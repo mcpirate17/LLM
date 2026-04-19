@@ -25,7 +25,11 @@ def test_role_slot_path_never_sets_wildcard():
     the function must not import or call _ALL_CLASSES."""
     import pathlib
 
-    src = pathlib.Path("research/synthesis/_template_role_slots.py").read_text()
+    src = (
+        pathlib.Path(__file__).resolve().parents[1]
+        / "synthesis"
+        / "_template_role_slots.py"
+    ).read_text()
     # The function body must not reference _ALL_CLASSES (which would widen).
     # The import at the top is fine (it's available for other helpers).
     func_start = src.index("def pick_role_motif(")
@@ -42,7 +46,11 @@ def test_class_slot_wildcard_sets_graph_breadcrumb():
     a graph-level breadcrumb so downstream filtering can detect it."""
     import pathlib
 
-    src = pathlib.Path("research/synthesis/_template_helpers.py").read_text()
+    src = (
+        pathlib.Path(__file__).resolve().parents[1]
+        / "synthesis"
+        / "_template_helpers.py"
+    ).read_text()
     assert "_template_wildcard_used" in src
     assert "_template_wildcard_slot_keys" in src
 
@@ -136,7 +144,11 @@ def test_codex_retention_block_records_named_slots():
     were previously emitted via raw _add without observability."""
     import pathlib
 
-    src = pathlib.Path("research/synthesis/_templates_attention_tail.py").read_text()
+    src = (
+        pathlib.Path(__file__).resolve().parents[1]
+        / "synthesis"
+        / "_templates_attention_advanced.py"
+    ).read_text()
     # Locate the function body.
     fn_start = src.index("def tpl_codex_ssm_retention_block(")
     fn_end = src.index("\ndef ", fn_start + 1)
@@ -150,7 +162,11 @@ def test_codex_retention_block_records_named_slots():
 def test_codex_mla_gated_block_records_retention_compress():
     import pathlib
 
-    src = pathlib.Path("research/synthesis/_templates_attention_tail.py").read_text()
+    src = (
+        pathlib.Path(__file__).resolve().parents[1]
+        / "synthesis"
+        / "_templates_attention_advanced.py"
+    ).read_text()
     fn_start = src.index("def tpl_codex_ssm_mla_gated_block(")
     fn_end = src.index("\ndef ", fn_start + 1)
     body = src[fn_start:fn_end]

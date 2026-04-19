@@ -1,5 +1,5 @@
 import React, { useState, useCallback } from 'react';
-import { apiCall } from '../../services/apiService';
+import { apiCall, postJson } from '../../services/apiService';
 import ConfigField from './ConfigField';
 
 /**
@@ -48,11 +48,7 @@ function SystemStatusSection({ systemStatus, onSystemStatusUpdate }) {
     setLlmSaving(true);
     setLlmMessage('');
     try {
-      const res = await apiCall('/api/llm/config', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(llmForm),
-      });
+      const res = await postJson('/api/llm/config', llmForm);
       const data = await res.json();
       if (res.ok) {
         setLlmConfig(data.config);

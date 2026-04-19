@@ -237,35 +237,6 @@ def validate_dim_flow(
     return result
 
 
-# ── 5.3: Parameter budget enforcement ─────────────────────────────
-
-
-def check_param_budget(
-    graph: ComputationGraph,
-    max_params: int,
-) -> DimFlowResult:
-    """Reject graphs that exceed a parameter budget before eval.
-
-    Args:
-        graph: The computation graph to check.
-        max_params: Maximum allowed learnable parameters.
-
-    Returns:
-        DimFlowResult with error if budget exceeded.
-    """
-    result = validate_dim_flow(graph, max_params=max_params)
-    budget_only = DimFlowResult(
-        reachable_param_count=result.reachable_param_count,
-        reachable_param_estimate=result.reachable_param_estimate,
-        reachable_nontrivial_ops=result.reachable_nontrivial_ops,
-        reachable_ops=result.reachable_ops,
-    )
-    for error in result.errors:
-        if error.startswith("Parameter budget exceeded:"):
-            budget_only.add_error(error)
-    return budget_only
-
-
 # ── 5.4: KV-cache compatibility ──────────────────────────────────
 
 # Ops that break incremental decoding (KV-cache). These either:

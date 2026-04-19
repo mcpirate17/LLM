@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from typing import Any
 
 from tasks.induction_native_probe.fast_induction_probe import (
@@ -47,11 +46,3 @@ def induction_result_metadata(result) -> dict[str, Any]:
         "induction_probe_speed_mode": INDUCTION_SPEED_MODE,
         "induction_probe_pool_size": INDUCTION_POOL_SIZE,
     }
-
-
-def induction_gap_json(result) -> str:
-    return json.dumps(
-        dict(result.gap_accuracies or {}),
-        sort_keys=True,
-        separators=(",", ":"),
-    )

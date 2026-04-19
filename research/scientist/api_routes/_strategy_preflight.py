@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List, Optional
+import logging
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
-from ..notebook import LabNotebook
 from ..trust_policy import TRUSTED_COMPARABILITY_LABELS, TRUSTED_TRUST_LABELS
 from .deps import get_notebook
+
+logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from ..notebook import LabNotebook
 
 
 _VALID_START_MODES = frozenset(
@@ -352,7 +357,7 @@ def run_launch_preflight(
         )
         verdict = "fail"
 
-    nb = get_notebook(notebook_path)
+    nb = get_notebook(notebook_path, read_only=True)
     try:
         active = nb.conn.execute(
             "SELECT COUNT(*) FROM experiments WHERE status = 'running'"

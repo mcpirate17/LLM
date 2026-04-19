@@ -5,8 +5,7 @@ import torch
 import torch.nn as nn
 
 from research.training import _loss_components as loss_components
-from research.training._muon_native import load_muon_native
-from research.training._rigl_native import load_rigl_native
+from research.training._optimizer_muon import _orthogonalize_update
 from research.scientist.runner._types import RunConfig
 from research.scientist.runner.execution_training import (
     _allow_synthesized_training,
@@ -16,6 +15,7 @@ from research.training.optimizer_synthesis import (
     build_optimizer,
     MuonOptimizer,
 )
+from research.training._loss_native import load_loss_native
 from research.training.sparse_training import RigLScheduler
 
 pytestmark = pytest.mark.unit
@@ -81,7 +81,7 @@ def test_build_optimizer_sgd():
     assert opt.param_groups[0]["nesterov"] is True
 
 
-def test_rigl_scheduler_uses_native_mask_kernel():
+def test_rigl_scheduler_updates_masks():
     params = [torch.nn.Parameter(torch.randn(32, 32)) for _ in range(2)]
     opt = torch.optim.AdamW(params, lr=1e-3)
     scheduler = RigLScheduler(params, opt, dense_allocation=0.2, T_end=10, delta=1)
@@ -90,14 +90,12 @@ def test_rigl_scheduler_uses_native_mask_kernel():
 
     scheduler.update_topology()
 
-    assert scheduler._native_ext is not None
     for state in scheduler._sparse_params:
         assert state.mask.dtype == torch.bool
         assert state.mask.shape == state.param.shape
 
 
-def test_rigl_native_mask_matches_reference_selection():
-    native = load_rigl_native()
+def test_rigl_mask_matches_reference_selection():
     param = torch.tensor(
         [[0.2, -0.9, 0.1], [1.4, -0.3, 0.8]],
         dtype=torch.float32,
@@ -133,7 +131,9 @@ def test_rigl_native_mask_matches_reference_selection():
     ).indices
     expected[grow_indices] = True
 
-    actual = native.compute_new_mask(param, grad, mask, num_to_update).reshape(-1)
+    actual = load_loss_native().rigl_compute_new_mask(
+        param, grad, mask, num_to_update
+    ).reshape(-1)
 
     assert torch.equal(actual, expected)
 
@@ -151,14 +151,13 @@ def test_entropy_reg_matches_reference_formula():
     probs = torch.nn.functional.softmax(logits, dim=-1)
 
     expected = -(probs * probs.clamp_min(1e-10).log()).sum(dim=-1).mean() * 0.1
-    actual = loss_components.loss_entropy_reg(logits, targets, log_probs, None)
+    actual = loss_components.loss_entropy_reg(logits, targets, log_probs)
 
     assert torch.allclose(actual, expected, rtol=1e-6, atol=1e-6)
 
 
 def test_entropy_reg_reuses_log_probs_instead_of_softmax():
     assert "entropy_reg" in loss_components.LOG_PROB_COMPONENTS
-    assert "entropy_reg" not in loss_components.PROB_COMPONENTS
 
 
 def test_rank_weighted_ce_matches_reference_formula():
@@ -172,7 +171,7 @@ def test_rank_weighted_ce_matches_reference_formula():
     rank_pos = logits.gt(target_logits).sum(dim=1).to(logits.dtype)
     expected = (nll * (torch.log1p(rank_pos) + 1.0)).mean()
 
-    actual = loss_components.loss_rank_weighted_ce(logits, targets, log_probs, None)
+    actual = loss_components.loss_rank_weighted_ce(logits, targets, log_probs)
 
     assert torch.allclose(actual, expected, rtol=1e-6, atol=1e-6)
 
@@ -192,7 +191,6 @@ def test_muon_step_updates_params():
 
     changed = any(not torch.equal(b, a) for b, a in zip(before, model.parameters()))
     assert changed, "MuonOptimizer did not update parameters"
-    assert opt._native_ext is not None
 
 
 def test_muon_state_size_is_1x_params():
@@ -217,8 +215,7 @@ def test_muon_state_size_is_1x_params():
     )
 
 
-def test_muon_native_orthogonalization_matches_reference_iteration():
-    native = load_muon_native()
+def test_muon_orthogonalization_matches_reference_iteration():
     matrix = torch.randn(16, 16, dtype=torch.float32)
     n_steps = 4
 
@@ -232,7 +229,7 @@ def test_muon_native_orthogonalization_matches_reference_iteration():
         gram = ref.transpose(0, 1).matmul(ref)
         ref = ref.matmul(a * eye + b * gram + c * gram.matmul(gram))
 
-    actual = native.orthogonalize_update(matrix, n_steps)
+    actual = _orthogonalize_update(matrix, n_steps)
 
     assert torch.allclose(actual, ref, rtol=1e-5, atol=1e-5)
 

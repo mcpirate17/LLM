@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 from functools import lru_cache
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from ..json_utils import fast_dumps as _json_dumps
 from ..json_utils import fast_loads as _json_loads

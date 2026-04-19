@@ -9,9 +9,15 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List, Tuple
 
-from research.scientist.intelligence.ml_corpus import load_deduped_graph_training_rows
-
 logger = logging.getLogger(__name__)
+
+
+def _load_deduped_graph_training_rows(db_path):
+    from research.scientist.intelligence.ml_corpus import (
+        load_deduped_graph_training_rows,
+    )
+
+    return load_deduped_graph_training_rows(db_path)
 
 
 def _scaffold_blend_alpha(support: int) -> float:
@@ -314,7 +320,7 @@ class _WeightsMixin:
 
     def _deduped_graph_rows(self, since_ts: float = 0.0) -> List[Dict]:
         db_path = str(getattr(self.nb, "db_path", Path("research/lab_notebook.db")))
-        rows = load_deduped_graph_training_rows(db_path)
+        rows = _load_deduped_graph_training_rows(db_path)
         if since_ts <= 0:
             return rows
         return [

@@ -31,6 +31,35 @@ from .ml_corpus import (
 
 logger = logging.getLogger(__name__)
 
+_TIER_WEIGHT = {
+    "screening": 1.0,
+    "screened_out": 0.5,
+    "investigation": 4.0,
+    "investigation_failed": 2.0,
+    "investigation_fingerprint_incomplete": 2.0,
+    "validation": 6.0,
+    "breakthrough": 6.0,
+}
+
+_FINGERPRINT_KEYS = [
+    "interaction_locality",
+    "interaction_sparsity",
+    "interaction_symmetry",
+    "interaction_hierarchy",
+    "intrinsic_dim",
+    "isotropy",
+    "rank_ratio",
+    "jacobian_spectral_norm",
+    "jacobian_effective_rank",
+    "sensitivity_uniformity",
+    "cka_vs_transformer",
+    "cka_vs_ssm",
+    "cka_vs_conv",
+    "hierarchy_fitness",
+    "routing_selectivity",
+    "routing_compute_ratio",
+]
+
 _STATE_DIR = Path("research/runtime/learning")
 _GBM_GATE_MODEL_PATH = _STATE_DIR / "gbm_gate_model.txt"
 _GBM_RANK_MODEL_PATH = _STATE_DIR / "gbm_rank_model.txt"

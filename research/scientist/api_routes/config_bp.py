@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from flask import jsonify, request
-from ..runner import RunConfig
+from ..runner._types import RunConfig
 from ..persona import get_aria
 from ._helpers import save_llm_config
 from .deps import ApiRouteContext

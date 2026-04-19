@@ -7,6 +7,7 @@ function profilingEnabled() {
     process.env.NODE_ENV !== 'production'
     && typeof window !== 'undefined'
     && typeof performance !== 'undefined'
+    && Boolean(window.__ariaRenderPerfCollect || window.__ariaRenderPerfDebug)
   );
 }
 

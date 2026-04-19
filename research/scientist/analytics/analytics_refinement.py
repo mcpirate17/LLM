@@ -3,9 +3,10 @@ import json
 import math
 import sqlite3
 from collections import defaultdict
-from typing import Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
-from ...synthesis.primitives import get_primitive
+if TYPE_CHECKING:
+    from . import ExperimentAnalytics
 
 
 class RefinementAnalyzer:
@@ -66,6 +67,12 @@ class RefinementAnalyzer:
         self.analytics = analytics
         self.nb = analytics.nb
 
+    @staticmethod
+    def _get_primitive(op_name: str):
+        from ...synthesis.primitives import get_primitive
+
+        return get_primitive(op_name)
+
     def analyze_program_for_refinement(
         self,
         result_id: str,
@@ -81,7 +88,7 @@ class RefinementAnalyzer:
         op_categories: Dict[str, str] = {}
         for op_name in program_ops:
             try:
-                prim = get_primitive(op_name)
+                prim = self._get_primitive(op_name)
                 op_categories[op_name] = prim.category.value
             except (KeyError, ValueError):
                 op_categories[op_name] = "unknown"
@@ -102,7 +109,7 @@ class RefinementAnalyzer:
             pop_s1_rates[op] = n_s1 / n_used if n_used > 0 else 0.0
             pop_s0_rates[op] = n_s0 / n_used if n_used > 0 else 0.0
             try:
-                prim = get_primitive(op)
+                prim = self._get_primitive(op)
                 pop_categories[op] = prim.category.value
             except (KeyError, ValueError):
                 pop_categories[op] = "unknown"
@@ -384,7 +391,7 @@ class RefinementAnalyzer:
         for gap in significant_gaps:
             for op in gap.get("improvement_ops", []):
                 try:
-                    prim = get_primitive(op)
+                    prim = self._get_primitive(op)
                     cat = prim.category.value
                     add_categories[cat] = max(add_categories.get(cat, 1.0), 1.5)
                 except (KeyError, ValueError):

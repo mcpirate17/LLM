@@ -17,12 +17,30 @@ from research.synthesis.validator import validate_graph
 pytestmark = pytest.mark.unit
 
 
-def _graph_json_for_ops(ops):
+def _graph_json_for_ops(ops, *, variant: int | None = None):
+    """Build a deterministic graph JSON.
+
+    If ``variant`` is provided, an extra linear_proj node is inserted a
+    variant-specific number of times so the canonical fingerprint is
+    distinct per variant. The corpus loader deduplicates by canonical
+    graph fingerprint, so tests that need independent per-row analysis
+    must supply distinct variants.
+    """
     nodes = {"0": {"id": 0, "op_name": "input", "input_ids": []}}
     prev = 0
     for idx, op in enumerate(ops, start=1):
         nodes[str(idx)] = {"id": idx, "op_name": op, "input_ids": [prev]}
         prev = idx
+    if variant is not None:
+        for v in range(int(variant) + 1):
+            idx = len(nodes)
+            nodes[str(idx)] = {
+                "id": idx,
+                "op_name": "linear_proj",
+                "input_ids": [prev],
+                "config": {"out_dim": 16 + (int(variant) % 16)},
+            }
+            prev = idx
     return json.dumps({"nodes": nodes})
 
 
@@ -106,12 +124,13 @@ def test_attribution_filters_unknown_depth_bucket_as_top_signal():
         "synthesis", {"n_programs": 60}, "unknown-depth signal quality"
     )
 
-    shared_graph = _graph_json_for_ops(["linear_proj", "gelu", "tanh"])
     for i in range(30):
         nb.record_program_result(
             experiment_id=exp_id,
             graph_fingerprint=f"unk_{i}",
-            graph_json=shared_graph,
+            graph_json=_graph_json_for_ops(
+                ["linear_proj", "gelu", "tanh"], variant=i
+            ),
             stage1_passed=1 if i < 24 else 0,
             graph_depth=None,
             graph_uses_math_spaces=0,
@@ -120,7 +139,9 @@ def test_attribution_filters_unknown_depth_bucket_as_top_signal():
         nb.record_program_result(
             experiment_id=exp_id,
             graph_fingerprint=f"known_{i}",
-            graph_json=shared_graph,
+            graph_json=_graph_json_for_ops(
+                ["linear_proj", "gelu", "tanh"], variant=1000 + i
+            ),
             stage1_passed=1 if i < 3 else 0,
             graph_depth=4,
             graph_uses_math_spaces=0,

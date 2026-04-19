@@ -52,41 +52,25 @@ class CheckpointManager:
         logger.debug("Checkpoint saved: %s", path)
 
     @staticmethod
-    def _cpu_tree(value: Any) -> Any:
+    def _map_tensors(value: Any, fn) -> Any:
+        """Recursively apply ``fn`` to every tensor leaf, preserving structure."""
         if torch.is_tensor(value):
-            return value.detach().cpu()
+            return fn(value)
         if isinstance(value, dict):
-            return {
-                key: CheckpointManager._cpu_tree(item) for key, item in value.items()
-            }
+            return {k: CheckpointManager._map_tensors(v, fn) for k, v in value.items()}
         if isinstance(value, list):
-            return [CheckpointManager._cpu_tree(item) for item in value]
+            return [CheckpointManager._map_tensors(v, fn) for v in value]
         if isinstance(value, tuple):
-            return tuple(CheckpointManager._cpu_tree(item) for item in value)
+            return tuple(CheckpointManager._map_tensors(v, fn) for v in value)
         return value
 
     @classmethod
-    def _cpu_state_dict(cls, model_state_dict: Dict[str, Any]) -> Dict[str, Any]:
-        return cls._cpu_tree(model_state_dict)
+    def _cpu_tree(cls, value: Any) -> Any:
+        return cls._map_tensors(value, lambda t: t.detach().cpu())
 
-    @staticmethod
-    def _move_tree_to_device(value: Any, device: torch.device) -> Any:
-        if torch.is_tensor(value):
-            return value.to(device=device)
-        if isinstance(value, dict):
-            return {
-                key: CheckpointManager._move_tree_to_device(item, device)
-                for key, item in value.items()
-            }
-        if isinstance(value, list):
-            return [
-                CheckpointManager._move_tree_to_device(item, device) for item in value
-            ]
-        if isinstance(value, tuple):
-            return tuple(
-                CheckpointManager._move_tree_to_device(item, device) for item in value
-            )
-        return value
+    @classmethod
+    def _move_tree_to_device(cls, value: Any, device: torch.device) -> Any:
+        return cls._map_tensors(value, lambda t: t.to(device=device))
 
     @staticmethod
     def _validate_phase_state(state: Dict[str, Any], path: Path) -> Dict[str, Any]:
@@ -179,15 +163,15 @@ class CheckpointManager:
             return None
         try:
             state = torch.load(str(path), map_location="cpu", weights_only=False)
-            logger.info(
-                "Loaded continuous checkpoint: %s (n_experiments=%d)",
-                path,
-                state.get("n_experiments", 0),
-            )
-            return state
-        except Exception as e:
-            logger.error("Failed to load continuous checkpoint %s: %s", path, e)
-            raise e
+        except Exception:
+            logger.exception("Failed to load continuous checkpoint %s", path)
+            raise
+        logger.info(
+            "Loaded continuous checkpoint: %s (n_experiments=%d)",
+            path,
+            state.get("n_experiments", 0),
+        )
+        return state
 
     # ── Phase checkpoints (investigation / validation) ──
 
@@ -208,8 +192,8 @@ class CheckpointManager:
             "phase": phase,
             "candidate_idx": candidate_idx,
             "seed_idx": seed_idx,
-            "model_state_dict": self._cpu_state_dict(model_state_dict),
-            "optimizer_state_dict": self._cpu_state_dict(optimizer_state_dict),
+            "model_state_dict": self._cpu_tree(model_state_dict),
+            "optimizer_state_dict": self._cpu_tree(optimizer_state_dict),
             "step": step,
         }
         if metrics:
@@ -233,13 +217,11 @@ class CheckpointManager:
         try:
             state = torch.load(str(path), map_location="cpu", weights_only=False)
             state = self._validate_phase_state(state, path)
-            logger.info(
-                "Loaded phase checkpoint: %s (step=%d)", path, state.get("step", 0)
-            )
-            return state
-        except Exception as e:
-            logger.error("Failed to load phase checkpoint %s: %s", path, e)
-            raise e
+        except Exception:
+            logger.exception("Failed to load phase checkpoint %s", path)
+            raise
+        logger.info("Loaded phase checkpoint: %s (step=%d)", path, state.get("step", 0))
+        return state
 
     def load_phase_into(
         self,
@@ -287,7 +269,7 @@ class CheckpointManager:
             "payload": payload,
         }
         if model_state_dict:
-            state["model_state_dict"] = self._cpu_state_dict(model_state_dict)
+            state["model_state_dict"] = self._cpu_tree(model_state_dict)
         filename = f"{source_result_id}_tp{training_program_idx}_{artifact_kind}.pt"
         path = self._artifact_dir(experiment_id) / filename
         self._atomic_save(state, path)

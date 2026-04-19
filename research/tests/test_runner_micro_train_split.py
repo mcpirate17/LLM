@@ -59,7 +59,12 @@ class TestMicroTrainMethodSizes(unittest.TestCase):
     )
 
     def test_no_split_method_exceeds_150_lines(self):
-        src = Path("research/scientist/runner/execution_training.py").read_text()
+        src = (
+            Path(__file__).parent.parent
+            / "scientist"
+            / "runner"
+            / "execution_training.py"
+        ).read_text()
         tree = ast.parse(src)
 
         for node in ast.walk(tree):

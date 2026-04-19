@@ -8,8 +8,11 @@ queryable metrics from the lab notebook.
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional
+
+logger = logging.getLogger(__name__)
 
 
 class EvidencePackError(ValueError):
@@ -188,13 +191,6 @@ def _query_scalar(nb, query: str, params: Optional[tuple] = None) -> Optional[fl
         return None
     # First column
     return _safe_float(row[0])
-
-
-def _query_pair(nb, query: str, params: Optional[tuple] = None) -> Optional[tuple]:
-    row = nb.conn.execute(query, params or ()).fetchone()
-    if not row:
-        return None
-    return tuple(row)
 
 
 def build_evidence_pack(

@@ -12,7 +12,6 @@ Usage:
     model = InteractionModel.train(notebook_db, profiling_db)
     p_stable = model.predict_stability("gelu", "linear_proj")
     loss = model.predict_loss("gelu", "linear_proj")
-    motif_score = model.motif_viability(["rmsnorm", "linear_proj", "gelu", "add"])
 """
 
 from __future__ import annotations
@@ -253,42 +252,6 @@ class InteractionModel:
             return 0.7
         return float(self.u[i] @ self.W_l @ self.v[j]) + self.b_l
 
-    def stability_matrix(self) -> np.ndarray:
-        """Full NxN stability prediction matrix."""
-        logits = self.u @ self.W_s @ self.v.T + self.b_s
-        return _sigmoid(logits)
-
-    def loss_matrix(self) -> np.ndarray:
-        """Full NxN loss prediction matrix."""
-        return self.u @ self.W_l @ self.v.T + self.b_l
-
-    def motif_viability(self, op_sequence: List[str]) -> float:
-        """Score a motif by minimum predicted stability across consecutive pairs.
-
-        Returns float in [0, 1]. Higher = more viable.
-        """
-        if len(op_sequence) < 2:
-            return 1.0
-        scores = []
-        for a, b in zip(op_sequence[:-1], op_sequence[1:]):
-            scores.append(self.predict_stability(a, b))
-        return float(min(scores))
-
-    def pair_adjusted_op_weight(self, candidate: str, context_ops: List[str]) -> float:
-        """Compute pair-adjusted weight for a candidate op given graph context.
-
-        Returns multiplier in [0.1, 2.0] based on mean stability with context ops.
-        """
-        if not context_ops:
-            return 1.0
-        stabilities = []
-        for op in context_ops:
-            stabilities.append(self.predict_stability(candidate, op))
-            stabilities.append(self.predict_stability(op, candidate))
-        mean_stab = float(np.mean(stabilities))
-        # Map [0, 1] → [0.1, 2.0]
-        return float(np.clip(0.1 + 1.9 * mean_stab, 0.1, 2.0))
-
     @classmethod
     def train(
         cls,
@@ -484,29 +447,23 @@ class InteractionModel:
             len(loss_idx),
         )
 
-        native_result = None
-        try:
-            native_result = _train_interaction_native(
-                u=u,
-                v=v,
-                W_s=W_s,
-                W_l=W_l,
-                b_s=b_s,
-                b_l=b_l,
-                stab_idx=stab_idx,
-                stab_labels=stab_labels,
-                stab_weights=stab_weights,
-                loss_idx=loss_idx,
-                loss_labels=loss_labels,
-                loss_weights=loss_weights,
-                n_epochs=n_epochs,
-                lr=lr,
-                seed=seed,
-            )
-        except Exception as exc:
-            logger.warning(
-                "Native interaction training failed; falling back to Python: %s", exc
-            )
+        native_result = _train_interaction_native(
+            u=u,
+            v=v,
+            W_s=W_s,
+            W_l=W_l,
+            b_s=b_s,
+            b_l=b_l,
+            stab_idx=stab_idx,
+            stab_labels=stab_labels,
+            stab_weights=stab_weights,
+            loss_idx=loss_idx,
+            loss_labels=loss_labels,
+            loss_weights=loss_weights,
+            n_epochs=n_epochs,
+            lr=lr,
+            seed=seed,
+        )
 
         if native_result is None:
             u, v, W_s, W_l, b_s, b_l, best_loss = _train_interaction_python(

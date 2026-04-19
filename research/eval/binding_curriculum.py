@@ -9,6 +9,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from .utils import clip_grad_norm
+
 CURRICULUM_BINDING_PROTOCOL_VERSION = "copy_curriculum_v1"
 CURRICULUM_BINDING_DISTANCES = (4, 8, 16, 32)
 CURRICULUM_BINDING_STEPS_SCREENING = 400
@@ -199,7 +201,7 @@ def curriculum_binding_range_profile(
                 break
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
-            nn.utils.clip_grad_norm_(probe_model.parameters(), 1.0)
+            clip_grad_norm(probe_model.parameters(), 1.0)
             optimizer.step()
             result.train_steps = step + 1
 

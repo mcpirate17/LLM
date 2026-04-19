@@ -160,13 +160,23 @@ class TestRunnerModeSelection(unittest.TestCase):
         self.assertIn("Compression examination injection", rec.get("reasoning", ""))
 
     def test_validation_calls_use_run_config_limits(self):
-        src_execute = inspect.getsource(ExperimentRunner._execute_experiment)
-        src_generate = inspect.getsource(ExperimentRunner._generate_candidates)
+        # Graph generation and structural validation gates both must respect
+        # config.max_ops / config.max_depth. Read the source directly from
+        # disk so the check is immune to any in-process mock state.
+        import pathlib
 
-        self.assertIn("max_ops=max(1, int(config.max_ops))", src_execute)
-        self.assertIn("max_depth=max(1, int(config.max_depth))", src_execute)
+        research_root = pathlib.Path(__file__).resolve().parents[1]
+        src_generate = (
+            research_root / "scientist" / "runner" / "execution_candidates.py"
+        ).read_text()
+        src_quality_gates = (
+            research_root / "scientist" / "runner" / "execution_screening_pipeline.py"
+        ).read_text()
+
         self.assertIn("max_ops=max(1, int(config.max_ops))", src_generate)
         self.assertIn("max_depth=max(1, int(config.max_depth))", src_generate)
+        self.assertIn("max_ops=max(1, int(config.max_ops))", src_quality_gates)
+        self.assertIn("max_depth=max(1, int(config.max_depth))", src_quality_gates)
 
     def test_run_cycle_dispatches_refinement_mode(self):
         tmpdir = tempfile.mkdtemp()

@@ -5,8 +5,8 @@ from unittest.mock import MagicMock
 
 import numpy as np
 
-from research.search.evolution import (
-    Individual,
+from research.search.evolution import Individual
+from research.search._nsga import (
     _assign_crowding_distance_in_python,
     assign_crowding_distance,
     fast_non_dominated_sort,

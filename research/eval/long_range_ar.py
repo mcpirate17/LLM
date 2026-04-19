@@ -29,7 +29,7 @@ from .associative_recall import (
     _generate_eval_set,
     _get_special_tokens,
 )
-from .utils import make_adamw
+from .utils import clip_grad_norm, make_adamw
 
 logger = logging.getLogger(__name__)
 
@@ -111,7 +111,7 @@ def _train_ar_at_length(
                 break
 
             loss.backward()
-            nn.utils.clip_grad_norm_(probe_model.parameters(), 1.0)
+            clip_grad_norm(probe_model.parameters(), 1.0)
             opt.step()
 
         acc = _eval_accuracy(probe_model, eval_ids, eval_targets, batch_size)

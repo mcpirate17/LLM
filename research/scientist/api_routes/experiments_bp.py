@@ -11,7 +11,7 @@ from ..json_utils import json_safe as _json_safe
 from ..code_agent import _should_autospawn_self_repair, _spawn_code_agent_task
 from .deps import ApiRouteContext
 from ._utils import with_notebook_context
-from ..runner import RunConfig
+from ..runner._types import RunConfig
 from ._experiment_launch import (
     build_start_error_response,
     build_start_success_response,

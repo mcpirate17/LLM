@@ -20,7 +20,6 @@ from ._notebook_misc_shared import (
     _template_label_from_evidence,
     _summarize_template_stat,
     _empty_template_stat,
-    _load_eval_native_module,
     _TEMPLATE_DEF_RE,
     _EMPTY_DATA_ACCOUNTING_SHAPE,
 )
@@ -29,11 +28,6 @@ from ..leaderboard_scoring import (
     compute_efficiency_multiple as _compute_efficiency_multiple,
     compute_pre_investigation_score as _compute_pre_investigation_score,
 )
-from ...synthesis.templates import TEMPLATES
-
-
-
-
 
 class _EntriesMixin:
     """Training curves, entries, and failure analysis."""

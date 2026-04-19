@@ -11,7 +11,7 @@ from research.search.native_metrics import (
     reset_native_search_metrics_lib,
     topk_nearest_indices,
 )
-from research.search.novelty_search import BehaviorArchive, _behavior_distance
+from research.search._behavior_archive import BehaviorArchive, _behavior_distance
 
 pytestmark = pytest.mark.unit
 

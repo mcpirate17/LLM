@@ -37,6 +37,7 @@ from .grammar_support import (
     check_shape_compat,
     compute_motif_weights_from_op_weights,
 )
+from .grammar_defaults import default_category_weights
 from .primitives import (
     PRIMITIVE_REGISTRY,
     REQUIRES_RESIDUAL_BYPASS,
@@ -86,21 +87,7 @@ class GrammarConfig:
     risky_op_prob: float = 0.5  # probability of using numerically risky ops
     freq_domain_prob: float = 0.15  # probability of FFT detour
     # Category weights (higher = more likely to be chosen)
-    category_weights: Dict[str, float] = field(
-        default_factory=lambda: {
-            "elementwise_unary": 2.0,
-            "elementwise_binary": 1.5,
-            "reduction": 0.8,
-            "linear_algebra": 1.0,
-            "structural": 1.0,
-            "parameterized": 2.0,
-            "mixing": 1.5,
-            "sequence": 1.2,
-            "frequency": 1.0,
-            "math_space": 1.5,
-            "functional": 3.0,  # Routing/gating/branching ops
-        }
-    )
+    category_weights: Dict[str, float] = field(default_factory=default_category_weights)
     # Per-op weight multipliers
     op_weights: Dict[str, float] = field(default_factory=dict)
 
@@ -757,6 +744,15 @@ def generate_layer_graph(
             exploration_budget=config.template_exploration_budget,
         )
 
+        # depth() returns 0 without a set output — point it at the trial tail
+        # so the budget check sees the actual longest input-to-trail path.
+        # Skip for very tight budgets where a real depth signal starves the
+        # grammar: the validator's +2 headroom is the sole depth backstop
+        # in that regime.
+        if config.max_depth > 10:
+            graph._output_node_id = trial_current
+            graph._cache.pop("depth", None)
+
         if _graph_exceeds_final_budget(graph, config):
             # Roll back only the suffix allocated by this template. Node IDs are
             # monotonic, so there is no reason to rebuild a full key set here.
@@ -1090,13 +1086,36 @@ def _validate_graph(graph: ComputationGraph, config: GrammarConfig) -> None:
         raise ValueError(f"Template rule violations: {tpl_errors}")
 
 
+_POST_BODY_OP_RESERVE = 3  # dim-coerce + outer residual + final rmsnorm
+_POST_BODY_DEPTH_RESERVE = 3  # same three hops, worst-case sequential
+
+
 def _graph_exceeds_final_budget(
     graph: ComputationGraph,
     config: GrammarConfig,
 ) -> bool:
-    """Mirror the final screening depth/op budget during generation."""
-    depth_limit = config.max_depth + max(0, int(config.min_splits)) * 3
-    return graph.n_ops() > config.max_ops or graph.depth() > depth_limit
+    """Mirror the final screening depth/op budget during generation.
+
+    Reserves a small op/depth margin for the trailing decorators that
+    generate_layer_graph always appends after the template loop
+    (output-dim coercion, outer residual, final rmsnorm). Without this
+    reservation the grammar routinely emits graphs 1-3 ops over
+    ``config.max_ops``, which the downstream validator rejects.
+
+    For very tight budgets (small max_ops/max_depth) the reserve is
+    waived: starving templates entirely produces zero valid graphs,
+    and the validator already tolerates the +2 depth headroom that
+    covers the post-body decorators.
+    """
+    op_reserve = _POST_BODY_OP_RESERVE if config.max_ops > 16 else 0
+    depth_reserve = _POST_BODY_DEPTH_RESERVE if config.max_depth > 10 else 0
+    op_limit = max(1, config.max_ops - op_reserve)
+    depth_limit = (
+        config.max_depth
+        + max(0, int(config.min_splits)) * 3
+        - depth_reserve
+    )
+    return graph.n_ops() > op_limit or graph.depth() > depth_limit
 
 
 def batch_generate(

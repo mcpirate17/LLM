@@ -6,6 +6,33 @@
 /* eslint-disable no-restricted-globals */
 
 let eventSource = null;
+let trainingStepFlushTimer = null;
+let pendingTrainingStep = null;
+
+function postEvent(eventName, data) {
+  self.postMessage({
+    type: 'event',
+    eventName,
+    data,
+  });
+}
+
+function flushPendingTrainingStep() {
+  trainingStepFlushTimer = null;
+  if (pendingTrainingStep === null) {
+    return;
+  }
+  postEvent('training_step', pendingTrainingStep);
+  pendingTrainingStep = null;
+}
+
+function clearBufferedEvents() {
+  pendingTrainingStep = null;
+  if (trainingStepFlushTimer !== null) {
+    clearTimeout(trainingStepFlushTimer);
+    trainingStepFlushTimer = null;
+  }
+}
 
 function resolveEventsUrl(payload) {
   const eventsUrl = String(payload?.eventsUrl || '').trim();
@@ -61,12 +88,16 @@ self.onmessage = function(e) {
         } catch (err) {
           console.error(`Worker failed to parse ${eventName}:`, err);
         }
-        
-        self.postMessage({
-          type: 'event',
-          eventName,
-          data: parsedData
-        });
+
+        if (eventName === 'training_step') {
+          pendingTrainingStep = parsedData;
+          if (trainingStepFlushTimer === null) {
+            trainingStepFlushTimer = setTimeout(flushPendingTrainingStep, 250);
+          }
+          return;
+        }
+
+        postEvent(eventName, parsedData);
       });
     });
   }
@@ -76,6 +107,7 @@ self.onmessage = function(e) {
       eventSource.close();
       eventSource = null;
     }
+    clearBufferedEvents();
     self.postMessage({ type: 'status', connected: false });
   }
 };

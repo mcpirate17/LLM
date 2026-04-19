@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import apiService from '../services/apiService';
+import useDocumentVisible from '../hooks/useDocumentVisible';
 
 // Color mapping for op types
 const OP_COLORS = {
@@ -71,6 +72,7 @@ function NativeProfilePanel() {
   const [expanded, setExpanded] = useState(true);
   const [hoveredNode, setHoveredNode] = useState(null);
   const intervalRef = useRef(null);
+  const isDocumentVisible = useDocumentVisible();
 
   const fetchProfile = useCallback(async () => {
     try {
@@ -90,7 +92,7 @@ function NativeProfilePanel() {
 
   // Auto-refresh when enabled
   useEffect(() => {
-    if (enabled) {
+    if (enabled && isDocumentVisible) {
       intervalRef.current = setInterval(fetchProfile, 2000);
     } else {
       if (intervalRef.current) {
@@ -101,7 +103,7 @@ function NativeProfilePanel() {
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current);
     };
-  }, [enabled, fetchProfile]);
+  }, [enabled, fetchProfile, isDocumentVisible]);
 
   const handleToggle = useCallback(async () => {
     setToggling(true);

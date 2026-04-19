@@ -13,6 +13,7 @@ import time
 import uuid
 import zlib
 from contextlib import contextmanager
+from os import PathLike
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
 
@@ -183,12 +184,37 @@ class _NotebookCore:
         _run_pragma("PRAGMA busy_timeout=15000", desc="busy timeout")
 
     @staticmethod
-    def resolve_db_path(db_path: str | Path) -> Path:
+    def validate_db_path_arg(db_path: str | PathLike[str]) -> str | PathLike[str]:
+        """Reject obviously bogus notebook paths before any filesystem side effects.
+
+        Test doubles and sentinel strings should fail fast instead of creating
+        files like ``<MagicMock name='mock.db_path' ...>`` or ``:memory:`` under
+        the repo root.
+        """
+        if not isinstance(db_path, (str, os.PathLike)):
+            raise TypeError(
+                f"db_path must be str or os.PathLike, got {type(db_path).__name__}"
+            )
+
+        raw = os.fspath(db_path).strip()
+        if not raw:
+            raise ValueError("db_path must not be empty")
+        if raw == ":memory:":
+            return raw
+        if raw.startswith("<MagicMock ") or "MagicMock name='mock.db_path'" in raw:
+            raise TypeError(f"db_path must be a real filesystem path, got {raw!r}")
+        return db_path
+
+    @staticmethod
+    def resolve_db_path(db_path: str | PathLike[str]) -> Path:
         """Resolve a database path to its absolute path, handling nested research/ cases.
 
         Ensures that if we are currently inside the research/ directory,
         a path like 'research/lab_notebook.db' refers to the one in the parent.
         """
+        db_path = _NotebookCore.validate_db_path_arg(db_path)
+        if isinstance(db_path, str) and db_path == ":memory:":
+            return Path(":memory:")
         path = Path(db_path)
         if not path.is_absolute():
             # If we are in /some/path/LLM/research and db_path is 'research/lab_notebook.db'
@@ -207,11 +233,12 @@ class _NotebookCore:
 
     def __init__(
         self,
-        db_path: str | Path = "research/lab_notebook.db",
+        db_path: str | PathLike[str] = "research/lab_notebook.db",
         *,
         skip_migrate: bool = False,
         check_same_thread: bool = False,
         read_only: bool = False,
+        use_native: bool = True,
     ):
         """Open the notebook.
 
@@ -221,12 +248,19 @@ class _NotebookCore:
         teardown that previously stranded writer data on the long-running
         dashboard process. Write attempts from a read-only notebook will
         raise at the aria-db layer instead of silently dropping.
+
+        ``use_native=False`` forces the legacy Python sqlite3 wrapper. This
+        is useful for short-lived writable admin/API requests that must
+        release the writer lock on close instead of pinning the process-wide
+        aria-db writer manager for the lifetime of the process.
         """
         _install_wal_autocheckpoint_guard()
         self.db_path = self.resolve_db_path(db_path)
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._is_memory = ":memory:" in str(self.db_path)
+        if not self._is_memory:
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._read_only = bool(read_only)
+        self._use_native = bool(use_native) and not self._is_memory
 
         if self._is_memory:
             # In-memory DBs can't use the native manager (no file path).
@@ -240,11 +274,27 @@ class _NotebookCore:
             raw_conn.row_factory = sqlite3.Row
             self.conn = _ThreadSafeConnectionWrapper(raw_conn)
             self._use_native = False
-        else:
+        elif self._use_native:
             self.conn = NativeConnectionWrapper(
                 str(self.db_path), read_only=self._read_only
             )
-            self._use_native = True
+        else:
+            connect_target = str(self.db_path)
+            connect_kwargs = {
+                "timeout": 10.0,
+                "check_same_thread": check_same_thread,
+            }
+            if self._read_only:
+                connect_target = f"file:{self.db_path}?mode=ro"
+                connect_kwargs["uri"] = True
+            raw_conn = sqlite3.connect(connect_target, **connect_kwargs)
+            self._configure_sqlite_connection(
+                raw_conn,
+                db_path=self.db_path,
+                role="readonly" if self._read_only else "api-write",
+            )
+            raw_conn.row_factory = sqlite3.Row
+            self.conn = _ThreadSafeConnectionWrapper(raw_conn)
 
         self._batch_depth = 0
         self._program_results_columns: Optional[set[str]] = None
@@ -319,7 +369,6 @@ class _NotebookCore:
         )
 
         batch = []
-        last_commit = time.time()
 
         while not self._stop_event.is_set() or not self._write_queue.empty():
             try:
@@ -333,7 +382,6 @@ class _NotebookCore:
                     if batch:
                         writer_conn.commit()
                         batch = []
-                        last_commit = time.time()
                     params.set()  # params is a threading.Event
                     continue
                 if (
@@ -352,13 +400,11 @@ class _NotebookCore:
                 # screening thread's concurrent notebook queries.
                 writer_conn.commit()
                 batch = []
-                last_commit = time.time()
 
             except queue.Empty:
                 if batch:
                     writer_conn.commit()
                     batch = []
-                    last_commit = time.time()
                 continue
             except sqlite3.OperationalError as e:
                 if "locked" in str(e).lower():
@@ -572,8 +618,12 @@ class _NotebookCore:
         Useful in tests and any code that writes via ``_submit_write`` then
         immediately reads back via the main ``self.conn``.
         """
+        if self._read_only:
+            return
         if getattr(self, "_use_native", False):
             self.conn._mgr.flush_writes(timeout)
+            return
+        if not self._writer_thread_started:
             return
         # Put a sentinel-like marker and wait for drain
         flush_event = threading.Event()

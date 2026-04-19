@@ -13,6 +13,7 @@ available (3-10x faster, native numpy support).  Falls back to stdlib
 from __future__ import annotations
 
 import json
+import logging
 import math
 from pathlib import Path
 from typing import Any, Union
@@ -21,6 +22,8 @@ try:
     import orjson as _orjson
 except ImportError:  # pragma: no cover
     _orjson = None  # type: ignore[assignment]
+
+logger = logging.getLogger(__name__)
 
 
 def json_safe(value: Any) -> Any:

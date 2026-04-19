@@ -1,5 +1,5 @@
 import React, { useState, useCallback } from 'react';
-import { apiCall } from '../../services/apiService';
+import { apiCall, postJson } from '../../services/apiService';
 import { INTENTS } from './architectureUtils';
 
 export function MorphPanel({ resultId, onSelectCandidate }) {
@@ -14,11 +14,7 @@ export function MorphPanel({ resultId, onSelectCandidate }) {
     setError(null);
     setCandidates(null);
     try {
-      const res = await apiCall(`/api/programs/${resultId}/morph`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ intent, n_candidates: 6, use_analysis: true }),
-      });
+      const res = await postJson(`/api/programs/${resultId}/morph`, { intent, n_candidates: 6, use_analysis: true });
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
       setCandidates(data.candidates || []);

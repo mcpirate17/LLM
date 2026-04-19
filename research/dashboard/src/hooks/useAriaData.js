@@ -1,5 +1,6 @@
 import { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import { useEventBus } from './useEventBus';
+import useDocumentVisible from './useDocumentVisible';
 import { apiCall } from '../services/apiService';
 
 const AriaDataContext = createContext(null);
@@ -13,10 +14,9 @@ const CORE_RETRY_MAX_MS = 120000;
  * Polls on a coordinated schedule and exposes an atomic snapshot
  * so all consumers see consistent data.
  */
-export function AriaDataProvider({ apiBase, isRunning, children }) {
+export function AriaDataProvider({ apiBase, isRunning, autoRefreshEnabled = true, children }) {
   const [learningTrajectory, setLearningTrajectory] = useState(null);
   const [leaderboardEntries, setLeaderboardEntries] = useState([]);
-  const [leaderboardRaw, setLeaderboardRaw] = useState(null);
   const [mathFamilyCoverage, setMathFamilyCoverage] = useState(null);
   const [fingerprintDiagnostics, setFingerprintDiagnostics] = useState(null);
   const [summary, setSummary] = useState(null);
@@ -25,7 +25,6 @@ export function AriaDataProvider({ apiBase, isRunning, children }) {
   // New centralized data
   const [dashboardData, setDashboardData] = useState(null);
   const [ariaCycle, setAriaCycle] = useState(null);
-  const [healerTasks, setHealerTasks] = useState([]);
   const [experiments, setExperiments] = useState([]);
   const [programs, setPrograms] = useState([]);
   const [entries, setEntries] = useState([]);
@@ -35,6 +34,7 @@ export function AriaDataProvider({ apiBase, isRunning, children }) {
   const [error, setError] = useState(null);
 
   const [pollTick, setPollTick] = useState(0);
+  const isDocumentVisible = useDocumentVisible();
   const pollCountRef = useRef(0);
   const [slowPollTick, setSlowPollTick] = useState(0);
 
@@ -48,8 +48,10 @@ export function AriaDataProvider({ apiBase, isRunning, children }) {
   const coreRetryDelayRef = useRef(0);
   const coreRetryAfterRef = useRef(0);
   const fullDashboardModeRef = useRef(false);
+  const sseRefreshTimeoutRef = useRef(null);
 
   const fetchCoreData = useCallback(async ({ force = false, includeFullDashboard = false } = {}) => {
+    if (!force && (!autoRefreshEnabled || !isDocumentVisible)) return;
     if (!force && coreRetryAfterRef.current > Date.now()) return;
     if (inFlightRef.current) return;
     inFlightRef.current = true;
@@ -104,7 +106,7 @@ export function AriaDataProvider({ apiBase, isRunning, children }) {
       inFlightRef.current = false;
       setLoading(false);
     }
-  }, []);
+  }, [autoRefreshEnabled, isDocumentVisible]);
 
   const fetchAnalyticsData = useCallback(async ({ force = false } = {}) => {
     const now = Date.now();
@@ -131,7 +133,6 @@ export function AriaDataProvider({ apiBase, isRunning, children }) {
 
       setLearningTrajectory(ltData);
       if (lbData) {
-        setLeaderboardRaw(lbData);
         setLeaderboardEntries(lbData.entries || []);
       }
       setMathFamilyCoverage(mcData);
@@ -194,14 +195,15 @@ export function AriaDataProvider({ apiBase, isRunning, children }) {
 
   // Initial fetch on mount
   useEffect(() => {
-    fetchCoreData();
+    fetchCoreData({ force: true });
   }, [fetchCoreData]);
 
-  // Poll at adaptive interval
+  // Poll at adaptive interval only when auto-refresh is enabled and the tab is visible.
   useEffect(() => {
+    if (!autoRefreshEnabled || !isDocumentVisible) return undefined;
     const interval = setInterval(fetchCoreData, isRunning ? 3000 : 10000);
     return () => clearInterval(interval);
-  }, [fetchCoreData, isRunning]);
+  }, [autoRefreshEnabled, fetchCoreData, isDocumentVisible, isRunning]);
 
   useEffect(() => () => {
     if (abortRef.current) {
@@ -212,11 +214,24 @@ export function AriaDataProvider({ apiBase, isRunning, children }) {
       analyticsAbortRef.current.abort();
       analyticsAbortRef.current = null;
     }
+    if (sseRefreshTimeoutRef.current) {
+      clearTimeout(sseRefreshTimeoutRef.current);
+      sseRefreshTimeoutRef.current = null;
+    }
   }, []);
+
+  useEffect(() => {
+    if (!isDocumentVisible || !autoRefreshEnabled) {
+      return;
+    }
+    coreRetryAfterRef.current = 0;
+    fetchCoreData({ force: true });
+  }, [autoRefreshEnabled, fetchCoreData, isDocumentVisible]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return undefined;
     const resumePolling = () => {
+      if (!autoRefreshEnabled) return;
       coreRetryAfterRef.current = 0;
       fetchCoreData({ force: true });
     };
@@ -226,7 +241,7 @@ export function AriaDataProvider({ apiBase, isRunning, children }) {
       window.removeEventListener('online', resumePolling);
       window.removeEventListener('focus', resumePolling);
     };
-  }, [fetchCoreData]);
+  }, [autoRefreshEnabled, fetchCoreData]);
 
   const invalidateTabCache = useCallback((tab) => {
     if (tab) {
@@ -240,10 +255,16 @@ export function AriaDataProvider({ apiBase, isRunning, children }) {
     fullDashboardModeRef.current = Boolean(enabled);
   }, []);
 
-  const sseTimersRef = useRef([]);
   const debouncedRefresh = useCallback(() => {
-    sseTimersRef.current.push(setTimeout(fetchCoreData, 2000));
-  }, [fetchCoreData]);
+    if (!autoRefreshEnabled || !isDocumentVisible) return;
+    if (sseRefreshTimeoutRef.current) {
+      clearTimeout(sseRefreshTimeoutRef.current);
+    }
+    sseRefreshTimeoutRef.current = setTimeout(() => {
+      sseRefreshTimeoutRef.current = null;
+      fetchCoreData();
+    }, 2000);
+  }, [autoRefreshEnabled, fetchCoreData, isDocumentVisible]);
 
   const onExperimentCompleted = useCallback(() => {
     invalidateTabCache('experiments');
@@ -253,23 +274,15 @@ export function AriaDataProvider({ apiBase, isRunning, children }) {
   useEventBus('experiment_completed', onExperimentCompleted);
   useEventBus('aria_cycle_completed', debouncedRefresh);
 
-  useEffect(() => () => {
-    sseTimersRef.current.forEach(clearTimeout);
-    sseTimersRef.current = [];
-  }, []);
-
   return (
     <AriaDataContext.Provider value={{
       learningTrajectory,
       leaderboardEntries,
-      leaderboardRaw,
       mathFamilyCoverage,
       fingerprintDiagnostics,
       summary,
-      setSummary,
       dashboardData,
       ariaCycle,
-      healerTasks,
       experiments,
       programs,
       entries,

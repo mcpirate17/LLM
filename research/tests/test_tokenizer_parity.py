@@ -24,8 +24,10 @@ class TestTokenizerParity:
         text = "The quick brown fox jumps over the lazy dog."
         vocab = 100_277  # cl100k native vocab
 
-        byte_ids = ByteTokenizer().encode(text, vocab)
-        tiktoken_ids = TiktokenAdapter("cl100k_base").encode(text, vocab)
+        byte_ids = ByteTokenizer().encode_to_tensor(text, vocab).tolist()
+        tiktoken_ids = (
+            TiktokenAdapter("cl100k_base").encode_to_tensor(text, vocab).tolist()
+        )
 
         # BPE merges bytes into subwords — fewer tokens, different IDs
         assert byte_ids != tiktoken_ids
@@ -45,8 +47,8 @@ class TestTokenizerParity:
         text = "Hello world"
         native = adapter.native_vocab_size
 
-        ids_native = adapter.encode(text, native)
-        ids_large = adapter.encode(text, native + 1000)
+        ids_native = adapter.encode_to_tensor(text, native).tolist()
+        ids_large = adapter.encode_to_tensor(text, native + 1000).tolist()
         assert ids_native == ids_large  # no projection in either case
 
     def test_pipeline_uses_configured_tokenizer(self):
@@ -77,8 +79,8 @@ class TestTokenizerParity:
         text = "alpha beta alpha"
         vocab = 8192
 
-        first = WhitespaceHashTokenizer().encode(text, vocab)
-        second = WhitespaceHashTokenizer().encode(text, vocab)
+        first = WhitespaceHashTokenizer().encode_to_tensor(text, vocab).tolist()
+        second = WhitespaceHashTokenizer().encode_to_tensor(text, vocab).tolist()
 
         assert first == second
         assert len(first) == 3
@@ -93,7 +95,7 @@ class TestTokenizerParity:
             config = CorpusConfig(path=tmp_path, tokenizer="byte")
             batcher = CorpusTokenBatcher(config, vocab_size=256)
             assert batcher.ready
-            assert batcher._native_ext is None
+            assert batcher._native_ext is not None
             batch = batcher.sample_batch(
                 batch_size=2,
                 seq_len=3,
@@ -102,7 +104,6 @@ class TestTokenizerParity:
             )
             assert batch is not None
             assert batch.shape == (2, 3)
-            assert batcher._native_ext is not None
         finally:
             Path(tmp_path).unlink(missing_ok=True)
 

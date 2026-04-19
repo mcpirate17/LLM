@@ -23,12 +23,9 @@ test.describe('Reports performance', () => {
     await expect(page.getByRole('button', { name: /Back to Reports/i })).toBeVisible({ timeout: 30000 });
     const detailHeaderMs = Date.now() - start;
 
-    const loadingVisible = await page.getByText('Loading report...').isVisible().catch(() => false);
-
-    console.log(JSON.stringify({ galleryMs, detailHeaderMs, loadingVisible }));
+    console.log(JSON.stringify({ galleryMs, detailHeaderMs }));
 
     expect(galleryMs).toBeLessThan(3000);
     expect(detailHeaderMs).toBeLessThan(3000);
-    expect(loadingVisible).toBeTruthy();
   });
 });

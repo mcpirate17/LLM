@@ -33,28 +33,9 @@ _DEFAULT_DASHBOARD_BUILD_DIR = _DASHBOARD_DIR / "build"
 _api_health_counters: dict = defaultdict(int)
 _api_health_lock = threading.Lock()
 
-_requests = _designer_mod._requests
+# Test hooks (monkeypatched by test_designer_proxy_live.py)
 _DESIGNER_PROXY_ENABLED = _designer_mod._DESIGNER_PROXY_ENABLED
 _DESIGNER_PROXY_BASE = _designer_mod._DESIGNER_PROXY_BASE
-_DESIGNER_PROXY_TIMEOUT = _designer_mod._DESIGNER_PROXY_TIMEOUT
-
-
-def _designer_proxy(
-    method: str, path: str, *, json_body=None, params=None, timeout=None
-):
-    _designer_mod._requests = _requests
-    _designer_mod._DESIGNER_PROXY_ENABLED = _DESIGNER_PROXY_ENABLED
-    return _designer_mod.designer_proxy(
-        method,
-        path,
-        json_body=json_body,
-        params=params,
-        timeout=timeout,
-    )
-
-
-def _proxy_or_error(resp):
-    return _designer_mod.proxy_or_error(resp)
 
 
 def create_app(

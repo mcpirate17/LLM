@@ -36,11 +36,8 @@ cleanup pass.
 | `attention_template_backfill.py` | pipeline | Managed attention-template backfill campaign runner | `python -m research.tools.attention_template_backfill` | - |
 | `backfill.py` | pipeline | Unified probe backfill and rescoring entrypoint | `python -m research.tools.backfill` | - |
 | `backfill_binding.py` | pipeline | Legacy binding backfill CLI wrapper over canonical backfill | `python -m research.tools.backfill_binding` | Remove after callers switch to `backfill.py` |
-| `backfill_cka_novelty.py` | pipeline | Legacy novelty backfill CLI wrapper over canonical backfill | `python -m research.tools.backfill_cka_novelty` | Remove after callers switch to `backfill.py` |
-| `backfill_hellaswag.py` | pipeline | Legacy HellaSwag backfill CLI wrapper over canonical backfill | `python -m research.tools.backfill_hellaswag` | Remove after callers switch to `backfill.py` |
 | `backfill_stats.py` | pipeline | Rebuild template, op, and motif stats from deduped corpus plus notebook state | `python -m research.tools.backfill_stats` | - |
 | `backfill_templates.py` | pipeline | Targeted template backfill runner using the full screening pipeline | `python -m research.tools.backfill_templates` | - |
-| `backfill_triage.py` | pipeline | Legacy triage backfill CLI wrapper over canonical backfill | `python -m research.tools.backfill_triage` | Remove after callers switch to `backfill.py` |
 | `backpopulate_screening_metrics.py` | pipeline | In-place replay/backpopulate for missing screening and probe metrics | `python -m research.tools.backpopulate_screening_metrics` | - |
 | `eval_templates.py` | pipeline | Extended template evaluation runner with training and probes | `python -m research.tools.eval_templates` | - |
 | `exact_graph_replay.py` | pipeline | Replay exact stored graphs through the current pipeline for validation and debugging | `python -m research.tools.exact_graph_replay` | - |
@@ -53,7 +50,6 @@ cleanup pass.
 | `register_references.py` | pipeline | Register reference architectures to the leaderboard | `python -m research --mode=register-references` | - |
 | `rescore_all_v7.py` | pipeline | Rescore the full leaderboard through the canonical composite implementation | `python -m research.tools.rescore_all_v7` | Remove after callers switch to `backfill.py --probe rescore` |
 | `run_binding_pilot.py` | pipeline | Run staged binding-pilot backpopulation campaigns | `python -m research.tools.run_binding_pilot` | - |
-| `run_hellaswag_backfill.py` | pipeline | Thin HellaSwag front-end for the generic concurrent probe backfill runner | `python -m research.tools.run_hellaswag_backfill` | Remove after callers switch to `run_probe_backfill.py` |
 | `run_probe_backfill.py` | pipeline | Generic concurrent probe backfill runner for post-train targets | `python -m research.tools.run_probe_backfill` | - |
 | `run_s1_backpopulate.py` | pipeline | Run guarded S1 backpopulate campaigns over selected cohorts | `python -m research.tools.run_s1_backpopulate` | - |
 | `screen_template.py` | pipeline | Force-screen a single template through screening and investigation stages | `python -m research.tools.screen_template` | - |

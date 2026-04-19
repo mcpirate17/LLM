@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import math
-
 import torch
 
 
@@ -89,6 +87,3 @@ def branch_rms(x: torch.Tensor) -> torch.Tensor:
     return x.float().pow(2).mean(dim=-1, keepdim=True).add_(1e-6).sqrt_().to(x.dtype)
 
 
-def inverse_sigmoid(value: float) -> float:
-    value = min(max(value, 1e-4), 1.0 - 1e-4)
-    return math.log(value / (1.0 - value))

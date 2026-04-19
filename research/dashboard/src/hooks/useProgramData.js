@@ -1,5 +1,5 @@
 import { useReducer, useEffect, useRef } from 'react';
-import { apiCall } from '../services/apiService';
+import { apiCall, postJson } from '../services/apiService';
 import useCopyToClipboard from './useCopyToClipboard';
 import apiService from '../services/apiService';
 import { summarizeRefineTrace } from '../components/programDetail/refineTraceSummary';
@@ -330,20 +330,16 @@ export default function useProgramData({ resultId, defaultOverrideIneligible, on
   const handleLaunchRefinement = async (intent, actionKey, failureLabel) => {
     dispatch({ type: 'SET_ACTION', payload: { starting: actionKey, error: null } });
     try {
-      const res = await apiCall(`/api/experiments/start`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          mode: 'refine_fingerprint',
-          graph_fingerprints: [program.graph_fingerprint],
-          n_programs: 24,
-          model_source: 'fingerprint_refine',
-          refine_intent: intent,
-          mutation_rate: 0.85,
-          preflight_override: true,
-          enforce_preflight: true,
-          ...(refineAnalysis ? { refine_analysis_json: refineAnalysis } : {}),
-        }),
+      const res = await postJson('/api/experiments/start', {
+        mode: 'refine_fingerprint',
+        graph_fingerprints: [program.graph_fingerprint],
+        n_programs: 24,
+        model_source: 'fingerprint_refine',
+        refine_intent: intent,
+        mutation_rate: 0.85,
+        preflight_override: true,
+        enforce_preflight: true,
+        ...(refineAnalysis ? { refine_analysis_json: refineAnalysis } : {}),
       });
       const payload = await res.json().catch(() => ({}));
       if (!res.ok) {

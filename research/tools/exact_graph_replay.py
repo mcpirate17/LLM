@@ -28,6 +28,7 @@ from research.scientist.runner.execution_screening import (
 )
 from research.scientist.runner._helpers import clear_gpu_memory, graph_routing_ops
 from research.scientist.shared_utils import resolve_device
+from research.training.loss_ops import next_token_cross_entropy
 from research.synthesis.serializer import graph_from_json
 from research.scientist.native_runner import (
     compile_model_native_first as compile_model,
@@ -253,9 +254,8 @@ def _evaluate_exact_replay(
                     enabled=(s075_dev.type == "cuda"),
                 ):
                     s075_logits = model(s075_ids)
-                    s075_loss = torch.nn.functional.cross_entropy(
-                        s075_logits[:, :-1].reshape(-1, s075_logits.size(-1)),
-                        s075_ids[:, 1:].reshape(-1),
+                    s075_loss = next_token_cross_entropy(
+                        s075_logits, s075_ids, s075_logits.size(-1)
                     )
                 initial_loss = float(s075_loss.item())
                 program_metrics["s075_initial_loss"] = initial_loss

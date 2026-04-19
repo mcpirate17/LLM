@@ -9,17 +9,6 @@ import torch.nn as nn
 from research.defaults import ROPE_THETA_BASE
 
 
-def straight_through_estimator(
-    original: torch.Tensor, modified: torch.Tensor
-) -> torch.Tensor:
-    """
-    Bypasses non-differentiable operations entirely in the backward pass.
-    Forward: returns modified
-    Backward: gradient flows through original
-    """
-    return original + (modified - original).detach()
-
-
 # ── Normalization Modules ──────────────────────────────────────────────
 
 

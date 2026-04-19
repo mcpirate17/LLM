@@ -1,17 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef, Suspense, startTransition } from 'react';
-import AriaAvatar from './components/AriaAvatar';
-import SummaryCards from './components/SummaryCards';
-import TemplateSlotObservability from './components/TemplateSlotObservability';
-import LiveFeed from './components/LiveFeed';
-import GlobalParetoChart from './components/GlobalParetoChart';
-import ActionQueue from './components/ActionQueue';
-import StatusBar from './components/StatusBar';
 import {
-  AnalyticsTab,
   ErrorBoundary,
   LazyFallback,
-  LogTab,
-  QuickAnalyticsPreview,
 } from './components/app/AppShellShared';
 import {
   ChatDrawer,
@@ -20,39 +10,29 @@ import {
   ProgramDetailOverlay,
   SettingsOverlay,
 } from './components/app/AppOverlays';
-import { NAV_CATEGORIES, TAB_LABELS, TAB_TIPS } from './components/app/appConfig';
+import AppTabContent from './components/app/AppTabContent';
+import {
+  DashboardHeader,
+  DashboardNav,
+  DashboardStatusBanners,
+} from './components/app/AppShellSections';
+import { NAV_CATEGORIES } from './components/app/appConfig';
 import {
   AriaChatPanel,
   ArchitectureDrawer,
-  CampaignView,
-  CompareView,
-  ComponentAnalyticsDashboard,
   ControlPanel,
-  DecisionTraces,
-  Discoveries,
-  ExperimentDetail,
-  ExperimentList,
-  InfrastructureDashboard,
-  KnowledgeBase,
-  Leaderboard,
-  LearningPanel,
-  NativeProfilePanel,
-  PerfDashboard,
   ProgramDetail,
-  ReferenceArchitectures,
-  ResearchReport,
 } from './components/app/lazyComponents';
 import { EventBusProvider } from './hooks/useEventBus';
 import { AriaDataProvider, useAriaData } from './hooks/useAriaData';
-import apiService, { apiCall } from './services/apiService';
+import { apiCall } from './services/apiService';
 import useLocalStorage from './hooks/useLocalStorage';
 import useInvestigationQueue from './hooks/useInvestigationQueue';
 import useAutoRepair from './hooks/useAutoRepair';
+import useDashboardActions from './hooks/useDashboardActions';
 import useKeyboardShortcuts from './hooks/useKeyboardShortcuts';
 import { buildEligibilityByResultId } from './utils/candidateState';
 import './App.css';
-
-const LONG_ACTION_TIMEOUT_MS = 120000;
 
 const API_BASE = process.env.REACT_APP_API_URL || '';
 const DEFAULT_EXPERIMENTS_PAGE_SIZE = 200;
@@ -60,26 +40,28 @@ const OVERRIDE_INELIGIBLE_ALWAYS_KEY = 'aria_override_ineligible_always_v1';
 
 function App() {
   const [isRunning, setIsRunning] = useState(false);
+  const [autoRefresh, setAutoRefresh] = useState(true);
   return (
     <EventBusProvider apiBase={API_BASE}>
-      <AriaDataProvider apiBase={API_BASE} isRunning={isRunning}>
-        <AppContent onRunningChange={setIsRunning} />
+      <AriaDataProvider apiBase={API_BASE} isRunning={isRunning} autoRefreshEnabled={autoRefresh}>
+        <AppContent
+          autoRefresh={autoRefresh}
+          onAutoRefreshChange={setAutoRefresh}
+          onRunningChange={setIsRunning}
+        />
       </AriaDataProvider>
     </EventBusProvider>
   );
 }
 
-function AppContent({ onRunningChange }) {
+function AppContent({ autoRefresh, onAutoRefreshChange, onRunningChange }) {
   // Centralized data from AriaDataProvider
   const {
     learningTrajectory,
     leaderboardEntries,
-    fingerprintDiagnostics,
     dashboardData: data,
     ariaCycle,
-    healerTasks,
     experiments: centralizedExperiments,
-    programs: centralizedPrograms,
     entries: centralizedEntries,
     insights: centralizedInsights,
     initialLoading,
@@ -98,8 +80,6 @@ function AppContent({ onRunningChange }) {
 
   const [activeTab, _setActiveTab] = useState('command');
   const setActiveTab = useCallback((tab) => startTransition(() => _setActiveTab(tab)), []);
-  const [autoRefresh, setAutoRefresh] = useState(true);
-  const [overviewActivityTab, setOverviewActivityTab] = useState('recent');
   const [showHelp, setShowHelp] = useState(false);
   const [showChat, setShowChat] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
@@ -200,9 +180,6 @@ function AppContent({ onRunningChange }) {
   }, [activeTab, selectedCampaignId]);
   const [activeOverviewStrategy, setActiveOverviewStrategy] = useState(null);
   const [cycleControlBusy, setCycleControlBusy] = useState(false);
-  const [fingerprintLookup, setFingerprintLookup] = useState('');
-  const [fingerprintLookupBusy, setFingerprintLookupBusy] = useState(false);
-  const [fingerprintLookupError, setFingerprintLookupError] = useState(null);
   const [allowAdvancedStartOverride, setAllowAdvancedStartOverride] = useState(false);
   const [autonomousMode, setAutonomousMode] = useState(false);
   const [comparisonList, setComparisonList] = useState([]);
@@ -282,22 +259,8 @@ function AppContent({ onRunningChange }) {
 
   // Auto-repair hook
   const {
-    autoRepairTasks,
-    setAutoRepairTasks,
-    showCompletedRepairs: showCompletedAutoRepairTasks,
-    setShowCompletedRepairs: setShowCompletedAutoRepairTasks,
-    activeAutoRepairTasks,
-    completedAutoRepairCount,
-    visibleAutoRepairTasks,
-    handleResetAutoRepairStripPreferences,
     emitAutoRepairStarted,
   } = useAutoRepair({ pollTick });
-
-  useEffect(() => {
-    if (data?.is_running && overviewActivityTab !== 'live') {
-      setOverviewActivityTab('live');
-    }
-  }, [data?.is_running, overviewActivityTab]);
 
   useEffect(() => {
     setAllowAdvancedStartOverride(false);
@@ -374,210 +337,6 @@ function AppContent({ onRunningChange }) {
     return deltas;
   }, [data?.deltas]);
 
-  const summarizePreflightBlock = useCallback((err, fallbackMessage) => {
-    const preflight = err?.preflight || {};
-    const verdict = String(preflight?.verdict || '').toUpperCase();
-    const checks = Array.isArray(preflight?.checks) ? preflight.checks : [];
-    const failingCheck = checks.find((c) => c?.status === 'fail') || checks.find((c) => c?.status === 'warn');
-    const detail = failingCheck?.message || failingCheck?.name || '';
-    return [err?.error || fallbackMessage, verdict ? `(${verdict})` : '', detail].filter(Boolean).join(' ');
-  }, []);
-
-  const handleStartExperiment = async (config) => {
-    try {
-      const res = await apiCall(`/api/experiments/start`, {
-        method: 'POST',
-        timeoutMs: LONG_ACTION_TIMEOUT_MS,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(config),
-      });
-      if (!res.ok) {
-        const err = await res.json();
-        const startedRepair = emitAutoRepairStarted(err, 'start_experiment');
-        if (startedRepair) {
-          const taskId = String(err?.auto_repair_task?.task_id || '').slice(0, 12);
-          setActionError(`${err.error || 'Failed to start experiment'} — auto-repair started (${taskId}).`);
-        } else if (err?.preflight_blocked) {
-          setActionError(summarizePreflightBlock(err, 'Preflight gate blocked launch.'));
-          setBlockedConfig(config);
-        } else {
-          setActionError(err.error || 'Failed to start experiment');
-        }
-        return { ok: false, ...err };
-      }
-      setActionError(null);
-      setBlockedConfig(null);
-      fetchDashboard();
-      if (refreshSharedData) refreshSharedData();
-      return { ok: true };
-    } catch (err) {
-      setActionError('Failed to start experiment: ' + err.message);
-      return { ok: false, error: err.message };
-    }
-  };
-
-  const handleForceStart = () => {
-    if (blockedConfig) {
-      handleStartExperiment({ ...blockedConfig, preflight_override: true });
-    }
-  };
-
-  const handleStopExperiment = async () => {
-    try {
-      const res = await apiCall(`/api/experiments/stop`, {
-        method: 'POST',
-      });
-      if (!res.ok) {
-        const err = await res.json();
-        setActionError(err.error || 'Failed to stop experiment');
-        return;
-      }
-      setActionError(null);
-      setAutonomousMode(false);
-      fetchDashboard();
-      if (refreshSharedData) refreshSharedData();
-    } catch (err) {
-      setActionError('Failed to stop: ' + err.message);
-    }
-  };
-
-  const handleRerunExperiment = async (experimentId) => {
-    if (!experimentId) {
-      setActionError('No recent experiment available to restart');
-      return;
-    }
-    try {
-      const res = await apiCall(`/api/experiments/${experimentId}/rerun`, {
-        method: 'POST',
-      });
-      if (!res.ok) {
-        const err = await res.json();
-        setActionError(err.error || 'Failed to restart experiment');
-        return;
-      }
-      setActionError(null);
-      fetchDashboard();
-    } catch (err) {
-      setActionError('Failed to restart experiment: ' + err.message);
-    }
-  };
-
-  const handleFillGapsExperiment = async (experimentId) => {
-    if (!experimentId) {
-      setActionError('No experiment selected for gap fill');
-      return;
-    }
-    try {
-      const res = await apiCall(`/api/experiments/${experimentId}/fill-gaps`, {
-        method: 'POST',
-      });
-      if (!res.ok) {
-        const err = await res.json();
-        setActionError(err.error || 'Failed to fill metric gaps');
-        return;
-      }
-      setActionError(null);
-      fetchDashboard();
-      if (refreshSharedData) refreshSharedData();
-    } catch (err) {
-      setActionError('Failed to fill gaps: ' + err.message);
-    }
-  };
-
-  const handleStartAutonomous = useCallback(async (config) => {
-    const payload = {
-      mode: 'continuous',
-      model_source: 'mixed',
-      source: 'action_queue',
-      auto_harden: true,
-      preflight_override: true,
-      enforce_preflight: true,
-      ...(config || {}),
-    };
-    try {
-      const res = await apiCall(`/api/experiments/start`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-      if (!res.ok) {
-        const err = await res.json();
-        const startedRepair = emitAutoRepairStarted(err, 'start_autonomous');
-        if (startedRepair) {
-          const taskId = String(err?.auto_repair_task?.task_id || '').slice(0, 12);
-          setActionError(`${err.error || 'Failed to start autonomous mode'} — auto-repair started (${taskId}).`);
-        } else if (err?.preflight_blocked) {
-          setActionError(summarizePreflightBlock(err, 'Preflight gate blocked launch.'));
-        } else {
-          setActionError(err.error || 'Failed to start autonomous mode');
-        }
-        return;
-      }
-      setActionError(null);
-      setAutonomousMode(true);
-      fetchDashboard();
-    } catch (err) {
-      setActionError('Failed to start autonomous mode: ' + err.message);
-    }
-  }, [emitAutoRepairStarted, summarizePreflightBlock]);
-
-  const handleStopAutonomous = async () => {
-    try {
-      setCycleControlBusy(true);
-      // Pause the cycle (prevents next experiment from starting)
-      const res = await apiCall(`/api/aria/cycle-control`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'pause' }),
-      });
-      const payload = await res.json();
-      if (!res.ok || payload?.error) {
-        throw new Error(payload?.error || 'Failed to pause autonomous cycle');
-      }
-      // Also stop the current experiment immediately
-      try {
-        await apiCall(`/api/experiments/stop`, { method: 'POST' });
-      } catch (_) {
-        // Ignore — may not have a running experiment
-      }
-      setAutonomousMode(false);
-      setActionError(null);
-      fetchDashboard();
-    } catch (err) {
-      setActionError(`Failed to stop autonomous loop: ${err.message}`);
-    } finally {
-      setCycleControlBusy(false);
-    }
-  };
-
-  const handleCycleControl = async (action) => {
-    if (!action || cycleControlBusy) return;
-    setCycleControlBusy(true);
-    try {
-      const res = await apiCall(`/api/aria/cycle-control`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action }),
-      });
-      const payload = await res.json();
-      if (!res.ok || payload?.error) {
-        throw new Error(payload?.error || `Failed to ${action} cycle`);
-      }
-      if (action === 'start') {
-        setAutonomousMode(true);
-      }
-      if (action === 'pause') {
-        setAutonomousMode(false);
-      }
-      setActionError(null);
-      fetchDashboard();
-    } catch (err) {
-      setActionError(`Cycle control failed: ${err.message}`);
-    } finally {
-      setCycleControlBusy(false);
-    }
-  };
-
   const handleSelectExperiment = (expId) => {
     setSelectedExperiment(expId);
     setActiveTab('experiment-detail');
@@ -599,253 +358,9 @@ function AppContent({ onRunningChange }) {
     }
     setSelectedProgram(resultId);
   };
-
-  const filterEligibleResultIds = useCallback((mode, resultIds) => {
-    const ids = Array.isArray(resultIds) ? resultIds.filter(Boolean) : [];
-    if (!ids.length) {
-      return {
-        ok: false,
-        eligibleIds: [],
-        message: `No result ids provided for ${mode} action.`,
-      };
-    }
-    const eligibilityKey = mode === 'validation' ? 'validationEligible' : 'investigationEligible';
-    const eligibleIds = [];
-    const ineligibleIds = [];
-    for (const resultId of ids) {
-      (eligibilityByResultId[resultId]?.[eligibilityKey] ? eligibleIds : ineligibleIds).push(resultId);
-    }
-    if (!eligibleIds.length) {
-      const label = ineligibleIds.slice(0, 3).join(', ') || 'unknown';
-      return {
-        ok: false,
-        eligibleIds: [],
-        message: `No eligible ${mode} candidates found. Ineligible: ${label}.`,
-      };
-    }
-    if (ineligibleIds.length > 0) {
-      const label = ineligibleIds.slice(0, 3).join(', ');
-      return {
-        ok: true,
-        eligibleIds,
-        message: `Skipping ${ineligibleIds.length} ineligible ${mode} candidate${ineligibleIds.length === 1 ? '' : 's'} (${label}).`,
-      };
-    }
-    return { ok: true, eligibleIds, message: null };
-  }, [eligibilityByResultId]);
-
-  const startProgression = async (mode, resultIds) => {
-    const label = mode.charAt(0).toUpperCase() + mode.slice(1);
-    const eligibility = filterEligibleResultIds(mode, resultIds);
-    const rawIds = Array.isArray(resultIds) ? resultIds.filter(Boolean) : [];
-    const hasIneligible = rawIds.length > (eligibility.eligibleIds || []).length;
-    const shouldForceAll = overrideIneligibleAlways && rawIds.length > 0;
-
-    const startForced = async (ids) => {
-      try {
-        const res = await apiCall(`/api/experiments/start`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ mode, result_ids: ids, force: true, override_ineligible: true }),
-        });
-        if (!res.ok) {
-          const err = await res.json();
-          setActionError(err.error || `Failed to start forced ${mode}`);
-          return;
-        }
-        setActionError(`${label} started with override.`);
-        fetchDashboard();
-      } catch (err) {
-        setActionError(`Failed to start forced ${mode}: ${err.message}`);
-      }
-    };
-
-    if (!eligibility.ok) {
-      if (!rawIds.length) { setActionError(eligibility.message); return; }
-      if (!shouldForceAll) {
-        if (!window.confirm(`${eligibility.message}\n\nForce override and start ${mode} anyway?`)) {
-          setActionError(eligibility.message);
-          return;
-        }
-      }
-      await startForced(rawIds);
-      return;
-    }
-    if (hasIneligible && rawIds.length) {
-      const confirmOverride = shouldForceAll || window.confirm(
-        `${eligibility.message}\n\nForce override and include the ineligible fingerprint(s) too?`
-      );
-      if (confirmOverride) { await startForced(rawIds); return; }
-    }
-    try {
-      const res = await apiCall(`/api/experiments/start`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode, result_ids: eligibility.eligibleIds }),
-      });
-      if (!res.ok) {
-        const err = await res.json();
-        const startedRepair = emitAutoRepairStarted(err, `start_${mode}`);
-        if (startedRepair) {
-          const taskId = String(err?.auto_repair_task?.task_id || '').slice(0, 12);
-          setActionError(`${err.error || `Failed to start ${mode}`} — auto-repair started (${taskId}).`);
-        } else {
-          setActionError(err.error || `Failed to start ${mode}`);
-        }
-        return;
-      }
-      setActionError(eligibility.message || null);
-      fetchDashboard();
-    } catch (err) {
-      setActionError(`Failed to start ${mode}: ${err.message}`);
-    }
-  };
-
-  const handleInvestigate = (resultIds) => startProgression('investigation', resultIds);
-  const handleValidate = (resultIds) => startProgression('validation', resultIds);
-  const handleRescreen = async (resultId) => {
-    if (!resultId) {
-      setActionError('Missing result ID for screening replay.');
-      return;
-    }
-    try {
-      const res = await apiCall(`/api/programs/${resultId}/rescreen`, {
-        method: 'POST',
-        timeoutMs: LONG_ACTION_TIMEOUT_MS,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fast: true, device: 'cuda' }),
-      });
-      const payload = await res.json();
-      if (!res.ok) {
-        setActionError(payload?.error || 'Failed to start screening replay');
-        return;
-      }
-      setActionNotice({
-        message: `Screening replay started for ${String(resultId).slice(0, 8)} (${String(payload?.experiment_id || '').slice(0, 8)}).`,
-        tone: 'info',
-        clearOnExperimentId: payload?.experiment_id || null,
-      });
-      fetchDashboard();
-    } catch (err) {
-      setActionError(`Failed to start screening replay: ${err.message}`);
-    }
-  };
-  const handlePromoteScreening = async (resultId) => {
-    if (!resultId) {
-      setActionError('Missing result ID for screening promotion.');
-      return;
-    }
-    try {
-      const res = await apiCall(`/api/programs/${resultId}/promote-screening`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-      });
-      const payload = await res.json();
-      if (!res.ok) {
-        setActionError(payload?.error || 'Failed to promote screening candidate');
-        return;
-      }
-      setActionNotice({
-        message: `Promoted ${String(resultId).slice(0, 8)} into screened candidates.`,
-        tone: 'info',
-        clearOnExperimentId: null,
-      });
-      fetchDashboard();
-    } catch (err) {
-      setActionError(`Failed to promote screening candidate: ${err.message}`);
-    }
-  };
-
-
-  const handleRunProductionTemplate = async (template) => {
-    const payload = template?.start_payload;
-    if (!payload || typeof payload !== 'object') {
-      setActionError('Invalid production template payload');
-      return;
-    }
-    const templateMode = payload?.mode;
-    let nextPayload = payload;
-    let eligibilityMessage = null;
-    if (templateMode === 'investigation' || templateMode === 'validation') {
-      const rawResultIds = Array.isArray(payload.result_ids)
-        ? payload.result_ids
-        : payload.result_id
-          ? [payload.result_id]
-          : [];
-      const eligibility = filterEligibleResultIds(templateMode, rawResultIds);
-      if (!eligibility.ok) {
-        setActionError(eligibility.message);
-        return;
-      }
-      const { result_id, ...rest } = payload;
-      nextPayload = { ...rest, result_ids: eligibility.eligibleIds };
-      eligibilityMessage = eligibility.message || null;
-    }
-    try {
-      const res = await apiCall(`/api/experiments/start`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(nextPayload),
-      });
-      if (!res.ok) {
-        const err = await res.json();
-        const startedRepair = emitAutoRepairStarted(err, 'run_production_template');
-        if (startedRepair) {
-          const taskId = String(err?.auto_repair_task?.task_id || '').slice(0, 12);
-          setActionError(`${err.error || 'Failed to run production template'} — auto-repair started (${taskId}).`);
-        } else {
-          setActionError(err.error || 'Failed to run production template');
-        }
-        return;
-      }
-      setActionError(eligibilityMessage);
-      setActiveTab('experiments');
-      fetchDashboard();
-    } catch (err) {
-      setActionError('Failed to run production template: ' + err.message);
-    }
-  };
-
-  const handleActionComplete = () => {
-    fetchDashboard();
-  };
-
-  const handleQueueInvestigate = useCallback(() => {
-    if (!investigationQueue.length) return;
-    const queuedIds = investigationQueue
-      .filter(item => item.intent === 'investigation')
-      .map(item => item.resultId);
-    const eligibleIds = queuedIds
-      .filter(resultId => eligibilityByResultId[resultId]?.investigationEligible);
-    if (!eligibleIds.length && !overrideIneligibleAlways) {
-      setActionError('No queued investigation candidates are currently eligible.');
-      return;
-    }
-    handleInvestigate(overrideIneligibleAlways ? queuedIds : eligibleIds);
-  }, [investigationQueue, eligibilityByResultId, overrideIneligibleAlways, handleInvestigate]);
-
-  const handleQueueValidate = useCallback(() => {
-    if (!investigationQueue.length) return;
-    const queuedIds = investigationQueue
-      .filter(item => item.intent === 'validation')
-      .map(item => item.resultId);
-    const eligibleIds = queuedIds
-      .filter(resultId => eligibilityByResultId[resultId]?.validationEligible);
-    if (!eligibleIds.length && !overrideIneligibleAlways) {
-      setActionError('No queued validation candidates are currently eligible.');
-      return;
-    }
-    handleValidate(overrideIneligibleAlways ? queuedIds : eligibleIds);
-  }, [investigationQueue, eligibilityByResultId, overrideIneligibleAlways, handleValidate]);
-
   const handleViewInLeaderboard = (resultId) => {
     setLeaderboardHighlight(resultId);
     setActiveTab('discoveries');
-  };
-
-  const handleSelectCampaign = (campaignId) => {
-    setSelectedCampaignId(campaignId);
-    setActiveTab('reports');
   };
 
   const handleHypothesisHandoff = useCallback((handoff) => {
@@ -874,62 +389,9 @@ function AppContent({ onRunningChange }) {
     }, 50);
   }, []);
 
-  const handleFingerprintLookup = useCallback(async () => {
-    const value = String(fingerprintLookup || '').trim();
-    if (!value) {
-      setFingerprintLookupError('Enter a result ID or fingerprint prefix.');
-      return;
-    }
-    setFingerprintLookupBusy(true);
-    setFingerprintLookupError(null);
-    try {
-      const res = await apiCall(`/api/fingerprint/resolve?value=${encodeURIComponent(value)}`);
-      const payload = await res.json();
-      if (!res.ok) {
-        setFingerprintLookupError(payload?.error || 'Fingerprint lookup failed.');
-        return;
-      }
-      if (payload?.result_id) {
-        setFingerprintLookup('');
-        setSelectedProgram(payload.result_id);
-      } else {
-        setFingerprintLookupError('No matching fingerprint found.');
-      }
-    } catch (err) {
-      setFingerprintLookupError(err.message || 'Fingerprint lookup failed.');
-    } finally {
-      setFingerprintLookupBusy(false);
-    }
-  }, [fingerprintLookup]);
-
   const ariaMood = data?.aria?.mood || 'curious';
   const autonomousActive = Boolean(autonomousMode || ariaCycle?.continuous_active);
-  const compactInsights = useMemo(() => {
-    const insights = Array.isArray(data?.insights) ? data.insights : [];
-    const deduped = [];
-    const seen = new Set();
-    for (const insight of insights) {
-      const key = `${(insight?.category || '').toLowerCase()}::${(insight?.content || '').trim().toLowerCase()}`;
-      if (key === '::' || seen.has(key)) continue;
-      seen.add(key);
-      deduped.push(insight);
-      if (deduped.length >= 5) break;
-    }
-    return deduped;
-  }, [data?.insights]);
   const productionReadiness = data?.production_readiness || null;
-  const epicRecommendation = productionReadiness?.epic_switch_recommendation || null;
-  const topReadinessCandidates = Array.isArray(productionReadiness?.top_candidates)
-    ? productionReadiness.top_candidates
-    : [];
-  const reproducibilityWorkflow = productionReadiness?.reproducibility_workflow || null;
-  const topFingerprintSkipReasons = useMemo(() => {
-    const byReason = fingerprintDiagnostics?.by_reason;
-    if (!byReason || typeof byReason !== 'object') return [];
-    return Object.entries(byReason)
-      .sort((a, b) => Number(b[1] || 0) - Number(a[1] || 0))
-      .slice(0, 2);
-  }, [fingerprintDiagnostics]);
 
   const strategyBlocksAdvancedStart = useMemo(() => {
     if (data?.is_running) return false;
@@ -948,523 +410,144 @@ function AppContent({ onRunningChange }) {
     return 'workbench';
   }, [activeTab]);
 
+  const {
+    handleActionComplete,
+    handleCycleControl,
+    handleFillGapsExperiment,
+    handleForceStart,
+    handleInvestigate,
+    handlePromoteScreening,
+    handleQueueInvestigate,
+    handleQueueValidate,
+    handleRescreen,
+    handleRerunExperiment,
+    handleSelectCampaign,
+    handleStartAutonomous,
+    handleStartExperiment,
+    handleStopAutonomous,
+    handleStopExperiment,
+    handleValidate,
+  } = useDashboardActions({
+    blockedConfig,
+    cycleControlBusy,
+    eligibilityByResultId,
+    emitAutoRepairStarted,
+    fetchDashboard,
+    investigationQueue,
+    overrideIneligibleAlways,
+    refreshSharedData,
+    setActionError,
+    setActionNotice,
+    setAutonomousMode,
+    setBlockedConfig,
+    setCycleControlBusy,
+    setSelectedCampaignId,
+    setActiveTab,
+  });
+
   return (
     <div className="app">
-      <header className="app-header">
-        <div className="header-left">
-          <AriaAvatar mood={ariaMood} size={40} />
-          <div>
-            <h1>Dr. Aria Nexus</h1>
-            <p className="subtitle">AI Research Scientist — Computational Architecture Discovery</p>
-          </div>
-          {data?.is_running && (
-            <span className="header-running-badge">
-              <span className="pulse-dot"></span>
-              Running
-            </span>
-          )}
-        </div>
-        <div className="header-right">
-          <div className="header-meta" aria-hidden="true">
-            <span className="kbd-chip">Keys 1-7 · ? · Esc</span>
-            <span className="last-updated-chip">
-              {dashboardUpdatedAt ? `Updated ${new Date(dashboardUpdatedAt).toLocaleTimeString()}` : 'Loading...'}
-            </span>
-          </div>
-          <button
-            className="refresh-btn"
-            style={{ fontSize: 14, padding: '3px 8px', fontWeight: 700, lineHeight: 1, minWidth: 28 }}
-            onClick={() => setShowChat(c => !c)}
-            aria-label="Toggle chat"
-            aria-pressed={showChat}
-            title="Aria Chat"
-          >
-            &#x1F4AC;
-          </button>
-          <button
-            className="refresh-btn"
-            style={{ fontSize: 14, padding: '3px 8px', fontWeight: 700, lineHeight: 1, minWidth: 28 }}
-            onClick={() => startTransition(() => setShowSettings(s => !s))}
-            aria-label="Toggle settings"
-            aria-pressed={showSettings}
-            title="Settings"
-          >
-            &#x2699;
-          </button>
-          <button
-            className="refresh-btn"
-            style={{ fontSize: 14, padding: '3px 8px', fontWeight: 700, lineHeight: 1, minWidth: 28 }}
-            onClick={() => setShowHelp(h => !h)}
-            aria-label="Toggle help"
-            aria-pressed={showHelp}
-            title="Help (press ? key)"
-          >
-            ?
-          </button>
-          <label className="auto-refresh">
-            <input
-              type="checkbox"
-              checked={autoRefresh}
-              onChange={(e) => setAutoRefresh(e.target.checked)}
-            />
-            Auto-refresh
-          </label>
-          <button className="refresh-btn" onClick={fetchDashboard}>Refresh</button>
-          <button
-            className="refresh-btn"
-            onClick={openDesignerBlank}
-            title="Open Aria Designer with a blank canvas"
-          >
-            Designer
-          </button>
-        </div>
-      </header>
-
-      <nav className="tab-nav-hierarchical">
-        <div className="primary-nav">
-          {Object.entries(NAV_CATEGORIES).map(([id, cat]) => (
-            <button
-              key={id}
-              className={`primary-tab ${primaryTab === id ? 'active' : ''}`}
-              onClick={() => {
-                setActiveTab(cat.tabs[0]);
-                setSelectedExperiment(null);
-              }}
-            >
-              {cat.label}
-            </button>
-          ))}
-        </div>
-        <div className="secondary-nav">
-          {NAV_CATEGORIES[primaryTab]?.tabs.map(tab => (
-            <button
-              key={tab}
-              className={`tab ${activeTab === tab ? 'active' : ''}`}
-              title={TAB_TIPS[tab]}
-              onClick={() => {
-                setActiveTab(tab);
-                setSelectedExperiment(null);
-              }}
-            >
-              {TAB_LABELS[tab]}
-              {tabDeltas[tab] && (
-                <span style={{
-                  marginLeft: 4, fontSize: 9, fontWeight: 600, padding: '1px 4px',
-                  borderRadius: 3,
-                  background: tabDeltas[tab].positive ? 'rgba(63, 185, 80, 0.15)' : 'rgba(248, 81, 73, 0.15)',
-                  color: tabDeltas[tab].positive ? 'var(--accent-green)' : 'var(--accent-red)',
-                  whiteSpace: 'nowrap',
-                }}>
-                  {tabDeltas[tab].text}
-                </span>
-              )}
-            </button>
-          ))}
-        </div>
-      </nav>
+      <DashboardHeader
+        ariaMood={ariaMood}
+        autoRefresh={autoRefresh}
+        dashboardUpdatedAt={dashboardUpdatedAt}
+        fetchDashboard={fetchDashboard}
+        isRunning={Boolean(data?.is_running)}
+        onAutoRefreshChange={onAutoRefreshChange}
+        onOpenDesigner={openDesignerBlank}
+        onToggleChat={() => setShowChat((current) => !current)}
+        onToggleHelp={() => setShowHelp((current) => !current)}
+        onToggleSettings={() => startTransition(() => setShowSettings((current) => !current))}
+        showChat={showChat}
+        showHelp={showHelp}
+        showSettings={showSettings}
+      />
+      <DashboardNav
+        activeTab={activeTab}
+        primaryTab={primaryTab}
+        setActiveTab={setActiveTab}
+        setSelectedExperiment={setSelectedExperiment}
+        tabDeltas={tabDeltas}
+      />
 
       <main className="app-main">
-        {initialLoading && !error && activeTab !== 'reports' && (
-          <div className="ux-state ux-state-loading" style={{ justifyContent: 'center', marginBottom: 14 }}>
-            <span className="ux-spinner" />
-            <div className="ux-stack">
-              <span className="ux-state-title">Loading dashboard</span>
-              <span className="ux-state-subtle">Fetching latest research, insights, and run status.</span>
-            </div>
-          </div>
-        )}
-        {error && (
-          <div className="error-banner">
-            Unable to connect to API: {error}
-            <br />
-            <small>Start the server: python -m research --mode=dashboard</small>
-          </div>
-        )}
-
-        {actionError && (
-          <div className="error-banner" style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }} onClick={() => setActionError(null)}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-              <span>{actionError}</span>
-              {blockedConfig && (
-                <button
-                  className="refresh-btn"
-                  style={{
-                    fontSize: 11,
-                    padding: '2px 8px',
-                    borderColor: 'var(--accent-red)',
-                    color: 'var(--accent-red)',
-                    background: 'rgba(248, 81, 73, 0.1)',
-                  }}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleForceStart();
-                  }}
-                >
-                  Force Start
-                </button>
-              )}
-            </div>
-            <button
-              onClick={(e) => { e.stopPropagation(); setActionError(null); }}
-              aria-label="Dismiss error"
-              style={{
-                background: 'none', border: 'none', color: 'inherit', cursor: 'pointer',
-                fontSize: 16, padding: '0 4px', opacity: 0.8, flexShrink: 0,
-              }}
-            >&times;</button>
-          </div>
-        )}
-
-        {actionNotice?.message && (
-          <div
-            className="error-banner"
-            style={{
-              cursor: 'pointer',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              borderColor: 'rgba(88, 166, 255, 0.45)',
-              background: 'rgba(88, 166, 255, 0.10)',
-              color: 'var(--accent-blue)',
-            }}
-            onClick={() => setActionNotice(null)}
-          >
-            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-              <span>{actionNotice.message}</span>
-            </div>
-            <button
-              onClick={(e) => { e.stopPropagation(); setActionNotice(null); }}
-              aria-label="Dismiss notice"
-              style={{
-                background: 'none', border: 'none', color: 'inherit', cursor: 'pointer',
-                fontSize: 16, padding: '0 4px', opacity: 0.8, flexShrink: 0,
-              }}
-            >&times;</button>
-          </div>
-        )}
-
-        {data?.is_running && (
-          <div className="card" style={{ marginBottom: 12, padding: '10px 12px', borderLeft: '3px solid var(--accent-green)' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-              <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
-                <strong style={{ color: 'var(--accent-green)' }}>
-                  {autonomousActive ? 'Autonomous active:' : 'Run active:'}
-                </strong>{' '}
-                {autonomousActive
-                  ? `${ariaCycle?.phase_label || ariaCycle?.phase || data?.progress?.status || 'running'}`
-                  : (data?.progress?.status || 'running')}
-                {data?.progress?.experiment_id ? ` · ${String(data.progress.experiment_id).slice(0, 12)}` : ''}
-                <span style={{ marginLeft: 8, color: 'var(--text-muted)' }}>
-                  {autonomousActive
-                    ? 'Aria is iterating across cycles while you browse other tabs.'
-                    : 'Search continues in background while you browse other tabs.'}
-                </span>
-              </div>
-              {activeTab !== 'command' && (
-                <button className="refresh-btn" onClick={() => setActiveTab('command')}>
-                  Open live view
-                </button>
-              )}
-            </div>
-          </div>
-        )}
-
-        {investigationQueue.length > 0 && (
-          <div className="card" style={{ marginBottom: 12, padding: 12 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-              <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
-                Progression Queue: {investigationQueue.length} candidate{investigationQueue.length === 1 ? '' : 's'} pinned
-                {' '}({queueBreakdown.investigation} investigate, {queueBreakdown.validation} validate).
-              </div>
-              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                <button
-                  className="refresh-btn"
-                  onClick={handleQueueInvestigate}
-                  disabled={queueBreakdown.investigation === 0}
-                >
-                  Investigate Queue
-                </button>
-                <button
-                  className="refresh-btn"
-                  onClick={handleQueueValidate}
-                  disabled={queueBreakdown.validation === 0}
-                >
-                  Validate Queue
-                </button>
-                <button className="refresh-btn" onClick={handleQueueClear} style={{ marginLeft: 8, color: 'var(--accent-red)', borderColor: 'var(--accent-red)' }}>Clear Queue</button>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {activeTab === 'command' && (
-          <>
-            {/* Zone 1: Status Bar */}
-            <StatusBar
-              aria={data?.aria}
-              isRunning={data?.is_running}
-              progress={data?.progress}
-              ariaCycle={ariaCycle}
-              onCycleControl={handleCycleControl}
-              cycleControlBusy={cycleControlBusy}
-              learningTrajectory={learningTrajectory}
-              productionReadiness={productionReadiness}
-            />
-
-            {/* Zone 2: Action Queue */}
-            <ActionQueue
-              dashboardData={data}
-              isRunning={data?.is_running}
-              autonomousMode={autonomousActive}
-              onStart={handleStartExperiment}
-              onStop={handleStopExperiment}
-              onStartAutonomous={handleStartAutonomous}
-              onStopAutonomous={handleStopAutonomous}
-              onStrategyChange={setActiveOverviewStrategy}
-              onNavigateTab={(tab) => {
-                const remap = { leaderboard: 'discoveries', learning: 'trends', report: 'reports' };
-                const allowed = new Set(['command', 'experiments', 'discoveries', 'trends', 'reports']);
-                const mapped = remap[tab] || tab;
-                if (allowed.has(mapped)) {
-                  setActiveTab(mapped);
-                }
-              }}
-              onSelectProgram={handleSelectProgram}
-            />
-
-
-            {/* Zone 3: Summary + Activity */}
-            <div className="overview-grid" style={{ marginTop: 24 }}>
-              <div className="overview-left">
-                <SummaryCards learningTrend={learningTrajectory} />
-                <QuickAnalyticsPreview
-                  deltas={data?.deltas}
-                  learningTrajectory={learningTrajectory}
-                  summary={data?.summary}
-                  onOpenAnalytics={() => setActiveTab('trends')}
-                />
-              </div>
-              <div className="overview-right card" style={{ padding: 24 }}>
-                <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 12, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Discovery Frontier</div>
-                <div>
-                  <GlobalParetoChart programs={leaderboardEntries} onSelectProgram={handleSelectProgram} onNavigateTab={(tab) => setActiveTab(tab)} />
-                </div>
-                <div style={{ marginTop: 20, borderTop: '1px solid var(--border)', paddingTop: 20 }}>
-                  <LiveFeed
-                    apiBase={API_BASE}
-                    experimentId={data?.progress?.experiment_id || null}
-                    progress={data?.progress || null}
-                  />
-                </div>
-              </div>
-            </div>
-          </>
-        )}
-
-        {activeTab === 'experiments' && (
-          <Suspense fallback={<LazyFallback />}>
-            <ExperimentList
-              experiments={paginatedExperiments}
-              onSelectExperiment={handleSelectExperiment}
-              onRefresh={refreshSharedData}
-              onLoadMore={handleLoadMoreExperiments}
-              hasMore={experimentsHasMore}
-              loadingMore={experimentsLoadingMore}
-              pageSize={experimentsPageSize}
-              onPageSizeChange={handleExperimentPageSizeChange}
-            />
-          </Suspense>
-        )}
-
-        {activeTab === 'experiment-detail' && selectedExperiment && (
-          <Suspense fallback={<LazyFallback />}>
-            <ExperimentDetail
-              experimentId={selectedExperiment}
-              onBack={handleBackFromExperiment}
-              onSelectProgram={handleSelectProgram}
-            />
-          </Suspense>
-        )}
-
-        {activeTab === 'discoveries' && (
-          <Suspense fallback={<LazyFallback />}>
-            <Discoveries
-              onSelectProgram={handleSelectProgram}
-              onAddToComparison={handleAddToComparison}
-              onRescreen={handleRescreen}
-              onPromoteScreening={handlePromoteScreening}
-              onInvestigate={handleInvestigate}
-              onValidate={handleValidate}
-              highlightResultId={leaderboardHighlight}
-              onHighlightClear={() => setLeaderboardHighlight(null)}
-              onQueueAdd={handleQueueAdd}
-              onQueueRemove={handleQueueRemove}
-              queuedResultIds={investigationQueue.map(item => item.resultId)}
-              eligibilityByResultId={eligibilityByResultId}
-              onOpenInDesigner={openDesignerForResult}
-            />
-          </Suspense>
-        )}
-
-        {activeTab === 'trends' && (
-          <Suspense fallback={<LazyFallback />}>
-            <AnalyticsTab
-              data={data}
-              insights={centralizedInsights}
-              leaderboardEntries={leaderboardEntries}
-              onSelectExperiment={handleSelectExperiment}
-              onSelectProgram={handleSelectProgram}
-              onRerunExperiment={handleRerunExperiment}
-              onFillGapsExperiment={handleFillGapsExperiment}
-              onNavigateStrategy={handleNavigateStrategy}
-              onStartExperiment={handleStartExperiment}
-              LearningPanelComponent={LearningPanel}
-            />
-          </Suspense>
-        )}
-
-        {activeTab === 'comparison' && (
-          <Suspense fallback={<LazyFallback />}>
-            <CompareView
-              comparisonList={comparisonList}
-              onRemoveProgram={handleRemoveFromComparison}
-              onSelectProgram={handleSelectProgram}
-            />
-          </Suspense>
-        )}
-
-        {activeTab === 'infrastructure' && (
-          <Suspense fallback={<LazyFallback />}>
-            <InfrastructureDashboard />
-          </Suspense>
-        )}
-
-        {activeTab === 'templates' && (
-          <div style={{ display: 'grid', gap: 16 }}>
-            <div className="card" style={{ padding: 18 }}>
-              <div className="card-title" style={{ marginBottom: 8 }}>Template &amp; Slot Observability</div>
-              <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: 0, lineHeight: 1.6 }}>
-                Dedicated structural diagnostics for template families, weak slots, routing/MoE fast-lane fairness, and structural trend drift across recent experiments.
-              </p>
-            </div>
-            <TemplateSlotObservability />
-          </div>
-        )}
-
-        {activeTab === 'components' && (
-          <Suspense fallback={<LazyFallback />}>
-            <ComponentAnalyticsDashboard />
-          </Suspense>
-        )}
-
-        {activeTab === 'perf' && (
-          <Suspense fallback={<LazyFallback />}>
-            <NativeProfilePanel />
-            <PerfDashboard />
-          </Suspense>
-        )}
-
-        {activeTab === 'references' && (
-          <Suspense fallback={<LazyFallback />}>
-            <ReferenceArchitectures
-              leaderboardEntries={leaderboardEntries}
-              onSelectProgram={handleSelectProgram}
-            />
-          </Suspense>
-        )}
-
-        {activeTab === 'decisions' && (
-          <Suspense fallback={<LazyFallback />}>
-            <DecisionTraces />
-          </Suspense>
-        )}
-
-        {activeTab === 'reports' && (
-          <Suspense fallback={<LazyFallback />}>
-            <ResearchReport
-              onSelectProgram={handleSelectProgram}
-              onSelectExperiment={handleSelectExperiment}
-              onInvestigate={handleInvestigate}
-              onValidate={handleValidate}
-              onOpenInDesigner={openDesignerForResult}
-              onQueueAdd={handleQueueAdd}
-              onQueueRemove={handleQueueRemove}
-              queuedResultIds={investigationQueue.map(item => item.resultId)}
-              eligibilityByResultId={eligibilityByResultId}
-              onHypothesisHandoff={handleHypothesisHandoff}
-            />
-            {reportsDeferredReady ? (
-              <>
-                <div style={{ marginTop: 16 }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 8 }}>
-                    <h3 style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)', margin: 0 }}>Campaigns</h3>
-                    {!reportsCampaignsVisible && (
-                      <button
-                        className="refresh-btn"
-                        onClick={() => setReportsCampaignsVisible(true)}
-                        style={{ fontSize: 12, padding: '4px 10px' }}
-                      >
-                        Load Campaigns
-                      </button>
-                    )}
-                  </div>
-                  {reportsCampaignsVisible ? (
-                    <CampaignView
-                      onSelectExperiment={handleSelectExperiment}
-                      selectedCampaignId={selectedCampaignId}
-                      onCampaignIdClear={() => setSelectedCampaignId(null)}
-                      onHypothesisHandoff={handleHypothesisHandoff}
-                    />
-                  ) : (
-                    <div className="card">
-                      <p style={{ color: 'var(--text-muted)', margin: 0 }}>
-                        Campaign details are available on demand to keep the reports page responsive.
-                      </p>
-                    </div>
-                  )}
-                </div>
-                <div style={{ marginTop: 16 }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 8 }}>
-                    <h3 style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)', margin: 0 }}>Knowledge Base</h3>
-                    {!reportsKnowledgeVisible && (
-                      <button
-                        className="refresh-btn"
-                        onClick={() => setReportsKnowledgeVisible(true)}
-                        style={{ fontSize: 12, padding: '4px 10px' }}
-                      >
-                        Load Knowledge Base
-                      </button>
-                    )}
-                  </div>
-                  {reportsKnowledgeVisible ? (
-                    <KnowledgeBase onSelectExperiment={handleSelectExperiment} />
-                  ) : (
-                    <div className="card">
-                      <p style={{ color: 'var(--text-muted)', margin: 0 }}>
-                        Knowledge clustering is deferred until requested so the reports landing page stays light.
-                      </p>
-                    </div>
-                  )}
-                </div>
-              </>
-            ) : (
-              <div className="card" style={{ marginTop: 16 }}>
-                <p style={{ color: 'var(--text-muted)', margin: 0 }}>
-                  Loading campaigns and knowledge base...
-                </p>
-              </div>
-            )}
-          </Suspense>
-        )}
-
-        {activeTab === 'log' && (
-          <Suspense fallback={<LazyFallback />}>
-            <LogTab
-              entries={centralizedEntries}
-              onSelectExperiment={handleSelectExperiment}
-            />
-          </Suspense>
-        )}
+        <DashboardStatusBanners
+          actionError={actionError}
+          actionNotice={actionNotice}
+          activeTab={activeTab}
+          autonomousActive={autonomousActive}
+          blockedConfig={blockedConfig}
+          data={data}
+          error={error}
+          initialLoading={initialLoading}
+          investigationQueue={investigationQueue}
+          onClearActionError={() => setActionError(null)}
+          onClearActionNotice={() => setActionNotice(null)}
+          onForceStart={handleForceStart}
+          onOpenLiveView={() => setActiveTab('command')}
+          onQueueClear={handleQueueClear}
+          onQueueInvestigate={handleQueueInvestigate}
+          onQueueValidate={handleQueueValidate}
+          queueBreakdown={queueBreakdown}
+          ariaCycle={ariaCycle}
+        />
+        <AppTabContent
+          activeTab={activeTab}
+          apiBase={API_BASE}
+          ariaCycle={ariaCycle}
+          autonomousActive={autonomousActive}
+          centralizedEntries={centralizedEntries}
+          centralizedInsights={centralizedInsights}
+          comparisonList={comparisonList}
+          cycleControlBusy={cycleControlBusy}
+          data={data}
+          eligibilityByResultId={eligibilityByResultId}
+          experimentsHasMore={experimentsHasMore}
+          experimentsLoadingMore={experimentsLoadingMore}
+          experimentsPageSize={experimentsPageSize}
+          handleAddToComparison={handleAddToComparison}
+          handleBackFromExperiment={handleBackFromExperiment}
+          handleCycleControl={handleCycleControl}
+          handleFillGapsExperiment={handleFillGapsExperiment}
+          handleHypothesisHandoff={handleHypothesisHandoff}
+          handleInvestigate={handleInvestigate}
+          handleLoadMoreExperiments={handleLoadMoreExperiments}
+          handleNavigateStrategy={handleNavigateStrategy}
+          handlePromoteScreening={handlePromoteScreening}
+          handleQueueAdd={handleQueueAdd}
+          handleQueueRemove={handleQueueRemove}
+          handleRemoveFromComparison={handleRemoveFromComparison}
+          handleRescreen={handleRescreen}
+          handleRerunExperiment={handleRerunExperiment}
+          handleSelectCampaign={handleSelectCampaign}
+          handleSelectExperiment={handleSelectExperiment}
+          handleSelectProgram={handleSelectProgram}
+          handleStartAutonomous={handleStartAutonomous}
+          handleStartExperiment={handleStartExperiment}
+          handleStopAutonomous={handleStopAutonomous}
+          handleStopExperiment={handleStopExperiment}
+          handleValidate={handleValidate}
+          handleViewInLeaderboard={handleViewInLeaderboard}
+          leaderboardEntries={leaderboardEntries}
+          leaderboardHighlight={leaderboardHighlight}
+          learningTrajectory={learningTrajectory}
+          onActiveOverviewStrategyChange={setActiveOverviewStrategy}
+          onExperimentPageSizeChange={handleExperimentPageSizeChange}
+          onHighlightClear={() => setLeaderboardHighlight(null)}
+          onOpenDesignerForResult={openDesignerForResult}
+          paginatedExperiments={paginatedExperiments}
+          productionReadiness={productionReadiness}
+          queuedResultIds={investigationQueue.map(item => item.resultId)}
+          refreshSharedData={refreshSharedData}
+          reportsCampaignsVisible={reportsCampaignsVisible}
+          reportsDeferredReady={reportsDeferredReady}
+          reportsKnowledgeVisible={reportsKnowledgeVisible}
+          selectedCampaignId={selectedCampaignId}
+          selectedExperiment={selectedExperiment}
+          setActiveTab={setActiveTab}
+          setReportsCampaignsVisible={setReportsCampaignsVisible}
+          setReportsKnowledgeVisible={setReportsKnowledgeVisible}
+        />
       </main>
 
       <ChatDrawer

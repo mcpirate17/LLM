@@ -135,7 +135,7 @@ def build_op_index(notebook_path: str, window: str = "all") -> Dict[str, Any]:
     if rust is None or not hasattr(rust, "build_op_index_from_rows"):
         raise RuntimeError("aria_scheduler.build_op_index_from_rows is required")
 
-    nb = get_notebook(notebook_path)
+    nb = get_notebook(notebook_path, read_only=True)
     rows = _load_program_rows(nb, window)
     payload_rows = [
         {
@@ -167,7 +167,7 @@ def get_throughput(notebook_path: str) -> Dict[str, Any]:
     now = time.time()
     windows = {"1h": 3600, "6h": 21600, "24h": 86400}
     result: Dict[str, Any] = {}
-    nb = get_notebook(notebook_path)
+    nb = get_notebook(notebook_path, read_only=True)
     try:
         for label, seconds in windows.items():
             cutoff = now - seconds
@@ -482,7 +482,7 @@ def get_component_health(notebook_path: str, window: str = "all") -> Dict[str, A
     ):
         return _health_cache
 
-    nb = get_notebook(notebook_path)
+    nb = get_notebook(notebook_path, read_only=True)
     op_rates = _load_op_rates(nb, window)
     grad_health = _load_grad_health()
     idx = build_op_index(notebook_path, window=window)
@@ -542,7 +542,7 @@ def _append_rate_alert(
     title: str,
     message_window: str,
 ) -> None:
-    nb = get_notebook(notebook_path)
+    nb = get_notebook(notebook_path, read_only=True)
     try:
         row = nb.conn.execute(query, params).fetchone()
     except sqlite3.OperationalError:
@@ -573,7 +573,7 @@ def _append_routing_collapse_alert(
     thresholds: Dict[str, Any],
     now: float,
 ) -> None:
-    nb = get_notebook(notebook_path)
+    nb = get_notebook(notebook_path, read_only=True)
     try:
         row = nb.conn.execute(
             "SELECT AVG(CAST(json_extract(starvation_report_json, '$.collapse_score') AS REAL)) as avg_collapse "
@@ -636,7 +636,7 @@ def _append_stale_pipeline_alert(
     thresholds: Dict[str, Any],
     now: float,
 ) -> None:
-    nb = get_notebook(notebook_path)
+    nb = get_notebook(notebook_path, read_only=True)
     try:
         row = nb.conn.execute(
             "SELECT MAX(timestamp) as last_ts FROM program_results"

@@ -23,6 +23,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from ...training.loss_ops import clip_grad_norm_, next_token_cross_entropy
 from ..notebook import LabNotebook
 from ..evidence import build_evidence_pack
 
@@ -834,9 +835,8 @@ class _SelectionMixin:
                         enabled=(dev.type == "cuda"),
                     ):
                         logits = model(input_ids)
-                        loss = F.cross_entropy(
-                            logits[:, :-1].reshape(-1, logits.shape[-1]),
-                            input_ids[:, 1:].reshape(-1),
+                        loss = next_token_cross_entropy(
+                            logits, input_ids, logits.shape[-1]
                         )
 
                     if torch.isnan(loss) or torch.isinf(loss):
@@ -844,7 +844,7 @@ class _SelectionMixin:
 
                     optimizer.zero_grad(set_to_none=True)
                     loss.backward()
-                    nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                    clip_grad_norm_(model, 1.0)
                     optimizer.step()
 
                     loss_val = loss.item()
@@ -946,9 +946,8 @@ class _SelectionMixin:
                         enabled=(dev.type == "cuda"),
                     ):
                         logits = model(input_ids)
-                        loss = F.cross_entropy(
-                            logits[:, :-1].reshape(-1, logits.shape[-1]),
-                            input_ids[:, 1:].reshape(-1),
+                        loss = next_token_cross_entropy(
+                            logits, input_ids, logits.shape[-1]
                         )
 
                     if torch.isnan(loss) or torch.isinf(loss):
@@ -956,7 +955,7 @@ class _SelectionMixin:
 
                     optimizer.zero_grad(set_to_none=True)
                     loss.backward()
-                    nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                    clip_grad_norm_(model, 1.0)
                     optimizer.step()
 
                     loss_val = loss.item()

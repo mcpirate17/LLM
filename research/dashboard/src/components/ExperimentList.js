@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useMemo, useCallback } from 'react';
-import { apiCall } from '../services/apiService';
+import { apiCall, postJson } from '../services/apiService';
 import { formatTime, formatDuration } from '../utils/format';
 import { noveltyColor } from '../utils/colors';
 import { MetricChipList } from './shared/MetricChipBadge';
@@ -212,6 +212,7 @@ function ExperimentList({
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [batchRerunActive, setBatchRerunActive] = useState(false);
   const [batchRerunStatus, setBatchRerunStatus] = useState(null);
+  const [batchRerunPollId, setBatchRerunPollId] = useState(null);
   const { columnWidths, onResizeStart } = useResizableColumns('aria_experiments_col_widths');
   const rowStyle = {
     height: 64,
@@ -375,6 +376,12 @@ function ExperimentList({
   const effectiveTopPadding = shouldVirtualize ? topPadding : 0;
   const effectiveBottomPadding = shouldVirtualize ? bottomPadding : 0;
 
+  useEffect(() => () => {
+    if (batchRerunPollId) {
+      clearInterval(batchRerunPollId);
+    }
+  }, [batchRerunPollId]);
+
   const toggleSelected = useCallback((id, e) => {
     if (e) e.stopPropagation();
     setSelectedIds(prev => {
@@ -398,11 +405,7 @@ function ExperimentList({
     if (!window.confirm(`Rerun ${selectedIds.size} selected experiment(s)? They will be queued and run sequentially.`)) return;
     setBatchRerunActive(true);
     try {
-      const res = await apiCall('/api/experiments/batch-rerun', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ experiment_ids: Array.from(selectedIds) }),
-      });
+      const res = await postJson('/api/experiments/batch-rerun', { experiment_ids: Array.from(selectedIds) });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         alert(data.error || 'Failed to start batch rerun');
@@ -410,6 +413,9 @@ function ExperimentList({
         return;
       }
       setSelectedIds(new Set());
+      if (batchRerunPollId) {
+        clearInterval(batchRerunPollId);
+      }
       const poll = setInterval(async () => {
         try {
           const sr = await apiCall('/api/experiments/batch-rerun/status');
@@ -417,17 +423,19 @@ function ExperimentList({
           setBatchRerunStatus(st);
           if (!st.active) {
             clearInterval(poll);
+            setBatchRerunPollId(null);
             setBatchRerunActive(false);
             setBatchRerunStatus(null);
             if (onRefresh) onRefresh();
           }
         } catch { /* ignore poll errors */ }
       }, 5000);
+      setBatchRerunPollId(poll);
     } catch (err) {
       alert('Network error starting batch rerun');
       setBatchRerunActive(false);
     }
-  }, [selectedIds, onRefresh]);
+  }, [batchRerunPollId, selectedIds, onRefresh]);
 
   if (!experiments || experiments.length === 0) {
     return (

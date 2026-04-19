@@ -191,7 +191,10 @@ def _structural_novelty_components(
     )
     entropy = -np.sum(probs * np.log(np.clip(probs, 1e-10, 1.0)), axis=1)
     max_entropy = np.log(np.maximum(unique_ops_per_graph, 1))
-    evenness = np.where(max_entropy > 0, entropy / max_entropy, 0)
+    # Clamp divisor before the divide so np.where never evaluates 0/0 and
+    # emits a spurious RuntimeWarning. The mask still selects the real 0
+    # branch where max_entropy == 0.
+    evenness = np.where(max_entropy > 0, entropy / np.maximum(max_entropy, 1e-10), 0)
 
     structural_novelty = (
         WEIGHT_DIVERSITY * diversity

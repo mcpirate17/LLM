@@ -57,9 +57,9 @@ def register_events_routes(app, context: ApiRouteContext):
     @app.route("/api/live-loss-curve")
     def api_live_loss_curve():
         """Return the in-memory training loss curve for the live chart."""
-        runner = get_runner(notebook_path)
+        runner = get_runner(notebook_path, create_if_missing=False)
         try:
-            return jsonify(runner.get_live_loss_curve())
+            return jsonify(runner.get_live_loss_curve() if runner is not None else [])
         except Exception as e:
             logger.error("Error in /api/live-loss-curve: %s", e)
             return jsonify([])
@@ -67,11 +67,14 @@ def register_events_routes(app, context: ApiRouteContext):
     @app.route("/api/events")
     def api_events():
         """SSE endpoint for real-time experiment events."""
-        runner = get_runner(notebook_path)
+        runner = get_runner(notebook_path, create_if_missing=False)
         sse_timeout = get_sse_timeout_seconds()
 
         def event_stream():
             while True:
+                if runner is None:
+                    yield "event: keepalive\ndata: {}\n\n"
+                    continue
                 for event in runner.get_events(timeout=sse_timeout):
                     data = _json_dumps(event.get("data", {}), safe=True)
                     yield f"event: {event['type']}\ndata: {data}\n\n"

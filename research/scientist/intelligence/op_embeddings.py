@@ -312,20 +312,14 @@ class OpEmbeddings:
         for epoch in range(n_epochs):
             total_loss = 0.0
             n_samples = 0
-            native_epoch = None
-            try:
-                native_epoch = _run_native_embedding_epoch(
-                    embeddings,
-                    positive_pairs,
-                    negative_pairs,
-                    pair_stability,
-                    lr=lr,
-                    seed=seed + epoch,
-                )
-            except Exception as exc:
-                logger.warning(
-                    "Native op-embedding epoch failed; falling back to Python: %s", exc
-                )
+            native_epoch = _run_native_embedding_epoch(
+                embeddings,
+                positive_pairs,
+                negative_pairs,
+                pair_stability,
+                lr=lr,
+                seed=seed + epoch,
+            )
 
             if native_epoch is not None:
                 embeddings, native_loss, native_samples = native_epoch

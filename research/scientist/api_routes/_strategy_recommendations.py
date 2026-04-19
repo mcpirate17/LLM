@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 import time as _time
 
-from ..notebook import LabNotebook
 from ..shared_utils import safe_float
+
+if TYPE_CHECKING:
+    from ..notebook import LabNotebook
 
 _logger = logging.getLogger(__name__)
 

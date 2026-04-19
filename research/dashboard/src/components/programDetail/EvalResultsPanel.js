@@ -1,5 +1,5 @@
 import React from 'react';
-import { apiCall } from '../../services/apiService';
+import { apiCall, postJson } from '../../services/apiService';
 
 const LONG_ACTION_TIMEOUT_MS = 120000;
 
@@ -82,20 +82,15 @@ function EvalResultsPanel({
                   dispatch({ type: 'SET_MODAL', payload: { scaleUpStarting: true } });
                   try {
                     dispatch({ type: 'SET_ACTION', payload: { starting: null, error: null } });
-                    const res = await apiCall(`/api/experiments/start`, {
-                      method: 'POST',
-                      timeoutMs: LONG_ACTION_TIMEOUT_MS,
-                      headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify({
-                        mode: 'scale_up',
-                        result_ids: [resultId],
-                        scale_up_steps: scaleUpConfig.steps,
-                        scale_up_batch_size: scaleUpConfig.batch_size,
-                        scale_up_seq_len: scaleUpConfig.seq_len,
-                        preflight_override: true,
-                        enforce_preflight: true,
-                      }),
-                    });
+                    const res = await postJson('/api/experiments/start', {
+                      mode: 'scale_up',
+                      result_ids: [resultId],
+                      scale_up_steps: scaleUpConfig.steps,
+                      scale_up_batch_size: scaleUpConfig.batch_size,
+                      scale_up_seq_len: scaleUpConfig.seq_len,
+                      preflight_override: true,
+                      enforce_preflight: true,
+                    }, { timeoutMs: LONG_ACTION_TIMEOUT_MS });
                     if (!res.ok) {
                       const err = await res.json();
                       dispatch({ type: 'SET_ACTION', payload: { starting: null, error: err.error || 'Failed to start scale-up' } });
@@ -268,12 +263,7 @@ function EvalResultsPanel({
                       body.hf_dataset = manualRunConfig.hf_dataset;
                       body.hf_subset = manualRunConfig.hf_subset;
                     }
-                    const res = await apiCall(`/api/experiments/start`, {
-                      method: 'POST',
-                      timeoutMs: LONG_ACTION_TIMEOUT_MS,
-                      headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify(body),
-                    });
+                    const res = await postJson('/api/experiments/start', body, { timeoutMs: LONG_ACTION_TIMEOUT_MS });
                     if (!res.ok) {
                       const err = await res.json();
                       dispatch({ type: 'SET_ACTION', payload: { starting: null, error: err.error || 'Failed to start manual run' } });
@@ -335,19 +325,14 @@ function EvalResultsPanel({
             const forceRun = Boolean(overrideIneligible || !canInvestigate);
             dispatch({ type: 'SET_ACTION', payload: { starting: 'investigate', error: null } });
             try {
-              const res = await apiCall(`/api/experiments/start`, {
-                method: 'POST',
-                timeoutMs: LONG_ACTION_TIMEOUT_MS,
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  mode: 'investigation',
-                  result_ids: [resultId],
-                  force: forceRun,
-                  override_ineligible: forceRun,
-                  preflight_override: true,
-                  enforce_preflight: true,
-                }),
-              });
+              const res = await postJson('/api/experiments/start', {
+                mode: 'investigation',
+                result_ids: [resultId],
+                force: forceRun,
+                override_ineligible: forceRun,
+                preflight_override: true,
+                enforce_preflight: true,
+              }, { timeoutMs: LONG_ACTION_TIMEOUT_MS });
               if (!res.ok) {
                 const err = await res.json();
                 dispatch({ type: 'SET_ACTION', payload: { starting: null, error: err.error || 'Failed to start investigation' } });
@@ -383,19 +368,14 @@ function EvalResultsPanel({
             const forceRun = Boolean(overrideIneligible || !canValidate);
             dispatch({ type: 'SET_ACTION', payload: { starting: 'validate', error: null } });
             try {
-              const res = await apiCall(`/api/experiments/start`, {
-                method: 'POST',
-                timeoutMs: LONG_ACTION_TIMEOUT_MS,
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  mode: 'validation',
-                  result_ids: [resultId],
-                  force: forceRun,
-                  override_ineligible: forceRun,
-                  preflight_override: true,
-                  enforce_preflight: true,
-                }),
-              });
+              const res = await postJson('/api/experiments/start', {
+                mode: 'validation',
+                result_ids: [resultId],
+                force: forceRun,
+                override_ineligible: forceRun,
+                preflight_override: true,
+                enforce_preflight: true,
+              }, { timeoutMs: LONG_ACTION_TIMEOUT_MS });
               if (!res.ok) {
                 const err = await res.json();
                 dispatch({ type: 'SET_ACTION', payload: { starting: null, error: err.error || 'Failed to start validation' } });
@@ -472,10 +452,7 @@ function BackfillSection({ program, leaderboardEntry, resultId, dispatch, backfi
               dispatch({ type: 'SET_BACKFILL', payload: { backfillRunning: true, backfillResult: null } });
               try {
                 dispatch({ type: 'SET_ACTION', payload: { starting: null, error: null } });
-                const res = await apiCall(`/api/programs/${resultId}/promote-screening`, {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                });
+                const res = await postJson(`/api/programs/${resultId}/promote-screening`);
                 const data = await res.json().catch(() => ({}));
                 if (!res.ok) {
                   dispatch({ type: 'SET_ACTION', payload: { starting: null, error: data.error || 'Promote to screening failed' } });
@@ -505,12 +482,7 @@ function BackfillSection({ program, leaderboardEntry, resultId, dispatch, backfi
             dispatch({ type: 'SET_BACKFILL', payload: { backfillRunning: true, backfillResult: null } });
             try {
               dispatch({ type: 'SET_ACTION', payload: { starting: null, error: null } });
-              const res = await apiCall(`/api/programs/${resultId}/rescreen`, {
-                method: 'POST',
-                timeoutMs: LONG_ACTION_TIMEOUT_MS,
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ device: 'cuda', fast: true, repeat_per_source: 1 }),
-              });
+              const res = await postJson(`/api/programs/${resultId}/rescreen`, { device: 'cuda', fast: true, repeat_per_source: 1 }, { timeoutMs: LONG_ACTION_TIMEOUT_MS });
               if (!res.ok) {
                 const err = await res.json();
                 dispatch({ type: 'SET_ACTION', payload: { starting: null, error: err.error || 'Rescreen failed' } });
@@ -541,12 +513,7 @@ function BackfillSection({ program, leaderboardEntry, resultId, dispatch, backfi
             dispatch({ type: 'SET_BACKFILL', payload: { backfillRunning: true, backfillResult: null } });
             try {
               dispatch({ type: 'SET_ACTION', payload: { starting: null, error: null } });
-              const res = await apiCall(`/api/programs/${resultId}/backfill-metrics`, {
-                method: 'POST',
-                timeoutMs: LONG_ACTION_TIMEOUT_MS,
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ device: 'cpu' }),
-              });
+              const res = await postJson(`/api/programs/${resultId}/backfill-metrics`, { device: 'cpu' }, { timeoutMs: LONG_ACTION_TIMEOUT_MS });
               if (!res.ok) {
                 const err = await res.json();
                 dispatch({ type: 'SET_ACTION', payload: { starting: null, error: err.error || 'Backfill failed' } });
@@ -593,12 +560,7 @@ function BackfillSection({ program, leaderboardEntry, resultId, dispatch, backfi
               dispatch({ type: 'SET_BACKFILL', payload: { lossBackfillRunning: true, lossBackfillResult: null } });
               try {
                 dispatch({ type: 'SET_ACTION', payload: { starting: null, error: null } });
-                const res = await apiCall(`/api/programs/${resultId}/backfill-loss`, {
-                  method: 'POST',
-                  timeoutMs: LONG_ACTION_TIMEOUT_MS,
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ device: 'cpu' }),
-                });
+                const res = await postJson(`/api/programs/${resultId}/backfill-loss`, { device: 'cpu' }, { timeoutMs: LONG_ACTION_TIMEOUT_MS });
                 if (!res.ok) {
                   const err = await res.json();
                   dispatch({ type: 'SET_ACTION', payload: { starting: null, error: err.error || 'Loss backfill failed' } });

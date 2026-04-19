@@ -55,7 +55,8 @@ def test_grammar_imports_residual_context_set():
     """Pin the integration: grammar must reference the enforcement set."""
     import pathlib
 
-    src = pathlib.Path("research/synthesis/grammar.py").read_text()
+    research_root = pathlib.Path(__file__).resolve().parents[1]
+    src = (research_root / "synthesis" / "grammar.py").read_text()
     assert "REQUIRES_RESIDUAL_CONTEXT_OPS" in src, (
         "Audit fix P0.5: grammar._validate_graph must consult the enforcement set"
     )

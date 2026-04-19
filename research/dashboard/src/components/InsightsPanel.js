@@ -1,4 +1,4 @@
-import { apiCall } from "../services/apiService";
+import { apiCall, postJson } from "../services/apiService";
 import React, { useState, useEffect, useMemo } from 'react';
 import { formatTime, scoreColor } from '../utils/format';
 import { confidenceColor } from '../utils/colors';
@@ -299,15 +299,11 @@ function InsightsPanel({ insights, compact }) {
     setBoostError(null);
     setBoostingId(insightId);
     try {
-      const res = await apiCall(`/api/insights/boost`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          insight_id: insightId,
-          category: insight?.category,
-          content: insight?.content,
-          confidence: insight?.confidence,
-        }),
+      const res = await postJson(`/api/insights/boost`, {
+        insight_id: insightId,
+        category: insight?.category,
+        content: insight?.content,
+        confidence: insight?.confidence,
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       setBoostedIds(prev => new Set([...Array.from(prev), insightId]));

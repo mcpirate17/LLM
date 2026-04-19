@@ -5,9 +5,13 @@ import re
 import sqlite3
 from typing import Dict, List, Optional
 
-from ...synthesis.primitives import get_primitive
-
 logger = logging.getLogger(__name__)
+
+
+def _get_primitive(op_name: str):
+    from ...synthesis.primitives import get_primitive
+
+    return get_primitive(op_name)
 
 
 class _CampaignsMixin:
@@ -401,11 +405,11 @@ class _CampaignsMixin:
                 op1, op2 = sig.split("->") if "->" in sig else (sig, "unknown")
                 cat1, cat2 = "unknown", "unknown"
                 try:
-                    cat1 = get_primitive(op1).category.value
+                    cat1 = _get_primitive(op1).category.value
                 except (KeyError, ValueError):
                     pass
                 try:
-                    cat2 = get_primitive(op2).category.value
+                    cat2 = _get_primitive(op2).category.value
                 except (KeyError, ValueError):
                     pass
 

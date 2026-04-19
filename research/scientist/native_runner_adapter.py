@@ -1,13 +1,16 @@
 from __future__ import annotations
 
-import os
-import re
 import importlib
 import importlib.util
+import logging
+import os
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -23,10 +26,6 @@ def _env_flag(name: str, default: bool) -> bool:
     if raw is None:
         return default
     return str(raw).strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _designer_runtime_lib_path() -> Path:
-    return _designer_runtime_lib_candidates()[0]
 
 
 def _designer_runtime_lib_candidates() -> List[Path]:
@@ -89,7 +88,7 @@ def detect_adapter_state() -> DesignerRuntimeAdapterState:
     )
 
 
-def capability_handshake() -> Dict[str, Any]:
+def capability_handshake(*, deep: bool = True) -> Dict[str, Any]:
     state = detect_adapter_state()
     approximate_mappings: Dict[str, str] = {}
     semantic_warnings: List[Dict[str, str]] = []
@@ -118,7 +117,7 @@ def capability_handshake() -> Dict[str, Any]:
             for component, note in sorted(approximate_mappings.items())
         ]
 
-    if state.enabled and state.designer_runtime_available:
+    if deep and state.enabled and state.designer_runtime_available:
         try:
             native_dispatch = importlib.import_module(
                 "research.scientist.native.dispatch"
@@ -149,6 +148,7 @@ def capability_handshake() -> Dict[str, Any]:
         "strict": state.strict,
         "designer_runtime_available": state.designer_runtime_available,
         "status": state.reason,
+        "probe_depth": "deep" if deep else "light",
         "supported_ops": supported_ops,
         "unsupported_ops": unsupported_ops,
         "scheduler_supported_ops": scheduler_supported_ops,

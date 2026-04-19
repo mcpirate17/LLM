@@ -12,8 +12,8 @@ from __future__ import annotations
 
 import math
 import random
-from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from dataclasses import dataclass
+from typing import Dict, Optional
 
 
 @dataclass(slots=True)
@@ -21,7 +21,6 @@ class CurriculumStrategy:
     """A synthesized curriculum/data presentation strategy."""
 
     name: str
-    components: List[str] = field(default_factory=list)
     description: str = ""
     seed: int = 0
 
@@ -30,7 +29,6 @@ class CurriculumStrategy:
     seq_len_schedule: str = "fixed"  # "fixed", "growing", "oscillating"
     initial_seq_len: int = 32
     max_seq_len: int = 512
-    masking_pattern: str = "causal"  # "causal", "prefix", "random_span", "checkerboard"
 
     def get_seq_len(self, step: int, total_steps: int) -> int:
         """Get sequence length for current step."""
@@ -53,11 +51,9 @@ class CurriculumStrategy:
     def to_dict(self) -> Dict:
         return {
             "name": self.name,
-            "components": self.components,
             "seq_len_schedule": self.seq_len_schedule,
             "initial_seq_len": self.initial_seq_len,
             "max_seq_len": self.max_seq_len,
-            "masking_pattern": self.masking_pattern,
             "seed": self.seed,
         }
 
@@ -74,21 +70,14 @@ def synthesize_curriculum(
     rng = rng if rng is not None else random.Random(seed)
 
     seq_schedule = rng.choice(["fixed", "growing", "growing", "oscillating"])
-    mask_pattern = rng.choice(
-        ["causal", "causal", "prefix", "random_span", "checkerboard"]
-    )
-    components = [seq_schedule, mask_pattern]
-
-    name = f"curriculum_{'_'.join(components[:3])}"
+    name = f"curriculum_{seq_schedule}"
 
     return CurriculumStrategy(
         name=name,
-        components=components,
-        description=f"Seq schedule: {seq_schedule}, Mask: {mask_pattern}",
+        description=f"Seq schedule: {seq_schedule}",
         seed=seed or 0,
         warmup_steps=rng.choice([50, 100, 200]),
         seq_len_schedule=seq_schedule,
         initial_seq_len=rng.choice([16, 32, 64]),
         max_seq_len=max_seq_len,
-        masking_pattern=mask_pattern,
     )

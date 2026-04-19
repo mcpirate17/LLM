@@ -537,7 +537,6 @@ class _ExecutionTrainingMicroMixin:
                 )
                 is_milestone = step == 250 or step == 500
                 if not should_check and not is_milestone:
-                    ctx.run_profiler.step()
                     step += 1
                     continue
 
@@ -559,7 +558,6 @@ class _ExecutionTrainingMicroMixin:
                     )
 
                 if not should_check:
-                    ctx.run_profiler.step()
                     step += 1
                     continue
 
@@ -612,7 +610,6 @@ class _ExecutionTrainingMicroMixin:
                     early_stop_steps_since_improve=_es_no_improve_cg,
                     elapsed_ms=(time.perf_counter() - ctx.t_start) * 1000.0,
                 )
-                ctx.run_profiler.step()
                 step += 1
             return True
         except RuntimeError as e:
@@ -960,7 +957,6 @@ class _ExecutionTrainingMicroMixin:
             early_stop_steps_since_improve=es_steps_since_improve,
             elapsed_ms=(time.perf_counter() - ctx.t_start) * 1000.0,
         )
-        ctx.run_profiler.step()
         return es_best_loss, es_steps_since_improve
 
     def _micro_train_pruning_eval(
@@ -1072,4 +1068,3 @@ class _ExecutionTrainingMicroMixin:
             result.update(self._extract_architecture_telemetry(model))
         except (RuntimeError, AttributeError) as e:
             logger.debug("Architecture telemetry extract failed: %s", e)
-

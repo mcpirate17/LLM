@@ -15,109 +15,31 @@ from .tensor_bridge import (
     to_native_array,
     to_native_flat_array,
 )
+from ._dispatch_constants import (
+    NATIVE_STRUCTURAL_OPS,
+    _CYTHON_BINARY_BACKWARD_OPS,
+    _CYTHON_BINARY_OPS,
+    _CYTHON_UNARY_BACKWARD_OPS,
+    _CYTHON_UNARY_OPS,
+    _CYTHON_WRAPPER_OPS,
+    _NATIVE_C_KERNEL_OPS,
+    _NATIVE_OP_ALIASES,
+    _NON_KERNEL_STRUCTURAL_OPS,
+    _PER_OP_BRIDGE_ONLY_OPS,
+    _RUST_SCHEDULER_UNSUPPORTED_OPS,
+    _SOFT_BRIDGE_OPS,
+)
+from ._dispatch_rust_exec import (
+    _compile_rust_graph_handle,
+    _execute_rust_graph_backward,
+    _execute_rust_graph_forward_saved,
+    _execute_rust_graph_forward_saved_multi_input,
+    _prepare_graph_input,
+    _reshape_graph_output,
+)
 
 logger = logging.getLogger(__name__)
 _last_profile_data: Dict[str, Any] | None = None
-
-NATIVE_STRUCTURAL_OPS: Set[str] = {
-    "input",
-    "output",
-    "identity",
-    "noop",
-    "reshape",
-    "view",
-    "concat",
-    "split2",
-    "split",
-}
-_NON_KERNEL_STRUCTURAL_OPS: Set[str] = NATIVE_STRUCTURAL_OPS
-_NATIVE_OP_ALIASES: Dict[str, str] = {
-    "linear_proj": "linear",
-    "softmax_last": "softmax",
-    "transpose": "transpose2d",
-    "swiglu_mlp": "swiglu",
-    "adaptive_recursion": "depth_weighted_proj",
-    "gated_lane_blend": "depth_weighted_proj",
-    "route_lanes": "depth_weighted_proj",
-    "depth_gated_transform": "depth_weighted_proj",
-    "route_recursion": "depth_weighted_proj",
-}
-_NATIVE_C_KERNEL_OPS: Set[str] = {
-    "relu",
-    "gelu",
-    "silu",
-    "sigmoid",
-    "tanh",
-    "exp",
-    "square",
-    "abs",
-    "neg",
-    "sin",
-    "cos",
-    "log",
-    "sqrt",
-    "reciprocal",
-    "add",
-    "sub",
-    "mul",
-    "matmul",
-    "linear",
-    "rmsnorm",
-    "layernorm",
-    "softmax",
-    "transpose2d",
-    "softmax_attention",
-    "linear_attention",
-    "selective_scan",
-    "state_space",
-    "gated_delta",
-    "gated_linear",
-    "rwkv_time_mixing",
-    "rwkv_channel",
-    "swiglu",
-    "conv1d_seq",
-    # depth_weighted_proj deliberately excluded (2026-04-16): the C kernel
-    # has forward but no backward, so native dispatch crashes on backward
-    # with "no backward kernel for op: depth_weighted_proj". 5 aliased ops
-    # (gated_lane_blend, route_lanes, depth_gated_transform, route_recursion,
-    # adaptive_recursion) inherit the same state. Forcing the PyTorch path
-    # for all six until the Rust backward kernel lands.
-}
-_PER_OP_BRIDGE_ONLY_OPS: Set[str] = set()
-_CYTHON_WRAPPER_OPS: Set[str] = set(_NATIVE_C_KERNEL_OPS)
-_SOFT_BRIDGE_OPS: Set[str] = {"causal_mask", "argsort_seq", "topk_gate"}
-_CYTHON_UNARY_OPS: Set[str] = {
-    "relu",
-    "gelu",
-    "silu",
-    "square",
-    "abs",
-    "neg",
-    "reciprocal",
-    "log",
-    "sqrt",
-    "sin",
-    "cos",
-    "sigmoid",
-    "tanh",
-    "exp",
-}
-_CYTHON_BINARY_OPS: Set[str] = {"add", "mul", "sub"}
-_CYTHON_UNARY_BACKWARD_OPS: Set[str] = {"relu", "gelu", "silu", "sigmoid", "tanh"}
-_CYTHON_BINARY_BACKWARD_OPS: Set[str] = {"add", "mul", "sub"}
-_RUST_SCHEDULER_UNSUPPORTED_OPS: Set[str] = {"grade_mix", "layernorm"}
-
-
-@lru_cache(maxsize=256)
-def _compile_rust_graph_handle(graph_json: str) -> Any:
-    rust = _try_import_rust_scheduler()
-    if rust is None or not hasattr(rust, "compile_graph_ir_handle"):
-        return None
-    try:
-        return rust.compile_graph_ir_handle(graph_json)
-    except Exception as exc:
-        logger.debug("Rust graph-handle compilation failed: %s", exc)
-        return None
 
 
 def _native_profiling_enabled(rust: Any) -> bool:
@@ -599,243 +521,6 @@ def dispatch_op_backward_native(op_name: str, grad_output, *saved_tensors) -> An
         )
 
     raise ValueError(f"Unsupported op for native backward dispatch: '{op_name}'")
-
-
-def _prepare_graph_input(graph: Any, input_data: Any):
-    """Shared setup for graph dispatch: convert input + serialize IR.
-
-    Returns (x_np, graph_json) where x_np is a float32 numpy array
-    and graph_json is the serialized native IR JSON string.
-    """
-    from ..synthesis.native_ir_converter import graph_to_native_ir_json
-
-    x_np = to_native_array(input_data)
-    graph_json = graph_to_native_ir_json(graph)
-    return x_np, graph_json
-
-
-def _reshape_graph_output(graph: Any, x_np: Any, y_flat: Any) -> Any:
-    import numpy as np
-
-    y_np = np.array(y_flat, dtype=np.float32)
-    if hasattr(graph, "output_node") and graph.output_node and x_np.ndim >= 3:
-        shape = graph.output_node.output_shape
-        target_shape = (x_np.shape[0], x_np.shape[1], shape.dim)
-        return y_np.reshape(target_shape)
-    return y_np
-
-
-def _execute_rust_graph_forward_saved(
-    *,
-    graph_json: str,
-    x_np: Any,
-    graph: Any,
-) -> Optional[Dict[str, Any]]:
-    rust = _try_import_rust_scheduler()
-    if rust is None or not (
-        hasattr(rust, "execute_graph_forward_saved_arrays_handle")
-        or hasattr(rust, "execute_graph_forward_saved_arrays")
-        or hasattr(rust, "execute_graph_forward_saved")
-    ):
-        return None
-
-    import numpy as np
-
-    graph_handle = _compile_rust_graph_handle(graph_json)
-
-    if graph_handle is not None and hasattr(
-        rust, "execute_graph_forward_saved_compiled_arrays_handle"
-    ):
-        result = rust.execute_graph_forward_saved_compiled_arrays_handle(
-            graph_handle,
-            x_np,
-        )
-        return {
-            "output": _reshape_graph_output(graph, x_np, result["output"]),
-            "saved_activations": result["saved_state"],
-            "ir_json": graph_json,
-            "arena_bytes_used": int(result.get("arena_bytes_used", 0)),
-            "arena_capacity": int(result.get("arena_capacity", 0)),
-        }
-    if hasattr(rust, "execute_graph_forward_saved_arrays_handle"):
-        result = rust.execute_graph_forward_saved_arrays_handle(graph_json, x_np)
-        return {
-            "output": _reshape_graph_output(graph, x_np, result["output"]),
-            "saved_activations": result["saved_state"],
-            "ir_json": graph_json,
-            "arena_bytes_used": int(result.get("arena_bytes_used", 0)),
-            "arena_capacity": int(result.get("arena_capacity", 0)),
-        }
-    if hasattr(rust, "execute_graph_forward_saved_arrays"):
-        result = rust.execute_graph_forward_saved_arrays(graph_json, x_np)
-    else:
-        result = rust.execute_graph_forward_saved(graph_json, x_np.ravel().tolist())
-    saved_activations = {
-        int(node_id): np.asarray(values, dtype=np.float32)
-        for node_id, values in dict(result.get("saved_activations", {})).items()
-    }
-    return {
-        "output": _reshape_graph_output(graph, x_np, result["output"]),
-        "saved_activations": saved_activations,
-        "ir_json": graph_json,
-        "arena_bytes_used": int(result.get("arena_bytes_used", 0)),
-        "arena_capacity": int(result.get("arena_capacity", 0)),
-    }
-
-
-def _execute_rust_graph_forward_saved_multi_input(
-    *,
-    graph_json: str,
-    native_inputs: list[Any],
-    output_shape: tuple[int, ...] | None,
-) -> Optional[Dict[str, Any]]:
-    rust = _try_import_rust_scheduler()
-    if rust is None or not (
-        hasattr(rust, "execute_graph_forward_saved_multi_input_arrays_handle")
-        or hasattr(rust, "execute_graph_forward_saved_multi_input_arrays")
-        or hasattr(rust, "execute_graph_forward_saved_multi_input")
-    ):
-        return None
-
-    import numpy as np
-
-    graph_handle = _compile_rust_graph_handle(graph_json)
-
-    if graph_handle is not None and hasattr(
-        rust, "execute_graph_forward_saved_multi_input_compiled_arrays_handle"
-    ):
-        result = rust.execute_graph_forward_saved_multi_input_compiled_arrays_handle(
-            graph_handle,
-            native_inputs,
-        )
-        output = np.asarray(result["output"], dtype=np.float32)
-        if output_shape is not None:
-            output = output.reshape(output_shape)
-        return {
-            "output": output,
-            "saved_activations": result["saved_state"],
-            "ir_json": graph_json,
-            "arena_bytes_used": int(result.get("arena_bytes_used", 0)),
-            "arena_capacity": int(result.get("arena_capacity", 0)),
-        }
-    if hasattr(rust, "execute_graph_forward_saved_multi_input_arrays_handle"):
-        result = rust.execute_graph_forward_saved_multi_input_arrays_handle(
-            graph_json,
-            native_inputs,
-        )
-        output = np.asarray(result["output"], dtype=np.float32)
-        if output_shape is not None:
-            output = output.reshape(output_shape)
-        return {
-            "output": output,
-            "saved_activations": result["saved_state"],
-            "ir_json": graph_json,
-            "arena_bytes_used": int(result.get("arena_bytes_used", 0)),
-            "arena_capacity": int(result.get("arena_capacity", 0)),
-        }
-    if hasattr(rust, "execute_graph_forward_saved_multi_input_arrays"):
-        result = rust.execute_graph_forward_saved_multi_input_arrays(
-            graph_json,
-            native_inputs,
-        )
-    else:
-        result = rust.execute_graph_forward_saved_multi_input(
-            graph_json,
-            [value.ravel().tolist() for value in native_inputs],
-        )
-    output = np.asarray(result["output"], dtype=np.float32)
-    if output_shape is not None:
-        output = output.reshape(output_shape)
-    saved_activations = {
-        int(node_id): np.asarray(values, dtype=np.float32)
-        for node_id, values in dict(result.get("saved_activations", {})).items()
-    }
-    return {
-        "output": output,
-        "saved_activations": saved_activations,
-        "ir_json": graph_json,
-        "arena_bytes_used": int(result.get("arena_bytes_used", 0)),
-        "arena_capacity": int(result.get("arena_capacity", 0)),
-    }
-
-
-def _execute_rust_graph_backward(
-    *,
-    graph_json: str,
-    grad_np: Any,
-    saved_activations: Any,
-) -> Optional[Dict[int, Any]]:
-    rust = _try_import_rust_scheduler()
-    if rust is None or not (
-        hasattr(rust, "execute_graph_backward_arrays_handle")
-        or hasattr(rust, "execute_graph_backward_handle")
-        or hasattr(rust, "execute_graph_backward_arrays")
-        or hasattr(rust, "execute_graph_backward")
-    ):
-        return None
-
-    import numpy as np
-
-    graph_handle = _compile_rust_graph_handle(graph_json)
-
-    if not isinstance(saved_activations, Mapping):
-        if graph_handle is not None and hasattr(
-            rust, "execute_graph_backward_compiled_arrays_handle"
-        ):
-            result = rust.execute_graph_backward_compiled_arrays_handle(
-                graph_handle,
-                grad_np,
-                saved_activations,
-            )
-            return {
-                int(node_id): np.asarray(values, dtype=np.float32)
-                for node_id, values in dict(result.get("grads", {})).items()
-            }
-        if hasattr(rust, "execute_graph_backward_arrays_handle"):
-            result = rust.execute_graph_backward_arrays_handle(
-                graph_json,
-                grad_np,
-                saved_activations,
-            )
-            return {
-                int(node_id): np.asarray(values, dtype=np.float32)
-                for node_id, values in dict(result.get("grads", {})).items()
-            }
-        if hasattr(rust, "execute_graph_backward_handle"):
-            result = rust.execute_graph_backward_handle(
-                graph_json,
-                grad_np.ravel().tolist(),
-                saved_activations,
-            )
-            return {
-                int(node_id): np.asarray(values, dtype=np.float32)
-                for node_id, values in dict(result.get("grads", {})).items()
-            }
-        return None
-
-    rust_saved = {
-        int(node_id): np.asarray(values, dtype=np.float32)
-        for node_id, values in saved_activations.items()
-    }
-    if hasattr(rust, "execute_graph_backward_arrays"):
-        result = rust.execute_graph_backward_arrays(
-            graph_json,
-            grad_np,
-            rust_saved,
-        )
-    else:
-        result = rust.execute_graph_backward(
-            graph_json,
-            grad_np.ravel().tolist(),
-            {
-                int(node_id): np.asarray(values, dtype=np.float32).ravel().tolist()
-                for node_id, values in rust_saved.items()
-            },
-        )
-    return {
-        int(node_id): np.asarray(values, dtype=np.float32)
-        for node_id, values in dict(result.get("grads", {})).items()
-    }
 
 
 def dispatch_graph_backward_native_cached(

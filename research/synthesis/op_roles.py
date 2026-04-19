@@ -247,11 +247,6 @@ def get_role(op_name: str) -> OpRole:
     return OpRole.ACTIVATE
 
 
-def ops_by_role(role: OpRole) -> FrozenSet[str]:
-    """Return all explicitly classified ops with the given role."""
-    return frozenset(name for name, r in _OP_ROLE_MAP.items() if r == role)
-
-
 # ── Role-valid transition rules ─────────────────────────────────────
 # Maps each role to the set of roles that can legally follow it.
 # Used by motif validation and template slot constraints.

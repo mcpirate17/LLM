@@ -2,23 +2,42 @@ from __future__ import annotations
 
 import torch
 
-from ._muon_native import load_muon_native
+_NS_A = 3.4445
+_NS_B = -4.7750
+_NS_C = 2.0315
+_NS_EPS = 1e-30
 
 
-def _orthogonalize_update(
-    matrix: torch.Tensor,
-    n_steps: int,
-    native_ext,
-) -> torch.Tensor:
+def _orthogonalize_update(matrix: torch.Tensor, n_steps: int) -> torch.Tensor:
+    """Newton-Schulz orthogonalization — device-side only, no host syncs."""
     if matrix.ndim != 2:
         return matrix
-    return native_ext.orthogonalize_update(matrix, n_steps)
+
+    rows, cols = matrix.shape
+    transposed = rows < cols
+    working = matrix.transpose(0, 1) if transposed else matrix
+    # clamp_min keeps near-zero matrices from producing NaNs while preserving
+    # the original behavior for any gradient with non-trivial norm (the clamp
+    # is a no-op for norms > 1e-30, i.e. essentially always).
+    norm = working.norm().clamp_min(_NS_EPS)
+    x = working / norm
+    for _ in range(n_steps):
+        gram = x.transpose(0, 1).matmul(x)
+        xg = x.matmul(gram)
+        # Fused polynomial step: x ← a·x + b·xg + c·(xg @ gram), in place.
+        # Eliminates two temporaries per iteration vs. the functional form.
+        x.mul_(_NS_A).add_(xg, alpha=_NS_B).addmm_(xg, gram, alpha=_NS_C)
+
+    return x.transpose(0, 1) if transposed else x
 
 
 class MuonOptimizer(torch.optim.Optimizer):
-    """Momentum optimizer with Newton-Schulz orthogonalized 2D updates."""
+    """Momentum optimizer with Newton-Schulz orthogonalized 2D updates.
 
-    __slots__ = ("_native_ext",)
+    Batched with torch._foreach_* ops so the Python overhead is amortized
+    across every parameter in a group; orthogonalization is still per-matrix
+    because each matrix has a different shape.
+    """
 
     def __init__(
         self,
@@ -37,7 +56,6 @@ class MuonOptimizer(torch.optim.Optimizer):
             ns_steps=ns_steps,
         )
         super().__init__(params, defaults)
-        self._native_ext = None
 
     @torch.no_grad()
     def step(self, closure=None):
@@ -47,36 +65,48 @@ class MuonOptimizer(torch.optim.Optimizer):
                 loss = closure()
 
         for group in self.param_groups:
-            lr = group["lr"]
-            weight_decay = group["weight_decay"]
-            momentum = group["momentum"]
-            nesterov = group["nesterov"]
-            ns_steps = group["ns_steps"]
+            lr = float(group["lr"])
+            weight_decay = float(group["weight_decay"])
+            momentum = float(group["momentum"])
+            nesterov = bool(group["nesterov"])
+            ns_steps = int(group["ns_steps"])
 
+            params: list[torch.Tensor] = []
+            grads: list[torch.Tensor] = []
+            buffers: list[torch.Tensor] = []
             for param in group["params"]:
                 grad = param.grad
                 if grad is None:
                     continue
-
                 state = self.state[param]
-                if not state:
-                    state["momentum_buffer"] = torch.zeros_like(grad)
+                buffer = state.get("momentum_buffer")
+                if buffer is None:
+                    buffer = torch.zeros_like(grad)
+                    state["momentum_buffer"] = buffer
+                params.append(param)
+                grads.append(grad)
+                buffers.append(buffer)
 
-                buffer = state["momentum_buffer"]
-                buffer.mul_(momentum).add_(grad)
-                update = grad + momentum * buffer if nesterov else buffer
+            if not params:
+                continue
 
+            # Batched momentum: buffer = momentum * buffer + grad
+            torch._foreach_mul_(buffers, momentum)
+            torch._foreach_add_(buffers, grads)
+
+            if nesterov:
+                updates = list(torch._foreach_add(grads, buffers, alpha=momentum))
+            else:
+                updates = list(buffers)
+
+            # Orthogonalize each 2D+ update (shapes differ — per-matrix call).
+            for i, param in enumerate(params):
                 if param.ndim >= 2:
-                    if self._native_ext is None:
-                        self._native_ext = load_muon_native()
-                    update = _orthogonalize_update(
-                        update.view(param.shape[0], -1),
-                        n_steps=ns_steps,
-                        native_ext=self._native_ext,
-                    ).view_as(param)
+                    reshaped = updates[i].view(param.shape[0], -1)
+                    updates[i] = _orthogonalize_update(reshaped, ns_steps).view_as(param)
 
-                if weight_decay > 0:
-                    param.data.mul_(1 - lr * weight_decay)
-                param.data.add_(update, alpha=-lr)
+            if weight_decay > 0.0:
+                torch._foreach_mul_(params, 1.0 - lr * weight_decay)
+            torch._foreach_add_(params, updates, alpha=-lr)
 
         return loss

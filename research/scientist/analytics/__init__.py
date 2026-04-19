@@ -9,14 +9,14 @@ Split into domain mixins under analytics/ directory.
 
 from __future__ import annotations
 
-from typing import Optional, Dict
+from typing import Dict, Optional
 
-from .analytics_ops import _OpsMixin
-from .analytics_grammar import _GrammarMixin
-from .analytics_routing import _RoutingMixin
-from .analytics_experiments import _ExperimentsMixin
 from .analytics_campaigns import _CampaignsMixin
+from .analytics_experiments import _ExperimentsMixin
+from .analytics_grammar import _GrammarMixin
+from .analytics_ops import _OpsMixin
 from .analytics_refinement import RefinementAnalyzer
+from .analytics_routing import _RoutingMixin
 
 
 class ExperimentAnalytics(
@@ -26,10 +26,7 @@ class ExperimentAnalytics(
     _ExperimentsMixin,
     _CampaignsMixin,
 ):
-    """Data-driven analytics over experiment history.
-
-    Composed from targeted mixins under analytics/ directory.
-    """
+    """Data-driven analytics over experiment history."""
 
     __slots__ = ("nb", "_last_grammar_weight_diagnostics")
 

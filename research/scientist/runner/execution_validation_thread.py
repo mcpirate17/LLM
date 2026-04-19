@@ -6,7 +6,7 @@ import json
 import sqlite3
 import time
 import traceback
-from typing import List
+from typing import Dict, List
 
 import torch
 
@@ -301,90 +301,11 @@ class _ExecutionValidationThreadMixin:
                     results=results,
                 )
 
-            # Guard: if no programs were processed at all, fail with clear reason
             if results["stage0_passed"] == 0 and results["total"] > 0:
-                reason = (
-                    f"All {results['total']} source programs were skipped "
-                    f"(not found or failed to compile). "
-                    f"Result IDs: {', '.join(r[:12] for r in result_ids)}"
-                )
-                logger.warning("Scale-up produced no results: %s", reason)
-                self._publish_validation_terminal_event(
-                    event_type="experiment_failed",
-                    exp_id=exp_id,
-                    payload={
-                        "completed_at": time.time(),
-                        "error": reason,
-                        "results": None,
-                    },
-                )
-                self._fail_experiment_compat(
-                    nb=nb,
-                    experiment_id=exp_id,
-                    error=reason,
-                )
-                self._update_progress(
-                    status="failed",
-                    error=reason,
-                    aria_message=self.aria.react_to_failure(reason),
-                )
-                self._emit_event(
-                    "experiment_failed",
-                    {
-                        "experiment_id": exp_id,
-                        "error": reason,
-                    },
-                )
+                self._scale_up_fail_no_results(exp_id, nb, results, result_ids)
                 return
 
-            # Complete experiment
-            context = self._build_rich_context_for_experiment(
-                results, config, hypothesis, nb
-            )
-            summary = self.aria.experiment_summary(results, context=context)
-            llm_analysis = self.aria.analyze_results(results, context=context)
-            insights = self._analyze_results(results, exp_id, nb, context=context)
-
-            self._publish_validation_terminal_event(
-                event_type="experiment_completed",
-                exp_id=exp_id,
-                payload={
-                    "completed_at": time.time(),
-                    "results": results,
-                    "aria_summary": summary,
-                    "aria_mood": self.aria.state.mood,
-                    "insights": insights,
-                    "llm_analysis": llm_analysis,
-                },
-            )
-
-            self._complete_experiment_compat(
-                nb=nb,
-                experiment_id=exp_id,
-                results=results,
-                aria_summary=summary,
-                insights=insights,
-                llm_analysis=llm_analysis,
-            )
-
-            self._auto_recommend(results, config, hypothesis, nb)
-
-            self._update_progress(
-                status="completed",
-                elapsed_seconds=time.time() - t_start,
-                aria_message=summary.split("\n")[-1]
-                if summary
-                else "Scale-up complete.",
-            )
-
-            self._emit_event(
-                "scale_up_completed",
-                {
-                    "experiment_id": exp_id,
-                    "results": results,
-                    "summary": summary,
-                },
-            )
+            self._scale_up_complete(exp_id, nb, results, config, hypothesis, t_start)
 
         except Exception as e:
             self._handle_thread_error(phase="scale_up", exp_id=exp_id, nb=nb, exc=e)
@@ -393,6 +314,86 @@ class _ExecutionValidationThreadMixin:
         finally:
             self._live_training_context = None
             nb.close()
+
+    def _scale_up_fail_no_results(
+        self,
+        exp_id: str,
+        nb,
+        results: Dict,
+        result_ids: List[str],
+    ) -> None:
+        reason = (
+            f"All {results['total']} source programs were skipped "
+            f"(not found or failed to compile). "
+            f"Result IDs: {', '.join(r[:12] for r in result_ids)}"
+        )
+        logger.warning("Scale-up produced no results: %s", reason)
+        self._publish_validation_terminal_event(
+            event_type="experiment_failed",
+            exp_id=exp_id,
+            payload={
+                "completed_at": time.time(),
+                "error": reason,
+                "results": None,
+            },
+        )
+        self._fail_experiment_compat(nb=nb, experiment_id=exp_id, error=reason)
+        self._update_progress(
+            status="failed",
+            error=reason,
+            aria_message=self.aria.react_to_failure(reason),
+        )
+        self._emit_event(
+            "experiment_failed",
+            {"experiment_id": exp_id, "error": reason},
+        )
+
+    def _scale_up_complete(
+        self,
+        exp_id: str,
+        nb,
+        results: Dict,
+        config: RunConfig,
+        hypothesis: str,
+        t_start: float,
+    ) -> None:
+        context = self._build_rich_context_for_experiment(
+            results, config, hypothesis, nb
+        )
+        summary = self.aria.experiment_summary(results, context=context)
+        llm_analysis = self.aria.analyze_results(results, context=context)
+        insights = self._analyze_results(results, exp_id, nb, context=context)
+
+        self._publish_validation_terminal_event(
+            event_type="experiment_completed",
+            exp_id=exp_id,
+            payload={
+                "completed_at": time.time(),
+                "results": results,
+                "aria_summary": summary,
+                "aria_mood": self.aria.state.mood,
+                "insights": insights,
+                "llm_analysis": llm_analysis,
+            },
+        )
+        self._complete_experiment_compat(
+            nb=nb,
+            experiment_id=exp_id,
+            results=results,
+            aria_summary=summary,
+            insights=insights,
+            llm_analysis=llm_analysis,
+        )
+        self._auto_recommend(results, config, hypothesis, nb)
+        self._update_progress(
+            status="completed",
+            elapsed_seconds=time.time() - t_start,
+            aria_message=(summary.split("\n")[-1] if summary else "Scale-up complete."),
+        )
+        self._emit_event(
+            "scale_up_completed",
+            {"experiment_id": exp_id, "results": results, "summary": summary},
+        )
 
     # ── Shared error handling for thread methods ──
 

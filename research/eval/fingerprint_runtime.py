@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
-from typing import Optional, Tuple
+from typing import TYPE_CHECKING, Optional, Tuple
 
 import torch
 import torch.nn as nn
+
+if TYPE_CHECKING:
+    from research.synthesis.graph import ComputationGraph
 
 from research.defaults import VOCAB_SIZE
 

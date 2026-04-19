@@ -197,13 +197,6 @@ def compute_motif_weights_from_op_weights(
     return result
 
 
-def compatible_space(current_space: str, op_space: str) -> bool:
-    return algebraic_types_compatible(
-        default_algebraic_type_for_space(current_space),
-        default_algebraic_type_for_space(op_space),
-    )
-
-
 def check_graph_space_consistency(graph: ComputationGraph) -> Optional[str]:
     """Validate that a computation graph has no algebraic space conflicts."""
     for _, node in sorted(graph.nodes.items()):

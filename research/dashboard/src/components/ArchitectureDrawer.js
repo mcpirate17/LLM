@@ -1,4 +1,4 @@
-import { apiCall } from "../services/apiService";
+import { apiCall, postJson } from "../services/apiService";
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { parseDesignerBridgeMessage } from '../utils/designerBridge';
 
@@ -86,11 +86,7 @@ function ArchitectureDrawer({ resultId, onClose, readOnly = true, onGraphLoaded,
     setCommitting(true);
     setNotice('Committing changes to research pipeline...');
     try {
-      const res = await apiCall(`/api/designer/commit`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ result_id: resultId, graph_json: graphJson }),
-      });
+      const res = await postJson('/api/designer/commit', { result_id: resultId, graph_json: graphJson });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Commit failed');
       setNotice('Graph committed successfully.');
@@ -155,10 +151,7 @@ function ArchitectureDrawer({ resultId, onClose, readOnly = true, onGraphLoaded,
     setBridgeStep('starting-services');
     setLoading(true);
 
-    const checkDesigner = apiCall('/api/designer/ensure-running', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ force_restart: false }),
+    const checkDesigner = postJson('/api/designer/ensure-running', { force_restart: false }, {
       signal: abortController.signal,
       timeoutMs: 60000,
     }).then(res => res.json().then(payload => {

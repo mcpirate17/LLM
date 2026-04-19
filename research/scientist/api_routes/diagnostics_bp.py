@@ -24,7 +24,7 @@ def register_diagnostics_routes(app, context: ApiRouteContext):
             "yes",
         }
         try:
-            from research.eval.fingerprint_sensitivity import get_sensitivity_skip_stats
+            from research.eval._sensitivity_skip_stats import get_sensitivity_skip_stats
 
             stats = get_sensitivity_skip_stats(reset=reset)
             return jsonify(

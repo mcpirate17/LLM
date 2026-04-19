@@ -8,9 +8,15 @@ import math
 from collections import defaultdict
 from typing import Dict, List, Optional, Tuple
 
-from research.scientist.intelligence.ml_corpus import load_deduped_graph_analysis_rows
-
 logger = logging.getLogger(__name__)
+
+
+def _load_deduped_graph_analysis_rows(db_path):
+    from research.scientist.intelligence.ml_corpus import (
+        load_deduped_graph_analysis_rows,
+    )
+
+    return load_deduped_graph_analysis_rows(db_path)
 
 
 class _ComparisonsMixin:
@@ -204,7 +210,7 @@ class _ComparisonsMixin:
         """Find op combinations that co-occur in Stage 1 survivors."""
         rows = [
             row
-            for row in load_deduped_graph_analysis_rows(self.nb.db_path)
+            for row in _load_deduped_graph_analysis_rows(self.nb.db_path)
             if row.get("stage1_any_passed")
         ]
         rows.sort(

@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import ConfigField from './ConfigField';
 import CategoryWeightsControl from './CategoryWeightsControl';
-import { apiCall } from '../../services/apiService';
+import { apiCall, postJson } from '../../services/apiService';
 
 const detailPanelStyle = { background: 'rgba(255,255,255,0.01)', padding: 16, borderRadius: 8, border: '1px solid var(--border)' };
 const accentSummary = { fontSize: 13, fontWeight: 600, color: 'var(--accent-blue)', cursor: 'pointer', padding: '4px 0' };
@@ -32,11 +32,7 @@ function ScoringVersionSelector() {
   const onChange = (e) => {
     const next = e.target.value;
     setStatus('saving…');
-    apiCall('/api/scoring/version', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ version: next }),
-    })
+    postJson('/api/scoring/version', { version: next })
       .then(r => r.ok ? r.json() : Promise.reject(r))
       .then(d => {
         setVersion(d.version);

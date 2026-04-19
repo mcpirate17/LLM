@@ -1,4 +1,4 @@
-import { apiCall } from "../services/apiService";
+import { apiCall, postJson } from "../services/apiService";
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { scoreColor } from '../utils/format';
 import { lossColor, noveltyColor, reliabilityColor } from '../utils/colors';
@@ -343,14 +343,10 @@ function Discoveries({
     setSavingStatusRowId(rowId);
     setStatusError(null);
     try {
-      const res = await apiCall(`/api/leaderboard/status`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          entry_id: entry.entry_id,
-          result_id: entry.result_id,
-          tier: nextTier,
-        }),
+      const res = await postJson('/api/leaderboard/status', {
+        entry_id: entry.entry_id,
+        result_id: entry.result_id,
+        tier: nextTier,
       });
       if (!res.ok) {
         let payload = null;

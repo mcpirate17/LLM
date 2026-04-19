@@ -31,7 +31,7 @@ from .routing_telemetry import collect_routing_telemetry
 
 _collect_routing_telemetry = collect_routing_telemetry
 from .sparsity import check_activation_sparsity
-from .utils import compute_grad_norm, language_model_loss, make_adamw
+from .utils import clip_grad_norm, compute_grad_norm, language_model_loss, make_adamw
 from research.defaults import VOCAB_SIZE
 
 
@@ -450,15 +450,6 @@ def _gradient_health(model: nn.Module):
             if pnorm > 1e-10:
                 has_zero = False
     return total_norm, has_nan, has_zero, n_with_grad
-
-
-def _set_result_error(
-    result: SandboxResult, error: str, error_type: str
-) -> SandboxResult:
-    result.passed = False
-    result.error = error
-    result.error_type = error_type
-    return result
 
 
 def _extract_failure_op(tb: List[str], error_text: str) -> Optional[str]:
@@ -1032,7 +1023,7 @@ def _run_training_dynamics_check(
             if torch.isnan(loss) or torch.isinf(loss):
                 return False
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            clip_grad_norm(model.parameters(), 1.0)
             probe_optimizer.step()
             probe_losses.append(loss.item())
         mean_loss = sum(probe_losses) / len(probe_losses)

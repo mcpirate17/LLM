@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, List, Tuple
+
+logger = logging.getLogger(__name__)
 
 from ..llm.context_experiment import build_validation_context
 from ..notebook import LabNotebook

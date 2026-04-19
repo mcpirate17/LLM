@@ -156,7 +156,11 @@ class _CoreMixin:
         self._live_loss_curve: List[Dict] = []  # rolling buffer for dashboard chart
         self._grammar_weight_overrides: Dict[str, float] = {}
         try:
-            with LabNotebook(self.notebook_path, skip_migrate=True) as _nb:
+            with LabNotebook(
+                self.notebook_path,
+                skip_migrate=True,
+                read_only=True,
+            ) as _nb:
                 row = _nb.conn.execute(
                     "SELECT evidence FROM learning_log "
                     "WHERE event_type='chat_grammar_overrides_applied' "
@@ -176,6 +180,7 @@ class _CoreMixin:
                         )
         except (
             sqlite3.OperationalError,
+            RuntimeError,
             json.JSONDecodeError,
             KeyError,
             ValueError,
@@ -238,7 +243,11 @@ class _CoreMixin:
                 if not owned_exp_id:
                     return
 
-                nb = LabNotebook(self.notebook_path, skip_migrate=True)
+                nb = LabNotebook(
+                    self.notebook_path,
+                    skip_migrate=True,
+                    use_native=False,
+                )
                 row = nb.conn.execute(
                     "SELECT status FROM experiments WHERE experiment_id = ?",
                     (owned_exp_id,),
@@ -297,6 +306,7 @@ class _CoreMixin:
             self.notebook_path,
             skip_migrate=True,
             check_same_thread=False,
+            use_native=False,
         )
 
     def _ensure_math_spaces(self):

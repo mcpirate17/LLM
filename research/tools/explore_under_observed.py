@@ -29,6 +29,7 @@ from typing import Dict, List, Optional, Set, Tuple
 
 import torch
 import torch.nn as nn
+from research.training.loss_ops import clip_grad_norm_, next_token_cross_entropy
 
 logger = logging.getLogger(__name__)
 
@@ -493,16 +494,13 @@ def _s1_micro_train(
     try:
         for step in range(n_steps):
             input_ids = torch.randint(0, vocab_size, (batch_size, seq_len), device=dev)
-            targets = input_ids[:, 1:]
-            logits = model(input_ids)[:, :-1].contiguous()
-            loss = torch.nn.functional.cross_entropy(
-                logits.view(-1, logits.size(-1)), targets.contiguous().view(-1)
-            )
+            logits = model(input_ids)
+            loss = next_token_cross_entropy(logits, input_ids, logits.size(-1))
             if torch.isnan(loss) or torch.isinf(loss):
                 return _S1Result(False, error=f"NaN/Inf loss at step {step}")
             optimizer.zero_grad()
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            clip_grad_norm_(model, 1.0)
             optimizer.step()
             losses.append(loss.item())
 
@@ -698,20 +696,54 @@ def update_coverage(
 # ── Reporting ────────────────────────────────────────────────────────
 
 
-def write_reports(
+def _coverage_status(cov: OpCoverage) -> str:
+    if cov.inserted == 0:
+        return "NOT COVERED"
+    if cov.compile_pass == 0:
+        return "COMPILE FAIL"
+    if cov.forward_pass == 0:
+        return "FORWARD FAIL"
+    if cov.rapid_pass == 0:
+        return "RAPID FAIL"
+    if cov.s1_pass == 0:
+        return "S1 FAIL"
+    return "PASS"
+
+
+def _result_to_json_row(r: ExplorationResult) -> dict:
+    return {
+        "fingerprint": r.graph_fingerprint,
+        "ops_present": r.ops_present,
+        "compile_ok": r.compile_ok,
+        "forward_ok": r.forward_ok,
+        "rapid_ok": r.rapid_ok,
+        "s1_ok": r.s1_ok,
+        "s1_loss_ratio": r.s1_loss_ratio,
+        "param_count": r.param_count,
+        "elapsed_s": round(r.elapsed_s, 2),
+        "errors": {
+            k: v
+            for k, v in {
+                "compile": r.compile_error,
+                "forward": r.forward_error,
+                "rapid": r.rapid_error,
+                "s1": r.s1_error,
+            }.items()
+            if v
+        },
+    }
+
+
+def _build_exploration_json(
     coverage: Dict[str, OpCoverage],
     results: List[ExplorationResult],
-    output_dir: str,
+    *,
+    ts: str,
     mode: str,
     threshold: int,
     elapsed_total: float,
-):
-    """Write markdown and JSON reports."""
-    os.makedirs(output_dir, exist_ok=True)
-    ts = time.strftime("%Y%m%d_%H%M%S")
-
-    # ── JSON report ──
-    json_data = {
+) -> dict:
+    return {
         "timestamp": ts,
         "mode": mode,
         "threshold": threshold,
@@ -720,38 +752,21 @@ def write_reports(
         "elapsed_seconds": round(elapsed_total, 1),
         "coverage": {op: cov.to_dict() for op, cov in sorted(coverage.items())},
         "summary": _build_summary(coverage),
-        "results": [
-            {
-                "fingerprint": r.graph_fingerprint,
-                "ops_present": r.ops_present,
-                "compile_ok": r.compile_ok,
-                "forward_ok": r.forward_ok,
-                "rapid_ok": r.rapid_ok,
-                "s1_ok": r.s1_ok,
-                "s1_loss_ratio": r.s1_loss_ratio,
-                "param_count": r.param_count,
-                "elapsed_s": round(r.elapsed_s, 2),
-                "errors": {
-                    k: v
-                    for k, v in {
-                        "compile": r.compile_error,
-                        "forward": r.forward_error,
-                        "rapid": r.rapid_error,
-                        "s1": r.s1_error,
-                    }.items()
-                    if v
-                },
-            }
-            for r in results
-        ],
+        "results": [_result_to_json_row(r) for r in results],
     }
-    json_path = os.path.join(output_dir, f"exploration_{ts}.json")
-    with open(json_path, "w") as f:
-        json.dump(json_data, f, indent=2)
 
-    # ── Markdown report ──
-    md_path = os.path.join(output_dir, f"exploration_{ts}.md")
-    summary = json_data["summary"]
+
+def _build_exploration_markdown(
+    coverage: Dict[str, OpCoverage],
+    results: List[ExplorationResult],
+    *,
+    ts: str,
+    mode: str,
+    threshold: int,
+    elapsed_total: float,
+    summary: dict,
+    json_path: str,
+) -> str:
     lines = [
         "# Under-Observed Component Exploration Report",
         "",
@@ -781,41 +796,16 @@ def write_reports(
 
     for op_name in sorted(coverage.keys()):
         cov = coverage[op_name]
-        if cov.inserted == 0:
-            status = "NOT COVERED"
-            reasons = (
-                "; ".join(set(cov.skip_reasons))
-                if cov.skip_reasons
-                else "generation failed"
-            )
-        elif cov.compile_pass == 0:
-            status = "COMPILE FAIL"
-        elif cov.forward_pass == 0:
-            status = "FORWARD FAIL"
-        elif cov.rapid_pass == 0:
-            status = "RAPID FAIL"
-        elif cov.s1_pass == 0:
-            status = "S1 FAIL"
-        else:
-            status = "PASS"
-
         lines.append(
             f"| {op_name} | {cov.n_prior_observations} "
             f"| {cov.inserted}/{cov.attempted} "
             f"| {cov.compile_pass} | {cov.forward_pass} "
-            f"| {cov.rapid_pass} | {cov.s1_pass} | {status} |"
+            f"| {cov.rapid_pass} | {cov.s1_pass} | {_coverage_status(cov)} |"
         )
 
-    # Explain uncovered ops
     uncovered = [op for op, cov in coverage.items() if cov.inserted == 0]
     if uncovered:
-        lines.extend(
-            [
-                "",
-                "## Uncovered Ops — Explanation",
-                "",
-            ]
-        )
+        lines.extend(["", "## Uncovered Ops — Explanation", ""])
         for op_name in sorted(uncovered):
             cov = coverage[op_name]
             reasons = (
@@ -832,9 +822,46 @@ def write_reports(
             lines.append(f"- **{op_name}** ({prim_info}): {'; '.join(reasons)}")
 
     lines.extend(["", "---", f"JSON: `{json_path}`"])
+    return "\n".join(lines)
 
+
+def write_reports(
+    coverage: Dict[str, OpCoverage],
+    results: List[ExplorationResult],
+    output_dir: str,
+    mode: str,
+    threshold: int,
+    elapsed_total: float,
+):
+    """Write markdown and JSON reports."""
+    os.makedirs(output_dir, exist_ok=True)
+    ts = time.strftime("%Y%m%d_%H%M%S")
+
+    json_data = _build_exploration_json(
+        coverage,
+        results,
+        ts=ts,
+        mode=mode,
+        threshold=threshold,
+        elapsed_total=elapsed_total,
+    )
+    json_path = os.path.join(output_dir, f"exploration_{ts}.json")
+    with open(json_path, "w") as f:
+        json.dump(json_data, f, indent=2)
+
+    md_path = os.path.join(output_dir, f"exploration_{ts}.md")
+    markdown = _build_exploration_markdown(
+        coverage,
+        results,
+        ts=ts,
+        mode=mode,
+        threshold=threshold,
+        elapsed_total=elapsed_total,
+        summary=json_data["summary"],
+        json_path=json_path,
+    )
     with open(md_path, "w") as f:
-        f.write("\n".join(lines))
+        f.write(markdown)
 
     return md_path, json_path
 
@@ -995,6 +1022,88 @@ class _DBRecorder:
 # ── Main orchestrator ────────────────────────────────────────────────
 
 
+def _resolve_targets(
+    db_path: str, threshold: int, force_ops: Optional[List[str]]
+) -> Dict[str, int]:
+    """Return {op_name: prior_observation_count} for the requested exploration run."""
+    if force_ops:
+        _register_mathspace_ops()
+        unknown = [op for op in force_ops if op not in PRIMITIVE_REGISTRY]
+        if unknown:
+            logger.error(
+                "Unknown ops not in PRIMITIVE_REGISTRY: %s", ", ".join(unknown)
+            )
+            sys.exit(1)
+        all_targets = discover_targets(db_path, threshold=999999)
+        targets = {op: all_targets.get(op, 0) for op in force_ops}
+        logger.info("Forcing exploration of %d specified ops:", len(targets))
+    else:
+        logger.info("Discovering under-observed ops (threshold=%d)...", threshold)
+        targets = discover_targets(db_path, threshold)
+    return targets
+
+
+def _dispatch_exploration_mode(
+    mode: str,
+    *,
+    targets: Dict[str, int],
+    coverage: Dict[str, OpCoverage],
+    target_set: Set[str],
+    n_graphs_weighted: int,
+    max_retries_forced: int,
+    graphs_per_op: int,
+    base_seed: int,
+    device: str,
+    dry_run: bool,
+    recorder: Optional["_DBRecorder"],
+    eval_kwargs: Dict,
+    gen_kwargs: Dict,
+) -> Tuple[List[ExplorationResult], Dict[str, OpCoverage]]:
+    """Run the primary mode (weighted or forced). Raises on unknown mode."""
+    if mode == "weighted":
+        return _run_weighted_mode(
+            targets,
+            coverage,
+            target_set,
+            n_graphs=n_graphs_weighted,
+            base_seed=base_seed,
+            device=device,
+            dry_run=dry_run,
+            recorder=recorder,
+            **eval_kwargs,
+            **gen_kwargs,
+        )
+    if mode == "forced":
+        return _run_forced_mode(
+            targets,
+            coverage,
+            target_set,
+            max_retries=max_retries_forced,
+            base_seed=base_seed,
+            device=device,
+            dry_run=dry_run,
+            graphs_per_op=graphs_per_op,
+            recorder=recorder,
+            **eval_kwargs,
+            **gen_kwargs,
+        )
+    raise ValueError(f"Unknown mode: {mode}. Use 'weighted' or 'forced'.")
+
+
+def _log_coverage_summary(coverage: Dict[str, OpCoverage]) -> None:
+    summary = _build_summary(coverage)
+    logger.info(
+        "Coverage: %d/%d (%.0f%%) | Compile: %d | Forward: %d | Rapid: %d | S1: %d",
+        summary["n_covered"],
+        summary["n_targets"],
+        summary["coverage_rate"] * 100,
+        summary["n_compile_pass"],
+        summary["n_forward_pass"],
+        summary["n_rapid_pass"],
+        summary["n_s1_pass"],
+    )
+
+
 def run_exploration(
     db_path: str,
     mode: str = "forced",
@@ -1018,50 +1127,10 @@ def run_exploration(
     max_ops: Optional[int] = None,
     boost_factor: float = 50.0,
 ) -> Tuple[Dict[str, OpCoverage], List[ExplorationResult]]:
-    """Main entry point for under-observed component exploration.
-
-    Args:
-        db_path: Path to lab_notebook.db
-        mode: "weighted" or "forced"
-        threshold: Observation count below which ops are targeted
-        device: "cpu" or "cuda"
-        n_graphs_weighted: Number of graphs for weighted mode
-        max_retries_forced: Max retries per op in forced mode
-        graphs_per_op: Graphs to generate per target op in forced mode
-        run_s1: Whether to run S1 micro-training
-        s1_steps: Number of S1 training steps
-        rapid_steps: Rapid screening gradient steps (default 150)
-        output_dir: Where to write reports
-        base_seed: Random seed
-        dry_run: If True, only generate graphs — skip eval pipeline
-        record: If True, write results to lab_notebook.db (real-time)
-        model_dim: Model dimension (default: 256)
-        n_layers: Number of layers in compiled model (default: 4)
-        composition_depth: Template blocks stacked per graph (default: 2)
-        max_depth: Max graph depth (default: 12)
-        max_ops: Max ops per graph (default: 18)
-        boost_factor: Weight multiplier for target op templates (default: 50.0)
-    """
+    """Main entry point for under-observed component exploration."""
     t_start = time.perf_counter()
 
-    # 1. Discover targets
-    if force_ops:
-        # Validate requested ops exist in the registry
-        # Ensure math-space ops are registered
-        _register_mathspace_ops()
-        unknown = [op for op in force_ops if op not in PRIMITIVE_REGISTRY]
-        if unknown:
-            logger.error(
-                "Unknown ops not in PRIMITIVE_REGISTRY: %s", ", ".join(unknown)
-            )
-            sys.exit(1)
-        # Look up current observation counts for reporting
-        all_targets = discover_targets(db_path, threshold=999999)
-        targets = {op: all_targets.get(op, 0) for op in force_ops}
-        logger.info("Forcing exploration of %d specified ops:", len(targets))
-    else:
-        logger.info("Discovering under-observed ops (threshold=%d)...", threshold)
-        targets = discover_targets(db_path, threshold)
+    targets = _resolve_targets(db_path, threshold, force_ops)
     if not targets:
         logger.info(
             "No under-observed ops found. All ops have >= %d observations.", threshold
@@ -1072,14 +1141,10 @@ def run_exploration(
     for op, n in sorted(targets.items(), key=lambda x: x[1]):
         logger.info("  %s: %d observations", op, n)
 
-    # 2. Initialize coverage tracking
     coverage: Dict[str, OpCoverage] = {
         op: OpCoverage(op_name=op, n_prior_observations=n) for op, n in targets.items()
     }
-    all_results: List[ExplorationResult] = []
     target_set = set(targets.keys())
-
-    # 3. Set up real-time DB recorder if requested
     recorder = None
     if record and not dry_run:
         recorder = _DBRecorder(
@@ -1107,38 +1172,22 @@ def run_exploration(
         boost_factor=boost_factor,
     )
 
-    # 4. Generate and evaluate graphs
-    if mode == "weighted":
-        all_results, coverage = _run_weighted_mode(
-            targets,
-            coverage,
-            target_set,
-            n_graphs=n_graphs_weighted,
-            base_seed=base_seed,
-            device=device,
-            dry_run=dry_run,
-            recorder=recorder,
-            **eval_kwargs,
-            **gen_kwargs,
-        )
-    elif mode == "forced":
-        all_results, coverage = _run_forced_mode(
-            targets,
-            coverage,
-            target_set,
-            max_retries=max_retries_forced,
-            base_seed=base_seed,
-            device=device,
-            dry_run=dry_run,
-            graphs_per_op=graphs_per_op,
-            recorder=recorder,
-            **eval_kwargs,
-            **gen_kwargs,
-        )
-    else:
-        raise ValueError(f"Unknown mode: {mode}. Use 'weighted' or 'forced'.")
+    all_results, coverage = _dispatch_exploration_mode(
+        mode,
+        targets=targets,
+        coverage=coverage,
+        target_set=target_set,
+        n_graphs_weighted=n_graphs_weighted,
+        max_retries_forced=max_retries_forced,
+        graphs_per_op=graphs_per_op,
+        base_seed=base_seed,
+        device=device,
+        dry_run=dry_run,
+        recorder=recorder,
+        eval_kwargs=eval_kwargs,
+        gen_kwargs=gen_kwargs,
+    )
 
-    # 5. Second pass: forced coverage for any ops still at zero in weighted mode
     if mode == "weighted":
         uncovered = [op for op, cov in coverage.items() if cov.inserted == 0]
         if uncovered:
@@ -1162,44 +1211,23 @@ def run_exploration(
             )
             all_results.extend(forced_results)
 
-    # 6. Finalize DB recording
     if recorder is not None:
         recorder.finalize()
-
     if _stop_requested:
         logger.info(
             "Run interrupted — saving partial results (%d graphs evaluated).",
             len(all_results),
         )
-
     elapsed = time.perf_counter() - t_start
 
-    # 7. Write reports
     md_path, json_path = write_reports(
-        coverage,
-        all_results,
-        output_dir,
-        mode,
-        threshold,
-        elapsed,
+        coverage, all_results, output_dir, mode, threshold, elapsed
     )
     logger.info("Reports written:")
     logger.info("  Markdown: %s", md_path)
     logger.info("  JSON:     %s", json_path)
 
-    # 7. Print summary
-    summary = _build_summary(coverage)
-    logger.info(
-        "Coverage: %d/%d (%.0f%%) | Compile: %d | Forward: %d | Rapid: %d | S1: %d",
-        summary["n_covered"],
-        summary["n_targets"],
-        summary["coverage_rate"] * 100,
-        summary["n_compile_pass"],
-        summary["n_forward_pass"],
-        summary["n_rapid_pass"],
-        summary["n_s1_pass"],
-    )
-
+    _log_coverage_summary(coverage)
     return coverage, all_results
 
 
@@ -1402,7 +1430,7 @@ def _run_forced_mode(
 # ── CLI ──────────────────────────────────────────────────────────────
 
 
-def main():
+def _build_cli_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Explore under-observed components end-to-end",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -1414,135 +1442,54 @@ def main():
         default="forced",
         help="weighted = boost under-observed ops; forced = one graph per op (default: forced)",
     )
+    parser.add_argument("--threshold", type=int, default=20,
+                        help="Observation threshold (default: 20)")
+    parser.add_argument("--device", default="cpu",
+                        help="Device for evaluation (default: cpu)")
+    parser.add_argument("--n-graphs", type=int, default=50,
+                        help="Number of graphs for weighted mode (default: 50)")
+    parser.add_argument("--max-retries", type=int, default=100,
+                        help="Max retries per op in forced mode (default: 20)")
+    parser.add_argument("--graphs-per-op", type=int, default=1,
+                        help="Graphs to generate per target op in forced mode (default: 1)")
+    parser.add_argument("--rapid-steps", type=int, default=150,
+                        help="Rapid screening gradient steps (default: 150)")
+    parser.add_argument("--no-s1", action="store_true",
+                        help="Skip S1 micro-training (faster, less thorough)")
+    parser.add_argument("--s1-steps", type=int, default=500,
+                        help="S1 training steps (default: 500)")
+    parser.add_argument("--output-dir", default="research/reports",
+                        help="Output directory for reports (default: research/reports)")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed (default: 42)")
+    parser.add_argument("--db", default="research/lab_notebook.db",
+                        help="Path to lab_notebook.db (default: research/lab_notebook.db)")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Only generate graphs, skip pipeline evaluation")
+    parser.add_argument("--record", action=argparse.BooleanOptionalAction, default=True,
+                        help="Record results to lab_notebook.db (default: on)")
     parser.add_argument(
-        "--threshold",
-        type=int,
-        default=20,
-        help="Observation threshold (default: 20)",
-    )
-    parser.add_argument(
-        "--device",
-        default="cpu",
-        help="Device for evaluation (default: cpu)",
-    )
-    parser.add_argument(
-        "--n-graphs",
-        type=int,
-        default=50,
-        help="Number of graphs for weighted mode (default: 50)",
-    )
-    parser.add_argument(
-        "--max-retries",
-        type=int,
-        default=100,
-        help="Max retries per op in forced mode (default: 20)",
-    )
-    parser.add_argument(
-        "--graphs-per-op",
-        type=int,
-        default=1,
-        help="Graphs to generate per target op in forced mode (default: 1)",
-    )
-    parser.add_argument(
-        "--rapid-steps",
-        type=int,
-        default=150,
-        help="Rapid screening gradient steps (default: 150)",
-    )
-    parser.add_argument(
-        "--no-s1",
-        action="store_true",
-        help="Skip S1 micro-training (faster, less thorough)",
-    )
-    parser.add_argument(
-        "--s1-steps",
-        type=int,
-        default=500,
-        help="S1 training steps (default: 500)",
-    )
-    parser.add_argument(
-        "--output-dir",
-        default="research/reports",
-        help="Output directory for reports (default: research/reports)",
-    )
-    parser.add_argument(
-        "--seed",
-        type=int,
-        default=42,
-        help="Random seed (default: 42)",
-    )
-    parser.add_argument(
-        "--db",
-        default="research/lab_notebook.db",
-        help="Path to lab_notebook.db (default: research/lab_notebook.db)",
-    )
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Only generate graphs, skip pipeline evaluation",
-    )
-    parser.add_argument(
-        "--record",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Record results to lab_notebook.db (default: on)",
-    )
-    parser.add_argument(
-        "--ops",
-        nargs="+",
-        metavar="OP",
+        "--ops", nargs="+", metavar="OP",
         help="Force exploration of specific ops by name (ignores --threshold). "
         "Example: --ops softmax_attention linear_proj chebyshev_spectral_mix",
     )
-    parser.add_argument(
-        "--max-ops",
-        type=int,
-        default=None,
-        metavar="N",
-        help="Max ops (components) per graph. Default: 18 (exploration mode)",
-    )
-    parser.add_argument(
-        "--max-depth",
-        type=int,
-        default=None,
-        metavar="N",
-        help="Max graph depth (longest path from input to output). Default: 12",
-    )
-    parser.add_argument(
-        "--n-blocks",
-        type=int,
-        default=None,
-        metavar="N",
-        help="Template blocks stacked per graph. Each block expands to ~3-8 ops. Default: 2",
-    )
-    parser.add_argument(
-        "--model-dim",
-        type=int,
-        default=MODEL_DIM,
-        metavar="D",
-        help=f"Model dimension (default: {MODEL_DIM})",
-    )
-    parser.add_argument(
-        "--n-layers",
-        type=int,
-        default=N_LAYERS,
-        metavar="N",
-        help=f"Layers in compiled model (default: {N_LAYERS})",
-    )
-    parser.add_argument(
-        "--boost-factor",
-        type=float,
-        default=50.0,
-        metavar="F",
-        help="Template weight multiplier for target ops in forced mode (default: 50.0)",
-    )
-    parser.add_argument(
-        "-v",
-        "--verbose",
-        action="store_true",
-        help="Verbose logging",
-    )
+    parser.add_argument("--max-ops", type=int, default=None, metavar="N",
+                        help="Max ops (components) per graph. Default: 18 (exploration mode)")
+    parser.add_argument("--max-depth", type=int, default=None, metavar="N",
+                        help="Max graph depth (longest path from input to output). Default: 12")
+    parser.add_argument("--n-blocks", type=int, default=None, metavar="N",
+                        help="Template blocks stacked per graph. Each block expands to ~3-8 ops. Default: 2")
+    parser.add_argument("--model-dim", type=int, default=MODEL_DIM, metavar="D",
+                        help=f"Model dimension (default: {MODEL_DIM})")
+    parser.add_argument("--n-layers", type=int, default=N_LAYERS, metavar="N",
+                        help=f"Layers in compiled model (default: {N_LAYERS})")
+    parser.add_argument("--boost-factor", type=float, default=50.0, metavar="F",
+                        help="Template weight multiplier for target ops in forced mode (default: 50.0)")
+    parser.add_argument("-v", "--verbose", action="store_true", help="Verbose logging")
+    return parser
 
+
+def main():
+    parser = _build_cli_parser()
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -1550,10 +1497,9 @@ def main():
         format="%(asctime)s %(levelname)-8s %(message)s",
         datefmt="%H:%M:%S",
     )
-
     signal.signal(signal.SIGINT, _handle_sigint)
 
-    coverage, results = run_exploration(
+    coverage, _ = run_exploration(
         db_path=args.db,
         mode=args.mode,
         threshold=args.threshold,
@@ -1577,7 +1523,6 @@ def main():
         boost_factor=args.boost_factor,
     )
 
-    # Exit code: 0 if all targets covered, 1 if any uncovered
     uncovered = [op for op, cov in coverage.items() if cov.inserted == 0]
     if uncovered:
         logger.warning(
@@ -1586,9 +1531,8 @@ def main():
             ", ".join(sorted(uncovered)),
         )
         sys.exit(1)
-    else:
-        logger.info("All %d target ops covered.", len(coverage))
-        sys.exit(0)
+    logger.info("All %d target ops covered.", len(coverage))
+    sys.exit(0)
 
 
 if __name__ == "__main__":

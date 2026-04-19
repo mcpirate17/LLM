@@ -42,11 +42,6 @@ def load_native_graph_mutation_lib() -> Any:
     return lib
 
 
-def reset_native_graph_mutation_lib() -> None:
-    global _NATIVE_GRAPH_MUTATION_LIB
-    _NATIVE_GRAPH_MUTATION_LIB = False
-
-
 @lru_cache(maxsize=1)
 def _opcode_metadata_tables() -> tuple[np.ndarray, np.ndarray]:
     n_opcodes = max(OPCODE_MAP.values()) + 1

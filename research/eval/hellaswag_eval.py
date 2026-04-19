@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 _HELLASWAG_CACHE_DIR = Path.home() / ".cache" / "aria" / "hellaswag"
 _CACHE_FILE = _HELLASWAG_CACHE_DIR / "validation.json"
 
-# Stage budgets (importable — used by backfill_hellaswag)
+# Stage budgets (importable — used by the unified backfill runner)
 SCREENING_N_EXAMPLES = 50
 INVESTIGATION_N_EXAMPLES = 100
 VALIDATION_N_EXAMPLES = 200

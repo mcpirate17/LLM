@@ -720,18 +720,37 @@ def _build_sparse_spans(
 
 
 def _op_sparse_span_builder(module, inputs, config):
-    """Build sparse fused pair/triplet features over informative token windows."""
+    """Build sparse fused pair/triplet features over informative token windows.
+
+    Output shape is per-position ``[B, S, D]``: the span ending at token t
+    is placed at output position t (matching the Python reference). The
+    native ``sparse_span_extract_f32`` kernel packs valid spans densely
+    into slots ``[0, span_counts[b])``, which is a different tensor layout
+    and breaks downstream autoregressive causality — we scatter that packed
+    output back to the per-position layout before returning.
+    """
     x = inputs[0]
     span_width = max(1, min(int(config.get("span_width", 3)), x.shape[1]))
     fallback_behavior = str(config.get("fallback_behavior", "default_path"))
     keep_mask = x.abs().sum(dim=-1) > 1e-8
     if _c(x) and hasattr(aria_core, "sparse_span_extract_f32"):
         try:
-            span_features, span_positions, span_counts, coverage = (
+            packed_features, span_positions, span_counts, coverage = (
                 aria_core.sparse_span_extract_f32(
                     x, keep_mask.to(torch.int64).contiguous(), span_width
                 )
             )
+            # Scatter packed spans onto the per-position layout using each
+            # span's end index. Spans with all-negative positions are the
+            # unused-slot sentinels — ignored by the validity mask below.
+            end_positions = span_positions[..., -1]  # [B, S]
+            valid = end_positions >= 0
+            span_features = torch.zeros_like(x)
+            if bool(valid.any()):
+                b_idx, k_idx = torch.where(valid)
+                span_features[b_idx, end_positions[b_idx, k_idx]] = (
+                    packed_features[b_idx, k_idx]
+                )
             span_strength = coverage.to(x.dtype)
         except (ImportError, RuntimeError, AttributeError) as e:
             record_kernel_fallback("sparse_span_extract_f32", e)

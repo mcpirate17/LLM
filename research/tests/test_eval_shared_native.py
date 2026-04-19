@@ -7,6 +7,7 @@ import torch
 from research.eval.choice_scoring import grouped_choice_scores
 from research.eval.utils import batched_span_mean_log_probs
 from pathlib import Path
+from research.tests._tokenize_helpers import bytes_to_int64_tokens
 
 from research.eval.corpus_pipeline import (
     _batch_cache,
@@ -129,8 +130,7 @@ def test_prepare_text_split_batches_reuses_token_cache(tmp_path, monkeypatch):
     def fake_tokenize(path: Path, vocab_size: int):
         del vocab_size
         calls["count"] += 1
-        encoded = path.read_bytes()
-        return np.frombuffer(encoded, dtype=np.uint8).astype(np.int64, copy=False)
+        return bytes_to_int64_tokens(path)
 
     monkeypatch.setattr("research.eval.corpus_pipeline.tokenize_file", fake_tokenize)
     _batch_cache.clear()
@@ -166,8 +166,7 @@ def test_prepare_text_corpus_split_batches_reuses_token_cache(tmp_path, monkeypa
     def fake_tokenize(corpus_path: Path, vocab_size: int):
         del vocab_size
         calls["count"] += 1
-        encoded = corpus_path.read_bytes()
-        return np.frombuffer(encoded, dtype=np.uint8).astype(np.int64, copy=False)
+        return bytes_to_int64_tokens(corpus_path)
 
     monkeypatch.setattr("research.eval.corpus_pipeline.tokenize_file", fake_tokenize)
     _batch_cache.clear()

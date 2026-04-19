@@ -119,11 +119,6 @@ class ExplorationScheduler:
         self._cache_expires = now + self._cache_ttl
         return self._cache
 
-    def invalidate_cache(self) -> None:
-        """Force next step() to reload from DB."""
-        self._cache = None
-        self._cache_expires = 0.0
-
 
 class ThompsonScheduler:
     """Thompson sampling for template selection.
@@ -203,8 +198,3 @@ class ThompsonScheduler:
         self._cache = stats
         self._cache_expires = now + self._cache_ttl
         return stats
-
-    def invalidate_cache(self) -> None:
-        """Force next sample() to reload from DB."""
-        self._cache = None
-        self._cache_expires = 0.0

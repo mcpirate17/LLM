@@ -70,15 +70,11 @@ class SynthesizedLoss:
 
         flat_targets = targets.reshape(-1)
 
-        # Pre-compute shared results
         log_probs = None
-        probs = None
-
         total = flat_logits.new_zeros(())
         for comp_name, comp_weight in zip(
             self._component_names, self._component_weights
         ):
-            # Handle components that need original 3D shape
             if comp_name == "spectral_loss":
                 if spectral_logits is not None:
                     total = total + comp_weight * compute_spectral_component(
@@ -86,13 +82,11 @@ class SynthesizedLoss:
                     )
                 continue
 
-            # Lazy compute log_probs/probs if needed by this component
-            if comp_name in LOG_PROB_COMPONENTS:
-                if log_probs is None:
-                    log_probs = torch.nn.functional.log_softmax(flat_logits, dim=-1)
+            if comp_name in LOG_PROB_COMPONENTS and log_probs is None:
+                log_probs = torch.nn.functional.log_softmax(flat_logits, dim=-1)
 
             total = total + comp_weight * compute_component_fast(
-                comp_name, flat_logits, flat_targets, log_probs, probs
+                comp_name, flat_logits, flat_targets, log_probs
             )
         return total
 
@@ -109,52 +103,52 @@ class SynthesizedLoss:
 
 
 # ── Available Components ──────────────────────────────────────────────
+#
+# Catalogue of (name, description) for synthesizable loss components.
+# `synthesize_loss` always assigns aux weights via `rng.uniform(...)`, so
+# carrying default weights here would be misleading dead data.
 
-LOSS_COMPONENTS = [
-    LossComponent("cross_entropy", 1.0, "Standard cross-entropy"),
-    LossComponent("label_smoothed_ce", 1.0, "Label-smoothed cross-entropy"),
-    LossComponent("rank_weighted_ce", 1.0, "Rank-weighted cross-entropy"),
-    LossComponent("tropical_ce", 0.5, "Tropical (min-plus) cross-entropy"),
-    LossComponent("spectral_loss", 0.1, "Spectral regularization"),
-    LossComponent("contrastive_push", 0.3, "Contrastive margin loss"),
-    LossComponent("entropy_reg", 0.1, "Entropy regularization"),
-    LossComponent("gradient_penalty", 0.01, "Logit magnitude penalty"),
-    LossComponent("kl_uniform", 0.05, "KL from uniform"),
-]
+_CE_VARIANTS: tuple[str, ...] = (
+    "cross_entropy",
+    "label_smoothed_ce",
+    "rank_weighted_ce",
+    "tropical_ce",
+)
+
+LOSS_COMPONENTS: dict[str, str] = {
+    "cross_entropy": "Standard cross-entropy",
+    "label_smoothed_ce": "Label-smoothed cross-entropy",
+    "rank_weighted_ce": "Rank-weighted cross-entropy",
+    "tropical_ce": "Tropical (min-plus) cross-entropy",
+    "spectral_loss": "Spectral regularization",
+    "contrastive_push": "Contrastive margin loss",
+    "entropy_reg": "Entropy regularization",
+    "gradient_penalty": "Logit magnitude penalty",
+    "kl_uniform": "KL from uniform",
+}
 
 
 def synthesize_loss(
     seed: Optional[int] = None,
     rng: Optional[random.Random] = None,
 ) -> SynthesizedLoss:
-    """Generate a random loss function from components."""
+    """Generate a random loss function: one CE-style primary + 0–3 aux terms."""
     rng = rng if rng is not None else random.Random(seed)
-
-    # Always include some form of CE
-    ce_variants = [
-        "cross_entropy",
-        "label_smoothed_ce",
-        "rank_weighted_ce",
-        "tropical_ce",
-    ]
-    primary = rng.choice(ce_variants)
-
+    primary = rng.choice(_CE_VARIANTS)
     components = [LossComponent(primary, 1.0)]
 
-    # Add 0-3 auxiliary components
-    n_aux = rng.randint(0, 3)
-    aux_pool = [
-        c for c in LOSS_COMPONENTS if c.name != primary and c.name not in ce_variants
+    aux_names = [
+        n for n in LOSS_COMPONENTS if n != primary and n not in _CE_VARIANTS
     ]
-    for comp in rng.sample(aux_pool, min(n_aux, len(aux_pool))):
-        weight = rng.uniform(0.01, 0.5)
-        components.append(LossComponent(comp.name, weight, comp.description))
+    n_aux = rng.randint(0, 3)
+    for name in rng.sample(aux_names, min(n_aux, len(aux_names))):
+        components.append(
+            LossComponent(name, rng.uniform(0.01, 0.5), LOSS_COMPONENTS[name])
+        )
 
-    name_parts = [c.name.split("_")[0] for c in components]
-    name = "loss_" + "_".join(name_parts)
-
+    pretty = "loss_" + "_".join(c.name.split("_")[0] for c in components)
     return SynthesizedLoss(
-        name=name,
+        name=pretty,
         components=components,
         description=f"Synthesized loss with {len(components)} components",
         seed=seed or 0,

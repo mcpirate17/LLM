@@ -4,21 +4,14 @@ from __future__ import annotations
 
 import logging
 import sqlite3
-import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Optional
-
-
-from ..notebook import LabNotebook
+from typing import TYPE_CHECKING, Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
 
-# Process-wide shared notebook — avoids re-running _migrate() on every
-# request and eliminates the "database is locked" errors that occur when
-# per-request notebooks contend with the runner's writer thread.
-_shared_notebooks: dict[str, LabNotebook] = {}
-_shared_lock = threading.Lock()
+if TYPE_CHECKING:
+    from ..notebook import LabNotebook
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,46 +24,33 @@ class ApiRouteContext:
     is_asset_path: Callable[[str], bool]
 
 
-def get_notebook(notebook_path: str) -> LabNotebook:
-    """Return a process-wide shared LabNotebook.
+def get_notebook(notebook_path: str, *, read_only: bool) -> LabNotebook:
+    """Return a notebook handle for the current request.
 
-    A single LabNotebook (and its writer thread / SQLite connection) is
-    reused across all requests for a given ``notebook_path``.  This avoids:
-    - Running ``_migrate()`` on every request (DDL contention)
-    - Opening/closing SQLite connections per request
-    - "database is locked" errors from concurrent per-request migrations
-
-    The notebook is never closed during the process lifetime — it stays
-    alive for the Flask server's duration.
+    Every request gets its own short-lived notebook so the dashboard does
+    not pin database handles longer than necessary. Read-only callers use
+    a short-lived read-only sqlite connection; writable callers use a
+    short-lived writable sqlite connection.
     """
-    nb = _shared_notebooks.get(notebook_path)
-    if nb is not None:
-        return nb
-    with _shared_lock:
-        # Double-check after acquiring lock
-        nb = _shared_notebooks.get(notebook_path)
-        if nb is not None:
-            return nb
-        try:
-            nb = LabNotebook(notebook_path, check_same_thread=False)
-        except RuntimeError as e:
-            if "writer lock" in str(e):
-                # Another process (backfill, admin script) holds the
-                # writer flock. Open read-only so the dashboard can
-                # still serve queries — writes will fail but most API
-                # endpoints only read.
-                logger.warning(
-                    "Writer lock held by another process — opening read-only: %s", e
-                )
-                nb = LabNotebook(notebook_path, check_same_thread=False, read_only=True)
-            else:
-                raise
-        except sqlite3.OperationalError:
-            # Migration may hit a lock from the runner — retry once
-            import time
+    from ..notebook import LabNotebook
 
-            logger.warning("LabNotebook init hit db lock, retrying in 2s...")
-            time.sleep(2)
-            nb = LabNotebook(notebook_path, check_same_thread=False)
-        _shared_notebooks[notebook_path] = nb
-        return nb
+    try:
+        return LabNotebook(
+            notebook_path,
+            check_same_thread=False,
+            read_only=read_only,
+            use_native=False,
+        )
+    except sqlite3.OperationalError:
+        if read_only:
+            raise
+        import time
+
+        logger.warning("Writable LabNotebook init hit db lock, retrying in 2s...")
+        time.sleep(2)
+        return LabNotebook(
+            notebook_path,
+            check_same_thread=False,
+            read_only=False,
+            use_native=False,
+        )

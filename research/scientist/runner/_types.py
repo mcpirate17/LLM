@@ -62,8 +62,10 @@ class ModelCandidate:
         self.arch_spec_json = arch_spec_json
         self.fingerprint = fingerprint
 
+def _default_native_runner_progress() -> Dict[str, Any]:
+    from ._helpers import _native_runner_progress_report
 
-from ._helpers import _native_runner_progress_report
+    return _native_runner_progress_report()
 
 
 @dataclass(slots=True)
@@ -503,9 +505,7 @@ class LiveProgress:
     # Preflight hypothesis critique
     hypothesis_critique: Optional[Dict] = None
     # Native runner adapter telemetry
-    native_runner: Dict[str, Any] = field(
-        default_factory=_native_runner_progress_report
-    )
+    native_runner: Dict[str, Any] = field(default_factory=_default_native_runner_progress)
 
     def to_dict(self) -> Dict:
         return {k: getattr(self, k) for k in self.__dataclass_fields__}
@@ -626,6 +626,7 @@ class ValidationMetrics:
     val_baseline_ratio: Optional[float] = None
     val_normalized_ratio: Optional[float] = None
     val_param_efficiency: Optional[float] = None
+    validation_baseline_loss_ratio: Optional[float] = None
     passed_seeds: list = field(default_factory=list)
     loss_ratios: list = field(default_factory=list)
     best_seed: Optional[Dict] = None

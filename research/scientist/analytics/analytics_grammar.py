@@ -6,11 +6,25 @@ import sqlite3
 from collections import defaultdict
 from typing import Any, Dict, List, Optional, Set, Tuple
 import numpy as np
-from ..intelligence.ml_corpus import load_deduped_graph_analysis_rows
-from ...synthesis.grammar import GrammarConfig
-from ...synthesis.primitives import get_primitive
+from ...synthesis.grammar_defaults import default_category_weights
 
 logger = logging.getLogger(__name__)
+
+
+def _load_deduped_graph_analysis_rows(db_path):
+    from ..intelligence.ml_corpus import load_deduped_graph_analysis_rows
+
+    return load_deduped_graph_analysis_rows(db_path)
+
+
+def _grammar_category_weights() -> Dict[str, float]:
+    return default_category_weights()
+
+
+def _get_primitive(op_name: str):
+    from ...synthesis.primitives import get_primitive
+
+    return get_primitive(op_name)
 
 
 class _GrammarMixin:
@@ -42,7 +56,7 @@ class _GrammarMixin:
         )
         for op_name, stats in op_rates.items():
             try:
-                op = get_primitive(op_name)
+                op = _get_primitive(op_name)
                 cat = op.category.value
             except (KeyError, Exception):
                 continue
@@ -65,7 +79,7 @@ class _GrammarMixin:
         cat_stats: Dict[str, Dict],
     ) -> Optional[Dict[str, float]]:
         """Compute grammar weights from per-category statistics."""
-        default_weights = GrammarConfig().category_weights
+        default_weights = _grammar_category_weights()
 
         cat_s1_rates = {}
         cat_novelties = {}
@@ -389,7 +403,7 @@ class _GrammarMixin:
     def _load_program_factor_rows(self) -> List[Dict[str, Any]]:
         """Load per-program factors for attribution analysis."""
         parsed: List[Dict[str, Any]] = []
-        for row in load_deduped_graph_analysis_rows(self.nb.db_path):
+        for row in _load_deduped_graph_analysis_rows(self.nb.db_path):
             graph_json = row["graph_json"]
             ops = self._extract_ops_fast(graph_json)
             if ops is None:
@@ -400,7 +414,7 @@ class _GrammarMixin:
             families: Set[str] = set()
             for op_name in op_set:
                 try:
-                    families.add(get_primitive(op_name).category.value)
+                    families.add(_get_primitive(op_name).category.value)
                 except (KeyError, ValueError):
                     continue
             parsed.append(
@@ -839,7 +853,7 @@ class _GrammarMixin:
             seen_cats = set()
             for op in ops:
                 try:
-                    cat = get_primitive(op).category.value
+                    cat = _get_primitive(op).category.value
                     if cat not in seen_cats:
                         cat_norms[cat].append(norm)
                         seen_cats.add(cat)
@@ -911,7 +925,7 @@ class _GrammarMixin:
                 seen_cats: Set[str] = set()
                 for op_name in ops:
                     try:
-                        cat = get_primitive(op_name).category.value
+                        cat = _get_primitive(op_name).category.value
                         if cat not in seen_cats:
                             cat_decline[cat].append(decline)
                             seen_cats.add(cat)
@@ -958,7 +972,7 @@ class _GrammarMixin:
         cat_n_tested: Dict[str, float] = defaultdict(float)
         for op_name, stats in op_rates.items():
             try:
-                op = get_primitive(op_name)
+                op = _get_primitive(op_name)
                 cat = op.category.value
             except (KeyError, ValueError):
                 continue
@@ -1009,7 +1023,7 @@ class _GrammarMixin:
         op_to_cat: Dict[str, str] = {}
         for op_name in op_rates:
             try:
-                op = get_primitive(op_name)
+                op = _get_primitive(op_name)
                 op_to_cat[op_name] = op.category.value
             except (KeyError, ValueError):
                 continue
@@ -1063,4 +1077,4 @@ class _GrammarMixin:
 
     def get_current_grammar_weights(self) -> Dict[str, float]:
         """Get the default grammar weights for comparison."""
-        return dict(GrammarConfig().category_weights)
+        return _grammar_category_weights()

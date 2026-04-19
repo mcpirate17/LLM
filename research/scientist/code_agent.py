@@ -85,12 +85,3 @@ def _spawn_code_agent_task(
     return task
 
 
-def _code_agent_task_snapshot(task_id: str) -> Optional[Dict[str, Any]]:
-    """Get a point-in-time copy of a task's state."""
-    from .api_routes._helpers import _CODE_AGENT_TASKS, _CODE_AGENT_TASKS_LOCK
-
-    with _CODE_AGENT_TASKS_LOCK:
-        task = _CODE_AGENT_TASKS.get(task_id)
-    if task is None:
-        return None
-    return dict(task)

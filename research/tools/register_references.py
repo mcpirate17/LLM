@@ -19,6 +19,7 @@ import time
 import torch
 
 from ..defaults import VOCAB_SIZE
+from ..training.loss_ops import clip_grad_norm_, next_token_cross_entropy
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
@@ -94,10 +95,7 @@ def register_reference(
             model.zero_grad()
             _ids = torch.randint(0, vocab_size, (2, seq_len), device=dev)
             _logits = model(_ids)
-            _loss = torch.nn.functional.cross_entropy(
-                _logits[:, :-1].contiguous().view(-1, _logits.size(-1)),
-                _ids[:, 1:].contiguous().view(-1),
-            )
+            _loss = next_token_cross_entropy(_logits, _ids, vocab_size)
             _loss.backward()
             _grads = [p.grad for p in model.parameters() if p.grad is not None]
             _nonzero = sum(1 for g in _grads if (g.abs() > 1e-10).any())
@@ -438,16 +436,13 @@ def _micro_train(
         else:
             input_ids = torch.randint(0, vocab_size, (batch_size, seq_len), device=dev)
 
-        targets = input_ids[:, 1:]
-        logits = model(input_ids)[:, :-1].contiguous()
-        loss = torch.nn.functional.cross_entropy(
-            logits.view(-1, logits.size(-1)), targets.contiguous().view(-1)
-        )
+        logits = model(input_ids)
+        loss = next_token_cross_entropy(logits, input_ids, logits.size(-1))
         if torch.isnan(loss) or torch.isinf(loss):
             break
         optimizer.zero_grad()
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        clip_grad_norm_(model, 1.0)
         optimizer.step()
         loss_curve.append(loss.item())
     if len(loss_curve) < 2:

@@ -96,10 +96,7 @@ def _eval_loss(model, batch_source, vocab_size, device: str):
     with torch.no_grad():
         for batch in batch_source.iter_val_batches(device=device):
             logits = model(batch)
-            loss = nn.functional.cross_entropy(
-                logits[:, :-1].reshape(-1, vocab_size),
-                batch[:, 1:].reshape(-1),
-            )
+            loss = next_token_cross_entropy(logits, batch, vocab_size)
             total_loss += loss.item()
             n += 1
     model.train()

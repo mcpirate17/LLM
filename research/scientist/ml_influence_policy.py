@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict
 
-from .runner import RunConfig
+from .runner._types import RunConfig
 
 _PREDICTOR_REPORT_PATH = Path("research/runtime/learning/predictor_metrics_report.json")
 

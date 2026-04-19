@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 _OP_REGISTRY_CACHE: Optional[str] = None
 

@@ -53,6 +53,30 @@ _DEFAULT_PROFILING_DB = (
     Path(__file__).parents[2] / "profiling" / "component_profiles.db"
 )
 
+# ── Native-fallback telemetry ───────────────────────────────────────────
+# Counters track when the Python parity twin fires in place of the Rust
+# extractor. Any non-zero count in prod means the Rust path returned
+# None/unparseable output — either aria-scheduler was not loaded, or the
+# native kernel disagreed with the graph shape. Surface via
+# ``get_native_fallback_counters()``.
+_NATIVE_FALLBACK_COUNTERS: Dict[str, int] = {
+    "topology_features_native_hit": 0,
+    "topology_features_python_fallback": 0,
+    "edge_op_pairs_native_hit": 0,
+    "edge_op_pairs_python_fallback": 0,
+}
+
+
+def get_native_fallback_counters() -> Dict[str, int]:
+    """Return a snapshot of native-vs-Python dispatch counts."""
+    return dict(_NATIVE_FALLBACK_COUNTERS)
+
+
+def reset_native_fallback_counters() -> None:
+    """Reset all native-fallback counters to zero (tests only)."""
+    for key in _NATIVE_FALLBACK_COUNTERS:
+        _NATIVE_FALLBACK_COUNTERS[key] = 0
+
 _MIN_SAMPLES = 50
 _FEATURE_Z_CLIP = 6.0
 _POLY_FEATURE_BASES = (
@@ -564,14 +588,8 @@ def _extract_edge_op_pairs_native(
     rust = _try_import_rust_scheduler()
     if rust is None or not hasattr(rust, "extract_edge_op_pairs_native"):
         return None
-    try:
-        payload = rust.extract_edge_op_pairs_native(graph_payload)
-        loaded = json.loads(payload)
-    except Exception as exc:
-        logger.warning(
-            "Native edge-pair extraction failed; falling back to Python: %s", exc
-        )
-        return None
+    payload = rust.extract_edge_op_pairs_native(graph_payload)
+    loaded = json.loads(payload)
     if not isinstance(loaded, list):
         return None
     pairs: List[Tuple[str, str]] = []
@@ -610,73 +628,70 @@ def _extract_topology_features_batch(
 
     rust = _try_import_rust_scheduler()
     if rust is not None and hasattr(rust, "extract_topology_features_batch_native"):
-        try:
-            ctx = native_ctx or _make_native_topology_context(
-                op_profiles, pair_stability
-            )
-            raw_result = rust.extract_topology_features_batch_native(
-                serialized,
-                ctx.op_profiles_json,
-                ctx.pair_stability_json,
-                ctx.op_metadata_json,
-            )
-            if isinstance(raw_result, list):
-                base_features: List[Optional[Dict[str, float]]] = []
-                for payload in raw_result:
-                    if not isinstance(payload, str):
-                        base_features.append(None)
+        ctx = native_ctx or _make_native_topology_context(
+            op_profiles, pair_stability
+        )
+        raw_result = rust.extract_topology_features_batch_native(
+            serialized,
+            ctx.op_profiles_json,
+            ctx.pair_stability_json,
+            ctx.op_metadata_json,
+        )
+        if isinstance(raw_result, list):
+            base_features: List[Optional[Dict[str, float]]] = []
+            for payload in raw_result:
+                if not isinstance(payload, str):
+                    base_features.append(None)
+                    continue
+                decoded = json.loads(payload)
+                if isinstance(decoded, dict):
+                    base_features.append(
+                        {str(key): float(value) for key, value in decoded.items()}
+                    )
+                else:
+                    base_features.append(None)
+            if len(base_features) == len(serialized):
+                if not (
+                    imodel is not None
+                    and hasattr(imodel, "_trained")
+                    and imodel._trained
+                ):
+                    return base_features
+                enriched: List[Optional[Dict[str, float]]] = []
+                for graph_payload, feats in zip(
+                    serialized, base_features, strict=False
+                ):
+                    if feats is None:
+                        enriched.append(None)
                         continue
-                    decoded = json.loads(payload)
-                    if isinstance(decoded, dict):
-                        base_features.append(
-                            {str(key): float(value) for key, value in decoded.items()}
-                        )
+                    edge_pairs = _extract_edge_op_pairs_native(graph_payload)
+                    if edge_pairs is None:
+                        _NATIVE_FALLBACK_COUNTERS["edge_op_pairs_python_fallback"] += 1
+                        edge_pairs = _extract_edge_op_pairs_python(graph_payload)
                     else:
-                        base_features.append(None)
-                if len(base_features) == len(serialized):
-                    if not (
-                        imodel is not None
-                        and hasattr(imodel, "_trained")
-                        and imodel._trained
-                    ):
-                        return base_features
-                    enriched: List[Optional[Dict[str, float]]] = []
-                    for graph_payload, feats in zip(
-                        serialized, base_features, strict=False
-                    ):
-                        if feats is None:
-                            enriched.append(None)
-                            continue
-                        edge_pairs = _extract_edge_op_pairs_native(graph_payload)
-                        if edge_pairs is None:
-                            edge_pairs = _extract_edge_op_pairs_python(graph_payload)
-                        if edge_pairs:
-                            imodel_stabilities = [
-                                imodel.predict_stability(left, right)
-                                for left, right in edge_pairs
-                            ]
-                            imodel_losses = [
-                                imodel.predict_loss(left, right)
-                                for left, right in edge_pairs
-                            ]
-                            feats["imodel_min_stability"] = float(
-                                min(imodel_stabilities)
-                            )
-                            feats["imodel_mean_stability"] = float(
-                                np.mean(imodel_stabilities)
-                            )
-                            feats["imodel_mean_loss"] = float(np.mean(imodel_losses))
-                        else:
-                            feats["imodel_min_stability"] = 0.5
-                            feats["imodel_mean_stability"] = 0.5
-                            feats["imodel_mean_loss"] = 0.7
-                        enriched.append(feats)
-                    return enriched
-        except Exception as exc:
-            logger.warning(
-                "Native topology batch extraction failed; falling back per-graph: %s",
-                exc,
-            )
+                        _NATIVE_FALLBACK_COUNTERS["edge_op_pairs_native_hit"] += 1
+                    if edge_pairs:
+                        imodel_stabilities = [
+                            imodel.predict_stability(left, right)
+                            for left, right in edge_pairs
+                        ]
+                        imodel_losses = [
+                            imodel.predict_loss(left, right)
+                            for left, right in edge_pairs
+                        ]
+                        feats["imodel_min_stability"] = float(
+                            min(imodel_stabilities)
+                        )
+                        feats["imodel_mean_stability"] = float(
+                            np.mean(imodel_stabilities)
+                        )
+                        feats["imodel_mean_loss"] = float(np.mean(imodel_losses))
+                    else:
+                        feats["imodel_min_stability"] = 0.5
+                        feats["imodel_mean_stability"] = 0.5
+                        feats["imodel_mean_loss"] = 0.7
+                    enriched.append(feats)
+                return enriched
 
     return [
         extract_topology_features(
@@ -711,30 +726,27 @@ def extract_topology_features(
 
     base_features: Optional[Dict[str, float]] = None
     if rust is not None and hasattr(rust, "extract_topology_features_native"):
-        try:
-            ctx = native_ctx or _make_native_topology_context(
-                op_profiles, pair_stability
-            )
-            payload = rust.extract_topology_features_native(
-                graph_payload,
-                ctx.op_profiles_json,
-                ctx.pair_stability_json,
-                ctx.op_metadata_json,
-            )
-            loaded = json.loads(payload)
-            if isinstance(loaded, dict):
-                base_features = {
-                    str(key): float(value) for key, value in loaded.items()
-                }
-        except Exception as exc:
-            logger.warning(
-                "Native topology extraction failed; falling back to Python: %s", exc
-            )
+        ctx = native_ctx or _make_native_topology_context(
+            op_profiles, pair_stability
+        )
+        payload = rust.extract_topology_features_native(
+            graph_payload,
+            ctx.op_profiles_json,
+            ctx.pair_stability_json,
+            ctx.op_metadata_json,
+        )
+        loaded = json.loads(payload)
+        if isinstance(loaded, dict):
+            base_features = {
+                str(key): float(value) for key, value in loaded.items()
+            }
 
     if base_features is None:
+        _NATIVE_FALLBACK_COUNTERS["topology_features_python_fallback"] += 1
         return _extract_topology_features_python(
             graph_payload, op_profiles, pair_stability, imodel=imodel
         )
+    _NATIVE_FALLBACK_COUNTERS["topology_features_native_hit"] += 1
 
     if not (imodel is not None and hasattr(imodel, "_trained") and imodel._trained):
         base_features["imodel_min_stability"] = 0.5
@@ -744,7 +756,10 @@ def extract_topology_features(
 
     edge_pairs = _extract_edge_op_pairs_native(graph_payload)
     if edge_pairs is None:
+        _NATIVE_FALLBACK_COUNTERS["edge_op_pairs_python_fallback"] += 1
         edge_pairs = _extract_edge_op_pairs_python(graph_payload)
+    else:
+        _NATIVE_FALLBACK_COUNTERS["edge_op_pairs_native_hit"] += 1
     if not edge_pairs:
         base_features["imodel_min_stability"] = 0.5
         base_features["imodel_mean_stability"] = 0.5
@@ -765,6 +780,386 @@ def extract_topology_features(
         base_features["imodel_mean_stability"] = 0.5
         base_features["imodel_mean_loss"] = 0.7
     return base_features
+
+
+def _train_interaction_model_for_predictor(
+    notebook_db: Path, profiling_db: Path
+) -> Optional[Any]:
+    try:
+        from .interaction_model import InteractionModel
+
+        trained = InteractionModel.train(
+            notebook_db=notebook_db, profiling_db=profiling_db, n_epochs=30
+        )
+        return trained if trained._trained else None
+    except (ImportError, OSError, RuntimeError, ValueError) as exc:
+        logger.warning(
+            "GraphPredictor interaction-model features disabled: %s", exc
+        )
+        return None
+
+
+def _empty_predictor_kwargs(
+    op_profiles: Dict[str, Dict[str, float]],
+    pair_stability: Dict[Tuple[str, str], float],
+    imodel: Optional[Any],
+    native_ctx: Optional[_NativeTopologyContext],
+) -> Dict[str, Any]:
+    return dict(
+        w_gate=np.zeros(0),
+        b_gate=0.0,
+        gate_threshold=0.5,
+        gate_calibration_a=1.0,
+        gate_calibration_b=0.0,
+        w_rank=np.zeros(0),
+        b_rank=5.0,
+        rank_log_min=float(np.log(1.0)),
+        rank_log_max=float(np.log(1e6)),
+        w_loss=np.zeros(0),
+        b_loss=0.7,
+        w_induction=np.zeros(0),
+        b_induction=0.0,
+        op_profiles=op_profiles,
+        pair_stability=pair_stability,
+        imodel=imodel,
+        _native_topology_ctx=native_ctx,
+    )
+
+
+def _extract_predictor_training_features(
+    rows: List[Dict[str, Any]],
+    op_profiles: Dict[str, Dict[str, float]],
+    pair_stability: Dict[Tuple[str, str], float],
+    trained_imodel: Optional[Any],
+    native_ctx: Optional[_NativeTopologyContext],
+) -> Dict[str, Any]:
+    feat_dicts: List[Dict[str, float]] = []
+    gate_labels: List[int] = []
+    rank_labels: List[float] = []
+    loss_labels: List[float] = []
+    induction_labels: List[float] = []
+    gate_sample_weights: List[float] = []
+    graph_signatures: List[str] = []
+
+    graph_payloads = [row["graph_json"] for row in rows]
+    batch_features = _extract_topology_features_batch(
+        graph_payloads,
+        op_profiles,
+        pair_stability,
+        imodel=trained_imodel,
+        native_ctx=native_ctx,
+    )
+
+    for row, feats in zip(rows, batch_features, strict=False):
+        s1 = bool(row["stage1_any_passed"])
+        ppl = row.get("wikitext_perplexity_best")
+        lr = row.get("loss_ratio_best")
+        induction_auc = row.get("induction_auc_500")
+        s0 = bool(row.get("stage0_any_passed"))
+        s05 = bool(row.get("stage05_any_passed"))
+        rerun_weight = rerun_confidence_weight(int(row.get("n_rows", 1)))
+        signature = str(row.get("canonical_fingerprint") or "")
+        if not signature or feats is None:
+            continue
+        feat_dicts.append(feats)
+        graph_signatures.append(signature)
+        gate_labels.append(int(s1 or 0))
+        hard_neg_mult = 1.0
+        if not s1:
+            if s05:
+                hard_neg_mult = 2.5
+            elif s0:
+                hard_neg_mult = 1.5
+        gate_sample_weights.append(hard_neg_mult * rerun_weight)
+        rank_labels.append(
+            float(ppl)
+            if ppl is not None and math.isfinite(float(ppl))
+            else float("nan")
+        )
+        loss_labels.append(
+            float(lr)
+            if s1 and lr is not None and math.isfinite(float(lr))
+            else float("nan")
+        )
+        induction_labels.append(
+            float(induction_auc)
+            if induction_auc is not None and math.isfinite(float(induction_auc))
+            else float("nan")
+        )
+    return {
+        "feat_dicts": feat_dicts,
+        "graph_signatures": graph_signatures,
+        "y_gate": np.array(gate_labels, dtype=np.float64),
+        "y_rank": np.array(rank_labels, dtype=np.float64),
+        "y_loss": np.array(loss_labels, dtype=np.float64),
+        "y_induction": np.array(induction_labels, dtype=np.float64),
+        "sample_weights": np.array(gate_sample_weights, dtype=np.float64),
+    }
+
+
+def _split_and_normalize_features(
+    X: np.ndarray,
+    y_gate: np.ndarray,
+    sample_weights: np.ndarray,
+    graph_signatures: List[str],
+    n_total: int,
+    seed: int,
+) -> Optional[Dict[str, Any]]:
+    rng = np.random.RandomState(seed)
+    train_idx, val_idx, split_stats = grouped_stratified_split(
+        graph_signatures, y_gate.astype(np.int32), seed=seed
+    )
+    if len(train_idx) == 0 or len(val_idx) == 0:
+        logger.warning(
+            "GraphPredictor grouped split failed; falling back to row split"
+        )
+        pos_idx = np.where(y_gate == 1)[0]
+        neg_idx = np.where(y_gate == 0)[0]
+        rng.shuffle(pos_idx)
+        rng.shuffle(neg_idx)
+        pos_split = int(len(pos_idx) * 0.8)
+        neg_split = int(len(neg_idx) * 0.8)
+        train_idx = np.concatenate([pos_idx[:pos_split], neg_idx[:neg_split]])
+        val_idx = np.concatenate([pos_idx[pos_split:], neg_idx[neg_split:]])
+        split_stats = {
+            "n_unique_graphs": n_total,
+            "n_duplicate_groups": 0,
+            "n_ambiguous_duplicate_groups": 0,
+        }
+
+    feat_mean = X[train_idx].mean(axis=0)
+    feat_std = X[train_idx].std(axis=0)
+    feat_std[feat_std < 1e-8] = 1.0
+    X_norm = (X - feat_mean) / feat_std
+    X_norm = _clip_normalized_features(X_norm)
+
+    X_tr, X_va = X_norm[train_idx], X_norm[val_idx]
+    y_gate_tr, y_gate_va = y_gate[train_idx], y_gate[val_idx]
+    gate_w_tr = sample_weights[train_idx]
+    if np.unique(y_gate_tr).size < 2 or np.unique(y_gate_va).size < 2:
+        logger.info(
+            "GraphPredictor: split lost class diversity (train=%d classes, val=%d classes)",
+            np.unique(y_gate_tr).size,
+            np.unique(y_gate_va).size,
+        )
+        return None
+    return {
+        "X_tr": X_tr,
+        "X_va": X_va,
+        "train_idx": train_idx,
+        "val_idx": val_idx,
+        "y_gate_tr": y_gate_tr,
+        "y_gate_va": y_gate_va,
+        "gate_w_tr": gate_w_tr,
+        "feat_mean": feat_mean,
+        "feat_std": feat_std,
+        "split_stats": split_stats,
+    }
+
+
+def _train_gate_head(
+    X_tr: np.ndarray,
+    X_va: np.ndarray,
+    y_gate_tr: np.ndarray,
+    y_gate_va: np.ndarray,
+    gate_w_tr: np.ndarray,
+    alpha: float,
+    seed: int,
+) -> Dict[str, Any]:
+    n_features = X_tr.shape[1]
+    n_pos_tr = float(np.sum(y_gate_tr))
+    n_neg_tr = float(len(y_gate_tr) - n_pos_tr)
+    pos_weight = max(n_neg_tr / max(n_pos_tr, 1.0), 1.0)
+    fit_sample_weight = np.where(y_gate_tr > 0.5, pos_weight, 1.0) * gate_w_tr
+    rng = np.random.RandomState(seed)
+    gate_threshold = 0.5
+    val_auc = 0.0
+    try:
+        from sklearn.linear_model import LogisticRegression
+
+        clf = LogisticRegression(
+            C=float(1.0 / max(alpha, 1e-6)),
+            solver="lbfgs",
+            max_iter=1200,
+            random_state=seed,
+        )
+        clf.fit(X_tr, y_gate_tr.astype(np.int32), sample_weight=fit_sample_weight)
+        w_gate = clf.coef_[0].astype(np.float64)
+        b_gate = float(clf.intercept_[0])
+    except (ImportError, ValueError, RuntimeError) as exc:
+        logger.warning("GraphPredictor logistic fit fell back to SGD: %s", exc)
+        w_gate = rng.randn(n_features).astype(np.float64) * 0.01
+        b_gate = 0.0
+        gate_lr = 0.01
+        for _ in range(80):
+            perm = rng.permutation(len(X_tr))
+            for start in range(0, len(X_tr), 128):
+                idx = perm[start : start + 128]
+                x_b = X_tr[idx]
+                y_b = y_gate_tr[idx]
+                preds = _sigmoid(x_b @ w_gate + b_gate)
+                grad = (preds - y_b)[:, None] * x_b
+                w_gate -= (
+                    gate_lr * grad.mean(axis=0) + gate_lr * alpha * 0.001 * w_gate
+                )
+                b_gate -= gate_lr * float((preds - y_b).mean())
+
+    raw_val_logits = X_va @ w_gate + b_gate
+    gate_calibration_a = 1.0
+    gate_calibration_b = 0.0
+    try:
+        from sklearn.linear_model import LogisticRegression
+
+        cal = LogisticRegression(
+            C=1e6, solver="lbfgs", max_iter=200, random_state=seed
+        )
+        cal.fit(raw_val_logits.reshape(-1, 1), y_gate_va.astype(np.int32))
+        gate_calibration_a = float(cal.coef_[0][0])
+        gate_calibration_b = float(cal.intercept_[0])
+    except (ImportError, ValueError, RuntimeError) as exc:
+        logger.warning("GraphPredictor calibration skipped: %s", exc)
+
+    val_preds = _sigmoid(raw_val_logits * gate_calibration_a + gate_calibration_b)
+    eps = 1e-8
+    val_loss = float(
+        -np.mean(
+            y_gate_va * np.log(val_preds + eps)
+            + (1 - y_gate_va) * np.log(1 - val_preds + eps)
+        )
+    )
+    try:
+        val_auc = safe_binary_roc_auc(y_gate_va, val_preds)
+        operating_points = operating_point_profiles(y_gate_va, val_preds)
+        gate_threshold = float(operating_points["f1"]["threshold"])
+        selected_metrics = operating_points["f1"]
+        val_acc = float(selected_metrics["accuracy"])
+        val_precision = float(selected_metrics["precision_ppv"])
+        val_recall = float(selected_metrics["recall_tpr_sensitivity"])
+    except (KeyError, TypeError, ValueError) as exc:
+        logger.warning("GraphPredictor operating-point metrics degraded: %s", exc)
+        operating_points = {}
+        val_acc = float(np.mean((val_preds > gate_threshold) == y_gate_va))
+        val_auc = 0.0
+        val_precision = 0.0
+        val_recall = 0.0
+    val_gate_metrics = binary_classification_metrics(
+        y_gate_va, val_preds, gate_threshold
+    )
+    val_gate_metrics["roc_auc"] = val_auc
+    return {
+        "w": w_gate,
+        "b": b_gate,
+        "threshold": gate_threshold,
+        "cal_a": gate_calibration_a,
+        "cal_b": gate_calibration_b,
+        "val_loss": val_loss,
+        "val_acc": val_acc,
+        "val_auc": val_auc,
+        "val_precision": val_precision,
+        "val_recall": val_recall,
+        "val_gate_metrics": val_gate_metrics,
+        "operating_points": operating_points,
+        "pos_weight": pos_weight,
+    }
+
+
+def _solve_ridge(
+    X_sub: np.ndarray, y_sub: np.ndarray, n_features: int, alpha: float
+) -> Tuple[Optional[np.ndarray], Optional[float]]:
+    XtX = X_sub.T @ X_sub + alpha * np.eye(n_features)
+    Xty = X_sub.T @ y_sub
+    try:
+        w = np.linalg.solve(XtX, Xty)
+        b = float(np.mean(y_sub - X_sub @ w))
+        return w, b
+    except np.linalg.LinAlgError as exc:
+        logger.warning("GraphPredictor ridge solve failed: %s", exc)
+        return None, None
+
+
+def _train_ridge_head(
+    X_tr: np.ndarray,
+    y_tr: np.ndarray,
+    n_features: int,
+    alpha: float,
+    default_bias: float,
+    min_samples: int = 20,
+) -> Dict[str, Any]:
+    mask = np.isfinite(y_tr)
+    w = np.zeros(n_features, dtype=np.float64)
+    b = default_bias
+    if mask.sum() >= min_samples:
+        solved_w, solved_b = _solve_ridge(X_tr[mask], y_tr[mask], n_features, alpha)
+        if solved_w is not None:
+            w, b = solved_w, solved_b
+    return {"w": w, "b": b}
+
+
+def _train_ridge_head_with_log_bounds(
+    X_tr: np.ndarray,
+    y_tr: np.ndarray,
+    n_features: int,
+    alpha: float,
+    default_bias: float,
+    min_samples: int = 20,
+) -> Dict[str, Any]:
+    mask = np.isfinite(y_tr)
+    w = np.zeros(n_features, dtype=np.float64)
+    b = default_bias
+    log_min = float(np.log(1.0))
+    log_max = float(np.log(1e6))
+    if mask.sum() >= min_samples:
+        X_sub = X_tr[mask]
+        y_log = np.log(np.maximum(y_tr[mask], 1.0))
+        log_min = float(np.percentile(y_log, 0.5))
+        log_max = float(np.percentile(y_log, 99.5))
+        if log_max < log_min:
+            log_max = log_min
+        solved_w, solved_b = _solve_ridge(X_sub, y_log, n_features, alpha)
+        if solved_w is not None:
+            w, b = solved_w, solved_b
+    return {"w": w, "b": b, "log_min": log_min, "log_max": log_max}
+
+
+def _train_induction_head(
+    X_tr: np.ndarray,
+    X_va: np.ndarray,
+    y_tr: np.ndarray,
+    y_va: np.ndarray,
+    n_features: int,
+    alpha: float,
+) -> Dict[str, Any]:
+    tr_mask = np.isfinite(y_tr)
+    va_mask = np.isfinite(y_va)
+    w = np.zeros(n_features, dtype=np.float64)
+    b = 0.0
+    mae = 0.0
+    spearman = 0.0
+    learner_acc = 0.0
+    if tr_mask.sum() >= 50:
+        solved_w, solved_b = _solve_ridge(
+            X_tr[tr_mask], y_tr[tr_mask], n_features, alpha
+        )
+        if solved_w is not None:
+            w, b = solved_w, solved_b
+        if va_mask.sum() >= 10:
+            y_auc_val = y_va[va_mask]
+            pred_auc_val = np.clip(X_va[va_mask] @ w + b, 0.0, 1.0)
+            mae = float(np.mean(np.abs(y_auc_val - pred_auc_val)))
+            try:
+                from scipy.stats import spearmanr
+
+                rho, _ = spearmanr(y_auc_val, pred_auc_val)
+                spearman = float(rho) if np.isfinite(rho) else 0.0
+            except (ImportError, ValueError, RuntimeError) as exc:
+                logger.warning(
+                    "GraphPredictor induction Spearman computation skipped: %s", exc
+                )
+                spearman = 0.0
+            y_bucket_val = (y_auc_val >= 0.02).astype(np.int32)
+            pred_bucket_val = (pred_auc_val >= 0.02).astype(np.int32)
+            learner_acc = float(np.mean(y_bucket_val == pred_bucket_val))
+    return {"w": w, "b": b, "mae": mae, "spearman": spearman, "learner_acc": learner_acc}
 
 
 @dataclass(slots=True)
@@ -880,46 +1275,15 @@ class GraphPredictor:
         op_profiles = _load_op_profiles(profiling_db)
         pair_stability = _load_pair_stability(profiling_db)
         native_ctx = _make_native_topology_context(op_profiles, pair_stability)
-
-        # Train interaction model for learned pair features
-        trained_imodel = None
-        try:
-            from .interaction_model import InteractionModel
-
-            trained_imodel = InteractionModel.train(
-                notebook_db=notebook_db,
-                profiling_db=profiling_db,
-                n_epochs=30,
-            )
-            if not trained_imodel._trained:
-                trained_imodel = None
-        except (ImportError, OSError, RuntimeError, ValueError) as exc:
-            logger.warning(
-                "GraphPredictor interaction-model features disabled: %s", exc
-            )
-
-        _empty_kwargs = dict(
-            w_gate=np.zeros(0),
-            b_gate=0.0,
-            gate_threshold=0.5,
-            gate_calibration_a=1.0,
-            gate_calibration_b=0.0,
-            w_rank=np.zeros(0),
-            b_rank=5.0,
-            rank_log_min=float(np.log(1.0)),
-            rank_log_max=float(np.log(1e6)),
-            w_loss=np.zeros(0),
-            b_loss=0.7,
-            w_induction=np.zeros(0),
-            b_induction=0.0,
-            op_profiles=op_profiles,
-            pair_stability=pair_stability,
-            imodel=trained_imodel,
-            _native_topology_ctx=native_ctx,
+        trained_imodel = _train_interaction_model_for_predictor(
+            notebook_db, profiling_db
+        )
+        empty_kwargs = _empty_predictor_kwargs(
+            op_profiles, pair_stability, trained_imodel, native_ctx
         )
 
         if not notebook_db.exists():
-            return cls(**_empty_kwargs)
+            return cls(**empty_kwargs)
 
         try:
             rows = load_screening_predictor_corpus_rows(notebook_db, validate=True)
@@ -927,147 +1291,46 @@ class GraphPredictor:
             raise
         except Exception as e:
             logger.warning("GraphPredictor training data query failed: %s", e)
-            return cls(**_empty_kwargs)
+            return cls(**empty_kwargs)
 
-        # Extract features
-        feat_dicts: List[Dict[str, float]] = []
-        gate_labels: List[int] = []
-        rank_labels: List[float] = []
-        loss_labels: List[float] = []
-        induction_labels: List[float] = []
-        gate_sample_weights: List[float] = []
-        graph_signatures: List[str] = []
-
-        graph_payloads = [row["graph_json"] for row in rows]
-        batch_features = _extract_topology_features_batch(
-            graph_payloads,
-            op_profiles,
-            pair_stability,
-            imodel=trained_imodel,
-            native_ctx=native_ctx,
+        extracted = _extract_predictor_training_features(
+            rows, op_profiles, pair_stability, trained_imodel, native_ctx
         )
-
-        for row, feats in zip(rows, batch_features, strict=False):
-            gj = row["graph_json"]
-            s1 = bool(row["stage1_any_passed"])
-            ppl = row.get("wikitext_perplexity_best")
-            lr = row.get("loss_ratio_best")
-            induction_auc = row.get("induction_auc_500")
-            s0 = bool(row.get("stage0_any_passed"))
-            s05 = bool(row.get("stage05_any_passed"))
-            rerun_weight = rerun_confidence_weight(int(row.get("n_rows", 1)))
-            signature = str(row.get("canonical_fingerprint") or "")
-            if not signature:
-                continue
-            if feats is None:
-                continue
-            feat_dicts.append(feats)
-            graph_signatures.append(signature)
-            gate_labels.append(int(s1 or 0))
-            hard_neg_mult = 1.0
-            if not s1:
-                if s05:
-                    hard_neg_mult = 2.5
-                elif s0:
-                    hard_neg_mult = 1.5
-            gate_sample_weights.append(hard_neg_mult * rerun_weight)
-            rank_labels.append(
-                float(ppl)
-                if ppl is not None and math.isfinite(float(ppl))
-                else float("nan")
-            )
-            loss_labels.append(
-                float(lr)
-                if s1 and lr is not None and math.isfinite(float(lr))
-                else float("nan")
-            )
-            induction_labels.append(
-                float(induction_auc)
-                if induction_auc is not None and math.isfinite(float(induction_auc))
-                else float("nan")
-            )
-
-        n_total = len(feat_dicts)
+        n_total = len(extracted["feat_dicts"])
         if n_total < _MIN_SAMPLES:
             logger.info(
                 "GraphPredictor: insufficient data (%d < %d)", n_total, _MIN_SAMPLES
             )
-            return cls(
-                w_gate=np.zeros(0),
-                b_gate=0.0,
-                gate_threshold=0.5,
-                w_rank=np.zeros(0),
-                b_rank=5.0,
-                rank_log_min=float(np.log(1.0)),
-                rank_log_max=float(np.log(1e6)),
-                w_induction=np.zeros(0),
-                b_induction=0.0,
-                op_profiles=op_profiles,
-                pair_stability=pair_stability,
-                imodel=trained_imodel,
-                _native_topology_ctx=native_ctx,
-            )
+            return cls(**empty_kwargs)
 
-        # Build feature matrix
-        X, feature_names = build_dense_feature_matrix(feat_dicts, dtype=np.float64)
-        feature_names, X = _augment_feature_space(feature_names, X)
-
-        y_gate = np.array(gate_labels, dtype=np.float64)
-        y_rank = np.array(rank_labels, dtype=np.float64)
-        y_induction = np.array(induction_labels, dtype=np.float64)
-        sample_weights = np.array(gate_sample_weights, dtype=np.float64)
-        rng = np.random.RandomState(seed)
-
-        n_pos_total = int(np.sum(y_gate))
-        n_neg_total = int(len(y_gate) - n_pos_total)
-        if n_pos_total < 5 or n_neg_total < 5:
-            logger.info(
-                "GraphPredictor: insufficient class balance (pos=%d, neg=%d)",
-                n_pos_total,
-                n_neg_total,
-            )
-            return cls(**_empty_kwargs)
-
-        # Train/val split grouped by exact graph to avoid duplicate leakage.
-        train_idx, val_idx, split_stats = grouped_stratified_split(
-            graph_signatures, y_gate.astype(np.int32), seed=seed
+        X, feature_names = build_dense_feature_matrix(
+            extracted["feat_dicts"], dtype=np.float64
         )
-        if len(train_idx) == 0 or len(val_idx) == 0:
-            logger.warning(
-                "GraphPredictor grouped split failed; falling back to row split"
-            )
-            pos_idx = np.where(y_gate == 1)[0]
-            neg_idx = np.where(y_gate == 0)[0]
-            rng.shuffle(pos_idx)
-            rng.shuffle(neg_idx)
-            pos_split = int(len(pos_idx) * 0.8)
-            neg_split = int(len(neg_idx) * 0.8)
-            train_idx = np.concatenate([pos_idx[:pos_split], neg_idx[:neg_split]])
-            val_idx = np.concatenate([pos_idx[pos_split:], neg_idx[neg_split:]])
-            split_stats = {
-                "n_unique_graphs": n_total,
-                "n_duplicate_groups": 0,
-                "n_ambiguous_duplicate_groups": 0,
-            }
+        feature_names, X = _augment_feature_space(feature_names, X)
+        y_gate = extracted["y_gate"]
+        y_rank = extracted["y_rank"]
+        y_loss = extracted["y_loss"]
+        y_induction = extracted["y_induction"]
+        sample_weights = extracted["sample_weights"]
+        graph_signatures = extracted["graph_signatures"]
 
-        # Standardize on train only.
-        feat_mean = X[train_idx].mean(axis=0)
-        feat_std = X[train_idx].std(axis=0)
-        feat_std[feat_std < 1e-8] = 1.0
-        X_norm = (X - feat_mean) / feat_std
-        X_norm = _clip_normalized_features(X_norm)
+        if int(np.sum(y_gate)) < 5 or int(len(y_gate) - np.sum(y_gate)) < 5:
+            logger.info("GraphPredictor: insufficient class balance")
+            return cls(**empty_kwargs)
 
-        X_tr, X_va = X_norm[train_idx], X_norm[val_idx]
-        y_gate_tr, y_gate_va = y_gate[train_idx], y_gate[val_idx]
-        gate_w_tr = sample_weights[train_idx]
-        if np.unique(y_gate_tr).size < 2 or np.unique(y_gate_va).size < 2:
-            logger.info(
-                "GraphPredictor: split lost class diversity (train=%d classes, val=%d classes)",
-                np.unique(y_gate_tr).size,
-                np.unique(y_gate_va).size,
-            )
-            return cls(**_empty_kwargs)
+        split = _split_and_normalize_features(
+            X, y_gate, sample_weights, graph_signatures, n_total, seed
+        )
+        if split is None:
+            return cls(**empty_kwargs)
 
+        X_tr = split["X_tr"]
+        X_va = split["X_va"]
+        train_idx = split["train_idx"]
+        val_idx = split["val_idx"]
+        y_gate_tr = split["y_gate_tr"]
+        y_gate_va = split["y_gate_va"]
+        gate_w_tr = split["gate_w_tr"]
         n_features = X_tr.shape[1]
         logger.info(
             "GraphPredictor training: %d samples, %d topology features",
@@ -1075,175 +1338,29 @@ class GraphPredictor:
             n_features,
         )
 
-        # ── Gate: regularized logistic regression ──
-        n_pos_tr = float(np.sum(y_gate_tr))
-        n_neg_tr = float(len(y_gate_tr) - n_pos_tr)
-        pos_weight = max(n_neg_tr / max(n_pos_tr, 1.0), 1.0)
-        fit_sample_weight = np.where(y_gate_tr > 0.5, pos_weight, 1.0) * gate_w_tr
-        gate_threshold = 0.5
-        try:
-            from sklearn.linear_model import LogisticRegression
-
-            clf = LogisticRegression(
-                C=float(1.0 / max(alpha, 1e-6)),
-                solver="lbfgs",
-                max_iter=1200,
-                random_state=seed,
-            )
-            clf.fit(X_tr, y_gate_tr.astype(np.int32), sample_weight=fit_sample_weight)
-            w_gate = clf.coef_[0].astype(np.float64)
-            b_gate = float(clf.intercept_[0])
-            val_preds = clf.predict_proba(X_va)[:, 1]
-            val_auc = safe_binary_roc_auc(y_gate_va, val_preds)
-        except (ImportError, ValueError, RuntimeError) as exc:
-            # Fallback: unweighted logistic SGD if sklearn is unavailable.
-            logger.warning("GraphPredictor logistic fit fell back to SGD: %s", exc)
-            w_gate = rng.randn(n_features).astype(np.float64) * 0.01
-            b_gate = 0.0
-            gate_lr = 0.01
-            for _ in range(80):
-                perm = rng.permutation(len(X_tr))
-                for start in range(0, len(X_tr), 128):
-                    idx = perm[start : start + 128]
-                    x_b = X_tr[idx]
-                    y_b = y_gate_tr[idx]
-                    logits = x_b @ w_gate + b_gate
-                    preds = _sigmoid(logits)
-                    grad = (preds - y_b)[:, None] * x_b
-                    w_gate -= (
-                        gate_lr * grad.mean(axis=0) + gate_lr * alpha * 0.001 * w_gate
-                    )
-                    b_gate -= gate_lr * float((preds - y_b).mean())
-            val_preds = _sigmoid(X_va @ w_gate + b_gate)
-            val_auc = 0.0
-
-        # Calibrate raw logits to better probabilities while preserving ranking.
-        raw_val_logits = X_va @ w_gate + b_gate
-        gate_calibration_a = 1.0
-        gate_calibration_b = 0.0
-        try:
-            from sklearn.linear_model import LogisticRegression
-
-            cal = LogisticRegression(
-                C=1e6,
-                solver="lbfgs",
-                max_iter=200,
-                random_state=seed,
-            )
-            cal.fit(raw_val_logits.reshape(-1, 1), y_gate_va.astype(np.int32))
-            gate_calibration_a = float(cal.coef_[0][0])
-            gate_calibration_b = float(cal.intercept_[0])
-        except (ImportError, ValueError, RuntimeError) as exc:
-            logger.warning("GraphPredictor calibration skipped: %s", exc)
-
-        # Val metrics
-        val_preds = _sigmoid(raw_val_logits * gate_calibration_a + gate_calibration_b)
-        eps = 1e-8
-        val_loss = float(
-            -np.mean(
-                y_gate_va * np.log(val_preds + eps)
-                + (1 - y_gate_va) * np.log(1 - val_preds + eps)
-            )
+        gate = _train_gate_head(
+            X_tr, X_va, y_gate_tr, y_gate_va, gate_w_tr, alpha, seed
         )
-        try:
-            val_auc = safe_binary_roc_auc(y_gate_va, val_preds)
-            operating_points = operating_point_profiles(y_gate_va, val_preds)
-            gate_threshold = float(operating_points["f1"]["threshold"])
-            selected_metrics = operating_points["f1"]
-            val_acc = float(selected_metrics["accuracy"])
-            val_precision = float(selected_metrics["precision_ppv"])
-            val_recall = float(selected_metrics["recall_tpr_sensitivity"])
-        except (KeyError, TypeError, ValueError) as exc:
-            logger.warning("GraphPredictor operating-point metrics degraded: %s", exc)
-            operating_points = {}
-            val_acc = float(np.mean((val_preds > gate_threshold) == y_gate_va))
-            val_auc = 0.0
-            val_precision = 0.0
-            val_recall = 0.0
-        val_gate_metrics = binary_classification_metrics(
-            y_gate_va, val_preds, gate_threshold
+
+        rank = _train_ridge_head_with_log_bounds(
+            X_tr, y_rank[train_idx], n_features, alpha, default_bias=5.0
         )
-        val_gate_metrics["roc_auc"] = val_auc
-
-        # ── Rank: Ridge regression on log-ppl ──
-        rank_mask = np.isfinite(y_rank[train_idx])
-        w_rank = np.zeros(n_features, dtype=np.float64)
-        b_rank = 5.0
-        rank_log_min = float(np.log(1.0))
-        rank_log_max = float(np.log(1e6))
-        if rank_mask.sum() >= 20:
-            X_rank = X_tr[rank_mask]
-            y_log_ppl = np.log(np.maximum(y_rank[train_idx][rank_mask], 1.0))
-            rank_log_min = float(np.percentile(y_log_ppl, 0.5))
-            rank_log_max = float(np.percentile(y_log_ppl, 99.5))
-            if rank_log_max < rank_log_min:
-                rank_log_max = rank_log_min
-            XtX = X_rank.T @ X_rank + alpha * np.eye(n_features)
-            Xty = X_rank.T @ y_log_ppl
-            try:
-                w_rank = np.linalg.solve(XtX, Xty)
-                b_rank = float(np.mean(y_log_ppl - X_rank @ w_rank))
-            except np.linalg.LinAlgError as exc:
-                logger.warning("GraphPredictor rank head solve failed: %s", exc)
-
-        # ── Loss: Ridge regression on loss_ratio (S1-passing only) ──
-        y_loss = np.array(loss_labels, dtype=np.float64)
-        loss_mask = np.isfinite(y_loss[train_idx])
-        w_loss = np.zeros(n_features, dtype=np.float64)
-        b_loss = 0.7
-        if loss_mask.sum() >= 20:
-            X_loss = X_tr[loss_mask]
-            y_lr = y_loss[train_idx][loss_mask]
-            XtX_l = X_loss.T @ X_loss + alpha * np.eye(n_features)
-            Xty_l = X_loss.T @ y_lr
-            try:
-                w_loss = np.linalg.solve(XtX_l, Xty_l)
-                b_loss = float(np.mean(y_lr - X_loss @ w_loss))
-            except np.linalg.LinAlgError as exc:
-                logger.warning("GraphPredictor loss head solve failed: %s", exc)
-
-        # ── Induction: Ridge regression on canonical induction AUC ──
-        induction_mask = np.isfinite(y_induction[train_idx])
-        induction_val_mask = np.isfinite(y_induction[val_idx])
-        w_induction = np.zeros(n_features, dtype=np.float64)
-        b_induction = 0.0
-        induction_mae = 0.0
-        induction_spearman = 0.0
-        induction_learner_acc = 0.0
-        if induction_mask.sum() >= 50:
-            X_induction = X_tr[induction_mask]
-            y_auc = y_induction[train_idx][induction_mask]
-            XtX_i = X_induction.T @ X_induction + alpha * np.eye(n_features)
-            Xty_i = X_induction.T @ y_auc
-            try:
-                w_induction = np.linalg.solve(XtX_i, Xty_i)
-                b_induction = float(np.mean(y_auc - X_induction @ w_induction))
-            except np.linalg.LinAlgError as exc:
-                logger.warning("GraphPredictor induction head solve failed: %s", exc)
-            if induction_val_mask.sum() >= 10:
-                y_auc_val = y_induction[val_idx][induction_val_mask]
-                pred_auc_val = np.clip(
-                    X_va[induction_val_mask] @ w_induction + b_induction, 0.0, 1.0
-                )
-                induction_mae = float(np.mean(np.abs(y_auc_val - pred_auc_val)))
-                try:
-                    from scipy.stats import spearmanr
-
-                    rho, _ = spearmanr(y_auc_val, pred_auc_val)
-                    induction_spearman = float(rho) if np.isfinite(rho) else 0.0
-                except (ImportError, ValueError, RuntimeError) as exc:
-                    logger.warning(
-                        "GraphPredictor induction Spearman computation skipped: %s", exc
-                    )
-                    induction_spearman = 0.0
-                y_bucket_val = (y_auc_val >= 0.02).astype(np.int32)
-                pred_bucket_val = (pred_auc_val >= 0.02).astype(np.int32)
-                induction_learner_acc = float(np.mean(y_bucket_val == pred_bucket_val))
+        loss = _train_ridge_head(
+            X_tr, y_loss[train_idx], n_features, alpha, default_bias=0.7
+        )
+        induction = _train_induction_head(
+            X_tr,
+            X_va,
+            y_induction[train_idx],
+            y_induction[val_idx],
+            n_features,
+            alpha,
+        )
 
         logger.info(
             "GraphPredictor trained: val_loss=%.4f val_acc=%.3f (%d train, %d val, %d features, imodel=%s)",
-            val_loss,
-            val_acc,
+            gate["val_loss"],
+            gate["val_acc"],
             len(X_tr),
             len(X_va),
             n_features,
@@ -1251,22 +1368,22 @@ class GraphPredictor:
         )
 
         return cls(
-            w_gate=w_gate.astype(np.float32),
-            b_gate=float(b_gate),
-            gate_threshold=float(gate_threshold),
-            gate_calibration_a=float(gate_calibration_a),
-            gate_calibration_b=float(gate_calibration_b),
-            w_rank=w_rank.astype(np.float32),
-            b_rank=float(b_rank),
-            rank_log_min=float(rank_log_min),
-            rank_log_max=float(rank_log_max),
-            w_loss=w_loss.astype(np.float32),
-            b_loss=float(b_loss),
-            w_induction=w_induction.astype(np.float32),
-            b_induction=float(b_induction),
+            w_gate=gate["w"].astype(np.float32),
+            b_gate=float(gate["b"]),
+            gate_threshold=float(gate["threshold"]),
+            gate_calibration_a=float(gate["cal_a"]),
+            gate_calibration_b=float(gate["cal_b"]),
+            w_rank=rank["w"].astype(np.float32),
+            b_rank=float(rank["b"]),
+            rank_log_min=float(rank["log_min"]),
+            rank_log_max=float(rank["log_max"]),
+            w_loss=loss["w"].astype(np.float32),
+            b_loss=float(loss["b"]),
+            w_induction=induction["w"].astype(np.float32),
+            b_induction=float(induction["b"]),
             feature_names=feature_names,
-            feature_mean=feat_mean.astype(np.float32),
-            feature_std=feat_std.astype(np.float32),
+            feature_mean=split["feat_mean"].astype(np.float32),
+            feature_std=split["feat_std"].astype(np.float32),
             op_profiles=op_profiles,
             pair_stability=pair_stability,
             imodel=trained_imodel,
@@ -1274,25 +1391,25 @@ class GraphPredictor:
             n_train=len(X_tr),
             _trained=True,
             _train_metrics={
-                "val_loss": val_loss,
-                "val_accuracy": val_acc,
-                "val_auc": val_auc,
-                "val_precision": val_precision,
-                "val_recall": val_recall,
-                "rank_log_min": float(rank_log_min),
-                "rank_log_max": float(rank_log_max),
-                "gate_threshold": float(gate_threshold),
-                "val_gate_metrics": val_gate_metrics,
-                "operating_points": operating_points,
-                "pos_weight": float(pos_weight),
+                "val_loss": gate["val_loss"],
+                "val_accuracy": gate["val_acc"],
+                "val_auc": gate["val_auc"],
+                "val_precision": gate["val_precision"],
+                "val_recall": gate["val_recall"],
+                "rank_log_min": float(rank["log_min"]),
+                "rank_log_max": float(rank["log_max"]),
+                "gate_threshold": float(gate["threshold"]),
+                "val_gate_metrics": gate["val_gate_metrics"],
+                "operating_points": gate["operating_points"],
+                "pos_weight": float(gate["pos_weight"]),
                 "n_train": len(X_tr),
                 "n_val": len(X_va),
                 "n_features": n_features,
                 "n_positive": int(y_gate.sum()),
-                "induction_mae": induction_mae,
-                "induction_spearman": induction_spearman,
-                "induction_learner_acc": induction_learner_acc,
-                **split_stats,
+                "induction_mae": induction["mae"],
+                "induction_spearman": induction["spearman"],
+                "induction_learner_acc": induction["learner_acc"],
+                **split["split_stats"],
             },
         )
 

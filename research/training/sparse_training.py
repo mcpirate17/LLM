@@ -13,7 +13,7 @@ from dataclasses import dataclass
 
 import torch
 
-from ._rigl_native import load_rigl_native
+from ._loss_native import load_loss_native
 
 
 @dataclass(slots=True)
@@ -34,11 +34,10 @@ class RigLScheduler:
         "T_end",
         "delta",
         "alpha",
-        "grad_accumulation_n",
         "step_count",
         "_sparse_params",
         "_hook_handles",
-        "_native_ext",
+        "_native",
     )
 
     def __init__(
@@ -49,27 +48,23 @@ class RigLScheduler:
         T_end: int = 1000,
         delta: int = 100,
         alpha: float = 0.3,
-        grad_accumulation_n: int = 1,
     ):
         self.optimizer = optimizer
         self.dense_allocation = dense_allocation
         self.T_end = T_end
         self.delta = delta
         self.alpha = alpha  # initial proportion of weights to update
-        self.grad_accumulation_n = grad_accumulation_n
 
         self.step_count = 0
         self._sparse_params: list[_SparseParamState] = []
         self._hook_handles: list[torch.utils.hooks.RemovableHandle] = []
-        self._native_ext = None
+        self._native = load_loss_native()
 
         for param in _flatten_params(params):
-            # We only sparsify weights that are 2D or more (ignore bias and LayerNorm)
-            # and ignore embeddings usually handled sparsely by default, but checking dimension is easiest heuristics
             if (
                 isinstance(param, torch.Tensor)
                 and param.requires_grad
-                and len(param.shape) >= 2
+                and param.dim() >= 2
             ):
                 self._sparse_params.append(
                     _SparseParamState(
@@ -87,14 +82,10 @@ class RigLScheduler:
         """Randomly initialize sparsity masks according to the dense_allocation."""
         for state in self._sparse_params:
             param = state.param
-            k = int(self.dense_allocation * param.numel())
-            # Ensure at least 1 parameter is active
-            k = max(1, k)
-            # Random permutation to select active connections
+            k = max(1, int(self.dense_allocation * param.numel()))
             perm = torch.randperm(param.numel(), device=param.device)
-            active_indices = perm[:k]
             mask = torch.zeros_like(param, dtype=torch.bool)
-            mask.view(-1)[active_indices] = True
+            mask.view(-1).index_fill_(0, perm[:k], True)
             state.mask = mask
 
     def apply_masks(self):
@@ -106,17 +97,15 @@ class RigLScheduler:
     def _register_hooks(self):
         """Register backward hooks to zero out gradients for pruned weights."""
         for state in self._sparse_params:
-            param = state.param
-            if param.requires_grad:
-
-                def get_hook(state_ref: _SparseParamState):
-                    def hook(grad):
-                        return grad * state_ref.mask
-
-                    return hook
-
-                handle = param.register_hook(get_hook(state))
-                self._hook_handles.append(handle)
+            if not state.param.requires_grad:
+                continue
+            # Bind the state via default arg so each hook captures its own
+            # mask reference without an extra closure layer.
+            self._hook_handles.append(
+                state.param.register_hook(
+                    lambda grad, s=state: grad * s.mask
+                )
+            )
 
     def cosine_annealing(self) -> float:
         """Compute the fraction of active weights to drop/grow at the current step."""
@@ -130,37 +119,32 @@ class RigLScheduler:
         if drop_fraction <= 0.0:
             return
 
-        if self._native_ext is None:
-            self._native_ext = load_rigl_native()
-
         with torch.no_grad():
             for state in self._sparse_params:
                 param = state.param
-                mask = state.mask
-                num_active = mask.sum().item()
+                old_mask = state.mask
+                num_active = int(old_mask.sum().item())
                 num_to_update = int(num_active * drop_fraction)
-
                 if num_to_update == 0:
                     continue
 
                 grad = param.grad if param.grad is not None else torch.zeros_like(param)
-                new_mask = self._native_ext.compute_new_mask(
-                    param,
-                    grad,
-                    mask,
-                    num_to_update,
+                new_mask = self._native.rigl_compute_new_mask(
+                    param, grad, old_mask, int(num_to_update)
                 )
                 state.mask = new_mask
 
-                # Apply new mask
                 param.data.mul_(new_mask)
 
-                # Zero out optimizer momentum for the newly grown weights
-                state = self.optimizer.state[param]
-                if "exp_avg" in state:
-                    state["exp_avg"][~new_mask] = 0.0
-                if "exp_avg_sq" in state:
-                    state["exp_avg_sq"][~new_mask] = 0.0
+                # Reset optimizer momentum for newly grown weights only.
+                # Pruned-weight momentum is harmless (their grad is zeroed by
+                # the backward hook) and writing to it wastes memory traffic.
+                grown = new_mask & ~old_mask
+                opt_state = self.optimizer.state[param]
+                if "exp_avg" in opt_state:
+                    opt_state["exp_avg"][grown] = 0.0
+                if "exp_avg_sq" in opt_state:
+                    opt_state["exp_avg_sq"][grown] = 0.0
 
     def step(self):
         """Called every training step. Periodically updates topology."""
@@ -183,13 +167,11 @@ class RigLOptimizer(torch.optim.Optimizer):
         delta=100,
         **kwargs,
     ):
-        # We must support normal optimizer initialization so extract param groups safely
         if isinstance(params, torch.Tensor):
             params = [params]
         params_list = list(params)
 
         self.base_optimizer = base_optimizer_cls(params_list, **kwargs)
-        # Expose defaults from base optimizer so wrap works properly
         self.defaults = self.base_optimizer.defaults
         self.param_groups = self.base_optimizer.param_groups
         self.state = self.base_optimizer.state
@@ -204,8 +186,7 @@ class RigLOptimizer(torch.optim.Optimizer):
 
     def step(self, closure=None):
         loss = self.base_optimizer.step(closure)
-        if hasattr(self, "scheduler"):
-            self.scheduler.step()
+        self.scheduler.step()
         return loss
 
     def zero_grad(self, set_to_none=False):

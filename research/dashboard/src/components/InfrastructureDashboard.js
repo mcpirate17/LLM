@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { apiCall } from '../services/apiService';
 import { useAriaData } from '../hooks/useAriaData';
+import useDocumentVisible from '../hooks/useDocumentVisible';
 
 const SEVERITY_COLORS = {
   critical: '#ef4444',
@@ -385,6 +386,7 @@ function DbHealthCard({ dbHealth }) {
 
 // ─── Main Infrastructure Dashboard ───
 export default function InfrastructureDashboard() {
+  const isDocumentVisible = useDocumentVisible();
   const [alerts, setAlerts] = useState([]);
   const [sseData, setSseData] = useState(null);
   const [sseConnected, setSseConnected] = useState(false);
@@ -428,6 +430,9 @@ export default function InfrastructureDashboard() {
 
   // SSE with exponential backoff
   const connectSSE = useCallback(() => {
+    if (!isDocumentVisible) {
+      return;
+    }
     if (sseRef.current) {
       sseRef.current.close();
       sseRef.current = null;
@@ -467,13 +472,26 @@ export default function InfrastructureDashboard() {
       backoffRef.current = Math.min(delay * 2, 30000);
       reconnectRef.current = setTimeout(connectSSE, delay);
     };
-  }, []);
+  }, [isDocumentVisible]);
 
   useEffect(() => {
     fetchData();
   }, [fetchData, slowPollTick]);
 
   useEffect(() => {
+    if (!isDocumentVisible) {
+      if (sseRef.current) {
+        sseRef.current.close();
+        sseRef.current = null;
+      }
+      if (reconnectRef.current) {
+        clearTimeout(reconnectRef.current);
+        reconnectRef.current = null;
+      }
+      setSseConnected(false);
+      return undefined;
+    }
+
     connectSSE();
 
     // Heartbeat staleness check
@@ -488,7 +506,7 @@ export default function InfrastructureDashboard() {
       if (sseRef.current) sseRef.current.close();
       if (reconnectRef.current) clearTimeout(reconnectRef.current);
     };
-  }, [connectSSE]);
+  }, [connectSSE, isDocumentVisible]);
 
   const handleCleanup = useCallback(async () => {
     try {

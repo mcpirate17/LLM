@@ -22,6 +22,7 @@ import torch
 
 from research.synthesis.grammar import GrammarConfig, generate_layer_graph
 from research.synthesis.compiler import compile_model
+from research.training.loss_ops import clip_grad_norm_
 from research.tools.explore_under_observed import (
     discover_targets as discover_under_observed,
 )
@@ -117,7 +118,7 @@ def run_exploration(
                     if initial_loss is None:
                         initial_loss = loss.item()
                     loss.backward()
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                    clip_grad_norm_(model, 1.0)
                     optimizer.step()
 
                 final_loss = loss.item()

@@ -13,8 +13,11 @@ Two entry points calling the same pipeline:
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, FrozenSet, List, Optional, Sequence, Tuple
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)

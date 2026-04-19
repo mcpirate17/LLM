@@ -25,6 +25,7 @@ from ._strategy_recommendations import (
     annotate_qkv_usage,
     compute_cross_run_stability,
     compute_breakthrough_production_readiness,
+    _empty_breakthrough_readiness,
 )
 from ._strategy_report import (
     parse_report_date,
@@ -42,6 +43,10 @@ logger = logging.getLogger(__name__)
 
 def _trusted_report_mode() -> bool:
     return parse_bool_query(request.args.get("trusted_only"), default=True)
+
+
+def _empty_production_readiness() -> Dict[str, Any]:
+    return _empty_breakthrough_readiness()
 
 
 def _degraded_dashboard_summary(exc: Exception) -> Dict[str, Any]:
@@ -268,6 +273,10 @@ def _build_report_payload(
         include_data_accounting=not fast_mode,
         include_template_observability=False,
     )
+    default_grammar_weights = analytics.get_current_grammar_weights()
+    learned_grammar_weights = (
+        analytics.compute_grammar_weights() if include_heavy else default_grammar_weights
+    )
     payload = {
         "summary": summary,
         "top_programs": nb.get_report_top_programs_grouped_by_fingerprint(
@@ -282,11 +291,15 @@ def _build_report_payload(
         "op_success_rates": analytics.op_success_rates(),
         "failure_patterns": analytics.failure_patterns(),
         "grammar_weights": {
-            "learned": analytics.compute_grammar_weights(),
-            "default": analytics.get_current_grammar_weights(),
+            "learned": learned_grammar_weights,
+            "default": default_grammar_weights,
             "control_comparison": analytics.control_experiment_comparison(),
             "holdout_validation": analytics.holdout_validation(),
-            "learning_diagnostics": analytics.grammar_weight_learning_diagnostics(),
+            "learning_diagnostics": (
+                analytics.grammar_weight_learning_diagnostics()
+                if include_heavy
+                else {}
+            ),
         },
         "learning_log": nb.get_learning_log(limit=20 if fast_mode else 50),
         "insights": nb.get_insights(),
@@ -327,17 +340,20 @@ def _attach_report_program_metadata(nb, analytics, data: Dict[str, Any]) -> None
         ),
         "weighting_mode": str(learning_diagnostics.get("mode") or "unknown"),
     }
-    data["action_eligibility"] = build_report_action_eligibility(
-        nb,
-        [
-            row.get("result_id")
-            for row in [
-                *(data["top_programs"] or []),
-                *(data["top_programs_expanded"] or []),
-            ]
-            if row.get("result_id")
-        ],
-    )
+    if getattr(nb, "_read_only", False):
+        data["action_eligibility"] = {}
+    else:
+        data["action_eligibility"] = build_report_action_eligibility(
+            nb,
+            [
+                row.get("result_id")
+                for row in [
+                    *(data["top_programs"] or []),
+                    *(data["top_programs_expanded"] or []),
+                ]
+                if row.get("result_id")
+            ],
+        )
     annotate_qkv_usage(data["top_programs"], analytics)
     annotate_qkv_usage(data["top_programs_expanded"], analytics)
 
@@ -453,7 +469,7 @@ def _load_filtered_report_programs(
 
 def _api_status(notebook_path: str, nb=None):
     """Get Aria's current status and dashboard summary."""
-    runner = get_runner(notebook_path)
+    runner = get_runner(notebook_path, create_if_missing=False)
     aria = get_aria()
     runner_state = resolve_runner_status(nb, runner)
     try:
@@ -547,9 +563,13 @@ def _api_metrics(metric_name, nb=None):
 
 def _api_dashboard(notebook_path: str, nb=None):
     """Get all dashboard data in one call."""
-    runner = get_runner(notebook_path)
+    runner = get_runner(notebook_path, create_if_missing=False)
     aria = get_aria()
     trusted_only = _trusted_report_mode()
+    include_analytics = parse_bool_query(
+        request.args.get("include_analytics"),
+        default=False,
+    )
     compact = request.path.endswith("/summary") or (
         str(request.args.get("compact", "0")).strip().lower() in {"1", "true", "yes"}
     )
@@ -574,16 +594,7 @@ def _api_dashboard(notebook_path: str, nb=None):
                 "summary": summary,
                 "recent_experiments": [],
                 "top_programs": [],
-                "production_readiness": {
-                    "breakthrough_count": 0,
-                    "epic_switch_recommendation": {
-                        "action": "stay_current_epic",
-                        "reason": "Notebook database is currently degraded",
-                    },
-                    "scale_up_templates": [],
-                    "reproducibility_workflow": None,
-                    "top_candidates": [],
-                },
+                "production_readiness": _empty_production_readiness(),
                 "insights": [],
                 "recent_entries": [],
                 "is_running": runner_state["is_running"],
@@ -595,14 +606,10 @@ def _api_dashboard(notebook_path: str, nb=None):
 
     _enrich_dashboard_summary_campaigns(nb, summary)
     recent_experiments = _load_recent_experiments_with_funnel(nb, limit=30)
-    from ..analytics import ExperimentAnalytics
-
-    analytics = ExperimentAnalytics(nb)
     top_programs = nb.get_top_programs(10, trusted_only=trusted_only)
-    annotate_qkv_usage(top_programs, analytics)
-    production_readiness = compute_breakthrough_production_readiness(nb, analytics)
     insights = deduplicate_insights(nb.get_insights(limit=50))
     recent_entries = normalize_entries(nb.get_entries(limit=20))
+    production_readiness = _empty_production_readiness()
 
     if compact:
         recent_experiments, top_programs, insights, recent_entries = (
@@ -613,6 +620,32 @@ def _api_dashboard(notebook_path: str, nb=None):
                 recent_entries,
             )
         )
+        data = {
+            "aria": aria.get_status(db_summary=summary),
+            "summary": summary,
+            "recent_experiments": recent_experiments,
+            "top_programs": top_programs,
+            "production_readiness": production_readiness,
+            "insights": insights,
+            "recent_entries": recent_entries,
+            "is_running": runner_state["is_running"],
+            "progress": runner_state["progress"],
+            "trusted_only": trusted_only,
+            "analytics_included": False,
+            "degraded": bool(summary.get("degraded")),
+        }
+        _compute_dashboard_deltas(data, recent_experiments)
+        last_rec = runner.last_recommendation if runner is not None else None
+        if last_rec:
+            data["last_recommendation"] = last_rec
+        return jsonify(data)
+    analytics = None
+    if include_analytics:
+        from ..analytics import ExperimentAnalytics
+
+        analytics = ExperimentAnalytics(nb)
+        annotate_qkv_usage(top_programs, analytics)
+        production_readiness = compute_breakthrough_production_readiness(nb, analytics)
 
     data = {
         "aria": aria.get_status(db_summary=summary),
@@ -625,10 +658,13 @@ def _api_dashboard(notebook_path: str, nb=None):
         "is_running": runner_state["is_running"],
         "progress": runner_state["progress"],
         "trusted_only": trusted_only,
+        "analytics_included": bool(include_analytics),
+        "degraded": bool(summary.get("degraded")),
     }
     _compute_dashboard_deltas(data, recent_experiments)
-    _attach_dashboard_learning_trend(summary, analytics)
-    last_rec = runner.last_recommendation
+    if analytics is not None:
+        _attach_dashboard_learning_trend(summary, analytics)
+    last_rec = runner.last_recommendation if runner is not None else None
     if last_rec:
         data["last_recommendation"] = last_rec
 

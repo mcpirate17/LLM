@@ -55,7 +55,7 @@ def test_dashboard_pinning_api_and_sorting(tmp_path):
     client = app.test_client()
 
     # Initial check: res2 (0.4) should be above res1 (0.5) because loss is better
-    resp = client.get("/api/leaderboard?limit=50")
+    resp = client.get("/api/leaderboard?limit=50&trusted_only=0")
     entries = resp.get_json().get("entries", [])
     assert entries[0]["result_id"] == res2
     assert entries[1]["result_id"] == res1
@@ -69,11 +69,12 @@ def test_dashboard_pinning_api_and_sorting(tmp_path):
     assert pin_resp.get_json()["pinned"] is True
 
     # Flush the async write so the next read sees it
-    shared_nb = get_notebook(db_path)
+    shared_nb = get_notebook(db_path, read_only=False)
     shared_nb.flush_writes()
+    shared_nb.close()
 
     # Check sorting: res1 should now be at the top despite worse loss
-    resp = client.get("/api/leaderboard?limit=50")
+    resp = client.get("/api/leaderboard?limit=50&trusted_only=0")
     entries = resp.get_json().get("entries", [])
     assert entries[0]["result_id"] == res1
     assert entries[0]["is_pinned"] == 1
@@ -81,9 +82,11 @@ def test_dashboard_pinning_api_and_sorting(tmp_path):
 
     # Unpin res1
     client.post("/api/leaderboard/pin", json={"entry_id": entry1, "pinned": False})
+    shared_nb = get_notebook(db_path, read_only=False)
     shared_nb.flush_writes()
+    shared_nb.close()
 
-    resp = client.get("/api/leaderboard?limit=50")
+    resp = client.get("/api/leaderboard?limit=50&trusted_only=0")
     entries = resp.get_json().get("entries", [])
     assert entries[0]["result_id"] == res2
     assert entries[0].get("is_pinned") == 0

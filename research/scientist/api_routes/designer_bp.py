@@ -11,12 +11,6 @@ from typing import Callable
 from flask import jsonify, request
 
 from . import _designer as _des
-from ..designer_utils import (
-    compile_designer_graph,
-    get_designer_components,
-    run_designer_graph,
-    validate_designer_graph,
-)
 from ._utils import with_notebook_context
 from .deps import ApiRouteContext
 
@@ -88,6 +82,8 @@ def _register_workflow_routes(app) -> None:
     @app.route("/api/designer/compile", methods=["POST"])
     def api_designer_compile():
         """Accept graph JSON from designer and return compiled module info."""
+        from ..designer_utils import compile_designer_graph
+
         workflow_json = request.get_json(silent=True)
         if not workflow_json:
             return jsonify({"success": False, "error": "Missing workflow JSON"}), 400
@@ -107,6 +103,8 @@ def _register_workflow_routes(app) -> None:
     @app.route("/api/designer/validate", methods=["POST"])
     def api_designer_validate():
         """Accept graph JSON from designer and return validation results."""
+        from ..designer_utils import validate_designer_graph
+
         workflow_json = request.get_json(silent=True)
         if not workflow_json:
             return jsonify({"success": False, "error": "Missing workflow JSON"}), 400
@@ -126,6 +124,8 @@ def _register_workflow_routes(app) -> None:
     @app.route("/api/designer/run", methods=["POST"])
     def api_designer_run():
         """Accept graph JSON from designer, run forward pass, and return metrics."""
+        from ..designer_utils import run_designer_graph
+
         workflow_json = request.get_json(silent=True)
         if not workflow_json:
             return jsonify({"success": False, "error": "Missing workflow JSON"}), 400
@@ -145,6 +145,8 @@ def _register_workflow_routes(app) -> None:
     @app.route("/api/designer/components", methods=["GET"])
     def api_designer_components():
         """Return all available primitives formatted for the designer."""
+        from ..designer_utils import get_designer_components
+
         proxied = _des.proxy_or_error(_des.designer_proxy("GET", "/api/v1/components"))
         if proxied is not None:
             return proxied
@@ -504,6 +506,8 @@ def _register_v1_proxy_routes(app, notebook_path: str, wnb) -> None:
             logger.debug(
                 "Could not load components from designer DB, falling back to primitives"
             )
+        from ..designer_utils import get_designer_components
+
         return jsonify(get_designer_components())
 
     @app.route("/api/v1/import/survivors", methods=["GET"])

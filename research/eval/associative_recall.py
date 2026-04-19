@@ -37,7 +37,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .utils import make_adamw
+from .utils import clip_grad_norm, make_adamw
 
 logger = logging.getLogger(__name__)
 
@@ -297,7 +297,7 @@ def associative_recall_score(
                 break
 
             loss.backward()
-            nn.utils.clip_grad_norm_(probe_model.parameters(), 1.0)
+            clip_grad_norm(probe_model.parameters(), 1.0)
             opt.step()
             result.steps_trained = step
 

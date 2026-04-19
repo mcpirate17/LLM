@@ -10,8 +10,9 @@ from __future__ import annotations
 import logging
 import time
 import torch
+import torch.nn as nn
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Any
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 

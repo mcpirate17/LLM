@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from typing import Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 
 from ...synthesis.grammar import GrammarConfig, batch_generate
@@ -16,7 +16,10 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-from ._types import RunConfig
+from ._types import ModelCandidate, RunConfig
+
+if TYPE_CHECKING:
+    from ..notebook import LabNotebook
 
 
 class _ExecutionCandidatesMixin:
@@ -36,8 +39,6 @@ class _ExecutionCandidatesMixin:
         source: "graph_synthesis", "morphological_box", or "mixed"
         Returns candidates that pass Stage 0 smoke test.
         """
-        from ._types import ModelCandidate
-
         candidates: List[ModelCandidate] = []
         dev_str = str(resolve_device(config.device))
 

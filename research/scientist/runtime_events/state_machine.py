@@ -49,6 +49,8 @@ class LifecycleStateMachine:
         self,
         current_event: Optional[RuntimeEvent],
         new_event: RuntimeEvent,
+        *,
+        quiet: bool = False,
     ) -> RuntimeEvent:
         current_type = current_event.event_type if current_event is not None else None
         if new_event.event_type == current_type:
@@ -62,7 +64,7 @@ class LifecycleStateMachine:
         if current_type in _TERMINAL_TYPES and new_event.event_type not in allowed:
             log = (
                 logger.debug
-                if is_terminal_conflict(current_type, new_event.event_type)
+                if quiet or is_terminal_conflict(current_type, new_event.event_type)
                 else logger.warning
             )
             log(
@@ -76,7 +78,8 @@ class LifecycleStateMachine:
             )
 
         if new_event.event_type not in allowed:
-            logger.warning(
+            log = logger.debug if quiet else logger.warning
+            log(
                 "Rejected lifecycle transition: run_id=%s %r -> %r",
                 new_event.run_id,
                 current_type,

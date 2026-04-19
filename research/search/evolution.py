@@ -58,18 +58,13 @@ class Individual:
     @property
     def lineage_hash(self) -> str:
         """Deterministic hash of the ancestry to avoid redundant fingerprinting."""
-        # Use existing lineage if present, otherwise compute it
         lh = self.metadata.get("lineage_hash")
         if lh:
             return lh
-
         if not self.parent_fingerprint:
-            # Root individual (gen 0)
             res = f"root:{self.fingerprint[:16]}"
         else:
-            # Derived individual
             res = f"gen{self.generation}:{self.parent_fingerprint[:32]}"
-
         self.metadata["lineage_hash"] = res
         return res
 

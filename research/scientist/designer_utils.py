@@ -12,7 +12,6 @@ from research.synthesis.compiler import compile_graph
 from research.synthesis.primitives import PRIMITIVE_REGISTRY, OpCategory
 from research.synthesis.workflow_converter import (
     workflow_to_computation_graph as _w2cg,
-    graph_to_workflow as _g2w,
 )
 
 logger = logging.getLogger(__name__)
@@ -54,14 +53,6 @@ def validate_designer_graph(workflow_json: Dict[str, Any]) -> Dict[str, Any]:
             "workflow_id": workflow_json.get("workflow_id"),
             "error": str(e),
         }
-
-
-def import_research_program(graph_json_str: str) -> Dict[str, Any]:
-    """Convert a backend ComputationGraph JSON to designer workflow JSON."""
-    from research.synthesis.serializer import graph_from_json as _gfj
-
-    graph = _gfj(graph_json_str)
-    return _g2w(graph)
 
 
 def compile_designer_graph(workflow_json: Dict[str, Any]) -> Dict[str, Any]:

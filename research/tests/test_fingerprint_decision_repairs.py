@@ -73,6 +73,9 @@ class TestPredictorEnabled:
         mixin = _ContinuousInvestigationMixin()
         config = RunConfig()
         config.investigation_predictor_max_lr = 0.5
+        # Exercising the filter requires the ML trust policy to allow the
+        # unproven investigation_predictor component in test.
+        config.allow_unproven_ml_influence = True
 
         # Mock a fitted predictor that predicts 0.3 for candidate A, 0.8 for B
         mock_model = MagicMock()
@@ -396,21 +399,44 @@ class TestPredictorModel:
         assert not model.is_fitted()
 
     def test_train_uses_screening_and_investigation_data(self):
-        """Training should use both screening and investigation data."""
+        """Training should use both screening and investigation data via the
+        deduped corpus loader (target loss_ratio already resolved per tier)."""
         from research.scientist.intelligence.predictor import _query_training_data
 
-        nb = MagicMock()
-        # Simulate 3 rows: 2 screening + 1 investigation
         rows = [
-            # (fp_json, novelty, struct_nov, loss_ratio, inv_loss_ratio, tier)
-            ('{"isotropy": 0.5}', 0.3, 0.2, 0.8, None, "screening"),
-            ('{"isotropy": 0.6}', 0.4, 0.3, 0.7, None, "screening"),
-            ('{"isotropy": 0.7}', 0.5, 0.4, 0.5, 0.25, "investigation"),
+            {
+                "fingerprint_json": '{"isotropy": 0.5}',
+                "novelty_score": 0.3,
+                "structural_novelty": 0.2,
+                "target_loss_ratio": 0.8,
+                "tier": "screening",
+                "n_rows": 1,
+            },
+            {
+                "fingerprint_json": '{"isotropy": 0.6}',
+                "novelty_score": 0.4,
+                "structural_novelty": 0.3,
+                "target_loss_ratio": 0.7,
+                "tier": "screening",
+                "n_rows": 1,
+            },
+            {
+                "fingerprint_json": '{"isotropy": 0.7}',
+                "novelty_score": 0.5,
+                "structural_novelty": 0.4,
+                "target_loss_ratio": 0.25,
+                "tier": "investigation",
+                "n_rows": 1,
+            },
         ]
-        nb.conn.execute = MagicMock(
-            return_value=MagicMock(fetchall=MagicMock(return_value=rows))
-        )
-        X, y, w = _query_training_data(nb)
+        nb = MagicMock()
+        nb.db_path = "/tmp/mock.db"
+        with patch(
+            "research.scientist.intelligence.predictor_ridge"
+            ".load_deduped_predictor_training_rows",
+            return_value=rows,
+        ):
+            X, y, w = _query_training_data(nb)
         assert len(X) == 3, "Should include all 3 rows"
         assert y[2] == 0.25, "Investigation row should use investigation_loss_ratio"
         assert y[0] == 0.8, "Screening row should use loss_ratio"
@@ -494,7 +520,7 @@ class TestExpandedNoveltyFeatures:
     def test_behavior_vector_returns_16_features(self):
         """_behavior_vector should return 16 features, not 10."""
         from research.eval.fingerprint import BehavioralFingerprint
-        from research.search.novelty_search import _behavior_vector
+        from research.search._behavior_archive import _behavior_vector
 
         fp = BehavioralFingerprint(
             interaction_locality=0.5,
@@ -521,7 +547,7 @@ class TestExpandedNoveltyFeatures:
     def test_behavior_vector_scaled_features_in_unit_range(self):
         """All 16 features should be in [0, 1] after sanitization."""
         from research.eval.fingerprint import BehavioralFingerprint
-        from research.search.novelty_search import _behavior_vector
+        from research.search._behavior_archive import _behavior_vector
 
         fp = BehavioralFingerprint(
             interaction_locality=0.5,
@@ -537,7 +563,7 @@ class TestExpandedNoveltyFeatures:
 
     def test_behavior_archive_uses_16d(self):
         """BehaviorArchive should use 16D feature buffer."""
-        from research.search.novelty_search import BehaviorArchive
+        from research.search._behavior_archive import BehaviorArchive
 
         archive = BehaviorArchive()
         assert archive._FEATURE_DIM == 16
@@ -545,7 +571,7 @@ class TestExpandedNoveltyFeatures:
 
     def test_scaled_feature_midpoint(self):
         """_sanitize_scaled_feature(scale, scale) should return 0.5."""
-        from research.search.novelty_search import _sanitize_scaled_feature
+        from research.search._behavior_archive import _sanitize_scaled_feature
 
         assert _sanitize_scaled_feature(5.0, 5.0) == 0.5
         assert _sanitize_scaled_feature(0.0, 5.0) == 0.0

@@ -280,19 +280,21 @@ class _ExecutionValidationCandidateMixin:
                 **kw,
             )
 
-        val_baseline_ratio, val_normalized_ratio, val_param_efficiency = (
-            self._validation_baseline_comparisons(
-                source=source,
-                source_result_id=source_result_id,
-                best_seed=best_seed,
-                loss_ratios=loss_ratios,
-                config=config,
-                _compare=_compare,
-                vstatus=vstatus,
-                rid_short=_rid_short,
-            )
+        (
+            val_baseline_ratio,
+            val_normalized_ratio,
+            val_param_efficiency,
+            val_split_ratio,
+        ) = self._validation_baseline_comparisons(
+            source=source,
+            source_result_id=source_result_id,
+            best_seed=best_seed,
+            loss_ratios=loss_ratios,
+            config=config,
+            _compare=_compare,
+            vstatus=vstatus,
+            rid_short=_rid_short,
         )
-
         if len(passed_seeds) > 0:
             results["stage1_passed"] += 1
         results["stage0_passed"] += 1
@@ -337,6 +339,7 @@ class _ExecutionValidationCandidateMixin:
             val_baseline_ratio=val_baseline_ratio,
             val_normalized_ratio=val_normalized_ratio,
             val_param_efficiency=val_param_efficiency,
+            validation_baseline_loss_ratio=val_split_ratio,
             passed_seeds=passed_seeds,
             best_seed=best_seed,
             source_params=int(source_params),
@@ -484,20 +487,21 @@ class _ExecutionValidationCandidateMixin:
     ) -> tuple:
         """Run baseline + normalized baseline comparisons.
 
-        Returns (val_baseline_ratio, val_normalized_ratio, val_param_efficiency).
+        Returns ``(val_baseline_ratio, val_normalized_ratio,
+        val_param_efficiency, val_split_ratio)``. The fourth element is the
+        per-validation-split ratio computed from ``best_seed.validation_loss``
+        (``None`` when the seed has no recorded validation loss); callers
+        thread it into their own ``program_metrics`` dict for persistence.
         """
         vstatus("baseline comparison", rid_short)
         val_baseline_ratio = None
+        val_split_ratio = None
         if best_seed is not None:
             try:
                 val_baseline_ratio = _compare(best_seed["final_loss"])
                 v_loss = best_seed.get("validation_loss")
                 if v_loss is not None:
-                    # NOTE: program_metrics is NOT defined here — pre-existing bug
-                    # preserved faithfully from the original code.
-                    program_metrics["validation_baseline_loss_ratio"] = (  # noqa: F821
-                        _compare(v_loss, split="val")
-                    )
+                    val_split_ratio = _compare(v_loss, split="val")
             except (RuntimeError, ValueError, TypeError) as exc:
                 _fail_loud(
                     "validation",
@@ -529,7 +533,7 @@ class _ExecutionValidationCandidateMixin:
                     exc,
                 )
 
-        return val_baseline_ratio, val_normalized_ratio, val_param_efficiency
+        return val_baseline_ratio, val_normalized_ratio, val_param_efficiency, val_split_ratio
 
     def _validation_record_and_checkpoint(
         self,

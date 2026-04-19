@@ -1,8 +1,6 @@
-"""
-Dr. Aria Nexus — AI Research Scientist.
-"""
+"""Dr. Aria Nexus — AI Research Scientist."""
 
-from .notebook import LabNotebook, ExperimentEntry
+from __future__ import annotations
 
 __all__ = [
     "Aria",
@@ -18,6 +16,10 @@ def __getattr__(name):
         from .persona import Aria, get_aria
 
         return Aria if name == "Aria" else get_aria
+    if name in {"LabNotebook", "ExperimentEntry"}:
+        from .notebook import ExperimentEntry, LabNotebook
+
+        return LabNotebook if name == "LabNotebook" else ExperimentEntry
     if name == "ExperimentRunner":
         from .runner import ExperimentRunner
 

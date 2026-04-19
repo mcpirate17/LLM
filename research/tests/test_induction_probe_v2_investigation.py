@@ -157,13 +157,16 @@ def test_attention_2l_beats_conv3_2l():
     attn = _CausalAttnLM()
     conv = _CausalConv3LM()
 
-    # Shorter step budget for CI — full probe runs 500; we use 300 with a
-    # reduced eval set to keep test runtime bounded.
+    # Use the production 500-step budget. At 300 steps the induction
+    # mechanism has not finished forming (attention AUC ~0.12, still near
+    # chance on the restricted vocab); 500 is the mechanism-formation
+    # threshold per PROBE_CALIBRATION_2026-04-17.md and takes ~10s/model
+    # on GPU, well within the unit-tier budget.
     r_attn = run_induction_v2_investigation(
-        attn, n_train_steps=300, n_eval=100, device=dev
+        attn, n_train_steps=500, n_eval=100, device=dev
     )
     r_conv = run_induction_v2_investigation(
-        conv, n_train_steps=300, n_eval=100, device=dev
+        conv, n_train_steps=500, n_eval=100, device=dev
     )
     assert r_attn.status == "ok", f"attn probe failed: {r_attn.status}"
     assert r_conv.status == "ok", f"conv probe failed: {r_conv.status}"

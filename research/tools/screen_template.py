@@ -29,7 +29,8 @@ from typing import Any, Dict
 import torch
 import torch.nn as nn
 
-from research.training.loss_ops import clip_grad_norm_, next_token_cross_entropy
+from research.eval.training_core import run_training_loop
+from research.training.loss_ops import next_token_cross_entropy
 from research.tools._wikitext_batches import load_wikitext_batch_source
 
 logging.basicConfig(
@@ -55,58 +56,27 @@ def _build_graphs(template_name: str, n_layers: int, dim: int, seed: int = 42):
     return graphs
 
 
-def screen_and_investigate(
-    template_name: str,
-    n_layers: int = 4,
-    model_dim: int = 256,
-    vocab_size: int = 100277,
-    screening_steps: int = 750,
-    investigation_steps: int = 2500,
-    batch_size: int = 16,
-    seq_len: int = 256,
-    lr: float = 3e-4,
-    device: str = "cuda",
-    seed: int = 42,
-    do_investigate: bool = False,
-) -> Dict[str, Any]:
-    from research.synthesis.compiler import compile_model
-    from research.scientist.notebook import LabNotebook
-
-    # ── Build ────────────────────────────────────────────────────────
-    logger.info("Building %s: %d layers, dim=%d", template_name, n_layers, model_dim)
-    graphs = _build_graphs(template_name, n_layers, model_dim, seed)
-    graph_fp = graphs[0].fingerprint()
-    graph_json_str = json.dumps(graphs[0].to_dict())
-
-    model = compile_model(graphs, vocab_size=vocab_size, max_seq_len=512).to(device)
-    n_params = sum(p.numel() for p in model.parameters())
-    logger.info("Params: %d, fingerprint: %s", n_params, graph_fp)
-
-    # ── S0: Forward pass ─────────────────────────────────────────────
-    logger.info("S0: Forward pass check...")
+def _s0_s05_check(model, vocab_size: int, device: str) -> tuple[bool, bool]:
+    """Forward-pass and gradient finiteness checks."""
     x = torch.randint(0, vocab_size, (2, 64), device=device)
     with torch.no_grad():
         y = model(x)
     s0_passed = y.shape[-1] == vocab_size and not torch.isnan(y).any()
     logger.info("S0: %s (shape=%s)", "PASSED" if s0_passed else "FAILED", y.shape)
     if not s0_passed:
-        return {"stage": "s0_failed", "template": template_name}
+        return False, False
 
-    # ── S0.5: Gradient check ────────────────────────────────────────
     logger.info("S0.5: Gradient + causality check...")
     x2 = torch.randint(0, vocab_size, (2, 64), device=device)
     logits = model(x2)
-    loss = nn.functional.cross_entropy(
-        logits[:, :-1].reshape(-1, vocab_size), x2[:, 1:].reshape(-1)
-    )
+    loss = next_token_cross_entropy(logits, x2, vocab_size)
     loss.backward()
     grads_with_values = [
         p.grad for p in model.parameters() if p.requires_grad and p.grad is not None
     ]
     n_grads = len(grads_with_values)
     n_finite = sum(1 for g in grads_with_values if torch.isfinite(g).all())
-    grad_ok = n_grads > 0 and n_finite == n_grads
-    s05_passed = grad_ok
+    s05_passed = n_grads > 0 and n_finite == n_grads
     logger.info(
         "S0.5: %s (grads: %d/%d finite, %d total params)",
         "PASSED" if s05_passed else "FAILED",
@@ -114,93 +84,65 @@ def screen_and_investigate(
         n_grads,
         sum(1 for p in model.parameters() if p.requires_grad),
     )
-    if not s05_passed:
-        return {"stage": "s05_failed", "template": template_name}
+    return s0_passed, s05_passed
 
-    # ── Prepare WikiText data ───────────────────────────────────────
-    logger.info("Loading WikiText-103...")
-    batch_source = load_wikitext_batch_source(
-        batch_size=batch_size,
-        seq_len=seq_len,
-        vocab_size=vocab_size,
-    )
-    logger.info(
-        "Prepared %d train windows, %d val windows",
-        batch_source.train_window_count,
-        batch_source.val_window_count,
-    )
 
-    # ── S1: Screening training ──────────────────────────────────────
-    def _eval_val():
-        model.eval()
-        total = 0.0
-        n = 0
-        for vb in batch_source.iter_val_batches(device=device):
-            with torch.no_grad():
-                lo = model(vb)
-                total += nn.functional.cross_entropy(
-                    lo[:, :-1].reshape(-1, vocab_size), vb[:, 1:].reshape(-1)
-                ).item()
-                n += 1
-        model.train()
-        return total / max(n, 1)
-
-    pre_val = _eval_val()
-    logger.info(
-        "Pre-training val loss: %.4f (PPL %.1f)", pre_val, math.exp(min(pre_val, 20))
-    )
-
-    logger.info("S1: Training %d steps (screening)...", screening_steps)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.01)
+def _train_loop(
+    model,
+    batch_source,
+    *,
+    n_steps: int,
+    lr: float,
+    lr_warmup: float,
+    vocab_size: int,
+    device: str,
+    seed: int,
+    warmup_steps: int = 50,
+    log_every: int = 250,
+    label: str = "train",
+    eval_fn=None,
+) -> tuple[list[float], float]:
+    """Wikitext warmup+AdamW loop. Delegates to ``eval.training_core.run_training_loop``."""
     rng_gen = torch.Generator().manual_seed(seed)
-    losses = []
+    losses: list[float] = []
     t0 = time.time()
 
-    for step in range(1, screening_steps + 1):
-        if step <= 50:
-            for g in optimizer.param_groups:
-                g["lr"] = lr * step / 50
-
+    def compute_loss(step: int) -> torch.Tensor:
         batch = batch_source.sample_train_batch(device=device, generator=rng_gen)
         logits = model(batch)
         loss = next_token_cross_entropy(logits, batch, vocab_size)
-        optimizer.zero_grad(set_to_none=True)
-        loss.backward()
-        clip_grad_norm_(model, 1.0)
-        optimizer.step()
-        losses.append(loss.item())
-
-        if step % 250 == 0:
-            vl = _eval_val()
-            avg_train = sum(losses[-250:]) / 250
+        losses.append(float(loss.detach()))
+        step_num = step + 1
+        if step_num % log_every == 0 and eval_fn is not None:
+            vl = eval_fn()
+            avg_train = sum(losses[-log_every:]) / log_every
             logger.info(
-                "  step %d: train=%.4f val=%.4f ppl=%.1f (%.0fs)",
-                step,
+                "  %s step %d: train=%.4f val=%.4f ppl=%.1f (%.0fs)",
+                label,
+                step_num,
                 avg_train,
                 vl,
                 math.exp(min(vl, 20)),
                 time.time() - t0,
             )
+        return loss
 
-    screening_val = _eval_val()
-    screening_lr = screening_val / pre_val if pre_val > 0 else 1.0
-    screening_ppl = math.exp(min(screening_val, 20))
-    s1_passed = screening_lr < 0.95
-    elapsed_s1 = time.time() - t0
-
-    logger.info(
-        "S1: %s — val=%.4f ppl=%.1f loss_ratio=%.4f (%.0fs)",
-        "PASSED" if s1_passed else "FAILED",
-        screening_val,
-        screening_ppl,
-        screening_lr,
-        elapsed_s1,
+    run_training_loop(
+        model.parameters(),
+        compute_loss,
+        n_steps=n_steps,
+        optimizer_name="adamw",
+        lr=lr,
+        weight_decay=0.01,
+        clip_grad=1.0,
+        warmup_steps=warmup_steps,
     )
+    return losses, time.time() - t0
 
-    # ── Run probes ──────────────────────────────────────────────────
-    model.eval()
+
+def _run_probes(model, vocab_size: int, device: str) -> Dict[str, Any]:
+    """Run binding/AR/HellaSwag/BLiMP probes, collect results defensively."""
     probe_results: Dict[str, Any] = {}
-
     try:
         from research.eval.binding_pipeline import run_screening_binding_probes
 
@@ -252,17 +194,40 @@ def screen_and_investigate(
         from research.eval.blimp_eval import evaluate_blimp
 
         blimp = evaluate_blimp(
-            model, vocab_size=vocab_size, device=device, n_per_subtask=50, timeout_s=120
+            model,
+            vocab_size=vocab_size,
+            device=device,
+            n_per_subtask=50,
+            timeout_s=120,
         )
         probe_results["blimp_overall_accuracy"] = blimp.overall_accuracy
         logger.info("BLiMP: acc=%.4f", blimp.overall_accuracy)
     except Exception as e:
         logger.warning("BLiMP failed: %s", e)
+    return probe_results
 
-    # ── Record in notebook ──────────────────────────────────────────
-    logger.info("Recording results in notebook...")
-    nb = LabNotebook()
 
+def _record_screening(
+    nb,
+    *,
+    template_name: str,
+    n_layers: int,
+    model_dim: int,
+    screening_steps: int,
+    lr: float,
+    graph_fp: str,
+    graph_json_str: str,
+    n_params: int,
+    s0_passed: bool,
+    s05_passed: bool,
+    s1_passed: bool,
+    screening_val: float,
+    pre_val: float,
+    screening_lr: float,
+    screening_ppl: float,
+    probe_results: Dict[str, Any],
+) -> tuple[str, str]:
+    """Insert experiment row + program_results + leaderboard upsert."""
     exp_id = f"manual_screen_{template_name}_{int(time.time())}"
     nb.conn.execute(
         "INSERT OR IGNORE INTO experiments (experiment_id, timestamp, experiment_type, config_json) VALUES (?, ?, ?, ?)",
@@ -281,7 +246,6 @@ def screen_and_investigate(
             ),
         ),
     )
-
     result_kwargs = {
         "stage0_passed": s0_passed,
         "stage05_passed": s05_passed,
@@ -296,7 +260,6 @@ def screen_and_investigate(
         "wikitext_perplexity": screening_ppl,
         **{k: v for k, v in probe_results.items() if v is not None},
     }
-
     result_id = nb.record_program_result(
         experiment_id=exp_id,
         graph_fingerprint=graph_fp,
@@ -307,7 +270,6 @@ def screen_and_investigate(
     nb.flush_writes()
     logger.info("Recorded result_id=%s", result_id)
 
-    # Upsert leaderboard — must use leaderboard column names, not program_results names
     try:
         lb_kwargs = {
             "screening_loss_ratio": screening_lr,
@@ -316,11 +278,9 @@ def screen_and_investigate(
             "wikitext_perplexity": screening_ppl,
             "param_count": n_params,
         }
-        # Pass probe results with their correct column names
         for k, v in probe_results.items():
             if v is not None:
                 lb_kwargs[k] = v
-
         entry_id = nb.upsert_leaderboard(
             result_id=result_id,
             model_source="manual_template_screen",
@@ -333,8 +293,211 @@ def screen_and_investigate(
         logger.info("Leaderboard entry: %s", entry_id)
     except Exception as e:
         logger.warning("Leaderboard upsert failed: %s", e)
+    return exp_id, result_id
 
-    result = {
+
+def _run_investigation(
+    model,
+    batch_source,
+    *,
+    investigation_steps: int,
+    lr: float,
+    vocab_size: int,
+    device: str,
+    seed: int,
+    eval_fn,
+    pre_val: float,
+    nb,
+    result_id: str,
+    n_params: int,
+    screening_lr: float,
+) -> Dict[str, Any]:
+    """Run investigation training + probes; upsert investigation tier."""
+    logger.info("Starting investigation (%d steps)...", investigation_steps)
+    _train_loop(
+        model,
+        batch_source,
+        n_steps=investigation_steps,
+        lr=lr * 0.5,
+        lr_warmup=lr * 0.5,
+        vocab_size=vocab_size,
+        device=device,
+        seed=seed,
+        warmup_steps=100,
+        log_every=500,
+        label="inv",
+        eval_fn=eval_fn,
+    )
+    inv_val = eval_fn()
+    inv_ppl = math.exp(min(inv_val, 20))
+    inv_loss_ratio = inv_val / pre_val if pre_val > 0 else 1.0
+    logger.info(
+        "Investigation: val=%.4f ppl=%.1f loss_ratio=%.4f",
+        inv_val,
+        inv_ppl,
+        inv_loss_ratio,
+    )
+
+    model.eval()
+    inv_result: Dict[str, Any] = {
+        "investigation_val_loss": inv_val,
+        "investigation_ppl": inv_ppl,
+        "investigation_loss_ratio": inv_loss_ratio,
+        "investigation_steps": investigation_steps,
+    }
+    try:
+        from research.eval.binding_pipeline import run_screening_binding_probes
+
+        bp2 = run_screening_binding_probes(model, device=device)
+        inv_result["inv_induction_auc"] = bp2.get("induction_auc")
+        inv_result["inv_binding_auc"] = bp2.get("binding_auc")
+        logger.info(
+            "Inv binding: ind=%.4f bind=%.4f",
+            inv_result.get("inv_induction_auc", 0),
+            inv_result.get("inv_binding_auc", 0),
+        )
+    except Exception as exc:
+        logger.warning("Investigation binding probes failed: %s", exc)
+
+    try:
+        inv_lb_kwargs = {
+            "screening_loss_ratio": screening_lr,
+            "investigation_loss_ratio": inv_loss_ratio,
+            "investigation_robustness": 1.0,
+            "investigation_passed": True,
+            "wikitext_perplexity": inv_ppl,
+            "param_count": n_params,
+        }
+        if inv_result.get("inv_induction_auc") is not None:
+            inv_lb_kwargs["induction_auc"] = inv_result["inv_induction_auc"]
+        if inv_result.get("inv_binding_auc") is not None:
+            inv_lb_kwargs["binding_auc"] = inv_result["inv_binding_auc"]
+        nb.upsert_leaderboard(
+            result_id=result_id,
+            model_source="manual_template_screen",
+            tier="investigation",
+            **inv_lb_kwargs,
+        )
+        logger.info("Promoted to investigation tier")
+    except Exception as e:
+        logger.warning("Investigation promotion failed: %s", e)
+    return inv_result
+
+
+def screen_and_investigate(
+    template_name: str,
+    n_layers: int = 4,
+    model_dim: int = 256,
+    vocab_size: int = 100277,
+    screening_steps: int = 750,
+    investigation_steps: int = 2500,
+    batch_size: int = 16,
+    seq_len: int = 256,
+    lr: float = 3e-4,
+    device: str = "cuda",
+    seed: int = 42,
+    do_investigate: bool = False,
+) -> Dict[str, Any]:
+    from research.synthesis.compiler import compile_model
+    from research.scientist.notebook import LabNotebook
+
+    logger.info("Building %s: %d layers, dim=%d", template_name, n_layers, model_dim)
+    graphs = _build_graphs(template_name, n_layers, model_dim, seed)
+    graph_fp = graphs[0].fingerprint()
+    graph_json_str = json.dumps(graphs[0].to_dict())
+    model = compile_model(graphs, vocab_size=vocab_size, max_seq_len=512).to(device)
+    n_params = sum(p.numel() for p in model.parameters())
+    logger.info("Params: %d, fingerprint: %s", n_params, graph_fp)
+
+    s0_passed, s05_passed = _s0_s05_check(model, vocab_size, device)
+    if not s0_passed:
+        return {"stage": "s0_failed", "template": template_name}
+    if not s05_passed:
+        return {"stage": "s05_failed", "template": template_name}
+
+    logger.info("Loading WikiText-103...")
+    batch_source = load_wikitext_batch_source(
+        batch_size=batch_size, seq_len=seq_len, vocab_size=vocab_size
+    )
+    logger.info(
+        "Prepared %d train windows, %d val windows",
+        batch_source.train_window_count,
+        batch_source.val_window_count,
+    )
+
+    def _eval_val() -> float:
+        model.eval()
+        total = 0.0
+        n = 0
+        for vb in batch_source.iter_val_batches(device=device):
+            with torch.no_grad():
+                lo = model(vb)
+                total += next_token_cross_entropy(lo, vb, vocab_size).item()
+                n += 1
+        model.train()
+        return total / max(n, 1)
+
+    pre_val = _eval_val()
+    logger.info(
+        "Pre-training val loss: %.4f (PPL %.1f)",
+        pre_val,
+        math.exp(min(pre_val, 20)),
+    )
+
+    logger.info("S1: Training %d steps (screening)...", screening_steps)
+    _, elapsed_s1 = _train_loop(
+        model,
+        batch_source,
+        n_steps=screening_steps,
+        lr=lr,
+        lr_warmup=lr,
+        vocab_size=vocab_size,
+        device=device,
+        seed=seed,
+        warmup_steps=50,
+        log_every=250,
+        label="S1",
+        eval_fn=_eval_val,
+    )
+    screening_val = _eval_val()
+    screening_lr = screening_val / pre_val if pre_val > 0 else 1.0
+    screening_ppl = math.exp(min(screening_val, 20))
+    s1_passed = screening_lr < 0.95
+    logger.info(
+        "S1: %s — val=%.4f ppl=%.1f loss_ratio=%.4f (%.0fs)",
+        "PASSED" if s1_passed else "FAILED",
+        screening_val,
+        screening_ppl,
+        screening_lr,
+        elapsed_s1,
+    )
+
+    model.eval()
+    probe_results = _run_probes(model, vocab_size, device)
+
+    logger.info("Recording results in notebook...")
+    nb = LabNotebook()
+    exp_id, result_id = _record_screening(
+        nb,
+        template_name=template_name,
+        n_layers=n_layers,
+        model_dim=model_dim,
+        screening_steps=screening_steps,
+        lr=lr,
+        graph_fp=graph_fp,
+        graph_json_str=graph_json_str,
+        n_params=n_params,
+        s0_passed=s0_passed,
+        s05_passed=s05_passed,
+        s1_passed=s1_passed,
+        screening_val=screening_val,
+        pre_val=pre_val,
+        screening_lr=screening_lr,
+        screening_ppl=screening_ppl,
+        probe_results=probe_results,
+    )
+
+    result: Dict[str, Any] = {
         "template": template_name,
         "result_id": result_id,
         "experiment_id": exp_id,
@@ -351,99 +514,25 @@ def screen_and_investigate(
         **probe_results,
     }
 
-    # ── Investigation (optional) ────────────────────────────────────
     if do_investigate and s1_passed:
-        logger.info("Starting investigation (%d steps)...", investigation_steps)
-        # Reset optimizer for longer training
-        optimizer = torch.optim.AdamW(
-            model.parameters(), lr=lr * 0.5, weight_decay=0.01
-        )
-        model.train()
-        inv_losses = []
-        t_inv = time.time()
-
-        for step in range(1, investigation_steps + 1):
-            if step <= 100:
-                for g in optimizer.param_groups:
-                    g["lr"] = lr * 0.5 * step / 100
-
-            batch = batch_source.sample_train_batch(device=device, generator=rng_gen)
-            logits = model(batch)
-            loss = nn.functional.cross_entropy(
-                logits[:, :-1].reshape(-1, vocab_size), batch[:, 1:].reshape(-1)
-            )
-            optimizer.zero_grad(set_to_none=True)
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            optimizer.step()
-            inv_losses.append(loss.item())
-
-            if step % 500 == 0:
-                vl = _eval_val()
-                logger.info(
-                    "  inv step %d: train=%.4f val=%.4f ppl=%.1f (%.0fs)",
-                    step,
-                    sum(inv_losses[-500:]) / 500,
-                    vl,
-                    math.exp(min(vl, 20)),
-                    time.time() - t_inv,
-                )
-
-        inv_val = _eval_val()
-        inv_ppl = math.exp(min(inv_val, 20))
-        inv_lr = inv_val / pre_val if pre_val > 0 else 1.0
-        logger.info(
-            "Investigation: val=%.4f ppl=%.1f loss_ratio=%.4f (%.0fs)",
-            inv_val,
-            inv_ppl,
-            inv_lr,
-            time.time() - t_inv,
-        )
-
-        # Re-run probes after investigation
-        model.eval()
-        try:
-            bp2 = run_screening_binding_probes(model, device=device)
-            result["inv_induction_auc"] = bp2.get("induction_auc")
-            result["inv_binding_auc"] = bp2.get("binding_auc")
-            logger.info(
-                "Inv binding: ind=%.4f bind=%.4f",
-                result.get("inv_induction_auc", 0),
-                result.get("inv_binding_auc", 0),
-            )
-        except Exception as exc:
-            logger.warning("Investigation binding probes failed: %s", exc)
-
-        result["investigation_val_loss"] = inv_val
-        result["investigation_ppl"] = inv_ppl
-        result["investigation_loss_ratio"] = inv_lr
-        result["investigation_steps"] = investigation_steps
-
-        # Update notebook with investigation results
-        try:
-            inv_lb_kwargs = {
-                "screening_loss_ratio": screening_lr,
-                "investigation_loss_ratio": inv_lr,
-                "investigation_robustness": 1.0,
-                "investigation_passed": True,
-                "wikitext_perplexity": inv_ppl,
-                "param_count": n_params,
-            }
-            if result.get("inv_induction_auc") is not None:
-                inv_lb_kwargs["induction_auc"] = result["inv_induction_auc"]
-            if result.get("inv_binding_auc") is not None:
-                inv_lb_kwargs["binding_auc"] = result["inv_binding_auc"]
-            nb.upsert_leaderboard(
+        result.update(
+            _run_investigation(
+                model,
+                batch_source,
+                investigation_steps=investigation_steps,
+                lr=lr,
+                vocab_size=vocab_size,
+                device=device,
+                seed=seed,
+                eval_fn=_eval_val,
+                pre_val=pre_val,
+                nb=nb,
                 result_id=result_id,
-                model_source="manual_template_screen",
-                tier="investigation",
-                **inv_lb_kwargs,
+                n_params=n_params,
+                screening_lr=screening_lr,
             )
-            logger.info("Promoted to investigation tier")
-        except Exception as e:
-            logger.warning("Investigation promotion failed: %s", e)
+        )
 
-    # ── Print summary ───────────────────────────────────────────────
     print("\n" + "=" * 70)
     print(f"RESULT: {template_name}")
     print("=" * 70)
@@ -469,7 +558,6 @@ def screen_and_investigate(
     print(f"  result_id:    {result_id}")
     print(f"  fingerprint:  {graph_fp}")
 
-    # Save JSON
     out_path = (
         Path("research/reports") / f"screen_{template_name}_{int(time.time())}.json"
     )
@@ -477,9 +565,9 @@ def screen_and_investigate(
     out_path.write_text(json.dumps(result, indent=2, default=str))
     print(f"  Saved: {out_path}")
 
-    del model, optimizer
-    torch.cuda.empty_cache()
-
+    del model
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
     return result
 
 

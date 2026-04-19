@@ -55,7 +55,7 @@ class LifecycleProjector:
                     self._mark_applied(record.event)
                 self._store_checkpoint(record.offset)
                 self.conn.commit()
-                logger.info(
+                logger.debug(
                     "Projected lifecycle event: type=%s run_id=%s event_id=%s offset=%s:%d accepted=%s",
                     record.event.event_type,
                     record.event.run_id,

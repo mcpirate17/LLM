@@ -1,4 +1,4 @@
-import { apiCall } from "../services/apiService";
+import { apiCall, postJson } from "../services/apiService";
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { scoreColor } from '../utils/format';
 import { bestLoss, percentOfReference, TIER_ORDER, TIER_COLORS, TIER_LABELS } from '../utils/scoringEngine';
@@ -116,32 +116,24 @@ function Leaderboard({
   const handleInvestigate = useCallback((resultIds) => {
     if (onInvestigate) { setActionError(null); onInvestigate(resultIds); }
     else {
-      apiCall(`/api/experiments/start`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode: 'investigation', result_ids: resultIds }),
-      }).then(() => fetchLeaderboard()).catch(e => setActionError('Failed: ' + e.message));
+      postJson('/api/experiments/start', { mode: 'investigation', result_ids: resultIds })
+        .then(() => fetchLeaderboard())
+        .catch((e) => setActionError('Failed: ' + e.message));
     }
   }, [onInvestigate, fetchLeaderboard]);
 
   const handleValidate = useCallback((resultIds) => {
     if (onValidate) { setActionError(null); onValidate(resultIds); }
     else {
-      apiCall(`/api/experiments/start`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode: 'validation', result_ids: resultIds }),
-      }).then(() => fetchLeaderboard()).catch(e => setActionError('Failed: ' + e.message));
+      postJson('/api/experiments/start', { mode: 'validation', result_ids: resultIds })
+        .then(() => fetchLeaderboard())
+        .catch((e) => setActionError('Failed: ' + e.message));
     }
   }, [onValidate, fetchLeaderboard]);
 
   const togglePin = useCallback(async (entryId, currentPinned) => {
     try {
-      const res = await apiCall(`/api/leaderboard/pin`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ entry_id: entryId, pinned: !currentPinned }),
-      });
+      const res = await postJson('/api/leaderboard/pin', { entry_id: entryId, pinned: !currentPinned });
       if (res.ok) fetchLeaderboard();
     } catch (e) { console.error(e); }
   }, [fetchLeaderboard]);

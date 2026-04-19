@@ -1,4 +1,4 @@
-import { apiCall } from "../services/apiService";
+import { apiCall, putJson } from "../services/apiService";
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useEventBus } from '../hooks/useEventBus';
 import { useAriaData } from '../hooks/useAriaData';
@@ -47,11 +47,7 @@ function TrustLevelSelector({ config, onUpdate }) {
   const handleChange = async (newLevel) => {
     setUpdating(true);
     try {
-      const res = await apiCall(`/api/aria/autonomy`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ trust_level: newLevel }),
-      });
+      const res = await putJson('/api/aria/autonomy', { trust_level: newLevel });
       if (res.ok) {
         const updated = await res.json();
         onUpdate?.(updated);

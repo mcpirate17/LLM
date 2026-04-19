@@ -8,7 +8,7 @@ import logging
 from typing import Any, Dict, List
 
 from flask import jsonify, request, Response
-from ..runner import RunConfig
+from ..runner._types import RunConfig
 from ..persona import get_aria
 from ..evidence import build_evidence_pack
 from ._helpers import (
@@ -49,11 +49,30 @@ def register_general_routes(app, context: ApiRouteContext):
     @wnb
     def api_aria_cycle_status(nb=None):
         """Get Aria continuous-cycle status (planning/running/analyzing)."""
-        runner = get_runner(notebook_path)
-        cycle = runner.get_aria_cycle_status()
+        runner = get_runner(notebook_path, create_if_missing=False)
+        cycle = (
+            runner.get_aria_cycle_status()
+            if runner is not None
+            else {
+                "phase": "idle",
+                "phase_label": "Idle",
+                "continuous_active": False,
+                "cycle_index": 0,
+                "selected_mode": None,
+                "last_completed_mode": None,
+                "last_note": "Awaiting run.",
+                "last_transition_ts": 0.0,
+                "aria_message": "",
+                "progress_status": "idle",
+                "cycle_paused": False,
+                "cycle_history": [],
+                "experiment_id": "",
+                "is_running": False,
+            }
+        )
         runner_state = resolve_runner_status(nb, runner)
         external = runner_state.get("external_snapshot")
-        if external and not runner.is_running:
+        if external and not (runner.is_running if runner is not None else False):
             cycle.update(
                 {
                     "aria_message": runner_state["progress"].get("aria_message", ""),

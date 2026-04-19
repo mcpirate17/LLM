@@ -19,6 +19,32 @@ class TrainingProfileArtifacts:
     trace_json: Optional[str]
 
 
+class _Trace:
+    """Reusable timing context for ``TrainingRunProfiler.trace(name)``.
+
+    Module-level class so each ``trace()`` call avoids the per-call class-body
+    allocation cost of the original closure-based implementation.
+    """
+
+    __slots__ = ("_profiler", "_name", "_t0")
+
+    def __init__(self, profiler: "TrainingRunProfiler", name: str):
+        self._profiler = profiler
+        self._name = name
+        self._t0 = 0.0
+
+    def __enter__(self) -> "_Trace":
+        self._t0 = time.perf_counter()
+        return self
+
+    def __exit__(self, _exc_type, _exc, _tb) -> bool:
+        if self._profiler.enabled:
+            self._profiler.record_timing(
+                self._name, (time.perf_counter() - self._t0) * 1000.0
+            )
+        return False
+
+
 class TrainingRunProfiler:
     """Guarded short-run profiler for the training loop."""
 
@@ -77,23 +103,8 @@ class TrainingRunProfiler:
             self._write_summary()
         return False
 
-    def trace(self, name: str):
-        profiler = self
-
-        class _TraceContext:
-            def __enter__(self_inner):
-                self_inner._t0 = time.perf_counter()
-                return self_inner
-
-            def __exit__(self_inner, _exc_type, _exc, _tb):
-                if profiler.enabled:
-                    profiler.record_timing(
-                        name,
-                        (time.perf_counter() - self_inner._t0) * 1000.0,
-                    )
-                return False
-
-        return _TraceContext()
+    def trace(self, name: str) -> "_Trace":
+        return _Trace(self, name)
 
     def record_timing(self, name: str, duration_ms: float) -> None:
         if self.enabled:
@@ -119,7 +130,8 @@ class TrainingRunProfiler:
         self._step_rows.append(row)
 
     def step(self) -> None:
-        return None
+        if self._torch_prof is not None:
+            self._torch_prof.step()
 
     def event(self, name: str, value: Any) -> None:
         if self.enabled:

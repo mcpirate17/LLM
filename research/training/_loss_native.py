@@ -10,7 +10,7 @@ from torch.utils.cpp_extension import load
 def load_loss_native():
     source = Path(__file__).with_name("_loss_native.cpp")
     return load(
-        name="loss_native_ext_v2",
+        name="training_native_ext_v1",
         sources=[str(source)],
         extra_cflags=["-O3"],
         verbose=False,

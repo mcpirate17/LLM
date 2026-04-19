@@ -15,12 +15,13 @@ import time
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
-from ..notebook import LabNotebook
-from ..runner import ExperimentRunner
 from ..runner._types import LiveProgress
-from ..runtime_events import get_runtime_event_services, start_runtime_event_projector
+from ..runtime_events import (
+    get_runtime_event_services,
+    start_runtime_event_projector,
+)
 from .deps import get_notebook
 from ..native.telemetry import native_runner_capability_report
 from ..persona import get_aria
@@ -28,15 +29,34 @@ from ._utils import is_malformed_db_error
 
 logger = logging.getLogger(__name__)
 
+if TYPE_CHECKING:
+    from ..notebook import LabNotebook
+    from ..runner import ExperimentRunner
+
 # ── Singleton runner ────────────────────────────────────────────────────
 _runner: Optional[ExperimentRunner] = None
 _EXTERNAL_RUN_ACTIVITY_TIMEOUT_SECONDS = 3600.0
 
 
-def get_runner(notebook_path: str) -> ExperimentRunner:
+def projected_runtime_status_enabled() -> bool:
+    raw = str(os.environ.get("ARIA_ENABLE_PROJECTED_RUNTIME_STATUS", "0")).strip()
+    return raw.lower() in {"1", "true", "yes", "on"}
+
+
+def get_runner(
+    notebook_path: str,
+    *,
+    create_if_missing: bool = True,
+    start_projector: bool = False,
+) -> Optional[ExperimentRunner]:
     global _runner
+    if _runner is None and not create_if_missing:
+        return None
     if _runner is None:
+        from ..runner import ExperimentRunner
+
         _runner = ExperimentRunner(notebook_path)
+    if start_projector:
         try:
             start_runtime_event_projector(notebook_path)
         except Exception:
@@ -195,9 +215,11 @@ def get_external_running_experiment_snapshot(
     }
 
 
-def resolve_runner_status(nb: LabNotebook, runner: ExperimentRunner) -> Dict[str, Any]:
+def resolve_runner_status(
+    nb: LabNotebook, runner: Optional[ExperimentRunner]
+) -> Dict[str, Any]:
     """Return dashboard-safe running/progress state for local or external runs."""
-    if runner.is_running:
+    if runner is not None and runner.is_running:
         return {
             "is_running": True,
             "progress": with_native_runner_progress(runner.progress.to_dict()),
@@ -215,19 +237,20 @@ def resolve_runner_status(nb: LabNotebook, runner: ExperimentRunner) -> Dict[str
         }
 
     try:
-        projected = get_projected_running_experiment_snapshot(nb)
-        if projected is not None:
-            return {
-                "is_running": True,
-                "progress": with_native_runner_progress(
-                    _build_external_progress(
-                        projected,
-                        current_stage="runtime_projector",
-                        default_message_prefix="Projected",
-                    )
-                ),
-                "external_snapshot": projected,
-            }
+        if runner is not None and projected_runtime_status_enabled():
+            projected = get_projected_running_experiment_snapshot(nb)
+            if projected is not None:
+                return {
+                    "is_running": True,
+                    "progress": with_native_runner_progress(
+                        _build_external_progress(
+                            projected,
+                            current_stage="runtime_projector",
+                            default_message_prefix="Projected",
+                        )
+                    ),
+                    "external_snapshot": projected,
+                }
 
         external = get_external_running_experiment_snapshot(nb)
     except sqlite3.DatabaseError as exc:
@@ -237,7 +260,9 @@ def resolve_runner_status(nb: LabNotebook, runner: ExperimentRunner) -> Dict[str
             "Runner status falling back to in-memory progress due to malformed DB: %s",
             exc,
         )
-        progress = with_native_runner_progress(runner.progress.to_dict())
+        progress = with_native_runner_progress(
+            runner.progress.to_dict() if runner is not None else LiveProgress().to_dict()
+        )
         progress["database_status"] = {
             "healthy": False,
             "error_type": "malformed",
@@ -251,7 +276,9 @@ def resolve_runner_status(nb: LabNotebook, runner: ExperimentRunner) -> Dict[str
     if not external:
         return {
             "is_running": False,
-            "progress": with_native_runner_progress(runner.progress.to_dict()),
+            "progress": with_native_runner_progress(
+                runner.progress.to_dict() if runner is not None else LiveProgress().to_dict()
+            ),
             "external_snapshot": None,
         }
 
@@ -307,6 +334,19 @@ def get_registry_running_experiment_snapshot(
     state = registry.get(run_id)
     if state is None or state.status != "running":
         return None
+    notebook_row = nb.conn.execute(
+        "SELECT status, started_at, completed_at FROM experiments WHERE experiment_id = ?",
+        (run_id,),
+    ).fetchone()
+    if notebook_row is not None:
+        notebook_status = str(notebook_row["status"] or "").strip().lower()
+        if notebook_status in {"completed", "failed", "cancelled", "canceled"}:
+            logger.debug(
+                "Ignoring stale registry-active run %s because notebook status is %s",
+                run_id,
+                notebook_status,
+            )
+            return None
     payload = dict(state.last_event.payload or {})
     config = _json_dict_or_empty(payload.get("config"))
     mode = str(
@@ -529,7 +569,7 @@ def with_native_runner_progress(
 ) -> Dict[str, Any]:
     payload = dict(progress_payload or {})
     try:
-        payload["native_runner"] = native_runner_capability_report()
+        payload["native_runner"] = native_runner_capability_report(deep=False)
     except Exception as exc:
         payload["native_runner"] = {
             "enabled": False,
@@ -791,7 +831,7 @@ def get_autonomy(notebook_path: str):
         from ..autonomy import AriaAutonomy
         from ..actions import ActionStore
 
-        nb = get_notebook(notebook_path)
+        nb = get_notebook(notebook_path, read_only=False)
         _aria_autonomy = AriaAutonomy(notebook=nb)
         _aria_action_store = ActionStore(nb.conn)
     return _aria_autonomy, _aria_action_store

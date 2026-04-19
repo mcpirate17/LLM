@@ -34,6 +34,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from research.training.loss_ops import clip_grad_norm_, next_token_cross_entropy
+
 logger = logging.getLogger(__name__)
 
 # ── Fixed protocol parameters ──
@@ -241,17 +243,14 @@ def train_reference(
     for step in range(n_steps):
         input_ids = torch.randint(0, VOCAB_SIZE, (BATCH_SIZE, SEQ_LEN), device=dev)
         logits = model(input_ids)
-        loss = F.cross_entropy(
-            logits[:, :-1].reshape(-1, VOCAB_SIZE),
-            input_ids[:, 1:].reshape(-1),
-        )
+        loss = next_token_cross_entropy(logits, input_ids, VOCAB_SIZE)
 
         if initial_loss is None:
             initial_loss = loss.item()
 
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
-        nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        clip_grad_norm_(model, 1.0)
         optimizer.step()
 
         final_loss = loss.item()

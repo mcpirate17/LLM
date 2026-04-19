@@ -29,8 +29,8 @@ def reset_native_runner_telemetry() -> None:
     _SELECTIVE_GUARDRAIL_HISTORY.clear()
 
 
-def native_runner_capability_report() -> Dict[str, Any]:
-    report = capability_handshake()
+def native_runner_capability_report(*, deep: bool = True) -> Dict[str, Any]:
+    report = capability_handshake(deep=deep)
     state = detect_native_state()
     # Phase D: ABI model-only is always active when native is enabled.
     disable_legacy_compile = _env_flag("NATIVE_RUNNER_DISABLE_LEGACY_COMPILE", False)

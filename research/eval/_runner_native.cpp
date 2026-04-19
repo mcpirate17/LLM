@@ -2,35 +2,6 @@
 #include <vector>
 
 #include <torch/extension.h>
-#include <torch/nn/functional/loss.h>
-
-namespace F = torch::nn::functional;
-
-torch::Tensor next_token_cross_entropy(
-    const torch::Tensor& logits,
-    const torch::Tensor& targets,
-    int64_t vocab_size,
-    const std::string& reduction) {
-  TORCH_CHECK(logits.dim() == 3, "logits must be [B,S,V]");
-  TORCH_CHECK(targets.dim() == 2, "targets must be [B,S]");
-  auto score_logits = logits.slice(1, 0, logits.size(1) - 1).contiguous();
-  if (score_logits.size(-1) > vocab_size) {
-    score_logits = score_logits.slice(-1, 0, vocab_size);
-  }
-  auto flat_logits = score_logits.view({-1, score_logits.size(-1)});
-  auto flat_targets =
-      targets.slice(1, 1, targets.size(1)).contiguous().view({-1});
-
-  F::CrossEntropyFuncOptions options;
-  if (reduction == "sum") {
-    options = options.reduction(torch::kSum);
-  } else if (reduction == "none") {
-    options = options.reduction(torch::kNone);
-  } else {
-    options = options.reduction(torch::kMean);
-  }
-  return F::cross_entropy(flat_logits, flat_targets, options);
-}
 
 void sgd_step_inplace(
     torch::Tensor param,
@@ -74,45 +45,6 @@ void adamw_step_inplace(
     param.mul_(1.0 - lr * weight_decay);
   }
   param.addcdiv_(exp_avg, denom, -step_size);
-}
-
-torch::Tensor clip_grad_norm_(
-    const std::vector<torch::Tensor>& grads,
-    double max_norm,
-    double eps) {
-  TORCH_CHECK(max_norm >= 0.0, "max_norm must be non-negative");
-  if (grads.empty()) {
-    return torch::zeros({}, torch::TensorOptions().dtype(torch::kFloat32));
-  }
-
-  const auto options = grads.front().options().dtype(torch::kFloat32);
-  auto total_sq = torch::zeros({}, options);
-  std::vector<torch::Tensor> dense_grads;
-  dense_grads.reserve(grads.size());
-
-  for (const auto& grad : grads) {
-    if (!grad.defined()) {
-      continue;
-    }
-    auto grad_view = grad.detach();
-    if (grad_view.is_sparse()) {
-      grad_view = grad_view.coalesce().values();
-    }
-    total_sq.add_(grad_view.to(torch::kFloat32).pow(2).sum());
-    dense_grads.push_back(grad);
-  }
-
-  if (dense_grads.empty()) {
-    return torch::zeros({}, options);
-  }
-
-  auto total_norm = total_sq.sqrt();
-  auto clip_coef =
-      torch::clamp(torch::full({}, max_norm, options) / (total_norm + eps), 0.0, 1.0);
-  for (auto& grad : dense_grads) {
-    grad.mul_(clip_coef);
-  }
-  return total_norm;
 }
 
 py::dict summarize_training_loop(
@@ -205,13 +137,8 @@ py::dict grad_stats_fused(
 }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-  m.def(
-      "next_token_cross_entropy",
-      &next_token_cross_entropy,
-      "Next-token cross entropy over [B,S,V] logits and [B,S] targets");
   m.def("sgd_step_inplace", &sgd_step_inplace, "In-place SGD update");
   m.def("adamw_step_inplace", &adamw_step_inplace, "In-place AdamW update");
-  m.def("clip_grad_norm_", &clip_grad_norm_, "In-place gradient clipping");
   m.def(
       "summarize_training_loop",
       &summarize_training_loop,

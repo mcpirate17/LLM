@@ -127,12 +127,6 @@ class _CursorResult:
         self._pos = len(self._rows)
         return [_NativeRow(r) for r in remaining]
 
-    def fetchmany(self, size: int = 1) -> list[_NativeRow]:
-        end = min(self._pos + size, len(self._rows))
-        batch = self._rows[self._pos : end]
-        self._pos = end
-        return [_NativeRow(r) for r in batch]
-
     def __iter__(self):
         for row in self._rows[self._pos :]:
             self._pos += 1

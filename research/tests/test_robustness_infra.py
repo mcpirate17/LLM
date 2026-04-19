@@ -25,11 +25,15 @@ class TestRobustnessInfrastructure(unittest.TestCase):
         self.tmp_dir.cleanup()
 
     def _ensure_program_result(self, result_id: str) -> None:
-        """Insert a minimal program_results row so FK constraints are satisfied."""
+        """Insert a program_results row with trust/comparability labels and
+        complete provenance so leaderboard tier promotions are allowed."""
         self.nb.conn.execute(
             "INSERT OR IGNORE INTO program_results "
-            "(result_id, experiment_id, graph_fingerprint, graph_json, timestamp) "
-            "VALUES (?, ?, ?, '{}', datetime('now'))",
+            "(result_id, experiment_id, graph_fingerprint, graph_json, timestamp, "
+            "trust_label, comparability_label, data_provenance_json) "
+            "VALUES (?, ?, ?, '{}', datetime('now'), "
+            "'candidate_grade', 'candidate_comparable', "
+            "'{\"provenance_complete\": true}')",
             (result_id, self._exp_id, f"fp_{result_id}"),
         )
         self.nb.conn.commit()

@@ -31,11 +31,69 @@ from .screening_signal_weights import (
     apply_insight_adjustments,
     build_signal_weight_maps,
 )
-from ._types import RunConfig
+from ._helpers_gate import clear_gpu_memory
+from ._helpers_metrics import (
+    _native_proactive_gating,
+    graph_observed_routing_ops,
+    graph_routing_ops,
+    routing_fast_lane_fields,
+)
+from ._types import RunConfig, LiveProgress
 
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+# These three names live in the sibling execution_screening module. We can't
+# import them at top level because that module imports _this_ module at the
+# bottom of its own body (mixin composition), which creates a circular load.
+# Fetch them lazily from sys.modules — once execution_screening has finished
+# loading (which it always has by the time any runner method is called via
+# an instance), the lookup is a single dict access.
+def _es_mod():
+    from . import execution_screening as _es  # cached after first call
+    return _es
+
+
+def _make_experiment_results() -> Dict[str, Any]:
+    """Create a fresh experiment results dict with all counters zeroed."""
+    return {
+        "total": 0,
+        "stage0_passed": 0,
+        "stage05_passed": 0,
+        "rapid_screening_killed": 0,
+        "rapid_screening_kill_reasons": {},
+        "stage09_passed": 0,
+        "stage1_passed": 0,
+        "novel_count": 0,
+        "best_loss_ratio": None,
+        "best_novelty_score": None,
+        "survivors": [],
+        "skipped_proactive_gating": 0,
+        "proactive_gating_failures": [],
+        "funnel_counts": {
+            "raw_generated": 0,
+            "post_batch_dedup": 0,
+            "judgment_filtered": 0,
+            "post_judgment": 0,
+            "screening_considered": 0,
+            "dropped_runtime_dedup": 0,
+            "dropped_toxic": 0,
+            "dropped_proactive_gating": 0,
+            "dropped_invalid_graph": 0,
+            "dropped_runtime_error": 0,
+            "stage0_attempted": 0,
+            "stage0_passed": 0,
+            "dropped_stage0": 0,
+            "stage05_passed": 0,
+            "dropped_stage05": 0,
+            "stage09_passed": 0,
+            "dropped_stage09": 0,
+            "stage1_passed": 0,
+            "dropped_stage1": 0,
+        },
+    }
 
 
 class _ExecutionScreeningPipelineMixin:
@@ -184,7 +242,7 @@ class _ExecutionScreeningPipelineMixin:
         gate_fail = structural_gate_failure(
             graph,
             routing_mandatory=bool(config.routing_mandatory),
-            efficiency_ops=_EFFICIENCY_OPS,
+            efficiency_ops=_es_mod()._EFFICIENCY_OPS,
             analysis=graph_analysis,
             binding_capable_required=bool(
                 getattr(config, "_capability_first_mode", False)
@@ -276,7 +334,7 @@ class _ExecutionScreeningPipelineMixin:
             },
         )
         if config.persist_screening_failures:
-            _record_screening_failure(
+            _es_mod()._record_screening_failure(
                 nb=nb,
                 exp_id=exp_id,
                 graph=graph,
@@ -469,7 +527,7 @@ class _ExecutionScreeningPipelineMixin:
             if (
                 not math.isnan(_s075_init_loss)
                 and not math.isinf(_s075_init_loss)
-                and _s075_init_loss > INITIAL_LOSS_THRESHOLD
+                and _s075_init_loss > _es_mod().INITIAL_LOSS_THRESHOLD
             ):
                 results["funnel_counts"]["dropped_s075_high_init"] += 1
                 self._emit_event(
@@ -479,11 +537,11 @@ class _ExecutionScreeningPipelineMixin:
                         "fingerprint": fp[:10],
                         "result": "fail_s075",
                         "initial_loss": round(_s075_init_loss, 1),
-                        "threshold": INITIAL_LOSS_THRESHOLD,
+                        "threshold": _es_mod().INITIAL_LOSS_THRESHOLD,
                     },
                 )
                 if config.persist_screening_failures:
-                    _record_screening_failure(
+                    _es_mod()._record_screening_failure(
                         nb=nb,
                         exp_id=exp_id,
                         graph=graph,
@@ -492,7 +550,7 @@ class _ExecutionScreeningPipelineMixin:
                         error_type="high_initial_loss",
                         error_message=(
                             f"initial_loss={_s075_init_loss:.4f} > "
-                            f"{INITIAL_LOSS_THRESHOLD:.4f}"
+                            f"{_es_mod().INITIAL_LOSS_THRESHOLD:.4f}"
                         ),
                         stage_at_death="stage075",
                         stability_score=sandbox_result.stability_score,
@@ -577,7 +635,7 @@ class _ExecutionScreeningPipelineMixin:
                 },
             )
             if config.persist_screening_failures:
-                _record_screening_failure(
+                _es_mod()._record_screening_failure(
                     nb=nb,
                     exp_id=exp_id,
                     graph=graph,
@@ -827,7 +885,7 @@ class _ExecutionScreeningPipelineMixin:
             getattr(config, "enable_stage09_cheap_train_gate", False)
         )
         stage1_config = (
-            _make_stage1_screening_config(config) if stage09_enabled else config
+            _es_mod()._make_stage1_screening_config(config) if stage09_enabled else config
         )
         with self._lock:
             # Z17: Explicitly reset progress object at start of execution

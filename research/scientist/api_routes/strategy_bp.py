@@ -7,7 +7,7 @@ import logging
 import os
 from flask import jsonify, request
 from ..json_utils import json_safe as _json_safe
-from ..runner import RunConfig
+from ..runner._types import RunConfig
 from ..persona import get_aria
 from ._helpers import (
     get_runner,

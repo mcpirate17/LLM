@@ -456,27 +456,32 @@ class _ContinuousLoopMixin:
             if e.get("best_novelty_score") is not None
         ]
         if not novelty_scores:
-            try:
-                row = nb.conn.execute(
-                    "SELECT AVG(novelty_score) as avg_nov FROM program_results "
-                    "WHERE novelty_score IS NOT NULL AND stage1_passed = 1"
-                ).fetchone()
-                if row and row["avg_nov"] is not None:
-                    novelty_scores = [float(row["avg_nov"])]
-            except (sqlite3.OperationalError, ValueError, TypeError) as e:
-                logger.debug("Novelty fallback query failed: %s", e)
+            conn = getattr(nb, "conn", None)
+            if conn is not None:
+                try:
+                    row = conn.execute(
+                        "SELECT AVG(novelty_score) as avg_nov FROM program_results "
+                        "WHERE novelty_score IS NOT NULL AND stage1_passed = 1"
+                    ).fetchone()
+                    if row and row["avg_nov"] is not None:
+                        novelty_scores = [float(row["avg_nov"])]
+                except (sqlite3.OperationalError, RuntimeError, ValueError, TypeError) as e:
+                    logger.debug("Novelty fallback query failed: %s", e)
         return sum(novelty_scores) / len(novelty_scores) if novelty_scores else 0.0
 
     def _fetch_investigated_fingerprints(self, nb: LabNotebook) -> set[str]:
+        conn = getattr(nb, "conn", None)
+        if conn is None:
+            return set()
         try:
-            rows = nb.conn.execute(
+            rows = conn.execute(
                 "SELECT DISTINCT pr.graph_fingerprint "
                 "FROM program_results pr "
                 "JOIN experiments e ON e.experiment_id = pr.experiment_id "
                 "WHERE e.experiment_type = 'investigation'"
             ).fetchall()
             return {row[0] for row in rows if row[0]}
-        except sqlite3.OperationalError as e:
+        except (sqlite3.OperationalError, RuntimeError) as e:
             logger.debug("Investigated fingerprint query failed: %s", e)
             return set()
 
@@ -505,14 +510,17 @@ class _ContinuousLoopMixin:
                 ]
             )
 
+        conn = getattr(nb, "conn", None)
+        if conn is None:
+            return 0
         count = 0
         for row in ready_rows:
             try:
-                fp_row = nb.conn.execute(
+                fp_row = conn.execute(
                     "SELECT graph_fingerprint FROM program_results WHERE result_id = ?",
                     (row["result_id"],),
                 ).fetchone()
-            except sqlite3.OperationalError as e:
+            except (sqlite3.OperationalError, RuntimeError) as e:
                 logger.debug("Fingerprint lookup failed: %s", e)
                 continue
             fp = fp_row[0] if fp_row else None
@@ -568,15 +576,18 @@ class _ContinuousLoopMixin:
     @staticmethod
     def _collect_optimizer_counts(nb: LabNotebook) -> Dict[str, int]:
         optimizer_counts: Dict[str, int] = {}
+        conn = getattr(nb, "conn", None)
+        if conn is None:
+            return optimizer_counts
         try:
-            rows = nb.conn.execute(
+            rows = conn.execute(
                 "SELECT optimizer_name, COUNT(*) as cnt "
                 "FROM program_results WHERE optimizer_name IS NOT NULL "
                 "GROUP BY optimizer_name"
             ).fetchall()
             for row in rows:
                 optimizer_counts[row[0]] = row[1]
-        except sqlite3.OperationalError as e:
+        except (sqlite3.OperationalError, RuntimeError) as e:
             logger.debug(
                 "Optimizer diversity query failed (table may not exist): %s", e
             )
@@ -774,6 +785,10 @@ class _ContinuousLoopMixin:
     def _apply_mode_selection_refinement(
         self, rec: Dict[str, Any], nb: LabNotebook, config: RunConfig
     ) -> Dict[str, Any]:
+        # Safety-valve decisions must survive — refinement cannot override a
+        # plateau-triggered escape mode.
+        if rec.get("safety_valve"):
+            return rec
         refinement_plan = self._build_refinement_plan(nb, config)
         if not refinement_plan or rec.get("mode") in {"investigation", "validation"}:
             return rec
@@ -802,9 +817,11 @@ class _ContinuousLoopMixin:
 
         Periodically re-exploiting proven winners prevents the pipeline from
         spending too long in pure exploration. Only triggers when the current
-        mode is synthesis/novelty/evolve (never overrides investigation or
-        validation).
+        mode is synthesis/evolve (never overrides investigation, validation,
+        or an active safety-valve escape into novelty/ablation-heavy).
         """
+        if rec.get("safety_valve"):
+            return rec
         if n_experiments > 0 and (n_experiments + 1) % 5 == 0:
             if rec.get("mode") not in {"investigation", "validation", "refinement"}:
                 rec["mode"] = "refinement"
@@ -889,9 +906,12 @@ class _ContinuousLoopMixin:
             ],
             "trigger": trigger,
         }
+        record_fn = getattr(nb, "record_selection_decision", None)
+        if record_fn is None:
+            return
         try:
             validate_selection_decision_log(decision_log)
-            nb.record_selection_decision(
+            record_fn(
                 context="mode_selection",
                 experiment_id=None,
                 candidate_pool_summary=decision_log["candidate_pool_summary"],
@@ -901,7 +921,7 @@ class _ContinuousLoopMixin:
                 chosen_experiments=decision_log["chosen_experiments"],
                 trigger=decision_log["trigger"],
             )
-        except (ValueError, sqlite3.OperationalError) as log_err:
+        except (ValueError, sqlite3.OperationalError, RuntimeError) as log_err:
             logger.warning("Mode selection decision log failed: %s", log_err)
 
     def _run_continuous_thread_inner(self, config: RunConfig):

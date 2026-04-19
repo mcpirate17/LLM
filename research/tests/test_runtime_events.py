@@ -1706,7 +1706,9 @@ def test_runtime_event_services_are_singleton_per_notebook_root(tmp_path):
         second = get_runtime_event_services(path)
 
         assert first is second
-        assert first.projector_worker.health_snapshot().running is False
+        # projector_worker is lazily created when start_projector=True;
+        # projector_health() returns a snapshot with running=False either way.
+        assert first.projector_health().running is False
     finally:
         nb.close()
         stop_runtime_event_services(path)

@@ -36,7 +36,7 @@ class RuntimeLifecycleRegistry:
         self.spool_unhealthy = False
         self.projector_unhealthy = False
 
-    def consume(self, event: RuntimeEvent) -> None:
+    def consume(self, event: RuntimeEvent, *, quiet: bool = False) -> None:
         if event.event_type not in LIFECYCLE_EVENT_TYPES or not event.run_id:
             return
         current = self._states.get(event.run_id)
@@ -44,13 +44,14 @@ class RuntimeLifecycleRegistry:
         next_event = self._machine.transition(
             current.last_event if current is not None else None,
             event,
+            quiet=quiet,
         )
         self._states[event.run_id] = RuntimeLifecycleState(
             run_id=event.run_id,
             last_event=next_event,
         )
         new_status = self._states[event.run_id].status
-        if new_status != prev_status:
+        if new_status != prev_status and not quiet:
             logger.info(
                 "Registry state change: run_id=%s %s -> %s (event=%s producer=%s)",
                 event.run_id,

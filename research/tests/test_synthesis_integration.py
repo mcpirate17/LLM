@@ -525,7 +525,8 @@ class TestGrammarWeightPersistence(unittest.TestCase):
         import inspect
         from research.scientist.runner import ExperimentRunner
 
-        src = inspect.getsource(ExperimentRunner._execute_experiment)
+        # Distribution shift is captured in the generate-and-filter helper.
+        src = inspect.getsource(ExperimentRunner._generate_and_filter_candidates)
         self.assertIn("generated_op_distribution", src)
         self.assertIn("generation_distribution_shift", src)
         self.assertIn("architecture_distribution_shift", src)
@@ -535,7 +536,8 @@ class TestGrammarWeightPersistence(unittest.TestCase):
         import inspect
         from research.scientist.runner import ExperimentRunner
 
-        src = inspect.getsource(ExperimentRunner._execute_experiment)
+        # Learned-grammar event emission lives in the grammar-prep helper.
+        src = inspect.getsource(ExperimentRunner._prepare_grammar_config)
         self.assertIn('"max_depth": int(config.max_depth)', src)
         self.assertIn('"max_ops": int(config.max_ops)', src)
         self.assertIn("Applied learned grammar weights (", src)

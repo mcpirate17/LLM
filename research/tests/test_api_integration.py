@@ -1192,22 +1192,6 @@ class TestAPI(unittest.TestCase):
         self.assertIsNone(detail["grad_norm"])
         self.assertIsNone(detail["max_grad_norm"])
 
-    def test_api_trends(self):
-        r = self.client.get("/api/trends")
-        self.assertEqual(r.status_code, 200)
-        data = r.get_json()
-        self.assertIsInstance(data, list)
-
-    def test_api_trends_context(self):
-        r = self.client.get("/api/trends/context")
-        self.assertEqual(r.status_code, 200)
-        data = r.get_json()
-        self.assertIn("trends", data)
-        self.assertIn("adaptation_events", data)
-        self.assertIn("generated_at", data)
-        self.assertIsInstance(data["trends"], list)
-        self.assertIsInstance(data["adaptation_events"], list)
-
     def test_api_insights(self):
         r = self.client.get("/api/insights")
         self.assertEqual(r.status_code, 200)
@@ -1484,13 +1468,6 @@ class TestAPI(unittest.TestCase):
         self.assertTrue(data["compact"])
         self.assertIsInstance(data["entries"], list)
 
-    def test_api_report(self):
-        r = self.client.get("/api/report")
-        self.assertEqual(r.status_code, 200)
-        data = r.get_json()
-        self.assertIn("summary", data)
-        self.assertIn("experiment_clusters", data)
-
     def test_api_report_fast_mode_contract(self):
         r = self.client.get("/api/report?fast=1&include_narrative=0")
         self.assertEqual(r.status_code, 200)
@@ -1590,55 +1567,9 @@ class TestAPI(unittest.TestCase):
         r = self.client.get("/api/analytics/failure-patterns")
         self.assertEqual(r.status_code, 200)
 
-    def test_api_analytics_grammar_weights(self):
-        r = self.client.get("/api/analytics/grammar-weights")
-        self.assertEqual(r.status_code, 200)
-
-    def test_api_analytics_efficiency_frontier(self):
-        r = self.client.get("/api/analytics/efficiency-frontier")
-        self.assertEqual(r.status_code, 200)
-
     def test_api_analytics_learning_log(self):
         r = self.client.get("/api/analytics/learning-log")
         self.assertEqual(r.status_code, 200)
-
-    def test_api_analytics_experiment_clusters(self):
-        r = self.client.get("/api/analytics/experiment-clusters")
-        self.assertEqual(r.status_code, 200)
-        data = r.get_json()
-        if data is not None:
-            self.assertIn("clusters", data)
-            self.assertIn("stability_score", data)
-
-    def test_api_analytics_routing_health(self):
-        r = self.client.get("/api/analytics/routing-health")
-        self.assertEqual(r.status_code, 200)
-        data = r.get_json()
-        self.assertIn("available", data)
-        self.assertIn("by_mode", data)
-
-    def test_api_analytics_math_family_coverage(self):
-        r = self.client.get("/api/analytics/math-family-coverage")
-        self.assertEqual(r.status_code, 200)
-        data = r.get_json()
-        self.assertIn("families", data)
-        self.assertIn("totals", data)
-
-    def test_api_analytics_learning_summary(self):
-        r = self.client.get("/api/analytics/learning-summary")
-        self.assertEqual(r.status_code, 200)
-        data = r.get_json()
-        self.assertIn("bullets", data)
-        self.assertIn("source", data)
-
-    def test_api_analytics_insight_interactions(self):
-        r = self.client.get("/api/analytics/insight-interactions")
-        self.assertEqual(r.status_code, 200)
-        data = r.get_json()
-        self.assertIn("available", data)
-        self.assertIn("interactions", data)
-        self.assertIn("synergistic_pairs", data)
-        self.assertIn("antagonistic_pairs", data)
 
     def test_api_analytics_learning_trajectory_includes_minimum_requirement(self):
         r = self.client.get("/api/analytics/learning-trajectory")

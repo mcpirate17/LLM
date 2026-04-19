@@ -48,7 +48,7 @@ def malformed_db_response_payload(exc: Exception) -> Dict[str, Any]:
     }
 
 
-def with_notebook_context(notebook_path: str):
+def with_notebook_context(notebook_path: str, *, read_only: bool | None = None):
     """Decorator factory: injects a shared ``nb`` kwarg and catches
     unhandled exceptions with a standard JSON error response.
 
@@ -65,8 +65,15 @@ def with_notebook_context(notebook_path: str):
     def decorator(fn):
         @functools.wraps(fn)
         def wrapper(*args, **kwargs):
+            method = str(getattr(request, "method", "GET") or "GET").upper()
+            effective_read_only = (
+                read_only
+                if read_only is not None
+                else method in {"GET", "HEAD", "OPTIONS"}
+            )
+            nb = None
             try:
-                nb = get_notebook(notebook_path)
+                nb = get_notebook(notebook_path, read_only=effective_read_only)
             except sqlite3.OperationalError as e:
                 logger.warning(
                     "%s %s -> 503 (db locked during init): %s",
@@ -135,6 +142,17 @@ def with_notebook_context(notebook_path: str):
             except Exception as e:
                 logger.error("Error in %s: %s", request.path, e, exc_info=True)
                 return jsonify({"error": str(e)}), 500
+            finally:
+                if nb is not None:
+                    try:
+                        nb.close()
+                    except Exception:
+                        logger.debug(
+                            "Failed closing notebook for %s %s",
+                            request.method,
+                            request.path,
+                            exc_info=True,
+                        )
 
         return wrapper
 

@@ -17,7 +17,6 @@ from ..leaderboard_scoring import (
     compute_efficiency_multiple as _compute_efficiency_multiple,
     compute_pre_investigation_score as _compute_pre_investigation_score,
 )
-from ...synthesis.templates import TEMPLATES
 
 _TEMPLATE_DEF_RE = re.compile(r"^def\s+(tpl_[A-Za-z0-9_]+)\s*\(", re.M)
 _EMPTY_DATA_ACCOUNTING_SHAPE = {
@@ -31,10 +30,30 @@ _EMPTY_DATA_ACCOUNTING_SHAPE = {
 
 
 @lru_cache(maxsize=1)
-def _load_eval_native_module():
-    from ...eval._eval_native import load_eval_native
+def _synthesis_dir() -> Path:
+    return Path(__file__).resolve().parents[2] / "synthesis"
 
-    return load_eval_native()
+
+@lru_cache(maxsize=1)
+def _load_template_source_map() -> Dict[str, str]:
+    template_sources: Dict[str, str] = {}
+    for template_file in sorted(_synthesis_dir().glob("_templates*.py")):
+        try:
+            source = template_file.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        matches = list(_TEMPLATE_DEF_RE.finditer(source))
+        for idx, match in enumerate(matches):
+            name = match.group(1).removeprefix("tpl_")
+            start = match.start()
+            end = matches[idx + 1].start() if idx + 1 < len(matches) else len(source)
+            template_sources[name] = source[start:end]
+    return template_sources
+
+
+@lru_cache(maxsize=1)
+def _discover_template_names() -> tuple[str, ...]:
+    return tuple(sorted(_load_template_source_map()))
 
 
 @lru_cache(maxsize=8192)
@@ -203,30 +222,10 @@ def _classify_template_structural(name: str) -> str:
         _STRUCTURAL_CATEGORY_CACHE[name] = "strong"
         return "strong"
 
-    # Inspect source code — check both the function itself and any
-    # factory function it delegates to
-    import inspect
-
-    fn = TEMPLATES.get(name)
-    if fn is None:
+    src = _load_template_source_map().get(name, "")
+    if not src:
         _STRUCTURAL_CATEGORY_CACHE[name] = "weak"
         return "weak"
-
-    # Collect source from the function and any wrapper it calls
-    src_parts = []
-    try:
-        src_parts.append(inspect.getsource(fn))
-    except (TypeError, OSError):
-        pass
-
-    # For factory-generated templates, also check the factory function
-    if hasattr(fn, "__wrapped__"):
-        try:
-            src_parts.append(inspect.getsource(fn.__wrapped__))
-        except (TypeError, OSError):
-            pass
-
-    src = "\n".join(src_parts) if src_parts else ""
     # Also check if the function delegates to a known factory
     is_factory = (
         "_tpl_attention_ffn_block" in src
@@ -455,120 +454,89 @@ def _summarize_template_stat(stat: Dict[str, Any]) -> Dict[str, Any]:
     top_reason = None
     if reasons:
         top_reason = max(reasons.items(), key=lambda item: item[1])[0]
-    try:
-        core = _load_eval_native_module().summarize_template_stat_core(
-            int(stat["n_used"] or 0),
-            int(stat["n_stage0"] or 0),
-            int(stat["n_stage05"] or 0),
-            int(stat["n_stage1"] or 0),
-            [float(v) for v in losses],
-            [float(v) for v in validation_vals],
-            [float(v) for v in discovery_vals],
-            [float(v) for v in novelties],
-            [float(v) for v in novelty_confidences],
-            [float(v) for v in induction_aucs],
-            [float(v) for v in binding_aucs],
-            [float(v) for v in ar_aucs],
-            [float(v) for v in hellaswag_accs],
-            [float(v) for v in screening_hellaswag_accs],
-            int(stat.get("screening_wikitext_ok") or 0),
-            int(stat.get("screening_wikitext_runs") or 0),
-            int(stat.get("slot_count") or 0),
-            int(stat.get("routing_fast_lane_runs") or 0),
-            int(stat.get("routing_fast_lane_ok") or 0),
-            int(stat.get("routing_fast_lane_positive") or 0),
-            [float(v) for v in fast_lane_scores],
-            [float(v) for v in fast_lane_improvements],
-            [float(v) for v in fast_lane_slopes],
-        )
-    except Exception:
-        n_used = int(stat["n_used"] or 0)
-        core = {
-            "n_used": n_used,
-            "s0_rate": stat["n_stage0"] / max(n_used, 1),
-            "s05_rate": stat["n_stage05"] / max(n_used, 1),
-            "s1_rate": stat["n_stage1"] / max(n_used, 1),
-            "avg_loss_ratio": sum(losses) / len(losses) if losses else None,
-            "best_loss_ratio": min(losses) if losses else None,
-            "avg_validation_loss_ratio": (
-                sum(validation_vals) / len(validation_vals) if validation_vals else None
-            ),
-            "avg_discovery_loss_ratio": (
-                sum(discovery_vals) / len(discovery_vals) if discovery_vals else None
-            ),
-            "avg_novelty": (sum(novelties) / len(novelties) if novelties else None),
-            "avg_novelty_confidence": (
-                sum(novelty_confidences) / len(novelty_confidences)
-                if novelty_confidences
-                else None
-            ),
-            "avg_induction_auc": (
-                sum(induction_aucs) / len(induction_aucs) if induction_aucs else None
-            ),
-            "avg_binding_auc": (
-                sum(binding_aucs) / len(binding_aucs) if binding_aucs else None
-            ),
-            "avg_ar_auc": sum(ar_aucs) / len(ar_aucs) if ar_aucs else None,
-            "avg_hellaswag_acc": (
-                sum(hellaswag_accs) / len(hellaswag_accs) if hellaswag_accs else None
-            ),
-            "avg_screening_hellaswag_acc": (
-                sum(screening_hellaswag_accs) / len(screening_hellaswag_accs)
-                if screening_hellaswag_accs
-                else None
-            ),
-            "screening_wikitext_ok_rate": (
-                int(stat.get("screening_wikitext_ok") or 0)
-                / max(int(stat.get("screening_wikitext_runs") or 0), 1)
-                if stat.get("screening_wikitext_runs")
-                else None
-            ),
-            "screening_metric_coverage": {
-                "induction": len(induction_aucs),
-                "binding": len(binding_aucs),
-                "associative_recall": len(ar_aucs),
-                "hellaswag": len(hellaswag_accs) + len(screening_hellaswag_accs),
-                "wikitext": int(stat.get("screening_wikitext_runs") or 0),
-            },
-            "slot_count": int(stat.get("slot_count") or 0),
-            "routing_fast_lane_runs": int(stat.get("routing_fast_lane_runs") or 0),
-            "routing_fast_lane_ok_rate": (
-                int(stat.get("routing_fast_lane_ok") or 0)
-                / max(int(stat.get("routing_fast_lane_runs") or 0), 1)
-                if stat.get("routing_fast_lane_runs")
-                else None
-            ),
-            "routing_fast_lane_positive_rate": (
-                int(stat.get("routing_fast_lane_positive") or 0)
-                / max(int(stat.get("routing_fast_lane_runs") or 0), 1)
-                if stat.get("routing_fast_lane_runs")
-                else None
-            ),
-            "routing_fast_lane_avg_score": (
-                sum(fast_lane_scores) / len(fast_lane_scores)
-                if fast_lane_scores
-                else None
-            ),
-            "routing_fast_lane_avg_improvement": (
-                sum(fast_lane_improvements) / len(fast_lane_improvements)
-                if fast_lane_improvements
-                else None
-            ),
-            "routing_fast_lane_avg_slope": (
-                sum(fast_lane_slopes) / len(fast_lane_slopes)
-                if fast_lane_slopes
-                else None
-            ),
-            "evidence_level": (
-                "insufficient"
-                if n_used < 3
-                else "sparse"
-                if n_used < 10
-                else "building"
-                if n_used < 30
-                else "established"
-            ),
-        }
+    n_used = int(stat["n_used"] or 0)
+    core = {
+        "n_used": n_used,
+        "s0_rate": stat["n_stage0"] / max(n_used, 1),
+        "s05_rate": stat["n_stage05"] / max(n_used, 1),
+        "s1_rate": stat["n_stage1"] / max(n_used, 1),
+        "avg_loss_ratio": sum(losses) / len(losses) if losses else None,
+        "best_loss_ratio": min(losses) if losses else None,
+        "avg_validation_loss_ratio": (
+            sum(validation_vals) / len(validation_vals) if validation_vals else None
+        ),
+        "avg_discovery_loss_ratio": (
+            sum(discovery_vals) / len(discovery_vals) if discovery_vals else None
+        ),
+        "avg_novelty": (sum(novelties) / len(novelties) if novelties else None),
+        "avg_novelty_confidence": (
+            sum(novelty_confidences) / len(novelty_confidences)
+            if novelty_confidences
+            else None
+        ),
+        "avg_induction_auc": (
+            sum(induction_aucs) / len(induction_aucs) if induction_aucs else None
+        ),
+        "avg_binding_auc": (
+            sum(binding_aucs) / len(binding_aucs) if binding_aucs else None
+        ),
+        "avg_ar_auc": sum(ar_aucs) / len(ar_aucs) if ar_aucs else None,
+        "avg_hellaswag_acc": (
+            sum(hellaswag_accs) / len(hellaswag_accs) if hellaswag_accs else None
+        ),
+        "avg_screening_hellaswag_acc": (
+            sum(screening_hellaswag_accs) / len(screening_hellaswag_accs)
+            if screening_hellaswag_accs
+            else None
+        ),
+        "screening_wikitext_ok_rate": (
+            int(stat.get("screening_wikitext_ok") or 0)
+            / max(int(stat.get("screening_wikitext_runs") or 0), 1)
+            if stat.get("screening_wikitext_runs")
+            else None
+        ),
+        "screening_metric_coverage": {
+            "induction": len(induction_aucs),
+            "binding": len(binding_aucs),
+            "associative_recall": len(ar_aucs),
+            "hellaswag": len(hellaswag_accs) + len(screening_hellaswag_accs),
+            "wikitext": int(stat.get("screening_wikitext_runs") or 0),
+        },
+        "slot_count": int(stat.get("slot_count") or 0),
+        "routing_fast_lane_runs": int(stat.get("routing_fast_lane_runs") or 0),
+        "routing_fast_lane_ok_rate": (
+            int(stat.get("routing_fast_lane_ok") or 0)
+            / max(int(stat.get("routing_fast_lane_runs") or 0), 1)
+            if stat.get("routing_fast_lane_runs")
+            else None
+        ),
+        "routing_fast_lane_positive_rate": (
+            int(stat.get("routing_fast_lane_positive") or 0)
+            / max(int(stat.get("routing_fast_lane_runs") or 0), 1)
+            if stat.get("routing_fast_lane_runs")
+            else None
+        ),
+        "routing_fast_lane_avg_score": (
+            sum(fast_lane_scores) / len(fast_lane_scores) if fast_lane_scores else None
+        ),
+        "routing_fast_lane_avg_improvement": (
+            sum(fast_lane_improvements) / len(fast_lane_improvements)
+            if fast_lane_improvements
+            else None
+        ),
+        "routing_fast_lane_avg_slope": (
+            sum(fast_lane_slopes) / len(fast_lane_slopes) if fast_lane_slopes else None
+        ),
+        "evidence_level": (
+            "insufficient"
+            if n_used < 3
+            else "sparse"
+            if n_used < 10
+            else "building"
+            if n_used < 30
+            else "established"
+        ),
+    }
     n_used = int(core["n_used"])
     s0_rate = core["s0_rate"]
     s05_rate = core["s05_rate"]
@@ -683,4 +651,3 @@ def _empty_template_stat(name: str, slot_count: int) -> Dict[str, Any]:
         "routing_fast_lane_improvements": [],
         "routing_fast_lane_slopes": [],
     }
-

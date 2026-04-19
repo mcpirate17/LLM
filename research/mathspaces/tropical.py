@@ -67,18 +67,6 @@ def _smooth_min(
     return -adaptive_tau * torch.logsumexp(stacked, dim=0)
 
 
-def _smooth_min_dim(
-    x: torch.Tensor, dim: int, tau: float = _SMOOTH_TAU
-) -> torch.Tensor:
-    """Smooth minimum reduction along a dimension via log-sum-exp.
-
-    Replaces x.min(dim=dim).values with a differentiable version.
-    """
-    adaptive_tau = _adaptive_temperature(tau, x.shape[dim])
-    inv_tau = 1.0 / adaptive_tau
-    return -adaptive_tau * torch.logsumexp(-x * inv_tau, dim=dim)
-
-
 def tropical_add(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
     """Tropical addition: element-wise smooth minimum."""
     if (

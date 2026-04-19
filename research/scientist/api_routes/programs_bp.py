@@ -8,9 +8,8 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 from flask import jsonify, request
-from ..runner import RunConfig
+from ..runner._types import RunConfig
 from ..refinement_scoring import oscillation_risk_score
-from research.tools.exact_graph_replay import start_exact_replay_async
 from ._helpers import get_runner
 from ..json_utils import json_safe
 from ._strategy_recommendations import (
@@ -20,7 +19,6 @@ from ._strategy_recommendations import (
 )
 from .deps import ApiRouteContext
 from ._utils import bind_notebook_view, with_notebook_context
-from ..screening_recompute import recompute_screening_metrics
 
 logger = logging.getLogger(__name__)
 
@@ -551,6 +549,8 @@ def _api_program_external_benchmarks(result_id, nb=None):
 
 
 def _api_program_backfill_metrics(notebook_path: str, result_id, nb=None):
+    from ..screening_recompute import recompute_screening_metrics
+
     program = nb.get_program_detail(result_id)
     if not program:
         return jsonify({"error": "Program not found"}), 404
@@ -746,6 +746,8 @@ def _api_program_backfill_loss(notebook_path: str, result_id, nb=None):
 
 
 def _api_program_rescreen(notebook_path: str, result_id, nb=None):
+    from research.tools.exact_graph_replay import start_exact_replay_async
+
     program = nb.get_program_detail(result_id)
     if program is None:
         program = _leaderboard_backed_program_detail(nb, result_id)

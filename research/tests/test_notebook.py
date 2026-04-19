@@ -741,8 +741,8 @@ class TestNotebook(unittest.TestCase):
         self.nb.flush_writes()
 
         with patch(
-            "research.scientist.notebook.notebook_misc.TEMPLATES",
-            {"attn_sparse_test": object(), "attn_strong_test": object()},
+            "research.scientist.notebook.notebook_observability._discover_template_names",
+            return_value=("attn_sparse_test", "attn_strong_test"),
         ):
             summary = self.nb.get_template_slot_observability(limit=8)
 
@@ -812,8 +812,8 @@ class TestNotebook(unittest.TestCase):
         self.nb.flush_writes()
 
         with patch(
-            "research.scientist.notebook.notebook_misc.TEMPLATES",
-            {"attn_active_test": object()},
+            "research.scientist.notebook.notebook_observability._discover_template_names",
+            return_value=("attn_active_test",),
         ):
             summary = self.nb.get_template_slot_observability(limit=8)
 
@@ -826,11 +826,11 @@ class TestNotebook(unittest.TestCase):
     def test_template_slot_observability_includes_zero_run_active_templates(self):
         """Active templates should appear in observability even before any runs land."""
         with patch(
-            "research.scientist.notebook.notebook_misc.TEMPLATES",
-            {
-                "codex_ssm_retention_block": object(),
-                "codex_ssm_delta_memory_block": object(),
-            },
+            "research.scientist.notebook.notebook_observability._discover_template_names",
+            return_value=(
+                "codex_ssm_retention_block",
+                "codex_ssm_delta_memory_block",
+            ),
         ):
             summary = self.nb.get_template_slot_observability(limit=8)
 
@@ -926,12 +926,12 @@ class TestNotebook(unittest.TestCase):
         self.nb.flush_writes()
 
         with patch(
-            "research.scientist.notebook.notebook_misc.TEMPLATES",
-            {
-                "gpt2_reference": object(),
-                "attn_family_winner": object(),
-                "attn_sparse_candidate": object(),
-            },
+            "research.scientist.notebook.notebook_observability._discover_template_names",
+            return_value=(
+                "gpt2_reference",
+                "attn_family_winner",
+                "attn_sparse_candidate",
+            ),
         ):
             summary = self.nb.get_template_slot_observability(limit=8)
 
@@ -1000,8 +1000,8 @@ class TestNotebook(unittest.TestCase):
         self.nb.flush_writes()
 
         with patch(
-            "research.scientist.notebook.notebook_misc.TEMPLATES",
-            {"depth_gated_block": object(), "control_template": object()},
+            "research.scientist.notebook.notebook_observability._discover_template_names",
+            return_value=("depth_gated_block", "control_template"),
         ):
             summary = self.nb.get_template_slot_observability(limit=8)
 

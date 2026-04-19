@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 import time
-from typing import Any, Dict, List
+from typing import TYPE_CHECKING, Any, Dict, List
 
-from ..notebook import LabNotebook
+if TYPE_CHECKING:
+    from ..notebook import LabNotebook
+
+logger = logging.getLogger(__name__)
 
 
 def diagnose_research_issues(

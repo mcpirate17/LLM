@@ -135,15 +135,14 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Backpopulate missing screening/probe metrics in-place"
     )
-    parser.add_argument("--db", type=Path, default=DB_PATH)
-    parser.add_argument(
-        "--device", default="cuda" if torch.cuda.is_available() else "cpu"
-    )
-    parser.add_argument("--limit", type=int, default=0)
-    parser.add_argument("--result-id", action="append", default=[])
-    parser.add_argument("--from-report", type=Path)
-    parser.add_argument("--force", action="store_true")
-    parser.add_argument(
+    add = parser.add_argument
+    add("--db", type=Path, default=DB_PATH)
+    add("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    add("--limit", type=int, default=0)
+    add("--result-id", action="append", default=[])
+    add("--from-report", type=Path)
+    add("--force", action="store_true")
+    add(
         "--selection-slice",
         choices=("backfill", "trusted_candidates", "nonref_unique_fingerprints"),
         default=DEFAULT_SELECTION_SLICE,
@@ -155,95 +154,59 @@ def _parse_args() -> argparse.Namespace:
             "non-reference graph fingerprint."
         ),
     )
-    parser.add_argument(
-        "--balance-by-family",
-        action="store_true",
-        help=(
-            "When selecting without explicit result ids, interleave graph families "
-            "so dense/sparse/routing/moe coverage grows more evenly."
-        ),
+    add(
+        "--balance-by-family", action="store_true",
+        help="When selecting without explicit result ids, interleave graph families "
+             "so dense/sparse/routing/moe coverage grows more evenly.",
     )
-    parser.add_argument("--skip-rapid", action="store_true")
-    parser.add_argument("--skip-post-train", action="store_true")
-    parser.add_argument(
-        "--post-train-target",
-        type=_normalize_post_target,
-        default="full",
-        help=(
-            "Which post-train metric family to backfill: "
-            "'one'/'hellaswag', 'two'/'binding' (induction+binding AUCs), "
-            "'induction', 'all' (hellaswag+induction+binding probes), "
-            "or 'full' (legacy full post-train, including wikitext)."
-        ),
+    add("--skip-rapid", action="store_true")
+    add("--skip-post-train", action="store_true")
+    add(
+        "--post-train-target", type=_normalize_post_target, default="full",
+        help="Which post-train metric family to backfill: "
+             "'one'/'hellaswag', 'two'/'binding' (induction+binding AUCs), "
+             "'induction', 'all' (hellaswag+induction+binding probes), "
+             "or 'full' (legacy full post-train, including wikitext).",
     )
-    parser.add_argument(
-        "--allow-insufficient-learning-metrics",
-        action="store_true",
-        help=(
-            "For backpopulate only, keep post-train screening/probe metrics even "
-            "when CUDA replay fails only due to the validation-loss generalization gate."
-        ),
+    add(
+        "--allow-insufficient-learning-metrics", action="store_true",
+        help="For backpopulate only, keep post-train screening/probe metrics even "
+             "when CUDA replay fails only due to the validation-loss generalization gate.",
     )
-    parser.add_argument("--batch-commit", type=int, default=DEFAULT_BATCH_COMMIT)
-    parser.add_argument(
-        "--max-consecutive-failures",
-        type=int,
+    add("--batch-commit", type=int, default=DEFAULT_BATCH_COMMIT)
+    add(
+        "--max-consecutive-failures", type=int,
         default=DEFAULT_MAX_CONSECUTIVE_FAILURES,
-        help=(
-            "Stop the run after this many row-level failures in a row to avoid "
-            "burning long CUDA batches on catastrophic tool/runtime failures."
-        ),
+        help="Stop the run after this many row-level failures in a row to avoid "
+             "burning long CUDA batches on catastrophic tool/runtime failures.",
     )
-    parser.add_argument(
-        "--worker-timeout-seconds",
-        type=_parse_optional_int,
+    add(
+        "--worker-timeout-seconds", type=_parse_optional_int,
         default=DEFAULT_WORKER_TIMEOUT_SECONDS,
         help="Hard timeout for a single isolated replay worker. Use 'none' or 'null' for no timeout.",
     )
-    parser.add_argument("--report", type=Path, default=REPORT_PATH)
-    parser.add_argument(
-        "--post-train-stability-runs",
-        type=int,
+    add("--report", type=Path, default=REPORT_PATH)
+    add(
+        "--post-train-stability-runs", type=int,
         default=DEFAULT_POST_TRAIN_STABILITY_RUNS,
-        help=(
-            "Repeat post-train CUDA replay this many times and fail closed when "
-            "key metrics drift beyond tolerance."
-        ),
+        help="Repeat post-train CUDA replay this many times and fail closed when "
+             "key metrics drift beyond tolerance.",
     )
-    parser.add_argument(
-        "--stability-wikitext-rel-tol",
-        type=float,
-        default=0.10,
-        help="Maximum allowed relative drift for wikitext_perplexity.",
-    )
-    parser.add_argument(
-        "--stability-hellaswag-abs-tol",
-        type=float,
-        default=0.05,
-        help="Maximum allowed absolute drift for hellaswag_acc.",
-    )
-    parser.add_argument(
-        "--stability-probe-abs-tol",
-        type=float,
-        default=0.01,
-        help=("Maximum allowed absolute drift for induction/binding probe metrics."),
-    )
-    parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument(
-        "--isolate-subprocess",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-    )
-    parser.add_argument(
-        "--fallback-device",
-        default="none",
-        help="Disabled. CUDA failures are treated as unrecovered; keep this as 'none'.",
-    )
-    parser.add_argument("--worker-payload", type=Path, help=argparse.SUPPRESS)
-    parser.add_argument("--worker-output", type=Path, help=argparse.SUPPRESS)
-    parser.add_argument("--audit-prefix", default="", help=argparse.SUPPRESS)
-    parser.add_argument("--audit-experiment-id", default="", help=argparse.SUPPRESS)
-    parser.add_argument("--audit-source-script", default="", help=argparse.SUPPRESS)
+    add("--stability-wikitext-rel-tol", type=float, default=0.10,
+        help="Maximum allowed relative drift for wikitext_perplexity.")
+    add("--stability-hellaswag-abs-tol", type=float, default=0.05,
+        help="Maximum allowed absolute drift for hellaswag_acc.")
+    add("--stability-probe-abs-tol", type=float, default=0.01,
+        help="Maximum allowed absolute drift for induction/binding probe metrics.")
+    add("--dry-run", action="store_true")
+    add("--isolate-subprocess", action=argparse.BooleanOptionalAction, default=True)
+    add("--fallback-device", default="none",
+        help="Disabled. CUDA failures are treated as unrecovered; keep this as 'none'.")
+    add("--worker-payload", type=Path, help=argparse.SUPPRESS)
+    add("--worker-output", type=Path, help=argparse.SUPPRESS)
+    add("--audit-prefix", default="", help=argparse.SUPPRESS)
+    add("--audit-experiment-id", default="", help=argparse.SUPPRESS)
+    add("--audit-source-script", default="", help=argparse.SUPPRESS)
     return parser.parse_args()
 
 
@@ -1388,32 +1351,111 @@ def _print_backpopulate_summary(
     )
 
 
+def _run_worker_mode(args: argparse.Namespace) -> None:
+    """Standalone worker: process one payload file and write the result."""
+    payload = json.loads(args.worker_payload.read_text(encoding="utf-8"))
+    try:
+        result = _evaluate_row_payload(
+            payload=payload,
+            device=args.device,
+            force=args.force,
+            skip_rapid=args.skip_rapid,
+            skip_post_train=args.skip_post_train,
+            post_train_stability_runs=args.post_train_stability_runs,
+            stability_wikitext_rel_tol=args.stability_wikitext_rel_tol,
+            stability_hellaswag_abs_tol=args.stability_hellaswag_abs_tol,
+            stability_probe_abs_tol=args.stability_probe_abs_tol,
+            allow_insufficient_learning_metrics=args.allow_insufficient_learning_metrics,
+            post_train_target=args.post_train_target,
+            selection_slice=args.selection_slice,
+        )
+        result["ok"] = 1
+    except Exception as exc:  # noqa: BLE001
+        result = {"ok": 0, "error": str(exc)}
+    args.worker_output.write_text(json.dumps(result), encoding="utf-8")
+
+
+def _evaluate_one_row(
+    row: sqlite3.Row, args: argparse.Namespace
+) -> tuple[int, int, Dict[str, Any]]:
+    """Run a row through worker (in-process or subprocess). Returns (rapid_needed, post_needed, updates)."""
+    if args.isolate_subprocess:
+        worker = _run_worker_subprocess(row, args)
+    else:
+        worker = _evaluate_row_payload(
+            payload=_row_to_payload(row),
+            device=args.device,
+            force=args.force,
+            skip_rapid=args.skip_rapid,
+            skip_post_train=args.skip_post_train,
+            post_train_stability_runs=args.post_train_stability_runs,
+            stability_wikitext_rel_tol=args.stability_wikitext_rel_tol,
+            stability_hellaswag_abs_tol=args.stability_hellaswag_abs_tol,
+            stability_probe_abs_tol=args.stability_probe_abs_tol,
+            allow_insufficient_learning_metrics=args.allow_insufficient_learning_metrics,
+            post_train_target=args.post_train_target,
+            selection_slice=args.selection_slice,
+        )
+    return (
+        int(worker.get("rapid_needed") or 0),
+        int(worker.get("post_needed") or 0),
+        dict(worker.get("updates") or {}),
+    )
+
+
+def _process_row(
+    nb: LabNotebook,
+    row: sqlite3.Row,
+    args: argparse.Namespace,
+    target_post_fields: Sequence[str],
+) -> Dict[str, Any]:
+    """Process one row and return a report entry. Status reflects what happened."""
+    rapid_needed = (not args.skip_rapid) and _needs_rapid(row, args.force)
+    post_needed = (not args.skip_post_train) and _needs_post_train(
+        row, args.force, target_post_fields
+    )
+    status = "skipped"
+    err = ""
+    updates: Dict[str, Any] = {}
+    source_device = str(args.device)
+    try:
+        rapid_needed, post_needed, updates = _evaluate_one_row(row, args)
+        if updates and not args.dry_run:
+            # Keep the write transaction short. Holding nb.batch() open
+            # across the expensive CUDA replay loop starves other writers.
+            _apply_row_updates(
+                nb,
+                result_id=str(row["result_id"]),
+                updates=updates,
+                provenance_context=_backpopulate_provenance_context(
+                    args, source_device
+                ),
+            )
+            status = "updated"
+        elif updates:
+            status = "would_update"
+        else:
+            status = "no_missing_fields"
+    except Exception as exc:  # noqa: BLE001
+        err = str(exc)
+        status = "error"
+    return {
+        "result_id": row["result_id"],
+        "graph_fingerprint": row["graph_fingerprint"],
+        "rapid_replayed": rapid_needed,
+        "post_train_replayed": post_needed,
+        "source_device": source_device,
+        "updated_fields": ",".join(sorted(updates.keys())),
+        "status": status,
+        "error": err[:240],
+        "n_updates": len(updates),
+    }
+
+
 def main() -> None:
     args = _parse_args()
     if args.worker_payload and args.worker_output:
-        payload = json.loads(args.worker_payload.read_text(encoding="utf-8"))
-        try:
-            result = _evaluate_row_payload(
-                payload=payload,
-                device=args.device,
-                force=args.force,
-                skip_rapid=args.skip_rapid,
-                skip_post_train=args.skip_post_train,
-                post_train_stability_runs=args.post_train_stability_runs,
-                stability_wikitext_rel_tol=args.stability_wikitext_rel_tol,
-                stability_hellaswag_abs_tol=args.stability_hellaswag_abs_tol,
-                stability_probe_abs_tol=args.stability_probe_abs_tol,
-                allow_insufficient_learning_metrics=args.allow_insufficient_learning_metrics,
-                post_train_target=args.post_train_target,
-                selection_slice=args.selection_slice,
-            )
-            result["ok"] = 1
-        except Exception as exc:  # noqa: BLE001
-            result = {
-                "ok": 0,
-                "error": str(exc),
-            }
-        args.worker_output.write_text(json.dumps(result), encoding="utf-8")
+        _run_worker_mode(args)
         return
 
     nb = LabNotebook(str(args.db))
@@ -1439,92 +1481,34 @@ def main() -> None:
     consecutive_failures = 0
     report_rows: List[Dict[str, Any]] = []
     t0 = time.time()
+    batch_size = max(1, int(args.batch_commit))
 
     try:
-        for start in range(0, len(rows), max(1, int(args.batch_commit))):
-            chunk = rows[start : start + max(1, int(args.batch_commit))]
+        for start in range(0, len(rows), batch_size):
+            chunk = rows[start : start + batch_size]
             chunk_report_rows: List[Dict[str, Any]] = []
             stop_error: str | None = None
             for row in chunk:
                 processed += 1
-                rapid_needed = (not args.skip_rapid) and _needs_rapid(row, args.force)
-                post_needed = (not args.skip_post_train) and _needs_post_train(
-                    row, args.force, target_post_fields
-                )
-                status = "skipped"
-                err = ""
-                updates: Dict[str, Any] = {}
-                source_device = str(args.device)
-                try:
-                    if args.isolate_subprocess:
-                        worker = _run_worker_subprocess(row, args)
-                        rapid_needed = int(worker.get("rapid_needed") or 0)
-                        post_needed = int(worker.get("post_needed") or 0)
-                        updates = dict(worker.get("updates") or {})
-                    else:
-                        worker = _evaluate_row_payload(
-                            payload=_row_to_payload(row),
-                            device=args.device,
-                            force=args.force,
-                            skip_rapid=args.skip_rapid,
-                            skip_post_train=args.skip_post_train,
-                            post_train_stability_runs=args.post_train_stability_runs,
-                            stability_wikitext_rel_tol=args.stability_wikitext_rel_tol,
-                            stability_hellaswag_abs_tol=args.stability_hellaswag_abs_tol,
-                            stability_probe_abs_tol=args.stability_probe_abs_tol,
-                            allow_insufficient_learning_metrics=args.allow_insufficient_learning_metrics,
-                            post_train_target=args.post_train_target,
-                            selection_slice=args.selection_slice,
-                        )
-                        rapid_needed = int(worker.get("rapid_needed") or 0)
-                        post_needed = int(worker.get("post_needed") or 0)
-                        updates = dict(worker.get("updates") or {})
-                    if updates and not args.dry_run:
-                        # Keep the write transaction short. Holding nb.batch() open
-                        # across the expensive CUDA replay loop starves other writers.
-                        _apply_row_updates(
-                            nb,
-                            result_id=str(row["result_id"]),
-                            updates=updates,
-                            provenance_context=_backpopulate_provenance_context(
-                                args, source_device
-                            ),
-                        )
-                        updated += 1
-                        updated_cuda += 1
-                        status = "updated"
-                    elif updates:
-                        status = "would_update"
-                    else:
-                        status = "no_missing_fields"
-                except Exception as exc:  # noqa: BLE001
-                    err = str(exc)
-                    status = "error"
-                if status == "error":
+                entry = _process_row(nb, row, args, target_post_fields)
+                if entry["status"] == "updated":
+                    updated += 1
+                    updated_cuda += 1
+                if entry["status"] == "error":
                     consecutive_failures += 1
                 else:
                     consecutive_failures = 0
-                chunk_report_rows.append(
-                    {
-                        "result_id": row["result_id"],
-                        "graph_fingerprint": row["graph_fingerprint"],
-                        "rapid_replayed": rapid_needed,
-                        "post_train_replayed": post_needed,
-                        "source_device": source_device,
-                        "updated_fields": ",".join(sorted(updates.keys())),
-                        "status": status,
-                        "error": err[:240],
-                    }
-                )
+                chunk_report_rows.append(entry)
                 print(
                     f"[{processed}/{len(rows)}] {row['result_id']} "
-                    f"rapid={int(rapid_needed)} post={int(post_needed)} "
-                    f"source={source_device} status={status} fields={len(updates)}",
+                    f"rapid={int(entry['rapid_replayed'])} post={int(entry['post_train_replayed'])} "
+                    f"source={entry['source_device']} status={entry['status']} "
+                    f"fields={entry['n_updates']}",
                     flush=True,
                 )
-                if int(
+                if int(args.max_consecutive_failures) > 0 and consecutive_failures >= int(
                     args.max_consecutive_failures
-                ) > 0 and consecutive_failures >= int(args.max_consecutive_failures):
+                ):
                     stop_error = (
                         "Stopping backpopulate run after "
                         f"{consecutive_failures} consecutive row failures. "
@@ -1538,25 +1522,23 @@ def main() -> None:
                 raise RuntimeError(stop_error)
 
         _write_report(args.report, report_rows)
-        elapsed = time.time() - t0
         _print_backpopulate_summary(
             processed=processed,
             total_rows=len(rows),
             updated=updated,
             updated_cuda=updated_cuda,
             report_path=args.report,
-            elapsed=elapsed,
+            elapsed=time.time() - t0,
         )
     except KeyboardInterrupt:
         _write_report(args.report, report_rows)
-        elapsed = time.time() - t0
         _print_backpopulate_summary(
             processed=processed,
             total_rows=len(rows),
             updated=updated,
             updated_cuda=updated_cuda,
             report_path=args.report,
-            elapsed=elapsed,
+            elapsed=time.time() - t0,
             interrupted=True,
         )
         print("Keyboard interrupt received. Partial results were preserved.")

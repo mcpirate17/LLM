@@ -1,74 +1,61 @@
 """
-Tiny corpus data pipeline for training-token batch generation.
+Corpus data pipeline for training-token batch generation.
 
-MVP goals:
-- lightweight TXT/JSONL ingestion
-- pluggable tokenizer adapter interface
-- deterministic batch sampling using caller-provided torch.Generator
+Hot-path requirements:
+- zero-copy ingest where possible (.npy mmap; native single-pass JSONL parse)
+- one allocation per token buffer; no per-record tensors
+- one pinned host buffer reused for the entire training loop
+- deterministic batch sampling using a caller-provided torch.Generator
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, List, Optional, Protocol
+from typing import Callable, Optional, Protocol
 
 import numpy as np
 import torch
 
 from ._data_native import load_data_native
+from research.synthesis._json_compat import loads_json
 
 logger = logging.getLogger(__name__)
 
 
-def _byte_tokenize_tensor(text: str, vocab_size: int) -> torch.Tensor:
-    if vocab_size <= 0 or not text:
-        return torch.empty(0, dtype=torch.long)
-    return load_data_native().byte_tokenize_utf8(text, int(vocab_size))
-
-
-def _whitespace_hash_tokenize_tensor(text: str, vocab_size: int) -> torch.Tensor:
-    if vocab_size <= 0 or not text:
-        return torch.empty(0, dtype=torch.long)
-    return load_data_native().whitespace_hash_tokenize(text, int(vocab_size))
-
-
 class TokenizerAdapter(Protocol):
-    """Tokenizer adapter interface for corpus-mode training."""
+    """Tokenizer that produces a 1-D int64 token tensor in one shot."""
 
-    def encode(self, text: str, vocab_size: int) -> List[int]:
-        """Encode text to token IDs bounded to vocab_size."""
+    def encode_to_tensor(self, text: str, vocab_size: int) -> torch.Tensor:
+        """Encode text to an int64 token tensor projected into [0, vocab_size)."""
 
 
 class ByteTokenizer:
-    """Deterministic byte tokenizer with modulo vocab projection."""
+    """Deterministic byte tokenizer (modulo vocab projection)."""
 
     __slots__ = ()
 
-    def encode(self, text: str, vocab_size: int) -> List[int]:
-        return _byte_tokenize_tensor(text, vocab_size).tolist()
+    def encode_to_tensor(self, text: str, vocab_size: int) -> torch.Tensor:
+        if vocab_size <= 0 or not text:
+            return torch.empty(0, dtype=torch.long)
+        return load_data_native().byte_tokenize_utf8(text, int(vocab_size))
 
 
 class WhitespaceHashTokenizer:
-    """Simple hashed-whitespace tokenizer for word-like segmentation."""
+    """FNV-1a hashed whitespace tokenizer."""
 
     __slots__ = ()
 
-    def encode(self, text: str, vocab_size: int) -> List[int]:
-        return _whitespace_hash_tokenize_tensor(text, vocab_size).tolist()
+    def encode_to_tensor(self, text: str, vocab_size: int) -> torch.Tensor:
+        if vocab_size <= 0 or not text:
+            return torch.empty(0, dtype=torch.long)
+        return load_data_native().whitespace_hash_tokenize(text, int(vocab_size))
 
 
 class TiktokenAdapter:
-    """Production-grade BPE tokenizer via tiktoken (GPT-2 vocabulary).
-
-    Uses the GPT-2 BPE encoding (50,257 subword tokens). Token IDs are
-    projected into [0, vocab_size) via modulo so the model's embedding
-    layer does not need to change. This preserves architecture fingerprints
-    while giving proper subword segmentation.
-    """
+    """GPT-2 BPE via tiktoken, projected to vocab_size with modulo."""
 
     __slots__ = ("_enc", "native_vocab_size")
 
@@ -78,11 +65,14 @@ class TiktokenAdapter:
         self._enc = tiktoken.get_encoding(encoding_name)
         self.native_vocab_size = self._enc.n_vocab
 
-    def encode(self, text: str, vocab_size: int) -> List[int]:
+    def encode_to_tensor(self, text: str, vocab_size: int) -> torch.Tensor:
         ids = self._enc.encode(text, allowed_special=set())
+        if not ids:
+            return torch.empty(0, dtype=torch.long)
+        tensor = torch.as_tensor(ids, dtype=torch.long)
         if vocab_size > 0 and vocab_size < self.native_vocab_size:
-            return [t % vocab_size for t in ids]
-        return ids
+            load_data_native().project_int64_modulo_inplace(tensor, int(vocab_size))
+        return tensor
 
 
 @dataclass(slots=True)
@@ -109,7 +99,8 @@ class CorpusTokenBatcher:
         "_train_tokens",
         "_val_tokens",
         "_native_ext",
-        "_newline_tokens",
+        "_pinned_batch",
+        "_pinned_shape",
     )
 
     def __init__(self, config: CorpusConfig, vocab_size: int):
@@ -119,8 +110,9 @@ class CorpusTokenBatcher:
         self._tokenizer = self._build_tokenizer(
             config.tokenizer, config.tiktoken_encoding
         )
-        self._native_ext = None
-        self._newline_tokens: Optional[torch.Tensor] = None
+        self._native_ext = load_data_native()
+        self._pinned_batch: Optional[torch.Tensor] = None
+        self._pinned_shape: Optional[tuple[int, int]] = None
         self._tokens = self._load_tokens()
         self._train_tokens, self._val_tokens = self._split_tokens(self._tokens)
 
@@ -169,103 +161,121 @@ class CorpusTokenBatcher:
             return "jsonl"
         return "txt"
 
-    def _tokens_from_text(self, text: str) -> torch.Tensor:
-        if not text:
+    def _load_text_tokens(self) -> torch.Tensor:
+        max_chars = max(0, int(self.config.max_chars))
+        if max_chars == 0:
             return torch.empty(0, dtype=torch.long)
         if isinstance(self._tokenizer, ByteTokenizer):
-            return _byte_tokenize_tensor(text, self.vocab_size)
-        if isinstance(self._tokenizer, WhitespaceHashTokenizer):
-            return _whitespace_hash_tokenize_tensor(text, self.vocab_size)
-
-        encoded = self._tokenizer.encode(text, self.vocab_size)
-        if not encoded:
-            return torch.empty(0, dtype=torch.long)
-        return torch.as_tensor(encoded, dtype=torch.long)
-
-    def _separator_tokens(self) -> torch.Tensor:
-        if self._newline_tokens is None:
-            self._newline_tokens = self._tokens_from_text("\n")
-        return self._newline_tokens
-
-    def _load_text_tokens(self, text: str) -> torch.Tensor:
-        return self._tokens_from_text(text[: self.config.max_chars])
+            return self._native_ext.byte_tokenize_file_prefix_utf8(
+                str(self.path),
+                int(self.vocab_size),
+                max_chars,
+            )
+        with self.path.open("r", encoding="utf-8", errors="ignore") as handle:
+            text = handle.read(max_chars)
+        return self._tokenizer.encode_to_tensor(text, self.vocab_size)
 
     def _load_jsonl_tokens(self) -> torch.Tensor:
-        token_chunks: List[torch.Tensor] = []
-        chars = 0
-        first_chunk = True
-        separator = self._separator_tokens()
+        max_chars = max(0, int(self.config.max_chars))
+        if max_chars == 0 or self.vocab_size <= 0:
+            return torch.empty(0, dtype=torch.long)
 
-        with self.path.open("r", encoding="utf-8") as handle:
+        # Single-pass native path for byte tokenization: no Python json.loads,
+        # no per-record tensors, one allocation.
+        if isinstance(self._tokenizer, ByteTokenizer):
+            return self._native_ext.jsonl_byte_tokenize_file(
+                str(self.path),
+                str(self.config.text_key),
+                int(self.vocab_size),
+                max_chars,
+            )
+
+        # Non-byte tokenizers still need string decoding. Parse with the
+        # shared fast-JSON helper, accumulate strings, then tokenize in one
+        # shot at the end.
+        text_key = str(self.config.text_key)
+        chars = 0
+        chunks: list[str] = []
+        with self.path.open("rb") as handle:
             for raw in handle:
-                line = raw.strip()
-                if not line:
+                if not raw.strip():
                     continue
                 try:
-                    item = json.loads(line)
-                except json.JSONDecodeError as e:
-                    logger.error("Failed to decode JSON line in corpus: %s", e)
-                    raise e
-
+                    item = loads_json(raw)
+                except Exception:
+                    logger.error("Failed to decode JSON line in corpus: %s", self.path)
+                    raise
                 if isinstance(item, dict):
-                    value = item.get(self.config.text_key)
+                    value = item.get(text_key)
                     text = value if isinstance(value, str) else ""
                 elif isinstance(item, str):
                     text = item
                 else:
                     text = ""
-
                 if not text:
                     continue
-
-                remaining = self.config.max_chars - chars
+                remaining = max_chars - chars
                 if remaining <= 0:
                     break
-                clipped = text[:remaining]
-                chunk_tokens = self._tokens_from_text(clipped)
-                if chunk_tokens.numel() == 0:
-                    chars += len(clipped)
-                    continue
-                if not first_chunk and separator.numel() > 0:
-                    token_chunks.append(separator)
-                token_chunks.append(chunk_tokens)
+                clipped = text if len(text) <= remaining else text[:remaining]
+                if chunks:
+                    chunks.append("\n")
+                    chars += 1
+                chunks.append(clipped)
                 chars += len(clipped)
-                first_chunk = False
 
-        if not token_chunks:
+        if not chunks:
             return torch.empty(0, dtype=torch.long)
-        if len(token_chunks) == 1:
-            return token_chunks[0]
-        return torch.cat(token_chunks)
+        return self._tokenizer.encode_to_tensor("".join(chunks), self.vocab_size)
 
     def _load_tokens(self) -> torch.Tensor:
         if not self.path.exists() or not self.path.is_file():
             logger.warning("Corpus path not found: %s", self.path)
             return torch.empty(0, dtype=torch.long)
 
-        # Pretokenized .npy: load directly, skip text encoding
+        # Pretokenized .npy: keep the mmap zero-copy when dtype matches and
+        # values already fit the vocab range. Otherwise materialize once and
+        # project in-place natively — never re-project per batch.
         if self.path.suffix == ".npy":
             tokens_np = np.load(str(self.path), mmap_mode="r")
-            tokens_np = np.asarray(tokens_np)
-            if tokens_np.dtype != np.int64:
-                tokens_np = tokens_np.astype(np.int64, copy=False)
-            if self.vocab_size > 0:
-                tokens_np = np.remainder(tokens_np, self.vocab_size).astype(
-                    np.int64, copy=False
+            already_int64 = tokens_np.dtype == np.int64
+            needs_modulo = self.vocab_size > 0
+            if already_int64 and (
+                not needs_modulo
+                or (
+                    int(tokens_np.min(initial=0)) >= 0
+                    and int(tokens_np.max(initial=0)) < self.vocab_size
                 )
-            return torch.from_numpy(np.ascontiguousarray(tokens_np))
+            ):
+                # mmap is read-only; we never write through this view, so the
+                # PyTorch read-only-array warning is benign — silence it locally.
+                import warnings as _w
+                with _w.catch_warnings():
+                    _w.filterwarnings(
+                        "ignore",
+                        message="The given NumPy array is not writable",
+                        category=UserWarning,
+                    )
+                    return torch.from_numpy(tokens_np)
+            if already_int64:
+                tokens = torch.from_numpy(np.asarray(tokens_np))
+            else:
+                tokens = torch.from_numpy(np.asarray(tokens_np, dtype=np.int64))
+            if needs_modulo:
+                self._native_ext.project_int64_modulo_inplace(
+                    tokens, self.vocab_size
+                )
+            return tokens
 
         fmt = self._detect_format()
 
         try:
             if fmt == "jsonl":
                 return self._load_jsonl_tokens()
-
-            with self.path.open("r", encoding="utf-8", errors="ignore") as handle:
-                return self._load_text_tokens(handle.read(self.config.max_chars))
-        except Exception as exc:
-            logger.error("Corpus load failed from %s: %s", self.path, exc)
-            raise exc
+            return self._load_text_tokens()
+        except Exception:
+            logger.error("Corpus load failed from %s", self.path)
+            raise
 
     def sample_batch(
         self,
@@ -278,44 +288,75 @@ class CorpusTokenBatcher:
     ) -> Optional[torch.Tensor]:
         if not self.ready or seq_len <= 0 or batch_size <= 0:
             return None
-
-        if str(split).lower() == "val":
-            tokens = self._val_tokens
-        else:
-            tokens = self._train_tokens
-
+        tokens = self._val_tokens if str(split).lower() == "val" else self._train_tokens
         if tokens is None or tokens.numel() == 0:
             return None
-
         max_start = int(tokens.numel()) - seq_len - 1
         if max_start < 0:
             return None
 
-        sample_t0 = time.perf_counter()
-        starts = torch.randint(
-            0,
-            max_start + 1,
-            (batch_size,),
-            generator=generator,
-            device="cpu",
+        if timer is None:
+            return self._sample_batch_fast(
+                tokens, batch_size, seq_len, generator, device
+            )
+        return self._sample_batch_timed(
+            tokens, batch_size, seq_len, generator, device, timer
         )
-        if timer is not None:
-            timer("start_index_sampling_ms", (time.perf_counter() - sample_t0) * 1000.0)
 
-        if self._native_ext is None:
-            self._native_ext = load_data_native()
-        gather_t0 = time.perf_counter()
-        batch = self._native_ext.gather_token_batch(tokens, starts, seq_len)
-        if timer is not None:
-            timer("native_gather_ms", (time.perf_counter() - gather_t0) * 1000.0)
-        if device.type == "cpu":
+    def _sample_batch_fast(
+        self,
+        tokens: torch.Tensor,
+        batch_size: int,
+        seq_len: int,
+        generator: torch.Generator,
+        device: torch.device,
+    ) -> torch.Tensor:
+        starts = torch.randint(
+            0, int(tokens.numel()) - seq_len,
+            (batch_size,), generator=generator, device="cpu",
+        )
+        if device.type != "cuda":
+            return self._native_ext.gather_token_batch(tokens, starts, seq_len)
+        out = self._cuda_pinned_buffer(batch_size, seq_len)
+        self._native_ext.gather_token_batch_into(tokens, starts, seq_len, out)
+        return out.to(device, non_blocking=True)
+
+    def _sample_batch_timed(
+        self,
+        tokens: torch.Tensor,
+        batch_size: int,
+        seq_len: int,
+        generator: torch.Generator,
+        device: torch.device,
+        timer: Callable[[str, float], None],
+    ) -> torch.Tensor:
+        t0 = time.perf_counter()
+        starts = torch.randint(
+            0, int(tokens.numel()) - seq_len,
+            (batch_size,), generator=generator, device="cpu",
+        )
+        timer("start_index_sampling_ms", (time.perf_counter() - t0) * 1000.0)
+
+        t0 = time.perf_counter()
+        if device.type != "cuda":
+            batch = self._native_ext.gather_token_batch(tokens, starts, seq_len)
+            timer("native_gather_ms", (time.perf_counter() - t0) * 1000.0)
             return batch
-        pin_t0 = time.perf_counter()
-        batch = batch.pin_memory()
-        if timer is not None:
-            timer("pin_memory_ms", (time.perf_counter() - pin_t0) * 1000.0)
-        h2d_t0 = time.perf_counter()
-        batch = batch.to(device, non_blocking=True)
-        if timer is not None:
-            timer("h2d_copy_ms", (time.perf_counter() - h2d_t0) * 1000.0)
+
+        out = self._cuda_pinned_buffer(batch_size, seq_len)
+        self._native_ext.gather_token_batch_into(tokens, starts, seq_len, out)
+        timer("native_gather_ms", (time.perf_counter() - t0) * 1000.0)
+
+        t0 = time.perf_counter()
+        batch = out.to(device, non_blocking=True)
+        timer("h2d_copy_ms", (time.perf_counter() - t0) * 1000.0)
         return batch
+
+    def _cuda_pinned_buffer(self, batch_size: int, seq_len: int) -> torch.Tensor:
+        shape = (batch_size, seq_len)
+        if self._pinned_batch is None or self._pinned_shape != shape:
+            self._pinned_batch = torch.empty(
+                shape, dtype=torch.long, pin_memory=True
+            )
+            self._pinned_shape = shape
+        return self._pinned_batch

@@ -12,6 +12,12 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any, Dict, List, Optional
 
 from ..thresholds import TIER_RANK
+from ._helpers_gate import clear_gpu_memory
+from ._helpers_metrics import (
+    _trajectory_probe_capability_tier,
+    screening_wikitext_fields,
+    trajectory_probe_fields,
+)
 
 logger = logging.getLogger(__name__)
 _REFERENCE_TRAJECTORY_PATH = Path("research/eval/reference_trajectories.json")

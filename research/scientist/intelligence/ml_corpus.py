@@ -478,13 +478,6 @@ def _sql_membership_clause(column: str, values: tuple[str, ...]) -> str:
     return f"COALESCE({column}, '') IN ({quoted_values})"
 
 
-def _db_has_trust_columns(db_path: str, table: str) -> bool:
-    from ..notebook.shared_conn import get_notebook_conn
-
-    conn = get_notebook_conn(db_path)
-    return _has_trust_columns(conn, table)
-
-
 def _program_results_columns(db_path: str) -> set[str]:
     from ..notebook.shared_conn import get_notebook_conn
 

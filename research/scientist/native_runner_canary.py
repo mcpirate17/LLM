@@ -6,6 +6,8 @@ import time
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any, Dict, List
+from unittest.mock import patch
+
 from research.scientist.native_runner import compile_model_native_first
 from research.scientist.native.telemetry import reset_native_runner_telemetry
 

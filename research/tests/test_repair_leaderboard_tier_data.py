@@ -30,6 +30,9 @@ def test_repair_leaderboard_tier_data_fills_missing_tier_fields():
             stage1_passed=True,
             loss_ratio=0.2,
             novelty_score=0.6,
+            trust_label="candidate_grade",
+            comparability_label="candidate_comparable",
+            data_provenance_json='{"provenance_complete": true}',
         )
         val_rid = nb.record_program_result(
             experiment_id=exp_id,
@@ -41,6 +44,9 @@ def test_repair_leaderboard_tier_data_fills_missing_tier_fields():
             validation_loss_ratio=0.12,
             baseline_loss_ratio=0.95,
             init_sensitivity_std=0.018,
+            trust_label="candidate_grade",
+            comparability_label="candidate_comparable",
+            data_provenance_json='{"provenance_complete": true}',
         )
         nb.flush_writes()
 

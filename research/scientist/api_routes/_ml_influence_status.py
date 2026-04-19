@@ -6,7 +6,7 @@ from ..ml_influence_policy import (
     build_ml_influence_policy,
     load_predictor_metrics_report,
 )
-from ..runner import RunConfig
+from ..runner._types import RunConfig
 
 
 def build_ml_influence_status() -> Dict[str, Any]:

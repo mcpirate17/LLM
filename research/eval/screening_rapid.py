@@ -23,7 +23,7 @@ from typing import Any, Dict, List, Optional
 import torch
 import torch.nn as nn
 
-from .utils import language_model_loss, make_adamw
+from .utils import clip_grad_norm, language_model_loss, make_adamw
 
 logger = logging.getLogger(__name__)
 
@@ -379,9 +379,7 @@ class RapidScreeningCheck:
             return False, min_loss_so_far
 
         if self.clip_grad > 0:
-            grad_norm = float(
-                torch.nn.utils.clip_grad_norm_(param_values, self.clip_grad)
-            )
+            grad_norm = float(clip_grad_norm(param_values, self.clip_grad))
         else:
             grad_norm = self._compute_grad_norm(param_values)
         metrics["grad_norms"].append(grad_norm)

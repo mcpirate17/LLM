@@ -11,7 +11,7 @@ from typing import Any, Dict, Optional
 
 from flask import jsonify
 
-from ..runner import RunConfig
+from ..runner._types import RunConfig
 from ..runtime_events import publish_lifecycle_event
 from ._helpers import (
     _BATCH_RERUN_STATE,
@@ -505,7 +505,7 @@ def start_rerun_from_source(*, source, experiment_id: str, notebook_path: str):
 
 def _run_batch_rerun_single(eid: str, notebook_path: str):
     runner = get_runner(notebook_path)
-    nb = get_notebook(notebook_path)
+    nb = get_notebook(notebook_path, read_only=False)
     source = load_rerun_source(nb, eid)
     if source is None:
         return None

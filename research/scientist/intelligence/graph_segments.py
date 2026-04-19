@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Sequence, Tuple
 
 import numpy as np
 
+from research.synthesis.primitives import canonicalize_op_name as _canonicalize_op_name
 from research.scientist.intelligence.metrics_utils import (
     binary_classification_metrics,
     operating_point_profiles,

@@ -29,13 +29,22 @@ def _safe_float(value: Any) -> float | None:
     return out if math.isfinite(out) else None
 
 
+_EMPTY_GRAD_STATS: dict[str, Any] = {
+    "total_norm": 0.0,
+    "layer_norms": {},
+    "max_layer": None,
+    "max_layer_norm": 0.0,
+    "has_nonfinite": False,
+    "num_grads": 0,
+}
+
+
 def _grad_stats(
     parameters: Sequence[torch.Tensor],
     parameter_names: Optional[Sequence[str]],
 ) -> dict[str, Any]:
     grads: list[torch.Tensor] = []
     names: list[str] = []
-
     for idx, param in enumerate(parameters):
         if param.grad is None:
             continue
@@ -43,68 +52,9 @@ def _grad_stats(
         names.append(
             parameter_names[idx] if parameter_names is not None else f"param_{idx}"
         )
-
     if not grads:
-        return {
-            "total_norm": 0.0,
-            "layer_norms": {},
-            "max_layer": None,
-            "max_layer_norm": 0.0,
-            "has_nonfinite": False,
-            "num_grads": 0,
-        }
-
-    try:
-        from ._runner_native import load_runner_native
-
-        return dict(load_runner_native().grad_stats_fused(grads, names))
-    except Exception:
-        pass
-
-    # Python fallback
-    layer_norms: dict[str, float | None] = {}
-    has_nonfinite = False
-    for i, grad in enumerate(grads):
-        grad_norm = _safe_float(grad.detach().float().norm().item())
-        layer_norms[names[i]] = grad_norm
-        if grad_norm is None:
-            has_nonfinite = True
-
-    try:
-        norms = torch._foreach_norm(grads, 2)
-        norm_vec = torch.stack([norm.detach().float() for norm in norms])
-        total_norm = _safe_float(torch.linalg.vector_norm(norm_vec, ord=2).item())
-    except RuntimeError:
-        total_sq = 0.0
-        total_norm = 0.0
-        for grad in grads:
-            grad_norm = _safe_float(grad.detach().float().norm().item())
-            if grad_norm is None:
-                total_norm = None
-                break
-            total_sq += grad_norm * grad_norm
-        if total_norm is not None:
-            total_norm = total_sq**0.5
-
-    if total_norm is None:
-        has_nonfinite = True
-
-    max_layer = None
-    max_layer_norm = 0.0
-    finite_layer_norms = [
-        (name, norm) for name, norm in layer_norms.items() if norm is not None
-    ]
-    if finite_layer_norms:
-        max_layer, max_layer_norm = max(finite_layer_norms, key=lambda item: item[1])
-
-    return {
-        "total_norm": 0.0 if total_norm is None else total_norm,
-        "layer_norms": layer_norms,
-        "max_layer": max_layer,
-        "max_layer_norm": max_layer_norm,
-        "has_nonfinite": has_nonfinite,
-        "num_grads": len(grads),
-    }
+        return dict(_EMPTY_GRAD_STATS)
+    return dict(load_runner_native().grad_stats_fused(grads, names))
 
 
 def _append_step_telemetry(
@@ -302,8 +252,8 @@ def make_optimizer(
     ).strip().lower() in {"1", "true", "yes", "on"}
     if enable_paramwise_native:
         try:
-            native = load_runner_native()
-            del native
+            # Probe: fail fast if the native extension can't be built/loaded.
+            load_runner_native()
             if opt == "sgd":
                 return _NativeSGDOptimizer(
                     parameters,
@@ -375,7 +325,6 @@ def run_training_loop(
         train_telemetry["optimizer_name"] = (optimizer_name or "adamw").lower()
         train_telemetry["warmup_steps"] = int(warmup_steps)
         train_telemetry["clip_grad"] = float(clip_grad)
-    use_native_clip = any(param.device.type == "cuda" for param in param_values)
 
     if train_telemetry is None and parameter_names is None:
         final_loss = float("inf")
@@ -395,10 +344,7 @@ def run_training_loop(
 
             loss.backward()
             if clip_grad > 0:
-                if use_native_clip:
-                    clip_grad_norm(param_values, clip_grad)
-                else:
-                    torch.nn.utils.clip_grad_norm_(param_values, clip_grad)
+                clip_grad_norm(param_values, clip_grad)
             optimizer.step()
             if scheduler_step is not None:
                 scheduler_step()
@@ -461,10 +407,7 @@ def run_training_loop(
 
         clipped = False
         if clip_grad > 0:
-            if use_native_clip:
-                clip_grad_norm(param_values, clip_grad)
-            else:
-                torch.nn.utils.clip_grad_norm_(param_values, clip_grad)
+            clip_grad_norm(param_values, clip_grad)
             clipped = pre_clip["total_norm"] > float(clip_grad)
         post_clip = _grad_stats(param_values, parameter_names)
         actual_lrs_before_step = [

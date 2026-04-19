@@ -1,4 +1,4 @@
-import { apiCall } from "../services/apiService";
+import { apiCall, postJson } from "../services/apiService";
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { useEventBus } from '../hooks/useEventBus';
 import useRenderPerf from '../hooks/useRenderPerf';
@@ -284,15 +284,11 @@ function AriaChatPanel({ isRunning, autonomousMode, onAutonomousEnd }) {
 
   // Persist a system message to DB (fire-and-forget)
   const persistSystemMessage = useCallback((text, label) => {
-    apiCall(`/api/aria/chat/message`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        session_id: sessionId,
-        role: 'system',
-        text,
-        label: label || 'System',
-      }),
+    postJson('/api/aria/chat/message', {
+      session_id: sessionId,
+      role: 'system',
+      text,
+      label: label || 'System',
     }).catch(() => {});
   }, [sessionId]);
 
@@ -333,11 +329,7 @@ function AriaChatPanel({ isRunning, autonomousMode, onAutonomousEnd }) {
     if (totalTokens > TOKEN_BUDGET) {
       compactingRef.current = true;
       try {
-        const res = await apiCall(`/api/aria/chat/compact`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ session_id: sessionId }),
-        });
+        const res = await postJson('/api/aria/chat/compact', { session_id: sessionId });
         if (res.ok) {
           await loadHistory();
         }
@@ -505,16 +497,12 @@ function AriaChatPanel({ isRunning, autonomousMode, onAutonomousEnd }) {
         });
         // Persist analysis messages to DB
         for (const msg of messagesToPersist) {
-          apiCall(`/api/aria/chat/message`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              session_id: sessionId,
-              role: msg.role,
-              text: msg.text,
-              label: msg.label,
-              message_id: msg.id,
-            }),
+          postJson('/api/aria/chat/message', {
+            session_id: sessionId,
+            role: msg.role,
+            text: msg.text,
+            label: msg.label,
+            message_id: msg.id,
           }).catch(() => {});
         }
       }
@@ -570,13 +558,9 @@ function AriaChatPanel({ isRunning, autonomousMode, onAutonomousEnd }) {
     setError('');
 
     try {
-      const res = await apiCall(`/api/aria/chat`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          message: text,
-          session_id: sessionId,
-        }),
+      const res = await postJson('/api/aria/chat', {
+        message: text,
+        session_id: sessionId,
       });
       const data = await res.json();
       if (!res.ok || data?.error) {

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Optional, Tuple
+from typing import TYPE_CHECKING, Optional, Tuple
 
 import torch.nn as nn
 
@@ -10,6 +10,9 @@ from research.defaults import VOCAB_SIZE
 
 from .fingerprint_runtime import compute_fingerprint, compute_lightning_fingerprint
 from .fingerprint_types import BehavioralFingerprint
+
+if TYPE_CHECKING:
+    from research.synthesis.graph import ComputationGraph
 
 
 def compute_gated_fingerprint(

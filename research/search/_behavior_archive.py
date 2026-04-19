@@ -115,47 +115,6 @@ class BehaviorArchive:
     def size(self) -> int:
         return self._size
 
-    def nearest_to(
-        self, behavior: BehavioralFingerprint, k: int = 5
-    ) -> List[Tuple[float, Individual]]:
-        fm = self._feature_matrix
-        if fm is None:
-            return []
-
-        target = _behavior_array(behavior)
-        if target is None:
-            return []
-        valid_positions = [
-            i
-            for i, ind in enumerate(self._individuals[: self._size])
-            if ind is not None
-        ]
-        if not valid_positions:
-            return []
-        candidate_matrix = (
-            fm if len(valid_positions) == self._size else fm[valid_positions]
-        )
-        index_lookup = None if len(valid_positions) == self._size else valid_positions
-
-        native_neighbors = topk_nearest_indices(candidate_matrix, target, k)
-        if native_neighbors is not None:
-            order, distances = native_neighbors
-        else:
-            diff = candidate_matrix - target
-            distances = np.sqrt(np.mean(np.square(diff), axis=1))
-            order = np.argsort(distances)
-
-        results: List[Tuple[float, Individual]] = []
-        for idx in order:
-            if len(results) >= k:
-                break
-            pos = int(idx)
-            archive_idx = pos if index_lookup is None else index_lookup[pos]
-            ind = self._individuals[archive_idx]
-            if ind is not None:
-                results.append((float(distances[pos]), ind))
-        return results
-
     def top_by_fitness(self, k: int = 5) -> List[Individual]:
         return nlargest(
             k,

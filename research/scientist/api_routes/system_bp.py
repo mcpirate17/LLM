@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 import logging
+import shutil
+import subprocess
 from datetime import datetime, timezone
 
 from flask import jsonify, request
 
 from ..native.telemetry import native_runner_capability_report
 from ..persona import get_aria
-from ..runner import RunConfig
-from ...perf_contract import list_recent_perf_artifacts, summarize_perf_artifacts
+from ..runner._types import RunConfig
 from ._helpers import (
     get_runner,
     native_runner_canary_status_payload,
@@ -30,6 +31,43 @@ from .deps import ApiRouteContext
 logger = logging.getLogger(__name__)
 
 
+def _probe_cuda_status() -> tuple[bool, dict]:
+    """Return lightweight CUDA availability without importing torch."""
+    nvidia_smi = shutil.which("nvidia-smi")
+    if not nvidia_smi:
+        return False, {}
+    try:
+        proc = subprocess.run(
+            [
+                nvidia_smi,
+                "--query-gpu=name,memory.free,memory.total",
+                "--format=csv,noheader,nounits",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=2.0,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        logger.debug("CUDA probe via nvidia-smi failed: %s", exc)
+        return False, {}
+
+    lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+    if not lines:
+        return False, {}
+    first = [part.strip() for part in lines[0].split(",")]
+    info = {"device_count": len(lines)}
+    if first:
+        info["device_name"] = first[0]
+    if len(first) >= 3:
+        try:
+            info["memory_free_gb"] = round(float(first[1]) / 1024.0, 1)
+            info["memory_total_gb"] = round(float(first[2]) / 1024.0, 1)
+        except ValueError:
+            logger.debug("Failed parsing CUDA memory info from nvidia-smi: %r", first)
+    return True, info
+
+
 def register_system_routes(app, context: ApiRouteContext):
     notebook_path = context.notebook_path
     wnb = with_notebook_context(notebook_path)
@@ -38,27 +76,13 @@ def register_system_routes(app, context: ApiRouteContext):
     @wnb
     def api_system_status(nb=None):
         """Report system status: CUDA, LLM, database, runner state."""
-        import torch
-
-        runner = get_runner(notebook_path)
+        runner = get_runner(notebook_path, create_if_missing=False)
         aria = get_aria()
         refresh_canary = parse_bool_query(
             request.args.get("refresh_canary"), default=False
         )
 
-        cuda_available = torch.cuda.is_available()
-        cuda_info = {}
-        if cuda_available:
-            try:
-                cuda_info = {
-                    "device_name": torch.cuda.get_device_name(0),
-                    "device_count": torch.cuda.device_count(),
-                }
-                mem = torch.cuda.mem_get_info(0)
-                cuda_info["memory_free_gb"] = round(mem[0] / 1e9, 1)
-                cuda_info["memory_total_gb"] = round(mem[1] / 1e9, 1)
-            except RuntimeError as e:
-                logger.warning("Failed collecting CUDA details: %s", e)
+        cuda_available, cuda_info = _probe_cuda_status()
 
         llm = aria._get_llm()
         llm_reachable = False
@@ -90,7 +114,7 @@ def register_system_routes(app, context: ApiRouteContext):
                 "llm": llm_info,
                 "database": db_info,
                 "ml_influence": build_ml_influence_status(),
-                "native_runner": native_runner_capability_report(),
+                "native_runner": native_runner_capability_report(deep=False),
                 "native_runner_canary": native_runner_canary_status_payload(
                     force_refresh=refresh_canary
                 ),
@@ -153,6 +177,11 @@ def register_system_routes(app, context: ApiRouteContext):
     def api_perf_summary():
         """Return recent research perf artifacts and aggregate budget state."""
         try:
+            from ...perf_contract import (
+                list_recent_perf_artifacts,
+                summarize_perf_artifacts,
+            )
+
             limit = max(1, min(100, int(request.args.get("limit", 20))))
         except (TypeError, ValueError):
             limit = 20

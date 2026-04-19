@@ -239,14 +239,13 @@ class _ExecutionValidationScaleMixin:
         model,
     ) -> dict:
         """Run micro-training for a scale-up candidate with checkpoint support."""
-        # NOTE: `ckpt` is NOT defined in _run_scale_up_thread — pre-existing bug
-        # preserved faithfully from the original code.
-        resume_state = ckpt.load_phase(exp_id, "validation", prog_idx, 0)  # noqa: F821
+        ckpt = CheckpointManager(checkpoint_dir=str(config.checkpoint_dir))
+        resume_state = ckpt.load_phase(exp_id, "validation", prog_idx, 0)
         base_ctx = {"exp_id": exp_id, "phase": "scale_up"}
         self._live_training_context = {
             **base_ctx,
             "source_result_id": source_result_id,
-            "checkpoint_manager": ckpt,  # noqa: F821
+            "checkpoint_manager": ckpt,
             "checkpoint_phase": "validation",
             "checkpoint_candidate_idx": prog_idx,
             "checkpoint_seed_idx": 0,

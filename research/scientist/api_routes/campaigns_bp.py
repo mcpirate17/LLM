@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import logging
+import sqlite3
 import time
 from flask import jsonify, request
 from ..persona import get_aria
 from ._helpers import get_runner
+from ._utils import is_malformed_db_error as _is_malformed_db_error
 from ._utils import with_notebook_context
 from .deps import ApiRouteContext
 

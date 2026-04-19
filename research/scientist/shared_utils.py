@@ -7,9 +7,15 @@ api.py, evidence.py, analyzer.py, runner.py, and other modules.
 from __future__ import annotations
 
 import ast
+import logging
 import math
 import struct
-from typing import Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, Optional
+
+if TYPE_CHECKING:
+    import torch
+
+logger = logging.getLogger(__name__)
 
 
 def safe_float(value: Any, default: Optional[float] = None) -> Optional[float]:

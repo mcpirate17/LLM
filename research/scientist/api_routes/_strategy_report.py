@@ -4,10 +4,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from ._strategy_preflight import build_start_mode_eligibility
+
+if TYPE_CHECKING:
+    from ..notebook import LabNotebook
+
+logger = logging.getLogger(__name__)
 
 
 def parse_report_date(

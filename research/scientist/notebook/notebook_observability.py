@@ -7,6 +7,7 @@ import math
 import statistics
 import time
 from functools import lru_cache
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from ._notebook_misc_shared import (
@@ -20,7 +21,7 @@ from ._notebook_misc_shared import (
     _template_label_from_evidence,
     _summarize_template_stat,
     _empty_template_stat,
-    _load_eval_native_module,
+    _discover_template_names,
     _TEMPLATE_DEF_RE,
     _EMPTY_DATA_ACCOUNTING_SHAPE,
 )
@@ -29,10 +30,6 @@ from ..leaderboard_scoring import (
     compute_efficiency_multiple as _compute_efficiency_multiple,
     compute_pre_investigation_score as _compute_pre_investigation_score,
 )
-from ...synthesis.templates import TEMPLATES
-
-
-
 class _ObservabilityMixin:
     """Template observability + slot statistics."""
 
@@ -40,6 +37,7 @@ class _ObservabilityMixin:
     _DASHBOARD_SUMMARY_TTL_S = 2.0
     _TEMPLATE_OBSERVABILITY_TTL_S = 10.0
 
+    @staticmethod
     def _percentile(values: List[float], pct: float) -> Optional[float]:
         clean = sorted(v for v in values if v is not None and math.isfinite(v))
         if not clean:
@@ -107,7 +105,8 @@ class _ObservabilityMixin:
             return dict(cached)
 
         self.flush_writes()
-        self._ensure_graph_features()
+        if not self._read_only:
+            self._ensure_graph_features()
         rows = self.conn.execute(
             """
             SELECT
@@ -454,7 +453,7 @@ class _ObservabilityMixin:
         limit: int,
     ) -> Dict[str, Any]:
         """Sort, rank, and assemble the final observability result dict."""
-        active_template_names = frozenset(TEMPLATES)
+        active_template_names = frozenset(_discover_template_names())
         template_stats = dict(acc.template_stats)
         for name in active_template_names:
             template_stats.setdefault(
@@ -879,4 +878,3 @@ class _ObservabilityMixin:
         }
 
     # ── Training Curves ──
-

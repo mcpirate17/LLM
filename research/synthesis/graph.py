@@ -155,11 +155,6 @@ class ComputationGraphIR:
         return bool(self.analyze_structure().has_gradient_path)
 
     @staticmethod
-    def batch_has_gradient_path(ir_list: List[ComputationGraphIR]) -> np.ndarray:
-        """Check gradient path for a list of IRs."""
-        return np.fromiter((ir.has_gradient_path() for ir in ir_list), dtype=bool)
-
-    @staticmethod
     def batch_op_distribution(
         ir_list: List[ComputationGraphIR], n_opcodes: int
     ) -> np.ndarray:

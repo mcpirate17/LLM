@@ -174,52 +174,27 @@ function ReportDetail({
     URL.revokeObjectURL(url);
   };
 
-  if (loading) return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      <button
-        className="refresh-btn"
-        onClick={onBack}
-        style={{ alignSelf: 'flex-start', fontSize: 12, padding: '4px 10px' }}
-      >
-        &larr; Back to Reports
-      </button>
-      <div className="card"><p style={{ color: 'var(--text-muted)' }}>Loading report...</p></div>
-    </div>
-  );
-  if (error) return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      <button
-        className="refresh-btn"
-        onClick={onBack}
-        style={{ alignSelf: 'flex-start', fontSize: 12, padding: '4px 10px' }}
-      >
-        &larr; Back to Reports
-      </button>
-      <div className="card"><p style={{ color: 'var(--accent-red)' }}>Error loading report: {error}</p></div>
-    </div>
-  );
-  if (!data) return null;
-
-  const s = data.summary || {};
-  const top = data.top_programs || [];
-  const topExpanded = data.top_programs_expanded || [];
-  const reportActionEligibility = data.action_eligibility || {};
+  const reportData = data || {};
+  const s = reportData.summary || {};
+  const top = reportData.top_programs || [];
+  const topExpanded = reportData.top_programs_expanded || [];
+  const reportActionEligibility = reportData.action_eligibility || {};
   const mergedEligibilityByResultId = useMemo(() => ({
     ...(eligibilityByResultId || {}),
     ...reportActionEligibility,
   }), [eligibilityByResultId, reportActionEligibility]);
-  const experiments = data.recent_experiments || [];
-  const ops = data.op_success_rates || [];
-  const failures = data.failure_patterns || {};
-  const frontier = data.efficiency_frontier || [];
-  const grammarWeights = data.grammar_weights || {};
-  const insights = data.insights || [];
-  const learningLog = data.learning_log || [];
-  const crossRunStability = data.cross_run_stability || {};
-  const mathFamilyCoverage = data.math_family_coverage || { families: [], totals: { n_tested: 0, n_survived: 0 } };
-  const mathspaceOperatorImpact = data.mathspace_operator_impact || null;
-  const routingModeComparison = data.routing_mode_comparison || null;
-  const architectureRerunTelemetry = data.architecture_rerun_telemetry || {};
+  const experiments = reportData.recent_experiments || [];
+  const ops = reportData.op_success_rates || [];
+  const failures = reportData.failure_patterns || {};
+  const frontier = reportData.efficiency_frontier || [];
+  const grammarWeights = reportData.grammar_weights || {};
+  const insights = reportData.insights || [];
+  const learningLog = reportData.learning_log || [];
+  const crossRunStability = reportData.cross_run_stability || {};
+  const mathFamilyCoverage = reportData.math_family_coverage || { families: [], totals: { n_tested: 0, n_survived: 0 } };
+  const mathspaceOperatorImpact = reportData.mathspace_operator_impact || null;
+  const routingModeComparison = reportData.routing_mode_comparison || null;
+  const architectureRerunTelemetry = reportData.architecture_rerun_telemetry || {};
   const stabilitySummary = crossRunStability.summary || {};
   const stabilityCandidates = crossRunStability.candidates || [];
 
@@ -331,6 +306,32 @@ function ReportDetail({
 
   const failureByType = failures.by_error_type || failures;
   const failureByStage = failures.by_stage || {};
+
+  if (loading) return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <button
+        className="refresh-btn"
+        onClick={onBack}
+        style={{ alignSelf: 'flex-start', fontSize: 12, padding: '4px 10px' }}
+      >
+        &larr; Back to Reports
+      </button>
+      <div className="card"><p style={{ color: 'var(--text-muted)' }}>Loading report...</p></div>
+    </div>
+  );
+  if (error) return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <button
+        className="refresh-btn"
+        onClick={onBack}
+        style={{ alignSelf: 'flex-start', fontSize: 12, padding: '4px 10px' }}
+      >
+        &larr; Back to Reports
+      </button>
+      <div className="card"><p style={{ color: 'var(--accent-red)' }}>Error loading report: {error}</p></div>
+    </div>
+  );
+  if (!data) return null;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>

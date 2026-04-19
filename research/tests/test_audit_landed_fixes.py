@@ -258,7 +258,9 @@ def test_grammar_source_uses_documented_metadata_keys():
     """Pin the metadata key names the audit fix introduced."""
     import pathlib
 
-    src = pathlib.Path("research/synthesis/grammar.py").read_text()
+    src = (
+        pathlib.Path(__file__).resolve().parents[1] / "synthesis" / "grammar.py"
+    ).read_text()
     assert "_grammar_output_dim_coerced" in src, (
         "Output-dim coercion breadcrumb must be in grammar.py"
     )

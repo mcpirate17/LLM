@@ -9,13 +9,12 @@ import time
 from dataclasses import asdict, dataclass
 
 import torch
-import torch.nn.functional as F
 
 from ._reference_model_native import load_reference_model_native
 from ._runner_native import load_runner_native
 from .reference_training import BaselineTransformer
 from .training_core import run_training_loop
-from .utils import language_model_loss
+from .utils import clip_grad_norm, language_model_loss
 
 
 @dataclass(slots=True)
@@ -50,12 +49,9 @@ def _legacy_train_once(
     for _ in range(n_steps):
         optimizer.zero_grad(set_to_none=True)
         logits = model(tokens)
-        loss = F.cross_entropy(
-            logits[:, :-1].reshape(-1, vocab_size),
-            tokens[:, 1:].reshape(-1),
-        )
+        loss = language_model_loss(logits, tokens, vocab_size)
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        clip_grad_norm(model.parameters(), 1.0)
         optimizer.step()
         final_loss = float(loss.item())
     elapsed_ms = (time.perf_counter() - t0) * 1000.0

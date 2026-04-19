@@ -12,6 +12,7 @@ import torch.nn.functional as F
 
 from ._reference_model_native import load_reference_model_native
 from .training_core import run_training_loop
+from .utils import language_model_loss
 
 
 class SimpleTransformerLayer(nn.Module):
@@ -145,10 +146,7 @@ def train_reference_transformer(
             enabled=(dev.type == "cuda"),
         ):
             logits = model(input_ids)
-            return F.cross_entropy(
-                logits[:, :-1].reshape(-1, vocab_size),
-                input_ids[:, 1:].reshape(-1),
-            )
+            return language_model_loss(logits, input_ids, vocab_size)
 
     try:
         result = run_training_loop(

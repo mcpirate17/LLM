@@ -45,24 +45,19 @@ def extract_unique_graph_ops_batch(graph_payloads: Iterable[Any]) -> List[List[s
 
     rust = _try_import_rust_scheduler()
     if rust is not None and hasattr(rust, "extract_graph_ops_batch"):
-        try:
-            result = rust.extract_graph_ops_batch(serialized)
-            if isinstance(result, list):
-                return [
-                    sorted(
-                        {
-                            str(op).strip()
-                            for op in ops
-                            if str(op).strip() and str(op).strip() != "input"
-                        }
-                    )
-                    if isinstance(ops, list)
-                    else []
-                    for ops in result
-                ]
-        except Exception as exc:
-            logger.warning(
-                "Native graph-op batch extraction failed; falling back: %s", exc
-            )
+        result = rust.extract_graph_ops_batch(serialized)
+        if isinstance(result, list):
+            return [
+                sorted(
+                    {
+                        str(op).strip()
+                        for op in ops
+                        if str(op).strip() and str(op).strip() != "input"
+                    }
+                )
+                if isinstance(ops, list)
+                else []
+                for ops in result
+            ]
 
     return [_extract_unique_graph_ops_python(payload) for payload in payloads]

@@ -80,6 +80,10 @@ export const apiCall = (endpoint, options = {}) => {
 
 const get = (endpoint) => apiCall(endpoint, { method: 'GET' }).then(handleResponse);
 const post = (endpoint, body) => apiCall(endpoint, { method: 'POST', body }).then(handleResponse);
+export const postJson = (endpoint, body, options = {}) =>
+  apiCall(endpoint, { method: 'POST', body, ...options });
+export const putJson = (endpoint, body, options = {}) =>
+  apiCall(endpoint, { method: 'PUT', body, ...options });
 
 export const apiService = {
   // Experiments

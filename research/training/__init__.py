@@ -5,21 +5,25 @@ Generate novel training methods — loss functions, optimizers,
 curricula — from the same primitive vocabulary used for architectures.
 """
 
-from .loss_synthesis import (
-    synthesize_loss as synthesize_loss,
-    SynthesizedLoss as SynthesizedLoss,
-)
+from .curriculum import CurriculumStrategy, synthesize_curriculum
+from .loss_synthesis import SynthesizedLoss, synthesize_loss
 from .optimizer_synthesis import (
-    synthesize_optimizer as synthesize_optimizer,
-    SynthesizedOptimizer as SynthesizedOptimizer,
-    build_optimizer as build_optimizer,
-    MuonOptimizer as MuonOptimizer,
+    MuonOptimizer,
+    SynthesizedOptimizer,
+    build_optimizer,
+    synthesize_optimizer,
 )
-from .curriculum import (
-    synthesize_curriculum as synthesize_curriculum,
-    CurriculumStrategy as CurriculumStrategy,
-)
-from .training_program import (
-    TrainingProgram as TrainingProgram,
-    synthesize_training_program as synthesize_training_program,
-)
+from .training_program import TrainingProgram, synthesize_training_program
+
+__all__ = [
+    "CurriculumStrategy",
+    "MuonOptimizer",
+    "SynthesizedLoss",
+    "SynthesizedOptimizer",
+    "TrainingProgram",
+    "build_optimizer",
+    "synthesize_curriculum",
+    "synthesize_loss",
+    "synthesize_optimizer",
+    "synthesize_training_program",
+]

@@ -32,6 +32,10 @@ function LiveFeed({ apiBase, experimentId = null, progress = null }) {
   const [autoScroll, setAutoScroll] = useState(true);
   const [showControls, setShowControls] = useState(false);
   const [nowTs, setNowTs] = useState(Date.now());
+  const eventQueueRef = useRef([]);
+  const eventFlushTimerRef = useRef(null);
+  const pendingLossPointRef = useRef(null);
+  const lossFlushTimerRef = useRef(null);
   const prevConnectedRef = useRef(null);
   const displayEvents = useMemo(
     () => annotateGenerationHistory(reconcileTerminalEvents(events)),
@@ -46,10 +50,16 @@ function LiveFeed({ apiBase, experimentId = null, progress = null }) {
     [displayEvents]
   );
 
+  const isValidationActive = useMemo(() => {
+    const status = String(progress?.status || '').toLowerCase();
+    return status === 'validating' || status.startsWith('validation:');
+  }, [progress?.status]);
+
   useEffect(() => {
+    if (!isValidationActive || lossCurve.length === 0) return undefined;
     const interval = setInterval(() => setNowTs(Date.now()), 10000);
     return () => clearInterval(interval);
-  }, []);
+  }, [isValidationActive, lossCurve.length]);
 
   useEffect(() => {
     lossCurveRef.current = lossCurve;
@@ -62,6 +72,38 @@ function LiveFeed({ apiBase, experimentId = null, progress = null }) {
     setCurveHistory((prev) => {
       const next = [snapshot, ...prev.filter((item) => item.experimentId !== snapshot.experimentId)];
       return next.slice(0, LIVE_FEED_MAX_GRAPHS);
+    });
+  }, []);
+
+  const flushQueuedEvents = useCallback(() => {
+    eventFlushTimerRef.current = null;
+    const queued = eventQueueRef.current;
+    if (queued.length === 0) return;
+    eventQueueRef.current = [];
+    setEvents((prev) => [...prev, ...queued].slice(-LIVE_FEED_MAX_EVENTS));
+  }, []);
+
+  const enqueueEvent = useCallback((event) => {
+    eventQueueRef.current.push(event);
+    if (eventFlushTimerRef.current === null) {
+      eventFlushTimerRef.current = setTimeout(flushQueuedEvents, 120);
+    }
+  }, [flushQueuedEvents]);
+
+  const flushPendingLossPoint = useCallback(() => {
+    lossFlushTimerRef.current = null;
+    const pendingPoint = pendingLossPointRef.current;
+    if (!pendingPoint) return;
+    pendingLossPointRef.current = null;
+    setLossCurve((prev) => {
+      if (lossCurveExpRef.current !== pendingPoint.expId) {
+        lossCurveExpRef.current = pendingPoint.expId;
+        return [pendingPoint.point];
+      }
+      const next = [...prev, pendingPoint.point];
+      return next.length > LIVE_LOSS_CURVE_MAX_POINTS
+        ? next.slice(-LIVE_LOSS_CURVE_MAX_POINTS)
+        : next;
     });
   }, []);
 
@@ -79,6 +121,11 @@ function LiveFeed({ apiBase, experimentId = null, progress = null }) {
       });
       activeExperimentRef.current = eventExpId;
       lossCurveExpRef.current = eventExpId;
+      eventQueueRef.current = [];
+      if (eventFlushTimerRef.current !== null) {
+        clearTimeout(eventFlushTimerRef.current);
+        eventFlushTimerRef.current = null;
+      }
       setEvents([]);
       setLossCurve([]);
     }
@@ -89,6 +136,11 @@ function LiveFeed({ apiBase, experimentId = null, progress = null }) {
       if (CONTEXT_SWITCH_EVENT_TYPES.has(type)) {
         activeExperimentRef.current = eventExpId;
         lossCurveExpRef.current = eventExpId;
+        eventQueueRef.current = [];
+        if (eventFlushTimerRef.current !== null) {
+          clearTimeout(eventFlushTimerRef.current);
+          eventFlushTimerRef.current = null;
+        }
         setEvents([]);
         setLossCurve([]);
       } else {
@@ -102,8 +154,8 @@ function LiveFeed({ apiBase, experimentId = null, progress = null }) {
     if (curveEventMeta && (!eventExpId || eventExpId === (activeExperimentRef.current || eventExpId))) {
       archiveCurveSnapshot(eventExpId, curveEventMeta);
     }
-    setEvents(prev => [...prev.slice(-(LIVE_FEED_MAX_EVENTS - 1)), normalized]);
-  }, [archiveCurveSnapshot]);
+    enqueueEvent(normalized);
+  }, [archiveCurveSnapshot, enqueueEvent]);
 
   // Handle training_step events for the mini loss chart
   const handleTrainingStep = useCallback((data) => {
@@ -111,18 +163,20 @@ function LiveFeed({ apiBase, experimentId = null, progress = null }) {
     const currentExpId = activeExperimentRef.current || null;
     if (currentExpId && expId && expId !== currentExpId) return;
     if (!currentExpId && expId) activeExperimentRef.current = expId;
-    setLossCurve(prev => {
-      // Clear buffer when experiment changes
-      if (lossCurveExpRef.current !== expId) {
-        lossCurveExpRef.current = expId;
-        return [{ step: data.step, loss: data.loss, total_steps: data.total_steps, phase: data.phase, received_ts: Date.now() }];
-      }
-      const next = [...prev, { step: data.step, loss: data.loss, total_steps: data.total_steps, phase: data.phase, received_ts: Date.now() }];
-      return next.length > LIVE_LOSS_CURVE_MAX_POINTS
-        ? next.slice(-LIVE_LOSS_CURVE_MAX_POINTS)
-        : next;
-    });
-  }, []);
+    pendingLossPointRef.current = {
+      expId,
+      point: {
+        step: data.step,
+        loss: data.loss,
+        total_steps: data.total_steps,
+        phase: data.phase,
+        received_ts: Date.now(),
+      },
+    };
+    if (lossFlushTimerRef.current === null) {
+      lossFlushTimerRef.current = setTimeout(flushPendingLossPoint, 250);
+    }
+  }, [flushPendingLossPoint]);
 
   // Subscribe to all SSE events via shared EventBus
   const { connected } = useEventBus('program_evaluated', addEvent('program'));
@@ -165,8 +219,20 @@ function LiveFeed({ apiBase, experimentId = null, progress = null }) {
   useEventBus('log_message', addEvent('log'));
   useEventBus('training_step', handleTrainingStep);
 
-  // Fetch loss curve on mount (regardless of experimentId)
+  useEffect(() => () => {
+    if (eventFlushTimerRef.current !== null) {
+      clearTimeout(eventFlushTimerRef.current);
+      eventFlushTimerRef.current = null;
+    }
+    if (lossFlushTimerRef.current !== null) {
+      clearTimeout(lossFlushTimerRef.current);
+      lossFlushTimerRef.current = null;
+    }
+  }, []);
+
+  // Fetch generic loss curve only when no experiment is selected.
   useEffect(() => {
+    if (experimentId) return undefined;
     apiCall(`/api/live-loss-curve`)
       .then(r => r.json())
       .then(curve => {
@@ -182,7 +248,8 @@ function LiveFeed({ apiBase, experimentId = null, progress = null }) {
         }
       })
       .catch(() => {});
-  }, [apiBase]);
+    return undefined;
+  }, [apiBase, experimentId]);
 
   // Load history from REST when experimentId changes
   useEffect(() => {
