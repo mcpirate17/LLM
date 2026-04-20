@@ -91,11 +91,6 @@ def create_app(
         name = Path(normalized).name
         return "." in name
 
-    # Auto-load persisted LLM config
-    from .api_routes._helpers import load_persisted_llm_config
-
-    load_persisted_llm_config(notebook_path)
-
     # ── Global error handlers ──
 
     @app.errorhandler(404)

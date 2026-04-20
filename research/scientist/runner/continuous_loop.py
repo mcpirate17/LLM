@@ -31,9 +31,6 @@ class _ContinuousLoopMixin:
 
     __slots__ = ()
 
-    def _log_learning_event_compat(self, nb: LabNotebook, *args, **kwargs) -> None:
-        getattr(nb, "log_learning_event")(*args, **kwargs)
-
     def _publish_continuous_session_event(
         self,
         *,
@@ -465,7 +462,12 @@ class _ContinuousLoopMixin:
                     ).fetchone()
                     if row and row["avg_nov"] is not None:
                         novelty_scores = [float(row["avg_nov"])]
-                except (sqlite3.OperationalError, RuntimeError, ValueError, TypeError) as e:
+                except (
+                    sqlite3.OperationalError,
+                    RuntimeError,
+                    ValueError,
+                    TypeError,
+                ) as e:
                     logger.debug("Novelty fallback query failed: %s", e)
         return sum(novelty_scores) / len(novelty_scores) if novelty_scores else 0.0
 

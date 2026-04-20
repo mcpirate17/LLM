@@ -2,12 +2,12 @@
 from __future__ import annotations
 
 import argparse
-import sqlite3
 from pathlib import Path
 from typing import List
 
 from research.scientist.notebook import LabNotebook
 from research.scientist.screening_recompute import recompute_screening_metrics
+from research.tools._db_maintenance import connect_readonly
 
 
 def _parse_args() -> argparse.Namespace:
@@ -29,8 +29,7 @@ def _parse_args() -> argparse.Namespace:
 
 
 def _select_result_ids(args: argparse.Namespace) -> List[str]:
-    con = sqlite3.connect(str(args.db))
-    con.row_factory = sqlite3.Row
+    con = connect_readonly(args.db)
     try:
         if args.result_id:
             return [str(rid) for rid in args.result_id if str(rid).strip()]

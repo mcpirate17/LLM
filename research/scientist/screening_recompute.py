@@ -18,6 +18,7 @@ from research.scientist.runner._helpers import (
     screening_wikitext_fields,
 )
 from research.scientist.runner.execution_triage import run_triage
+from research.scientist.runner.shared import get_shared_runner
 from research.scientist.shared_utils import resolve_device
 from research.synthesis.serializer import graph_from_json
 from research.tools.backfill import (
@@ -133,7 +134,10 @@ def _run_full_post_train(
             else:
                 raise
 
-    runner = ExperimentRunner(notebook_path=str(notebook_path))
+    # Process-wide singleton: amortizes CodeHealer init, baseline transformer,
+    # SSE handler, and corpus batcher across all calls in a batch loop. Lives
+    # for process lifetime; cleaned up via atexit in runner.shared.
+    runner = get_shared_runner(str(notebook_path))
     dev = resolve_device(device)
     try:
         s1_result = runner._micro_train(
@@ -204,9 +208,8 @@ def _run_full_post_train(
         updates["train_budget_steps"] = int(config.stage1_steps)
         return updates
     finally:
-        close_runner = getattr(runner, "close", None)
-        if callable(close_runner):
-            close_runner()
+        # Do NOT close runner — it's a process-wide singleton owned by
+        # runner.shared and torn down via atexit.
         del model
         if torch.cuda.is_available():
             try:

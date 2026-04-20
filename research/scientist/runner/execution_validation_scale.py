@@ -4,24 +4,12 @@ from __future__ import annotations
 
 import json
 import sqlite3
-import time
-import traceback
-from typing import List
 
-import torch
 
 from ..json_utils import json_safe
 from ..native_runner import compile_model_native_first as compile_model
-from ..runtime_events import publish_lifecycle_event
-from ..shared_utils import resolve_device
 from ._helpers import (
-    build_validation_entry,
     clear_gpu_memory,
-    compute_seed_metrics,
-    handle_breakthrough,
-    promote_validation_candidate,
-    run_baseline_comparison,
-    run_trajectory_probe,
     screening_probe_fields,
     screening_wikitext_fields,
 )
@@ -30,7 +18,7 @@ from .execution_validation import _fail_loud
 from ...eval.diagnostic_tasks import run_diagnostic_suite
 from ...eval.fingerprint import compute_fingerprint
 from ...eval.metrics import novelty_score
-from ...synthesis.serializer import graph_from_json, graph_to_json
+from ...synthesis.serializer import graph_from_json
 from ...training.checkpointing import CheckpointManager
 
 import logging
@@ -549,27 +537,16 @@ class _ExecutionValidationScaleMixin:
         ):
             results["best_novelty_score"] = n_score
 
-        result_id = nb.record_program_result(
-            experiment_id=exp_id,
-            graph_fingerprint=graph.fingerprint(),
-            graph_json=graph_to_json(graph),
-            stage0_passed=True,
-            stage05_passed=True,
-            stage1_passed=s1_passed,
-            loss_ratio=loss_ratio,
-            final_loss=final_loss,
-            throughput=throughput,
-            novelty_score=n_score,
-            structural_novelty=nov.structural_novelty,
-            behavioral_novelty=nov.behavioral_novelty,
-            most_similar_to=nov.most_similar_to,
-            novelty_confidence=nov.novelty_confidence,
-            **program_metrics,
-        )
+        result_id = source_result_id
 
         if training_curve and result_id:
             try:
-                nb.store_training_curve(result_id, training_curve)
+                existing_curve = nb.conn.execute(
+                    "SELECT 1 FROM training_curves WHERE result_id = ? LIMIT 1",
+                    (result_id,),
+                ).fetchone()
+                if existing_curve is None:
+                    nb.store_training_curve(result_id, training_curve)
             except (sqlite3.OperationalError, RuntimeError) as exc:
                 _fail_loud(
                     "scale_up",

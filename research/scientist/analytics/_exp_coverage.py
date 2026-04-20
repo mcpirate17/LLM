@@ -6,6 +6,8 @@ import json
 import logging
 from typing import Dict, List, Optional
 
+from ..intelligence.graph_ops import extract_unique_graph_ops
+
 logger = logging.getLogger(__name__)
 
 # Op-to-family mappings (shared between coverage methods)
@@ -65,25 +67,7 @@ def _extract_op_names(graph_json: Optional[str]) -> set[str]:
     """Extract op names from graph JSON string."""
     if not graph_json:
         return set()
-    try:
-        graph = json.loads(graph_json)
-        nodes = graph.get("nodes", {}) if isinstance(graph, dict) else {}
-        node_iter = (
-            nodes.values()
-            if isinstance(nodes, dict)
-            else nodes
-            if isinstance(nodes, list)
-            else []
-        )
-        result: set[str] = set()
-        for node in node_iter:
-            if isinstance(node, dict):
-                op_name = node.get("op_name") or node.get("op")
-                if op_name:
-                    result.add(op_name)
-        return result
-    except (json.JSONDecodeError, TypeError, AttributeError):
-        return set()
+    return set(extract_unique_graph_ops(graph_json))
 
 
 def _family_from_row(graph_json: Optional[str], arch_spec_json: Optional[str]) -> str:

@@ -11,7 +11,9 @@ Hot-path requirements:
 from __future__ import annotations
 
 import logging
+import threading
 import time
+from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional, Protocol
@@ -23,6 +25,37 @@ from ._data_native import load_data_native
 from research.synthesis._json_compat import loads_json
 
 logger = logging.getLogger(__name__)
+
+# Tokenized corpora are large (WikiText-103 int64 ≈ 300 MB) and immutable for
+# a given (path, mtime, vocab, tokenizer, ...) tuple. Cache the tensor at
+# module level so every CorpusTokenBatcher with matching key shares the same
+# underlying buffer. Without this, each new ExperimentRunner re-tokenizes —
+# observed leak: ~870 MB/iter, OOM-killing the box at iter ~140.
+_TOKEN_CACHE_LOCK = threading.Lock()
+_TOKEN_CACHE_MAX_ENTRIES = 4
+_TOKEN_CACHE: "OrderedDict[tuple, torch.Tensor]" = OrderedDict()
+
+
+def _token_cache_get(key: tuple) -> Optional[torch.Tensor]:
+    with _TOKEN_CACHE_LOCK:
+        tensor = _TOKEN_CACHE.get(key)
+        if tensor is not None:
+            _TOKEN_CACHE.move_to_end(key)
+        return tensor
+
+
+def _token_cache_put(key: tuple, tensor: torch.Tensor) -> None:
+    with _TOKEN_CACHE_LOCK:
+        _TOKEN_CACHE[key] = tensor
+        _TOKEN_CACHE.move_to_end(key)
+        while len(_TOKEN_CACHE) > _TOKEN_CACHE_MAX_ENTRIES:
+            _TOKEN_CACHE.popitem(last=False)
+
+
+def clear_corpus_token_cache() -> None:
+    """Drop all cached tokenized corpora. Use in tests / after corpus edits."""
+    with _TOKEN_CACHE_LOCK:
+        _TOKEN_CACHE.clear()
 
 
 class TokenizerAdapter(Protocol):
@@ -233,6 +266,38 @@ class CorpusTokenBatcher:
             logger.warning("Corpus path not found: %s", self.path)
             return torch.empty(0, dtype=torch.long)
 
+        try:
+            stat = self.path.stat()
+            cache_key = (
+                str(self.path.resolve()),
+                int(stat.st_mtime_ns),
+                int(stat.st_size),
+                int(self.vocab_size),
+                type(self._tokenizer).__name__,
+                int(self.config.max_chars),
+                str(self.config.fmt or "auto"),
+                str(self.config.text_key or ""),
+                str(self.config.tiktoken_encoding or ""),
+            )
+        except OSError:
+            cache_key = None
+
+        if cache_key is not None:
+            cached = _token_cache_get(cache_key)
+            if cached is not None:
+                return cached
+
+        tokens = self._load_tokens_uncached()
+
+        if (
+            cache_key is not None
+            and isinstance(tokens, torch.Tensor)
+            and tokens.numel() > 0
+        ):
+            _token_cache_put(cache_key, tokens)
+        return tokens
+
+    def _load_tokens_uncached(self) -> torch.Tensor:
         # Pretokenized .npy: keep the mmap zero-copy when dtype matches and
         # values already fit the vocab range. Otherwise materialize once and
         # project in-place natively — never re-project per batch.
@@ -250,6 +315,7 @@ class CorpusTokenBatcher:
                 # mmap is read-only; we never write through this view, so the
                 # PyTorch read-only-array warning is benign — silence it locally.
                 import warnings as _w
+
                 with _w.catch_warnings():
                     _w.filterwarnings(
                         "ignore",
@@ -262,9 +328,7 @@ class CorpusTokenBatcher:
             else:
                 tokens = torch.from_numpy(np.asarray(tokens_np, dtype=np.int64))
             if needs_modulo:
-                self._native_ext.project_int64_modulo_inplace(
-                    tokens, self.vocab_size
-                )
+                self._native_ext.project_int64_modulo_inplace(tokens, self.vocab_size)
             return tokens
 
         fmt = self._detect_format()
@@ -312,8 +376,11 @@ class CorpusTokenBatcher:
         device: torch.device,
     ) -> torch.Tensor:
         starts = torch.randint(
-            0, int(tokens.numel()) - seq_len,
-            (batch_size,), generator=generator, device="cpu",
+            0,
+            int(tokens.numel()) - seq_len,
+            (batch_size,),
+            generator=generator,
+            device="cpu",
         )
         if device.type != "cuda":
             return self._native_ext.gather_token_batch(tokens, starts, seq_len)
@@ -332,8 +399,11 @@ class CorpusTokenBatcher:
     ) -> torch.Tensor:
         t0 = time.perf_counter()
         starts = torch.randint(
-            0, int(tokens.numel()) - seq_len,
-            (batch_size,), generator=generator, device="cpu",
+            0,
+            int(tokens.numel()) - seq_len,
+            (batch_size,),
+            generator=generator,
+            device="cpu",
         )
         timer("start_index_sampling_ms", (time.perf_counter() - t0) * 1000.0)
 
@@ -355,8 +425,6 @@ class CorpusTokenBatcher:
     def _cuda_pinned_buffer(self, batch_size: int, seq_len: int) -> torch.Tensor:
         shape = (batch_size, seq_len)
         if self._pinned_batch is None or self._pinned_shape != shape:
-            self._pinned_batch = torch.empty(
-                shape, dtype=torch.long, pin_memory=True
-            )
+            self._pinned_batch = torch.empty(shape, dtype=torch.long, pin_memory=True)
             self._pinned_shape = shape
         return self._pinned_batch

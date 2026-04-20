@@ -4,7 +4,7 @@ from typing import List, Optional, Sequence, Tuple
 
 import numpy as np
 
-from .native_nsga import compute_crowding_distances, compute_pareto_ranks
+from research.frontier_kernel import crowding_distances, pareto_ranks
 
 PARETO_FRONT_RANK = 1
 DEFAULT_OBJECTIVES: List[Tuple[str, str]] = [("fitness", "max"), ("novelty", "max")]
@@ -17,26 +17,16 @@ def fast_non_dominated_sort(
     if not population:
         return []
 
-    signs = np.array(
-        [1.0 if direction == "max" else -1.0 for _, direction in objectives],
+    maximize = tuple(direction == "max" for _, direction in objectives)
+    attr_names = [name for name, _ in objectives]
+    vals = np.asarray(
+        [[getattr(ind, attr_name) for attr_name in attr_names] for ind in population],
         dtype=np.float32,
     )
-    attr_names = [name for name, _ in objectives]
-    vals = (
-        np.array(
-            [
-                [getattr(ind, attr_name) for attr_name in attr_names]
-                for ind in population
-            ],
-            dtype=np.float32,
-        )
-        * signs
+    return _fronts_from_rank_array(
+        population,
+        pareto_ranks(vals, maximize=maximize),
     )
-
-    native_ranks = compute_pareto_ranks(vals)
-    if native_ranks is not None:
-        return _fronts_from_rank_array(population, native_ranks)
-    return _fast_non_dominated_sort_in_python(population, vals)
 
 
 def _fronts_from_rank_array(
@@ -58,86 +48,17 @@ def _fronts_from_rank_array(
     return fronts
 
 
-def _fast_non_dominated_sort_in_python(
-    population: List[object], vals: np.ndarray
-) -> List[List[object]]:
-    diff = vals[:, np.newaxis, :] - vals[np.newaxis, :, :]
-    ge_all = np.all(diff >= 0, axis=2)
-    gt_any = np.any(diff > 0, axis=2)
-    dominates = ge_all & gt_any
-    domination_count = dominates.sum(axis=0)
-
-    fronts: List[List[object]] = []
-    rank = 1
-    remaining = np.ones(len(population), dtype=bool)
-
-    while True:
-        front_mask = remaining & (domination_count == 0)
-        front_indices = np.where(front_mask)[0]
-        if len(front_indices) == 0:
-            break
-
-        front: List[object] = []
-        for i in front_indices:
-            population[int(i)].pareto_rank = rank
-            front.append(population[int(i)])
-        fronts.append(front)
-
-        remaining[front_indices] = False
-        for i in front_indices:
-            dominated_by_i = np.where(dominates[int(i)] & remaining)[0]
-            domination_count[dominated_by_i] -= 1
-
-        rank += 1
-
-    return fronts
-
-
 def assign_crowding_distance(
     front: List[object],
     objectives: Sequence[Tuple[str, str]] = DEFAULT_OBJECTIVES,
 ) -> None:
-    if len(front) <= 2:
-        for ind in front:
-            ind.crowding_dist = float("inf")
-        return
-
     attr_names = [attr for attr, _ in objectives]
     objective_matrix = np.asarray(
         [[getattr(ind, attr) for attr in attr_names] for ind in front],
         dtype=np.float32,
     )
-    native_distances = compute_crowding_distances(objective_matrix)
-    if native_distances is not None:
-        for ind, distance in zip(front, native_distances):
-            ind.crowding_dist = float(distance)
-        return
-    _assign_crowding_distance_in_python(front, objective_matrix)
-
-
-def _assign_crowding_distance_in_python(
-    front: List[object], objective_matrix: np.ndarray
-) -> None:
-    n = len(front)
-    for ind in front:
-        ind.crowding_dist = 0.0
-
-    for objective_idx in range(objective_matrix.shape[1]):
-        order = np.argsort(objective_matrix[:, objective_idx], kind="mergesort")
-        obj_values = objective_matrix[order, objective_idx]
-        span = float(obj_values[-1]) - float(obj_values[0])
-        front[int(order[0])].crowding_dist = float("inf")
-        front[int(order[-1])].crowding_dist = float("inf")
-        if span <= 0.0:
-            continue
-        inv_span = 1.0 / span
-        for pos in range(1, n - 1):
-            idx = int(order[pos])
-            if np.isinf(front[idx].crowding_dist):
-                continue
-            front[idx].crowding_dist += float(
-                (obj_values[pos + 1] - obj_values[pos - 1]) * inv_span
-            )
+    for ind, distance in zip(front, crowding_distances(objective_matrix)):
+        ind.crowding_dist = float(distance)
 
 
 def nsga2_rank(

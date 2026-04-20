@@ -28,44 +28,6 @@ def _parse_metrics(raw: str) -> tuple[str, ...]:
     return tuple(probe_order)
 
 
-def _requested_metric_is_missing(row, metrics: tuple[str, ...]) -> bool:
-    for metric in metrics:
-        if metric == "binding" and row["binding_auc"] is None:
-            return True
-        if metric == "induction" and row["induction_auc"] is None:
-            return True
-        if metric == "ar" and row["ar_auc"] is None:
-            return True
-    return False
-
-
-def _query_candidates(
-    nb, tiers: list[str], top: int, force: bool, metrics: tuple[str, ...]
-):
-    tier_ph = ",".join("?" for _ in tiers)
-    rows = nb.conn.execute(
-        f"SELECT l.entry_id, l.result_id, l.tier, l.composite_score, "
-        f"l.is_reference, pr.graph_json, pr.binding_auc, pr.induction_auc, "
-        f"pr.ar_auc, pr.graph_fingerprint, pr.stage1_passed "
-        f"FROM leaderboard l "
-        f"LEFT JOIN program_results pr ON l.result_id = pr.result_id "
-        f"WHERE l.tier IN ({tier_ph}) AND COALESCE(pr.stage1_passed, 0) = 1 "
-        f"ORDER BY l.composite_score DESC",
-        tuple(tiers),
-    ).fetchall()
-    if not force:
-        rows = [row for row in rows if _requested_metric_is_missing(row, metrics)]
-    by_tier: dict[str, list] = {}
-    for row in rows:
-        tier_rows = by_tier.setdefault(row["tier"], [])
-        if len(tier_rows) < top:
-            tier_rows.append(row)
-    ordered = []
-    for tier in tiers:
-        ordered.extend(by_tier.get(tier, []))
-    return ordered, by_tier
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Backfill binding-family metrics via research.tools.backfill"

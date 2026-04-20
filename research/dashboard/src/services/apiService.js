@@ -123,11 +123,6 @@ export const apiService = {
   getAriaChatGuardrails: (window = 200) => get(`/api/aria/chat/guardrails?window=${window}`),
   getHealerTasks: (limit = 5) => get(`/api/healer/tasks?limit=${limit}`),
 
-  // Designer Integration
-  ensureDesignerRunning: (forceRestart = false) => post(`/api/designer/ensure-running`, { force_restart: !!forceRestart }),
-  touchDesigner: (reason = 'dashboard') => post(`/api/designer/touch`, { reason }),
-  stopDesigner: () => post(`/api/designer/stop`),
-
   // Native runner profiling
   getNativeProfile: () => get(`/api/native-profile/v2/data`),
   toggleNativeProfiling: (enable) => post(`/api/native-profile/v2/enable`, { enable: !!enable }),

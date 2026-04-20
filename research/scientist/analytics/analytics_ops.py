@@ -1,17 +1,15 @@
 from __future__ import annotations
 import json
-import re
 from typing import Any, Dict, List, Optional, Set
+from ..intelligence.graph_ops import extract_unique_graph_ops
 from ..shared_utils import safe_float
+from .frontier import pareto_mask
 
 
 class _OpsMixin:
     """Op extraction, compression analysis, and efficiency frontiers."""
 
     __slots__ = ()
-
-    _OP_NAME_PATTERN = re.compile(r'"op_name"\s*:\s*"([^"]+)"')
-    _OP_KEY_PATTERN = re.compile(r'"op"\s*:\s*"([^"]+)"')
 
     _FULL_QKV_TOKEN_MIXERS: Set[str] = {
         "softmax_attention",
@@ -59,39 +57,12 @@ class _OpsMixin:
 
     @classmethod
     def _extract_ops_fast(cls, graph_json: str) -> Optional[List[str]]:
-        """Fast-path op extraction from JSON string without full decode."""
-        if not graph_json:
-            return []
-        if '"op_name"' not in graph_json and '"op"' not in graph_json:
-            return []
-        ops = set()
-        ops.update(
-            op
-            for op in cls._OP_NAME_PATTERN.findall(graph_json)
-            if op and op != "input"
-        )
-        ops.update(
-            op for op in cls._OP_KEY_PATTERN.findall(graph_json) if op and op != "input"
-        )
-        return sorted(ops)
+        """Fast-path shared op extraction for analytics scans."""
+        return extract_unique_graph_ops(graph_json)
 
     @staticmethod
     def _extract_ops_fallback(graph_json: str) -> Optional[List[str]]:
-        """Robust fallback extraction using JSON decode."""
-        try:
-            graph_data = json.loads(graph_json)
-            nodes = graph_data.get("nodes", {}) if isinstance(graph_data, dict) else {}
-            return sorted(
-                {
-                    nd.get("op_name") or nd.get("op")
-                    for nd in nodes.values()
-                    if isinstance(nd, dict)
-                    and (nd.get("op_name") or nd.get("op"))
-                    and (nd.get("op_name") or nd.get("op")) != "input"
-                }
-            )
-        except (json.JSONDecodeError, TypeError, AttributeError):
-            return None
+        return extract_unique_graph_ops(graph_json)
 
     @staticmethod
     def _extract_arch_choices(arch_spec_json: Optional[str]) -> Dict[str, str]:
@@ -135,20 +106,9 @@ class _OpsMixin:
         if not programs:
             return []
 
-        # Simple Pareto Sort: O(N^2) but N is usually small (< 5000)
-        frontier = []
-        for i, p1 in enumerate(programs):
-            is_dominated = False
-            for j, p2 in enumerate(programs):
-                if i == j:
-                    continue
-                # p2 dominates p1 if it's better in both and strictly better in one
-                if p2["params"] <= p1["params"] and p2["loss"] <= p1["loss"]:
-                    if p2["params"] < p1["params"] or p2["loss"] < p1["loss"]:
-                        is_dominated = True
-                        break
-            if not is_dominated:
-                frontier.append(p1)
+        objective_matrix = [(p["params"], p["loss"]) for p in programs]
+        mask = pareto_mask(objective_matrix)
+        frontier = [programs[i] for i, keep in enumerate(mask) if keep]
 
         return sorted(frontier, key=lambda x: x["params"])
 
@@ -597,15 +557,12 @@ class _OpsMixin:
 
         programs = [dict(r) for r in rows]
 
-        # Find Pareto frontier: minimize (loss, flops) in O(n log n)
-        programs.sort(key=lambda r: (r["flops_forward"], r["final_loss"]))
-        frontier = []
-        best_loss = float("inf")
-        for p in programs:
-            loss = p["final_loss"]
-            if loss < best_loss:
-                frontier.append(p)
-                best_loss = loss
+        objective_matrix = [
+            (float(p["final_loss"]), float(p["flops_forward"])) for p in programs
+        ]
+        mask = pareto_mask(objective_matrix)
+        frontier = [programs[i] for i, keep in enumerate(mask) if keep]
+        frontier.sort(key=lambda r: (r["flops_forward"], r["final_loss"]))
 
         # Extract ops list only for the final frontier programs
         for p in frontier:
@@ -660,36 +617,21 @@ class _OpsMixin:
             pc = p.get("param_count") or 0
             p["effective_params"] = pc * cr if (cr and cr > 0) else pc
 
-        # 3D Pareto: minimize (final_loss, flops_forward, effective_params)
-        # A point is dominated if another point is <= on all 3 and < on at least 1
-        n = len(programs)
-        dominated = [False] * n
-        for i in range(n):
-            if dominated[i]:
-                continue
-            li, fi, ei = (
-                programs[i]["final_loss"],
-                programs[i]["flops_forward"],
-                programs[i]["effective_params"],
+        objective_matrix = [
+            (
+                float(p["final_loss"]),
+                float(p["flops_forward"]),
+                float(p["effective_params"]),
             )
-            for j in range(n):
-                if i == j or dominated[j]:
-                    continue
-                lj, fj, ej = (
-                    programs[j]["final_loss"],
-                    programs[j]["flops_forward"],
-                    programs[j]["effective_params"],
-                )
-                # j dominates i if j <= i on all and j < i on at least one
-                if lj <= li and fj <= fi and ej <= ei:
-                    if lj < li or fj < fi or ej < ei:
-                        dominated[i] = True
-                        break
+            for p in programs
+        ]
+        mask = pareto_mask(objective_matrix)
+        n = len(programs)
 
         frontier = []
         for i, p in enumerate(programs):
-            p["is_pareto_optimal"] = not dominated[i]
-            if not dominated[i]:
+            p["is_pareto_optimal"] = bool(mask[i])
+            if mask[i]:
                 frontier.append(p)
 
         # Extract ops for frontier programs
@@ -704,7 +646,7 @@ class _OpsMixin:
             p.pop("graph_json", None)
 
         # Clean graph_json from non-frontier programs too (not returned but tidy)
-        dominated_count = sum(1 for d in dominated if d)
+        dominated_count = sum(1 for keep in mask if not keep)
 
         return {
             "frontier": frontier,

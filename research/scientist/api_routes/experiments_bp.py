@@ -81,10 +81,10 @@ def _generate_experiment_analysis(
     nb, experiment_id: str, exp: Dict[str, Any]
 ) -> Optional[str]:
     from ..llm.context_experiment import build_experiment_context
-    from ..persona import get_aria
+    from ._helpers import get_aria_for_notebook
 
     results = exp.get("results") or {}
-    analysis = get_aria().analyze_results(
+    analysis = get_aria_for_notebook(str(nb.db_path)).analyze_results(
         results,
         context=build_experiment_context(results),
     )

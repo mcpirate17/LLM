@@ -24,10 +24,17 @@ use crate::executor::{
 use crate::ffi;
 use crate::graph::GraphIR;
 use crate::intelligence::{
-    extract_edge_op_pairs_json, extract_topology_features_json, train_interaction_model_native,
+    extract_edge_op_pairs_batch_json, extract_edge_op_pairs_json, extract_graph_segments_json,
+    extract_topology_features_batch_json,
+    extract_topology_features_json,
+    train_interaction_model_native,
     train_op_embeddings_epoch_native,
 };
-use crate::notebook_graph::{extract_graph_feature_payload_json, extract_graph_ops_json};
+use crate::notebook_graph::{
+    analyze_graph_provenance_json, extract_graph_feature_payload_json, extract_graph_ops_json,
+    extract_graph_structure_features_json,
+};
+use crate::template_selection::TemplateSelector;
 
 #[pyclass]
 struct SavedActivationStore {
@@ -37,6 +44,11 @@ struct SavedActivationStore {
 #[pyclass]
 struct CompiledGraphHandle {
     graph: GraphIR,
+}
+
+#[pyclass]
+struct TemplateSelectorHandle {
+    selector: TemplateSelector,
 }
 
 enum SavedActivationInput<'py> {
@@ -159,6 +171,61 @@ fn extract_graph_feature_payload(
         payload.motifs_json,
         payload.slot_usage_json,
     ))
+}
+
+#[pyfunction(signature = (graph_json, generic_sink_ops, failure_op=None))]
+fn analyze_graph_provenance_native(
+    graph_json: &str,
+    generic_sink_ops: Vec<String>,
+    failure_op: Option<&str>,
+) -> PyResult<String> {
+    analyze_graph_provenance_json(graph_json, failure_op, &generic_sink_ops)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))
+}
+
+#[pyfunction]
+fn extract_graph_structure_features_native(graph_json: &str) -> PyResult<String> {
+    extract_graph_structure_features_json(graph_json)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))
+}
+
+#[pyfunction]
+fn compile_template_selector_handle(
+    py: Python<'_>,
+    names: Vec<String>,
+    default_weights: Vec<f64>,
+) -> PyResult<Py<TemplateSelectorHandle>> {
+    let selector = TemplateSelector::new(names, default_weights)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    Py::new(py, TemplateSelectorHandle { selector })
+}
+
+#[pyfunction(signature = (
+    handle,
+    exploration_budget,
+    exploration_draw,
+    selection_draw,
+    override_weights=None,
+    allowed_names=None
+))]
+fn select_template_index_compiled(
+    handle: PyRef<'_, TemplateSelectorHandle>,
+    exploration_budget: f64,
+    exploration_draw: f64,
+    selection_draw: f64,
+    override_weights: Option<HashMap<String, f64>>,
+    allowed_names: Option<Vec<String>>,
+) -> PyResult<(usize, bool)> {
+    handle
+        .selector
+        .select_index(
+            override_weights.as_ref(),
+            allowed_names.as_ref(),
+            exploration_budget,
+            exploration_draw,
+            selection_draw,
+        )
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
 }
 
 #[derive(Serialize)]
@@ -480,23 +547,34 @@ fn extract_topology_features_batch_native(
     pair_stability_json: &str,
     op_metadata_json: &str,
 ) -> PyResult<Vec<String>> {
-    graphs
-        .into_iter()
-        .map(|graph| {
-            extract_topology_features_json(
-                &graph,
-                op_profiles_json,
-                pair_stability_json,
-                op_metadata_json,
-            )
-            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))
-        })
-        .collect()
+    extract_topology_features_batch_json(
+        &graphs,
+        op_profiles_json,
+        pair_stability_json,
+        op_metadata_json,
+    )
+    .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))
 }
 
 #[pyfunction]
 fn extract_edge_op_pairs_native(graph_json: &str) -> PyResult<String> {
     extract_edge_op_pairs_json(graph_json)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))
+}
+
+#[pyfunction]
+fn extract_edge_op_pairs_batch_native(graphs: Vec<String>) -> PyResult<Vec<String>> {
+    extract_edge_op_pairs_batch_json(&graphs)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))
+}
+
+#[pyfunction]
+fn extract_graph_segments_native(
+    graph_json: &str,
+    min_len: usize,
+    max_len: usize,
+) -> PyResult<String> {
+    extract_graph_segments_json(graph_json, min_len, max_len)
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))
 }
 
@@ -1369,19 +1447,26 @@ fn execute_graph_backward_compiled_arrays_handle<'py>(
 fn aria_scheduler(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<CompiledGraphHandle>()?;
     m.add_class::<SavedActivationStore>()?;
+    m.add_class::<TemplateSelectorHandle>()?;
     m.add_function(wrap_pyfunction!(parse_graph_ir, m)?)?;
     m.add_function(wrap_pyfunction!(compile_graph_ir_handle, m)?)?;
+    m.add_function(wrap_pyfunction!(compile_template_selector_handle, m)?)?;
+    m.add_function(wrap_pyfunction!(select_template_index_compiled, m)?)?;
     m.add_function(wrap_pyfunction!(topological_order, m)?)?;
     m.add_function(wrap_pyfunction!(fingerprint_notebook_graph, m)?)?;
     m.add_function(wrap_pyfunction!(extract_graph_ops, m)?)?;
     m.add_function(wrap_pyfunction!(extract_graph_ops_batch, m)?)?;
     m.add_function(wrap_pyfunction!(extract_graph_feature_payload, m)?)?;
+    m.add_function(wrap_pyfunction!(extract_graph_structure_features_native, m)?)?;
+    m.add_function(wrap_pyfunction!(analyze_graph_provenance_native, m)?)?;
     m.add_function(wrap_pyfunction!(build_op_index_from_rows, m)?)?;
     m.add_function(wrap_pyfunction!(build_graph_training_corpus, m)?)?;
     m.add_function(wrap_pyfunction!(build_predictor_training_corpus, m)?)?;
     m.add_function(wrap_pyfunction!(extract_topology_features_native, m)?)?;
     m.add_function(wrap_pyfunction!(extract_topology_features_batch_native, m)?)?;
     m.add_function(wrap_pyfunction!(extract_edge_op_pairs_native, m)?)?;
+    m.add_function(wrap_pyfunction!(extract_edge_op_pairs_batch_native, m)?)?;
+    m.add_function(wrap_pyfunction!(extract_graph_segments_native, m)?)?;
     m.add_function(wrap_pyfunction!(train_interaction_model_native_py, m)?)?;
     m.add_function(wrap_pyfunction!(train_op_embeddings_epoch_native_py, m)?)?;
     m.add_function(wrap_pyfunction!(execute_graph, m)?)?;

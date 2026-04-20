@@ -3,31 +3,14 @@
 from __future__ import annotations
 
 import json
-import math
-import statistics
 import time
-from functools import lru_cache
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict
 
 from ._notebook_misc_shared import (
-    _cached_extract_op_bigrams,
-    _cached_extract_observability_metadata,
-    _ObservabilityAccumulator,
-    _classify_template_structural,
-    _capability_signal_count,
-    _reference_metric_baselines,
-    _reference_beating_metrics,
-    _template_label_from_evidence,
-    _summarize_template_stat,
-    _empty_template_stat,
-    _TEMPLATE_DEF_RE,
     _EMPTY_DATA_ACCOUNTING_SHAPE,
 )
 from ..json_utils import fast_loads as _json_loads
-from ..leaderboard_scoring import (
-    compute_efficiency_multiple as _compute_efficiency_multiple,
-    compute_pre_investigation_score as _compute_pre_investigation_score,
-)
+
 
 class _DashboardNBMixin:
     """Dashboard summary + data accounting."""

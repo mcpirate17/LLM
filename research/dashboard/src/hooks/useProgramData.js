@@ -306,21 +306,26 @@ export default function useProgramData({ resultId, defaultOverrideIneligible, on
   // Derived eligibility
   const entryTier = typeof leaderboardEntry?.tier === 'string' ? leaderboardEntry.tier : (typeof program?.tier === 'string' ? program.tier : '');
   const tier = String(entryTier || '').toLowerCase();
+  const capabilityStatus = String(leaderboardEntry?.capability_quality?.status || '').toLowerCase();
   const hasInvestigationEvidence = leaderboardEntry?.investigation_loss_ratio != null;
   const hasValidationEvidence = (
     leaderboardEntry?.validation_loss_ratio != null
     || leaderboardEntry?.validation_baseline_ratio != null
     || Boolean(leaderboardEntry?.validation_passed)
   );
+  const isCapabilityQualified = capabilityStatus === 'qualified' || capabilityStatus === 'breakthrough';
   const alreadyInvestigated = Boolean(
     hasInvestigationEvidence || tier === 'investigation' || tier === 'validation' || tier === 'breakthrough'
   );
   const alreadyValidated = Boolean(
-    tier === 'validation' || tier === 'breakthrough' || hasValidationEvidence
+    tier === 'breakthrough' || isCapabilityQualified
   );
   const fallbackEligibility = {
     investigationEligible: Boolean(program?.stage1_passed) && (tier === 'screening' && !hasInvestigationEvidence),
-    validationEligible: tier === 'investigation' && Boolean(leaderboardEntry?.investigation_passed ?? program?.investigation_passed),
+    validationEligible: (
+      (tier === 'investigation' && Boolean(leaderboardEntry?.investigation_passed ?? program?.investigation_passed))
+      || (tier === 'validation' && !isCapabilityQualified)
+    ),
   };
   const resolvedEligibility = eligibilityByResultId?.[resultId] || fallbackEligibility;
   const canInvestigate = Boolean(resolvedEligibility.investigationEligible || overrideIneligible);

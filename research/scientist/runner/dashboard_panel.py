@@ -10,7 +10,6 @@ import torch
 
 from ._helpers import clear_gpu_memory
 from ._types import RunConfig
-from ..notebook import LabNotebook
 
 logger = logging.getLogger(__name__)
 
@@ -28,9 +27,6 @@ _ROUTING_BENCH_FIXED_BASE: Dict[str, str] = {
 
 class _DashboardPanelMixin:
     """Dashboard data reads + routing benchmark."""
-
-    def _log_learning_event_compat(self, nb: LabNotebook, *args, **kwargs) -> None:
-        getattr(nb, "log_learning_event")(*args, **kwargs)
 
     def get_dashboard_data(self) -> Dict:
         """Get all data needed for the React dashboard."""
@@ -104,9 +100,7 @@ class _DashboardPanelMixin:
                 train_result.get("n_train_steps") or bench_config.stage1_steps
             )
             tokens_total = int(bench_config.stage1_batch_size) * seq_len * n_steps
-            eff_factor = float(
-                self._ROUTING_EFFICIENCY_FACTOR.get(routing_mode, 1.0)
-            )
+            eff_factor = float(self._ROUTING_EFFICIENCY_FACTOR.get(routing_mode, 1.0))
 
             run_data.update(
                 {
@@ -140,8 +134,7 @@ class _DashboardPanelMixin:
             mode_runs = [
                 row
                 for row in raw_runs
-                if row.get("routing_mode") == routing_mode
-                and row.get("status") == "ok"
+                if row.get("routing_mode") == routing_mode and row.get("status") == "ok"
             ]
             if not mode_runs:
                 continue

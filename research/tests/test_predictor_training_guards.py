@@ -4,6 +4,7 @@ import sys
 import numpy as np
 from types import SimpleNamespace
 
+from research.scientist.intelligence import gnn_predictor as gp
 from research.scientist.intelligence.gnn_predictor import GraphPredictor
 from research.scientist.intelligence.predictor import (
     EnsemblePredictor,
@@ -56,6 +57,84 @@ def test_graph_predictor_train_skips_single_class_corpus(monkeypatch, tmp_path):
 
     assert not model.is_fitted()
     assert model.w_gate.size == 0
+
+
+def test_extract_topology_features_prefers_single_native_bridge(monkeypatch):
+    ctx = gp._NativeTopologyContext(
+        op_profiles_json="{}",
+        pair_stability_json="{}",
+        op_metadata_json="{}",
+    )
+    calls = {"single": 0}
+
+    class _FakeRust:
+        def extract_topology_features_native(self, *args):
+            calls["single"] += 1
+            return '{"topo_n_ops": 3.0}'
+
+        def extract_topology_features_batch_native(self, *args):
+            raise AssertionError("single-graph path should not use batch bridge")
+
+    monkeypatch.setattr(
+        "research.scientist.intelligence.gnn_predictor._try_import_rust_scheduler",
+        lambda: _FakeRust(),
+    )
+
+    features = gp.extract_topology_features(
+        {"nodes": {"0": {"op_name": "input"}, "1": {"op_name": "linear_proj"}}},
+        {},
+        {},
+        native_ctx=ctx,
+    )
+
+    assert calls["single"] == 1
+    assert features == {
+        "topo_n_ops": 3.0,
+        "imodel_min_stability": 0.5,
+        "imodel_mean_stability": 0.5,
+        "imodel_mean_loss": 0.7,
+    }
+
+
+def test_extract_topology_feature_batch_uses_edge_pair_batch_for_imodel(monkeypatch):
+    class _FakeIModel:
+        _trained = True
+
+        def predict_stability(self, left, right):
+            return 0.75 if left == "linear_proj" else 0.5
+
+        def predict_loss(self, left, right):
+            return 0.25 if right == "gelu" else 0.4
+
+    monkeypatch.setattr(
+        "research.scientist.intelligence.gnn_predictor._extract_topology_base_features_native",
+        lambda *_args, **_kwargs: [{"topo_n_ops": 2.0}, {"topo_n_ops": 3.0}],
+    )
+    monkeypatch.setattr(
+        "research.scientist.intelligence.gnn_predictor._extract_edge_op_pairs_batch_native",
+        lambda _payloads: [
+            [("linear_proj", "gelu")],
+            [("linear_proj", "add"), ("add", "rmsnorm")],
+        ],
+    )
+    monkeypatch.setattr(
+        "research.scientist.intelligence.gnn_predictor._edge_op_pairs_with_fallback",
+        lambda _payload: (_ for _ in ()).throw(
+            AssertionError("per-graph edge pair fallback should not run")
+        ),
+    )
+
+    features = gp._extract_topology_features_batch(
+        ['{"nodes":{"0":{"op_name":"linear_proj"}}}'] * 2,
+        {},
+        {},
+        imodel=_FakeIModel(),
+    )
+
+    assert features[0]["imodel_min_stability"] == 0.75
+    assert features[0]["imodel_mean_loss"] == 0.25
+    assert features[1]["imodel_mean_stability"] == 0.625
+    assert features[1]["imodel_mean_loss"] == 0.4
 
 
 def test_calibrate_ensemble_skips_single_class_rows(monkeypatch):

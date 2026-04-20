@@ -21,7 +21,6 @@ from ...eval.fingerprint import BehavioralFingerprint
 from ...eval.diagnostic_tasks import run_diagnostic_suite
 from ...eval.metrics import novelty_score
 from ...synthesis.serializer import graph_to_json
-from ._helpers import clear_gpu_memory
 
 logger = logging.getLogger(__name__)
 
@@ -383,19 +382,41 @@ class _DashboardOrchestratorMixin:
             except (ImportError, KeyError, TypeError, ValueError) as e:
                 logger.debug("NCD computation failed: %s", e)
 
-        rid = nb.record_program_result(
-            experiment_id=exp_id,
-            graph_fingerprint=graph.fingerprint(),
-            graph_json=graph_to_json(graph),
-            stage0_passed=True,
-            stage05_passed=True,
-            stage1_passed=s1_passed,
-            final_loss=final_loss,
-            loss_ratio=loss_ratio,
-            throughput_tok_s=throughput,
-            **novelty_kwargs,
-            **program_metrics,
-        )
+        source_result_id = str(program_metrics.get("source_result_id") or "").strip()
+        if (
+            source_result_id
+            and program_metrics.get("model_source") == "exact_graph_replay"
+        ):
+            nb.merge_program_result_patch(
+                result_id=source_result_id,
+                graph_fingerprint=graph.fingerprint(),
+                graph_json=graph_to_json(graph),
+                clear_failure_if_stage1=True,
+                relabel_backfill_if_orphan=True,
+                stage0_passed=True,
+                stage05_passed=True,
+                stage1_passed=s1_passed,
+                final_loss=final_loss,
+                loss_ratio=loss_ratio,
+                throughput_tok_s=throughput,
+                **novelty_kwargs,
+                **program_metrics,
+            )
+            rid = source_result_id
+        else:
+            rid = nb.record_program_result(
+                experiment_id=exp_id,
+                graph_fingerprint=graph.fingerprint(),
+                graph_json=graph_to_json(graph),
+                stage0_passed=True,
+                stage05_passed=True,
+                stage1_passed=s1_passed,
+                final_loss=final_loss,
+                loss_ratio=loss_ratio,
+                throughput_tok_s=throughput,
+                **novelty_kwargs,
+                **program_metrics,
+            )
         if rid:
             funnel["persisted_rows"] = int(funnel.get("persisted_rows", 0)) + 1
         else:
@@ -405,7 +426,12 @@ class _DashboardOrchestratorMixin:
 
         if training_curve and rid:
             try:
-                nb.store_training_curve(rid, training_curve)
+                existing_curve = nb.conn.execute(
+                    "SELECT 1 FROM training_curves WHERE result_id = ? LIMIT 1",
+                    (rid,),
+                ).fetchone()
+                if existing_curve is None:
+                    nb.store_training_curve(rid, training_curve)
             except (OSError, RuntimeError) as e:
                 logger.debug("store_training_curve failed for %s: %s", rid, e)
         if rid:
@@ -634,7 +660,9 @@ class _DashboardOrchestratorMixin:
             loss_ratio or 0,
             f"{program_metrics.get('param_count', 0):,}",
         )
-        self._record_baseline_comparisons(final_loss, s1_result, config, program_metrics)
+        self._record_baseline_comparisons(
+            final_loss, s1_result, config, program_metrics
+        )
         self._run_diagnostic_suite_for_survivor(graph, config, program_metrics)
 
     def _record_orchestrator_result(self, jr, nb, exp_id, results, config):
@@ -668,8 +696,14 @@ class _DashboardOrchestratorMixin:
         # Step 3: S1 survivor bookkeeping + baselines + diagnostics
         if s1_passed:
             self._handle_s1_survivor(
-                i, graph, config, final_loss, loss_ratio, s1_result,
-                program_metrics, results,
+                i,
+                graph,
+                config,
+                final_loss,
+                loss_ratio,
+                s1_result,
+                program_metrics,
+                results,
             )
 
         # Step 4: Novelty scoring
@@ -681,16 +715,28 @@ class _DashboardOrchestratorMixin:
 
         # Step 5: Persist + leaderboard
         rid = self._record_persist_result(
-            nb=nb, exp_id=exp_id, graph=graph, s1_result=s1_result,
-            s1_passed=s1_passed, program_metrics=program_metrics,
-            novelty_kwargs=novelty_kwargs, results=results,
-            loss_ratio=loss_ratio, final_loss=final_loss,
-            throughput=throughput, training_curve=training_curve,
+            nb=nb,
+            exp_id=exp_id,
+            graph=graph,
+            s1_result=s1_result,
+            s1_passed=s1_passed,
+            program_metrics=program_metrics,
+            novelty_kwargs=novelty_kwargs,
+            results=results,
+            loss_ratio=loss_ratio,
+            final_loss=final_loss,
+            throughput=throughput,
+            training_curve=training_curve,
         )
         self._record_leaderboard_and_best(
-            nb=nb, rid=rid, graph=graph, s1_passed=s1_passed,
-            program_metrics=program_metrics, novelty_kwargs=novelty_kwargs,
-            results=results, loss_ratio=loss_ratio,
+            nb=nb,
+            rid=rid,
+            graph=graph,
+            s1_passed=s1_passed,
+            program_metrics=program_metrics,
+            novelty_kwargs=novelty_kwargs,
+            results=results,
+            loss_ratio=loss_ratio,
         )
 
         # Step 6: Emit event

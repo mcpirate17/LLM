@@ -38,6 +38,12 @@ _BLIMP_CACHE_DIR = Path.home() / ".cache" / "aria" / "blimp"
 _CACHE_FILE = _BLIMP_CACHE_DIR / "all_subtasks.json"
 _TIMEOUT_S = 120.0
 
+# In-memory cache of the parsed BLiMP JSON. The disk cache holds ~10-30 MB of
+# pairs across 67 subtasks; without this, every evaluate_blimp call re-reads
+# and re-parses it. Keyed by file mtime so a cache rewrite invalidates.
+_BLIMP_DATA_CACHE: Dict[str, List[Dict[str, str]]] | None = None
+_BLIMP_DATA_CACHE_MTIME: int = 0
+
 
 # ── Data loading ────────────────────────────────────────────────────────
 
@@ -119,8 +125,15 @@ def _download_blimp() -> Dict[str, List[Dict[str, str]]]:
     Each example: {"good": str, "bad": str}
     BLiMP uses one HuggingFace config per subtask (67 configs).
     """
+    global _BLIMP_DATA_CACHE, _BLIMP_DATA_CACHE_MTIME
     if _CACHE_FILE.exists():
-        return json.loads(_CACHE_FILE.read_text(encoding="utf-8"))
+        mtime = int(_CACHE_FILE.stat().st_mtime_ns)
+        if _BLIMP_DATA_CACHE is not None and _BLIMP_DATA_CACHE_MTIME == mtime:
+            return _BLIMP_DATA_CACHE
+        data = json.loads(_CACHE_FILE.read_text(encoding="utf-8"))
+        _BLIMP_DATA_CACHE = data
+        _BLIMP_DATA_CACHE_MTIME = mtime
+        return data
 
     try:
         from datasets import load_dataset

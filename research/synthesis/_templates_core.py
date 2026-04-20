@@ -136,9 +136,11 @@ def tpl_transformer_block(
             graph, "rope_rotate", [normed1], context="transformer_block.rope"
         )
 
-    mixer = _pick_compatible_motif_from_classes(
-        graph, normed1, rng, _MIXER_CLASSES, weights
-    )
+    # Pin mixer slot to attention only — the template name advertises a
+    # transformer block, and broad _MIXER_CLASSES dilution (1/5 attention)
+    # was producing graphs whose realized topology never reached
+    # investigation tier despite passing s1.
+    mixer = _pick_compatible_motif(graph, normed1, rng, MOTIF_CLASS_ATTENTION, weights)
     if mixer:
         mixed = _instantiate_motif(graph, normed1, mixer, rng)
     else:
@@ -227,20 +229,47 @@ def tpl_gated_maximum(
     return _residual(graph, input_id, out, context="gated_maximum.output")
 
 
+# Per-lane safe op palettes for tpl_three_way_split. Curated to all work at
+# D/3 dims (no must-divide-by-N attention head constraints, no must-be-power-of-2
+# constraints). Picker rotates by rng to avoid the previous monoculture where
+# every "three_way_split" graph realized to the same conv1d_seq/gelu/sigmoid arch.
+_THREE_WAY_LANE0_OPS = (
+    "conv1d_seq",
+    "conv_only",
+    "linear_attention",
+    "gated_linear_attention",
+    "rwkv_time_mixing",
+)
+_THREE_WAY_LANE1_OPS = (
+    "fused_linear_gelu",
+    "swiglu_mlp",
+    "gated_linear",
+    "linear_proj",  # falls back to linear+silu via the post-act below
+)
+_THREE_WAY_LANE2_OPS = (
+    "learned_token_gate",
+    "cheap_verify_blend",
+    "depth_token_mask",
+    "gated_delta",
+    "rwkv_channel",
+)
+
+
 def tpl_three_way_split(
     graph: ComputationGraph,
     input_id: int,
     rng: random.Random,
     weights: MotifWeights = None,
 ) -> int:
-    """norm → route_lanes(3) → split3 → {up → motif → down} per lane → concat → residual.
+    """norm → route_lanes(3) → split3 → {distinct motif per lane} → merge → residual.
 
-    Routed feature split with DISTINCT motif classes per lane.
-    Each lane is up-projected to full D before its motif so attention/FFN/MoE
-    operate at full width, then down-projected back to D/3 before concat.
-    Lane 0: sequence mixing (attention/SSM/conv)
-    Lane 1: channel mixing (FFN/gate/sparse)
-    Lane 2: routing (MoE/gate/guarded activation)
+    Lane 0: sequence mixing (conv1d_seq / conv_only / linear_attention / gated_linear_attention / rwkv_time_mixing)
+    Lane 1: channel mixing (fused_linear_gelu / swiglu_mlp / gated_linear / linear_proj+silu)
+    Lane 2: gating / routing (learned_token_gate / cheap_verify_blend / depth_token_mask / gated_delta / rwkv_channel)
+
+    Each lane operates at D/3 dims using ops verified compatible at sub-divisible widths.
+    The 3-way merge is renormalized before injection into the residual stream so the
+    Jacobian spectral norm stays in the investigation eligibility band.
     """
     D = graph.model_dim
     normed = _add(graph, "rmsnorm", [input_id], context="three_way_split.norm")
@@ -271,31 +300,39 @@ def tpl_three_way_split(
         graph, "split3", [routed], {"part": 2}, context="three_way_split.part2"
     )
 
-    p0 = _add(graph, "conv1d_seq", [part0], context="three_way_split.lane0")
-    p1 = _add(
-        graph,
-        "linear_proj",
-        [part1],
-        {"out_dim": graph.nodes[part1].output_shape.dim},
-        context="three_way_split.lane1",
-    )
-    p1 = _add(graph, "gelu", [p1], context="three_way_split.lane1_act")
-    p2 = _add(
-        graph,
-        "linear_proj",
-        [part2],
-        {"out_dim": graph.nodes[part2].output_shape.dim},
-        context="three_way_split.lane2",
-    )
-    p2 = _add(graph, "sigmoid", [p2], context="three_way_split.lane2_gate")
+    # Lane 0 — sequence mixing
+    lane0_op = rng.choice(_THREE_WAY_LANE0_OPS)
+    p0 = _add(graph, lane0_op, [part0], context=f"three_way_split.lane0_{lane0_op}")
+
+    # Lane 1 — channel/FFN
+    lane1_op = rng.choice(_THREE_WAY_LANE1_OPS)
+    if lane1_op == "linear_proj":
+        p1 = _add(
+            graph,
+            "linear_proj",
+            [part1],
+            {"out_dim": graph.nodes[part1].output_shape.dim},
+            context="three_way_split.lane1_linear",
+        )
+        p1 = _add(graph, "silu", [p1], context="three_way_split.lane1_act")
+    else:
+        p1 = _add(graph, lane1_op, [part1], context=f"three_way_split.lane1_{lane1_op}")
+
+    # Lane 2 — gating / routing
+    lane2_op = rng.choice(_THREE_WAY_LANE2_OPS)
+    p2 = _add(graph, lane2_op, [part2], context=f"three_way_split.lane2_{lane2_op}")
 
     combined01 = _residual(graph, p0, p1, context="three_way_split.merge01")
     combined = _residual(graph, combined01, p2, context="three_way_split.merge")
+    # Renormalize the 3-path merge before re-injecting into the residual stream.
+    combined = _add(graph, "rmsnorm", [combined], context="three_way_split.merge_norm")
+    # Dampen the output projection's initial variance: 3 lane paths + skip
+    # = 4 contributors to the residual stream, so 1/sqrt(4) = 0.5.
     combined = _add(
         graph,
         "linear_proj",
         [combined],
-        {"out_dim": D},
+        {"out_dim": D, "init_scale": 0.5},
         context="three_way_split.project",
     )
     return _residual(graph, input_id, combined, context="three_way_split.output")

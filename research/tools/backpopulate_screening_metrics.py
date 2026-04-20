@@ -42,12 +42,14 @@ from research.eval.native_induction import (
 from research.scientist.notebook import LabNotebook
 from research.scientist.native_runner import compile_model_native_first as compile_model
 from research.scientist.runner import ExperimentRunner, RunConfig
+from research.scientist.runner.shared import get_shared_runner
 from research.scientist.runner._helpers import (
     screening_probe_fields,
     screening_wikitext_fields,
 )
 from research.scientist.shared_utils import resolve_device
 from research.synthesis.serializer import graph_from_json
+from research.tools._candidate_selection import fetch_latest_unique_fingerprint_rows
 from research.tools.backfill import store_probe_results
 
 DB_PATH = Path("research/lab_notebook.db")
@@ -155,53 +157,75 @@ def _parse_args() -> argparse.Namespace:
         ),
     )
     add(
-        "--balance-by-family", action="store_true",
+        "--balance-by-family",
+        action="store_true",
         help="When selecting without explicit result ids, interleave graph families "
-             "so dense/sparse/routing/moe coverage grows more evenly.",
+        "so dense/sparse/routing/moe coverage grows more evenly.",
     )
     add("--skip-rapid", action="store_true")
     add("--skip-post-train", action="store_true")
     add(
-        "--post-train-target", type=_normalize_post_target, default="full",
+        "--post-train-target",
+        type=_normalize_post_target,
+        default="full",
         help="Which post-train metric family to backfill: "
-             "'one'/'hellaswag', 'two'/'binding' (induction+binding AUCs), "
-             "'induction', 'all' (hellaswag+induction+binding probes), "
-             "or 'full' (legacy full post-train, including wikitext).",
+        "'one'/'hellaswag', 'two'/'binding' (induction+binding AUCs), "
+        "'induction', 'all' (hellaswag+induction+binding probes), "
+        "or 'full' (legacy full post-train, including wikitext).",
     )
     add(
-        "--allow-insufficient-learning-metrics", action="store_true",
+        "--allow-insufficient-learning-metrics",
+        action="store_true",
         help="For backpopulate only, keep post-train screening/probe metrics even "
-             "when CUDA replay fails only due to the validation-loss generalization gate.",
+        "when CUDA replay fails only due to the validation-loss generalization gate.",
     )
     add("--batch-commit", type=int, default=DEFAULT_BATCH_COMMIT)
     add(
-        "--max-consecutive-failures", type=int,
+        "--max-consecutive-failures",
+        type=int,
         default=DEFAULT_MAX_CONSECUTIVE_FAILURES,
         help="Stop the run after this many row-level failures in a row to avoid "
-             "burning long CUDA batches on catastrophic tool/runtime failures.",
+        "burning long CUDA batches on catastrophic tool/runtime failures.",
     )
     add(
-        "--worker-timeout-seconds", type=_parse_optional_int,
+        "--worker-timeout-seconds",
+        type=_parse_optional_int,
         default=DEFAULT_WORKER_TIMEOUT_SECONDS,
         help="Hard timeout for a single isolated replay worker. Use 'none' or 'null' for no timeout.",
     )
     add("--report", type=Path, default=REPORT_PATH)
     add(
-        "--post-train-stability-runs", type=int,
+        "--post-train-stability-runs",
+        type=int,
         default=DEFAULT_POST_TRAIN_STABILITY_RUNS,
         help="Repeat post-train CUDA replay this many times and fail closed when "
-             "key metrics drift beyond tolerance.",
+        "key metrics drift beyond tolerance.",
     )
-    add("--stability-wikitext-rel-tol", type=float, default=0.10,
-        help="Maximum allowed relative drift for wikitext_perplexity.")
-    add("--stability-hellaswag-abs-tol", type=float, default=0.05,
-        help="Maximum allowed absolute drift for hellaswag_acc.")
-    add("--stability-probe-abs-tol", type=float, default=0.01,
-        help="Maximum allowed absolute drift for induction/binding probe metrics.")
+    add(
+        "--stability-wikitext-rel-tol",
+        type=float,
+        default=0.10,
+        help="Maximum allowed relative drift for wikitext_perplexity.",
+    )
+    add(
+        "--stability-hellaswag-abs-tol",
+        type=float,
+        default=0.05,
+        help="Maximum allowed absolute drift for hellaswag_acc.",
+    )
+    add(
+        "--stability-probe-abs-tol",
+        type=float,
+        default=0.01,
+        help="Maximum allowed absolute drift for induction/binding probe metrics.",
+    )
     add("--dry-run", action="store_true")
     add("--isolate-subprocess", action=argparse.BooleanOptionalAction, default=True)
-    add("--fallback-device", default="none",
-        help="Disabled. CUDA failures are treated as unrecovered; keep this as 'none'.")
+    add(
+        "--fallback-device",
+        default="none",
+        help="Disabled. CUDA failures are treated as unrecovered; keep this as 'none'.",
+    )
     add("--worker-payload", type=Path, help=argparse.SUPPRESS)
     add("--worker-output", type=Path, help=argparse.SUPPRESS)
     add("--audit-prefix", default="", help=argparse.SUPPRESS)
@@ -435,13 +459,45 @@ def _fetch_rows(
                 )
               )
             """
-    if selection_slice == "nonref_unique_fingerprints":
-        base += " ORDER BY pr.timestamp DESC, pr.result_id DESC"
+    if not result_ids and selection_slice == "nonref_unique_fingerprints":
+        extra_where = base.split("WHERE", 1)[1]
+        rows = fetch_latest_unique_fingerprint_rows(
+            conn,
+            select_sql="""
+                pr.result_id,
+                pr.experiment_id,
+                pr.graph_fingerprint,
+                pr.graph_json,
+                pr.stage0_passed,
+                pr.stage05_passed,
+                pr.stage1_passed,
+                pr.n_train_steps,
+                pr.train_budget_steps,
+                pr.rapid_screening_passed,
+                pr.rapid_screening_elapsed_ms,
+                pr.rapid_screening_steps_completed,
+                pr.rapid_screening_max_steps,
+                pr.wikitext_perplexity,
+                pr.hellaswag_acc,
+                pr.induction_auc,
+                pr.binding_auc,
+                pr.binding_composite,
+                pr.ar_auc,
+                pr.blimp_overall_accuracy,
+                pr.ncd_score,
+                pr.trust_label,
+                pr.comparability_label,
+                pr.data_provenance_json,
+                e.config_json,
+                e.timestamp
+            """,
+            extra_where_sql=" AND " + extra_where,
+            params=params,
+            include_leaderboard=False,
+        )
     else:
         base += " ORDER BY e.timestamp ASC, pr.result_id ASC"
-    rows = list(conn.execute(base, tuple(params)).fetchall())
-    if not result_ids and selection_slice == "nonref_unique_fingerprints":
-        rows = _dedupe_rows_by_fingerprint_keep_latest(rows)
+        rows = list(conn.execute(base, tuple(params)).fetchall())
     if not result_ids and balance_by_family:
         rows = _interleave_rows_by_family(rows)
     if limit > 0:
@@ -485,20 +541,6 @@ def _interleave_rows_by_family(rows: Sequence[sqlite3.Row]) -> List[sqlite3.Row]
         if not progressed:
             break
     return interleaved
-
-
-def _dedupe_rows_by_fingerprint_keep_latest(
-    rows: Sequence[sqlite3.Row],
-) -> List[sqlite3.Row]:
-    seen: set[str] = set()
-    deduped: List[sqlite3.Row] = []
-    for row in rows:
-        fingerprint = str(row["graph_fingerprint"] or "").strip()
-        if not fingerprint or fingerprint in seen:
-            continue
-        seen.add(fingerprint)
-        deduped.append(row)
-    return deduped
 
 
 def _build_run_config(row: sqlite3.Row, device: str) -> RunConfig:
@@ -1144,23 +1186,18 @@ def _evaluate_row_payload(
         _merge_binding_composite_from_existing(row, updates, force)
     elif post_needed:
         post_runs: List[Dict[str, Any]] = []
+        runner = get_shared_runner(str(DB_PATH))
         for _ in range(max(1, int(post_train_stability_runs))):
-            runner = ExperimentRunner(notebook_path=str(DB_PATH))
-            try:
-                post_runs.append(
-                    _run_post_train(
-                        runner,
-                        str(row["graph_json"]),
-                        config,
-                        device,
-                        str(row["result_id"]),
-                        allow_insufficient_learning_metrics=allow_insufficient_learning_metrics,
-                    )
+            post_runs.append(
+                _run_post_train(
+                    runner,
+                    str(row["graph_json"]),
+                    config,
+                    device,
+                    str(row["result_id"]),
+                    allow_insufficient_learning_metrics=allow_insufficient_learning_metrics,
                 )
-            finally:
-                close_runner = getattr(runner, "close", None)
-                if callable(close_runner):
-                    close_runner()
+            )
         compare_keys = [
             key for key in target_post_fields if force or row.get(key) is None
         ]
@@ -1506,9 +1543,9 @@ def main() -> None:
                     f"fields={entry['n_updates']}",
                     flush=True,
                 )
-                if int(args.max_consecutive_failures) > 0 and consecutive_failures >= int(
+                if int(
                     args.max_consecutive_failures
-                ):
+                ) > 0 and consecutive_failures >= int(args.max_consecutive_failures):
                     stop_error = (
                         "Stopping backpopulate run after "
                         f"{consecutive_failures} consecutive row failures. "

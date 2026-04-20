@@ -329,6 +329,30 @@ torch::Tensor span_mean_log_probs_native(
   return mean_lps;
 }
 
+double restricted_last_token_accuracy_native(
+    const torch::Tensor& logits,
+    const torch::Tensor& targets,
+    int64_t vocab_lo,
+    int64_t vocab_hi,
+    int64_t query_pos) {
+  TORCH_CHECK(logits.dim() == 3, "logits must be rank-3 [B, T, V]");
+  TORCH_CHECK(targets.dim() == 1, "targets must be rank-1 [B]");
+  TORCH_CHECK(logits.size(0) == targets.size(0), "batch mismatch between logits and targets");
+  TORCH_CHECK(vocab_hi > vocab_lo, "vocab_hi must be > vocab_lo");
+
+  const int64_t seq_len = logits.size(1);
+  int64_t pos = query_pos;
+  if (pos < 0) {
+    pos += seq_len;
+  }
+  TORCH_CHECK(pos >= 0 && pos < seq_len, "query_pos out of range");
+
+  auto restricted = logits.select(1, pos).slice(1, vocab_lo, vocab_hi);
+  auto preds = std::get<1>(restricted.max(1)) + vocab_lo;
+  auto correct = preds.eq(targets).to(torch::kFloat32).mean();
+  return correct.item<double>();
+}
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def(
       "zero_count_last_dim",
@@ -362,6 +386,10 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
       "span_mean_log_probs_native",
       &span_mean_log_probs_native,
       "Compute span-masked mean token log-probs from gathered log-probs");
+  m.def(
+      "restricted_last_token_accuracy_native",
+      &restricted_last_token_accuracy_native,
+      "Compute exact-match accuracy at one sequence position over a restricted vocab");
 }
 
 std::tuple<int, int> hellaswag_score_batch_native(

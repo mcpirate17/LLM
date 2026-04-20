@@ -12,6 +12,7 @@ import torch.nn as nn
 
 from ..json_utils import json_safe
 from ..notebook import LabNotebook
+from ..notebook.notebook_programs import DuplicateFingerprintError
 from ...synthesis.serializer import graph_to_json
 
 logger = logging.getLogger(__name__)
@@ -40,6 +41,38 @@ class _ResultsAnalysisMixin:
     """Graph/sandbox metric extraction and post-evaluation callbacks."""
 
     __slots__ = ()
+
+    def _check_intra_experiment_dedup(self, nb, exp_id: str, fingerprint: str) -> bool:
+        """Return True if this (exp_id, fingerprint) pair has already been recorded.
+
+        Lazily loads the per-experiment fingerprint set from the DB on first
+        call for a given experiment, then maintains it in memory. Used by
+        evolution / novelty / synthesis paths to short-circuit duplicate
+        ``record_program_result`` calls — a regression caught downstream
+        (slice 3b of the dedup-governance plan).
+        """
+        if not exp_id or not fingerprint:
+            return False
+        cache = getattr(self, "_evaluated_fp_by_experiment", None)
+        if cache is None:
+            cache = {}
+            self._evaluated_fp_by_experiment = cache
+        seen = cache.get(exp_id)
+        if seen is None:
+            seen = {
+                row[0]
+                for row in nb.conn.execute(
+                    "SELECT graph_fingerprint FROM program_results "
+                    "WHERE experiment_id = ?",
+                    (exp_id,),
+                ).fetchall()
+                if row[0]
+            }
+            cache[exp_id] = seen
+        if fingerprint in seen:
+            return True
+        seen.add(fingerprint)
+        return False
 
     def _on_program_evaluated(
         self,
@@ -176,6 +209,25 @@ class _ResultsAnalysisMixin:
                     behavioral_fingerprint is not None,
                 )
 
+            # Slice 3b: per-experiment fingerprint dedup. The synthesis-time
+            # gate at execution_experiment_phase3._dedup_graph_candidates
+            # should have prevented us from re-evaluating an already-known
+            # fingerprint. If we hit a duplicate here we still skip the
+            # write — both to honor the future UNIQUE(graph_fingerprint,
+            # experiment_id) index and to surface the regression in logs.
+            graph_fp = graph.fingerprint()
+            if self._check_intra_experiment_dedup(nb, exp_id, graph_fp):
+                eval_counters["skipped_intra_experiment_dedup"] = (
+                    eval_counters.get("skipped_intra_experiment_dedup", 0) + 1
+                )
+                logger.warning(
+                    "Dedup regression: fp=%s already recorded under exp=%s — skipping duplicate write (model_source=%s)",
+                    graph_fp[:16],
+                    str(exp_id)[:12],
+                    model_source,
+                )
+                return
+
             rid = nb.record_program_result(
                 experiment_id=exp_id,
                 graph_fingerprint=graph.fingerprint(),
@@ -221,6 +273,20 @@ class _ResultsAnalysisMixin:
                         },
                     },
                 )
+        except DuplicateFingerprintError as e:
+            eval_counters["skipped_cross_experiment_dedup"] = (
+                eval_counters.get("skipped_cross_experiment_dedup", 0) + 1
+            )
+            logger.warning(
+                "Cross-experiment dedup blocked fp=%s during %s eval under exp=%s; existing rid=%s exp=%s",
+                e.fingerprint[:16],
+                model_source,
+                str(exp_id)[:12],
+                e.existing_result_id,
+                str(e.existing_experiment_id)[:12]
+                if e.existing_experiment_id
+                else None,
+            )
         except (
             RuntimeError,
             ValueError,

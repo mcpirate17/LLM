@@ -12,6 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from ..json_utils import json_safe
 from ..runtime_events import publish_runtime_event
 from ._shared import LOGGER
 from .failure_signature_audits import AUDITED_FALSE_FAILURE_SIGNATURE_SET
@@ -1100,8 +1101,12 @@ class _AdvancedAnalyticsMixin:
             (
                 snapshot_key,
                 scope,
-                json.dumps(query or {}, sort_keys=True, separators=(",", ":")),
-                json.dumps(payload or {}, separators=(",", ":")),
+                json.dumps(
+                    json_safe(query or {}),
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+                json.dumps(json_safe(payload or {}), separators=(",", ":")),
                 float(latest_completed_ts or 0.0),
                 now,
                 now,

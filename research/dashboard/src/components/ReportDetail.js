@@ -1,6 +1,6 @@
 import { apiCall } from "../services/apiService";
 import React, { useEffect, useMemo, useState } from 'react';
-import { promotionEvidence } from '../utils/scoringEngine';
+import { promotionEvidenceView } from '../utils/backendScore';
 import useInteractiveTable from './shared/useInteractiveTable';
 import SortIndicator from './shared/SortIndicator';
 import {
@@ -268,7 +268,7 @@ function ReportDetail({
     const evidenceCount = top.filter(program => program.baseline_loss_ratio != null).length;
     const winCount = top.filter(program => program.baseline_loss_ratio != null && program.baseline_loss_ratio < 1.0).length;
     const winInterval = wilsonInterval(winCount, evidenceCount);
-    const promotionRows = top.map(program => promotionEvidence(program));
+    const promotionRows = top.map(program => promotionEvidenceView(program));
     const promotionScore = promotionRows.length > 0
       ? Math.round(promotionRows.reduce((sum, row) => sum + row.score, 0) / promotionRows.length)
       : 0;

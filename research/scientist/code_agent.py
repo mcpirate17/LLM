@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 import time
 import uuid
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 logger = logging.getLogger(__name__)
 
@@ -83,5 +83,3 @@ def _spawn_code_agent_task(
     logger.warning(f"Code agent {task_id} unavailable (not implemented): {goal[:120]}")
 
     return task
-
-

@@ -630,6 +630,9 @@ def test_fetch_rows_nonref_unique_fingerprints_dedupes_latest():
             induction_auc REAL,
             binding_auc REAL,
             binding_composite REAL,
+            ar_auc REAL,
+            blimp_overall_accuracy REAL,
+            ncd_score REAL,
             trust_label TEXT,
             comparability_label TEXT,
             data_provenance_json TEXT,
@@ -649,7 +652,7 @@ def test_fetch_rows_nonref_unique_fingerprints_dedupes_latest():
     conn.executemany(
         """
         INSERT INTO program_results
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         [
             (
@@ -671,6 +674,9 @@ def test_fetch_rows_nonref_unique_fingerprints_dedupes_latest():
                 0.2,
                 0.3,
                 0.25,
+                None,
+                None,
+                None,
                 "runtime_observation",
                 "partial",
                 json.dumps({"graph": {"graph_family": "dense"}}),
@@ -696,6 +702,9 @@ def test_fetch_rows_nonref_unique_fingerprints_dedupes_latest():
                 0.2,
                 0.31,
                 0.26,
+                None,
+                None,
+                None,
                 "candidate_grade",
                 "candidate_comparable",
                 json.dumps({"graph": {"graph_family": "dense"}}),
@@ -721,6 +730,9 @@ def test_fetch_rows_nonref_unique_fingerprints_dedupes_latest():
                 0.2,
                 0.32,
                 0.27,
+                None,
+                None,
+                None,
                 "exploratory",
                 "partial",
                 json.dumps({"graph": {"graph_family": "sparse"}}),
@@ -746,6 +758,9 @@ def test_fetch_rows_nonref_unique_fingerprints_dedupes_latest():
                 0.2,
                 0.32,
                 0.27,
+                None,
+                None,
+                None,
                 "reference",
                 "reference_comparable",
                 json.dumps({"graph": {"graph_family": "reference"}}),

@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import json
 
-from research.scientist.analytics.model_strength import build_model_strength_report
+from research.scientist.analytics.model_strength import (
+    _graph_features,
+    build_model_strength_report,
+)
 from research.scientist.api import create_app
 from research.scientist.notebook import LabNotebook
 
@@ -201,6 +204,41 @@ def test_build_model_strength_report_returns_rankings(tmp_path):
 
     top_template = report["rankings"]["best_templates_overall"][0]["name"]
     assert top_template == "tpl_good"
+
+
+def test_graph_features_supports_list_nodes_and_preserves_raw_ops():
+    graph_json = json.dumps(
+        {
+            "nodes": [
+                {"id": 0, "op_name": "input", "input_ids": []},
+                {"id": 1, "op_name": "state_space", "input_ids": [0]},
+                {"id": 2, "op_name": "route_topk", "input_ids": [1]},
+                {"id": 3, "op_name": "output", "input_ids": [2]},
+            ],
+            "metadata": {
+                "primary_template": "router_block",
+                "templates_used": ["router_block"],
+                "motifs_used": ["router_chain"],
+                "template_slot_usage": [
+                    {
+                        "template_name": "router_block",
+                        "slot_index": 0,
+                        "selected_motif": "router_chain",
+                    }
+                ],
+            },
+        }
+    )
+
+    features = _graph_features(graph_json)
+
+    assert features["primary_template"] == "router_block"
+    assert features["ops"] == ["route_topk", "state_space"]
+    assert features["op_pairs"] == ["route_topk+state_space"]
+    assert features["depth_ops"] == ["late:route_topk", "middle:state_space"]
+    assert features["slot_components"] == ["router_block.slot0:router_chain"]
+    assert features["pattern_has_routing"] == 1
+    assert features["pattern_has_ssm"] == 1
 
 
 def test_model_strength_endpoint_returns_payload(tmp_path):

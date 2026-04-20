@@ -5,7 +5,6 @@ import json
 import logging
 from collections.abc import Mapping
 import os
-from functools import lru_cache
 from typing import Any, Dict, List, Optional, Set
 
 from .core import _try_import_cython_bridge, _try_import_rust_scheduler
@@ -25,7 +24,6 @@ from ._dispatch_constants import (
     _NATIVE_C_KERNEL_OPS,
     _NATIVE_OP_ALIASES,
     _NON_KERNEL_STRUCTURAL_OPS,
-    _PER_OP_BRIDGE_ONLY_OPS,
     _RUST_SCHEDULER_UNSUPPORTED_OPS,
     _SOFT_BRIDGE_OPS,
 )

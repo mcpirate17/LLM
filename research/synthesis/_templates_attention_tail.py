@@ -10,19 +10,14 @@ if TYPE_CHECKING:
     from .graph import ComputationGraph
 from ._template_helpers import (
     MOTIF_CLASS_ATTENTION,
-    MOTIF_CLASS_CONV,
-    MOTIF_CLASS_EFFICIENT_PROJ,
     MOTIF_CLASS_GATE,
     MOTIF_CLASS_MOE,
     MOTIF_CLASS_NORM,
-    MOTIF_CLASS_SSM,
     MotifWeights,
-    _FFN_CLASSES,
     _SPARSE_FFN_CLASSES,
     _fix_dim,
     _instantiate_motif,
     _pick_compatible_motif,
-    _pick_compatible_motif_from_classes,
     _tpl_attention_ffn_block,
     record_template_slot_binding,
     template_add_op as _add,
@@ -364,7 +359,13 @@ def tpl_attn_normalized_matmul(
     merged = _residual(graph, pa, pb, context="attn_normalized_matmul.merge")
     merged = _fix_dim(graph, merged)
     mid = _residual(graph, input_id, merged, context=f"{name}.mid")
-    tail = _add(graph, "swiglu_mlp", [_add(graph, "rmsnorm", [mid], context=f"{name}.tail_norm")], {"mlp_ratio": 2.0}, context=f"{name}.ffn")
+    tail = _add(
+        graph,
+        "swiglu_mlp",
+        [_add(graph, "rmsnorm", [mid], context=f"{name}.tail_norm")],
+        {"mlp_ratio": 2.0},
+        context=f"{name}.ffn",
+    )
     tail = _fix_dim(graph, tail)
     return _residual(graph, mid, tail, context=f"{name}.output")
 
@@ -380,16 +381,30 @@ def _tpl_softmax_matmul_tail(
     normed = _add(graph, "rmsnorm", [input_id], context=f"{name}.norm")
     attended = _add(graph, "softmax_attention", [normed], context=f"{name}.attn")
     attended = _add(graph, "rmsnorm", [attended], context=f"{name}.attn_norm")
-    attended = _add(graph, "linear_proj", [attended], {"out_dim": D}, context=f"{name}.attn_proj")
+    attended = _add(
+        graph, "linear_proj", [attended], {"out_dim": D}, context=f"{name}.attn_proj"
+    )
     mid = _residual(graph, input_id, attended, context=f"{name}.mid1")
     refine_in = _add(graph, "rmsnorm", [mid], context=f"{name}.refine_norm")
-    proj_a = _add(graph, "linear_proj", [refine_in], {"out_dim": D}, context=f"{name}.proj_a")
-    proj_b = _add(graph, "linear_proj", [refine_in], {"out_dim": D}, context=f"{name}.proj_b")
+    proj_a = _add(
+        graph, "linear_proj", [refine_in], {"out_dim": D}, context=f"{name}.proj_a"
+    )
+    proj_b = _add(
+        graph, "linear_proj", [refine_in], {"out_dim": D}, context=f"{name}.proj_b"
+    )
     refined = _add(graph, "matmul", [proj_a, proj_b], context=f"{name}.refined")
-    refined = _add(graph, "linear_proj", [refined], {"out_dim": D}, context=f"{name}.refined_proj")
+    refined = _add(
+        graph, "linear_proj", [refined], {"out_dim": D}, context=f"{name}.refined_proj"
+    )
     refined = _fix_dim(graph, refined)
     mid2 = _residual(graph, mid, refined, context=f"{name}.mid2")
-    ffned = _add(graph, "swiglu_mlp", [_add(graph, "rmsnorm", [mid2], context=f"{name}.tail_norm")], {"mlp_ratio": ffn_ratio}, context=f"{name}.ffn")
+    ffned = _add(
+        graph,
+        "swiglu_mlp",
+        [_add(graph, "rmsnorm", [mid2], context=f"{name}.tail_norm")],
+        {"mlp_ratio": ffn_ratio},
+        context=f"{name}.ffn",
+    )
     ffned = _fix_dim(graph, ffned)
     return _residual(graph, mid2, ffned, context=f"{name}.output")
 
@@ -523,8 +538,6 @@ def _tpl_controlled_attn_matmul_ablation(
     return _residual(graph, mid2, tail, context=f"{name}.output")
 
 
-
-
 # ── Split modules re-export ─────────────────────────────────────────
 # Standalone variants live in private split modules to stay under the
 # 1250-line file cap. Factory-generated templates remain in this module
@@ -606,35 +619,123 @@ def _make_attn_ffn_template(attn_op=None, ffn_classes=None):
     return _template
 
 
-_ATTN_OP_CHAIN_TEMPLATES = {
+_ATTN_OP_CHAIN_TEMPLATE_SPECS = {
     # Retired: no FFN, unstable reciprocal, 0% S1
-    "attn_reciprocal_gated": "reciprocal",
-    "attn_kronecker_hybrid": "kronecker_linear",
-    "attn_log_gated": "log",
+    "attn_reciprocal_gated": {
+        "factory": _make_attn_op_chain_template,
+        "factory_arg": "reciprocal",
+    },
+    "attn_kronecker_hybrid": {
+        "factory": _make_attn_op_chain_template,
+        "factory_arg": "kronecker_linear",
+    },
+    "attn_log_gated": {
+        "factory": _make_attn_op_chain_template,
+        "factory_arg": "log",
+    },
 }
 
 _MOE_CLASSES = (MOTIF_CLASS_MOE, MOTIF_CLASS_GATE)
 
-_ATTN_FFN_TEMPLATES = {
-    "attn_dual_axis": {},
-    "latent_attn_ffn_block": {"attn_op": "latent_attention_compressor"},
-    "diff_attn_ffn_block": {"attn_op": "diff_attention"},
+_ATTN_FFN_TEMPLATE_SPECS = {
+    "attn_dual_axis": {
+        "factory": _make_attn_ffn_template,
+        "factory_kwargs": {},
+    },
+    "latent_attn_ffn_block": {
+        "factory": _make_attn_ffn_template,
+        "factory_kwargs": {"attn_op": "latent_attention_compressor"},
+    },
+    "diff_attn_ffn_block": {
+        "factory": _make_attn_ffn_template,
+        "factory_kwargs": {"attn_op": "diff_attention"},
+    },
     "latent_attn_sparse_ffn": {
-        "attn_op": "latent_attention_compressor",
-        "ffn_classes": _SPARSE_FFN_CLASSES,
+        "factory": _make_attn_ffn_template,
+        "factory_kwargs": {
+            "attn_op": "latent_attention_compressor",
+            "ffn_classes": _SPARSE_FFN_CLASSES,
+        },
     },
-    "graph_attn_ffn_block": {"attn_op": "graph_attention"},
-    "attn_moe_block": {"ffn_classes": _MOE_CLASSES},
+    "graph_attn_ffn_block": {
+        "factory": _make_attn_ffn_template,
+        "factory_kwargs": {"attn_op": "graph_attention"},
+    },
+    "attn_moe_block": {
+        "factory": _make_attn_ffn_template,
+        "factory_kwargs": {"ffn_classes": _MOE_CLASSES},
+    },
     "latent_attn_moe": {
-        "attn_op": "latent_attention_compressor",
-        "ffn_classes": _MOE_CLASSES,
+        "factory": _make_attn_ffn_template,
+        "factory_kwargs": {
+            "attn_op": "latent_attention_compressor",
+            "ffn_classes": _MOE_CLASSES,
+        },
     },
-    "diff_attn_moe": {"attn_op": "diff_attention", "ffn_classes": _MOE_CLASSES},
-    "graph_attn_moe": {"attn_op": "graph_attention", "ffn_classes": _MOE_CLASSES},
+    "diff_attn_moe": {
+        "factory": _make_attn_ffn_template,
+        "factory_kwargs": {
+            "attn_op": "diff_attention",
+            "ffn_classes": _MOE_CLASSES,
+        },
+    },
+    "graph_attn_moe": {
+        "factory": _make_attn_ffn_template,
+        "factory_kwargs": {
+            "attn_op": "graph_attention",
+            "ffn_classes": _MOE_CLASSES,
+        },
+    },
 }
 
-for _name, _post_op in _ATTN_OP_CHAIN_TEMPLATES.items():
-    globals()[f"tpl_{_name}"] = _make_attn_op_chain_template(_post_op)
+_GENERATED_ATTN_TEMPLATE_SPECS = {
+    **_ATTN_OP_CHAIN_TEMPLATE_SPECS,
+    **_ATTN_FFN_TEMPLATE_SPECS,
+}
 
-for _name, _kwargs in _ATTN_FFN_TEMPLATES.items():
-    globals()[f"tpl_{_name}"] = _make_attn_ffn_template(**_kwargs)
+
+def _build_generated_attn_templates() -> dict[str, callable]:
+    generated: dict[str, callable] = {}
+    for name, spec in _GENERATED_ATTN_TEMPLATE_SPECS.items():
+        factory = spec["factory"]
+        if "factory_arg" in spec:
+            generated[name] = factory(spec["factory_arg"])
+        else:
+            generated[name] = factory(**dict(spec.get("factory_kwargs") or {}))
+    return generated
+
+
+GENERATED_ATTN_TEMPLATE_EXPORTS = _build_generated_attn_templates()
+
+# The registry only consumes the live subset. Extra generated wrappers stay
+# exported for compatibility but do not participate in template sampling.
+GENERATED_ATTN_REGISTRY_TEMPLATES = {
+    name: GENERATED_ATTN_TEMPLATE_EXPORTS[name]
+    for name in (
+        "attn_kronecker_hybrid",
+        "attn_log_gated",
+        "latent_attn_ffn_block",
+        "diff_attn_ffn_block",
+        "latent_attn_sparse_ffn",
+        "graph_attn_ffn_block",
+        "latent_attn_moe",
+        "diff_attn_moe",
+        "graph_attn_moe",
+    )
+}
+
+GENERATED_ATTN_DEFAULT_WEIGHTS = {
+    "latent_attn_ffn_block": 4.0,
+    "diff_attn_ffn_block": 3.5,
+    "latent_attn_sparse_ffn": 4.0,
+    "graph_attn_ffn_block": 3.5,
+    "attn_kronecker_hybrid": 3.0,
+    "attn_log_gated": 3.0,
+    "latent_attn_moe": 4.0,
+    "diff_attn_moe": 3.5,
+    "graph_attn_moe": 3.5,
+}
+
+globals().update(
+    {f"tpl_{name}": fn for name, fn in GENERATED_ATTN_TEMPLATE_EXPORTS.items()}
+)

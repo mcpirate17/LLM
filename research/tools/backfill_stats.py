@@ -15,7 +15,6 @@ import argparse
 import itertools
 import json
 import math
-import sqlite3
 import time
 from collections import Counter
 from typing import Dict, List, Tuple
@@ -24,6 +23,7 @@ from research.scientist.intelligence.ml_corpus import (
     _fallback_graph_analysis_rows,
     load_deduped_graph_training_rows,
 )
+from research.tools._db_maintenance import connect_writer
 from research.tools._script_audit import (
     complete_script_experiment,
     fail_script_experiment,
@@ -88,7 +88,7 @@ def _mean_or_none(values: List[float]):
     return sum(values) / len(values) if values else None
 
 
-def _ensure_tables(conn: sqlite3.Connection) -> None:
+def _ensure_tables(conn) -> None:
     """Ensure analytics tables exist via LabNotebook schema."""
     from research.scientist.notebook._shared import NOTEBOOK_SCHEMA
 
@@ -128,8 +128,7 @@ def _load_stats_source_rows(db_path: str) -> List[Dict]:
 
 def backfill(db_path: str = "research/lab_notebook.db") -> Dict[str, int]:
     """Backfill analytics tables. Returns row counts inserted."""
-    conn = sqlite3.connect(db_path, timeout=15.0)
-    conn.execute("PRAGMA journal_mode=WAL")
+    conn = connect_writer(Path(db_path))
     conn.execute("PRAGMA busy_timeout=15000")
     _ensure_tables(conn)
 

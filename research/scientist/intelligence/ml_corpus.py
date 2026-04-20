@@ -629,7 +629,7 @@ def _fallback_predictor_training_rows(db_path: str) -> List[Dict[str, Any]]:
                COALESCE(l.tier, 'screening') AS tier,
                pr.timestamp
         FROM program_results pr
-        JOIN leaderboard l ON l.result_id = pr.result_id
+        LEFT JOIN leaderboard l ON l.result_id = pr.result_id
         WHERE {" AND ".join(where)}
         """
     ).fetchall()
@@ -682,6 +682,10 @@ def _fallback_screening_predictor_rows(db_path: str) -> List[Dict[str, Any]]:
     where = [
         "TRIM(COALESCE(pr.graph_json, '')) <> ''",
         "pr.graph_json <> '{}'",
+        # Aria-scheduler's IR converter rejects graphs with <2 nodes — filter
+        # at the corpus layer so GraphPredictor's batched IR call doesn't fail
+        # for every caller. Rows with NULL graph_n_ops (older schema) pass.
+        "(pr.graph_n_ops IS NULL OR pr.graph_n_ops >= 2)",
     ]
     if use_explicit_flags:
         where.append(
@@ -731,6 +735,8 @@ def _fallback_screening_predictor_rows(db_path: str) -> List[Dict[str, Any]]:
                pr.comparability_label, pr.result_cohort, pr.data_provenance_json,
                pr.hellaswag_acc, pr.induction_auc, pr.ar_auc,
                pr.blimp_overall_accuracy, pr.binding_composite,
+               pr.induction_v2_investigation_auc, pr.binding_v2_investigation_auc,
+               pr.validation_loss_ratio, pr.rapid_screening_passed,
                pr.initial_loss, pr.mean_grad_norm, pr.max_grad_norm,
                pr.grad_norm_std,
                l.composite_score
@@ -760,6 +766,10 @@ def _fallback_screening_predictor_rows(db_path: str) -> List[Dict[str, Any]]:
                 "ar_auc_best": None,
                 "blimp_overall_accuracy_best": None,
                 "binding_composite_best": None,
+                "induction_v2_investigation_auc_best": None,
+                "binding_v2_investigation_auc_best": None,
+                "validation_loss_ratio_best": None,
+                "rapid_screening_passed_best": None,
                 "composite_score_best": None,
                 "initial_loss_best": None,
                 "mean_grad_norm_best": None,
@@ -816,12 +826,25 @@ def _fallback_screening_predictor_rows(db_path: str) -> List[Dict[str, Any]]:
             group["wikitext_perplexity_best"], row["wikitext_perplexity"]
         )
         group["loss_ratio_best"] = _min_opt(group["loss_ratio_best"], row["loss_ratio"])
+        group["validation_loss_ratio_best"] = _min_opt(
+            group["validation_loss_ratio_best"], row["validation_loss_ratio"]
+        )
         for probe_key, row_key in (
             ("hellaswag_acc_best", "hellaswag_acc"),
             ("induction_auc_best", "induction_auc"),
             ("ar_auc_best", "ar_auc"),
             ("blimp_overall_accuracy_best", "blimp_overall_accuracy"),
             ("binding_composite_best", "binding_composite"),
+            (
+                "induction_v2_investigation_auc_best",
+                "induction_v2_investigation_auc",
+            ),
+            (
+                "binding_v2_investigation_auc_best",
+                "binding_v2_investigation_auc",
+            ),
+            # 0/1 int → max() == OR
+            ("rapid_screening_passed_best", "rapid_screening_passed"),
             ("composite_score_best", "composite_score"),
         ):
             group[probe_key] = _max_opt(group[probe_key], row[row_key])

@@ -2,35 +2,12 @@
 
 from __future__ import annotations
 
-import json
-import sqlite3
 import time
 import traceback
 from typing import Dict, List
-
-import torch
-
-from ..json_utils import json_safe
-from ..native_runner import compile_model_native_first as compile_model
-from ..runtime_events import publish_lifecycle_event
 from ..shared_utils import resolve_device
-from ._helpers import (
-    build_validation_entry,
-    clear_gpu_memory,
-    compute_seed_metrics,
-    handle_breakthrough,
-    promote_validation_candidate,
-    run_baseline_comparison,
-    run_trajectory_probe,
-    screening_probe_fields,
-    screening_wikitext_fields,
-)
 from ._types import RunConfig
 from .execution_validation import _fail_loud
-from ...eval.diagnostic_tasks import run_diagnostic_suite
-from ...eval.fingerprint import compute_fingerprint
-from ...eval.metrics import novelty_score
-from ...synthesis.serializer import graph_from_json, graph_to_json
 from ...training.checkpointing import CheckpointManager
 
 import logging
@@ -42,51 +19,6 @@ class _ExecutionValidationThreadMixin:
     """Validation + scale-up threads, thread error handling."""
 
     __slots__ = ()
-
-    def _complete_experiment_compat(
-        self,
-        *,
-        nb,
-        experiment_id: str,
-        results: dict,
-        aria_summary: str,
-        insights,
-        llm_analysis: str | None,
-    ) -> None:
-        # Compatibility sink until notebook lifecycle persistence is projector-only.
-        getattr(nb, "complete_experiment")(
-            experiment_id=experiment_id,
-            results=results,
-            aria_summary=aria_summary,
-            aria_mood=self.aria.state.mood,
-            insights=insights,
-            llm_analysis=llm_analysis,
-        )
-
-    def _fail_experiment_compat(
-        self,
-        *,
-        nb,
-        experiment_id: str,
-        error: str,
-    ) -> None:
-        # Compatibility sink until notebook lifecycle persistence is projector-only.
-        getattr(nb, "fail_experiment")(experiment_id, error)
-
-    def _publish_validation_terminal_event(
-        self,
-        *,
-        event_type: str,
-        exp_id: str,
-        payload: dict,
-    ) -> None:
-        publish_lifecycle_event(
-            notebook_path=self.notebook_path,
-            event_type=event_type,
-            producer="runner.execution_validation",
-            run_id=exp_id,
-            payload=payload,
-        )
 
     def _run_validation_thread(
         self, exp_id: str, result_ids: List[str], config: RunConfig, hypothesis: str
@@ -173,7 +105,8 @@ class _ExecutionValidationThreadMixin:
             llm_analysis = self.aria.analyze_results(results, context=context)
             insights = self._analyze_results(results, exp_id, nb, context=context)
 
-            self._publish_validation_terminal_event(
+            self._publish_terminal_event(
+                producer="runner.execution_validation",
                 event_type="experiment_completed",
                 exp_id=exp_id,
                 payload={
@@ -328,7 +261,8 @@ class _ExecutionValidationThreadMixin:
             f"Result IDs: {', '.join(r[:12] for r in result_ids)}"
         )
         logger.warning("Scale-up produced no results: %s", reason)
-        self._publish_validation_terminal_event(
+        self._publish_terminal_event(
+            producer="runner.execution_validation",
             event_type="experiment_failed",
             exp_id=exp_id,
             payload={
@@ -364,7 +298,8 @@ class _ExecutionValidationThreadMixin:
         llm_analysis = self.aria.analyze_results(results, context=context)
         insights = self._analyze_results(results, exp_id, nb, context=context)
 
-        self._publish_validation_terminal_event(
+        self._publish_terminal_event(
+            producer="runner.execution_validation",
             event_type="experiment_completed",
             exp_id=exp_id,
             payload={
@@ -422,7 +357,8 @@ class _ExecutionValidationThreadMixin:
                 heal_err,
                 exc_info=True,
             )
-        self._publish_validation_terminal_event(
+        self._publish_terminal_event(
+            producer="runner.execution_validation",
             event_type="experiment_failed",
             exp_id=exp_id,
             payload={
@@ -459,7 +395,8 @@ class _ExecutionValidationThreadMixin:
             traceback.format_exc(),
         )
         try:
-            self._publish_validation_terminal_event(
+            self._publish_terminal_event(
+                producer="runner.execution_validation",
                 event_type="experiment_failed",
                 exp_id=exp_id,
                 payload={
@@ -487,4 +424,3 @@ class _ExecutionValidationThreadMixin:
         raise
 
     # ── Extracted helpers for _run_validation_thread ──
-

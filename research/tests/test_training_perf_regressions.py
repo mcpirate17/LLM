@@ -53,12 +53,16 @@ def test_npy_in_range_tokens_stay_zero_copy(tmp_path: Path):
     tokens = batcher._tokens
     np_view = tokens.numpy()
     assert np_view.base is not None
-    assert np.shares_memory(np_view, arr) is False  # disk-backed memmap, not original array
+    assert (
+        np.shares_memory(np_view, arr) is False
+    )  # disk-backed memmap, not original array
     assert int(tokens[0].item()) == 0
     assert int(tokens[-1].item()) == 127
 
 
-def test_byte_text_loader_uses_native_file_prefix_tokenizer(monkeypatch, tmp_path: Path):
+def test_byte_text_loader_uses_native_file_prefix_tokenizer(
+    monkeypatch, tmp_path: Path
+):
     path = tmp_path / "sample.txt"
     path.write_text("abcdef" * 10, encoding="utf-8")
 
@@ -74,7 +78,9 @@ def test_byte_text_loader_uses_native_file_prefix_tokenizer(monkeypatch, tmp_pat
         def gather_token_batch(self, tokens, starts, seq_len):
             raise AssertionError("not expected in this test")
 
-    monkeypatch.setattr("research.training.data_pipeline.load_data_native", lambda: _Native())
+    monkeypatch.setattr(
+        "research.training.data_pipeline.load_data_native", lambda: _Native()
+    )
 
     batcher = CorpusTokenBatcher(
         CorpusConfig(path=str(path), fmt="txt", tokenizer="byte", max_chars=12),
@@ -110,7 +116,9 @@ def test_jsonl_byte_loader_uses_native_jsonl_path(monkeypatch):
             raise AssertionError("not expected in this test")
 
     try:
-        monkeypatch.setattr("research.training.data_pipeline.load_data_native", lambda: _Native())
+        monkeypatch.setattr(
+            "research.training.data_pipeline.load_data_native", lambda: _Native()
+        )
         batcher = CorpusTokenBatcher(
             CorpusConfig(
                 path=str(path),
@@ -131,4 +139,3 @@ def test_jsonl_byte_loader_uses_native_jsonl_path(monkeypatch):
         }
     finally:
         path.unlink(missing_ok=True)
-

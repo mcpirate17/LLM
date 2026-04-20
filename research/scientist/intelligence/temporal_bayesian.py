@@ -14,7 +14,6 @@ Usage:
 
 from __future__ import annotations
 
-import json
 import logging
 import math
 import sqlite3
@@ -24,6 +23,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import numpy as np
+
+from .predictor_artifacts import read_json, write_json
 
 logger = logging.getLogger(__name__)
 
@@ -494,17 +495,14 @@ class TemporalBayesianTracker:
             },
         }
         path = Path(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "w") as f:
-            json.dump(state, f, indent=2)
+        write_json(path, state)
         logger.info("Saved tracker state to %s", path)
 
     @classmethod
     def load_state(cls, path: Path) -> "TemporalBayesianTracker":
         """Load tracker state from JSON."""
         path = Path(path)
-        with open(path) as f:
-            state = json.load(f)
+        state = read_json(path)
 
         tracker = cls()
         tracker._last_decay_time = state.get("last_decay_time", 0.0)

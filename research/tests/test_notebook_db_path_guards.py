@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -25,7 +24,9 @@ def test_runtime_events_reject_in_memory_notebook_path():
         runtime_events_root_for(":memory:")
 
 
-def test_lab_notebook_in_memory_does_not_create_repo_local_memory_file(tmp_path, monkeypatch):
+def test_lab_notebook_in_memory_does_not_create_repo_local_memory_file(
+    tmp_path, monkeypatch
+):
     monkeypatch.chdir(tmp_path)
     nb = LabNotebook(":memory:", use_native=False)
     try:

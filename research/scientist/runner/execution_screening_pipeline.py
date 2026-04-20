@@ -2,21 +2,16 @@
 
 from __future__ import annotations
 
-import json
 import math
-import random
 import time
-import traceback
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import torch
 
-from ..json_utils import fast_dumps, json_safe
-from ..notebook import LabNotebook, ExperimentEntry
+from ..json_utils import fast_dumps
+from ..notebook import LabNotebook
 from ..native_runner import compile_model_native_first as _compile_model_native
-from ..runtime_events import publish_lifecycle_event
 from ...synthesis.compiler import compile_model as _compile_model_legacy
-from ...synthesis.grammar import GrammarConfig, batch_generate
 from ...synthesis.validator import validate_graph
 from ...eval.flops import estimate_flops
 from ...eval.perf_budget import evaluate_perf_budget_gate
@@ -24,12 +19,6 @@ from .execution_screening_graphs import (
     analyze_graph_for_screening,
     structural_gate_failure,
     toxic_failure_ratio,
-)
-from .failure_provenance import infer_graph_failure_provenance
-from .screening_candidate_rank import judgment_rerank
-from .screening_signal_weights import (
-    apply_insight_adjustments,
-    build_signal_weight_maps,
 )
 from ._helpers_gate import clear_gpu_memory
 from ._helpers_metrics import (
@@ -53,6 +42,7 @@ logger = logging.getLogger(__name__)
 # an instance), the lookup is a single dict access.
 def _es_mod():
     from . import execution_screening as _es  # cached after first call
+
     return _es
 
 
@@ -100,7 +90,6 @@ class _ExecutionScreeningPipelineMixin:
     """Per-candidate gate checks, compile/eval, pipeline, finalize, execute_experiment."""
 
     __slots__ = ()
-
 
     def _screen_candidate_quality_gates(
         self,
@@ -885,7 +874,9 @@ class _ExecutionScreeningPipelineMixin:
             getattr(config, "enable_stage09_cheap_train_gate", False)
         )
         stage1_config = (
-            _es_mod()._make_stage1_screening_config(config) if stage09_enabled else config
+            _es_mod()._make_stage1_screening_config(config)
+            if stage09_enabled
+            else config
         )
         with self._lock:
             # Z17: Explicitly reset progress object at start of execution

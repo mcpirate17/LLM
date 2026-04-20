@@ -483,6 +483,8 @@ def _score_performance_curves(
     cfg: Dict[str, float],
     *,
     inv_failed: bool,
+    is_investigated: bool,
+    is_validation: bool,
     ppl_screening: Optional[float],
     ppl_investigation: Optional[float],
     ppl_validation: Optional[float],
@@ -505,13 +507,23 @@ def _score_performance_curves(
     bd["perf_short"] = perf_short
 
     perf_med = 0.0
-    if not inv_failed and ppl_investigation is not None and ppl_investigation > 0:
+    if (
+        not inv_failed
+        and is_investigated
+        and ppl_investigation is not None
+        and ppl_investigation > 0
+    ):
         perf_med = cfg["w_perf_medium"] * _scurve(cfg["ppl_2500"] / ppl_investigation)
     total += perf_med
     bd["perf_medium"] = perf_med
 
     perf_long = 0.0
-    if not inv_failed and ppl_validation is not None and ppl_validation > 0:
+    if (
+        not inv_failed
+        and is_validation
+        and ppl_validation is not None
+        and ppl_validation > 0
+    ):
         perf_long = cfg["w_perf_long"] * _scurve(cfg["ppl_10000"] / ppl_validation)
     total += perf_long
     bd["perf_long"] = perf_long
@@ -992,6 +1004,8 @@ def _compute_composite_generic(
     perf_pts, perf_bd = _score_performance_curves(
         cfg,
         inv_failed=_inv_failed,
+        is_investigated=_is_investigated,
+        is_validation=_is_validation,
         ppl_screening=ppl_screening,
         ppl_investigation=ppl_investigation,
         ppl_validation=ppl_validation,

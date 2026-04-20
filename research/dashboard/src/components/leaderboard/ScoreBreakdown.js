@@ -1,42 +1,11 @@
 import React, { useState } from 'react';
 import { scoreColor } from '../../utils/format';
+import { canonicalScoreComponents } from '../../utils/backendScore';
 
 export function ScoreBreakdown({ entry }) {
   const [show, setShow] = useState(false);
-  const breakdown = entry?.score_breakdown || {};
   const score = Number(entry?.composite_score || 0);
-
-  const keyMap = {
-    perf_short: { label: 'Screening Loss', color: 'var(--accent-blue)' },
-    perf_medium: { label: 'Investigation Loss', color: '#1f6feb' },
-    perf_long: { label: 'Validation Loss', color: 'var(--accent-green)' },
-    novelty: { label: 'Novelty', color: 'var(--accent-purple)' },
-    robustness: { label: 'Robustness', color: 'var(--accent-yellow)' },
-    long_context: { label: 'Long Context', color: '#79c0ff' },
-    speed: { label: 'Speed', color: 'var(--text-muted)' },
-    binding: { label: 'Binding Range', color: '#a371f7' },
-    blimp: { label: 'BLiMP Linguistic', color: '#79c0ff' },
-    compression: { label: 'Compression', color: '#56d364' },
-    sparsity: { label: 'Sparsity', color: '#3fb950' },
-    adaptive_computation: { label: 'Adaptive Compute', color: '#c77dff' },
-    routing_savings: { label: 'Routing', color: '#58a6ff' },
-    param_efficiency: { label: 'Param Efficiency', color: '#e3b341' },
-    learning_efficiency: { label: 'Learning Efficiency', color: '#db61a2' },
-    early_convergence: { label: 'Early Convergence', color: '#f0883e' },
-    cross_task: { label: 'Cross Task', color: '#3fb950' },
-    diagnostic: { label: 'Diagnostic', color: '#d29922' },
-    hellaswag: { label: 'HellaSwag', color: 'var(--accent-orange)' },
-    hierarchy: { label: 'Hierarchy', color: '#58a6ff' },
-    tinystories: { label: 'TinyStories', color: '#56d364' },
-  };
-
-  const positives = Object.entries(breakdown)
-    .filter(([key, weight]) => Number.isFinite(Number(weight)) && Number(weight) > 0 && !key.includes('penalty'))
-    .map(([key, weight]) => ({
-      key,
-      weight: Number(weight),
-      ...(keyMap[key] || { label: key, color: 'var(--border)' })
-    }));
+  const positives = canonicalScoreComponents(entry);
 
   const total = positives.reduce((acc, c) => acc + (Number(c.weight) || 0), 0) || 1;
 

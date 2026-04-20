@@ -58,9 +58,6 @@ def __getattr__(name: str):
     try:
         module = import_module(f".{name}", __name__)
     except ImportError as exc:
-        raise AttributeError(
-            f"module {__name__!r} has no attribute {name!r}"
-        ) from exc
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from exc
     globals()[name] = module
     return module
-

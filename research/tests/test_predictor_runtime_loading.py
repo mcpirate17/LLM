@@ -8,6 +8,8 @@ import numpy as np
 import pytest
 
 from research.scientist.intelligence.gnn_predictor import GraphPredictor
+from research.scientist.intelligence.interaction_model import InteractionModel
+from research.scientist.intelligence.op_embeddings import OpEmbeddings
 from research.scientist.intelligence.predictor import load_runtime_ensemble
 
 
@@ -44,6 +46,56 @@ def test_graph_predictor_roundtrip_from_artifact(tmp_path):
     np.testing.assert_allclose(loaded.w_loss, model.w_loss)
     np.testing.assert_allclose(loaded.feature_mean, model.feature_mean)
     np.testing.assert_allclose(loaded.feature_std, model.feature_std)
+
+
+@pytest.mark.unit
+def test_interaction_model_roundtrip_from_artifact(tmp_path):
+    artifact = tmp_path / "interaction_model.npz"
+    model = InteractionModel(
+        u=np.array([[0.1, 0.2], [0.3, 0.4]], dtype=np.float32),
+        v=np.array([[0.5, 0.6], [0.7, 0.8]], dtype=np.float32),
+        W_s=np.eye(2, dtype=np.float32),
+        W_l=np.array([[1.0, -1.0], [0.25, 0.5]], dtype=np.float32),
+        b_s=0.15,
+        b_l=0.85,
+        op_names=["add", "mul"],
+        op_to_idx={"add": 0, "mul": 1},
+        _trained=True,
+        _timestamp=123.0,
+        _train_metrics={"best_loss": 0.42},
+    )
+
+    model.save(artifact)
+    loaded = InteractionModel.load(artifact)
+
+    assert loaded._trained is True
+    assert loaded.op_names == ["add", "mul"]
+    assert loaded.op_to_idx == {"add": 0, "mul": 1}
+    assert loaded._train_metrics == {"best_loss": 0.42}
+    np.testing.assert_allclose(loaded.u, model.u)
+    np.testing.assert_allclose(loaded.v, model.v)
+    np.testing.assert_allclose(loaded.W_s, model.W_s)
+    np.testing.assert_allclose(loaded.W_l, model.W_l)
+
+
+@pytest.mark.unit
+def test_op_embeddings_roundtrip_from_artifact(tmp_path):
+    artifact = tmp_path / "op_embeddings.npz"
+    model = OpEmbeddings(
+        embeddings=np.array([[1.0, 0.0], [0.5, 0.5]], dtype=np.float32),
+        op_names=["add", "relu"],
+        op_to_idx={"add": 0, "relu": 1},
+        _trained=True,
+        _timestamp=456.0,
+    )
+
+    model.save(artifact)
+    loaded = OpEmbeddings.load(artifact)
+
+    assert loaded._trained is True
+    assert loaded.op_names == ["add", "relu"]
+    assert loaded.op_to_idx == {"add": 0, "relu": 1}
+    np.testing.assert_allclose(loaded.embeddings, model.embeddings)
 
 
 @pytest.mark.unit

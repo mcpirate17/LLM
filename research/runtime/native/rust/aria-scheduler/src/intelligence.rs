@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
@@ -162,12 +163,45 @@ pub fn extract_topology_features_json(
     pair_stability_json: &str,
     op_metadata_json: &str,
 ) -> Result<String, AriaError> {
-    let graph = NotebookGraph::from_json(graph_json)?;
     let op_profiles: HashMap<String, OpProfile> = serde_json::from_str(op_profiles_json)
         .map_err(|e| AriaError::InvalidIR(e.to_string()))?;
     let pair_stability = parse_pair_stability_map(pair_stability_json)?;
     let op_metadata: HashMap<String, OpCategoryMeta> = serde_json::from_str(op_metadata_json)
         .map_err(|e| AriaError::InvalidIR(e.to_string()))?;
+    let graph = NotebookGraph::from_json(graph_json)?;
+    extract_topology_features_for_graph(&graph, &op_profiles, &pair_stability, &op_metadata)
+}
+
+pub fn extract_topology_features_batch_json(
+    graphs: &[String],
+    op_profiles_json: &str,
+    pair_stability_json: &str,
+    op_metadata_json: &str,
+) -> Result<Vec<String>, AriaError> {
+    let op_profiles: HashMap<String, OpProfile> = serde_json::from_str(op_profiles_json)
+        .map_err(|e| AriaError::InvalidIR(e.to_string()))?;
+    let pair_stability = parse_pair_stability_map(pair_stability_json)?;
+    let op_metadata: HashMap<String, OpCategoryMeta> = serde_json::from_str(op_metadata_json)
+        .map_err(|e| AriaError::InvalidIR(e.to_string()))?;
+    let mut results = Vec::with_capacity(graphs.len());
+    for graph_json in graphs {
+        let graph = NotebookGraph::from_json(graph_json)?;
+        results.push(extract_topology_features_for_graph(
+            &graph,
+            &op_profiles,
+            &pair_stability,
+            &op_metadata,
+        )?);
+    }
+    Ok(results)
+}
+
+fn extract_topology_features_for_graph(
+    graph: &NotebookGraph,
+    op_profiles: &HashMap<String, OpProfile>,
+    pair_stability: &HashMap<(String, String), f64>,
+    op_metadata: &HashMap<String, OpCategoryMeta>,
+) -> Result<String, AriaError> {
     let topo = build_topology_index(&graph)?;
     let n = topo.sorted_nodes.len();
     let op_names = topo.op_names;
@@ -534,6 +568,19 @@ pub fn extract_topology_features_json(
 
 pub fn extract_edge_op_pairs_json(graph_json: &str) -> Result<String, AriaError> {
     let graph = NotebookGraph::from_json(graph_json)?;
+    extract_edge_op_pairs_for_graph(&graph)
+}
+
+pub fn extract_edge_op_pairs_batch_json(graphs: &[String]) -> Result<Vec<String>, AriaError> {
+    let mut results = Vec::with_capacity(graphs.len());
+    for graph_json in graphs {
+        let graph = NotebookGraph::from_json(graph_json)?;
+        results.push(extract_edge_op_pairs_for_graph(&graph)?);
+    }
+    Ok(results)
+}
+
+fn extract_edge_op_pairs_for_graph(graph: &NotebookGraph) -> Result<String, AriaError> {
     let topo = build_topology_index(&graph)?;
     let mut pairs: Vec<(String, String)> = Vec::new();
     for (idx, children) in topo.children.iter().enumerate() {
@@ -550,6 +597,66 @@ pub fn extract_edge_op_pairs_json(graph_json: &str) -> Result<String, AriaError>
         }
     }
     serde_json::to_string(&pairs).map_err(|e| AriaError::ExecutionFailed(e.to_string()))
+}
+
+pub fn extract_graph_segments_json(
+    graph_json: &str,
+    min_len: usize,
+    max_len: usize,
+) -> Result<String, AriaError> {
+    let graph = NotebookGraph::from_json(graph_json)?;
+    let topo = build_topology_index(&graph)?;
+    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+    let mut path: Vec<usize> = Vec::new();
+
+    fn visit(
+        idx: usize,
+        topo: &TopologyIndex<'_>,
+        min_len: usize,
+        max_len: usize,
+        path: &mut Vec<usize>,
+        counts: &mut BTreeMap<String, usize>,
+    ) {
+        let op_name = topo.op_names[idx];
+        if op_name.is_empty() || op_name == "input" {
+            return;
+        }
+        path.push(idx);
+
+        let path_len = path.len();
+        if path_len >= min_len {
+            let mut fragment = format!("seg_p{}:", path_len);
+            for (pos, &node_idx) in path.iter().enumerate() {
+                if pos > 0 {
+                    fragment.push('>');
+                }
+                fragment.push_str(topo.op_names[node_idx]);
+            }
+            *counts.entry(fragment).or_insert(0) += 1;
+        }
+
+        if path_len < max_len {
+            for &child_idx in &topo.children[idx] {
+                let child_op = topo.op_names[child_idx];
+                if child_op.is_empty() || child_op == "input" || path.contains(&child_idx) {
+                    continue;
+                }
+                visit(child_idx, topo, min_len, max_len, path, counts);
+            }
+        }
+
+        path.pop();
+    }
+
+    for idx in 0..topo.sorted_nodes.len() {
+        let op_name = topo.op_names[idx];
+        if op_name.is_empty() || op_name == "input" {
+            continue;
+        }
+        visit(idx, &topo, min_len, max_len, &mut path, &mut counts);
+    }
+
+    serde_json::to_string(&counts).map_err(|e| AriaError::ExecutionFailed(e.to_string()))
 }
 
 fn checked_flat_copy(flat: &[f64], rows: usize, cols: usize) -> Result<Vec<f64>, AriaError> {

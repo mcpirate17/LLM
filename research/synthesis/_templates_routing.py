@@ -9,23 +9,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from .graph import ComputationGraph
 from ._template_helpers import (
-    MOTIF_CLASS_ATTENTION,
-    MOTIF_CLASS_CHANNEL,
-    MOTIF_CLASS_CONV,
-    MOTIF_CLASS_EFFICIENT_PROJ,
-    MOTIF_CLASS_MATH_SPACE,
-    MOTIF_CLASS_NORM,
-    MOTIF_CLASS_SSM,
-    MotifWeights,
-    _FFN_CLASSES,
-    _MIXER_CLASSES,
-    _fix_dim,
-    _instantiate_motif,
-    _pick_compatible_motif,
-    _pick_compatible_motif_from_classes,
-    record_template_slot_binding,
     template_add_op as _add,
-    template_add_residual as _residual,
 )
 
 
@@ -43,9 +27,7 @@ ROUTING_TEMPLATES: frozenset = frozenset(
         "cascaded_early_exit",
         "hybrid_sparse_triplet_router",
         "multiscale_difficulty_router",
-        "multiscale_difficulty_router_easy_attn_ssm",
         "multiscale_difficulty_router_adaptive_attn_ssm",
-        "multiscale_difficulty_router_blocksparse_attn_ssm",
         "multiscale_rich_lane_router",
         "intelligent_multilane_router",
         "recursive_depth_router",
@@ -55,7 +37,6 @@ ROUTING_TEMPLATES: frozenset = frozenset(
         "sparse_moe_block",
         # Attention templates that produce routing ops internally
         "attn_routing_block",
-        "attn_moe_block",
         "attn_three_way_split",
         "attn_conditional_compute",
         "attn_sparse_moe",
@@ -317,7 +298,6 @@ def _apply_optional_single_input_ops(
         )
         selected.append(op_name)
     return node_id, selected
-
 
 
 # ── Template implementations live in split modules ─────────────────

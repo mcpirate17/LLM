@@ -14,7 +14,6 @@ from __future__ import annotations
 import json
 import logging
 import math
-import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -22,6 +21,8 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 import numpy as np
 
 from .ml_corpus import load_deduped_graph_training_rows
+from .profiling_db import load_op_categories as load_profiling_op_categories
+from .profiling_db import load_pair_profile_rows
 
 logger = logging.getLogger(__name__)
 
@@ -163,22 +164,9 @@ class InteractionMatrix:
         }
 
 
-def _load_op_categories(notebook_db: Path, profiling_db: Path) -> Dict[str, str]:
+def _load_op_categories(profiling_db: Path) -> Dict[str, str]:
     """Load op → category mapping from profiling DB and primitives registry."""
-    categories: Dict[str, str] = {}
-
-    # From profiling DB
-    if profiling_db.exists():
-        try:
-            conn = sqlite3.connect(str(profiling_db), timeout=5)
-            rows = conn.execute(
-                "SELECT op_name, category FROM op_profiles WHERE category IS NOT NULL"
-            ).fetchall()
-            conn.close()
-            for op_name, cat in rows:
-                categories[op_name] = cat
-        except Exception as e:
-            logger.warning("Failed to load categories from profiling DB: %s", e)
+    categories: Dict[str, str] = dict(load_profiling_op_categories(profiling_db))
 
     # Fill gaps from primitives registry
     try:
@@ -237,7 +225,7 @@ def build_interaction_matrix(
     Returns:
         InteractionMatrix with all observed op pairs.
     """
-    categories = _load_op_categories(notebook_db, profiling_db)
+    categories = _load_op_categories(profiling_db)
     pair_stats: Dict[Tuple[str, str], PairStats] = {}
     all_ops: Set[str] = set()
 
@@ -274,42 +262,31 @@ def build_interaction_matrix(
             logger.warning("Failed to load experiment data: %s", e)
 
     # ── Phase 2: Enrich from profiling DB ──
-    if profiling_db.exists():
-        try:
-            conn = sqlite3.connect(str(profiling_db), timeout=5)
-            rows = conn.execute(
-                """SELECT op_a, op_b, stability_delta, lipschitz_estimate,
-                          grad_vanishing, grad_exploding, output_has_nan, grad_has_nan
-                   FROM pair_profiles
-                   WHERE error IS NULL"""
-            ).fetchall()
-            conn.close()
+    rows = load_pair_profile_rows(profiling_db)
+    if rows:
+        for (
+            op_a,
+            op_b,
+            stab_delta,
+            lip,
+            grad_van,
+            grad_exp,
+            out_nan,
+            grad_nan,
+        ) in rows:
+            # Normalize order
+            a, b = (op_a, op_b) if op_a <= op_b else (op_b, op_a)
+            all_ops.add(a)
+            all_ops.add(b)
+            if (a, b) not in pair_stats:
+                pair_stats[(a, b)] = PairStats()
+            ps = pair_stats[(a, b)]
+            stable = not (out_nan or grad_nan or grad_van or grad_exp)
+            ps.profiling_stable = stable
+            ps.profiling_lipschitz = lip
+            ps.profiling_stability_delta = stab_delta
 
-            for (
-                op_a,
-                op_b,
-                stab_delta,
-                lip,
-                grad_van,
-                grad_exp,
-                out_nan,
-                grad_nan,
-            ) in rows:
-                # Normalize order
-                a, b = (op_a, op_b) if op_a <= op_b else (op_b, op_a)
-                all_ops.add(a)
-                all_ops.add(b)
-                if (a, b) not in pair_stats:
-                    pair_stats[(a, b)] = PairStats()
-                ps = pair_stats[(a, b)]
-                stable = not (out_nan or grad_nan or grad_van or grad_exp)
-                ps.profiling_stable = stable
-                ps.profiling_lipschitz = lip
-                ps.profiling_stability_delta = stab_delta
-
-            logger.info("Enriched with %d profiling pairs", len(rows))
-        except Exception as e:
-            logger.warning("Failed to load profiling data: %s", e)
+        logger.info("Enriched with %d profiling pairs", len(rows))
 
     # ── Build matrix ──
     if min_observations > 0:

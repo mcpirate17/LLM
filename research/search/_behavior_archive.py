@@ -12,7 +12,6 @@ from .evolution import Individual
 from .native_metrics import (
     archive_mean_k_nearest,
     pairwise_median_and_neighbor_counts,
-    topk_nearest_indices,
 )
 
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 """Auto-extracted mixin for LabNotebook."""
 
 import json
+import math
 import sqlite3
 import time
 import uuid
@@ -35,6 +36,217 @@ from .program_writes import (
     should_record_program_result,
 )
 from ._shared import ExperimentEntry, LOGGER, sanitize_for_db
+
+
+class DuplicateFingerprintError(Exception):
+    """Raised when a non-intentional caller tries to record a graph_fingerprint
+    that already exists in ``program_results``.
+
+    Callers that legitimately re-run an existing graph (replay, validation
+    promotion, reference re-registration, manual override) must pass
+    ``intentional_rerun_reason=<short string>`` to bypass the gate.
+    """
+
+    def __init__(
+        self,
+        fingerprint: str,
+        existing_result_id: Optional[str],
+        existing_experiment_id: Optional[str],
+        attempted_experiment_id: Optional[str],
+        attempted_model_source: Optional[str],
+    ):
+        self.fingerprint = fingerprint
+        self.existing_result_id = existing_result_id
+        self.existing_experiment_id = existing_experiment_id
+        self.attempted_experiment_id = attempted_experiment_id
+        self.attempted_model_source = attempted_model_source
+        super().__init__(
+            f"BLOCKED duplicate graph_fingerprint={fingerprint[:16]} "
+            f"by experiment={str(attempted_experiment_id)[:12]} "
+            f"(model_source={attempted_model_source}); "
+            f"already at result_id={existing_result_id} under experiment={str(existing_experiment_id)[:12]}. "
+            f"Pass intentional_rerun_reason=<reason> to bypass."
+        )
+
+
+POST_SCREENING_SIGNAL_COLUMNS = (
+    "rapid_screening_passed",
+    "wikitext_perplexity",
+    "wikitext_score",
+    "hellaswag_acc",
+    "blimp_overall_accuracy",
+    "induction_auc",
+    "binding_auc",
+    "binding_composite",
+    "induction_v2_investigation_auc",
+    "binding_v2_investigation_auc",
+    "discovery_loss_ratio",
+    "validation_loss_ratio",
+)
+
+MERGE_HIGHER_BETTER_COLUMNS = {
+    "novelty_score",
+    "structural_novelty",
+    "behavioral_novelty",
+    "novelty_confidence",
+    "throughput_tok_s",
+    "stability_score",
+    "loss_improvement_rate",
+    "screening_slope",
+    "activation_sparsity_score",
+    "routing_confidence_mean",
+    "routing_utilization_entropy",
+    "routing_savings_ratio",
+    "compression_ratio",
+    "hellaswag_acc",
+    "blimp_overall_accuracy",
+    "ar_auc",
+    "ar_final_acc",
+    "induction_auc",
+    "binding_auc",
+    "binding_composite",
+    "validation_robustness_score",
+    "wikitext_score",
+    "tinystories_score",
+    "cross_task_score",
+    "diagnostic_score",
+    "judgment_score",
+    "ncd_score",
+    "efficiency_multiple",
+    "robustness_long_ctx_scaling_score",
+    "robustness_long_ctx_assoc_score",
+    "robustness_long_ctx_multi_hop_score",
+    "robustness_long_ctx_passkey_score",
+    "robustness_long_ctx_retrieval_aggregate",
+    "robustness_long_ctx_combined_score",
+    "induction_v2_investigation_auc",
+    "induction_v2_investigation_max_gap_acc",
+    "binding_v2_investigation_auc",
+    "binding_v2_investigation_max_distance_acc",
+}
+
+MERGE_LOWER_BETTER_COLUMNS = {
+    "loss_ratio",
+    "final_loss",
+    "discovery_loss",
+    "discovery_loss_ratio",
+    "validation_loss",
+    "validation_loss_ratio",
+    "generalization_gap",
+    "baseline_loss_ratio",
+    "wikitext_perplexity",
+    "wikitext_pre_perplexity",
+    "wikitext_ppl_200",
+    "wikitext_ppl_500",
+    "tinystories_perplexity",
+    "ncd_description_length",
+    "ncd_description_length_per_param",
+    "fp_jacobian_spectral_norm",
+    "peak_memory_mb",
+    "compile_time_ms",
+    "forward_time_ms",
+    "backward_time_ms",
+    "validation_multi_seed_std",
+    "init_sensitivity_std",
+    "robustness_noise_score",
+}
+
+MERGE_MAX_COLUMNS = {
+    "stage0_passed",
+    "stage05_passed",
+    "stage1_passed",
+    "rapid_screening_passed",
+    "validation_passed",
+    "validation_is_unstable",
+    "extreme_input_passed",
+    "random_input_passed",
+    "has_zero_grad",
+    "n_train_steps",
+    "train_budget_steps",
+    "rapid_screening_steps_completed",
+    "rapid_screening_max_steps",
+    "routing_tokens_total",
+    "routing_tokens_processed",
+    "routing_tokens_skipped",
+    "routing_capacity_overflow_count",
+    "routing_expert_count",
+    "graph_n_ops",
+    "graph_depth",
+    "graph_n_edges",
+    "graph_n_unique_ops",
+    "max_viable_seq_len",
+    "hellaswag_n_examples",
+    "blimp_n_subtasks",
+    "induction_probe_train_steps",
+    "binding_probe_eval_examples",
+    "screening_hellaswag_correct",
+    "screening_hellaswag_total",
+    "induction_v2_investigation_steps_trained",
+    "binding_v2_investigation_train_steps",
+}
+
+MERGE_REPLACE_COLUMNS = {
+    "error_type",
+    "error_message",
+    "stage0_error",
+    "stage_at_death",
+    "failure_op",
+    "failure_details_json",
+}
+
+BACKFILL_RELABEL_COLUMNS = {
+    "result_cohort": "backfill",
+    "trust_label": "backfill_observation",
+    "comparability_label": "reconstructed_init_variant",
+    "evaluation_protocol_version": "backfill_replay_v1",
+    "init_regime": "reconstructed_fresh_init",
+}
+
+
+def _safe_float(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        as_float = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(as_float):
+        return None
+    return as_float
+
+
+def _merge_program_value(column: str, current: Any, candidate: Any) -> Any:
+    if candidate is None:
+        return current
+    if column in MERGE_REPLACE_COLUMNS:
+        return candidate
+    if current is None:
+        return candidate
+    if column in MERGE_HIGHER_BETTER_COLUMNS:
+        current_f = _safe_float(current)
+        candidate_f = _safe_float(candidate)
+        if current_f is None:
+            return candidate
+        if candidate_f is None:
+            return current
+        return candidate if candidate_f > current_f else current
+    if column in MERGE_LOWER_BETTER_COLUMNS:
+        current_f = _safe_float(current)
+        candidate_f = _safe_float(candidate)
+        if current_f is None:
+            return candidate
+        if candidate_f is None:
+            return current
+        return candidate if candidate_f < current_f else current
+    if column in MERGE_MAX_COLUMNS:
+        current_f = _safe_float(current)
+        candidate_f = _safe_float(candidate)
+        if current_f is None:
+            return candidate
+        if candidate_f is None:
+            return current
+        return candidate if candidate_f > current_f else current
+    return current
 
 
 class _ProgramsMixin:
@@ -247,6 +459,126 @@ class _ProgramsMixin:
                 "graph_fingerprint": kwargs.get("graph_fingerprint"),
             }
         )
+
+    def merge_program_result_patch(
+        self,
+        *,
+        result_id: str,
+        graph_fingerprint: Optional[str] = None,
+        graph_json: Optional[str] = None,
+        clear_failure_if_stage1: bool = False,
+        relabel_backfill_if_orphan: bool = False,
+        **kwargs,
+    ) -> bool:
+        """Merge new measurements into an existing canonical program row.
+
+        This is used by replay/backfill and promotion flows that should enrich an
+        existing fingerprint row instead of creating a sibling ``program_results``
+        record.
+        """
+        rid = str(result_id or "").strip()
+        if not rid:
+            return False
+
+        self.flush_writes()
+        existing_row = self.conn.execute(
+            "SELECT * FROM program_results WHERE result_id = ?",
+            (rid,),
+        ).fetchone()
+        if existing_row is None:
+            return False
+
+        current = dict(existing_row)
+        updates: Dict[str, Any] = {}
+        valid_columns = set(self._get_program_results_columns())
+
+        if (
+            graph_json
+            and "graph_json" in valid_columns
+            and not str(current.get("graph_json") or "").strip()
+        ):
+            updates["graph_json"] = graph_json
+            current["graph_json"] = graph_json
+        if (
+            graph_fingerprint
+            and "graph_fingerprint" in valid_columns
+            and not str(current.get("graph_fingerprint") or "").strip()
+        ):
+            updates["graph_fingerprint"] = graph_fingerprint
+            current["graph_fingerprint"] = graph_fingerprint
+
+        for column, candidate in kwargs.items():
+            if column not in valid_columns or column in {
+                "result_id",
+                "experiment_id",
+                "timestamp",
+                "graph_fingerprint",
+                "graph_json",
+            }:
+                continue
+            merged = _merge_program_value(column, current.get(column), candidate)
+            if merged != current.get(column):
+                updates[column] = merged
+                current[column] = merged
+
+        if clear_failure_if_stage1 and current.get("stage1_passed") in (1, True):
+            for column in (
+                "error_type",
+                "error_message",
+                "stage_at_death",
+                "failure_op",
+                "failure_details_json",
+            ):
+                if column in valid_columns and current.get(column) is not None:
+                    updates[column] = None
+                    current[column] = None
+
+        if relabel_backfill_if_orphan:
+            has_leaderboard = self.conn.execute(
+                "SELECT 1 FROM leaderboard WHERE result_id = ? LIMIT 1",
+                (rid,),
+            ).fetchone()
+            has_post_screening = any(
+                current.get(column) is not None
+                for column in POST_SCREENING_SIGNAL_COLUMNS
+            )
+            if (
+                not has_leaderboard
+                and not bool(current.get("stage1_passed"))
+                and has_post_screening
+            ):
+                for column, value in BACKFILL_RELABEL_COLUMNS.items():
+                    if column in valid_columns and current.get(column) != value:
+                        updates[column] = value
+                        current[column] = value
+
+        if not updates:
+            return False
+
+        set_clause = ", ".join(f"{column} = ?" for column in updates)
+        params = list(updates.values()) + [rid]
+        self._submit_write(
+            f"UPDATE program_results SET {set_clause} WHERE result_id = ?",
+            params,
+        )
+
+        final_fp = str(
+            current.get("graph_fingerprint") or graph_fingerprint or ""
+        ).strip()
+        final_graph_json = str(current.get("graph_json") or graph_json or "").strip()
+        if final_fp and final_graph_json:
+            self._store_graph_features_async(
+                result_id=rid,
+                graph_fingerprint=final_fp,
+                graph_json=final_graph_json,
+            )
+        self.upsert_induction_metric_v2(
+            graph_fingerprint=final_fp,
+            result_id=rid,
+            row=current,
+            source_cohort="runtime",
+        )
+        return True
 
     def _ensure_experiment_row(self, experiment_id: Optional[str]) -> None:
         if not experiment_id:
@@ -628,6 +960,7 @@ class _ProgramsMixin:
         graph_json: str,
         result_id: Optional[str] = None,
         bypass_quality_gate: bool = False,
+        intentional_rerun_reason: Optional[str] = None,
         **kwargs,
     ) -> str:
         """Record results for a single synthesized program.
@@ -640,6 +973,13 @@ class _ProgramsMixin:
         errors — to keep the database lean and focused.
 
         Set bypass_quality_gate=True (via debug mode) to persist all results.
+
+        Cross-experiment dedup gate (slice 4): if ``graph_fingerprint`` is
+        already present anywhere in ``program_results``, this method raises
+        ``DuplicateFingerprintError`` — unless the caller passes
+        ``intentional_rerun_reason``. A SQLite trigger enforces the same
+        rule at the schema level for any code path that bypasses this
+        method and INSERTs directly.
         """
         if not should_record_program_result(
             graph_fingerprint=graph_fingerprint,
@@ -648,6 +988,49 @@ class _ProgramsMixin:
             logger=LOGGER,
         ):
             return ""
+
+        if not intentional_rerun_reason:
+            experiment_type = self._experiment_type_for_id(experiment_id)
+            if experiment_type == "validation":
+                intentional_rerun_reason = "validation_promotion"
+            elif experiment_type == "investigation":
+                intentional_rerun_reason = "investigation_followup"
+
+        if (
+            graph_fingerprint
+            and not intentional_rerun_reason
+            and self.has_fingerprint(graph_fingerprint)
+        ):
+            existing = self.conn.execute(
+                "SELECT result_id, experiment_id FROM program_results "
+                "WHERE graph_fingerprint = ? LIMIT 1",
+                (graph_fingerprint,),
+            ).fetchone()
+            cls = type(self)
+            cls._dup_rejection_count = getattr(cls, "_dup_rejection_count", 0) + 1
+            existing_rid = existing["result_id"] if existing else None
+            existing_eid = existing["experiment_id"] if existing else None
+            attempted_source = kwargs.get("model_source")
+            LOGGER.warning(
+                "BLOCKED duplicate fp=%s by exp=%s (model_source=%s) — "
+                "already at rid=%s under exp=%s. Caller must pass "
+                "intentional_rerun_reason=<reason> if this re-run is intentional.",
+                graph_fingerprint[:16],
+                str(experiment_id)[:12],
+                attempted_source,
+                existing_rid,
+                str(existing_eid)[:12] if existing_eid else None,
+            )
+            raise DuplicateFingerprintError(
+                fingerprint=graph_fingerprint,
+                existing_result_id=existing_rid,
+                existing_experiment_id=existing_eid,
+                attempted_experiment_id=experiment_id,
+                attempted_model_source=attempted_source,
+            )
+
+        if intentional_rerun_reason:
+            kwargs.setdefault("intentional_rerun_reason", intentional_rerun_reason)
 
         if not result_id:
             result_id = str(uuid.uuid4())[:12]
@@ -871,9 +1254,19 @@ class _ProgramsMixin:
                 row["investigation_loss_ratio"] = (
                     lb.get("investigation_loss_ratio") if stage_rank >= 2 else None
                 )
-                row["validation_loss_ratio"] = (
-                    lb.get("validation_loss_ratio") if stage_rank >= 3 else None
-                )
+                if stage_rank >= 3:
+                    row["validation_loss_ratio"] = lb.get("validation_loss_ratio")
+                elif (
+                    str(row.get("result_cohort") or "").strip().lower() == "backfill"
+                    and row.get("validation_loss_ratio") is not None
+                ):
+                    # Backfill rows may carry validation-style metrics without
+                    # representing a promoted validation candidate. Preserve the
+                    # observed value so downstream semantic warnings can flag
+                    # non-comparable backfill evidence without mislabeling the tier.
+                    row["validation_loss_ratio"] = row.get("validation_loss_ratio")
+                else:
+                    row["validation_loss_ratio"] = None
                 row["validation_baseline_ratio"] = (
                     lb.get("validation_baseline_ratio") if stage_rank >= 3 else None
                 )
@@ -976,6 +1369,26 @@ class _ProgramsMixin:
             (result_id,),
         ).fetchone()
         return dict(rows) if rows else None
+
+    def get_leaderboard_entry_by_fingerprint(
+        self, graph_fingerprint: str
+    ) -> Optional[Dict]:
+        """Fetch the leaderboard entry (if any) for a given graph_fingerprint.
+
+        Leaderboard stores result_id, not fingerprint; this joins through
+        program_results. Used by promote callers and the dedup gate to find
+        an existing entry before inserting a new one.
+        """
+        if not graph_fingerprint:
+            return None
+        row = self.conn.execute(
+            "SELECT l.* FROM leaderboard l "
+            "JOIN program_results pr ON l.result_id = pr.result_id "
+            "WHERE pr.graph_fingerprint = ? "
+            "ORDER BY l.timestamp DESC LIMIT 1",
+            (str(graph_fingerprint).strip(),),
+        ).fetchone()
+        return dict(row) if row else None
 
     def get_leaderboard_consistency_report(self) -> Dict[str, Any]:
         return leaderboard_consistency_report(self)

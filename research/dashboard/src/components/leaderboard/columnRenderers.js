@@ -12,6 +12,7 @@ import TierBadge from '../shared/TierBadge';
 import StatusBadge from '../shared/StatusBadge';
 import Sparkline from '../shared/Sparkline';
 import ScoreBreakdown from './ScoreBreakdown';
+import { capabilityQualityLabel, capabilityQualityStatus } from '../../utils/discoveryStatus';
 
 const fmt = (v, d = 4) => {
   if (v == null) return '--';
@@ -40,6 +41,18 @@ const coloredMetric = (value, thresholds, decimals = 3, pct = false) => {
  */
 const RENDERERS = {
   _score: (entry) => <ScoreBreakdown entry={entry} />,
+  _capability_quality: (entry) => {
+    const status = capabilityQualityStatus(entry);
+    const label = capabilityQualityLabel(entry) || '--';
+    const color = status === 'qualified' || status === 'breakthrough'
+      ? 'var(--accent-green)'
+      : status === 'pending'
+        ? 'var(--accent-purple)'
+        : status === 'training_only'
+          ? 'var(--accent-yellow)'
+          : 'var(--text-muted)';
+    return <span style={{ color, fontWeight: 600 }}>{label}</span>;
+  },
   tier: (entry) => <TierBadge tier={entry.tier} entry={entry} />,
 
   _verified: (entry) => {

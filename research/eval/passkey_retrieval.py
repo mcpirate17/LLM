@@ -10,8 +10,6 @@ Output column: ``robustness_long_ctx_passkey_score``
 
 from __future__ import annotations
 
-import copy
-import gc
 import logging
 import time
 from dataclasses import dataclass, field
@@ -19,9 +17,11 @@ from typing import Any, Dict, Tuple
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
-from .utils import clip_grad_norm, make_adamw
+from .retrieval_eval_utils import (
+    eval_restricted_last_token_accuracy,
+    run_retrieval_probe_config,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -115,22 +115,14 @@ def _eval_passkey_accuracy(
     batch_size: int,
 ) -> float:
     """Evaluate passkey retrieval accuracy on eval set."""
-    model.eval()
-    correct = 0
-    total = eval_ids.shape[0]
-    query_pos = eval_ids.shape[1] - 1  # predict at last position
-
-    with torch.no_grad():
-        for start in range(0, total, batch_size):
-            end = min(start + batch_size, total)
-            inp = eval_ids[start:end]
-            tgt = eval_targets[start:end]
-            logits = model(inp)
-            pred_logits = logits[:, query_pos, _FILL_LO:_FILL_HI]
-            preds = pred_logits.argmax(dim=-1) + _FILL_LO
-            correct += (preds == tgt).sum().item()
-
-    return correct / max(total, 1)
+    return eval_restricted_last_token_accuracy(
+        model,
+        eval_ids,
+        eval_targets,
+        batch_size=batch_size,
+        vocab_lo=_FILL_LO,
+        vocab_hi=_FILL_HI,
+    )
 
 
 def _train_passkey_at_length(
@@ -147,40 +139,25 @@ def _train_passkey_at_length(
 
     Returns (accuracy, timed_out).
     """
-    probe_model = copy.deepcopy(model)
-    probe_model.to(device)
-    probe_model.train()
-
     eval_ids, eval_targets = _generate_passkey_eval_set(n_eval, seq_len, device)
-    opt = make_adamw(probe_model.parameters(), lr=lr)
     query_pos = seq_len - 1
-    timed_out = False
-
     try:
-        for step in range(1, n_train_steps + 1):
-            if time.perf_counter() > deadline:
-                timed_out = True
-                break
-
-            input_ids, targets = _generate_passkey_batch(batch_size, seq_len, device)
-            opt.zero_grad(set_to_none=True)
-            logits = probe_model(input_ids)
-            pred_logits = logits[:, query_pos, _FILL_LO:_FILL_HI]
-            loss = F.cross_entropy(pred_logits, targets - _FILL_LO)
-
-            if not torch.isfinite(loss):
-                break
-
-            loss.backward()
-            clip_grad_norm(probe_model.parameters(), 1.0)
-            opt.step()
-
-        acc = _eval_passkey_accuracy(probe_model, eval_ids, eval_targets, batch_size)
+        acc, timed_out = run_retrieval_probe_config(
+            model,
+            n_train_steps=n_train_steps,
+            eval_ids=eval_ids,
+            eval_targets=eval_targets,
+            batch_size=batch_size,
+            lr=lr,
+            device=device,
+            deadline=deadline,
+            make_train_batch=lambda bs, dev: _generate_passkey_batch(bs, seq_len, dev),
+            query_pos=query_pos,
+            vocab_lo=_FILL_LO,
+            vocab_hi=_FILL_HI,
+        )
     finally:
-        del eval_ids, eval_targets, probe_model
-        if device == "cuda":
-            torch.cuda.empty_cache()
-        gc.collect()
+        del eval_ids, eval_targets
 
     return acc, timed_out
 

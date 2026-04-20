@@ -8,8 +8,8 @@ import os
 from flask import jsonify, request
 from ..json_utils import json_safe as _json_safe
 from ..runner._types import RunConfig
-from ..persona import get_aria
 from ._helpers import (
+    get_aria_for_notebook,
     get_runner,
     with_native_runner_progress,
     get_run_trigger_snapshot,
@@ -22,7 +22,7 @@ from ._strategy_briefing import (
     determine_recommended_action,
 )
 from .deps import ApiRouteContext
-from ._utils import with_notebook_context
+from ._utils import register_notebook_routes, register_routes, with_notebook_context
 
 logger = logging.getLogger(__name__)
 
@@ -30,8 +30,6 @@ logger = logging.getLogger(__name__)
 def _register_decision_routes(app, notebook_path: str, wnb) -> None:
     """Decision: decision-packet, reproducibility-manifest, workflow-export."""
 
-    @app.route("/api/decision-packet/<result_id>")
-    @wnb
     def api_decision_packet(result_id, nb=None):
         """One-click evidence bundle for promotion decisions."""
         packet = build_decision_packet(nb, result_id)
@@ -39,8 +37,6 @@ def _register_decision_routes(app, notebook_path: str, wnb) -> None:
             return jsonify({"error": "Not found"}), 404
         return jsonify(packet)
 
-    @app.route("/api/reproducibility-manifest/<result_id>")
-    @wnb
     def api_reproducibility_manifest(result_id, nb=None):
         """Exportable reproducibility manifest for a program result."""
         from ..analytics import ExperimentAnalytics
@@ -122,8 +118,6 @@ def _register_decision_routes(app, notebook_path: str, wnb) -> None:
         }
         return jsonify(manifest)
 
-    @app.route("/api/reproducibility-manifest/<result_id>/workflow", methods=["GET"])
-    @wnb
     def api_workflow_export(result_id: str, nb=None):
         """Export a program result as an aria_designer workflow JSON."""
         row = nb.conn.execute(
@@ -145,12 +139,33 @@ def _register_decision_routes(app, notebook_path: str, wnb) -> None:
         )
         return jsonify(workflow)
 
+    register_notebook_routes(
+        app,
+        wnb,
+        (
+            (
+                "/api/decision-packet/<result_id>",
+                "api_decision_packet",
+                api_decision_packet,
+            ),
+            (
+                "/api/reproducibility-manifest/<result_id>",
+                "api_reproducibility_manifest",
+                api_reproducibility_manifest,
+            ),
+            (
+                "/api/reproducibility-manifest/<result_id>/workflow",
+                "api_workflow_export",
+                api_workflow_export,
+                ("GET",),
+            ),
+        ),
+    )
+
 
 def _register_fingerprint_routes(app, notebook_path: str, wnb) -> None:
     """Fingerprint: references, fingerprint/resolve, fingerprint/history."""
 
-    @app.route("/api/references")
-    @wnb
     def api_references(nb=None):
         """Get pinned reference architectures."""
         from ..naming import annotate_display_names
@@ -173,8 +188,6 @@ def _register_fingerprint_routes(app, notebook_path: str, wnb) -> None:
             }
         )
 
-    @app.route("/api/fingerprint/resolve")
-    @wnb
     def api_fingerprint_resolve(nb=None):
         """Resolve a result_id or fingerprint prefix to a concrete program result.
 
@@ -257,8 +270,6 @@ def _register_fingerprint_routes(app, notebook_path: str, wnb) -> None:
             )
         return jsonify({"error": "No matching fingerprint or result_id found."}), 404
 
-    @app.route("/api/fingerprint/history")
-    @wnb
     def api_fingerprint_history(nb=None):
         """Return chronological run history for a fingerprint prefix/result_id."""
         value = str(request.args.get("value") or "").strip()
@@ -333,11 +344,28 @@ def _register_fingerprint_routes(app, notebook_path: str, wnb) -> None:
             }
         )
 
+    register_notebook_routes(
+        app,
+        wnb,
+        (
+            ("/api/references", "api_references", api_references),
+            (
+                "/api/fingerprint/resolve",
+                "api_fingerprint_resolve",
+                api_fingerprint_resolve,
+            ),
+            (
+                "/api/fingerprint/history",
+                "api_fingerprint_history",
+                api_fingerprint_history,
+            ),
+        ),
+    )
+
 
 def _register_execution_routes(app, notebook_path: str) -> None:
     """Execution: worker/evaluate, progress."""
 
-    @app.route("/api/worker/evaluate", methods=["POST"])
     def api_worker_evaluate():
         """Z12: Distributed worker endpoint for evaluating a computation graph."""
         runner = get_runner(notebook_path)
@@ -385,7 +413,6 @@ def _register_execution_routes(app, notebook_path: str) -> None:
             logger.error("Worker evaluation failed: %s", e)
             return jsonify({"error": str(e), "passed": False}), 500
 
-    @app.route("/api/progress")
     def api_progress():
         """Get current experiment progress (poll-based alternative to SSE)."""
         runner = get_runner(notebook_path)
@@ -403,12 +430,23 @@ def _register_execution_routes(app, notebook_path: str) -> None:
             }
         )
 
+    register_routes(
+        app,
+        (
+            (
+                "/api/worker/evaluate",
+                "api_worker_evaluate",
+                api_worker_evaluate,
+                ("POST",),
+            ),
+            ("/api/progress", "api_progress", api_progress),
+        ),
+    )
+
 
 def _register_briefing_routes(app, notebook_path: str, wnb) -> None:
     """Briefing: strategy/briefing."""
 
-    @app.route("/api/strategy/briefing")
-    @wnb
     def api_strategy_briefing(nb=None):
         """Data-driven strategy briefing for the overview page.
 
@@ -429,12 +467,12 @@ def _register_briefing_routes(app, notebook_path: str, wnb) -> None:
                 if (e.get("experiment_id") or "").startswith(just_completed_id):
                     just_completed_exp = e
                     break
-            aria_inst = get_aria()
+            aria_inst = get_aria_for_notebook(notebook_path)
             if hasattr(aria_inst, "_briefing_cache"):
                 aria_inst._briefing_cache = None
 
         # Try LLM-powered briefing first
-        aria = get_aria()
+        aria = get_aria_for_notebook(notebook_path)
         llm_response = try_llm_briefing(
             nb, aria, analytics, data, recent, just_completed_exp
         )
@@ -460,6 +498,18 @@ def _register_briefing_routes(app, notebook_path: str, wnb) -> None:
                 "ref_comparison": data["ref_comparison"],
             }
         )
+
+    register_notebook_routes(
+        app,
+        wnb,
+        (
+            (
+                "/api/strategy/briefing",
+                "api_strategy_briefing",
+                api_strategy_briefing,
+            ),
+        ),
+    )
 
 
 def register_strategy_bp_routes(app, context: ApiRouteContext):

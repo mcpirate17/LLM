@@ -128,9 +128,7 @@ def test_attribution_filters_unknown_depth_bucket_as_top_signal():
         nb.record_program_result(
             experiment_id=exp_id,
             graph_fingerprint=f"unk_{i}",
-            graph_json=_graph_json_for_ops(
-                ["linear_proj", "gelu", "tanh"], variant=i
-            ),
+            graph_json=_graph_json_for_ops(["linear_proj", "gelu", "tanh"], variant=i),
             stage1_passed=1 if i < 24 else 0,
             graph_depth=None,
             graph_uses_math_spaces=0,

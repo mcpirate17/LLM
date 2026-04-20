@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import math
 import time
 
@@ -300,6 +301,21 @@ def test_native_edge_op_pairs_match_python_reference():
     assert native == python_ref
 
 
+def test_native_edge_op_pair_batch_matches_python_reference():
+    rust = _try_import_rust_scheduler()
+    if rust is None or not hasattr(rust, "extract_edge_op_pairs_batch_native"):
+        pytest.skip("native edge-pair batch extractor unavailable")
+
+    payloads = _many_graph_payloads(64)
+    raw = rust.extract_edge_op_pairs_batch_native(payloads)
+    native = [
+        sorted((left, right) for left, right in json.loads(payload)) for payload in raw
+    ]
+    python_ref = [gp._extract_edge_op_pairs_python(payload) for payload in payloads]
+
+    assert native == python_ref
+
+
 def test_native_topology_feature_batch_matches_single_graph_reference():
     rust = _try_import_rust_scheduler()
     if rust is None or not hasattr(rust, "extract_topology_features_batch_native"):
@@ -334,6 +350,23 @@ def test_native_graph_op_batch_matches_python_reference():
     native = go.extract_unique_graph_ops_batch(payloads)
     python_ref = [go._extract_unique_graph_ops_python(payload) for payload in payloads]
     assert native == python_ref
+
+
+def test_graph_op_extractors_handle_list_nodes_and_op_type():
+    graph = {
+        "nodes": [
+            {"id": 0, "op_name": "input", "input_ids": []},
+            {"id": 1, "op_type": "linear_proj", "input_ids": [0]},
+            {"id": 2, "op": "gelu", "input_ids": [1]},
+        ]
+    }
+    graph_json = json.dumps(graph)
+
+    assert go.extract_unique_graph_ops(graph_json) == ["gelu", "linear_proj"]
+    assert go.extract_unique_graph_ops_batch([graph_json, graph]) == [
+        ["gelu", "linear_proj"],
+        ["gelu", "linear_proj"],
+    ]
 
 
 def test_native_interaction_training_produces_separable_scores():

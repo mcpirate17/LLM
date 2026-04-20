@@ -13,7 +13,6 @@ from collections.abc import Mapping
 from functools import lru_cache
 from typing import Any, Dict, Optional
 
-from .core import _try_import_rust_scheduler  # re-bound dynamically via dispatch
 from .tensor_bridge import to_native_array
 
 logger = logging.getLogger(__name__)

@@ -21,7 +21,6 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 from ...training.loss_ops import clip_grad_norm_, next_token_cross_entropy
 from ..notebook import LabNotebook

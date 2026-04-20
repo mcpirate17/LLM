@@ -12,7 +12,6 @@ from .predictor_ridge import (  # noqa: F401
     PerformancePredictor,
     _extract_features,
     _query_training_data,
-    _unlink_if_exists,
     evaluate,
     predict,
     train,

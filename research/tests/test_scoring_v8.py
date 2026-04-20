@@ -53,6 +53,58 @@ class TestV8ScoringBasics:
         assert bd.get("perf_medium", 0) == 0.0
         assert bd.get("perf_long", 0) == 0.0
 
+    def test_screened_out_zeros_later_stage_perf(self):
+        result = compute_composite_v8(
+            ppl_screening=8.0,
+            ppl_investigation=7.0,
+            ppl_validation=5.5,
+            tier="screened_out",
+            decompose=True,
+        )
+        bd = result["breakdown"]
+        assert bd.get("perf_short", 0) == 0.0
+        assert bd.get("perf_medium", 0) == 0.0
+        assert bd.get("perf_long", 0) == 0.0
+
+    def test_screening_tier_ignores_later_stage_ppl_even_if_present(self):
+        result = compute_composite_v8(
+            ppl_screening=8.0,
+            ppl_investigation=7.0,
+            ppl_validation=5.5,
+            tier="screening",
+            decompose=True,
+        )
+        bd = result["breakdown"]
+        assert bd.get("perf_short", 0) > 0.0
+        assert bd.get("perf_medium", 0) == 0.0
+        assert bd.get("perf_long", 0) == 0.0
+
+    def test_investigation_tier_scores_medium_but_not_validation_band(self):
+        result = compute_composite_v8(
+            ppl_screening=8.0,
+            ppl_investigation=7.0,
+            ppl_validation=5.5,
+            tier="investigation",
+            decompose=True,
+        )
+        bd = result["breakdown"]
+        assert bd.get("perf_short", 0) > 0.0
+        assert bd.get("perf_medium", 0) > 0.0
+        assert bd.get("perf_long", 0) == 0.0
+
+    def test_breakthrough_tier_scores_validation_band(self):
+        result = compute_composite_v8(
+            ppl_screening=8.0,
+            ppl_investigation=7.0,
+            ppl_validation=5.5,
+            tier="breakthrough",
+            decompose=True,
+        )
+        bd = result["breakdown"]
+        assert bd.get("perf_short", 0) > 0.0
+        assert bd.get("perf_medium", 0) > 0.0
+        assert bd.get("perf_long", 0) > 0.0
+
 
 @pytest.mark.unit
 class TestV8NewComponents:

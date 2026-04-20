@@ -45,6 +45,18 @@ ensure_ui_deps() {
   )
 }
 
+start_detached() {
+  local pid_file="$1"
+  local log_file="$2"
+  local command="$3"
+
+  rm -f "$pid_file"
+  : > "$log_file"
+
+  nohup setsid bash -lc "$command" >>"$log_file" 2>&1 </dev/null &
+  echo $! > "$pid_file"
+}
+
 # ── Check if services are already running ──
 
 api_up=false
@@ -72,28 +84,21 @@ if ! $api_up; then
   rm -f "$RUN_DIR/api.pid"
   PYTHON_BIN="$(resolve_python)"
   echo "Starting API (port 8091)..."
-  (
-    cd "$API_DIR"
-    "$PYTHON_BIN" -m uvicorn app.main:app --reload --port 8091
-  ) &
-  API_PID=$!
-  echo "$API_PID" > "$RUN_DIR/api.pid"
+  start_detached \
+    "$RUN_DIR/api.pid" \
+    "$RUN_DIR/api.log" \
+    "cd '$API_DIR' && exec '$PYTHON_BIN' -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8091"
 fi
 
 if ! $ui_up; then
   rm -f "$RUN_DIR/ui.pid"
   ensure_ui_deps
   echo "Starting UI (port 5174)..."
-  (
-    cd "$UI_DIR"
-    npm exec vite -- --port 5174 --strictPort
-  ) &
-  UI_PID=$!
-  echo "$UI_PID" > "$RUN_DIR/ui.pid"
+  start_detached \
+    "$RUN_DIR/ui.pid" \
+    "$RUN_DIR/ui.log" \
+    "cd '$UI_DIR' && exec ./node_modules/.bin/vite --host 127.0.0.1 --port 5174 --strictPort"
 fi
 
 echo "API: http://127.0.0.1:8091  UI: http://localhost:5174"
 echo "Run 'make dev-stop' to stop both servers."
-
-# Wait for started processes (don't block if none were started)
-wait 2>/dev/null || true

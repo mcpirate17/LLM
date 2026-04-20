@@ -92,9 +92,7 @@ def tokenize_string(text: str, vocab_size: int) -> np.ndarray:
 def tokenize_file(path: Path, vocab_size: int) -> np.ndarray:
     """Tokenize a text file as UTF-8 bytes modulo vocab size (native C++)."""
     return (
-        load_data_native()
-        .byte_tokenize_file_utf8(str(path), int(vocab_size))
-        .numpy()
+        load_data_native().byte_tokenize_file_utf8(str(path), int(vocab_size)).numpy()
     )
 
 

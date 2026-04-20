@@ -7,6 +7,7 @@ from collections import defaultdict
 from typing import Any, Dict, List, Optional, Set, Tuple
 import numpy as np
 from ...synthesis.grammar_defaults import default_category_weights
+from .frontier import pareto_mask
 
 logger = logging.getLogger(__name__)
 
@@ -380,25 +381,8 @@ class _GrammarMixin:
             return []
 
         costs = np.array(data, dtype=np.float32)
-        n = costs.shape[0]
-
-        # Sort by objective 1 descending, then objective 2 descending so
-        # equal-loss candidates keep the most efficient point first.
-        order = np.lexsort((-costs[:, 1], -costs[:, 0]))
-        costs_sorted = costs[order]
-
-        is_pareto = np.ones(n, dtype=bool)
-        max_obj2 = -np.inf
-        for i in range(n):
-            if costs_sorted[i, 1] <= max_obj2:
-                is_pareto[i] = False
-            else:
-                max_obj2 = costs_sorted[i, 1]
-
-        # Map back to original indices
-        pareto_mask = np.zeros(n, dtype=bool)
-        pareto_mask[order[is_pareto]] = True
-        return [ids[i] for i in range(n) if pareto_mask[i]]
+        mask = pareto_mask(costs, minimize=(False, False))
+        return [ids[i] for i, keep in enumerate(mask) if keep]
 
     def _load_program_factor_rows(self) -> List[Dict[str, Any]]:
         """Load per-program factors for attribution analysis."""

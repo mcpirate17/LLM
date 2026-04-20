@@ -28,9 +28,9 @@ def get_notebook(notebook_path: str, *, read_only: bool) -> LabNotebook:
     """Return a notebook handle for the current request.
 
     Every request gets its own short-lived notebook so the dashboard does
-    not pin database handles longer than necessary. Read-only callers use
-    a short-lived read-only sqlite connection; writable callers use a
-    short-lived writable sqlite connection.
+    not pin sqlite handles longer than necessary. Keep request-scoped access
+    on the disposable sqlite path for both read and write flows so callers
+    always observe the latest committed state after write-side flushes.
     """
     from ..notebook import LabNotebook
 

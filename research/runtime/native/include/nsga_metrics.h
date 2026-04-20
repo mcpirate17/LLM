@@ -17,4 +17,11 @@ int aria_nsga_pareto_ranks(
     int32_t* out_ranks
 );
 
+int aria_nsga_pareto_frontier_mask(
+    const float* objective_matrix,
+    int32_t n_rows,
+    int32_t n_objectives,
+    uint8_t* out_mask
+);
+
 #endif

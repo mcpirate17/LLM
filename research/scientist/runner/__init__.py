@@ -12,6 +12,8 @@ import threading as threading  # noqa: F401 - re-exported for test patching
 
 from ._types import LiveProgress as LiveProgress, RunConfig as RunConfig
 
+_EXPERIMENT_RUNNER_CLASS = None
+
 __all__ = [
     "ExperimentRunner",
     "LiveProgress",
@@ -26,7 +28,12 @@ __all__ = [
 
 def __getattr__(name: str):
     if name == "ExperimentRunner":
+        global _EXPERIMENT_RUNNER_CLASS
+        if _EXPERIMENT_RUNNER_CLASS is not None:
+            return _EXPERIMENT_RUNNER_CLASS
+
         from .core import _CoreMixin
+        from ._lifecycle import _LifecycleMixin
         from .control_start import _ControlStartMixin
         from .control_actions import _ControlActionsMixin
         from .control_cycle import _ControlCycleMixin
@@ -62,6 +69,7 @@ def __getattr__(name: str):
 
         class ExperimentRunner(
             _CoreMixin,
+            _LifecycleMixin,
             _ControlStartMixin,
             _ControlActionsMixin,
             _ControlCycleMixin,
@@ -95,7 +103,8 @@ def __getattr__(name: str):
         ):
             """Autonomous experiment execution engine with background support."""
 
-        return ExperimentRunner
+        _EXPERIMENT_RUNNER_CLASS = ExperimentRunner
+        return _EXPERIMENT_RUNNER_CLASS
 
     if name == "results":
         return importlib.import_module(".results_automation", __name__)

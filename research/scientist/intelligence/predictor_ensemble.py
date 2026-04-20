@@ -3,21 +3,17 @@
 from __future__ import annotations
 
 import functools
-import hashlib
 import json
 import logging
-import sqlite3
-from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 
 from .metrics_utils import (
     binary_classification_metrics,
     operating_point_profiles,
-    safe_binary_roc_auc,
 )
 from .predictor_gbm import (
     _graph_signature,
@@ -25,38 +21,34 @@ from .predictor_gbm import (
     train_gbm,
 )
 from .ml_corpus import (
-    CorpusIntegrityError,
-    build_dense_feature_matrix,
     grouped_stratified_split,
-    load_deduped_screening_predictor_rows,
-    load_deduped_graph_training_rows,
-    load_deduped_predictor_training_rows,
     rerun_confidence_weight,
+)
+from .predictor_artifacts import (
+    BAYESIAN_STATE_PATH as _BAYESIAN_STATE_PATH,
+    ENSEMBLE_META_PATH as _ENSEMBLE_META_PATH,
+    ENSEMBLE_STATE_PATH as _ENSEMBLE_STATE_PATH,
+    GBM_GATE_MODEL_PATH as _GBM_GATE_MODEL_PATH,
+    GBM_META_PATH as _GBM_META_PATH,
+    GBM_RANK_MODEL_PATH as _GBM_RANK_MODEL_PATH,
+    GRAPH_PREDICTOR_PATH as _GRAPH_PREDICTOR_PATH,
+    INTERACTION_MODEL_PATH as _INTERACTION_MODEL_PATH,
+    STATE_DIR,
+    ensure_state_dir,
+    metadata_sidecar_path,
+    load_npz_archive,
+    read_json,
+    save_npz_archive,
+    unlink_paths,
+    write_json,
 )
 
 logger = logging.getLogger(__name__)
 
-_STATE_DIR = Path("research/runtime/learning")
-_GBM_GATE_MODEL_PATH = _STATE_DIR / "gbm_gate_model.txt"
-_GBM_RANK_MODEL_PATH = _STATE_DIR / "gbm_rank_model.txt"
-_GBM_META_PATH = _STATE_DIR / "gbm_predictor.json"
-_GRAPH_PREDICTOR_PATH = _STATE_DIR / "graph_predictor.npz"
-_INTERACTION_MODEL_PATH = _STATE_DIR / "interaction_model.npz"
-_BAYESIAN_STATE_PATH = _STATE_DIR / "bayesian_state.json"
-_ENSEMBLE_STATE_PATH = _STATE_DIR / "ensemble_state.npz"
-_ENSEMBLE_META_PATH = _STATE_DIR / "ensemble_state.json"
-
-
-def _unlink_if_exists(path: Path) -> None:
-    try:
-        path.unlink()
-    except FileNotFoundError:
-        pass
-
-
 
 from .predictor_gbm import GBMPredictor  # noqa: F401
 from .predictor_ridge import PerformancePredictor, _extract_features  # noqa: F401
+
 
 @dataclass
 class EnsemblePredictor:
@@ -231,11 +223,7 @@ class EnsemblePredictor:
         # Removed from blend until induction predictor achieves Spearman >= 0.5.
         # Previous: 0.5*p_pass + 0.25*quality + 0.25*induction (25% noise).
         if quality_terms:
-            blended = float(
-                np.clip(
-                    0.65 * p_pass + 0.35 * quality_score, 0.0, 1.0
-                )
-            )
+            blended = float(np.clip(0.65 * p_pass + 0.35 * quality_score, 0.0, 1.0))
         else:
             blended = float(np.clip(p_pass, 0.0, 1.0))
         return {
@@ -315,54 +303,53 @@ class EnsemblePredictor:
 
     def save(self, state_dir: Path) -> None:
         """Persist ensemble calibration plus any fitted submodels."""
-        state_dir = Path(state_dir)
-        state_dir.mkdir(parents=True, exist_ok=True)
+        state_dir = ensure_state_dir(state_dir)
         if self.gbm is not None and self.gbm.is_fitted():
             self.gbm.save(state_dir)
         else:
-            _unlink_if_exists(state_dir / _GBM_GATE_MODEL_PATH.name)
-            _unlink_if_exists(state_dir / _GBM_RANK_MODEL_PATH.name)
-            _unlink_if_exists(state_dir / _GBM_META_PATH.name)
+            unlink_paths(
+                state_dir / _GBM_GATE_MODEL_PATH.name,
+                state_dir / _GBM_RANK_MODEL_PATH.name,
+                state_dir / _GBM_META_PATH.name,
+            )
         if self.graph_pred is not None and self.graph_pred.is_fitted():
             self.graph_pred.save(state_dir / _GRAPH_PREDICTOR_PATH.name)
         else:
-            _unlink_if_exists(state_dir / _GRAPH_PREDICTOR_PATH.name)
-            _unlink_if_exists(
-                (state_dir / _GRAPH_PREDICTOR_PATH.name).with_suffix(".json")
+            unlink_paths(
+                state_dir / _GRAPH_PREDICTOR_PATH.name,
+                metadata_sidecar_path(state_dir / _GRAPH_PREDICTOR_PATH.name),
             )
         if self.bayesian is not None:
             self.bayesian.save_state(state_dir / _BAYESIAN_STATE_PATH.name)
         else:
-            _unlink_if_exists(state_dir / _BAYESIAN_STATE_PATH.name)
+            unlink_paths(state_dir / _BAYESIAN_STATE_PATH.name)
         if self.interaction is not None and self.interaction._trained:
             self.interaction.save(state_dir / _INTERACTION_MODEL_PATH.name)
         else:
-            _unlink_if_exists(state_dir / _INTERACTION_MODEL_PATH.name)
-            _unlink_if_exists(
-                (state_dir / _INTERACTION_MODEL_PATH.name).with_suffix(".json")
+            unlink_paths(
+                state_dir / _INTERACTION_MODEL_PATH.name,
+                metadata_sidecar_path(state_dir / _INTERACTION_MODEL_PATH.name),
             )
-        np.savez_compressed(
-            str(state_dir / _ENSEMBLE_STATE_PATH.name),
+        save_npz_archive(
+            state_dir / _ENSEMBLE_STATE_PATH.name,
             w_ensemble=self.w_ensemble,
             score_mean=self._score_mean,
             score_std=self._score_std,
         )
-        with open(state_dir / _ENSEMBLE_META_PATH.name, "w", encoding="utf-8") as f:
-            json.dump(
-                {
-                    "b_ensemble": self.b_ensemble,
-                    "n_score_dims": self._n_score_dims,
-                    "gate_threshold": self.gate_threshold,
-                    "calibration_metrics": self._calibration_metrics,
-                },
-                f,
-                indent=2,
-            )
+        write_json(
+            state_dir / _ENSEMBLE_META_PATH.name,
+            {
+                "b_ensemble": self.b_ensemble,
+                "n_score_dims": self._n_score_dims,
+                "gate_threshold": self.gate_threshold,
+                "calibration_metrics": self._calibration_metrics,
+            },
+        )
 
     @classmethod
     def load(
         cls,
-        state_dir: Path = _STATE_DIR,
+        state_dir: Path = STATE_DIR,
         profiling_db: str = "research/profiling/component_profiles.db",
     ) -> "EnsemblePredictor":
         """Load persisted ensemble state without retraining."""
@@ -406,9 +393,8 @@ class EnsemblePredictor:
         ensemble_meta_path = state_dir / _ENSEMBLE_META_PATH.name
         if ensemble_state_path.exists() and ensemble_meta_path.exists():
             try:
-                data = np.load(str(ensemble_state_path))
-                with open(ensemble_meta_path, encoding="utf-8") as f:
-                    meta = json.load(f)
+                data = load_npz_archive(ensemble_state_path)
+                meta = read_json(ensemble_meta_path)
                 ensemble.w_ensemble = data["w_ensemble"]
                 ensemble._score_mean = data["score_mean"]
                 ensemble._score_std = data["score_std"]
@@ -426,7 +412,7 @@ class EnsemblePredictor:
 
 @functools.lru_cache(maxsize=4)
 def load_runtime_ensemble(
-    state_dir: str = str(_STATE_DIR),
+    state_dir: str = str(STATE_DIR),
     profiling_db: str = "research/profiling/component_profiles.db",
 ) -> EnsemblePredictor:
     """Load persisted ensemble state for runtime use.

@@ -10,6 +10,7 @@ from flask import Response, request, send_from_directory
 
 from research.defaults import DESIGNER_UI_BASE
 from .deps import ApiRouteContext
+from ._utils import register_routes
 
 logger = logging.getLogger(__name__)
 
@@ -74,14 +75,12 @@ def register_misc_routes(app, context: ApiRouteContext):
     )
     designer_dist_path = Path(designer_dist)
 
-    @app.route("/designer-proxy/")
     def designer_index():
         """Serve the built aria_designer index for the embedded iframe."""
         if (designer_dist_path / "index.html").is_file():
             return send_from_directory(designer_dist, "index.html")
         return _proxy_designer_ui()
 
-    @app.route("/designer-proxy/<path:subpath>")
     def designer_assets(subpath):
         """Serve aria_designer static assets."""
         asset_path = designer_dist_path / subpath
@@ -89,13 +88,11 @@ def register_misc_routes(app, context: ApiRouteContext):
             return send_from_directory(designer_dist, subpath)
         return _proxy_designer_ui(subpath)
 
-    @app.route("/")
     def index():
         if not _dashboard_index_path():
             return _dashboard_missing_response()
         return send_from_directory(app.static_folder, "index.html")
 
-    @app.route("/favicon.ico")
     def favicon():
         if app.static_folder:
             icon = Path(app.static_folder) / "favicon.ico"
@@ -103,7 +100,6 @@ def register_misc_routes(app, context: ApiRouteContext):
                 return send_from_directory(app.static_folder, "favicon.ico")
         return "", 204
 
-    @app.route("/<path:path>")
     def static_files(path):
         if app.static_folder:
             static_path = Path(app.static_folder) / path
@@ -113,3 +109,14 @@ def register_misc_routes(app, context: ApiRouteContext):
         if index_path and not _is_asset_path(path):
             return send_from_directory(app.static_folder, "index.html")
         return "Not found", 404
+
+    register_routes(
+        app,
+        (
+            ("/designer-proxy/", "designer_index", designer_index),
+            ("/designer-proxy/<path:subpath>", "designer_assets", designer_assets),
+            ("/", "index", index),
+            ("/favicon.ico", "favicon", favicon),
+            ("/<path:path>", "static_files", static_files),
+        ),
+    )

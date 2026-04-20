@@ -2,18 +2,10 @@
 
 from __future__ import annotations
 
-import json
-import sqlite3
 import time
-import traceback
 from typing import List
 
-import torch
 
-from ..json_utils import json_safe
-from ..native_runner import compile_model_native_first as compile_model
-from ..runtime_events import publish_lifecycle_event
-from ..shared_utils import resolve_device
 from ._helpers import (
     build_validation_entry,
     clear_gpu_memory,
@@ -22,16 +14,9 @@ from ._helpers import (
     promote_validation_candidate,
     run_baseline_comparison,
     run_trajectory_probe,
-    screening_probe_fields,
-    screening_wikitext_fields,
 )
 from ._types import RunConfig
 from .execution_validation import _fail_loud
-from ...eval.diagnostic_tasks import run_diagnostic_suite
-from ...eval.fingerprint import compute_fingerprint
-from ...eval.metrics import novelty_score
-from ...synthesis.serializer import graph_from_json, graph_to_json
-from ...training.checkpointing import CheckpointManager
 
 import logging
 
@@ -533,7 +518,12 @@ class _ExecutionValidationCandidateMixin:
                     exc,
                 )
 
-        return val_baseline_ratio, val_normalized_ratio, val_param_efficiency, val_split_ratio
+        return (
+            val_baseline_ratio,
+            val_normalized_ratio,
+            val_param_efficiency,
+            val_split_ratio,
+        )
 
     def _validation_record_and_checkpoint(
         self,
@@ -559,27 +549,6 @@ class _ExecutionValidationCandidateMixin:
                 _raw_novelty = float(_raw_novelty) * novelty_cap
             if _raw_confidence is not None:
                 _raw_confidence = float(_raw_confidence) * novelty_cap
-
-        nb.record_program_result(
-            experiment_id=exp_id,
-            graph_fingerprint=source.get("graph_fingerprint", source_result_id),
-            graph_json=graph_json_str or "{}",
-            stage0_passed=True,
-            stage05_passed=True,
-            stage1_passed=len(passed_seeds) > 0,
-            loss_ratio=val_loss_ratio,
-            baseline_loss_ratio=val_baseline_ratio,
-            novelty_score=_raw_novelty,
-            novelty_confidence=_raw_confidence,
-            novelty_raw_score=source.get("novelty_raw_score"),
-            novelty_z_score=source.get("novelty_z_score"),
-            novelty_reference_version=source.get("novelty_reference_version"),
-            novelty_valid_for_promotion=source.get("novelty_valid_for_promotion"),
-            novelty_validity_reason=source.get("novelty_validity_reason"),
-            novelty_requires_justification=source.get("novelty_requires_justification"),
-            model_source=model_source,
-            arch_spec_json=arch_spec_json_str,
-        )
 
         try:
             ckpt.save_phase(
@@ -610,4 +579,3 @@ class _ExecutionValidationCandidateMixin:
             )
 
     # ── Extracted helpers for _run_scale_up_thread ──
-

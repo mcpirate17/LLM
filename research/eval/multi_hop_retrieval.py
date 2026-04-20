@@ -10,8 +10,6 @@ Output column: ``robustness_long_ctx_multi_hop_score``
 
 from __future__ import annotations
 
-import copy
-import gc
 import logging
 import time
 from dataclasses import dataclass, field
@@ -19,9 +17,11 @@ from typing import Any, Dict, List, Tuple
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
-from .utils import clip_grad_norm, make_adamw
+from .retrieval_eval_utils import (
+    eval_restricted_last_token_accuracy,
+    run_retrieval_probe_config,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -155,22 +155,14 @@ def _eval_multi_hop_accuracy(
     batch_size: int,
 ) -> float:
     """Evaluate multi-hop retrieval accuracy."""
-    model.eval()
-    correct = 0
-    total = eval_ids.shape[0]
-    ans_pos = eval_ids.shape[1] - 1
-
-    with torch.no_grad():
-        for start in range(0, total, batch_size):
-            end = min(start + batch_size, total)
-            inp = eval_ids[start:end]
-            tgt = eval_targets[start:end]
-            logits = model(inp)
-            pred_logits = logits[:, ans_pos, _VOCAB_LO:_VOCAB_HI]
-            preds = pred_logits.argmax(dim=-1) + _VOCAB_LO
-            correct += (preds == tgt).sum().item()
-
-    return correct / max(total, 1)
+    return eval_restricted_last_token_accuracy(
+        model,
+        eval_ids,
+        eval_targets,
+        batch_size=batch_size,
+        vocab_lo=_VOCAB_LO,
+        vocab_hi=_VOCAB_HI,
+    )
 
 
 def _train_multi_hop_at_config(
@@ -188,44 +180,30 @@ def _train_multi_hop_at_config(
 
     Returns (accuracy, timed_out).
     """
-    probe_model = copy.deepcopy(model)
-    probe_model.to(device)
-    probe_model.train()
-
     eval_ids, eval_targets = _generate_multi_hop_eval_set(
         n_eval, seq_len, n_hops, device
     )
-    opt = make_adamw(probe_model.parameters(), lr=lr)
     ans_pos = seq_len - 1
-    timed_out = False
 
     try:
-        for step in range(1, n_train_steps + 1):
-            if time.perf_counter() > deadline:
-                timed_out = True
-                break
-
-            input_ids, targets = _generate_multi_hop_batch(
-                batch_size, seq_len, n_hops, device
-            )
-            opt.zero_grad(set_to_none=True)
-            logits = probe_model(input_ids)
-            pred_logits = logits[:, ans_pos, _VOCAB_LO:_VOCAB_HI]
-            loss = F.cross_entropy(pred_logits, targets - _VOCAB_LO)
-
-            if not torch.isfinite(loss):
-                break
-
-            loss.backward()
-            clip_grad_norm(probe_model.parameters(), 1.0)
-            opt.step()
-
-        acc = _eval_multi_hop_accuracy(probe_model, eval_ids, eval_targets, batch_size)
+        acc, timed_out = run_retrieval_probe_config(
+            model,
+            n_train_steps=n_train_steps,
+            eval_ids=eval_ids,
+            eval_targets=eval_targets,
+            batch_size=batch_size,
+            lr=lr,
+            device=device,
+            deadline=deadline,
+            make_train_batch=lambda bs, dev: _generate_multi_hop_batch(
+                bs, seq_len, n_hops, dev
+            ),
+            query_pos=ans_pos,
+            vocab_lo=_VOCAB_LO,
+            vocab_hi=_VOCAB_HI,
+        )
     finally:
-        del eval_ids, eval_targets, probe_model
-        if device == "cuda":
-            torch.cuda.empty_cache()
-        gc.collect()
+        del eval_ids, eval_targets
 
     return acc, timed_out
 

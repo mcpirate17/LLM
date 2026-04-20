@@ -41,10 +41,15 @@ export function candidateEligibility(entry) {
   }
 
   const tier = typeof entry.tier === 'string' ? entry.tier.toLowerCase() : '';
+  const capabilityStatus = String(entry?.capability_quality?.status || '').toLowerCase();
   const hasInvestigationEvidence = entry.investigation_loss_ratio != null || entry.investigation_robustness != null;
-  const hasValidationEvidence = entry.validation_loss_ratio != null || Boolean(entry.validation_passed);
+  const hasValidationEvidence = entry.validation_loss_ratio != null || entry.validation_baseline_ratio != null || Boolean(entry.validation_passed);
+  const isCapabilityQualified = capabilityStatus === 'qualified' || capabilityStatus === 'breakthrough';
   const investigationEligible = tier === 'screening' && !hasInvestigationEvidence;
-  const validationEligible = tier === 'investigation' && Boolean(entry.investigation_passed) && !hasValidationEvidence;
+  const validationEligible = (
+    (tier === 'investigation' && Boolean(entry.investigation_passed))
+    || (tier === 'validation' && !isCapabilityQualified)
+  );
 
   let queueReason = null;
   if (!investigationEligible && !validationEligible) {
@@ -52,8 +57,10 @@ export function candidateEligibility(entry) {
       queueReason = 'already_investigated_unchanged';
     } else if (tier === 'investigation' && !entry.investigation_passed) {
       queueReason = 'not_investigation_passed';
-    } else if (tier === 'validation' || tier === 'breakthrough') {
+    } else if ((tier === 'validation' && isCapabilityQualified) || tier === 'breakthrough') {
       queueReason = 'already_promoted';
+    } else if (tier === 'validation' && hasValidationEvidence) {
+      queueReason = 'needs_capability_revalidation';
     } else {
       queueReason = 'not_progression_eligible';
     }

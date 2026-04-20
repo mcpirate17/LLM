@@ -52,9 +52,6 @@ class _ControlActionsMixin:
 
     __slots__ = ()
 
-    def _log_learning_event_compat(self, nb: LabNotebook, *args, **kwargs) -> None:
-        getattr(nb, "log_learning_event")(*args, **kwargs)
-
     def _persist_live_feed_event(self, event_type: str, data: Dict[str, Any]):
         """Persist selected lifecycle events for feed replay in the dashboard."""
         if event_type not in _PERSISTED_LIVE_FEED_EVENTS:

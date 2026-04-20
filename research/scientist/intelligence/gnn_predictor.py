@@ -22,7 +22,6 @@ from __future__ import annotations
 import json
 import logging
 import math
-import sqlite3
 from collections import defaultdict
 from dataclasses import dataclass, field
 from functools import lru_cache
@@ -44,6 +43,11 @@ from .ml_corpus import (
     grouped_stratified_split,
     load_screening_predictor_corpus_rows,
     rerun_confidence_weight,
+)
+from .predictor_artifacts import load_npz_with_metadata, save_npz_with_metadata
+from .profiling_db import (
+    load_op_profiles as _load_op_profiles,
+    load_pair_stability_map as _load_pair_stability,
 )
 
 logger = logging.getLogger(__name__)
@@ -76,6 +80,7 @@ def reset_native_fallback_counters() -> None:
     """Reset all native-fallback counters to zero (tests only)."""
     for key in _NATIVE_FALLBACK_COUNTERS:
         _NATIVE_FALLBACK_COUNTERS[key] = 0
+
 
 _MIN_SAMPLES = 50
 _FEATURE_Z_CLIP = 6.0
@@ -196,54 +201,6 @@ def _make_native_topology_context(
         pair_stability_json=_native_pair_stability_payload(pair_stability),
         op_metadata_json=_primitive_feature_metadata_json(),
     )
-
-
-def _load_op_profiles(profiling_db: Path) -> Dict[str, Dict[str, float]]:
-    """Load per-op profiling stats for topology feature computation."""
-    profiles: Dict[str, Dict[str, float]] = {}
-    if not profiling_db.exists():
-        return profiles
-    try:
-        conn = sqlite3.connect(str(profiling_db), timeout=5)
-        rows = conn.execute(
-            """SELECT op_name, output_std, grad_norm, lipschitz_estimate,
-                      grad_vanishing, grad_exploding, output_has_nan, has_params
-               FROM op_profiles WHERE error IS NULL"""
-        ).fetchall()
-        conn.close()
-        for op, out_std, gn, lip, gv, ge, nan_out, has_p in rows:
-            profiles[op] = {
-                "output_std": float(out_std) if out_std else 1.0,
-                "grad_norm": float(gn) if gn else 1.0,
-                "lipschitz": float(lip) if lip else 1.0,
-                "grad_vanishing": float(gv or 0),
-                "grad_exploding": float(ge or 0),
-                "has_nan": float(nan_out or 0),
-                "has_params": float(has_p or 0),
-            }
-    except Exception as e:
-        logger.warning("Failed to load op profiles: %s", e)
-    return profiles
-
-
-def _load_pair_stability(profiling_db: Path) -> Dict[Tuple[str, str], float]:
-    """Load pair stability rates from profiling DB."""
-    pairs: Dict[Tuple[str, str], float] = {}
-    if not profiling_db.exists():
-        return pairs
-    try:
-        conn = sqlite3.connect(str(profiling_db), timeout=5)
-        rows = conn.execute(
-            """SELECT op_a, op_b,
-                      (output_has_nan = 0 AND grad_has_nan = 0 AND grad_vanishing = 0) as stable
-               FROM pair_profiles WHERE error IS NULL AND composition = 'sequential'"""
-        ).fetchall()
-        conn.close()
-        for a, b, stable in rows:
-            pairs[(a, b)] = float(stable)
-    except Exception as e:
-        logger.warning("Failed to load pair stability: %s", e)
-    return pairs
 
 
 def _extract_topology_features_python(
@@ -579,6 +536,7 @@ def _extract_edge_op_pairs_python(graph_json: Any) -> Optional[List[Tuple[str, s
             if not parent_op or parent_op == "input":
                 continue
             pairs.append((parent_op, child_op))
+    pairs.sort()
     return pairs
 
 
@@ -600,7 +558,158 @@ def _extract_edge_op_pairs_native(
             and all(isinstance(part, str) for part in item)
         ):
             pairs.append((item[0], item[1]))
+    pairs.sort()
     return pairs
+
+
+def _serialize_graph_payload(graph_json: Any) -> Optional[str]:
+    if isinstance(graph_json, str):
+        return graph_json
+    try:
+        return json.dumps(graph_json, sort_keys=True, separators=(",", ":"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _default_imodel_features(features: Dict[str, float]) -> Dict[str, float]:
+    features["imodel_min_stability"] = 0.5
+    features["imodel_mean_stability"] = 0.5
+    features["imodel_mean_loss"] = 0.7
+    return features
+
+
+def _edge_op_pairs_with_fallback(graph_payload: str) -> Optional[List[Tuple[str, str]]]:
+    edge_pairs = _extract_edge_op_pairs_native(graph_payload)
+    if edge_pairs is None:
+        _NATIVE_FALLBACK_COUNTERS["edge_op_pairs_python_fallback"] += 1
+        return _extract_edge_op_pairs_python(graph_payload)
+    _NATIVE_FALLBACK_COUNTERS["edge_op_pairs_native_hit"] += 1
+    return edge_pairs
+
+
+def _extract_edge_op_pairs_batch_native(
+    graph_payloads: List[str],
+) -> Optional[List[Optional[List[Tuple[str, str]]]]]:
+    rust = _try_import_rust_scheduler()
+    if rust is None or not hasattr(rust, "extract_edge_op_pairs_batch_native"):
+        return None
+    try:
+        raw_result = rust.extract_edge_op_pairs_batch_native(graph_payloads)
+    except Exception:
+        return None
+    if not isinstance(raw_result, list) or len(raw_result) != len(graph_payloads):
+        return None
+    decoded_batch: List[Optional[List[Tuple[str, str]]]] = []
+    for payload in raw_result:
+        if not isinstance(payload, str):
+            decoded_batch.append(None)
+            continue
+        loaded = json.loads(payload)
+        if not isinstance(loaded, list):
+            decoded_batch.append(None)
+            continue
+        pairs: List[Tuple[str, str]] = []
+        for item in loaded:
+            if (
+                isinstance(item, (list, tuple))
+                and len(item) == 2
+                and all(isinstance(part, str) for part in item)
+            ):
+                pairs.append((item[0], item[1]))
+        pairs.sort()
+        decoded_batch.append(pairs)
+    return decoded_batch
+
+
+def _augment_imodel_features_from_pairs(
+    features: Optional[Dict[str, float]],
+    edge_pairs: Optional[List[Tuple[str, str]]],
+    imodel: Optional[Any],
+) -> Optional[Dict[str, float]]:
+    if features is None:
+        return None
+    if not (imodel is not None and hasattr(imodel, "_trained") and imodel._trained):
+        return _default_imodel_features(features)
+    if not edge_pairs:
+        return _default_imodel_features(features)
+
+    imodel_stabilities = [
+        imodel.predict_stability(left, right) for left, right in edge_pairs
+    ]
+    imodel_losses = [imodel.predict_loss(left, right) for left, right in edge_pairs]
+    if not imodel_stabilities:
+        return _default_imodel_features(features)
+
+    features["imodel_min_stability"] = float(min(imodel_stabilities))
+    features["imodel_mean_stability"] = float(np.mean(imodel_stabilities))
+    features["imodel_mean_loss"] = float(np.mean(imodel_losses))
+    return features
+
+
+def _augment_imodel_features(
+    features: Optional[Dict[str, float]],
+    graph_payload: str,
+    imodel: Optional[Any],
+) -> Optional[Dict[str, float]]:
+    edge_pairs = _edge_op_pairs_with_fallback(graph_payload)
+    return _augment_imodel_features_from_pairs(features, edge_pairs, imodel)
+
+
+def _decode_topology_feature_payload(payload: Any) -> Optional[Dict[str, float]]:
+    if not isinstance(payload, str):
+        return None
+    decoded = json.loads(payload)
+    if not isinstance(decoded, dict):
+        return None
+    return {str(key): float(value) for key, value in decoded.items()}
+
+
+def _extract_topology_base_feature_native(
+    graph_payload: str,
+    op_profiles: Dict[str, Dict[str, float]],
+    pair_stability: Dict[Tuple[str, str], float],
+    native_ctx: Optional[_NativeTopologyContext],
+) -> Optional[Dict[str, float]]:
+    rust = _try_import_rust_scheduler()
+    if rust is None or not hasattr(rust, "extract_topology_features_native"):
+        return None
+    ctx = native_ctx or _make_native_topology_context(op_profiles, pair_stability)
+    try:
+        raw_result = rust.extract_topology_features_native(
+            graph_payload,
+            ctx.op_profiles_json,
+            ctx.pair_stability_json,
+            ctx.op_metadata_json,
+        )
+    except Exception:
+        return None
+    return _decode_topology_feature_payload(raw_result)
+
+
+def _extract_topology_base_features_native(
+    serialized: List[str],
+    op_profiles: Dict[str, Dict[str, float]],
+    pair_stability: Dict[Tuple[str, str], float],
+    native_ctx: Optional[_NativeTopologyContext],
+) -> Optional[List[Optional[Dict[str, float]]]]:
+    rust = _try_import_rust_scheduler()
+    if rust is None or not hasattr(rust, "extract_topology_features_batch_native"):
+        return None
+    ctx = native_ctx or _make_native_topology_context(op_profiles, pair_stability)
+    raw_result = rust.extract_topology_features_batch_native(
+        serialized,
+        ctx.op_profiles_json,
+        ctx.pair_stability_json,
+        ctx.op_metadata_json,
+    )
+    if not isinstance(raw_result, list):
+        return None
+    base_features: List[Optional[Dict[str, float]]] = []
+    for payload in raw_result:
+        base_features.append(_decode_topology_feature_payload(payload))
+    if len(base_features) != len(serialized):
+        return None
+    return base_features
 
 
 def _extract_topology_features_batch(
@@ -614,84 +723,26 @@ def _extract_topology_features_batch(
     if not graph_payloads:
         return []
 
-    serialized: List[str] = []
-    for payload in graph_payloads:
-        if isinstance(payload, str):
-            serialized.append(payload)
-        else:
-            try:
-                serialized.append(
-                    json.dumps(payload, sort_keys=True, separators=(",", ":"))
-                )
-            except (TypeError, ValueError):
-                serialized.append("")
+    serialized = [_serialize_graph_payload(payload) or "" for payload in graph_payloads]
 
-    rust = _try_import_rust_scheduler()
-    if rust is not None and hasattr(rust, "extract_topology_features_batch_native"):
-        ctx = native_ctx or _make_native_topology_context(
-            op_profiles, pair_stability
-        )
-        raw_result = rust.extract_topology_features_batch_native(
-            serialized,
-            ctx.op_profiles_json,
-            ctx.pair_stability_json,
-            ctx.op_metadata_json,
-        )
-        if isinstance(raw_result, list):
-            base_features: List[Optional[Dict[str, float]]] = []
-            for payload in raw_result:
-                if not isinstance(payload, str):
-                    base_features.append(None)
-                    continue
-                decoded = json.loads(payload)
-                if isinstance(decoded, dict):
-                    base_features.append(
-                        {str(key): float(value) for key, value in decoded.items()}
-                    )
-                else:
-                    base_features.append(None)
-            if len(base_features) == len(serialized):
-                if not (
-                    imodel is not None
-                    and hasattr(imodel, "_trained")
-                    and imodel._trained
-                ):
-                    return base_features
-                enriched: List[Optional[Dict[str, float]]] = []
-                for graph_payload, feats in zip(
-                    serialized, base_features, strict=False
-                ):
-                    if feats is None:
-                        enriched.append(None)
-                        continue
-                    edge_pairs = _extract_edge_op_pairs_native(graph_payload)
-                    if edge_pairs is None:
-                        _NATIVE_FALLBACK_COUNTERS["edge_op_pairs_python_fallback"] += 1
-                        edge_pairs = _extract_edge_op_pairs_python(graph_payload)
-                    else:
-                        _NATIVE_FALLBACK_COUNTERS["edge_op_pairs_native_hit"] += 1
-                    if edge_pairs:
-                        imodel_stabilities = [
-                            imodel.predict_stability(left, right)
-                            for left, right in edge_pairs
-                        ]
-                        imodel_losses = [
-                            imodel.predict_loss(left, right)
-                            for left, right in edge_pairs
-                        ]
-                        feats["imodel_min_stability"] = float(
-                            min(imodel_stabilities)
-                        )
-                        feats["imodel_mean_stability"] = float(
-                            np.mean(imodel_stabilities)
-                        )
-                        feats["imodel_mean_loss"] = float(np.mean(imodel_losses))
-                    else:
-                        feats["imodel_min_stability"] = 0.5
-                        feats["imodel_mean_stability"] = 0.5
-                        feats["imodel_mean_loss"] = 0.7
-                    enriched.append(feats)
-                return enriched
+    base_features = _extract_topology_base_features_native(
+        serialized, op_profiles, pair_stability, native_ctx
+    )
+    if base_features is not None:
+        edge_pairs_batch = None
+        if imodel is not None and hasattr(imodel, "_trained") and imodel._trained:
+            edge_pairs_batch = _extract_edge_op_pairs_batch_native(serialized)
+        if edge_pairs_batch is not None:
+            return [
+                _augment_imodel_features_from_pairs(feats, edge_pairs, imodel)
+                for feats, edge_pairs in zip(
+                    base_features, edge_pairs_batch, strict=False
+                )
+            ]
+        return [
+            _augment_imodel_features(feats, graph_payload, imodel)
+            for graph_payload, feats in zip(serialized, base_features, strict=False)
+        ]
 
     return [
         extract_topology_features(
@@ -712,74 +763,21 @@ def extract_topology_features(
     imodel: Optional[Any] = None,
     native_ctx: Optional[_NativeTopologyContext] = None,
 ) -> Optional[Dict[str, float]]:
-    rust = _try_import_rust_scheduler()
-    graph_payload: str
-    if isinstance(graph_json, str):
-        graph_payload = graph_json
-    else:
-        try:
-            graph_payload = json.dumps(
-                graph_json, sort_keys=True, separators=(",", ":")
-            )
-        except (TypeError, ValueError):
-            return None
+    graph_payload = _serialize_graph_payload(graph_json)
+    if graph_payload is None:
+        return None
 
-    base_features: Optional[Dict[str, float]] = None
-    if rust is not None and hasattr(rust, "extract_topology_features_native"):
-        ctx = native_ctx or _make_native_topology_context(
-            op_profiles, pair_stability
-        )
-        payload = rust.extract_topology_features_native(
-            graph_payload,
-            ctx.op_profiles_json,
-            ctx.pair_stability_json,
-            ctx.op_metadata_json,
-        )
-        loaded = json.loads(payload)
-        if isinstance(loaded, dict):
-            base_features = {
-                str(key): float(value) for key, value in loaded.items()
-            }
+    base_feature = _extract_topology_base_feature_native(
+        graph_payload, op_profiles, pair_stability, native_ctx
+    )
 
-    if base_features is None:
+    if base_feature is None:
         _NATIVE_FALLBACK_COUNTERS["topology_features_python_fallback"] += 1
         return _extract_topology_features_python(
             graph_payload, op_profiles, pair_stability, imodel=imodel
         )
     _NATIVE_FALLBACK_COUNTERS["topology_features_native_hit"] += 1
-
-    if not (imodel is not None and hasattr(imodel, "_trained") and imodel._trained):
-        base_features["imodel_min_stability"] = 0.5
-        base_features["imodel_mean_stability"] = 0.5
-        base_features["imodel_mean_loss"] = 0.7
-        return base_features
-
-    edge_pairs = _extract_edge_op_pairs_native(graph_payload)
-    if edge_pairs is None:
-        _NATIVE_FALLBACK_COUNTERS["edge_op_pairs_python_fallback"] += 1
-        edge_pairs = _extract_edge_op_pairs_python(graph_payload)
-    else:
-        _NATIVE_FALLBACK_COUNTERS["edge_op_pairs_native_hit"] += 1
-    if not edge_pairs:
-        base_features["imodel_min_stability"] = 0.5
-        base_features["imodel_mean_stability"] = 0.5
-        base_features["imodel_mean_loss"] = 0.7
-        return base_features
-
-    imodel_stabilities = [
-        imodel.predict_stability(left, right) for left, right in edge_pairs
-    ]
-    imodel_losses = [imodel.predict_loss(left, right) for left, right in edge_pairs]
-
-    if imodel_stabilities:
-        base_features["imodel_min_stability"] = float(min(imodel_stabilities))
-        base_features["imodel_mean_stability"] = float(np.mean(imodel_stabilities))
-        base_features["imodel_mean_loss"] = float(np.mean(imodel_losses))
-    else:
-        base_features["imodel_min_stability"] = 0.5
-        base_features["imodel_mean_stability"] = 0.5
-        base_features["imodel_mean_loss"] = 0.7
-    return base_features
+    return _augment_imodel_features(base_feature, graph_payload, imodel)
 
 
 def _train_interaction_model_for_predictor(
@@ -793,9 +791,7 @@ def _train_interaction_model_for_predictor(
         )
         return trained if trained._trained else None
     except (ImportError, OSError, RuntimeError, ValueError) as exc:
-        logger.warning(
-            "GraphPredictor interaction-model features disabled: %s", exc
-        )
+        logger.warning("GraphPredictor interaction-model features disabled: %s", exc)
         return None
 
 
@@ -910,9 +906,7 @@ def _split_and_normalize_features(
         graph_signatures, y_gate.astype(np.int32), seed=seed
     )
     if len(train_idx) == 0 or len(val_idx) == 0:
-        logger.warning(
-            "GraphPredictor grouped split failed; falling back to row split"
-        )
+        logger.warning("GraphPredictor grouped split failed; falling back to row split")
         pos_idx = np.where(y_gate == 1)[0]
         neg_idx = np.where(y_gate == 0)[0]
         rng.shuffle(pos_idx)
@@ -999,9 +993,7 @@ def _train_gate_head(
                 y_b = y_gate_tr[idx]
                 preds = _sigmoid(x_b @ w_gate + b_gate)
                 grad = (preds - y_b)[:, None] * x_b
-                w_gate -= (
-                    gate_lr * grad.mean(axis=0) + gate_lr * alpha * 0.001 * w_gate
-                )
+                w_gate -= gate_lr * grad.mean(axis=0) + gate_lr * alpha * 0.001 * w_gate
                 b_gate -= gate_lr * float((preds - y_b).mean())
 
     raw_val_logits = X_va @ w_gate + b_gate
@@ -1010,9 +1002,7 @@ def _train_gate_head(
     try:
         from sklearn.linear_model import LogisticRegression
 
-        cal = LogisticRegression(
-            C=1e6, solver="lbfgs", max_iter=200, random_state=seed
-        )
+        cal = LogisticRegression(C=1e6, solver="lbfgs", max_iter=200, random_state=seed)
         cal.fit(raw_val_logits.reshape(-1, 1), y_gate_va.astype(np.int32))
         gate_calibration_a = float(cal.coef_[0][0])
         gate_calibration_b = float(cal.intercept_[0])
@@ -1159,7 +1149,13 @@ def _train_induction_head(
             y_bucket_val = (y_auc_val >= 0.02).astype(np.int32)
             pred_bucket_val = (pred_auc_val >= 0.02).astype(np.int32)
             learner_acc = float(np.mean(y_bucket_val == pred_bucket_val))
-    return {"w": w, "b": b, "mae": mae, "spearman": spearman, "learner_acc": learner_acc}
+    return {
+        "w": w,
+        "b": b,
+        "mae": mae,
+        "spearman": spearman,
+        "learner_acc": learner_acc,
+    }
 
 
 @dataclass(slots=True)
@@ -1416,41 +1412,37 @@ class GraphPredictor:
     def save(self, path: Path) -> None:
         """Save model weights/normalization metadata to npz + JSON."""
         path = Path(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        np.savez_compressed(
-            str(path),
-            w_gate=self.w_gate,
-            w_rank=self.w_rank,
-            w_loss=self.w_loss,
-            w_induction=self.w_induction,
-            feature_mean=self.feature_mean,
-            feature_std=self.feature_std,
-        )
         imodel_path = None
         if self.imodel is not None and getattr(self.imodel, "_trained", False):
             imodel_path = _graph_imodel_path(path)
             self.imodel.save(imodel_path)
-        with open(path.with_suffix(".json"), "w", encoding="utf-8") as f:
-            json.dump(
-                {
-                    "b_gate": self.b_gate,
-                    "gate_threshold": self.gate_threshold,
-                    "gate_calibration_a": self.gate_calibration_a,
-                    "gate_calibration_b": self.gate_calibration_b,
-                    "b_rank": self.b_rank,
-                    "rank_log_min": self.rank_log_min,
-                    "rank_log_max": self.rank_log_max,
-                    "b_loss": self.b_loss,
-                    "b_induction": self.b_induction,
-                    "feature_names": self.feature_names,
-                    "n_train": self.n_train,
-                    "trained": self._trained,
-                    "interaction_model_path": imodel_path.name if imodel_path else None,
-                    "train_metrics": self._train_metrics,
-                },
-                f,
-                indent=2,
-            )
+        save_npz_with_metadata(
+            path,
+            arrays={
+                "w_gate": self.w_gate,
+                "w_rank": self.w_rank,
+                "w_loss": self.w_loss,
+                "w_induction": self.w_induction,
+                "feature_mean": self.feature_mean,
+                "feature_std": self.feature_std,
+            },
+            metadata={
+                "b_gate": self.b_gate,
+                "gate_threshold": self.gate_threshold,
+                "gate_calibration_a": self.gate_calibration_a,
+                "gate_calibration_b": self.gate_calibration_b,
+                "b_rank": self.b_rank,
+                "rank_log_min": self.rank_log_min,
+                "rank_log_max": self.rank_log_max,
+                "b_loss": self.b_loss,
+                "b_induction": self.b_induction,
+                "feature_names": self.feature_names,
+                "n_train": self.n_train,
+                "trained": self._trained,
+                "interaction_model_path": imodel_path.name if imodel_path else None,
+                "train_metrics": self._train_metrics,
+            },
+        )
 
     @classmethod
     def load(
@@ -1460,9 +1452,7 @@ class GraphPredictor:
     ) -> "GraphPredictor":
         """Load model weights/metadata from disk and refresh profiling caches."""
         path = Path(path)
-        data = np.load(str(path))
-        with open(path.with_suffix(".json"), encoding="utf-8") as f:
-            meta = json.load(f)
+        data, meta = load_npz_with_metadata(path)
         trained_imodel = None
         imodel_relpath = meta.get("interaction_model_path")
         if isinstance(imodel_relpath, str) and imodel_relpath:

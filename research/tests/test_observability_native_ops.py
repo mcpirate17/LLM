@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 
 from research.scientist.api_routes import _observability_core as obs
 
@@ -71,7 +72,11 @@ def test_build_op_index_prefers_native_bridge(monkeypatch):
     class DummyNotebook:
         pass
 
-    monkeypatch.setattr(obs, "get_notebook", lambda path: DummyNotebook())
+    monkeypatch.setattr(
+        obs,
+        "get_notebook",
+        lambda path, read_only=True: DummyNotebook(),
+    )
 
     result = obs.build_op_index("/tmp/native.sqlite", window="all")
 
@@ -103,3 +108,56 @@ def test_get_cached_alerts_reuses_recent_snapshot(monkeypatch):
 
     assert first == second == [{"id": "x", "severity": "info"}]
     assert calls["n"] == 1
+
+
+def test_build_op_index_deduplicates_parallel_cold_miss(monkeypatch):
+    obs.refresh_observability_caches()
+    calls = {"rust": 0, "build": 0}
+
+    class FakeRust:
+        def build_op_index_from_rows(self, rows_json):
+            calls["build"] += 1
+            return json.dumps(
+                {
+                    "pair_counts": [],
+                    "loss_by_op": [],
+                    "failure_groups": [],
+                    "stored_rates": [],
+                    "corrected_rates": [],
+                }
+            )
+
+    monkeypatch.setattr(obs, "get_notebook", lambda path, read_only=True: object())
+    monkeypatch.setattr(
+        obs,
+        "_load_program_rows",
+        lambda nb, window: [
+            {
+                "graph_json": '{"nodes":[{"op_name":"gelu"}]}',
+                "stage0_passed": 1,
+                "stage1_passed": 0,
+                "loss_ratio": 0.2,
+                "error_type": None,
+                "failure_op": None,
+                "failure_details_json": None,
+            }
+        ],
+    )
+
+    def fake_try_import():
+        calls["rust"] += 1
+        return FakeRust()
+
+    monkeypatch.setattr(obs, "_try_import_rust_scheduler", fake_try_import)
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        results = list(
+            pool.map(
+                lambda _: obs.build_op_index("/tmp/native.sqlite", window="all"),
+                range(4),
+            )
+        )
+
+    assert all(result == results[0] for result in results)
+    assert calls["rust"] == 1
+    assert calls["build"] == 1

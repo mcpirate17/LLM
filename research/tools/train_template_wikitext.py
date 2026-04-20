@@ -29,7 +29,6 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 import torch
-import torch.nn as nn
 
 from research.training.loss_ops import clip_grad_norm_, next_token_cross_entropy
 from research.tools._wikitext_batches import load_wikitext_batch_source

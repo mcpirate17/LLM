@@ -59,7 +59,10 @@ def _get_notebook():
     db_path = os.path.join(_RESEARCH_ROOT, "lab_notebook.db")
     if not os.path.exists(db_path):
         raise FileNotFoundError(f"Lab notebook not found at {db_path}")
-    return LabNotebook(db_path)
+    # The designer importer only reads graph payloads. Keep it out of the
+    # process-wide native writer path so dashboard-driven imports cannot
+    # contend with live experiment writes or trigger pragma setup failures.
+    return LabNotebook(db_path, read_only=True, use_native=False)
 
 
 def import_survivors(

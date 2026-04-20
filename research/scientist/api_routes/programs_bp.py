@@ -18,7 +18,7 @@ from ._strategy_recommendations import (
     program_lineage_chain,
 )
 from .deps import ApiRouteContext
-from ._utils import bind_notebook_view, with_notebook_context
+from ._utils import register_notebook_routes, with_notebook_context
 
 logger = logging.getLogger(__name__)
 
@@ -136,9 +136,9 @@ def _generate_program_explanation(
     nb, result_id: str, program: Dict[str, Any]
 ) -> Optional[str]:
     from ..llm.context_experiment import build_program_context
-    from ..persona import get_aria
+    from ._helpers import get_aria_for_notebook
 
-    aria = get_aria()
+    aria = get_aria_for_notebook(str(nb.db_path))
     explanation = aria.explain_fingerprint(build_program_context(program))
     if not explanation:
         return None
@@ -802,6 +802,17 @@ def _api_program_promote_screening(result_id, nb=None):
         return jsonify({"error": "Program not found"}), 404
 
     entry = nb.get_leaderboard_entry(result_id)
+    # Fingerprint-level dedup: if an entry already exists for this fingerprint
+    # under a different result_id, route the promotion to that entry instead
+    # of creating a duplicate leaderboard row.
+    if entry is None:
+        fp = str(program.get("graph_fingerprint") or "").strip()
+        if fp:
+            sibling_entry = nb.get_leaderboard_entry_by_fingerprint(fp)
+            if sibling_entry and sibling_entry.get("result_id") != result_id:
+                entry = sibling_entry
+                result_id = sibling_entry.get("result_id")
+                program = nb.get_program_detail(result_id) or program
     trust_label = _preserve_stronger_label(
         program.get("trust_label"),
         entry.get("trust_label") if entry else None,
@@ -898,75 +909,77 @@ def _api_purge_junk_programs(nb=None):
 def register_programs_routes(app, context: ApiRouteContext):
     notebook_path = context.notebook_path
     wnb = with_notebook_context(notebook_path)
-
-    app.add_url_rule(
-        "/api/programs/<result_id>",
-        "api_program_detail",
-        bind_notebook_view(wnb, _api_program_detail),
-    )
-    app.add_url_rule(
-        "/api/programs/<result_id>/explanation",
-        "api_program_explanation",
-        bind_notebook_view(wnb, _api_program_explanation),
-        methods=["POST"],
-    )
-    app.add_url_rule(
-        "/api/programs/<result_id>/lineage",
-        "api_program_lineage",
-        bind_notebook_view(wnb, _api_program_lineage),
-    )
-    app.add_url_rule(
-        "/api/programs/<result_id>/refine-analysis",
-        "api_program_refine_analysis",
-        bind_notebook_view(wnb, _api_program_refine_analysis),
-    )
-    app.add_url_rule(
-        "/api/programs/<result_id>/morph",
-        "api_program_morph",
-        bind_notebook_view(wnb, _api_program_morph),
-        methods=["POST"],
-    )
-    app.add_url_rule(
-        "/api/programs/<result_id>/external-benchmarks",
-        "api_program_external_benchmarks",
-        bind_notebook_view(wnb, _api_program_external_benchmarks),
-        methods=["POST"],
-    )
-    app.add_url_rule(
-        "/api/programs/<result_id>/backfill-metrics",
-        "api_program_backfill_metrics",
-        bind_notebook_view(wnb, _api_program_backfill_metrics, notebook_path),
-        methods=["POST"],
-    )
-    app.add_url_rule(
-        "/api/programs/<result_id>/backfill-loss",
-        "api_program_backfill_loss",
-        bind_notebook_view(wnb, _api_program_backfill_loss, notebook_path),
-        methods=["POST"],
-    )
-    app.add_url_rule(
-        "/api/programs/<result_id>/rescreen",
-        "api_program_rescreen",
-        bind_notebook_view(wnb, _api_program_rescreen, notebook_path),
-        methods=["POST"],
-    )
-    app.add_url_rule(
-        "/api/programs/<result_id>/promote-screening",
-        "api_program_promote_screening",
-        bind_notebook_view(wnb, _api_program_promote_screening),
-        methods=["POST"],
-    )
-    app.add_url_rule(
-        "/api/programs", "api_programs", bind_notebook_view(wnb, _api_programs)
-    )
-    app.add_url_rule(
-        "/api/programs/<result_id>/training-curve",
-        "api_training_curve",
-        bind_notebook_view(wnb, _api_training_curve),
-    )
-    app.add_url_rule(
-        "/api/programs/purge-junk",
-        "api_purge_junk_programs",
-        bind_notebook_view(wnb, _api_purge_junk_programs),
-        methods=["POST"],
+    register_notebook_routes(
+        app,
+        wnb,
+        (
+            ("/api/programs/<result_id>", "api_program_detail", _api_program_detail),
+            (
+                "/api/programs/<result_id>/explanation",
+                "api_program_explanation",
+                _api_program_explanation,
+                ("POST",),
+            ),
+            (
+                "/api/programs/<result_id>/lineage",
+                "api_program_lineage",
+                _api_program_lineage,
+            ),
+            (
+                "/api/programs/<result_id>/refine-analysis",
+                "api_program_refine_analysis",
+                _api_program_refine_analysis,
+            ),
+            (
+                "/api/programs/<result_id>/morph",
+                "api_program_morph",
+                _api_program_morph,
+                ("POST",),
+            ),
+            (
+                "/api/programs/<result_id>/external-benchmarks",
+                "api_program_external_benchmarks",
+                _api_program_external_benchmarks,
+                ("POST",),
+            ),
+            (
+                "/api/programs/<result_id>/backfill-metrics",
+                "api_program_backfill_metrics",
+                _api_program_backfill_metrics,
+                ("POST",),
+                (notebook_path,),
+            ),
+            (
+                "/api/programs/<result_id>/backfill-loss",
+                "api_program_backfill_loss",
+                _api_program_backfill_loss,
+                ("POST",),
+                (notebook_path,),
+            ),
+            (
+                "/api/programs/<result_id>/rescreen",
+                "api_program_rescreen",
+                _api_program_rescreen,
+                ("POST",),
+                (notebook_path,),
+            ),
+            (
+                "/api/programs/<result_id>/promote-screening",
+                "api_program_promote_screening",
+                _api_program_promote_screening,
+                ("POST",),
+            ),
+            ("/api/programs", "api_programs", _api_programs),
+            (
+                "/api/programs/<result_id>/training-curve",
+                "api_training_curve",
+                _api_training_curve,
+            ),
+            (
+                "/api/programs/purge-junk",
+                "api_purge_junk_programs",
+                _api_purge_junk_programs,
+                ("POST",),
+            ),
+        ),
     )

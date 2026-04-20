@@ -102,9 +102,7 @@ class RigLScheduler:
             # Bind the state via default arg so each hook captures its own
             # mask reference without an extra closure layer.
             self._hook_handles.append(
-                state.param.register_hook(
-                    lambda grad, s=state: grad * s.mask
-                )
+                state.param.register_hook(lambda grad, s=state: grad * s.mask)
             )
 
     def cosine_annealing(self) -> float:

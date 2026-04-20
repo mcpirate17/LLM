@@ -17,7 +17,6 @@ import argparse
 import json
 import logging
 import random
-import sqlite3
 import time
 from collections import Counter
 from dataclasses import dataclass
@@ -30,6 +29,8 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 logger = logging.getLogger(__name__)
+
+from research.tools._db_maintenance import connect_readonly
 
 DB_PATH = Path(__file__).resolve().parents[1] / "lab_notebook.db"
 _VALID_TARGET_METRICS = ("eval", "s0", "s1")
@@ -271,7 +272,7 @@ _TEMPLATE_BACKFILL_POLICIES: dict[str, TemplateBackfillPolicy] = {
 
 def get_template_stats(db_path: Path) -> dict[str, dict[str, int]]:
     """Return per-template eval/S0/S1 counts from live program_results rows."""
-    db = sqlite3.connect(str(db_path))
+    db = connect_readonly(db_path)
     stats: dict[str, dict[str, int]] = {}
 
     try:
@@ -290,7 +291,7 @@ def get_template_stats(db_path: Path) -> dict[str, dict[str, int]]:
                     bucket["s1"] += 1 if s1 else 0
             except (json.JSONDecodeError, TypeError):
                 logger.debug("Skipping invalid graph_json while loading template stats")
-    except sqlite3.OperationalError as exc:
+    except Exception as exc:
         logger.warning("program_results scan failed: %s", exc)
         try:
             rows = db.execute(
@@ -303,7 +304,7 @@ def get_template_stats(db_path: Path) -> dict[str, dict[str, int]]:
                     "s0": int(s0 or 0),
                     "s1": int(s1 or 0),
                 }
-        except sqlite3.OperationalError:
+        except Exception:
             logger.debug("template_stats fallback table unavailable")
     finally:
         db.close()
@@ -449,7 +450,7 @@ def plan_batch_size(
 
 def summarize_experiment_batch(db_path: str, experiment_id: str) -> dict[str, Any]:
     """Return compact persisted-row outcomes for a completed or partial batch."""
-    db = sqlite3.connect(db_path)
+    db = connect_readonly(Path(db_path))
     try:
         row = db.execute(
             """
@@ -529,7 +530,7 @@ def _start_backfill_experiment_with_retry(
     max_attempts: int = 6,
 ) -> tuple[str, Any]:
     """Start a preregistered experiment, retrying transient SQLite lock contention."""
-    last_error: sqlite3.OperationalError | None = None
+    last_error: Exception | None = None
     for attempt in range(1, max_attempts + 1):
         nb = runner._make_notebook()
         try:
@@ -543,7 +544,7 @@ def _start_backfill_experiment_with_retry(
                 created_by=created_by,
             )
             return exp_id, nb
-        except sqlite3.OperationalError as exc:
+        except Exception as exc:
             nb.close()
             if "locked" not in str(exc).lower() or attempt >= max_attempts:
                 raise
@@ -556,7 +557,7 @@ def _start_backfill_experiment_with_retry(
                 sleep_s,
             )
             time.sleep(sleep_s)
-    raise last_error or sqlite3.OperationalError("database is locked")
+    raise last_error or RuntimeError("database is locked")
 
 
 def run_template_batch_detailed(

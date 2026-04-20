@@ -1,6 +1,10 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import useCopyToClipboard from '../../hooks/useCopyToClipboard';
-import { discoveryScore, discoveryScoreBreakdown, promotionEvidence } from '../../utils/scoringEngine';
+import {
+  canonicalDiscoveryScore,
+  canonicalDiscoveryScoreBreakdown,
+  promotionEvidenceView,
+} from '../../utils/backendScore';
 import { scoreColor } from '../../utils/format';
 import { MetricChipList } from '../shared/MetricChipBadge';
 import RatingBadge from './RatingBadge';
@@ -70,7 +74,7 @@ export default function DiscoveryRankings({
       const gate = decisionGate(p);
       const compression = compressionSummary(p);
       const chips = metricChips(p);
-      const promotion = promotionEvidence(p);
+      const promotion = promotionEvidenceView(p);
       const reproPacket = reproducibilityPacketStatus(p);
       const qkv = qkvUsageDescriptor(p);
       return {
@@ -78,8 +82,8 @@ export default function DiscoveryRankings({
         repeat_count: repeatCount,
         group_repeat_count: repeatCount,
         group_repeat_index: repeatIndex,
-        _score: discoveryScore(p),
-        _scoreBreakdown: discoveryScoreBreakdown(p),
+        _score: canonicalDiscoveryScore(p),
+        _scoreBreakdown: canonicalDiscoveryScoreBreakdown(p),
         _ratingOrder: DISC_RATING_ORDER[rLabel] || 0,
         _compressionRatio: compression.ratio ?? -1,
         _compressionSummary: compression,

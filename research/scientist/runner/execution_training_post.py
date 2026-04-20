@@ -2,69 +2,44 @@
 
 from __future__ import annotations
 
-import copy
 import json
-import math
-import time
-from contextlib import nullcontext
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List
 
 import torch
 import torch.nn as nn
 
 from ..json_utils import json_safe
 from ._helpers import (
-    InflightState,
     _corpus_type_from_config,
-    _native_proactive_gating,
-    apply_adaptive_grad_clip,
-    check_inflight_health,
     get_reference_losses,
     normalized_loss_ratio,
     resolve_stage1_gate_metrics,
     stage1_learning_gate,
 )
 from ._types import RunConfig
-from .execution_training import (
-    _EntropyGateSampler,
-    _MicroTrainContext,
-    _allow_synthesized_training,
-    _candidate_perf_budget_verdict,
-    _maybe_save_phase_training_state,
-    _micro_train_attribute_error,
-    _nested_metric_present,
-    _phase_checkpoint_context,
-    _restore_inflight_state,
-    _restore_phase_training_state,
-    _restore_progress,
-    _serialize_inflight_state,
-    _serialize_progress,
-    _smoke_test_graph_structure,
-    _training_phase,
-)
 from .execution_training_native_boundary import (
-    _MicroTrainLoopProgress,
     _TrainingLoopState,
-    _apply_training_aux_losses,
-    _backward_loss,
-    _build_training_step_event,
-    _collect_aux_modules,
-    _compute_micro_train_forward_loss,
-    _maybe_extend_training_budget,
-    _optimizer_step,
-    _training_step_error,
 )
 from ...eval.fingerprint import compute_gated_fingerprint
-from ...eval.perf_budget import DEFAULT_PERF_BUDGETS, evaluate_perf_budget_gate
-from ...eval.pruning import apply_one_shot_pruning, estimate_lm_ce_loss
-from ...eval.utils import clip_grad_norm, language_model_loss
 from ...training.profiling import TrainingRunProfiler
 
 import logging
 
 logger = logging.getLogger(__name__)
 
+
+def _resolve_stage1_learning_gate():
+    """Honor monkeypatches against the legacy execution_training module surface."""
+    gate_fn = getattr(
+        __import__(
+            __package__ + ".execution_training", fromlist=["stage1_learning_gate"]
+        ),
+        "stage1_learning_gate",
+        None,
+    )
+    if callable(gate_fn):
+        return gate_fn
+    return stage1_learning_gate
 
 
 class _ExecutionTrainingPostMixin:
@@ -196,7 +171,7 @@ class _ExecutionTrainingPostMixin:
                 final_loss=ls.final_loss,
                 validation_loss=validation_loss,
             )
-            gate_passed, gate_reason = stage1_learning_gate(
+            gate_passed, gate_reason = _resolve_stage1_learning_gate()(
                 final_loss=gate_loss,
                 loss_ratio=raw_ratio,
                 initial_loss=ls.initial_loss,
@@ -639,10 +614,14 @@ class _ExecutionTrainingPostMixin:
                 if ind is not None and ind.auc > 0.20 and graph_data:
                     graph_nodes = []
                     if isinstance(graph_data, dict):
+                        raw_nodes = graph_data.get("nodes", [])
+                        if isinstance(raw_nodes, dict):
+                            raw_nodes = list(raw_nodes.values())
                         graph_nodes = [
                             node
-                            for node in graph_data.get("nodes", [])
-                            if not node.get("is_input", False)
+                            for node in raw_nodes
+                            if isinstance(node, dict)
+                            and not node.get("is_input", False)
                         ]
                     _has_attention = any(
                         n.get("op_name", n.get("op"))
@@ -708,4 +687,3 @@ class _ExecutionTrainingPostMixin:
                 logger.debug("Triage eval skipped: %s", e_tri)
 
     # ── Scale-Up Mode ──
-

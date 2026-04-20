@@ -7,45 +7,28 @@ import json
 import math
 import time
 from contextlib import nullcontext
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import torch
 import torch.nn as nn
 
-from ..json_utils import json_safe
 from ._helpers import (
     InflightState,
-    _corpus_type_from_config,
-    _native_proactive_gating,
     apply_adaptive_grad_clip,
     check_inflight_health,
-    get_reference_losses,
-    normalized_loss_ratio,
-    resolve_stage1_gate_metrics,
-    stage1_learning_gate,
 )
 from ._types import RunConfig
 from .execution_training import (
     _EntropyGateSampler,
     _MicroTrainContext,
     _allow_synthesized_training,
-    _candidate_perf_budget_verdict,
     _maybe_save_phase_training_state,
     _micro_train_attribute_error,
-    _nested_metric_present,
-    _phase_checkpoint_context,
-    _restore_inflight_state,
     _restore_phase_training_state,
-    _restore_progress,
-    _serialize_inflight_state,
-    _serialize_progress,
     _smoke_test_graph_structure,
-    _training_phase,
 )
 from .execution_training_native_boundary import (
     _MicroTrainLoopProgress,
-    _TrainingLoopState,
     _apply_training_aux_losses,
     _backward_loss,
     _build_training_step_event,
@@ -55,8 +38,6 @@ from .execution_training_native_boundary import (
     _optimizer_step,
     _training_step_error,
 )
-from ...eval.fingerprint import compute_gated_fingerprint
-from ...eval.perf_budget import DEFAULT_PERF_BUDGETS, evaluate_perf_budget_gate
 from ...eval.pruning import apply_one_shot_pruning, estimate_lm_ce_loss
 from ...eval.utils import clip_grad_norm, language_model_loss
 from ...training.profiling import TrainingRunProfiler
@@ -64,7 +45,6 @@ from ...training.profiling import TrainingRunProfiler
 import logging
 
 logger = logging.getLogger(__name__)
-
 
 
 class _ExecutionTrainingMicroMixin:
@@ -242,7 +222,6 @@ class _ExecutionTrainingMicroMixin:
         grad_clip_norm = float(getattr(config, "gradient_clip_norm", 1.0) or 0.0)
         if grad_clip_norm < 0.0:
             grad_clip_norm = 0.0
-        from ._helpers import apply_adaptive_grad_clip
 
         grad_clip_norm = apply_adaptive_grad_clip(model, grad_clip_norm)
 

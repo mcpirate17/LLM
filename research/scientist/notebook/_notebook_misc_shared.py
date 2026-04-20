@@ -9,14 +9,8 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 import re
-import time
-import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 from ..json_utils import fast_loads as _json_loads
-from ..leaderboard_scoring import (
-    compute_efficiency_multiple as _compute_efficiency_multiple,
-    compute_pre_investigation_score as _compute_pre_investigation_score,
-)
 
 _TEMPLATE_DEF_RE = re.compile(r"^def\s+(tpl_[A-Za-z0-9_]+)\s*\(", re.M)
 _EMPTY_DATA_ACCOUNTING_SHAPE = {

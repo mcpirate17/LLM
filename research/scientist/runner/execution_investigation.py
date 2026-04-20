@@ -8,8 +8,6 @@ import traceback
 from typing import Any, Dict, List, Optional, Tuple
 
 import torch
-
-from ..runtime_events import publish_lifecycle_event
 from ...synthesis.serializer import graph_from_json
 from ...training.training_program import synthesize_training_program_batch
 from ...training.checkpointing import CheckpointManager
@@ -47,50 +45,6 @@ class _ExecutionInvestigationMixin:
     """Investigation phase execution."""
 
     __slots__ = ()
-
-    def _complete_experiment_compat(
-        self,
-        *,
-        nb,
-        experiment_id: str,
-        results: dict,
-        aria_summary: str,
-        insights,
-        llm_analysis: str | None,
-    ) -> None:
-        getattr(nb, "complete_experiment")(
-            experiment_id=experiment_id,
-            results=results,
-            aria_summary=aria_summary,
-            aria_mood=self.aria.state.mood,
-            insights=insights,
-            llm_analysis=llm_analysis,
-        )
-
-    def _fail_experiment_compat(
-        self,
-        *,
-        nb,
-        experiment_id: str,
-        error: str,
-        results: dict | None = None,
-    ) -> None:
-        getattr(nb, "fail_experiment")(experiment_id, error, results=results)
-
-    def _publish_investigation_terminal_event(
-        self,
-        *,
-        event_type: str,
-        exp_id: str,
-        payload: dict,
-    ) -> None:
-        publish_lifecycle_event(
-            notebook_path=self.notebook_path,
-            event_type=event_type,
-            producer="runner.execution_investigation",
-            run_id=exp_id,
-            payload=payload,
-        )
 
     # ------------------------------------------------------------------
     # Orchestrator
@@ -170,7 +124,8 @@ class _ExecutionInvestigationMixin:
                     "code_healer failed during investigation error handling",
                     exc_info=True,
                 )
-            self._publish_investigation_terminal_event(
+            self._publish_terminal_event(
+                producer="runner.execution_investigation",
                 event_type="experiment_failed",
                 exp_id=exp_id,
                 payload={
@@ -202,7 +157,8 @@ class _ExecutionInvestigationMixin:
                 traceback.format_exc(),
             )
             try:
-                self._publish_investigation_terminal_event(
+                self._publish_terminal_event(
+                    producer="runner.execution_investigation",
                     event_type="experiment_failed",
                     exp_id=exp_id,
                     payload={
@@ -561,7 +517,8 @@ class _ExecutionInvestigationMixin:
         llm_analysis = self.aria.analyze_results(results, context=context)
         insights = self._analyze_results(results, exp_id, nb, context=context)
 
-        self._publish_investigation_terminal_event(
+        self._publish_terminal_event(
+            producer="runner.execution_investigation",
             event_type="experiment_completed",
             exp_id=exp_id,
             payload={
@@ -1259,7 +1216,8 @@ class _ExecutionInvestigationMixin:
             f"All {n_infra} candidate(s) failed with infrastructure "
             f"errors (CUDA/OOM): {err_summary}"
         )
-        self._publish_investigation_terminal_event(
+        self._publish_terminal_event(
+            producer="runner.execution_investigation",
             event_type="experiment_failed",
             exp_id=exp_id,
             payload={

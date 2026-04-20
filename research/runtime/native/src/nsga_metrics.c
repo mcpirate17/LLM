@@ -195,3 +195,36 @@ int aria_nsga_pareto_ranks(
     free(front_indices);
     return 0;
 }
+
+int aria_nsga_pareto_frontier_mask(
+    const float* objective_matrix,
+    int32_t n_rows,
+    int32_t n_objectives,
+    uint8_t* out_mask
+) {
+    if (
+        objective_matrix == NULL || out_mask == NULL || n_rows <= 0 ||
+        n_objectives <= 0
+    ) {
+        return -1;
+    }
+
+    int32_t* ranks = (int32_t*)malloc((size_t)n_rows * sizeof(int32_t));
+    if (ranks == NULL) {
+        return -2;
+    }
+
+    const int status =
+        aria_nsga_pareto_ranks(objective_matrix, n_rows, n_objectives, ranks);
+    if (status != 0) {
+        free(ranks);
+        return status;
+    }
+
+    for (int32_t i = 0; i < n_rows; ++i) {
+        out_mask[i] = (uint8_t)(ranks[i] == 1 ? 1u : 0u);
+    }
+
+    free(ranks);
+    return 0;
+}

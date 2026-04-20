@@ -6,8 +6,9 @@ import logging
 from flask import jsonify, request
 from ..runner._types import RunConfig
 from ..persona import get_aria
-from ._helpers import save_llm_config
+from ._helpers import get_aria_for_notebook, get_passive_llm_config, save_llm_config
 from .deps import ApiRouteContext
+from ._utils import register_routes
 
 logger = logging.getLogger(__name__)
 
@@ -15,12 +16,10 @@ logger = logging.getLogger(__name__)
 def register_config_routes(app, context: ApiRouteContext):
     notebook_path = context.notebook_path
 
-    @app.route("/api/config", methods=["GET"])
     def api_get_config():
         """Get the default RunConfig."""
         return jsonify(RunConfig().to_dict())
 
-    @app.route("/api/scoring/version", methods=["GET"])
     def api_get_scoring_version():
         """Return the active composite scoring version.
 
@@ -41,7 +40,6 @@ def register_config_routes(app, context: ApiRouteContext):
             }
         )
 
-    @app.route("/api/scoring/version", methods=["POST"])
     def api_set_scoring_version():
         """Switch the active composite scoring version at runtime.
 
@@ -70,16 +68,13 @@ def register_config_routes(app, context: ApiRouteContext):
         logger.info("Scoring version changed to %s via API", new_version)
         return jsonify({"version": new_version})
 
-    @app.route("/api/llm/config")
     def api_llm_config():
         """Get current LLM backend configuration."""
-        aria = get_aria()
-        return jsonify(aria.get_llm_config())
+        return jsonify(get_passive_llm_config(notebook_path, aria=get_aria()))
 
-    @app.route("/api/llm/config", methods=["POST"])
     def api_llm_configure():
         """Configure the LLM backend at runtime and persist to disk."""
-        aria = get_aria()
+        aria = get_aria_for_notebook(notebook_path)
         body = request.get_json(silent=True) or {}
 
         backend_name = str(body.get("backend", "")).strip()
@@ -143,3 +138,29 @@ def register_config_routes(app, context: ApiRouteContext):
             return jsonify(result)
         else:
             return jsonify({"error": "Failed to configure LLM backend"}), 500
+
+    register_routes(
+        app,
+        (
+            ("/api/config", "api_get_config", api_get_config, ("GET",)),
+            (
+                "/api/scoring/version",
+                "api_get_scoring_version",
+                api_get_scoring_version,
+                ("GET",),
+            ),
+            (
+                "/api/scoring/version",
+                "api_set_scoring_version",
+                api_set_scoring_version,
+                ("POST",),
+            ),
+            ("/api/llm/config", "api_llm_config", api_llm_config),
+            (
+                "/api/llm/config",
+                "api_llm_configure",
+                api_llm_configure,
+                ("POST",),
+            ),
+        ),
+    )

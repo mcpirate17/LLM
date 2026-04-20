@@ -26,7 +26,6 @@ Pass signal: >15% accuracy at step 500.
 
 from __future__ import annotations
 
-import copy
 import logging
 import time
 from collections import OrderedDict
@@ -35,9 +34,8 @@ from typing import Any, Dict, List, Tuple
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
-from .utils import clip_grad_norm, make_adamw
+from .retrieval_eval_utils import run_retrieval_probe_learning_curve
 
 logger = logging.getLogger(__name__)
 
@@ -171,31 +169,6 @@ def _generate_eval_set(
         torch.random.set_rng_state(rng_state)
 
 
-def _eval_accuracy(
-    model: nn.Module,
-    eval_ids: torch.Tensor,
-    eval_targets: torch.Tensor,
-    batch_size: int,
-) -> float:
-    """Evaluate accuracy on the fixed eval set."""
-    model.eval()
-    correct = 0
-    total = eval_ids.shape[0]
-    ans_pos = eval_ids.shape[1] - 1
-
-    with torch.no_grad():
-        for start in range(0, total, batch_size):
-            end = min(start + batch_size, total)
-            inp = eval_ids[start:end]
-            tgt = eval_targets[start:end]
-            logits = model(inp)
-            pred_logits = logits[:, ans_pos, _VOCAB_LO:_VOCAB_HI]
-            preds = pred_logits.argmax(dim=-1) + _VOCAB_LO
-            correct += (preds == tgt).sum().item()
-
-    return correct / max(total, 1)
-
-
 def _trapezoidal_auc(curve: List[Tuple[int, float]], max_steps: int) -> float:
     """Normalized AUC via trapezoidal rule. Divides by max_steps * 1.0."""
     if len(curve) < 2:
@@ -241,15 +214,11 @@ def associative_recall_score(
     result = ARResult(learning_curve=[])
 
     try:
-        probe_model = copy.deepcopy(model)
-        probe_model.to(device)
-        probe_model.train()
+        sep_token, ans_token = _get_special_tokens(model)
     except Exception as e:
         result.status = f"copy_failed: {e}"
         result.elapsed_ms = (time.perf_counter() - t0) * 1000
         return result
-
-    sep_token, ans_token = _get_special_tokens(probe_model)
 
     try:
         eval_ids, eval_targets = _generate_eval_set(
@@ -262,57 +231,42 @@ def associative_recall_score(
     except Exception as e:
         result.status = f"eval_gen_failed: {e}"
         result.elapsed_ms = (time.perf_counter() - t0) * 1000
-        del probe_model
         return result
 
-    opt = make_adamw(probe_model.parameters(), lr=lr)
     ans_pos = 3 * n_pairs + 3
 
     try:
-        acc0 = _eval_accuracy(probe_model, eval_ids, eval_targets, batch_size)
-        result.learning_curve.append((0, round(acc0, 4)))
-        probe_model.train()
-
-        for step in range(1, n_train_steps + 1):
-            if time.perf_counter() - t0 > timeout_s:
-                result.timed_out = True
-                result.status = "timeout"
-                break
-
-            input_ids, targets = _generate_ar_batch(
-                batch_size,
-                n_pairs,
-                sep_token,
-                ans_token,
-                device,
+        learning_curve, steps_trained, timed_out, status = (
+            run_retrieval_probe_learning_curve(
+                model,
+                n_train_steps=n_train_steps,
+                eval_every=eval_every,
+                eval_ids=eval_ids,
+                eval_targets=eval_targets,
+                batch_size=batch_size,
+                lr=lr,
+                device=device,
+                deadline=t0 + timeout_s,
+                make_train_batch=lambda bs, dev: _generate_ar_batch(
+                    bs,
+                    n_pairs,
+                    sep_token,
+                    ans_token,
+                    dev,
+                ),
+                query_pos=ans_pos,
+                vocab_lo=_VOCAB_LO,
+                vocab_hi=_VOCAB_HI,
             )
-            opt.zero_grad(set_to_none=True)
-
-            logits = probe_model(input_ids)
-            pred_logits = logits[:, ans_pos, _VOCAB_LO:_VOCAB_HI]
-            loss = F.cross_entropy(pred_logits, targets - _VOCAB_LO)
-
-            if not torch.isfinite(loss):
-                result.status = "diverged"
-                break
-
-            loss.backward()
-            clip_grad_norm(probe_model.parameters(), 1.0)
-            opt.step()
-            result.steps_trained = step
-
-            if step % eval_every == 0 or step == n_train_steps:
-                acc = _eval_accuracy(probe_model, eval_ids, eval_targets, batch_size)
-                result.learning_curve.append((step, round(acc, 4)))
-                probe_model.train()
-
+        )
+        result.learning_curve = learning_curve
+        result.steps_trained = steps_trained
+        result.timed_out = timed_out
+        result.status = status
     except Exception as e:
         result.status = f"train_failed: {e}"
     finally:
         del eval_ids, eval_targets
-        del probe_model
-        if device == "cuda":
-            torch.cuda.empty_cache()
 
     if result.learning_curve:
         result.final_acc = result.learning_curve[-1][1]

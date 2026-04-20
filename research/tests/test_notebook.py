@@ -13,7 +13,7 @@ from research.scientist.runtime_events import (
     get_runtime_event_services,
     stop_runtime_event_services,
 )
-from research.scientist.notebook.notebook_core import _ThreadSafeConnectionWrapper
+from research.scientist.notebook.notebook_core import _SqliteConnectionAdapter
 import importlib
 import json
 import os
@@ -312,6 +312,14 @@ class TestNotebook(unittest.TestCase):
             config={"n_programs": 3},
             hypothesis="accounting summary",
         )
+        # Cross-experiment re-run of the same fingerprint exercises the
+        # "same graph, multiple rows" pathway. Within a single experiment
+        # idx_pr_fp_per_experiment now forbids this.
+        exp_id_rerun = self.nb.start_experiment(
+            experiment_type="synthesis",
+            config={"n_programs": 1},
+            hypothesis="accounting summary rerun",
+        )
         rid_pass = self.nb.record_program_result(
             experiment_id=exp_id,
             graph_fingerprint="fp_a",
@@ -333,9 +341,10 @@ class TestNotebook(unittest.TestCase):
             ),
         )
         rid_fail_same_graph = self.nb.record_program_result(
-            experiment_id=exp_id,
+            experiment_id=exp_id_rerun,
             graph_fingerprint="fp_a",
             graph_json='{"nodes": {"0": {"op_name": "linear_proj"}}}',
+            intentional_rerun_reason="validation_promotion",
             stage0_passed=True,
             stage05_passed=True,
             stage1_passed=False,
@@ -592,9 +601,10 @@ class TestNotebook(unittest.TestCase):
         self.assertEqual(payload["execution_device"], "cuda")
         self.assertEqual(payload["s1_steps"], 500)
         self.assertEqual(payload["rapid_steps"], 150)
-        self.assertEqual(row["trust_label"], "exploratory")
-        self.assertEqual(row["comparability_label"], "partial")
-        self.assertEqual(row["evaluation_protocol_version"], "forced_exploration_v1")
+        self.assertEqual(row["result_cohort"], "backfill")
+        self.assertEqual(row["trust_label"], "backfill_observation")
+        self.assertEqual(row["comparability_label"], "reconstructed_init_variant")
+        self.assertEqual(row["evaluation_protocol_version"], "backfill_replay_v1")
 
     def test_record_program_result_hydrates_model_source_from_experiment_config(self):
         exp_id = self.nb.start_experiment(
@@ -1100,7 +1110,7 @@ class TestNotebook(unittest.TestCase):
     def test_log_learning_event_tolerates_sqlite_operational_error(self):
         """Learning log should be best-effort and not abort on SQLite write failure."""
         with patch.object(
-            _ThreadSafeConnectionWrapper,
+            _SqliteConnectionAdapter,
             "execute",
             side_effect=sqlite3.OperationalError("disk I/O error"),
         ):
@@ -1132,7 +1142,7 @@ class TestNotebook(unittest.TestCase):
             "exploratory": False,
         }
 
-        original_execute = _ThreadSafeConnectionWrapper.execute
+        original_execute = _SqliteConnectionAdapter.execute
 
         def flaky_execute(conn, sql, params=()):
             if "INSERT INTO hypothesis_preregistrations" in sql:
@@ -1140,7 +1150,7 @@ class TestNotebook(unittest.TestCase):
             return original_execute(conn, sql, params)
 
         with patch.object(
-            _ThreadSafeConnectionWrapper,
+            _SqliteConnectionAdapter,
             "execute",
             autospec=True,
             side_effect=flaky_execute,
@@ -1609,7 +1619,7 @@ class TestNotebook(unittest.TestCase):
     def test_add_entry_tolerates_sqlite_operational_error(self):
         """Notebook entries should be best-effort on a degraded primary connection."""
         with patch.object(
-            _ThreadSafeConnectionWrapper,
+            _SqliteConnectionAdapter,
             "execute",
             side_effect=sqlite3.OperationalError("disk I/O error"),
         ):
@@ -1626,7 +1636,7 @@ class TestNotebook(unittest.TestCase):
     def test_has_fingerprint_tolerates_sqlite_operational_error(self):
         """Fingerprint existence checks should degrade to a safe miss on SQLite failure."""
         with patch.object(
-            _ThreadSafeConnectionWrapper,
+            _SqliteConnectionAdapter,
             "execute",
             side_effect=sqlite3.OperationalError("disk I/O error"),
         ):
@@ -1635,7 +1645,7 @@ class TestNotebook(unittest.TestCase):
     def test_create_healer_task_tolerates_sqlite_operational_error(self):
         """Healer bookkeeping should not cascade another failure during recovery."""
         with patch.object(
-            _ThreadSafeConnectionWrapper,
+            _SqliteConnectionAdapter,
             "execute",
             side_effect=sqlite3.OperationalError("disk I/O error"),
         ):
@@ -1654,7 +1664,7 @@ class TestNotebook(unittest.TestCase):
     def test_add_healer_event_tolerates_sqlite_operational_error(self):
         """Healer event logging should be best-effort under SQLite failures."""
         with patch.object(
-            _ThreadSafeConnectionWrapper,
+            _SqliteConnectionAdapter,
             "execute",
             side_effect=sqlite3.OperationalError("disk I/O error"),
         ):
@@ -1669,7 +1679,7 @@ class TestNotebook(unittest.TestCase):
     def test_get_recent_experiments_tolerates_sqlite_operational_error(self):
         """Recent history queries should degrade to an empty list on SQLite failure."""
         with patch.object(
-            _ThreadSafeConnectionWrapper,
+            _SqliteConnectionAdapter,
             "execute",
             side_effect=sqlite3.OperationalError("disk I/O error"),
         ):
@@ -1678,7 +1688,7 @@ class TestNotebook(unittest.TestCase):
     def test_get_insights_tolerates_sqlite_operational_error(self):
         """Insight queries should degrade to empty results on SQLite failure."""
         with patch.object(
-            _ThreadSafeConnectionWrapper,
+            _SqliteConnectionAdapter,
             "execute",
             side_effect=sqlite3.OperationalError("disk I/O error"),
         ):
@@ -1687,7 +1697,7 @@ class TestNotebook(unittest.TestCase):
     def test_get_knowledge_tolerates_sqlite_operational_error(self):
         """Knowledge queries should degrade to empty results on SQLite failure."""
         with patch.object(
-            _ThreadSafeConnectionWrapper,
+            _SqliteConnectionAdapter,
             "execute",
             side_effect=sqlite3.OperationalError("disk I/O error"),
         ):
@@ -1696,7 +1706,7 @@ class TestNotebook(unittest.TestCase):
     def test_record_insight_tolerates_sqlite_operational_error(self):
         """Insight persistence should be best-effort under SQLite failure."""
         with patch.object(
-            _ThreadSafeConnectionWrapper,
+            _SqliteConnectionAdapter,
             "execute",
             side_effect=sqlite3.OperationalError("disk I/O error"),
         ):
@@ -1711,7 +1721,7 @@ class TestNotebook(unittest.TestCase):
     def test_get_healer_task_tolerates_sqlite_operational_error(self):
         """Healer task lookup should degrade to None on SQLite failure."""
         with patch.object(
-            _ThreadSafeConnectionWrapper,
+            _SqliteConnectionAdapter,
             "execute",
             side_effect=sqlite3.OperationalError("disk I/O error"),
         ):
@@ -1720,7 +1730,7 @@ class TestNotebook(unittest.TestCase):
     def test_get_recent_healer_tasks_tolerates_sqlite_operational_error(self):
         """Recent healer task queries should degrade to empty results on SQLite failure."""
         with patch.object(
-            _ThreadSafeConnectionWrapper,
+            _SqliteConnectionAdapter,
             "execute",
             side_effect=sqlite3.OperationalError("disk I/O error"),
         ):
@@ -1729,7 +1739,7 @@ class TestNotebook(unittest.TestCase):
     def test_get_leaderboard_tolerates_sqlite_operational_error(self):
         """Leaderboard reads should degrade to empty results on SQLite failure."""
         with patch.object(
-            _ThreadSafeConnectionWrapper,
+            _SqliteConnectionAdapter,
             "execute",
             side_effect=sqlite3.OperationalError("disk I/O error"),
         ):
@@ -1744,7 +1754,7 @@ class TestNotebook(unittest.TestCase):
         )
 
         with patch.object(
-            _ThreadSafeConnectionWrapper,
+            _SqliteConnectionAdapter,
             "execute",
             side_effect=sqlite3.OperationalError("disk I/O error"),
         ):
@@ -1763,7 +1773,7 @@ class TestNotebook(unittest.TestCase):
         )
 
         with patch.object(
-            _ThreadSafeConnectionWrapper,
+            _SqliteConnectionAdapter,
             "execute",
             side_effect=sqlite3.OperationalError("disk I/O error"),
         ):
@@ -2491,10 +2501,17 @@ class TestLeaderboardDedup(unittest.TestCase):
         self.nb.close()
 
     def test_leaderboard_dedup_by_fingerprint(self):
-        """Same fingerprint should only appear once, keeping best score."""
-        exp_id = self.nb.start_experiment("synthesis", {}, "test")
+        """Same fingerprint should only appear once on the leaderboard, keeping best score.
 
-        # Create two results with same fingerprint
+        Within-experiment fp dedup is enforced at the schema level
+        (idx_pr_fp_per_experiment), so the two same-fp program_result rows
+        live under different experiment_ids — modeling a re-evaluation in
+        a later experiment.
+        """
+        exp_id = self.nb.start_experiment("synthesis", {}, "test")
+        exp_id_b = self.nb.start_experiment("synthesis", {}, "test rerun")
+
+        # Two cross-experiment program_results with the same fingerprint.
         r1 = self.nb.record_program_result(
             experiment_id=exp_id,
             graph_fingerprint="same_fp",
@@ -2504,9 +2521,10 @@ class TestLeaderboardDedup(unittest.TestCase):
             novelty_score=0.6,
         )
         r2 = self.nb.record_program_result(
-            experiment_id=exp_id,
+            experiment_id=exp_id_b,
             graph_fingerprint="same_fp",
             graph_json='{"nodes": {}}',
+            intentional_rerun_reason="validation_promotion",
             stage1_passed=True,
             loss_ratio=0.3,
             novelty_score=0.9,
@@ -2531,6 +2549,14 @@ class TestLeaderboardDedup(unittest.TestCase):
             screening_passed=True,
             tier="screening",
         )
+        # Simulate pre-migration state: drop the schema-level UNIQUE index
+        # so this test can plant a historical duplicate. After this test
+        # runs, the tmp_path DB is discarded. Both the Python-level gate
+        # (allow_fingerprint_duplicate=True) and the schema-level index
+        # have to be bypassed to create a dup; this models what was
+        # possible before migrations landed.
+        self.nb.conn.execute("DROP INDEX IF EXISTS idx_leaderboard_fp")
+        self.nb.conn.commit()
         self.nb.upsert_leaderboard(
             result_id=r2,
             model_source="test",
@@ -2538,6 +2564,7 @@ class TestLeaderboardDedup(unittest.TestCase):
             screening_novelty=0.9,
             screening_passed=True,
             tier="screening",
+            allow_fingerprint_duplicate=True,
         )
         self.nb.upsert_leaderboard(
             result_id=r3,
@@ -2680,6 +2707,7 @@ class TestLeaderboardDedup(unittest.TestCase):
             experiment_id=exp_inv,
             graph_fingerprint="fp_shared",
             graph_json="{}",
+            intentional_rerun_reason="validation_promotion",
             stage1_passed=True,
             loss_ratio=0.1,
         )
@@ -2727,6 +2755,7 @@ class TestLeaderboardDedup(unittest.TestCase):
             experiment_id=exp_inv,
             graph_fingerprint="fp_covered",
             graph_json="{}",
+            intentional_rerun_reason="validation_promotion",
             stage1_passed=True,
             loss_ratio=0.15,
             novelty_score=0.7,

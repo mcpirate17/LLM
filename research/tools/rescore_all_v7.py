@@ -3,8 +3,11 @@
 
 from __future__ import annotations
 
-from research.tools.backfill import DB_PATH, complete_script_experiment, rescore_all
-from research.tools.backfill import start_script_experiment
+from research.tools._script_audit import (
+    complete_script_experiment,
+    start_script_experiment,
+)
+from research.tools.backfill import DB_PATH, rescore_all
 
 
 def main() -> None:

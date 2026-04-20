@@ -51,7 +51,9 @@ class RuntimeEventServices:
 def runtime_events_root_for(notebook_path: str | Path) -> Path:
     raw = str(notebook_path).strip()
     if raw == ":memory:":
-        raise ValueError("runtime events are not supported for in-memory notebook paths")
+        raise ValueError(
+            "runtime events are not supported for in-memory notebook paths"
+        )
     if raw.startswith("<MagicMock ") or "MagicMock name='mock.db_path'" in raw:
         raise TypeError(
             f"runtime event services require a real notebook path, got {raw!r}"

@@ -36,18 +36,6 @@ from ._types import RunConfig
 class _CycleMixin:
     """Main experiment cycle, proactive repair, healer integration."""
 
-    def _log_learning_event_compat(self, nb: LabNotebook, *args, **kwargs) -> None:
-        getattr(nb, "log_learning_event")(*args, **kwargs)
-
-    def _fail_experiment_compat(
-        self,
-        *,
-        nb,
-        experiment_id: str,
-        error: str,
-    ) -> None:
-        getattr(nb, "fail_experiment")(experiment_id, error)
-
     def run_aria_cycle(
         self,
         config: RunConfig,

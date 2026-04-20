@@ -40,29 +40,16 @@
 from __future__ import annotations
 
 import json
-import math
 import random
 import time
 import traceback
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..json_utils import fast_dumps, json_safe
-from ..runtime_events import publish_lifecycle_event
 
-import torch
 
 from ...synthesis.grammar import GrammarConfig, batch_generate
-from ..native_runner import compile_model_native_first as _compile_model_native
-from ...synthesis.compiler import compile_model as _compile_model_legacy
-from ...synthesis.validator import validate_graph
 from ..refinement_scoring import rank_synthesis_candidates_by_stability
-from ...eval.flops import estimate_flops
-from ...eval.perf_budget import evaluate_perf_budget_gate
-from .execution_screening_graphs import (
-    analyze_graph_for_screening,
-    structural_gate_failure,
-    toxic_failure_ratio,
-)
 from .screening_candidate_rank import judgment_rerank
 from .screening_signal_weights import (
     apply_insight_adjustments,
@@ -74,11 +61,6 @@ from ..notebook import LabNotebook, ExperimentEntry
 import logging
 
 logger = logging.getLogger(__name__)
-
-
-def _log_learning_event_compat(nb: LabNotebook, *args, **kwargs) -> None:
-    getattr(nb, "log_learning_event")(*args, **kwargs)
-
 
 # Gate 5 constant: routing/MoE/sparse/compression ops required for efficiency scoring.
 # Module-level to avoid re-instantiation per graph in the screening loop.
@@ -131,6 +113,7 @@ def _record_screening_failure(
     nb,
     exp_id: str,
     graph,
+    source_result_id: str | None = None,
     stage0_passed: bool,
     stage05_passed: bool,
     error_type: str | None = None,
@@ -150,10 +133,7 @@ def _record_screening_failure(
             error_type=error_type,
             error_message=error_message,
         )
-        nb.record_program_result(
-            experiment_id=exp_id,
-            graph_fingerprint=graph.fingerprint(),
-            graph_json=json.dumps(graph.to_dict(), separators=(",", ":")),
+        patch_kwargs = dict(
             bypass_quality_gate=True,
             stage0_passed=stage0_passed,
             stage05_passed=stage05_passed,
@@ -175,17 +155,27 @@ def _record_screening_failure(
             failure_details_json=failure_provenance["failure_details_json"],
             **persisted_extra_metrics,
         )
+        if source_result_id:
+            nb.merge_program_result_patch(
+                result_id=source_result_id,
+                graph_fingerprint=graph.fingerprint(),
+                graph_json=json.dumps(graph.to_dict(), separators=(",", ":")),
+                relabel_backfill_if_orphan=True,
+                **patch_kwargs,
+            )
+            return
+        nb.record_program_result(
+            experiment_id=exp_id,
+            graph_fingerprint=graph.fingerprint(),
+            graph_json=json.dumps(graph.to_dict(), separators=(",", ":")),
+            **patch_kwargs,
+        )
     except Exception as exc:
         logger.debug("Failed to persist screening failure for %s: %s", exp_id, exc)
 
 
 from ._types import RunConfig, LiveProgress
 from ._helpers import (
-    _native_proactive_gating,
-    clear_gpu_memory,
-    graph_observed_routing_ops,
-    graph_routing_ops,
-    routing_fast_lane_fields,
     screening_probe_fields,
     screening_wikitext_fields,
 )
@@ -199,7 +189,6 @@ INITIAL_LOSS_THRESHOLD: float = 50.0
 
 # Number of gradient steps for S0.75 mini-train probe
 _S075_PROBE_STEPS: int = 5
-
 
 
 def _make_experiment_results() -> Dict[str, Any]:
@@ -284,52 +273,6 @@ class _ExecutionScreeningMixin:
 
     __slots__ = ()
 
-    def _log_learning_event_compat(self, nb: LabNotebook, *args, **kwargs) -> None:
-        getattr(nb, "log_learning_event")(*args, **kwargs)
-
-    def _publish_screening_terminal_event(
-        self,
-        *,
-        event_type: str,
-        exp_id: str,
-        payload: dict,
-    ) -> None:
-        publish_lifecycle_event(
-            notebook_path=self.notebook_path,
-            event_type=event_type,
-            producer="runner.execution_screening",
-            run_id=exp_id,
-            payload=payload,
-        )
-
-    def _complete_experiment_compat(
-        self,
-        *,
-        nb,
-        experiment_id: str,
-        results: dict,
-        aria_summary: str,
-        insights,
-        llm_analysis: str | None,
-    ) -> None:
-        getattr(nb, "complete_experiment")(
-            experiment_id=experiment_id,
-            results=results,
-            aria_summary=aria_summary,
-            aria_mood=self.aria.state.mood,
-            insights=insights,
-            llm_analysis=llm_analysis,
-        )
-
-    def _fail_experiment_compat(
-        self,
-        *,
-        nb,
-        experiment_id: str,
-        error: str,
-    ) -> None:
-        getattr(nb, "fail_experiment")(experiment_id, error)
-
     def _run_experiment_thread(self, exp_id: str, config: RunConfig, hypothesis: str):
         """Execute a single experiment in background."""
         with self._lock:
@@ -372,7 +315,8 @@ class _ExecutionScreeningMixin:
             except Exception as e:
                 logger.warning("Hypothesis validation logging failed: %s", e)
 
-            self._publish_screening_terminal_event(
+            self._publish_terminal_event(
+                producer="runner.execution_screening",
                 event_type="experiment_completed",
                 exp_id=exp_id,
                 payload={
@@ -485,7 +429,8 @@ class _ExecutionScreeningMixin:
                 logger.warning(
                     "code_healer failed during experiment error handling", exc_info=True
                 )
-            self._publish_screening_terminal_event(
+            self._publish_terminal_event(
+                producer="runner.execution_screening",
                 event_type="experiment_failed",
                 exp_id=exp_id,
                 payload={
@@ -520,7 +465,8 @@ class _ExecutionScreeningMixin:
                 traceback.format_exc(),
             )
             try:
-                self._publish_screening_terminal_event(
+                self._publish_terminal_event(
+                    producer="runner.execution_screening",
                     event_type="experiment_failed",
                     exp_id=exp_id,
                     payload={
@@ -1028,7 +974,7 @@ class _ExecutionScreeningMixin:
                 graphs,
                 nb,
                 logger,
-                log_event=_log_learning_event_compat,
+                log_event=self._log_learning_event_compat,
             )
             if len(ranked) != before_judgment:
                 results["judgment_filtered"] = before_judgment - len(ranked)

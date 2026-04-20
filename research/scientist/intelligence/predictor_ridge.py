@@ -2,29 +2,15 @@
 
 from __future__ import annotations
 
-import functools
-import hashlib
 import json
 import logging
-import sqlite3
-from collections import defaultdict
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
-from .metrics_utils import (
-    binary_classification_metrics,
-    operating_point_profiles,
-    safe_binary_roc_auc,
-)
 from .ml_corpus import (
     CorpusIntegrityError,
-    build_dense_feature_matrix,
-    grouped_stratified_split,
-    load_deduped_screening_predictor_rows,
-    load_deduped_graph_training_rows,
     load_deduped_predictor_training_rows,
     rerun_confidence_weight,
 )
@@ -59,23 +45,6 @@ _FINGERPRINT_KEYS = [
     "routing_selectivity",
     "routing_compute_ratio",
 ]
-
-_STATE_DIR = Path("research/runtime/learning")
-_GBM_GATE_MODEL_PATH = _STATE_DIR / "gbm_gate_model.txt"
-_GBM_RANK_MODEL_PATH = _STATE_DIR / "gbm_rank_model.txt"
-_GBM_META_PATH = _STATE_DIR / "gbm_predictor.json"
-_GRAPH_PREDICTOR_PATH = _STATE_DIR / "graph_predictor.npz"
-_INTERACTION_MODEL_PATH = _STATE_DIR / "interaction_model.npz"
-_BAYESIAN_STATE_PATH = _STATE_DIR / "bayesian_state.json"
-_ENSEMBLE_STATE_PATH = _STATE_DIR / "ensemble_state.npz"
-_ENSEMBLE_META_PATH = _STATE_DIR / "ensemble_state.json"
-
-
-def _unlink_if_exists(path: Path) -> None:
-    try:
-        path.unlink()
-    except FileNotFoundError:
-        pass
 
 
 def _extract_features(
@@ -347,5 +316,3 @@ def evaluate(nb, alpha: float = 1.0) -> Dict:
         "n_investigation": n_inv,
         "mean_absolute_error": mean_error,
     }
-
-

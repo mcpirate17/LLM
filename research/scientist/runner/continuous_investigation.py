@@ -8,7 +8,6 @@ import time
 from typing import List, Optional
 
 from ..json_utils import json_safe
-from ..runtime_events import publish_lifecycle_event
 
 
 from ...eval.perf_budget import evaluate_perf_budget_gate
@@ -42,49 +41,6 @@ class _ContinuousInvestigationMixin:
     """Pre-investigation gate and inline investigation execution."""
 
     __slots__ = ()
-
-    def _publish_continuous_investigation_terminal_event(
-        self,
-        *,
-        event_type: str,
-        exp_id: str,
-        payload: dict,
-    ) -> None:
-        publish_lifecycle_event(
-            notebook_path=self.notebook_path,
-            event_type=event_type,
-            producer="runner.continuous_investigation",
-            run_id=exp_id,
-            payload=payload,
-        )
-
-    def _complete_experiment_compat(
-        self,
-        *,
-        nb,
-        experiment_id: str,
-        results: dict,
-        aria_summary: str,
-        insights,
-        llm_analysis: str | None,
-    ) -> None:
-        getattr(nb, "complete_experiment")(
-            experiment_id=experiment_id,
-            results=results,
-            aria_summary=aria_summary,
-            aria_mood=self.aria.state.mood,
-            insights=insights,
-            llm_analysis=llm_analysis,
-        )
-
-    def _fail_experiment_compat(
-        self,
-        *,
-        nb,
-        experiment_id: str,
-        error: str,
-    ) -> None:
-        getattr(nb, "fail_experiment")(experiment_id, error)
 
     def _pre_inv_probe(
         self, config: RunConfig, nb: LabNotebook, result_id: str
@@ -1364,7 +1320,8 @@ class _ContinuousInvestigationMixin:
             llm_analysis = self.aria.analyze_results(results, context=context)
             insights = self._analyze_results(results, exp_id, nb, context=context)
 
-            self._publish_continuous_investigation_terminal_event(
+            self._publish_terminal_event(
+                producer="runner.continuous_investigation",
                 event_type="experiment_completed",
                 exp_id=exp_id,
                 payload={
@@ -1404,7 +1361,8 @@ class _ContinuousInvestigationMixin:
 
         except Exception as e:
             logger.warning(f"Inline investigation failed: {e}")
-            self._publish_continuous_investigation_terminal_event(
+            self._publish_terminal_event(
+                producer="runner.continuous_investigation",
                 event_type="experiment_failed",
                 exp_id=exp_id,
                 payload={

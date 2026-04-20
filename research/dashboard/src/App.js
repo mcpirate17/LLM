@@ -154,15 +154,19 @@ function AppContent({ autoRefresh, onAutoRefreshChange, onRunningChange }) {
   const [overrideIneligibleAlways, setOverrideIneligibleAlways] = useLocalStorage(OVERRIDE_INELIGIBLE_ALWAYS_KEY, false);
 
   // Architecture designer drawer
-  const [designerSession, setDesignerSession] = useState({ open: false, resultId: null });
+  const [designerSession, setDesignerSession] = useState({
+    open: false,
+    resultId: null,
+    readOnly: true,
+  });
   const openDesignerBlank = useCallback(() => {
-    setDesignerSession({ open: true, resultId: null });
+    setDesignerSession({ open: true, resultId: null, readOnly: false });
   }, []);
   const openDesignerForResult = useCallback((rid) => {
-    setDesignerSession({ open: true, resultId: rid || null });
+    setDesignerSession({ open: true, resultId: rid || null, readOnly: true });
   }, []);
   const closeDesigner = useCallback(() => {
-    setDesignerSession({ open: false, resultId: null });
+    setDesignerSession({ open: false, resultId: null, readOnly: true });
   }, []);
 
   // Cross-view navigation state
@@ -600,6 +604,7 @@ function AppContent({ autoRefresh, onAutoRefreshChange, onRunningChange }) {
       <DesignerDrawerOverlay
         open={designerSession.open}
         resultId={designerSession.resultId}
+        readOnly={designerSession.readOnly}
         onClose={closeDesigner}
         fallback={<LazyFallback />}
         ArchitectureDrawerComponent={ArchitectureDrawer}

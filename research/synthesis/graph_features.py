@@ -9,6 +9,7 @@ Performance target: <5ms per graph.
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import sqlite3
@@ -17,6 +18,7 @@ from functools import lru_cache
 from typing import Any, Dict, FrozenSet, List, Optional, Tuple
 
 from ._json_compat import loads_json
+from ..scientist.native.core import _try_import_rust_scheduler
 
 logger = logging.getLogger(__name__)
 
@@ -185,35 +187,13 @@ def _collect_canonical_ops(nodes: Dict[str, dict]) -> List[str]:
     return op_names
 
 
-def _extract_graph_features_python(
-    graph_json: Dict[str, Any],
-) -> tuple[Dict[str, float], List[str]]:
-    nodes = graph_json.get("nodes") or {}
-    metadata = graph_json.get("metadata") or {}
-
-    if not nodes:
-        return {}, []
-
+def _populate_op_feature_columns(
+    features: Dict[str, float],
+    op_names: List[str],
+) -> None:
     _, top_ops = _primitive_metadata()
-    op_names = _collect_canonical_ops(nodes)
     op_counter = Counter(op_names)
     op_set = set(op_names)
-    n_nodes = len(nodes)
-    n_ops = len(op_names)
-
-    fwd, _rev = _build_adjacency(nodes)
-    n_edges = sum(len(children) for children in fwd.values())
-
-    features: Dict[str, float] = {}
-    features["n_nodes"] = float(n_nodes)
-    features["n_edges"] = float(n_edges)
-    features["n_ops"] = float(n_ops)
-    depth_map = _compute_depth_map(nodes, fwd)
-    features["depth"] = float(_longest_path(nodes, fwd))
-    features["width"] = float(_width_at_depths(depth_map))
-    features["n_unique_ops"] = float(len(op_set))
-    features["n_skip_connections"] = float(_count_skip_connections(nodes, depth_map))
-    features["edge_density"] = n_edges / max(n_nodes, 1)
 
     for op in top_ops:
         features[f"op_{op}"] = float(op_counter.get(op, 0))
@@ -245,17 +225,99 @@ def _extract_graph_features_python(
     features["has_rope"] = float(bool(op_set & _ROPE_OPS))
     features["has_causal_mask"] = float(bool(op_set & _CAUSAL_OPS))
 
+
+def _extract_graph_structure_native(
+    graph_json: Any,
+) -> tuple[Dict[str, float], List[str]] | None:
+    rust = _try_import_rust_scheduler()
+    if rust is None or not hasattr(rust, "extract_graph_structure_features_native"):
+        return None
+    if isinstance(graph_json, str):
+        payload = graph_json
+    else:
+        try:
+            payload = json.dumps(graph_json, separators=(",", ":"))
+        except (TypeError, ValueError):
+            return None
+    try:
+        raw = rust.extract_graph_structure_features_native(payload)
+    except Exception:
+        return None
+    try:
+        loaded = json.loads(raw)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    if not isinstance(loaded, dict):
+        return None
+    raw_ops = loaded.get("op_names")
+    if not isinstance(raw_ops, list):
+        return None
+    op_names = [str(op) for op in raw_ops if str(op)]
+    features = {
+        key: float(loaded.get(key, 0.0) or 0.0)
+        for key in (
+            "n_nodes",
+            "n_edges",
+            "n_ops",
+            "depth",
+            "width",
+            "n_unique_ops",
+            "n_skip_connections",
+            "edge_density",
+            "n_templates_used",
+            "model_dim",
+        )
+    }
+    return features, op_names
+
+
+def _extract_graph_features_python(
+    graph_json: Dict[str, Any],
+) -> tuple[Dict[str, float], List[str]]:
+    nodes = graph_json.get("nodes") or {}
+    metadata = graph_json.get("metadata") or {}
+
+    if not nodes:
+        return {}, []
+
+    op_names = _collect_canonical_ops(nodes)
+    op_set = set(op_names)
+    n_nodes = len(nodes)
+    n_ops = len(op_names)
+
+    fwd, _rev = _build_adjacency(nodes)
+    n_edges = sum(len(children) for children in fwd.values())
+
+    features: Dict[str, float] = {}
+    features["n_nodes"] = float(n_nodes)
+    features["n_edges"] = float(n_edges)
+    features["n_ops"] = float(n_ops)
+    depth_map = _compute_depth_map(nodes, fwd)
+    features["depth"] = float(_longest_path(nodes, fwd))
+    features["width"] = float(_width_at_depths(depth_map))
+    features["n_unique_ops"] = float(len(op_set))
+    features["n_skip_connections"] = float(_count_skip_connections(nodes, depth_map))
+    features["edge_density"] = n_edges / max(n_nodes, 1)
+
     templates_used = metadata.get("templates_used") or []
     features["n_templates_used"] = float(len(templates_used))
 
     model_dim = graph_json.get("model_dim", 0)
     features["model_dim"] = float(model_dim) if model_dim else 0.0
+    _populate_op_feature_columns(features, op_names)
     return features, op_names
 
 
 def extract_graph_features_bundle(
     graph_json: Any,
 ) -> tuple[Dict[str, float], List[str]]:
+    native = _extract_graph_structure_native(graph_json)
+    if native is not None:
+        base_features, op_names = native
+        features = dict(base_features)
+        _populate_op_feature_columns(features, op_names)
+        return features, op_names
+
     if isinstance(graph_json, str):
         try:
             graph_json = loads_json(graph_json)

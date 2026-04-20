@@ -28,19 +28,26 @@ class CompiledOpParamInitMixin:
             d_in = self.model_dim
         d_out = max(1, config.get("out_dim", d_in))
         std = 1.0 / math.sqrt(d_in) if d_in > 0 else 0.02
+        # Optional residual-aware init dampening: templates that emit a
+        # `linear_proj` whose output joins a residual stream after N merged
+        # paths can pass `init_scale=1/sqrt(N+1)` to shrink the projection's
+        # initial variance contribution. Bounds Jacobian spectral norm at
+        # the initial step so the investigation eligibility gate doesn't
+        # reject before training has a chance to stabilize.
+        proj_std = 0.02 * float(config.get("init_scale", 1.0))
 
         dispatch = {
             "linear_proj": lambda: setattr(
-                self, "weight", self._make_param((d_out, d_in), std=0.02)
+                self, "weight", self._make_param((d_out, d_in), std=proj_std)
             ),
             "linear_proj_down": lambda: setattr(
-                self, "weight", self._make_param((d_out, d_in), std=0.02)
+                self, "weight", self._make_param((d_out, d_in), std=proj_std)
             ),
             "linear_proj_up": lambda: setattr(
-                self, "weight", self._make_param((d_out, d_in), std=0.02)
+                self, "weight", self._make_param((d_out, d_in), std=proj_std)
             ),
             "fused_linear_gelu": lambda: (
-                setattr(self, "weight", self._make_param((d_out, d_in), std=0.02)),
+                setattr(self, "weight", self._make_param((d_out, d_in), std=proj_std)),
                 setattr(self, "bias", nn.Parameter(torch.zeros(d_out))),
             ),
             "learnable_scale": lambda: setattr(

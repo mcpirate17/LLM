@@ -74,8 +74,14 @@ function SystemStatusSection({ systemStatus, onSystemStatusUpdate }) {
         <span className={`sys-badge ${systemStatus?.cuda?.available ? 'pass' : 'fail'}`}>
           {systemStatus?.cuda?.available ? `CUDA: ${systemStatus.cuda.device_name || 'GPU'}` : 'CPU Only'}
         </span>
-        <span className={`sys-badge ${systemStatus?.llm?.available ? 'pass' : 'warn'}`}>
-          {systemStatus?.llm?.available ? `LLM: ${systemStatus.llm.backend}` : 'No LLM'}
+        <span className={`sys-badge ${
+          systemStatus?.llm?.available ? 'pass' : systemStatus?.llm?.configured ? 'info' : 'warn'
+        }`}>
+          {systemStatus?.llm?.available
+            ? `LLM: ${systemStatus.llm.backend}`
+            : systemStatus?.llm?.configured
+            ? `LLM Configured: ${systemStatus.llm.backend || 'saved'}`
+            : 'No LLM'}
         </span>
         <button className="sys-badge info" onClick={handleToggleConfig}>
           {showLlmConfig ? 'Hide Config' : 'Configure LLM'}

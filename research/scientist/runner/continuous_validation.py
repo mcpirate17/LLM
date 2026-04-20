@@ -6,8 +6,6 @@ import time
 
 import torch
 import torch.nn as nn
-
-from ..runtime_events import publish_lifecycle_event
 from ...eval.perf_budget import evaluate_perf_budget_gate
 from ...training.checkpointing import CheckpointManager
 from ...training.training_program import synthesize_training_program
@@ -39,49 +37,6 @@ class _ContinuousValidationMixin:
     """Validation seed runs, metrics computation, external evals, and inline validation."""
 
     __slots__ = ()
-
-    def _publish_continuous_validation_terminal_event(
-        self,
-        *,
-        event_type: str,
-        exp_id: str,
-        payload: dict,
-    ) -> None:
-        publish_lifecycle_event(
-            notebook_path=self.notebook_path,
-            event_type=event_type,
-            producer="runner.continuous_validation",
-            run_id=exp_id,
-            payload=payload,
-        )
-
-    def _complete_experiment_compat(
-        self,
-        *,
-        nb,
-        experiment_id: str,
-        results: dict,
-        aria_summary: str,
-        insights,
-        llm_analysis: str | None,
-    ) -> None:
-        getattr(nb, "complete_experiment")(
-            experiment_id=experiment_id,
-            results=results,
-            aria_summary=aria_summary,
-            aria_mood=self.aria.state.mood,
-            insights=insights,
-            llm_analysis=llm_analysis,
-        )
-
-    def _fail_experiment_compat(
-        self,
-        *,
-        nb,
-        experiment_id: str,
-        error: str,
-    ) -> None:
-        getattr(nb, "fail_experiment")(experiment_id, error)
 
     def _scaling_reference_families(self, config: RunConfig) -> tuple[str, ...]:
         raw = str(getattr(config, "scaling_reference_families", "gpt2") or "gpt2")
@@ -682,31 +637,6 @@ class _ContinuousValidationMixin:
                     ev_res=ev_res,
                 )
 
-                nb.record_program_result(
-                    experiment_id=exp_id,
-                    graph_fingerprint=source.get("graph_fingerprint", source_result_id),
-                    graph_json=graph_json_str or "{}",
-                    stage0_passed=True,
-                    stage05_passed=True,
-                    stage1_passed=len(metrics.passed_seeds) > 0,
-                    loss_ratio=metrics.val_loss_ratio,
-                    baseline_loss_ratio=metrics.val_baseline_ratio,
-                    novelty_score=source.get("novelty_score"),
-                    novelty_confidence=source.get("novelty_confidence"),
-                    novelty_raw_score=source.get("novelty_raw_score"),
-                    novelty_z_score=source.get("novelty_z_score"),
-                    novelty_reference_version=source.get("novelty_reference_version"),
-                    novelty_valid_for_promotion=source.get(
-                        "novelty_valid_for_promotion"
-                    ),
-                    novelty_validity_reason=source.get("novelty_validity_reason"),
-                    novelty_requires_justification=source.get(
-                        "novelty_requires_justification"
-                    ),
-                    model_source=model_source,
-                    arch_spec_json=arch_spec_json_str,
-                )
-
                 trajectory_composite = run_trajectory_probe(
                     graph_json_str=graph_json_str,
                     config=config,
@@ -773,7 +703,8 @@ class _ContinuousValidationMixin:
             llm_analysis = self.aria.analyze_results(results, context=context)
 
             insights = self._analyze_results(results, exp_id, nb, context=context)
-            self._publish_continuous_validation_terminal_event(
+            self._publish_terminal_event(
+                producer="runner.continuous_validation",
                 event_type="experiment_completed",
                 exp_id=exp_id,
                 payload={
@@ -806,7 +737,8 @@ class _ContinuousValidationMixin:
 
         except Exception as e:
             logger.warning(f"Inline validation failed: {e}")
-            self._publish_continuous_validation_terminal_event(
+            self._publish_terminal_event(
+                producer="runner.continuous_validation",
                 event_type="experiment_failed",
                 exp_id=exp_id,
                 payload={

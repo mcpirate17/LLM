@@ -11,7 +11,6 @@ from ._template_helpers import (
     MOTIF_CLASS_ATTENTION,
     MOTIF_CLASS_CHANNEL,
     MOTIF_CLASS_CONV,
-    MOTIF_CLASS_EFFICIENT_PROJ,
     MOTIF_CLASS_MATH_SPACE,
     MOTIF_CLASS_NORM,
     MOTIF_CLASS_SSM,
@@ -26,16 +25,6 @@ from ._template_helpers import (
     template_add_op as _add,
     template_add_residual as _residual,
 )
-from ._templates_routing import (
-    _apply_optional_single_input_ops,
-    _multiscale_gate_config,
-    _multiscale_merge_config,
-    _multiscale_sparse_router_config,
-    _next_multiscale_hard_config,
-    _next_multiscale_medium_config,
-    _single_input_op_config,
-)
-
 
 
 # ── Latent Compression Templates ──────────────────────────────────
@@ -279,6 +268,15 @@ def tpl_signal_routed_compression(
         )
         compressed = _fix_dim(graph, compressed)
 
+    # Bound compounded variance from classifier→compression→moe stack
+    # so the residual contribution stays in the spectral band.
+    compressed = _add(
+        graph,
+        "rmsnorm",
+        [compressed],
+        context="signal_routed_compression.output_norm",
+    )
+
     return _residual(
         graph,
         input_id,
@@ -341,6 +339,8 @@ def tpl_dual_routing_stack(
             routed = _instantiate_motif(graph, routed, ffn, rng)
 
     routed = _fix_dim(graph, routed)
+    # Bound compounded variance from classifier→compression→moe stack.
+    routed = _add(graph, "rmsnorm", [routed], context="dual_routing_stack.output_norm")
 
     return _residual(
         graph,

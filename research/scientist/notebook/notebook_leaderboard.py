@@ -13,6 +13,37 @@ from ..leaderboard_scoring import SCORING_VERSION, build_score_kwargs, compute_c
 from ..thresholds import TIER_RANK
 from ..trust_policy import is_promotable_entry, sql_trusted_clause
 
+
+class DuplicateLeaderboardFingerprintError(Exception):
+    """Raised when ``upsert_leaderboard`` would create a second leaderboard
+    row for a ``graph_fingerprint`` that already has an entry under a
+    different ``result_id``.
+
+    Pass ``allow_fingerprint_duplicate=True`` to bypass, or resolve by calling
+    ``promote_to_tier(existing_entry_id, ...)`` on the pre-existing entry so
+    metrics merge onto one row instead of creating a duplicate.
+    """
+
+    def __init__(
+        self,
+        graph_fingerprint: str,
+        existing_entry_id: str,
+        existing_result_id: str,
+        attempted_result_id: str,
+    ) -> None:
+        self.graph_fingerprint = graph_fingerprint
+        self.existing_entry_id = existing_entry_id
+        self.existing_result_id = existing_result_id
+        self.attempted_result_id = attempted_result_id
+        super().__init__(
+            f"fingerprint {graph_fingerprint} is already on the leaderboard at "
+            f"entry_id={existing_entry_id} (result_id={existing_result_id}); "
+            f"attempted insert for result_id={attempted_result_id}. "
+            f"Call promote_to_tier() on the existing entry, or pass "
+            f"allow_fingerprint_duplicate=True if the duplicate is intentional."
+        )
+
+
 _LEADERBOARD_MANAGED_COLUMNS = frozenset(
     {
         "entry_id",
@@ -189,6 +220,7 @@ class _LeaderboardMixin:
         notes: Optional[str] = None,
         is_reference: bool = False,
         reference_name: Optional[str] = None,
+        allow_fingerprint_duplicate: bool = False,
         **kwargs,
     ) -> str:
         """Insert or update a leaderboard entry.
@@ -216,6 +248,41 @@ class _LeaderboardMixin:
             "SELECT * FROM leaderboard WHERE result_id = ?",
             (resolved_result_id,),
         ).fetchone()
+
+        # Fingerprint-level dedup gate: if another entry already exists for
+        # the same graph_fingerprint but a different result_id, refuse to
+        # INSERT a duplicate. References and intentional inserts bypass.
+        if (
+            not existing
+            and not is_reference
+            and not allow_fingerprint_duplicate
+            and pr_row
+            and pr_row["graph_fingerprint"]
+        ):
+            fp = str(pr_row["graph_fingerprint"]).strip()
+            if fp:
+                fp_dup = self.conn.execute(
+                    "SELECT l.entry_id, l.result_id FROM leaderboard l "
+                    "JOIN program_results pr ON l.result_id = pr.result_id "
+                    "WHERE pr.graph_fingerprint = ? AND l.result_id != ? "
+                    "LIMIT 1",
+                    (fp, resolved_result_id),
+                ).fetchone()
+                if fp_dup is not None:
+                    LOGGER.warning(
+                        "BLOCKED leaderboard dup insert: fp=%s existing_entry=%s "
+                        "(result_id=%s) attempted_result_id=%s",
+                        fp,
+                        fp_dup["entry_id"],
+                        fp_dup["result_id"],
+                        resolved_result_id,
+                    )
+                    raise DuplicateLeaderboardFingerprintError(
+                        graph_fingerprint=fp,
+                        existing_entry_id=str(fp_dup["entry_id"]),
+                        existing_result_id=str(fp_dup["result_id"]),
+                        attempted_result_id=str(resolved_result_id),
+                    )
 
         # Combine kwargs with existing data for composite score recomputation
         d = dict(existing) if existing else {}
@@ -393,6 +460,13 @@ class _LeaderboardMixin:
             )
         else:
             entry_id = str(uuid.uuid4())[:12]
+            # Denormalize graph_fingerprint for the UNIQUE idx_leaderboard_fp.
+            # pr_row carries the fingerprint resolved earlier in this fn.
+            fp_for_insert = None
+            if pr_row is not None:
+                fp_val = pr_row["graph_fingerprint"]
+                if fp_val is not None and str(fp_val).strip():
+                    fp_for_insert = str(fp_val).strip()
             cols = [
                 "entry_id",
                 "result_id",
@@ -424,6 +498,16 @@ class _LeaderboardMixin:
                 cols.append(col)
                 vals.append(val)
 
+            # Populate denormalized graph_fingerprint (idx_leaderboard_fp)
+            # only if the column exists and is not already set by kwargs.
+            if (
+                fp_for_insert is not None
+                and "graph_fingerprint" in self._get_leaderboard_columns()
+                and "graph_fingerprint" not in cols
+            ):
+                cols.append("graph_fingerprint")
+                vals.append(fp_for_insert)
+
             placeholders = ", ".join(["?"] * len(cols))
             self.conn.execute(
                 f"INSERT INTO leaderboard ({', '.join(cols)}) VALUES ({placeholders})",
@@ -441,6 +525,7 @@ class _LeaderboardMixin:
         include_family: bool = True,
         include_references: bool = True,
         trusted_only: bool = False,
+        tier_match_mode: str = "reached",
     ) -> List[Dict]:
         """Get leaderboard entries, optionally filtered by tier."""
         valid_sorts = {
@@ -475,12 +560,15 @@ class _LeaderboardMixin:
             "pr.stage1_passed AS stage1_passed, "
             "pr.routing_confidence_mean AS _routing_confidence_mean, "
             "pr.fp_jacobian_spectral_norm AS jacobian_spectral_norm, "
-            # Fields for client-side candidateScore computation
+            # Program-side fields used by canonical backend score attachment
             "pr.loss_ratio AS loss_ratio, "
             "pr.discovery_loss AS discovery_loss, "
             "pr.discovery_loss_ratio AS _pr_discovery_loss_ratio, "
             "pr.validation_loss AS validation_loss, "
             "pr.validation_loss_ratio AS _pr_validation_loss_ratio, "
+            "pr.wikitext_perplexity AS _pr_wikitext_perplexity, "
+            "pr.tinystories_perplexity AS _pr_tinystories_perplexity, "
+            "pr.hellaswag_acc AS _pr_hellaswag_acc, "
             "pr.generalization_gap AS generalization_gap, "
             "pr.novelty_score AS novelty_score, "
             "pr.final_loss AS final_loss, "
@@ -519,27 +607,39 @@ class _LeaderboardMixin:
         params: List[Any] = []
         if trusted_only:
             query += f" AND {sql_trusted_clause(table_alias='l')}"
-        # Stage-based filtering: show entries that *reached* a stage, not just
-        # entries whose tier column is that exact value.  Entries move through
-        # tiers quickly (screening → investigation → validation in one run) so
-        # the tier column is often already promoted past the requested stage.
-        _STAGE_FILTER = {
-            "investigation": "l.investigation_passed = 1",
-            "validation": "l.validation_passed = 1",
-        }
         if tier:
-            stage_clause = _STAGE_FILTER.get(tier)
-            if stage_clause:
+            normalized_tier = str(tier).strip().lower()
+            current_status_clause = {
+                "screening": "COALESCE(l.tier, 'screening') = 'screening'",
+                "screened_out": "l.tier = 'screened_out'",
+                "investigation": "l.tier = 'investigation'",
+                "investigation_failed": "l.tier = 'investigation_failed'",
+                "validation": "l.tier = 'validation' AND COALESCE(l.validation_passed, 0) = 1",
+                "validation_pending": "l.tier = 'validation' AND COALESCE(l.validation_passed, 0) = 0",
+                "validation_failed": "l.tier = 'validation_failed'",
+                "breakthrough": "l.tier = 'breakthrough'",
+            }
+            reached_stage_clause = {
+                "investigation": "l.investigation_passed = 1",
+                "validation": "l.validation_passed = 1",
+            }
+            tier_clause = None
+            if tier_match_mode == "current":
+                tier_clause = current_status_clause.get(normalized_tier)
+            else:
+                tier_clause = reached_stage_clause.get(normalized_tier)
+
+            if tier_clause:
                 if include_references:
-                    query += f" AND ({stage_clause} OR COALESCE(l.is_reference, 0) = 1)"
+                    query += f" AND ({tier_clause} OR COALESCE(l.is_reference, 0) = 1)"
                 else:
-                    query += f" AND {stage_clause} AND COALESCE(l.is_reference, 0) = 0"
+                    query += f" AND {tier_clause} AND COALESCE(l.is_reference, 0) = 0"
             elif include_references:
                 query += " AND (l.tier = ? OR COALESCE(l.is_reference, 0) = 1)"
-                params.append(tier)
+                params.append(normalized_tier)
             else:
                 query += " AND l.tier = ? AND COALESCE(l.is_reference, 0) = 0"
-                params.append(tier)
+                params.append(normalized_tier)
         elif not include_references:
             query += " AND COALESCE(l.is_reference, 0) = 0"
         oversample = max(limit * 6, 200)
@@ -581,6 +681,27 @@ class _LeaderboardMixin:
                     and d.get("_pr_validation_loss_ratio") is not None
                 ):
                     d["validation_loss_ratio"] = d.get("_pr_validation_loss_ratio")
+            elif (
+                str(d.get("result_cohort") or "").strip().lower() == "backfill"
+                and d.get("validation_loss_ratio") is None
+                and d.get("_pr_validation_loss_ratio") is not None
+            ):
+                d["validation_loss_ratio"] = d.get("_pr_validation_loss_ratio")
+            if (
+                d.get("wikitext_perplexity") is None
+                and d.get("_pr_wikitext_perplexity") is not None
+            ):
+                d["wikitext_perplexity"] = d.get("_pr_wikitext_perplexity")
+            if (
+                d.get("tinystories_perplexity") is None
+                and d.get("_pr_tinystories_perplexity") is not None
+            ):
+                d["tinystories_perplexity"] = d.get("_pr_tinystories_perplexity")
+            if (
+                d.get("hellaswag_acc") is None
+                and d.get("_pr_hellaswag_acc") is not None
+            ):
+                d["hellaswag_acc"] = d.get("_pr_hellaswag_acc")
             if include_family:
                 d["architecture_family"] = self._classify_architecture_family(
                     graph_json=d.get("_graph_json"),
@@ -605,6 +726,9 @@ class _LeaderboardMixin:
                 d["efficiency_multiple"] = d.get("_pr_efficiency_multiple")
             d.pop("_pr_discovery_loss_ratio", None)
             d.pop("_pr_validation_loss_ratio", None)
+            d.pop("_pr_wikitext_perplexity", None)
+            d.pop("_pr_tinystories_perplexity", None)
+            d.pop("_pr_hellaswag_acc", None)
             d.pop("_pr_efficiency_multiple", None)
             self._normalize_benchmark_fields(d)
 
@@ -625,6 +749,8 @@ class _LeaderboardMixin:
                     )
             d["trusted_candidate"] = bool(is_promotable_entry(d))
             results.append(d)
+
+        results = self._attach_canonical_program_scores(results)
 
         # Separate reference entries so they survive dedup and limit
         references = []

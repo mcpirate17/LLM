@@ -6,6 +6,7 @@ import logging
 from typing import Any, Optional
 
 from ._strategy_recommendations import (
+    capability_quality_for_entry,
     compute_cross_run_stability,
     compute_recommendation,
 )
@@ -33,6 +34,9 @@ def build_decision_packet(nb, result_id: str) -> Optional[dict[str, Any]]:
     bl_ratio = program.get("baseline_loss_ratio")
     baseline_comparison = _interpret_baseline(bl_ratio)
     recommendation = compute_recommendation(program, leaderboard_entry)
+    capability_quality = capability_quality_for_entry(
+        leaderboard_entry or program or {}
+    )
 
     from ..analytics import ExperimentAnalytics
 
@@ -55,12 +59,15 @@ def build_decision_packet(nb, result_id: str) -> Optional[dict[str, Any]]:
         },
         "cross_run_stability": cross_run,
         "recommendation": recommendation,
+        "capability_quality": capability_quality,
         "evidence_flags": {
             "has_baseline": bl_ratio is not None,
             "has_cka_artifact": program.get("cka_source") == "artifact",
             "has_multi_seed": outcomes["validation"] is not None,
             "has_hypothesis": len(hypothesis_chain) > 0,
             "repro_packet_ready": packet_status.get("status") == "ready",
+            "capability_qualified": capability_quality.get("status")
+            in {"qualified", "breakthrough"},
         },
         "compression_metrics": analytics.canonical_compression_metrics(entry_or_prog),
         "reproducibility_packet": packet_status,
@@ -165,6 +172,7 @@ def _build_outcomes(program: dict, leaderboard_entry: Optional[dict]) -> dict:
             "baseline_ratio": leaderboard_entry.get("validation_baseline_ratio"),
             "multi_seed_std": leaderboard_entry.get("validation_multi_seed_std"),
             "passed": bool(leaderboard_entry.get("validation_passed")),
+            "capability_quality": capability_quality_for_entry(leaderboard_entry),
         }
     return outcomes
 

@@ -26,6 +26,16 @@ from typing import Any
 
 import numpy as np
 
+from research.scientist.intelligence.predictor_artifacts import (
+    BAYESIAN_STATE_PATH,
+    ENSEMBLE_META_PATH,
+    GRAPH_PREDICTOR_PATH,
+    INTERACTION_MODEL_PATH,
+    METRICS_REPORT_PATH,
+    OP_EMBEDDINGS_PATH,
+    STATE_DIR,
+    ensure_state_dir,
+)
 from research.tools._script_audit import (
     complete_script_experiment,
     fail_script_experiment,
@@ -36,8 +46,6 @@ logger = logging.getLogger(__name__)
 
 _NOTEBOOK_DB = Path("research/lab_notebook.db")
 _PROFILING_DB = Path("research/profiling/component_profiles.db")
-_STATE_DIR = Path("research/runtime/learning")
-_METRICS_REPORT_PATH = _STATE_DIR / "predictor_metrics_report.json"
 
 
 def _safe_report_section(name: str, fn, *args, **kwargs) -> dict[str, Any]:
@@ -208,7 +216,7 @@ def _component_scores(
 ) -> tuple[np.ndarray, np.ndarray, dict[str, int]]:
     from research.scientist.intelligence.ml_corpus import (
         grouped_stratified_split,
-        load_deduped_screening_predictor_rows,
+        load_screening_predictor_corpus_rows,
     )
     from research.synthesis.graph_features import (
         enrich_with_op_stats,
@@ -218,7 +226,7 @@ def _component_scores(
 
     rows = [
         row
-        for row in load_deduped_screening_predictor_rows(db_path)
+        for row in load_screening_predictor_corpus_rows(db_path)
         if bool(row.get("stage0_any_passed"))
     ]
     if len(rows) > sample_limit:
@@ -317,7 +325,7 @@ def _ensemble_metrics_report(
     y_true, y_score, split_stats = _component_scores(ensemble, db_path)
     return {
         "source": source,
-        "persisted_meta": _load_json_if_exists(state_dir / "ensemble_state.json"),
+        "persisted_meta": _load_json_if_exists(state_dir / ENSEMBLE_META_PATH.name),
         "split_stats": split_stats,
         "val_metrics_selected_threshold": binary_classification_metrics(
             y_true, y_score, threshold=ensemble.gate_threshold
@@ -421,8 +429,8 @@ def train_bayesian(save: bool = False) -> dict:
     logger.info("Bayesian tracker: %s (%.1fs)", diag, elapsed)
 
     if save:
-        _STATE_DIR.mkdir(parents=True, exist_ok=True)
-        tracker.save_state(_STATE_DIR / "bayesian_state.json")
+        state_dir = ensure_state_dir(STATE_DIR)
+        tracker.save_state(state_dir / BAYESIAN_STATE_PATH.name)
 
     return {"component": "bayesian", "elapsed_s": elapsed, **diag}
 
@@ -440,8 +448,8 @@ def train_embeddings(save: bool = False) -> dict:
     )
 
     if save:
-        _STATE_DIR.mkdir(parents=True, exist_ok=True)
-        emb.save(_STATE_DIR / "op_embeddings.npz")
+        state_dir = ensure_state_dir(STATE_DIR)
+        emb.save(state_dir / OP_EMBEDDINGS_PATH.name)
 
     return {
         "component": "embeddings",
@@ -467,8 +475,8 @@ def train_interaction(save: bool = False) -> dict:
     )
 
     if save:
-        _STATE_DIR.mkdir(parents=True, exist_ok=True)
-        model.save(_STATE_DIR / "interaction_model.npz")
+        state_dir = ensure_state_dir(STATE_DIR)
+        model.save(state_dir / INTERACTION_MODEL_PATH.name)
 
     return {
         "component": "interaction",
@@ -489,8 +497,8 @@ def train_graph_predictor(save: bool = False) -> dict:
     logger.info("Graph predictor: metrics=%s (%.1fs)", model._train_metrics, elapsed)
 
     if save and model.is_fitted():
-        _STATE_DIR.mkdir(parents=True, exist_ok=True)
-        model.save(_STATE_DIR / "graph_predictor.npz")
+        state_dir = ensure_state_dir(STATE_DIR)
+        model.save(state_dir / GRAPH_PREDICTOR_PATH.name)
 
     return {
         "component": "graph_predictor",
@@ -514,8 +522,7 @@ def train_ensemble_full(save: bool = False) -> dict:
     logger.info("Ensemble: %s (%.1fs)", diag, elapsed)
 
     if save and ensemble.is_fitted():
-        _STATE_DIR.mkdir(parents=True, exist_ok=True)
-        ensemble.save(_STATE_DIR)
+        ensemble.save(ensure_state_dir(STATE_DIR))
 
     return {"component": "ensemble", "elapsed_s": elapsed, **diag}
 
@@ -525,14 +532,15 @@ def write_metrics_report(fresh_ensemble: bool = False) -> dict:
     report = _build_predictor_metrics_report(
         db_path=str(_NOTEBOOK_DB),
         profiling_db=str(_PROFILING_DB),
-        state_dir=_STATE_DIR,
+        state_dir=STATE_DIR,
         fresh_ensemble=fresh_ensemble,
     )
-    _STATE_DIR.mkdir(parents=True, exist_ok=True)
-    with open(_METRICS_REPORT_PATH, "w", encoding="utf-8") as f:
+    state_dir = ensure_state_dir(STATE_DIR)
+    report_path = state_dir / METRICS_REPORT_PATH.name
+    with open(report_path, "w", encoding="utf-8") as f:
         json.dump(report, f, indent=2, sort_keys=True)
-    logger.info("Predictor metrics report written to %s", _METRICS_REPORT_PATH)
-    return {"report_path": str(_METRICS_REPORT_PATH)}
+    logger.info("Predictor metrics report written to %s", report_path)
+    return {"report_path": str(report_path)}
 
 
 def evaluate_all() -> dict:

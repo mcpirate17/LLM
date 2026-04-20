@@ -3,21 +3,42 @@
 from __future__ import annotations
 
 import logging
+import time
 from flask import jsonify, request, Response
 from ..json_utils import fast_dumps as _json_dumps, fast_loads as _json_loads
 from ._helpers import get_runner, get_sse_timeout_seconds
-from ._utils import with_notebook_context
+from ._utils import register_notebook_routes, register_routes, with_notebook_context
 from .deps import ApiRouteContext
 
 logger = logging.getLogger(__name__)
+
+
+def _idle_keepalive_interval_seconds(sse_timeout: float) -> float:
+    try:
+        timeout = float(sse_timeout)
+    except (TypeError, ValueError):
+        timeout = 30.0
+    return max(1.0, min(5.0, timeout))
+
+
+def _iter_sse_events(*, notebook_path: str, sse_timeout: float):
+    idle_sleep_s = _idle_keepalive_interval_seconds(sse_timeout)
+    while True:
+        runner = get_runner(notebook_path, create_if_missing=False)
+        if runner is None:
+            yield "event: keepalive\ndata: {}\n\n"
+            time.sleep(idle_sleep_s)
+            continue
+        for event in runner.get_events(timeout=sse_timeout):
+            data = _json_dumps(event.get("data", {}), safe=True)
+            yield f"event: {event['type']}\ndata: {data}\n\n"
+        yield "event: keepalive\ndata: {}\n\n"
 
 
 def register_events_routes(app, context: ApiRouteContext):
     notebook_path = context.notebook_path
     wnb = with_notebook_context(notebook_path)
 
-    @app.route("/api/live-feed")
-    @wnb
     def api_live_feed(nb=None):
         """List persisted live-feed events for replay in the dashboard."""
         exp_id = request.args.get("experiment_id")
@@ -54,7 +75,6 @@ def register_events_routes(app, context: ApiRouteContext):
             events = events[-n:]
         return jsonify(events)
 
-    @app.route("/api/live-loss-curve")
     def api_live_loss_curve():
         """Return the in-memory training loss curve for the live chart."""
         runner = get_runner(notebook_path, create_if_missing=False)
@@ -64,24 +84,12 @@ def register_events_routes(app, context: ApiRouteContext):
             logger.error("Error in /api/live-loss-curve: %s", e)
             return jsonify([])
 
-    @app.route("/api/events")
     def api_events():
         """SSE endpoint for real-time experiment events."""
-        runner = get_runner(notebook_path, create_if_missing=False)
         sse_timeout = get_sse_timeout_seconds()
 
-        def event_stream():
-            while True:
-                if runner is None:
-                    yield "event: keepalive\ndata: {}\n\n"
-                    continue
-                for event in runner.get_events(timeout=sse_timeout):
-                    data = _json_dumps(event.get("data", {}), safe=True)
-                    yield f"event: {event['type']}\ndata: {data}\n\n"
-                yield "event: keepalive\ndata: {}\n\n"
-
         return Response(
-            event_stream(),
+            _iter_sse_events(notebook_path=notebook_path, sse_timeout=sse_timeout),
             mimetype="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
@@ -89,6 +97,19 @@ def register_events_routes(app, context: ApiRouteContext):
                 "Connection": "keep-alive",
             },
         )
+
+    register_notebook_routes(
+        app,
+        wnb,
+        (("/api/live-feed", "api_live_feed", api_live_feed),),
+    )
+    register_routes(
+        app,
+        (
+            ("/api/live-loss-curve", "api_live_loss_curve", api_live_loss_curve),
+            ("/api/events", "api_events", api_events),
+        ),
+    )
 
 
 def _entry_to_live_feed_event(entry: dict):

@@ -7,15 +7,18 @@ import logging
 from typing import Any, Dict, List
 from flask import jsonify, request
 from ..json_utils import json_safe as _json_safe
+from ..leaderboard_rescore import rescore_leaderboard
 from ..trust_policy import is_trusted_entry, sql_trusted_clause
 from .deps import ApiRouteContext
-from ._utils import with_notebook_context
+from ._utils import register_notebook_routes, with_notebook_context
 from ._strategy_recommendations import (
     annotate_qkv_usage,
     attach_long_context_breakdown,
+    capability_quality_for_entry,
     compute_cross_run_stability,
     infer_tier_for_program,
     count_discovery_tiers,
+    promotion_evidence_for_entry,
 )
 from ._strategy_report import parse_bool_query
 
@@ -29,6 +32,52 @@ def _default_cross_run_stability() -> Dict[str, Any]:
         "latest_rank": None,
         "previous_rank": None,
         "rank_delta": None,
+    }
+
+
+def _to_float(value: Any) -> float | None:
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _semantic_warning_for_entry(entry: Dict[str, Any]) -> Dict[str, Any] | None:
+    cohort = str(entry.get("result_cohort") or "").strip().lower()
+    if cohort != "backfill":
+        return None
+
+    validation_loss_ratio = _to_float(entry.get("validation_loss_ratio"))
+    if validation_loss_ratio is None or validation_loss_ratio >= 0.1:
+        return None
+
+    wikitext_perplexity = _to_float(entry.get("wikitext_perplexity"))
+    tinystories_perplexity = _to_float(entry.get("tinystories_perplexity"))
+    hellaswag_acc = _to_float(entry.get("hellaswag_acc"))
+
+    evidence: List[str] = []
+    if wikitext_perplexity is not None and wikitext_perplexity > 500.0:
+        evidence.append(f"WikiText perplexity {wikitext_perplexity:.2f}")
+    if tinystories_perplexity is not None and tinystories_perplexity > 500.0:
+        evidence.append(f"TinyStories perplexity {tinystories_perplexity:.2f}")
+    if hellaswag_acc is not None and hellaswag_acc < 0.2:
+        evidence.append(f"HellaSwag {hellaswag_acc:.2%}")
+
+    if not evidence:
+        return None
+
+    return {
+        "code": "backfill_metric_mismatch",
+        "severity": "warning",
+        "label": "Backfill mismatch",
+        "message": (
+            "Backfill row has a very low validation-style loss ratio but poor "
+            "real-token quality, so these metrics should not be read as "
+            "candidate-grade evidence."
+        ),
+        "evidence": evidence,
     }
 
 
@@ -54,6 +103,13 @@ def _dedupe_discovery_rows(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]
         if new_score > existing_score:
             deduped[existing_index] = entry
     return deduped
+
+
+def _current_discovery_tier(entry: Dict[str, Any]) -> str:
+    tier = str(entry.get("tier") or "screening").strip().lower()
+    if tier == "validation" and not bool(entry.get("validation_passed")):
+        return "validation_pending"
+    return tier or "screening"
 
 
 def _search_discoveries(
@@ -173,7 +229,7 @@ def _search_discoveries(
             graph_json=entry.get("graph_json"),
             routing_mode=entry.get("routing_mode"),
         )
-        if tier and str(entry.get("tier") or "").lower() != str(tier).lower():
+        if tier and _current_discovery_tier(entry) != str(tier).strip().lower():
             continue
         if not include_references and entry.get("is_reference"):
             continue
@@ -246,6 +302,11 @@ def _compact_leaderboard_entry(entry: dict) -> dict:
         "result_id": entry.get("result_id"),
         "tier": entry.get("tier"),
         "composite_score": entry.get("composite_score"),
+        "score_breakdown": entry.get("score_breakdown") or {},
+        "capability_quality": entry.get("capability_quality"),
+        "semantic_warning": entry.get("semantic_warning"),
+        "semantic_warning_count": entry.get("semantic_warning_count"),
+        "promotion_evidence": entry.get("promotion_evidence"),
         "loss_ratio": entry.get("loss_ratio"),
         "screening_loss_ratio": entry.get("screening_loss_ratio"),
         "screening_novelty": entry.get("screening_novelty"),
@@ -278,10 +339,10 @@ def _compact_leaderboard_entry(entry: dict) -> dict:
         "reference_name": entry.get("reference_name"),
         "timestamp": entry.get("timestamp"),
         "tags": entry.get("tags"),
-        # Scaling & efficiency (needed by candidateScore)
+        # Scaling & efficiency
         "scaling_param_efficiency": entry.get("scaling_param_efficiency"),
         "scaling_gate_passed": entry.get("scaling_gate_passed"),
-        # Routing & sparsity (needed by candidateScore)
+        # Routing & sparsity
         "routing_savings_ratio": entry.get("routing_savings_ratio"),
         "routing_utilization_entropy": entry.get("routing_utilization_entropy"),
         "n_routing_ops": entry.get("n_routing_ops"),
@@ -291,7 +352,7 @@ def _compact_leaderboard_entry(entry: dict) -> dict:
         "depth_savings_ratio": entry.get("depth_savings_ratio"),
         "recursion_savings_ratio": entry.get("recursion_savings_ratio"),
         "activation_sparsity_score": entry.get("activation_sparsity_score"),
-        # Robustness (needed by candidateScore)
+        # Robustness
         "fp_jacobian_spectral_norm": entry.get("fp_jacobian_spectral_norm"),
         "robustness_noise_score": entry.get("robustness_noise_score"),
         "quant_int8_retention": entry.get("quant_int8_retention"),
@@ -352,6 +413,21 @@ def _compact_leaderboard_entry(entry: dict) -> dict:
     }
 
 
+def _attach_dashboard_entry_metadata(entries: List[Dict[str, Any]]) -> None:
+    if not entries:
+        return
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        entry["capability_quality"] = capability_quality_for_entry(entry)
+        entry["promotion_evidence"] = promotion_evidence_for_entry(entry)
+        semantic_warning = _semantic_warning_for_entry(entry)
+        entry["semantic_warning"] = semantic_warning
+        entry["semantic_warning_count"] = 1 if semantic_warning else 0
+        if not isinstance(entry.get("score_breakdown"), dict):
+            entry["score_breakdown"] = {}
+
+
 def _apply_arch_spec_metrics(entries: List[Dict[str, Any]]) -> None:
     for entry in entries:
         spec_json = entry.get("_arch_spec_json")
@@ -370,6 +446,11 @@ def _apply_arch_spec_metrics(entries: List[Dict[str, Any]]) -> None:
             and entry.get("loss_improvement_rate") is None
         ):
             entry["loss_improvement_rate"] = float(spec["improvement_rate"])
+
+
+def _annotate_capability_quality(entries: List[Dict[str, Any]]) -> None:
+    for entry in entries:
+        entry["capability_quality"] = capability_quality_for_entry(entry)
 
 
 def _apply_cross_run_stability(
@@ -401,6 +482,7 @@ def _enrich_ranked_entries(
     stability = _apply_cross_run_stability(nb, entries)
     annotate_qkv_usage(entries, analytics)
     _apply_arch_spec_metrics(entries)
+    _annotate_capability_quality(entries)
     return stability
 
 
@@ -408,8 +490,6 @@ def register_leaderboard_routes(app, context: ApiRouteContext):
     notebook_path = context.notebook_path
     wnb = with_notebook_context(notebook_path)
 
-    @app.route("/api/leaderboard")
-    @wnb
     def api_leaderboard(nb=None):
         """Get leaderboard entries, optionally filtered by tier."""
         tier = request.args.get("tier")
@@ -439,6 +519,7 @@ def register_leaderboard_routes(app, context: ApiRouteContext):
         if quality == "promotable":
             entries = [entry for entry in entries if _entry_has_promotion_path(entry)]
             entries = entries[:limit]
+        _attach_dashboard_entry_metadata(entries)
         if not compact:
             stability = _enrich_ranked_entries(
                 nb,
@@ -467,8 +548,6 @@ def register_leaderboard_routes(app, context: ApiRouteContext):
             }
         )
 
-    @app.route("/api/leaderboard/status", methods=["POST"])
-    @wnb
     def api_leaderboard_update_status(nb=None):
         body = request.get_json(silent=True) or {}
         tier = str(body.get("tier") or "").strip().lower()
@@ -522,8 +601,6 @@ def register_leaderboard_routes(app, context: ApiRouteContext):
             }
         )
 
-    @app.route("/api/leaderboard/pin", methods=["POST"])
-    @wnb
     def api_leaderboard_pin(nb=None):
         body = request.get_json(silent=True) or {}
         entry_id = str(body.get("entry_id") or "").strip()
@@ -549,8 +626,39 @@ def register_leaderboard_routes(app, context: ApiRouteContext):
             {"success": True, "entry_id": resolved_entry_id, "pinned": pinned}
         )
 
-    @app.route("/api/discoveries")
-    @wnb
+    def api_leaderboard_rescore(nb=None):
+        body = request.get_json(silent=True) or {}
+        result_ids = body.get("result_ids") or []
+        if isinstance(result_ids, str):
+            result_ids = [result_ids]
+        if not isinstance(result_ids, list):
+            return jsonify({"error": "result_ids must be a list of strings"}), 400
+
+        only_stale_raw = body.get("only_stale", False)
+        only_stale = (
+            parse_bool_query(only_stale_raw, default=False)
+            if isinstance(only_stale_raw, str)
+            else bool(only_stale_raw)
+        )
+        normalized_ids = [
+            str(result_id).strip() for result_id in result_ids if str(result_id).strip()
+        ]
+        total, changed = rescore_leaderboard(
+            nb,
+            result_ids=normalized_ids or None,
+            only_stale=only_stale,
+            reason="api_leaderboard_rescore",
+        )
+        return jsonify(
+            {
+                "success": True,
+                "total": total,
+                "changed": changed,
+                "only_stale": only_stale,
+                "result_ids": normalized_ids,
+            }
+        )
+
     def api_discoveries(nb=None):
         """Unified discoveries endpoint merging leaderboard + raw candidates."""
         from ..naming import annotate_display_names
@@ -594,6 +702,8 @@ def register_leaderboard_routes(app, context: ApiRouteContext):
                 p.pop("graph_json", None)
                 p.pop("_graph_json", None)
                 p.pop("loss_curve", None)
+            _annotate_capability_quality(programs)
+            _attach_dashboard_entry_metadata(programs)
 
             return jsonify(
                 {
@@ -604,6 +714,89 @@ def register_leaderboard_routes(app, context: ApiRouteContext):
                     "tier_counts": tier_counts,
                     "trusted_only": trusted_only,
                     "view": "all",
+                }
+            )
+
+        if view in ("backlog", "all_graphs"):
+            include_failed = parse_bool_query(
+                request.args.get("include_failed"), default=True
+            )
+            unranked_only = view == "backlog"
+            capped_limit = max(min(int(limit), 5000), 1)
+
+            where = ["TRIM(COALESCE(pr.graph_fingerprint, '')) <> ''"]
+            params: List[Any] = []
+            if unranked_only:
+                where.append("l.entry_id IS NULL")
+            if not include_failed:
+                where.append("COALESCE(pr.stage1_passed, 0) = 1")
+            if search_query:
+                wildcard = f"%{search_query}%"
+                where.append(
+                    "("
+                    "LOWER(COALESCE(pr.graph_fingerprint, '')) LIKE LOWER(?)"
+                    " OR LOWER(COALESCE(pr.result_id, '')) LIKE LOWER(?)"
+                    " OR LOWER(COALESCE(pr.model_source, '')) LIKE LOWER(?)"
+                    ")"
+                )
+                params.extend([wildcard, wildcard, wildcard])
+            sql = f"""
+                SELECT pr.*, l.entry_id AS leaderboard_entry_id
+                FROM program_results pr
+                LEFT JOIN leaderboard l ON l.result_id = pr.result_id
+                WHERE {" AND ".join(where)}
+                ORDER BY pr.timestamp DESC
+                LIMIT ?
+            """
+            params.append(capped_limit)
+            rows = nb.conn.execute(sql, tuple(params)).fetchall()
+            programs = nb._attach_canonical_program_scores([dict(row) for row in rows])
+            for p in programs:
+                # Promote leaderboard_entry_id → entry_id so client filters
+                # (`!entry?.entry_id`) and the existing column renderers work
+                # uniformly across ranked and unranked rows.
+                if p.get("leaderboard_entry_id") and not p.get("entry_id"):
+                    p["entry_id"] = p["leaderboard_entry_id"]
+            completeness_fields = (
+                "rapid_screening_passed",
+                "wikitext_perplexity",
+                "hellaswag_acc",
+                "induction_v2_investigation_auc",
+                "binding_v2_investigation_auc",
+                "discovery_loss_ratio",
+                "validation_loss_ratio",
+            )
+            for p in programs:
+                missing = [f for f in completeness_fields if p.get(f) is None]
+                p["missing_metrics"] = missing
+                p["missing_metrics_count"] = len(missing)
+                p["completeness_ratio"] = 1.0 - len(missing) / len(completeness_fields)
+            attach_long_context_breakdown(nb, programs)
+            annotate_qkv_usage(programs, analytics)
+            for p in programs:
+                p["architecture_family"] = nb._classify_architecture_family(
+                    graph_json=p.get("graph_json"),
+                    routing_mode=p.get("routing_mode"),
+                )
+                p["tier"] = infer_tier_for_program(nb, p)
+            annotate_display_names(programs)
+            for p in programs:
+                p.pop("graph_json", None)
+                p.pop("_graph_json", None)
+                p.pop("loss_curve", None)
+            _annotate_capability_quality(programs)
+            _attach_dashboard_entry_metadata(programs)
+
+            return jsonify(
+                {
+                    "entries": _json_safe(programs),
+                    "references": _json_safe(references),
+                    "total": len(programs),
+                    "counts": tier_counts,
+                    "tier_counts": tier_counts,
+                    "trusted_only": False,
+                    "view": view,
+                    "include_failed": include_failed,
                 }
             )
 
@@ -623,12 +816,14 @@ def register_leaderboard_routes(app, context: ApiRouteContext):
                 sort_by=sort_by,
                 include_references=False,
                 trusted_only=trusted_only,
+                tier_match_mode="current",
             )
         stability = _enrich_ranked_entries(
             nb,
             entries,
             analytics=analytics,
         )
+        _attach_dashboard_entry_metadata(entries)
         annotate_display_names(entries)
 
         return jsonify(
@@ -648,3 +843,30 @@ def register_leaderboard_routes(app, context: ApiRouteContext):
                 "view": "ranked",
             }
         )
+
+    register_notebook_routes(
+        app,
+        wnb,
+        (
+            ("/api/leaderboard", "api_leaderboard", api_leaderboard),
+            (
+                "/api/leaderboard/status",
+                "api_leaderboard_update_status",
+                api_leaderboard_update_status,
+                ("POST",),
+            ),
+            (
+                "/api/leaderboard/pin",
+                "api_leaderboard_pin",
+                api_leaderboard_pin,
+                ("POST",),
+            ),
+            (
+                "/api/leaderboard/rescore",
+                "api_leaderboard_rescore",
+                api_leaderboard_rescore,
+                ("POST",),
+            ),
+            ("/api/discoveries", "api_discoveries", api_discoveries),
+        ),
+    )

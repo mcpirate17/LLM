@@ -67,10 +67,6 @@ class _ResultsAutoEscalatePhase7Mixin:
     """Branch helpers extracted from _auto_escalate orchestration."""
 
     @staticmethod
-    def _log_learning_event_compat(nb: LabNotebook, *args, **kwargs) -> None:
-        getattr(nb, "log_learning_event")(*args, **kwargs)
-
-    @staticmethod
     def _meets_empirical_validation_override(
         candidate: Dict[str, Any],
         candidate_score: float,
@@ -381,8 +377,7 @@ class _ResultsAutoEscalatePhase7Mixin:
         delta = 0.1
         old_bias = config.grammar_config.structured_sparsity_bias
         config.grammar_config.update_bias(delta)
-        _ResultsAutoEscalatePhase7Mixin._log_learning_event_compat(
-            nb,
+        nb.log_learning_event(
             event_type="grammar_adjustment",
             description=f"Boosted structured_sparsity_bias by {delta} due to sparse dominance.",
             old_weights={"bias": old_bias},

@@ -7,15 +7,18 @@ import sqlite3
 from typing import Any, Dict, List
 
 from flask import jsonify, request
+from .deps import get_notebook
 from .deps import ApiRouteContext
 from ._utils import (
-    bind_notebook_view,
     is_malformed_db_error,
     malformed_db_response_payload,
+    register_notebook_routes,
     with_notebook_context,
 )
 from ..persona import get_aria
 from ._helpers import (
+    build_passive_aria_status,
+    get_aria_for_notebook,
     get_runner,
     get_run_trigger_snapshot,
     deduplicate_insights,
@@ -26,7 +29,10 @@ from ._strategy_recommendations import (
     compute_cross_run_stability,
     compute_breakthrough_production_readiness,
     _empty_breakthrough_readiness,
+    promotion_evidence_for_entry,
+    decision_gate_for_entry,
 )
+from ..discovery_scoring import attach_discovery_score_payload
 from ._strategy_report import (
     parse_report_date,
     report_program_matches_theme,
@@ -275,7 +281,9 @@ def _build_report_payload(
     )
     default_grammar_weights = analytics.get_current_grammar_weights()
     learned_grammar_weights = (
-        analytics.compute_grammar_weights() if include_heavy else default_grammar_weights
+        analytics.compute_grammar_weights()
+        if include_heavy
+        else default_grammar_weights
     )
     payload = {
         "summary": summary,
@@ -296,9 +304,7 @@ def _build_report_payload(
             "control_comparison": analytics.control_experiment_comparison(),
             "holdout_validation": analytics.holdout_validation(),
             "learning_diagnostics": (
-                analytics.grammar_weight_learning_diagnostics()
-                if include_heavy
-                else {}
+                analytics.grammar_weight_learning_diagnostics() if include_heavy else {}
             ),
         },
         "learning_log": nb.get_learning_log(limit=20 if fast_mode else 50),
@@ -327,7 +333,10 @@ def _build_report_payload(
 
 
 def _attach_report_program_metadata(nb, analytics, data: Dict[str, Any]) -> None:
-    learning_diagnostics = data["grammar_weights"].get("learning_diagnostics") or {}
+    attach_discovery_score_payload(data["top_programs"])
+    attach_discovery_score_payload(data["top_programs_expanded"])
+    grammar_weights = data.get("grammar_weights") or {}
+    learning_diagnostics = grammar_weights.get("learning_diagnostics") or {}
     data["architecture_rerun_telemetry"] = {
         "unique_fingerprint_count": int(
             learning_diagnostics.get("unique_fingerprints") or 0
@@ -340,9 +349,7 @@ def _attach_report_program_metadata(nb, analytics, data: Dict[str, Any]) -> None
         ),
         "weighting_mode": str(learning_diagnostics.get("mode") or "unknown"),
     }
-    if getattr(nb, "_read_only", False):
-        data["action_eligibility"] = {}
-    else:
+    try:
         data["action_eligibility"] = build_report_action_eligibility(
             nb,
             [
@@ -354,8 +361,19 @@ def _attach_report_program_metadata(nb, analytics, data: Dict[str, Any]) -> None
                 if row.get("result_id")
             ],
         )
+    except sqlite3.DatabaseError as exc:
+        if not getattr(nb, "_read_only", False):
+            raise
+        logger.debug("Report action eligibility unavailable in read-only mode: %s", exc)
+        data["action_eligibility"] = {}
     annotate_qkv_usage(data["top_programs"], analytics)
     annotate_qkv_usage(data["top_programs_expanded"], analytics)
+    for program in [
+        *(data["top_programs"] or []),
+        *(data["top_programs_expanded"] or []),
+    ]:
+        program["promotion_evidence"] = promotion_evidence_for_entry(program)
+        program["decision_gate"] = decision_gate_for_entry(program)
 
 
 def _attach_report_cross_run_stability(nb, data: Dict[str, Any]) -> None:
@@ -486,7 +504,11 @@ def _api_status(notebook_path: str, nb=None):
     progress_payload["run_trigger"] = trigger
     return jsonify(
         {
-            "aria": aria.get_status(db_summary=summary),
+            "aria": build_passive_aria_status(
+                aria,
+                notebook_path=notebook_path,
+                db_summary=summary,
+            ),
             "summary": summary,
             "is_running": runner_state["is_running"],
             "progress": progress_payload,
@@ -590,7 +612,11 @@ def _api_dashboard(notebook_path: str, nb=None):
         summary = _degraded_dashboard_summary(exc)
         return jsonify(
             {
-                "aria": aria.get_status(db_summary=summary),
+                "aria": build_passive_aria_status(
+                    aria,
+                    notebook_path=notebook_path,
+                    db_summary=summary,
+                ),
                 "summary": summary,
                 "recent_experiments": [],
                 "top_programs": [],
@@ -621,7 +647,11 @@ def _api_dashboard(notebook_path: str, nb=None):
             )
         )
         data = {
-            "aria": aria.get_status(db_summary=summary),
+            "aria": build_passive_aria_status(
+                aria,
+                notebook_path=notebook_path,
+                db_summary=summary,
+            ),
             "summary": summary,
             "recent_experiments": recent_experiments,
             "top_programs": top_programs,
@@ -648,7 +678,11 @@ def _api_dashboard(notebook_path: str, nb=None):
         production_readiness = compute_breakthrough_production_readiness(nb, analytics)
 
     data = {
-        "aria": aria.get_status(db_summary=summary),
+        "aria": build_passive_aria_status(
+            aria,
+            notebook_path=notebook_path,
+            db_summary=summary,
+        ),
         "summary": summary,
         "recent_experiments": recent_experiments,
         "top_programs": top_programs,
@@ -714,9 +748,9 @@ def _api_slot_compatibility(nb=None):
     return jsonify({"slot_rules": get_slot_rule_summary()})
 
 
-def _api_report(nb=None):
+def _api_report(notebook_path: str, nb=None):
     """Consolidated research report with all data."""
-    aria = get_aria()
+    aria = get_aria_for_notebook(notebook_path)
     from ..analytics import ExperimentAnalytics
 
     analytics = ExperimentAnalytics(nb)
@@ -753,9 +787,9 @@ def _api_report(nb=None):
     return jsonify(data)
 
 
-def _api_report_query(nb=None):
+def _api_report_query(notebook_path: str, nb=None):
     """Scoped report payload for date/theme/trend report generation."""
-    aria = get_aria()
+    aria = get_aria_for_notebook(notebook_path)
     from ..analytics import ExperimentAnalytics
 
     analytics = ExperimentAnalytics(nb)
@@ -796,6 +830,8 @@ def _api_report_query(nb=None):
             min_latest_completed_ts=latest_completed_ts,
         )
         if isinstance(cached, dict):
+            _attach_report_program_metadata(nb, analytics, cached)
+            _attach_report_cross_run_stability(nb, cached)
             cached["snapshot_cache"] = {
                 "enabled": True,
                 "hit": True,
@@ -851,6 +887,9 @@ def _api_report_query(nb=None):
         },
     }
 
+    _attach_report_program_metadata(nb, analytics, data)
+    _attach_report_cross_run_stability(nb, data)
+
     if include_narrative:
         try:
             data["narrative"] = aria.generate_report_narrative(data)
@@ -860,13 +899,22 @@ def _api_report_query(nb=None):
 
     if not include_narrative:
         try:
-            nb.save_report_snapshot(
-                snapshot_key=snapshot_key,
-                scope="report_query",
-                query=snapshot_query,
-                payload=data,
-                latest_completed_ts=latest_completed_ts,
-            )
+            writer_nb = nb
+            close_writer = False
+            if getattr(nb, "_read_only", False):
+                writer_nb = get_notebook(notebook_path, read_only=False)
+                close_writer = True
+            try:
+                writer_nb.save_report_snapshot(
+                    snapshot_key=snapshot_key,
+                    scope="report_query",
+                    query=snapshot_query,
+                    payload=data,
+                    latest_completed_ts=latest_completed_ts,
+                )
+            finally:
+                if close_writer:
+                    writer_nb.close()
         except Exception as exc:
             logger.debug("Scoped report snapshot save failed: %s", exc)
 
@@ -876,68 +924,67 @@ def _api_report_query(nb=None):
 def register_reporting_routes(app, context: ApiRouteContext):
     notebook_path = context.notebook_path
     wnb = with_notebook_context(notebook_path)
-
-    app.add_url_rule(
-        "/api/status", "api_status", bind_notebook_view(wnb, _api_status, notebook_path)
-    )
-    app.add_url_rule(
-        "/api/recompute-failure-signatures",
-        "api_recompute_failure_signatures",
-        bind_notebook_view(wnb, _api_recompute_failure_signatures),
-        methods=["POST"],
-    )
-    app.add_url_rule(
-        "/api/reset-op-stats",
-        "api_reset_op_stats",
-        bind_notebook_view(wnb, _api_reset_op_stats),
-        methods=["POST"],
-    )
-    app.add_url_rule(
-        "/api/healer/tasks",
-        "api_healer_tasks",
-        bind_notebook_view(wnb, _api_healer_tasks),
-    )
-    app.add_url_rule(
-        "/api/healer/tasks/<task_id>",
-        "api_healer_task_detail",
-        bind_notebook_view(wnb, _api_healer_task_detail),
-    )
-    app.add_url_rule(
-        "/api/entries", "api_entries", bind_notebook_view(wnb, _api_entries)
-    )
-    app.add_url_rule(
-        "/api/metrics/<metric_name>",
-        "api_metrics",
-        bind_notebook_view(wnb, _api_metrics),
-    )
-    app.add_url_rule(
-        "/api/dashboard",
-        "api_dashboard",
-        bind_notebook_view(wnb, _api_dashboard, notebook_path),
-    )
-    app.add_url_rule(
-        "/api/dashboard/summary",
-        "api_dashboard_2",
-        bind_notebook_view(wnb, _api_dashboard, notebook_path),
-    )
-    app.add_url_rule(
-        "/api/reporting/data-accounting",
-        "api_data_accounting",
-        bind_notebook_view(wnb, _api_data_accounting),
-    )
-    app.add_url_rule(
-        "/api/reporting/model-strength",
-        "api_model_strength",
-        bind_notebook_view(wnb, _api_model_strength),
-    )
-    app.add_url_rule(
-        "/api/reporting/slot-compatibility",
-        "api_slot_compatibility",
-        bind_notebook_view(wnb, _api_slot_compatibility),
-    )
-    app.add_url_rule("/api/report", "api_report", bind_notebook_view(wnb, _api_report))
-    app.add_url_rule(
-        "/api/report/query",
-        "api_report_query",
-        bind_notebook_view(wnb, _api_report_query),
+    register_notebook_routes(
+        app,
+        wnb,
+        (
+            ("/api/status", "api_status", _api_status, None, (notebook_path,)),
+            (
+                "/api/recompute-failure-signatures",
+                "api_recompute_failure_signatures",
+                _api_recompute_failure_signatures,
+                ("POST",),
+            ),
+            (
+                "/api/reset-op-stats",
+                "api_reset_op_stats",
+                _api_reset_op_stats,
+                ("POST",),
+            ),
+            ("/api/healer/tasks", "api_healer_tasks", _api_healer_tasks),
+            (
+                "/api/healer/tasks/<task_id>",
+                "api_healer_task_detail",
+                _api_healer_task_detail,
+            ),
+            ("/api/entries", "api_entries", _api_entries),
+            ("/api/metrics/<metric_name>", "api_metrics", _api_metrics),
+            (
+                "/api/dashboard",
+                "api_dashboard",
+                _api_dashboard,
+                None,
+                (notebook_path,),
+            ),
+            (
+                "/api/dashboard/summary",
+                "api_dashboard_2",
+                _api_dashboard,
+                None,
+                (notebook_path,),
+            ),
+            (
+                "/api/reporting/data-accounting",
+                "api_data_accounting",
+                _api_data_accounting,
+            ),
+            (
+                "/api/reporting/model-strength",
+                "api_model_strength",
+                _api_model_strength,
+            ),
+            (
+                "/api/reporting/slot-compatibility",
+                "api_slot_compatibility",
+                _api_slot_compatibility,
+            ),
+            ("/api/report", "api_report", _api_report, None, (notebook_path,)),
+            (
+                "/api/report/query",
+                "api_report_query",
+                _api_report_query,
+                None,
+                (notebook_path,),
+            ),
+        ),
     )

@@ -131,9 +131,11 @@ def test_rigl_mask_matches_reference_selection():
     ).indices
     expected[grow_indices] = True
 
-    actual = load_loss_native().rigl_compute_new_mask(
-        param, grad, mask, num_to_update
-    ).reshape(-1)
+    actual = (
+        load_loss_native()
+        .rigl_compute_new_mask(param, grad, mask, num_to_update)
+        .reshape(-1)
+    )
 
     assert torch.equal(actual, expected)
 

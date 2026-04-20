@@ -103,7 +103,9 @@ class MuonOptimizer(torch.optim.Optimizer):
             for i, param in enumerate(params):
                 if param.ndim >= 2:
                     reshaped = updates[i].view(param.shape[0], -1)
-                    updates[i] = _orthogonalize_update(reshaped, ns_steps).view_as(param)
+                    updates[i] = _orthogonalize_update(reshaped, ns_steps).view_as(
+                        param
+                    )
 
             if weight_decay > 0.0:
                 torch._foreach_mul_(params, 1.0 - lr * weight_decay)

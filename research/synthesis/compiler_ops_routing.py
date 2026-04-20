@@ -748,9 +748,9 @@ def _op_sparse_span_builder(module, inputs, config):
             span_features = torch.zeros_like(x)
             if bool(valid.any()):
                 b_idx, k_idx = torch.where(valid)
-                span_features[b_idx, end_positions[b_idx, k_idx]] = (
-                    packed_features[b_idx, k_idx]
-                )
+                span_features[b_idx, end_positions[b_idx, k_idx]] = packed_features[
+                    b_idx, k_idx
+                ]
             span_strength = coverage.to(x.dtype)
         except (ImportError, RuntimeError, AttributeError) as e:
             record_kernel_fallback("sparse_span_extract_f32", e)

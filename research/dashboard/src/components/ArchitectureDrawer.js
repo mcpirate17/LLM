@@ -148,17 +148,19 @@ function ArchitectureDrawer({ resultId, onClose, readOnly = true, onGraphLoaded,
 
     setBooting(true);
     setError(null);
-    setBridgeStep('starting-services');
+    setBridgeStep(readOnly ? 'loading-iframe' : 'starting-services');
     setLoading(true);
 
-    const checkDesigner = postJson('/api/designer/ensure-running', { force_restart: false }, {
-      signal: abortController.signal,
-      timeoutMs: 60000,
-    }).then(res => res.json().then(payload => {
-      if (!res.ok || payload?.ok === false) {
-        throw new Error(payload?.error || `HTTP ${res.status}`);
-      }
-    }));
+    const checkDesigner = readOnly
+      ? Promise.resolve()
+      : postJson('/api/designer/ensure-running', { force_restart: false }, {
+          signal: abortController.signal,
+          timeoutMs: 60000,
+        }).then(res => res.json().then(payload => {
+          if (!res.ok || payload?.ok === false) {
+            throw new Error(payload?.error || `HTTP ${res.status}`);
+          }
+        }));
 
     const fetchSource = resultId
       ? apiCall(`/api/programs/${resultId}`, { signal: abortController.signal }).then(r => r.json())
@@ -188,7 +190,7 @@ function ArchitectureDrawer({ resultId, onClose, readOnly = true, onGraphLoaded,
       });
 
     return () => { abortController.abort(); };
-  }, [resultId]);
+  }, [readOnly, resultId]);
 
   useEffect(() => {
     setIntegrityWarning(buildIntegrityWarning(sourceGraphCheck, designerGraphCheck));

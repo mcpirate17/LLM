@@ -21,7 +21,6 @@ import logging
 import os
 import random
 import signal
-import sqlite3
 import sys
 import time
 from dataclasses import dataclass, field
@@ -29,6 +28,7 @@ from typing import Dict, List, Optional, Set, Tuple
 
 import torch
 import torch.nn as nn
+from research.tools._db_maintenance import connect_readonly
 from research.training.loss_ops import clip_grad_norm_, next_token_cross_entropy
 
 logger = logging.getLogger(__name__)
@@ -171,8 +171,7 @@ def discover_targets(
 
     observed: Dict[str, int] = {}
     if os.path.exists(db_path):
-        conn = sqlite3.connect(db_path, timeout=5)
-        conn.row_factory = sqlite3.Row
+        conn = connect_readonly(Path(db_path))
         try:
             tables = {
                 r["name"]
@@ -1442,48 +1441,117 @@ def _build_cli_parser() -> argparse.ArgumentParser:
         default="forced",
         help="weighted = boost under-observed ops; forced = one graph per op (default: forced)",
     )
-    parser.add_argument("--threshold", type=int, default=20,
-                        help="Observation threshold (default: 20)")
-    parser.add_argument("--device", default="cpu",
-                        help="Device for evaluation (default: cpu)")
-    parser.add_argument("--n-graphs", type=int, default=50,
-                        help="Number of graphs for weighted mode (default: 50)")
-    parser.add_argument("--max-retries", type=int, default=100,
-                        help="Max retries per op in forced mode (default: 20)")
-    parser.add_argument("--graphs-per-op", type=int, default=1,
-                        help="Graphs to generate per target op in forced mode (default: 1)")
-    parser.add_argument("--rapid-steps", type=int, default=150,
-                        help="Rapid screening gradient steps (default: 150)")
-    parser.add_argument("--no-s1", action="store_true",
-                        help="Skip S1 micro-training (faster, less thorough)")
-    parser.add_argument("--s1-steps", type=int, default=500,
-                        help="S1 training steps (default: 500)")
-    parser.add_argument("--output-dir", default="research/reports",
-                        help="Output directory for reports (default: research/reports)")
-    parser.add_argument("--seed", type=int, default=42, help="Random seed (default: 42)")
-    parser.add_argument("--db", default="research/lab_notebook.db",
-                        help="Path to lab_notebook.db (default: research/lab_notebook.db)")
-    parser.add_argument("--dry-run", action="store_true",
-                        help="Only generate graphs, skip pipeline evaluation")
-    parser.add_argument("--record", action=argparse.BooleanOptionalAction, default=True,
-                        help="Record results to lab_notebook.db (default: on)")
     parser.add_argument(
-        "--ops", nargs="+", metavar="OP",
+        "--threshold", type=int, default=20, help="Observation threshold (default: 20)"
+    )
+    parser.add_argument(
+        "--device", default="cpu", help="Device for evaluation (default: cpu)"
+    )
+    parser.add_argument(
+        "--n-graphs",
+        type=int,
+        default=50,
+        help="Number of graphs for weighted mode (default: 50)",
+    )
+    parser.add_argument(
+        "--max-retries",
+        type=int,
+        default=100,
+        help="Max retries per op in forced mode (default: 20)",
+    )
+    parser.add_argument(
+        "--graphs-per-op",
+        type=int,
+        default=1,
+        help="Graphs to generate per target op in forced mode (default: 1)",
+    )
+    parser.add_argument(
+        "--rapid-steps",
+        type=int,
+        default=150,
+        help="Rapid screening gradient steps (default: 150)",
+    )
+    parser.add_argument(
+        "--no-s1",
+        action="store_true",
+        help="Skip S1 micro-training (faster, less thorough)",
+    )
+    parser.add_argument(
+        "--s1-steps", type=int, default=500, help="S1 training steps (default: 500)"
+    )
+    parser.add_argument(
+        "--output-dir",
+        default="research/reports",
+        help="Output directory for reports (default: research/reports)",
+    )
+    parser.add_argument(
+        "--seed", type=int, default=42, help="Random seed (default: 42)"
+    )
+    parser.add_argument(
+        "--db",
+        default="research/lab_notebook.db",
+        help="Path to lab_notebook.db (default: research/lab_notebook.db)",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Only generate graphs, skip pipeline evaluation",
+    )
+    parser.add_argument(
+        "--record",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Record results to lab_notebook.db (default: on)",
+    )
+    parser.add_argument(
+        "--ops",
+        nargs="+",
+        metavar="OP",
         help="Force exploration of specific ops by name (ignores --threshold). "
         "Example: --ops softmax_attention linear_proj chebyshev_spectral_mix",
     )
-    parser.add_argument("--max-ops", type=int, default=None, metavar="N",
-                        help="Max ops (components) per graph. Default: 18 (exploration mode)")
-    parser.add_argument("--max-depth", type=int, default=None, metavar="N",
-                        help="Max graph depth (longest path from input to output). Default: 12")
-    parser.add_argument("--n-blocks", type=int, default=None, metavar="N",
-                        help="Template blocks stacked per graph. Each block expands to ~3-8 ops. Default: 2")
-    parser.add_argument("--model-dim", type=int, default=MODEL_DIM, metavar="D",
-                        help=f"Model dimension (default: {MODEL_DIM})")
-    parser.add_argument("--n-layers", type=int, default=N_LAYERS, metavar="N",
-                        help=f"Layers in compiled model (default: {N_LAYERS})")
-    parser.add_argument("--boost-factor", type=float, default=50.0, metavar="F",
-                        help="Template weight multiplier for target ops in forced mode (default: 50.0)")
+    parser.add_argument(
+        "--max-ops",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Max ops (components) per graph. Default: 18 (exploration mode)",
+    )
+    parser.add_argument(
+        "--max-depth",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Max graph depth (longest path from input to output). Default: 12",
+    )
+    parser.add_argument(
+        "--n-blocks",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Template blocks stacked per graph. Each block expands to ~3-8 ops. Default: 2",
+    )
+    parser.add_argument(
+        "--model-dim",
+        type=int,
+        default=MODEL_DIM,
+        metavar="D",
+        help=f"Model dimension (default: {MODEL_DIM})",
+    )
+    parser.add_argument(
+        "--n-layers",
+        type=int,
+        default=N_LAYERS,
+        metavar="N",
+        help=f"Layers in compiled model (default: {N_LAYERS})",
+    )
+    parser.add_argument(
+        "--boost-factor",
+        type=float,
+        default=50.0,
+        metavar="F",
+        help="Template weight multiplier for target ops in forced mode (default: 50.0)",
+    )
     parser.add_argument("-v", "--verbose", action="store_true", help="Verbose logging")
     return parser
 

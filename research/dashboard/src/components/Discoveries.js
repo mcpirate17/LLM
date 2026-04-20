@@ -3,9 +3,10 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { scoreColor } from '../utils/format';
 import { lossColor, noveltyColor, reliabilityColor } from '../utils/colors';
 import { useAriaData } from '../hooks/useAriaData';
-import { candidateScore, TIER_COLORS, TIER_LABELS, TIER_ORDER, bestLoss, percentOfReference } from '../utils/scoringEngine';
+import { TIER_COLORS, TIER_LABELS, TIER_ORDER, bestLoss, percentOfReference } from '../utils/scoringEngine';
+import { DISCOVERY_TIER_FILTERS, capabilityQualityRank, capabilityQualityStatus, getDiscoveryDisplayStatus, matchesActiveTier } from '../utils/discoveryStatus';
 import {
-  ExpandedDetail,
+  ExpandedDetailPanel,
   FingerprintLeaderboardChart,
   ScoreCell,
   StatusBadge,
@@ -15,6 +16,64 @@ import SortIndicator from './shared/SortIndicator';
 
 const DISCOVERIES_PREFS_KEY = 'aria_discoveries_prefs_v1';
 const QUALITY_FLOOR_THRESHOLD = 0.8;
+const DEFAULT_ACTIVE_TIER = 'all';
+const DEFAULT_SHOW_REFERENCES = true;
+const DEFAULT_HIDE_FAILED = true;
+const DEFAULT_QUALITY_FLOOR_ENABLED = true;
+const DEFAULT_SOURCE_FILTER = 'trusted';
+const DEFAULT_CAPABILITY_FILTER = 'all';
+
+const SOURCE_FILTER_LABELS = {
+  trusted: 'Trusted ranked',
+  backlog: 'Backlog',
+  all_graphs: 'All graphs',
+  all: 'Mixed trust ranked',
+  untrusted: 'Untrusted',
+  backfill: 'Backfill',
+  replay: 'Replay',
+};
+
+const CAPABILITY_FILTER_LABELS = {
+  all: 'All quality states',
+  qualified: 'Capability-Qualified',
+  training_only: 'Training-Only',
+  pending: 'Validation Pending',
+};
+
+const FILTER_PANEL_STYLE = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 8,
+  flexWrap: 'wrap',
+  padding: '8px 10px',
+  border: '1px solid var(--border)',
+  borderRadius: 8,
+  background: 'var(--bg-secondary)',
+  minHeight: 44,
+};
+
+const FILTER_PANEL_TITLE_STYLE = {
+  fontSize: 11,
+  fontWeight: 600,
+  color: 'var(--text-muted)',
+  marginRight: 2,
+};
+const PIN_COLUMN_WIDTH = 26;
+const RANK_COLUMN_WIDTH = 44;
+const STATUS_COLUMN_WIDTH = 152;
+const ACTION_COLUMN_WIDTH = 84;
+
+function toggleButtonStyle(active, activeColor, activeBackground) {
+  return {
+    fontSize: 11,
+    padding: '5px 12px',
+    cursor: 'pointer',
+    background: active ? activeBackground : 'transparent',
+    border: `1px solid ${active ? activeColor : 'var(--border)'}`,
+    borderRadius: 4,
+    color: active ? activeColor : 'var(--text-secondary)',
+  };
+}
 
 function provenanceBucket(entry) {
   const cohort = String(entry?.result_cohort || '').trim().toLowerCase();
@@ -36,6 +95,37 @@ function provenanceBucket(entry) {
     return 'trusted';
   }
   return 'untrusted';
+}
+
+function rowBackgrounds({ index, isHighlighted, isPinnedReference, isExpanded, tier }) {
+  if (isPinnedReference) {
+    return {
+      base: 'rgba(188, 140, 255, 0.14)',
+      hover: 'rgba(188, 140, 255, 0.18)',
+    };
+  }
+  if (isHighlighted) {
+    return {
+      base: 'rgba(88, 166, 255, 0.20)',
+      hover: 'rgba(88, 166, 255, 0.26)',
+    };
+  }
+  if (isExpanded) {
+    return {
+      base: 'rgba(88, 166, 255, 0.12)',
+      hover: 'rgba(88, 166, 255, 0.16)',
+    };
+  }
+  if (tier === 'breakthrough') {
+    return {
+      base: 'rgba(63, 185, 80, 0.08)',
+      hover: 'rgba(63, 185, 80, 0.13)',
+    };
+  }
+  return {
+    base: index % 2 === 1 ? 'rgba(255, 255, 255, 0.012)' : 'transparent',
+    hover: 'rgba(88, 166, 255, 0.10)',
+  };
 }
 
 function discoveryLossDisplay(entry) {
@@ -61,10 +151,17 @@ function finitePositiveOrNull(value) {
   return num;
 }
 
+function finiteOrNull(value) {
+  if (value == null) return null;
+  const num = Number(value);
+  return Number.isFinite(num) ? num : null;
+}
+
 // ── Main Component ─────────────────────────────────────────────────
 
 const COLUMNS = [
-  { key: '_score', label: 'Discovery Score', width: 124, title: 'Internal ranking score based on novelty and performance.' },
+  { key: '_score', label: 'Discovery Score', width: 124, title: 'Canonical backend composite score used for ranking discoveries.' },
+  { key: '_capability_quality', label: 'Capability', width: 134, title: 'Quality state separate from workflow stage: Capability-Qualified, Training-Only, Validation Pending, etc.' },
   { key: 'display_name', label: 'Architecture', width: 240, title: 'Human-readable name or fingerprint of the model topology.' },
   { key: 'architecture_family', label: 'Family', width: 120, title: 'The architectural category (e.g., Attention, SSM, Hybrid).' },
   { key: 'discovery_loss_ratio', label: 'Disc Loss', width: 92, title: 'Loss ratio on random tokens (fast triage).' },
@@ -84,10 +181,25 @@ const COLUMNS = [
   { key: 'max_viable_seq_len', label: 'MaxLen', width: 86, title: 'Maximum viable sequence length from long-context scaling sweep.' },
   { key: 'jacobian_spectral_norm', label: 'Spectral', width: 82, title: 'Jacobian Spectral Norm: stability of gradient propagation (lower is better).' },
   { key: 'init_sensitivity_std', label: 'InitStd', width: 82, title: 'Sensitivity to weight initialization (lower means more predictable).' },
-  { key: 'tier', label: 'Status', width: 128, title: 'Current research phase of this architecture.' },
-  { key: '_details', label: 'View', width: 72, title: 'Open the detailed fingerprint side panel for this architecture.' },
-  { key: '_compare', label: 'Cmp', width: 72, title: 'Add architecture to side-by-side comparison.' },
-  { key: '_designer', label: 'UI', width: 72, title: 'Open architecture in the visual designer.' },
+  { key: 'wikitext_perplexity', label: 'WikiPPL', width: 90, title: 'WikiText-103 validation perplexity (lower is better).' },
+  { key: 'hellaswag_acc', label: 'HellaSwag', width: 90, title: 'HellaSwag accuracy (commonsense reasoning).' },
+  { key: 'induction_auc', label: 'Ind v1', width: 78, title: 'Induction-head probe AUC (v1 protocol).' },
+  { key: 'induction_v2_investigation_auc', label: 'Ind v2', width: 78, title: 'Induction-head probe AUC (v2 investigation protocol).' },
+  { key: 'binding_auc', label: 'Bind v1', width: 78, title: 'Variable-binding probe AUC (v1 protocol).' },
+  { key: 'binding_v2_investigation_auc', label: 'Bind v2', width: 78, title: 'Variable-binding probe AUC (v2 investigation protocol).' },
+  { key: 'binding_composite', label: 'Bind Cmp', width: 84, title: 'Composite binding score (3-signal AND).' },
+  { key: 'ar_auc', label: 'AR AUC', width: 78, title: 'Associative recall probe AUC.' },
+  { key: 'blimp_overall_accuracy', label: 'BLiMP', width: 78, title: 'BLiMP overall grammatical-acceptability accuracy.' },
+  { key: 'ncd_score', label: 'NCD', width: 78, title: 'Normalized compression distance score.' },
+  { key: 'rapid_screening_passed', label: 'Rapid', width: 70, title: 'Whether the rapid-screening pre-gate passed.' },
+  { key: 'stage_at_death', label: 'Died At', width: 90, title: 'Stage where the program failed (blank if it survived).' },
+  { key: 'error_type', label: 'Error', width: 130, title: 'Error class if the program failed (e.g. unstable_dynamics).' },
+  { key: 'completeness_ratio', label: 'Compl', width: 78, title: 'Fraction of promotion-relevant fields populated (backlog/all_graphs only).' },
+  { key: 'missing_metrics_count', label: 'Missing', width: 80, title: 'Count of promotion-relevant metric fields still NULL.' },
+  { key: 'tier', label: 'Status', width: STATUS_COLUMN_WIDTH, title: 'Current research phase of this architecture.' },
+  { key: '_details', label: 'View', width: ACTION_COLUMN_WIDTH, title: 'Open the detailed fingerprint side panel for this architecture.' },
+  { key: '_compare', label: 'Cmp', width: ACTION_COLUMN_WIDTH, title: 'Add architecture to side-by-side comparison.' },
+  { key: '_designer', label: 'UI', width: ACTION_COLUMN_WIDTH, title: 'Open architecture in the visual designer.' },
 ];
 
 const CORE_VISIBLE_COLUMNS = [
@@ -114,6 +226,30 @@ const RESEARCH_VISIBLE_COLUMNS = [
   'robustness_long_ctx_score',
   'max_viable_seq_len',
   'init_sensitivity_std',
+];
+
+const PROBES_VISIBLE_COLUMNS = [
+  '_score',
+  'display_name',
+  'architecture_family',
+  'wikitext_perplexity',
+  'hellaswag_acc',
+  'induction_auc',
+  'induction_v2_investigation_auc',
+  'binding_auc',
+  'binding_v2_investigation_auc',
+  'binding_composite',
+  'ar_auc',
+  'blimp_overall_accuracy',
+  'ncd_score',
+  'rapid_screening_passed',
+  'stage_at_death',
+  'error_type',
+  'completeness_ratio',
+  'missing_metrics_count',
+  'tier',
+  '_details',
+  '_designer',
 ];
 
 function Discoveries({
@@ -151,7 +287,7 @@ function Discoveries({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [activeTier, setActiveTier] = useState(() =>
-    ['all', 'screening', 'investigation', 'validation', 'breakthrough'].includes(prefs?.activeTier) ? prefs.activeTier : 'all'
+    DISCOVERY_TIER_FILTERS.includes(prefs?.activeTier) ? prefs.activeTier : DEFAULT_ACTIVE_TIER
   );
   const [sortKey, setSortKey] = useState(() => typeof prefs?.sortKey === 'string' ? prefs.sortKey : '_score');
   const [sortDesc, setSortDesc] = useState(() => typeof prefs?.sortDesc === 'boolean' ? prefs.sortDesc : true);
@@ -165,18 +301,28 @@ function Discoveries({
   const [statusError, setStatusError] = useState(null);
   const [showChart, setShowChart] = useState(true);
   const [showReferences, setShowReferences] = useState(() =>
-    typeof prefs?.showReferences === 'boolean' ? prefs.showReferences : true
+    typeof prefs?.showReferences === 'boolean' ? prefs.showReferences : DEFAULT_SHOW_REFERENCES
   );
   const [hideFailed, setHideFailed] = useState(() =>
-    typeof prefs?.hideFailed === 'boolean' ? prefs.hideFailed : true
+    typeof prefs?.hideFailed === 'boolean' ? prefs.hideFailed : DEFAULT_HIDE_FAILED
   );
   const [qualityFloorEnabled, setQualityFloorEnabled] = useState(() =>
-    typeof prefs?.qualityFloorEnabled === 'boolean' ? prefs.qualityFloorEnabled : true
+    typeof prefs?.qualityFloorEnabled === 'boolean' ? prefs.qualityFloorEnabled : DEFAULT_QUALITY_FLOOR_ENABLED
   );
   const [sourceFilter, setSourceFilter] = useState(() =>
-    ['trusted', 'all', 'untrusted', 'backfill', 'replay'].includes(prefs?.sourceFilter)
+    ['trusted', 'all', 'all_graphs', 'untrusted', 'backfill', 'replay', 'backlog'].includes(prefs?.sourceFilter)
       ? prefs.sourceFilter
-      : (typeof prefs?.trustedOnly === 'boolean' ? (prefs.trustedOnly ? 'trusted' : 'all') : 'trusted')
+      : (typeof prefs?.trustedOnly === 'boolean' ? (prefs.trustedOnly ? 'trusted' : 'all') : DEFAULT_SOURCE_FILTER)
+  );
+  const [capabilityFilter, setCapabilityFilter] = useState(() =>
+    ['all', 'qualified', 'training_only', 'pending'].includes(prefs?.capabilityFilter)
+      ? prefs.capabilityFilter
+      : DEFAULT_CAPABILITY_FILTER
+  );
+  const [showAdvancedSourceFilter, setShowAdvancedSourceFilter] = useState(() =>
+    typeof prefs?.showAdvancedSourceFilter === 'boolean'
+      ? prefs.showAdvancedSourceFilter
+      : ['untrusted', 'backfill', 'replay'].includes(prefs?.sourceFilter)
   );
   const [visibleColumns, setVisibleColumns] = useState(() =>
     {
@@ -214,6 +360,10 @@ function Discoveries({
     () => COLUMNS.filter((col) => visibleColumns.includes(col.key)),
     [visibleColumns]
   );
+  const displayNameColumnWidth = useMemo(
+    () => visibleTableColumns.find((col) => col.key === 'display_name')?.width || 240,
+    [visibleTableColumns]
+  );
   const referenceLossIndex = useMemo(() => {
     const refs = Array.isArray(data?.references) ? data.references : [];
     const byFamily = new Map();
@@ -250,9 +400,10 @@ function Discoveries({
       window.localStorage.setItem(DISCOVERIES_PREFS_KEY, JSON.stringify({
         activeTier, sortKey, sortDesc, searchQuery, showChart, showReferences,
         qualityFloorEnabled, visibleColumns, hideFailed, sourceFilter,
+        showAdvancedSourceFilter, capabilityFilter,
       }));
     } catch {}
-  }, [activeTier, sortKey, sortDesc, searchQuery, showChart, showReferences, qualityFloorEnabled, visibleColumns, hideFailed, sourceFilter]);
+  }, [activeTier, sortKey, sortDesc, searchQuery, showChart, showReferences, qualityFloorEnabled, visibleColumns, hideFailed, sourceFilter, showAdvancedSourceFilter, capabilityFilter]);
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -288,14 +439,17 @@ function Discoveries({
       setError(null);
     }
     try {
-      const limit = sourceFilter === 'trusted' ? '200' : '2500';
+      const isBacklog = sourceFilter === 'backlog';
+      const isAllGraphs = sourceFilter === 'all_graphs';
+      const limit = sourceFilter === 'trusted' ? '200' : (isAllGraphs ? '5000' : '2500');
       const params = new URLSearchParams({
-        sort: 'composite_score',
+        sort: (isBacklog || isAllGraphs) ? 'loss_ratio' : 'composite_score',
         limit,
-        view: 'ranked',
+        view: isAllGraphs ? 'all_graphs' : (isBacklog ? 'backlog' : 'ranked'),
         trusted_only: sourceFilter === 'trusted' ? '1' : '0',
       });
-      if (activeTier !== 'all') params.set('tier', activeTier);
+      if (isBacklog || isAllGraphs) params.set('include_failed', '1');
+      if (!isBacklog && !isAllGraphs && activeTier !== 'all') params.set('tier', activeTier);
       const q = debouncedSearchQuery.trim();
       if (q) {
         params.set('q', q);
@@ -407,8 +561,7 @@ function Discoveries({
         ...e,
         discovery_loss_ratio: discoveryLossDisplay(e),
         validation_loss_ratio: validationLossDisplay(e),
-        // Keep Discoveries score aligned with backend leaderboard composite when present.
-        _score: (e.composite_score != null ? Number(e.composite_score) : candidateScore(e, TIER_ORDER)),
+        _score: finiteOrNull(e.composite_score),
         _best_loss: entryBestLoss,
         _vs_ref: vsRef,
         _novelty: e.screening_novelty ?? e.novelty_score ?? null,
@@ -423,6 +576,9 @@ function Discoveries({
         va = a[sortKey] || '';
         vb = b[sortKey] || '';
         return sortDesc ? vb.localeCompare(va) : va.localeCompare(vb);
+      } else if (sortKey === '_capability_quality') {
+        va = capabilityQualityRank(a);
+        vb = capabilityQualityRank(b);
       } else {
         va = a[sortKey]; vb = b[sortKey];
       }
@@ -437,13 +593,16 @@ function Discoveries({
   const references = useMemo(() => {
     const refs = (data?.references || []).map((e) => ({
       ...e,
-      _score: (e.composite_score != null ? Number(e.composite_score) : candidateScore(e, TIER_ORDER)),
+      _score: finiteOrNull(e.composite_score),
       _best_loss: bestLoss(e),
       _novelty: e.screening_novelty ?? e.novelty_score ?? null,
     }));
     refs.sort((a, b) => {
-      const aScore = Number(a._score || 0);
-      const bScore = Number(b._score || 0);
+      const aScore = a._score;
+      const bScore = b._score;
+      if (aScore == null && bScore == null) return 0;
+      if (aScore == null) return 1;
+      if (bScore == null) return -1;
       return bScore - aScore;
     });
     return refs;
@@ -451,6 +610,8 @@ function Discoveries({
 
   const sourceFiltered = useMemo(() => {
     return sorted.filter((entry) => {
+      if (sourceFilter === 'backlog') return !entry?.entry_id;
+      if (sourceFilter === 'all_graphs') return true;
       const bucket = provenanceBucket(entry);
       if (sourceFilter === 'all') return true;
       if (sourceFilter === 'trusted') return bucket === 'trusted';
@@ -459,47 +620,71 @@ function Discoveries({
     });
   }, [sorted, sourceFilter]);
 
+  const tierFiltered = useMemo(() => {
+    return sourceFiltered.filter((entry) => matchesActiveTier(entry, activeTier));
+  }, [sourceFiltered, activeTier]);
+
   const effectiveQualityFloorEnabled = useMemo(() => {
     if (!qualityFloorEnabled) return false;
     return sourceFilter === 'trusted' || sourceFilter === 'all';
   }, [qualityFloorEnabled, sourceFilter]);
 
   const failedFiltered = useMemo(() => {
-    if (!hideFailed) return sourceFiltered;
-    return sourceFiltered.filter(e => {
+    if (!hideFailed) return tierFiltered;
+    return tierFiltered.filter(e => {
       if (e.is_reference) return true;
-      const tier = String(e.tier || '').toLowerCase();
+      const tier = getDiscoveryDisplayStatus(e).tierKey;
       // Tier-based failures
-      if (tier === 'screened_out' || tier === 'failed' || tier === 'rejected') return false;
-      // Explicit flag failures
-      if (e.screening_passed === false || e.investigation_passed === false || e.validation_passed === false) return false;
+      if (
+        tier === 'screened_out'
+        || tier === 'investigation_failed'
+        || tier === 'validation_failed'
+        || tier === 'failed'
+        || tier === 'rejected'
+      ) return false;
+      if (e.screening_passed === false) return false;
       // Derived failures (mirrors DiscoveryUiBits logic)
       if (tier === 'investigation' && e.investigation_robustness != null && !e.investigation_passed) return false;
       if (tier === 'validation' && e.validation_baseline_ratio != null && !e.validation_passed) return false;
       return true;
     });
-  }, [sourceFiltered, hideFailed]);
+  }, [tierFiltered, hideFailed]);
+
+  const capabilityFiltered = useMemo(() => {
+    if (capabilityFilter === 'all') return failedFiltered;
+    return failedFiltered.filter((entry) => {
+      const status = capabilityQualityStatus(entry);
+      if (capabilityFilter === 'qualified') return status === 'qualified' || status === 'breakthrough';
+      if (capabilityFilter === 'training_only') return status === 'training_only';
+      if (capabilityFilter === 'pending') return status === 'pending';
+      return true;
+    });
+  }, [failedFiltered, capabilityFilter]);
 
   const failedHiddenCount = useMemo(() => {
     if (!hideFailed) return 0;
-    return Math.max(0, (sourceFiltered?.length || 0) - (failedFiltered?.length || 0));
-  }, [hideFailed, sourceFiltered, failedFiltered]);
+    return Math.max(0, (tierFiltered?.length || 0) - (failedFiltered?.length || 0));
+  }, [hideFailed, tierFiltered, failedFiltered]);
 
   const qualityFiltered = useMemo(() => {
-    if (!effectiveQualityFloorEnabled) return failedFiltered;
-    return failedFiltered.filter((e) => {
+    if (!effectiveQualityFloorEnabled) return capabilityFiltered;
+    return capabilityFiltered.filter((e) => {
       if (e?.is_reference) return true;
       const score = e?.composite_score;
       return score != null && (Number(score) / 100.0) >= QUALITY_FLOOR_THRESHOLD;
     });
-  }, [failedFiltered, effectiveQualityFloorEnabled]);
+  }, [capabilityFiltered, effectiveQualityFloorEnabled]);
 
   const qualityHiddenCount = useMemo(() => {
     if (!effectiveQualityFloorEnabled) return 0;
-    return Math.max(0, (failedFiltered?.length || 0) - (qualityFiltered?.length || 0));
-  }, [effectiveQualityFloorEnabled, failedFiltered, qualityFiltered]);
+    return Math.max(0, (capabilityFiltered?.length || 0) - (qualityFiltered?.length || 0));
+  }, [effectiveQualityFloorEnabled, capabilityFiltered, qualityFiltered]);
 
   const filtered = qualityFiltered;
+  const expandedEntry = useMemo(
+    () => filtered.find((entry, i) => (entry.entry_id || entry.result_id || i) === expandedRowId) || null,
+    [filtered, expandedRowId]
+  );
 
   const counts = data?.counts || data?.tier_counts || {};
   const summaryCounts = useMemo(() => {
@@ -521,10 +706,68 @@ function Discoveries({
     base.replay = replay;
     return base;
   }, [counts, data?.entries]);
-  const tiers = ['all', 'screening', 'investigation', 'validation', 'breakthrough'];
+  const tiers = DISCOVERY_TIER_FILTERS;
   const hasLoadedData = Boolean(
     data && (Array.isArray(data.entries) || Array.isArray(data.references))
   );
+  useEffect(() => {
+    if (expandedRowId != null && !expandedEntry) {
+      setExpandedRowId(null);
+    }
+  }, [expandedRowId, expandedEntry]);
+  const filtersDirty = activeTier !== DEFAULT_ACTIVE_TIER
+    || searchQuery.trim().length > 0
+    || showReferences !== DEFAULT_SHOW_REFERENCES
+    || hideFailed !== DEFAULT_HIDE_FAILED
+    || qualityFloorEnabled !== DEFAULT_QUALITY_FLOOR_ENABLED
+    || sourceFilter !== DEFAULT_SOURCE_FILTER
+    || capabilityFilter !== DEFAULT_CAPABILITY_FILTER;
+  const visibleTierLabel = activeTier === 'all' ? 'All statuses' : (TIER_LABELS[activeTier] || activeTier);
+  const sourceFilterLabel = SOURCE_FILTER_LABELS[sourceFilter] || sourceFilter;
+  const capabilityFilterLabel = CAPABILITY_FILTER_LABELS[capabilityFilter] || capabilityFilter;
+  const filterSummaryParts = [
+    `${filtered.length} ${filtered.length === 1 ? 'entry' : 'entries'}`,
+    visibleTierLabel,
+    sourceFilterLabel,
+    showReferences ? 'references on' : 'references off',
+    hideFailed ? 'failed hidden' : 'failed visible',
+    effectiveQualityFloorEnabled
+      ? `quality >= ${(QUALITY_FLOOR_THRESHOLD * 100).toFixed(0)}`
+      : 'all quality',
+  ];
+  if (capabilityFilter !== 'all') {
+    filterSummaryParts.push(capabilityFilterLabel);
+  }
+  if (searchQuery.trim()) {
+    filterSummaryParts.push(`search "${searchQuery.trim()}"`);
+  }
+
+  const handleResetFilters = useCallback(() => {
+    setActiveTier(DEFAULT_ACTIVE_TIER);
+    setSearchQuery('');
+    setDebouncedSearchQuery('');
+    setShowReferences(DEFAULT_SHOW_REFERENCES);
+    setHideFailed(DEFAULT_HIDE_FAILED);
+    setQualityFloorEnabled(DEFAULT_QUALITY_FLOOR_ENABLED);
+    setSourceFilter(DEFAULT_SOURCE_FILTER);
+    setCapabilityFilter(DEFAULT_CAPABILITY_FILTER);
+    setShowAdvancedSourceFilter(false);
+  }, []);
+
+  const presetButtonStyle = useCallback((isActive) => ({
+    fontSize: 11,
+    padding: '5px 10px',
+    cursor: 'pointer',
+    border: `1px solid ${isActive ? 'var(--accent-blue)' : 'var(--border)'}`,
+    borderRadius: 4,
+    background: isActive ? 'rgba(88, 166, 255, 0.12)' : 'transparent',
+    color: isActive ? 'var(--accent-blue)' : 'var(--text-secondary)',
+  }), []);
+  const hasExactVisibleColumns = useCallback((keys) => {
+    if (visibleColumns.length !== keys.length) return false;
+    const keySet = new Set(keys);
+    return visibleColumns.every((key) => keySet.has(key));
+  }, [visibleColumns]);
 
   return (
     <div className="card" style={{ padding: 16 }}>
@@ -573,7 +816,7 @@ function Discoveries({
                 cursor: 'pointer', fontSize: 12, fontWeight: activeTier === tier ? 600 : 400,
               }}
             >
-              {tier === 'all' ? 'All' : TIER_LABELS[tier]}
+              {tier === 'all' ? 'All statuses' : TIER_LABELS[tier]}
               {count > 0 && (
                 <span style={{
                   marginLeft: 5, fontSize: 10,
@@ -585,146 +828,246 @@ function Discoveries({
             </button>
           );
         })}
-        <button
-          onClick={() => setShowReferences(v => !v)}
-          aria-label={showReferences ? 'Hide references' : 'Show references'}
-          style={{
-            fontSize: 11, padding: '5px 12px', cursor: 'pointer',
-            background: showReferences ? 'rgba(188, 140, 255, 0.12)' : 'transparent',
-            border: `1px solid ${showReferences ? 'var(--accent-purple)' : 'var(--border)'}`,
-            borderRadius: 4, color: showReferences ? 'var(--accent-purple)' : 'var(--text-secondary)',
-          }}
-        >
-          {showReferences ? `Hide references` : `Show references`}
-          {Number(counts.references || 0) > 0 && (
-            <span style={{ marginLeft: 5, fontSize: 10, color: 'var(--accent-purple)' }}>
-              ({counts.references})
-            </span>
-          )}
-        </button>
-        <label
-          title="Filter by provenance source"
-          style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: 6,
-            fontSize: 11,
-            padding: '0 10px',
-            border: '1px solid var(--border)',
-            borderRadius: 4,
-            color: 'var(--text-secondary)',
-            background: 'transparent',
-            minHeight: 28,
-          }}
-        >
-          <span style={{ color: 'var(--text-muted)' }}>Source</span>
-          <select
-            value={sourceFilter}
-            onChange={(e) => setSourceFilter(e.target.value)}
-            aria-label="Filter by source provenance"
+      </div>
+
+      <div style={{
+        display: 'grid',
+        gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))',
+        gap: 8,
+        marginBottom: 12,
+      }}>
+        <div style={FILTER_PANEL_STYLE}>
+          <span style={FILTER_PANEL_TITLE_STYLE}>Scope</span>
+          <button
+            onClick={() => setShowReferences(v => !v)}
+            aria-label={showReferences ? 'Hide references' : 'Show references'}
+            style={toggleButtonStyle(showReferences, 'var(--accent-purple)', 'rgba(188, 140, 255, 0.12)')}
+          >
+            {showReferences ? 'References on' : 'References off'}
+            {Number(counts.references || 0) > 0 && (
+              <span style={{ marginLeft: 5, fontSize: 10, color: 'var(--accent-purple)' }}>
+                ({counts.references})
+              </span>
+            )}
+          </button>
+          <label
+            title="Filter by provenance source"
             style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 6,
               fontSize: 11,
-              border: '1px solid var(--border)',
-              borderRadius: 4,
-              background: 'var(--bg-secondary)',
-              color: 'var(--text-primary)',
-              outline: 'none',
-              cursor: 'pointer',
-              padding: '3px 22px 3px 8px',
-              appearance: 'auto',
+              color: 'var(--text-secondary)',
             }}
           >
-            <option value="trusted">Trusted</option>
-            <option value="all">All</option>
-            <option value="untrusted">Untrusted</option>
-            <option value="backfill">Backfill</option>
-            <option value="replay">Replay</option>
-          </select>
-        </label>
-        <button
-          onClick={() => setHideFailed(v => !v)}
-          aria-label={hideFailed ? 'Show failed' : 'Hide failed'}
-          style={{
-            fontSize: 11, padding: '5px 12px', cursor: 'pointer',
-            background: hideFailed ? 'rgba(248, 81, 73, 0.12)' : 'transparent',
-            border: `1px solid ${hideFailed ? 'var(--accent-red)' : 'var(--border)'}`,
-            borderRadius: 4, color: hideFailed ? 'var(--accent-red)' : 'var(--text-secondary)',
-          }}
-        >
-          {hideFailed ? 'Show failed' : 'Hide failed'}
-        </button>
-        <button
-          onClick={() => setQualityFloorEnabled(v => !v)}
-          aria-label={qualityFloorEnabled ? 'Disable quality floor' : 'Enable quality floor'}
-          style={{
-            fontSize: 11, padding: '5px 12px', cursor: 'pointer',
-            background: qualityFloorEnabled ? 'rgba(63, 185, 80, 0.14)' : 'transparent',
-            border: `1px solid ${qualityFloorEnabled ? 'var(--accent-green)' : 'var(--border)'}`,
-            borderRadius: 4, color: qualityFloorEnabled ? 'var(--accent-green)' : 'var(--text-secondary)',
-          }}
-          title={`Hide entries with composite score < ${(QUALITY_FLOOR_THRESHOLD * 100).toFixed(0)}`}
-        >
-          {qualityFloorEnabled ? `Quality floor ≥ ${(QUALITY_FLOOR_THRESHOLD * 100).toFixed(0)}` : 'Show all quality'}
-        </button>
-        <button
-          onClick={() => setShowColumnPicker(!showColumnPicker)}
-          style={{
-            fontSize: 11, padding: '5px 12px', cursor: 'pointer',
-            border: `1px solid ${showColumnPicker ? 'var(--accent-blue)' : 'var(--border)'}`, 
-            borderRadius: 4,
-            background: showColumnPicker ? 'rgba(88, 166, 255, 0.12)' : 'transparent', 
-            color: showColumnPicker ? 'var(--accent-blue)' : 'var(--text-secondary)',
-          }}
-        >
-          Columns
-        </button>
-        <button
-          onClick={() => applyColumnPreset(CORE_VISIBLE_COLUMNS)}
-          style={{
-            fontSize: 11, padding: '5px 10px', cursor: 'pointer',
-            border: '1px solid var(--border)',
-            borderRadius: 4,
-            background: 'transparent',
-            color: 'var(--text-secondary)',
-          }}
-          title="Show the core discovery columns"
-        >
-          Core
-        </button>
-        <button
-          onClick={() => applyColumnPreset(RESEARCH_VISIBLE_COLUMNS)}
-          style={{
-            fontSize: 11, padding: '5px 10px', cursor: 'pointer',
-            border: '1px solid var(--border)',
-            borderRadius: 4,
-            background: 'transparent',
-            color: 'var(--text-secondary)',
-          }}
-          title="Show an expanded research-oriented column set"
-        >
-          Research
-        </button>
-        <button
-          onClick={() => applyColumnPreset(COLUMNS.map((col) => col.key))}
-          style={{
-            fontSize: 11, padding: '5px 10px', cursor: 'pointer',
-            border: '1px solid var(--border)',
-            borderRadius: 4,
-            background: 'transparent',
-            color: 'var(--text-secondary)',
-          }}
-          title="Show all available columns"
-        >
-          All
-        </button>
-        <button
-          onClick={fetchData}
-          disabled={loading}
-          aria-label="Refresh discoveries"
-          style={{ marginLeft: 'auto', fontSize: 11, padding: '5px 12px', cursor: loading ? 'not-allowed' : 'pointer', background: 'transparent', border: '1px solid var(--border)', borderRadius: 4, color: 'var(--text-secondary)', opacity: loading ? 0.6 : 1 }}
-        >
-          {loading ? 'Refreshing...' : 'Refresh'}
-        </button>
+            <span style={{ color: 'var(--text-muted)' }}>Source</span>
+            <select
+              value={sourceFilter}
+              onChange={(e) => setSourceFilter(e.target.value)}
+              aria-label="Filter by source provenance"
+              style={{
+                fontSize: 11,
+                border: '1px solid var(--border)',
+                borderRadius: 4,
+                background: 'var(--bg-card)',
+                color: 'var(--text-primary)',
+                outline: 'none',
+                cursor: 'pointer',
+                padding: '3px 22px 3px 8px',
+                appearance: 'auto',
+                minWidth: 132,
+              }}
+            >
+              <option value="trusted">Trusted ranked</option>
+              <option value="backlog">Backlog (unranked)</option>
+              <option value="all_graphs">All graphs</option>
+              {showAdvancedSourceFilter && (
+                <>
+                  <option value="all">Mixed trust ranked</option>
+                  <option value="untrusted">Untrusted</option>
+                  <option value="backfill">Backfill</option>
+                  <option value="replay">Replay</option>
+                </>
+              )}
+            </select>
+          </label>
+          <button
+            type="button"
+            onClick={() => setShowAdvancedSourceFilter((v) => !v)}
+            aria-label={showAdvancedSourceFilter ? 'Hide advanced source filters' : 'Show advanced source filters'}
+            title={showAdvancedSourceFilter ? 'Hide Untrusted/Backfill/Replay' : 'Show Untrusted/Backfill/Replay'}
+            style={presetButtonStyle(showAdvancedSourceFilter)}
+          >
+            {showAdvancedSourceFilter ? 'Advanced on' : 'Advanced off'}
+          </button>
+          <label
+            title="Filter by capability-quality state"
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 6,
+              fontSize: 11,
+              color: 'var(--text-secondary)',
+            }}
+          >
+            <span style={{ color: 'var(--text-muted)' }}>Capability</span>
+            <select
+              value={capabilityFilter}
+              onChange={(e) => setCapabilityFilter(e.target.value)}
+              aria-label="Filter by capability quality"
+              style={{
+                fontSize: 11,
+                border: '1px solid var(--border)',
+                borderRadius: 4,
+                background: 'var(--bg-card)',
+                color: 'var(--text-primary)',
+                outline: 'none',
+                cursor: 'pointer',
+                padding: '3px 22px 3px 8px',
+                appearance: 'auto',
+                minWidth: 156,
+              }}
+            >
+              <option value="all">All quality states</option>
+              <option value="qualified">Capability-Qualified</option>
+              <option value="training_only">Training-Only</option>
+              <option value="pending">Validation Pending</option>
+            </select>
+          </label>
+        </div>
+
+        <div style={FILTER_PANEL_STYLE}>
+          <span style={FILTER_PANEL_TITLE_STYLE}>Visibility</span>
+          <button
+            onClick={() => setHideFailed(v => !v)}
+            aria-label={hideFailed ? 'Show failed' : 'Hide failed'}
+            style={toggleButtonStyle(hideFailed, 'var(--accent-red)', 'rgba(248, 81, 73, 0.12)')}
+          >
+            {hideFailed ? 'Failed hidden' : 'Failed visible'}
+          </button>
+          <button
+            onClick={() => setQualityFloorEnabled(v => !v)}
+            aria-label={qualityFloorEnabled ? 'Disable quality floor' : 'Enable quality floor'}
+            style={toggleButtonStyle(effectiveQualityFloorEnabled, 'var(--accent-green)', 'rgba(63, 185, 80, 0.14)')}
+            title={effectiveQualityFloorEnabled
+              ? `Hide entries with composite score < ${(QUALITY_FLOOR_THRESHOLD * 100).toFixed(0)}`
+              : `Quality floor is bypassed for ${sourceFilterLabel.toLowerCase()}`
+            }
+          >
+            {effectiveQualityFloorEnabled
+              ? `Quality ≥ ${(QUALITY_FLOOR_THRESHOLD * 100).toFixed(0)}`
+              : (qualityFloorEnabled ? 'Quality bypassed' : 'All quality')}
+          </button>
+          {filtersDirty && (
+            <button
+              onClick={handleResetFilters}
+              style={{
+                fontSize: 11,
+                padding: '5px 12px',
+                cursor: 'pointer',
+                border: '1px solid var(--accent-orange)',
+                borderRadius: 4,
+                background: 'rgba(255, 166, 87, 0.10)',
+                color: 'var(--accent-orange)',
+              }}
+              title="Reset tier, search, provenance, quality, and reference filters"
+            >
+              Reset filters
+            </button>
+          )}
+        </div>
+
+        <div style={FILTER_PANEL_STYLE}>
+          <span style={FILTER_PANEL_TITLE_STYLE}>Columns</span>
+          <button
+            onClick={() => setShowColumnPicker(!showColumnPicker)}
+            style={{
+              fontSize: 11, padding: '5px 12px', cursor: 'pointer',
+              border: `1px solid ${showColumnPicker ? 'var(--accent-blue)' : 'var(--border)'}`,
+              borderRadius: 4,
+              background: showColumnPicker ? 'rgba(88, 166, 255, 0.12)' : 'transparent',
+              color: showColumnPicker ? 'var(--accent-blue)' : 'var(--text-secondary)',
+            }}
+          >
+            {showColumnPicker ? 'Picker open' : 'Picker closed'}
+          </button>
+          <button
+            onClick={() => applyColumnPreset(CORE_VISIBLE_COLUMNS)}
+            style={presetButtonStyle(hasExactVisibleColumns(CORE_VISIBLE_COLUMNS))}
+            title="Show the core discovery columns"
+          >
+            Core
+          </button>
+          <button
+            onClick={() => applyColumnPreset(RESEARCH_VISIBLE_COLUMNS)}
+            style={presetButtonStyle(hasExactVisibleColumns(RESEARCH_VISIBLE_COLUMNS))}
+            title="Show an expanded research-oriented column set"
+          >
+            Research
+          </button>
+          <button
+            onClick={() => applyColumnPreset(PROBES_VISIBLE_COLUMNS)}
+            style={presetButtonStyle(hasExactVisibleColumns(PROBES_VISIBLE_COLUMNS))}
+            title="Show probe metrics: induction, binding, hellaswag, ar, blimp, ppl, completeness"
+          >
+            Probes
+          </button>
+          <button
+            onClick={() => applyColumnPreset(COLUMNS.map((col) => col.key))}
+            style={presetButtonStyle(hasExactVisibleColumns(COLUMNS.map((col) => col.key)))}
+            title="Show all available columns"
+          >
+            All
+          </button>
+        </div>
+
+        <div style={{ ...FILTER_PANEL_STYLE, justifyContent: 'space-between' }}>
+          <span style={FILTER_PANEL_TITLE_STYLE}>Actions</span>
+          <button
+            onClick={fetchData}
+            disabled={loading}
+            aria-label="Refresh discoveries"
+            style={{
+              fontSize: 11,
+              padding: '5px 12px',
+              cursor: loading ? 'not-allowed' : 'pointer',
+              background: 'transparent',
+              border: '1px solid var(--border)',
+              borderRadius: 4,
+              color: 'var(--text-secondary)',
+              opacity: loading ? 0.6 : 1,
+            }}
+          >
+            {loading ? 'Refreshing...' : 'Refresh'}
+          </button>
+        </div>
+      </div>
+
+      <div style={{
+        display: 'flex',
+        gap: 8,
+        alignItems: 'center',
+        flexWrap: 'wrap',
+        marginBottom: 12,
+      }}>
+        <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+          Showing:
+        </span>
+        {filterSummaryParts.map((part, idx) => (
+          <span
+            key={`${part}-${idx}`}
+            style={{
+              fontSize: 11,
+              padding: '3px 8px',
+              borderRadius: 999,
+              border: '1px solid var(--border)',
+              background: 'var(--bg-secondary)',
+              color: 'var(--text-secondary)',
+            }}
+          >
+            {part}
+          </span>
+        ))}
       </div>
 
       {showColumnPicker && (
@@ -753,7 +1096,7 @@ function Discoveries({
       )}
 
       {/* Search */}
-      <div style={{ marginBottom: 12 }}>
+      <div style={{ marginBottom: 12, display: 'flex', gap: 8, alignItems: 'flex-start', flexWrap: 'wrap' }}>
         <input
           type="text"
           placeholder="Search by name, family, fingerprint, or ID..."
@@ -761,31 +1104,36 @@ function Discoveries({
           onChange={e => setSearchQuery(e.target.value)}
           aria-label="Search discoveries"
           style={{
-            width: '100%', maxWidth: 400, padding: '6px 10px', fontSize: 12,
+            flex: '1 1 320px',
+            minWidth: 220,
+            maxWidth: 520,
+            padding: '6px 10px', fontSize: 12,
             border: '1px solid var(--border)', borderRadius: 4,
             background: 'var(--bg-secondary)', color: 'var(--text-primary)',
           }}
         />
-        {searchQuery && (
-          <span style={{ marginLeft: 8, fontSize: 11, color: 'var(--text-muted)' }}>
-            {loading ? 'Searching full DB...' : `${filtered.length} matches`}
-          </span>
-        )}
-        {qualityFloorEnabled && qualityHiddenCount > 0 && (
-          <span style={{ marginLeft: 8, fontSize: 11, color: 'var(--accent-yellow)' }}>
-            {qualityHiddenCount} low-quality hidden
-          </span>
-        )}
-        {qualityFloorEnabled && !effectiveQualityFloorEnabled && (
-          <span style={{ marginLeft: 8, fontSize: 11, color: 'var(--text-muted)' }}>
-            quality floor bypassed for {sourceFilter}
-          </span>
-        )}
-        {hideFailed && failedHiddenCount > 0 && (
-          <span style={{ marginLeft: 8, fontSize: 11, color: 'var(--accent-red)' }}>
-            {failedHiddenCount} failed hidden
-          </span>
-        )}
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', flex: '1 1 240px' }}>
+          {searchQuery && (
+            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+              {loading ? 'Searching full DB...' : `${filtered.length} matches`}
+            </span>
+          )}
+          {qualityFloorEnabled && qualityHiddenCount > 0 && (
+            <span style={{ fontSize: 11, color: 'var(--accent-yellow)' }}>
+              {qualityHiddenCount} low-quality hidden
+            </span>
+          )}
+          {qualityFloorEnabled && !effectiveQualityFloorEnabled && (
+            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+              quality floor bypassed for {sourceFilterLabel.toLowerCase()}
+            </span>
+          )}
+          {hideFailed && failedHiddenCount > 0 && (
+            <span style={{ fontSize: 11, color: 'var(--accent-red)' }}>
+              {failedHiddenCount} failed hidden
+            </span>
+          )}
+        </div>
       </div>
 
       {/* Reference Baselines Banner */}
@@ -866,30 +1214,34 @@ function Discoveries({
               Refreshing discoveries...
             </p>
           )}
-          <div style={{ overflowX: 'auto', overflowY: 'auto', maxHeight: 'calc(100vh - 280px)' }}>
-          <table className="data-table table-wide" style={{ tableLayout: 'fixed' }}>
+          <div className="discoveries-table-shell">
+            <div className="discoveries-table-meta">
+              <span>Pinned while scrolling: rank and architecture</span>
+              <span>{visibleTableColumns.length} visible columns</span>
+            </div>
+            <div className="discoveries-table-wrap">
+          <table className="data-table table-wide table-compact discoveries-table" style={{ tableLayout: 'fixed' }}>
             <colgroup>
-              <col style={{ width: 26 }} />
-              <col style={{ width: 44 }} />
+              <col style={{ width: PIN_COLUMN_WIDTH }} />
+              <col style={{ width: RANK_COLUMN_WIDTH }} />
               {visibleTableColumns.map((col) => (
                 <col key={col.key} style={{ width: col.width ? `${col.width}px` : '104px' }} />
               ))}
             </colgroup>
             <thead style={{ position: 'sticky', top: 0, zIndex: 2, background: 'var(--bg-card, #1a1a2e)' }}>
               <tr style={{ borderBottom: '1px solid var(--border)' }}>
-                <th style={{ ...thStyle, width: 26, position: 'sticky', top: 0, background: 'inherit' }} aria-label="Pinned marker" />
-                <th style={{ ...thStyle, position: 'sticky', top: 0, background: 'inherit' }}>#</th>
+                <th className="sticky-cell sticky-header" style={{ ...thStyle, left: 0, width: PIN_COLUMN_WIDTH }} aria-label="Pinned marker" />
+                <th className="sticky-cell sticky-header" style={{ ...thStyle, left: PIN_COLUMN_WIDTH, width: RANK_COLUMN_WIDTH }}>#</th>
                 {visibleTableColumns.map(col => (
                   <th
                     key={col.key}
                     onClick={() => handleSort(col.key)}
                     title={col.title}
+                    className={col.key === 'display_name' ? 'sticky-cell sticky-header sticky-divider' : undefined}
                     style={{
                       ...thStyle,
-                      position: 'sticky',
-                      top: 0,
-                      background: 'inherit',
                       width: col.width ? `${col.width}px` : undefined,
+                      left: col.key === 'display_name' ? (PIN_COLUMN_WIDTH + RANK_COLUMN_WIDTH) : undefined,
                       cursor: (col.key === '_details' || col.key === '_compare' || col.key === '_designer') ? 'default' : 'pointer',
                       userSelect: 'none',
                     }}
@@ -927,6 +1279,8 @@ function Discoveries({
                     tdStyle={tdStyle}
                     COLUMNS={COLUMNS}
                     visibleColumns={visibleTableColumns.map((col) => col.key)}
+                    stickyDisplayNameLeft={PIN_COLUMN_WIDTH + RANK_COLUMN_WIDTH}
+                    stickyDisplayNameWidth={displayNameColumnWidth}
                     onOpenInDesigner={onOpenInDesigner}
                     setExpandedRowId={setExpandedRowId}
                     actionBtnStyle={actionBtnStyle}
@@ -948,24 +1302,67 @@ function Discoveries({
           </table>
         </div>
         </div>
+        {expandedEntry && (
+          <ExpandedDetailPanel
+            entry={expandedEntry}
+            onClose={() => setExpandedRowId(null)}
+            onRescreen={onRescreen}
+            onPromoteScreening={onPromoteScreening}
+            onInvestigate={onInvestigate}
+            onValidate={onValidate}
+            onQueueAdd={onQueueAdd}
+            onQueueRemove={onQueueRemove}
+            onDelete={handleDelete}
+            isQueued={Boolean(expandedEntry.result_id) && queuedSet.has(expandedEntry.result_id)}
+            eligibility={eligibilityByResultId?.[expandedEntry.result_id] || null}
+            statusDraft={statusDrafts[expandedEntry.entry_id || expandedEntry.result_id] || expandedEntry.tier}
+            onStatusDraftChange={(tier) => {
+              const rowId = expandedEntry.entry_id || expandedEntry.result_id;
+              handleStatusDraftChange(rowId, tier);
+            }}
+            onSaveStatus={() => handleSaveStatus(expandedEntry)}
+            savingStatus={savingStatusRowId === (expandedEntry.entry_id || expandedEntry.result_id)}
+            actionBtnStyle={actionBtnStyle}
+          />
+        )}
+        </div>
       )}
     </div>
   );
 }
 
 const thStyle = {
-  padding: '6px 12px', textAlign: 'left', fontSize: 11,
+  padding: '6px 10px', textAlign: 'left', fontSize: 10,
   color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase', whiteSpace: 'nowrap',
 };
 
 const tdStyle = {
-  padding: '6px 12px', whiteSpace: 'nowrap',
+  padding: '6px 10px', whiteSpace: 'nowrap',
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+};
+
+const statusCellStyle = {
+  ...tdStyle,
+  padding: '6px 10px',
+  overflow: 'hidden',
+};
+
+const actionCellStyle = {
+  ...tdStyle,
+  padding: '6px',
+  textAlign: 'center',
+  overflow: 'hidden',
 };
 
 const actionBtnStyle = {
   padding: '4px 8px', fontSize: 10,
   border: '1px solid rgba(88, 166, 255, 0.4)', borderRadius: 4,
   background: 'rgba(88, 166, 255, 0.12)', color: 'var(--accent-blue)', cursor: 'pointer',
+  width: '100%',
+  minWidth: 0,
+  whiteSpace: 'nowrap',
+  lineHeight: 1.1,
 };
 
 
@@ -985,6 +1382,8 @@ const DiscoveryRow = React.memo(function DiscoveryRow({
   tdStyle,
   COLUMNS,
   visibleColumns,
+  stickyDisplayNameLeft,
+  stickyDisplayNameWidth,
   onOpenInDesigner,
   setExpandedRowId,
   actionBtnStyle,
@@ -1001,40 +1400,63 @@ const DiscoveryRow = React.memo(function DiscoveryRow({
   savingStatusRowId
 }) {
   const canDelete = !entry.is_reference && (entry.tier === 'screening' || entry.tier === 'failed' || entry.tier === 'rejected' || entry.screening_passed === false || entry.investigation_passed === false || entry.validation_passed === false);
+  const rowColors = rowBackgrounds({
+    index: i,
+    isHighlighted,
+    isPinnedReference,
+    isExpanded,
+    tier: entry.tier,
+  });
 
   return (
     <React.Fragment>
       <tr
         ref={isHighlighted ? highlightRef : undefined}
         style={{
+          '--discoveries-row-bg': rowColors.base,
+          '--discoveries-row-hover-bg': rowColors.hover,
           borderBottom: '1px solid var(--border)',
           cursor: 'pointer',
-          background: isHighlighted
-            ? 'rgba(88, 166, 255, 0.2)'
-            : isPinnedReference
-              ? 'rgba(188, 140, 255, 0.14)'
-              : entry.tier === 'breakthrough' ? 'rgba(63, 185, 80, 0.08)' : undefined,
           animation: isHighlighted ? 'leaderboard-pulse 1.5s ease-in-out 2' : undefined,
         }}
         onClick={() => setExpandedRowId(isExpanded ? null : rowId)}
       >
-        <td style={{ ...tdStyle, width: 26, textAlign: 'center', paddingLeft: 4, paddingRight: 4 }}>
+        <td className="sticky-cell sticky-body" style={{ ...tdStyle, left: 0, width: PIN_COLUMN_WIDTH, textAlign: 'center', paddingLeft: 4, paddingRight: 4 }}>
           {isPinnedReference ? (
             <span title="Pinned reference" style={{ color: 'var(--accent-purple)', fontSize: 12, fontWeight: 700 }}>
               ★
             </span>
           ) : null}
         </td>
-        <td style={tdStyle}>{i + 1}</td>
+        <td className="sticky-cell sticky-body" style={{ ...tdStyle, left: PIN_COLUMN_WIDTH, width: RANK_COLUMN_WIDTH, fontVariantNumeric: 'tabular-nums' }}>{i + 1}</td>
         {visibleColumns.map((colKey) => {
           const col = COLUMNS.find((item) => item.key === colKey);
           if (!col) return null;
           switch (col.key) {
             case '_score':
               return <td key={col.key} style={tdStyle}><ScoreCell entry={entry} /></td>;
+            case '_capability_quality':
+              return (
+                <td key={col.key} style={tdStyle}>
+                  <StatusBadge entry={entry} />
+                </td>
+              );
             case 'display_name':
               return (
-                <td key={col.key} style={{ ...tdStyle, maxWidth: 260, whiteSpace: 'normal', overflowWrap: 'anywhere', lineHeight: 1.35 }}>
+                <td
+                  key={col.key}
+                  className="sticky-cell sticky-body sticky-divider"
+                  style={{
+                    ...tdStyle,
+                    left: stickyDisplayNameLeft,
+                    width: stickyDisplayNameWidth,
+                    minWidth: stickyDisplayNameWidth,
+                    maxWidth: stickyDisplayNameWidth,
+                    whiteSpace: 'normal',
+                    overflowWrap: 'anywhere',
+                    lineHeight: 1.35,
+                  }}
+                >
                   <div style={{ fontWeight: 500 }}>{displayName}</div>
                   {entry.graph_fingerprint && (
                     <div style={{ fontSize: 10, color: 'var(--text-muted)', fontFamily: 'monospace', whiteSpace: 'normal', overflowWrap: 'anywhere' }}>
@@ -1045,7 +1467,7 @@ const DiscoveryRow = React.memo(function DiscoveryRow({
               );
             case 'architecture_family':
               return (
-                <td key={col.key} style={{ ...tdStyle, whiteSpace: 'normal' }}>
+                <td key={col.key} style={{ ...tdStyle, whiteSpace: 'normal', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                   <span style={{
                     fontSize: 11, padding: '1px 6px', borderRadius: 3,
                     background: 'var(--bg-tertiary)', color: 'var(--text-secondary)',
@@ -1113,24 +1535,53 @@ const DiscoveryRow = React.memo(function DiscoveryRow({
               return <td key={col.key} style={{ ...tdStyle, textAlign: 'right', fontFamily: 'monospace' }}>{specVal != null ? Number(specVal).toFixed(4) : '--'}</td>;
             case 'init_sensitivity_std':
               return <td key={col.key} style={{ ...tdStyle, textAlign: 'right', fontFamily: 'monospace' }}>{entry.init_sensitivity_std != null ? Number(entry.init_sensitivity_std).toFixed(4) : '--'}</td>;
+            case 'wikitext_perplexity':
+              return <td key={col.key} style={{ ...tdStyle, textAlign: 'right', fontFamily: 'monospace' }}>{entry.wikitext_perplexity != null ? Number(entry.wikitext_perplexity).toFixed(2) : '--'}</td>;
+            case 'hellaswag_acc':
+              return <td key={col.key} style={{ ...tdStyle, textAlign: 'right', fontFamily: 'monospace' }}>{entry.hellaswag_acc != null ? Number(entry.hellaswag_acc).toFixed(3) : '--'}</td>;
+            case 'induction_auc':
+              return <td key={col.key} style={{ ...tdStyle, textAlign: 'right', fontFamily: 'monospace' }}>{entry.induction_auc != null ? Number(entry.induction_auc).toFixed(3) : '--'}</td>;
+            case 'induction_v2_investigation_auc':
+              return <td key={col.key} style={{ ...tdStyle, textAlign: 'right', fontFamily: 'monospace' }}>{entry.induction_v2_investigation_auc != null ? Number(entry.induction_v2_investigation_auc).toFixed(3) : '--'}</td>;
+            case 'binding_auc':
+              return <td key={col.key} style={{ ...tdStyle, textAlign: 'right', fontFamily: 'monospace' }}>{entry.binding_auc != null ? Number(entry.binding_auc).toFixed(3) : '--'}</td>;
+            case 'binding_v2_investigation_auc':
+              return <td key={col.key} style={{ ...tdStyle, textAlign: 'right', fontFamily: 'monospace' }}>{entry.binding_v2_investigation_auc != null ? Number(entry.binding_v2_investigation_auc).toFixed(3) : '--'}</td>;
+            case 'binding_composite':
+              return <td key={col.key} style={{ ...tdStyle, textAlign: 'right', fontFamily: 'monospace' }}>{entry.binding_composite != null ? Number(entry.binding_composite).toFixed(3) : '--'}</td>;
+            case 'ar_auc':
+              return <td key={col.key} style={{ ...tdStyle, textAlign: 'right', fontFamily: 'monospace' }}>{entry.ar_auc != null ? Number(entry.ar_auc).toFixed(3) : '--'}</td>;
+            case 'blimp_overall_accuracy':
+              return <td key={col.key} style={{ ...tdStyle, textAlign: 'right', fontFamily: 'monospace' }}>{entry.blimp_overall_accuracy != null ? Number(entry.blimp_overall_accuracy).toFixed(3) : '--'}</td>;
+            case 'ncd_score':
+              return <td key={col.key} style={{ ...tdStyle, textAlign: 'right', fontFamily: 'monospace' }}>{entry.ncd_score != null ? Number(entry.ncd_score).toFixed(3) : '--'}</td>;
+            case 'rapid_screening_passed':
+              return <td key={col.key} style={{ ...tdStyle, textAlign: 'center', fontFamily: 'monospace' }}>{entry.rapid_screening_passed == null ? '--' : (entry.rapid_screening_passed ? '✓' : '✗')}</td>;
+            case 'stage_at_death':
+              return <td key={col.key} style={{ ...tdStyle, fontFamily: 'monospace', color: entry.stage_at_death ? 'var(--accent-red)' : 'var(--text-muted)' }}>{entry.stage_at_death || '--'}</td>;
+            case 'error_type':
+              return <td key={col.key} style={{ ...tdStyle, fontFamily: 'monospace', color: entry.error_type ? 'var(--accent-red)' : 'var(--text-muted)' }} title={entry.error_message || ''}>{entry.error_type || '--'}</td>;
+            case 'completeness_ratio':
+              return <td key={col.key} style={{ ...tdStyle, textAlign: 'right', fontFamily: 'monospace' }}>{entry.completeness_ratio != null ? `${(Number(entry.completeness_ratio) * 100).toFixed(0)}%` : '--'}</td>;
+            case 'missing_metrics_count':
+              return <td key={col.key} style={{ ...tdStyle, textAlign: 'right', fontFamily: 'monospace' }}>{entry.missing_metrics_count != null ? Number(entry.missing_metrics_count).toFixed(0) : '--'}</td>;
             case 'tier':
               return (
-                <td key={col.key} style={tdStyle}>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                <td key={col.key} style={statusCellStyle}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 0 }}>
                     <StatusBadge entry={entry} />
                   </div>
                 </td>
               );
             case '_details':
               return (
-                <td key={col.key} style={tdStyle} onClick={e => e.stopPropagation()}>
+                <td key={col.key} style={actionCellStyle} onClick={e => e.stopPropagation()}>
                   <button
                     onClick={() => {
                       if (entry.result_id) onSelectProgram?.(entry.result_id);
                     }}
                     style={{
                       ...actionBtnStyle,
-                      width: '100%',
                       borderColor: 'var(--accent-blue)',
                       color: 'var(--accent-blue)',
                       background: 'transparent',
@@ -1143,7 +1594,7 @@ const DiscoveryRow = React.memo(function DiscoveryRow({
               );
             case '_compare':
               return (
-                <td key={col.key} style={tdStyle} onClick={e => e.stopPropagation()}>
+                <td key={col.key} style={actionCellStyle} onClick={e => e.stopPropagation()}>
                   {onAddToComparison ? (
                     <button
                       onClick={() => {
@@ -1152,7 +1603,6 @@ const DiscoveryRow = React.memo(function DiscoveryRow({
                       disabled={!entry.result_id}
                       style={{
                         ...actionBtnStyle,
-                        width: '100%',
                         borderColor: 'var(--accent-green)',
                         color: 'var(--accent-green)',
                         opacity: entry.result_id ? 1 : 0.5,
@@ -1167,7 +1617,7 @@ const DiscoveryRow = React.memo(function DiscoveryRow({
               );
             case '_designer':
               return (
-                <td key={col.key} style={tdStyle} onClick={e => e.stopPropagation()}>
+                <td key={col.key} style={actionCellStyle} onClick={e => e.stopPropagation()}>
                   {onOpenInDesigner ? (
                     <button
                       onClick={() => {
@@ -1176,7 +1626,6 @@ const DiscoveryRow = React.memo(function DiscoveryRow({
                       disabled={!entry.result_id}
                       style={{
                         ...actionBtnStyle,
-                        width: '100%',
                         borderColor: 'var(--accent-purple)',
                         color: 'var(--accent-purple)',
                         opacity: entry.result_id ? 1 : 0.5,
@@ -1194,25 +1643,6 @@ const DiscoveryRow = React.memo(function DiscoveryRow({
           }
         })}
       </tr>
-      {isExpanded && (
-        <ExpandedDetail
-          entry={entry}
-          onRescreen={onRescreen}
-          onPromoteScreening={onPromoteScreening}
-          onInvestigate={onInvestigate}
-          onValidate={onValidate}
-          onQueueAdd={onQueueAdd}
-          onQueueRemove={onQueueRemove}
-          onDelete={handleDelete}
-          isQueued={isQueued}
-          eligibility={eligibility}
-          statusDraft={statusDrafts[rowId] || entry.tier}
-          onStatusDraftChange={(tier) => handleStatusDraftChange(rowId, tier)}
-          onSaveStatus={() => handleSaveStatus(entry)}
-          savingStatus={savingStatusRowId === rowId}
-          actionBtnStyle={actionBtnStyle}
-        />
-      )}
     </React.Fragment>
   );
 });

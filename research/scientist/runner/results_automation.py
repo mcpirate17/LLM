@@ -21,9 +21,6 @@ class _ResultsAutomationMixin:
 
     __slots__ = ()
 
-    def _log_learning_event_compat(self, nb: LabNotebook, *args, **kwargs) -> None:
-        getattr(nb, "log_learning_event")(*args, **kwargs)
-
     def _auto_recommend(
         self, results: Dict, config: RunConfig, hypothesis: str, nb: LabNotebook
     ):

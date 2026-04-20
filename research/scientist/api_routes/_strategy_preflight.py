@@ -152,14 +152,30 @@ def _ensure_screening_leaderboard_entry(
     result_id: str,
     program: Optional[Dict[str, Any]],
 ) -> Optional[Dict[str, Any]]:
-    if not _program_is_screening_admissible(program):
-        return None
-
     existing = nb.get_leaderboard_entry(result_id)
     if existing is not None:
         return existing
 
+    graph_fingerprint = str((program or {}).get("graph_fingerprint") or "").strip()
+    if graph_fingerprint:
+        sibling = nb.get_leaderboard_entry_by_fingerprint(graph_fingerprint)
+        if sibling is not None:
+            return sibling
+
+    if not _program_is_screening_admissible(program):
+        return None
+
     program = program or {}
+    if getattr(nb, "_read_only", False):
+        return {
+            "result_id": result_id,
+            "tier": "screening",
+            "investigation_passed": False,
+            "validation_passed": False,
+            "investigation_loss_ratio": None,
+            "validation_loss_ratio": None,
+        }
+
     entry_id = nb.upsert_leaderboard(
         result_id=result_id,
         model_source=str(program.get("model_source") or "screening_backfill"),
@@ -207,7 +223,11 @@ def _evaluate_mode_eligibility(
         }
 
     if mode == "validation":
-        if tier != "investigation":
+        has_investigation_evidence = (
+            lb.get("investigation_loss_ratio") is not None
+            or lb.get("investigation_passed") is not None
+        )
+        if tier != "investigation" and not has_investigation_evidence:
             return {
                 "result_id": result_id,
                 "reason": "not_investigation_tier",

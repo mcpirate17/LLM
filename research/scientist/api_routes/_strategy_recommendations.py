@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 import time as _time
 
 from ..shared_utils import safe_float
+from ..runner.auto_escalate_flow import understanding_gate_metrics
 
 if TYPE_CHECKING:
     from ..notebook import LabNotebook
@@ -24,66 +25,88 @@ def infer_tier_for_program(nb: LabNotebook, program: dict) -> str:
     row = nb.conn.execute(
         "SELECT tier FROM leaderboard WHERE result_id = ?", (result_id,)
     ).fetchone()
-    return row["tier"] if row else "screening"
+    if row:
+        return row["tier"]
+    return "screening" if bool(program.get("stage1_passed")) else "screened_out"
 
 
 _tier_cache: dict = {}
-_tier_cache_ts: float = 0.0
+_tier_cache_ts: dict = {}
 _TIER_CACHE_TTL: float = 60.0
 
 
 def count_discovery_tiers(nb: LabNotebook) -> dict:
-    """Count discovery rows by tier, excluding references from stage buckets.
+    """Count discovery rows by current dashboard-facing status.
 
-    Uses stage-based counting: entries that *passed* a stage count for that
-    stage, even if their tier column has since been promoted further.
+    This intentionally reports the row's current state rather than historical
+    "passed stage at least once" facts. The dashboard uses these counts for the
+    Discoveries summary and tier tabs, so stage-pass counters produce confusing
+    mismatches such as:
+
+    - ``investigation=53`` while only 36 rows currently have tier
+      ``investigation`` because 17 already moved on.
+    - ``validation=2`` while 12 rows currently show tier ``validation`` because
+      some were pre-promoted into validation before the run finished.
+
+    We therefore keep historical pass flags in the row payloads, but the
+    summary counts are based on the current status visible to the user.
     """
     global _tier_cache, _tier_cache_ts
     now = _time.monotonic()
-    if _tier_cache and (now - _tier_cache_ts) < _TIER_CACHE_TTL:
-        return _tier_cache
-    _NON_REF = "COALESCE(is_reference, 0) = 0"
-    rows = nb.conn.execute(
-        f"SELECT tier, COUNT(*) AS cnt FROM leaderboard WHERE {_NON_REF} GROUP BY tier"
-    ).fetchall()
-    tier_counts = {r["tier"]: r["cnt"] for r in rows}
-    # Stage-based counts: investigation/validation count entries that *reached*
-    # and *passed* each stage, regardless of current tier value.
-    inv_row = nb.conn.execute(
-        f"SELECT COUNT(*) AS cnt FROM leaderboard "
-        f"WHERE {_NON_REF} AND investigation_passed = 1"
-    ).fetchone()
-    val_row = nb.conn.execute(
-        f"SELECT COUNT(*) AS cnt FROM leaderboard "
-        f"WHERE {_NON_REF} AND validation_passed = 1"
-    ).fetchone()
-    counts = {
-        "screening": int(tier_counts.get("screening", 0) or 0),
-        "screened_out": int(tier_counts.get("screened_out", 0) or 0),
-        "investigation": int(inv_row["cnt"] if inv_row else 0),
-        "validation": int(val_row["cnt"] if val_row else 0),
-        "breakthrough": int(tier_counts.get("breakthrough", 0) or 0),
-    }
-    ref_row = nb.conn.execute(
-        "SELECT COUNT(*) AS cnt FROM leaderboard WHERE COALESCE(is_reference, 0) = 1"
-    ).fetchone()
-    counts["references"] = int(ref_row["cnt"] if ref_row else 0)
-    counts["all"] = sum(
-        int(tier_counts.get(tier, 0) or 0)
-        for tier in (
-            "screening",
-            "screened_out",
-            "investigation",
-            "validation",
-            "breakthrough",
-        )
+    cache_key = str(
+        getattr(nb, "db_path", None) or getattr(nb, "_db_path", None) or "default"
     )
+    cached = _tier_cache.get(cache_key)
+    cached_ts = _tier_cache_ts.get(cache_key, 0.0)
+    if cached and (now - cached_ts) < _TIER_CACHE_TTL:
+        return cached
+
+    rows = nb.conn.execute(
+        """
+        SELECT
+            tier,
+            COALESCE(validation_passed, 0) AS validation_passed,
+            COALESCE(is_reference, 0) AS is_reference
+        FROM leaderboard
+        """
+    ).fetchall()
+
+    counts = {
+        "screening": 0,
+        "screened_out": 0,
+        "investigation": 0,
+        "investigation_failed": 0,
+        "validation": 0,
+        "validation_pending": 0,
+        "validation_failed": 0,
+        "breakthrough": 0,
+        "references": 0,
+        "all": 0,
+    }
+
+    for row in rows:
+        if bool(row["is_reference"]):
+            counts["references"] += 1
+            continue
+
+        counts["all"] += 1
+        tier = str(row["tier"] or "screening").strip().lower()
+        validation_passed = bool(row["validation_passed"])
+
+        if tier == "validation" and not validation_passed:
+            counts["validation_pending"] += 1
+            continue
+
+        if tier not in counts:
+            counts[tier] = 0
+        counts[tier] += 1
+
     total_s1 = nb.conn.execute(
         "SELECT COUNT(*) AS cnt FROM program_results WHERE stage1_passed = 1"
     ).fetchone()
     counts["total_survivors"] = total_s1["cnt"] if total_s1 else 0
-    _tier_cache = counts
-    _tier_cache_ts = now
+    _tier_cache[cache_key] = counts
+    _tier_cache_ts[cache_key] = now
     return counts
 
 
@@ -241,6 +264,7 @@ def compute_recommendation(program: dict, leaderboard_entry: Optional[dict]) -> 
     """Deterministic next-action recommendation based on tier and pass/fail."""
     tier = (leaderboard_entry or {}).get("tier", "screening")
     s1 = program.get("stage1_passed", False)
+    capability_quality = capability_quality_for_entry(leaderboard_entry or {})
 
     if not s1:
         return {
@@ -248,20 +272,32 @@ def compute_recommendation(program: dict, leaderboard_entry: Optional[dict]) -> 
             "rationale": "Program did not pass Stage 1 learning evaluation.",
             "confidence": "high",
         }
-    if tier == "breakthrough":
+    if tier == "breakthrough" and capability_quality["status"] == "breakthrough":
         return {
             "action": "publish",
             "rationale": "Breakthrough-tier architecture with validated performance.",
             "confidence": "high",
         }
+    if tier == "breakthrough":
+        return {
+            "action": "re-validate",
+            "rationale": "Breakthrough-tier row lacks full capability-quality evidence; confirm before publication.",
+            "confidence": "medium",
+        }
     if tier == "validation":
         passed = (leaderboard_entry or {}).get("validation_passed", False)
-        if passed:
+        if passed and capability_quality["status"] in {"qualified", "breakthrough"}:
             return {
                 "action": "scale up or publish",
-                "rationale": "Validation passed with multi-seed stability confirmed.",
+                "rationale": "Validation passed with quality and capability gates confirmed.",
                 "confidence": "high",
                 "bias_check": "grammar_independence_verified",
+            }
+        if passed:
+            return {
+                "action": "re-validate or archive",
+                "rationale": "Validation completed, but capability evidence is still weak or incomplete.",
+                "confidence": "medium",
             }
         return {
             "action": "re-validate",
@@ -409,6 +445,103 @@ def decision_gate_for_entry(entry: Dict[str, Any]) -> Dict[str, Any]:
     missing = [name for name, ok in checks.items() if not ok]
     return {
         "decision_ready": decision_ready,
+        "missing": missing,
+        "checks": checks,
+    }
+
+
+def capability_quality_for_entry(entry: Dict[str, Any]) -> Dict[str, Any]:
+    """Explicit quality state separate from workflow completion.
+
+    A row can complete validation and still be a weak language model. This
+    helper separates:
+    - workflow state: "validation finished"
+    - model quality: "capability-qualified"
+    """
+    tier = str(entry.get("tier") or "").strip().lower()
+    validation_passed = bool(entry.get("validation_passed"))
+    has_validation_evidence = (
+        any(
+            entry.get(key) is not None
+            for key in (
+                "validation_loss_ratio",
+                "validation_baseline_ratio",
+                "validation_multi_seed_std",
+            )
+        )
+        or validation_passed
+    )
+
+    understanding = {
+        "diagnostic_score": safe_float(entry.get("diagnostic_score")),
+        "ar_auc": safe_float(entry.get("ar_auc")),
+        "induction_auc": safe_float(
+            entry.get("induction_v2_investigation_auc")
+            if entry.get("induction_v2_investigation_auc") is not None
+            else entry.get("induction_auc")
+        ),
+        "binding_auc": safe_float(
+            entry.get("binding_v2_investigation_auc")
+            if entry.get("binding_v2_investigation_auc") is not None
+            else entry.get("binding_auc")
+        ),
+        "hellaswag_acc": safe_float(
+            entry.get("hellaswag_acc_validation")
+            if entry.get("hellaswag_acc_validation") is not None
+            else entry.get("hellaswag_acc")
+        ),
+    }
+    passes_understanding, diagnostic, binding_composite, hellaswag = (
+        understanding_gate_metrics(understanding)
+    )
+    gate = decision_gate_for_entry(entry)
+    baseline_ratio = safe_float(entry.get("validation_baseline_ratio"))
+    multi_seed_std = safe_float(entry.get("validation_multi_seed_std"))
+
+    if (
+        tier == "breakthrough"
+        and validation_passed
+        and gate["decision_ready"]
+        and passes_understanding
+    ):
+        status = "breakthrough"
+        label = "Breakthrough-Qualified"
+    elif validation_passed and gate["decision_ready"] and passes_understanding:
+        status = "qualified"
+        label = "Capability-Qualified"
+    elif tier == "validation" and not validation_passed:
+        status = "pending"
+        label = "Validation Pending"
+    elif has_validation_evidence or validation_passed:
+        status = "training_only"
+        label = "Training-Only"
+    elif bool(entry.get("investigation_passed")):
+        status = "investigated"
+        label = "Investigated"
+    else:
+        status = "exploratory"
+        label = "Exploratory"
+
+    missing = list(gate.get("missing") or [])
+    if has_validation_evidence and not passes_understanding:
+        missing.append("understandingGate")
+
+    return {
+        "status": status,
+        "label": label,
+        "checks": {
+            "validationPassed": validation_passed,
+            "decisionReady": bool(gate.get("decision_ready")),
+            "understandingPassed": bool(passes_understanding),
+            "baselineBeatsReference": baseline_ratio is not None
+            and baseline_ratio < 1.0,
+            "consistencyBounded": multi_seed_std is not None and multi_seed_std <= 0.12,
+        },
+        "metrics": {
+            "diagnostic": diagnostic,
+            "bindingComposite": binding_composite,
+            "hellaswag": hellaswag,
+        },
         "missing": missing,
     }
 
@@ -589,6 +722,7 @@ def annotate_qkv_usage(programs: list, analytics) -> None:
 def _empty_breakthrough_readiness() -> Dict[str, Any]:
     return {
         "breakthrough_count": 0,
+        "capability_qualified_count": 0,
         "decision_ready_count": 0,
         "high_confidence_count": 0,
         "full_repro_packet_count": 0,
@@ -622,6 +756,7 @@ def _evaluate_breakthrough_entry(
     row["reproducibility_packet"] = analytics.reproducibility_packet_status(row)
     promotion = promotion_evidence_for_entry(row)
     gate = decision_gate_for_entry(row)
+    capability_quality = capability_quality_for_entry(row)
     scale_templates = build_scale_up_templates_for_result(row.get("result_id"))
     reproducibility_workflow = build_reproducibility_workflow(
         row["reproducibility_packet"],
@@ -637,6 +772,7 @@ def _evaluate_breakthrough_entry(
         "seen_runs": promotion["seen_runs"],
         "decision_ready": gate["decision_ready"],
         "decision_missing": gate["missing"],
+        "capability_quality": capability_quality,
         "repro_packet": row["reproducibility_packet"],
         "cka_source": row.get("cka_source"),
         "scale_up_templates": scale_templates,
@@ -646,7 +782,8 @@ def _evaluate_breakthrough_entry(
 
 def _switch_recommendation(evaluated: List[Dict[str, Any]]) -> Dict[str, str]:
     switch_ready = any(
-        row.get("decision_ready")
+        (row.get("capability_quality") or {}).get("status") == "breakthrough"
+        and row.get("decision_ready")
         and int(row.get("promotion_confidence_score") or 0) >= 75
         and (row.get("repro_packet") or {}).get("status") == "ready"
         and row.get("cka_source") == "artifact"
@@ -691,6 +828,12 @@ def compute_breakthrough_production_readiness(
     ]
 
     breakthrough_count = len(evaluated)
+    capability_qualified_count = sum(
+        1
+        for row in evaluated
+        if (row.get("capability_quality") or {}).get("status")
+        in {"qualified", "breakthrough"}
+    )
     decision_ready_count = sum(1 for row in evaluated if row.get("decision_ready"))
     high_confidence_count = sum(
         1 for row in evaluated if int(row.get("promotion_confidence_score") or 0) >= 75
@@ -709,6 +852,10 @@ def compute_breakthrough_production_readiness(
         evaluated,
         key=lambda row: (
             int(bool(row.get("decision_ready"))),
+            int(
+                (row.get("capability_quality") or {}).get("status")
+                in {"qualified", "breakthrough"}
+            ),
             int(row.get("promotion_confidence_score") or 0),
             safe_float(row.get("composite_score"), 0.0),
         ),
@@ -720,6 +867,7 @@ def compute_breakthrough_production_readiness(
 
     return {
         "breakthrough_count": breakthrough_count,
+        "capability_qualified_count": capability_qualified_count,
         "decision_ready_count": decision_ready_count,
         "high_confidence_count": high_confidence_count,
         "full_repro_packet_count": full_repro_packet_count,

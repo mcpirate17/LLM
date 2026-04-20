@@ -147,9 +147,9 @@ describe('embedded bridge handshake roundtrip', () => {
 /**
  * ArchitectureDrawer state-machine simulation.
  *
- * Verifies the full lifecycle that occurs when a user clicks "Designer"
- * from Discoveries/ProgramDetail/DiscoveryRankings:
- *   1. ensure-running → designerReady
+ * Verifies the full lifecycle that occurs when a user opens the passive
+ * read-only Architecture Viewer from Discoveries/ProgramDetail:
+ *   1. dashboard serves the built designer UI locally
  *   2. iframe posts embedded-ready → bridgeReady
  *   3. parent sends load-result immediately (no 2s delay)
  *   4. iframe posts graph-loaded → loading=false, graphInfo populated
@@ -200,7 +200,7 @@ describe('ArchitectureDrawer state machine', () => {
   test('happy path: boot → bridgeReady → load-result → graph-loaded', () => {
     let state = createDrawerState('res_happy');
 
-    // Step 1: ensure-running succeeds
+    // Step 1: read-only viewer uses the dashboard-local designer UI
     state.booting = false;
     state.designerReady = true;
     expect(state.loading).toBe(true);
@@ -257,10 +257,10 @@ describe('ArchitectureDrawer state machine', () => {
     expect(state.graphInfo).toBeNull();
   });
 
-  test('boot failure: ensure-running fails → error before bridge', () => {
+  test('boot failure: source graph load fails → error before bridge', () => {
     let state = createDrawerState('res_noboot');
     state.booting = false;
-    state.error = 'Could not auto-start Aria Designer: Connection refused';
+    state.error = 'Failed to initialize: HTTP 500';
     state.loading = false;
 
     // No bridge messages should arrive since iframe never loads

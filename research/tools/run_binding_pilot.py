@@ -15,10 +15,19 @@ from typing import Any
 from research.scientist.notebook import LabNotebook
 from research.synthesis.context_rules import find_byte_safety_violations
 from research.synthesis.serializer import graph_from_json
+from research.tools._candidate_selection import fetch_latest_unique_fingerprint_rows
+from research.tools._fingerprint_selection import dedupe_records_by_fingerprint
 
 BASE = Path(__file__).resolve().parents[2]
 DB_PATH = BASE / "research/lab_notebook.db"
 OUT_DIR = BASE / "research/reports/binding_pilot"
+
+
+def _dedupe_manifest_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return dedupe_records_by_fingerprint(
+        rows,
+        result_id_key="result_id",
+    )
 
 
 def _parse_args() -> argparse.Namespace:
@@ -59,21 +68,21 @@ def _choose_manifest(limit: int, order: str) -> list[dict[str, Any]]:
     try:
         fetch_limit = max(int(limit) * 10, int(limit) + 50)
         if order == "newest":
-            sql = """
-            SELECT pr.result_id, pr.graph_fingerprint, pr.graph_json, e.timestamp AS ts,
-                   COALESCE(l.composite_score, 0) AS composite_score
-            FROM program_results pr
-            JOIN experiments e ON e.experiment_id = pr.experiment_id
-            LEFT JOIN leaderboard l ON l.result_id = pr.result_id
-            WHERE COALESCE(pr.stage1_passed, 0) = 1
-              AND COALESCE(pr.stage0_passed, 0) = 1
-              AND COALESCE(pr.stage05_passed, 0) = 1
-              AND TRIM(COALESCE(pr.graph_json, '')) <> ''
-              AND pr.graph_json <> '{}'
-              AND pr.binding_auc IS NULL
-            ORDER BY e.timestamp DESC, pr.result_id DESC
-            LIMIT ?
-            """
+            rows = fetch_latest_unique_fingerprint_rows(
+                nb.conn,
+                select_sql="""
+                    pr.result_id,
+                    pr.graph_fingerprint,
+                    pr.graph_json,
+                    e.timestamp AS ts,
+                    COALESCE(l.composite_score, 0) AS composite_score
+                """,
+                extra_where_sql="""
+                    AND COALESCE(pr.stage1_passed, 0) = 1
+                    AND pr.binding_auc IS NULL
+                """,
+                limit=fetch_limit,
+            )
         else:
             sql = """
             SELECT pr.result_id, pr.graph_fingerprint, pr.graph_json, e.timestamp AS ts,
@@ -95,7 +104,7 @@ def _choose_manifest(limit: int, order: str) -> list[dict[str, Any]]:
                      pr.result_id DESC
             LIMIT ?
             """
-        rows = nb.conn.execute(sql, (fetch_limit,)).fetchall()
+            rows = nb.conn.execute(sql, (fetch_limit,)).fetchall()
         manifest = [
             {
                 "result_id": str(row["result_id"]),
@@ -124,24 +133,6 @@ def _choose_manifest(limit: int, order: str) -> list[dict[str, Any]]:
         return trimmed
     finally:
         nb.close()
-
-
-def _dedupe_manifest_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    deduped: list[dict[str, Any]] = []
-    seen_result_ids: set[str] = set()
-    seen_fingerprints: set[str] = set()
-    for row in rows:
-        result_id = str(row["result_id"]).strip()
-        fingerprint = str(row.get("graph_fingerprint") or "").strip()
-        if not result_id or result_id in seen_result_ids:
-            continue
-        if fingerprint and fingerprint in seen_fingerprints:
-            continue
-        seen_result_ids.add(result_id)
-        if fingerprint:
-            seen_fingerprints.add(fingerprint)
-        deduped.append(row)
-    return deduped
 
 
 def _is_native_binding_eligible(graph_json: str) -> bool:

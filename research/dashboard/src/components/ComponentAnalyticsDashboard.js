@@ -720,8 +720,20 @@ export default function ComponentAnalyticsDashboard() {
   const [refreshing, setRefreshing] = useState(false);
   const { slowPollTick } = useAriaData();
 
-  const fetchData = useCallback(async () => {
+  const fetchHealthOnly = useCallback(async () => {
+    const windowParam = timeWindow !== 'all' ? `?window=${timeWindow}` : '';
+    const healthRes = await apiCall(`/api/observability/health${windowParam}`);
+    if (healthRes.ok) {
+      setHealth(await healthRes.json());
+    }
+  }, [timeWindow]);
+
+  const fetchData = useCallback(async ({ includeHeavy = true } = {}) => {
     try {
+      if (!includeHeavy) {
+        await fetchHealthOnly();
+        return;
+      }
       const windowParam = timeWindow !== 'all' ? `?window=${timeWindow}` : '';
       const [healthRes, blockRes, pairRes, lossRes, gramRes, failRes, lbRes, insRes] = await Promise.all([
         apiCall(`/api/observability/health${windowParam}`),
@@ -746,21 +758,28 @@ export default function ComponentAnalyticsDashboard() {
     } finally {
       setLoading(false);
     }
-  }, [timeWindow]);
+  }, [fetchHealthOnly, timeWindow]);
 
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
     try {
       await apiCall('/api/observability/health/refresh', { method: 'POST' });
-      await fetchData();
+      await fetchData({ includeHeavy: true });
     } finally {
       setRefreshing(false);
     }
   }, [fetchData]);
 
   useEffect(() => {
-    fetchData();
-  }, [fetchData, slowPollTick]);
+    fetchData({ includeHeavy: true });
+  }, [fetchData, timeWindow]);
+
+  useEffect(() => {
+    if (loading) {
+      return;
+    }
+    fetchData({ includeHeavy: false });
+  }, [fetchData, loading, slowPollTick]);
 
   if (loading) {
     return <div className="card"><p style={{ color: 'var(--text-muted)', fontSize: 13 }}>Loading component analytics...</p></div>;

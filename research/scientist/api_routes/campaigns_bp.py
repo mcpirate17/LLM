@@ -6,10 +6,9 @@ import logging
 import sqlite3
 import time
 from flask import jsonify, request
-from ..persona import get_aria
-from ._helpers import get_runner
+from ._helpers import get_aria_for_notebook, get_runner
 from ._utils import is_malformed_db_error as _is_malformed_db_error
-from ._utils import with_notebook_context
+from ._utils import register_notebook_routes, with_notebook_context
 from .deps import ApiRouteContext
 
 logger = logging.getLogger(__name__)
@@ -66,15 +65,11 @@ def register_campaigns_routes(app, context: ApiRouteContext):
     notebook_path = context.notebook_path
     wnb = with_notebook_context(notebook_path)
 
-    @app.route("/api/campaigns")
-    @wnb
     def api_campaigns(nb=None):
         """List all campaigns with summary stats."""
         campaigns = _safe_campaigns_list(nb)
         return jsonify(campaigns)
 
-    @app.route("/api/campaigns/<campaign_id>")
-    @wnb
     def api_campaign_detail(campaign_id, nb=None):
         """Full campaign detail with experiments, hypotheses, decisions."""
         payload = _safe_campaign_detail_payload(nb, campaign_id)
@@ -104,11 +99,9 @@ def register_campaigns_routes(app, context: ApiRouteContext):
         payload["success_criteria_tracker"] = success_criteria_tracker
         return jsonify(payload)
 
-    @app.route("/api/campaigns/<campaign_id>/report")
-    @wnb
     def api_campaign_report(campaign_id, nb=None):
         """Compiled campaign report (LLM-generated narrative)."""
-        aria = get_aria()
+        aria = get_aria_for_notebook(notebook_path)
         payload = _safe_campaign_detail_payload(nb, campaign_id)
         if payload is None:
             return jsonify({"error": "Not found"}), 404
@@ -156,8 +149,6 @@ def register_campaigns_routes(app, context: ApiRouteContext):
             }
         )
 
-    @app.route("/api/campaigns/<campaign_id>/hypotheses")
-    @wnb
     def api_campaign_hypotheses(campaign_id, nb=None):
         """Hypothesis chain for a campaign."""
         payload = _safe_campaign_detail_payload(nb, campaign_id)
@@ -166,8 +157,6 @@ def register_campaigns_routes(app, context: ApiRouteContext):
         hypotheses = payload["hypotheses"]
         return jsonify(hypotheses)
 
-    @app.route("/api/campaigns/<campaign_id>/decisions")
-    @wnb
     def api_campaign_decisions(campaign_id, nb=None):
         """Decision log for a campaign."""
         payload = _safe_campaign_detail_payload(nb, campaign_id)
@@ -176,8 +165,6 @@ def register_campaigns_routes(app, context: ApiRouteContext):
         decisions = payload["decisions"]
         return jsonify(decisions)
 
-    @app.route("/api/campaigns", methods=["POST"])
-    @wnb
     def api_create_campaign(nb=None):
         """Create a new campaign manually."""
         body = request.get_json(silent=True) or {}
@@ -203,15 +190,11 @@ def register_campaigns_routes(app, context: ApiRouteContext):
             }
         )
 
-    @app.route("/api/campaigns/<campaign_id>/pause", methods=["POST"])
-    @wnb
     def api_pause_campaign(campaign_id, nb=None):
         """Pause a campaign."""
         nb.update_campaign(campaign_id, status="paused")
         return jsonify({"status": "paused"})
 
-    @app.route("/api/campaigns/<campaign_id>/complete", methods=["POST"])
-    @wnb
     def api_complete_campaign(campaign_id, nb=None):
         """Complete a campaign."""
         campaign = nb.get_campaign(campaign_id)
@@ -225,3 +208,44 @@ def register_campaigns_routes(app, context: ApiRouteContext):
             },
         )
         return jsonify({"status": "completed"})
+
+    register_notebook_routes(
+        app,
+        wnb,
+        (
+            ("/api/campaigns", "api_campaigns", api_campaigns),
+            (
+                "/api/campaigns/<campaign_id>",
+                "api_campaign_detail",
+                api_campaign_detail,
+            ),
+            (
+                "/api/campaigns/<campaign_id>/report",
+                "api_campaign_report",
+                api_campaign_report,
+            ),
+            (
+                "/api/campaigns/<campaign_id>/hypotheses",
+                "api_campaign_hypotheses",
+                api_campaign_hypotheses,
+            ),
+            (
+                "/api/campaigns/<campaign_id>/decisions",
+                "api_campaign_decisions",
+                api_campaign_decisions,
+            ),
+            ("/api/campaigns", "api_create_campaign", api_create_campaign, ("POST",)),
+            (
+                "/api/campaigns/<campaign_id>/pause",
+                "api_pause_campaign",
+                api_pause_campaign,
+                ("POST",),
+            ),
+            (
+                "/api/campaigns/<campaign_id>/complete",
+                "api_complete_campaign",
+                api_complete_campaign,
+                ("POST",),
+            ),
+        ),
+    )

@@ -2,7 +2,7 @@ import { apiCall, postJson } from "../services/apiService";
 import React, { useState, useEffect, useMemo } from 'react';
 import { formatTime, scoreColor } from '../utils/format';
 import { confidenceColor } from '../utils/colors';
-import { insightScore } from '../utils/scoringEngine';
+import { insightScore } from '../utils/dashboardHeuristics';
 import useRenderPerf from '../hooks/useRenderPerf';
 import useInteractiveTable from './shared/useInteractiveTable';
 import SortIndicator from './shared/SortIndicator';

@@ -4,7 +4,6 @@ import FailureAnalysis from './FailureAnalysis';
 import ProgramDetail from './ProgramDetail';
 import { formatTime, formatDuration } from '../utils/format';
 import { lossColor, noveltyColor } from '../utils/colors';
-import { candidateScore } from '../utils/scoringEngine';
 import useInteractiveTable from './shared/useInteractiveTable';
 import SortIndicator from './shared/SortIndicator';
 import useResizableColumns from './shared/useResizableColumns';
@@ -55,6 +54,12 @@ function progScoreColor(score) {
   if (score >= 40) return 'var(--accent-yellow)';
   if (score >= 20) return 'var(--accent-orange, #f0883e)';
   return 'var(--accent-red)';
+}
+
+function canonicalScore(row) {
+  if (row?.composite_score == null) return null;
+  const score = Number(row.composite_score);
+  return Number.isFinite(score) ? score : null;
 }
 
 const PROG_COLUMNS = [
@@ -114,7 +119,14 @@ function FunnelViz({ experiment }) {
 function ExperimentSummaryHeader({ experiment, programs }) {
   const bestProgram = useMemo(() => {
     if (!programs || programs.length === 0) return null;
-    return [...programs].sort((a, b) => candidateScore(b) - candidateScore(a))[0];
+    return [...programs].sort((a, b) => {
+      const aScore = canonicalScore(a);
+      const bScore = canonicalScore(b);
+      if (aScore == null && bScore == null) return 0;
+      if (aScore == null) return 1;
+      if (bScore == null) return -1;
+      return bScore - aScore;
+    })[0];
   }, [programs]);
 
   return (
@@ -146,7 +158,7 @@ function ExperimentSummaryHeader({ experiment, programs }) {
             </div>
           </div>
           <div style={{ marginTop: 10, fontSize: 10, color: 'var(--text-muted)' }}>
-            Score: <span style={{ color: 'var(--text-primary)', fontWeight: 700 }}>{candidateScore(bestProgram)}</span>
+            Score: <span style={{ color: 'var(--text-primary)', fontWeight: 700 }}>{canonicalScore(bestProgram)?.toFixed(1) ?? '—'}</span>
           </div>
         </div>
       )}
@@ -164,7 +176,7 @@ const PROG_FILTER_FIELDS = [
 ];
 
 function getProgSortValue(row, key) {
-  if (key === '_score') return candidateScore(row);
+  if (key === '_score') return canonicalScore(row);
   if (key === 'rating') return ROW_RATING_ORDER[programRowRating(row).label] || 0;
   return row[key];
 }
@@ -196,7 +208,7 @@ function ProgramsTable({ programs, onSelectProgram }) {
   });
 
   const sorted = useMemo(() =>
-    sortedRows.map(p => ({ ...p, _score: candidateScore(p), _rating: programRowRating(p) })),
+    sortedRows.map(p => ({ ...p, _score: canonicalScore(p), _rating: programRowRating(p) })),
     [sortedRows]
   );
 

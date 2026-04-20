@@ -648,6 +648,157 @@ def _register_db_health_routes(app, notebook_path: str, wnb) -> None:
         return jsonify(result)
 
 
+def _register_governance_routes(app, notebook_path: str, wnb) -> None:
+    """Slice 3c: surface fingerprint dedup violations for the dashboard."""
+
+    # Experiment types where multiple rows per fingerprint are intentional.
+    # (Cross-experiment re-runs of the same fp.)
+    INTENTIONAL_TYPES = (
+        "exact_graph_replay",
+        "reference",
+        "reference_registration",
+        "validation",
+        "backfill",
+    )
+
+    @app.route("/api/governance/duplicate-fingerprints")
+    @wnb
+    def api_governance_dup_fps(nb=None):
+        """Top fingerprints with multiple rows.
+
+        Buckets:
+          - within_experiment: SAME (fingerprint, experiment_id) appears > 1 row.
+            These are unconditional violations — the dedup gate should have
+            caught them.
+          - cross_experiment_unintentional: same fp across multiple
+            experiments where the experiment_type is NOT in INTENTIONAL_TYPES
+            (i.e., evolution / novelty / synthesis re-evaluating something
+            the system has already seen).
+        """
+        limit = int(request.args.get("limit", 50))
+        limit = max(1, min(limit, 500))
+
+        within = nb.conn.execute(
+            """
+            SELECT
+                pr.graph_fingerprint AS fp,
+                pr.experiment_id,
+                COUNT(*) AS n_runs,
+                MIN(pr.timestamp) AS first_ts,
+                MAX(pr.timestamp) AS last_ts,
+                MAX(e.experiment_type) AS experiment_type,
+                MAX(pr.model_source) AS model_source,
+                MAX(pr.result_cohort) AS result_cohort,
+                SUM(CASE WHEN pr.stage1_passed = 1 THEN 1 ELSE 0 END) AS n_passed
+            FROM program_results pr
+            JOIN experiments e ON e.experiment_id = pr.experiment_id
+            WHERE TRIM(COALESCE(pr.graph_fingerprint, '')) <> ''
+            GROUP BY pr.graph_fingerprint, pr.experiment_id
+            HAVING n_runs > 1
+            ORDER BY n_runs DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+
+        placeholders = ",".join("?" for _ in INTENTIONAL_TYPES)
+        cross = nb.conn.execute(
+            f"""
+            SELECT
+                pr.graph_fingerprint AS fp,
+                COUNT(DISTINCT pr.experiment_id) AS n_experiments,
+                COUNT(*) AS n_rows,
+                MIN(pr.timestamp) AS first_ts,
+                MAX(pr.timestamp) AS last_ts,
+                GROUP_CONCAT(DISTINCT e.experiment_type) AS experiment_types
+            FROM program_results pr
+            JOIN experiments e ON e.experiment_id = pr.experiment_id
+            WHERE TRIM(COALESCE(pr.graph_fingerprint, '')) <> ''
+              AND e.experiment_type NOT IN ({placeholders})
+            GROUP BY pr.graph_fingerprint
+            HAVING n_experiments > 1
+            ORDER BY n_experiments DESC, n_rows DESC
+            LIMIT ?
+            """,
+            (*INTENTIONAL_TYPES, limit),
+        ).fetchall()
+
+        # Aggregate counts (cheap — same scan, group-only).
+        agg_within = nb.conn.execute(
+            """
+            SELECT COUNT(*) AS dup_groups, SUM(n_runs - 1) AS excess_rows
+            FROM (
+              SELECT COUNT(*) AS n_runs
+              FROM program_results
+              WHERE TRIM(COALESCE(graph_fingerprint, '')) <> ''
+              GROUP BY graph_fingerprint, experiment_id
+              HAVING n_runs > 1
+            )
+            """
+        ).fetchone()
+        agg_cross = nb.conn.execute(
+            f"""
+            SELECT COUNT(*) AS fingerprints, SUM(n - 1) AS excess_experiments
+            FROM (
+              SELECT pr.graph_fingerprint, COUNT(DISTINCT pr.experiment_id) AS n
+              FROM program_results pr
+              JOIN experiments e ON e.experiment_id = pr.experiment_id
+              WHERE TRIM(COALESCE(pr.graph_fingerprint, '')) <> ''
+                AND e.experiment_type NOT IN ({placeholders})
+              GROUP BY pr.graph_fingerprint
+              HAVING n > 1
+            )
+            """,
+            INTENTIONAL_TYPES,
+        ).fetchone()
+
+        # Slice 4 dup-write rejection counter (cross-experiment gate live since
+        # the trigger + record_program_result gate were installed). This is an
+        # in-process counter on the LabNotebook class; survives only as long
+        # as the dashboard process. A persistent count would need a stats table.
+        from research.scientist.notebook import LabNotebook
+
+        rejection_count = getattr(LabNotebook, "_dup_rejection_count", 0)
+
+        # Trigger / index install status.
+        guards_installed = {
+            "idx_pr_fp_per_experiment": bool(
+                nb.conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_pr_fp_per_experiment'"
+                ).fetchone()
+            ),
+            "reject_dup_fingerprint_no_reason": bool(
+                nb.conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='trigger' AND name='reject_dup_fingerprint_no_reason'"
+                ).fetchone()
+            ),
+        }
+
+        return jsonify(
+            {
+                "within_experiment": {
+                    "summary": {
+                        "duplicate_groups": agg_within["dup_groups"] or 0,
+                        "excess_rows": agg_within["excess_rows"] or 0,
+                    },
+                    "groups": [dict(row) for row in within],
+                },
+                "cross_experiment_unintentional": {
+                    "summary": {
+                        "fingerprints": agg_cross["fingerprints"] or 0,
+                        "excess_experiments": agg_cross["excess_experiments"] or 0,
+                    },
+                    "intentional_types_excluded": list(INTENTIONAL_TYPES),
+                    "fingerprints": [dict(row) for row in cross],
+                },
+                "rejection_counter": {
+                    "since_dashboard_boot": rejection_count,
+                    "guards_installed": guards_installed,
+                },
+            }
+        )
+
+
 def register_observability_routes(app, context: ApiRouteContext):
     notebook_path = context.notebook_path
     wnb = with_notebook_context(notebook_path)
@@ -655,3 +806,4 @@ def register_observability_routes(app, context: ApiRouteContext):
     _register_analytics_routes(app, notebook_path)
     _register_patterns_routes(app, notebook_path, wnb)
     _register_db_health_routes(app, notebook_path, wnb)
+    _register_governance_routes(app, notebook_path, wnb)

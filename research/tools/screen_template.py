@@ -27,7 +27,6 @@ from pathlib import Path
 from typing import Any, Dict
 
 import torch
-import torch.nn as nn
 
 from research.eval.training_core import run_training_loop
 from research.training.loss_ops import next_token_cross_entropy

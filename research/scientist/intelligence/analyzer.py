@@ -13,6 +13,7 @@ from typing import Dict, List, Tuple
 
 import numpy as np
 
+from ..analytics.frontier import pareto_mask
 from .digest import (
     ArchitectureFamily,
     ConfigEffect,
@@ -670,24 +671,13 @@ def analyze_efficiency_profiles(
             )
         )
 
-    # Identify Pareto-optimal: no other family dominates on BOTH loss and params
-    for i, pi in enumerate(profiles):
-        dominated = False
-        for j, pj in enumerate(profiles):
-            if i == j:
-                continue
-            # pj dominates pi if it has lower loss AND fewer params
-            pi_loss = 1.0 - pi.loss_per_megaparam  # lower is worse
-            pj_loss = 1.0 - pj.loss_per_megaparam
-            if (
-                pj.avg_params <= pi.avg_params
-                and pj_loss <= pi_loss
-                and (pj.avg_params < pi.avg_params or pj_loss < pi_loss)
-            ):
-                dominated = True
-                break
-        if not dominated:
-            pi.pareto_optimal = True
+    objective_matrix = [
+        (1.0 - float(profile.loss_per_megaparam), float(profile.avg_params))
+        for profile in profiles
+    ]
+    mask = pareto_mask(objective_matrix)
+    for i, profile in enumerate(profiles):
+        profile.pareto_optimal = bool(mask[i])
 
     profiles.sort(key=lambda p: p.loss_per_megaparam, reverse=True)
     return profiles[:10]

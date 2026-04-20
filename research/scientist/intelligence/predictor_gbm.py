@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import functools
 import hashlib
 import json
 import logging
-import sqlite3
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -23,34 +21,21 @@ from .ml_corpus import (
     CorpusIntegrityError,
     build_dense_feature_matrix,
     grouped_stratified_split,
-    load_deduped_screening_predictor_rows,
-    load_deduped_graph_training_rows,
-    load_deduped_predictor_training_rows,
+    load_screening_predictor_corpus_rows,
     rerun_confidence_weight,
+)
+from .predictor_artifacts import (
+    GBM_GATE_MODEL_PATH as _GBM_GATE_MODEL_PATH,
+    GBM_META_PATH as _GBM_META_PATH,
+    GBM_RANK_MODEL_PATH as _GBM_RANK_MODEL_PATH,
+    ensure_state_dir,
+    read_json,
+    write_json,
 )
 
 logger = logging.getLogger(__name__)
 
-_STATE_DIR = Path("research/runtime/learning")
-_GBM_GATE_MODEL_PATH = _STATE_DIR / "gbm_gate_model.txt"
-_GBM_RANK_MODEL_PATH = _STATE_DIR / "gbm_rank_model.txt"
-_GBM_META_PATH = _STATE_DIR / "gbm_predictor.json"
-_GRAPH_PREDICTOR_PATH = _STATE_DIR / "graph_predictor.npz"
-_INTERACTION_MODEL_PATH = _STATE_DIR / "interaction_model.npz"
-_BAYESIAN_STATE_PATH = _STATE_DIR / "bayesian_state.json"
-_ENSEMBLE_STATE_PATH = _STATE_DIR / "ensemble_state.npz"
-_ENSEMBLE_META_PATH = _STATE_DIR / "ensemble_state.json"
-
-
-def _unlink_if_exists(path: Path) -> None:
-    try:
-        path.unlink()
-    except FileNotFoundError:
-        pass
-
-
-
-from .predictor_ridge import _extract_features, _unlink_if_exists  # noqa: F401
+from .predictor_ridge import _extract_features  # noqa: F401
 
 # ─────────────────────────────────────────────────────────────────────────────
 # GBMPredictor: LightGBM graph-structure pre-screener
@@ -80,31 +65,15 @@ def _load_screening_predictor_corpus_rows(
     *,
     validate: bool,
 ) -> List[Dict[str, Any]]:
-    """Backward-compatible wrapper that preserves local monkeypatch points."""
-    db_file = Path(db_path)
-    if not db_file.exists():
-        return load_deduped_graph_training_rows(db_path, validate=validate)
-    try:
-        from ..notebook.shared_conn import get_notebook_conn
-        conn = get_notebook_conn(db_path)
-        cols = {row[1] for row in conn.execute("PRAGMA table_info(program_results)")}
-    except sqlite3.Error:
-        return load_deduped_graph_training_rows(db_path, validate=validate)
-    required = {
-        "result_cohort",
-        "data_provenance_json",
-        "trust_label",
-        "comparability_label",
-    }
-    if not required.issubset(cols):
-        return load_deduped_graph_training_rows(db_path, validate=validate)
-    return load_deduped_screening_predictor_rows(db_path, validate=validate)
+    """Backward-compatible monkeypatch point over the canonical corpus loader."""
+    return load_screening_predictor_corpus_rows(db_path, validate=validate)
 
 
 def analyze_graph_label_quality(db_path: str) -> Dict[str, Any]:
     """Summarize duplicate-graph ambiguity and hard-negative composition."""
     try:
         from ..notebook.shared_conn import get_notebook_conn
+
         conn = get_notebook_conn(db_path)
         rows = conn.execute(
             """SELECT graph_json, stage1_passed, stage0_passed, stage05_passed
@@ -233,6 +202,10 @@ def _query_graph_training_data(
             "ar_auc_best",
             "blimp_overall_accuracy_best",
             "binding_composite_best",
+            "induction_v2_investigation_auc_best",
+            "binding_v2_investigation_auc_best",
+            "validation_loss_ratio_best",
+            "rapid_screening_passed_best",
             "initial_loss_best",
             "mean_grad_norm_best",
             "max_grad_norm_best",
@@ -314,26 +287,23 @@ class GBMPredictor:
         """Persist LightGBM models plus feature metadata."""
         if not self.is_fitted():
             return
-        state_dir = Path(state_dir)
-        state_dir.mkdir(parents=True, exist_ok=True)
+        state_dir = ensure_state_dir(state_dir)
         self.gate_model.save_model(str(state_dir / _GBM_GATE_MODEL_PATH.name))
         if self.rank_model is not None:
             self.rank_model.save_model(str(state_dir / _GBM_RANK_MODEL_PATH.name))
-        with open(state_dir / _GBM_META_PATH.name, "w", encoding="utf-8") as f:
-            json.dump(
-                {
-                    "feature_names": self.feature_names,
-                    "gate_feature_names": self.gate_feature_names,
-                    "n_train": self.n_train,
-                    "gate_threshold": self.gate_threshold,
-                    "gate_importance": self.gate_importance,
-                    "rank_importance": self.rank_importance,
-                    "has_rank_model": self.rank_model is not None,
-                    "train_metrics": self.train_metrics,
-                },
-                f,
-                indent=2,
-            )
+        write_json(
+            state_dir / _GBM_META_PATH.name,
+            {
+                "feature_names": self.feature_names,
+                "gate_feature_names": self.gate_feature_names,
+                "n_train": self.n_train,
+                "gate_threshold": self.gate_threshold,
+                "gate_importance": self.gate_importance,
+                "rank_importance": self.rank_importance,
+                "has_rank_model": self.rank_model is not None,
+                "train_metrics": self.train_metrics,
+            },
+        )
 
     @classmethod
     def load(cls, state_dir: Path) -> "GBMPredictor":
@@ -348,8 +318,7 @@ class GBMPredictor:
         except ImportError:
             logger.info("lightgbm not installed, persisted GBM predictor unavailable")
             return cls()
-        with open(meta_path, encoding="utf-8") as f:
-            meta = json.load(f)
+        meta = read_json(meta_path)
         gate_model = lgb.Booster(model_file=str(gate_model_path))
         rank_model = None
         if meta.get("has_rank_model"):
@@ -408,6 +377,10 @@ def train_gbm(
         "ar_auc_best",
         "blimp_overall_accuracy_best",
         "binding_composite_best",
+        "induction_v2_investigation_auc_best",
+        "binding_v2_investigation_auc_best",
+        "validation_loss_ratio_best",
+        "rapid_screening_passed_best",
         "initial_loss_best",
         "mean_grad_norm_best",
         "max_grad_norm_best",
@@ -623,6 +596,10 @@ def evaluate_gbm(
         "ar_auc_best",
         "blimp_overall_accuracy_best",
         "binding_composite_best",
+        "induction_v2_investigation_auc_best",
+        "binding_v2_investigation_auc_best",
+        "validation_loss_ratio_best",
+        "rapid_screening_passed_best",
         "initial_loss_best",
         "mean_grad_norm_best",
         "max_grad_norm_best",
@@ -970,5 +947,3 @@ def evaluate_gbm_induction(
 # ─────────────────────────────────────────────────────────────────────────────
 # EnsemblePredictor: combines GBM + GraphPredictor + Bayesian + InteractionModel
 # ─────────────────────────────────────────────────────────────────────────────
-
-

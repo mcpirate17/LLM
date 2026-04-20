@@ -625,6 +625,11 @@ def tpl_n_way_moe_block(
         processed = normed2
 
     processed = _fix_dim(graph, processed)
+    # Bound MoE-routed expert outputs (which can spike when one expert
+    # dominates) before injecting back into the residual stream.
+    processed = _add(
+        graph, "rmsnorm", [processed], context="n_way_moe_block.output_norm"
+    )
     try:
         return graph.add_op("add", [input_id, processed])
     except ValueError:

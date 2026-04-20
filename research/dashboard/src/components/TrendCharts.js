@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { formatTime, formatDuration, scoreColor } from '../utils/format';
 import { lossColor, noveltyColor } from '../utils/colors';
-import { trendScore, trendScoreBreakdown } from '../utils/scoringEngine';
+import { trendScore, trendScoreBreakdown } from '../utils/dashboardHeuristics';
 import useCopyToClipboard from '../hooks/useCopyToClipboard';
 import { useAriaData } from '../hooks/useAriaData';
 import apiService, { apiCall } from '../services/apiService';

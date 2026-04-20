@@ -137,9 +137,7 @@ def synthesize_loss(
     primary = rng.choice(_CE_VARIANTS)
     components = [LossComponent(primary, 1.0)]
 
-    aux_names = [
-        n for n in LOSS_COMPONENTS if n != primary and n not in _CE_VARIANTS
-    ]
+    aux_names = [n for n in LOSS_COMPONENTS if n != primary and n not in _CE_VARIANTS]
     n_aux = rng.randint(0, 3)
     for name in rng.sample(aux_names, min(n_aux, len(aux_names))):
         components.append(

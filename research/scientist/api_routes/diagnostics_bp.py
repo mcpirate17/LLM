@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import os
 from flask import jsonify, request
-from ._utils import with_notebook_context
+from ._utils import register_notebook_routes, register_routes, with_notebook_context
 from .deps import ApiRouteContext
 
 logger = logging.getLogger(__name__)
@@ -14,8 +14,8 @@ logger = logging.getLogger(__name__)
 def register_diagnostics_routes(app, context: ApiRouteContext):
     notebook_path = context.notebook_path
     wnb = with_notebook_context(notebook_path)
+    wnb_writer = with_notebook_context(notebook_path, read_only=False)
 
-    @app.route("/api/diagnostics/fingerprint")
     def api_fingerprint_diagnostics():
         """Expose lightweight runtime diagnostics for fingerprint analysis."""
         reset = str(request.args.get("reset", "0")).strip().lower() in {
@@ -44,8 +44,6 @@ def register_diagnostics_routes(app, context: ApiRouteContext):
                 }
             ), 500
 
-    @app.route("/api/diagnostics/report-cache")
-    @wnb
     def api_report_cache_diagnostics(nb=None):
         """Expose report snapshot cache usage and retention diagnostics."""
         cleanup = str(request.args.get("cleanup", "0")).strip().lower() in {
@@ -85,3 +83,25 @@ def register_diagnostics_routes(app, context: ApiRouteContext):
                 "cleanup": cleanup_stats,
             }
         )
+
+    register_routes(
+        app,
+        (
+            (
+                "/api/diagnostics/fingerprint",
+                "api_fingerprint_diagnostics",
+                api_fingerprint_diagnostics,
+            ),
+        ),
+    )
+    register_notebook_routes(
+        app,
+        wnb_writer,
+        (
+            (
+                "/api/diagnostics/report-cache",
+                "api_report_cache_diagnostics",
+                api_report_cache_diagnostics,
+            ),
+        ),
+    )

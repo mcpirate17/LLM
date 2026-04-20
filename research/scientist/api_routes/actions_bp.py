@@ -6,7 +6,7 @@ import logging
 from flask import jsonify, request
 from ._helpers import get_autonomy, _DISMISSED_ACTIONS
 from ._strategy_recommendations import compute_action_queue
-from ._utils import with_notebook_context
+from ._utils import register_notebook_routes, register_routes, with_notebook_context
 from .deps import ApiRouteContext
 
 logger = logging.getLogger(__name__)
@@ -16,14 +16,11 @@ def register_actions_routes(app, context: ApiRouteContext):
     notebook_path = context.notebook_path
     wnb = with_notebook_context(notebook_path)
 
-    @app.route("/api/actions")
-    @wnb
     def api_actions(nb=None):
         """Aggregated prioritized action list for the dashboard."""
         actions = compute_action_queue(nb)
         return jsonify(actions)
 
-    @app.route("/api/actions/<action_id>/dismiss", methods=["POST"])
     def api_action_dismiss(action_id):
         """Dismiss an action card (ephemeral, resets on server restart)."""
         clean_id = str(action_id or "").strip()[:64]
@@ -34,7 +31,6 @@ def register_actions_routes(app, context: ApiRouteContext):
             {"dismissed": clean_id, "total_dismissed": len(_DISMISSED_ACTIONS)}
         )
 
-    @app.route("/api/actions/<action_id>/approve", methods=["POST"])
     def api_action_approve(action_id):
         """User approves a pending autonomous action."""
         try:
@@ -53,7 +49,6 @@ def register_actions_routes(app, context: ApiRouteContext):
             logger.error(f"Error approving action {action_id}: {e}")
             return jsonify({"error": str(e)}), 500
 
-    @app.route("/api/actions/<action_id>/undo", methods=["POST"])
     def api_action_undo(action_id):
         """Undo a recently executed autonomous action (within 5 min window)."""
         try:
@@ -69,7 +64,6 @@ def register_actions_routes(app, context: ApiRouteContext):
             logger.error(f"Error undoing action {action_id}: {e}")
             return jsonify({"error": str(e)}), 500
 
-    @app.route("/api/aria/autonomy", methods=["GET", "PUT"])
     def api_aria_autonomy():
         """Get or update autonomy configuration (trust level, behaviors)."""
         try:
@@ -83,7 +77,6 @@ def register_actions_routes(app, context: ApiRouteContext):
             logger.error(f"Error in /api/aria/autonomy: {e}")
             return jsonify({"error": str(e)}), 500
 
-    @app.route("/api/aria/activity")
     def api_aria_activity():
         """Recent autonomous action history for the activity feed."""
         try:
@@ -93,3 +86,39 @@ def register_actions_routes(app, context: ApiRouteContext):
         except Exception as e:
             logger.error(f"Error in /api/aria/activity: {e}")
             return jsonify([]), 500
+
+    register_notebook_routes(
+        app,
+        wnb,
+        (("/api/actions", "api_actions", api_actions),),
+    )
+    register_routes(
+        app,
+        (
+            (
+                "/api/actions/<action_id>/dismiss",
+                "api_action_dismiss",
+                api_action_dismiss,
+                ("POST",),
+            ),
+            (
+                "/api/actions/<action_id>/approve",
+                "api_action_approve",
+                api_action_approve,
+                ("POST",),
+            ),
+            (
+                "/api/actions/<action_id>/undo",
+                "api_action_undo",
+                api_action_undo,
+                ("POST",),
+            ),
+            (
+                "/api/aria/autonomy",
+                "api_aria_autonomy",
+                api_aria_autonomy,
+                ("GET", "PUT"),
+            ),
+            ("/api/aria/activity", "api_aria_activity", api_aria_activity),
+        ),
+    )

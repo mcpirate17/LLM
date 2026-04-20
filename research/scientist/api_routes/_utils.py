@@ -5,7 +5,7 @@ from __future__ import annotations
 import functools
 import logging
 import sqlite3
-from typing import Any, Dict
+from typing import Any, Dict, Iterable, Sequence
 
 from flask import jsonify, request
 
@@ -20,6 +20,51 @@ def bind_view(handler, *bound_args):
 
 def bind_notebook_view(wnb, handler, *bound_args):
     return wnb(bind_view(handler, *bound_args))
+
+
+def register_routes(
+    app,
+    routes: Iterable[Sequence[Any]],
+):
+    """Register a table of pre-bound routes.
+
+    Each route entry is ``(rule, endpoint, view[, methods])``.
+    """
+    for route in routes:
+        if len(route) < 3 or len(route) > 4:
+            raise ValueError("Each route must be (rule, endpoint, view[, methods])")
+        rule, endpoint, view = route[:3]
+        methods = route[3] if len(route) >= 4 else None
+        kwargs = {"methods": list(methods)} if methods is not None else {}
+        app.add_url_rule(rule, endpoint, view, **kwargs)
+
+
+def register_notebook_routes(
+    app,
+    wnb,
+    routes: Iterable[Sequence[Any]],
+):
+    """Register a table of notebook-backed routes.
+
+    Each route entry is ``(rule, endpoint, handler[, methods][, bound_args])`` where
+    ``methods`` is an iterable of HTTP verbs and ``bound_args`` is a tuple of extra
+    positional arguments bound into the handler.
+    """
+    for route in routes:
+        if len(route) < 3 or len(route) > 5:
+            raise ValueError(
+                "Each route must be (rule, endpoint, handler[, methods][, bound_args])"
+            )
+        rule, endpoint, handler = route[:3]
+        methods = route[3] if len(route) >= 4 else None
+        bound_args = route[4] if len(route) >= 5 else ()
+        kwargs = {"methods": list(methods)} if methods is not None else {}
+        app.add_url_rule(
+            rule,
+            endpoint,
+            bind_notebook_view(wnb, handler, *tuple(bound_args or ())),
+            **kwargs,
+        )
 
 
 def is_malformed_db_error(exc: Exception) -> bool:

@@ -371,10 +371,8 @@ def infer_result_cohort(
         kwargs.get("experiment_type")
         or experiment_type_for_id(kwargs.get("experiment_id"))
     )
-    if experiment_type in {"backfill", "exact_graph_replay"}:
+    if experiment_type in {"backfill", "exact_graph_replay", "forced_exploration"}:
         return "backfill"
-    if experiment_type == "forced_exploration":
-        return "forced_exploration"
     if experiment_type == "designer":
         return "designer"
     if experiment_type == "reference":
@@ -397,7 +395,7 @@ def infer_result_cohort(
     if source.startswith("designer"):
         return "designer"
     if source == "forced_exploration":
-        return "forced_exploration"
+        return "backfill"
     if source in {
         "graph_synthesis",
         "novelty",
@@ -419,7 +417,7 @@ def infer_trust_label(kwargs: Dict[str, Any], result_cohort: str) -> str:
         return "backfill_observation"
     if result_cohort == "legacy_unlabeled":
         return "legacy_unlabeled"
-    if result_cohort in {"designer", "forced_exploration"}:
+    if result_cohort == "designer":
         return "exploratory"
     if kwargs.get("stage1_passed") in (1, True):
         has_deep_eval = any(
@@ -478,8 +476,6 @@ def infer_evaluation_protocol_version(
         return "backfill_replay_v1"
     if result_cohort == "designer":
         return "designer_bridge_v1"
-    if result_cohort == "forced_exploration":
-        return "forced_exploration_v1"
     if trust_label == "candidate_grade":
         return "candidate_grade_v1"
     if trust_label == "candidate_screening":

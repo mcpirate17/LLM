@@ -1,17 +1,11 @@
 from __future__ import annotations
 
-from functools import lru_cache
-from pathlib import Path
-
-from torch.utils.cpp_extension import load
+from ..runtime.native.torch_extension_loader import load_local_cpp_extension
 
 
-@lru_cache(maxsize=1)
 def load_loss_native():
-    source = Path(__file__).with_name("_loss_native.cpp")
-    return load(
-        name="training_native_ext_v1",
-        sources=[str(source)],
-        extra_cflags=["-O3"],
-        verbose=False,
+    return load_local_cpp_extension(
+        __file__,
+        "_loss_native.cpp",
+        "training_native_ext_v1",
     )

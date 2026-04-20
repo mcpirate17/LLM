@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import json
 import math
-from collections import Counter
+from collections import Counter, deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -12,6 +11,7 @@ import pandas as pd
 from scipy import stats as scipy_stats
 import statsmodels.api as sm
 
+from ..json_utils import fast_loads as _json_loads
 from ..trust_policy import (
     PROMOTABLE_COMPARABILITY_LABELS,
     PROMOTABLE_TRUST_LABELS,
@@ -126,7 +126,7 @@ def _safe_json_loads(raw: Any) -> dict[str, Any]:
     if isinstance(raw, dict):
         return raw
     try:
-        parsed = json.loads(raw)
+        parsed = _json_loads(raw)
     except (TypeError, ValueError):
         return {}
     return parsed if isinstance(parsed, dict) else {}
@@ -191,56 +191,51 @@ def _iter_nodes(graph: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
     return []
 
 
-def _compute_depths(nodes: list[tuple[str, dict[str, Any]]]) -> dict[str, int]:
-    by_id = {node_id: node for node_id, node in nodes}
-    depths: dict[str, int] = {}
-
-    def visit(node_id: str, trail: set[str]) -> int:
-        if node_id in depths:
-            return depths[node_id]
-        if node_id in trail:
-            return 0
-        node = by_id.get(node_id) or {}
-        inputs = node.get("input_ids") or []
-        if not isinstance(inputs, list) or not inputs:
-            depths[node_id] = 0
-            return 0
-        next_trail = set(trail)
-        next_trail.add(node_id)
-        parent_depth = max(
-            (visit(str(parent), next_trail) for parent in inputs), default=-1
-        )
-        depths[node_id] = parent_depth + 1
-        return depths[node_id]
-
-    for node_id, _node in nodes:
-        visit(node_id, set())
-    return depths
-
-
 def _graph_features(graph_json: Any) -> dict[str, Any]:
     graph = _safe_json_loads(graph_json)
     metadata = graph.get("metadata") if isinstance(graph.get("metadata"), dict) else {}
     nodes = _iter_nodes(graph)
-    depths = _compute_depths(nodes)
+    by_id = {node_id: node for node_id, node in nodes}
+    children = {node_id: [] for node_id, _ in nodes}
+    indegree = {node_id: 0 for node_id, _ in nodes}
+    depths = {node_id: 0 for node_id, _ in nodes}
     ops: list[str] = []
     depth_ops: list[tuple[str, str]] = []
     pairs: set[str] = set()
-    by_id = {node_id: node for node_id, node in nodes}
     for node_id, node in nodes:
         op = str(node.get("op_name") or "").strip()
+        inputs = node.get("input_ids") or []
+        if isinstance(inputs, list):
+            valid_parents: list[str] = []
+            for parent in inputs:
+                parent_id = str(parent)
+                if parent_id not in by_id:
+                    continue
+                valid_parents.append(parent_id)
+                children[parent_id].append(node_id)
+            indegree[node_id] = len(valid_parents)
+            if op and op not in {"input", "output"}:
+                for parent_id in valid_parents:
+                    parent_node = by_id.get(parent_id) or {}
+                    parent_op = str(parent_node.get("op_name") or "").strip()
+                    if parent_op and parent_op not in {"input", "output"}:
+                        a, b = sorted((parent_op, op))
+                        pairs.add(f"{a}+{b}")
         if not op or op in {"input", "output"}:
             continue
         ops.append(op)
         depth_ops.append((node_id, op))
-        inputs = node.get("input_ids") or []
-        if isinstance(inputs, list):
-            for parent in inputs:
-                parent_node = by_id.get(str(parent)) or {}
-                parent_op = str(parent_node.get("op_name") or "").strip()
-                if parent_op and parent_op not in {"input", "output"}:
-                    a, b = sorted((parent_op, op))
-                    pairs.add(f"{a}+{b}")
+
+    queue = deque(node_id for node_id, degree in indegree.items() if degree == 0)
+    while queue:
+        node_id = queue.popleft()
+        next_depth = depths[node_id] + 1
+        for child_id in children.get(node_id, ()):
+            if next_depth > depths.get(child_id, 0):
+                depths[child_id] = next_depth
+            indegree[child_id] -= 1
+            if indegree[child_id] == 0:
+                queue.append(child_id)
 
     max_depth = max(depths.values(), default=0)
     op_depth_buckets: set[str] = set()
@@ -442,7 +437,8 @@ def load_strength_datasets(db_path: str | Path) -> StrengthDatasets:
     from ..notebook.shared_conn import get_notebook_conn
 
     conn = get_notebook_conn(str(db_path))
-    df = pd.read_sql_query(BASE_ANALYSIS_QUERY, conn)
+    rows = conn.execute(BASE_ANALYSIS_QUERY).fetchall()
+    df = pd.DataFrame([dict(row) for row in rows])
 
     config_df = pd.DataFrame(
         [_parse_config_features(value) for value in df["config_json"]]

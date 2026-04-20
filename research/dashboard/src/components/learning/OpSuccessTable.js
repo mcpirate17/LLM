@@ -1,6 +1,6 @@
 import React, { useMemo } from 'react';
 import { scoreColor } from '../../utils/format';
-import { opScore, opScoreBreakdown } from '../../utils/scoringEngine';
+import { opScore, opScoreBreakdown } from '../../utils/dashboardHeuristics';
 import useInteractiveTable from '../shared/useInteractiveTable';
 import SortIndicator from '../shared/SortIndicator';
 import { MetricChipList } from '../shared/MetricChipBadge';

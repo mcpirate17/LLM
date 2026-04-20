@@ -40,7 +40,7 @@ function StatusBar({
   const pr = productionReadiness;
   const screening = pr?.screening_count ?? 0;
   const investigation = pr?.investigation_count ?? 0;
-  const validation = pr?.validation_count ?? pr?.decision_ready_count ?? 0;
+  const validation = pr?.validation_count ?? pr?.capability_qualified_count ?? pr?.decision_ready_count ?? 0;
   const breakthrough = pr?.breakthrough_count ?? 0;
 
   // Trend arrow from learningTrajectory

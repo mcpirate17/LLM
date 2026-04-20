@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import sys
+import threading
 from dataclasses import dataclass
 import importlib.util
 from pathlib import Path
@@ -14,6 +15,7 @@ logger = logging.getLogger(__name__)
 _cython_bridge_cache: Any = False
 _rust_scheduler_cache: Any = False
 _native_lib_cache: Any = False
+_rust_scheduler_lock = threading.Lock()
 
 PARTIAL_NATIVE_COVERAGE_THRESHOLD = 0.7
 _SELECTIVE_GUARDRAIL_HISTORY_MAX = 25
@@ -133,59 +135,62 @@ def _try_import_rust_scheduler() -> Any:
     global _rust_scheduler_cache
     if _rust_scheduler_cache not in {False, None}:
         return _rust_scheduler_cache
+    with _rust_scheduler_lock:
+        if _rust_scheduler_cache not in {False, None}:
+            return _rust_scheduler_cache
 
-    local_scheduler = (
-        Path(__file__).resolve().parents[2]
-        / "runtime"
-        / "native"
-        / "rust"
-        / "aria-scheduler"
-        / "target"
-        / "release"
-        / "libaria_scheduler.so"
-    )
-    if local_scheduler.exists():
-        try:
-            sys.modules.pop("aria_scheduler", None)
-            spec = importlib.util.spec_from_file_location(
-                "aria_scheduler", local_scheduler
-            )
-            if spec is not None and spec.loader is not None:
-                module = importlib.util.module_from_spec(spec)
-                sys.modules["aria_scheduler"] = module
-                spec.loader.exec_module(module)
-                _rust_scheduler_cache = module
-                logger.info(
-                    "Loaded Rust scheduler (aria_scheduler) from local build %s",
-                    local_scheduler,
+        local_scheduler = (
+            Path(__file__).resolve().parents[2]
+            / "runtime"
+            / "native"
+            / "rust"
+            / "aria-scheduler"
+            / "target"
+            / "release"
+            / "libaria_scheduler.so"
+        )
+        if local_scheduler.exists():
+            try:
+                sys.modules.pop("aria_scheduler", None)
+                spec = importlib.util.spec_from_file_location(
+                    "aria_scheduler", local_scheduler
                 )
-                return _rust_scheduler_cache
-        except Exception as exc:
-            logger.debug(
-                "Repo-local Rust scheduler load failed from %s: %s",
-                local_scheduler,
-                exc,
-            )
+                if spec is not None and spec.loader is not None:
+                    module = importlib.util.module_from_spec(spec)
+                    sys.modules["aria_scheduler"] = module
+                    spec.loader.exec_module(module)
+                    _rust_scheduler_cache = module
+                    logger.info(
+                        "Loaded Rust scheduler (aria_scheduler) from local build %s",
+                        local_scheduler,
+                    )
+                    return _rust_scheduler_cache
+            except Exception as exc:
+                logger.debug(
+                    "Repo-local Rust scheduler load failed from %s: %s",
+                    local_scheduler,
+                    exc,
+                )
 
-    try:
-        from . import aria_scheduler
+        try:
+            from . import aria_scheduler
 
-        _rust_scheduler_cache = aria_scheduler
-        logger.info("Loaded Rust scheduler (aria_scheduler)")
-        return _rust_scheduler_cache
-    except ImportError as exc:
-        logger.debug("Package-local Rust scheduler not available: %s", exc)
+            _rust_scheduler_cache = aria_scheduler
+            logger.info("Loaded Rust scheduler (aria_scheduler)")
+            return _rust_scheduler_cache
+        except ImportError as exc:
+            logger.debug("Package-local Rust scheduler not available: %s", exc)
 
-    try:
-        import aria_scheduler  # type: ignore[import-untyped]
+        try:
+            import aria_scheduler  # type: ignore[import-untyped]
 
-        _rust_scheduler_cache = aria_scheduler
-        logger.info("Loaded Rust scheduler (aria_scheduler) via top-level import")
-        return _rust_scheduler_cache
-    except ImportError as exc:
-        logger.debug("Rust scheduler not available: %s", exc)
-        _rust_scheduler_cache = False
-        return None
+            _rust_scheduler_cache = aria_scheduler
+            logger.info("Loaded Rust scheduler (aria_scheduler) via top-level import")
+            return _rust_scheduler_cache
+        except ImportError as exc:
+            logger.debug("Rust scheduler not available: %s", exc)
+            _rust_scheduler_cache = False
+            return None
 
 
 __all__ = [

@@ -30,7 +30,6 @@ from ...eval.flops import estimate_flops
 from ..notebook import LabNotebook
 from ..refinement_scoring import oscillation_risk_score
 from ..json_utils import json_safe
-from ..runtime_events import publish_lifecycle_event
 
 import logging
 
@@ -53,42 +52,6 @@ def _graph_is_moe(graph) -> bool:
 
 class _SynthesisMixin:
     """Grammar config, ablation, weight management, diversity."""
-
-    def _log_learning_event_compat(self, nb: LabNotebook, *args, **kwargs) -> None:
-        getattr(nb, "log_learning_event")(*args, **kwargs)
-
-    def _publish_synthesis_terminal_event(
-        self,
-        *,
-        event_type: str,
-        exp_id: str,
-        payload: dict,
-    ) -> None:
-        publish_lifecycle_event(
-            notebook_path=self.notebook_path,
-            event_type=event_type,
-            producer="runner.synthesis",
-            run_id=exp_id,
-            payload=payload,
-        )
-
-    def _complete_experiment_compat(
-        self,
-        *,
-        nb,
-        experiment_id: str,
-        results: dict,
-        aria_summary: str,
-        insights=None,
-        llm_analysis: str | None = None,
-    ) -> None:
-        getattr(nb, "complete_experiment")(
-            experiment_id=experiment_id,
-            results=results,
-            aria_summary=aria_summary,
-            insights=insights,
-            llm_analysis=llm_analysis,
-        )
 
     @staticmethod
     def _diversify_grammar_config(config: RunConfig, n_experiments: int) -> RunConfig:
@@ -452,7 +415,8 @@ class _SynthesisMixin:
             experiment_results["ablation_delta"] = ablation_delta
             experiment_results["original_loss_ratio"] = original_loss_ratio
         aria_summary = f"Ablation outcome: {outcome}"
-        self._publish_synthesis_terminal_event(
+        self._publish_terminal_event(
+            producer="runner.synthesis",
             event_type="completed",
             exp_id=exp_id,
             payload={

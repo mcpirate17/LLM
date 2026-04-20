@@ -9,11 +9,14 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from flask import jsonify, request
-from ..persona import get_aria
 from ..shared_utils import safe_float as _to_safe_float
-from ._helpers import deduplicate_insights, native_runner_canary_status_payload
+from ._helpers import (
+    deduplicate_insights,
+    get_aria_for_notebook,
+    native_runner_canary_status_payload,
+)
 from ._strategy_recommendations import compute_compression_opportunities
-from ._utils import bind_notebook_view, with_notebook_context
+from ._utils import register_notebook_routes, with_notebook_context
 from .deps import ApiRouteContext
 
 logger = logging.getLogger(__name__)
@@ -297,8 +300,8 @@ def _api_failure_patterns(nb=None):
     return jsonify(analytics.failure_patterns())
 
 
-def _api_grammar_weights(nb=None):
-    aria = get_aria()
+def _api_grammar_weights(notebook_path: str, nb=None):
+    aria = get_aria_for_notebook(notebook_path)
     from ..analytics import ExperimentAnalytics
 
     analytics = ExperimentAnalytics(nb)
@@ -368,15 +371,18 @@ def _api_regression_vs_baseline(nb=None):
             float(item.get("baseline_loss_ratio") or 0.0) < 1.0
         )
         points.append(item)
-    frontier = []
-    best_ratio = float("inf")
-    for item in sorted(
-        points, key=lambda p: float(p.get("throughput_tok_s") or 0.0), reverse=True
-    ):
-        ratio = float(item.get("baseline_loss_ratio") or float("inf"))
-        if ratio <= best_ratio:
-            frontier.append(item)
-            best_ratio = ratio
+    from ..analytics.frontier import pareto_mask
+
+    objective_matrix = [
+        (
+            float(item.get("baseline_loss_ratio") or float("inf")),
+            float(item.get("throughput_tok_s") or 0.0),
+        )
+        for item in points
+    ]
+    mask = pareto_mask(objective_matrix, minimize=(True, False))
+    frontier = [points[i] for i, keep in enumerate(mask) if keep]
+    frontier.sort(key=lambda p: float(p.get("throughput_tok_s") or 0.0), reverse=True)
     summary = {
         "n_points": len(points),
         "n_beating_baseline": sum(1 for p in points if p["baseline_beats_reference"]),
@@ -529,8 +535,8 @@ def _api_control_comparison(nb=None):
     return jsonify(result)
 
 
-def _api_learning_summary(nb=None):
-    aria = get_aria()
+def _api_learning_summary(notebook_path: str, nb=None):
+    aria = get_aria_for_notebook(notebook_path)
     from ..analytics import ExperimentAnalytics
 
     analytics = ExperimentAnalytics(nb)
@@ -631,133 +637,133 @@ def register_analytics_routes(app, context: ApiRouteContext):
     notebook_path = context.notebook_path
     wnb = with_notebook_context(notebook_path)
 
-    app.add_url_rule("/api/trends", "api_trends", bind_notebook_view(wnb, _api_trends))
-    app.add_url_rule(
-        "/api/trends/context",
-        "api_trends_context",
-        bind_notebook_view(wnb, _api_trends_context),
-    )
-    app.add_url_rule(
-        "/api/insights", "api_insights", bind_notebook_view(wnb, _api_insights)
-    )
-    app.add_url_rule(
-        "/api/insights/boost",
-        "api_insights_boost",
-        bind_notebook_view(wnb, _api_insights_boost),
-        methods=["POST"],
-    )
-    app.add_url_rule(
-        "/api/analytics/op-success",
-        "api_op_success",
-        bind_notebook_view(wnb, _api_op_success),
-    )
-    app.add_url_rule(
-        "/api/analytics/recommendation-signals",
-        "api_recommendation_signals",
-        bind_notebook_view(wnb, _api_recommendation_signals),
-    )
-    app.add_url_rule(
-        "/api/analytics/failure-patterns",
-        "api_failure_patterns",
-        bind_notebook_view(wnb, _api_failure_patterns),
-    )
-    app.add_url_rule(
-        "/api/analytics/grammar-weights",
-        "api_grammar_weights",
-        bind_notebook_view(wnb, _api_grammar_weights),
-    )
-    app.add_url_rule(
-        "/api/analytics/efficiency-frontier",
-        "api_efficiency_frontier",
-        bind_notebook_view(wnb, _api_efficiency_frontier),
-    )
-    app.add_url_rule(
-        "/api/analytics/efficiency-frontier-3d",
-        "api_efficiency_frontier_3d",
-        bind_notebook_view(wnb, _api_efficiency_frontier_3d),
-    )
-    app.add_url_rule(
-        "/api/analytics/regression-vs-baseline",
-        "api_regression_vs_baseline",
-        bind_notebook_view(wnb, _api_regression_vs_baseline),
-    )
-    app.add_url_rule(
-        "/api/analytics/experiment-clusters",
-        "api_experiment_clusters",
-        bind_notebook_view(wnb, _api_experiment_clusters),
-    )
-    app.add_url_rule(
-        "/api/analytics/routing-health",
-        "api_routing_health",
-        bind_notebook_view(wnb, _api_routing_health),
-    )
-    app.add_url_rule(
-        "/api/analytics/routing-comparison",
-        "api_routing_comparison",
-        bind_notebook_view(wnb, _api_routing_comparison),
-    )
-    app.add_url_rule(
-        "/api/analytics/gating-diagnostics",
-        "api_gating_diagnostics",
-        bind_notebook_view(wnb, _api_gating_diagnostics),
-    )
-    app.add_url_rule(
-        "/api/analytics/gate-health",
-        "api_gate_health",
-        bind_notebook_view(wnb, _api_gate_health),
-    )
-    app.add_url_rule(
-        "/api/analytics/math-family-coverage",
-        "api_math_family_coverage",
-        bind_notebook_view(wnb, _api_math_family_coverage),
-    )
-    app.add_url_rule(
-        "/api/analytics/mathspace-impact",
-        "api_mathspace_impact",
-        bind_notebook_view(wnb, _api_mathspace_impact),
-    )
-    app.add_url_rule(
-        "/api/analytics/compression-coverage",
-        "api_compression_coverage",
-        bind_notebook_view(wnb, _api_compression_coverage),
-    )
-    app.add_url_rule(
-        "/api/analytics/compression-opportunities",
-        "api_compression_opportunities",
-        bind_notebook_view(wnb, _api_compression_opportunities),
-    )
-    app.add_url_rule(
-        "/api/analytics/negative-results",
-        "api_negative_results",
-        bind_notebook_view(wnb, _api_negative_results),
-    )
-    app.add_url_rule(
-        "/api/analytics/learning-trajectory",
-        "api_learning_trajectory",
-        bind_notebook_view(wnb, _api_learning_trajectory),
-    )
-    app.add_url_rule(
-        "/api/analytics/strategy-backtest",
-        "api_strategy_backtest",
-        bind_notebook_view(wnb, _api_strategy_backtest),
-    )
-    app.add_url_rule(
-        "/api/analytics/control-comparison",
-        "api_control_comparison",
-        bind_notebook_view(wnb, _api_control_comparison),
-    )
-    app.add_url_rule(
-        "/api/analytics/learning-summary",
-        "api_learning_summary",
-        bind_notebook_view(wnb, _api_learning_summary),
-    )
-    app.add_url_rule(
-        "/api/analytics/learning-log",
-        "api_learning_log",
-        bind_notebook_view(wnb, _api_learning_log),
-    )
-    app.add_url_rule(
-        "/api/analytics/insight-interactions",
-        "api_insight_interactions",
-        bind_notebook_view(wnb, _api_insight_interactions),
+    register_notebook_routes(
+        app,
+        wnb,
+        (
+            ("/api/trends", "api_trends", _api_trends),
+            ("/api/trends/context", "api_trends_context", _api_trends_context),
+            ("/api/insights", "api_insights", _api_insights),
+            (
+                "/api/insights/boost",
+                "api_insights_boost",
+                _api_insights_boost,
+                ("POST",),
+            ),
+            ("/api/analytics/op-success", "api_op_success", _api_op_success),
+            (
+                "/api/analytics/recommendation-signals",
+                "api_recommendation_signals",
+                _api_recommendation_signals,
+            ),
+            (
+                "/api/analytics/failure-patterns",
+                "api_failure_patterns",
+                _api_failure_patterns,
+            ),
+            (
+                "/api/analytics/grammar-weights",
+                "api_grammar_weights",
+                _api_grammar_weights,
+                None,
+                (notebook_path,),
+            ),
+            (
+                "/api/analytics/efficiency-frontier",
+                "api_efficiency_frontier",
+                _api_efficiency_frontier,
+            ),
+            (
+                "/api/analytics/efficiency-frontier-3d",
+                "api_efficiency_frontier_3d",
+                _api_efficiency_frontier_3d,
+            ),
+            (
+                "/api/analytics/regression-vs-baseline",
+                "api_regression_vs_baseline",
+                _api_regression_vs_baseline,
+            ),
+            (
+                "/api/analytics/experiment-clusters",
+                "api_experiment_clusters",
+                _api_experiment_clusters,
+            ),
+            (
+                "/api/analytics/routing-health",
+                "api_routing_health",
+                _api_routing_health,
+            ),
+            (
+                "/api/analytics/routing-comparison",
+                "api_routing_comparison",
+                _api_routing_comparison,
+            ),
+            (
+                "/api/analytics/gating-diagnostics",
+                "api_gating_diagnostics",
+                _api_gating_diagnostics,
+            ),
+            (
+                "/api/analytics/gate-health",
+                "api_gate_health",
+                _api_gate_health,
+            ),
+            (
+                "/api/analytics/math-family-coverage",
+                "api_math_family_coverage",
+                _api_math_family_coverage,
+            ),
+            (
+                "/api/analytics/mathspace-impact",
+                "api_mathspace_impact",
+                _api_mathspace_impact,
+            ),
+            (
+                "/api/analytics/compression-coverage",
+                "api_compression_coverage",
+                _api_compression_coverage,
+            ),
+            (
+                "/api/analytics/compression-opportunities",
+                "api_compression_opportunities",
+                _api_compression_opportunities,
+            ),
+            (
+                "/api/analytics/negative-results",
+                "api_negative_results",
+                _api_negative_results,
+            ),
+            (
+                "/api/analytics/learning-trajectory",
+                "api_learning_trajectory",
+                _api_learning_trajectory,
+            ),
+            (
+                "/api/analytics/strategy-backtest",
+                "api_strategy_backtest",
+                _api_strategy_backtest,
+            ),
+            (
+                "/api/analytics/control-comparison",
+                "api_control_comparison",
+                _api_control_comparison,
+            ),
+            (
+                "/api/analytics/learning-summary",
+                "api_learning_summary",
+                _api_learning_summary,
+                None,
+                (notebook_path,),
+            ),
+            (
+                "/api/analytics/learning-log",
+                "api_learning_log",
+                _api_learning_log,
+            ),
+            (
+                "/api/analytics/insight-interactions",
+                "api_insight_interactions",
+                _api_insight_interactions,
+            ),
+        ),
     )

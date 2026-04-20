@@ -62,6 +62,7 @@ class ModelCandidate:
         self.arch_spec_json = arch_spec_json
         self.fingerprint = fingerprint
 
+
 def _default_native_runner_progress() -> Dict[str, Any]:
     from ._helpers import _native_runner_progress_report
 
@@ -505,7 +506,9 @@ class LiveProgress:
     # Preflight hypothesis critique
     hypothesis_critique: Optional[Dict] = None
     # Native runner adapter telemetry
-    native_runner: Dict[str, Any] = field(default_factory=_default_native_runner_progress)
+    native_runner: Dict[str, Any] = field(
+        default_factory=_default_native_runner_progress
+    )
 
     def to_dict(self) -> Dict:
         return {k: getattr(self, k) for k in self.__dataclass_fields__}

@@ -4,7 +4,6 @@ import sys
 import tempfile
 import time
 import unittest
-import inspect
 from unittest.mock import patch
 
 

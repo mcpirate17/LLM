@@ -6,7 +6,6 @@ import sqlite3
 import time
 from typing import Any, Dict, List, Optional
 
-from ..runtime_events import publish_lifecycle_event
 from ..native_runner import compile_model_native_first as compile_model
 from ...eval.metrics import novelty_score
 from ...eval.fingerprint import compute_fingerprint
@@ -29,43 +28,6 @@ class _ContinuousModesMixin:
     """Synthesis, evolution, novelty, refinement mode runners."""
 
     __slots__ = ()
-
-    def _log_learning_event_compat(self, nb: LabNotebook, *args, **kwargs) -> None:
-        getattr(nb, "log_learning_event")(*args, **kwargs)
-
-    def _publish_continuous_modes_terminal_event(
-        self,
-        *,
-        event_type: str,
-        exp_id: str,
-        payload: dict,
-    ) -> None:
-        publish_lifecycle_event(
-            notebook_path=self.notebook_path,
-            event_type=event_type,
-            producer="runner.continuous_modes",
-            run_id=exp_id,
-            payload=payload,
-        )
-
-    def _complete_experiment_compat(
-        self,
-        *,
-        nb,
-        experiment_id: str,
-        results: dict,
-        aria_summary: str,
-        insights,
-        llm_analysis: str | None,
-    ) -> None:
-        getattr(nb, "complete_experiment")(
-            experiment_id=experiment_id,
-            results=results,
-            aria_summary=aria_summary,
-            aria_mood=self.aria.state.mood,
-            insights=insights,
-            llm_analysis=llm_analysis,
-        )
 
     def _run_continuous_synthesis(
         self,
@@ -351,7 +313,8 @@ class _ContinuousModesMixin:
             except (RuntimeError, ValueError, KeyError) as e:
                 logger.warning("Hypothesis validation logging failed: %s", e)
 
-        self._publish_continuous_modes_terminal_event(
+        self._publish_terminal_event(
+            producer="runner.continuous_modes",
             event_type="experiment_completed",
             exp_id=exp_id,
             payload={
@@ -533,7 +496,8 @@ class _ContinuousModesMixin:
         summary = self.aria.experiment_summary(results, context=context)
         llm_analysis = self.aria.analyze_results(results, context=context)
         insights = self._analyze_results(results, exp_id, nb, context=context)
-        self._publish_continuous_modes_terminal_event(
+        self._publish_terminal_event(
+            producer="runner.continuous_modes",
             event_type="experiment_completed",
             exp_id=exp_id,
             payload={
@@ -778,7 +742,8 @@ class _ContinuousModesMixin:
         summary = self.aria.experiment_summary(results, context=context)
         llm_analysis = self.aria.analyze_results(results, context=context)
         insights = self._analyze_results(results, exp_id, nb, context=context)
-        self._publish_continuous_modes_terminal_event(
+        self._publish_terminal_event(
+            producer="runner.continuous_modes",
             event_type="experiment_completed",
             exp_id=exp_id,
             payload={

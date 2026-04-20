@@ -9,9 +9,9 @@ from typing import Any, Dict, List
 
 from flask import jsonify, request, Response
 from ..runner._types import RunConfig
-from ..persona import get_aria
 from ..evidence import build_evidence_pack
 from ._helpers import (
+    get_aria_for_notebook,
     get_runner,
     get_run_trigger_snapshot,
     record_run_trigger,
@@ -26,7 +26,7 @@ from ._chat import (
     get_local_ollama_settings,
 )
 from .deps import ApiRouteContext
-from ._utils import with_notebook_context
+from ._utils import register_notebook_routes, register_routes, with_notebook_context
 
 logger = logging.getLogger(__name__)
 
@@ -34,19 +34,13 @@ logger = logging.getLogger(__name__)
 def register_general_routes(app, context: ApiRouteContext):
     notebook_path = context.notebook_path
     wnb = with_notebook_context(notebook_path)
-    _dashboard_index_path = context.dashboard_index_path
-    _dashboard_missing_response = context.dashboard_missing_response
-    _is_asset_path = context.is_asset_path
 
-    @app.route("/api/template-names")
     def api_template_names():
         """Return sorted list of all available template names."""
         from ...synthesis.templates import TEMPLATES
 
         return jsonify({"names": sorted(TEMPLATES.keys())})
 
-    @app.route("/api/aria/cycle-status")
-    @wnb
     def api_aria_cycle_status(nb=None):
         """Get Aria continuous-cycle status (planning/running/analyzing)."""
         runner = get_runner(notebook_path, create_if_missing=False)
@@ -66,6 +60,7 @@ def register_general_routes(app, context: ApiRouteContext):
                 "progress_status": "idle",
                 "cycle_paused": False,
                 "cycle_history": [],
+                "last_cycle_summary": None,
                 "experiment_id": "",
                 "is_running": False,
             }
@@ -91,8 +86,6 @@ def register_general_routes(app, context: ApiRouteContext):
             )
         return jsonify(cycle)
 
-    @app.route("/api/aria/cycle-history")
-    @wnb
     def api_aria_cycle_history(nb=None):
         """Get persisted Aria cycle summaries from notebook live-feed entries."""
         n = request.args.get("n", 100, type=int)
@@ -192,7 +185,6 @@ def register_general_routes(app, context: ApiRouteContext):
 
         return jsonify(history)
 
-    @app.route("/api/aria/cycle-control", methods=["POST"])
     def api_aria_cycle_control():
         """Control Aria cycle policy: start, pause, resume."""
         runner = get_runner(notebook_path)
@@ -256,12 +248,10 @@ def register_general_routes(app, context: ApiRouteContext):
 
         return jsonify({"error": "action must be one of: start, pause, resume"}), 400
 
-    @app.route("/api/aria/recommendation")
-    @wnb
     def api_aria_recommendation(nb=None):
         """Get Aria's experiment recommendation based on all data."""
         runner = get_runner(notebook_path)
-        aria = get_aria()
+        aria = get_aria_for_notebook(notebook_path)
         analytics_data = runner._gather_analytics_data(nb)
         history = nb.get_recent_experiments(10)
         past_hypotheses = runner._get_past_hypotheses(nb)
@@ -294,12 +284,10 @@ def register_general_routes(app, context: ApiRouteContext):
             )
         return jsonify(suggestion)
 
-    @app.route("/api/aria/strategy")
-    @wnb
     def api_aria_strategy(nb=None):
         """Get Aria's research strategy recommendation."""
         runner = get_runner(notebook_path)
-        aria = get_aria()
+        aria = get_aria_for_notebook(notebook_path)
         analytics_data = runner._gather_analytics_data(nb)
         history = nb.get_recent_experiments(10)
         past_hypotheses = runner._get_past_hypotheses(nb)
@@ -325,11 +313,10 @@ def register_general_routes(app, context: ApiRouteContext):
             }
         )
 
-    @app.route("/api/aria/tools")
     def api_aria_tools():
         """Report Aria tool capabilities and current operational readiness."""
         runner = get_runner(notebook_path)
-        aria = get_aria()
+        aria = get_aria_for_notebook(notebook_path)
         llm = aria._get_llm()
         llm_available = False
         llm_reason = "not_configured"
@@ -390,3 +377,35 @@ def register_general_routes(app, context: ApiRouteContext):
                 },
             }
         )
+
+    register_routes(
+        app,
+        (
+            ("/api/template-names", "api_template_names", api_template_names),
+            (
+                "/api/aria/cycle-control",
+                "api_aria_cycle_control",
+                api_aria_cycle_control,
+                ("POST",),
+            ),
+            ("/api/aria/tools", "api_aria_tools", api_aria_tools),
+        ),
+    )
+    register_notebook_routes(
+        app,
+        wnb,
+        (
+            ("/api/aria/cycle-status", "api_aria_cycle_status", api_aria_cycle_status),
+            (
+                "/api/aria/cycle-history",
+                "api_aria_cycle_history",
+                api_aria_cycle_history,
+            ),
+            (
+                "/api/aria/recommendation",
+                "api_aria_recommendation",
+                api_aria_recommendation,
+            ),
+            ("/api/aria/strategy", "api_aria_strategy", api_aria_strategy),
+        ),
+    )

@@ -37,6 +37,7 @@ _health_cache: Dict[str, Any] = {}
 _health_cache_ts: float = 0.0
 _HEALTH_CACHE_TTL = 120.0
 _op_index_caches: Dict[Tuple[str, str], Tuple[float, Dict[str, Any]]] = {}
+_op_index_lock = threading.Lock()
 _OP_INDEX_TTL = 300.0
 _throughput_cache: Optional[Dict[str, Any]] = None
 _throughput_cache_ts: float = 0.0
@@ -130,32 +131,37 @@ def build_op_index(notebook_path: str, window: str = "all") -> Dict[str, Any]:
     cached = _op_index_caches.get(cache_key)
     if cached and (now - cached[0]) < _OP_INDEX_TTL:
         return cached[1]
+    with _op_index_lock:
+        now = time.monotonic()
+        cached = _op_index_caches.get(cache_key)
+        if cached and (now - cached[0]) < _OP_INDEX_TTL:
+            return cached[1]
 
-    rust = _try_import_rust_scheduler()
-    if rust is None or not hasattr(rust, "build_op_index_from_rows"):
-        raise RuntimeError("aria_scheduler.build_op_index_from_rows is required")
+        rust = _try_import_rust_scheduler()
+        if rust is None or not hasattr(rust, "build_op_index_from_rows"):
+            raise RuntimeError("aria_scheduler.build_op_index_from_rows is required")
 
-    nb = get_notebook(notebook_path, read_only=True)
-    rows = _load_program_rows(nb, window)
-    payload_rows = [
-        {
-            "graph_json": row["graph_json"],
-            "stage0_passed": bool(row.get("stage0_passed")),
-            "stage1_passed": bool(row.get("stage1_passed")),
-            "loss_ratio": float(row["loss_ratio"])
-            if row.get("loss_ratio") is not None
-            else None,
-            "error_type": row.get("error_type"),
-            "failure_op": row.get("failure_op"),
-            "failure_details_json": row.get("failure_details_json"),
-        }
-        for row in rows
-        if isinstance(row.get("graph_json"), str) and row["graph_json"]
-    ]
-    payload = fast_loads(rust.build_op_index_from_rows(fast_dumps(payload_rows)))
-    result = _build_op_index_result(payload)
-    _op_index_caches[cache_key] = (now, result)
-    return result
+        nb = get_notebook(notebook_path, read_only=True)
+        rows = _load_program_rows(nb, window)
+        payload_rows = [
+            {
+                "graph_json": row["graph_json"],
+                "stage0_passed": bool(row.get("stage0_passed")),
+                "stage1_passed": bool(row.get("stage1_passed")),
+                "loss_ratio": float(row["loss_ratio"])
+                if row.get("loss_ratio") is not None
+                else None,
+                "error_type": row.get("error_type"),
+                "failure_op": row.get("failure_op"),
+                "failure_details_json": row.get("failure_details_json"),
+            }
+            for row in rows
+            if isinstance(row.get("graph_json"), str) and row["graph_json"]
+        ]
+        payload = fast_loads(rust.build_op_index_from_rows(fast_dumps(payload_rows)))
+        result = _build_op_index_result(payload)
+        _op_index_caches[cache_key] = (now, result)
+        return result
 
 
 def get_throughput(notebook_path: str) -> Dict[str, Any]:

@@ -5,13 +5,13 @@ from __future__ import annotations
 import logging
 from flask import jsonify, request
 from .deps import ApiRouteContext
+from ._utils import register_routes
 
 logger = logging.getLogger(__name__)
 
 
 def register_native_routes(app, context: ApiRouteContext):
 
-    @app.route("/api/native-profile/v2/data")
     def api_native_runner_profile():
         """Return per-node profiling data from the most recent native execution."""
         try:
@@ -54,7 +54,6 @@ def register_native_routes(app, context: ApiRouteContext):
             logger.error(f"Error in /api/native-profile/v2/data: {e}")
             return jsonify({"error": str(e)}), 500
 
-    @app.route("/api/native-profile/v2/enable", methods=["POST"])
     def api_native_runner_profile_enable():
         """Toggle native kernel profiling on or off."""
         try:
@@ -84,3 +83,20 @@ def register_native_routes(app, context: ApiRouteContext):
         except Exception as e:
             logger.error(f"Error in /api/native-profile/v2/enable: {e}")
             return jsonify({"error": str(e)}), 500
+
+    register_routes(
+        app,
+        (
+            (
+                "/api/native-profile/v2/data",
+                "api_native_runner_profile",
+                api_native_runner_profile,
+            ),
+            (
+                "/api/native-profile/v2/enable",
+                "api_native_runner_profile_enable",
+                api_native_runner_profile_enable,
+                ("POST",),
+            ),
+        ),
+    )

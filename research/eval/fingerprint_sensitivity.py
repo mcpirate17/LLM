@@ -3,14 +3,12 @@
 from __future__ import annotations
 
 import logging
-import time
 from typing import Callable, Dict, Optional
 
 import torch
 import torch.nn as nn
 
 from ._sensitivity_skip_stats import (
-    get_sensitivity_skip_stats,
     record_sensitivity_skip,
 )
 from .fingerprint_native import collect_sensitivity_rows, sensitivity_metrics

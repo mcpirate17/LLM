@@ -46,18 +46,12 @@ class _ExperimentsMixin:
         """
         if getattr(self, "_use_native", False):
             return self.conn
-        # Fallback for in-memory test DBs.
-        conn = sqlite3.connect(str(self.db_path), timeout=10.0)
-        for pragma in (
-            "PRAGMA foreign_keys=ON",
-            "PRAGMA wal_autocheckpoint=0",
-            "PRAGMA busy_timeout=15000",
-        ):
-            try:
-                conn.execute(pragma)
-            except sqlite3.OperationalError as exc:
-                LOGGER.warning("Direct DB pragma failed (%s): %s", pragma, exc)
-        return conn
+        return self._open_sqlite_connection(
+            db_path=self.db_path,
+            read_only=False,
+            role="direct-write",
+            check_same_thread=False,
+        )
 
     def _experiment_exists_direct(self, experiment_id: str) -> bool:
         try:

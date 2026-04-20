@@ -6,6 +6,7 @@ import { compressionSummary } from './report/reportUtils';
 import { useAriaData } from '../hooks/useAriaData';
 import { LEADERBOARD_PREFS_KEY, COLUMNS } from './leaderboard/leaderboardConfig';
 import { candidateEligibility, toRetentionPercent } from './leaderboard/leaderboardUtils';
+import { capabilityQualityRank, capabilityQualityStatus } from '../utils/discoveryStatus';
 import LeaderboardRow from './leaderboard/LeaderboardRow';
 import SortIndicator from './shared/SortIndicator';
 import useResizableColumns from './shared/useResizableColumns';
@@ -59,7 +60,7 @@ function Leaderboard({
     return ['all', 'screening', 'investigation', 'validation', 'breakthrough'].includes(tier) ? tier : 'all';
   });
   const [sortKey, setSortKey] = useState(() => {
-    return typeof leaderboardPrefs?.sortKey === 'string' ? leaderboardPrefs.sortKey : '_score';
+    return typeof leaderboardPrefs?.sortKey === 'string' ? leaderboardPrefs.sortKey : 'composite_score';
   });
   const [sortDesc, setSortDesc] = useState(() => {
     return typeof leaderboardPrefs?.sortDesc === 'boolean' ? leaderboardPrefs.sortDesc : true;
@@ -80,6 +81,10 @@ function Leaderboard({
     const saved = Array.isArray(leaderboardPrefs?.visibleColumns) ? leaderboardPrefs.visibleColumns : baseline;
     return saved;
   });
+  const [capabilityFilter, setCapabilityFilter] = useState(() => {
+    const value = leaderboardPrefs?.capabilityFilter;
+    return ['all', 'qualified', 'training_only', 'pending'].includes(value) ? value : 'all';
+  });
   const [highlightId, setHighlightId] = useState(null);
   const [showColumnPicker, setShowColumnPicker] = useState(false);
   const { columnWidths, onResizeStart } = useResizableColumns('aria_leaderboard_col_widths');
@@ -88,10 +93,10 @@ function Leaderboard({
   useEffect(() => {
     try {
       window.localStorage.setItem(LEADERBOARD_PREFS_KEY, JSON.stringify({
-        activeTier, sortKey, sortDesc, searchQuery, showReferences, onlyRobust, visibleColumns,
+        activeTier, sortKey, sortDesc, searchQuery, showReferences, onlyRobust, visibleColumns, capabilityFilter,
       }));
     } catch { /* ignore */ }
-  }, [activeTier, sortKey, sortDesc, searchQuery, showReferences, onlyRobust, visibleColumns]);
+  }, [activeTier, sortKey, sortDesc, searchQuery, showReferences, onlyRobust, visibleColumns, capabilityFilter]);
 
   useEffect(() => {
     if (highlightResultId) {
@@ -188,6 +193,7 @@ function Leaderboard({
       if (Boolean(a.is_reference) !== Boolean(b.is_reference)) return b.is_reference ? 1 : -1;
       let va = a[sortKey], vb = b[sortKey];
       if (sortKey === 'tier') { va = TIER_ORDER[a.tier] || 0; vb = TIER_ORDER[b.tier] || 0; }
+      if (sortKey === '_capability_quality') { va = capabilityQualityRank(a); vb = capabilityQualityRank(b); }
       if (va == null && vb == null) return 0;
       if (va == null) return 1;
       if (vb == null) return -1;
@@ -199,6 +205,15 @@ function Leaderboard({
   const filtered = useMemo(() => {
     let entries = sorted;
     if (!showReferences) entries = entries.filter(e => !e.is_reference);
+    if (capabilityFilter !== 'all') {
+      entries = entries.filter((e) => {
+        const status = capabilityQualityStatus(e);
+        if (capabilityFilter === 'qualified') return status === 'qualified' || status === 'breakthrough';
+        if (capabilityFilter === 'training_only') return status === 'training_only';
+        if (capabilityFilter === 'pending') return status === 'pending';
+        return true;
+      });
+    }
     if (onlyRobust) entries = entries.filter(e => (e.robustness_noise_score || 1) < 0.3 && (e._quant_retention_pct || 0) > 80);
     if (!searchQuery.trim()) return entries;
     const q = searchQuery.toLowerCase();
@@ -207,7 +222,7 @@ function Leaderboard({
       (e.architecture_desc?.toLowerCase().includes(q)) ||
       (e.architecture_family?.toLowerCase().includes(q))
     );
-  }, [sorted, showReferences, onlyRobust, searchQuery]);
+  }, [sorted, showReferences, capabilityFilter, onlyRobust, searchQuery]);
 
   const highlightRef = useRef(null);
   useEffect(() => {
@@ -257,6 +272,19 @@ function Leaderboard({
         <button onClick={fetchLeaderboard} className="refresh-btn" style={{ fontSize: 11 }}>
           Refresh
         </button>
+        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--text-secondary)' }}>
+          <span style={{ color: 'var(--text-muted)' }}>Capability</span>
+          <select
+            value={capabilityFilter}
+            onChange={(e) => setCapabilityFilter(e.target.value)}
+            style={{ fontSize: 11, border: '1px solid var(--border)', borderRadius: 4, background: 'var(--bg-secondary)', color: 'var(--text-primary)' }}
+          >
+            <option value="all">All</option>
+            <option value="qualified">Capability-Qualified</option>
+            <option value="training_only">Training-Only</option>
+            <option value="pending">Validation Pending</option>
+          </select>
+        </label>
       </div>
 
       {/* Search */}

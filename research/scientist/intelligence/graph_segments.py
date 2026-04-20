@@ -28,6 +28,7 @@ from research.synthesis.graph_features import (
     load_op_stats,
 )
 from research.synthesis.serializer import graph_from_json
+from research.scientist.native.core import _try_import_rust_scheduler
 
 logger = logging.getLogger(__name__)
 
@@ -91,12 +92,52 @@ def _non_input_op_nodes(nodes: Dict[str, dict]) -> Dict[str, str]:
     return out
 
 
+def _extract_graph_segments_native(
+    graph_json: Any,
+    *,
+    min_len: int,
+    max_len: int,
+) -> GraphSegmentExtraction | None:
+    rust = _try_import_rust_scheduler()
+    if rust is None or not hasattr(rust, "extract_graph_segments_native"):
+        return None
+    if isinstance(graph_json, str):
+        payload = graph_json
+    else:
+        try:
+            payload = json.dumps(graph_json, sort_keys=True, separators=(",", ":"))
+        except (TypeError, ValueError):
+            return None
+    try:
+        raw = rust.extract_graph_segments_native(payload, int(min_len), int(max_len))
+    except Exception:
+        return None
+    try:
+        loaded = json.loads(raw)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    if not isinstance(loaded, dict):
+        return None
+    count_map = {
+        str(key): int(value) for key, value in loaded.items() if isinstance(key, str)
+    }
+    return GraphSegmentExtraction(frozenset(count_map.keys()), count_map)
+
+
 def extract_graph_segments(
     graph_json: Any,
     *,
     min_len: int = 3,
     max_len: int = 6,
 ) -> GraphSegmentExtraction:
+    native = _extract_graph_segments_native(
+        graph_json,
+        min_len=min_len,
+        max_len=max_len,
+    )
+    if native is not None:
+        return native
+
     graph_dict = _loads_graph_json(graph_json)
     nodes = graph_dict.get("nodes") or {}
     if not isinstance(nodes, dict) or not nodes:

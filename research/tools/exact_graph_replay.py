@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import sqlite3
 import threading
 from pathlib import Path
 from typing import Any, Dict, List, Sequence
@@ -30,6 +29,7 @@ from research.scientist.runner._helpers import clear_gpu_memory, graph_routing_o
 from research.scientist.shared_utils import resolve_device
 from research.training.loss_ops import next_token_cross_entropy
 from research.synthesis.serializer import graph_from_json
+from research.tools._db_maintenance import connect_readonly
 from research.scientist.native_runner import (
     compile_model_native_first as compile_model,
 )
@@ -57,8 +57,7 @@ def _fetch_source_rows(
     ids = [str(rid).strip() for rid in result_ids if str(rid).strip()]
     if not ids:
         return []
-    conn = sqlite3.connect(str(db_path), timeout=10.0)
-    conn.row_factory = sqlite3.Row
+    conn = connect_readonly(db_path)
     placeholders = ",".join("?" for _ in ids)
     rows = conn.execute(
         f"""SELECT result_id, graph_json, graph_fingerprint, loss_ratio, stage1_passed,
@@ -234,6 +233,7 @@ def _evaluate_exact_replay(
                     nb=nb,
                     exp_id=exp_id,
                     graph=graph,
+                    source_result_id=row["result_id"],
                     stage0_passed=s0_passed,
                     stage05_passed=s05_passed,
                     error_type=sandbox_result.error_type or "unknown",
@@ -274,6 +274,7 @@ def _evaluate_exact_replay(
                         nb=nb,
                         exp_id=exp_id,
                         graph=graph,
+                        source_result_id=row["result_id"],
                         stage0_passed=True,
                         stage05_passed=True,
                         error_type="high_initial_loss",
@@ -320,6 +321,7 @@ def _evaluate_exact_replay(
                     nb=nb,
                     exp_id=exp_id,
                     graph=graph,
+                    source_result_id=row["result_id"],
                     stage0_passed=True,
                     stage05_passed=True,
                     error_type="rapid_screening_error",
@@ -387,6 +389,7 @@ def _evaluate_exact_replay(
                 nb=nb,
                 exp_id=exp_id,
                 graph=graph,
+                source_result_id=row["result_id"],
                 stage0_passed=False,
                 stage05_passed=False,
                 error_type="exact_replay_error",

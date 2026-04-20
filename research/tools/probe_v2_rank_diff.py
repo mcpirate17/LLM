@@ -12,14 +12,14 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import sqlite3
 from typing import Dict, List, Tuple
 
+from research.tools._db_maintenance import connect_readonly
 
 DB_PATH = "research/lab_notebook.db"
 
 
-def _rank_by_score(rows: List[sqlite3.Row], score_col: str) -> Dict[str, int]:
+def _rank_by_score(rows: List[object], score_col: str) -> Dict[str, int]:
     ordered = sorted(rows, key=lambda r: float(r[score_col] or 0.0), reverse=True)
     return {r["entry_id"]: i + 1 for i, r in enumerate(ordered)}
 
@@ -40,10 +40,7 @@ def main() -> None:
     args = parser.parse_args()
 
     tiers = tuple(t.strip() for t in args.tier.split(","))
-    import os
-
-    conn = sqlite3.connect(os.path.abspath(DB_PATH))
-    conn.row_factory = sqlite3.Row
+    conn = connect_readonly(Path(DB_PATH).resolve())
 
     ph = ",".join("?" for _ in tiers)
     rows = conn.execute(
@@ -77,7 +74,7 @@ def main() -> None:
     if backfilled:
         before_ranks = _rank_by_score(rows, "old_composite_score")
         after_ranks = _rank_by_score(rows, "composite_score")
-        shifts: List[Tuple[int, sqlite3.Row]] = []
+        shifts: List[Tuple[int, object]] = []
         for r in backfilled:
             eid = r["entry_id"]
             if eid in before_ranks and eid in after_ranks:

@@ -16,10 +16,8 @@ Usage:
 
 from __future__ import annotations
 
-import json
 import logging
 import math
-import sqlite3
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -34,6 +32,8 @@ from .ml_corpus import (
     load_deduped_graph_training_rows,
     rerun_confidence_weight,
 )
+from .predictor_artifacts import load_npz_with_metadata, save_npz_with_metadata
+from .profiling_db import load_pair_stability_training_rows
 
 logger = logging.getLogger(__name__)
 
@@ -285,23 +285,14 @@ class InteractionModel:
 
         # From profiling DB
         if profiling_db.exists():
-            try:
-                conn = sqlite3.connect(str(profiling_db), timeout=5)
-                rows = conn.execute(
-                    """SELECT op_a, op_b,
-                              (output_has_nan = 0 AND grad_has_nan = 0 AND grad_vanishing = 0) as stable,
-                              lipschitz_estimate
-                       FROM pair_profiles WHERE error IS NULL"""
-                ).fetchall()
-                conn.close()
-                for op_a, op_b, stable, lip in rows:
-                    all_ops.add(op_a)
-                    all_ops.add(op_b)
-                    stability_data.append(
-                        (op_a, op_b, bool(stable), _PROFILING_STATIC_WEIGHT)
-                    )
-            except Exception as e:
-                logger.warning("Failed to load profiling pairs: %s", e)
+            for op_a, op_b, stable, _lipschitz in load_pair_stability_training_rows(
+                profiling_db
+            ):
+                all_ops.add(op_a)
+                all_ops.add(op_b)
+                stability_data.append(
+                    (op_a, op_b, bool(stable), _PROFILING_STATIC_WEIGHT)
+                )
 
         # From failure signatures
         if notebook_db.exists():
@@ -524,30 +515,23 @@ class InteractionModel:
 
     def save(self, path: Path) -> None:
         """Save model to npz + JSON."""
-        path = Path(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        np.savez_compressed(str(path), u=self.u, v=self.v, W_s=self.W_s, W_l=self.W_l)
-        with open(path.with_suffix(".json"), "w") as f:
-            json.dump(
-                {
-                    "op_names": self.op_names,
-                    "b_s": self.b_s,
-                    "b_l": self.b_l,
-                    "trained": self._trained,
-                    "timestamp": self._timestamp,
-                    "train_metrics": self._train_metrics,
-                },
-                f,
-                indent=2,
-            )
+        save_npz_with_metadata(
+            path,
+            arrays={"u": self.u, "v": self.v, "W_s": self.W_s, "W_l": self.W_l},
+            metadata={
+                "op_names": self.op_names,
+                "b_s": self.b_s,
+                "b_l": self.b_l,
+                "trained": self._trained,
+                "timestamp": self._timestamp,
+                "train_metrics": self._train_metrics,
+            },
+        )
 
     @classmethod
     def load(cls, path: Path) -> "InteractionModel":
         """Load model from npz + JSON."""
-        path = Path(path)
-        data = np.load(str(path))
-        with open(path.with_suffix(".json")) as f:
-            meta = json.load(f)
+        data, meta = load_npz_with_metadata(path)
         op_names = meta["op_names"]
         return cls(
             u=data["u"],

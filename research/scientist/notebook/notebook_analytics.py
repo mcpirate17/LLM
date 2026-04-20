@@ -15,12 +15,9 @@ _OP_CATEGORY_CACHE: Dict[str, str] = {}
 
 @lru_cache(maxsize=8192)
 def _cached_extract_op_names(graph_json: str) -> tuple[str, ...]:
-    from research.scientist.analytics.analytics_ops import _OpsMixin
+    from research.scientist.intelligence.graph_ops import extract_unique_graph_ops
 
-    ops = _OpsMixin._extract_ops_fast(graph_json)
-    if ops is None:
-        ops = _OpsMixin._extract_ops_fallback(graph_json)
-    return tuple(ops or ())
+    return tuple(extract_unique_graph_ops(graph_json))
 
 
 @lru_cache(maxsize=8192)
@@ -37,21 +34,7 @@ def _cached_extract_template_name(graph_json: str) -> str:
 
 @lru_cache(maxsize=8192)
 def _cached_extract_unique_ops(graph_json: str) -> tuple[str, ...]:
-    try:
-        graph_data = json.loads(graph_json)
-    except (json.JSONDecodeError, TypeError):
-        return ()
-    nodes = graph_data.get("nodes", {})
-    if not isinstance(nodes, dict):
-        return ()
-    ops = {
-        str(node_data.get("op_name", ""))
-        for node_data in nodes.values()
-        if isinstance(node_data, dict)
-        and node_data.get("op_name")
-        and node_data.get("op_name") != "input"
-    }
-    return tuple(sorted(ops))
+    return _cached_extract_op_names(graph_json)
 
 
 def _get_op_category(op_name: str) -> str:

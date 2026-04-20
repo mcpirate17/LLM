@@ -3,32 +3,16 @@
 from __future__ import annotations
 
 import json
-import math
-import statistics
 import time
 import uuid
-from functools import lru_cache
 from typing import Any, Dict, List, Optional
 
-from ._notebook_misc_shared import (
-    _cached_extract_op_bigrams,
-    _cached_extract_observability_metadata,
-    _ObservabilityAccumulator,
-    _classify_template_structural,
-    _capability_signal_count,
-    _reference_metric_baselines,
-    _reference_beating_metrics,
-    _template_label_from_evidence,
-    _summarize_template_stat,
-    _empty_template_stat,
-    _TEMPLATE_DEF_RE,
-    _EMPTY_DATA_ACCOUNTING_SHAPE,
-)
 from ..json_utils import fast_loads as _json_loads
 from ..leaderboard_scoring import (
     compute_efficiency_multiple as _compute_efficiency_multiple,
     compute_pre_investigation_score as _compute_pre_investigation_score,
 )
+
 
 class _ReferencesMixin:
     """Reference architectures, decisions, novelty calibration."""
@@ -192,8 +176,15 @@ class _ReferencesMixin:
         primary worthiness gate instead of loss_ratio — a model with excellent
         efficiency/novelty/stability deserves investigation even with moderate loss.
         """
-        # Dynamic score floor: 25th percentile of investigation tier,
-        # excluding reference architectures which inflate the floor.
+        # Dynamic score floor: the lower of (p25 of non-ref investigation tier)
+        # and (p90 of non-ref screening tier).
+        #
+        # Why both? The p25-of-investigation rule alone drifts upward as a few
+        # exceptional candidates promote (they shift the historical baseline),
+        # which then locks out the next wave of solid-but-not-stellar templates.
+        # Bounding by p90-of-screening keeps the floor anchored to what new
+        # candidates can plausibly reach: at least the top 10% of any screening
+        # population is always eligible to attempt investigation.
         # Falls back to 75th percentile of screening tier when no
         # non-reference investigation entries exist yet.
         if min_composite_score is None:
@@ -204,20 +195,24 @@ class _ReferencesMixin:
                 " AND composite_score IS NOT NULL"
                 " ORDER BY composite_score ASC"
             ).fetchall()
-            if inv_scores:
-                min_composite_score = inv_scores[len(inv_scores) // 4][0]
+            scr_scores = self.conn.execute(
+                "SELECT composite_score FROM leaderboard"
+                " WHERE tier = 'screening'"
+                " AND COALESCE(is_reference, 0) = 0"
+                " AND composite_score IS NOT NULL"
+                " ORDER BY composite_score ASC"
+            ).fetchall()
+            inv_floor = inv_scores[len(inv_scores) // 4][0] if inv_scores else None
+            screen_p90 = (
+                scr_scores[9 * len(scr_scores) // 10][0] if scr_scores else None
+            )
+            screen_p75 = scr_scores[3 * len(scr_scores) // 4][0] if scr_scores else 0.0
+            if inv_floor is not None and screen_p90 is not None:
+                min_composite_score = min(inv_floor, screen_p90)
+            elif inv_floor is not None:
+                min_composite_score = inv_floor
             else:
-                # No non-reference investigation entries: use 75th percentile
-                # of screening tier as a reasonable promotion threshold
-                scr_scores = self.conn.execute(
-                    "SELECT composite_score FROM leaderboard"
-                    " WHERE tier = 'screening'"
-                    " AND composite_score IS NOT NULL"
-                    " ORDER BY composite_score ASC"
-                ).fetchall()
-                min_composite_score = (
-                    scr_scores[3 * len(scr_scores) // 4][0] if scr_scores else 0.0
-                )
+                min_composite_score = screen_p75
         rows = self.conn.execute(
             """SELECT pr.*, l.entry_id, l.tier, l.composite_score,
                       l.screening_loss_ratio, l.screening_novelty,

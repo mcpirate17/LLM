@@ -36,11 +36,18 @@ if TYPE_CHECKING:
 # ── Singleton runner ────────────────────────────────────────────────────
 _runner: Optional[ExperimentRunner] = None
 _EXTERNAL_RUN_ACTIVITY_TIMEOUT_SECONDS = 3600.0
+_PERSISTED_LLM_CONFIG_LOCK = threading.Lock()
+_PERSISTED_LLM_CONFIG_LOADED: set[str] = set()
 
 
 def projected_runtime_status_enabled() -> bool:
     raw = str(os.environ.get("ARIA_ENABLE_PROJECTED_RUNTIME_STATUS", "0")).strip()
     return raw.lower() in {"1", "true", "yes", "on"}
+
+
+def get_aria_for_notebook(notebook_path: str):
+    ensure_persisted_llm_config_loaded(notebook_path)
+    return get_aria()
 
 
 def get_runner(
@@ -261,7 +268,9 @@ def resolve_runner_status(
             exc,
         )
         progress = with_native_runner_progress(
-            runner.progress.to_dict() if runner is not None else LiveProgress().to_dict()
+            runner.progress.to_dict()
+            if runner is not None
+            else LiveProgress().to_dict()
         )
         progress["database_status"] = {
             "healthy": False,
@@ -277,7 +286,9 @@ def resolve_runner_status(
         return {
             "is_running": False,
             "progress": with_native_runner_progress(
-                runner.progress.to_dict() if runner is not None else LiveProgress().to_dict()
+                runner.progress.to_dict()
+                if runner is not None
+                else LiveProgress().to_dict()
             ),
             "external_snapshot": None,
         }
@@ -347,6 +358,20 @@ def get_registry_running_experiment_snapshot(
                 notebook_status,
             )
             return None
+    else:
+        other_running = nb.conn.execute(
+            "SELECT experiment_id FROM experiments WHERE status = 'running' "
+            "ORDER BY timestamp DESC LIMIT 1"
+        ).fetchone()
+        if other_running is not None:
+            other_run_id = str(other_running["experiment_id"] or "").strip()
+            if other_run_id and other_run_id != run_id:
+                logger.debug(
+                    "Ignoring registry-active run %s because notebook has running experiment %s",
+                    run_id,
+                    other_run_id,
+                )
+                return None
     payload = dict(state.last_event.payload or {})
     config = _json_dict_or_empty(payload.get("config"))
     mode = str(
@@ -738,6 +763,17 @@ _LAST_RUN_TRIGGER: Dict[str, Any] = {
 }
 
 
+def _unknown_run_trigger(experiment_id: Optional[str] = None) -> Dict[str, Any]:
+    return {
+        "experiment_id": experiment_id,
+        "source": "unknown",
+        "mode": None,
+        "timestamp": None,
+        "details": {},
+        "matched": False,
+    }
+
+
 def record_run_trigger(
     experiment_id: str,
     source: str,
@@ -763,6 +799,8 @@ def get_run_trigger_snapshot(
     active_experiment_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     active_id = str(active_experiment_id or "").strip() or None
+    if active_id is None:
+        return _unknown_run_trigger()
     with _RUN_TRIGGER_LOCK:
         snap = dict(_LAST_RUN_TRIGGER)
     if (
@@ -770,14 +808,7 @@ def get_run_trigger_snapshot(
         and snap.get("experiment_id")
         and snap.get("experiment_id") != active_id
     ):
-        return {
-            "experiment_id": active_id,
-            "source": "unknown",
-            "mode": None,
-            "timestamp": None,
-            "details": {},
-            "matched": False,
-        }
+        return _unknown_run_trigger(active_id)
     snap["experiment_id"] = active_id or snap.get("experiment_id")
     snap["matched"] = (
         bool(active_id)
@@ -845,6 +876,104 @@ def llm_config_path(notebook_path: str) -> Path:
     return Path(notebook_path).parent / "llm_config.json"
 
 
+def get_passive_llm_config(notebook_path: str, *, aria=None) -> Dict[str, Any]:
+    """Return configured LLM metadata without instantiating a backend.
+
+    If Aria already has an initialized backend in-process, report its live state.
+    Otherwise, inspect persisted config on disk and return a lightweight snapshot.
+    """
+    if aria is not None and getattr(aria, "_llm_initialized", False):
+        return aria.get_llm_config()
+
+    config_path = llm_config_path(notebook_path)
+    if not config_path.exists():
+        return {
+            "backend": None,
+            "available": False,
+            "configured": False,
+            "reachable": False,
+            "initialized": False,
+            "source": "none",
+        }
+
+    try:
+        data = json.loads(config_path.read_text())
+    except Exception as exc:
+        logger.debug(
+            "Failed reading persisted LLM config from %s: %s", config_path, exc
+        )
+        return {
+            "backend": None,
+            "available": False,
+            "configured": False,
+            "reachable": False,
+            "initialized": False,
+            "source": "invalid_persisted_config",
+        }
+
+    backend = str(data.get("backend", "")).strip() or None
+    model = str(data.get("model", "")).strip() or None
+    host = str(data.get("host", "")).strip() or None
+    api_key_env = str(data.get("api_key_env", "")).strip()
+    api_key = (
+        os.environ.get(api_key_env, "")
+        if api_key_env
+        else str(data.get("api_key", "")).strip()
+    )
+    configured = bool(backend)
+    payload = {
+        "backend": backend,
+        "available": False,
+        "configured": configured,
+        "reachable": False,
+        "initialized": False,
+        "source": "persisted" if configured else "none",
+        "api_key_set": bool(api_key),
+    }
+    if model:
+        payload["model"] = model
+    if host:
+        payload["host"] = host
+    if api_key:
+        payload["api_key_hint"] = (
+            api_key[:8] + "..." + api_key[-4:] if len(api_key) > 12 else "***"
+        )
+    return payload
+
+
+def build_passive_aria_status(
+    aria, *, notebook_path: str, db_summary: Optional[Dict] = None
+) -> Dict[str, Any]:
+    llm_config = get_passive_llm_config(notebook_path, aria=aria)
+    status = {
+        "name": aria.NAME,
+        "title": aria.TITLE,
+        "avatar": aria.AVATAR,
+        "mood": aria.state.mood,
+        "energy": aria.state.energy,
+        "experiments_today": aria.state.experiments_today,
+        "discoveries_today": aria.state.discoveries_today,
+        "current_hypothesis": aria._sanitize_hypothesis(aria.state.current_hypothesis),
+        "research_focus": aria.state.research_focus,
+        "recent_insights": aria.state.insights[-5:] if aria.state.insights else [],
+        "llm_enabled": bool(llm_config.get("configured")),
+    }
+    if db_summary:
+        status["total_experiments"] = db_summary.get("total_experiments", 0)
+        status["total_programs"] = db_summary.get("total_programs_evaluated", 0)
+        status["stage1_survivors"] = db_summary.get("stage1_survivors", 0)
+    return status
+
+
+def ensure_persisted_llm_config_loaded(notebook_path: str) -> None:
+    normalized = str(Path(notebook_path).resolve())
+    with _PERSISTED_LLM_CONFIG_LOCK:
+        if normalized in _PERSISTED_LLM_CONFIG_LOADED:
+            return
+        load_persisted_llm_config(notebook_path)
+        _PERSISTED_LLM_CONFIG_LOADED.add(normalized)
+
+
 def load_persisted_llm_config(notebook_path: str):
     """Auto-load LLM config from disk if present."""
     config_path = llm_config_path(notebook_path)
@@ -870,7 +999,7 @@ def load_persisted_llm_config(notebook_path: str):
             model=str(data.get("model", "")).strip(),
             host=str(data.get("host", "")).strip(),
         )
-        logger.info(f"Loaded persisted LLM config: {backend}")
+        logger.debug("Loaded persisted LLM config: %s", backend)
     except Exception as e:
         logger.warning(f"Failed to load persisted LLM config: {e}")
 

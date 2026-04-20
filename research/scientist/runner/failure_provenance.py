@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import json
-from collections import deque
 from typing import Any
 
+from ..native.core import _try_import_rust_scheduler
 from ...synthesis.graph_validator import validate_dim_flow
+from ...synthesis.serializer import graph_to_json
 from ...synthesis.validator import validate_graph
 
 _GENERIC_SINK_OPS = frozenset(
@@ -138,6 +139,40 @@ def _graph_op_names(graph: Any) -> list[str]:
         if op_name:
             names.append(str(op_name))
     return names
+
+
+def _native_graph_provenance(
+    graph: Any, failure_op: str | None
+) -> tuple[list[str], str | None] | None:
+    rust = _try_import_rust_scheduler()
+    if rust is None or not hasattr(rust, "analyze_graph_provenance_native"):
+        return None
+    try:
+        graph_json = graph_to_json(graph)
+    except Exception:
+        return None
+    try:
+        raw = rust.analyze_graph_provenance_native(
+            graph_json,
+            sorted(_GENERIC_SINK_OPS),
+            failure_op,
+        )
+    except Exception:
+        return None
+    try:
+        payload = json.loads(raw)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    raw_op_names = payload.get("op_names")
+    if not isinstance(raw_op_names, list):
+        return None
+    op_names = [str(op) for op in raw_op_names if str(op)]
+    source_op = payload.get("source_op")
+    if source_op is not None:
+        source_op = str(source_op) or None
+    return op_names, source_op
 
 
 def _graph_generic_sink_ratio(op_names: list[str]) -> float:
@@ -393,42 +428,6 @@ def _classify_from_error(
     return error_type, _pick_failure_op(op_names, tuple(op_names))
 
 
-def _parent_map(graph: Any) -> dict[int, list[int]]:
-    mapping: dict[int, list[int]] = {}
-    for node_id, node in graph.nodes.items():
-        mapping[int(node_id)] = [
-            int(parent_id) for parent_id in getattr(node, "input_ids", ())
-        ]
-    return mapping
-
-
-def _find_node_ids(graph: Any, op_name: str) -> list[int]:
-    found: list[int] = []
-    for node_id, node in graph.nodes.items():
-        if getattr(node, "op_name", None) == op_name:
-            found.append(int(node_id))
-    return found
-
-
-def _nearest_non_generic_ancestor(graph: Any, start_id: int) -> str | None:
-    parents = _parent_map(graph)
-    queue = deque(parents.get(start_id, ()))
-    seen: set[int] = set()
-    while queue:
-        node_id = queue.popleft()
-        if node_id in seen:
-            continue
-        seen.add(node_id)
-        node = graph.nodes.get(node_id)
-        if node is None or getattr(node, "is_input", False):
-            continue
-        op_name = str(getattr(node, "op_name", "") or "")
-        if op_name and op_name not in _GENERIC_SINK_OPS:
-            return op_name
-        queue.extend(parents.get(node_id, ()))
-    return None
-
-
 def _infer_source_op(
     graph: Any,
     *,
@@ -440,12 +439,12 @@ def _infer_source_op(
     picked = _pick_failure_op(op_names, preferred)
     if picked is not None:
         return picked
-    if failure_op:
-        node_ids = _find_node_ids(graph, failure_op)
-        for node_id in node_ids:
-            ancestor = _nearest_non_generic_ancestor(graph, node_id)
-            if ancestor is not None:
-                return ancestor
+    native = _native_graph_provenance(graph, failure_op)
+    if native is not None:
+        _native_op_names, source_op = native
+        if source_op is not None:
+            return source_op
+        return failure_op
     return failure_op
 
 

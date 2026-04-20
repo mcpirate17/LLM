@@ -27,49 +27,41 @@ from ._shared import (
 )
 
 
-class _ThreadSafeConnectionWrapper:
-    """Wraps a sqlite3.Connection so that all execute/cursor operations
-    are serialized via a lock.  This prevents ``InterfaceError: bad
-    parameter or other API misuse`` when Flask's threaded server fires
-    concurrent requests that share one LabNotebook instance.
+class _SqliteConnectionAdapter:
+    """Small patchable adapter over ``sqlite3.Connection``.
+
+    Native notebook connections already provide thread-safe process-wide
+    access. For the remaining legacy/in-memory sqlite paths we keep a minimal
+    Python adapter so tests can patch ``execute`` and callers share one
+    compatibility surface.
     """
 
-    __slots__ = ("_conn", "_lock")
+    __slots__ = ("_conn",)
 
     def __init__(self, conn: sqlite3.Connection):
         self._conn = conn
-        self._lock = threading.Lock()
 
-    # --- Serialized execute family ---
     def execute(self, sql, parameters=()):
-        with self._lock:
-            return self._conn.execute(sql, parameters)
+        return self._conn.execute(sql, parameters)
 
     def executemany(self, sql, seq_of_parameters):
-        with self._lock:
-            return self._conn.executemany(sql, seq_of_parameters)
+        return self._conn.executemany(sql, seq_of_parameters)
 
     def executescript(self, sql_script):
-        with self._lock:
-            return self._conn.executescript(sql_script)
+        return self._conn.executescript(sql_script)
 
     def commit(self):
-        with self._lock:
-            self._conn.commit()
+        self._conn.commit()
 
     def rollback(self):
-        with self._lock:
-            self._conn.rollback()
+        self._conn.rollback()
 
     def close(self):
-        with self._lock:
-            self._conn.close()
+        self._conn.close()
 
     def cursor(self):
-        with self._lock:
-            return self._conn.cursor()
+        return self._conn.cursor()
 
-    # --- Passthrough for attribute access (row_factory, etc.) ---
     @property
     def row_factory(self):
         return self._conn.row_factory
@@ -265,36 +257,25 @@ class _NotebookCore:
         if self._is_memory:
             # In-memory DBs can't use the native manager (no file path).
             # Fall back to the old Python wrapper for tests.
-            raw_conn = sqlite3.connect(
-                ":memory:",
-                timeout=10.0,
+            self.conn = self._open_sqlite_connection(
+                db_path=self.db_path,
+                read_only=False,
+                role="memory",
                 check_same_thread=False,
+                connect_target=":memory:",
             )
-            raw_conn.execute("PRAGMA foreign_keys=ON")
-            raw_conn.row_factory = sqlite3.Row
-            self.conn = _ThreadSafeConnectionWrapper(raw_conn)
             self._use_native = False
         elif self._use_native:
             self.conn = NativeConnectionWrapper(
                 str(self.db_path), read_only=self._read_only
             )
         else:
-            connect_target = str(self.db_path)
-            connect_kwargs = {
-                "timeout": 10.0,
-                "check_same_thread": check_same_thread,
-            }
-            if self._read_only:
-                connect_target = f"file:{self.db_path}?mode=ro"
-                connect_kwargs["uri"] = True
-            raw_conn = sqlite3.connect(connect_target, **connect_kwargs)
-            self._configure_sqlite_connection(
-                raw_conn,
+            self.conn = self._open_sqlite_connection(
                 db_path=self.db_path,
+                read_only=self._read_only,
                 role="readonly" if self._read_only else "api-write",
+                check_same_thread=check_same_thread,
             )
-            raw_conn.row_factory = sqlite3.Row
-            self.conn = _ThreadSafeConnectionWrapper(raw_conn)
 
         self._batch_depth = 0
         self._program_results_columns: Optional[set[str]] = None
@@ -358,14 +339,44 @@ class _NotebookCore:
                 return
             raise
 
+    @classmethod
+    def _open_sqlite_connection(
+        cls,
+        *,
+        db_path: Path,
+        read_only: bool,
+        role: str,
+        check_same_thread: bool,
+        connect_target: str | None = None,
+    ) -> _SqliteConnectionAdapter:
+        target = connect_target or str(db_path)
+        connect_kwargs: Dict[str, Any] = {
+            "timeout": 10.0,
+            "check_same_thread": check_same_thread,
+        }
+        if read_only and connect_target is None:
+            target = f"file:{db_path}?mode=ro"
+            connect_kwargs["uri"] = True
+        raw_conn = sqlite3.connect(target, **connect_kwargs)
+        if target == ":memory:":
+            raw_conn.execute("PRAGMA foreign_keys=ON")
+        else:
+            cls._configure_sqlite_connection(
+                raw_conn,
+                db_path=db_path,
+                role=role,
+            )
+        raw_conn.row_factory = sqlite3.Row
+        return _SqliteConnectionAdapter(raw_conn)
+
     def _writer_loop(self):
         """Background thread that handles all database writes."""
         # Use a separate connection for the writer thread
-        writer_conn = sqlite3.connect(str(self.db_path), timeout=10.0)
-        self._configure_sqlite_connection(
-            writer_conn,
+        writer_conn = self._open_sqlite_connection(
             db_path=self.db_path,
+            read_only=False,
             role="writer",
+            check_same_thread=False,
         )
 
         batch = []
@@ -1091,9 +1102,213 @@ class _NotebookCore:
         self._migrate_insights_semantic()
         self._migrate_insights_bayesian()
         self._migrate_leaderboard_columns()
+        self._migrate_program_results_dedup_index()
+        self._migrate_program_results_intentional_rerun_column()
+        self._migrate_program_results_dedup_trigger()
+        self._migrate_leaderboard_fp_dedup()
         self._program_results_columns = None
         self._leaderboard_columns = None
         self._maybe_commit()
+
+    def _migrate_program_results_intentional_rerun_column(self) -> None:
+        """Slice 4: track callers that intentionally re-evaluate a known graph."""
+        cols = {
+            row[1]
+            for row in self.conn.execute(
+                "PRAGMA table_info(program_results)"
+            ).fetchall()
+        }
+        if "intentional_rerun_reason" not in cols:
+            try:
+                self.conn.execute(
+                    "ALTER TABLE program_results "
+                    "ADD COLUMN intentional_rerun_reason TEXT"
+                )
+            except sqlite3.OperationalError:
+                pass
+
+    def _migrate_program_results_dedup_trigger(self) -> None:
+        """Slice 4 schema backstop for the cross-experiment dedup gate.
+
+        Mirrors the application-level check in ``record_program_result``: any
+        INSERT of a row whose ``graph_fingerprint`` already exists must set
+        ``intentional_rerun_reason`` (replay, validation_promotion,
+        reference_registration, etc.). The trigger only fires on INSERT, so
+        the historical 1.5k cross-experiment duplicates are grandfathered
+        until a separate cleanup runs.
+        """
+        try:
+            existing = self.conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='trigger' AND name=?",
+                ("reject_dup_fingerprint_no_reason",),
+            ).fetchone()
+            if existing:
+                return
+            self.conn.execute(
+                """
+                CREATE TRIGGER IF NOT EXISTS reject_dup_fingerprint_no_reason
+                BEFORE INSERT ON program_results
+                WHEN NEW.graph_fingerprint IS NOT NULL
+                 AND TRIM(NEW.graph_fingerprint) <> ''
+                 AND NEW.intentional_rerun_reason IS NULL
+                 AND EXISTS (
+                       SELECT 1 FROM program_results
+                       WHERE graph_fingerprint = NEW.graph_fingerprint
+                         AND result_id <> NEW.result_id
+                     )
+                BEGIN
+                  SELECT RAISE(
+                    ABORT,
+                    'duplicate graph_fingerprint without intentional_rerun_reason'
+                  );
+                END
+                """
+            )
+            LOGGER.info(
+                "Installed reject_dup_fingerprint_no_reason trigger — cross-experiment fingerprint dedup is now enforced at the schema level."
+            )
+        except sqlite3.OperationalError as exc:
+            LOGGER.warning(
+                "reject_dup_fingerprint_no_reason migration skipped: %s", exc
+            )
+
+    def _migrate_program_results_dedup_index(self) -> None:
+        """Slice 3a: enforce per-experiment fingerprint uniqueness.
+
+        The index forbids two rows in ``program_results`` from sharing the
+        same ``(graph_fingerprint, experiment_id)`` pair. Cross-experiment
+        re-runs (replay, validation, backfill, references) are still allowed
+        because they have different ``experiment_id``.
+
+        We probe for existing duplicates first. If any are found we log a
+        loud warning and skip the index — the dashboard must keep booting,
+        but the duplicates need to be cleaned up via
+        ``research/tools/dedup_within_experiment.py --apply`` before the
+        guarantee can be enforced.
+        """
+        try:
+            existing = self.conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='index' AND name=?",
+                ("idx_pr_fp_per_experiment",),
+            ).fetchone()
+            if existing:
+                return
+            dup = self.conn.execute(
+                """
+                SELECT graph_fingerprint, experiment_id, COUNT(*) AS n
+                FROM program_results
+                WHERE TRIM(COALESCE(graph_fingerprint, '')) <> ''
+                GROUP BY graph_fingerprint, experiment_id
+                HAVING n > 1
+                LIMIT 1
+                """
+            ).fetchone()
+            if dup is not None:
+                LOGGER.warning(
+                    "Skipping idx_pr_fp_per_experiment install: "
+                    "program_results contains within-experiment duplicates. "
+                    "Run `python -m research.tools.dedup_within_experiment --apply` "
+                    "first, then restart to install the dedup guarantee."
+                )
+                return
+            self.conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_pr_fp_per_experiment "
+                "ON program_results(graph_fingerprint, experiment_id) "
+                "WHERE graph_fingerprint IS NOT NULL "
+                "AND graph_fingerprint <> ''"
+            )
+            LOGGER.info(
+                "Installed idx_pr_fp_per_experiment — within-experiment fingerprint dedup is now enforced at the schema level."
+            )
+        except sqlite3.OperationalError as exc:
+            LOGGER.warning("idx_pr_fp_per_experiment migration skipped: %s", exc)
+
+    def _migrate_leaderboard_fp_dedup(self) -> None:
+        """Denormalize graph_fingerprint onto leaderboard and install a
+        UNIQUE partial index so the schema blocks duplicate leaderboard
+        entries for the same fingerprint.
+
+        Three steps, all idempotent:
+
+        1. Add ``graph_fingerprint TEXT`` column if missing.
+        2. Backfill it from ``program_results`` for existing leaderboard rows.
+        3. Install ``idx_leaderboard_fp`` UNIQUE partial index (skipped with a
+           warning if duplicate fingerprints still exist — run
+           ``research/tools/leaderboard_dedup_by_fingerprint.py --apply``
+           first).
+
+        Complements the Python-layer ``DuplicateLeaderboardFingerprintError``
+        gate on ``upsert_leaderboard``. Defense-in-depth, matching the slice-3
+        pattern on ``program_results``.
+        """
+        try:
+            # 1. Add column
+            cols = {
+                row[1] for row in self.conn.execute("PRAGMA table_info(leaderboard)")
+            }
+            if "graph_fingerprint" not in cols:
+                self.conn.execute(
+                    "ALTER TABLE leaderboard ADD COLUMN graph_fingerprint TEXT"
+                )
+                LOGGER.info(
+                    "Added leaderboard.graph_fingerprint column (denormalized "
+                    "from program_results for dedup enforcement)."
+                )
+
+            # 2. Backfill NULLs — one UPDATE..FROM query would race with
+            #    concurrent readers; do an in-place UPDATE via correlated
+            #    subquery instead (SQLite-safe).
+            self.conn.execute(
+                "UPDATE leaderboard "
+                "SET graph_fingerprint = ("
+                "  SELECT pr.graph_fingerprint FROM program_results pr "
+                "  WHERE pr.result_id = leaderboard.result_id "
+                ") "
+                "WHERE graph_fingerprint IS NULL"
+            )
+
+            # 3. Install UNIQUE partial index (skip if non-reference dups remain).
+            # References are a separate namespace — GPT-2/Mamba/RWKV registered
+            # as baselines can legitimately share a fingerprint with a
+            # synthesized discovery. Exclude is_reference=1 from the index.
+            existing_idx = self.conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='index' AND name=?",
+                ("idx_leaderboard_fp",),
+            ).fetchone()
+            if existing_idx:
+                return
+            dup = self.conn.execute(
+                """
+                SELECT graph_fingerprint, COUNT(*) AS n
+                FROM leaderboard
+                WHERE TRIM(COALESCE(graph_fingerprint, '')) <> ''
+                  AND COALESCE(is_reference, 0) = 0
+                GROUP BY graph_fingerprint
+                HAVING n > 1
+                LIMIT 1
+                """
+            ).fetchone()
+            if dup is not None:
+                LOGGER.warning(
+                    "Skipping idx_leaderboard_fp install: leaderboard contains "
+                    "duplicate graph_fingerprints. Run `python -m "
+                    "research.tools.leaderboard_dedup_by_fingerprint --apply` "
+                    "first, then restart to install the dedup guarantee."
+                )
+                return
+            self.conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_leaderboard_fp "
+                "ON leaderboard(graph_fingerprint) "
+                "WHERE graph_fingerprint IS NOT NULL "
+                "AND graph_fingerprint <> '' "
+                "AND COALESCE(is_reference, 0) = 0"
+            )
+            LOGGER.info(
+                "Installed idx_leaderboard_fp — leaderboard fingerprint dedup "
+                "is now enforced at the schema level (excluding references)."
+            )
+        except sqlite3.OperationalError as exc:
+            LOGGER.warning("idx_leaderboard_fp migration skipped: %s", exc)
 
     def _get_program_results_columns(self) -> set[str]:
         """Return current program_results columns for defensive inserts."""

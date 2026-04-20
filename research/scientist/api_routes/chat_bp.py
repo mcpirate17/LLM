@@ -7,13 +7,19 @@ from typing import Any, Dict, List, Optional
 
 from flask import jsonify, request
 from .deps import ApiRouteContext
-from ..persona import get_aria
 from ..code_agent import _spawn_code_agent_task
+from ..persona import get_aria
 from ._helpers import (
+    get_aria_for_notebook,
     get_runner,
     record_run_trigger,
 )
-from ._utils import bind_notebook_view, bind_view, with_notebook_context
+from ._utils import (
+    bind_notebook_view,
+    bind_view,
+    register_routes,
+    with_notebook_context,
+)
 from ._strategy_diagnostics import diagnose_research_issues
 from ._chat import (
     chat_requests_detailed_response,
@@ -34,6 +40,11 @@ from ._chat import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_chat_aria(notebook_path: str):
+    get_aria_for_notebook(notebook_path)
+    return get_aria()
 
 
 def _api_aria_chat_guardrails():
@@ -694,7 +705,7 @@ def _chat_fallback_response(
 def _api_aria_chat(notebook_path: str, nb=None):
     """Interactive Aria chat response grounded in current research context."""
     runner = get_runner(notebook_path)
-    aria = get_aria()
+    aria = _resolve_chat_aria(notebook_path)
 
     body = request.get_json(silent=True) or {}
     question = str(body.get("message") or "").strip()
@@ -836,9 +847,9 @@ def _api_aria_chat_message(nb=None):
     return jsonify({"message_id": mid, "saved": True})
 
 
-def _api_aria_chat_compact(nb=None):
+def _api_aria_chat_compact(notebook_path: str, nb=None):
     """Compact older chat messages into a summary when token budget exceeded."""
-    aria = get_aria()
+    aria = _resolve_chat_aria(notebook_path)
     body = request.get_json(silent=True) or {}
     session_id = body.get("session_id", "default")
     token_budget = int(body.get("token_budget", 4000))
@@ -937,54 +948,58 @@ def _api_aria_chat_compact(nb=None):
 def register_chat_routes(app, context: ApiRouteContext):
     notebook_path = context.notebook_path
     wnb = with_notebook_context(notebook_path)
-
-    app.add_url_rule(
-        "/api/aria/chat/guardrails",
-        "api_aria_chat_guardrails",
-        bind_view(_api_aria_chat_guardrails),
-    )
-    app.add_url_rule(
-        "/api/aria/agent/spawn",
-        "api_aria_agent_spawn",
-        bind_view(_api_aria_agent_spawn, notebook_path),
-        methods=["POST"],
-    )
-    app.add_url_rule(
-        "/api/aria/agent/status/<task_id>",
-        "api_aria_agent_status",
-        bind_view(_api_aria_agent_status),
-    )
-    app.add_url_rule(
-        "/api/aria/agent/status/<task_id>/summary",
-        "api_aria_agent_status_summary",
-        bind_view(_api_aria_agent_status_summary),
-    )
-    app.add_url_rule(
-        "/api/aria/diagnose",
-        "api_aria_diagnose",
-        bind_notebook_view(wnb, _api_aria_diagnose, notebook_path),
-        methods=["POST"],
-    )
-    app.add_url_rule(
-        "/api/aria/chat",
-        "api_aria_chat",
-        bind_notebook_view(wnb, _api_aria_chat, notebook_path),
-        methods=["POST"],
-    )
-    app.add_url_rule(
-        "/api/aria/chat/history",
-        "api_aria_chat_history",
-        bind_notebook_view(wnb, _api_aria_chat_history),
-    )
-    app.add_url_rule(
-        "/api/aria/chat/message",
-        "api_aria_chat_message",
-        bind_notebook_view(wnb, _api_aria_chat_message),
-        methods=["POST"],
-    )
-    app.add_url_rule(
-        "/api/aria/chat/compact",
-        "api_aria_chat_compact",
-        bind_notebook_view(wnb, _api_aria_chat_compact),
-        methods=["POST"],
+    register_routes(
+        app,
+        (
+            (
+                "/api/aria/chat/guardrails",
+                "api_aria_chat_guardrails",
+                bind_view(_api_aria_chat_guardrails),
+            ),
+            (
+                "/api/aria/agent/spawn",
+                "api_aria_agent_spawn",
+                bind_view(_api_aria_agent_spawn, notebook_path),
+                ("POST",),
+            ),
+            (
+                "/api/aria/agent/status/<task_id>",
+                "api_aria_agent_status",
+                bind_view(_api_aria_agent_status),
+            ),
+            (
+                "/api/aria/agent/status/<task_id>/summary",
+                "api_aria_agent_status_summary",
+                bind_view(_api_aria_agent_status_summary),
+            ),
+            (
+                "/api/aria/diagnose",
+                "api_aria_diagnose",
+                bind_notebook_view(wnb, _api_aria_diagnose, notebook_path),
+                ("POST",),
+            ),
+            (
+                "/api/aria/chat",
+                "api_aria_chat",
+                bind_notebook_view(wnb, _api_aria_chat, notebook_path),
+                ("POST",),
+            ),
+            (
+                "/api/aria/chat/history",
+                "api_aria_chat_history",
+                bind_notebook_view(wnb, _api_aria_chat_history),
+            ),
+            (
+                "/api/aria/chat/message",
+                "api_aria_chat_message",
+                bind_notebook_view(wnb, _api_aria_chat_message),
+                ("POST",),
+            ),
+            (
+                "/api/aria/chat/compact",
+                "api_aria_chat_compact",
+                bind_notebook_view(wnb, _api_aria_chat_compact, notebook_path),
+                ("POST",),
+            ),
+        ),
     )

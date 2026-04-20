@@ -13,6 +13,7 @@ from ..native.telemetry import native_runner_capability_report
 from ..persona import get_aria
 from ..runner._types import RunConfig
 from ._helpers import (
+    get_passive_llm_config,
     get_runner,
     native_runner_canary_status_payload,
     resolve_runner_status,
@@ -25,7 +26,7 @@ from ._strategy_preflight import (
     run_pipeline_sample_check,
 )
 from ._strategy_report import parse_bool_query
-from ._utils import with_notebook_context
+from ._utils import register_notebook_routes, register_routes, with_notebook_context
 from .deps import ApiRouteContext
 
 logger = logging.getLogger(__name__)
@@ -72,8 +73,6 @@ def register_system_routes(app, context: ApiRouteContext):
     notebook_path = context.notebook_path
     wnb = with_notebook_context(notebook_path)
 
-    @app.route("/api/system/status")
-    @wnb
     def api_system_status(nb=None):
         """Report system status: CUDA, LLM, database, runner state."""
         runner = get_runner(notebook_path, create_if_missing=False)
@@ -84,21 +83,7 @@ def register_system_routes(app, context: ApiRouteContext):
 
         cuda_available, cuda_info = _probe_cuda_status()
 
-        llm = aria._get_llm()
-        llm_reachable = False
-        if llm is not None:
-            try:
-                llm_reachable = (
-                    bool(llm.is_available()) if hasattr(llm, "is_available") else True
-                )
-            except Exception as exc:
-                logger.debug("LLM reachability check failed: %s", exc)
-                llm_reachable = False
-        llm_info = {
-            "available": llm_reachable,
-            "configured": llm is not None,
-            "backend": getattr(llm, "name", None) if llm else None,
-        }
+        llm_info = get_passive_llm_config(notebook_path, aria=aria)
 
         summary = nb.get_dashboard_headline_summary()
         runner_state = resolve_runner_status(nb, runner)
@@ -122,7 +107,6 @@ def register_system_routes(app, context: ApiRouteContext):
             }
         )
 
-    @app.route("/api/native-runner/capability")
     def api_native_runner_capability():
         """Report native-runner adapter capability and current mode flags."""
         try:
@@ -131,7 +115,6 @@ def register_system_routes(app, context: ApiRouteContext):
             logger.error("Error in /api/native-runner/capability: %s", e)
             return jsonify({"error": str(e)}), 500
 
-    @app.route("/api/native-runner/canary/refresh", methods=["POST"])
     def api_native_runner_canary_refresh():
         """Force-refresh native runner canary payload (bypass TTL cache)."""
         try:
@@ -149,7 +132,6 @@ def register_system_routes(app, context: ApiRouteContext):
             logger.error("Error in /api/native-runner/canary/refresh: %s", e)
             return jsonify({"error": str(e)}), 500
 
-    @app.route("/api/native-runner/telemetry")
     def api_native_runner_telemetry():
         """Return native runner fallback metrics for dashboard consumption."""
         try:
@@ -173,7 +155,6 @@ def register_system_routes(app, context: ApiRouteContext):
             logger.error("Error in /api/native-runner/telemetry: %s", e)
             return jsonify({"error": str(e)}), 500
 
-    @app.route("/api/perf/summary")
     def api_perf_summary():
         """Return recent research perf artifacts and aggregate budget state."""
         try:
@@ -200,7 +181,6 @@ def register_system_routes(app, context: ApiRouteContext):
             logger.error("Error in /api/perf/summary: %s", e)
             return jsonify({"error": str(e)}), 500
 
-    @app.route("/api/validate", methods=["POST"])
     def api_validate_pipeline():
         """Validate the synthesis pipeline by generating and testing programs."""
         body = request.get_json(silent=True) or {}
@@ -255,3 +235,37 @@ def register_system_routes(app, context: ApiRouteContext):
                     "prescreen": prescreen,
                 }
             )
+
+    register_notebook_routes(
+        app,
+        wnb,
+        (("/api/system/status", "api_system_status", api_system_status),),
+    )
+    register_routes(
+        app,
+        (
+            (
+                "/api/native-runner/capability",
+                "api_native_runner_capability",
+                api_native_runner_capability,
+            ),
+            (
+                "/api/native-runner/canary/refresh",
+                "api_native_runner_canary_refresh",
+                api_native_runner_canary_refresh,
+                ("POST",),
+            ),
+            (
+                "/api/native-runner/telemetry",
+                "api_native_runner_telemetry",
+                api_native_runner_telemetry,
+            ),
+            ("/api/perf/summary", "api_perf_summary", api_perf_summary),
+            (
+                "/api/validate",
+                "api_validate_pipeline",
+                api_validate_pipeline,
+                ("POST",),
+            ),
+        ),
+    )

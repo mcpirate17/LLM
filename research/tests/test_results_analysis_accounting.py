@@ -9,8 +9,11 @@ from research.scientist.runner.results_analysis import _ResultsAnalysisMixin
 
 
 class _FakeGraph:
+    def __init__(self, fp: str = "fp_stage0_search_proxy"):
+        self._fp = fp
+
     def fingerprint(self) -> str:
-        return "fp_stage0_search_proxy"
+        return self._fp
 
 
 class _FakeSandboxResult:
@@ -68,4 +71,92 @@ class TestResultsAnalysisAccounting(unittest.TestCase):
             self.assertEqual(int(row["stage1_passed"] or 0), 0)
             self.assertEqual(row["stage_at_death"], "stage0")
 
+            nb.close()
+
+    def test_duplicate_fingerprint_is_skipped_without_crashing_evolution_eval(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = f"{tmpdir}/test.db"
+            nb = LabNotebook(db_path)
+            first_exp = nb.start_experiment("synthesis", {}, "seed")
+            nb.record_program_result(
+                experiment_id=first_exp,
+                graph_fingerprint="fp_existing_evolution",
+                graph_json="{}",
+                stage0_passed=True,
+                stage05_passed=True,
+                stage1_passed=True,
+                loss_ratio=0.4,
+                model_source="graph_synthesis",
+            )
+            nb.flush_writes()
+
+            exp_id = nb.start_experiment("evolution", {}, "dup attempt")
+            runner = _StubResultsAnalysis()
+            counters = {"total": 0, "s0": 0, "s1": 0}
+
+            with patch(
+                "research.scientist.runner.results_analysis.graph_to_json",
+                return_value="{}",
+            ):
+                runner._on_program_evaluated(
+                    graph=_FakeGraph("fp_existing_evolution"),
+                    fitness=0.8,
+                    sandbox_result=None,
+                    s1_result={"passed": True, "final_loss": 0.4, "initial_loss": 1.0},
+                    eval_counters=counters,
+                    nb=nb,
+                    exp_id=exp_id,
+                    model_source="evolution",
+                    behavioral_fingerprint=None,
+                )
+            nb.flush_writes()
+
+            rows = nb.conn.execute(
+                "SELECT COUNT(*) AS n FROM program_results WHERE graph_fingerprint = ?",
+                ("fp_existing_evolution",),
+            ).fetchone()
+            self.assertEqual(int(rows["n"]), 1)
+            evo_rows = nb.conn.execute(
+                "SELECT COUNT(*) AS n FROM program_results WHERE experiment_id = ?",
+                (exp_id,),
+            ).fetchone()
+            self.assertEqual(int(evo_rows["n"]), 0)
+            self.assertEqual(counters.get("skipped_cross_experiment_dedup"), 1)
+            nb.close()
+
+    def test_successful_evolution_survivor_creates_screening_entry(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = f"{tmpdir}/test.db"
+            nb = LabNotebook(db_path)
+            exp_id = nb.start_experiment("evolution", {}, "screening path")
+            runner = _StubResultsAnalysis()
+
+            with patch(
+                "research.scientist.runner.results_analysis.graph_to_json",
+                return_value="{}",
+            ):
+                runner._on_program_evaluated(
+                    graph=_FakeGraph("fp_evolution_screening"),
+                    fitness=0.8,
+                    sandbox_result=None,
+                    s1_result={"passed": True, "final_loss": 0.4, "initial_loss": 1.0},
+                    eval_counters={"total": 0, "s0": 0, "s1": 0},
+                    nb=nb,
+                    exp_id=exp_id,
+                    model_source="evolution",
+                    behavioral_fingerprint=None,
+                )
+            nb.flush_writes()
+
+            row = nb.conn.execute(
+                "SELECT result_id FROM program_results WHERE graph_fingerprint = ?",
+                ("fp_evolution_screening",),
+            ).fetchone()
+            self.assertIsNotNone(row)
+            lb = nb.conn.execute(
+                "SELECT tier FROM leaderboard WHERE result_id = ?",
+                (row["result_id"],),
+            ).fetchone()
+            self.assertIsNotNone(lb)
+            self.assertEqual(lb["tier"], "screening")
             nb.close()

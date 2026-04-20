@@ -6,6 +6,11 @@ export const COLUMNS = [
     label: 'Score',
     title: 'Open-ended score anchored to GPT-2 = 100. Above 100 = beats GPT-2. No ceiling.',
   },
+  {
+    key: '_capability_quality',
+    label: 'Capability',
+    title: 'Capability quality separate from workflow completion: Capability-Qualified, Training-Only, Validation Pending, etc.',
+  },
   { key: 'tier', label: 'Tier', title: "The model's current research phase: Screening, Investigation, Validation, or Breakthrough." },
   { key: '_verified', label: 'Verified', title: 'Verification status: tiktoken+wikitext103, tiktoken only, or byte-era.' },
   { key: '_rate', label: 'Rate', title: '2K-6K loss improvement rate. Green >10%, yellow 5-10%, red <5%.' },

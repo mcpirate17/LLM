@@ -1,17 +1,20 @@
 import React, { useState } from 'react';
 import { scoreColor } from '../../utils/format';
 import { lossColor, noveltyColor } from '../../utils/colors';
+import { TIER_COLORS } from '../../utils/scoringEngine';
 import {
-  candidateScore,
-  candidateScoreBreakdown,
-  promotionEvidence,
-  TIER_COLORS,
-  TIER_ORDER,
-} from '../../utils/scoringEngine';
+  canonicalCompositeScore,
+  canonicalScoreComponents,
+  promotionEvidenceView,
+} from '../../utils/backendScore';
+import { getDiscoveryDisplayStatus } from '../../utils/discoveryStatus';
 
 const STATUS_LABELS = {
   screening: 'Screened',
-  screened_out: 'Failed Investigation',
+  screened_out: 'Failed Screening',
+  investigation_failed: 'Failed Investigation',
+  validation_failed: 'Failed Validation',
+  validation_pending: 'Validation Pending',
   investigation: 'Investigation',
   validation: 'Validated',
   breakthrough: 'Breakthrough',
@@ -19,7 +22,7 @@ const STATUS_LABELS = {
 
 const STATUS_OPTIONS = [
   { value: 'screening', label: 'Screened' },
-  { value: 'screened_out', label: 'Failed Investigation' },
+  { value: 'screened_out', label: 'Failed Screening' },
   { value: 'investigation', label: 'Investigating' },
   { value: 'validation', label: 'Validated' },
   { value: 'breakthrough', label: 'Breakthrough' },
@@ -41,6 +44,21 @@ function provenanceStatus(entry) {
     return { label: 'Backfill', color: 'var(--accent-orange, #d29922)' };
   }
   return null;
+}
+
+function capabilityBadgeTheme(status) {
+  switch (status) {
+    case 'qualified':
+      return { color: 'var(--accent-green)', bg: 'rgba(63, 185, 80, 0.12)' };
+    case 'breakthrough':
+      return { color: 'var(--accent-green)', bg: 'rgba(63, 185, 80, 0.18)' };
+    case 'training_only':
+      return { color: 'var(--accent-yellow)', bg: 'rgba(210, 153, 34, 0.12)' };
+    case 'pending':
+      return { color: 'var(--accent-purple)', bg: 'rgba(188, 140, 255, 0.12)' };
+    default:
+      return { color: 'var(--text-muted)', bg: 'rgba(139, 148, 158, 0.10)' };
+  }
 }
 
 export function SummaryBar({ tierCounts }) {
@@ -68,8 +86,14 @@ export function SummaryBar({ tierCounts }) {
     >
       <Stat value={total} label="discoveries" />
       <Stat value={tierCounts?.screening || 0} label="screened" color="var(--accent-blue)" />
-      <Stat value={tierCounts?.screened_out || 0} label="failed investigation" color="var(--text-muted)" />
+      <Stat value={tierCounts?.screened_out || 0} label="failed screening" color="var(--text-muted)" />
+      {(tierCounts?.investigation_failed || 0) > 0 && (
+        <Stat value={tierCounts?.investigation_failed || 0} label="failed investigation" color="var(--accent-red)" />
+      )}
       <Stat value={tierCounts?.investigation || 0} label="investigation" color="var(--accent-yellow)" />
+      {(tierCounts?.validation_pending || 0) > 0 && (
+        <Stat value={tierCounts?.validation_pending || 0} label="validation pending" color="var(--accent-purple)" />
+      )}
       <Stat value={validated} label="validated" color="var(--accent-purple)" />
       <Stat value={breakthroughs} label="breakthroughs" color="var(--accent-green)" />
       {backfill > 0 && <Stat value={backfill} label="backfill" color="var(--accent-orange, #d29922)" />}
@@ -91,11 +115,17 @@ function Stat({ value, label, color }) {
 }
 
 export function StatusBadge({ entry }) {
-  const tier = entry.tier;
+  const status = getDiscoveryDisplayStatus(entry);
+  const tier = status.tierKey;
   const provenance = provenanceStatus(entry);
   const color = provenance?.color || TIER_COLORS[tier] || 'var(--text-muted)';
+  const capability = entry?.capability_quality || null;
+  const semanticWarning = entry?.semantic_warning || null;
+  const semanticWarningTitle = semanticWarning
+    ? [semanticWarning.message, ...(semanticWarning.evidence || [])].join('\n')
+    : '';
 
-  let label = provenance?.label || STATUS_LABELS[tier] || tier || 'Unknown';
+  let label = provenance?.label || status.label || STATUS_LABELS[tier] || tier || 'Unknown';
   if (tier === 'investigation' && entry.investigation_robustness != null && !entry.investigation_passed) {
     label = 'Brittle';
   } else if (tier === 'validation' && entry.validation_baseline_ratio != null && !entry.validation_passed) {
@@ -103,22 +133,69 @@ export function StatusBadge({ entry }) {
   }
 
   return (
-    <span
-      style={{
-        display: 'inline-block',
-        padding: '2px 8px',
-        borderRadius: 4,
-        fontSize: 11,
-        fontWeight: 600,
-        color,
-        background: `${color}22`,
-        border: `1px solid ${color}`,
-        textTransform: 'uppercase',
-        whiteSpace: 'nowrap',
-      }}
-    >
-      {label}
-    </span>
+    <div style={{ display: 'inline-flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', minWidth: 0, maxWidth: '100%' }}>
+      <span
+        style={{
+          display: 'inline-block',
+          padding: '2px 8px',
+          borderRadius: 4,
+          fontSize: 11,
+          fontWeight: 600,
+          color,
+          background: `${color}22`,
+          border: `1px solid ${color}`,
+          textTransform: 'uppercase',
+          whiteSpace: 'nowrap',
+          maxWidth: '100%',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+        }}
+      >
+        {label}
+      </span>
+      {capability?.status && !['exploratory', 'investigated'].includes(capability.status) && (
+        <span
+          title={(capability?.missing || []).length ? `Missing: ${(capability.missing || []).join(', ')}` : capability.label}
+          style={{
+            display: 'inline-block',
+            padding: '2px 8px',
+            borderRadius: 4,
+            fontSize: 10,
+            fontWeight: 600,
+            color: capabilityBadgeTheme(capability.status).color,
+            background: capabilityBadgeTheme(capability.status).bg,
+            border: `1px solid ${capabilityBadgeTheme(capability.status).color}`,
+            whiteSpace: 'nowrap',
+            maxWidth: '100%',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+          }}
+        >
+          {capability.label}
+        </span>
+      )}
+      {semanticWarning && (
+        <span
+          title={semanticWarningTitle}
+          style={{
+            display: 'inline-block',
+            padding: '2px 8px',
+            borderRadius: 4,
+            fontSize: 10,
+            fontWeight: 700,
+            color: 'var(--accent-yellow)',
+            background: 'rgba(210, 153, 34, 0.12)',
+            border: '1px solid rgba(210, 153, 34, 0.45)',
+            whiteSpace: 'nowrap',
+            maxWidth: '100%',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+          }}
+        >
+          {semanticWarning.label || 'Warning'}
+        </span>
+      )}
+    </div>
   );
 }
 
@@ -148,34 +225,8 @@ export function StatusEditor({ entry, currentValue, onChange }) {
 
 export function ScoreCell({ entry }) {
   const [show, setShow] = useState(false);
-  const breakdown = candidateScoreBreakdown(entry, TIER_ORDER);
-  const score = entry?._score != null
-    ? Number(entry._score)
-    : entry?.composite_score != null
-      ? Number(entry.composite_score)
-      : candidateScore(entry, TIER_ORDER);
-
-  const keyMap = {
-    sLoss: { label: 'Screening Loss', color: 'var(--accent-blue)' },
-    iLoss: { label: 'Investigation Loss', color: '#1f6feb' },
-    loss: { label: 'Loss', color: 'var(--accent-blue)' },
-    novelty: { label: 'Novelty', color: 'var(--accent-purple)' },
-    vBase: { label: 'Baseline', color: 'var(--accent-green)' },
-    baseline: { label: 'Baseline', color: 'var(--accent-green)' },
-    robust: { label: 'Robustness', color: 'var(--accent-yellow)' },
-    consistency: { label: 'Consistency', color: '#d29922' },
-    tierBonus: { label: 'Tier Bonus', color: 'var(--accent-orange)' },
-    throughput: { label: 'Throughput', color: 'var(--text-muted)' },
-    efficiencyBonus: { label: 'Efficiency', color: '#58a6ff' },
-    routingBonus: { label: 'Routing', color: '#3fb950' },
-    adaptiveBonus: { label: 'Adaptive Compute', color: '#c77dff' },
-    robustnessBonus: { label: 'Robustness', color: 'var(--accent-yellow)' },
-    referenceDeltaBonus: { label: 'Baseline Delta', color: 'var(--accent-orange)' },
-  };
-
-  const components = Object.entries(breakdown)
-    .filter(([, weight]) => weight > 0)
-    .map(([key, weight]) => ({ key, weight, ...(keyMap[key] || { label: key, color: 'var(--border)' }) }));
+  const score = canonicalCompositeScore(entry);
+  const components = canonicalScoreComponents(entry);
   const total = components.reduce((acc, component) => acc + (Number(component.weight) || 0), 0) || 1;
 
   return (
@@ -184,13 +235,17 @@ export function ScoreCell({ entry }) {
       onMouseEnter={() => setShow(true)}
       onMouseLeave={() => setShow(false)}
     >
-      <div style={{ fontWeight: 600, color: scoreColor(score) }}>{Number(score).toFixed(1)}</div>
-      <div style={{ display: 'flex', height: 3, borderRadius: 2, overflow: 'hidden', background: 'var(--bg-tertiary)', marginTop: 2 }}>
-        {components.map((component) => (
-          <div key={component.key} style={{ width: `${(component.weight / total) * 100}%`, background: component.color, height: '100%' }} />
-        ))}
+      <div style={{ fontWeight: 600, color: score != null ? scoreColor(score) : 'var(--text-muted)' }}>
+        {score != null ? Number(score).toFixed(1) : '—'}
       </div>
-      {show && (
+      {components.length > 0 && (
+        <div style={{ display: 'flex', height: 3, borderRadius: 2, overflow: 'hidden', background: 'var(--bg-tertiary)', marginTop: 2 }}>
+          {components.map((component) => (
+            <div key={component.key} style={{ width: `${(component.weight / total) * 100}%`, background: component.color, height: '100%' }} />
+          ))}
+        </div>
+      )}
+      {show && components.length > 0 && (
         <div
           style={{
             position: 'absolute',
@@ -209,12 +264,12 @@ export function ScoreCell({ entry }) {
             color: 'var(--text-primary)',
           }}
         >
-          <div style={{ fontWeight: 600, marginBottom: 4 }}>Score Breakdown</div>
+          <div style={{ fontWeight: 600, marginBottom: 4 }}>Canonical Score Breakdown</div>
           {components.map((component) => (
             <div key={component.key} style={{ marginBottom: 4 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 1 }}>
-                <span>{component.label}</span>
-                <span>{Number(component.weight).toFixed(1)}</span>
+                <span style={{ color: component.color }}>{component.label}</span>
+                <span style={{ color: component.color, fontFamily: 'monospace' }}>{Number(component.weight).toFixed(1)}</span>
               </div>
               <div style={{ height: 3, background: 'var(--bg-tertiary)', borderRadius: 2, overflow: 'hidden' }}>
                 <div style={{ width: `${(component.weight / total) * 100}%`, height: '100%', background: component.color }} />
@@ -227,7 +282,7 @@ export function ScoreCell({ entry }) {
   );
 }
 
-export function ExpandedDetail({
+function ExpandedDetailBody({
   entry,
   onRescreen,
   onPromoteScreening,
@@ -244,7 +299,10 @@ export function ExpandedDetail({
   savingStatus,
   actionBtnStyle,
 }) {
-  const promotion = promotionEvidence(entry);
+  const promotion = promotionEvidenceView(entry);
+  const score = canonicalCompositeScore(entry);
+  const scoreComponents = canonicalScoreComponents(entry);
+  const scoreTotal = scoreComponents.reduce((acc, component) => acc + component.weight, 0) || 1;
   const fmt = (value, digits = 4) => {
     if (value == null) return '--';
     const num = Number(value);
@@ -259,10 +317,17 @@ export function ExpandedDetail({
   const canDelete = !entry.is_reference && (entry.tier === 'screening' || entry.tier === 'failed' || entry.tier === 'rejected' || entry.screening_passed === false || entry.investigation_passed === false || entry.validation_passed === false);
 
   return (
-    <tr>
-      <td colSpan={8} style={{ padding: '12px 16px', background: 'var(--bg-secondary)', borderBottom: '1px solid var(--border)' }}>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 16, fontSize: 12 }}>
-          <div>
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: 12, fontSize: 12 }}>
+          <div style={{ gridColumn: '1 / -1', padding: '8px 10px', borderRadius: 8, border: '1px solid var(--border)', background: 'rgba(255,255,255,0.015)' }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-primary)' }}>
+              {entry.display_name || entry.architecture_desc || entry.graph_fingerprint || entry.result_id || 'Selected discovery'}
+            </div>
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 4, fontSize: 10, color: 'var(--text-muted)', fontFamily: 'monospace' }}>
+              {entry.result_id && <span>ID: {entry.result_id}</span>}
+              {entry.graph_fingerprint && <span>FP: {entry.graph_fingerprint}</span>}
+            </div>
+          </div>
+          <div style={{ padding: 10, borderRadius: 8, border: '1px solid var(--border)', background: 'rgba(255,255,255,0.02)' }}>
             <div style={{ fontWeight: 600, marginBottom: 6, textTransform: 'uppercase', fontSize: 10, color: 'var(--text-muted)' }}>Full Metrics</div>
             <MetricRow label="Screening Loss" value={fmt(entry.screening_loss_ratio)} color={lossColor(entry.screening_loss_ratio)} />
             <MetricRow label="Screening Novelty" value={fmt(entry.screening_novelty, 3)} color={noveltyColor(entry.screening_novelty)} />
@@ -282,7 +347,7 @@ export function ExpandedDetail({
             <MetricRow label="Composite" value={fmt(entry.composite_score, 3)} color="var(--accent-green)" />
           </div>
 
-          <div>
+          <div style={{ padding: 10, borderRadius: 8, border: '1px solid var(--border)', background: 'rgba(255,255,255,0.02)' }}>
             <div style={{ fontWeight: 600, marginBottom: 6, textTransform: 'uppercase', fontSize: 10, color: 'var(--text-muted)' }}>Evidence</div>
             <div style={{ marginBottom: 6, color: promotion.color, fontWeight: 600 }}>
               Promotion: {promotion.label} ({promotion.score}%)
@@ -300,11 +365,6 @@ export function ExpandedDetail({
             {entry.param_count != null && (
               <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>
                 Parameters: {(entry.param_count / 1e6).toFixed(1)}M
-              </div>
-            )}
-            {entry.graph_fingerprint && (
-              <div style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: 'monospace' }}>
-                FP: {entry.graph_fingerprint}
               </div>
             )}
             <div style={{ marginTop: 8 }}>
@@ -334,14 +394,36 @@ export function ExpandedDetail({
                 {savingStatus ? 'Saving…' : 'Save Status'}
               </button>
             </div>
-            {entry.result_id && (
-              <div style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: 'monospace' }}>
-                ID: {entry.result_id}
+          </div>
+
+          <div style={{ padding: 10, borderRadius: 8, border: '1px solid var(--border)', background: 'rgba(255,255,255,0.02)' }}>
+            <div style={{ fontWeight: 600, marginBottom: 6, textTransform: 'uppercase', fontSize: 10, color: 'var(--text-muted)' }}>Canonical Breakdown</div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 10 }}>
+              <span style={{ color: 'var(--text-muted)' }}>Composite score</span>
+              <span style={{ color: score != null ? scoreColor(score) : 'var(--text-primary)', fontWeight: 700, fontFamily: 'monospace' }}>
+                {score != null ? Number(score).toFixed(1) : '--'}
+              </span>
+            </div>
+            {scoreComponents.length > 0 ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {scoreComponents.map((component) => (
+                  <div key={component.key}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 3 }}>
+                      <span style={{ color: component.color }}>{component.label}</span>
+                      <span style={{ color: component.color, fontFamily: 'monospace' }}>{component.weight.toFixed(1)}</span>
+                    </div>
+                    <div style={{ height: 5, background: 'var(--bg-tertiary)', borderRadius: 999, overflow: 'hidden' }}>
+                      <div style={{ width: `${(component.weight / scoreTotal) * 100}%`, height: '100%', background: component.color }} />
+                    </div>
+                  </div>
+                ))}
               </div>
+            ) : (
+              <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>No score breakdown recorded for this row.</div>
             )}
           </div>
 
-          <div>
+          <div style={{ padding: 10, borderRadius: 8, border: '1px solid var(--border)', background: 'rgba(255,255,255,0.02)' }}>
             <div style={{ fontWeight: 600, marginBottom: 6, textTransform: 'uppercase', fontSize: 10, color: 'var(--text-muted)' }}>Actions</div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
               {entry.result_id && !entry.is_reference && (
@@ -458,8 +540,85 @@ export function ExpandedDetail({
             </div>
           </div>
         </div>
+  );
+}
+
+export function ExpandedDetail({
+  entry,
+  colSpan,
+  ...props
+}) {
+  return (
+    <tr>
+      <td colSpan={colSpan || 8} style={{ padding: '10px 14px', background: 'var(--bg-secondary)', borderBottom: '1px solid var(--border)' }}>
+        <ExpandedDetailBody entry={entry} {...props} />
       </td>
     </tr>
+  );
+}
+
+export function ExpandedDetailPanel({
+  entry,
+  onClose,
+  ...props
+}) {
+  if (!entry) return null;
+
+  return (
+    <div
+      style={{
+        marginTop: 14,
+        position: 'sticky',
+        bottom: 12,
+        zIndex: 6,
+        border: '1px solid var(--border)',
+        borderRadius: 10,
+        background: 'var(--bg-secondary)',
+        overflow: 'hidden',
+        boxShadow: '0 14px 36px rgba(0, 0, 0, 0.34)',
+        backdropFilter: 'blur(10px)',
+      }}
+    >
+      <div
+        style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          gap: 12,
+          padding: '10px 14px',
+          borderBottom: '1px solid var(--border)',
+          background: 'rgba(255,255,255,0.02)',
+        }}
+      >
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-primary)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+            Discovery Detail
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 4, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            {entry.display_name || entry.architecture_desc || entry.graph_fingerprint || entry.result_id || 'Selected discovery'}
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          style={{
+            border: '1px solid var(--border)',
+            background: 'transparent',
+            color: 'var(--text-secondary)',
+            borderRadius: 6,
+            padding: '5px 10px',
+            cursor: 'pointer',
+            fontSize: 11,
+            flexShrink: 0,
+          }}
+        >
+          Close
+        </button>
+      </div>
+      <div style={{ padding: '10px 14px', maxHeight: 'min(46vh, 420px)', overflowY: 'auto' }}>
+        <ExpandedDetailBody entry={entry} {...props} />
+      </div>
+    </div>
   );
 }
 

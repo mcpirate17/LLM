@@ -10,14 +10,12 @@ if TYPE_CHECKING:
 from ._template_helpers import (
     MOTIF_CLASS_ATTENTION,
     MOTIF_CLASS_CONV,
-    MOTIF_CLASS_EFFICIENT_PROJ,
     MOTIF_CLASS_GATE,
     MOTIF_CLASS_MOE,
     MOTIF_CLASS_NORM,
     MOTIF_CLASS_SSM,
     MotifWeights,
     _FFN_CLASSES,
-    _SPARSE_FFN_CLASSES,
     _fix_dim,
     _instantiate_motif,
     _pick_compatible_motif,
@@ -27,15 +25,9 @@ from ._template_helpers import (
     template_add_op as _add,
     template_add_residual as _residual,
 )
-from ._selection_utils import with_local_wildcard_probability
 from ._templates_attention_tail import (
-    _add_explicit_norm,
     _pick_with_local_wildcard,
-    _tpl_attn_op_chain,
-    _tpl_controlled_attn_matmul_ablation,
-    _tpl_softmax_matmul_tail,
 )
-
 
 
 def tpl_linear_attn_ffn_block(
@@ -224,9 +216,7 @@ def tpl_graph_attn_sparse_ffn(
         selected_class="norm_wrap",
         input_node_id=input_id,
     )
-    attended = _add(
-        graph, "graph_attention", [normed], context=f"{name}.attn1"
-    )
+    attended = _add(graph, "graph_attention", [normed], context=f"{name}.attn1")
     attended = _add(
         graph,
         "linear_proj",
@@ -236,8 +226,12 @@ def tpl_graph_attn_sparse_ffn(
     )
     mid = _residual(graph, input_id, attended, context=f"{name}.mid1")
     refine_in = _add(graph, "rmsnorm", [mid], context=f"{name}.refine_norm")
-    proj_a = _add(graph, "linear_proj", [refine_in], {"out_dim": D}, context=f"{name}.proj_a")
-    proj_b = _add(graph, "linear_proj", [refine_in], {"out_dim": D}, context=f"{name}.proj_b")
+    proj_a = _add(
+        graph, "linear_proj", [refine_in], {"out_dim": D}, context=f"{name}.proj_a"
+    )
+    proj_b = _add(
+        graph, "linear_proj", [refine_in], {"out_dim": D}, context=f"{name}.proj_b"
+    )
     refined = _add(graph, "matmul", [proj_a, proj_b], context=f"{name}.refined")
     refined = _add(graph, "rmsnorm", [refined], context=f"{name}.refined_norm")
     sparse = _add(
@@ -272,7 +266,8 @@ def tpl_latent_attn_conv_hybrid(
         graph,
         "linear_proj",
         [path_attn],
-        {"out_dim": D},
+        # 2 lane paths + skip = 3-way addition into the residual stream.
+        {"out_dim": D, "init_scale": 0.577},
         context="latent_attn_conv_hybrid.project",
     )
 
@@ -284,6 +279,10 @@ def tpl_latent_attn_conv_hybrid(
         graph, path_attn, path_conv, context="latent_attn_conv_hybrid.merge"
     )
     merged = _fix_dim(graph, merged)
+    # Bound multi-path variance before injecting back into the residual stream.
+    merged = _add(
+        graph, "rmsnorm", [merged], context="latent_attn_conv_hybrid.merge_norm"
+    )
     mid = _residual(graph, input_id, merged, context="latent_attn_conv_hybrid.mid")
 
     norm2 = _pick_compatible_motif(graph, mid, rng, MOTIF_CLASS_NORM, weights)
@@ -315,7 +314,8 @@ def tpl_diff_attn_conv_hybrid(
         graph,
         "linear_proj",
         [path_attn],
-        {"out_dim": D},
+        # 2 lane paths + skip = 3-way addition into the residual stream.
+        {"out_dim": D, "init_scale": 0.577},
         context="diff_attn_conv_hybrid.project",
     )
 
@@ -327,6 +327,10 @@ def tpl_diff_attn_conv_hybrid(
         graph, path_attn, path_conv, context="diff_attn_conv_hybrid.merge"
     )
     merged = _fix_dim(graph, merged)
+    # Bound multi-path variance before injecting back into the residual stream.
+    merged = _add(
+        graph, "rmsnorm", [merged], context="diff_attn_conv_hybrid.merge_norm"
+    )
     mid = _residual(graph, input_id, merged, context="diff_attn_conv_hybrid.mid")
 
     norm2 = _pick_compatible_motif(graph, mid, rng, MOTIF_CLASS_NORM, weights)
@@ -422,7 +426,8 @@ def tpl_latent_attn_ssm_hybrid(
         graph,
         "linear_proj",
         [pa],
-        {"out_dim": D},
+        # 2 lane paths + skip = 3-way addition into the residual stream.
+        {"out_dim": D, "init_scale": 0.577},
         context="latent_attn_ssm_hybrid.pa_proj",
     )
     ssm = _pick_compatible_motif(graph, normed, rng, MOTIF_CLASS_SSM, weights)
@@ -430,6 +435,11 @@ def tpl_latent_attn_ssm_hybrid(
     ps = _fix_dim(graph, ps)
     merged = _residual(graph, pa, ps, context="latent_attn_ssm_hybrid.merge")
     merged = _fix_dim(graph, merged)
+    # Bound multi-path variance before injecting back into the residual stream
+    # — keeps Jacobian spectral norm in [0.5, 10] so investigation gate passes.
+    merged = _add(
+        graph, "rmsnorm", [merged], context="latent_attn_ssm_hybrid.merge_norm"
+    )
     mid = _residual(graph, input_id, merged, context="latent_attn_ssm_hybrid.mid")
     norm2 = _pick_compatible_motif(graph, mid, rng, MOTIF_CLASS_NORM, weights)
     normed2 = _instantiate_motif(graph, mid, norm2, rng) if norm2 else mid
@@ -463,7 +473,8 @@ def tpl_local_attn_ssm_hybrid(
         graph,
         "linear_proj",
         [pa],
-        {"out_dim": D},
+        # 2 lane paths + skip = 3-way addition into the residual stream.
+        {"out_dim": D, "init_scale": 0.577},
         context="local_attn_ssm_hybrid.pa_proj",
     )
     ssm = _pick_compatible_motif(graph, normed, rng, MOTIF_CLASS_SSM, weights)
@@ -471,6 +482,10 @@ def tpl_local_attn_ssm_hybrid(
     ps = _fix_dim(graph, ps)
     merged = _residual(graph, pa, ps, context="local_attn_ssm_hybrid.merge")
     merged = _fix_dim(graph, merged)
+    # Bound multi-path variance before injecting back into the residual stream.
+    merged = _add(
+        graph, "rmsnorm", [merged], context="local_attn_ssm_hybrid.merge_norm"
+    )
     mid = _residual(graph, input_id, merged, context="local_attn_ssm_hybrid.mid")
     norm2 = _pick_compatible_motif(graph, mid, rng, MOTIF_CLASS_NORM, weights)
     normed2 = _instantiate_motif(graph, mid, norm2, rng) if norm2 else mid
@@ -542,31 +557,45 @@ def tpl_attn_normalized_matmul_pinned(
 
     # Pre-norm: rmsnorm (pinned)
     normed = _add(
-        graph, "rmsnorm", [input_id],
+        graph,
+        "rmsnorm",
+        [input_id],
         context="attn_normalized_matmul_pinned.norm1",
     )
 
     # Path A: softmax attention → post-attn norm → projection
     pa = _add(
-        graph, "softmax_attention", [normed],
+        graph,
+        "softmax_attention",
+        [normed],
         context="attn_normalized_matmul_pinned.softmax_attn",
     )
     pa = _add(
-        graph, "rmsnorm", [pa],
+        graph,
+        "rmsnorm",
+        [pa],
         context="attn_normalized_matmul_pinned.attn_postnorm",
     )
     pa = _add(
-        graph, "linear_proj", [pa], {"out_dim": D},
+        graph,
+        "linear_proj",
+        [pa],
+        {"out_dim": D},
         context="attn_normalized_matmul_pinned.attn_proj",
     )
 
     # Path B: padic_expand → projection
     pb = _add(
-        graph, "padic_expand", [normed],
+        graph,
+        "padic_expand",
+        [normed],
         context="attn_normalized_matmul_pinned.padic",
     )
     pb = _add(
-        graph, "linear_proj", [pb], {"out_dim": D},
+        graph,
+        "linear_proj",
+        [pb],
+        {"out_dim": D},
         context="attn_normalized_matmul_pinned.padic_proj",
     )
     pb = _fix_dim(graph, pb)
@@ -574,18 +603,23 @@ def tpl_attn_normalized_matmul_pinned(
     # Merge parallel paths + skip connection
     merged = _residual(graph, pa, pb, context="attn_normalized_matmul_pinned.merge")
     merged = _fix_dim(graph, merged)
-    mid = _residual(graph, input_id, merged, context="attn_normalized_matmul_pinned.mid")
+    mid = _residual(
+        graph, input_id, merged, context="attn_normalized_matmul_pinned.mid"
+    )
 
     # FFN: rmsnorm → swiglu_mlp ratio=4 (pinned — standard transformer FFN)
     normed2 = _add(
-        graph, "rmsnorm", [mid],
+        graph,
+        "rmsnorm",
+        [mid],
         context="attn_normalized_matmul_pinned.norm2",
     )
     ffned = _add(
-        graph, "swiglu_mlp", [normed2], {"mlp_ratio": 4.0},
+        graph,
+        "swiglu_mlp",
+        [normed2],
+        {"mlp_ratio": 4.0},
         context="attn_normalized_matmul_pinned.ffn",
     )
     ffned = _fix_dim(graph, ffned)
     return _residual(graph, mid, ffned, context="attn_normalized_matmul_pinned.output")
-
-

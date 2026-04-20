@@ -186,12 +186,13 @@ export function DesignerDrawerOverlay({
   onClose,
   fallback,
   ArchitectureDrawerComponent,
+  readOnly = true,
 }) {
   if (!open || !ArchitectureDrawerComponent) return null;
 
   return (
     <Suspense fallback={fallback}>
-      <ArchitectureDrawerComponent resultId={resultId} onClose={onClose} />
+      <ArchitectureDrawerComponent resultId={resultId} onClose={onClose} readOnly={readOnly} />
     </Suspense>
   );
 }

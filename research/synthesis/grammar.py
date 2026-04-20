@@ -676,6 +676,7 @@ def generate_layer_graph(
             if (t_idx == 0 and _use_efficiency_first)
             else tpl_weights
         )
+        _iter_allowed_names = None
 
         # routing_mandatory bias: on the FIRST slot (cheap, fits budget), pick
         # from templates that reliably emit a routing/compression/MoE op. The
@@ -690,14 +691,7 @@ def generate_layer_graph(
         # dict, so a drop-based filter gets silently re-expanded to the full
         # registry. An explicit zero weight does stick.
         if config.routing_mandatory and t_idx == 0 and not config.forced_template:
-            from .templates import TEMPLATES as _ALL_TEMPLATES
-
-            _routing_tpls = _get_routing_capable_templates()
-            _base_weights = dict(_iter_weights) if _iter_weights else {}
-            _iter_weights = {
-                name: (_base_weights.get(name, 1.0) if name in _routing_tpls else 0.0)
-                for name in _ALL_TEMPLATES
-            }
+            _iter_allowed_names = _get_routing_capable_templates()
 
         # Depth-aware template biasing: early blocks favor FFN/conv,
         # late blocks favor attention/SSM (per GPT-2 layer importance research).
@@ -742,6 +736,7 @@ def generate_layer_graph(
             motif_weights=motif_weights,
             op_weights=config.op_weights or None,
             exploration_budget=config.template_exploration_budget,
+            allowed_template_names=_iter_allowed_names,
         )
 
         # depth() returns 0 without a set output — point it at the trial tail
@@ -1110,11 +1105,7 @@ def _graph_exceeds_final_budget(
     op_reserve = _POST_BODY_OP_RESERVE if config.max_ops > 16 else 0
     depth_reserve = _POST_BODY_DEPTH_RESERVE if config.max_depth > 10 else 0
     op_limit = max(1, config.max_ops - op_reserve)
-    depth_limit = (
-        config.max_depth
-        + max(0, int(config.min_splits)) * 3
-        - depth_reserve
-    )
+    depth_limit = config.max_depth + max(0, int(config.min_splits)) * 3 - depth_reserve
     return graph.n_ops() > op_limit or graph.depth() > depth_limit
 
 

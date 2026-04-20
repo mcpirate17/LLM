@@ -21,6 +21,7 @@ from research.defaults import (
     DESIGNER_API_BASE,
     DESIGNER_UI_BASE,
     DESIGNER_API_HEALTH,
+    RESEARCH_API_BASE,
     DESIGNER_PROXY_TIMEOUT,
     DESIGNER_BOOT_TIMEOUT,
     DESIGNER_IDLE_TIMEOUT,
@@ -46,6 +47,9 @@ _ARIA_DESIGNER_API_HEALTH = os.environ.get(
     "ARIA_DESIGNER_API_HEALTH", DESIGNER_API_HEALTH
 )
 _ARIA_DESIGNER_UI_HEALTH = os.environ.get("ARIA_DESIGNER_UI_HEALTH", DESIGNER_UI_BASE)
+_ARIA_DESIGNER_DASHBOARD_UI = os.environ.get(
+    "ARIA_DESIGNER_DASHBOARD_UI", f"{RESEARCH_API_BASE}/designer-proxy/"
+)
 _ARIA_DESIGNER_BOOT_TIMEOUT_S = float(
     os.environ.get("ARIA_DESIGNER_BOOT_TIMEOUT_S", str(DESIGNER_BOOT_TIMEOUT))
 )
@@ -66,6 +70,36 @@ _health_cache_ts: float = 0.0
 _health_cache_lock = threading.Lock()
 
 
+def _designer_embedded_dist_path() -> Path:
+    return _ARIA_DESIGNER_ROOT / "ui" / "dist" / "index.html"
+
+
+def _designer_ui_available() -> tuple[bool, str]:
+    dist_index = _designer_embedded_dist_path()
+    if dist_index.is_file():
+        return True, _ARIA_DESIGNER_DASHBOARD_UI
+    try:
+        r = _requests.get(_ARIA_DESIGNER_UI_HEALTH, timeout=1.0)
+        return r.status_code < 500, _ARIA_DESIGNER_UI_HEALTH
+    except (OSError, ValueError):
+        return False, _ARIA_DESIGNER_UI_HEALTH
+
+
+def _designer_runtime_up_path() -> Path:
+    return _ARIA_DESIGNER_ROOT / "tools" / "run_up.sh"
+
+
+def _designer_runtime_down_path() -> Path:
+    return _ARIA_DESIGNER_ROOT / "tools" / "run_down.sh"
+
+
+def _invalidate_health_cache() -> None:
+    global _health_cache, _health_cache_ts
+    with _health_cache_lock:
+        _health_cache = None
+        _health_cache_ts = 0.0
+
+
 def designer_service_status() -> Dict[str, Any]:
     """Probe aria_designer API/UI health (cached for 3s to avoid blocking)."""
     global _health_cache, _health_cache_ts
@@ -76,22 +110,22 @@ def designer_service_status() -> Dict[str, Any]:
 
     api_up = False
     ui_up = False
+    ui_health_url = _ARIA_DESIGNER_UI_HEALTH
     try:
         r = _requests.get(_ARIA_DESIGNER_API_HEALTH, timeout=1.0)
         api_up = r.status_code < 500
     except (OSError, ValueError):
         api_up = False
-    try:
-        r = _requests.get(_ARIA_DESIGNER_UI_HEALTH, timeout=1.0)
-        ui_up = r.status_code < 500
-    except (OSError, ValueError):
-        ui_up = False
+    ui_up, ui_health_url = _designer_ui_available()
     result = {
         "api_up": api_up,
         "ui_up": ui_up,
         "running": bool(api_up and ui_up),
         "api_health_url": _ARIA_DESIGNER_API_HEALTH,
-        "ui_health_url": _ARIA_DESIGNER_UI_HEALTH,
+        "ui_health_url": ui_health_url,
+        "ui_mode": "dashboard-dist"
+        if ui_health_url == _ARIA_DESIGNER_DASHBOARD_UI
+        else "vite-dev",
     }
     with _health_cache_lock:
         _health_cache = result
@@ -168,50 +202,44 @@ def ensure_designer_idle_watchdog() -> None:
     thread.start()
 
 
-def _designer_dev_up_path() -> Path:
-    return _ARIA_DESIGNER_ROOT / "tools" / "dev_up.sh"
-
-
-def _designer_dev_down_path() -> Path:
-    return _ARIA_DESIGNER_ROOT / "tools" / "dev_down.sh"
-
-
 def start_designer_services(force_restart: bool = False) -> Dict[str, Any]:
-    """Best-effort start of aria_designer FE/BE via shared scripts."""
+    """Best-effort start of aria_designer runtime API via shared scripts."""
     if not _ARIA_DESIGNER_ROOT.exists():
         return {
             "ok": False,
             "error": f"ARIA_DESIGNER_ROOT not found: {_ARIA_DESIGNER_ROOT}",
         }
-    dev_up = _designer_dev_up_path()
-    dev_down = _designer_dev_down_path()
-    if not dev_up.exists() or not dev_down.exists():
+    runtime_up = _designer_runtime_up_path()
+    runtime_down = _designer_runtime_down_path()
+    if not runtime_up.exists() or not runtime_down.exists():
         return {
             "ok": False,
             "error": f"Missing lifecycle scripts under {_ARIA_DESIGNER_ROOT / 'tools'}",
         }
 
     with _DESIGNER_LIFECYCLE_LOCK:
+        _invalidate_health_cache()
         status0 = designer_service_status()
         if status0["running"] and not force_restart:
             return {"ok": True, "already_running": True, "status": status0}
 
-        if force_restart or status0["api_up"] or status0["ui_up"]:
+        if force_restart or status0["api_up"]:
             try:
                 subprocess.run(
-                    [str(dev_down)],
+                    [str(runtime_down)],
                     cwd=str(_ARIA_DESIGNER_ROOT),
                     check=False,
                     timeout=20,
                 )
             except Exception as exc:
                 logger.debug("Suppressed error: %s", exc)
+            _invalidate_health_cache()
 
         log_path = _ARIA_DESIGNER_ROOT / ".run" / "research_designer_boot.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log_fh = open(log_path, "ab")
         proc = subprocess.Popen(
-            [str(dev_up)],
+            [str(runtime_up)],
             cwd=str(_ARIA_DESIGNER_ROOT),
             stdout=log_fh,
             stderr=subprocess.STDOUT,
@@ -222,6 +250,7 @@ def start_designer_services(force_restart: bool = False) -> Dict[str, Any]:
         deadline = time.time() + max(5.0, _ARIA_DESIGNER_BOOT_TIMEOUT_S)
         latest = designer_service_status()
         while time.time() < deadline:
+            _invalidate_health_cache()
             latest = designer_service_status()
             if latest["running"]:
                 return {
@@ -243,15 +272,16 @@ def start_designer_services(force_restart: bool = False) -> Dict[str, Any]:
 
 
 def stop_designer_services() -> Dict[str, Any]:
-    """Best-effort stop of aria_designer FE/BE via shared scripts."""
-    dev_down = _designer_dev_down_path()
-    if not dev_down.exists():
-        return {"ok": False, "error": f"Missing stop script: {dev_down}"}
+    """Best-effort stop of aria_designer runtime API via shared scripts."""
+    runtime_down = _designer_runtime_down_path()
+    if not runtime_down.exists():
+        return {"ok": False, "error": f"Missing stop script: {runtime_down}"}
     with _DESIGNER_LIFECYCLE_LOCK:
+        _invalidate_health_cache()
         status_before = designer_service_status()
         try:
             subprocess.run(
-                [str(dev_down)],
+                [str(runtime_down)],
                 cwd=str(_ARIA_DESIGNER_ROOT),
                 check=False,
                 timeout=25,
@@ -261,8 +291,9 @@ def stop_designer_services() -> Dict[str, Any]:
         deadline = time.time() + 10.0
         latest = designer_service_status()
         while time.time() < deadline:
+            _invalidate_health_cache()
             latest = designer_service_status()
-            if not latest["api_up"] and not latest["ui_up"]:
+            if not latest["api_up"]:
                 return {
                     "ok": True,
                     "status_before": status_before,

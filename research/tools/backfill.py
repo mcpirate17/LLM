@@ -30,9 +30,11 @@ import torch.nn as nn
 
 from research.defaults import VOCAB_SIZE
 from research.scientist.leaderboard_scoring import (
-    build_score_kwargs_from_prefetch,
-    compute_composite,
     prefetch_program_results,
+)
+from research.scientist.leaderboard_rescore import (
+    rescore_entry as canonical_rescore_entry,
+    rescore_leaderboard,
 )
 from research.scientist.notebook import LabNotebook
 from research.synthesis.compiler import compile_model
@@ -195,14 +197,200 @@ class Candidate:
     graph_fingerprint: str
 
 
+_SIGNAL_WHERE_CLAUSE = (
+    "(COALESCE(pr.induction_auc, 0) > 0.05 "
+    "OR COALESCE(pr.binding_auc, 0) > 0.05 "
+    "OR COALESCE(pr.ar_auc, 0) > 0.05 "
+    "OR COALESCE(pr.hellaswag_acc, 0) > 0.30 "
+    "OR COALESCE(pr.blimp_overall_accuracy, 0) > 0.55)"
+)
+
+
+def query_fingerprint_file_candidates(
+    nb: LabNotebook,
+    path: str,
+    null_column: Optional[str],
+    force: bool,
+    shard: Optional[Tuple[int, int]] = None,
+    limit: Optional[int] = None,
+) -> List[Candidate]:
+    """Candidates from a ranked JSONL file (e.g. probe_priority_next.jsonl).
+
+    Each JSON line must carry at minimum ``result_id`` and ``fp``. Rows are
+    consumed in file order (priority-descending). ``graph_json`` is joined
+    from program_results. Rows are filtered against ``null_column`` unless
+    ``force`` is set — same semantics as the other query helpers.
+    """
+    fingerprints: List[Tuple[str, str]] = []  # (result_id, fp)
+    with open(path, "r") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            rid = str(row.get("result_id") or "").strip()
+            fp = str(row.get("fp") or row.get("graph_fingerprint") or "").strip()
+            if rid and fp:
+                fingerprints.append((rid, fp))
+    if not fingerprints:
+        return []
+
+    # Look up graph_json + leaderboard context for each result_id
+    rid_to_meta: Dict[str, Dict[str, Any]] = {}
+    chunk = 500
+    for start in range(0, len(fingerprints), chunk):
+        batch = fingerprints[start : start + chunk]
+        placeholders = ",".join("?" for _ in batch)
+        rows = nb.conn.execute(
+            f"""
+            SELECT pr.result_id, pr.graph_fingerprint, pr.graph_json,
+                   l.entry_id, l.tier, l.composite_score, l.is_reference,
+                   l.model_source,
+                   pr.{null_column} AS probe_val
+            FROM program_results pr
+            LEFT JOIN leaderboard l ON pr.result_id = l.result_id
+            WHERE pr.result_id IN ({placeholders})
+            """
+            if null_column
+            else f"""
+            SELECT pr.result_id, pr.graph_fingerprint, pr.graph_json,
+                   l.entry_id, l.tier, l.composite_score, l.is_reference,
+                   l.model_source,
+                   NULL AS probe_val
+            FROM program_results pr
+            LEFT JOIN leaderboard l ON pr.result_id = l.result_id
+            WHERE pr.result_id IN ({placeholders})
+            """,
+            tuple(r for r, _ in batch),
+        ).fetchall()
+        for r in rows:
+            rid_to_meta[str(r["result_id"])] = dict(r)
+
+    shard_idx, shard_n = shard if shard is not None else (0, 1)
+
+    out: List[Candidate] = []
+    seen_fp: set[str] = set()
+    idx = -1
+    for rid, fp in fingerprints:
+        meta = rid_to_meta.get(rid)
+        if meta is None:
+            continue
+        gj = meta.get("graph_json")
+        if not gj:
+            continue
+        if not force and null_column and meta.get("probe_val") is not None:
+            continue
+        if fp in seen_fp:
+            continue
+        seen_fp.add(fp)
+        idx += 1
+        if shard_n > 1 and (idx % shard_n) != shard_idx:
+            continue
+        out.append(
+            Candidate(
+                entry_id=meta.get("entry_id") or f"priority:{fp[:12]}",
+                result_id=rid,
+                tier=meta.get("tier") or "priority",
+                composite_score=float(meta.get("composite_score") or 0),
+                is_reference=bool(meta.get("is_reference") or 0),
+                model_source=meta.get("model_source") or "",
+                graph_json=gj,
+                graph_fingerprint=fp,
+            )
+        )
+        if limit and len(out) >= limit:
+            break
+    return out
+
+
+def query_signal_candidates(
+    nb: LabNotebook,
+    null_column: Optional[str],
+    force: bool,
+    shard: Optional[Tuple[int, int]] = None,
+) -> List[Candidate]:
+    """Signal-only candidates across ALL tiers (and off-leaderboard).
+
+    Returns one Candidate per unique graph_fingerprint that passes the
+    capability-signal filter, ordered by composite signal strength
+    (hellaswag_acc DESC, then induction_auc DESC). For off-leaderboard rows,
+    the Candidate has entry_id='' and composite_score=0.
+    """
+    where = _SIGNAL_WHERE_CLAUSE
+    if null_column and not force:
+        where += f" AND pr.{null_column} IS NULL"
+
+    rows = nb.conn.execute(
+        f"""
+        SELECT pr.result_id, pr.graph_fingerprint, pr.graph_json,
+          pr.hellaswag_acc, pr.induction_auc, pr.binding_auc, pr.ar_auc,
+          pr.blimp_overall_accuracy,
+          l.entry_id, l.tier, l.composite_score, l.is_reference, l.model_source
+        FROM program_results pr
+        LEFT JOIN leaderboard l ON pr.result_id = l.result_id
+        WHERE {where}
+          AND pr.graph_fingerprint IS NOT NULL
+          AND pr.graph_fingerprint != ''
+          AND pr.graph_json IS NOT NULL
+          AND pr.graph_json != ''
+          AND pr.graph_json != '{{}}'
+        ORDER BY
+          (COALESCE(pr.induction_auc, 0) * 3.0
+            + COALESCE(pr.binding_auc, 0) * 3.0
+            + COALESCE(pr.ar_auc, 0) * 2.0
+            + MAX(COALESCE(pr.hellaswag_acc, 0) - 0.25, 0) * 2.0
+            + MAX(COALESCE(pr.blimp_overall_accuracy, 0) - 0.50, 0) * 1.5) DESC,
+          COALESCE(pr.hellaswag_acc, 0) DESC
+        """
+    ).fetchall()
+
+    shard_idx, shard_n = shard if shard is not None else (0, 1)
+
+    # Keep one candidate per fingerprint (best-signal representative).
+    seen: set[str] = set()
+    out: List[Candidate] = []
+    idx = -1
+    for r in rows:
+        fp = r["graph_fingerprint"]
+        if fp in seen:
+            continue
+        seen.add(fp)
+        idx += 1
+        if shard_n > 1 and (idx % shard_n) != shard_idx:
+            continue
+        out.append(
+            Candidate(
+                entry_id=r["entry_id"] or f"signal:{fp[:12]}",
+                result_id=r["result_id"],
+                tier=r["tier"] or "signal",
+                composite_score=float(r["composite_score"] or 0),
+                is_reference=bool(r["is_reference"] or 0),
+                model_source=r["model_source"] or "",
+                graph_json=r["graph_json"],
+                graph_fingerprint=fp,
+            )
+        )
+    return out
+
+
 def query_candidates(
     nb: LabNotebook,
     tiers: Sequence[str],
     top_per_tier: int,
     null_column: Optional[str],
     force: bool,
+    shard: Optional[Tuple[int, int]] = None,
 ) -> List[Candidate]:
-    """Single candidate query for all probes. Returns top N per tier."""
+    """Single candidate query for all probes. Returns top N per tier.
+
+    If `shard=(i, N)` is given, deterministically filters to rows where
+    (per-tier-index % N == i). The tier-local index is computed over the
+    composite-score-DESC ordering before the top-N clamp, so sharded
+    workers cover disjoint fingerprints at similar score depths.
+    """
     tier_ph = ",".join("?" for _ in tiers)
     where = f"l.tier IN ({tier_ph})"
     if null_column and not force:
@@ -219,10 +407,17 @@ def query_candidates(
         tuple(tiers),
     ).fetchall()
 
-    # Top N per tier using dict of lists
+    shard_idx, shard_n = shard if shard is not None else (0, 1)
+
+    # Top N per tier using dict of lists, applying shard filter first.
     by_tier: dict[str, list[Candidate]] = {}
+    tier_counters: dict[str, int] = {}
     for r in rows:
         t = r["tier"]
+        idx = tier_counters.get(t, 0)
+        tier_counters[t] = idx + 1
+        if shard_n > 1 and (idx % shard_n) != shard_idx:
+            continue
         tier_list = by_tier.setdefault(t, [])
         if len(tier_list) < top_per_tier:
             tier_list.append(
@@ -234,7 +429,7 @@ def query_candidates(
                     is_reference=bool(r["is_reference"]),
                     model_source=r["model_source"] or "",
                     graph_json=r["graph_json"],
-                    graph_fingerprint=(r["graph_fingerprint"] or "")[:12],
+                    graph_fingerprint=(r["graph_fingerprint"] or ""),
                 )
             )
 
@@ -252,52 +447,21 @@ def rescore_entry(
     pr_cache: Dict[str, Dict],
     pr_updates: Optional[Dict[str, Any]] = None,
 ) -> Tuple[float, float]:
-    """Recompute composite score. Returns (new_score, old_score)."""
-    existing = nb.conn.execute(
-        "SELECT * FROM leaderboard WHERE entry_id = ?", (entry_id,)
-    ).fetchone()
-    if not existing:
-        return 0.0, 0.0
-    d = dict(existing)
-    old_score = float(d.get("composite_score") or 0)
-    pr_dict = dict(pr_cache.get(result_id, {}))
-    if pr_updates:
-        pr_dict.update(pr_updates)
-    score_kw = build_score_kwargs_from_prefetch(pr_dict, d, is_ref)
-    new_score = compute_composite(**score_kw)
-    if new_score != old_score:
-        nb.conn.execute(
-            "UPDATE leaderboard SET composite_score = ?, "
-            "rescore_status = 'rescored_v7', rescore_timestamp = ?, "
-            "old_composite_score = ?, rescore_reason = 'backfill_rescore' "
-            "WHERE entry_id = ?",
-            (new_score, time.time(), old_score, entry_id),
-        )
-    return new_score, old_score
+    """Compatibility wrapper around the canonical leaderboard rescore helper."""
+    return canonical_rescore_entry(
+        nb,
+        entry_id,
+        result_id,
+        is_ref,
+        pr_cache,
+        pr_updates=pr_updates,
+        reason="backfill_rescore",
+    )
 
 
 def rescore_all(nb: LabNotebook) -> Tuple[int, int]:
     """Bulk rescore all leaderboard entries. Returns (total, changed)."""
-    rows = nb.conn.execute(
-        "SELECT entry_id, result_id, is_reference, composite_score "
-        "FROM leaderboard ORDER BY composite_score DESC"
-    ).fetchall()
-    all_ids = [r["result_id"] for r in rows]
-    pr_cache = prefetch_program_results(nb.conn, all_ids)
-    changed = 0
-    for row in rows:
-        new, old = rescore_entry(
-            nb,
-            row["entry_id"],
-            row["result_id"],
-            bool(row["is_reference"]),
-            pr_cache,
-        )
-        if new != old:
-            changed += 1
-    # Single commit at end instead of every 200 rows
-    nb.conn.commit()
-    return len(rows), changed
+    return rescore_leaderboard(nb, reason="backfill_rescore")
 
 
 # ── Probe functions (each returns dict of columns to write) ─────────────
@@ -601,6 +765,64 @@ _PROBE_NULL_COLUMN: Dict[str, str] = {
     "binding_v2": "binding_v2_investigation_auc",
 }
 
+# Graph-deterministic probes: the result depends only on the graph, so rows
+# sharing a graph_fingerprint can reuse a single computed result.
+_FP_REUSABLE_PROBE_COLS: Dict[str, List[str]] = {
+    "induction_v2": [
+        "induction_v2_investigation_auc",
+        "induction_v2_investigation_max_gap_acc",
+        "induction_v2_investigation_steps_trained",
+        "induction_v2_investigation_status",
+        "induction_v2_investigation_elapsed_ms",
+        "induction_v2_investigation_protocol_version",
+    ],
+    "binding_v2": [
+        "binding_v2_investigation_auc",
+        "binding_v2_investigation_max_distance_acc",
+        "binding_v2_investigation_train_steps",
+        "binding_v2_investigation_status",
+        "binding_v2_investigation_elapsed_ms",
+        "binding_v2_investigation_protocol_version",
+    ],
+}
+
+
+def _seed_fingerprint_cache(
+    nb: LabNotebook,
+    reusable_probe_cols: Dict[str, List[str]],
+    fp_cache: Dict[str, Dict[str, Any]],
+) -> None:
+    """Pre-populate fp_cache from existing program_results rows.
+
+    Captures completed probe values from earlier backfill runs so the new run
+    reuses them for every sibling entry that shares a graph_fingerprint.
+    """
+    all_cols = sorted({c for cols in reusable_probe_cols.values() for c in cols})
+    if not all_cols:
+        return
+    existing_cols = _get_table_columns(nb, "program_results")
+    present_cols = [c for c in all_cols if c in existing_cols]
+    if not present_cols:
+        return
+    or_clause = " OR ".join(f"pr.{c} IS NOT NULL" for c in present_cols)
+    sql = (
+        f"SELECT pr.graph_fingerprint, "
+        f"{', '.join('pr.' + c for c in present_cols)} "
+        f"FROM program_results pr "
+        f"WHERE pr.graph_fingerprint IS NOT NULL "
+        f"AND pr.graph_fingerprint != '' AND ({or_clause})"
+    )
+    rows = nb.conn.execute(sql).fetchall()
+    for r in rows:
+        fp_key = r["graph_fingerprint"]
+        if not fp_key:
+            continue
+        entry = fp_cache.setdefault(fp_key, {})
+        for c in present_cols:
+            v = r[c]
+            if v is not None and c not in entry:
+                entry[c] = v
+
 
 def _prefetch_probe_state(
     nb: LabNotebook, result_ids: Sequence[str], probes: Sequence[str]
@@ -674,6 +896,9 @@ def run_backfill(
     force: bool,
     dry_run: bool,
     fp_timeout: int,
+    shard: Optional[Tuple[int, int]] = None,
+    signal_only: bool = False,
+    fingerprint_file: Optional[str] = None,
 ) -> None:
     nb, exp_id = start_script_experiment(
         db_path=DB_PATH,
@@ -708,8 +933,30 @@ def run_backfill(
     # Determine which null column to filter on (use first probe's column)
     null_col = _PROBE_NULL_COLUMN.get(probes[0]) if len(probes) == 1 else None
 
-    candidates = query_candidates(nb, tiers, top_per_tier, null_col, force)
+    if fingerprint_file:
+        candidates = query_fingerprint_file_candidates(
+            nb,
+            fingerprint_file,
+            null_col,
+            force,
+            shard=shard,
+            limit=top_per_tier if top_per_tier > 0 else None,
+        )
+        print(
+            f"Fingerprint-file mode: {len(candidates)} candidates from {fingerprint_file}"
+        )
+    elif signal_only:
+        candidates = query_signal_candidates(nb, null_col, force, shard=shard)
+        print(
+            f"Signal-only mode: {len(candidates)} unique fingerprints with capability signal"
+        )
+    else:
+        candidates = query_candidates(
+            nb, tiers, top_per_tier, null_col, force, shard=shard
+        )
     total = len(candidates)
+    if shard is not None and shard[1] > 1:
+        print(f"Shard {shard[0]}/{shard[1]}: {total} candidates after filter")
 
     # Print plan
     tier_counts: dict[str, int] = {}
@@ -736,7 +983,7 @@ def run_backfill(
     if dry_run:
         for c in candidates[:20]:
             print(
-                f"  [{c.graph_fingerprint}] tier={c.tier} score={c.composite_score:.1f}"
+                f"  [{c.graph_fingerprint[:12]}] tier={c.tier} score={c.composite_score:.1f}"
             )
         if total > 20:
             print(f"  ... and {total - 20} more")
@@ -758,14 +1005,25 @@ def run_backfill(
     needs_model = bool(set(probes) & _PROBE_NEEDS_MODEL)
     needs_train = bool(set(probes) & _PROBE_NEEDS_TRAIN)
 
+    # Graph-fingerprint-level dedup cache for graph-deterministic probes:
+    # a probe that only reads the graph (not run-specific metrics) yields the
+    # same result for every entry sharing a fingerprint — so run once, reuse.
+    reusable_probe_cols: Dict[str, List[str]] = {
+        p: cols for p, cols in _FP_REUSABLE_PROBE_COLS.items() if p in probes
+    }
+    fp_cache: Dict[str, Dict[str, Any]] = {}
+    if reusable_probe_cols:
+        _seed_fingerprint_cache(nb, reusable_probe_cols, fp_cache)
+
     evaluated = 0
     failed = 0
     no_graph = 0
+    cache_reused = 0
     t0 = time.time()
 
     try:
         for i, cand in enumerate(candidates):
-            fp = cand.graph_fingerprint
+            fp = cand.graph_fingerprint[:12]
             if not cand.graph_json or cand.graph_json == "{}":
                 no_graph += 1
                 continue
@@ -781,18 +1039,32 @@ def run_backfill(
 
             try:
                 pass_results: List[Dict[str, Any]] = []
+                reused_any = False
 
                 for pass_idx in range(n_passes):
                     pass_updates: Dict[str, Any] = {}
+
+                    # Dedup by graph_fingerprint: split active_probes into
+                    # ones we can reuse from cache vs ones we must run.
+                    cached_for_fp = fp_cache.get(cand.graph_fingerprint, {})
+                    probes_to_run: List[str] = []
+                    for probe_name in active_probes:
+                        needed = reusable_probe_cols.get(probe_name)
+                        if needed and all(c in cached_for_fp for c in needed):
+                            for c in needed:
+                                pass_updates[c] = cached_for_fp[c]
+                            reused_any = True
+                        else:
+                            probes_to_run.append(probe_name)
+
                     model = None
                     graph = None
-
-                    if needs_model:
+                    if probes_to_run and needs_model:
                         model, graph = reconstruct_model(cand.graph_json, device)
                         if needs_train:
                             micro_train(model, train_steps, device)
 
-                    for probe_name in active_probes:
+                    for probe_name in probes_to_run:
                         probe_updates = _run_single_probe(
                             probe_name,
                             model,
@@ -803,6 +1075,16 @@ def run_backfill(
                         )
                         if probe_updates:
                             pass_updates.update(probe_updates)
+                            # Populate fp_cache so siblings with same graph reuse.
+                            needed_cache = reusable_probe_cols.get(probe_name)
+                            if needed_cache:
+                                entry = fp_cache.setdefault(cand.graph_fingerprint, {})
+                                for c in needed_cache:
+                                    if (
+                                        c in probe_updates
+                                        and probe_updates[c] is not None
+                                    ):
+                                        entry[c] = probe_updates[c]
 
                     if model is not None:
                         del model
@@ -825,20 +1107,36 @@ def run_backfill(
                     for probe_name in active_probes:
                         cand_state[probe_name] = True
 
-                # Rescore with new data
-                new_score, old_score = rescore_entry(
-                    nb,
-                    cand.entry_id,
-                    cand.result_id,
-                    cand.is_reference,
-                    pr_cache,
-                    all_updates,
-                )
+                # Rescore only if this candidate is on the leaderboard;
+                # off-leaderboard rows from --signal-only have synthetic
+                # entry_ids (prefixed "signal:") and no leaderboard row.
+                if cand.entry_id and not cand.entry_id.startswith("signal:"):
+                    new_score, old_score = rescore_entry(
+                        nb,
+                        cand.entry_id,
+                        cand.result_id,
+                        cand.is_reference,
+                        pr_cache,
+                        all_updates,
+                    )
+                else:
+                    new_score = old_score = 0.0
                 evaluated += 1
 
+                if reused_any:
+                    cache_reused += 1
                 delta = new_score - old_score
                 delta_str = f" ({delta:+.1f})" if abs(delta) > 0.1 else ""
-                print(f"  [{fp}] {cand.tier} score={new_score:.1f}{delta_str}")
+                reused_str = " [cache]" if reused_any else ""
+                if cand.entry_id.startswith("signal:"):
+                    # Off-leaderboard: just report probe values, no score.
+                    iv2 = all_updates.get("induction_v2_investigation_auc", 0.0) or 0
+                    bv2 = all_updates.get("binding_v2_investigation_auc", 0.0) or 0
+                    print(f"  [{fp}] off-lb iv2={iv2:.3f} bv2={bv2:.3f}{reused_str}")
+                else:
+                    print(
+                        f"  [{fp}] {cand.tier} score={new_score:.1f}{delta_str}{reused_str}"
+                    )
 
             except (RuntimeError, KeyError, ValueError, TypeError) as e:
                 failed += 1
@@ -883,6 +1181,7 @@ def run_backfill(
     print(f"  Evaluated: {evaluated}")
     print(f"  Failed:    {failed}")
     print(f"  No graph:  {no_graph}")
+    print(f"  Cache hits: {cache_reused}")
 
     complete_script_experiment(
         nb,
@@ -971,6 +1270,26 @@ def main():
         "--force", action="store_true", help="Re-evaluate even if data exists"
     )
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--shard",
+        default=None,
+        help="Shard spec 'i/N' — this worker processes rows where "
+        "(per-tier index % N) == i. Use for multi-worker parallel backfills.",
+    )
+    parser.add_argument(
+        "--signal-only",
+        action="store_true",
+        help="Ignore --tier/--top; select every unique graph_fingerprint with "
+        "real capability signal (induction/binding/ar>0.05, hellaswag>0.30, "
+        "or blimp>0.55), ordered by combined signal strength DESC.",
+    )
+    parser.add_argument(
+        "--fingerprint-file",
+        default=None,
+        help="JSONL of pre-ranked candidates (e.g. probe_priority_next.jsonl). "
+        "Each line must carry 'result_id' and 'fp'. Overrides --tier/--signal-only. "
+        "Use --top N to cap; N=0 means consume full file.",
+    )
     args = parser.parse_args()
 
     probe_str = args.probe.strip().lower()
@@ -1012,6 +1331,16 @@ def main():
 
     tiers = [t.strip() for t in args.tier.split(",")]
 
+    shard: Optional[Tuple[int, int]] = None
+    if args.shard:
+        try:
+            si, sn = args.shard.split("/")
+            shard = (int(si), int(sn))
+            if shard[1] < 1 or shard[0] < 0 or shard[0] >= shard[1]:
+                raise ValueError
+        except Exception:
+            parser.error(f"Invalid --shard '{args.shard}'. Expected 'i/N' with 0<=i<N.")
+
     run_backfill(
         probes=probes,
         tiers=tiers,
@@ -1022,6 +1351,9 @@ def main():
         force=args.force,
         dry_run=args.dry_run,
         fp_timeout=args.fp_timeout,
+        shard=shard,
+        signal_only=args.signal_only,
+        fingerprint_file=args.fingerprint_file,
     )
 
 

@@ -3103,6 +3103,80 @@ class TestAPI(unittest.TestCase):
         self.assertEqual(entry["trust_label"], "candidate_grade")
         self.assertEqual(entry["comparability_label"], "candidate_comparable")
 
+    def test_investigation_eligibility_reuses_existing_fingerprint_entry(self):
+        from research.scientist.api_routes._strategy_preflight import (
+            build_start_mode_eligibility,
+        )
+
+        nb = LabNotebook(self.db_path)
+        exp_id = nb.start_experiment(
+            "synthesis", {"n_programs": 2}, "fingerprint sibling eligibility"
+        )
+        canonical_result_id = nb.record_program_result(
+            experiment_id=exp_id,
+            graph_fingerprint="fp_shared_screening_row",
+            graph_json=_MINIMAL_GRAPH_JSON,
+            stage0_passed=True,
+            stage05_passed=True,
+            stage1_passed=True,
+            loss_ratio=0.24,
+            novelty_score=0.63,
+            trust_label="candidate_grade",
+            comparability_label="candidate_comparable",
+            evaluation_protocol_version="candidate_grade_v1",
+        )
+        nb.flush_writes()
+        nb.upsert_leaderboard(
+            result_id=canonical_result_id,
+            model_source="graph_synthesis",
+            screening_loss_ratio=0.24,
+            screening_novelty=0.63,
+            tier="screening",
+        )
+        replay_exp_id = nb.start_experiment(
+            "synthesis", {"n_programs": 1}, "fingerprint sibling replay"
+        )
+        replay_result_id = nb.record_program_result(
+            experiment_id=replay_exp_id,
+            graph_fingerprint="fp_shared_screening_row",
+            graph_json=_MINIMAL_GRAPH_JSON,
+            stage0_passed=True,
+            stage05_passed=True,
+            stage1_passed=True,
+            loss_ratio=0.25,
+            novelty_score=0.61,
+            trust_label="candidate_grade",
+            comparability_label="candidate_comparable",
+            evaluation_protocol_version="candidate_grade_v1",
+            intentional_rerun_reason="test_fixture_historical_dup",
+        )
+        nb.flush_writes()
+
+        eligibility = build_start_mode_eligibility(
+            nb, "investigation", [replay_result_id]
+        )
+        direct_entry = nb.get_leaderboard_entry(replay_result_id)
+        fingerprint_entry = nb.get_leaderboard_entry_by_fingerprint(
+            "fp_shared_screening_row"
+        )
+        row_count = nb.conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM leaderboard l
+            JOIN program_results pr ON pr.result_id = l.result_id
+            WHERE pr.graph_fingerprint = ?
+            """,
+            ("fp_shared_screening_row",),
+        ).fetchone()[0]
+        nb.close()
+
+        self.assertEqual(eligibility["eligible_result_ids"], [replay_result_id])
+        self.assertEqual(eligibility["ineligible"], [])
+        self.assertIsNone(direct_entry)
+        self.assertIsNotNone(fingerprint_entry)
+        self.assertEqual(fingerprint_entry["result_id"], canonical_result_id)
+        self.assertEqual(row_count, 1)
+
     def test_promote_screening_preserves_candidate_grade_labels(self):
         nb = LabNotebook(self.db_path)
         exp_id = nb.start_experiment(

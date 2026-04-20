@@ -517,6 +517,22 @@ class TestPrDictToScoreKwargs:
         assert kw_i["ppl_validation"] is None
         assert kw_v["ppl_validation"] is not None
 
+    def test_screened_out_row_keeps_investigation_context_but_not_validation(self):
+        pr = self._make_pr_dict()
+        d = self._make_lb_row(tier="screened_out")
+        kw = _pr_dict_to_score_kwargs(copy.deepcopy(pr), d, is_reference=False)
+        assert kw["tier"] == "screened_out"
+        assert kw["ppl_investigation"] is None
+        assert kw["ppl_validation"] is None
+
+    def test_breakthrough_row_maps_both_investigation_and_validation_bands(self):
+        pr = self._make_pr_dict()
+        d = self._make_lb_row(tier="breakthrough")
+        kw = _pr_dict_to_score_kwargs(copy.deepcopy(pr), d, is_reference=False)
+        assert kw["tier"] == "breakthrough"
+        assert kw["ppl_investigation"] is not None
+        assert kw["ppl_validation"] is not None
+
     def test_kwargs_can_be_passed_to_compute_composite(self):
         """End-to-end: pr_dict → kwargs → compute_composite produces a valid score."""
         pr = self._make_pr_dict()

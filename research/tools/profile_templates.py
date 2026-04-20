@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import sqlite3
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -25,13 +24,13 @@ from research.tools.backfill_templates import (
     get_template_stats,
     run_template_batch,
 )
+from research.tools._db_maintenance import connect_readonly
 
 MIN_TEMPLATE_EVIDENCE_RUNS = 10
 
 
-def _load_program_rows(db_path: Path) -> list[sqlite3.Row]:
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
+def _load_program_rows(db_path: Path) -> list[Any]:
+    conn = connect_readonly(db_path)
     try:
         return conn.execute(
             """
@@ -67,7 +66,7 @@ def _safe_json_loads(raw: Any) -> Any:
         return {}
 
 
-def _root_cause(row: sqlite3.Row) -> str:
+def _root_cause(row: Any) -> str:
     details = _safe_json_loads(row["failure_details_json"])
     return str(
         details.get("root_cause_code")

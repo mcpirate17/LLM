@@ -3,13 +3,13 @@ from __future__ import annotations
 import argparse
 import csv
 import json
-import sqlite3
 import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
 from research.scientist.notebook import LabNotebook
+from research.tools._db_maintenance import connect_readonly
 
 BASE = Path(__file__).resolve().parents[2]
 DB_PATH = BASE / "research/lab_notebook.db"
@@ -100,8 +100,7 @@ def fetch_candidates(
     distinct_fingerprint: bool,
     order: str,
 ) -> list[RowCandidate]:
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
+    conn = connect_readonly(DB_PATH)
     try:
         select_prefix = """
         SELECT pr.result_id, pr.graph_fingerprint, e.timestamp AS row_timestamp, pr.avg_step_time_ms

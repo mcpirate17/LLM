@@ -8,7 +8,6 @@ from typing import Callable, Optional
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 from ._reference_model_native import load_reference_model_native
 from .training_core import run_training_loop

@@ -14,10 +14,8 @@ Usage:
 
 from __future__ import annotations
 
-import json
 import logging
 import math
-import sqlite3
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -28,6 +26,11 @@ import numpy as np
 from ..native.core import _try_import_rust_scheduler
 from .graph_ops import extract_unique_graph_ops_batch
 from .ml_corpus import load_deduped_graph_training_rows
+from .predictor_artifacts import load_npz_with_metadata, save_npz_with_metadata
+from .profiling_db import (
+    load_op_feature_rows,
+    load_pair_stability_labels,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -196,13 +199,7 @@ class OpEmbeddings:
             logger.warning("Profiling DB not found: %s", profiling_db)
             return cls._empty()
 
-        conn = sqlite3.connect(str(profiling_db), timeout=5)
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute(
-            f"SELECT op_name, {', '.join(_PROFILING_FEATURES)} "
-            f"FROM op_profiles WHERE error IS NULL ORDER BY op_name"
-        ).fetchall()
-        conn.close()
+        rows = load_op_feature_rows(profiling_db, _PROFILING_FEATURES)
 
         if not rows:
             return cls._empty()
@@ -436,35 +433,23 @@ class OpEmbeddings:
 
     def save(self, path: Path) -> None:
         """Save embeddings to npz + JSON metadata."""
-        path = Path(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        np.savez_compressed(
-            str(path),
-            embeddings=self.embeddings,
+        save_npz_with_metadata(
+            path,
+            arrays={"embeddings": self.embeddings},
+            metadata={
+                "op_names": self.op_names,
+                "embed_dim": EMBED_DIM,
+                "trained": self._trained,
+                "timestamp": self._timestamp,
+                "n_ops": self.n_ops,
+            },
         )
-        meta_path = path.with_suffix(".json")
-        with open(meta_path, "w") as f:
-            json.dump(
-                {
-                    "op_names": self.op_names,
-                    "embed_dim": EMBED_DIM,
-                    "trained": self._trained,
-                    "timestamp": self._timestamp,
-                    "n_ops": self.n_ops,
-                },
-                f,
-                indent=2,
-            )
         logger.info("Saved embeddings to %s", path)
 
     @classmethod
     def load(cls, path: Path) -> "OpEmbeddings":
         """Load embeddings from npz + JSON metadata."""
-        path = Path(path)
-        data = np.load(str(path))
-        meta_path = path.with_suffix(".json")
-        with open(meta_path) as f:
-            meta = json.load(f)
+        data, meta = load_npz_with_metadata(path)
         op_names = meta["op_names"]
         return cls(
             embeddings=data["embeddings"],
@@ -519,24 +504,4 @@ def _load_pair_stability(
     op_to_idx: Dict[str, int],
 ) -> List[Tuple[int, int, bool]]:
     """Load pair stability labels from profiling DB."""
-    results: List[Tuple[int, int, bool]] = []
-
-    if not profiling_db.exists():
-        return results
-
-    try:
-        conn = sqlite3.connect(str(profiling_db), timeout=5)
-        rows = conn.execute(
-            """SELECT op_a, op_b,
-                      (output_has_nan = 0 AND grad_has_nan = 0 AND grad_vanishing = 0) as stable
-               FROM pair_profiles WHERE error IS NULL"""
-        ).fetchall()
-        conn.close()
-
-        for op_a, op_b, stable in rows:
-            if op_a in op_to_idx and op_b in op_to_idx:
-                results.append((op_to_idx[op_a], op_to_idx[op_b], bool(stable)))
-    except Exception as e:
-        logger.warning("Failed to load pair stability: %s", e)
-
-    return results
+    return load_pair_stability_labels(profiling_db, op_to_idx)

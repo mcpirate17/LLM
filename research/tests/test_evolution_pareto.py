@@ -4,19 +4,23 @@ import math
 from unittest.mock import MagicMock
 
 import numpy as np
+import pytest
 
+from research.frontier_kernel import crowding_distances, pareto_ranks
 from research.search.evolution import Individual
 from research.search._nsga import (
-    _assign_crowding_distance_in_python,
     assign_crowding_distance,
     fast_non_dominated_sort,
 )
 from research.search.native_nsga import (
+    compute_pareto_frontier_mask,
     compute_crowding_distances,
     compute_pareto_ranks,
     load_native_nsga_lib,
     reset_native_nsga_lib,
 )
+
+pytestmark = pytest.mark.unit
 
 
 def _make_individual(fitness: float, novelty: float) -> Individual:
@@ -117,54 +121,110 @@ def test_assign_crowding_distance_sets_boundary_infinity():
     assert inf_count >= 2
 
 
-def test_native_crowding_distance_matches_python_reference():
-    reset_native_nsga_lib()
-    if load_native_nsga_lib() is None:
-        return
+def test_fast_non_dominated_sort_routes_through_shared_frontier_kernel(monkeypatch):
+    import research.search._nsga as nsga_mod
+
+    population = [
+        _make_individual(3.0, 1.0),
+        _make_individual(1.0, 3.0),
+        _make_individual(2.0, 1.0),
+    ]
+    stub = MagicMock(return_value=np.array([1, 1, 2], dtype=np.int32))
+    monkeypatch.setattr(nsga_mod, "pareto_ranks", stub)
+
+    fronts = fast_non_dominated_sort(population)
+
+    assert [[ind.fitness, ind.novelty] for ind in fronts[0]] == [[3.0, 1.0], [1.0, 3.0]]
+    assert [[ind.fitness, ind.novelty] for ind in fronts[1]] == [[2.0, 1.0]]
+    stub.assert_called_once()
+    args, kwargs = stub.call_args
+    np.testing.assert_allclose(
+        args[0],
+        np.asarray([[3.0, 1.0], [1.0, 3.0], [2.0, 1.0]], dtype=np.float32),
+    )
+    assert kwargs == {"maximize": (True, True)}
+
+
+def test_assign_crowding_distance_routes_through_shared_frontier_kernel(monkeypatch):
+    import research.search._nsga as nsga_mod
 
     front = [
         _make_individual(1.0, 4.0),
         _make_individual(2.0, 2.5),
         _make_individual(3.0, 2.0),
-        _make_individual(4.0, 1.0),
-        _make_individual(2.5, 3.0),
     ]
+    stub = MagicMock(return_value=np.array([np.inf, 0.75, np.inf], dtype=np.float32))
+    monkeypatch.setattr(nsga_mod, "crowding_distances", stub)
+
+    assign_crowding_distance(front)
+
+    assert math.isinf(front[0].crowding_dist)
+    assert front[1].crowding_dist == pytest.approx(0.75)
+    assert math.isinf(front[2].crowding_dist)
+    stub.assert_called_once()
+    args, kwargs = stub.call_args
+    np.testing.assert_allclose(
+        args[0],
+        np.asarray([[1.0, 4.0], [2.0, 2.5], [3.0, 2.0]], dtype=np.float32),
+    )
+    assert kwargs == {}
+
+
+def test_native_crowding_distance_matches_python_reference():
+    reset_native_nsga_lib()
+    if load_native_nsga_lib() is None:
+        pytest.skip("native frontier library unavailable")
+
     objective_matrix = np.asarray(
-        [[ind.fitness, ind.novelty] for ind in front],
+        [[1.0, 4.0], [2.0, 2.5], [3.0, 2.0], [4.0, 1.0], [2.5, 3.0]],
         dtype=np.float32,
     )
 
-    py_front = list(front)
-    _assign_crowding_distance_in_python(py_front, objective_matrix)
+    expected = crowding_distances(objective_matrix)
     native_distances = compute_crowding_distances(objective_matrix)
 
     assert native_distances is not None
-    for ind, native in zip(py_front, native_distances):
-        if math.isinf(ind.crowding_dist):
+    for expected_distance, native in zip(expected, native_distances):
+        if math.isinf(float(expected_distance)):
             assert math.isinf(float(native))
         else:
             assert math.isclose(
-                ind.crowding_dist, float(native), rel_tol=1e-6, abs_tol=1e-6
+                float(expected_distance), float(native), rel_tol=1e-6, abs_tol=1e-6
             )
 
 
 def test_native_pareto_ranks_match_fronts():
     reset_native_nsga_lib()
     if load_native_nsga_lib() is None:
-        return
+        pytest.skip("native frontier library unavailable")
 
-    population = [
-        _make_individual(3.0, 1.0),
-        _make_individual(1.0, 3.0),
-        _make_individual(2.0, 1.0),
-        _make_individual(1.0, 2.0),
-        _make_individual(1.0, 1.0),
-    ]
     objective_matrix = np.asarray(
-        [[ind.fitness, ind.novelty] for ind in population],
+        [[3.0, 1.0], [1.0, 3.0], [2.0, 1.0], [1.0, 2.0], [1.0, 1.0]],
         dtype=np.float32,
     )
 
     ranks = compute_pareto_ranks(objective_matrix)
     assert ranks is not None
     assert list(ranks) == [1, 1, 2, 2, 3]
+
+
+def test_frontier_kernel_drives_search_ranking_outputs():
+    objective_matrix = np.asarray(
+        [[3.0, 1.0], [1.0, 3.0], [2.0, 1.0], [1.0, 2.0], [1.0, 1.0]],
+        dtype=np.float32,
+    )
+    assert pareto_ranks(objective_matrix).tolist() == [1, 1, 2, 2, 3]
+
+
+def test_native_frontier_mask_compatibility_shim():
+    reset_native_nsga_lib()
+    if load_native_nsga_lib() is None:
+        pytest.skip("native frontier library unavailable")
+
+    objective_matrix = np.asarray(
+        [[3.0, 1.0], [1.0, 3.0], [2.0, 1.0], [1.0, 2.0], [1.0, 1.0]],
+        dtype=np.float32,
+    )
+    mask = compute_pareto_frontier_mask(objective_matrix)
+    assert mask is not None
+    assert mask.tolist() == [True, True, False, False, False]
