@@ -168,9 +168,14 @@ def test_score_example_batch_native_matches_python_for_empty_endings():
         device="cpu",
         max_seq_len=16,
     )
+    ctx_tokens = [ex["ctx_tokens"].tolist() for ex in examples]
+    ending_tokens = [[t.tolist() for t in ex["ending_tokens"]] for ex in examples]
+    labels = [int(ex["label"]) for ex in examples]
     native_result = hellaswag_eval._score_example_batch_native(
         model,
-        examples,
+        ctx_tokens,
+        ending_tokens,
+        labels,
         vocab_size=32,
         device="cpu",
         max_seq_len=16,
@@ -292,7 +297,16 @@ def test_screening_hellaswag_bypasses_native_dispatch(monkeypatch, device):
     )
     monkeypatch.setattr(
         hellaswag_eval,
-        "_score_example_batch",
+        "_get_native_subset_payload",
+        lambda n_examples, *, vocab_size, seed=42: (
+            [[1, 2, 3]],
+            [[[4], [5], [6], [7]]],
+            [2],
+        ),
+    )
+    monkeypatch.setattr(
+        hellaswag_eval,
+        "_score_example_batch_native",
         lambda *args, **kwargs: (1, 1),
     )
 

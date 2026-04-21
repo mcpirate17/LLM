@@ -24,6 +24,7 @@ from ._dispatch_constants import (
     _NATIVE_C_KERNEL_OPS,
     _NATIVE_OP_ALIASES,
     _NON_KERNEL_STRUCTURAL_OPS,
+    _PER_OP_BRIDGE_ONLY_OPS,
     _RUST_SCHEDULER_UNSUPPORTED_OPS,
     _SOFT_BRIDGE_OPS,
 )
@@ -38,6 +39,7 @@ from ._dispatch_rust_exec import (
 
 logger = logging.getLogger(__name__)
 _last_profile_data: Dict[str, Any] | None = None
+__all__ = ["_PER_OP_BRIDGE_ONLY_OPS"]
 
 
 def _native_profiling_enabled(rust: Any) -> bool:
@@ -623,7 +625,12 @@ def dispatch_graph_native(graph: Any, input_data: Any) -> Any:
         raise
 
 
-def dispatch_graph_forward_native_saved(graph: Any, input_data: Any) -> Dict[str, Any]:
+def dispatch_graph_forward_native_saved(
+    graph: Any,
+    input_data: Any,
+    *,
+    ir_json: Optional[str] = None,
+) -> Dict[str, Any]:
     """Execute a full forward pass, returning output and saved activations.
 
     This is the companion to ``dispatch_graph_backward_native()``.  The saved
@@ -644,7 +651,7 @@ def dispatch_graph_forward_native_saved(graph: Any, input_data: Any) -> Dict[str
           - ``"ir_json"``: the pre-serialized IR JSON (for backward call).
     """
 
-    x_np, graph_json = _prepare_graph_input(graph, input_data)
+    x_np, graph_json = _prepare_graph_input(graph, input_data, ir_json=ir_json)
     try:
         rust_result = _execute_rust_graph_forward_saved(
             graph_json=graph_json,

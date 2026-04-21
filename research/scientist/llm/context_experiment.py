@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 from typing import Dict, List, Optional
 
+from ._op_registry import grouped_primitive_registry, primitive_registry_size
+
 logger = logging.getLogger(__name__)
 
 _OP_REGISTRY_CACHE: Optional[str] = None
@@ -26,18 +28,8 @@ def build_op_reference(
 
     # Registry by category
     try:
-        try:
-            from ...synthesis.primitives import PRIMITIVE_REGISTRY
-        except (ImportError, SystemError):
-            from synthesis.primitives import PRIMITIVE_REGISTRY
-        by_cat: Dict[str, List[str]] = {}
-        for name, op in sorted(PRIMITIVE_REGISTRY.items()):
-            cat = (
-                op.category.value if hasattr(op.category, "value") else str(op.category)
-            )
-            by_cat.setdefault(cat, []).append(name)
-        for cat in sorted(by_cat):
-            lines.append(f"  {cat}: {', '.join(by_cat[cat])}")
+        for category, ops in grouped_primitive_registry():
+            lines.append(f"  {category}: {', '.join(ops)}")
     except Exception as exc:
         logger.debug("Suppressed error: %s", exc)
 
@@ -126,22 +118,11 @@ def _build_op_registry_section() -> str:
     if _OP_REGISTRY_CACHE is not None:
         return _OP_REGISTRY_CACHE
     try:
-        try:
-            from ...synthesis.primitives import PRIMITIVE_REGISTRY
-        except (ImportError, SystemError):
-            from synthesis.primitives import PRIMITIVE_REGISTRY
-        by_cat: Dict[str, List[str]] = {}
-        for name, op in sorted(PRIMITIVE_REGISTRY.items()):
-            cat = (
-                op.category.value if hasattr(op.category, "value") else str(op.category)
-            )
-            by_cat.setdefault(cat, []).append(name)
         lines = [
-            f"Available Ops ({len(PRIMITIVE_REGISTRY)} total, use op_weights to control selection):"
+            f"Available Ops ({primitive_registry_size()} total, use op_weights to control selection):"
         ]
-        for cat in sorted(by_cat):
-            ops = by_cat[cat]
-            lines.append(f"  {cat} ({len(ops)}): {', '.join(ops)}")
+        for category, ops in grouped_primitive_registry():
+            lines.append(f"  {category} ({len(ops)}): {', '.join(ops)}")
         _OP_REGISTRY_CACHE = "\n".join(lines)
     except Exception as exc:
         logger.debug("Falling back to default: %s", exc)

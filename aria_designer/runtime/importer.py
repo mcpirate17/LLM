@@ -30,12 +30,12 @@ from research.synthesis.primitives import PRIMITIVE_REGISTRY
 from research.synthesis.workflow_converter import graph_to_workflow as _g2w
 
 try:
-    from aria_designer.api.app.component_identity import canonicalize_workflow
+    from aria_designer.component_identity import canonicalize_workflow
 except ImportError:
     # Fallback for when running from within aria_designer/ as cwd
     import importlib
 
-    _ci = importlib.import_module("api.app.component_identity")
+    _ci = importlib.import_module("component_identity")
     canonicalize_workflow = _ci.canonicalize_workflow
 
 

@@ -47,43 +47,12 @@ def _es_mod():
 
 
 def _make_experiment_results() -> Dict[str, Any]:
-    """Create a fresh experiment results dict with all counters zeroed."""
-    return {
-        "total": 0,
-        "stage0_passed": 0,
-        "stage05_passed": 0,
-        "rapid_screening_killed": 0,
-        "rapid_screening_kill_reasons": {},
-        "stage09_passed": 0,
-        "stage1_passed": 0,
-        "novel_count": 0,
-        "best_loss_ratio": None,
-        "best_novelty_score": None,
-        "survivors": [],
-        "skipped_proactive_gating": 0,
-        "proactive_gating_failures": [],
-        "funnel_counts": {
-            "raw_generated": 0,
-            "post_batch_dedup": 0,
-            "judgment_filtered": 0,
-            "post_judgment": 0,
-            "screening_considered": 0,
-            "dropped_runtime_dedup": 0,
-            "dropped_toxic": 0,
-            "dropped_proactive_gating": 0,
-            "dropped_invalid_graph": 0,
-            "dropped_runtime_error": 0,
-            "stage0_attempted": 0,
-            "stage0_passed": 0,
-            "dropped_stage0": 0,
-            "stage05_passed": 0,
-            "dropped_stage05": 0,
-            "stage09_passed": 0,
-            "dropped_stage09": 0,
-            "stage1_passed": 0,
-            "dropped_stage1": 0,
-        },
-    }
+    """Create a fresh experiment results dict with all counters zeroed.
+
+    Keep this delegated to the canonical builder in execution_screening so the
+    split modules cannot silently diverge on funnel counter keys.
+    """
+    return _es_mod()._make_experiment_results()
 
 
 class _ExecutionScreeningPipelineMixin:

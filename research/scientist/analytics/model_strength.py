@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from collections import Counter, deque
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -438,13 +438,82 @@ def load_strength_datasets(db_path: str | Path) -> StrengthDatasets:
 
     conn = get_notebook_conn(str(db_path))
     rows = conn.execute(BASE_ANALYSIS_QUERY).fetchall()
-    df = pd.DataFrame([dict(row) for row in rows])
-
-    config_df = pd.DataFrame(
-        [_parse_config_features(value) for value in df["config_json"]]
-    )
-    graph_df = pd.DataFrame([_graph_features(value) for value in df["graph_json"]])
-    merged = pd.concat([df, config_df, graph_df], axis=1)
+    records: list[dict[str, Any]] = []
+    for row in rows:
+        record = dict(row)
+        record.update(_parse_config_features(record.get("config_json")))
+        record.update(_graph_features(record.get("graph_json")))
+        records.append(record)
+    merged = pd.DataFrame.from_records(records)
+    if merged.empty:
+        merged = pd.DataFrame(
+            columns=(
+                "result_id",
+                "experiment_id",
+                "timestamp",
+                "graph_fingerprint",
+                "graph_json",
+                "stage0_passed",
+                "stage05_passed",
+                "stage1_passed",
+                "loss_ratio",
+                "validation_loss_ratio",
+                "discovery_loss_ratio",
+                "induction_auc",
+                "binding_auc",
+                "ar_auc",
+                "hellaswag_acc",
+                "wikitext_perplexity",
+                "wikitext_score",
+                "stability_score",
+                "validation_robustness_score",
+                "efficiency_multiple",
+                "efficiency_wall_score",
+                "param_count",
+                "train_budget_steps",
+                "n_train_steps",
+                "total_train_time_ms",
+                "graph_depth",
+                "graph_n_ops",
+                "graph_n_unique_ops",
+                "graph_uses_math_spaces",
+                "graph_uses_frequency_domain",
+                "routing_savings_ratio",
+                "compression_ratio",
+                "activation_sparsity_score",
+                "dead_neuron_ratio",
+                "routing_collapse_score",
+                "validation_is_unstable",
+                "has_nan_output",
+                "has_inf_output",
+                "has_nan_grad",
+                "has_zero_grad",
+                "local_only",
+                "novelty_score",
+                "novelty_confidence",
+                "result_cohort",
+                "trust_label",
+                "comparability_label",
+                "evaluation_protocol_version",
+                "init_regime",
+                "model_source",
+                "error_type",
+                "stage_at_death",
+                "data_provenance_json",
+                "experiment_timestamp",
+                "experiment_type",
+                "config_json",
+                "primary_template",
+                "templates_used",
+                "motifs_used",
+                "ops",
+                "op_pairs",
+                "slot_keys",
+                "slot_motifs",
+                "slot_components",
+                "depth_ops",
+            )
+        )
     merged["timestamp"] = pd.to_numeric(merged["timestamp"], errors="coerce")
     merged["log_param_count"] = np.log1p(
         pd.to_numeric(merged["param_count"], errors="coerce")
@@ -616,30 +685,34 @@ def _fit_feature_effect_from_base(
 def _within_template_delta(
     df: pd.DataFrame, feature: pd.Series, target: str, *, higher_is_better: bool
 ) -> float | None:
-    work = pd.DataFrame(
-        {
-            "primary_template": df["primary_template"],
-            "feature": pd.to_numeric(feature, errors="coerce").fillna(0.0),
-            "target": pd.to_numeric(df[target], errors="coerce"),
-        }
-    )
-    work = work[work["target"].notna()].copy()
-    if work.empty:
+    feature_values = pd.to_numeric(feature, errors="coerce").fillna(0.0)
+    target_values = pd.to_numeric(df[target], errors="coerce")
+    valid_mask = target_values.notna()
+    if not valid_mask.any():
         return None
+    templates = df.loc[valid_mask, "primary_template"].fillna("unknown")
+    feature_values = feature_values.loc[valid_mask]
+    target_values = target_values.loc[valid_mask]
     deltas: list[float] = []
     weights: list[int] = []
-    for _template, group in work.groupby("primary_template"):
-        if group["feature"].sum() < 2 or (1.0 - group["feature"]).sum() < 2:
+    for _template, group_index in templates.groupby(
+        templates, observed=False
+    ).groups.items():
+        group_feature = feature_values.loc[group_index]
+        if group_feature.sum() < 2 or (1.0 - group_feature).sum() < 2:
             continue
-        pos = group.loc[group["feature"] > 0.5, "target"]
-        neg = group.loc[group["feature"] <= 0.5, "target"]
+        group_target = target_values.loc[group_index]
+        pos_mask = group_feature > 0.5
+        neg_mask = ~pos_mask
+        pos = group_target.loc[pos_mask]
+        neg = group_target.loc[neg_mask]
         if pos.empty or neg.empty:
             continue
         delta = float(pos.mean() - neg.mean())
         if not higher_is_better:
             delta = -delta
         deltas.append(delta)
-        weights.append(int(len(group)))
+        weights.append(int(len(group_index)))
     if not deltas:
         return None
     return float(np.average(np.asarray(deltas), weights=np.asarray(weights)))
@@ -647,8 +720,8 @@ def _within_template_delta(
 
 def _feature_diagnostics(df: pd.DataFrame, feature: pd.Series) -> dict[str, Any]:
     values = pd.to_numeric(feature, errors="coerce").fillna(0.0)
-    present = df.loc[values > 0.5].copy()
-    if present.empty:
+    present_mask = values > 0.5
+    if not present_mask.any():
         return {
             "template_count": 0,
             "dominant_template": None,
@@ -659,25 +732,26 @@ def _feature_diagnostics(df: pd.DataFrame, feature: pd.Series) -> dict[str, Any]
             "experiment_count": 0,
             "matched_template_controls": 0,
         }
-    template_counts = present["primary_template"].fillna("unknown").value_counts()
-    protocol_counts = (
-        present["evaluation_protocol_version"].fillna("unknown").value_counts()
+    templates = df["primary_template"].fillna("unknown")
+    protocols = df["evaluation_protocol_version"].fillna("unknown")
+    template_counts = templates.loc[present_mask].value_counts()
+    protocol_counts = protocols.loc[present_mask].value_counts()
+    total_by_template = templates.value_counts(sort=False)
+    pos_by_template = templates.loc[present_mask].value_counts(sort=False)
+    pos_by_template = pos_by_template.reindex(total_by_template.index, fill_value=0)
+    neg_by_template = total_by_template - pos_by_template
+    matched_template_controls = int(
+        ((pos_by_template >= 2) & (neg_by_template >= 2)).sum()
     )
-    matched_template_controls = 0
-    with_feature = df.assign(_feature_present=values)
-    for _template, group in with_feature.groupby("primary_template", observed=False):
-        pos = int((group["_feature_present"] > 0.5).sum())
-        neg = int((group["_feature_present"] <= 0.5).sum())
-        if pos >= 2 and neg >= 2:
-            matched_template_controls += 1
+    present_count = int(present_mask.sum())
     return {
         "template_count": int(template_counts.size),
         "dominant_template": str(template_counts.index[0]),
-        "dominant_template_share": float(template_counts.iloc[0] / len(present)),
+        "dominant_template_share": float(template_counts.iloc[0] / present_count),
         "protocol_count": int(protocol_counts.size),
         "dominant_protocol": str(protocol_counts.index[0]),
-        "dominant_protocol_share": float(protocol_counts.iloc[0] / len(present)),
-        "experiment_count": int(present["experiment_id"].nunique()),
+        "dominant_protocol_share": float(protocol_counts.iloc[0] / present_count),
+        "experiment_count": int(df.loc[present_mask, "experiment_id"].nunique()),
         "matched_template_controls": matched_template_controls,
     }
 
@@ -801,18 +875,20 @@ def _rank_binary_features(
 
 
 def _counter_feature_map(series: pd.Series) -> dict[str, pd.Series]:
-    items: Counter[str] = Counter()
-    for values in series:
+    row_positions: dict[str, list[int]] = {}
+    for pos, values in enumerate(series):
         if not isinstance(values, list):
             continue
-        for value in values:
-            if isinstance(value, str) and value:
-                items[value] += 1
+        valid_values = {value for value in values if isinstance(value, str) and value}
+        for value in valid_values:
+            row_positions.setdefault(value, []).append(pos)
     columns: dict[str, pd.Series] = {}
-    for item in items:
-        columns[item] = series.map(
-            lambda values, key=item: float(isinstance(values, list) and key in values)
-        )
+    index = series.index
+    size = len(series)
+    for item, positions in row_positions.items():
+        data = np.zeros(size, dtype=float)
+        data[positions] = 1.0
+        columns[item] = pd.Series(data, index=index)
     return columns
 
 
@@ -895,11 +971,11 @@ def _metric_rankings(
 
 
 def _drift_report(datasets: StrengthDatasets) -> dict[str, Any]:
-    all_rows = datasets.all_runs.copy()
-    trusted = datasets.dedup_trusted.copy()
-    promotable = datasets.dedup_promotable.copy()
-    search_all = all_rows[
-        (all_rows["result_cohort"] == "search") & all_rows["loss_ratio"].notna()
+    trusted = datasets.dedup_trusted
+    promotable = datasets.dedup_promotable
+    search_all = datasets.all_runs[
+        (datasets.all_runs["result_cohort"] == "search")
+        & datasets.all_runs["loss_ratio"].notna()
     ].copy()
     search_promotable = promotable[
         (promotable["result_cohort"] == "search") & promotable["loss_ratio"].notna()
@@ -1035,7 +1111,7 @@ def _drift_report(datasets: StrengthDatasets) -> dict[str, Any]:
 
 
 def _weight_bias_summary(datasets: StrengthDatasets) -> dict[str, Any]:
-    search = datasets.all_runs[datasets.all_runs["result_cohort"] == "search"].copy()
+    search = datasets.all_runs[datasets.all_runs["result_cohort"] == "search"]
     if search.empty:
         return {"top_weighted_categories": [], "category_weight_vs_loss": []}
     weight_columns = sorted(

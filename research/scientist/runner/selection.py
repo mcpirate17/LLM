@@ -629,14 +629,10 @@ class _SelectionMixin:
         graph_json = row.get("graph_json")
         if isinstance(graph_json, str) and graph_json:
             try:
-                graph_data = json.loads(graph_json)
-                nodes = (
-                    graph_data.get("nodes", {}) if isinstance(graph_data, dict) else {}
-                )
-                for nd in nodes.values():
-                    if not isinstance(nd, dict):
-                        continue
-                    op_name = str(nd.get("op_name") or "").strip().lower()
+                from ..intelligence.graph_ops import extract_unique_graph_ops
+
+                for op_name in extract_unique_graph_ops(graph_json):
+                    op_name = str(op_name).strip().lower()
                     if not op_name or op_name == "input":
                         continue
                     tokens.add(op_name)

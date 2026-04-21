@@ -221,6 +221,7 @@ class _ExecutionExperimentPhase3Mixin:
         if getattr(config, "_capability_first_mode", False):
             return graphs
         from ..ml_influence_policy import component_is_allowed
+        from ..ml_influence_policy import load_predictor_metrics_report
 
         if not component_is_allowed("screening_ensemble", config):
             logger.info(
@@ -248,6 +249,39 @@ class _ExecutionExperimentPhase3Mixin:
                     "Ensemble pre-screener disabled: no persisted predictor artifacts loaded"
                 )
                 return graphs
+
+            report = load_predictor_metrics_report()
+            temporal_f1_threshold = (
+                (
+                    (
+                        (report.get("ensemble_calibrated") or {}).get(
+                            "temporal_holdout_evaluation"
+                        )
+                        or {}
+                    ).get("operating_points")
+                    or {}
+                )
+                .get("f1", {})
+                .get("threshold")
+            )
+            explicit_floor = float(
+                getattr(config, "screening_ensemble_p_pass_floor", 0.0) or 0.0
+            )
+            deprecated_floor = float(getattr(config, "gbm_gate_threshold", 0.0) or 0.0)
+            if explicit_floor > 0.0:
+                p_pass_floor = explicit_floor
+                floor_source = "config.screening_ensemble_p_pass_floor"
+            elif deprecated_floor > 0.0:
+                p_pass_floor = deprecated_floor
+                floor_source = "config.gbm_gate_threshold"
+            elif temporal_f1_threshold is not None:
+                p_pass_floor = float(temporal_f1_threshold)
+                floor_source = (
+                    "ensemble.temporal_holdout_evaluation.operating_points.f1.threshold"
+                )
+            else:
+                p_pass_floor = float(getattr(ensemble, "gate_threshold", 0.5))
+                floor_source = "ensemble.gate_threshold"
 
             op_stats_cache = load_op_stats(db_path)
             scored: List[tuple[float, float, float, float, Any, Dict[str, Any]]] = []
@@ -278,7 +312,7 @@ class _ExecutionExperimentPhase3Mixin:
             kept: List[Any] = []
             skipped = 0
             for planning_score, p_pass, p_ind, pred_auc, graph, graph_dict in scored:
-                if p_pass < config.gbm_gate_threshold:
+                if p_pass < p_pass_floor:
                     skipped += 1
                     try:
                         nb.record_program_result(
@@ -291,6 +325,8 @@ class _ExecutionExperimentPhase3Mixin:
                                 "predicted_induction_auc": pred_auc,
                                 "predicted_p_induction_learner": p_ind,
                                 "predictor_planning_score": planning_score,
+                                "screening_ensemble_p_pass_floor": p_pass_floor,
+                                "screening_ensemble_p_pass_floor_source": floor_source,
                             },
                         )
                     except (TypeError, ValueError) as exc:
@@ -300,6 +336,8 @@ class _ExecutionExperimentPhase3Mixin:
 
             results["funnel_counts"]["gbm_prescreener_skipped"] = skipped
             results["funnel_counts"]["post_gbm_prescreener"] = len(kept)
+            results["screening_ensemble_p_pass_floor"] = p_pass_floor
+            results["screening_ensemble_p_pass_floor_source"] = floor_source
             diagnostics = (
                 ensemble.diagnostics() if hasattr(ensemble, "diagnostics") else {}
             )
@@ -318,7 +356,7 @@ class _ExecutionExperimentPhase3Mixin:
                 min(induction_scores) if induction_scores else 0.0,
                 max(induction_scores) if induction_scores else 0.0,
                 skipped,
-                config.gbm_gate_threshold,
+                p_pass_floor,
                 len(kept),
                 diagnostics.get("n_components", 1),
             )

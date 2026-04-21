@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 from uuid import uuid4
 
-from .component_identity import component_leaf
+from aria_designer.component_identity import component_leaf
 from .database import get_workflow, save_proposal
 from .intent_parser import IntentConstraints, component_groups, parse_intent_constraints
 from .models import AriaPatchProposalModel, PatchOpModel

@@ -168,6 +168,90 @@ def grouped_stratified_split(
     return train_idx, val_idx, stats
 
 
+def grouped_temporal_split(
+    signatures: List[str],
+    labels: np.ndarray,
+    timestamps: np.ndarray,
+    *,
+    train_fraction: float = 0.8,
+) -> Tuple[np.ndarray, np.ndarray, Dict[str, int | float | str]]:
+    """Chronological grouped split using each signature group's latest timestamp."""
+    groups: Dict[str, List[int]] = {}
+    for idx, sig in enumerate(signatures):
+        groups.setdefault(sig, []).append(idx)
+
+    if not groups:
+        return (
+            np.zeros(0, dtype=np.int32),
+            np.zeros(0, dtype=np.int32),
+            {"split_strategy": "temporal_grouped", "error": "no_groups"},
+        )
+
+    group_order: List[Tuple[float, str, float]] = []
+    ambiguous_groups = 0
+    for sig, idxs in groups.items():
+        rate = float(np.mean(labels[idxs]))
+        if 0.0 < rate < 1.0:
+            ambiguous_groups += 1
+        latest_ts = float(np.max(np.asarray(timestamps[idxs], dtype=np.float64)))
+        group_order.append((latest_ts, sig, rate))
+
+    group_order.sort(key=lambda item: (item[0], item[1]))
+    n_groups = len(group_order)
+    split_at = int(np.floor(n_groups * float(train_fraction)))
+    split_at = max(1, min(n_groups - 1, split_at))
+    train_order = list(group_order[:split_at])
+    val_order = list(group_order[split_at:])
+
+    def _ensure_class_presence(
+        train_part: List[Tuple[float, str, float]],
+        val_part: List[Tuple[float, str, float]],
+        *,
+        want_positive: bool,
+    ) -> None:
+        predicate = (
+            (lambda rate: rate >= 0.5) if want_positive else (lambda rate: rate < 0.5)
+        )
+        if any(predicate(rate) for _, _, rate in val_part):
+            return
+        for idx in range(len(train_part) - 1, -1, -1):
+            ts, sig, rate = train_part[idx]
+            if predicate(rate):
+                val_part.insert(0, train_part.pop(idx))
+                return
+
+    _ensure_class_presence(train_order, val_order, want_positive=True)
+    _ensure_class_presence(train_order, val_order, want_positive=False)
+
+    if not train_order:
+        train_order.append(val_order.pop(0))
+    if not val_order:
+        val_order.append(train_order.pop())
+
+    train_groups = {sig for _, sig, _ in train_order}
+    val_groups = {sig for _, sig, _ in val_order}
+    train_idx = np.fromiter(
+        (idx for sig, idxs in groups.items() if sig in train_groups for idx in idxs),
+        dtype=np.int32,
+    )
+    val_idx = np.fromiter(
+        (idx for sig, idxs in groups.items() if sig in val_groups for idx in idxs),
+        dtype=np.int32,
+    )
+    stats: Dict[str, int | float | str] = {
+        "split_strategy": "temporal_grouped",
+        "n_unique_graphs": len(groups),
+        "n_duplicate_groups": int(sum(1 for idxs in groups.values() if len(idxs) > 1)),
+        "n_ambiguous_duplicate_groups": int(ambiguous_groups),
+        "n_train_groups": int(len(train_groups)),
+        "n_val_groups": int(len(val_groups)),
+        "temporal_train_fraction": float(train_fraction),
+        "temporal_cutoff_timestamp": float(train_order[-1][0]),
+        "temporal_val_start_timestamp": float(val_order[0][0]),
+    }
+    return train_idx, val_idx, stats
+
+
 def build_dense_feature_matrix(
     feat_dicts: List[Dict[str, float]],
     *,
@@ -452,10 +536,10 @@ def _graph_fingerprint(graph_json: str) -> str:
                 "Rust graph fingerprinting failed; using Python fallback: %s", exc
             )
 
-    from research.synthesis.graph import ComputationGraph
+    from research.synthesis.serializer import graph_from_json
 
     try:
-        return str(ComputationGraph.from_dict(json.loads(graph_json)).fingerprint())
+        return str(graph_from_json(graph_json).fingerprint())
     except (KeyError, ValueError, TypeError, json.JSONDecodeError):
         import hashlib
 

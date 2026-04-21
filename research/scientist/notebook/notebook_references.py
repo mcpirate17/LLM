@@ -19,6 +19,40 @@ class _ReferencesMixin:
 
     __slots__ = ()
 
+    @staticmethod
+    def _decode_reference_json_field(data: Dict[str, Any], key: str) -> None:
+        raw = data.get(key)
+        if raw:
+            try:
+                data[key] = _json_loads(raw)
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+    @classmethod
+    def _hydrate_decision_row(cls, row: Any) -> Dict[str, Any]:
+        data = dict(row)
+        for key in ("evidence_ids", "alternatives_considered"):
+            cls._decode_reference_json_field(data, key)
+        if data.get("evidence_pack_json"):
+            try:
+                data["evidence_pack"] = _json_loads(data["evidence_pack_json"])
+            except (json.JSONDecodeError, TypeError):
+                data["evidence_pack"] = None
+        return data
+
+    @classmethod
+    def _hydrate_selection_decision_row(cls, row: Any) -> Dict[str, Any]:
+        data = dict(row)
+        for key in (
+            "candidate_pool_summary_json",
+            "score_breakdown_json",
+            "policy_json",
+            "chosen_experiments_json",
+            "trigger_json",
+        ):
+            cls._decode_reference_json_field(data, key)
+        return data
+
     def _graph_structural_counts(
         self, result_id: str, graph_json: Optional[str] = None
     ) -> Dict[str, Optional[int]]:
@@ -410,8 +444,8 @@ class _ReferencesMixin:
             query += " AND campaign_id = ?"
             params.append(campaign_id)
         query += " ORDER BY timestamp DESC"
-        rows = self.conn.execute(query, params).fetchall()
-        return [dict(r) for r in rows]
+        cursor = self.conn.execute(query, params)
+        return [dict(row) for row in cursor]
 
     # ── Decisions ──
 
@@ -462,23 +496,8 @@ class _ReferencesMixin:
             query += " AND decision_type = ?"
             params.append(decision_type)
         query += " ORDER BY timestamp DESC"
-        rows = self.conn.execute(query, params).fetchall()
-        results = []
-        for r in rows:
-            d = dict(r)
-            for f in ("evidence_ids", "alternatives_considered"):
-                if d.get(f):
-                    try:
-                        d[f] = _json_loads(d[f])
-                    except (json.JSONDecodeError, TypeError):
-                        pass
-            if d.get("evidence_pack_json"):
-                try:
-                    d["evidence_pack"] = _json_loads(d["evidence_pack_json"])
-                except (json.JSONDecodeError, TypeError):
-                    d["evidence_pack"] = None
-            results.append(d)
-        return results
+        cursor = self.conn.execute(query, params)
+        return [self._hydrate_decision_row(row) for row in cursor]
 
     # ── Selection Decisions / Family Bandit Stats ──
 
@@ -531,30 +550,13 @@ class _ReferencesMixin:
             params.append(context)
         query += " ORDER BY timestamp DESC LIMIT ?"
         params.append(limit)
-        rows = self.conn.execute(query, params).fetchall()
-        out: List[Dict[str, Any]] = []
-        for row in rows:
-            item = dict(row)
-            for key in (
-                "candidate_pool_summary_json",
-                "score_breakdown_json",
-                "policy_json",
-                "chosen_experiments_json",
-                "trigger_json",
-            ):
-                raw = item.get(key)
-                if raw:
-                    try:
-                        item[key] = _json_loads(raw)
-                    except (TypeError, json.JSONDecodeError):
-                        pass
-            out.append(item)
-        return out
+        cursor = self.conn.execute(query, params)
+        return [self._hydrate_selection_decision_row(row) for row in cursor]
 
     def get_selection_family_stats(self) -> Dict[str, Dict[str, Any]]:
         """Return family bandit stats keyed by family name."""
-        rows = self.conn.execute("SELECT * FROM selection_family_stats").fetchall()
-        return {r["family"]: dict(r) for r in rows}
+        cursor = self.conn.execute("SELECT * FROM selection_family_stats")
+        return {row["family"]: dict(row) for row in cursor}
 
     def update_selection_family_stats(self, family: str, reward: float) -> None:
         """Update per-family running reward estimate for UCB/uncertainty."""

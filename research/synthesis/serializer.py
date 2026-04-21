@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Dict
+from functools import lru_cache
+from typing import Dict, Optional
 
 from ._json_compat import dumps_json, loads_json
 from .graph import ComputationGraph
@@ -10,13 +11,33 @@ from .graph import ComputationGraph
 
 def graph_to_json(graph: ComputationGraph) -> str:
     """Serialize a computation graph to JSON."""
-    return dumps_json(graph.to_dict())
+    cached = getattr(graph, "_cache", {}).get("graph_json")
+    if cached is not None:
+        return cached
+    payload = dumps_json(graph.to_dict())
+    if hasattr(graph, "_cache"):
+        graph._cache["graph_json"] = payload
+    return payload
 
 
-def graph_from_json(json_str: str) -> ComputationGraph:
-    """Deserialize a computation graph from JSON."""
-    d = loads_json(json_str)
-    return ComputationGraph.from_dict(d)
+@lru_cache(maxsize=256)
+def _graph_dict_from_json_cached(json_str: str) -> dict:
+    return loads_json(json_str)
+
+
+def graph_from_json(
+    json_str: str,
+    model_dim: Optional[int] = None,
+) -> ComputationGraph:
+    """Deserialize a computation graph from JSON.
+
+    Caches the decoded JSON document and rebuilds a fresh graph per call so
+    callers can mutate the result without contaminating shared cache state.
+    """
+    graph = ComputationGraph.from_dict(_graph_dict_from_json_cached(json_str))
+    if model_dim is not None:
+        graph.model_dim = int(model_dim)
+    return graph
 
 
 def graph_summary(graph: ComputationGraph) -> Dict:

@@ -633,6 +633,15 @@ def _augment_imodel_features_from_pairs(
     if not edge_pairs:
         return _default_imodel_features(features)
 
+    if hasattr(imodel, "predict_pair_stats"):
+        pair_stats = imodel.predict_pair_stats(edge_pairs)
+        if pair_stats is not None:
+            min_stability, mean_stability, mean_loss = pair_stats
+            features["imodel_min_stability"] = float(min_stability)
+            features["imodel_mean_stability"] = float(mean_stability)
+            features["imodel_mean_loss"] = float(mean_loss)
+            return features
+
     imodel_stabilities = [
         imodel.predict_stability(left, right) for left, right in edge_pairs
     ]
@@ -664,6 +673,15 @@ def _decode_topology_feature_payload(payload: Any) -> Optional[Dict[str, float]]
     return {str(key): float(value) for key, value in decoded.items()}
 
 
+def _coerce_topology_feature_mapping(payload: Any) -> Optional[Dict[str, float]]:
+    if not isinstance(payload, dict):
+        return None
+    try:
+        return {str(key): float(value) for key, value in payload.items()}
+    except (TypeError, ValueError):
+        return None
+
+
 def _extract_topology_base_feature_native(
     graph_payload: str,
     op_profiles: Dict[str, Dict[str, float]],
@@ -671,15 +689,87 @@ def _extract_topology_base_feature_native(
     native_ctx: Optional[_NativeTopologyContext],
 ) -> Optional[Dict[str, float]]:
     rust = _try_import_rust_scheduler()
-    if rust is None or not hasattr(rust, "extract_topology_features_native"):
+    if rust is None:
         return None
     ctx = native_ctx or _make_native_topology_context(op_profiles, pair_stability)
+    if hasattr(rust, "extract_topology_feature_map_native_py"):
+        try:
+            raw_result = rust.extract_topology_feature_map_native_py(
+                graph_payload,
+                ctx.op_profiles_json,
+                ctx.pair_stability_json,
+                ctx.op_metadata_json,
+            )
+        except Exception:
+            raw_result = None
+        mapped = _coerce_topology_feature_mapping(raw_result)
+        if mapped is not None:
+            return mapped
+    if not hasattr(rust, "extract_topology_features_native"):
+        return None
     try:
         raw_result = rust.extract_topology_features_native(
             graph_payload,
             ctx.op_profiles_json,
             ctx.pair_stability_json,
             ctx.op_metadata_json,
+        )
+    except Exception:
+        return None
+    return _decode_topology_feature_payload(raw_result)
+
+
+def _extract_topology_feature_with_imodel_native(
+    graph_payload: str,
+    op_profiles: Dict[str, Dict[str, float]],
+    pair_stability: Dict[Tuple[str, str], float],
+    imodel: Optional[Any],
+    native_ctx: Optional[_NativeTopologyContext],
+) -> Optional[Dict[str, float]]:
+    if not (imodel is not None and hasattr(imodel, "_trained") and imodel._trained):
+        return None
+    required_attrs = ("op_names", "u", "v", "W_s", "W_l", "b_s", "b_l")
+    if not all(hasattr(imodel, attr) for attr in required_attrs):
+        return None
+    rust = _try_import_rust_scheduler()
+    if rust is None:
+        return None
+    ctx = native_ctx or _make_native_topology_context(op_profiles, pair_stability)
+    if hasattr(rust, "extract_topology_feature_map_with_imodel_native_py"):
+        try:
+            raw_result = rust.extract_topology_feature_map_with_imodel_native_py(
+                graph_payload,
+                ctx.op_profiles_json,
+                ctx.pair_stability_json,
+                ctx.op_metadata_json,
+                list(imodel.op_names),
+                np.ascontiguousarray(imodel.u, dtype=np.float32),
+                np.ascontiguousarray(imodel.v, dtype=np.float32),
+                np.ascontiguousarray(imodel.W_s, dtype=np.float32),
+                np.ascontiguousarray(imodel.W_l, dtype=np.float32),
+                float(imodel.b_s),
+                float(imodel.b_l),
+            )
+        except Exception:
+            raw_result = None
+        mapped = _coerce_topology_feature_mapping(raw_result)
+        if mapped is not None:
+            return mapped
+    if not hasattr(rust, "extract_topology_features_with_imodel_native"):
+        return None
+    try:
+        raw_result = rust.extract_topology_features_with_imodel_native(
+            graph_payload,
+            ctx.op_profiles_json,
+            ctx.pair_stability_json,
+            ctx.op_metadata_json,
+            list(imodel.op_names),
+            np.ascontiguousarray(imodel.u, dtype=np.float32),
+            np.ascontiguousarray(imodel.v, dtype=np.float32),
+            np.ascontiguousarray(imodel.W_s, dtype=np.float32),
+            np.ascontiguousarray(imodel.W_l, dtype=np.float32),
+            float(imodel.b_s),
+            float(imodel.b_l),
         )
     except Exception:
         return None
@@ -693,9 +783,27 @@ def _extract_topology_base_features_native(
     native_ctx: Optional[_NativeTopologyContext],
 ) -> Optional[List[Optional[Dict[str, float]]]]:
     rust = _try_import_rust_scheduler()
-    if rust is None or not hasattr(rust, "extract_topology_features_batch_native"):
+    if rust is None:
         return None
     ctx = native_ctx or _make_native_topology_context(op_profiles, pair_stability)
+    if hasattr(rust, "extract_topology_feature_maps_batch_native_py"):
+        try:
+            raw_result = rust.extract_topology_feature_maps_batch_native_py(
+                serialized,
+                ctx.op_profiles_json,
+                ctx.pair_stability_json,
+                ctx.op_metadata_json,
+            )
+        except Exception:
+            raw_result = None
+        if isinstance(raw_result, list):
+            base_features = [
+                _coerce_topology_feature_mapping(payload) for payload in raw_result
+            ]
+            if len(base_features) == len(serialized):
+                return base_features
+    if not hasattr(rust, "extract_topology_features_batch_native"):
+        return None
     raw_result = rust.extract_topology_features_batch_native(
         serialized,
         ctx.op_profiles_json,
@@ -712,6 +820,73 @@ def _extract_topology_base_features_native(
     return base_features
 
 
+def _extract_topology_features_with_imodel_batch_native(
+    serialized: List[str],
+    op_profiles: Dict[str, Dict[str, float]],
+    pair_stability: Dict[Tuple[str, str], float],
+    imodel: Optional[Any],
+    native_ctx: Optional[_NativeTopologyContext],
+) -> Optional[List[Optional[Dict[str, float]]]]:
+    if not (imodel is not None and hasattr(imodel, "_trained") and imodel._trained):
+        return None
+    required_attrs = ("op_names", "u", "v", "W_s", "W_l", "b_s", "b_l")
+    if not all(hasattr(imodel, attr) for attr in required_attrs):
+        return None
+    rust = _try_import_rust_scheduler()
+    if rust is None:
+        return None
+    ctx = native_ctx or _make_native_topology_context(op_profiles, pair_stability)
+    if hasattr(rust, "extract_topology_feature_maps_with_imodel_batch_native_py"):
+        try:
+            raw_result = rust.extract_topology_feature_maps_with_imodel_batch_native_py(
+                serialized,
+                ctx.op_profiles_json,
+                ctx.pair_stability_json,
+                ctx.op_metadata_json,
+                list(imodel.op_names),
+                np.ascontiguousarray(imodel.u, dtype=np.float32),
+                np.ascontiguousarray(imodel.v, dtype=np.float32),
+                np.ascontiguousarray(imodel.W_s, dtype=np.float32),
+                np.ascontiguousarray(imodel.W_l, dtype=np.float32),
+                float(imodel.b_s),
+                float(imodel.b_l),
+            )
+        except Exception:
+            raw_result = None
+        if isinstance(raw_result, list):
+            decoded_features = [
+                _coerce_topology_feature_mapping(payload) for payload in raw_result
+            ]
+            if len(decoded_features) == len(serialized):
+                return decoded_features
+    if not hasattr(rust, "extract_topology_features_with_imodel_batch_native"):
+        return None
+    try:
+        raw_result = rust.extract_topology_features_with_imodel_batch_native(
+            serialized,
+            ctx.op_profiles_json,
+            ctx.pair_stability_json,
+            ctx.op_metadata_json,
+            list(imodel.op_names),
+            np.ascontiguousarray(imodel.u, dtype=np.float32),
+            np.ascontiguousarray(imodel.v, dtype=np.float32),
+            np.ascontiguousarray(imodel.W_s, dtype=np.float32),
+            np.ascontiguousarray(imodel.W_l, dtype=np.float32),
+            float(imodel.b_s),
+            float(imodel.b_l),
+        )
+    except Exception:
+        return None
+    if not isinstance(raw_result, list):
+        return None
+    decoded_features: List[Optional[Dict[str, float]]] = []
+    for payload in raw_result:
+        decoded_features.append(_decode_topology_feature_payload(payload))
+    if len(decoded_features) != len(serialized):
+        return None
+    return decoded_features
+
+
 def _extract_topology_features_batch(
     graph_payloads: List[Any],
     op_profiles: Dict[str, Dict[str, float]],
@@ -724,6 +899,12 @@ def _extract_topology_features_batch(
         return []
 
     serialized = [_serialize_graph_payload(payload) or "" for payload in graph_payloads]
+
+    fused_features = _extract_topology_features_with_imodel_batch_native(
+        serialized, op_profiles, pair_stability, imodel, native_ctx
+    )
+    if fused_features is not None:
+        return fused_features
 
     base_features = _extract_topology_base_features_native(
         serialized, op_profiles, pair_stability, native_ctx
@@ -766,6 +947,13 @@ def extract_topology_features(
     graph_payload = _serialize_graph_payload(graph_json)
     if graph_payload is None:
         return None
+
+    fused_feature = _extract_topology_feature_with_imodel_native(
+        graph_payload, op_profiles, pair_stability, imodel, native_ctx
+    )
+    if fused_feature is not None:
+        _NATIVE_FALLBACK_COUNTERS["topology_features_native_hit"] += 1
+        return fused_feature
 
     base_feature = _extract_topology_base_feature_native(
         graph_payload, op_profiles, pair_stability, native_ctx

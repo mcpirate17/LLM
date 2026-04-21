@@ -8,7 +8,7 @@ from typing import Any, Dict, Optional, Set
 
 import requests
 
-from .component_identity import canonicalize_component_id
+from aria_designer.component_identity import canonicalize_component_id
 from .config import settings
 
 logger = logging.getLogger(__name__)

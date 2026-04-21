@@ -81,12 +81,16 @@ export function splitCurveIntoSegments(curve) {
 
 export function buildCurveSnapshot(experimentId, curve, overrides = {}) {
   if (!experimentId || !Array.isArray(curve) || curve.length < 2) return null;
+  const phase = String(overrides.phase || curve[curve.length - 1]?.phase || '').toLowerCase();
+  const segmentLabelPrefix = overrides.segmentLabelPrefix
+    || (phase === 'investigation' ? 'program' : phase === 'validation' ? 'seed' : 'run');
   return {
     experimentId,
     curve: curve.map((point) => ({ ...point })),
     statusText: overrides.statusText || '',
     statusTone: overrides.statusTone || 'info',
     label: overrides.label || `Run ${String(experimentId).slice(0, 8)}`,
+    segmentLabelPrefix,
     updatedTs: Date.now(),
   };
 }
@@ -117,4 +121,3 @@ export function describeCurveEvent(event) {
   }
   return null;
 }
-

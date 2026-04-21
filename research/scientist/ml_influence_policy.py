@@ -51,6 +51,42 @@ def _quality_tier_from_auc(value: float | None) -> str:
     return "weak"
 
 
+def _classification_metrics(
+    section: Dict[str, Any] | None,
+    *,
+    legacy_key: str,
+) -> Dict[str, Any]:
+    payload = section or {}
+    saved_eval = payload.get("saved_runtime_artifact_evaluation") or {}
+    selected = saved_eval.get("selected_metrics")
+    if isinstance(selected, dict) and selected:
+        return selected
+    legacy = payload.get(legacy_key)
+    return legacy if isinstance(legacy, dict) else {}
+
+
+def _evaluation_metrics(
+    section: Dict[str, Any] | None,
+    *,
+    prefer_temporal: bool = True,
+    legacy_key: str,
+) -> tuple[Dict[str, Any], str]:
+    payload = section or {}
+    if prefer_temporal:
+        temporal = (payload.get("temporal_holdout_evaluation") or {}).get(
+            "selected_metrics"
+        ) or {}
+        if isinstance(temporal, dict) and temporal:
+            return temporal, "temporal_holdout_evaluation"
+    saved = (payload.get("saved_runtime_artifact_evaluation") or {}).get(
+        "selected_metrics"
+    ) or {}
+    if isinstance(saved, dict) and saved:
+        return saved, "saved_runtime_artifact_evaluation"
+    legacy = payload.get(legacy_key)
+    return (legacy if isinstance(legacy, dict) else {}), legacy_key
+
+
 def build_ml_influence_policy(
     config: RunConfig | None = None,
     report: Dict[str, Any] | None = None,
@@ -59,15 +95,21 @@ def build_ml_influence_policy(
     metrics = report if report is not None else load_predictor_metrics_report()
     allow_unproven = bool(getattr(cfg, "allow_unproven_ml_influence", False))
 
-    ensemble_metrics = (metrics.get("ensemble_calibrated") or {}).get(
-        "val_metrics_selected_threshold"
-    ) or {}
-    gbm_metrics = (metrics.get("gbm_gate") or {}).get(
-        "val_metrics_selected_threshold"
-    ) or {}
-    graph_metrics = (metrics.get("graph_predictor") or {}).get(
-        "derived_val_classification_metrics"
-    ) or {}
+    ensemble_metrics, ensemble_metric_source = _evaluation_metrics(
+        metrics.get("ensemble_calibrated"),
+        prefer_temporal=True,
+        legacy_key="val_metrics_selected_threshold",
+    )
+    gbm_metrics, gbm_metric_source = _evaluation_metrics(
+        metrics.get("gbm_gate"),
+        prefer_temporal=True,
+        legacy_key="val_metrics_selected_threshold",
+    )
+    graph_metrics, graph_metric_source = _evaluation_metrics(
+        metrics.get("graph_predictor"),
+        prefer_temporal=True,
+        legacy_key="derived_val_classification_metrics",
+    )
     investigation_metrics = metrics.get("investigation_predictor") or {}
 
     ensemble_auc = _float_or_none(ensemble_metrics.get("roc_auc"))
@@ -97,6 +139,7 @@ def build_ml_influence_policy(
             "quality_tier": _quality_tier_from_auc(ensemble_auc),
             "roc_auc": ensemble_auc,
             "precision_ppv": ensemble_ppv,
+            "metric_source": ensemble_metric_source,
             "reason": (
                 "meets_screening_thresholds"
                 if screening_proven
@@ -108,12 +151,14 @@ def build_ml_influence_policy(
                 _float_or_none(gbm_metrics.get("roc_auc"))
             ),
             "roc_auc": _float_or_none(gbm_metrics.get("roc_auc")),
+            "metric_source": gbm_metric_source,
         },
         "graph_predictor": {
             "quality_tier": _quality_tier_from_auc(
                 _float_or_none(graph_metrics.get("roc_auc"))
             ),
             "roc_auc": _float_or_none(graph_metrics.get("roc_auc")),
+            "metric_source": graph_metric_source,
         },
         "learned_candidate_weights": {
             "requested": bool(cfg.use_learned_candidate_weights),

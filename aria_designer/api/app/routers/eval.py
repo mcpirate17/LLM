@@ -16,25 +16,24 @@ from ..models import (
     RunWorkflowRequest,
     utc_now_iso as _utc_now,
 )
-from ..shared_api import (
-    HAS_BRIDGE,
-    HAS_PROFILER,
+from ..eval_run_store import _get_run, _list_runs, _store_run, _update_run
+from ..perf_support import (
     _build_designer_perf_bundle,
-    _collect_workflow_semantic_warnings,
     _compute_eval_composite_score,
     _discovery_url_for_fingerprint,
-    _get_run,
-    _list_runs,
-    _require_run,
-    _store_run,
-    _sync_lineage_to_research,
-    _update_run,
+    designer_metrics_from_stages,
+)
+from ..research_sync import _sync_lineage_to_research
+from ..runtime_features import (
+    HAS_BRIDGE,
+    HAS_PROFILER,
     _RESEARCH_ROOT,
     bridge_analyze_compression,
     bridge_analyze_routing,
     bridge_evaluate,
-    designer_metrics_from_stages,
 )
+from ..workflow_support import _collect_workflow_semantic_warnings, _require_run
+from ..workflow_graph_cache import materialize_workflow_graph
 from research.defaults import MODEL_DIM, VOCAB_SIZE
 from research.perf_contract import build_duplicate_work_report
 from ..type_utils import dig, safe_float
@@ -165,9 +164,12 @@ async def _stage_conversion(wf: dict, model_dim: int) -> dict:
         graph, cg_to_aria = original
         used_original = True
     else:
-        from aria_designer.runtime.bridge import workflow_to_graph as _w2g
-
-        graph, id_map = await asyncio.to_thread(_w2g, wf, model_dim, return_id_map=True)
+        graph, id_map = await asyncio.to_thread(
+            materialize_workflow_graph,
+            wf,
+            model_dim,
+            return_id_map=True,
+        )
         cg_to_aria = {v: k for k, v in id_map.items()}
         used_original = False
 

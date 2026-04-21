@@ -25,13 +25,20 @@ use crate::ffi;
 use crate::graph::GraphIR;
 use crate::intelligence::{
     extract_edge_op_pairs_batch_json, extract_edge_op_pairs_json, extract_graph_segments_json,
+    extract_graph_segments_map,
+    extract_topology_feature_map,
+    extract_topology_feature_map_with_imodel,
     extract_topology_features_batch_json,
+    extract_topology_feature_maps_batch,
+    extract_topology_feature_maps_with_imodel_batch,
     extract_topology_features_json,
+    extract_topology_features_with_imodel_json,
+    extract_topology_features_with_imodel_batch,
     train_interaction_model_native,
     train_op_embeddings_epoch_native,
 };
 use crate::notebook_graph::{
-    analyze_graph_provenance_json, extract_graph_feature_payload_json, extract_graph_ops_json,
+    analyze_graph_provenance, analyze_graph_provenance_json, extract_graph_feature_payload_json, extract_graph_ops_json,
     extract_graph_structure_features_json,
 };
 use crate::template_selection::TemplateSelector;
@@ -84,6 +91,28 @@ fn readonly_array_slice<'py, T: Element>(
     input
         .as_slice()
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+}
+
+fn feature_map_to_pydict<'py>(
+    py: Python<'py>,
+    features: HashMap<String, f64>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let dict = PyDict::new_bound(py);
+    for (key, value) in features {
+        dict.set_item(key, value)?;
+    }
+    Ok(dict)
+}
+
+fn feature_maps_to_pylist<'py>(
+    py: Python<'py>,
+    features_batch: Vec<HashMap<String, f64>>,
+) -> PyResult<Bound<'py, PyList>> {
+    let items = PyList::empty_bound(py);
+    for features in features_batch {
+        items.append(feature_map_to_pydict(py, features)?)?;
+    }
+    Ok(items)
 }
 
 fn matrix_to_numpy<'py>(
@@ -181,6 +210,21 @@ fn analyze_graph_provenance_native(
 ) -> PyResult<String> {
     analyze_graph_provenance_json(graph_json, failure_op, &generic_sink_ops)
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))
+}
+
+#[pyfunction(signature = (graph_json, generic_sink_ops, failure_op=None))]
+fn analyze_graph_provenance_native_py<'py>(
+    py: Python<'py>,
+    graph_json: &str,
+    generic_sink_ops: Vec<String>,
+    failure_op: Option<&str>,
+) -> PyResult<PyObject> {
+    let payload = analyze_graph_provenance(graph_json, failure_op, &generic_sink_ops)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+    let dict = PyDict::new_bound(py);
+    dict.set_item("op_names", payload.op_names)?;
+    dict.set_item("source_op", payload.source_op)?;
+    Ok(dict.into())
 }
 
 #[pyfunction]
@@ -541,6 +585,120 @@ fn extract_topology_features_native(
 }
 
 #[pyfunction]
+fn extract_topology_feature_map_native_py<'py>(
+    py: Python<'py>,
+    graph_json: &str,
+    op_profiles_json: &str,
+    pair_stability_json: &str,
+    op_metadata_json: &str,
+) -> PyResult<PyObject> {
+    let features = extract_topology_feature_map(
+        graph_json,
+        op_profiles_json,
+        pair_stability_json,
+        op_metadata_json,
+    )
+    .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+    Ok(feature_map_to_pydict(py, features)?.into())
+}
+
+#[pyfunction]
+fn extract_topology_features_with_imodel_native<'py>(
+    graph_json: &str,
+    op_profiles_json: &str,
+    pair_stability_json: &str,
+    op_metadata_json: &str,
+    op_names: Vec<String>,
+    u: PyReadonlyArrayDyn<'py, f32>,
+    v: PyReadonlyArrayDyn<'py, f32>,
+    w_s: PyReadonlyArrayDyn<'py, f32>,
+    w_l: PyReadonlyArrayDyn<'py, f32>,
+    b_s: f64,
+    b_l: f64,
+) -> PyResult<String> {
+    let u_shape = u.shape();
+    let v_shape = v.shape();
+    let ws_shape = w_s.shape();
+    let wl_shape = w_l.shape();
+    if u_shape.len() != 2 || v_shape.len() != 2 || ws_shape.len() != 2 || wl_shape.len() != 2 {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "interaction model arrays must be 2D",
+        ));
+    }
+    extract_topology_features_with_imodel_json(
+        graph_json,
+        op_profiles_json,
+        pair_stability_json,
+        op_metadata_json,
+        &op_names,
+        readonly_array_slice(&u)?,
+        u_shape[0],
+        u_shape[1],
+        readonly_array_slice(&v)?,
+        v_shape[0],
+        v_shape[1],
+        readonly_array_slice(&w_s)?,
+        ws_shape[0],
+        ws_shape[1],
+        readonly_array_slice(&w_l)?,
+        wl_shape[0],
+        wl_shape[1],
+        b_s,
+        b_l,
+    )
+    .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))
+}
+
+#[pyfunction]
+fn extract_topology_feature_map_with_imodel_native_py<'py>(
+    py: Python<'py>,
+    graph_json: &str,
+    op_profiles_json: &str,
+    pair_stability_json: &str,
+    op_metadata_json: &str,
+    op_names: Vec<String>,
+    u: PyReadonlyArrayDyn<'py, f32>,
+    v: PyReadonlyArrayDyn<'py, f32>,
+    w_s: PyReadonlyArrayDyn<'py, f32>,
+    w_l: PyReadonlyArrayDyn<'py, f32>,
+    b_s: f64,
+    b_l: f64,
+) -> PyResult<PyObject> {
+    let u_shape = u.shape();
+    let v_shape = v.shape();
+    let ws_shape = w_s.shape();
+    let wl_shape = w_l.shape();
+    if u_shape.len() != 2 || v_shape.len() != 2 || ws_shape.len() != 2 || wl_shape.len() != 2 {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "interaction model arrays must be 2D",
+        ));
+    }
+    let features = extract_topology_feature_map_with_imodel(
+        graph_json,
+        op_profiles_json,
+        pair_stability_json,
+        op_metadata_json,
+        &op_names,
+        readonly_array_slice(&u)?,
+        u_shape[0],
+        u_shape[1],
+        readonly_array_slice(&v)?,
+        v_shape[0],
+        v_shape[1],
+        readonly_array_slice(&w_s)?,
+        ws_shape[0],
+        ws_shape[1],
+        readonly_array_slice(&w_l)?,
+        wl_shape[0],
+        wl_shape[1],
+        b_s,
+        b_l,
+    )
+    .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+    Ok(feature_map_to_pydict(py, features)?.into())
+}
+
+#[pyfunction]
 fn extract_topology_features_batch_native(
     graphs: Vec<String>,
     op_profiles_json: &str,
@@ -554,6 +712,120 @@ fn extract_topology_features_batch_native(
         op_metadata_json,
     )
     .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))
+}
+
+#[pyfunction]
+fn extract_topology_feature_maps_batch_native_py<'py>(
+    py: Python<'py>,
+    graphs: Vec<String>,
+    op_profiles_json: &str,
+    pair_stability_json: &str,
+    op_metadata_json: &str,
+) -> PyResult<PyObject> {
+    let features_batch = extract_topology_feature_maps_batch(
+        &graphs,
+        op_profiles_json,
+        pair_stability_json,
+        op_metadata_json,
+    )
+    .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+    Ok(feature_maps_to_pylist(py, features_batch)?.into())
+}
+
+#[pyfunction]
+fn extract_topology_features_with_imodel_batch_native<'py>(
+    graphs: Vec<String>,
+    op_profiles_json: &str,
+    pair_stability_json: &str,
+    op_metadata_json: &str,
+    op_names: Vec<String>,
+    u: PyReadonlyArrayDyn<'py, f32>,
+    v: PyReadonlyArrayDyn<'py, f32>,
+    w_s: PyReadonlyArrayDyn<'py, f32>,
+    w_l: PyReadonlyArrayDyn<'py, f32>,
+    b_s: f64,
+    b_l: f64,
+) -> PyResult<Vec<String>> {
+    let u_shape = u.shape();
+    let v_shape = v.shape();
+    let ws_shape = w_s.shape();
+    let wl_shape = w_l.shape();
+    if u_shape.len() != 2 || v_shape.len() != 2 || ws_shape.len() != 2 || wl_shape.len() != 2 {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "interaction model arrays must be 2D",
+        ));
+    }
+    extract_topology_features_with_imodel_batch(
+        &graphs,
+        op_profiles_json,
+        pair_stability_json,
+        op_metadata_json,
+        &op_names,
+        readonly_array_slice(&u)?,
+        u_shape[0],
+        u_shape[1],
+        readonly_array_slice(&v)?,
+        v_shape[0],
+        v_shape[1],
+        readonly_array_slice(&w_s)?,
+        ws_shape[0],
+        ws_shape[1],
+        readonly_array_slice(&w_l)?,
+        wl_shape[0],
+        wl_shape[1],
+        b_s,
+        b_l,
+    )
+    .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))
+}
+
+#[pyfunction]
+fn extract_topology_feature_maps_with_imodel_batch_native_py<'py>(
+    py: Python<'py>,
+    graphs: Vec<String>,
+    op_profiles_json: &str,
+    pair_stability_json: &str,
+    op_metadata_json: &str,
+    op_names: Vec<String>,
+    u: PyReadonlyArrayDyn<'py, f32>,
+    v: PyReadonlyArrayDyn<'py, f32>,
+    w_s: PyReadonlyArrayDyn<'py, f32>,
+    w_l: PyReadonlyArrayDyn<'py, f32>,
+    b_s: f64,
+    b_l: f64,
+) -> PyResult<PyObject> {
+    let u_shape = u.shape();
+    let v_shape = v.shape();
+    let ws_shape = w_s.shape();
+    let wl_shape = w_l.shape();
+    if u_shape.len() != 2 || v_shape.len() != 2 || ws_shape.len() != 2 || wl_shape.len() != 2 {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "interaction model arrays must be 2D",
+        ));
+    }
+    let features_batch = extract_topology_feature_maps_with_imodel_batch(
+        &graphs,
+        op_profiles_json,
+        pair_stability_json,
+        op_metadata_json,
+        &op_names,
+        readonly_array_slice(&u)?,
+        u_shape[0],
+        u_shape[1],
+        readonly_array_slice(&v)?,
+        v_shape[0],
+        v_shape[1],
+        readonly_array_slice(&w_s)?,
+        ws_shape[0],
+        ws_shape[1],
+        readonly_array_slice(&w_l)?,
+        wl_shape[0],
+        wl_shape[1],
+        b_s,
+        b_l,
+    )
+    .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+    Ok(feature_maps_to_pylist(py, features_batch)?.into())
 }
 
 #[pyfunction]
@@ -576,6 +848,22 @@ fn extract_graph_segments_native(
 ) -> PyResult<String> {
     extract_graph_segments_json(graph_json, min_len, max_len)
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))
+}
+
+#[pyfunction]
+fn extract_graph_segments_map_native_py<'py>(
+    py: Python<'py>,
+    graph_json: &str,
+    min_len: usize,
+    max_len: usize,
+) -> PyResult<PyObject> {
+    let counts = extract_graph_segments_map(graph_json, min_len, max_len)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+    let dict = PyDict::new_bound(py);
+    for (key, value) in counts {
+        dict.set_item(key, value)?;
+    }
+    Ok(dict.into())
 }
 
 #[pyfunction]
@@ -1459,14 +1747,37 @@ fn aria_scheduler(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(extract_graph_feature_payload, m)?)?;
     m.add_function(wrap_pyfunction!(extract_graph_structure_features_native, m)?)?;
     m.add_function(wrap_pyfunction!(analyze_graph_provenance_native, m)?)?;
+    m.add_function(wrap_pyfunction!(analyze_graph_provenance_native_py, m)?)?;
     m.add_function(wrap_pyfunction!(build_op_index_from_rows, m)?)?;
     m.add_function(wrap_pyfunction!(build_graph_training_corpus, m)?)?;
     m.add_function(wrap_pyfunction!(build_predictor_training_corpus, m)?)?;
     m.add_function(wrap_pyfunction!(extract_topology_features_native, m)?)?;
+    m.add_function(wrap_pyfunction!(extract_topology_feature_map_native_py, m)?)?;
+    m.add_function(wrap_pyfunction!(
+        extract_topology_features_with_imodel_native,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
+        extract_topology_feature_map_with_imodel_native_py,
+        m
+    )?)?;
     m.add_function(wrap_pyfunction!(extract_topology_features_batch_native, m)?)?;
+    m.add_function(wrap_pyfunction!(
+        extract_topology_feature_maps_batch_native_py,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
+        extract_topology_features_with_imodel_batch_native,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
+        extract_topology_feature_maps_with_imodel_batch_native_py,
+        m
+    )?)?;
     m.add_function(wrap_pyfunction!(extract_edge_op_pairs_native, m)?)?;
     m.add_function(wrap_pyfunction!(extract_edge_op_pairs_batch_native, m)?)?;
     m.add_function(wrap_pyfunction!(extract_graph_segments_native, m)?)?;
+    m.add_function(wrap_pyfunction!(extract_graph_segments_map_native_py, m)?)?;
     m.add_function(wrap_pyfunction!(train_interaction_model_native_py, m)?)?;
     m.add_function(wrap_pyfunction!(train_op_embeddings_epoch_native_py, m)?)?;
     m.add_function(wrap_pyfunction!(execute_graph, m)?)?;

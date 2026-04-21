@@ -5,7 +5,10 @@ import tempfile
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 from research.scientist.notebook import LabNotebook
+from research.scientist.leaderboard_scoring import build_score_kwargs, compute_composite
 from research.scientist.runner._helpers_benchmark import promote_validation_candidate
 from research.scientist.runner.execution_screening import _record_screening_failure
 
@@ -81,6 +84,23 @@ def _validation_ev_res(**overrides):
     return SimpleNamespace(**base)
 
 
+def _mark_promotable(nb: LabNotebook, result_id: str) -> None:
+    nb.conn.execute(
+        """
+        UPDATE program_results
+        SET trust_label = ?, comparability_label = ?, data_provenance_json = ?
+        WHERE result_id = ?
+        """,
+        (
+            "candidate_grade",
+            "candidate_comparable",
+            json.dumps({"eligible_for_promotion": True, "provenance_complete": True}),
+            result_id,
+        ),
+    )
+    nb.conn.commit()
+
+
 def test_merge_program_result_patch_clears_failure_when_stage1_recovers():
     with tempfile.TemporaryDirectory() as tmpdir:
         nb = LabNotebook(f"{tmpdir}/merge.db")
@@ -115,6 +135,96 @@ def test_merge_program_result_patch_clears_failure_when_stage1_recovers():
         assert row["error_type"] is None
         assert row["error_message"] is None
         assert row["stage_at_death"] is None
+        nb.close()
+
+
+def test_sync_behavioral_fingerprint_result_updates_top_level_fields():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        nb = LabNotebook(f"{tmpdir}/fingerprint_sync.db")
+        exp_id = nb.start_experiment("synthesis", {}, "fingerprint sync")
+        rid = nb.record_program_result(
+            experiment_id=exp_id,
+            graph_fingerprint="fp_sync_top_level",
+            graph_json="{}",
+            model_source="graph_synthesis",
+            stage0_passed=True,
+            stage05_passed=True,
+            stage1_passed=True,
+            novelty_score=0.28,
+            novelty_confidence=0.35,
+            cka_source="deferred",
+            novelty_valid_for_promotion=0,
+            novelty_validity_reason="cka_deferred_post_investigation",
+            fp_jacobian_spectral_norm=43610.9,
+            fingerprint_json=json.dumps({"novelty_score": 0.28}),
+        )
+        nb.flush_writes()
+        nb.upsert_leaderboard(
+            result_id=rid,
+            model_source="graph_synthesis",
+            screening_loss_ratio=0.42,
+            screening_novelty=0.28,
+            screening_passed=True,
+            tier="screening",
+            novelty_confidence=0.35,
+            fp_jacobian_spectral_norm=43610.9,
+        )
+        nb.flush_writes()
+
+        fp_payload = {
+            "novelty_score": 0.794569122294585,
+            "quality": "partial",
+            "analyses_succeeded": 3,
+            "cka_source": "none",
+            "cka_artifact_version": None,
+            "cka_probe_protocol_hash": None,
+            "cka_reference_quality": "none",
+            "novelty_valid_for_promotion": False,
+            "novelty_validity_reason": "no_reference_available",
+            "novelty_reference_version": "nv1:none",
+            "jacobian_spectral_norm": 5518.1201171875,
+            "jacobian_effective_rank": 4.2,
+            "sensitivity_uniformity": 0.6,
+            "interaction_locality": 0.1,
+            "interaction_sparsity": 0.2,
+            "interaction_symmetry": 0.3,
+            "interaction_hierarchy": 0.4,
+            "intrinsic_dim": 5.0,
+            "isotropy": 0.7,
+            "rank_ratio": 0.8,
+            "cka_vs_transformer": 0.0,
+            "cka_vs_ssm": 0.0,
+            "cka_vs_conv": 0.0,
+            "hierarchy_fitness": 0.15,
+            "gromov_delta": 0.25,
+            "fingerprint_completed_post_investigation": True,
+        }
+
+        changed = nb.sync_behavioral_fingerprint_result(
+            result_id=rid,
+            fp_payload=fp_payload,
+        )
+        nb.flush_writes()
+
+        assert changed is True
+        row = nb.get_program_detail(rid)
+        assert row is not None
+        assert row["novelty_score"] == fp_payload["novelty_score"]
+        assert row["novelty_confidence"] == pytest.approx(0.7)
+        assert row["cka_source"] == "none"
+        assert row["novelty_validity_reason"] == "no_reference_available"
+        assert row["fp_jacobian_spectral_norm"] == fp_payload["jacobian_spectral_norm"]
+
+        entry = nb.conn.execute(
+            "SELECT screening_novelty, fp_jacobian_spectral_norm "
+            "FROM leaderboard WHERE result_id = ?",
+            (rid,),
+        ).fetchone()
+        assert entry is not None
+        assert entry["screening_novelty"] == fp_payload["novelty_score"]
+        assert (
+            entry["fp_jacobian_spectral_norm"] == fp_payload["jacobian_spectral_norm"]
+        )
         nb.close()
 
 
@@ -199,22 +309,7 @@ def test_promote_validation_candidate_updates_source_row_without_duplicate():
             screening_passed=True,
             tier="screening",
         )
-        nb.conn.execute(
-            """
-            UPDATE program_results
-            SET trust_label = ?, comparability_label = ?, data_provenance_json = ?
-            WHERE result_id = ?
-            """,
-            (
-                "candidate_grade",
-                "candidate_comparable",
-                json.dumps(
-                    {"eligible_for_promotion": True, "provenance_complete": True}
-                ),
-                rid,
-            ),
-        )
-        nb.conn.commit()
+        _mark_promotable(nb, rid)
 
         metrics = SimpleNamespace(
             val_loss_ratio=0.31,
@@ -263,4 +358,206 @@ def test_promote_validation_candidate_updates_source_row_without_duplicate():
         assert lb["validation_baseline_ratio"] == 0.88
         assert lb["validation_multi_seed_std"] == 0.03
         assert int(lb["validation_passed"] or 0) == 1
+        nb.close()
+
+
+def test_promote_validation_candidate_uses_fingerprint_canonical_row():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        nb = LabNotebook(f"{tmpdir}/validation_fingerprint.db")
+
+        screen_exp = nb.start_experiment("synthesis", {}, "screening source")
+        canonical_rid = nb.record_program_result(
+            experiment_id=screen_exp,
+            graph_fingerprint="fp_validation_fingerprint",
+            graph_json="{}",
+            model_source="graph_synthesis",
+            stage0_passed=True,
+            stage05_passed=True,
+            stage1_passed=True,
+            loss_ratio=0.41,
+            novelty_score=0.63,
+            novelty_confidence=0.72,
+            fp_jacobian_spectral_norm=1.4,
+        )
+        _mark_promotable(nb, canonical_rid)
+        nb.upsert_leaderboard(
+            result_id=canonical_rid,
+            model_source="graph_synthesis",
+            screening_loss_ratio=0.41,
+            screening_novelty=0.63,
+            screening_passed=True,
+            tier="screening",
+        )
+
+        inv_exp = nb.start_experiment("investigation", {}, "investigation child")
+        child_rid = nb.record_program_result(
+            experiment_id=inv_exp,
+            graph_fingerprint="fp_validation_fingerprint",
+            graph_json="{}",
+            model_source="graph_synthesis",
+            stage0_passed=True,
+            stage05_passed=True,
+            stage1_passed=True,
+            loss_ratio=0.33,
+            novelty_score=0.63,
+            novelty_confidence=0.72,
+            fp_jacobian_spectral_norm=1.4,
+        )
+        _mark_promotable(nb, child_rid)
+        nb.flush_writes()
+
+        metrics = SimpleNamespace(
+            val_loss_ratio=0.29,
+            val_baseline_ratio=0.83,
+            val_normalized_ratio=0.8,
+            val_param_efficiency=0.12,
+            multi_seed_std=0.02,
+            robustness_score=0.91,
+            is_unstable=False,
+            passed_seeds=[1, 2, 3, 4, 5],
+            init_sensitivity_std=0.04,
+        )
+        promote_validation_candidate(
+            nb=nb,
+            source_result_id=child_rid,
+            source=nb.get_program_detail(child_rid),
+            tier="validation",
+            metrics=metrics,
+            ev_res=_validation_ev_res(
+                scaling_result={"score": 0.77},
+                long_context_details={"multi_hop": {"score": 0.69}},
+            ),
+        )
+        nb.flush_writes()
+
+        child_row = nb.conn.execute(
+            """
+            SELECT validation_loss_ratio, baseline_loss_ratio,
+                   wikitext_perplexity, external_benchmarks_json
+            FROM program_results
+            WHERE result_id = ?
+            """,
+            (child_rid,),
+        ).fetchone()
+        canonical_lb = nb.get_leaderboard_entry(canonical_rid)
+        canonical_row = nb.conn.execute(
+            """
+            SELECT external_benchmarks_json
+            FROM program_results
+            WHERE result_id = ?
+            """,
+            (canonical_rid,),
+        ).fetchone()
+        leaderboard_count = nb.conn.execute(
+            """
+            SELECT COUNT(*) AS n
+            FROM leaderboard l
+            JOIN program_results pr ON pr.result_id = l.result_id
+            WHERE pr.graph_fingerprint = ?
+            """,
+            ("fp_validation_fingerprint",),
+        ).fetchone()
+
+        assert child_row is not None
+        assert child_row["validation_loss_ratio"] == 0.29
+        assert child_row["baseline_loss_ratio"] == 0.83
+        assert child_row["wikitext_perplexity"] == 7.2
+        assert canonical_lb is not None
+        assert canonical_lb["tier"] == "validation"
+        assert canonical_lb["result_id"] == canonical_rid
+        assert canonical_lb["validation_loss_ratio"] == 0.29
+        assert canonical_lb["validation_baseline_ratio"] == 0.83
+        assert int(canonical_lb["validation_passed"] or 0) == 1
+        assert leaderboard_count["n"] == 1
+        assert json.loads(child_row["external_benchmarks_json"])["score"] == 0.77
+        assert json.loads(canonical_row["external_benchmarks_json"])["score"] == 0.77
+        nb.close()
+
+
+def test_sync_fingerprint_leaderboard_preserves_child_validation_evidence():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        nb = LabNotebook(f"{tmpdir}/fingerprint_sync.db")
+
+        screen_exp = nb.start_experiment("synthesis", {}, "screening anchor")
+        anchor_rid = nb.record_program_result(
+            experiment_id=screen_exp,
+            graph_fingerprint="fp_sync_validation",
+            graph_json="{}",
+            model_source="graph_synthesis",
+            stage1_passed=True,
+            loss_ratio=0.46,
+            novelty_score=0.58,
+        )
+        nb.upsert_leaderboard(
+            result_id=anchor_rid,
+            model_source="graph_synthesis",
+            screening_loss_ratio=0.46,
+            screening_novelty=0.58,
+            screening_passed=True,
+            tier="screening",
+        )
+
+        val_exp = nb.start_experiment("validation", {}, "child validation")
+        child_rid = nb.record_program_result(
+            experiment_id=val_exp,
+            graph_fingerprint="fp_sync_validation",
+            graph_json="{}",
+            model_source="graph_synthesis",
+            stage1_passed=True,
+            loss_ratio=0.32,
+            validation_loss_ratio=0.27,
+            baseline_loss_ratio=0.81,
+            validation_multi_seed_std=0.019,
+            validation_passed=True,
+        )
+        nb.flush_writes()
+
+        nb._sync_fingerprint_leaderboard(child_rid)
+
+        row = nb.get_leaderboard_entry(anchor_rid)
+        assert row is not None
+        assert row["tier"] == "validation"
+        assert row["validation_loss_ratio"] == 0.27
+        assert row["validation_baseline_ratio"] == 0.81
+        expected = compute_composite(
+            **build_score_kwargs(nb.conn, nb, anchor_rid, dict(row), False)
+        )
+        assert row["composite_score"] == expected
+        nb.close()
+
+
+def test_sync_fingerprint_leaderboard_preserves_investigation_tier_without_pass():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        nb = LabNotebook(f"{tmpdir}/fingerprint_sync_investigation.db")
+
+        exp_id = nb.start_experiment("investigation", {}, "investigation anchor")
+        rid = nb.record_program_result(
+            experiment_id=exp_id,
+            graph_fingerprint="fp_sync_investigation",
+            graph_json="{}",
+            model_source="graph_synthesis",
+            stage1_passed=True,
+            loss_ratio=0.58,
+            novelty_score=0.61,
+        )
+        _mark_promotable(nb, rid)
+        nb.upsert_leaderboard(
+            result_id=rid,
+            model_source="graph_synthesis",
+            tier="investigation",
+            screening_loss_ratio=0.58,
+            screening_novelty=0.61,
+            screening_passed=True,
+            investigation_loss_ratio=0.58,
+            investigation_robustness=1.0,
+            investigation_passed=False,
+        )
+        nb.flush_writes()
+
+        nb._sync_fingerprint_leaderboard(rid)
+
+        row = nb.get_leaderboard_entry(rid)
+        assert row is not None
+        assert row["tier"] == "investigation"
+        assert int(row["investigation_passed"] or 0) == 0
         nb.close()

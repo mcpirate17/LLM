@@ -1014,17 +1014,16 @@ class _ExecutionInvestigationMixin:
                             if _fp.quality == "partial"
                             else 0.3
                         )
-                        # Persist to DB so escalation gate can read it.
-                        nb._submit_write(
-                            "UPDATE program_results "
-                            "SET fingerprint_json = ?, "
-                            "    novelty_valid_for_promotion = ? "
-                            "WHERE result_id = ?",
-                            (
-                                json.dumps(_fp_dict_updated),
-                                int(_fp.novelty_valid_for_promotion),
-                                source_result_id,
-                            ),
+                        source.update(
+                            nb._behavioral_fingerprint_program_fields(
+                                _fp_dict_updated,
+                                novelty_confidence=source["novelty_confidence"],
+                            )
+                        )
+                        nb.sync_behavioral_fingerprint_result(
+                            result_id=source_result_id,
+                            fp_payload=_fp_dict_updated,
+                            novelty_confidence=source["novelty_confidence"],
                         )
                         logger.info(
                             "post_investigation_fingerprint_completed: "
@@ -1122,6 +1121,7 @@ class _ExecutionInvestigationMixin:
                 graph_json_str=graph_json_str,
                 arch_spec_json_str=arch_spec_json_str,
                 n_passed=n_passed,
+                n_programs_tested=len(training_programs),
                 best_lr=best_lr,
                 best_tp_json=best_tp_json,
                 robustness=robustness,
@@ -1141,6 +1141,7 @@ class _ExecutionInvestigationMixin:
                 graph_json_str=graph_json_str,
                 arch_spec_json_str=arch_spec_json_str,
                 n_passed=n_passed,
+                n_programs_tested=len(training_programs),
                 best_lr=best_lr,
                 best_tp_json=best_tp_json,
                 robustness=robustness,

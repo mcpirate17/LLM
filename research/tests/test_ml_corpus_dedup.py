@@ -340,7 +340,7 @@ def test_predictor_query_reraises_corpus_integrity_error(monkeypatch) -> None:
         raise CorpusIntegrityError("predictor corpus broken")
 
     monkeypatch.setattr(
-        "research.scientist.intelligence.predictor.load_deduped_predictor_training_rows",
+        "research.scientist.intelligence.predictor_ridge.load_deduped_predictor_training_rows",
         _broken_loader,
     )
 
@@ -359,7 +359,7 @@ def test_gbm_query_reraises_corpus_integrity_error(monkeypatch) -> None:
         raise CorpusIntegrityError("graph corpus broken")
 
     monkeypatch.setattr(
-        "research.scientist.intelligence.predictor.load_deduped_graph_training_rows",
+        "research.scientist.intelligence.predictor_gbm.load_screening_predictor_corpus_rows",
         _broken_loader,
     )
 
@@ -569,13 +569,21 @@ def test_gbm_query_uses_deduped_graph_rows(tmp_path: Path) -> None:
     conn.commit()
     conn.close()
 
-    feat_dicts, y_gate, y_rank, sample_weights, graph_signatures = (
-        _query_graph_training_data(str(db_path))
-    )
+    (
+        feat_dicts,
+        y_gate,
+        y_rank_ppl,
+        y_rank_composite,
+        sample_weights,
+        latest_timestamps,
+        graph_signatures,
+    ) = _query_graph_training_data(str(db_path))
     assert len(feat_dicts) == 1
     assert y_gate.tolist() == [1]
-    assert y_rank.tolist() == [7.0]
+    assert y_rank_ppl.tolist() == [7.0]
+    assert np.isnan(y_rank_composite[0])
     assert sample_weights.shape == (1,)
+    assert latest_timestamps.shape == (1,)
     assert len(graph_signatures) == 1
 
 
@@ -649,3 +657,24 @@ def test_op_embeddings_cooccurrence_pairs_dedupe_reruns(tmp_path: Path) -> None:
     positive, negative = _extract_cooccurrence_pairs(db_path, op_to_idx)
     assert positive == [(0, 1)]
     assert negative == []
+
+
+def test_graph_fingerprint_fallback_uses_shared_graph_parser(monkeypatch) -> None:
+    from research.scientist.intelligence import ml_corpus
+    import research.synthesis.serializer as serializer_mod
+
+    calls = {"n": 0}
+    original_graph_from_json = serializer_mod.graph_from_json
+
+    def _counted_graph_from_json(payload: str):
+        calls["n"] += 1
+        return original_graph_from_json(payload)
+
+    monkeypatch.setattr(ml_corpus, "_try_import_rust_scheduler", lambda: None)
+    monkeypatch.setattr(serializer_mod, "graph_from_json", _counted_graph_from_json)
+
+    payload = graph_json('{"templates_used":["fp"]}')
+    fingerprint = ml_corpus._graph_fingerprint(payload)
+
+    assert fingerprint
+    assert calls["n"] == 1

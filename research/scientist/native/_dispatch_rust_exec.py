@@ -49,16 +49,21 @@ def _compile_rust_graph_handle(graph_json: str) -> Any:
         return None
 
 
-def _prepare_graph_input(graph: Any, input_data: Any):
+def _prepare_graph_input(
+    graph: Any,
+    input_data: Any,
+    *,
+    ir_json: Optional[str] = None,
+):
     """Shared setup for graph dispatch: convert input + serialize IR.
 
     Returns (x_np, graph_json) where x_np is a float32 numpy array
     and graph_json is the serialized native IR JSON string.
     """
-    from ..synthesis.native_ir_converter import graph_to_native_ir_json
+    from ...synthesis.native_ir_converter import graph_to_native_ir_json
 
     x_np = to_native_array(input_data)
-    graph_json = graph_to_native_ir_json(graph)
+    graph_json = ir_json if ir_json is not None else graph_to_native_ir_json(graph)
     return x_np, graph_json
 
 

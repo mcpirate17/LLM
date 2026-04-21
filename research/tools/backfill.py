@@ -323,57 +323,90 @@ def query_signal_candidates(
     if null_column and not force:
         where += f" AND pr.{null_column} IS NULL"
 
+    shard_idx, shard_n = shard if shard is not None else (0, 1)
     rows = nb.conn.execute(
         f"""
-        SELECT pr.result_id, pr.graph_fingerprint, pr.graph_json,
-          pr.hellaswag_acc, pr.induction_auc, pr.binding_auc, pr.ar_auc,
-          pr.blimp_overall_accuracy,
-          l.entry_id, l.tier, l.composite_score, l.is_reference, l.model_source
-        FROM program_results pr
-        LEFT JOIN leaderboard l ON pr.result_id = l.result_id
-        WHERE {where}
-          AND pr.graph_fingerprint IS NOT NULL
-          AND pr.graph_fingerprint != ''
-          AND pr.graph_json IS NOT NULL
-          AND pr.graph_json != ''
-          AND pr.graph_json != '{{}}'
-        ORDER BY
-          (COALESCE(pr.induction_auc, 0) * 3.0
-            + COALESCE(pr.binding_auc, 0) * 3.0
-            + COALESCE(pr.ar_auc, 0) * 2.0
-            + MAX(COALESCE(pr.hellaswag_acc, 0) - 0.25, 0) * 2.0
-            + MAX(COALESCE(pr.blimp_overall_accuracy, 0) - 0.50, 0) * 1.5) DESC,
-          COALESCE(pr.hellaswag_acc, 0) DESC
-        """
+        WITH base AS (
+            SELECT
+                pr.result_id,
+                pr.graph_fingerprint,
+                pr.graph_json,
+                pr.hellaswag_acc,
+                l.entry_id,
+                l.tier,
+                l.composite_score,
+                l.is_reference,
+                l.model_source,
+                (
+                    COALESCE(pr.induction_auc, 0) * 3.0
+                    + COALESCE(pr.binding_auc, 0) * 3.0
+                    + COALESCE(pr.ar_auc, 0) * 2.0
+                    + MAX(COALESCE(pr.hellaswag_acc, 0) - 0.25, 0) * 2.0
+                    + MAX(COALESCE(pr.blimp_overall_accuracy, 0) - 0.50, 0) * 1.5
+                ) AS signal_strength
+            FROM program_results pr
+            LEFT JOIN leaderboard l ON pr.result_id = l.result_id
+            WHERE {where}
+              AND pr.graph_fingerprint IS NOT NULL
+              AND pr.graph_fingerprint != ''
+              AND pr.graph_json IS NOT NULL
+              AND pr.graph_json != ''
+              AND pr.graph_json != '{{}}'
+        ),
+        deduped AS (
+            SELECT *
+            FROM (
+                SELECT
+                    base.*,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY graph_fingerprint
+                        ORDER BY signal_strength DESC,
+                                 COALESCE(hellaswag_acc, 0) DESC,
+                                 result_id
+                    ) AS fp_rank
+                FROM base
+            )
+            WHERE fp_rank = 1
+        ),
+        ranked AS (
+            SELECT
+                deduped.*,
+                ROW_NUMBER() OVER (
+                    ORDER BY signal_strength DESC,
+                             COALESCE(hellaswag_acc, 0) DESC,
+                             graph_fingerprint
+                ) - 1 AS global_idx
+            FROM deduped
+        )
+        SELECT
+            result_id,
+            graph_fingerprint,
+            graph_json,
+            entry_id,
+            tier,
+            composite_score,
+            is_reference,
+            model_source
+        FROM ranked
+        WHERE (? = 1 OR (global_idx % ?) = ?)
+        ORDER BY global_idx
+        """,
+        (1 if shard_n <= 1 else 0, shard_n, shard_idx),
     ).fetchall()
 
-    shard_idx, shard_n = shard if shard is not None else (0, 1)
-
-    # Keep one candidate per fingerprint (best-signal representative).
-    seen: set[str] = set()
-    out: List[Candidate] = []
-    idx = -1
-    for r in rows:
-        fp = r["graph_fingerprint"]
-        if fp in seen:
-            continue
-        seen.add(fp)
-        idx += 1
-        if shard_n > 1 and (idx % shard_n) != shard_idx:
-            continue
-        out.append(
-            Candidate(
-                entry_id=r["entry_id"] or f"signal:{fp[:12]}",
-                result_id=r["result_id"],
-                tier=r["tier"] or "signal",
-                composite_score=float(r["composite_score"] or 0),
-                is_reference=bool(r["is_reference"] or 0),
-                model_source=r["model_source"] or "",
-                graph_json=r["graph_json"],
-                graph_fingerprint=fp,
-            )
+    return [
+        Candidate(
+            entry_id=r["entry_id"] or f"signal:{r['graph_fingerprint'][:12]}",
+            result_id=r["result_id"],
+            tier=r["tier"] or "signal",
+            composite_score=float(r["composite_score"] or 0),
+            is_reference=bool(r["is_reference"] or 0),
+            model_source=r["model_source"] or "",
+            graph_json=r["graph_json"],
+            graph_fingerprint=r["graph_fingerprint"],
         )
-    return out
+        for r in rows
+    ]
 
 
 def query_candidates(
@@ -396,44 +429,75 @@ def query_candidates(
     if null_column and not force:
         where += f" AND pr.{null_column} IS NULL"
 
+    shard_idx, shard_n = shard if shard is not None else (0, 1)
     rows = nb.conn.execute(
-        f"SELECT l.entry_id, l.result_id, l.tier, l.composite_score, "
-        f"l.is_reference, l.model_source, "
-        f"pr.graph_json, pr.graph_fingerprint "
-        f"FROM leaderboard l "
-        f"LEFT JOIN program_results pr ON l.result_id = pr.result_id "
-        f"WHERE {where} "
-        f"ORDER BY l.composite_score DESC",
-        tuple(tiers),
+        f"""
+        WITH ranked AS (
+            SELECT
+                l.entry_id,
+                l.result_id,
+                l.tier,
+                l.composite_score,
+                l.is_reference,
+                l.model_source,
+                pr.graph_json,
+                pr.graph_fingerprint,
+                ROW_NUMBER() OVER (
+                    PARTITION BY l.tier
+                    ORDER BY l.composite_score DESC, l.result_id
+                ) - 1 AS tier_idx
+            FROM leaderboard l
+            LEFT JOIN program_results pr ON l.result_id = pr.result_id
+            WHERE {where}
+        ),
+        sharded AS (
+            SELECT
+                ranked.*,
+                ROW_NUMBER() OVER (
+                    PARTITION BY tier
+                    ORDER BY tier_idx
+                ) AS shard_rank
+            FROM ranked
+            WHERE (? = 1 OR (tier_idx % ?) = ?)
+        )
+        SELECT
+            entry_id,
+            result_id,
+            tier,
+            composite_score,
+            is_reference,
+            model_source,
+            graph_json,
+            graph_fingerprint
+        FROM sharded
+        WHERE shard_rank <= ?
+        ORDER BY tier, shard_rank
+        """,
+        tuple(tiers) + (1 if shard_n <= 1 else 0, shard_n, shard_idx, top_per_tier),
     ).fetchall()
 
-    shard_idx, shard_n = shard if shard is not None else (0, 1)
-
-    # Top N per tier using dict of lists, applying shard filter first.
-    by_tier: dict[str, list[Candidate]] = {}
-    tier_counters: dict[str, int] = {}
-    for r in rows:
-        t = r["tier"]
-        idx = tier_counters.get(t, 0)
-        tier_counters[t] = idx + 1
-        if shard_n > 1 and (idx % shard_n) != shard_idx:
-            continue
-        tier_list = by_tier.setdefault(t, [])
-        if len(tier_list) < top_per_tier:
-            tier_list.append(
-                Candidate(
-                    entry_id=r["entry_id"],
-                    result_id=r["result_id"],
-                    tier=t,
-                    composite_score=float(r["composite_score"] or 0),
-                    is_reference=bool(r["is_reference"]),
-                    model_source=r["model_source"] or "",
-                    graph_json=r["graph_json"],
-                    graph_fingerprint=(r["graph_fingerprint"] or ""),
-                )
-            )
-
-    return [c for t in tiers for c in by_tier.get(t, [])]
+    tier_order = {tier: idx for idx, tier in enumerate(tiers)}
+    candidates = [
+        Candidate(
+            entry_id=r["entry_id"],
+            result_id=r["result_id"],
+            tier=r["tier"],
+            composite_score=float(r["composite_score"] or 0),
+            is_reference=bool(r["is_reference"]),
+            model_source=r["model_source"] or "",
+            graph_json=r["graph_json"],
+            graph_fingerprint=(r["graph_fingerprint"] or ""),
+        )
+        for r in rows
+    ]
+    candidates.sort(
+        key=lambda c: (
+            tier_order.get(c.tier, len(tiers)),
+            -float(c.composite_score),
+            c.result_id,
+        )
+    )
+    return candidates
 
 
 # ── Rescore (single implementation) ─────────────────────────────────────

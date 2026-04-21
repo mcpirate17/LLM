@@ -186,7 +186,11 @@ function ProgramsTable({ programs, onSelectProgram }) {
     () => Object.fromEntries(PROG_COLUMNS.map((c) => [c.key, c.initWidth])),
     []
   );
-  const { columnWidths: storedColWidths, onResizeStart } = useResizableColumns(EXPERIMENT_DETAIL_PROGRAM_SORT_PREFS_KEY + '.widths');
+  const {
+    columnWidths: storedColWidths,
+    onResizeStart,
+    activeResizeKey,
+  } = useResizableColumns(EXPERIMENT_DETAIL_PROGRAM_SORT_PREFS_KEY + '.widths');
   const colWidths = useMemo(
     () => ({ ...defaultColWidths, ...storedColWidths }),
     [defaultColWidths, storedColWidths]
@@ -271,7 +275,7 @@ function ProgramsTable({ programs, onSelectProgram }) {
                       bottom: 0,
                       width: 5,
                       cursor: 'col-resize',
-                      background: dragRef.current === col.key ? 'var(--accent-blue)' : 'transparent',
+                      background: activeResizeKey === col.key ? 'var(--accent-blue)' : 'transparent',
                     }}
                     onClick={(e) => e.stopPropagation()}
                   />

@@ -232,3 +232,48 @@ def operating_point_profiles(
         "high_precision": _best_high_precision(),
         "high_recall": _best_high_recall(),
     }
+
+
+def reliability_curve(
+    y_true: np.ndarray,
+    y_score: np.ndarray,
+    *,
+    n_bins: int = 10,
+) -> list[Dict[str, Any]]:
+    """Return simple reliability-bin summaries for probability forecasts."""
+    y_true = np.asarray(y_true, dtype=np.float64)
+    y_score = np.asarray(y_score, dtype=np.float64)
+    if y_true.size == 0:
+        return []
+
+    bin_edges = np.linspace(0.0, 1.0, n_bins + 1)
+    bins: list[Dict[str, Any]] = []
+    for idx, (lo, hi) in enumerate(zip(bin_edges[:-1], bin_edges[1:])):
+        mask = (
+            (y_score > lo) & (y_score <= hi)
+            if idx > 0
+            else (y_score >= lo) & (y_score <= hi)
+        )
+        if not np.any(mask):
+            bins.append(
+                {
+                    "bin": idx,
+                    "lo": float(lo),
+                    "hi": float(hi),
+                    "count": 0,
+                    "avg_pred": None,
+                    "event_rate": None,
+                }
+            )
+            continue
+        bins.append(
+            {
+                "bin": idx,
+                "lo": float(lo),
+                "hi": float(hi),
+                "count": int(mask.sum()),
+                "avg_pred": float(np.mean(y_score[mask])),
+                "event_rate": float(np.mean(y_true[mask])),
+            }
+        )
+    return bins

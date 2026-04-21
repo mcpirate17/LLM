@@ -30,9 +30,13 @@ sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(ROOT))
 
 from research.synthesis.primitives import PRIMITIVE_REGISTRY  # noqa: E402
-from research.synthesis.component_registry import registry  # noqa: E402
+from research.synthesis.component_catalog import (  # noqa: E402
+    IO_COMPONENTS,
+    is_passthrough_component,
+    is_source_component,
+    is_template_lowered_component,
+)
 from aria_designer.runtime.bridge import (  # noqa: E402
-    _IO_COMPONENTS,
     get_component_execution_capability,
 )
 
@@ -85,13 +89,13 @@ def _resolve_primitive(component_id: str, category: str) -> tuple[str, Optional[
 
     for candidate in candidates:
         cid = candidate.split("/")[-1]
-        if cid in _IO_COMPONENTS:
+        if cid in IO_COMPONENTS:
             return "io", None
-        if registry.is_source(candidate):
+        if is_source_component(candidate):
             return "source", None
-        if cid in registry.template_lowered_components:
+        if is_template_lowered_component(candidate):
             return "template", None
-        if registry.is_passthrough(candidate):
+        if is_passthrough_component(candidate):
             return "passthrough", None
         if cid in PRIMITIVE_REGISTRY:
             return "direct", cid

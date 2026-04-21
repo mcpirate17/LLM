@@ -30,6 +30,10 @@ def _graph_to_native_ir_json(graph: "ComputationGraph") -> str:
 def _build_canonical_topology_inputs(
     graph: "ComputationGraph",
 ) -> tuple[int, list[tuple[int, int]], list[str], list[str], list[list[int]]]:
+    cached = getattr(graph, "_cache", {}).get("canonical_topology_inputs")
+    if cached is not None:
+        return cached
+
     n_nodes = graph._next_id
     op_names = [""] * n_nodes
     config_strs = [""] * n_nodes
@@ -45,7 +49,10 @@ def _build_canonical_topology_inputs(
         for iid in node.input_ids:
             edges.append((iid, nid))
 
-    return n_nodes, edges, op_names, config_strs, node_inputs
+    payload = (n_nodes, edges, op_names, config_strs, node_inputs)
+    if hasattr(graph, "_cache"):
+        graph._cache["canonical_topology_inputs"] = payload
+    return payload
 
 
 def _topological_order_with_aria_core(graph: "ComputationGraph") -> Optional[List[int]]:

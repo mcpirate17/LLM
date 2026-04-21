@@ -12,6 +12,8 @@ METRICS_REPORT_PATH = STATE_DIR / "predictor_metrics_report.json"
 
 GBM_GATE_MODEL_PATH = STATE_DIR / "gbm_gate_model.txt"
 GBM_RANK_MODEL_PATH = STATE_DIR / "gbm_rank_model.txt"
+GBM_RANK_PPL_MODEL_PATH = STATE_DIR / "gbm_rank_ppl_model.txt"
+GBM_RANK_COMPOSITE_MODEL_PATH = STATE_DIR / "gbm_rank_composite_model.txt"
 GBM_META_PATH = STATE_DIR / "gbm_predictor.json"
 
 GRAPH_PREDICTOR_PATH = STATE_DIR / "graph_predictor.npz"

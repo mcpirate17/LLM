@@ -1,4 +1,5 @@
 import numpy as np
+import torch
 
 from aria_designer.runtime.dispatch import KernelDispatcher
 
@@ -82,6 +83,31 @@ def test_dispatch_file_writer_txt_native_or_fallback(tmp_path):
     assert written == 3
     lines = out_path.read_text(encoding="utf-8").strip().splitlines()
     assert len(lines) == 3
+
+
+def test_dispatch_rwkv_time_mixing_torch_matches_numpy_fallback():
+    dispatcher = KernelDispatcher(use_native=False)
+    x_np = np.random.randn(2, 4, 3).astype(np.float32)
+    decay_np = np.random.randn(3).astype(np.float32)
+    bonus_np = np.random.randn(3).astype(np.float32)
+    wk_np = np.random.randn(3, 3).astype(np.float32)
+    wv_np = np.random.randn(3, 3).astype(np.float32)
+    wr_np = np.random.randn(3, 3).astype(np.float32)
+
+    expected = dispatcher.rwkv_time_mixing(
+        x_np, decay_np, bonus_np, wk_np, wv_np, wr_np
+    )
+    actual = dispatcher.rwkv_time_mixing(
+        torch.from_numpy(x_np),
+        torch.from_numpy(decay_np),
+        torch.from_numpy(bonus_np),
+        torch.from_numpy(wk_np),
+        torch.from_numpy(wv_np),
+        torch.from_numpy(wr_np),
+    )
+
+    assert isinstance(actual, torch.Tensor)
+    np.testing.assert_allclose(actual.detach().cpu().numpy(), expected, atol=3e-5)
 
 
 if __name__ == "__main__":

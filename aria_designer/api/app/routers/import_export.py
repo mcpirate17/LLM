@@ -8,9 +8,9 @@ from typing import Any, Dict, List
 from fastapi import APIRouter, HTTPException, Query
 
 from .. import database as db
-from ..component_identity import canonicalize_workflow_ids
+from aria_designer.component_identity import canonicalize_workflow_ids
 from ..models import utc_now_iso as _utc_now, CompileWorkflowRequest
-from ..shared_api import get_approved_registry_ids, collect_unresolved_nodes
+from ..workflow_support import collect_unresolved_nodes, get_approved_registry_ids
 
 # Optional runtime imports
 try:

@@ -118,11 +118,28 @@ def _load_program_rows(nb, window: str) -> list[dict[str, Any]]:
         query += " AND timestamp > ?"
         params = (cutoff,)
     try:
-        rows = nb.conn.execute(query, params).fetchall()
+        cursor = nb.conn.execute(query, params)
     except sqlite3.OperationalError as exc:
         logger.error("Failed to load observability program rows: %s", exc)
         return []
-    return [dict(row) for row in rows]
+    payload_rows: list[dict[str, Any]] = []
+    for row in cursor:
+        graph_json = row["graph_json"]
+        if not isinstance(graph_json, str) or not graph_json:
+            continue
+        loss_ratio = row["loss_ratio"]
+        payload_rows.append(
+            {
+                "graph_json": graph_json,
+                "stage0_passed": bool(row["stage0_passed"]),
+                "stage1_passed": bool(row["stage1_passed"]),
+                "loss_ratio": float(loss_ratio) if loss_ratio is not None else None,
+                "error_type": row["error_type"],
+                "failure_op": row["failure_op"],
+                "failure_details_json": row["failure_details_json"],
+            }
+        )
+    return payload_rows
 
 
 def build_op_index(notebook_path: str, window: str = "all") -> Dict[str, Any]:
@@ -142,22 +159,7 @@ def build_op_index(notebook_path: str, window: str = "all") -> Dict[str, Any]:
             raise RuntimeError("aria_scheduler.build_op_index_from_rows is required")
 
         nb = get_notebook(notebook_path, read_only=True)
-        rows = _load_program_rows(nb, window)
-        payload_rows = [
-            {
-                "graph_json": row["graph_json"],
-                "stage0_passed": bool(row.get("stage0_passed")),
-                "stage1_passed": bool(row.get("stage1_passed")),
-                "loss_ratio": float(row["loss_ratio"])
-                if row.get("loss_ratio") is not None
-                else None,
-                "error_type": row.get("error_type"),
-                "failure_op": row.get("failure_op"),
-                "failure_details_json": row.get("failure_details_json"),
-            }
-            for row in rows
-            if isinstance(row.get("graph_json"), str) and row["graph_json"]
-        ]
+        payload_rows = _load_program_rows(nb, window)
         payload = fast_loads(rust.build_op_index_from_rows(fast_dumps(payload_rows)))
         result = _build_op_index_result(payload)
         _op_index_caches[cache_key] = (now, result)
@@ -222,41 +224,41 @@ def _load_grad_health() -> Dict[str, Dict[str, Any]]:
         conn = sqlite3.connect(str(profiling_db), timeout=5)
         conn.row_factory = sqlite3.Row
         try:
-            rows = conn.execute(
+            cursor = conn.execute(
                 "SELECT op_name, grad_norm, grad_exploding, grad_vanishing, "
                 "output_has_nan, output_has_inf, forward_time_us, backward_time_us, "
                 "lipschitz_estimate, error FROM op_profiles"
-            ).fetchall()
+            )
+            for row in cursor:
+                grad_health[row["op_name"]] = {
+                    "grad_norm": float(row["grad_norm"])
+                    if row["grad_norm"] is not None
+                    else None,
+                    "grad_exploding": bool(row["grad_exploding"])
+                    if row["grad_exploding"] is not None
+                    else False,
+                    "grad_vanishing": bool(row["grad_vanishing"])
+                    if row["grad_vanishing"] is not None
+                    else False,
+                    "has_nan": bool(row["output_has_nan"])
+                    if row["output_has_nan"] is not None
+                    else False,
+                    "has_inf": bool(row["output_has_inf"])
+                    if row["output_has_inf"] is not None
+                    else False,
+                    "fwd_us": float(row["forward_time_us"])
+                    if row["forward_time_us"] is not None
+                    else None,
+                    "bwd_us": float(row["backward_time_us"])
+                    if row["backward_time_us"] is not None
+                    else None,
+                    "lipschitz": float(row["lipschitz_estimate"])
+                    if row["lipschitz_estimate"] is not None
+                    else None,
+                    "profile_error": row["error"],
+                }
         finally:
             conn.close()
-        for row in rows:
-            grad_health[row["op_name"]] = {
-                "grad_norm": float(row["grad_norm"])
-                if row["grad_norm"] is not None
-                else None,
-                "grad_exploding": bool(row["grad_exploding"])
-                if row["grad_exploding"] is not None
-                else False,
-                "grad_vanishing": bool(row["grad_vanishing"])
-                if row["grad_vanishing"] is not None
-                else False,
-                "has_nan": bool(row["output_has_nan"])
-                if row["output_has_nan"] is not None
-                else False,
-                "has_inf": bool(row["output_has_inf"])
-                if row["output_has_inf"] is not None
-                else False,
-                "fwd_us": float(row["forward_time_us"])
-                if row["forward_time_us"] is not None
-                else None,
-                "bwd_us": float(row["backward_time_us"])
-                if row["backward_time_us"] is not None
-                else None,
-                "lipschitz": float(row["lipschitz_estimate"])
-                if row["lipschitz_estimate"] is not None
-                else None,
-                "profile_error": row["error"],
-            }
     except (sqlite3.OperationalError, KeyError, TypeError, OSError) as exc:
         logger.debug(
             "Failed to load component profiling health data: %s", exc, exc_info=True

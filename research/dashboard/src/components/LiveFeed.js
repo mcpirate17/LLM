@@ -544,6 +544,7 @@ function LiveFeed({ apiBase, experimentId = null, progress = null }) {
                     statusText={card.statusText}
                     statusTone={card.statusTone}
                     label={card.label}
+                    segmentLabelPrefix={card.segmentLabelPrefix}
                     width={600}
                   />
                 </div>

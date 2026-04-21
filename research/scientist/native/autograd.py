@@ -51,7 +51,7 @@ class NativeSubgraphFunction:
             @staticmethod
             def forward(ctx, x):
                 # Perform a full native forward, saving activations.
-                fwd = dispatch_graph_forward_native_saved(_graph, x)
+                fwd = dispatch_graph_forward_native_saved(_graph, x, ir_json=_ir_json)
                 output_np = fwd["output"]
                 saved_activations = fwd["saved_activations"]
                 used_ir_json = fwd["ir_json"]

@@ -17,27 +17,23 @@ from dataclasses import dataclass, field, asdict
 from typing import Any, Dict, List, Optional
 
 from research.defaults import MODEL_DIM, VOCAB_SIZE
+from research.synthesis.component_catalog import (
+    IO_COMPONENTS,
+    category_execution_class,
+    component_leaf,
+    is_passthrough_component,
+    is_source_component,
+    is_template_lowered_component,
+)
 from research.synthesis.primitives import PRIMITIVE_REGISTRY
 from research.mathspaces.registry import register_all_mathspaces
-from research.synthesis.component_registry import registry
-from research.synthesis.workflow_converter import workflow_to_computation_graph as _w2cg
+from research.synthesis.workflow_converter import workflow_to_computation_graph
 from research.synthesis.result_schemas import BridgeResult
 
 # Ensure mathspace primitives are available for resolution.
 register_all_mathspaces()
 
-# Stable I/O leaves that do not map to backend primitives.
-_IO_COMPONENTS = {"graph_input", "graph_output", "input", "output", "output_head"}
-
 # ── Backward-compatible primitive resolution ─────────────────────────
-
-
-def _normalize_component_leaf(component_type: str) -> str:
-    """Normalize any category/id component token into a lowercased leaf id."""
-    token = str(component_type or "").strip().lower()
-    if not token:
-        return ""
-    return token.split("/")[-1]
 
 
 def _resolve_primitive(component_type: str) -> Optional[str]:
@@ -45,10 +41,10 @@ def _resolve_primitive(component_type: str) -> Optional[str]:
 
     Returns `None` for explicit I/O components and raises for unknown tokens.
     """
-    leaf = _normalize_component_leaf(component_type)
+    leaf = component_leaf(component_type)
     if not leaf:
         raise ValueError("Unknown component: empty component type")
-    if leaf in _IO_COMPONENTS:
+    if leaf in IO_COMPONENTS:
         return None
 
     if leaf in PRIMITIVE_REGISTRY:
@@ -86,14 +82,12 @@ def _capability_result(
 
 def get_component_execution_capability(component_type: str) -> Dict[str, Any]:
     """Return bridge execution capability metadata for a component type."""
-    parts = str(component_type or "").split("/")
-    cid = parts[-1]
-    category = parts[0] if len(parts) > 1 else None
-    category_class = registry.category_execution_class.get(
-        category or "", "primitive_candidate"
+    cid = component_leaf(component_type)
+    category_class = category_execution_class(
+        component_type, default="primitive_candidate"
     )
 
-    if cid in _IO_COMPONENTS:
+    if cid in IO_COMPONENTS:
         return _capability_result(
             component_type,
             cid,
@@ -113,11 +107,11 @@ def get_component_execution_capability(component_type: str) -> Dict[str, Any]:
         ),
         "template": ("Template lowering to primitive subgraph.", "composite"),
     }
-    if registry.is_source(component_type):
+    if is_source_component(component_type):
         kind = "source"
-    elif registry.is_passthrough(component_type):
+    elif is_passthrough_component(component_type):
         kind = "passthrough"
-    elif cid in registry.template_lowered_components:
+    elif is_template_lowered_component(component_type):
         kind = "template"
     else:
         kind = None
@@ -183,8 +177,8 @@ def workflow_to_graph(
     model_dim: int = MODEL_DIM,
     return_id_map: bool = False,
 ) -> Any:
-    """Convert an aria_designer workflow JSON to a research ComputationGraph."""
-    return _w2cg(workflow_json, model_dim, return_id_map)
+    """Compatibility wrapper for workflow conversion."""
+    return workflow_to_computation_graph(workflow_json, model_dim, return_id_map)
 
 
 # ── Compression / Efficiency Analysis ─────────────────────────────────
@@ -318,7 +312,7 @@ def evaluate_workflow(
     fp = None
 
     try:
-        graph = workflow_to_graph(workflow_json, model_dim=model_dim)
+        graph = workflow_to_graph(workflow_json, model_dim)
         result.graph_fingerprint = graph.fingerprint()
         result.n_ops = graph.n_ops()
         result.depth = graph.depth()
@@ -427,7 +421,7 @@ def validate_workflow_graph(
                     "recommend pair/triplet routing around local structural operators",
                 ],
             }
-        graph = workflow_to_graph(workflow_json, model_dim=model_dim)
+        graph = workflow_to_graph(workflow_json, model_dim)
 
         # Wiring constraint check — catch misconnected signal chains
         from research.synthesis.primitives import validate_wiring
@@ -491,7 +485,7 @@ def estimate_performance(
 ) -> Dict[str, Any]:
     """Quick performance estimate without running the model."""
     try:
-        graph = workflow_to_graph(workflow_json, model_dim=model_dim)
+        graph = workflow_to_graph(workflow_json, model_dim)
         op_counts: Dict[str, int] = {}
         for node_id in graph.topological_order():
             node = graph.nodes[node_id]

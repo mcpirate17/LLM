@@ -241,6 +241,24 @@ class _LeaderboardMixin:
             "LIMIT 1",
             (result_id, result_id, result_id),
         ).fetchone()
+        if (
+            pr_row is None
+            and architecture_desc
+            and not is_reference
+            and str(architecture_desc).strip()
+        ):
+            # Historical corruption showed callers could reach this method with
+            # a bogus result_id but the correct fingerprint in architecture_desc.
+            # Rebind to the canonical program row instead of creating an orphan.
+            pr_row = self.conn.execute(
+                "SELECT result_id, novelty_confidence, loss_ratio, param_count, flops_forward, "
+                "throughput_tok_s, peak_memory_mb, forward_time_ms, graph_json, graph_fingerprint, "
+                "result_cohort, trust_label, comparability_label, evaluation_protocol_version, "
+                "data_provenance_json "
+                "FROM program_results WHERE graph_fingerprint = ? "
+                "ORDER BY timestamp DESC LIMIT 1",
+                (str(architecture_desc).strip(),),
+            ).fetchone()
         if pr_row:
             resolved_result_id = pr_row["result_id"]
         # Check if entry exists for this result_id
@@ -248,6 +266,13 @@ class _LeaderboardMixin:
             "SELECT * FROM leaderboard WHERE result_id = ?",
             (resolved_result_id,),
         ).fetchone()
+        if pr_row is None and existing is None and not is_reference:
+            LOGGER.error(
+                "Blocked orphan leaderboard insert: result_id=%s architecture_desc=%s",
+                str(result_id)[:12],
+                str(architecture_desc or "")[:40],
+            )
+            return ""
 
         # Fingerprint-level dedup gate: if another entry already exists for
         # the same graph_fingerprint but a different result_id, refuse to

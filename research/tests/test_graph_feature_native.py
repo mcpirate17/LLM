@@ -79,6 +79,36 @@ def test_native_graph_segments_extracts_expected_counts():
     }
 
 
+def test_native_graph_segments_map_extracts_expected_counts():
+    from research.scientist.native.core import _try_import_rust_scheduler
+
+    aria_scheduler = _try_import_rust_scheduler()
+    if aria_scheduler is None:
+        pytest.skip("aria_scheduler Rust module not available")
+    if not hasattr(aria_scheduler, "extract_graph_segments_map_native_py"):
+        pytest.skip("graph segment map extraction not exported by aria_scheduler")
+
+    graph_json = json.dumps(
+        {
+            "nodes": {
+                "0": {"id": 0, "op_name": "input", "input_ids": []},
+                "1": {"id": 1, "op_name": "layernorm", "input_ids": [0]},
+                "2": {"id": 2, "op_name": "gelu", "input_ids": [1]},
+                "3": {"id": 3, "op_name": "linear_proj", "input_ids": [2]},
+                "4": {"id": 4, "op_name": "add", "input_ids": [3]},
+            }
+        }
+    )
+
+    payload = aria_scheduler.extract_graph_segments_map_native_py(graph_json, 3, 6)
+
+    assert payload == {
+        "seg_p3:gelu>linear_proj>add": 1,
+        "seg_p3:layernorm>gelu>linear_proj": 1,
+        "seg_p4:layernorm>gelu>linear_proj>add": 1,
+    }
+
+
 def test_native_graph_provenance_extracts_ops_and_upstream_source():
     from research.scientist.native.core import _try_import_rust_scheduler
 
@@ -106,6 +136,42 @@ def test_native_graph_provenance_extracts_ops_and_upstream_source():
         "add",
     )
     payload = json.loads(raw)
+
+    assert payload["op_names"] == [
+        "layernorm",
+        "identity",
+        "hybrid_sparse_router",
+        "add",
+    ]
+    assert payload["source_op"] == "hybrid_sparse_router"
+
+
+def test_native_graph_provenance_map_extracts_ops_and_upstream_source():
+    from research.scientist.native.core import _try_import_rust_scheduler
+
+    aria_scheduler = _try_import_rust_scheduler()
+    if aria_scheduler is None:
+        pytest.skip("aria_scheduler Rust module not available")
+    if not hasattr(aria_scheduler, "analyze_graph_provenance_native_py"):
+        pytest.skip("graph provenance map extraction not exported by aria_scheduler")
+
+    graph_json = json.dumps(
+        {
+            "nodes": {
+                "0": {"id": 0, "op_name": "input", "input_ids": []},
+                "1": {"id": 1, "op_name": "layernorm", "input_ids": [0]},
+                "2": {"id": 2, "op_name": "identity", "input_ids": [1]},
+                "3": {"id": 3, "op_name": "hybrid_sparse_router", "input_ids": [2]},
+                "4": {"id": 4, "op_name": "add", "input_ids": [3]},
+            }
+        }
+    )
+
+    payload = aria_scheduler.analyze_graph_provenance_native_py(
+        graph_json,
+        ["add", "identity", "layernorm", "linear_proj", "rmsnorm"],
+        "add",
+    )
 
     assert payload["op_names"] == [
         "layernorm",

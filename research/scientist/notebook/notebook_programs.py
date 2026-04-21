@@ -10,6 +10,7 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from ..leaderboard_scoring import build_score_kwargs_from_prefetch, compute_composite
+from ..thresholds import TIER_RANK
 from .leaderboard_maintenance import (
     leaderboard_consistency_report,
     sync_fingerprint_leaderboard,
@@ -82,6 +83,10 @@ POST_SCREENING_SIGNAL_COLUMNS = (
     "binding_v2_investigation_auc",
     "discovery_loss_ratio",
     "validation_loss_ratio",
+)
+
+SCREENING_EXPERIMENT_TYPES = frozenset(
+    {"synthesis", "novelty", "evolution", "reference", "backfill"}
 )
 
 MERGE_HIGHER_BETTER_COLUMNS = {
@@ -459,6 +464,105 @@ class _ProgramsMixin:
                 "graph_fingerprint": kwargs.get("graph_fingerprint"),
             }
         )
+
+    @staticmethod
+    def _fingerprint_confidence_from_payload(
+        fp_payload: Dict[str, Any],
+    ) -> Optional[float]:
+        quality = normalize_text(fp_payload.get("quality"))
+        try:
+            analyses_succeeded = int(fp_payload.get("analyses_succeeded") or 0)
+        except (TypeError, ValueError):
+            analyses_succeeded = 0
+        if quality == "full":
+            return 0.9
+        if quality == "partial":
+            return min(0.9, 0.4 + (analyses_succeeded * 0.1))
+        if fp_payload:
+            return 0.3
+        return None
+
+    @classmethod
+    def _behavioral_fingerprint_program_fields(
+        cls,
+        fp_payload: Dict[str, Any],
+        *,
+        novelty_confidence: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        if not isinstance(fp_payload, dict) or not fp_payload:
+            return {}
+
+        confidence = novelty_confidence
+        if confidence is None:
+            confidence = cls._fingerprint_confidence_from_payload(fp_payload)
+
+        patch = {
+            "fingerprint_json": json.dumps(sanitize_for_db(fp_payload)),
+            "novelty_score": fp_payload.get("novelty_score"),
+            "novelty_confidence": confidence,
+            "fp_interaction_locality": fp_payload.get("interaction_locality"),
+            "fp_interaction_sparsity": fp_payload.get("interaction_sparsity"),
+            "fp_interaction_symmetry": fp_payload.get("interaction_symmetry"),
+            "fp_interaction_hierarchy": fp_payload.get("interaction_hierarchy"),
+            "fp_intrinsic_dim": fp_payload.get("intrinsic_dim"),
+            "fp_isotropy": fp_payload.get("isotropy"),
+            "fp_rank_ratio": fp_payload.get("rank_ratio"),
+            "fp_jacobian_spectral_norm": fp_payload.get("jacobian_spectral_norm"),
+            "fp_jacobian_effective_rank": fp_payload.get("jacobian_effective_rank"),
+            "fp_sensitivity_uniformity": fp_payload.get("sensitivity_uniformity"),
+            "fp_cka_vs_transformer": fp_payload.get("cka_vs_transformer"),
+            "fp_cka_vs_ssm": fp_payload.get("cka_vs_ssm"),
+            "fp_cka_vs_conv": fp_payload.get("cka_vs_conv"),
+            "fp_hierarchy_fitness": fp_payload.get("hierarchy_fitness"),
+            "fp_gromov_delta": fp_payload.get("gromov_delta"),
+            "cka_source": fp_payload.get("cka_source"),
+            "cka_artifact_version": fp_payload.get("cka_artifact_version"),
+            "cka_probe_protocol_hash": fp_payload.get("cka_probe_protocol_hash"),
+            "cka_reference_quality": fp_payload.get("cka_reference_quality"),
+            "novelty_valid_for_promotion": int(
+                bool(fp_payload.get("novelty_valid_for_promotion"))
+            ),
+            "novelty_validity_reason": fp_payload.get("novelty_validity_reason"),
+            "novelty_reference_version": fp_payload.get("novelty_reference_version"),
+            "fingerprint_full_ran": int(
+                normalize_text(fp_payload.get("quality")) == "full"
+            ),
+        }
+        return sanitize_for_db(patch)
+
+    def sync_behavioral_fingerprint_result(
+        self,
+        *,
+        result_id: str,
+        fp_payload: Dict[str, Any],
+        novelty_confidence: Optional[float] = None,
+        sync_leaderboard: bool = True,
+    ) -> bool:
+        rid = str(result_id or "").strip()
+        if not rid:
+            return False
+        patch = self._behavioral_fingerprint_program_fields(
+            fp_payload,
+            novelty_confidence=novelty_confidence,
+        )
+        if not patch:
+            return False
+        valid_columns = set(self._get_program_results_columns())
+        patch = {
+            column: value for column, value in patch.items() if column in valid_columns
+        }
+        if not patch:
+            return False
+        set_clause = ", ".join(f"{column} = ?" for column in patch)
+        self._submit_write(
+            f"UPDATE program_results SET {set_clause} WHERE result_id = ?",
+            [*patch.values(), rid],
+        )
+        if sync_leaderboard:
+            self.flush_writes()
+            self._sync_fingerprint_leaderboard(rid)
+            self._maybe_commit()
+        return True
 
     def merge_program_result_patch(
         self,
@@ -1041,6 +1145,19 @@ class _ProgramsMixin:
             kwargs,
             self._experiment_config_for_id(experiment_id),
         )
+        if kwargs.get("fingerprint_json"):
+            fp_payload = kwargs.get("fingerprint_json")
+            if isinstance(fp_payload, str):
+                try:
+                    fp_payload = json.loads(fp_payload)
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    fp_payload = None
+            if isinstance(fp_payload, dict):
+                for column, value in self._behavioral_fingerprint_program_fields(
+                    fp_payload,
+                    novelty_confidence=kwargs.get("novelty_confidence"),
+                ).items():
+                    kwargs.setdefault(column, value)
         kwargs = enrich_program_result_kwargs(
             normalize_program_result_kwargs(kwargs),
             infer_result_cohort=self._infer_result_cohort,
@@ -1088,6 +1205,20 @@ class _ProgramsMixin:
             row=filtered_kwargs,
             source_cohort="runtime",
         )
+        experiment_type = str(self._experiment_type_for_id(experiment_id) or "").lower()
+        if (
+            not str(intentional_rerun_reason or "").strip()
+            and experiment_type in SCREENING_EXPERIMENT_TYPES
+            and bool(filtered_kwargs.get("stage1_passed"))
+        ):
+            self._ensure_screening_leaderboard_entry(
+                result_id=result_id,
+                graph_fingerprint=graph_fingerprint,
+                model_source=str(
+                    filtered_kwargs.get("model_source") or "graph_synthesis"
+                ),
+                metrics=filtered_kwargs,
+            )
         return result_id
 
     def save_op_rehabilitation_result(
@@ -1393,6 +1524,33 @@ class _ProgramsMixin:
     def get_leaderboard_consistency_report(self) -> Dict[str, Any]:
         return leaderboard_consistency_report(self)
 
+    def _ensure_screening_leaderboard_entry(
+        self,
+        *,
+        result_id: str,
+        graph_fingerprint: str,
+        model_source: str,
+        metrics: Dict[str, Any],
+    ) -> Optional[str]:
+        """Create or refresh the canonical screening leaderboard row."""
+        return self.upsert_leaderboard(
+            result_id=result_id,
+            model_source=model_source or "graph_synthesis",
+            architecture_desc=str(graph_fingerprint or "")[:40],
+            screening_loss_ratio=metrics.get("loss_ratio"),
+            screening_novelty=metrics.get("novelty_score"),
+            screening_passed=True,
+            tier="screening",
+            novelty_confidence=metrics.get("novelty_confidence"),
+            fp_jacobian_spectral_norm=metrics.get("fp_jacobian_spectral_norm"),
+            routing_savings_ratio=metrics.get("routing_savings_ratio"),
+            activation_sparsity_score=metrics.get("activation_sparsity_score"),
+            depth_savings_ratio=metrics.get("depth_savings_ratio"),
+            compression_ratio=metrics.get("compression_ratio"),
+            wikitext_perplexity=metrics.get("wikitext_perplexity"),
+            wikitext_score=metrics.get("wikitext_score"),
+        )
+
     def backfill_missing_screening_leaderboard_entries(
         self,
         *,
@@ -1460,6 +1618,110 @@ class _ProgramsMixin:
             "created_entries": len(created_entry_ids),
             "entry_ids": created_entry_ids,
             "result_ids": created_result_ids,
+        }
+
+    def repair_rebindable_orphan_leaderboard_rows(
+        self,
+        *,
+        limit: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Rebind orphan leaderboard rows to canonical program rows by fingerprint."""
+        query = """
+            SELECT l.entry_id,
+                   l.result_id AS orphan_result_id,
+                   l.architecture_desc AS graph_fingerprint,
+                   pr.result_id AS canonical_result_id
+            FROM leaderboard l
+            LEFT JOIN program_results pr0 ON pr0.result_id = l.result_id
+            JOIN program_results pr ON pr.graph_fingerprint = l.architecture_desc
+            WHERE pr0.result_id IS NULL
+              AND l.architecture_desc IS NOT NULL
+              AND TRIM(l.architecture_desc) != ''
+            ORDER BY l.timestamp DESC
+        """
+        params: List[Any] = []
+        if limit is not None:
+            query += " LIMIT ?"
+            params.append(int(limit))
+        rows = [dict(row) for row in self.conn.execute(query, params).fetchall()]
+        if not rows:
+            return {
+                "rebound_rows": 0,
+                "fingerprints_repaired": 0,
+                "deleted_duplicate_rows": 0,
+                "fingerprints": [],
+            }
+
+        grouped: Dict[str, Dict[str, Any]] = {}
+        for row in rows:
+            fp = str(row.get("graph_fingerprint") or "").strip()
+            canonical_rid = str(row.get("canonical_result_id") or "").strip()
+            if not fp or not canonical_rid:
+                continue
+            bucket = grouped.setdefault(
+                fp,
+                {
+                    "canonical_result_id": canonical_rid,
+                    "entry_ids": [],
+                    "orphan_result_ids": [],
+                },
+            )
+            bucket["entry_ids"].append(str(row["entry_id"]))
+            bucket["orphan_result_ids"].append(str(row["orphan_result_id"]))
+
+        rebound_rows = 0
+        deleted_duplicate_rows = 0
+        repaired_fps: List[str] = []
+
+        for graph_fingerprint, bucket in grouped.items():
+            canonical_rid = bucket["canonical_result_id"]
+            orphan_entry_ids = bucket["entry_ids"]
+            repaired_fps.append(graph_fingerprint)
+            rebound_rows += len(orphan_entry_ids)
+            placeholders = ",".join("?" for _ in orphan_entry_ids)
+            self.conn.execute(
+                f"UPDATE leaderboard SET result_id = ? WHERE entry_id IN ({placeholders})",
+                [canonical_rid, *orphan_entry_ids],
+            )
+            self._sync_fingerprint_leaderboard(canonical_rid)
+
+            dup_rows = [
+                dict(row)
+                for row in self.conn.execute(
+                    "SELECT entry_id, tier, timestamp, composite_score "
+                    "FROM leaderboard WHERE result_id = ?",
+                    (canonical_rid,),
+                ).fetchall()
+            ]
+            if not dup_rows:
+                continue
+            keep = max(
+                dup_rows,
+                key=lambda row: (
+                    int(TIER_RANK.get(str(row.get("tier") or "").lower(), -1)),
+                    float(row.get("timestamp") or 0.0),
+                    float(row.get("composite_score") or -1e9),
+                ),
+            )
+            delete_ids = [
+                str(row["entry_id"])
+                for row in dup_rows
+                if str(row["entry_id"]) != str(keep["entry_id"])
+            ]
+            if delete_ids:
+                delete_placeholders = ",".join("?" for _ in delete_ids)
+                self.conn.execute(
+                    f"DELETE FROM leaderboard WHERE entry_id IN ({delete_placeholders})",
+                    delete_ids,
+                )
+                deleted_duplicate_rows += len(delete_ids)
+
+        self._maybe_commit()
+        return {
+            "rebound_rows": rebound_rows,
+            "fingerprints_repaired": len(repaired_fps),
+            "deleted_duplicate_rows": deleted_duplicate_rows,
+            "fingerprints": repaired_fps,
         }
 
     def get_investigated_fingerprints(self) -> set:

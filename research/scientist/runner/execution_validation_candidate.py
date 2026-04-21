@@ -82,6 +82,7 @@ class _ExecutionValidationCandidateMixin:
         _novelty_cap = self._validation_cka_check(
             source=source,
             source_result_id=source_result_id,
+            nb=nb,
             model_source=model_source,
             arch_spec_json_str=arch_spec_json_str,
             graph_json_str=graph_json_str,
@@ -137,6 +138,7 @@ class _ExecutionValidationCandidateMixin:
         self,
         source: dict,
         source_result_id: str,
+        nb,
         model_source: str,
         arch_spec_json_str: str | None,
         graph_json_str: str | None,
@@ -197,8 +199,15 @@ class _ExecutionValidationCandidateMixin:
             del _tmp_model
             clear_gpu_memory()
 
+            fp_payload = _fp.to_dict()
+            source["_behavioral_fingerprint"] = fp_payload
+            source.update(nb._behavioral_fingerprint_program_fields(fp_payload))
+            nb.sync_behavioral_fingerprint_result(
+                result_id=source_result_id,
+                fp_payload=fp_payload,
+            )
+
             if _fp.cka_source == "artifact":
-                source["_behavioral_fingerprint"] = _fp.to_dict()
                 logger.info(
                     "validation_cka_completed: result_id=%s cka_source=artifact",
                     source_result_id[:12],

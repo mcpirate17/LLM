@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Any, Dict, List, Tuple
 
-from .component_identity import canonicalize_component_id, component_leaf
+from aria_designer.component_identity import canonicalize_component_id, component_leaf
 
 
 _INTENT_KEYWORDS: Tuple[Tuple[str, Tuple[str, ...]], ...] = (

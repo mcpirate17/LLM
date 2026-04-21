@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException, Query
 
 from .. import database as db
-from ..component_identity import canonicalize_component_id
+from aria_designer.component_identity import canonicalize_component_id
 from ..models import (
     ComponentModel,
     ComponentConfigValidateRequest,
@@ -15,11 +15,8 @@ from ..models import (
 )
 from ..loader import scan_and_load, COMPONENTS_ROOT
 from ..property_audit import audit_components
-from ..shared_api import (
-    HAS_BRIDGE,
-    _require_component,
-    bridge_component_capability,
-)
+from ..runtime_features import HAS_BRIDGE, bridge_component_capability
+from ..workflow_support import _require_component
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1", tags=["components"])

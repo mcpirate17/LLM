@@ -1,10 +1,8 @@
 import logging
-import os
 from collections import defaultdict
 
 import torch.nn as nn
-import importlib.util
-import yaml
+from .component_catalog import RuntimeComponentCatalog
 from .dispatch import KernelDispatcher
 from .port_dtypes import find_unsupported_edge_dtype_pairings
 
@@ -12,13 +10,13 @@ logger = logging.getLogger(__name__)
 
 
 class WorkflowModule(nn.Module):
-    def __init__(self, workflow_json, component_registry):
+    def __init__(self, workflow_json, component_catalog):
         super().__init__()
         self.workflow_id = workflow_json["workflow_id"]
         self.name = workflow_json["name"]
         self.nodes_config = {n["id"]: n for n in workflow_json["nodes"]}
         self.edges = workflow_json["edges"]
-        self.component_registry = component_registry
+        self.component_catalog = component_catalog
 
         # Precompute edge adjacency — O(E) once instead of O(N×E) per forward
         self._edges_by_target = defaultdict(list)
@@ -30,7 +28,7 @@ class WorkflowModule(nn.Module):
 
         dtype_issues = find_unsupported_edge_dtype_pairings(
             workflow_json,
-            self.component_registry.get_manifest,
+            self.component_catalog.get_manifest,
         )
         if dtype_issues:
             first = dtype_issues[0]
@@ -59,7 +57,7 @@ class WorkflowModule(nn.Module):
             comp_type = config["component_type"]
             params = config["params"]
 
-            handler_class = self.component_registry.get_handler(comp_type)
+            handler_class = self.component_catalog.get_handler(comp_type)
             if not handler_class:
                 missing_runtime.append(f"{node_id} ({comp_type})")
                 continue
@@ -173,7 +171,7 @@ class WorkflowModule(nn.Module):
     def _invoke_handler(self, node_id, comp_type, node_inputs, params):
         handler = self.node_handlers.get(node_id)
         if handler is None:
-            handler_class = self.component_registry.get_handler(comp_type)
+            handler_class = self.component_catalog.get_handler(comp_type)
             if handler_class:
                 handler = handler_class()
                 self.node_handlers[node_id] = handler
@@ -187,93 +185,6 @@ class WorkflowModule(nn.Module):
         return out
 
 
-class ComponentRegistry:
-    def __init__(self, components_dir):
-        self.components_dir = components_dir
-        self.handlers = {}
-        self.manifests = {}
-        self._dir_cache = {}  # component_type → directory path (or None)
-
-    def _resolve_component_dir(self, component_type):
-        if component_type in self._dir_cache:
-            return self._dir_cache[component_type]
-
-        from aria_designer.api.app.component_identity import canonicalize_component_id
-
-        canonical = canonicalize_component_id(component_type)
-        if canonical in self._dir_cache:
-            result = self._dir_cache[canonical]
-            self._dir_cache[component_type] = result
-            return result
-
-        result = self._scan_component_dir(canonical)
-        self._dir_cache[component_type] = result
-        self._dir_cache[canonical] = result
-        return result
-
-    def _scan_component_dir(self, component_type):
-        parts = component_type.split("/")
-        if len(parts) == 2:
-            cat, cid = parts
-            component_dir = os.path.join(self.components_dir, cat, cid)
-            if os.path.isdir(component_dir):
-                return component_dir
-            parts = [cid]
-
-        cid = parts[0]
-        try:
-            categories = os.listdir(self.components_dir)
-        except OSError:
-            return None
-        for cat in categories:
-            category_dir = os.path.join(self.components_dir, cat)
-            if not os.path.isdir(category_dir):
-                continue
-            component_dir = os.path.join(category_dir, cid)
-            if os.path.isdir(component_dir):
-                return component_dir
-        return None
-
-    def get_manifest(self, component_type):
-        if component_type in self.manifests:
-            return self.manifests[component_type]
-
-        component_dir = self._resolve_component_dir(component_type)
-        if component_dir is None:
-            return None
-
-        manifest_path = os.path.join(component_dir, "manifest.yaml")
-        if not os.path.exists(manifest_path):
-            return None
-
-        with open(manifest_path, "r", encoding="utf-8") as f:
-            manifest = yaml.safe_load(f)
-        self.manifests[component_type] = manifest
-        return manifest
-
-    def get_handler(self, component_type):
-        if component_type in self.handlers:
-            return self.handlers[component_type]
-
-        component_dir = self._resolve_component_dir(component_type)
-        if component_dir is None:
-            return None
-
-        path = os.path.join(component_dir, "kernel_fallback.py")
-        if os.path.exists(path):
-            return self._load_handler(component_type, path)
-
-        return None
-
-    def _load_handler(self, component_type, path):
-        cid = os.path.basename(os.path.dirname(path))
-        spec = importlib.util.spec_from_file_location(f"handler_{cid}", path)
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        self.handlers[component_type] = module.ComponentHandler
-        return module.ComponentHandler
-
-
 def compile_workflow(workflow_json, components_dir):
-    registry = ComponentRegistry(components_dir)
-    return WorkflowModule(workflow_json, registry)
+    component_catalog = RuntimeComponentCatalog(components_dir)
+    return WorkflowModule(workflow_json, component_catalog)

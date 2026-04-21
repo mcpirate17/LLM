@@ -30,7 +30,9 @@ from .predictor_artifacts import (
     ENSEMBLE_STATE_PATH as _ENSEMBLE_STATE_PATH,
     GBM_GATE_MODEL_PATH as _GBM_GATE_MODEL_PATH,
     GBM_META_PATH as _GBM_META_PATH,
+    GBM_RANK_COMPOSITE_MODEL_PATH as _GBM_RANK_COMPOSITE_MODEL_PATH,
     GBM_RANK_MODEL_PATH as _GBM_RANK_MODEL_PATH,
+    GBM_RANK_PPL_MODEL_PATH as _GBM_RANK_PPL_MODEL_PATH,
     GRAPH_PREDICTOR_PATH as _GRAPH_PREDICTOR_PATH,
     INTERACTION_MODEL_PATH as _INTERACTION_MODEL_PATH,
     STATE_DIR,
@@ -44,6 +46,10 @@ from .predictor_artifacts import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _ppl_to_quality(value: float) -> float:
+    return float(np.exp(-max(float(value), 0.0) / 25.0))
 
 
 from .predictor_gbm import GBMPredictor  # noqa: F401
@@ -197,9 +203,9 @@ class EnsemblePredictor:
         quality_terms: List[float] = []
 
         if self.gbm is not None and self.gbm.is_fitted() and graph_features is not None:
-            gbm_rank = float(self.gbm.predict_rank(graph_features))
-            if np.isfinite(gbm_rank) and gbm_rank < 1e5:
-                quality_terms.append(float(np.exp(-max(gbm_rank, 0.0) / 25.0)))
+            gbm_quality = float(self.gbm.predict_quality_score(graph_features))
+            if np.isfinite(gbm_quality) and gbm_quality > 0.0:
+                quality_terms.append(float(np.clip(gbm_quality, 0.0, 1.0)))
 
         if (
             self.graph_pred is not None
@@ -208,7 +214,7 @@ class EnsemblePredictor:
         ):
             graph_rank = float(self.graph_pred.predict_rank(graph_json))
             if np.isfinite(graph_rank) and graph_rank < 1e5:
-                quality_terms.append(float(np.exp(-max(graph_rank, 0.0) / 25.0)))
+                quality_terms.append(_ppl_to_quality(graph_rank))
             if hasattr(self.graph_pred, "predict_loss"):
                 predicted_loss = float(self.graph_pred.predict_loss(graph_json))
                 if np.isfinite(predicted_loss):
@@ -310,6 +316,8 @@ class EnsemblePredictor:
             unlink_paths(
                 state_dir / _GBM_GATE_MODEL_PATH.name,
                 state_dir / _GBM_RANK_MODEL_PATH.name,
+                state_dir / _GBM_RANK_PPL_MODEL_PATH.name,
+                state_dir / _GBM_RANK_COMPOSITE_MODEL_PATH.name,
                 state_dir / _GBM_META_PATH.name,
             )
         if self.graph_pred is not None and self.graph_pred.is_fitted():

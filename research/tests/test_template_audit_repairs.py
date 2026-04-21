@@ -3,7 +3,7 @@ import random
 from research.synthesis.graph import ComputationGraph
 from research.synthesis.grammar import GrammarConfig, _validate_graph
 from research.synthesis._template_helpers import get_slot_rule_summary
-from research.synthesis.component_registry import fe_type_to_op_name
+from research.synthesis.component_catalog import get_primitive_name
 from research.synthesis.primitives import canonicalize_op_name
 from research.scientist.runner._types import RunConfig
 from research.scientist.runner.execution_screening import _make_stage1_screening_config
@@ -96,12 +96,12 @@ def test_stage1_screening_config_enables_text_and_binding_probes():
     assert cfg.binding_probe_eval_batch_size >= 1
 
 
-def test_graph_and_component_registry_canonicalize_alias_names():
+def test_graph_and_component_catalog_canonicalize_alias_names():
     graph = ComputationGraph(model_dim=64)
     inp = graph.add_input()
     nid = graph.add_op("route_topk", [inp], config={"k": 4})
     assert graph.nodes[nid].op_name == canonicalize_op_name("route_topk")
-    assert fe_type_to_op_name("routing/route_topk") == canonicalize_op_name(
+    assert get_primitive_name("routing/route_topk") == canonicalize_op_name(
         "route_topk"
     )
 

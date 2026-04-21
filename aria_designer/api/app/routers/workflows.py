@@ -11,7 +11,7 @@ from uuid import uuid4
 from fastapi import APIRouter, HTTPException, Query
 
 from .. import database as db
-from ..component_identity import (
+from aria_designer.component_identity import (
     canonicalize_workflow_ids,
 )
 from ..config import settings
@@ -27,25 +27,30 @@ from ..models import (
     WorkflowGraphModel,
     utc_now_iso as _utc_now,
 )
-from ..shared_api import (
+from ..research_sync import (
+    _auto_promote_workflow_to_research,
+    _sync_lineage_to_research,
+)
+from ..runtime_features import (
     HAS_BRIDGE,
     HAS_PROFILER,
     KernelDispatcher,
-    _auto_promote_workflow_to_research,
-    _collect_workflow_semantic_warnings,
-    _require_run,
-    _require_workflow,
-    _sync_lineage_to_research,
     bridge_estimate,
     bridge_list_primitives,
     bridge_profile,
     bridge_validate,
-    collect_unresolved_nodes,
     find_unsupported_edge_dtype_pairings,
-    get_approved_registry_ids,
-    require_feature,
     runtime_compile,
 )
+from ..workflow_support import (
+    _collect_workflow_semantic_warnings,
+    _require_run,
+    _require_workflow,
+    collect_unresolved_nodes,
+    get_approved_registry_ids,
+    require_feature,
+)
+from ..workflow_graph_cache import materialize_workflow_graph
 from research.defaults import MODEL_DIM, VOCAB_SIZE
 from research.perf_contract import emit_perf_artifact
 from ..type_utils import dig
@@ -457,10 +462,8 @@ def save_workflow(workflow_id: str, workflow: WorkflowGraphModel) -> Dict[str, A
     fingerprint = None
     if HAS_BRIDGE:
         try:
-            from aria_designer.runtime.bridge import workflow_to_graph as _w2g
-
             model_dim = wf_dict.get("metadata", {}).get("model_dim", 256)
-            graph, _ = _w2g(wf_dict, model_dim, return_id_map=True)
+            graph = materialize_workflow_graph(wf_dict, model_dim)
             fingerprint = graph.fingerprint()
             meta = wf_dict.setdefault("metadata", {})
             meta["graph_fingerprint"] = fingerprint

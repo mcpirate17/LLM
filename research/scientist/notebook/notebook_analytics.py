@@ -37,6 +37,10 @@ def _cached_extract_unique_ops(graph_json: str) -> tuple[str, ...]:
     return _cached_extract_op_names(graph_json)
 
 
+def _cursor_dict_rows(cursor) -> List[Dict[str, Any]]:
+    return [dict(row) for row in cursor]
+
+
 def _get_op_category(op_name: str) -> str:
     """Map an op name to its OpCategory string. Cached for speed."""
     if op_name in _OP_CATEGORY_CACHE:
@@ -112,7 +116,7 @@ class _AnalyticsMixin:
     ) -> Optional[List[Dict[str, Any]]]:
         self.flush_writes()
         self._ensure_graph_features()
-        rows = self.conn.execute(
+        cursor = self.conn.execute(
             f"""
             WITH op_rows AS (
                 SELECT DISTINCT
@@ -143,8 +147,8 @@ class _AnalyticsMixin:
             ORDER BY n_stage1_passed DESC, n_used DESC
             """,
             params,
-        ).fetchall()
-        return [dict(row) for row in rows]
+        )
+        return _cursor_dict_rows(cursor)
 
     def _query_bigram_stats_sql(
         self,
@@ -162,7 +166,7 @@ class _AnalyticsMixin:
         )
         self.flush_writes()
         self._ensure_graph_features()
-        rows = self.conn.execute(
+        cursor = self.conn.execute(
             f"""
             signatures AS (
                 SELECT DISTINCT
@@ -189,13 +193,13 @@ class _AnalyticsMixin:
             GROUP BY signature
             """,
             params,
-        ).fetchall()
-        return [dict(row) for row in rows]
+        )
+        return _cursor_dict_rows(cursor)
 
     def _query_graph_feature_rows_sql(self) -> Optional[List[Dict[str, Any]]]:
         self.flush_writes()
         self._ensure_graph_features()
-        rows = self.conn.execute(
+        cursor = self.conn.execute(
             """
             SELECT
                 pr.result_id,
@@ -228,15 +232,15 @@ class _AnalyticsMixin:
             FROM program_results pr
             JOIN program_graph_features gf ON gf.result_id = pr.result_id
             """
-        ).fetchall()
-        return [dict(row) for row in rows]
+        )
+        return _cursor_dict_rows(cursor)
 
     def _query_nearest_peers_sql(
         self, graph_fingerprint: str, limit: int = 500
     ) -> Optional[List[Dict[str, Any]]]:
         self.flush_writes()
         self._ensure_graph_features()
-        rows = self.conn.execute(
+        cursor = self.conn.execute(
             """
             WITH fingerprint_rows AS (
                 SELECT
@@ -319,8 +323,8 @@ class _AnalyticsMixin:
             LIMIT ?
             """,
             (graph_fingerprint, graph_fingerprint, graph_fingerprint, int(limit)),
-        ).fetchall()
-        return [dict(row) for row in rows]
+        )
+        return _cursor_dict_rows(cursor)
 
     # ── Op Success Rates ──
 
@@ -467,11 +471,11 @@ class _AnalyticsMixin:
 
     def get_op_success_rates(self) -> List[Dict]:
         """Get all op success rates."""
-        rows = self.conn.execute(
+        cursor = self.conn.execute(
             """SELECT * FROM op_success_rates
                ORDER BY n_stage1_passed DESC, n_used DESC"""
-        ).fetchall()
-        return [dict(r) for r in rows]
+        )
+        return _cursor_dict_rows(cursor)
 
     def get_op_success_rates_windowed(self, since_ts: float) -> List[Dict]:
         """Compute op success rates from program_results within a time window.
@@ -565,7 +569,7 @@ class _AnalyticsMixin:
         """Aggregate op bigram priors from program results."""
         self.flush_writes()
         self._ensure_graph_features()
-        rows = self.conn.execute(
+        cursor = self.conn.execute(
             """
             SELECT
                 gp.signature,
@@ -579,7 +583,7 @@ class _AnalyticsMixin:
             HAVING COUNT(*) >= ?
             """,
             (int(min_support),),
-        ).fetchall()
+        )
         priors = [
             {
                 "signature": row["signature"],
@@ -598,7 +602,7 @@ class _AnalyticsMixin:
                     else None
                 ),
             }
-            for row in rows
+            for row in cursor
         ]
         return heapq.nlargest(
             limit, priors, key=lambda item: (item["success_rate"], item["support"])
@@ -616,7 +620,7 @@ class _AnalyticsMixin:
         rows = self._query_graph_feature_rows_sql() or []
         buckets: Dict[str, Dict[str, Any]] = {}
         for row in rows:
-            record = dict(row)
+            record = row
             bucket_name = self._assign_fingerprint_bucket(record)
             bucket = buckets.setdefault(
                 bucket_name, self._new_fingerprint_bucket(bucket_name)

@@ -61,7 +61,8 @@ def novelty_metadata(nb, result_ids: Iterable[str]) -> Dict[str, Dict[str, Any]]
         return {}
     placeholders = ",".join("?" for _ in ids)
     rows = nb.conn.execute(
-        f"""SELECT result_id, novelty_valid_for_promotion, cka_source, fingerprint_json
+        f"""SELECT result_id, novelty_valid_for_promotion, novelty_validity_reason,
+                   cka_source, fingerprint_json
             FROM program_results
             WHERE result_id IN ({placeholders})""",
         tuple(ids),
@@ -75,10 +76,25 @@ def novelty_metadata(nb, result_ids: Iterable[str]) -> Dict[str, Dict[str, Any]]
                 parsed = json.loads(fp_json)
             except (ValueError, TypeError):
                 parsed = {}
+            if "novelty_valid_for_promotion" in parsed:
+                meta["novelty_valid_for_promotion"] = bool(
+                    parsed.get("novelty_valid_for_promotion")
+                )
+            else:
+                meta["novelty_valid_for_promotion"] = bool(
+                    meta.get("novelty_valid_for_promotion")
+                )
+            if parsed.get("novelty_validity_reason"):
+                meta["novelty_validity_reason"] = parsed.get("novelty_validity_reason")
+            if parsed.get("cka_source"):
+                meta["cka_source"] = parsed.get("cka_source")
             meta["fingerprint_completed_post_investigation"] = bool(
                 parsed.get("fingerprint_completed_post_investigation")
             )
         else:
+            meta["novelty_valid_for_promotion"] = bool(
+                meta.get("novelty_valid_for_promotion")
+            )
             meta["fingerprint_completed_post_investigation"] = False
         out[row["result_id"]] = meta
     return out

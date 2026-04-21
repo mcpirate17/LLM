@@ -18,14 +18,13 @@ from typing import Any, Dict, List
 
 import torch
 
-from .bridge import workflow_to_graph
-
 from research.defaults import MODEL_DIM, VOCAB_SIZE
 from research.perf_contract import (
     build_duplicate_work_report,
     build_perf_contract_with_gate,
 )
 from research.synthesis.primitives import PRIMITIVE_REGISTRY, safe_eval_formula
+from research.synthesis.workflow_converter import workflow_to_computation_graph
 
 
 # ── Static Analysis ──────────────────────────────────────────────────
@@ -237,7 +236,7 @@ def profile_static(
     Analyzes the workflow graph to estimate FLOPs, params, memory, and
     identify bottleneck operations.
     """
-    graph = workflow_to_graph(workflow_json, model_dim=model_dim)
+    graph = workflow_to_computation_graph(workflow_json, model_dim)
     return profile_static_graph(
         graph, model_dim=model_dim, batch_size=batch_size, seq_len=seq_len
     )
@@ -322,7 +321,7 @@ def profile_runtime(
     Compiles the workflow and benchmarks forward/backward passes.
     """
     total_started = time.perf_counter()
-    graph = workflow_to_graph(workflow_json, model_dim=model_dim)
+    graph = workflow_to_computation_graph(workflow_json, model_dim)
 
     # Start with static analysis
     report = profile_static_graph(graph, model_dim, batch_size, seq_len)

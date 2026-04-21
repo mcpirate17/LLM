@@ -5,45 +5,12 @@ from __future__ import annotations
 import json
 import logging
 import math
-import queue
 import time
-from pathlib import Path
-from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
-from ..json_utils import json_safe
-from ..thresholds import TIER_RANK
 
 logger = logging.getLogger(__name__)
-_REFERENCE_TRAJECTORY_PATH = Path("research/eval/reference_trajectories.json")
-_ROUTING_FAST_LANE_OPS: frozenset[str] = frozenset(
-    {
-        "moe_topk",
-        "hetero_moe",
-        "arch_router",
-        "compute_budget_router",
-        "signal_conditioned_compression",
-    }
-)
-_ROUTING_OBSERVED_OPS: frozenset[str] = frozenset(
-    set(_ROUTING_FAST_LANE_OPS)
-    | {
-        "hybrid_token_gate",
-        "hybrid_sparse_router",
-        "sparse_span_builder",
-        "adjacent_token_merge",
-        "cheap_verify_blend",
-        "adaptive_lane_mixer",
-        "route_lanes",
-        "block_sparse_linear",
-        "semi_structured_2_4_linear",
-        "adaptive_recursion",
-        "route_recursion",
-        "moe_2expert",
-        "token_class_proj",
-    }
-)
 
 
 # ── Normalized loss_ratio ──
@@ -68,7 +35,6 @@ def _build_source_map(nb: Any, result_ids: List[str]) -> Dict[str, Dict]:
     Also reconstructs ``_behavioral_fingerprint`` from ``fingerprint_json``
     so that post-investigation fingerprint completion (CKA) can run.
     """
-    import json
 
     details = [d or {} for d in (nb.get_program_details(result_ids) or [])]
     source_map = {}
@@ -117,6 +83,7 @@ def get_reference_losses(db_path: str) -> Dict[str, float]:
     ref: Dict[str, float] = {}
     try:
         from ..notebook.shared_conn import get_notebook_conn
+
         conn = get_notebook_conn(str(db_path))
         row = conn.execute("""
             SELECT AVG(p.final_loss) as avg_loss
@@ -463,5 +430,3 @@ def _unload_ollama_if_running() -> None:
                 )
     except (ImportError, OSError, ValueError) as e:
         logger.debug("Ollama unload skipped: %s", e)
-
-

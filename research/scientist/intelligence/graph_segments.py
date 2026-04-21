@@ -109,12 +109,20 @@ def _extract_graph_segments_native(
         except (TypeError, ValueError):
             return None
     try:
+        if hasattr(rust, "extract_graph_segments_map_native_py"):
+            loaded = rust.extract_graph_segments_map_native_py(
+                payload, int(min_len), int(max_len)
+            )
+            if isinstance(loaded, dict):
+                count_map = {
+                    str(key): int(value)
+                    for key, value in loaded.items()
+                    if isinstance(key, str)
+                }
+                return GraphSegmentExtraction(frozenset(count_map.keys()), count_map)
         raw = rust.extract_graph_segments_native(payload, int(min_len), int(max_len))
-    except Exception:
-        return None
-    try:
         loaded = json.loads(raw)
-    except (TypeError, ValueError, json.JSONDecodeError):
+    except Exception:
         return None
     if not isinstance(loaded, dict):
         return None

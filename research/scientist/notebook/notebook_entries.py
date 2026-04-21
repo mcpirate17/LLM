@@ -52,13 +52,13 @@ class _EntriesMixin:
 
     def get_training_curve(self, result_id: str) -> List[Dict]:
         """Get per-step training data for a program."""
-        rows = self.conn.execute(
+        cursor = self.conn.execute(
             """SELECT step, loss, grad_norm, step_time_ms
                FROM training_curves WHERE result_id = ?
                ORDER BY step""",
             (result_id,),
-        ).fetchall()
-        return [dict(r) for r in rows]
+        )
+        return [dict(row) for row in cursor]
 
     def strip_graph_json_for_failures(self, experiment_id: str) -> int:
         """Clear graph_json for S1 failures with no loss data.
@@ -142,8 +142,8 @@ class _EntriesMixin:
             params.append(entry_type)
         query += " ORDER BY timestamp DESC LIMIT ?"
         params.append(limit)
-        rows = self.conn.execute(query, params).fetchall()
-        return [dict(r) for r in rows]
+        cursor = self.conn.execute(query, params)
+        return [dict(row) for row in cursor]
 
     def set_external_benchmarks(self, result_id: str, payload: Any) -> bool:
         """Store external benchmark payload for a program result."""

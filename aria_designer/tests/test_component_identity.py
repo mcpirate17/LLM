@@ -1,5 +1,5 @@
 from __future__ import annotations
-from aria_designer.api.app.component_identity import (
+from aria_designer.component_identity import (
     canonicalize_component_id,
     canonicalize_workflow,
     canonicalize_workflow_ids,

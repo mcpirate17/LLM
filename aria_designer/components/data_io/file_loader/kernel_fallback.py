@@ -15,6 +15,32 @@ class ComponentHandler:
     def build(self, config):
         return None
 
+    @staticmethod
+    def _load_csv_array(
+        file_path: Path, *, delimiter: str, has_header: bool, encoding: str
+    ):
+        with file_path.open("r", newline="", encoding=encoding) as f:
+            reader = csv.reader(f, delimiter=delimiter)
+            if has_header:
+                next(reader, None)
+            first_row = next(reader, None)
+            if first_row is None:
+                return np.array([], dtype=np.float32)
+            width = len(first_row)
+            if width == 0:
+                row_count = 1 + sum(1 for _ in reader)
+                return np.empty((row_count, 0), dtype=np.float32)
+
+            def iter_values():
+                yield from (float(cell) for cell in first_row)
+                for row in reader:
+                    if len(row) != width:
+                        raise ValueError("CSV rows must all have the same width")
+                    yield from (float(cell) for cell in row)
+
+            values = np.fromiter(iter_values(), dtype=np.float32)
+            return values.reshape(-1, width)
+
     def forward(self, inputs, config):
         file_path = Path(str(config.get("file_path", "data.csv")))
         fmt = str(config.get("file_format", "auto")).lower()
@@ -24,14 +50,12 @@ class ComponentHandler:
         if fmt == "csv":
             delim = str(config.get("delimiter", ","))
             has_header = bool(config.get("has_header", True))
-            with file_path.open(
-                "r", newline="", encoding=str(config.get("text_encoding", "utf-8"))
-            ) as f:
-                reader = csv.reader(f, delimiter=delim)
-                rows = list(reader)
-                if has_header and rows:
-                    rows = rows[1:]
-            arr = np.array(rows, dtype=np.float32)
+            arr = self._load_csv_array(
+                file_path,
+                delimiter=delim,
+                has_header=has_header,
+                encoding=str(config.get("text_encoding", "utf-8")),
+            )
             return {"data": torch.from_numpy(arr)}
 
         if fmt == "json":
@@ -39,7 +63,7 @@ class ComponentHandler:
                 "r", encoding=str(config.get("text_encoding", "utf-8"))
             ) as f:
                 payload = json.load(f)
-            arr = np.array(payload, dtype=np.float32)
+            arr = np.asarray(payload, dtype=np.float32)
             return {"data": torch.from_numpy(arr)}
 
         if fmt == "npy":
@@ -56,8 +80,10 @@ class ComponentHandler:
             with file_path.open(
                 "r", encoding=str(config.get("text_encoding", "utf-8"))
             ) as f:
-                lines = [line.strip() for line in f if line.strip()]
-            arr = np.array([float(x) for x in lines], dtype=np.float32)
+                arr = np.fromiter(
+                    (float(line.strip()) for line in f if line.strip()),
+                    dtype=np.float32,
+                )
             return {"data": torch.from_numpy(arr)}
 
         raise ValueError(f"Unsupported file format: {fmt}")

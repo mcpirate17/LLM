@@ -43,6 +43,8 @@ _tokenized_examples_cache: "OrderedDict[tuple[int, int], List[Dict[str, Any]]]" 
 )
 _TOKENIZED_SUBSET_CACHE_MAX_ENTRIES = 16
 _tokenized_subset_cache: "OrderedDict[tuple[int, int, int, int], List[Dict[str, Any]]]" = OrderedDict()
+_NATIVE_SUBSET_CACHE_MAX_ENTRIES = 16
+_native_subset_cache: "OrderedDict[tuple[int, int, int, int], tuple[List[List[int]], List[List[List[int]]], List[int]]]" = OrderedDict()
 
 
 # ── Data loading ────────────────────────────────────────────────────────
@@ -141,6 +143,37 @@ def _get_tokenized_subset(
     return subset
 
 
+def _get_native_subset_payload(
+    n: int,
+    *,
+    vocab_size: int,
+    seed: int = 42,
+) -> tuple[List[List[int]], List[List[List[int]]], List[int]]:
+    """Return native-friendly subset payloads cached across model evaluations.
+
+    This avoids rebuilding nested Python lists via ``tolist()`` for every
+    HellaSwag run over the same cached subset.
+    """
+    cache_key = (*_tokenized_cache_key(vocab_size), int(n), int(seed))
+    cached = _native_subset_cache.get(cache_key)
+    if cached is not None:
+        _native_subset_cache.move_to_end(cache_key)
+        return cached
+
+    examples = _get_tokenized_subset(n, vocab_size=vocab_size, seed=seed)
+    ctx_tokens = [ex["ctx_tokens"].tolist() for ex in examples]
+    ending_tokens = [
+        [ending.tolist() for ending in ex["ending_tokens"]] for ex in examples
+    ]
+    labels = [int(ex["label"]) for ex in examples]
+    payload = (ctx_tokens, ending_tokens, labels)
+    _native_subset_cache[cache_key] = payload
+    _native_subset_cache.move_to_end(cache_key)
+    while len(_native_subset_cache) > _NATIVE_SUBSET_CACHE_MAX_ENTRIES:
+        _native_subset_cache.popitem(last=False)
+    return payload
+
+
 # ── Scoring ─────────────────────────────────────────────────────────────
 
 
@@ -190,10 +223,15 @@ def _score_example_batch(
     max_seq_len: int = 512,
 ) -> tuple[int, int]:
     """Score a batch of HellaSwag examples using the fastest correct path."""
+    ctx_tokens = [ex["ctx_tokens"].tolist() for ex in examples]
+    ending_tokens = [[t.tolist() for t in ex["ending_tokens"]] for ex in examples]
+    labels = [int(ex["label"]) for ex in examples]
     try:
         return _score_example_batch_native(
             model,
-            examples,
+            ctx_tokens,
+            ending_tokens,
+            labels,
             vocab_size,
             device,
             max_seq_len=max_seq_len,
@@ -214,7 +252,9 @@ def _score_example_batch(
 
 def _score_example_batch_native(
     model: nn.Module,
-    examples: List[Dict[str, Any]],
+    ctx_tokens: List[List[int]],
+    ending_tokens: List[List[List[int]]],
+    labels: List[int],
     vocab_size: int,
     device: str,
     max_seq_len: int = 512,
@@ -223,15 +263,6 @@ def _score_example_batch_native(
     from ._eval_native import load_eval_native
 
     ext = load_eval_native()
-
-    ctx_tokens = []
-    ending_tokens = []
-    labels = []
-
-    for ex in examples:
-        ctx_tokens.append(ex["ctx_tokens"].tolist())
-        ending_tokens.append([t.tolist() for t in ex["ending_tokens"]])
-        labels.append(int(ex["label"]))
 
     return ext.hellaswag_score_batch_native(
         model,
@@ -304,6 +335,9 @@ def _run_hellaswag(
 
     try:
         examples = _get_tokenized_subset(n_examples, vocab_size=vocab_size)
+        native_ctx_tokens, native_ending_tokens, native_labels = (
+            _get_native_subset_payload(n_examples, vocab_size=vocab_size)
+        )
     except Exception as exc:
         return {
             "hellaswag_acc": None,
@@ -329,14 +363,41 @@ def _run_hellaswag(
         start = 0
         while start < len(examples):
             batch = examples[start : start + effective_batch_examples]
+            batch_ctx_tokens = native_ctx_tokens[
+                start : start + effective_batch_examples
+            ]
+            batch_ending_tokens = native_ending_tokens[
+                start : start + effective_batch_examples
+            ]
+            batch_labels = native_labels[start : start + effective_batch_examples]
             try:
-                batch_correct, batch_total = _score_example_batch(
-                    model, batch, vocab_size, device, max_seq_len
+                batch_correct, batch_total = _score_example_batch_native(
+                    model,
+                    batch_ctx_tokens,
+                    batch_ending_tokens,
+                    batch_labels,
+                    vocab_size,
+                    device,
+                    max_seq_len=max_seq_len,
                 )
                 correct += batch_correct
                 total += batch_total
                 start += effective_batch_examples
-            except Exception as exc:
+            except Exception:
+                logger.warning(
+                    "Native HellaSwag scorer failed; falling back to Python reference",
+                    exc_info=True,
+                )
+                try:
+                    batch_correct, batch_total = _score_example_batch_python(
+                        model, batch, vocab_size, device, max_seq_len=max_seq_len
+                    )
+                    correct += batch_correct
+                    total += batch_total
+                    start += effective_batch_examples
+                    continue
+                except Exception as fallback_exc:
+                    exc = fallback_exc
                 if _is_cuda_oom(exc) and effective_batch_examples > 1:
                     oom_retries += 1
                     effective_batch_examples = max(1, effective_batch_examples // 2)

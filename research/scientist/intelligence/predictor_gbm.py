@@ -27,9 +27,12 @@ from .ml_corpus import (
 from .predictor_artifacts import (
     GBM_GATE_MODEL_PATH as _GBM_GATE_MODEL_PATH,
     GBM_META_PATH as _GBM_META_PATH,
+    GBM_RANK_COMPOSITE_MODEL_PATH as _GBM_RANK_COMPOSITE_MODEL_PATH,
     GBM_RANK_MODEL_PATH as _GBM_RANK_MODEL_PATH,
+    GBM_RANK_PPL_MODEL_PATH as _GBM_RANK_PPL_MODEL_PATH,
     ensure_state_dir,
     read_json,
+    unlink_paths,
     write_json,
 )
 
@@ -42,6 +45,215 @@ from .predictor_ridge import _extract_features  # noqa: F401
 # ─────────────────────────────────────────────────────────────────────────────
 
 _MIN_GBM_SAMPLES = 50  # minimum rows to train
+_MIN_PPL_RANK_SPEARMAN = 0.30
+_MIN_PPL_RANK_NDCG = 0.50
+_MIN_COMPOSITE_RANK_SPEARMAN = 0.50
+_MIN_COMPOSITE_RANK_NDCG = 0.60
+
+
+_PROBE_FEATURE_NAMES = {
+    "hellaswag_acc_best",
+    "induction_auc_best",
+    "ar_auc_best",
+    "blimp_overall_accuracy_best",
+    "binding_composite_best",
+    "induction_v2_investigation_auc_best",
+    "binding_v2_investigation_auc_best",
+    "validation_loss_ratio_best",
+    "rapid_screening_passed_best",
+    "initial_loss_best",
+    "mean_grad_norm_best",
+    "max_grad_norm_best",
+    "grad_norm_std_best",
+}
+
+
+def _quality_from_ppl(value: float) -> float:
+    return float(np.exp(-max(float(value), 0.0) / 25.0))
+
+
+def _quality_from_composite(value: float) -> float:
+    return float(np.clip(float(value) / 100.0, 0.0, 1.0))
+
+
+def _rank_target_quality(
+    values: np.ndarray,
+    *,
+    target_kind: str,
+) -> np.ndarray:
+    arr = np.asarray(values, dtype=np.float64)
+    if target_kind == "ppl":
+        return np.array([_quality_from_ppl(v) for v in arr], dtype=np.float64)
+    if target_kind == "composite":
+        return np.array([_quality_from_composite(v) for v in arr], dtype=np.float64)
+    raise ValueError(f"unknown rank target kind: {target_kind}")
+
+
+def _ranking_diagnostics(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    *,
+    target_kind: str,
+) -> Dict[str, Any]:
+    mask = np.isfinite(y_true) & np.isfinite(y_pred)
+    y_true_f = np.asarray(y_true[mask], dtype=np.float64)
+    y_pred_f = np.asarray(y_pred[mask], dtype=np.float64)
+    n = int(y_true_f.size)
+    if n < 2:
+        return {
+            "target_kind": target_kind,
+            "n": n,
+            "error": "insufficient_data",
+        }
+
+    from scipy.stats import kendalltau, pearsonr, spearmanr
+
+    rho, _ = spearmanr(y_true_f, y_pred_f)
+    pearson = pearsonr(y_true_f, y_pred_f).statistic
+    kendall = kendalltau(y_true_f, y_pred_f).statistic
+
+    true_quality = _rank_target_quality(y_true_f, target_kind=target_kind)
+    pred_quality = _rank_target_quality(y_pred_f, target_kind=target_kind)
+    k = min(max(int(np.ceil(n * 0.1)), 5), n)
+
+    def _dcg(order: np.ndarray) -> float:
+        gains = true_quality[order]
+        discounts = 1.0 / np.log2(np.arange(2, gains.size + 2))
+        return float(np.sum(gains * discounts))
+
+    pred_order = np.argsort(-pred_quality)
+    ideal_order = np.argsort(-true_quality)
+    ndcg_at_k = 0.0
+    ideal_dcg = _dcg(ideal_order[:k])
+    if ideal_dcg > 0.0:
+        ndcg_at_k = float(_dcg(pred_order[:k]) / ideal_dcg)
+
+    pred_top = set(pred_order[:k].tolist())
+    true_top = set(ideal_order[:k].tolist())
+    overlap = len(pred_top & true_top)
+
+    return {
+        "target_kind": target_kind,
+        "n": n,
+        "spearman": float(rho) if np.isfinite(rho) else 0.0,
+        "pearson": float(pearson) if np.isfinite(pearson) else 0.0,
+        "kendall": float(kendall) if np.isfinite(kendall) else 0.0,
+        "mae": float(np.mean(np.abs(y_true_f - y_pred_f))),
+        "rmse": float(np.sqrt(np.mean((y_true_f - y_pred_f) ** 2))),
+        "ndcg_at_top_decile": ndcg_at_k,
+        "top_decile_n": int(k),
+        "top_decile_overlap": int(overlap),
+        "top_decile_hit_rate": float(overlap / max(k, 1)),
+        "top_decile_mean_true_quality": float(np.mean(true_quality[pred_order[:k]])),
+    }
+
+
+def _ppl_log_bounds(values: np.ndarray) -> tuple[float, float]:
+    finite = np.asarray(values[np.isfinite(values)], dtype=np.float64)
+    if finite.size == 0:
+        return float(np.log(1.0)), float(np.log(1e6))
+    y_log = np.log(np.maximum(finite, 1.0))
+    log_min = float(np.percentile(y_log, 0.5))
+    log_max = float(np.percentile(y_log, 99.5))
+    if log_max < log_min:
+        log_max = log_min
+    return log_min, log_max
+
+
+def _fit_rank_head(
+    lgb: Any,
+    *,
+    X_train: np.ndarray,
+    y_train_full: np.ndarray,
+    w_train: np.ndarray,
+    X_val: np.ndarray,
+    y_val_full: np.ndarray,
+    w_val: np.ndarray,
+    feature_names: List[str],
+    target_kind: str,
+) -> tuple[Any, Optional[Dict[str, float]], Dict[str, Any], Dict[str, Any]]:
+    rank_mask_tr = np.isfinite(y_train_full)
+    rank_mask_va = np.isfinite(y_val_full)
+    n_train = int(rank_mask_tr.sum())
+    n_val = int(rank_mask_va.sum())
+    if n_train < 30 or n_val < 10:
+        return (
+            None,
+            None,
+            {
+                "target_kind": target_kind,
+                "n_train": n_train,
+                "n_val": n_val,
+                "error": "insufficient_data",
+            },
+            {},
+        )
+
+    y_train_target = np.asarray(y_train_full[rank_mask_tr], dtype=np.float64)
+    y_val_target = np.asarray(y_val_full[rank_mask_va], dtype=np.float64)
+    target_meta: Dict[str, Any] = {}
+    if target_kind == "ppl":
+        log_min, log_max = _ppl_log_bounds(y_train_target)
+        y_train_target = np.clip(
+            np.log(np.maximum(y_train_target, 1.0)), log_min, log_max
+        )
+        y_val_target = np.clip(np.log(np.maximum(y_val_target, 1.0)), log_min, log_max)
+        target_meta = {
+            "log_min": float(log_min),
+            "log_max": float(log_max),
+            "training_target_space": "clipped_log_ppl",
+        }
+
+    rank_params = {
+        "objective": "regression",
+        "metric": "rmse",
+        "learning_rate": 0.03,
+        "num_leaves": 31,
+        "min_data_in_leaf": 20,
+        "feature_fraction": 0.7,
+        "bagging_fraction": 0.7,
+        "bagging_freq": 5,
+        "lambda_l1": 0.1,
+        "lambda_l2": 1.0,
+        "verbose": -1,
+        "n_jobs": 1,
+        "seed": 42,
+    }
+    r_train = lgb.Dataset(
+        X_train[rank_mask_tr],
+        label=y_train_target,
+        weight=w_train[rank_mask_tr],
+        feature_name=feature_names,
+    )
+    r_val = lgb.Dataset(
+        X_val[rank_mask_va],
+        label=y_val_target,
+        weight=w_val[rank_mask_va],
+        feature_name=feature_names,
+        reference=r_train,
+    )
+    rank_model = lgb.train(
+        rank_params,
+        r_train,
+        num_boost_round=500,
+        valid_sets=[r_val],
+        callbacks=[lgb.early_stopping(50, verbose=False), lgb.log_evaluation(0)],
+    )
+    importance = dict(
+        zip(feature_names, rank_model.feature_importance("gain").tolist())
+    )
+    rank_preds = rank_model.predict(X_val[rank_mask_va])
+    if target_kind == "ppl":
+        log_min = float(target_meta["log_min"])
+        log_max = float(target_meta["log_max"])
+        rank_preds = np.exp(np.clip(rank_preds, log_min, log_max))
+    diagnostics = _ranking_diagnostics(
+        y_val_full[rank_mask_va],
+        rank_preds,
+        target_kind=target_kind,
+    )
+    diagnostics.update({"n_train": n_train, "n_val": n_val, **target_meta})
+    return rank_model, importance, diagnostics, target_meta
 
 
 def _graph_signature(graph_json: Any) -> Optional[str]:
@@ -136,7 +348,15 @@ def analyze_graph_label_quality(db_path: str) -> Dict[str, Any]:
 
 def _query_graph_training_data(
     db_path: str,
-) -> Tuple[List[Dict[str, float]], np.ndarray, np.ndarray, np.ndarray, List[str]]:
+) -> Tuple[
+    List[Dict[str, float]],
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    List[str],
+]:
     """Query graph_json + labels from ALL program_results for GBM training.
 
     Uses every graph — including failures without final_loss (they're known
@@ -144,11 +364,13 @@ def _query_graph_training_data(
     "hopeless" looks like vs only training on graphs that survived long enough
     to produce a loss.
 
-    Returns (feature_dicts, y_gate, y_rank) where:
+    Returns (feature_dicts, y_gate, y_rank_ppl, y_rank_composite, sample_weights,
+    latest_timestamps, graph_signatures) where:
       - feature_dicts: list of dicts from extract_graph_features (with full op histogram
         + probe features: hellaswag_acc, induction_auc, ar_auc, blimp, binding_composite)
       - y_gate: binary array (1 = passed S1)
-      - y_rank: float array of composite_score (NaN where unavailable)
+      - y_rank_ppl: float array of best wikitext perplexity (NaN where unavailable)
+      - y_rank_composite: float array of best composite score (NaN where unavailable)
     """
     from ...synthesis.graph_features import (
         extract_graph_features_bundle,
@@ -162,15 +384,17 @@ def _query_graph_training_data(
         raise
     except Exception as e:
         logger.warning("GBM training data query failed: %s", e)
-        return [], np.zeros(0), np.zeros(0), np.zeros(0), []
+        return [], np.zeros(0), np.zeros(0), np.zeros(0), np.zeros(0), np.zeros(0), []
 
     # Load op_stats ONCE for all rows (avoids N+1 DB queries)
     op_stats_cache = load_op_stats(db_path)
 
     feat_dicts: List[Dict[str, float]] = []
     gate_labels: List[int] = []
-    rank_labels: List[float] = []
+    rank_labels_ppl: List[float] = []
+    rank_labels_composite: List[float] = []
     sample_weights: List[float] = []
+    latest_timestamps: List[float] = []
     graph_signatures: List[str] = []
 
     for row in rows:
@@ -217,20 +441,21 @@ def _query_graph_training_data(
         graph_signatures.append(signature)
         gate_labels.append(1 if row["stage1_any_passed"] else 0)
         sample_weights.append(rerun_confidence_weight(int(row.get("n_rows", 1))))
-        # Rank target: prefer composite_score when available, otherwise fall back
-        # to best observed wikitext perplexity for corpora without leaderboard data.
+        latest_timestamps.append(float(row.get("latest_timestamp") or 0.0))
+        # Rank targets stay semantically separate.  We no longer mix a
+        # higher-is-better composite score with a lower-is-better perplexity head.
         comp = row.get("composite_score_best")
-        if comp is not None:
-            rank_labels.append(float(comp))
-        else:
-            ppl = row.get("wikitext_perplexity_best")
-            rank_labels.append(float(ppl) if ppl is not None else float("nan"))
+        ppl = row.get("wikitext_perplexity_best")
+        rank_labels_composite.append(float(comp) if comp is not None else float("nan"))
+        rank_labels_ppl.append(float(ppl) if ppl is not None else float("nan"))
 
     return (
         feat_dicts,
         np.array(gate_labels, dtype=np.int32),
-        np.array(rank_labels, dtype=np.float64),
+        np.array(rank_labels_ppl, dtype=np.float64),
+        np.array(rank_labels_composite, dtype=np.float64),
         np.array(sample_weights, dtype=np.float64),
+        np.array(latest_timestamps, dtype=np.float64),
         graph_signatures,
     )
 
@@ -239,21 +464,27 @@ def _query_graph_training_data(
 class GBMPredictor:
     """LightGBM-based graph pre-screener.
 
-    Two models:
+    Three models:
       gate_model: classifier — P(pass_s1 | graph_features)
-      rank_model: regressor — predicted wikitext_perplexity
+      rank_model_ppl: regressor — predicted wikitext_perplexity (lower is better)
+      rank_model_composite: regressor — predicted composite_score (higher is better)
 
     Both operate on graph-structure features only (no forward pass needed).
     """
 
     gate_model: Any = None  # lgb.Booster
-    rank_model: Any = None  # lgb.Booster
+    rank_model_ppl: Any = None  # lgb.Booster
+    rank_model_composite: Any = None  # lgb.Booster
     feature_names: List[str] = field(default_factory=list)  # all features (rank model)
     gate_feature_names: List[str] = field(default_factory=list)  # structure only (gate)
     n_train: int = 0
     gate_threshold: float = 0.5
     gate_importance: Optional[Dict[str, float]] = None
-    rank_importance: Optional[Dict[str, float]] = None
+    rank_importance_ppl: Optional[Dict[str, float]] = None
+    rank_importance_composite: Optional[Dict[str, float]] = None
+    rank_ppl_log_min: float = float(np.log(1.0))
+    rank_ppl_log_max: float = float(np.log(1e6))
+    legacy_mixed_rank_model_loaded: bool = False
     train_metrics: Dict[str, Any] = field(default_factory=dict)
 
     def is_fitted(self) -> bool:
@@ -270,18 +501,68 @@ class GBMPredictor:
         except (TypeError, ValueError):
             return 0.5
 
-    def predict_rank(self, features: Dict[str, float]) -> float:
-        """Predict composite_score for a single graph. Returns 1e6 if not fitted."""
-        if self.rank_model is None:
+    def _predict_rank_head(self, model: Any, features: Dict[str, float]) -> float:
+        if model is None:
             return 1e6
         x = np.array(
             [[features.get(k, float("nan")) for k in self.feature_names]],
             dtype=np.float32,
         )
         try:
-            return float(self.rank_model.predict(x)[0])
+            return float(model.predict(x)[0])
         except (TypeError, ValueError):
             return 1e6
+
+    def predict_rank(self, features: Dict[str, float]) -> float:
+        """Predict perplexity-style rank (lower is better). Returns 1e6 if unavailable."""
+        return self.predict_rank_ppl(features)
+
+    def _rank_head_metrics(self, target_kind: str) -> Dict[str, Any]:
+        return dict((self.train_metrics.get("rank_heads") or {}).get(target_kind) or {})
+
+    def rank_head_is_usable(self, target_kind: str) -> bool:
+        metrics = self._rank_head_metrics(target_kind)
+        spearman = float(metrics.get("spearman", 0.0) or 0.0)
+        ndcg = float(metrics.get("ndcg_at_top_decile", 0.0) or 0.0)
+        if target_kind == "ppl":
+            return (
+                self.rank_model_ppl is not None
+                and spearman >= _MIN_PPL_RANK_SPEARMAN
+                and ndcg >= _MIN_PPL_RANK_NDCG
+            )
+        if target_kind == "composite":
+            return (
+                self.rank_model_composite is not None
+                and spearman >= _MIN_COMPOSITE_RANK_SPEARMAN
+                and ndcg >= _MIN_COMPOSITE_RANK_NDCG
+            )
+        return False
+
+    def predict_rank_ppl(self, features: Dict[str, float]) -> float:
+        if not self.rank_head_is_usable("ppl"):
+            return 1e6
+        log_ppl = self._predict_rank_head(self.rank_model_ppl, features)
+        if not np.isfinite(log_ppl) or log_ppl >= 1e5:
+            return 1e6
+        log_ppl = float(np.clip(log_ppl, self.rank_ppl_log_min, self.rank_ppl_log_max))
+        return float(np.exp(log_ppl))
+
+    def predict_rank_composite(self, features: Dict[str, float]) -> float:
+        if not self.rank_head_is_usable("composite"):
+            return 1e6
+        return self._predict_rank_head(self.rank_model_composite, features)
+
+    def predict_quality_score(self, features: Dict[str, float]) -> float:
+        quality_terms: List[float] = []
+        ppl = self.predict_rank_ppl(features)
+        if np.isfinite(ppl) and ppl < 1e5:
+            quality_terms.append(_quality_from_ppl(ppl))
+        composite = self.predict_rank_composite(features)
+        if np.isfinite(composite) and composite > -1e5:
+            quality_terms.append(_quality_from_composite(composite))
+        if not quality_terms:
+            return 0.0
+        return float(np.clip(np.mean(quality_terms), 0.0, 1.0))
 
     def save(self, state_dir: Path) -> None:
         """Persist LightGBM models plus feature metadata."""
@@ -289,8 +570,15 @@ class GBMPredictor:
             return
         state_dir = ensure_state_dir(state_dir)
         self.gate_model.save_model(str(state_dir / _GBM_GATE_MODEL_PATH.name))
-        if self.rank_model is not None:
-            self.rank_model.save_model(str(state_dir / _GBM_RANK_MODEL_PATH.name))
+        if self.rank_model_ppl is not None:
+            self.rank_model_ppl.save_model(
+                str(state_dir / _GBM_RANK_PPL_MODEL_PATH.name)
+            )
+        if self.rank_model_composite is not None:
+            self.rank_model_composite.save_model(
+                str(state_dir / _GBM_RANK_COMPOSITE_MODEL_PATH.name)
+            )
+        unlink_paths(state_dir / _GBM_RANK_MODEL_PATH.name)
         write_json(
             state_dir / _GBM_META_PATH.name,
             {
@@ -299,8 +587,13 @@ class GBMPredictor:
                 "n_train": self.n_train,
                 "gate_threshold": self.gate_threshold,
                 "gate_importance": self.gate_importance,
-                "rank_importance": self.rank_importance,
-                "has_rank_model": self.rank_model is not None,
+                "rank_importance_ppl": self.rank_importance_ppl,
+                "rank_importance_composite": self.rank_importance_composite,
+                "rank_ppl_log_min": self.rank_ppl_log_min,
+                "rank_ppl_log_max": self.rank_ppl_log_max,
+                "has_rank_model_ppl": self.rank_model_ppl is not None,
+                "has_rank_model_composite": self.rank_model_composite is not None,
+                "rank_semantics_version": 2,
                 "train_metrics": self.train_metrics,
             },
         )
@@ -320,14 +613,28 @@ class GBMPredictor:
             return cls()
         meta = read_json(meta_path)
         gate_model = lgb.Booster(model_file=str(gate_model_path))
-        rank_model = None
-        if meta.get("has_rank_model"):
-            rank_model_path = state_dir / _GBM_RANK_MODEL_PATH.name
+        rank_model_ppl = None
+        if meta.get("has_rank_model_ppl"):
+            rank_model_path = state_dir / _GBM_RANK_PPL_MODEL_PATH.name
             if rank_model_path.exists():
-                rank_model = lgb.Booster(model_file=str(rank_model_path))
+                rank_model_ppl = lgb.Booster(model_file=str(rank_model_path))
+        rank_model_composite = None
+        if meta.get("has_rank_model_composite"):
+            rank_model_path = state_dir / _GBM_RANK_COMPOSITE_MODEL_PATH.name
+            if rank_model_path.exists():
+                rank_model_composite = lgb.Booster(model_file=str(rank_model_path))
+        legacy_mixed_rank_model_loaded = False
+        if (
+            rank_model_ppl is None
+            and rank_model_composite is None
+            and meta.get("has_rank_model")
+            and (state_dir / _GBM_RANK_MODEL_PATH.name).exists()
+        ):
+            legacy_mixed_rank_model_loaded = True
         return cls(
             gate_model=gate_model,
-            rank_model=rank_model,
+            rank_model_ppl=rank_model_ppl,
+            rank_model_composite=rank_model_composite,
             feature_names=list(meta.get("feature_names", [])),
             gate_feature_names=list(
                 meta.get("gate_feature_names", meta.get("feature_names", []))
@@ -335,7 +642,11 @@ class GBMPredictor:
             n_train=int(meta.get("n_train", 0)),
             gate_threshold=float(meta.get("gate_threshold", 0.5)),
             gate_importance=meta.get("gate_importance"),
-            rank_importance=meta.get("rank_importance"),
+            rank_importance_ppl=meta.get("rank_importance_ppl"),
+            rank_importance_composite=meta.get("rank_importance_composite"),
+            rank_ppl_log_min=float(meta.get("rank_ppl_log_min", np.log(1.0))),
+            rank_ppl_log_max=float(meta.get("rank_ppl_log_max", np.log(1e6))),
+            legacy_mixed_rank_model_loaded=legacy_mixed_rank_model_loaded,
             train_metrics=dict(meta.get("train_metrics", {})),
         )
 
@@ -354,9 +665,15 @@ def train_gbm(
         logger.info("lightgbm not installed, GBM predictor unavailable")
         return GBMPredictor()
 
-    feat_dicts, y_gate, y_rank, sample_weights, graph_signatures = (
-        _query_graph_training_data(db_path)
-    )
+    (
+        feat_dicts,
+        y_gate,
+        y_rank_ppl,
+        y_rank_composite,
+        sample_weights,
+        _latest_timestamps,
+        graph_signatures,
+    ) = _query_graph_training_data(db_path)
 
     if len(feat_dicts) < _MIN_GBM_SAMPLES:
         logger.info(
@@ -370,22 +687,7 @@ def train_gbm(
     n_total = len(X)
 
     # Post-eval features leak the gate label (only non-NaN for entries
-    # that completed training).  Excluded from gate; kept for rank model.
-    _PROBE_FEATURE_NAMES = {
-        "hellaswag_acc_best",
-        "induction_auc_best",
-        "ar_auc_best",
-        "blimp_overall_accuracy_best",
-        "binding_composite_best",
-        "induction_v2_investigation_auc_best",
-        "binding_v2_investigation_auc_best",
-        "validation_loss_ratio_best",
-        "rapid_screening_passed_best",
-        "initial_loss_best",
-        "mean_grad_norm_best",
-        "max_grad_norm_best",
-        "grad_norm_std_best",
-    }
+    # that completed training).  Excluded from gate; kept for rank heads.
     gate_col_mask = np.array(
         [fn not in _PROBE_FEATURE_NAMES for fn in feature_names], dtype=bool
     )
@@ -412,7 +714,9 @@ def train_gbm(
     # Gate feature matrices (no probes — probes leak the S1 label)
     X_gate_train, X_gate_val = X_gate[train_idx], X_gate[val_idx]
     y_gate_train, y_gate_val = y_gate[train_idx], y_gate[val_idx]
-    y_rank_train_full, y_rank_val_full = y_rank[train_idx], y_rank[val_idx]
+    y_rank_ppl_train, y_rank_ppl_val = y_rank_ppl[train_idx], y_rank_ppl[val_idx]
+    y_rank_composite_train = y_rank_composite[train_idx]
+    y_rank_composite_val = y_rank_composite[val_idx]
     w_train, w_val = sample_weights[train_idx], sample_weights[val_idx]
 
     # Class imbalance handling
@@ -464,55 +768,34 @@ def train_gbm(
         zip(gate_feature_names, gate_model.feature_importance("gain").tolist())
     )
 
-    # ── Rank model (regression on composite_score, with probe features) ──
-    rank_model = None
-    rank_importance = None
-    rank_mask_tr = np.isfinite(y_rank_train_full)
-    rank_mask_va = np.isfinite(y_rank_val_full)
-    if rank_mask_tr.sum() >= 30 and rank_mask_va.sum() >= 5:
-        X_rank_train = X_train[rank_mask_tr]
-        y_rank_train = y_rank_train_full[rank_mask_tr]
-        X_rank_val = X_val[rank_mask_va]
-        y_rank_val = y_rank_val_full[rank_mask_va]
-
-        rank_params = {
-            "objective": "regression",
-            "metric": "rmse",
-            "learning_rate": 0.03,
-            "num_leaves": 31,
-            "min_data_in_leaf": 20,
-            "feature_fraction": 0.7,
-            "bagging_fraction": 0.7,
-            "bagging_freq": 5,
-            "lambda_l1": 0.1,
-            "lambda_l2": 1.0,
-            "verbose": -1,
-            "n_jobs": 1,
-            "seed": 42,
-        }
-        r_train = lgb.Dataset(
-            X_rank_train,
-            label=y_rank_train,
-            weight=w_train[rank_mask_tr],
-            feature_name=feature_names,
-        )
-        r_val = lgb.Dataset(
-            X_rank_val,
-            label=y_rank_val,
-            weight=w_val[rank_mask_va],
-            feature_name=feature_names,
-            reference=r_train,
-        )
-        rank_model = lgb.train(
-            rank_params,
-            r_train,
-            num_boost_round=500,
-            valid_sets=[r_val],
-            callbacks=[lgb.early_stopping(50, verbose=False), lgb.log_evaluation(0)],
-        )
-        rank_importance = dict(
-            zip(feature_names, rank_model.feature_importance("gain").tolist())
-        )
+    # ── Rank heads (semantically separate targets) ──
+    rank_model_ppl, rank_importance_ppl, rank_diag_ppl, rank_ppl_meta = _fit_rank_head(
+        lgb,
+        X_train=X_train,
+        y_train_full=y_rank_ppl_train,
+        w_train=w_train,
+        X_val=X_val,
+        y_val_full=y_rank_ppl_val,
+        w_val=w_val,
+        feature_names=feature_names,
+        target_kind="ppl",
+    )
+    (
+        rank_model_composite,
+        rank_importance_composite,
+        rank_diag_composite,
+        _rank_composite_meta,
+    ) = _fit_rank_head(
+        lgb,
+        X_train=X_train,
+        y_train_full=y_rank_composite_train,
+        w_train=w_train,
+        X_val=X_val,
+        y_val_full=y_rank_composite_val,
+        w_val=w_val,
+        feature_names=feature_names,
+        target_kind="composite",
+    )
 
     gate_scores = gate_model.predict(X_gate_val)
     operating_points = operating_point_profiles(y_gate_val, gate_scores)
@@ -521,31 +804,30 @@ def train_gbm(
         y_gate_val, gate_scores, gate_threshold
     )
 
-    rank_spearman = 0.0
-    if rank_model is not None:
-        rank_mask_va = np.isfinite(y_rank_val_full)
-        if rank_mask_va.sum() >= 10:
-            rank_preds = rank_model.predict(X_val[rank_mask_va])
-            from scipy.stats import spearmanr
-
-            rho, _ = spearmanr(y_rank_val_full[rank_mask_va], rank_preds)
-            rank_spearman = float(rho) if np.isfinite(rho) else 0.0
-
     n_trained = len(X_train)
     predictor = GBMPredictor(
         gate_model=gate_model,
-        rank_model=rank_model,
+        rank_model_ppl=rank_model_ppl,
+        rank_model_composite=rank_model_composite,
         feature_names=feature_names,
         gate_feature_names=gate_feature_names,
         n_train=n_trained,
         gate_threshold=gate_threshold,
         gate_importance=gate_importance,
-        rank_importance=rank_importance,
+        rank_importance_ppl=rank_importance_ppl,
+        rank_importance_composite=rank_importance_composite,
+        rank_ppl_log_min=float(rank_ppl_meta.get("log_min", np.log(1.0))),
+        rank_ppl_log_max=float(rank_ppl_meta.get("log_max", np.log(1e6))),
         train_metrics={
             "gate_threshold": gate_threshold,
             "gate_metrics": gate_metrics,
             "operating_points": operating_points,
-            "rank_spearman": rank_spearman,
+            "rank_heads": {
+                "ppl": rank_diag_ppl,
+                "composite": rank_diag_composite,
+            },
+            "rank_spearman_ppl": rank_diag_ppl.get("spearman", 0.0),
+            "rank_spearman_composite": rank_diag_composite.get("spearman", 0.0),
             "n_train": n_trained,
             "n_val": len(X_val),
             "n_positive": int(y_gate.sum()),
@@ -558,7 +840,9 @@ def train_gbm(
         n_trained,
         len(feature_names),
         spw,
-        "yes" if rank_model else "no",
+        "yes"
+        if (rank_model_ppl is not None or rank_model_composite is not None)
+        else "no",
         split_stats["n_unique_graphs"],
         split_stats["n_duplicate_groups"],
         split_stats["n_ambiguous_duplicate_groups"],
@@ -578,9 +862,15 @@ def evaluate_gbm(
     except ImportError:
         return {"error": "lightgbm_not_installed"}
 
-    feat_dicts, y_gate, y_rank, sample_weights, graph_signatures = (
-        _query_graph_training_data(db_path)
-    )
+    (
+        feat_dicts,
+        y_gate,
+        y_rank_ppl,
+        y_rank_composite,
+        sample_weights,
+        _latest_timestamps,
+        graph_signatures,
+    ) = _query_graph_training_data(db_path)
     n_total = len(feat_dicts)
     if n_total < _MIN_GBM_SAMPLES:
         return {"error": "insufficient_data", "n_total": n_total}
@@ -589,22 +879,7 @@ def evaluate_gbm(
 
     # Strip post-eval probe features from gate evaluation — same as train_gbm().
     # These features leak the gate label (only non-NaN for entries that completed
-    # training). Kept for rank model; excluded from gate.
-    _PROBE_FEATURE_NAMES = {
-        "hellaswag_acc_best",
-        "induction_auc_best",
-        "ar_auc_best",
-        "blimp_overall_accuracy_best",
-        "binding_composite_best",
-        "induction_v2_investigation_auc_best",
-        "binding_v2_investigation_auc_best",
-        "validation_loss_ratio_best",
-        "rapid_screening_passed_best",
-        "initial_loss_best",
-        "mean_grad_norm_best",
-        "max_grad_norm_best",
-        "grad_norm_std_best",
-    }
+    # training). Kept for rank heads; excluded from gate.
     gate_col_mask = np.array(
         [fn not in _PROBE_FEATURE_NAMES for fn in feature_names], dtype=bool
     )
@@ -625,7 +900,9 @@ def evaluate_gbm(
     X_gate_train, X_gate_test = X_gate[train_idx], X_gate[val_idx]
     X_train, X_test = X[train_idx], X[val_idx]
     y_gate_train, y_gate_test = y_gate[train_idx], y_gate[val_idx]
-    y_rank_train_full, y_rank_test_full = y_rank[train_idx], y_rank[val_idx]
+    y_rank_ppl_train, y_rank_ppl_test = y_rank_ppl[train_idx], y_rank_ppl[val_idx]
+    y_rank_composite_train = y_rank_composite[train_idx]
+    y_rank_composite_test = y_rank_composite[val_idx]
     w_train, w_test = sample_weights[train_idx], sample_weights[val_idx]
     n_train = len(X_train)
     n_test = len(X_test)
@@ -689,51 +966,35 @@ def evaluate_gbm(
     else:
         false_skip_rate = 0.0
 
-    # Rank Spearman on wikitext_perplexity subset
-    rank_spearman = 0.0
-    rank_mask_tr = np.isfinite(y_rank_train_full)
-    rank_mask_te = np.isfinite(y_rank_test_full)
-    if rank_mask_tr.sum() >= 30 and rank_mask_te.sum() >= 10:
-        rank_params = {
-            "objective": "regression",
-            "metric": "rmse",
-            "learning_rate": 0.03,
-            "num_leaves": 31,
-            "min_data_in_leaf": 20,
-            "feature_fraction": 0.7,
-            "bagging_fraction": 0.7,
-            "bagging_freq": 5,
-            "lambda_l1": 0.1,
-            "lambda_l2": 1.0,
-            "verbose": -1,
-            "n_jobs": 1,
-            "seed": 42,
-        }
-        r_train = lgb.Dataset(
-            X_train[rank_mask_tr],
-            label=y_rank_train_full[rank_mask_tr],
-            weight=w_train[rank_mask_tr],
-            feature_name=feature_names,
+    rank_model_ppl, _rank_importance_ppl, rank_diag_ppl, _rank_ppl_meta = (
+        _fit_rank_head(
+            lgb,
+            X_train=X_train,
+            y_train_full=y_rank_ppl_train,
+            w_train=w_train,
+            X_val=X_test,
+            y_val_full=y_rank_ppl_test,
+            w_val=w_test,
+            feature_names=feature_names,
+            target_kind="ppl",
         )
-        r_val = lgb.Dataset(
-            X_test[rank_mask_te],
-            label=y_rank_test_full[rank_mask_te],
-            weight=w_test[rank_mask_te],
-            feature_name=feature_names,
-            reference=r_train,
-        )
-        rank_model = lgb.train(
-            rank_params,
-            r_train,
-            num_boost_round=500,
-            valid_sets=[r_val],
-            callbacks=[lgb.early_stopping(50, verbose=False), lgb.log_evaluation(0)],
-        )
-        rank_preds = rank_model.predict(X_test[rank_mask_te])
-        from scipy.stats import spearmanr
-
-        rho, _ = spearmanr(y_rank_test_full[rank_mask_te], rank_preds)
-        rank_spearman = float(rho) if np.isfinite(rho) else 0.0
+    )
+    (
+        _rank_model_composite,
+        _rank_importance_composite,
+        rank_diag_composite,
+        _rank_composite_meta,
+    ) = _fit_rank_head(
+        lgb,
+        X_train=X_train,
+        y_train_full=y_rank_composite_train,
+        w_train=w_train,
+        X_val=X_test,
+        y_val_full=y_rank_composite_test,
+        w_val=w_test,
+        feature_names=feature_names,
+        target_kind="composite",
+    )
 
     # Top feature importances
     importance = dict(
@@ -746,7 +1007,13 @@ def evaluate_gbm(
         "gate_threshold": gate_threshold,
         "gate_metrics": gate_metrics,
         "operating_points": operating_points,
-        "rank_spearman": rank_spearman,
+        "rank_heads": {
+            "ppl": rank_diag_ppl,
+            "composite": rank_diag_composite,
+        },
+        "rank_spearman": rank_diag_ppl.get("spearman", 0.0),
+        "rank_spearman_ppl": rank_diag_ppl.get("spearman", 0.0),
+        "rank_spearman_composite": rank_diag_composite.get("spearman", 0.0),
         "skip_rate": skip_rate,
         "false_skip_rate": false_skip_rate,
         "n_train": n_train,

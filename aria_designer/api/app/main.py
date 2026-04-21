@@ -32,11 +32,8 @@ from .collaboration import collab_manager
 logger = logging.getLogger(__name__)
 
 # Re-export shared symbols so tests that monkeypatch app.main still work.
-from .shared_api import (  # noqa: F401
-    HAS_BRIDGE,
-    bridge_evaluate,
-    _sync_lineage_to_research,
-)
+from .runtime_features import HAS_BRIDGE, bridge_evaluate  # noqa: F401
+from .research_sync import _sync_lineage_to_research  # noqa: F401
 
 
 # ── Lifespan ──────────────────────────────────────────────────────────

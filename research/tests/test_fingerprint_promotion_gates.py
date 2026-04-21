@@ -48,9 +48,17 @@ class TestB1EscalationFingerprintGate:
         fp_complete: bool,
         novelty_valid: bool = True,
         composite_score: float = 200.0,
+        understanding_metrics: dict[str, float] | None = None,
     ):
         """Create a mock LabNotebook with the specified fingerprint state."""
         nb = MagicMock()
+        understanding_metrics = understanding_metrics or {
+            "ar_auc": 0.10,
+            "induction_auc": 0.20,
+            "binding_auc": 0.10,
+            "diagnostic_score": 0.35,
+            "hellaswag_acc": 0.45,
+        }
 
         # Build rows for the fingerprint_json query
         fp_json = json.dumps({"fingerprint_completed_post_investigation": fp_complete})
@@ -81,6 +89,20 @@ class TestB1EscalationFingerprintGate:
             sr.__getitem__ = lambda self, k, _r=_row_data: _r[k]
             score_rows.append(sr)
 
+        understanding_rows = []
+        for rid in result_ids:
+            _row_data = {
+                "result_id": rid,
+                "ar_auc": understanding_metrics["ar_auc"],
+                "induction_auc": understanding_metrics["induction_auc"],
+                "binding_auc": understanding_metrics["binding_auc"],
+                "diagnostic_score": understanding_metrics["diagnostic_score"],
+                "hellaswag_acc": understanding_metrics["hellaswag_acc"],
+            }
+            sr = MagicMock()
+            sr.__getitem__ = lambda self, k, _r=_row_data: _r[k]
+            understanding_rows.append(sr)
+
         # conn.execute returns different results based on query
         def mock_execute(query, params=None):
             result = MagicMock()
@@ -88,6 +110,8 @@ class TestB1EscalationFingerprintGate:
                 result.fetchall = MagicMock(return_value=fp_rows)
             elif "composite_score" in query:
                 result.fetchall = MagicMock(return_value=score_rows)
+            elif "ar_auc" in query:
+                result.fetchall = MagicMock(return_value=understanding_rows)
             else:
                 result.fetchall = MagicMock(return_value=[])
             return result
@@ -178,6 +202,65 @@ class TestB1EscalationFingerprintGate:
         # Should have called _score_candidate_pool since candidate passed all gates
         mixin._score_candidate_pool.assert_called_once()
 
+    def test_novelty_invalid_is_informational_not_blocking(self):
+        """Completed fingerprints with invalid novelty metadata must still score."""
+        mixin = self._make_mixin()
+        result_ids = ["rid_001"]
+        nb = self._make_nb_with_fingerprint(
+            result_ids,
+            fp_complete=True,
+            novelty_valid=False,
+        )
+
+        _orig_execute = nb.conn.execute
+
+        def patched_execute(query, params=None):
+            result = MagicMock()
+            if "graph_json" in query:
+                row = MagicMock()
+                row.__getitem__ = lambda self, k: {
+                    "result_id": "rid_001",
+                    "graph_json": "{}",
+                    "routing_mode": None,
+                }.get(k)
+                row.keys = lambda: ["result_id", "graph_json", "routing_mode"]
+                result.fetchall = MagicMock(return_value=[row])
+            else:
+                return _orig_execute(query, params)
+            return result
+
+        nb.conn.execute = patched_execute
+
+        config = MagicMock()
+        config.auto_validate = True
+        config.auto_validate_min_composite_score = 0.0
+        config.auto_validate_top_n = 5
+        config.auto_validate_min_robustness = 0.5
+        config.auto_validate_max_baseline_ratio = 0.80
+        config.investigation_max_loss_ratio_multiplier = 10.0
+
+        results = {
+            "investigation_results": [
+                {
+                    "result_id": "rid_001",
+                    "robustness": 0.8,
+                    "best_loss_ratio": 0.1,
+                    "baseline_loss_ratio": 0.45,
+                    "novelty_confidence": 0.9,
+                    "brittle_risk": False,
+                    "loss_ratio_multiplier": 2.0,
+                    "throughput_tok_s": 1000,
+                    "flops_per_token": 100,
+                    "peak_memory_mb": 512,
+                }
+            ],
+            "experiment_id": "exp_test",
+        }
+
+        mixin._auto_escalate_investigation(results, config, nb)
+
+        mixin._score_candidate_pool.assert_called_once()
+
 
 # ---------------------------------------------------------------------------
 # B2: Investigation marks incomplete fingerprint visibly
@@ -202,18 +285,45 @@ class TestB2InvestigationFingerprintRequired:
         )
 
     def test_tier_selection_logic(self):
-        """Verify the three-way tier logic: passed, fingerprint_incomplete, failed."""
+        """Verify strict pass, incomplete, and fully reproducible weak cases."""
 
-        # Simulate the tier selection from _record_investigation_result
-        def tier_for(investigation_passed, fingerprint_incomplete):
-            return (
-                "investigation"
-                if investigation_passed
-                else "investigation_fingerprint_incomplete"
-                if fingerprint_incomplete
-                else "investigation_failed"
+        from research.scientist.runner._helpers_benchmark import (
+            _investigation_tier_for_result,
+        )
+
+        assert (
+            _investigation_tier_for_result(
+                investigation_passed=True,
+                fingerprint_incomplete=False,
+                n_passed=1,
+                n_programs_tested=3,
             )
-
-        assert tier_for(True, False) == "investigation"
-        assert tier_for(False, True) == "investigation_fingerprint_incomplete"
-        assert tier_for(False, False) == "investigation_failed"
+            == "investigation"
+        )
+        assert (
+            _investigation_tier_for_result(
+                investigation_passed=False,
+                fingerprint_incomplete=True,
+                n_passed=3,
+                n_programs_tested=3,
+            )
+            == "investigation_fingerprint_incomplete"
+        )
+        assert (
+            _investigation_tier_for_result(
+                investigation_passed=False,
+                fingerprint_incomplete=False,
+                n_passed=3,
+                n_programs_tested=3,
+            )
+            == "investigation"
+        )
+        assert (
+            _investigation_tier_for_result(
+                investigation_passed=False,
+                fingerprint_incomplete=False,
+                n_passed=2,
+                n_programs_tested=3,
+            )
+            == "investigation_failed"
+        )

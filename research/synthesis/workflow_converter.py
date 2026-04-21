@@ -7,7 +7,12 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional, Tuple
 from .graph import ComputationGraph
-from .component_registry import registry, fe_type_to_op_name
+from .component_catalog import (
+    component_leaf,
+    get_primitive_name,
+    is_passthrough_component,
+    is_template_lowered_component,
+)
 from .primitives import PRIMITIVE_REGISTRY
 
 logger = logging.getLogger(__name__)
@@ -116,7 +121,7 @@ def workflow_to_computation_graph(
     fe_inputs = [
         n
         for n in nodes
-        if fe_type_to_op_name(n["component_type"]) in ("input", "graph_input")
+        if get_primitive_name(n["component_type"]) in ("input", "graph_input")
     ]
     if not fe_inputs:
         # If no explicit input node, look for nodes with no incoming edges
@@ -134,7 +139,7 @@ def workflow_to_computation_graph(
     fe_outputs = [
         n
         for n in nodes
-        if fe_type_to_op_name(n["component_type"])
+        if get_primitive_name(n["component_type"])
         in ("output", "output_head", "graph_output")
     ]
     output_fe_id: Optional[str] = None
@@ -150,14 +155,14 @@ def workflow_to_computation_graph(
         next_pending = []
         for node in pending:
             comp_type = node["component_type"]
-            leaf_id = comp_type.split("/")[-1]
-            op_name = registry.get_primitive_name(comp_type)
+            leaf_id = component_leaf(comp_type)
+            op_name = get_primitive_name(comp_type)
 
             # Strict routing: routing components must lower to a real primitive or template.
             if comp_type.startswith("routing/"):
                 if (
-                    not registry.is_passthrough(comp_type)
-                    and leaf_id not in registry.template_lowered_components
+                    not is_passthrough_component(comp_type)
+                    and not is_template_lowered_component(comp_type)
                     and op_name not in PRIMITIVE_REGISTRY
                 ):
                     raise ValueError(
@@ -171,7 +176,7 @@ def workflow_to_computation_graph(
                 continue
 
             # Passthrough handling
-            if registry.is_passthrough(comp_type):
+            if is_passthrough_component(comp_type):
                 incoming = incoming_by_target.get(node["id"], [])
                 if incoming and incoming[0]["source"] in fe_to_be:
                     fe_to_be[node["id"]] = fe_to_be[incoming[0]["source"]]
@@ -189,7 +194,7 @@ def workflow_to_computation_graph(
             if all(sid in fe_to_be for sid in source_fe_ids):
                 be_input_ids = [fe_to_be[sid] for sid in source_fe_ids]
 
-                if leaf_id in registry.template_lowered_components:
+                if is_template_lowered_component(comp_type):
                     try:
                         be_id = _lower_template_component(
                             graph, leaf_id, be_input_ids, model_dim

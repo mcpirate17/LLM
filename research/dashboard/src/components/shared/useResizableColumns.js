@@ -9,6 +9,7 @@ export default function useResizableColumns(storageKey) {
       return {};
     }
   });
+  const [activeResizeKey, setActiveResizeKey] = useState(null);
   const resizingRef = useRef(null);
 
   useEffect(() => {
@@ -26,6 +27,7 @@ export default function useResizableColumns(storageKey) {
     const th = e.target.parentElement;
     const startWidth = th.offsetWidth;
     resizingRef.current = colKey;
+    setActiveResizeKey(colKey);
 
     const onMouseMove = (moveE) => {
       const diff = moveE.clientX - startX;
@@ -34,6 +36,7 @@ export default function useResizableColumns(storageKey) {
     };
     const onMouseUp = () => {
       resizingRef.current = null;
+      setActiveResizeKey(null);
       document.removeEventListener('mousemove', onMouseMove);
       document.removeEventListener('mouseup', onMouseUp);
       document.body.style.cursor = '';
@@ -46,5 +49,5 @@ export default function useResizableColumns(storageKey) {
     document.body.style.userSelect = 'none';
   }, []);
 
-  return { columnWidths, onResizeStart };
+  return { columnWidths, onResizeStart, activeResizeKey };
 }

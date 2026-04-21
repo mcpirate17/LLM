@@ -368,6 +368,15 @@ pub fn analyze_graph_provenance_json(
     failure_op: Option<&str>,
     generic_sink_ops: &[String],
 ) -> Result<String, AriaError> {
+    let payload = analyze_graph_provenance(json, failure_op, generic_sink_ops)?;
+    serde_json::to_string(&payload).map_err(|e| AriaError::InvalidIR(e.to_string()))
+}
+
+pub fn analyze_graph_provenance(
+    json: &str,
+    failure_op: Option<&str>,
+    generic_sink_ops: &[String],
+) -> Result<GraphProvenancePayload, AriaError> {
     let graph = NotebookGraph::from_json(json)?;
     let mut sorted_nodes: Vec<&NotebookNode> = graph.nodes.values().collect();
     sorted_nodes.sort_unstable_by_key(|node| node.id);
@@ -426,11 +435,10 @@ pub fn analyze_graph_provenance_json(
             None
         });
 
-    serde_json::to_string(&GraphProvenancePayload {
+    Ok(GraphProvenancePayload {
         op_names,
         source_op,
     })
-    .map_err(|e| AriaError::InvalidIR(e.to_string()))
 }
 
 pub fn extract_graph_structure_features_json(json: &str) -> Result<String, AriaError> {

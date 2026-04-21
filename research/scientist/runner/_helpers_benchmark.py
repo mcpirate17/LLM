@@ -7,7 +7,6 @@ import logging
 import math
 import queue
 import time
-from pathlib import Path
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any, Dict, List, Optional
 
@@ -20,34 +19,6 @@ from ._helpers_metrics import (
 )
 
 logger = logging.getLogger(__name__)
-_REFERENCE_TRAJECTORY_PATH = Path("research/eval/reference_trajectories.json")
-_ROUTING_FAST_LANE_OPS: frozenset[str] = frozenset(
-    {
-        "moe_topk",
-        "hetero_moe",
-        "arch_router",
-        "compute_budget_router",
-        "signal_conditioned_compression",
-    }
-)
-_ROUTING_OBSERVED_OPS: frozenset[str] = frozenset(
-    set(_ROUTING_FAST_LANE_OPS)
-    | {
-        "hybrid_token_gate",
-        "hybrid_sparse_router",
-        "sparse_span_builder",
-        "adjacent_token_merge",
-        "cheap_verify_blend",
-        "adaptive_lane_mixer",
-        "route_lanes",
-        "block_sparse_linear",
-        "semi_structured_2_4_linear",
-        "adaptive_recursion",
-        "route_recursion",
-        "moe_2expert",
-        "token_class_proj",
-    }
-)
 
 
 def _build_benchmark_model(
@@ -315,6 +286,7 @@ def _submit_benchmark_eval(
     graph_json_str: str | None,
     arch_spec_json_str: str | None,
     n_passed: int,
+    n_programs_tested: int,
     best_lr: Any,
     best_tp_json: str | None,
     robustness: float,
@@ -357,6 +329,7 @@ def _submit_benchmark_eval(
                 graph_json_str=graph_json_str,
                 arch_spec_json_str=arch_spec_json_str,
                 n_passed=n_passed,
+                n_programs_tested=n_programs_tested,
                 best_lr=best_lr,
                 best_tp_json=best_tp_json,
                 robustness=robustness,
@@ -386,6 +359,29 @@ def _safe_tier(nb, result_id: str, proposed: str) -> str:
     return proposed
 
 
+def _investigation_tier_for_result(
+    *,
+    investigation_passed: bool,
+    fingerprint_incomplete: bool,
+    n_passed: int,
+    n_programs_tested: int,
+) -> str:
+    """Choose the canonical current-status tier for an investigation result.
+
+    ``investigation_passed`` remains the strict gate for validation-readiness.
+    A run that was fully reproducible across the complete investigation program
+    set is still treated as having reached the investigation tier even when it
+    failed the stricter loss-ratio gate.
+    """
+    if investigation_passed:
+        return "investigation"
+    if fingerprint_incomplete:
+        return "investigation_fingerprint_incomplete"
+    if n_programs_tested >= 3 and n_passed == n_programs_tested:
+        return "investigation"
+    return "investigation_failed"
+
+
 def _record_investigation_result(
     *,
     nb,
@@ -396,6 +392,7 @@ def _record_investigation_result(
     graph_json_str: str | None,
     arch_spec_json_str: str | None,
     n_passed: int,
+    n_programs_tested: int,
     best_lr: Any,
     best_tp_json: str | None,
     robustness: float,
@@ -440,6 +437,12 @@ def _record_investigation_result(
         )
 
     trajectory_fields = trajectory_probe_fields(benchmark_result)
+    proposed_tier = _investigation_tier_for_result(
+        investigation_passed=investigation_passed,
+        fingerprint_incomplete=fingerprint_incomplete,
+        n_passed=n_passed,
+        n_programs_tested=n_programs_tested,
+    )
     nb.upsert_leaderboard(
         result_id=source_result_id,
         model_source=model_source,
@@ -451,15 +454,7 @@ def _record_investigation_result(
         investigation_robustness=robustness,
         investigation_best_training=best_tp_json,
         investigation_passed=investigation_passed,
-        tier=_safe_tier(
-            nb,
-            source_result_id,
-            "investigation"
-            if investigation_passed
-            else "investigation_fingerprint_incomplete"
-            if fingerprint_incomplete
-            else "investigation_failed",
-        ),
+        tier=_safe_tier(nb, source_result_id, proposed_tier),
         novelty_confidence=source.get("novelty_confidence"),
         fp_jacobian_spectral_norm=source.get("fp_jacobian_spectral_norm"),
         wikitext_perplexity=benchmark_result.get("inv_wikitext_ppl"),
@@ -731,10 +726,15 @@ def promote_validation_candidate(
     """
     from ..shared_utils import coerce_dict_payload
 
+    source_row = dict(nb.get_program_detail(source_result_id) or {})
+    for key, value in dict(source or {}).items():
+        if value is not None:
+            source_row[key] = value
+
     # B3: cap novelty if CKA was missing
     if novelty_cap is not None:
-        _raw_novelty = source.get("novelty_score")
-        _raw_confidence = source.get("novelty_confidence")
+        _raw_novelty = source_row.get("novelty_score")
+        _raw_confidence = source_row.get("novelty_confidence")
         if _raw_novelty is not None:
             _raw_novelty = float(_raw_novelty) * novelty_cap
         if _raw_confidence is not None:
@@ -767,7 +767,69 @@ def promote_validation_candidate(
                     e,
                 )
 
+    nb.merge_program_result_patch(
+        result_id=source_result_id,
+        clear_failure_if_stage1=True,
+        validation_loss_ratio=metrics.val_loss_ratio,
+        validation_baseline_ratio=metrics.val_baseline_ratio,
+        baseline_loss_ratio=metrics.val_baseline_ratio,
+        validation_multi_seed_std=metrics.multi_seed_std,
+        validation_robustness_score=metrics.robustness_score,
+        validation_is_unstable=int(metrics.is_unstable),
+        validation_passed=len(metrics.passed_seeds) > 0,
+        normalized_baseline_ratio=metrics.val_normalized_ratio,
+        param_efficiency=metrics.val_param_efficiency,
+        quant_int8_retention=ev_res.quant_int8_retention,
+        quant_quality_per_byte=ev_res.quant_quality_per_byte,
+        robustness_long_ctx_score=ev_res.long_context_score,
+        robustness_long_ctx_scaling_score=ev_res.long_ctx_scaling_score,
+        robustness_long_ctx_assoc_score=ev_res.long_ctx_assoc_score,
+        robustness_long_ctx_passkey_score=ev_res.long_ctx_passkey_score,
+        robustness_long_ctx_multi_hop_score=ev_res.long_ctx_multi_hop_score,
+        robustness_long_ctx_retrieval_aggregate=ev_res.long_ctx_retrieval_aggregate,
+        robustness_long_ctx_combined_score=ev_res.long_ctx_combined_score,
+        induction_v2_investigation_auc=ev_res.induction_v2_investigation_auc,
+        induction_v2_investigation_max_gap_acc=ev_res.induction_v2_investigation_max_gap_acc,
+        induction_v2_investigation_protocol_version=ev_res.induction_v2_investigation_protocol_version,
+        binding_v2_investigation_auc=ev_res.binding_v2_investigation_auc,
+        binding_v2_investigation_max_distance_acc=ev_res.binding_v2_investigation_max_distance_acc,
+        binding_v2_investigation_protocol_version=ev_res.binding_v2_investigation_protocol_version,
+        robustness_noise_score=ev_res.noise_score,
+        init_sensitivity_std=metrics.init_sensitivity_std,
+        fp_jacobian_spectral_norm=source_row.get("fp_jacobian_spectral_norm"),
+        scaling_param_efficiency=ev_res.scaling_param_efficiency,
+        scaling_d512_param_efficiency=ev_res.scaling_d512_param_efficiency,
+        scaling_flop_efficiency=ev_res.scaling_flop_efficiency,
+        scaling_gate_passed=ev_res.scaling_gate_passed_val,
+        scaling_best_family=ev_res.scaling_best_family,
+        scaling_confidence=ev_res.scaling_confidence,
+        activation_sparsity_score=ev_res.activation_sparsity_score,
+        dead_neuron_ratio=ev_res.dead_neuron_ratio,
+        routing_collapse_score=ev_res.routing_collapse_score,
+        wikitext_perplexity=ev_res.wikitext_perplexity,
+        wikitext_score=ev_res.wikitext_score,
+        tinystories_perplexity=ev_res.tinystories_perplexity,
+        tinystories_score=ev_res.tinystories_score,
+        cross_task_score=ev_res.cross_task_score,
+        efficiency_wall_score=ev_res.efficiency_wall_score,
+        max_viable_seq_len=ev_res.max_viable_seq_len,
+        scaling_regime=ev_res.scaling_regime,
+    )
+
     entry = nb.get_leaderboard_entry(source_result_id)
+    if not entry:
+        graph_fingerprint = str(source_row.get("graph_fingerprint") or "").strip()
+        if graph_fingerprint:
+            entry = nb.get_leaderboard_entry_by_fingerprint(graph_fingerprint)
+    if not entry:
+        entry_id = _upsert_screening_entry(nb, source_row)
+        if entry_id:
+            entry = nb.get_leaderboard_entry(source_result_id)
+            if entry is None:
+                entry = {
+                    "entry_id": entry_id,
+                    "result_id": source_result_id,
+                }
     if not entry:
         return
 
@@ -799,7 +861,7 @@ def promote_validation_candidate(
         binding_v2_investigation_protocol_version=ev_res.binding_v2_investigation_protocol_version,
         robustness_noise_score=ev_res.noise_score,
         init_sensitivity_std=metrics.init_sensitivity_std,
-        fp_jacobian_spectral_norm=source.get("fp_jacobian_spectral_norm"),
+        fp_jacobian_spectral_norm=source_row.get("fp_jacobian_spectral_norm"),
         scaling_param_efficiency=ev_res.scaling_param_efficiency,
         scaling_d512_param_efficiency=ev_res.scaling_d512_param_efficiency,
         scaling_flop_efficiency=ev_res.scaling_flop_efficiency,
@@ -819,57 +881,10 @@ def promote_validation_candidate(
         scaling_regime=ev_res.scaling_regime,
     )
     if novelty_cap is not None:
-        _raw = source.get("novelty_score")
+        _raw = source_row.get("novelty_score")
         if _raw is not None:
             promote_kwargs["screening_novelty"] = float(_raw) * novelty_cap
 
-    nb.merge_program_result_patch(
-        result_id=source_result_id,
-        clear_failure_if_stage1=True,
-        validation_loss_ratio=metrics.val_loss_ratio,
-        validation_baseline_ratio=metrics.val_baseline_ratio,
-        validation_multi_seed_std=metrics.multi_seed_std,
-        validation_robustness_score=metrics.robustness_score,
-        validation_is_unstable=int(metrics.is_unstable),
-        validation_passed=len(metrics.passed_seeds) > 0,
-        normalized_baseline_ratio=metrics.val_normalized_ratio,
-        param_efficiency=metrics.val_param_efficiency,
-        quant_int8_retention=ev_res.quant_int8_retention,
-        quant_quality_per_byte=ev_res.quant_quality_per_byte,
-        robustness_long_ctx_score=ev_res.long_context_score,
-        robustness_long_ctx_scaling_score=ev_res.long_ctx_scaling_score,
-        robustness_long_ctx_assoc_score=ev_res.long_ctx_assoc_score,
-        robustness_long_ctx_passkey_score=ev_res.long_ctx_passkey_score,
-        robustness_long_ctx_multi_hop_score=ev_res.long_ctx_multi_hop_score,
-        robustness_long_ctx_retrieval_aggregate=ev_res.long_ctx_retrieval_aggregate,
-        robustness_long_ctx_combined_score=ev_res.long_ctx_combined_score,
-        induction_v2_investigation_auc=ev_res.induction_v2_investigation_auc,
-        induction_v2_investigation_max_gap_acc=ev_res.induction_v2_investigation_max_gap_acc,
-        induction_v2_investigation_protocol_version=ev_res.induction_v2_investigation_protocol_version,
-        binding_v2_investigation_auc=ev_res.binding_v2_investigation_auc,
-        binding_v2_investigation_max_distance_acc=ev_res.binding_v2_investigation_max_distance_acc,
-        binding_v2_investigation_protocol_version=ev_res.binding_v2_investigation_protocol_version,
-        robustness_noise_score=ev_res.noise_score,
-        init_sensitivity_std=metrics.init_sensitivity_std,
-        fp_jacobian_spectral_norm=source.get("fp_jacobian_spectral_norm"),
-        scaling_param_efficiency=ev_res.scaling_param_efficiency,
-        scaling_d512_param_efficiency=ev_res.scaling_d512_param_efficiency,
-        scaling_flop_efficiency=ev_res.scaling_flop_efficiency,
-        scaling_gate_passed=ev_res.scaling_gate_passed_val,
-        scaling_best_family=ev_res.scaling_best_family,
-        scaling_confidence=ev_res.scaling_confidence,
-        activation_sparsity_score=ev_res.activation_sparsity_score,
-        dead_neuron_ratio=ev_res.dead_neuron_ratio,
-        routing_collapse_score=ev_res.routing_collapse_score,
-        wikitext_perplexity=ev_res.wikitext_perplexity,
-        wikitext_score=ev_res.wikitext_score,
-        tinystories_perplexity=ev_res.tinystories_perplexity,
-        tinystories_score=ev_res.tinystories_score,
-        cross_task_score=ev_res.cross_task_score,
-        efficiency_wall_score=ev_res.efficiency_wall_score,
-        max_viable_seq_len=ev_res.max_viable_seq_len,
-        scaling_regime=ev_res.scaling_regime,
-    )
     nb.promote_to_tier(**promote_kwargs)
 
     # Store external benchmark payload
@@ -882,6 +897,9 @@ def promote_validation_candidate(
         external["long_context"] = ev_res.long_context_details
     if external:
         nb.set_external_benchmarks(source_result_id, external)
+        canonical_result_id = str(entry.get("result_id") or "").strip()
+        if canonical_result_id and canonical_result_id != source_result_id:
+            nb.set_external_benchmarks(canonical_result_id, external)
 
 
 def run_trajectory_probe(

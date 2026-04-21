@@ -29,6 +29,44 @@ class _AdvancedAnalyticsMixin:
     __slots__ = ()
 
     @staticmethod
+    def _decode_json_field(
+        data: Dict[str, Any], source_key: str, target_key: str
+    ) -> None:
+        try:
+            data[target_key] = json.loads(data.get(source_key) or "{}")
+        except (TypeError, json.JSONDecodeError):
+            data[target_key] = {}
+
+    @classmethod
+    def _hydrate_designer_run_lineage_row(cls, row: Any) -> Dict[str, Any]:
+        data = dict(row)
+        cls._decode_json_field(data, "metrics_json", "metrics")
+        cls._decode_json_field(data, "payload_json", "payload")
+        return data
+
+    @classmethod
+    def _hydrate_scaffold_profile_result_row(cls, row: Any) -> Dict[str, Any]:
+        data = dict(row)
+        cls._decode_json_field(data, "metrics_json", "metrics")
+        return data
+
+    @staticmethod
+    def _hydrate_attribution_report_row(row: Any) -> Dict[str, Any]:
+        item = dict(row)
+        for key in (
+            "supporting_experiments",
+            "ablation_experiments",
+            "report_json",
+        ):
+            raw = item.get(key)
+            if raw:
+                try:
+                    item[key] = json.loads(raw)
+                except (TypeError, json.JSONDecodeError):
+                    pass
+        return item
+
+    @staticmethod
     def _new_pair_bucket(signature: str) -> Dict[str, Any]:
         return {
             "signature": signature,
@@ -789,16 +827,7 @@ class _AdvancedAnalyticsMixin:
         ).fetchone()
         if row is None:
             return None
-        data = dict(row)
-        try:
-            data["metrics"] = json.loads(data.get("metrics_json") or "{}")
-        except (TypeError, json.JSONDecodeError):
-            data["metrics"] = {}
-        try:
-            data["payload"] = json.loads(data.get("payload_json") or "{}")
-        except (TypeError, json.JSONDecodeError):
-            data["payload"] = {}
-        return data
+        return self._hydrate_designer_run_lineage_row(row)
 
     def list_designer_run_lineage(
         self, *, workflow_id: Optional[str] = None, limit: int = 100
@@ -810,16 +839,8 @@ class _AdvancedAnalyticsMixin:
             params.append(workflow_id)
         query += " ORDER BY updated_at DESC LIMIT ?"
         params.append(int(max(1, limit)))
-        rows = self.conn.execute(query, params).fetchall()
-        results: List[Dict[str, Any]] = []
-        for row in rows:
-            data = dict(row)
-            try:
-                data["metrics"] = json.loads(data.get("metrics_json") or "{}")
-            except (TypeError, json.JSONDecodeError):
-                data["metrics"] = {}
-            results.append(data)
-        return results
+        cursor = self.conn.execute(query, params)
+        return [self._hydrate_designer_run_lineage_row(row) for row in cursor]
 
     def save_scaffold_profile_run(
         self,
@@ -918,16 +939,8 @@ class _AdvancedAnalyticsMixin:
             params.append(run_id)
         query += " ORDER BY timestamp DESC LIMIT ?"
         params.append(int(max(1, limit)))
-        rows = self.conn.execute(query, params).fetchall()
-        results: List[Dict[str, Any]] = []
-        for row in rows:
-            data = dict(row)
-            try:
-                data["metrics"] = json.loads(data.get("metrics_json") or "{}")
-            except (TypeError, json.JSONDecodeError):
-                data["metrics"] = {}
-            results.append(data)
-        return results
+        cursor = self.conn.execute(query, params)
+        return [self._hydrate_scaffold_profile_result_row(row) for row in cursor]
 
     def get_scaffold_component_stats(
         self,
@@ -945,11 +958,10 @@ class _AdvancedAnalyticsMixin:
         if since_ts > 0:
             query += " WHERE timestamp >= ?"
             params.append(float(since_ts))
-        rows = self.conn.execute(query, params).fetchall()
+        cursor = self.conn.execute(query, params)
 
         buckets: Dict[str, Dict[str, Any]] = {}
-        for row in rows:
-            record = dict(row)
+        for record in cursor:
             ops = {
                 str(record.get("op_a") or "").strip(),
                 str(record.get("op_b") or "").strip(),
@@ -1276,23 +1288,8 @@ class _AdvancedAnalyticsMixin:
             params.append(hypothesis_id)
         query += " ORDER BY timestamp DESC LIMIT ?"
         params.append(limit)
-        rows = self.conn.execute(query, params).fetchall()
-        results: List[Dict] = []
-        for row in rows:
-            item = dict(row)
-            for key in (
-                "supporting_experiments",
-                "ablation_experiments",
-                "report_json",
-            ):
-                raw = item.get(key)
-                if raw:
-                    try:
-                        item[key] = json.loads(raw)
-                    except (TypeError, json.JSONDecodeError):
-                        pass
-            results.append(item)
-        return results
+        cursor = self.conn.execute(query, params)
+        return [self._hydrate_attribution_report_row(row) for row in cursor]
 
     def save_report_markdown(
         self, content: str, reason: str, summary: Optional[Dict] = None

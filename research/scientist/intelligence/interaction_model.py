@@ -235,6 +235,52 @@ class InteractionModel:
     def n_ops(self) -> int:
         return len(self.op_names)
 
+    def predict_pair_stats(
+        self, edge_pairs: List[Tuple[str, str]]
+    ) -> Optional[Tuple[float, float, float]]:
+        """Score many edge pairs in one vectorized pass.
+
+        Returns (min_stability, mean_stability, mean_loss) or None when there
+        are no pairs to score.
+        """
+        if not edge_pairs:
+            return None
+
+        pair_count = len(edge_pairs)
+        left_idx = np.fromiter(
+            (self.op_to_idx.get(left, -1) for left, _ in edge_pairs),
+            dtype=np.int32,
+            count=pair_count,
+        )
+        right_idx = np.fromiter(
+            (self.op_to_idx.get(right, -1) for _, right in edge_pairs),
+            dtype=np.int32,
+            count=pair_count,
+        )
+
+        stabilities = np.full(pair_count, 0.5, dtype=np.float32)
+        losses = np.full(pair_count, 0.7, dtype=np.float32)
+        known_mask = (left_idx >= 0) & (right_idx >= 0)
+        if np.any(known_mask):
+            u_batch = self.u[left_idx[known_mask]]
+            v_batch = self.v[right_idx[known_mask]]
+            stab_logits = (
+                np.sum((u_batch @ self.W_s) * v_batch, axis=1, dtype=np.float64)
+                + self.b_s
+            )
+            loss_values = (
+                np.sum((u_batch @ self.W_l) * v_batch, axis=1, dtype=np.float64)
+                + self.b_l
+            )
+            stabilities[known_mask] = _sigmoid(stab_logits)
+            losses[known_mask] = loss_values
+
+        return (
+            float(np.min(stabilities)),
+            float(np.mean(stabilities)),
+            float(np.mean(losses)),
+        )
+
     def predict_stability(self, op_a: str, op_b: str) -> float:
         """Predict P(pair stable) for (op_a, op_b). Returns 0.5 if unknown."""
         i = self.op_to_idx.get(op_a)

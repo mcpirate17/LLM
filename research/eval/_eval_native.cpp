@@ -400,98 +400,81 @@ std::tuple<int, int> hellaswag_score_batch_native(
     int64_t vocab_size,
     std::string device_str,
     int64_t max_seq_len) {
-    
-    int n_examples = ctx_tokens.size();
-    std::vector<std::vector<int64_t>> flat_seqs;
-    std::vector<int64_t> flat_starts;
-    std::vector<int> group_sizes;
-    
-    for (int i = 0; i < n_examples; ++i) {
-        const auto& c_toks = ctx_tokens[i];
-        const auto& e_toks_list = ending_tokens[i];
-        group_sizes.push_back(e_toks_list.size());
-        
-        for (const auto& e_toks : e_toks_list) {
-            std::vector<int64_t> combined;
-            int64_t start_pos = 0;
-            
-            if (e_toks.empty()) {
-                combined.clear();
-                start_pos = 0;
-            } else {
-                int64_t total_len = c_toks.size() + e_toks.size();
-                if (total_len <= max_seq_len) {
-                    combined = c_toks;
-                    combined.insert(combined.end(), e_toks.begin(), e_toks.end());
-                    start_pos = std::max<int64_t>(0, c_toks.size() - 1);
-                } else {
-                    int64_t excess = total_len - max_seq_len;
-                    int64_t ctx_len;
-                    if (excess < (int64_t)c_toks.size()) {
-                        combined.insert(combined.end(), c_toks.begin() + excess, c_toks.end());
-                        ctx_len = combined.size();
-                        combined.insert(combined.end(), e_toks.begin(), e_toks.end());
-                    } else {
-                        combined.insert(combined.end(), e_toks.begin() + (excess - c_toks.size()), e_toks.end());
-                        ctx_len = 0;
-                    }
-                    start_pos = std::max<int64_t>(0, ctx_len - 1);
-                }
-            }
-            flat_seqs.push_back(combined);
-            flat_starts.push_back(start_pos);
-        }
-    }
-    
-    int n_seq = flat_seqs.size();
-    if (n_seq == 0) return {0, 0};
-    
-    int64_t max_len = 0;
-    for (const auto& s : flat_seqs) {
-        if ((int64_t)s.size() > max_len) {
-            max_len = s.size();
-        }
-    }
-    if (max_len < 2) {
-        return {0, 0}; 
-    }
-    
-    auto tensor_opts = torch::TensorOptions().dtype(torch::kInt64);
-    std::vector<int64_t> padded_host(static_cast<size_t>(n_seq) * static_cast<size_t>(max_len), 0);
-    std::vector<int64_t> lengths_host(static_cast<size_t>(n_seq), 0);
-    for (int i = 0; i < n_seq; ++i) {
-        const auto& seq = flat_seqs[i];
-        const auto seq_len = static_cast<int64_t>(seq.size());
-        lengths_host[static_cast<size_t>(i)] = seq_len;
-        if (seq_len > 0) {
-            std::memcpy(
-                padded_host.data() + static_cast<size_t>(i) * static_cast<size_t>(max_len),
-                seq.data(),
-                static_cast<size_t>(seq_len) * sizeof(int64_t));
-        }
+    const int64_t n_examples = static_cast<int64_t>(ctx_tokens.size());
+    size_t total_sequences = 0;
+    for (const auto& endings : ending_tokens) {
+      total_sequences += endings.size();
     }
 
-    torch::Tensor padded = torch::from_blob(
-        padded_host.data(),
-        {n_seq, max_len},
+    std::vector<std::vector<int64_t>> flat_seqs;
+    flat_seqs.reserve(total_sequences);
+    std::vector<int64_t> flat_starts;
+    flat_starts.reserve(total_sequences);
+    std::vector<int> group_sizes;
+    group_sizes.reserve(static_cast<size_t>(n_examples));
+
+    for (int64_t i = 0; i < n_examples; ++i) {
+      const auto& c_toks = ctx_tokens[static_cast<size_t>(i)];
+      const auto& e_toks_list = ending_tokens[static_cast<size_t>(i)];
+      group_sizes.push_back(static_cast<int>(e_toks_list.size()));
+
+      for (const auto& e_toks : e_toks_list) {
+        int64_t start_pos = 0;
+        flat_seqs.emplace_back();
+        auto& combined = flat_seqs.back();
+
+        if (!e_toks.empty()) {
+          const int64_t ctx_size = static_cast<int64_t>(c_toks.size());
+          const int64_t ending_size = static_cast<int64_t>(e_toks.size());
+          const int64_t total_len = ctx_size + ending_size;
+          if (total_len <= max_seq_len) {
+            combined.reserve(static_cast<size_t>(total_len));
+            combined.insert(combined.end(), c_toks.begin(), c_toks.end());
+            combined.insert(combined.end(), e_toks.begin(), e_toks.end());
+            start_pos = std::max<int64_t>(0, ctx_size - 1);
+          } else {
+            const int64_t excess = total_len - max_seq_len;
+            int64_t ctx_len = 0;
+            if (excess < ctx_size) {
+              const auto ctx_begin = c_toks.begin() + excess;
+              ctx_len = static_cast<int64_t>(c_toks.end() - ctx_begin);
+              combined.reserve(static_cast<size_t>(ctx_len + ending_size));
+              combined.insert(combined.end(), ctx_begin, c_toks.end());
+              combined.insert(combined.end(), e_toks.begin(), e_toks.end());
+            } else {
+              const auto ending_begin = e_toks.begin() + (excess - ctx_size);
+              combined.reserve(static_cast<size_t>(e_toks.end() - ending_begin));
+              combined.insert(combined.end(), ending_begin, e_toks.end());
+            }
+            start_pos = std::max<int64_t>(0, ctx_len - 1);
+          }
+        }
+
+        flat_starts.push_back(start_pos);
+      }
+    }
+
+    const int64_t n_seq = static_cast<int64_t>(flat_seqs.size());
+    if (n_seq == 0) {
+      return {0, 0};
+    }
+
+    auto [padded, lengths_tensor, max_len] = pad_sequences_native(flat_seqs, device_str);
+    if (max_len < 2) {
+      return {0, 0};
+    }
+
+    auto tensor_opts = torch::TensorOptions().dtype(torch::kInt64);
+    torch::Tensor starts_tensor = torch::from_blob(
+        flat_starts.data(),
+        {n_seq},
         tensor_opts).clone();
 
     torch::Device device(device_str);
     if (device.is_cuda()) {
-        padded = padded.pin_memory().to(device, true);
-    }
-
-    auto starts_tensor = torch::from_blob(
-        flat_starts.data(),
-        {n_seq},
-        tensor_opts).clone();
-    auto lengths_tensor = torch::from_blob(
-        lengths_host.data(),
-        {n_seq},
-        tensor_opts).clone();
-    if (device.is_cuda()) {
-        starts_tensor = starts_tensor.to(device, true);
-        lengths_tensor = lengths_tensor.to(device, true);
+      starts_tensor = starts_tensor.to(device, /*non_blocking=*/true);
+    } else if (device != torch::kCPU) {
+      starts_tensor = starts_tensor.to(device);
     }
 
     c10::InferenceMode guard(true);
@@ -508,17 +491,9 @@ std::tuple<int, int> hellaswag_score_batch_native(
     auto target_logits = next_logits.gather(2, targets.unsqueeze(2)).squeeze(2);
     auto log_denom = torch::logsumexp(next_logits, -1);
     auto token_lps = target_logits - log_denom;
-    
-    auto positions = torch::arange(max_len - 1, torch::TensorOptions().device(device)).unsqueeze(0);
-    auto span_mask = (positions >= starts_tensor.unsqueeze(1)).logical_and(positions < (lengths_tensor - 1).unsqueeze(1));
-    
-    auto token_counts = span_mask.sum(1);
-    auto valid_spans = token_counts > 0;
-    auto mean_lps = torch::full({n_seq}, -std::numeric_limits<float>::infinity(), torch::TensorOptions().dtype(torch::kFloat32).device(device));
-    auto sums = (token_lps * span_mask).sum(1);
-    auto denom = token_counts.clamp_min(1).to(torch::kFloat32);
-    auto candidate_means = sums / denom;
-    mean_lps = torch::where(valid_spans, candidate_means, mean_lps);
+
+    auto mean_lps = span_mean_log_probs_native(
+        token_lps, starts_tensor, lengths_tensor, max_len);
 
     mean_lps = mean_lps.cpu();
     auto mean_lps_acc = mean_lps.accessor<float, 1>();

@@ -106,9 +106,9 @@ class OpNode:
         return cls(
             id=d["id"],
             op_name=d["op_name"],
-            input_ids=d["input_ids"],
+            input_ids=list(d["input_ids"]),
             output_shape=ShapeInfo.from_dict(d["output_shape"]),
-            config=d.get("config", {}),
+            config=dict(d.get("config", {})),
             is_input=d.get("is_input", False),
             is_output=d.get("is_output", False),
         )
@@ -564,7 +564,7 @@ class ComputationGraph:
         g._next_id = max(g.nodes.keys()) + 1 if g.nodes else 0
         g._input_node_id = d.get("input_node_id")
         g._output_node_id = d.get("output_node_id")
-        g.metadata = d.get("metadata", {})
+        g.metadata = dict(d.get("metadata", {}))
         return g
 
     def lower_to_ir(self) -> ComputationGraphIR:

@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from typing import Any, Dict, List, Optional
 
-from ..leaderboard_scoring import compute_composite
+from ..leaderboard_scoring import build_score_kwargs, compute_composite
 from ..thresholds import TIER_RANK
 
 
@@ -24,10 +24,14 @@ def _timestamp_key(value: Any) -> float:
 FINGERPRINT_PROGRAM_RESULT_COLUMNS = (
     "result_id",
     "experiment_id",
+    "loss_ratio",
+    "novelty_score",
     "novelty_confidence",
+    "fp_jacobian_spectral_norm",
     "loss_improvement_rate",
     "discovery_loss_ratio",
     "validation_loss_ratio",
+    "baseline_loss_ratio",
     "efficiency_multiple",
     "max_viable_seq_len",
     "robustness_long_ctx_scaling_score",
@@ -62,6 +66,7 @@ FINGERPRINT_MIN_COLUMNS = (
     "validation_baseline_ratio",
     "validation_multi_seed_std",
     "discovery_loss_ratio",
+    "fp_jacobian_spectral_norm",
     "compression_ratio",
     "routing_drop_rate",
     "robustness_noise_score",
@@ -131,6 +136,7 @@ FINGERPRINT_UPDATE_COLUMNS = (
     "quant_quality_per_byte",
     "robustness_long_ctx_score",
     "robustness_noise_score",
+    "fp_jacobian_spectral_norm",
     "init_sensitivity_std",
     "scaling_param_efficiency",
     "scaling_flop_efficiency",
@@ -210,6 +216,58 @@ def _tier_scope_rank(tier: str) -> int:
     return 1
 
 
+def _has_stage_evidence(rows: List[Dict[str, Any]], columns: tuple[str, ...]) -> bool:
+    for row in rows:
+        for column in columns:
+            if row.get(column) is not None:
+                return True
+    return False
+
+
+def _effective_fingerprint_tier(
+    leaderboard_rows: List[Dict[str, Any]],
+    program_rows: List[Dict[str, Any]],
+    merged: Dict[str, Any],
+) -> str:
+    tier = _highest_tier(leaderboard_rows) or "screening"
+    if TIER_RANK.get(tier, -1) >= TIER_RANK.get("breakthrough", 4):
+        return tier
+
+    combo_rows = leaderboard_rows + program_rows
+    has_validation = _has_stage_evidence(
+        combo_rows,
+        (
+            "validation_loss_ratio",
+            "validation_baseline_ratio",
+            "validation_multi_seed_std",
+        ),
+    )
+    if has_validation:
+        return "validation"
+
+    has_investigation = _has_stage_evidence(
+        combo_rows,
+        (
+            "investigation_loss_ratio",
+            "investigation_robustness",
+            "discovery_loss_ratio",
+        ),
+    ) or any(
+        str(row.get("experiment_type") or "").lower() == "investigation"
+        for row in program_rows
+    )
+    if has_investigation:
+        if tier in {"investigation", "validation", "breakthrough"}:
+            return tier
+        if tier == "investigation_fingerprint_incomplete":
+            return tier
+        if bool(merged.get("investigation_passed")):
+            return "investigation"
+        return "investigation_failed"
+
+    return tier
+
+
 def _fingerprint_leaderboard_rows(nb, graph_fingerprint: str) -> List[Dict[str, Any]]:
     rows = nb.conn.execute(
         """
@@ -280,7 +338,14 @@ def sync_fingerprint_leaderboard(nb, result_id: str) -> None:
         if value is not None:
             merged[column] = value
 
-    tier = _highest_tier(leaderboard_rows)
+    screening_loss = _best_min(program_rows, "loss_ratio")
+    if screening_loss is not None:
+        merged["screening_loss_ratio"] = screening_loss
+    screening_novelty = _best_max(program_rows, "novelty_score")
+    if screening_novelty is not None:
+        merged["screening_novelty"] = screening_novelty
+
+    tier = _effective_fingerprint_tier(leaderboard_rows, program_rows, merged)
     if tier:
         merged["tier"] = tier
         tier_rank = _tier_scope_rank(tier)
@@ -305,6 +370,17 @@ def sync_fingerprint_leaderboard(nb, result_id: str) -> None:
                         )
                     except (TypeError, ValueError):
                         pass
+        if tier_rank >= 3 and merged.get("validation_baseline_ratio") is None:
+            val_rows = [
+                row
+                for row in program_rows
+                if str(row.get("experiment_type") or "").lower() == "validation"
+                or row.get("validation_loss_ratio") is not None
+            ]
+            if val_rows:
+                merged["validation_baseline_ratio"] = _best_min(
+                    val_rows, "baseline_loss_ratio"
+                )
         if tier_rank < 3:
             merged["validation_loss_ratio"] = None
             merged["validation_baseline_ratio"] = None
@@ -315,22 +391,14 @@ def sync_fingerprint_leaderboard(nb, result_id: str) -> None:
             merged["investigation_robustness"] = None
             merged["investigation_passed"] = 0
 
-    best_program = (
-        max(program_rows, key=lambda row: row.get("n_train_steps") or 0)
-        if program_rows
-        else {}
-    )
     composite_score = compute_composite(
-        ppl_screening=merged.get("wikitext_perplexity"),
-        screening_lr=merged.get("screening_loss_ratio"),
-        screening_nov=merged.get("screening_novelty"),
-        novelty_confidence=_best_max(program_rows, "novelty_confidence"),
-        is_reference=bool(merged.get("is_reference")),
-        param_count=best_program.get("param_count"),
-        spectral_norm=merged.get("fp_jacobian_spectral_norm"),
-        robustness_score=merged.get("investigation_robustness"),
-        throughput_tok_s=best_program.get("throughput_tok_s"),
-        forward_time_ms=best_program.get("forward_time_ms"),
+        **build_score_kwargs(
+            nb.conn,
+            nb,
+            str(anchor.get("result_id") or result_id),
+            merged,
+            bool(merged.get("is_reference")),
+        )
     )
 
     update_columns = [

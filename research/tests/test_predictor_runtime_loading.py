@@ -79,6 +79,33 @@ def test_interaction_model_roundtrip_from_artifact(tmp_path):
 
 
 @pytest.mark.unit
+def test_interaction_model_predict_pair_stats_matches_scalar_predictions():
+    model = InteractionModel(
+        u=np.array([[0.1, 0.2], [0.3, 0.4]], dtype=np.float32),
+        v=np.array([[0.5, 0.6], [0.7, 0.8]], dtype=np.float32),
+        W_s=np.eye(2, dtype=np.float32),
+        W_l=np.array([[1.0, -1.0], [0.25, 0.5]], dtype=np.float32),
+        b_s=0.15,
+        b_l=0.85,
+        op_names=["add", "mul"],
+        op_to_idx={"add": 0, "mul": 1},
+        _trained=True,
+    )
+    edge_pairs = [("add", "mul"), ("mul", "add"), ("unknown", "mul")]
+
+    stats = model.predict_pair_stats(edge_pairs)
+    scalar_stabilities = [
+        model.predict_stability(left, right) for left, right in edge_pairs
+    ]
+    scalar_losses = [model.predict_loss(left, right) for left, right in edge_pairs]
+
+    assert stats is not None
+    assert stats[0] == pytest.approx(min(scalar_stabilities))
+    assert stats[1] == pytest.approx(float(np.mean(scalar_stabilities)))
+    assert stats[2] == pytest.approx(float(np.mean(scalar_losses)))
+
+
+@pytest.mark.unit
 def test_op_embeddings_roundtrip_from_artifact(tmp_path):
     artifact = tmp_path / "op_embeddings.npz"
     model = OpEmbeddings(

@@ -13,7 +13,7 @@ import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
-from .component_identity import canonicalize_workflow
+from aria_designer.component_identity import canonicalize_workflow
 
 logger = logging.getLogger(__name__)
 
@@ -172,6 +172,7 @@ def upsert_component(
 ) -> None:
     """Insert or update a component from its manifest dict."""
     conn = _get_conn()
+    manifest_json = json.dumps(manifest)
     conn.execute(
         """INSERT INTO components (id, version, name, category, status, manifest_json, created_at, updated_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -184,7 +185,7 @@ def upsert_component(
             manifest["name"],
             manifest["category"],
             manifest.get("status", "draft"),
-            json.dumps(manifest),
+            manifest_json,
             created_at,
             updated_at,
         ),
@@ -196,7 +197,7 @@ def upsert_component(
         (
             manifest["id"],
             manifest.get("version", "1.0.0"),
-            json.dumps(manifest),
+            manifest_json,
             created_at,
         ),
     )
@@ -374,6 +375,18 @@ def _loads_json_blob(blob: Any) -> Any:
         return None
 
 
+def _hydrate_workflow_run_row(row: sqlite3.Row) -> Dict[str, Any]:
+    data = dict(row)
+    data["result"] = _loads_json_blob(data.get("results_json")) or {}
+    data["perf_contract"] = _loads_json_blob(data.get("perf_json"))
+    data["stages"] = _loads_json_blob(data.get("stages_json")) or {}
+    data["error_details"] = _loads_json_blob(data.get("error_json"))
+    data["semantic_warnings"] = (
+        _loads_json_blob(data.get("semantic_warnings_json")) or []
+    )
+    return data
+
+
 def save_workflow_run(
     *,
     workflow_id: str,
@@ -445,15 +458,7 @@ def get_workflow_run(run_id: str) -> Optional[Dict[str, Any]]:
     ).fetchone()
     if row is None:
         return None
-    data = dict(row)
-    data["result"] = _loads_json_blob(data.get("results_json")) or {}
-    data["perf_contract"] = _loads_json_blob(data.get("perf_json"))
-    data["stages"] = _loads_json_blob(data.get("stages_json")) or {}
-    data["error_details"] = _loads_json_blob(data.get("error_json"))
-    data["semantic_warnings"] = (
-        _loads_json_blob(data.get("semantic_warnings_json")) or []
-    )
-    return data
+    return _hydrate_workflow_run_row(row)
 
 
 def list_workflow_runs(
@@ -464,7 +469,7 @@ def list_workflow_runs(
 ) -> List[Dict[str, Any]]:
     """List persisted workflow runs newest-first."""
     conn = _get_conn()
-    sql = "SELECT run_id FROM workflow_runs WHERE 1=1"
+    sql = "SELECT * FROM workflow_runs WHERE 1=1"
     params: list[Any] = []
     if workflow_id:
         sql += " AND workflow_id = ?"
@@ -475,7 +480,7 @@ def list_workflow_runs(
     sql += " ORDER BY COALESCE(updated_at, completed_at, started_at) DESC LIMIT ?"
     params.append(limit)
     rows = conn.execute(sql, params).fetchall()
-    return [run for row in rows if (run := get_workflow_run(row["run_id"])) is not None]
+    return [_hydrate_workflow_run_row(row) for row in rows]
 
 
 # ── Aria Proposals ────────────────────────────────────────────────────

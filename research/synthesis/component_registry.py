@@ -1,23 +1,32 @@
 """
-Component Registry: Single source of truth for component type mappings.
-Maps frontend component types to backend primitive names (leaf extraction).
+Compatibility shim for the older singleton component-registry API.
+
+Hot-path callers should import from ``research.synthesis.component_catalog``
+directly. This module remains only to preserve existing imports while the rest
+of the tree is migrated away from the registry facade.
 """
 
 from __future__ import annotations
-import yaml
 from pathlib import Path
 from typing import Any, Dict, Optional, Set
 
-from .primitives import canonicalize_op_name
+from .component_catalog import (
+    get_primitive_name,
+    is_passthrough_component,
+    is_source_component,
+    load_component_mapping,
+    passthrough_components,
+    source_components,
+    template_lowered_components,
+)
 
-# Configuration file location
 _HERE = Path(__file__).resolve().parent
 _PROJECT_ROOT = _HERE.parent.parent
 _MAPPING_FILE = _PROJECT_ROOT / "aria_designer" / "runtime" / "component_mapping.yaml"
 
 
 class ComponentRegistry:
-    """Registry for mapping frontend components to backend primitives."""
+    """Legacy facade over the direct component catalog helpers."""
 
     def __init__(self, mapping_file: Optional[Path] = None):
         self.mapping_file = mapping_file or _MAPPING_FILE
@@ -31,54 +40,25 @@ class ComponentRegistry:
         self.load()
 
     def load(self):
-        """Load mapping configuration from YAML."""
-        if not self.mapping_file.exists():
-            self._set_defaults()
-            return
-
-        try:
-            with open(self.mapping_file, "r", encoding="utf-8") as f:
-                self.config = yaml.safe_load(f) or {}
-        except Exception:
-            self._set_defaults()
-            return
-
-        self.category_execution_class = self.config.get("category_execution_class", {})
-        self.component_execution_class = self.config.get(
-            "component_execution_class", {}
+        self.config = load_component_mapping(self.mapping_file)
+        self.category_execution_class = dict(
+            self.config.get("category_execution_class", {})
         )
-        self.passthrough_components = set(self.config.get("passthrough_components", []))
-        self.source_components = set(self.config.get("source_components", []))
-        self.template_lowered_components = set(
-            self.config.get("template_lowered_components", [])
+        self.component_execution_class = dict(
+            self.config.get("component_execution_class", {})
         )
-
-    def _set_defaults(self):
-        """Minimal fallback — YAML should always be present at runtime."""
-        import warnings
-
-        warnings.warn(
-            f"component_mapping.yaml not found at {self.mapping_file}; "
-            "component mappings will be unavailable",
-            stacklevel=2,
-        )
+        self.passthrough_components = set(passthrough_components())
+        self.source_components = set(source_components())
+        self.template_lowered_components = set(template_lowered_components())
 
     def get_primitive_name(self, component_type: str) -> str:
-        """Map component type to a canonical primitive name when possible."""
-        if not component_type:
-            return "identity"
-        leaf_id = component_type.split("/")[-1]
-        return canonicalize_op_name(leaf_id)
+        return get_primitive_name(component_type)
 
     def is_passthrough(self, component_type: str) -> bool:
-        """Check if component is a passthrough (identity)."""
-        leaf_id = component_type.split("/")[-1]
-        return leaf_id in self.passthrough_components
+        return is_passthrough_component(component_type)
 
     def is_source(self, component_type: str) -> bool:
-        """Check if component is a data source."""
-        leaf_id = component_type.split("/")[-1]
-        return leaf_id in self.source_components
+        return is_source_component(component_type)
 
 
 # Global instance
@@ -87,4 +67,4 @@ registry = ComponentRegistry()
 
 def fe_type_to_op_name(fe_type: str) -> str:
     """Compatibility helper for existing code."""
-    return registry.get_primitive_name(fe_type)
+    return get_primitive_name(fe_type)

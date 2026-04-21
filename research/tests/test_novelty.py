@@ -523,10 +523,14 @@ class TestNoveltyCalibration(unittest.TestCase):
             }
 
             for i in range(24):
+                loop_exp_id = nb.start_experiment(
+                    "synthesis", {}, f"fingerprint-cap-dominant-{i}"
+                )
                 nb.record_program_result(
-                    exp_id,
+                    loop_exp_id,
                     "fp_repeat_dominant",
                     json.dumps(dominant_graph),
+                    intentional_rerun_reason="replication_measurement",
                     stage0_passed=True,
                     stage1_passed=True,
                     novelty_score=0.8,
@@ -1126,6 +1130,41 @@ class TestCkaReferenceArtifacts(unittest.TestCase):
                 m2 = json.load(f)
             self.assertEqual(m1["probe_protocol_hash"], m2["probe_protocol_hash"])
             self.assertEqual(m1["activation_shape"], m2["activation_shape"])
+
+
+def test_populate_cka_without_artifacts_keeps_no_reference_reason(monkeypatch):
+    from research.eval.fingerprint import BehavioralFingerprint
+    from research.eval.fingerprint_runtime import populate_cka
+
+    class _MissingArtifactStore:
+        def get_references(self):
+            return None
+
+        def get_reference_similarities(self):
+            return None
+
+        def get_metadata(self):
+            return {
+                "cka_source": "none",
+                "cka_artifact_version": None,
+                "cka_probe_protocol_hash": None,
+                "cka_reference_quality": "none",
+                "cka_similarity_path": "compute_reference_cka",
+            }
+
+    monkeypatch.setattr(
+        "research.eval.fingerprint_runtime._get_default_store",
+        lambda: _MissingArtifactStore(),
+    )
+
+    fp = BehavioralFingerprint()
+    reps = torch.randn(8, 16)
+    _, cka_all_zero = populate_cka(fp, reps, include=True)
+
+    assert cka_all_zero is True
+    assert fp.cka_source == "none"
+    assert fp.novelty_valid_for_promotion is False
+    assert fp.novelty_validity_reason == "no_reference_available"
 
 
 if __name__ == "__main__":

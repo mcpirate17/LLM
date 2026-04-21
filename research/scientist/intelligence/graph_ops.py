@@ -15,16 +15,15 @@ _OP_KEY_PATTERN = re.compile(r'"op"\s*:\s*"([^"]+)"')
 _NODES_LIST_PATTERN = re.compile(r'"nodes"\s*:\s*\[')
 
 
-def _normalize_extracted_ops(ops: Any) -> List[str]:
+def _normalize_extracted_ops(ops: Any, *, unique: bool) -> List[str]:
     if not isinstance(ops, list):
         return []
-    return sorted(
-        {
-            str(op).strip()
-            for op in ops
-            if str(op).strip() and str(op).strip() != "input"
-        }
-    )
+    cleaned = [
+        str(op).strip() for op in ops if str(op).strip() and str(op).strip() != "input"
+    ]
+    if unique:
+        return sorted(set(cleaned))
+    return cleaned
 
 
 def _iter_graph_nodes(graph_json: Any) -> Iterable[dict[str, Any]]:
@@ -53,7 +52,7 @@ def _payload_requires_python_fallback(payload: Any) -> bool:
     )
 
 
-def _extract_unique_graph_ops_python(graph_json: Any) -> List[str]:
+def _extract_graph_ops_python(graph_json: Any, *, unique: bool) -> List[str]:
     if isinstance(graph_json, str):
         if (
             '"op_name"' not in graph_json
@@ -61,24 +60,27 @@ def _extract_unique_graph_ops_python(graph_json: Any) -> List[str]:
             and '"op"' not in graph_json
         ):
             return []
-        ops = set()
-        ops.update(
-            op for op in _OP_NAME_PATTERN.findall(graph_json) if op and op != "input"
-        )
-        ops.update(
-            op for op in _OP_TYPE_PATTERN.findall(graph_json) if op and op != "input"
-        )
-        ops.update(
-            op for op in _OP_KEY_PATTERN.findall(graph_json) if op and op != "input"
-        )
+        ops = [
+            *[
+                op
+                for op in _OP_NAME_PATTERN.findall(graph_json)
+                if op and op != "input"
+            ],
+            *[
+                op
+                for op in _OP_TYPE_PATTERN.findall(graph_json)
+                if op and op != "input"
+            ],
+            *[op for op in _OP_KEY_PATTERN.findall(graph_json) if op and op != "input"],
+        ]
         if ops:
-            return sorted(ops)
+            return _normalize_extracted_ops(ops, unique=unique)
         try:
             graph_json = json.loads(graph_json)
         except (json.JSONDecodeError, TypeError):
             return []
 
-    ops = {
+    ops = [
         str(node.get("op_name") or node.get("op_type") or node.get("op") or "").strip()
         for node in _iter_graph_nodes(graph_json)
         if str(
@@ -88,12 +90,21 @@ def _extract_unique_graph_ops_python(graph_json: Any) -> List[str]:
             node.get("op_name") or node.get("op_type") or node.get("op") or ""
         ).strip()
         != "input"
-    }
-    return sorted(ops)
+    ]
+    return _normalize_extracted_ops(ops, unique=unique)
+
+
+def extract_graph_ops(graph_payload: Any) -> List[str]:
+    """Return graph op names with multiplicity preserved when possible."""
+    return _extract_graph_ops_python(graph_payload, unique=False)
+
+
+def _extract_unique_graph_ops_python(graph_json: Any) -> List[str]:
+    return _extract_graph_ops_python(graph_json, unique=True)
 
 
 def extract_unique_graph_ops(graph_payload: Any) -> List[str]:
-    return _extract_unique_graph_ops_python(graph_payload)
+    return _extract_graph_ops_python(graph_payload, unique=True)
 
 
 def extract_unique_graph_ops_batch(graph_payloads: Iterable[Any]) -> List[List[str]]:
@@ -107,7 +118,7 @@ def extract_unique_graph_ops_batch(graph_payloads: Iterable[Any]) -> List[List[s
 
     for index, payload in enumerate(payloads):
         if _payload_requires_python_fallback(payload):
-            results[index] = _extract_unique_graph_ops_python(payload)
+            results[index] = _extract_graph_ops_python(payload, unique=True)
             continue
         if isinstance(payload, str):
             native_serialized.append(payload)
@@ -130,10 +141,10 @@ def extract_unique_graph_ops_batch(graph_payloads: Iterable[Any]) -> List[List[s
         result = rust.extract_graph_ops_batch(native_serialized)
         if isinstance(result, list):
             for index, ops in zip(native_indexes, result):
-                results[index] = _normalize_extracted_ops(ops)
+                results[index] = _normalize_extracted_ops(ops, unique=True)
 
     for index, payload in enumerate(payloads):
         if results[index] is None:
-            results[index] = _extract_unique_graph_ops_python(payload)
+            results[index] = _extract_graph_ops_python(payload, unique=True)
 
     return [ops or [] for ops in results]

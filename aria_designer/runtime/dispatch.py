@@ -74,15 +74,33 @@ else:
 def _np_to_torch(x):
     """Convert numpy array to contiguous float32 torch tensor."""
     if isinstance(x, torch.Tensor):
-        return x.float().contiguous()
-    return torch.from_numpy(np.ascontiguousarray(x, dtype=np.float32))
+        if x.dtype != torch.float32:
+            x = x.to(dtype=torch.float32)
+        if not x.is_contiguous():
+            x = x.contiguous()
+        return x
+    arr = np.asarray(x, dtype=np.float32)
+    if not arr.flags.c_contiguous:
+        arr = np.ascontiguousarray(arr)
+    return torch.from_numpy(arr)
+
+
+def _idx_to_torch(idx, *, dtype: torch.dtype):
+    """Convert index-like inputs with minimal copying."""
+    if isinstance(idx, torch.Tensor):
+        return idx if idx.dtype == dtype else idx.to(dtype=dtype)
+    np_dtype = np.int32 if dtype == torch.int32 else np.int64
+    arr = np.asarray(idx, dtype=np_dtype)
+    if not arr.flags.c_contiguous:
+        arr = np.ascontiguousarray(arr)
+    return torch.from_numpy(arr)
 
 
 def _to_output(t, *, like):
     """Return tensor in the same format as the input (numpy or torch)."""
     if isinstance(like, torch.Tensor):
         return t if isinstance(t, torch.Tensor) else torch.from_numpy(t)
-    return t.numpy() if isinstance(t, torch.Tensor) else t
+    return t.detach().cpu().numpy() if isinstance(t, torch.Tensor) else t
 
 
 class KernelDispatcher:
@@ -222,22 +240,13 @@ class KernelDispatcher:
     def embedding_lookup(self, table, idx, pe=None):
         if _HAS_ARIA_CORE and self.use_native:
             pe_t = _np_to_torch(pe) if pe is not None else None
-            idx_t = (
-                idx
-                if isinstance(idx, torch.Tensor)
-                else torch.from_numpy(idx.astype(np.int32))
-            )
+            idx_t = _idx_to_torch(idx, dtype=torch.int32)
             return _to_output(
                 aria_core.embedding_lookup_f32(_np_to_torch(table), idx_t.int(), pe_t),
                 like=table,
             )
         t = _np_to_torch(table)
-        i = (
-            idx
-            if isinstance(idx, torch.Tensor)
-            else torch.from_numpy(idx.astype(np.int64))
-        )
-        i = i.long()
+        i = _idx_to_torch(idx, dtype=torch.int64).long()
         res = t[i]
         if pe is not None:
             res = res + _np_to_torch(pe)
@@ -253,8 +262,8 @@ class KernelDispatcher:
         xt = _np_to_torch(x)
         *batch, seq_len, d = xt.shape
         half_d = d // 2
-        positions = torch.arange(seq_len, dtype=torch.float32)
-        dim_indices = torch.arange(half_d, dtype=torch.float32)
+        positions = torch.arange(seq_len, dtype=torch.float32, device=xt.device)
+        dim_indices = torch.arange(half_d, dtype=torch.float32, device=xt.device)
         freqs = positions[:, None] / (theta_base ** (dim_indices[None, :] / half_d))
         cos_f = torch.cos(freqs)
         sin_f = torch.sin(freqs)
@@ -305,6 +314,29 @@ class KernelDispatcher:
                 ),
                 like=x,
             )
+        if isinstance(x, torch.Tensor):
+            xt = _np_to_torch(x)
+            decay_t = _np_to_torch(decay).reshape(-1)
+            bonus_t = _np_to_torch(bonus).reshape(-1)
+            wk_t = _np_to_torch(wk)
+            wv_t = _np_to_torch(wv)
+            wr_t = _np_to_torch(wr)
+
+            k = xt @ wk_t
+            v = xt @ wv_t
+            r = torch.sigmoid(xt @ wr_t)
+
+            b, seq_len, d = k.shape
+            out = torch.empty_like(k)
+            state = torch.zeros((b, d), dtype=xt.dtype, device=xt.device)
+            decay_exp = torch.exp(decay_t)
+            for t in range(seq_len):
+                kt = k[:, t, :]
+                vt = v[:, t, :]
+                ekt = torch.exp(kt)
+                out[:, t, :] = r[:, t, :] * (state + torch.exp(bonus_t + kt) * vt)
+                state = decay_exp * state + ekt * vt
+            return _to_output(out, like=x)
         # RWKV time-mixing: linear attention with exponential decay
         # x: (batch, seq_len, d), decay/bonus: (d,), wk/wv/wr: (d, d)
         x_np = x.numpy() if isinstance(x, torch.Tensor) else x
@@ -382,9 +414,12 @@ class KernelDispatcher:
         file_path: str,
         _max_rows: int = 4096,
         _max_cols: int = 1024,
+        max_cols: int | None = None,
         delimiter: str = ",",
         has_header: bool = True,
     ) -> np.ndarray:
+        if max_cols is not None:
+            _max_cols = int(max_cols)
         skip = 1 if has_header else 0
         return np.loadtxt(
             file_path,
@@ -401,7 +436,7 @@ class KernelDispatcher:
             if offset_bytes > 0:
                 f.seek(offset_bytes)
             raw = f.read(max_elems * 4)
-        return np.frombuffer(raw, dtype=np.float32).copy()
+        return np.frombuffer(raw, dtype=np.float32)
 
     def file_writer_txt(
         self, file_path: str, data: np.ndarray, overwrite: bool = False

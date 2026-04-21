@@ -227,12 +227,11 @@ def strong_investigation_candidates(
             continue
         if not bool(meta.get("novelty_valid_for_promotion")):
             logger.info(
-                "escalation_blocked_novelty_invalid: result_id=%s reason=%s cka_source=%s",
+                "escalation_novelty_informational_only: result_id=%s reason=%s cka_source=%s",
                 result_id[:12],
                 meta.get("novelty_validity_reason", "unknown"),
                 meta.get("cka_source", "unknown"),
             )
-            continue
 
         candidate_score = composite_scores.get(result_id, 0.0)
         replication = replication_info.get(result_id, {"n": 1, "loss_std": 0.0})

@@ -143,6 +143,40 @@ def test_result_to_dict_has_all_keys():
     assert "induction_v2_investigation_protocol_version" in d
 
 
+def test_multi_seed_probe_restores_model_state_between_runs(monkeypatch):
+    from research.eval import induction_probe_v2_investigation as probe
+
+    class _TinyModel(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.weight = nn.Parameter(torch.tensor([1.0]))
+            self.register_buffer("offset", torch.tensor([2.0]))
+
+        def forward(self, x):
+            return x
+
+    starts: list[tuple[float, float]] = []
+
+    def _fake_run(*args, **kwargs):
+        model = args[0]
+        starts.append((float(model.weight.item()), float(model.offset.item())))
+        with torch.no_grad():
+            model.weight.add_(10.0)
+            model.offset.add_(20.0)
+        return probe.InductionV2Result(auc=float(len(starts)), gap_accuracies={4: 1.0})
+
+    monkeypatch.setattr(probe, "_run_induction_v2_on", _fake_run)
+
+    result = probe.run_induction_v2_investigation(
+        _TinyModel(),
+        seeds=(1, 2, 3),
+        device="cpu",
+    )
+
+    assert starts == [(1.0, 2.0), (1.0, 2.0), (1.0, 2.0)]
+    assert result.auc == 2.0
+
+
 @pytest.mark.slow
 def test_attention_2l_beats_conv3_2l():
     """A 2-layer causal transformer should clearly out-score a 2-layer

@@ -1,745 +1,76 @@
 from __future__ import annotations
 
-import logging
-import threading
-import time as _time_mod
-from pathlib import Path
-from typing import Any, Dict, List, Optional
-
-import requests
-from fastapi import HTTPException
-
-from . import database as db
-from .config import settings
-from .models import utc_now_iso as _utc_now
-from .research_signals import fetch_research_recommendation_signals
-from .type_utils import dig, safe_float
-
-logger = logging.getLogger(__name__)
-
-_PROJECT_ROOT = Path(__file__).resolve().parents[3]
-_ARIA_DESIGNER_ROOT = _PROJECT_ROOT / "aria_designer"
-_ARIA_CORE_ROOT = _PROJECT_ROOT / "aria_core"
-_RESEARCH_ROOT = _PROJECT_ROOT / "research"
-
 from research.perf_contract import (
     build_duplicate_work_report,
-    build_perf_contract_with_gate,
-    emit_perf_artifact,
     list_recent_perf_artifacts,
     summarize_perf_artifacts,
 )
 
-# ── Optional Import Helper ────────────────────────────────────────────
-
-
-def _optional_import(
-    module: str,
-    names: list[str],
-    *,
-    aliases: dict[str, str] | None = None,
-) -> tuple[Any, ...]:
-    """Import *names* from *module*, returning ``None`` for each on ImportError.
-
-    Tries both the bare module path and an ``aria_designer.`` prefix so the
-    same call works whether the package is installed or run from a checkout.
-    """
-    aliases = aliases or {}
-    for candidate in (
-        module,
-        f"aria_designer.{module}" if module.startswith("runtime.") else None,
-    ):
-        if not candidate:
-            continue
-        try:
-            mod = __import__(candidate, fromlist=names)
-            return tuple(getattr(mod, n) for n in names)
-        except ImportError:
-            continue
-    return tuple(None for _ in names)
-
-
-# ── Optional runtime imports ──────────────────────────────────────────
-
-(KernelDispatcher, runtime_compile, find_unsupported_edge_dtype_pairings) = (
-    _optional_import("runtime.dispatch", ["KernelDispatcher"])
-    + _optional_import("runtime.compiler", ["compile_workflow"])
-    + _optional_import("runtime.port_dtypes", ["find_unsupported_edge_dtype_pairings"])
+from .config import settings
+from .perf_support import (
+    _build_designer_perf_bundle,
+    _compute_eval_composite_score,
+    _discovery_url_for_fingerprint,
+    designer_metrics_from_stages,
 )
-
-(export_onnx,) = _optional_import("runtime.export", ["export_onnx"])
-
-(
-    bridge_evaluate,
-    bridge_validate,
-    bridge_estimate,
-    bridge_list_primitives,
+from .eval_run_store import _get_run, _list_runs, _store_run, _update_run
+from .research_signals import fetch_research_recommendation_signals
+from .research_sync import _auto_promote_workflow_to_research, _sync_lineage_to_research
+from .runtime_features import (
+    BUILTIN_BLOCKS,
+    HAS_BRIDGE,
+    HAS_CONSTRAINTS,
+    HAS_IMPORTER,
+    HAS_PROFILER,
+    HAS_SUBGRAPH,
+    KernelDispatcher,
+    _ARIA_CORE_ROOT,
+    _ARIA_DESIGNER_ROOT,
+    _PROJECT_ROOT,
+    _RESEARCH_ROOT,
+    _optional_import,
     bridge_analyze_compression,
     bridge_analyze_routing,
     bridge_component_capability,
-) = _optional_import(
-    "runtime.bridge",
-    [
-        "evaluate_workflow",
-        "validate_workflow_graph",
-        "estimate_performance",
-        "list_available_primitives",
-        "analyze_compression",
-        "bridge_analyze_routing",
-        "get_component_execution_capability",
-    ],
+    bridge_estimate,
+    bridge_evaluate,
+    bridge_list_primitives,
+    bridge_profile,
+    bridge_validate,
+    check_compatibility,
+    compute_palette_constraints,
+    expand_block,
+    export_onnx,
+    extract_block,
+    find_unsupported_edge_dtype_pairings,
+    graph_to_workflow,
+    import_single,
+    import_survivors,
+    list_builtin_blocks,
+    runtime_compile,
 )
-HAS_BRIDGE: bool = bridge_evaluate is not None
-
-(bridge_profile,) = _optional_import("runtime.profiler", ["profile_workflow"])
-HAS_PROFILER: bool = bridge_profile is not None
-
-(import_survivors, import_single, graph_to_workflow) = _optional_import(
-    "runtime.importer", ["import_survivors", "import_single", "graph_to_workflow"]
+from .workflow_support import (
+    _collect_workflow_semantic_warnings,
+    _require_component,
+    _require_proposal,
+    _require_run,
+    _require_workflow,
+    collect_unresolved_nodes,
+    get_approved_registry_ids,
+    require_feature,
 )
-HAS_IMPORTER: bool = import_survivors is not None
-
-(check_compatibility, compute_palette_constraints) = _optional_import(
-    "runtime.constraints", ["check_compatibility", "compute_palette_constraints"]
-)
-HAS_CONSTRAINTS: bool = check_compatibility is not None
-
-(extract_block, expand_block, list_builtin_blocks, BUILTIN_BLOCKS) = _optional_import(
-    "runtime.subgraph",
-    ["extract_block", "expand_block", "list_builtin_blocks", "BUILTIN_BLOCKS"],
-)
-HAS_SUBGRAPH: bool = extract_block is not None
 
 
-# ── Eval Run Store ────────────────────────────────────────────────────
-# In-memory store for evaluation run results, keyed by run_id.
-# Each entry stores full stage-by-stage metrics so external apps (ARIA,
-# dashboards, CI pipelines) can query results via REST after completion.
-
-_EVAL_RUNS: Dict[str, Dict[str, Any]] = {}
-_EVAL_RUNS_LOCK = threading.Lock()
-_EVAL_RUNS_MAX = 200  # max runs kept in memory
-_EVAL_RUNS_TTL_S = 3600  # evict runs older than 1 hour
-
-
-def _persist_run_snapshot(run_id: str) -> None:
-    run = _EVAL_RUNS.get(run_id)
-    if not run:
-        return
-    workflow_id = run.get("workflow_id")
-    if not workflow_id:
-        return
-    error_details = run.get("error_details")
-    if error_details is None and (run.get("error") or run.get("error_stage")):
-        error_details = {
-            "stage": run.get("error_stage"),
-            "error_type": run.get("status") if run.get("status") != "success" else None,
-            "error_message": run.get("error"),
-            "root_cause_code": run.get("error_stage") or "unknown",
-        }
-    db.save_workflow_run(
-        workflow_id=str(workflow_id),
-        run_id=run_id,
-        status=str(run.get("status") or "unknown"),
-        results=run.get("result"),
-        perf=run.get("perf_contract"),
-        stages=run.get("stages"),
-        error=error_details,
-        semantic_warnings=run.get("semantic_warnings"),
-        started_at=run.get("created_at"),
-        completed_at=run.get("completed_at"),
-        updated_at=run.get("completed_at") or _utc_now(),
-    )
-
-
-def _evict_old_runs() -> None:
-    """Remove expired runs.  Called under lock."""
-    cutoff = _time_mod.time() - _EVAL_RUNS_TTL_S
-    expired = [k for k, v in _EVAL_RUNS.items() if v.get("_created_ts", 0) < cutoff]
-    for k in expired:
-        del _EVAL_RUNS[k]
-    # If still over capacity, drop oldest
-    if len(_EVAL_RUNS) > _EVAL_RUNS_MAX:
-        by_ts = sorted(_EVAL_RUNS.items(), key=lambda kv: kv[1].get("_created_ts", 0))
-        for k, _ in by_ts[: len(_EVAL_RUNS) - _EVAL_RUNS_MAX]:
-            del _EVAL_RUNS[k]
-
-
-def _store_run(run_id: str, data: Dict[str, Any]) -> None:
-    with _EVAL_RUNS_LOCK:
-        _evict_old_runs()
-        data["_created_ts"] = _time_mod.time()
-        _EVAL_RUNS[run_id] = data
-        _persist_run_snapshot(run_id)
-
-
-def _update_run(run_id: str, updates: Dict[str, Any]) -> None:
-    with _EVAL_RUNS_LOCK:
-        _evict_old_runs()
-        if run_id in _EVAL_RUNS:
-            _EVAL_RUNS[run_id].update(updates)
-            _EVAL_RUNS[run_id]["_updated_ts"] = _time_mod.time()
-            _persist_run_snapshot(run_id)
-
-
-def _get_run(run_id: str) -> Optional[Dict[str, Any]]:
-    with _EVAL_RUNS_LOCK:
-        _evict_old_runs()
-        run = _EVAL_RUNS.get(run_id)
-        if run is not None:
-            return run
-    persisted = db.get_workflow_run(run_id)
-    if persisted is None:
-        return None
-    compact = {
-        "run_id": persisted.get("run_id"),
-        "workflow_id": persisted.get("workflow_id"),
-        "status": persisted.get("status", "unknown"),
-        "created_at": persisted.get("started_at"),
-        "completed_at": persisted.get("completed_at"),
-        "total_time_ms": dig(persisted, "result", "total_time_ms", default=None)
-        or persisted.get("total_time_ms"),
-        "stages": persisted.get("stages", {}),
-        "result": persisted.get("result", {}),
-        "perf_contract": persisted.get("perf_contract"),
-        "semantic_warnings": persisted.get("semantic_warnings", []),
-        "error_details": persisted.get("error_details"),
-    }
-    if persisted.get("error_details"):
-        compact["error"] = dig(
-            persisted, "error_details", "error_message", default=None
-        )
-        compact["error_stage"] = dig(persisted, "error_details", "stage", default=None)
-    return compact
-
-
-def _list_runs() -> List[Dict[str, Any]]:
-    with _EVAL_RUNS_LOCK:
-        _evict_old_runs()
-        out: List[Dict[str, Any]] = []
-        for run_id, data in sorted(
-            _EVAL_RUNS.items(),
-            key=lambda kv: kv[1].get("_created_ts", 0),
-            reverse=True,
-        ):
-            out.append(
-                {
-                    "run_id": run_id,
-                    "workflow_id": data.get("workflow_id"),
-                    "status": data.get("status", "unknown"),
-                    "created_at": data.get("created_at"),
-                    "total_time_ms": data.get("total_time_ms"),
-                    "stages_completed": len(data.get("stages", {})),
-                }
-            )
-        if out:
-            return out
-    persisted = db.list_workflow_runs(limit=_EVAL_RUNS_MAX)
-    out = []
-    for data in persisted:
-        out.append(
-            {
-                "run_id": data.get("run_id"),
-                "workflow_id": data.get("workflow_id"),
-                "status": data.get("status", "unknown"),
-                "created_at": data.get("started_at"),
-                "total_time_ms": dig(data, "result", "total_time_ms", default=None),
-                "stages_completed": len(data.get("stages", {})),
-            }
-        )
-    return out
-
-
-def _stage_elapsed_metrics(stages: Dict[str, Any]) -> Dict[str, float]:
-    metrics: Dict[str, float] = {}
-    for stage_name, stage in (stages or {}).items():
-        if not isinstance(stage, dict):
-            continue
-        elapsed_ms = stage.get("elapsed_ms")
-        if elapsed_ms is not None:
-            try:
-                metrics[f"{stage_name}_time_ms"] = float(elapsed_ms)
-            except (TypeError, ValueError):
-                continue
-    return metrics
-
-
-def designer_metrics_from_stages(
-    stages: Dict[str, Any],
-    total_time_ms: Optional[float],
-    status: str,
-) -> Dict[str, Any]:
-    """Flatten a staged designer-eval result into the `designer_interactive`
-    metric shape. Shared by the streaming eval orchestrator and any caller
-    that wants to reconstruct designer perf metrics from stage output."""
-    profiling = dig(stages, "profiling", "metrics", default={})
-    compilation = dig(stages, "compilation", "metrics", default={})
-    sandbox = dig(stages, "sandbox", "metrics", default={})
-    metrics: Dict[str, Any] = {
-        "total_time_ms": safe_float(total_time_ms),
-        "compile_time_ms": safe_float(compilation.get("compile_time_ms")),
-        "forward_time_ms": safe_float(sandbox.get("forward_ms")),
-        "backward_time_ms": safe_float(sandbox.get("backward_ms")),
-        "peak_memory_mb": safe_float(sandbox.get("peak_memory_mb")),
-        "native_coverage": safe_float(profiling.get("native_coverage")),
-        "total_flops_per_token": safe_float(profiling.get("total_flops_per_token")),
-        "total_params": safe_float(profiling.get("total_params")),
-        "status_code": 1.0 if status == "success" else 0.0,
-    }
-    metrics.update(_stage_elapsed_metrics(stages))
-    return metrics
-
-
-# ── Perf Bundle Builder ──────────────────────────────────────────────
-
-
-def _build_designer_perf_bundle(
-    *,
-    run_id: Optional[str],
-    workflow_id: Optional[str],
-    metrics: Dict[str, Any],
-    status: str = "unknown",
-    workload: str = "workflow_evaluation",
-    duplicate_work: Optional[Dict[str, Any]] = None,
-    slug: Optional[str] = None,
-) -> Dict[str, Any]:
-    """Single aria_designer perf-contract emitter. Callers supply the metric
-    dict; we run the `designer_interactive` budget gate, build the contract,
-    and emit the artifact."""
-    contract, budget_verdict = build_perf_contract_with_gate(
-        component="aria_designer",
-        workload=workload,
-        metrics=metrics,
-        budget_profile="designer_interactive",
-        identity={"run_id": run_id, "workflow_id": workflow_id, "status": status},
-        duplicate_work=duplicate_work,
-    )
-    artifact_path = emit_perf_artifact(
-        contract, slug=(slug or run_id or workflow_id or "designer_eval")
-    )
-    contract["artifact_path"] = artifact_path
-    return {
-        "perf_contract": contract,
-        "perf_artifact_path": artifact_path,
-        "perf_budget_gate": budget_verdict,
-    }
-
-
-# ── Small Helper Functions ───────────────────────────────────────────
-
-
-def _fetch_research_recommendation_signals(
-    force: bool = False,
-) -> Optional[Dict[str, Any]]:
+def _fetch_research_recommendation_signals(force: bool = False):
     return fetch_research_recommendation_signals(force=force)
 
 
-def _discovery_url_for_fingerprint(fingerprint: str | None) -> str | None:
-    token = str(fingerprint or "").strip()
-    if not token:
-        return None
-    return f"{settings.LINEAGE_SYNC_BASE.rstrip('/')}/?search={token}"
-
-
-def _compute_eval_composite_score(stage_metrics: Dict[str, Any]) -> float:
-    benchmark_score = safe_float(dig(stage_metrics, "benchmarking", "summary", "score"))
-    novelty = safe_float(dig(stage_metrics, "novelty", "overall_novelty"))
-    efficiency = safe_float(dig(stage_metrics, "compression", "efficiency_score"))
-    stability = safe_float(dig(stage_metrics, "sandbox", "stability_score"))
-    raw = (
-        (benchmark_score * 100.0)
-        + (novelty * 40.0)
-        + (efficiency * 30.0)
-        + (stability * 20.0)
-    )
-    return round(max(0.0, raw), 3)
-
-
-# ── Lookup Helpers (DRY: eliminates repeated get->None->404 pattern) ──
-
-
-def _require_component(component_id: str) -> Dict[str, Any]:
-    comp = db.get_component(component_id)
-    if comp is None:
-        raise HTTPException(
-            status_code=404, detail=f"Component {component_id} not found"
-        )
-    return comp
-
-
-def _require_proposal(proposal_id: str) -> Dict[str, Any]:
-    proposal = db.get_proposal(proposal_id)
-    if proposal is None:
-        raise HTTPException(status_code=404, detail="Proposal not found")
-    return proposal
-
-
-def _require_workflow(workflow_id: str) -> Dict[str, Any]:
-    wf = db.get_workflow(workflow_id)
-    if wf is None:
-        raise HTTPException(
-            status_code=404, detail=f"Workflow '{workflow_id}' not found"
-        )
-    return wf
-
-
-def _require_run(run_id: str) -> Dict[str, Any]:
-    run = _get_run(run_id)
-    if run is None:
-        raise HTTPException(
-            status_code=404, detail=f"Evaluation run {run_id} not found"
-        )
-    return run
-
-
-# ── Shared Validation Helpers ─────────────────────────────────────────
-
-
-def get_approved_registry_ids() -> set[str]:
-    """Single source of truth for fetching approved component type IDs."""
-    return db.list_component_types(status="approved")
-
-
-def collect_unresolved_nodes(
-    workflow: Dict[str, Any],
-    registry_ids: set[str] | None = None,
-) -> List[Dict[str, str]]:
-    """Find nodes whose component_type is not in the approved registry.
-
-    Returns a list of dicts with node_id, component_type, message.
-    Works for all three routers (workflows, aria, import_export).
-    """
-    if registry_ids is None:
-        registry_ids = get_approved_registry_ids()
-    issues: List[Dict[str, str]] = []
-    for node in workflow.get("nodes", []):
-        component_type = str(node.get("component_type") or "").strip().lower()
-        if component_type and component_type not in registry_ids:
-            issues.append(
-                {
-                    "node_id": str(node.get("id") or ""),
-                    "component_type": str(node.get("component_type") or ""),
-                    "message": (
-                        f"Node {node.get('id')} uses unresolved component type "
-                        f"'{node.get('component_type')}'."
-                    ),
-                }
-            )
-    return issues
-
-
-def require_feature(flag: bool, name: str) -> None:
-    """Raise 501 if a runtime feature is not available."""
-    if not flag:
-        raise HTTPException(status_code=501, detail=f"{name} not available")
-
-
-# ── Research Integration ──────────────────────────────────────────────
-
-
-def _sync_lineage_to_research(payload: Dict[str, Any]) -> bool:
-    """Best-effort sync of designer run lineage into research notebook API."""
-    if not settings.LINEAGE_SYNC_ENABLED:
-        return False
-    url = f"{settings.LINEAGE_SYNC_BASE.rstrip('/')}/api/designer/lineage/sync"
-    try:
-        resp = requests.post(url, json=payload, timeout=settings.LINEAGE_SYNC_TIMEOUT)
-        if resp.status_code >= 400:
-            logger.warning(
-                "Lineage sync failed (%s): %s", resp.status_code, resp.text[:200]
-            )
-            return False
-        return True
-    except (requests.RequestException, OSError) as exc:
-        logger.warning("Lineage sync unavailable: %s", exc)
-        return False
-
-
-def _auto_promote_workflow_to_research(
-    workflow: Dict[str, Any],
-) -> Optional[Dict[str, Any]]:
-    """Best-effort: promote a saved workflow into research discoveries as screening tier."""
-    url = f"{settings.LINEAGE_SYNC_BASE.rstrip('/')}/api/designer/commit"
-    try:
-        resp = requests.post(
-            url,
-            json={"workflow": workflow},
-            timeout=max(settings.LINEAGE_SYNC_TIMEOUT, 6.0),
-        )
-        if resp.status_code >= 400:
-            logger.warning(
-                "Auto-promotion failed (%s): %s", resp.status_code, resp.text[:300]
-            )
-            return _auto_promote_workflow_locally(workflow)
-        data = resp.json() if resp.content else {}
-        if not isinstance(data, dict) or not data.get("success"):
-            logger.warning("Auto-promotion returned unexpected payload: %s", data)
-            return _auto_promote_workflow_locally(workflow)
-        if not data.get("result_id"):
-            logger.warning("Auto-promotion returned no result_id: %s", data)
-            return _auto_promote_workflow_locally(workflow)
-        return data
-    except (requests.RequestException, OSError) as exc:
-        logger.warning("Auto-promotion unavailable: %s", exc)
-    return _auto_promote_workflow_locally(workflow)
-
-
-def _convert_workflow_to_graph(
-    workflow: Dict[str, Any],
-) -> Optional[tuple[Any, str, str, float, Optional[float], Optional[int]]]:
-    """Convert a workflow dict to a research graph with metrics.
-
-    Returns ``(graph, fingerprint, graph_json, loss_ratio, novelty_score,
-    param_count)`` on success, or ``None`` on failure.
-    """
-    try:
-        from aria_designer.runtime.bridge import workflow_to_graph as _w2g
-        from research.synthesis.serializer import graph_to_json
-    except Exception as exc:
-        logger.warning("Local auto-promotion unavailable (imports): %s", exc)
-        return None
-
-    model_dim = safe_float(dig(workflow, "metadata", "model_dim"), default=256)
-    model_dim = int(model_dim)
-
-    try:
-        graph, _ = _w2g(workflow, model_dim=model_dim, return_id_map=True)
-        fingerprint = graph.fingerprint()
-        g_json = graph_to_json(graph)
-    except Exception as exc:
-        logger.warning("Local auto-promotion graph conversion failed: %s", exc)
-        return None
-
-    # Extract metrics from workflow metadata
-    meta = (
-        workflow.get("metadata") if isinstance(workflow.get("metadata"), dict) else {}
-    )
-    loss_ratio = meta.get("loss_ratio")
-    try:
-        loss_ratio = float(loss_ratio) if loss_ratio is not None else 1.0
-    except Exception:
-        logger.debug(
-            "Failed to parse loss_ratio from workflow metadata, defaulting to 1.0",
-            exc_info=True,
-        )
-        loss_ratio = 1.0
-    novelty_score = meta.get("novelty_score")
-    try:
-        novelty_score = float(novelty_score) if novelty_score is not None else None
-    except Exception:
-        logger.debug(
-            "Failed to parse novelty_score from workflow metadata", exc_info=True
-        )
-        novelty_score = None
-
-    # Compute param_count from the graph
-    param_count: int | None = None
-    try:
-        from research.synthesis.compiler import compile_model
-
-        model = compile_model(graph)
-        param_count = sum(p.numel() for p in model.parameters())
-    except Exception as exc:
-        logger.debug("Could not compute param_count for designer graph: %s", exc)
-
-    return (graph, fingerprint, g_json, loss_ratio, novelty_score, param_count)
-
-
-def _insert_into_notebook(
-    nb: Any,
-    workflow: Dict[str, Any],
-    fingerprint: str,
-    graph_json: str,
-    loss_ratio: float,
-    novelty_score: Optional[float],
-    param_count: Optional[int],
-) -> Optional[Dict[str, Any]]:
-    """Insert or deduplicate a designer workflow into the research notebook.
-
-    Returns a result dict on success, or ``None`` on failure.
-    """
-    existing = nb.conn.execute(
-        "SELECT result_id FROM program_results WHERE graph_fingerprint = ? "
-        "ORDER BY timestamp DESC LIMIT 1",
-        (fingerprint,),
-    ).fetchone()
-    if existing and existing[0]:
-        result_id = str(existing[0])
-        nb.upsert_leaderboard(
-            result_id=result_id,
-            model_source="designer_edit",
-            architecture_desc=f"Manual edit: {workflow.get('name', fingerprint[:8])}",
-            tier="screening",
-            screening_passed=True,
-            screening_loss_ratio=loss_ratio,
-            screening_novelty=novelty_score,
-        )
-        return {
-            "success": True,
-            "result_id": result_id,
-            "fingerprint": fingerprint,
-            "deduped": True,
-        }
-
-    exp_id = "designer_edits"
-    existing_exp = nb.conn.execute(
-        "SELECT 1 FROM experiments WHERE experiment_id = ?",
-        (exp_id,),
-    ).fetchone()
-    if not existing_exp:
-        nb.conn.execute(
-            "INSERT INTO experiments (experiment_id, timestamp, experiment_type, status, config_json) "
-            "VALUES (?, ?, 'designer', 'completed', '{}')",
-            (exp_id, _time_mod.time()),
-        )
-        nb.conn.commit()
-
-    # Designer models have been tested in the designer — mark stage1 as passed
-    # if the loss_ratio is reasonable (< 1.0 means better than random baseline)
-    designer_tested = loss_ratio < 1.0
-
-    result_id = nb.record_program_result(
-        experiment_id=exp_id,
-        graph_fingerprint=fingerprint,
-        graph_json=graph_json,
-        model_source="designer_edit",
-        stage0_passed=True,
-        stage05_passed=True,
-        stage1_passed=designer_tested,
-        loss_ratio=loss_ratio,
-        novelty_score=novelty_score,
-        param_count=param_count,
-    )
-    if not result_id:
-        logger.warning(
-            "Local auto-promotion rejected by quality gate (fingerprint=%s)",
-            fingerprint,
-        )
-        return None
-
-    nb.upsert_leaderboard(
-        result_id=result_id,
-        model_source="designer_edit",
-        architecture_desc=f"Manual edit: {workflow.get('name', fingerprint[:8])}",
-        tier="screening",
-        screening_passed=True,
-        screening_loss_ratio=loss_ratio,
-        screening_novelty=novelty_score,
-    )
-    return {
-        "success": True,
-        "result_id": result_id,
-        "fingerprint": fingerprint,
-        "deduped": False,
-    }
-
-
-def _auto_promote_workflow_locally(
-    workflow: Dict[str, Any],
-) -> Optional[Dict[str, Any]]:
-    """Fallback promotion path: write directly to research notebook DB."""
-    try:
-        from research.scientist.notebook import LabNotebook  # noqa: F811
-    except Exception as exc:
-        logger.warning("Local auto-promotion unavailable (imports): %s", exc)
-        return None
-
-    notebook_path = _PROJECT_ROOT / "research" / "lab_notebook.db"
-    if not notebook_path.exists():
-        logger.warning(
-            "Local auto-promotion unavailable (missing notebook): %s", notebook_path
-        )
-        return None
-
-    converted = _convert_workflow_to_graph(workflow)
-    if converted is None:
-        return None
-    _graph, fingerprint, graph_json, loss_ratio, novelty_score, param_count = converted
-
-    try:
-        nb = LabNotebook(str(notebook_path))
-    except Exception as exc:
-        logger.warning("Local auto-promotion unavailable (notebook open failed): %s", exc)
-        return None
-    try:
-        return _insert_into_notebook(
-            nb,
-            workflow,
-            fingerprint,
-            graph_json,
-            loss_ratio,
-            novelty_score,
-            param_count,
-        )
-    except Exception as exc:
-        logger.warning("Local auto-promotion failed: %s", exc)
-        return None
-    finally:
-        try:
-            nb.close()
-        except Exception:
-            logger.debug("Failed to close notebook connection", exc_info=True)
-
-
-# ── Workflow Semantic Warnings ────────────────────────────────────────
-
-
-def _collect_workflow_semantic_warnings(
-    workflow_json: Dict[str, Any],
-) -> List[Dict[str, Any]]:
-    """Collect approximate-mapping warnings for workflow components."""
-    if not (HAS_BRIDGE and bridge_component_capability):
-        return []
-    warnings: List[Dict[str, Any]] = []
-    seen: set[tuple[str, str, str]] = set()
-    for node in workflow_json.get("nodes", []):
-        node_id = str(node.get("id") or "")
-        component_type = str(node.get("component_type") or "")
-        if not component_type:
-            continue
-        try:
-            cap = bridge_component_capability(component_type)
-        except Exception:
-            logger.debug(
-                "Failed to get capability for component %s",
-                component_type,
-                exc_info=True,
-            )
-            continue
-        if not cap.get("bridge_supported"):
-            continue
-        semantic = str(cap.get("semantic_fidelity") or "exact")
-        if semantic != "approximate":
-            continue
-        primitive_name = cap.get("primitive_name")
-        for msg in cap.get("warnings") or [cap.get("reason")]:
-            key = (node_id, component_type, str(msg))
-            if key in seen:
-                continue
-            seen.add(key)
-            warnings.append(
-                {
-                    "node_id": node_id,
-                    "component_type": component_type,
-                    "mapping_kind": cap.get("mapping_kind"),
-                    "primitive_name": primitive_name,
-                    "message": str(msg),
-                }
-            )
-    return warnings
-
-
-# ── Public API ────────────────────────────────────────────────────────
-
 __all__ = [
-    # Path constants
     "_PROJECT_ROOT",
     "_ARIA_DESIGNER_ROOT",
     "_ARIA_CORE_ROOT",
     "_RESEARCH_ROOT",
-    # Import helper
     "_optional_import",
-    # Optional runtime objects
     "KernelDispatcher",
     "runtime_compile",
     "find_unsupported_edge_dtype_pairings",
@@ -761,49 +92,32 @@ __all__ = [
     "expand_block",
     "list_builtin_blocks",
     "BUILTIN_BLOCKS",
-    # HAS_* flags
     "HAS_BRIDGE",
     "HAS_PROFILER",
     "HAS_IMPORTER",
     "HAS_CONSTRAINTS",
     "HAS_SUBGRAPH",
-    # Eval run store
-    "_EVAL_RUNS",
-    "_EVAL_RUNS_LOCK",
-    "_evict_old_runs",
-    "_store_run",
-    "_update_run",
     "_get_run",
     "_list_runs",
-    "_stage_elapsed_metrics",
+    "_store_run",
+    "_update_run",
     "designer_metrics_from_stages",
-    # Perf bundle
     "_build_designer_perf_bundle",
-    # Helpers
     "_fetch_research_recommendation_signals",
     "_discovery_url_for_fingerprint",
     "_compute_eval_composite_score",
-    # Lookup helpers
     "_require_component",
     "_require_proposal",
     "_require_workflow",
     "_require_run",
-    # Shared validation
     "get_approved_registry_ids",
     "collect_unresolved_nodes",
     "require_feature",
-    # Research integration
     "_sync_lineage_to_research",
     "_auto_promote_workflow_to_research",
-    "_auto_promote_workflow_locally",
-    # Semantic warnings
     "_collect_workflow_semantic_warnings",
-    # Re-exports from research
+    "settings",
     "build_duplicate_work_report",
-    "build_perf_contract_with_gate",
-    "emit_perf_artifact",
     "list_recent_perf_artifacts",
     "summarize_perf_artifacts",
-    # Re-exports from siblings
-    "_utc_now",
 ]

@@ -5,7 +5,7 @@ import logging
 from collections import Counter
 from typing import Any, Dict, List, Optional, Set
 
-from .component_identity import canonicalize_component_id, component_leaf
+from aria_designer.component_identity import canonicalize_component_id, component_leaf
 from .database import list_components
 from .intent_parser import compute_insertion_point
 from .research_signals import fetch_leaderboard_top_entries

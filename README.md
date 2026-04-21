@@ -89,7 +89,7 @@ Primary flow:
 Verified coupling points:
 
 - `research` imports `aria_core` opportunistically through [`research/env.py`](/home/tim/Projects/LLM/research/env.py).
-- `research` reads Designer-owned assets such as [`aria_designer/runtime/component_mapping.yaml`](/home/tim/Projects/LLM/aria_designer/runtime/component_mapping.yaml) in [`research/synthesis/component_registry.py`](/home/tim/Projects/LLM/research/synthesis/component_registry.py).
+- `research` reads Designer-owned assets such as [`aria_designer/runtime/component_mapping.yaml`](/home/tim/Projects/LLM/aria_designer/runtime/component_mapping.yaml) in [`research/synthesis/component_catalog.py`](/home/tim/Projects/LLM/research/synthesis/component_catalog.py).
 - `research` loads Designer runtime modules dynamically in [`research/scientist/native_runner_adapter.py`](/home/tim/Projects/LLM/research/scientist/native_runner_adapter.py).
 - `research` can proxy and auto-start Designer through [`research/scientist/api_routes/_designer.py`](/home/tim/Projects/LLM/research/scientist/api_routes/_designer.py).
 - `aria_designer` imports `research` directly for defaults, compile/eval, notebook import, perf contracts, and recommendation signals in [`aria_designer/api/app/shared_api.py`](/home/tim/Projects/LLM/aria_designer/api/app/shared_api.py), [`aria_designer/runtime/bridge.py`](/home/tim/Projects/LLM/aria_designer/runtime/bridge.py), and [`aria_designer/runtime/importer.py`](/home/tim/Projects/LLM/aria_designer/runtime/importer.py).
@@ -344,7 +344,7 @@ npm run dev
 - Put reusable low-level kernels and native math/graph helpers in `aria_core/`.
 - Avoid adding new direct `sys.path` manipulation unless there is no alternative; the workspace already relies on it heavily.
 - Prefer extending the shared workflow conversion path in [`research/synthesis/workflow_converter.py`](/home/tim/Projects/LLM/research/synthesis/workflow_converter.py) instead of adding another converter.
-- Prefer updating [`aria_designer/runtime/component_mapping.yaml`](/home/tim/Projects/LLM/aria_designer/runtime/component_mapping.yaml) and [`research/synthesis/component_registry.py`](/home/tim/Projects/LLM/research/synthesis/component_registry.py) together when component/primitive mappings change.
+- Prefer updating [`aria_designer/runtime/component_mapping.yaml`](/home/tim/Projects/LLM/aria_designer/runtime/component_mapping.yaml) and [`research/synthesis/component_catalog.py`](/home/tim/Projects/LLM/research/synthesis/component_catalog.py) together when component/primitive mappings change.
 - If a Designer feature needs research evaluation, route it through `aria_designer/runtime/bridge.py` or shared API helpers rather than duplicating evaluation code in route handlers.
 - `research` has the broader automated test surface; run targeted tests near the area you touch before relying on cross-project behavior.
 

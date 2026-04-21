@@ -31,16 +31,17 @@ from ..research_signals import (
     fetch_research_recommendation_signals,
 )
 from ..intent_parser import compute_insertion_point, parse_intent_constraints
-from ..shared_api import (
+from ..runtime_features import HAS_BRIDGE, _PROJECT_ROOT, bridge_validate
+from ..workflow_support import (
     _require_proposal,
     _require_workflow,
-    HAS_BRIDGE,
-    bridge_validate,
-    _PROJECT_ROOT,
-    get_approved_registry_ids,
     collect_unresolved_nodes,
+    get_approved_registry_ids,
 )
-from ..component_identity import canonicalize_component_id, canonicalize_workflow_ids
+from aria_designer.component_identity import (
+    canonicalize_component_id,
+    canonicalize_workflow_ids,
+)
 from ..type_utils import dig, safe_str
 
 logger = logging.getLogger(__name__)
@@ -164,7 +165,9 @@ def apply_patch(req: ApplyPatchRequest) -> Dict[str, Any]:
             )
     old_fingerprint = workflow.get("metadata", {}).get("graph_fingerprint")
     try:
-        from aria_designer.runtime.bridge import workflow_to_graph as _w2g
+        from research.synthesis.workflow_converter import (
+            workflow_to_computation_graph as _w2g,
+        )
 
         patched_graph, _ = _w2g(patched_workflow, model_dim, return_id_map=True)
         new_fingerprint = patched_graph.fingerprint()

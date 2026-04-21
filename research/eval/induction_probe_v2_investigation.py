@@ -53,6 +53,25 @@ INDUCTION_V2_SEEDS: Tuple[int, ...] = (11, 23, 47)
 _RESTRICTED_VOCAB = 256
 
 
+def _snapshot_module_tensors(
+    module: nn.Module,
+) -> tuple[List[torch.Tensor], List[torch.Tensor]]:
+    """Capture parameters and buffers for cheap in-place restoration."""
+    refs = [*module.parameters(), *module.buffers()]
+    with torch.no_grad():
+        snapshot = [tensor.detach().clone() for tensor in refs]
+    return refs, snapshot
+
+
+def _restore_module_tensors(
+    refs: List[torch.Tensor], snapshot: List[torch.Tensor]
+) -> None:
+    """Restore parameters and buffers without rebuilding a state_dict."""
+    with torch.no_grad():
+        for ref, original in zip(refs, snapshot):
+            ref.copy_(original)
+
+
 def _amp_context(device: str):
     if str(device).startswith("cuda"):
         return torch.autocast(device_type="cuda", dtype=torch.bfloat16)
@@ -78,13 +97,20 @@ def _generate_induction_batch_bulk(
     scatter, no conditional branch that depends on a CUDA tensor.
     """
     seq_len = gap + 3
-    total = n_batches * batch_size
     # Sample A, B once per (batch, example)
     A = torch.randint(
-        1, _RESTRICTED_VOCAB, (n_batches, batch_size), device=device, generator=generator
+        1,
+        _RESTRICTED_VOCAB,
+        (n_batches, batch_size),
+        device=device,
+        generator=generator,
     )
     B = torch.randint(
-        1, _RESTRICTED_VOCAB, (n_batches, batch_size), device=device, generator=generator
+        1,
+        _RESTRICTED_VOCAB,
+        (n_batches, batch_size),
+        device=device,
+        generator=generator,
     )
     # Noise sampled from the reduced range [1, _RESTRICTED_VOCAB-1). Any
     # token equal-or-greater than A is shifted up by 1, producing a
@@ -100,7 +126,9 @@ def _generate_induction_batch_bulk(
     noise = noise_raw + (noise_raw >= A.unsqueeze(-1)).to(torch.int64)
 
     # Assemble [A, B, noise, A]
-    inputs = torch.empty((n_batches, batch_size, seq_len), dtype=torch.int64, device=device)
+    inputs = torch.empty(
+        (n_batches, batch_size, seq_len), dtype=torch.int64, device=device
+    )
     inputs[:, :, 0] = A
     inputs[:, :, 1] = B
     inputs[:, :, 2 : gap + 2] = noise
@@ -347,15 +375,15 @@ def run_induction_v2_investigation(
             elapsed_ms=round((time.perf_counter() - t0) * 1000, 1),
             gap_accuracies={},
         )
-    # Snapshot initial params/buffers once; restore between seeds.
-    init_state = {k: v.detach().clone() for k, v in probe_model.state_dict().items()}
+    # Snapshot initial params/buffers once; restore between seeds in-place
+    # instead of rebuilding/loading a full state_dict every time.
+    state_refs, init_state = _snapshot_module_tensors(probe_model)
 
     runs: List[InductionV2Result] = []
     try:
         for idx, seed in enumerate(seeds):
             if idx > 0:
-                # Restore initial weights for the next seed
-                probe_model.load_state_dict(init_state, strict=False)
+                _restore_module_tensors(state_refs, init_state)
             generator = torch.Generator(device=device)
             generator.manual_seed(int(seed))
             r = _run_induction_v2_on(
@@ -371,7 +399,7 @@ def run_induction_v2_investigation(
             )
             runs.append(r)
     finally:
-        del probe_model, init_state
+        del probe_model, state_refs, init_state
         if device == "cuda":
             torch.cuda.empty_cache()
 

@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
 from . import database as db
-from .component_identity import (
+from aria_designer.component_identity import (
     discover_concepts,
 )
 from .intent_parser import (

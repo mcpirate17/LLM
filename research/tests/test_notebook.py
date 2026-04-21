@@ -2729,10 +2729,10 @@ class TestLeaderboardDedup(unittest.TestCase):
 
         report = self.nb.get_leaderboard_consistency_report()
         self.assertEqual(report["stage1_program_rows"], 3)
-        self.assertEqual(report["direct_stage1_leaderboard_rows"], 1)
+        self.assertEqual(report["direct_stage1_leaderboard_rows"], 2)
         self.assertEqual(report["descendant_stage1_rows_without_direct_entry"], 1)
-        self.assertEqual(report["missing_screening_leaderboard_rows"], 1)
-        self.assertIn(
+        self.assertEqual(report["missing_screening_leaderboard_rows"], 0)
+        self.assertNotIn(
             missing_screening_rid, report["samples"]["missing_screening_result_ids"]
         )
         self.assertIn(descendant_rid, report["samples"]["descendant_result_ids"])
@@ -2779,10 +2779,129 @@ class TestLeaderboardDedup(unittest.TestCase):
         )
 
         result = self.nb.backfill_missing_screening_leaderboard_entries()
-        self.assertEqual(result["created_entries"], 1)
-        self.assertEqual(result["result_ids"], [missing_rid])
+        self.assertEqual(result["created_entries"], 0)
+        self.assertEqual(result["result_ids"], [])
         self.assertIsNotNone(self.nb.get_leaderboard_entry(missing_rid))
         self.assertIsNone(self.nb.get_leaderboard_entry(descendant_rid))
+
+    def test_record_program_result_auto_creates_screening_leaderboard_row(self):
+        exp_screen = self.nb.start_experiment("synthesis", {}, "screen")
+        rid = self.nb.record_program_result(
+            experiment_id=exp_screen,
+            graph_fingerprint="fp_auto_screening_row",
+            graph_json="{}",
+            stage1_passed=True,
+            loss_ratio=0.22,
+            novelty_score=0.71,
+        )
+        self.nb.flush_writes()
+
+        row = self.nb.get_leaderboard_entry(rid)
+        self.assertIsNotNone(row)
+        self.assertEqual(row["tier"], "screening")
+        self.assertEqual(row["screening_loss_ratio"], 0.22)
+        self.assertEqual(row["screening_novelty"], 0.71)
+        self.assertEqual(int(row["screening_passed"] or 0), 1)
+
+    def test_upsert_leaderboard_rebinds_bogus_result_id_by_fingerprint(self):
+        exp_screen = self.nb.start_experiment("synthesis", {}, "screen")
+        canonical_rid = self.nb.record_program_result(
+            experiment_id=exp_screen,
+            graph_fingerprint="fp_rebind_bogus_result",
+            graph_json="{}",
+            stage1_passed=True,
+            loss_ratio=0.31,
+            novelty_score=0.66,
+        )
+        self.nb.flush_writes()
+
+        entry_id = self.nb.upsert_leaderboard(
+            result_id="bogus-result-id",
+            model_source="test",
+            architecture_desc="fp_rebind_bogus_result",
+            screening_loss_ratio=0.29,
+            screening_novelty=0.68,
+            screening_passed=True,
+            tier="screening",
+        )
+
+        self.assertTrue(entry_id)
+        row = self.nb.get_leaderboard_entry(canonical_rid)
+        self.assertIsNotNone(row)
+        self.assertEqual(row["result_id"], canonical_rid)
+        self.assertEqual(row["screening_loss_ratio"], 0.29)
+        self.assertIsNone(self.nb.get_leaderboard_entry("bogus-result-id"))
+        report = self.nb.get_leaderboard_consistency_report()
+        self.assertEqual(report["orphan_leaderboard_rows"], 0)
+
+    def test_repair_rebindable_orphan_leaderboard_rows_merges_and_dedupes(self):
+        exp_screen = self.nb.start_experiment("synthesis", {}, "screen")
+        canonical_rid = self.nb.record_program_result(
+            experiment_id=exp_screen,
+            graph_fingerprint="fp_orphan_repair",
+            graph_json="{}",
+            stage1_passed=True,
+            loss_ratio=0.41,
+            novelty_score=0.55,
+        )
+        self.nb.flush_writes()
+        self.nb.upsert_leaderboard(
+            result_id=canonical_rid,
+            model_source="test",
+            screening_loss_ratio=0.41,
+            screening_novelty=0.55,
+            screening_passed=True,
+            tier="screening",
+        )
+        self.nb.conn.execute(
+            """
+            INSERT INTO leaderboard (
+                entry_id, result_id, timestamp, model_source, architecture_desc,
+                screening_loss_ratio, screening_novelty, screening_passed,
+                investigation_loss_ratio, investigation_robustness, investigation_passed,
+                tier, composite_score
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "orphan-entry-1",
+                "bogus-orphan-rid",
+                1234567890.0,
+                "test",
+                "fp_orphan_repair",
+                0.39,
+                0.61,
+                1,
+                0.35,
+                1.0,
+                0,
+                "investigation",
+                50.0,
+            ),
+        )
+        self.nb.conn.commit()
+
+        before = self.nb.get_leaderboard_consistency_report()
+        self.assertEqual(before["orphan_leaderboard_rows"], 1)
+
+        repair = self.nb.repair_rebindable_orphan_leaderboard_rows()
+
+        self.assertEqual(repair["rebound_rows"], 1)
+        self.assertEqual(repair["fingerprints_repaired"], 1)
+        self.assertEqual(repair["deleted_duplicate_rows"], 1)
+
+        after = self.nb.get_leaderboard_consistency_report()
+        self.assertEqual(after["orphan_leaderboard_rows"], 0)
+        row = self.nb.get_leaderboard_entry(canonical_rid)
+        self.assertIsNotNone(row)
+        self.assertEqual(row["tier"], "investigation")
+        self.assertEqual(row["screening_loss_ratio"], 0.39)
+        self.assertEqual(row["investigation_loss_ratio"], 0.35)
+        self.assertEqual(row["investigation_robustness"], 1.0)
+        count = self.nb.conn.execute(
+            "SELECT COUNT(*) FROM leaderboard WHERE result_id = ?",
+            (canonical_rid,),
+        ).fetchone()[0]
+        self.assertEqual(count, 1)
 
 
 if __name__ == "__main__":

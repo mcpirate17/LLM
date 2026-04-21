@@ -28,15 +28,9 @@ class ComponentHandler:
         offset = int(config.get("offset_bytes", 0))
         shape_str = str(config.get("shape", "1,1,256"))
         shape = tuple(int(x.strip()) for x in shape_str.split(",") if x.strip())
-
-        with file_path.open("rb") as f:
-            if offset > 0:
-                f.seek(offset)
-            raw = f.read()
-
-        arr = np.frombuffer(raw, dtype=dtype)
+        arr = np.fromfile(file_path, dtype=dtype, offset=offset)
         if shape:
             target_size = int(np.prod(shape))
             if target_size <= arr.size:
                 arr = arr[:target_size].reshape(shape)
-        return {"data": torch.from_numpy(arr.copy())}
+        return {"data": torch.from_numpy(arr)}

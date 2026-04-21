@@ -287,6 +287,71 @@ def test_native_topology_features_match_python_reference():
         assert native[key] == pytest.approx(python_ref[key], rel=1e-6, abs=1e-6)
 
 
+def test_native_topology_features_with_imodel_match_scalar_reference():
+    rust = _try_import_rust_scheduler()
+    if rust is None or not hasattr(
+        rust, "extract_topology_features_with_imodel_native"
+    ):
+        pytest.skip("native fused single topology+imodel extractor unavailable")
+
+    graph = _sample_graph()
+    op_profiles = _sample_profiles()
+    pair_stability = _sample_pair_stability()
+    native_ctx = gp._make_native_topology_context(op_profiles, pair_stability)
+    model = im.InteractionModel(
+        u=np.array(
+            [
+                [0.2, 0.1],
+                [0.3, 0.4],
+                [0.5, 0.2],
+                [0.1, 0.6],
+            ],
+            dtype=np.float32,
+        ),
+        v=np.array(
+            [
+                [0.4, 0.2],
+                [0.1, 0.5],
+                [0.6, 0.3],
+                [0.2, 0.7],
+            ],
+            dtype=np.float32,
+        ),
+        W_s=np.array([[0.8, 0.1], [0.2, 0.9]], dtype=np.float32),
+        W_l=np.array([[0.5, -0.2], [0.1, 0.4]], dtype=np.float32),
+        b_s=0.15,
+        b_l=0.85,
+        op_names=["add", "gelu", "linear_proj", "rmsnorm"],
+        op_to_idx={"add": 0, "gelu": 1, "linear_proj": 2, "rmsnorm": 3},
+        _trained=True,
+    )
+
+    native = gp.extract_topology_features(
+        graph,
+        op_profiles,
+        pair_stability,
+        imodel=model,
+        native_ctx=native_ctx,
+    )
+    base = gp._extract_topology_base_feature_native(
+        gp.json.dumps(graph, sort_keys=True, separators=(",", ":")),
+        op_profiles,
+        pair_stability,
+        native_ctx,
+    )
+    scalar_ref = gp._augment_imodel_features(
+        dict(base),
+        gp.json.dumps(graph, sort_keys=True, separators=(",", ":")),
+        model,
+    )
+
+    assert native is not None
+    assert scalar_ref is not None
+    assert native.keys() == scalar_ref.keys()
+    for key in native:
+        assert native[key] == pytest.approx(scalar_ref[key], rel=1e-6, abs=1e-6)
+
+
 def test_native_edge_op_pairs_match_python_reference():
     rust = _try_import_rust_scheduler()
     if rust is None or not hasattr(rust, "extract_edge_op_pairs_native"):
@@ -342,6 +407,66 @@ def test_native_topology_feature_batch_matches_single_graph_reference():
     assert batch == [single, single]
 
 
+def test_native_topology_feature_batch_with_imodel_matches_single_graph_reference():
+    rust = _try_import_rust_scheduler()
+    if rust is None or not hasattr(
+        rust, "extract_topology_features_with_imodel_batch_native"
+    ):
+        pytest.skip("native fused topology+imodel extractor unavailable")
+
+    graph = _sample_graph()
+    op_profiles = _sample_profiles()
+    pair_stability = _sample_pair_stability()
+    native_ctx = gp._make_native_topology_context(op_profiles, pair_stability)
+    model = im.InteractionModel(
+        u=np.array(
+            [
+                [0.2, 0.1],
+                [0.3, 0.4],
+                [0.5, 0.2],
+                [0.1, 0.6],
+            ],
+            dtype=np.float32,
+        ),
+        v=np.array(
+            [
+                [0.4, 0.2],
+                [0.1, 0.5],
+                [0.6, 0.3],
+                [0.2, 0.7],
+            ],
+            dtype=np.float32,
+        ),
+        W_s=np.array([[0.8, 0.1], [0.2, 0.9]], dtype=np.float32),
+        W_l=np.array([[0.5, -0.2], [0.1, 0.4]], dtype=np.float32),
+        b_s=0.15,
+        b_l=0.85,
+        op_names=["add", "gelu", "linear_proj", "rmsnorm"],
+        op_to_idx={"add": 0, "gelu": 1, "linear_proj": 2, "rmsnorm": 3},
+        _trained=True,
+    )
+
+    batch = gp._extract_topology_features_batch(
+        [graph, graph],
+        op_profiles,
+        pair_stability,
+        imodel=model,
+        native_ctx=native_ctx,
+    )
+    single = gp.extract_topology_features(
+        graph,
+        op_profiles,
+        pair_stability,
+        imodel=model,
+        native_ctx=native_ctx,
+    )
+
+    for item in batch:
+        assert item.keys() == single.keys()
+        for key, value in item.items():
+            assert value == pytest.approx(single[key], rel=1e-6, abs=1e-6)
+
+
 def test_native_graph_op_batch_matches_python_reference():
     rust = _try_import_rust_scheduler()
     if rust is None or not hasattr(rust, "extract_graph_ops_batch"):
@@ -367,6 +492,25 @@ def test_graph_op_extractors_handle_list_nodes_and_op_type():
         ["gelu", "linear_proj"],
         ["gelu", "linear_proj"],
     ]
+
+
+def test_graph_op_extractor_preserves_multiplicity_for_string_payloads():
+    graph = {
+        "nodes": {
+            "0": {"id": 0, "op_name": "input", "input_ids": []},
+            "1": {"id": 1, "op_name": "linear_proj", "input_ids": [0]},
+            "2": {"id": 2, "op_name": "gelu", "input_ids": [1]},
+            "3": {"id": 3, "op_name": "linear_proj", "input_ids": [2]},
+        }
+    }
+    graph_json = json.dumps(graph, sort_keys=True, separators=(",", ":"))
+
+    assert go.extract_graph_ops(graph_json) == [
+        "linear_proj",
+        "gelu",
+        "linear_proj",
+    ]
+    assert go.extract_unique_graph_ops(graph_json) == ["gelu", "linear_proj"]
 
 
 def test_native_interaction_training_produces_separable_scores():

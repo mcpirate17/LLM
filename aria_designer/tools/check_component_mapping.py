@@ -23,7 +23,7 @@ COMPONENTS_ROOT = ROOT / "components"
 MAPPING_FILE = ROOT / "runtime" / "component_mapping.yaml"
 
 from research.synthesis.primitives import PRIMITIVE_REGISTRY
-from aria_designer.runtime.bridge import _IO_COMPONENTS
+from research.synthesis.component_catalog import IO_COMPONENTS
 
 
 def _load_yaml(path: Path) -> Dict[str, Any]:
@@ -78,7 +78,7 @@ def main() -> int:
             )
             continue
 
-        if leaf in _IO_COMPONENTS or leaf in PRIMITIVE_REGISTRY:
+        if leaf in IO_COMPONENTS or leaf in PRIMITIVE_REGISTRY:
             continue
         if leaf in passthrough or leaf in sources or leaf in template_lowered:
             continue

@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException, Query
 
 from .. import database as db
 from ..models import WorkflowGraphModel, ValidateWorkflowRequest
-from ..shared_api import (
+from ..runtime_features import (
     extract_block,
     expand_block,
     list_builtin_blocks,

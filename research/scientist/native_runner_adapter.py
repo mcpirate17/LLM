@@ -183,7 +183,7 @@ def try_designer_runtime_probe(layer_graphs: List[Any]) -> Dict[str, Any]:
     report["attempted"] = True
 
     try:
-        importer_mod, bridge_mod, compiler_mod = _load_designer_runtime_modules()
+        importer_mod, compiler_mod = _load_designer_runtime_modules()
         first_graph = layer_graphs[0]
         model_dim = int(getattr(first_graph, "model_dim", 256))
 
@@ -194,7 +194,9 @@ def try_designer_runtime_probe(layer_graphs: List[Any]) -> Dict[str, Any]:
             metadata={"native_runner_probe": True},
         )
 
-        roundtrip_graph = bridge_mod.workflow_to_graph(workflow, model_dim=model_dim)
+        from research.synthesis.workflow_converter import workflow_to_computation_graph
+
+        roundtrip_graph = workflow_to_computation_graph(workflow, model_dim)
         parity_ok = bool(roundtrip_graph.n_ops() == first_graph.n_ops())
 
         components_dir = (
@@ -290,7 +292,7 @@ def build_designer_layer_modules(layer_graphs: List[Any]) -> Dict[str, Any]:
 
     result["attempted"] = True
     try:
-        importer_mod, _bridge_mod, compiler_mod = _load_designer_runtime_modules()
+        importer_mod, compiler_mod = _load_designer_runtime_modules()
         components_dir = (
             Path(__file__).resolve().parents[2] / "aria_designer" / "components"
         )
@@ -321,20 +323,17 @@ def build_designer_layer_modules(layer_graphs: List[Any]) -> Dict[str, Any]:
     return result
 
 
-def _load_designer_runtime_modules() -> Tuple[Any, Any, Any]:
+def _load_designer_runtime_modules() -> Tuple[Any, Any]:
     runtime_dir = Path(__file__).resolve().parents[2] / "aria_designer" / "runtime"
     package_name = "aria_designer_runtime"
     _ensure_package_loaded(package_name, runtime_dir)
     importer_mod = _load_module_from_path(
         f"{package_name}.importer", runtime_dir / "importer.py"
     )
-    bridge_mod = _load_module_from_path(
-        f"{package_name}.bridge", runtime_dir / "bridge.py"
-    )
     compiler_mod = _load_module_from_path(
         f"{package_name}.compiler", runtime_dir / "compiler.py"
     )
-    return importer_mod, bridge_mod, compiler_mod
+    return importer_mod, compiler_mod
 
 
 def _ensure_package_loaded(package_name: str, package_dir: Path) -> None:

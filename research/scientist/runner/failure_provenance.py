@@ -145,24 +145,37 @@ def _native_graph_provenance(
     graph: Any, failure_op: str | None
 ) -> tuple[list[str], str | None] | None:
     rust = _try_import_rust_scheduler()
-    if rust is None or not hasattr(rust, "analyze_graph_provenance_native"):
+    if rust is None:
         return None
     try:
         graph_json = graph_to_json(graph)
     except Exception:
         return None
-    try:
-        raw = rust.analyze_graph_provenance_native(
-            graph_json,
-            sorted(_GENERIC_SINK_OPS),
-            failure_op,
-        )
-    except Exception:
-        return None
-    try:
-        payload = json.loads(raw)
-    except (TypeError, ValueError, json.JSONDecodeError):
-        return None
+    payload = None
+    if hasattr(rust, "analyze_graph_provenance_native_py"):
+        try:
+            payload = rust.analyze_graph_provenance_native_py(
+                graph_json,
+                sorted(_GENERIC_SINK_OPS),
+                failure_op,
+            )
+        except Exception:
+            payload = None
+    if payload is None:
+        if not hasattr(rust, "analyze_graph_provenance_native"):
+            return None
+        try:
+            raw = rust.analyze_graph_provenance_native(
+                graph_json,
+                sorted(_GENERIC_SINK_OPS),
+                failure_op,
+            )
+        except Exception:
+            return None
+        try:
+            payload = json.loads(raw)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return None
     if not isinstance(payload, dict):
         return None
     raw_op_names = payload.get("op_names")

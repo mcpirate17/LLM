@@ -172,6 +172,114 @@ pub fn extract_topology_features_json(
     extract_topology_features_for_graph(&graph, &op_profiles, &pair_stability, &op_metadata)
 }
 
+pub fn extract_topology_features_with_imodel_json(
+    graph_json: &str,
+    op_profiles_json: &str,
+    pair_stability_json: &str,
+    op_metadata_json: &str,
+    op_names: &[String],
+    u: &[f32],
+    u_rows: usize,
+    u_cols: usize,
+    v: &[f32],
+    v_rows: usize,
+    v_cols: usize,
+    w_s: &[f32],
+    ws_rows: usize,
+    ws_cols: usize,
+    w_l: &[f32],
+    wl_rows: usize,
+    wl_cols: usize,
+    b_s: f64,
+    b_l: f64,
+) -> Result<String, AriaError> {
+    let op_profiles: HashMap<String, OpProfile> = serde_json::from_str(op_profiles_json)
+        .map_err(|e| AriaError::InvalidIR(e.to_string()))?;
+    let pair_stability = parse_pair_stability_map(pair_stability_json)?;
+    let op_metadata: HashMap<String, OpCategoryMeta> = serde_json::from_str(op_metadata_json)
+        .map_err(|e| AriaError::InvalidIR(e.to_string()))?;
+    let kernel = InteractionModelKernel::new(
+        op_names, u, u_rows, u_cols, v, v_rows, v_cols, w_s, ws_rows, ws_cols, w_l, wl_rows,
+        wl_cols, b_s, b_l,
+    )?;
+    let graph = NotebookGraph::from_json(graph_json)?;
+    let topo = build_topology_index(&graph)?;
+    let mut features = collect_topology_features_for_graph(
+        &graph,
+        &topo,
+        &op_profiles,
+        &pair_stability,
+        &op_metadata,
+    )?;
+    let (min_stability, mean_stability, mean_loss) = kernel.pair_stats_for_topology(&topo);
+    features.insert("imodel_min_stability".into(), min_stability);
+    features.insert("imodel_mean_stability".into(), mean_stability);
+    features.insert("imodel_mean_loss".into(), mean_loss);
+    serde_json::to_string(&features).map_err(|e| AriaError::ExecutionFailed(e.to_string()))
+}
+
+pub fn extract_topology_feature_map(
+    graph_json: &str,
+    op_profiles_json: &str,
+    pair_stability_json: &str,
+    op_metadata_json: &str,
+) -> Result<HashMap<String, f64>, AriaError> {
+    let op_profiles: HashMap<String, OpProfile> = serde_json::from_str(op_profiles_json)
+        .map_err(|e| AriaError::InvalidIR(e.to_string()))?;
+    let pair_stability = parse_pair_stability_map(pair_stability_json)?;
+    let op_metadata: HashMap<String, OpCategoryMeta> = serde_json::from_str(op_metadata_json)
+        .map_err(|e| AriaError::InvalidIR(e.to_string()))?;
+    let graph = NotebookGraph::from_json(graph_json)?;
+    let topo = build_topology_index(&graph)?;
+    collect_topology_features_for_graph(&graph, &topo, &op_profiles, &pair_stability, &op_metadata)
+}
+
+pub fn extract_topology_feature_map_with_imodel(
+    graph_json: &str,
+    op_profiles_json: &str,
+    pair_stability_json: &str,
+    op_metadata_json: &str,
+    op_names: &[String],
+    u: &[f32],
+    u_rows: usize,
+    u_cols: usize,
+    v: &[f32],
+    v_rows: usize,
+    v_cols: usize,
+    w_s: &[f32],
+    ws_rows: usize,
+    ws_cols: usize,
+    w_l: &[f32],
+    wl_rows: usize,
+    wl_cols: usize,
+    b_s: f64,
+    b_l: f64,
+) -> Result<HashMap<String, f64>, AriaError> {
+    let op_profiles: HashMap<String, OpProfile> = serde_json::from_str(op_profiles_json)
+        .map_err(|e| AriaError::InvalidIR(e.to_string()))?;
+    let pair_stability = parse_pair_stability_map(pair_stability_json)?;
+    let op_metadata: HashMap<String, OpCategoryMeta> = serde_json::from_str(op_metadata_json)
+        .map_err(|e| AriaError::InvalidIR(e.to_string()))?;
+    let kernel = InteractionModelKernel::new(
+        op_names, u, u_rows, u_cols, v, v_rows, v_cols, w_s, ws_rows, ws_cols, w_l, wl_rows,
+        wl_cols, b_s, b_l,
+    )?;
+    let graph = NotebookGraph::from_json(graph_json)?;
+    let topo = build_topology_index(&graph)?;
+    let mut features = collect_topology_features_for_graph(
+        &graph,
+        &topo,
+        &op_profiles,
+        &pair_stability,
+        &op_metadata,
+    )?;
+    let (min_stability, mean_stability, mean_loss) = kernel.pair_stats_for_topology(&topo);
+    features.insert("imodel_min_stability".into(), min_stability);
+    features.insert("imodel_mean_stability".into(), mean_stability);
+    features.insert("imodel_mean_loss".into(), mean_loss);
+    Ok(features)
+}
+
 pub fn extract_topology_features_batch_json(
     graphs: &[String],
     op_profiles_json: &str,
@@ -196,6 +304,268 @@ pub fn extract_topology_features_batch_json(
     Ok(results)
 }
 
+pub fn extract_topology_feature_maps_batch(
+    graphs: &[String],
+    op_profiles_json: &str,
+    pair_stability_json: &str,
+    op_metadata_json: &str,
+) -> Result<Vec<HashMap<String, f64>>, AriaError> {
+    let op_profiles: HashMap<String, OpProfile> = serde_json::from_str(op_profiles_json)
+        .map_err(|e| AriaError::InvalidIR(e.to_string()))?;
+    let pair_stability = parse_pair_stability_map(pair_stability_json)?;
+    let op_metadata: HashMap<String, OpCategoryMeta> = serde_json::from_str(op_metadata_json)
+        .map_err(|e| AriaError::InvalidIR(e.to_string()))?;
+    let mut results = Vec::with_capacity(graphs.len());
+    for graph_json in graphs {
+        let graph = NotebookGraph::from_json(graph_json)?;
+        let topo = build_topology_index(&graph)?;
+        results.push(collect_topology_features_for_graph(
+            &graph,
+            &topo,
+            &op_profiles,
+            &pair_stability,
+            &op_metadata,
+        )?);
+    }
+    Ok(results)
+}
+
+struct InteractionModelKernel<'a> {
+    op_to_idx: HashMap<&'a str, usize>,
+    u: &'a [f32],
+    v: &'a [f32],
+    w_s: &'a [f32],
+    w_l: &'a [f32],
+    n_ops: usize,
+    dim: usize,
+    b_s: f64,
+    b_l: f64,
+}
+
+impl<'a> InteractionModelKernel<'a> {
+    fn new(
+        op_names: &'a [String],
+        u: &'a [f32],
+        u_rows: usize,
+        u_cols: usize,
+        v: &'a [f32],
+        v_rows: usize,
+        v_cols: usize,
+        w_s: &'a [f32],
+        ws_rows: usize,
+        ws_cols: usize,
+        w_l: &'a [f32],
+        wl_rows: usize,
+        wl_cols: usize,
+        b_s: f64,
+        b_l: f64,
+    ) -> Result<Self, AriaError> {
+        if op_names.len() != u_rows || op_names.len() != v_rows {
+            return Err(AriaError::InvalidIR(
+                "interaction model op registry shape mismatch".into(),
+            ));
+        }
+        if u_cols == 0 || v_cols == 0 || u_cols != v_cols {
+            return Err(AriaError::InvalidIR(
+                "interaction model embedding dims must match".into(),
+            ));
+        }
+        if ws_rows != u_cols || ws_cols != u_cols || wl_rows != u_cols || wl_cols != u_cols {
+            return Err(AriaError::InvalidIR(
+                "interaction model bilinear kernels must be square embedding-dim matrices".into(),
+            ));
+        }
+        if u.len() != u_rows * u_cols
+            || v.len() != v_rows * v_cols
+            || w_s.len() != ws_rows * ws_cols
+            || w_l.len() != wl_rows * wl_cols
+        {
+            return Err(AriaError::InvalidIR(
+                "interaction model tensor buffer shape mismatch".into(),
+            ));
+        }
+        let mut op_to_idx = HashMap::with_capacity(op_names.len());
+        for (idx, op_name) in op_names.iter().enumerate() {
+            op_to_idx.insert(op_name.as_str(), idx);
+        }
+        Ok(Self {
+            op_to_idx,
+            u,
+            v,
+            w_s,
+            w_l,
+            n_ops: op_names.len(),
+            dim: u_cols,
+            b_s,
+            b_l,
+        })
+    }
+
+    fn bilinear_score(&self, left_idx: usize, right_idx: usize, weights: &[f32]) -> f64 {
+        let left_start = left_idx * self.dim;
+        let right_start = right_idx * self.dim;
+        let left = &self.u[left_start..left_start + self.dim];
+        let right = &self.v[right_start..right_start + self.dim];
+        let mut total = 0.0_f64;
+        for row in 0..self.dim {
+            let lhs = left[row] as f64;
+            let weight_row = &weights[row * self.dim..(row + 1) * self.dim];
+            let mut inner = 0.0_f64;
+            for col in 0..self.dim {
+                inner += weight_row[col] as f64 * right[col] as f64;
+            }
+            total += lhs * inner;
+        }
+        total
+    }
+
+    fn pair_stats_for_topology(&self, topo: &TopologyIndex<'_>) -> (f64, f64, f64) {
+        let mut pair_count = 0usize;
+        let mut min_stability = 1.0_f64;
+        let mut sum_stability = 0.0_f64;
+        let mut sum_loss = 0.0_f64;
+        for (idx, children) in topo.children.iter().enumerate() {
+            let left = topo.op_names[idx];
+            if left.is_empty() || left == "input" {
+                continue;
+            }
+            for &child_idx in children {
+                let right = topo.op_names[child_idx];
+                if right.is_empty() || right == "input" {
+                    continue;
+                }
+                let mut stability = 0.5_f64;
+                let mut loss = 0.7_f64;
+                if let (Some(&left_idx), Some(&right_idx)) =
+                    (self.op_to_idx.get(left), self.op_to_idx.get(right))
+                {
+                    if left_idx < self.n_ops && right_idx < self.n_ops {
+                        stability =
+                            sigmoid(self.bilinear_score(left_idx, right_idx, self.w_s) + self.b_s);
+                        loss =
+                            self.bilinear_score(left_idx, right_idx, self.w_l) + self.b_l;
+                    }
+                }
+                pair_count += 1;
+                min_stability = min_stability.min(stability);
+                sum_stability += stability;
+                sum_loss += loss;
+            }
+        }
+        if pair_count == 0 {
+            return (0.5, 0.5, 0.7);
+        }
+        (
+            min_stability,
+            sum_stability / pair_count as f64,
+            sum_loss / pair_count as f64,
+        )
+    }
+}
+
+pub fn extract_topology_features_with_imodel_batch(
+    graphs: &[String],
+    op_profiles_json: &str,
+    pair_stability_json: &str,
+    op_metadata_json: &str,
+    op_names: &[String],
+    u: &[f32],
+    u_rows: usize,
+    u_cols: usize,
+    v: &[f32],
+    v_rows: usize,
+    v_cols: usize,
+    w_s: &[f32],
+    ws_rows: usize,
+    ws_cols: usize,
+    w_l: &[f32],
+    wl_rows: usize,
+    wl_cols: usize,
+    b_s: f64,
+    b_l: f64,
+) -> Result<Vec<String>, AriaError> {
+    let op_profiles: HashMap<String, OpProfile> = serde_json::from_str(op_profiles_json)
+        .map_err(|e| AriaError::InvalidIR(e.to_string()))?;
+    let pair_stability = parse_pair_stability_map(pair_stability_json)?;
+    let op_metadata: HashMap<String, OpCategoryMeta> = serde_json::from_str(op_metadata_json)
+        .map_err(|e| AriaError::InvalidIR(e.to_string()))?;
+    let kernel = InteractionModelKernel::new(
+        op_names, u, u_rows, u_cols, v, v_rows, v_cols, w_s, ws_rows, ws_cols, w_l, wl_rows,
+        wl_cols, b_s, b_l,
+    )?;
+    let mut results = Vec::with_capacity(graphs.len());
+    for graph_json in graphs {
+        let graph = NotebookGraph::from_json(graph_json)?;
+        let topo = build_topology_index(&graph)?;
+        let mut features = collect_topology_features_for_graph(
+            &graph,
+            &topo,
+            &op_profiles,
+            &pair_stability,
+            &op_metadata,
+        )?;
+        let (min_stability, mean_stability, mean_loss) = kernel.pair_stats_for_topology(&topo);
+        features.insert("imodel_min_stability".into(), min_stability);
+        features.insert("imodel_mean_stability".into(), mean_stability);
+        features.insert("imodel_mean_loss".into(), mean_loss);
+        results.push(
+            serde_json::to_string(&features)
+                .map_err(|e| AriaError::ExecutionFailed(e.to_string()))?,
+        );
+    }
+    Ok(results)
+}
+
+pub fn extract_topology_feature_maps_with_imodel_batch(
+    graphs: &[String],
+    op_profiles_json: &str,
+    pair_stability_json: &str,
+    op_metadata_json: &str,
+    op_names: &[String],
+    u: &[f32],
+    u_rows: usize,
+    u_cols: usize,
+    v: &[f32],
+    v_rows: usize,
+    v_cols: usize,
+    w_s: &[f32],
+    ws_rows: usize,
+    ws_cols: usize,
+    w_l: &[f32],
+    wl_rows: usize,
+    wl_cols: usize,
+    b_s: f64,
+    b_l: f64,
+) -> Result<Vec<HashMap<String, f64>>, AriaError> {
+    let op_profiles: HashMap<String, OpProfile> = serde_json::from_str(op_profiles_json)
+        .map_err(|e| AriaError::InvalidIR(e.to_string()))?;
+    let pair_stability = parse_pair_stability_map(pair_stability_json)?;
+    let op_metadata: HashMap<String, OpCategoryMeta> = serde_json::from_str(op_metadata_json)
+        .map_err(|e| AriaError::InvalidIR(e.to_string()))?;
+    let kernel = InteractionModelKernel::new(
+        op_names, u, u_rows, u_cols, v, v_rows, v_cols, w_s, ws_rows, ws_cols, w_l, wl_rows,
+        wl_cols, b_s, b_l,
+    )?;
+    let mut results = Vec::with_capacity(graphs.len());
+    for graph_json in graphs {
+        let graph = NotebookGraph::from_json(graph_json)?;
+        let topo = build_topology_index(&graph)?;
+        let mut features = collect_topology_features_for_graph(
+            &graph,
+            &topo,
+            &op_profiles,
+            &pair_stability,
+            &op_metadata,
+        )?;
+        let (min_stability, mean_stability, mean_loss) = kernel.pair_stats_for_topology(&topo);
+        features.insert("imodel_min_stability".into(), min_stability);
+        features.insert("imodel_mean_stability".into(), mean_stability);
+        features.insert("imodel_mean_loss".into(), mean_loss);
+        results.push(features);
+    }
+    Ok(results)
+}
+
 fn extract_topology_features_for_graph(
     graph: &NotebookGraph,
     op_profiles: &HashMap<String, OpProfile>,
@@ -203,11 +573,28 @@ fn extract_topology_features_for_graph(
     op_metadata: &HashMap<String, OpCategoryMeta>,
 ) -> Result<String, AriaError> {
     let topo = build_topology_index(&graph)?;
+    let features = collect_topology_features_for_graph(
+        graph,
+        &topo,
+        op_profiles,
+        pair_stability,
+        op_metadata,
+    )?;
+    serde_json::to_string(&features).map_err(|e| AriaError::ExecutionFailed(e.to_string()))
+}
+
+fn collect_topology_features_for_graph(
+    graph: &NotebookGraph,
+    topo: &TopologyIndex<'_>,
+    op_profiles: &HashMap<String, OpProfile>,
+    pair_stability: &HashMap<(String, String), f64>,
+    op_metadata: &HashMap<String, OpCategoryMeta>,
+) -> Result<HashMap<String, f64>, AriaError> {
     let n = topo.sorted_nodes.len();
-    let op_names = topo.op_names;
-    let id_to_idx = topo.id_to_idx;
-    let children = topo.children;
-    let parents = topo.parents;
+    let op_names = &topo.op_names;
+    let id_to_idx = &topo.id_to_idx;
+    let children = &topo.children;
+    let parents = &topo.parents;
 
     let mut roots: Vec<usize> = parents
         .iter()
@@ -388,7 +775,7 @@ fn extract_topology_features_for_graph(
     }
 
     let mut child_lip_means = Vec::new();
-    for child_list in &children {
+    for child_list in children {
         if child_list.is_empty() {
             continue;
         }
@@ -563,7 +950,7 @@ fn extract_topology_features_for_graph(
         features.insert("output_parent_depth_mean".into(), 0.0);
     }
 
-    serde_json::to_string(&features).map_err(|e| AriaError::ExecutionFailed(e.to_string()))
+    Ok(features)
 }
 
 pub fn extract_edge_op_pairs_json(graph_json: &str) -> Result<String, AriaError> {
@@ -604,6 +991,15 @@ pub fn extract_graph_segments_json(
     min_len: usize,
     max_len: usize,
 ) -> Result<String, AriaError> {
+    let counts = extract_graph_segments_map(graph_json, min_len, max_len)?;
+    serde_json::to_string(&counts).map_err(|e| AriaError::ExecutionFailed(e.to_string()))
+}
+
+pub fn extract_graph_segments_map(
+    graph_json: &str,
+    min_len: usize,
+    max_len: usize,
+) -> Result<BTreeMap<String, usize>, AriaError> {
     let graph = NotebookGraph::from_json(graph_json)?;
     let topo = build_topology_index(&graph)?;
     let mut counts: BTreeMap<String, usize> = BTreeMap::new();
@@ -656,7 +1052,7 @@ pub fn extract_graph_segments_json(
         visit(idx, &topo, min_len, max_len, &mut path, &mut counts);
     }
 
-    serde_json::to_string(&counts).map_err(|e| AriaError::ExecutionFailed(e.to_string()))
+    Ok(counts)
 }
 
 fn checked_flat_copy(flat: &[f64], rows: usize, cols: usize) -> Result<Vec<f64>, AriaError> {

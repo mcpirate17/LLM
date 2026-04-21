@@ -24,6 +24,10 @@ def graph_to_native_ir(graph: ComputationGraph) -> dict:
     The returned dict validates against ``schemas/native_ir.v1.json`` and can
     be serialized directly to JSON for the Rust scheduler.
     """
+    cached = getattr(graph, "_cache", {}).get("native_ir_doc")
+    if cached is not None:
+        return cached
+
     reachable = graph.get_reachable_nodes()
     if len(reachable) != len(graph.nodes):
         dead_count = len(graph.nodes) - len(reachable)
@@ -53,15 +57,24 @@ def graph_to_native_ir(graph: ComputationGraph) -> dict:
         for inp_id in node.input_ids:
             edges.append({"source": inp_id, "target": node.id})
 
-    return {
+    payload = {
         "schema_version": "native_ir.v1",
         "model_dim": graph.model_dim,
         "nodes": nodes,
         "edges": edges,
         "output_node_id": graph._output_node_id,
     }
+    if hasattr(graph, "_cache"):
+        graph._cache["native_ir_doc"] = payload
+    return payload
 
 
 def graph_to_native_ir_json(graph: ComputationGraph) -> str:
     """Convert a ComputationGraph and serialize to a compact JSON string."""
-    return dumps_json(graph_to_native_ir(graph))
+    cached = getattr(graph, "_cache", {}).get("native_ir_json")
+    if cached is not None:
+        return cached
+    payload = dumps_json(graph_to_native_ir(graph))
+    if hasattr(graph, "_cache"):
+        graph._cache["native_ir_json"] = payload
+    return payload

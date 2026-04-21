@@ -17,6 +17,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import json
 import logging
 import random
@@ -46,6 +47,7 @@ logger = logging.getLogger(__name__)
 
 _NOTEBOOK_DB = Path("research/lab_notebook.db")
 _PROFILING_DB = Path("research/profiling/component_profiles.db")
+_MODEL_REGISTRY_PATH = STATE_DIR / "model_registry.json"
 
 
 def _safe_report_section(name: str, fn, *args, **kwargs) -> dict[str, Any]:
@@ -61,6 +63,270 @@ def _load_json_if_exists(path: Path) -> dict[str, Any]:
     with open(path, encoding="utf-8") as handle:
         payload = json.load(handle)
     return payload if isinstance(payload, dict) else {}
+
+
+def _selected_metrics_from_section(
+    section: dict[str, Any] | None,
+    key: str,
+) -> dict[str, Any]:
+    payload = section or {}
+    selected = (payload.get(key) or {}).get("selected_metrics") or {}
+    return dict(selected) if isinstance(selected, dict) else {}
+
+
+def _build_model_registry(report: dict[str, Any]) -> dict[str, Any]:
+    from research.scientist.ml_influence_policy import build_ml_influence_policy
+    from research.scientist.runner import RunConfig
+
+    policy = build_ml_influence_policy(config=RunConfig(), report=report)
+    components = dict(policy.get("components") or {})
+
+    def _component_status(name: str, default_status: str) -> str:
+        comp = components.get(name) or {}
+        if comp.get("proven") is True:
+            return default_status
+        quality_tier = str(comp.get("quality_tier") or "")
+        if quality_tier == "usable":
+            return "restricted"
+        if quality_tier == "weak":
+            return "advisory_only"
+        if quality_tier == "monitor_only":
+            return "monitor_only"
+        return "insufficient_evidence"
+
+    ensemble = report.get("ensemble_calibrated") or {}
+    gbm = report.get("gbm_gate") or {}
+    graph = report.get("graph_predictor") or {}
+    investigation = report.get("investigation_predictor") or {}
+
+    models: dict[str, Any] = {
+        "ensemble_calibrated": {
+            "status": _component_status("screening_ensemble", "production"),
+            "quality_tier": (components.get("screening_ensemble") or {}).get(
+                "quality_tier"
+            ),
+            "metric_source": (components.get("screening_ensemble") or {}).get(
+                "metric_source"
+            ),
+            "runtime_active": bool(
+                (components.get("screening_ensemble") or {}).get("allowed")
+            ),
+            "saved_runtime_artifact_metrics": _selected_metrics_from_section(
+                ensemble, "saved_runtime_artifact_evaluation"
+            ),
+            "temporal_holdout_metrics": _selected_metrics_from_section(
+                ensemble, "temporal_holdout_evaluation"
+            ),
+        },
+        "gbm_gate": {
+            "status": _component_status("gbm_gate", "production"),
+            "quality_tier": (components.get("gbm_gate") or {}).get("quality_tier"),
+            "metric_source": (components.get("gbm_gate") or {}).get("metric_source"),
+            "saved_runtime_artifact_metrics": _selected_metrics_from_section(
+                gbm, "saved_runtime_artifact_evaluation"
+            ),
+            "temporal_holdout_metrics": _selected_metrics_from_section(
+                gbm, "temporal_holdout_evaluation"
+            ),
+        },
+        "gbm_rank_ppl": {
+            "status": (
+                "production"
+                if ((gbm.get("persisted_train_metrics") or {}).get("rank_heads") or {})
+                .get("ppl", {})
+                .get("spearman", 0.0)
+                >= 0.5
+                else "needs_review"
+            ),
+            "saved_runtime_artifact_metrics": dict(
+                (gbm.get("rank_heads") or {}).get("ppl") or {}
+            ),
+            "temporal_holdout_metrics": dict(
+                (gbm.get("temporal_rank_heads") or {}).get("ppl") or {}
+            ),
+        },
+        "gbm_rank_composite": {
+            "status": (
+                "production"
+                if ((gbm.get("persisted_train_metrics") or {}).get("rank_heads") or {})
+                .get("composite", {})
+                .get("spearman", 0.0)
+                >= 0.5
+                else "needs_review"
+            ),
+            "saved_runtime_artifact_metrics": dict(
+                (gbm.get("rank_heads") or {}).get("composite") or {}
+            ),
+            "temporal_holdout_metrics": dict(
+                (gbm.get("temporal_rank_heads") or {}).get("composite") or {}
+            ),
+        },
+        "graph_predictor": {
+            "status": _component_status("graph_predictor", "advisory_only"),
+            "quality_tier": (components.get("graph_predictor") or {}).get(
+                "quality_tier"
+            ),
+            "metric_source": (components.get("graph_predictor") or {}).get(
+                "metric_source"
+            ),
+            "saved_runtime_artifact_metrics": _selected_metrics_from_section(
+                graph, "saved_runtime_artifact_evaluation"
+            ),
+            "temporal_holdout_metrics": _selected_metrics_from_section(
+                graph, "temporal_holdout_evaluation"
+            ),
+        },
+        "investigation_predictor": {
+            "status": _component_status("investigation_predictor", "production"),
+            "quality_tier": (components.get("investigation_predictor") or {}).get(
+                "quality_tier"
+            ),
+            "metric_source": "saved_runtime_artifact_metrics",
+            "runtime_active": bool(
+                (components.get("investigation_predictor") or {}).get("allowed")
+            ),
+            "saved_runtime_artifact_metrics": {
+                key: value
+                for key, value in dict(investigation).items()
+                if isinstance(value, (int, float, str, bool))
+            },
+        },
+        "interaction_model": {
+            "status": "insufficient_evidence",
+            "saved_runtime_artifact_metrics": dict(
+                ((report.get("interaction_model") or {}).get("persisted_train_metrics"))
+                or {}
+            ),
+        },
+        "bayesian_tracker": {
+            "status": "insufficient_evidence",
+            "saved_runtime_artifact_metrics": dict(
+                report.get("bayesian_tracker") or {}
+            ),
+        },
+    }
+
+    return {
+        "registry_version": 2,
+        "updated_at": _iso_utc_now(),
+        "source_report_schema_version": report.get("report_schema_version"),
+        "policy_active_generation_influencers": list(
+            policy.get("active_generation_influencers") or []
+        ),
+        "models": models,
+    }
+
+
+def _iso_utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _regression_eval_metrics(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+) -> dict[str, Any]:
+    mask = np.isfinite(y_true) & np.isfinite(y_pred)
+    y_true_f = np.asarray(y_true[mask], dtype=np.float64)
+    y_pred_f = np.asarray(y_pred[mask], dtype=np.float64)
+    if y_true_f.size < 2:
+        return {"n": int(y_true_f.size), "error": "insufficient_data"}
+
+    metrics: dict[str, Any] = {
+        "n": int(y_true_f.size),
+        "mae": float(np.mean(np.abs(y_true_f - y_pred_f))),
+        "rmse": float(np.sqrt(np.mean((y_true_f - y_pred_f) ** 2))),
+    }
+    try:
+        from scipy.stats import kendalltau, pearsonr, spearmanr
+
+        rho, _ = spearmanr(y_true_f, y_pred_f)
+        pearson = pearsonr(y_true_f, y_pred_f).statistic
+        kendall = kendalltau(y_true_f, y_pred_f).statistic
+        metrics.update(
+            {
+                "spearman": float(rho) if np.isfinite(rho) else 0.0,
+                "pearson": float(pearson) if np.isfinite(pearson) else 0.0,
+                "kendall": float(kendall) if np.isfinite(kendall) else 0.0,
+            }
+        )
+    except Exception:
+        metrics.update({"spearman": 0.0, "pearson": 0.0, "kendall": 0.0})
+    return metrics
+
+
+def _binary_evaluation_bundle(
+    *,
+    y_true: np.ndarray,
+    y_score: np.ndarray,
+    selected_threshold: float,
+    source: str,
+    split_stats: dict[str, Any] | None = None,
+    extra_thresholds: tuple[float, ...] = (),
+    include_predictions: bool = True,
+) -> dict[str, Any]:
+    from research.scientist.intelligence.metrics_utils import (
+        binary_classification_metrics,
+        operating_point_profiles,
+        reliability_curve,
+    )
+
+    y_true_arr = np.asarray(y_true).astype(np.int32)
+    y_score_arr = np.asarray(y_score, dtype=np.float64)
+    threshold_metrics = {
+        str(float(threshold)): binary_classification_metrics(
+            y_true_arr, y_score_arr, threshold=float(threshold)
+        )
+        for threshold in (selected_threshold, 0.5, *extra_thresholds)
+    }
+    bundle: dict[str, Any] = {
+        "evaluated_at": _iso_utc_now(),
+        "source": source,
+        "split_stats": dict(split_stats or {}),
+        "selected_threshold": float(selected_threshold),
+        "selected_metrics": threshold_metrics[str(float(selected_threshold))],
+        "threshold_0_5_metrics": threshold_metrics[str(0.5)],
+        "operating_points": operating_point_profiles(y_true_arr, y_score_arr),
+        "reliability_curve": reliability_curve(y_true_arr, y_score_arr),
+    }
+    if extra_thresholds:
+        bundle["extra_threshold_metrics"] = {
+            str(float(threshold)): threshold_metrics[str(float(threshold))]
+            for threshold in extra_thresholds
+        }
+    if include_predictions:
+        bundle["holdout_predictions"] = {
+            "n": int(y_true_arr.size),
+            "y_true": y_true_arr.astype(int).tolist(),
+            "y_score": y_score_arr.astype(float).tolist(),
+        }
+    return bundle
+
+
+def _attach_primary_eval_aliases(
+    section: dict[str, Any],
+    *,
+    primary_key: str,
+) -> dict[str, Any]:
+    primary = dict(section.get(primary_key) or {})
+    if not primary:
+        return section
+    section["primary_source"] = str(primary.get("source") or primary_key)
+    section["source"] = str(primary.get("source") or primary_key)
+    if "split_stats" in primary:
+        section["split_stats"] = dict(primary.get("split_stats") or {})
+    if "selected_metrics" in primary:
+        section["val_metrics_selected_threshold"] = dict(
+            primary.get("selected_metrics") or {}
+        )
+    if "threshold_0_5_metrics" in primary:
+        section["val_metrics_threshold_0_5"] = dict(
+            primary.get("threshold_0_5_metrics") or {}
+        )
+    if "operating_points" in primary:
+        section["operating_points"] = dict(primary.get("operating_points") or {})
+    if "reliability_curve" in primary:
+        section["reliability_curve"] = list(primary.get("reliability_curve") or [])
+    return section
 
 
 def _derive_confusion_from_summary(
@@ -100,7 +366,68 @@ def _derive_confusion_from_summary(
     raise ValueError("unable to derive confusion matrix from summary metrics")
 
 
-def _graph_predictor_metrics_report(state_dir: Path) -> dict[str, Any]:
+def _evaluate_graph_predictor_temporal(
+    *,
+    db_path: str,
+    state_dir: Path,
+    selected_threshold: float,
+) -> dict[str, Any]:
+    from research.scientist.intelligence.gnn_predictor import GraphPredictor
+    from research.scientist.intelligence.ml_corpus import (
+        grouped_temporal_split,
+        load_screening_predictor_corpus_rows,
+    )
+
+    graph_path = state_dir / GRAPH_PREDICTOR_PATH.name
+    if not graph_path.exists():
+        return {"error": "graph_predictor_not_fitted"}
+    model = GraphPredictor.load(graph_path)
+    if not model.is_fitted():
+        return {"error": "graph_predictor_not_fitted"}
+
+    labels: list[int] = []
+    scores: list[float] = []
+    signatures: list[str] = []
+    timestamps: list[float] = []
+    for row in load_screening_predictor_corpus_rows(db_path):
+        signature = str(row.get("canonical_fingerprint") or "")
+        if not signature:
+            continue
+        graph_json = row.get("graph_json")
+        try:
+            graph = (
+                json.loads(graph_json) if isinstance(graph_json, str) else graph_json
+            )
+        except (json.JSONDecodeError, TypeError):
+            continue
+        labels.append(int(bool(row.get("stage1_any_passed"))))
+        scores.append(float(model.predict_gate(graph)))
+        signatures.append(signature)
+        timestamps.append(float(row.get("latest_timestamp") or 0.0))
+
+    if len(labels) < 10:
+        return {"error": "insufficient_data"}
+    y = np.asarray(labels, dtype=np.int32)
+    y_score = np.asarray(scores, dtype=np.float64)
+    _train_idx, val_idx, split_stats = grouped_temporal_split(
+        signatures,
+        y,
+        np.asarray(timestamps, dtype=np.float64),
+    )
+    if len(val_idx) == 0:
+        return {"error": "temporal_split_failed", "split_stats": split_stats}
+    return _binary_evaluation_bundle(
+        y_true=y[val_idx],
+        y_score=y_score[val_idx],
+        selected_threshold=selected_threshold,
+        source="saved_runtime_artifact_temporal",
+        split_stats=split_stats,
+    )
+
+
+def _graph_predictor_metrics_report(
+    state_dir: Path, db_path: str | None = None
+) -> dict[str, Any]:
     graph_meta_path = state_dir / "graph_predictor.json"
     if not graph_meta_path.exists():
         return {"error": "graph_predictor_not_fitted"}
@@ -117,32 +444,64 @@ def _graph_predictor_metrics_report(state_dir: Path) -> dict[str, Any]:
         )
         derived["roc_auc"] = float(train_metrics.get("val_auc", 0.0))
         derived["threshold"] = float(train_metrics.get("gate_threshold", 0.5))
-    return {
+    section: dict[str, Any] = {
         "persisted_train_metrics": train_metrics,
+        "saved_runtime_artifact_evaluation": {
+            "evaluated_at": _iso_utc_now(),
+            "source": "saved_runtime_artifact",
+            "split_stats": {
+                "n_val": int(train_metrics.get("n_val", 0)),
+                "n_positive": int(train_metrics.get("n_positive", 0)),
+            },
+            "selected_threshold": float(derived.get("threshold", 0.5)),
+            "selected_metrics": derived,
+            "threshold_0_5_metrics": (
+                dict(derived)
+                if np.isclose(float(derived.get("threshold", 0.5)), 0.5)
+                else {}
+            ),
+            "operating_points": dict(train_metrics.get("operating_points", {})),
+            "reliability_curve": [],
+        },
         "derived_val_classification_metrics": derived,
         "note": (
             "Uses persisted holdout metrics from graph_predictor.json. "
             "This is the most faithful report for the saved GraphPredictor artifact."
         ),
     }
+    if db_path:
+        section["temporal_holdout_evaluation"] = _evaluate_graph_predictor_temporal(
+            db_path=db_path,
+            state_dir=state_dir,
+            selected_threshold=float(derived.get("threshold", 0.5)),
+        )
+    return _attach_primary_eval_aliases(
+        section,
+        primary_key="saved_runtime_artifact_evaluation",
+    )
 
 
 def _gbm_metrics_report(db_path: str, state_dir: Path) -> dict[str, Any]:
-    from research.scientist.intelligence.metrics_utils import (
-        binary_classification_metrics,
-    )
     from research.scientist.intelligence.ml_corpus import (
         build_dense_feature_matrix,
         grouped_stratified_split,
+        grouped_temporal_split,
     )
+    from research.scientist.intelligence.predictor_gbm import _ranking_diagnostics
     from research.scientist.intelligence.predictor import (
         GBMPredictor,
         _query_graph_training_data,
     )
 
-    feat_dicts, y_gate, y_rank, _sample_weights, graph_signatures = (
-        _query_graph_training_data(db_path)
-    )
+    (
+        feat_dicts,
+        y_gate,
+        y_rank_ppl,
+        y_rank_composite,
+        _sample_weights,
+        latest_timestamps,
+        graph_signatures,
+    ) = _query_graph_training_data(db_path)
     X, feature_names = build_dense_feature_matrix(feat_dicts)
     _train_idx, val_idx, split_stats = grouped_stratified_split(
         graph_signatures, y_gate, seed=42
@@ -157,65 +516,128 @@ def _gbm_metrics_report(db_path: str, state_dir: Path) -> dict[str, Any]:
     ]
     X_gate = X[:, gate_col_idx] if gate_col_idx else X
 
-    if gbm.train_metrics:
-        operating_points = dict(gbm.train_metrics.get("operating_points", {}))
-        selected = dict(gbm.train_metrics.get("gate_metrics", {}))
-        skip_metrics = binary_classification_metrics(
-            y_gate[val_idx], gbm.gate_model.predict(X_gate[val_idx]), threshold=0.1
-        )
-        skipped = skip_metrics["tn"] + skip_metrics["fn"]
-        false_skip_rate = float(skip_metrics["fn"] / skipped) if skipped else 0.0
-        return {
-            "split_stats": split_stats,
-            "train_metrics": gbm.train_metrics,
-            "val_metrics_selected_threshold": selected,
-            "val_metrics_threshold_0_5": binary_classification_metrics(
-                y_gate[val_idx], gbm.gate_model.predict(X_gate[val_idx]), threshold=0.5
-            ),
-            "val_metrics_threshold_0_1_skip_rule": skip_metrics,
-            "operating_points": operating_points,
-            "skip_rate": float(skipped / max(len(val_idx), 1)),
-            "false_skip_rate": false_skip_rate,
-            "rank_spearman_val": gbm.train_metrics.get("rank_spearman"),
+    gate_scores = gbm.gate_model.predict(X_gate[val_idx])
+    saved_eval = _binary_evaluation_bundle(
+        y_true=y_gate[val_idx],
+        y_score=gate_scores,
+        selected_threshold=float(gbm.gate_threshold),
+        source="saved_runtime_artifact",
+        split_stats=split_stats,
+        extra_thresholds=(0.1,),
+    )
+    skip_metrics = dict(
+        (saved_eval.get("extra_threshold_metrics") or {}).get(str(0.1), {})
+    )
+    skipped = int(skip_metrics.get("tn", 0) + skip_metrics.get("fn", 0))
+    false_skip_rate = float(skip_metrics.get("fn", 0) / skipped) if skipped else 0.0
+
+    rank_heads: dict[str, Any] = {}
+    if gbm.rank_model_ppl is not None:
+        rank_mask = np.isfinite(y_rank_ppl[val_idx])
+        if rank_mask.sum() >= 2:
+            rank_heads["ppl"] = _ranking_diagnostics(
+                y_rank_ppl[val_idx][rank_mask],
+                gbm.rank_model_ppl.predict(X[val_idx][rank_mask]),
+                target_kind="ppl",
+            )
+        else:
+            rank_heads["ppl"] = {
+                "n": int(rank_mask.sum()),
+                "error": "insufficient_data",
+            }
+    if gbm.rank_model_composite is not None:
+        rank_mask = np.isfinite(y_rank_composite[val_idx])
+        if rank_mask.sum() >= 2:
+            rank_heads["composite"] = _ranking_diagnostics(
+                y_rank_composite[val_idx][rank_mask],
+                gbm.rank_model_composite.predict(X[val_idx][rank_mask]),
+                target_kind="composite",
+            )
+        else:
+            rank_heads["composite"] = {
+                "n": int(rank_mask.sum()),
+                "error": "insufficient_data",
+            }
+    if not rank_heads and gbm.legacy_mixed_rank_model_loaded:
+        rank_heads["legacy_mixed"] = {
+            "error": "legacy_mixed_rank_model_ignored_until_retrained"
         }
 
-    gate_scores = gbm.gate_model.predict(X_gate[val_idx])
-    rank_spearman = None
-    if gbm.rank_model is not None:
-        rank_mask = np.isfinite(y_rank[val_idx])
-        if rank_mask.sum() >= 2:
-            from scipy.stats import spearmanr
-
-            rho, _ = spearmanr(
-                y_rank[val_idx][rank_mask],
-                gbm.rank_model.predict(X[val_idx][rank_mask]),
-            )
-            rank_spearman = float(rho) if np.isfinite(rho) else 0.0
-
-    skip_metrics = binary_classification_metrics(
-        y_gate[val_idx], gate_scores, threshold=0.1
+    _train_idx_tm, val_idx_tm, temporal_split_stats = grouped_temporal_split(
+        graph_signatures,
+        y_gate,
+        latest_timestamps,
     )
-    skipped = skip_metrics["tn"] + skip_metrics["fn"]
-    false_skip_rate = float(skip_metrics["fn"] / skipped) if skipped else 0.0
-    return {
+    temporal_eval = {
+        "error": "temporal_split_failed",
+        "split_stats": temporal_split_stats,
+    }
+    temporal_rank_heads: dict[str, Any] = {}
+    if len(val_idx_tm) > 0:
+        gate_scores_tm = gbm.gate_model.predict(X_gate[val_idx_tm])
+        temporal_eval = _binary_evaluation_bundle(
+            y_true=y_gate[val_idx_tm],
+            y_score=gate_scores_tm,
+            selected_threshold=float(gbm.gate_threshold),
+            source="saved_runtime_artifact_temporal",
+            split_stats=temporal_split_stats,
+            extra_thresholds=(0.1,),
+        )
+        if gbm.rank_model_ppl is not None:
+            rank_mask = np.isfinite(y_rank_ppl[val_idx_tm])
+            if rank_mask.sum() >= 2:
+                raw_preds = gbm.rank_model_ppl.predict(X[val_idx_tm][rank_mask])
+                ppl_preds = np.exp(
+                    np.clip(raw_preds, gbm.rank_ppl_log_min, gbm.rank_ppl_log_max)
+                )
+                temporal_rank_heads["ppl"] = _ranking_diagnostics(
+                    y_rank_ppl[val_idx_tm][rank_mask],
+                    ppl_preds,
+                    target_kind="ppl",
+                )
+            else:
+                temporal_rank_heads["ppl"] = {
+                    "n": int(rank_mask.sum()),
+                    "error": "insufficient_data",
+                }
+        if gbm.rank_model_composite is not None:
+            rank_mask = np.isfinite(y_rank_composite[val_idx_tm])
+            if rank_mask.sum() >= 2:
+                temporal_rank_heads["composite"] = _ranking_diagnostics(
+                    y_rank_composite[val_idx_tm][rank_mask],
+                    gbm.rank_model_composite.predict(X[val_idx_tm][rank_mask]),
+                    target_kind="composite",
+                )
+            else:
+                temporal_rank_heads["composite"] = {
+                    "n": int(rank_mask.sum()),
+                    "error": "insufficient_data",
+                }
+
+    section: dict[str, Any] = {
         "split_stats": split_stats,
-        "val_metrics_threshold_0_5": binary_classification_metrics(
-            y_gate[val_idx], gate_scores, threshold=0.5
-        ),
+        "persisted_train_metrics": dict(gbm.train_metrics or {}),
+        "saved_runtime_artifact_evaluation": saved_eval,
+        "temporal_holdout_evaluation": temporal_eval,
         "val_metrics_threshold_0_1_skip_rule": skip_metrics,
         "skip_rate": float(skipped / max(len(val_idx), 1)),
         "false_skip_rate": false_skip_rate,
-        "rank_spearman_val": rank_spearman,
+        "rank_heads": rank_heads,
+        "temporal_rank_heads": temporal_rank_heads,
+        "rank_spearman_val": (rank_heads.get("ppl") or {}).get("spearman"),
     }
+    return _attach_primary_eval_aliases(
+        section,
+        primary_key="saved_runtime_artifact_evaluation",
+    )
 
 
-def _component_scores(
+def _component_score_frame(
     ensemble,
     db_path: str,
-    sample_limit: int = 2000,
-) -> tuple[np.ndarray, np.ndarray, dict[str, int]]:
+    sample_limit: int | None = None,
+) -> tuple[np.ndarray, np.ndarray, list[str], np.ndarray]:
     from research.scientist.intelligence.ml_corpus import (
-        grouped_stratified_split,
         load_screening_predictor_corpus_rows,
     )
     from research.synthesis.graph_features import (
@@ -229,13 +651,14 @@ def _component_scores(
         for row in load_screening_predictor_corpus_rows(db_path)
         if bool(row.get("stage0_any_passed"))
     ]
-    if len(rows) > sample_limit:
+    if sample_limit is not None and len(rows) > sample_limit:
         rows = random.Random(0).sample(rows, sample_limit)
 
     op_stats_cache = load_op_stats(db_path)
     score_rows: list[list[float]] = []
     labels: list[int] = []
     graph_signatures: list[str] = []
+    latest_timestamps: list[float] = []
 
     for row in rows:
         graph_json = row["graph_json"]
@@ -272,24 +695,29 @@ def _component_scores(
         score_rows.append(component_scores)
         labels.append(label)
         graph_signatures.append(signature)
+        latest_timestamps.append(float(row.get("latest_timestamp") or 0.0))
 
     X = np.array(score_rows, dtype=np.float64)
     y = np.array(labels, dtype=np.int32)
-    _train_idx, val_idx, split_stats = grouped_stratified_split(
-        graph_signatures, y, seed=42
-    )
+    return y, X, graph_signatures, np.asarray(latest_timestamps, dtype=np.float64)
+
+
+def _ensemble_scores_from_components(
+    ensemble,
+    X: np.ndarray,
+    idx: np.ndarray,
+) -> np.ndarray:
     scores_norm = (X - ensemble._score_mean) / ensemble._score_std
-    val_scores = 1.0 / (
+    return 1.0 / (
         1.0
         + np.exp(
             -np.clip(
-                scores_norm[val_idx] @ ensemble.w_ensemble + ensemble.b_ensemble,
+                scores_norm[idx] @ ensemble.w_ensemble + ensemble.b_ensemble,
                 -15,
                 15,
             )
         )
     )
-    return y[val_idx], val_scores, split_stats
 
 
 def _ensemble_metrics_report(
@@ -298,44 +726,105 @@ def _ensemble_metrics_report(
     state_dir: Path,
     fresh_ensemble: bool,
 ) -> dict[str, Any]:
-    from research.scientist.intelligence.metrics_utils import (
-        binary_classification_metrics,
-    )
     from research.scientist.intelligence.predictor import (
         EnsemblePredictor,
         train_ensemble,
     )
+    from research.scientist.intelligence.ml_corpus import (
+        grouped_stratified_split,
+        grouped_temporal_split,
+    )
 
-    if fresh_ensemble:
-        ensemble = train_ensemble(db_path=db_path, profiling_db=profiling_db)
-        source = "fresh_train_ensemble"
-    else:
-        ensemble = EnsemblePredictor.load(
-            state_dir=state_dir, profiling_db=profiling_db
-        )
-        source = "saved_runtime_artifacts"
-
+    ensemble = EnsemblePredictor.load(state_dir=state_dir, profiling_db=profiling_db)
     if (
         ensemble.w_ensemble.size == 0
         or ensemble._score_mean.size == 0
         or ensemble._score_std.size == 0
     ):
-        return {"error": "ensemble_not_calibrated", "source": source}
+        return {"error": "ensemble_not_calibrated", "source": "saved_runtime_artifact"}
 
-    y_true, y_score, split_stats = _component_scores(ensemble, db_path)
-    return {
-        "source": source,
+    y_all, X_all, graph_signatures, latest_timestamps = _component_score_frame(
+        ensemble,
+        db_path,
+    )
+    _train_idx, val_idx, split_stats = grouped_stratified_split(
+        graph_signatures,
+        y_all,
+        seed=42,
+    )
+    y_true = y_all[val_idx]
+    y_score = _ensemble_scores_from_components(ensemble, X_all, val_idx)
+    section: dict[str, Any] = {
         "persisted_meta": _load_json_if_exists(state_dir / ENSEMBLE_META_PATH.name),
-        "split_stats": split_stats,
-        "val_metrics_selected_threshold": binary_classification_metrics(
-            y_true, y_score, threshold=ensemble.gate_threshold
-        ),
-        "val_metrics_threshold_0_5": binary_classification_metrics(
-            y_true, y_score, threshold=0.5
+        "saved_runtime_artifact_evaluation": _binary_evaluation_bundle(
+            y_true=y_true,
+            y_score=y_score,
+            selected_threshold=float(ensemble.gate_threshold),
+            source="saved_runtime_artifact",
+            split_stats=split_stats,
         ),
         "weights": [float(x) for x in ensemble.w_ensemble.tolist()],
         "bias": float(ensemble.b_ensemble),
     }
+    _train_idx_tm, val_idx_tm, temporal_split_stats = grouped_temporal_split(
+        graph_signatures,
+        y_all,
+        latest_timestamps,
+    )
+    if len(val_idx_tm) > 0:
+        section["temporal_holdout_evaluation"] = _binary_evaluation_bundle(
+            y_true=y_all[val_idx_tm],
+            y_score=_ensemble_scores_from_components(ensemble, X_all, val_idx_tm),
+            selected_threshold=float(ensemble.gate_threshold),
+            source="saved_runtime_artifact_temporal",
+            split_stats=temporal_split_stats,
+        )
+    else:
+        section["temporal_holdout_evaluation"] = {
+            "error": "temporal_split_failed",
+            "split_stats": temporal_split_stats,
+        }
+    if fresh_ensemble:
+        fresh = train_ensemble(db_path=db_path, profiling_db=profiling_db)
+        if (
+            fresh.w_ensemble.size == 0
+            or fresh._score_mean.size == 0
+            or fresh._score_std.size == 0
+        ):
+            section["fresh_train_comparison"] = {
+                "error": "ensemble_not_calibrated",
+                "source": "fresh_train_comparison",
+            }
+        else:
+            (
+                fresh_y_all,
+                fresh_X_all,
+                fresh_graph_signatures,
+                _fresh_latest_timestamps,
+            ) = _component_score_frame(
+                fresh,
+                db_path,
+            )
+            _fresh_train_idx, fresh_val_idx, fresh_split_stats = (
+                grouped_stratified_split(
+                    fresh_graph_signatures,
+                    fresh_y_all,
+                    seed=42,
+                )
+            )
+            section["fresh_train_comparison"] = _binary_evaluation_bundle(
+                y_true=fresh_y_all[fresh_val_idx],
+                y_score=_ensemble_scores_from_components(
+                    fresh, fresh_X_all, fresh_val_idx
+                ),
+                selected_threshold=float(fresh.gate_threshold),
+                source="fresh_train_comparison",
+                split_stats=fresh_split_stats,
+            )
+    return _attach_primary_eval_aliases(
+        section,
+        primary_key="saved_runtime_artifact_evaluation",
+    )
 
 
 def _interaction_metrics_report(state_dir: Path) -> dict[str, Any]:
@@ -372,6 +861,8 @@ def _build_predictor_metrics_report(
     fresh_ensemble: bool,
 ) -> dict[str, Any]:
     return {
+        "report_schema_version": 2,
+        "report_generated_at": _iso_utc_now(),
         "paths": {
             "db_path": db_path,
             "profiling_db": profiling_db,
@@ -381,6 +872,7 @@ def _build_predictor_metrics_report(
             "graph_predictor",
             _graph_predictor_metrics_report,
             state_dir,
+            db_path,
         ),
         "gbm_gate": _safe_report_section(
             "gbm_gate",
@@ -537,10 +1029,18 @@ def write_metrics_report(fresh_ensemble: bool = False) -> dict:
     )
     state_dir = ensure_state_dir(STATE_DIR)
     report_path = state_dir / METRICS_REPORT_PATH.name
+    registry_path = state_dir / _MODEL_REGISTRY_PATH.name
     with open(report_path, "w", encoding="utf-8") as f:
         json.dump(report, f, indent=2, sort_keys=True)
+    registry = _build_model_registry(report)
+    with open(registry_path, "w", encoding="utf-8") as f:
+        json.dump(registry, f, indent=2, sort_keys=True)
     logger.info("Predictor metrics report written to %s", report_path)
-    return {"report_path": str(report_path)}
+    logger.info("Model registry written to %s", registry_path)
+    return {
+        "report_path": str(report_path),
+        "model_registry_path": str(registry_path),
+    }
 
 
 def evaluate_all() -> dict:

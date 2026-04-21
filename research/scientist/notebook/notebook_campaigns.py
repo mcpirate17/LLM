@@ -13,6 +13,20 @@ class _CampaignsMixin:
 
     __slots__ = ()
 
+    @staticmethod
+    def _hydrate_campaign_hypothesis_row(row: Any) -> Dict[str, Any]:
+        hypothesis = dict(row)
+        raw_meta = hypothesis.get("metadata_json")
+        if isinstance(raw_meta, str) and raw_meta.strip():
+            try:
+                parsed = json.loads(raw_meta)
+                hypothesis["metadata"] = parsed if isinstance(parsed, dict) else {}
+            except (json.JSONDecodeError, TypeError):
+                hypothesis["metadata"] = {}
+        else:
+            hypothesis["metadata"] = {}
+        return hypothesis
+
     # ── Metrics ──
 
     def log_metric(
@@ -46,8 +60,8 @@ class _CampaignsMixin:
             params.append(experiment_id)
         query += " ORDER BY timestamp DESC LIMIT ?"
         params.append(limit)
-        rows = self.conn.execute(query, params).fetchall()
-        return [dict(r) for r in rows]
+        cursor = self.conn.execute(query, params)
+        return [dict(row) for row in cursor]
 
     # ── Campaigns ──
 
@@ -81,10 +95,10 @@ class _CampaignsMixin:
 
     def get_active_campaigns(self) -> List[Dict]:
         """Get all active campaigns."""
-        rows = self.conn.execute(
+        cursor = self.conn.execute(
             "SELECT * FROM campaigns WHERE status = 'active' ORDER BY timestamp DESC"
-        ).fetchall()
-        return [dict(r) for r in rows]
+        )
+        return [dict(row) for row in cursor]
 
     def update_campaign(self, campaign_id: str, **kwargs) -> None:
         """Update campaign fields."""
@@ -115,34 +129,21 @@ class _CampaignsMixin:
 
     def get_campaign_hypotheses(self, campaign_id: str) -> List[Dict]:
         """Get all hypotheses for a campaign."""
-        rows = self.conn.execute(
+        cursor = self.conn.execute(
             """SELECT * FROM hypotheses WHERE campaign_id = ?
                ORDER BY timestamp ASC""",
             (campaign_id,),
-        ).fetchall()
-        hypotheses = []
-        for row in rows:
-            hypothesis = dict(row)
-            raw_meta = hypothesis.get("metadata_json")
-            if isinstance(raw_meta, str) and raw_meta.strip():
-                try:
-                    parsed = json.loads(raw_meta)
-                    hypothesis["metadata"] = parsed if isinstance(parsed, dict) else {}
-                except (json.JSONDecodeError, TypeError):
-                    hypothesis["metadata"] = {}
-            else:
-                hypothesis["metadata"] = {}
-            hypotheses.append(hypothesis)
-        return hypotheses
+        )
+        return [self._hydrate_campaign_hypothesis_row(row) for row in cursor]
 
     def get_campaign_decisions(self, campaign_id: str) -> List[Dict]:
         """Get all decisions for a campaign."""
-        rows = self.conn.execute(
+        cursor = self.conn.execute(
             """SELECT * FROM decisions WHERE campaign_id = ?
                ORDER BY timestamp ASC""",
             (campaign_id,),
-        ).fetchall()
-        return [dict(r) for r in rows]
+        )
+        return [dict(row) for row in cursor]
 
     def evaluate_campaign_criteria(self, campaign_id: str) -> Dict:
         """Evaluate campaign success criteria against measured data.

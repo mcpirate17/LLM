@@ -55,7 +55,14 @@ export function MiniNoveltyChart({ points, label = '', width = 600 }) {
   );
 }
 
-export function MiniLossChart({ curve, statusText = '', statusTone = 'info', label = '', width = 600 }) {
+export function MiniLossChart({
+  curve,
+  statusText = '',
+  statusTone = 'info',
+  label = '',
+  segmentLabelPrefix = 'run',
+  width = 600,
+}) {
   if (!curve || curve.length < 2) return null;
   const W = width;
   const H = 113;
@@ -118,7 +125,7 @@ export function MiniLossChart({ curve, statusText = '', statusTone = 'info', lab
               fontSize="9"
               fontFamily="monospace"
             >
-              {`seed ${idx + 1}`}
+              {`${segmentLabelPrefix} ${idx + 1}`}
             </text>
           </g>
         ))}
@@ -135,4 +142,3 @@ export function MiniLossChart({ curve, statusText = '', statusTone = 'info', lab
     </div>
   );
 }
-

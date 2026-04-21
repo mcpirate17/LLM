@@ -42,7 +42,7 @@ def test_graph_predictor_train_skips_single_class_corpus(monkeypatch, tmp_path):
         lambda _path: {},
     )
     monkeypatch.setattr(
-        "research.scientist.intelligence.gnn_predictor.load_deduped_graph_training_rows",
+        "research.scientist.intelligence.gnn_predictor.load_screening_predictor_corpus_rows",
         lambda *_args, **_kwargs: rows,
     )
     monkeypatch.setattr(
@@ -96,6 +96,100 @@ def test_extract_topology_features_prefers_single_native_bridge(monkeypatch):
     }
 
 
+def test_extract_topology_features_prefers_single_direct_feature_map_bridge(
+    monkeypatch,
+):
+    ctx = gp._NativeTopologyContext(
+        op_profiles_json="{}",
+        pair_stability_json="{}",
+        op_metadata_json="{}",
+    )
+    calls = {"single": 0}
+
+    class _FakeRust:
+        def extract_topology_feature_map_native_py(self, *args):
+            calls["single"] += 1
+            return {"topo_n_ops": 3.0}
+
+        def extract_topology_features_native(self, *args):
+            raise AssertionError("single-graph path should not use JSON bridge")
+
+    monkeypatch.setattr(
+        "research.scientist.intelligence.gnn_predictor._try_import_rust_scheduler",
+        lambda: _FakeRust(),
+    )
+
+    features = gp.extract_topology_features(
+        {"nodes": {"0": {"op_name": "input"}, "1": {"op_name": "linear_proj"}}},
+        {},
+        {},
+        native_ctx=ctx,
+    )
+
+    assert calls["single"] == 1
+    assert features == {
+        "topo_n_ops": 3.0,
+        "imodel_min_stability": 0.5,
+        "imodel_mean_stability": 0.5,
+        "imodel_mean_loss": 0.7,
+    }
+
+
+def test_extract_topology_features_prefers_fused_single_native_imodel_bridge(
+    monkeypatch,
+):
+    ctx = gp._NativeTopologyContext(
+        op_profiles_json="{}",
+        pair_stability_json="{}",
+        op_metadata_json="{}",
+    )
+    calls = {"fused": 0}
+
+    class _FakeRust:
+        def extract_topology_feature_map_with_imodel_native_py(self, *args):
+            calls["fused"] += 1
+            return {
+                "topo_n_ops": 2.0,
+                "imodel_min_stability": 0.2,
+                "imodel_mean_stability": 0.4,
+                "imodel_mean_loss": 0.6,
+            }
+
+        def extract_topology_features_native(self, *args):
+            raise AssertionError("fused single-graph path should bypass base bridge")
+
+    class _FakeIModel:
+        _trained = True
+        op_names = ["linear_proj", "gelu"]
+        u = np.ones((2, 2), dtype=np.float32)
+        v = np.ones((2, 2), dtype=np.float32)
+        W_s = np.eye(2, dtype=np.float32)
+        W_l = np.eye(2, dtype=np.float32)
+        b_s = 0.0
+        b_l = 0.5
+
+    monkeypatch.setattr(
+        "research.scientist.intelligence.gnn_predictor._try_import_rust_scheduler",
+        lambda: _FakeRust(),
+    )
+
+    features = gp.extract_topology_features(
+        {"nodes": {"0": {"op_name": "linear_proj"}, "1": {"op_name": "gelu"}}},
+        {},
+        {},
+        imodel=_FakeIModel(),
+        native_ctx=ctx,
+    )
+
+    assert calls["fused"] == 1
+    assert features == {
+        "topo_n_ops": 2.0,
+        "imodel_min_stability": 0.2,
+        "imodel_mean_stability": 0.4,
+        "imodel_mean_loss": 0.6,
+    }
+
+
 def test_extract_topology_feature_batch_uses_edge_pair_batch_for_imodel(monkeypatch):
     class _FakeIModel:
         _trained = True
@@ -137,6 +231,123 @@ def test_extract_topology_feature_batch_uses_edge_pair_batch_for_imodel(monkeypa
     assert features[1]["imodel_mean_loss"] == 0.4
 
 
+def test_extract_topology_feature_batch_prefers_fused_native_imodel_bridge(monkeypatch):
+    class _FakeRust:
+        def extract_topology_feature_maps_with_imodel_batch_native_py(self, *args):
+            return [
+                {
+                    "topo_n_ops": 2.0,
+                    "imodel_min_stability": 0.2,
+                    "imodel_mean_stability": 0.4,
+                    "imodel_mean_loss": 0.6,
+                }
+            ]
+
+    class _FakeIModel:
+        _trained = True
+        op_names = ["linear_proj", "gelu"]
+        u = np.ones((2, 2), dtype=np.float32)
+        v = np.ones((2, 2), dtype=np.float32)
+        W_s = np.eye(2, dtype=np.float32)
+        W_l = np.eye(2, dtype=np.float32)
+        b_s = 0.0
+        b_l = 0.5
+
+    monkeypatch.setattr(
+        "research.scientist.intelligence.gnn_predictor._try_import_rust_scheduler",
+        lambda: _FakeRust(),
+    )
+    monkeypatch.setattr(
+        "research.scientist.intelligence.gnn_predictor._extract_topology_base_features_native",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("base feature native path should not run")
+        ),
+    )
+    monkeypatch.setattr(
+        "research.scientist.intelligence.gnn_predictor._extract_edge_op_pairs_batch_native",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("edge-pair batch path should not run")
+        ),
+    )
+
+    features = gp._extract_topology_features_batch(
+        ['{"nodes":{"0":{"op_name":"linear_proj"}}}'],
+        {},
+        {},
+        imodel=_FakeIModel(),
+    )
+
+    assert features == [
+        {
+            "topo_n_ops": 2.0,
+            "imodel_min_stability": 0.2,
+            "imodel_mean_stability": 0.4,
+            "imodel_mean_loss": 0.6,
+        }
+    ]
+
+
+def test_extract_topology_feature_batch_prefers_direct_feature_maps_bridge(monkeypatch):
+    class _FakeRust:
+        def extract_topology_feature_maps_batch_native_py(self, *args):
+            return [{"topo_n_ops": 2.0, "pair_mean_stability": 0.7}]
+
+    monkeypatch.setattr(
+        "research.scientist.intelligence.gnn_predictor._try_import_rust_scheduler",
+        lambda: _FakeRust(),
+    )
+    monkeypatch.setattr(
+        "research.scientist.intelligence.gnn_predictor._extract_edge_op_pairs_batch_native",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("edge-pair batch path should not run")
+        ),
+    )
+
+    features = gp._extract_topology_features_batch(
+        ['{"nodes":{"0":{"op_name":"linear_proj"}}}'],
+        {},
+        {},
+    )
+
+    assert features == [
+        {
+            "topo_n_ops": 2.0,
+            "pair_mean_stability": 0.7,
+            "imodel_min_stability": 0.5,
+            "imodel_mean_stability": 0.5,
+            "imodel_mean_loss": 0.7,
+        }
+    ]
+
+
+def test_augment_imodel_features_prefers_pair_stats():
+    class _FakeIModel:
+        _trained = True
+
+        def predict_pair_stats(self, edge_pairs):
+            assert edge_pairs == [("linear_proj", "gelu"), ("add", "rmsnorm")]
+            return (0.25, 0.5, 0.75)
+
+        def predict_stability(self, left, right):
+            raise AssertionError("scalar pair scoring should not run")
+
+        def predict_loss(self, left, right):
+            raise AssertionError("scalar pair scoring should not run")
+
+    features = gp._augment_imodel_features_from_pairs(
+        {"topo_n_ops": 2.0},
+        [("linear_proj", "gelu"), ("add", "rmsnorm")],
+        _FakeIModel(),
+    )
+
+    assert features == {
+        "topo_n_ops": 2.0,
+        "imodel_min_stability": 0.25,
+        "imodel_mean_stability": 0.5,
+        "imodel_mean_loss": 0.75,
+    }
+
+
 def test_calibrate_ensemble_skips_single_class_rows(monkeypatch):
     rows = [
         {
@@ -150,7 +361,7 @@ def test_calibrate_ensemble_skips_single_class_rows(monkeypatch):
     ]
 
     monkeypatch.setattr(
-        "research.scientist.intelligence.predictor.load_deduped_graph_training_rows",
+        "research.scientist.intelligence.predictor_ensemble._load_screening_predictor_corpus_rows",
         lambda *_args, **_kwargs: rows,
     )
 
@@ -176,7 +387,9 @@ def test_planning_score_promotes_quality_when_pass_is_equal():
     ensemble.predict_induction_learner_prob = lambda **_kwargs: 0.5
     ensemble.gbm = SimpleNamespace(
         is_fitted=lambda: True,
-        predict_rank=lambda _features: 4.0,
+        predict_quality_score=lambda features: (
+            0.8 if features == {"feat": 1.0} else 0.2
+        ),
     )
     ensemble.graph_pred = SimpleNamespace(
         is_fitted=lambda: True,
@@ -190,7 +403,7 @@ def test_planning_score_promotes_quality_when_pass_is_equal():
     )
     bad = ensemble.predict_planning_score(
         graph_json={"id": "bad"},
-        graph_features={"feat": 1.0},
+        graph_features={"feat": 0.0},
     )
 
     assert good["p_pass"] == bad["p_pass"] == 0.4
@@ -268,6 +481,10 @@ def test_gbm_prescreener_gates_on_p_pass_not_planning_score(monkeypatch):
         lambda **_kwargs: _Ensemble(),
     )
     monkeypatch.setattr(
+        "research.scientist.ml_influence_policy.component_is_allowed",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(
         "research.synthesis.graph_features.load_op_stats",
         lambda _db_path: {},
     )
@@ -295,6 +512,162 @@ def test_gbm_prescreener_gates_on_p_pass_not_planning_score(monkeypatch):
     assert [graph.graph_id for graph in kept] == ["keep_me"]
     assert results["funnel_counts"]["gbm_prescreener_skipped"] == 1
     assert recorded[0]["metrics"]["predicted_p_s1"] == 0.05
+
+
+def test_gbm_prescreener_uses_temporal_f1_floor_by_default(monkeypatch):
+    runner = _DummyPhase3Runner()
+    config = RunConfig(gbm_prescreener_enabled=True)
+    results = {"funnel_counts": {}}
+
+    class _Graph:
+        def __init__(self, graph_id: str):
+            self.graph_id = graph_id
+
+        def to_dict(self):
+            return {"graph_id": self.graph_id, "nodes": {}}
+
+    class _Ensemble:
+        gate_threshold = 0.27
+
+        def is_fitted(self):
+            return True
+
+        def diagnostics(self):
+            return {"n_components": 2}
+
+        def predict_planning_score(self, *, graph_json=None, graph_features=None):
+            return {
+                "planning_score": 0.9,
+                "p_pass": 0.26 if graph_json["graph_id"] == "skip_me" else 0.28,
+                "p_induction_learner": 0.0,
+                "predicted_induction_auc": 0.0,
+            }
+
+    monkeypatch.setattr(
+        "research.scientist.intelligence.predictor.load_runtime_ensemble",
+        lambda **_kwargs: _Ensemble(),
+    )
+    monkeypatch.setattr(
+        "research.scientist.ml_influence_policy.component_is_allowed",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        "research.scientist.ml_influence_policy.load_predictor_metrics_report",
+        lambda: {
+            "ensemble_calibrated": {
+                "temporal_holdout_evaluation": {
+                    "operating_points": {"f1": {"threshold": 0.32}}
+                }
+            }
+        },
+    )
+    monkeypatch.setattr(
+        "research.synthesis.graph_features.load_op_stats",
+        lambda _db_path: {},
+    )
+    monkeypatch.setattr(
+        "research.synthesis.graph_features.extract_graph_features",
+        lambda _graph_dict: {"feat": 1.0},
+    )
+    monkeypatch.setattr(
+        "research.synthesis.graph_features.enrich_with_op_stats",
+        lambda *_args, **_kwargs: None,
+    )
+
+    notebook = SimpleNamespace(
+        db_path="unused.sqlite",
+        record_program_result=lambda **kwargs: None,
+    )
+    kept = runner._run_gbm_prescreener(
+        nb=notebook,
+        graphs=[_Graph("keep_me"), _Graph("skip_me")],
+        config=config,
+        exp_id="exp-1",
+        results=results,
+    )
+
+    assert [graph.graph_id for graph in kept] == []
+    assert results["screening_ensemble_p_pass_floor"] == 0.32
+    assert (
+        results["screening_ensemble_p_pass_floor_source"]
+        == "ensemble.temporal_holdout_evaluation.operating_points.f1.threshold"
+    )
+
+
+def test_gbm_prescreener_prefers_explicit_screening_floor_over_deprecated_alias(
+    monkeypatch,
+):
+    runner = _DummyPhase3Runner()
+    config = RunConfig(
+        gbm_prescreener_enabled=True,
+        screening_ensemble_p_pass_floor=0.4,
+        gbm_gate_threshold=0.1,
+    )
+    results = {"funnel_counts": {}}
+
+    class _Graph:
+        def __init__(self, graph_id: str):
+            self.graph_id = graph_id
+
+        def to_dict(self):
+            return {"graph_id": self.graph_id, "nodes": {}}
+
+    class _Ensemble:
+        gate_threshold = 0.27
+
+        def is_fitted(self):
+            return True
+
+        def diagnostics(self):
+            return {"n_components": 2}
+
+        def predict_planning_score(self, *, graph_json=None, graph_features=None):
+            return {
+                "planning_score": 0.9,
+                "p_pass": 0.35 if graph_json["graph_id"] == "skip_me" else 0.45,
+                "p_induction_learner": 0.0,
+                "predicted_induction_auc": 0.0,
+            }
+
+    monkeypatch.setattr(
+        "research.scientist.intelligence.predictor.load_runtime_ensemble",
+        lambda **_kwargs: _Ensemble(),
+    )
+    monkeypatch.setattr(
+        "research.scientist.ml_influence_policy.component_is_allowed",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        "research.synthesis.graph_features.load_op_stats",
+        lambda _db_path: {},
+    )
+    monkeypatch.setattr(
+        "research.synthesis.graph_features.extract_graph_features",
+        lambda _graph_dict: {"feat": 1.0},
+    )
+    monkeypatch.setattr(
+        "research.synthesis.graph_features.enrich_with_op_stats",
+        lambda *_args, **_kwargs: None,
+    )
+
+    notebook = SimpleNamespace(
+        db_path="unused.sqlite",
+        record_program_result=lambda **kwargs: None,
+    )
+    kept = runner._run_gbm_prescreener(
+        nb=notebook,
+        graphs=[_Graph("keep_me"), _Graph("skip_me")],
+        config=config,
+        exp_id="exp-1",
+        results=results,
+    )
+
+    assert [graph.graph_id for graph in kept] == ["keep_me"]
+    assert results["screening_ensemble_p_pass_floor"] == 0.4
+    assert (
+        results["screening_ensemble_p_pass_floor_source"]
+        == "config.screening_ensemble_p_pass_floor"
+    )
 
 
 def test_evaluate_gbm_induction_uses_single_corpus_source(monkeypatch):
@@ -350,12 +723,8 @@ def test_evaluate_gbm_induction_uses_single_corpus_source(monkeypatch):
 
     monkeypatch.setitem(sys.modules, "lightgbm", _DummyLGB)
     monkeypatch.setattr(
-        "research.scientist.intelligence.predictor._load_screening_predictor_corpus_rows",
+        "research.scientist.intelligence.predictor_gbm._load_screening_predictor_corpus_rows",
         lambda _db_path, validate=True: rows,
-    )
-    monkeypatch.setattr(
-        "research.scientist.intelligence.predictor.load_deduped_graph_training_rows",
-        lambda *_args, **_kwargs: [],
     )
     monkeypatch.setattr(
         "research.synthesis.graph_features.load_op_stats",

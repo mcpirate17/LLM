@@ -168,11 +168,18 @@ def populate_cka(
 
     cka_scores = [fp.cka_vs_transformer, fp.cka_vs_ssm, fp.cka_vs_conv]
     cka_all_zero = all(abs(score) < 1e-6 for score in cka_scores)
-    if cka_all_zero:
+    if cka_all_zero and fp.cka_source == "artifact":
         fp.novelty_valid_for_promotion = False
         fp.novelty_validity_reason = "cka_degenerate_zeros"
         logger.warning(
             "cka_degenerate_zeros: cka_scores=%s cka_source=%s quality=%s",
+            cka_scores,
+            fp.cka_source,
+            fp.quality,
+        )
+    elif cka_all_zero:
+        logger.info(
+            "cka_zero_scores_without_artifact: cka_scores=%s cka_source=%s quality=%s",
             cka_scores,
             fp.cka_source,
             fp.quality,

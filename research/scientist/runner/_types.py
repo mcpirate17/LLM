@@ -436,12 +436,13 @@ class RunConfig:
     investigation_predictor_enabled: bool = True
     investigation_predictor_max_lr: float = 0.7
 
-    # GBM pre-screener: LightGBM on graph-structure features, skips hopeless graphs
-    # before expensive eval. Gate threshold: skip if P(pass_s1) < gbm_gate_threshold.
-    # F1-optimal operating point is 0.33 (PPV=0.54, recall=0.76, AUC=0.89).
-    # Previous 0.1 was the high-recall point (PPV=0.38) — barely filtered anything.
+    # Screening ensemble pre-screener: runtime gates on ensemble-calibrated
+    # P(pass_s1), not raw GBM output.  By default the floor comes from the
+    # persisted ensemble artifact's calibrated gate_threshold.  Set an explicit
+    # floor only to override that artifact-backed operating point.
     gbm_prescreener_enabled: bool = True
-    gbm_gate_threshold: float = 0.33
+    screening_ensemble_p_pass_floor: float = 0.0
+    gbm_gate_threshold: float = 0.0  # deprecated alias for the override above
 
     # Thompson sampling for op/template/motif selection via Bayesian posteriors.
     # When True, draws from Beta posterior (explore/exploit). When False, uses

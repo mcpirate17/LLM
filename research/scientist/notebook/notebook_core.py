@@ -554,15 +554,12 @@ class _NotebookCore:
             LIMIT ?
         """
         params.append(int(limit))
-        rows = self.conn.execute(query, tuple(params)).fetchall()
-        if not rows:
-            return 0
-
         feature_rows = []
         op_rows = []
         pair_rows = []
         result_keys = []
-        for row in rows:
+        cursor = self.conn.execute(query, tuple(params))
+        for row in cursor:
             result_id = str(row["result_id"] or "").strip()
             if not result_id:
                 continue

@@ -17,6 +17,48 @@ class _KnowledgeMixin:
 
     __slots__ = ()
 
+    @staticmethod
+    def _decode_knowledge_json_field(data: Dict[str, Any], key: str) -> None:
+        raw = data.get(key)
+        if not raw:
+            return
+        try:
+            data[key] = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+    @classmethod
+    def _hydrate_insight_row(cls, row: Any) -> Dict[str, Any]:
+        data = dict(row)
+        cls._decode_knowledge_json_field(data, "evidence_json")
+        return data
+
+    @classmethod
+    def _hydrate_selection_insight_trial_row(cls, row: Any) -> Dict[str, Any]:
+        item = dict(row)
+        for key in ("insight_ids_json", "chosen_result_ids_json", "metadata_json"):
+            cls._decode_knowledge_json_field(item, key)
+        return item
+
+    @staticmethod
+    def _apply_knowledge_confidence_fields(data: Dict[str, Any]) -> Dict[str, Any]:
+        base_conf = float(data.get("confidence") or 0.5)
+        validated = int(data.get("times_validated") or 0)
+        # Validation bonus saturates; repeated confirmations help but are capped.
+        val_bonus = min(0.18, 0.05 * math.log1p(max(validated - 1, 0)))
+        effective_conf = min(0.95, max(0.0, base_conf) + val_bonus)
+        data["effective_confidence"] = round(effective_conf, 4)
+        data["validation_bonus"] = round(val_bonus, 4)
+        data["confidence_capped"] = effective_conf >= 0.95
+        return data
+
+    @classmethod
+    def _hydrate_knowledge_row(cls, row: Any) -> Dict[str, Any]:
+        data = dict(row)
+        cls._apply_knowledge_confidence_fields(data)
+        cls._decode_knowledge_json_field(data, "supporting_evidence")
+        return data
+
     # ── Insights ──
 
     def record_insight(
@@ -152,24 +194,14 @@ class _KnowledgeMixin:
         query += " ORDER BY confidence DESC, timestamp DESC LIMIT ?"
         params.append(limit)
         try:
-            rows = self.conn.execute(query, params).fetchall()
+            cursor = self.conn.execute(query, params)
         except sqlite3.OperationalError as exc:
             LOGGER.warning(
                 "Insight query failed; returning empty results: %s",
                 exc,
             )
             return []
-        results = []
-        for r in rows:
-            d = dict(r)
-            # Parse evidence_json if present
-            if d.get("evidence_json"):
-                try:
-                    d["evidence_json"] = json.loads(d["evidence_json"])
-                except (json.JSONDecodeError, TypeError):
-                    pass
-            results.append(d)
-        return results
+        return [self._hydrate_insight_row(row) for row in cursor]
 
     def update_insight_bayesian(self, insight_id: str, success: bool) -> None:
         """Increment alpha (success) or beta_ (failure). Recompute confidence.
@@ -236,20 +268,8 @@ class _KnowledgeMixin:
                ORDER BY timestamp ASC
                LIMIT ?""",
             (max(1, int(limit)),),
-        ).fetchall()
-        out: List[Dict[str, Any]] = []
-        for row in rows:
-            item = dict(row)
-            for key in ("insight_ids_json", "chosen_result_ids_json", "metadata_json"):
-                raw = item.get(key)
-                if not raw:
-                    continue
-                try:
-                    item[key] = json.loads(raw)
-                except (TypeError, json.JSONDecodeError):
-                    pass
-            out.append(item)
-        return out
+        )
+        return [self._hydrate_selection_insight_trial_row(row) for row in rows]
 
     def resolve_selection_insight_trial(
         self,
@@ -351,8 +371,8 @@ class _KnowledgeMixin:
                ORDER BY n_trials DESC, mean_reward DESC
                LIMIT ?""",
             (max(1, int(limit)),),
-        ).fetchall()
-        return [dict(r) for r in rows]
+        )
+        return [dict(row) for row in rows]
 
     # ── Knowledge Base ──
 
@@ -395,30 +415,14 @@ class _KnowledgeMixin:
             params.append(category)
         query += " ORDER BY timestamp DESC"
         try:
-            rows = self.conn.execute(query, params).fetchall()
+            cursor = self.conn.execute(query, params)
         except sqlite3.OperationalError as exc:
             LOGGER.warning(
                 "Knowledge query failed; returning empty results: %s",
                 exc,
             )
             return []
-        results = []
-        for r in rows:
-            d = dict(r)
-            base_conf = float(d.get("confidence") or 0.5)
-            validated = int(d.get("times_validated") or 0)
-            # Validation bonus saturates; repeated confirmations help but are capped.
-            val_bonus = min(0.18, 0.05 * math.log1p(max(validated - 1, 0)))
-            effective_conf = min(0.95, max(0.0, base_conf) + val_bonus)
-            d["effective_confidence"] = round(effective_conf, 4)
-            d["validation_bonus"] = round(val_bonus, 4)
-            d["confidence_capped"] = effective_conf >= 0.95
-            if d.get("supporting_evidence"):
-                try:
-                    d["supporting_evidence"] = json.loads(d["supporting_evidence"])
-                except (json.JSONDecodeError, TypeError):
-                    pass
-            results.append(d)
+        results = [self._hydrate_knowledge_row(row) for row in cursor]
         results.sort(
             key=lambda row: (
                 float(row.get("effective_confidence") or 0.0),
@@ -444,29 +448,14 @@ class _KnowledgeMixin:
     def search_knowledge(self, query: str) -> List[Dict]:
         """Simple LIKE search on title + content."""
         pattern = f"%{query}%"
-        rows = self.conn.execute(
+        cursor = self.conn.execute(
             """SELECT * FROM knowledge_base
                WHERE status = 'active'
                AND (title LIKE ? OR content LIKE ?)
                ORDER BY timestamp DESC""",
             (pattern, pattern),
-        ).fetchall()
-        results = []
-        for r in rows:
-            d = dict(r)
-            base_conf = float(d.get("confidence") or 0.5)
-            validated = int(d.get("times_validated") or 0)
-            val_bonus = min(0.18, 0.05 * math.log1p(max(validated - 1, 0)))
-            effective_conf = min(0.95, max(0.0, base_conf) + val_bonus)
-            d["effective_confidence"] = round(effective_conf, 4)
-            d["validation_bonus"] = round(val_bonus, 4)
-            d["confidence_capped"] = effective_conf >= 0.95
-            if d.get("supporting_evidence"):
-                try:
-                    d["supporting_evidence"] = json.loads(d["supporting_evidence"])
-                except (json.JSONDecodeError, TypeError):
-                    pass
-            results.append(d)
+        )
+        results = [self._hydrate_knowledge_row(row) for row in cursor]
         results.sort(
             key=lambda row: (
                 float(row.get("effective_confidence") or 0.0),
