@@ -8,34 +8,22 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from .graph import ComputationGraph
 from ._template_helpers import (
-    MOTIF_CLASS_ATTENTION,
-    MOTIF_CLASS_CONV,
-    MOTIF_CLASS_EFFICIENT_PROJ,
-    MOTIF_CLASS_GATE,
-    MOTIF_CLASS_MOE,
     MOTIF_CLASS_NORM,
     MOTIF_CLASS_SSM,
     MotifWeights,
     _FFN_CLASSES,
-    _SPARSE_FFN_CLASSES,
     _fix_dim,
     _instantiate_motif,
     _pick_compatible_motif,
     _pick_compatible_motif_from_classes,
-    _tpl_attention_ffn_block,
-    record_template_slot_binding,
     template_add_op as _add,
     template_add_residual as _residual,
 )
-from ._selection_utils import with_local_wildcard_probability
 from ._templates_attention_tail import (
-    _add_explicit_norm,
     _pick_with_local_wildcard,
-    _tpl_attn_op_chain,
     _tpl_controlled_attn_matmul_ablation,
     _tpl_softmax_matmul_tail,
 )
-
 
 
 def tpl_attn_softmax_normalized_matmul(
@@ -95,9 +83,7 @@ def tpl_attn_softmax_normalized_matmul_v2(
     pb = _fix_dim(graph, pb)
 
     # Merge parallel paths
-    merged = _residual(
-        graph, pa, pb, context="attn_softmax_normalized_matmul_v2.merge"
-    )
+    merged = _residual(graph, pa, pb, context="attn_softmax_normalized_matmul_v2.merge")
     merged = _fix_dim(graph, merged)
     mid = _residual(
         graph, input_id, merged, context="attn_softmax_normalized_matmul_v2.mid"
@@ -129,7 +115,10 @@ def tpl_attn_softmax_normalized_matmul_compact_ffn(
 ) -> int:
     """Winner-derived variant that changes only the final FFN width."""
     return _tpl_softmax_matmul_tail(
-        graph, input_id, name="attn_softmax_normalized_matmul_compact_ffn", ffn_ratio=2.0
+        graph,
+        input_id,
+        name="attn_softmax_normalized_matmul_compact_ffn",
+        ffn_ratio=2.0,
     )
 
 
@@ -141,28 +130,10 @@ def tpl_attn_softmax_normalized_matmul_fixed_tail_norm(
 ) -> int:
     """Winner-derived variant that fixes the tail norm placement."""
     return _tpl_softmax_matmul_tail(
-        graph, input_id, name="attn_softmax_normalized_matmul_fixed_tail_norm", ffn_ratio=3.0
-    )
-
-    tail_in = _add(
         graph,
-        "rmsnorm",
-        [mid2],
-        context="attn_softmax_normalized_matmul_fixed_tail_norm.tail_norm",
-    )
-    ffned = _add(
-        graph,
-        "swiglu_mlp",
-        [tail_in],
-        {"mlp_ratio": 3.0},
-        context="attn_softmax_normalized_matmul_fixed_tail_norm.ffn",
-    )
-    ffned = _fix_dim(graph, ffned)
-    return _residual(
-        graph,
-        mid2,
-        ffned,
-        context="attn_softmax_normalized_matmul_fixed_tail_norm.output",
+        input_id,
+        name="attn_softmax_normalized_matmul_fixed_tail_norm",
+        ffn_ratio=3.0,
     )
 
 
@@ -610,9 +581,7 @@ def tpl_attn_softmax_matmul_sparse_tail(
     pb = _fix_dim(graph, pb)
 
     # Merge parallel paths
-    merged = _residual(
-        graph, pa, pb, context="attn_softmax_matmul_sparse_tail.merge"
-    )
+    merged = _residual(graph, pa, pb, context="attn_softmax_matmul_sparse_tail.merge")
     merged = _fix_dim(graph, merged)
     mid = _residual(
         graph, input_id, merged, context="attn_softmax_matmul_sparse_tail.mid"
@@ -623,7 +592,9 @@ def tpl_attn_softmax_matmul_sparse_tail(
         graph, mid, rng, MOTIF_CLASS_NORM, weights, wildcard_prob=0.0
     )
     normed2 = _instantiate_motif(graph, mid, norm2, rng) if norm2 else mid
-    ffn = _pick_compatible_motif_from_classes(graph, normed2, rng, _FFN_CLASSES, weights)
+    ffn = _pick_compatible_motif_from_classes(
+        graph, normed2, rng, _FFN_CLASSES, weights
+    )
     if ffn:
         ffned = _instantiate_motif(graph, normed2, ffn, rng)
     else:
@@ -746,5 +717,3 @@ def tpl_attn_linear_matmul_router_sidecar(
         use_matmul_refine=True,
         tail_kind="router_sidecar",
     )
-
-

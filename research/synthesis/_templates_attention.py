@@ -627,11 +627,8 @@ def tpl_attn_bottleneck_hybrid(
     original sparse bottleneck (D→D//2→sparse→D) which killed gradient
     flow through 50% of dimensions.
     """
-    D = graph.model_dim
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
-
-    D = graph.model_dim
 
     # Path A: attention
     attn = _pick_compatible_motif(graph, normed, rng, MOTIF_CLASS_ATTENTION, weights)

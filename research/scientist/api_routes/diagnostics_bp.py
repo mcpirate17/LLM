@@ -13,7 +13,6 @@ logger = logging.getLogger(__name__)
 
 def register_diagnostics_routes(app, context: ApiRouteContext):
     notebook_path = context.notebook_path
-    wnb = with_notebook_context(notebook_path)
     wnb_writer = with_notebook_context(notebook_path, read_only=False)
 
     def api_fingerprint_diagnostics():

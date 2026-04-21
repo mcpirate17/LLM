@@ -8,34 +8,19 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from .graph import ComputationGraph
 from ._template_helpers import (
-    MOTIF_CLASS_ATTENTION,
-    MOTIF_CLASS_CONV,
     MOTIF_CLASS_EFFICIENT_PROJ,
-    MOTIF_CLASS_GATE,
-    MOTIF_CLASS_MOE,
     MOTIF_CLASS_NORM,
     MOTIF_CLASS_SSM,
     MotifWeights,
     _FFN_CLASSES,
-    _SPARSE_FFN_CLASSES,
     _fix_dim,
     _instantiate_motif,
     _pick_compatible_motif,
     _pick_compatible_motif_from_classes,
-    _tpl_attention_ffn_block,
     record_template_slot_binding,
     template_add_op as _add,
     template_add_residual as _residual,
 )
-from ._selection_utils import with_local_wildcard_probability
-from ._templates_attention_tail import (
-    _add_explicit_norm,
-    _pick_with_local_wildcard,
-    _tpl_attn_op_chain,
-    _tpl_controlled_attn_matmul_ablation,
-    _tpl_softmax_matmul_tail,
-)
-
 
 
 def _tpl_novel_mixing_block(
@@ -52,20 +37,35 @@ def _tpl_novel_mixing_block(
     D = graph.model_dim
     normed = _add(graph, "rmsnorm", [input_id], context=f"{template_ctx}.norm1")
     pa = _add(graph, primary_op, [normed], context=f"{template_ctx}.primary")
-    pa = _add(graph, "linear_proj", [pa], {"out_dim": D}, context=f"{template_ctx}.primary_proj")
+    pa = _add(
+        graph,
+        "linear_proj",
+        [pa],
+        {"out_dim": D},
+        context=f"{template_ctx}.primary_proj",
+    )
     pb = _add(graph, complement_op, [normed], context=f"{template_ctx}.complement")
     pb = _fix_dim(graph, pb)
     merged = _residual(graph, pa, pb, context=f"{template_ctx}.merge")
     merged = _fix_dim(graph, merged)
     mid = _residual(graph, input_id, merged, context=f"{template_ctx}.mid")
     normed2 = _add(graph, "rmsnorm", [mid], context=f"{template_ctx}.norm2")
-    ffned = _add(graph, "swiglu_mlp", [normed2], {"mlp_ratio": 4.0}, context=f"{template_ctx}.ffn")
+    ffned = _add(
+        graph,
+        "swiglu_mlp",
+        [normed2],
+        {"mlp_ratio": 4.0},
+        context=f"{template_ctx}.ffn",
+    )
     ffned = _fix_dim(graph, ffned)
     return _residual(graph, mid, ffned, context=f"{template_ctx}.output")
 
 
 def tpl_difficulty_routed_attention_block(
-    graph: ComputationGraph, input_id: int, rng: random.Random, weights: MotifWeights = None,
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
 ) -> int:
     """rmsnorm → {difficulty_routed_attention || state_space} → merge → residual → rmsnorm → swiglu → residual.
 
@@ -73,14 +73,20 @@ def tpl_difficulty_routed_attention_block(
     this repo plus an SSM complement.
     """
     return _tpl_novel_mixing_block(
-        graph, input_id, rng, weights,
+        graph,
+        input_id,
+        rng,
+        weights,
         primary_op="difficulty_routed_attention",
         template_ctx="difficulty_routed_attention_block",
     )
 
 
 def tpl_strided_attention_block(
-    graph: ComputationGraph, input_id: int, rng: random.Random, weights: MotifWeights = None,
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
 ) -> int:
     """rmsnorm → {strided_attention || state_space} → merge → residual → rmsnorm → swiglu → residual.
 
@@ -88,14 +94,20 @@ def tpl_strided_attention_block(
     over key/value positions for multi-scale coverage.
     """
     return _tpl_novel_mixing_block(
-        graph, input_id, rng, weights,
+        graph,
+        input_id,
+        rng,
+        weights,
         primary_op="strided_attention",
         template_ctx="strided_attention_block",
     )
 
 
 def tpl_gated_progressive_attention_block(
-    graph: ComputationGraph, input_id: int, rng: random.Random, weights: MotifWeights = None,
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
 ) -> int:
     """rmsnorm → {gated_progressive_attention || state_space} → merge → residual → rmsnorm → swiglu → residual.
 
@@ -103,14 +115,20 @@ def tpl_gated_progressive_attention_block(
     (bias=-2) that learns how much attention output to use.
     """
     return _tpl_novel_mixing_block(
-        graph, input_id, rng, weights,
+        graph,
+        input_id,
+        rng,
+        weights,
         primary_op="gated_progressive_attention",
         template_ctx="gated_progressive_attention_block",
     )
 
 
 def tpl_gated_linear_attention_block(
-    graph: ComputationGraph, input_id: int, rng: random.Random, weights: MotifWeights = None,
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
 ) -> int:
     """rmsnorm → {gated_linear_attention || state_space} → merge → residual → rmsnorm → swiglu → residual.
 
@@ -118,14 +136,20 @@ def tpl_gated_linear_attention_block(
     Trains in parallel like transformer, infers like RNN. Used by Qwen3-Next.
     """
     return _tpl_novel_mixing_block(
-        graph, input_id, rng, weights,
+        graph,
+        input_id,
+        rng,
+        weights,
         primary_op="gated_linear_attention",
         template_ctx="gated_linear_attention_block",
     )
 
 
 def tpl_long_conv_hyena_block(
-    graph: ComputationGraph, input_id: int, rng: random.Random, weights: MotifWeights = None,
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
 ) -> int:
     """rmsnorm → {long_conv_hyena || gated_linear_attention} → merge → residual → rmsnorm → swiglu → residual.
 
@@ -133,7 +157,10 @@ def tpl_long_conv_hyena_block(
     the GLA side handles sharper retrieval.
     """
     return _tpl_novel_mixing_block(
-        graph, input_id, rng, weights,
+        graph,
+        input_id,
+        rng,
+        weights,
         primary_op="long_conv_hyena",
         complement_op="gated_linear_attention",
         template_ctx="long_conv_hyena_block",
@@ -141,7 +168,10 @@ def tpl_long_conv_hyena_block(
 
 
 def tpl_associative_memory_block(
-    graph: ComputationGraph, input_id: int, rng: random.Random, weights: MotifWeights = None,
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
 ) -> int:
     """rmsnorm → {associative_memory || state_space} → merge → residual → rmsnorm → swiglu → residual.
 
@@ -149,14 +179,20 @@ def tpl_associative_memory_block(
     here as dense causal query-key-value retrieval.
     """
     return _tpl_novel_mixing_block(
-        graph, input_id, rng, weights,
+        graph,
+        input_id,
+        rng,
+        weights,
         primary_op="associative_memory",
         template_ctx="associative_memory_block",
     )
 
 
 def tpl_mixture_of_recursions_block(
-    graph: ComputationGraph, input_id: int, rng: random.Random, weights: MotifWeights = None,
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
 ) -> int:
     """rmsnorm → {mixture_of_recursions || gated_delta} → merge → residual → rmsnorm → swiglu → residual.
 
@@ -164,7 +200,10 @@ def tpl_mixture_of_recursions_block(
     refinement steps. Paired with gated delta rule for targeted state writes.
     """
     return _tpl_novel_mixing_block(
-        graph, input_id, rng, weights,
+        graph,
+        input_id,
+        rng,
+        weights,
         primary_op="mixture_of_recursions",
         complement_op="gated_delta",
         template_ctx="mixture_of_recursions_block",
@@ -214,7 +253,9 @@ def tpl_codex_ssm_retention_block(
         input_node_id=pa,
     )
     pa = _add(graph, "shared_basis_proj", [pa], context=f"{name}.retention_basis")
-    pa = _add(graph, "linear_proj", [pa], {"out_dim": D}, context=f"{name}.retention_out")
+    pa = _add(
+        graph, "linear_proj", [pa], {"out_dim": D}, context=f"{name}.retention_out"
+    )
 
     pb = _add(graph, "state_space", [normed], context=f"{name}.memory")
     record_template_slot_binding(
@@ -403,9 +444,15 @@ def tpl_codex_ssm_mla_gated_block(
 
     norm2 = _pick_compatible_motif(graph, mid, rng, MOTIF_CLASS_NORM, weights)
     normed2 = _instantiate_motif(graph, mid, norm2, rng) if norm2 else mid
-    ffn = _pick_compatible_motif_from_classes(graph, normed2, rng, _FFN_CLASSES, weights)
-    ffned = _instantiate_motif(graph, normed2, ffn, rng) if ffn else _add(
-        graph, "swiglu_mlp", [normed2], {"mlp_ratio": 3.0}, context=f"{name}.ffn"
+    ffn = _pick_compatible_motif_from_classes(
+        graph, normed2, rng, _FFN_CLASSES, weights
+    )
+    ffned = (
+        _instantiate_motif(graph, normed2, ffn, rng)
+        if ffn
+        else _add(
+            graph, "swiglu_mlp", [normed2], {"mlp_ratio": 3.0}, context=f"{name}.ffn"
+        )
     )
     ffned = _fix_dim(graph, ffned)
     return _residual(graph, mid, ffned, context=f"{name}.output")
@@ -462,9 +509,15 @@ def tpl_codex_ssm_local_recall_block(
 
     norm2 = _pick_compatible_motif(graph, mid, rng, MOTIF_CLASS_NORM, weights)
     normed2 = _instantiate_motif(graph, mid, norm2, rng) if norm2 else mid
-    ffn = _pick_compatible_motif_from_classes(graph, normed2, rng, _FFN_CLASSES, weights)
-    ffned = _instantiate_motif(graph, normed2, ffn, rng) if ffn else _add(
-        graph, "swiglu_mlp", [normed2], {"mlp_ratio": 4.0}, context=f"{name}.ffn"
+    ffn = _pick_compatible_motif_from_classes(
+        graph, normed2, rng, _FFN_CLASSES, weights
+    )
+    ffned = (
+        _instantiate_motif(graph, normed2, ffn, rng)
+        if ffn
+        else _add(
+            graph, "swiglu_mlp", [normed2], {"mlp_ratio": 4.0}, context=f"{name}.ffn"
+        )
     )
     ffned = _fix_dim(graph, ffned)
     return _residual(graph, mid, ffned, context=f"{name}.output")
@@ -517,14 +570,14 @@ def tpl_recursive_attn_ssm_depth(
         context="recursive_attn_ssm_depth.recursion",
     )
     recursed = _fix_dim(graph, recursed)
-    mid = _residual(
-        graph, input_id, recursed, context="recursive_attn_ssm_depth.mid"
-    )
+    mid = _residual(graph, input_id, recursed, context="recursive_attn_ssm_depth.mid")
 
     # FFN sub-block
     norm2 = _pick_compatible_motif(graph, mid, rng, MOTIF_CLASS_NORM, weights)
     normed2 = _instantiate_motif(graph, mid, norm2, rng) if norm2 else mid
-    ffn = _pick_compatible_motif_from_classes(graph, normed2, rng, _FFN_CLASSES, weights)
+    ffn = _pick_compatible_motif_from_classes(
+        graph, normed2, rng, _FFN_CLASSES, weights
+    )
     ffned = _instantiate_motif(graph, normed2, ffn, rng) if ffn else normed2
     ffned = _fix_dim(graph, ffned)
     return _residual(graph, mid, ffned, context="recursive_attn_ssm_depth.output")
@@ -580,7 +633,9 @@ def tpl_latent_attn_padic_hybrid(
     # FFN sub-block
     norm2 = _pick_compatible_motif(graph, mid, rng, MOTIF_CLASS_NORM, weights)
     normed2 = _instantiate_motif(graph, mid, norm2, rng) if norm2 else mid
-    ffn = _pick_compatible_motif_from_classes(graph, normed2, rng, _FFN_CLASSES, weights)
+    ffn = _pick_compatible_motif_from_classes(
+        graph, normed2, rng, _FFN_CLASSES, weights
+    )
     ffned = _instantiate_motif(graph, normed2, ffn, rng) if ffn else normed2
     ffned = _fix_dim(graph, ffned)
     return _residual(graph, mid, ffned, context="latent_attn_padic_hybrid.output")
@@ -626,16 +681,14 @@ def tpl_graph_attn_ssm_recursive(
     # Merge parallel paths
     merged = _residual(graph, pa, pb, context="graph_attn_ssm_recursive.merge")
     merged = _fix_dim(graph, merged)
-    mid = _residual(
-        graph, input_id, merged, context="graph_attn_ssm_recursive.mid"
-    )
+    mid = _residual(graph, input_id, merged, context="graph_attn_ssm_recursive.mid")
 
     # FFN sub-block
     norm2 = _pick_compatible_motif(graph, mid, rng, MOTIF_CLASS_NORM, weights)
     normed2 = _instantiate_motif(graph, mid, norm2, rng) if norm2 else mid
-    ffn = _pick_compatible_motif_from_classes(graph, normed2, rng, _FFN_CLASSES, weights)
+    ffn = _pick_compatible_motif_from_classes(
+        graph, normed2, rng, _FFN_CLASSES, weights
+    )
     ffned = _instantiate_motif(graph, normed2, ffn, rng) if ffn else normed2
     ffned = _fix_dim(graph, ffned)
     return _residual(graph, mid, ffned, context="graph_attn_ssm_recursive.output")
-
-

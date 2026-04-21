@@ -146,7 +146,6 @@ def tpl_conv_residual_retrieval_v2(
     Sidecar: binding_write/read through matmul+gather_topk, gated by a
     typed-entropy controller, merged back via add.
     """
-    d = graph.model_dim
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
@@ -207,7 +206,6 @@ def tpl_state_space_retrieval_v2(
     Trunk: norm → state_space → proj → FFN motif → residual.
     Sidecar: same pattern as conv_residual_retrieval_v2.
     """
-    d = graph.model_dim
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
@@ -274,7 +272,6 @@ def tpl_latent_attn_retrieval_v2(
     path. The v2 sidecar uses matmul+gather_topk rather than softmax
     attention, so it is complementary to the attention lane.
     """
-    d = graph.model_dim
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 

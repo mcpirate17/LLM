@@ -773,7 +773,6 @@ def tpl_mamba_reference(
     Canonical Mamba block: depthwise conv → selective state-space → MLP.
     SSM baseline — linear-time sequence mixing vs quadratic attention.
     """
-    D = graph.model_dim
     # SSM sub-block
     normed1 = _add(graph, "rmsnorm", [input_id], context="mamba_reference.norm1")
 

@@ -8,13 +8,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from .graph import ComputationGraph
 from ._template_helpers import (
-    MOTIF_CLASS_ATTENTION,
-    MOTIF_CLASS_CHANNEL,
-    MOTIF_CLASS_CONV,
-    MOTIF_CLASS_EFFICIENT_PROJ,
-    MOTIF_CLASS_MATH_SPACE,
     MOTIF_CLASS_NORM,
-    MOTIF_CLASS_SSM,
     MotifWeights,
     _FFN_CLASSES,
     _MIXER_CLASSES,
@@ -27,28 +21,12 @@ from ._template_helpers import (
     template_add_residual as _residual,
 )
 from ._templates_routing import (
-    _apply_optional_single_input_ops,
     _multiscale_gate_config,
     _multiscale_merge_config,
     _multiscale_sparse_router_config,
     _next_multiscale_hard_config,
     _next_multiscale_medium_config,
-    _single_input_op_config,
-    DIFFICULTY_ROUTER_HARD_ATTENTION_OPS,
-    DIFFICULTY_ROUTER_HARD_LANE_OPS,
-    DIFFICULTY_ROUTER_MEDIUM_LANE_OPS,
-    INTELLIGENT_EASY_MANDATORY_OPS,
-    INTELLIGENT_EASY_OPTIONAL_OPS,
-    INTELLIGENT_HARD_MANDATORY_OPS,
-    INTELLIGENT_HARD_OPTIONAL_OPS,
-    INTELLIGENT_MEDIUM_MANDATORY_OPS,
-    INTELLIGENT_MEDIUM_OPTIONAL_OPS,
-    INTELLIGENT_POST_MERGE_OPTIONAL_OPS,
-    INTELLIGENT_PRE_ROUTER_OPTIONAL_OPS,
-    NEXT_MULTISCALE_HARD_LANE_OPS,
-    NEXT_MULTISCALE_MEDIUM_LANE_OPS,
 )
-
 
 
 def tpl_difficulty_routed_block(
@@ -1042,5 +1020,3 @@ def tpl_multiscale_rich_lane_router(
     return _residual(
         graph, input_id, merged, context="multiscale_rich_lane_router.output_residual"
     )
-
-
