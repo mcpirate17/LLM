@@ -626,6 +626,21 @@ CREATE TABLE IF NOT EXISTS selection_family_stats (
     last_updated REAL
 );
 
+CREATE TABLE IF NOT EXISTS selection_family_trials (
+    trial_id TEXT PRIMARY KEY,
+    decision_id TEXT REFERENCES selection_decisions(decision_id),
+    timestamp REAL NOT NULL,
+    context TEXT NOT NULL,
+    source_experiment_id TEXT,
+    family TEXT NOT NULL,
+    chosen_result_ids_json TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    reward REAL,
+    outcome TEXT,
+    resolved_timestamp REAL,
+    metadata_json TEXT
+);
+
 CREATE TABLE IF NOT EXISTS selection_insight_trials (
     trial_id TEXT PRIMARY KEY,
     decision_id TEXT REFERENCES selection_decisions(decision_id),
@@ -655,6 +670,45 @@ CREATE TABLE IF NOT EXISTS selection_insight_interactions (
     PRIMARY KEY (insight_a, insight_b)
 );
 
+CREATE TABLE IF NOT EXISTS followup_tasks (
+    task_id TEXT PRIMARY KEY,
+    timestamp REAL NOT NULL,
+    stage TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'queued',
+    source_context TEXT,
+    source_decision_id TEXT REFERENCES selection_decisions(decision_id),
+    source_experiment_id TEXT,
+    result_ids_json TEXT NOT NULL,
+    hypothesis TEXT,
+    config_json TEXT,
+    evidence_pack_json TEXT,
+    priority_score REAL DEFAULT 0.0,
+    priority_reasons_json TEXT,
+    started_timestamp REAL,
+    completed_timestamp REAL,
+    outcome TEXT,
+    metadata_json TEXT
+);
+
+CREATE TABLE IF NOT EXISTS threshold_calibrations (
+    calibration_id TEXT PRIMARY KEY,
+    timestamp REAL NOT NULL,
+    context TEXT NOT NULL,
+    tier_clause TEXT,
+    floor REAL,
+    percentile REAL,
+    selected_threshold REAL NOT NULL,
+    fallback_threshold REAL,
+    sample_size INTEGER,
+    labeled_size INTEGER,
+    positive_count INTEGER,
+    negative_count INTEGER,
+    objective REAL,
+    threshold_delta REAL,
+    metrics_json TEXT,
+    metadata_json TEXT
+);
+
 CREATE TABLE IF NOT EXISTS knowledge_base (
     entry_id TEXT PRIMARY KEY,
     timestamp REAL NOT NULL,
@@ -680,9 +734,14 @@ CREATE INDEX IF NOT EXISTS idx_decisions_type ON decisions(decision_type);
 CREATE INDEX IF NOT EXISTS idx_attribution_hypothesis ON attribution_reports(hypothesis_id);
 CREATE INDEX IF NOT EXISTS idx_novelty_calibration_ref ON novelty_calibration(reference_version, timestamp);
 CREATE INDEX IF NOT EXISTS idx_selection_decisions_context ON selection_decisions(context);
+CREATE INDEX IF NOT EXISTS idx_selection_family_trials_status ON selection_family_trials(status, timestamp);
+CREATE INDEX IF NOT EXISTS idx_selection_family_trials_family ON selection_family_trials(family, timestamp);
 CREATE INDEX IF NOT EXISTS idx_selection_insight_trials_status ON selection_insight_trials(status, timestamp);
 CREATE INDEX IF NOT EXISTS idx_selection_insight_trials_context ON selection_insight_trials(context, timestamp);
 CREATE INDEX IF NOT EXISTS idx_selection_insight_interactions_reward ON selection_insight_interactions(mean_reward DESC, n_trials DESC);
+CREATE INDEX IF NOT EXISTS idx_followup_tasks_stage_status ON followup_tasks(stage, status, priority_score DESC, timestamp ASC);
+CREATE INDEX IF NOT EXISTS idx_followup_tasks_context ON followup_tasks(source_context, timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_threshold_calibrations_context ON threshold_calibrations(context, timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_knowledge_category ON knowledge_base(category);
 CREATE INDEX IF NOT EXISTS idx_knowledge_status ON knowledge_base(status);
 

@@ -170,11 +170,20 @@ class _CycleMixin:
         ):
             stale_ids = self._check_stale_screening_candidates(nb, config)
             if stale_ids:
-                self._pending_investigation = {
-                    "result_ids": stale_ids,
-                    "config": config,
-                    "hypothesis": f"Priority investigation: {len(stale_ids)} screening models beat reference baselines but are uninvestigated.",
-                }
+                self._queue_pending_followup(
+                    nb=nb,
+                    stage="investigation",
+                    result_ids=stale_ids,
+                    config=config,
+                    survivor_count=len(stale_ids),
+                    qualifying_count=len(stale_ids),
+                    source_context="stale_screening_recovery",
+                    priority_score=0.7,
+                    priority_reasons={
+                        "policy": "stale_screening_recovery",
+                        "reason": "screening_models_beat_reference_but_were_not_investigated",
+                    },
+                )
 
         pending_inv = getattr(self, "_pending_investigation", None)
         pending_val = getattr(self, "_pending_validation", None)

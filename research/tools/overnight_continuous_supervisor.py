@@ -15,6 +15,7 @@ and a timestamped file under research/logs/.
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import shlex
@@ -40,7 +41,7 @@ LOG_DIR = ROOT / "research" / "logs"
 API_ROOT = "http://127.0.0.1:5000"
 DASHBOARD_CMD = [sys.executable, "-m", "research", "--mode=dashboard", "--port", "5000"]
 DASHBOARD_PATTERN = "python -m research --mode=dashboard --port 5000"
-CHECK_MINUTES = [2, 4, 6, 8, 10, 12, 14, 24, 34, 44, 54, 64, 74]
+CHECK_MINUTES = list(range(2, 15, 2)) + list(range(24, 10 * 60 + 1, 10))
 CORE_ENDPOINTS = [
     "/api/aria/cycle-status",
     "/api/diagnostics/fingerprint",
@@ -57,6 +58,30 @@ LOG_ERROR_MARKERS = (
     "cannot import name",
     " -> 500",
 )
+PROMOTABLE_EXPERIMENT_TYPES = (
+    "synthesis",
+    "novelty",
+    "evolution",
+    "reference",
+    "backfill",
+    "forced_exploration",
+    "ablation",
+)
+HTTP_LOG_MARKERS = (
+    '"GET /api/',
+    '"POST /api/',
+    '"OPTIONS /api/',
+)
+
+
+def build_check_minutes(total_minutes: int) -> List[int]:
+    total = max(2, int(total_minutes))
+    checks = [minute for minute in range(2, min(total, 14) + 1, 2)]
+    if total > 14:
+        checks.extend(range(24, total + 1, 10))
+    if checks[-1] != total:
+        checks.append(total)
+    return sorted(set(checks))
 
 
 def now_iso() -> str:
@@ -107,13 +132,20 @@ def latest_runtime_event_mtime() -> float:
 class Supervisor:
     log_path: Path
     dashboard_output_path: Path
+    check_minutes: List[int] = field(default_factory=lambda: list(CHECK_MINUTES))
+    max_wall_minutes: Optional[int] = None
+    shutdown_command: Optional[str] = None
+    activity_stall_minutes: int = 25
+    dashboard_start_retries: int = 3
     log_offset: int = 0
     sequence_started_at: float = 0.0
+    overall_started_at: float = 0.0
     reset_count: int = 0
     last_runtime_event_mtime: float = field(default_factory=latest_runtime_event_mtime)
     last_cycle_transition_ts: float = 0.0
     last_cycle_experiment_id: str = ""
     check_index: int = 0
+    last_meaningful_log_ts: float = 0.0
 
     def log(self, message: str) -> None:
         line = f"[{now_iso()}] {message}"
@@ -159,7 +191,7 @@ class Supervisor:
                 return pid
         return None
 
-    def wait_for_dashboard(self, timeout_s: float = 45.0) -> bool:
+    def wait_for_dashboard(self, timeout_s: float = 60.0) -> bool:
         deadline = time.time() + timeout_s
         while time.time() < deadline:
             status, _ = read_http_json("/api/aria/cycle-status", timeout=5.0)
@@ -174,23 +206,27 @@ class Supervisor:
             self.log(f"Dashboard already running (pid={pid}).")
             return True
 
-        self.log("Starting dashboard on port 5000.")
-        with self.dashboard_output_path.open("a", encoding="utf-8") as out:
-            proc = subprocess.Popen(
-                DASHBOARD_CMD,
-                cwd=ROOT,
-                stdout=out,
-                stderr=subprocess.STDOUT,
-                start_new_session=True,
+        for attempt in range(1, self.dashboard_start_retries + 1):
+            self.log(
+                f"Starting dashboard on port 5000 (attempt {attempt}/{self.dashboard_start_retries})."
             )
-        ok = self.wait_for_dashboard()
-        if ok:
-            self.log(f"Dashboard started (pid={proc.pid}).")
-        else:
+            with self.dashboard_output_path.open("a", encoding="utf-8") as out:
+                proc = subprocess.Popen(
+                    DASHBOARD_CMD,
+                    cwd=ROOT,
+                    stdout=out,
+                    stderr=subprocess.STDOUT,
+                    start_new_session=True,
+                )
+            ok = self.wait_for_dashboard(timeout_s=60.0 if attempt == 1 else 90.0)
+            if ok:
+                self.log(f"Dashboard started (pid={proc.pid}).")
+                return True
             self.log(
                 f"Dashboard failed to become healthy after start (pid={proc.pid})."
             )
-        return ok
+            self.stop_dashboard(f"failed_start_attempt_{attempt}")
+        return False
 
     def stop_dashboard(self, reason: str) -> None:
         pid = self.find_dashboard_pid()
@@ -267,14 +303,61 @@ class Supervisor:
             return []
         if not chunk:
             return []
-        return [line for line in chunk.splitlines() if line.strip()]
+        lines = [line for line in chunk.splitlines() if line.strip()]
+        if any(
+            not any(marker in line for marker in HTTP_LOG_MARKERS) for line in lines
+        ):
+            self.last_meaningful_log_ts = time.time()
+        return lines
+
+    def current_experiment_activity_mtime(self, experiment_id: str) -> float:
+        exp_id = str(experiment_id or "").strip()
+        if not exp_id:
+            return 0.0
+        latest = 0.0
+        try:
+            conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
+            conn.row_factory = sqlite3.Row
+            try:
+                row = conn.execute(
+                    """
+                    SELECT MAX(timestamp) AS latest_program_ts
+                    FROM program_results
+                    WHERE experiment_id = ?
+                    """,
+                    (exp_id,),
+                ).fetchone()
+                latest = max(latest, float(row["latest_program_ts"] or 0.0))
+            finally:
+                conn.close()
+        except (sqlite3.OperationalError, OSError, TypeError, ValueError):
+            pass
+
+        ckpt_dir = ROOT / "checkpoints" / exp_id
+        if ckpt_dir.exists():
+            try:
+                latest = max(
+                    latest,
+                    max(
+                        (
+                            path.stat().st_mtime
+                            for path in ckpt_dir.rglob("*")
+                            if path.is_file()
+                        ),
+                        default=0.0,
+                    ),
+                )
+            except OSError:
+                pass
+        return latest
 
     def db_health_snapshot(self) -> Dict[str, int]:
         conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
         conn.row_factory = sqlite3.Row
         try:
+            promotable_sql = ",".join(repr(x) for x in PROMOTABLE_EXPERIMENT_TYPES)
             row = conn.execute(
-                """
+                f"""
                 SELECT
                     SUM(
                         CASE WHEN pr.fingerprint_json IS NOT NULL
@@ -315,7 +398,7 @@ class Supervisor:
                         FROM program_results p
                         JOIN experiments e ON e.experiment_id = p.experiment_id
                         WHERE p.stage1_passed = 1
-                          AND e.experiment_type IN ('synthesis', 'novelty', 'evolution', 'reference')
+                          AND e.experiment_type IN ({promotable_sql})
                           AND NOT EXISTS (SELECT 1 FROM leaderboard l WHERE l.result_id = p.result_id)
                           AND NOT EXISTS (
                                 SELECT 1
@@ -392,8 +475,63 @@ class Supervisor:
         finally:
             nb.close()
 
+    def repair_leaderboard_coverage(self) -> Dict[str, Any]:
+        from research.scientist.notebook import LabNotebook
+
+        nb = LabNotebook(str(DB_PATH))
+        try:
+            result = nb.backfill_missing_screening_leaderboard_entries(
+                experiment_types=list(PROMOTABLE_EXPERIMENT_TYPES)
+            )
+            return result
+        finally:
+            nb.close()
+
+    def repair_stranded_experiments(
+        self,
+        *,
+        active_experiment_id: str = "",
+        min_age_minutes: int = 2,
+        reason: str,
+    ) -> Dict[str, Any]:
+        from research.scientist.notebook import LabNotebook
+
+        nb = LabNotebook(str(DB_PATH))
+        try:
+            cutoff = time.time() - (max(0, int(min_age_minutes)) * 60)
+            rows = nb.conn.execute(
+                """
+                SELECT experiment_id
+                FROM experiments
+                WHERE status = 'running'
+                  AND started_at <= ?
+                ORDER BY started_at ASC
+                """,
+                (cutoff,),
+            ).fetchall()
+            active = str(active_experiment_id or "").strip()
+            repaired: List[str] = []
+            skipped: List[str] = []
+            for row in rows:
+                experiment_id = str(row["experiment_id"] or "").strip()
+                if not experiment_id:
+                    continue
+                if active and experiment_id == active:
+                    skipped.append(experiment_id)
+                    continue
+                nb.interrupt_experiment(
+                    experiment_id,
+                    f"INTERRUPTED: supervisor repair ({reason})",
+                )
+                repaired.append(experiment_id)
+            return {"repaired": repaired, "skipped": skipped}
+        finally:
+            nb.close()
+
     def reset_sequence(self, reason: str) -> None:
         self.reset_count += 1
+        if self.overall_started_at <= 0:
+            self.overall_started_at = time.time()
         self.sequence_started_at = time.time()
         self.check_index = 0
         self.last_runtime_event_mtime = latest_runtime_event_mtime()
@@ -406,14 +544,26 @@ class Supervisor:
 
     def intervene_and_reset(self, reason: str) -> None:
         self.log(f"Intervention triggered: {reason}")
+        previous_active_experiment = self.last_cycle_experiment_id
         self.stop_dashboard(reason)
+        stranded = self.repair_stranded_experiments(
+            active_experiment_id="",
+            reason=reason,
+        )
+        self.log(f"Stranded experiment repair: {stranded}")
         repaired = self.repair_fingerprint_mismatches()
         self.log(f"Repair result: {repaired}")
+        coverage = self.repair_leaderboard_coverage()
+        self.log(f"Coverage repair result: {coverage}")
         if not self.start_dashboard():
             raise RuntimeError("Dashboard failed to restart after intervention")
         if not self.ensure_continuous_running():
             raise RuntimeError(
                 "Continuous session failed to restart after intervention"
+            )
+        if previous_active_experiment:
+            self.log(
+                f"Previous active experiment before intervention was {previous_active_experiment[:12]}."
             )
         self.reset_sequence(reason)
 
@@ -466,14 +616,28 @@ class Supervisor:
             anomalies.append(f"dashboard_errors:{sample}")
 
         runtime_mtime = latest_runtime_event_mtime()
+        activity_stall_s = max(5, int(self.activity_stall_minutes)) * 60
+        exp_activity_mtime = self.current_experiment_activity_mtime(
+            str(cycle_status.get("experiment_id") or "")
+        )
+        latest_activity_mtime = max(
+            runtime_mtime,
+            self.last_meaningful_log_ts,
+            exp_activity_mtime,
+        )
         if (
             cycle_status_code == 200
             and cycle_status.get("is_running")
             and self.last_runtime_event_mtime > 0
             and runtime_mtime <= self.last_runtime_event_mtime
-            and (time.time() - runtime_mtime) > 12 * 60
+            and (time.time() - latest_activity_mtime) > activity_stall_s
         ):
-            anomalies.append(f"runtime_events_stalled:last_mtime={runtime_mtime:.3f}")
+            anomalies.append(
+                "runtime_events_stalled:"
+                f"runtime={runtime_mtime:.3f}:"
+                f"log={self.last_meaningful_log_ts:.3f}:"
+                f"exp={exp_activity_mtime:.3f}"
+            )
         self.last_runtime_event_mtime = max(
             self.last_runtime_event_mtime, runtime_mtime
         )
@@ -493,11 +657,22 @@ class Supervisor:
     def run(self) -> int:
         self.log(f"Supervisor starting. Root={ROOT} DB={DB_PATH}")
         self.log(f"Dashboard log={DASHBOARD_LOG}")
+        self.overall_started_at = time.time()
         if DASHBOARD_LOG.exists():
             try:
                 self.log_offset = DASHBOARD_LOG.stat().st_size
             except OSError:
                 self.log_offset = 0
+        status, payload = read_http_json("/api/aria/cycle-status")
+        active_exp_id = ""
+        if status == 200 and payload.get("is_running"):
+            active_exp_id = str(payload.get("experiment_id") or "")
+        stranded = self.repair_stranded_experiments(
+            active_experiment_id=active_exp_id,
+            reason="startup_repair",
+        )
+        if stranded.get("repaired"):
+            self.log(f"Startup stranded experiment repair: {stranded}")
         if not self.start_dashboard():
             self.log("Supervisor aborting: dashboard is unavailable.")
             return 1
@@ -506,26 +681,77 @@ class Supervisor:
             return 1
         self.reset_sequence("initial continuous launch")
 
-        while self.check_index < len(CHECK_MINUTES):
-            target_elapsed = CHECK_MINUTES[self.check_index] * 60
+        while self.check_index < len(self.check_minutes):
+            if self.max_wall_minutes is not None:
+                overall_deadline = self.overall_started_at + (
+                    self.max_wall_minutes * 60
+                )
+                if time.time() >= overall_deadline:
+                    break
+            target_elapsed = self.check_minutes[self.check_index] * 60
             deadline = self.sequence_started_at + target_elapsed
+            if self.max_wall_minutes is not None:
+                deadline = min(deadline, overall_deadline)
             sleep_s = max(0.0, deadline - time.time())
             self.log(
-                f"Sleeping {sleep_s:.1f}s until check {self.check_index + 1}/{len(CHECK_MINUTES)} "
-                f"at +{CHECK_MINUTES[self.check_index]}m."
+                f"Sleeping {sleep_s:.1f}s until check {self.check_index + 1}/{len(self.check_minutes)} "
+                f"at +{self.check_minutes[self.check_index]}m."
             )
             time.sleep(sleep_s)
+            if self.max_wall_minutes is not None and time.time() >= overall_deadline:
+                break
             reset = self.check_once()
             if not reset:
                 self.check_index += 1
 
-        self.log(
-            "Supervisor completed full overnight watch window without further resets."
-        )
+        self.log("Supervisor completed requested watch window without further resets.")
         return 0
+
+    def run_shutdown_command(self) -> int:
+        command = str(self.shutdown_command or "").strip()
+        if not command:
+            return 0
+        self.log(f"Running shutdown command: {command}")
+        proc = subprocess.run(
+            command,
+            cwd=ROOT,
+            shell=True,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if proc.stdout.strip():
+            self.log(f"Shutdown command stdout:\n{proc.stdout.strip()}")
+        if proc.stderr.strip():
+            self.log(f"Shutdown command stderr:\n{proc.stderr.strip()}")
+        self.log(f"Shutdown command exit code: {proc.returncode}")
+        return int(proc.returncode)
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Supervise Aria continuous mode on a bounded cadence."
+    )
+    parser.add_argument(
+        "--total-minutes",
+        type=int,
+        default=10 * 60,
+        help="Total wall-clock watch window in minutes.",
+    )
+    parser.add_argument(
+        "--activity-stall-minutes",
+        type=int,
+        default=25,
+        help="Minutes of no meaningful log or experiment activity before declaring a stall.",
+    )
+    parser.add_argument(
+        "--shutdown-command",
+        type=str,
+        default="",
+        help="Shell command to run after the watch window completes cleanly.",
+    )
+    args = parser.parse_args()
+
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     log_path = LOG_DIR / f"overnight_continuous_supervisor_{ts}.log"
@@ -533,9 +759,18 @@ def main() -> int:
     sup = Supervisor(
         log_path=log_path,
         dashboard_output_path=dashboard_output_path,
+        check_minutes=build_check_minutes(args.total_minutes),
+        max_wall_minutes=int(args.total_minutes),
+        shutdown_command=args.shutdown_command or None,
+        activity_stall_minutes=int(args.activity_stall_minutes),
     )
     try:
-        return sup.run()
+        rc = sup.run()
+        if rc == 0 and sup.shutdown_command:
+            shutdown_rc = sup.run_shutdown_command()
+            if shutdown_rc != 0:
+                return shutdown_rc
+        return rc
     except KeyboardInterrupt:
         sup.log("Supervisor interrupted by user.")
         return 130

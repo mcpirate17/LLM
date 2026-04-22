@@ -71,7 +71,17 @@ def _fetch_source_rows(
     ).fetchall()
     conn.close()
     row_by_id = {str(row["result_id"]): dict(row) for row in rows}
-    return [row_by_id[rid] for rid in ids if rid in row_by_id]
+    ordered = [row_by_id[rid] for rid in ids if rid in row_by_id]
+    deduped: List[Dict[str, Any]] = []
+    seen_fingerprints: set[str] = set()
+    for row in ordered:
+        fingerprint = str(row.get("graph_fingerprint") or "").strip()
+        dedup_key = fingerprint or f"result:{str(row.get('result_id') or '').strip()}"
+        if dedup_key in seen_fingerprints:
+            continue
+        seen_fingerprints.add(dedup_key)
+        deduped.append(row)
+    return deduped
 
 
 def _expand_replays(
@@ -428,9 +438,20 @@ def run_exact_replay(
     runner._ensure_math_spaces()
 
     nb = LabNotebook(str(db_path))
+    exp_config = config.to_dict()
+    exp_config["source_result_ids"] = [
+        str(row.get("result_id") or "").strip()
+        for row in rows
+        if str(row.get("result_id") or "").strip()
+    ]
+    exp_config["source_graph_fingerprints"] = [
+        str(row.get("graph_fingerprint") or "").strip()
+        for row in rows
+        if str(row.get("graph_fingerprint") or "").strip()
+    ]
     exp_id = nb.start_experiment(
         "exact_graph_replay",
-        config.to_dict(),
+        exp_config,
         hypothesis=hypothesis,
     )
     try:
@@ -496,9 +517,20 @@ def start_exact_replay_async(
     runner._ensure_math_spaces()
 
     init_nb = LabNotebook(str(db_path))
+    exp_config = config.to_dict()
+    exp_config["source_result_ids"] = [
+        str(row.get("result_id") or "").strip()
+        for row in rows
+        if str(row.get("result_id") or "").strip()
+    ]
+    exp_config["source_graph_fingerprints"] = [
+        str(row.get("graph_fingerprint") or "").strip()
+        for row in rows
+        if str(row.get("graph_fingerprint") or "").strip()
+    ]
     exp_id = init_nb.start_experiment(
         "exact_graph_replay",
-        config.to_dict(),
+        exp_config,
         hypothesis=hypothesis,
     )
     init_nb.close()

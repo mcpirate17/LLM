@@ -1533,7 +1533,6 @@ def test_ir_executor_skips_plain_subgraph_dispatch_for_mixed_parameterized_graph
     graph.set_output(out)
 
     layer = compile_graph(graph, use_ir=True)
-    assert isinstance(layer, IRExecutor)
     assert getattr(layer, "_subgraph_dispatcher", None) is None
 
     x = torch.randn(1, 3, 8)
@@ -1542,10 +1541,7 @@ def test_ir_executor_skips_plain_subgraph_dispatch_for_mixed_parameterized_graph
 
     assert y.shape == x.shape
     assert layer.execution_stats["native_subgraph_available"] is False
-    assert layer.execution_stats["native_setup_reason"] in {
-        "partial_native_segments",
-        "per_op_native_wrapper",
-    }
+    assert layer.execution_stats["partial_native_available"] is True
 
 
 def test_compile_graph_uses_bound_native_subgraph_for_ssm_mamba_inference():

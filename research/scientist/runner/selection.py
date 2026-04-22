@@ -60,6 +60,7 @@ class _SelectionMixin:
                 "policy": {"name": config.selection_policy, "exploration": False},
             }
 
+        self._resolve_pending_selection_family_trials(nb)
         self._resolve_pending_selection_insight_trials(nb)
 
         weights = {

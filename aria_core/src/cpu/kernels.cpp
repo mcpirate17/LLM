@@ -16,6 +16,7 @@
 #include "norm.cpp"
 #include "mixing.cpp"
 #include "math_space.cpp"
+#include "structural.cpp"
 #include "backward.cpp"
 #include "rwkv_time_mixing_backward.cpp"
 #include "selective_scan_compiled.cpp"

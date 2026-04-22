@@ -95,10 +95,10 @@ def test_workflow_converter_rejects_unwired_output_node():
         workflow_to_computation_graph(workflow)
 
 
-def test_compile_graph_prefers_native_subgraph_dispatch(monkeypatch):
-    import research.synthesis.ir_executor as ir_executor_mod
+def test_compile_graph_prefers_ir_executor_v2_by_default(monkeypatch):
+    import research.synthesis.ir_executor_v2 as ir_executor_v2_mod
 
-    class FakeIRExecutor(nn.Module):
+    class FakeIRExecutorV2(nn.Module):
         def __init__(self, ir, source_graph=None):
             super().__init__()
             self.ir = ir
@@ -107,7 +107,7 @@ def test_compile_graph_prefers_native_subgraph_dispatch(monkeypatch):
         def forward(self, x):
             return x
 
-    monkeypatch.setattr(ir_executor_mod, "IRExecutor", FakeIRExecutor)
+    monkeypatch.setattr(ir_executor_v2_mod, "IRExecutorV2", FakeIRExecutorV2)
 
     graph = ComputationGraph(32)
     inp = graph.add_input()
@@ -116,7 +116,7 @@ def test_compile_graph_prefers_native_subgraph_dispatch(monkeypatch):
 
     module = compile_graph(graph, use_ir=True)
 
-    assert isinstance(module, FakeIRExecutor)
+    assert isinstance(module, FakeIRExecutorV2)
     assert module.source_graph is graph
 
 
@@ -161,7 +161,7 @@ def test_compile_graph_falls_back_to_ir_executor_when_native_unavailable(monkeyp
     out = graph.add_op("topk_gate", [inp], {"k": 1})
     graph.set_output(out)
 
-    module = compile_graph(graph, use_ir=True)
+    module = compile_graph(graph, use_ir=True, executor="ir_v1")
 
     assert isinstance(module, FakeIRExecutor)
 
@@ -196,7 +196,6 @@ def test_compile_model_uses_fast_path_selection_per_layer(monkeypatch):
 def test_compile_graph_attaches_native_subgraph_dispatcher(monkeypatch):
     import research.scientist.native.autograd as native_autograd
     import research.scientist.native.dispatch as native_dispatch
-    from research.synthesis.ir_executor import IRExecutor
 
     class FakeDispatcher:
         def __init__(self, graph, supported_ops):
@@ -218,7 +217,6 @@ def test_compile_graph_attaches_native_subgraph_dispatcher(monkeypatch):
 
     module = compile_graph(graph, use_ir=True)
 
-    assert isinstance(module, IRExecutor)
     assert isinstance(module._subgraph_dispatcher, FakeDispatcher)
 
 

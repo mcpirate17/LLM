@@ -15,9 +15,11 @@ from __future__ import annotations
 
 import json
 import copy
+import math
 import random
 import sqlite3
 import time
+import zlib
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 import torch
@@ -53,30 +55,29 @@ def _graph_is_moe(graph) -> bool:
 class _SynthesisMixin:
     """Grammar config, ablation, weight management, diversity."""
 
-    @staticmethod
-    def _diversify_grammar_config(config: RunConfig, n_experiments: int) -> RunConfig:
-        """Mutate grammar parameters based on experiment number for diversity.
+    _SYNTHESIS_REGIMES: Tuple[str, ...] = (
+        "math_space_explore",
+        "deep_routing",
+        "wide_shallow",
+        "efficiency",
+        "capability_first",
+        "routing_variant",
+        "math_space_boost",
+        "exotic",
+    )
 
-        Returns a shallow copy of config with adjusted grammar settings.
-        Uses modular arithmetic to cycle through configurations deterministically.
+    @classmethod
+    def _cycle_regime_name(cls, n_experiments: int) -> str:
+        return cls._SYNTHESIS_REGIMES[n_experiments % len(cls._SYNTHESIS_REGIMES)]
 
-        User-supplied max_depth, max_ops, grammar_split_prob, and
-        three_way_split_prob are treated as floors — cycle presets can
-        raise them but never lower them below what the user requested.
-
-        Cycle allocation (mod 8):
-          0: math-space exploration
-          1: deep routing-first (routing_mandatory, 2-3 templates)
-          2: wider, shallower
-          3: efficiency mode (sparse/routing/compression)
-          4: high-risk frequency focus
-          5: routing-first variant (routing_mandatory, high ops)
-          6: default with boosted math space
-          7: exotic preset
-        """
-        cfg = copy.copy(config)
-        cycle = n_experiments % 8
-
+    @classmethod
+    def _apply_synthesis_regime(
+        cls,
+        cfg: RunConfig,
+        config: RunConfig,
+        regime: str,
+    ) -> None:
+        """Apply one named synthesis regime onto a shallow config copy."""
         # Preserve user-supplied floors
         user_max_depth = config.max_depth
         user_max_ops = config.max_ops
@@ -84,46 +85,41 @@ class _SynthesisMixin:
         user_three_way = config.three_way_split_prob
         user_residual = config.residual_prob
 
-        if cycle == 0:
+        if regime == "math_space_explore":
             cfg.math_space_weight = max(config.math_space_weight, 1.0)
             cfg.residual_prob = 0.5
             cfg.max_ops = 16
             cfg.composition_depth = 2
-        elif cycle == 1:
+        elif regime == "deep_routing":
             cfg.max_depth = 12
             cfg.max_ops = 20
             cfg.residual_prob = 0.8
             cfg.composition_depth = 3
             cfg._routing_first_mode = True
-        elif cycle == 2:
+        elif regime == "wide_shallow":
             cfg.max_depth = 8
             cfg.max_ops = 16
             cfg.residual_prob = 0.6
             cfg.composition_depth = 2
-        elif cycle == 3:
+        elif regime == "efficiency":
             cfg.max_depth = 10
             cfg.max_ops = 16
             cfg.residual_prob = 0.7
             cfg.composition_depth = 2
             cfg._efficiency_mode = True
-        elif cycle == 4:
-            # Capability-first: trunk+sidecar graphs with explicit
-            # retrieval path. Promotes role-slot templates (matmul /
-            # gather_topk sidecar) and enables gate8_retrieval_dead to
-            # stop retrieval-dead graphs from wasting investigation
-            # compute. Pairs with v8.1 scoring rebalance.
+        elif regime == "capability_first":
             cfg._capability_first_mode = True
             cfg.max_depth = 12
             cfg.max_ops = 22
             cfg.residual_prob = 0.8
             cfg.composition_depth = 3
-        elif cycle == 5:
+        elif regime == "routing_variant":
             cfg.max_depth = 10
             cfg.max_ops = 18
             cfg.residual_prob = 0.7
             cfg.composition_depth = 2
             cfg._routing_first_mode = True
-        elif cycle == 6:
+        elif regime == "math_space_boost":
             cfg.math_space_weight = max(config.math_space_weight, 2.5)
             cfg.max_depth = 10
             cfg.max_ops = 16
@@ -152,7 +148,201 @@ class _SynthesisMixin:
         if getattr(config, "_capability_first_mode", False):
             cfg._capability_first_mode = True
 
-        return cfg
+    def _recent_synthesis_regime_stats(
+        self,
+        nb: LabNotebook,
+        *,
+        limit: int = 64,
+    ) -> Dict[str, Dict[str, Any]]:
+        """Return recent realized reward summaries for adaptive regime choice."""
+        rows = nb.conn.execute(
+            """SELECT experiment_id, config_json, results_json
+               FROM experiments
+               WHERE experiment_type = 'synthesis'
+                 AND status = 'completed'
+               ORDER BY timestamp DESC
+               LIMIT ?""",
+            (max(8, int(limit)),),
+        ).fetchall()
+        if not rows:
+            return {}
+
+        exp_ids = [str(row["experiment_id"]) for row in rows if row["experiment_id"]]
+        downstream_by_exp: Dict[str, Dict[str, float]] = {}
+        if exp_ids:
+            chunk_size = 900
+            for start in range(0, len(exp_ids), chunk_size):
+                chunk = exp_ids[start : start + chunk_size]
+                placeholders = ",".join("?" for _ in chunk)
+                down_rows = nb.conn.execute(
+                    f"""SELECT
+                            pr.experiment_id,
+                            AVG(COALESCE(l.investigation_passed, 0)) AS investigate_rate,
+                            AVG(COALESCE(l.validation_passed, 0)) AS validation_rate
+                        FROM program_results pr
+                        LEFT JOIN leaderboard l ON l.result_id = pr.result_id
+                        WHERE pr.experiment_id IN ({placeholders})
+                          AND COALESCE(pr.stage1_passed, 0) = 1
+                        GROUP BY pr.experiment_id""",
+                    tuple(chunk),
+                ).fetchall()
+                for down in down_rows:
+                    downstream_by_exp[str(down["experiment_id"])] = {
+                        "investigate_rate": float(down["investigate_rate"] or 0.0),
+                        "validation_rate": float(down["validation_rate"] or 0.0),
+                    }
+
+        stats: Dict[str, Dict[str, Any]] = {}
+        for recency_idx, row in enumerate(rows):
+            raw_config = row["config_json"]
+            raw_results = row["results_json"]
+            try:
+                config_payload = json.loads(raw_config) if raw_config else {}
+            except (TypeError, json.JSONDecodeError):
+                config_payload = {}
+            try:
+                results_payload = nb._decompress(raw_results) if raw_results else {}
+            except (TypeError, ValueError, zlib.error):
+                try:
+                    results_payload = json.loads(raw_results) if raw_results else {}
+                except (TypeError, json.JSONDecodeError):
+                    results_payload = {}
+
+            regime = str(
+                config_payload.get("adaptive_synthesis_regime")
+                or config_payload.get("synthesis_regime")
+                or self._cycle_regime_name(recency_idx)
+            )
+            total = max(int(results_payload.get("total") or 0), 1)
+            s1_rate = float(results_payload.get("stage1_passed") or 0.0) / total
+            best_loss = results_payload.get("best_loss_ratio")
+            loss_term = (
+                0.0 if best_loss is None else max(0.0, min(1.0, 1.0 - float(best_loss)))
+            )
+            novelty_term = max(
+                0.0,
+                min(1.0, float(results_payload.get("best_novelty_score") or 0.0)),
+            )
+            downstream = downstream_by_exp.get(str(row["experiment_id"]), {})
+            investigate_rate = float(downstream.get("investigate_rate") or 0.0)
+            validation_rate = float(downstream.get("validation_rate") or 0.0)
+            reward = (
+                0.35 * s1_rate
+                + 0.25 * loss_term
+                + 0.15 * novelty_term
+                + 0.15 * investigate_rate
+                + 0.10 * validation_rate
+            )
+            bucket = stats.setdefault(
+                regime,
+                {
+                    "n": 0,
+                    "cumulative_reward": 0.0,
+                    "recent_weighted_reward": 0.0,
+                    "recent_weight_sum": 0.0,
+                    "mean_reward": 0.0,
+                    "investigate_rate": 0.0,
+                    "validation_rate": 0.0,
+                    "s1_rate": 0.0,
+                },
+            )
+            bucket["n"] += 1
+            bucket["cumulative_reward"] += reward
+            recency_weight = 1.0 / float(recency_idx + 1)
+            bucket["recent_weighted_reward"] += reward * recency_weight
+            bucket["recent_weight_sum"] += recency_weight
+            bucket["investigate_rate"] += investigate_rate
+            bucket["validation_rate"] += validation_rate
+            bucket["s1_rate"] += s1_rate
+
+        for regime, bucket in stats.items():
+            n = max(int(bucket["n"]), 1)
+            bucket["mean_reward"] = float(bucket["cumulative_reward"]) / n
+            recent_weight_sum = float(bucket["recent_weight_sum"] or 1.0)
+            bucket["recent_mean_reward"] = (
+                float(bucket["recent_weighted_reward"]) / recent_weight_sum
+            )
+            bucket["investigate_rate"] /= n
+            bucket["validation_rate"] /= n
+            bucket["s1_rate"] /= n
+        return stats
+
+    def _select_synthesis_regime(
+        self,
+        config: RunConfig,
+        n_experiments: int,
+        nb: Optional[LabNotebook] = None,
+    ) -> Tuple[str, Dict[str, Any]]:
+        """Choose a synthesis regime with realized-outcome UCB instead of mod-8."""
+        fallback_regime = self._cycle_regime_name(n_experiments)
+        if nb is None:
+            return fallback_regime, {
+                "policy": "mod8_fallback",
+                "regime": fallback_regime,
+                "reason": "No notebook available for adaptive regime selection.",
+            }
+
+        try:
+            regime_stats = self._recent_synthesis_regime_stats(nb, limit=64)
+        except (sqlite3.OperationalError, ValueError, TypeError) as e:
+            logger.debug("Adaptive regime stats failed: %s", e)
+            regime_stats = {}
+        if not regime_stats:
+            return fallback_regime, {
+                "policy": "mod8_fallback",
+                "regime": fallback_regime,
+                "reason": "No resolved synthesis history available.",
+            }
+
+        total_trials = sum(int(item.get("n") or 0) for item in regime_stats.values())
+        best_regime = fallback_regime
+        best_score = float("-inf")
+        score_breakdown: Dict[str, Dict[str, float]] = {}
+        for regime in self._SYNTHESIS_REGIMES:
+            stat = regime_stats.get(regime, {})
+            n_trials = int(stat.get("n") or 0)
+            mean_reward = float(stat.get("mean_reward") or 0.0)
+            recent_reward = float(stat.get("recent_mean_reward") or mean_reward)
+            uncertainty = math.sqrt(
+                math.log(max(total_trials, 1) + 1.0) / (n_trials + 1.0)
+            )
+            score = (0.55 * mean_reward) + (0.25 * recent_reward) + (0.20 * uncertainty)
+            score_breakdown[regime] = {
+                "n": float(n_trials),
+                "mean_reward": round(mean_reward, 6),
+                "recent_mean_reward": round(recent_reward, 6),
+                "uncertainty": round(uncertainty, 6),
+                "score": round(score, 6),
+            }
+            if score > best_score:
+                best_score = score
+                best_regime = regime
+
+        return best_regime, {
+            "policy": "ucb_realized_reward",
+            "regime": best_regime,
+            "fallback_regime": fallback_regime,
+            "score_breakdown": score_breakdown,
+            "history_size": int(total_trials),
+        }
+
+    def _diversify_grammar_config(
+        self,
+        config: RunConfig,
+        n_experiments: int,
+        nb: Optional[LabNotebook] = None,
+    ) -> Tuple[RunConfig, Dict[str, Any]]:
+        """Apply an adaptive synthesis regime and return the chosen policy."""
+        cfg = copy.copy(config)
+        regime, decision = self._select_synthesis_regime(
+            config=config,
+            n_experiments=n_experiments,
+            nb=nb,
+        )
+        self._apply_synthesis_regime(cfg, config, regime)
+        decision = dict(decision)
+        decision["regime"] = regime
+        return cfg, decision
 
     def _persist_applied_grammar_weights(
         self,

@@ -45,3 +45,35 @@ def test_fetch_source_rows_skips_malformed_graph_json(tmp_path):
     rows = _fetch_source_rows(db_path, ["good", "bad"])
 
     assert [row["result_id"] for row in rows] == ["good"]
+
+
+def test_fetch_source_rows_dedupes_duplicate_fingerprints(tmp_path):
+    db_path = tmp_path / "replay_dups.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        """CREATE TABLE program_results (
+            result_id TEXT PRIMARY KEY,
+            graph_json TEXT,
+            graph_fingerprint TEXT,
+            loss_ratio REAL,
+            stage1_passed INTEGER,
+            stage05_passed INTEGER,
+            timestamp REAL
+        )"""
+    )
+    conn.execute(
+        """INSERT INTO program_results
+           (result_id, graph_json, graph_fingerprint, loss_ratio, stage1_passed, stage05_passed, timestamp)
+           VALUES ('first', '{"nodes":{"0":{"op_name":"input","input_ids":[]}}}', 'fp_same', 0.5, 1, 1, 1.0)"""
+    )
+    conn.execute(
+        """INSERT INTO program_results
+           (result_id, graph_json, graph_fingerprint, loss_ratio, stage1_passed, stage05_passed, timestamp)
+           VALUES ('second', '{"nodes":{"0":{"op_name":"input","input_ids":[]}}}', 'fp_same', 0.4, 1, 1, 2.0)"""
+    )
+    conn.commit()
+    conn.close()
+
+    rows = _fetch_source_rows(db_path, ["first", "second"])
+
+    assert [row["result_id"] for row in rows] == ["first"]

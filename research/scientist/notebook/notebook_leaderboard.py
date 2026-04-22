@@ -639,6 +639,9 @@ class _LeaderboardMixin:
                 "screened_out": "l.tier = 'screened_out'",
                 "investigation": "l.tier = 'investigation'",
                 "investigation_failed": "l.tier = 'investigation_failed'",
+                "investigation_fingerprint_incomplete": (
+                    "l.tier = 'investigation_fingerprint_incomplete'"
+                ),
                 "validation": "l.tier = 'validation' AND COALESCE(l.validation_passed, 0) = 1",
                 "validation_pending": "l.tier = 'validation' AND COALESCE(l.validation_passed, 0) = 0",
                 "validation_failed": "l.tier = 'validation_failed'",

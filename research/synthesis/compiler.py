@@ -59,14 +59,16 @@ def compile_graph(
     Args:
         graph: The computation graph to compile.
         use_ir: If True (default), prefers native subgraph dispatch and falls
-            back to IRExecutor when native execution is unavailable.
-        executor: `default` preserves the current path. `ir_v2` enables the
-            isolated experimental executor instance.
+            back to an IR executor when native execution is unavailable.
+        executor: `default` resolves to `ir_v2`. Use `ir_v1` or `legacy` to
+            force the original executor path.
     """
     from .graph_validator import annotate_kv_cacheable
 
     annotate_kv_cacheable(graph)
 
+    if executor == "default":
+        return _compile_layer_module(graph, prefer_fast_path=use_ir)
     return _compile_layer_module(
         graph, prefer_fast_path=use_ir, executor_variant=executor
     )
@@ -87,13 +89,26 @@ def compile_model(
     if use_ir:
         model.layers = nn.ModuleList(
             [
-                _compile_layer_module(
-                    g, prefer_fast_path=True, executor_variant=executor
+                (
+                    _compile_layer_module(g, prefer_fast_path=True)
+                    if executor == "default"
+                    else _compile_layer_module(
+                        g, prefer_fast_path=True, executor_variant=executor
+                    )
                 )
                 for g in layer_graphs
             ]
         )
     return model
+
+
+def _resolve_executor_variant(executor_variant: str) -> str:
+    normalized = str(executor_variant or "default").strip().lower()
+    if normalized in {"default", "ir_v2", "v2"}:
+        return "ir_v2"
+    if normalized in {"ir_v1", "v1", "legacy"}:
+        return "ir_v1"
+    raise ValueError(f"Unknown executor variant: {executor_variant}")
 
 
 def _compile_layer_module(
@@ -102,6 +117,7 @@ def _compile_layer_module(
     prefer_fast_path: bool,
     executor_variant: str = "default",
 ) -> nn.Module:
+    executor_variant = _resolve_executor_variant(executor_variant)
     if not prefer_fast_path:
         layer = CompiledLayer(graph)
         native_compile.attach_partial_native_wrapper(layer, graph)

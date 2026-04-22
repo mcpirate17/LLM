@@ -269,7 +269,10 @@ def _filter_slot_candidates(
     allowed = _SLOT_MOTIF_ALLOWLIST.get(slot_key)
     if allowed is not None:
         candidates = [motif for motif in candidates if motif.name in allowed]
-    denied = _SLOT_MOTIF_DENYLIST.get(slot_key)
+    denied = set(_SLOT_MOTIF_DENYLIST.get(slot_key, ()))
+    dynamic_denied = graph.metadata.get("_slot_motif_denylist", {})
+    if isinstance(dynamic_denied, dict):
+        denied.update(dynamic_denied.get(slot_key, ()))
     if denied:
         candidates = [motif for motif in candidates if motif.name not in denied]
     return candidates
@@ -286,7 +289,16 @@ def _select_from_candidates(
     if len(candidates) == 1:
         return candidates[0]
     slot_key = _normalize_slot_key(_current_slot_key(graph))
-    slot_multipliers = _SLOT_MOTIF_WEIGHT_MULTIPLIERS.get(slot_key, {})
+    slot_multipliers = dict(_SLOT_MOTIF_WEIGHT_MULTIPLIERS.get(slot_key, {}))
+    dynamic_slot_multipliers = graph.metadata.get("_slot_motif_weight_multipliers", {})
+    if isinstance(dynamic_slot_multipliers, dict):
+        for motif_name, multiplier in (
+            dynamic_slot_multipliers.get(slot_key, {}) or {}
+        ).items():
+            try:
+                slot_multipliers[str(motif_name)] = float(multiplier)
+            except (TypeError, ValueError):
+                continue
     candidate_weights = [
         (weights.get(m.name, m.lift) if weights else m.lift)
         * slot_multipliers.get(m.name, 1.0)

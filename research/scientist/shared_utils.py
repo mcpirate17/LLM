@@ -63,6 +63,25 @@ def safe_float(value: Any, default: Optional[float] = None) -> Optional[float]:
     return f if math.isfinite(f) else default
 
 
+def coerce_finite_float(value: Any, default: Optional[float] = None) -> Optional[float]:
+    """Strict finite-float coercion matching the legacy local ``_safe_float`` helpers.
+
+    This deliberately preserves ``float(value)`` semantics and does not try to
+    decode binary blobs or reinterpret byte payloads. It exists to collapse the
+    repeated strict helpers used in training and notebook maintenance code
+    without broadening their behavior.
+    """
+    if value is None:
+        return default
+
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return default
+
+    return f if math.isfinite(f) else default
+
+
 def clamp(value: float, lo: float, hi: float) -> float:
     """Clamp *value* to the range [lo, hi]."""
     return max(lo, min(hi, value))

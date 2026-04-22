@@ -605,6 +605,10 @@ class TestNotebook(unittest.TestCase):
         self.assertEqual(row["trust_label"], "backfill_observation")
         self.assertEqual(row["comparability_label"], "reconstructed_init_variant")
         self.assertEqual(row["evaluation_protocol_version"], "backfill_replay_v1")
+        lb_row = self.nb.get_leaderboard_entry(result_id)
+        self.assertIsNotNone(lb_row)
+        self.assertEqual(lb_row["tier"], "screening")
+        self.assertEqual(int(lb_row["screening_passed"] or 0), 1)
 
     def test_record_program_result_hydrates_model_source_from_experiment_config(self):
         exp_id = self.nb.start_experiment(
@@ -2685,12 +2689,42 @@ class TestLeaderboardDedup(unittest.TestCase):
             tier="validation",
         )
 
+        rid4 = self.nb.record_program_result(
+            experiment_id=exp_id,
+            graph_fingerprint="fp_incomplete",
+            graph_json="{}",
+            model_source="graph_synthesis",
+            stage0_passed=True,
+            stage05_passed=True,
+            stage1_passed=True,
+            loss_ratio=0.25,
+            wikitext_perplexity=7.0,
+            data_mode="corpus",
+            corpus_path="/tmp/incomplete_fp.txt",
+            corpus_format="txt",
+            corpus_text_key="text",
+            corpus_train_fraction=0.9,
+            corpus_val_fraction=0.1,
+            corpus_max_chars=12000,
+            tokenizer_mode="tiktoken",
+            tiktoken_encoding="cl100k_base",
+            screening_wikitext_metric_version="screening_wikitext_v1",
+        )
+        self.nb.upsert_leaderboard(
+            result_id=rid4,
+            model_source="test",
+            screening_loss_ratio=0.25,
+            screening_passed=True,
+            tier="investigation_fingerprint_incomplete",
+        )
+
         self.nb.flush_writes()
         fps = self.nb.get_investigated_fingerprints()
         self.assertNotIn("fp_screening", fps)
         self.assertIn("fp_investigated", fps)
         self.assertIn("fp_validated", fps)
-        self.assertEqual(len(fps), 2)
+        self.assertIn("fp_incomplete", fps)
+        self.assertEqual(len(fps), 3)
 
     def test_leaderboard_consistency_report_distinguishes_descendants(self):
         exp_screen = self.nb.start_experiment("synthesis", {}, "screen")
@@ -2783,6 +2817,42 @@ class TestLeaderboardDedup(unittest.TestCase):
         self.assertEqual(result["result_ids"], [])
         self.assertIsNotNone(self.nb.get_leaderboard_entry(missing_rid))
         self.assertIsNone(self.nb.get_leaderboard_entry(descendant_rid))
+
+    def test_backfill_missing_screening_leaderboard_entries_covers_forced_and_ablation(
+        self,
+    ):
+        exp_forced = self.nb.start_experiment("forced_exploration", {}, "forced")
+        exp_ablation = self.nb.start_experiment("ablation", {}, "ablation")
+
+        forced_rid = self.nb.record_program_result(
+            experiment_id=exp_forced,
+            graph_fingerprint="fp_forced_missing_lb",
+            graph_json="{}",
+            intentional_rerun_reason="manual_backfill_seed",
+            stage1_passed=True,
+            loss_ratio=0.33,
+            novelty_score=0.51,
+        )
+        ablation_rid = self.nb.record_program_result(
+            experiment_id=exp_ablation,
+            graph_fingerprint="fp_ablation_missing_lb",
+            graph_json="{}",
+            intentional_rerun_reason="manual_backfill_seed",
+            stage1_passed=True,
+            loss_ratio=0.37,
+            novelty_score=0.49,
+        )
+        self.nb.flush_writes()
+
+        self.assertIsNone(self.nb.get_leaderboard_entry(forced_rid))
+        self.assertIsNone(self.nb.get_leaderboard_entry(ablation_rid))
+
+        result = self.nb.backfill_missing_screening_leaderboard_entries()
+
+        self.assertEqual(result["created_entries"], 2)
+        self.assertCountEqual(result["result_ids"], [forced_rid, ablation_rid])
+        self.assertIsNotNone(self.nb.get_leaderboard_entry(forced_rid))
+        self.assertIsNotNone(self.nb.get_leaderboard_entry(ablation_rid))
 
     def test_record_program_result_auto_creates_screening_leaderboard_row(self):
         exp_screen = self.nb.start_experiment("synthesis", {}, "screen")

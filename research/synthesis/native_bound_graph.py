@@ -760,12 +760,14 @@ class BoundNativeSubgraphDispatcher:
         x: torch.Tensor,
         module: torch.nn.Module,
         dim_in: int,
+        dim_out: int,
         input_ids: list[int],
         next_id: int,
         payload_specs: list[_PayloadSpec],
         nodes: list[dict],
         edges: list[dict],
     ) -> tuple[str, dict, list[int], int]:
+        del dim_out
         config = {
             **self._shape_config(x, dim_in),
             "n_heads": int(getattr(module, "_gated_delta_heads", min(8, dim_in))),

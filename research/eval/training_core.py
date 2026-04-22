@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import math
 import os
 from typing import Any, Callable, Iterable, Optional, Sequence
 
@@ -11,6 +10,7 @@ import torch
 
 from ._runner_native import load_runner_native
 from .utils import clip_grad_norm, make_adamw
+from ..scientist.shared_utils import coerce_finite_float as _safe_float
 
 
 @dataclass(slots=True)
@@ -19,14 +19,6 @@ class TrainLoopResult:
     steps_completed: int
     diverged: bool
     telemetry: Optional[dict[str, Any]] = None
-
-
-def _safe_float(value: Any) -> float | None:
-    try:
-        out = float(value)
-    except (TypeError, ValueError):
-        return None
-    return out if math.isfinite(out) else None
 
 
 _EMPTY_GRAD_STATS: dict[str, Any] = {

@@ -558,13 +558,21 @@ def register_leaderboard_routes(app, context: ApiRouteContext):
             "screening",
             "screened_out",
             "investigation",
+            "investigation_failed",
+            "investigation_fingerprint_incomplete",
             "validation",
+            "validation_failed",
             "breakthrough",
         }
         if tier not in valid_tiers:
             return jsonify(
                 {
-                    "error": "tier must be one of screening, screened_out, investigation, validation, breakthrough"
+                    "error": (
+                        "tier must be one of screening, screened_out, "
+                        "investigation, investigation_failed, "
+                        "investigation_fingerprint_incomplete, validation, "
+                        "validation_failed, breakthrough"
+                    )
                 }
             ), 400
         if not entry_id and not result_id:

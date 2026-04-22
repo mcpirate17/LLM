@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 
@@ -26,6 +27,143 @@ class _ExecutionCandidatesMixin:
     """Candidate generation, grammar config building, pending escalation."""
 
     __slots__ = ()
+
+    def _claim_pending_followup_from_notebook(self, stage: str):
+        try:
+            nb = self._make_notebook()
+        except Exception as e:
+            logger.warning(
+                "Failed to open notebook for %s follow-up claim: %s", stage, e
+            )
+            return None
+        try:
+            task = nb.claim_followup_task(stage)
+        except Exception as e:
+            logger.warning("Failed to claim %s follow-up task: %s", stage, e)
+            nb.close()
+            return None
+        nb.close()
+        if not task:
+            return None
+        config_payload = task.get("config_json") or {}
+        config = (
+            RunConfig.from_dict(config_payload)
+            if isinstance(config_payload, dict) and config_payload
+            else RunConfig()
+        )
+        return {
+            "task_id": task.get("task_id"),
+            "result_ids": list(task.get("result_ids_json") or []),
+            "config": config,
+            "hypothesis": str(task.get("hypothesis") or ""),
+            "evidence_pack": task.get("evidence_pack_json") or {},
+        }
+
+    def _finalize_followup_task(
+        self,
+        task_id: str | None,
+        *,
+        success: bool,
+        stage: str,
+        error: str | None = None,
+    ) -> None:
+        if not task_id:
+            return
+        try:
+            nb = self._make_notebook()
+        except Exception as e:
+            logger.warning("Failed to open notebook to finalize %s task: %s", stage, e)
+            return
+        try:
+            if success:
+                nb.complete_followup_task(
+                    task_id,
+                    outcome="launched",
+                    metadata={"stage": stage},
+                )
+            else:
+                nb.requeue_followup_task(
+                    task_id,
+                    outcome="launch_failed",
+                    metadata={"stage": stage, "error": str(error or "")[:500]},
+                )
+        except Exception as e:
+            logger.warning(
+                "Failed to finalize %s follow-up task %s: %s", stage, task_id, e
+            )
+        finally:
+            nb.close()
+
+    def _run_pending_replay(self) -> bool:
+        """Run one queued exact replay task through the canonical replay pipeline."""
+        if self.is_running:
+            return False
+        try:
+            nb = self._make_notebook()
+        except Exception as e:
+            logger.warning("Failed to open notebook for replay task claim: %s", e)
+            return False
+        try:
+            task = nb.claim_followup_task("replay")
+        except Exception as e:
+            logger.warning("Failed to claim replay task: %s", e)
+            nb.close()
+            return False
+        nb.close()
+        if not task:
+            return False
+
+        config_payload = task.get("config_json") or {}
+        repeat_per_source = max(
+            1,
+            min(3, int(config_payload.get("repeat_per_source") or 1)),
+        )
+        device = str(config_payload.get("device") or "cuda")
+        fast = bool(config_payload.get("fast", True))
+        result_ids = [
+            str(rid).strip()
+            for rid in (task.get("result_ids_json") or [])
+            if str(rid).strip()
+        ]
+        hypothesis = str(task.get("hypothesis") or "Active-learning exact replay")
+
+        try:
+            from research.tools.exact_graph_replay import run_exact_replay
+
+            exp_id = run_exact_replay(
+                db_path=Path(self.notebook_path),
+                result_ids=result_ids,
+                repeat_per_source=repeat_per_source,
+                device=device,
+                hypothesis=hypothesis,
+                fast=fast,
+                verbose=False,
+            )
+            nb_done = None
+            try:
+                nb_done = self._make_notebook()
+                nb_done.complete_followup_task(
+                    str(task.get("task_id") or ""),
+                    outcome="completed",
+                    metadata={"stage": "replay", "replay_experiment_id": exp_id},
+                )
+            except Exception as e:
+                logger.warning("Failed to attach replay completion metadata: %s", e)
+            finally:
+                try:
+                    nb_done.close()
+                except Exception:
+                    pass
+            return True
+        except Exception as e:
+            logger.warning("Failed to run exact replay task: %s", e)
+            self._finalize_followup_task(
+                str(task.get("task_id") or ""),
+                success=False,
+                stage="replay",
+                error=str(e),
+            )
+            return False
 
     def _generate_candidates(
         self,
@@ -694,13 +832,14 @@ class _ExecutionCandidatesMixin:
 
     def _run_pending_investigation(self):
         """Launch pending auto-investigation if queued."""
-        pending = getattr(self, "_pending_investigation", None)
-        if pending is None:
-            return
-        self._pending_investigation = None
-
         if self.is_running:
             return
+        pending = getattr(self, "_pending_investigation", None)
+        if pending is None:
+            pending = self._claim_pending_followup_from_notebook("investigation")
+            if pending is None:
+                return
+        self._pending_investigation = None
 
         try:
             self.start_investigation(
@@ -708,18 +847,30 @@ class _ExecutionCandidatesMixin:
                 config=pending["config"],
                 hypothesis=pending["hypothesis"],
             )
+            self._finalize_followup_task(
+                pending.get("task_id"),
+                success=True,
+                stage="investigation",
+            )
         except Exception as e:
             logger.warning(f"Failed to launch auto-investigation: {e}")
+            self._finalize_followup_task(
+                pending.get("task_id"),
+                success=False,
+                stage="investigation",
+                error=str(e),
+            )
 
     def _run_pending_validation(self):
         """Launch pending auto-validation if queued."""
-        pending = getattr(self, "_pending_validation", None)
-        if pending is None:
-            return
-        self._pending_validation = None
-
         if self.is_running:
             return
+        pending = getattr(self, "_pending_validation", None)
+        if pending is None:
+            pending = self._claim_pending_followup_from_notebook("validation")
+            if pending is None:
+                return
+        self._pending_validation = None
 
         try:
             self.start_validation(
@@ -728,5 +879,16 @@ class _ExecutionCandidatesMixin:
                 hypothesis=pending["hypothesis"],
                 trigger="auto_escalate",
             )
+            self._finalize_followup_task(
+                pending.get("task_id"),
+                success=True,
+                stage="validation",
+            )
         except Exception as e:
             logger.warning(f"Failed to launch auto-validation: {e}")
+            self._finalize_followup_task(
+                pending.get("task_id"),
+                success=False,
+                stage="validation",
+                error=str(e),
+            )

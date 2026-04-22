@@ -7,7 +7,8 @@ import numpy as np
 from .dim_flow_opcode_tables import (
     build_dim_flow_opcode_tables,
 )
-from .graph import ComputationGraph
+from .graph import ComputationGraph, ComputationGraphIR
+from .graph_ir_builder import build_graph_ir
 from .native_dim_flow_flags import build_dim_flow_flags_natively
 
 
@@ -35,8 +36,18 @@ def build_dim_flow_inputs(
     op_kind_identity: int,
     op_kind_binary_broadcast: int,
 ) -> DimFlowInputs:
-    analysis_ir = graph._analysis_ir()
-    analysis = analysis_ir.analyze_structure(include_reachable=True)
+    analysis_source_ir = graph._analysis_ir()
+    analysis = analysis_source_ir.analyze_structure(include_reachable=True)
+    analysis_ir = (
+        analysis_source_ir
+        if hasattr(analysis_source_ir, "op_codes")
+        and hasattr(analysis_source_ir, "input_indices")
+        else build_graph_ir(
+            graph,
+            node_ids=sorted(graph.nodes.keys()),
+            ir_cls=ComputationGraphIR,
+        )
+    )
     analysis_node_ids = (
         analysis_ir.node_ids
         if analysis_ir.node_ids is not None

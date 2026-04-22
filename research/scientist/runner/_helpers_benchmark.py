@@ -746,26 +746,46 @@ def promote_validation_candidate(
             _raw_novelty or 0.0,
             _raw_confidence or 0.0,
         )
-        cap_updates = []
         if _raw_novelty is not None:
-            cap_updates.append(("novelty_score", _raw_novelty))
+            source_row["novelty_score"] = _raw_novelty
         if _raw_confidence is not None:
-            cap_updates.append(("novelty_confidence", _raw_confidence))
-        if cap_updates:
-            try:
-                _set = ", ".join(f"{c} = ?" for c, _ in cap_updates)
-                _vals = [v for _, v in cap_updates] + [source_result_id]
-                nb._submit_write(
-                    f"UPDATE program_results SET {_set} WHERE result_id = ?",
-                    _vals,
+            source_row["novelty_confidence"] = _raw_confidence
+        try:
+            fp_payload = source_row.get("fingerprint_json")
+            if isinstance(fp_payload, str):
+                try:
+                    fp_payload = json.loads(fp_payload)
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    fp_payload = None
+            if isinstance(fp_payload, dict):
+                fp_payload = dict(fp_payload)
+                fp_payload["novelty_score"] = _raw_novelty
+                nb.sync_behavioral_fingerprint_result(
+                    result_id=source_result_id,
+                    fp_payload=fp_payload,
+                    novelty_confidence=_raw_confidence,
+                    sync_leaderboard=False,
                 )
-                nb.flush_writes()
-            except (OSError, RuntimeError) as e:
-                logger.debug(
-                    "B3 novelty cap DB update failed for %s: %s",
-                    source_result_id[:12],
-                    e,
-                )
+            else:
+                cap_updates = []
+                if _raw_novelty is not None:
+                    cap_updates.append(("novelty_score", _raw_novelty))
+                if _raw_confidence is not None:
+                    cap_updates.append(("novelty_confidence", _raw_confidence))
+                if cap_updates:
+                    _set = ", ".join(f"{c} = ?" for c, _ in cap_updates)
+                    _vals = [v for _, v in cap_updates] + [source_result_id]
+                    nb._submit_write(
+                        f"UPDATE program_results SET {_set} WHERE result_id = ?",
+                        _vals,
+                    )
+            nb.flush_writes()
+        except (OSError, RuntimeError) as e:
+            logger.debug(
+                "B3 novelty cap DB update failed for %s: %s",
+                source_result_id[:12],
+                e,
+            )
 
     nb.merge_program_result_patch(
         result_id=source_result_id,

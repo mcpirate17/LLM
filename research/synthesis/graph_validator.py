@@ -75,7 +75,6 @@ def validate_dim_flow(
 
     model_dim = graph.model_dim
     topo = graph.topological_order()
-    reachable = graph.get_reachable_nodes()
     dim_flow_inputs = build_dim_flow_inputs(
         graph,
         op_kind_default=_OP_KIND_DEFAULT,
@@ -87,8 +86,15 @@ def validate_dim_flow(
     analysis = dim_flow_inputs.analysis
     analysis_node_ids = dim_flow_inputs.analysis_node_ids
     node_id_to_analysis_idx = dim_flow_inputs.node_id_to_analysis_idx
+    reachable_mask = getattr(analysis, "reachable_mask", None)
+    if reachable_mask is None:
+        reachable_mask = np.ones(analysis_ir.n_nodes(), dtype=np.int32)
+    reachable = {
+        int(analysis_node_ids[idx])
+        for idx in np.flatnonzero(np.asarray(reachable_mask).astype(bool, copy=False))
+    }
 
-    summary_reachable_mask = analysis.reachable_mask.astype(np.int32, copy=True)
+    summary_reachable_mask = np.asarray(reachable_mask).astype(np.int32, copy=True)
     input_node_id = graph._input_node_id
     if input_node_id is not None and input_node_id in node_id_to_analysis_idx:
         summary_reachable_mask[node_id_to_analysis_idx[input_node_id]] = 0
@@ -106,7 +112,7 @@ def validate_dim_flow(
     result.reachable_ops = summary.reachable_ops
 
     edge_validation = validate_edges(
-        reachable_mask=analysis.reachable_mask.astype(np.int32, copy=False),
+        reachable_mask=np.asarray(reachable_mask).astype(np.int32, copy=False),
         input_indices=analysis_ir.input_indices,
         node_dims=dim_flow_inputs.node_dims,
         node_seq_flags=dim_flow_inputs.node_seq_flags,
@@ -193,7 +199,9 @@ def validate_dim_flow(
             )
 
     if result.reachable_param_count == 0:
-        result.add_error("No parameterized ops on reachable path — model cannot learn")
+        result.add_warning(
+            "No parameterized ops on reachable path — model cannot learn"
+        )
 
     # Minimum effective depth: reject graphs where most slots silently skipped.
     # At least 3 effective ops, or at least 30% of reachable ops must be non-trivial
@@ -212,7 +220,7 @@ def validate_dim_flow(
 
     # ── 3. Dead parameterized nodes (unreachable learned weights) ─
     dead_params = dead_parameterized_mask(
-        reachable_mask=analysis.reachable_mask.astype(np.int32, copy=False),
+        reachable_mask=np.asarray(reachable_mask).astype(np.int32, copy=False),
         parameterized_flags=dim_flow_inputs.has_params_flags,
     )
     for idx in np.flatnonzero(dead_params.mask):

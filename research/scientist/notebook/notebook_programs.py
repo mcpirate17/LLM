@@ -3,7 +3,6 @@ from __future__ import annotations
 """Auto-extracted mixin for LabNotebook."""
 
 import json
-import math
 import sqlite3
 import time
 import uuid
@@ -36,6 +35,8 @@ from .program_writes import (
     normalize_program_result_kwargs,
     should_record_program_result,
 )
+from ..shared_utils import coerce_finite_float as _safe_float
+from .notebook_leaderboard import DuplicateLeaderboardFingerprintError
 from ._shared import ExperimentEntry, LOGGER, sanitize_for_db
 
 
@@ -86,8 +87,42 @@ POST_SCREENING_SIGNAL_COLUMNS = (
 )
 
 SCREENING_EXPERIMENT_TYPES = frozenset(
-    {"synthesis", "novelty", "evolution", "reference", "backfill"}
+    {
+        "synthesis",
+        "novelty",
+        "evolution",
+        "reference",
+        "backfill",
+        "forced_exploration",
+        "ablation",
+    }
 )
+
+FINGERPRINT_PROGRAM_TO_PAYLOAD_COLUMNS = {
+    "novelty_score": "novelty_score",
+    "cka_source": "cka_source",
+    "cka_artifact_version": "cka_artifact_version",
+    "cka_probe_protocol_hash": "cka_probe_protocol_hash",
+    "cka_reference_quality": "cka_reference_quality",
+    "novelty_valid_for_promotion": "novelty_valid_for_promotion",
+    "novelty_validity_reason": "novelty_validity_reason",
+    "novelty_reference_version": "novelty_reference_version",
+    "fp_interaction_locality": "interaction_locality",
+    "fp_interaction_sparsity": "interaction_sparsity",
+    "fp_interaction_symmetry": "interaction_symmetry",
+    "fp_interaction_hierarchy": "interaction_hierarchy",
+    "fp_intrinsic_dim": "intrinsic_dim",
+    "fp_isotropy": "isotropy",
+    "fp_rank_ratio": "rank_ratio",
+    "fp_jacobian_spectral_norm": "jacobian_spectral_norm",
+    "fp_jacobian_effective_rank": "jacobian_effective_rank",
+    "fp_sensitivity_uniformity": "sensitivity_uniformity",
+    "fp_cka_vs_transformer": "cka_vs_transformer",
+    "fp_cka_vs_ssm": "cka_vs_ssm",
+    "fp_cka_vs_conv": "cka_vs_conv",
+    "fp_hierarchy_fitness": "hierarchy_fitness",
+    "fp_gromov_delta": "gromov_delta",
+}
 
 MERGE_HIGHER_BETTER_COLUMNS = {
     "novelty_score",
@@ -208,18 +243,6 @@ BACKFILL_RELABEL_COLUMNS = {
 }
 
 
-def _safe_float(value: Any) -> Optional[float]:
-    if value is None:
-        return None
-    try:
-        as_float = float(value)
-    except (TypeError, ValueError):
-        return None
-    if not math.isfinite(as_float):
-        return None
-    return as_float
-
-
 def _merge_program_value(column: str, current: Any, candidate: Any) -> Any:
     if candidate is None:
         return current
@@ -314,6 +337,7 @@ class _ProgramsMixin:
         if experiment_type == "investigation" or tier in {
             "investigation",
             "investigation_failed",
+            "investigation_fingerprint_incomplete",
         }:
             return 2
         return 1
@@ -323,7 +347,11 @@ class _ProgramsMixin:
         normalized = normalize_text(value)
         if normalized in {"validation", "validation_failed", "breakthrough"}:
             return 3
-        if normalized in {"investigation", "investigation_failed"}:
+        if normalized in {
+            "investigation",
+            "investigation_failed",
+            "investigation_fingerprint_incomplete",
+        }:
             return 2
         return 1
 
@@ -530,6 +558,27 @@ class _ProgramsMixin:
         }
         return sanitize_for_db(patch)
 
+    @classmethod
+    def _canonicalize_fingerprint_payload(
+        cls,
+        fp_payload: Dict[str, Any],
+        *,
+        program_values: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        if not isinstance(fp_payload, dict) or not fp_payload:
+            return {}
+
+        merged = dict(fp_payload)
+        for column, payload_key in FINGERPRINT_PROGRAM_TO_PAYLOAD_COLUMNS.items():
+            value = program_values.get(column)
+            if value is None:
+                continue
+            if column == "novelty_valid_for_promotion":
+                merged[payload_key] = bool(value)
+            else:
+                merged[payload_key] = value
+        return sanitize_for_db(merged)
+
     def sync_behavioral_fingerprint_result(
         self,
         *,
@@ -624,6 +673,30 @@ class _ProgramsMixin:
             if merged != current.get(column):
                 updates[column] = merged
                 current[column] = merged
+
+        fp_payload = None
+        raw_fp_payload = current.get("fingerprint_json")
+        if raw_fp_payload:
+            try:
+                fp_payload = json.loads(raw_fp_payload)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                fp_payload = None
+        if isinstance(kwargs.get("fingerprint_json"), dict):
+            fp_payload = dict(kwargs["fingerprint_json"])
+        elif isinstance(kwargs.get("fingerprint_json"), str):
+            try:
+                fp_payload = json.loads(kwargs["fingerprint_json"])
+            except (TypeError, ValueError, json.JSONDecodeError):
+                pass
+        if isinstance(fp_payload, dict):
+            canonical_fp_payload = self._canonicalize_fingerprint_payload(
+                fp_payload,
+                program_values=current,
+            )
+            canonical_fp_json = json.dumps(canonical_fp_payload)
+            if canonical_fp_json != current.get("fingerprint_json"):
+                updates["fingerprint_json"] = canonical_fp_json
+                current["fingerprint_json"] = canonical_fp_json
 
         if clear_failure_if_stage1 and current.get("stage1_passed") in (1, True):
             for column in (
@@ -1153,6 +1226,11 @@ class _ProgramsMixin:
                 except (TypeError, ValueError, json.JSONDecodeError):
                     fp_payload = None
             if isinstance(fp_payload, dict):
+                fp_payload = self._canonicalize_fingerprint_payload(
+                    fp_payload,
+                    program_values=kwargs,
+                )
+                kwargs["fingerprint_json"] = json.dumps(fp_payload)
                 for column, value in self._behavioral_fingerprint_program_fields(
                     fp_payload,
                     novelty_confidence=kwargs.get("novelty_confidence"),
@@ -1211,14 +1289,20 @@ class _ProgramsMixin:
             and experiment_type in SCREENING_EXPERIMENT_TYPES
             and bool(filtered_kwargs.get("stage1_passed"))
         ):
-            self._ensure_screening_leaderboard_entry(
-                result_id=result_id,
-                graph_fingerprint=graph_fingerprint,
-                model_source=str(
-                    filtered_kwargs.get("model_source") or "graph_synthesis"
-                ),
-                metrics=filtered_kwargs,
-            )
+            try:
+                self._ensure_screening_leaderboard_entry(
+                    result_id=result_id,
+                    graph_fingerprint=graph_fingerprint,
+                    model_source=str(
+                        filtered_kwargs.get("model_source") or "graph_synthesis"
+                    ),
+                    metrics=filtered_kwargs,
+                )
+            except DuplicateLeaderboardFingerprintError:
+                # Another result for this fingerprint already owns the canonical
+                # leaderboard row; keep the fingerprint aggregate in sync instead
+                # of silently leaving this survivor without any row coverage.
+                self._sync_fingerprint_leaderboard(result_id)
         return result_id
 
     def save_op_rehabilitation_result(
@@ -1563,6 +1647,9 @@ class _ProgramsMixin:
             "novelty",
             "evolution",
             "reference",
+            "backfill",
+            "forced_exploration",
+            "ablation",
         ]
         placeholders = ",".join("?" for _ in experiment_types)
         params: List[Any] = list(experiment_types)
@@ -1737,7 +1824,12 @@ class _ProgramsMixin:
             "SELECT DISTINCT pr.graph_fingerprint "
             "FROM leaderboard l "
             "JOIN program_results pr ON pr.result_id = l.result_id "
-            "WHERE l.tier IN ('investigation', 'validation', 'breakthrough')"
+            "WHERE l.tier IN ("
+            "'investigation', "
+            "'investigation_fingerprint_incomplete', "
+            "'validation', "
+            "'breakthrough'"
+            ")"
         ).fetchall()
         fps.update(r[0] for r in rows if r[0])
         # History-based: fingerprints tested in investigation/ablation experiments

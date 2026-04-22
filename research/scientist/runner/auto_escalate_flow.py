@@ -318,7 +318,7 @@ def prepare_validation_candidates(
                 "routing_mode": meta.get("routing_mode"),
                 "loss_ratio": row.get("best_loss_ratio"),
                 "baseline_loss_ratio": row.get("baseline_loss_ratio"),
-                "novelty_score": row.get("novelty_confidence"),
+                "novelty_score": row.get("novelty_score"),
                 "throughput_tok_s": row.get("throughput_tok_s"),
                 "flops_per_token": row.get("flops_per_token"),
                 "peak_memory_mb": row.get("peak_memory_mb"),

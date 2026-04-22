@@ -1,12 +1,14 @@
 # Hybrid Sparse Router Prototype
 
-This directory is a copy of the standalone reference implementation that was
-previously only available in `/home/tim/intelligent_router_proto`.
+This directory remains as the designer-facing prototype surface, but it no
+longer carries a second independent implementation.
 
-It lives under the `hybrid_sparse_router` component so the promoted routing
-component has the original prototype code beside its runtime manifest/fallback.
+The local headers and sources are thin forwarders to the canonical native
+implementation under `research/runtime/native/`. That keeps the historical
+prototype paths stable without allowing the C++ router logic to drift into
+parallel copies.
 
-Included files:
+Forwarded files:
 
 - `router_distilled.hpp`
 - `router_distilled.cpp`

@@ -114,6 +114,13 @@ class GrammarConfig:
     # Motif selection weights (motif_name → weight).
     # If empty, uses motif's lift score as weight.
     motif_weights: Dict[str, float] = field(default_factory=dict)
+    # Slot-specific motif priors derived from observability. Keys are
+    # ``template.slotN`` identifiers and values are per-motif multipliers.
+    slot_motif_weight_multipliers: Dict[str, Dict[str, float]] = field(
+        default_factory=dict
+    )
+    # Slot-specific motif denylist derived from repeated toxic/failing slots.
+    slot_motif_denylist: Dict[str, FrozenSet[str]] = field(default_factory=dict)
     # Number of templates to compose per graph (1-3)
     composition_depth: int = 3  # Minimum template blocks per graph
 
@@ -648,6 +655,20 @@ def generate_layer_graph(
     graph.metadata["context_rules_version"] = "low_s1_v1"
     if config.wildcard_slot_prob > 0:
         graph.metadata["_wildcard_slot_prob"] = config.wildcard_slot_prob
+    if config.slot_motif_weight_multipliers:
+        graph.metadata["_slot_motif_weight_multipliers"] = {
+            str(slot_key): {
+                str(name): float(weight) for name, weight in weights.items()
+            }
+            for slot_key, weights in config.slot_motif_weight_multipliers.items()
+            if weights
+        }
+    if config.slot_motif_denylist:
+        graph.metadata["_slot_motif_denylist"] = {
+            str(slot_key): tuple(sorted({str(name) for name in denied if str(name)}))
+            for slot_key, denied in config.slot_motif_denylist.items()
+            if denied
+        }
     # Load learned slot class expansions from wildcard success data
     if config.use_db_weights:
         slot_adaptations = _slot_adaptation_cache.get()

@@ -426,7 +426,15 @@ def sync_fingerprint_leaderboard(nb, result_id: str) -> None:
 
 
 def leaderboard_consistency_report(nb) -> Dict[str, Any]:
-    screening_modes = ("synthesis", "novelty", "evolution", "reference")
+    screening_modes = (
+        "synthesis",
+        "novelty",
+        "evolution",
+        "reference",
+        "backfill",
+        "forced_exploration",
+        "ablation",
+    )
     screening_placeholders = ",".join("?" for _ in screening_modes)
 
     def count_rows(sql: str, params: tuple[Any, ...] = ()) -> int:

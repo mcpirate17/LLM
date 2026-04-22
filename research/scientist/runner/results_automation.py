@@ -391,6 +391,11 @@ class _ResultsAutomationMixin:
 
     def _run_pending_scale_up(self):
         """Launch pending auto-scale-up, auto-investigation, or auto-validation."""
+        # Replay first: it resolves ambiguous frontier cases before we spend
+        # heavier investigation/validation budget on them.
+        if self._run_pending_replay():
+            return
+
         # Check investigation first (higher priority)
         self._run_pending_investigation()
         if self.is_running:

@@ -206,6 +206,7 @@ def tpl_state_space_retrieval_v2(
     Trunk: norm → state_space → proj → FFN motif → residual.
     Sidecar: same pattern as conv_residual_retrieval_v2.
     """
+    d = graph.model_dim
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 

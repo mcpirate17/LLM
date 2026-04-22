@@ -9,7 +9,7 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
-from ._shared import LOGGER, infer_insight_identity
+from ._shared import LOGGER, infer_insight_identity, sanitize_for_db
 
 
 class _KnowledgeMixin:
@@ -38,6 +38,45 @@ class _KnowledgeMixin:
         item = dict(row)
         for key in ("insight_ids_json", "chosen_result_ids_json", "metadata_json"):
             cls._decode_knowledge_json_field(item, key)
+        return item
+
+    @classmethod
+    def _hydrate_selection_family_trial_row(cls, row: Any) -> Dict[str, Any]:
+        item = dict(row)
+        for key in ("chosen_result_ids_json", "metadata_json"):
+            cls._decode_knowledge_json_field(item, key)
+        return item
+
+    @classmethod
+    def _hydrate_followup_task_row(cls, row: Any) -> Dict[str, Any]:
+        item = dict(row)
+        for key in (
+            "result_ids_json",
+            "config_json",
+            "evidence_pack_json",
+            "priority_reasons_json",
+            "metadata_json",
+        ):
+            cls._decode_knowledge_json_field(item, key)
+        if "config_json" in item and "config" not in item:
+            item["config"] = item.get("config_json")
+        if "evidence_pack_json" in item and "evidence_pack" not in item:
+            item["evidence_pack"] = item.get("evidence_pack_json")
+        if "priority_reasons_json" in item and "priority_reasons" not in item:
+            item["priority_reasons"] = item.get("priority_reasons_json")
+        if "metadata_json" in item and "metadata" not in item:
+            item["metadata"] = item.get("metadata_json")
+        return item
+
+    @classmethod
+    def _hydrate_threshold_calibration_row(cls, row: Any) -> Dict[str, Any]:
+        item = dict(row)
+        for key in ("metrics_json", "metadata_json"):
+            cls._decode_knowledge_json_field(item, key)
+        if "metrics_json" in item and "metrics" not in item:
+            item["metrics"] = item.get("metrics_json")
+        if "metadata_json" in item and "metadata" not in item:
+            item["metadata"] = item.get("metadata_json")
         return item
 
     @staticmethod
@@ -271,6 +310,95 @@ class _KnowledgeMixin:
         )
         return [self._hydrate_selection_insight_trial_row(row) for row in rows]
 
+    def record_selection_family_trial(
+        self,
+        decision_id: str,
+        context: str,
+        family: str,
+        chosen_result_ids: List[str],
+        source_experiment_id: Optional[str] = None,
+    ) -> str:
+        """Record one family-level selection trial for deferred outcome learning."""
+        trial_id = str(uuid.uuid4())[:12]
+        now = time.time()
+        family_name = str(family or "Unknown").strip() or "Unknown"
+        cleaned_results = sorted(
+            {str(r).strip() for r in (chosen_result_ids or []) if str(r).strip()}
+        )
+        self.conn.execute(
+            """INSERT INTO selection_family_trials
+               (trial_id, decision_id, timestamp, context, source_experiment_id,
+                family, chosen_result_ids_json, status)
+               VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')""",
+            (
+                trial_id,
+                decision_id,
+                now,
+                context or "",
+                source_experiment_id,
+                family_name,
+                json.dumps(cleaned_results),
+            ),
+        )
+        self._maybe_commit()
+        return trial_id
+
+    def get_pending_selection_family_trials(
+        self,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        """Return unresolved family-level trials."""
+        rows = self.conn.execute(
+            """SELECT * FROM selection_family_trials
+               WHERE status = 'pending'
+               ORDER BY timestamp ASC
+               LIMIT ?""",
+            (max(1, int(limit)),),
+        )
+        return [self._hydrate_selection_family_trial_row(row) for row in rows]
+
+    def resolve_selection_family_trial(
+        self,
+        trial_id: str,
+        reward: float,
+        outcome: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Resolve a family-level trial and update the family reward stats."""
+        row = self.conn.execute(
+            "SELECT * FROM selection_family_trials WHERE trial_id = ?",
+            (trial_id,),
+        ).fetchone()
+        if row is None:
+            return
+        trial = dict(row)
+        if str(trial.get("status") or "") == "resolved":
+            return
+        now = time.time()
+        reward_value = float(reward or 0.0)
+        outcome_text = str(outcome or "inconclusive").strip() or "inconclusive"
+        self.conn.execute(
+            """UPDATE selection_family_trials
+               SET status = 'resolved',
+                   reward = ?,
+                   outcome = ?,
+                   resolved_timestamp = ?,
+                   metadata_json = ?
+               WHERE trial_id = ?""",
+            (
+                reward_value,
+                outcome_text,
+                now,
+                json.dumps(metadata or {}),
+                trial_id,
+            ),
+        )
+        self.update_selection_family_stats(
+            str(trial.get("family") or "Unknown"),
+            reward=reward_value,
+        )
+        self._maybe_commit()
+
     def resolve_selection_insight_trial(
         self,
         trial_id: str,
@@ -360,6 +488,310 @@ class _KnowledgeMixin:
                 ),
             )
         self._maybe_commit()
+
+    # ── Follow-up task queue ──
+
+    def enqueue_followup_task(
+        self,
+        *,
+        stage: str,
+        result_ids: List[str],
+        hypothesis: str,
+        config: Optional[Dict[str, Any]] = None,
+        evidence_pack: Optional[Dict[str, Any]] = None,
+        source_context: Optional[str] = None,
+        source_decision_id: Optional[str] = None,
+        source_experiment_id: Optional[str] = None,
+        priority_score: float = 0.0,
+        priority_reasons: Optional[Dict[str, Any]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """Enqueue a follow-up task, deduplicating active duplicates."""
+        cleaned_stage = str(stage or "").strip().lower()
+        if not cleaned_stage:
+            raise ValueError("stage is required")
+        requested_result_ids = [
+            str(r).strip() for r in (result_ids or []) if str(r).strip()
+        ]
+        canonical_result_ids = []
+        for rid in requested_result_ids:
+            canonical = str(self.resolve_canonical_result_id(rid) or rid).strip()
+            if canonical:
+                canonical_result_ids.append(canonical)
+        cleaned_result_ids = sorted(set(canonical_result_ids))
+        if not cleaned_result_ids:
+            raise ValueError("result_ids is required")
+        result_ids_json = json.dumps(cleaned_result_ids)
+        task_metadata = dict(metadata or {})
+        if cleaned_result_ids != sorted(set(requested_result_ids)):
+            task_metadata.setdefault(
+                "requested_result_ids", sorted(set(requested_result_ids))
+            )
+            task_metadata.setdefault(
+                "canonicalized_result_ids", list(cleaned_result_ids)
+            )
+        now = time.time()
+        existing = self.conn.execute(
+            """SELECT task_id FROM followup_tasks
+               WHERE stage = ?
+                 AND result_ids_json = ?
+                 AND status IN ('queued', 'running')
+               ORDER BY timestamp DESC
+               LIMIT 1""",
+            (cleaned_stage, result_ids_json),
+        ).fetchone()
+        if existing is not None:
+            task_id = str(existing["task_id"])
+            self.conn.execute(
+                """UPDATE followup_tasks
+                   SET source_context = COALESCE(?, source_context),
+                       source_decision_id = COALESCE(?, source_decision_id),
+                       source_experiment_id = COALESCE(?, source_experiment_id),
+                       hypothesis = COALESCE(?, hypothesis),
+                       config_json = COALESCE(?, config_json),
+                       evidence_pack_json = COALESCE(?, evidence_pack_json),
+                       priority_score = MAX(priority_score, ?),
+                       priority_reasons_json = COALESCE(?, priority_reasons_json),
+                       metadata_json = COALESCE(?, metadata_json)
+                   WHERE task_id = ?""",
+                (
+                    source_context,
+                    source_decision_id,
+                    source_experiment_id,
+                    hypothesis or None,
+                    json.dumps(sanitize_for_db(config or {})) if config else None,
+                    (
+                        json.dumps(sanitize_for_db(evidence_pack or {}))
+                        if evidence_pack
+                        else None
+                    ),
+                    float(priority_score or 0.0),
+                    (
+                        json.dumps(sanitize_for_db(priority_reasons or {}))
+                        if priority_reasons
+                        else None
+                    ),
+                    json.dumps(sanitize_for_db(task_metadata or {}))
+                    if task_metadata
+                    else None,
+                    task_id,
+                ),
+            )
+            self._maybe_commit()
+            return task_id
+
+        task_id = str(uuid.uuid4())[:12]
+        self.conn.execute(
+            """INSERT INTO followup_tasks
+               (task_id, timestamp, stage, status, source_context,
+                source_decision_id, source_experiment_id, result_ids_json,
+                hypothesis, config_json, evidence_pack_json, priority_score,
+                priority_reasons_json, metadata_json)
+               VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                task_id,
+                now,
+                cleaned_stage,
+                source_context or "",
+                source_decision_id,
+                source_experiment_id,
+                result_ids_json,
+                hypothesis or "",
+                json.dumps(sanitize_for_db(config or {})) if config else None,
+                (
+                    json.dumps(sanitize_for_db(evidence_pack or {}))
+                    if evidence_pack
+                    else None
+                ),
+                float(priority_score or 0.0),
+                (
+                    json.dumps(sanitize_for_db(priority_reasons or {}))
+                    if priority_reasons
+                    else None
+                ),
+                json.dumps(sanitize_for_db(task_metadata or {}))
+                if task_metadata
+                else None,
+            ),
+        )
+        self._maybe_commit()
+        return task_id
+
+    def get_followup_tasks(
+        self,
+        *,
+        stage: Optional[str] = None,
+        status: Optional[str] = None,
+        limit: int = 50,
+    ) -> List[Dict[str, Any]]:
+        query = "SELECT * FROM followup_tasks WHERE 1=1"
+        params: List[Any] = []
+        if stage:
+            query += " AND stage = ?"
+            params.append(str(stage).strip().lower())
+        if status:
+            query += " AND status = ?"
+            params.append(str(status).strip().lower())
+        query += " ORDER BY priority_score DESC, timestamp ASC LIMIT ?"
+        params.append(max(1, int(limit)))
+        rows = self.conn.execute(query, params)
+        return [self._hydrate_followup_task_row(row) for row in rows]
+
+    def claim_followup_task(self, stage: str) -> Optional[Dict[str, Any]]:
+        """Claim the highest-priority queued follow-up task for a stage."""
+        cleaned_stage = str(stage or "").strip().lower()
+        if not cleaned_stage:
+            return None
+        row = self.conn.execute(
+            """SELECT * FROM followup_tasks
+               WHERE stage = ?
+                 AND status = 'queued'
+               ORDER BY priority_score DESC, timestamp ASC
+               LIMIT 1""",
+            (cleaned_stage,),
+        ).fetchone()
+        if row is None:
+            return None
+        task_id = str(row["task_id"])
+        self.conn.execute(
+            """UPDATE followup_tasks
+               SET status = 'running',
+                   started_timestamp = ?
+               WHERE task_id = ?
+                 AND status = 'queued'""",
+            (time.time(), task_id),
+        )
+        updated = self.conn.execute(
+            "SELECT * FROM followup_tasks WHERE task_id = ?",
+            (task_id,),
+        ).fetchone()
+        self._maybe_commit()
+        if updated is None:
+            return None
+        return self._hydrate_followup_task_row(updated)
+
+    def complete_followup_task(
+        self,
+        task_id: str,
+        *,
+        outcome: str = "launched",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        self.conn.execute(
+            """UPDATE followup_tasks
+               SET status = 'completed',
+                   outcome = ?,
+                   completed_timestamp = ?,
+                   metadata_json = COALESCE(?, metadata_json)
+               WHERE task_id = ?""",
+            (
+                str(outcome or "completed"),
+                time.time(),
+                json.dumps(sanitize_for_db(metadata or {})) if metadata else None,
+                task_id,
+            ),
+        )
+        self._maybe_commit()
+
+    def requeue_followup_task(
+        self,
+        task_id: str,
+        *,
+        outcome: str = "requeued",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        self.conn.execute(
+            """UPDATE followup_tasks
+               SET status = 'queued',
+                   outcome = ?,
+                   started_timestamp = NULL,
+                   metadata_json = COALESCE(?, metadata_json)
+               WHERE task_id = ?""",
+            (
+                str(outcome or "requeued"),
+                json.dumps(sanitize_for_db(metadata or {})) if metadata else None,
+                task_id,
+            ),
+        )
+        self._maybe_commit()
+
+    # ── Threshold calibration history ──
+
+    def record_threshold_calibration(
+        self,
+        *,
+        context: str,
+        tier_clause: str,
+        floor: float,
+        percentile: float,
+        selected_threshold: float,
+        fallback_threshold: Optional[float] = None,
+        sample_size: int = 0,
+        labeled_size: int = 0,
+        positive_count: int = 0,
+        negative_count: int = 0,
+        objective: Optional[float] = None,
+        metrics: Optional[Dict[str, Any]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        calibration_id = str(uuid.uuid4())[:12]
+        now = time.time()
+        previous = self.conn.execute(
+            """SELECT selected_threshold FROM threshold_calibrations
+               WHERE context = ?
+               ORDER BY timestamp DESC
+               LIMIT 1""",
+            (str(context or ""),),
+        ).fetchone()
+        threshold_delta = None
+        if previous is not None and previous["selected_threshold"] is not None:
+            threshold_delta = float(selected_threshold) - float(
+                previous["selected_threshold"]
+            )
+        self.conn.execute(
+            """INSERT INTO threshold_calibrations
+               (calibration_id, timestamp, context, tier_clause, floor, percentile,
+                selected_threshold, fallback_threshold, sample_size, labeled_size,
+                positive_count, negative_count, objective, threshold_delta,
+                metrics_json, metadata_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                calibration_id,
+                now,
+                str(context or ""),
+                str(tier_clause or ""),
+                float(floor or 0.0),
+                float(percentile or 0.0),
+                float(selected_threshold),
+                float(fallback_threshold) if fallback_threshold is not None else None,
+                int(sample_size or 0),
+                int(labeled_size or 0),
+                int(positive_count or 0),
+                int(negative_count or 0),
+                float(objective) if objective is not None else None,
+                threshold_delta,
+                json.dumps(sanitize_for_db(metrics or {})) if metrics else None,
+                json.dumps(sanitize_for_db(metadata or {})) if metadata else None,
+            ),
+        )
+        self._maybe_commit()
+        return calibration_id
+
+    def get_threshold_calibrations(
+        self,
+        *,
+        context: Optional[str] = None,
+        limit: int = 50,
+    ) -> List[Dict[str, Any]]:
+        query = "SELECT * FROM threshold_calibrations WHERE 1=1"
+        params: List[Any] = []
+        if context:
+            query += " AND context = ?"
+            params.append(str(context or ""))
+        query += " ORDER BY timestamp DESC LIMIT ?"
+        params.append(max(1, int(limit)))
+        rows = self.conn.execute(query, params)
+        return [self._hydrate_threshold_calibration_row(row) for row in rows]
 
     def get_selection_insight_interactions(
         self,

@@ -779,7 +779,7 @@ class _DashboardOrchestratorMixin:
     def _selection_insight_trial_rewards(
         self, entries: List[Dict[str, Any]], context: str
     ) -> Optional[List[float]]:
-        """Return per-entry rewards or None if any entry is unresolved."""
+        """Return per-entry realized rewards or None if any entry is unresolved."""
         if context == "auto_investigate_screening":
             reward_fn = self._selection_insight_reward_investigate
         elif context == "auto_validate_investigation":
@@ -794,6 +794,65 @@ class _DashboardOrchestratorMixin:
             rewards.append(r)
         return rewards
 
+    @staticmethod
+    def _selection_trial_outcome(reward: float) -> str:
+        if reward >= 0.55:
+            return "supported"
+        if reward <= 0.45:
+            return "not_supported"
+        return "inconclusive"
+
+    @staticmethod
+    def _selection_trial_leaderboard_rows(nb: LabNotebook) -> Dict[str, Dict[str, Any]]:
+        rows = nb.conn.execute(
+            """SELECT result_id, investigation_passed, investigation_loss_ratio,
+                      investigation_robustness, validation_passed,
+                      validation_loss_ratio, validation_baseline_ratio,
+                      validation_multi_seed_std
+               FROM leaderboard
+               WHERE result_id IS NOT NULL"""
+        ).fetchall()
+        return {
+            str(row["result_id"]): dict(row)
+            for row in rows
+            if row["result_id"] is not None
+        }
+
+    def _resolve_pending_selection_family_trials(self, nb: LabNotebook) -> None:
+        """Resolve pending family trials against realized downstream outcomes."""
+        try:
+            trials = nb.get_pending_selection_family_trials(limit=200)
+        except (OSError, RuntimeError) as e:
+            logger.debug("Pending selection family trials fetch failed: %s", e)
+            return
+        if not trials:
+            return
+
+        by_result = self._selection_trial_leaderboard_rows(nb)
+        for trial in trials:
+            context = str(trial.get("context") or "")
+            chosen_ids = trial.get("chosen_result_ids_json") or []
+            if not isinstance(chosen_ids, list) or not chosen_ids:
+                continue
+            entries = [by_result.get(str(rid)) for rid in chosen_ids]
+            if any(entry is None for entry in entries):
+                continue
+            rewards = self._selection_insight_trial_rewards(entries, context)
+            if not rewards:
+                continue
+            reward = float(sum(rewards) / len(rewards))
+            nb.resolve_selection_family_trial(
+                trial_id=str(trial.get("trial_id")),
+                reward=reward,
+                outcome=self._selection_trial_outcome(reward),
+                metadata={
+                    "context": context,
+                    "family": trial.get("family"),
+                    "n_candidates": len(chosen_ids),
+                    "resolved_from": "leaderboard",
+                },
+            )
+
     def _resolve_pending_selection_insight_trials(self, nb: LabNotebook) -> None:
         """Resolve pending insight-bundle trials once outcomes are available."""
         try:
@@ -804,12 +863,7 @@ class _DashboardOrchestratorMixin:
         if not trials:
             return
 
-        leaderboard = nb.get_leaderboard(limit=2000)
-        by_result = {
-            str(row.get("result_id")): row
-            for row in leaderboard
-            if row.get("result_id")
-        }
+        by_result = self._selection_trial_leaderboard_rows(nb)
         for trial in trials:
             context = str(trial.get("context") or "")
             chosen_ids = trial.get("chosen_result_ids_json") or []
@@ -824,12 +878,7 @@ class _DashboardOrchestratorMixin:
                 continue
 
             reward = float(sum(rewards) / len(rewards))
-            if reward >= 0.55:
-                outcome = "supported"
-            elif reward <= 0.45:
-                outcome = "not_supported"
-            else:
-                outcome = "inconclusive"
+            outcome = self._selection_trial_outcome(reward)
             nb.resolve_selection_insight_trial(
                 trial_id=str(trial.get("trial_id")),
                 reward=reward,

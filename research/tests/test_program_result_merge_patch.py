@@ -228,6 +228,86 @@ def test_sync_behavioral_fingerprint_result_updates_top_level_fields():
         nb.close()
 
 
+def test_record_program_result_canonicalizes_fingerprint_json_from_explicit_novelty():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        nb = LabNotebook(f"{tmpdir}/fingerprint_insert_sync.db")
+        exp_id = nb.start_experiment("synthesis", {}, "fingerprint insert sync")
+        rid = nb.record_program_result(
+            experiment_id=exp_id,
+            graph_fingerprint="fp_insert_sync",
+            graph_json="{}",
+            stage1_passed=True,
+            novelty_score=0.62,
+            novelty_confidence=0.71,
+            cka_source="deferred",
+            novelty_validity_reason="cka_deferred_post_investigation",
+            fp_jacobian_spectral_norm=12.5,
+            fingerprint_json=json.dumps(
+                {
+                    "novelty_score": 0.0,
+                    "cka_source": "none",
+                    "novelty_validity_reason": "missing_reference",
+                    "jacobian_spectral_norm": 0.0,
+                    "quality": "partial",
+                    "analyses_succeeded": 3,
+                }
+            ),
+        )
+        nb.flush_writes()
+
+        row = nb.get_program_detail(rid)
+        assert row is not None
+        fp_payload = json.loads(row["fingerprint_json"])
+        assert row["novelty_score"] == 0.62
+        assert fp_payload["novelty_score"] == 0.62
+        assert fp_payload["cka_source"] == "deferred"
+        assert (
+            fp_payload["novelty_validity_reason"] == "cka_deferred_post_investigation"
+        )
+        assert fp_payload["jacobian_spectral_norm"] == 12.5
+        nb.close()
+
+
+def test_merge_program_result_patch_keeps_fingerprint_json_synced_with_novelty_updates():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        nb = LabNotebook(f"{tmpdir}/fingerprint_merge_sync.db")
+        exp_id = nb.start_experiment("validation", {}, "fingerprint merge sync")
+        rid = nb.record_program_result(
+            experiment_id=exp_id,
+            graph_fingerprint="fp_merge_sync",
+            graph_json="{}",
+            stage1_passed=True,
+            novelty_score=0.4,
+            novelty_confidence=0.8,
+            fingerprint_json=json.dumps(
+                {
+                    "novelty_score": 0.4,
+                    "quality": "partial",
+                    "analyses_succeeded": 4,
+                    "cka_source": "deferred",
+                    "novelty_validity_reason": "cka_deferred_post_investigation",
+                }
+            ),
+        )
+        nb.flush_writes()
+
+        changed = nb.merge_program_result_patch(
+            result_id=rid,
+            novelty_score=0.5,
+            novelty_confidence=0.9,
+        )
+        nb.flush_writes()
+
+        assert changed is True
+        row = nb.get_program_detail(rid)
+        assert row is not None
+        fp_payload = json.loads(row["fingerprint_json"])
+        assert row["novelty_score"] == 0.5
+        assert row["novelty_confidence"] == 0.9
+        assert fp_payload["novelty_score"] == 0.5
+        nb.close()
+
+
 def test_record_screening_failure_merges_into_source_row_without_duplicate():
     with tempfile.TemporaryDirectory() as tmpdir:
         nb = LabNotebook(f"{tmpdir}/replay.db")
@@ -358,6 +438,75 @@ def test_promote_validation_candidate_updates_source_row_without_duplicate():
         assert lb["validation_baseline_ratio"] == 0.88
         assert lb["validation_multi_seed_std"] == 0.03
         assert int(lb["validation_passed"] or 0) == 1
+        nb.close()
+
+
+def test_promote_validation_candidate_novelty_cap_keeps_fingerprint_json_synced():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        nb = LabNotebook(f"{tmpdir}/validation_cap_sync.db")
+        exp_id = nb.start_experiment("synthesis", {}, "validation cap source")
+        rid = nb.record_program_result(
+            experiment_id=exp_id,
+            graph_fingerprint="fp_validation_cap",
+            graph_json="{}",
+            model_source="graph_synthesis",
+            stage0_passed=True,
+            stage05_passed=True,
+            stage1_passed=True,
+            loss_ratio=0.42,
+            novelty_score=0.66,
+            novelty_confidence=0.71,
+            cka_source="deferred",
+            novelty_validity_reason="cka_deferred_post_investigation",
+            fingerprint_json=json.dumps(
+                {
+                    "novelty_score": 0.66,
+                    "quality": "partial",
+                    "analyses_succeeded": 3,
+                    "cka_source": "deferred",
+                    "novelty_validity_reason": "cka_deferred_post_investigation",
+                }
+            ),
+        )
+        nb.flush_writes()
+        nb.upsert_leaderboard(
+            result_id=rid,
+            model_source="graph_synthesis",
+            screening_loss_ratio=0.42,
+            screening_novelty=0.66,
+            screening_passed=True,
+            tier="screening",
+        )
+        _mark_promotable(nb, rid)
+
+        metrics = SimpleNamespace(
+            val_loss_ratio=0.31,
+            val_baseline_ratio=0.88,
+            val_normalized_ratio=0.84,
+            val_param_efficiency=0.11,
+            multi_seed_std=0.03,
+            robustness_score=0.79,
+            is_unstable=False,
+            passed_seeds=[1, 2, 3],
+            init_sensitivity_std=0.05,
+        )
+        promote_validation_candidate(
+            nb=nb,
+            source_result_id=rid,
+            source=nb.get_program_detail(rid),
+            tier="validation",
+            metrics=metrics,
+            ev_res=_validation_ev_res(),
+            novelty_cap=0.5,
+        )
+        nb.flush_writes()
+
+        row = nb.get_program_detail(rid)
+        assert row is not None
+        fp_payload = json.loads(row["fingerprint_json"])
+        assert row["novelty_score"] == pytest.approx(0.33)
+        assert row["novelty_confidence"] == pytest.approx(0.355)
+        assert fp_payload["novelty_score"] == pytest.approx(0.33)
         nb.close()
 
 

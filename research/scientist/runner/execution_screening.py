@@ -516,6 +516,8 @@ class _ExecutionScreeningMixin:
         champion_bias: Dict[str, float] = {}
         template_weights: Dict[str, float] = {}
         motif_weights: Dict[str, float] = {}
+        slot_motif_multipliers: Dict[str, Dict[str, float]] = {}
+        slot_motif_denylist: Dict[str, frozenset[str]] = {}
         analytics = None
         grammar_gate: Optional[Dict[str, Any]] = None
         from ..ml_influence_policy import component_is_allowed
@@ -526,11 +528,17 @@ class _ExecutionScreeningMixin:
         screening_signal_allowed = component_is_allowed(
             "screening_signal_weights", config
         )
-        if use_learned_grammar and learned_grammar_allowed:
-            try:
-                from ..analytics import ExperimentAnalytics
 
-                analytics = ExperimentAnalytics(nb)
+        try:
+            from ..analytics import ExperimentAnalytics
+
+            analytics = ExperimentAnalytics(nb)
+        except Exception as e:
+            logger.debug("Experiment analytics unavailable for %s: %s", exp_id, e)
+            analytics = None
+
+        if use_learned_grammar and learned_grammar_allowed and analytics is not None:
+            try:
                 last_effective = nb.load_last_effective_weights()
                 last_weights = last_effective[0] if last_effective else None
                 grammar_weights = analytics.compute_grammar_weights(
@@ -554,122 +562,131 @@ class _ExecutionScreeningMixin:
                 logger.warning(
                     "Failed computing learned grammar weights for %s: %s", exp_id, e
                 )
+        elif use_learned_grammar and learned_grammar_allowed and analytics is None:
+            logger.info(
+                "Learned grammar weights requested for %s but analytics backend was unavailable",
+                exp_id,
+            )
         elif use_learned_grammar and not learned_grammar_allowed:
             logger.info(
                 "Learned grammar weights requested but blocked by ML trust policy"
             )
 
-            # Soft-penalize poorly-performing ops (no hard exclusion — causality
-            # sandbox gate catches truly broken ops at eval time)
-            op_weights: Dict[str, float] = {}
-            try:
-                rehab_cache = nb.get_op_rehabilitation_cache()
-                if analytics is not None:
-                    neg = analytics.negative_results_synthesis()
-                    for op_info in neg.get("failed_ops", []):
+        # Soft-penalize poorly-performing ops (no hard exclusion — causality
+        # sandbox gate catches truly broken ops at eval time). This path is
+        # evidence-aware but intentionally non-ML-governing, so it should run
+        # even when unproven learned grammar weights are blocked.
+        try:
+            rehab_cache = nb.get_op_rehabilitation_cache()
+            if analytics is not None:
+                neg = analytics.negative_results_synthesis()
+                for op_info in neg.get("failed_ops", []):
+                    if (
+                        op_info.get("s1_rate", 1) == 0
+                        and op_info.get("n_used", 0) >= 5
+                        and op_info.get("confidence", 0) >= 0.7
+                    ):
+                        op_name = op_info["op_name"]
+                        rehab = rehab_cache.get(op_name)
                         if (
-                            op_info.get("s1_rate", 1) == 0
-                            and op_info.get("n_used", 0) >= 5
-                            and op_info.get("confidence", 0) >= 0.7
+                            rehab
+                            and rehab.get("compile_passed")
+                            and rehab.get("forward_passed")
                         ):
-                            op_name = op_info["op_name"]
-                            rehab = rehab_cache.get(op_name)
-                            if (
-                                rehab
-                                and rehab.get("compile_passed")
-                                and rehab.get("forward_passed")
-                            ):
-                                op_weights[op_name] = 0.5
-                            elif op_info.get("failure_stage") == "compilation":
-                                op_weights[op_name] = 0.15
-                            else:
-                                op_weights[op_name] = 0.1
-                    for op_info in neg.get("weak_ops", []):
-                        op_name = op_info.get("op_name", "")
-                        penalty = op_info.get("penalty_weight", 1.0)
-                        if op_name:
-                            op_weights[op_name] = penalty
-                    if op_weights:
-                        self._log_learning_event_compat(
-                            nb,
-                            "weak_ops_penalized",
-                            f"Soft-penalized {len(op_weights)} weak ops: "
-                            f"{', '.join(f'{k}={v:.2f}' for k, v in sorted(op_weights.items()))}",
-                            op_weights=op_weights,
+                            op_weights[op_name] = min(
+                                float(op_weights.get(op_name, 1.0)),
+                                0.5,
+                            )
+                        elif op_info.get("failure_stage") == "compilation":
+                            op_weights[op_name] = min(
+                                float(op_weights.get(op_name, 1.0)),
+                                0.15,
+                            )
+                        else:
+                            op_weights[op_name] = min(
+                                float(op_weights.get(op_name, 1.0)),
+                                0.1,
+                            )
+                for op_info in neg.get("weak_ops", []):
+                    op_name = op_info.get("op_name", "")
+                    penalty = op_info.get("penalty_weight", 1.0)
+                    if op_name:
+                        op_weights[op_name] = min(
+                            float(op_weights.get(op_name, 1.0)),
+                            float(penalty),
                         )
-            except Exception as e:
-                logger.warning("Failed computing op penalties for %s: %s", exp_id, e)
-
-            # Load failure-signature blocklist (op-pair bigrams with high fail rate)
-            failure_blocklist: Dict[str, float] = {}
-            try:
-                failure_blocklist = nb.get_failure_signature_blocklist()
-                if failure_blocklist:
+                if op_weights:
                     self._log_learning_event_compat(
                         nb,
-                        "failure_signatures_loaded",
-                        f"Loaded {len(failure_blocklist)} toxic op-pair patterns",
-                        signatures=sorted(failure_blocklist.keys())[:10],
+                        "weak_ops_penalized",
+                        f"Soft-penalized {len(op_weights)} weak ops: "
+                        f"{', '.join(f'{k}={v:.2f}' for k, v in sorted(op_weights.items()))}",
+                        op_weights=op_weights,
                     )
-            except Exception as e:
-                logger.warning(
-                    "Failed loading failure signatures for %s: %s", exp_id, e
+        except Exception as e:
+            logger.warning("Failed computing op penalties for %s: %s", exp_id, e)
+
+        # Load failure-signature blocklist (op-pair bigrams with high fail rate)
+        try:
+            failure_blocklist = nb.get_failure_signature_blocklist()
+            if failure_blocklist:
+                self._log_learning_event_compat(
+                    nb,
+                    "failure_signatures_loaded",
+                    f"Loaded {len(failure_blocklist)} toxic op-pair patterns",
+                    signatures=sorted(failure_blocklist.keys())[:10],
                 )
+        except Exception as e:
+            logger.warning("Failed loading failure signatures for %s: %s", exp_id, e)
 
-            # Champion bias pass: nudge category weights toward proven winners.
-            # This biases the search toward high-performing projection/sparse patterns
-            # and known-good structural/sequence motifs without hard-coding op-level picks.
-            try:
-                if analytics is not None:
-                    # Use 7d windowed rates to avoid death spiral from
-                    # stale lifetime data poisoning recently-fixed ops
-                    _window_cutoff = time.time() - 604800  # 7 days
-                    op_rates = analytics.op_success_rates(since_ts=_window_cutoff) or {}
-                    if op_rates:
-                        winning_ops = {"exp", "selective_scan", "tropical_center"}
-                        projection_ops = {
-                            "low_rank_proj",
-                            "shared_basis_proj",
-                            "tied_proj",
-                        }
-                        sparse_ops = {
-                            "nm_sparse_linear",
-                            "block_sparse_linear",
-                            "semi_structured_2_4_linear",
-                        }
+        # Champion bias pass: nudge category weights toward proven winners.
+        try:
+            if analytics is not None:
+                _window_cutoff = time.time() - 604800  # 7 days
+                op_rates = analytics.op_success_rates(since_ts=_window_cutoff) or {}
+                if op_rates:
+                    winning_ops = {"exp", "selective_scan", "tropical_center"}
+                    projection_ops = {
+                        "low_rank_proj",
+                        "shared_basis_proj",
+                        "tied_proj",
+                    }
+                    sparse_ops = {
+                        "nm_sparse_linear",
+                        "block_sparse_linear",
+                        "semi_structured_2_4_linear",
+                    }
 
-                        def _is_reliable(
-                            op_name: str, min_used: int = 10, min_s1: float = 0.25
-                        ) -> bool:
-                            info = op_rates.get(op_name) or {}
-                            n_used = int(info.get("n_used") or 0)
-                            s1_rate = float(info.get("s1_rate") or 0.0)
-                            return n_used >= min_used and s1_rate >= min_s1
+                    def _is_reliable(
+                        op_name: str, min_used: int = 10, min_s1: float = 0.25
+                    ) -> bool:
+                        info = op_rates.get(op_name) or {}
+                        n_used = int(info.get("n_used") or 0)
+                        s1_rate = float(info.get("s1_rate") or 0.0)
+                        return n_used >= min_used and s1_rate >= min_s1
 
-                        has_winners = any(_is_reliable(op) for op in winning_ops)
-                        has_projection = any(_is_reliable(op) for op in projection_ops)
-                        has_sparse = any(_is_reliable(op) for op in sparse_ops)
+                    has_winners = any(_is_reliable(op) for op in winning_ops)
+                    has_projection = any(_is_reliable(op) for op in projection_ops)
+                    has_sparse = any(_is_reliable(op) for op in sparse_ops)
 
-                        if has_winners:
-                            champion_bias["structural"] = max(
-                                champion_bias.get("structural", 1.0), 1.2
-                            )
-                            champion_bias["sequence"] = max(
-                                champion_bias.get("sequence", 1.0), 1.2
-                            )
-                        if has_projection:
-                            champion_bias["parameterized"] = max(
-                                champion_bias.get("parameterized", 1.0), 1.4
-                            )
-                        if has_sparse:
-                            champion_bias["parameterized"] = max(
-                                champion_bias.get("parameterized", 1.0), 1.5
-                            )
-                            # Z7: If sparse ops are reliable, nudge the grammar hard toward them
-                            champion_bias["_structured_sparsity_bias"] = 0.8
-
-            except Exception as e:
-                logger.warning("Failed computing champion bias for %s: %s", exp_id, e)
+                    if has_winners:
+                        champion_bias["structural"] = max(
+                            champion_bias.get("structural", 1.0), 1.2
+                        )
+                        champion_bias["sequence"] = max(
+                            champion_bias.get("sequence", 1.0), 1.2
+                        )
+                    if has_projection:
+                        champion_bias["parameterized"] = max(
+                            champion_bias.get("parameterized", 1.0), 1.4
+                        )
+                    if has_sparse:
+                        champion_bias["parameterized"] = max(
+                            champion_bias.get("parameterized", 1.0), 1.5
+                        )
+                        champion_bias["_structured_sparsity_bias"] = 0.8
+        except Exception as e:
+            logger.warning("Failed computing champion bias for %s: %s", exp_id, e)
 
         if screening_signal_allowed:
             try:
@@ -677,6 +694,40 @@ class _ExecutionScreeningMixin:
             except (AttributeError, TypeError, ValueError) as e:
                 logger.debug("Failed building signal weight maps: %s", e)
                 template_weights, motif_weights = {}, {}
+            try:
+                observability_priors = nb.get_generation_observability_priors(
+                    max_rows=48,
+                    min_support=4,
+                )
+                for name, weight in (
+                    observability_priors.get("template_weights") or {}
+                ).items():
+                    template_weights[name] = max(
+                        float(template_weights.get(name, 1.0)),
+                        float(weight),
+                    )
+                for name, weight in (
+                    observability_priors.get("motif_weights") or {}
+                ).items():
+                    motif_weights[name] = max(
+                        float(motif_weights.get(name, 1.0)),
+                        float(weight),
+                    )
+                for slot_key, weights in (
+                    observability_priors.get("slot_multipliers") or {}
+                ).items():
+                    slot_motif_multipliers[str(slot_key)] = {
+                        str(name): float(weight)
+                        for name, weight in (weights or {}).items()
+                    }
+                for slot_key, denied in (
+                    observability_priors.get("slot_denylist") or {}
+                ).items():
+                    slot_motif_denylist[str(slot_key)] = frozenset(
+                        str(name) for name in (denied or []) if str(name).strip()
+                    )
+            except (AttributeError, TypeError, ValueError) as e:
+                logger.debug("Failed building observability priors: %s", e)
         else:
             template_weights, motif_weights = {}, {}
             logger.info("Screening signal weight maps disabled or blocked for this run")
@@ -731,6 +782,8 @@ class _ExecutionScreeningMixin:
         else:
             grammar.template_weights = template_weights
         grammar.motif_weights = motif_weights
+        grammar.slot_motif_weight_multipliers = slot_motif_multipliers
+        grammar.slot_motif_denylist = slot_motif_denylist
         # Apply Bayesian insight adjustments to grammar config
         if screening_signal_allowed:
             try:

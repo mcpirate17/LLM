@@ -170,6 +170,133 @@ class _ObservabilityMixin:
         )
         return result
 
+    def get_generation_observability_priors(
+        self,
+        *,
+        max_rows: int = 48,
+        min_support: int = 4,
+    ) -> Dict[str, Any]:
+        """Translate observability telemetry into live generation priors.
+
+        This is intentionally conservative: it boosts repeated winners,
+        downweights weak motifs/templates, and only applies slot-specific
+        priors when a slot has enough support to be meaningfully directional.
+        """
+
+        def _bounded(value: float, *, lo: float, hi: float) -> float:
+            return max(lo, min(hi, float(value)))
+
+        obs = self.get_template_slot_observability(limit=max_rows)
+        template_rows = obs.get("all_templates") or []
+        motif_rows = obs.get("motif_slots") or []
+        slot_rows = obs.get("all_slots") or obs.get("slot_observability") or []
+
+        template_weights: Dict[str, float] = {}
+        motif_weights: Dict[str, float] = {}
+        slot_multipliers: Dict[str, Dict[str, float]] = {}
+        slot_denylist: Dict[str, List[str]] = {}
+
+        toxic_reason_tokens = (
+            "compilation",
+            "nan",
+            "overflow",
+            "shape",
+            "invalid",
+            "causality",
+            "oom",
+        )
+
+        for row in template_rows:
+            support = int(row.get("n_used") or 0)
+            if support < min_support:
+                continue
+            name = str(row.get("name") or "").strip()
+            if not name:
+                continue
+            s1_rate = float(row.get("s1_rate") or 0.0)
+            loss_ratio = row.get("avg_validation_loss_ratio")
+            if loss_ratio is None:
+                loss_ratio = row.get("avg_loss_ratio")
+            loss_term = (
+                0.0
+                if loss_ratio is None
+                else _bounded(1.1 - float(loss_ratio), lo=0.0, hi=1.0)
+            )
+            evidence_level = str(row.get("evidence_level") or "")
+            evidence_bonus = {
+                "established": 0.25,
+                "building": 0.10,
+                "sparse": 0.0,
+                "insufficient": -0.05,
+            }.get(evidence_level, 0.0)
+            weight = 0.35 + (1.45 * s1_rate) + (0.45 * loss_term) + evidence_bonus
+            template_weights[name] = round(_bounded(weight, lo=0.2, hi=3.5), 4)
+
+        for row in motif_rows:
+            support = int(row.get("n_used") or 0)
+            if support < min_support:
+                continue
+            name = str(row.get("name") or "").strip()
+            if not name:
+                continue
+            s1_rate = float(row.get("s1_rate") or 0.0)
+            loss_ratio = row.get("avg_loss_ratio")
+            loss_term = (
+                0.0
+                if loss_ratio is None
+                else _bounded(1.05 - float(loss_ratio), lo=0.0, hi=1.0)
+            )
+            failure_reason = str(row.get("top_failure_reason") or "").lower()
+            toxic_penalty = (
+                0.2 if any(t in failure_reason for t in toxic_reason_tokens) else 0.0
+            )
+            weight = 0.25 + (1.55 * s1_rate) + (0.35 * loss_term) - toxic_penalty
+            motif_weights[name] = round(_bounded(weight, lo=0.15, hi=3.0), 4)
+
+        for row in slot_rows:
+            support = int(row.get("n_used") or 0)
+            motif_name = str(row.get("top_selected_motif") or "").strip()
+            slot_key = str(row.get("slot_key") or "").strip()
+            if support < min_support or not slot_key or not motif_name:
+                continue
+            s1_rate = float(row.get("s1_rate") or 0.0)
+            loss_ratio = row.get("avg_loss_ratio")
+            loss_term = (
+                0.0
+                if loss_ratio is None
+                else _bounded(1.05 - float(loss_ratio), lo=0.0, hi=1.0)
+            )
+            failure_reason = str(row.get("top_failure_reason") or "").lower()
+            slot_map = slot_multipliers.setdefault(slot_key, {})
+            if s1_rate >= 0.55:
+                slot_map[motif_name] = round(
+                    _bounded(
+                        1.05 + (0.65 * s1_rate) + (0.20 * loss_term), lo=1.0, hi=2.5
+                    ),
+                    4,
+                )
+            elif s1_rate <= 0.18:
+                slot_map[motif_name] = round(
+                    _bounded(0.15 + (0.85 * s1_rate), lo=0.1, hi=0.55), 4
+                )
+                if any(t in failure_reason for t in toxic_reason_tokens):
+                    slot_denylist.setdefault(slot_key, []).append(motif_name)
+
+        return {
+            "template_weights": template_weights,
+            "motif_weights": motif_weights,
+            "slot_multipliers": slot_multipliers,
+            "slot_denylist": {
+                key: sorted(set(values)) for key, values in slot_denylist.items()
+            },
+            "metadata": {
+                "min_support": int(min_support),
+                "template_count": len(template_weights),
+                "motif_count": len(motif_weights),
+                "slot_count": len(slot_multipliers),
+            },
+        }
+
     def _accumulate_observability_stats(
         self, rows: list, slot_counts: Dict[str, int]
     ) -> _ObservabilityAccumulator:

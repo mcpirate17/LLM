@@ -162,7 +162,15 @@ class _ContinuousModesMixin:
                 "hypothesis_id": hypothesis_id,
             }
 
-        exp_config = config.to_dict()
+        synth_config, regime_decision = self._diversify_grammar_config(
+            config,
+            n_experiments,
+            nb=nb,
+        )
+
+        exp_config = synth_config.to_dict()
+        exp_config["adaptive_synthesis_regime"] = regime_decision.get("regime")
+        exp_config["synthesis_regime_decision"] = regime_decision
         exp_config["use_learned_grammar_weights"] = bool(
             config.use_learned_grammar_weights and not is_control
         )
@@ -235,9 +243,6 @@ class _ContinuousModesMixin:
                 "is_control_experiment": is_control,
             },
         )
-
-        # Diversify grammar config based on experiment number
-        synth_config = self._diversify_grammar_config(config, n_experiments)
 
         results = self._execute_experiment(
             exp_id,

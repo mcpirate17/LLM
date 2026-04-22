@@ -7,6 +7,7 @@ import numpy as np
 import torch.nn as nn
 
 from .compiled_op import CompiledOp
+from .compiler_registry import load_split_op_modules
 from .graph import ComputationGraphIR, ShapeInfo
 from .primitives import REVERSE_OPCODE_MAP
 
@@ -94,6 +95,9 @@ def _build_consumer_counts(ir: ComputationGraphIR) -> np.ndarray:
 
 
 def build_executor_plan(ir: ComputationGraphIR) -> ExecutorPlan:
+    # IR executors can be instantiated without going through compiler.py,
+    # so ensure the split op registry is populated before creating CompiledOps.
+    load_split_op_modules()
     node_dims = _infer_node_dims(ir)
     n_nodes = len(ir.op_codes)
     ops = nn.ModuleList()

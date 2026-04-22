@@ -23,6 +23,11 @@ class IRExecutorV2(nn.Module):
         super().__init__()
         self._ir = ir
         self.source_graph = source_graph
+        self._subgraph_dispatcher = None
+        self._native_chain_segments = ()
+        self._native_chain_segment_slots = ()
+        self._native_forward_wrapper = None
+        self._has_native_chain_slots = False
         self._has_bound_params = bool(
             source_graph is not None
             and ir_executor_v2_native.graph_has_bound_params(source_graph)
@@ -45,6 +50,10 @@ class IRExecutorV2(nn.Module):
             **self._bound_native_inputs(),
         )
         self._native_dispatcher = native_cfg.dispatcher
+        if self._native_dispatcher is not None and getattr(
+            self._native_dispatcher, "all_native", False
+        ):
+            self._subgraph_dispatcher = self._native_dispatcher
         self._native_setup_reason = native_cfg.setup_reason
         self._native_setup_detail = native_cfg.setup_detail
         self._last_execution_path = "uninitialized"
@@ -52,6 +61,25 @@ class IRExecutorV2(nn.Module):
             "v2_native_dispatches": 0,
             "v2_fallback_dispatches": 0,
         }
+
+    def _wrapper_stats(self) -> tuple[int, int]:
+        wrapper = self._native_forward_wrapper
+        if wrapper is None:
+            return (0, 0)
+        stats = getattr(wrapper, "stats", {})
+        return (
+            int(stats.get("native_dispatches", 0)),
+            int(stats.get("fallbacks", 0)),
+        )
+
+    def _effective_setup_reason(self) -> str | None:
+        if self._subgraph_dispatcher is not None:
+            return self._native_setup_reason
+        if self._native_chain_segment_slots:
+            return "partial_native_segments"
+        if self._native_forward_wrapper is not None:
+            return "per_op_native_wrapper"
+        return self._native_setup_reason
 
     def _ensure_plan(self):
         plan = self._plan
@@ -125,14 +153,19 @@ class IRExecutorV2(nn.Module):
             and hasattr(self._native_dispatcher, "stats")
             else {}
         )
+        wrapper_dispatches, wrapper_fallbacks = self._wrapper_stats()
         return {
             "last_execution_path": self._last_execution_path,
-            "native_subgraph_available": self._native_dispatcher is not None,
-            "native_setup_reason": self._native_setup_reason,
+            "native_subgraph_available": self._subgraph_dispatcher is not None,
+            "native_setup_reason": self._effective_setup_reason(),
             "native_setup_detail": self._native_setup_detail,
             "native_subgraph_refusal_reason": dispatcher_stats.get(
                 "last_refusal_reason"
             ),
+            "native_chain_segments": len(self._native_chain_segments),
+            "partial_native_available": self._native_forward_wrapper is not None,
+            "partial_native_dispatches": wrapper_dispatches,
+            "partial_native_fallbacks": wrapper_fallbacks,
             "plan_initialized": self._plan is not None,
             **self._execution_stats,
         }

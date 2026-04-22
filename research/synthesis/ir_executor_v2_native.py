@@ -6,8 +6,6 @@ from dataclasses import dataclass
 from .graph import ComputationGraph
 from .native_compile import get_supported_native_ops
 from .native_support import graph_has_bound_params
-from .native_bound_graph import BoundNativeSubgraphDispatcher
-from ..scientist.native.autograd import SubgraphDispatcher
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +26,9 @@ def configure_ir_executor_v2_native(
     if source_graph is None:
         return IRExecutorV2NativeConfig(setup_reason="missing_source_graph")
     try:
+        from .native_bound_graph import BoundNativeSubgraphDispatcher
+        from ..scientist.native.autograd import SubgraphDispatcher
+
         supported_ops = get_supported_native_ops(source_graph)
         if not supported_ops:
             return IRExecutorV2NativeConfig(setup_reason="no_supported_native_ops")

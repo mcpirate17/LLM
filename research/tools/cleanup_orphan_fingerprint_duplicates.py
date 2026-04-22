@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import sqlite3
 import sys
 import time
@@ -43,6 +42,7 @@ from research.tools._db_maintenance import (
     table_columns,
     table_row_count,
 )
+from research.scientist.shared_utils import coerce_finite_float as _safe_float
 
 DEFAULT_DB = Path("research/lab_notebook.db")
 BACKUP_TABLE = "program_results_orphan_fingerprint_cleanup_backup"
@@ -194,18 +194,6 @@ AUX_RESULT_ID_TABLES = (
 
 def _mode_label(mode: str) -> str:
     return "single-leaderboard" if mode == "single-lb" else "orphan"
-
-
-def _safe_float(value: Any) -> Optional[float]:
-    if value is None:
-        return None
-    try:
-        f = float(value)
-    except (TypeError, ValueError):
-        return None
-    if not math.isfinite(f):
-        return None
-    return f
 
 
 def _has_post_screening_signal(row: Dict[str, Any]) -> bool:
