@@ -163,6 +163,9 @@ class ComputationGraphIR:
     configs: List[Dict]
     node_ids: Optional[np.ndarray] = None
     param_estimates: Optional[np.ndarray] = None
+    node_dims: Optional[np.ndarray] = None
+    node_seq_flags: Optional[np.ndarray] = None
+    node_ids_are_contiguous: bool = False
     source_version: int = 0  # _ir_version of source ComputationGraph at construction
     analysis_cache: Dict[str, object] = field(default_factory=dict, repr=False)
 
@@ -759,10 +762,12 @@ class ComputationGraph:
         if cached is not None:
             return cached
 
+        contiguous_ids = len(self.nodes) == self._next_id
         ir = build_graph_ir(
             self,
-            node_ids=sorted(self.nodes.keys()),
+            node_ids=range(len(self.nodes)) if contiguous_ids else self.nodes.keys(),
             ir_cls=ComputationGraphIR,
+            assume_contiguous_ids=contiguous_ids,
         )
         self._cache["analysis_ir"] = ir
         return ir

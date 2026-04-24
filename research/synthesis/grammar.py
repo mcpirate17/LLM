@@ -56,6 +56,9 @@ from .native_template_selection import (
     TemplateWeightOverrides,
     make_template_weight_overrides,
 )
+from ._routing_capable_manifest import (
+    ROUTING_CAPABLE_TEMPLATE_NAMES as _ROUTING_CAPABLE_TEMPLATE_NAMES,
+)
 
 
 # Alias for backward compatibility — some test files import Node from grammar
@@ -493,22 +496,17 @@ _ROUTING_PROBE_SEEDS: int = 8
 _ROUTING_PROBE_MIN_HITS: int = 7  # ≥ 7/8 seeds must emit routing
 
 
-def _get_routing_capable_templates() -> FrozenSet[str]:
-    """Return names of templates that reliably emit a ROUTING_COMPRESSION_MOE op.
+def _probe_routing_capable_templates() -> FrozenSet[str]:
+    """Probe templates that reliably emit a ROUTING_COMPRESSION_MOE op.
 
-    Built once on first call by dry-running each registered template across
-    several seeds. A template qualifies only if it emits a routing op in at
+    This is intentionally kept out of the runtime path. It dry-runs every
+    registered template across several seeds and is used by tests/audits to
+    refresh ``_ROUTING_CAPABLE_TEMPLATE_NAMES`` when template behavior changes.
+    A template qualifies only if it emits a routing op in at
     least ``_ROUTING_PROBE_MIN_HITS`` of ``_ROUTING_PROBE_SEEDS`` probes —
-    templates that emit routing only stochastically via motif lottery (e.g.
-    residual_block, diff_attention_block) would defeat the rescue since the
-    actual composition picks its own seed. Used by the routing_mandatory
-    rescue in generate_layer_graph to restrict the final composition slot
-    to a guaranteed-routing pool.
+    templates that emit routing only stochastically via motif lottery would
+    defeat the rescue since the actual composition picks its own seed.
     """
-    global _ROUTING_CAPABLE_TEMPLATES_CACHE
-    if _ROUTING_CAPABLE_TEMPLATES_CACHE is not None:
-        return _ROUTING_CAPABLE_TEMPLATES_CACHE
-
     # Import here to avoid circular imports at module load.
     from .templates import TEMPLATES
 
@@ -539,15 +537,31 @@ def _get_routing_capable_templates() -> FrozenSet[str]:
         if hits >= _ROUTING_PROBE_MIN_HITS:
             routing_capable.append(tpl_name)
 
-    _ROUTING_CAPABLE_TEMPLATES_CACHE = frozenset(routing_capable)
-    logger.info(
-        "Routing-capable templates: %d of %d registered "
-        "(>=%d/%d probe hits; cached for routing_mandatory rescue).",
-        len(_ROUTING_CAPABLE_TEMPLATES_CACHE),
-        len(TEMPLATES),
-        _ROUTING_PROBE_MIN_HITS,
-        _ROUTING_PROBE_SEEDS,
-    )
+    return frozenset(routing_capable)
+
+
+def _get_routing_capable_templates() -> FrozenSet[str]:
+    """Return names of templates that reliably emit a ROUTING_COMPRESSION_MOE op.
+
+    Runtime graph generation uses the maintained manifest rather than probing
+    all templates on first use. The probe is still available for tests/audits,
+    but not on the hot path.
+    """
+    global _ROUTING_CAPABLE_TEMPLATES_CACHE
+    if _ROUTING_CAPABLE_TEMPLATES_CACHE is not None:
+        return _ROUTING_CAPABLE_TEMPLATES_CACHE
+
+    # Import here to avoid circular imports at module load.
+    from .templates import TEMPLATES
+
+    unknown = _ROUTING_CAPABLE_TEMPLATE_NAMES - set(TEMPLATES)
+    if unknown:
+        raise RuntimeError(
+            "Routing-capable template manifest contains unknown templates: "
+            f"{sorted(unknown)}"
+        )
+
+    _ROUTING_CAPABLE_TEMPLATES_CACHE = _ROUTING_CAPABLE_TEMPLATE_NAMES
     return _ROUTING_CAPABLE_TEMPLATES_CACHE
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import Any
 
 import torch
@@ -35,147 +36,144 @@ def _sum_histograms(histograms: list[torch.Tensor]) -> torch.Tensor | None:
     return acc
 
 
-def _init_totals() -> dict[str, Any]:
-    return {
-        "heatmaps": {},
-        "total_savings": 0.0,
-        "total_depth_ratio": 0.0,
-        "routing_op_count": 0,
-        "tokens_total": 0,
-        "keep_count": 0,
-        "drop_count": 0,
-        "default_path_count": 0,
-        "routed_token_count": 0,
-        "sparse_span_count": 0,
-        "sparse_span_width_sum": 0.0,
-        "sparse_span_width_count": 0,
-        "sparse_span_coverage_tokens": 0,
-        "lane_histogram": None,
-        "lane_histograms": [],
-        "confidence_histogram": None,
-        "confidence_histograms": [],
-        "confidence_sum": 0.0,
-        "confidence_sq_sum": 0.0,
-        "confidence_count": 0,
-        "route_strength_sum": 0.0,
-        "route_strength_count": 0,
-        "branch_weight_sum": None,
-        "branch_weight_sums": [],
-        "branch_weight_count": 0,
-        "branch_dominance_sum": 0.0,
-        "routed_branch_share_sum": 0.0,
-        "medium_branch_share_sum": 0.0,
-        "hard_branch_share_sum": 0.0,
-        "routing_modes": set(),
-        "gate_types": set(),
-        "span_types": set(),
-        "lane_count_max": 0,
-        "trace_payloads": {},
-    }
+@dataclass(slots=True)
+class _RoutingTelemetryTotals:
+    heatmaps: dict[str, Any] = field(default_factory=dict)
+    total_savings: float = 0.0
+    total_depth_ratio: float = 0.0
+    routing_op_count: int = 0
+    tokens_total: int = 0
+    keep_count: int = 0
+    drop_count: int = 0
+    default_path_count: int = 0
+    routed_token_count: int = 0
+    sparse_span_count: int = 0
+    sparse_span_width_sum: float = 0.0
+    sparse_span_width_count: int = 0
+    sparse_span_coverage_tokens: int = 0
+    lane_histogram: torch.Tensor | None = None
+    lane_histograms: list[torch.Tensor] = field(default_factory=list)
+    confidence_histogram: torch.Tensor | None = None
+    confidence_histograms: list[torch.Tensor] = field(default_factory=list)
+    confidence_sum: float = 0.0
+    confidence_sq_sum: float = 0.0
+    confidence_count: int = 0
+    route_strength_sum: float = 0.0
+    route_strength_count: int = 0
+    branch_weight_sum: torch.Tensor | None = None
+    branch_weight_sums: list[torch.Tensor] = field(default_factory=list)
+    branch_weight_count: int = 0
+    branch_dominance_sum: float = 0.0
+    routed_branch_share_sum: float = 0.0
+    medium_branch_share_sum: float = 0.0
+    hard_branch_share_sum: float = 0.0
+    routing_modes: set[str] = field(default_factory=set)
+    gate_types: set[str] = field(default_factory=set)
+    span_types: set[str] = field(default_factory=set)
+    lane_count_max: int = 0
+    trace_payloads: dict[str, Any] = field(default_factory=dict)
+
+    def finalize_histograms(self) -> None:
+        self.lane_histogram = _sum_histograms(self.lane_histograms)
+        self.confidence_histogram = _sum_histograms(self.confidence_histograms)
+        self.branch_weight_sum = _sum_histograms(self.branch_weight_sums)
 
 
 def _merge_module_telemetry(
-    totals: dict[str, Any],
+    totals: _RoutingTelemetryTotals,
     module_name: str,
     rt: dict[str, Any],
     capture_heatmaps: bool,
 ) -> None:
     if capture_heatmaps and rt.get("heatmap") is not None:
-        totals["heatmaps"][module_name] = rt["heatmap"]
-    totals["routing_op_count"] += 1
-    totals["tokens_total"] += int(rt.get("tokens_total", 0) or 0)
-    totals["keep_count"] += int(rt.get("keep_count", 0) or 0)
-    totals["drop_count"] += int(rt.get("drop_count", 0) or 0)
-    totals["default_path_count"] += int(rt.get("default_path_count", 0) or 0)
-    totals["routed_token_count"] += int(rt.get("routed_token_count", 0) or 0)
-    totals["sparse_span_count"] += int(rt.get("sparse_span_count", 0) or 0)
-    totals["sparse_span_width_sum"] += float(
-        rt.get("sparse_span_width_sum", 0.0) or 0.0
-    )
-    totals["sparse_span_width_count"] += int(rt.get("sparse_span_width_count", 0) or 0)
-    totals["sparse_span_coverage_tokens"] += int(
+        totals.heatmaps[module_name] = rt["heatmap"]
+    totals.routing_op_count += 1
+    totals.tokens_total += int(rt.get("tokens_total", 0) or 0)
+    totals.keep_count += int(rt.get("keep_count", 0) or 0)
+    totals.drop_count += int(rt.get("drop_count", 0) or 0)
+    totals.default_path_count += int(rt.get("default_path_count", 0) or 0)
+    totals.routed_token_count += int(rt.get("routed_token_count", 0) or 0)
+    totals.sparse_span_count += int(rt.get("sparse_span_count", 0) or 0)
+    totals.sparse_span_width_sum += float(rt.get("sparse_span_width_sum", 0.0) or 0.0)
+    totals.sparse_span_width_count += int(rt.get("sparse_span_width_count", 0) or 0)
+    totals.sparse_span_coverage_tokens += int(
         rt.get("sparse_span_coverage_tokens", 0) or 0
     )
-    totals["confidence_sum"] += float(rt.get("confidence_sum", 0.0) or 0.0)
-    totals["confidence_sq_sum"] += float(rt.get("confidence_sq_sum", 0.0) or 0.0)
-    totals["confidence_count"] += int(rt.get("confidence_count", 0) or 0)
-    totals["route_strength_sum"] += float(rt.get("route_strength_sum", 0.0) or 0.0)
-    totals["route_strength_count"] += int(rt.get("route_strength_count", 0) or 0)
-    totals["branch_dominance_sum"] += float(rt.get("branch_dominance_sum", 0.0) or 0.0)
-    totals["routed_branch_share_sum"] += float(
+    totals.confidence_sum += float(rt.get("confidence_sum", 0.0) or 0.0)
+    totals.confidence_sq_sum += float(rt.get("confidence_sq_sum", 0.0) or 0.0)
+    totals.confidence_count += int(rt.get("confidence_count", 0) or 0)
+    totals.route_strength_sum += float(rt.get("route_strength_sum", 0.0) or 0.0)
+    totals.route_strength_count += int(rt.get("route_strength_count", 0) or 0)
+    totals.branch_dominance_sum += float(rt.get("branch_dominance_sum", 0.0) or 0.0)
+    totals.routed_branch_share_sum += float(
         rt.get("routed_branch_share_sum", 0.0) or 0.0
     )
-    totals["medium_branch_share_sum"] += float(
+    totals.medium_branch_share_sum += float(
         rt.get("medium_branch_share_sum", 0.0) or 0.0
     )
-    totals["hard_branch_share_sum"] += float(
-        rt.get("hard_branch_share_sum", 0.0) or 0.0
+    totals.hard_branch_share_sum += float(rt.get("hard_branch_share_sum", 0.0) or 0.0)
+    totals.branch_weight_count += int(rt.get("branch_weight_count", 0) or 0)
+    totals.lane_count_max = max(
+        totals.lane_count_max, int(rt.get("lane_count", 0) or 0)
     )
-    totals["branch_weight_count"] += int(rt.get("branch_weight_count", 0) or 0)
-    totals["lane_count_max"] = max(
-        totals["lane_count_max"], int(rt.get("lane_count", 0) or 0)
-    )
-    totals["total_savings"] += float(rt.get("savings_ratio", 0.0) or 0.0)
-    totals["total_depth_ratio"] += float(rt.get("depth_ratio", 1.0) or 1.0)
+    totals.total_savings += float(rt.get("savings_ratio", 0.0) or 0.0)
+    totals.total_depth_ratio += float(rt.get("depth_ratio", 1.0) or 1.0)
 
     if rt.get("routing_mode"):
-        totals["routing_modes"].add(str(rt["routing_mode"]))
+        totals.routing_modes.add(str(rt["routing_mode"]))
     if rt.get("gate_type"):
-        totals["gate_types"].add(str(rt["gate_type"]))
+        totals.gate_types.add(str(rt["gate_type"]))
     if rt.get("span_type"):
-        totals["span_types"].add(str(rt["span_type"]))
+        totals.span_types.add(str(rt["span_type"]))
     if rt.get("trace_payload") is not None:
-        totals["trace_payloads"][module_name] = rt["trace_payload"]
+        totals.trace_payloads[module_name] = rt["trace_payload"]
 
     if isinstance(rt.get("lane_histogram"), torch.Tensor):
         hist = _as_cpu_float_tensor(rt["lane_histogram"])
-        totals["lane_histograms"].append(hist)
+        totals.lane_histograms.append(hist)
     if isinstance(rt.get("confidence_histogram"), torch.Tensor):
         hist = _as_cpu_float_tensor(rt["confidence_histogram"])
-        totals["confidence_histograms"].append(hist)
+        totals.confidence_histograms.append(hist)
     if isinstance(rt.get("branch_weight_sum"), torch.Tensor):
         hist = _as_cpu_float_tensor(rt["branch_weight_sum"])
-        totals["branch_weight_sums"].append(hist)
+        totals.branch_weight_sums.append(hist)
 
 
-def _finalize_histogram_totals(totals: dict[str, Any]) -> None:
-    totals["lane_histogram"] = _sum_histograms(totals["lane_histograms"])
-    totals["confidence_histogram"] = _sum_histograms(totals["confidence_histograms"])
-    totals["branch_weight_sum"] = _sum_histograms(totals["branch_weight_sums"])
-
-
-def _add_token_payload(payload: dict[str, Any], totals: dict[str, Any]) -> None:
-    tokens_total = totals["tokens_total"]
+def _add_token_payload(
+    payload: dict[str, Any],
+    totals: _RoutingTelemetryTotals,
+) -> None:
+    tokens_total = totals.tokens_total
     if tokens_total <= 0:
         return
     payload["routing_keep_drop_ratio"] = {
-        "keep": round(totals["keep_count"] / tokens_total, 4),
-        "drop": round(totals["drop_count"] / tokens_total, 4),
+        "keep": round(totals.keep_count / tokens_total, 4),
+        "drop": round(totals.drop_count / tokens_total, 4),
     }
     payload["default_path_fraction"] = round(
-        totals["default_path_count"] / tokens_total, 4
+        totals.default_path_count / tokens_total, 4
     )
     payload["routed_compute_fraction"] = round(
-        totals["routed_token_count"] / tokens_total, 4
+        totals.routed_token_count / tokens_total, 4
     )
     payload["sparse_span_coverage"] = round(
-        totals["sparse_span_coverage_tokens"] / tokens_total,
+        totals.sparse_span_coverage_tokens / tokens_total,
         4,
     )
 
 
-def _add_span_payload(payload: dict[str, Any], totals: dict[str, Any]) -> None:
-    if totals["sparse_span_width_count"] <= 0:
+def _add_span_payload(payload: dict[str, Any], totals: _RoutingTelemetryTotals) -> None:
+    if totals.sparse_span_width_count <= 0:
         return
-    payload["sparse_span_count"] = int(totals["sparse_span_count"])
+    payload["sparse_span_count"] = int(totals.sparse_span_count)
     payload["average_span_width"] = round(
-        totals["sparse_span_width_sum"] / totals["sparse_span_width_count"],
+        totals.sparse_span_width_sum / totals.sparse_span_width_count,
         4,
     )
 
 
-def _add_lane_payload(payload: dict[str, Any], totals: dict[str, Any]) -> None:
-    lane_histogram = totals["lane_histogram"]
+def _add_lane_payload(payload: dict[str, Any], totals: _RoutingTelemetryTotals) -> None:
+    lane_histogram = totals.lane_histogram
     if lane_histogram is None:
         return
     lane_probs = lane_histogram / lane_histogram.sum().clamp(min=1.0)
@@ -189,77 +187,83 @@ def _add_lane_payload(payload: dict[str, Any], totals: dict[str, Any]) -> None:
     payload["dead_lane_count"] = int((lane_histogram == 0).sum().item())
 
 
-def _add_confidence_payload(payload: dict[str, Any], totals: dict[str, Any]) -> None:
-    if totals["confidence_count"] > 0:
-        conf_mean = totals["confidence_sum"] / totals["confidence_count"]
+def _add_confidence_payload(
+    payload: dict[str, Any],
+    totals: _RoutingTelemetryTotals,
+) -> None:
+    if totals.confidence_count > 0:
+        conf_mean = totals.confidence_sum / totals.confidence_count
         conf_var = max(
             0.0,
-            (totals["confidence_sq_sum"] / totals["confidence_count"])
+            (totals.confidence_sq_sum / totals.confidence_count)
             - (conf_mean * conf_mean),
         )
         payload["route_confidence_mean"] = round(conf_mean, 4)
         payload["route_confidence_std"] = round(conf_var**0.5, 4)
-    if totals["confidence_histogram"] is not None:
-        payload["confidence_histogram"] = totals["confidence_histogram"].int().tolist()
+    if totals.confidence_histogram is not None:
+        payload["confidence_histogram"] = totals.confidence_histogram.int().tolist()
 
 
-def _add_branch_payload(payload: dict[str, Any], totals: dict[str, Any]) -> None:
-    if totals["route_strength_count"] > 0:
+def _add_branch_payload(
+    payload: dict[str, Any],
+    totals: _RoutingTelemetryTotals,
+) -> None:
+    if totals.route_strength_count > 0:
         payload["route_strength_mean"] = round(
-            totals["route_strength_sum"] / totals["route_strength_count"],
+            totals.route_strength_sum / totals.route_strength_count,
             4,
         )
-    branch_weight_sum = totals["branch_weight_sum"]
-    if branch_weight_sum is None or totals["branch_weight_count"] <= 0:
+    branch_weight_sum = totals.branch_weight_sum
+    if branch_weight_sum is None or totals.branch_weight_count <= 0:
         return
-    branch_means = (branch_weight_sum / totals["branch_weight_count"]).tolist()
+    branch_means = (branch_weight_sum / totals.branch_weight_count).tolist()
     payload["branch_weight_mean"] = [round(float(v), 4) for v in branch_means]
     payload["branch_dominance_mean"] = round(
-        totals["branch_dominance_sum"] / totals["branch_weight_count"],
+        totals.branch_dominance_sum / totals.branch_weight_count,
         4,
     )
     payload["routed_branch_share"] = round(
-        totals["routed_branch_share_sum"] / totals["branch_weight_count"],
+        totals.routed_branch_share_sum / totals.branch_weight_count,
         4,
     )
     payload["medium_branch_share"] = round(
-        totals["medium_branch_share_sum"] / totals["branch_weight_count"],
+        totals.medium_branch_share_sum / totals.branch_weight_count,
         4,
     )
     payload["hard_branch_share"] = round(
-        totals["hard_branch_share_sum"] / totals["branch_weight_count"],
+        totals.hard_branch_share_sum / totals.branch_weight_count,
         4,
     )
 
 
 def _finalize_payload(
-    totals: dict[str, Any],
+    totals: _RoutingTelemetryTotals,
     capture_heatmaps: bool,
 ) -> dict[str, Any] | None:
-    routing_op_count = totals["routing_op_count"]
+    routing_op_count = totals.routing_op_count
     if routing_op_count <= 0:
         return None
     payload: dict[str, Any] = {
-        "routing_savings_ratio": round(totals["total_savings"] / routing_op_count, 4),
-        "routing_depth_ratio": round(totals["total_depth_ratio"] / routing_op_count, 4),
+        "routing_savings_ratio": round(totals.total_savings / routing_op_count, 4),
+        "routing_depth_ratio": round(totals.total_depth_ratio / routing_op_count, 4),
     }
     _add_token_payload(payload, totals)
     _add_span_payload(payload, totals)
     _add_lane_payload(payload, totals)
     _add_confidence_payload(payload, totals)
     _add_branch_payload(payload, totals)
-    if totals["routing_modes"]:
-        payload["routing_modes"] = sorted(totals["routing_modes"])
-    if totals["gate_types"]:
-        payload["gate_types"] = sorted(totals["gate_types"])
-    if totals["span_types"]:
-        payload["span_types"] = sorted(totals["span_types"])
-    if totals["lane_count_max"] > 0:
-        payload["lane_count"] = totals["lane_count_max"]
-    if totals["trace_payloads"]:
-        payload["routing_traces"] = totals["trace_payloads"]
-    if capture_heatmaps and totals["heatmaps"]:
-        payload["routing_heatmaps"] = totals["heatmaps"]
+    if totals.routing_modes:
+        payload["routing_modes"] = sorted(totals.routing_modes)
+    if totals.gate_types:
+        payload["gate_types"] = sorted(totals.gate_types)
+    if totals.span_types:
+        payload["span_types"] = sorted(totals.span_types)
+    if totals.lane_count_max > 0:
+        payload["lane_count"] = totals.lane_count_max
+    if totals.trace_payloads:
+        payload["routing_traces"] = totals.trace_payloads
+    if capture_heatmaps and totals.heatmaps:
+        payload["routing_heatmaps"] = totals.heatmaps
     return payload
 
 
@@ -267,10 +271,10 @@ def collect_routing_telemetry(
     model: nn.Module,
     capture_heatmaps: bool,
 ) -> dict[str, Any] | None:
-    totals = _init_totals()
+    totals = _RoutingTelemetryTotals()
     for module_name, module in model.named_modules():
         rt = getattr(module, "routing_telemetry", None)
         if rt:
             _merge_module_telemetry(totals, module_name, rt, capture_heatmaps)
-    _finalize_histogram_totals(totals)
+    totals.finalize_histograms()
     return _finalize_payload(totals, capture_heatmaps)

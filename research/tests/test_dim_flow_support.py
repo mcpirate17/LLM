@@ -11,6 +11,7 @@ from research.synthesis.dim_flow_support import (
     FULL_DIM_OPS,
     KV_CACHE_BREAKING_OPS,
     build_dim_flow_inputs,
+    ensure_dim_flow_flags,
 )
 from research.synthesis.graph import ComputationGraph
 from research.synthesis.native_analysis import (
@@ -102,6 +103,44 @@ def test_build_dim_flow_inputs_reuses_ir_param_estimates(monkeypatch):
 
     assert result.param_estimates.tolist() == [0, 123]
     assert result.has_params_flags.tolist() == [0, 1]
+
+
+def test_build_dim_flow_inputs_can_defer_flags():
+    graph = ComputationGraph(8)
+    inp = graph.add_input()
+    proj = graph.add_op("linear_proj", [inp], config={"out_dim": 8})
+    graph.set_output(proj)
+
+    deferred = build_dim_flow_inputs(
+        graph,
+        op_kind_default=0,
+        op_kind_irfft=1,
+        op_kind_identity=2,
+        op_kind_binary_broadcast=3,
+        build_flags=False,
+    )
+    eager = build_dim_flow_inputs(
+        graph,
+        op_kind_default=0,
+        op_kind_irfft=1,
+        op_kind_identity=2,
+        op_kind_binary_broadcast=3,
+    )
+
+    assert not deferred.flags_ready
+    assert deferred.has_params_flags.size == 0
+
+    ensure_dim_flow_flags(
+        deferred,
+        op_kind_default=0,
+        op_kind_irfft=1,
+        op_kind_identity=2,
+        op_kind_binary_broadcast=3,
+    )
+
+    assert deferred.flags_ready
+    assert deferred.has_params_flags.tolist() == eager.has_params_flags.tolist()
+    assert deferred.op_kind_flags.tolist() == eager.op_kind_flags.tolist()
 
 
 def test_validate_packed_ir_native_matches_split_reference():

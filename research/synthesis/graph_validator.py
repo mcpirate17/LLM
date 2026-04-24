@@ -22,7 +22,7 @@ from typing import Any, FrozenSet, List, Optional
 import numpy as np
 
 from .dim_flow_opcode_tables import KV_CACHE_BREAKING_OPS
-from .dim_flow_support import build_dim_flow_inputs
+from .dim_flow_support import build_dim_flow_inputs, ensure_dim_flow_flags
 from .graph import ComputationGraph
 from .native_analysis import (
     analyze_ir_runtime_first,
@@ -127,6 +127,7 @@ def build_dim_flow_validation_inputs(
     analysis_ir: Any | None = None,
     analysis: Any | None = None,
     compute_analysis: bool = True,
+    build_flags: bool = True,
 ) -> Any:
     return build_dim_flow_inputs(
         graph,
@@ -137,6 +138,7 @@ def build_dim_flow_validation_inputs(
         analysis_ir=analysis_ir,
         analysis=analysis,
         compute_analysis=compute_analysis,
+        build_flags=build_flags,
     )
 
 
@@ -157,6 +159,14 @@ def try_packed_dim_flow_validation(
     input_node_idx = dim_flow_inputs.node_id_to_analysis_idx.get(
         graph._input_node_id, -1
     )
+    if not dim_flow_inputs.flags_ready:
+        ensure_dim_flow_flags(
+            dim_flow_inputs,
+            op_kind_default=_OP_KIND_DEFAULT,
+            op_kind_irfft=_OP_KIND_IRFFT,
+            op_kind_identity=_OP_KIND_IDENTITY,
+            op_kind_binary_broadcast=_OP_KIND_BINARY_BROADCAST,
+        )
     return validate_packed_ir_natively(
         op_codes=analysis_ir.op_codes,
         input_indices=analysis_ir.input_indices,
@@ -225,6 +235,13 @@ def validate_dim_flow(
         edge_error_count = packed_validation.edge_error_count
         dead_parameterized_count = packed_validation.dead_parameterized_count
     else:
+        ensure_dim_flow_flags(
+            dim_flow_inputs,
+            op_kind_default=_OP_KIND_DEFAULT,
+            op_kind_irfft=_OP_KIND_IRFFT,
+            op_kind_identity=_OP_KIND_IDENTITY,
+            op_kind_binary_broadcast=_OP_KIND_BINARY_BROADCAST,
+        )
         if analysis is None:
             analysis = analyze_ir_runtime_first(analysis_ir, include_reachable=True)
         reachable_mask = getattr(analysis, "reachable_mask", None)

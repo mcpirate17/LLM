@@ -201,15 +201,18 @@ def test_routing_mandatory_first_slot_bias_improves_yield():
 
 
 def test_routing_capable_templates_cache_populated():
-    """The routing-capable probe must find a meaningful subset."""
+    """The routing-capable manifest must match the audit probe."""
     import research.synthesis.grammar as g
 
-    g._ROUTING_CAPABLE_TEMPLATES_CACHE = None  # force re-probe
+    probed = g._probe_routing_capable_templates()
+    assert probed == g._ROUTING_CAPABLE_TEMPLATE_NAMES
+
+    g._ROUTING_CAPABLE_TEMPLATES_CACHE = None
     rc = g._get_routing_capable_templates()
     assert 30 <= len(rc) <= 100, (
         f"Expected 30-100 routing-capable templates, got {len(rc)}. "
-        "If the probe is returning ~170, it's too permissive; if <30, "
-        "the probe threshold is too strict or routing ops have been renamed."
+        "If the manifest returns ~170, it's too permissive; if <30, "
+        "the threshold is too strict or routing ops have been renamed."
     )
 
 
