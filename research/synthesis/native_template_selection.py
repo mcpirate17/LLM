@@ -24,6 +24,57 @@ def _compile_template_selector_handle(
         return None
 
 
+@lru_cache(maxsize=128)
+def _allowed_indices(
+    names: TemplateNameOrder,
+    allowed_names: tuple[str, ...] | None,
+) -> list[int] | None:
+    if allowed_names is None:
+        return None
+    index_by_name = {name: idx for idx, name in enumerate(names)}
+    indices = sorted(
+        {index_by_name[name] for name in allowed_names if name in index_by_name}
+    )
+    return list(indices) if indices else None
+
+
+@lru_cache(maxsize=256)
+def _override_arrays(
+    names: TemplateNameOrder,
+    override_items: tuple[tuple[str, float], ...] | None,
+) -> tuple[list[int], list[float]] | None:
+    if not override_items:
+        return None
+    index_by_name = {name: idx for idx, name in enumerate(names)}
+    indices: list[int] = []
+    weights: list[float] = []
+    for name, weight in override_items:
+        idx = index_by_name.get(name)
+        if idx is None:
+            continue
+        indices.append(idx)
+        weights.append(float(weight))
+    if not indices:
+        return None
+    return indices, weights
+
+
+def _override_key(
+    override_weights: Mapping[str, float] | None,
+) -> tuple[tuple[str, float], ...] | None:
+    if not override_weights:
+        return None
+    return tuple(
+        (str(name), float(weight)) for name, weight in override_weights.items()
+    )
+
+
+def _allowed_key(allowed_names: Iterable[str] | None) -> tuple[str, ...] | None:
+    if allowed_names is None:
+        return None
+    return tuple(sorted(str(name) for name in allowed_names))
+
+
 def pick_template_index_native(
     names: TemplateNameOrder,
     default_weights: WeightVector,
@@ -40,6 +91,28 @@ def pick_template_index_native(
     handle = _compile_template_selector_handle(names, default_weights)
     if handle is None:
         return None
+    arrays_fn = getattr(rust, "select_template_index_compiled_arrays", None)
+    if arrays_fn is not None:
+        override = _override_arrays(names, _override_key(override_weights))
+        if override is None:
+            override_indices = None
+            override_values = None
+        else:
+            override_indices, override_values = override
+        allowed_indices = _allowed_indices(names, _allowed_key(allowed_names))
+        try:
+            index, explored = arrays_fn(
+                handle,
+                float(exploration_budget),
+                float(exploration_draw),
+                float(selection_draw),
+                override_indices,
+                override_values,
+                allowed_indices,
+            )
+            return int(index), bool(explored)
+        except Exception:
+            pass
     try:
         index, explored = rust.select_template_index_compiled(
             handle,

@@ -351,7 +351,9 @@ pub struct NkRegistration {
 }
 
 extern "C" {
-    pub fn nr_optimizer_clip_step_f32(req: *const NrOptimizerStepRequest) -> NrOptimizerStepResponse;
+    pub fn nr_optimizer_clip_step_f32(
+        req: *const NrOptimizerStepRequest,
+    ) -> NrOptimizerStepResponse;
 
     pub fn aria_registry_init();
     pub fn nk_is_registered(op_name: *const c_char) -> i32;

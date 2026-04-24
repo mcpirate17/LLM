@@ -232,9 +232,10 @@ impl NativeKernelDispatch {
     }
 
     fn cfg_i64_req(config: &serde_json::Value, key: &str, op: &str) -> Result<i64, AriaError> {
-        config.get(key).and_then(|v| v.as_i64()).ok_or_else(|| {
-            AriaError::ExecutionFailed(format!("{} missing {}", op, key))
-        })
+        config
+            .get(key)
+            .and_then(|v| v.as_i64())
+            .ok_or_else(|| AriaError::ExecutionFailed(format!("{} missing {}", op, key)))
     }
 
     fn cfg_f32(config: &serde_json::Value, key: &str, default: f32) -> f32 {
@@ -278,8 +279,12 @@ impl NativeKernelDispatch {
                 let c = Self::cfg_f32(config, "c", 1.0);
                 unsafe {
                     ffi::aria_poincare_add_f32(
-                        inputs[0].as_ptr(), inputs[1].as_ptr(),
-                        output.as_mut_ptr(), batch, dim, c,
+                        inputs[0].as_ptr(),
+                        inputs[1].as_ptr(),
+                        output.as_mut_ptr(),
+                        batch,
+                        dim,
+                        c,
                     );
                 }
                 Some(Ok(()))
@@ -291,8 +296,13 @@ impl NativeKernelDispatch {
                 let c = Self::cfg_f32(config, "c", 1.0);
                 unsafe {
                     ffi::aria_hyp_linear_f32(
-                        inputs[0].as_ptr(), inputs[1].as_ptr(),
-                        output.as_mut_ptr(), batch, dim_in, dim_out, c,
+                        inputs[0].as_ptr(),
+                        inputs[1].as_ptr(),
+                        output.as_mut_ptr(),
+                        batch,
+                        dim_in,
+                        dim_out,
+                        c,
                     );
                 }
                 Some(Ok(()))
@@ -301,7 +311,10 @@ impl NativeKernelDispatch {
                 let c = Self::cfg_f32(config, "c", 1.0);
                 unsafe {
                     ffi::aria_hyp_tangent_nonlinear_f32(
-                        inputs[0].as_ptr(), output.as_mut_ptr(), output.len() as i64, c,
+                        inputs[0].as_ptr(),
+                        output.as_mut_ptr(),
+                        output.len() as i64,
+                        c,
                     );
                 }
                 Some(Ok(()))
@@ -313,8 +326,14 @@ impl NativeKernelDispatch {
                 let eps = Self::cfg_f32(config, "eps", 1e-5);
                 unsafe {
                     ffi::aria_hyperbolic_norm_f32(
-                        inputs[0].as_ptr(), inputs[1].as_ptr(), inputs[2].as_ptr(),
-                        output.as_mut_ptr(), batch, dim, c, eps,
+                        inputs[0].as_ptr(),
+                        inputs[1].as_ptr(),
+                        inputs[2].as_ptr(),
+                        output.as_mut_ptr(),
+                        batch,
+                        dim,
+                        c,
+                        eps,
                     );
                 }
                 Some(Ok(()))
@@ -334,14 +353,19 @@ impl NativeKernelDispatch {
                 let batch = Self::cfg_i64(config, "batch", 1);
                 let dim = Self::cfg_i64(config, "dim", 0);
                 let seq = Self::cfg_i64(
-                    config, "seq",
+                    config,
+                    "seq",
                     output.len() as i64 / (batch.max(1) * dim.max(1)),
                 );
                 let temperature = Self::cfg_f32(config, "temperature", 1.0);
                 unsafe {
                     ffi::aria_tropical_attention_f32(
-                        inputs[0].as_ptr(), output.as_mut_ptr(),
-                        batch, seq, dim, temperature,
+                        inputs[0].as_ptr(),
+                        output.as_mut_ptr(),
+                        batch,
+                        seq,
+                        dim,
+                        temperature,
                     );
                 }
                 Some(Ok(()))
@@ -350,14 +374,19 @@ impl NativeKernelDispatch {
                 let batch = Self::cfg_i64(config, "batch", 1);
                 let dim = Self::cfg_i64(config, "dim", 0);
                 let seq = Self::cfg_i64(
-                    config, "seq",
+                    config,
+                    "seq",
                     output.len() as i64 / (batch.max(1) * dim.max(1)),
                 );
                 let temperature = Self::cfg_f32(config, "temperature", 1.0);
                 unsafe {
                     ffi::aria_tropical_gate_f32(
-                        inputs[0].as_ptr(), output.as_mut_ptr(),
-                        batch, seq, dim, temperature,
+                        inputs[0].as_ptr(),
+                        output.as_mut_ptr(),
+                        batch,
+                        seq,
+                        dim,
+                        temperature,
                     );
                 }
                 Some(Ok(()))
@@ -365,8 +394,10 @@ impl NativeKernelDispatch {
             "tropical_add" => {
                 unsafe {
                     ffi::aria_tropical_add_f32(
-                        inputs[0].as_ptr(), inputs[1].as_ptr(),
-                        output.as_mut_ptr(), output.len() as i64,
+                        inputs[0].as_ptr(),
+                        inputs[1].as_ptr(),
+                        output.as_mut_ptr(),
+                        output.len() as i64,
                     );
                 }
                 Some(Ok(()))
@@ -378,8 +409,12 @@ impl NativeKernelDispatch {
                     let n = Self::cfg_i64_req(config, "n", "tropical_matmul")?;
                     unsafe {
                         ffi::aria_tropical_matmul_f32(
-                            inputs[0].as_ptr(), inputs[1].as_ptr(),
-                            output.as_mut_ptr(), m, k, n,
+                            inputs[0].as_ptr(),
+                            inputs[1].as_ptr(),
+                            output.as_mut_ptr(),
+                            m,
+                            k,
+                            n,
                         );
                     }
                     Ok(())
@@ -402,8 +437,11 @@ impl NativeKernelDispatch {
                 let dim = Self::cfg_i64(config, "dim", output.len() as i64 / batch.max(1));
                 unsafe {
                     ffi::aria_rotor_transform_f32(
-                        inputs[0].as_ptr(), inputs[1].as_ptr(),
-                        output.as_mut_ptr(), batch, dim,
+                        inputs[0].as_ptr(),
+                        inputs[1].as_ptr(),
+                        output.as_mut_ptr(),
+                        batch,
+                        dim,
                     );
                 }
                 Some(Ok(()))
@@ -414,7 +452,11 @@ impl NativeKernelDispatch {
                 let grade = Self::cfg_i64(config, "grade", 0) as i32;
                 unsafe {
                     ffi::aria_grade_select_f32(
-                        inputs[0].as_ptr(), output.as_mut_ptr(), batch, dim, grade,
+                        inputs[0].as_ptr(),
+                        output.as_mut_ptr(),
+                        batch,
+                        dim,
+                        grade,
                     );
                 }
                 Some(Ok(()))
@@ -429,20 +471,24 @@ impl NativeKernelDispatch {
                 let dim = Self::cfg_i64(config, "dim", output.len() as i64 / batch.max(1));
                 unsafe {
                     ffi::aria_grade_mix_f32(
-                        inputs[0].as_ptr(), inputs[1].as_ptr(),
-                        output.as_mut_ptr(), batch, dim,
+                        inputs[0].as_ptr(),
+                        inputs[1].as_ptr(),
+                        output.as_mut_ptr(),
+                        batch,
+                        dim,
                     );
                 }
                 Some(Ok(()))
             }
             "geometric_product" => {
-                let n_multivectors = Self::cfg_i64(
-                    config, "n_multivectors", output.len() as i64 / 8,
-                );
+                let n_multivectors =
+                    Self::cfg_i64(config, "n_multivectors", output.len() as i64 / 8);
                 unsafe {
                     ffi::aria_clifford_geometric_product_cl30_f32(
-                        inputs[0].as_ptr(), inputs[1].as_ptr(),
-                        output.as_mut_ptr(), n_multivectors,
+                        inputs[0].as_ptr(),
+                        inputs[1].as_ptr(),
+                        output.as_mut_ptr(),
+                        n_multivectors,
                     );
                 }
                 Some(Ok(()))
@@ -463,12 +509,17 @@ impl NativeKernelDispatch {
         let batch = Self::cfg_i64(config, "batch", 1);
         let dim = Self::cfg_i64(config, "dim", 0);
         let seq = Self::cfg_i64(
-            config, "seq",
+            config,
+            "seq",
             output.len() as i64 / (batch.max(1) * dim.max(1)),
         );
         unsafe {
             ffi::aria_clifford_attention_f32(
-                inputs[0].as_ptr(), output.as_mut_ptr(), batch, seq, dim,
+                inputs[0].as_ptr(),
+                output.as_mut_ptr(),
+                batch,
+                seq,
+                dim,
             );
         }
         Some(Ok(()))
@@ -494,9 +545,16 @@ impl NativeKernelDispatch {
                     let n_heads = Self::cfg_i64_req(config, "n_heads", "softmax_attention")?;
                     unsafe {
                         ffi::aria_softmax_attention_f32(
-                            inputs[0].as_ptr(), inputs[1].as_ptr(), inputs[2].as_ptr(),
-                            inputs[3].as_ptr(), inputs[4].as_ptr(), output.as_mut_ptr(),
-                            batch, seq, dim, n_heads,
+                            inputs[0].as_ptr(),
+                            inputs[1].as_ptr(),
+                            inputs[2].as_ptr(),
+                            inputs[3].as_ptr(),
+                            inputs[4].as_ptr(),
+                            output.as_mut_ptr(),
+                            batch,
+                            seq,
+                            dim,
+                            n_heads,
                         );
                     }
                     Ok(())
@@ -515,9 +573,15 @@ impl NativeKernelDispatch {
                     let dim = Self::cfg_i64_req(config, "dim", "linear_attention")?;
                     unsafe {
                         ffi::aria_linear_attention_f32(
-                            inputs[0].as_ptr(), inputs[1].as_ptr(), inputs[2].as_ptr(),
-                            inputs[3].as_ptr(), inputs[4].as_ptr(), output.as_mut_ptr(),
-                            batch, seq, dim,
+                            inputs[0].as_ptr(),
+                            inputs[1].as_ptr(),
+                            inputs[2].as_ptr(),
+                            inputs[3].as_ptr(),
+                            inputs[4].as_ptr(),
+                            output.as_mut_ptr(),
+                            batch,
+                            seq,
+                            dim,
                         );
                     }
                     Ok(())
@@ -538,8 +602,14 @@ impl NativeKernelDispatch {
                     let max_depth = Self::cfg_i64_req(config, "max_depth", "depth_weighted_proj")?;
                     unsafe {
                         ffi::aria_depth_weighted_proj_f32(
-                            inputs[0].as_ptr(), inputs[1].as_ptr(), inputs[2].as_ptr(),
-                            output.as_mut_ptr(), batch, seq, dim, max_depth,
+                            inputs[0].as_ptr(),
+                            inputs[1].as_ptr(),
+                            inputs[2].as_ptr(),
+                            output.as_mut_ptr(),
+                            batch,
+                            seq,
+                            dim,
+                            max_depth,
                         );
                     }
                     Ok(())
@@ -558,8 +628,13 @@ impl NativeKernelDispatch {
                     let eps = Self::cfg_f32(config, "eps", 1e-5);
                     unsafe {
                         ffi::aria_layernorm_f32(
-                            inputs[0].as_ptr(), inputs[1].as_ptr(), inputs[2].as_ptr(),
-                            output.as_mut_ptr(), batch, dim, eps,
+                            inputs[0].as_ptr(),
+                            inputs[1].as_ptr(),
+                            inputs[2].as_ptr(),
+                            output.as_mut_ptr(),
+                            batch,
+                            dim,
+                            eps,
                         );
                     }
                     Ok(())
@@ -593,9 +668,15 @@ impl NativeKernelDispatch {
                     let dim = Self::cfg_i64_req(config, "dim", "selective_scan")?;
                     unsafe {
                         ffi::aria_selective_scan_compiled_f32(
-                            inputs[0].as_ptr(), inputs[1].as_ptr(), inputs[2].as_ptr(),
-                            inputs[3].as_ptr(), inputs[4].as_ptr(), output.as_mut_ptr(),
-                            batch, seq, dim,
+                            inputs[0].as_ptr(),
+                            inputs[1].as_ptr(),
+                            inputs[2].as_ptr(),
+                            inputs[3].as_ptr(),
+                            inputs[4].as_ptr(),
+                            output.as_mut_ptr(),
+                            batch,
+                            seq,
+                            dim,
                         );
                     }
                     Ok(())
@@ -618,7 +699,11 @@ impl NativeKernelDispatch {
                         .or_else(|| {
                             if dim > 0 {
                                 let len = inputs[1].len() as i64;
-                                if len % dim == 0 { Some(len / dim) } else { None }
+                                if len % dim == 0 {
+                                    Some(len / dim)
+                                } else {
+                                    None
+                                }
                             } else {
                                 None
                             }
@@ -628,10 +713,18 @@ impl NativeKernelDispatch {
                         })?;
                     unsafe {
                         ffi::aria_state_space_compiled_f32(
-                            inputs[0].as_ptr(), inputs[1].as_ptr(), inputs[2].as_ptr(),
-                            inputs[3].as_ptr(), inputs[4].as_ptr(), inputs[5].as_ptr(),
-                            inputs[6].as_ptr(), output.as_mut_ptr(),
-                            batch, seq, dim, state_dim,
+                            inputs[0].as_ptr(),
+                            inputs[1].as_ptr(),
+                            inputs[2].as_ptr(),
+                            inputs[3].as_ptr(),
+                            inputs[4].as_ptr(),
+                            inputs[5].as_ptr(),
+                            inputs[6].as_ptr(),
+                            output.as_mut_ptr(),
+                            batch,
+                            seq,
+                            dim,
+                            state_dim,
                         );
                     }
                     Ok(())
@@ -651,10 +744,18 @@ impl NativeKernelDispatch {
                     let n_heads = Self::cfg_i64_req(config, "n_heads", "gated_delta")?;
                     unsafe {
                         ffi::aria_gated_delta_compiled_f32(
-                            inputs[0].as_ptr(), inputs[1].as_ptr(), inputs[2].as_ptr(),
-                            inputs[3].as_ptr(), inputs[4].as_ptr(), inputs[5].as_ptr(),
-                            inputs[6].as_ptr(), output.as_mut_ptr(),
-                            batch, seq, dim, n_heads,
+                            inputs[0].as_ptr(),
+                            inputs[1].as_ptr(),
+                            inputs[2].as_ptr(),
+                            inputs[3].as_ptr(),
+                            inputs[4].as_ptr(),
+                            inputs[5].as_ptr(),
+                            inputs[6].as_ptr(),
+                            output.as_mut_ptr(),
+                            batch,
+                            seq,
+                            dim,
+                            n_heads,
                         );
                     }
                     Ok(())
@@ -676,16 +777,17 @@ impl NativeKernelDispatch {
         output_len: usize,
     ) -> Option<Result<NkStatus, AriaError>> {
         if let Some(unary) = reg.unary_fn {
-            let status = unsafe {
-                unary(inputs[0].as_ptr(), output.as_mut_ptr(), output_len as i64)
-            };
+            let status =
+                unsafe { unary(inputs[0].as_ptr(), output.as_mut_ptr(), output_len as i64) };
             return Some(Ok(status));
         }
         if let Some(binary) = reg.binary_fn {
             let status = unsafe {
                 binary(
-                    inputs[0].as_ptr(), inputs[1].as_ptr(),
-                    output.as_mut_ptr(), output_len as i64,
+                    inputs[0].as_ptr(),
+                    inputs[1].as_ptr(),
+                    output.as_mut_ptr(),
+                    output_len as i64,
                 )
             };
             return Some(Ok(status));
@@ -708,8 +810,12 @@ impl NativeKernelDispatch {
                 let n = Self::cfg_i64_req(config, "n", "matmul")?;
                 let status = unsafe {
                     matmul(
-                        inputs[0].as_ptr(), inputs[1].as_ptr(),
-                        output.as_mut_ptr(), m, k, n,
+                        inputs[0].as_ptr(),
+                        inputs[1].as_ptr(),
+                        output.as_mut_ptr(),
+                        m,
+                        k,
+                        n,
                     )
                 };
                 Ok(status)
@@ -723,8 +829,12 @@ impl NativeKernelDispatch {
                 let n = Self::cfg_i64_req(config, "n", "matmul_relu")?;
                 let status = unsafe {
                     matmul_relu(
-                        inputs[0].as_ptr(), inputs[1].as_ptr(),
-                        output.as_mut_ptr(), m, k, n,
+                        inputs[0].as_ptr(),
+                        inputs[1].as_ptr(),
+                        output.as_mut_ptr(),
+                        m,
+                        k,
+                        n,
                     )
                 };
                 Ok(status)
@@ -743,8 +853,13 @@ impl NativeKernelDispatch {
                 let n = Self::cfg_i64_req(config, "n", op_name)?;
                 let status = unsafe {
                     matmul_bias_relu(
-                        inputs[0].as_ptr(), inputs[1].as_ptr(), inputs[2].as_ptr(),
-                        output.as_mut_ptr(), m, k, n,
+                        inputs[0].as_ptr(),
+                        inputs[1].as_ptr(),
+                        inputs[2].as_ptr(),
+                        output.as_mut_ptr(),
+                        m,
+                        k,
+                        n,
                     )
                 };
                 Ok(status)
@@ -758,8 +873,12 @@ impl NativeKernelDispatch {
                 let n = Self::cfg_i64_req(config, "n", "matmul_gelu")?;
                 let status = unsafe {
                     matmul_gelu(
-                        inputs[0].as_ptr(), inputs[1].as_ptr(),
-                        output.as_mut_ptr(), m, k, n,
+                        inputs[0].as_ptr(),
+                        inputs[1].as_ptr(),
+                        output.as_mut_ptr(),
+                        m,
+                        k,
+                        n,
                     )
                 };
                 Ok(status)
@@ -781,11 +900,19 @@ impl NativeKernelDispatch {
             let batch = Self::cfg_i64(config, "batch", 1);
             let dim_in = Self::cfg_i64(config, "dim_in", 0);
             let dim_out = Self::cfg_i64(config, "dim_out", 0);
-            let bias_ptr = inputs.get(2).map(|input| input.as_ptr()).unwrap_or(std::ptr::null());
+            let bias_ptr = inputs
+                .get(2)
+                .map(|input| input.as_ptr())
+                .unwrap_or(std::ptr::null());
             let status = unsafe {
                 linear(
-                    inputs[0].as_ptr(), inputs[1].as_ptr(), bias_ptr,
-                    output.as_mut_ptr(), batch, dim_in, dim_out,
+                    inputs[0].as_ptr(),
+                    inputs[1].as_ptr(),
+                    bias_ptr,
+                    output.as_mut_ptr(),
+                    batch,
+                    dim_in,
+                    dim_out,
                 )
             };
             return Some(Ok(status));
@@ -793,9 +920,7 @@ impl NativeKernelDispatch {
         if let Some(softmax) = reg.softmax_fn {
             let batch = Self::cfg_i64(config, "batch", 1);
             let dim = Self::cfg_i64(config, "dim", output_len as i64 / batch);
-            let status = unsafe {
-                softmax(inputs[0].as_ptr(), output.as_mut_ptr(), batch, dim)
-            };
+            let status = unsafe { softmax(inputs[0].as_ptr(), output.as_mut_ptr(), batch, dim) };
             return Some(Ok(status));
         }
         if let Some(rmsnorm) = reg.rmsnorm_fn {
@@ -809,8 +934,12 @@ impl NativeKernelDispatch {
             let eps = Self::cfg_f32(config, "eps", 1e-5);
             let status = unsafe {
                 rmsnorm(
-                    inputs[0].as_ptr(), inputs[1].as_ptr(),
-                    output.as_mut_ptr(), batch, dim, eps,
+                    inputs[0].as_ptr(),
+                    inputs[1].as_ptr(),
+                    output.as_mut_ptr(),
+                    batch,
+                    dim,
+                    eps,
                 )
             };
             return Some(Ok(status));
@@ -827,9 +956,14 @@ impl NativeKernelDispatch {
                 let eps = Self::cfg_f32(config, "eps", 1e-5);
                 let status = unsafe {
                     layernorm_residual(
-                        inputs[0].as_ptr(), inputs[1].as_ptr(),
-                        inputs[2].as_ptr(), inputs[3].as_ptr(),
-                        output.as_mut_ptr(), rows, cols, eps,
+                        inputs[0].as_ptr(),
+                        inputs[1].as_ptr(),
+                        inputs[2].as_ptr(),
+                        inputs[3].as_ptr(),
+                        output.as_mut_ptr(),
+                        rows,
+                        cols,
+                        eps,
                     )
                 };
                 Ok(status)
@@ -862,11 +996,19 @@ impl NativeKernelDispatch {
                 let mut tmp_up = vec![0.0f32; (batch * hidden_dim) as usize];
                 let status = unsafe {
                     swiglu(
-                        inputs[0].as_ptr(), inputs[1].as_ptr(), inputs[2].as_ptr(),
-                        inputs[3].as_ptr(), inputs[4].as_ptr(), inputs[5].as_ptr(),
-                        inputs[6].as_ptr(), output.as_mut_ptr(),
-                        tmp_gate.as_mut_ptr(), tmp_up.as_mut_ptr(),
-                        batch, dim, hidden_dim,
+                        inputs[0].as_ptr(),
+                        inputs[1].as_ptr(),
+                        inputs[2].as_ptr(),
+                        inputs[3].as_ptr(),
+                        inputs[4].as_ptr(),
+                        inputs[5].as_ptr(),
+                        inputs[6].as_ptr(),
+                        output.as_mut_ptr(),
+                        tmp_gate.as_mut_ptr(),
+                        tmp_up.as_mut_ptr(),
+                        batch,
+                        dim,
+                        hidden_dim,
                     )
                 };
                 Ok(status)
@@ -892,9 +1034,16 @@ impl NativeKernelDispatch {
                 let mut tmp_gate = vec![0.0f32; (batch * dim_out) as usize];
                 let status = unsafe {
                     gated_linear(
-                        inputs[0].as_ptr(), inputs[1].as_ptr(), inputs[2].as_ptr(),
-                        inputs[3].as_ptr(), b_gate_ptr, output.as_mut_ptr(),
-                        tmp_gate.as_mut_ptr(), batch, dim_in, dim_out,
+                        inputs[0].as_ptr(),
+                        inputs[1].as_ptr(),
+                        inputs[2].as_ptr(),
+                        inputs[3].as_ptr(),
+                        b_gate_ptr,
+                        output.as_mut_ptr(),
+                        tmp_gate.as_mut_ptr(),
+                        batch,
+                        dim_in,
+                        dim_out,
                     )
                 };
                 Ok(status)
@@ -924,8 +1073,13 @@ impl NativeKernelDispatch {
                 let dim = Self::cfg_i64_req(config, "dim", op_name)?;
                 let status = unsafe {
                     conv1d_seq(
-                        inputs[0].as_ptr(), inputs[1].as_ptr(), inputs[2].as_ptr(),
-                        output.as_mut_ptr(), batch, seq, dim,
+                        inputs[0].as_ptr(),
+                        inputs[1].as_ptr(),
+                        inputs[2].as_ptr(),
+                        output.as_mut_ptr(),
+                        batch,
+                        seq,
+                        dim,
                     )
                 };
                 Ok(status)
@@ -951,8 +1105,13 @@ impl NativeKernelDispatch {
                 };
                 let status = unsafe {
                     embedding_lookup(
-                        inputs[0].as_ptr(), indices_ptr, pos_embed_ptr,
-                        output.as_mut_ptr(), batch, dim, vocab_size,
+                        inputs[0].as_ptr(),
+                        indices_ptr,
+                        pos_embed_ptr,
+                        output.as_mut_ptr(),
+                        batch,
+                        dim,
+                        vocab_size,
                     )
                 };
                 Ok(status)
@@ -967,8 +1126,12 @@ impl NativeKernelDispatch {
                 let theta_base = Self::cfg_f32(config, "theta_base", 10000.0);
                 let status = unsafe {
                     rope_rotate(
-                        inputs[0].as_ptr(), output.as_mut_ptr(),
-                        batch, seq, dim, theta_base,
+                        inputs[0].as_ptr(),
+                        output.as_mut_ptr(),
+                        batch,
+                        seq,
+                        dim,
+                        theta_base,
                     )
                 };
                 Ok(status)
@@ -1000,9 +1163,16 @@ impl NativeKernelDispatch {
                 let dim = Self::cfg_i64_req(config, "dim", op_name)?;
                 let status = unsafe {
                     rwkv_time_mixing(
-                        inputs[0].as_ptr(), inputs[1].as_ptr(), inputs[2].as_ptr(),
-                        inputs[3].as_ptr(), inputs[4].as_ptr(), inputs[5].as_ptr(),
-                        output.as_mut_ptr(), batch, seq, dim,
+                        inputs[0].as_ptr(),
+                        inputs[1].as_ptr(),
+                        inputs[2].as_ptr(),
+                        inputs[3].as_ptr(),
+                        inputs[4].as_ptr(),
+                        inputs[5].as_ptr(),
+                        output.as_mut_ptr(),
+                        batch,
+                        seq,
+                        dim,
                     )
                 };
                 Ok(status)
@@ -1025,10 +1195,20 @@ impl NativeKernelDispatch {
                 let mut tmp_k = vec![0.0f32; (batch * seq * hidden_dim) as usize];
                 let status = unsafe {
                     rwkv_channel(
-                        inputs[0].as_ptr(), inputs[1].as_ptr(), inputs[2].as_ptr(),
-                        inputs[3].as_ptr(), inputs[4].as_ptr(), inputs[5].as_ptr(),
-                        output.as_mut_ptr(), tmp_xk.as_mut_ptr(), tmp_xr.as_mut_ptr(),
-                        tmp_k.as_mut_ptr(), batch, seq, dim, hidden_dim,
+                        inputs[0].as_ptr(),
+                        inputs[1].as_ptr(),
+                        inputs[2].as_ptr(),
+                        inputs[3].as_ptr(),
+                        inputs[4].as_ptr(),
+                        inputs[5].as_ptr(),
+                        output.as_mut_ptr(),
+                        tmp_xk.as_mut_ptr(),
+                        tmp_xr.as_mut_ptr(),
+                        tmp_k.as_mut_ptr(),
+                        batch,
+                        seq,
+                        dim,
+                        hidden_dim,
                     )
                 };
                 Ok(status)
@@ -1058,8 +1238,12 @@ impl NativeKernelDispatch {
                 let dim = Self::cfg_i64_req(config, "dim", op_name)?;
                 let status = unsafe {
                     cosine_similarity(
-                        inputs[0].as_ptr(), inputs[1].as_ptr(),
-                        output.as_mut_ptr(), batch, seq, dim,
+                        inputs[0].as_ptr(),
+                        inputs[1].as_ptr(),
+                        output.as_mut_ptr(),
+                        batch,
+                        seq,
+                        dim,
                     )
                 };
                 Ok(status)
@@ -1080,9 +1264,14 @@ impl NativeKernelDispatch {
                 let mut out_indices = vec![0i32; (batch * k) as usize];
                 let status = unsafe {
                     gather_topk(
-                        inputs[0].as_ptr(), inputs[1].as_ptr(),
-                        output.as_mut_ptr(), out_indices.as_mut_ptr(),
-                        batch, n_items, dim, k,
+                        inputs[0].as_ptr(),
+                        inputs[1].as_ptr(),
+                        output.as_mut_ptr(),
+                        out_indices.as_mut_ptr(),
+                        batch,
+                        n_items,
+                        dim,
+                        k,
                     )
                 };
                 Ok(status)
@@ -1101,8 +1290,11 @@ impl NativeKernelDispatch {
                 let dim = Self::cfg_i64(config, "dim", -1);
                 let status = unsafe {
                     concat(
-                        input_ptrs.as_ptr(), sizes.as_ptr(),
-                        input_ptrs.len() as i32, output.as_mut_ptr(), dim,
+                        input_ptrs.as_ptr(),
+                        sizes.as_ptr(),
+                        input_ptrs.len() as i32,
+                        output.as_mut_ptr(),
+                        dim,
                     )
                 };
                 Ok(status)
@@ -1150,13 +1342,21 @@ impl NativeKernelDispatch {
         let reg_ptr = unsafe { ffi::nk_dispatch(c_op_name.as_ptr()) };
         if reg_ptr.is_null() {
             return Err(AriaError::ExecutionFailed(format!(
-                "op {} not registered in native runtime", op_name
+                "op {} not registered in native runtime",
+                op_name
             )));
         }
         let reg = unsafe { &*reg_ptr };
         let output_len = output.len();
 
-        let reg_dispatchers: &[fn(&ffi::NkRegistration, &str, &[&[f32]], &serde_json::Value, &mut [f32], usize) -> Option<Result<NkStatus, AriaError>>] = &[
+        let reg_dispatchers: &[fn(
+            &ffi::NkRegistration,
+            &str,
+            &[&[f32]],
+            &serde_json::Value,
+            &mut [f32],
+            usize,
+        ) -> Option<Result<NkStatus, AriaError>>] = &[
             Self::dispatch_reg_simple,
             Self::dispatch_reg_matmul,
             Self::dispatch_reg_linear_norm,
@@ -1169,7 +1369,8 @@ impl NativeKernelDispatch {
                 let status = result?;
                 if status != NkStatus::Ok {
                     return Err(AriaError::ExecutionFailed(format!(
-                        "native kernel {} failed with status {:?}", op_name, status
+                        "native kernel {} failed with status {:?}",
+                        op_name, status
                     )));
                 }
                 return Ok(());
@@ -1177,7 +1378,8 @@ impl NativeKernelDispatch {
         }
 
         Err(AriaError::ExecutionFailed(format!(
-            "op {} has no dispatch handler", op_name
+            "op {} has no dispatch handler",
+            op_name
         )))
     }
 }

@@ -3,6 +3,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define ARIA_GRAPH_STACK_NODES 128
+#define ARIA_GRAPH_STACK_EDGES (ARIA_GRAPH_STACK_NODES * 2)
+
 static uint64_t _aria_xorshift64(uint64_t* state) {
   uint64_t x = *state;
   if (x == 0U) {
@@ -62,6 +65,16 @@ int32_t aria_graph_analyze_ir(
   int32_t* queue = NULL;
   int32_t* stack = NULL;
   int8_t* seen = NULL;
+  int32_t stack_child_counts[ARIA_GRAPH_STACK_NODES];
+  int32_t stack_child_offsets[ARIA_GRAPH_STACK_NODES + 1];
+  int32_t stack_child_cursor[ARIA_GRAPH_STACK_NODES];
+  int32_t stack_children[ARIA_GRAPH_STACK_EDGES];
+  int32_t stack_indegree[ARIA_GRAPH_STACK_NODES];
+  int32_t stack_topo_depth[ARIA_GRAPH_STACK_NODES];
+  int32_t stack_queue[ARIA_GRAPH_STACK_NODES];
+  int32_t stack_stack[ARIA_GRAPH_STACK_NODES];
+  int8_t stack_seen[ARIA_GRAPH_STACK_NODES];
+  int32_t use_stack = n_nodes <= ARIA_GRAPH_STACK_NODES;
 
   if (out == NULL || n_nodes < 0 || op_codes == NULL || input_indices == NULL) {
     return -1;
@@ -72,26 +85,45 @@ int32_t aria_graph_analyze_ir(
     return 0;
   }
 
-  child_counts = (int32_t*)calloc((size_t)n_nodes, sizeof(int32_t));
-  child_offsets = (int32_t*)calloc((size_t)n_nodes + 1U, sizeof(int32_t));
-  child_cursor = (int32_t*)calloc((size_t)n_nodes, sizeof(int32_t));
-  indegree = (int32_t*)calloc((size_t)n_nodes, sizeof(int32_t));
-  topo_depth = (int32_t*)calloc((size_t)n_nodes, sizeof(int32_t));
-  queue = (int32_t*)malloc((size_t)n_nodes * sizeof(int32_t));
-  stack = (int32_t*)malloc((size_t)n_nodes * sizeof(int32_t));
-  seen = (int8_t*)calloc((size_t)n_nodes, sizeof(int8_t));
+  if (use_stack) {
+    child_counts = stack_child_counts;
+    child_offsets = stack_child_offsets;
+    child_cursor = stack_child_cursor;
+    indegree = stack_indegree;
+    topo_depth = stack_topo_depth;
+    queue = stack_queue;
+    stack = stack_stack;
+    seen = stack_seen;
+    memset(child_counts, 0, (size_t)n_nodes * sizeof(int32_t));
+    memset(child_offsets, 0, ((size_t)n_nodes + 1U) * sizeof(int32_t));
+    memset(child_cursor, 0, (size_t)n_nodes * sizeof(int32_t));
+    memset(indegree, 0, (size_t)n_nodes * sizeof(int32_t));
+    memset(topo_depth, 0, (size_t)n_nodes * sizeof(int32_t));
+    memset(seen, 0, (size_t)n_nodes * sizeof(int8_t));
+  } else {
+    child_counts = (int32_t*)calloc((size_t)n_nodes, sizeof(int32_t));
+    child_offsets = (int32_t*)calloc((size_t)n_nodes + 1U, sizeof(int32_t));
+    child_cursor = (int32_t*)calloc((size_t)n_nodes, sizeof(int32_t));
+    indegree = (int32_t*)calloc((size_t)n_nodes, sizeof(int32_t));
+    topo_depth = (int32_t*)calloc((size_t)n_nodes, sizeof(int32_t));
+    queue = (int32_t*)malloc((size_t)n_nodes * sizeof(int32_t));
+    stack = (int32_t*)malloc((size_t)n_nodes * sizeof(int32_t));
+    seen = (int8_t*)calloc((size_t)n_nodes, sizeof(int8_t));
+  }
 
   if (child_counts == NULL || child_offsets == NULL || child_cursor == NULL ||
       indegree == NULL || topo_depth == NULL || queue == NULL || stack == NULL ||
       seen == NULL) {
-    free(child_counts);
-    free(child_offsets);
-    free(child_cursor);
-    free(indegree);
-    free(topo_depth);
-    free(queue);
-    free(stack);
-    free(seen);
+    if (!use_stack) {
+      free(child_counts);
+      free(child_offsets);
+      free(child_cursor);
+      free(indegree);
+      free(topo_depth);
+      free(queue);
+      free(stack);
+      free(seen);
+    }
     return -1;
   }
 
@@ -116,16 +148,22 @@ int32_t aria_graph_analyze_ir(
     child_offsets[i + 1] = child_offsets[i] + child_counts[i];
   }
 
-  children = (int32_t*)malloc((size_t)(edge_count > 0 ? edge_count : 1) * sizeof(int32_t));
+  if (use_stack && edge_count <= ARIA_GRAPH_STACK_EDGES) {
+    children = stack_children;
+  } else {
+    children = (int32_t*)malloc((size_t)(edge_count > 0 ? edge_count : 1) * sizeof(int32_t));
+  }
   if (children == NULL) {
-    free(child_counts);
-    free(child_offsets);
-    free(child_cursor);
-    free(indegree);
-    free(topo_depth);
-    free(queue);
-    free(stack);
-    free(seen);
+    if (!use_stack) {
+      free(child_counts);
+      free(child_offsets);
+      free(child_cursor);
+      free(indegree);
+      free(topo_depth);
+      free(queue);
+      free(stack);
+      free(seen);
+    }
     return -1;
   }
 
@@ -212,15 +250,19 @@ int32_t aria_graph_analyze_ir(
   out->depth = max_depth;
   out->has_cycle = visited_count < n_nodes ? 1 : 0;
 
-  free(child_counts);
-  free(child_offsets);
-  free(child_cursor);
-  free(children);
-  free(indegree);
-  free(topo_depth);
-  free(queue);
-  free(stack);
-  free(seen);
+  if (!use_stack) {
+    free(child_counts);
+    free(child_offsets);
+    free(child_cursor);
+    free(indegree);
+    free(topo_depth);
+    free(queue);
+    free(stack);
+    free(seen);
+  }
+  if (!(use_stack && children == stack_children)) {
+    free(children);
+  }
   return 0;
 }
 

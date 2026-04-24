@@ -90,6 +90,19 @@ class ShapeInfo:
         return cls(**d)
 
 
+_SHAPE_INFO_CACHE: dict[tuple[str, int], ShapeInfo] = {}
+
+
+def _shape_info(dim: int, seq: str = "S") -> ShapeInfo:
+    """Return a shared immutable-by-convention shape for graph construction."""
+    key = (seq, int(dim))
+    shape = _SHAPE_INFO_CACHE.get(key)
+    if shape is None:
+        shape = ShapeInfo(seq=seq, dim=int(dim))
+        _SHAPE_INFO_CACHE[key] = shape
+    return shape
+
+
 @dataclass(slots=True)
 class OpNode:
     """A single node in the computation graph."""
@@ -250,7 +263,7 @@ class ComputationGraph:
         """Add the input node. Returns node ID."""
         node_id = self._next_id
         self._next_id += 1
-        shape = ShapeInfo(dim=self.model_dim)
+        shape = _shape_info(self.model_dim)
         node = OpNode(
             id=node_id,
             op_name="input",
@@ -350,7 +363,7 @@ class ComputationGraph:
         rule = op.shape_rule
 
         if rule in _UNCHANGED_UNARY_SHAPE_RULES:
-            return ShapeInfo(dim=s0.dim, seq=s0.seq)
+            return _shape_info(s0.dim, s0.seq)
 
         if rule == "binary_broadcast":
             if input_count != 2 or s1 is None:
@@ -363,21 +376,21 @@ class ComputationGraph:
                 raise ValueError(
                     f"Binary op {op.name}: incompatible seq {s0.seq} vs {s1.seq}"
                 )
-            return ShapeInfo(dim=s0.dim if s0.dim >= s1.dim else s1.dim, seq=s0.seq)
+            return _shape_info(s0.dim if s0.dim >= s1.dim else s1.dim, s0.seq)
 
         if rule == "linear":
-            return ShapeInfo(dim=config.get("out_dim", s0.dim), seq=s0.seq)
+            return _shape_info(config.get("out_dim", s0.dim), s0.seq)
 
         if rule == "reduce_last":
-            return ShapeInfo(dim=1, seq=s0.seq)
+            return _shape_info(1, s0.seq)
 
         if rule == "reduce_seq":
-            return ShapeInfo(dim=s0.dim, seq="1")
+            return _shape_info(s0.dim, "1")
 
         if rule == "matmul":
             if input_count != 2 or s1 is None:
                 raise ValueError("Matmul needs 2 inputs")
-            return ShapeInfo(dim=s0.dim if s0.dim == s1.dim else s1.dim, seq=s0.seq)
+            return _shape_info(s0.dim if s0.dim == s1.dim else s1.dim, s0.seq)
 
         if rule == "split":
             if op.name == "split2":
@@ -388,18 +401,18 @@ class ComputationGraph:
                 n = 4
             else:
                 n = int(config.get("n_splits", 2))
-            return ShapeInfo(dim=s0.dim // n, seq=s0.seq)
+            return _shape_info(s0.dim // n, s0.seq)
 
         if rule == "rfft":
-            return ShapeInfo(dim=s0.dim, seq="S//2+1")
+            return _shape_info(s0.dim, "S//2+1")
 
         if rule == "irfft":
-            return ShapeInfo(dim=s0.dim, seq="S")
+            return _shape_info(s0.dim, "S")
 
         if rule == "concat":
             if input_count == 2 and s1 is not None:
-                return ShapeInfo(dim=s0.dim + s1.dim, seq=s0.seq)
-            return ShapeInfo(dim=s0.dim, seq=s0.seq)
+                return _shape_info(s0.dim + s1.dim, s0.seq)
+            return _shape_info(s0.dim, s0.seq)
 
         raise ValueError(f"Unknown shape rule: {rule}")
 
@@ -435,7 +448,7 @@ class ComputationGraph:
         s0 = input_shapes[0]
 
         if rule == "identity":
-            return ShapeInfo(dim=s0.dim, seq=s0.seq)
+            return _shape_info(s0.dim, s0.seq)
 
         elif rule == "binary_broadcast":
             if len(input_shapes) != 2:
@@ -452,13 +465,13 @@ class ComputationGraph:
                 raise ValueError(
                     f"Binary op {op.name}: incompatible seq {s0.seq} vs {s1.seq}"
                 )
-            return ShapeInfo(dim=max(s0.dim, s1.dim), seq=s0.seq)
+            return _shape_info(max(s0.dim, s1.dim), s0.seq)
 
         elif rule == "reduce_last":
-            return ShapeInfo(dim=1, seq=s0.seq)
+            return _shape_info(1, s0.seq)
 
         elif rule == "reduce_seq":
-            return ShapeInfo(dim=s0.dim, seq="1")
+            return _shape_info(s0.dim, "1")
 
         elif rule == "matmul":
             if len(input_shapes) != 2:
@@ -468,23 +481,23 @@ class ComputationGraph:
             # - If dims match, it's an attention-style [B,S,D] @ [B,S,D] -> [B,S,D]
             # - Otherwise, it's a projection [B,S,D] @ [B,D,K] -> [B,S,K]
             if s0.dim == s1.dim:
-                return ShapeInfo(dim=s0.dim, seq=s0.seq)
-            return ShapeInfo(dim=s1.dim, seq=s0.seq)
+                return _shape_info(s0.dim, s0.seq)
+            return _shape_info(s1.dim, s0.seq)
 
         elif rule == "outer":
             # Outer product of features — would be D*D which is too large
             # Instead we produce (B, S, D) by doing outer then project
-            return ShapeInfo(dim=s0.dim, seq=s0.seq)
+            return _shape_info(s0.dim, s0.seq)
 
         elif rule == "transpose_seq_dim":
-            return ShapeInfo(dim=s0.dim, seq=s0.seq)  # we handle internally
+            return _shape_info(s0.dim, s0.seq)  # we handle internally
 
         elif rule == "concat":
             if not input_shapes:
                 raise ValueError("Concat needs at least 1 input")
             # Sum dimensions across all inputs
             total_dim = sum(s.dim for s in input_shapes)
-            return ShapeInfo(dim=total_dim, seq=s0.seq)
+            return _shape_info(total_dim, s0.seq)
 
         elif rule == "split":
             # Determine split divisor from op name or config
@@ -500,27 +513,27 @@ class ComputationGraph:
             if s0.dim % n != 0:
                 # Fallback: if not perfectly divisible, last split gets remainder
                 # but for simplicity in research, we often just want floor
-                return ShapeInfo(dim=s0.dim // n, seq=s0.seq)
-            return ShapeInfo(dim=s0.dim // n, seq=s0.seq)
+                return _shape_info(s0.dim // n, s0.seq)
+            return _shape_info(s0.dim // n, s0.seq)
 
         elif rule == "linear":
             out_dim = config.get("out_dim", s0.dim)
-            return ShapeInfo(dim=out_dim, seq=s0.seq)
+            return _shape_info(out_dim, s0.seq)
 
         elif rule == "roll":
-            return ShapeInfo(dim=s0.dim, seq=s0.seq)
+            return _shape_info(s0.dim, s0.seq)
 
         elif rule == "gather":
-            return ShapeInfo(dim=s0.dim, seq=s0.seq)
+            return _shape_info(s0.dim, s0.seq)
 
         elif rule == "scatter":
-            return ShapeInfo(dim=s0.dim, seq=s0.seq)
+            return _shape_info(s0.dim, s0.seq)
 
         elif rule == "rfft":
-            return ShapeInfo(dim=s0.dim, seq="S//2+1")
+            return _shape_info(s0.dim, "S//2+1")
 
         elif rule == "irfft":
-            return ShapeInfo(dim=s0.dim, seq="S")
+            return _shape_info(s0.dim, "S")
 
         elif rule in (
             "cumulative",
@@ -531,7 +544,7 @@ class ComputationGraph:
             "sort",
             "unsort",
         ):
-            return ShapeInfo(dim=s0.dim, seq=s0.seq)
+            return _shape_info(s0.dim, s0.seq)
 
         else:
             raise ValueError(f"Unknown shape rule: {rule}")

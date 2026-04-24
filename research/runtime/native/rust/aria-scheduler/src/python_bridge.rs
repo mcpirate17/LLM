@@ -17,29 +17,23 @@ use crate::corpus::{
 };
 use crate::executor::{
     execute_backward_with_arena, execute_backward_with_arena_slices,
-    execute_forward_saving_activations,
-    execute_forward_saving_activations_multi_input, execute_with_arena,
-    execute_with_arena_multi_input, NativeKernelDispatch,
+    execute_forward_saving_activations, execute_forward_saving_activations_multi_input,
+    execute_with_arena, execute_with_arena_multi_input, NativeKernelDispatch,
 };
 use crate::ffi;
 use crate::graph::GraphIR;
 use crate::intelligence::{
     extract_edge_op_pairs_batch_json, extract_edge_op_pairs_json, extract_graph_segments_json,
-    extract_graph_segments_map,
-    extract_topology_feature_map,
-    extract_topology_feature_map_with_imodel,
-    extract_topology_features_batch_json,
-    extract_topology_feature_maps_batch,
-    extract_topology_feature_maps_with_imodel_batch,
-    extract_topology_features_json,
-    extract_topology_features_with_imodel_json,
-    extract_topology_features_with_imodel_batch,
-    train_interaction_model_native,
+    extract_graph_segments_map, extract_topology_feature_map,
+    extract_topology_feature_map_with_imodel, extract_topology_feature_maps_batch,
+    extract_topology_feature_maps_with_imodel_batch, extract_topology_features_batch_json,
+    extract_topology_features_json, extract_topology_features_with_imodel_batch,
+    extract_topology_features_with_imodel_json, train_interaction_model_native,
     train_op_embeddings_epoch_native,
 };
 use crate::notebook_graph::{
-    analyze_graph_provenance, analyze_graph_provenance_json, extract_graph_feature_payload_json, extract_graph_ops_json,
-    extract_graph_structure_features_json,
+    analyze_graph_provenance, analyze_graph_provenance_json, extract_graph_feature_payload_json,
+    extract_graph_ops_json, extract_graph_structure_features_json,
 };
 use crate::template_selection::TemplateSelector;
 
@@ -171,8 +165,7 @@ fn fingerprint_notebook_graph(json: &str) -> PyResult<String> {
 
 #[pyfunction]
 fn extract_graph_ops(json: &str) -> PyResult<Vec<String>> {
-    extract_graph_ops_json(json)
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+    extract_graph_ops_json(json).map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
 }
 
 #[pyfunction]
@@ -265,6 +258,37 @@ fn select_template_index_compiled(
         .select_index(
             override_weights.as_ref(),
             allowed_names.as_ref(),
+            exploration_budget,
+            exploration_draw,
+            selection_draw,
+        )
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+}
+
+#[pyfunction(signature = (
+    handle,
+    exploration_budget,
+    exploration_draw,
+    selection_draw,
+    override_indices=None,
+    override_weights=None,
+    allowed_indices=None
+))]
+fn select_template_index_compiled_arrays(
+    handle: PyRef<'_, TemplateSelectorHandle>,
+    exploration_budget: f64,
+    exploration_draw: f64,
+    selection_draw: f64,
+    override_indices: Option<Vec<usize>>,
+    override_weights: Option<Vec<f64>>,
+    allowed_indices: Option<Vec<usize>>,
+) -> PyResult<(usize, bool)> {
+    handle
+        .selector
+        .select_index_arrays(
+            override_indices.as_ref(),
+            override_weights.as_ref(),
+            allowed_indices.as_ref(),
             exploration_budget,
             exploration_draw,
             selection_draw,
@@ -393,8 +417,7 @@ fn build_op_index_from_rows(rows_json: &str) -> PyResult<String> {
         }
 
         let error_type = row.error_type.unwrap_or_default();
-        let is_non_op_failure =
-            !row.stage0_passed && non_op_errors.contains(&error_type.as_str());
+        let is_non_op_failure = !row.stage0_passed && non_op_errors.contains(&error_type.as_str());
 
         for op in ops.iter() {
             let stored = stored_rates.entry(op.clone()).or_default();
@@ -452,10 +475,7 @@ fn build_op_index_from_rows(rows_json: &str) -> PyResult<String> {
             let root_cause_code = details
                 .root_cause_code
                 .unwrap_or_else(|| error_type.clone());
-            let failure_op = details
-                .failure_op
-                .or(row.failure_op)
-                .unwrap_or_default();
+            let failure_op = details.failure_op.or(row.failure_op).unwrap_or_default();
 
             if !row.stage0_passed {
                 let group = failure_groups.entry(root_cause_code.clone()).or_default();
@@ -914,43 +934,56 @@ fn train_interaction_model_native_py<'py>(
     let loss_labels_vec = readonly_array_slice(&loss_labels)?.to_vec();
     let loss_weights_vec = readonly_array_slice(&loss_weights)?.to_vec();
 
-    let result = py.allow_threads(move || {
-        train_interaction_model_native(
-            &u_vec,
-            u_shape[0],
-            u_shape[1],
-            &v_vec,
-            v_shape[0],
-            v_shape[1],
-            &ws_vec,
-            ws_shape[0],
-            ws_shape[1],
-            &wl_vec,
-            wl_shape[0],
-            wl_shape[1],
-            b_s,
-            b_l,
-            &stab_idx_vec,
-            stab_shape[0],
-            &stab_labels_vec,
-            &stab_weights_vec,
-            &loss_idx_vec,
-            loss_shape[0],
-            &loss_labels_vec,
-            &loss_weights_vec,
-            n_epochs,
-            lr,
-            batch_size,
-            seed,
-        )
-    })
-    .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+    let result = py
+        .allow_threads(move || {
+            train_interaction_model_native(
+                &u_vec,
+                u_shape[0],
+                u_shape[1],
+                &v_vec,
+                v_shape[0],
+                v_shape[1],
+                &ws_vec,
+                ws_shape[0],
+                ws_shape[1],
+                &wl_vec,
+                wl_shape[0],
+                wl_shape[1],
+                b_s,
+                b_l,
+                &stab_idx_vec,
+                stab_shape[0],
+                &stab_labels_vec,
+                &stab_weights_vec,
+                &loss_idx_vec,
+                loss_shape[0],
+                &loss_labels_vec,
+                &loss_weights_vec,
+                n_epochs,
+                lr,
+                batch_size,
+                seed,
+            )
+        })
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
 
     let dict = PyDict::new_bound(py);
-    dict.set_item("u", matrix_to_numpy(py, result.u, result.u_rows, result.u_cols)?)?;
-    dict.set_item("v", matrix_to_numpy(py, result.v, result.v_rows, result.v_cols)?)?;
-    dict.set_item("W_s", matrix_to_numpy(py, result.w_s, result.ws_rows, result.ws_cols)?)?;
-    dict.set_item("W_l", matrix_to_numpy(py, result.w_l, result.wl_rows, result.wl_cols)?)?;
+    dict.set_item(
+        "u",
+        matrix_to_numpy(py, result.u, result.u_rows, result.u_cols)?,
+    )?;
+    dict.set_item(
+        "v",
+        matrix_to_numpy(py, result.v, result.v_rows, result.v_cols)?,
+    )?;
+    dict.set_item(
+        "W_s",
+        matrix_to_numpy(py, result.w_s, result.ws_rows, result.ws_cols)?,
+    )?;
+    dict.set_item(
+        "W_l",
+        matrix_to_numpy(py, result.w_l, result.wl_rows, result.wl_cols)?,
+    )?;
     dict.set_item("b_s", result.b_s)?;
     dict.set_item("b_l", result.b_l)?;
     dict.set_item("best_loss", result.best_loss)?;
@@ -987,26 +1020,27 @@ fn train_op_embeddings_epoch_native_py<'py>(
     let pair_idx_vec = readonly_array_slice(&pair_idx)?.to_vec();
     let pair_labels_vec = readonly_array_slice(&pair_labels)?.to_vec();
 
-    let result = py.allow_threads(move || {
-        train_op_embeddings_epoch_native(
-            &embeddings_vec,
-            emb_shape[0],
-            emb_shape[1],
-            &positive_vec,
-            pos_shape[0],
-            &negative_vec,
-            neg_shape[0],
-            &pair_idx_vec,
-            pair_shape[0],
-            &pair_labels_vec,
-            lr,
-            batch_size,
-            margin,
-            pair_weight,
-            seed,
-        )
-    })
-    .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+    let result = py
+        .allow_threads(move || {
+            train_op_embeddings_epoch_native(
+                &embeddings_vec,
+                emb_shape[0],
+                emb_shape[1],
+                &positive_vec,
+                pos_shape[0],
+                &negative_vec,
+                neg_shape[0],
+                &pair_idx_vec,
+                pair_shape[0],
+                &pair_labels_vec,
+                lr,
+                batch_size,
+                margin,
+                pair_weight,
+                seed,
+            )
+        })
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
 
     let dict = PyDict::new_bound(py);
     dict.set_item(
@@ -1740,12 +1774,16 @@ fn aria_scheduler(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(compile_graph_ir_handle, m)?)?;
     m.add_function(wrap_pyfunction!(compile_template_selector_handle, m)?)?;
     m.add_function(wrap_pyfunction!(select_template_index_compiled, m)?)?;
+    m.add_function(wrap_pyfunction!(select_template_index_compiled_arrays, m)?)?;
     m.add_function(wrap_pyfunction!(topological_order, m)?)?;
     m.add_function(wrap_pyfunction!(fingerprint_notebook_graph, m)?)?;
     m.add_function(wrap_pyfunction!(extract_graph_ops, m)?)?;
     m.add_function(wrap_pyfunction!(extract_graph_ops_batch, m)?)?;
     m.add_function(wrap_pyfunction!(extract_graph_feature_payload, m)?)?;
-    m.add_function(wrap_pyfunction!(extract_graph_structure_features_native, m)?)?;
+    m.add_function(wrap_pyfunction!(
+        extract_graph_structure_features_native,
+        m
+    )?)?;
     m.add_function(wrap_pyfunction!(analyze_graph_provenance_native, m)?)?;
     m.add_function(wrap_pyfunction!(analyze_graph_provenance_native_py, m)?)?;
     m.add_function(wrap_pyfunction!(build_op_index_from_rows, m)?)?;
@@ -1783,7 +1821,10 @@ fn aria_scheduler(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(execute_graph, m)?)?;
     m.add_function(wrap_pyfunction!(execute_graph_with_stats, m)?)?;
     m.add_function(wrap_pyfunction!(execute_graph_with_stats_arrays, m)?)?;
-    m.add_function(wrap_pyfunction!(execute_graph_with_stats_compiled_arrays, m)?)?;
+    m.add_function(wrap_pyfunction!(
+        execute_graph_with_stats_compiled_arrays,
+        m
+    )?)?;
     m.add_function(wrap_pyfunction!(execute_graph_compiled_arrays_handle, m)?)?;
     m.add_function(wrap_pyfunction!(execute_graph_multi_input, m)?)?;
     m.add_function(wrap_pyfunction!(execute_graph_multi_input_with_stats, m)?)?;
@@ -1803,7 +1844,10 @@ fn aria_scheduler(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(execute_graph_forward_saved, m)?)?;
     m.add_function(wrap_pyfunction!(execute_graph_forward_saved_handle, m)?)?;
     m.add_function(wrap_pyfunction!(execute_graph_forward_saved_arrays, m)?)?;
-    m.add_function(wrap_pyfunction!(execute_graph_forward_saved_arrays_handle, m)?)?;
+    m.add_function(wrap_pyfunction!(
+        execute_graph_forward_saved_arrays_handle,
+        m
+    )?)?;
     m.add_function(wrap_pyfunction!(
         execute_graph_forward_saved_compiled_arrays_handle,
         m

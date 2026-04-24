@@ -1,8 +1,8 @@
 use std::cmp::Ordering;
 use std::collections::{BTreeSet, BinaryHeap, HashMap, HashSet, VecDeque};
 
-use serde::Serialize;
 use serde::Deserialize;
+use serde::Serialize;
 use serde_json::Value;
 use xxhash_rust::xxh64::xxh64;
 
@@ -190,7 +190,7 @@ impl NotebookGraph {
         order
     }
 
-pub fn fingerprint(&self) -> Result<String, AriaError> {
+    pub fn fingerprint(&self) -> Result<String, AriaError> {
         let order = self.canonical_topological_order();
         let mut id_to_rank = HashMap::with_capacity(order.len());
         for (idx, node_id) in order.iter().enumerate() {
@@ -288,7 +288,8 @@ pub fn extract_graph_feature_payload_json(json: &str) -> Result<GraphFeaturePayl
                 let Some(node_obj) = node.as_object() else {
                     continue;
                 };
-                let op_name = cleaned_op_name(node_obj.get("op_name").or_else(|| node_obj.get("op")));
+                let op_name =
+                    cleaned_op_name(node_obj.get("op_name").or_else(|| node_obj.get("op")));
                 if op_name.is_empty() || op_name == "input" {
                     continue;
                 }
@@ -298,10 +299,12 @@ pub fn extract_graph_feature_payload_json(json: &str) -> Result<GraphFeaturePayl
                 };
                 for raw_parent in input_ids {
                     let parent_key = value_to_lookup_key(raw_parent);
-                    let Some(parent_obj) = node_map.get(&parent_key).and_then(Value::as_object) else {
+                    let Some(parent_obj) = node_map.get(&parent_key).and_then(Value::as_object)
+                    else {
                         continue;
                     };
-                    let parent_op = cleaned_op_name(parent_obj.get("op_name").or_else(|| parent_obj.get("op")));
+                    let parent_op =
+                        cleaned_op_name(parent_obj.get("op_name").or_else(|| parent_obj.get("op")));
                     if !parent_op.is_empty() && parent_op != "input" {
                         pair_signatures.insert(format!("{}->{}", parent_op, op_name));
                     }
@@ -322,7 +325,8 @@ pub fn extract_graph_feature_payload_json(json: &str) -> Result<GraphFeaturePayl
                 node_map.insert(id_key, node_obj);
             }
             for node_obj in node_map.values() {
-                let op_name = cleaned_op_name(node_obj.get("op_name").or_else(|| node_obj.get("op")));
+                let op_name =
+                    cleaned_op_name(node_obj.get("op_name").or_else(|| node_obj.get("op")));
                 if op_name.is_empty() || op_name == "input" {
                     continue;
                 }
@@ -335,7 +339,8 @@ pub fn extract_graph_feature_payload_json(json: &str) -> Result<GraphFeaturePayl
                     let Some(parent_obj) = node_map.get(&parent_key) else {
                         continue;
                     };
-                    let parent_op = cleaned_op_name(parent_obj.get("op_name").or_else(|| parent_obj.get("op")));
+                    let parent_op =
+                        cleaned_op_name(parent_obj.get("op_name").or_else(|| parent_obj.get("op")));
                     if !parent_op.is_empty() && parent_op != "input" {
                         pair_signatures.insert(format!("{}->{}", parent_op, op_name));
                     }
@@ -420,9 +425,7 @@ pub fn analyze_graph_provenance(
                     continue;
                 }
                 let op_name = sorted_nodes[idx].op_name.trim();
-                if !op_name.is_empty()
-                    && op_name != "input"
-                    && !generic_sink_set.contains(op_name)
+                if !op_name.is_empty() && op_name != "input" && !generic_sink_set.contains(op_name)
                 {
                     return Some(op_name.to_string());
                 }
@@ -584,13 +587,7 @@ fn empty_graph_feature_payload() -> GraphFeaturePayload {
 }
 
 fn cleaned_op_name(value: Option<&Value>) -> String {
-    canonicalize_op_name(
-        value
-            .map(value_to_string)
-            .unwrap_or_default()
-            .trim(),
-    )
-    .to_string()
+    canonicalize_op_name(value.map(value_to_string).unwrap_or_default().trim()).to_string()
 }
 
 fn value_to_lookup_key(value: &Value) -> String {

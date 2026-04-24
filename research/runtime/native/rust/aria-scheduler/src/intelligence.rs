@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use std::collections::BTreeMap;
+use std::collections::HashMap;
 
 use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
@@ -163,11 +163,11 @@ pub fn extract_topology_features_json(
     pair_stability_json: &str,
     op_metadata_json: &str,
 ) -> Result<String, AriaError> {
-    let op_profiles: HashMap<String, OpProfile> = serde_json::from_str(op_profiles_json)
-        .map_err(|e| AriaError::InvalidIR(e.to_string()))?;
+    let op_profiles: HashMap<String, OpProfile> =
+        serde_json::from_str(op_profiles_json).map_err(|e| AriaError::InvalidIR(e.to_string()))?;
     let pair_stability = parse_pair_stability_map(pair_stability_json)?;
-    let op_metadata: HashMap<String, OpCategoryMeta> = serde_json::from_str(op_metadata_json)
-        .map_err(|e| AriaError::InvalidIR(e.to_string()))?;
+    let op_metadata: HashMap<String, OpCategoryMeta> =
+        serde_json::from_str(op_metadata_json).map_err(|e| AriaError::InvalidIR(e.to_string()))?;
     let graph = NotebookGraph::from_json(graph_json)?;
     extract_topology_features_for_graph(&graph, &op_profiles, &pair_stability, &op_metadata)
 }
@@ -193,11 +193,11 @@ pub fn extract_topology_features_with_imodel_json(
     b_s: f64,
     b_l: f64,
 ) -> Result<String, AriaError> {
-    let op_profiles: HashMap<String, OpProfile> = serde_json::from_str(op_profiles_json)
-        .map_err(|e| AriaError::InvalidIR(e.to_string()))?;
+    let op_profiles: HashMap<String, OpProfile> =
+        serde_json::from_str(op_profiles_json).map_err(|e| AriaError::InvalidIR(e.to_string()))?;
     let pair_stability = parse_pair_stability_map(pair_stability_json)?;
-    let op_metadata: HashMap<String, OpCategoryMeta> = serde_json::from_str(op_metadata_json)
-        .map_err(|e| AriaError::InvalidIR(e.to_string()))?;
+    let op_metadata: HashMap<String, OpCategoryMeta> =
+        serde_json::from_str(op_metadata_json).map_err(|e| AriaError::InvalidIR(e.to_string()))?;
     let kernel = InteractionModelKernel::new(
         op_names, u, u_rows, u_cols, v, v_rows, v_cols, w_s, ws_rows, ws_cols, w_l, wl_rows,
         wl_cols, b_s, b_l,
@@ -224,11 +224,11 @@ pub fn extract_topology_feature_map(
     pair_stability_json: &str,
     op_metadata_json: &str,
 ) -> Result<HashMap<String, f64>, AriaError> {
-    let op_profiles: HashMap<String, OpProfile> = serde_json::from_str(op_profiles_json)
-        .map_err(|e| AriaError::InvalidIR(e.to_string()))?;
+    let op_profiles: HashMap<String, OpProfile> =
+        serde_json::from_str(op_profiles_json).map_err(|e| AriaError::InvalidIR(e.to_string()))?;
     let pair_stability = parse_pair_stability_map(pair_stability_json)?;
-    let op_metadata: HashMap<String, OpCategoryMeta> = serde_json::from_str(op_metadata_json)
-        .map_err(|e| AriaError::InvalidIR(e.to_string()))?;
+    let op_metadata: HashMap<String, OpCategoryMeta> =
+        serde_json::from_str(op_metadata_json).map_err(|e| AriaError::InvalidIR(e.to_string()))?;
     let graph = NotebookGraph::from_json(graph_json)?;
     let topo = build_topology_index(&graph)?;
     collect_topology_features_for_graph(&graph, &topo, &op_profiles, &pair_stability, &op_metadata)
@@ -255,11 +255,11 @@ pub fn extract_topology_feature_map_with_imodel(
     b_s: f64,
     b_l: f64,
 ) -> Result<HashMap<String, f64>, AriaError> {
-    let op_profiles: HashMap<String, OpProfile> = serde_json::from_str(op_profiles_json)
-        .map_err(|e| AriaError::InvalidIR(e.to_string()))?;
+    let op_profiles: HashMap<String, OpProfile> =
+        serde_json::from_str(op_profiles_json).map_err(|e| AriaError::InvalidIR(e.to_string()))?;
     let pair_stability = parse_pair_stability_map(pair_stability_json)?;
-    let op_metadata: HashMap<String, OpCategoryMeta> = serde_json::from_str(op_metadata_json)
-        .map_err(|e| AriaError::InvalidIR(e.to_string()))?;
+    let op_metadata: HashMap<String, OpCategoryMeta> =
+        serde_json::from_str(op_metadata_json).map_err(|e| AriaError::InvalidIR(e.to_string()))?;
     let kernel = InteractionModelKernel::new(
         op_names, u, u_rows, u_cols, v, v_rows, v_cols, w_s, ws_rows, ws_cols, w_l, wl_rows,
         wl_cols, b_s, b_l,
@@ -286,11 +286,11 @@ pub fn extract_topology_features_batch_json(
     pair_stability_json: &str,
     op_metadata_json: &str,
 ) -> Result<Vec<String>, AriaError> {
-    let op_profiles: HashMap<String, OpProfile> = serde_json::from_str(op_profiles_json)
-        .map_err(|e| AriaError::InvalidIR(e.to_string()))?;
+    let op_profiles: HashMap<String, OpProfile> =
+        serde_json::from_str(op_profiles_json).map_err(|e| AriaError::InvalidIR(e.to_string()))?;
     let pair_stability = parse_pair_stability_map(pair_stability_json)?;
-    let op_metadata: HashMap<String, OpCategoryMeta> = serde_json::from_str(op_metadata_json)
-        .map_err(|e| AriaError::InvalidIR(e.to_string()))?;
+    let op_metadata: HashMap<String, OpCategoryMeta> =
+        serde_json::from_str(op_metadata_json).map_err(|e| AriaError::InvalidIR(e.to_string()))?;
     let mut results = Vec::with_capacity(graphs.len());
     for graph_json in graphs {
         let graph = NotebookGraph::from_json(graph_json)?;
@@ -310,11 +310,11 @@ pub fn extract_topology_feature_maps_batch(
     pair_stability_json: &str,
     op_metadata_json: &str,
 ) -> Result<Vec<HashMap<String, f64>>, AriaError> {
-    let op_profiles: HashMap<String, OpProfile> = serde_json::from_str(op_profiles_json)
-        .map_err(|e| AriaError::InvalidIR(e.to_string()))?;
+    let op_profiles: HashMap<String, OpProfile> =
+        serde_json::from_str(op_profiles_json).map_err(|e| AriaError::InvalidIR(e.to_string()))?;
     let pair_stability = parse_pair_stability_map(pair_stability_json)?;
-    let op_metadata: HashMap<String, OpCategoryMeta> = serde_json::from_str(op_metadata_json)
-        .map_err(|e| AriaError::InvalidIR(e.to_string()))?;
+    let op_metadata: HashMap<String, OpCategoryMeta> =
+        serde_json::from_str(op_metadata_json).map_err(|e| AriaError::InvalidIR(e.to_string()))?;
     let mut results = Vec::with_capacity(graphs.len());
     for graph_json in graphs {
         let graph = NotebookGraph::from_json(graph_json)?;
@@ -442,8 +442,7 @@ impl<'a> InteractionModelKernel<'a> {
                     if left_idx < self.n_ops && right_idx < self.n_ops {
                         stability =
                             sigmoid(self.bilinear_score(left_idx, right_idx, self.w_s) + self.b_s);
-                        loss =
-                            self.bilinear_score(left_idx, right_idx, self.w_l) + self.b_l;
+                        loss = self.bilinear_score(left_idx, right_idx, self.w_l) + self.b_l;
                     }
                 }
                 pair_count += 1;
@@ -484,11 +483,11 @@ pub fn extract_topology_features_with_imodel_batch(
     b_s: f64,
     b_l: f64,
 ) -> Result<Vec<String>, AriaError> {
-    let op_profiles: HashMap<String, OpProfile> = serde_json::from_str(op_profiles_json)
-        .map_err(|e| AriaError::InvalidIR(e.to_string()))?;
+    let op_profiles: HashMap<String, OpProfile> =
+        serde_json::from_str(op_profiles_json).map_err(|e| AriaError::InvalidIR(e.to_string()))?;
     let pair_stability = parse_pair_stability_map(pair_stability_json)?;
-    let op_metadata: HashMap<String, OpCategoryMeta> = serde_json::from_str(op_metadata_json)
-        .map_err(|e| AriaError::InvalidIR(e.to_string()))?;
+    let op_metadata: HashMap<String, OpCategoryMeta> =
+        serde_json::from_str(op_metadata_json).map_err(|e| AriaError::InvalidIR(e.to_string()))?;
     let kernel = InteractionModelKernel::new(
         op_names, u, u_rows, u_cols, v, v_rows, v_cols, w_s, ws_rows, ws_cols, w_l, wl_rows,
         wl_cols, b_s, b_l,
@@ -537,11 +536,11 @@ pub fn extract_topology_feature_maps_with_imodel_batch(
     b_s: f64,
     b_l: f64,
 ) -> Result<Vec<HashMap<String, f64>>, AriaError> {
-    let op_profiles: HashMap<String, OpProfile> = serde_json::from_str(op_profiles_json)
-        .map_err(|e| AriaError::InvalidIR(e.to_string()))?;
+    let op_profiles: HashMap<String, OpProfile> =
+        serde_json::from_str(op_profiles_json).map_err(|e| AriaError::InvalidIR(e.to_string()))?;
     let pair_stability = parse_pair_stability_map(pair_stability_json)?;
-    let op_metadata: HashMap<String, OpCategoryMeta> = serde_json::from_str(op_metadata_json)
-        .map_err(|e| AriaError::InvalidIR(e.to_string()))?;
+    let op_metadata: HashMap<String, OpCategoryMeta> =
+        serde_json::from_str(op_metadata_json).map_err(|e| AriaError::InvalidIR(e.to_string()))?;
     let kernel = InteractionModelKernel::new(
         op_names, u, u_rows, u_cols, v, v_rows, v_cols, w_s, ws_rows, ws_cols, w_l, wl_rows,
         wl_cols, b_s, b_l,
@@ -635,10 +634,7 @@ fn collect_topology_features_for_graph(
     features.insert("topo_n_ops".into(), n_ops);
     features.insert("topo_depth".into(), max_depth);
     features.insert("topo_edge_density".into(), n_edges as f64 / n.max(1) as f64);
-    features.insert(
-        "topo_edges_per_op".into(),
-        n_edges as f64 / n_ops.max(1.0),
-    );
+    features.insert("topo_edges_per_op".into(), n_edges as f64 / n_ops.max(1.0));
     features.insert("topo_depth_per_op".into(), max_depth / n_ops.max(1.0));
 
     let fan_ins: Vec<usize> = parents.iter().map(|p| p.len()).collect();
@@ -693,7 +689,11 @@ fn collect_topology_features_for_graph(
             lip_product[idx] = max_parent_lip * lip_values[idx];
         }
     }
-    let max_lip_product = lip_product.iter().copied().fold(0.0_f64, f64::max).clamp(0.0, 1e6);
+    let max_lip_product = lip_product
+        .iter()
+        .copied()
+        .fold(0.0_f64, f64::max)
+        .clamp(0.0, 1e6);
     let mean_lip_product =
         (lip_product.iter().sum::<f64>() / lip_product.len().max(1) as f64).clamp(0.0, 1e6);
     features.insert("path_max_lip_product".into(), max_lip_product);
@@ -743,7 +743,10 @@ fn collect_topology_features_for_graph(
     let denom = weight_sum.max(1e-8);
     features.insert("depth_weighted_lip".into(), weighted_lip / denom);
     features.insert("depth_weighted_std".into(), weighted_std / denom);
-    features.insert("depth_weighted_grad".into(), (1.0 + (weighted_grad / denom)).ln());
+    features.insert(
+        "depth_weighted_grad".into(),
+        (1.0 + (weighted_grad / denom)).ln(),
+    );
 
     let mut pair_values = Vec::new();
     for idx in 0..n {
@@ -811,8 +814,10 @@ fn collect_topology_features_for_graph(
             }
             if !local_depths.is_empty() {
                 let min_depth = local_depths.iter().copied().fold(f64::INFINITY, f64::min);
-                let max_depth_local =
-                    local_depths.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+                let max_depth_local = local_depths
+                    .iter()
+                    .copied()
+                    .fold(f64::NEG_INFINITY, f64::max);
                 if max_depth_local - min_depth > 0.0 {
                     n_skip += 1;
                     skip_spans.push(max_depth_local - min_depth);
@@ -890,7 +895,10 @@ fn collect_topology_features_for_graph(
         "cat_frac_reduction".into(),
         reduction as f64 / n_ops.max(1.0),
     );
-    features.insert("param_op_fraction".into(), param_ops as f64 / n_ops.max(1.0));
+    features.insert(
+        "param_op_fraction".into(),
+        param_ops as f64 / n_ops.max(1.0),
+    );
     features.insert("late_mixing_density".into(), mixing_late / n_ops.max(1.0));
     features.insert("late_math_density".into(), math_late / n_ops.max(1.0));
 
@@ -932,7 +940,10 @@ fn collect_topology_features_for_graph(
                     parent_depths.push(depth[parent_idx] as f64);
                 }
             }
-            features.insert("has_norm_before_output".into(), if has_norm { 1.0 } else { 0.0 });
+            features.insert(
+                "has_norm_before_output".into(),
+                if has_norm { 1.0 } else { 0.0 },
+            );
             features.insert(
                 "output_parent_depth_mean".into(),
                 if parent_depths.is_empty() {
@@ -1130,7 +1141,9 @@ pub fn train_interaction_model_native(
         || loss_labels.len() != loss_rows
         || loss_weights.len() != loss_rows
     {
-        return Err(AriaError::ExecutionFailed("interaction input shape mismatch".into()));
+        return Err(AriaError::ExecutionFailed(
+            "interaction input shape mismatch".into(),
+        ));
     }
 
     let mut rng = StdRng::seed_from_u64(seed);
@@ -1238,8 +1251,8 @@ pub fn train_interaction_model_native(
                     total_loss += 0.5 * grad.abs();
                     db_accum += grad;
                     for a in 0..d {
-                    let u_val = u[u_base + a];
-                    for b in 0..d {
+                        let u_val = u[u_base + a];
+                        for b in 0..d {
                             d_wl[a * d + b] += u_val * grad * v[v_base + b];
                         }
                     }
@@ -1326,7 +1339,9 @@ pub fn train_op_embeddings_epoch_native(
         || pair_idx.len() != pair_rows * 2
         || pair_labels.len() != pair_rows
     {
-        return Err(AriaError::ExecutionFailed("embedding input shape mismatch".into()));
+        return Err(AriaError::ExecutionFailed(
+            "embedding input shape mismatch".into(),
+        ));
     }
     let mut embeddings = checked_flat_copy(embeddings_init, emb_rows, emb_cols)?;
     let mut rng = StdRng::seed_from_u64(seed);
@@ -1348,7 +1363,11 @@ pub fn train_op_embeddings_epoch_native(
             let neg_pair_idx = rng.gen_range(0..negative_rows);
             let neg_left = negative_pairs[neg_pair_idx * 2] as usize;
             let neg_right = negative_pairs[neg_pair_idx * 2 + 1] as usize;
-            let neg_idx = if neg_left == anchor_idx { neg_right } else { neg_left };
+            let neg_idx = if neg_left == anchor_idx {
+                neg_right
+            } else {
+                neg_left
+            };
             let anchor_base = row_offset(anchor_idx, d);
             let pos_base = row_offset(pos_idx, d);
             let neg_base = row_offset(neg_idx, d);

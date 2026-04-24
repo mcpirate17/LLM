@@ -27,9 +27,10 @@ def validate_template_graph(graph: ComputationGraph) -> List[str]:
     Returns list of error strings. Empty list = valid.
     """
     errors: List[str] = []
+    children = _build_children_map(graph)
     errors.extend(_check_final_norm(graph))
-    errors.extend(_check_lane_diversity(graph))
-    errors.extend(_check_bottleneck_dimension(graph))
+    errors.extend(_check_lane_diversity(graph, children))
+    errors.extend(_check_bottleneck_dimension(graph, children))
     return errors
 
 
@@ -56,10 +57,14 @@ def _build_children_map(graph: ComputationGraph) -> Dict[int, List[int]]:
     return children
 
 
-def _check_lane_diversity(graph: ComputationGraph) -> List[str]:
+def _check_lane_diversity(
+    graph: ComputationGraph,
+    children: Dict[int, List[int]] | None = None,
+) -> List[str]:
     """Multi-lane splits must have distinct op categories per lane."""
     errors = []
-    children = _build_children_map(graph)
+    if children is None:
+        children = _build_children_map(graph)
 
     for nid, node in graph.nodes.items():
         if node.op_name != "split3":
@@ -98,13 +103,17 @@ def _get_parametric_ops() -> frozenset:
     return frozenset(name for name, op in PRIMITIVE_REGISTRY.items() if op.has_params)
 
 
-def _check_bottleneck_dimension(graph: ComputationGraph) -> List[str]:
+def _check_bottleneck_dimension(
+    graph: ComputationGraph,
+    children: Dict[int, List[int]] | None = None,
+) -> List[str]:
     """After a bottleneck (D→D/4), no full-dim parametric op should appear
     until an up-projection restores dimensionality.
     """
     errors = []
     parametric = _get_parametric_ops()
-    children = _build_children_map(graph)
+    if children is None:
+        children = _build_children_map(graph)
 
     # Kahn's algorithm with adjacency list — O(V+E)
     in_degree: Dict[int, int] = {nid: 0 for nid in graph.nodes}
