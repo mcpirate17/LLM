@@ -1574,3 +1574,13 @@ class _NotebookCore:
         self._dashboard_summary_cache_expires_at = 0.0
         self._template_observability_cache = {}
         self._template_observability_cache_expires_at = 0.0
+        try:
+            from .notebook_dashboard import clear_dashboard_process_caches
+            from .notebook_observability import (
+                clear_template_observability_process_cache,
+            )
+
+            clear_dashboard_process_caches()
+            clear_template_observability_process_cache()
+        except Exception:
+            pass

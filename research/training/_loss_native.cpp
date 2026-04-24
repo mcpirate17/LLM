@@ -11,27 +11,21 @@ namespace F = torch::nn::functional;
 namespace {
 
 template <typename scalar_t>
-torch::Tensor rank_weighted_ce_cpu_impl(
+torch::Tensor rank_weights_cpu_impl(
     const torch::Tensor& flat_logits,
-    const torch::Tensor& flat_targets,
-    const torch::Tensor& log_probs) {
+    const torch::Tensor& flat_targets) {
   const auto rows = flat_logits.size(0);
   const auto cols = flat_logits.size(1);
 
   const auto logits = flat_logits.contiguous();
   const auto targets = flat_targets.contiguous();
-  const auto logs = log_probs.contiguous();
 
   const scalar_t* logits_ptr = logits.data_ptr<scalar_t>();
-  const scalar_t* log_probs_ptr = logs.data_ptr<scalar_t>();
   const int64_t* targets_ptr = targets.data_ptr<int64_t>();
+  auto weights = torch::empty({rows}, flat_logits.options());
+  scalar_t* weights_ptr = weights.data_ptr<scalar_t>();
 
-  std::vector<double> partials(at::get_num_threads(), 0.0);
-
-  at::parallel_for(0, rows, 1, [&](int64_t begin, int64_t end) {
-    const auto thread_id = at::get_thread_num();
-    double local_sum = 0.0;
-
+  at::parallel_for(0, rows, 1 << 8, [&](int64_t begin, int64_t end) {
     for (int64_t row = begin; row < end; ++row) {
       const int64_t target = targets_ptr[row];
       const int64_t offset = row * cols;
@@ -42,21 +36,12 @@ torch::Tensor rank_weighted_ce_cpu_impl(
         rank_pos += logits_ptr[offset + col] > target_logit;
       }
 
-      const double nll = -static_cast<double>(log_probs_ptr[offset + target]);
-      local_sum += nll * (std::log1p(static_cast<double>(rank_pos)) + 1.0);
+      weights_ptr[row] = static_cast<scalar_t>(
+          std::log1p(static_cast<double>(rank_pos)) + 1.0);
     }
-
-    partials[thread_id] += local_sum;
   });
 
-  double total = 0.0;
-  for (double partial : partials) {
-    total += partial;
-  }
-
-  return torch::scalar_tensor(
-      total / static_cast<double>(rows),
-      flat_logits.options());
+  return weights;
 }
 
 torch::Tensor rank_weighted_ce(
@@ -76,19 +61,20 @@ torch::Tensor rank_weighted_ce(
       flat_targets.device().is_cpu() &&
       log_probs.device().is_cpu() &&
       flat_targets.scalar_type() == torch::kInt64) {
+    torch::Tensor weights;
     switch (flat_logits.scalar_type()) {
       case torch::kFloat32:
-        return rank_weighted_ce_cpu_impl<float>(
-            flat_logits,
-            flat_targets,
-            log_probs);
+        weights = rank_weights_cpu_impl<float>(flat_logits, flat_targets);
+        break;
       case torch::kFloat64:
-        return rank_weighted_ce_cpu_impl<double>(
-            flat_logits,
-            flat_targets,
-            log_probs);
+        weights = rank_weights_cpu_impl<double>(flat_logits, flat_targets);
+        break;
       default:
         break;
+    }
+    if (weights.defined()) {
+      auto nll = -log_probs.gather(1, flat_targets.unsqueeze(1)).squeeze(1);
+      return (nll * weights).mean();
     }
   }
 
@@ -122,6 +108,25 @@ torch::Tensor tropical_ce(
       top_vals.select(1, 0));
   auto margin = max_other - target_log_probs;
   return torch::relu(margin + 1.0).mean();
+}
+
+torch::Tensor contrastive_push(
+    const torch::Tensor& flat_logits,
+    const torch::Tensor& flat_targets) {
+  TORCH_CHECK(flat_logits.dim() == 2, "flat_logits must be 2D");
+  TORCH_CHECK(flat_targets.dim() == 1, "flat_targets must be 1D");
+  TORCH_CHECK(
+      flat_logits.size(0) == flat_targets.size(0),
+      "batch size mismatch between logits and targets");
+  const auto vocab = flat_logits.size(1);
+  const auto topk_width = std::min<int64_t>(6, vocab);
+  if (topk_width <= 1) {
+    return flat_logits.new_zeros({});
+  }
+  auto target_logits = flat_logits.gather(1, flat_targets.unsqueeze(1));
+  auto topk = std::get<0>(torch::topk(flat_logits, topk_width, -1, true, true));
+  auto negatives = topk.slice(1, 1, topk_width);
+  return torch::relu(negatives - target_logits + 0.5).mean();
 }
 
 torch::Tensor next_token_cross_entropy(
@@ -248,6 +253,10 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
       "tropical_ce",
       &tropical_ce,
       "Tropical cross entropy");
+  m.def(
+      "contrastive_push",
+      &contrastive_push,
+      "Contrastive top-k margin push loss");
   m.def(
       "next_token_cross_entropy",
       &next_token_cross_entropy,

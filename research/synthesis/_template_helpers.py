@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import random
 import re
+from functools import lru_cache
 from typing import TYPE_CHECKING, Any, Callable, Dict, Optional, Tuple
 
 if TYPE_CHECKING:
@@ -163,19 +164,21 @@ def _step_is_compatible(graph: ComputationGraph, node_id: int, op_name: str) -> 
     return algebraic_types_compatible(current_type, next_op.algebraic_type)
 
 
-def _motif_is_compatible(graph: ComputationGraph, node_id: int, motif: Motif) -> bool:
-    current_type = _node_output_type(graph, node_id)
+def _node_depth_and_previous_op(
+    graph: ComputationGraph,
+    node_id: int,
+) -> tuple[int, str | None]:
     current_node = graph.nodes[node_id]
     previous_op = None if current_node.is_input else current_node.op_name
-    # Approximate depth of node_id for min_layer_depth check
-    depth = 0
-    nid = node_id
-    while nid in graph.nodes:
-        node = graph.nodes[nid]
-        if node.is_input or not node.input_ids:
-            break
-        nid = node.input_ids[0]
-        depth += 1
+    return current_node.depth, previous_op
+
+
+def _motif_is_compatible_from_context(
+    current_type: AlgebraicType,
+    previous_op: str | None,
+    depth: int,
+    motif: Motif,
+) -> bool:
     for step in motif.steps:
         step_op = PRIMITIVE_REGISTRY.get(step.op_name)
         if (
@@ -193,6 +196,24 @@ def _motif_is_compatible(graph: ComputationGraph, node_id: int, motif: Motif) ->
     return True
 
 
+def _motif_is_compatible(graph: ComputationGraph, node_id: int, motif: Motif) -> bool:
+    depth, previous_op = _node_depth_and_previous_op(graph, node_id)
+    return _motif_is_compatible_from_context(
+        _node_output_type(graph, node_id),
+        previous_op,
+        depth,
+        motif,
+    )
+
+
+@lru_cache(maxsize=128)
+def _motif_pool_for_classes(classes: Tuple[str, ...]) -> tuple[Motif, ...]:
+    pool: list[Motif] = []
+    for cls in classes:
+        pool.extend(MOTIFS_BY_CLASS.get(cls, ()))
+    return tuple(pool)
+
+
 def _compatible_from_classes(
     graph: ComputationGraph,
     node_id: int,
@@ -200,15 +221,35 @@ def _compatible_from_classes(
 ) -> list[Motif]:
     """Return motifs from *classes* that are compatible at *node_id*."""
     active_tpl = graph.metadata.get("_active_template")
-    pool: list[Motif] = []
-    for cls in classes:
-        pool.extend(MOTIFS_BY_CLASS.get(cls, []))
-    return [
+    classes_tuple = tuple(classes)
+    current_type = _node_output_type(graph, node_id)
+    depth, previous_op = _node_depth_and_previous_op(graph, node_id)
+    return list(
+        _compatible_from_context(
+            classes_tuple,
+            current_type,
+            previous_op,
+            depth,
+            active_tpl,
+        )
+    )
+
+
+@lru_cache(maxsize=2048)
+def _compatible_from_context(
+    classes: Tuple[str, ...],
+    current_type: AlgebraicType,
+    previous_op: str | None,
+    depth: int,
+    active_tpl: str | None,
+) -> tuple[Motif, ...]:
+    pool = _motif_pool_for_classes(classes)
+    return tuple(
         m
         for m in pool
-        if _motif_is_compatible(graph, node_id, m)
+        if _motif_is_compatible_from_context(current_type, previous_op, depth, m)
         and _motif_allowed_in_template(m, active_tpl)
-    ]
+    )
 
 
 _SLOT_MOTIF_DENYLIST: dict[str, frozenset[str]] = {
@@ -232,6 +273,8 @@ _SLOT_MOTIF_WEIGHT_MULTIPLIERS: dict[str, dict[str, float]] = {}
 
 def _normalize_slot_key(slot_key: str) -> str:
     """Map instanceful telemetry keys to the canonical template.slotN form."""
+    if "[" not in slot_key:
+        return slot_key
     return re.sub(r"\[\d+\]", "", slot_key)
 
 

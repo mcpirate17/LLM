@@ -50,6 +50,7 @@ from research.scientist.runner._helpers import (
 from research.scientist.shared_utils import resolve_device
 from research.synthesis.serializer import graph_from_json
 from research.tools._candidate_selection import fetch_latest_unique_fingerprint_rows
+from research.tools._fingerprint_selection import dedupe_records_by_fingerprint
 from research.tools.backfill import store_probe_results
 
 DB_PATH = Path("research/lab_notebook.db")
@@ -503,6 +504,12 @@ def _fetch_rows(
     if limit > 0:
         rows = rows[: int(limit)]
     return rows
+
+
+def _dedupe_rows_by_fingerprint_keep_latest(
+    rows: Sequence[sqlite3.Row],
+) -> List[sqlite3.Row]:
+    return dedupe_records_by_fingerprint(rows)
 
 
 def _graph_family_from_row(row: sqlite3.Row) -> str:

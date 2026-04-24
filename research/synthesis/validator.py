@@ -22,12 +22,116 @@ import numpy as np
 
 from .context_rules import find_graph_context_violations
 from .graph_validator import validate_dim_flow
-from .primitives import get_primitive, REVERSE_OPCODE_MAP
+from .native_analysis import analyze_ir_runtime_first
+from .primitives import OPCODE_MAP, REVERSE_OPCODE_MAP, get_primitive
 from .graph import ComputationGraph, ComputationGraphIR
 from .native_validation import summarize_validation
+from .validation_opcode_tables import validation_opcode_tables
 
 
 _NORM_OPS = frozenset({"rmsnorm", "layernorm", "batchnorm"})
+
+
+def _compute_effective_depth_graph(graph: ComputationGraph) -> float:
+    if "effective_depth" in graph._cache:
+        return float(graph._cache["effective_depth"])
+
+    if not graph.nodes:
+        graph._cache["effective_depth"] = 0.0
+        return 0.0
+
+    tables = validation_opcode_tables()
+    weights = tables.effective_depth_weight
+    discount_successor = tables.discount_successor
+    scores: dict[int, float] = {}
+    for node_id in graph.topological_order():
+        node = graph.nodes[node_id]
+        if node.is_input:
+            scores[node_id] = 0.0
+            continue
+        opcode = OPCODE_MAP.get(node.op_name, 0)
+        weight = float(weights[opcode]) if opcode < len(weights) else 0.0
+        parent_score = 0.0
+        discounted = False
+        for parent_id in node.input_ids:
+            parent_score = max(parent_score, scores.get(parent_id, 0.0))
+            parent = graph.nodes.get(parent_id)
+            if parent is None or parent.is_input:
+                continue
+            parent_opcode = OPCODE_MAP.get(parent.op_name, 0)
+            if (
+                parent_opcode < discount_successor.shape[0]
+                and opcode < discount_successor.shape[1]
+                and discount_successor[parent_opcode, opcode]
+            ):
+                discounted = True
+        if discounted and weight > 0.20:
+            weight = 0.20
+        scores[node_id] = parent_score + weight
+
+    effective_depth = max(scores.values(), default=0.0)
+    graph._cache["effective_depth"] = effective_depth
+    return effective_depth
+
+
+def _compute_effective_depth_ir(ir: ComputationGraphIR) -> float:
+    cached = ir.analysis_cache.get("effective_depth")
+    if cached is not None:
+        return float(cached)
+
+    n_nodes = ir.n_nodes()
+    if n_nodes <= 0:
+        ir.analysis_cache["effective_depth"] = 0.0
+        return 0.0
+
+    tables = validation_opcode_tables()
+    weights = tables.effective_depth_weight
+    discount_successor = tables.discount_successor
+    op_codes = ir.op_codes
+    input_indices = ir.input_indices
+    scores = np.zeros(n_nodes, dtype=np.float32)
+    for idx in range(n_nodes):
+        opcode = int(op_codes[idx])
+        if opcode == 0:
+            continue
+        if opcode >= len(weights):
+            continue
+        weight = float(weights[opcode])
+        parent_score = 0.0
+        discounted = False
+        for parent_idx_raw in input_indices[idx]:
+            parent_idx = int(parent_idx_raw)
+            if parent_idx < 0:
+                continue
+            parent_score = max(parent_score, float(scores[parent_idx]))
+            parent_opcode = int(op_codes[parent_idx])
+            if (
+                parent_opcode != 0
+                and parent_opcode < discount_successor.shape[0]
+                and opcode < discount_successor.shape[1]
+                and discount_successor[parent_opcode, opcode]
+            ):
+                discounted = True
+        if discounted and weight > 0.20:
+            weight = 0.20
+        scores[idx] = parent_score + weight
+
+    effective_depth = float(scores.max(initial=0.0))
+    ir.analysis_cache["effective_depth"] = effective_depth
+    return effective_depth
+
+
+def compute_effective_depth(
+    graph_or_ir: ComputationGraph | ComputationGraphIR,
+) -> float:
+    if isinstance(graph_or_ir, ComputationGraph):
+        return _compute_effective_depth_graph(graph_or_ir)
+    if isinstance(graph_or_ir, ComputationGraphIR):
+        return _compute_effective_depth_ir(graph_or_ir)
+    analyze_structure = getattr(graph_or_ir, "analyze_structure", None)
+    if analyze_structure is not None:
+        return float(analyze_structure(include_reachable=True).depth)
+    raise TypeError(f"Unsupported graph type: {type(graph_or_ir)!r}")
 
 
 @dataclass
@@ -40,6 +144,7 @@ class ValidationResult:
     # Metrics
     n_ops: int = 0
     depth: int = 0
+    effective_depth: float = 0.0
     n_params_estimate: int = 0
     has_gradient_path: bool = True
     n_risky_ops: int = 0
@@ -89,36 +194,14 @@ def _summarize_graph_validation(graph: ComputationGraph) -> tuple[object, list[i
 
 def _summarize_ir_validation(ir: ComputationGraphIR):
     op_codes = ir.op_codes
-    n_nodes = ir.n_nodes()
-    known_op_flags = np.zeros(n_nodes, dtype=np.int32)
-    risky_op_flags = np.zeros(n_nodes, dtype=np.int32)
-    parameterized_op_flags = np.zeros(n_nodes, dtype=np.int32)
-    norm_op_flags = np.zeros(n_nodes, dtype=np.int32)
-    linear_op_flags = np.zeros(n_nodes, dtype=np.int32)
-
-    for idx in range(n_nodes):
-        opcode = int(op_codes[idx])
-        if opcode == 0:
-            continue
-        op_name = REVERSE_OPCODE_MAP.get(opcode)
-        if op_name is None:
-            continue
-        try:
-            op = get_primitive(op_name)
-        except KeyError:
-            continue
-        known_op_flags[idx] = 1
-        risky_op_flags[idx] = int(op.numerically_risky)
-        parameterized_op_flags[idx] = int(op.has_params)
-        norm_op_flags[idx] = int(op_name in _NORM_OPS)
-        linear_op_flags[idx] = int(op.has_params and op.shape_rule == "linear")
+    tables = validation_opcode_tables()
 
     return summarize_validation(
-        known_op_flags=known_op_flags,
-        risky_op_flags=risky_op_flags,
-        parameterized_op_flags=parameterized_op_flags,
-        norm_op_flags=norm_op_flags,
-        linear_op_flags=linear_op_flags,
+        known_op_flags=tables.known[op_codes],
+        risky_op_flags=tables.risky[op_codes],
+        parameterized_op_flags=tables.parameterized[op_codes],
+        norm_op_flags=tables.norm[op_codes],
+        linear_op_flags=tables.linear[op_codes],
     )
 
 
@@ -127,6 +210,7 @@ def validate_graph(
     max_ops: int = 20,
     max_depth: int = 15,
     min_splits: int = 0,
+    max_params: int | None = None,
 ) -> ValidationResult:
     """Validate a computation graph.
 
@@ -143,20 +227,25 @@ def validate_graph(
         result.add_error("Graph has no output node")
         return result
 
-    analysis = graph._analysis_ir().analyze_structure(include_reachable=True)
+    analysis_ir = graph._analysis_ir()
+    analysis = analyze_ir_runtime_first(analysis_ir, include_reachable=True)
 
     result.n_ops = graph.n_ops()
     result.depth = analysis.depth
+    result.effective_depth = compute_effective_depth(analysis_ir)
     result.n_params_estimate = analysis.param_estimate
 
     # Size limits
     if result.n_ops > max_ops:
         result.add_error(f"Too many ops: {result.n_ops} > {max_ops}")
 
-    # Forced splits add structural depth (split+merge+proj = ~3 per split)
-    depth_limit = max_depth + min_splits * 3
-    if result.depth > depth_limit:
-        result.add_error(f"Too deep: {result.depth} > {depth_limit}")
+    depth_limit = float(max_depth) + float(min_splits) * 0.5
+    if result.effective_depth > depth_limit + 1e-9:
+        result.add_error(
+            "Too deep: "
+            f"effective {result.effective_depth:.2f} > {depth_limit:.2f} "
+            f"(raw={result.depth})"
+        )
 
     # Dead branch detection (Shadow Complexity)
     if analysis.reachable_count < len(graph.nodes):
@@ -179,12 +268,15 @@ def validate_graph(
     if not output_shape.is_standard:
         result.add_error(f"Output seq dimension is '{output_shape.seq}', expected 'S'")
 
-    validation_summary, topo = _summarize_graph_validation(graph)
+    if hasattr(analysis_ir, "op_codes"):
+        validation_summary = _summarize_ir_validation(analysis_ir)
+    else:
+        validation_summary, _ = _summarize_graph_validation(graph)
     result.n_risky_ops = validation_summary.risky_op_count
     result.n_parameterized_ops = validation_summary.parameterized_op_count
 
     # Check all nodes
-    for nid in topo:
+    for nid in sorted(graph.nodes):
         node = graph.nodes[nid]
         if node.is_input:
             continue
@@ -210,7 +302,7 @@ def validate_graph(
     for violation in find_graph_context_violations(graph):
         result.add_error(violation)
 
-    dim_flow = validate_dim_flow(graph)
+    dim_flow = validate_dim_flow(graph, max_params=max_params)
     for error in dim_flow.errors:
         if error not in result.errors:
             result.add_error(error)
@@ -264,7 +356,9 @@ def validate_ir(
     if result.n_ops > max_ops:
         result.add_error(f"Too many ops: {result.n_ops} > {max_ops}")
 
-    analysis = ir.analyze_structure(include_reachable=True)
+    analysis = analyze_ir_runtime_first(ir, include_reachable=True)
+    result.depth = int(analysis.depth)
+    result.effective_depth = compute_effective_depth(ir)
 
     # Gradient flow (native-backed when available)
     result.has_gradient_path = analysis.has_gradient_path
@@ -286,6 +380,14 @@ def validate_ir(
     validation_summary = _summarize_ir_validation(ir)
     result.n_risky_ops = validation_summary.risky_op_count
     result.n_parameterized_ops = validation_summary.parameterized_op_count
+
+    depth_limit = float(max_depth)
+    if result.effective_depth > depth_limit + 1e-9:
+        result.add_error(
+            "Too deep: "
+            f"effective {result.effective_depth:.2f} > {depth_limit:.2f} "
+            f"(raw={result.depth})"
+        )
 
     for i in range(ir.n_nodes()):
         opcode = op_codes[i]

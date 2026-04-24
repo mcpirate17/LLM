@@ -9,14 +9,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import math
 from typing import Any, List, Tuple
-import logging
 
 import torch
 import torch.nn as nn
 
 from ...eval.utils import clip_grad_norm, language_model_loss
-
-logger = logging.getLogger(__name__)
 
 
 def _native_training_summary(loop_state: "_TrainingLoopState") -> dict[str, Any]:
@@ -194,17 +191,14 @@ def _compute_micro_train_forward_loss(
             use_synthesized_training
             and getattr(config, "loss_type", "cross_entropy") != "cross_entropy"
         ):
-            try:
-                if not hasattr(owner, "_synth_loss"):
-                    from ...training.loss_synthesis import synthesize_loss
+            if not hasattr(owner, "_synth_loss"):
+                from ...training.loss_synthesis import synthesize_loss
 
-                    owner._synth_loss = synthesize_loss(seed=seed)
-                return owner._synth_loss.compute(
-                    logits[:, :-1],
-                    input_ids[:, 1:],
-                )
-            except (RuntimeError, ValueError, TypeError) as exc:
-                logger.debug("Synthesized loss failed, falling back to CE: %s", exc)
+                owner._synth_loss = synthesize_loss(seed=seed)
+            return owner._synth_loss.compute(
+                logits[:, :-1],
+                input_ids[:, 1:],
+            )
         return language_model_loss(
             logits,
             input_ids,

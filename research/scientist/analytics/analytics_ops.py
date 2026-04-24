@@ -1,6 +1,9 @@
 from __future__ import annotations
 import json
 from typing import Any, Dict, List, Optional, Set
+
+import numpy as np
+
 from ..intelligence.graph_ops import extract_unique_graph_ops
 from ..shared_utils import safe_float
 from .frontier import pareto_mask
@@ -86,7 +89,7 @@ class _OpsMixin:
         """
         rows = self.nb.conn.execute("""
             SELECT result_id, graph_fingerprint, param_count, graph_n_params_estimate,
-                   loss_ratio, validation_loss_ratio, graph_json
+                   loss_ratio, validation_loss_ratio
             FROM program_results
             WHERE (loss_ratio IS NOT NULL OR validation_loss_ratio IS NOT NULL)
               AND (param_count IS NOT NULL OR graph_n_params_estimate IS NOT NULL)
@@ -106,8 +109,17 @@ class _OpsMixin:
         if not programs:
             return []
 
-        objective_matrix = [(p["params"], p["loss"]) for p in programs]
-        mask = pareto_mask(objective_matrix)
+        objective_matrix = np.asarray(
+            [(p["params"], p["loss"]) for p in programs], dtype=np.float64
+        )
+        order = np.lexsort((objective_matrix[:, 1], objective_matrix[:, 0]))
+        mask = np.zeros(len(programs), dtype=bool)
+        best_loss = float("inf")
+        for idx in order:
+            loss = float(objective_matrix[idx, 1])
+            if loss < best_loss:
+                mask[idx] = True
+                best_loss = loss
         frontier = [programs[i] for i, keep in enumerate(mask) if keep]
 
         return sorted(frontier, key=lambda x: x["params"])
@@ -260,85 +272,63 @@ class _OpsMixin:
         Returns success rates and parameter efficiency for each compression
         primitive observed in program graphs.
         """
-        rows = self.nb.conn.execute("""
-            SELECT graph_json, stage1_passed, loss_ratio, validation_loss_ratio,
-                   param_count, graph_n_params_estimate
-            FROM program_results
-            WHERE graph_json IS NOT NULL
-        """).fetchall()
-
-        per_op: Dict[str, Dict] = {}
-        for row in rows:
-            record = dict(row)
-            ops = self._detect_compression_ops(record)
-            if not ops:
-                continue
-            passed = bool(record.get("stage1_passed"))
-            # Prefer validation_loss_ratio if available
-            loss = self._as_float(
-                record.get("validation_loss_ratio")
-                if record.get("validation_loss_ratio") is not None
-                else record.get("loss_ratio")
+        self.nb.flush_writes()
+        if not getattr(self.nb, "_read_only", False):
+            self.nb._ensure_graph_features()
+        compression_ops = tuple(sorted(self._OP_TO_COMPRESSION))
+        if not compression_ops:
+            return {"primitives": [], "n_programs_with_compression": 0}
+        placeholders = ",".join("?" for _ in compression_ops)
+        rows = self.nb.conn.execute(
+            f"""
+            WITH op_rows AS (
+                SELECT DISTINCT result_id, op_name
+                FROM program_graph_ops
+                WHERE op_name IN ({placeholders})
             )
-            params = self._as_float(
-                record.get("param_count")
-                if record.get("param_count") is not None
-                else record.get("graph_n_params_estimate")
-            )
-            for op_name in ops:
-                bucket = per_op.setdefault(
-                    op_name,
-                    {
-                        "op_name": op_name,
-                        "mechanism": self._OP_TO_COMPRESSION.get(op_name, "unknown"),
-                        "n_tested": 0,
-                        "n_survived": 0,
-                        "sum_loss": 0.0,
-                        "n_loss": 0,
-                        "best_loss": None,
-                        "sum_params": 0.0,
-                        "n_params": 0,
-                    },
-                )
-                bucket["n_tested"] += 1
-                if passed:
-                    bucket["n_survived"] += 1
-                if loss is not None:
-                    bucket["sum_loss"] += loss
-                    bucket["n_loss"] += 1
-                    if bucket["best_loss"] is None or loss < bucket["best_loss"]:
-                        bucket["best_loss"] = loss
-                if params is not None:
-                    bucket["sum_params"] += params
-                    bucket["n_params"] += 1
+            SELECT
+                op.op_name AS op_name,
+                COUNT(*) AS n_tested,
+                SUM(CASE WHEN COALESCE(pr.stage1_passed, 0) = 1 THEN 1 ELSE 0 END)
+                    AS n_survived,
+                AVG(COALESCE(pr.validation_loss_ratio, pr.loss_ratio)) AS avg_loss_ratio,
+                MIN(COALESCE(pr.validation_loss_ratio, pr.loss_ratio)) AS best_loss_ratio,
+                AVG(COALESCE(pr.param_count, pr.graph_n_params_estimate))
+                    AS avg_param_count
+            FROM op_rows op
+            JOIN program_results pr ON pr.result_id = op.result_id
+            GROUP BY op.op_name
+            ORDER BY n_tested DESC
+            """,
+            compression_ops,
+        ).fetchall()
 
         primitives = []
-        for op_name, bucket in sorted(
-            per_op.items(), key=lambda kv: kv[1]["n_tested"], reverse=True
-        ):
-            n = bucket["n_tested"]
+        for row in rows:
+            op_name = str(row["op_name"])
+            n = int(row["n_tested"] or 0)
             primitives.append(
                 {
                     "op_name": op_name,
-                    "mechanism": bucket["mechanism"],
+                    "mechanism": self._OP_TO_COMPRESSION.get(op_name, "unknown"),
                     "n_tested": n,
-                    "n_survived": bucket["n_survived"],
-                    "survival_rate": round(bucket["n_survived"] / n, 4)
+                    "n_survived": int(row["n_survived"] or 0),
+                    "survival_rate": round(float(row["n_survived"] or 0) / n, 4)
                     if n > 0
                     else 0.0,
                     "avg_loss_ratio": (
-                        round(bucket["sum_loss"] / bucket["n_loss"], 4)
-                        if bucket["n_loss"] > 0
+                        round(float(row["avg_loss_ratio"]), 4)
+                        if row["avg_loss_ratio"] is not None
                         else None
                     ),
                     "best_loss_ratio": (
-                        round(bucket["best_loss"], 4)
-                        if bucket["best_loss"] is not None
+                        round(float(row["best_loss_ratio"]), 4)
+                        if row["best_loss_ratio"] is not None
                         else None
                     ),
                     "avg_param_count": (
-                        int(bucket["sum_params"] / bucket["n_params"])
-                        if bucket["n_params"] > 0
+                        int(float(row["avg_param_count"]))
+                        if row["avg_param_count"] is not None
                         else None
                     ),
                 }

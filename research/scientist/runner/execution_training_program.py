@@ -2,12 +2,8 @@
 
 from __future__ import annotations
 
-import copy
 import json
-import math
 import time
-from contextlib import nullcontext
-from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 import torch
@@ -16,55 +12,23 @@ import torch.nn as nn
 from ..json_utils import json_safe
 from ._helpers import (
     InflightState,
-    _corpus_type_from_config,
-    _native_proactive_gating,
     apply_adaptive_grad_clip,
     check_inflight_health,
-    get_reference_losses,
     normalized_loss_ratio,
-    resolve_stage1_gate_metrics,
-    stage1_learning_gate,
 )
 from ._types import RunConfig
 from .execution_training import (
-    _EntropyGateSampler,
-    _MicroTrainContext,
-    _allow_synthesized_training,
     _candidate_perf_budget_verdict,
     _maybe_save_phase_training_state,
-    _micro_train_attribute_error,
-    _nested_metric_present,
-    _phase_checkpoint_context,
-    _restore_inflight_state,
     _restore_phase_training_state,
-    _restore_progress,
-    _serialize_inflight_state,
-    _serialize_progress,
-    _smoke_test_graph_structure,
-    _training_phase,
 )
-from .execution_training_native_boundary import (
-    _MicroTrainLoopProgress,
-    _TrainingLoopState,
-    _apply_training_aux_losses,
-    _backward_loss,
-    _build_training_step_event,
-    _collect_aux_modules,
-    _compute_micro_train_forward_loss,
-    _maybe_extend_training_budget,
-    _optimizer_step,
-    _training_step_error,
-)
-from ...eval.fingerprint import compute_gated_fingerprint
-from ...eval.perf_budget import DEFAULT_PERF_BUDGETS, evaluate_perf_budget_gate
-from ...eval.pruning import apply_one_shot_pruning, estimate_lm_ce_loss
-from ...eval.utils import clip_grad_norm, language_model_loss
-from ...training.profiling import TrainingRunProfiler
+from .execution_training_native_boundary import _MicroTrainLoopProgress
+from ._curriculum_schedule import precompute_curriculum_seq_lens
+from ...eval.utils import clip_grad_norm
 
 import logging
 
 logger = logging.getLogger(__name__)
-
 
 
 class _ExecutionTrainingProgramMixin:
@@ -155,9 +119,6 @@ class _ExecutionTrainingProgramMixin:
         n_steps = program.n_steps
         batch_size = program.batch_size
         max_grad_norm_val = program.max_grad_norm
-        # Adaptive clip for math-space architectures
-        from ._helpers import apply_adaptive_grad_clip
-
         max_grad_norm_val = apply_adaptive_grad_clip(model, max_grad_norm_val)
 
         return model, optimizer, model_params, n_steps, batch_size, max_grad_norm_val
@@ -401,6 +362,9 @@ class _ExecutionTrainingProgramMixin:
             seq_len, safe_max_seq = self._train_compute_safe_seq_len(
                 config, dev, program, n_steps
             )
+            curriculum_seq_lens = precompute_curriculum_seq_lens(
+                getattr(program, "curriculum", None), n_steps
+            )
 
             ckpt = self._train_restore_checkpoint(model, optimizer, dev, result)
             initial_loss = ckpt["initial_loss"]
@@ -421,12 +385,14 @@ class _ExecutionTrainingProgramMixin:
                     break
 
                 # Update seq_len from curriculum
-                try:
+                if curriculum_seq_lens is not None:
+                    curr_seq = curriculum_seq_lens[step]
+                    if curr_seq and curr_seq > 0:
+                        seq_len = min(curr_seq, safe_max_seq)
+                else:
                     curr_seq = program.curriculum.get_seq_len(step, n_steps)
                     if curr_seq and curr_seq > 0:
                         seq_len = min(curr_seq, safe_max_seq)
-                except (AttributeError, TypeError, ValueError):
-                    pass
 
                 starvation_detector.start_wait()
                 with tracer.trace("data_sampling"):
@@ -448,21 +414,10 @@ class _ExecutionTrainingProgramMixin:
                         enabled=(dev.type == "cuda"),
                     ):
                         logits = model(input_ids)
-                        # Use synthesized loss if possible
-                        try:
-                            loss = program.loss.compute(
-                                logits[:, :-1].reshape(-1, logits.shape[-1]),
-                                input_ids[:, 1:].reshape(-1),
-                            )
-                        except (RuntimeError, ValueError, TypeError) as e:
-                            logger.debug(
-                                "Program loss failed, falling back to CE: %s", e
-                            )
-                            loss = language_model_loss(
-                                logits,
-                                input_ids,
-                                min(config.vocab_size, int(logits.shape[-1])),
-                            )
+                        loss = program.loss.compute(
+                            logits[:, :-1].reshape(-1, logits.shape[-1]),
+                            input_ids[:, 1:].reshape(-1),
+                        )
 
                 if torch.isnan(loss) or torch.isinf(loss):
                     result["error"] = f"NaN/Inf loss at step {step}"

@@ -58,18 +58,29 @@ def _vectorized_silhouette(
     unique = np.unique(assignments)
     if len(unique) < 2:
         return 0.0
-    sil = []
-    for i in range(len(X_norm)):
-        c_i = assignments[i]
-        mask_same = assignments == c_i
-        mask_same[i] = False
-        if not np.any(mask_same):
-            sil.append(0.0)
-            continue
-        a_i = dist_matrix[i, mask_same].mean()
-        b_i = min(dist_matrix[i, assignments == c].mean() for c in unique if c != c_i)
-        sil.append((b_i - a_i) / max(a_i, b_i, 1e-9))
-    return np.mean(sil)
+
+    n_rows = len(X_norm)
+    intra = np.zeros(n_rows, dtype=np.float32)
+    nearest_other = np.full(n_rows, np.inf, dtype=np.float32)
+    singleton = np.zeros(n_rows, dtype=bool)
+
+    for cluster in unique:
+        mask = assignments == cluster
+        cluster_size = int(mask.sum())
+        if cluster_size > 1:
+            intra[mask] = dist_matrix[np.ix_(mask, mask)].sum(axis=1) / (
+                cluster_size - 1
+            )
+        else:
+            singleton[mask] = True
+        mean_to_cluster = dist_matrix[:, mask].mean(axis=1)
+        nearest_other[~mask] = np.minimum(nearest_other[~mask], mean_to_cluster[~mask])
+
+    denom = np.maximum(np.maximum(intra, nearest_other), 1e-9)
+    scores = (nearest_other - intra) / denom
+    scores[singleton] = 0.0
+    scores[~np.isfinite(scores)] = 0.0
+    return float(scores.mean())
 
 
 _TRAJECTORY_ZERO_KEYS = [

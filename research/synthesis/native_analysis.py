@@ -80,6 +80,31 @@ def analyze_ir(ir: Any, *, include_reachable: bool = False) -> StructuralAnalysi
     return analyze_ir_in_python(ir, include_reachable=include_reachable)
 
 
+def analyze_ir_runtime_first(
+    ir: Any, *, include_reachable: bool = False
+) -> StructuralAnalysisResult:
+    if not hasattr(ir, "op_codes") or not hasattr(ir, "input_indices"):
+        return ir.analyze_structure(include_reachable=include_reachable)
+
+    native_runtime_result = analyze_ir_with_native_runtime(
+        ir,
+        include_reachable=include_reachable,
+        load_native_graph_analysis_lib=_load_native_graph_analysis_lib,
+    )
+    if native_runtime_result is not None:
+        return native_runtime_result
+
+    aria_core_result = analyze_ir_with_aria_core(
+        ir,
+        include_reachable=include_reachable,
+        try_import_aria_core=_try_import_aria_core,
+    )
+    if aria_core_result is not None:
+        return aria_core_result
+
+    return analyze_ir_in_python(ir, include_reachable=include_reachable)
+
+
 def summarize_dim_flow_natively(
     *,
     reachable_mask: np.ndarray,
@@ -283,6 +308,16 @@ def validate_edges(
     full_dim_flags: np.ndarray,
     model_dim: int,
 ) -> EdgeValidationResult:
+    if int(len(reachable_mask)) <= 12:
+        return validate_edges_in_python(
+            reachable_mask=reachable_mask,
+            input_indices=input_indices,
+            node_dims=node_dims,
+            node_seq_flags=node_seq_flags,
+            op_kind_flags=op_kind_flags,
+            full_dim_flags=full_dim_flags,
+            model_dim=model_dim,
+        )
     native_result = validate_edges_natively(
         reachable_mask=reachable_mask,
         input_indices=input_indices,

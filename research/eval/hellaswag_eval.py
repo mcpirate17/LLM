@@ -133,8 +133,7 @@ def _get_tokenized_subset(
     import random
 
     rng = random.Random(seed)
-    indices = list(range(len(tokenized)))
-    rng.shuffle(indices)
+    indices = rng.sample(range(len(tokenized)), n)
     subset = [tokenized[i] for i in indices[:n]]
     _tokenized_subset_cache[cache_key] = subset
     _tokenized_subset_cache.move_to_end(cache_key)

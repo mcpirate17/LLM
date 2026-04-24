@@ -1,0 +1,88 @@
+         8621343 function calls (8621325 primitive calls) in 5.142 seconds
+
+   Ordered by: cumulative time
+   List reduced from 361 to 80 due to restriction <80>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+        2    0.022    0.011    2.051    1.025 notebook_dashboard.py:34(get_dashboard_summary)
+        1    0.000    0.000    1.997    1.997 <stdin>:20(task_dashboard_full)
+        1    0.001    0.001    1.554    1.554 <stdin>:45(task_clusters)
+        1    0.003    0.003    1.554    1.554 _exp_clustering.py:226(experiment_clusters)
+       27    0.004    0.000    1.291    0.048 native_conn.py:165(execute)
+       27    1.287    0.048    1.287    0.048 {method 'fetchall' of 'builtins.ConnectionManager' objects}
+        1    0.000    0.000    1.232    1.232 notebook_observability.py:93(get_template_slot_observability)
+        1    0.000    0.000    1.221    1.221 _exp_clustering.py:409(_run_model_selection)
+       16    0.244    0.015    1.162    0.073 _exp_clustering.py:52(_vectorized_silhouette)
+        1    0.485    0.485    1.055    1.055 notebook_observability.py:300(_accumulate_observability_stats)
+    36760    0.017    0.000    0.710    0.000 {built-in method builtins.min}
+        1    0.000    0.000    0.701    0.701 notebook_dashboard.py:262(get_data_accounting_summary)
+    84000    0.362    0.000    0.693    0.000 _exp_clustering.py:70(<genexpr>)
+        1    0.009    0.009    0.550    0.550 <stdin>:35(task_frontier)
+        1    0.016    0.016    0.540    0.540 analytics_ops.py:82(get_efficiency_frontier)
+    94208    0.204    0.000    0.512    0.000 _methods.py:119(_mean)
+        1    0.004    0.004    0.473    0.473 <stdin>:40(task_compression)
+    84640    0.025    0.000    0.470    0.000 {method 'mean' of 'numpy.ndarray' objects}
+        1    0.026    0.026    0.469    0.469 analytics_ops.py:257(compression_primitive_effectiveness)
+        1    0.000    0.000    0.430    0.430 frontier.py:10(pareto_mask)
+        1    0.000    0.000    0.425    0.425 frontier_kernel.py:143(pareto_frontier_mask)
+        1    0.425    0.425    0.425    0.425 frontier_kernel.py:105(native_pareto_frontier_mask)
+        1    0.004    0.004    0.345    0.345 <stdin>:15(task_leaderboard_full)
+        1    0.034    0.034    0.341    0.341 notebook_leaderboard.py:545(get_leaderboard)
+    15933    0.010    0.000    0.319    0.000 analytics_ops.py:164(_detect_compression_ops)
+  1636844    0.209    0.000    0.314    0.000 native_conn.py:62(__getitem__)
+    15776    0.005    0.000    0.306    0.000 analytics_ops.py:58(_extract_ops_fast)
+    15776    0.004    0.000    0.302    0.000 graph_ops.py:106(extract_unique_graph_ops)
+    15776    0.021    0.000    0.298    0.000 graph_ops.py:55(_extract_graph_ops_python)
+        1    0.000    0.000    0.210    0.210 _exp_clustering.py:393(_enrich_trajectory_data)
+    49048    0.022    0.000    0.202    0.000 __init__.py:299(loads)
+   126760    0.184    0.000    0.184    0.000 {method 'reduce' of 'numpy.ufunc' objects}
+    49048    0.071    0.000    0.170    0.000 decoder.py:332(decode)
+        1    0.009    0.009    0.167    0.167 _exp_clustering.py:171(_compute_trajectory_features)
+        1    0.040    0.040    0.167    0.167 notebook_programs.py:1412(_attach_canonical_program_scores)
+    47313    0.144    0.000    0.144    0.000 {method 'findall' of 're.Pattern' objects}
+  1951157    0.135    0.000    0.135    0.000 {built-in method builtins.isinstance}
+        1    0.020    0.020    0.134    0.134 <stdin>:50(task_rescore_compute)
+    15771    0.090    0.000    0.132    0.000 graph_ops.py:18(_normalize_extracted_ops)
+    95860    0.088    0.000    0.096    0.000 _methods.py:77(_count_reduce_items)
+       16    0.012    0.001    0.077    0.005 native_conn.py:125(fetchall)
+   667113    0.075    0.000    0.075    0.000 {method 'get' of 'dict' objects}
+     9568    0.005    0.000    0.072    0.000 fromnumeric.py:3783(mean)
+    24641    0.011    0.000    0.070    0.000 fromnumeric.py:2496(any)
+      826    0.012    0.000    0.065    0.000 _exp_clustering.py:92(_compute_momentum)
+    67303    0.059    0.000    0.065    0.000 native_conn.py:58(__init__)
+    49048    0.065    0.000    0.065    0.000 decoder.py:343(raw_decode)
+      826    0.010    0.000    0.062    0.000 _exp_clustering.py:110(_compute_transitions)
+    24820    0.026    0.000    0.059    0.000 fromnumeric.py:89(_wrapreduction_any_all)
+       16    0.010    0.001    0.059    0.004 _exp_clustering.py:16(_vectorized_kmeans)
+        1    0.000    0.000    0.054    0.054 <stdin>:25(task_dashboard_headline)
+        1    0.000    0.000    0.054    0.054 notebook_dashboard.py:27(get_dashboard_headline_summary)
+        1    0.003    0.003    0.052    0.052 _exp_clustering.py:336(_enrich_failure_data)
+     2200    0.002    0.000    0.051    0.000 leaderboard_scoring.py:253(build_score_kwargs_from_prefetch)
+     2200    0.005    0.000    0.050    0.000 leaderboard_scoring.py:1194(compute_composite)
+     2200    0.025    0.000    0.049    0.000 leaderboard_scoring.py:91(_pr_dict_to_score_kwargs)
+      237    0.000    0.000    0.045    0.000 distance.py:2793(cdist)
+     2200    0.006    0.000    0.045    0.000 leaderboard_scoring.py:1132(compute_composite_v8_1)
+      237    0.045    0.000    0.045    0.000 {built-in method scipy.spatial._distance_pybind.cdist_euclidean}
+   492443    0.045    0.000    0.045    0.000 {method 'append' of 'list' objects}
+        1    0.003    0.003    0.042    0.042 notebook_observability.py:570(_assemble_observability_result)
+   582258    0.039    0.000    0.039    0.000 {method 'strip' of 'str' objects}
+     2200    0.007    0.000    0.039    0.000 leaderboard_scoring.py:905(_compute_composite_generic)
+    16229    0.021    0.000    0.035    0.000 {built-in method builtins.sorted}
+        1    0.000    0.000    0.034    0.034 <stdin>:30(task_routing)
+        1    0.000    0.000    0.033    0.033 analytics_routing.py:141(routing_mode_comparison)
+        1    0.010    0.010    0.030    0.030 _exp_clustering.py:445(_compute_stability)
+    30043    0.030    0.000    0.030    0.000 _notebook_misc_shared.py:616(_empty_template_stat)
+   224329    0.029    0.000    0.029    0.000 {method 'setdefault' of 'dict' objects}
+   191714    0.028    0.000    0.028    0.000 {built-in method builtins.issubclass}
+       69    0.000    0.000    0.026    0.000 notebook_observability.py:34(_percentile)
+   461955    0.026    0.000    0.026    0.000 {built-in method math.isfinite}
+     1652    0.001    0.000    0.024    0.000 fromnumeric.py:3913(std)
+        1    0.004    0.004    0.023    0.023 leaderboard_scoring.py:225(prefetch_program_results)
+     1652    0.002    0.000    0.023    0.000 _methods.py:225(_std)
+    98096    0.022    0.000    0.022    0.000 {method 'match' of 're.Pattern' objects}
+     1652    0.011    0.000    0.020    0.000 _methods.py:153(_var)
+     7014    0.001    0.000    0.018    0.000 json_utils.py:148(fast_loads)
+    65882    0.016    0.000    0.017    0.000 {built-in method builtins.max}
+     7014    0.016    0.000    0.016    0.000 {orjson.loads}
+
+

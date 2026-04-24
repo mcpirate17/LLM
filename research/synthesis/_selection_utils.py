@@ -1,11 +1,11 @@
 from __future__ import annotations
 
+from ._context_registry import CONTEXT_RULES
+
 
 def context_pair_allowed(prev_op: str | None, next_op: str | None) -> bool:
     if prev_op is None or next_op is None:
         return True
-    from .context_rules import CONTEXT_RULES
-
     prev_rule = CONTEXT_RULES.get(prev_op)
     if prev_rule is not None and next_op in prev_rule.forbidden_successors:
         return False

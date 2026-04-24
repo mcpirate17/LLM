@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import heapq
 import logging
+from functools import lru_cache
 from typing import TYPE_CHECKING, Dict, List, Optional
 
 from ..scientist.native.core import _try_import_rust_scheduler
@@ -12,6 +13,7 @@ if TYPE_CHECKING:
     from .graph import ComputationGraph
 
 
+@lru_cache(maxsize=1)
 def _try_import_aria_core():
     try:
         import aria_core

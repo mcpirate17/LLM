@@ -120,6 +120,14 @@ def summarize_validation(
     norm_op_flags: np.ndarray,
     linear_op_flags: np.ndarray,
 ) -> ValidationSummary:
+    if int(len(known_op_flags)) <= 48:
+        return summarize_validation_in_python(
+            known_op_flags=known_op_flags,
+            risky_op_flags=risky_op_flags,
+            parameterized_op_flags=parameterized_op_flags,
+            norm_op_flags=norm_op_flags,
+            linear_op_flags=linear_op_flags,
+        )
     native_result = summarize_validation_natively(
         known_op_flags=known_op_flags,
         risky_op_flags=risky_op_flags,

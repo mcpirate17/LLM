@@ -76,15 +76,8 @@ def _generate_induction_batch(
     Actually: A B n1 n2 ... nG A = gap + 3 tokens, predict at position gap+2.
     """
     seq_len = gap + 3  # A B [noise x gap] A
-    batch = torch.randint(
-        1,
-        _RESTRICTED_VOCAB,
-        (batch_size, seq_len),
-        device=device,
-        generator=generator,
-    )
 
-    # Token A and B are random, distinct from noise
+    # Token A and B are random; noise excludes A by construction.
     A = torch.randint(
         1,
         _RESTRICTED_VOCAB,
@@ -100,26 +93,25 @@ def _generate_induction_batch(
         generator=generator,
     )
 
+    noise_raw = torch.randint(
+        1,
+        _RESTRICTED_VOCAB - 1,
+        (batch_size, gap),
+        device=device,
+        generator=generator,
+    )
+    noise = noise_raw + (noise_raw >= A.unsqueeze(1)).to(noise_raw.dtype)
+
+    batch = torch.empty(
+        (batch_size, seq_len),
+        dtype=torch.long,
+        device=device,
+    )
+
     # Place pattern: position 0=A, position 1=B, positions 2..gap+1=noise, position gap+2=A
     batch[:, 0] = A
     batch[:, 1] = B
-    # Vectorized noise collision fix: where noise == A, replace with (A+offset) mod vocab
-    noise = batch[:, 2 : gap + 2]  # (B, gap)
-    A_expanded = A.unsqueeze(1).expand_as(noise)
-    collisions = noise == A_expanded
-    if collisions.any():
-        # Shift colliding tokens by a random offset (1 to vocab-2) to avoid A
-        offsets = torch.randint(
-            1,
-            _RESTRICTED_VOCAB - 1,
-            collisions.shape,
-            device=device,
-            generator=generator,
-        )
-        noise[collisions] = (A_expanded[collisions] + offsets[collisions]) % (
-            _RESTRICTED_VOCAB - 1
-        ) + 1
-        batch[:, 2 : gap + 2] = noise
+    batch[:, 2 : gap + 2] = noise
     batch[:, gap + 2] = A  # repeat A at the end
 
     return batch, B

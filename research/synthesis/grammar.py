@@ -20,6 +20,7 @@ from __future__ import annotations
 import logging
 import random
 from dataclasses import dataclass, field, replace
+from functools import lru_cache
 from typing import Dict, FrozenSet, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -49,8 +50,6 @@ from .primitives import (
 from .templates import (
     apply_template,
 )
-from .context_rules import validate_context_rules
-from .graph_validator import validate_dim_flow
 from .template_rules import validate_template_graph
 from .validator import validate_graph
 
@@ -736,19 +735,18 @@ def generate_layer_graph(
             depth_ratio = t_idx / (n_templates - 1)
             depth_weights = {}
             for tpl_name, base_w in _iter_weights.items():
-                tl = tpl_name.lower()
-                _is_attn = "attn" in tl or "attention" in tl or "transformer" in tl
+                is_early_template, is_attn, is_mamba = _template_depth_tags(tpl_name)
                 if depth_ratio < 0.33:
-                    if "conv" in tl or "ffn" in tl or "bottleneck" in tl:
+                    if is_early_template:
                         depth_weights[tpl_name] = base_w * 1.5
-                    elif _is_attn:
+                    elif is_attn:
                         depth_weights[tpl_name] = base_w * 0.85
                     else:
                         depth_weights[tpl_name] = base_w
                 elif depth_ratio > 0.66:
-                    if _is_attn or "mamba" in tl:
+                    if is_attn or is_mamba:
                         depth_weights[tpl_name] = base_w * 1.5
-                    elif "bottleneck" in tl or "compress" in tl:
+                    elif is_early_template:
                         depth_weights[tpl_name] = base_w * 0.6
                     else:
                         depth_weights[tpl_name] = base_w
@@ -885,23 +883,18 @@ def _validate_graph(graph: ComputationGraph, config: GrammarConfig) -> None:
     """Validate a generated graph and raise ValueError if invalid."""
     # Allow +2 depth headroom for multi-step motifs (e.g., 3-4 step math-space
     # motifs that include norm+op+proj) which can push templates slightly over.
+    max_params = 12 * 4 * config.model_dim * config.model_dim
     result = validate_graph(
         graph,
         max_ops=config.max_ops,
         max_depth=config.max_depth + 2,
         min_splits=config.min_splits,
+        max_params=max_params,
     )
     if not result.valid:
         raise ValueError(
             result.errors[0] if result.errors else "Graph validation failed"
         )
-
-    # Dimension-flow validation also enforces the parameter budget so we
-    # don't pay for an extra whole-graph reachable-path scan here.
-    max_params = 12 * 4 * config.model_dim * config.model_dim
-    dim_result = validate_dim_flow(graph, max_params=max_params)
-    if not dim_result.valid:
-        raise ValueError(dim_result.errors[0])
 
     # Algebraic space consistency check — reject graphs that mix
     # incompatible mathematical spaces (e.g., tropical after poincaré).
@@ -1111,10 +1104,6 @@ def _validate_graph(graph: ComputationGraph, config: GrammarConfig) -> None:
                     f"must be followed by one of {must_follow_with}"
                 )
 
-    ctx_err = validate_context_rules(graph)
-    if ctx_err is not None:
-        raise ValueError(ctx_err)
-
     # Template-level structural invariants are part of legality, not metadata-only
     # guidance. Preserve the warning payload for observability, but reject the
     # graph so template-invalid programs never count as valid survivors.
@@ -1128,6 +1117,43 @@ def _validate_graph(graph: ComputationGraph, config: GrammarConfig) -> None:
 
 _POST_BODY_OP_RESERVE = 3  # dim-coerce + outer residual + final rmsnorm
 _POST_BODY_DEPTH_RESERVE = 3  # same three hops, worst-case sequential
+
+
+@lru_cache(maxsize=256)
+def _template_depth_tags(template_name: str) -> tuple[bool, bool, bool]:
+    name = template_name.lower()
+    is_attn = "attn" in name or "attention" in name or "transformer" in name
+    is_early = "conv" in name or "ffn" in name or "bottleneck" in name
+    is_mamba = "mamba" in name
+    return is_early, is_attn, is_mamba
+
+
+def _reachable_output_depth(graph: ComputationGraph) -> int:
+    """Compute output-ancestor depth without lowering to IR."""
+    output_id = graph._output_node_id
+    if output_id is None or output_id not in graph.nodes:
+        return 0
+
+    reachable: set[int] = set()
+    stack = [output_id]
+    while stack:
+        nid = stack.pop()
+        if nid in reachable or nid not in graph.nodes:
+            continue
+        reachable.add(nid)
+        stack.extend(graph.nodes[nid].input_ids)
+
+    depths: Dict[int, int] = {}
+    for nid in sorted(reachable):
+        node = graph.nodes[nid]
+        if node.is_input or not node.input_ids:
+            depths[nid] = 0
+        else:
+            depths[nid] = 1 + max(
+                (depths.get(parent_id, 0) for parent_id in node.input_ids),
+                default=0,
+            )
+    return depths.get(output_id, 0)
 
 
 def _graph_exceeds_final_budget(
@@ -1151,7 +1177,7 @@ def _graph_exceeds_final_budget(
     depth_reserve = _POST_BODY_DEPTH_RESERVE if config.max_depth > 10 else 0
     op_limit = max(1, config.max_ops - op_reserve)
     depth_limit = config.max_depth + max(0, int(config.min_splits)) * 3 - depth_reserve
-    return graph.n_ops() > op_limit or graph.depth() > depth_limit
+    return graph.n_ops() > op_limit or _reachable_output_depth(graph) > depth_limit
 
 
 def batch_generate(

@@ -730,16 +730,6 @@ class _LeaderboardMixin:
                 and d.get("_pr_hellaswag_acc") is not None
             ):
                 d["hellaswag_acc"] = d.get("_pr_hellaswag_acc")
-            if include_family:
-                d["architecture_family"] = self._classify_architecture_family(
-                    graph_json=d.get("_graph_json"),
-                    routing_mode=d.get("_routing_mode"),
-                )
-                if d.get("architecture_family") == "Unknown" and d.get("is_reference"):
-                    d["architecture_family"] = self._reference_family_fallback(
-                        d.get("reference_name")
-                    )
-            d.pop("_graph_json", None)
             d["routing_mode"] = d.pop("_routing_mode", None)
             d["arch_spec_json"] = d.pop("_arch_spec_json", None)
             d["param_count"] = d.pop("_param_count", None)
@@ -839,6 +829,19 @@ class _LeaderboardMixin:
             for ref in deduped_refs:
                 if ref.get("entry_id") not in ref_ids:
                     merged.append(ref)
+        for entry in merged:
+            graph_json = entry.pop("_graph_json", None)
+            if include_family:
+                entry["architecture_family"] = self._classify_architecture_family(
+                    graph_json=graph_json,
+                    routing_mode=entry.get("routing_mode"),
+                )
+                if entry.get("architecture_family") == "Unknown" and entry.get(
+                    "is_reference"
+                ):
+                    entry["architecture_family"] = self._reference_family_fallback(
+                        entry.get("reference_name")
+                    )
         return merged
 
     def set_leaderboard_pin(self, entry_id: str, pinned: bool):

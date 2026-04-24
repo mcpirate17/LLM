@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 import pytest
 import torch
 import torch.nn as nn
@@ -15,6 +17,7 @@ from research.training.optimizer_synthesis import (
     build_optimizer,
     MuonOptimizer,
 )
+from research.training.curriculum import CurriculumStrategy
 from research.training._loss_native import load_loss_native
 from research.training.sparse_training import RigLScheduler
 
@@ -140,6 +143,26 @@ def test_rigl_mask_matches_reference_selection():
     assert torch.equal(actual, expected)
 
 
+def test_curriculum_native_schedule_matches_scalar_path():
+    for schedule in ("fixed", "growing", "oscillating"):
+        curriculum = CurriculumStrategy(
+            name=f"cur_{schedule}",
+            seq_len_schedule=schedule,
+            initial_seq_len=16,
+            max_seq_len=128,
+            warmup_steps=7,
+        )
+        total_steps = 32
+        expected = torch.tensor(
+            [curriculum.get_seq_len(step, total_steps) for step in range(3, 19)],
+            dtype=torch.long,
+        )
+
+        actual = curriculum.seq_len_tensor(total_steps, start=3, stop=19)
+
+        assert torch.equal(actual, expected)
+
+
 def test_build_optimizer_unknown_raises():
     model = _make_model()
     with pytest.raises(ValueError, match="Unknown optimizer_type"):
@@ -162,6 +185,30 @@ def test_entropy_reg_reuses_log_probs_instead_of_softmax():
     assert "entropy_reg" in loss_components.LOG_PROB_COMPONENTS
 
 
+def test_log_prob_mean_losses_match_reference_gradients():
+    logits = torch.randn(8, 19, dtype=torch.float32, requires_grad=True)
+    ref_logits = logits.detach().clone().requires_grad_(True)
+    targets = torch.randint(0, 19, (8,), dtype=torch.int64)
+
+    log_probs = torch.nn.functional.log_softmax(logits, dim=-1)
+    actual = loss_components.loss_label_smoothed_ce(logits, targets, log_probs)
+    actual = actual + 0.3 * loss_components.loss_kl_uniform(logits, targets, log_probs)
+    actual.backward()
+
+    ref_log_probs = torch.nn.functional.log_softmax(ref_logits, dim=-1)
+    nll = -ref_log_probs.gather(1, targets.unsqueeze(1)).squeeze(1)
+    smooth_loss = -ref_log_probs.mean(dim=-1)
+    expected = ((1 - 0.1) * nll + 0.1 * smooth_loss).mean()
+    expected = (
+        expected
+        + 0.3 * -(ref_log_probs.mean(dim=-1) + math.log(ref_logits.shape[-1])).mean()
+    )
+    expected.backward()
+
+    torch.testing.assert_close(actual, expected, rtol=1e-6, atol=1e-6)
+    torch.testing.assert_close(logits.grad, ref_logits.grad, rtol=1e-6, atol=1e-6)
+
+
 def test_rank_weighted_ce_matches_reference_formula():
     logits = torch.randn(5, 11, dtype=torch.float32)
     targets = torch.randint(0, 11, (5,), dtype=torch.int64)
@@ -176,6 +223,77 @@ def test_rank_weighted_ce_matches_reference_formula():
     actual = loss_components.loss_rank_weighted_ce(logits, targets, log_probs)
 
     assert torch.allclose(actual, expected, rtol=1e-6, atol=1e-6)
+
+
+def test_rank_weighted_ce_preserves_autograd_and_matches_reference_gradient():
+    logits = torch.randn(6, 13, dtype=torch.float32, requires_grad=True)
+    ref_logits = logits.detach().clone().requires_grad_(True)
+    targets = torch.randint(0, 13, (6,), dtype=torch.int64)
+
+    log_probs = torch.nn.functional.log_softmax(logits, dim=-1)
+    actual = loss_components.loss_rank_weighted_ce(logits, targets, log_probs)
+    actual.backward()
+
+    ref_log_probs = torch.nn.functional.log_softmax(ref_logits, dim=-1)
+    target_col = targets.unsqueeze(1)
+    nll = -ref_log_probs.gather(1, target_col).squeeze(1)
+    target_logits = ref_logits.gather(1, target_col)
+    rank_pos = ref_logits.gt(target_logits).sum(dim=1).to(ref_logits.dtype)
+    expected = (nll * (torch.log1p(rank_pos) + 1.0)).mean()
+    expected.backward()
+
+    assert actual.requires_grad
+    torch.testing.assert_close(actual, expected, rtol=1e-6, atol=1e-6)
+    torch.testing.assert_close(logits.grad, ref_logits.grad, rtol=1e-5, atol=1e-6)
+
+
+def test_synthesized_rank_weighted_primary_backpropagates_on_cpu():
+    from research.training.loss_synthesis import LossComponent, SynthesizedLoss
+
+    logits = torch.randn(7, 17, dtype=torch.float32, requires_grad=True)
+    targets = torch.randint(0, 17, (7,), dtype=torch.int64)
+    loss = SynthesizedLoss(
+        "rank_primary",
+        [LossComponent("rank_weighted_ce", 1.0)],
+    ).compute(logits, targets)
+
+    loss.backward()
+
+    assert loss.requires_grad
+    assert logits.grad is not None
+    assert float(logits.grad.abs().sum().item()) > 0.0
+
+
+def test_contrastive_push_native_matches_reference_gradient():
+    logits = torch.randn(8, 19, dtype=torch.float32, requires_grad=True)
+    ref_logits = logits.detach().clone().requires_grad_(True)
+    targets = torch.randint(0, 19, (8,), dtype=torch.int64)
+
+    actual = loss_components.loss_contrastive_push(logits, targets, None)
+    actual.backward()
+
+    target_logits = ref_logits.gather(1, targets.unsqueeze(1))
+    topk_width = min(6, ref_logits.shape[-1])
+    topk, _ = ref_logits.topk(topk_width, dim=-1)
+    expected = torch.nn.functional.relu(topk[:, 1:] - target_logits + 0.5).mean()
+    expected.backward()
+
+    torch.testing.assert_close(actual, expected, rtol=1e-6, atol=1e-6)
+    torch.testing.assert_close(logits.grad, ref_logits.grad, rtol=1e-6, atol=1e-6)
+
+
+def test_gradient_penalty_uses_norm_squared_with_matching_gradient():
+    logits = torch.randn(9, 23, dtype=torch.float32, requires_grad=True)
+    ref_logits = logits.detach().clone().requires_grad_(True)
+    targets = torch.randint(0, 23, (9,), dtype=torch.int64)
+
+    actual = loss_components.loss_gradient_penalty(logits, targets, None)
+    expected = ref_logits.pow(2).mean() * 0.001
+    actual.backward()
+    expected.backward()
+
+    torch.testing.assert_close(actual, expected, rtol=5e-4, atol=1e-8)
+    torch.testing.assert_close(logits.grad, ref_logits.grad, rtol=1e-6, atol=1e-9)
 
 
 # ── MuonOptimizer tests ───────────────────────────────────────────────

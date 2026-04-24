@@ -32,6 +32,7 @@ class BehaviorArchive:
         self._size: int = 0
         self._total_seen = 0
         self._rng = _random_module.Random(42)
+        self._density_cache: Tuple[float, np.ndarray] | None = None
 
     @property
     def _feature_matrix(self) -> np.ndarray | None:
@@ -54,9 +55,11 @@ class BehaviorArchive:
         self._ensure_capacity(self._size + 1)
         self._feature_buf[self._size] = vector
         self._size += 1
+        self._density_cache = None
 
     def _replace_in_cache(self, idx: int, vector: np.ndarray) -> None:
         self._feature_buf[idx] = vector
+        self._density_cache = None
 
     def add(
         self,
@@ -126,15 +129,20 @@ class BehaviorArchive:
         if fm is None or self._size < 2:
             return self.top_by_fitness(k)
 
-        native_stats = pairwise_median_and_neighbor_counts(fm)
-        if native_stats is not None:
-            median_dist, neighbor_counts = native_stats
+        cached_stats = self._density_cache
+        if cached_stats is not None:
+            median_dist, neighbor_counts = cached_stats
         else:
-            diffs = fm[:, np.newaxis, :] - fm[np.newaxis, :, :]
-            all_dists = np.sqrt(np.mean(np.square(diffs), axis=2))
-            mask = ~np.eye(self._size, dtype=bool)
-            median_dist = float(np.median(all_dists[mask]))
-            neighbor_counts = np.sum(all_dists < median_dist, axis=1) - 1
+            native_stats = pairwise_median_and_neighbor_counts(fm)
+            if native_stats is not None:
+                median_dist, neighbor_counts = native_stats
+            else:
+                diffs = fm[:, np.newaxis, :] - fm[np.newaxis, :, :]
+                all_dists = np.sqrt(np.mean(np.square(diffs), axis=2))
+                mask = ~np.eye(self._size, dtype=bool)
+                median_dist = float(np.median(all_dists[mask]))
+                neighbor_counts = np.sum(all_dists < median_dist, axis=1) - 1
+            self._density_cache = (float(median_dist), neighbor_counts)
 
         if median_dist <= 0:
             return self.top_by_fitness(k)
@@ -156,10 +164,47 @@ def _behavior_distance(a: BehavioralFingerprint, b: BehavioralFingerprint) -> fl
 
 
 def _behavior_array(fp: BehavioralFingerprint) -> np.ndarray | None:
-    vec = _behavior_vector(fp)
-    if vec is None:
+    if _all_behavior_features_missing(fp):
         return None
-    return np.asarray(vec, dtype=np.float32)
+    out = np.empty(BehaviorArchive._FEATURE_DIM, dtype=np.float32)
+    out[0] = _sanitize_unit_feature(fp.interaction_locality)
+    out[1] = _sanitize_unit_feature(fp.interaction_sparsity)
+    out[2] = _sanitize_unit_feature(fp.interaction_symmetry)
+    out[3] = _sanitize_unit_feature(fp.interaction_hierarchy)
+    out[4] = _sanitize_unit_feature(fp.isotropy)
+    out[5] = _sanitize_unit_feature(fp.rank_ratio)
+    out[6] = _sanitize_unit_feature(fp.sensitivity_uniformity)
+    out[7] = _sanitize_unit_feature(fp.cka_vs_transformer)
+    out[8] = _sanitize_unit_feature(fp.cka_vs_ssm)
+    out[9] = _sanitize_unit_feature(fp.cka_vs_conv)
+    out[10] = _sanitize_scaled_feature(fp.jacobian_spectral_norm, scale=5.0)
+    out[11] = _sanitize_scaled_feature(fp.jacobian_effective_rank, scale=16.0)
+    out[12] = _sanitize_unit_feature(fp.routing_selectivity)
+    out[13] = _sanitize_scaled_feature(fp.routing_compute_ratio, scale=2.0)
+    out[14] = _sanitize_unit_feature(fp.hierarchy_fitness)
+    out[15] = _sanitize_scaled_feature(fp.gromov_delta, scale=0.3)
+    return out
+
+
+def _all_behavior_features_missing(fp: BehavioralFingerprint) -> bool:
+    return (
+        fp.interaction_locality is None
+        and fp.interaction_sparsity is None
+        and fp.interaction_symmetry is None
+        and fp.interaction_hierarchy is None
+        and fp.isotropy is None
+        and fp.rank_ratio is None
+        and fp.sensitivity_uniformity is None
+        and fp.cka_vs_transformer is None
+        and fp.cka_vs_ssm is None
+        and fp.cka_vs_conv is None
+        and fp.jacobian_spectral_norm is None
+        and fp.jacobian_effective_rank is None
+        and fp.routing_selectivity is None
+        and fp.routing_compute_ratio is None
+        and fp.hierarchy_fitness is None
+        and fp.gromov_delta is None
+    )
 
 
 def _behavior_vector(fp: BehavioralFingerprint) -> List[float] | None:

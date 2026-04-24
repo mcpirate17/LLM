@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from functools import lru_cache
 from typing import Dict, List, Optional
 
 import numpy as np
@@ -129,6 +130,7 @@ def novelty_score(
     return metrics
 
 
+@lru_cache(maxsize=1)
 def _opcode_category_maps():
     from ..synthesis.primitives import OPCODE_MAP, get_primitive
 
@@ -144,6 +146,30 @@ def _opcode_category_maps():
     all_categories = sorted(set(opcode_to_cat.values()))
     cat_to_idx = {cat: i for i, cat in enumerate(all_categories)}
     return opcode_to_cat, cat_to_idx
+
+
+@lru_cache(maxsize=8)
+def _opcode_histogram_metadata(
+    n_opcodes: int,
+) -> tuple[tuple[str | None, ...], tuple[str | None, ...]]:
+    from ..synthesis.primitives import REVERSE_OPCODE_MAP, get_primitive
+
+    names: list[str | None] = [None] * n_opcodes
+    categories: list[str | None] = [None] * n_opcodes
+    for code in range(n_opcodes):
+        name = REVERSE_OPCODE_MAP.get(code)
+        if not name:
+            continue
+        names[code] = name
+        try:
+            categories[code] = get_primitive(name).category.value
+        except (AttributeError, KeyError, ValueError) as exc:
+            logger.debug(
+                "Novelty histogram category lookup failed for %s: %s",
+                name,
+                exc,
+            )
+    return tuple(names), tuple(categories)
 
 
 def _category_counts(
@@ -211,26 +237,20 @@ def _structural_novelty_components(
 
 
 def _populate_histograms(metrics: NoveltyMetrics, batch_row: np.ndarray) -> None:
-    from ..synthesis.primitives import REVERSE_OPCODE_MAP, get_primitive
-
-    for code, count in enumerate(batch_row):
+    names, categories = _opcode_histogram_metadata(int(batch_row.shape[0]))
+    for code in np.flatnonzero(batch_row):
+        count = batch_row[code]
         if count <= 0:
             continue
-        name = REVERSE_OPCODE_MAP.get(code)
+        name = names[int(code)]
         if not name:
             continue
         metrics.op_histogram[name] = int(count)
-        try:
-            cat = get_primitive(name).category.value
+        cat = categories[int(code)]
+        if cat is not None:
             metrics.category_histogram[cat] = metrics.category_histogram.get(
                 cat, 0
             ) + int(count)
-        except (AttributeError, KeyError, ValueError) as exc:
-            logger.debug(
-                "Novelty histogram category lookup failed for %s: %s",
-                name,
-                exc,
-            )
 
 
 def _apply_behavioral_novelty(

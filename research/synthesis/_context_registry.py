@@ -228,7 +228,7 @@ CONTEXT_RULES: Dict[str, ContextRule] = {
     "exp": ContextRule(
         search_mode=SearchMode.GENERAL,
         forbidden_predecessors=_REDUCE_OPS,
-        forbidden_successors=frozenset({"output_head", "mul", "linear_proj"})
+        forbidden_successors=frozenset({"output_head", "linear_proj"})
         | _STRUCTURAL_SPLIT_OPS,
     ),
     "sign_ste": ContextRule(

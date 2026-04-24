@@ -6,18 +6,33 @@ import torch
 import torch.nn as nn
 
 
-def _accumulate_histogram(acc: torch.Tensor | None, hist: torch.Tensor) -> torch.Tensor:
-    if acc is None:
-        return hist
-    if acc.numel() == hist.numel():
-        return acc + hist
-    if acc.numel() < hist.numel():
-        padded = torch.zeros_like(hist)
-        padded[: acc.numel()] = acc
-        return padded + hist
-    padded = torch.zeros_like(acc)
-    padded[: hist.numel()] = hist
-    return acc + padded
+def _as_cpu_float_tensor(value: torch.Tensor) -> torch.Tensor:
+    if (
+        value.dtype == torch.float32
+        and value.device.type == "cpu"
+        and not value.requires_grad
+    ):
+        return value
+    hist = value.detach()
+    if hist.dtype != torch.float32:
+        hist = hist.to(torch.float32)
+    if hist.device.type != "cpu":
+        hist = hist.cpu()
+    return hist
+
+
+def _sum_histograms(histograms: list[torch.Tensor]) -> torch.Tensor | None:
+    if not histograms:
+        return None
+    first = histograms[0]
+    if all(hist.shape == first.shape for hist in histograms):
+        return torch.stack(histograms, dim=0).sum(dim=0)
+    max_len = max(hist.numel() for hist in histograms)
+    acc = torch.zeros(max_len, dtype=torch.float32)
+    for hist in histograms:
+        flat = hist.reshape(-1)
+        acc[: flat.numel()].add_(flat)
+    return acc
 
 
 def _init_totals() -> dict[str, Any]:
@@ -36,13 +51,16 @@ def _init_totals() -> dict[str, Any]:
         "sparse_span_width_count": 0,
         "sparse_span_coverage_tokens": 0,
         "lane_histogram": None,
+        "lane_histograms": [],
         "confidence_histogram": None,
+        "confidence_histograms": [],
         "confidence_sum": 0.0,
         "confidence_sq_sum": 0.0,
         "confidence_count": 0,
         "route_strength_sum": 0.0,
         "route_strength_count": 0,
         "branch_weight_sum": None,
+        "branch_weight_sums": [],
         "branch_weight_count": 0,
         "branch_dominance_sum": 0.0,
         "routed_branch_share_sum": 0.0,
@@ -60,8 +78,9 @@ def _merge_module_telemetry(
     totals: dict[str, Any],
     module_name: str,
     rt: dict[str, Any],
+    capture_heatmaps: bool,
 ) -> None:
-    if rt.get("heatmap") is not None:
+    if capture_heatmaps and rt.get("heatmap") is not None:
         totals["heatmaps"][module_name] = rt["heatmap"]
     totals["routing_op_count"] += 1
     totals["tokens_total"] += int(rt.get("tokens_total", 0) or 0)
@@ -109,19 +128,20 @@ def _merge_module_telemetry(
         totals["trace_payloads"][module_name] = rt["trace_payload"]
 
     if isinstance(rt.get("lane_histogram"), torch.Tensor):
-        hist = rt["lane_histogram"].detach().to(torch.float32).cpu()
-        totals["lane_histogram"] = _accumulate_histogram(totals["lane_histogram"], hist)
+        hist = _as_cpu_float_tensor(rt["lane_histogram"])
+        totals["lane_histograms"].append(hist)
     if isinstance(rt.get("confidence_histogram"), torch.Tensor):
-        hist = rt["confidence_histogram"].detach().to(torch.float32).cpu()
-        totals["confidence_histogram"] = _accumulate_histogram(
-            totals["confidence_histogram"],
-            hist,
-        )
+        hist = _as_cpu_float_tensor(rt["confidence_histogram"])
+        totals["confidence_histograms"].append(hist)
     if isinstance(rt.get("branch_weight_sum"), torch.Tensor):
-        hist = rt["branch_weight_sum"].detach().to(torch.float32).cpu()
-        totals["branch_weight_sum"] = _accumulate_histogram(
-            totals["branch_weight_sum"], hist
-        )
+        hist = _as_cpu_float_tensor(rt["branch_weight_sum"])
+        totals["branch_weight_sums"].append(hist)
+
+
+def _finalize_histogram_totals(totals: dict[str, Any]) -> None:
+    totals["lane_histogram"] = _sum_histograms(totals["lane_histograms"])
+    totals["confidence_histogram"] = _sum_histograms(totals["confidence_histograms"])
+    totals["branch_weight_sum"] = _sum_histograms(totals["branch_weight_sums"])
 
 
 def _add_token_payload(payload: dict[str, Any], totals: dict[str, Any]) -> None:
@@ -251,5 +271,6 @@ def collect_routing_telemetry(
     for module_name, module in model.named_modules():
         rt = getattr(module, "routing_telemetry", None)
         if rt:
-            _merge_module_telemetry(totals, module_name, rt)
+            _merge_module_telemetry(totals, module_name, rt, capture_heatmaps)
+    _finalize_histogram_totals(totals)
     return _finalize_payload(totals, capture_heatmaps)

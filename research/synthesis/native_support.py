@@ -48,6 +48,8 @@ BOUND_PARAM_OPS = frozenset(
         "route_recursion",
         "depth_weighted_proj",
         "adaptive_recursion",
+        "score_depth_blend",
+        "mixed_recursion_gate",
         "selective_scan",
         "state_space",
         "gated_delta",

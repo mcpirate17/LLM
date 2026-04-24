@@ -80,6 +80,7 @@ class OpNode:
     op_name: str
     input_ids: List[int]  # IDs of input nodes (empty for graph inputs)
     output_shape: ShapeInfo = field(default_factory=ShapeInfo)
+    depth: int = 0
     # Config for parameterized ops
     config: Dict = field(default_factory=dict)
     # Metadata
@@ -96,6 +97,7 @@ class OpNode:
             "op_name": self.op_name,
             "input_ids": self.input_ids,
             "output_shape": self.output_shape.to_dict(),
+            "depth": self.depth,
             "config": self.config,
             "is_input": self.is_input,
             "is_output": self.is_output,
@@ -108,6 +110,7 @@ class OpNode:
             op_name=d["op_name"],
             input_ids=list(d["input_ids"]),
             output_shape=ShapeInfo.from_dict(d["output_shape"]),
+            depth=int(d.get("depth", 0)),
             config=dict(d.get("config", {})),
             is_input=d.get("is_input", False),
             is_output=d.get("is_output", False),
@@ -235,6 +238,7 @@ class ComputationGraph:
             op_name="input",
             input_ids=[],
             output_shape=shape,
+            depth=0,
             is_input=True,
         )
         self.nodes[node_id] = node
@@ -250,20 +254,47 @@ class ComputationGraph:
 
         Raises ValueError if shapes don't compose.
         """
-        canonical_name = canonicalize_op_name(op_name)
-        if canonical_name not in PRIMITIVE_REGISTRY and canonical_name != "input":
-            raise ValueError(f"Unknown op: {op_name}")
+        op = PRIMITIVE_REGISTRY.get(op_name)
+        if op is None:
+            canonical_name = canonicalize_op_name(op_name)
+            op = PRIMITIVE_REGISTRY.get(canonical_name)
+            if op is None and canonical_name != "input":
+                raise ValueError(f"Unknown op: {op_name}")
+        else:
+            canonical_name = op_name
 
-        # Get input shapes
-        input_shapes = []
-        for iid in input_ids:
-            if iid not in self.nodes:
-                raise ValueError(f"Input node {iid} doesn't exist")
-            input_shapes.append(self.nodes[iid].output_shape)
+        input_count = len(input_ids)
+        if input_count == 1:
+            input_node = self.nodes.get(input_ids[0])
+            if input_node is None:
+                raise ValueError(f"Input node {input_ids[0]} doesn't exist")
+            input_shapes = [input_node.output_shape]
+        elif input_count == 2:
+            left_node = self.nodes.get(input_ids[0])
+            if left_node is None:
+                raise ValueError(f"Input node {input_ids[0]} doesn't exist")
+            right_node = self.nodes.get(input_ids[1])
+            if right_node is None:
+                raise ValueError(f"Input node {input_ids[1]} doesn't exist")
+            input_shapes = [left_node.output_shape, right_node.output_shape]
+        else:
+            input_shapes = []
+            for iid in input_ids:
+                input_node = self.nodes.get(iid)
+                if input_node is None:
+                    raise ValueError(f"Input node {iid} doesn't exist")
+                input_shapes.append(input_node.output_shape)
 
         # Compute output shape
-        op = get_primitive(canonical_name)
         output_shape = self._compute_shape(op, input_shapes, config or {})
+        if input_count == 1:
+            depth = input_node.depth + 1
+        elif input_count == 2:
+            left_depth = left_node.depth
+            right_depth = right_node.depth
+            depth = (left_depth if left_depth >= right_depth else right_depth) + 1
+        else:
+            depth = 1 + max((self.nodes[iid].depth for iid in input_ids), default=0)
 
         node_id = self._next_id
         self._next_id += 1
@@ -272,6 +303,7 @@ class ComputationGraph:
             op_name=canonical_name,
             input_ids=input_ids,
             output_shape=output_shape,
+            depth=depth,
             config=config or {},
         )
         self.nodes[node_id] = node
@@ -436,21 +468,26 @@ class ComputationGraph:
         if self._output_node_id is None:
             self._cache["reachable"] = set()
             return set()
-        ir = self._analysis_ir()
-        analysis = ir.analyze_structure(include_reachable=True)
-        mask = analysis.reachable_mask
-        node_ids = (
-            ir.node_ids
-            if ir.node_ids is not None
-            else np.arange(ir.n_nodes(), dtype=np.int32)
-        )
-        visited = {int(node_ids[idx]) for idx in np.flatnonzero(mask)}
+        visited: set[int] = set()
+        stack = [self._output_node_id]
+        while stack:
+            node_id = stack.pop()
+            if node_id in visited:
+                continue
+            node = self.nodes.get(node_id)
+            if node is None:
+                continue
+            visited.add(node_id)
+            stack.extend(node.input_ids)
         self._cache["reachable"] = visited
         return visited
 
     def get_dead_nodes(self) -> set:
         """Return set of node IDs that are NOT reachable from the output."""
-        return set(self.nodes.keys()) - self.get_reachable_nodes()
+        reachable = self.get_reachable_nodes()
+        if len(reachable) == len(self.nodes):
+            return set()
+        return set(self.nodes.keys()) - reachable
 
     def prune_unreachable_nodes(self) -> int:
         """Remove dead-branch nodes not connected to the output.
@@ -475,7 +512,7 @@ class ComputationGraph:
         if not self.nodes:
             self._cache["depth"] = 0
             return 0
-        result = int(self.lower_to_ir().analyze_structure().depth)
+        result = int(self._analysis_ir().analyze_structure().depth)
         self._cache["depth"] = result
         return result
 
@@ -491,8 +528,7 @@ class ComputationGraph:
         """Estimate total learnable parameters. Cached."""
         if "n_params" in self._cache:
             return self._cache["n_params"]
-        ir = self.lower_to_ir()
-        result = ir.n_params_estimate()
+        result = int(self._analysis_ir().analyze_structure().param_estimate)
         self._cache["n_params"] = result
         return result
 
@@ -502,7 +538,7 @@ class ComputationGraph:
         """
         if "grad_path" in self._cache:
             return self._cache["grad_path"]
-        result = bool(self.lower_to_ir().analyze_structure().has_gradient_path)
+        result = bool(self._analysis_ir().analyze_structure().has_gradient_path)
         self._cache["grad_path"] = result
         return result
 
@@ -520,17 +556,26 @@ class ComputationGraph:
         # and replace node IDs with their rank in that order.
         order = self.topological_order()
         id_to_rank = {nid: i for i, nid in enumerate(order)}
+        topology_inputs = self._cache.get("canonical_topology_inputs")
+        if topology_inputs is not None:
+            _, _, op_names, config_strs, node_inputs = topology_inputs
+        else:
+            op_names = config_strs = node_inputs = None
 
         desc = []
         for nid in order:
-            node = self.nodes[nid]
-            ranks = tuple(str(id_to_rank[iid]) for iid in node.input_ids)
-            if node.config:
-                config_items = sorted(f"{k}={v}" for k, v in node.config.items())
-                config_str = f"[{','.join(config_items)}]"
+            if op_names is not None and nid < len(op_names):
+                ranks = tuple(str(id_to_rank[iid]) for iid in node_inputs[nid])
+                desc.append(f"{op_names[nid]}{config_strs[nid]}({','.join(ranks)})")
             else:
-                config_str = ""
-            desc.append(f"{node.op_name}{config_str}({','.join(ranks)})")
+                node = self.nodes[nid]
+                ranks = tuple(str(id_to_rank[iid]) for iid in node.input_ids)
+                if node.config:
+                    config_items = sorted(f"{k}={v}" for k, v in node.config.items())
+                    config_str = f"[{','.join(config_items)}]"
+                else:
+                    config_str = ""
+                desc.append(f"{node.op_name}{config_str}({','.join(ranks)})")
 
         # Include model_dim in fingerprint
         # Z13: Include routing/compression policy in fingerprint
@@ -565,7 +610,21 @@ class ComputationGraph:
         g._input_node_id = d.get("input_node_id")
         g._output_node_id = d.get("output_node_id")
         g.metadata = dict(d.get("metadata", {}))
+        g._refresh_node_depths()
         return g
+
+    def _refresh_node_depths(self) -> None:
+        depths: Dict[int, int] = {}
+        for nid in compute_topological_order(self):
+            node = self.nodes[nid]
+            if node.is_input:
+                node.depth = 0
+            else:
+                node.depth = 1 + max(
+                    (depths.get(input_id, 0) for input_id in node.input_ids),
+                    default=0,
+                )
+            depths[nid] = node.depth
 
     def lower_to_ir(self) -> ComputationGraphIR:
         """Lower the graph to its compact IR representation. Cached.

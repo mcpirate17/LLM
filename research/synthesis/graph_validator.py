@@ -24,8 +24,8 @@ import numpy as np
 from .dim_flow_opcode_tables import FULL_DIM_OPS, KV_CACHE_BREAKING_OPS
 from .dim_flow_support import build_dim_flow_inputs
 from .graph import ComputationGraph
-from .native_analysis import summarize_dim_flow, validate_edges
-from .native_dim_flow import dead_parameterized_mask
+from .native_analysis import summarize_dim_flow_in_python, validate_edges
+from .native_dim_flow import dead_parameterized_mask_in_python
 from .primitives import PRIMITIVE_REGISTRY
 
 
@@ -74,7 +74,7 @@ def validate_dim_flow(
         return result
 
     model_dim = graph.model_dim
-    topo = graph.topological_order()
+    topo = sorted(graph.nodes)
     dim_flow_inputs = build_dim_flow_inputs(
         graph,
         op_kind_default=_OP_KIND_DEFAULT,
@@ -89,17 +89,14 @@ def validate_dim_flow(
     reachable_mask = getattr(analysis, "reachable_mask", None)
     if reachable_mask is None:
         reachable_mask = np.ones(analysis_ir.n_nodes(), dtype=np.int32)
-    reachable = {
-        int(analysis_node_ids[idx])
-        for idx in np.flatnonzero(np.asarray(reachable_mask).astype(bool, copy=False))
-    }
+    reachable_bool = np.asarray(reachable_mask).astype(bool, copy=False)
 
     summary_reachable_mask = np.asarray(reachable_mask).astype(np.int32, copy=True)
     input_node_id = graph._input_node_id
     if input_node_id is not None and input_node_id in node_id_to_analysis_idx:
         summary_reachable_mask[node_id_to_analysis_idx[input_node_id]] = 0
 
-    summary = summarize_dim_flow(
+    summary = summarize_dim_flow_in_python(
         reachable_mask=summary_reachable_mask,
         has_params_flags=dim_flow_inputs.has_params_flags,
         param_estimates=dim_flow_inputs.param_estimates,
@@ -126,7 +123,8 @@ def validate_dim_flow(
         node = graph.nodes[nid]
         if node.is_input:
             continue
-        if nid not in reachable:
+        analysis_idx = node_id_to_analysis_idx.get(nid)
+        if analysis_idx is None or not reachable_bool[analysis_idx]:
             continue
 
         op = PRIMITIVE_REGISTRY.get(node.op_name)
@@ -144,23 +142,19 @@ def validate_dim_flow(
 
             p_shape = parent.output_shape
 
-            if edge_validation.freq_mismatch_bits[node_id_to_analysis_idx[nid]] & (
-                1 << i
-            ):
+            if edge_validation.freq_mismatch_bits[analysis_idx] & (1 << i):
                 result.add_error(
                     f"Node {nid} ({node.op_name}): input[{i}] is freq-domain "
                     f"(seq={p_shape.seq}) but op expects time-domain"
                 )
 
-            if edge_validation.reduce_full_dim_bits[node_id_to_analysis_idx[nid]] & (
-                1 << i
-            ):
+            if edge_validation.reduce_full_dim_bits[analysis_idx] & (1 << i):
                 result.add_error(
                     f"Node {nid} ({node.op_name}): input[{i}] has dim=1 "
                     f"(from reduce) but op requires full dim"
                 )
 
-        if edge_validation.binary_dim_mismatch[node_id_to_analysis_idx[nid]]:
+        if edge_validation.binary_dim_mismatch[analysis_idx]:
             d0 = graph.nodes[node.input_ids[0]].output_shape.dim
             d1 = graph.nodes[node.input_ids[1]].output_shape.dim
             result.add_error(
@@ -171,9 +165,9 @@ def validate_dim_flow(
         if node.op_name in _FULL_DIM_OPS:
             for i, pid in enumerate(node.input_ids):
                 parent = graph.nodes.get(pid)
-                if parent and edge_validation.full_dim_input_bits[
-                    node_id_to_analysis_idx[nid]
-                ] & (1 << i):
+                if parent and edge_validation.full_dim_input_bits[analysis_idx] & (
+                    1 << i
+                ):
                     result.add_error(
                         f"Node {nid} ({node.op_name}): input[{i}] has "
                         f"dim={parent.output_shape.dim}, needs model_dim={model_dim}"
@@ -219,7 +213,7 @@ def validate_dim_flow(
         )
 
     # ── 3. Dead parameterized nodes (unreachable learned weights) ─
-    dead_params = dead_parameterized_mask(
+    dead_params = dead_parameterized_mask_in_python(
         reachable_mask=np.asarray(reachable_mask).astype(np.int32, copy=False),
         parameterized_flags=dim_flow_inputs.has_params_flags,
     )
@@ -276,7 +270,7 @@ def compute_kv_cacheable(graph: ComputationGraph) -> bool:
         input_idx = int(np.where(analysis_node_ids == input_node_id)[0][0])
         summary_reachable_mask[input_idx] = 0
 
-    summary = summarize_dim_flow(
+    summary = summarize_dim_flow_in_python(
         reachable_mask=summary_reachable_mask,
         has_params_flags=np.zeros(analysis_ir.n_nodes(), dtype=np.int32),
         param_estimates=np.zeros(analysis_ir.n_nodes(), dtype=np.int64),

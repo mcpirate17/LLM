@@ -24,6 +24,16 @@ from ._notebook_misc_shared import (
 from ..json_utils import fast_loads as _json_loads
 
 
+_TEMPLATE_OBSERVABILITY_PROCESS_CACHE: Dict[
+    tuple[str, int], tuple[tuple[Any, ...], float, Dict[str, Any]]
+] = {}
+
+
+def clear_template_observability_process_cache() -> None:
+    """Clear cross-notebook template observability cache after writes."""
+    _TEMPLATE_OBSERVABILITY_PROCESS_CACHE.clear()
+
+
 class _ObservabilityMixin:
     """Template observability + slot statistics."""
 
@@ -98,6 +108,36 @@ class _ObservabilityMixin:
         ):
             return dict(cached)
 
+        process_cache_key = None
+        process_signature = None
+        if not getattr(self, "_is_memory", False):
+            process_cache_key = (str(getattr(self, "db_path", "")), int(limit))
+            signature_row = self.conn.execute(
+                """
+                SELECT
+                    (SELECT COUNT(*) FROM program_results) AS pr_count,
+                    (SELECT MAX(timestamp) FROM program_results) AS pr_max_ts,
+                    (SELECT COUNT(*) FROM program_graph_features) AS gf_count,
+                    (SELECT MAX(rowid) FROM program_graph_features) AS gf_max_rowid
+                """
+            ).fetchone()
+            process_signature = tuple(signature_row) if signature_row else None
+            process_cached = _TEMPLATE_OBSERVABILITY_PROCESS_CACHE.get(
+                process_cache_key
+            )
+            if (
+                process_cached is not None
+                and process_signature is not None
+                and process_cached[0] == process_signature
+                and now < process_cached[1]
+            ):
+                result = dict(process_cached[2])
+                self._template_observability_cache[limit] = dict(result)
+                self._template_observability_cache_expires_at = (
+                    now + self._TEMPLATE_OBSERVABILITY_TTL_S
+                )
+                return result
+
         self.flush_writes()
         if not self._read_only:
             self._ensure_graph_features()
@@ -168,6 +208,12 @@ class _ObservabilityMixin:
         self._template_observability_cache_expires_at = (
             now + self._TEMPLATE_OBSERVABILITY_TTL_S
         )
+        if process_cache_key is not None and process_signature is not None:
+            _TEMPLATE_OBSERVABILITY_PROCESS_CACHE[process_cache_key] = (
+                process_signature,
+                now + self._TEMPLATE_OBSERVABILITY_TTL_S,
+                dict(result),
+            )
         return result
 
     def get_generation_observability_priors(
@@ -316,7 +362,7 @@ class _ObservabilityMixin:
                 try:
                     templates = tuple(
                         str(item)
-                        for item in (json.loads(row["templates_json"]) or [])
+                        for item in (_json_loads(row["templates_json"]) or [])
                         if item is not None
                     )
                 except (json.JSONDecodeError, TypeError, ValueError):
@@ -324,13 +370,13 @@ class _ObservabilityMixin:
                 try:
                     motifs = tuple(
                         str(item)
-                        for item in (json.loads(row["motifs_json"]) or [])
+                        for item in (_json_loads(row["motifs_json"]) or [])
                         if item is not None
                     )
                 except (json.JSONDecodeError, TypeError, ValueError):
                     motifs = ()
                 try:
-                    loaded_slots = json.loads(row["slot_usage_json"]) or []
+                    loaded_slots = _json_loads(row["slot_usage_json"]) or []
                     slot_usage = tuple(
                         item for item in loaded_slots if isinstance(item, dict)
                     )

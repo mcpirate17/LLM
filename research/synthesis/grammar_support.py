@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import threading
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Dict, FrozenSet, List, Optional
 
 from .graph import ComputationGraph, ShapeInfo
@@ -386,10 +387,22 @@ def blend_template_weights_with_db(
     if not db_weights:
         return dict(template_weights)
 
+    template_items = tuple(
+        sorted((str(k), float(v)) for k, v in template_weights.items())
+    )
+    db_items = tuple(sorted((str(k), float(v)) for k, v in db_weights.items()))
+    return dict(_blend_template_weights_cached(template_items, db_items))
+
+
+@lru_cache(maxsize=128)
+def _blend_template_weights_cached(
+    template_items: tuple[tuple[str, float], ...],
+    db_items: tuple[tuple[str, float], ...],
+) -> tuple[tuple[str, float], ...]:
     from .templates import DEFAULT_TEMPLATE_WEIGHTS
 
-    blended = dict(template_weights)
-    for tpl_name, db_weight in db_weights.items():
+    blended = dict(template_items)
+    for tpl_name, db_weight in db_items:
         try:
             db_w = float(db_weight)
         except (TypeError, ValueError):
@@ -407,7 +420,7 @@ def blend_template_weights_with_db(
             blended[tpl_name] = prior_w * (ratio**0.5)
         else:
             blended[tpl_name] = db_w
-    return blended
+    return tuple(blended.items())
 
 
 def _load_template_slot_context(conn) -> Dict[str, dict]:

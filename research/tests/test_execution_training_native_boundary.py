@@ -19,6 +19,10 @@ from research.scientist.runner.execution_training_native_boundary import (
     _optimizer_step,
     _training_step_error,
 )
+from research.scientist.runner._curriculum_schedule import (
+    precompute_curriculum_seq_lens,
+)
+from research.training.curriculum import CurriculumStrategy
 
 
 class _RoutingModule(nn.Module):
@@ -82,6 +86,30 @@ def test_compute_micro_train_forward_loss_matches_cross_entropy_path():
 
     expected = language_model_loss(model(inputs), inputs, 3)
     assert float(loss.item()) == pytest.approx(float(expected.item()))
+
+
+def test_compute_micro_train_forward_loss_does_not_swallow_synth_loss_errors():
+    model = _DummyModel()
+    inputs = torch.tensor([[0, 1, 2]])
+    config = type("Cfg", (), {"vocab_size": 3, "loss_type": "synthesized"})()
+
+    class _BrokenLoss:
+        @staticmethod
+        def compute(*_args, **_kwargs):
+            raise ValueError("bad loss")
+
+    owner = type("Owner", (), {"_synth_loss": _BrokenLoss()})()
+
+    with pytest.raises(ValueError, match="bad loss"):
+        _compute_micro_train_forward_loss(
+            owner,
+            model,
+            inputs,
+            config=config,
+            dev=torch.device("cpu"),
+            use_synthesized_training=True,
+            seed=123,
+        )
 
 
 def test_collect_aux_modules_finds_routing_and_early_exit_modules():
@@ -250,3 +278,35 @@ def test_build_training_step_event_includes_optional_metrics():
         "routing_aux_loss": 0.001234,
         "grad_norm": 0.4322,
     }
+
+
+def test_precompute_curriculum_seq_lens_uses_native_schedule():
+    curriculum = CurriculumStrategy(
+        name="cur",
+        seq_len_schedule="growing",
+        initial_seq_len=8,
+        max_seq_len=32,
+        warmup_steps=4,
+    )
+
+    actual = precompute_curriculum_seq_lens(curriculum, 8)
+    expected = tuple(curriculum.get_seq_len(step, 8) for step in range(8))
+
+    assert actual == expected
+
+
+def test_precompute_curriculum_seq_lens_falls_back_for_legacy_curriculum():
+    class _LegacyCurriculum:
+        def get_seq_len(self, step, total):
+            return 8
+
+    assert precompute_curriculum_seq_lens(_LegacyCurriculum(), 4) is None
+
+
+def test_precompute_curriculum_seq_lens_rejects_broken_native_schedule():
+    class _BrokenCurriculum:
+        def seq_len_tensor(self, total_steps):
+            return torch.tensor([8], dtype=torch.long)
+
+    with pytest.raises(ValueError, match="invalid schedule"):
+        precompute_curriculum_seq_lens(_BrokenCurriculum(), 4)

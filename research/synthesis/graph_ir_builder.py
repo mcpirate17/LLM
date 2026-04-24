@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import TYPE_CHECKING, Iterable, List
 
 import numpy as np
@@ -9,7 +10,6 @@ from .primitives import (
     OPCODE_MAP,
     PRIMITIVE_REGISTRY,
     estimate_op_params,
-    get_primitive,
 )
 
 if TYPE_CHECKING:
@@ -56,8 +56,8 @@ def pack_ir_inputs(
         idx = id_to_idx[node_id]
         op_codes[idx] = OPCODE_MAP.get(node.op_name, 0)
         if not node.is_input and node.op_name in PRIMITIVE_REGISTRY:
-            param_estimates[idx] = estimate_op_params(
-                get_primitive(node.op_name), graph.model_dim
+            param_estimates[idx] = _estimate_op_params_cached(
+                node.op_name, graph.model_dim
             )
         for input_slot, input_id in enumerate(node.input_ids[:2]):
             input_indices[idx, input_slot] = id_to_idx.get(input_id, -1)
@@ -76,6 +76,11 @@ def pack_ir_inputs(
         configs=configs,
         output_idx=output_idx,
     )
+
+
+@lru_cache(maxsize=1024)
+def _estimate_op_params_cached(op_name: str, model_dim: int) -> int:
+    return estimate_op_params(PRIMITIVE_REGISTRY[op_name], int(model_dim))
 
 
 def build_graph_ir(

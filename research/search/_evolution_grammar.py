@@ -7,6 +7,7 @@ from ..scientist.shared_utils import clamp
 from ..synthesis.graph import ComputationGraph
 from ..synthesis.grammar import GrammarConfig
 from ..synthesis.primitives import get_primitive, graph_binding_range_class
+from ..synthesis.validator import compute_effective_depth
 
 
 _SPARSE_ROUTING_OPS = frozenset(
@@ -44,7 +45,7 @@ def derive_mutation_grammar(
 ) -> GrammarConfig:
     hard_max_depth = 18
     hard_max_ops = 28
-    parent_depth = max(1, graph.depth())
+    parent_depth = max(1, int(round(compute_effective_depth(graph))))
     parent_ops = max(1, graph.n_ops())
     category_weights = _mutated_category_weights(
         base.category_weights, category_histogram(graph), rng
@@ -90,7 +91,12 @@ def derive_crossover_grammar(
         2,
         int(
             round(
-                (max(1, g1.depth()) + max(1, g2.depth())) / 2 + rng.choice([-1, 0, 1])
+                (
+                    max(1, int(round(compute_effective_depth(g1))))
+                    + max(1, int(round(compute_effective_depth(g2))))
+                )
+                / 2
+                + rng.choice([-1, 0, 1])
             )
         ),
     )

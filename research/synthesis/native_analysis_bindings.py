@@ -155,6 +155,14 @@ def load_native_graph_analysis_lib() -> Any:
         ]
         dim_flow_flags_fn.restype = ctypes.c_int32
 
+    param_formula_fn = getattr(lib, "aria_eval_param_formula", None)
+    if param_formula_fn is not None:
+        param_formula_fn.argtypes = [
+            ctypes.c_char_p,
+            ctypes.POINTER(ctypes.c_int64),
+        ]
+        param_formula_fn.restype = ctypes.c_int32
+
     BOUND_NATIVE_LIB = lib
     return lib
 

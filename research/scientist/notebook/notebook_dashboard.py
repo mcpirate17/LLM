@@ -4,12 +4,22 @@ from __future__ import annotations
 
 import json
 import time
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from ._notebook_misc_shared import (
     _EMPTY_DATA_ACCOUNTING_SHAPE,
 )
 from ..json_utils import fast_loads as _json_loads
+
+
+_DATA_ACCOUNTING_PROCESS_CACHE: Dict[
+    str, tuple[tuple[Any, ...], float, Dict[str, Any]]
+] = {}
+
+
+def clear_dashboard_process_caches() -> None:
+    """Clear cross-notebook dashboard caches after writes."""
+    _DATA_ACCOUNTING_PROCESS_CACHE.clear()
 
 
 class _DashboardNBMixin:
@@ -261,149 +271,187 @@ class _DashboardNBMixin:
 
     def get_data_accounting_summary(self) -> Dict[str, Any]:
         """Separate raw row volume from runs, canonical graphs, and comparable cohorts."""
+        cache_key: Optional[str] = None
+        signature: Optional[tuple[Any, ...]] = None
+        if not getattr(self, "_is_memory", False):
+            cache_key = str(getattr(self, "db_path", ""))
+            signature_row = self.conn.execute(
+                """
+                SELECT
+                    (SELECT COUNT(*) FROM program_results) AS pr_count,
+                    (SELECT MAX(timestamp) FROM program_results) AS pr_max_ts,
+                    (SELECT COUNT(*) FROM training_curves) AS tc_count,
+                    (SELECT MAX(rowid) FROM training_curves) AS tc_max_rowid,
+                    (SELECT COUNT(*) FROM leaderboard) AS lb_count,
+                    (SELECT MAX(timestamp) FROM leaderboard) AS lb_max_ts
+                """
+            ).fetchone()
+            signature = tuple(signature_row) if signature_row else None
+            cached = _DATA_ACCOUNTING_PROCESS_CACHE.get(cache_key)
+            now = time.time()
+            if (
+                cached is not None
+                and signature is not None
+                and cached[0] == signature
+                and now < cached[1]
+            ):
+                return dict(cached[2])
+
         entity_row = self.conn.execute(
             """
-            WITH curve_rows AS (
-                SELECT result_id, COUNT(*) AS curve_rows
-                FROM training_curves
-                GROUP BY result_id
-            ),
-            run_rows AS (
-                SELECT
-                    result_id,
-                    graph_fingerprint,
-                    evaluation_protocol_version,
-                    COALESCE(train_budget_steps, n_train_steps) AS budget_steps,
-                    stage0_passed,
-                    stage05_passed,
-                    stage1_passed,
-                    trust_label,
-                    comparability_label,
-                    data_provenance_json,
-                    hellaswag_acc,
-                    ar_auc,
-                    induction_auc,
-                    binding_auc,
-                    wikitext_perplexity
-                FROM program_results
-            )
             SELECT
-                (SELECT COUNT(*) FROM run_rows) AS program_result_rows,
-                (SELECT COUNT(*) FROM training_curves) AS training_curve_rows,
-                (SELECT COUNT(*) FROM leaderboard) AS leaderboard_rows,
-                (SELECT COUNT(DISTINCT result_id) FROM run_rows) AS unique_runs,
-                (SELECT COUNT(DISTINCT graph_fingerprint) FROM run_rows
-                  WHERE TRIM(COALESCE(graph_fingerprint, '')) <> '') AS unique_graphs,
-                (SELECT COUNT(DISTINCT graph_fingerprint || '|' || COALESCE(evaluation_protocol_version, ''))
-                  FROM run_rows
-                  WHERE TRIM(COALESCE(graph_fingerprint, '')) <> '') AS unique_graph_protocols,
-                (SELECT COUNT(DISTINCT graph_fingerprint || '|' || COALESCE(evaluation_protocol_version, '') || '|' ||
-                                      COALESCE(CAST(budget_steps AS TEXT), ''))
-                  FROM run_rows
-                  WHERE TRIM(COALESCE(graph_fingerprint, '')) <> '') AS unique_graph_protocol_budgets,
-                (SELECT COUNT(*) FROM run_rows WHERE COALESCE(stage0_passed, 0) = 0) AS runs_filtered_pre_s0,
-                (SELECT COUNT(*) FROM run_rows
-                  WHERE COALESCE(stage0_passed, 0) = 1 AND COALESCE(stage05_passed, 0) = 0) AS runs_filtered_pre_s05,
-                (SELECT COUNT(*) FROM run_rows
-                  WHERE COALESCE(stage05_passed, 0) = 1 AND COALESCE(stage1_passed, 0) = 0) AS runs_filtered_pre_s1,
-                (SELECT COUNT(*) FROM run_rows WHERE COALESCE(stage1_passed, 0) = 1) AS runs_reaching_s1_pass,
-                (SELECT COUNT(DISTINCT graph_fingerprint) FROM run_rows
-                  WHERE TRIM(COALESCE(graph_fingerprint, '')) <> ''
-                    AND COALESCE(stage0_passed, 0) = 0) AS graphs_any_filtered_pre_s0,
-                (SELECT COUNT(DISTINCT graph_fingerprint) FROM run_rows
-                  WHERE TRIM(COALESCE(graph_fingerprint, '')) <> ''
-                    AND COALESCE(stage0_passed, 0) = 1
-                    AND COALESCE(stage05_passed, 0) = 0) AS graphs_any_filtered_pre_s05,
-                (SELECT COUNT(DISTINCT graph_fingerprint) FROM run_rows
-                  WHERE TRIM(COALESCE(graph_fingerprint, '')) <> ''
-                    AND COALESCE(stage05_passed, 0) = 1
-                    AND COALESCE(stage1_passed, 0) = 0) AS graphs_any_filtered_pre_s1,
-                (SELECT COUNT(DISTINCT graph_fingerprint) FROM run_rows
-                  WHERE TRIM(COALESCE(graph_fingerprint, '')) <> ''
-                    AND COALESCE(stage1_passed, 0) = 1) AS graphs_any_s1_pass,
-                (SELECT COUNT(*) FROM (
-                    SELECT graph_fingerprint
-                    FROM run_rows
-                    WHERE TRIM(COALESCE(graph_fingerprint, '')) <> ''
-                    GROUP BY graph_fingerprint
-                    HAVING MAX(COALESCE(stage0_passed, 0)) = 0
-                )) AS graphs_all_filtered_pre_s0,
-                (SELECT COUNT(*) FROM (
-                    SELECT graph_fingerprint
-                    FROM run_rows
-                    WHERE TRIM(COALESCE(graph_fingerprint, '')) <> ''
-                    GROUP BY graph_fingerprint
-                    HAVING MAX(COALESCE(stage0_passed, 0)) = 1
-                       AND MAX(COALESCE(stage05_passed, 0)) = 0
-                )) AS graphs_all_filtered_pre_s05,
-                (SELECT COUNT(*) FROM (
-                    SELECT graph_fingerprint
-                    FROM run_rows
-                    WHERE TRIM(COALESCE(graph_fingerprint, '')) <> ''
-                    GROUP BY graph_fingerprint
-                    HAVING MAX(COALESCE(stage05_passed, 0)) = 1
-                       AND MAX(COALESCE(stage1_passed, 0)) = 0
-                )) AS graphs_all_filtered_pre_s1,
-                (SELECT COUNT(*) FROM run_rows
-                  WHERE hellaswag_acc IS NOT NULL
-                     OR ar_auc IS NOT NULL
-                     OR induction_auc IS NOT NULL
-                     OR binding_auc IS NOT NULL
-                     OR wikitext_perplexity IS NOT NULL) AS downstream_eval_runs,
-                (SELECT COUNT(DISTINCT graph_fingerprint) FROM run_rows
-                  WHERE TRIM(COALESCE(graph_fingerprint, '')) <> ''
-                    AND (hellaswag_acc IS NOT NULL
+                COUNT(*) AS program_result_rows,
+                COUNT(DISTINCT result_id) AS unique_runs,
+                COUNT(DISTINCT CASE
+                    WHEN TRIM(COALESCE(graph_fingerprint, '')) <> ''
+                    THEN graph_fingerprint END) AS unique_graphs,
+                COUNT(DISTINCT CASE
+                    WHEN TRIM(COALESCE(graph_fingerprint, '')) <> ''
+                    THEN graph_fingerprint || '|' || COALESCE(evaluation_protocol_version, '')
+                    END) AS unique_graph_protocols,
+                COUNT(DISTINCT CASE
+                    WHEN TRIM(COALESCE(graph_fingerprint, '')) <> ''
+                    THEN graph_fingerprint || '|' || COALESCE(evaluation_protocol_version, '') || '|' ||
+                         COALESCE(CAST(COALESCE(train_budget_steps, n_train_steps) AS TEXT), '')
+                    END) AS unique_graph_protocol_budgets,
+                SUM(CASE WHEN COALESCE(stage0_passed, 0) = 0 THEN 1 ELSE 0 END)
+                    AS runs_filtered_pre_s0,
+                SUM(CASE
+                    WHEN COALESCE(stage0_passed, 0) = 1
+                     AND COALESCE(stage05_passed, 0) = 0 THEN 1 ELSE 0 END)
+                    AS runs_filtered_pre_s05,
+                SUM(CASE
+                    WHEN COALESCE(stage05_passed, 0) = 1
+                     AND COALESCE(stage1_passed, 0) = 0 THEN 1 ELSE 0 END)
+                    AS runs_filtered_pre_s1,
+                SUM(CASE WHEN COALESCE(stage1_passed, 0) = 1 THEN 1 ELSE 0 END)
+                    AS runs_reaching_s1_pass,
+                COUNT(DISTINCT CASE
+                    WHEN TRIM(COALESCE(graph_fingerprint, '')) <> ''
+                     AND COALESCE(stage0_passed, 0) = 0
+                    THEN graph_fingerprint END) AS graphs_any_filtered_pre_s0,
+                COUNT(DISTINCT CASE
+                    WHEN TRIM(COALESCE(graph_fingerprint, '')) <> ''
+                     AND COALESCE(stage0_passed, 0) = 1
+                     AND COALESCE(stage05_passed, 0) = 0
+                    THEN graph_fingerprint END) AS graphs_any_filtered_pre_s05,
+                COUNT(DISTINCT CASE
+                    WHEN TRIM(COALESCE(graph_fingerprint, '')) <> ''
+                     AND COALESCE(stage05_passed, 0) = 1
+                     AND COALESCE(stage1_passed, 0) = 0
+                    THEN graph_fingerprint END) AS graphs_any_filtered_pre_s1,
+                COUNT(DISTINCT CASE
+                    WHEN TRIM(COALESCE(graph_fingerprint, '')) <> ''
+                     AND COALESCE(stage1_passed, 0) = 1
+                    THEN graph_fingerprint END) AS graphs_any_s1_pass,
+                SUM(CASE
+                    WHEN hellaswag_acc IS NOT NULL
                       OR ar_auc IS NOT NULL
                       OR induction_auc IS NOT NULL
                       OR binding_auc IS NOT NULL
-                      OR wikitext_perplexity IS NOT NULL)) AS downstream_eval_graphs,
-                (SELECT COUNT(*) FROM run_rows
-                  WHERE hellaswag_acc IS NOT NULL
-                    AND induction_auc IS NOT NULL
-                    AND binding_auc IS NOT NULL
-                    AND wikitext_perplexity IS NOT NULL) AS downstream_full_bundle_runs,
-                (SELECT COUNT(DISTINCT graph_fingerprint) FROM run_rows
-                  WHERE TRIM(COALESCE(graph_fingerprint, '')) <> ''
-                    AND hellaswag_acc IS NOT NULL
-                    AND induction_auc IS NOT NULL
-                    AND binding_auc IS NOT NULL
-                    AND wikitext_perplexity IS NOT NULL) AS downstream_full_bundle_graphs,
-                (SELECT COUNT(*) FROM run_rows
-                  WHERE COALESCE(trust_label, '') IN ('candidate_screening', 'candidate_grade', 'reference')
-                    AND COALESCE(comparability_label, '') IN ('screening_only', 'candidate_comparable', 'reference_comparable')) AS trusted_comparable_runs,
-                (SELECT COUNT(DISTINCT graph_fingerprint) FROM run_rows
-                  WHERE TRIM(COALESCE(graph_fingerprint, '')) <> ''
-                    AND COALESCE(trust_label, '') IN ('candidate_screening', 'candidate_grade', 'reference')
-                    AND COALESCE(comparability_label, '') IN ('screening_only', 'candidate_comparable', 'reference_comparable')) AS trusted_comparable_graphs,
-                (SELECT COUNT(*) FROM run_rows
-                  WHERE COALESCE(trust_label, '') IN ('candidate_grade', 'reference')
-                    AND COALESCE(comparability_label, '') IN ('candidate_comparable', 'reference_comparable')) AS promotable_runs,
-                (SELECT COUNT(DISTINCT graph_fingerprint) FROM run_rows
-                  WHERE TRIM(COALESCE(graph_fingerprint, '')) <> ''
-                    AND COALESCE(trust_label, '') IN ('candidate_grade', 'reference')
-                    AND COALESCE(comparability_label, '') IN ('candidate_comparable', 'reference_comparable')) AS promotable_graphs,
-                (SELECT COUNT(*) FROM run_rows
-                  WHERE json_extract(COALESCE(data_provenance_json, '{}'), '$.eligible_for_screening_model_training') = 1
-                     OR (COALESCE(trust_label, '') IN ('candidate_screening', 'candidate_grade', 'reference')
-                         AND COALESCE(comparability_label, '') IN ('screening_only', 'candidate_comparable', 'reference_comparable'))) AS screening_model_eligible_runs,
-                (SELECT COUNT(DISTINCT graph_fingerprint) FROM run_rows
-                  WHERE TRIM(COALESCE(graph_fingerprint, '')) <> ''
-                    AND (json_extract(COALESCE(data_provenance_json, '{}'), '$.eligible_for_screening_model_training') = 1
+                      OR wikitext_perplexity IS NOT NULL
+                    THEN 1 ELSE 0 END) AS downstream_eval_runs,
+                COUNT(DISTINCT CASE
+                    WHEN TRIM(COALESCE(graph_fingerprint, '')) <> ''
+                     AND (hellaswag_acc IS NOT NULL
+                       OR ar_auc IS NOT NULL
+                       OR induction_auc IS NOT NULL
+                       OR binding_auc IS NOT NULL
+                       OR wikitext_perplexity IS NOT NULL)
+                    THEN graph_fingerprint END) AS downstream_eval_graphs,
+                SUM(CASE
+                    WHEN hellaswag_acc IS NOT NULL
+                     AND induction_auc IS NOT NULL
+                     AND binding_auc IS NOT NULL
+                     AND wikitext_perplexity IS NOT NULL
+                    THEN 1 ELSE 0 END) AS downstream_full_bundle_runs,
+                COUNT(DISTINCT CASE
+                    WHEN TRIM(COALESCE(graph_fingerprint, '')) <> ''
+                     AND hellaswag_acc IS NOT NULL
+                     AND induction_auc IS NOT NULL
+                     AND binding_auc IS NOT NULL
+                     AND wikitext_perplexity IS NOT NULL
+                    THEN graph_fingerprint END) AS downstream_full_bundle_graphs,
+                SUM(CASE
+                    WHEN COALESCE(trust_label, '') IN ('candidate_screening', 'candidate_grade', 'reference')
+                     AND COALESCE(comparability_label, '') IN ('screening_only', 'candidate_comparable', 'reference_comparable')
+                    THEN 1 ELSE 0 END) AS trusted_comparable_runs,
+                COUNT(DISTINCT CASE
+                    WHEN TRIM(COALESCE(graph_fingerprint, '')) <> ''
+                     AND COALESCE(trust_label, '') IN ('candidate_screening', 'candidate_grade', 'reference')
+                     AND COALESCE(comparability_label, '') IN ('screening_only', 'candidate_comparable', 'reference_comparable')
+                    THEN graph_fingerprint END) AS trusted_comparable_graphs,
+                SUM(CASE
+                    WHEN COALESCE(trust_label, '') IN ('candidate_grade', 'reference')
+                     AND COALESCE(comparability_label, '') IN ('candidate_comparable', 'reference_comparable')
+                    THEN 1 ELSE 0 END) AS promotable_runs,
+                COUNT(DISTINCT CASE
+                    WHEN TRIM(COALESCE(graph_fingerprint, '')) <> ''
+                     AND COALESCE(trust_label, '') IN ('candidate_grade', 'reference')
+                     AND COALESCE(comparability_label, '') IN ('candidate_comparable', 'reference_comparable')
+                    THEN graph_fingerprint END) AS promotable_graphs,
+                SUM(CASE
+                    WHEN json_extract(COALESCE(data_provenance_json, '{}'), '$.eligible_for_screening_model_training') = 1
                       OR (COALESCE(trust_label, '') IN ('candidate_screening', 'candidate_grade', 'reference')
-                          AND COALESCE(comparability_label, '') IN ('screening_only', 'candidate_comparable', 'reference_comparable')))) AS screening_model_eligible_graphs,
-                (SELECT ROUND(AVG(curve_rows), 2) FROM curve_rows) AS avg_training_curve_rows_per_run,
-                (SELECT AVG(curve_rows) FROM (
-                    SELECT curve_rows
-                    FROM curve_rows
-                    ORDER BY curve_rows
-                    LIMIT 2 - (SELECT COUNT(*) FROM curve_rows) % 2
-                    OFFSET (SELECT (COUNT(*) - 1) / 2 FROM curve_rows)
-                )) AS median_training_curve_rows_per_run,
-                (SELECT MAX(curve_rows) FROM curve_rows) AS max_training_curve_rows_per_run,
-                (SELECT COUNT(*) FROM curve_rows) AS runs_with_training_curves,
-                (SELECT (SELECT COUNT(*) FROM run_rows) - COUNT(*) FROM curve_rows) AS runs_without_training_curves
+                      AND COALESCE(comparability_label, '') IN ('screening_only', 'candidate_comparable', 'reference_comparable'))
+                    THEN 1 ELSE 0 END) AS screening_model_eligible_runs,
+                COUNT(DISTINCT CASE
+                    WHEN TRIM(COALESCE(graph_fingerprint, '')) <> ''
+                     AND (
+                        json_extract(COALESCE(data_provenance_json, '{}'), '$.eligible_for_screening_model_training') = 1
+                        OR (COALESCE(trust_label, '') IN ('candidate_screening', 'candidate_grade', 'reference')
+                        AND COALESCE(comparability_label, '') IN ('screening_only', 'candidate_comparable', 'reference_comparable'))
+                     )
+                    THEN graph_fingerprint END) AS screening_model_eligible_graphs
+            FROM program_results
             """
         ).fetchone()
+
+        graph_row = self.conn.execute(
+            """
+            SELECT
+                SUM(CASE WHEN max_s0 = 0 THEN 1 ELSE 0 END)
+                    AS graphs_all_filtered_pre_s0,
+                SUM(CASE WHEN max_s0 = 1 AND max_s05 = 0 THEN 1 ELSE 0 END)
+                    AS graphs_all_filtered_pre_s05,
+                SUM(CASE WHEN max_s05 = 1 AND max_s1 = 0 THEN 1 ELSE 0 END)
+                    AS graphs_all_filtered_pre_s1
+            FROM (
+                SELECT
+                    graph_fingerprint,
+                    MAX(COALESCE(stage0_passed, 0)) AS max_s0,
+                    MAX(COALESCE(stage05_passed, 0)) AS max_s05,
+                    MAX(COALESCE(stage1_passed, 0)) AS max_s1
+                FROM program_results
+                WHERE TRIM(COALESCE(graph_fingerprint, '')) <> ''
+                GROUP BY graph_fingerprint
+            )
+            """
+        ).fetchone()
+
+        curve_rows = self.conn.execute(
+            """
+            SELECT result_id, COUNT(*) AS curve_rows
+            FROM training_curves
+            GROUP BY result_id
+            ORDER BY curve_rows
+            """
+        ).fetchall()
+        curve_counts = [int(row["curve_rows"] or 0) for row in curve_rows]
+        training_curve_rows = sum(curve_counts)
+        runs_with_training_curves = len(curve_counts)
+        if curve_counts:
+            avg_curve_rows = round(training_curve_rows / len(curve_counts), 2)
+            mid = len(curve_counts) // 2
+            if len(curve_counts) % 2:
+                median_curve_rows = float(curve_counts[mid])
+            else:
+                median_curve_rows = float(curve_counts[mid - 1] + curve_counts[mid]) / 2
+            max_curve_rows = max(curve_counts)
+        else:
+            avg_curve_rows = 0.0
+            median_curve_rows = 0.0
+            max_curve_rows = 0
 
         leaderboard_rows = self.conn.execute(
             """
@@ -413,12 +461,15 @@ class _DashboardNBMixin:
             ORDER BY entry_count DESC
             """
         ).fetchall()
+        leaderboard_count = sum(
+            int(row["entry_count"] or 0) for row in leaderboard_rows
+        )
 
-        return {
+        result = {
             "row_volume": {
                 "program_result_rows": int(entity_row["program_result_rows"] or 0),
-                "training_curve_rows": int(entity_row["training_curve_rows"] or 0),
-                "leaderboard_rows": int(entity_row["leaderboard_rows"] or 0),
+                "training_curve_rows": training_curve_rows,
+                "leaderboard_rows": leaderboard_count,
             },
             "run_volume": {
                 "unique_runs": int(entity_row["unique_runs"] or 0),
@@ -472,31 +523,24 @@ class _DashboardNBMixin:
                 ),
                 "graphs_any_s1_pass": int(entity_row["graphs_any_s1_pass"] or 0),
                 "graphs_all_filtered_pre_s0": int(
-                    entity_row["graphs_all_filtered_pre_s0"] or 0
+                    graph_row["graphs_all_filtered_pre_s0"] or 0
                 ),
                 "graphs_all_filtered_pre_s05": int(
-                    entity_row["graphs_all_filtered_pre_s05"] or 0
+                    graph_row["graphs_all_filtered_pre_s05"] or 0
                 ),
                 "graphs_all_filtered_pre_s1": int(
-                    entity_row["graphs_all_filtered_pre_s1"] or 0
+                    graph_row["graphs_all_filtered_pre_s1"] or 0
                 ),
             },
             "training_curve_density": {
-                "runs_with_training_curves": int(
-                    entity_row["runs_with_training_curves"] or 0
-                ),
+                "runs_with_training_curves": runs_with_training_curves,
                 "runs_without_training_curves": int(
-                    entity_row["runs_without_training_curves"] or 0
-                ),
-                "avg_rows_per_run_with_curve": float(
-                    entity_row["avg_training_curve_rows_per_run"] or 0.0
-                ),
-                "median_rows_per_run_with_curve": float(
-                    entity_row["median_training_curve_rows_per_run"] or 0.0
-                ),
-                "max_rows_per_run_with_curve": int(
-                    entity_row["max_training_curve_rows_per_run"] or 0
-                ),
+                    entity_row["program_result_rows"] or 0
+                )
+                - runs_with_training_curves,
+                "avg_rows_per_run_with_curve": avg_curve_rows,
+                "median_rows_per_run_with_curve": median_curve_rows,
+                "max_rows_per_run_with_curve": max_curve_rows,
             },
             "leaderboard_tiers": {
                 str(row["tier"] or "unknown"): {
@@ -506,6 +550,13 @@ class _DashboardNBMixin:
                 for row in leaderboard_rows
             },
         }
+        if cache_key is not None and signature is not None:
+            _DATA_ACCOUNTING_PROCESS_CACHE[cache_key] = (
+                signature,
+                time.time() + self._DASHBOARD_SUMMARY_TTL_S,
+                dict(result),
+            )
+        return result
 
     # ── Leaderboard ──
 

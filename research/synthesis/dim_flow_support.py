@@ -9,7 +9,7 @@ from .dim_flow_opcode_tables import (
 )
 from .graph import ComputationGraph, ComputationGraphIR
 from .graph_ir_builder import build_graph_ir
-from .native_dim_flow_flags import build_dim_flow_flags_natively
+from .native_analysis import analyze_ir_runtime_first
 
 
 @dataclass(slots=True)
@@ -37,7 +37,7 @@ def build_dim_flow_inputs(
     op_kind_binary_broadcast: int,
 ) -> DimFlowInputs:
     analysis_source_ir = graph._analysis_ir()
-    analysis = analysis_source_ir.analyze_structure(include_reachable=True)
+    analysis = analyze_ir_runtime_first(analysis_source_ir, include_reachable=True)
     analysis_ir = (
         analysis_source_ir
         if hasattr(analysis_source_ir, "op_codes")
@@ -53,10 +53,6 @@ def build_dim_flow_inputs(
         if analysis_ir.node_ids is not None
         else np.arange(analysis_ir.n_nodes(), dtype=np.int32)
     )
-    node_id_to_analysis_idx = {
-        int(node_id): idx for idx, node_id in enumerate(analysis_node_ids.tolist())
-    }
-
     node_dims = np.zeros(analysis_ir.n_nodes(), dtype=np.int32)
     node_seq_flags = np.zeros(analysis_ir.n_nodes(), dtype=np.int32)
     param_estimates = np.ascontiguousarray(
@@ -66,7 +62,10 @@ def build_dim_flow_inputs(
         dtype=np.int64,
     )
 
-    for node_id, idx in node_id_to_analysis_idx.items():
+    node_id_to_analysis_idx: dict[int, int] = {}
+    for idx, raw_node_id in enumerate(analysis_node_ids):
+        node_id = int(raw_node_id)
+        node_id_to_analysis_idx[node_id] = idx
         node = graph.nodes[node_id]
         node_dims[idx] = int(node.output_shape.dim)
         node_seq_flags[idx] = int(node.output_shape.is_freq_domain)
@@ -77,34 +76,14 @@ def build_dim_flow_inputs(
         op_kind_identity=op_kind_identity,
         op_kind_binary_broadcast=op_kind_binary_broadcast,
     )
-    native_flags = build_dim_flow_flags_natively(
-        op_codes=analysis_ir.op_codes,
-        param_estimates=param_estimates,
-        opcode_has_params=opcode_tables["opcode_has_params"],
-        opcode_nontrivial=opcode_tables["opcode_nontrivial"],
-        opcode_kv_breaking=opcode_tables["opcode_kv_breaking"],
-        opcode_kind=opcode_tables["opcode_kind"],
-        opcode_full_dim=opcode_tables["opcode_full_dim"],
-    )
-    if native_flags is None:
-        has_params_flags = opcode_tables["opcode_has_params"][analysis_ir.op_codes] * (
-            param_estimates > 0
-        ).astype(np.int32, copy=False)
-        nontrivial_flags = opcode_tables["opcode_nontrivial"][
-            analysis_ir.op_codes
-        ].copy()
-        kv_breaking_flags = opcode_tables["opcode_kv_breaking"][
-            analysis_ir.op_codes
-        ].copy()
-        op_kind_flags = opcode_tables["opcode_kind"][analysis_ir.op_codes].copy()
-        full_dim_flags = opcode_tables["opcode_full_dim"][analysis_ir.op_codes].copy()
-    else:
-        has_params_flags = native_flags["has_params_flags"]
-        nontrivial_flags = native_flags["nontrivial_flags"]
-        kv_breaking_flags = native_flags["kv_breaking_flags"]
-        op_kind_flags = native_flags["op_kind_flags"]
-        full_dim_flags = native_flags["full_dim_flags"]
-
+    op_codes = analysis_ir.op_codes
+    has_params_flags = opcode_tables["opcode_has_params"][op_codes] * (
+        param_estimates > 0
+    ).astype(np.int32, copy=False)
+    nontrivial_flags = opcode_tables["opcode_nontrivial"][op_codes].copy()
+    kv_breaking_flags = opcode_tables["opcode_kv_breaking"][op_codes].copy()
+    op_kind_flags = opcode_tables["opcode_kind"][op_codes].copy()
+    full_dim_flags = opcode_tables["opcode_full_dim"][op_codes].copy()
     return DimFlowInputs(
         analysis_ir=analysis_ir,
         analysis=analysis,

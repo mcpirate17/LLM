@@ -4,8 +4,10 @@
 Behavior:
 - Ensure the dashboard is running on port 5000.
 - Start a fresh continuous session through the dashboard API if none is active.
-- Monitor every 2 minutes for the first 14 minutes, then every 10 minutes
-  for the next hour.
+- Monitor every 2 minutes for the first 20 minutes, then every 10 minutes
+  for the remainder of the watch window.
+- If the run is clean through the full watch window, optionally extend once
+  before shutdown.
 - If the supervisor intervenes (restart, DB repair, or relaunch), the cadence
   resets from that point.
 
@@ -41,7 +43,10 @@ LOG_DIR = ROOT / "research" / "logs"
 API_ROOT = "http://127.0.0.1:5000"
 DASHBOARD_CMD = [sys.executable, "-m", "research", "--mode=dashboard", "--port", "5000"]
 DASHBOARD_PATTERN = "python -m research --mode=dashboard --port 5000"
-CHECK_MINUTES = list(range(2, 15, 2)) + list(range(24, 10 * 60 + 1, 10))
+DEFAULT_DENSE_MINUTES = 20
+DEFAULT_DENSE_INTERVAL_MINUTES = 2
+DEFAULT_SPARSE_INTERVAL_MINUTES = 10
+DEFAULT_STELLAR_EXTENSION_MINUTES = 60
 CORE_ENDPOINTS = [
     "/api/aria/cycle-status",
     "/api/diagnostics/fingerprint",
@@ -74,11 +79,21 @@ HTTP_LOG_MARKERS = (
 )
 
 
-def build_check_minutes(total_minutes: int) -> List[int]:
+def build_check_minutes(
+    total_minutes: int,
+    *,
+    dense_minutes: int = DEFAULT_DENSE_MINUTES,
+    dense_interval_minutes: int = DEFAULT_DENSE_INTERVAL_MINUTES,
+    sparse_interval_minutes: int = DEFAULT_SPARSE_INTERVAL_MINUTES,
+) -> List[int]:
     total = max(2, int(total_minutes))
-    checks = [minute for minute in range(2, min(total, 14) + 1, 2)]
-    if total > 14:
-        checks.extend(range(24, total + 1, 10))
+    dense_limit = min(total, max(2, int(dense_minutes)))
+    dense_step = max(1, int(dense_interval_minutes))
+    sparse_step = max(1, int(sparse_interval_minutes))
+    checks = [minute for minute in range(dense_step, dense_limit + 1, dense_step)]
+    if total > dense_limit:
+        sparse_start = dense_limit + sparse_step
+        checks.extend(range(sparse_start, total + 1, sparse_step))
     if checks[-1] != total:
         checks.append(total)
     return sorted(set(checks))
@@ -132,9 +147,12 @@ def latest_runtime_event_mtime() -> float:
 class Supervisor:
     log_path: Path
     dashboard_output_path: Path
-    check_minutes: List[int] = field(default_factory=lambda: list(CHECK_MINUTES))
+    check_minutes: List[int] = field(
+        default_factory=lambda: build_check_minutes(10 * 60)
+    )
     max_wall_minutes: Optional[int] = None
     shutdown_command: Optional[str] = None
+    stellar_extension_minutes: int = DEFAULT_STELLAR_EXTENSION_MINUTES
     activity_stall_minutes: int = 25
     dashboard_start_retries: int = 3
     log_offset: int = 0
@@ -146,6 +164,7 @@ class Supervisor:
     last_cycle_experiment_id: str = ""
     check_index: int = 0
     last_meaningful_log_ts: float = 0.0
+    extended_once: bool = False
 
     def log(self, message: str) -> None:
         line = f"[{now_iso()}] {message}"
@@ -655,57 +674,101 @@ class Supervisor:
         return False
 
     def run(self) -> int:
-        self.log(f"Supervisor starting. Root={ROOT} DB={DB_PATH}")
-        self.log(f"Dashboard log={DASHBOARD_LOG}")
-        self.overall_started_at = time.time()
-        if DASHBOARD_LOG.exists():
-            try:
-                self.log_offset = DASHBOARD_LOG.stat().st_size
-            except OSError:
-                self.log_offset = 0
-        status, payload = read_http_json("/api/aria/cycle-status")
-        active_exp_id = ""
-        if status == 200 and payload.get("is_running"):
-            active_exp_id = str(payload.get("experiment_id") or "")
-        stranded = self.repair_stranded_experiments(
-            active_experiment_id=active_exp_id,
-            reason="startup_repair",
-        )
-        if stranded.get("repaired"):
-            self.log(f"Startup stranded experiment repair: {stranded}")
-        if not self.start_dashboard():
-            self.log("Supervisor aborting: dashboard is unavailable.")
-            return 1
-        if not self.ensure_continuous_running():
-            self.log("Supervisor aborting: failed to start continuous session.")
-            return 1
-        self.reset_sequence("initial continuous launch")
-
-        while self.check_index < len(self.check_minutes):
-            if self.max_wall_minutes is not None:
-                overall_deadline = self.overall_started_at + (
-                    self.max_wall_minutes * 60
-                )
-                if time.time() >= overall_deadline:
-                    break
-            target_elapsed = self.check_minutes[self.check_index] * 60
-            deadline = self.sequence_started_at + target_elapsed
-            if self.max_wall_minutes is not None:
-                deadline = min(deadline, overall_deadline)
-            sleep_s = max(0.0, deadline - time.time())
-            self.log(
-                f"Sleeping {sleep_s:.1f}s until check {self.check_index + 1}/{len(self.check_minutes)} "
-                f"at +{self.check_minutes[self.check_index]}m."
+        if self.overall_started_at <= 0:
+            self.log(f"Supervisor starting. Root={ROOT} DB={DB_PATH}")
+            self.log(f"Dashboard log={DASHBOARD_LOG}")
+            self.overall_started_at = time.time()
+            if DASHBOARD_LOG.exists():
+                try:
+                    self.log_offset = DASHBOARD_LOG.stat().st_size
+                except OSError:
+                    self.log_offset = 0
+            status, payload = read_http_json("/api/aria/cycle-status")
+            active_exp_id = ""
+            if status == 200 and payload.get("is_running"):
+                active_exp_id = str(payload.get("experiment_id") or "")
+            stranded = self.repair_stranded_experiments(
+                active_experiment_id=active_exp_id,
+                reason="startup_repair",
             )
-            time.sleep(sleep_s)
-            if self.max_wall_minutes is not None and time.time() >= overall_deadline:
-                break
-            reset = self.check_once()
-            if not reset:
-                self.check_index += 1
+            if stranded.get("repaired"):
+                self.log(f"Startup stranded experiment repair: {stranded}")
+            if not self.start_dashboard():
+                self.log("Supervisor aborting: dashboard is unavailable.")
+                return 1
+            if not self.ensure_continuous_running():
+                self.log("Supervisor aborting: failed to start continuous session.")
+                return 1
+            self.reset_sequence("initial continuous launch")
 
+        while True:
+            while self.check_index < len(self.check_minutes):
+                if self.max_wall_minutes is not None:
+                    overall_deadline = self.overall_started_at + (
+                        self.max_wall_minutes * 60
+                    )
+                    if time.time() >= overall_deadline:
+                        break
+                target_elapsed = self.check_minutes[self.check_index] * 60
+                deadline = self.sequence_started_at + target_elapsed
+                if self.max_wall_minutes is not None:
+                    deadline = min(deadline, overall_deadline)
+                sleep_s = max(0.0, deadline - time.time())
+                self.log(
+                    f"Sleeping {sleep_s:.1f}s until check {self.check_index + 1}/{len(self.check_minutes)} "
+                    f"at +{self.check_minutes[self.check_index]}m."
+                )
+                time.sleep(sleep_s)
+                if (
+                    self.max_wall_minutes is not None
+                    and time.time() >= overall_deadline
+                ):
+                    break
+                reset = self.check_once()
+                if not reset:
+                    self.check_index += 1
+            if not self.maybe_extend_watch_window():
+                break
         self.log("Supervisor completed requested watch window without further resets.")
         return 0
+
+    def maybe_extend_watch_window(self) -> bool:
+        if self.extended_once:
+            return False
+        extension_minutes = max(0, int(self.stellar_extension_minutes))
+        if extension_minutes <= 0:
+            return False
+        if self.max_wall_minutes is None:
+            return False
+        if self.reset_count > 1:
+            self.log(
+                "Skipping watch-window extension because the supervisor already intervened."
+            )
+            return False
+        status, payload = read_http_json("/api/aria/cycle-status")
+        if (
+            status != 200
+            or not payload.get("is_running")
+            or not payload.get("continuous_active")
+        ):
+            self.log(
+                f"Skipping watch-window extension because cycle status is not clean: status={status} payload={payload}"
+            )
+            return False
+        db_health = self.db_health_snapshot()
+        if any(db_health.values()):
+            self.log(
+                f"Skipping watch-window extension because DB health is non-zero: {db_health}"
+            )
+            return False
+        self.extended_once = True
+        self.max_wall_minutes += extension_minutes
+        self.check_minutes = build_check_minutes(self.max_wall_minutes)
+        self.log(
+            f"Clean run detected; extending watch window by {extension_minutes} minutes "
+            f"to total {self.max_wall_minutes} minutes."
+        )
+        return True
 
     def run_shutdown_command(self) -> int:
         command = str(self.shutdown_command or "").strip()
@@ -750,6 +813,12 @@ def main() -> int:
         default="",
         help="Shell command to run after the watch window completes cleanly.",
     )
+    parser.add_argument(
+        "--stellar-extension-minutes",
+        type=int,
+        default=DEFAULT_STELLAR_EXTENSION_MINUTES,
+        help="One-time extension added after a clean run with no interventions.",
+    )
     args = parser.parse_args()
 
     LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -762,6 +831,7 @@ def main() -> int:
         check_minutes=build_check_minutes(args.total_minutes),
         max_wall_minutes=int(args.total_minutes),
         shutdown_command=args.shutdown_command or None,
+        stellar_extension_minutes=int(args.stellar_extension_minutes),
         activity_stall_minutes=int(args.activity_stall_minutes),
     )
     try:

@@ -441,6 +441,43 @@ _LINALG_NUMERICAL_OPS = frozenset(
     }
 )
 
+_STRUCTURAL_CONTEXT_OPS = (
+    frozenset(
+        {
+            "local_window_attn",
+            "causal_mask",
+            "sliding_window_mask",
+            "sum_last",
+            "mean_last",
+            "max_last",
+            "norm_last",
+            "identity",
+            "split2",
+            "split3",
+            "confidence_token_gate",
+            "depth_token_mask",
+            "selective_scan",
+            "hybrid_token_gate",
+            "sparse_span_builder",
+            "hybrid_sparse_router",
+            "lane_conditioned_block",
+            "default_path",
+            "calibrated_branch_merge",
+            "grade_mix",
+            "lif_neuron",
+            "sparse_threshold",
+            "stdp_attention",
+            "geometric_product",
+            "n_way_sparse_router",
+            "sparse_bottleneck_moe",
+            "tropical_center",
+            "early_exit",
+        }
+    )
+    | _ELEMENTWISE_NUMERICAL_OPS
+    | _LINALG_NUMERICAL_OPS
+)
+
 
 def _check_elementwise_numerical(
     graph: ComputationGraph,
@@ -583,13 +620,15 @@ def find_graph_context_violations(graph: ComputationGraph) -> List[str]:
     non_input_nodes = [node for node in graph.nodes.values() if not node.is_input]
     non_input_count = len(non_input_nodes)
 
-    for nid in graph.topological_order():
+    for nid in sorted(graph.nodes):
         node = graph.nodes[nid]
         if node.is_input:
             continue
 
+        op_name = node.op_name
+
         # Check forbidden predecessor/successor from CONTEXT_RULES registry
-        rule = CONTEXT_RULES.get(node.op_name)
+        rule = CONTEXT_RULES.get(op_name)
         if rule is not None:
             if rule.forbidden_predecessors:
                 for pid in node.input_ids:
@@ -599,15 +638,18 @@ def find_graph_context_violations(graph: ComputationGraph) -> List[str]:
                         and parent.op_name in rule.forbidden_predecessors
                     ):
                         violations.append(
-                            f"Context rule: {parent.op_name} (id={pid}) -> {node.op_name} (id={nid}) is forbidden"
+                            f"Context rule: {parent.op_name} (id={pid}) -> {op_name} (id={nid}) is forbidden"
                         )
             if rule.forbidden_successors:
                 for sid in children.get(nid, ()):
                     succ = graph.nodes.get(sid)
                     if succ is not None and succ.op_name in rule.forbidden_successors:
                         violations.append(
-                            f"Context rule: {node.op_name} (id={nid}) -> {succ.op_name} (id={sid}) is forbidden"
+                            f"Context rule: {op_name} (id={nid}) -> {succ.op_name} (id={sid}) is forbidden"
                         )
+
+        if op_name not in _STRUCTURAL_CONTEXT_OPS:
+            continue
 
         # Compute neighbor op sets for structural checks
         child_ops = {
@@ -625,7 +667,7 @@ def find_graph_context_violations(graph: ComputationGraph) -> List[str]:
         _check_op_structural_rules(
             graph,
             nid,
-            node.op_name,
+            op_name,
             child_ops,
             parent_ops,
             children,

@@ -37,8 +37,7 @@ def loss_label_smoothed_ce(flat_logits, flat_targets, log_probs):
         log_probs = F.log_softmax(flat_logits, dim=-1)
     smooth = 0.1
     nll = -log_probs.gather(1, flat_targets.unsqueeze(1)).squeeze(1)
-    smooth_loss = -log_probs.mean(dim=-1)
-    return ((1 - smooth) * nll + smooth * smooth_loss).mean()
+    return (1 - smooth) * nll.mean() - smooth * log_probs.mean()
 
 
 def loss_rank_weighted_ce(flat_logits, flat_targets, log_probs):
@@ -56,12 +55,9 @@ def loss_tropical_ce(flat_logits, flat_targets, log_probs):
 
 
 def loss_contrastive_push(flat_logits, flat_targets, log_probs):
-    target_logits = flat_logits.gather(1, flat_targets.unsqueeze(1))
-    topk_width = min(6, flat_logits.shape[-1])
-    if topk_width <= 1:
+    if flat_logits.shape[-1] <= 1:
         return flat_logits.new_zeros(())
-    topk, _ = flat_logits.topk(topk_width, dim=-1)
-    return F.relu(topk[:, 1:] - target_logits + 0.5).mean()
+    return load_loss_native().contrastive_push(flat_logits, flat_targets)
 
 
 def loss_entropy_reg(flat_logits, flat_targets, log_probs):
@@ -71,14 +67,14 @@ def loss_entropy_reg(flat_logits, flat_targets, log_probs):
 
 
 def loss_gradient_penalty(flat_logits, flat_targets, log_probs):
-    return flat_logits.pow(2).mean() * 0.001
+    return flat_logits.norm(p=2).square().mul(0.001 / flat_logits.numel())
 
 
 def loss_kl_uniform(flat_logits, flat_targets, log_probs):
     if log_probs is None:
         log_probs = F.log_softmax(flat_logits, dim=-1)
     vocab_size = flat_logits.shape[-1]
-    return -(log_probs.mean(dim=-1) + math.log(vocab_size)).mean()
+    return -(log_probs.mean() + math.log(vocab_size))
 
 
 LOSS_DISPATCH: dict[str, Callable[..., torch.Tensor]] = {
