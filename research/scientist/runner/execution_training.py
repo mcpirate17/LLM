@@ -12,6 +12,7 @@ import torch
 import torch.nn as nn
 
 from ...eval.perf_budget import DEFAULT_PERF_BUDGETS, evaluate_perf_budget_gate
+from ._helpers import stage1_learning_gate as _stage1_learning_gate
 from .execution_training_native_boundary import (
     _MicroTrainLoopProgress,
 )
@@ -19,6 +20,9 @@ from .execution_training_native_boundary import (
 import logging
 
 logger = logging.getLogger(__name__)
+
+# Legacy monkeypatch surface used by post-training gate resolution.
+stage1_learning_gate = _stage1_learning_gate
 
 
 def _nested_metric_present(payload: Dict[str, Any], dotted_key: str) -> bool:
