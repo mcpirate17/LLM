@@ -44,6 +44,10 @@ def _require_aria_db():
     return aria_db
 
 
+def is_native_available() -> bool:
+    return aria_db is not None
+
+
 def _translate_error(exc: RuntimeError) -> sqlite3.OperationalError:
     """Convert Rust RuntimeError to sqlite3.OperationalError.
 

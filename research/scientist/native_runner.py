@@ -6,8 +6,15 @@ from research.defaults import VOCAB_SIZE
 from .native import autograd as _autograd_mod
 from .native import compiler as _compiler_mod
 from .native import telemetry as _telemetry_mod
-from .native.abi import _try_load_native_lib
+from .native.abi import (
+    _maybe_prepare_runner_abi_session,
+    _try_load_native_lib,
+)
 from .native.compiler import _legacy_compile_model
+from .native.dispatch import (
+    dispatch_graph_native as dispatch_graph_native,  # noqa: F401
+    dispatch_op_native as dispatch_op_native,  # noqa: F401
+)
 
 
 class NativeForwardWrapper(_autograd_mod.NativeForwardWrapper):
@@ -32,6 +39,7 @@ def compile_model_native_first(
             raise ValueError(f"Cannot compile for native execution: {violations[0]}")
     _compiler_mod._legacy_compile_model = _legacy_compile_model
     _compiler_mod._try_load_native_lib = _try_load_native_lib
+    _compiler_mod._maybe_prepare_runner_abi_session = _maybe_prepare_runner_abi_session
     return _compiler_mod.compile_model_native_first(
         layer_graphs,
         vocab_size=vocab_size,

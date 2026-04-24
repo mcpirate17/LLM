@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
 
 from .graph_features import build_graph_feature_rows
-from .native_conn import NativeConnectionWrapper
+from .native_conn import NativeConnectionWrapper, is_native_available
 from ._shared import (
     LOGGER,
     NOTEBOOK_SCHEMA,
@@ -260,6 +260,12 @@ class _NotebookCore:
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._read_only = bool(read_only)
         self._use_native = bool(use_native) and not self._is_memory
+        if self._use_native and not is_native_available():
+            LOGGER.warning(
+                "aria_db is unavailable; opening %s with the sqlite fallback",
+                self.db_path,
+            )
+            self._use_native = False
 
         if self._is_memory:
             # In-memory DBs can't use the native manager (no file path).

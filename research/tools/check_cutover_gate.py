@@ -24,7 +24,7 @@ def _generate_deterministic_parity_sample() -> None:
     import torch
 
     from research.eval.sandbox import safe_eval
-    from research.scientist.native_runner import record_native_abi_parity_result
+    from research.scientist.native.abi import record_native_abi_parity_result
 
     vocab_size = 16
     base = torch.arange(vocab_size, dtype=torch.float32) * 0.1

@@ -29,6 +29,24 @@ from .primitives import (
     PRIMITIVE_REGISTRY,
 )
 
+_UNCHANGED_UNARY_SHAPE_RULES = frozenset(
+    {
+        "identity",
+        "outer",
+        "transpose_seq_dim",
+        "roll",
+        "gather",
+        "scatter",
+        "cumulative",
+        "softmax",
+        "causal_mask",
+        "scale",
+        "bias",
+        "sort",
+        "unsort",
+    }
+)
+
 
 @dataclass(slots=True)
 class ShapeInfo:
@@ -263,12 +281,19 @@ class ComputationGraph:
         else:
             canonical_name = op_name
 
+        config_dict = config if config is not None else {}
         input_count = len(input_ids)
         if input_count == 1:
             input_node = self.nodes.get(input_ids[0])
             if input_node is None:
                 raise ValueError(f"Input node {input_ids[0]} doesn't exist")
-            input_shapes = [input_node.output_shape]
+            output_shape = self._compute_shape_fast(
+                op,
+                input_node.output_shape,
+                None,
+                input_count,
+                config_dict,
+            )
         elif input_count == 2:
             left_node = self.nodes.get(input_ids[0])
             if left_node is None:
@@ -276,7 +301,13 @@ class ComputationGraph:
             right_node = self.nodes.get(input_ids[1])
             if right_node is None:
                 raise ValueError(f"Input node {input_ids[1]} doesn't exist")
-            input_shapes = [left_node.output_shape, right_node.output_shape]
+            output_shape = self._compute_shape_fast(
+                op,
+                left_node.output_shape,
+                right_node.output_shape,
+                input_count,
+                config_dict,
+            )
         else:
             input_shapes = []
             for iid in input_ids:
@@ -284,9 +315,8 @@ class ComputationGraph:
                 if input_node is None:
                     raise ValueError(f"Input node {iid} doesn't exist")
                 input_shapes.append(input_node.output_shape)
+            output_shape = self._compute_shape(op, input_shapes, config_dict)
 
-        # Compute output shape
-        output_shape = self._compute_shape(op, input_shapes, config or {})
         if input_count == 1:
             depth = input_node.depth + 1
         elif input_count == 2:
@@ -304,12 +334,77 @@ class ComputationGraph:
             input_ids=input_ids,
             output_shape=output_shape,
             depth=depth,
-            config=config or {},
+            config=config_dict,
         )
         self.nodes[node_id] = node
         self._ir_version += 1
         self._cache.clear()
         return node_id
+
+    def _compute_shape_fast(
+        self,
+        op: PrimitiveOp,
+        s0: ShapeInfo,
+        s1: ShapeInfo | None,
+        input_count: int,
+        config: Dict,
+    ) -> ShapeInfo:
+        """Compute output shape for the common one- and two-input add_op paths."""
+        rule = op.shape_rule
+
+        if rule in _UNCHANGED_UNARY_SHAPE_RULES:
+            return ShapeInfo(dim=s0.dim, seq=s0.seq)
+
+        if rule == "binary_broadcast":
+            if input_count != 2 or s1 is None:
+                raise ValueError(f"Binary op requires 2 inputs, got {input_count}")
+            if s0.dim != s1.dim and s0.dim != 1 and s1.dim != 1:
+                raise ValueError(
+                    f"Binary op {op.name}: incompatible dims {s0.dim} vs {s1.dim}"
+                )
+            if s0.seq != s1.seq:
+                raise ValueError(
+                    f"Binary op {op.name}: incompatible seq {s0.seq} vs {s1.seq}"
+                )
+            return ShapeInfo(dim=s0.dim if s0.dim >= s1.dim else s1.dim, seq=s0.seq)
+
+        if rule == "linear":
+            return ShapeInfo(dim=config.get("out_dim", s0.dim), seq=s0.seq)
+
+        if rule == "reduce_last":
+            return ShapeInfo(dim=1, seq=s0.seq)
+
+        if rule == "reduce_seq":
+            return ShapeInfo(dim=s0.dim, seq="1")
+
+        if rule == "matmul":
+            if input_count != 2 or s1 is None:
+                raise ValueError("Matmul needs 2 inputs")
+            return ShapeInfo(dim=s0.dim if s0.dim == s1.dim else s1.dim, seq=s0.seq)
+
+        if rule == "split":
+            if op.name == "split2":
+                n = 2
+            elif op.name == "split3":
+                n = 3
+            elif op.name == "split4":
+                n = 4
+            else:
+                n = int(config.get("n_splits", 2))
+            return ShapeInfo(dim=s0.dim // n, seq=s0.seq)
+
+        if rule == "rfft":
+            return ShapeInfo(dim=s0.dim, seq="S//2+1")
+
+        if rule == "irfft":
+            return ShapeInfo(dim=s0.dim, seq="S")
+
+        if rule == "concat":
+            if input_count == 2 and s1 is not None:
+                return ShapeInfo(dim=s0.dim + s1.dim, seq=s0.seq)
+            return ShapeInfo(dim=s0.dim, seq=s0.seq)
+
+        raise ValueError(f"Unknown shape rule: {rule}")
 
     def set_output(self, node_id: int) -> None:
         """Mark a node as the graph output."""
@@ -517,12 +612,18 @@ class ComputationGraph:
         return result
 
     def n_ops(self) -> int:
-        """Number of non-input nodes. Cached."""
-        if "n_ops" in self._cache:
-            return self._cache["n_ops"]
-        result = sum(1 for n in self.nodes.values() if not n.is_input)
-        self._cache["n_ops"] = result
-        return result
+        """Number of non-input nodes.
+
+        Generation calls this inside budget checks while the graph is mutating,
+        so a cache is invalidated almost every time. There is only one input
+        node by construction; compute the count directly instead of scanning.
+        """
+        input_adjustment = (
+            1
+            if self._input_node_id is not None and self._input_node_id in self.nodes
+            else 0
+        )
+        return len(self.nodes) - input_adjustment
 
     def n_params_estimate(self) -> int:
         """Estimate total learnable parameters. Cached."""
