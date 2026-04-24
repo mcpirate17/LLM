@@ -9,7 +9,7 @@ import torch
 from research.synthesis.compiler_op_utils import _build_block_sparse_mask
 from research.synthesis.compiled_op import CompiledOp
 from research.synthesis.compiler_ops_routing import _op_feature_sparsity
-from research.synthesis.compiler_ops_sequence import _op_conv1d_seq
+from research.synthesis.compiler_ops_sequence import _op_conv1d_seq, _op_long_conv_hyena
 from research.synthesis.compiler_ops_mathspaces import _op_spectral_filter
 from research.synthesis.graph import ShapeInfo
 from research.synthesis.kernels import triton_block_sparse_linear
@@ -177,4 +177,23 @@ class TestBFloat16FallbackStability:
         assert out.shape == (2, 8, 64)
         assert torch.isfinite(out).all(), (
             "latent_attention_compressor produced non-finite values in bf16"
+        )
+
+    def test_long_conv_hyena_runs_in_bfloat16(self):
+        module = type("M", (), {})()
+        module.in_proj = torch.nn.Linear(64, 128, bias=False)
+        module.out_proj = torch.nn.Linear(64, 64, bias=False)
+        module.kernel_net = torch.nn.Sequential(
+            torch.nn.Linear(1, 32),
+            torch.nn.SiLU(),
+            torch.nn.Linear(32, 64),
+        )
+        x = torch.randn(2, 8, 64, dtype=torch.bfloat16)
+        with torch.amp.autocast(device_type="cpu", dtype=torch.bfloat16, enabled=True):
+            out = _op_long_conv_hyena(module, [x], {})
+
+        assert out.dtype == torch.bfloat16
+        assert out.shape == (2, 8, 64)
+        assert torch.isfinite(out).all(), (
+            "long_conv_hyena produced non-finite values in bf16"
         )

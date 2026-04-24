@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 import torch
 
 from research.eval.training_core import run_training_loop
@@ -71,6 +72,63 @@ def test_run_training_loop_warmup_preserves_optimizer_group_ratios():
     )
 
     assert telemetry["steps"][0]["lr_expected"] == [0.025, 0.0025]
+
+
+def test_run_training_loop_native_fast_path_matches_torch_adamw():
+    torch.manual_seed(11)
+    inputs = torch.randn(6, 4)
+    targets = torch.randn(6, 3)
+    base = torch.nn.Linear(4, 3)
+    native = torch.nn.Linear(4, 3)
+    native.load_state_dict(base.state_dict())
+    reference = torch.nn.Linear(4, 3)
+    reference.load_state_dict(base.state_dict())
+
+    def native_loss(step: int) -> torch.Tensor:
+        pred = native(inputs[step : step + 1])
+        return torch.nn.functional.mse_loss(pred, targets[step : step + 1])
+
+    def reference_loss(step: int) -> torch.Tensor:
+        pred = reference(inputs[step : step + 1])
+        return torch.nn.functional.mse_loss(pred, targets[step : step + 1])
+
+    native_result = run_training_loop(
+        native.parameters(),
+        native_loss,
+        n_steps=4,
+        optimizer_name="adamw",
+        lr=3e-4,
+        weight_decay=0.01,
+        betas=(0.9, 0.999),
+        clip_grad=0.5,
+    )
+    reference_opt = torch.optim.AdamW(
+        reference.parameters(),
+        lr=3e-4,
+        weight_decay=0.01,
+        betas=(0.9, 0.999),
+    )
+    reference_result = run_training_loop(
+        reference.parameters(),
+        reference_loss,
+        n_steps=4,
+        optimizer=reference_opt,
+        optimizer_name="adamw",
+        lr=3e-4,
+        weight_decay=0.01,
+        betas=(0.9, 0.999),
+        clip_grad=0.5,
+    )
+
+    assert native_result.diverged is False
+    assert reference_result.diverged is False
+    assert native_result.final_loss == pytest.approx(
+        reference_result.final_loss, rel=1e-6, abs=1e-6
+    )
+    for native_param, reference_param in zip(
+        native.parameters(), reference.parameters(), strict=True
+    ):
+        torch.testing.assert_close(native_param, reference_param, atol=1e-6, rtol=1e-5)
 
 
 def test_prepare_text_split_batches_reports_token_counts_on_cache_hit(tmp_path):

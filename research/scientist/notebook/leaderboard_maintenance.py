@@ -338,7 +338,9 @@ def sync_fingerprint_leaderboard(nb, result_id: str) -> None:
         if value is not None:
             merged[column] = value
 
-    screening_loss = _best_min(program_rows, "loss_ratio")
+    screening_loss = _best_min(combo_rows, "screening_loss_ratio")
+    if screening_loss is None:
+        screening_loss = _best_min(program_rows, "loss_ratio")
     if screening_loss is not None:
         merged["screening_loss_ratio"] = screening_loss
     screening_novelty = _best_max(program_rows, "novelty_score")

@@ -52,6 +52,44 @@ typedef struct {
   const char* message;
 } nr_execute_batch_response_t;
 
+/* --------------- training primitives --------------- */
+
+typedef enum {
+  NR_OPTIMIZER_SGD = 1,
+  NR_OPTIMIZER_ADAMW = 2
+} nr_optimizer_t;
+
+typedef struct {
+  float* param;
+  const float* grad;
+  float* momentum;
+  float* exp_avg;
+  float* exp_avg_sq;
+  int64_t numel;
+} nr_train_tensor_f32_t;
+
+typedef struct {
+  nr_optimizer_t optimizer;
+  nr_train_tensor_f32_t* tensors;
+  int32_t n_tensors;
+  double learning_rate;
+  double momentum;
+  double beta1;
+  double beta2;
+  double eps;
+  double weight_decay;
+  double max_grad_norm;
+  int32_t nesterov;
+  int64_t step;
+} nr_optimizer_step_request_t;
+
+typedef struct {
+  nr_status_t status;
+  double grad_norm;
+  int64_t elements;
+  const char* message;
+} nr_optimizer_step_response_t;
+
 /* --------------- capability query --------------- */
 
 typedef struct {
@@ -75,6 +113,7 @@ void nr_runtime_shutdown(void);
 nr_compile_response_t nr_compile(const nr_compile_request_t* req);
 nr_execute_response_t nr_execute(const nr_execute_request_t* req);
 nr_execute_batch_response_t nr_execute_batch(const nr_execute_request_t* req);
+nr_optimizer_step_response_t nr_optimizer_clip_step_f32(const nr_optimizer_step_request_t* req);
 void nr_release_model(int64_t model_handle);
 
 #ifdef __cplusplus

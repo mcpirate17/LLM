@@ -491,6 +491,7 @@ def _op_long_conv_hyena(module, inputs, _):
     if not hasattr(module, "in_proj"):
         return x
     B, S, D = x.shape
+    orig_dtype = x.dtype
 
     # Project to gate and value
     proj = module.in_proj(x)  # (B, S, 2D)
@@ -502,11 +503,19 @@ def _op_long_conv_hyena(module, inputs, _):
     kernel = module.kernel_net(positions)  # (S, D)
 
     # Apply convolution via FFT (O(S log S))
+    # torch.fft does not support bf16/fp16 on the current CUDA path.
+    # Compute the FFT in fp32, then restore the original dtype.
+    kernel_fft_in = (
+        kernel.float() if kernel.dtype in (torch.bfloat16, torch.float16) else kernel
+    )
+    val_fft_in = val.float() if val.dtype in (torch.bfloat16, torch.float16) else val
     # Causal: zero out future kernel positions
-    kernel_fft = torch.fft.rfft(kernel, n=2 * S, dim=0)
-    val_fft = torch.fft.rfft(val, n=2 * S, dim=1)
+    kernel_fft = torch.fft.rfft(kernel_fft_in, n=2 * S, dim=0)
+    val_fft = torch.fft.rfft(val_fft_in, n=2 * S, dim=1)
     conv_out = torch.fft.irfft(kernel_fft.unsqueeze(0) * val_fft, n=2 * S, dim=1)
     conv_out = conv_out[:, :S, :]  # causal: take first S positions
+    if conv_out.dtype != orig_dtype:
+        conv_out = conv_out.to(orig_dtype)
 
     # Multiplicative gating
     out = gate * conv_out

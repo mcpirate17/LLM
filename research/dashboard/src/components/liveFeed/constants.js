@@ -29,6 +29,7 @@ export const EVENT_TYPE_ALIASES = {
   investigation_started: 'invest_start',
   investigation_progress: 'invest_progress',
   investigation_completed: 'invest_complete',
+  investigation_failed: 'invest_failed',
   validation_started: 'validate_start',
   validation_progress: 'validate_progress',
   validation_phase: 'validate_phase',
@@ -71,6 +72,7 @@ export const RENDERABLE_EVENT_TYPES = new Set([
   'invest_start',
   'invest_progress',
   'invest_complete',
+  'invest_failed',
   'validate_start',
   'validate_progress',
   'validate_phase',
@@ -103,7 +105,12 @@ export const CONTEXT_SWITCH_EVENT_TYPES = new Set([
   'nov_gen',
 ]);
 
-export const TERMINAL_EVENT_TYPES = new Set(['complete', 'failed']);
+export const TERMINAL_EVENT_TYPES = new Set([
+  'complete',
+  'failed',
+  'invest_complete',
+  'invest_failed',
+]);
 export const PROGRESSION_EVENT_TYPES = new Set([
   'scaleup_start',
   'scaleup_progress',
@@ -125,4 +132,3 @@ export const RUN_BOUNDARY_STYLE = {
   paddingTop: 12,
   borderTop: '1px solid var(--border)',
 };
-

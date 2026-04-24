@@ -806,6 +806,30 @@ def test_cleanup_stale_experiments_clears_registry_running_state(tmp_path):
         nb.close()
 
 
+def test_deleted_experiment_row_does_not_leave_registry_run_active(tmp_path):
+    nb = _make_status_notebook(tmp_path)
+    try:
+        exp_id = nb.start_experiment(
+            "synthesis",
+            {"mode": "single", "n_programs": 1},
+            "deleted experiment registry",
+        )
+
+        status_before = resolve_runner_status(nb, _IdleRunner())
+        nb._delete_experiment_cascade(exp_id)
+        status_after = resolve_runner_status(nb, _IdleRunner())
+        registry = get_runtime_event_services(nb.db_path).registry
+
+        assert registry.get(exp_id) is not None
+        assert registry.get(exp_id).status == "running"
+        assert status_before["is_running"] is True
+        assert status_after["is_running"] is False
+        assert status_after["external_snapshot"] is None
+    finally:
+        stop_runtime_event_services(nb.db_path)
+        nb.close()
+
+
 def test_projector_bootstrap_replays_spool_into_notebook(tmp_path):
     nb = _make_status_notebook(tmp_path)
     try:

@@ -46,6 +46,7 @@ import traceback
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..json_utils import fast_dumps, json_safe
+from ._lifecycle import _LifecycleMixin
 
 
 from ...synthesis.grammar import GrammarConfig, batch_generate
@@ -272,6 +273,11 @@ class _ExecutionScreeningMixin:
     """Screening experiment thread and core experiment execution."""
 
     __slots__ = ()
+    _publish_terminal_event = _LifecycleMixin._publish_terminal_event
+    _publish_screening_terminal_event = _LifecycleMixin._publish_terminal_event
+    _fail_experiment_compat = _LifecycleMixin._fail_experiment_compat
+    _complete_experiment_compat = _LifecycleMixin._complete_experiment_compat
+    _log_learning_event_compat = _LifecycleMixin._log_learning_event_compat
 
     def _run_experiment_thread(self, exp_id: str, config: RunConfig, hypothesis: str):
         """Execute a single experiment in background."""

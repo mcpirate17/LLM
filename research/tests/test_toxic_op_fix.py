@@ -236,6 +236,43 @@ def test_failure_signatures_skip_malformed_graph_json(nb):
     assert row[1] == 0
 
 
+def test_failure_signatures_skip_persistently_suppressed_pairs(nb):
+    """Audited false-positive pairs should be blocked at write time."""
+    exp_id = nb.start_experiment(
+        experiment_type="test",
+        config={"dim": 64},
+        hypothesis="suppressed pair",
+    )
+
+    graph_json = _make_graph_json(["rwkv_channel", "rmsnorm"])
+    nb.record_program_result(
+        experiment_id=exp_id,
+        graph_fingerprint="suppressed_pair_fail",
+        graph_json=graph_json,
+        stage0_passed=True,
+        stage05_passed=True,
+        stage1_passed=False,
+        error_type="insufficient_learning",
+        loss_ratio=0.99,
+    )
+    nb.flush_writes()
+    nb.update_failure_signatures(exp_id)
+
+    row = nb.conn.execute(
+        "SELECT n_failures, n_successes FROM failure_signatures "
+        "WHERE signature='rwkv_channel->rmsnorm'"
+    ).fetchone()
+    assert row is None
+
+    suppression = nb.conn.execute(
+        "SELECT source, active FROM failure_signature_suppressions "
+        "WHERE signature='rwkv_channel->rmsnorm'"
+    ).fetchone()
+    assert suppression is not None
+    assert suppression[0] == "audit"
+    assert suppression[1] == 1
+
+
 def test_op_rehabilitation_basic(nb):
     """test_op_in_isolation should compile and forward for a known-good op."""
     from research.eval.op_rehab import test_op_in_isolation

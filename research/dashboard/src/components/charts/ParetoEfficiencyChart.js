@@ -2,21 +2,24 @@ import React, { useMemo } from 'react';
 import { CHART_DEFAULTS, clampToScale, getFixedScale } from '../../utils/chartScales';
 
 export function ParetoEfficiencyChart({ points, frontier }) {
-  if (!Array.isArray(points) || points.length === 0) return null;
   const W = 440;
   const H = 220;
   const PAD = 36;
-  
-  const validPoints = points.filter(p => {
+
+  const validPoints = useMemo(() => {
+    if (!Array.isArray(points)) return [];
+    return points.filter(p => {
     const x = Number(p.throughput_tok_s);
     const y = 1.0 - (p.validation_loss_ratio || p.loss_ratio || 1.0);
     return Number.isFinite(x) && Number.isFinite(y);
-  });
+    });
+  }, [points]);
 
-  if (validPoints.length === 0) return null;
-
-  const xs = validPoints.map(p => Number(p.throughput_tok_s));
-  const ys = validPoints.map(p => 1.0 - (p.validation_loss_ratio || p.loss_ratio || 1.0));
+  const xs = useMemo(() => validPoints.map(p => Number(p.throughput_tok_s)), [validPoints]);
+  const ys = useMemo(
+    () => validPoints.map(p => 1.0 - (p.validation_loss_ratio || p.loss_ratio || 1.0)),
+    [validPoints]
+  );
   
   const xDefaults = CHART_DEFAULTS.throughput_tok_s;
   const xScale = getFixedScale('trend.throughput_tok_s', xs, {
@@ -60,6 +63,8 @@ export function ParetoEfficiencyChart({ points, frontier }) {
     }
     return front;
   }, [validPoints, ys, frontier]);
+
+  if (validPoints.length === 0) return null;
 
   const frontierPath = frontierPoints
     .map((p, i) => {

@@ -10,6 +10,7 @@ from typing import Any, Dict, Optional
 from flask import jsonify, request
 from ..runner._types import RunConfig
 from ..refinement_scoring import oscillation_risk_score
+from research.synthesis.workflow_converter import graph_to_workflow
 from ._helpers import get_runner
 from ..json_utils import json_safe
 from ._strategy_recommendations import (
@@ -317,18 +318,6 @@ def _api_program_morph(result_id, nb=None):
     from research.synthesis.validator import validate_graph
     from ..search.evolution import _mutate_graph
 
-    try:
-        import sys as _sys
-
-        _designer_root = str(Path(__file__).resolve().parents[2] / "aria_designer")
-        if _designer_root not in _sys.path:
-            _sys.path.insert(0, _designer_root)
-        from aria_designer.runtime.importer import (
-            graph_to_workflow as _graph_to_workflow,
-        )
-    except ImportError:
-        _graph_to_workflow = None
-
     body = request.get_json(silent=True) or {}
     intent = str(body.get("intent", "balanced")).lower()
     n_candidates = min(20, max(1, int(body.get("n_candidates", 5))))
@@ -485,18 +474,16 @@ def _api_program_morph(result_id, nb=None):
         removed_ops = [op for op in parent_ops if op not in child_ops]
 
         workflow_json = None
-        if _graph_to_workflow:
-            try:
-                wf = _graph_to_workflow(
-                    child, workflow_id=fp[:12], name=f"morph_{fp[:8]}"
-                )
-                workflow_json = wf
-            except Exception as exc:
-                logger.debug(
-                    "Failed to convert morph candidate to workflow for fingerprint=%s: %s",
-                    fp[:12],
-                    exc,
-                )
+        try:
+            workflow_json = graph_to_workflow(
+                child, workflow_id=fp[:12], name=f"morph_{fp[:8]}"
+            )
+        except Exception as exc:
+            logger.debug(
+                "Failed to convert morph candidate to workflow for fingerprint=%s: %s",
+                fp[:12],
+                exc,
+            )
 
         candidates.append(
             {

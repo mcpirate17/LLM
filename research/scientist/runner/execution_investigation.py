@@ -8,6 +8,8 @@ import traceback
 from typing import Any, Dict, List, Optional, Tuple
 
 import torch
+from ...synthesis.compiler import compile_model as _compile_model_legacy
+from ...synthesis.context_rules import find_byte_safety_violations
 from ...synthesis.serializer import graph_from_json
 from ...training.training_program import synthesize_training_program_batch
 from ...training.checkpointing import CheckpointManager
@@ -15,8 +17,8 @@ from ..native_runner import compile_model_native_first as compile_model
 from ..shared_utils import resolve_device
 from ._helpers import (
     _build_source_map,
-    _record_investigation_result,
     _submit_benchmark_eval,
+    _submit_v2_probe_eval,
     clear_gpu_memory,
 )
 from .execution_investigation_scoring import (
@@ -24,6 +26,7 @@ from .execution_investigation_scoring import (
     summarize_investigation_program_runs,
     InvestigationProgramSummary,
 )
+from ._lifecycle import _LifecycleMixin
 
 import logging
 
@@ -45,6 +48,11 @@ class _ExecutionInvestigationMixin:
     """Investigation phase execution."""
 
     __slots__ = ()
+    _publish_terminal_event = _LifecycleMixin._publish_terminal_event
+    _publish_investigation_terminal_event = _LifecycleMixin._publish_terminal_event
+    _fail_experiment_compat = _LifecycleMixin._fail_experiment_compat
+    _complete_experiment_compat = _LifecycleMixin._complete_experiment_compat
+    _log_learning_event_compat = _LifecycleMixin._log_learning_event_compat
 
     # ------------------------------------------------------------------
     # Orchestrator
@@ -891,7 +899,17 @@ class _ExecutionInvestigationMixin:
         elif graph_json_str:
             graph = graph_from_json(graph_json_str)
             layer_graphs = [graph] * config.n_layers
-            return compile_model(
+            byte_safety_violations = find_byte_safety_violations(graph)
+            if byte_safety_violations:
+                logger.info(
+                    "Investigation %s using legacy compile fallback: %s",
+                    source_result_id[:8],
+                    byte_safety_violations[0],
+                )
+            compiler = (
+                _compile_model_legacy if byte_safety_violations else compile_model
+            )
+            return compiler(
                 layer_graphs,
                 vocab_size=config.vocab_size,
                 max_seq_len=tp_max_seq,
@@ -1132,7 +1150,7 @@ class _ExecutionInvestigationMixin:
                 fingerprint_incomplete=fp_incomplete,
             )
         else:
-            _record_investigation_result(
+            _submit_v2_probe_eval(
                 nb=nb,
                 exp_id=exp_id,
                 source_result_id=source_result_id,
@@ -1146,7 +1164,9 @@ class _ExecutionInvestigationMixin:
                 best_tp_json=best_tp_json,
                 robustness=robustness,
                 investigation_passed=investigation_passed,
-                benchmark_result={},
+                config=config,
+                dev=dev,
+                cached_json_load=self._cached_json_load,
                 fingerprint_incomplete=fp_incomplete,
             )
 

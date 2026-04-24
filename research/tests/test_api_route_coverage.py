@@ -88,9 +88,11 @@ def test_all_api_routes_have_tests():
         "/api/observability/stream",
         "/api/recompute-failure-signatures",
         "/api/references",
+        "/api/scoring/version",
         "/api/reproducibility-manifest/<param>",
         "/api/reproducibility-manifest/<param>/workflow",
         "/api/reset-op-stats",
+        "/api/template-names",
         "/api/v1/<param>",
         "/api/v1/components",
         "/api/v1/import/survivors",
@@ -101,6 +103,7 @@ def test_all_api_routes_have_tests():
         "/api/v1/workflows/validate",
         "/api/v1/workflows/<param>",
         "/api/worker/evaluate",
+        "/api/governance/duplicate-fingerprints",
     }
 
     newly_untested = untested - known_untested

@@ -98,3 +98,78 @@ def test_failure_blocklist_skips_audited_false_positive_pairs(nb):
     blocklist = nb.get_failure_signature_blocklist(min_seen=5, max_fail_rate=0.85)
     assert "layernorm->rope_rotate" not in blocklist
     assert blocklist["bad_op->worse_op"] == 0.05
+
+
+def test_failure_blocklist_suppresses_op_dominated_pairs(nb):
+    exp_id = nb.start_experiment("synthesis", {})
+
+    for idx in range(20):
+        nb.record_program_result(
+            experiment_id=exp_id,
+            graph_fingerprint=f"dominated-fail-{idx}",
+            graph_json=_program_graph(["src_op", "toxic_dst"]),
+            stage0_passed=True,
+            stage05_passed=True,
+            stage1_passed=False,
+            error_type="insufficient_learning",
+            loss_ratio=0.99,
+        )
+    for idx in range(21):
+        nb.record_program_result(
+            experiment_id=exp_id,
+            graph_fingerprint=f"other-dst-{idx}",
+            graph_json=_program_graph(["other_src", "toxic_dst"]),
+            stage0_passed=True,
+            stage05_passed=True,
+            stage1_passed=False,
+            error_type="insufficient_learning",
+            loss_ratio=0.99,
+        )
+    for idx in range(2):
+        nb.record_program_result(
+            experiment_id=exp_id,
+            graph_fingerprint=f"toxic-dst-success-{idx}",
+            graph_json=_program_graph(["safe_src", "toxic_dst"]),
+            stage0_passed=True,
+            stage05_passed=True,
+            stage1_passed=True,
+            loss_ratio=0.6,
+        )
+
+    for idx in range(20):
+        nb.record_program_result(
+            experiment_id=exp_id,
+            graph_fingerprint=f"fragile-pair-fail-{idx}",
+            graph_json=_program_graph(["fragile_src", "fragile_dst"]),
+            stage0_passed=True,
+            stage05_passed=True,
+            stage1_passed=False,
+            error_type="insufficient_learning",
+            loss_ratio=0.99,
+        )
+    for idx in range(10):
+        nb.record_program_result(
+            experiment_id=exp_id,
+            graph_fingerprint=f"fragile-src-success-{idx}",
+            graph_json=_program_graph(["fragile_src", "safe_tail"]),
+            stage0_passed=True,
+            stage05_passed=True,
+            stage1_passed=True,
+            loss_ratio=0.5,
+        )
+        nb.record_program_result(
+            experiment_id=exp_id,
+            graph_fingerprint=f"fragile-dst-success-{idx}",
+            graph_json=_program_graph(["safe_head", "fragile_dst"]),
+            stage0_passed=True,
+            stage05_passed=True,
+            stage1_passed=True,
+            loss_ratio=0.5,
+        )
+
+    nb.flush_writes()
+    nb.recompute_failure_signatures()
+
+    blocklist = nb.get_failure_signature_blocklist(min_seen=5, max_fail_rate=0.85)
+    assert "src_op->toxic_dst" not in blocklist
+    assert blocklist["fragile_src->fragile_dst"] == 0.05

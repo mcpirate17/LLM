@@ -93,6 +93,7 @@ def _evaluate_investigation_benchmarks(
         return result
 
     eval_seq_len = min(128, config.max_seq_len)
+    result.update(_run_investigation_v2_probes(model, dev))
 
     try:
         from ...eval.wikitext_eval import evaluate_wikitext_trajectory
@@ -271,6 +272,85 @@ def _evaluate_investigation_benchmarks(
     return result
 
 
+def _run_investigation_v2_probes(model: Any, dev: Any) -> Dict[str, Any]:
+    """Run investigation-tier v2 induction/binding probes on the benchmark model."""
+    result: Dict[str, Any] = {}
+
+    try:
+        from ...eval.induction_probe_v2_investigation import (
+            run_induction_v2_investigation,
+        )
+
+        induction_v2 = run_induction_v2_investigation(model, device=dev)
+        induction_v2_ok = str(induction_v2.status or "") == "ok"
+        result.update(
+            {
+                "induction_v2_investigation_auc": (
+                    induction_v2.auc if induction_v2_ok else None
+                ),
+                "induction_v2_investigation_max_gap_acc": (
+                    induction_v2.max_gap_acc if induction_v2_ok else None
+                ),
+                "induction_v2_investigation_gap_accuracies_json": json.dumps(
+                    induction_v2.gap_accuracies or {},
+                    sort_keys=True,
+                ),
+                "induction_v2_investigation_steps_trained": induction_v2.steps_trained,
+                "induction_v2_investigation_status": induction_v2.status,
+                "induction_v2_investigation_elapsed_ms": induction_v2.elapsed_ms,
+                "induction_v2_investigation_protocol_version": (
+                    induction_v2.protocol_version
+                ),
+            }
+        )
+        logger.info(
+            "Investigation induction-v2 probe: auc=%.4f max_gap=%.4f status=%s",
+            induction_v2.auc,
+            induction_v2.max_gap_acc,
+            induction_v2.status,
+        )
+    except (ImportError, RuntimeError, ValueError, TypeError) as exc:
+        logger.debug("Investigation induction-v2 probe skipped: %s", exc)
+
+    try:
+        from ...eval.binding_probe_v2_investigation import (
+            run_binding_v2_investigation,
+        )
+
+        binding_v2 = run_binding_v2_investigation(model, device=dev)
+        binding_v2_ok = str(binding_v2.status or "") == "ok"
+        result.update(
+            {
+                "binding_v2_investigation_auc": (
+                    binding_v2.auc if binding_v2_ok else None
+                ),
+                "binding_v2_investigation_max_distance_acc": (
+                    binding_v2.max_distance_acc if binding_v2_ok else None
+                ),
+                "binding_v2_investigation_distance_accuracies_json": json.dumps(
+                    binding_v2.distance_accuracies or {},
+                    sort_keys=True,
+                ),
+                "binding_v2_investigation_train_steps": binding_v2.train_steps,
+                "binding_v2_investigation_status": binding_v2.status,
+                "binding_v2_investigation_elapsed_ms": binding_v2.elapsed_ms,
+                "binding_v2_investigation_protocol_version": (
+                    binding_v2.protocol_version
+                ),
+            }
+        )
+        logger.info(
+            "Investigation binding-v2 probe: auc=%.4f max_distance=%.4f status=%s",
+            binding_v2.auc,
+            binding_v2.max_distance_acc,
+            binding_v2.status,
+        )
+    except (ImportError, RuntimeError, ValueError, TypeError) as exc:
+        logger.debug("Investigation binding-v2 probe skipped: %s", exc)
+
+    return result
+
+
 # Single-threaded pool for background benchmark evals — avoids blocking the
 # investigation loop while still serialising GPU work.
 _benchmark_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="bench")
@@ -316,6 +396,81 @@ def _submit_benchmark_eval(
             cached_json_load=cached_json_load,
         )
         # Create a thread-local notebook for DB writes
+        from ..notebook import LabNotebook
+
+        thread_nb = LabNotebook(db_path)
+        try:
+            _record_investigation_result(
+                nb=thread_nb,
+                exp_id=exp_id,
+                source_result_id=source_result_id,
+                source=source,
+                model_source=model_source,
+                graph_json_str=graph_json_str,
+                arch_spec_json_str=arch_spec_json_str,
+                n_passed=n_passed,
+                n_programs_tested=n_programs_tested,
+                best_lr=best_lr,
+                best_tp_json=best_tp_json,
+                robustness=robustness,
+                investigation_passed=investigation_passed,
+                benchmark_result=benchmark_result,
+                fingerprint_incomplete=fingerprint_incomplete,
+            )
+            thread_nb.flush_writes()
+        finally:
+            thread_nb.close()
+
+    return _benchmark_pool.submit(_run)
+
+
+def _submit_v2_probe_eval(
+    *,
+    nb,
+    exp_id: str,
+    source_result_id: str,
+    source: Dict[str, Any],
+    model_source: str,
+    graph_json_str: str | None,
+    arch_spec_json_str: str | None,
+    n_passed: int,
+    n_programs_tested: int,
+    best_lr: Any,
+    best_tp_json: str | None,
+    robustness: float,
+    investigation_passed: bool,
+    config,
+    dev,
+    cached_json_load,
+    fingerprint_incomplete: bool = False,
+) -> Future:
+    """Submit v2-only investigation probes when no training program passes.
+
+    The v2 probes train their own probe heads/tasks, so they can still produce
+    useful induction/binding evidence for a compiled graph even when the
+    investigation training recipe did not pass.
+    """
+    db_path = str(nb.db_path)
+
+    def _run() -> None:
+        benchmark_result: Dict[str, Any] = {}
+        try:
+            model = _build_benchmark_model(
+                config=config,
+                dev=dev,
+                model_source=model_source,
+                arch_spec_json_str=arch_spec_json_str,
+                graph_json_str=graph_json_str,
+                cached_json_load=cached_json_load,
+            )
+            if model is not None:
+                try:
+                    benchmark_result.update(_run_investigation_v2_probes(model, dev))
+                finally:
+                    del model
+        except (ImportError, RuntimeError, ValueError, TypeError) as exc:
+            logger.debug("Investigation v2-only probe eval skipped: %s", exc)
+
         from ..notebook import LabNotebook
 
         thread_nb = LabNotebook(db_path)
@@ -475,6 +630,50 @@ def _record_investigation_result(
         **trajectory_fields,
     )
 
+    v2_fields = {
+        "induction_v2_investigation_auc": benchmark_result.get(
+            "induction_v2_investigation_auc"
+        ),
+        "induction_v2_investigation_max_gap_acc": benchmark_result.get(
+            "induction_v2_investigation_max_gap_acc"
+        ),
+        "induction_v2_investigation_gap_accuracies_json": benchmark_result.get(
+            "induction_v2_investigation_gap_accuracies_json"
+        ),
+        "induction_v2_investigation_steps_trained": benchmark_result.get(
+            "induction_v2_investigation_steps_trained"
+        ),
+        "induction_v2_investigation_status": benchmark_result.get(
+            "induction_v2_investigation_status"
+        ),
+        "induction_v2_investigation_elapsed_ms": benchmark_result.get(
+            "induction_v2_investigation_elapsed_ms"
+        ),
+        "induction_v2_investigation_protocol_version": benchmark_result.get(
+            "induction_v2_investigation_protocol_version"
+        ),
+        "binding_v2_investigation_auc": benchmark_result.get(
+            "binding_v2_investigation_auc"
+        ),
+        "binding_v2_investigation_max_distance_acc": benchmark_result.get(
+            "binding_v2_investigation_max_distance_acc"
+        ),
+        "binding_v2_investigation_distance_accuracies_json": benchmark_result.get(
+            "binding_v2_investigation_distance_accuracies_json"
+        ),
+        "binding_v2_investigation_train_steps": benchmark_result.get(
+            "binding_v2_investigation_train_steps"
+        ),
+        "binding_v2_investigation_status": benchmark_result.get(
+            "binding_v2_investigation_status"
+        ),
+        "binding_v2_investigation_elapsed_ms": benchmark_result.get(
+            "binding_v2_investigation_elapsed_ms"
+        ),
+        "binding_v2_investigation_protocol_version": benchmark_result.get(
+            "binding_v2_investigation_protocol_version"
+        ),
+    }
     result_id = nb.record_program_result(
         experiment_id=exp_id,
         graph_fingerprint=source.get("graph_fingerprint", source_result_id),
@@ -506,6 +705,7 @@ def _record_investigation_result(
         hellaswag_acc=benchmark_result.get("hellaswag_acc"),
         hellaswag_status=benchmark_result.get("hellaswag_status"),
         hellaswag_n_examples=benchmark_result.get("hellaswag_total"),
+        **v2_fields,
     )
     source_updates = {
         "wikitext_perplexity": benchmark_result.get("inv_wikitext_ppl"),
@@ -527,6 +727,7 @@ def _record_investigation_result(
         "binding_auc": benchmark_result.get("binding_auc"),
         "binding_composite": benchmark_result.get("binding_composite"),
         "local_only": benchmark_result.get("local_only"),
+        **v2_fields,
     }
     set_parts = []
     set_params: List[Any] = []
@@ -542,7 +743,11 @@ def _record_investigation_result(
             set_params,
         )
         nb.upsert_induction_metric_v2(
-            graph_fingerprint=str(benchmark_result.get("graph_fingerprint") or ""),
+            graph_fingerprint=str(
+                benchmark_result.get("graph_fingerprint")
+                or source.get("graph_fingerprint")
+                or ""
+            ),
             result_id=str(source_result_id),
             row=benchmark_result,
             source_cohort="runtime",

@@ -39,7 +39,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from ._probe_runtime import disable_native_probe_dispatch
-from .utils import clip_grad_norm, make_adamw
+from .utils import clip_grad_norm
 
 logger = logging.getLogger(__name__)
 
@@ -212,11 +212,13 @@ def _run_binding_v2_on(
             )
     cursor = {d: 0 for d in valid_distances}
 
-    optimizer_kwargs = {"lr": lr}
-    if device == "cuda" and torch.cuda.is_available():
-        optimizer_kwargs["fused"] = True
-    optimizer = torch.optim.AdamW(probe_model.parameters(), **optimizer_kwargs)
-    use_autocast = device == "cuda" and torch.cuda.is_available()
+    optimizer = torch.optim.AdamW(
+        probe_model.parameters(),
+        lr=lr,
+        foreach=False,
+        fused=False,
+    )
+    use_autocast = False
 
     try:
         with disable_native_probe_dispatch(probe_model, device=device):
@@ -232,7 +234,9 @@ def _run_binding_v2_on(
                     device_type="cuda", dtype=torch.bfloat16, enabled=use_autocast
                 ):
                     logits = compiled(batch)
-                    pred_logits = logits[:, distance - 1 : train_seq_len - 1, :vocab_size]
+                    pred_logits = logits[
+                        :, distance - 1 : train_seq_len - 1, :vocab_size
+                    ]
                     targets = batch[:, distance:train_seq_len]
                     loss = F.cross_entropy(
                         pred_logits.reshape(-1, vocab_size),

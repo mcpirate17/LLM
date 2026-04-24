@@ -452,11 +452,11 @@ function evaluateSuccessCriteria(successCriteria, context) {
 }
 
 function DecisionLog({ decisions, hypotheses, experiments, onSelectExperiment }) {
-  if (!decisions || decisions.length === 0) return null;
-
   const hypothesisById = useMemo(() => new Map((hypotheses || []).map(h => [h.hypothesis_id, h])), [hypotheses]);
   const experimentById = useMemo(() => new Map((experiments || []).map(exp => [exp.experiment_id, exp])), [experiments]);
   const [copiedValue, copyText] = useCopyToClipboard();
+
+  if (!decisions || decisions.length === 0) return null;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>

@@ -975,7 +975,11 @@ def _fallback_graph_analysis_rows(db_path: str) -> List[Dict[str, Any]]:
         SELECT result_id, experiment_id, graph_json, novelty_score, loss_ratio,
                param_count, graph_n_params_estimate, graph_depth,
                graph_uses_math_spaces, stage0_passed, stage05_passed,
-               stage1_passed, timestamp
+               stage1_passed, timestamp, induction_auc, ar_auc,
+               hellaswag_acc, blimp_overall_accuracy,
+               induction_v2_investigation_auc, binding_v2_investigation_auc,
+               COALESCE(binding_auc_curriculum, binding_auc) AS binding_auc,
+               binding_composite
         FROM program_results
         WHERE TRIM(COALESCE(graph_json, '')) <> ''
           AND graph_json <> '{}'
@@ -999,6 +1003,14 @@ def _fallback_graph_analysis_rows(db_path: str) -> List[Dict[str, Any]]:
                 "graph_n_params_estimate": row["graph_n_params_estimate"],
                 "graph_depth": row["graph_depth"],
                 "graph_uses_math_spaces": bool(row["graph_uses_math_spaces"]),
+                "induction_auc": row["induction_auc"],
+                "binding_auc": row["binding_auc"],
+                "binding_composite": row["binding_composite"],
+                "ar_auc": row["ar_auc"],
+                "hellaswag_acc": row["hellaswag_acc"],
+                "blimp_overall_accuracy": row["blimp_overall_accuracy"],
+                "induction_v2_investigation_auc": row["induction_v2_investigation_auc"],
+                "binding_v2_investigation_auc": row["binding_v2_investigation_auc"],
                 "stage0_any_passed": False,
                 "stage05_any_passed": False,
                 "stage1_any_passed": False,
@@ -1019,6 +1031,17 @@ def _fallback_graph_analysis_rows(db_path: str) -> List[Dict[str, Any]]:
         group["latest_timestamp"] = max(
             float(group["latest_timestamp"]), float(row["timestamp"] or 0.0)
         )
+        for metric_key in (
+            "induction_auc",
+            "binding_auc",
+            "binding_composite",
+            "ar_auc",
+            "hellaswag_acc",
+            "blimp_overall_accuracy",
+            "induction_v2_investigation_auc",
+            "binding_v2_investigation_auc",
+        ):
+            group[metric_key] = _max_opt(group.get(metric_key), row[metric_key])
 
         rank = (
             0 if stage1_passed else 1,

@@ -45,6 +45,19 @@ def temp_notebook(tmp_path):
         nb.flush_writes()
 
 
+@pytest.fixture
+def temp_notebook_legacy(tmp_path):
+    """Yield a legacy-sqlite notebook to pin parity with aria-db pragmas."""
+    nb = LabNotebook(
+        db_path=str(tmp_path / "lab_notebook_legacy_test.db"),
+        use_native=False,
+    )
+    try:
+        yield nb
+    finally:
+        nb.flush_writes()
+
+
 def test_native_conn_foreign_keys_pragma_is_off(temp_notebook) -> None:
     """Connection-level FK enforcement must stay OFF so writes land."""
     temp_notebook.flush_writes()
@@ -55,6 +68,18 @@ def test_native_conn_foreign_keys_pragma_is_off(temp_notebook) -> None:
         f"aria-db connection has foreign_keys={value!r}; expected 0 (OFF). "
         "Flipping this to ON produces silent writer-thread drops on any "
         "INSERT that precedes its parent row."
+    )
+
+
+def test_legacy_conn_foreign_keys_pragma_is_off(temp_notebook_legacy) -> None:
+    """Legacy sqlite fallback must match aria-db FK-off behavior."""
+    temp_notebook_legacy.flush_writes()
+    row = temp_notebook_legacy.conn.execute("PRAGMA foreign_keys").fetchone()
+    assert row is not None
+    value = dict(row).get("foreign_keys")
+    assert value == 0, (
+        f"legacy sqlite connection has foreign_keys={value!r}; expected 0 (OFF). "
+        "The API/dashboard request path uses use_native=False notebooks."
     )
 
 

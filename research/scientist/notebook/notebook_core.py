@@ -171,8 +171,15 @@ class _NotebookCore:
                 last_error,
             )
 
-        _run_pragma("PRAGMA foreign_keys=ON", desc="foreign_keys")
-        _run_pragma("PRAGMA synchronous=NORMAL", desc="synchronous mode")
+        # Match aria-db/native behavior: file-backed notebook connections keep
+        # connection-wide FK enforcement OFF. The codebase still contains
+        # write-order paths that enqueue child rows before parent rows; flipping
+        # FKs ON causes silent async-writer drops.
+        _run_pragma("PRAGMA foreign_keys=OFF", desc="foreign_keys")
+        # Read-only handles do not need to negotiate synchronous mode and doing
+        # so during a busy startup window can fail with "database is locked".
+        if role != "readonly":
+            _run_pragma("PRAGMA synchronous=NORMAL", desc="synchronous mode")
         _run_pragma("PRAGMA busy_timeout=15000", desc="busy timeout")
 
     @staticmethod
@@ -665,6 +672,18 @@ class _NotebookCore:
 
     # -- Per-table migration helpers --
 
+    def _migrate_schema_artifacts(self) -> None:
+        """Backfill idempotent schema objects for legacy notebooks.
+
+        Older databases may already have the core tables, which causes
+        bootstrap to skip the full ``NOTEBOOK_SCHEMA`` script. Re-running the
+        schema here is safe because it is CREATE IF NOT EXISTS-only, and it
+        ensures late-added tables like ``followup_tasks`` exist before runner
+        features touch them.
+        """
+
+        self.conn.executescript(NOTEBOOK_SCHEMA)
+
     def _migrate_experiments_table(self) -> None:
         try:
             self.conn.execute("SELECT llm_analysis FROM experiments LIMIT 1")
@@ -706,6 +725,73 @@ class _NotebookCore:
                 "ALTER TABLE program_results ADD COLUMN model_source TEXT"
             )
 
+    def _migrate_generation_stats_tables(self) -> None:
+        expected_columns = {
+            "template_stats": {
+                "avg_induction_auc": "REAL",
+                "avg_binding_auc": "REAL",
+                "avg_binding_composite": "REAL",
+                "avg_ar_auc": "REAL",
+                "avg_hellaswag_acc": "REAL",
+                "avg_blimp_overall_accuracy": "REAL",
+                "avg_induction_v2_investigation_auc": "REAL",
+                "avg_binding_v2_investigation_auc": "REAL",
+                "math_space_rate": "REAL",
+            },
+            "op_stats": {
+                "avg_induction_auc": "REAL",
+                "avg_binding_auc": "REAL",
+                "avg_binding_composite": "REAL",
+                "avg_ar_auc": "REAL",
+                "avg_hellaswag_acc": "REAL",
+                "avg_blimp_overall_accuracy": "REAL",
+                "avg_induction_v2_investigation_auc": "REAL",
+                "avg_binding_v2_investigation_auc": "REAL",
+                "math_space_rate": "REAL",
+            },
+            "motif_stats": {
+                "avg_induction_auc": "REAL",
+                "avg_binding_auc": "REAL",
+                "avg_binding_composite": "REAL",
+                "avg_ar_auc": "REAL",
+                "avg_hellaswag_acc": "REAL",
+                "avg_blimp_overall_accuracy": "REAL",
+                "avg_induction_v2_investigation_auc": "REAL",
+                "avg_binding_v2_investigation_auc": "REAL",
+                "math_space_rate": "REAL",
+            },
+            "slot_stats": {
+                "avg_induction_auc": "REAL",
+                "avg_binding_auc": "REAL",
+                "avg_binding_composite": "REAL",
+                "avg_ar_auc": "REAL",
+                "avg_hellaswag_acc": "REAL",
+                "avg_blimp_overall_accuracy": "REAL",
+                "avg_induction_v2_investigation_auc": "REAL",
+                "avg_binding_v2_investigation_auc": "REAL",
+                "math_space_rate": "REAL",
+            },
+        }
+        for table_name, column_map in expected_columns.items():
+            try:
+                existing = {
+                    row[1]
+                    for row in self.conn.execute(
+                        f"PRAGMA table_info({table_name})"
+                    ).fetchall()
+                }
+            except sqlite3.OperationalError:
+                continue
+            for col_name, col_type in column_map.items():
+                if col_name in existing:
+                    continue
+                try:
+                    self.conn.execute(
+                        f"ALTER TABLE {table_name} ADD COLUMN {col_name} {col_type}"
+                    )
+                except sqlite3.OperationalError:
+                    pass
+
     def _migrate_leaderboard_create(self) -> None:
         self.conn.executescript("""
             CREATE TABLE IF NOT EXISTS leaderboard (
@@ -744,6 +830,29 @@ class _NotebookCore:
             CREATE INDEX IF NOT EXISTS idx_programs_timestamp ON program_results(timestamp);
             CREATE INDEX IF NOT EXISTS idx_programs_exp_ts ON program_results(experiment_id, timestamp);
         """)
+
+    def _migrate_failure_signature_suppressions(self) -> None:
+        """Ensure durable suppression rows exist for audited false positives."""
+        from .failure_signature_audits import AUDITED_FALSE_FAILURE_SIGNATURES
+
+        now = time.time()
+        rows = [
+            (signature, reason, "audit", 1, now, now)
+            for signature, reason in AUDITED_FALSE_FAILURE_SIGNATURES.items()
+        ]
+        if not rows:
+            return
+        self.conn.executemany(
+            """INSERT INTO failure_signature_suppressions
+               (signature, reason, source, active, created_at, last_updated)
+               VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(signature) DO UPDATE SET
+                   reason = excluded.reason,
+                   source = excluded.source,
+                   active = 1,
+                   last_updated = excluded.last_updated""",
+            rows,
+        )
 
     def _migrate_decisions_table(self) -> None:
         try:
@@ -1087,9 +1196,12 @@ class _NotebookCore:
 
     def _migrate_impl(self):
         """Internal migration logic — delegates to per-table helpers."""
+        self._migrate_schema_artifacts()
         self._migrate_experiments_table()
         self._migrate_program_results_table()
+        self._migrate_generation_stats_tables()
         self._migrate_leaderboard_create()
+        self._migrate_failure_signature_suppressions()
         self._migrate_decisions_table()
         self._migrate_op_success_rates_table()
         self._migrate_orphan_preregistration_repair()

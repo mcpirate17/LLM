@@ -4,15 +4,9 @@ import logging
 from typing import Any, Callable, Dict, List, Tuple
 
 from ..notebook import LabNotebook
+from ..judgment import JudgmentContext, score_candidate
 
 logger = logging.getLogger(__name__)
-
-try:
-    from ..judgment import JudgmentContext, score_candidate
-
-    _HAS_JUDGMENT = True
-except ImportError:
-    _HAS_JUDGMENT = False
 
 _EXPLORATION_BUDGET = 0.15
 
@@ -51,7 +45,7 @@ def judgment_rerank(
     log: logging.Logger,
     log_event: Callable[..., None] | None = None,
 ) -> List[Tuple[Any, float]]:
-    if not _HAS_JUDGMENT or not graphs:
+    if not graphs:
         return [(graph, 0.5) for graph in graphs]
 
     try:

@@ -902,6 +902,23 @@ class _ExperimentsMixin:
         attribution_reports → hypotheses → experiments,
         healer_task_events → healer_tasks → experiments, etc.
         """
+
+        def _tables_with_column(column_name: str) -> list[str]:
+            tables = []
+            rows = self.conn.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+            ).fetchall()
+            for row in rows:
+                table = str(row[0])
+                try:
+                    cols = self.conn.execute(f"PRAGMA table_info({table})").fetchall()
+                except Exception:
+                    continue
+                if any(str(col[1]) == column_name for col in cols):
+                    tables.append(table)
+            return tables
+
         # attribution_reports → hypotheses (grandchild)
         hypothesis_rows = self.conn.execute(
             "SELECT hypothesis_id FROM hypotheses WHERE experiment_id = ?",
@@ -928,15 +945,36 @@ class _ExperimentsMixin:
                 task_ids,
             )
 
-        # Direct children of experiments
-        for table in (
-            "entries",
-            "insights",
-            "hypotheses",
-            "preregistration_deviations",
-            "hypothesis_preregistrations",
-            "healer_tasks",
-        ):
+        # Delete result-linked children before removing program_results.
+        result_rows = self.conn.execute(
+            "SELECT result_id FROM program_results WHERE experiment_id = ?",
+            (experiment_id,),
+        ).fetchall()
+        result_ids = [str(r[0]) for r in result_rows if r[0]]
+        if result_ids:
+            result_tables = [
+                table
+                for table in _tables_with_column("result_id")
+                if table != "program_results"
+            ]
+            batch_size = 500
+            for table in result_tables:
+                for i in range(0, len(result_ids), batch_size):
+                    batch = result_ids[i : i + batch_size]
+                    ph = ",".join("?" for _ in batch)
+                    self.conn.execute(
+                        f"DELETE FROM {table} WHERE result_id IN ({ph})",
+                        batch,
+                    )
+
+        # Direct and auxiliary experiment-linked children. This is schema-driven
+        # so new tables with experiment_id do not silently break cascade deletes.
+        experiment_tables = [
+            table
+            for table in _tables_with_column("experiment_id")
+            if table != "experiments"
+        ]
+        for table in experiment_tables:
             try:
                 self.conn.execute(
                     f"DELETE FROM {table} WHERE experiment_id = ?",
@@ -944,6 +982,13 @@ class _ExperimentsMixin:
                 )
             except Exception as e:
                 LOGGER.debug("Cascade delete from %s skipped: %s", table, e)
+        try:
+            self.conn.execute(
+                "DELETE FROM applied_runtime_events WHERE run_id = ?",
+                (experiment_id,),
+            )
+        except sqlite3.OperationalError:
+            pass
 
         self.conn.execute(
             "DELETE FROM experiments WHERE experiment_id = ?",

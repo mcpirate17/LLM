@@ -24,6 +24,7 @@ from ._eval_registry import (
     run_eval_suite,
     apply_breakthrough_logic,
 )
+from ._lifecycle import _LifecycleMixin
 from ..notebook import LabNotebook
 
 import logging
@@ -37,6 +38,13 @@ class _ContinuousValidationMixin:
     """Validation seed runs, metrics computation, external evals, and inline validation."""
 
     __slots__ = ()
+    _publish_terminal_event = _LifecycleMixin._publish_terminal_event
+    _publish_continuous_validation_terminal_event = (
+        _LifecycleMixin._publish_terminal_event
+    )
+    _fail_experiment_compat = _LifecycleMixin._fail_experiment_compat
+    _complete_experiment_compat = _LifecycleMixin._complete_experiment_compat
+    _log_learning_event_compat = _LifecycleMixin._log_learning_event_compat
 
     def _scaling_reference_families(self, config: RunConfig) -> tuple[str, ...]:
         raw = str(getattr(config, "scaling_reference_families", "gpt2") or "gpt2")

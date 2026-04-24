@@ -113,6 +113,12 @@ const FeedItem = React.memo(function FeedItem({ evt, prevExpId }) {
         );
       })()}
       {evt.type === 'invest_complete' && <span className="feed-event-msg feed-success">Investigation {evt.experiment_id?.slice(0, 8)} completed!{evt.n_passed != null && ` ${evt.n_passed} passed`}</span>}
+      {evt.type === 'invest_failed' && (
+        <span className="feed-event-msg feed-fail">
+          Investigation {evt.experiment_id?.slice(0, 8)} failed!
+          {evt.error ? ` ${evt.error}` : ''}
+        </span>
+      )}
       {evt.type === 'validate_start' && <span className="feed-event-msg" style={{ color: 'var(--accent-purple)' }}>Validation started: {evt.experiment_id?.slice(0, 8)} — {evt.n_candidates || evt.result_ids?.length || '?'} candidate(s)</span>}
       {evt.type === 'validate_progress' && (
         <span className="feed-event-msg">

@@ -187,10 +187,18 @@ class TestObservabilityAPI(unittest.TestCase):
         self.assertIn("ram_percent", data)
 
     def test_api_health(self):
+        from research.scientist.api_routes._api_health import (
+            API_HEALTH_COUNTERS,
+            API_HEALTH_LOCK,
+        )
+
+        with API_HEALTH_LOCK:
+            API_HEALTH_COUNTERS["/api/test:2xx"] += 1
         resp = self.client.get("/api/observability/api-health")
         self.assertEqual(resp.status_code, 200)
         data = resp.get_json()
         self.assertIn("counters", data)
+        self.assertIn("/api/test:2xx", data["counters"])
 
     def test_db_health_includes_entity_accounting(self):
         resp = self.client.get("/api/observability/db-health")
@@ -377,10 +385,10 @@ class TestObservabilityAPI(unittest.TestCase):
         # Experiment 1: op "linear_proj" with loss_ratio=1.0
         exp1 = nb.start_experiment("synthesis", {"n_programs": 2}, "avg test 1")
         graph = json.dumps({"nodes": {"0": {"op_name": "linear_proj"}}})
-        for _ in range(4):
+        for idx in range(4):
             nb.record_program_result(
                 experiment_id=exp1,
-                graph_fingerprint="avg_fp1",
+                graph_fingerprint=f"avg_fp1_{idx}",
                 graph_json=graph,
                 stage0_passed=True,
                 stage1_passed=True,
@@ -396,10 +404,10 @@ class TestObservabilityAPI(unittest.TestCase):
 
         # Experiment 2: same op with loss_ratio=0.0, 4 more samples
         exp2 = nb.start_experiment("synthesis", {"n_programs": 2}, "avg test 2")
-        for _ in range(4):
+        for idx in range(4):
             nb.record_program_result(
                 experiment_id=exp2,
-                graph_fingerprint="avg_fp2",
+                graph_fingerprint=f"avg_fp2_{idx}",
                 graph_json=graph,
                 stage0_passed=True,
                 stage1_passed=True,
@@ -430,6 +438,38 @@ class TestObservabilityAPI(unittest.TestCase):
                     "profiling_only",
                     f"Op {comp.get('op')} with n_used=0 should be profiling_only",
                 )
+
+    def test_component_health_uses_corrected_counts_for_display(self):
+        """Excluded runtime-only failures should not render as 0% effective rates."""
+        from research.scientist.api_routes._observability_core import (
+            _build_component_entry,
+        )
+
+        row = {
+            "op_name": "long_conv_hyena",
+            "n_used": 60,
+            "n_stage0_passed": 0,
+            "n_stage05_passed": 0,
+            "n_stage1_passed": 0,
+        }
+        stored_rates = {"long_conv_hyena": {"n": 59, "s0": 0, "s1": 0}}
+        corrected_rates = {
+            "long_conv_hyena": {"n": 0, "s0": 0, "s1": 0, "excluded": 59}
+        }
+
+        payload = _build_component_entry(
+            row,
+            stored_rates=stored_rates,
+            corrected_rates=corrected_rates,
+            grad_health={},
+            max_n_used=59,
+        )
+
+        self.assertEqual(payload["n_used"], 0)
+        self.assertIsNone(payload["s0_rate"])
+        self.assertIsNone(payload["s1_rate"])
+        self.assertEqual(payload["raw_n_used"], 59)
+        self.assertIn("excluded 59 runtime-only failures", payload["reasons"])
 
 
 if __name__ == "__main__":

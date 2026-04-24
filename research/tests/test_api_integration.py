@@ -461,6 +461,28 @@ class TestAPI(unittest.TestCase):
         self.assertEqual(r.json.get("schema_version"), "workflow_graph.v1")
         mock_loader.assert_called_once_with("import_single")
 
+    def test_api_v1_import_survivors_returns_501_when_importer_missing(self):
+        with (
+            patch(
+                "research.scientist.api_routes._designer.designer_proxy"
+            ) as mock_proxy,
+            patch(
+                "research.scientist.api_routes._designer.proxy_or_error"
+            ) as mock_proxy_result,
+            patch(
+                "research.scientist.api_routes.designer_bp._load_designer_importer",
+                side_effect=ImportError("broken importer"),
+            ) as mock_loader,
+        ):
+            mock_proxy.return_value = None
+            mock_proxy_result.return_value = None
+
+            r = self.client.get("/api/v1/import/survivors?n=3")
+
+        self.assertEqual(r.status_code, 501)
+        self.assertIn("Importer not available", r.json.get("error", ""))
+        mock_loader.assert_called_once_with("import_survivors")
+
     # ── GET endpoints ──
 
     def test_api_dashboard(self):

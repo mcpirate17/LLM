@@ -22,6 +22,31 @@ void sgd_step_inplace(
   param.add_(update, -lr);
 }
 
+void sgd_step_many_inplace(
+    std::vector<torch::Tensor> params,
+    const std::vector<torch::Tensor>& grads,
+    std::vector<torch::Tensor> momentum_bufs,
+    double lr,
+    double momentum,
+    double weight_decay,
+    bool nesterov) {
+  const auto n = params.size();
+  TORCH_CHECK(grads.size() == n, "grads length must match params length");
+  TORCH_CHECK(
+      momentum_bufs.size() == n,
+      "momentum buffers length must match params length");
+  for (size_t i = 0; i < n; ++i) {
+    sgd_step_inplace(
+        params[i],
+        grads[i],
+        momentum_bufs[i],
+        lr,
+        momentum,
+        weight_decay,
+        nesterov);
+  }
+}
+
 void adamw_step_inplace(
     torch::Tensor param,
     const torch::Tensor& grad,
@@ -45,6 +70,260 @@ void adamw_step_inplace(
     param.mul_(1.0 - lr * weight_decay);
   }
   param.addcdiv_(exp_avg, denom, -step_size);
+}
+
+void adamw_step_many_inplace(
+    std::vector<torch::Tensor> params,
+    const std::vector<torch::Tensor>& grads,
+    std::vector<torch::Tensor> exp_avgs,
+    std::vector<torch::Tensor> exp_avg_sqs,
+    double lr,
+    double beta1,
+    double beta2,
+    double eps,
+    double weight_decay,
+    int64_t step) {
+  const auto n = params.size();
+  TORCH_CHECK(grads.size() == n, "grads length must match params length");
+  TORCH_CHECK(exp_avgs.size() == n, "exp_avgs length must match params length");
+  TORCH_CHECK(
+      exp_avg_sqs.size() == n,
+      "exp_avg_sqs length must match params length");
+  for (size_t i = 0; i < n; ++i) {
+    adamw_step_inplace(
+        params[i],
+        grads[i],
+        exp_avgs[i],
+        exp_avg_sqs[i],
+        lr,
+        beta1,
+        beta2,
+        eps,
+        weight_decay,
+        step);
+  }
+}
+
+double clip_grad_norm_many_inplace(
+    const std::vector<torch::Tensor>& grads,
+    double max_norm,
+    double eps) {
+  TORCH_CHECK(max_norm >= 0.0, "max_norm must be non-negative");
+  if (grads.empty()) {
+    return 0.0;
+  }
+
+  const auto options = grads.front().options().dtype(torch::kFloat32);
+  auto total_sq = torch::zeros({}, options);
+  std::vector<torch::Tensor> dense_grads;
+  dense_grads.reserve(grads.size());
+
+  for (const auto& grad : grads) {
+    if (!grad.defined()) {
+      continue;
+    }
+    auto grad_view = grad.detach();
+    if (grad_view.is_sparse()) {
+      grad_view = grad_view.coalesce().values();
+    }
+    total_sq.add_(grad_view.to(torch::kFloat32).pow(2).sum());
+    dense_grads.push_back(grad);
+  }
+
+  if (dense_grads.empty()) {
+    return 0.0;
+  }
+
+  auto total_norm = total_sq.sqrt();
+  auto clip_coef =
+      torch::clamp(torch::full({}, max_norm, options) / (total_norm + eps), 0.0, 1.0);
+  for (auto& grad : dense_grads) {
+    grad.mul_(clip_coef);
+  }
+  return total_norm.item<double>();
+}
+
+double sgd_clip_step_many_inplace(
+    std::vector<torch::Tensor> params,
+    const std::vector<torch::Tensor>& grads,
+    std::vector<torch::Tensor> momentum_bufs,
+    double lr,
+    double momentum,
+    double weight_decay,
+    bool nesterov,
+    double max_norm,
+    double eps) {
+  const double grad_norm = clip_grad_norm_many_inplace(grads, max_norm, eps);
+  sgd_step_many_inplace(
+      params,
+      grads,
+      momentum_bufs,
+      lr,
+      momentum,
+      weight_decay,
+      nesterov);
+  return grad_norm;
+}
+
+double adamw_clip_step_many_inplace(
+    std::vector<torch::Tensor> params,
+    const std::vector<torch::Tensor>& grads,
+    std::vector<torch::Tensor> exp_avgs,
+    std::vector<torch::Tensor> exp_avg_sqs,
+    double lr,
+    double beta1,
+    double beta2,
+    double eps,
+    double weight_decay,
+    int64_t step,
+    double max_norm,
+    double clip_eps) {
+  const double grad_norm = clip_grad_norm_many_inplace(grads, max_norm, clip_eps);
+  adamw_step_many_inplace(
+      params,
+      grads,
+      exp_avgs,
+      exp_avg_sqs,
+      lr,
+      beta1,
+      beta2,
+      eps,
+      weight_decay,
+      step);
+  return grad_norm;
+}
+
+double sgd_backward_clip_step_many_inplace(
+    torch::Tensor loss,
+    std::vector<torch::Tensor> params,
+    std::vector<torch::Tensor> momentum_bufs,
+    double lr,
+    double momentum,
+    double weight_decay,
+    bool nesterov,
+    double max_norm,
+    double eps) {
+  torch::autograd::backward({loss});
+
+  std::vector<torch::Tensor> active_params;
+  std::vector<torch::Tensor> active_grads;
+  std::vector<torch::Tensor> active_momentum;
+  active_params.reserve(params.size());
+  active_grads.reserve(params.size());
+  active_momentum.reserve(params.size());
+
+  if (momentum != 0.0) {
+    TORCH_CHECK(
+        momentum_bufs.size() == params.size(),
+        "momentum buffers length must match params length when momentum is enabled");
+  }
+
+  for (size_t i = 0; i < params.size(); ++i) {
+    auto grad = params[i].grad();
+    if (!grad.defined()) {
+      continue;
+    }
+    active_params.push_back(params[i]);
+    active_grads.push_back(grad);
+    active_momentum.push_back(momentum != 0.0 ? momentum_bufs[i] : params[i]);
+  }
+
+  if (active_params.empty()) {
+    return 0.0;
+  }
+  if (max_norm <= 0.0) {
+    sgd_step_many_inplace(
+        active_params,
+        active_grads,
+        active_momentum,
+        lr,
+        momentum,
+        weight_decay,
+        nesterov);
+    return 0.0;
+  }
+  return sgd_clip_step_many_inplace(
+      active_params,
+      active_grads,
+      active_momentum,
+      lr,
+      momentum,
+      weight_decay,
+      nesterov,
+      max_norm,
+      eps);
+}
+
+double adamw_backward_clip_step_many_inplace(
+    torch::Tensor loss,
+    std::vector<torch::Tensor> params,
+    std::vector<torch::Tensor> exp_avgs,
+    std::vector<torch::Tensor> exp_avg_sqs,
+    double lr,
+    double beta1,
+    double beta2,
+    double eps,
+    double weight_decay,
+    int64_t step,
+    double max_norm,
+    double clip_eps) {
+  TORCH_CHECK(exp_avgs.size() == params.size(), "exp_avgs length must match params length");
+  TORCH_CHECK(
+      exp_avg_sqs.size() == params.size(),
+      "exp_avg_sqs length must match params length");
+
+  torch::autograd::backward({loss});
+
+  std::vector<torch::Tensor> active_params;
+  std::vector<torch::Tensor> active_grads;
+  std::vector<torch::Tensor> active_exp_avgs;
+  std::vector<torch::Tensor> active_exp_avg_sqs;
+  active_params.reserve(params.size());
+  active_grads.reserve(params.size());
+  active_exp_avgs.reserve(params.size());
+  active_exp_avg_sqs.reserve(params.size());
+
+  for (size_t i = 0; i < params.size(); ++i) {
+    auto grad = params[i].grad();
+    if (!grad.defined()) {
+      continue;
+    }
+    active_params.push_back(params[i]);
+    active_grads.push_back(grad);
+    active_exp_avgs.push_back(exp_avgs[i]);
+    active_exp_avg_sqs.push_back(exp_avg_sqs[i]);
+  }
+
+  if (active_params.empty()) {
+    return 0.0;
+  }
+  if (max_norm <= 0.0) {
+    adamw_step_many_inplace(
+        active_params,
+        active_grads,
+        active_exp_avgs,
+        active_exp_avg_sqs,
+        lr,
+        beta1,
+        beta2,
+        eps,
+        weight_decay,
+        step);
+    return 0.0;
+  }
+  return adamw_clip_step_many_inplace(
+      active_params,
+      active_grads,
+      active_exp_avgs,
+      active_exp_avg_sqs,
+      lr,
+      beta1,
+      beta2,
+      eps,
+      weight_decay,
+      step,
+      max_norm,
+      clip_eps);
 }
 
 py::dict summarize_training_loop(
@@ -138,7 +417,37 @@ py::dict grad_stats_fused(
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("sgd_step_inplace", &sgd_step_inplace, "In-place SGD update");
+  m.def(
+      "sgd_step_many_inplace",
+      &sgd_step_many_inplace,
+      "In-place SGD update over many tensors");
   m.def("adamw_step_inplace", &adamw_step_inplace, "In-place AdamW update");
+  m.def(
+      "adamw_step_many_inplace",
+      &adamw_step_many_inplace,
+      "In-place AdamW update over many tensors");
+  m.def(
+      "clip_grad_norm_many_inplace",
+      &clip_grad_norm_many_inplace,
+      "In-place gradient clipping over many tensors");
+  m.def(
+      "sgd_clip_step_many_inplace",
+      &sgd_clip_step_many_inplace,
+      "Fused gradient clipping and SGD update over many tensors");
+  m.def(
+      "adamw_clip_step_many_inplace",
+      &adamw_clip_step_many_inplace,
+      "Fused gradient clipping and AdamW update over many tensors");
+  m.def(
+      "sgd_backward_clip_step_many_inplace",
+      &sgd_backward_clip_step_many_inplace,
+      "Autograd backward plus fused gradient clipping and SGD update over many tensors",
+      py::call_guard<py::gil_scoped_release>());
+  m.def(
+      "adamw_backward_clip_step_many_inplace",
+      &adamw_backward_clip_step_many_inplace,
+      "Autograd backward plus fused gradient clipping and AdamW update over many tensors",
+      py::call_guard<py::gil_scoped_release>());
   m.def(
       "summarize_training_loop",
       &summarize_training_loop,

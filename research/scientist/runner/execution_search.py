@@ -12,6 +12,7 @@ from ...eval.fingerprint import compute_fingerprint
 from ..notebook import ExperimentEntry
 from ..shared_utils import resolve_device
 from ._helpers import clear_gpu_memory
+from ._lifecycle import _LifecycleMixin
 
 import logging
 
@@ -24,6 +25,11 @@ class _ExecutionSearchMixin:
     """Evolution and novelty search execution."""
 
     __slots__ = ()
+    _publish_terminal_event = _LifecycleMixin._publish_terminal_event
+    _publish_search_terminal_event = _LifecycleMixin._publish_terminal_event
+    _fail_experiment_compat = _LifecycleMixin._fail_experiment_compat
+    _complete_experiment_compat = _LifecycleMixin._complete_experiment_compat
+    _log_learning_event_compat = _LifecycleMixin._log_learning_event_compat
 
     # Ops considered "routing" for dashboard template stats
     _ROUTING_OPS = frozenset(

@@ -877,11 +877,16 @@ class _LeaderboardMixin:
             pr_row=pr,
             is_reference=bool(row["is_reference"]),
         )
+        requested_rank = TIER_RANK.get(str(tier or "").lower(), 0)
+        allowed_rank = TIER_RANK.get(str(allowed_tier or "").lower(), 0)
+        promotion_blocked = requested_rank > allowed_rank
         sets = ["tier = ?"]
         params: List[Any] = [allowed_tier]
 
         kwargs = sanitize_for_db(kwargs)
-        update_items = self._leaderboard_update_items(kwargs)
+        update_items = (
+            [] if promotion_blocked else self._leaderboard_update_items(kwargs)
+        )
 
         for col, val in update_items:
             sets.append(f"{col} = ?")

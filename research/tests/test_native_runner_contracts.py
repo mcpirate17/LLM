@@ -46,6 +46,7 @@ def test_runner_abi_header_exports_required_symbols():
         "nr_compile",
         "nr_execute",
         "nr_execute_batch",
+        "nr_optimizer_clip_step_f32",
         "nr_release_model",
         "nr_query_capabilities",
         "nr_set_strict_mode",

@@ -548,32 +548,29 @@ def run_pipeline_sample_check(*, config, sample_n: int = 5) -> Dict[str, Any]:
 
     Returns dict with 'generated', 'compiled', 'passed_s0', 'errors'.
     """
+    from ...synthesis.compiler import compile_model
+    from ...synthesis.grammar import GrammarConfig, random_graph
+
     generated = 0
     compiled = 0
     passed_s0 = 0
     errors: List[str] = []
 
-    try:
-        from ...synthesis.grammar import GrammarConfig, random_graph
-        from ...synthesis.compiler import compile_model
+    gc = GrammarConfig()
+    for _ in range(sample_n):
+        try:
+            graph = random_graph(gc)
+            generated += 1
+            model = compile_model([graph], vocab_size=256, max_seq_len=64)
+            compiled += 1
+            import torch
 
-        gc = GrammarConfig()
-        for _ in range(sample_n):
-            try:
-                graph = random_graph(gc)
-                generated += 1
-                model = compile_model([graph], vocab_size=256, max_seq_len=64)
-                compiled += 1
-                import torch
-
-                x = torch.randint(0, 256, (1, 16))
-                out = model(x)
-                if out is not None:
-                    passed_s0 += 1
-            except Exception as exc:
-                errors.append(str(exc)[:200])
-    except ImportError as exc:
-        errors.append(f"Import error: {exc}")
+            x = torch.randint(0, 256, (1, 16))
+            out = model(x)
+            if out is not None:
+                passed_s0 += 1
+        except Exception as exc:
+            errors.append(str(exc)[:200])
 
     return {
         "generated": generated,

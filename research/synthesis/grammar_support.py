@@ -169,6 +169,326 @@ MIN_DIM_OPS: Dict[str, int] = {
     "relu_gated_moe": 8,
 }
 
+_INDUCTION_STEERING_TARGET = 0.01
+_BINDING_STEERING_TARGET = 0.005
+_BINDING_COMPOSITE_STEERING_TARGET = 0.006
+_AR_STEERING_TARGET = 0.04
+_HELLASWAG_STEERING_TARGET = 0.30
+_BLIMP_STEERING_TARGET = 0.60
+_INDUCTION_V2_STEERING_TARGET = 0.06
+_BINDING_V2_STEERING_TARGET = 0.06
+_LOSS_STEERING_ANCHOR = 0.65
+_SLOT_OUTCOME_MIN_RESCUE_SUPPORT = 3
+_SLOT_OUTCOME_SUPPORT_PRIOR = 8.0
+_CAPABILITY_SUPPORT_PRIOR = 16.0
+
+
+def _bounded(value: float, *, lo: float, hi: float) -> float:
+    return max(lo, min(hi, float(value)))
+
+
+def _finite_or_none(value) -> Optional[float]:
+    import math as _math
+
+    if value is None:
+        return None
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return None
+    return out if _math.isfinite(out) else None
+
+
+def _loss_quality_factor(mean_loss, *, k: float = 2.0) -> float:
+    import math as _math
+
+    loss = _finite_or_none(mean_loss)
+    if loss is None:
+        return 1.0
+    return _bounded(
+        _math.exp(-k * (loss - _LOSS_STEERING_ANCHOR)),
+        lo=0.35,
+        hi=2.25,
+    )
+
+
+def _s1_quality_factor(s1_rate: float) -> float:
+    return _bounded(0.75 + (1.25 * float(s1_rate)), lo=0.75, hi=2.0)
+
+
+def _support_confidence(n: int, *, prior: float = _CAPABILITY_SUPPORT_PRIOR) -> float:
+    n = max(int(n or 0), 0)
+    return n / max(n + float(prior), 1.0)
+
+
+def _support_shrunk_reward(
+    reward: float,
+    n: int,
+    *,
+    prior: float = _CAPABILITY_SUPPORT_PRIOR,
+) -> float:
+    return 1.0 + (
+        (_bounded(reward, lo=0.0, hi=4.0) - 1.0) * _support_confidence(n, prior=prior)
+    )
+
+
+def _support_shrunk_multiplier(
+    multiplier: float,
+    n: int,
+    *,
+    prior: float = _CAPABILITY_SUPPORT_PRIOR,
+) -> float:
+    return 1.0 + ((float(multiplier) - 1.0) * _support_confidence(n, prior=prior))
+
+
+def _capability_reward(
+    avg_induction_auc,
+    avg_binding_auc,
+    avg_binding_composite,
+    avg_ar_auc=None,
+    avg_hellaswag_acc=None,
+    avg_blimp_overall_accuracy=None,
+    avg_induction_v2_investigation_auc=None,
+    avg_binding_v2_investigation_auc=None,
+    math_space_rate=None,
+) -> float:
+    induction = _bounded(
+        (_finite_or_none(avg_induction_auc) or 0.0) / _INDUCTION_STEERING_TARGET,
+        lo=0.0,
+        hi=2.0,
+    )
+    binding = _bounded(
+        (_finite_or_none(avg_binding_auc) or 0.0) / _BINDING_STEERING_TARGET,
+        lo=0.0,
+        hi=2.0,
+    )
+    binding_composite = _bounded(
+        (_finite_or_none(avg_binding_composite) or 0.0)
+        / _BINDING_COMPOSITE_STEERING_TARGET,
+        lo=0.0,
+        hi=2.0,
+    )
+    ar_auc = _bounded(
+        (_finite_or_none(avg_ar_auc) or 0.0) / _AR_STEERING_TARGET,
+        lo=0.0,
+        hi=2.0,
+    )
+    hellaswag = _bounded(
+        (_finite_or_none(avg_hellaswag_acc) or 0.0) / _HELLASWAG_STEERING_TARGET,
+        lo=0.0,
+        hi=2.0,
+    )
+    blimp = _bounded(
+        (_finite_or_none(avg_blimp_overall_accuracy) or 0.0) / _BLIMP_STEERING_TARGET,
+        lo=0.0,
+        hi=2.0,
+    )
+    induction_v2 = _bounded(
+        (_finite_or_none(avg_induction_v2_investigation_auc) or 0.0)
+        / _INDUCTION_V2_STEERING_TARGET,
+        lo=0.0,
+        hi=2.0,
+    )
+    binding_v2 = _bounded(
+        (_finite_or_none(avg_binding_v2_investigation_auc) or 0.0)
+        / _BINDING_V2_STEERING_TARGET,
+        lo=0.0,
+        hi=2.0,
+    )
+    math_share = _bounded(_finite_or_none(math_space_rate) or 0.0, lo=0.0, hi=1.0)
+    return (
+        1.0
+        + (0.16 * induction)
+        + (0.14 * binding)
+        + (0.12 * binding_composite)
+        + (0.10 * ar_auc)
+        + (0.07 * hellaswag)
+        + (0.07 * blimp)
+        + (0.17 * induction_v2)
+        + (0.17 * binding_v2)
+        + (0.10 * math_share)
+    )
+
+
+def _capability_score(
+    avg_induction_auc,
+    avg_binding_auc,
+    avg_binding_composite,
+    avg_ar_auc=None,
+    avg_hellaswag_acc=None,
+    avg_blimp_overall_accuracy=None,
+    avg_induction_v2_investigation_auc=None,
+    avg_binding_v2_investigation_auc=None,
+    math_space_rate=None,
+) -> float:
+    return (
+        _capability_reward(
+            avg_induction_auc,
+            avg_binding_auc,
+            avg_binding_composite,
+            avg_ar_auc,
+            avg_hellaswag_acc,
+            avg_blimp_overall_accuracy,
+            avg_induction_v2_investigation_auc,
+            avg_binding_v2_investigation_auc,
+            math_space_rate,
+        )
+        - 1.0
+    )
+
+
+def _metric_select_list(columns: set[str], metric_columns: tuple[str, ...]) -> str:
+    select_parts = []
+    for col_name in metric_columns:
+        if col_name in columns:
+            select_parts.append(col_name)
+        else:
+            select_parts.append(f"NULL AS {col_name}")
+    return ", ".join(select_parts)
+
+
+def _slot_outcome_capability(vals: dict) -> float:
+    return _capability_score(
+        vals.get("mean_induction_auc"),
+        vals.get("mean_binding_auc"),
+        vals.get("mean_binding_composite"),
+        vals.get("mean_ar_auc"),
+        vals.get("mean_hellaswag_acc"),
+        vals.get("mean_blimp_overall_accuracy"),
+        vals.get("mean_induction_v2_investigation_auc"),
+        vals.get("mean_binding_v2_investigation_auc"),
+        vals.get("math_space_rate"),
+    )
+
+
+def _support_shrunk_slot_outcome_capability(vals: dict) -> Optional[float]:
+    try:
+        n = int(vals.get("n") or 0)
+    except (TypeError, ValueError):
+        return None
+    if n < _SLOT_OUTCOME_MIN_RESCUE_SUPPORT:
+        return None
+    capability = _slot_outcome_capability(vals)
+    confidence = n / (n + _SLOT_OUTCOME_SUPPORT_PRIOR)
+    return capability * confidence
+
+
+def blend_template_weights_with_db(
+    template_weights: Dict[str, float],
+    db_weights: Optional[Dict[str, float]],
+) -> Dict[str, float]:
+    """Apply DB empirical template evidence to existing priors.
+
+    Runner-injected template maps may come from older signal paths. Treat those
+    as priors and multiply in a bounded DB/default ratio so the refreshed stats
+    can steer without allowing either source to dominate outright.
+    """
+    if not db_weights:
+        return dict(template_weights)
+
+    from .templates import DEFAULT_TEMPLATE_WEIGHTS
+
+    blended = dict(template_weights)
+    for tpl_name, db_weight in db_weights.items():
+        try:
+            db_w = float(db_weight)
+        except (TypeError, ValueError):
+            continue
+        if db_w <= 0.0:
+            continue
+        default_w = float(DEFAULT_TEMPLATE_WEIGHTS.get(tpl_name, 1.0) or 1.0)
+        default_w = max(default_w, 0.01)
+        ratio = _bounded(db_w / default_w, lo=0.20, hi=5.0)
+        if tpl_name in blended:
+            try:
+                prior_w = float(blended[tpl_name])
+            except (TypeError, ValueError):
+                prior_w = default_w
+            blended[tpl_name] = prior_w * (ratio**0.5)
+        else:
+            blended[tpl_name] = db_w
+    return blended
+
+
+def _load_template_slot_context(conn) -> Dict[str, dict]:
+    import json as _json
+
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(slot_stats)")}
+    metric_columns = (
+        "avg_induction_auc",
+        "avg_binding_auc",
+        "avg_binding_composite",
+        "avg_ar_auc",
+        "avg_hellaswag_acc",
+        "avg_blimp_overall_accuracy",
+        "avg_induction_v2_investigation_auc",
+        "avg_binding_v2_investigation_auc",
+        "math_space_rate",
+    )
+    rows = conn.execute(
+        f"""SELECT template_name, class_outcomes, wildcard_class_outcomes,
+                   {_metric_select_list(columns, metric_columns)}
+            FROM slot_stats
+            WHERE eval_count >= 3"""
+    ).fetchall()
+    out: Dict[str, dict] = {}
+    for row in rows:
+        template_name = str(row[0] or "").strip()
+        if not template_name:
+            continue
+        slot_score = _capability_score(
+            row[3],
+            row[4],
+            row[5],
+            row[6],
+            row[7],
+            row[8],
+            row[9],
+            row[10],
+            row[11],
+        )
+        best_class_score = slot_score
+        for raw_payload in (row[1], row[2]):
+            if not raw_payload:
+                continue
+            try:
+                payload = _json.loads(raw_payload)
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(payload, dict):
+                continue
+            for vals in payload.values():
+                if isinstance(vals, dict):
+                    supported_score = _support_shrunk_slot_outcome_capability(vals)
+                    if supported_score is not None:
+                        best_class_score = max(best_class_score, supported_score)
+        ctx = out.setdefault(
+            template_name,
+            {
+                "slot_scores": [],
+                "slot_potentials": [],
+                "salvage_gaps": [],
+            },
+        )
+        ctx["slot_scores"].append(slot_score)
+        ctx["slot_potentials"].append(best_class_score)
+        ctx["salvage_gaps"].append(max(0.0, best_class_score - slot_score))
+    for template_name, ctx in out.items():
+        scores = ctx["slot_scores"]
+        potentials = ctx["slot_potentials"]
+        gaps = ctx["salvage_gaps"]
+        weak_slots = sum(1 for score in scores if score <= 0.15)
+        out[template_name] = {
+            "mean_slot_score": sum(scores) / len(scores) if scores else 0.0,
+            "mean_slot_potential": sum(potentials) / len(potentials)
+            if potentials
+            else 0.0,
+            "max_slot_potential": max(potentials) if potentials else 0.0,
+            "mean_salvage_gap": sum(gaps) / len(gaps) if gaps else 0.0,
+            "weak_slot_fraction": weak_slots / max(len(scores), 1),
+        }
+    return out
+
 
 def compute_motif_weights_from_op_weights(
     op_weights: Dict[str, float],
@@ -235,7 +555,6 @@ class DBTemplateWeightCache:
     def get(
         self, db_path: str = "research/lab_notebook.db"
     ) -> Optional[Dict[str, float]]:
-        import math as _math
         import sqlite3
         import time as _time
 
@@ -262,10 +581,26 @@ class DBTemplateWeightCache:
 
             conn = sqlite3.connect(str(path), timeout=5.0)
             conn.execute("PRAGMA busy_timeout=5000")
+            columns = {
+                row[1] for row in conn.execute("PRAGMA table_info(template_stats)")
+            }
+            metric_columns = (
+                "avg_induction_auc",
+                "avg_binding_auc",
+                "avg_binding_composite",
+                "avg_ar_auc",
+                "avg_hellaswag_acc",
+                "avg_blimp_overall_accuracy",
+                "avg_induction_v2_investigation_auc",
+                "avg_binding_v2_investigation_auc",
+                "math_space_rate",
+            )
             rows = conn.execute(
-                """SELECT template_name, eval_count, s1_pass_count, mean_loss
-                   FROM template_stats WHERE eval_count >= 5"""
+                f"""SELECT template_name, eval_count, s1_pass_count, mean_loss,
+                           {_metric_select_list(columns, metric_columns)}
+                    FROM template_stats WHERE eval_count >= 5"""
             ).fetchall()
+            template_slot_context = _load_template_slot_context(conn)
             conn.close()
 
             if not rows:
@@ -275,13 +610,72 @@ class DBTemplateWeightCache:
 
             k = 3.0
             db_weights: Dict[str, float] = {}
-            for tpl_name, eval_count, s1_count, mean_loss in rows:
-                if mean_loss is None or not _math.isfinite(mean_loss):
-                    continue
+            for (
+                tpl_name,
+                eval_count,
+                s1_count,
+                mean_loss,
+                avg_induction_auc,
+                avg_binding_auc,
+                avg_binding_composite,
+                avg_ar_auc,
+                avg_hellaswag_acc,
+                avg_blimp_overall_accuracy,
+                avg_induction_v2_investigation_auc,
+                avg_binding_v2_investigation_auc,
+                math_space_rate,
+            ) in rows:
                 s1_rate = s1_count / max(eval_count, 1)
-                perf_weight = _math.exp(-k * mean_loss) * (1.0 + s1_rate)
                 static_weight = DEFAULT_TEMPLATE_WEIGHTS.get(tpl_name, 1.0)
-                db_weights[tpl_name] = 0.5 * static_weight + 0.5 * perf_weight
+                perf_weight = (
+                    static_weight
+                    * _loss_quality_factor(mean_loss, k=k)
+                    * _s1_quality_factor(s1_rate)
+                )
+                signal_reward = _support_shrunk_reward(
+                    _capability_reward(
+                        avg_induction_auc,
+                        avg_binding_auc,
+                        avg_binding_composite,
+                        avg_ar_auc,
+                        avg_hellaswag_acc,
+                        avg_blimp_overall_accuracy,
+                        avg_induction_v2_investigation_auc,
+                        avg_binding_v2_investigation_auc,
+                        math_space_rate,
+                    ),
+                    eval_count,
+                    prior=20.0,
+                )
+                perf_weight *= signal_reward
+                confidence = eval_count / max(eval_count + 12.0, 1.0)
+                dynamic_weight = perf_weight
+                slot_ctx = template_slot_context.get(str(tpl_name)) or {}
+                slot_mean_potential = float(slot_ctx.get("mean_slot_potential") or 0.0)
+                slot_max_potential = float(slot_ctx.get("max_slot_potential") or 0.0)
+                mean_salvage_gap = float(slot_ctx.get("mean_salvage_gap") or 0.0)
+                weak_slot_fraction = float(slot_ctx.get("weak_slot_fraction") or 1.0)
+                if slot_ctx:
+                    rescue_score = max(slot_mean_potential, 0.75 * slot_max_potential)
+                    if rescue_score > (signal_reward - 1.0):
+                        rescue_weight = (
+                            static_weight
+                            * _loss_quality_factor(mean_loss, k=k)
+                            * _s1_quality_factor(s1_rate)
+                            * (1.0 + rescue_score)
+                        )
+                        rescue_mix = _bounded(
+                            (0.55 * mean_salvage_gap)
+                            + (0.20 * (1.0 - weak_slot_fraction)),
+                            lo=0.0,
+                            hi=0.45,
+                        )
+                        dynamic_weight = ((1.0 - rescue_mix) * dynamic_weight) + (
+                            rescue_mix * rescue_weight
+                        )
+                db_weights[tpl_name] = ((1.0 - confidence) * static_weight) + (
+                    confidence * dynamic_weight
+                )
 
             for tpl_name, w in DEFAULT_TEMPLATE_WEIGHTS.items():
                 if tpl_name not in db_weights:
@@ -308,6 +702,124 @@ class DBTemplateWeightCache:
             return db_weights
         except Exception as e:
             logger.debug("Failed to load DB template weights: %s", e)
+            return None
+
+
+class DBOpWeightCache:
+    """TTL-bounded cache for DB op weights."""
+
+    __slots__ = ("_weights", "_expires", "_ttl")
+
+    def __init__(self, ttl: float = 60.0):
+        self._weights: Optional[Dict[str, float]] = None
+        self._expires: float = 0.0
+        self._ttl = ttl
+
+    def get(
+        self, db_path: str = "research/lab_notebook.db"
+    ) -> Optional[Dict[str, float]]:
+        import sqlite3
+        import time as _time
+
+        now = _time.time()
+        if self._weights is not None and now < self._expires:
+            return self._weights
+
+        try:
+            from pathlib import Path
+
+            path = Path(db_path)
+            if not path.is_absolute():
+                cwd = Path.cwd()
+                if (
+                    cwd.name == "research"
+                    and path.parts
+                    and path.parts[0] == "research"
+                ):
+                    path = cwd.parent / db_path
+                else:
+                    path = path.resolve()
+            if not path.exists():
+                return None
+
+            conn = sqlite3.connect(str(path), timeout=5.0)
+            conn.execute("PRAGMA busy_timeout=5000")
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(op_stats)")}
+            metric_columns = (
+                "avg_induction_auc",
+                "avg_binding_auc",
+                "avg_binding_composite",
+                "avg_ar_auc",
+                "avg_hellaswag_acc",
+                "avg_blimp_overall_accuracy",
+                "avg_induction_v2_investigation_auc",
+                "avg_binding_v2_investigation_auc",
+                "math_space_rate",
+            )
+            rows = conn.execute(
+                f"""SELECT op_name, eval_count, s1_pass_count, mean_loss,
+                           {_metric_select_list(columns, metric_columns)}
+                    FROM op_stats
+                    WHERE eval_count >= 3"""
+            ).fetchall()
+            conn.close()
+
+            if not rows:
+                return None
+
+            weights: Dict[str, float] = {}
+            for (
+                op_name,
+                eval_count,
+                s1_count,
+                mean_loss,
+                avg_induction_auc,
+                avg_binding_auc,
+                avg_binding_composite,
+                avg_ar_auc,
+                avg_hellaswag_acc,
+                avg_blimp_overall_accuracy,
+                avg_induction_v2_investigation_auc,
+                avg_binding_v2_investigation_auc,
+                math_space_rate,
+            ) in rows:
+                s1_rate = s1_count / max(eval_count, 1)
+                perf_term = _loss_quality_factor(mean_loss, k=2.0) * _s1_quality_factor(
+                    s1_rate
+                )
+                capability_term = _support_shrunk_reward(
+                    _capability_reward(
+                        avg_induction_auc,
+                        avg_binding_auc,
+                        avg_binding_composite,
+                        avg_ar_auc,
+                        avg_hellaswag_acc,
+                        avg_blimp_overall_accuracy,
+                        avg_induction_v2_investigation_auc,
+                        avg_binding_v2_investigation_auc,
+                        math_space_rate,
+                    ),
+                    eval_count,
+                    prior=12.0,
+                )
+                raw_weight = perf_term * capability_term
+                raw_weight = _support_shrunk_multiplier(
+                    raw_weight,
+                    eval_count,
+                    prior=10.0,
+                )
+                weights[str(op_name)] = round(
+                    _bounded(raw_weight, lo=0.25, hi=4.5),
+                    4,
+                )
+
+            self._weights = weights
+            self._expires = now + self._ttl
+            if weights:
+                logger.info("Loaded DB op weights for %d ops", len(weights))
+            return weights
+        except Exception as e:
+            logger.debug("Failed to load DB op weights: %s", e)
             return None
 
 
@@ -353,16 +865,43 @@ class SlotAdaptationCache:
 
             conn = sqlite3.connect(str(path), timeout=5.0)
             conn.execute("PRAGMA busy_timeout=5000")
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(slot_stats)")}
+            metric_columns = (
+                "avg_induction_auc",
+                "avg_binding_auc",
+                "avg_binding_composite",
+                "avg_ar_auc",
+                "avg_hellaswag_acc",
+                "avg_blimp_overall_accuracy",
+                "avg_induction_v2_investigation_auc",
+                "avg_binding_v2_investigation_auc",
+                "math_space_rate",
+            )
             rows = conn.execute(
-                """SELECT slot_key, slot_classes, s1_pass_count, eval_count,
-                          wildcard_class_outcomes
-                   FROM slot_stats
-                   WHERE wildcard_count >= ?""",
+                f"""SELECT slot_key, slot_classes, s1_pass_count, eval_count,
+                           {_metric_select_list(columns, metric_columns)}, wildcard_class_outcomes
+                    FROM slot_stats
+                    WHERE wildcard_count >= ?""",
                 (self._MIN_EVALS,),
             ).fetchall()
             conn.close()
 
-            for slot_key, slot_classes_json, s1_total, eval_total, wc_json in rows:
+            for (
+                slot_key,
+                slot_classes_json,
+                s1_total,
+                eval_total,
+                avg_induction_auc,
+                avg_binding_auc,
+                avg_binding_composite,
+                avg_ar_auc,
+                avg_hellaswag_acc,
+                avg_blimp_overall_accuracy,
+                avg_induction_v2_investigation_auc,
+                avg_binding_v2_investigation_auc,
+                math_space_rate,
+                wc_json,
+            ) in rows:
                 if not wc_json:
                     continue
                 try:
@@ -372,7 +911,19 @@ class SlotAdaptationCache:
                     continue
 
                 baseline_s1_rate = s1_total / max(eval_total, 1)
+                baseline_capability = _capability_score(
+                    avg_induction_auc,
+                    avg_binding_auc,
+                    avg_binding_composite,
+                    avg_ar_auc,
+                    avg_hellaswag_acc,
+                    avg_blimp_overall_accuracy,
+                    avg_induction_v2_investigation_auc,
+                    avg_binding_v2_investigation_auc,
+                    math_space_rate,
+                )
                 extra: list = []
+                scored_extra: list[tuple[float, str]] = []
                 for cls, vals in wc_outcomes.items():
                     if cls in prescribed:
                         continue
@@ -380,8 +931,30 @@ class SlotAdaptationCache:
                     s1 = vals.get("s1", 0)
                     if n < self._MIN_EVALS:
                         continue
-                    if s1 / n > baseline_s1_rate:
-                        extra.append(cls)
+                    cls_s1_rate = s1 / n
+                    cls_capability = _capability_score(
+                        vals.get("mean_induction_auc"),
+                        vals.get("mean_binding_auc"),
+                        vals.get("mean_binding_composite"),
+                        vals.get("mean_ar_auc"),
+                        vals.get("mean_hellaswag_acc"),
+                        vals.get("mean_blimp_overall_accuracy"),
+                        vals.get("mean_induction_v2_investigation_auc"),
+                        vals.get("mean_binding_v2_investigation_auc"),
+                        vals.get("math_space_rate"),
+                    )
+                    if cls_s1_rate > baseline_s1_rate or cls_capability > (
+                        baseline_capability + 0.2
+                    ):
+                        scored_extra.append(
+                            (
+                                (cls_s1_rate - baseline_s1_rate)
+                                + (0.5 * (cls_capability - baseline_capability)),
+                                cls,
+                            )
+                        )
+                for _, cls in sorted(scored_extra, reverse=True):
+                    extra.append(cls)
                     if len(extra) >= self._MAX_EXTRA_CLASSES:
                         break
 

@@ -1,12 +1,12 @@
-"""Backfill template_stats, op_stats, motif_stats from the deduped training corpus.
+"""Backfill template/op/motif/slot analytics from live notebook results.
 
 Usage:
     python -m research.tools.backfill_stats [--db research/lab_notebook.db]
 
-Reads the shared deduped ML corpus, supplements it with any canonical graphs
-present in the notebook but missing from the corpus snapshot, then extracts
-templates_used/motifs_used/op names and populates the analytics tables with
-structural-unique statistics. Idempotent and safe to re-run.
+Reads canonicalized graph-analysis rows from the notebook so the steering
+tables stay aligned with current continuous runs rather than waiting for an
+offline corpus rebuild. The resulting analytics tables remain structural-unique
+at the graph level while also carrying induction/binding/math-space signals.
 """
 
 from __future__ import annotations
@@ -17,18 +17,19 @@ import json
 import math
 import time
 from collections import Counter
+from pathlib import Path
 from typing import Dict, List, Tuple
 
-from research.scientist.intelligence.ml_corpus import (
-    _fallback_graph_analysis_rows,
-    load_deduped_graph_training_rows,
-)
+from research.scientist.intelligence.ml_corpus import load_deduped_graph_analysis_rows
 from research.tools._db_maintenance import connect_writer
 from research.tools._script_audit import (
     complete_script_experiment,
     fail_script_experiment,
     start_script_experiment,
 )
+
+_RECENCY_HALF_LIFE_SECONDS = 14.0 * 24.0 * 3600.0
+_RECENCY_WEIGHT_FLOOR = 0.25
 
 
 def _unique_strings(values: object) -> List[str]:
@@ -75,17 +76,66 @@ def _extract_graph_info(
     )
 
 
+def _sample_value(value) -> float:
+    if isinstance(value, tuple):
+        return float(value[0])
+    return float(value)
+
+
 def _safe_std(values: List[float]) -> float:
     """Standard deviation, or 0.0 if fewer than 2 values."""
     if len(values) < 2:
         return 0.0
-    mean = sum(values) / len(values)
-    variance = sum((v - mean) ** 2 for v in values) / (len(values) - 1)
+    raw_values = [_sample_value(v) for v in values]
+    mean = sum(raw_values) / len(raw_values)
+    variance = sum((v - mean) ** 2 for v in raw_values) / (len(raw_values) - 1)
     return math.sqrt(variance)
 
 
 def _mean_or_none(values: List[float]):
-    return sum(values) / len(values) if values else None
+    if not values:
+        return None
+    first = values[0]
+    if isinstance(first, tuple):
+        weight_sum = sum(max(float(weight), 0.0) for _, weight in values)
+        if weight_sum <= 0.0:
+            return None
+        return (
+            sum(float(value) * max(float(weight), 0.0) for value, weight in values)
+            / weight_sum
+        )
+    return sum(values) / len(values)
+
+
+def _min_or_none(values: List[float]):
+    return min((_sample_value(v) for v in values), default=None)
+
+
+def _recency_weight(timestamp, now: float) -> float:
+    ts = _normalize_metric(timestamp)
+    if ts is None or ts <= 0.0:
+        return 1.0
+    age = max(0.0, now - ts)
+    weight = 0.5 ** (age / _RECENCY_HALF_LIFE_SECONDS)
+    return max(_RECENCY_WEIGHT_FLOOR, min(1.0, weight))
+
+
+def _append_weighted(values: list, value, weight: float) -> None:
+    metric = _normalize_metric(value)
+    if metric is not None:
+        values.append((metric, weight))
+
+
+def _normalize_metric(value):
+    if value is None:
+        return None
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(out):
+        return None
+    return out
 
 
 def _ensure_tables(conn) -> None:
@@ -95,52 +145,111 @@ def _ensure_tables(conn) -> None:
     conn.executescript(NOTEBOOK_SCHEMA)
 
 
-def _load_stats_source_rows(db_path: str) -> List[Dict]:
-    """Combine corpus-backed rows with notebook-backed rows for missing canonicals.
-
-    The deduped ML corpus is the preferred source because it applies training
-    eligibility filters, but it can lag behind active notebook families. For
-    analytics observability we union in canonical graphs present in
-    ``program_results`` but absent from the corpus snapshot.
-    """
-    corpus_rows = load_deduped_graph_training_rows(db_path)
-    rows_by_canonical: Dict[str, Dict] = {}
-    for row in corpus_rows:
-        canonical = str(row.get("canonical_fingerprint") or "")
-        if canonical:
-            rows_by_canonical[canonical] = dict(row)
-
-    for row in _fallback_graph_analysis_rows(db_path):
-        canonical = str(row.get("canonical_fingerprint") or "")
-        if not canonical or canonical in rows_by_canonical:
-            continue
-        rows_by_canonical[canonical] = {
-            "canonical_fingerprint": canonical,
-            "graph_json": row.get("graph_json"),
-            "stage0_any_passed": row.get("stage0_any_passed"),
-            "stage1_any_passed": row.get("stage1_any_passed"),
-            "loss_ratio_best": row.get("loss_ratio"),
-            "n_rows": row.get("n_rows", 1),
+def _ensure_generation_stats_columns(conn) -> None:
+    expected = {
+        "template_stats": (
+            "avg_induction_auc",
+            "avg_binding_auc",
+            "avg_binding_composite",
+            "avg_ar_auc",
+            "avg_hellaswag_acc",
+            "avg_blimp_overall_accuracy",
+            "avg_induction_v2_investigation_auc",
+            "avg_binding_v2_investigation_auc",
+            "math_space_rate",
+        ),
+        "op_stats": (
+            "avg_induction_auc",
+            "avg_binding_auc",
+            "avg_binding_composite",
+            "avg_ar_auc",
+            "avg_hellaswag_acc",
+            "avg_blimp_overall_accuracy",
+            "avg_induction_v2_investigation_auc",
+            "avg_binding_v2_investigation_auc",
+            "math_space_rate",
+        ),
+        "motif_stats": (
+            "avg_induction_auc",
+            "avg_binding_auc",
+            "avg_binding_composite",
+            "avg_ar_auc",
+            "avg_hellaswag_acc",
+            "avg_blimp_overall_accuracy",
+            "avg_induction_v2_investigation_auc",
+            "avg_binding_v2_investigation_auc",
+            "math_space_rate",
+        ),
+        "slot_stats": (
+            "avg_induction_auc",
+            "avg_binding_auc",
+            "avg_binding_composite",
+            "avg_ar_auc",
+            "avg_hellaswag_acc",
+            "avg_blimp_overall_accuracy",
+            "avg_induction_v2_investigation_auc",
+            "avg_binding_v2_investigation_auc",
+            "math_space_rate",
+        ),
+    }
+    for table_name, columns in expected.items():
+        existing = {
+            row[1]
+            for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()
         }
+        for column in columns:
+            if column in existing:
+                continue
+            conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column} REAL")
 
-    return list(rows_by_canonical.values())
+
+def _load_stats_source_rows(db_path: str) -> List[Dict]:
+    """Load canonical graph rows directly from notebook analysis data."""
+    return load_deduped_graph_analysis_rows(db_path)
 
 
-def backfill(db_path: str = "research/lab_notebook.db") -> Dict[str, int]:
+def _new_slot_outcome_bucket() -> dict:
+    return {
+        "n": 0,
+        "s1": 0,
+        "losses": [],
+        "induction_aucs": [],
+        "binding_aucs": [],
+        "binding_composites": [],
+        "ar_aucs": [],
+        "hellaswag_accs": [],
+        "blimp_accuracies": [],
+        "induction_v2_aucs": [],
+        "binding_v2_aucs": [],
+        "math_hits": [],
+    }
+
+
+def backfill(
+    db_path: str = "research/lab_notebook.db",
+    *,
+    conn=None,
+) -> Dict[str, int]:
     """Backfill analytics tables. Returns row counts inserted."""
-    conn = connect_writer(Path(db_path))
+    owns_connection = conn is None
+    if conn is None:
+        conn = connect_writer(Path(db_path))
     conn.execute("PRAGMA busy_timeout=15000")
     _ensure_tables(conn)
+    _ensure_generation_stats_columns(conn)
 
     now = time.time()
 
-    # Accumulators — using lists for losses/novelties, counters for co-occurrence
-    tpl_data: Dict[str, list] = {}  # [eval, s0, s1, [losses], [novelties]]
-    op_data: Dict[str, list] = {}  # [eval, s0, s1, [losses], [novelties], Counter]
-    motif_data: Dict[
-        str, list
-    ] = {}  # [eval, s0, s1, [losses], [novelties], best_tpl, best_loss]
-    # Slot stats: slot_key → {eval, s1, [losses], class_outcomes, wc_count, wc_s1, wc_class_outcomes, template_name, slot_index, slot_classes}
+    # Metric lists store (value, recency_weight) samples. Counts remain raw so
+    # support thresholds still reflect actual observations.
+    # [eval, s0, s1, losses, novelties, induction_aucs, binding_aucs,
+    #  binding_composites, ar_aucs, hellaswag_accs, blimp_accuracies,
+    #  induction_v2_aucs, binding_v2_aucs, math_space_samples]
+    tpl_data: Dict[str, list] = {}
+    # same + co_occurrence counter at the end
+    op_data: Dict[str, list] = {}
+    # same + best template / best loss at the end
+    motif_data: Dict[str, list] = {}
     slot_data: Dict[str, dict] = {}
 
     rows = _load_stats_source_rows(db_path)
@@ -152,57 +261,121 @@ def backfill(db_path: str = "research/lab_notebook.db") -> Dict[str, int]:
         templates, motifs, ops, slot_usage = _extract_graph_info(graph_json)
         s0_pass = 1 if row.get("stage0_any_passed") else 0
         s1_pass = 1 if row.get("stage1_any_passed") else 0
-        loss_ratio = row.get("loss_ratio_best")
-        novelty = None
-        valid_loss = loss_ratio is not None and math.isfinite(float(loss_ratio))
-        valid_nov = novelty is not None and math.isfinite(float(novelty))
+        loss_ratio = _normalize_metric(row.get("loss_ratio"))
+        novelty = _normalize_metric(row.get("novelty_score"))
+        induction_auc = _normalize_metric(row.get("induction_auc"))
+        binding_auc = _normalize_metric(row.get("binding_auc"))
+        binding_composite = _normalize_metric(row.get("binding_composite"))
+        ar_auc = _normalize_metric(row.get("ar_auc"))
+        hellaswag_acc = _normalize_metric(row.get("hellaswag_acc"))
+        blimp_accuracy = _normalize_metric(row.get("blimp_overall_accuracy"))
+        induction_v2_auc = _normalize_metric(row.get("induction_v2_investigation_auc"))
+        binding_v2_auc = _normalize_metric(row.get("binding_v2_investigation_auc"))
+        math_space = 1 if row.get("graph_uses_math_spaces") else 0
+        recency_weight = _recency_weight(
+            row.get("latest_timestamp") or row.get("timestamp"),
+            now,
+        )
 
         for tpl in templates:
             if tpl not in tpl_data:
-                tpl_data[tpl] = [0, 0, 0, [], []]
+                tpl_data[tpl] = [0, 0, 0, [], [], [], [], [], [], [], [], [], [], []]
             d = tpl_data[tpl]
             d[0] += 1
             d[1] += s0_pass
             d[2] += s1_pass
-            if valid_loss:
-                d[3].append(loss_ratio)
-            if valid_nov:
-                d[4].append(novelty)
+            _append_weighted(d[3], loss_ratio, recency_weight)
+            _append_weighted(d[4], novelty, recency_weight)
+            _append_weighted(d[5], induction_auc, recency_weight)
+            _append_weighted(d[6], binding_auc, recency_weight)
+            _append_weighted(d[7], binding_composite, recency_weight)
+            _append_weighted(d[8], ar_auc, recency_weight)
+            _append_weighted(d[9], hellaswag_acc, recency_weight)
+            _append_weighted(d[10], blimp_accuracy, recency_weight)
+            _append_weighted(d[11], induction_v2_auc, recency_weight)
+            _append_weighted(d[12], binding_v2_auc, recency_weight)
+            _append_weighted(d[13], math_space, recency_weight)
 
         op_set = set(ops)
         for op in op_set:
             if op not in op_data:
-                op_data[op] = [0, 0, 0, [], [], Counter()]
+                op_data[op] = [
+                    0,
+                    0,
+                    0,
+                    [],
+                    [],
+                    [],
+                    [],
+                    [],
+                    [],
+                    [],
+                    [],
+                    [],
+                    [],
+                    [],
+                    Counter(),
+                ]
             d = op_data[op]
             d[0] += 1
             d[1] += s0_pass
             d[2] += s1_pass
-            if valid_loss:
-                d[3].append(loss_ratio)
-            if valid_nov:
-                d[4].append(novelty)
+            _append_weighted(d[3], loss_ratio, recency_weight)
+            _append_weighted(d[4], novelty, recency_weight)
+            _append_weighted(d[5], induction_auc, recency_weight)
+            _append_weighted(d[6], binding_auc, recency_weight)
+            _append_weighted(d[7], binding_composite, recency_weight)
+            _append_weighted(d[8], ar_auc, recency_weight)
+            _append_weighted(d[9], hellaswag_acc, recency_weight)
+            _append_weighted(d[10], blimp_accuracy, recency_weight)
+            _append_weighted(d[11], induction_v2_auc, recency_weight)
+            _append_weighted(d[12], binding_v2_auc, recency_weight)
+            _append_weighted(d[13], math_space, recency_weight)
 
-        # Co-occurrence: iterate pairs once via combinations (not O(n²) nested loop)
         for a, b in itertools.combinations(op_set, 2):
-            op_data[a][5][b] += 1
-            op_data[b][5][a] += 1
+            op_data[a][14][b] += 1
+            op_data[b][14][a] += 1
 
         for motif in motifs:
             if motif not in motif_data:
-                motif_data[motif] = [0, 0, 0, [], [], None, float("inf")]
+                motif_data[motif] = [
+                    0,
+                    0,
+                    0,
+                    [],
+                    [],
+                    [],
+                    [],
+                    [],
+                    [],
+                    [],
+                    [],
+                    [],
+                    [],
+                    [],
+                    None,
+                    float("inf"),
+                ]
             d = motif_data[motif]
             d[0] += 1
             d[1] += s0_pass
             d[2] += s1_pass
-            if valid_loss:
-                d[3].append(loss_ratio)
-                if loss_ratio < d[6]:
-                    d[6] = loss_ratio
-                    d[5] = templates[0] if templates else None
-            if valid_nov:
-                d[4].append(novelty)
+            if loss_ratio is not None:
+                _append_weighted(d[3], loss_ratio, recency_weight)
+                if loss_ratio < d[15]:
+                    d[15] = loss_ratio
+                    d[14] = templates[0] if templates else None
+            _append_weighted(d[4], novelty, recency_weight)
+            _append_weighted(d[5], induction_auc, recency_weight)
+            _append_weighted(d[6], binding_auc, recency_weight)
+            _append_weighted(d[7], binding_composite, recency_weight)
+            _append_weighted(d[8], ar_auc, recency_weight)
+            _append_weighted(d[9], hellaswag_acc, recency_weight)
+            _append_weighted(d[10], blimp_accuracy, recency_weight)
+            _append_weighted(d[11], induction_v2_auc, recency_weight)
+            _append_weighted(d[12], binding_v2_auc, recency_weight)
+            _append_weighted(d[13], math_space, recency_weight)
 
-        # Accumulate slot-level stats
         for slot in slot_usage:
             if not isinstance(slot, dict):
                 continue
@@ -217,6 +390,15 @@ def backfill(db_path: str = "research/lab_notebook.db") -> Dict[str, int]:
                     "eval": 0,
                     "s1": 0,
                     "losses": [],
+                    "induction_aucs": [],
+                    "binding_aucs": [],
+                    "binding_composites": [],
+                    "ar_aucs": [],
+                    "hellaswag_accs": [],
+                    "blimp_accuracies": [],
+                    "induction_v2_aucs": [],
+                    "binding_v2_aucs": [],
+                    "math_hits": [],
                     "class_outcomes": {},
                     "wc_count": 0,
                     "wc_s1": 0,
@@ -228,95 +410,216 @@ def backfill(db_path: str = "research/lab_notebook.db") -> Dict[str, int]:
             sd = slot_data[sk]
             sd["eval"] += 1
             sd["s1"] += s1_pass
-            if valid_loss:
-                sd["losses"].append(loss_ratio)
+            _append_weighted(sd["losses"], loss_ratio, recency_weight)
+            _append_weighted(sd["induction_aucs"], induction_auc, recency_weight)
+            _append_weighted(sd["binding_aucs"], binding_auc, recency_weight)
+            _append_weighted(
+                sd["binding_composites"],
+                binding_composite,
+                recency_weight,
+            )
+            _append_weighted(sd["ar_aucs"], ar_auc, recency_weight)
+            _append_weighted(sd["hellaswag_accs"], hellaswag_acc, recency_weight)
+            _append_weighted(sd["blimp_accuracies"], blimp_accuracy, recency_weight)
+            _append_weighted(sd["induction_v2_aucs"], induction_v2_auc, recency_weight)
+            _append_weighted(sd["binding_v2_aucs"], binding_v2_auc, recency_weight)
+            _append_weighted(sd["math_hits"], math_space, recency_weight)
 
             if motif_cls:
-                # Track per-class outcomes
                 co = sd["wc_class_outcomes"] if is_wc else sd["class_outcomes"]
-                if motif_cls not in co:
-                    co[motif_cls] = {"n": 0, "s1": 0, "losses": []}
-                co[motif_cls]["n"] += 1
-                co[motif_cls]["s1"] += s1_pass
-                if valid_loss:
-                    co[motif_cls]["losses"].append(loss_ratio)
+                bucket = co.setdefault(motif_cls, _new_slot_outcome_bucket())
+                bucket["n"] += 1
+                bucket["s1"] += s1_pass
+                _append_weighted(bucket["losses"], loss_ratio, recency_weight)
+                _append_weighted(
+                    bucket["induction_aucs"], induction_auc, recency_weight
+                )
+                _append_weighted(bucket["binding_aucs"], binding_auc, recency_weight)
+                _append_weighted(
+                    bucket["binding_composites"],
+                    binding_composite,
+                    recency_weight,
+                )
+                _append_weighted(bucket["ar_aucs"], ar_auc, recency_weight)
+                _append_weighted(
+                    bucket["hellaswag_accs"],
+                    hellaswag_acc,
+                    recency_weight,
+                )
+                _append_weighted(
+                    bucket["blimp_accuracies"],
+                    blimp_accuracy,
+                    recency_weight,
+                )
+                _append_weighted(
+                    bucket["induction_v2_aucs"],
+                    induction_v2_auc,
+                    recency_weight,
+                )
+                _append_weighted(
+                    bucket["binding_v2_aucs"],
+                    binding_v2_auc,
+                    recency_weight,
+                )
+                _append_weighted(bucket["math_hits"], math_space, recency_weight)
 
             if is_wc:
                 sd["wc_count"] += 1
                 sd["wc_s1"] += s1_pass
 
-    # Write template_stats
     conn.execute("DELETE FROM template_stats")
-    for tpl, (ev, s0, s1, losses, novs) in tpl_data.items():
+    for tpl, (
+        ev,
+        s0,
+        s1,
+        losses,
+        novs,
+        inds,
+        binds,
+        bind_comp,
+        ars,
+        hellaswags,
+        blimps,
+        inds_v2,
+        binds_v2,
+        math_hits,
+    ) in tpl_data.items():
         conn.execute(
             """INSERT INTO template_stats
                (template_name, eval_count, s0_pass_count, s1_pass_count,
-                mean_loss, min_loss, std_loss, mean_novelty, last_updated)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                mean_loss, min_loss, std_loss, mean_novelty,
+                avg_induction_auc, avg_binding_auc, avg_binding_composite,
+                avg_ar_auc, avg_hellaswag_acc, avg_blimp_overall_accuracy,
+                avg_induction_v2_investigation_auc, avg_binding_v2_investigation_auc,
+                math_space_rate, last_updated)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 tpl,
                 ev,
                 s0,
                 s1,
                 _mean_or_none(losses),
-                min(losses) if losses else None,
+                _min_or_none(losses),
                 _safe_std(losses) if losses else None,
                 _mean_or_none(novs),
+                _mean_or_none(inds),
+                _mean_or_none(binds),
+                _mean_or_none(bind_comp),
+                _mean_or_none(ars),
+                _mean_or_none(hellaswags),
+                _mean_or_none(blimps),
+                _mean_or_none(inds_v2),
+                _mean_or_none(binds_v2),
+                _mean_or_none(math_hits),
                 now,
             ),
         )
 
-    # Write op_stats
     conn.execute("DELETE FROM op_stats")
-    for op, (ev, s0, s1, losses, novs, co_counter) in op_data.items():
+    for op, (
+        ev,
+        s0,
+        s1,
+        losses,
+        novs,
+        inds,
+        binds,
+        bind_comp,
+        ars,
+        hellaswags,
+        blimps,
+        inds_v2,
+        binds_v2,
+        math_hits,
+        co_counter,
+    ) in op_data.items():
         top20 = dict(co_counter.most_common(20))
         conn.execute(
             """INSERT INTO op_stats
                (op_name, eval_count, s0_pass_count, s1_pass_count,
                 mean_loss, min_loss, std_loss, mean_novelty,
-                co_occurrence_json, last_updated)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                avg_induction_auc, avg_binding_auc, avg_binding_composite,
+                avg_ar_auc, avg_hellaswag_acc, avg_blimp_overall_accuracy,
+                avg_induction_v2_investigation_auc, avg_binding_v2_investigation_auc,
+                math_space_rate, co_occurrence_json, last_updated)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 op,
                 ev,
                 s0,
                 s1,
                 _mean_or_none(losses),
-                min(losses) if losses else None,
+                _min_or_none(losses),
                 _safe_std(losses) if losses else None,
                 _mean_or_none(novs),
+                _mean_or_none(inds),
+                _mean_or_none(binds),
+                _mean_or_none(bind_comp),
+                _mean_or_none(ars),
+                _mean_or_none(hellaswags),
+                _mean_or_none(blimps),
+                _mean_or_none(inds_v2),
+                _mean_or_none(binds_v2),
+                _mean_or_none(math_hits),
                 json.dumps(top20) if top20 else None,
                 now,
             ),
         )
 
-    # Write motif_stats
     conn.execute("DELETE FROM motif_stats")
-    for motif, (ev, s0, s1, losses, novs, best_tpl, _) in motif_data.items():
+    for motif, (
+        ev,
+        s0,
+        s1,
+        losses,
+        novs,
+        inds,
+        binds,
+        bind_comp,
+        ars,
+        hellaswags,
+        blimps,
+        inds_v2,
+        binds_v2,
+        math_hits,
+        best_tpl,
+        _,
+    ) in motif_data.items():
         conn.execute(
             """INSERT INTO motif_stats
                (motif_name, eval_count, s0_pass_count, s1_pass_count,
                 mean_loss, min_loss, std_loss, mean_novelty,
-                best_template, last_updated)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                avg_induction_auc, avg_binding_auc, avg_binding_composite,
+                avg_ar_auc, avg_hellaswag_acc, avg_blimp_overall_accuracy,
+                avg_induction_v2_investigation_auc, avg_binding_v2_investigation_auc,
+                math_space_rate, best_template, last_updated)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 motif,
                 ev,
                 s0,
                 s1,
                 _mean_or_none(losses),
-                min(losses) if losses else None,
+                _min_or_none(losses),
                 _safe_std(losses) if losses else None,
                 _mean_or_none(novs),
+                _mean_or_none(inds),
+                _mean_or_none(binds),
+                _mean_or_none(bind_comp),
+                _mean_or_none(ars),
+                _mean_or_none(hellaswags),
+                _mean_or_none(blimps),
+                _mean_or_none(inds_v2),
+                _mean_or_none(binds_v2),
+                _mean_or_none(math_hits),
                 best_tpl,
                 now,
             ),
         )
 
-    # Write slot_stats
     conn.execute("DELETE FROM slot_stats")
     for sk, sd in slot_data.items():
-        # Summarize class_outcomes: replace loss lists with mean_loss
+
         def _summarize_outcomes(outcomes: dict) -> dict:
             out = {}
             for cls, vals in outcomes.items():
@@ -324,6 +627,21 @@ def backfill(db_path: str = "research/lab_notebook.db") -> Dict[str, int]:
                     "n": vals["n"],
                     "s1": vals["s1"],
                     "mean_loss": _mean_or_none(vals["losses"]),
+                    "mean_induction_auc": _mean_or_none(vals["induction_aucs"]),
+                    "mean_binding_auc": _mean_or_none(vals["binding_aucs"]),
+                    "mean_binding_composite": _mean_or_none(vals["binding_composites"]),
+                    "mean_ar_auc": _mean_or_none(vals["ar_aucs"]),
+                    "mean_hellaswag_acc": _mean_or_none(vals["hellaswag_accs"]),
+                    "mean_blimp_overall_accuracy": _mean_or_none(
+                        vals["blimp_accuracies"]
+                    ),
+                    "mean_induction_v2_investigation_auc": _mean_or_none(
+                        vals["induction_v2_aucs"]
+                    ),
+                    "mean_binding_v2_investigation_auc": _mean_or_none(
+                        vals["binding_v2_aucs"]
+                    ),
+                    "math_space_rate": _mean_or_none(vals["math_hits"]),
                 }
             return out
 
@@ -332,9 +650,12 @@ def backfill(db_path: str = "research/lab_notebook.db") -> Dict[str, int]:
             """INSERT INTO slot_stats
                (slot_key, template_name, slot_index, slot_classes,
                 eval_count, s1_pass_count, mean_loss, min_loss,
-                class_outcomes, wildcard_count, wildcard_s1_count,
-                wildcard_class_outcomes, last_updated)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                avg_induction_auc, avg_binding_auc, avg_binding_composite,
+                avg_ar_auc, avg_hellaswag_acc, avg_blimp_overall_accuracy,
+                avg_induction_v2_investigation_auc, avg_binding_v2_investigation_auc,
+                math_space_rate, class_outcomes, wildcard_count,
+                wildcard_s1_count, wildcard_class_outcomes, last_updated)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 sk,
                 sd["template_name"],
@@ -343,7 +664,16 @@ def backfill(db_path: str = "research/lab_notebook.db") -> Dict[str, int]:
                 sd["eval"],
                 sd["s1"],
                 _mean_or_none(losses),
-                min(losses) if losses else None,
+                _min_or_none(losses),
+                _mean_or_none(sd["induction_aucs"]),
+                _mean_or_none(sd["binding_aucs"]),
+                _mean_or_none(sd["binding_composites"]),
+                _mean_or_none(sd["ar_aucs"]),
+                _mean_or_none(sd["hellaswag_accs"]),
+                _mean_or_none(sd["blimp_accuracies"]),
+                _mean_or_none(sd["induction_v2_aucs"]),
+                _mean_or_none(sd["binding_v2_aucs"]),
+                _mean_or_none(sd["math_hits"]),
                 json.dumps(_summarize_outcomes(sd["class_outcomes"])),
                 sd["wc_count"],
                 sd["wc_s1"],
@@ -353,7 +683,8 @@ def backfill(db_path: str = "research/lab_notebook.db") -> Dict[str, int]:
         )
 
     conn.commit()
-    conn.close()
+    if owns_connection:
+        conn.close()
 
     counts = {
         "template_stats": len(tpl_data),

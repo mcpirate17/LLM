@@ -198,6 +198,7 @@ function LiveFeed({ apiBase, experimentId = null, progress = null }) {
   useEventBus('investigation_started', addEvent('invest_start'));
   useEventBus('investigation_progress', addEvent('invest_progress'));
   useEventBus('investigation_completed', addEvent('invest_complete'));
+  useEventBus('investigation_failed', addEvent('invest_failed'));
   useEventBus('validation_started', addEvent('validate_start'));
   useEventBus('validation_progress', addEvent('validate_progress'));
   useEventBus('validation_phase', addEvent('validate_phase'));

@@ -41,7 +41,7 @@ _PERSISTED_LLM_CONFIG_LOADED: set[str] = set()
 
 
 def projected_runtime_status_enabled() -> bool:
-    raw = str(os.environ.get("ARIA_ENABLE_PROJECTED_RUNTIME_STATUS", "0")).strip()
+    raw = str(os.environ.get("ARIA_ENABLE_PROJECTED_RUNTIME_STATUS", "1")).strip()
     return raw.lower() in {"1", "true", "yes", "on"}
 
 
@@ -232,6 +232,14 @@ def resolve_runner_status(
             "progress": with_native_runner_progress(runner.progress.to_dict()),
             "external_snapshot": None,
         }
+    if runner is not None:
+        runner_progress = runner.progress.to_dict()
+        if str(runner_progress.get("status") or "").lower() in {"failed", "error"}:
+            return {
+                "is_running": False,
+                "progress": with_native_runner_progress(runner_progress),
+                "external_snapshot": None,
+            }
 
     lifecycle_snapshot = get_registry_running_experiment_snapshot(nb)
     if lifecycle_snapshot is not None:
@@ -247,6 +255,17 @@ def resolve_runner_status(
         if runner is not None and projected_runtime_status_enabled():
             projected = get_projected_running_experiment_snapshot(nb)
             if projected is not None:
+                projected_state = get_runtime_event_services(nb.db_path).registry.get(
+                    str(projected.get("experiment_id") or "")
+                )
+                projected_producer = (
+                    str(getattr(projected_state.last_event, "producer", "") or "")
+                    if projected_state is not None
+                    else ""
+                )
+                if projected_producer.startswith("notebook."):
+                    projected = None
+            if projected is not None:
                 return {
                     "is_running": True,
                     "progress": with_native_runner_progress(
@@ -260,6 +279,20 @@ def resolve_runner_status(
                 }
 
         external = get_external_running_experiment_snapshot(nb)
+        if external is not None:
+            external_state = get_runtime_event_services(nb.db_path).registry.get(
+                str(external.get("experiment_id") or "")
+            )
+            external_producer = (
+                str(getattr(external_state.last_event, "producer", "") or "")
+                if external_state is not None
+                else ""
+            )
+            if (
+                external_producer.startswith("notebook.")
+                and int(external.get("current_program") or 0) <= 0
+            ):
+                external = None
     except sqlite3.DatabaseError as exc:
         if not is_malformed_db_error(exc):
             raise
@@ -345,6 +378,7 @@ def get_registry_running_experiment_snapshot(
     state = registry.get(run_id)
     if state is None or state.status != "running":
         return None
+    producer = str(getattr(state.last_event, "producer", "") or "")
     notebook_row = nb.conn.execute(
         "SELECT status, started_at, completed_at FROM experiments WHERE experiment_id = ?",
         (run_id,),
@@ -358,16 +392,51 @@ def get_registry_running_experiment_snapshot(
                 notebook_status,
             )
             return None
+        if producer.startswith("notebook."):
+            result_count = nb.conn.execute(
+                "SELECT COUNT(*) FROM program_results WHERE experiment_id = ?",
+                (run_id,),
+            ).fetchone()[0]
+            if int(result_count or 0) > 0:
+                return None
     else:
-        other_running = nb.conn.execute(
-            "SELECT experiment_id FROM experiments WHERE status = 'running' "
+        latest_row = nb.conn.execute(
+            "SELECT experiment_id, timestamp, started_at FROM experiments "
             "ORDER BY timestamp DESC LIMIT 1"
+        ).fetchone()
+        if latest_row is not None:
+            latest_run_id = str(latest_row["experiment_id"] or "").strip()
+            latest_ts = float(
+                latest_row["timestamp"] or latest_row["started_at"] or 0.0
+            )
+            if (
+                latest_run_id
+                and latest_run_id != run_id
+                and (latest_ts >= float(state.last_event.created_at))
+            ):
+                return None
+        if producer.startswith("notebook."):
+            logger.debug(
+                "Ignoring registry-active run %s because its notebook row is missing",
+                run_id,
+            )
+            return None
+        other_running = nb.conn.execute(
+            "SELECT experiment_id, timestamp, started_at FROM experiments "
+            "WHERE status = 'running' ORDER BY timestamp DESC LIMIT 1"
         ).fetchone()
         if other_running is not None:
             other_run_id = str(other_running["experiment_id"] or "").strip()
-            if other_run_id and other_run_id != run_id:
+            other_started = float(
+                other_running["started_at"] or other_running["timestamp"] or 0.0
+            )
+            if (
+                other_run_id
+                and other_run_id != run_id
+                and (other_started >= float(state.last_event.created_at))
+            ):
                 logger.debug(
-                    "Ignoring registry-active run %s because notebook has running experiment %s",
+                    "Ignoring registry-active run %s because notebook has newer running experiment %s",
                     run_id,
                     other_run_id,
                 )
@@ -452,7 +521,22 @@ def get_projected_running_experiment_snapshot(
     except (TypeError, ValueError):
         total_programs = 0
 
-    current_program = int(row["n_programs_generated"] or 0)
+    result_counts = nb.conn.execute(
+        """
+        SELECT
+            COUNT(*) AS current_program,
+            COALESCE(SUM(CASE WHEN stage0_passed THEN 1 ELSE 0 END), 0) AS stage0_passed,
+            COALESCE(SUM(CASE WHEN stage05_passed THEN 1 ELSE 0 END), 0) AS stage05_passed,
+            COALESCE(SUM(CASE WHEN stage1_passed THEN 1 ELSE 0 END), 0) AS stage1_passed
+        FROM program_results
+        WHERE experiment_id = ?
+        """,
+        (row["experiment_id"],),
+    ).fetchone()
+    current_program = max(
+        int(row["n_programs_generated"] or 0),
+        int(result_counts["current_program"] or 0) if result_counts else 0,
+    )
     started_at = float(row["started_at"] or row["timestamp"] or time.time())
     last_projected_at = float(row["last_projected_at"] or started_at)
     return {
@@ -468,9 +552,18 @@ def get_projected_running_experiment_snapshot(
         "hypothesis": str(row["hypothesis"] or "").strip(),
         "current_program": current_program,
         "total_programs": max(total_programs, current_program),
-        "stage0_passed": int(row["n_stage0_passed"] or 0),
-        "stage05_passed": int(row["n_stage05_passed"] or 0),
-        "stage1_passed": int(row["n_stage1_passed"] or 0),
+        "stage0_passed": max(
+            int(row["n_stage0_passed"] or 0),
+            int(result_counts["stage0_passed"] or 0) if result_counts else 0,
+        ),
+        "stage05_passed": max(
+            int(row["n_stage05_passed"] or 0),
+            int(result_counts["stage05_passed"] or 0) if result_counts else 0,
+        ),
+        "stage1_passed": max(
+            int(row["n_stage1_passed"] or 0),
+            int(result_counts["stage1_passed"] or 0) if result_counts else 0,
+        ),
         "started_at": started_at,
         "last_activity_ts": last_projected_at,
         "elapsed_seconds": max(0.0, time.time() - started_at),

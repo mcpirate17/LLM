@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <limits.h>
+#include <math.h>
 #include <pthread.h>
 
 #define NR_MAX_HANDLES 1024
@@ -1313,6 +1314,187 @@ nr_execute_batch_response_t nr_execute_batch(const nr_execute_request_t* req) {
   res.logits = batch_logits;
   res.batch = batch;
   res.vocab_size = vocab_size;
+  return res;
+}
+
+static int _validate_optimizer_step_request(
+    const nr_optimizer_step_request_t* req,
+    const char** out_message) {
+  if (out_message != NULL) {
+    *out_message = "ok";
+  }
+  if (req == NULL) {
+    if (out_message != NULL) {
+      *out_message = "null_optimizer_step_request";
+    }
+    return 0;
+  }
+  if (req->optimizer != NR_OPTIMIZER_SGD && req->optimizer != NR_OPTIMIZER_ADAMW) {
+    if (out_message != NULL) {
+      *out_message = "unsupported_optimizer";
+    }
+    return 0;
+  }
+  if (req->tensors == NULL || req->n_tensors <= 0) {
+    if (out_message != NULL) {
+      *out_message = "empty_tensor_list";
+    }
+    return 0;
+  }
+  if (!(req->learning_rate >= 0.0) || !isfinite(req->learning_rate)) {
+    if (out_message != NULL) {
+      *out_message = "invalid_learning_rate";
+    }
+    return 0;
+  }
+  if (!(req->max_grad_norm >= 0.0) || !isfinite(req->max_grad_norm)) {
+    if (out_message != NULL) {
+      *out_message = "invalid_max_grad_norm";
+    }
+    return 0;
+  }
+  if (req->optimizer == NR_OPTIMIZER_ADAMW) {
+    if (req->step <= 0) {
+      if (out_message != NULL) {
+        *out_message = "adamw_step_must_be_positive";
+      }
+      return 0;
+    }
+    if (!(req->beta1 >= 0.0 && req->beta1 < 1.0) || !(req->beta2 >= 0.0 && req->beta2 < 1.0) ||
+        !(req->eps > 0.0) || !isfinite(req->beta1) || !isfinite(req->beta2) || !isfinite(req->eps)) {
+      if (out_message != NULL) {
+        *out_message = "invalid_adamw_hyperparameters";
+      }
+      return 0;
+    }
+  }
+  for (int32_t i = 0; i < req->n_tensors; i++) {
+    const nr_train_tensor_f32_t* t = &req->tensors[i];
+    if (t->numel < 0) {
+      if (out_message != NULL) {
+        *out_message = "negative_tensor_numel";
+      }
+      return 0;
+    }
+    if (t->numel == 0) {
+      continue;
+    }
+    if (t->param == NULL || t->grad == NULL) {
+      if (out_message != NULL) {
+        *out_message = "missing_param_or_grad";
+      }
+      return 0;
+    }
+    if (req->optimizer == NR_OPTIMIZER_SGD && req->momentum != 0.0f && t->momentum == NULL) {
+      if (out_message != NULL) {
+        *out_message = "missing_sgd_momentum_buffer";
+      }
+      return 0;
+    }
+    if (req->optimizer == NR_OPTIMIZER_ADAMW && (t->exp_avg == NULL || t->exp_avg_sq == NULL)) {
+      if (out_message != NULL) {
+        *out_message = "missing_adamw_state";
+      }
+      return 0;
+    }
+  }
+  return 1;
+}
+
+nr_optimizer_step_response_t nr_optimizer_clip_step_f32(const nr_optimizer_step_request_t* req) {
+  nr_optimizer_step_response_t res;
+  res.status = NR_OK;
+  res.grad_norm = 0.0f;
+  res.elements = 0;
+  res.message = "ok";
+
+  const char* validation_message = "ok";
+  if (!_validate_optimizer_step_request(req, &validation_message)) {
+    res.status = NR_ERR_INVALID_ARGUMENT;
+    res.message = validation_message;
+    return res;
+  }
+
+  float sum_sq = 0.0f;
+  double response_sum_sq = 0.0;
+  int64_t elements = 0;
+  for (int32_t i = 0; i < req->n_tensors; i++) {
+    const nr_train_tensor_f32_t* t = &req->tensors[i];
+    for (int64_t j = 0; j < t->numel; j++) {
+      const float g = t->grad[j];
+      if (!isfinite(g)) {
+        res.status = NR_ERR_EXECUTION_FAILURE;
+        res.message = "nonfinite_gradient";
+        return res;
+      }
+      sum_sq += g * g;
+      response_sum_sq += (double)g * (double)g;
+    }
+    elements += t->numel;
+  }
+
+  const float grad_norm = sqrtf(sum_sq);
+  const float max_grad_norm = (float)req->max_grad_norm;
+  const float clip_coef =
+      (max_grad_norm > 0.0f) ? (max_grad_norm / (grad_norm + 1.0e-6f)) : 1.0f;
+  const float clip_scale = (clip_coef < 1.0f) ? clip_coef : 1.0f;
+  res.grad_norm = sqrt(response_sum_sq);
+  res.elements = elements;
+
+  if (req->optimizer == NR_OPTIMIZER_SGD) {
+    const double lr = req->learning_rate;
+    const double momentum = req->momentum;
+    const double weight_decay = req->weight_decay;
+    for (int32_t i = 0; i < req->n_tensors; i++) {
+      nr_train_tensor_f32_t* t = &req->tensors[i];
+      for (int64_t j = 0; j < t->numel; j++) {
+        float d_p = t->grad[j] * clip_scale;
+        if (weight_decay != 0.0f) {
+          d_p += (float)(weight_decay * (double)t->param[j]);
+        }
+        if (momentum != 0.0f) {
+          float buf = (float)(momentum * (double)t->momentum[j] + (double)d_p);
+          t->momentum[j] = buf;
+          if (req->nesterov) {
+            d_p += (float)(momentum * (double)buf);
+          } else {
+            d_p = buf;
+          }
+        }
+        t->param[j] -= (float)(lr * (double)d_p);
+      }
+    }
+    return res;
+  }
+
+  const double lr = req->learning_rate;
+  const double beta1 = req->beta1;
+  const double beta2 = req->beta2;
+  const double eps = req->eps;
+  const double weight_decay = req->weight_decay;
+  const double bias_correction1 = 1.0 - pow(beta1, (double)req->step);
+  const double bias_correction2 = 1.0 - pow(beta2, (double)req->step);
+  const double step_size = (bias_correction1 != 0.0) ? (lr / bias_correction1) : 0.0;
+  const double denom_scale = sqrt(bias_correction2);
+  const float step_size_f = (float)step_size;
+  const float denom_scale_f = (float)denom_scale;
+  const float eps_f = (float)eps;
+  for (int32_t i = 0; i < req->n_tensors; i++) {
+    nr_train_tensor_f32_t* t = &req->tensors[i];
+    for (int64_t j = 0; j < t->numel; j++) {
+      if (weight_decay != 0.0f) {
+        t->param[j] *= (float)(1.0 - lr * weight_decay);
+      }
+      const float grad = t->grad[j] * clip_scale;
+      const float exp_avg = (float)(beta1 * (double)t->exp_avg[j] + (1.0 - beta1) * (double)grad);
+      const float exp_avg_sq =
+          (float)(beta2 * (double)t->exp_avg_sq[j] + (1.0 - beta2) * (double)grad * (double)grad);
+      t->exp_avg[j] = exp_avg;
+      t->exp_avg_sq[j] = exp_avg_sq;
+      const float denom = (sqrtf(exp_avg_sq) / denom_scale_f) + eps_f;
+      t->param[j] -= step_size_f * exp_avg / denom;
+    }
+  }
   return res;
 }
 

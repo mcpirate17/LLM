@@ -17,6 +17,7 @@ from typing import Any, Dict
 from flask import Response, jsonify, request
 from ..json_utils import fast_dumps as _json_dumps
 from ..trust_policy import sql_trusted_clause
+from ._api_health import API_HEALTH_COUNTERS, API_HEALTH_LOCK
 from ._helpers import get_runner
 from ._observability_core import (
     _DEFAULT_THRESHOLDS,
@@ -448,14 +449,9 @@ def _register_analytics_routes(app, notebook_path: str) -> None:
     @app.route("/api/observability/api-health")
     def api_api_health():
         """API request counters by endpoint x status bucket."""
-        try:
-            from ..api import _api_health_counters, _api_health_lock
-
-            with _api_health_lock:
-                snapshot = dict(_api_health_counters)
-            return jsonify({"counters": snapshot})
-        except ImportError:
-            return jsonify({"counters": {}, "note": "counters not available"})
+        with API_HEALTH_LOCK:
+            snapshot = dict(API_HEALTH_COUNTERS)
+        return jsonify({"counters": snapshot})
 
 
 def _register_patterns_routes(app, notebook_path: str, wnb) -> None:

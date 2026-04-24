@@ -26,6 +26,7 @@ from ..native_runner import (
     compile_model_native_first as _compile_model_native,
 )
 from ...synthesis.compiler import compile_model as _compile_model_legacy
+from ...synthesis.context_rules import find_byte_safety_violations
 from ..native.abi import record_native_abi_parity_result
 from ...synthesis.serializer import graph_from_json
 from ...eval.sandbox import safe_eval
@@ -168,11 +169,21 @@ class _ScreeningMixin:
         if graph_json_str:
             graph = graph_from_json(graph_json_str)
             layer_graphs = [graph] * config.n_layers
+            byte_safety_violations = find_byte_safety_violations(graph)
             # Capability-first graphs can segfault the native C/Rust
             # dispatch path. Use PyTorch compilation for safety.
+            # Also keep byte-unsafe routing ops on the legacy path:
+            # compile_model_native_first rejects graphs with mod_topk/token_merge
+            # before the native compiler can decide on a safe fallback.
+            if byte_safety_violations:
+                logger.info(
+                    "Falling back to legacy compile for source reconstruction: %s",
+                    byte_safety_violations[0],
+                )
             _compiler = (
                 _compile_model_legacy
                 if getattr(config, "_capability_first_mode", False)
+                or bool(byte_safety_violations)
                 else _compile_model_native
             )
             return _compiler(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ctypes
+import math
 from pathlib import Path
 
 import pytest
@@ -62,6 +63,43 @@ class NrCapability(ctypes.Structure):
     ]
 
 
+class NrTrainTensorF32(ctypes.Structure):
+    _fields_ = [
+        ("param", ctypes.POINTER(ctypes.c_float)),
+        ("grad", ctypes.POINTER(ctypes.c_float)),
+        ("momentum", ctypes.POINTER(ctypes.c_float)),
+        ("exp_avg", ctypes.POINTER(ctypes.c_float)),
+        ("exp_avg_sq", ctypes.POINTER(ctypes.c_float)),
+        ("numel", ctypes.c_int64),
+    ]
+
+
+class NrOptimizerStepRequest(ctypes.Structure):
+    _fields_ = [
+        ("optimizer", ctypes.c_int32),
+        ("tensors", ctypes.POINTER(NrTrainTensorF32)),
+        ("n_tensors", ctypes.c_int32),
+        ("learning_rate", ctypes.c_double),
+        ("momentum", ctypes.c_double),
+        ("beta1", ctypes.c_double),
+        ("beta2", ctypes.c_double),
+        ("eps", ctypes.c_double),
+        ("weight_decay", ctypes.c_double),
+        ("max_grad_norm", ctypes.c_double),
+        ("nesterov", ctypes.c_int32),
+        ("step", ctypes.c_int64),
+    ]
+
+
+class NrOptimizerStepResponse(ctypes.Structure):
+    _fields_ = [
+        ("status", ctypes.c_int32),
+        ("grad_norm", ctypes.c_double),
+        ("elements", ctypes.c_int64),
+        ("message", ctypes.c_char_p),
+    ]
+
+
 def _load_native_lib():
     lib_path = (
         Path(__file__).resolve().parents[1]
@@ -73,6 +111,97 @@ def _load_native_lib():
     if not lib_path.exists():
         pytest.skip(f"native runtime library not built: {lib_path}")
     return ctypes.CDLL(str(lib_path))
+
+
+def test_runner_abi_optimizer_clip_step_sgd_updates_flat_spans():
+    lib = _load_native_lib()
+    lib.nr_optimizer_clip_step_f32.argtypes = [ctypes.POINTER(NrOptimizerStepRequest)]
+    lib.nr_optimizer_clip_step_f32.restype = NrOptimizerStepResponse
+
+    param_a = (ctypes.c_float * 3)(1.0, -2.0, 3.0)
+    grad_a = (ctypes.c_float * 3)(3.0, 4.0, 0.0)
+    param_b = (ctypes.c_float * 1)(0.5)
+    grad_b = (ctypes.c_float * 1)(0.0)
+    tensors = (NrTrainTensorF32 * 2)(
+        NrTrainTensorF32(param_a, grad_a, None, None, None, 3),
+        NrTrainTensorF32(param_b, grad_b, None, None, None, 1),
+    )
+    req = NrOptimizerStepRequest(
+        optimizer=1,
+        tensors=tensors,
+        n_tensors=2,
+        learning_rate=0.1,
+        momentum=0.0,
+        beta1=0.0,
+        beta2=0.0,
+        eps=1.0e-8,
+        weight_decay=0.0,
+        max_grad_norm=2.0,
+        nesterov=0,
+        step=0,
+    )
+
+    res = lib.nr_optimizer_clip_step_f32(ctypes.byref(req))
+
+    scale = 2.0 / (5.0 + 1.0e-6)
+    assert int(res.status) == 0
+    assert int(res.elements) == 4
+    assert float(res.grad_norm) == pytest.approx(5.0, rel=1e-6)
+    assert list(param_a) == pytest.approx(
+        [1.0 - 0.1 * 3.0 * scale, -2.0 - 0.1 * 4.0 * scale, 3.0],
+        rel=1e-6,
+    )
+    assert list(param_b) == pytest.approx([0.5], rel=1e-6)
+
+
+def test_runner_abi_optimizer_clip_step_adamw_updates_state_and_params():
+    lib = _load_native_lib()
+    lib.nr_optimizer_clip_step_f32.argtypes = [ctypes.POINTER(NrOptimizerStepRequest)]
+    lib.nr_optimizer_clip_step_f32.restype = NrOptimizerStepResponse
+
+    param = (ctypes.c_float * 2)(1.0, -2.0)
+    grad = (ctypes.c_float * 2)(0.5, -0.25)
+    exp_avg = (ctypes.c_float * 2)(0.0, 0.0)
+    exp_avg_sq = (ctypes.c_float * 2)(0.0, 0.0)
+    tensors = (NrTrainTensorF32 * 1)(
+        NrTrainTensorF32(param, grad, None, exp_avg, exp_avg_sq, 2),
+    )
+    req = NrOptimizerStepRequest(
+        optimizer=2,
+        tensors=tensors,
+        n_tensors=1,
+        learning_rate=0.01,
+        momentum=0.0,
+        beta1=0.9,
+        beta2=0.999,
+        eps=1.0e-8,
+        weight_decay=0.1,
+        max_grad_norm=10.0,
+        nesterov=0,
+        step=1,
+    )
+
+    res = lib.nr_optimizer_clip_step_f32(ctypes.byref(req))
+
+    expected_params = [1.0, -2.0]
+    expected_exp_avg = []
+    expected_exp_avg_sq = []
+    for idx, g in enumerate([0.5, -0.25]):
+        p = expected_params[idx] * (1.0 - 0.01 * 0.1)
+        m = 0.9 * 0.0 + 0.1 * g
+        v = 0.999 * 0.0 + 0.001 * g * g
+        denom = math.sqrt(v) / math.sqrt(1.0 - 0.999**1) + 1.0e-8
+        p -= (0.01 / (1.0 - 0.9**1)) * m / denom
+        expected_params[idx] = p
+        expected_exp_avg.append(m)
+        expected_exp_avg_sq.append(v)
+
+    assert int(res.status) == 0
+    assert int(res.elements) == 2
+    assert float(res.grad_norm) == pytest.approx(math.sqrt(0.5**2 + 0.25**2), rel=1e-6)
+    assert list(param) == pytest.approx(expected_params, rel=1e-6)
+    assert list(exp_avg) == pytest.approx(expected_exp_avg, rel=1e-6)
+    assert list(exp_avg_sq) == pytest.approx(expected_exp_avg_sq, rel=1e-6, abs=1e-8)
 
 
 def test_runner_abi_lifecycle_compile_execute_smoke():

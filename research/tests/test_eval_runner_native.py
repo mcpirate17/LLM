@@ -39,6 +39,7 @@ def test_native_sgd_step_matches_torch_sgd():
         lr=1e-2,
         momentum=0.9,
         weight_decay=0.05,
+        prefer_native=True,
     )
     native_opt.step()
 
@@ -69,6 +70,7 @@ def test_native_adamw_step_matches_torch_adamw():
         lr=3e-4,
         weight_decay=0.01,
         betas=(0.9, 0.999),
+        prefer_native=True,
     )
     native_opt.step()
 
@@ -83,6 +85,124 @@ def test_native_adamw_step_matches_torch_adamw():
     ref_opt.step()
 
     torch.testing.assert_close(native_param, ref_param, atol=1e-6, rtol=1e-5)
+
+
+def test_native_adamw_clip_step_matches_torch_clip_then_adamw():
+    torch.manual_seed(22)
+    bases = [torch.randn(5, 4), torch.randn(3, 2)]
+    grads = [torch.randn_like(base) * 3.0 for base in bases]
+
+    native_params = [base.clone().requires_grad_(True) for base in bases]
+    for param, grad in zip(native_params, grads, strict=True):
+        param.grad = grad.clone()
+    native_opt = make_optimizer(
+        native_params,
+        optimizer_name="adamw",
+        lr=3e-4,
+        weight_decay=0.01,
+        betas=(0.9, 0.999),
+        prefer_native=True,
+    )
+    native_norm = native_opt.step_with_grad_clip(0.75)
+
+    ref_params = [base.clone().requires_grad_(True) for base in bases]
+    for param, grad in zip(ref_params, grads, strict=True):
+        param.grad = grad.clone()
+    ref_opt = torch.optim.AdamW(
+        ref_params,
+        lr=3e-4,
+        weight_decay=0.01,
+        betas=(0.9, 0.999),
+    )
+    ref_norm = torch.nn.utils.clip_grad_norm_(ref_params, 0.75)
+    ref_opt.step()
+
+    assert native_norm == pytest.approx(float(ref_norm.item()), rel=1e-6, abs=1e-6)
+    for native_param, ref_param in zip(native_params, ref_params, strict=True):
+        torch.testing.assert_close(native_param, ref_param, atol=1e-6, rtol=1e-5)
+
+
+def test_native_adamw_backward_clip_step_matches_torch_backward_clip_step():
+    torch.manual_seed(23)
+    bases = [torch.randn(5, 4), torch.randn(3, 2)]
+    factors = [torch.randn_like(base) for base in bases]
+
+    native_params = [base.clone().requires_grad_(True) for base in bases]
+    native_loss = sum(
+        (param * factor).sum()
+        for param, factor in zip(native_params, factors, strict=True)
+    )
+    native_opt = make_optimizer(
+        native_params,
+        optimizer_name="adamw",
+        lr=3e-4,
+        weight_decay=0.01,
+        betas=(0.9, 0.999),
+        prefer_native=True,
+    )
+    native_norm = native_opt.backward_step_with_grad_clip(native_loss, 0.75)
+
+    ref_params = [base.clone().requires_grad_(True) for base in bases]
+    ref_loss = sum(
+        (param * factor).sum()
+        for param, factor in zip(ref_params, factors, strict=True)
+    )
+    ref_opt = torch.optim.AdamW(
+        ref_params,
+        lr=3e-4,
+        weight_decay=0.01,
+        betas=(0.9, 0.999),
+    )
+    ref_opt.zero_grad(set_to_none=True)
+    ref_loss.backward()
+    ref_norm = torch.nn.utils.clip_grad_norm_(ref_params, 0.75)
+    ref_opt.step()
+
+    assert native_norm == pytest.approx(float(ref_norm.item()), rel=1e-6, abs=1e-6)
+    for native_param, ref_param in zip(native_params, ref_params, strict=True):
+        torch.testing.assert_close(native_param, ref_param, atol=1e-6, rtol=1e-5)
+
+
+def test_native_sgd_backward_clip_step_matches_torch_backward_clip_step():
+    torch.manual_seed(24)
+    bases = [torch.randn(4, 3), torch.randn(2, 5)]
+    factors = [torch.randn_like(base) for base in bases]
+
+    native_params = [base.clone().requires_grad_(True) for base in bases]
+    native_loss = sum(
+        (param * factor).sum()
+        for param, factor in zip(native_params, factors, strict=True)
+    )
+    native_opt = make_optimizer(
+        native_params,
+        optimizer_name="sgd",
+        lr=1e-2,
+        momentum=0.9,
+        weight_decay=0.05,
+        prefer_native=True,
+    )
+    native_norm = native_opt.backward_step_with_grad_clip(native_loss, 0.75)
+
+    ref_params = [base.clone().requires_grad_(True) for base in bases]
+    ref_loss = sum(
+        (param * factor).sum()
+        for param, factor in zip(ref_params, factors, strict=True)
+    )
+    ref_opt = torch.optim.SGD(
+        ref_params,
+        lr=1e-2,
+        momentum=0.9,
+        weight_decay=0.05,
+        nesterov=True,
+    )
+    ref_opt.zero_grad(set_to_none=True)
+    ref_loss.backward()
+    ref_norm = torch.nn.utils.clip_grad_norm_(ref_params, 0.75)
+    ref_opt.step()
+
+    assert native_norm == pytest.approx(float(ref_norm.item()), rel=1e-6, abs=1e-6)
+    for native_param, ref_param in zip(native_params, ref_params, strict=True):
+        torch.testing.assert_close(native_param, ref_param, atol=1e-6, rtol=1e-6)
 
 
 def test_native_clip_grad_norm_matches_torch():

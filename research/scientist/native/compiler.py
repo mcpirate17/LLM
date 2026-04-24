@@ -144,7 +144,11 @@ def _attach_subgraph_dispatchers(
             graph = layer_graph_list[i]
             if not hasattr(graph, "nodes"):
                 continue
-            dispatcher = SubgraphDispatcher(graph, supported_ops)
+            dispatcher = _build_layer_subgraph_dispatcher(
+                layer=layer,
+                graph=graph,
+                supported_ops=supported_ops,
+            )
             if dispatcher.all_native:
                 layer._subgraph_dispatcher = dispatcher
                 dispatchers_attached += 1
@@ -167,6 +171,31 @@ def _attach_subgraph_dispatchers(
             "attached": 0,
             "error": str(exc),
         }
+
+
+def _build_layer_subgraph_dispatcher(
+    *,
+    layer: Any,
+    graph: Any,
+    supported_ops: set[str],
+) -> Any:
+    try:
+        from ...synthesis.native_bound_graph import BoundNativeSubgraphDispatcher
+        from ...synthesis.native_compile import _bound_dispatcher_inputs_from_layer
+        from ...synthesis.native_support import graph_has_bound_params
+
+        if graph_has_bound_params(graph):
+            flat_ops, ir_node_ids = _bound_dispatcher_inputs_from_layer(layer, graph)
+            return BoundNativeSubgraphDispatcher(
+                graph,
+                flat_ops=flat_ops,
+                ir_node_ids=ir_node_ids,
+                supported_ops=supported_ops,
+            )
+    except Exception as exc:
+        logger.debug("Failed to build bound subgraph dispatcher: %s", exc)
+
+    return SubgraphDispatcher(graph, supported_ops)
 
 
 def _init_layer_build_report(layer_build: Dict[str, Any]) -> Dict[str, Any]:

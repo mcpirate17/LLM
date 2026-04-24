@@ -378,39 +378,55 @@ def _build_component_entry(
 
     op = row["op_name"]
     prof = grad_health.get(op, {})
-    raw_n = row.get("n_used") or 0
-    raw_s0 = row.get("n_stage0_passed") or 0
+    raw = stored_rates.get(op)
+    raw_n = int(raw["n"]) if raw and raw["n"] > 0 else int(row.get("n_used") or 0)
+    raw_s0 = (
+        int(raw["s0"]) if raw and raw["n"] > 0 else int(row.get("n_stage0_passed") or 0)
+    )
+    raw_s1 = (
+        int(raw["s1"]) if raw and raw["n"] > 0 else int(row.get("n_stage1_passed") or 0)
+    )
     raw_blame, raw_tf, _ = _compute_blame(max_n_used, raw_n, raw_s0)
     corrected = corrected_rates.get(op)
     if corrected and corrected["n"] > 0:
         blame, tf, idf = _compute_blame(max_n_used, corrected["n"], corrected["s0"])
     else:
         blame, tf, idf = _compute_blame(max_n_used, raw_n, raw_s0)
-    stored = stored_rates.get(op)
-    if stored and stored["n"] > 0:
-        n_used = stored["n"]
-        n_s0 = stored["s0"]
-        n_s1 = stored["s1"]
+    if corrected is not None:
+        n_used = int(corrected["n"])
+        n_s0 = int(corrected["s0"])
+        n_s1 = int(corrected["s1"])
     else:
         n_used = raw_n
         n_s0 = raw_s0
-        n_s1 = row.get("n_stage1_passed") or 0
+        n_s1 = raw_s1
     n_s05 = row.get("n_stage05_passed") or 0
-    s0_rate = n_s0 / max(n_used, 1)
-    s1_rate = n_s1 / max(n_s0, 1) if n_s0 > 0 else 0.0
+    s0_rate = (n_s0 / n_used) if n_used > 0 else None
+    s1_rate = (n_s1 / n_s0) if n_s0 > 0 else None
     n_excluded = corrected["excluded"] if corrected else 0
     lipschitz = prof.get("lipschitz") or 0.0
+    exclusion_reason = None
+    if n_excluded > 0:
+        if n_used == 0:
+            exclusion_reason = f"excluded {n_excluded} runtime-only failures"
+        else:
+            exclusion_reason = (
+                f"excluded {n_excluded} runtime-only failures from displayed rates"
+            )
 
     if op in S1_EXEMPT_OPS:
+        reasons = ["scaffolding op — not a standalone learner"]
+        if exclusion_reason:
+            reasons.append(exclusion_reason)
         return _build_structural_component(
             op,
-            ["scaffolding op — not a standalone learner"],
+            reasons,
             n_used,
             n_s0,
             n_s05,
             n_s1,
-            s0_rate,
-            s1_rate,
+            float(s0_rate or 0.0),
+            float(s1_rate or 0.0),
             blame,
             raw_blame,
             n_excluded,
@@ -420,7 +436,7 @@ def _build_component_entry(
         )
 
     status, reasons, grad_norm = _classify_component_status(
-        s1_rate,
+        float(s1_rate or 0.0),
         n_s0,
         raw_n,
         blame,
@@ -428,18 +444,23 @@ def _build_component_entry(
         idf,
         prof,
     )
+    if exclusion_reason:
+        reasons = [*reasons, exclusion_reason]
     return {
         "op": op,
         "status": status,
         "reasons": reasons,
         "n_used": n_used,
-        "s0_rate": round(s0_rate, 3),
-        "s1_rate": round(s1_rate, 3),
+        "s0_rate": round(s0_rate, 3) if s0_rate is not None else None,
+        "s1_rate": round(s1_rate, 3) if s1_rate is not None else None,
         "blame": round(blame, 3),
         "fail_rate": round(tf, 3),
         "rarity": round(idf, 3),
         "raw_blame": round(raw_blame, 3),
         "raw_fail_rate": round(raw_tf, 3),
+        "raw_n_used": raw_n,
+        "raw_s0_rate": round(raw_s0 / raw_n, 3) if raw_n > 0 else None,
+        "raw_s1_rate": round(raw_s1 / raw_s0, 3) if raw_s0 > 0 else None,
         "n_excluded": n_excluded,
         "lipschitz": round(lipschitz, 2) if lipschitz else None,
         "grad_norm": round(grad_norm, 1) if grad_norm is not None else None,

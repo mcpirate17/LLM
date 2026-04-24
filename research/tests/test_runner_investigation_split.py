@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import time
 from unittest.mock import MagicMock
+from unittest.mock import patch
 
 
 from research.scientist.runner.execution_investigation import (
@@ -22,6 +23,8 @@ class _StubRunner(_ExecutionInvestigationMixin):
     def __init__(self, **overrides):
         self._update_progress = MagicMock()
         self._emit_event = MagicMock()
+        self._publish_terminal_event = MagicMock()
+        self._fail_experiment_compat = MagicMock()
         self._live_training_context = None
         for k, v in overrides.items():
             setattr(self, k, v)
@@ -124,7 +127,7 @@ class TestHandleInvestigationInfraFailure:
         )
 
         assert result is True
-        nb.fail_experiment.assert_called_once()
+        mixin._fail_experiment_compat.assert_called_once()
         nb.flush_writes.assert_called_once()
         mixin._update_progress.assert_called_once()
         mixin._emit_event.assert_called_once_with(
@@ -231,3 +234,47 @@ class TestSummarizeAndCheckInfra:
         assert ret is not _SKIP_INFRA
         assert hasattr(ret, "n_passed")
         assert ret.n_passed == 1
+
+
+class TestInvestigationModelReconstruction:
+    """Tests for investigation model reconstruction fallback behavior."""
+
+    def test_reconstruct_investigation_model_falls_back_for_byte_unsafe_graph(self):
+        mixin = _make_mixin()
+        config = MagicMock(model_dim=256, n_layers=4, vocab_size=32000)
+        sentinel = object()
+
+        with (
+            patch(
+                "research.scientist.runner.execution_investigation.graph_from_json",
+                return_value=MagicMock(name="graph"),
+            ) as graph_from_json,
+            patch(
+                "research.scientist.runner.execution_investigation.find_byte_safety_violations",
+                return_value=["Byte-unsafe op 'mod_topk'"],
+            ),
+            patch(
+                "research.scientist.runner.execution_investigation._compile_model_legacy",
+                return_value=sentinel,
+            ) as legacy_compile,
+            patch(
+                "research.scientist.runner.execution_investigation.compile_model",
+            ) as native_compile,
+        ):
+            model = mixin._reconstruct_investigation_model(
+                source_result_id="9cfd1d97-336",
+                model_source="fingerprint_refine",
+                graph_json_str="{}",
+                arch_spec_json_str=None,
+                config=config,
+                tp_max_seq=256,
+            )
+
+        assert model is sentinel
+        graph = graph_from_json.return_value
+        legacy_compile.assert_called_once_with(
+            [graph] * config.n_layers,
+            vocab_size=config.vocab_size,
+            max_seq_len=256,
+        )
+        native_compile.assert_not_called()

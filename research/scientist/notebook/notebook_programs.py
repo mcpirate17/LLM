@@ -35,9 +35,13 @@ from .program_writes import (
     normalize_program_result_kwargs,
     should_record_program_result,
 )
-from ..shared_utils import coerce_finite_float as _safe_float
+from .. import shared_utils as _shared_utils
 from .notebook_leaderboard import DuplicateLeaderboardFingerprintError
 from ._shared import ExperimentEntry, LOGGER, sanitize_for_db
+
+
+def _safe_float(value: Any, default: Optional[float] = None) -> Optional[float]:
+    return _shared_utils.coerce_finite_float(value, default)
 
 
 class DuplicateFingerprintError(Exception):

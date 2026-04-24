@@ -182,6 +182,8 @@ OP_NAME_ALIASES: Dict[str, str] = {
     "route_recursion": "depth_gated_transform",
     "routing_conditioned_compression": "signal_conditioned_compression",
     "relu_gate_routing": "relu_gated_moe",
+    # Typo/back-compat shim observed in website/debug references.
+    "long_conv_hyen": "long_conv_hyena",
     # Phase 2 renames (remaining "routing" ops that don't actually route)
     "adaptive_lane_mixer": "difficulty_blend_3way",
     "adaptive_recursion": "depth_weighted_proj",

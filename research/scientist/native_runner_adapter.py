@@ -6,11 +6,15 @@ import logging
 import os
 import re
 import sys
+from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
+
+_PROBE_CACHE_MAX_ENTRIES = 256
+_PROBE_RESULT_CACHE: "OrderedDict[Tuple[Any, ...], Dict[str, Any]]" = OrderedDict()
 
 
 @dataclass
@@ -180,11 +184,18 @@ def try_designer_runtime_probe(layer_graphs: List[Any]) -> Dict[str, Any]:
         report["reason"] = "no_layer_graphs"
         return report
 
+    first_graph = layer_graphs[0]
+    cache_key = _probe_cache_key(state, first_graph)
+    if cache_key is not None:
+        cached = _PROBE_RESULT_CACHE.get(cache_key)
+        if cached is not None:
+            _PROBE_RESULT_CACHE.move_to_end(cache_key)
+            return dict(cached)
+
     report["attempted"] = True
 
     try:
         importer_mod, compiler_mod = _load_designer_runtime_modules()
-        first_graph = layer_graphs[0]
         model_dim = int(getattr(first_graph, "model_dim", 256))
 
         workflow = importer_mod.graph_to_workflow(
@@ -240,6 +251,7 @@ def try_designer_runtime_probe(layer_graphs: List[Any]) -> Dict[str, Any]:
                             "native_bypass_ops": missing_op_names,
                         }
                     )
+                    _remember_probe_result(cache_key, report)
                     return report
             raise  # re-raise if not handled
 
@@ -254,6 +266,7 @@ def try_designer_runtime_probe(layer_graphs: List[Any]) -> Dict[str, Any]:
                 "workflow_node_count": len(workflow.get("nodes") or []),
             }
         )
+        _remember_probe_result(cache_key, report)
         return report
     except Exception as exc:
         report.update(
@@ -263,7 +276,54 @@ def try_designer_runtime_probe(layer_graphs: List[Any]) -> Dict[str, Any]:
                 "reason": f"probe_error:{exc}",
             }
         )
+        _remember_probe_result(cache_key, report)
         return report
+
+
+def _probe_cache_key(
+    state: DesignerRuntimeAdapterState,
+    first_graph: Any,
+) -> Optional[Tuple[Any, ...]]:
+    """Stable key for the expensive designer-runtime probe.
+
+    The probe only inspects the first graph and adapter/runtime state. It does
+    not compile candidate-specific weights, so caching by structural graph
+    fingerprint removes repeated YAML manifest parsing without changing model
+    construction or execution.
+    """
+    fingerprint_fn = getattr(first_graph, "fingerprint", None)
+    if not callable(fingerprint_fn):
+        return None
+    try:
+        fingerprint = str(fingerprint_fn())
+    except Exception as exc:
+        logger.debug("Designer runtime probe cache disabled: %s", exc)
+        return None
+    try:
+        n_ops = int(first_graph.n_ops())
+    except Exception:
+        n_ops = -1
+    return (
+        bool(state.enabled),
+        bool(state.strict),
+        bool(state.designer_runtime_available),
+        str(state.reason),
+        int(getattr(first_graph, "model_dim", 0) or 0),
+        n_ops,
+        fingerprint,
+    )
+
+
+def _remember_probe_result(
+    cache_key: Optional[Tuple[Any, ...]],
+    report: Dict[str, Any],
+) -> None:
+    if cache_key is None:
+        return
+    _PROBE_RESULT_CACHE[cache_key] = dict(report)
+    _PROBE_RESULT_CACHE.move_to_end(cache_key)
+    while len(_PROBE_RESULT_CACHE) > _PROBE_CACHE_MAX_ENTRIES:
+        _PROBE_RESULT_CACHE.popitem(last=False)
 
 
 def build_designer_layer_modules(layer_graphs: List[Any]) -> Dict[str, Any]:

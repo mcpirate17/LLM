@@ -204,6 +204,120 @@ class TestInlineInvestigationLoop(unittest.TestCase):
         self.assertEqual(call_kwargs["source_result_id"], "ccc")
         self.assertEqual(call_kwargs["prog_idx"], 2)
 
+    def test_loop_skips_failed_candidate_and_continues(self):
+        """One bad candidate should not abort the rest of the investigation batch."""
+        mixin = _TestableInvestigationMixin()
+
+        mixin._stop_event = MagicMock()
+        mixin._stop_event.is_set.return_value = False
+        mixin.aria = MagicMock()
+        mixin.aria.total_cost = 0
+        mixin._update_progress = MagicMock()
+        mixin._emit_event = MagicMock()
+
+        def _run_candidate(**kwargs):
+            if kwargs["source_result_id"] == "bad":
+                raise RuntimeError("boom")
+            kwargs["results"]["investigation_results"].append(
+                {"result_id": kwargs["source_result_id"]}
+            )
+
+        mixin._inline_investigate_one_candidate = MagicMock(side_effect=_run_candidate)
+
+        config = MagicMock()
+        config.device = "cpu"
+        config.investigation_steps = 100
+        config.investigation_batch_size = 4
+        config.stage1_steps = 50
+        config.early_stop_patience = 10
+        config.early_stop_min_steps = 5
+        config.max_cost_dollars = 0
+        config.n_training_programs = 1
+
+        nb = MagicMock()
+        result_ids = ["bad", "good"]
+        inv_map = {
+            "bad": {"graph_json": "{}", "loss_ratio": 0.3},
+            "good": {"graph_json": "{}", "loss_ratio": 0.2},
+        }
+        ckpt = MagicMock()
+        ckpt.load_phase.return_value = None
+
+        with (
+            patch(
+                "research.scientist.runner.continuous_investigation._build_source_map",
+                return_value=inv_map,
+            ),
+            patch(
+                "research.scientist.runner.continuous_investigation.resolve_device",
+                return_value="cpu",
+            ),
+        ):
+            results = mixin._inline_investigation_loop(
+                config,
+                nb,
+                result_ids,
+                inv_map,
+                "exp-2",
+                ckpt,
+            )
+
+        self.assertEqual(mixin._inline_investigate_one_candidate.call_count, 2)
+        self.assertEqual(len(results["investigation_results"]), 1)
+        self.assertEqual(results["investigation_results"][0]["result_id"], "good")
+        self.assertEqual(len(results["candidate_failures"]), 1)
+        self.assertEqual(results["candidate_failures"][0]["result_id"], "bad")
+
+    def test_loop_raises_when_every_candidate_fails(self):
+        """A batch with zero successful candidates should still fail loudly."""
+        mixin = _TestableInvestigationMixin()
+
+        mixin._stop_event = MagicMock()
+        mixin._stop_event.is_set.return_value = False
+        mixin.aria = MagicMock()
+        mixin.aria.total_cost = 0
+        mixin._update_progress = MagicMock()
+        mixin._emit_event = MagicMock()
+        mixin._inline_investigate_one_candidate = MagicMock(
+            side_effect=RuntimeError("still bad")
+        )
+
+        config = MagicMock()
+        config.device = "cpu"
+        config.investigation_steps = 100
+        config.investigation_batch_size = 4
+        config.stage1_steps = 50
+        config.early_stop_patience = 10
+        config.early_stop_min_steps = 5
+        config.max_cost_dollars = 0
+        config.n_training_programs = 1
+
+        nb = MagicMock()
+        result_ids = ["bad"]
+        inv_map = {"bad": {"graph_json": "{}", "loss_ratio": 0.3}}
+        ckpt = MagicMock()
+        ckpt.load_phase.return_value = None
+
+        with (
+            patch(
+                "research.scientist.runner.continuous_investigation._build_source_map",
+                return_value=inv_map,
+            ),
+            patch(
+                "research.scientist.runner.continuous_investigation.resolve_device",
+                return_value="cpu",
+            ),
+        ):
+            with self.assertRaises(RuntimeError):
+                mixin._inline_investigation_loop(
+                    config,
+                    nb,
+                    result_ids,
+                    inv_map,
+                    "exp-3",
+                    ckpt,
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

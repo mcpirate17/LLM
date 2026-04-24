@@ -16,6 +16,7 @@ from ..llm.context_experiment import (
 from ..llm.context_hypothesis import build_hypothesis_context
 from ..shared_utils import resolve_device
 from ._helpers import clear_gpu_memory
+from ._lifecycle import _LifecycleMixin
 
 import logging
 
@@ -28,6 +29,11 @@ class _ContinuousModesMixin:
     """Synthesis, evolution, novelty, refinement mode runners."""
 
     __slots__ = ()
+    _publish_terminal_event = _LifecycleMixin._publish_terminal_event
+    _publish_continuous_modes_terminal_event = _LifecycleMixin._publish_terminal_event
+    _fail_experiment_compat = _LifecycleMixin._fail_experiment_compat
+    _complete_experiment_compat = _LifecycleMixin._complete_experiment_compat
+    _log_learning_event_compat = _LifecycleMixin._log_learning_event_compat
 
     def _run_continuous_synthesis(
         self,

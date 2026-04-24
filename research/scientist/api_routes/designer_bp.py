@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import importlib
 import logging
-import sys
-from pathlib import Path
 from typing import Callable
 
 from flask import jsonify, request
@@ -16,25 +14,17 @@ from .deps import ApiRouteContext
 
 logger = logging.getLogger(__name__)
 
-_PROJECT_ROOT = Path(__file__).resolve().parents[3]
-_ARIA_DESIGNER_ROOT = _PROJECT_ROOT / "aria_designer"
-
 
 def _load_designer_importer(*names: str) -> tuple[Callable, ...]:
-    """Load importer functions from the colocated aria_designer checkout."""
-    if str(_PROJECT_ROOT) not in sys.path:
-        sys.path.insert(0, str(_PROJECT_ROOT))
-    if not _ARIA_DESIGNER_ROOT.exists():
-        raise ImportError(f"aria_designer root not found at {_ARIA_DESIGNER_ROOT}")
-
-    last_error: Exception | None = None
-    for module_name in ("runtime.importer", "aria_designer.runtime.importer"):
-        try:
-            module = importlib.import_module(module_name)
-            return tuple(getattr(module, name) for name in names)
-        except (ImportError, AttributeError) as exc:
-            last_error = exc
-    raise ImportError("Could not import aria_designer runtime importer") from last_error
+    """Load importer functions from the canonical aria_designer package path."""
+    module = importlib.import_module("aria_designer.runtime.importer")
+    try:
+        return tuple(getattr(module, name) for name in names)
+    except AttributeError as exc:
+        missing = ", ".join(name for name in names if not hasattr(module, name))
+        raise ImportError(
+            f"aria_designer.runtime.importer is missing: {missing}"
+        ) from exc
 
 
 def _register_lifecycle_routes(app) -> None:
@@ -489,12 +479,7 @@ def _register_v1_proxy_routes(app, notebook_path: str, wnb) -> None:
             return proxied
         # Fallback: read directly from the designer component database
         try:
-            import sys as _sys
-
-            _designer_root = str(Path(__file__).resolve().parents[2] / "aria_designer")
-            if _designer_root not in _sys.path:
-                _sys.path.insert(0, _designer_root)
-            from api.app import database as _designer_db
+            from aria_designer.api.app import database as _designer_db
 
             comps = _designer_db.list_components(
                 category=request.args.get("category"),
@@ -528,15 +513,12 @@ def _register_v1_proxy_routes(app, notebook_path: str, wnb) -> None:
         if proxied is not None:
             return proxied
 
-        # Local fallback: use importer directly
         try:
             (_import_survivors,) = _load_designer_importer("import_survivors")
-            return jsonify(
-                _import_survivors(n=n, sort_by=sort_by, min_novelty=min_novelty)
-            )
-        except ImportError:
-            survivors = nb.get_top_programs(n, sort_by=sort_by)
-            return jsonify(survivors)
+        except ImportError as exc:
+            logger.error("Importer import failed: %s", exc, exc_info=True)
+            return jsonify({"error": f"Importer not available: {exc}"}), 501
+        return jsonify(_import_survivors(n=n, sort_by=sort_by, min_novelty=min_novelty))
 
     @app.route("/api/v1/import/survivors/<result_id>", methods=["POST"])
     def api_v1_import_single(result_id):
@@ -547,7 +529,6 @@ def _register_v1_proxy_routes(app, notebook_path: str, wnb) -> None:
         if proxied is not None:
             return proxied
 
-        # Local fallback: use importer directly
         try:
             (_import_single,) = _load_designer_importer("import_single")
         except ImportError as exc:

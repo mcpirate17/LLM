@@ -9,6 +9,62 @@ pub enum NkStatus {
     ErrInternal = -3,
 }
 
+#[repr(C)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum NrStatus {
+    Ok = 0,
+    ErrInvalidArgument = -1,
+    ErrUnsupportedIr = -2,
+    ErrCompileFailure = -3,
+    ErrExecutionFailure = -4,
+    ErrInternal = -5,
+    ErrStrictUnsupported = -6,
+}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum NrOptimizer {
+    Sgd = 1,
+    Adamw = 2,
+}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct NrTrainTensorF32 {
+    pub param: *mut f32,
+    pub grad: *const f32,
+    pub momentum: *mut f32,
+    pub exp_avg: *mut f32,
+    pub exp_avg_sq: *mut f32,
+    pub numel: i64,
+}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct NrOptimizerStepRequest {
+    pub optimizer: NrOptimizer,
+    pub tensors: *mut NrTrainTensorF32,
+    pub n_tensors: i32,
+    pub learning_rate: f64,
+    pub momentum: f64,
+    pub beta1: f64,
+    pub beta2: f64,
+    pub eps: f64,
+    pub weight_decay: f64,
+    pub max_grad_norm: f64,
+    pub nesterov: i32,
+    pub step: i64,
+}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct NrOptimizerStepResponse {
+    pub status: NrStatus,
+    pub grad_norm: f64,
+    pub elements: i64,
+    pub message: *const c_char,
+}
+
 pub type NkUnaryF32Fn =
     Option<unsafe extern "C" fn(x: *const f32, y: *mut f32, n: i64) -> NkStatus>;
 pub type NkBinaryF32Fn =
@@ -295,6 +351,8 @@ pub struct NkRegistration {
 }
 
 extern "C" {
+    pub fn nr_optimizer_clip_step_f32(req: *const NrOptimizerStepRequest) -> NrOptimizerStepResponse;
+
     pub fn aria_registry_init();
     pub fn nk_is_registered(op_name: *const c_char) -> i32;
     pub fn nk_dispatch(op_name: *const c_char) -> *const NkRegistration;

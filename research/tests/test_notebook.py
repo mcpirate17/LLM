@@ -19,6 +19,7 @@ import json
 import os
 import sqlite3
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -2456,6 +2457,77 @@ class TestStaleExperimentCleanup(unittest.TestCase):
         """No stale experiments means cleanup returns 0."""
         cleaned = self.nb.cleanup_stale_experiments(timeout_minutes=60)
         self.assertEqual(cleaned, 0)
+
+    def test_delete_experiment_cascade_removes_program_result_children(self):
+        """Experiment deletion must remove program_results and result-linked tables."""
+        exp_id = self.nb.start_experiment("synthesis", {}, "delete cascade test")
+        result_id = self.nb.record_program_result(
+            experiment_id=exp_id,
+            graph_fingerprint="cascade_fp",
+            graph_json='{"nodes": {}}',
+            stage0_passed=True,
+            stage05_passed=True,
+            stage1_passed=False,
+            loss_ratio=1.1,
+        )
+        self.nb.flush_writes()
+
+        now = time.time()
+        self.nb.conn.execute(
+            "INSERT INTO training_curves (result_id, step, loss, grad_norm, step_time_ms) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (result_id, 1, 1.23, 0.45, 12.0),
+        )
+        self.nb.conn.execute(
+            "INSERT INTO leaderboard (entry_id, result_id, timestamp, model_source) "
+            "VALUES (?, ?, ?, ?)",
+            ("lb_" + result_id, result_id, now, "graph_synthesis"),
+        )
+        self.nb.conn.execute(
+            "INSERT OR REPLACE INTO program_graph_features "
+            "(result_id, graph_fingerprint, template_name, templates_json, motifs_json, "
+            "slot_usage_json, op_count, pair_count, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                result_id,
+                "cascade_fp",
+                "template_a",
+                "[]",
+                "[]",
+                "{}",
+                1,
+                1,
+                now,
+            ),
+        )
+        self.nb.conn.execute(
+            "INSERT OR REPLACE INTO program_graph_ops (result_id, graph_fingerprint, op_name) "
+            "VALUES (?, ?, ?)",
+            (result_id, "cascade_fp", "linear_proj"),
+        )
+        self.nb.conn.execute(
+            "INSERT OR REPLACE INTO program_graph_pairs (result_id, graph_fingerprint, signature) "
+            "VALUES (?, ?, ?)",
+            (result_id, "cascade_fp", "linear_proj->add"),
+        )
+        self.nb.conn.commit()
+
+        self.nb._delete_experiment_cascade(exp_id)
+
+        for table, key, value in (
+            ("experiments", "experiment_id", exp_id),
+            ("program_results", "experiment_id", exp_id),
+            ("leaderboard", "result_id", result_id),
+            ("training_curves", "result_id", result_id),
+            ("program_graph_features", "result_id", result_id),
+            ("program_graph_ops", "result_id", result_id),
+            ("program_graph_pairs", "result_id", result_id),
+        ):
+            row = self.nb.conn.execute(
+                f"SELECT COUNT(*) AS n FROM {table} WHERE {key} = ?",
+                (value,),
+            ).fetchone()
+            self.assertEqual(row["n"], 0, table)
 
 
 class TestNotebookThreadAffinity(unittest.TestCase):

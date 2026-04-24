@@ -99,6 +99,13 @@ class IRExecutorV2(nn.Module):
             self._exec_ops = exec_plan.exec_ops
         return plan
 
+    def _apply(self, fn):
+        # The execution plan owns the per-op modules. If it is still lazy when
+        # model.to(device) runs, those modules would be created later on CPU
+        # and mixed into CUDA forwards.
+        self._ensure_plan()
+        return super()._apply(fn)
+
     def _bound_native_inputs(self) -> Dict[str, list[object | None] | list[int]]:
         if not self._has_bound_params:
             return {}

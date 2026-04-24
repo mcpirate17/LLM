@@ -447,6 +447,15 @@ CREATE TABLE IF NOT EXISTS failure_signatures (
     last_updated REAL
 );
 
+CREATE TABLE IF NOT EXISTS failure_signature_suppressions (
+    signature TEXT PRIMARY KEY,
+    reason TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT 'audit',
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at REAL NOT NULL,
+    last_updated REAL NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS op_rehabilitation_cache (
     op_name TEXT PRIMARY KEY,
     compile_passed INTEGER,
@@ -898,6 +907,15 @@ CREATE TABLE IF NOT EXISTS template_stats (
     min_loss REAL,
     std_loss REAL,
     mean_novelty REAL,
+    avg_induction_auc REAL,
+    avg_binding_auc REAL,
+    avg_binding_composite REAL,
+    avg_ar_auc REAL,
+    avg_hellaswag_acc REAL,
+    avg_blimp_overall_accuracy REAL,
+    avg_induction_v2_investigation_auc REAL,
+    avg_binding_v2_investigation_auc REAL,
+    math_space_rate REAL,
     last_updated REAL NOT NULL
 );
 
@@ -910,6 +928,15 @@ CREATE TABLE IF NOT EXISTS op_stats (
     min_loss REAL,
     std_loss REAL,
     mean_novelty REAL,
+    avg_induction_auc REAL,
+    avg_binding_auc REAL,
+    avg_binding_composite REAL,
+    avg_ar_auc REAL,
+    avg_hellaswag_acc REAL,
+    avg_blimp_overall_accuracy REAL,
+    avg_induction_v2_investigation_auc REAL,
+    avg_binding_v2_investigation_auc REAL,
+    math_space_rate REAL,
     co_occurrence_json TEXT,  -- JSON: {other_op: count} for top-20 co-occurring ops
     last_updated REAL NOT NULL
 );
@@ -923,6 +950,15 @@ CREATE TABLE IF NOT EXISTS motif_stats (
     min_loss REAL,
     std_loss REAL,
     mean_novelty REAL,
+    avg_induction_auc REAL,
+    avg_binding_auc REAL,
+    avg_binding_composite REAL,
+    avg_ar_auc REAL,
+    avg_hellaswag_acc REAL,
+    avg_blimp_overall_accuracy REAL,
+    avg_induction_v2_investigation_auc REAL,
+    avg_binding_v2_investigation_auc REAL,
+    math_space_rate REAL,
     best_template TEXT,  -- template where this motif performed best
     last_updated REAL NOT NULL
 );
@@ -936,6 +972,15 @@ CREATE TABLE IF NOT EXISTS slot_stats (
     s1_pass_count INTEGER NOT NULL DEFAULT 0,
     mean_loss REAL,
     min_loss REAL,
+    avg_induction_auc REAL,
+    avg_binding_auc REAL,
+    avg_binding_composite REAL,
+    avg_ar_auc REAL,
+    avg_hellaswag_acc REAL,
+    avg_blimp_overall_accuracy REAL,
+    avg_induction_v2_investigation_auc REAL,
+    avg_binding_v2_investigation_auc REAL,
+    math_space_rate REAL,
     -- Per-class success tracking (drives adaptive slot expansion)
     class_outcomes TEXT,                  -- JSON: {motif_class: {n, s1, mean_loss}}
     -- Wildcard tracking

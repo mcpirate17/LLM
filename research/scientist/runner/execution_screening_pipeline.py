@@ -890,10 +890,7 @@ class _ExecutionScreeningPipelineMixin:
         _s0_op_counts: Dict[str, Dict[str, int]] = {}  # op -> {n_used, n_s0, n_s05}
 
         # Pre-import outside graph loop to avoid per-node import overhead
-        try:
-            from ...synthesis.primitives import get_primitive as _get_primitive
-        except ImportError:
-            _get_primitive = None
+        from ...synthesis.primitives import get_primitive as _get_primitive
 
         # Phase 3: Per-candidate screening loop
         for i, graph in enumerate(graphs):

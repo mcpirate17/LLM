@@ -25,6 +25,7 @@ from ..notebook import LabNotebook, ExperimentEntry
 from ..json_utils import json_safe
 from ..runtime_events import publish_lifecycle_event
 from ...healer.core import HealerTaskSpec
+from ._lifecycle import _LifecycleMixin
 
 import logging
 
@@ -35,6 +36,54 @@ from ._types import RunConfig
 
 class _CycleMixin:
     """Main experiment cycle, proactive repair, healer integration."""
+
+    _publish_terminal_event = _LifecycleMixin._publish_terminal_event
+    _fail_experiment_compat = _LifecycleMixin._fail_experiment_compat
+    _complete_experiment_compat = _LifecycleMixin._complete_experiment_compat
+    _log_learning_event_compat = _LifecycleMixin._log_learning_event_compat
+
+    def _refresh_generation_stats_if_stale(
+        self,
+        nb: LabNotebook,
+        *,
+        max_age_seconds: float = 600.0,
+    ) -> None:
+        db_path = str(getattr(nb, "_db_path", "") or getattr(self, "notebook_path", ""))
+        if not db_path:
+            return
+        try:
+            nb.flush_writes()
+            row = nb.conn.execute(
+                "SELECT MAX(last_updated) FROM template_stats"
+            ).fetchone()
+            last_updated = float(row[0] or 0.0) if row else 0.0
+            age_seconds = (
+                time.time() - last_updated if last_updated > 0.0 else float("inf")
+            )
+            if age_seconds <= max_age_seconds:
+                return
+            from research.tools.backfill_stats import backfill
+
+            t0 = time.time()
+            counts = backfill(db_path, conn=nb.conn)
+            elapsed = time.time() - t0
+            logger.info(
+                "Refreshed generation stats tables in %.2fs (age was %.0fs): %s",
+                elapsed,
+                age_seconds,
+                counts,
+            )
+            self._emit_event(
+                "generation_stats_refreshed",
+                {
+                    "db_path": db_path,
+                    "age_seconds": age_seconds,
+                    "elapsed_seconds": elapsed,
+                    "counts": counts,
+                },
+            )
+        except Exception as e:
+            logger.warning("Failed refreshing generation stats tables: %s", e)
 
     def run_aria_cycle(
         self,
@@ -51,6 +100,7 @@ class _CycleMixin:
             selected_mode=None,
             note=f"Planning cycle {n_experiments}.",
         )
+        self._refresh_generation_stats_if_stale(nb)
 
         # Get digest from distiller if available
         _digest = None
@@ -254,10 +304,15 @@ class _CycleMixin:
         self._emit_event = _tracked_emit
         self._update_progress = _tracked_progress
 
+        cycle_done = threading.Event()
+
         def _cycle_watchdog():
             nonlocal _watchdog_fired
-            while not self._stop_event.is_set():
-                time.sleep(30)  # check every 30s
+            while not self._stop_event.is_set() and not cycle_done.is_set():
+                if cycle_done.wait(
+                    30
+                ):  # check every 30s, exit immediately at cycle end
+                    return
                 if self._stop_event.is_set():
                     return
                 idle = time.time() - _last_activity[0]
@@ -347,6 +402,8 @@ class _CycleMixin:
             )
         finally:
             # Restore original methods and signal watchdog thread to exit
+            cycle_done.set()
+            watchdog.join(timeout=1.0)
             self._emit_event = _orig_emit
             self._update_progress = _orig_progress
             # If watchdog fired, clear stop event so continuous mode can proceed

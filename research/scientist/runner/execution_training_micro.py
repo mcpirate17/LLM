@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import json
 import math
+import os
 import time
 from contextlib import nullcontext
 from typing import Any, Dict, Optional, Tuple
@@ -349,21 +350,53 @@ class _ExecutionTrainingMicroMixin:
                 result["optimizer_synthesized"] = synth_opt.name
             else:
                 resolved_type = opt_type if opt_type != "synthesized" else "adamw"
-                optimizer = build_optimizer(
-                    model_params,
-                    optimizer_type=resolved_type,
-                    lr=effective_lr,
-                    weight_decay=getattr(config, "optimizer_weight_decay", 0.01),
-                    betas=getattr(config, "optimizer_betas", (0.9, 0.95)),
-                    fused=(
-                        dev.type == "cuda"
-                        and bool(getattr(config, "optimizer_fused", True))
-                    ),
-                    foreach=(
-                        dev.type == "cuda"
-                        and bool(getattr(config, "optimizer_foreach", True))
-                    ),
+                native_optimizer_flag = (
+                    os.getenv("MICRO_TRAIN_NATIVE_OPTIMIZER", "1").strip().lower()
                 )
+                prefer_native_optimizer = native_optimizer_flag not in {
+                    "0",
+                    "false",
+                    "no",
+                    "off",
+                }
+                if (
+                    prefer_native_optimizer
+                    and dev.type == "cpu"
+                    and resolved_type in {"adamw", "sgd"}
+                ):
+                    from ...eval.training_core import make_optimizer
+
+                    optimizer = make_optimizer(
+                        model_params,
+                        optimizer_name=resolved_type,
+                        lr=effective_lr,
+                        weight_decay=getattr(config, "optimizer_weight_decay", 0.01),
+                        momentum=getattr(config, "optimizer_momentum", 0.95),
+                        betas=getattr(config, "optimizer_betas", (0.9, 0.95)),
+                        prefer_native=True,
+                    )
+                    result["native_optimizer_requested"] = True
+                    result["native_optimizer_active"] = optimizer.__class__.__name__
+                else:
+                    optimizer = build_optimizer(
+                        model_params,
+                        optimizer_type=resolved_type,
+                        lr=effective_lr,
+                        weight_decay=getattr(config, "optimizer_weight_decay", 0.01),
+                        betas=getattr(config, "optimizer_betas", (0.9, 0.95)),
+                        fused=(
+                            dev.type == "cuda"
+                            and bool(getattr(config, "optimizer_fused", True))
+                        ),
+                        foreach=(
+                            dev.type == "cuda"
+                            and bool(getattr(config, "optimizer_foreach", True))
+                        ),
+                    )
+                    if prefer_native_optimizer:
+                        result["native_optimizer_requested"] = True
+                        result["native_optimizer_active"] = False
+                        result["native_optimizer_skip_reason"] = "cpu_adamw_sgd_only"
         trace_totals_ms["model_setup"] += (time.perf_counter() - setup_t0) * 1000.0
         return optimizer, opt_type
 
@@ -789,16 +822,48 @@ class _ExecutionTrainingMicroMixin:
                 step_state["early_exit_aux_loss_tensor"] = ee_loss.detach()
 
             bwd_t0 = time.perf_counter()
-            with (
-                ctx.trace_ctx("backward_pass"),
-                ctx.run_profiler.trace("backward_pass_ms"),
-            ):
-                step_state["grad_norm"] = _backward_loss(
-                    loss,
-                    optimizer=ctx.optimizer,
-                    grad_clip_norm=ctx.grad_clip_norm,
-                    model_params=ctx.model_params,
+            native_backward_step = getattr(
+                ctx.optimizer, "backward_step_with_grad_clip", None
+            )
+            use_native_backward_step = callable(native_backward_step) and (
+                os.getenv("MICRO_TRAIN_NATIVE_BACKWARD_STEP", "1").strip().lower()
+                not in {"0", "false", "no", "off"}
+            )
+            fused_step = getattr(ctx.optimizer, "step_with_grad_clip", None)
+            use_fused_native_step = (
+                callable(fused_step) and not use_native_backward_step
+            )
+            if use_native_backward_step:
+                with (
+                    ctx.trace_ctx("backward_optimizer_step"),
+                    ctx.run_profiler.trace("backward_optimizer_step_ms"),
+                ):
+                    step_state["grad_norm"] = native_backward_step(
+                        loss, ctx.grad_clip_norm
+                    )
+                ctx.trace_totals_ms["backward_optimizer_step"] = (
+                    ctx.trace_totals_ms.get("backward_optimizer_step", 0.0)
+                    + (time.perf_counter() - bwd_t0) * 1000.0
                 )
+                return
+            if use_fused_native_step:
+                with (
+                    ctx.trace_ctx("backward_pass"),
+                    ctx.run_profiler.trace("backward_pass_ms"),
+                ):
+                    ctx.optimizer.zero_grad(set_to_none=True)
+                    loss.backward()
+            else:
+                with (
+                    ctx.trace_ctx("backward_pass"),
+                    ctx.run_profiler.trace("backward_pass_ms"),
+                ):
+                    step_state["grad_norm"] = _backward_loss(
+                        loss,
+                        optimizer=ctx.optimizer,
+                        grad_clip_norm=ctx.grad_clip_norm,
+                        model_params=ctx.model_params,
+                    )
             ctx.trace_totals_ms["backward_pass"] += (
                 time.perf_counter() - bwd_t0
             ) * 1000.0
@@ -808,7 +873,10 @@ class _ExecutionTrainingMicroMixin:
                 ctx.trace_ctx("optimizer_step"),
                 ctx.run_profiler.trace("optimizer_step_ms"),
             ):
-                _optimizer_step(ctx.optimizer)
+                if use_fused_native_step:
+                    step_state["grad_norm"] = fused_step(ctx.grad_clip_norm)
+                else:
+                    _optimizer_step(ctx.optimizer)
             ctx.trace_totals_ms["optimizer_step"] += (
                 time.perf_counter() - opt_t0
             ) * 1000.0

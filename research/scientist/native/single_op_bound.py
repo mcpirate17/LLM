@@ -4,11 +4,17 @@ from typing import Any, Iterable
 
 import torch
 
+_BOUND_SINGLE_OPS: frozenset[str] | None = None
+
 
 def _single_op_bound_native_ops() -> frozenset[str]:
+    global _BOUND_SINGLE_OPS
+    if _BOUND_SINGLE_OPS is not None:
+        return _BOUND_SINGLE_OPS
     from ...synthesis.native_support import BOUND_BACKWARD_OPS, BOUND_PARAM_OPS
 
-    return frozenset(BOUND_BACKWARD_OPS & BOUND_PARAM_OPS)
+    _BOUND_SINGLE_OPS = frozenset(BOUND_BACKWARD_OPS & BOUND_PARAM_OPS)
+    return _BOUND_SINGLE_OPS
 
 
 def dispatch_single_op_bound_native(
@@ -20,6 +26,11 @@ def dispatch_single_op_bound_native(
 ) -> torch.Tensor | None:
     if op_name not in _single_op_bound_native_ops():
         return None
+    cache = getattr(module, "_native_single_op_dispatchers", None)
+    if cache is not None:
+        dispatcher = cache.get(op_name)
+        if dispatcher is not None:
+            return dispatcher.try_dispatch(x)
     dispatcher = _get_or_create_single_op_dispatcher(
         op_name,
         module,

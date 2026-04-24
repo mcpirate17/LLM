@@ -440,7 +440,7 @@ class RunConfig:
     # P(pass_s1), not raw GBM output.  By default the floor comes from the
     # persisted ensemble artifact's calibrated gate_threshold.  Set an explicit
     # floor only to override that artifact-backed operating point.
-    gbm_prescreener_enabled: bool = True
+    gbm_prescreener_enabled: bool = False
     screening_ensemble_p_pass_floor: float = 0.0
     gbm_gate_threshold: float = 0.0  # deprecated alias for the override above
 

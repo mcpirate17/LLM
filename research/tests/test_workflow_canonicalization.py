@@ -1,5 +1,6 @@
 from __future__ import annotations
 from research.synthesis.graph import ComputationGraph
+from research.synthesis.workflow_converter import workflow_to_computation_graph
 from aria_designer.runtime.importer import graph_to_workflow
 
 
@@ -29,3 +30,24 @@ def test_research_import_canonicalization():
     # Ensure no unprefixed IDs
     for ct in node_types:
         assert "/" in ct, f"Component type '{ct}' is not canonicalized"
+
+
+def test_workflow_import_canonicalizes_long_conv_hyen_alias():
+    workflow = {
+        "workflow_id": "test_long_conv_hyen_alias",
+        "metadata": {"model_dim": 128},
+        "nodes": [
+            {"id": "in", "component_type": "io/input", "params": {}},
+            {"id": "mix", "component_type": "mixing/long_conv_hyen", "params": {}},
+            {"id": "out", "component_type": "io/output_head", "params": {}},
+        ],
+        "edges": [
+            {"id": "e0", "source": "in", "target": "mix"},
+            {"id": "e1", "source": "mix", "target": "out"},
+        ],
+    }
+
+    graph = workflow_to_computation_graph(workflow)
+    op_names = {node.op_name for node in graph.nodes.values()}
+    assert "long_conv_hyena" in op_names
+    assert "long_conv_hyen" not in op_names

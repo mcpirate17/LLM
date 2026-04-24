@@ -13,7 +13,7 @@ class _LifecycleMixin:
     def _publish_terminal_event(
         self,
         *,
-        producer: str,
+        producer: str = "runner.lifecycle",
         event_type: str,
         exp_id: str,
         payload: dict[str, Any],

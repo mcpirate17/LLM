@@ -77,7 +77,7 @@ def get_reference_losses(db_path: str) -> Dict[str, float]:
     global _ref_losses_cache, _ref_losses_ts
 
     now = time.monotonic()
-    if _ref_losses_cache and (now - _ref_losses_ts) < _REF_LOSSES_TTL:
+    if _ref_losses_ts > 0.0 and (now - _ref_losses_ts) < _REF_LOSSES_TTL:
         return _ref_losses_cache
 
     ref: Dict[str, float] = {}

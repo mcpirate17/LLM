@@ -27,12 +27,14 @@ logger = logging.getLogger(__name__)
 from research.defaults import MODEL_DIM
 from .graph import ComputationGraph, OpNode
 from .grammar_support import (
+    DBOpWeightCache,
     DBTemplateWeightCache,
     EFFICIENCY_TEMPLATES,
     EfficiencyPrior,
     OP_TO_TEMPLATE,
     ROUTING_COMPRESSION_MOE_OPS,
     SlotAdaptationCache,
+    blend_template_weights_with_db,
     check_graph_space_consistency,
     check_shape_compat,
     compute_motif_weights_from_op_weights,
@@ -486,6 +488,7 @@ class GrammarConfig:
 
 
 _db_weight_cache = DBTemplateWeightCache(ttl=60.0)
+_db_op_weight_cache = DBOpWeightCache(ttl=60.0)
 _slot_adaptation_cache = SlotAdaptationCache(ttl=120.0)
 _ROUTING_COMPRESSION_MOE_OPS = ROUTING_COMPRESSION_MOE_OPS
 
@@ -615,21 +618,31 @@ def generate_layer_graph(
     # Template and motif weights flow directly into template/motif pickers.
     # Non-empty dicts carry research-signal priors from execution_screening.
     # If config has explicit weights, use them. If use_db_weights, try DB.
+    db_tpl_weights = _db_weight_cache.get() if config.use_db_weights else None
     if config.template_weights:
-        tpl_weights = dict(config.template_weights)
-    elif config.use_db_weights:
-        tpl_weights = _db_weight_cache.get()  # TTL-cached, returns None if unavailable
+        tpl_weights = blend_template_weights_with_db(
+            dict(config.template_weights),
+            db_tpl_weights,
+        )
+    elif db_tpl_weights:
+        tpl_weights = db_tpl_weights  # TTL-cached, returns None if unavailable
     else:
         tpl_weights = None
     motif_weights = dict(config.motif_weights) if config.motif_weights else {}
+    effective_op_weights = dict(config.op_weights) if config.op_weights else {}
+    if config.use_db_weights:
+        db_op_weights = _db_op_weight_cache.get()
+        if db_op_weights:
+            for op_name, weight in db_op_weights.items():
+                effective_op_weights.setdefault(op_name, weight)
 
     # Bridge op_weights → motif_weights: geometric mean of constituent op weights.
     # Always applied (not just boosts) so penalties propagate through motifs.
-    if config.op_weights or config.exploration_targets:
+    if effective_op_weights or config.exploration_targets:
         from .motifs import ALL_MOTIFS
 
-    if config.op_weights:
-        cached_factors = compute_motif_weights_from_op_weights(config.op_weights)
+    if effective_op_weights:
+        cached_factors = compute_motif_weights_from_op_weights(effective_op_weights)
         for motif_name, (factor, default_lift) in cached_factors.items():
             current = motif_weights.get(motif_name, default_lift)
             motif_weights[motif_name] = current * factor
@@ -674,6 +687,8 @@ def generate_layer_graph(
         slot_adaptations = _slot_adaptation_cache.get()
         if slot_adaptations:
             graph.metadata["_slot_adaptations"] = slot_adaptations
+    if effective_op_weights:
+        graph.metadata["_op_weights"] = dict(effective_op_weights)
 
     # High sparsity bias → force first template from efficiency pool
     if config.structured_sparsity_bias > 0.5 and tpl_weights:
@@ -755,7 +770,7 @@ def generate_layer_graph(
             template_name=config.forced_template,
             template_weights=_iter_weights,
             motif_weights=motif_weights,
-            op_weights=config.op_weights or None,
+            op_weights=effective_op_weights or None,
             exploration_budget=config.template_exploration_budget,
             allowed_template_names=_iter_allowed_names,
         )
@@ -855,6 +870,15 @@ def generate_layer_graph(
     _validate_graph(graph, config)
 
     return graph
+
+
+def random_graph(
+    config: Optional[GrammarConfig] = None,
+    seed: Optional[int] = None,
+) -> ComputationGraph:
+    """Backward-compatible alias for older callers."""
+
+    return generate_layer_graph(config=config, seed=seed)
 
 
 def _validate_graph(graph: ComputationGraph, config: GrammarConfig) -> None:

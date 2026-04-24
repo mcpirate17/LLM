@@ -599,9 +599,10 @@ def run_induction_v2_probe(model: nn.Module, device: str) -> Dict[str, Any]:
     )
 
     r = run_induction_v2_investigation(model, device=device)
+    ok = str(r.status or "") == "ok"
     return {
-        "induction_v2_investigation_auc": r.auc,
-        "induction_v2_investigation_max_gap_acc": r.max_gap_acc,
+        "induction_v2_investigation_auc": r.auc if ok else None,
+        "induction_v2_investigation_max_gap_acc": r.max_gap_acc if ok else None,
         "induction_v2_investigation_steps_trained": r.steps_trained,
         "induction_v2_investigation_status": r.status,
         "induction_v2_investigation_elapsed_ms": r.elapsed_ms,
@@ -616,9 +617,12 @@ def run_binding_v2_probe(model: nn.Module, device: str) -> Dict[str, Any]:
     )
 
     r = run_binding_v2_investigation(model, device=device)
+    ok = str(r.status or "") == "ok"
     return {
-        "binding_v2_investigation_auc": r.auc,
-        "binding_v2_investigation_max_distance_acc": r.max_distance_acc,
+        "binding_v2_investigation_auc": r.auc if ok else None,
+        "binding_v2_investigation_max_distance_acc": (
+            r.max_distance_acc if ok else None
+        ),
         "binding_v2_investigation_train_steps": r.train_steps,
         "binding_v2_investigation_status": r.status,
         "binding_v2_investigation_elapsed_ms": r.elapsed_ms,
@@ -882,10 +886,18 @@ def _seed_fingerprint_cache(
         if not fp_key:
             continue
         entry = fp_cache.setdefault(fp_key, {})
-        for c in present_cols:
-            v = r[c]
-            if v is not None and c not in entry:
-                entry[c] = v
+        for _probe_name, probe_cols in reusable_probe_cols.items():
+            status_col = next((c for c in probe_cols if c.endswith("_status")), None)
+            if status_col in present_cols:
+                status = r[status_col]
+                if status is not None and str(status) != "ok":
+                    continue
+            for c in probe_cols:
+                if c not in present_cols:
+                    continue
+                v = r[c]
+                if v is not None and c not in entry:
+                    entry[c] = v
 
 
 def _prefetch_probe_state(
@@ -1076,7 +1088,7 @@ def run_backfill(
         p: cols for p, cols in _FP_REUSABLE_PROBE_COLS.items() if p in probes
     }
     fp_cache: Dict[str, Dict[str, Any]] = {}
-    if reusable_probe_cols:
+    if reusable_probe_cols and not force:
         _seed_fingerprint_cache(nb, reusable_probe_cols, fp_cache)
 
     evaluated = 0

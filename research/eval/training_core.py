@@ -155,33 +155,118 @@ class _NativeSGDOptimizer(_NativeOptimizerBase):
         self._native = load_runner_native()
         self._momentum = float(momentum)
         self._weight_decay = float(weight_decay)
+        self.param_groups[0]["momentum"] = self._momentum
+        self.param_groups[0]["weight_decay"] = self._weight_decay
         self._state = {
             id(param): torch.zeros_like(param)
             for param in self.params
             if momentum != 0.0
         }
+        self._cached_active_params: list[torch.Tensor] | None = None
+        self._cached_active_momentum: list[torch.Tensor] | None = None
+
+    def _active_step_tensors_from_cache(
+        self,
+    ) -> tuple[list[torch.Tensor], list[torch.Tensor], list[torch.Tensor]] | None:
+        cached_params = self._cached_active_params
+        cached_momentum = self._cached_active_momentum
+        if cached_params is None or cached_momentum is None:
+            return None
+        grads = [param.grad for param in cached_params]
+        if any(grad is None for grad in grads):
+            self._cached_active_params = None
+            self._cached_active_momentum = None
+            return None
+        return cached_params, grads, cached_momentum  # type: ignore[return-value]
+
+    @torch.no_grad()
+    def _active_step_tensors(
+        self,
+    ) -> tuple[list[torch.Tensor], list[torch.Tensor], list[torch.Tensor]]:
+        cached = self._active_step_tensors_from_cache()
+        if cached is not None:
+            return cached
+        active_params: list[torch.Tensor] = []
+        active_grads: list[torch.Tensor] = []
+        active_momentum: list[torch.Tensor] = []
+        for param in self.params:
+            if param.grad is None:
+                continue
+            active_params.append(param)
+            active_grads.append(param.grad)
+            buf = self._state.get(id(param))
+            if buf is None:
+                buf = torch.zeros_like(param)
+                if self._momentum != 0.0:
+                    self._state[id(param)] = buf
+            active_momentum.append(buf)
+        if active_params and len(active_params) == len(self.params):
+            self._cached_active_params = active_params
+            self._cached_active_momentum = active_momentum
+        return active_params, active_grads, active_momentum
 
     @torch.no_grad()
     def step(self):
         lr = float(self.param_groups[0]["lr"])
-        for param in self.params:
-            grad = param.grad
-            if grad is None:
-                continue
-            buf = self._state.get(id(param))
-            if buf is None:
-                buf = torch.zeros_like(param)
-            self._native.sgd_step_inplace(
-                param,
-                grad,
-                buf,
+        active_params, active_grads, active_momentum = self._active_step_tensors()
+        if active_params:
+            self._native.sgd_step_many_inplace(
+                active_params,
+                active_grads,
+                active_momentum,
                 lr,
                 self._momentum,
                 self._weight_decay,
                 bool(self._momentum != 0.0),
             )
-            if self._momentum != 0.0:
-                self._state[id(param)] = buf
+
+    @torch.no_grad()
+    def step_with_grad_clip(self, max_norm: float) -> float:
+        lr = float(self.param_groups[0]["lr"])
+        active_params, active_grads, active_momentum = self._active_step_tensors()
+        if not active_params:
+            return 0.0
+        if max_norm <= 0.0:
+            self.step()
+            return 0.0
+        return float(
+            self._native.sgd_clip_step_many_inplace(
+                active_params,
+                active_grads,
+                active_momentum,
+                lr,
+                self._momentum,
+                self._weight_decay,
+                bool(self._momentum != 0.0),
+                float(max_norm),
+                1e-6,
+            )
+        )
+
+    @torch.no_grad()
+    def backward_step_with_grad_clip(
+        self, loss: torch.Tensor, max_norm: float
+    ) -> float:
+        self.zero_grad(set_to_none=True)
+        lr = float(self.param_groups[0]["lr"])
+        momentum_bufs = (
+            [self._state[id(param)] for param in self.params]
+            if self._momentum != 0.0
+            else []
+        )
+        return float(
+            self._native.sgd_backward_clip_step_many_inplace(
+                loss,
+                self.params,
+                momentum_bufs,
+                lr,
+                self._momentum,
+                self._weight_decay,
+                bool(self._momentum != 0.0),
+                float(max_norm),
+                1e-6,
+            )
+        )
 
 
 class _NativeAdamWOptimizer(_NativeOptimizerBase):
@@ -200,26 +285,85 @@ class _NativeAdamWOptimizer(_NativeOptimizerBase):
         self._beta2 = float(betas[1])
         self._weight_decay = float(weight_decay)
         self._eps = float(eps)
+        self.param_groups[0]["betas"] = (self._beta1, self._beta2)
+        self.param_groups[0]["weight_decay"] = self._weight_decay
+        self.param_groups[0]["eps"] = self._eps
         self._step = 0
         self._state = {
             id(param): (torch.zeros_like(param), torch.zeros_like(param))
             for param in self.params
         }
+        self._cached_active_params: list[torch.Tensor] | None = None
+        self._cached_active_exp_avg: list[torch.Tensor] | None = None
+        self._cached_active_exp_avg_sq: list[torch.Tensor] | None = None
+
+    def _active_step_tensors_from_cache(
+        self,
+    ) -> (
+        tuple[
+            list[torch.Tensor],
+            list[torch.Tensor],
+            list[torch.Tensor],
+            list[torch.Tensor],
+        ]
+        | None
+    ):
+        cached_params = self._cached_active_params
+        cached_exp_avg = self._cached_active_exp_avg
+        cached_exp_avg_sq = self._cached_active_exp_avg_sq
+        if cached_params is None or cached_exp_avg is None or cached_exp_avg_sq is None:
+            return None
+        grads = [param.grad for param in cached_params]
+        if any(grad is None for grad in grads):
+            self._cached_active_params = None
+            self._cached_active_exp_avg = None
+            self._cached_active_exp_avg_sq = None
+            return None
+        return cached_params, grads, cached_exp_avg, cached_exp_avg_sq  # type: ignore[return-value]
+
+    @torch.no_grad()
+    def _active_step_tensors(
+        self,
+    ) -> tuple[
+        list[torch.Tensor],
+        list[torch.Tensor],
+        list[torch.Tensor],
+        list[torch.Tensor],
+    ]:
+        active_params: list[torch.Tensor] = []
+        active_grads: list[torch.Tensor] = []
+        active_exp_avg: list[torch.Tensor] = []
+        active_exp_avg_sq: list[torch.Tensor] = []
+        cached = self._active_step_tensors_from_cache()
+        if cached is not None:
+            return cached
+        for param in self.params:
+            if param.grad is None:
+                continue
+            exp_avg, exp_avg_sq = self._state[id(param)]
+            active_params.append(param)
+            active_grads.append(param.grad)
+            active_exp_avg.append(exp_avg)
+            active_exp_avg_sq.append(exp_avg_sq)
+        if active_params and len(active_params) == len(self.params):
+            self._cached_active_params = active_params
+            self._cached_active_exp_avg = active_exp_avg
+            self._cached_active_exp_avg_sq = active_exp_avg_sq
+        return active_params, active_grads, active_exp_avg, active_exp_avg_sq
 
     @torch.no_grad()
     def step(self):
         self._step += 1
         lr = float(self.param_groups[0]["lr"])
-        for param in self.params:
-            grad = param.grad
-            if grad is None:
-                continue
-            exp_avg, exp_avg_sq = self._state[id(param)]
-            self._native.adamw_step_inplace(
-                param,
-                grad,
-                exp_avg,
-                exp_avg_sq,
+        active_params, active_grads, active_exp_avg, active_exp_avg_sq = (
+            self._active_step_tensors()
+        )
+        if active_params:
+            self._native.adamw_step_many_inplace(
+                active_params,
+                active_grads,
+                active_exp_avg,
+                active_exp_avg_sq,
                 lr,
                 self._beta1,
                 self._beta2,
@@ -227,6 +371,72 @@ class _NativeAdamWOptimizer(_NativeOptimizerBase):
                 self._weight_decay,
                 int(self._step),
             )
+
+    @torch.no_grad()
+    def step_with_grad_clip(self, max_norm: float) -> float:
+        self._step += 1
+        lr = float(self.param_groups[0]["lr"])
+        active_params, active_grads, active_exp_avg, active_exp_avg_sq = (
+            self._active_step_tensors()
+        )
+        if not active_params:
+            return 0.0
+        if max_norm <= 0.0:
+            self._native.adamw_step_many_inplace(
+                active_params,
+                active_grads,
+                active_exp_avg,
+                active_exp_avg_sq,
+                lr,
+                self._beta1,
+                self._beta2,
+                self._eps,
+                self._weight_decay,
+                int(self._step),
+            )
+            return 0.0
+        return float(
+            self._native.adamw_clip_step_many_inplace(
+                active_params,
+                active_grads,
+                active_exp_avg,
+                active_exp_avg_sq,
+                lr,
+                self._beta1,
+                self._beta2,
+                self._eps,
+                self._weight_decay,
+                int(self._step),
+                float(max_norm),
+                1e-6,
+            )
+        )
+
+    @torch.no_grad()
+    def backward_step_with_grad_clip(
+        self, loss: torch.Tensor, max_norm: float
+    ) -> float:
+        self._step += 1
+        lr = float(self.param_groups[0]["lr"])
+        self.zero_grad(set_to_none=True)
+        exp_avgs = [self._state[id(param)][0] for param in self.params]
+        exp_avg_sqs = [self._state[id(param)][1] for param in self.params]
+        return float(
+            self._native.adamw_backward_clip_step_many_inplace(
+                loss,
+                self.params,
+                exp_avgs,
+                exp_avg_sqs,
+                lr,
+                self._beta1,
+                self._beta2,
+                self._eps,
+                self._weight_decay,
+                int(self._step),
+                float(max_norm),
+                1e-6,
+            )
+        )
 
 
 def make_optimizer(
@@ -237,34 +447,49 @@ def make_optimizer(
     weight_decay: float = 0.01,
     momentum: float = 0.0,
     betas: Optional[tuple[float, float]] = None,
+    prefer_native: Optional[bool] = None,
 ):
+    param_values = list(parameters)
     opt = (optimizer_name or "adamw").lower()
-    enable_paramwise_native = os.getenv(
-        "ARIA_ENABLE_EVAL_PARAMWISE_NATIVE_OPTIMIZER", "0"
-    ).strip().lower() in {"1", "true", "yes", "on"}
+    if prefer_native is None:
+        native_flag = (
+            os.getenv("ARIA_ENABLE_EVAL_PARAMWISE_NATIVE_OPTIMIZER", "1")
+            .strip()
+            .lower()
+        )
+        enable_paramwise_native = native_flag not in {"0", "false", "no", "off"}
+    else:
+        enable_paramwise_native = bool(prefer_native)
+    if enable_paramwise_native and any(
+        getattr(param, "device", None) is not None and param.device.type != "cpu"
+        for param in param_values
+    ):
+        enable_paramwise_native = False
     if enable_paramwise_native:
         try:
             # Probe: fail fast if the native extension can't be built/loaded.
             load_runner_native()
             if opt == "sgd":
                 return _NativeSGDOptimizer(
-                    parameters,
+                    param_values,
                     lr=lr,
                     momentum=momentum,
                     weight_decay=weight_decay,
                 )
             adamw_betas = betas if betas is not None else (0.9, 0.999)
             return _NativeAdamWOptimizer(
-                parameters,
+                param_values,
                 lr=lr,
                 betas=adamw_betas,
                 weight_decay=weight_decay,
             )
         except Exception:
+            if prefer_native is True:
+                raise
             pass
     if opt == "sgd":
         return torch.optim.SGD(
-            parameters,
+            param_values,
             lr=lr,
             momentum=momentum,
             weight_decay=weight_decay,
@@ -272,7 +497,7 @@ def make_optimizer(
         )
     adamw_betas = betas if betas is not None else (0.9, 0.999)
     return make_adamw(
-        parameters,
+        param_values,
         lr=lr,
         weight_decay=weight_decay,
         betas=adamw_betas,
@@ -334,10 +559,20 @@ def run_training_loop(
                 diverged = True
                 break
 
-            loss.backward()
-            if clip_grad > 0:
-                clip_grad_norm(param_values, clip_grad)
-            optimizer.step()
+            native_backward_step = getattr(
+                optimizer, "backward_step_with_grad_clip", None
+            )
+            if callable(native_backward_step):
+                native_backward_step(loss, float(clip_grad))
+            else:
+                loss.backward()
+                fused_step = getattr(optimizer, "step_with_grad_clip", None)
+                if callable(fused_step) and clip_grad > 0:
+                    fused_step(float(clip_grad))
+                else:
+                    if clip_grad > 0:
+                        clip_grad_norm(param_values, clip_grad)
+                    optimizer.step()
             if scheduler_step is not None:
                 scheduler_step()
 

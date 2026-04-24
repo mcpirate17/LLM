@@ -84,6 +84,58 @@ AUDITED_FALSE_FAILURE_SIGNATURES: dict[str, str] = {
         "Failures were dominated by oversized routing assemblies; the norm-to-merge edge "
         "was not the root cause."
     ),
+    "gated_lane_blend->linear_proj": (
+        "Historical failures were contaminated by alias/canonicalization split with "
+        "route_lanes plus name-sensitive wiring behavior; this is not stable pair evidence."
+    ),
+    "layernorm->gated_linear_attention": (
+        "Failures are dominated by gated_linear_attention's near-global weakness; the pair "
+        "does not isolate a norm-specific adjacency failure."
+    ),
+    "layernorm->mixture_of_recursions": (
+        "Failures are receiver-dominated because mixture_of_recursions currently has near-zero "
+        "global S1 success; this is not pair-specific evidence."
+    ),
+    "linear_proj->calibrated_branch_merge": (
+        "Observed failures cluster in weak multiscale routing templates; the pair is being "
+        "penalized for template-family behavior rather than adjacency alone."
+    ),
+    "linear_proj->gated_lane_blend": (
+        "Historical failures were contaminated by alias/canonicalization split with "
+        "route_lanes plus name-sensitive wiring behavior; this is not stable pair evidence."
+    ),
+    "mixture_of_recursions->linear_proj": (
+        "Failures are source-dominated because mixture_of_recursions itself is globally failing; "
+        "the pair does not add pair-specific explanatory power."
+    ),
+    "rmsnorm->gated_linear_attention": (
+        "Failures are dominated by gated_linear_attention's near-global weakness; the pair "
+        "does not isolate a norm-specific adjacency failure."
+    ),
+    "route_recursion->linear_proj": (
+        "Historical failures were contaminated by deprecated alias storage for depth_gated_transform "
+        "and name-sensitive wiring behavior, not a stable pair break."
+    ),
+    "rwkv_channel->rmsnorm": (
+        "Current productive RWKV template families use this neighborhood successfully; the "
+        "historical penalty reflects placement/template effects, not a toxic adjacency."
+    ),
+    "semi_structured_2_4_linear->calibrated_branch_merge": (
+        "Observed failures cluster in weak multiscale routing templates; the pair is being "
+        "penalized for template-family behavior rather than adjacency alone."
+    ),
+    "semi_structured_2_4_linear->linear_proj": (
+        "Observed failures cluster in weak multiscale routing templates; this is not strong "
+        "evidence that sparse linear restoration is intrinsically toxic."
+    ),
+    "signal_conditioned_compression->add": (
+        "Historical failures were contaminated by routing_conditioned_compression alias usage "
+        "and routing-template assembly effects; add was often just the residual sink."
+    ),
+    "split2->rmsnorm": (
+        "Failures were dominated by split-slot placement misuse and downstream full-width contract "
+        "breaks, not by the normalization edge itself."
+    ),
 }
 
 AUDITED_FALSE_FAILURE_SIGNATURE_SET = frozenset(AUDITED_FALSE_FAILURE_SIGNATURES)

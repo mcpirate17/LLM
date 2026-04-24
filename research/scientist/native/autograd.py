@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 from typing import Any, Dict, Optional, Set
 
 import torch
@@ -19,6 +20,28 @@ from .single_op_bound import dispatch_single_op_bound_native
 from .tensor_bridge import supports_host_array_bridge, to_device_tensor
 
 logger = logging.getLogger(__name__)
+_NATIVE_AUTOGRAD_MODULE = None
+
+
+def _get_native_autograd_dispatch():
+    """Resolve native autograd lazily once to avoid a circular import at module load."""
+    global _NATIVE_AUTOGRAD_MODULE
+    if _NATIVE_AUTOGRAD_MODULE is None:
+        from .. import native_autograd
+
+        _NATIVE_AUTOGRAD_MODULE = native_autograd
+    return (
+        _NATIVE_AUTOGRAD_MODULE.NATIVE_AUTOGRAD_SUPPORTED_OPS,
+        _NATIVE_AUTOGRAD_MODULE.native_autograd_dispatch,
+    )
+
+
+def _dispatch_op_native_compat(op_name: str, *tensors: Any, **kwargs: Any) -> Any:
+    legacy_facade = sys.modules.get("research.scientist.native_runner")
+    facade_dispatch = getattr(legacy_facade, "dispatch_op_native", None)
+    if callable(facade_dispatch) and facade_dispatch is not dispatch_op_native:
+        return facade_dispatch(op_name, *tensors, **kwargs)
+    return dispatch_op_native(op_name, *tensors, **kwargs)
 
 
 class NativeSubgraphFunction:
@@ -149,6 +172,16 @@ class SubgraphDispatcher:
         self._autograd_fn: Any = None
         # Pre-convert graph to native_ir JSON once; reuse across dispatches.
         self._ir_json: Optional[str] = None
+        try:
+            from ...synthesis.native_support import graph_has_bound_params
+
+            if graph_has_bound_params(graph):
+                self._all_native = False
+                self._last_refusal_reason = (
+                    "bound_param_graph_requires_bound_dispatcher"
+                )
+        except Exception:
+            pass
         if self._all_native:
             try:
                 from ...synthesis.native_ir_converter import graph_to_native_ir_json
@@ -487,15 +520,9 @@ class NativeForwardWrapper:
                             self._dispatch_count += 1
                             self._last_fallback_reason = None
                             return result
-                    from ..native_autograd import (
-                        NATIVE_AUTOGRAD_SUPPORTED_OPS,
-                        native_autograd_dispatch,
-                    )
-
-                    if native_op_name in NATIVE_AUTOGRAD_SUPPORTED_OPS:
-                        result = native_autograd_dispatch(
-                            native_op_name, *dispatch_tensors
-                        )
+                    supported_ops, native_dispatch = _get_native_autograd_dispatch()
+                    if native_op_name in supported_ops:
+                        result = native_dispatch(native_op_name, *dispatch_tensors)
                         self._dispatch_count += 1
                         self._last_fallback_reason = None
                         return result
@@ -503,7 +530,7 @@ class NativeForwardWrapper:
                     self._last_fallback_reason = "native_backward_unavailable"
                     return None
 
-                result = dispatch_op_native(
+                result = _dispatch_op_native_compat(
                     native_op_name, *dispatch_tensors, **dispatch_kwargs
                 )
                 self._dispatch_count += 1

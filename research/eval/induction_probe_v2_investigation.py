@@ -73,8 +73,6 @@ def _restore_module_tensors(
 
 
 def _amp_context(device: str):
-    if str(device).startswith("cuda"):
-        return torch.autocast(device_type="cuda", dtype=torch.bfloat16)
     return nullcontext()
 
 
@@ -208,7 +206,14 @@ def _run_induction_v2_on(
     t0 = time.perf_counter()
     result = InductionV2Result(gap_accuracies={})
     probe_model.train()
-    opt = make_adamw(probe_model.parameters(), lr=lr)
+    # Fused AdamW has produced graph-dependent CUDA grouped-tensor failures
+    # here, which should not become false zero-capability evidence.
+    opt = make_adamw(
+        probe_model.parameters(),
+        lr=lr,
+        fused_if_available=False,
+        foreach=False,
+    )
     compiled = _maybe_compile(probe_model)
 
     # Pre-generate ALL training batches per gap, up-front. Shape:

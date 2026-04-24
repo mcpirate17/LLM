@@ -8,13 +8,15 @@ Uses Flask for simplicity, SSE for real-time streaming.
 
 from __future__ import annotations
 
+import atexit
+import faulthandler
 import logging
 import os
+import signal
 import shutil
 import subprocess
 import threading
 import traceback
-from collections import defaultdict
 from pathlib import Path
 from typing import Optional
 
@@ -22,16 +24,16 @@ from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 
 from research.defaults import LAB_NOTEBOOK_DB
+from .notebook import LabNotebook
 from .api_routes import _designer as _designer_mod
+from .api_routes._api_health import API_HEALTH_COUNTERS, API_HEALTH_LOCK
 
 logger = logging.getLogger(__name__)
 
 _DASHBOARD_DIR = Path(__file__).resolve().parent.parent / "dashboard"
 _DEFAULT_DASHBOARD_BUILD_DIR = _DASHBOARD_DIR / "build"
-
-# ── API health counters (consumed by /api/observability/api-health) ──
-_api_health_counters: dict = defaultdict(int)
-_api_health_lock = threading.Lock()
+_FAULT_LOG_STREAM = None
+_PROCESS_LIFECYCLE_REGISTERED = False
 
 # Test hooks (monkeypatched by test_designer_proxy_live.py)
 _DESIGNER_PROXY_ENABLED = _designer_mod._DESIGNER_PROXY_ENABLED
@@ -128,8 +130,8 @@ def create_app(
             else:
                 bucket = "5xx"
             key = f"{request.path}:{bucket}"
-            with _api_health_lock:
-                _api_health_counters[key] += 1
+            with API_HEALTH_LOCK:
+                API_HEALTH_COUNTERS[key] += 1
             if code >= 400:
                 logger.warning(f"{request.method} {request.path} -> {code}")
         return response
@@ -304,12 +306,21 @@ def _setup_logging(log_dir: Optional[str] = None):
     root.setLevel(logging.INFO)
 
     # Suppress polling endpoint spam from werkzeug
-    logging.getLogger("werkzeug").addFilter(_PollEndpointFilter())
+    werkzeug_logger = logging.getLogger("werkzeug")
+    if not any(isinstance(f, _PollEndpointFilter) for f in werkzeug_logger.filters):
+        werkzeug_logger.addFilter(_PollEndpointFilter())
 
     # Quiet noisy third-party loggers
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
     logging.getLogger("urllib3").setLevel(logging.WARNING)
+
+    for handler in list(root.handlers):
+        root.removeHandler(handler)
+        try:
+            handler.close()
+        except Exception:
+            pass
 
     fmt = logging.Formatter(
         "%(asctime)s %(levelname)-8s [%(name)s] %(message)s",
@@ -320,6 +331,7 @@ def _setup_logging(log_dir: Optional[str] = None):
     console = logging.StreamHandler()
     console.setLevel(logging.INFO)
     console.setFormatter(fmt)
+    console._aria_dashboard_handler = True
     root.addHandler(console)
 
     # File handler
@@ -336,10 +348,121 @@ def _setup_logging(log_dir: Optional[str] = None):
         )
         file_handler.setLevel(logging.INFO)
         file_handler.setFormatter(fmt)
+        file_handler._aria_dashboard_handler = True
         root.addHandler(file_handler)
         logger.info(f"Logging to {log_path}")
     except Exception as e:
         logger.warning(f"Could not create log file at {log_path}: {e}")
+
+    return log_path
+
+
+def _register_process_lifecycle_logging(
+    notebook_path: str,
+    log_path: Path,
+) -> None:
+    """Log dashboard process exits/signals and dump tracebacks on fatal paths."""
+    global _FAULT_LOG_STREAM, _PROCESS_LIFECYCLE_REGISTERED
+
+    if _PROCESS_LIFECYCLE_REGISTERED:
+        return
+
+    try:
+        _FAULT_LOG_STREAM = open(log_path, "a", buffering=1, encoding="utf-8")
+        faulthandler.enable(_FAULT_LOG_STREAM, all_threads=True)
+    except Exception as exc:
+        logger.warning("Failed to enable faulthandler at %s: %s", log_path, exc)
+        _FAULT_LOG_STREAM = None
+
+    def _log_exit(reason: str) -> None:
+        logger.error(
+            "Dashboard process exit path: %s | pid=%d ppid=%d thread=%s notebook=%s",
+            reason,
+            os.getpid(),
+            os.getppid(),
+            threading.current_thread().name,
+            notebook_path,
+        )
+        if _FAULT_LOG_STREAM is not None:
+            try:
+                faulthandler.dump_traceback(file=_FAULT_LOG_STREAM, all_threads=True)
+                _FAULT_LOG_STREAM.flush()
+            except Exception:
+                pass
+        for handler in logging.getLogger().handlers:
+            try:
+                handler.flush()
+            except Exception:
+                pass
+
+    atexit.register(lambda: _log_exit("atexit"))
+
+    for sig_name in ("SIGTERM", "SIGINT", "SIGHUP", "SIGQUIT"):
+        sig = getattr(signal, sig_name, None)
+        if sig is None:
+            continue
+        try:
+            prev_handler = signal.getsignal(sig)
+        except Exception:
+            continue
+
+        def _make_handler(_sig_name, _prev_handler):
+            def _handler(signum, frame):
+                _log_exit(f"signal={_sig_name}")
+                if callable(_prev_handler) and _prev_handler not in (
+                    signal.SIG_DFL,
+                    signal.SIG_IGN,
+                ):
+                    return _prev_handler(signum, frame)
+                if _prev_handler == signal.SIG_IGN:
+                    return None
+                raise SystemExit(128 + signum)
+
+            return _handler
+
+        try:
+            signal.signal(sig, _make_handler(sig_name, prev_handler))
+        except Exception as exc:
+            logger.debug("Signal handler registration failed for %s: %s", sig_name, exc)
+
+    _PROCESS_LIFECYCLE_REGISTERED = True
+
+
+def _recover_orphaned_running_experiments(notebook_path: str) -> int:
+    """At API startup, mark inherited 'running' rows as failed.
+
+    The dashboard executes experiments in-process. If the API process is starting,
+    any pre-existing DB rows still marked 'running' are orphaned from a dead process.
+    """
+    nb = None
+    try:
+        nb = LabNotebook(notebook_path, use_native=False)
+        running_rows = nb.conn.execute(
+            "SELECT experiment_id FROM experiments WHERE status = 'running'"
+        ).fetchall()
+        running_ids = [
+            str(row["experiment_id"]) for row in running_rows if row["experiment_id"]
+        ]
+        if not running_ids:
+            return 0
+        cleaned = nb.cleanup_stale_experiments(
+            timeout_minutes=0, startup_failure_minutes=0
+        )
+        logger.warning(
+            "Recovered %d orphaned running experiment(s) at dashboard startup: %s",
+            cleaned,
+            ", ".join(running_ids[:10]),
+        )
+        return cleaned
+    except Exception as exc:
+        logger.warning("Startup orphaned-run recovery failed: %s", exc, exc_info=True)
+        return 0
+    finally:
+        if nb is not None:
+            try:
+                nb.close()
+            except Exception:
+                pass
 
 
 def run_server(
@@ -349,8 +472,15 @@ def run_server(
     debug: bool = False,
 ):
     """Run the API server."""
-    _setup_logging()
+    log_path = _setup_logging()
+    _register_process_lifecycle_logging(notebook_path, Path(log_path))
+    recovered = _recover_orphaned_running_experiments(notebook_path)
     app = create_app(notebook_path)
+    if recovered:
+        logger.warning(
+            "Dashboard startup recovered %d orphaned experiment(s) before serving API",
+            recovered,
+        )
     logger.info(f"Starting Aria's Dashboard API on http://{host}:{port}")
     print(f"Starting Aria's Dashboard API on http://{host}:{port}")
     app.run(host=host, port=port, debug=debug, threaded=True)

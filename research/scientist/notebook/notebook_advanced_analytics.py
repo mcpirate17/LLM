@@ -10,12 +10,15 @@ import uuid
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 from ..json_utils import json_safe
 from ..runtime_events import publish_runtime_event
 from ._shared import LOGGER
-from .failure_signature_audits import AUDITED_FALSE_FAILURE_SIGNATURE_SET
+from .failure_signature_audits import (
+    AUDITED_FALSE_FAILURE_SIGNATURES,
+    AUDITED_FALSE_FAILURE_SIGNATURE_SET,
+)
 from .notebook_analytics import (
     _ALL_CATEGORIES,
     _cached_extract_op_names,
@@ -298,15 +301,21 @@ class _AdvancedAnalyticsMixin:
     ) -> Dict[str, List[Dict[str, Any]]]:
         """Compute soft failure-risk penalties with positive-evidence filtering."""
         support = self._top_performer_bigram_support()
-        rows = self.conn.execute(
-            """SELECT signature, n_failures, n_successes, error_types
+        rows = list(
+            self.conn.execute(
+                """SELECT signature, n_failures, n_successes, error_types
                FROM failure_signatures"""
-        ).fetchall()
+            ).fetchall()
+        )
+        suppressions = self._effective_failure_signature_suppressions(
+            rows=rows,
+            min_seen=5,
+        )
         risk_signatures: List[Dict[str, Any]] = []
         critical: List[Dict[str, Any]] = []
         for row in rows:
             signature = str(row["signature"] or "")
-            if signature in AUDITED_FALSE_FAILURE_SIGNATURE_SET:
+            if signature in suppressions:
                 continue
             positive_support = int(support.get(str(row["signature"]), 0))
             if positive_support < 3:
@@ -433,6 +442,303 @@ class _AdvancedAnalyticsMixin:
             support[str(row["signature"])] += 1
         return dict(support)
 
+    def _get_failure_signature_suppressions(self) -> Dict[str, Dict[str, str]]:
+        suppressions = {
+            signature: {"reason": reason, "source": "audit"}
+            for signature, reason in AUDITED_FALSE_FAILURE_SIGNATURES.items()
+        }
+        try:
+            rows = self.conn.execute(
+                """SELECT signature, reason, source
+                   FROM failure_signature_suppressions
+                   WHERE active = 1"""
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return suppressions
+        for row in rows:
+            signature = str(row["signature"] or "").strip()
+            if not signature:
+                continue
+            suppressions[signature] = {
+                "reason": str(row["reason"] or "").strip(),
+                "source": str(row["source"] or "").strip() or "manual",
+            }
+        return suppressions
+
+    def sync_failure_signature_suppressions(self) -> int:
+        """Persist audited signature suppressions into the notebook database."""
+        now = time.time()
+        rows = [
+            (signature, reason, "audit", 1, now, now)
+            for signature, reason in AUDITED_FALSE_FAILURE_SIGNATURES.items()
+        ]
+        if not rows:
+            return 0
+        self.conn.executemany(
+            """INSERT INTO failure_signature_suppressions
+               (signature, reason, source, active, created_at, last_updated)
+               VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(signature) DO UPDATE SET
+                   reason = excluded.reason,
+                   source = excluded.source,
+                   active = 1,
+                   last_updated = excluded.last_updated""",
+            rows,
+        )
+        self._maybe_commit()
+        return len(rows)
+
+    def _failure_signature_op_fail_rates(
+        self, ops: Sequence[str]
+    ) -> Dict[str, Dict[str, float]]:
+        op_names = sorted({str(op).strip() for op in ops if str(op).strip()})
+        if not op_names:
+            return {}
+        placeholders = ",".join("?" for _ in op_names)
+        rows = self.conn.execute(
+            f"""
+            SELECT
+                go.op_name AS op_name,
+                COUNT(DISTINCT pr.result_id) AS total,
+                COUNT(DISTINCT CASE WHEN pr.stage1_passed = 1 THEN pr.result_id END) AS successes
+            FROM program_graph_ops go
+            JOIN program_results pr ON pr.result_id = go.result_id
+            WHERE go.op_name IN ({placeholders})
+              AND (
+                  pr.stage1_passed = 1
+                  OR (pr.stage0_passed = 1 AND pr.stage05_passed = 1)
+              )
+            GROUP BY go.op_name
+            """,
+            op_names,
+        ).fetchall()
+        stats: Dict[str, Dict[str, float]] = {}
+        for row in rows:
+            total = int(row["total"] or 0)
+            successes = int(row["successes"] or 0)
+            failures = max(0, total - successes)
+            stats[str(row["op_name"])] = {
+                "total": total,
+                "successes": successes,
+                "fail_rate": (float(failures) / float(total)) if total else 0.0,
+            }
+        return stats
+
+    def _failure_signature_template_dominance(
+        self, signatures: Sequence[str]
+    ) -> Dict[str, Dict[str, Any]]:
+        sigs = sorted({str(sig).strip() for sig in signatures if str(sig).strip()})
+        if not sigs:
+            return {}
+        placeholders = ",".join("?" for _ in sigs)
+        rows = self.conn.execute(
+            f"""
+            SELECT
+                gp.signature AS signature,
+                COALESCE(NULLIF(gf.template_name, ''), '') AS template_name,
+                COUNT(*) AS support
+            FROM program_graph_pairs gp
+            JOIN program_results pr ON pr.result_id = gp.result_id
+            LEFT JOIN program_graph_features gf ON gf.result_id = gp.result_id
+            WHERE gp.signature IN ({placeholders})
+              AND (
+                  pr.stage1_passed = 1
+                  OR (pr.stage0_passed = 1 AND pr.stage05_passed = 1)
+              )
+            GROUP BY gp.signature, COALESCE(NULLIF(gf.template_name, ''), '')
+            """,
+            sigs,
+        ).fetchall()
+        buckets: Dict[str, Dict[str, Any]] = defaultdict(
+            lambda: {"known_total": 0, "best_template": "", "best_support": 0}
+        )
+        template_names: set[str] = set()
+        for row in rows:
+            signature = str(row["signature"] or "").strip()
+            template_name = str(row["template_name"] or "").strip()
+            support = int(row["support"] or 0)
+            if not signature or not template_name or support <= 0:
+                continue
+            entry = buckets[signature]
+            entry["known_total"] += support
+            if support > int(entry["best_support"]):
+                entry["best_support"] = support
+                entry["best_template"] = template_name
+            template_names.add(template_name)
+        if not template_names:
+            return {}
+        template_placeholders = ",".join("?" for _ in template_names)
+        template_rows = self.conn.execute(
+            f"""
+            SELECT template_name, eval_count, s1_pass_count
+            FROM template_stats
+            WHERE template_name IN ({template_placeholders})
+            """,
+            sorted(template_names),
+        ).fetchall()
+        template_rates = {}
+        for row in template_rows:
+            total = int(row["eval_count"] or 0)
+            passed = int(row["s1_pass_count"] or 0)
+            template_rates[str(row["template_name"] or "")] = (
+                float(passed) / float(total) if total else 0.0
+            )
+        dominance: Dict[str, Dict[str, Any]] = {}
+        for signature, entry in buckets.items():
+            known_total = int(entry["known_total"] or 0)
+            best_support = int(entry["best_support"] or 0)
+            best_template = str(entry["best_template"] or "")
+            if known_total <= 0 or best_support <= 0 or not best_template:
+                continue
+            dominance[signature] = {
+                "template_name": best_template,
+                "template_share": float(best_support) / float(known_total),
+                "template_support": best_support,
+                "template_s1_rate": float(template_rates.get(best_template, 0.0)),
+            }
+        return dominance
+
+    def _heuristic_failure_signature_suppressions(
+        self,
+        *,
+        rows: Optional[Sequence[Any]] = None,
+        min_seen: int = 5,
+    ) -> Dict[str, str]:
+        source_rows = (
+            list(rows)
+            if rows is not None
+            else list(
+                self.conn.execute(
+                    """SELECT signature, n_failures, n_successes, error_types
+                   FROM failure_signatures"""
+                ).fetchall()
+            )
+        )
+        candidate_rows = []
+        ops: set[str] = set()
+        signatures: set[str] = set()
+        for row in source_rows:
+            signature = str(row["signature"] or "").strip()
+            if not signature or signature in AUDITED_FALSE_FAILURE_SIGNATURE_SET:
+                continue
+            total = int(row["n_failures"] or 0) + int(row["n_successes"] or 0)
+            if total < max(1, int(min_seen)):
+                continue
+            tokens = [tok.strip() for tok in signature.split("->") if tok.strip()]
+            if len(tokens) != 2:
+                continue
+            src, dst = tokens
+            candidate_rows.append((row, src, dst, total))
+            ops.add(src)
+            ops.add(dst)
+            signatures.add(signature)
+        op_rates = self._failure_signature_op_fail_rates(sorted(ops))
+        template_dominance = self._failure_signature_template_dominance(
+            sorted(signatures)
+        )
+        suppressions: Dict[str, str] = {}
+        for row, src, dst, total in candidate_rows:
+            signature = str(row["signature"] or "").strip()
+            pair_fail_rate = float(row["n_failures"] or 0) / float(total)
+            src_fail = float(op_rates.get(src, {}).get("fail_rate", 0.0))
+            dst_fail = float(op_rates.get(dst, {}).get("fail_rate", 0.0))
+            dominant_fail = max(src_fail, dst_fail)
+            dominant_op = src if src_fail >= dst_fail else dst
+            if dominant_fail >= 0.90 and pair_fail_rate <= dominant_fail + 0.05:
+                suppressions[signature] = (
+                    f"Pair fail rate is dominated by globally weak endpoint '{dominant_op}' "
+                    f"({dominant_fail:.0%} fail), so this is not clean adjacency evidence."
+                )
+                continue
+            tpl = template_dominance.get(signature)
+            if (
+                tpl
+                and float(tpl.get("template_share") or 0.0) >= 0.75
+                and int(tpl.get("template_support") or 0) >= 6
+                and float(tpl.get("template_s1_rate") or 0.0) <= 0.15
+            ):
+                suppressions[signature] = (
+                    f"Failures are dominated by weak template '{tpl['template_name']}' "
+                    f"({float(tpl['template_share']):.0%} of labeled rows), not by a stable "
+                    "pair-level incompatibility."
+                )
+        return suppressions
+
+    def _effective_failure_signature_suppressions(
+        self,
+        *,
+        rows: Optional[Sequence[Any]] = None,
+        min_seen: int = 5,
+    ) -> Dict[str, Dict[str, str]]:
+        suppressions = dict(self._get_failure_signature_suppressions())
+        heuristics = self._heuristic_failure_signature_suppressions(
+            rows=rows,
+            min_seen=min_seen,
+        )
+        for signature, reason in heuristics.items():
+            suppressions.setdefault(
+                signature,
+                {"reason": reason, "source": "heuristic"},
+            )
+        return suppressions
+
+    def prune_suppressed_failure_signatures(self) -> int:
+        suppressions = self._get_failure_signature_suppressions()
+        if not suppressions:
+            return 0
+        signatures = sorted(suppressions.keys())
+        placeholders = ",".join("?" for _ in signatures)
+        deleted = self.conn.execute(
+            f"SELECT COUNT(*) FROM failure_signatures WHERE signature IN ({placeholders})",
+            signatures,
+        ).fetchone()[0]
+        self.conn.execute(
+            f"DELETE FROM failure_signatures WHERE signature IN ({placeholders})",
+            signatures,
+        )
+        self._maybe_commit()
+        return int(deleted or 0)
+
+    def refresh_failure_signature_suppressions(
+        self,
+        *,
+        include_heuristics: bool = True,
+        prune_rows: bool = True,
+        min_seen: int = 5,
+    ) -> Dict[str, int]:
+        """Persist current suppression decisions and optionally prune raw rows."""
+        seeded = self.sync_failure_signature_suppressions()
+        heuristic_added = 0
+        if include_heuristics:
+            now = time.time()
+            heuristic_rows = [
+                (signature, reason, "heuristic", 1, now, now)
+                for signature, reason in self._heuristic_failure_signature_suppressions(
+                    min_seen=min_seen
+                ).items()
+                if signature not in AUDITED_FALSE_FAILURE_SIGNATURE_SET
+            ]
+            if heuristic_rows:
+                self.conn.executemany(
+                    """INSERT INTO failure_signature_suppressions
+                       (signature, reason, source, active, created_at, last_updated)
+                       VALUES (?, ?, ?, ?, ?, ?)
+                       ON CONFLICT(signature) DO UPDATE SET
+                           reason = excluded.reason,
+                           source = excluded.source,
+                           active = 1,
+                           last_updated = excluded.last_updated""",
+                    heuristic_rows,
+                )
+                heuristic_added = len(heuristic_rows)
+        deleted = self.prune_suppressed_failure_signatures() if prune_rows else 0
+        self._maybe_commit()
+        return {
+            "seeded": int(seeded),
+            "heuristic_added": int(heuristic_added),
+            "deleted": int(deleted),
+        }
+
     @staticmethod
     def _failure_penalty_weight(
         fail_rate: float, total: int, positive_support: int
@@ -483,6 +789,7 @@ class _AdvancedAnalyticsMixin:
         """Update failure_signatures table from program results in this experiment."""
         self.flush_writes()
         self._ensure_graph_features()
+        suppressions = self._get_failure_signature_suppressions()
         rows = self.conn.execute(
             """
             SELECT
@@ -505,6 +812,11 @@ class _AdvancedAnalyticsMixin:
         if not rows:
             return
         now = time.time()
+        filtered_rows = [
+            row for row in rows if str(row["signature"] or "") not in suppressions
+        ]
+        if not filtered_rows:
+            return
         self.conn.executemany(
             """INSERT INTO failure_signatures
                (signature, n_failures, n_successes, error_types, last_updated)
@@ -522,7 +834,7 @@ class _AdvancedAnalyticsMixin:
                     row["error_types"],
                     now,
                 )
-                for row in rows
+                for row in filtered_rows
             ],
         )
         self._maybe_commit()
@@ -536,6 +848,7 @@ class _AdvancedAnalyticsMixin:
             return 0
         self.flush_writes()
         self._ensure_graph_features()
+        suppressions = self._get_failure_signature_suppressions()
         rows = self.conn.execute(
             """
             SELECT
@@ -553,6 +866,7 @@ class _AdvancedAnalyticsMixin:
             GROUP BY gp.signature
             """
         ).fetchall()
+        rows = [row for row in rows if str(row["signature"] or "") not in suppressions]
         now = time.time()
         self.conn.executemany(
             """INSERT INTO failure_signatures
@@ -578,6 +892,7 @@ class _AdvancedAnalyticsMixin:
         self.conn.execute("DELETE FROM failure_signatures")
         self.flush_writes()
         self._ensure_graph_features()
+        suppressions = self._get_failure_signature_suppressions()
         rows = self.conn.execute(
             """
             SELECT
@@ -595,6 +910,7 @@ class _AdvancedAnalyticsMixin:
             GROUP BY gp.signature
             """
         ).fetchall()
+        rows = [row for row in rows if str(row["signature"] or "") not in suppressions]
         now = time.time()
         self.conn.executemany(
             """INSERT INTO failure_signatures
@@ -619,16 +935,22 @@ class _AdvancedAnalyticsMixin:
         self, min_seen: int = 20, max_fail_rate: float = 0.95
     ) -> Dict[str, float]:
         """Return op-pair bigrams that consistently fail."""
-        rows = self.conn.execute(
-            """SELECT signature, n_failures, n_successes
+        rows = list(
+            self.conn.execute(
+                """SELECT signature, n_failures, n_successes
                FROM failure_signatures
                WHERE (n_failures + n_successes) >= ?""",
-            (min_seen,),
-        ).fetchall()
+                (min_seen,),
+            ).fetchall()
+        )
+        suppressions = self._effective_failure_signature_suppressions(
+            rows=rows,
+            min_seen=min_seen,
+        )
         blocklist: Dict[str, float] = {}
         for row in rows:
             signature = str(row[0] or "")
-            if signature in AUDITED_FALSE_FAILURE_SIGNATURE_SET:
+            if signature in suppressions:
                 continue
             total = row[1] + row[2]
             fail_rate = row[1] / total if total else 0
