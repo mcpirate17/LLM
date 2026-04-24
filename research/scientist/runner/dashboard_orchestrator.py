@@ -31,15 +31,24 @@ _PROGRAM_RESULT_FLUSH_BATCH = 10
 class _DashboardOrchestratorMixin:
     """Orchestrator-result ingestion + persistence."""
 
-    def _process_orchestrator_results(self, orchestrator, nb, exp_id, results, config):
+    def _process_orchestrator_results(
+        self,
+        orchestrator,
+        nb,
+        exp_id,
+        results,
+        config,
+        wait_timeout: float = 0.0,
+    ) -> int:
         """Collect and record all available results from the orchestrator."""
-        job_results = orchestrator.get_results()
+        job_results = orchestrator.get_results(timeout=wait_timeout)
         if not job_results:
-            return
+            return 0
         for start in range(0, len(job_results), _PROGRAM_RESULT_FLUSH_BATCH):
             with nb.batch():
                 for jr in job_results[start : start + _PROGRAM_RESULT_FLUSH_BATCH]:
                     self._record_orchestrator_result(jr, nb, exp_id, results, config)
+        return len(job_results)
 
     def _merge_train_result_metrics(self, program_metrics, train_result, config):
         from ._helpers import screening_probe_fields, screening_wikitext_fields
@@ -361,27 +370,66 @@ class _DashboardOrchestratorMixin:
         """
         funnel = results.setdefault("funnel_counts", {})
 
-        # Compute NCD before recording so values go into the initial INSERT
-        if training_curve:
-            try:
-                from ...eval.ncd import compute_graph_ncd
+        self._attach_ncd_metrics(graph, training_curve, program_metrics)
+        rid = self._persist_program_row(
+            nb=nb,
+            exp_id=exp_id,
+            graph=graph,
+            s1_passed=s1_passed,
+            program_metrics=program_metrics,
+            novelty_kwargs=novelty_kwargs,
+            final_loss=final_loss,
+            loss_ratio=loss_ratio,
+            throughput=throughput,
+        )
+        if rid:
+            funnel["persisted_rows"] = int(funnel.get("persisted_rows", 0)) + 1
+        else:
+            funnel["dropped_persistence_quality_gate"] = (
+                int(funnel.get("dropped_persistence_quality_gate", 0)) + 1
+            )
 
-                graph_json_str = graph_to_json(graph)
-                ncd_result = compute_graph_ncd(
-                    graph_json_str,
-                    training_curve,
-                    n_params=program_metrics.get("param_count"),
-                )
-                program_metrics["ncd_score"] = ncd_result["ncd_score"]
-                program_metrics["ncd_description_length"] = ncd_result[
-                    "description_length"
-                ]
-                program_metrics["ncd_description_length_per_param"] = ncd_result[
-                    "description_length_per_param"
-                ]
-            except (ImportError, KeyError, TypeError, ValueError) as e:
-                logger.debug("NCD computation failed: %s", e)
+        self._persist_training_curve_if_missing(nb, rid, training_curve)
+        self._persist_screening_benchmark_payload(nb, rid, s1_result)
+        return rid
 
+    def _attach_ncd_metrics(
+        self,
+        graph,
+        training_curve,
+        program_metrics: Dict[str, Any],
+    ) -> None:
+        if not training_curve:
+            return
+        try:
+            from ...eval.ncd import compute_graph_ncd
+
+            graph_json_str = graph_to_json(graph)
+            ncd_result = compute_graph_ncd(
+                graph_json_str,
+                training_curve,
+                n_params=program_metrics.get("param_count"),
+            )
+            program_metrics["ncd_score"] = ncd_result["ncd_score"]
+            program_metrics["ncd_description_length"] = ncd_result["description_length"]
+            program_metrics["ncd_description_length_per_param"] = ncd_result[
+                "description_length_per_param"
+            ]
+        except (ImportError, KeyError, TypeError, ValueError) as e:
+            logger.debug("NCD computation failed: %s", e)
+
+    def _persist_program_row(
+        self,
+        nb,
+        exp_id: str,
+        graph,
+        s1_passed: bool,
+        program_metrics: Dict[str, Any],
+        novelty_kwargs: Dict[str, Any],
+        final_loss,
+        loss_ratio,
+        throughput,
+    ) -> Optional[str]:
         source_result_id = str(program_metrics.get("source_result_id") or "").strip()
         if (
             source_result_id
@@ -402,51 +450,47 @@ class _DashboardOrchestratorMixin:
                 **novelty_kwargs,
                 **program_metrics,
             )
-            rid = source_result_id
-        else:
-            rid = nb.record_program_result(
-                experiment_id=exp_id,
-                graph_fingerprint=graph.fingerprint(),
-                graph_json=graph_to_json(graph),
-                stage0_passed=True,
-                stage05_passed=True,
-                stage1_passed=s1_passed,
-                final_loss=final_loss,
-                loss_ratio=loss_ratio,
-                throughput_tok_s=throughput,
-                **novelty_kwargs,
-                **program_metrics,
+            return source_result_id
+        return nb.record_program_result(
+            experiment_id=exp_id,
+            graph_fingerprint=graph.fingerprint(),
+            graph_json=graph_to_json(graph),
+            stage0_passed=True,
+            stage05_passed=True,
+            stage1_passed=s1_passed,
+            final_loss=final_loss,
+            loss_ratio=loss_ratio,
+            throughput_tok_s=throughput,
+            **novelty_kwargs,
+            **program_metrics,
+        )
+
+    def _persist_training_curve_if_missing(self, nb, rid, training_curve) -> None:
+        if not training_curve or not rid:
+            return
+        try:
+            existing_curve = nb.conn.execute(
+                "SELECT 1 FROM training_curves WHERE result_id = ? LIMIT 1",
+                (rid,),
+            ).fetchone()
+            if existing_curve is None:
+                nb.store_training_curve(rid, training_curve)
+        except (OSError, RuntimeError) as e:
+            logger.debug("store_training_curve failed for %s: %s", rid, e)
+
+    def _persist_screening_benchmark_payload(self, nb, rid, s1_result: Dict) -> None:
+        if not rid:
+            return
+        try:
+            from ...eval.wikitext_eval import screening_wikitext_payload
+
+            payload = screening_wikitext_payload(s1_result)
+            if payload:
+                nb.set_external_benchmarks(rid, payload)
+        except (ImportError, OSError, ValueError) as e:
+            logger.debug(
+                "Screening benchmark payload persist failed for %s: %s", rid, e
             )
-        if rid:
-            funnel["persisted_rows"] = int(funnel.get("persisted_rows", 0)) + 1
-        else:
-            funnel["dropped_persistence_quality_gate"] = (
-                int(funnel.get("dropped_persistence_quality_gate", 0)) + 1
-            )
-
-        if training_curve and rid:
-            try:
-                existing_curve = nb.conn.execute(
-                    "SELECT 1 FROM training_curves WHERE result_id = ? LIMIT 1",
-                    (rid,),
-                ).fetchone()
-                if existing_curve is None:
-                    nb.store_training_curve(rid, training_curve)
-            except (OSError, RuntimeError) as e:
-                logger.debug("store_training_curve failed for %s: %s", rid, e)
-        if rid:
-            try:
-                from ...eval.wikitext_eval import screening_wikitext_payload
-
-                payload = screening_wikitext_payload(s1_result)
-                if payload:
-                    nb.set_external_benchmarks(rid, payload)
-            except (ImportError, OSError, ValueError) as e:
-                logger.debug(
-                    "Screening benchmark payload persist failed for %s: %s", rid, e
-                )
-
-        return rid
 
     def _record_leaderboard_and_best(
         self,

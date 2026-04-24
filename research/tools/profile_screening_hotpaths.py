@@ -151,14 +151,13 @@ def benchmark_orchestrator_hotpath(*, fixture: str) -> Dict[str, Any]:
                 },
             )
 
+        results = []
         while (
-            orchestrator.job_queue.unfinished_tasks > 0
+            len(results) < n_jobs
+            or orchestrator.job_queue.unfinished_tasks > 0
             or orchestrator.prep_queue.unfinished_tasks > 0
-            or orchestrator.result_queue.qsize() < n_jobs
         ):
-            time.sleep(0.01)
-
-        results = orchestrator.get_results()
+            results.extend(orchestrator.get_results(timeout=0.002))
         telemetry = orchestrator.get_telemetry()
     finally:
         orchestrator.shutdown()

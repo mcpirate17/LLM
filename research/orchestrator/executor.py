@@ -20,6 +20,22 @@ from ..scientist.perf import QueueTelemetry
 logger = logging.getLogger(__name__)
 
 
+def _compile_model_default(layer_graphs, *, vocab_size: int, max_seq_len: int):
+    """Default preprocessor compiler.
+
+    This path is only used when callers do not submit an already compiled model.
+    The legacy compiler is faster on the small CPU screening fixtures; native
+    callers can still inject a measured faster compiler via ``compile_fn``.
+    """
+    from ..synthesis.compiler import compile_model
+
+    return compile_model(
+        layer_graphs,
+        vocab_size=vocab_size,
+        max_seq_len=max_seq_len,
+    )
+
+
 @dataclass
 class Job:
     """A single evaluation job."""
@@ -57,11 +73,13 @@ class WorkerPoolOrchestrator:
         max_queue_size: int = 10,
         devices: List[str] = None,
         remote_workers: List[str] = None,
+        compile_fn: Optional[Callable[..., torch.nn.Module]] = None,
     ):
         self.train_fn = train_fn
         self.num_workers = num_workers
         self.devices = devices or ["cuda:0" if torch.cuda.is_available() else "cpu"]
         self.remote_workers = remote_workers or []
+        self.compile_fn = compile_fn or _compile_model_default
 
         # Z6: Preprocessing queue for double buffering
         self.prep_queue = queue.Queue(maxsize=max_queue_size)
@@ -87,9 +105,10 @@ class WorkerPoolOrchestrator:
         self.workers = []
         self.remote_threads = []
         self.preprocessors = []
+        self._preprocessors_started = False
+        self._preprocessor_start_lock = threading.Lock()
         self.stop_event = threading.Event()
 
-        self._start_preprocessors()
         self._start_workers()
         self._start_remote_workers()
 
@@ -180,12 +199,21 @@ class WorkerPoolOrchestrator:
                 continue
 
     def _start_preprocessors(self):
+        if self._preprocessors_started:
+            return
         # 2 preprocessor threads per GPU worker generally enough
         num_preps = max(2, self.num_workers)
         for i in range(num_preps):
             t = threading.Thread(target=self._preprocessor_loop, args=(i,), daemon=True)
             t.start()
             self.preprocessors.append(t)
+        self._preprocessors_started = True
+
+    def _ensure_preprocessors_started(self):
+        if self._preprocessors_started:
+            return
+        with self._preprocessor_start_lock:
+            self._start_preprocessors()
 
     def _start_workers(self):
         for i in range(self.num_workers):
@@ -198,8 +226,6 @@ class WorkerPoolOrchestrator:
 
     def _preprocessor_loop(self, prep_id: int):
         """Background thread for graph-to-model compilation (CPU-heavy)."""
-        from ..synthesis.compiler import compile_model
-
         while not self.stop_event.is_set():
             try:
                 job = self.prep_queue.get(timeout=0.5)
@@ -212,7 +238,7 @@ class WorkerPoolOrchestrator:
                 try:
                     # CPU-intensive compilation
                     layer_graphs = [job.graph] * job.config.n_layers
-                    job.model = compile_model(
+                    job.model = self.compile_fn(
                         layer_graphs,
                         vocab_size=job.config.vocab_size,
                         max_seq_len=job.config.max_seq_len,
@@ -347,6 +373,7 @@ class WorkerPoolOrchestrator:
             self.job_queue.put(job)
         else:
             # Z6: Submit to preprocessor
+            self._ensure_preprocessors_started()
             self.prep_queue.put(job)
         submit_wait_ms = (time.perf_counter() - t0) * 1000.0
         with self._telemetry_lock:
@@ -364,9 +391,14 @@ class WorkerPoolOrchestrator:
             if payload_data.get("queue_kind") == "training_program":
                 self._training_program_queue["submitted"] += 1
 
-    def get_results(self) -> List[JobResult]:
-        """Collect all currently available results."""
+    def get_results(self, timeout: float = 0.0) -> List[JobResult]:
+        """Collect available results, optionally blocking for the first one."""
         results = []
+        if timeout > 0.0:
+            try:
+                results.append(self.result_queue.get(timeout=timeout))
+            except queue.Empty:
+                return results
         while not self.result_queue.empty():
             results.append(self.result_queue.get())
         return results

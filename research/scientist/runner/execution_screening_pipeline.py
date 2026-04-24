@@ -771,14 +771,14 @@ class _ExecutionScreeningPipelineMixin:
 
         while (
             orchestrator.job_queue.unfinished_tasks > 0
+            or orchestrator.prep_queue.unfinished_tasks > 0
             or not orchestrator.result_queue.empty()
         ):
             if self._stop_event.is_set():
                 break
             self._process_orchestrator_results(
-                orchestrator, nb, exp_id, results, config
+                orchestrator, nb, exp_id, results, config, wait_timeout=0.05
             )
-            time.sleep(0.5)
 
         queue_telemetry = orchestrator.get_telemetry()
         orchestrator.shutdown()

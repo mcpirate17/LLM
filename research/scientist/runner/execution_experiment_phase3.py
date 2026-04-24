@@ -19,9 +19,36 @@ from ._types import RunConfig
 
 logger = logging.getLogger(__name__)
 
+_SQLITE_IN_CLAUSE_CHUNK = 900
+
 
 class _ExecutionExperimentPhase3Mixin:
     """Split helpers for experiment execution phase orchestration."""
+
+    def _lookup_existing_fingerprints(
+        self,
+        nb: LabNotebook,
+        fingerprints: Set[str],
+    ) -> Set[str]:
+        if not fingerprints:
+            return set()
+
+        found: Set[str] = set()
+        ordered = [fp for fp in fingerprints if fp]
+        for start in range(0, len(ordered), _SQLITE_IN_CLAUSE_CHUNK):
+            chunk = ordered[start : start + _SQLITE_IN_CLAUSE_CHUNK]
+            placeholders = ",".join("?" for _ in chunk)
+            try:
+                rows = nb.conn.execute(
+                    "SELECT graph_fingerprint FROM program_results "
+                    f"WHERE graph_fingerprint IN ({placeholders})",
+                    chunk,
+                ).fetchall()
+            except Exception as exc:
+                logger.debug("Failed fingerprint membership lookup: %s", exc)
+                return set()
+            found.update(str(row[0]) for row in rows if row[0])
+        return found
 
     def _run_morphological_screening(
         self,
@@ -374,26 +401,18 @@ class _ExecutionExperimentPhase3Mixin:
         exp_id: str,
         results: Dict[str, Any],
     ) -> Tuple[List[Any], Set[str]]:
-        try:
-            existing_fps = {
-                r[0]
-                for r in nb.conn.execute(
-                    "SELECT graph_fingerprint FROM program_results"
-                ).fetchall()
-                if r[0]
-            }
-        except Exception as exc:
-            logger.debug("Failed to load existing fingerprints for dedup: %s", exc)
-            existing_fps = set()
-
         original_count = len(graphs)
+        graph_fps = [(g, g.fingerprint()) for g in graphs]
+        existing_fps = self._lookup_existing_fingerprints(
+            nb, {fp for _, fp in graph_fps}
+        )
+        known_before = len(existing_fps)
         dedup_max_rounds = 3
         dedup_target = max(1, int(original_count * 0.5))
         for dedup_round in range(dedup_max_rounds):
             novel = []
             seen_this_batch: Set[str] = set()
-            for g in graphs:
-                fp = g.fingerprint()
+            for g, fp in graph_fps:
                 if fp not in existing_fps and fp not in seen_this_batch:
                     novel.append(g)
                     seen_this_batch.add(fp)
@@ -407,6 +426,12 @@ class _ExecutionExperimentPhase3Mixin:
             if shortfall <= 0:
                 break
             extra = batch_generate(min(shortfall * 2, original_count), grammar).graphs
+            extra_fps = [(g, g.fingerprint()) for g in extra]
+            existing_fps.update(
+                self._lookup_existing_fingerprints(nb, {fp for _, fp in extra_fps})
+            )
+            graph_fps = [(g, g.fingerprint()) for g in graphs]
+            graph_fps.extend(extra_fps)
             graphs.extend(extra)
             logger.info(
                 "Experiment %s dedup round %d: %d novel / %d generated, added %d extra candidates",
@@ -424,7 +449,7 @@ class _ExecutionExperimentPhase3Mixin:
         results["skipped_dedup"] = original_count - len(graphs)
         results["dedup_rate"] = round(dedup_rate, 3)
         results["dedup_novel_count"] = len(graphs)
-        results["dedup_known_fingerprints"] = len(existing_fps)
+        results["dedup_known_fingerprints"] = known_before
         results["total"] = len(graphs)
 
         if dedup_rate > 0.1:
