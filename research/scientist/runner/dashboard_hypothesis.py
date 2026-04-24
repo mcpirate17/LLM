@@ -91,7 +91,9 @@ class _DashboardHypothesisMixin:
         stage1_rows: List[Dict[str, Any]],
     ) -> Dict[str, Optional[float]]:
         eff_rows = [
-            r for r in stage1_rows if isinstance(r.get("throughput_tok_s"), (int, float))
+            r
+            for r in stage1_rows
+            if isinstance(r.get("throughput_tok_s"), (int, float))
         ]
         stab_rows = [
             r for r in stage1_rows if isinstance(r.get("stability_score"), (int, float))

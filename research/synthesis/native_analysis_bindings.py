@@ -46,6 +46,7 @@ class AriaPackedValidationResult(ctypes.Structure):
     _fields_ = [
         ("analysis", AriaGraphAnalysisResult),
         ("dim_flow", AriaDimFlowSummary),
+        ("effective_depth", ctypes.c_double),
         ("edge_error_count", ctypes.c_int32),
         ("dead_parameterized_count", ctypes.c_int32),
     ]
@@ -61,12 +62,12 @@ def load_native_graph_analysis_lib() -> Any:
         Path(__file__).resolve().parents[1]
         / "runtime"
         / "native"
-        / "build_current"
+        / "build"
         / "libaria_native_runtime.so",
         Path(__file__).resolve().parents[1]
         / "runtime"
         / "native"
-        / "build"
+        / "build_current"
         / "libaria_native_runtime.so",
     ):
         if not path.exists():
@@ -160,6 +161,9 @@ def load_native_graph_analysis_lib() -> Any:
             ctypes.POINTER(ctypes.c_int32),
             ctypes.POINTER(ctypes.c_int32),
             ctypes.POINTER(ctypes.c_int32),
+            ctypes.POINTER(ctypes.c_float),
+            ctypes.POINTER(ctypes.c_uint8),
+            ctypes.c_int32,
             ctypes.c_int32,
             ctypes.c_int32,
             ctypes.POINTER(AriaPackedValidationResult),

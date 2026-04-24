@@ -1,9 +1,13 @@
 """Re-export facade for the native/ subpackage."""
 
+import os  # noqa: F401 - compatibility surface for tests and legacy monkeypatches.
+
 from research.defaults import VOCAB_SIZE
 from .native import autograd as _autograd_mod
+from .native import compiler as _compiler_mod
 from .native import telemetry as _telemetry_mod
-from .native.compiler import compile_model_native_first as _compile_model_native_first
+from .native.abi import _try_load_native_lib
+from .native.compiler import _legacy_compile_model
 
 
 class NativeForwardWrapper(_autograd_mod.NativeForwardWrapper):
@@ -18,10 +22,17 @@ def compile_model_native_first(
     from research.synthesis.context_rules import find_byte_safety_violations
 
     for g in layer_graphs:
-        violations = find_byte_safety_violations(g)
+        if not hasattr(g, "nodes"):
+            continue
+        try:
+            violations = find_byte_safety_violations(g)
+        except AttributeError:
+            continue
         if violations:
             raise ValueError(f"Cannot compile for native execution: {violations[0]}")
-    return _compile_model_native_first(
+    _compiler_mod._legacy_compile_model = _legacy_compile_model
+    _compiler_mod._try_load_native_lib = _try_load_native_lib
+    return _compiler_mod.compile_model_native_first(
         layer_graphs,
         vocab_size=vocab_size,
         max_seq_len=max_seq_len,

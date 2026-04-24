@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from research.synthesis.dim_flow_opcode_tables import (
     FULL_DIM_OPS as CANONICAL_FULL_DIM_OPS,
@@ -17,6 +18,8 @@ from research.synthesis.native_analysis import (
     validate_edges,
     validate_packed_ir_natively,
 )
+from research.synthesis.validation_opcode_tables import validation_opcode_tables
+from research.synthesis.validator import compute_effective_depth
 from research.synthesis.native_dim_flow_flags import build_dim_flow_flags_natively
 
 
@@ -115,6 +118,7 @@ def test_validate_packed_ir_native_matches_split_reference():
         op_kind_identity=2,
         op_kind_binary_broadcast=3,
     )
+    tables = validation_opcode_tables()
     analysis = dim_inputs.analysis
     reachable_mask = np.asarray(analysis.reachable_mask).astype(np.int32, copy=False)
     summary_mask = reachable_mask.copy()
@@ -134,10 +138,10 @@ def test_validate_packed_ir_native_matches_split_reference():
         full_dim_flags=dim_inputs.full_dim_flags,
         model_dim=graph.model_dim,
         input_node_idx=dim_inputs.node_id_to_analysis_idx[inp],
+        effective_depth_weights=tables.effective_depth_weight,
+        discount_successor_u8=tables.discount_successor_u8,
     )
     if packed is None:
-        import pytest
-
         pytest.skip("packed graph-validation runtime unavailable")
 
     split_summary = summarize_dim_flow_in_python(
@@ -174,3 +178,6 @@ def test_validate_packed_ir_native_matches_split_reference():
         split_edges.full_dim_input_bits.tolist()
     )
     assert packed.dead_parameterized_mask.tolist() == [0, 0, 0]
+    assert packed.effective_depth == pytest.approx(
+        compute_effective_depth(dim_inputs.analysis_ir)
+    )

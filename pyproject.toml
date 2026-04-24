@@ -7,6 +7,7 @@ name = "llm-workspace"
 version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
+    "flask-cors>=6.0.0",
     "lightgbm>=4.6.0",
     "pyyaml>=6.0",
     "xxhash>=3.0.0",

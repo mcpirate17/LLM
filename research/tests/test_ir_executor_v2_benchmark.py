@@ -59,7 +59,9 @@ def test_ir_executor_v2_benchmark_smoke():
     relu_ctor_default = _median_ctor_ms(
         lambda: IRExecutor(relu_ir, source_graph=relu_graph)
     )
-    relu_ctor_v2 = _median_ctor_ms(lambda: IRExecutorV2(relu_ir, source_graph=relu_graph))
+    relu_ctor_v2 = _median_ctor_ms(
+        lambda: IRExecutorV2(relu_ir, source_graph=relu_graph)
+    )
 
     bound_graph = _make_bound_linear_graph()
     bound_ir = bound_graph.lower_to_ir()

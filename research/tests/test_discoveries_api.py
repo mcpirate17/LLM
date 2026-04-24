@@ -919,7 +919,7 @@ def test_report_query_handles_duplicate_fingerprint_without_conflicting_insert(
         tier="screening",
     )
     replay_exp_id = nb.start_experiment("synthesis", {})
-    duplicate_rid = nb.record_program_result(
+    nb.record_program_result(
         experiment_id=replay_exp_id,
         graph_fingerprint="fp-report-dup",
         graph_json="{}",

@@ -17,7 +17,7 @@ still have skip-only or broken paths.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, FrozenSet, Optional
+from typing import Any, FrozenSet, List, Optional
 
 import numpy as np
 
@@ -121,12 +121,39 @@ def _add_edge_validation_errors(
             )
 
 
-def _try_packed_validation(
+def build_dim_flow_validation_inputs(
+    graph: ComputationGraph,
+    *,
+    analysis_ir: Any | None = None,
+    analysis: Any | None = None,
+    compute_analysis: bool = True,
+) -> Any:
+    return build_dim_flow_inputs(
+        graph,
+        op_kind_default=_OP_KIND_DEFAULT,
+        op_kind_irfft=_OP_KIND_IRFFT,
+        op_kind_identity=_OP_KIND_IDENTITY,
+        op_kind_binary_broadcast=_OP_KIND_BINARY_BROADCAST,
+        analysis_ir=analysis_ir,
+        analysis=analysis,
+        compute_analysis=compute_analysis,
+    )
+
+
+def try_packed_dim_flow_validation(
     *,
     graph: ComputationGraph,
     analysis_ir: Any,
     dim_flow_inputs: Any,
+    effective_depth_weights: Any | None = None,
+    discount_successor_u8: Any | None = None,
 ) -> Any | None:
+    if (
+        not hasattr(analysis_ir, "op_codes")
+        or not hasattr(analysis_ir, "input_indices")
+        or not hasattr(analysis_ir, "output_node_idx")
+    ):
+        return None
     input_node_idx = dim_flow_inputs.node_id_to_analysis_idx.get(
         graph._input_node_id, -1
     )
@@ -144,6 +171,8 @@ def _try_packed_validation(
         full_dim_flags=dim_flow_inputs.full_dim_flags,
         model_dim=graph.model_dim,
         input_node_idx=int(input_node_idx),
+        effective_depth_weights=effective_depth_weights,
+        discount_successor_u8=discount_successor_u8,
     )
 
 
@@ -152,6 +181,8 @@ def validate_dim_flow(
     max_params: Optional[int] = None,
     analysis_ir: Any | None = None,
     analysis: Any | None = None,
+    dim_flow_inputs: Any | None = None,
+    packed_validation: Any | None = None,
 ) -> DimFlowResult:
     """Walk the DAG and validate dimension flow at every edge.
 
@@ -165,24 +196,22 @@ def validate_dim_flow(
         return result
 
     model_dim = graph.model_dim
-    dim_flow_inputs = build_dim_flow_inputs(
-        graph,
-        op_kind_default=_OP_KIND_DEFAULT,
-        op_kind_irfft=_OP_KIND_IRFFT,
-        op_kind_identity=_OP_KIND_IDENTITY,
-        op_kind_binary_broadcast=_OP_KIND_BINARY_BROADCAST,
-        analysis_ir=analysis_ir,
-        analysis=analysis,
-        compute_analysis=caller_supplied_analysis,
-    )
+    if dim_flow_inputs is None:
+        dim_flow_inputs = build_dim_flow_validation_inputs(
+            graph,
+            analysis_ir=analysis_ir,
+            analysis=analysis,
+            compute_analysis=caller_supplied_analysis,
+        )
+    elif analysis is not None and dim_flow_inputs.analysis is None:
+        dim_flow_inputs.analysis = analysis
     analysis_ir = dim_flow_inputs.analysis_ir
     analysis = dim_flow_inputs.analysis
     analysis_node_ids = dim_flow_inputs.analysis_node_ids
     node_id_to_analysis_idx = dim_flow_inputs.node_id_to_analysis_idx
 
-    packed_validation = None
-    if not caller_supplied_analysis:
-        packed_validation = _try_packed_validation(
+    if packed_validation is None and not caller_supplied_analysis:
+        packed_validation = try_packed_dim_flow_validation(
             graph=graph,
             analysis_ir=analysis_ir,
             dim_flow_inputs=dim_flow_inputs,

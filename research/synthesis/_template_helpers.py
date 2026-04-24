@@ -9,7 +9,7 @@ from __future__ import annotations
 import random
 import re
 from functools import lru_cache
-from typing import TYPE_CHECKING, Any, Callable, Dict, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Dict, Optional, Sequence, Tuple
 
 if TYPE_CHECKING:
     from .graph import ComputationGraph
@@ -222,25 +222,38 @@ def _compatible_from_classes(
     graph: ComputationGraph,
     node_id: int,
     classes: Tuple[str, ...] | list[str],
-) -> list[Motif]:
+) -> tuple[Motif, ...]:
     """Return motifs from *classes* that are compatible at *node_id*."""
     active_tpl = graph.metadata.get("_active_template")
     classes_tuple = tuple(classes)
     current_type = _node_output_type(graph, node_id)
     depth, previous_op = _node_depth_and_previous_op(graph, node_id)
     depth = min(depth, _MAX_CONTEXT_DEPTH)
-    return list(
-        _compatible_from_context(
-            classes_tuple,
-            current_type,
-            previous_op,
-            depth,
-            active_tpl,
-        )
+    return _compatible_from_context(
+        classes_tuple,
+        current_type,
+        previous_op,
+        depth,
+        active_tpl,
     )
 
 
 @lru_cache(maxsize=2048)
+def _compatible_base_from_context(
+    classes: Tuple[str, ...],
+    current_type: AlgebraicType,
+    previous_op: str | None,
+    depth: int,
+) -> tuple[Motif, ...]:
+    pool = _motif_pool_for_classes(classes)
+    return tuple(
+        m
+        for m in pool
+        if _motif_is_compatible_from_context(current_type, previous_op, depth, m)
+    )
+
+
+@lru_cache(maxsize=4096)
 def _compatible_from_context(
     classes: Tuple[str, ...],
     current_type: AlgebraicType,
@@ -248,13 +261,13 @@ def _compatible_from_context(
     depth: int,
     active_tpl: str | None,
 ) -> tuple[Motif, ...]:
-    pool = _motif_pool_for_classes(classes)
-    return tuple(
-        m
-        for m in pool
-        if _motif_is_compatible_from_context(current_type, previous_op, depth, m)
-        and _motif_allowed_in_template(m, active_tpl)
+    base = _compatible_base_from_context(
+        classes,
+        current_type,
+        previous_op,
+        depth,
     )
+    return tuple(m for m in base if _motif_allowed_in_template(m, active_tpl))
 
 
 _SLOT_MOTIF_DENYLIST: dict[str, frozenset[str]] = {
@@ -310,46 +323,75 @@ def get_slot_rule_summary() -> list[dict[str, object]]:
 
 def _filter_slot_candidates(
     graph: ComputationGraph,
-    candidates: list[Motif],
-) -> list[Motif]:
+    candidates: Sequence[Motif],
+    slot_key: str | None = None,
+) -> Sequence[Motif]:
     """Drop motifs that are known-bad for the active template slot."""
-    slot_key = _normalize_slot_key(_current_slot_key(graph))
+    if slot_key is None:
+        slot_key = _normalize_slot_key(_current_slot_key(graph))
     allowed = _SLOT_MOTIF_ALLOWLIST.get(slot_key)
     if allowed is not None:
-        candidates = [motif for motif in candidates if motif.name in allowed]
-    denied = set(_SLOT_MOTIF_DENYLIST.get(slot_key, ()))
+        candidates = tuple(motif for motif in candidates if motif.name in allowed)
+    denied_static = _SLOT_MOTIF_DENYLIST.get(slot_key)
     dynamic_denied = graph.metadata.get("_slot_motif_denylist", {})
+    denied_dynamic = ()
     if isinstance(dynamic_denied, dict):
-        denied.update(dynamic_denied.get(slot_key, ()))
-    if denied:
-        candidates = [motif for motif in candidates if motif.name not in denied]
+        denied_dynamic = dynamic_denied.get(slot_key, ()) or ()
+    if denied_static or denied_dynamic:
+        denied = (
+            denied_static
+            if denied_static and not denied_dynamic
+            else frozenset((*tuple(denied_static or ()), *tuple(denied_dynamic)))
+        )
+        candidates = tuple(motif for motif in candidates if motif.name not in denied)
     return candidates
+
+
+def _select_by_lift(candidates: Sequence[Motif], rng: random.Random) -> Motif:
+    total = 0.0
+    for motif in candidates:
+        total += float(motif.lift)
+    if total <= 0.0:
+        return rng.choice(candidates)
+    threshold = rng.random() * total
+    for motif in candidates:
+        threshold -= float(motif.lift)
+        if threshold < 0.0:
+            return motif
+    return candidates[-1]
 
 
 def _select_from_candidates(
     graph: ComputationGraph,
-    candidates: list[Motif],
+    candidates: Sequence[Motif],
     rng: random.Random,
     weights: MotifWeights,
+    slot_key: str | None = None,
 ) -> Optional[Motif]:
     if not candidates:
         return None
     if len(candidates) == 1:
         return candidates[0]
-    slot_key = _normalize_slot_key(_current_slot_key(graph))
-    slot_multipliers = dict(_SLOT_MOTIF_WEIGHT_MULTIPLIERS.get(slot_key, {}))
+    if slot_key is None:
+        slot_key = _normalize_slot_key(_current_slot_key(graph))
+    slot_multipliers = _SLOT_MOTIF_WEIGHT_MULTIPLIERS.get(slot_key)
     dynamic_slot_multipliers = graph.metadata.get("_slot_motif_weight_multipliers", {})
+    dynamic_multipliers = None
     if isinstance(dynamic_slot_multipliers, dict):
-        for motif_name, multiplier in (
-            dynamic_slot_multipliers.get(slot_key, {}) or {}
-        ).items():
+        dynamic_multipliers = dynamic_slot_multipliers.get(slot_key, {}) or None
+    if weights is None and not slot_multipliers and not dynamic_multipliers:
+        return _select_by_lift(candidates, rng)
+
+    merged_multipliers = dict(slot_multipliers or {})
+    if dynamic_multipliers:
+        for motif_name, multiplier in dynamic_multipliers.items():
             try:
-                slot_multipliers[str(motif_name)] = float(multiplier)
+                merged_multipliers[str(motif_name)] = float(multiplier)
             except (TypeError, ValueError):
                 continue
     candidate_weights = [
         (weights.get(m.name, m.lift) if weights else m.lift)
-        * slot_multipliers.get(m.name, 1.0)
+        * merged_multipliers.get(m.name, 1.0)
         for m in candidates
     ]
     return rng.choices(candidates, weights=candidate_weights, k=1)[0]
@@ -394,7 +436,8 @@ def _pick_compatible_motif(
         if not candidates and wildcard_prob > 0:
             candidates = _compatible_from_classes(graph, node_id, _ALL_CLASSES)
             is_wildcard = True
-    candidates = _filter_slot_candidates(graph, candidates)
+    slot_key = _normalize_slot_key(_current_slot_key(graph))
+    candidates = _filter_slot_candidates(graph, candidates, slot_key=slot_key)
 
     # Graph-level wildcard breadcrumb. Per-slot `wildcard` is already on
     # _record_slot_usage; this aggregate makes it cheap for downstream
@@ -404,7 +447,9 @@ def _pick_compatible_motif(
         wildcards = graph.metadata.setdefault("_template_wildcard_slot_keys", [])
         wildcards.append(_current_slot_key(graph))
 
-    selected = _select_from_candidates(graph, candidates, rng, weights)
+    selected = _select_from_candidates(
+        graph, candidates, rng, weights, slot_key=slot_key
+    )
     _record_slot_usage(
         graph,
         node_id=node_id,

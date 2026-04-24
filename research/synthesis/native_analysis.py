@@ -51,6 +51,7 @@ class PackedGraphValidationResult:
     edge_validation: EdgeValidationResult
     reachable_mask: np.ndarray
     dead_parameterized_mask: np.ndarray
+    effective_depth: float | None
     edge_error_count: int
     dead_parameterized_count: int
     backend: str
@@ -153,6 +154,11 @@ def _packed_validation_result_from_native(
         ),
         reachable_mask=reachable_mask,
         dead_parameterized_mask=dead_parameterized_mask,
+        effective_depth=(
+            float(native_result.effective_depth)
+            if float(native_result.effective_depth) >= 0.0
+            else None
+        ),
         edge_error_count=int(native_result.edge_error_count),
         dead_parameterized_count=int(native_result.dead_parameterized_count),
         backend="native_packed",
@@ -174,6 +180,8 @@ def validate_packed_ir_natively(
     full_dim_flags: np.ndarray,
     model_dim: int,
     input_node_idx: int,
+    effective_depth_weights: np.ndarray | None = None,
+    discount_successor_u8: np.ndarray | None = None,
 ) -> Optional[PackedGraphValidationResult]:
     lib = _load_native_graph_analysis_lib()
     if lib is None or not hasattr(lib, "aria_graph_validate_packed_ir"):
@@ -189,6 +197,24 @@ def validate_packed_ir_natively(
     node_seq_flags = np.ascontiguousarray(node_seq_flags, dtype=np.int32)
     op_kind_flags = np.ascontiguousarray(op_kind_flags, dtype=np.int32)
     full_dim_flags = np.ascontiguousarray(full_dim_flags, dtype=np.int32)
+    if effective_depth_weights is None or discount_successor_u8 is None:
+        effective_depth_weights_ptr = ctypes.POINTER(ctypes.c_float)()
+        discount_successor_ptr = ctypes.POINTER(ctypes.c_uint8)()
+        n_opcodes = 0
+    else:
+        effective_depth_weights = np.ascontiguousarray(
+            effective_depth_weights, dtype=np.float32
+        )
+        discount_successor_u8 = np.ascontiguousarray(
+            discount_successor_u8, dtype=np.uint8
+        )
+        effective_depth_weights_ptr = effective_depth_weights.ctypes.data_as(
+            ctypes.POINTER(ctypes.c_float)
+        )
+        discount_successor_ptr = discount_successor_u8.ctypes.data_as(
+            ctypes.POINTER(ctypes.c_uint8)
+        )
+        n_opcodes = int(effective_depth_weights.shape[0])
     n_nodes = int(op_codes.shape[0])
 
     reachable_mask = np.zeros(n_nodes, dtype=np.int32)
@@ -216,6 +242,9 @@ def validate_packed_ir_natively(
         node_seq_flags.ctypes.data_as(ctypes.POINTER(ctypes.c_int32)),
         op_kind_flags.ctypes.data_as(ctypes.POINTER(ctypes.c_int32)),
         full_dim_flags.ctypes.data_as(ctypes.POINTER(ctypes.c_int32)),
+        effective_depth_weights_ptr,
+        discount_successor_ptr,
+        n_opcodes,
         int(model_dim),
         int(input_node_idx),
         ctypes.byref(native_result),

@@ -20,13 +20,9 @@ from __future__ import annotations
 
 import copy
 import csv
-import math
-import os
-import sys
 import time
 import traceback
 import warnings
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Tuple
 
@@ -60,33 +56,43 @@ print(f"Results dir: {RESULTS_DIR.absolute()}")
 
 
 def _causal_mask(S: int, device) -> torch.Tensor:
-    return torch.triu(
-        torch.ones(S, S, device=device, dtype=torch.bool), diagonal=1
-    )
+    return torch.triu(torch.ones(S, S, device=device, dtype=torch.bool), diagonal=1)
 
 
 class CausalAttnLM(nn.Module):
     """Standard N-layer causal-attention language model with absolute pos embed."""
 
-    def __init__(self, n_layers: int, d_model: int = D_MODEL, n_heads: int = N_HEADS,
-                 vocab: int = VOCAB, max_seq_len: int = MAX_SEQ_LEN):
+    def __init__(
+        self,
+        n_layers: int,
+        d_model: int = D_MODEL,
+        n_heads: int = N_HEADS,
+        vocab: int = VOCAB,
+        max_seq_len: int = MAX_SEQ_LEN,
+    ):
         super().__init__()
         self.vocab_size = vocab
         self.embed = nn.Embedding(vocab, d_model)
         self.pos = nn.Embedding(max_seq_len, d_model)
-        self.layers = nn.ModuleList([
-            nn.ModuleDict({
-                'ln1': nn.LayerNorm(d_model),
-                'attn': nn.MultiheadAttention(d_model, n_heads, batch_first=True),
-                'ln2': nn.LayerNorm(d_model),
-                'ffn': nn.Sequential(
-                    nn.Linear(d_model, 4 * d_model),
-                    nn.GELU(),
-                    nn.Linear(4 * d_model, d_model),
-                ),
-            })
-            for _ in range(n_layers)
-        ])
+        self.layers = nn.ModuleList(
+            [
+                nn.ModuleDict(
+                    {
+                        "ln1": nn.LayerNorm(d_model),
+                        "attn": nn.MultiheadAttention(
+                            d_model, n_heads, batch_first=True
+                        ),
+                        "ln2": nn.LayerNorm(d_model),
+                        "ffn": nn.Sequential(
+                            nn.Linear(d_model, 4 * d_model),
+                            nn.GELU(),
+                            nn.Linear(4 * d_model, d_model),
+                        ),
+                    }
+                )
+                for _ in range(n_layers)
+            ]
+        )
         self.ln_f = nn.LayerNorm(d_model)
         self.head = nn.Linear(d_model, vocab, bias=False)
         self.head.weight = self.embed.weight
@@ -97,36 +103,44 @@ class CausalAttnLM(nn.Module):
         h = self.embed(x) + self.pos(pos_ids)
         mask = _causal_mask(S, x.device)
         for L in self.layers:
-            a, _ = L['attn'](
-                L['ln1'](h), L['ln1'](h), L['ln1'](h),
-                attn_mask=mask, need_weights=False,
+            a, _ = L["attn"](
+                L["ln1"](h),
+                L["ln1"](h),
+                L["ln1"](h),
+                attn_mask=mask,
+                need_weights=False,
             )
             h = h + a
-            h = h + L['ffn'](L['ln2'](h))
+            h = h + L["ffn"](L["ln2"](h))
         return self.head(self.ln_f(h))
 
 
 class CausalConvLM(nn.Module):
     """Stacked causal-1D-conv LM — deliberately no attention for baseline."""
 
-    def __init__(self, n_layers: int, k: int, d_model: int = D_MODEL,
-                 vocab: int = VOCAB):
+    def __init__(
+        self, n_layers: int, k: int, d_model: int = D_MODEL, vocab: int = VOCAB
+    ):
         super().__init__()
         self.vocab_size = vocab
         self.k = k
         self.embed = nn.Embedding(vocab, d_model)
-        self.convs = nn.ModuleList([
-            nn.Conv1d(d_model, d_model, kernel_size=k, padding=k - 1)
-            for _ in range(n_layers)
-        ])
-        self.ffns = nn.ModuleList([
-            nn.Sequential(
-                nn.Linear(d_model, 4 * d_model),
-                nn.GELU(),
-                nn.Linear(4 * d_model, d_model),
-            )
-            for _ in range(n_layers)
-        ])
+        self.convs = nn.ModuleList(
+            [
+                nn.Conv1d(d_model, d_model, kernel_size=k, padding=k - 1)
+                for _ in range(n_layers)
+            ]
+        )
+        self.ffns = nn.ModuleList(
+            [
+                nn.Sequential(
+                    nn.Linear(d_model, 4 * d_model),
+                    nn.GELU(),
+                    nn.Linear(4 * d_model, d_model),
+                )
+                for _ in range(n_layers)
+            ]
+        )
         self.lns = nn.ModuleList([nn.LayerNorm(d_model) for _ in range(n_layers)])
         self.ln_f = nn.LayerNorm(d_model)
         self.head = nn.Linear(d_model, vocab, bias=False)
@@ -179,12 +193,19 @@ class MiniSSM(nn.Module):
 
 
 class CausalSSMLM(nn.Module):
-    def __init__(self, n_layers: int, d_model: int = D_MODEL, vocab: int = VOCAB,
-                 state_dim: int = 16):
+    def __init__(
+        self,
+        n_layers: int,
+        d_model: int = D_MODEL,
+        vocab: int = VOCAB,
+        state_dim: int = 16,
+    ):
         super().__init__()
         self.vocab_size = vocab
         self.embed = nn.Embedding(vocab, d_model)
-        self.ssms = nn.ModuleList([MiniSSM(d_model, state_dim) for _ in range(n_layers)])
+        self.ssms = nn.ModuleList(
+            [MiniSSM(d_model, state_dim) for _ in range(n_layers)]
+        )
         self.lns = nn.ModuleList([nn.LayerNorm(d_model) for _ in range(n_layers)])
         self.ln_f = nn.LayerNorm(d_model)
         self.head = nn.Linear(d_model, vocab, bias=False)
@@ -233,19 +254,23 @@ class CausalRWKVLM(nn.Module):
         super().__init__()
         self.vocab_size = vocab
         self.embed = nn.Embedding(vocab, d_model)
-        self.blocks = nn.ModuleList([
-            nn.ModuleDict({
-                'ln1': nn.LayerNorm(d_model),
-                'mix': MiniRWKVTimeMix(d_model),
-                'ln2': nn.LayerNorm(d_model),
-                'ffn': nn.Sequential(
-                    nn.Linear(d_model, 4 * d_model),
-                    nn.GELU(),
-                    nn.Linear(4 * d_model, d_model),
-                ),
-            })
-            for _ in range(n_layers)
-        ])
+        self.blocks = nn.ModuleList(
+            [
+                nn.ModuleDict(
+                    {
+                        "ln1": nn.LayerNorm(d_model),
+                        "mix": MiniRWKVTimeMix(d_model),
+                        "ln2": nn.LayerNorm(d_model),
+                        "ffn": nn.Sequential(
+                            nn.Linear(d_model, 4 * d_model),
+                            nn.GELU(),
+                            nn.Linear(4 * d_model, d_model),
+                        ),
+                    }
+                )
+                for _ in range(n_layers)
+            ]
+        )
         self.ln_f = nn.LayerNorm(d_model)
         self.head = nn.Linear(d_model, vocab, bias=False)
         self.head.weight = self.embed.weight
@@ -253,8 +278,8 @@ class CausalRWKVLM(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         h = self.embed(x)
         for B in self.blocks:
-            h = h + B['mix'](B['ln1'](h))
-            h = h + B['ffn'](B['ln2'](h))
+            h = h + B["mix"](B["ln1"](h))
+            h = h + B["ffn"](B["ln2"](h))
         return self.head(self.ln_f(h))
 
 
@@ -303,8 +328,14 @@ class HybridConvAttnLM(nn.Module):
     (conv, FFN, attn, FFN). For n_layers=4, (conv, FFN, attn, FFN) × 2.
     """
 
-    def __init__(self, n_layers: int = 2, d_model: int = D_MODEL, n_heads: int = N_HEADS,
-                 vocab: int = VOCAB, max_seq_len: int = MAX_SEQ_LEN):
+    def __init__(
+        self,
+        n_layers: int = 2,
+        d_model: int = D_MODEL,
+        n_heads: int = N_HEADS,
+        vocab: int = VOCAB,
+        max_seq_len: int = MAX_SEQ_LEN,
+    ):
         super().__init__()
         assert n_layers >= 2 and n_layers % 2 == 0
         self.vocab_size = vocab
@@ -366,7 +397,9 @@ def _gen_induction_batch(batch_size: int, gap: int, device, vocab: int = 256):
     collisions = noise == A.unsqueeze(1)
     if collisions.any():
         offsets = torch.randint(1, vocab - 1, collisions.shape, device=device)
-        noise[collisions] = (A.unsqueeze(1).expand_as(noise)[collisions] + offsets[collisions]) % (vocab - 1) + 1
+        noise[collisions] = (
+            A.unsqueeze(1).expand_as(noise)[collisions] + offsets[collisions]
+        ) % (vocab - 1) + 1
         batch[:, 2 : gap + 2] = noise
     batch[:, gap + 2] = A
     return batch, Bt
@@ -389,7 +422,12 @@ def run_induction(
     try:
         m = copy.deepcopy(model).to(device)
     except Exception as e:
-        return {"status": f"copy_fail: {e}", "auc": 0.0, "gap_acc": {}, "elapsed_s": 0.0}
+        return {
+            "status": f"copy_fail: {e}",
+            "auc": 0.0,
+            "gap_acc": {},
+            "elapsed_s": 0.0,
+        }
     m.train()
     opt = torch.optim.AdamW(m.parameters(), lr=lr)
     train_gaps = (8,) if train_mode == "fixed8" else eval_gaps
@@ -468,7 +506,12 @@ def run_binding_curriculum(
     try:
         m = copy.deepcopy(model).to(device)
     except Exception as e:
-        return {"status": f"copy_fail: {e}", "auc": 0.0, "dist_acc": {}, "elapsed_s": 0.0}
+        return {
+            "status": f"copy_fail: {e}",
+            "auc": 0.0,
+            "dist_acc": {},
+            "elapsed_s": 0.0,
+        }
     vocab = int(getattr(m, "vocab_size", 256) or 256)
     m.train()
     opt = torch.optim.AdamW(m.parameters(), lr=lr)
@@ -547,14 +590,24 @@ def run_associative_recall(
     try:
         m = copy.deepcopy(model).to(device)
     except Exception as e:
-        return {"status": f"copy_fail: {e}", "auc": 0.0, "final_acc": 0.0, "elapsed_s": 0.0}
+        return {
+            "status": f"copy_fail: {e}",
+            "auc": 0.0,
+            "final_acc": 0.0,
+            "elapsed_s": 0.0,
+        }
     m.train()
     sep, ans = _get_special_tokens(m)
     opt = torch.optim.AdamW(m.parameters(), lr=lr)
     try:
         eval_ids, eval_tgts = _generate_eval_set(n_eval, n_pairs, sep, ans, device)
     except Exception as e:
-        return {"status": f"eval_gen_fail: {e}", "auc": 0.0, "final_acc": 0.0, "elapsed_s": 0.0}
+        return {
+            "status": f"eval_gen_fail: {e}",
+            "auc": 0.0,
+            "final_acc": 0.0,
+            "elapsed_s": 0.0,
+        }
     ans_pos = 3 * n_pairs + 3
     first_loss = None
     last_loss = None
@@ -635,10 +688,22 @@ def _param_count(model: nn.Module) -> int:
 
 def sweep_induction():
     fieldnames = [
-        "arch", "n_params", "n_train_steps", "train_mode",
-        "auc", "max_gap_acc", "min_gap_acc",
-        "acc_4", "acc_8", "acc_16", "acc_32", "acc_64",
-        "first_loss", "last_loss", "status", "elapsed_s",
+        "arch",
+        "n_params",
+        "n_train_steps",
+        "train_mode",
+        "auc",
+        "max_gap_acc",
+        "min_gap_acc",
+        "acc_4",
+        "acc_8",
+        "acc_16",
+        "acc_32",
+        "acc_64",
+        "first_loss",
+        "last_loss",
+        "status",
+        "elapsed_s",
     ]
     f, w = _init_csv(INDUCTION_CSV, fieldnames)
     step_grid = (100, 250, 500, 1000, 2000)
@@ -657,9 +722,13 @@ def sweep_induction():
                 except Exception as e:
                     res = {
                         "status": f"exception: {type(e).__name__}: {e}",
-                        "auc": 0.0, "gap_acc": {},
-                        "max_gap_acc": 0.0, "min_gap_acc": 0.0,
-                        "first_loss": 0.0, "last_loss": 0.0, "elapsed_s": 0.0,
+                        "auc": 0.0,
+                        "gap_acc": {},
+                        "max_gap_acc": 0.0,
+                        "min_gap_acc": 0.0,
+                        "first_loss": 0.0,
+                        "last_loss": 0.0,
+                        "elapsed_s": 0.0,
                     }
                 gap_acc = res.get("gap_acc", {})
                 row = {
@@ -682,10 +751,12 @@ def sweep_induction():
                 }
                 w.writerow(row)
                 f.flush()
-                print(f"[{done}/{total}] {arch_name:<12} steps={steps:4} "
-                      f"{mode:<6} auc={res['auc']:.3f} "
-                      f"peak={res.get('max_gap_acc', 0):.3f} "
-                      f"time={res['elapsed_s']}s")
+                print(
+                    f"[{done}/{total}] {arch_name:<12} steps={steps:4} "
+                    f"{mode:<6} auc={res['auc']:.3f} "
+                    f"peak={res.get('max_gap_acc', 0):.3f} "
+                    f"time={res['elapsed_s']}s"
+                )
         del base
         if DEVICE == "cuda":
             torch.cuda.empty_cache()
@@ -696,14 +767,33 @@ def sweep_induction_extended():
     """Extended: fine-grained step sweep for the most promising archs,
     so we can see the learning curve shape."""
     fieldnames = [
-        "arch", "n_params", "n_train_steps", "train_mode",
-        "auc", "max_gap_acc", "min_gap_acc",
-        "acc_4", "acc_8", "acc_16", "acc_32", "acc_64",
-        "last_loss", "status", "elapsed_s",
+        "arch",
+        "n_params",
+        "n_train_steps",
+        "train_mode",
+        "auc",
+        "max_gap_acc",
+        "min_gap_acc",
+        "acc_4",
+        "acc_8",
+        "acc_16",
+        "acc_32",
+        "acc_64",
+        "last_loss",
+        "status",
+        "elapsed_s",
     ]
     f, w = _init_csv(INDUCTION_EXTENDED_CSV, fieldnames)
     # Dense step grid on the architectures most relevant for discrimination.
-    target_archs = ["attn_1l", "attn_2l", "attn_4l", "hybrid_2l", "ssm_4l", "rwkv_2l", "conv7_4l"]
+    target_archs = [
+        "attn_1l",
+        "attn_2l",
+        "attn_4l",
+        "hybrid_2l",
+        "ssm_4l",
+        "rwkv_2l",
+        "conv7_4l",
+    ]
     step_grid = (50, 100, 150, 200, 300, 400, 600, 800, 1200, 1600, 2400)
     mode_grid = ("mixed",)  # mixed is the better training regime per earlier finding
     total = len(target_archs) * len(step_grid) * len(mode_grid)
@@ -720,9 +810,12 @@ def sweep_induction_extended():
                 except Exception as e:
                     res = {
                         "status": f"exception: {type(e).__name__}: {e}",
-                        "auc": 0.0, "gap_acc": {},
-                        "max_gap_acc": 0.0, "min_gap_acc": 0.0,
-                        "last_loss": 0.0, "elapsed_s": 0.0,
+                        "auc": 0.0,
+                        "gap_acc": {},
+                        "max_gap_acc": 0.0,
+                        "min_gap_acc": 0.0,
+                        "last_loss": 0.0,
+                        "elapsed_s": 0.0,
                     }
                 gap_acc = res.get("gap_acc", {})
                 row = {
@@ -744,9 +837,11 @@ def sweep_induction_extended():
                 }
                 w.writerow(row)
                 f.flush()
-                print(f"[{done}/{total}] {arch_name:<12} steps={steps:4} "
-                      f"auc={res['auc']:.3f} peak={res.get('max_gap_acc', 0):.3f} "
-                      f"time={res['elapsed_s']}s")
+                print(
+                    f"[{done}/{total}] {arch_name:<12} steps={steps:4} "
+                    f"auc={res['auc']:.3f} peak={res.get('max_gap_acc', 0):.3f} "
+                    f"time={res['elapsed_s']}s"
+                )
         del base
         if DEVICE == "cuda":
             torch.cuda.empty_cache()
@@ -755,9 +850,18 @@ def sweep_induction_extended():
 
 def sweep_binding_curriculum():
     fieldnames = [
-        "arch", "n_params", "n_train_steps",
-        "auc", "acc_4", "acc_8", "acc_16", "acc_32",
-        "first_loss", "last_loss", "status", "elapsed_s",
+        "arch",
+        "n_params",
+        "n_train_steps",
+        "auc",
+        "acc_4",
+        "acc_8",
+        "acc_16",
+        "acc_32",
+        "first_loss",
+        "last_loss",
+        "status",
+        "elapsed_s",
     ]
     f, w = _init_csv(BINDING_CURR_CSV, fieldnames)
     step_grid = (200, 400, 800, 1600)
@@ -774,8 +878,11 @@ def sweep_binding_curriculum():
             except Exception as e:
                 res = {
                     "status": f"exception: {type(e).__name__}: {e}",
-                    "auc": 0.0, "dist_acc": {},
-                    "first_loss": 0.0, "last_loss": 0.0, "elapsed_s": 0.0,
+                    "auc": 0.0,
+                    "dist_acc": {},
+                    "first_loss": 0.0,
+                    "last_loss": 0.0,
+                    "elapsed_s": 0.0,
                 }
             dist_acc = res.get("dist_acc", {})
             row = {
@@ -794,8 +901,10 @@ def sweep_binding_curriculum():
             }
             w.writerow(row)
             f.flush()
-            print(f"[{done}/{total}] {arch_name:<12} steps={steps:4} "
-                  f"auc={res['auc']:.3f} time={res['elapsed_s']}s")
+            print(
+                f"[{done}/{total}] {arch_name:<12} steps={steps:4} "
+                f"auc={res['auc']:.3f} time={res['elapsed_s']}s"
+            )
         del base
         if DEVICE == "cuda":
             torch.cuda.empty_cache()
@@ -804,9 +913,15 @@ def sweep_binding_curriculum():
 
 def sweep_associative_recall():
     fieldnames = [
-        "arch", "n_params", "n_train_steps",
-        "auc", "final_acc",
-        "first_loss", "last_loss", "status", "elapsed_s",
+        "arch",
+        "n_params",
+        "n_train_steps",
+        "auc",
+        "final_acc",
+        "first_loss",
+        "last_loss",
+        "status",
+        "elapsed_s",
     ]
     f, w = _init_csv(AR_CSV, fieldnames)
     step_grid = (500, 1000, 2000)
@@ -823,8 +938,11 @@ def sweep_associative_recall():
             except Exception as e:
                 res = {
                     "status": f"exception: {type(e).__name__}: {e}",
-                    "auc": 0.0, "final_acc": 0.0,
-                    "first_loss": 0.0, "last_loss": 0.0, "elapsed_s": 0.0,
+                    "auc": 0.0,
+                    "final_acc": 0.0,
+                    "first_loss": 0.0,
+                    "last_loss": 0.0,
+                    "elapsed_s": 0.0,
                 }
             row = {
                 "arch": arch_name,
@@ -839,9 +957,11 @@ def sweep_associative_recall():
             }
             w.writerow(row)
             f.flush()
-            print(f"[{done}/{total}] {arch_name:<12} steps={steps:4} "
-                  f"auc={res['auc']:.3f} final={res['final_acc']:.3f} "
-                  f"time={res['elapsed_s']}s")
+            print(
+                f"[{done}/{total}] {arch_name:<12} steps={steps:4} "
+                f"auc={res['auc']:.3f} final={res['final_acc']:.3f} "
+                f"time={res['elapsed_s']}s"
+            )
         del base
         if DEVICE == "cuda":
             torch.cuda.empty_cache()

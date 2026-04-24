@@ -34,9 +34,7 @@ class _DashboardPerfMixin:
             perf_traces, results.get("_compile_times_ms", []) or [], queue_compile_ms
         )
         gpu_starvation = aggregate_gpu_starvation(results.get("_gpu_starvation") or [])
-        kernel_hotspots = aggregate_kernel_hotspots(
-            results.get("_kernel_timing") or []
-        )
+        kernel_hotspots = aggregate_kernel_hotspots(results.get("_kernel_timing") or [])
         tp_scheduling = aggregate_training_program_scheduling(
             results.get("training_program_scheduling")
         )

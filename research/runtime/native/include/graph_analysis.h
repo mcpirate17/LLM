@@ -40,6 +40,7 @@ typedef struct {
 typedef struct {
   aria_graph_analysis_result_t analysis;
   aria_dim_flow_summary_t dim_flow;
+  double effective_depth;
   int32_t edge_error_count;
   int32_t dead_parameterized_count;
 } aria_packed_validation_result_t;
@@ -101,6 +102,9 @@ int32_t aria_graph_validate_packed_ir(
     const int32_t* node_seq_flags,
     const int32_t* op_kind_flags,
     const int32_t* full_dim_flags,
+    const float* effective_depth_weights,
+    const uint8_t* discount_successor,
+    int32_t n_opcodes,
     int32_t model_dim,
     int32_t input_node_idx,
     aria_packed_validation_result_t* out,

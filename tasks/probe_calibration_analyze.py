@@ -25,18 +25,30 @@ OUT_MD = Path("PROBE_CALIBRATION_2026-04-17.md")
 
 # Architectural family mapping (mirrors the sweep script).
 FAMILY = {
-    "attn_1l": "attention", "attn_2l": "attention", "attn_4l": "attention",
-    "conv3_2l": "conv", "conv7_2l": "conv", "conv7_4l": "conv",
-    "ssm_2l": "ssm", "ssm_4l": "ssm",
+    "attn_1l": "attention",
+    "attn_2l": "attention",
+    "attn_4l": "attention",
+    "conv3_2l": "conv",
+    "conv7_2l": "conv",
+    "conv7_4l": "conv",
+    "ssm_2l": "ssm",
+    "ssm_4l": "ssm",
     "rwkv_2l": "rwkv",
-    "hybrid_2l": "hybrid", "hybrid_4l": "hybrid",
+    "hybrid_2l": "hybrid",
+    "hybrid_4l": "hybrid",
 }
 LAYER_DEPTH = {
-    "attn_1l": 1, "attn_2l": 2, "attn_4l": 4,
-    "conv3_2l": 2, "conv7_2l": 2, "conv7_4l": 4,
-    "ssm_2l": 2, "ssm_4l": 4,
+    "attn_1l": 1,
+    "attn_2l": 2,
+    "attn_4l": 4,
+    "conv3_2l": 2,
+    "conv7_2l": 2,
+    "conv7_4l": 4,
+    "ssm_2l": 2,
+    "ssm_4l": 4,
     "rwkv_2l": 2,
-    "hybrid_2l": 2, "hybrid_4l": 4,
+    "hybrid_2l": 2,
+    "hybrid_4l": 4,
 }
 
 
@@ -91,8 +103,11 @@ def table_induction_auc_by_arch_and_step(rows: List[Dict], train_mode: str) -> s
 
 
 def table_induction_pergap_at(rows: List[Dict], steps: int, train_mode: str) -> str:
-    sub = [r for r in rows if _int(r, "n_train_steps") == steps
-           and r.get("train_mode") == train_mode]
+    sub = [
+        r
+        for r in rows
+        if _int(r, "n_train_steps") == steps and r.get("train_mode") == train_mode
+    ]
     if not sub:
         return "_(no data at this step count)_"
     lines = [
@@ -158,9 +173,7 @@ def single_vs_mixed_compare(rows: List[Dict]) -> str:
             mx = pivot.get((arch, s, "mixed"))
             if fx is None or mx is None:
                 continue
-            lines.append(
-                f"| `{arch}` | {s} | {fx:.3f} | {mx:.3f} | {mx - fx:+.3f} |"
-            )
+            lines.append(f"| `{arch}` | {s} | {fx:.3f} | {mx:.3f} | {mx - fx:+.3f} |")
     return "\n".join(lines)
 
 
@@ -228,7 +241,6 @@ def extended_curve_table(rows: List[Dict]) -> str:
 def recommend_investigation_tier(ind_rows: List[Dict]) -> str:
     """Pick a recommended budget: the smallest one where attention ≥ 0.7
     AND conv / ssm / rwkv ≤ 0.3 under mixed-mode training."""
-    best_budget = None
     for r in sorted(ind_rows, key=lambda r: _int(r, "n_train_steps")):
         if r.get("train_mode") != "mixed":
             continue
@@ -242,7 +254,9 @@ def recommend_investigation_tier(ind_rows: List[Dict]) -> str:
     for s in sorted(by_steps):
         rec = by_steps[s]
         attn_vals = [v for k, v in rec.items() if FAMILY.get(k) == "attention"]
-        nonattn_vals = [v for k, v in rec.items() if FAMILY.get(k) in ("conv", "ssm", "rwkv")]
+        nonattn_vals = [
+            v for k, v in rec.items() if FAMILY.get(k) in ("conv", "ssm", "rwkv")
+        ]
         if not attn_vals or not nonattn_vals:
             continue
         if min(attn_vals) >= 0.6 and max(nonattn_vals) <= 0.4:
@@ -268,8 +282,10 @@ def main():
     bind = _load_csv(BINDING_CURR_CSV)
     ar = _load_csv(AR_CSV)
 
-    print(f"Loaded: {len(ind)} induction rows, {len(ind_ext)} extended, "
-          f"{len(bind)} binding, {len(ar)} AR")
+    print(
+        f"Loaded: {len(ind)} induction rows, {len(ind_ext)} extended, "
+        f"{len(bind)} binding, {len(ar)} AR"
+    )
     if not (ind or ind_ext or bind or ar):
         print("No data yet — exiting.")
         return

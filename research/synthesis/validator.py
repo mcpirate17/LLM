@@ -21,7 +21,11 @@ from typing import List
 import numpy as np
 
 from .context_rules import find_graph_context_violations
-from .graph_validator import validate_dim_flow
+from .graph_validator import (
+    build_dim_flow_validation_inputs,
+    try_packed_dim_flow_validation,
+    validate_dim_flow,
+)
 from .native_analysis import analyze_ir_runtime_first
 from .primitives import OPCODE_MAP, REVERSE_OPCODE_MAP, get_primitive
 from .graph import ComputationGraph, ComputationGraphIR
@@ -237,12 +241,48 @@ def validate_graph(
         result.add_error("Graph has no output node")
         return result
 
-    analysis_ir = graph._analysis_ir()
-    analysis = analyze_ir_runtime_first(analysis_ir, include_reachable=True)
+    analysis_source_ir = graph._analysis_ir()
+    tables = validation_opcode_tables()
+    dim_flow_inputs = build_dim_flow_validation_inputs(
+        graph,
+        analysis_ir=analysis_source_ir,
+        compute_analysis=False,
+    )
+    analysis_ir = dim_flow_inputs.analysis_ir
+    cached_effective_depth = analysis_ir.analysis_cache.get("effective_depth")
+    needs_effective_depth = cached_effective_depth is None
+    packed_validation = try_packed_dim_flow_validation(
+        graph=graph,
+        analysis_ir=analysis_ir,
+        dim_flow_inputs=dim_flow_inputs,
+        effective_depth_weights=(
+            tables.effective_depth_weight if needs_effective_depth else None
+        ),
+        discount_successor_u8=(
+            tables.discount_successor_u8 if needs_effective_depth else None
+        ),
+    )
+    if packed_validation is not None:
+        analysis = packed_validation.analysis
+        dim_flow_inputs.analysis = analysis
+    else:
+        analysis = analyze_ir_runtime_first(
+            analysis_source_ir,
+            include_reachable=True,
+        )
+        dim_flow_inputs.analysis = analysis
 
     result.n_ops = graph.n_ops()
     result.depth = analysis.depth
-    result.effective_depth = compute_effective_depth(analysis_ir)
+    if cached_effective_depth is not None:
+        result.effective_depth = float(cached_effective_depth)
+    elif (
+        packed_validation is not None and packed_validation.effective_depth is not None
+    ):
+        result.effective_depth = float(packed_validation.effective_depth)
+        analysis_ir.analysis_cache["effective_depth"] = result.effective_depth
+    else:
+        result.effective_depth = compute_effective_depth(analysis_ir)
     result.n_params_estimate = analysis.param_estimate
 
     # Size limits
@@ -317,6 +357,8 @@ def validate_graph(
         max_params=max_params,
         analysis_ir=analysis_ir,
         analysis=analysis,
+        dim_flow_inputs=dim_flow_inputs,
+        packed_validation=packed_validation,
     )
     for error in dim_flow.errors:
         if error not in result.errors:

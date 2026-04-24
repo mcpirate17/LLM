@@ -555,102 +555,7 @@ static int32_t _aria_edge_has_error(const aria_edge_validation_t* edge) {
          edge->binary_dim_mismatch != 0 || edge->full_dim_input_bits != 0;
 }
 
-int32_t aria_graph_validate_packed_ir(
-    int32_t n_nodes,
-    const int32_t* op_codes,
-    const int32_t* input_indices,
-    int32_t output_node_idx,
-    const int64_t* param_estimates,
-    const int32_t* has_params_flags,
-    const int32_t* nontrivial_flags,
-    const int32_t* kv_breaking_flags,
-    const int32_t* node_dims,
-    const int32_t* node_seq_flags,
-    const int32_t* op_kind_flags,
-    const int32_t* full_dim_flags,
-    int32_t model_dim,
-    int32_t input_node_idx,
-    aria_packed_validation_result_t* out,
-    int32_t* reachable_mask,
-    aria_edge_validation_t* edge_validation,
-    int32_t* dead_parameterized_mask) {
-  int32_t i;
-  int32_t status;
-
-  if (n_nodes < 0 || op_codes == NULL || input_indices == NULL ||
-      param_estimates == NULL || has_params_flags == NULL ||
-      nontrivial_flags == NULL || kv_breaking_flags == NULL ||
-      node_dims == NULL || node_seq_flags == NULL || op_kind_flags == NULL ||
-      full_dim_flags == NULL || out == NULL || reachable_mask == NULL ||
-      edge_validation == NULL || dead_parameterized_mask == NULL) {
-    return -1;
-  }
-
-  memset(out, 0, sizeof(*out));
-  memset(reachable_mask, 0, (size_t)n_nodes * sizeof(int32_t));
-  memset(edge_validation, 0, (size_t)n_nodes * sizeof(aria_edge_validation_t));
-  memset(dead_parameterized_mask, 0, (size_t)n_nodes * sizeof(int32_t));
-  out->dim_flow.kv_cacheable = 1;
-
-  status = aria_graph_analyze_ir(
-      n_nodes,
-      op_codes,
-      input_indices,
-      output_node_idx,
-      param_estimates,
-      &out->analysis,
-      reachable_mask);
-  if (status != 0) {
-    return status;
-  }
-
-  for (i = 0; i < n_nodes; ++i) {
-    if (reachable_mask[i] == 0 || i == input_node_idx) {
-      continue;
-    }
-    out->dim_flow.reachable_ops += 1;
-    if (nontrivial_flags[i] != 0) {
-      out->dim_flow.reachable_nontrivial_ops += 1;
-    }
-    if (has_params_flags[i] != 0) {
-      out->dim_flow.reachable_param_count += 1;
-      if (param_estimates[i] > 0) {
-        out->dim_flow.reachable_param_estimate += param_estimates[i];
-      }
-    }
-    if (kv_breaking_flags[i] != 0) {
-      out->dim_flow.kv_cacheable = 0;
-    }
-  }
-
-  status = aria_graph_validate_edges(
-      n_nodes,
-      reachable_mask,
-      input_indices,
-      node_dims,
-      node_seq_flags,
-      op_kind_flags,
-      full_dim_flags,
-      model_dim,
-      edge_validation);
-  if (status != 0) {
-    return status;
-  }
-
-  for (i = 0; i < n_nodes; ++i) {
-    if (_aria_edge_has_error(&edge_validation[i])) {
-      out->edge_error_count += 1;
-    }
-    if (reachable_mask[i] == 0 && has_params_flags[i] != 0) {
-      dead_parameterized_mask[i] = 1;
-      out->dead_parameterized_count += 1;
-    }
-  }
-
-  return 0;
-}
-
-int32_t aria_graph_effective_depth(
+static int32_t _aria_graph_effective_depth_impl(
     int32_t n_nodes,
     const int32_t* op_codes,
     const int32_t* input_indices,
@@ -719,4 +624,136 @@ int32_t aria_graph_effective_depth(
   *out_depth = (double)max_depth;
   free(scores);
   return 0;
+}
+
+int32_t aria_graph_validate_packed_ir(
+    int32_t n_nodes,
+    const int32_t* op_codes,
+    const int32_t* input_indices,
+    int32_t output_node_idx,
+    const int64_t* param_estimates,
+    const int32_t* has_params_flags,
+    const int32_t* nontrivial_flags,
+    const int32_t* kv_breaking_flags,
+    const int32_t* node_dims,
+    const int32_t* node_seq_flags,
+    const int32_t* op_kind_flags,
+    const int32_t* full_dim_flags,
+    const float* effective_depth_weights,
+    const uint8_t* discount_successor,
+    int32_t n_opcodes,
+    int32_t model_dim,
+    int32_t input_node_idx,
+    aria_packed_validation_result_t* out,
+    int32_t* reachable_mask,
+    aria_edge_validation_t* edge_validation,
+    int32_t* dead_parameterized_mask) {
+  int32_t i;
+  int32_t status;
+
+  if (n_nodes < 0 || op_codes == NULL || input_indices == NULL ||
+      param_estimates == NULL || has_params_flags == NULL ||
+      nontrivial_flags == NULL || kv_breaking_flags == NULL ||
+      node_dims == NULL || node_seq_flags == NULL || op_kind_flags == NULL ||
+      full_dim_flags == NULL || out == NULL || reachable_mask == NULL ||
+      edge_validation == NULL || dead_parameterized_mask == NULL) {
+    return -1;
+  }
+
+  memset(out, 0, sizeof(*out));
+  memset(reachable_mask, 0, (size_t)n_nodes * sizeof(int32_t));
+  memset(edge_validation, 0, (size_t)n_nodes * sizeof(aria_edge_validation_t));
+  memset(dead_parameterized_mask, 0, (size_t)n_nodes * sizeof(int32_t));
+  out->dim_flow.kv_cacheable = 1;
+  out->effective_depth = -1.0;
+
+  status = aria_graph_analyze_ir(
+      n_nodes,
+      op_codes,
+      input_indices,
+      output_node_idx,
+      param_estimates,
+      &out->analysis,
+      reachable_mask);
+  if (status != 0) {
+    return status;
+  }
+
+  if (effective_depth_weights != NULL && discount_successor != NULL &&
+      n_opcodes > 0) {
+    status = _aria_graph_effective_depth_impl(
+        n_nodes,
+        op_codes,
+        input_indices,
+        effective_depth_weights,
+        discount_successor,
+        n_opcodes,
+        &out->effective_depth);
+    if (status != 0) {
+      out->effective_depth = -1.0;
+    }
+  }
+
+  for (i = 0; i < n_nodes; ++i) {
+    if (reachable_mask[i] == 0 || i == input_node_idx) {
+      continue;
+    }
+    out->dim_flow.reachable_ops += 1;
+    if (nontrivial_flags[i] != 0) {
+      out->dim_flow.reachable_nontrivial_ops += 1;
+    }
+    if (has_params_flags[i] != 0) {
+      out->dim_flow.reachable_param_count += 1;
+      if (param_estimates[i] > 0) {
+        out->dim_flow.reachable_param_estimate += param_estimates[i];
+      }
+    }
+    if (kv_breaking_flags[i] != 0) {
+      out->dim_flow.kv_cacheable = 0;
+    }
+  }
+
+  status = aria_graph_validate_edges(
+      n_nodes,
+      reachable_mask,
+      input_indices,
+      node_dims,
+      node_seq_flags,
+      op_kind_flags,
+      full_dim_flags,
+      model_dim,
+      edge_validation);
+  if (status != 0) {
+    return status;
+  }
+
+  for (i = 0; i < n_nodes; ++i) {
+    if (_aria_edge_has_error(&edge_validation[i])) {
+      out->edge_error_count += 1;
+    }
+    if (reachable_mask[i] == 0 && has_params_flags[i] != 0) {
+      dead_parameterized_mask[i] = 1;
+      out->dead_parameterized_count += 1;
+    }
+  }
+
+  return 0;
+}
+
+int32_t aria_graph_effective_depth(
+    int32_t n_nodes,
+    const int32_t* op_codes,
+    const int32_t* input_indices,
+    const float* effective_depth_weights,
+    const uint8_t* discount_successor,
+    int32_t n_opcodes,
+    double* out_depth) {
+  return _aria_graph_effective_depth_impl(
+      n_nodes,
+      op_codes,
+      input_indices,
+      effective_depth_weights,
+      discount_successor,
+      n_opcodes,
+      out_depth);
 }
