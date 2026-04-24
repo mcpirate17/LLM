@@ -667,6 +667,12 @@ def tpl_multiscale_difficulty_router_adaptive_attn_ssm(
         _multiscale_gate_config(),
         context="multiscale_difficulty_router_adaptive_attn_ssm.token_gate",
     )
+    gate_bypass = _residual(
+        graph,
+        normed,
+        gated,
+        context="multiscale_difficulty_router_adaptive_attn_ssm.gate_bypass",
+    )
     pair_routed = _add(
         graph,
         "hybrid_sparse_router",
@@ -815,6 +821,12 @@ def tpl_multiscale_difficulty_router_adaptive_attn_ssm(
     )
     merged = _residual(
         graph,
+        gate_bypass,
+        merged,
+        context="multiscale_difficulty_router_adaptive_attn_ssm.merge_gate_bypass",
+    )
+    merged = _residual(
+        graph,
         input_id,
         merged,
         context="multiscale_difficulty_router_adaptive_attn_ssm.output_residual",
@@ -866,6 +878,12 @@ def tpl_multiscale_rich_lane_router(
         [normed],
         _multiscale_gate_config(),
         context="multiscale_rich_lane_router.token_gate",
+    )
+    gate_bypass = _residual(
+        graph,
+        normed,
+        gated,
+        context="multiscale_rich_lane_router.gate_bypass",
     )
     record_template_slot_binding(
         graph,
@@ -1016,6 +1034,12 @@ def tpl_multiscale_rich_lane_router(
             max_secondary_end=0.22,
         ),
         context="multiscale_rich_lane_router.merge_hard",
+    )
+    merged = _residual(
+        graph,
+        gate_bypass,
+        merged,
+        context="multiscale_rich_lane_router.merge_gate_bypass",
     )
     return _residual(
         graph, input_id, merged, context="multiscale_rich_lane_router.output_residual"

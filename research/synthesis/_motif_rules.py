@@ -59,6 +59,7 @@ ACTIVATION_RULES: Dict[str, Dict] = {
             "cosine_similarity",
             "cumprod_safe",
             "add",
+            "exp",
             "reciprocal",
             "log",
             "moe_topk",
@@ -79,7 +80,7 @@ ACTIVATION_RULES: Dict[str, Dict] = {
     # Magnitude: loses sign info, must feed into gating/scaling
     "abs": {
         "after": {OpRole.PROJECT, OpRole.MIX},
-        "before": {"mul", "learnable_scale", "topk_gate", "add"},
+        "before": {"mul", "learnable_scale", "topk_gate", "add", "sqrt"},
     },
     # Inversion: -x, works broadly but not after sign-flipping ops
     "neg": {
@@ -290,14 +291,14 @@ MATH_SPACE_RULES: Dict[str, Dict] = {
         "must_follow_with": {"log_map", "linear_proj"},
     },
     # Numerically risky ops: must be preceded by norm to bound activations
-    "cosine_similarity": {"must_precede": {"rmsnorm", "layernorm"}},
-    "cumprod_safe": {"must_precede": {"rmsnorm", "layernorm"}},
-    "div_safe": {"must_precede": {"rmsnorm", "layernorm"}},
-    "exp": {"must_precede": {"rmsnorm", "layernorm"}},
+    "cosine_similarity": {"must_precede": {"rmsnorm", "layernorm", "linear_proj"}},
+    "cumprod_safe": {"must_precede": {"rmsnorm", "layernorm", "sigmoid"}},
+    "div_safe": {"must_precede": {"rmsnorm", "layernorm", "softmax_last"}},
+    "exp": {"must_precede": {"rmsnorm", "layernorm", "sigmoid", "tanh"}},
     "hyperbolic_norm": {"must_precede": {"rmsnorm", "layernorm"}},
-    "log": {"must_precede": {"rmsnorm", "layernorm"}},
-    "reciprocal": {"must_precede": {"rmsnorm", "layernorm"}},
-    "sqrt": {"must_precede": {"rmsnorm", "layernorm"}},
+    "log": {"must_precede": {"rmsnorm", "layernorm", "sigmoid", "tanh"}},
+    "reciprocal": {"must_precede": {"rmsnorm", "layernorm", "sigmoid", "tanh"}},
+    "sqrt": {"must_precede": {"rmsnorm", "layernorm", "abs", "sigmoid", "tanh"}},
     # Ops with domain constraints
     "spike_rate_code": {"must_precede": {"rmsnorm", "layernorm", "lif_neuron"}},
     "padic_gate": {"must_precede": {"rmsnorm", "layernorm"}},
@@ -351,11 +352,18 @@ MATH_SPACE_RULES: Dict[str, Dict] = {
     },
     # Ops that were in the original audit's must_precede list
     "exp_map": {"must_precede": {"rmsnorm", "layernorm", "linear_proj"}},
-    "log_map": {"must_follow": {"exp_map", "poincare_add", "hyp_linear"}},
+    "log_map": {
+        "must_follow": {
+            "exp_map",
+            "poincare_add",
+            "hyp_linear",
+            "hyp_tangent_nonlinear",
+        }
+    },
     "fixed_point_iter": {"must_precede": {"rmsnorm", "layernorm"}},
     "hyp_distance": {"must_precede": {"exp_map"}},
     "rwkv_time_mixing": {"must_precede": {"rmsnorm", "layernorm"}},
-    "selective_scan": {"must_precede": {"rmsnorm", "layernorm"}},
+    "selective_scan": {"must_precede": {"rmsnorm", "layernorm", "conv1d_seq", "silu"}},
     "n_way_sparse_router": {"must_precede": {"rmsnorm", "layernorm"}},
     # Mixing ops: 3.3% pass when pred=input, 1% when pred=add, 57% when pred=norm.
     # Every sequence-mixing op must be preceded by normalization.

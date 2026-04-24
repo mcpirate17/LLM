@@ -475,12 +475,24 @@ def tpl_depth_token_mask_block(
         context="depth_token_mask_block.score",
     )
     routed = _fix_dim(graph, routed)
+    mask_input = _add(
+        graph,
+        "rmsnorm",
+        [routed],
+        context="depth_token_mask_block.mask_pre_norm",
+    )
     masked = _add(
         graph,
         "depth_token_mask",
-        [routed],
+        [mask_input],
         {"capacity_factor": rng.choice([0.875, 0.9])},
         context="depth_token_mask_block.mask",
+    )
+    mask_bypass = _residual(
+        graph,
+        mask_input,
+        masked,
+        context="depth_token_mask_block.mask_bypass",
     )
 
     current = _add(
@@ -523,7 +535,7 @@ def tpl_depth_token_mask_block(
     current = _fix_dim(graph, current)
     current = _residual(
         graph,
-        routed,
+        mask_bypass,
         current,
         context="depth_token_mask_block.branch_output",
     )

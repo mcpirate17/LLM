@@ -272,6 +272,19 @@ def tpl_three_way_split(
     Jacobian spectral norm stays in the investigation eligibility band.
     """
     D = graph.model_dim
+    routed = _three_way_routed_input(graph, input_id)
+    part0, part1, part2 = _three_way_parts(graph, routed)
+    p0 = _three_way_lane0(graph, part0, rng)
+    p1 = _three_way_lane1(graph, part1, rng)
+    p2 = _three_way_lane2(graph, part2, rng)
+
+    combined01 = _residual(graph, p0, p1, context="three_way_split.merge01")
+    combined = _residual(graph, combined01, p2, context="three_way_split.merge")
+    combined = _three_way_project_merge(graph, combined, D)
+    return _residual(graph, input_id, combined, context="three_way_split.output")
+
+
+def _three_way_routed_input(graph: ComputationGraph, input_id: int) -> int:
     normed = _add(graph, "rmsnorm", [input_id], context="three_way_split.norm")
     routed = _add(
         graph,
@@ -289,7 +302,10 @@ def tpl_three_way_split(
             {"out_dim": 255},
             context="three_way_split.reproject",
         )
+    return routed
 
+
+def _three_way_parts(graph: ComputationGraph, routed: int) -> tuple[int, int, int]:
     part0 = _add(
         graph, "split3", [routed], {"part": 0}, context="three_way_split.part0"
     )
@@ -299,12 +315,15 @@ def tpl_three_way_split(
     part2 = _add(
         graph, "split3", [routed], {"part": 2}, context="three_way_split.part2"
     )
+    return part0, part1, part2
 
-    # Lane 0 — sequence mixing
+
+def _three_way_lane0(graph: ComputationGraph, part0: int, rng: random.Random) -> int:
     lane0_op = rng.choice(_THREE_WAY_LANE0_OPS)
-    p0 = _add(graph, lane0_op, [part0], context=f"three_way_split.lane0_{lane0_op}")
+    return _add(graph, lane0_op, [part0], context=f"three_way_split.lane0_{lane0_op}")
 
-    # Lane 1 — channel/FFN
+
+def _three_way_lane1(graph: ComputationGraph, part1: int, rng: random.Random) -> int:
     lane1_op = rng.choice(_THREE_WAY_LANE1_OPS)
     if lane1_op == "linear_proj":
         p1 = _add(
@@ -314,28 +333,77 @@ def tpl_three_way_split(
             {"out_dim": graph.nodes[part1].output_shape.dim},
             context="three_way_split.lane1_linear",
         )
-        p1 = _add(graph, "silu", [p1], context="three_way_split.lane1_act")
-    else:
-        p1 = _add(graph, lane1_op, [part1], context=f"three_way_split.lane1_{lane1_op}")
+        return _add(graph, "silu", [p1], context="three_way_split.lane1_act")
+    return _add(graph, lane1_op, [part1], context=f"three_way_split.lane1_{lane1_op}")
 
-    # Lane 2 — gating / routing
+
+def _three_way_lane2(graph: ComputationGraph, part2: int, rng: random.Random) -> int:
     lane2_op = rng.choice(_THREE_WAY_LANE2_OPS)
-    p2 = _add(graph, lane2_op, [part2], context=f"three_way_split.lane2_{lane2_op}")
+    if lane2_op == "depth_token_mask":
+        return _three_way_depth_token_mask_lane(graph, part2)
+    if lane2_op == "learned_token_gate":
+        return _three_way_learned_token_gate_lane(graph, part2)
+    return _add(graph, lane2_op, [part2], context=f"three_way_split.lane2_{lane2_op}")
 
-    combined01 = _residual(graph, p0, p1, context="three_way_split.merge01")
-    combined = _residual(graph, combined01, p2, context="three_way_split.merge")
-    # Renormalize the 3-path merge before re-injecting into the residual stream.
+
+def _three_way_depth_token_mask_lane(graph: ComputationGraph, part2: int) -> int:
+    mask_input = _add(
+        graph,
+        "rmsnorm",
+        [part2],
+        context="three_way_split.lane2_depth_token_mask_pre_norm",
+    )
+    masked = _add(
+        graph,
+        "depth_token_mask",
+        [mask_input],
+        context="three_way_split.lane2_depth_token_mask",
+    )
+    projected = _add(
+        graph,
+        "linear_proj",
+        [masked],
+        {"out_dim": graph.nodes[part2].output_shape.dim},
+        context="three_way_split.lane2_depth_token_mask_proj",
+    )
+    bypass = _residual(
+        graph,
+        mask_input,
+        masked,
+        context="three_way_split.lane2_depth_token_mask_bypass",
+    )
+    return _residual(
+        graph,
+        bypass,
+        projected,
+        context="three_way_split.lane2_depth_token_mask_merge",
+    )
+
+
+def _three_way_learned_token_gate_lane(graph: ComputationGraph, part2: int) -> int:
+    gated = _add(
+        graph,
+        "learned_token_gate",
+        [part2],
+        context="three_way_split.lane2_learned_token_gate",
+    )
+    return _residual(
+        graph,
+        part2,
+        gated,
+        context="three_way_split.lane2_learned_token_gate_bypass",
+    )
+
+
+def _three_way_project_merge(graph: ComputationGraph, combined: int, dim: int) -> int:
     combined = _add(graph, "rmsnorm", [combined], context="three_way_split.merge_norm")
-    # Dampen the output projection's initial variance: 3 lane paths + skip
-    # = 4 contributors to the residual stream, so 1/sqrt(4) = 0.5.
-    combined = _add(
+    return _add(
         graph,
         "linear_proj",
         [combined],
-        {"out_dim": D, "init_scale": 0.5},
+        {"out_dim": dim, "init_scale": 0.5},
         context="three_way_split.project",
     )
-    return _residual(graph, input_id, combined, context="three_way_split.output")
 
 
 def tpl_bottleneck(
@@ -647,6 +715,12 @@ def tpl_token_merge_block(
         [normed],
         context="token_merge_block.merge",
     )
+    merge_bypass = _residual(
+        graph,
+        normed,
+        merged,
+        context="token_merge_block.merge_bypass",
+    )
 
     # Post-merge norm: satisfies conv1d_seq.must_precede and swiglu_mlp predecessor rules
     post_norm = _add(graph, "rmsnorm", [merged], context="token_merge_block.post_norm")
@@ -682,7 +756,7 @@ def tpl_token_merge_block(
 
     processed = _fix_dim(graph, processed)
     # Residual from normed: satisfies REQUIRES_RESIDUAL_BYPASS for token_merge
-    return _residual(graph, normed, processed, context="token_merge_block.output")
+    return _residual(graph, merge_bypass, processed, context="token_merge_block.output")
 
 
 def tpl_token_merge_conv(
@@ -711,6 +785,12 @@ def tpl_token_merge_conv(
         [normed],
         context="token_merge_conv.merge",
     )
+    merge_bypass = _residual(
+        graph,
+        normed,
+        merged,
+        context="token_merge_conv.merge_bypass",
+    )
 
     # Post-merge norm: satisfies conv1d_seq.must_precede
     post_norm = _add(graph, "rmsnorm", [merged], context="token_merge_conv.post_norm")
@@ -737,7 +817,7 @@ def tpl_token_merge_conv(
 
     sparse = _fix_dim(graph, sparse)
     # Residual from normed: satisfies REQUIRES_RESIDUAL_BYPASS for token_merge
-    return _residual(graph, normed, sparse, context="token_merge_conv.output")
+    return _residual(graph, merge_bypass, sparse, context="token_merge_conv.output")
 
 
 def tpl_conditional_compute(

@@ -272,14 +272,11 @@ class ComputationGraph:
 
         Raises ValueError if shapes don't compose.
         """
-        op = PRIMITIVE_REGISTRY.get(op_name)
+        canonical_name = canonicalize_op_name(op_name)
+        op = PRIMITIVE_REGISTRY.get(canonical_name)
         if op is None:
-            canonical_name = canonicalize_op_name(op_name)
-            op = PRIMITIVE_REGISTRY.get(canonical_name)
             if op is None and canonical_name != "input":
                 raise ValueError(f"Unknown op: {op_name}")
-        else:
-            canonical_name = op_name
 
         config_dict = config if config is not None else {}
         input_count = len(input_ids)

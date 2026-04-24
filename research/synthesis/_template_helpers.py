@@ -57,6 +57,34 @@ class TemplateBuildError(ValueError):
     """Raised when a template cannot be lowered into a valid graph."""
 
 
+_TEMPLATE_PRE_NORM_OPS = frozenset(
+    op_name for op_name, rules in MATH_SPACE_RULES.items() if "must_precede" in rules
+)
+
+
+def _template_inputs_with_required_pre_norm(
+    graph: ComputationGraph,
+    op_name: str,
+    input_ids: list[int],
+    context: str,
+) -> list[int]:
+    required = MATH_SPACE_RULES[op_name]["must_precede"]
+    for input_id in input_ids:
+        parent = graph.nodes.get(input_id)
+        if parent is not None and not parent.is_input and parent.op_name in required:
+            return input_ids
+
+    if not input_ids:
+        return input_ids
+
+    normalized = list(input_ids)
+    try:
+        normalized[0] = graph.add_op("rmsnorm", [normalized[0]])
+    except (ValueError, KeyError) as exc:
+        raise TemplateBuildError(f"{context}: failed to add required pre-norm") from exc
+    return normalized
+
+
 def template_add_op(
     graph: ComputationGraph,
     op_name: str,
@@ -66,6 +94,13 @@ def template_add_op(
     context: str,
 ) -> int:
     """Add an op during template lowering and fail with template context."""
+    if op_name in _TEMPLATE_PRE_NORM_OPS:
+        input_ids = _template_inputs_with_required_pre_norm(
+            graph,
+            op_name,
+            input_ids,
+            context,
+        )
     try:
         return graph.add_op(op_name, input_ids, config=config)
     except (ValueError, KeyError) as exc:
@@ -757,7 +792,13 @@ def _tpl_norm_op_residual(
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
     try:
-        processed = graph.add_op(op_name, [normed], config=op_config or {})
+        processed = template_add_op(
+            graph,
+            op_name,
+            [normed],
+            config=op_config or {},
+            context=f"template_op_residual.{op_name}",
+        )
     except (ValueError, KeyError) as exc:
         raise TemplateBuildError(f"Template op '{op_name}' failed to lower") from exc
     if post_norm:
@@ -801,7 +842,12 @@ def _tpl_norm_dual_op_residual(
         proj_b = graph.add_op(
             "linear_proj", [normed], config=path_b_config or {"out_dim": D}
         )
-        merged = graph.add_op(merge_op, [proj_a, proj_b])
+        merged = template_add_op(
+            graph,
+            merge_op,
+            [proj_a, proj_b],
+            context=f"template_dual_op_residual.{merge_op}",
+        )
     except (ValueError, KeyError) as exc:
         raise TemplateBuildError(
             f"Template merge op '{merge_op}' failed to lower"
@@ -835,7 +881,13 @@ def _tpl_norm_op_motif_residual(
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
     try:
-        mixed = graph.add_op(op_name, [normed], config=op_config or {})
+        mixed = template_add_op(
+            graph,
+            op_name,
+            [normed],
+            config=op_config or {},
+            context=f"template_op_motif_residual.{op_name}",
+        )
         projected = graph.add_op("linear_proj", [mixed], config={"out_dim": D})
     except (ValueError, KeyError) as exc:
         raise TemplateBuildError(
@@ -879,7 +931,13 @@ def _tpl_attention_ffn_block(
 
     if attn_op is not None:
         try:
-            mixed = graph.add_op(attn_op, [normed1], config=attn_config or {})
+            mixed = template_add_op(
+                graph,
+                attn_op,
+                [normed1],
+                config=attn_config or {},
+                context=f"attention_ffn_block.{attn_op}",
+            )
             mixed = graph.add_op("linear_proj", [mixed], config={"out_dim": D})
         except (ValueError, KeyError) as exc:
             raise TemplateBuildError(

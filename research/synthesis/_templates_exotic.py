@@ -22,6 +22,7 @@ from ._template_helpers import (
     _pick_compatible_motif_from_classes,
     _tpl_norm_dual_op_residual,
     template_add_op as _add,
+    template_add_residual as _residual,
 )
 from ._templates_core import tpl_residual_block
 
@@ -237,14 +238,32 @@ def tpl_tropical_center_block(
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
-    try:
-        attended = graph.add_op("tropical_attention", [normed])
-        gated = graph.add_op("tropical_gate", [attended])
-        centered = graph.add_op("tropical_center", [gated])
-        centered = graph.add_op("rmsnorm", [centered])
-        out = graph.add_op("linear_proj", [centered], config={"out_dim": D})
-    except (ValueError, KeyError):
-        return tpl_residual_block(graph, input_id, rng, weights)
+    attended = _add(
+        graph,
+        "tropical_attention",
+        [normed],
+        context="tropical_center_block.attention",
+    )
+    gated = _add(
+        graph,
+        "tropical_gate",
+        [attended],
+        context="tropical_center_block.gate",
+    )
+    centered = _add(
+        graph,
+        "tropical_center",
+        [gated],
+        context="tropical_center_block.center",
+    )
+    out = _add(
+        graph,
+        "linear_proj_down",
+        [centered],
+        {"out_dim": D},
+        context="tropical_center_block.project",
+    )
+    out = _add(graph, "rmsnorm", [out], context="tropical_center_block.post_norm")
 
     try:
         return graph.add_op("add", [input_id, out])
@@ -267,16 +286,51 @@ def tpl_geometric_product_block(
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
-    try:
-        proj_a = graph.add_op("linear_proj", [normed], config={"out_dim": D})
-        proj_b = graph.add_op("linear_proj", [normed], config={"out_dim": D})
-        rotor_a = graph.add_op("rotor_transform", [proj_a])
-        rotor_b = graph.add_op("rotor_transform", [proj_b])
-        product = graph.add_op("geometric_product", [rotor_a, rotor_b])
-        selected = graph.add_op("grade_select", [product])
-        projected = graph.add_op("linear_proj", [selected], config={"out_dim": D})
-    except (ValueError, KeyError):
-        return tpl_residual_block(graph, input_id, rng, weights)
+    proj_a = _add(
+        graph,
+        "linear_proj",
+        [normed],
+        {"out_dim": D},
+        context="geometric_product_block.proj_a",
+    )
+    proj_b = _add(
+        graph,
+        "linear_proj",
+        [normed],
+        {"out_dim": D},
+        context="geometric_product_block.proj_b",
+    )
+    rotor_a = _add(
+        graph,
+        "rotor_transform",
+        [proj_a],
+        context="geometric_product_block.rotor_a",
+    )
+    rotor_b = _add(
+        graph,
+        "rotor_transform",
+        [proj_b],
+        context="geometric_product_block.rotor_b",
+    )
+    product = _add(
+        graph,
+        "geometric_product",
+        [rotor_a, rotor_b],
+        context="geometric_product_block.product",
+    )
+    selected = _add(
+        graph,
+        "grade_select",
+        [product],
+        context="geometric_product_block.grade_select",
+    )
+    projected = _add(
+        graph,
+        "linear_proj",
+        [selected],
+        {"out_dim": D},
+        context="geometric_product_block.project",
+    )
 
     ffn = _pick_compatible_motif_from_classes(
         graph, projected, rng, list(_FFN_CLASSES), weights
@@ -540,21 +594,52 @@ def tpl_poincare_add_bridge(
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
-    try:
-        branch_a = graph.add_op("linear_proj", [normed], config={"out_dim": D})
-        branch_b = graph.add_op("linear_proj", [normed], config={"out_dim": D})
-        if rng.random() < 0.5:
-            branch_b = graph.add_op(rng.choice(["silu", "gelu", "tanh"]), [branch_b])
-        if rng.random() < 0.35:
-            branch_b = graph.add_op("linear_proj", [branch_b], config={"out_dim": D})
+    branch_a = _add(
+        graph,
+        "linear_proj",
+        [normed],
+        {"out_dim": D},
+        context="poincare_add_bridge.branch_a",
+    )
+    branch_b = _add(
+        graph,
+        "linear_proj",
+        [normed],
+        {"out_dim": D},
+        context="poincare_add_bridge.branch_b",
+    )
+    if rng.random() < 0.5:
+        branch_b = _add(
+            graph,
+            rng.choice(["silu", "gelu", "tanh"]),
+            [branch_b],
+            context="poincare_add_bridge.branch_b_act",
+        )
+    if rng.random() < 0.35:
+        branch_b = _add(
+            graph,
+            "linear_proj",
+            [branch_b],
+            {"out_dim": D},
+            context="poincare_add_bridge.branch_b_project",
+        )
 
-        mapped_a = graph.add_op("exp_map", [branch_a])
-        mapped_b = graph.add_op("exp_map", [branch_b])
-        mixed = graph.add_op("add", [mapped_a, mapped_b])
-        bridged = graph.add_op("poincare_add", [mixed])
-        current = graph.add_op("log_map", [bridged])
-    except (ValueError, KeyError):
-        return tpl_residual_block(graph, input_id, rng, weights)
+    mixed = _residual(graph, branch_a, branch_b, context="poincare_add_bridge.mix")
+    tangent = _add(
+        graph,
+        "linear_proj",
+        [mixed],
+        {"out_dim": D},
+        context="poincare_add_bridge.tangent_project",
+    )
+    mapped = _add(graph, "exp_map", [tangent], context="poincare_add_bridge.exp")
+    bridged = _add(
+        graph,
+        "poincare_add",
+        [mapped],
+        context="poincare_add_bridge.poincare_add",
+    )
+    current = _add(graph, "log_map", [bridged], context="poincare_add_bridge.log")
 
     if rng.random() < 0.7:
         post = _pick_compatible_motif_from_classes(

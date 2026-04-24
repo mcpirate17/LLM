@@ -623,7 +623,13 @@ def tpl_latent_attn_padic_hybrid(
         [normed],
         context="latent_attn_padic_hybrid.padic",
     )
-    pb = _fix_dim(graph, pb)
+    pb = _add(
+        graph,
+        "linear_proj",
+        [pb],
+        {"out_dim": D},
+        context="latent_attn_padic_hybrid.padic_project",
+    )
 
     # Merge parallel paths
     merged = _residual(graph, pa, pb, context="latent_attn_padic_hybrid.merge")

@@ -149,13 +149,26 @@ def tpl_conv_residual_retrieval_v2(
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
+    D = graph.model_dim
     try:
-        conved = graph.add_op("conv_only", [normed])
+        conved = _add(
+            graph,
+            "conv_only",
+            [normed],
+            context="conv_residual_retrieval_v2.trunk",
+        )
     except (ValueError, KeyError):
         # If conv_only is unavailable, fall back to conv1d_seq.
         conved = _add(
             graph, "conv1d_seq", [normed], context="conv_residual_retrieval_v2.trunk"
         )
+    conved = _add(
+        graph,
+        "linear_proj",
+        [conved],
+        {"out_dim": D},
+        context="conv_residual_retrieval_v2.trunk_project",
+    )
     record_role_slot_binding(
         graph,
         role_name="trunk_compression",
