@@ -53,11 +53,8 @@ def _load_workflows(workflow_dir: Path) -> list[dict[str, Any]]:
     return items
 
 
-def main() -> None:
-    args = _parse_args()
-    workflow_dir = args.workflow_dir.resolve()
-    report: dict[str, Any] = {"api_base": args.api_base, "workflows": []}
-    budget = {
+def _evaluation_budget() -> dict[str, Any]:
+    return {
         "model_dim": 256,
         "vocab_size": 32000,
         "device": "cpu",
@@ -66,91 +63,144 @@ def main() -> None:
         "run_fingerprint": True,
         "run_novelty": True,
     }
+
+
+def _entry_for_item(item: dict[str, Any]) -> dict[str, Any]:
+    workflow = item["workflow"]
+    return {
+        "workflow_id": workflow["workflow_id"],
+        "name": workflow["name"],
+        "variant": item["meta"]["variant"],
+    }
+
+
+def _capture_api_validate(
+    entry: dict[str, Any],
+    session: requests.Session,
+    args: argparse.Namespace,
+    workflow: dict[str, Any],
+) -> None:
+    try:
+        validate_resp = _post(
+            session,
+            args.api_base,
+            args.timeout,
+            "/workflows/validate",
+            {"workflow": workflow},
+        )
+        entry["validate_status"] = validate_resp.status_code
+        entry["validate"] = validate_resp.json()
+    except Exception as exc:
+        entry["validate_status"] = None
+        entry["validate"] = {"error": str(exc)}
+
+
+def _capture_direct_validate(
+    entry: dict[str, Any], workflow: dict[str, Any], budget: dict[str, Any]
+) -> None:
+    try:
+        entry["direct_validate"] = direct_bridge_validate(
+            workflow,
+            model_dim=budget["model_dim"],
+        )
+    except Exception as exc:
+        entry["direct_validate"] = {"error": str(exc)}
+
+
+def _capture_api_preview(
+    entry: dict[str, Any],
+    session: requests.Session,
+    args: argparse.Namespace,
+    workflow: dict[str, Any],
+) -> None:
+    try:
+        t0 = time.perf_counter()
+        preview_resp = _post(
+            session,
+            args.api_base,
+            args.timeout,
+            "/workflows/preview",
+            {"workflow": workflow},
+        )
+        entry["preview_elapsed_ms"] = round((time.perf_counter() - t0) * 1000, 3)
+        entry["preview_status"] = preview_resp.status_code
+        entry["preview"] = preview_resp.json()
+    except Exception as exc:
+        entry["preview_elapsed_ms"] = None
+        entry["preview_status"] = None
+        entry["preview"] = {"error": str(exc)}
+
+
+def _capture_api_evaluate(
+    entry: dict[str, Any],
+    session: requests.Session,
+    args: argparse.Namespace,
+    workflow: dict[str, Any],
+    budget: dict[str, Any],
+) -> None:
+    try:
+        eval_resp = _post(
+            session,
+            args.api_base,
+            args.timeout,
+            "/workflows/evaluate",
+            {"workflow": workflow, "budget": budget},
+        )
+        entry["evaluate_status"] = eval_resp.status_code
+        entry["evaluate"] = eval_resp.json()
+    except Exception as exc:
+        entry["evaluate_status"] = None
+        entry["evaluate"] = {"error": str(exc)}
+
+
+def _capture_direct_bridge(
+    entry: dict[str, Any], workflow: dict[str, Any], budget: dict[str, Any]
+) -> None:
+    try:
+        t0 = time.perf_counter()
+        direct = direct_bridge_evaluate(
+            workflow,
+            model_dim=budget["model_dim"],
+            vocab_size=budget["vocab_size"],
+            device=budget["device"],
+            run_fingerprint=budget["run_fingerprint"],
+            run_novelty=budget["run_novelty"],
+            batch_size=budget["batch_size"],
+            seq_len=budget["seq_len"],
+        )
+        entry["direct_bridge_elapsed_ms"] = round((time.perf_counter() - t0) * 1000, 3)
+        entry["direct_bridge"] = (
+            direct.to_dict() if hasattr(direct, "to_dict") else dict(direct)
+        )
+    except Exception as exc:
+        entry["direct_bridge_elapsed_ms"] = None
+        entry["direct_bridge"] = {"error": str(exc)}
+
+
+def _benchmark_workflow(
+    item: dict[str, Any],
+    session: requests.Session,
+    args: argparse.Namespace,
+    budget: dict[str, Any],
+) -> dict[str, Any]:
+    workflow = item["workflow"]
+    entry = _entry_for_item(item)
+    _capture_api_validate(entry, session, args, workflow)
+    _capture_direct_validate(entry, workflow, budget)
+    _capture_api_preview(entry, session, args, workflow)
+    _capture_api_evaluate(entry, session, args, workflow, budget)
+    _capture_direct_bridge(entry, workflow, budget)
+    return entry
+
+
+def main() -> None:
+    args = _parse_args()
+    workflow_dir = args.workflow_dir.resolve()
+    report: dict[str, Any] = {"api_base": args.api_base, "workflows": []}
+    budget = _evaluation_budget()
     with requests.Session() as session:
         for item in _load_workflows(workflow_dir):
-            workflow = item["workflow"]
-            entry: dict[str, Any] = {
-                "workflow_id": workflow["workflow_id"],
-                "name": workflow["name"],
-                "variant": item["meta"]["variant"],
-            }
-            try:
-                validate_resp = _post(
-                    session,
-                    args.api_base,
-                    args.timeout,
-                    "/workflows/validate",
-                    {"workflow": workflow},
-                )
-                entry["validate_status"] = validate_resp.status_code
-                entry["validate"] = validate_resp.json()
-            except Exception as exc:
-                entry["validate_status"] = None
-                entry["validate"] = {"error": str(exc)}
-
-            try:
-                entry["direct_validate"] = direct_bridge_validate(
-                    workflow,
-                    model_dim=budget["model_dim"],
-                )
-            except Exception as exc:
-                entry["direct_validate"] = {"error": str(exc)}
-
-            try:
-                t0 = time.perf_counter()
-                preview_resp = _post(
-                    session,
-                    args.api_base,
-                    args.timeout,
-                    "/workflows/preview",
-                    {"workflow": workflow},
-                )
-                entry["preview_elapsed_ms"] = round(
-                    (time.perf_counter() - t0) * 1000, 3
-                )
-                entry["preview_status"] = preview_resp.status_code
-                entry["preview"] = preview_resp.json()
-            except Exception as exc:
-                entry["preview_elapsed_ms"] = None
-                entry["preview_status"] = None
-                entry["preview"] = {"error": str(exc)}
-
-            try:
-                eval_resp = _post(
-                    session,
-                    args.api_base,
-                    args.timeout,
-                    "/workflows/evaluate",
-                    {"workflow": workflow, "budget": budget},
-                )
-                entry["evaluate_status"] = eval_resp.status_code
-                entry["evaluate"] = eval_resp.json()
-            except Exception as exc:
-                entry["evaluate_status"] = None
-                entry["evaluate"] = {"error": str(exc)}
-
-            try:
-                t0 = time.perf_counter()
-                direct = direct_bridge_evaluate(
-                    workflow,
-                    model_dim=budget["model_dim"],
-                    vocab_size=budget["vocab_size"],
-                    device=budget["device"],
-                    run_fingerprint=budget["run_fingerprint"],
-                    run_novelty=budget["run_novelty"],
-                    batch_size=budget["batch_size"],
-                    seq_len=budget["seq_len"],
-                )
-                entry["direct_bridge_elapsed_ms"] = round(
-                    (time.perf_counter() - t0) * 1000, 3
-                )
-                entry["direct_bridge"] = (
-                    direct.to_dict() if hasattr(direct, "to_dict") else dict(direct)
-                )
-            except Exception as exc:
-                entry["direct_bridge_elapsed_ms"] = None
-                entry["direct_bridge"] = {"error": str(exc)}
-            report["workflows"].append(entry)
+            report["workflows"].append(_benchmark_workflow(item, session, args, budget))
 
     out_path = workflow_dir / "adaptive_lane_benchmark_report.json"
     out_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")

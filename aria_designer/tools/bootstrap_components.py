@@ -457,7 +457,7 @@ def write_component(
     return comp_dir
 
 
-def main():
+def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Bootstrap component manifests from research/"
     )
@@ -469,40 +469,51 @@ def main():
         action="store_true",
         help="Also emit placeholder fallback/native/test scaffolding",
     )
-    args = parser.parse_args()
+    return parser.parse_args()
 
-    # Import research modules
-    from research.synthesis.primitives import PRIMITIVE_REGISTRY
-    from research.morphological_box import DIMENSIONS
+
+def _load_research_sources():
     from research.mathspaces.registry import register_all_mathspaces
+    from research.morphological_box import DIMENSIONS
+    from research.synthesis.primitives import PRIMITIVE_REGISTRY
 
+    return PRIMITIVE_REGISTRY, DIMENSIONS, register_all_mathspaces
+
+
+def _print_header() -> None:
     print("=" * 60)
     print("Bootstrapping components from research/")
     print("=" * 60)
 
-    # Ensure mathspaces are registered in PRIMITIVE_REGISTRY
-    register_all_mathspaces()
 
-    # 1. Bootstrap primitives
-    print(f"\n--- Primitive Operations ({len(PRIMITIVE_REGISTRY)} ops) ---")
+def _bootstrap_primitives(
+    primitive_registry, dry_run: bool, emit_scaffolding: bool
+) -> int:
+    print(f"\n--- Primitive Operations ({len(primitive_registry)} ops) ---")
     prim_count = 0
-    for name, op in PRIMITIVE_REGISTRY.items():
+    for name, op in primitive_registry.items():
         if name == "input":
             continue
         manifest = build_primitive_manifest(op)
         write_component(
             manifest,
-            dry_run=args.dry_run,
-            emit_scaffolding=args.emit_scaffolding,
+            dry_run=dry_run,
+            emit_scaffolding=emit_scaffolding,
         )
         prim_count += 1
         print(f"  [{manifest['category']:>16s}] {name}")
+    return prim_count
 
-    # 2. Bootstrap morphological box options
-    print(f"\n--- Morphological Box Dimensions ({len(DIMENSIONS)} dims) ---")
+
+def _bootstrap_morph_options(
+    dimensions,
+    seen_ids: set[str],
+    dry_run: bool,
+    emit_scaffolding: bool,
+) -> int:
+    print(f"\n--- Morphological Box Dimensions ({len(dimensions)} dims) ---")
     morph_count = 0
-    seen_ids = set(PRIMITIVE_REGISTRY.keys())
-    for dim in DIMENSIONS:
+    for dim in dimensions:
         print(f"\n  Dimension: {dim.name}")
         for option in dim.options:
             if option.name in seen_ids:
@@ -512,14 +523,16 @@ def main():
             manifest = build_morph_manifest(dim.name, option)
             write_component(
                 manifest,
-                dry_run=args.dry_run,
-                emit_scaffolding=args.emit_scaffolding,
+                dry_run=dry_run,
+                emit_scaffolding=emit_scaffolding,
             )
             morph_count += 1
             print(f"    [{manifest['category']:>16s}] {option.name}")
+    return morph_count
 
-    # 3. Add io components
-    io_components = [
+
+def _io_component_manifests() -> list[dict[str, Any]]:
+    return [
         {
             "id": "input",
             "version": "1.0.0",
@@ -571,26 +584,52 @@ def main():
             "performance": {"has_params": True, "param_formula": "D * vocab_size"},
         },
     ]
+
+
+def _bootstrap_io_components(
+    seen_ids: set[str], dry_run: bool, emit_scaffolding: bool
+) -> int:
     print("\n--- IO Components ---")
     io_count = 0
-    for manifest in io_components:
+    for manifest in _io_component_manifests():
         if manifest["id"] not in seen_ids:
             write_component(
                 manifest,
-                dry_run=args.dry_run,
-                emit_scaffolding=args.emit_scaffolding,
+                dry_run=dry_run,
+                emit_scaffolding=emit_scaffolding,
             )
             seen_ids.add(manifest["id"])
             io_count += 1
             print(f"  [{manifest['category']:>16s}] {manifest['id']}")
+    return io_count
 
+
+def _print_summary(
+    prim_count: int, morph_count: int, io_count: int, dry_run: bool
+) -> None:
     print(f"\n{'=' * 60}")
     print(
         f"Total: {prim_count} primitives + {morph_count} morph options + {io_count} io = {prim_count + morph_count + io_count} components"
     )
-    if args.dry_run:
+    if dry_run:
         print("(DRY RUN — no files written)")
     print(f"{'=' * 60}")
+
+
+def main():
+    args = _parse_args()
+    primitive_registry, dimensions, register_all_mathspaces = _load_research_sources()
+    _print_header()
+    register_all_mathspaces()
+    prim_count = _bootstrap_primitives(
+        primitive_registry, args.dry_run, args.emit_scaffolding
+    )
+    seen_ids = set(primitive_registry.keys())
+    morph_count = _bootstrap_morph_options(
+        dimensions, seen_ids, args.dry_run, args.emit_scaffolding
+    )
+    io_count = _bootstrap_io_components(seen_ids, args.dry_run, args.emit_scaffolding)
+    _print_summary(prim_count, morph_count, io_count, args.dry_run)
 
 
 if __name__ == "__main__":
