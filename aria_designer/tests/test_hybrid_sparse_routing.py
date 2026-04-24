@@ -11,109 +11,62 @@ def _hybrid_workflow():
         "schema_version": "workflow_graph.v1",
         "workflow_id": "hybrid_sparse_router",
         "name": "Hybrid Sparse Router",
-        "nodes": [
-            {"id": "in", "component_type": "graph_input", "params": {}, "ui_meta": {}},
-            {
-                "id": "default",
-                "component_type": "routing/default_path",
-                "params": {},
-                "ui_meta": {},
-            },
-            {
-                "id": "gate",
-                "component_type": "routing/hybrid_token_gate",
-                "params": {"threshold": 0.45},
-                "ui_meta": {},
-            },
-            {
-                "id": "span",
-                "component_type": "routing/sparse_span_builder",
-                "params": {"span_width": 3, "fallback_behavior": "default_path"},
-                "ui_meta": {},
-            },
-            {
-                "id": "router",
-                "component_type": "routing/hybrid_sparse_router",
-                "params": {
-                    "span_width": 3,
-                    "lane_count": 3,
-                    "confidence_threshold": 0.45,
-                },
-                "ui_meta": {},
-            },
-            {
-                "id": "lane",
-                "component_type": "routing/lane_conditioned_block",
-                "params": {"lane_id": 1},
-                "ui_meta": {},
-            },
-            {"id": "merge", "component_type": "add", "params": {}, "ui_meta": {}},
-            {
-                "id": "out",
-                "component_type": "graph_output",
-                "params": {},
-                "ui_meta": {},
-            },
-        ],
-        "edges": [
-            {
-                "id": "e0",
-                "source": "in",
-                "source_port": "out",
-                "target": "default",
-                "target_port": "x",
-            },
-            {
-                "id": "e1",
-                "source": "in",
-                "source_port": "out",
-                "target": "gate",
-                "target_port": "x",
-            },
-            {
-                "id": "e2",
-                "source": "gate",
-                "source_port": "y",
-                "target": "span",
-                "target_port": "x",
-            },
-            {
-                "id": "e3",
-                "source": "span",
-                "source_port": "y",
-                "target": "router",
-                "target_port": "x",
-            },
-            {
-                "id": "e4",
-                "source": "router",
-                "source_port": "y",
-                "target": "lane",
-                "target_port": "x",
-            },
-            {
-                "id": "e5",
-                "source": "default",
-                "source_port": "y",
-                "target": "merge",
-                "target_port": "a",
-            },
-            {
-                "id": "e6",
-                "source": "lane",
-                "source_port": "y",
-                "target": "merge",
-                "target_port": "b",
-            },
-            {
-                "id": "e7",
-                "source": "merge",
-                "source_port": "y",
-                "target": "out",
-                "target_port": "x",
-            },
-        ],
+        "nodes": _hybrid_nodes(),
+        "edges": _hybrid_edges(),
     }
+
+
+def _node(node_id, component_type, params=None):
+    return {
+        "id": node_id,
+        "component_type": component_type,
+        "params": params or {},
+        "ui_meta": {},
+    }
+
+
+def _hybrid_nodes():
+    return [
+        _node("in", "graph_input"),
+        _node("default", "routing/default_path"),
+        _node("gate", "routing/hybrid_token_gate", {"threshold": 0.45}),
+        _node(
+            "span",
+            "routing/sparse_span_builder",
+            {"span_width": 3, "fallback_behavior": "default_path"},
+        ),
+        _node(
+            "router",
+            "routing/hybrid_sparse_router",
+            {"span_width": 3, "lane_count": 3, "confidence_threshold": 0.45},
+        ),
+        _node("lane", "routing/lane_conditioned_block", {"lane_id": 1}),
+        _node("merge", "add"),
+        _node("out", "graph_output"),
+    ]
+
+
+def _edge(edge_id, source, target, source_port, target_port):
+    return {
+        "id": edge_id,
+        "source": source,
+        "source_port": source_port,
+        "target": target,
+        "target_port": target_port,
+    }
+
+
+def _hybrid_edges():
+    return [
+        _edge("e0", "in", "default", "out", "x"),
+        _edge("e1", "in", "gate", "out", "x"),
+        _edge("e2", "gate", "span", "y", "x"),
+        _edge("e3", "span", "router", "y", "x"),
+        _edge("e4", "router", "lane", "y", "x"),
+        _edge("e5", "default", "merge", "y", "a"),
+        _edge("e6", "lane", "merge", "y", "b"),
+        _edge("e7", "merge", "out", "y", "x"),
+    ]
 
 
 def test_validate_hybrid_sparse_workflow_succeeds_and_suggests():

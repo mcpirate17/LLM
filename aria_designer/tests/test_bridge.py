@@ -670,30 +670,30 @@ def test_bridge_result_to_dict():
     assert '"status": "success"' in json_str
 
 
-def test_evaluate_workflow_uses_behavioral_fingerprint_for_novelty(monkeypatch):
-    import aria_designer.runtime.bridge as bridge_mod
+class _BehavioralNoveltyFakeGraph:
+    def fingerprint(self):
+        return "fp_test"
 
-    class _FakeGraph:
-        def fingerprint(self):
-            return "fp_test"
+    def n_ops(self):
+        return 3
 
-        def n_ops(self):
-            return 3
+    def depth(self):
+        return 2
 
-        def depth(self):
-            return 2
+    def n_params_estimate(self):
+        return 123
 
-        def n_params_estimate(self):
-            return 123
+    def has_gradient_path(self):
+        return True
 
-        def has_gradient_path(self):
-            return True
 
-    class _FakeModel:
-        def to(self, _device):
-            return self
+class _BehavioralNoveltyFakeModel:
+    def to(self, _device):
+        return self
 
-    fake_sandbox = SimpleNamespace(
+
+def _behavioral_novelty_fake_sandbox():
+    return SimpleNamespace(
         passed=True,
         error=None,
         compile_time_ms=1.0,
@@ -715,7 +715,9 @@ def test_evaluate_workflow_uses_behavioral_fingerprint_for_novelty(monkeypatch):
         },
     )
 
-    fp = SimpleNamespace(
+
+def _behavioral_novelty_fingerprint():
+    return SimpleNamespace(
         cka_vs_transformer=0.2,
         cka_vs_ssm=0.6,
         cka_vs_conv=0.1,
@@ -726,20 +728,34 @@ def test_evaluate_workflow_uses_behavioral_fingerprint_for_novelty(monkeypatch):
         novelty_score=0.75,
     )
 
-    novelty_metrics = SimpleNamespace(
+
+def _behavioral_novelty_metrics():
+    return SimpleNamespace(
         structural_novelty=0.25,
         behavioral_novelty=0.75,
         overall_novelty=0.6,
         most_similar_to="ssm",
     )
 
+
+def test_evaluate_workflow_uses_behavioral_fingerprint_for_novelty(monkeypatch):
+    import aria_designer.runtime.bridge as bridge_mod
+
+    fake_sandbox = _behavioral_novelty_fake_sandbox()
+    fp = _behavioral_novelty_fingerprint()
+    novelty_metrics = _behavioral_novelty_metrics()
+
     monkeypatch.setattr(
-        bridge_mod, "workflow_to_graph", lambda *args, **kwargs: _FakeGraph()
+        bridge_mod,
+        "workflow_to_graph",
+        lambda *args, **kwargs: _BehavioralNoveltyFakeGraph(),
     )
     monkeypatch.setitem(
         sys.modules,
         "research.synthesis.compiler",
-        SimpleNamespace(compile_model=lambda *args, **kwargs: _FakeModel()),
+        SimpleNamespace(
+            compile_model=lambda *args, **kwargs: _BehavioralNoveltyFakeModel()
+        ),
     )
     monkeypatch.setitem(
         sys.modules,

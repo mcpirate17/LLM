@@ -55,8 +55,28 @@ def _build_workflow(
     """
     inputs = manifest.get("inputs", [])
     outputs = manifest.get("outputs", [])
+    nodes, edges, edge_id = _source_nodes_and_edges(inputs)
+    nodes.append(_component_node(component_type, _default_config(manifest)))
+    nodes.append(_sink_node())
+    edges.append(
+        {
+            "id": f"e{edge_id}",
+            "source": "op",
+            "target": "sink",
+            "source_port": outputs[0]["name"] if outputs else "y",
+            "target_port": "in",
+        }
+    )
+    return {
+        "schema_version": "workflow_graph.v1",
+        "workflow_id": f"test_{component_type.replace('/', '_')}",
+        "name": f"Test {component_type}",
+        "nodes": nodes,
+        "edges": edges,
+    }
 
-    # Build default config from params_schema defaults
+
+def _default_config(manifest: Dict[str, Any]) -> Dict[str, Any]:
     config: Dict[str, Any] = {}
     params = manifest.get("params_schema") or manifest.get("params", {})
     for k, v in (params or {}).items():
@@ -64,49 +84,30 @@ def _build_workflow(
             config[k] = v["default"]
         elif isinstance(v, dict) and v.get("type") == "integer":
             config[k] = 256
+    return config
 
+
+def _source_nodes_and_edges(
+    inputs: List[Dict[str, Any]],
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], int]:
     nodes = []
     edges = []
     edge_id = 0
-
-    # Determine primary output port
-    primary_out = "y"
-    if outputs:
-        primary_out = outputs[0]["name"]
-
-    # Create source nodes + edges for each input
     for inp in inputs:
         port_name = inp["name"]
-        inp.get("dtype", "tensor")
-        src_id = f"src_{port_name}"
-
-        nodes.append(
-            {
-                "id": src_id,
-                "component_type": "graph_input",
-                "params": {},
-            }
-        )
+        nodes.append(_source_node(f"src_{port_name}"))
         edges.append(
             {
                 "id": f"e{edge_id}",
-                "source": src_id,
+                "source": f"src_{port_name}",
                 "target": "op",
                 "source_port": "out",
                 "target_port": port_name,
             }
         )
         edge_id += 1
-
-    # If no inputs defined, create a default source
     if not inputs:
-        nodes.append(
-            {
-                "id": "src_x",
-                "component_type": "graph_input",
-                "params": {},
-            }
-        )
+        nodes.append(_source_node("src_x"))
         edges.append(
             {
                 "id": f"e{edge_id}",
@@ -117,41 +118,19 @@ def _build_workflow(
             }
         )
         edge_id += 1
+    return nodes, edges, edge_id
 
-    # The component under test
-    nodes.append(
-        {
-            "id": "op",
-            "component_type": component_type,
-            "params": config,
-        }
-    )
 
-    # Output node
-    nodes.append(
-        {
-            "id": "sink",
-            "component_type": "graph_output",
-            "params": {},
-        }
-    )
-    edges.append(
-        {
-            "id": f"e{edge_id}",
-            "source": "op",
-            "target": "sink",
-            "source_port": primary_out,
-            "target_port": "in",
-        }
-    )
+def _source_node(node_id: str) -> Dict[str, Any]:
+    return {"id": node_id, "component_type": "graph_input", "params": {}}
 
-    return {
-        "schema_version": "workflow_graph.v1",
-        "workflow_id": f"test_{component_type.replace('/', '_')}",
-        "name": f"Test {component_type}",
-        "nodes": nodes,
-        "edges": edges,
-    }
+
+def _component_node(component_type: str, config: Dict[str, Any]) -> Dict[str, Any]:
+    return {"id": "op", "component_type": component_type, "params": config}
+
+
+def _sink_node() -> Dict[str, Any]:
+    return {"id": "sink", "component_type": "graph_output", "params": {}}
 
 
 def _make_input_tensor(

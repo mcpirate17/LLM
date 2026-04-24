@@ -1061,8 +1061,8 @@ def test_preview_workflow_multi_input_ports(client):
     assert "shape" in data["results"]["out"]
 
 
-def test_ai_design_refine_evaluate_records_lineage(client, monkeypatch):
-    workflow = {
+def _ai_learning_workflow():
+    return {
         "schema_version": "workflow_graph.v1",
         "workflow_id": "wf_ai_learning_loop",
         "name": "AI Learning Loop",
@@ -1100,10 +1100,23 @@ def test_ai_design_refine_evaluate_records_lineage(client, monkeypatch):
         ],
     }
 
+
+class _FakeAiLearningBridgeResult:
+    def to_dict(self):
+        return {
+            "status": "success",
+            "sandbox_passed": True,
+            "graph_fingerprint": "fp_ai_learning_loop_v2",
+            "overall_novelty": 0.73,
+            "efficiency_score": 0.62,
+            "total_time_ms": 12.5,
+        }
+
+
+def _apply_ai_learning_patch(client, workflow):
     r_save = client.put("/api/v1/workflows/wf_ai_learning_loop", json=workflow)
     assert r_save.status_code == 200
     assert r_save.json()["version"] == 1
-
     r_patch = client.post(
         "/api/v1/aria/generate-patch",
         json={
@@ -1121,33 +1134,24 @@ def test_ai_design_refine_evaluate_records_lineage(client, monkeypatch):
     )
     assert r_apply.status_code == 200
     assert r_apply.json()["applied"] is True
-
     r_get = client.get("/api/v1/workflows/wf_ai_learning_loop")
     assert r_get.status_code == 200
     updated = r_get.json()
     assert updated["version"] == 2
     updated_graph = updated["graph"]
     updated_graph["version"] = updated["version"]
+    return updated_graph
 
-    class _FakeBridgeResult:
-        def to_dict(self):
-            return {
-                "status": "success",
-                "sandbox_passed": True,
-                "graph_fingerprint": "fp_ai_learning_loop_v2",
-                "overall_novelty": 0.73,
-                "efficiency_score": 0.62,
-                "total_time_ms": 12.5,
-            }
 
-    captured = {}
-
+def _patch_ai_learning_eval(monkeypatch, captured):
     from aria_designer.api.app.routers import eval as eval_mod
     from aria_designer.api.app import shared_api as shared_mod
 
     monkeypatch.setattr(eval_mod, "HAS_BRIDGE", True)
     monkeypatch.setattr(
-        eval_mod, "bridge_evaluate", lambda *args, **kwargs: _FakeBridgeResult()
+        eval_mod,
+        "bridge_evaluate",
+        lambda *args, **kwargs: _FakeAiLearningBridgeResult(),
     )
     monkeypatch.setattr(shared_mod, "HAS_BRIDGE", True)
     monkeypatch.setattr(shared_mod.settings, "LINEAGE_SYNC_ENABLED", True)
@@ -1158,6 +1162,8 @@ def test_ai_design_refine_evaluate_records_lineage(client, monkeypatch):
 
     monkeypatch.setattr(eval_mod, "_sync_lineage_to_research", _capture_sync)
 
+
+def _evaluate_ai_learning_workflow(client, updated_graph):
     r_eval = client.post(
         "/api/v1/workflows/evaluate",
         json={
@@ -1179,7 +1185,14 @@ def test_ai_design_refine_evaluate_records_lineage(client, monkeypatch):
     assert "targets" in eval_data["benchmarking"]
     assert eval_data["lineage_sync"]["attempted"] is True
     assert eval_data["lineage_sync"]["synced"] is True
+    return eval_data
 
+
+def test_ai_design_refine_evaluate_records_lineage(client, monkeypatch):
+    updated_graph = _apply_ai_learning_patch(client, _ai_learning_workflow())
+    captured = {}
+    _patch_ai_learning_eval(monkeypatch, captured)
+    _evaluate_ai_learning_workflow(client, updated_graph)
     lineage_payload = captured.get("payload")
     assert lineage_payload is not None
     assert lineage_payload["workflow_id"] == "wf_ai_learning_loop"
