@@ -2,13 +2,44 @@
 
 from __future__ import annotations
 
+import logging
 from typing import List, Sequence
 
 import numpy as np
 
+import torch
 import torch.nn as nn
 
 from .utils import batched_span_mean_log_probs
+
+logger = logging.getLogger(__name__)
+
+
+def _pack_choice_sequences(
+    flat_sequences: Sequence[Sequence[int]],
+    flat_starts: Sequence[int],
+    group_sizes: Sequence[int],
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    n_seq = len(flat_sequences)
+    offsets = torch.empty(n_seq + 1, dtype=torch.long)
+    offsets[0] = 0
+    total_len = 0
+    flat_values: list[int] = []
+    extend_values = flat_values.extend
+    for idx, seq in enumerate(flat_sequences):
+        seq_len = len(seq)
+        total_len += seq_len
+        offsets[idx + 1] = total_len
+        if seq_len:
+            if isinstance(seq, np.ndarray):
+                extend_values(seq.tolist())
+            else:
+                extend_values(seq)
+
+    packed = torch.tensor(flat_values, dtype=torch.long)
+    starts = torch.as_tensor(flat_starts, dtype=torch.long)
+    groups = torch.as_tensor(group_sizes, dtype=torch.long)
+    return packed, offsets, starts, groups
 
 
 def concat_choice_tokens(
@@ -56,6 +87,30 @@ def grouped_choice_scores(
 
     if not flat_sequences:
         return [[] for _ in grouped_sequences]
+
+    if vocab_size <= 512 and callable(model):
+        try:
+            from ._eval_native import load_eval_native
+
+            native_scorer = load_eval_native().grouped_choice_scores_packed_native
+        except (AttributeError, ImportError, OSError, RuntimeError) as exc:
+            logger.debug("Native grouped choice scorer unavailable: %s", exc)
+        else:
+            packed, offsets, starts, groups = _pack_choice_sequences(
+                flat_sequences,
+                flat_starts,
+                group_sizes,
+            )
+            mean_lps = native_scorer(
+                model,
+                packed,
+                offsets,
+                starts,
+                groups,
+                int(vocab_size),
+                str(device),
+            )
+            return [chunk.tolist() for chunk in mean_lps.split(group_sizes)]
 
     mean_lps = batched_span_mean_log_probs(
         model,

@@ -18,6 +18,16 @@ std::tuple<int, int> hellaswag_score_batch_native(
     std::string device_str,
     int64_t max_seq_len);
 
+torch::Tensor grouped_choice_scores_packed_native(
+    py::object model,
+    const torch::Tensor& packed_tokens,
+    const torch::Tensor& offsets,
+    const torch::Tensor& start_positions,
+    const torch::Tensor& group_sizes,
+    int64_t vocab_size,
+    std::string device_str);
+
+
 torch::Tensor zero_count_last_dim(const torch::Tensor& values, double threshold) {
   TORCH_CHECK(values.dim() >= 1, "values must have at least 1 dimension");
   auto flat = values.reshape({-1, values.size(-1)}).abs();
@@ -329,6 +339,191 @@ torch::Tensor span_mean_log_probs_native(
   return mean_lps;
 }
 
+torch::Tensor score_flat_sequences_mean_lps(
+    py::object model,
+    const std::vector<std::vector<int64_t>>& flat_sequences,
+    const std::vector<int64_t>& flat_starts,
+    int64_t vocab_size,
+    const std::string& device_str) {
+  const int64_t n_seq = static_cast<int64_t>(flat_sequences.size());
+  TORCH_CHECK(
+      static_cast<int64_t>(flat_starts.size()) == n_seq,
+      "flat_starts length must match flat_sequences length");
+  if (n_seq == 0) {
+    return torch::empty({0}, torch::TensorOptions().dtype(torch::kFloat32));
+  }
+
+  auto [padded, lengths_tensor, max_len] =
+      pad_sequences_native(flat_sequences, device_str);
+  if (max_len < 2) {
+    return torch::full(
+        {n_seq},
+        -std::numeric_limits<float>::infinity(),
+        torch::TensorOptions().dtype(torch::kFloat32));
+  }
+
+  auto tensor_opts = torch::TensorOptions().dtype(torch::kInt64);
+  torch::Tensor starts_tensor =
+      torch::from_blob(
+          const_cast<int64_t*>(flat_starts.data()), {n_seq}, tensor_opts)
+          .clone();
+
+  torch::Device device(device_str);
+  if (device.is_cuda()) {
+    starts_tensor = starts_tensor.to(device, /*non_blocking=*/true);
+  } else if (device != torch::kCPU) {
+    starts_tensor = starts_tensor.to(device);
+  }
+
+  c10::InferenceMode guard(true);
+  torch::Tensor logits = model(padded).cast<torch::Tensor>();
+  if (logits.size(-1) > vocab_size) {
+    logits = logits.index({
+        torch::indexing::Slice(),
+        torch::indexing::Slice(),
+        torch::indexing::Slice(0, vocab_size)});
+  }
+
+  auto next_logits = logits.index(
+      {torch::indexing::Slice(), torch::indexing::Slice(0, -1)});
+  auto targets = padded.index(
+      {torch::indexing::Slice(), torch::indexing::Slice(1, torch::indexing::None)});
+  torch::Tensor token_lps;
+  if (next_logits.device().is_cpu() && vocab_size >= 4096) {
+    auto log_probs = torch::log_softmax(next_logits, -1);
+    token_lps = log_probs.gather(2, targets.unsqueeze(2)).squeeze(2);
+  } else {
+    auto target_logits = next_logits.gather(2, targets.unsqueeze(2)).squeeze(2);
+    auto log_denom = torch::logsumexp(next_logits, -1);
+    token_lps = target_logits - log_denom;
+  }
+
+  auto mean_lps =
+      span_mean_log_probs_native(token_lps, starts_tensor, lengths_tensor, max_len);
+  return mean_lps.cpu();
+}
+
+torch::Tensor grouped_choice_scores_packed_native(
+    py::object model,
+    const torch::Tensor& packed_tokens,
+    const torch::Tensor& offsets,
+    const torch::Tensor& start_positions,
+    const torch::Tensor& group_sizes,
+    int64_t vocab_size,
+    std::string device_str) {
+  TORCH_CHECK(packed_tokens.device().is_cpu(), "packed_tokens must be on CPU");
+  TORCH_CHECK(offsets.device().is_cpu(), "offsets must be on CPU");
+  TORCH_CHECK(start_positions.device().is_cpu(), "start_positions must be on CPU");
+  TORCH_CHECK(group_sizes.device().is_cpu(), "group_sizes must be on CPU");
+  TORCH_CHECK(packed_tokens.dtype() == torch::kInt64, "packed_tokens must be int64");
+  TORCH_CHECK(offsets.dtype() == torch::kInt64, "offsets must be int64");
+  TORCH_CHECK(start_positions.dtype() == torch::kInt64, "start_positions must be int64");
+  TORCH_CHECK(group_sizes.dtype() == torch::kInt64, "group_sizes must be int64");
+  TORCH_CHECK(offsets.dim() == 1, "offsets must be 1-D");
+  TORCH_CHECK(start_positions.dim() == 1, "start_positions must be 1-D");
+  TORCH_CHECK(group_sizes.dim() == 1, "group_sizes must be 1-D");
+
+  auto packed = packed_tokens.contiguous();
+  auto offs = offsets.contiguous();
+  auto starts = start_positions.contiguous();
+  auto groups = group_sizes.contiguous();
+  const int64_t n_seq = starts.numel();
+  TORCH_CHECK(offs.numel() == n_seq + 1, "offsets length must equal n_seq + 1");
+
+  int64_t expected = 0;
+  auto group_acc = groups.accessor<int64_t, 1>();
+  for (int64_t i = 0; i < groups.numel(); ++i) {
+    const int64_t size = group_acc[i];
+    TORCH_CHECK(size >= 0, "group size must be non-negative");
+    expected += size;
+  }
+  TORCH_CHECK(expected == n_seq, "group sizes must sum to sequence count");
+
+  if (n_seq == 0) {
+    return torch::empty({0}, torch::TensorOptions().dtype(torch::kFloat32));
+  }
+
+  auto off_acc = offs.accessor<int64_t, 1>();
+  int64_t max_len = 0;
+  std::vector<int64_t> lengths_host(static_cast<size_t>(n_seq));
+  for (int64_t i = 0; i < n_seq; ++i) {
+    const int64_t begin = off_acc[i];
+    const int64_t end = off_acc[i + 1];
+    TORCH_CHECK(begin >= 0 && end >= begin, "offsets must be monotonic");
+    TORCH_CHECK(end <= packed.numel(), "offset out of range");
+    const int64_t len = end - begin;
+    lengths_host[static_cast<size_t>(i)] = len;
+    if (len > max_len) {
+      max_len = len;
+    }
+  }
+
+  if (max_len == 0) {
+    return torch::full(
+        {n_seq},
+        -std::numeric_limits<float>::infinity(),
+        torch::TensorOptions().dtype(torch::kFloat32));
+  }
+
+  std::vector<int64_t> padded_host(
+      static_cast<size_t>(n_seq) * static_cast<size_t>(max_len), 0);
+  const int64_t* packed_ptr = packed.data_ptr<int64_t>();
+  for (int64_t i = 0; i < n_seq; ++i) {
+    const int64_t len = lengths_host[static_cast<size_t>(i)];
+    if (len > 0) {
+      std::memcpy(
+          padded_host.data() + static_cast<size_t>(i) * static_cast<size_t>(max_len),
+          packed_ptr + off_acc[i],
+          static_cast<size_t>(len) * sizeof(int64_t));
+    }
+  }
+
+  auto tensor_opts = torch::TensorOptions().dtype(torch::kInt64);
+  torch::Tensor padded = torch::from_blob(
+      padded_host.data(), {n_seq, max_len}, tensor_opts).clone();
+  torch::Tensor lengths = torch::from_blob(
+      lengths_host.data(), {n_seq}, tensor_opts).clone();
+  torch::Tensor starts_tensor = starts.clone();
+
+  torch::Device device(device_str);
+  if (device.is_cuda()) {
+    padded = padded.pin_memory().to(device, /*non_blocking=*/true);
+    lengths = lengths.to(device, /*non_blocking=*/true);
+    starts_tensor = starts_tensor.to(device, /*non_blocking=*/true);
+  } else if (device != torch::kCPU) {
+    padded = padded.to(device);
+    lengths = lengths.to(device);
+    starts_tensor = starts_tensor.to(device);
+  }
+
+  c10::InferenceMode guard(true);
+  torch::Tensor logits = model(padded).cast<torch::Tensor>();
+  if (logits.size(-1) > vocab_size) {
+    logits = logits.index({
+        torch::indexing::Slice(),
+        torch::indexing::Slice(),
+        torch::indexing::Slice(0, vocab_size)});
+  }
+
+  auto next_logits = logits.index(
+      {torch::indexing::Slice(), torch::indexing::Slice(0, -1)});
+  auto targets = padded.index(
+      {torch::indexing::Slice(), torch::indexing::Slice(1, torch::indexing::None)});
+  torch::Tensor token_lps;
+  if (next_logits.device().is_cpu() && vocab_size >= 4096) {
+    auto log_probs = torch::log_softmax(next_logits, -1);
+    token_lps = log_probs.gather(2, targets.unsqueeze(2)).squeeze(2);
+  } else {
+    auto target_logits = next_logits.gather(2, targets.unsqueeze(2)).squeeze(2);
+    auto log_denom = torch::logsumexp(next_logits, -1);
+    token_lps = target_logits - log_denom;
+  }
+
+  auto mean_lps =
+      span_mean_log_probs_native(token_lps, starts_tensor, lengths, max_len);
+  return mean_lps.cpu();
+}
+
 double restricted_last_token_accuracy_native(
     const torch::Tensor& logits,
     const torch::Tensor& targets,
@@ -386,6 +581,10 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
       "span_mean_log_probs_native",
       &span_mean_log_probs_native,
       "Compute span-masked mean token log-probs from gathered log-probs");
+  m.def(
+      "grouped_choice_scores_packed_native",
+      &grouped_choice_scores_packed_native,
+      "Score packed flat choice sequences natively");
   m.def(
       "restricted_last_token_accuracy_native",
       &restricted_last_token_accuracy_native,
@@ -454,48 +653,12 @@ std::tuple<int, int> hellaswag_score_batch_native(
       }
     }
 
-    const int64_t n_seq = static_cast<int64_t>(flat_seqs.size());
-    if (n_seq == 0) {
+    if (flat_seqs.empty()) {
       return {0, 0};
     }
 
-    auto [padded, lengths_tensor, max_len] = pad_sequences_native(flat_seqs, device_str);
-    if (max_len < 2) {
-      return {0, 0};
-    }
-
-    auto tensor_opts = torch::TensorOptions().dtype(torch::kInt64);
-    torch::Tensor starts_tensor = torch::from_blob(
-        flat_starts.data(),
-        {n_seq},
-        tensor_opts).clone();
-
-    torch::Device device(device_str);
-    if (device.is_cuda()) {
-      starts_tensor = starts_tensor.to(device, /*non_blocking=*/true);
-    } else if (device != torch::kCPU) {
-      starts_tensor = starts_tensor.to(device);
-    }
-
-    c10::InferenceMode guard(true);
-    torch::Tensor logits = model(padded).cast<torch::Tensor>();
-    
-    if (logits.size(-1) > vocab_size) {
-        logits = logits.index({torch::indexing::Slice(), torch::indexing::Slice(), torch::indexing::Slice(0, vocab_size)});
-    }
-    
-    auto next_logits = logits.index(
-        {torch::indexing::Slice(), torch::indexing::Slice(0, -1)});
-    auto targets = padded.index(
-        {torch::indexing::Slice(), torch::indexing::Slice(1, torch::indexing::None)});
-    auto target_logits = next_logits.gather(2, targets.unsqueeze(2)).squeeze(2);
-    auto log_denom = torch::logsumexp(next_logits, -1);
-    auto token_lps = target_logits - log_denom;
-
-    auto mean_lps = span_mean_log_probs_native(
-        token_lps, starts_tensor, lengths_tensor, max_len);
-
-    mean_lps = mean_lps.cpu();
+    auto mean_lps = score_flat_sequences_mean_lps(
+        model, flat_seqs, flat_starts, vocab_size, device_str);
     auto mean_lps_acc = mean_lps.accessor<float, 1>();
     
     int correct = 0;

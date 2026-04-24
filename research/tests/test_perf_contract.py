@@ -43,6 +43,25 @@ def test_perf_contract_artifact_roundtrip(tmp_path):
     assert summary["failed_budget_runs"] == 1
 
 
+def test_recent_perf_artifacts_skips_non_contract_json(tmp_path):
+    contract = build_perf_contract(
+        component="research",
+        workload="experiment_screening",
+        metrics={"total_time_ms": 123.4},
+    )
+    artifact_path = emit_perf_artifact(contract, root=str(tmp_path), slug="valid")
+
+    junk_dir = tmp_path / "research" / "2099-01-01"
+    junk_dir.mkdir(parents=True, exist_ok=True)
+    (junk_dir / "profile_dump.json").write_text('{"metrics": null}\n')
+
+    artifacts = list_recent_perf_artifacts(
+        root=str(tmp_path), component="research", limit=5
+    )
+
+    assert [item["artifact_path"] for item in artifacts] == [artifact_path]
+
+
 def test_build_perf_contract_with_gate_designer_flat_metrics():
     """designer_interactive gates on flat ``metrics.*`` keys — no gate_payload
     override should be needed."""

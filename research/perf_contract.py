@@ -110,10 +110,14 @@ def build_perf_contract_with_gate(
     an explicit ``gate_payload``.
     """
     dup = duplicate_work or build_duplicate_work_report()
-    payload = gate_payload if gate_payload is not None else {
-        "metrics": metrics,
-        "duplicate_work": dup,
-    }
+    payload = (
+        gate_payload
+        if gate_payload is not None
+        else {
+            "metrics": metrics,
+            "duplicate_work": dup,
+        }
+    )
     verdict = evaluate_perf_budget_gate(payload, budget_profile=budget_profile)
     contract = build_perf_contract(
         component=component,
@@ -186,34 +190,39 @@ def list_recent_perf_artifacts(
         date_dirs.extend(d for d in comp_root.iterdir() if d.is_dir())
     date_dirs.sort(key=lambda d: d.name, reverse=True)
 
-    candidates: List[Path] = []
+    results: List[Dict[str, Any]] = []
     for d in date_dirs:
         files = [f for f in d.iterdir() if f.suffix == ".json"]
         files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-        candidates.extend(files)
-        if len(candidates) >= n:
-            break
-
-    results: List[Dict[str, Any]] = []
-    for path in candidates[:n]:
-        try:
-            payload = load_perf_artifact(str(path))
-        except Exception:
-            continue
-        metrics = payload.get("metrics") if isinstance(payload, dict) else {}
-        results.append(
-            {
-                "artifact_path": str(path),
-                "component": payload.get("component"),
-                "workload": payload.get("workload"),
-                "generated_at": payload.get("generated_at"),
-                "identity": payload.get("identity", {}),
-                "budget_profile": payload.get("budget_profile"),
-                "budget_verdict": payload.get("budget_verdict"),
-                "duplicate_work": payload.get("duplicate_work"),
-                "total_time_ms": safe_float(metrics.get("total_time_ms"), 0.0),
-            }
-        )
+        for path in files:
+            try:
+                payload = load_perf_artifact(str(path))
+            except Exception:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            metrics = payload.get("metrics")
+            if not isinstance(metrics, dict):
+                continue
+            component_name = payload.get("component")
+            workload_name = payload.get("workload")
+            if not component_name or not workload_name:
+                continue
+            results.append(
+                {
+                    "artifact_path": str(path),
+                    "component": component_name,
+                    "workload": workload_name,
+                    "generated_at": payload.get("generated_at"),
+                    "identity": payload.get("identity", {}),
+                    "budget_profile": payload.get("budget_profile"),
+                    "budget_verdict": payload.get("budget_verdict"),
+                    "duplicate_work": payload.get("duplicate_work"),
+                    "total_time_ms": safe_float(metrics.get("total_time_ms"), 0.0),
+                }
+            )
+            if len(results) >= n:
+                return results
     return results
 
 
