@@ -776,6 +776,7 @@ def tpl_token_merge_conv(
     Residual from normed satisfies REQUIRES_RESIDUAL_BYPASS for token_merge.
     """
     D = graph.model_dim
+    mlp_ratio = rng.choice([2.0, 3.0])
 
     normed = _add(graph, "rmsnorm", [input_id], context="token_merge_conv.pre_norm")
 
@@ -801,7 +802,7 @@ def tpl_token_merge_conv(
         graph,
         "swiglu_mlp",
         [conv],
-        {"mlp_ratio": rng.choice([2.0, 3.0])},
+        {"mlp_ratio": mlp_ratio},
         context="token_merge_conv.mlp",
     )
 

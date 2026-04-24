@@ -8,6 +8,7 @@ import torch
 
 from research.synthesis.graph import ComputationGraph
 from research.synthesis.compiler import compile_graph, compile_model
+from research.synthesis.grammar import GrammarConfig, generate_layer_graph
 from research.synthesis.reference_architectures import build_reference
 from research.synthesis.ir_executor import IRExecutor
 from research.synthesis.native_analysis import reset_native_analysis_bindings
@@ -44,6 +45,32 @@ def test_structural_analysis_uses_native_runtime_when_available():
     assert analysis.has_gradient_path is True
     assert analysis.reachable_count == 2
     assert analysis.depth == 1
+
+
+def test_token_merge_conv_lowers_forced_template():
+    graph = generate_layer_graph(
+        GrammarConfig(
+            max_depth=8,
+            model_dim=64,
+            forced_template="token_merge_conv",
+            routing_mandatory=False,
+        ),
+        seed=123,
+    )
+    op_names = [node.op_name for node in graph.nodes.values() if not node.is_input]
+    assert op_names[:9] == [
+        "rmsnorm",
+        "adjacent_token_merge",
+        "add",
+        "rmsnorm",
+        "conv1d_seq",
+        "swiglu_mlp",
+        "gelu",
+        "nm_sparse_linear",
+        "add",
+    ]
+    assert graph.output_node is not None
+    assert graph.output_node.output_shape.dim == 64
 
 
 def test_structural_analysis_falls_back_to_python(monkeypatch):

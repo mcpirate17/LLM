@@ -351,6 +351,62 @@ class ComputationGraph:
         self._cache.clear()
         return node_id
 
+    def append_precomputed_ops(
+        self,
+        op_names: List[str],
+        input0: List[int] | tuple[int, ...],
+        input1: List[int] | tuple[int, ...],
+        depths: List[int] | tuple[int, ...],
+        dims: List[int] | tuple[int, ...],
+        seq_flags: List[int] | tuple[int, ...],
+        configs: List[Dict],
+    ) -> List[int]:
+        """Append a native-planned op batch.
+
+        This is deliberately narrow: native code computes the structural plan,
+        while Python still owns OpNode materialization and config dictionaries.
+        """
+        n_ops = len(op_names)
+        if not (
+            len(input0)
+            == len(input1)
+            == len(depths)
+            == len(dims)
+            == len(seq_flags)
+            == len(configs)
+            == n_ops
+        ):
+            raise ValueError("precomputed op plan length mismatch")
+
+        start_id = self._next_id
+        node_ids = [start_id + idx for idx in range(n_ops)]
+        nodes = self.nodes
+        for idx, op_name in enumerate(op_names):
+            left = int(input0[idx])
+            right = int(input1[idx])
+            input_ids = [left] if right < 0 else [left, right]
+            for input_id in input_ids:
+                if input_id not in nodes:
+                    raise ValueError(f"Input node {input_id} doesn't exist")
+            node_id = node_ids[idx]
+            node = OpNode(
+                id=node_id,
+                op_name=canonicalize_op_name(op_name),
+                input_ids=input_ids,
+                output_shape=_shape_info(
+                    int(dims[idx]),
+                    "S//2+1" if int(seq_flags[idx]) else "S",
+                ),
+                depth=int(depths[idx]),
+                config=configs[idx],
+            )
+            nodes[node_id] = node
+
+        self._next_id += n_ops
+        self._ir_version += 1
+        self._cache.clear()
+        return node_ids
+
     def _compute_shape_fast(
         self,
         op: PrimitiveOp,

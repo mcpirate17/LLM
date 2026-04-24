@@ -1,13 +1,44 @@
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Iterable, Mapping, Sequence, Tuple
+from collections.abc import Mapping as MappingABC
+from typing import Iterable, Iterator, Mapping, Sequence, Tuple
 
 from research.scientist.native.core import _try_import_rust_scheduler
 
 
 TemplateNameOrder = Tuple[str, ...]
 WeightVector = Tuple[float, ...]
+OverrideItems = tuple[tuple[str, float], ...]
+
+
+class TemplateWeightOverrides(MappingABC[str, float]):
+    """Immutable weight map carrying the native selector's precomputed key."""
+
+    __slots__ = ("override_items", "_values")
+
+    def __init__(self, override_items: OverrideItems):
+        self.override_items = override_items
+        self._values = dict(override_items)
+
+    def __getitem__(self, key: str) -> float:
+        return self._values[key]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._values)
+
+    def __len__(self) -> int:
+        return len(self._values)
+
+    def get(self, key: str, default: float | None = None) -> float | None:
+        return self._values.get(key, default)
+
+
+@lru_cache(maxsize=256)
+def make_template_weight_overrides(
+    override_items: OverrideItems,
+) -> TemplateWeightOverrides:
+    return TemplateWeightOverrides(override_items)
 
 
 @lru_cache(maxsize=8)
@@ -61,9 +92,12 @@ def _override_arrays(
 
 def _override_key(
     override_weights: Mapping[str, float] | None,
-) -> tuple[tuple[str, float], ...] | None:
+) -> OverrideItems | None:
     if not override_weights:
         return None
+    prepared = getattr(override_weights, "override_items", None)
+    if prepared is not None:
+        return prepared
     return tuple(
         (str(name), float(weight)) for name, weight in override_weights.items()
     )
@@ -72,6 +106,15 @@ def _override_key(
 def _allowed_key(allowed_names: Iterable[str] | None) -> tuple[str, ...] | None:
     if allowed_names is None:
         return None
+    if isinstance(allowed_names, frozenset):
+        return _allowed_key_from_frozenset(allowed_names)
+    if isinstance(allowed_names, tuple):
+        return allowed_names
+    return tuple(sorted(str(name) for name in allowed_names))
+
+
+@lru_cache(maxsize=128)
+def _allowed_key_from_frozenset(allowed_names: frozenset[str]) -> tuple[str, ...]:
     return tuple(sorted(str(name) for name in allowed_names))
 
 

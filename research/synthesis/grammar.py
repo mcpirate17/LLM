@@ -21,7 +21,7 @@ import logging
 import random
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
-from typing import Dict, FrozenSet, List, Optional
+from typing import Dict, FrozenSet, List, Mapping, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +52,10 @@ from .templates import (
 )
 from .template_rules import validate_template_graph
 from .validator import validate_graph
+from .native_template_selection import (
+    TemplateWeightOverrides,
+    make_template_weight_overrides,
+)
 
 
 # Alias for backward compatibility — some test files import Node from grammar
@@ -722,27 +726,9 @@ def generate_layer_graph(
         # late blocks favor attention/SSM (per GPT-2 layer importance research).
         # Note: "attn" matches new attention templates (attn_*).
         if _iter_weights and n_templates > 1:
-            depth_ratio = t_idx / (n_templates - 1)
-            depth_weights = {}
-            for tpl_name, base_w in _iter_weights.items():
-                is_early_template, is_attn, is_mamba = _template_depth_tags(tpl_name)
-                if depth_ratio < 0.33:
-                    if is_early_template:
-                        depth_weights[tpl_name] = base_w * 1.5
-                    elif is_attn:
-                        depth_weights[tpl_name] = base_w * 0.85
-                    else:
-                        depth_weights[tpl_name] = base_w
-                elif depth_ratio > 0.66:
-                    if is_attn or is_mamba:
-                        depth_weights[tpl_name] = base_w * 1.5
-                    elif is_early_template:
-                        depth_weights[tpl_name] = base_w * 0.6
-                    else:
-                        depth_weights[tpl_name] = base_w
-                else:
-                    depth_weights[tpl_name] = base_w
-            _iter_weights = depth_weights
+            _iter_weights = _depth_adjusted_template_weights(
+                _iter_weights, t_idx, n_templates
+            )
 
         # Snapshot graph state for lightweight rollback instead of full copy.
         # Only need to track node IDs added and metadata changes.
@@ -1116,6 +1102,47 @@ def _template_depth_tags(template_name: str) -> tuple[bool, bool, bool]:
     is_early = "conv" in name or "ffn" in name or "bottleneck" in name
     is_mamba = "mamba" in name
     return is_early, is_attn, is_mamba
+
+
+_DEPTH_WEIGHT_CACHE_MAX = 256
+_DEPTH_WEIGHT_CACHE: dict[
+    tuple[int, int, int], tuple[Mapping[str, float], TemplateWeightOverrides]
+] = {}
+
+
+def _depth_adjusted_template_weights(
+    weights: Mapping[str, float],
+    t_idx: int,
+    n_templates: int,
+) -> TemplateWeightOverrides:
+    """Return cached depth-adjusted template weights for native selection."""
+    cache_key = (id(weights), int(t_idx), int(n_templates))
+    cached = _DEPTH_WEIGHT_CACHE.get(cache_key)
+    if cached is not None and cached[0] is weights:
+        return cached[1]
+
+    depth_ratio = t_idx / (n_templates - 1)
+    items = []
+    for tpl_name, base_w in weights.items():
+        is_early_template, is_attn, is_mamba = _template_depth_tags(tpl_name)
+        weight = float(base_w)
+        if depth_ratio < 0.33:
+            if is_early_template:
+                weight *= 1.5
+            elif is_attn:
+                weight *= 0.85
+        elif depth_ratio > 0.66:
+            if is_attn or is_mamba:
+                weight *= 1.5
+            elif is_early_template:
+                weight *= 0.6
+        items.append((str(tpl_name), weight))
+
+    prepared = make_template_weight_overrides(tuple(items))
+    if len(_DEPTH_WEIGHT_CACHE) >= _DEPTH_WEIGHT_CACHE_MAX:
+        _DEPTH_WEIGHT_CACHE.pop(next(iter(_DEPTH_WEIGHT_CACHE)))
+    _DEPTH_WEIGHT_CACHE[cache_key] = (weights, prepared)
+    return prepared
 
 
 def _reachable_output_depth(graph: ComputationGraph) -> int:
