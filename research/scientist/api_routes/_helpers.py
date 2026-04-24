@@ -45,6 +45,16 @@ def projected_runtime_status_enabled() -> bool:
     return raw.lower() in {"1", "true", "yes", "on"}
 
 
+def _has_real_notebook_path(nb: LabNotebook) -> bool:
+    raw = str(getattr(nb, "db_path", "")).strip()
+    return (
+        bool(raw)
+        and raw != ":memory:"
+        and not raw.startswith("<MagicMock ")
+        and "MagicMock name='mock.db_path'" not in raw
+    )
+
+
 def get_aria_for_notebook(notebook_path: str):
     ensure_persisted_llm_config_loaded(notebook_path)
     return get_aria()
@@ -252,7 +262,11 @@ def resolve_runner_status(
         }
 
     try:
-        if runner is not None and projected_runtime_status_enabled():
+        if (
+            runner is not None
+            and projected_runtime_status_enabled()
+            and _has_real_notebook_path(nb)
+        ):
             projected = get_projected_running_experiment_snapshot(nb)
             if projected is not None:
                 projected_state = get_runtime_event_services(nb.db_path).registry.get(
@@ -467,11 +481,8 @@ def get_registry_running_experiment_snapshot(
     }
 
 
-def get_projected_running_experiment_snapshot(
-    nb: LabNotebook,
-) -> Optional[Dict[str, Any]]:
-    start_runtime_event_projector(nb.db_path)
-    row = nb.conn.execute(
+def _fetch_projected_running_experiment_row(nb: LabNotebook):
+    return nb.conn.execute(
         """
         SELECT
             e.experiment_id,
@@ -506,10 +517,9 @@ def get_projected_running_experiment_snapshot(
         LIMIT 1
         """
     ).fetchone()
-    if row is None:
-        return None
 
-    config = _json_dict_or_empty(row["config_json"])
+
+def _projected_total_programs(row, config: Dict[str, Any]) -> int:
     total_programs = (
         config.get("n_programs")
         or config.get("num_programs")
@@ -517,11 +527,13 @@ def get_projected_running_experiment_snapshot(
         or 0
     )
     try:
-        total_programs = int(total_programs or 0)
+        return int(total_programs or 0)
     except (TypeError, ValueError):
-        total_programs = 0
+        return 0
 
-    result_counts = nb.conn.execute(
+
+def _fetch_projected_result_counts(nb: LabNotebook, experiment_id: str):
+    return nb.conn.execute(
         """
         SELECT
             COUNT(*) AS current_program,
@@ -531,8 +543,23 @@ def get_projected_running_experiment_snapshot(
         FROM program_results
         WHERE experiment_id = ?
         """,
-        (row["experiment_id"],),
+        (experiment_id,),
     ).fetchone()
+
+
+def _projected_stage_count(
+    row, result_counts, row_stage: str, result_stage: str
+) -> int:
+    return max(
+        int(row[row_stage] or 0),
+        int(result_counts[result_stage] or 0) if result_counts else 0,
+    )
+
+
+def _build_projected_experiment_snapshot(
+    row, config: Dict[str, Any], result_counts
+) -> Dict[str, Any]:
+    total_programs = _projected_total_programs(row, config)
     current_program = max(
         int(row["n_programs_generated"] or 0),
         int(result_counts["current_program"] or 0) if result_counts else 0,
@@ -552,23 +579,33 @@ def get_projected_running_experiment_snapshot(
         "hypothesis": str(row["hypothesis"] or "").strip(),
         "current_program": current_program,
         "total_programs": max(total_programs, current_program),
-        "stage0_passed": max(
-            int(row["n_stage0_passed"] or 0),
-            int(result_counts["stage0_passed"] or 0) if result_counts else 0,
+        "stage0_passed": _projected_stage_count(
+            row, result_counts, "n_stage0_passed", "stage0_passed"
         ),
-        "stage05_passed": max(
-            int(row["n_stage05_passed"] or 0),
-            int(result_counts["stage05_passed"] or 0) if result_counts else 0,
+        "stage05_passed": _projected_stage_count(
+            row, result_counts, "n_stage05_passed", "stage05_passed"
         ),
-        "stage1_passed": max(
-            int(row["n_stage1_passed"] or 0),
-            int(result_counts["stage1_passed"] or 0) if result_counts else 0,
+        "stage1_passed": _projected_stage_count(
+            row, result_counts, "n_stage1_passed", "stage1_passed"
         ),
         "started_at": started_at,
         "last_activity_ts": last_projected_at,
         "elapsed_seconds": max(0.0, time.time() - started_at),
         "source": "projected_runtime_lifecycle",
     }
+
+
+def get_projected_running_experiment_snapshot(
+    nb: LabNotebook,
+) -> Optional[Dict[str, Any]]:
+    start_runtime_event_projector(nb.db_path)
+    row = _fetch_projected_running_experiment_row(nb)
+    if row is None:
+        return None
+
+    config = _json_dict_or_empty(row["config_json"])
+    result_counts = _fetch_projected_result_counts(nb, row["experiment_id"])
+    return _build_projected_experiment_snapshot(row, config, result_counts)
 
 
 def _build_registry_progress(snapshot: Dict[str, Any]) -> Dict[str, Any]:

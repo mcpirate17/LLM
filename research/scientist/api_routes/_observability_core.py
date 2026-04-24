@@ -367,6 +367,82 @@ def _classify_component_status(
     return status, reasons, grad_norm
 
 
+def _component_raw_counts(
+    row: dict[str, Any], raw: dict[str, int] | None
+) -> tuple[int, int, int]:
+    has_stored_rates = raw is not None and raw["n"] > 0
+    return (
+        int(raw["n"]) if has_stored_rates else int(row.get("n_used") or 0),
+        int(raw["s0"]) if has_stored_rates else int(row.get("n_stage0_passed") or 0),
+        int(raw["s1"]) if has_stored_rates else int(row.get("n_stage1_passed") or 0),
+    )
+
+
+def _component_display_counts(
+    corrected: dict[str, int] | None,
+    raw_n: int,
+    raw_s0: int,
+    raw_s1: int,
+) -> tuple[int, int, int]:
+    if corrected is None:
+        return raw_n, raw_s0, raw_s1
+    return int(corrected["n"]), int(corrected["s0"]), int(corrected["s1"])
+
+
+def _component_exclusion_reason(
+    corrected: dict[str, int] | None, n_used: int
+) -> str | None:
+    if corrected is None or corrected["excluded"] <= 0:
+        return None
+    n_excluded = corrected["excluded"]
+    if n_used == 0:
+        return f"excluded {n_excluded} runtime-only failures"
+    return f"excluded {n_excluded} runtime-only failures from displayed rates"
+
+
+def _build_search_component_entry(
+    op: str,
+    status: str,
+    reasons: list[str],
+    counts: dict[str, Any],
+    metrics: dict[str, Any],
+    prof: dict[str, Any],
+) -> dict[str, Any]:
+    grad_norm = metrics["grad_norm"]
+    lipschitz = metrics["lipschitz"]
+    return {
+        "op": op,
+        "status": status,
+        "reasons": reasons,
+        "n_used": counts["n_used"],
+        "s0_rate": round(metrics["s0_rate"], 3)
+        if metrics["s0_rate"] is not None
+        else None,
+        "s1_rate": round(metrics["s1_rate"], 3)
+        if metrics["s1_rate"] is not None
+        else None,
+        "blame": round(metrics["blame"], 3),
+        "fail_rate": round(metrics["tf"], 3),
+        "rarity": round(metrics["idf"], 3),
+        "raw_blame": round(metrics["raw_blame"], 3),
+        "raw_fail_rate": round(metrics["raw_tf"], 3),
+        "raw_n_used": counts["raw_n"],
+        "raw_s0_rate": round(counts["raw_s0"] / counts["raw_n"], 3)
+        if counts["raw_n"] > 0
+        else None,
+        "raw_s1_rate": round(counts["raw_s1"] / counts["raw_s0"], 3)
+        if counts["raw_s0"] > 0
+        else None,
+        "n_excluded": counts["n_excluded"],
+        "lipschitz": round(lipschitz, 2) if lipschitz else None,
+        "grad_norm": round(grad_norm, 1) if grad_norm is not None else None,
+        "has_nan": prof.get("has_nan", False),
+        "fwd_us": prof.get("fwd_us"),
+        "bwd_us": prof.get("bwd_us"),
+        "data_source": "search+profiling" if prof else "search",
+    }
+
+
 def _build_component_entry(
     row: dict[str, Any],
     stored_rates: Dict[str, Dict[str, int]],
@@ -379,40 +455,20 @@ def _build_component_entry(
     op = row["op_name"]
     prof = grad_health.get(op, {})
     raw = stored_rates.get(op)
-    raw_n = int(raw["n"]) if raw and raw["n"] > 0 else int(row.get("n_used") or 0)
-    raw_s0 = (
-        int(raw["s0"]) if raw and raw["n"] > 0 else int(row.get("n_stage0_passed") or 0)
-    )
-    raw_s1 = (
-        int(raw["s1"]) if raw and raw["n"] > 0 else int(row.get("n_stage1_passed") or 0)
-    )
+    raw_n, raw_s0, raw_s1 = _component_raw_counts(row, raw)
     raw_blame, raw_tf, _ = _compute_blame(max_n_used, raw_n, raw_s0)
     corrected = corrected_rates.get(op)
     if corrected and corrected["n"] > 0:
         blame, tf, idf = _compute_blame(max_n_used, corrected["n"], corrected["s0"])
     else:
         blame, tf, idf = _compute_blame(max_n_used, raw_n, raw_s0)
-    if corrected is not None:
-        n_used = int(corrected["n"])
-        n_s0 = int(corrected["s0"])
-        n_s1 = int(corrected["s1"])
-    else:
-        n_used = raw_n
-        n_s0 = raw_s0
-        n_s1 = raw_s1
+    n_used, n_s0, n_s1 = _component_display_counts(corrected, raw_n, raw_s0, raw_s1)
     n_s05 = row.get("n_stage05_passed") or 0
     s0_rate = (n_s0 / n_used) if n_used > 0 else None
     s1_rate = (n_s1 / n_s0) if n_s0 > 0 else None
     n_excluded = corrected["excluded"] if corrected else 0
     lipschitz = prof.get("lipschitz") or 0.0
-    exclusion_reason = None
-    if n_excluded > 0:
-        if n_used == 0:
-            exclusion_reason = f"excluded {n_excluded} runtime-only failures"
-        else:
-            exclusion_reason = (
-                f"excluded {n_excluded} runtime-only failures from displayed rates"
-            )
+    exclusion_reason = _component_exclusion_reason(corrected, n_used)
 
     if op in S1_EXEMPT_OPS:
         reasons = ["scaffolding op — not a standalone learner"]
@@ -446,29 +502,30 @@ def _build_component_entry(
     )
     if exclusion_reason:
         reasons = [*reasons, exclusion_reason]
-    return {
-        "op": op,
-        "status": status,
-        "reasons": reasons,
-        "n_used": n_used,
-        "s0_rate": round(s0_rate, 3) if s0_rate is not None else None,
-        "s1_rate": round(s1_rate, 3) if s1_rate is not None else None,
-        "blame": round(blame, 3),
-        "fail_rate": round(tf, 3),
-        "rarity": round(idf, 3),
-        "raw_blame": round(raw_blame, 3),
-        "raw_fail_rate": round(raw_tf, 3),
-        "raw_n_used": raw_n,
-        "raw_s0_rate": round(raw_s0 / raw_n, 3) if raw_n > 0 else None,
-        "raw_s1_rate": round(raw_s1 / raw_s0, 3) if raw_s0 > 0 else None,
-        "n_excluded": n_excluded,
-        "lipschitz": round(lipschitz, 2) if lipschitz else None,
-        "grad_norm": round(grad_norm, 1) if grad_norm is not None else None,
-        "has_nan": prof.get("has_nan", False),
-        "fwd_us": prof.get("fwd_us"),
-        "bwd_us": prof.get("bwd_us"),
-        "data_source": "search+profiling" if prof else "search",
-    }
+    return _build_search_component_entry(
+        op,
+        status,
+        reasons,
+        {
+            "n_used": n_used,
+            "raw_n": raw_n,
+            "raw_s0": raw_s0,
+            "raw_s1": raw_s1,
+            "n_excluded": n_excluded,
+        },
+        {
+            "s0_rate": s0_rate,
+            "s1_rate": s1_rate,
+            "blame": blame,
+            "tf": tf,
+            "idf": idf,
+            "raw_blame": raw_blame,
+            "raw_tf": raw_tf,
+            "lipschitz": lipschitz,
+            "grad_norm": grad_norm,
+        },
+        prof,
+    )
 
 
 def _build_profile_only_component(op_name: str, prof: dict[str, Any]) -> dict[str, Any]:
