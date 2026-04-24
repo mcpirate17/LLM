@@ -231,7 +231,7 @@ class NativeConnectionWrapper:
         return None
 
     @row_factory.setter
-    def row_factory(self, value: Any) -> None:
+    def row_factory(self, _value: Any) -> None:
         # Accept but ignore — we always return _NativeRow which supports
         # both dict-style and index access.
         pass
@@ -244,5 +244,5 @@ class NativeConnectionWrapper:
     def __enter__(self) -> "NativeConnectionWrapper":
         return self
 
-    def __exit__(self, *args: Any) -> None:
+    def __exit__(self, *_args: Any) -> None:
         pass
