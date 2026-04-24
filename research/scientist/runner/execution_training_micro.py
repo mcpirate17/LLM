@@ -780,6 +780,132 @@ class _ExecutionTrainingMicroMixin:
         ctx.trace_totals_ms["data_sampling"] += (time.perf_counter() - data_t0) * 1000.0
         return input_ids, time.perf_counter()
 
+    def _micro_train_forward_step_loss(
+        self,
+        ctx: _MicroTrainContext,
+        input_ids: torch.Tensor,
+        step_state: Dict[str, Any],
+    ) -> torch.Tensor:
+        fwd_t0 = time.perf_counter()
+        with (
+            ctx.trace_ctx("forward_pass"),
+            ctx.run_profiler.trace("forward_pass_ms"),
+        ):
+            loss = _compute_micro_train_forward_loss(
+                self,
+                ctx.model,
+                input_ids,
+                config=ctx.config,
+                dev=ctx.dev,
+                use_synthesized_training=ctx.use_synthesized_training,
+                seed=ctx.seed,
+            )
+        ctx.trace_totals_ms["forward_pass"] += (time.perf_counter() - fwd_t0) * 1000.0
+        loss, aux_loss, ee_loss = _apply_training_aux_losses(
+            loss,
+            routing_modules=ctx.routing_modules,
+            early_exit_modules=ctx.early_exit_modules,
+            lm_head=ctx.lm_head,
+            norm=ctx.norm,
+            input_ids=input_ids,
+        )
+        step_state["loss"] = loss
+        if aux_loss is not None:
+            step_state["routing_aux_loss_tensor"] = aux_loss.detach()
+        if ee_loss is not None:
+            step_state["early_exit_aux_loss_tensor"] = ee_loss.detach()
+        return loss
+
+    @staticmethod
+    def _use_native_backward_step(
+        ctx: _MicroTrainContext, native_backward_step
+    ) -> bool:
+        return callable(native_backward_step) and (
+            os.getenv("MICRO_TRAIN_NATIVE_BACKWARD_STEP", "1").strip().lower()
+            not in {"0", "false", "no", "off"}
+        )
+
+    def _micro_train_backward_and_step(
+        self,
+        ctx: _MicroTrainContext,
+        loss: torch.Tensor,
+        step_state: Dict[str, Any],
+    ) -> None:
+        bwd_t0 = time.perf_counter()
+        native_backward_step = getattr(
+            ctx.optimizer, "backward_step_with_grad_clip", None
+        )
+        use_native_backward_step = self._use_native_backward_step(
+            ctx, native_backward_step
+        )
+        fused_step = getattr(ctx.optimizer, "step_with_grad_clip", None)
+        use_fused_native_step = callable(fused_step) and not use_native_backward_step
+        if use_native_backward_step:
+            with (
+                ctx.trace_ctx("backward_optimizer_step"),
+                ctx.run_profiler.trace("backward_optimizer_step_ms"),
+            ):
+                step_state["grad_norm"] = native_backward_step(loss, ctx.grad_clip_norm)
+            ctx.trace_totals_ms["backward_optimizer_step"] = (
+                ctx.trace_totals_ms.get("backward_optimizer_step", 0.0)
+                + (time.perf_counter() - bwd_t0) * 1000.0
+            )
+            return
+        self._micro_train_backward_pass(ctx, loss, step_state, use_fused_native_step)
+        ctx.trace_totals_ms["backward_pass"] += (time.perf_counter() - bwd_t0) * 1000.0
+        self._micro_train_optimizer_step(
+            ctx, step_state, fused_step, use_fused_native_step
+        )
+
+    def _micro_train_backward_pass(
+        self,
+        ctx: _MicroTrainContext,
+        loss: torch.Tensor,
+        step_state: Dict[str, Any],
+        use_fused_native_step: bool,
+    ) -> None:
+        with (
+            ctx.trace_ctx("backward_pass"),
+            ctx.run_profiler.trace("backward_pass_ms"),
+        ):
+            if use_fused_native_step:
+                ctx.optimizer.zero_grad(set_to_none=True)
+                loss.backward()
+            else:
+                step_state["grad_norm"] = _backward_loss(
+                    loss,
+                    optimizer=ctx.optimizer,
+                    grad_clip_norm=ctx.grad_clip_norm,
+                    model_params=ctx.model_params,
+                )
+
+    def _micro_train_optimizer_step(
+        self,
+        ctx: _MicroTrainContext,
+        step_state: Dict[str, Any],
+        fused_step,
+        use_fused_native_step: bool,
+    ) -> None:
+        opt_t0 = time.perf_counter()
+        with (
+            ctx.trace_ctx("optimizer_step"),
+            ctx.run_profiler.trace("optimizer_step_ms"),
+        ):
+            if use_fused_native_step:
+                step_state["grad_norm"] = fused_step(ctx.grad_clip_norm)
+            else:
+                _optimizer_step(ctx.optimizer)
+        ctx.trace_totals_ms["optimizer_step"] += (time.perf_counter() - opt_t0) * 1000.0
+
+    def _micro_train_run_step(
+        self,
+        ctx: _MicroTrainContext,
+        input_ids: torch.Tensor,
+        step_state: Dict[str, Any],
+    ) -> None:
+        loss = self._micro_train_forward_step_loss(ctx, input_ids, step_state)
+        self._micro_train_backward_and_step(ctx, loss, step_state)
+
     def _micro_train_execute_step(
         self,
         ctx: _MicroTrainContext,
@@ -790,96 +916,7 @@ class _ExecutionTrainingMicroMixin:
         step_state: Dict[str, Any] = {}
 
         def _run_step() -> None:
-            fwd_t0 = time.perf_counter()
-            with (
-                ctx.trace_ctx("forward_pass"),
-                ctx.run_profiler.trace("forward_pass_ms"),
-            ):
-                loss = _compute_micro_train_forward_loss(
-                    self,
-                    ctx.model,
-                    input_ids,
-                    config=ctx.config,
-                    dev=ctx.dev,
-                    use_synthesized_training=ctx.use_synthesized_training,
-                    seed=ctx.seed,
-                )
-            ctx.trace_totals_ms["forward_pass"] += (
-                time.perf_counter() - fwd_t0
-            ) * 1000.0
-            loss, aux_loss, ee_loss = _apply_training_aux_losses(
-                loss,
-                routing_modules=ctx.routing_modules,
-                early_exit_modules=ctx.early_exit_modules,
-                lm_head=ctx.lm_head,
-                norm=ctx.norm,
-                input_ids=input_ids,
-            )
-            step_state["loss"] = loss
-            if aux_loss is not None:
-                step_state["routing_aux_loss_tensor"] = aux_loss.detach()
-            if ee_loss is not None:
-                step_state["early_exit_aux_loss_tensor"] = ee_loss.detach()
-
-            bwd_t0 = time.perf_counter()
-            native_backward_step = getattr(
-                ctx.optimizer, "backward_step_with_grad_clip", None
-            )
-            use_native_backward_step = callable(native_backward_step) and (
-                os.getenv("MICRO_TRAIN_NATIVE_BACKWARD_STEP", "1").strip().lower()
-                not in {"0", "false", "no", "off"}
-            )
-            fused_step = getattr(ctx.optimizer, "step_with_grad_clip", None)
-            use_fused_native_step = (
-                callable(fused_step) and not use_native_backward_step
-            )
-            if use_native_backward_step:
-                with (
-                    ctx.trace_ctx("backward_optimizer_step"),
-                    ctx.run_profiler.trace("backward_optimizer_step_ms"),
-                ):
-                    step_state["grad_norm"] = native_backward_step(
-                        loss, ctx.grad_clip_norm
-                    )
-                ctx.trace_totals_ms["backward_optimizer_step"] = (
-                    ctx.trace_totals_ms.get("backward_optimizer_step", 0.0)
-                    + (time.perf_counter() - bwd_t0) * 1000.0
-                )
-                return
-            if use_fused_native_step:
-                with (
-                    ctx.trace_ctx("backward_pass"),
-                    ctx.run_profiler.trace("backward_pass_ms"),
-                ):
-                    ctx.optimizer.zero_grad(set_to_none=True)
-                    loss.backward()
-            else:
-                with (
-                    ctx.trace_ctx("backward_pass"),
-                    ctx.run_profiler.trace("backward_pass_ms"),
-                ):
-                    step_state["grad_norm"] = _backward_loss(
-                        loss,
-                        optimizer=ctx.optimizer,
-                        grad_clip_norm=ctx.grad_clip_norm,
-                        model_params=ctx.model_params,
-                    )
-            ctx.trace_totals_ms["backward_pass"] += (
-                time.perf_counter() - bwd_t0
-            ) * 1000.0
-
-            opt_t0 = time.perf_counter()
-            with (
-                ctx.trace_ctx("optimizer_step"),
-                ctx.run_profiler.trace("optimizer_step_ms"),
-            ):
-                if use_fused_native_step:
-                    step_state["grad_norm"] = fused_step(ctx.grad_clip_norm)
-                else:
-                    _optimizer_step(ctx.optimizer)
-            ctx.trace_totals_ms["optimizer_step"] += (
-                time.perf_counter() - opt_t0
-            ) * 1000.0
+            self._micro_train_run_step(ctx, input_ids, step_state)
 
         if step == 0 and ctx.op_profiler.enabled:
             kernel_summary = ctx.op_profiler.profile_callable(_run_step)
