@@ -12,6 +12,13 @@ on:
       - '.github/workflows/research-native-ci.yml'
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: research-native-ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   native-runner-contracts:
     runs-on: ubuntu-latest

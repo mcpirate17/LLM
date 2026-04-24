@@ -8,6 +8,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: weekly-audit-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   audit-and-profile:
     runs-on: ubuntu-latest
