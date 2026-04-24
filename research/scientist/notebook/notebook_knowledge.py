@@ -491,6 +491,132 @@ class _KnowledgeMixin:
 
     # ── Follow-up task queue ──
 
+    def _canonical_followup_result_ids(
+        self, result_ids: List[str]
+    ) -> tuple[list[str], list[str]]:
+        requested = [str(r).strip() for r in (result_ids or []) if str(r).strip()]
+        canonical_result_ids = []
+        for rid in requested:
+            canonical = str(self.resolve_canonical_result_id(rid) or rid).strip()
+            if canonical:
+                canonical_result_ids.append(canonical)
+        return requested, sorted(set(canonical_result_ids))
+
+    @staticmethod
+    def _followup_metadata(
+        metadata: Optional[Dict[str, Any]],
+        requested_result_ids: list[str],
+        cleaned_result_ids: list[str],
+    ) -> Dict[str, Any]:
+        task_metadata = dict(metadata or {})
+        if cleaned_result_ids != sorted(set(requested_result_ids)):
+            task_metadata.setdefault(
+                "requested_result_ids", sorted(set(requested_result_ids))
+            )
+            task_metadata.setdefault(
+                "canonicalized_result_ids", list(cleaned_result_ids)
+            )
+        return task_metadata
+
+    @staticmethod
+    def _followup_json(payload: Optional[Dict[str, Any]]) -> Optional[str]:
+        return json.dumps(sanitize_for_db(payload or {})) if payload else None
+
+    def _find_active_followup_task(self, stage: str, result_ids_json: str):
+        return self.conn.execute(
+            """SELECT task_id FROM followup_tasks
+               WHERE stage = ?
+                 AND result_ids_json = ?
+                 AND status IN ('queued', 'running')
+               ORDER BY timestamp DESC
+               LIMIT 1""",
+            (stage, result_ids_json),
+        ).fetchone()
+
+    def _update_followup_task(
+        self,
+        task_id: str,
+        *,
+        source_context: Optional[str],
+        source_decision_id: Optional[str],
+        source_experiment_id: Optional[str],
+        hypothesis: str,
+        config: Optional[Dict[str, Any]],
+        evidence_pack: Optional[Dict[str, Any]],
+        priority_score: float,
+        priority_reasons: Optional[Dict[str, Any]],
+        task_metadata: Dict[str, Any],
+    ) -> str:
+        self.conn.execute(
+            """UPDATE followup_tasks
+               SET source_context = COALESCE(?, source_context),
+                   source_decision_id = COALESCE(?, source_decision_id),
+                   source_experiment_id = COALESCE(?, source_experiment_id),
+                   hypothesis = COALESCE(?, hypothesis),
+                   config_json = COALESCE(?, config_json),
+                   evidence_pack_json = COALESCE(?, evidence_pack_json),
+                   priority_score = MAX(priority_score, ?),
+                   priority_reasons_json = COALESCE(?, priority_reasons_json),
+                   metadata_json = COALESCE(?, metadata_json)
+               WHERE task_id = ?""",
+            (
+                source_context,
+                source_decision_id,
+                source_experiment_id,
+                hypothesis or None,
+                self._followup_json(config),
+                self._followup_json(evidence_pack),
+                float(priority_score or 0.0),
+                self._followup_json(priority_reasons),
+                self._followup_json(task_metadata),
+                task_id,
+            ),
+        )
+        self._maybe_commit()
+        return task_id
+
+    def _insert_followup_task(
+        self,
+        *,
+        stage: str,
+        result_ids_json: str,
+        hypothesis: str,
+        config: Optional[Dict[str, Any]],
+        evidence_pack: Optional[Dict[str, Any]],
+        source_context: Optional[str],
+        source_decision_id: Optional[str],
+        source_experiment_id: Optional[str],
+        priority_score: float,
+        priority_reasons: Optional[Dict[str, Any]],
+        task_metadata: Dict[str, Any],
+    ) -> str:
+        task_id = str(uuid.uuid4())[:12]
+        self.conn.execute(
+            """INSERT INTO followup_tasks
+               (task_id, timestamp, stage, status, source_context,
+                source_decision_id, source_experiment_id, result_ids_json,
+                hypothesis, config_json, evidence_pack_json, priority_score,
+                priority_reasons_json, metadata_json)
+               VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                task_id,
+                time.time(),
+                stage,
+                source_context or "",
+                source_decision_id,
+                source_experiment_id,
+                result_ids_json,
+                hypothesis or "",
+                self._followup_json(config),
+                self._followup_json(evidence_pack),
+                float(priority_score or 0.0),
+                self._followup_json(priority_reasons),
+                self._followup_json(task_metadata),
+            ),
+        )
+        self._maybe_commit()
+        return task_id
+
     def enqueue_followup_task(
         self,
         *,
@@ -510,112 +636,42 @@ class _KnowledgeMixin:
         cleaned_stage = str(stage or "").strip().lower()
         if not cleaned_stage:
             raise ValueError("stage is required")
-        requested_result_ids = [
-            str(r).strip() for r in (result_ids or []) if str(r).strip()
-        ]
-        canonical_result_ids = []
-        for rid in requested_result_ids:
-            canonical = str(self.resolve_canonical_result_id(rid) or rid).strip()
-            if canonical:
-                canonical_result_ids.append(canonical)
-        cleaned_result_ids = sorted(set(canonical_result_ids))
+        requested_result_ids, cleaned_result_ids = self._canonical_followup_result_ids(
+            result_ids
+        )
         if not cleaned_result_ids:
             raise ValueError("result_ids is required")
         result_ids_json = json.dumps(cleaned_result_ids)
-        task_metadata = dict(metadata or {})
-        if cleaned_result_ids != sorted(set(requested_result_ids)):
-            task_metadata.setdefault(
-                "requested_result_ids", sorted(set(requested_result_ids))
-            )
-            task_metadata.setdefault(
-                "canonicalized_result_ids", list(cleaned_result_ids)
-            )
-        now = time.time()
-        existing = self.conn.execute(
-            """SELECT task_id FROM followup_tasks
-               WHERE stage = ?
-                 AND result_ids_json = ?
-                 AND status IN ('queued', 'running')
-               ORDER BY timestamp DESC
-               LIMIT 1""",
-            (cleaned_stage, result_ids_json),
-        ).fetchone()
-        if existing is not None:
-            task_id = str(existing["task_id"])
-            self.conn.execute(
-                """UPDATE followup_tasks
-                   SET source_context = COALESCE(?, source_context),
-                       source_decision_id = COALESCE(?, source_decision_id),
-                       source_experiment_id = COALESCE(?, source_experiment_id),
-                       hypothesis = COALESCE(?, hypothesis),
-                       config_json = COALESCE(?, config_json),
-                       evidence_pack_json = COALESCE(?, evidence_pack_json),
-                       priority_score = MAX(priority_score, ?),
-                       priority_reasons_json = COALESCE(?, priority_reasons_json),
-                       metadata_json = COALESCE(?, metadata_json)
-                   WHERE task_id = ?""",
-                (
-                    source_context,
-                    source_decision_id,
-                    source_experiment_id,
-                    hypothesis or None,
-                    json.dumps(sanitize_for_db(config or {})) if config else None,
-                    (
-                        json.dumps(sanitize_for_db(evidence_pack or {}))
-                        if evidence_pack
-                        else None
-                    ),
-                    float(priority_score or 0.0),
-                    (
-                        json.dumps(sanitize_for_db(priority_reasons or {}))
-                        if priority_reasons
-                        else None
-                    ),
-                    json.dumps(sanitize_for_db(task_metadata or {}))
-                    if task_metadata
-                    else None,
-                    task_id,
-                ),
-            )
-            self._maybe_commit()
-            return task_id
-
-        task_id = str(uuid.uuid4())[:12]
-        self.conn.execute(
-            """INSERT INTO followup_tasks
-               (task_id, timestamp, stage, status, source_context,
-                source_decision_id, source_experiment_id, result_ids_json,
-                hypothesis, config_json, evidence_pack_json, priority_score,
-                priority_reasons_json, metadata_json)
-               VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                task_id,
-                now,
-                cleaned_stage,
-                source_context or "",
-                source_decision_id,
-                source_experiment_id,
-                result_ids_json,
-                hypothesis or "",
-                json.dumps(sanitize_for_db(config or {})) if config else None,
-                (
-                    json.dumps(sanitize_for_db(evidence_pack or {}))
-                    if evidence_pack
-                    else None
-                ),
-                float(priority_score or 0.0),
-                (
-                    json.dumps(sanitize_for_db(priority_reasons or {}))
-                    if priority_reasons
-                    else None
-                ),
-                json.dumps(sanitize_for_db(task_metadata or {}))
-                if task_metadata
-                else None,
-            ),
+        task_metadata = self._followup_metadata(
+            metadata, requested_result_ids, cleaned_result_ids
         )
-        self._maybe_commit()
-        return task_id
+        existing = self._find_active_followup_task(cleaned_stage, result_ids_json)
+        if existing is not None:
+            return self._update_followup_task(
+                str(existing["task_id"]),
+                source_context=source_context,
+                source_decision_id=source_decision_id,
+                source_experiment_id=source_experiment_id,
+                hypothesis=hypothesis,
+                config=config,
+                evidence_pack=evidence_pack,
+                priority_score=priority_score,
+                priority_reasons=priority_reasons,
+                task_metadata=task_metadata,
+            )
+        return self._insert_followup_task(
+            stage=cleaned_stage,
+            result_ids_json=result_ids_json,
+            hypothesis=hypothesis,
+            config=config,
+            evidence_pack=evidence_pack,
+            source_context=source_context,
+            source_decision_id=source_decision_id,
+            source_experiment_id=source_experiment_id,
+            priority_score=priority_score,
+            priority_reasons=priority_reasons,
+            task_metadata=task_metadata,
+        )
 
     def get_followup_tasks(
         self,
