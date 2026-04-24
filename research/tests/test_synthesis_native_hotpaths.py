@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
+import pytest
 import torch
 
 from research.synthesis.graph import ComputationGraph
@@ -952,6 +953,40 @@ def test_validate_graph_validation_summary_falls_back_to_python(monkeypatch):
 
     assert result.n_parameterized_ops == 4
     assert any("projection chain" in warning.lower() for warning in result.warnings)
+
+
+def test_effective_depth_native_matches_python(monkeypatch):
+    from research.synthesis.native_validation import effective_depth_natively
+    from research.synthesis.validation_opcode_tables import validation_opcode_tables
+    import research.synthesis.validator as validator
+
+    graph = ComputationGraph(8)
+    inp = graph.add_input()
+    a = graph.add_op("linear_proj", [inp], config={"out_dim": 8})
+    b = graph.add_op("rmsnorm", [a])
+    c = graph.add_op("linear_proj", [b], config={"out_dim": 8})
+    graph.set_output(c)
+    ir = graph._analysis_ir()
+    tables = validation_opcode_tables()
+
+    native_depth = effective_depth_natively(
+        op_codes=ir.op_codes,
+        input_indices=ir.input_indices,
+        effective_depth_weights=tables.effective_depth_weight,
+        discount_successor_u8=tables.discount_successor_u8,
+    )
+    if native_depth is None:
+        pytest.skip("native graph effective-depth runtime unavailable")
+
+    monkeypatch.setattr(
+        validator,
+        "effective_depth_natively",
+        lambda **_: None,
+    )
+    ir.analysis_cache.clear()
+    python_depth = validator.compute_effective_depth(ir)
+
+    assert native_depth == pytest.approx(python_depth)
 
 
 def test_validate_graph_reuses_shared_structural_analysis(monkeypatch):

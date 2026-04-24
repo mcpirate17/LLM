@@ -182,6 +182,17 @@ _LOSS_STEERING_ANCHOR = 0.65
 _SLOT_OUTCOME_MIN_RESCUE_SUPPORT = 3
 _SLOT_OUTCOME_SUPPORT_PRIOR = 8.0
 _CAPABILITY_SUPPORT_PRIOR = 16.0
+_DB_METRIC_COLUMNS = (
+    "avg_induction_auc",
+    "avg_binding_auc",
+    "avg_binding_composite",
+    "avg_ar_auc",
+    "avg_hellaswag_acc",
+    "avg_blimp_overall_accuracy",
+    "avg_induction_v2_investigation_auc",
+    "avg_binding_v2_investigation_auc",
+    "math_space_rate",
+)
 
 
 def _bounded(value: float, *, lo: float, hi: float) -> float:
@@ -348,6 +359,30 @@ def _metric_select_list(columns: set[str], metric_columns: tuple[str, ...]) -> s
     return ", ".join(select_parts)
 
 
+def _resolve_existing_db_path(db_path: str):
+    from pathlib import Path
+
+    path = Path(db_path)
+    if not path.is_absolute():
+        cwd = Path.cwd()
+        if cwd.name == "research" and path.parts and path.parts[0] == "research":
+            path = cwd.parent / db_path
+        else:
+            path = path.resolve()
+    return path if path.exists() else None
+
+
+def _connect_existing_db(db_path: str):
+    import sqlite3
+
+    path = _resolve_existing_db_path(db_path)
+    if path is None:
+        return None
+    conn = sqlite3.connect(str(path), timeout=5.0)
+    conn.execute("PRAGMA busy_timeout=5000")
+    return conn
+
+
 def _slot_outcome_capability(vals: dict) -> float:
     return _capability_score(
         vals.get("mean_induction_auc"),
@@ -427,20 +462,9 @@ def _load_template_slot_context(conn) -> Dict[str, dict]:
     import json as _json
 
     columns = {row[1] for row in conn.execute("PRAGMA table_info(slot_stats)")}
-    metric_columns = (
-        "avg_induction_auc",
-        "avg_binding_auc",
-        "avg_binding_composite",
-        "avg_ar_auc",
-        "avg_hellaswag_acc",
-        "avg_blimp_overall_accuracy",
-        "avg_induction_v2_investigation_auc",
-        "avg_binding_v2_investigation_auc",
-        "math_space_rate",
-    )
     rows = conn.execute(
         f"""SELECT template_name, class_outcomes, wildcard_class_outcomes,
-                   {_metric_select_list(columns, metric_columns)}
+                   {_metric_select_list(columns, _DB_METRIC_COLUMNS)}
             FROM slot_stats
             WHERE eval_count >= 3"""
     ).fetchall()
@@ -501,6 +525,233 @@ def _load_template_slot_context(conn) -> Dict[str, dict]:
             "weak_slot_fraction": weak_slots / max(len(scores), 1),
         }
     return out
+
+
+def _fetch_template_weight_rows(conn):
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(template_stats)")}
+    return conn.execute(
+        f"""SELECT template_name, eval_count, s1_pass_count, mean_loss,
+                   {_metric_select_list(columns, _DB_METRIC_COLUMNS)}
+            FROM template_stats WHERE eval_count >= 5"""
+    ).fetchall()
+
+
+def _template_dynamic_weight(
+    row,
+    *,
+    template_slot_context: Dict[str, dict],
+    default_template_weights: Dict[str, float],
+    k: float,
+) -> tuple[str, int, float]:
+    (
+        tpl_name,
+        eval_count,
+        s1_count,
+        mean_loss,
+        avg_induction_auc,
+        avg_binding_auc,
+        avg_binding_composite,
+        avg_ar_auc,
+        avg_hellaswag_acc,
+        avg_blimp_overall_accuracy,
+        avg_induction_v2_investigation_auc,
+        avg_binding_v2_investigation_auc,
+        math_space_rate,
+    ) = row
+    s1_rate = s1_count / max(eval_count, 1)
+    static_weight = default_template_weights.get(tpl_name, 1.0)
+    dynamic_weight = (
+        static_weight
+        * _loss_quality_factor(mean_loss, k=k)
+        * _s1_quality_factor(s1_rate)
+    )
+    signal_reward = _support_shrunk_reward(
+        _capability_reward(
+            avg_induction_auc,
+            avg_binding_auc,
+            avg_binding_composite,
+            avg_ar_auc,
+            avg_hellaswag_acc,
+            avg_blimp_overall_accuracy,
+            avg_induction_v2_investigation_auc,
+            avg_binding_v2_investigation_auc,
+            math_space_rate,
+        ),
+        eval_count,
+        prior=20.0,
+    )
+    dynamic_weight *= signal_reward
+    slot_ctx = template_slot_context.get(str(tpl_name)) or {}
+    if slot_ctx:
+        rescue_score = max(
+            float(slot_ctx.get("mean_slot_potential") or 0.0),
+            0.75 * float(slot_ctx.get("max_slot_potential") or 0.0),
+        )
+        if rescue_score > (signal_reward - 1.0):
+            rescue_weight = (
+                static_weight
+                * _loss_quality_factor(mean_loss, k=k)
+                * _s1_quality_factor(s1_rate)
+                * (1.0 + rescue_score)
+            )
+            rescue_mix = _bounded(
+                (0.55 * float(slot_ctx.get("mean_salvage_gap") or 0.0))
+                + (0.20 * (1.0 - float(slot_ctx.get("weak_slot_fraction") or 1.0))),
+                lo=0.0,
+                hi=0.45,
+            )
+            dynamic_weight = ((1.0 - rescue_mix) * dynamic_weight) + (
+                rescue_mix * rescue_weight
+            )
+    confidence = eval_count / max(eval_count + 12.0, 1.0)
+    weight = ((1.0 - confidence) * static_weight) + (confidence * dynamic_weight)
+    return str(tpl_name), int(eval_count), weight
+
+
+def _build_db_template_weights(rows, template_slot_context: Dict[str, dict]):
+    from .templates import DEFAULT_TEMPLATE_WEIGHTS
+
+    db_weights: Dict[str, float] = {}
+    eval_counts: Dict[str, int] = {}
+    for row in rows:
+        tpl_name, eval_count, weight = _template_dynamic_weight(
+            row,
+            template_slot_context=template_slot_context,
+            default_template_weights=DEFAULT_TEMPLATE_WEIGHTS,
+            k=3.0,
+        )
+        db_weights[tpl_name] = weight
+        eval_counts[tpl_name] = eval_count
+
+    for tpl_name, weight in DEFAULT_TEMPLATE_WEIGHTS.items():
+        db_weights.setdefault(tpl_name, weight)
+
+    if eval_counts:
+        sorted_counts = sorted(eval_counts.values())
+        median_evals = sorted_counts[len(sorted_counts) // 2]
+        if median_evals > 0:
+            for tpl_name in db_weights:
+                n = eval_counts.get(tpl_name, 0)
+                if n < median_evals:
+                    db_weights[tpl_name] *= 1.0 + (1.0 - n / median_evals)
+    return db_weights
+
+
+def _fetch_op_weight_rows(conn):
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(op_stats)")}
+    return conn.execute(
+        f"""SELECT op_name, eval_count, s1_pass_count, mean_loss,
+                   {_metric_select_list(columns, _DB_METRIC_COLUMNS)}
+            FROM op_stats
+            WHERE eval_count >= 3"""
+    ).fetchall()
+
+
+def _build_db_op_weights(rows) -> Dict[str, float]:
+    weights: Dict[str, float] = {}
+    for row in rows:
+        (
+            op_name,
+            eval_count,
+            s1_count,
+            mean_loss,
+            avg_induction_auc,
+            avg_binding_auc,
+            avg_binding_composite,
+            avg_ar_auc,
+            avg_hellaswag_acc,
+            avg_blimp_overall_accuracy,
+            avg_induction_v2_investigation_auc,
+            avg_binding_v2_investigation_auc,
+            math_space_rate,
+        ) = row
+        s1_rate = s1_count / max(eval_count, 1)
+        perf_term = _loss_quality_factor(mean_loss, k=2.0) * _s1_quality_factor(s1_rate)
+        capability_term = _support_shrunk_reward(
+            _capability_reward(
+                avg_induction_auc,
+                avg_binding_auc,
+                avg_binding_composite,
+                avg_ar_auc,
+                avg_hellaswag_acc,
+                avg_blimp_overall_accuracy,
+                avg_induction_v2_investigation_auc,
+                avg_binding_v2_investigation_auc,
+                math_space_rate,
+            ),
+            eval_count,
+            prior=12.0,
+        )
+        raw_weight = _support_shrunk_multiplier(
+            perf_term * capability_term,
+            eval_count,
+            prior=10.0,
+        )
+        weights[str(op_name)] = round(_bounded(raw_weight, lo=0.25, hi=4.5), 4)
+    return weights
+
+
+def _fetch_slot_adaptation_rows(conn, min_evals: int):
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(slot_stats)")}
+    return conn.execute(
+        f"""SELECT slot_key, slot_classes, s1_pass_count, eval_count,
+                   {_metric_select_list(columns, _DB_METRIC_COLUMNS)},
+                   wildcard_class_outcomes
+            FROM slot_stats
+            WHERE wildcard_count >= ?""",
+        (min_evals,),
+    ).fetchall()
+
+
+def _build_slot_adaptations(rows, *, min_evals: int, max_extra_classes: int):
+    import json as _json
+
+    adaptations: Dict[str, list] = {}
+    for row in rows:
+        slot_key, slot_classes_json, s1_total, eval_total, *metrics, wc_json = row
+        if not wc_json:
+            continue
+        try:
+            prescribed = set(_json.loads(slot_classes_json or "[]"))
+            wc_outcomes = _json.loads(wc_json)
+        except (ValueError, TypeError):
+            continue
+
+        baseline_s1_rate = s1_total / max(eval_total, 1)
+        baseline_capability = _capability_score(*metrics)
+        scored_extra: list[tuple[float, str]] = []
+        for cls, vals in wc_outcomes.items():
+            if cls in prescribed:
+                continue
+            n = vals.get("n", 0)
+            if n < min_evals:
+                continue
+            cls_s1_rate = vals.get("s1", 0) / n
+            cls_capability = _capability_score(
+                vals.get("mean_induction_auc"),
+                vals.get("mean_binding_auc"),
+                vals.get("mean_binding_composite"),
+                vals.get("mean_ar_auc"),
+                vals.get("mean_hellaswag_acc"),
+                vals.get("mean_blimp_overall_accuracy"),
+                vals.get("mean_induction_v2_investigation_auc"),
+                vals.get("mean_binding_v2_investigation_auc"),
+                vals.get("math_space_rate"),
+            )
+            if cls_s1_rate > baseline_s1_rate or cls_capability > (
+                baseline_capability + 0.2
+            ):
+                scored_extra.append(
+                    (
+                        (cls_s1_rate - baseline_s1_rate)
+                        + (0.5 * (cls_capability - baseline_capability)),
+                        cls,
+                    )
+                )
+        extra = [cls for _, cls in sorted(scored_extra, reverse=True)]
+        if extra:
+            adaptations[slot_key] = extra[:max_extra_classes]
+    return adaptations
 
 
 def compute_motif_weights_from_op_weights(
@@ -568,143 +819,23 @@ class DBTemplateWeightCache:
     def get(
         self, db_path: str = "research/lab_notebook.db"
     ) -> Optional[Dict[str, float]]:
-        import sqlite3
         import time as _time
 
         now = _time.time()
         if self._weights is not None and now < self._expires:
             return self._weights
 
+        conn = None
         try:
-            from pathlib import Path
-
-            path = Path(db_path)
-            if not path.is_absolute():
-                cwd = Path.cwd()
-                if (
-                    cwd.name == "research"
-                    and path.parts
-                    and path.parts[0] == "research"
-                ):
-                    path = cwd.parent / db_path
-                else:
-                    path = path.resolve()
-            if not path.exists():
+            conn = _connect_existing_db(db_path)
+            if conn is None:
                 return None
-
-            conn = sqlite3.connect(str(path), timeout=5.0)
-            conn.execute("PRAGMA busy_timeout=5000")
-            columns = {
-                row[1] for row in conn.execute("PRAGMA table_info(template_stats)")
-            }
-            metric_columns = (
-                "avg_induction_auc",
-                "avg_binding_auc",
-                "avg_binding_composite",
-                "avg_ar_auc",
-                "avg_hellaswag_acc",
-                "avg_blimp_overall_accuracy",
-                "avg_induction_v2_investigation_auc",
-                "avg_binding_v2_investigation_auc",
-                "math_space_rate",
-            )
-            rows = conn.execute(
-                f"""SELECT template_name, eval_count, s1_pass_count, mean_loss,
-                           {_metric_select_list(columns, metric_columns)}
-                    FROM template_stats WHERE eval_count >= 5"""
-            ).fetchall()
+            rows = _fetch_template_weight_rows(conn)
             template_slot_context = _load_template_slot_context(conn)
-            conn.close()
-
             if not rows:
                 return None
 
-            from .templates import DEFAULT_TEMPLATE_WEIGHTS
-
-            k = 3.0
-            db_weights: Dict[str, float] = {}
-            for (
-                tpl_name,
-                eval_count,
-                s1_count,
-                mean_loss,
-                avg_induction_auc,
-                avg_binding_auc,
-                avg_binding_composite,
-                avg_ar_auc,
-                avg_hellaswag_acc,
-                avg_blimp_overall_accuracy,
-                avg_induction_v2_investigation_auc,
-                avg_binding_v2_investigation_auc,
-                math_space_rate,
-            ) in rows:
-                s1_rate = s1_count / max(eval_count, 1)
-                static_weight = DEFAULT_TEMPLATE_WEIGHTS.get(tpl_name, 1.0)
-                perf_weight = (
-                    static_weight
-                    * _loss_quality_factor(mean_loss, k=k)
-                    * _s1_quality_factor(s1_rate)
-                )
-                signal_reward = _support_shrunk_reward(
-                    _capability_reward(
-                        avg_induction_auc,
-                        avg_binding_auc,
-                        avg_binding_composite,
-                        avg_ar_auc,
-                        avg_hellaswag_acc,
-                        avg_blimp_overall_accuracy,
-                        avg_induction_v2_investigation_auc,
-                        avg_binding_v2_investigation_auc,
-                        math_space_rate,
-                    ),
-                    eval_count,
-                    prior=20.0,
-                )
-                perf_weight *= signal_reward
-                confidence = eval_count / max(eval_count + 12.0, 1.0)
-                dynamic_weight = perf_weight
-                slot_ctx = template_slot_context.get(str(tpl_name)) or {}
-                slot_mean_potential = float(slot_ctx.get("mean_slot_potential") or 0.0)
-                slot_max_potential = float(slot_ctx.get("max_slot_potential") or 0.0)
-                mean_salvage_gap = float(slot_ctx.get("mean_salvage_gap") or 0.0)
-                weak_slot_fraction = float(slot_ctx.get("weak_slot_fraction") or 1.0)
-                if slot_ctx:
-                    rescue_score = max(slot_mean_potential, 0.75 * slot_max_potential)
-                    if rescue_score > (signal_reward - 1.0):
-                        rescue_weight = (
-                            static_weight
-                            * _loss_quality_factor(mean_loss, k=k)
-                            * _s1_quality_factor(s1_rate)
-                            * (1.0 + rescue_score)
-                        )
-                        rescue_mix = _bounded(
-                            (0.55 * mean_salvage_gap)
-                            + (0.20 * (1.0 - weak_slot_fraction)),
-                            lo=0.0,
-                            hi=0.45,
-                        )
-                        dynamic_weight = ((1.0 - rescue_mix) * dynamic_weight) + (
-                            rescue_mix * rescue_weight
-                        )
-                db_weights[tpl_name] = ((1.0 - confidence) * static_weight) + (
-                    confidence * dynamic_weight
-                )
-
-            for tpl_name, w in DEFAULT_TEMPLATE_WEIGHTS.items():
-                if tpl_name not in db_weights:
-                    db_weights[tpl_name] = w
-
-            eval_counts = {r[0]: r[1] for r in rows}
-            if eval_counts:
-                sorted_counts = sorted(eval_counts.values())
-                median_evals = sorted_counts[len(sorted_counts) // 2]
-                if median_evals > 0:
-                    for tpl_name in db_weights:
-                        n = eval_counts.get(tpl_name, 0)
-                        if n < median_evals:
-                            curiosity = 1.0 + (1.0 - n / median_evals)
-                            db_weights[tpl_name] *= curiosity
-
+            db_weights = _build_db_template_weights(rows, template_slot_context)
             self._weights = db_weights
             self._expires = now + self._ttl
             logger.info(
@@ -716,6 +847,9 @@ class DBTemplateWeightCache:
         except Exception as e:
             logger.debug("Failed to load DB template weights: %s", e)
             return None
+        finally:
+            if conn is not None:
+                conn.close()
 
 
 class DBOpWeightCache:
@@ -731,101 +865,22 @@ class DBOpWeightCache:
     def get(
         self, db_path: str = "research/lab_notebook.db"
     ) -> Optional[Dict[str, float]]:
-        import sqlite3
         import time as _time
 
         now = _time.time()
         if self._weights is not None and now < self._expires:
             return self._weights
 
+        conn = None
         try:
-            from pathlib import Path
-
-            path = Path(db_path)
-            if not path.is_absolute():
-                cwd = Path.cwd()
-                if (
-                    cwd.name == "research"
-                    and path.parts
-                    and path.parts[0] == "research"
-                ):
-                    path = cwd.parent / db_path
-                else:
-                    path = path.resolve()
-            if not path.exists():
+            conn = _connect_existing_db(db_path)
+            if conn is None:
                 return None
-
-            conn = sqlite3.connect(str(path), timeout=5.0)
-            conn.execute("PRAGMA busy_timeout=5000")
-            columns = {row[1] for row in conn.execute("PRAGMA table_info(op_stats)")}
-            metric_columns = (
-                "avg_induction_auc",
-                "avg_binding_auc",
-                "avg_binding_composite",
-                "avg_ar_auc",
-                "avg_hellaswag_acc",
-                "avg_blimp_overall_accuracy",
-                "avg_induction_v2_investigation_auc",
-                "avg_binding_v2_investigation_auc",
-                "math_space_rate",
-            )
-            rows = conn.execute(
-                f"""SELECT op_name, eval_count, s1_pass_count, mean_loss,
-                           {_metric_select_list(columns, metric_columns)}
-                    FROM op_stats
-                    WHERE eval_count >= 3"""
-            ).fetchall()
-            conn.close()
-
+            rows = _fetch_op_weight_rows(conn)
             if not rows:
                 return None
 
-            weights: Dict[str, float] = {}
-            for (
-                op_name,
-                eval_count,
-                s1_count,
-                mean_loss,
-                avg_induction_auc,
-                avg_binding_auc,
-                avg_binding_composite,
-                avg_ar_auc,
-                avg_hellaswag_acc,
-                avg_blimp_overall_accuracy,
-                avg_induction_v2_investigation_auc,
-                avg_binding_v2_investigation_auc,
-                math_space_rate,
-            ) in rows:
-                s1_rate = s1_count / max(eval_count, 1)
-                perf_term = _loss_quality_factor(mean_loss, k=2.0) * _s1_quality_factor(
-                    s1_rate
-                )
-                capability_term = _support_shrunk_reward(
-                    _capability_reward(
-                        avg_induction_auc,
-                        avg_binding_auc,
-                        avg_binding_composite,
-                        avg_ar_auc,
-                        avg_hellaswag_acc,
-                        avg_blimp_overall_accuracy,
-                        avg_induction_v2_investigation_auc,
-                        avg_binding_v2_investigation_auc,
-                        math_space_rate,
-                    ),
-                    eval_count,
-                    prior=12.0,
-                )
-                raw_weight = perf_term * capability_term
-                raw_weight = _support_shrunk_multiplier(
-                    raw_weight,
-                    eval_count,
-                    prior=10.0,
-                )
-                weights[str(op_name)] = round(
-                    _bounded(raw_weight, lo=0.25, hi=4.5),
-                    4,
-                )
-
+            weights = _build_db_op_weights(rows)
             self._weights = weights
             self._expires = now + self._ttl
             if weights:
@@ -834,6 +889,9 @@ class DBOpWeightCache:
         except Exception as e:
             logger.debug("Failed to load DB op weights: %s", e)
             return None
+        finally:
+            if conn is not None:
+                conn.close()
 
 
 class SlotAdaptationCache:
@@ -850,8 +908,6 @@ class SlotAdaptationCache:
         self._ttl = ttl
 
     def get(self, db_path: str = "research/lab_notebook.db") -> Dict[str, list]:
-        import json as _json
-        import sqlite3
         import time as _time
 
         now = _time.time()
@@ -859,121 +915,18 @@ class SlotAdaptationCache:
             return self._adaptations
 
         adaptations: Dict[str, list] = {}
+        conn = None
         try:
-            from pathlib import Path
-
-            path = Path(db_path)
-            if not path.is_absolute():
-                cwd = Path.cwd()
-                if (
-                    cwd.name == "research"
-                    and path.parts
-                    and path.parts[0] == "research"
-                ):
-                    path = cwd.parent / db_path
-                else:
-                    path = path.resolve()
-            if not path.exists():
+            conn = _connect_existing_db(db_path)
+            if conn is None:
                 return adaptations
 
-            conn = sqlite3.connect(str(path), timeout=5.0)
-            conn.execute("PRAGMA busy_timeout=5000")
-            columns = {row[1] for row in conn.execute("PRAGMA table_info(slot_stats)")}
-            metric_columns = (
-                "avg_induction_auc",
-                "avg_binding_auc",
-                "avg_binding_composite",
-                "avg_ar_auc",
-                "avg_hellaswag_acc",
-                "avg_blimp_overall_accuracy",
-                "avg_induction_v2_investigation_auc",
-                "avg_binding_v2_investigation_auc",
-                "math_space_rate",
+            rows = _fetch_slot_adaptation_rows(conn, self._MIN_EVALS)
+            adaptations = _build_slot_adaptations(
+                rows,
+                min_evals=self._MIN_EVALS,
+                max_extra_classes=self._MAX_EXTRA_CLASSES,
             )
-            rows = conn.execute(
-                f"""SELECT slot_key, slot_classes, s1_pass_count, eval_count,
-                           {_metric_select_list(columns, metric_columns)}, wildcard_class_outcomes
-                    FROM slot_stats
-                    WHERE wildcard_count >= ?""",
-                (self._MIN_EVALS,),
-            ).fetchall()
-            conn.close()
-
-            for (
-                slot_key,
-                slot_classes_json,
-                s1_total,
-                eval_total,
-                avg_induction_auc,
-                avg_binding_auc,
-                avg_binding_composite,
-                avg_ar_auc,
-                avg_hellaswag_acc,
-                avg_blimp_overall_accuracy,
-                avg_induction_v2_investigation_auc,
-                avg_binding_v2_investigation_auc,
-                math_space_rate,
-                wc_json,
-            ) in rows:
-                if not wc_json:
-                    continue
-                try:
-                    prescribed = set(_json.loads(slot_classes_json or "[]"))
-                    wc_outcomes = _json.loads(wc_json)
-                except (ValueError, TypeError):
-                    continue
-
-                baseline_s1_rate = s1_total / max(eval_total, 1)
-                baseline_capability = _capability_score(
-                    avg_induction_auc,
-                    avg_binding_auc,
-                    avg_binding_composite,
-                    avg_ar_auc,
-                    avg_hellaswag_acc,
-                    avg_blimp_overall_accuracy,
-                    avg_induction_v2_investigation_auc,
-                    avg_binding_v2_investigation_auc,
-                    math_space_rate,
-                )
-                extra: list = []
-                scored_extra: list[tuple[float, str]] = []
-                for cls, vals in wc_outcomes.items():
-                    if cls in prescribed:
-                        continue
-                    n = vals.get("n", 0)
-                    s1 = vals.get("s1", 0)
-                    if n < self._MIN_EVALS:
-                        continue
-                    cls_s1_rate = s1 / n
-                    cls_capability = _capability_score(
-                        vals.get("mean_induction_auc"),
-                        vals.get("mean_binding_auc"),
-                        vals.get("mean_binding_composite"),
-                        vals.get("mean_ar_auc"),
-                        vals.get("mean_hellaswag_acc"),
-                        vals.get("mean_blimp_overall_accuracy"),
-                        vals.get("mean_induction_v2_investigation_auc"),
-                        vals.get("mean_binding_v2_investigation_auc"),
-                        vals.get("math_space_rate"),
-                    )
-                    if cls_s1_rate > baseline_s1_rate or cls_capability > (
-                        baseline_capability + 0.2
-                    ):
-                        scored_extra.append(
-                            (
-                                (cls_s1_rate - baseline_s1_rate)
-                                + (0.5 * (cls_capability - baseline_capability)),
-                                cls,
-                            )
-                        )
-                for _, cls in sorted(scored_extra, reverse=True):
-                    extra.append(cls)
-                    if len(extra) >= self._MAX_EXTRA_CLASSES:
-                        break
-
-                if extra:
-                    adaptations[slot_key] = extra
-
             self._adaptations = adaptations
             self._expires = now + self._ttl
             if adaptations:
@@ -983,6 +936,9 @@ class SlotAdaptationCache:
                 )
         except Exception as e:
             logger.debug("Failed to load slot adaptations: %s", e)
+        finally:
+            if conn is not None:
+                conn.close()
 
         return adaptations
 

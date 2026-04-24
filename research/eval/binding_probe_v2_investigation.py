@@ -185,9 +185,7 @@ def _run_binding_v2_on(
     """Run the probe training+eval on an already-prepared ``probe_model``."""
     t0 = time.perf_counter()
     result = BindingV2Result(distance_accuracies={})
-    valid_distances = tuple(
-        int(d) for d in distances if int(d) > 0 and int(d) + 1 < train_seq_len
-    )
+    valid_distances = _valid_binding_distances(distances, train_seq_len)
     if not valid_distances:
         result.status = "no_valid_distances"
         result.elapsed_ms = round((time.perf_counter() - t0) * 1000, 1)
@@ -198,18 +196,15 @@ def _run_binding_v2_on(
     compiled = _maybe_compile(probe_model)
 
     # Pre-generate all training batches per distance up-front.
-    n_dists = len(valid_distances)
-    steps_per_dist: Dict[int, int] = {d: 0 for d in valid_distances}
-    for s in range(n_train_steps):
-        steps_per_dist[valid_distances[s % n_dists]] += 1
-
-    pre_train: Dict[int, torch.Tensor] = {}
-    for d in valid_distances:
-        cnt = steps_per_dist[d]
-        if cnt > 0:
-            pre_train[d] = _generate_copy_batches_bulk(
-                cnt, train_batch_size, train_seq_len, d, vocab_size, device, generator
-            )
+    pre_train = _pre_generate_binding_train_batches(
+        valid_distances,
+        n_train_steps,
+        train_batch_size,
+        train_seq_len,
+        vocab_size,
+        device,
+        generator,
+    )
     cursor = {d: 0 for d in valid_distances}
 
     optimizer = torch.optim.AdamW(
@@ -218,7 +213,6 @@ def _run_binding_v2_on(
         foreach=False,
         fused=False,
     )
-    use_autocast = False
 
     try:
         with disable_native_probe_dispatch(probe_model, device=device):
@@ -230,18 +224,13 @@ def _run_binding_v2_on(
                 batch = pre_train[distance][cursor[distance]]
                 cursor[distance] += 1
 
-                with torch.autocast(
-                    device_type="cuda", dtype=torch.bfloat16, enabled=use_autocast
-                ):
-                    logits = compiled(batch)
-                    pred_logits = logits[
-                        :, distance - 1 : train_seq_len - 1, :vocab_size
-                    ]
-                    targets = batch[:, distance:train_seq_len]
-                    loss = F.cross_entropy(
-                        pred_logits.reshape(-1, vocab_size),
-                        targets.reshape(-1),
-                    )
+                loss = _binding_train_loss(
+                    compiled,
+                    batch,
+                    distance=distance,
+                    train_seq_len=train_seq_len,
+                    vocab_size=vocab_size,
+                )
                 if not torch.isfinite(loss):
                     result.status = "diverged"
                     break
@@ -270,6 +259,59 @@ def _run_binding_v2_on(
 
     result.elapsed_ms = round((time.perf_counter() - t0) * 1000, 1)
     return result
+
+
+def _valid_binding_distances(
+    distances: Tuple[int, ...],
+    train_seq_len: int,
+) -> Tuple[int, ...]:
+    return tuple(int(d) for d in distances if int(d) > 0 and int(d) + 1 < train_seq_len)
+
+
+def _pre_generate_binding_train_batches(
+    valid_distances: Tuple[int, ...],
+    n_train_steps: int,
+    train_batch_size: int,
+    train_seq_len: int,
+    vocab_size: int,
+    device: str,
+    generator: torch.Generator | None,
+) -> Dict[int, torch.Tensor]:
+    steps_per_dist: Dict[int, int] = {d: 0 for d in valid_distances}
+    n_dists = len(valid_distances)
+    for step in range(n_train_steps):
+        steps_per_dist[valid_distances[step % n_dists]] += 1
+
+    pre_train: Dict[int, torch.Tensor] = {}
+    for distance, count in steps_per_dist.items():
+        if count > 0:
+            pre_train[distance] = _generate_copy_batches_bulk(
+                count,
+                train_batch_size,
+                train_seq_len,
+                distance,
+                vocab_size,
+                device,
+                generator,
+            )
+    return pre_train
+
+
+def _binding_train_loss(
+    compiled_model: nn.Module,
+    batch: torch.Tensor,
+    *,
+    distance: int,
+    train_seq_len: int,
+    vocab_size: int,
+) -> torch.Tensor:
+    logits = compiled_model(batch)
+    pred_logits = logits[:, distance - 1 : train_seq_len - 1, :vocab_size]
+    targets = batch[:, distance:train_seq_len]
+    return F.cross_entropy(
+        pred_logits.reshape(-1, vocab_size),
+        targets.reshape(-1),
+    )
 
 
 def _run_binding_v2_single_seed(

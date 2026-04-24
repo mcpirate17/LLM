@@ -147,6 +147,10 @@ _ALL_CLASSES: Tuple[str, ...] = (
 # ── Helper: instantiate a motif into a graph ────────────────────────
 
 _INPUT_TYPE = AlgebraicType("euclidean", "real", "real")
+_MAX_CONTEXT_DEPTH = max(
+    (op.min_layer_depth for op in PRIMITIVE_REGISTRY.values()),
+    default=0,
+)
 
 
 def _node_output_type(graph: ComputationGraph, node_id: int) -> AlgebraicType:
@@ -224,6 +228,7 @@ def _compatible_from_classes(
     classes_tuple = tuple(classes)
     current_type = _node_output_type(graph, node_id)
     depth, previous_op = _node_depth_and_previous_op(graph, node_id)
+    depth = min(depth, _MAX_CONTEXT_DEPTH)
     return list(
         _compatible_from_context(
             classes_tuple,

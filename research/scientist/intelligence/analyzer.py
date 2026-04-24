@@ -26,6 +26,7 @@ from .ml_corpus import (
     load_deduped_graph_analysis_rows,
     load_deduped_graph_training_rows,
 )
+from .graph_ops import extract_unique_graph_ops
 
 logger = logging.getLogger(__name__)
 
@@ -33,37 +34,10 @@ logger = logging.getLogger(__name__)
 from ..shared_utils import safe_float
 
 
-# Input/output pseudo-ops to exclude from analysis
-_SKIP_OPS = {"input", "output", ""}
-
-
-def _extract_ops_from_graph(graph: dict) -> set:
-    """Extract op names from a graph JSON dict.
-
-    Handles both dict-keyed nodes (``{id: {op_name: ...}}``) and
-    list-format nodes (``[{op_type: ...}, ...]``).
-    """
-    ops: set = set()
-    nodes = graph.get("nodes", {})
-    if isinstance(nodes, dict):
-        for node in nodes.values():
-            if isinstance(node, dict):
-                op = node.get("op_name") or node.get("op_type") or node.get("op") or ""
-            elif isinstance(node, str):
-                op = node
-            else:
-                continue
-            ops.add(op)
-    elif isinstance(nodes, list):
-        for node in nodes:
-            if isinstance(node, dict):
-                op = node.get("op_name") or node.get("op_type") or node.get("op") or ""
-            elif isinstance(node, str):
-                op = node
-            else:
-                continue
-            ops.add(op)
-    return ops - _SKIP_OPS
+def _extract_ops_from_graph(graph: dict) -> set[str]:
+    ops = set(extract_unique_graph_ops(graph))
+    ops.discard("output")
+    return ops
 
 
 # ---------------------------------------------------------------------------

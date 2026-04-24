@@ -42,6 +42,15 @@ class AriaEdgeValidation(ctypes.Structure):
     ]
 
 
+class AriaPackedValidationResult(ctypes.Structure):
+    _fields_ = [
+        ("analysis", AriaGraphAnalysisResult),
+        ("dim_flow", AriaDimFlowSummary),
+        ("edge_error_count", ctypes.c_int32),
+        ("dead_parameterized_count", ctypes.c_int32),
+    ]
+
+
 def load_native_graph_analysis_lib() -> Any:
     global BOUND_NATIVE_LIB
     if BOUND_NATIVE_LIB is not False:
@@ -135,6 +144,43 @@ def load_native_graph_analysis_lib() -> Any:
             ctypes.POINTER(ctypes.c_int32),
         ]
         dead_param_fn.restype = ctypes.c_int32
+
+    packed_validation_fn = getattr(lib, "aria_graph_validate_packed_ir", None)
+    if packed_validation_fn is not None:
+        packed_validation_fn.argtypes = [
+            ctypes.c_int32,
+            ctypes.POINTER(ctypes.c_int32),
+            ctypes.POINTER(ctypes.c_int32),
+            ctypes.c_int32,
+            ctypes.POINTER(ctypes.c_int64),
+            ctypes.POINTER(ctypes.c_int32),
+            ctypes.POINTER(ctypes.c_int32),
+            ctypes.POINTER(ctypes.c_int32),
+            ctypes.POINTER(ctypes.c_int32),
+            ctypes.POINTER(ctypes.c_int32),
+            ctypes.POINTER(ctypes.c_int32),
+            ctypes.POINTER(ctypes.c_int32),
+            ctypes.c_int32,
+            ctypes.c_int32,
+            ctypes.POINTER(AriaPackedValidationResult),
+            ctypes.POINTER(ctypes.c_int32),
+            ctypes.POINTER(AriaEdgeValidation),
+            ctypes.POINTER(ctypes.c_int32),
+        ]
+        packed_validation_fn.restype = ctypes.c_int32
+
+    effective_depth_fn = getattr(lib, "aria_graph_effective_depth", None)
+    if effective_depth_fn is not None:
+        effective_depth_fn.argtypes = [
+            ctypes.c_int32,
+            ctypes.POINTER(ctypes.c_int32),
+            ctypes.POINTER(ctypes.c_int32),
+            ctypes.POINTER(ctypes.c_float),
+            ctypes.POINTER(ctypes.c_uint8),
+            ctypes.c_int32,
+            ctypes.POINTER(ctypes.c_double),
+        ]
+        effective_depth_fn.restype = ctypes.c_int32
 
     dim_flow_flags_fn = getattr(lib, "aria_graph_build_dim_flow_flags", None)
     if dim_flow_flags_fn is not None:

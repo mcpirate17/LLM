@@ -10,6 +10,7 @@ import numpy as np
 from .native_analysis_bindings import (
     AriaDimFlowSummary,
     AriaEdgeValidation,
+    AriaPackedValidationResult,
     load_native_graph_analysis_lib,
     reset_bindings as _reset_native_analysis_bindings,
     try_import_aria_core,
@@ -40,6 +41,18 @@ class EdgeValidationResult:
     reduce_full_dim_bits: np.ndarray
     binary_dim_mismatch: np.ndarray
     full_dim_input_bits: np.ndarray
+    backend: str
+
+
+@dataclass(slots=True)
+class PackedGraphValidationResult:
+    analysis: StructuralAnalysisResult
+    dim_flow: DimFlowSummary
+    edge_validation: EdgeValidationResult
+    reachable_mask: np.ndarray
+    dead_parameterized_mask: np.ndarray
+    edge_error_count: int
+    dead_parameterized_count: int
     backend: str
 
 
@@ -103,6 +116,123 @@ def analyze_ir_runtime_first(
         return aria_core_result
 
     return analyze_ir_in_python(ir, include_reachable=include_reachable)
+
+
+def _packed_validation_result_from_native(
+    native_result: AriaPackedValidationResult,
+    reachable_mask: np.ndarray,
+    dead_parameterized_mask: np.ndarray,
+    edge_out: np.ndarray,
+) -> PackedGraphValidationResult:
+    analysis = native_result.analysis
+    dim_flow = native_result.dim_flow
+    return PackedGraphValidationResult(
+        analysis=StructuralAnalysisResult(
+            has_gradient_path=bool(analysis.has_gradient_path),
+            reachable_count=int(analysis.reachable_count),
+            depth=int(analysis.depth),
+            has_cycle=bool(analysis.has_cycle),
+            param_estimate=int(analysis.param_estimate),
+            reachable_mask=reachable_mask.copy(),
+            backend="native_packed",
+        ),
+        dim_flow=DimFlowSummary(
+            reachable_param_count=int(dim_flow.reachable_param_count),
+            reachable_param_estimate=int(dim_flow.reachable_param_estimate),
+            reachable_nontrivial_ops=int(dim_flow.reachable_nontrivial_ops),
+            reachable_ops=int(dim_flow.reachable_ops),
+            kv_cacheable=bool(dim_flow.kv_cacheable),
+            backend="native_packed",
+        ),
+        edge_validation=EdgeValidationResult(
+            freq_mismatch_bits=edge_out["freq_mismatch_bits"].copy(),
+            reduce_full_dim_bits=edge_out["reduce_full_dim_bits"].copy(),
+            binary_dim_mismatch=edge_out["binary_dim_mismatch"].copy(),
+            full_dim_input_bits=edge_out["full_dim_input_bits"].copy(),
+            backend="native_packed",
+        ),
+        reachable_mask=reachable_mask.copy(),
+        dead_parameterized_mask=dead_parameterized_mask.copy(),
+        edge_error_count=int(native_result.edge_error_count),
+        dead_parameterized_count=int(native_result.dead_parameterized_count),
+        backend="native_packed",
+    )
+
+
+def validate_packed_ir_natively(
+    *,
+    op_codes: np.ndarray,
+    input_indices: np.ndarray,
+    output_node_idx: int,
+    param_estimates: np.ndarray,
+    has_params_flags: np.ndarray,
+    nontrivial_flags: np.ndarray,
+    kv_breaking_flags: np.ndarray,
+    node_dims: np.ndarray,
+    node_seq_flags: np.ndarray,
+    op_kind_flags: np.ndarray,
+    full_dim_flags: np.ndarray,
+    model_dim: int,
+    input_node_idx: int,
+) -> Optional[PackedGraphValidationResult]:
+    lib = _load_native_graph_analysis_lib()
+    if lib is None or not hasattr(lib, "aria_graph_validate_packed_ir"):
+        return None
+
+    op_codes = np.ascontiguousarray(op_codes, dtype=np.int32)
+    input_indices = np.ascontiguousarray(input_indices, dtype=np.int32)
+    param_estimates = np.ascontiguousarray(param_estimates, dtype=np.int64)
+    has_params_flags = np.ascontiguousarray(has_params_flags, dtype=np.int32)
+    nontrivial_flags = np.ascontiguousarray(nontrivial_flags, dtype=np.int32)
+    kv_breaking_flags = np.ascontiguousarray(kv_breaking_flags, dtype=np.int32)
+    node_dims = np.ascontiguousarray(node_dims, dtype=np.int32)
+    node_seq_flags = np.ascontiguousarray(node_seq_flags, dtype=np.int32)
+    op_kind_flags = np.ascontiguousarray(op_kind_flags, dtype=np.int32)
+    full_dim_flags = np.ascontiguousarray(full_dim_flags, dtype=np.int32)
+    n_nodes = int(op_codes.shape[0])
+
+    reachable_mask = np.zeros(n_nodes, dtype=np.int32)
+    dead_parameterized_mask = np.zeros(n_nodes, dtype=np.int32)
+    edge_out = np.zeros(
+        n_nodes,
+        dtype=[
+            ("freq_mismatch_bits", np.int32),
+            ("reduce_full_dim_bits", np.int32),
+            ("binary_dim_mismatch", np.int32),
+            ("full_dim_input_bits", np.int32),
+        ],
+    )
+    native_result = AriaPackedValidationResult()
+    status = lib.aria_graph_validate_packed_ir(
+        n_nodes,
+        op_codes.ctypes.data_as(ctypes.POINTER(ctypes.c_int32)),
+        input_indices.ctypes.data_as(ctypes.POINTER(ctypes.c_int32)),
+        int(output_node_idx),
+        param_estimates.ctypes.data_as(ctypes.POINTER(ctypes.c_int64)),
+        has_params_flags.ctypes.data_as(ctypes.POINTER(ctypes.c_int32)),
+        nontrivial_flags.ctypes.data_as(ctypes.POINTER(ctypes.c_int32)),
+        kv_breaking_flags.ctypes.data_as(ctypes.POINTER(ctypes.c_int32)),
+        node_dims.ctypes.data_as(ctypes.POINTER(ctypes.c_int32)),
+        node_seq_flags.ctypes.data_as(ctypes.POINTER(ctypes.c_int32)),
+        op_kind_flags.ctypes.data_as(ctypes.POINTER(ctypes.c_int32)),
+        full_dim_flags.ctypes.data_as(ctypes.POINTER(ctypes.c_int32)),
+        int(model_dim),
+        int(input_node_idx),
+        ctypes.byref(native_result),
+        reachable_mask.ctypes.data_as(ctypes.POINTER(ctypes.c_int32)),
+        edge_out.ctypes.data_as(ctypes.POINTER(AriaEdgeValidation)),
+        dead_parameterized_mask.ctypes.data_as(ctypes.POINTER(ctypes.c_int32)),
+    )
+    if status != 0:
+        logger.debug("aria_graph_validate_packed_ir failed with status=%d", status)
+        return None
+
+    return _packed_validation_result_from_native(
+        native_result,
+        reachable_mask,
+        dead_parameterized_mask,
+        edge_out,
+    )
 
 
 def summarize_dim_flow_natively(

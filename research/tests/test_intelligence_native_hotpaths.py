@@ -494,6 +494,13 @@ def test_graph_op_extractors_handle_list_nodes_and_op_type():
     ]
 
 
+def test_graph_op_extractors_handle_string_nodes():
+    graph = {"nodes": {"0": "input", "1": "linear_proj", "2": "gelu"}}
+
+    assert go.extract_unique_graph_ops(graph) == ["gelu", "linear_proj"]
+    assert go.extract_graph_ops(graph) == ["linear_proj", "gelu"]
+
+
 def test_graph_op_extractor_preserves_multiplicity_for_string_payloads():
     graph = {
         "nodes": {

@@ -37,6 +37,13 @@ typedef struct {
   int32_t max_projection_chain_depth;
 } aria_validation_summary_t;
 
+typedef struct {
+  aria_graph_analysis_result_t analysis;
+  aria_dim_flow_summary_t dim_flow;
+  int32_t edge_error_count;
+  int32_t dead_parameterized_count;
+} aria_packed_validation_result_t;
+
 int32_t aria_graph_analyze_ir(
     int32_t n_nodes,
     const int32_t* op_codes,
@@ -80,6 +87,35 @@ int32_t aria_graph_dead_parameterized_mask(
     const int32_t* reachable_mask,
     const int32_t* parameterized_flags,
     int32_t* dead_mask);
+
+int32_t aria_graph_validate_packed_ir(
+    int32_t n_nodes,
+    const int32_t* op_codes,
+    const int32_t* input_indices,
+    int32_t output_node_idx,
+    const int64_t* param_estimates,
+    const int32_t* has_params_flags,
+    const int32_t* nontrivial_flags,
+    const int32_t* kv_breaking_flags,
+    const int32_t* node_dims,
+    const int32_t* node_seq_flags,
+    const int32_t* op_kind_flags,
+    const int32_t* full_dim_flags,
+    int32_t model_dim,
+    int32_t input_node_idx,
+    aria_packed_validation_result_t* out,
+    int32_t* reachable_mask,
+    aria_edge_validation_t* edge_validation,
+    int32_t* dead_parameterized_mask);
+
+int32_t aria_graph_effective_depth(
+    int32_t n_nodes,
+    const int32_t* op_codes,
+    const int32_t* input_indices,
+    const float* effective_depth_weights,
+    const uint8_t* discount_successor,
+    int32_t n_opcodes,
+    double* out_depth);
 
 int32_t aria_eval_param_formula(const char* formula, int64_t* out_value);
 

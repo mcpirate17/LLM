@@ -267,22 +267,6 @@ class EnsemblePredictor:
 
         return float(np.mean(ranks))
 
-    def _extract_ops(self, graph_json: Any) -> List[str]:
-        """Extract op names from graph JSON."""
-        if isinstance(graph_json, str):
-            try:
-                graph_json = json.loads(graph_json)
-            except (json.JSONDecodeError, TypeError):
-                return []
-        if not isinstance(graph_json, dict):
-            return []
-        nodes = graph_json.get("nodes") or {}
-        return [
-            n.get("op_name", "")
-            for n in nodes.values()
-            if n.get("op_name", "") and n.get("op_name") != "input"
-        ]
-
     def diagnostics(self) -> Dict:
         """Return diagnostic info about ensemble state."""
         return {

@@ -54,16 +54,6 @@ from .template_rules import validate_template_graph
 from .validator import validate_graph
 
 
-@dataclass(slots=True)
-class BatchGenerateResult:
-    """Result of batch_generate with generation statistics."""
-
-    graphs: List["ComputationGraph"]
-    n_attempted: int  # total generate_layer_graph calls made
-    n_rejected_grammar: int  # ValueError/RuntimeError during generation
-    n_rejected_dedup: int  # duplicate fingerprints
-
-
 # Alias for backward compatibility — some test files import Node from grammar
 Node = OpNode
 _check_graph_space_consistency = check_graph_space_consistency
@@ -1129,31 +1119,11 @@ def _template_depth_tags(template_name: str) -> tuple[bool, bool, bool]:
 
 
 def _reachable_output_depth(graph: ComputationGraph) -> int:
-    """Compute output-ancestor depth without lowering to IR."""
+    """Return maintained output-ancestor depth without lowering to IR."""
     output_id = graph._output_node_id
     if output_id is None or output_id not in graph.nodes:
         return 0
-
-    reachable: set[int] = set()
-    stack = [output_id]
-    while stack:
-        nid = stack.pop()
-        if nid in reachable or nid not in graph.nodes:
-            continue
-        reachable.add(nid)
-        stack.extend(graph.nodes[nid].input_ids)
-
-    depths: Dict[int, int] = {}
-    for nid in sorted(reachable):
-        node = graph.nodes[nid]
-        if node.is_input or not node.input_ids:
-            depths[nid] = 0
-        else:
-            depths[nid] = 1 + max(
-                (depths.get(parent_id, 0) for parent_id in node.input_ids),
-                default=0,
-            )
-    return depths.get(output_id, 0)
+    return int(graph.nodes[output_id].depth)
 
 
 def _graph_exceeds_final_budget(
@@ -1180,133 +1150,20 @@ def _graph_exceeds_final_budget(
     return graph.n_ops() > op_limit or _reachable_output_depth(graph) > depth_limit
 
 
-def batch_generate(
-    n: int,
-    config: Optional[GrammarConfig] = None,
-    base_seed: int = 42,
-    _use_adaptive_synthesis: bool = False,
-    prior: Optional[EfficiencyPrior] = None,
-) -> BatchGenerateResult:
-    """Generate N unique computation graphs.
-
-    Returns BatchGenerateResult with generation statistics (n_attempted,
-    n_rejected_grammar, n_rejected_dedup) to expose the true rejection rate.
-    """
-    if config is None:
-        config = GrammarConfig()
-    config = _config_with_efficiency_prior(config, prior)
-
-    graphs: List[ComputationGraph] = []
-    fingerprints: set = set()
-
-    attempts = 0
-    n_rejected_grammar = 0
-    n_rejected_dedup = 0
-    max_attempts = n * 10
-
-    while len(graphs) < n and attempts < max_attempts:
-        attempts += 1
-        seed = base_seed + attempts * 137
-        try:
-            g = generate_layer_graph(config, seed=seed)
-            fp = g.fingerprint()
-            if fp not in fingerprints:
-                fingerprints.add(fp)
-                graphs.append(g)
-            else:
-                n_rejected_dedup += 1
-        except (ValueError, RuntimeError):
-            n_rejected_grammar += 1
-            continue
-
-    rejection_rate = (n_rejected_grammar + n_rejected_dedup) / max(attempts, 1)
-
-    # Exhaustion recovery: if 0 graphs produced, relax constraints and retry.
-    # Reduces composition_depth, raises max_ops/max_depth, increases exploration
-    # budget. This prevents complete stalls when the grammar is saturated.
-    if len(graphs) == 0 and n_rejected_grammar > 0:
-        relaxed = replace(
-            config,
-            composition_depth=max(1, config.composition_depth - 1),
-            max_ops=config.max_ops + 6,
-            max_depth=config.max_depth + 6,
-            template_exploration_budget=max(config.template_exploration_budget, 0.25),
-            forced_template=None,  # clear forced template on recovery
-        )
-        logger.info(
-            "batch_generate: exhaustion recovery — relaxing constraints "
-            "(depth %d→%d, ops %d→%d, composition %d→%d, exploration %.0f%%)",
-            config.max_depth,
-            relaxed.max_depth,
-            config.max_ops,
-            relaxed.max_ops,
-            config.composition_depth,
-            relaxed.composition_depth,
-            relaxed.template_exploration_budget * 100,
-        )
-        retry_attempts = 0
-        retry_max = n * 5
-        while len(graphs) < n and retry_attempts < retry_max:
-            retry_attempts += 1
-            attempts += 1
-            seed = base_seed + attempts * 137 + 99999
-            try:
-                g = generate_layer_graph(relaxed, seed=seed)
-                fp = g.fingerprint()
-                if fp not in fingerprints:
-                    fingerprints.add(fp)
-                    graphs.append(g)
-                else:
-                    n_rejected_dedup += 1
-            except (ValueError, RuntimeError):
-                n_rejected_grammar += 1
-
-    rejection_rate = (n_rejected_grammar + n_rejected_dedup) / max(attempts, 1)
-    logger.info(
-        "batch_generate: %d graphs from %d attempts "
-        "(%d grammar failures, %d duplicates, %.0f%% rejection rate)",
-        len(graphs),
-        attempts,
-        n_rejected_grammar,
-        n_rejected_dedup,
-        rejection_rate * 100,
-    )
-
-    return BatchGenerateResult(
-        graphs=graphs,
-        n_attempted=attempts,
-        n_rejected_grammar=n_rejected_grammar,
-        n_rejected_dedup=n_rejected_dedup,
-    )
-
-
-# ── Legacy compatibility ────────────────────────────────────────────
-# AdaptiveGenerator is still referenced by some test files and the
-# use_adaptive_synthesis path. Keep it functional.
-
-
-class AdaptiveGenerator:
-    """Adaptive generator — delegates to motif-based generation."""
-
-    __slots__ = ("config", "prior", "model_dim", "max_params", "max_flops")
-
-    def __init__(self, config: GrammarConfig, prior: Optional[EfficiencyPrior] = None):
-        self.config = config
-        self.prior = prior
-        self.model_dim = config.model_dim
-        self.max_params = (
-            4 * self.model_dim * self.model_dim * 12
-        )  # VRAM is the real constraint
-        self.max_flops = 4 * (12 * self.model_dim * self.model_dim * 128)
-
-    def generate(self, seed: Optional[int] = None) -> ComputationGraph:
-        return generate_layer_graph(
-            _config_with_efficiency_prior(self.config, self.prior),
-            seed=seed,
-        )
-
-
 # ── Shape compatibility check (used by external code) ───────────────
 
 
 _check_shape_compat = check_shape_compat
+
+
+from .grammar_batch import AdaptiveGenerator, BatchGenerateResult, batch_generate
+
+__all__ = [
+    "AdaptiveGenerator",
+    "BatchGenerateResult",
+    "GrammarConfig",
+    "Node",
+    "batch_generate",
+    "generate_layer_graph",
+    "random_graph",
+]

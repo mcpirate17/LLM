@@ -321,99 +321,110 @@ def _score_example_batch_python(
     return correct, total
 
 
-def _run_hellaswag(
+def _hellaswag_data_failed_result(t0: float, exc: Exception) -> Dict[str, Any]:
+    return {
+        "hellaswag_acc": None,
+        "hellaswag_status": "data_failed",
+        "error": str(exc),
+        "elapsed_ms": round((time.perf_counter() - t0) * 1000, 1),
+    }
+
+
+def _load_hellaswag_eval_payload(
+    n_examples: int,
+    vocab_size: int,
+) -> tuple[
+    List[Dict[str, Any]],
+    List[List[int]],
+    List[List[List[int]]],
+    List[int],
+]:
+    examples = _get_tokenized_subset(n_examples, vocab_size=vocab_size)
+    native_ctx_tokens, native_ending_tokens, native_labels = _get_native_subset_payload(
+        n_examples, vocab_size=vocab_size
+    )
+    return examples, native_ctx_tokens, native_ending_tokens, native_labels
+
+
+def _score_hellaswag_loop(
     model: nn.Module,
+    examples: List[Dict[str, Any]],
+    native_ctx_tokens: List[List[int]],
+    native_ending_tokens: List[List[List[int]]],
+    native_labels: List[int],
     vocab_size: int,
     device: str,
-    n_examples: int,
-    max_seq_len: int = 512,
-    batch_examples: int = 16,
-) -> Dict[str, Any]:
-    """Core HellaSwag evaluation loop. Returns accuracy and metadata."""
-    t0 = time.perf_counter()
-
-    try:
-        examples = _get_tokenized_subset(n_examples, vocab_size=vocab_size)
-        native_ctx_tokens, native_ending_tokens, native_labels = (
-            _get_native_subset_payload(n_examples, vocab_size=vocab_size)
-        )
-    except Exception as exc:
-        return {
-            "hellaswag_acc": None,
-            "hellaswag_status": "data_failed",
-            "error": str(exc),
-            "elapsed_ms": round((time.perf_counter() - t0) * 1000, 1),
-        }
-
-    model.eval()
+    max_seq_len: int,
+    effective_batch_examples: int,
+) -> tuple[int, int, str | None, int]:
     correct = 0
     total = 0
     first_error: str | None = None
-    effective_batch_examples = _recommended_batch_examples(
-        requested=batch_examples,
-        vocab_size=vocab_size,
-        max_seq_len=max_seq_len,
-        device=device,
-        model_dim=getattr(model, "model_dim", None),
-    )
     oom_retries = 0
 
-    with disable_native_probe_dispatch(model, device=device):
-        start = 0
-        while start < len(examples):
-            batch = examples[start : start + effective_batch_examples]
-            batch_ctx_tokens = native_ctx_tokens[
-                start : start + effective_batch_examples
-            ]
-            batch_ending_tokens = native_ending_tokens[
-                start : start + effective_batch_examples
-            ]
-            batch_labels = native_labels[start : start + effective_batch_examples]
+    start = 0
+    while start < len(examples):
+        batch = examples[start : start + effective_batch_examples]
+        batch_ctx_tokens = native_ctx_tokens[start : start + effective_batch_examples]
+        batch_ending_tokens = native_ending_tokens[
+            start : start + effective_batch_examples
+        ]
+        batch_labels = native_labels[start : start + effective_batch_examples]
+        try:
+            batch_correct, batch_total = _score_example_batch_native(
+                model,
+                batch_ctx_tokens,
+                batch_ending_tokens,
+                batch_labels,
+                vocab_size,
+                device,
+                max_seq_len=max_seq_len,
+            )
+            correct += batch_correct
+            total += batch_total
+            start += effective_batch_examples
+        except Exception:
+            logger.warning(
+                "Native HellaSwag scorer failed; falling back to Python reference",
+                exc_info=True,
+            )
             try:
-                batch_correct, batch_total = _score_example_batch_native(
-                    model,
-                    batch_ctx_tokens,
-                    batch_ending_tokens,
-                    batch_labels,
-                    vocab_size,
-                    device,
-                    max_seq_len=max_seq_len,
+                batch_correct, batch_total = _score_example_batch_python(
+                    model, batch, vocab_size, device, max_seq_len=max_seq_len
                 )
                 correct += batch_correct
                 total += batch_total
                 start += effective_batch_examples
-            except Exception:
+                continue
+            except Exception as fallback_exc:
+                exc = fallback_exc
+            if _is_cuda_oom(exc) and effective_batch_examples > 1:
+                oom_retries += 1
+                effective_batch_examples = max(1, effective_batch_examples // 2)
+                _clear_cuda_cache(device)
                 logger.warning(
-                    "Native HellaSwag scorer failed; falling back to Python reference",
-                    exc_info=True,
+                    "HellaSwag CUDA OOM at batch_examples=%d; retrying with %d",
+                    len(batch),
+                    effective_batch_examples,
                 )
-                try:
-                    batch_correct, batch_total = _score_example_batch_python(
-                        model, batch, vocab_size, device, max_seq_len=max_seq_len
-                    )
-                    correct += batch_correct
-                    total += batch_total
-                    start += effective_batch_examples
-                    continue
-                except Exception as fallback_exc:
-                    exc = fallback_exc
-                if _is_cuda_oom(exc) and effective_batch_examples > 1:
-                    oom_retries += 1
-                    effective_batch_examples = max(1, effective_batch_examples // 2)
-                    _clear_cuda_cache(device)
-                    logger.warning(
-                        "HellaSwag CUDA OOM at batch_examples=%d; retrying with %d",
-                        len(batch),
-                        effective_batch_examples,
-                    )
-                    continue
-                if first_error is None:
-                    first_error = f"{type(exc).__name__}: {exc}"
-                logger.debug("HellaSwag batch failed, skipping", exc_info=True)
-                start += max(1, effective_batch_examples)
+                continue
+            if first_error is None:
+                first_error = f"{type(exc).__name__}: {exc}"
+            logger.debug("HellaSwag batch failed, skipping", exc_info=True)
+            start += max(1, effective_batch_examples)
 
-    elapsed_ms = round((time.perf_counter() - t0) * 1000, 1)
+    return correct, total, first_error, oom_retries
 
+
+def _hellaswag_result(
+    *,
+    correct: int,
+    total: int,
+    n_examples: int,
+    elapsed_ms: float,
+    first_error: str | None,
+    oom_retries: int,
+) -> Dict[str, Any]:
     if total == 0:
         result = {
             "hellaswag_acc": None,
@@ -441,6 +452,54 @@ def _run_hellaswag(
     if oom_retries:
         result["hellaswag_oom_retries"] = oom_retries
     return result
+
+
+def _run_hellaswag(
+    model: nn.Module,
+    vocab_size: int,
+    device: str,
+    n_examples: int,
+    max_seq_len: int = 512,
+    batch_examples: int = 16,
+) -> Dict[str, Any]:
+    """Core HellaSwag evaluation loop. Returns accuracy and metadata."""
+    t0 = time.perf_counter()
+    try:
+        examples, native_ctx_tokens, native_ending_tokens, native_labels = (
+            _load_hellaswag_eval_payload(n_examples, vocab_size)
+        )
+    except Exception as exc:
+        return _hellaswag_data_failed_result(t0, exc)
+
+    model.eval()
+    effective_batch_examples = _recommended_batch_examples(
+        requested=batch_examples,
+        vocab_size=vocab_size,
+        max_seq_len=max_seq_len,
+        device=device,
+        model_dim=getattr(model, "model_dim", None),
+    )
+    with disable_native_probe_dispatch(model, device=device):
+        correct, total, first_error, oom_retries = _score_hellaswag_loop(
+            model,
+            examples,
+            native_ctx_tokens,
+            native_ending_tokens,
+            native_labels,
+            vocab_size,
+            device,
+            max_seq_len,
+            effective_batch_examples,
+        )
+
+    return _hellaswag_result(
+        correct=correct,
+        total=total,
+        n_examples=n_examples,
+        elapsed_ms=round((time.perf_counter() - t0) * 1000, 1),
+        first_error=first_error,
+        oom_retries=oom_retries,
+    )
 
 
 # ── Public API ──────────────────────────────────────────────────────────

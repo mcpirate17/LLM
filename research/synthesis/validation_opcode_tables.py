@@ -149,6 +149,7 @@ class ValidationOpcodeTables:
     linear: np.ndarray
     effective_depth_weight: np.ndarray
     discount_successor: np.ndarray
+    discount_successor_u8: np.ndarray
 
 
 def _base_effective_op_weight(op_name: str, category: OpCategory) -> float:
@@ -202,4 +203,5 @@ def validation_opcode_tables() -> ValidationOpcodeTables:
         linear=linear,
         effective_depth_weight=effective_depth_weight,
         discount_successor=discount_successor,
+        discount_successor_u8=discount_successor.astype(np.uint8, copy=False),
     )

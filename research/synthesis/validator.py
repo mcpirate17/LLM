@@ -25,7 +25,7 @@ from .graph_validator import validate_dim_flow
 from .native_analysis import analyze_ir_runtime_first
 from .primitives import OPCODE_MAP, REVERSE_OPCODE_MAP, get_primitive
 from .graph import ComputationGraph, ComputationGraphIR
-from .native_validation import summarize_validation
+from .native_validation import effective_depth_natively, summarize_validation
 from .validation_opcode_tables import validation_opcode_tables
 
 
@@ -85,6 +85,16 @@ def _compute_effective_depth_ir(ir: ComputationGraphIR) -> float:
         return 0.0
 
     tables = validation_opcode_tables()
+    native_depth = effective_depth_natively(
+        op_codes=ir.op_codes,
+        input_indices=ir.input_indices,
+        effective_depth_weights=tables.effective_depth_weight,
+        discount_successor_u8=tables.discount_successor_u8,
+    )
+    if native_depth is not None:
+        ir.analysis_cache["effective_depth"] = native_depth
+        return native_depth
+
     weights = tables.effective_depth_weight
     discount_successor = tables.discount_successor
     op_codes = ir.op_codes
@@ -302,7 +312,12 @@ def validate_graph(
     for violation in find_graph_context_violations(graph):
         result.add_error(violation)
 
-    dim_flow = validate_dim_flow(graph, max_params=max_params)
+    dim_flow = validate_dim_flow(
+        graph,
+        max_params=max_params,
+        analysis_ir=analysis_ir,
+        analysis=analysis,
+    )
     for error in dim_flow.errors:
         if error not in result.errors:
             result.add_error(error)

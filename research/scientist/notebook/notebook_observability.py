@@ -34,6 +34,120 @@ def clear_template_observability_process_cache() -> None:
     _TEMPLATE_OBSERVABILITY_PROCESS_CACHE.clear()
 
 
+def _bounded_prior(value: float, *, lo: float, hi: float) -> float:
+    return max(lo, min(hi, float(value)))
+
+
+def _template_prior_weights(
+    template_rows: list,
+    *,
+    min_support: int,
+) -> Dict[str, float]:
+    weights: Dict[str, float] = {}
+    evidence_bonuses = {
+        "established": 0.25,
+        "building": 0.10,
+        "sparse": 0.0,
+        "insufficient": -0.05,
+    }
+    for row in template_rows:
+        support = int(row.get("n_used") or 0)
+        name = str(row.get("name") or "").strip()
+        if support < min_support or not name:
+            continue
+        loss_ratio = row.get("avg_validation_loss_ratio")
+        if loss_ratio is None:
+            loss_ratio = row.get("avg_loss_ratio")
+        loss_term = (
+            0.0
+            if loss_ratio is None
+            else _bounded_prior(1.1 - float(loss_ratio), lo=0.0, hi=1.0)
+        )
+        evidence_bonus = evidence_bonuses.get(str(row.get("evidence_level") or ""), 0.0)
+        weight = (
+            0.35
+            + (1.45 * float(row.get("s1_rate") or 0.0))
+            + (0.45 * loss_term)
+            + evidence_bonus
+        )
+        weights[name] = round(_bounded_prior(weight, lo=0.2, hi=3.5), 4)
+    return weights
+
+
+def _motif_prior_weights(
+    motif_rows: list,
+    *,
+    min_support: int,
+    toxic_reason_tokens: tuple[str, ...],
+) -> Dict[str, float]:
+    weights: Dict[str, float] = {}
+    for row in motif_rows:
+        support = int(row.get("n_used") or 0)
+        name = str(row.get("name") or "").strip()
+        if support < min_support or not name:
+            continue
+        loss_ratio = row.get("avg_loss_ratio")
+        loss_term = (
+            0.0
+            if loss_ratio is None
+            else _bounded_prior(1.05 - float(loss_ratio), lo=0.0, hi=1.0)
+        )
+        failure_reason = str(row.get("top_failure_reason") or "").lower()
+        toxic_penalty = (
+            0.2 if any(t in failure_reason for t in toxic_reason_tokens) else 0.0
+        )
+        weight = (
+            0.25
+            + (1.55 * float(row.get("s1_rate") or 0.0))
+            + (0.35 * loss_term)
+            - toxic_penalty
+        )
+        weights[name] = round(_bounded_prior(weight, lo=0.15, hi=3.0), 4)
+    return weights
+
+
+def _slot_generation_priors(
+    slot_rows: list,
+    *,
+    min_support: int,
+    toxic_reason_tokens: tuple[str, ...],
+) -> tuple[Dict[str, Dict[str, float]], Dict[str, List[str]]]:
+    slot_multipliers: Dict[str, Dict[str, float]] = {}
+    slot_denylist: Dict[str, List[str]] = {}
+    for row in slot_rows:
+        support = int(row.get("n_used") or 0)
+        motif_name = str(row.get("top_selected_motif") or "").strip()
+        slot_key = str(row.get("slot_key") or "").strip()
+        if support < min_support or not slot_key or not motif_name:
+            continue
+        s1_rate = float(row.get("s1_rate") or 0.0)
+        loss_ratio = row.get("avg_loss_ratio")
+        loss_term = (
+            0.0
+            if loss_ratio is None
+            else _bounded_prior(1.05 - float(loss_ratio), lo=0.0, hi=1.0)
+        )
+        slot_map = slot_multipliers.setdefault(slot_key, {})
+        if s1_rate >= 0.55:
+            slot_map[motif_name] = round(
+                _bounded_prior(
+                    1.05 + (0.65 * s1_rate) + (0.20 * loss_term),
+                    lo=1.0,
+                    hi=2.5,
+                ),
+                4,
+            )
+        elif s1_rate <= 0.18:
+            slot_map[motif_name] = round(
+                _bounded_prior(0.15 + (0.85 * s1_rate), lo=0.1, hi=0.55),
+                4,
+            )
+            failure_reason = str(row.get("top_failure_reason") or "").lower()
+            if any(t in failure_reason for t in toxic_reason_tokens):
+                slot_denylist.setdefault(slot_key, []).append(motif_name)
+    return slot_multipliers, slot_denylist
+
+
 class _ObservabilityMixin:
     """Template observability + slot statistics."""
 
@@ -108,69 +222,131 @@ class _ObservabilityMixin:
         ):
             return dict(cached)
 
-        process_cache_key = None
-        process_signature = None
-        if not getattr(self, "_is_memory", False):
-            process_cache_key = (str(getattr(self, "db_path", "")), int(limit))
-            signature_row = self.conn.execute(
-                """
-                SELECT
-                    (SELECT COUNT(*) FROM program_results) AS pr_count,
-                    (SELECT MAX(timestamp) FROM program_results) AS pr_max_ts,
-                    (SELECT COUNT(*) FROM program_graph_features) AS gf_count,
-                    (SELECT MAX(rowid) FROM program_graph_features) AS gf_max_rowid
-                """
-            ).fetchone()
-            process_signature = tuple(signature_row) if signature_row else None
-            process_cached = _TEMPLATE_OBSERVABILITY_PROCESS_CACHE.get(
-                process_cache_key
-            )
-            if (
-                process_cached is not None
-                and process_signature is not None
-                and process_cached[0] == process_signature
-                and now < process_cached[1]
-            ):
-                result = dict(process_cached[2])
-                self._template_observability_cache[limit] = dict(result)
-                self._template_observability_cache_expires_at = (
-                    now + self._TEMPLATE_OBSERVABILITY_TTL_S
-                )
-                return result
+        process_cache_key, process_signature = self._template_process_cache_key(limit)
+        process_hit = self._get_template_process_cache_hit(
+            process_cache_key,
+            process_signature,
+            now,
+        )
+        if process_hit is not None:
+            self._cache_template_observability(limit, process_hit, now)
+            return process_hit
 
         self.flush_writes()
         if not self._read_only:
             self._ensure_graph_features()
-        rows = self.conn.execute(
+        rows = self._fetch_template_observability_rows()
+        slot_counts = self._infer_template_slot_counts()
+        if not rows:
+            result = self._empty_template_observability_result(slot_counts, limit)
+            self._cache_template_observability(limit, result, now)
+            return result
+
+        acc = self._accumulate_observability_stats(rows, slot_counts)
+        result = self._assemble_observability_result(acc, slot_counts, limit)
+        self._cache_template_observability(limit, result, now)
+        self._cache_template_process_result(
+            process_cache_key,
+            process_signature,
+            result,
+            now,
+        )
+        return result
+
+    def _template_process_cache_key(
+        self, limit: int
+    ) -> tuple[tuple[str, int] | None, tuple[Any, ...] | None]:
+        if getattr(self, "_is_memory", False):
+            return None, None
+        cache_key = (str(getattr(self, "db_path", "")), int(limit))
+        signature_row = self.conn.execute(
             """
             SELECT
-                pr.experiment_id,
-                pr.timestamp,
-                pr.graph_fingerprint,
-                gf.templates_json,
-                gf.motifs_json,
-                gf.slot_usage_json,
-                pr.stage0_passed,
-                pr.stage05_passed,
-                pr.stage1_passed,
-                pr.loss_ratio,
-                pr.discovery_loss_ratio,
-                pr.validation_loss_ratio,
-                pr.novelty_score,
-                pr.novelty_confidence,
-                pr.error_type,
-                pr.stage_at_death,
-                pr.failure_details_json,
-                pr.induction_auc,
-                pr.binding_auc,
-                pr.binding_auc_curriculum,
-                pr.ar_auc,
-                pr.hellaswag_acc,
-                pr.screening_hellaswag_correct,
-                pr.screening_hellaswag_total,
+                (SELECT COUNT(*) FROM program_results) AS pr_count,
+                (SELECT MAX(timestamp) FROM program_results) AS pr_max_ts,
+                (SELECT COUNT(*) FROM program_graph_features) AS gf_count,
+                (SELECT MAX(rowid) FROM program_graph_features) AS gf_max_rowid
+            """
+        ).fetchone()
+        return cache_key, tuple(signature_row) if signature_row else None
+
+    def _get_template_process_cache_hit(
+        self,
+        cache_key: tuple[str, int] | None,
+        signature: tuple[Any, ...] | None,
+        now: float,
+    ) -> Dict[str, Any] | None:
+        if cache_key is None or signature is None:
+            return None
+        process_cached = _TEMPLATE_OBSERVABILITY_PROCESS_CACHE.get(cache_key)
+        if process_cached is None:
+            return None
+        if process_cached[0] == signature and now < process_cached[1]:
+            return dict(process_cached[2])
+        return None
+
+    def _cache_template_process_result(
+        self,
+        cache_key: tuple[str, int] | None,
+        signature: tuple[Any, ...] | None,
+        result: Dict[str, Any],
+        now: float,
+    ) -> None:
+        if cache_key is None or signature is None:
+            return
+        _TEMPLATE_OBSERVABILITY_PROCESS_CACHE[cache_key] = (
+            signature,
+            now + self._TEMPLATE_OBSERVABILITY_TTL_S,
+            dict(result),
+        )
+
+    def _cache_template_observability(
+        self,
+        limit: int,
+        result: Dict[str, Any],
+        now: float,
+    ) -> None:
+        self._template_observability_cache[limit] = dict(result)
+        self._template_observability_cache_expires_at = (
+            now + self._TEMPLATE_OBSERVABILITY_TTL_S
+        )
+
+    def _empty_template_observability_result(
+        self,
+        slot_counts: Dict[str, int],
+        limit: int,
+    ) -> Dict[str, Any]:
+        return self._assemble_observability_result(
+            _ObservabilityAccumulator(
+                template_stats={},
+                motif_stats={},
+                slot_stats={},
+                experiment_buckets={},
+                loss_values=[],
+                validation_losses=[],
+                discovery_losses=[],
+                motifs_per_graph=[],
+                templates_per_graph=[],
+            ),
+            slot_counts,
+            limit,
+        )
+
+    def _fetch_template_observability_rows(self) -> list:
+        return self.conn.execute(
+            """
+            SELECT
+                pr.experiment_id, pr.timestamp, pr.graph_fingerprint,
+                gf.templates_json, gf.motifs_json, gf.slot_usage_json,
+                pr.stage0_passed, pr.stage05_passed, pr.stage1_passed,
+                pr.loss_ratio, pr.discovery_loss_ratio, pr.validation_loss_ratio,
+                pr.novelty_score, pr.novelty_confidence,
+                pr.error_type, pr.stage_at_death, pr.failure_details_json,
+                pr.induction_auc, pr.binding_auc, pr.binding_auc_curriculum,
+                pr.ar_auc, pr.hellaswag_acc,
+                pr.screening_hellaswag_correct, pr.screening_hellaswag_total,
                 pr.screening_wikitext_status,
-                pr.routing_fast_lane_applied,
-                pr.routing_fast_lane_status,
+                pr.routing_fast_lane_applied, pr.routing_fast_lane_status,
                 pr.routing_fast_lane_score,
                 pr.routing_fast_lane_ppl_improvement,
                 pr.routing_fast_lane_slope,
@@ -179,42 +355,6 @@ class _ObservabilityMixin:
             JOIN program_graph_features gf ON gf.result_id = pr.result_id
             """
         ).fetchall()
-        slot_counts = self._infer_template_slot_counts()
-        if not rows:
-            result = self._assemble_observability_result(
-                _ObservabilityAccumulator(
-                    template_stats={},
-                    motif_stats={},
-                    slot_stats={},
-                    experiment_buckets={},
-                    loss_values=[],
-                    validation_losses=[],
-                    discovery_losses=[],
-                    motifs_per_graph=[],
-                    templates_per_graph=[],
-                ),
-                slot_counts,
-                limit,
-            )
-            self._template_observability_cache[limit] = dict(result)
-            self._template_observability_cache_expires_at = (
-                now + self._TEMPLATE_OBSERVABILITY_TTL_S
-            )
-            return result
-
-        acc = self._accumulate_observability_stats(rows, slot_counts)
-        result = self._assemble_observability_result(acc, slot_counts, limit)
-        self._template_observability_cache[limit] = dict(result)
-        self._template_observability_cache_expires_at = (
-            now + self._TEMPLATE_OBSERVABILITY_TTL_S
-        )
-        if process_cache_key is not None and process_signature is not None:
-            _TEMPLATE_OBSERVABILITY_PROCESS_CACHE[process_cache_key] = (
-                process_signature,
-                now + self._TEMPLATE_OBSERVABILITY_TTL_S,
-                dict(result),
-            )
-        return result
 
     def get_generation_observability_priors(
         self,
@@ -228,19 +368,10 @@ class _ObservabilityMixin:
         downweights weak motifs/templates, and only applies slot-specific
         priors when a slot has enough support to be meaningfully directional.
         """
-
-        def _bounded(value: float, *, lo: float, hi: float) -> float:
-            return max(lo, min(hi, float(value)))
-
         obs = self.get_template_slot_observability(limit=max_rows)
         template_rows = obs.get("all_templates") or []
         motif_rows = obs.get("motif_slots") or []
         slot_rows = obs.get("all_slots") or obs.get("slot_observability") or []
-
-        template_weights: Dict[str, float] = {}
-        motif_weights: Dict[str, float] = {}
-        slot_multipliers: Dict[str, Dict[str, float]] = {}
-        slot_denylist: Dict[str, List[str]] = {}
 
         toxic_reason_tokens = (
             "compilation",
@@ -252,81 +383,20 @@ class _ObservabilityMixin:
             "oom",
         )
 
-        for row in template_rows:
-            support = int(row.get("n_used") or 0)
-            if support < min_support:
-                continue
-            name = str(row.get("name") or "").strip()
-            if not name:
-                continue
-            s1_rate = float(row.get("s1_rate") or 0.0)
-            loss_ratio = row.get("avg_validation_loss_ratio")
-            if loss_ratio is None:
-                loss_ratio = row.get("avg_loss_ratio")
-            loss_term = (
-                0.0
-                if loss_ratio is None
-                else _bounded(1.1 - float(loss_ratio), lo=0.0, hi=1.0)
-            )
-            evidence_level = str(row.get("evidence_level") or "")
-            evidence_bonus = {
-                "established": 0.25,
-                "building": 0.10,
-                "sparse": 0.0,
-                "insufficient": -0.05,
-            }.get(evidence_level, 0.0)
-            weight = 0.35 + (1.45 * s1_rate) + (0.45 * loss_term) + evidence_bonus
-            template_weights[name] = round(_bounded(weight, lo=0.2, hi=3.5), 4)
-
-        for row in motif_rows:
-            support = int(row.get("n_used") or 0)
-            if support < min_support:
-                continue
-            name = str(row.get("name") or "").strip()
-            if not name:
-                continue
-            s1_rate = float(row.get("s1_rate") or 0.0)
-            loss_ratio = row.get("avg_loss_ratio")
-            loss_term = (
-                0.0
-                if loss_ratio is None
-                else _bounded(1.05 - float(loss_ratio), lo=0.0, hi=1.0)
-            )
-            failure_reason = str(row.get("top_failure_reason") or "").lower()
-            toxic_penalty = (
-                0.2 if any(t in failure_reason for t in toxic_reason_tokens) else 0.0
-            )
-            weight = 0.25 + (1.55 * s1_rate) + (0.35 * loss_term) - toxic_penalty
-            motif_weights[name] = round(_bounded(weight, lo=0.15, hi=3.0), 4)
-
-        for row in slot_rows:
-            support = int(row.get("n_used") or 0)
-            motif_name = str(row.get("top_selected_motif") or "").strip()
-            slot_key = str(row.get("slot_key") or "").strip()
-            if support < min_support or not slot_key or not motif_name:
-                continue
-            s1_rate = float(row.get("s1_rate") or 0.0)
-            loss_ratio = row.get("avg_loss_ratio")
-            loss_term = (
-                0.0
-                if loss_ratio is None
-                else _bounded(1.05 - float(loss_ratio), lo=0.0, hi=1.0)
-            )
-            failure_reason = str(row.get("top_failure_reason") or "").lower()
-            slot_map = slot_multipliers.setdefault(slot_key, {})
-            if s1_rate >= 0.55:
-                slot_map[motif_name] = round(
-                    _bounded(
-                        1.05 + (0.65 * s1_rate) + (0.20 * loss_term), lo=1.0, hi=2.5
-                    ),
-                    4,
-                )
-            elif s1_rate <= 0.18:
-                slot_map[motif_name] = round(
-                    _bounded(0.15 + (0.85 * s1_rate), lo=0.1, hi=0.55), 4
-                )
-                if any(t in failure_reason for t in toxic_reason_tokens):
-                    slot_denylist.setdefault(slot_key, []).append(motif_name)
+        template_weights = _template_prior_weights(
+            template_rows,
+            min_support=min_support,
+        )
+        motif_weights = _motif_prior_weights(
+            motif_rows,
+            min_support=min_support,
+            toxic_reason_tokens=toxic_reason_tokens,
+        )
+        slot_multipliers, slot_denylist = _slot_generation_priors(
+            slot_rows,
+            min_support=min_support,
+            toxic_reason_tokens=toxic_reason_tokens,
+        )
 
         return {
             "template_weights": template_weights,

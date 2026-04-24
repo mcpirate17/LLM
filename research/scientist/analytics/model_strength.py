@@ -18,6 +18,7 @@ from ..trust_policy import (
     TRUSTED_COMPARABILITY_LABELS,
     TRUSTED_TRUST_LABELS,
 )
+from .model_strength_schema import EMPTY_STRENGTH_COLUMNS
 
 BASE_ANALYSIS_QUERY = """
 SELECT
@@ -433,7 +434,7 @@ def _compose_score(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def load_strength_datasets(db_path: str | Path) -> StrengthDatasets:
+def _load_strength_records(db_path: str | Path) -> list[dict[str, Any]]:
     from ..notebook.shared_conn import get_notebook_conn
 
     conn = get_notebook_conn(str(db_path))
@@ -444,76 +445,17 @@ def load_strength_datasets(db_path: str | Path) -> StrengthDatasets:
         record.update(_parse_config_features(record.get("config_json")))
         record.update(_graph_features(record.get("graph_json")))
         records.append(record)
+    return records
+
+
+def _strength_frame(records: list[dict[str, Any]]) -> pd.DataFrame:
     merged = pd.DataFrame.from_records(records)
     if merged.empty:
-        merged = pd.DataFrame(
-            columns=(
-                "result_id",
-                "experiment_id",
-                "timestamp",
-                "graph_fingerprint",
-                "graph_json",
-                "stage0_passed",
-                "stage05_passed",
-                "stage1_passed",
-                "loss_ratio",
-                "validation_loss_ratio",
-                "discovery_loss_ratio",
-                "induction_auc",
-                "binding_auc",
-                "ar_auc",
-                "hellaswag_acc",
-                "wikitext_perplexity",
-                "wikitext_score",
-                "stability_score",
-                "validation_robustness_score",
-                "efficiency_multiple",
-                "efficiency_wall_score",
-                "param_count",
-                "train_budget_steps",
-                "n_train_steps",
-                "total_train_time_ms",
-                "graph_depth",
-                "graph_n_ops",
-                "graph_n_unique_ops",
-                "graph_uses_math_spaces",
-                "graph_uses_frequency_domain",
-                "routing_savings_ratio",
-                "compression_ratio",
-                "activation_sparsity_score",
-                "dead_neuron_ratio",
-                "routing_collapse_score",
-                "validation_is_unstable",
-                "has_nan_output",
-                "has_inf_output",
-                "has_nan_grad",
-                "has_zero_grad",
-                "local_only",
-                "novelty_score",
-                "novelty_confidence",
-                "result_cohort",
-                "trust_label",
-                "comparability_label",
-                "evaluation_protocol_version",
-                "init_regime",
-                "model_source",
-                "error_type",
-                "stage_at_death",
-                "data_provenance_json",
-                "experiment_timestamp",
-                "experiment_type",
-                "config_json",
-                "primary_template",
-                "templates_used",
-                "motifs_used",
-                "ops",
-                "op_pairs",
-                "slot_keys",
-                "slot_motifs",
-                "slot_components",
-                "depth_ops",
-            )
-        )
+        merged = pd.DataFrame(columns=EMPTY_STRENGTH_COLUMNS)
+    return merged
+
+
+def _normalize_strength_frame(merged: pd.DataFrame) -> pd.DataFrame:
     merged["timestamp"] = pd.to_numeric(merged["timestamp"], errors="coerce")
     merged["log_param_count"] = np.log1p(
         pd.to_numeric(merged["param_count"], errors="coerce")
@@ -548,7 +490,11 @@ def load_strength_datasets(db_path: str | Path) -> StrengthDatasets:
         low=0.01,
         high=0.99,
     )
-    merged = _compose_score(merged)
+    return _compose_score(merged)
+
+
+def load_strength_datasets(db_path: str | Path) -> StrengthDatasets:
+    merged = _normalize_strength_frame(_strength_frame(_load_strength_records(db_path)))
 
     trusted_mask = _cohort_mask(
         merged, TRUSTED_TRUST_LABELS, TRUSTED_COMPARABILITY_LABELS

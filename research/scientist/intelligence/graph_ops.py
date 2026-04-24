@@ -26,14 +26,14 @@ def _normalize_extracted_ops(ops: Any, *, unique: bool) -> List[str]:
     return cleaned
 
 
-def _iter_graph_nodes(graph_json: Any) -> Iterable[dict[str, Any]]:
+def _iter_graph_nodes(graph_json: Any) -> Iterable[Any]:
     if not isinstance(graph_json, dict):
         return ()
     nodes = graph_json.get("nodes") or {}
     if isinstance(nodes, dict):
-        return (node for node in nodes.values() if isinstance(node, dict))
+        return (node for node in nodes.values() if isinstance(node, (dict, str)))
     if isinstance(nodes, list):
-        return (node for node in nodes if isinstance(node, dict))
+        return (node for node in nodes if isinstance(node, (dict, str)))
     return ()
 
 
@@ -80,17 +80,15 @@ def _extract_graph_ops_python(graph_json: Any, *, unique: bool) -> List[str]:
         except (json.JSONDecodeError, TypeError):
             return []
 
-    ops = [
-        str(node.get("op_name") or node.get("op_type") or node.get("op") or "").strip()
-        for node in _iter_graph_nodes(graph_json)
-        if str(
-            node.get("op_name") or node.get("op_type") or node.get("op") or ""
-        ).strip()
-        and str(
-            node.get("op_name") or node.get("op_type") or node.get("op") or ""
-        ).strip()
-        != "input"
-    ]
+    ops: List[str] = []
+    for node in _iter_graph_nodes(graph_json):
+        if isinstance(node, dict):
+            op = node.get("op_name") or node.get("op_type") or node.get("op") or ""
+        else:
+            op = node
+        op_name = str(op).strip()
+        if op_name and op_name != "input":
+            ops.append(op_name)
     return _normalize_extracted_ops(ops, unique=unique)
 
 

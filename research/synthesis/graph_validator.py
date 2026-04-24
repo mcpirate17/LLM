@@ -17,11 +17,11 @@ still have skip-only or broken paths.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import FrozenSet, Optional
+from typing import Any, FrozenSet, Optional
 
 import numpy as np
 
-from .dim_flow_opcode_tables import FULL_DIM_OPS, KV_CACHE_BREAKING_OPS
+from .dim_flow_opcode_tables import KV_CACHE_BREAKING_OPS
 from .dim_flow_support import build_dim_flow_inputs
 from .graph import ComputationGraph
 from .native_analysis import summarize_dim_flow_in_python, validate_edges
@@ -51,17 +51,76 @@ class DimFlowResult:
         self.warnings.append(msg)
 
 
-# Ops that do internal Q/K/V projection and need full model_dim.
-_FULL_DIM_OPS: FrozenSet[str] = FULL_DIM_OPS
 _OP_KIND_DEFAULT = 0
 _OP_KIND_IRFFT = 1
 _OP_KIND_IDENTITY = 2
 _OP_KIND_BINARY_BROADCAST = 3
 
 
+def _edge_error_indices(edge_validation: Any) -> np.ndarray:
+    combined = (
+        edge_validation.freq_mismatch_bits
+        | edge_validation.reduce_full_dim_bits
+        | edge_validation.binary_dim_mismatch
+        | edge_validation.full_dim_input_bits
+    )
+    return np.flatnonzero(combined)
+
+
+def _add_edge_validation_errors(
+    *,
+    result: DimFlowResult,
+    graph: ComputationGraph,
+    model_dim: int,
+    analysis_node_ids: np.ndarray,
+    edge_validation: Any,
+    flagged_indices: np.ndarray,
+) -> None:
+    for raw_idx in flagged_indices:
+        analysis_idx = int(raw_idx)
+        nid = int(analysis_node_ids[analysis_idx])
+        node = graph.nodes[nid]
+
+        for i, pid in enumerate(node.input_ids):
+            parent = graph.nodes.get(pid)
+            if parent is None:
+                result.add_error(
+                    f"Node {nid} ({node.op_name}): input[{i}] id={pid} missing"
+                )
+                continue
+
+            p_shape = parent.output_shape
+            if edge_validation.freq_mismatch_bits[analysis_idx] & (1 << i):
+                result.add_error(
+                    f"Node {nid} ({node.op_name}): input[{i}] is freq-domain "
+                    f"(seq={p_shape.seq}) but op expects time-domain"
+                )
+
+            if edge_validation.reduce_full_dim_bits[analysis_idx] & (1 << i):
+                result.add_error(
+                    f"Node {nid} ({node.op_name}): input[{i}] has dim=1 "
+                    f"(from reduce) but op requires full dim"
+                )
+
+            if edge_validation.full_dim_input_bits[analysis_idx] & (1 << i):
+                result.add_error(
+                    f"Node {nid} ({node.op_name}): input[{i}] has "
+                    f"dim={parent.output_shape.dim}, needs model_dim={model_dim}"
+                )
+
+        if edge_validation.binary_dim_mismatch[analysis_idx]:
+            d0 = graph.nodes[node.input_ids[0]].output_shape.dim
+            d1 = graph.nodes[node.input_ids[1]].output_shape.dim
+            result.add_error(
+                f"Node {nid} ({node.op_name}): dim mismatch {d0} vs {d1} at binary edge"
+            )
+
+
 def validate_dim_flow(
     graph: ComputationGraph,
     max_params: Optional[int] = None,
+    analysis_ir: Any | None = None,
+    analysis: Any | None = None,
 ) -> DimFlowResult:
     """Walk the DAG and validate dimension flow at every edge.
 
@@ -74,13 +133,14 @@ def validate_dim_flow(
         return result
 
     model_dim = graph.model_dim
-    topo = sorted(graph.nodes)
     dim_flow_inputs = build_dim_flow_inputs(
         graph,
         op_kind_default=_OP_KIND_DEFAULT,
         op_kind_irfft=_OP_KIND_IRFFT,
         op_kind_identity=_OP_KIND_IDENTITY,
         op_kind_binary_broadcast=_OP_KIND_BINARY_BROADCAST,
+        analysis_ir=analysis_ir,
+        analysis=analysis,
     )
     analysis_ir = dim_flow_inputs.analysis_ir
     analysis = dim_flow_inputs.analysis
@@ -89,7 +149,6 @@ def validate_dim_flow(
     reachable_mask = getattr(analysis, "reachable_mask", None)
     if reachable_mask is None:
         reachable_mask = np.ones(analysis_ir.n_nodes(), dtype=np.int32)
-    reachable_bool = np.asarray(reachable_mask).astype(bool, copy=False)
 
     summary_reachable_mask = np.asarray(reachable_mask).astype(np.int32, copy=True)
     input_node_id = graph._input_node_id
@@ -118,60 +177,19 @@ def validate_dim_flow(
         model_dim=model_dim,
     )
 
-    # ── 1. Check every reachable node/edge for dim, seq, and param constraints ──
-    for nid in topo:
-        node = graph.nodes[nid]
-        if node.is_input:
-            continue
-        analysis_idx = node_id_to_analysis_idx.get(nid)
-        if analysis_idx is None or not reachable_bool[analysis_idx]:
-            continue
-
-        op = PRIMITIVE_REGISTRY.get(node.op_name)
-        if op is None:
-            result.add_error(f"Node {nid}: unknown op '{node.op_name}'")
-            continue
-
-        for i, pid in enumerate(node.input_ids):
-            parent = graph.nodes.get(pid)
-            if parent is None:
-                result.add_error(
-                    f"Node {nid} ({node.op_name}): input[{i}] id={pid} missing"
-                )
-                continue
-
-            p_shape = parent.output_shape
-
-            if edge_validation.freq_mismatch_bits[analysis_idx] & (1 << i):
-                result.add_error(
-                    f"Node {nid} ({node.op_name}): input[{i}] is freq-domain "
-                    f"(seq={p_shape.seq}) but op expects time-domain"
-                )
-
-            if edge_validation.reduce_full_dim_bits[analysis_idx] & (1 << i):
-                result.add_error(
-                    f"Node {nid} ({node.op_name}): input[{i}] has dim=1 "
-                    f"(from reduce) but op requires full dim"
-                )
-
-        if edge_validation.binary_dim_mismatch[analysis_idx]:
-            d0 = graph.nodes[node.input_ids[0]].output_shape.dim
-            d1 = graph.nodes[node.input_ids[1]].output_shape.dim
-            result.add_error(
-                f"Node {nid} ({node.op_name}): dim mismatch {d0} vs {d1} at binary edge"
-            )
-
-        # Full-dim ops receiving non-model-dim input.
-        if node.op_name in _FULL_DIM_OPS:
-            for i, pid in enumerate(node.input_ids):
-                parent = graph.nodes.get(pid)
-                if parent and edge_validation.full_dim_input_bits[analysis_idx] & (
-                    1 << i
-                ):
-                    result.add_error(
-                        f"Node {nid} ({node.op_name}): input[{i}] has "
-                        f"dim={parent.output_shape.dim}, needs model_dim={model_dim}"
-                    )
+    # ── 1. Check reachable edge errors only when the native/vectorized masks
+    # report something to format. The common valid path should not walk every
+    # edge again just to rediscover an all-zero mask.
+    flagged_edge_indices = _edge_error_indices(edge_validation)
+    if flagged_edge_indices.size:
+        _add_edge_validation_errors(
+            result=result,
+            graph=graph,
+            model_dim=model_dim,
+            analysis_node_ids=analysis_node_ids,
+            edge_validation=edge_validation,
+            flagged_indices=flagged_edge_indices,
+        )
 
     # ── 2. Detect skip-only paths ─────────────────────────────────
     # A graph where the output node is the input node, or the output is

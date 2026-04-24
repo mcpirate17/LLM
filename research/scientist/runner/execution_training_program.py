@@ -223,7 +223,7 @@ class _ExecutionTrainingProgramMixin:
                 f"Validation loss ratio {_vlr:.4f} > 0.60 — "
                 f"model memorized training but failed to generalize"
             )
-        # Inflight checks already flagged this run ��� override pass
+        # Inflight checks already flagged this run; override pass.
         if result.get("error_type", "").startswith("inflight_"):
             result["passed"] = False
         if not result["passed"] and result.get("error_type") is None:

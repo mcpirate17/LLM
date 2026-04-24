@@ -966,23 +966,156 @@ def _fallback_screening_predictor_rows(db_path: str) -> List[Dict[str, Any]]:
     return out
 
 
+def _select_program_result_col(available: set[str], name: str) -> str:
+    return name if name in available else f"NULL AS {name}"
+
+
+def _select_first_program_result_col(
+    available: set[str], alias: str, *candidates: str
+) -> str:
+    existing = [name for name in candidates if name in available]
+    if not existing:
+        return f"NULL AS {alias}"
+    if len(existing) == 1:
+        source = existing[0]
+        return source if source == alias else f"{source} AS {alias}"
+    return f"COALESCE({', '.join(existing)}) AS {alias}"
+
+
+def _graph_analysis_select_cols(available: set[str]) -> List[str]:
+    def col(name: str) -> str:
+        return _select_program_result_col(available, name)
+
+    def first(alias: str, *names: str) -> str:
+        return _select_first_program_result_col(available, alias, *names)
+
+    return [
+        "result_id",
+        "experiment_id",
+        "graph_json",
+        col("novelty_score"),
+        col("loss_ratio"),
+        col("param_count"),
+        col("graph_n_params_estimate"),
+        col("graph_depth"),
+        col("graph_uses_math_spaces"),
+        col("stage0_passed"),
+        col("stage05_passed"),
+        col("stage1_passed"),
+        col("timestamp"),
+        col("induction_auc"),
+        first("binding_auc", "binding_auc_curriculum", "binding_auc"),
+        col("binding_composite"),
+        col("ar_auc"),
+        col("hellaswag_acc"),
+        col("blimp_overall_accuracy"),
+        col("induction_v2_investigation_auc"),
+        col("binding_v2_investigation_auc"),
+    ]
+
+
+def _initial_graph_analysis_group(
+    canonical: str, row: sqlite3.Row, graph_json: str
+) -> Dict[str, Any]:
+    return {
+        "canonical_fingerprint": canonical,
+        "result_id": str(row["result_id"] or ""),
+        "experiment_id": str(row["experiment_id"] or ""),
+        "graph_json": graph_json,
+        "novelty_score": row["novelty_score"],
+        "loss_ratio": row["loss_ratio"],
+        "param_count": row["param_count"],
+        "graph_n_params_estimate": row["graph_n_params_estimate"],
+        "graph_depth": row["graph_depth"],
+        "graph_uses_math_spaces": bool(row["graph_uses_math_spaces"]),
+        "induction_auc": row["induction_auc"],
+        "binding_auc": row["binding_auc"],
+        "binding_composite": row["binding_composite"],
+        "ar_auc": row["ar_auc"],
+        "hellaswag_acc": row["hellaswag_acc"],
+        "blimp_overall_accuracy": row["blimp_overall_accuracy"],
+        "induction_v2_investigation_auc": row["induction_v2_investigation_auc"],
+        "binding_v2_investigation_auc": row["binding_v2_investigation_auc"],
+        "stage0_any_passed": False,
+        "stage05_any_passed": False,
+        "stage1_any_passed": False,
+        "n_rows": 0,
+        "latest_timestamp": 0.0,
+        "_best_rank": None,
+    }
+
+
+def _update_graph_analysis_group(
+    group: Dict[str, Any],
+    row: sqlite3.Row,
+    graph_json: str,
+) -> None:
+    stage1_passed = bool(row["stage1_passed"])
+    group["n_rows"] += 1
+    group["stage0_any_passed"] = bool(
+        group["stage0_any_passed"] or bool(row["stage0_passed"])
+    )
+    group["stage05_any_passed"] = bool(
+        group["stage05_any_passed"] or bool(row["stage05_passed"])
+    )
+    group["stage1_any_passed"] = bool(group["stage1_any_passed"] or stage1_passed)
+    group["latest_timestamp"] = max(
+        float(group["latest_timestamp"]), float(row["timestamp"] or 0.0)
+    )
+    for metric_key in (
+        "induction_auc",
+        "binding_auc",
+        "binding_composite",
+        "ar_auc",
+        "hellaswag_acc",
+        "blimp_overall_accuracy",
+        "induction_v2_investigation_auc",
+        "binding_v2_investigation_auc",
+    ):
+        group[metric_key] = _max_opt(group.get(metric_key), row[metric_key])
+
+    rank = (
+        0 if stage1_passed else 1,
+        row["loss_ratio"] is None,
+        float(row["loss_ratio"]) if row["loss_ratio"] is not None else float("inf"),
+        -float(row["novelty_score"]) if row["novelty_score"] is not None else 0.0,
+        float(row["timestamp"] or 0.0),
+    )
+    if group["_best_rank"] is None or rank < group["_best_rank"]:
+        group["_best_rank"] = rank
+        group["result_id"] = str(row["result_id"] or "")
+        group["experiment_id"] = str(row["experiment_id"] or "")
+        group["graph_json"] = graph_json
+        group["novelty_score"] = row["novelty_score"]
+        group["loss_ratio"] = row["loss_ratio"]
+        group["param_count"] = row["param_count"]
+        group["graph_n_params_estimate"] = row["graph_n_params_estimate"]
+        group["graph_depth"] = row["graph_depth"]
+        group["graph_uses_math_spaces"] = bool(row["graph_uses_math_spaces"])
+
+
+def _finalize_graph_analysis_groups(
+    grouped: Dict[str, Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    for group in grouped.values():
+        group.pop("_best_rank", None)
+        out.append(group)
+    out.sort(key=lambda row: str(row["canonical_fingerprint"]))
+    return out
+
+
 def _fallback_graph_analysis_rows(db_path: str) -> List[Dict[str, Any]]:
     from ..notebook.shared_conn import get_notebook_conn
 
     conn = get_notebook_conn(db_path)
+    select_cols = _graph_analysis_select_cols(_table_columns(conn, "program_results"))
     rows = conn.execute(
-        """
-        SELECT result_id, experiment_id, graph_json, novelty_score, loss_ratio,
-               param_count, graph_n_params_estimate, graph_depth,
-               graph_uses_math_spaces, stage0_passed, stage05_passed,
-               stage1_passed, timestamp, induction_auc, ar_auc,
-               hellaswag_acc, blimp_overall_accuracy,
-               induction_v2_investigation_auc, binding_v2_investigation_auc,
-               COALESCE(binding_auc_curriculum, binding_auc) AS binding_auc,
-               binding_composite
+        f"""
+        SELECT {", ".join(select_cols)}
         FROM program_results
         WHERE TRIM(COALESCE(graph_json, '')) <> ''
-          AND graph_json <> '{}'
+          AND graph_json <> '{{}}'
         """
     ).fetchall()
 
@@ -992,82 +1125,10 @@ def _fallback_graph_analysis_rows(db_path: str) -> List[Dict[str, Any]]:
         canonical = _graph_fingerprint(graph_json)
         group = grouped.setdefault(
             canonical,
-            {
-                "canonical_fingerprint": canonical,
-                "result_id": str(row["result_id"] or ""),
-                "experiment_id": str(row["experiment_id"] or ""),
-                "graph_json": graph_json,
-                "novelty_score": row["novelty_score"],
-                "loss_ratio": row["loss_ratio"],
-                "param_count": row["param_count"],
-                "graph_n_params_estimate": row["graph_n_params_estimate"],
-                "graph_depth": row["graph_depth"],
-                "graph_uses_math_spaces": bool(row["graph_uses_math_spaces"]),
-                "induction_auc": row["induction_auc"],
-                "binding_auc": row["binding_auc"],
-                "binding_composite": row["binding_composite"],
-                "ar_auc": row["ar_auc"],
-                "hellaswag_acc": row["hellaswag_acc"],
-                "blimp_overall_accuracy": row["blimp_overall_accuracy"],
-                "induction_v2_investigation_auc": row["induction_v2_investigation_auc"],
-                "binding_v2_investigation_auc": row["binding_v2_investigation_auc"],
-                "stage0_any_passed": False,
-                "stage05_any_passed": False,
-                "stage1_any_passed": False,
-                "n_rows": 0,
-                "latest_timestamp": 0.0,
-                "_best_rank": None,
-            },
+            _initial_graph_analysis_group(canonical, row, graph_json),
         )
-        stage1_passed = bool(row["stage1_passed"])
-        group["n_rows"] += 1
-        group["stage0_any_passed"] = bool(
-            group["stage0_any_passed"] or bool(row["stage0_passed"])
-        )
-        group["stage05_any_passed"] = bool(
-            group["stage05_any_passed"] or bool(row["stage05_passed"])
-        )
-        group["stage1_any_passed"] = bool(group["stage1_any_passed"] or stage1_passed)
-        group["latest_timestamp"] = max(
-            float(group["latest_timestamp"]), float(row["timestamp"] or 0.0)
-        )
-        for metric_key in (
-            "induction_auc",
-            "binding_auc",
-            "binding_composite",
-            "ar_auc",
-            "hellaswag_acc",
-            "blimp_overall_accuracy",
-            "induction_v2_investigation_auc",
-            "binding_v2_investigation_auc",
-        ):
-            group[metric_key] = _max_opt(group.get(metric_key), row[metric_key])
-
-        rank = (
-            0 if stage1_passed else 1,
-            row["loss_ratio"] is None,
-            float(row["loss_ratio"]) if row["loss_ratio"] is not None else float("inf"),
-            -float(row["novelty_score"]) if row["novelty_score"] is not None else 0.0,
-            float(row["timestamp"] or 0.0),
-        )
-        if group["_best_rank"] is None or rank < group["_best_rank"]:
-            group["_best_rank"] = rank
-            group["result_id"] = str(row["result_id"] or "")
-            group["experiment_id"] = str(row["experiment_id"] or "")
-            group["graph_json"] = graph_json
-            group["novelty_score"] = row["novelty_score"]
-            group["loss_ratio"] = row["loss_ratio"]
-            group["param_count"] = row["param_count"]
-            group["graph_n_params_estimate"] = row["graph_n_params_estimate"]
-            group["graph_depth"] = row["graph_depth"]
-            group["graph_uses_math_spaces"] = bool(row["graph_uses_math_spaces"])
-
-    out: List[Dict[str, Any]] = []
-    for group in grouped.values():
-        group.pop("_best_rank", None)
-        out.append(group)
-    out.sort(key=lambda row: str(row["canonical_fingerprint"]))
-    return out
+        _update_graph_analysis_group(group, row, graph_json)
+    return _finalize_graph_analysis_groups(grouped)
 
 
 def _min_opt(current: Any, candidate: Any) -> Any:

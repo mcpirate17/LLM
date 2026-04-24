@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 
@@ -35,9 +36,14 @@ def build_dim_flow_inputs(
     op_kind_irfft: int,
     op_kind_identity: int,
     op_kind_binary_broadcast: int,
+    analysis_ir: Any | None = None,
+    analysis: Any | None = None,
 ) -> DimFlowInputs:
-    analysis_source_ir = graph._analysis_ir()
-    analysis = analyze_ir_runtime_first(analysis_source_ir, include_reachable=True)
+    analysis_source_ir = (
+        analysis_ir if analysis_ir is not None else graph._analysis_ir()
+    )
+    if analysis is None:
+        analysis = analyze_ir_runtime_first(analysis_source_ir, include_reachable=True)
     analysis_ir = (
         analysis_source_ir
         if hasattr(analysis_source_ir, "op_codes")
