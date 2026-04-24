@@ -26,9 +26,22 @@ import logging
 import sqlite3
 from typing import Any, Optional, Sequence
 
-import aria_db
+try:
+    import aria_db
+except ModuleNotFoundError:
+    aria_db = None
 
 logger = logging.getLogger("research.scientist.notebook")
+
+
+def _require_aria_db():
+    if aria_db is None:
+        raise ModuleNotFoundError(
+            "aria_db is required for NativeConnectionWrapper; build "
+            "research/runtime/native/rust/aria-db or open LabNotebook with "
+            "use_native=False"
+        )
+    return aria_db
 
 
 def _translate_error(exc: RuntimeError) -> sqlite3.OperationalError:
@@ -157,10 +170,11 @@ class NativeConnectionWrapper:
     def __init__(self, db_path: str, *, read_only: bool = False):
         self._db_path = db_path
         self._read_only = bool(read_only)
+        native_db = _require_aria_db()
         if self._read_only:
-            self._mgr = aria_db.get_manager_readonly(db_path)
+            self._mgr = native_db.get_manager_readonly(db_path)
         else:
-            self._mgr = aria_db.get_manager(db_path)
+            self._mgr = native_db.get_manager(db_path)
 
     def execute(self, sql: str, parameters: Sequence[Any] = ()) -> _CursorResult:
         sql_stripped = sql.strip()

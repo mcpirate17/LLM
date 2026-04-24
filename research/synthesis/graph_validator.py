@@ -24,7 +24,12 @@ import numpy as np
 from .dim_flow_opcode_tables import KV_CACHE_BREAKING_OPS
 from .dim_flow_support import build_dim_flow_inputs
 from .graph import ComputationGraph
-from .native_analysis import summarize_dim_flow_in_python, validate_edges
+from .native_analysis import (
+    analyze_ir_runtime_first,
+    summarize_dim_flow_in_python,
+    validate_edges,
+    validate_packed_ir_natively,
+)
 from .native_dim_flow import dead_parameterized_mask_in_python
 from .primitives import PRIMITIVE_REGISTRY
 
@@ -116,6 +121,32 @@ def _add_edge_validation_errors(
             )
 
 
+def _try_packed_validation(
+    *,
+    graph: ComputationGraph,
+    analysis_ir: Any,
+    dim_flow_inputs: Any,
+) -> Any | None:
+    input_node_idx = dim_flow_inputs.node_id_to_analysis_idx.get(
+        graph._input_node_id, -1
+    )
+    return validate_packed_ir_natively(
+        op_codes=analysis_ir.op_codes,
+        input_indices=analysis_ir.input_indices,
+        output_node_idx=int(analysis_ir.output_node_idx),
+        param_estimates=dim_flow_inputs.param_estimates,
+        has_params_flags=dim_flow_inputs.has_params_flags,
+        nontrivial_flags=dim_flow_inputs.nontrivial_flags,
+        kv_breaking_flags=dim_flow_inputs.kv_breaking_flags,
+        node_dims=dim_flow_inputs.node_dims,
+        node_seq_flags=dim_flow_inputs.node_seq_flags,
+        op_kind_flags=dim_flow_inputs.op_kind_flags,
+        full_dim_flags=dim_flow_inputs.full_dim_flags,
+        model_dim=graph.model_dim,
+        input_node_idx=int(input_node_idx),
+    )
+
+
 def validate_dim_flow(
     graph: ComputationGraph,
     max_params: Optional[int] = None,
@@ -127,6 +158,7 @@ def validate_dim_flow(
     Returns DimFlowResult with errors (hard failures) and warnings.
     """
     result = DimFlowResult()
+    caller_supplied_analysis = analysis is not None
 
     if graph.input_node is None or graph.output_node is None:
         result.add_error("Graph missing input or output node")
@@ -141,46 +173,72 @@ def validate_dim_flow(
         op_kind_binary_broadcast=_OP_KIND_BINARY_BROADCAST,
         analysis_ir=analysis_ir,
         analysis=analysis,
+        compute_analysis=caller_supplied_analysis,
     )
     analysis_ir = dim_flow_inputs.analysis_ir
     analysis = dim_flow_inputs.analysis
     analysis_node_ids = dim_flow_inputs.analysis_node_ids
     node_id_to_analysis_idx = dim_flow_inputs.node_id_to_analysis_idx
-    reachable_mask = getattr(analysis, "reachable_mask", None)
-    if reachable_mask is None:
-        reachable_mask = np.ones(analysis_ir.n_nodes(), dtype=np.int32)
 
-    summary_reachable_mask = np.asarray(reachable_mask).astype(np.int32, copy=True)
-    input_node_id = graph._input_node_id
-    if input_node_id is not None and input_node_id in node_id_to_analysis_idx:
-        summary_reachable_mask[node_id_to_analysis_idx[input_node_id]] = 0
+    packed_validation = None
+    if not caller_supplied_analysis:
+        packed_validation = _try_packed_validation(
+            graph=graph,
+            analysis_ir=analysis_ir,
+            dim_flow_inputs=dim_flow_inputs,
+        )
 
-    summary = summarize_dim_flow_in_python(
-        reachable_mask=summary_reachable_mask,
-        has_params_flags=dim_flow_inputs.has_params_flags,
-        param_estimates=dim_flow_inputs.param_estimates,
-        nontrivial_flags=dim_flow_inputs.nontrivial_flags,
-        kv_breaking_flags=dim_flow_inputs.kv_breaking_flags,
-    )
+    if packed_validation is not None:
+        reachable_mask = packed_validation.reachable_mask
+        summary = packed_validation.dim_flow
+        edge_validation = packed_validation.edge_validation
+        dead_parameterized_mask = packed_validation.dead_parameterized_mask
+        edge_error_count = packed_validation.edge_error_count
+        dead_parameterized_count = packed_validation.dead_parameterized_count
+    else:
+        if analysis is None:
+            analysis = analyze_ir_runtime_first(analysis_ir, include_reachable=True)
+        reachable_mask = getattr(analysis, "reachable_mask", None)
+        if reachable_mask is None:
+            reachable_mask = np.ones(analysis_ir.n_nodes(), dtype=np.int32)
+
+        summary_reachable_mask = np.asarray(reachable_mask).astype(np.int32, copy=True)
+        input_node_id = graph._input_node_id
+        if input_node_id is not None and input_node_id in node_id_to_analysis_idx:
+            summary_reachable_mask[node_id_to_analysis_idx[input_node_id]] = 0
+
+        summary = summarize_dim_flow_in_python(
+            reachable_mask=summary_reachable_mask,
+            has_params_flags=dim_flow_inputs.has_params_flags,
+            param_estimates=dim_flow_inputs.param_estimates,
+            nontrivial_flags=dim_flow_inputs.nontrivial_flags,
+            kv_breaking_flags=dim_flow_inputs.kv_breaking_flags,
+        )
+        edge_validation = validate_edges(
+            reachable_mask=np.asarray(reachable_mask).astype(np.int32, copy=False),
+            input_indices=analysis_ir.input_indices,
+            node_dims=dim_flow_inputs.node_dims,
+            node_seq_flags=dim_flow_inputs.node_seq_flags,
+            op_kind_flags=dim_flow_inputs.op_kind_flags,
+            full_dim_flags=dim_flow_inputs.full_dim_flags,
+            model_dim=model_dim,
+        )
+        dead_parameterized_mask = None
+        edge_error_count = -1
+        dead_parameterized_count = -1
     result.reachable_param_count = summary.reachable_param_count
     result.reachable_param_estimate = summary.reachable_param_estimate
     result.reachable_nontrivial_ops = summary.reachable_nontrivial_ops
     result.reachable_ops = summary.reachable_ops
 
-    edge_validation = validate_edges(
-        reachable_mask=np.asarray(reachable_mask).astype(np.int32, copy=False),
-        input_indices=analysis_ir.input_indices,
-        node_dims=dim_flow_inputs.node_dims,
-        node_seq_flags=dim_flow_inputs.node_seq_flags,
-        op_kind_flags=dim_flow_inputs.op_kind_flags,
-        full_dim_flags=dim_flow_inputs.full_dim_flags,
-        model_dim=model_dim,
-    )
-
     # ── 1. Check reachable edge errors only when the native/vectorized masks
     # report something to format. The common valid path should not walk every
     # edge again just to rediscover an all-zero mask.
-    flagged_edge_indices = _edge_error_indices(edge_validation)
+    flagged_edge_indices = (
+        _edge_error_indices(edge_validation)
+        if edge_error_count != 0
+        else np.empty(0, dtype=np.int64)
+    )
     if flagged_edge_indices.size:
         _add_edge_validation_errors(
             result=result,
@@ -231,11 +289,17 @@ def validate_dim_flow(
         )
 
     # ── 3. Dead parameterized nodes (unreachable learned weights) ─
-    dead_params = dead_parameterized_mask_in_python(
-        reachable_mask=np.asarray(reachable_mask).astype(np.int32, copy=False),
-        parameterized_flags=dim_flow_inputs.has_params_flags,
-    )
-    for idx in np.flatnonzero(dead_params.mask):
+    if dead_parameterized_mask is None:
+        dead_params = dead_parameterized_mask_in_python(
+            reachable_mask=np.asarray(reachable_mask).astype(np.int32, copy=False),
+            parameterized_flags=dim_flow_inputs.has_params_flags,
+        )
+        dead_mask = dead_params.mask
+    elif dead_parameterized_count == 0:
+        dead_mask = np.empty(0, dtype=np.int32)
+    else:
+        dead_mask = dead_parameterized_mask
+    for idx in np.flatnonzero(dead_mask):
         nid = int(analysis_node_ids[idx])
         node = graph.nodes[nid]
         op = PRIMITIVE_REGISTRY.get(node.op_name)

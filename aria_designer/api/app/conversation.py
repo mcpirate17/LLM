@@ -493,33 +493,68 @@ def _build_difficulty_routed_patch(
         base_x = position.get("x", 200) + 180
         base_y = position.get("y", 0) - 120
 
-    difficulty_id = f"aria_difficulty_{uuid4().hex[:4]}"
-    router_id = f"aria_router_{uuid4().hex[:4]}"
-    easy_dispatch_id = f"aria_easy_dispatch_{uuid4().hex[:4]}"
-    hard_dispatch_id = f"aria_hard_dispatch_{uuid4().hex[:4]}"
-    easy_lane_id = f"aria_fast_lane_{uuid4().hex[:4]}"
-    gather_id = f"aria_gather_{uuid4().hex[:4]}"
-
-    _append_add_node(
-        ops, difficulty_id, "routing/token_difficulty_proj", {}, base_x, base_y
+    ids = _difficulty_route_node_ids()
+    _append_difficulty_route_nodes(ops, ids, base_x, base_y)
+    _append_difficulty_route_edges(
+        ops,
+        ids,
+        input_node=input_node,
+        output_node=output_node,
+        input_edge=input_edge,
+        output_edge=output_edge,
+        base_x=base_x,
+        base_y=base_y,
     )
+    return _difficulty_route_patch_result(ops)
+
+
+def _difficulty_route_node_ids() -> Dict[str, str]:
+    return {
+        "difficulty": f"aria_difficulty_{uuid4().hex[:4]}",
+        "router": f"aria_router_{uuid4().hex[:4]}",
+        "easy_dispatch": f"aria_easy_dispatch_{uuid4().hex[:4]}",
+        "hard_dispatch": f"aria_hard_dispatch_{uuid4().hex[:4]}",
+        "easy_lane": f"aria_fast_lane_{uuid4().hex[:4]}",
+        "gather": f"aria_gather_{uuid4().hex[:4]}",
+    }
+
+
+def _append_difficulty_route_nodes(
+    ops: List[Dict[str, Any]],
+    ids: Dict[str, str],
+    base_x: int,
+    base_y: int,
+) -> None:
     _append_add_node(
-        ops, router_id, "routing/lane_router", {"num_lanes": 2}, base_x + 180, base_y
+        ops, ids["difficulty"], "routing/token_difficulty_proj", {}, base_x, base_y
     )
     _append_add_node(
         ops,
-        easy_dispatch_id,
+        ids["router"],
+        "routing/lane_router",
+        {"num_lanes": 2},
+        base_x + 180,
+        base_y,
+    )
+    _append_add_node(
+        ops,
+        ids["easy_dispatch"],
         "structural/conditional_dispatch",
         {"num_lanes": 2, "lane": 0},
         base_x + 360,
         base_y - 90,
     )
     _append_add_node(
-        ops, easy_lane_id, "linear_algebra/linear_proj", {}, base_x + 540, base_y - 90
+        ops,
+        ids["easy_lane"],
+        "linear_algebra/linear_proj",
+        {},
+        base_x + 540,
+        base_y - 90,
     )
     _append_add_node(
         ops,
-        hard_dispatch_id,
+        ids["hard_dispatch"],
         "structural/conditional_dispatch",
         {"num_lanes": 2, "lane": 1},
         base_x + 360,
@@ -527,25 +562,37 @@ def _build_difficulty_routed_patch(
     )
     _append_add_node(
         ops,
-        gather_id,
+        ids["gather"],
         "structural/conditional_gather",
         {"num_lanes": 2},
         base_x + 720,
         base_y,
     )
 
+
+def _append_difficulty_route_edges(
+    ops: List[Dict[str, Any]],
+    ids: Dict[str, str],
+    *,
+    input_node: Optional[Dict[str, Any]],
+    output_node: Optional[Dict[str, Any]],
+    input_edge: Optional[Dict[str, Any]],
+    output_edge: Optional[Dict[str, Any]],
+    base_x: int,
+    base_y: int,
+) -> None:
     if input_node:
-        _append_rewire(ops, input_node["id"], difficulty_id)
-    _append_rewire(ops, difficulty_id, router_id)
-    _append_rewire(ops, router_id, easy_dispatch_id)
-    _append_rewire(ops, easy_dispatch_id, easy_lane_id)
-    _append_rewire(ops, easy_lane_id, gather_id, target_port="a")
-    _append_rewire(ops, router_id, hard_dispatch_id)
+        _append_rewire(ops, input_node["id"], ids["difficulty"])
+    _append_rewire(ops, ids["difficulty"], ids["router"])
+    _append_rewire(ops, ids["router"], ids["easy_dispatch"])
+    _append_rewire(ops, ids["easy_dispatch"], ids["easy_lane"])
+    _append_rewire(ops, ids["easy_lane"], ids["gather"], target_port="a")
+    _append_rewire(ops, ids["router"], ids["hard_dispatch"])
 
     if input_edge:
         _append_rewire(
             ops,
-            hard_dispatch_id,
+            ids["hard_dispatch"],
             str(input_edge.get("target")),
             remove_edge_id=str(input_edge.get("id") or ""),
             target_port=str(input_edge.get("target_port") or "x"),
@@ -555,22 +602,24 @@ def _build_difficulty_routed_patch(
         _append_add_node(
             ops, hard_lane_id, "mixing/softmax_attention", {}, base_x + 540, base_y + 90
         )
-        _append_rewire(ops, hard_dispatch_id, hard_lane_id)
-        _append_rewire(ops, hard_lane_id, gather_id, target_port="b")
+        _append_rewire(ops, ids["hard_dispatch"], hard_lane_id)
+        _append_rewire(ops, hard_lane_id, ids["gather"], target_port="b")
 
     if output_edge:
         _append_rewire(
             ops,
             str(output_edge.get("source")),
-            gather_id,
+            ids["gather"],
             remove_edge_id=str(output_edge.get("id") or ""),
             source_port=str(output_edge.get("source_port") or "y"),
             target_port="b",
         )
 
     if output_node:
-        _append_rewire(ops, gather_id, output_node["id"])
+        _append_rewire(ops, ids["gather"], output_node["id"])
 
+
+def _difficulty_route_patch_result(ops: List[Dict[str, Any]]) -> Dict[str, Any]:
     return {
         "rationale": (
             "Difficulty-routed refinement: score token difficulty, route easy tokens "

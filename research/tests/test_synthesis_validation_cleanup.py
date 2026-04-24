@@ -162,3 +162,70 @@ def test_validate_dim_flow_dead_parameterized_mask_falls_back_to_python(monkeypa
         f"Node {dead} (linear_proj): parameterized but unreachable" in warning
         for warning in result.warnings
     )
+
+
+def test_validate_dim_flow_packed_native_matches_fallback(monkeypatch):
+    import research.synthesis.graph_validator as graph_validator
+
+    graph = ComputationGraph(32)
+    input_id = graph.add_input()
+    live = graph.add_op("linear_proj", [input_id], config={"out_dim": 32})
+    dead = graph.add_op("linear_proj", [input_id], config={"out_dim": 32})
+    graph.set_output(live)
+
+    original = graph_validator.validate_packed_ir_natively
+    packed_hits = 0
+
+    def _counting_packed(**kwargs):
+        nonlocal packed_hits
+        result = original(**kwargs)
+        if result is not None:
+            packed_hits += 1
+        return result
+
+    monkeypatch.setattr(
+        graph_validator, "validate_packed_ir_natively", _counting_packed
+    )
+    packed = validate_dim_flow(graph)
+    if packed_hits == 0:
+        pytest.skip("packed graph validation ABI is unavailable")
+
+    monkeypatch.setattr(
+        graph_validator, "validate_packed_ir_natively", lambda **_: None
+    )
+    fallback = validate_dim_flow(graph)
+
+    assert packed.errors == fallback.errors
+    assert packed.warnings == fallback.warnings
+    assert packed.reachable_param_count == fallback.reachable_param_count
+    assert packed.reachable_param_estimate == fallback.reachable_param_estimate
+    assert packed.reachable_nontrivial_ops == fallback.reachable_nontrivial_ops
+    assert packed.reachable_ops == fallback.reachable_ops
+    assert any(
+        f"Node {dead} (linear_proj): parameterized but unreachable" in warning
+        for warning in packed.warnings
+    )
+
+
+def test_validate_dim_flow_reuses_caller_analysis_without_packed_call(monkeypatch):
+    import research.synthesis.graph_validator as graph_validator
+
+    graph = ComputationGraph(32)
+    input_id = graph.add_input()
+    hidden = graph.add_op("linear_proj", [input_id], config={"out_dim": 32})
+    graph.set_output(hidden)
+    analysis_ir = graph._analysis_ir()
+    analysis = analysis_ir.analyze_structure(include_reachable=True)
+
+    monkeypatch.setattr(
+        graph_validator,
+        "validate_packed_ir_natively",
+        lambda **_: (_ for _ in ()).throw(
+            AssertionError("packed validation should not rerun supplied analysis")
+        ),
+    )
+
+    result = validate_dim_flow(graph, analysis_ir=analysis_ir, analysis=analysis)
+
+    assert result.reachable_param_count == 1
+    assert result.reachable_ops == 1

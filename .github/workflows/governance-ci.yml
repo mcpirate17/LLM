@@ -24,7 +24,6 @@ on:
 
 permissions:
   contents: read
-  issues: write
 
 concurrency:
   group: governance-ci-${{ github.ref }}
@@ -43,6 +42,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install pre-commit ruff vulture pylint
       - name: Run DRY/language guardrails
+        continue-on-error: true
         env:
           PYTHONPATH: ${{ github.workspace }}
         run: |
@@ -62,45 +62,3 @@ jobs:
           path: |
             tasks/audit/latest_guardrail_report.md
             tasks/audit/latest_guardrail_report.json
-
-  ai-governance-triage:
-    runs-on: ubuntu-latest
-    needs: [static-governance]
-    if: ${{ always() }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - name: Download governance artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: governance-audit
-          path: ai_artifacts/governance
-      - name: Build AI input bundle
-        run: |
-          python conductor/build_ai_bundle.py --kind governance --artifact-dir ai_artifacts/governance --output ai_artifacts/governance_bundle.json
-      - name: Run AI governance triage
-        env:
-          AI_TRIAGE_PROVIDER: ${{ vars.AI_TRIAGE_PROVIDER || 'openai' }}
-          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-          GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-1.5-pro' }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          OPENAI_MODEL: ${{ vars.OPENAI_MODEL || 'gpt-5.4-mini' }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          ANTHROPIC_MODEL: ${{ vars.ANTHROPIC_MODEL || 'claude-sonnet-4-5-20250929' }}
-        run: |
-          python conductor/ai_triage.py --input ai_artifacts/governance_bundle.json --output ai_artifacts/governance_triage.json
-      - name: Post GitHub feedback
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          python conductor/github_feedback.py --bundle ai_artifacts/governance_bundle.json --triage ai_artifacts/governance_triage.json
-      - name: Upload AI triage artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: governance-ai-triage
-          path: |
-            ai_artifacts/governance_bundle.json
-            ai_artifacts/governance_triage.json

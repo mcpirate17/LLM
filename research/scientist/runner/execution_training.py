@@ -2,42 +2,18 @@
 
 from __future__ import annotations
 
-import copy
 import json
-import math
-import time
 from contextlib import nullcontext
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
-from ..json_utils import json_safe
 
 import torch
 import torch.nn as nn
 
-from ...eval.fingerprint import compute_gated_fingerprint
 from ...eval.perf_budget import DEFAULT_PERF_BUDGETS, evaluate_perf_budget_gate
-from ...eval.pruning import apply_one_shot_pruning, estimate_lm_ce_loss
-from ...eval.utils import clip_grad_norm, language_model_loss
-from ...training.profiling import TrainingRunProfiler
-from ._helpers import (
-    normalized_loss_ratio,
-    stage1_learning_gate,
-    resolve_stage1_gate_metrics,
-    get_reference_losses,
-    _corpus_type_from_config,
-)
 from .execution_training_native_boundary import (
-    _build_training_step_event,
     _MicroTrainLoopProgress,
-    _TrainingLoopState,
-    _apply_training_aux_losses,
-    _backward_loss,
-    _collect_aux_modules,
-    _compute_micro_train_forward_loss,
-    _maybe_extend_training_budget,
-    _optimizer_step,
-    _training_step_error,
 )
 
 import logging
@@ -221,7 +197,7 @@ def _smoke_test_graph_structure(graph_json) -> Dict[str, Any]:
 
 
 from ._types import RunConfig
-from ._helpers import InflightState, check_inflight_health
+from ._helpers import InflightState
 from ...training.checkpointing import CheckpointManager
 
 
@@ -463,8 +439,6 @@ def _micro_train_attribute_error(e: Exception, result: Dict[str, Any]) -> None:
             result["failure_op"] = "latent_attention_compressor"
         elif "conv_weight" in err_str:
             result["failure_op"] = "conv1d_seq"
-
-
 
 
 # ── Mixin composition ─────────────────────────────────────────────

@@ -12,6 +12,73 @@ from .research_signals import fetch_leaderboard_top_entries
 
 logger = logging.getLogger(__name__)
 
+_NAME_MATCH_SKIP_WORDS = {
+    "add",
+    "sub",
+    "exp",
+    "log",
+    "cos",
+    "sin",
+    "abs",
+    "neg",
+    "sign",
+    "sort",
+    "mul",
+    "div",
+    "input",
+    "output",
+    "split",
+    "join",
+    "loop",
+    "none",
+    "filter",
+    "from",
+    "with",
+    "that",
+    "this",
+    "then",
+    "have",
+    "will",
+    "been",
+    "into",
+    "over",
+    "each",
+    "more",
+    "like",
+    "make",
+    "graph",
+    "block",
+    "dense",
+    "scale",
+    "speed",
+    "model",
+    "layer",
+    "point",
+    "batch",
+    "step",
+    "gate",
+    "head",
+    "base",
+    "loss",
+    "task",
+    "test",
+    "down",
+    "last",
+    "first",
+    "quality",
+    "stability",
+    "benchmark",
+    "target",
+    "gaps",
+    "novelty",
+    "preserving",
+    "propose",
+    "patch",
+    "closes",
+    "downstream",
+    "while",
+}
+
 
 def _canon_leaf(name: str) -> str:
     """Resolve aliases to canonical leaf name for matching."""
@@ -139,100 +206,118 @@ def _suggest_for_leaf_nodes(
 ) -> List[Dict[str, Any]]:
     """Suggest components based on leaf node types."""
     suggestions: List[Dict[str, Any]] = []
+    for node in _leaf_analysis_nodes(leaf_nodes, nodes, edges):
+        suggestions.extend(
+            _suggest_for_leaf_type(
+                str(node.get("component_type", "")).split("/")[-1].lower(),
+                by_category,
+                ctx,
+            )
+        )
+    return suggestions
 
-    # If the only leaf is graph_output, use its predecessors
-    analysis_nodes = leaf_nodes
+
+def _leaf_analysis_nodes(
+    leaf_nodes: List[Dict[str, Any]],
+    nodes: List[Dict[str, Any]],
+    edges: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
     if all("output" in str(n.get("component_type", "")) for n in leaf_nodes) and edges:
         target_ids = {
             e["target"] for e in edges if e["target"] in {n["id"] for n in leaf_nodes}
         }
         pred_ids = {e["source"] for e in edges if e["target"] in target_ids}
-        analysis_nodes = [n for n in nodes if n["id"] in pred_ids] or leaf_nodes
+        return [n for n in nodes if n["id"] in pred_ids] or leaf_nodes
+    return leaf_nodes
 
-    for node in analysis_nodes:
-        comp_type = str(node.get("component_type", "")).split("/")[-1].lower()
 
-        if "input" in comp_type:
-            suggestions.extend(
-                _suggest_category(
-                    by_category,
-                    "linear_algebra",
-                    "Add a linear layer.",
-                    score=0.72,
-                    evidence=[f"Leaf node '{comp_type}' usually feeds projection"],
-                    context=ctx,
-                )
+def _suggest_for_leaf_type(
+    comp_type: str,
+    by_category: Dict[str, List[Dict[str, Any]]],
+    ctx: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    suggestions: List[Dict[str, Any]] = []
+    if "input" in comp_type:
+        suggestions.extend(
+            _suggest_category(
+                by_category,
+                "linear_algebra",
+                "Add a linear layer.",
+                score=0.72,
+                evidence=[f"Leaf node '{comp_type}' usually feeds projection"],
+                context=ctx,
             )
-            suggestions.extend(
-                _suggest_category(
-                    by_category,
-                    "math",
-                    "Apply an elementwise operation.",
-                    score=0.66,
-                    evidence=[f"Leaf node '{comp_type}' benefits from nonlinearity"],
-                    context=ctx,
-                )
+        )
+        suggestions.extend(
+            _suggest_category(
+                by_category,
+                "math",
+                "Apply an elementwise operation.",
+                score=0.66,
+                evidence=[f"Leaf node '{comp_type}' benefits from nonlinearity"],
+                context=ctx,
             )
-        elif "linear" in comp_type:
-            suggestions.extend(
-                _suggest_category(
-                    by_category,
-                    "math",
-                    "Add an activation function.",
-                    score=0.78,
-                    evidence=[
-                        "Linear layer at leaf",
-                        "Activation not yet applied downstream",
-                    ],
-                    context=ctx,
-                )
+        )
+    elif "linear" in comp_type:
+        suggestions.extend(
+            _suggest_category(
+                by_category,
+                "math",
+                "Add an activation function.",
+                score=0.78,
+                evidence=[
+                    "Linear layer at leaf",
+                    "Activation not yet applied downstream",
+                ],
+                context=ctx,
             )
-            suggestions.extend(
-                _suggest_category(
-                    by_category,
-                    "normalization",
-                    "Normalize the output.",
-                    score=0.74,
-                    evidence=["Linear output can drift in scale"],
-                    context=ctx,
-                    exclude_ids={"no_norm", "none"},
-                )
+        )
+        suggestions.extend(
+            _suggest_category(
+                by_category,
+                "normalization",
+                "Normalize the output.",
+                score=0.74,
+                evidence=["Linear output can drift in scale"],
+                context=ctx,
+                exclude_ids={"no_norm", "none"},
             )
-        elif "relu" in comp_type or "gelu" in comp_type or "silu" in comp_type:
-            suggestions.extend(
-                _suggest_category(
-                    by_category,
-                    "linear_algebra",
-                    "Project to a new dimension.",
-                    score=0.70,
-                    evidence=[
-                        "Activation leaf found",
-                        "Projection expands modeling capacity",
-                    ],
-                    context=ctx,
-                )
+        )
+    elif "relu" in comp_type or "gelu" in comp_type or "silu" in comp_type:
+        suggestions.extend(
+            _suggest_category(
+                by_category,
+                "linear_algebra",
+                "Project to a new dimension.",
+                score=0.70,
+                evidence=[
+                    "Activation leaf found",
+                    "Projection expands modeling capacity",
+                ],
+                context=ctx,
             )
-            suggestions.extend(
-                _suggest_category(
-                    by_category,
-                    "blocks",
-                    "Add a transformer block.",
-                    score=0.57,
-                    evidence=["Activation stage can be wrapped in reusable block"],
-                    context=ctx,
-                )
+        )
+        suggestions.extend(
+            _suggest_category(
+                by_category,
+                "blocks",
+                "Add a transformer block.",
+                score=0.57,
+                evidence=["Activation stage can be wrapped in reusable block"],
+                context=ctx,
             )
-        elif "norm" in comp_type:
-            suggestions.extend(
-                _suggest_category(
-                    by_category,
-                    "mixing",
-                    "Add attention.",
-                    score=0.69,
-                    evidence=["Normalized features are ready for mixing"],
-                    context=ctx,
-                )
+        )
+    elif "norm" in comp_type:
+        suggestions.extend(
+            _suggest_category(
+                by_category,
+                "mixing",
+                "Add attention.",
+                score=0.69,
+                evidence=["Normalized features are ready for mixing"],
+                context=ctx,
             )
+        )
     return suggestions
 
 
@@ -442,87 +527,8 @@ def _suggest_by_name(
     context: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     """Match component IDs mentioned in the prompt."""
-    lower = prompt.lower()
-    # Tokenize prompt into words
-    words = set(
-        lower.replace(",", " ")
-        .replace(".", " ")
-        .replace("(", " ")
-        .replace(")", " ")
-        .split()
-    )
     out: List[Dict[str, Any]] = []
-    # Skip common English words that clash with op names
-    skip_words = {
-        "add",
-        "sub",
-        "exp",
-        "log",
-        "cos",
-        "sin",
-        "abs",
-        "neg",
-        "sign",
-        "sort",
-        "mul",
-        "div",
-        "input",
-        "output",
-        "split",
-        "join",
-        "loop",
-        "none",
-        "filter",
-        "from",
-        "with",
-        "that",
-        "this",
-        "then",
-        "have",
-        "will",
-        "been",
-        "into",
-        "over",
-        "each",
-        "more",
-        "like",
-        "make",
-        "graph",
-        "block",
-        "dense",
-        "scale",
-        "speed",
-        "model",
-        "layer",
-        "point",
-        "batch",
-        "step",
-        "gate",
-        "head",
-        "base",
-        "loss",
-        "task",
-        "test",
-        "down",
-        "last",
-        "first",
-        "quality",
-        "stability",
-        "benchmark",
-        "target",
-        "gaps",
-        "novelty",
-        "preserving",
-        "propose",
-        "patch",
-        "closes",
-        "downstream",
-        "while",
-    }
-    candidate_words = [
-        word for word in words if len(word) >= 5 and word not in skip_words
-    ]
-    for word in candidate_words:
+    for word in _candidate_name_words(prompt):
         component = by_id.get(word)
         if component is not None:
             out.append(
@@ -536,7 +542,7 @@ def _suggest_by_name(
             )
             continue
         for component_id, component in by_id.items():
-            if component_id in skip_words:
+            if component_id in _NAME_MATCH_SKIP_WORDS:
                 continue
             if component_id.startswith(word):
                 out.append(
@@ -550,6 +556,20 @@ def _suggest_by_name(
                 )
                 break
     return _dedupe_suggestions(out)
+
+
+def _candidate_name_words(prompt: str) -> List[str]:
+    words = set(
+        prompt.lower()
+        .replace(",", " ")
+        .replace(".", " ")
+        .replace("(", " ")
+        .replace(")", " ")
+        .split()
+    )
+    return [
+        word for word in words if len(word) >= 5 and word not in _NAME_MATCH_SKIP_WORDS
+    ]
 
 
 def _suggest_component_ids(
@@ -695,95 +715,126 @@ def _research_score_delta(
     delta = 0.0
     canon_cid = _canon_leaf(cid)
 
-    # Op success rate priors
-    op_priors = research.get("op_priors")
-    if isinstance(op_priors, list):
-        for row in op_priors:
-            if _canon_leaf(str((row or {}).get("op_name") or "")) == canon_cid:
-                try:
-                    delta += (float((row or {}).get("s1_rate")) - 0.5) * 0.2
-                except Exception:
-                    pass
-                break
+    delta += _op_prior_delta(research.get("op_priors"), canon_cid)
+    delta += _toxic_op_delta(research.get("toxic_ops"), canon_cid)
+    delta += _compression_delta(
+        research.get("compression_techniques"), canon_cid, prompt_lower
+    )
+    delta += _insight_stability_delta(research.get("insights"), component, prompt_lower)
+    delta += _op_pair_delta(research.get("op_pair_priors"), canon_cid, all_types)
+    delta += _failure_signature_delta(
+        research.get("failure_risk_signatures"), canon_cid
+    )
+    return delta
 
-    # Toxic ops penalty
-    toxic_ops = research.get("toxic_ops")
-    if isinstance(toxic_ops, list):
-        if canon_cid in {_canon_leaf(str(x)) for x in toxic_ops}:
-            delta -= 0.12
 
-    # Compression technique boost
-    comp_techniques = research.get("compression_techniques")
-    if isinstance(comp_techniques, list) and any(
+def _op_prior_delta(op_priors: object, canon_cid: str) -> float:
+    if not isinstance(op_priors, list):
+        return 0.0
+    for row in op_priors:
+        if _canon_leaf(str((row or {}).get("op_name") or "")) == canon_cid:
+            try:
+                return (float((row or {}).get("s1_rate")) - 0.5) * 0.2
+            except Exception:
+                return 0.0
+    return 0.0
+
+
+def _toxic_op_delta(toxic_ops: object, canon_cid: str) -> float:
+    if isinstance(toxic_ops, list) and canon_cid in {
+        _canon_leaf(str(op)) for op in toxic_ops
+    }:
+        return -0.12
+    return 0.0
+
+
+def _compression_delta(
+    comp_techniques: object,
+    canon_cid: str,
+    prompt_lower: str,
+) -> float:
+    if not isinstance(comp_techniques, list):
+        return 0.0
+    if not any(
         tok in prompt_lower for tok in ("compress", "flop", "latency", "efficien")
     ):
-        low_rank_like = {
-            "low_rank",
-            "bottleneck",
-            "grouped_linear",
-            "structured_sparse",
-            "shared_basis",
-        }
-        if canon_cid in low_rank_like and any(
-            canon_cid in str(t).lower() for t in comp_techniques
+        return 0.0
+    low_rank_like = {
+        "low_rank",
+        "bottleneck",
+        "grouped_linear",
+        "structured_sparse",
+        "shared_basis",
+    }
+    if canon_cid in low_rank_like and any(
+        canon_cid in str(technique).lower() for technique in comp_techniques
+    ):
+        return 0.06
+    return 0.0
+
+
+def _insight_stability_delta(
+    insights: object,
+    component: Dict[str, Any],
+    prompt_lower: str,
+) -> float:
+    if not isinstance(insights, list):
+        return 0.0
+    stability_keywords = ("stability", "exploding", "nan", "gradient")
+    if not any(tok in prompt_lower for tok in stability_keywords):
+        return 0.0
+    for insight in insights[:40]:
+        cat = str((insight or {}).get("category") or "").lower()
+        content = str((insight or {}).get("content") or "").lower()
+        if cat not in {"failure_mode", "success_factor"}:
+            continue
+        if not any(keyword in content for keyword in stability_keywords):
+            continue
+        if cat == "success_factor" and str(component.get("category", "")).lower() == (
+            "normalization"
         ):
-            delta += 0.06
+            return 0.02
+        break
+    return 0.0
 
-    # Insight-driven stability boost
-    insights = research.get("insights")
-    if isinstance(insights, list):
-        stability_keywords = ("stability", "exploding", "nan", "gradient")
-        if any(tok in prompt_lower for tok in stability_keywords):
-            for ins in insights[:40]:
-                cat = str((ins or {}).get("category") or "").lower()
-                content = str((ins or {}).get("content") or "").lower()
-                if cat in {"failure_mode", "success_factor"} and any(
-                    k in content for k in stability_keywords
-                ):
-                    if (
-                        cat == "success_factor"
-                        and str(component.get("category", "")).lower()
-                        == "normalization"
-                    ):
-                        delta += 0.02
-                    break
 
-    # Op-pair priors: boost components that pair well with existing graph ops
-    op_pair_priors = research.get("op_pair_priors")
-    if isinstance(op_pair_priors, list) and all_types:
-        pair_boost = 0.0
-        pair_count = 0
-        for pair in op_pair_priors:
-            if not isinstance(pair, dict):
-                continue
-            op_a = _canon_leaf(str(pair.get("op_a") or ""))
-            op_b = _canon_leaf(str(pair.get("op_b") or ""))
-            try:
-                rate = float(pair.get("success_rate"))
-            except (TypeError, ValueError):
-                continue
-            if (op_a == canon_cid and op_b in all_types) or (
-                op_b == canon_cid and op_a in all_types
-            ):
-                pair_boost += (rate - 0.5) * 0.15
-                pair_count += 1
-        if pair_count > 0:
-            delta += min(0.08, pair_boost / pair_count)
+def _op_pair_delta(
+    op_pair_priors: object, canon_cid: str, all_types: Set[str]
+) -> float:
+    if not isinstance(op_pair_priors, list) or not all_types:
+        return 0.0
+    pair_boost = 0.0
+    pair_count = 0
+    for pair in op_pair_priors:
+        if not isinstance(pair, dict):
+            continue
+        op_a = _canon_leaf(str(pair.get("op_a") or ""))
+        op_b = _canon_leaf(str(pair.get("op_b") or ""))
+        try:
+            rate = float(pair.get("success_rate"))
+        except (TypeError, ValueError):
+            continue
+        if (op_a == canon_cid and op_b in all_types) or (
+            op_b == canon_cid and op_a in all_types
+        ):
+            pair_boost += (rate - 0.5) * 0.15
+            pair_count += 1
+    return min(0.08, pair_boost / pair_count) if pair_count > 0 else 0.0
 
-    # Failure risk signatures
-    failure_sigs = research.get("failure_risk_signatures")
-    if isinstance(failure_sigs, list):
-        for sig in failure_sigs:
-            if not isinstance(sig, dict):
-                continue
-            if canon_cid in str(sig.get("pattern") or "").lower():
-                try:
-                    delta -= min(0.1, float(sig.get("penalty") or 0.0) * 0.1)
-                except (TypeError, ValueError):
-                    pass
-                break
 
-    return delta
+def _failure_signature_delta(failure_sigs: object, canon_cid: str) -> float:
+    if not isinstance(failure_sigs, list):
+        return 0.0
+    for sig in failure_sigs:
+        if not isinstance(sig, dict):
+            continue
+        if canon_cid not in str(sig.get("pattern") or "").lower():
+            continue
+        try:
+            return -min(0.1, float(sig.get("penalty") or 0.0) * 0.1)
+        except (TypeError, ValueError):
+            return 0.0
+    return 0.0
 
 
 def _leaderboard_boost(

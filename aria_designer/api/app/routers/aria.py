@@ -97,20 +97,55 @@ def apply_patch(req: ApplyPatchRequest) -> Dict[str, Any]:
     ops = patch_data.get("ops", [])
     proposal_base_version = int(patch_data.get("base_version") or 0)
     wf_row = _require_workflow(workflow_id)
-    current_version = int(wf_row.get("version") or 0)
-    if (
-        proposal_base_version
-        and current_version
-        and proposal_base_version != current_version
-    ):
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                f"Proposal is stale (base_version={proposal_base_version}, "
-                f"current_version={current_version}). Regenerate a new proposal on the latest graph."
-            ),
-        )
+    _raise_if_stale_patch(proposal_base_version, int(wf_row.get("version") or 0))
     workflow = json.loads(wf_row["graph_json"])
+    patched_workflow = _apply_ops_to_workflow(workflow, ops)
+    model_dim = patched_workflow.get("metadata", {}).get("model_dim", 256)
+    validation_info = _validate_patched_workflow(patched_workflow, model_dim)
+    old_fingerprint, new_fingerprint = _refresh_patch_fingerprint(
+        workflow,
+        patched_workflow,
+        model_dim,
+    )
+    new_version = _persist_applied_patch(
+        req,
+        wf_row,
+        workflow,
+        patched_workflow,
+        workflow_id,
+    )
+    return {
+        "applied": True,
+        "proposal_id": req.proposal_id,
+        "approved_by": req.approved_by,
+        "workflow_id": workflow_id,
+        "new_version": new_version,
+        "ops_applied": len(ops),
+        "validation": validation_info,
+        "old_fingerprint": old_fingerprint,
+        "new_fingerprint": new_fingerprint,
+        "patched_workflow": patched_workflow,
+    }
+
+
+def _raise_if_stale_patch(proposal_base_version: int, current_version: int) -> None:
+    if not proposal_base_version or not current_version:
+        return
+    if proposal_base_version == current_version:
+        return
+    raise HTTPException(
+        status_code=409,
+        detail=(
+            f"Proposal is stale (base_version={proposal_base_version}, "
+            f"current_version={current_version}). Regenerate a new proposal on the latest graph."
+        ),
+    )
+
+
+def _apply_ops_to_workflow(
+    workflow: Dict[str, Any],
+    ops: List[Dict[str, Any]],
+) -> Dict[str, Any]:
     from ..patcher import PatchError as _PE
 
     added_node_ids = [
@@ -153,17 +188,31 @@ def apply_patch(req: ApplyPatchRequest) -> Dict[str, Any]:
                 "issues": unresolved,
             },
         )
-    validation_info = None
-    new_fingerprint = None
-    model_dim = patched_workflow.get("metadata", {}).get("model_dim", 256)
-    if HAS_BRIDGE:
-        validation_info = bridge_validate(patched_workflow, model_dim=model_dim)
-        if not validation_info.get("valid", False):
-            raise HTTPException(
-                status_code=422,
-                detail=f"Patched workflow invalid: {validation_info.get('error', 'unknown error')}",
-            )
+    return patched_workflow
+
+
+def _validate_patched_workflow(
+    patched_workflow: Dict[str, Any],
+    model_dim: int,
+) -> Optional[Dict[str, Any]]:
+    if not HAS_BRIDGE:
+        return None
+    validation_info = bridge_validate(patched_workflow, model_dim=model_dim)
+    if not validation_info.get("valid", False):
+        raise HTTPException(
+            status_code=422,
+            detail=f"Patched workflow invalid: {validation_info.get('error', 'unknown error')}",
+        )
+    return validation_info
+
+
+def _refresh_patch_fingerprint(
+    workflow: Dict[str, Any],
+    patched_workflow: Dict[str, Any],
+    model_dim: int,
+) -> Tuple[Optional[str], Optional[str]]:
     old_fingerprint = workflow.get("metadata", {}).get("graph_fingerprint")
+    new_fingerprint = None
     try:
         from research.synthesis.workflow_converter import (
             workflow_to_computation_graph as _w2g,
@@ -177,6 +226,16 @@ def apply_patch(req: ApplyPatchRequest) -> Dict[str, Any]:
             meta["parent_fingerprint"] = old_fingerprint
     except Exception:
         logger.debug("Could not recompute fingerprint after patch", exc_info=True)
+    return old_fingerprint, new_fingerprint
+
+
+def _persist_applied_patch(
+    req: ApplyPatchRequest,
+    wf_row: Dict[str, Any],
+    workflow: Dict[str, Any],
+    patched_workflow: Dict[str, Any],
+    workflow_id: str,
+) -> int:
     now = _utc_now()
     new_version = db.save_workflow(
         workflow_id=workflow_id,
@@ -188,18 +247,7 @@ def apply_patch(req: ApplyPatchRequest) -> Dict[str, Any]:
         updated_at=now,
     )
     db.resolve_proposal(req.proposal_id, "applied", req.approved_by, now)
-    return {
-        "applied": True,
-        "proposal_id": req.proposal_id,
-        "approved_by": req.approved_by,
-        "workflow_id": workflow_id,
-        "new_version": new_version,
-        "ops_applied": len(ops),
-        "validation": validation_info,
-        "old_fingerprint": old_fingerprint,
-        "new_fingerprint": new_fingerprint,
-        "patched_workflow": patched_workflow,
-    }
+    return new_version
 
 
 @router.post("/reject-patch")

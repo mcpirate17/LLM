@@ -75,51 +75,13 @@ def extract_block(
         with those nodes replaced by a single block node.
     """
     all_nodes = {n["id"]: n for n in workflow.get("nodes", [])}
-    all_edges = workflow.get("edges", [])
-
-    # Partition nodes
     inner_nodes = [all_nodes[nid] for nid in node_ids if nid in all_nodes]
-    set(all_nodes.keys()) - node_ids
-
-    # Classify edges
-    inner_edges = []
-    incoming_edges = []  # from outside → inside (these become input ports)
-    outgoing_edges = []  # from inside → outside (these become output ports)
-    outer_edges = []
-
-    for e in all_edges:
-        src_in = e["source"] in node_ids
-        tgt_in = e["target"] in node_ids
-        if src_in and tgt_in:
-            inner_edges.append(e)
-        elif not src_in and tgt_in:
-            incoming_edges.append(e)
-        elif src_in and not tgt_in:
-            outgoing_edges.append(e)
-        else:
-            outer_edges.append(e)
-
-    # Build input/output port specs
-    input_ports = []
-    for i, e in enumerate(incoming_edges):
-        input_ports.append(
-            {
-                "name": f"in_{i}",
-                "target_node": e["target"],
-                "target_port": e.get("target_port", "in"),
-            }
-        )
-
-    output_ports = []
-    for i, e in enumerate(outgoing_edges):
-        output_ports.append(
-            {
-                "name": f"out_{i}",
-                "source_node": e["source"],
-                "source_port": e.get("source_port", "out"),
-            }
-        )
-
+    inner_edges, incoming_edges, outgoing_edges, outer_edges = _partition_block_edges(
+        workflow.get("edges", []),
+        node_ids,
+    )
+    input_ports = _input_ports_for_edges(incoming_edges)
+    output_ports = _output_ports_for_edges(outgoing_edges)
     block = create_block(
         name=block_name,
         nodes=inner_nodes,
@@ -128,9 +90,68 @@ def extract_block(
         output_ports=output_ports,
     )
 
-    # Create the block node that replaces the subgraph
+    block_node = _replacement_block_node(block, inner_nodes)
+    modified_wf = _workflow_with_extracted_block(
+        workflow,
+        node_ids,
+        block_node,
+        _rewired_block_edges(
+            block_node["id"],
+            outer_edges,
+            incoming_edges,
+            outgoing_edges,
+        ),
+    )
+    return block, modified_wf
+
+
+def _partition_block_edges(edges: List[Dict[str, Any]], node_ids: Set[str]):
+    inner_edges = []
+    incoming_edges = []
+    outgoing_edges = []
+    outer_edges = []
+    for edge in edges:
+        src_in = edge["source"] in node_ids
+        tgt_in = edge["target"] in node_ids
+        if src_in and tgt_in:
+            inner_edges.append(edge)
+        elif not src_in and tgt_in:
+            incoming_edges.append(edge)
+        elif src_in and not tgt_in:
+            outgoing_edges.append(edge)
+        else:
+            outer_edges.append(edge)
+    return inner_edges, incoming_edges, outgoing_edges, outer_edges
+
+
+def _input_ports_for_edges(edges: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+    return [
+        {
+            "name": f"in_{idx}",
+            "target_node": edge["target"],
+            "target_port": edge.get("target_port", "in"),
+        }
+        for idx, edge in enumerate(edges)
+    ]
+
+
+def _output_ports_for_edges(edges: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+    return [
+        {
+            "name": f"out_{idx}",
+            "source_node": edge["source"],
+            "source_port": edge.get("source_port", "out"),
+        }
+        for idx, edge in enumerate(edges)
+    ]
+
+
+def _replacement_block_node(
+    block: Dict[str, Any],
+    inner_nodes: List[Dict[str, Any]],
+) -> Dict[str, Any]:
     block_node_id = f"blk_{uuid4().hex[:6]}"
-    block_node = {
+    return {
         "id": block_node_id,
         "component_type": f"block/{block['block_id']}",
         "params": {},
@@ -138,38 +159,49 @@ def extract_block(
         "block_ref": block["block_id"],
     }
 
-    # Rewire edges: incoming → block node, block node → outgoing
+
+def _rewired_block_edges(
+    block_node_id: str,
+    outer_edges: List[Dict[str, Any]],
+    incoming_edges: List[Dict[str, Any]],
+    outgoing_edges: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
     rewired_edges = list(outer_edges)
-    for i, e in enumerate(incoming_edges):
-        rewired_edges.append(
-            {
-                "id": e["id"],
-                "source": e["source"],
-                "source_port": e.get("source_port", "out"),
-                "target": block_node_id,
-                "target_port": f"in_{i}",
-            }
-        )
-    for i, e in enumerate(outgoing_edges):
-        rewired_edges.append(
-            {
-                "id": e["id"],
-                "source": block_node_id,
-                "source_port": f"out_{i}",
-                "target": e["target"],
-                "target_port": e.get("target_port", "in"),
-            }
-        )
+    rewired_edges.extend(
+        {
+            "id": edge["id"],
+            "source": edge["source"],
+            "source_port": edge.get("source_port", "out"),
+            "target": block_node_id,
+            "target_port": f"in_{idx}",
+        }
+        for idx, edge in enumerate(incoming_edges)
+    )
+    rewired_edges.extend(
+        {
+            "id": edge["id"],
+            "source": block_node_id,
+            "source_port": f"out_{idx}",
+            "target": edge["target"],
+            "target_port": edge.get("target_port", "in"),
+        }
+        for idx, edge in enumerate(outgoing_edges)
+    )
+    return rewired_edges
 
-    # Build modified workflow
-    remaining_nodes = [n for n in workflow["nodes"] if n["id"] not in node_ids]
+
+def _workflow_with_extracted_block(
+    workflow: Dict[str, Any],
+    node_ids: Set[str],
+    block_node: Dict[str, Any],
+    rewired_edges: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    remaining_nodes = [node for node in workflow["nodes"] if node["id"] not in node_ids]
     remaining_nodes.append(block_node)
-
     modified_wf = copy.deepcopy(workflow)
     modified_wf["nodes"] = remaining_nodes
     modified_wf["edges"] = rewired_edges
-
-    return block, modified_wf
+    return modified_wf
 
 
 def expand_block(

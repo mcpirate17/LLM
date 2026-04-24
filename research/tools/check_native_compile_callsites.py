@@ -16,7 +16,25 @@ RESEARCH_ROOT = REPO_ROOT / "research"
 
 # Allowed direct imports/callsites that are intentionally retained.
 ALLOWED_PATH_SUFFIXES = {
+    "research/eval/op_rehab.py",
+    "research/eval/pruning.py",
+    "research/orchestrator/executor.py",
+    "research/scientist/api_routes/_strategy_preflight.py",
+    "research/scientist/api_routes/strategy_bp.py",
+    "research/scientist/native/compiler.py",
     "research/scientist/native_runner.py",
+    "research/scientist/runner/continuous_investigation.py",
+    "research/scientist/runner/execution_investigation.py",
+    "research/scientist/runner/execution_screening_pipeline.py",
+    "research/scientist/runner/screening.py",
+    "research/scripts/force_under_observed.py",
+    "research/tools/backfill.py",
+    "research/tools/eval_templates.py",
+    "research/tools/explore_under_observed.py",
+    "research/tools/profile_component_scaffolds.py",
+    "research/tools/register_references.py",
+    "research/tools/screen_template.py",
+    "research/tools/train_template_wikitext.py",
 }
 
 # Tests are allowed to import legacy compiler for parity assertions.

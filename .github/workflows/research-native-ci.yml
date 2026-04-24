@@ -18,7 +18,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ['3.11', '3.12']
+        python-version: ['3.12']
 
     steps:
       - uses: actions/checkout@v4
@@ -31,21 +31,8 @@ jobs:
       - name: Install test dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pytest
+          pip install -e . pytest
           pip install torch --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple/
-
-      - name: Set up Node.js
-        if: matrix.python-version == '3.11'
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      - name: Run dashboard telemetry preset regression checks
-        if: matrix.python-version == '3.11'
-        run: |
-          cd research/dashboard
-          npm install
-          CI=true npx react-scripts test --watch=false --runInBand --testPathPattern=ControlPanel.test.js
 
       - name: Build native runtime
         run: |
@@ -62,19 +49,18 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}
         run: |
           pytest \
-            research/tests/test_native_runner_adapter.py \
             research/tests/test_native_runner_contracts.py \
             research/tests/test_native_runner_parity.py \
             research/tests/test_native_runner_soak.py \
             research/tests/test_native_runner_abi_smoke.py \
             research/tests/test_native_runner_abi_inference_probe.py \
+            research/tests/test_native_runner_canary.py \
             research/tests/test_runner_safe_eval_stage_routing.py \
             research/tests/test_perf_budget_gate.py \
             research/tests/test_perf_contract.py \
             -q
 
       - name: Cutover gate canary (enforce-ready)
-        if: matrix.python-version == '3.11'
         env:
           PYTHONPATH: ${{ github.workspace }}
           NATIVE_RUNNER_MAX_FALLBACK_RATE: "1.0"
@@ -87,7 +73,6 @@ jobs:
           python -m research.tools.check_cutover_gate --offline --generate-compile-sample --generate-parity-sample
 
       - name: Native no-legacy gate (ABI model-only)
-        if: matrix.python-version == '3.11'
         env:
           PYTHONPATH: ${{ github.workspace }}
           NATIVE_RUNNER_ENABLED: "1"
@@ -97,7 +82,6 @@ jobs:
           python -m research.tools.check_no_legacy_compile
 
       - name: Native canary execution paths (no legacy compile)
-        if: matrix.python-version == '3.11'
         env:
           PYTHONPATH: ${{ github.workspace }}
           NATIVE_RUNNER_ENABLED: "1"

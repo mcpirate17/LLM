@@ -6,17 +6,26 @@ from typing import Any
 import numpy as np
 
 from .dim_flow_opcode_tables import (
+    FULL_DIM_OPS,
+    KV_CACHE_BREAKING_OPS,
     build_dim_flow_opcode_tables,
 )
 from .graph import ComputationGraph, ComputationGraphIR
 from .graph_ir_builder import build_graph_ir
 from .native_analysis import analyze_ir_runtime_first
 
+__all__ = [
+    "DimFlowInputs",
+    "FULL_DIM_OPS",
+    "KV_CACHE_BREAKING_OPS",
+    "build_dim_flow_inputs",
+]
+
 
 @dataclass(slots=True)
 class DimFlowInputs:
     analysis_ir: object
-    analysis: object
+    analysis: object | None
     analysis_node_ids: np.ndarray
     node_id_to_analysis_idx: dict[int, int]
     has_params_flags: np.ndarray
@@ -38,11 +47,12 @@ def build_dim_flow_inputs(
     op_kind_binary_broadcast: int,
     analysis_ir: Any | None = None,
     analysis: Any | None = None,
+    compute_analysis: bool = True,
 ) -> DimFlowInputs:
     analysis_source_ir = (
         analysis_ir if analysis_ir is not None else graph._analysis_ir()
     )
-    if analysis is None:
+    if analysis is None and compute_analysis:
         analysis = analyze_ir_runtime_first(analysis_source_ir, include_reachable=True)
     analysis_ir = (
         analysis_source_ir

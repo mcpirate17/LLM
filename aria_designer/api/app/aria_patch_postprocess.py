@@ -102,122 +102,184 @@ def _auto_connect_added_nodes(
     nodes_by_id = {str(n.get("id")): n for n in nodes}
 
     for new_id in added_node_ids:
-        node = nodes_by_id.get(str(new_id))
-        if not node:
-            continue
-        ctype = str(node.get("component_type", ""))
-        if _contains_token(ctype, "input") or _contains_token(ctype, "output"):
-            continue
-
-        incoming, outgoing, output_node, source_ids = _node_edge_indexes(
-            nodes, edges, str(new_id)
+        _auto_connect_added_node(
+            nodes,
+            edges,
+            nodes_by_id,
+            str(new_id),
+            insertion_hints,
         )
 
-        if incoming and outgoing:
-            continue
 
-        hint = (insertion_hints or {}).get(str(new_id))
-        if isinstance(hint, dict) and not incoming and not outgoing:
-            after_id = hint.get("after_node_id")
-            before_id = hint.get("before_node_id")
-            if after_id and after_id in nodes_by_id:
-                if before_id and before_id in nodes_by_id:
-                    _remove_edge_once(edges, str(after_id), str(before_id))
-                    _append_edge(edges, str(after_id), str(new_id))
-                    _append_edge(edges, str(new_id), str(before_id))
-                    continue
-                _append_edge(edges, str(after_id), str(new_id))
-                if output_node:
-                    _append_edge(edges, str(new_id), str(output_node.get("id", "")))
-                continue
-            if before_id and before_id in nodes_by_id:
-                _append_edge(edges, str(new_id), str(before_id))
-                continue
+def _auto_connect_added_node(
+    nodes: List[Dict[str, Any]],
+    edges: List[Dict[str, Any]],
+    nodes_by_id: Dict[str, Dict[str, Any]],
+    new_id: str,
+    insertion_hints: Optional[Dict[str, Dict[str, str | None]]],
+) -> None:
+    node = nodes_by_id.get(str(new_id))
+    if not node:
+        return
+    ctype = str(node.get("component_type", ""))
+    if _contains_token(ctype, "input") or _contains_token(ctype, "output"):
+        return
 
-        if (not incoming) and outgoing:
-            out_to_output = [
-                e
-                for e in outgoing
-                if output_node and e.get("target") == output_node.get("id")
-            ]
-            if out_to_output and output_node:
-                in_to_output = [
-                    e
-                    for e in edges
-                    if e.get("target") == output_node.get("id")
-                    and e.get("source") != new_id
-                ]
-                if in_to_output:
-                    old = in_to_output[-1]
-                    try:
-                        edges.remove(old)
-                    except ValueError:
-                        pass
-                    _append_edge(
-                        edges,
-                        str(old.get("source", "")),
-                        str(new_id),
-                        str(old.get("source_port") or "out"),
-                        "in",
-                    )
-                    continue
+    incoming, outgoing, output_node, source_ids = _node_edge_indexes(
+        nodes, edges, str(new_id)
+    )
 
-                sink = _last_non_new_sink(
-                    nodes, source_ids, {str(new_id), str(output_node.get("id"))}
-                )
-                if sink:
-                    _append_edge(edges, str(sink.get("id", "")), str(new_id))
-                    continue
+    if incoming and outgoing:
+        return
 
-        if incoming and (not outgoing):
-            src = str(incoming[-1].get("source", ""))
-            if output_node:
-                while _remove_edge_once(edges, src, str(output_node.get("id", ""))):
-                    pass
-                _append_edge(
-                    edges, str(new_id), str(output_node.get("id", "")), "out", "in"
-                )
-                continue
+    hint = (insertion_hints or {}).get(str(new_id))
+    if _connect_from_insertion_hint(
+        edges, nodes_by_id, new_id, hint, incoming, outgoing, output_node
+    ):
+        return
 
+    if _connect_missing_incoming(
+        nodes, edges, new_id, outgoing, output_node, source_ids
+    ):
+        return
+
+    if incoming and (not outgoing):
+        src = str(incoming[-1].get("source", ""))
         if output_node:
-            inc_to_output = [
-                e for e in edges if e.get("target") == output_node.get("id")
-            ]
-            if inc_to_output:
-                old = inc_to_output[-1]
-                try:
-                    edges.remove(old)
-                except ValueError:
-                    pass
-                _append_edge(
-                    edges,
-                    str(old.get("source", "")),
-                    str(new_id),
-                    str(old.get("source_port") or "out"),
-                    "in",
-                )
-                _append_edge(
-                    edges,
-                    str(new_id),
-                    str(output_node.get("id", "")),
-                    "out",
-                    str(old.get("target_port") or "in"),
-                )
-                continue
+            while _remove_edge_once(edges, src, str(output_node.get("id", ""))):
+                pass
+            _append_edge(
+                edges, str(new_id), str(output_node.get("id", "")), "out", "in"
+            )
+            return
 
-        sink = _last_non_new_sink(nodes, source_ids, {str(new_id)})
-        if sink:
-            _append_edge(edges, str(sink.get("id", "")), str(new_id))
-            continue
+    if _insert_before_output(edges, new_id, output_node):
+        return
+    _connect_from_sink_or_input(nodes, edges, new_id, source_ids)
 
-        inputs = [
-            n
-            for n in nodes
-            if _contains_token(n.get("component_type", ""), "input")
-            and n.get("id") != new_id
-        ]
-        if inputs:
-            _append_edge(edges, str(inputs[0].get("id", "")), str(new_id))
+
+def _connect_from_insertion_hint(
+    edges: List[Dict[str, Any]],
+    nodes_by_id: Dict[str, Dict[str, Any]],
+    new_id: str,
+    hint: object,
+    incoming: List[Dict[str, Any]],
+    outgoing: List[Dict[str, Any]],
+    output_node: Optional[Dict[str, Any]],
+) -> bool:
+    if not isinstance(hint, dict) or incoming or outgoing:
+        return False
+    after_id = hint.get("after_node_id")
+    before_id = hint.get("before_node_id")
+    if after_id and after_id in nodes_by_id:
+        if before_id and before_id in nodes_by_id:
+            _remove_edge_once(edges, str(after_id), str(before_id))
+            _append_edge(edges, str(after_id), str(new_id))
+            _append_edge(edges, str(new_id), str(before_id))
+            return True
+        _append_edge(edges, str(after_id), str(new_id))
+        if output_node:
+            _append_edge(edges, str(new_id), str(output_node.get("id", "")))
+        return True
+    if before_id and before_id in nodes_by_id:
+        _append_edge(edges, str(new_id), str(before_id))
+        return True
+    return False
+
+
+def _connect_missing_incoming(
+    nodes: List[Dict[str, Any]],
+    edges: List[Dict[str, Any]],
+    new_id: str,
+    outgoing: List[Dict[str, Any]],
+    output_node: Optional[Dict[str, Any]],
+    source_ids: set[str],
+) -> bool:
+    if not outgoing or not output_node:
+        return False
+    if not any(edge.get("target") == output_node.get("id") for edge in outgoing):
+        return False
+    in_to_output = [
+        edge
+        for edge in edges
+        if edge.get("target") == output_node.get("id") and edge.get("source") != new_id
+    ]
+    if in_to_output:
+        old = in_to_output[-1]
+        _remove_edge_object(edges, old)
+        _append_edge(
+            edges,
+            str(old.get("source", "")),
+            str(new_id),
+            str(old.get("source_port") or "out"),
+            "in",
+        )
+        return True
+    sink = _last_non_new_sink(
+        nodes, source_ids, {str(new_id), str(output_node.get("id"))}
+    )
+    if sink:
+        _append_edge(edges, str(sink.get("id", "")), str(new_id))
+        return True
+    return False
+
+
+def _remove_edge_object(edges: List[Dict[str, Any]], edge: Dict[str, Any]) -> None:
+    try:
+        edges.remove(edge)
+    except ValueError:
+        pass
+
+
+def _insert_before_output(
+    edges: List[Dict[str, Any]],
+    new_id: str,
+    output_node: Optional[Dict[str, Any]],
+) -> bool:
+    if not output_node:
+        return False
+    inc_to_output = [
+        edge for edge in edges if edge.get("target") == output_node.get("id")
+    ]
+    if not inc_to_output:
+        return False
+    old = inc_to_output[-1]
+    _remove_edge_object(edges, old)
+    _append_edge(
+        edges,
+        str(old.get("source", "")),
+        str(new_id),
+        str(old.get("source_port") or "out"),
+        "in",
+    )
+    _append_edge(
+        edges,
+        str(new_id),
+        str(output_node.get("id", "")),
+        "out",
+        str(old.get("target_port") or "in"),
+    )
+    return True
+
+
+def _connect_from_sink_or_input(
+    nodes: List[Dict[str, Any]],
+    edges: List[Dict[str, Any]],
+    new_id: str,
+    source_ids: set[str],
+) -> None:
+    sink = _last_non_new_sink(nodes, source_ids, {str(new_id)})
+    if sink:
+        _append_edge(edges, str(sink.get("id", "")), str(new_id))
+        return
+    inputs = [
+        node
+        for node in nodes
+        if _contains_token(node.get("component_type", ""), "input")
+        and node.get("id") != new_id
+    ]
+    if inputs:
+        _append_edge(edges, str(inputs[0].get("id", "")), str(new_id))
 
 
 def _auto_layout_workflow(
