@@ -8,6 +8,7 @@ from typing import Any, Dict, List
 from flask import jsonify, request
 from ..json_utils import json_safe as _json_safe
 from ..leaderboard_rescore import rescore_leaderboard
+from ..naming import annotate_display_names
 from ..trust_policy import is_trusted_entry, sql_trusted_clause
 from .deps import ApiRouteContext
 from ._utils import register_notebook_routes, with_notebook_context
@@ -486,6 +487,245 @@ def _enrich_ranked_entries(
     return stability
 
 
+def _discovery_references(nb, search_query: str) -> List[Dict[str, Any]]:
+    references = nb.get_references()
+    annotate_display_names(references)
+    if not search_query:
+        return references
+    return [
+        entry for entry in references if _matches_discovery_query(entry, search_query)
+    ]
+
+
+def _strip_heavy_program_fields(programs: List[Dict[str, Any]]) -> None:
+    for program in programs:
+        program.pop("graph_json", None)
+        program.pop("_graph_json", None)
+        program.pop("loss_curve", None)
+
+
+def _classify_and_name_program_entries(nb, programs: List[Dict[str, Any]]) -> None:
+    for program in programs:
+        program["architecture_family"] = nb._classify_architecture_family(
+            graph_json=program.get("graph_json"),
+            routing_mode=program.get("routing_mode"),
+        )
+        program["tier"] = infer_tier_for_program(nb, program)
+    annotate_display_names(programs)
+    _strip_heavy_program_fields(programs)
+    _annotate_capability_quality(programs)
+    _attach_dashboard_entry_metadata(programs)
+
+
+def _discoveries_payload(
+    *,
+    entries: List[Dict[str, Any]],
+    references: List[Dict[str, Any]],
+    tier_counts: Dict[str, Any],
+    trusted_only: bool,
+    view: str,
+    **extra: Any,
+) -> Dict[str, Any]:
+    payload = {
+        "entries": _json_safe(entries),
+        "references": _json_safe(references),
+        "total": len(entries),
+        "counts": tier_counts,
+        "tier_counts": tier_counts,
+        "trusted_only": trusted_only,
+        "view": view,
+    }
+    payload.update(extra)
+    return payload
+
+
+def _all_discoveries_payload(
+    nb,
+    *,
+    limit: int,
+    trusted_only: bool,
+    references: List[Dict[str, Any]],
+    tier_counts: Dict[str, Any],
+    analytics,
+) -> Dict[str, Any]:
+    programs = nb.get_top_programs(
+        limit,
+        sort_by="loss_ratio",
+        trusted_only=trusted_only,
+    )
+    attach_long_context_breakdown(nb, programs)
+    annotate_qkv_usage(programs, analytics)
+    _classify_and_name_program_entries(nb, programs)
+    return _discoveries_payload(
+        entries=programs,
+        references=references,
+        tier_counts=tier_counts,
+        trusted_only=trusted_only,
+        view="all",
+    )
+
+
+def _program_graph_rows(
+    nb,
+    *,
+    view: str,
+    limit: int,
+    include_failed: bool,
+    search_query: str,
+) -> List[Dict[str, Any]]:
+    unranked_only = view == "backlog"
+    capped_limit = max(min(int(limit), 5000), 1)
+    where = ["TRIM(COALESCE(pr.graph_fingerprint, '')) <> ''"]
+    params: List[Any] = []
+    if unranked_only:
+        where.append("l.entry_id IS NULL")
+    if not include_failed:
+        where.append("COALESCE(pr.stage1_passed, 0) = 1")
+    if search_query:
+        wildcard = f"%{search_query}%"
+        where.append(
+            "("
+            "LOWER(COALESCE(pr.graph_fingerprint, '')) LIKE LOWER(?)"
+            " OR LOWER(COALESCE(pr.result_id, '')) LIKE LOWER(?)"
+            " OR LOWER(COALESCE(pr.model_source, '')) LIKE LOWER(?)"
+            ")"
+        )
+        params.extend([wildcard, wildcard, wildcard])
+    sql = f"""
+        SELECT pr.*, l.entry_id AS leaderboard_entry_id
+        FROM program_results pr
+        LEFT JOIN leaderboard l ON l.result_id = pr.result_id
+        WHERE {" AND ".join(where)}
+        ORDER BY pr.timestamp DESC
+        LIMIT ?
+    """
+    params.append(capped_limit)
+    rows = nb.conn.execute(sql, tuple(params)).fetchall()
+    return nb._attach_canonical_program_scores([dict(row) for row in rows])
+
+
+def _promote_leaderboard_entry_ids(programs: List[Dict[str, Any]]) -> None:
+    for program in programs:
+        if program.get("leaderboard_entry_id") and not program.get("entry_id"):
+            program["entry_id"] = program["leaderboard_entry_id"]
+
+
+def _attach_metric_completeness(programs: List[Dict[str, Any]]) -> None:
+    completeness_fields = (
+        "rapid_screening_passed",
+        "wikitext_perplexity",
+        "hellaswag_acc",
+        "induction_v2_investigation_auc",
+        "binding_v2_investigation_auc",
+        "discovery_loss_ratio",
+        "validation_loss_ratio",
+    )
+    for program in programs:
+        missing = [field for field in completeness_fields if program.get(field) is None]
+        program["missing_metrics"] = missing
+        program["missing_metrics_count"] = len(missing)
+        program["completeness_ratio"] = 1.0 - len(missing) / len(completeness_fields)
+
+
+def _program_graph_discoveries_payload(
+    nb,
+    *,
+    view: str,
+    limit: int,
+    include_failed: bool,
+    search_query: str,
+    references: List[Dict[str, Any]],
+    tier_counts: Dict[str, Any],
+    analytics,
+) -> Dict[str, Any]:
+    programs = _program_graph_rows(
+        nb,
+        view=view,
+        limit=limit,
+        include_failed=include_failed,
+        search_query=search_query,
+    )
+    _promote_leaderboard_entry_ids(programs)
+    _attach_metric_completeness(programs)
+    attach_long_context_breakdown(nb, programs)
+    annotate_qkv_usage(programs, analytics)
+    _classify_and_name_program_entries(nb, programs)
+    return _discoveries_payload(
+        entries=programs,
+        references=references,
+        tier_counts=tier_counts,
+        trusted_only=False,
+        view=view,
+        include_failed=include_failed,
+    )
+
+
+def _ranked_discovery_entries(
+    nb,
+    *,
+    tier: str | None,
+    limit: int,
+    sort_by: str,
+    search_query: str,
+    search_scope: str,
+    trusted_only: bool,
+) -> List[Dict[str, Any]]:
+    if search_query and search_scope == "all":
+        return _search_discoveries(
+            nb,
+            query=search_query,
+            tier=tier,
+            limit=limit,
+            trusted_only=trusted_only,
+            include_references=False,
+        )
+    return nb.get_leaderboard(
+        tier=tier,
+        limit=limit,
+        sort_by=sort_by,
+        include_references=False,
+        trusted_only=trusted_only,
+        tier_match_mode="current",
+    )
+
+
+def _ranked_discoveries_payload(
+    nb,
+    *,
+    tier: str | None,
+    limit: int,
+    sort_by: str,
+    search_query: str,
+    search_scope: str,
+    trusted_only: bool,
+    references: List[Dict[str, Any]],
+    tier_counts: Dict[str, Any],
+    analytics,
+) -> Dict[str, Any]:
+    entries = _ranked_discovery_entries(
+        nb,
+        tier=tier,
+        limit=limit,
+        sort_by=sort_by,
+        search_query=search_query,
+        search_scope=search_scope,
+        trusted_only=trusted_only,
+    )
+    stability = _enrich_ranked_entries(nb, entries, analytics=analytics)
+    _attach_dashboard_entry_metadata(entries)
+    annotate_display_names(entries)
+    return _discoveries_payload(
+        entries=entries,
+        references=references,
+        tier_counts=tier_counts,
+        trusted_only=trusted_only,
+        view="ranked",
+        cross_run_stability_summary=stability.get("summary", {}),
+        cross_run_stability_window=stability.get("window_size", 0),
+        search={"query": search_query, "scope": search_scope},
+    )
+
+
 def register_leaderboard_routes(app, context: ApiRouteContext):
     notebook_path = context.notebook_path
     wnb = with_notebook_context(notebook_path)
@@ -669,8 +909,6 @@ def register_leaderboard_routes(app, context: ApiRouteContext):
 
     def api_discoveries(nb=None):
         """Unified discoveries endpoint merging leaderboard + raw candidates."""
-        from ..naming import annotate_display_names
-
         tier = request.args.get("tier")
         limit = request.args.get("limit", 100, type=int)
         sort_by = request.args.get("sort", "composite_score")
@@ -682,174 +920,50 @@ def register_leaderboard_routes(app, context: ApiRouteContext):
 
         analytics = ExperimentAnalytics(nb)
         tier_counts = count_discovery_tiers(nb)
-        references = nb.get_references()
-        annotate_display_names(references)
-        if search_query:
-            references = [
-                entry
-                for entry in references
-                if _matches_discovery_query(entry, search_query)
-            ]
+        references = _discovery_references(nb, search_query)
 
         if view == "all":
-            programs = nb.get_top_programs(
-                limit,
-                sort_by="loss_ratio",
-                trusted_only=trusted_only,
-            )
-            attach_long_context_breakdown(nb, programs)
-            annotate_qkv_usage(programs, analytics)
-            for p in programs:
-                p["architecture_family"] = nb._classify_architecture_family(
-                    graph_json=p.get("graph_json"),
-                    routing_mode=p.get("routing_mode"),
-                )
-                p["tier"] = infer_tier_for_program(nb, p)
-            annotate_display_names(programs)
-            for p in programs:
-                p.pop("graph_json", None)
-                p.pop("_graph_json", None)
-                p.pop("loss_curve", None)
-            _annotate_capability_quality(programs)
-            _attach_dashboard_entry_metadata(programs)
-
             return jsonify(
-                {
-                    "entries": _json_safe(programs),
-                    "references": _json_safe(references),
-                    "total": len(programs),
-                    "counts": tier_counts,
-                    "tier_counts": tier_counts,
-                    "trusted_only": trusted_only,
-                    "view": "all",
-                }
+                _all_discoveries_payload(
+                    nb,
+                    limit=limit,
+                    trusted_only=trusted_only,
+                    references=references,
+                    tier_counts=tier_counts,
+                    analytics=analytics,
+                )
             )
 
         if view in ("backlog", "all_graphs"):
             include_failed = parse_bool_query(
                 request.args.get("include_failed"), default=True
             )
-            unranked_only = view == "backlog"
-            capped_limit = max(min(int(limit), 5000), 1)
-
-            where = ["TRIM(COALESCE(pr.graph_fingerprint, '')) <> ''"]
-            params: List[Any] = []
-            if unranked_only:
-                where.append("l.entry_id IS NULL")
-            if not include_failed:
-                where.append("COALESCE(pr.stage1_passed, 0) = 1")
-            if search_query:
-                wildcard = f"%{search_query}%"
-                where.append(
-                    "("
-                    "LOWER(COALESCE(pr.graph_fingerprint, '')) LIKE LOWER(?)"
-                    " OR LOWER(COALESCE(pr.result_id, '')) LIKE LOWER(?)"
-                    " OR LOWER(COALESCE(pr.model_source, '')) LIKE LOWER(?)"
-                    ")"
-                )
-                params.extend([wildcard, wildcard, wildcard])
-            sql = f"""
-                SELECT pr.*, l.entry_id AS leaderboard_entry_id
-                FROM program_results pr
-                LEFT JOIN leaderboard l ON l.result_id = pr.result_id
-                WHERE {" AND ".join(where)}
-                ORDER BY pr.timestamp DESC
-                LIMIT ?
-            """
-            params.append(capped_limit)
-            rows = nb.conn.execute(sql, tuple(params)).fetchall()
-            programs = nb._attach_canonical_program_scores([dict(row) for row in rows])
-            for p in programs:
-                # Promote leaderboard_entry_id → entry_id so client filters
-                # (`!entry?.entry_id`) and the existing column renderers work
-                # uniformly across ranked and unranked rows.
-                if p.get("leaderboard_entry_id") and not p.get("entry_id"):
-                    p["entry_id"] = p["leaderboard_entry_id"]
-            completeness_fields = (
-                "rapid_screening_passed",
-                "wikitext_perplexity",
-                "hellaswag_acc",
-                "induction_v2_investigation_auc",
-                "binding_v2_investigation_auc",
-                "discovery_loss_ratio",
-                "validation_loss_ratio",
-            )
-            for p in programs:
-                missing = [f for f in completeness_fields if p.get(f) is None]
-                p["missing_metrics"] = missing
-                p["missing_metrics_count"] = len(missing)
-                p["completeness_ratio"] = 1.0 - len(missing) / len(completeness_fields)
-            attach_long_context_breakdown(nb, programs)
-            annotate_qkv_usage(programs, analytics)
-            for p in programs:
-                p["architecture_family"] = nb._classify_architecture_family(
-                    graph_json=p.get("graph_json"),
-                    routing_mode=p.get("routing_mode"),
-                )
-                p["tier"] = infer_tier_for_program(nb, p)
-            annotate_display_names(programs)
-            for p in programs:
-                p.pop("graph_json", None)
-                p.pop("_graph_json", None)
-                p.pop("loss_curve", None)
-            _annotate_capability_quality(programs)
-            _attach_dashboard_entry_metadata(programs)
-
             return jsonify(
-                {
-                    "entries": _json_safe(programs),
-                    "references": _json_safe(references),
-                    "total": len(programs),
-                    "counts": tier_counts,
-                    "tier_counts": tier_counts,
-                    "trusted_only": False,
-                    "view": view,
-                    "include_failed": include_failed,
-                }
+                _program_graph_discoveries_payload(
+                    nb,
+                    view=view,
+                    limit=limit,
+                    include_failed=include_failed,
+                    search_query=search_query,
+                    references=references,
+                    tier_counts=tier_counts,
+                    analytics=analytics,
+                )
             )
 
-        if search_query and search_scope == "all":
-            entries = _search_discoveries(
+        return jsonify(
+            _ranked_discoveries_payload(
                 nb,
-                query=search_query,
-                tier=tier,
-                limit=limit,
-                trusted_only=trusted_only,
-                include_references=False,
-            )
-        else:
-            entries = nb.get_leaderboard(
                 tier=tier,
                 limit=limit,
                 sort_by=sort_by,
-                include_references=False,
+                search_query=search_query,
+                search_scope=search_scope,
                 trusted_only=trusted_only,
-                tier_match_mode="current",
+                references=references,
+                tier_counts=tier_counts,
+                analytics=analytics,
             )
-        stability = _enrich_ranked_entries(
-            nb,
-            entries,
-            analytics=analytics,
-        )
-        _attach_dashboard_entry_metadata(entries)
-        annotate_display_names(entries)
-
-        return jsonify(
-            {
-                "entries": _json_safe(entries),
-                "references": _json_safe(references),
-                "total": len(entries),
-                "counts": tier_counts,
-                "tier_counts": tier_counts,
-                "cross_run_stability_summary": stability.get("summary", {}),
-                "cross_run_stability_window": stability.get("window_size", 0),
-                "trusted_only": trusted_only,
-                "search": {
-                    "query": search_query,
-                    "scope": search_scope,
-                },
-                "view": "ranked",
-            }
         )
 
     register_notebook_routes(
