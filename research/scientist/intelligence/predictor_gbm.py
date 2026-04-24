@@ -51,7 +51,7 @@ _MIN_COMPOSITE_RANK_SPEARMAN = 0.50
 _MIN_COMPOSITE_RANK_NDCG = 0.60
 
 
-_PROBE_FEATURE_NAMES = {
+_POST_EVAL_FEATURE_NAMES = (
     "hellaswag_acc_best",
     "induction_auc_best",
     "ar_auc_best",
@@ -65,7 +65,8 @@ _PROBE_FEATURE_NAMES = {
     "mean_grad_norm_best",
     "max_grad_norm_best",
     "grad_norm_std_best",
-}
+)
+_PROBE_FEATURE_NAMES = set(_POST_EVAL_FEATURE_NAMES)
 
 
 def _quality_from_ppl(value: float) -> float:
@@ -346,6 +347,83 @@ def analyze_graph_label_quality(db_path: str) -> Dict[str, Any]:
     }
 
 
+def _load_gbm_corpus_rows(db_path: str) -> List[Dict[str, Any]]:
+    try:
+        return _load_screening_predictor_corpus_rows(db_path, validate=True)
+    except CorpusIntegrityError:
+        raise
+    except Exception as e:
+        logger.warning("GBM training data query failed: %s", e)
+        return []
+
+
+def _row_graph_and_signature(row: Dict[str, Any]) -> tuple[dict[str, Any], str] | None:
+    gj = row["graph_json"]
+    if not gj:
+        return None
+    try:
+        gj_dict = json.loads(gj) if isinstance(gj, str) else gj
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(gj_dict, dict):
+        return None
+    signature = str(row.get("canonical_fingerprint") or "")
+    if not signature:
+        signature = _graph_signature(gj_dict) or ""
+    if not signature:
+        return None
+    return gj_dict, signature
+
+
+def _add_op_histogram(feats: Dict[str, float], ops: list[str]) -> None:
+    for op in ops:
+        if op:
+            feats[f"op_{op}"] = feats.get(f"op_{op}", 0.0) + 1.0
+
+
+def _add_post_eval_features(feats: Dict[str, float], row: Dict[str, Any]) -> None:
+    for post_key in _POST_EVAL_FEATURE_NAMES:
+        value = row.get(post_key)
+        feats[post_key] = float(value) if value is not None else float("nan")
+
+
+def _training_feature_row(row: Dict[str, Any], op_stats_cache):
+    from ...synthesis.graph_features import (
+        enrich_with_op_stats,
+        extract_graph_features_bundle,
+    )
+
+    parsed = _row_graph_and_signature(row)
+    if parsed is None:
+        return None
+    graph, signature = parsed
+    feats, ops = extract_graph_features_bundle(graph)
+    if not feats:
+        return None
+    _add_op_histogram(feats, ops)
+    enrich_with_op_stats(feats, ops, preloaded=op_stats_cache)
+    _add_post_eval_features(feats, row)
+    return feats, signature
+
+
+def _append_training_labels(
+    row: Dict[str, Any],
+    *,
+    gate_labels: List[int],
+    rank_labels_ppl: List[float],
+    rank_labels_composite: List[float],
+    sample_weights: List[float],
+    latest_timestamps: List[float],
+) -> None:
+    gate_labels.append(1 if row["stage1_any_passed"] else 0)
+    sample_weights.append(rerun_confidence_weight(int(row.get("n_rows", 1))))
+    latest_timestamps.append(float(row.get("latest_timestamp") or 0.0))
+    comp = row.get("composite_score_best")
+    ppl = row.get("wikitext_perplexity_best")
+    rank_labels_composite.append(float(comp) if comp is not None else float("nan"))
+    rank_labels_ppl.append(float(ppl) if ppl is not None else float("nan"))
+
+
 def _query_graph_training_data(
     db_path: str,
 ) -> Tuple[
@@ -372,23 +450,13 @@ def _query_graph_training_data(
       - y_rank_ppl: float array of best wikitext perplexity (NaN where unavailable)
       - y_rank_composite: float array of best composite score (NaN where unavailable)
     """
-    from ...synthesis.graph_features import (
-        extract_graph_features_bundle,
-        enrich_with_op_stats,
-        load_op_stats,
-    )
+    from ...synthesis.graph_features import load_op_stats
 
-    try:
-        rows = _load_screening_predictor_corpus_rows(db_path, validate=True)
-    except CorpusIntegrityError:
-        raise
-    except Exception as e:
-        logger.warning("GBM training data query failed: %s", e)
+    rows = _load_gbm_corpus_rows(db_path)
+    if not rows:
         return [], np.zeros(0), np.zeros(0), np.zeros(0), np.zeros(0), np.zeros(0), []
 
-    # Load op_stats ONCE for all rows (avoids N+1 DB queries)
     op_stats_cache = load_op_stats(db_path)
-
     feat_dicts: List[Dict[str, float]] = []
     gate_labels: List[int] = []
     rank_labels_ppl: List[float] = []
@@ -398,56 +466,20 @@ def _query_graph_training_data(
     graph_signatures: List[str] = []
 
     for row in rows:
-        gj = row["graph_json"]
-        if not gj:
+        training_row = _training_feature_row(row, op_stats_cache)
+        if training_row is None:
             continue
-        try:
-            gj_dict = json.loads(gj) if isinstance(gj, str) else gj
-        except (json.JSONDecodeError, TypeError):
-            continue
-        signature = str(row.get("canonical_fingerprint") or "")
-        if not signature:
-            signature = _graph_signature(gj_dict) or ""
-        if not signature:
-            continue
-        feats, ops = extract_graph_features_bundle(gj_dict)
-        if not feats:
-            continue
-        for op in ops:
-            if op:
-                feats[f"op_{op}"] = feats.get(f"op_{op}", 0.0) + 1.0
-        enrich_with_op_stats(feats, ops, preloaded=op_stats_cache)
-        # Post-eval features (NaN where unavailable — LightGBM handles
-        # missing natively).  Excluded from gate model to prevent leakage;
-        # used by rank model only.
-        for post_key in (
-            "hellaswag_acc_best",
-            "induction_auc_best",
-            "ar_auc_best",
-            "blimp_overall_accuracy_best",
-            "binding_composite_best",
-            "induction_v2_investigation_auc_best",
-            "binding_v2_investigation_auc_best",
-            "validation_loss_ratio_best",
-            "rapid_screening_passed_best",
-            "initial_loss_best",
-            "mean_grad_norm_best",
-            "max_grad_norm_best",
-            "grad_norm_std_best",
-        ):
-            v = row.get(post_key)
-            feats[post_key] = float(v) if v is not None else float("nan")
+        feats, signature = training_row
         feat_dicts.append(feats)
         graph_signatures.append(signature)
-        gate_labels.append(1 if row["stage1_any_passed"] else 0)
-        sample_weights.append(rerun_confidence_weight(int(row.get("n_rows", 1))))
-        latest_timestamps.append(float(row.get("latest_timestamp") or 0.0))
-        # Rank targets stay semantically separate.  We no longer mix a
-        # higher-is-better composite score with a lower-is-better perplexity head.
-        comp = row.get("composite_score_best")
-        ppl = row.get("wikitext_perplexity_best")
-        rank_labels_composite.append(float(comp) if comp is not None else float("nan"))
-        rank_labels_ppl.append(float(ppl) if ppl is not None else float("nan"))
+        _append_training_labels(
+            row,
+            gate_labels=gate_labels,
+            rank_labels_ppl=rank_labels_ppl,
+            rank_labels_composite=rank_labels_composite,
+            sample_weights=sample_weights,
+            latest_timestamps=latest_timestamps,
+        )
 
     return (
         feat_dicts,
