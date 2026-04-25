@@ -644,20 +644,6 @@ def generate_layer_graph(
         if config.routing_mandatory and t_idx == 0 and not config.forced_template:
             _iter_allowed_names = _get_routing_capable_templates()
 
-        remaining_ops, remaining_depth = _template_budget_remaining(
-            graph, current, config
-        )
-        if remaining_ops <= 0 or remaining_depth <= 0:
-            break
-        if not config.forced_template:
-            _iter_allowed_names = _budget_allowed_template_names(
-                _iter_allowed_names,
-                remaining_ops=remaining_ops,
-                remaining_depth=remaining_depth,
-            )
-            if _iter_allowed_names == ():
-                break
-
         # Depth-aware template biasing: early blocks favor FFN/conv,
         # late blocks favor attention/SSM (per GPT-2 layer importance research).
         # Note: "attn" matches new attention templates (attn_*).
@@ -683,12 +669,6 @@ def generate_layer_graph(
             op_weights=runtime.effective_op_weights,
             exploration_budget=config.template_exploration_budget,
             allowed_template_names=_iter_allowed_names,
-        )
-        template_name = graph.metadata.get("templates_used", [None])[-1]
-        _record_template_cost(
-            template_name,
-            added_ops=graph._next_id - prev_next_id,
-            added_depth=graph.nodes[trial_current].depth - graph.nodes[current].depth,
         )
 
         # depth() returns 0 without a set output — point it at the trial tail

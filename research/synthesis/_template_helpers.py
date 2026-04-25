@@ -410,12 +410,17 @@ def _select_from_candidates(
     if slot_key is None:
         slot_key = _normalize_slot_key(_current_slot_key(graph))
     slot_multipliers = _SLOT_MOTIF_WEIGHT_MULTIPLIERS.get(slot_key)
-    dynamic_slot_multipliers = graph.metadata.get("_slot_motif_weight_multipliers", {})
+    dynamic_slot_multipliers = graph.metadata.get("_slot_motif_weight_multipliers")
     dynamic_multipliers = None
-    if isinstance(dynamic_slot_multipliers, dict):
+    if dynamic_slot_multipliers:
         dynamic_multipliers = dynamic_slot_multipliers.get(slot_key, {}) or None
     if weights is None and not slot_multipliers and not dynamic_multipliers:
         return _select_by_lift(candidates, rng)
+
+    if not slot_multipliers and not dynamic_multipliers:
+        weight_get = weights.get
+        candidate_weights = [weight_get(m.name, m.lift) for m in candidates]
+        return rng.choices(candidates, weights=candidate_weights, k=1)[0]
 
     merged_multipliers = dict(slot_multipliers or {})
     if dynamic_multipliers:
@@ -424,9 +429,11 @@ def _select_from_candidates(
                 merged_multipliers[str(motif_name)] = float(multiplier)
             except (TypeError, ValueError):
                 continue
+    weight_get = weights.get if weights else None
+    multiplier_get = merged_multipliers.get
     candidate_weights = [
-        (weights.get(m.name, m.lift) if weights else m.lift)
-        * merged_multipliers.get(m.name, 1.0)
+        (weight_get(m.name, m.lift) if weight_get else m.lift)
+        * multiplier_get(m.name, 1.0)
         for m in candidates
     ]
     return rng.choices(candidates, weights=candidate_weights, k=1)[0]

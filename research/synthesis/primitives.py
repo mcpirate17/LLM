@@ -1930,6 +1930,7 @@ def validate_wiring(graph, errors: Optional[List[str]] = None) -> List[str]:
     """
     if errors is None:
         errors = []
+    consumers_by_source = None
     for nid, node in graph.nodes.items():
         if node.is_input:
             continue
@@ -1965,10 +1966,15 @@ def validate_wiring(graph, errors: Optional[List[str]] = None) -> List[str]:
         # Check output consumers for signal producers
         valid_consumers = rule.get("valid_consumers")
         if valid_consumers is not None:
-            consumers = [
-                n for n in graph.nodes.values() if not n.is_input and nid in n.input_ids
-            ]
-            for consumer in consumers:
+            if consumers_by_source is None:
+                consumers_by_source = {node_id: [] for node_id in graph.nodes}
+                for candidate in graph.nodes.values():
+                    if candidate.is_input:
+                        continue
+                    for source_id in candidate.input_ids:
+                        if source_id in consumers_by_source:
+                            consumers_by_source[source_id].append(candidate)
+            for consumer in consumers_by_source.get(nid, ()):
                 if (
                     consumer.op_name not in valid_consumers
                     and consumer.op_name != "add"
