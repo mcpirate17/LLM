@@ -25,12 +25,7 @@ from ._context_registry import CONTEXT_RULES
 
 
 def _child_map(graph: ComputationGraph) -> Dict[int, List[int]]:
-    children: Dict[int, List[int]] = {nid: [] for nid in graph.nodes}
-    for nid, node in graph.nodes.items():
-        for inp_id in node.input_ids:
-            if inp_id in children:
-                children[inp_id].append(nid)
-    return children
+    return graph.children_map()
 
 
 def _has_descendant_op(

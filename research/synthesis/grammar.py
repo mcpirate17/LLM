@@ -848,12 +848,9 @@ def _validate_graph(
 
     # Residual bypass check: ops in REQUIRES_RESIDUAL_BYPASS must have a
     # downstream add that also takes the op's input (residual connection).
-    successors: Dict[int, List[int]] = {nid: [] for nid in graph.nodes}
+    successors: Dict[int, List[int]] = graph.children_map()
     add_inputs_by_source: Dict[int, set[int]] = {}
     for other_nid, other_node in graph.nodes.items():
-        for parent_id in other_node.input_ids:
-            if parent_id in successors:
-                successors[parent_id].append(other_nid)
         if other_node.op_name == "add":
             add_inputs = set(other_node.input_ids)
             for source_id in add_inputs:

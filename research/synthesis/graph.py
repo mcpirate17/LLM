@@ -654,6 +654,19 @@ class ComputationGraph:
             return set()
         return set(self.nodes.keys()) - reachable
 
+    def children_map(self) -> Dict[int, List[int]]:
+        """Return parent→children adjacency. Cached until graph mutation."""
+        cached = self._cache.get("children")
+        if cached is not None:
+            return cached
+        children: Dict[int, List[int]] = {nid: [] for nid in self.nodes}
+        for nid, node in self.nodes.items():
+            for parent_id in node.input_ids:
+                if parent_id in children:
+                    children[parent_id].append(nid)
+        self._cache["children"] = children
+        return children
+
     def prune_unreachable_nodes(self) -> int:
         """Remove dead-branch nodes not connected to the output.
 

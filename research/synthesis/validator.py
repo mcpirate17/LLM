@@ -27,7 +27,12 @@ from .graph_validator import (
     validate_dim_flow,
 )
 from .native_analysis import analyze_ir_runtime_first
-from .primitives import OPCODE_MAP, REVERSE_OPCODE_MAP, get_primitive
+from .primitives import (
+    OPCODE_MAP,
+    PRIMITIVE_REGISTRY,
+    REVERSE_OPCODE_MAP,
+    get_primitive,
+)
 from .graph import ComputationGraph, ComputationGraphIR
 from .native_validation import effective_depth_natively, summarize_validation
 from .validation_opcode_tables import validation_opcode_tables
@@ -35,6 +40,13 @@ from .validation_opcode_tables import validation_opcode_tables
 
 _NORM_OPS = frozenset({"rmsnorm", "layernorm", "batchnorm"})
 _PACKED_VALIDATION_UNSET = object()
+
+
+def _lookup_primitive(name: str):
+    op = PRIMITIVE_REGISTRY.get(name)
+    if op is not None:
+        return op
+    return get_primitive(name)
 
 
 def _compute_effective_depth_graph(graph: ComputationGraph) -> float:
@@ -187,7 +199,7 @@ def _summarize_graph_validation(graph: ComputationGraph) -> tuple[object, list[i
         if node.is_input:
             continue
         try:
-            op = get_primitive(node.op_name)
+            op = _lookup_primitive(node.op_name)
         except KeyError:
             continue
         known_op_flags[idx] = 1
@@ -342,7 +354,7 @@ def validate_graph(
             continue
 
         try:
-            op = get_primitive(node.op_name)
+            op = _lookup_primitive(node.op_name)
         except KeyError:
             result.add_error(f"Node {nid}: unknown op '{node.op_name}'")
             continue
@@ -464,7 +476,7 @@ def validate_ir(
         if op_name is None:
             continue
         try:
-            get_primitive(op_name)
+            _lookup_primitive(op_name)
         except KeyError:
             result.add_warning(f"IR contains unknown op '{op_name}'")
 

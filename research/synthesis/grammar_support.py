@@ -783,22 +783,25 @@ def compute_motif_weights_from_op_weights(
 
 def check_graph_space_consistency(graph: ComputationGraph) -> Optional[str]:
     """Validate that a computation graph has no algebraic space conflicts."""
-    for _, node in sorted(graph.nodes.items()):
-        if node.op_name == "input":
+    node_types = {}
+    for node_id, node in graph.nodes.items():
+        if node.is_input:
             continue
         op = PRIMITIVE_REGISTRY.get(node.op_name)
         if op is None:
             continue
-        op_type = op.algebraic_type
+        node_types[node_id] = op.algebraic_type
+
+    for node_id, node in graph.nodes.items():
+        op_type = node_types.get(node_id)
+        if op_type is None:
+            continue
         for in_id in node.input_ids:
-            in_node = graph.nodes.get(in_id)
-            if in_node is None or in_node.op_name == "input":
+            in_type = node_types.get(in_id)
+            if in_type is None:
                 continue
-            in_op = PRIMITIVE_REGISTRY.get(in_node.op_name)
-            if in_op is None:
-                continue
-            in_type = in_op.algebraic_type
             if not algebraic_types_compatible(in_type, op_type):
+                in_node = graph.nodes[in_id]
                 return (
                     f"Space conflict: {in_node.op_name} ({in_type.space}/{in_type.output_guarantee}) -> "
                     f"{node.op_name} ({op_type.space}/{op_type.input_constraint})"

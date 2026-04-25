@@ -49,12 +49,7 @@ def _check_final_norm(graph: ComputationGraph) -> List[str]:
 
 def _build_children_map(graph: ComputationGraph) -> Dict[int, List[int]]:
     """Build parent→children adjacency list in O(E)."""
-    children: Dict[int, List[int]] = {nid: [] for nid in graph.nodes}
-    for nid, node in graph.nodes.items():
-        for pid in node.input_ids:
-            if pid in children:
-                children[pid].append(nid)
-    return children
+    return graph.children_map()
 
 
 def _check_lane_diversity(
