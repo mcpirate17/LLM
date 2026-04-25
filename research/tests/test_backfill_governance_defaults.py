@@ -62,7 +62,7 @@ def test_non_routing_template_whitelist_covers_attention_ablations():
     assert "attn_softmax_normalized_matmul_compact_ffn" in _NON_ROUTING_TEMPLATES
     assert "attn_softmax_normalized_matmul_fixed_tail_norm" in _NON_ROUTING_TEMPLATES
     assert "attn_linear_no_matmul_ffn" in _NON_ROUTING_TEMPLATES
-    assert "attn_linear_no_matmul_ffn_v2" in _NON_ROUTING_TEMPLATES
+    assert "attn_linear_no_matmul_ffn_v2" not in _NON_ROUTING_TEMPLATES
     assert "attn_linear_no_matmul_ffn_dense_tail" in _NON_ROUTING_TEMPLATES
     assert "attn_linear_no_matmul_ffn_direct_recovery" in _NON_ROUTING_TEMPLATES
     assert "attn_softmax_router_sidecar" not in _NON_ROUTING_TEMPLATES

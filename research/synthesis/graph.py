@@ -19,7 +19,10 @@ from typing import Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 import numpy as np
-from .graph_ir_builder import build_graph_ir, resolve_reachable_node_ids
+from .graph_ir_builder import (
+    build_graph_ir,
+    estimate_reachable_params,
+)
 from .native_analysis import analyze_ir
 from .native_topology import compute_topological_order
 from .primitives import (
@@ -103,6 +106,13 @@ def _shape_info(dim: int, seq: str = "S") -> ShapeInfo:
     return shape
 
 
+def _canonical_config_repr(config: Dict) -> str:
+    if not config:
+        return ""
+    config_items = sorted(f"{key}={value}" for key, value in config.items())
+    return f"[{','.join(config_items)}]"
+
+
 @dataclass(slots=True)
 class OpNode:
     """A single node in the computation graph."""
@@ -117,6 +127,11 @@ class OpNode:
     # Metadata
     is_input: bool = False
     is_output: bool = False
+    _config_repr: str = field(default="", repr=False)
+
+    def __post_init__(self) -> None:
+        if not self._config_repr:
+            self._config_repr = _canonical_config_repr(self.config)
 
     @property
     def op(self) -> PrimitiveOp:
@@ -348,6 +363,7 @@ class ComputationGraph:
             output_shape=output_shape,
             depth=depth,
             config=config_dict,
+            _config_repr=_canonical_config_repr(config_dict),
         )
         self.nodes[node_id] = node
         self._ir_version += 1
@@ -620,7 +636,8 @@ class ComputationGraph:
         if not self.nodes:
             self._cache["depth"] = 0
             return 0
-        result = int(self._analysis_ir().analyze_structure().depth)
+        output_node = self.output_node
+        result = int(output_node.depth) if output_node is not None else 0
         self._cache["depth"] = result
         return result
 
@@ -642,7 +659,7 @@ class ComputationGraph:
         """Estimate total learnable parameters. Cached."""
         if "n_params" in self._cache:
             return self._cache["n_params"]
-        result = int(self._analysis_ir().analyze_structure().param_estimate)
+        result = estimate_reachable_params(self, self.get_reachable_nodes())
         self._cache["n_params"] = result
         return result
 
@@ -669,27 +686,37 @@ class ComputationGraph:
         # Use a stable topological order (Kahn's or similar)
         # and replace node IDs with their rank in that order.
         order = self.topological_order()
-        id_to_rank = {nid: i for i, nid in enumerate(order)}
         topology_inputs = self._cache.get("canonical_topology_inputs")
         if topology_inputs is not None:
             _, _, op_names, config_strs, node_inputs = topology_inputs
         else:
             op_names = config_strs = node_inputs = None
 
+        if len(order) == self._next_id:
+            rank_strs = [""] * self._next_id
+            for rank, nid in enumerate(order):
+                rank_strs[nid] = str(rank)
+            id_to_rank = None
+        else:
+            id_to_rank = {nid: i for i, nid in enumerate(order)}
+            rank_strs = None
+
         desc = []
+        desc_append = desc.append
         for nid in order:
             if op_names is not None and nid < len(op_names):
-                ranks = tuple(str(id_to_rank[iid]) for iid in node_inputs[nid])
-                desc.append(f"{op_names[nid]}{config_strs[nid]}({','.join(ranks)})")
+                if rank_strs is not None:
+                    ranks = ",".join(rank_strs[iid] for iid in node_inputs[nid])
+                else:
+                    ranks = ",".join(str(id_to_rank[iid]) for iid in node_inputs[nid])
+                desc_append(f"{op_names[nid]}{config_strs[nid]}({ranks})")
             else:
                 node = self.nodes[nid]
-                ranks = tuple(str(id_to_rank[iid]) for iid in node.input_ids)
-                if node.config:
-                    config_items = sorted(f"{k}={v}" for k, v in node.config.items())
-                    config_str = f"[{','.join(config_items)}]"
+                if rank_strs is not None:
+                    ranks = ",".join(rank_strs[iid] for iid in node.input_ids)
                 else:
-                    config_str = ""
-                desc.append(f"{node.op_name}{config_str}({','.join(ranks)})")
+                    ranks = ",".join(str(id_to_rank[iid]) for iid in node.input_ids)
+                desc_append(f"{node.op_name}{node._config_repr}({ranks})")
 
         # Include model_dim in fingerprint
         # Z13: Include routing/compression policy in fingerprint
@@ -749,10 +776,24 @@ class ComputationGraph:
         if "ir" in self._cache:
             return self._cache["ir"]
 
+        reachable = self.get_reachable_nodes()
+        contiguous_all_nodes = len(self.nodes) == self._next_id
+        all_nodes_reachable = len(reachable) == len(self.nodes)
+        if not reachable:
+            node_ids = []
+            assume_contiguous_ids = False
+        elif contiguous_all_nodes and all_nodes_reachable:
+            node_ids = range(len(self.nodes))
+            assume_contiguous_ids = True
+        else:
+            node_ids = [nid for nid in self.topological_order() if nid in reachable]
+            assume_contiguous_ids = False
+
         ir = build_graph_ir(
             self,
-            node_ids=resolve_reachable_node_ids(self),
+            node_ids=node_ids,
             ir_cls=ComputationGraphIR,
+            assume_contiguous_ids=assume_contiguous_ids,
         )
         self._cache["ir"] = ir
         return ir

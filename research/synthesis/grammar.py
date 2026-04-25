@@ -585,6 +585,8 @@ def _config_with_efficiency_prior(
 def generate_layer_graph(
     config: Optional[GrammarConfig] = None,
     seed: Optional[int] = None,
+    *,
+    validate: bool = True,
 ) -> ComputationGraph:
     """Generate a computation graph for a single layer.
 
@@ -854,8 +856,8 @@ def generate_layer_graph(
     # Prune dead branches
     graph.prune_unreachable_nodes()
 
-    # Post-generation validation
-    _validate_graph(graph, config)
+    if validate:
+        _validate_graph(graph, config)
 
     return graph
 
@@ -869,18 +871,28 @@ def random_graph(
     return generate_layer_graph(config=config, seed=seed)
 
 
-def _validate_graph(graph: ComputationGraph, config: GrammarConfig) -> None:
+def _validate_graph(
+    graph: ComputationGraph,
+    config: GrammarConfig,
+    *,
+    dim_flow_inputs: object | None = None,
+    packed_validation: object | None = None,
+) -> None:
     """Validate a generated graph and raise ValueError if invalid."""
     # Allow +2 depth headroom for multi-step motifs (e.g., 3-4 step math-space
     # motifs that include norm+op+proj) which can push templates slightly over.
     max_params = 12 * 4 * config.model_dim * config.model_dim
-    result = validate_graph(
-        graph,
-        max_ops=config.max_ops,
-        max_depth=config.max_depth + 2,
-        min_splits=config.min_splits,
-        max_params=max_params,
-    )
+    validation_kwargs = {
+        "max_ops": config.max_ops,
+        "max_depth": config.max_depth + 2,
+        "min_splits": config.min_splits,
+        "max_params": max_params,
+    }
+    if dim_flow_inputs is not None:
+        validation_kwargs["dim_flow_inputs"] = dim_flow_inputs
+    if packed_validation is not None:
+        validation_kwargs["packed_validation"] = packed_validation
+    result = validate_graph(graph, **validation_kwargs)
     if not result.valid:
         raise ValueError(
             result.errors[0] if result.errors else "Graph validation failed"

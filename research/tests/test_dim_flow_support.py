@@ -17,6 +17,7 @@ from research.synthesis.graph import ComputationGraph
 from research.synthesis.native_analysis import (
     summarize_dim_flow_in_python,
     validate_edges,
+    validate_packed_ir_batch_natively,
     validate_packed_ir_natively,
 )
 from research.synthesis.validation_opcode_tables import validation_opcode_tables
@@ -220,3 +221,92 @@ def test_validate_packed_ir_native_matches_split_reference():
     assert packed.effective_depth == pytest.approx(
         compute_effective_depth(dim_inputs.analysis_ir)
     )
+
+
+def test_validate_packed_ir_batch_native_matches_single_graph_results():
+    graphs = []
+    for out_dim in (8, 4, 8):
+        graph = ComputationGraph(8)
+        inp = graph.add_input()
+        proj = graph.add_op("linear_proj", [inp], config={"out_dim": out_dim})
+        if out_dim != 8:
+            proj = graph.add_op("linear_proj", [proj], config={"out_dim": 8})
+        norm = graph.add_op("rmsnorm", [proj])
+        graph.set_output(norm)
+        graphs.append(graph)
+
+    inputs = [
+        build_dim_flow_inputs(
+            graph,
+            op_kind_default=0,
+            op_kind_irfft=1,
+            op_kind_identity=2,
+            op_kind_binary_broadcast=3,
+        )
+        for graph in graphs
+    ]
+    tables = validation_opcode_tables()
+    singles = [
+        validate_packed_ir_natively(
+            op_codes=item.analysis_ir.op_codes,
+            input_indices=item.analysis_ir.input_indices,
+            output_node_idx=int(item.analysis_ir.output_node_idx),
+            param_estimates=item.param_estimates,
+            has_params_flags=item.has_params_flags,
+            nontrivial_flags=item.nontrivial_flags,
+            kv_breaking_flags=item.kv_breaking_flags,
+            node_dims=item.node_dims,
+            node_seq_flags=item.node_seq_flags,
+            op_kind_flags=item.op_kind_flags,
+            full_dim_flags=item.full_dim_flags,
+            model_dim=graph.model_dim,
+            input_node_idx=item.node_id_to_analysis_idx[graph._input_node_id],
+            effective_depth_weights=tables.effective_depth_weight,
+            discount_successor_u8=tables.discount_successor_u8,
+        )
+        for graph, item in zip(graphs, inputs)
+    ]
+    if any(result is None for result in singles):
+        pytest.skip("packed graph-validation runtime unavailable")
+
+    batch = validate_packed_ir_batch_natively(
+        op_codes=[item.analysis_ir.op_codes for item in inputs],
+        input_indices=[item.analysis_ir.input_indices for item in inputs],
+        output_node_indices=[int(item.analysis_ir.output_node_idx) for item in inputs],
+        param_estimates=[item.param_estimates for item in inputs],
+        has_params_flags=[item.has_params_flags for item in inputs],
+        nontrivial_flags=[item.nontrivial_flags for item in inputs],
+        kv_breaking_flags=[item.kv_breaking_flags for item in inputs],
+        node_dims=[item.node_dims for item in inputs],
+        node_seq_flags=[item.node_seq_flags for item in inputs],
+        op_kind_flags=[item.op_kind_flags for item in inputs],
+        full_dim_flags=[item.full_dim_flags for item in inputs],
+        model_dims=[graph.model_dim for graph in graphs],
+        input_node_indices=[
+            item.node_id_to_analysis_idx[graph._input_node_id]
+            for graph, item in zip(graphs, inputs)
+        ],
+        effective_depth_weights=tables.effective_depth_weight,
+        discount_successor_u8=tables.discount_successor_u8,
+    )
+    if batch is None:
+        pytest.skip("packed graph-validation batch runtime unavailable")
+
+    assert len(batch) == len(singles)
+    for batched, single in zip(batch, singles):
+        assert batched.analysis.depth == single.analysis.depth
+        assert batched.analysis.reachable_count == single.analysis.reachable_count
+        assert batched.analysis.param_estimate == single.analysis.param_estimate
+        assert batched.dim_flow.reachable_param_count == (
+            single.dim_flow.reachable_param_count
+        )
+        assert batched.edge_error_count == single.edge_error_count
+        assert batched.dead_parameterized_count == single.dead_parameterized_count
+        assert batched.reachable_mask.tolist() == single.reachable_mask.tolist()
+        assert batched.dead_parameterized_mask.tolist() == (
+            single.dead_parameterized_mask.tolist()
+        )
+        assert batched.edge_validation.freq_mismatch_bits.tolist() == (
+            single.edge_validation.freq_mismatch_bits.tolist()
+        )
+        assert batched.effective_depth == pytest.approx(single.effective_depth)

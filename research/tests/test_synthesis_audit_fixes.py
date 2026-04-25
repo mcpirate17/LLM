@@ -262,9 +262,13 @@ def test_graph_uses_native_analysis_when_available(monkeypatch):
 
     native_analysis.reset_native_analysis_bindings()
     monkeypatch.setattr(
+        native_analysis, "_load_native_graph_analysis_lib", lambda: None
+    )
+    monkeypatch.setattr(
         native_analysis, "_try_import_aria_core", lambda: FakeAriaCore()
     )
 
     assert graph.get_reachable_nodes() == {inp, mid, out}
-    assert graph.depth() == 7
+    analysis = graph._analysis_ir().analyze_structure()
+    assert analysis.depth == 7
     assert graph.has_gradient_path() is False

@@ -173,6 +173,36 @@ def load_native_graph_analysis_lib() -> Any:
         ]
         packed_validation_fn.restype = ctypes.c_int32
 
+    packed_validation_batch_fn = getattr(
+        lib, "aria_graph_validate_packed_ir_batch", None
+    )
+    if packed_validation_batch_fn is not None:
+        packed_validation_batch_fn.argtypes = [
+            ctypes.c_int32,
+            ctypes.POINTER(ctypes.c_int32),
+            ctypes.POINTER(ctypes.c_int32),
+            ctypes.POINTER(ctypes.c_int32),
+            ctypes.POINTER(ctypes.c_int32),
+            ctypes.POINTER(ctypes.c_int64),
+            ctypes.POINTER(ctypes.c_int32),
+            ctypes.POINTER(ctypes.c_int32),
+            ctypes.POINTER(ctypes.c_int32),
+            ctypes.POINTER(ctypes.c_int32),
+            ctypes.POINTER(ctypes.c_int32),
+            ctypes.POINTER(ctypes.c_int32),
+            ctypes.POINTER(ctypes.c_int32),
+            ctypes.POINTER(ctypes.c_float),
+            ctypes.POINTER(ctypes.c_uint8),
+            ctypes.c_int32,
+            ctypes.POINTER(ctypes.c_int32),
+            ctypes.POINTER(ctypes.c_int32),
+            ctypes.POINTER(AriaPackedValidationResult),
+            ctypes.POINTER(ctypes.c_int32),
+            ctypes.POINTER(AriaEdgeValidation),
+            ctypes.POINTER(ctypes.c_int32),
+        ]
+        packed_validation_batch_fn.restype = ctypes.c_int32
+
     effective_depth_fn = getattr(lib, "aria_graph_effective_depth", None)
     if effective_depth_fn is not None:
         effective_depth_fn.argtypes = [

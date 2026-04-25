@@ -95,7 +95,6 @@ _NON_ROUTING_TEMPLATES = {
     "attn_softmax_normalized_matmul_compact_ffn",
     "attn_softmax_normalized_matmul_fixed_tail_norm",
     "attn_linear_no_matmul_ffn",
-    "attn_linear_no_matmul_ffn_v2",
     "attn_linear_no_matmul_ffn_dense_tail",
     "attn_linear_no_matmul_ffn_direct_recovery",
     "latent_attn_conv_hybrid",

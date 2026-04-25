@@ -34,6 +34,7 @@ from .validation_opcode_tables import validation_opcode_tables
 
 
 _NORM_OPS = frozenset({"rmsnorm", "layernorm", "batchnorm"})
+_PACKED_VALIDATION_UNSET = object()
 
 
 def _compute_effective_depth_graph(graph: ComputationGraph) -> float:
@@ -73,7 +74,7 @@ def _compute_effective_depth_graph(graph: ComputationGraph) -> float:
             weight = 0.20
         scores[node_id] = parent_score + weight
 
-    effective_depth = max(scores.values(), default=0.0)
+    effective_depth = round(max(scores.values(), default=0.0), 6)
     graph._cache["effective_depth"] = effective_depth
     return effective_depth
 
@@ -96,8 +97,9 @@ def _compute_effective_depth_ir(ir: ComputationGraphIR) -> float:
         discount_successor_u8=tables.discount_successor_u8,
     )
     if native_depth is not None:
-        ir.analysis_cache["effective_depth"] = native_depth
-        return native_depth
+        effective_depth = round(float(native_depth), 6)
+        ir.analysis_cache["effective_depth"] = effective_depth
+        return effective_depth
 
     weights = tables.effective_depth_weight
     discount_successor = tables.discount_successor
@@ -130,7 +132,7 @@ def _compute_effective_depth_ir(ir: ComputationGraphIR) -> float:
             weight = 0.20
         scores[idx] = parent_score + weight
 
-    effective_depth = float(scores.max(initial=0.0))
+    effective_depth = round(float(scores.max(initial=0.0)), 6)
     ir.analysis_cache["effective_depth"] = effective_depth
     return effective_depth
 
@@ -225,6 +227,8 @@ def validate_graph(
     max_depth: int = 15,
     min_splits: int = 0,
     max_params: int | None = None,
+    dim_flow_inputs: object | None = None,
+    packed_validation: object = _PACKED_VALIDATION_UNSET,
 ) -> ValidationResult:
     """Validate a computation graph.
 
@@ -241,27 +245,33 @@ def validate_graph(
         result.add_error("Graph has no output node")
         return result
 
-    analysis_source_ir = graph._analysis_ir()
-    tables = validation_opcode_tables()
-    dim_flow_inputs = build_dim_flow_validation_inputs(
-        graph,
-        analysis_ir=analysis_source_ir,
-        compute_analysis=False,
+    analysis_source_ir = (
+        dim_flow_inputs.analysis_ir
+        if dim_flow_inputs is not None
+        else graph._analysis_ir()
     )
+    tables = validation_opcode_tables()
+    if dim_flow_inputs is None:
+        dim_flow_inputs = build_dim_flow_validation_inputs(
+            graph,
+            analysis_ir=analysis_source_ir,
+            compute_analysis=False,
+        )
     analysis_ir = dim_flow_inputs.analysis_ir
     cached_effective_depth = analysis_ir.analysis_cache.get("effective_depth")
     needs_effective_depth = cached_effective_depth is None
-    packed_validation = try_packed_dim_flow_validation(
-        graph=graph,
-        analysis_ir=analysis_ir,
-        dim_flow_inputs=dim_flow_inputs,
-        effective_depth_weights=(
-            tables.effective_depth_weight if needs_effective_depth else None
-        ),
-        discount_successor_u8=(
-            tables.discount_successor_u8 if needs_effective_depth else None
-        ),
-    )
+    if packed_validation is _PACKED_VALIDATION_UNSET:
+        packed_validation = try_packed_dim_flow_validation(
+            graph=graph,
+            analysis_ir=analysis_ir,
+            dim_flow_inputs=dim_flow_inputs,
+            effective_depth_weights=(
+                tables.effective_depth_weight if needs_effective_depth else None
+            ),
+            discount_successor_u8=(
+                tables.discount_successor_u8 if needs_effective_depth else None
+            ),
+        )
     if packed_validation is not None:
         analysis = packed_validation.analysis
         dim_flow_inputs.analysis = analysis

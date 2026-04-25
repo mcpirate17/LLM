@@ -19,21 +19,168 @@ class BatchGenerateResult:
     n_rejected_dedup: int
 
 
-def _generate_unique_graph(
+def _candidate_batch_size(remaining: int) -> int:
+    return min(32, max(8, remaining))
+
+
+def _try_batch_packed_validation(candidates: list) -> list:
+    from .graph_validator import build_dim_flow_validation_inputs
+    from .native_analysis import validate_packed_ir_batch_natively
+    from .validation_opcode_tables import validation_opcode_tables
+
+    if not candidates:
+        return []
+
+    tables = validation_opcode_tables()
+    dim_inputs = []
+    input_node_indices = []
+    for graph in candidates:
+        analysis_ir = graph._analysis_ir()
+        inputs = build_dim_flow_validation_inputs(
+            graph,
+            analysis_ir=analysis_ir,
+            compute_analysis=False,
+        )
+        dim_inputs.append(inputs)
+        input_node_indices.append(
+            inputs.node_id_to_analysis_idx.get(graph._input_node_id, -1)
+        )
+
+    packed_results = validate_packed_ir_batch_natively(
+        op_codes=[inputs.analysis_ir.op_codes for inputs in dim_inputs],
+        input_indices=[inputs.analysis_ir.input_indices for inputs in dim_inputs],
+        output_node_indices=[
+            int(inputs.analysis_ir.output_node_idx) for inputs in dim_inputs
+        ],
+        param_estimates=[inputs.param_estimates for inputs in dim_inputs],
+        has_params_flags=[inputs.has_params_flags for inputs in dim_inputs],
+        nontrivial_flags=[inputs.nontrivial_flags for inputs in dim_inputs],
+        kv_breaking_flags=[inputs.kv_breaking_flags for inputs in dim_inputs],
+        node_dims=[inputs.node_dims for inputs in dim_inputs],
+        node_seq_flags=[inputs.node_seq_flags for inputs in dim_inputs],
+        op_kind_flags=[inputs.op_kind_flags for inputs in dim_inputs],
+        full_dim_flags=[inputs.full_dim_flags for inputs in dim_inputs],
+        model_dims=[graph.model_dim for graph in candidates],
+        input_node_indices=input_node_indices,
+        effective_depth_weights=tables.effective_depth_weight,
+        discount_successor_u8=tables.discount_successor_u8,
+    )
+    if packed_results is None:
+        return [(graph, inputs, None) for graph, inputs in zip(candidates, dim_inputs)]
+    return list(zip(candidates, dim_inputs, packed_results))
+
+
+def _forced_template_name(config) -> str | None:
+    if config.forced_template:
+        return str(config.forced_template)
+    positive_templates = [
+        str(name)
+        for name, weight in config.template_weights.items()
+        if float(weight) > 0.0
+    ]
+    return positive_templates[0] if len(positive_templates) == 1 else None
+
+
+def _validate_candidate_batch(grammar, candidates: list, config) -> tuple[list, int]:
+    valid_graphs = []
+    rejected = 0
+    forced_template = _forced_template_name(config)
+    for graph, dim_inputs, packed_result in _try_batch_packed_validation(candidates):
+        if forced_template is not None and graph.metadata.get("templates_used") != [
+            forced_template
+        ]:
+            rejected += 1
+            continue
+        try:
+            grammar._validate_graph(
+                graph,
+                config,
+                dim_flow_inputs=dim_inputs,
+                packed_validation=packed_result,
+            )
+        except (ValueError, RuntimeError):
+            rejected += 1
+            continue
+        valid_graphs.append(graph)
+    return valid_graphs, rejected
+
+
+def _generate_unvalidated_candidate(grammar, config, seed: int):
+    return grammar.generate_layer_graph(config, seed=seed, validate=False)
+
+
+def _generate_candidate_batch(
     *,
     grammar,
     config,
-    seed: int,
+    base_seed: int,
+    start_attempt: int,
+    max_attempts: int,
+    target_count: int,
+) -> tuple[list, int, int]:
+    candidates = []
+    attempts = 0
+    rejected = 0
+    while attempts < max_attempts and len(candidates) < target_count:
+        attempts += 1
+        try:
+            graph = _generate_unvalidated_candidate(
+                grammar,
+                config,
+                base_seed + (start_attempt + attempts) * 137,
+            )
+            candidates.append(graph)
+        except (ValueError, RuntimeError):
+            rejected += 1
+    return candidates, attempts, rejected
+
+
+def _add_unique_graphs(
+    valid_graphs: list, graphs: list, fingerprints: set, n: int
+) -> int:
+    rejected_dedup = 0
+    for graph in valid_graphs:
+        fingerprint = graph.fingerprint()
+        if fingerprint in fingerprints:
+            rejected_dedup += 1
+            continue
+        fingerprints.add(fingerprint)
+        graphs.append(graph)
+        if len(graphs) >= n:
+            break
+    return rejected_dedup
+
+
+def _fill_unique_graphs(
+    *,
+    grammar,
+    config,
+    base_seed: int,
+    attempts: int,
+    max_attempts: int,
+    n: int,
     graphs: list,
     fingerprints: set,
-) -> bool:
-    graph = grammar.generate_layer_graph(config, seed=seed)
-    fingerprint = graph.fingerprint()
-    if fingerprint in fingerprints:
-        return False
-    fingerprints.add(fingerprint)
-    graphs.append(graph)
-    return True
+) -> tuple[int, int, int]:
+    n_rejected_grammar = 0
+    n_rejected_dedup = 0
+    while len(graphs) < n and attempts < max_attempts:
+        candidates, attempted, rejected = _generate_candidate_batch(
+            grammar=grammar,
+            config=config,
+            base_seed=base_seed,
+            start_attempt=attempts,
+            max_attempts=max_attempts - attempts,
+            target_count=_candidate_batch_size(n - len(graphs)),
+        )
+        attempts += attempted
+        n_rejected_grammar += rejected
+        valid_graphs, rejected_validation = _validate_candidate_batch(
+            grammar, candidates, config
+        )
+        n_rejected_grammar += rejected_validation
+        n_rejected_dedup += _add_unique_graphs(valid_graphs, graphs, fingerprints, n)
+    return attempts, n_rejected_grammar, n_rejected_dedup
 
 
 def _relaxed_config(grammar, config):
@@ -68,19 +215,18 @@ def batch_generate(
     n_rejected_dedup = 0
     max_attempts = n * 10
 
-    while len(graphs) < n and attempts < max_attempts:
-        attempts += 1
-        try:
-            if not _generate_unique_graph(
-                grammar=grammar,
-                config=config,
-                seed=base_seed + attempts * 137,
-                graphs=graphs,
-                fingerprints=fingerprints,
-            ):
-                n_rejected_dedup += 1
-        except (ValueError, RuntimeError):
-            n_rejected_grammar += 1
+    attempts, rejected_grammar, rejected_dedup = _fill_unique_graphs(
+        grammar=grammar,
+        config=config,
+        base_seed=base_seed,
+        attempts=attempts,
+        max_attempts=max_attempts,
+        n=n,
+        graphs=graphs,
+        fingerprints=fingerprints,
+    )
+    n_rejected_grammar += rejected_grammar
+    n_rejected_dedup += rejected_dedup
 
     if len(graphs) == 0 and n_rejected_grammar > 0:
         relaxed = _relaxed_config(grammar, config)
@@ -95,21 +241,19 @@ def batch_generate(
             relaxed.composition_depth,
             relaxed.template_exploration_budget * 100,
         )
-        retry_attempts = 0
-        while len(graphs) < n and retry_attempts < n * 5:
-            retry_attempts += 1
-            attempts += 1
-            try:
-                if not _generate_unique_graph(
-                    grammar=grammar,
-                    config=relaxed,
-                    seed=base_seed + attempts * 137 + 99999,
-                    graphs=graphs,
-                    fingerprints=fingerprints,
-                ):
-                    n_rejected_dedup += 1
-            except (ValueError, RuntimeError):
-                n_rejected_grammar += 1
+        retry_start = attempts
+        attempts, rejected_grammar, rejected_dedup = _fill_unique_graphs(
+            grammar=grammar,
+            config=relaxed,
+            base_seed=base_seed + 99999,
+            attempts=attempts,
+            max_attempts=retry_start + (n * 5),
+            n=n,
+            graphs=graphs,
+            fingerprints=fingerprints,
+        )
+        n_rejected_grammar += rejected_grammar
+        n_rejected_dedup += rejected_dedup
 
     rejection_rate = (n_rejected_grammar + n_rejected_dedup) / max(attempts, 1)
     logger.info(

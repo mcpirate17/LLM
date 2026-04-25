@@ -782,6 +782,82 @@ int32_t aria_graph_validate_packed_ir(
   return 0;
 }
 
+int32_t aria_graph_validate_packed_ir_batch(
+    int32_t n_graphs,
+    const int32_t* node_offsets,
+    const int32_t* op_codes,
+    const int32_t* input_indices,
+    const int32_t* output_node_indices,
+    const int64_t* param_estimates,
+    const int32_t* has_params_flags,
+    const int32_t* nontrivial_flags,
+    const int32_t* kv_breaking_flags,
+    const int32_t* node_dims,
+    const int32_t* node_seq_flags,
+    const int32_t* op_kind_flags,
+    const int32_t* full_dim_flags,
+    const float* effective_depth_weights,
+    const uint8_t* discount_successor,
+    int32_t n_opcodes,
+    const int32_t* model_dims,
+    const int32_t* input_node_indices,
+    aria_packed_validation_result_t* out,
+    int32_t* reachable_mask,
+    aria_edge_validation_t* edge_validation,
+    int32_t* dead_parameterized_mask) {
+  int32_t graph_idx;
+
+  if (n_graphs < 0 || node_offsets == NULL || op_codes == NULL ||
+      input_indices == NULL || output_node_indices == NULL ||
+      param_estimates == NULL || has_params_flags == NULL ||
+      nontrivial_flags == NULL || kv_breaking_flags == NULL ||
+      node_dims == NULL || node_seq_flags == NULL || op_kind_flags == NULL ||
+      full_dim_flags == NULL || model_dims == NULL ||
+      input_node_indices == NULL || out == NULL || reachable_mask == NULL ||
+      edge_validation == NULL || dead_parameterized_mask == NULL) {
+    return -1;
+  }
+
+  for (graph_idx = 0; graph_idx < n_graphs; ++graph_idx) {
+    int32_t start = node_offsets[graph_idx];
+    int32_t end = node_offsets[graph_idx + 1];
+    int32_t n_nodes = end - start;
+    int32_t status;
+
+    if (start < 0 || end < start) {
+      return -1;
+    }
+
+    status = aria_graph_validate_packed_ir(
+        n_nodes,
+        op_codes + start,
+        input_indices + ((size_t)start * 2U),
+        output_node_indices[graph_idx],
+        param_estimates + start,
+        has_params_flags + start,
+        nontrivial_flags + start,
+        kv_breaking_flags + start,
+        node_dims + start,
+        node_seq_flags + start,
+        op_kind_flags + start,
+        full_dim_flags + start,
+        effective_depth_weights,
+        discount_successor,
+        n_opcodes,
+        model_dims[graph_idx],
+        input_node_indices[graph_idx],
+        out + graph_idx,
+        reachable_mask + start,
+        edge_validation + start,
+        dead_parameterized_mask + start);
+    if (status != 0) {
+      return status;
+    }
+  }
+
+  return 0;
+}
+
 int32_t aria_graph_effective_depth(
     int32_t n_nodes,
     const int32_t* op_codes,

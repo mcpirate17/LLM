@@ -112,6 +112,30 @@ int32_t aria_graph_validate_packed_ir(
     aria_edge_validation_t* edge_validation,
     int32_t* dead_parameterized_mask);
 
+int32_t aria_graph_validate_packed_ir_batch(
+    int32_t n_graphs,
+    const int32_t* node_offsets,
+    const int32_t* op_codes,
+    const int32_t* input_indices,
+    const int32_t* output_node_indices,
+    const int64_t* param_estimates,
+    const int32_t* has_params_flags,
+    const int32_t* nontrivial_flags,
+    const int32_t* kv_breaking_flags,
+    const int32_t* node_dims,
+    const int32_t* node_seq_flags,
+    const int32_t* op_kind_flags,
+    const int32_t* full_dim_flags,
+    const float* effective_depth_weights,
+    const uint8_t* discount_successor,
+    int32_t n_opcodes,
+    const int32_t* model_dims,
+    const int32_t* input_node_indices,
+    aria_packed_validation_result_t* out,
+    int32_t* reachable_mask,
+    aria_edge_validation_t* edge_validation,
+    int32_t* dead_parameterized_mask);
+
 int32_t aria_graph_effective_depth(
     int32_t n_nodes,
     const int32_t* op_codes,

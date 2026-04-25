@@ -82,6 +82,8 @@ _SIMPLE_UNARY_OPS = {
 }
 
 _SIMPLE_BINARY_OPS = {
+    "maximum": (torch.maximum, "maximum_f32", None),
+    "minimum": (torch.minimum, "minimum_f32", None),
     "sub": (lambda a, b: a - b, "sub_f32", None),
 }
 
@@ -106,29 +108,6 @@ def _op_neg(_, inputs, __):
     if _c(x):
         return aria_core.neg_f32(x)
     return -x
-
-
-def _op_minimum(_, inputs, __):
-    a, b = inputs[0], inputs[1]
-    if _c(a) and not a.requires_grad:
-        native_fn = getattr(aria_core, "minimum_f32", None)
-        if native_fn is not None:
-            return native_fn(a, b)
-    # Smooth min: -tau * log(exp(-a/tau) + exp(-b/tau)), tau=1.0
-    # Gradient flows through both inputs (unlike hard torch.minimum)
-    tau = 1.0
-    return -tau * torch.logaddexp(-a / tau, -b / tau)
-
-
-def _op_maximum(_, inputs, __):
-    a, b = inputs[0], inputs[1]
-    if _c(a) and not a.requires_grad:
-        native_fn = getattr(aria_core, "maximum_f32", None)
-        if native_fn is not None:
-            return native_fn(a, b)
-    # Smooth max: tau * log(exp(a/tau) + exp(b/tau)), tau=1.0
-    tau = 1.0
-    return tau * torch.logaddexp(a / tau, b / tau)
 
 
 def _op_exp(_, inputs, __):
@@ -425,6 +404,4 @@ OP_IMPLS: Dict[str, Callable] = {
     "fused_linear_gelu": _op_fused_linear_gelu,
     "learnable_scale": _op_learnable_scale,
     "learnable_bias": _op_learnable_bias,
-    "minimum": _op_minimum,
-    "maximum": _op_maximum,
 }

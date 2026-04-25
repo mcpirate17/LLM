@@ -44,9 +44,7 @@ def _build_canonical_topology_inputs(
 
     for nid, node in graph.nodes.items():
         op_names[nid] = node.op_name
-        if node.config:
-            config_items = sorted(f"{k}={v}" for k, v in node.config.items())
-            config_strs[nid] = f"[{','.join(config_items)}]"
+        config_strs[nid] = node._config_repr
         node_inputs[nid] = list(node.input_ids)
         for iid in node.input_ids:
             edges.append((iid, nid))
@@ -101,11 +99,7 @@ def _python_topological_order(graph: "ComputationGraph") -> List[int]:
 
     static_keys: Dict[int, tuple[str, str, int]] = {}
     for nid, node in graph.nodes.items():
-        config_str = ""
-        if node.config:
-            config_items = sorted(f"{k}={v}" for k, v in node.config.items())
-            config_str = f"[{','.join(config_items)}]"
-        static_keys[nid] = (node.op_name, config_str, nid)
+        static_keys[nid] = (node.op_name, node._config_repr, nid)
 
     order: List[int] = []
     canonical_id_map: Dict[int, int] = {}

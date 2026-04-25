@@ -102,6 +102,18 @@ def pack_ir_inputs(
     )
 
 
+def estimate_reachable_params(
+    graph: "ComputationGraph", node_ids: Iterable[int]
+) -> int:
+    op_pack_info = _op_pack_info_for_dim(graph.model_dim)
+    total = 0
+    for node_id in node_ids:
+        node = graph.nodes[int(node_id)]
+        if not node.is_input:
+            total += op_pack_info.get(node.op_name, (0, 0))[1]
+    return int(total)
+
+
 @lru_cache(maxsize=1024)
 def _estimate_op_params_cached(op_name: str, model_dim: int) -> int:
     return estimate_op_params(PRIMITIVE_REGISTRY[op_name], int(model_dim))
