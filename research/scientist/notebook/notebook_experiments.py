@@ -238,7 +238,9 @@ class _ExperimentsMixin:
 
         self.conn.executemany(
             "UPDATE experiments SET status = 'failed', "
-            "results_json = json_set(COALESCE(results_json, '{}'), '$.failure_reason', ?) "
+            "results_json = json_set("
+            "CASE WHEN json_valid(results_json) THEN results_json ELSE '{}' END, "
+            "'$.failure_reason', ?) "
             "WHERE experiment_id = ?",
             updates,
         )
