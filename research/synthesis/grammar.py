@@ -825,24 +825,15 @@ def _validate_graph(
     # Depth constraint check: reject ops placed before their required layer depth.
     # The requirement lives in wiring rules; mutating the graph here leaves stale
     # cached IR/metrics behind and turns validation into silent graph rewriting.
-    topo_depth: Dict[int, int] = {}
-    for nid, node in sorted(graph.nodes.items()):
-        if node.is_input:
-            topo_depth[nid] = 0
-        else:
-            parent_depths = [topo_depth.get(pid, 0) for pid in node.input_ids]
-            topo_depth[nid] = max(parent_depths, default=0) + 1
-
     for nid, node in graph.nodes.items():
         if node.is_input:
             continue
         depth_rule = get_wiring_rule(node.op_name) or {}
         min_layer_depth = int(depth_rule.get("min_layer_depth", 0))
         if min_layer_depth > 0:
-            depth = topo_depth.get(nid, 0)
-            if depth < min_layer_depth:
+            if node.depth < min_layer_depth:
                 raise ValueError(
-                    f"{node.op_name} (id={nid}) placed at depth {depth} "
+                    f"{node.op_name} (id={nid}) placed at depth {node.depth} "
                     f"before min_layer_depth={min_layer_depth}"
                 )
 
