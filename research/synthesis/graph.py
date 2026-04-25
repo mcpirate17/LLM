@@ -106,11 +106,45 @@ def _shape_info(dim: int, seq: str = "S") -> ShapeInfo:
     return shape
 
 
+_CONFIG_REPR_CACHE_MAX = 4096
+_CONFIG_REPR_CACHE: dict[tuple, str] = {}
+
+
+def _format_config_items(items: tuple) -> str:
+    return f"[{','.join(f'{key}={value}' for key, value in items)}]"
+
+
 def _canonical_config_repr(config: Dict) -> str:
     if not config:
         return ""
-    config_items = sorted(f"{key}={value}" for key, value in config.items())
-    return f"[{','.join(config_items)}]"
+    if len(config) == 1:
+        key, value = next(iter(config.items()))
+        return f"[{key}={value}]"
+    try:
+        cache_key = tuple(config.items())
+        cached = _CONFIG_REPR_CACHE.get(cache_key)
+        if cached is not None:
+            return cached
+    except TypeError:
+        sorted_items = tuple(
+            item
+            for _, item in sorted(
+                (f"{key}={value}", (key, value)) for key, value in config.items()
+            )
+        )
+        return _format_config_items(sorted_items)
+
+    sorted_items = tuple(
+        item
+        for _, item in sorted(
+            (f"{key}={value}", (key, value)) for key, value in cache_key
+        )
+    )
+    result = _format_config_items(sorted_items)
+    if len(_CONFIG_REPR_CACHE) >= _CONFIG_REPR_CACHE_MAX:
+        _CONFIG_REPR_CACHE.clear()
+    _CONFIG_REPR_CACHE[cache_key] = result
+    return result
 
 
 @dataclass(slots=True)
@@ -127,11 +161,13 @@ class OpNode:
     # Metadata
     is_input: bool = False
     is_output: bool = False
-    _config_repr: str = field(default="", repr=False)
+    _config_repr: str | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
-        if not self._config_repr:
-            self._config_repr = _canonical_config_repr(self.config)
+        if self._config_repr is None:
+            self._config_repr = (
+                _canonical_config_repr(self.config) if self.config else ""
+            )
 
     @property
     def op(self) -> PrimitiveOp:
@@ -293,7 +329,8 @@ class ComputationGraph:
         self.nodes[node_id] = node
         self._input_node_id = node_id
         self._ir_version += 1
-        self._cache.clear()
+        if self._cache:
+            self._cache.clear()
         return node_id
 
     def add_op(
@@ -306,7 +343,7 @@ class ComputationGraph:
         canonical_name = canonicalize_op_name(op_name)
         op = PRIMITIVE_REGISTRY.get(canonical_name)
         if op is None:
-            if op is None and canonical_name != "input":
+            if canonical_name != "input":
                 raise ValueError(f"Unknown op: {op_name}")
 
         config_dict = config if config is not None else {}
@@ -367,7 +404,8 @@ class ComputationGraph:
         )
         self.nodes[node_id] = node
         self._ir_version += 1
-        self._cache.clear()
+        if self._cache:
+            self._cache.clear()
         return node_id
 
     def _compute_shape_fast(
@@ -453,7 +491,8 @@ class ComputationGraph:
         node.is_output = True
         self._output_node_id = node_id
         self._ir_version += 1
-        self._cache.clear()
+        if self._cache:
+            self._cache.clear()
 
     def _compute_shape(
         self, op: PrimitiveOp, input_shapes: List[ShapeInfo], config: Dict

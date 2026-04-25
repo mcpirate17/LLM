@@ -24,6 +24,7 @@ def load_native_search_metrics_lib() -> Any:
             "aria_behavior_topk_nearest_indices",
             "aria_behavior_pairwise_median",
             "aria_behavior_neighbor_counts",
+            "aria_behavior_pairwise_median_neighbor_counts",
         ),
         logger,
     )
@@ -68,6 +69,15 @@ def load_native_search_metrics_lib() -> Any:
         ctypes.POINTER(ctypes.c_int32),
     ]
     lib.aria_behavior_neighbor_counts.restype = ctypes.c_int32
+
+    lib.aria_behavior_pairwise_median_neighbor_counts.argtypes = [
+        ctypes.POINTER(ctypes.c_float),
+        ctypes.c_int32,
+        ctypes.c_int32,
+        ctypes.POINTER(ctypes.c_float),
+        ctypes.POINTER(ctypes.c_int32),
+    ]
+    lib.aria_behavior_pairwise_median_neighbor_counts.restype = ctypes.c_int32
 
     _NATIVE_SEARCH_LIB = lib
     return lib
@@ -153,24 +163,15 @@ def pairwise_median_and_neighbor_counts(
         return None
 
     median = ctypes.c_float()
-    median_status = lib.aria_behavior_pairwise_median(
+    out_counts = np.empty(int(fm.shape[0]), dtype=np.int32)
+    status = lib.aria_behavior_pairwise_median_neighbor_counts(
         fm.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
         int(fm.shape[0]),
         int(fm.shape[1]),
         ctypes.byref(median),
-    )
-    if median_status != 0:
-        return None
-
-    out_counts = np.empty(int(fm.shape[0]), dtype=np.int32)
-    count_status = lib.aria_behavior_neighbor_counts(
-        fm.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
-        int(fm.shape[0]),
-        int(fm.shape[1]),
-        ctypes.c_float(float(median.value)),
         out_counts.ctypes.data_as(ctypes.POINTER(ctypes.c_int32)),
     )
-    if count_status != 0:
+    if status != 0:
         return None
 
     return float(median.value), out_counts

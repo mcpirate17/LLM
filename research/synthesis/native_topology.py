@@ -31,7 +31,7 @@ def _graph_to_native_ir_json(graph: "ComputationGraph") -> str:
 
 def _build_canonical_topology_inputs(
     graph: "ComputationGraph",
-) -> tuple[int, list[tuple[int, int]], list[str], list[str], list[list[int]]]:
+) -> tuple[int, list[tuple[int, int]], list[str], list[str], list[object]]:
     cached = getattr(graph, "_cache", {}).get("canonical_topology_inputs")
     if cached is not None:
         return cached
@@ -39,13 +39,13 @@ def _build_canonical_topology_inputs(
     n_nodes = graph._next_id
     op_names = [""] * n_nodes
     config_strs = [""] * n_nodes
-    node_inputs = [[] for _ in range(n_nodes)]
+    node_inputs: list[object] = [()] * n_nodes
     edges: list[tuple[int, int]] = []
 
     for nid, node in graph.nodes.items():
         op_names[nid] = node.op_name
         config_strs[nid] = node._config_repr
-        node_inputs[nid] = list(node.input_ids)
+        node_inputs[nid] = node.input_ids
         for iid in node.input_ids:
             edges.append((iid, nid))
 

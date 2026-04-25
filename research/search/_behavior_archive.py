@@ -33,6 +33,7 @@ class BehaviorArchive:
         self._total_seen = 0
         self._rng = _random_module.Random(42)
         self._density_cache: Tuple[float, np.ndarray] | None = None
+        self._exploit_order_cache: list[int] | None = None
 
     @property
     def _feature_matrix(self) -> np.ndarray | None:
@@ -56,10 +57,12 @@ class BehaviorArchive:
         self._feature_buf[self._size] = vector
         self._size += 1
         self._density_cache = None
+        self._exploit_order_cache = None
 
     def _replace_in_cache(self, idx: int, vector: np.ndarray) -> None:
         self._feature_buf[idx] = vector
         self._density_cache = None
+        self._exploit_order_cache = None
 
     def add(
         self,
@@ -113,6 +116,7 @@ class BehaviorArchive:
             ind = by_hash.get(graph_hash)
             if ind is not None:
                 self._individuals[i] = ind
+        self._exploit_order_cache = None
 
     def size(self) -> int:
         return self._size
@@ -147,12 +151,16 @@ class BehaviorArchive:
         if median_dist <= 0:
             return self.top_by_fitness(k)
 
-        candidates: List[Tuple[float, int]] = []
-        for i, ind in enumerate(self._individuals[: self._size]):
-            if ind is None:
-                continue
-            candidates.append((ind.fitness - 0.1 * neighbor_counts[i], i))
-        return [self._individuals[idx] for _, idx in nlargest(k, candidates)]
+        ordered = self._exploit_order_cache
+        if ordered is None:
+            candidates: List[Tuple[float, int]] = []
+            for i, ind in enumerate(self._individuals[: self._size]):
+                if ind is None:
+                    continue
+                candidates.append((ind.fitness - 0.1 * neighbor_counts[i], i))
+            ordered = [idx for _, idx in sorted(candidates, reverse=True)]
+            self._exploit_order_cache = ordered
+        return [self._individuals[idx] for idx in ordered[:k]]
 
 
 def _behavior_distance(a: BehavioralFingerprint, b: BehavioralFingerprint) -> float:
@@ -241,22 +249,32 @@ def _behavior_vector(fp: BehavioralFingerprint) -> List[float] | None:
 def _sanitize_unit_feature(value: float | None) -> float:
     if value is None:
         return 0.0
-    try:
-        v = float(value)
-    except Exception:
-        return 0.0
+    if isinstance(value, float):
+        v = value
+    else:
+        try:
+            v = float(value)
+        except Exception:
+            return 0.0
     if not math.isfinite(v):
         return 0.0
-    return min(1.0, max(0.0, v))
+    if v <= 0.0:
+        return 0.0
+    if v >= 1.0:
+        return 1.0
+    return v
 
 
 def _sanitize_scaled_feature(value: float | None, scale: float) -> float:
     if value is None:
         return 0.0
-    try:
-        v = float(value)
-    except Exception:
-        return 0.0
+    if isinstance(value, float):
+        v = value
+    else:
+        try:
+            v = float(value)
+        except Exception:
+            return 0.0
     if not math.isfinite(v) or v < 0:
         return 0.0
     return v / (v + scale)

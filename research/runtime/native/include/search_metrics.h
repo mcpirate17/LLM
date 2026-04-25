@@ -37,4 +37,12 @@ int aria_behavior_neighbor_counts(
     int32_t* out_counts
 );
 
+int aria_behavior_pairwise_median_neighbor_counts(
+    const float* feature_matrix,
+    int32_t n_rows,
+    int32_t dim,
+    float* out_median,
+    int32_t* out_counts
+);
+
 #endif
