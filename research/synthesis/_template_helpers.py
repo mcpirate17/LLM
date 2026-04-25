@@ -260,10 +260,15 @@ def _compatible_from_classes(
 ) -> tuple[Motif, ...]:
     """Return motifs from *classes* that are compatible at *node_id*."""
     active_tpl = graph.metadata.get("_active_template")
-    classes_tuple = tuple(classes)
-    current_type = _node_output_type(graph, node_id)
-    depth, previous_op = _node_depth_and_previous_op(graph, node_id)
-    depth = min(depth, _MAX_CONTEXT_DEPTH)
+    classes_tuple = classes if isinstance(classes, tuple) else tuple(classes)
+    node = graph.nodes[node_id]
+    if node.is_input:
+        current_type = _INPUT_TYPE
+        previous_op = None
+    else:
+        current_type = PRIMITIVE_REGISTRY[node.op_name].algebraic_type
+        previous_op = node.op_name
+    depth = min(node.depth, _MAX_CONTEXT_DEPTH)
     return _compatible_from_context(
         classes_tuple,
         current_type,
@@ -365,10 +370,12 @@ def _filter_slot_candidates(
     if slot_key is None:
         slot_key = _normalize_slot_key(_current_slot_key(graph))
     allowed = _SLOT_MOTIF_ALLOWLIST.get(slot_key)
+    denied_static = _SLOT_MOTIF_DENYLIST.get(slot_key)
+    dynamic_denied = graph.metadata.get("_slot_motif_denylist")
+    if allowed is None and denied_static is None and not dynamic_denied:
+        return candidates
     if allowed is not None:
         candidates = tuple(motif for motif in candidates if motif.name in allowed)
-    denied_static = _SLOT_MOTIF_DENYLIST.get(slot_key)
-    dynamic_denied = graph.metadata.get("_slot_motif_denylist", {})
     denied_dynamic = ()
     if isinstance(dynamic_denied, dict):
         denied_dynamic = dynamic_denied.get(slot_key, ()) or ()
@@ -396,6 +403,57 @@ def _select_by_lift(candidates: Sequence[Motif], rng: random.Random) -> Motif:
     return candidates[-1]
 
 
+def _select_by_weight_get(
+    candidates: Sequence[Motif],
+    rng: random.Random,
+    weight_get,
+) -> Motif:
+    total = 0.0
+    for motif in candidates:
+        total += float(weight_get(motif.name, motif.lift))
+    if total <= 0.0:
+        return rng.choice(candidates)
+    threshold = rng.random() * total
+    for motif in candidates:
+        threshold -= float(weight_get(motif.name, motif.lift))
+        if threshold < 0.0:
+            return motif
+    return candidates[-1]
+
+
+def _select_by_weight_and_multiplier(
+    candidates: Sequence[Motif],
+    rng: random.Random,
+    weight_get,
+    multiplier_get,
+) -> Motif:
+    total = 0.0
+    if weight_get is None:
+        for motif in candidates:
+            total += float(motif.lift) * float(multiplier_get(motif.name, 1.0))
+    else:
+        for motif in candidates:
+            total += float(weight_get(motif.name, motif.lift)) * float(
+                multiplier_get(motif.name, 1.0)
+            )
+    if total <= 0.0:
+        return rng.choice(candidates)
+    threshold = rng.random() * total
+    if weight_get is None:
+        for motif in candidates:
+            threshold -= float(motif.lift) * float(multiplier_get(motif.name, 1.0))
+            if threshold < 0.0:
+                return motif
+    else:
+        for motif in candidates:
+            threshold -= float(weight_get(motif.name, motif.lift)) * float(
+                multiplier_get(motif.name, 1.0)
+            )
+            if threshold < 0.0:
+                return motif
+    return candidates[-1]
+
+
 def _select_from_candidates(
     graph: ComputationGraph,
     candidates: Sequence[Motif],
@@ -418,9 +476,7 @@ def _select_from_candidates(
         return _select_by_lift(candidates, rng)
 
     if not slot_multipliers and not dynamic_multipliers:
-        weight_get = weights.get
-        candidate_weights = [weight_get(m.name, m.lift) for m in candidates]
-        return rng.choices(candidates, weights=candidate_weights, k=1)[0]
+        return _select_by_weight_get(candidates, rng, weights.get)
 
     merged_multipliers = dict(slot_multipliers or {})
     if dynamic_multipliers:
@@ -431,12 +487,12 @@ def _select_from_candidates(
                 continue
     weight_get = weights.get if weights else None
     multiplier_get = merged_multipliers.get
-    candidate_weights = [
-        (weight_get(m.name, m.lift) if weight_get else m.lift)
-        * multiplier_get(m.name, 1.0)
-        for m in candidates
-    ]
-    return rng.choices(candidates, weights=candidate_weights, k=1)[0]
+    return _select_by_weight_and_multiplier(
+        candidates,
+        rng,
+        weight_get,
+        multiplier_get,
+    )
 
 
 def _pick_compatible_motif(
