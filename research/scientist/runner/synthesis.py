@@ -45,6 +45,131 @@ from ._helpers import propose_ablation_suite
 from ...synthesis.op_roles import MOE_OPS
 
 
+def _load_recent_synthesis_experiments(nb: LabNotebook, limit: int):
+    return nb.conn.execute(
+        """SELECT experiment_id, config_json, results_json
+           FROM experiments
+           WHERE experiment_type = 'synthesis'
+             AND status = 'completed'
+           ORDER BY timestamp DESC
+           LIMIT ?""",
+        (max(8, int(limit)),),
+    ).fetchall()
+
+
+def _load_synthesis_downstream_rates(
+    nb: LabNotebook, exp_ids: List[str]
+) -> Dict[str, Dict[str, float]]:
+    downstream_by_exp: Dict[str, Dict[str, float]] = {}
+    chunk_size = 900
+    for start in range(0, len(exp_ids), chunk_size):
+        chunk = exp_ids[start : start + chunk_size]
+        placeholders = ",".join("?" for _ in chunk)
+        down_rows = nb.conn.execute(
+            f"""SELECT
+                    pr.experiment_id,
+                    AVG(COALESCE(l.investigation_passed, 0)) AS investigate_rate,
+                    AVG(COALESCE(l.validation_passed, 0)) AS validation_rate
+                FROM program_results pr
+                LEFT JOIN leaderboard l ON l.result_id = pr.result_id
+                WHERE pr.experiment_id IN ({placeholders})
+                  AND COALESCE(pr.stage1_passed, 0) = 1
+                GROUP BY pr.experiment_id""",
+            tuple(chunk),
+        ).fetchall()
+        for down in down_rows:
+            downstream_by_exp[str(down["experiment_id"])] = {
+                "investigate_rate": float(down["investigate_rate"] or 0.0),
+                "validation_rate": float(down["validation_rate"] or 0.0),
+            }
+    return downstream_by_exp
+
+
+def _json_object_or_empty(raw: Any) -> Dict[str, Any]:
+    try:
+        payload = json.loads(raw) if raw else {}
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _results_payload_or_empty(nb: LabNotebook, raw: Any) -> Dict[str, Any]:
+    if not raw:
+        return {}
+    try:
+        payload = nb._decompress(raw)
+    except (TypeError, ValueError, zlib.error):
+        return _json_object_or_empty(raw)
+    return payload if isinstance(payload, dict) else {}
+
+
+def _synthesis_reward_terms(
+    results_payload: Dict[str, Any], downstream: Dict[str, float]
+) -> Tuple[float, float, float]:
+    total = max(int(results_payload.get("total") or 0), 1)
+    s1_rate = float(results_payload.get("stage1_passed") or 0.0) / total
+    best_loss = results_payload.get("best_loss_ratio")
+    loss_term = 0.0 if best_loss is None else max(0.0, min(1.0, 1.0 - float(best_loss)))
+    novelty_term = max(
+        0.0,
+        min(1.0, float(results_payload.get("best_novelty_score") or 0.0)),
+    )
+    investigate_rate = float(downstream.get("investigate_rate") or 0.0)
+    validation_rate = float(downstream.get("validation_rate") or 0.0)
+    reward = (
+        0.35 * s1_rate
+        + 0.25 * loss_term
+        + 0.15 * novelty_term
+        + 0.15 * investigate_rate
+        + 0.10 * validation_rate
+    )
+    return reward, s1_rate, investigate_rate, validation_rate
+
+
+def _new_synthesis_regime_bucket() -> Dict[str, Any]:
+    return {
+        "n": 0,
+        "cumulative_reward": 0.0,
+        "recent_weighted_reward": 0.0,
+        "recent_weight_sum": 0.0,
+        "mean_reward": 0.0,
+        "investigate_rate": 0.0,
+        "validation_rate": 0.0,
+        "s1_rate": 0.0,
+    }
+
+
+def _record_synthesis_regime_reward(
+    bucket: Dict[str, Any],
+    *,
+    reward: float,
+    recency_weight: float,
+    s1_rate: float,
+    investigate_rate: float,
+    validation_rate: float,
+) -> None:
+    bucket["n"] += 1
+    bucket["cumulative_reward"] += reward
+    bucket["recent_weighted_reward"] += reward * recency_weight
+    bucket["recent_weight_sum"] += recency_weight
+    bucket["investigate_rate"] += investigate_rate
+    bucket["validation_rate"] += validation_rate
+    bucket["s1_rate"] += s1_rate
+
+
+def _finalize_synthesis_regime_stats(stats: Dict[str, Dict[str, Any]]) -> None:
+    for bucket in stats.values():
+        n = max(int(bucket["n"]), 1)
+        bucket["mean_reward"] = float(bucket["cumulative_reward"]) / n
+        recent_weight_sum = float(bucket["recent_weight_sum"] or 1.0)
+        bucket["recent_mean_reward"] = (
+            float(bucket["recent_weighted_reward"]) / recent_weight_sum
+        )
+        bucket["investigate_rate"] /= n
+        bucket["validation_rate"] /= n
+        bucket["s1_rate"] /= n
+
+
 def _graph_is_moe(graph) -> bool:
     """Return True if graph contains any MoE/routing-with-experts op."""
     return any(
@@ -155,116 +280,42 @@ class _SynthesisMixin:
         limit: int = 64,
     ) -> Dict[str, Dict[str, Any]]:
         """Return recent realized reward summaries for adaptive regime choice."""
-        rows = nb.conn.execute(
-            """SELECT experiment_id, config_json, results_json
-               FROM experiments
-               WHERE experiment_type = 'synthesis'
-                 AND status = 'completed'
-               ORDER BY timestamp DESC
-               LIMIT ?""",
-            (max(8, int(limit)),),
-        ).fetchall()
+        rows = _load_recent_synthesis_experiments(nb, limit)
         if not rows:
             return {}
 
         exp_ids = [str(row["experiment_id"]) for row in rows if row["experiment_id"]]
-        downstream_by_exp: Dict[str, Dict[str, float]] = {}
-        if exp_ids:
-            chunk_size = 900
-            for start in range(0, len(exp_ids), chunk_size):
-                chunk = exp_ids[start : start + chunk_size]
-                placeholders = ",".join("?" for _ in chunk)
-                down_rows = nb.conn.execute(
-                    f"""SELECT
-                            pr.experiment_id,
-                            AVG(COALESCE(l.investigation_passed, 0)) AS investigate_rate,
-                            AVG(COALESCE(l.validation_passed, 0)) AS validation_rate
-                        FROM program_results pr
-                        LEFT JOIN leaderboard l ON l.result_id = pr.result_id
-                        WHERE pr.experiment_id IN ({placeholders})
-                          AND COALESCE(pr.stage1_passed, 0) = 1
-                        GROUP BY pr.experiment_id""",
-                    tuple(chunk),
-                ).fetchall()
-                for down in down_rows:
-                    downstream_by_exp[str(down["experiment_id"])] = {
-                        "investigate_rate": float(down["investigate_rate"] or 0.0),
-                        "validation_rate": float(down["validation_rate"] or 0.0),
-                    }
+        downstream_by_exp = (
+            _load_synthesis_downstream_rates(nb, exp_ids) if exp_ids else {}
+        )
 
         stats: Dict[str, Dict[str, Any]] = {}
         for recency_idx, row in enumerate(rows):
-            raw_config = row["config_json"]
-            raw_results = row["results_json"]
-            try:
-                config_payload = json.loads(raw_config) if raw_config else {}
-            except (TypeError, json.JSONDecodeError):
-                config_payload = {}
-            try:
-                results_payload = nb._decompress(raw_results) if raw_results else {}
-            except (TypeError, ValueError, zlib.error):
-                try:
-                    results_payload = json.loads(raw_results) if raw_results else {}
-                except (TypeError, json.JSONDecodeError):
-                    results_payload = {}
-
+            config_payload = _json_object_or_empty(row["config_json"])
+            results_payload = _results_payload_or_empty(nb, row["results_json"])
             regime = str(
                 config_payload.get("adaptive_synthesis_regime")
                 or config_payload.get("synthesis_regime")
                 or self._cycle_regime_name(recency_idx)
             )
-            total = max(int(results_payload.get("total") or 0), 1)
-            s1_rate = float(results_payload.get("stage1_passed") or 0.0) / total
-            best_loss = results_payload.get("best_loss_ratio")
-            loss_term = (
-                0.0 if best_loss is None else max(0.0, min(1.0, 1.0 - float(best_loss)))
-            )
-            novelty_term = max(
-                0.0,
-                min(1.0, float(results_payload.get("best_novelty_score") or 0.0)),
-            )
             downstream = downstream_by_exp.get(str(row["experiment_id"]), {})
-            investigate_rate = float(downstream.get("investigate_rate") or 0.0)
-            validation_rate = float(downstream.get("validation_rate") or 0.0)
-            reward = (
-                0.35 * s1_rate
-                + 0.25 * loss_term
-                + 0.15 * novelty_term
-                + 0.15 * investigate_rate
-                + 0.10 * validation_rate
+            reward, s1_rate, investigate_rate, validation_rate = (
+                _synthesis_reward_terms(results_payload, downstream)
             )
             bucket = stats.setdefault(
                 regime,
-                {
-                    "n": 0,
-                    "cumulative_reward": 0.0,
-                    "recent_weighted_reward": 0.0,
-                    "recent_weight_sum": 0.0,
-                    "mean_reward": 0.0,
-                    "investigate_rate": 0.0,
-                    "validation_rate": 0.0,
-                    "s1_rate": 0.0,
-                },
+                _new_synthesis_regime_bucket(),
             )
-            bucket["n"] += 1
-            bucket["cumulative_reward"] += reward
-            recency_weight = 1.0 / float(recency_idx + 1)
-            bucket["recent_weighted_reward"] += reward * recency_weight
-            bucket["recent_weight_sum"] += recency_weight
-            bucket["investigate_rate"] += investigate_rate
-            bucket["validation_rate"] += validation_rate
-            bucket["s1_rate"] += s1_rate
+            _record_synthesis_regime_reward(
+                bucket,
+                reward=reward,
+                recency_weight=1.0 / float(recency_idx + 1),
+                s1_rate=s1_rate,
+                investigate_rate=investigate_rate,
+                validation_rate=validation_rate,
+            )
 
-        for regime, bucket in stats.items():
-            n = max(int(bucket["n"]), 1)
-            bucket["mean_reward"] = float(bucket["cumulative_reward"]) / n
-            recent_weight_sum = float(bucket["recent_weight_sum"] or 1.0)
-            bucket["recent_mean_reward"] = (
-                float(bucket["recent_weighted_reward"]) / recent_weight_sum
-            )
-            bucket["investigate_rate"] /= n
-            bucket["validation_rate"] /= n
-            bucket["s1_rate"] /= n
+        _finalize_synthesis_regime_stats(stats)
         return stats
 
     def _select_synthesis_regime(
