@@ -36,6 +36,7 @@ research/dashboard/build/
 
 # SQLite databases & WAL files
 *.db
+*.db-journal
 *.db-shm
 *.db-wal
 

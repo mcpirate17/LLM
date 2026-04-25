@@ -23,10 +23,8 @@ from __future__ import annotations
 
 import json
 import logging
-import math
 import sqlite3
-import time
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List
 
 from .auto_escalate_data import (
     composite_score_map,
@@ -48,6 +46,8 @@ from .auto_escalate_flow import (
     sparse_dense_learning_signal,
     strong_investigation_candidates,
 )
+from .auto_escalate_active_learning import _ActiveLearningFollowupMixin
+from .auto_escalate_thresholds import calibrated_promotion_threshold
 from ..evidence import validate_selection_decision_log
 from ..llm.context_experiment import build_go_no_go_context
 from ..notebook import ExperimentEntry, LabNotebook
@@ -65,7 +65,7 @@ from ._types import RunConfig
 logger = logging.getLogger(__name__)
 
 
-class _ResultsAutoEscalatePhase7Mixin:
+class _ResultsAutoEscalatePhase7Mixin(_ActiveLearningFollowupMixin):
     """Branch helpers extracted from _auto_escalate orchestration."""
 
     @staticmethod
@@ -102,266 +102,6 @@ class _ResultsAutoEscalatePhase7Mixin:
         ):
             return False
         return True
-
-    def _active_learning_screening_rank(
-        self,
-        nb: LabNotebook,
-        rows: List[Dict[str, Any]],
-        score_map: Dict[str, float],
-        threshold: float,
-    ) -> List[Dict[str, Any]]:
-        """Prioritize backfill/replay candidates by expected information gain."""
-        if not rows:
-            return []
-        fingerprints = [
-            str(row.get("graph_fingerprint") or "").strip()
-            for row in rows
-            if str(row.get("graph_fingerprint") or "").strip()
-        ]
-        agg_by_fp = nb.get_fingerprint_aggregates_batch(fingerprints)
-        ranked: List[Dict[str, Any]] = []
-        for row in rows:
-            result_id = str(row.get("result_id") or "")
-            fp = str(row.get("graph_fingerprint") or "").strip()
-            agg = agg_by_fp.get(fp, {})
-            n_runs = int(agg.get("n_runs") or 0)
-            n_s1 = int(agg.get("n_s1_passed") or 0)
-            s1_rate = n_s1 / max(n_runs, 1)
-            ambiguity = 1.0 - abs((2.0 * s1_rate) - 1.0)
-            instability = min(1.0, float(agg.get("loss_std") or 0.0) / 0.15)
-            threshold_distance = abs(
-                float(score_map.get(result_id, threshold)) - threshold
-            )
-            threshold_proximity = max(0.0, 1.0 - min(1.0, threshold_distance / 12.0))
-            novelty = float(row.get("novelty_score") or 0.0)
-            info_gain = (
-                0.35 * threshold_proximity
-                + 0.25 * ambiguity
-                + 0.20 * instability
-                + 0.20 * novelty
-            )
-            enriched = dict(row)
-            enriched["_active_learning"] = {
-                "info_gain": round(info_gain, 6),
-                "ambiguity": round(ambiguity, 6),
-                "instability": round(instability, 6),
-                "threshold_proximity": round(threshold_proximity, 6),
-                "n_runs": n_runs,
-                "s1_rate": round(s1_rate, 6),
-            }
-            ranked.append(enriched)
-        ranked.sort(
-            key=lambda row: (
-                float((row.get("_active_learning") or {}).get("info_gain") or 0.0),
-                float(score_map.get(str(row.get("result_id") or ""), threshold)),
-            ),
-            reverse=True,
-        )
-        return ranked
-
-    @staticmethod
-    def _followup_priority_summary(
-        rows: List[Dict[str, Any]],
-    ) -> Tuple[float, Dict[str, Any]]:
-        if not rows:
-            return 0.0, {"policy": "expected_information_gain", "per_result": {}}
-        per_result: Dict[str, Any] = {}
-        scores: List[float] = []
-        for row in rows:
-            result_id = str(row.get("result_id") or "")
-            details = dict((row.get("_active_learning") or {}))
-            if not result_id or not details:
-                continue
-            per_result[result_id] = details
-            scores.append(float(details.get("info_gain") or 0.0))
-        priority_score = (sum(scores) / len(scores)) if scores else 0.0
-        return priority_score, {
-            "policy": "expected_information_gain",
-            "selected_count": len(per_result),
-            "per_result": per_result,
-        }
-
-    def _active_learning_validation_rank(
-        self,
-        rows: List[Dict[str, Any]],
-        composite_scores: Dict[str, float],
-        replication_info: Dict[str, Dict[str, Any]],
-        min_score: float,
-    ) -> List[Dict[str, Any]]:
-        """Prioritize validation follow-up by uncertainty and decision value."""
-        if not rows:
-            return []
-        ranked: List[Dict[str, Any]] = []
-        for row in rows:
-            result_id = str(row.get("result_id") or "")
-            if not result_id:
-                continue
-            score = float(composite_scores.get(result_id, min_score) or min_score)
-            replication = replication_info.get(
-                result_id,
-                {"n": 1, "loss_std": 0.0},
-            )
-            n_rep = max(1, int(replication.get("n") or 1))
-            loss_std = float(replication.get("loss_std") or 0.0)
-            effective_threshold = effective_validation_threshold(
-                min_score=min_score,
-                replication_n=n_rep,
-                loss_std=loss_std,
-            )
-            threshold_distance = abs(score - effective_threshold)
-            threshold_proximity = max(0.0, 1.0 - min(1.0, threshold_distance / 10.0))
-            uncertainty = min(1.0, 1.0 / math.sqrt(float(n_rep)))
-            instability = min(1.0, loss_std / 0.12)
-            novelty = float(row.get("novelty_score") or 0.0)
-            info_gain = (
-                0.35 * threshold_proximity
-                + 0.25 * uncertainty
-                + 0.20 * instability
-                + 0.20 * novelty
-            )
-            enriched = dict(row)
-            enriched["_active_learning"] = {
-                "info_gain": round(info_gain, 6),
-                "threshold_proximity": round(threshold_proximity, 6),
-                "uncertainty": round(uncertainty, 6),
-                "instability": round(instability, 6),
-                "replication_n": n_rep,
-                "loss_std": round(loss_std, 6),
-                "effective_threshold": round(effective_threshold, 6),
-            }
-            ranked.append(enriched)
-        ranked.sort(
-            key=lambda row: (
-                float((row.get("_active_learning") or {}).get("info_gain") or 0.0),
-                float(composite_scores.get(str(row.get("result_id") or ""), min_score)),
-            ),
-            reverse=True,
-        )
-        return ranked
-
-    def _queue_active_learning_replays(
-        self,
-        *,
-        nb: LabNotebook,
-        config: RunConfig,
-        rows: List[Dict[str, Any]],
-        source_context: str,
-        source_experiment_id: str | None = None,
-    ) -> str | None:
-        """Queue exact replays for ambiguous, unstable frontier cases.
-
-        This does not invent a new evaluation path. It routes canonical
-        result_ids through the existing exact_graph_replay pipeline.
-        """
-        suppressed_ids: set[str] = set()
-        active_statuses = ("queued", "running")
-        for status in active_statuses:
-            for task in nb.get_followup_tasks(stage="replay", status=status, limit=200):
-                suppressed_ids.update(
-                    str(rid).strip()
-                    for rid in (task.get("result_ids_json") or [])
-                    if str(rid).strip()
-                )
-        recent_cutoff = time.time() - (12.0 * 3600.0)
-        for task in nb.get_followup_tasks(
-            stage="replay", status="completed", limit=200
-        ):
-            completed_ts = float(task.get("completed_timestamp") or 0.0)
-            if completed_ts < recent_cutoff:
-                continue
-            suppressed_ids.update(
-                str(rid).strip()
-                for rid in (task.get("result_ids_json") or [])
-                if str(rid).strip()
-            )
-
-        replay_targets: List[Dict[str, Any]] = []
-        seen_canonical_ids: set[str] = set()
-        max_targets = max(1, min(2, int(config.auto_investigate_top_n or 1)))
-        for row in rows:
-            details = row.get("_active_learning") or {}
-            info_gain = float(details.get("info_gain") or 0.0)
-            threshold_proximity = float(details.get("threshold_proximity") or 0.0)
-            ambiguity = float(details.get("ambiguity") or 0.0)
-            instability = float(details.get("instability") or 0.0)
-            n_runs = int(details.get("n_runs") or 0)
-            canonical_id = str(
-                nb.resolve_canonical_result_id(str(row.get("result_id") or "").strip())
-                or row.get("result_id")
-                or ""
-            ).strip()
-            if not canonical_id:
-                continue
-            if canonical_id in seen_canonical_ids or canonical_id in suppressed_ids:
-                continue
-            if info_gain < 0.60:
-                continue
-            if threshold_proximity < 0.80:
-                continue
-            if ambiguity < 0.30 and instability < 0.20:
-                continue
-            if n_runs < 1:
-                continue
-            replay_target = dict(row)
-            replay_target["result_id"] = canonical_id
-            replay_targets.append(replay_target)
-            seen_canonical_ids.add(canonical_id)
-            if len(replay_targets) >= max_targets:
-                break
-        if not replay_targets:
-            return None
-
-        priority_score, priority_reasons = self._followup_priority_summary(
-            replay_targets
-        )
-        result_ids = [
-            str(row.get("result_id") or "").strip()
-            for row in replay_targets
-            if str(row.get("result_id") or "").strip()
-        ]
-        if not result_ids:
-            return None
-        evidence_pack = self._safe_build_evidence_pack(
-            nb,
-            recommendation={"mode": "exact_graph_replay"},
-            decision_type="active_learning_replay",
-        )
-        hypothesis = (
-            "Active-learning replay: re-measure ambiguous or unstable frontier "
-            f"candidates before downstream promotion ({len(result_ids)} canonical graphs)."
-        )
-        task_id = nb.enqueue_followup_task(
-            stage="replay",
-            result_ids=result_ids,
-            hypothesis=hypothesis,
-            config={
-                "device": config.device,
-                "repeat_per_source": 2,
-                "fast": True,
-            },
-            evidence_pack=evidence_pack,
-            source_context=source_context,
-            source_experiment_id=source_experiment_id,
-            priority_score=priority_score,
-            priority_reasons=priority_reasons,
-            metadata={
-                "policy": "exact_graph_replay",
-                "target_type": "ambiguous_unstable_frontier",
-            },
-        )
-        self._emit_event(
-            "active_learning_replay_queued",
-            {
-                "task_id": task_id,
-                "result_ids": result_ids,
-                "n_candidates": len(result_ids),
-                "suppressed_candidate_count": len(suppressed_ids),
-                "priority_score": round(float(priority_score or 0.0), 6),
-                "priority_reasons": priority_reasons,
-                "evidence_pack": evidence_pack,
-            },
-        )
-        return task_id
 
     def sweep_backfill_candidates(self, config: RunConfig, nb: LabNotebook) -> int:
         """Standalone global sweep for accumulated backfill survivors.
@@ -583,71 +323,129 @@ class _ResultsAutoEscalatePhase7Mixin:
         priority_reasons: Dict[str, Any] | None = None,
     ) -> str | None:
         if stage == "investigation":
-            hypothesis = (
-                f"Auto-investigation: testing robustness of top "
-                f"{len(result_ids)} screening survivors with "
-                f"{config.n_training_programs} training programs each."
-            )
-            evidence_pack = self._safe_build_evidence_pack(
-                nb,
-                recommendation={"mode": "investigation"},
-                decision_type="auto_investigate",
-            )
-            task_id = nb.enqueue_followup_task(
-                stage="investigation",
+            return self._queue_pending_investigation_followup(
+                nb=nb,
                 result_ids=result_ids,
-                hypothesis=hypothesis,
-                config=config.to_dict(),
-                evidence_pack=evidence_pack,
-                source_context=source_context or "auto_investigate_screening",
+                config=config,
+                blocked_incomplete_fingerprint=blocked_incomplete_fingerprint,
+                survivor_count=survivor_count,
+                qualifying_count=qualifying_count,
+                source_context=source_context,
                 source_decision_id=source_decision_id,
                 source_experiment_id=source_experiment_id,
                 priority_score=priority_score,
                 priority_reasons=priority_reasons,
-                metadata={
-                    "survivor_count": survivor_count,
-                    "qualifying_count": qualifying_count,
-                    "blocked_incomplete_fingerprint": blocked_incomplete_fingerprint,
-                },
             )
-            self._pending_investigation = {
-                "result_ids": result_ids,
-                "config": config,
-                "hypothesis": hypothesis,
+
+        return self._queue_pending_validation_followup(
+            nb=nb,
+            result_ids=result_ids,
+            config=config,
+            blocked_incomplete_fingerprint=blocked_incomplete_fingerprint,
+            survivor_count=survivor_count,
+            qualifying_count=qualifying_count,
+            source_context=source_context,
+            source_decision_id=source_decision_id,
+            source_experiment_id=source_experiment_id,
+            priority_score=priority_score,
+            priority_reasons=priority_reasons,
+        )
+
+    def _queue_pending_investigation_followup(
+        self,
+        *,
+        nb: LabNotebook,
+        result_ids: List[str],
+        config: RunConfig,
+        blocked_incomplete_fingerprint: int | None,
+        survivor_count: int | None,
+        qualifying_count: int | None,
+        source_context: str | None,
+        source_decision_id: str | None,
+        source_experiment_id: str | None,
+        priority_score: float,
+        priority_reasons: Dict[str, Any] | None,
+    ) -> str:
+        hypothesis = (
+            f"Auto-investigation: testing robustness of top "
+            f"{len(result_ids)} screening survivors with "
+            f"{config.n_training_programs} training programs each."
+        )
+        evidence_pack = self._safe_build_evidence_pack(
+            nb,
+            recommendation={"mode": "investigation"},
+            decision_type="auto_investigate",
+        )
+        task_id = nb.enqueue_followup_task(
+            stage="investigation",
+            result_ids=result_ids,
+            hypothesis=hypothesis,
+            config=config.to_dict(),
+            evidence_pack=evidence_pack,
+            source_context=source_context or "auto_investigate_screening",
+            source_decision_id=source_decision_id,
+            source_experiment_id=source_experiment_id,
+            priority_score=priority_score,
+            priority_reasons=priority_reasons,
+            metadata={
+                "survivor_count": survivor_count,
+                "qualifying_count": qualifying_count,
+                "blocked_incomplete_fingerprint": blocked_incomplete_fingerprint,
+            },
+        )
+        self._pending_investigation = {
+            "result_ids": result_ids,
+            "config": config,
+            "hypothesis": hypothesis,
+            "task_id": task_id,
+            "evidence_pack": evidence_pack,
+        }
+        self._emit_event(
+            "auto_investigate_queued",
+            {
                 "task_id": task_id,
-            }
-            self._pending_investigation["evidence_pack"] = evidence_pack
-            self._emit_event(
-                "auto_investigate_queued",
-                {
+                "result_ids": result_ids,
+                "n_candidates": len(result_ids),
+                "reason": f"{survivor_count} S1 survivors with loss_ratio < 0.5",
+                "priority_score": round(float(priority_score or 0.0), 6),
+                "priority_reasons": priority_reasons or {},
+                "evidence_pack": evidence_pack,
+            },
+        )
+        nb.add_entry(
+            ExperimentEntry(
+                entry_type="decision",
+                title="Auto-Investigation Triggered",
+                content=(
+                    f"Automatically queuing investigation for {len(result_ids)} "
+                    f"top performers. Criteria: {survivor_count} S1 survivors."
+                ),
+                metadata={
                     "task_id": task_id,
                     "result_ids": result_ids,
-                    "n_candidates": len(result_ids),
-                    "reason": f"{survivor_count} S1 survivors with loss_ratio < 0.5",
-                    "priority_score": round(float(priority_score or 0.0), 6),
+                    "priority_score": priority_score,
                     "priority_reasons": priority_reasons or {},
                     "evidence_pack": evidence_pack,
                 },
             )
-            nb.add_entry(
-                ExperimentEntry(
-                    entry_type="decision",
-                    title="Auto-Investigation Triggered",
-                    content=(
-                        f"Automatically queuing investigation for {len(result_ids)} "
-                        f"top performers. Criteria: {survivor_count} S1 survivors."
-                    ),
-                    metadata={
-                        "task_id": task_id,
-                        "result_ids": result_ids,
-                        "priority_score": priority_score,
-                        "priority_reasons": priority_reasons or {},
-                        "evidence_pack": evidence_pack,
-                    },
-                )
-            )
-            return task_id
+        )
+        return task_id
 
+    def _queue_pending_validation_followup(
+        self,
+        *,
+        nb: LabNotebook,
+        result_ids: List[str],
+        config: RunConfig,
+        blocked_incomplete_fingerprint: int | None,
+        survivor_count: int | None,
+        qualifying_count: int | None,
+        source_context: str | None,
+        source_decision_id: str | None,
+        source_experiment_id: str | None,
+        priority_score: float,
+        priority_reasons: Dict[str, Any] | None,
+    ) -> str:
         hypothesis = (
             f"Auto-validation: publication-grade testing of "
             f"{len(result_ids)} robust investigation survivors."
@@ -1074,33 +872,13 @@ class _ResultsAutoEscalatePhase7Mixin:
         candidate_ids = [
             item["result_id"] for item in ranked[: config.auto_validate_top_n]
         ]
-        decision_payload = build_selection_decision_payload(
-            context="auto_validate_investigation",
-            experiment_id=results.get("experiment_id"),
+        decision_id = self._record_auto_validate_selection(
+            nb,
+            results=results,
             selection=selection,
             candidate_ids=candidate_ids,
             scored_by_id=scored_by_id,
         )
-        decision_id = self._record_selection_decision(
-            nb,
-            decision_payload=decision_payload,
-            candidate_ids=candidate_ids,
-            supporting_insight_ids=selection.get("supporting_insight_ids") or [],
-            source_experiment_id=results.get("experiment_id"),
-            failure_log_label="Auto-validate selection logging failed",
-        )
-
-        for rid in candidate_ids:
-            score_row = scored_by_id.get(rid)
-            if not score_row or not decision_id:
-                continue
-            nb.record_selection_family_trial(
-                decision_id=decision_id,
-                context="auto_validate_investigation",
-                family=str(score_row.get("family") or "Unknown"),
-                chosen_result_ids=[rid],
-                source_experiment_id=str(results.get("experiment_id") or ""),
-            )
         ranked_strong_by_id = {
             str(row.get("result_id") or ""): row for row in ranked_strong
         }
@@ -1124,6 +902,45 @@ class _ResultsAutoEscalatePhase7Mixin:
             priority_score=priority_score,
             priority_reasons=priority_reasons,
         )
+
+    def _record_auto_validate_selection(
+        self,
+        nb: LabNotebook,
+        *,
+        results: Dict,
+        selection: Dict[str, Any],
+        candidate_ids: List[str],
+        scored_by_id: Dict[str, Dict[str, Any]],
+    ) -> str | None:
+        decision_payload = build_selection_decision_payload(
+            context="auto_validate_investigation",
+            experiment_id=results.get("experiment_id"),
+            selection=selection,
+            candidate_ids=candidate_ids,
+            scored_by_id=scored_by_id,
+        )
+        decision_id = self._record_selection_decision(
+            nb,
+            decision_payload=decision_payload,
+            candidate_ids=candidate_ids,
+            supporting_insight_ids=selection.get("supporting_insight_ids") or [],
+            source_experiment_id=results.get("experiment_id"),
+            failure_log_label="Auto-validate selection logging failed",
+        )
+        if not decision_id:
+            return None
+        for rid in candidate_ids:
+            score_row = scored_by_id.get(rid)
+            if not score_row:
+                continue
+            nb.record_selection_family_trial(
+                decision_id=decision_id,
+                context="auto_validate_investigation",
+                family=str(score_row.get("family") or "Unknown"),
+                chosen_result_ids=[rid],
+                source_experiment_id=str(results.get("experiment_id") or ""),
+            )
+        return decision_id
 
     @staticmethod
     def _recent_threshold_scores(
@@ -1160,153 +977,30 @@ class _ResultsAutoEscalatePhase7Mixin:
     ) -> float:
         """Pick a stage threshold from recent realized downstream outcomes."""
         try:
-            import numpy as np
-
             rows = self._recent_threshold_scores(nb, tier_clause=tier_clause, limit=250)
-            sample_size = len(rows)
-            if len(rows) < 20:
-                nb.record_threshold_calibration(
-                    context=context,
-                    tier_clause=tier_clause,
-                    floor=floor,
-                    percentile=percentile,
-                    selected_threshold=floor,
-                    fallback_threshold=floor,
-                    sample_size=sample_size,
-                    labeled_size=0,
-                    metrics={"mode": "floor_fallback"},
-                    metadata={"reason": "insufficient_rows"},
-                )
-                return floor
-
-            scores = np.array(
-                [float(row["composite_score"]) for row in rows],
-                dtype=np.float64,
-            )
-            pct_value = float(np.percentile(scores, percentile))
-            fallback_threshold = max(pct_value, floor)
-
             if context == "auto_investigate_screening":
-                reward_fn = self._selection_insight_reward_investigate
+                reward_fn = getattr(
+                    self,
+                    "_selection_insight_reward_investigate",
+                    None,
+                )
             elif context == "auto_validate_investigation":
-                reward_fn = self._selection_insight_reward_validate
+                reward_fn = getattr(
+                    self,
+                    "_selection_insight_reward_validate",
+                    None,
+                )
             else:
-                nb.record_threshold_calibration(
-                    context=context,
-                    tier_clause=tier_clause,
-                    floor=floor,
-                    percentile=percentile,
-                    selected_threshold=fallback_threshold,
-                    fallback_threshold=fallback_threshold,
-                    sample_size=sample_size,
-                    labeled_size=0,
-                    metrics={"mode": "fallback"},
-                    metadata={"reason": "unsupported_context"},
-                )
-                return fallback_threshold
-
-            labeled: List[Tuple[float, float]] = []
-            for row in rows:
-                reward = reward_fn(row)
-                if reward is not None:
-                    labeled.append((float(row["composite_score"]), float(reward)))
-            positive_count = sum(1 for _, reward in labeled if reward >= 0.55)
-            negative_count = sum(1 for _, reward in labeled if reward <= 0.45)
-            if len(labeled) < 24:
-                nb.record_threshold_calibration(
-                    context=context,
-                    tier_clause=tier_clause,
-                    floor=floor,
-                    percentile=percentile,
-                    selected_threshold=fallback_threshold,
-                    fallback_threshold=fallback_threshold,
-                    sample_size=sample_size,
-                    labeled_size=len(labeled),
-                    positive_count=positive_count,
-                    negative_count=negative_count,
-                    metrics={"mode": "fallback"},
-                    metadata={"reason": "insufficient_labeled_rows"},
-                )
-                return fallback_threshold
-
-            candidate_thresholds = np.unique(
-                np.quantile(
-                    np.array([score for score, _ in labeled], dtype=np.float64),
-                    np.linspace(0.10, 0.95, 32),
-                )
-            )
-
-            best_threshold = fallback_threshold
-            best_objective = float("-inf")
-            best_metrics: Dict[str, Any] = {
-                "mode": "fallback",
-                "promoted_count": 0,
-                "held_count": len(labeled),
-            }
-            for threshold in candidate_thresholds:
-                promoted = [reward for score, reward in labeled if score >= threshold]
-                held = [reward for score, reward in labeled if score < threshold]
-                if len(promoted) < 5:
-                    continue
-                tp = sum(1 for reward in promoted if reward >= 0.55)
-                fp = sum(1 for reward in promoted if reward <= 0.45)
-                fn = sum(1 for reward in held if reward >= 0.55)
-                precision = tp / max(tp + fp, 1)
-                recall = tp / max(tp + fn, 1)
-                f1 = (
-                    (2.0 * precision * recall / (precision + recall))
-                    if (precision + recall)
-                    else 0.0
-                )
-                avg_reward = sum(promoted) / max(len(promoted), 1)
-                rejection_quality = (
-                    sum(1 for reward in held if reward <= 0.45) / max(len(held), 1)
-                    if held
-                    else 0.0
-                )
-                objective = 0.55 * f1 + 0.30 * avg_reward + 0.15 * rejection_quality
-                if objective > best_objective:
-                    best_objective = objective
-                    best_threshold = float(threshold)
-                    best_metrics = {
-                        "mode": "adaptive",
-                        "precision": round(precision, 6),
-                        "recall": round(recall, 6),
-                        "f1": round(f1, 6),
-                        "avg_reward": round(avg_reward, 6),
-                        "rejection_quality": round(rejection_quality, 6),
-                        "promoted_count": len(promoted),
-                        "held_count": len(held),
-                        "selected_quantile": round(
-                            float(
-                                np.mean(
-                                    np.array(
-                                        [score <= threshold for score, _ in labeled],
-                                        dtype=np.float64,
-                                    )
-                                )
-                            ),
-                            6,
-                        ),
-                    }
-
-            selected_threshold = max(float(best_threshold), float(floor))
-            nb.record_threshold_calibration(
-                context=context,
+                reward_fn = None
+            return calibrated_promotion_threshold(
+                nb,
+                rows=rows,
                 tier_clause=tier_clause,
                 floor=floor,
                 percentile=percentile,
-                selected_threshold=selected_threshold,
-                fallback_threshold=fallback_threshold,
-                sample_size=sample_size,
-                labeled_size=len(labeled),
-                positive_count=positive_count,
-                negative_count=negative_count,
-                objective=best_objective if math.isfinite(best_objective) else None,
-                metrics=best_metrics,
-                metadata={"candidate_threshold_count": len(candidate_thresholds)},
+                context=context,
+                reward_fn=reward_fn,
             )
-            return selected_threshold
         except (ImportError, sqlite3.OperationalError, ValueError, TypeError) as e:
             logger.warning(
                 "Adaptive threshold calibration failed: %s, using floor %.1f",
