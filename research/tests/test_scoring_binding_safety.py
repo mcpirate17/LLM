@@ -10,7 +10,13 @@ Covers the critical paths that have zero test coverage:
 """
 
 import copy
+
 import pytest
+
+pytest.importorskip(
+    "tasks.induction_native_probe.fast_induction_probe",
+    reason="native induction probe task package is unavailable",
+)
 
 from research.eval.binding_pipeline import (
     FullBindingProbeResult,

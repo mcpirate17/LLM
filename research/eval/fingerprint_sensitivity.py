@@ -8,6 +8,7 @@ from typing import Callable, Dict, Optional
 import torch
 import torch.nn as nn
 
+from ._probe_runtime import disable_native_probe_dispatch
 from ._sensitivity_skip_stats import (
     record_sensitivity_skip,
 )
@@ -47,7 +48,11 @@ def analyze_sensitivity(
     }
     try:
         model.eval()
-        with torch.enable_grad():
+        device_str = str(device) if not isinstance(device, str) else device
+        with (
+            disable_native_probe_dispatch(model, device=device_str),
+            torch.enable_grad(),
+        ):
             ids = torch.randint(0, vocab_size, (1, seq_len), device=device)
             embed = model.embed(ids).detach().requires_grad_(True)
 

@@ -123,9 +123,16 @@ def _extract_graph_metadata_payload(
     template_name = metadata.get("template") or metadata.get("template_name") or ""
     if not isinstance(template_name, str):
         template_name = str(template_name)
+    template_name = template_name.strip()
+    templates_used = metadata.get("templates_used")
+    if not template_name and isinstance(templates_used, list):
+        for candidate in templates_used:
+            if isinstance(candidate, str) and candidate.strip():
+                template_name = candidate.strip()
+                break
     return (
-        template_name.strip(),
-        _clean_string_array_json(metadata.get("templates_used")),
+        template_name,
+        _clean_string_array_json(templates_used),
         _clean_string_array_json(metadata.get("motifs_used")),
         _clean_dict_array_json(metadata.get("template_slot_usage")),
     )
@@ -166,14 +173,49 @@ def _extract_graph_feature_payload_python(
     )
 
 
+def _first_template_from_json(templates_json: str) -> str:
+    if not templates_json or templates_json == _EMPTY_JSON_ARRAY:
+        return ""
+    try:
+        names = _json_loads(templates_json)
+    except Exception:
+        return ""
+    if not isinstance(names, list):
+        return ""
+    for candidate in names:
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()
+    return ""
+
+
 @lru_cache(maxsize=8192)
 def extract_graph_feature_payload(
     graph_json: str,
 ) -> tuple[str, tuple[str, ...], tuple[str, ...], str, str, str]:
     native_payload = _extract_graph_feature_payload_native(graph_json)
-    if native_payload is not None:
-        return native_payload
-    return _extract_graph_feature_payload_python(graph_json)
+    payload = (
+        native_payload
+        if native_payload is not None
+        else _extract_graph_feature_payload_python(graph_json)
+    )
+    (
+        template_name,
+        op_names,
+        pair_signatures,
+        templates_json,
+        motifs_json,
+        slot_usage_json,
+    ) = payload
+    if not template_name:
+        template_name = _first_template_from_json(templates_json)
+    return (
+        template_name,
+        op_names,
+        pair_signatures,
+        templates_json,
+        motifs_json,
+        slot_usage_json,
+    )
 
 
 def build_graph_feature_rows(

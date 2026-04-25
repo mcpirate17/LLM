@@ -79,6 +79,7 @@ class IRExecutor(nn.Module):
         self._exec_in1_indices = plan.exec_in1_indices
         self._exec_in2_indices = plan.exec_in2_indices
         self._exec_ops = plan.exec_ops
+        self._node_outputs_buf = [None] * self._n_nodes
 
         # torch.compile can dominate runtime for short-lived candidate models.
         # Keep it opt-in so screening throughput does not get bottlenecked by
@@ -139,6 +140,7 @@ class IRExecutor(nn.Module):
             input_node_indices=self._input_node_indices,
             x=x,
             capture_intermediates=capture_intermediates,
+            node_outputs_buf=None if capture_intermediates else self._node_outputs_buf,
         )
 
         if capture_intermediates or not self._has_native_chain_slots:
@@ -189,6 +191,7 @@ class IRExecutor(nn.Module):
 
         if captured is not None:
             return res, captured
+        node_outputs[self._output_idx_int] = None
         return res
 
     @property

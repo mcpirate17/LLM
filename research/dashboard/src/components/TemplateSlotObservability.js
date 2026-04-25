@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useAriaData } from '../hooks/useAriaData';
 import { fmtLoss, fmtNumber, fmtPct } from '../utils/format';
 import useInteractiveTable from './shared/useInteractiveTable';
@@ -40,7 +40,7 @@ function Badge({ label, tone }) {
       fontSize: 10,
       fontWeight: 700,
       textTransform: 'uppercase',
-      letterSpacing: 0.3,
+      letterSpacing: 0,
     }}>
       {label}
     </span>
@@ -106,30 +106,79 @@ const CATEGORY_ORDER = {
 };
 
 const TEMPLATE_COLUMNS = [
-  { key: 'name', label: 'Template' },
-  { key: 'structural_category', label: 'Label' },
-  { key: 'evidence_level', label: 'Evidence' },
-  { key: 'n_used', label: 'Runs' },
-  { key: 's0_rate', label: 'S0' },
-  { key: 's05_rate', label: 'S0.5' },
-  { key: 's1_rate', label: 'S1' },
-  { key: 'avg_loss_ratio', label: 'Train LR' },
-  { key: 'avg_validation_loss_ratio', label: 'Val LR' },
-  { key: 'avg_induction_auc', label: 'Ind' },
-  { key: 'avg_binding_auc', label: 'Bind' },
-  { key: 'avg_hellaswag_acc', label: 'Hella' },
-  { key: 'top_failure_reason', label: 'Issue' },
+  { key: 'name', label: 'Template', tooltip: 'Structural recipe name.', sticky: true, left: 0, width: 250 },
+  { key: 'structural_category', label: 'Label', tooltip: 'Template quality category from aggregate evidence.' },
+  { key: 'evidence_level', label: 'Evidence', tooltip: 'Sample support level for comparing this template.' },
+  { key: 'n_used', label: 'Runs', tooltip: 'Number of observed graphs using this template.' },
+  { key: 's0_rate', label: 'S0', tooltip: 'Share of template runs that passed Stage 0.' },
+  { key: 's05_rate', label: 'S0.5', tooltip: 'Share of template runs that passed stability screening.' },
+  { key: 's1_rate', label: 'S1', tooltip: 'Share of Stage 0 passes that reached Stage 1.' },
+  { key: 'avg_loss_ratio', label: 'Train LR', tooltip: 'Average training loss ratio.' },
+  { key: 'avg_validation_loss_ratio', label: 'Val LR', tooltip: 'Average validation loss ratio.' },
+  { key: 'avg_induction_auc', label: 'Ind', tooltip: 'Average induction-task AUC.' },
+  { key: 'avg_binding_auc', label: 'Bind', tooltip: 'Average binding/copy-task AUC.' },
+  { key: 'avg_hellaswag_acc', label: 'Hella', tooltip: 'Average HellaSwag accuracy signal.' },
+  { key: 'top_failure_reason', label: 'Issue', tooltip: 'Most common failure reason.' },
 ];
 
 const SLOT_COLUMNS = [
-  { key: 'slot_key', label: 'Slot' },
-  { key: 'template_name', label: 'Template' },
-  { key: 'slot_index', label: '#' },
-  { key: 'n_used', label: 'Uses' },
-  { key: 's1_rate', label: 'S1' },
-  { key: 'avg_loss_ratio', label: 'Train LR' },
-  { key: 'top_selected_motif', label: 'Selected' },
-  { key: 'top_failure_reason', label: 'Issue' },
+  { key: 'slot_key', label: 'Slot', tooltip: 'Template slot identifier.', sticky: true, left: 0, width: 270 },
+  { key: 'template_name', label: 'Template', tooltip: 'Template that owns this slot.' },
+  { key: 'slot_index', label: '#', tooltip: 'Slot index inside the template.' },
+  { key: 'n_used', label: 'Uses', tooltip: 'Number of observed fills for this slot.' },
+  { key: 's1_rate', label: 'S1', tooltip: 'Share of slot uses that reached Stage 1.' },
+  { key: 'avg_loss_ratio', label: 'Train LR', tooltip: 'Average training loss ratio for this slot.' },
+  { key: 'top_selected_motif', label: 'Selected', tooltip: 'Most frequently selected motif.' },
+  { key: 'top_failure_reason', label: 'Issue', tooltip: 'Most common failure reason.' },
+];
+
+const TEMPLATE_GROUPS = [
+  { label: 'Identity', span: 3 },
+  { label: 'Health', span: 4 },
+  { label: 'Learning', span: 2 },
+  { label: 'Benchmarks', span: 3 },
+  { label: 'Diagnosis', span: 1 },
+];
+
+const SLOT_GROUPS = [
+  { label: 'Identity', span: 3 },
+  { label: 'Health', span: 3 },
+  { label: 'Diagnosis', span: 2 },
+];
+
+const TEMPLATE_FILTERS = [
+  { key: 'all', label: 'All' },
+  { key: 'strong', label: 'Strong' },
+  { key: 'decent', label: 'Decent' },
+  { key: 'weak', label: 'Weak' },
+  { key: 'sparse', label: 'Sparse' },
+  { key: 'untested', label: 'Untested' },
+  { key: 'established', label: 'Established' },
+  { key: 'low_s1', label: 'Low S1' },
+];
+
+const TEMPLATE_SORT_PRESETS = [
+  { key: 'most_runs', label: 'Most Runs', sortKey: 'n_used', desc: true },
+  { key: 'worst_s1', label: 'Worst S1', sortKey: 's1_rate', desc: false },
+  { key: 'best_val', label: 'Best Val', sortKey: 'avg_validation_loss_ratio', desc: false },
+  { key: 'worst_gap', label: 'Worst Val Gap', sortKey: 'val_gap', desc: true },
+  { key: 'best_ind', label: 'Best Ind', sortKey: 'avg_induction_auc', desc: true },
+  { key: 'best_hella', label: 'Best Hella', sortKey: 'avg_hellaswag_acc', desc: true },
+];
+
+const SLOT_FILTERS = [
+  { key: 'all', label: 'All' },
+  { key: 'low_s1', label: 'Low S1' },
+  { key: 'high_loss', label: 'High Loss' },
+  { key: 'role', label: 'Role Slots' },
+  { key: 'has_issue', label: 'Has Issue' },
+];
+
+const SLOT_SORT_PRESETS = [
+  { key: 'template', label: 'Template Order', sortKey: 'template_name', desc: false },
+  { key: 'most_used', label: 'Most Used', sortKey: 'n_used', desc: true },
+  { key: 'worst_s1', label: 'Worst S1', sortKey: 's1_rate', desc: false },
+  { key: 'worst_loss', label: 'Worst Loss', sortKey: 'avg_loss_ratio', desc: true },
 ];
 
 const EVIDENCE_ORDER = { insufficient: 0, sparse: 1, building: 2, established: 3 };
@@ -137,6 +186,12 @@ const EVIDENCE_ORDER = { insufficient: 0, sparse: 1, building: 2, established: 3
 function getTemplateSortValue(row, key) {
   if (key === 'evidence_level') return EVIDENCE_ORDER[row.evidence_level] ?? -1;
   if (key === 'structural_category') return CATEGORY_ORDER[row.structural_category] ?? -1;
+  if (key === 'val_gap') {
+    const val = Number(row.avg_validation_loss_ratio);
+    const train = Number(row.avg_loss_ratio);
+    if (!Number.isFinite(val) || !Number.isFinite(train)) return null;
+    return val - train;
+  }
   return row[key];
 }
 
@@ -144,12 +199,83 @@ function getTemplateInitialSortDesc(key) {
   return key !== 'name' && key !== 'top_failure_reason';
 }
 
+function stickyCellStyle(col, extra = {}) {
+  if (!col?.sticky) return extra;
+  return {
+    ...extra,
+    position: 'sticky',
+    left: col.left,
+    minWidth: col.width,
+    maxWidth: col.width,
+    width: col.width,
+    background: extra.background || 'var(--bg-primary)',
+    zIndex: extra.zIndex || 2,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    boxShadow: '1px 0 0 var(--border)',
+  };
+}
+
+function valLossTone(row) {
+  const val = Number(row.avg_validation_loss_ratio);
+  const train = Number(row.avg_loss_ratio);
+  if (!Number.isFinite(val)) return 'var(--text-muted)';
+  if (val >= 0.68 || (Number.isFinite(train) && val > train * 1.15)) return 'var(--accent-yellow)';
+  return 'var(--text-primary)';
+}
+
+function templateMatchesFilter(row, filter) {
+  if (filter === 'all') return true;
+  if (filter === 'established') return row.evidence_level === 'established';
+  if (filter === 'sparse') return row.evidence_level === 'sparse' || row.structural_category === 'data-sparse';
+  if (filter === 'low_s1') return row.s1_rate != null && row.s1_rate < 0.15;
+  return row.structural_category === filter;
+}
+
+function slotMatchesFilter(row, filter) {
+  if (filter === 'all') return true;
+  if (filter === 'low_s1') return row.s1_rate != null && row.s1_rate < 0.15;
+  if (filter === 'high_loss') return row.avg_loss_ratio != null && row.avg_loss_ratio > 0.65;
+  if (filter === 'role') return (row.slot_classes || []).some((item) => typeof item === 'string' && item.startsWith('role:'));
+  if (filter === 'has_issue') return Boolean(row.top_failure_reason);
+  return true;
+}
+
+function controlStyle(maxWidth) {
+  return {
+    flex: '1 1 180px',
+    maxWidth,
+    background: 'var(--bg-tertiary)',
+    border: '1px solid var(--border)',
+    borderRadius: 6,
+    color: 'var(--text-primary)',
+    padding: '7px 10px',
+    fontSize: 12,
+  };
+}
+
+function filterButtonStyle(active) {
+  return {
+    padding: '3px 10px',
+    fontSize: 11,
+    borderRadius: 12,
+    cursor: 'pointer',
+    background: active ? 'var(--accent-blue)22' : 'var(--bg-tertiary)',
+    color: active ? 'var(--accent-blue)' : 'var(--text-muted)',
+    border: `1px solid ${active ? 'var(--accent-blue)' : 'var(--border)'}`,
+    fontWeight: active ? 600 : 400,
+  };
+}
+
 function TemplateTable({ rows }) {
   const [search, setSearch] = useState('');
+  const [filter, setFilter] = useState('all');
+  const [sortPreset, setSortPreset] = useState('most_runs');
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
-    if (!q) return rows || [];
     return (rows || []).filter((row) => {
+      if (!templateMatchesFilter(row, filter)) return false;
+      if (!q) return true;
       const text = [
         row.name,
         row.structural_category,
@@ -160,9 +286,9 @@ function TemplateTable({ rows }) {
       ].filter(Boolean).join(' ').toLowerCase();
       return text.includes(q);
     });
-  }, [rows, search]);
+  }, [filter, rows, search]);
 
-  const { sortKey, sortDesc, sortedRows, handleSort } = useInteractiveTable({
+  const { sortKey, sortDesc, setSortKey, setSortDesc, sortedRows, handleSort } = useInteractiveTable({
     rows: filtered,
     filterFields: [],
     initialSortKey: 'n_used',
@@ -171,37 +297,94 @@ function TemplateTable({ rows }) {
     getInitialSortDesc: getTemplateInitialSortDesc,
   });
 
+  useEffect(() => {
+    const preset = TEMPLATE_SORT_PRESETS.find((item) => item.key === sortPreset);
+    if (!preset) return;
+    setSortKey(preset.sortKey);
+    setSortDesc(preset.desc);
+  }, [setSortDesc, setSortKey, sortPreset]);
+
+  const hasFilters = filter !== 'all' || sortPreset !== 'most_runs' || search.trim() !== '';
+
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, marginBottom: 10 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, marginBottom: 10, flexWrap: 'wrap' }}>
         <input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Search templates..."
-          style={{
-            flex: 1,
-            maxWidth: 280,
-            background: 'var(--bg-tertiary)',
-            border: '1px solid var(--border)',
-            borderRadius: 6,
-            color: 'var(--text-primary)',
-            padding: '7px 10px',
-            fontSize: 12,
-          }}
+          style={controlStyle(280)}
         />
+        <select value={sortPreset} onChange={(e) => setSortPreset(e.target.value)} style={{ ...controlStyle(180), cursor: 'pointer', flex: '0 0 180px' }}>
+          {TEMPLATE_SORT_PRESETS.map((preset) => (
+            <option key={preset.key} value={preset.key}>{preset.label}</option>
+          ))}
+        </select>
         <div style={{ fontSize: 11, color: 'var(--text-muted)', alignSelf: 'center' }}>
-          {fmtNumber(sortedRows.length)} rows
+          {fmtNumber(sortedRows.length)} of {fmtNumber((rows || []).length)} rows
         </div>
       </div>
+      <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', marginBottom: 10 }}>
+        {TEMPLATE_FILTERS.map((item) => (
+          <button key={item.key} onClick={() => setFilter(item.key)} style={filterButtonStyle(filter === item.key)}>
+            {item.label}
+          </button>
+        ))}
+        <button
+          disabled={!hasFilters}
+          onClick={() => {
+            setSearch('');
+            setFilter('all');
+            setSortPreset('most_runs');
+          }}
+          style={{
+            ...filterButtonStyle(false),
+            background: 'var(--bg-secondary)',
+            color: hasFilters ? 'var(--text-primary)' : 'var(--text-muted)',
+            cursor: hasFilters ? 'pointer' : 'not-allowed',
+          }}
+        >
+          Reset
+        </button>
+      </div>
       <div style={{ overflowX: 'auto', maxHeight: 560, overflowY: 'auto' }}>
-        <table className="data-table" style={{ fontSize: 12 }}>
+        <table className="data-table" style={{ fontSize: 12, borderCollapse: 'separate', borderSpacing: 0, minWidth: 1280 }}>
           <thead style={{ position: 'sticky', top: 0, zIndex: 1, background: 'var(--bg-primary)' }}>
+            <tr>
+              {TEMPLATE_GROUPS.map((group) => (
+                <th
+                  key={group.label}
+                  colSpan={group.span}
+                  style={{
+                    textAlign: 'center',
+                    fontSize: 10,
+                    color: 'var(--text-muted)',
+                    textTransform: 'uppercase',
+                    letterSpacing: 0,
+                    background: 'var(--bg-primary)',
+                    position: 'sticky',
+                    top: 0,
+                    zIndex: 3,
+                  }}
+                >
+                  {group.label}
+                </th>
+              ))}
+            </tr>
             <tr>
               {TEMPLATE_COLUMNS.map((col) => (
                 <th
                   key={col.key}
+                  title={col.tooltip}
                   onClick={() => handleSort(col.key)}
-                  style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap', background: 'var(--bg-primary)' }}
+                  style={stickyCellStyle(col, {
+                    cursor: 'pointer',
+                    userSelect: 'none',
+                    whiteSpace: 'nowrap',
+                    background: 'var(--bg-primary)',
+                    top: 34,
+                    zIndex: col.sticky ? 4 : 1,
+                  })}
                 >
                   {col.label}
                   <SortIndicator active={sortKey === col.key} desc={sortDesc} />
@@ -212,7 +395,7 @@ function TemplateTable({ rows }) {
           <tbody>
             {sortedRows.map((row) => (
               <tr key={row.name}>
-                <td style={{ fontFamily: 'monospace', fontWeight: 600 }}>{row.name}</td>
+                <td style={stickyCellStyle(TEMPLATE_COLUMNS[0], { fontFamily: 'monospace', fontWeight: 600, background: 'var(--bg-secondary)', zIndex: 3, whiteSpace: 'nowrap' })}>{row.name}</td>
                 <td><Badge label={row.structural_category || '?'} tone={toneForCategory(row.structural_category)} /></td>
                 <td><Badge label={row.evidence_level || 'unknown'} tone={toneForEvidence(row.evidence_level)} /></td>
                 <td style={{ textAlign: 'right' }}>{fmtNumber(row.n_used)}</td>
@@ -220,7 +403,12 @@ function TemplateTable({ rows }) {
                 <td style={{ textAlign: 'right' }}>{fmtPct(row.s05_rate, 0)}</td>
                 <td style={{ textAlign: 'right', color: (row.s1_rate || 0) < 0.15 ? 'var(--accent-red)' : 'var(--text-primary)' }}>{fmtPct(row.s1_rate, 1)}</td>
                 <td style={{ textAlign: 'right' }}>{fmtLoss(row.avg_loss_ratio)}</td>
-                <td style={{ textAlign: 'right' }}>{fmtLoss(row.avg_validation_loss_ratio)}</td>
+                <td
+                  title={Number.isFinite(Number(row.avg_validation_loss_ratio)) && Number.isFinite(Number(row.avg_loss_ratio)) ? `Gap ${(Number(row.avg_validation_loss_ratio) - Number(row.avg_loss_ratio)).toFixed(3)}` : undefined}
+                  style={{ textAlign: 'right', color: valLossTone(row) }}
+                >
+                  {fmtLoss(row.avg_validation_loss_ratio)}
+                </td>
                 <td style={{ textAlign: 'right' }}>{metricText(row.avg_induction_auc)}</td>
                 <td style={{ textAlign: 'right' }}>{metricText(row.avg_binding_auc)}</td>
                 <td style={{ textAlign: 'right' }}>{metricText(row.avg_hellaswag_acc)}</td>
@@ -238,10 +426,13 @@ function TemplateTable({ rows }) {
 
 function SlotTable({ rows }) {
   const [search, setSearch] = useState('');
+  const [filter, setFilter] = useState('all');
+  const [sortPreset, setSortPreset] = useState('template');
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
-    if (!q) return rows || [];
     return (rows || []).filter((row) => {
+      if (!slotMatchesFilter(row, filter)) return false;
+      if (!q) return true;
       const text = [
         row.slot_key,
         row.template_name,
@@ -251,46 +442,103 @@ function SlotTable({ rows }) {
       ].filter(Boolean).join(' ').toLowerCase();
       return text.includes(q);
     });
-  }, [rows, search]);
+  }, [filter, rows, search]);
 
-  const { sortKey, sortDesc, sortedRows, handleSort } = useInteractiveTable({
+  const { sortKey, sortDesc, setSortKey, setSortDesc, sortedRows, handleSort } = useInteractiveTable({
     rows: filtered,
     filterFields: [],
     initialSortKey: 'template_name',
     initialSortDesc: false,
   });
 
+  useEffect(() => {
+    const preset = SLOT_SORT_PRESETS.find((item) => item.key === sortPreset);
+    if (!preset) return;
+    setSortKey(preset.sortKey);
+    setSortDesc(preset.desc);
+  }, [setSortDesc, setSortKey, sortPreset]);
+
+  const hasFilters = filter !== 'all' || sortPreset !== 'template' || search.trim() !== '';
+
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, marginBottom: 10 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, marginBottom: 10, flexWrap: 'wrap' }}>
         <input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Search slots or templates..."
-          style={{
-            flex: 1,
-            maxWidth: 320,
-            background: 'var(--bg-tertiary)',
-            border: '1px solid var(--border)',
-            borderRadius: 6,
-            color: 'var(--text-primary)',
-            padding: '7px 10px',
-            fontSize: 12,
-          }}
+          style={controlStyle(320)}
         />
+        <select value={sortPreset} onChange={(e) => setSortPreset(e.target.value)} style={{ ...controlStyle(180), cursor: 'pointer', flex: '0 0 180px' }}>
+          {SLOT_SORT_PRESETS.map((preset) => (
+            <option key={preset.key} value={preset.key}>{preset.label}</option>
+          ))}
+        </select>
         <div style={{ fontSize: 11, color: 'var(--text-muted)', alignSelf: 'center' }}>
-          {fmtNumber(sortedRows.length)} rows
+          {fmtNumber(sortedRows.length)} of {fmtNumber((rows || []).length)} rows
         </div>
       </div>
+      <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', marginBottom: 10 }}>
+        {SLOT_FILTERS.map((item) => (
+          <button key={item.key} onClick={() => setFilter(item.key)} style={filterButtonStyle(filter === item.key)}>
+            {item.label}
+          </button>
+        ))}
+        <button
+          disabled={!hasFilters}
+          onClick={() => {
+            setSearch('');
+            setFilter('all');
+            setSortPreset('template');
+          }}
+          style={{
+            ...filterButtonStyle(false),
+            background: 'var(--bg-secondary)',
+            color: hasFilters ? 'var(--text-primary)' : 'var(--text-muted)',
+            cursor: hasFilters ? 'pointer' : 'not-allowed',
+          }}
+        >
+          Reset
+        </button>
+      </div>
       <div style={{ overflowX: 'auto', maxHeight: 420, overflowY: 'auto' }}>
-        <table className="data-table" style={{ fontSize: 12 }}>
+        <table className="data-table" style={{ fontSize: 12, borderCollapse: 'separate', borderSpacing: 0, minWidth: 960 }}>
           <thead style={{ position: 'sticky', top: 0, zIndex: 1, background: 'var(--bg-primary)' }}>
+            <tr>
+              {SLOT_GROUPS.map((group) => (
+                <th
+                  key={group.label}
+                  colSpan={group.span}
+                  style={{
+                    textAlign: 'center',
+                    fontSize: 10,
+                    color: 'var(--text-muted)',
+                    textTransform: 'uppercase',
+                    letterSpacing: 0,
+                    background: 'var(--bg-primary)',
+                    position: 'sticky',
+                    top: 0,
+                    zIndex: 3,
+                  }}
+                >
+                  {group.label}
+                </th>
+              ))}
+            </tr>
             <tr>
               {SLOT_COLUMNS.map((col) => (
                 <th
                   key={col.key}
+                  title={col.tooltip}
                   onClick={() => handleSort(col.key)}
-                  style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap', background: 'var(--bg-primary)' }}
+                  style={stickyCellStyle(col, {
+                    cursor: 'pointer',
+                    userSelect: 'none',
+                    whiteSpace: 'nowrap',
+                    background: 'var(--bg-primary)',
+                    top: 34,
+                    zIndex: col.sticky ? 4 : 1,
+                  })}
                 >
                   {col.label}
                   <SortIndicator active={sortKey === col.key} desc={sortDesc} />
@@ -301,11 +549,11 @@ function SlotTable({ rows }) {
           <tbody>
             {sortedRows.map((row) => (
               <tr key={row.slot_key}>
-                <td style={{ fontFamily: 'monospace', fontWeight: 600 }}>{row.slot_key}</td>
+                <td style={stickyCellStyle(SLOT_COLUMNS[0], { fontFamily: 'monospace', fontWeight: 600, background: 'var(--bg-secondary)', zIndex: 3, whiteSpace: 'nowrap' })}>{row.slot_key}</td>
                 <td style={{ fontFamily: 'monospace' }}>{row.template_name}</td>
                 <td style={{ textAlign: 'right' }}>{fmtNumber(row.slot_index)}</td>
                 <td style={{ textAlign: 'right' }}>{fmtNumber(row.n_used)}</td>
-                <td style={{ textAlign: 'right' }}>{fmtPct(row.s1_rate, 1)}</td>
+                <td style={{ textAlign: 'right', color: (row.s1_rate || 0) < 0.15 ? 'var(--accent-red)' : 'var(--text-primary)' }}>{fmtPct(row.s1_rate, 1)}</td>
                 <td style={{ textAlign: 'right' }}>{fmtLoss(row.avg_loss_ratio)}</td>
                 <td style={{ fontSize: 11, color: 'var(--text-muted)' }}>{row.top_selected_motif || ''}</td>
                 <td style={{ fontSize: 11, color: 'var(--text-muted)' }}>{row.top_failure_reason || ''}</td>

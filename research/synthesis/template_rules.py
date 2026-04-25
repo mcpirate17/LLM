@@ -129,9 +129,7 @@ def _check_bottleneck_dimension(
 
             if node.op_name in _BOTTLENECK_OPS:
                 in_bottleneck.add(nid)
-            elif node.op_name in _UPPROJ_OPS:
-                pass  # exits bottleneck
-            elif parents_in_bottleneck:
+            elif node.op_name not in _UPPROJ_OPS and parents_in_bottleneck:
                 in_bottleneck.add(nid)
                 if (
                     node.op_name in parametric

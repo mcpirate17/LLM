@@ -62,19 +62,6 @@ class Individual:
             self._cached_fingerprint = self.graph.fingerprint()
         return self._cached_fingerprint
 
-    @property
-    def lineage_hash(self) -> str:
-        """Deterministic hash of the ancestry to avoid redundant fingerprinting."""
-        lh = self.metadata.get("lineage_hash")
-        if lh:
-            return lh
-        if not self.parent_fingerprint:
-            res = f"root:{self.fingerprint[:16]}"
-        else:
-            res = f"gen{self.generation}:{self.parent_fingerprint[:32]}"
-        self.metadata["lineage_hash"] = res
-        return res
-
 
 @dataclass(slots=True)
 class EvolutionConfig:
@@ -412,17 +399,40 @@ def _evaluate_population(
         ind.metadata["_evaluated"] = True
 
     # Novelty always recomputed — it depends on the current population mix.
-    if novelty_fn:
-        all_graphs = [ind.graph for ind in population]
-        for ind in population:
-            try:
-                ind.novelty = novelty_fn(ind.graph, all_graphs)
+    _evaluate_novelty(population, novelty_fn)
+
+
+def _evaluate_novelty(
+    population: List[Individual], novelty_fn: Optional[Callable]
+) -> None:
+    if not novelty_fn:
+        return
+    all_graphs = [ind.graph for ind in population]
+    batch_scores = getattr(novelty_fn, "batch_scores", None)
+    if callable(batch_scores):
+        try:
+            scores = batch_scores(all_graphs)
+            if len(scores) != len(population):
+                raise ValueError("batch novelty score count does not match population")
+            for ind, novelty in zip(population, scores, strict=True):
+                ind.novelty = float(novelty)
                 ind.metadata.pop("novelty_error_type", None)
                 ind.metadata.pop("novelty_error", None)
-            except Exception as exc:
-                ind.novelty = 0.0
-                ind.metadata["novelty_error_type"] = type(exc).__name__
-                ind.metadata["novelty_error"] = str(exc)[:240]
+            return
+        except Exception as exc:
+            for ind in population:
+                ind.metadata["novelty_batch_error_type"] = type(exc).__name__
+                ind.metadata["novelty_batch_error"] = str(exc)[:240]
+
+    for ind in population:
+        try:
+            ind.novelty = novelty_fn(ind.graph, all_graphs)
+            ind.metadata.pop("novelty_error_type", None)
+            ind.metadata.pop("novelty_error", None)
+        except Exception as exc:
+            ind.novelty = 0.0
+            ind.metadata["novelty_error_type"] = type(exc).__name__
+            ind.metadata["novelty_error"] = str(exc)[:240]
 
 
 def _mutate_graph(
@@ -474,25 +484,16 @@ def _enforce_population_diversity(
 
     ranked = sorted(population, key=score, reverse=True)
 
-    # Fast-path: use lineage_hash for structural identity check without IR lowering
-    seen_hashes = set()
     seen_fingerprints = set()
     deduped: List[Individual] = []
     duplicates = 0
 
     for ind in ranked:
-        lh = ind.lineage_hash
-        if lh in seen_hashes:
-            duplicates += 1
-            continue
-
-        # Fallback to fingerprint for potential convergence/root collisions
         fp = ind.fingerprint
         if fp in seen_fingerprints:
             duplicates += 1
             continue
 
-        seen_hashes.add(lh)
         seen_fingerprints.add(fp)
         deduped.append(ind)
 
@@ -526,31 +527,21 @@ def _enforce_population_diversity(
 
     deduped.extend(new_replacements)
 
-    # If generation failed to refill entirely, append highest-ranked leftovers.
+    # If generation failed to refill entirely, append highest-ranked unique leftovers.
     if len(deduped) < config.population_size:
-        deduped_ids = {id(d.graph) for d in deduped}
         for ind in ranked:
             if len(deduped) >= config.population_size:
                 break
-            if id(ind.graph) in deduped_ids:
+            fp = ind.fingerprint
+            if fp in seen_fingerprints:
                 continue
-            deduped_ids.add(id(ind.graph))
+            seen_fingerprints.add(fp)
             deduped.append(ind)
 
     deduped = deduped[: config.population_size]
 
     # Recompute novelty for everyone now that population composition changed.
-    if novelty_fn:
-        all_graphs = [ind.graph for ind in deduped]
-        for ind in deduped:
-            try:
-                ind.novelty = novelty_fn(ind.graph, all_graphs)
-                ind.metadata.pop("novelty_error_type", None)
-                ind.metadata.pop("novelty_error", None)
-            except Exception as exc:
-                ind.novelty = 0.0
-                ind.metadata["novelty_error_type"] = type(exc).__name__
-                ind.metadata["novelty_error"] = str(exc)[:240]
+    _evaluate_novelty(deduped, novelty_fn)
 
     for ind in deduped:
         ind.metadata["dedupe_duplicates_replaced"] = duplicates

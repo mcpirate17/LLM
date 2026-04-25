@@ -988,6 +988,7 @@ class _ContinuousInvestigationMixin:
                 dev=dev,
                 cached_json_load=self._cached_json_load,
                 fingerprint_incomplete=_fp_incomplete,
+                stop_event=self._stop_event,
             )
         else:
             _submit_v2_probe_eval(
@@ -1007,6 +1008,7 @@ class _ContinuousInvestigationMixin:
                 config=config,
                 dev=dev,
                 cached_json_load=self._cached_json_load,
+                stop_event=self._stop_event,
                 fingerprint_incomplete=_fp_incomplete,
             )
 

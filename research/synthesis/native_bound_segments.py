@@ -8,11 +8,15 @@ import torch
 from ._json_compat import dumps_json
 from .compiler_op_utils import _get_stacked_params
 from .graph import ComputationGraph
+from .native_bound_common import (
+    rows_for_bound_tensor,
+    runtime_shape_key,
+    supports_bound_input,
+)
 from .native_segments import NativeChainSegment, _unique_consumers
 from .native_support import (
     BOUND_PARAM_OPS,
     BOUND_POINTWISE_OPS,
-    BOUND_SUPPORTED_INPUT_RANKS,
 )
 from .primitives import PRIMITIVE_REGISTRY
 from ..scientist.native.dispatch import dispatch_graph_native_multi_input_cached
@@ -59,17 +63,13 @@ class BoundNativeChainDispatcher:
         self._plan_cache: Dict[tuple[tuple[int, ...], torch.dtype], _BoundIrPlan] = {}
 
     def _rows(self, x: torch.Tensor) -> int:
-        if x.ndim == 3:
-            return int(x.shape[0] * x.shape[1])
-        if x.ndim == 2:
-            return int(x.shape[0])
-        raise ValueError(f"Unsupported tensor rank for bound native chain: {x.ndim}")
+        return rows_for_bound_tensor(x, label="bound native chain")
 
     def _supports_input(self, x: torch.Tensor) -> bool:
-        return x.ndim in BOUND_SUPPORTED_INPUT_RANKS
+        return supports_bound_input(x)
 
     def _runtime_shape_key(self, x: torch.Tensor) -> tuple[int, ...]:
-        return tuple(int(v) for v in x.shape)
+        return runtime_shape_key(x)
 
     def _runtime_plan_key(self, x: torch.Tensor) -> tuple[tuple[int, ...], torch.dtype]:
         return self._runtime_shape_key(x), x.dtype

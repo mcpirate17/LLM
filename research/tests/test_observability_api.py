@@ -462,14 +462,34 @@ class TestObservabilityAPI(unittest.TestCase):
             stored_rates=stored_rates,
             corrected_rates=corrected_rates,
             grad_health={},
+            metric_overlays={},
             max_n_used=59,
         )
 
         self.assertEqual(payload["n_used"], 0)
         self.assertIsNone(payload["s0_rate"])
+        self.assertIsNone(payload["s05_rate"])
         self.assertIsNone(payload["s1_rate"])
         self.assertEqual(payload["raw_n_used"], 59)
         self.assertIn("excluded 59 runtime-only failures", payload["reasons"])
+
+    def test_health_components_include_observability_metrics(self):
+        """Component rows expose the same downstream metrics shown in template views."""
+        resp = self.client.get("/api/observability/health")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertGreater(data.get("total", 0), 0)
+        comp = data["components"][0]
+        for key in (
+            "s05_rate",
+            "avg_loss_ratio",
+            "avg_validation_loss_ratio",
+            "avg_induction_auc",
+            "avg_binding_auc",
+            "avg_hellaswag_acc",
+            "top_failure_reason",
+        ):
+            self.assertIn(key, comp)
 
 
 if __name__ == "__main__":

@@ -190,6 +190,7 @@ def _run_binding_v2_on(
         result.status = "no_valid_distances"
         result.elapsed_ms = round((time.perf_counter() - t0) * 1000, 1)
         return result
+    n_dists = len(valid_distances)
 
     vocab_size = int(getattr(probe_model, "vocab_size", 256) or 256)
     probe_model.train()

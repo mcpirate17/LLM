@@ -6,6 +6,7 @@ from typing import Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
+from ..eval.metrics import novelty_score as structural_novelty_score
 from ..synthesis.graph import ComputationGraph
 from ..synthesis.grammar import GrammarConfig
 from ..eval.fingerprint import BehavioralFingerprint
@@ -95,71 +96,12 @@ def novelty_search(
         "stall_count": 0,
         "last_best_fitness": 0.0,
     }
-
-    def structural_novelty(graph: ComputationGraph) -> float:
-        from ..eval.metrics import novelty_score as struct_novelty
-
-        return struct_novelty(graph).structural_novelty
-
-    def novelty_fn(
-        graph: ComputationGraph, population: List[ComputationGraph]
-    ) -> float:
-        """Compute novelty score for a graph."""
-        del population
-        if fingerprint_fn is None:
-            return structural_novelty(graph)
-
-        try:
-            behavior = fingerprint_fn(graph)
-            # fingerprint_fn may return None on failure — fall back to structural novelty
-            if behavior is None:
-                if config.debug:
-                    logger.info(
-                        "DEBUG novelty: fingerprint_fn returned None for %s, falling back to structural",
-                        graph.fingerprint()[:16],
-                    )
-                return structural_novelty(graph)
-
-            novelty = archive.novelty_of(behavior, k=config.k_nearest)
-
-            # None means fingerprint had no behavioral data (probes deferred)
-            if novelty is None:
-                if config.debug:
-                    logger.info(
-                        "DEBUG novelty: behavior_vector returned None (all probes deferred) for %s",
-                        graph.fingerprint()[:16],
-                    )
-                return structural_novelty(graph)
-
-            # Add to archive if novel enough
-            if novelty >= config.archive_threshold:
-                archive.add(graph.fingerprint(), behavior)
-                if config.debug:
-                    logger.info(
-                        "DEBUG novelty: archived %s (novelty=%.3f >= threshold=%.3f, archive_size=%d)",
-                        graph.fingerprint()[:16],
-                        novelty,
-                        config.archive_threshold,
-                        archive.size(),
-                    )
-            elif config.debug:
-                logger.info(
-                    "DEBUG novelty: rejected %s (novelty=%.3f < threshold=%.3f)",
-                    graph.fingerprint()[:16],
-                    novelty,
-                    config.archive_threshold,
-                )
-
-            result.novelty_scores.append(novelty)
-            return novelty
-        except Exception as e:
-            if config.debug:
-                logger.exception(
-                    "DEBUG novelty: computation failed for %s", graph.fingerprint()[:16]
-                )
-            else:
-                logger.warning("Novelty computation failed: %s", e)
-            return 0.0
+    novelty_fn = _NoveltyEvaluator(
+        archive=archive,
+        config=config,
+        fingerprint_fn=fingerprint_fn,
+        score_sink=result.novelty_scores,
+    )
 
     def gen_callback(gen: int, population: List[Individual]):
         result.generations_run = gen + 1
@@ -207,6 +149,109 @@ def novelty_search(
         ).fingerprint
 
     return result
+
+
+class _NoveltyEvaluator:
+    __slots__ = ("archive", "config", "fingerprint_fn", "score_sink")
+
+    def __init__(
+        self,
+        *,
+        archive: BehaviorArchive,
+        config: NoveltySearchConfig,
+        fingerprint_fn: Optional[Callable[[ComputationGraph], BehavioralFingerprint]],
+        score_sink: List[float],
+    ) -> None:
+        self.archive = archive
+        self.config = config
+        self.fingerprint_fn = fingerprint_fn
+        self.score_sink = score_sink
+
+    def __call__(
+        self, graph: ComputationGraph, population: List[ComputationGraph]
+    ) -> float:
+        del population
+        scores = self.batch_scores([graph])
+        return scores[0] if scores else 0.0
+
+    def batch_scores(self, graphs: List[ComputationGraph]) -> List[float]:
+        if self.fingerprint_fn is None:
+            scores = [_structural_novelty(graph) for graph in graphs]
+            self.score_sink.extend(scores)
+            return scores
+
+        behaviors: List[BehavioralFingerprint | None] = []
+        scores: List[float] = [0.0] * len(graphs)
+        behavioral_indices: List[int] = []
+        behavioral_fps: List[BehavioralFingerprint] = []
+
+        for idx, graph in enumerate(graphs):
+            try:
+                behavior = self.fingerprint_fn(graph)
+            except Exception as exc:
+                if self.config.debug:
+                    logger.exception(
+                        "DEBUG novelty: fingerprint computation failed for %s",
+                        graph.fingerprint()[:16],
+                    )
+                else:
+                    logger.warning("Novelty fingerprint failed: %s", exc)
+                behaviors.append(None)
+                continue
+
+            behaviors.append(behavior)
+            if behavior is None:
+                scores[idx] = _structural_novelty(graph)
+                if self.config.debug:
+                    logger.info(
+                        "DEBUG novelty: fingerprint_fn returned None for %s, falling back to structural",
+                        graph.fingerprint()[:16],
+                    )
+                continue
+            behavioral_indices.append(idx)
+            behavioral_fps.append(behavior)
+
+        archive_scores = self.archive.novelty_of_many(
+            behavioral_fps, k=self.config.k_nearest
+        )
+        archive_additions: List[tuple[str, BehavioralFingerprint, float]] = []
+        for local_idx, novelty in enumerate(archive_scores):
+            idx = behavioral_indices[local_idx]
+            graph = graphs[idx]
+            behavior = behaviors[idx]
+            if novelty is None:
+                scores[idx] = _structural_novelty(graph)
+                if self.config.debug:
+                    logger.info(
+                        "DEBUG novelty: behavior_vector returned None for %s, falling back to structural",
+                        graph.fingerprint()[:16],
+                    )
+                continue
+
+            novelty_value = float(novelty)
+            scores[idx] = novelty_value
+            if behavior is not None and novelty_value >= float(
+                self.config.archive_threshold
+            ):
+                archive_additions.append((graph.fingerprint(), behavior, novelty_value))
+
+        for graph_hash, behavior, novelty_value in archive_additions:
+            self.archive.add(graph_hash, behavior)
+            if self.config.debug:
+                logger.info(
+                    "DEBUG novelty: archived %s (novelty=%.3f >= threshold=%.3f, archive_size=%d)",
+                    graph_hash[:16],
+                    novelty_value,
+                    self.config.archive_threshold,
+                    self.archive.size(),
+                )
+
+        self.score_sink.extend(scores)
+        return scores
+
+
+def _structural_novelty(graph: ComputationGraph) -> float:
+    return structural_novelty_score(graph).structural_novelty
 
 
 def _update_adaptive_novelty_policy(

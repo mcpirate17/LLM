@@ -1,14 +1,15 @@
 from __future__ import annotations
 
-import time
-
+from research.scientist import perf as perf_mod
 from research.scientist.perf import GPUStarvationDetector
 
 
-def test_gpu_starvation_detector_uses_wall_clock_waits():
+def test_gpu_starvation_detector_uses_wall_clock_waits(monkeypatch):
+    clock = iter([10.0, 10.002])
+    monkeypatch.setattr(perf_mod.time, "perf_counter", lambda: next(clock))
+
     detector = GPUStarvationDetector(threshold_ms=0.1)
     detector.start_wait()
-    time.sleep(0.002)
     duration_ms = detector.end_wait()
 
     assert duration_ms is not None

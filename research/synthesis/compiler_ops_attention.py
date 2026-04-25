@@ -8,10 +8,10 @@ import torch.nn.functional as F
 
 from research.defaults import ROPE_THETA_BASE
 from .compiler_op_utils import (
-    HAS_KERNELS,
     aria_core,
     kernels,
     _c,
+    _t,
     _safe_linear,
     record_kernel_fallback,
 )
@@ -171,7 +171,7 @@ def _op_rmsnorm(module, inputs, _):
     orig_dtype = x.dtype
     if _c(x):
         return aria_core.rmsnorm_f32(x, module.weight, 1e-6)
-    if HAS_KERNELS and x.is_cuda:
+    if _t(x):
         try:
             return kernels.triton_rmsnorm(x, module.weight)
         except (ImportError, RuntimeError, AttributeError) as e:
@@ -385,13 +385,13 @@ def _op_local_window_attn(_, inputs, config):
     # Triton's tl.dot requires K >= 16 after internal block padding. For
     # D <= 8, the local-attention kernel compiles with BLOCK_D=8 and fails;
     # use the dense fallback directly instead of logging noisy compile errors.
-    if HAS_KERNELS and x.is_cuda and D > 8:
+    if _t(x) and D > 8:
         try:
             x_f32 = x.float() if x.dtype != torch.float32 else x
             out = kernels.triton_local_attn(x_f32, W)
             if torch.isfinite(out).all():
                 return out.to(x.dtype)
-        except Exception as e:
+        except (ImportError, RuntimeError, AttributeError) as e:
             record_kernel_fallback("triton_local_attn", e)
     x_work = x.float() if x.dtype in (torch.float16, torch.bfloat16) else x
     scores = torch.bmm(x_work, x_work.transpose(-2, -1)) / math.sqrt(D)
@@ -414,12 +414,12 @@ def _op_sliding_window_mask(_, inputs, config):
         return aria_core.sliding_window_mask_f32(x, W)
 
     # Triton banded kernel: O(S*W*D) instead of O(S²*D)
-    if HAS_KERNELS and x.is_cuda:
+    if _t(x):
         try:
             x_f32 = x.float() if x.dtype != torch.float32 else x
             out = kernels.triton_banded_sliding_window(x_f32, W)
             return out.to(x.dtype)
-        except Exception as e:
+        except (ImportError, RuntimeError, AttributeError) as e:
             record_kernel_fallback("banded_sliding_window", e)
 
     # Python Fallback: O(S^2) masking

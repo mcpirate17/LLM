@@ -27,6 +27,10 @@ from .routing_runtime import (
 )
 
 
+def _capture_routing_trace(module) -> bool:
+    return bool(getattr(module, "_capture_routing_trace", False))
+
+
 def _routing_scores_from_x(x: torch.Tensor) -> torch.Tensor:
     """Simple, deterministic score: mean over channels."""
     return x.mean(dim=-1)
@@ -134,6 +138,7 @@ def _moe_sequential_dispatch(
     x_flat = x.reshape(BS, D)
     idx_flat = indices.reshape(BS, top_k)
     w_flat = weights.reshape(BS, top_k)
+    output_flat = output.view(BS, D)
 
     for k_idx in range(top_k):
         expert_ids = idx_flat[:, k_idx]
@@ -144,21 +149,20 @@ def _moe_sequential_dispatch(
         sorted_w = slot_weights[sort_order]
 
         expert_counts = torch.bincount(expert_ids, minlength=n_actual).tolist()
-        x_chunks = sorted_x.split(expert_counts, dim=0)
-        w_chunks = sorted_w.split(expert_counts, dim=0)
-
-        result_chunks = []
-        for e_idx in range(n_actual):
-            if expert_counts[e_idx] == 0:
-                result_chunks.append(sorted_x.new_empty(0, D))
+        result_sorted = torch.empty_like(sorted_x)
+        start = 0
+        for e_idx, count in enumerate(expert_counts):
+            if count == 0:
                 continue
-            out = experts[e_idx](x_chunks[e_idx])
-            result_chunks.append(out.to(x.dtype) * w_chunks[e_idx].to(x.dtype))
+            x_chunk = sorted_x.narrow(0, start, count)
+            w_chunk = sorted_w.narrow(0, start, count)
+            out = experts[e_idx](x_chunk)
+            result_sorted.narrow(0, start, count).copy_(
+                out.to(x.dtype) * w_chunk.to(x.dtype)
+            )
+            start += count
 
-        result_sorted = torch.cat(result_chunks, dim=0)
-        result_flat = torch.zeros(BS, D, device=x.device, dtype=x.dtype)
-        result_flat[sort_order] = result_sorted
-        output.view(BS, D).add_(result_flat)
+        output_flat.index_add_(0, sort_order, result_sorted)
 
     return output
 
@@ -604,31 +608,41 @@ def _op_hybrid_token_gate(module, inputs, config):
         routing_mode="hybrid_token_gate",
         gate_type="single_token",
         span_type="single",
-        default_path_count=int((~keep_mask).sum().item()),
-        routed_token_count=int(keep_mask.sum().item()),
-        trace_payload={
-            "curriculum_stage": stage_name(
-                progress,
-                float(config.get("curriculum_warmup_frac", 0.25)),
-                float(config.get("curriculum_mid_frac", 0.65)),
-            ),
-            "keep_mask_sample": keep_mask[0].detach().cpu().to(torch.int64).tolist()
-            if keep_mask.numel() > 0
-            else [],
-        },
+        default_path_count=(~keep_mask),
+        routed_token_count=keep_mask,
+        trace_payload=(
+            {
+                "curriculum_stage": stage_name(
+                    progress,
+                    float(config.get("curriculum_warmup_frac", 0.25)),
+                    float(config.get("curriculum_mid_frac", 0.65)),
+                ),
+                "keep_mask_sample": keep_mask[0].detach().cpu().to(torch.int64).tolist()
+                if keep_mask.numel() > 0
+                else [],
+            }
+            if _capture_routing_trace(module)
+            else None
+        ),
     )
     return x * gate_ste.unsqueeze(-1)
 
 
-def _minimum_keep_count(
-    token_present: torch.Tensor,
+def _minimum_keep_target(
     seq_len: int,
     span_width: int,
     min_keep_fraction: float,
+) -> int:
+    requested = max(span_width, int(math.ceil(seq_len * max(0.0, min_keep_fraction))))
+    return min(seq_len, max(1, requested))
+
+
+def _minimum_keep_count(
+    token_present: torch.Tensor,
+    keep_target: int,
 ) -> torch.Tensor:
     present_counts = token_present.sum(dim=-1)
-    requested = max(span_width, int(math.ceil(seq_len * max(0.0, min_keep_fraction))))
-    requested = max(1, requested)
+    requested = max(1, int(keep_target))
     requested_t = torch.full_like(present_counts, requested)
     return torch.minimum(present_counts, requested_t)
 
@@ -638,11 +652,10 @@ def _rescue_keep_mask(
     token_present: torch.Tensor,
     threshold: float,
     min_keep_count: torch.Tensor,
+    max_keep_count: int,
 ) -> torch.Tensor:
     keep_mask = (gate >= threshold) & token_present
-    if not token_present.any():
-        return keep_mask
-    max_keep = int(min_keep_count.max().item())
+    max_keep = min(int(max_keep_count), int(gate.shape[-1]))
     if max_keep <= 0:
         return keep_mask
     gated_scores = gate.masked_fill(~token_present, -1.0)
@@ -746,11 +759,10 @@ def _op_sparse_span_builder(module, inputs, config):
             end_positions = span_positions[..., -1]  # [B, S]
             valid = end_positions >= 0
             span_features = torch.zeros_like(x)
-            if bool(valid.any()):
-                b_idx, k_idx = torch.where(valid)
-                span_features[b_idx, end_positions[b_idx, k_idx]] = packed_features[
-                    b_idx, k_idx
-                ]
+            b_idx, k_idx = torch.where(valid)
+            span_features[b_idx, end_positions[b_idx, k_idx]] = packed_features[
+                b_idx, k_idx
+            ]
             span_strength = coverage.to(x.dtype)
         except (ImportError, RuntimeError, AttributeError) as e:
             record_kernel_fallback("sparse_span_extract_f32", e)
@@ -769,23 +781,25 @@ def _op_sparse_span_builder(module, inputs, config):
         routing_mode="sparse_span_builder",
         gate_type="single_token",
         span_type=f"sparse_{'triplet' if span_width >= 3 else 'pair' if span_width == 2 else 'single'}",
-        sparse_span_count=int(span_counts.sum().item()),
+        sparse_span_count=span_counts,
         sparse_span_width=span_width,
-        sparse_span_coverage_tokens=int((coverage > 0).sum().item()),
-        default_path_count=int((coverage == 0).sum().item()),
-        routed_token_count=int((coverage > 0).sum().item()),
-        route_strength=float(
-            span_strength.sum().item() / max(int((coverage > 0).sum().item()), 1)
+        sparse_span_coverage_tokens=(coverage > 0),
+        default_path_count=(coverage == 0),
+        routed_token_count=(coverage > 0),
+        route_strength=span_strength[coverage > 0],
+        trace_payload=(
+            {
+                "fallback_behavior": fallback_behavior,
+                "span_positions_sample": span_positions[0][span_positions[0, :, 0] >= 0]
+                .detach()
+                .cpu()
+                .tolist()
+                if span_counts.numel() > 0
+                else [],
+            }
+            if _capture_routing_trace(module)
+            else None
         ),
-        trace_payload={
-            "fallback_behavior": fallback_behavior,
-            "span_positions_sample": span_positions[0][span_positions[0, :, 0] >= 0]
-            .detach()
-            .cpu()
-            .tolist()
-            if span_counts.numel() > 0
-            else [],
-        },
     )
     return span_features
 
@@ -818,34 +832,41 @@ def _op_hybrid_sparse_router(module, inputs, config):
     else:
         gate_scores = _routing_scores_from_x(x)
     token_present = x.abs().sum(dim=-1) > 1e-8
+    keep_target = _minimum_keep_target(x.shape[1], span_width, min_keep_fraction)
     if _c(x) and hasattr(aria_core, "token_gate_trace_f32"):
         try:
             keep_mask_i64, gate_conf = aria_core.token_gate_trace_f32(
                 gate_scores.contiguous(), confidence_threshold
             )
             keep_mask = keep_mask_i64.bool() & token_present
-            min_keep_count = _minimum_keep_count(
-                token_present, x.shape[1], span_width, min_keep_fraction
-            )
+            min_keep_count = _minimum_keep_count(token_present, keep_target)
             keep_mask = keep_mask | _rescue_keep_mask(
-                gate_conf, token_present, confidence_threshold, min_keep_count
+                gate_conf,
+                token_present,
+                confidence_threshold,
+                min_keep_count,
+                keep_target,
             )
         except (ImportError, RuntimeError, AttributeError) as e:
             record_kernel_fallback("token_gate_trace_f32", e)
             gate_conf = torch.sigmoid(gate_scores)
-            min_keep_count = _minimum_keep_count(
-                token_present, x.shape[1], span_width, min_keep_fraction
-            )
+            min_keep_count = _minimum_keep_count(token_present, keep_target)
             keep_mask = _rescue_keep_mask(
-                gate_conf, token_present, confidence_threshold, min_keep_count
+                gate_conf,
+                token_present,
+                confidence_threshold,
+                min_keep_count,
+                keep_target,
             )
     else:
         gate_conf = torch.sigmoid(gate_scores)
-        min_keep_count = _minimum_keep_count(
-            token_present, x.shape[1], span_width, min_keep_fraction
-        )
+        min_keep_count = _minimum_keep_count(token_present, keep_target)
         keep_mask = _rescue_keep_mask(
-            gate_conf, token_present, confidence_threshold, min_keep_count
+            gate_conf,
+            token_present,
+            confidence_threshold,
+            min_keep_count,
+            keep_target,
         )
 
     span_features, span_positions, span_counts, coverage, span_strength = (
@@ -915,23 +936,25 @@ def _op_hybrid_sparse_router(module, inputs, config):
         routing_mode="hybrid_sparse_router",
         gate_type="single_token",
         span_type=span_type,
-        sparse_span_count=int(span_counts.sum().item()),
+        sparse_span_count=span_counts,
         sparse_span_width=span_width,
-        sparse_span_coverage_tokens=int((coverage > 0).sum().item()),
-        default_path_count=int((~active_route_mask).sum().item()),
-        routed_token_count=int(active_route_mask.sum().item()),
-        route_strength=float(route_scale[active_route_mask].mean().item())
-        if active_route_mask.any()
-        else 0.0,
+        sparse_span_coverage_tokens=(coverage > 0),
+        default_path_count=(~active_route_mask),
+        routed_token_count=active_route_mask,
+        route_strength=route_scale[active_route_mask],
         lane_count=lane_count,
-        trace_payload={
-            "keep_mask_sample": keep_mask[0].detach().cpu().to(torch.int64).tolist()
-            if keep_mask.numel() > 0
-            else [],
-            "lane_assignments_sample": lane_assignments[0].detach().cpu().tolist()
-            if lane_assignments.numel() > 0
-            else [],
-        },
+        trace_payload=(
+            {
+                "keep_mask_sample": keep_mask[0].detach().cpu().to(torch.int64).tolist()
+                if keep_mask.numel() > 0
+                else [],
+                "lane_assignments_sample": lane_assignments[0].detach().cpu().tolist()
+                if lane_assignments.numel() > 0
+                else [],
+            }
+            if _capture_routing_trace(module)
+            else None
+        ),
     )
     return out
 
@@ -1123,7 +1146,7 @@ def _op_calibrated_branch_merge(module, inputs, config):
     out = out * anchor
 
     weight_mean = weights.mean(dim=(0, 1))
-    dominance = weights.max(dim=-1).values.mean().item()
+    dominance = weights.max(dim=-1).values
     primary_role = str(config.get("primary_role", "primary"))
     secondary_role = str(config.get("secondary_role", "secondary"))
     _record_routing_telemetry(
@@ -1135,19 +1158,23 @@ def _op_calibrated_branch_merge(module, inputs, config):
         gate_type="branch_merge",
         branch_weights=weight_mean.detach(),
         branch_dominance=dominance,
-        routed_branch_share=float(weights[..., 0].mean().item()),
-        medium_branch_share=float(weights[..., 0].mean().item()),
-        hard_branch_share=float(weights[..., 1].mean().item()),
-        trace_payload={
-            "branch_names": [primary_role, secondary_role],
-            "primary_role": primary_role,
-            "secondary_role": secondary_role,
-            "curriculum_stage": stage_name(
-                get_routing_progress(module),
-                float(config.get("curriculum_warmup_frac", 0.25)),
-                float(config.get("curriculum_mid_frac", 0.65)),
-            ),
-        },
+        routed_branch_share=weights[..., 0],
+        medium_branch_share=weights[..., 0],
+        hard_branch_share=weights[..., 1],
+        trace_payload=(
+            {
+                "branch_names": [primary_role, secondary_role],
+                "primary_role": primary_role,
+                "secondary_role": secondary_role,
+                "curriculum_stage": stage_name(
+                    get_routing_progress(module),
+                    float(config.get("curriculum_warmup_frac", 0.25)),
+                    float(config.get("curriculum_mid_frac", 0.65)),
+                ),
+            }
+            if _capture_routing_trace(module)
+            else None
+        ),
     )
     return out
 

@@ -857,7 +857,7 @@ def test_projector_bootstrap_replays_spool_into_notebook(tmp_path):
             ).fetchone()
             if row is not None:
                 break
-            time.sleep(0.05)
+            time.sleep(0.005)
 
         assert row is not None
         assert row["status"] == "running"
@@ -1712,9 +1712,9 @@ def test_projector_worker_background_start_and_stop():
 
         return Status()
 
-    worker = ProjectorWorker(replay_once, interval_seconds=0.05)
+    worker = ProjectorWorker(replay_once, interval_seconds=0.001)
     worker.start()
-    time.sleep(0.12)
+    time.sleep(0.01)
     worker.stop(timeout=1.0)
     health = worker.health_snapshot()
 
@@ -1764,7 +1764,7 @@ def test_start_runtime_event_projector_bootstraps_worker_and_projects(tmp_path):
             ).fetchone()
             if row is not None:
                 break
-            time.sleep(0.05)
+            time.sleep(0.005)
 
         assert row is not None
         assert row["status"] == "running"

@@ -380,9 +380,9 @@ class TestWrapperAutogradRouting:
 
     def test_wrapper_routes_through_autograd_when_grad_required(self):
         """When input requires_grad, wrapper should return a tensor with grad_fn."""
-        wrapper = NativeForwardWrapper(MagicMock(), {"relu", "add", "mul"})
+        wrapper = NativeForwardWrapper(MagicMock(), {"sigmoid"})
         x = torch.tensor([1.0, -1.0, 2.0], requires_grad=True)
-        result = wrapper.dispatch("relu", x)
+        result = wrapper.dispatch("sigmoid", x)
         assert result is not None
         assert isinstance(result, torch.Tensor)
         # Should have a grad_fn since we went through autograd
@@ -393,9 +393,9 @@ class TestWrapperAutogradRouting:
 
     def test_wrapper_no_autograd_when_no_grad(self):
         """When input does not require grad, wrapper should use the non-autograd path."""
-        wrapper = NativeForwardWrapper(MagicMock(), {"relu"})
+        wrapper = NativeForwardWrapper(MagicMock(), {"sigmoid"})
         x = torch.tensor([1.0, -1.0, 2.0], requires_grad=False)
-        result = wrapper.dispatch("relu", x)
+        result = wrapper.dispatch("sigmoid", x)
         assert result is not None
         assert isinstance(result, torch.Tensor)
         # Should NOT have a grad_fn

@@ -15,6 +15,25 @@ import pytest
 # Use: pytest -m unit, pytest -m native, pytest -m "unit or api", etc.
 
 _KNOWN_MARKS = {"unit", "native", "api", "pipeline", "e2e", "designer", "slow"}
+_HEAVY_CLEANUP_MARKS = {"native", "pipeline", "e2e", "slow"}
+
+
+def _infer_marker_from_nodeid(nodeid: str) -> str:
+    """Assign unmarked tests to the category users are forced to select."""
+    name = nodeid.lower()
+    if "designer" in name:
+        return "designer"
+    if "e2e" in name or "end_to_end" in name:
+        return "e2e"
+    if "benchmark" in name or "soak" in name:
+        return "slow"
+    if "native" in name or "cython" in name or "rust" in name:
+        return "native"
+    if "api" in name or "dashboard" in name or "sse" in name:
+        return "api"
+    if "pipeline" in name or "runner" in name:
+        return "pipeline"
+    return "unit"
 
 
 def pytest_collection_modifyitems(config, items):
@@ -39,9 +58,18 @@ def pytest_collection_modifyitems(config, items):
                 returncode=4,
             )
 
-    # xdist worker groups — group heavy tests to avoid duplicate CUDA contexts
+    # Fill in missing category markers before pytest applies the -m expression.
+    # Without this, a large fraction of the tree is silently deselected by the
+    # marker gate this file enforces.
     for item in items:
         marker_names = {m.name for m in item.iter_markers()}
+        if not (marker_names & _KNOWN_MARKS):
+            item.add_marker(
+                getattr(pytest.mark, _infer_marker_from_nodeid(item.nodeid))
+            )
+            marker_names = {m.name for m in item.iter_markers()}
+
+        # xdist worker groups — group heavy tests to avoid duplicate CUDA contexts
         if "native" in marker_names:
             item.add_marker(pytest.mark.xdist_group("native"))
         elif "api" in marker_names:
@@ -111,9 +139,21 @@ def make_fake_graph(op_names):
 
 
 @pytest.fixture(autouse=True)
-def _cleanup_after_test():
-    """Reclaim memory after every test — prevents OOM in parallel runs."""
+def _cleanup_after_test(request):
+    """Reclaim memory only for tests likely to allocate heavyweight state."""
     yield
+    marker_names = {m.name for m in request.node.iter_markers()}
+    nodeid = request.node.nodeid.lower()
+    needs_cleanup = (
+        os.environ.get("ARIA_TEST_FORCE_CLEANUP") == "1"
+        or bool(marker_names & _HEAVY_CLEANUP_MARKS)
+        or "native" in nodeid
+        or "cuda" in nodeid
+        or "benchmark" in nodeid
+    )
+    if not needs_cleanup:
+        return
+
     gc.collect()
     try:
         import torch

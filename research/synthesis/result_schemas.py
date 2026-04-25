@@ -8,7 +8,7 @@ from dataclasses import dataclass, field, asdict
 from typing import Any, Dict, Optional
 
 
-@dataclass
+@dataclass(slots=True)
 class SandboxResult:
     """Result of sandbox evaluation (Stage 0 and 0.5)."""
 
@@ -60,7 +60,7 @@ class SandboxResult:
         return asdict(self)
 
 
-@dataclass
+@dataclass(slots=True)
 class FingerprintResult:
     """Result of behavioral fingerprinting (Stage 1)."""
 
@@ -82,7 +82,7 @@ class FingerprintResult:
     most_similar_to: str = ""
 
 
-@dataclass
+@dataclass(slots=True)
 class BridgeResult:
     """Complete evaluation result from the research pipeline."""
 

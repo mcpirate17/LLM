@@ -254,7 +254,7 @@ def _op_rwkv_time_mixing(module, inputs, _):
     k = _safe_linear(x, module.W_k)
     v = _safe_linear(x, module.W_v)
     r_raw = _safe_linear(x, module.W_r)
-    if _c(k) and hasattr(aria_core, "rwkv_wkv_scan_f32") and not k.requires_grad:
+    if _c(k) and hasattr(aria_core, "rwkv_wkv_scan_f32"):
         out = aria_core.rwkv_wkv_scan_f32(
             k.contiguous(),
             v.contiguous(),

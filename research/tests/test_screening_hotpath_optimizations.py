@@ -102,7 +102,7 @@ def test_orchestrator_preprocessor_uses_injected_compile_fn():
             results = orchestrator.get_results()
             if results:
                 break
-            time.sleep(0.01)
+            time.sleep(0.001)
 
         assert len(results) == 1
         assert results[0].s1_result["passed"] is True
@@ -137,7 +137,7 @@ def test_orchestrator_skips_preprocessor_threads_for_precompiled_models():
             results = orchestrator.get_results()
             if results:
                 break
-            time.sleep(0.01)
+            time.sleep(0.001)
 
         assert len(results) == 1
         assert results[0].s1_result["passed"] is True

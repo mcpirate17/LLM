@@ -7,11 +7,11 @@ import torch
 import torch.nn.functional as F
 
 from .compiler_op_utils import (
-    HAS_KERNELS,
     aria_core,
     kernels,
     _c,
     _c16,
+    _t,
     _flatten_for_kernel,
     _safe_linear,
     _unflatten_from_kernel,
@@ -123,7 +123,7 @@ def _op_log(_, inputs, __):
     # Clamp softplus output to >= 0.01 to bound log gradient (d/dx = 1/x):
     # at 0.01 grad is 100, at 1e-6 grad is 1e6.
     soft = F.softplus(x, beta=1.0, threshold=20).clamp(min=0.01)
-    if _c(x) and not x.requires_grad:
+    if _c(x):
         return aria_core.log_f32(soft)
     return torch.log(soft)
 
@@ -132,7 +132,7 @@ def _op_sqrt(_, inputs, __):
     x = inputs[0]
     # Clamp to 1e-4 (not 1e-8): grad of sqrt at 1e-8 is 5623, at 1e-4 is 50
     clamped = torch.clamp(x.abs(), min=1e-4)
-    if _c(x) and not x.requires_grad:
+    if _c(x):
         return aria_core.sqrt_f32(clamped)
     return torch.sqrt(clamped)
 
@@ -156,7 +156,7 @@ def _op_sign_ste(_, inputs, __):
 
 def _op_reciprocal(_, inputs, __):
     x = inputs[0]
-    if _c(x) and not x.requires_grad:
+    if _c(x):
         return aria_core.reciprocal_f32(x)
     # Sigmoid-based: 1/(1+sigmoid(x)), range [0.5, 1.0], bounded gradient.
     # Always use this path during training — C kernel uses raw 1/x which
@@ -348,7 +348,7 @@ def _op_fused_linear_gelu(module, inputs, _):
             bias = torch.zeros(module.weight.shape[0], device=x.device, dtype=x.dtype)
         out = aria_core.fused_linear_gelu_f32(xf, module.weight, bias)
         return _unflatten_from_kernel(out, orig_shape)
-    if HAS_KERNELS and x.is_cuda:
+    if _t(x):
         bias = getattr(module, "bias", None)
         return kernels.fused_linear_gelu(x, module.weight, bias)
     out = _safe_linear(x, module.weight, getattr(module, "bias", None))

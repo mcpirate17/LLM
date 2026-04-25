@@ -55,19 +55,28 @@ def populate_behavioral_probes(
                 seq_len,
                 vocab_size,
             )
-            fp.interaction_locality = interaction["locality"]
-            fp.interaction_sparsity = interaction["sparsity"]
-            fp.interaction_symmetry = interaction["symmetry"]
-            fp.interaction_hierarchy = interaction["hierarchy"]
             if interaction.get("_succeeded"):
+                fp.interaction_locality = interaction["locality"]
+                fp.interaction_sparsity = interaction["sparsity"]
+                fp.interaction_symmetry = interaction["symmetry"]
+                fp.interaction_hierarchy = interaction["hierarchy"]
                 n_succeeded += 1
+            else:
+                fp.interaction_locality = None
+                fp.interaction_sparsity = None
+                fp.interaction_symmetry = None
+                fp.interaction_hierarchy = None
 
             geometry = analyze_geometry(reps)
-            fp.intrinsic_dim = geometry["intrinsic_dim"]
-            fp.isotropy = geometry["isotropy"]
-            fp.rank_ratio = geometry["rank_ratio"]
             if geometry.get("_succeeded"):
+                fp.intrinsic_dim = geometry["intrinsic_dim"]
+                fp.isotropy = geometry["isotropy"]
+                fp.rank_ratio = geometry["rank_ratio"]
                 n_succeeded += 1
+            else:
+                fp.intrinsic_dim = None
+                fp.isotropy = None
+                fp.rank_ratio = None
         else:
             fp.interaction_locality = None
             fp.interaction_sparsity = None
@@ -88,12 +97,12 @@ def populate_behavioral_probes(
             fp.hierarchy_fitness = None
             fp.gromov_delta = None
 
-    if include:
-        sensitivity = analyze_sensitivity(model, device, seq_len, vocab_size)
+    sensitivity = analyze_sensitivity(model, device, seq_len, vocab_size)
+    if sensitivity.get("_succeeded"):
         fp.jacobian_spectral_norm = sensitivity["spectral_norm"]
         fp.jacobian_effective_rank = sensitivity["effective_rank"]
         fp.sensitivity_uniformity = sensitivity["uniformity"]
-        if sensitivity.get("_succeeded"):
+        if include:
             n_succeeded += 1
     else:
         fp.jacobian_spectral_norm = None
@@ -289,6 +298,18 @@ def compute_lightning_fingerprint(
                 fp.gromov_delta = hierarchy["gromov_delta"]
             except Exception as exc:
                 logger.debug("Hierarchy detection skipped: %s", exc)
+
+    # Always compute sensitivity (Jacobian spectral norm) for ML-ops training
+    # data; this needs grad so it runs outside the no_grad block above.
+    sensitivity = analyze_sensitivity(model, dev, seq_len, vocab_size=32000)
+    if sensitivity.get("_succeeded"):
+        fp.jacobian_spectral_norm = sensitivity["spectral_norm"]
+        fp.jacobian_effective_rank = sensitivity["effective_rank"]
+        fp.sensitivity_uniformity = sensitivity["uniformity"]
+    else:
+        fp.jacobian_spectral_norm = None
+        fp.jacobian_effective_rank = None
+        fp.sensitivity_uniformity = None
 
     fp.cka_vs_transformer = None
     fp.cka_vs_ssm = None

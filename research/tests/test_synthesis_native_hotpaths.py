@@ -357,6 +357,40 @@ def test_compile_graph_uses_plain_dispatcher_for_non_parameterized_graph(monkeyp
     assert torch.equal(y, x + 3)
 
 
+def test_partial_native_wrapper_skips_slow_standalone_ops(monkeypatch):
+    import research.synthesis.native_compile as native_compile
+
+    class FakeOp:
+        def __init__(self, op_name):
+            self.op_name = op_name
+
+        def forward(self):
+            return None
+
+    class FakeLayer:
+        def __init__(self):
+            self.ops = {
+                "relu": FakeOp("relu"),
+                "sigmoid": FakeOp("sigmoid"),
+            }
+
+    monkeypatch.setattr(
+        native_compile, "get_supported_native_ops", lambda graph: {"relu", "sigmoid"}
+    )
+
+    graph = ComputationGraph(8)
+    inp = graph.add_input()
+    relu = graph.add_op("relu", [inp])
+    out = graph.add_op("sigmoid", [relu])
+    graph.set_output(out)
+
+    layer = FakeLayer()
+    native_compile.attach_partial_native_wrapper(layer, graph)
+
+    assert not hasattr(layer.ops["relu"], "_native_wrapper")
+    assert layer.ops["sigmoid"]._native_wrapper is layer._native_forward_wrapper
+
+
 def test_bound_dispatcher_disables_after_runtime_failure(monkeypatch):
     import research.synthesis.native_bound_graph as native_bound_graph
     import research.synthesis.native_compile as native_compile

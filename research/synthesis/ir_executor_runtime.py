@@ -13,8 +13,14 @@ def initialize_execution_state(
     input_node_indices: tuple[int, ...],
     x: torch.Tensor,
     capture_intermediates: bool,
+    node_outputs_buf: list[Optional[torch.Tensor]] | None = None,
 ) -> tuple[list[int], list[Optional[torch.Tensor]], dict[int, torch.Tensor] | None]:
-    node_outputs: list[Optional[torch.Tensor]] = [None] * n_nodes
+    if node_outputs_buf is None or len(node_outputs_buf) != n_nodes:
+        node_outputs: list[Optional[torch.Tensor]] = [None] * n_nodes
+    else:
+        node_outputs = node_outputs_buf
+        for idx in range(n_nodes):
+            node_outputs[idx] = None
     counts_buf[:] = counts_original
     for input_idx in input_node_indices:
         node_outputs[input_idx] = x
@@ -60,9 +66,11 @@ def execute_plan_loop(
     exec_ops: tuple,
 ) -> None:
     release_outputs = captured is None
-    for node_idx, in1_idx, in2_idx, op in zip(
-        exec_node_indices, exec_in1_indices, exec_in2_indices, exec_ops
-    ):
+    for plan_index in range(len(exec_node_indices)):
+        node_idx = exec_node_indices[plan_index]
+        in1_idx = exec_in1_indices[plan_index]
+        in2_idx = exec_in2_indices[plan_index]
+        op = exec_ops[plan_index]
         t1 = node_outputs[in1_idx]
         if in2_idx != -1:
             t2 = node_outputs[in2_idx]

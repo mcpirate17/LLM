@@ -162,7 +162,7 @@ def compute_effective_depth(
     raise TypeError(f"Unsupported graph type: {type(graph_or_ir)!r}")
 
 
-@dataclass
+@dataclass(slots=True)
 class ValidationResult:
     """Result of graph validation."""
 

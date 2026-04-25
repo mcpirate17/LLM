@@ -3,6 +3,13 @@ from __future__ import annotations
 import json
 import sqlite3
 
+import pytest
+
+pytest.importorskip(
+    "tasks.induction_native_probe.fast_induction_probe",
+    reason="native induction probe task package is unavailable",
+)
+
 from research.tools.backpopulate_screening_metrics import (
     _apply_row_updates,
     _backpopulate_provenance_context,

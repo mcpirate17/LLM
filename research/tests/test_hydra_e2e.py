@@ -1,5 +1,6 @@
 import pytest
 import os
+import shutil
 import tempfile
 import time
 from research.scientist.runner import ExperimentRunner, RunConfig
@@ -74,7 +75,7 @@ def temp_research_dir():
         f.write("This is a test corpus for E2E validation. " * 100)
 
     yield tmpdir, db_path, corpus_path
-    time.sleep(1.0)
+    shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 def test_hydra_synthesis_to_leaderboard_e2e(temp_research_dir):
@@ -139,10 +140,13 @@ def test_hydra_synthesis_to_leaderboard_e2e(temp_research_dir):
         timeout = 60
         start_time = time.time()
         while runner.is_running and (time.time() - start_time < timeout):
-            time.sleep(1.0)
+            thread = getattr(runner, "_thread", None)
+            if thread is not None:
+                thread.join(timeout=0.05)
+            else:
+                time.sleep(0.05)
 
         print("Experiment finished. Manual promotion to leaderboard...")
-        time.sleep(2.0)
 
         # 3. Verify and Manually Promote
         nb = LabNotebook(db_path)

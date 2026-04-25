@@ -43,6 +43,35 @@ def _maybe_true_routing_sync(x: torch.Tensor) -> None:
         torch.cuda.synchronize(x.device)
 
 
+def _has_params(module: nn.Module, *names: str) -> bool:
+    return all(hasattr(module, name) for name in names)
+
+
+def _route_top1(
+    x: torch.Tensor,
+    module: nn.Module,
+    n_experts: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    logits = _safe_linear(x, module.gate_weight)
+    logits = _apply_moe_load_balance(module, logits, n_experts)
+    weights, indices = logits.topk(1, dim=-1)
+    weights = torch.sigmoid(weights)
+    _record_routing_telemetry(module, n_experts, indices, logits=logits)
+    return weights, indices
+
+
+def _select_dense_expert_outputs(
+    out0: torch.Tensor,
+    out1: torch.Tensor,
+    out2: torch.Tensor,
+    indices: torch.Tensor,
+    weights: torch.Tensor,
+) -> torch.Tensor:
+    idx = indices.reshape(-1, 1)
+    selected = torch.where(idx == 0, out0, torch.where(idx == 1, out1, out2))
+    return selected * weights.reshape(-1, 1).to(selected.dtype)
+
+
 # ── Gather-scatter dispatch helper ────────────────────────────────
 
 
@@ -75,13 +104,7 @@ def _dispatch_to_experts(
         _maybe_true_routing_sync(x)
 
         # 1. Gate: learned routing decision per token (pointwise — causal-safe)
-        logits = _safe_linear(x, module.gate_weight)  # (B, S, n_experts)
-        logits = _apply_moe_load_balance(module, logits, n_experts)
-        weights, indices = logits.topk(1, dim=-1)  # top-1 hard routing
-        weights = torch.sigmoid(weights)  # (B, S, 1) — gate confidence
-
-        # Record telemetry
-        _record_routing_telemetry(module, n_experts, indices, logits=logits)
+        weights, indices = _route_top1(x, module, n_experts)
 
         # 2. Batched gather-scatter dispatch: flatten B*S tokens, sort by expert,
         # run each expert on its contiguous chunk, unsort back. O(E) Python
@@ -92,6 +115,24 @@ def _dispatch_to_experts(
         w_flat = weights.reshape(-1, 1)  # (B*S, 1)
         x_flat = x.reshape(-1, D)  # (B*S, D)
 
+        if x.is_cuda:
+            result_flat = torch.empty_like(x_flat)
+            for e_idx, expert_fn in enumerate(expert_fns):
+                token_idx = torch.nonzero(idx_flat == e_idx, as_tuple=False).flatten()
+                x_chunk = x_flat.index_select(0, token_idx)
+                w_chunk = w_flat.index_select(0, token_idx)
+                out = expert_fn(x_chunk, module)
+                if out.shape != x_chunk.shape:
+                    raise RuntimeError(
+                        f"true routing expert {e_idx} returned shape {tuple(out.shape)} "
+                        f"for input chunk {tuple(x_chunk.shape)}"
+                    )
+                result_flat.index_copy_(
+                    0, token_idx, out.to(x.dtype) * w_chunk.to(x.dtype)
+                )
+            _maybe_true_routing_sync(result_flat)
+            return result_flat.reshape(B, S, D)
+
         # Sort tokens by expert assignment for contiguous expert chunks
         sort_order = idx_flat.argsort(stable=True)
         x_sorted = x_flat[sort_order]  # (B*S, D)
@@ -101,23 +142,26 @@ def _dispatch_to_experts(
         # because repeated zero-length views have been implicated in crashes.
         expert_counts = torch.bincount(idx_flat, minlength=n_experts).tolist()
 
-        # Run each expert on its contiguous chunk (E iterations, not B*E)
-        result_chunks = []
+        # Run each expert on its contiguous chunk (E iterations, not B*E).
+        # Fill the sorted output buffer directly; building chunk lists and
+        # concatenating them adds avoidable allocation in this hot path.
+        result_sorted = torch.empty_like(x_sorted)
         start = 0
         for e_idx, count in enumerate(expert_counts):
             if count == 0:
-                result_chunks.append(x_sorted.new_empty(0, D))
                 continue
             x_chunk = x_sorted.narrow(0, start, count)
             w_chunk = w_sorted.narrow(0, start, count)
-            start += count
             out = expert_fns[e_idx](x_chunk, module)
             if out.shape != x_chunk.shape:
                 raise RuntimeError(
                     f"true routing expert {e_idx} returned shape {tuple(out.shape)} "
                     f"for input chunk {tuple(x_chunk.shape)}"
                 )
-            result_chunks.append(out.to(x.dtype) * w_chunk.to(x.dtype))
+            result_sorted.narrow(0, start, count).copy_(
+                out.to(x.dtype) * w_chunk.to(x.dtype)
+            )
+            start += count
 
         if start != x_sorted.shape[0]:
             raise RuntimeError(
@@ -125,9 +169,8 @@ def _dispatch_to_experts(
                 f"sorted_tokens={x_sorted.shape[0]}"
             )
 
-        # Unsort back to original token order without indexed assignment.
-        result_sorted = torch.cat(result_chunks, dim=0)  # (B*S, D)
-        inverse_sort = sort_order.argsort(stable=True)
+        inverse_sort = torch.empty_like(sort_order)
+        inverse_sort[sort_order] = torch.arange(sort_order.numel(), device=x.device)
         result_flat = result_sorted[inverse_sort]
         _maybe_true_routing_sync(result_flat)
         return result_flat.reshape(B, S, D)
@@ -225,12 +268,54 @@ def _mini_cheap_linear(chunk: torch.Tensor, module: nn.Module) -> torch.Tensor:
     return _safe_linear(chunk, module.cheap_proj)
 
 
+def _dense_cuda_attention(flat: torch.Tensor, module: nn.Module) -> torch.Tensor:
+    qkv = _safe_linear(flat, module.attn_qkv)
+    q, k, v = qkv.chunk(3, dim=-1)
+    return _safe_linear(torch.sigmoid(q * k) * v, module.attn_out)
+
+
+def _dense_cuda_conv(flat: torch.Tensor, module: nn.Module) -> torch.Tensor:
+    return F.gelu(_safe_linear(flat, module.conv_proj)) * flat
+
+
+def _dense_cuda_ssm(flat: torch.Tensor, module: nn.Module) -> torch.Tensor:
+    gate_b = torch.sigmoid(_safe_linear(flat, module.ssm_B_proj))
+    gate_c = torch.sigmoid(_safe_linear(flat, module.ssm_C_proj))
+    return gate_b * gate_c * flat + module.ssm_D * flat
+
+
 # ── Op 1: hetero_moe ─────────────────────────────────────────────
+
+
+def _op_hetero_moe_dense_cuda(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
+    B, S, D = x.shape
+    weights, indices = _route_top1(x, module, 3)
+    flat = x.reshape(-1, D)
+    out = _select_dense_expert_outputs(
+        _dense_cuda_attention(flat, module),
+        _dense_cuda_conv(flat, module),
+        _dense_cuda_ssm(flat, module),
+        indices,
+        weights,
+    )
+    _maybe_true_routing_sync(out)
+    return out.reshape(B, S, D)
 
 
 def _op_hetero_moe(module, inputs, config):
     """Heterogeneous MoE: routes tokens to attention, conv, or SSM experts."""
     x = inputs[0]
+    if x.is_cuda and _has_params(
+        module,
+        "gate_weight",
+        "attn_qkv",
+        "attn_out",
+        "conv_proj",
+        "ssm_B_proj",
+        "ssm_C_proj",
+        "ssm_D",
+    ):
+        return _op_hetero_moe_dense_cuda(module, x)
     return _dispatch_to_experts(x, module, 3, [_mini_attention, _mini_conv, _mini_ssm])
 
 
@@ -253,6 +338,38 @@ def _mini_mamba_block(chunk: torch.Tensor, module: nn.Module) -> torch.Tensor:
 def _op_arch_router(module, inputs, config):
     """Architecture router: tokens choose transformer, mamba, or MLP style."""
     x = inputs[0]
+    if x.is_cuda and _has_params(
+        module,
+        "gate_weight",
+        "attn_qkv",
+        "attn_out",
+        "arch_ffn",
+        "conv_proj",
+        "ssm_B_proj",
+        "ssm_C_proj",
+        "ssm_D",
+        "arch_proj",
+        "mlp_up",
+        "mlp_down",
+    ):
+        B, S, D = x.shape
+        weights, indices = _route_top1(x, module, 3)
+        flat = x.reshape(-1, D)
+        attn = _dense_cuda_attention(flat, module)
+        transformer = _safe_linear(F.gelu(attn), module.arch_ffn)
+        conv = _dense_cuda_conv(flat, module)
+        ssm = _dense_cuda_ssm(conv, module)
+        mamba = _safe_linear(ssm, module.arch_proj)
+        mlp = _safe_linear(F.gelu(_safe_linear(flat, module.mlp_up)), module.mlp_down)
+        out = _select_dense_expert_outputs(
+            transformer,
+            mamba,
+            mlp,
+            indices,
+            weights,
+        )
+        _maybe_true_routing_sync(out)
+        return out.reshape(B, S, D)
     return _dispatch_to_experts(
         x,
         module,
@@ -267,6 +384,26 @@ def _op_arch_router(module, inputs, config):
 def _op_compute_budget_router(module, inputs, config):
     """Adaptive compute budget: easy → cheap linear, medium → conv, hard → attention."""
     x = inputs[0]
+    if x.is_cuda and _has_params(
+        module,
+        "gate_weight",
+        "cheap_proj",
+        "conv_proj",
+        "attn_qkv",
+        "attn_out",
+    ):
+        B, S, D = x.shape
+        weights, indices = _route_top1(x, module, 3)
+        flat = x.reshape(-1, D)
+        out = _select_dense_expert_outputs(
+            _safe_linear(flat, module.cheap_proj),
+            _dense_cuda_conv(flat, module),
+            _dense_cuda_attention(flat, module),
+            indices,
+            weights,
+        )
+        _maybe_true_routing_sync(out)
+        return out.reshape(B, S, D)
     return _dispatch_to_experts(
         x,
         module,

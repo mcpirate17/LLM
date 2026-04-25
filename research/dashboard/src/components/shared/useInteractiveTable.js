@@ -76,5 +76,7 @@ export default function useInteractiveTable({
     setFilterQuery,
     sortedRows,
     handleSort,
+    setSortKey,
+    setSortDesc,
   };
 }

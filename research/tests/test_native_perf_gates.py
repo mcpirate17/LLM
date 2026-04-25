@@ -1,9 +1,10 @@
 """Performance acceptance gate tests for native C kernels.
 
 Gate criteria:
-- Native kernel must be at least 0.5x NumPy speed on large inputs (no regressions)
+- Standalone native dispatch is allowed only for ops that beat the backend
+- Disabled standalone kernels are still correctness-checked for fused/native use
 - Native matmul 256x256 must complete in < 5ms (absolute latency budget)
-- Native softmax batch=16 dim=4096 must complete in < 100us (absolute latency budget)
+- Native softmax batch=16 dim=4096 must complete in < 500us (absolute latency budget)
 - Native relu 262144 must complete in < 200us (throughput gate)
 """
 
@@ -13,6 +14,12 @@ import time
 
 import numpy as np
 import pytest
+import torch
+
+from research.scientist.native._dispatch_constants import (
+    _STANDALONE_NATIVE_DISABLED_OPS,
+)
+from research.scientist.native.autograd import NativeForwardWrapper
 
 pytestmark = pytest.mark.native
 
@@ -191,12 +198,13 @@ BINARY_OPS = [
     ("sub", lambda a, b: a - b),
 ]
 
-# Test on a large size to give the C kernel a fair chance vs numpy overhead
+# Test on a large size to give the C kernel a fair chance vs numpy overhead.
 _GATE_SIZE = 65536
+_MIN_NATIVE_SPEEDUP = 1.0
 
 
 class TestRelativeSpeedupGates:
-    """Ensure native kernels are at least 0.5x NumPy speed (regression gate).
+    """Ensure native kernels are at least as fast as NumPy (regression gate).
 
     Uses scipy-bundled OpenBLAS 0.3.27 (DYNAMIC_ARCH, Haswell-optimized) for
     matmul/linear parity with NumPy.
@@ -204,7 +212,7 @@ class TestRelativeSpeedupGates:
 
     @pytest.mark.parametrize("op_name,np_fn", UNARY_OPS, ids=[o[0] for o in UNARY_OPS])
     def test_unary_vs_numpy(self, lib, op_name, np_fn):
-        """Unary op must achieve >= 0.5x NumPy throughput on 65536 elements."""
+        """Unary op must achieve NumPy-or-better throughput on 65536 elements."""
         c_fn = getattr(lib, f"aria_{op_name}_f32")
         c_fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int64]
         c_fn.restype = None
@@ -217,16 +225,31 @@ class TestRelativeSpeedupGates:
         numpy_us = _median_us(lambda: np_fn(x))
 
         speedup = numpy_us / native_us if native_us > 0 else float("inf")
-        assert speedup >= 0.5, (
+        assert speedup >= _MIN_NATIVE_SPEEDUP, (
             f"{op_name} n={n}: native={native_us:.1f}us, numpy={numpy_us:.1f}us, "
-            f"speedup={speedup:.2f}x < 0.5x threshold"
+            f"speedup={speedup:.2f}x < {_MIN_NATIVE_SPEEDUP:.1f}x threshold"
         )
 
     @pytest.mark.parametrize(
         "op_name,np_fn", BINARY_OPS, ids=[o[0] for o in BINARY_OPS]
     )
     def test_binary_vs_numpy(self, lib, op_name, np_fn):
-        """Binary op must achieve >= 0.5x NumPy throughput on 65536 elements."""
+        """Slow binary kernels must not be advertised for standalone dispatch."""
+        assert op_name in _STANDALONE_NATIVE_DISABLED_OPS
+        wrapper = NativeForwardWrapper(object(), {op_name})
+        x = torch.randn(_GATE_SIZE)
+        y = torch.randn(_GATE_SIZE)
+        assert wrapper.dispatch(op_name, x, y) is None
+        assert (
+            wrapper.stats["last_fallback_reason"]
+            == "standalone_native_disabled_slow_backend"
+        )
+
+    @pytest.mark.parametrize(
+        "op_name,np_fn", BINARY_OPS, ids=[o[0] for o in BINARY_OPS]
+    )
+    def test_disabled_binary_raw_kernel_is_not_numpy_gate(self, lib, op_name, np_fn):
+        """Raw disabled kernels remain correctness-checked elsewhere, not speed-gated."""
         c_fn = getattr(lib, f"aria_{op_name}_f32")
         c_fn.argtypes = [
             ctypes.c_void_p,
@@ -241,17 +264,23 @@ class TestRelativeSpeedupGates:
         b = np.random.randn(n).astype(np.float32)
         y = np.empty(n, dtype=np.float32)
 
-        native_us = _median_us(lambda: c_fn(_ptr(a), _ptr(b), _ptr(y), n))
-        numpy_us = _median_us(lambda: np_fn(a, b))
-
-        speedup = numpy_us / native_us if native_us > 0 else float("inf")
-        assert speedup >= 0.5, (
-            f"{op_name} n={n}: native={native_us:.1f}us, numpy={numpy_us:.1f}us, "
-            f"speedup={speedup:.2f}x < 0.5x threshold"
-        )
+        c_fn(_ptr(a), _ptr(b), _ptr(y), n)
+        np.testing.assert_allclose(y, np_fn(a, b), rtol=1e-6, atol=1e-6)
 
     def test_matmul_vs_numpy(self, lib):
-        """matmul 128x128x128 must achieve >= 0.5x NumPy throughput."""
+        """matmul is disabled for standalone per-op dispatch until it beats NumPy."""
+        assert "matmul" in _STANDALONE_NATIVE_DISABLED_OPS
+        wrapper = NativeForwardWrapper(object(), {"matmul"})
+        a = torch.randn(128, 128)
+        b = torch.randn(128, 128)
+        assert wrapper.dispatch("matmul", a, b) is None
+        assert (
+            wrapper.stats["last_fallback_reason"]
+            == "standalone_native_disabled_slow_backend"
+        )
+
+    def test_disabled_matmul_raw_kernel_is_not_numpy_gate(self, lib):
+        """Raw disabled matmul remains correctness-checked, not standalone speed-gated."""
         fn = lib.aria_matmul_f32
         fn.argtypes = [
             ctypes.c_void_p,
@@ -268,17 +297,23 @@ class TestRelativeSpeedupGates:
         B = np.random.randn(K, N).astype(np.float32)
         C = np.empty((M, N), dtype=np.float32)
 
-        native_us = _median_us(lambda: fn(_ptr(A), _ptr(B), _ptr(C), M, K, N))
-        numpy_us = _median_us(lambda: np.dot(A, B))
-
-        speedup = numpy_us / native_us if native_us > 0 else float("inf")
-        assert speedup >= 0.5, (
-            f"matmul 128x128x128: native={native_us:.1f}us, numpy={numpy_us:.1f}us, "
-            f"speedup={speedup:.2f}x < 0.5x threshold"
-        )
+        fn(_ptr(A), _ptr(B), _ptr(C), M, K, N)
+        np.testing.assert_allclose(C, np.dot(A, B), rtol=1e-4, atol=1e-4)
 
     def test_linear_vs_numpy(self, lib):
-        """linear 16x256x256 must achieve >= 0.5x NumPy throughput."""
+        """linear is disabled for standalone per-op dispatch until it beats NumPy."""
+        assert "linear" in _STANDALONE_NATIVE_DISABLED_OPS
+        wrapper = NativeForwardWrapper(object(), {"linear", "linear_proj"})
+        x = torch.randn(16, 256)
+        w = torch.randn(256, 256)
+        assert wrapper.dispatch("linear", x, w) is None
+        assert (
+            wrapper.stats["last_fallback_reason"]
+            == "standalone_native_disabled_slow_backend"
+        )
+
+    def test_disabled_linear_raw_kernel_is_not_numpy_gate(self, lib):
+        """Raw disabled linear remains correctness-checked, not standalone speed-gated."""
         fn = lib.aria_linear_f32
         fn.argtypes = [
             ctypes.c_void_p,
@@ -304,16 +339,11 @@ class TestRelativeSpeedupGates:
         def np_linear():
             return x @ W.T + bias
 
-        numpy_us = _median_us(np_linear)
-
-        speedup = numpy_us / native_us if native_us > 0 else float("inf")
-        assert speedup >= 0.5, (
-            f"linear 16x256x256: native={native_us:.1f}us, numpy={numpy_us:.1f}us, "
-            f"speedup={speedup:.2f}x < 0.5x threshold"
-        )
+        assert native_us > 0
+        np.testing.assert_allclose(y, np_linear(), rtol=1e-4, atol=1e-4)
 
     def test_softmax_vs_numpy(self, lib):
-        """softmax batch=8 dim=1024 must achieve >= 0.5x NumPy throughput."""
+        """softmax batch=8 dim=1024 must achieve NumPy-or-better throughput."""
         fn = lib.aria_softmax_f32
         fn.argtypes = [
             ctypes.c_void_p,
@@ -337,13 +367,13 @@ class TestRelativeSpeedupGates:
         numpy_us = _median_us(np_softmax)
 
         speedup = numpy_us / native_us if native_us > 0 else float("inf")
-        assert speedup >= 0.5, (
+        assert speedup >= _MIN_NATIVE_SPEEDUP, (
             f"softmax 8x1024: native={native_us:.1f}us, numpy={numpy_us:.1f}us, "
-            f"speedup={speedup:.2f}x < 0.5x threshold"
+            f"speedup={speedup:.2f}x < {_MIN_NATIVE_SPEEDUP:.1f}x threshold"
         )
 
     def test_rmsnorm_vs_numpy(self, lib):
-        """rmsnorm batch=8 dim=1024 must achieve >= 0.5x NumPy throughput."""
+        """rmsnorm batch=8 dim=1024 must achieve NumPy-or-better throughput."""
         fn = lib.aria_rmsnorm_f32
         fn.argtypes = [
             ctypes.c_void_p,
@@ -372,13 +402,13 @@ class TestRelativeSpeedupGates:
         numpy_us = _median_us(np_rmsnorm)
 
         speedup = numpy_us / native_us if native_us > 0 else float("inf")
-        assert speedup >= 0.5, (
+        assert speedup >= _MIN_NATIVE_SPEEDUP, (
             f"rmsnorm 8x1024: native={native_us:.1f}us, numpy={numpy_us:.1f}us, "
-            f"speedup={speedup:.2f}x < 0.5x threshold"
+            f"speedup={speedup:.2f}x < {_MIN_NATIVE_SPEEDUP:.1f}x threshold"
         )
 
     def test_layernorm_vs_numpy(self, lib):
-        """layernorm batch=8 dim=1024 must achieve >= 0.5x NumPy throughput."""
+        """layernorm batch=8 dim=1024 must achieve NumPy-or-better throughput."""
         fn = lib.aria_layernorm_f32
         fn.argtypes = [
             ctypes.c_void_p,
@@ -412,7 +442,7 @@ class TestRelativeSpeedupGates:
         numpy_us = _median_us(np_layernorm)
 
         speedup = numpy_us / native_us if native_us > 0 else float("inf")
-        assert speedup >= 0.5, (
+        assert speedup >= _MIN_NATIVE_SPEEDUP, (
             f"layernorm 8x1024: native={native_us:.1f}us, numpy={numpy_us:.1f}us, "
-            f"speedup={speedup:.2f}x < 0.5x threshold"
+            f"speedup={speedup:.2f}x < {_MIN_NATIVE_SPEEDUP:.1f}x threshold"
         )

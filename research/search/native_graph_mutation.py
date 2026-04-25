@@ -75,16 +75,38 @@ def plan_local_mutation_trials(
         raise ValueError("op_codes must be rank-1")
 
     category_ids, input_arities = _opcode_metadata_tables()
-    max_pairs = int(graph_opcodes.shape[0] * max(int(category_ids.shape[0]) - 1, 0))
-    if max_pairs <= 0:
+    if graph_opcodes.size == 0 or category_ids.size <= 1:
         return (
             np.empty(0, dtype=np.int32),
             np.empty(0, dtype=np.int32),
         )
 
+    empty_indices = np.empty(0, dtype=np.int32)
+    empty_opcodes = np.empty(0, dtype=np.int32)
+    out_pair_count = ctypes.c_int32()
+    probe_status = lib.aria_graph_mutation_plan(
+        int(graph_opcodes.shape[0]),
+        graph_opcodes.ctypes.data_as(ctypes.POINTER(ctypes.c_int32)),
+        int(category_ids.shape[0]),
+        category_ids.ctypes.data_as(ctypes.POINTER(ctypes.c_int32)),
+        input_arities.ctypes.data_as(ctypes.POINTER(ctypes.c_int32)),
+        ctypes.c_uint64(int(seed) & ((1 << 64) - 1)),
+        0,
+        empty_indices.ctypes.data_as(ctypes.POINTER(ctypes.c_int32)),
+        empty_opcodes.ctypes.data_as(ctypes.POINTER(ctypes.c_int32)),
+        ctypes.byref(out_pair_count),
+    )
+    max_pairs = int(out_pair_count.value)
+    if max_pairs <= 0 and probe_status == 0:
+        return (
+            np.empty(0, dtype=np.int32),
+            np.empty(0, dtype=np.int32),
+        )
+    if max_pairs <= 0 or probe_status not in (0, -1):
+        return None
+
     out_node_indices = np.empty(max_pairs, dtype=np.int32)
     out_candidate_opcodes = np.empty(max_pairs, dtype=np.int32)
-    out_pair_count = ctypes.c_int32()
     status = lib.aria_graph_mutation_plan(
         int(graph_opcodes.shape[0]),
         graph_opcodes.ctypes.data_as(ctypes.POINTER(ctypes.c_int32)),

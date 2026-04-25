@@ -140,6 +140,7 @@ def local_mutate_graph(
     rng: random.Random,
 ) -> ComputationGraph:
     new_graph = graph.copy()
+    parent_fp = graph.fingerprint()
     native_plan = _native_local_mutation_plan(graph, rng)
     if native_plan is not None:
         node_ids, candidate_opcodes = native_plan
@@ -155,7 +156,7 @@ def local_mutate_graph(
             if validate_context_rules(new_graph) is None:
                 new_graph.metadata["lineage"] = {
                     "type": "local_mutation",
-                    "parent": graph.fingerprint(),
+                    "parent": parent_fp,
                     "swapped_node": int(target_id),
                     "old_op": original_op,
                     "new_op": candidate_name,
@@ -175,7 +176,7 @@ def local_mutate_graph(
         if validate_context_rules(new_graph) is None:
             new_graph.metadata["lineage"] = {
                 "type": "local_mutation",
-                "parent": graph.fingerprint(),
+                "parent": parent_fp,
                 "swapped_node": target_id,
                 "old_op": original_op,
                 "new_op": candidate_name,
@@ -271,11 +272,10 @@ def _python_local_mutation_trials(
 ):
     non_input_ids = [nid for nid, node in graph.nodes.items() if not node.is_input]
     if not non_input_ids:
-        return ()
+        return
 
     targets = list(non_input_ids)
     rng.shuffle(targets)
-    planned_trials = []
     for target_id in targets:
         target_node = graph.nodes[target_id]
         try:
@@ -292,7 +292,5 @@ def _python_local_mutation_trials(
         if not same_cat_ops:
             continue
         rng.shuffle(same_cat_ops)
-        planned_trials.extend(
-            (target_id, candidate_name) for candidate_name in same_cat_ops
-        )
-    return tuple(planned_trials)
+        for candidate_name in same_cat_ops:
+            yield target_id, candidate_name

@@ -400,6 +400,45 @@ def _component_exclusion_reason(
     return f"excluded {n_excluded} runtime-only failures from displayed rates"
 
 
+def _finite_float_or_none(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if _math.isfinite(number) else None
+
+
+def _rounded_metric(value: Any, digits: int = 3) -> float | None:
+    number = _finite_float_or_none(value)
+    return round(number, digits) if number is not None else None
+
+
+def _attach_component_observability_metrics(
+    component: dict[str, Any],
+    row: dict[str, Any],
+    overlay: dict[str, Any] | None,
+    *,
+    n_used: int,
+    n_s05: int,
+) -> dict[str, Any]:
+    overlay = overlay or {}
+    component["n_s05"] = int(n_s05 or 0)
+    component["s05_rate"] = round((n_s05 / n_used), 3) if n_used > 0 else None
+    component["avg_loss_ratio"] = _rounded_metric(
+        overlay.get("avg_loss_ratio", row.get("avg_loss_ratio"))
+    )
+    component["avg_validation_loss_ratio"] = _rounded_metric(
+        overlay.get("avg_validation_loss_ratio")
+    )
+    component["avg_induction_auc"] = _rounded_metric(overlay.get("avg_induction_auc"))
+    component["avg_binding_auc"] = _rounded_metric(overlay.get("avg_binding_auc"))
+    component["avg_hellaswag_acc"] = _rounded_metric(overlay.get("avg_hellaswag_acc"))
+    component["top_failure_reason"] = overlay.get("top_failure_reason")
+    return component
+
+
 def _build_search_component_entry(
     op: str,
     status: str,
@@ -448,11 +487,13 @@ def _build_component_entry(
     stored_rates: Dict[str, Dict[str, int]],
     corrected_rates: Dict[str, Dict[str, int]],
     grad_health: Dict[str, Dict[str, Any]],
+    metric_overlays: Dict[str, Dict[str, Any]],
     max_n_used: int,
 ) -> dict[str, Any]:
     from research.synthesis.context_rules import S1_EXEMPT_OPS
 
     op = row["op_name"]
+    overlay = metric_overlays.get(op, {})
     prof = grad_health.get(op, {})
     raw = stored_rates.get(op)
     raw_n, raw_s0, raw_s1 = _component_raw_counts(row, raw)
@@ -463,7 +504,8 @@ def _build_component_entry(
     else:
         blame, tf, idf = _compute_blame(max_n_used, raw_n, raw_s0)
     n_used, n_s0, n_s1 = _component_display_counts(corrected, raw_n, raw_s0, raw_s1)
-    n_s05 = row.get("n_stage05_passed") or 0
+    raw_s05 = int(row.get("n_stage05_passed") or 0)
+    n_s05 = min(raw_s05, n_used)
     s0_rate = (n_s0 / n_used) if n_used > 0 else None
     s1_rate = (n_s1 / n_s0) if n_s0 > 0 else None
     n_excluded = corrected["excluded"] if corrected else 0
@@ -474,7 +516,7 @@ def _build_component_entry(
         reasons = ["scaffolding op — not a standalone learner"]
         if exclusion_reason:
             reasons.append(exclusion_reason)
-        return _build_structural_component(
+        entry = _build_structural_component(
             op,
             reasons,
             n_used,
@@ -490,6 +532,13 @@ def _build_component_entry(
             lipschitz,
             prof,
         )
+        return _attach_component_observability_metrics(
+            entry,
+            row,
+            overlay,
+            n_used=n_used,
+            n_s05=n_s05,
+        )
 
     status, reasons, grad_norm = _classify_component_status(
         float(s1_rate or 0.0),
@@ -502,7 +551,7 @@ def _build_component_entry(
     )
     if exclusion_reason:
         reasons = [*reasons, exclusion_reason]
-    return _build_search_component_entry(
+    entry = _build_search_component_entry(
         op,
         status,
         reasons,
@@ -526,6 +575,13 @@ def _build_component_entry(
         },
         prof,
     )
+    return _attach_component_observability_metrics(
+        entry,
+        row,
+        overlay,
+        n_used=n_used,
+        n_s05=n_s05,
+    )
 
 
 def _build_profile_only_component(op_name: str, prof: dict[str, Any]) -> dict[str, Any]:
@@ -546,7 +602,14 @@ def _build_profile_only_component(op_name: str, prof: dict[str, Any]) -> dict[st
         "reasons": reasons,
         "n_used": 0,
         "s0_rate": None,
+        "s05_rate": None,
         "s1_rate": None,
+        "avg_loss_ratio": None,
+        "avg_validation_loss_ratio": None,
+        "avg_induction_auc": None,
+        "avg_binding_auc": None,
+        "avg_hellaswag_acc": None,
+        "top_failure_reason": None,
         "grad_norm": round(prof["grad_norm"], 1)
         if prof.get("grad_norm") is not None
         else None,
@@ -556,6 +619,106 @@ def _build_profile_only_component(op_name: str, prof: dict[str, Any]) -> dict[st
         "bwd_us": prof.get("bwd_us"),
         "data_source": "profiling_only",
     }
+
+
+def _component_metric_where(window: str) -> tuple[str, tuple[Any, ...]]:
+    where = "gpo.op_name IS NOT NULL AND gpo.op_name <> '' AND gpo.op_name <> 'input'"
+    params: tuple[Any, ...] = ()
+    window_seconds = _WINDOW_SECONDS.get(window)
+    if window_seconds is not None:
+        where += " AND pr.timestamp > ?"
+        params = (time.time() - window_seconds,)
+    return where, params
+
+
+def _load_component_metric_overlays(nb, window: str) -> Dict[str, Dict[str, Any]]:
+    where, params = _component_metric_where(window)
+    overlays: Dict[str, Dict[str, Any]] = {}
+    try:
+        rows = nb.conn.execute(
+            f"""
+            WITH op_rows AS (
+                SELECT DISTINCT
+                    pr.result_id AS result_id,
+                    gpo.op_name AS op_name,
+                    pr.loss_ratio AS loss_ratio,
+                    pr.validation_loss_ratio AS validation_loss_ratio,
+                    pr.induction_auc AS induction_auc,
+                    COALESCE(pr.binding_auc_curriculum, pr.binding_auc) AS binding_auc,
+                    COALESCE(
+                        pr.hellaswag_acc,
+                        CASE
+                            WHEN pr.screening_hellaswag_total > 0
+                            THEN CAST(pr.screening_hellaswag_correct AS REAL)
+                                 / pr.screening_hellaswag_total
+                            ELSE NULL
+                        END
+                    ) AS hellaswag_acc
+                FROM program_results pr
+                JOIN program_graph_ops gpo ON gpo.result_id = pr.result_id
+                WHERE {where}
+            )
+            SELECT
+                op_name,
+                AVG(loss_ratio) AS avg_loss_ratio,
+                AVG(validation_loss_ratio) AS avg_validation_loss_ratio,
+                AVG(induction_auc) AS avg_induction_auc,
+                AVG(binding_auc) AS avg_binding_auc,
+                AVG(hellaswag_acc) AS avg_hellaswag_acc
+            FROM op_rows
+            GROUP BY op_name
+            """,
+            params,
+        ).fetchall()
+        for row in rows:
+            overlays[row["op_name"]] = {
+                "avg_loss_ratio": row["avg_loss_ratio"],
+                "avg_validation_loss_ratio": row["avg_validation_loss_ratio"],
+                "avg_induction_auc": row["avg_induction_auc"],
+                "avg_binding_auc": row["avg_binding_auc"],
+                "avg_hellaswag_acc": row["avg_hellaswag_acc"],
+            }
+
+        reason_rows = nb.conn.execute(
+            f"""
+            WITH reason_rows AS (
+                SELECT DISTINCT
+                    pr.result_id AS result_id,
+                    gpo.op_name AS op_name,
+                    COALESCE(NULLIF(pr.error_type, ''), NULLIF(pr.stage_at_death, '')) AS reason
+                FROM program_results pr
+                JOIN program_graph_ops gpo ON gpo.result_id = pr.result_id
+                WHERE {where} AND pr.stage1_passed = 0
+            ),
+            reason_counts AS (
+                SELECT op_name, reason, COUNT(*) AS n
+                FROM reason_rows
+                WHERE reason IS NOT NULL AND reason <> ''
+                GROUP BY op_name, reason
+            ),
+            ranked AS (
+                SELECT
+                    op_name,
+                    reason,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY op_name
+                        ORDER BY n DESC, reason ASC
+                    ) AS rn
+                FROM reason_counts
+            )
+            SELECT op_name, reason
+            FROM ranked
+            WHERE rn = 1
+            """,
+            params,
+        ).fetchall()
+        for row in reason_rows:
+            overlays.setdefault(row["op_name"], {})["top_failure_reason"] = row[
+                "reason"
+            ]
+    except sqlite3.OperationalError as exc:
+        logger.debug("component metric overlay query failed: %s", exc)
+    return overlays
 
 
 def get_component_health(notebook_path: str, window: str = "all") -> Dict[str, Any]:
@@ -571,6 +734,7 @@ def get_component_health(notebook_path: str, window: str = "all") -> Dict[str, A
     nb = get_notebook(notebook_path, read_only=True)
     op_rates = _load_op_rates(nb, window)
     grad_health = _load_grad_health()
+    metric_overlays = _load_component_metric_overlays(nb, window)
     idx = build_op_index(notebook_path, window=window)
     stored_rates = idx.get("stored_rates", {})
     corrected_rates = idx.get("corrected_rates", {})
@@ -578,7 +742,12 @@ def get_component_health(notebook_path: str, window: str = "all") -> Dict[str, A
 
     components = [
         _build_component_entry(
-            row, stored_rates, corrected_rates, grad_health, max_n_used
+            row,
+            stored_rates,
+            corrected_rates,
+            grad_health,
+            metric_overlays,
+            max_n_used,
         )
         for row in op_rates
     ]

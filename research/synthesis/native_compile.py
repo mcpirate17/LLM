@@ -56,6 +56,10 @@ def try_compile_native_subgraph_layer(
 def attach_partial_native_wrapper(layer: nn.Module, graph: ComputationGraph) -> None:
     try:
         from ..scientist.native.autograd import NativeForwardWrapper
+        from ..scientist.native._dispatch_constants import (
+            _NATIVE_OP_ALIASES,
+            _STANDALONE_NATIVE_DISABLED_OPS,
+        )
     except Exception:
         return
 
@@ -72,6 +76,13 @@ def attach_partial_native_wrapper(layer: nn.Module, graph: ComputationGraph) -> 
     propagated = False
     for op in op_values:
         if hasattr(op, "forward"):
+            op_name = getattr(op, "op_name", "")
+            native_op_name = _NATIVE_OP_ALIASES.get(op_name, op_name)
+            if (
+                op_name in _STANDALONE_NATIVE_DISABLED_OPS
+                or native_op_name in _STANDALONE_NATIVE_DISABLED_OPS
+            ):
+                continue
             op._native_wrapper = wrapper
             propagated = True
     if propagated:

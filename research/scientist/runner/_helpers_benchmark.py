@@ -63,11 +63,17 @@ def _evaluate_investigation_benchmarks(
     arch_spec_json_str: str | None,
     graph_json_str: str | None,
     cached_json_load,
+    stop_event=None,
 ) -> Dict[str, Any]:
     """Run lightweight benchmark evals for investigation survivors.
 
     Compiles the model once and runs both WikiText and TinyStories evals
     on the same instance to avoid redundant compilation.
+
+    ``stop_event`` is a ``threading.Event``; when set, the function aborts
+    between major phases so that ``runner.stop()`` actually terminates
+    background benchmark work in a bounded time instead of letting it
+    grind through every queued candidate.
     """
     result: Dict[str, Any] = {
         "inv_wikitext_ppl": None,
@@ -75,6 +81,9 @@ def _evaluate_investigation_benchmarks(
         "inv_tinystories_ppl": None,
         "inv_tinystories_score": None,
     }
+
+    if stop_event is not None and stop_event.is_set():
+        return result
 
     try:
         model = _build_benchmark_model(
@@ -92,8 +101,14 @@ def _evaluate_investigation_benchmarks(
     if model is None:
         return result
 
+    if stop_event is not None and stop_event.is_set():
+        return result
+
     eval_seq_len = min(128, config.max_seq_len)
     result.update(_run_investigation_v2_probes(model, dev))
+
+    if stop_event is not None and stop_event.is_set():
+        return result
 
     try:
         from ...eval.wikitext_eval import evaluate_wikitext_trajectory
@@ -153,6 +168,10 @@ def _evaluate_investigation_benchmarks(
     except (ImportError, RuntimeError, ValueError) as exc:
         logger.debug("Investigation WikiText eval skipped: %s", exc)
 
+    if stop_event is not None and stop_event.is_set():
+        del model
+        return result
+
     try:
         from ...eval.tinystories_eval import evaluate_tinystories
 
@@ -173,6 +192,10 @@ def _evaluate_investigation_benchmarks(
             )
     except (ImportError, RuntimeError, ValueError) as exc:
         logger.debug("Investigation TinyStories eval skipped: %s", exc)
+
+    if stop_event is not None and stop_event.is_set():
+        del model
+        return result
 
     try:
         from ...eval.hellaswag_eval import evaluate_hellaswag
@@ -196,6 +219,10 @@ def _evaluate_investigation_benchmarks(
     except (ImportError, RuntimeError, ValueError) as exc:
         logger.debug("Investigation HellaSwag eval skipped: %s", exc)
 
+    if stop_event is not None and stop_event.is_set():
+        del model
+        return result
+
     # BLiMP linguistic minimal pairs (investigation: 50 per subtask)
     try:
         from ...eval.blimp_eval import evaluate_blimp
@@ -215,6 +242,10 @@ def _evaluate_investigation_benchmarks(
             )
     except (ImportError, RuntimeError, ValueError) as exc:
         logger.debug("Investigation BLiMP eval skipped: %s", exc)
+
+    if stop_event is not None and stop_event.is_set():
+        del model
+        return result
 
     # Binding probes: AR + induction + binding range (full suite at investigation)
     try:
@@ -375,6 +406,7 @@ def _submit_benchmark_eval(
     dev,
     cached_json_load,
     fingerprint_incomplete: bool = False,
+    stop_event=None,
 ) -> Future:
     """Submit benchmark evals + result recording to a background thread.
 
@@ -383,10 +415,16 @@ def _submit_benchmark_eval(
 
     Creates a fresh LabNotebook connection in the background thread because
     SQLite connections cannot be shared across threads (check_same_thread).
+
+    ``stop_event`` is consulted at the top of the worker (so queued jobs
+    drop immediately on stop) and threaded into the benchmark evaluator
+    so mid-run aborts are honored too.
     """
     db_path = str(nb.db_path)
 
     def _run() -> None:
+        if stop_event is not None and stop_event.is_set():
+            return
         benchmark_result = _evaluate_investigation_benchmarks(
             config=config,
             dev=dev,
@@ -394,7 +432,10 @@ def _submit_benchmark_eval(
             arch_spec_json_str=arch_spec_json_str,
             graph_json_str=graph_json_str,
             cached_json_load=cached_json_load,
+            stop_event=stop_event,
         )
+        if stop_event is not None and stop_event.is_set():
+            return
         # Create a thread-local notebook for DB writes
         from ..notebook import LabNotebook
 
@@ -443,16 +484,22 @@ def _submit_v2_probe_eval(
     dev,
     cached_json_load,
     fingerprint_incomplete: bool = False,
+    stop_event=None,
 ) -> Future:
     """Submit v2-only investigation probes when no training program passes.
 
     The v2 probes train their own probe heads/tasks, so they can still produce
     useful induction/binding evidence for a compiled graph even when the
     investigation training recipe did not pass.
+
+    ``stop_event`` lets ``runner.stop()`` cancel queued jobs that haven't
+    started executing yet so the background pool drains promptly.
     """
     db_path = str(nb.db_path)
 
     def _run() -> None:
+        if stop_event is not None and stop_event.is_set():
+            return
         benchmark_result: Dict[str, Any] = {}
         try:
             model = _build_benchmark_model(
@@ -470,6 +517,8 @@ def _submit_v2_probe_eval(
                     del model
         except (ImportError, RuntimeError, ValueError, TypeError) as exc:
             logger.debug("Investigation v2-only probe eval skipped: %s", exc)
+        if stop_event is not None and stop_event.is_set():
+            return
 
         from ..notebook import LabNotebook
 

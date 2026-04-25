@@ -73,6 +73,32 @@ _NATIVE_C_KERNEL_OPS: Set[str] = {
     # adaptive_recursion) inherit the same state. Forcing the PyTorch path
     # for all six until the Rust backward kernel lands.
 }
+_STANDALONE_NATIVE_DISABLED_OPS: Set[str] = {
+    # These kernels are available for fused/native subgraph execution, but the
+    # Python tensor -> native array -> tensor bridge loses to PyTorch/NumPy for
+    # standalone calls on the current CPU path.
+    "add",
+    "sub",
+    "mul",
+    "matmul",
+    "linear",
+    "linear_proj",
+    "linear_proj_down",
+    "linear_proj_up",
+    "relu",
+    "gelu",
+    "silu",
+    "square",
+    "abs",
+    "neg",
+    "sin",
+    "cos",
+    "log",
+    "sqrt",
+    "reciprocal",
+    "softmax",
+    "layernorm",
+}
 _PER_OP_BRIDGE_ONLY_OPS: Set[str] = set()
 _CYTHON_WRAPPER_OPS: Set[str] = set(_NATIVE_C_KERNEL_OPS)
 _SOFT_BRIDGE_OPS: Set[str] = {"causal_mask", "argsort_seq", "topk_gate"}

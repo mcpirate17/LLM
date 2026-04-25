@@ -57,14 +57,49 @@ function HealthSummary({ health }) {
 
 // ─── Sortable Column Header ───
 const SORT_COLUMNS = [
-  { key: 'status', label: 'Status' },
-  { key: 'op', label: 'Op Name' },
-  { key: 'n_used', label: 'Used' },
-  { key: 's0_rate', label: 'S0 Rate' },
-  { key: 's1_rate', label: 'S1 Rate' },
-  { key: 'grad_norm', label: 'Grad Norm' },
-  { key: 'fwd_us', label: 'Fwd (us)' },
-  { key: 'reasons', label: 'Issues' },
+  { key: 'status', label: 'Status', tooltip: 'Current component health classification.', sticky: true, left: 0, width: 58 },
+  { key: 'op', label: 'Op Name', tooltip: 'Component/operator name.', sticky: true, left: 58, width: 260 },
+  { key: 'n_used', label: 'Used', tooltip: 'Number of observed programs containing this op.' },
+  { key: 's0_rate', label: 'S0', tooltip: 'Share of observed programs containing this op that passed Stage 0.' },
+  { key: 's05_rate', label: 'S0.5', tooltip: 'Share of observed programs containing this op that passed the stability band.' },
+  { key: 's1_rate', label: 'S1', tooltip: 'Share of Stage 0 passes that reached Stage 1.' },
+  { key: 'avg_loss_ratio', label: 'Train LR', tooltip: 'Average training loss ratio for programs containing this op.' },
+  { key: 'avg_validation_loss_ratio', label: 'Val LR', tooltip: 'Average validation loss ratio for programs containing this op.' },
+  { key: 'avg_induction_auc', label: 'Ind', tooltip: 'Average induction-task AUC for programs containing this op.' },
+  { key: 'avg_binding_auc', label: 'Bind', tooltip: 'Average binding/copy-task AUC for programs containing this op.' },
+  { key: 'avg_hellaswag_acc', label: 'Hella', tooltip: 'Average HellaSwag accuracy signal for programs containing this op.' },
+  { key: 'grad_norm', label: 'Grad Norm', tooltip: 'Gradient norm from component profiling.' },
+  { key: 'fwd_us', label: 'Fwd (us)', tooltip: 'Forward-pass runtime in microseconds from component profiling.' },
+  { key: 'reasons', label: 'Issues', tooltip: 'Dominant failure reason or health-grid diagnostic.' },
+];
+
+const COLUMN_GROUPS = [
+  { label: 'Identity', span: 2 },
+  { label: 'Health', span: 4 },
+  { label: 'Learning', span: 2 },
+  { label: 'Benchmarks', span: 3 },
+  { label: 'Runtime', span: 2 },
+  { label: 'Diagnosis', span: 1 },
+];
+
+const REASON_FILTERS = [
+  { key: 'all', label: 'All' },
+  { key: 'low_s1', label: 'Low S1' },
+  { key: 'poor_val', label: 'Poor Val' },
+  { key: 'low_ind', label: 'Low Ind' },
+  { key: 'low_bind', label: 'Low Bind' },
+  { key: 'high_grad', label: 'High Grad' },
+  { key: 'slow_fwd', label: 'Slow Fwd' },
+  { key: 'runtime_excluded', label: 'Runtime Excluded' },
+];
+
+const SORT_PRESETS = [
+  { key: 'most_used', label: 'Most Used', sortKey: 'n_used', desc: true },
+  { key: 'worst_s1', label: 'Worst S1', sortKey: 's1_rate', desc: false },
+  { key: 'best_val', label: 'Best Val', sortKey: 'avg_validation_loss_ratio', desc: false },
+  { key: 'worst_gap', label: 'Worst Val Gap', sortKey: 'val_gap', desc: true },
+  { key: 'best_ind', label: 'Best Ind', sortKey: 'avg_induction_auc', desc: true },
+  { key: 'slowest', label: 'Slowest Runtime', sortKey: 'fwd_us', desc: true },
 ];
 
 const STATUS_ORDER = { broken: 0, degraded: 1, structural: 2, healthy: 3 };
@@ -72,6 +107,12 @@ const STATUS_ORDER = { broken: 0, degraded: 1, structural: 2, healthy: 3 };
 function getComponentSortValue(row, key) {
   if (key === 'status') return STATUS_ORDER[row.status] ?? 3;
   if (key === 'reasons') return Array.isArray(row.reasons) ? row.reasons.length : 0;
+  if (key === 'val_gap') {
+    const val = Number(row.avg_validation_loss_ratio);
+    const train = Number(row.avg_loss_ratio);
+    if (!Number.isFinite(val) || !Number.isFinite(train)) return null;
+    return val - train;
+  }
   return row[key];
 }
 
@@ -83,8 +124,56 @@ function getPairInitialSortDesc(key) {
   return key !== 'op_a' && key !== 'op_b';
 }
 
+function metricText(value, digits = 3) {
+  if (value === null || value === undefined || !Number.isFinite(Number(value))) return '-';
+  return Number(value).toFixed(digits);
+}
+
+function componentMatchesReason(component, reasonFilter) {
+  if (reasonFilter === 'all') return true;
+  if (reasonFilter === 'low_s1') return component.s1_rate != null && component.s1_rate < 0.15;
+  if (reasonFilter === 'poor_val') {
+    const val = Number(component.avg_validation_loss_ratio);
+    const train = Number(component.avg_loss_ratio);
+    return Number.isFinite(val) && (
+      val >= 0.65 || (Number.isFinite(train) && val > train * 1.15)
+    );
+  }
+  if (reasonFilter === 'low_ind') return component.avg_induction_auc != null && component.avg_induction_auc < 0.02;
+  if (reasonFilter === 'low_bind') return component.avg_binding_auc != null && component.avg_binding_auc < 0.05;
+  if (reasonFilter === 'high_grad') return component.grad_norm != null && component.grad_norm > 3000;
+  if (reasonFilter === 'slow_fwd') return component.fwd_us != null && component.fwd_us > 1000;
+  if (reasonFilter === 'runtime_excluded') return Number(component.n_excluded || 0) > 0;
+  return true;
+}
+
+function componentValLossTone(component) {
+  const val = Number(component.avg_validation_loss_ratio);
+  const train = Number(component.avg_loss_ratio);
+  if (!Number.isFinite(val)) return 'var(--text-muted)';
+  if (val >= 0.68 || (Number.isFinite(train) && val > train * 1.15)) return STATUS_COLORS.degraded;
+  return 'var(--text-primary)';
+}
+
+function stickyCellStyle(col, extra = {}) {
+  if (!col?.sticky) return extra;
+  return {
+    ...extra,
+    position: 'sticky',
+    left: col.left,
+    minWidth: col.width,
+    maxWidth: col.width,
+    width: col.width,
+    background: 'var(--bg-primary)',
+    zIndex: extra.zIndex || 2,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    boxShadow: col.key === 'op' ? '1px 0 0 var(--border)' : undefined,
+  };
+}
+
 // ─── Component Health Grid ───
-function ComponentGrid({ components, filter, searchTerm, sourceFilter }) {
+function ComponentGrid({ components, filter, searchTerm, sourceFilter, reasonFilter, sortPreset }) {
   // Pre-filter rows before passing to the hook (custom filtering not suited to filterRowsByQuery)
   const preFiltered = useMemo(() => {
     let list = components || [];
@@ -96,14 +185,15 @@ function ComponentGrid({ components, filter, searchTerm, sourceFilter }) {
     });
     if (filter !== 'all') list = list.filter(c => c.status === filter);
     if (sourceFilter !== 'all') list = list.filter(c => c.data_source === sourceFilter);
+    if (reasonFilter !== 'all') list = list.filter(c => componentMatchesReason(c, reasonFilter));
     if (searchTerm) {
       const q = searchTerm.toLowerCase();
       list = list.filter(c => c.op.toLowerCase().includes(q));
     }
     return list;
-  }, [components, filter, searchTerm, sourceFilter]);
+  }, [components, filter, reasonFilter, searchTerm, sourceFilter]);
 
-  const { sortKey, sortDesc, sortedRows: filtered, handleSort } = useInteractiveTable({
+  const { sortKey, sortDesc, setSortKey, setSortDesc, sortedRows: filtered, handleSort } = useInteractiveTable({
     rows: preFiltered,
     filterFields: [],
     initialSortKey: 'n_used',
@@ -112,20 +202,68 @@ function ComponentGrid({ components, filter, searchTerm, sourceFilter }) {
     getInitialSortDesc: getComponentInitialSortDesc,
   });
 
-  if (filtered.length === 0) {
-    return <p className="ux-state ux-state-empty">No components match the current filter.</p>;
-  }
+  useEffect(() => {
+    const preset = SORT_PRESETS.find(item => item.key === sortPreset);
+    if (!preset) return;
+    setSortKey(preset.sortKey);
+    setSortDesc(preset.desc);
+  }, [setSortDesc, setSortKey, sortPreset]);
+
+  const uniqueCount = useMemo(() => {
+    const seen = new Set();
+    for (const component of components || []) {
+      if (component?.op) seen.add(component.op);
+    }
+    return seen.size;
+  }, [components]);
 
   return (
+    <>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, marginBottom: 8, fontSize: 11, color: 'var(--text-muted)' }}>
+        <span>{filtered.length === 0 ? 'No matching ops' : `${filtered.length} of ${uniqueCount} ops`}</span>
+        <span>Sorted by {SORT_PRESETS.find(item => item.key === sortPreset)?.label || sortKey}</span>
+      </div>
+      {filtered.length === 0 ? (
+        <p className="ux-state ux-state-empty">No components match the current filter.</p>
+      ) : (
     <div style={{ overflowX: 'auto', maxHeight: 600, overflowY: 'auto' }}>
-      <table className="data-table" style={{ fontSize: 12 }}>
+      <table className="data-table" style={{ fontSize: 12, borderCollapse: 'separate', borderSpacing: 0, minWidth: 1340 }}>
         <thead style={{ position: 'sticky', top: 0, zIndex: 1, background: 'var(--bg-primary)' }}>
+          <tr>
+            {COLUMN_GROUPS.map(group => (
+              <th
+                key={group.label}
+                colSpan={group.span}
+                style={{
+                  textAlign: 'center',
+                  fontSize: 10,
+                  color: 'var(--text-muted)',
+                  textTransform: 'uppercase',
+                  letterSpacing: 0,
+                  background: 'var(--bg-primary)',
+                  position: 'sticky',
+                  top: 0,
+                  zIndex: 3,
+                }}
+              >
+                {group.label}
+              </th>
+            ))}
+          </tr>
           <tr>
             {SORT_COLUMNS.map(col => (
               <th
                 key={col.key}
+                title={col.tooltip}
                 onClick={() => handleSort(col.key)}
-                style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap', background: 'var(--bg-primary)' }}
+                style={stickyCellStyle(col, {
+                  cursor: 'pointer',
+                  userSelect: 'none',
+                  whiteSpace: 'nowrap',
+                  background: 'var(--bg-primary)',
+                  top: 34,
+                  zIndex: col.sticky ? 5 : 1,
+                })}
               >
                 {col.label}
                 <SortIndicator active={sortKey === col.key} desc={sortDesc} />
@@ -138,14 +276,23 @@ function ComponentGrid({ components, filter, searchTerm, sourceFilter }) {
             <tr key={c.op} style={{
               background: c.status === 'broken' ? '#ef444408' : c.status === 'degraded' ? '#eab30808' : undefined,
             }}>
-              <td>
+              <td style={stickyCellStyle(SORT_COLUMNS[0], {
+                background: c.status === 'broken' ? '#18161a' : c.status === 'degraded' ? '#1b1a15' : 'var(--bg-secondary)',
+                zIndex: 3,
+              })}>
                 <span style={{
                   display: 'inline-block', width: 8, height: 8, borderRadius: '50%',
                   background: STATUS_COLORS[c.status],
                   boxShadow: c.status !== 'healthy' ? `0 0 4px ${STATUS_COLORS[c.status]}66` : 'none',
                 }} />
               </td>
-              <td style={{ fontFamily: 'monospace', fontWeight: c.status !== 'healthy' ? 600 : 400 }}>
+              <td style={stickyCellStyle(SORT_COLUMNS[1], {
+                fontFamily: 'monospace',
+                fontWeight: c.status !== 'healthy' ? 600 : 400,
+                background: c.status === 'broken' ? '#18161a' : c.status === 'degraded' ? '#1b1a15' : 'var(--bg-secondary)',
+                zIndex: 3,
+                whiteSpace: 'nowrap',
+              })}>
                 {c.op}
                 {c.data_source && (
                   <span style={{
@@ -166,10 +313,26 @@ function ComponentGrid({ components, filter, searchTerm, sourceFilter }) {
               </td>
               <td style={{
                 textAlign: 'right',
+                color: c.s05_rate !== null && c.s05_rate !== undefined ? (c.s05_rate < 0.3 ? STATUS_COLORS.broken : c.s05_rate < 0.6 ? STATUS_COLORS.degraded : 'var(--text-primary)') : 'var(--text-muted)',
+              }}>
+                {c.s05_rate !== null && c.s05_rate !== undefined ? `${(c.s05_rate * 100).toFixed(0)}%` : '-'}
+              </td>
+              <td style={{
+                textAlign: 'right',
                 color: c.s1_rate !== null ? (c.s1_rate < 0.05 ? STATUS_COLORS.broken : c.s1_rate < 0.15 ? STATUS_COLORS.degraded : 'var(--text-primary)') : 'var(--text-muted)',
               }}>
                 {c.s1_rate !== null ? `${(c.s1_rate * 100).toFixed(1)}%` : '-'}
               </td>
+              <td style={{ textAlign: 'right' }}>{fmtLoss(c.avg_loss_ratio)}</td>
+              <td
+                title={Number.isFinite(Number(c.avg_validation_loss_ratio)) && Number.isFinite(Number(c.avg_loss_ratio)) ? `Gap ${(Number(c.avg_validation_loss_ratio) - Number(c.avg_loss_ratio)).toFixed(3)}` : undefined}
+                style={{ textAlign: 'right', color: componentValLossTone(c) }}
+              >
+                {fmtLoss(c.avg_validation_loss_ratio)}
+              </td>
+              <td style={{ textAlign: 'right' }}>{metricText(c.avg_induction_auc)}</td>
+              <td style={{ textAlign: 'right' }}>{metricText(c.avg_binding_auc)}</td>
+              <td style={{ textAlign: 'right' }}>{metricText(c.avg_hellaswag_acc)}</td>
               <td style={{
                 textAlign: 'right', fontFamily: 'monospace', fontSize: 11,
                 color: c.grad_norm !== null ? (c.grad_norm > 50000 ? STATUS_COLORS.broken : c.grad_norm > 3000 ? STATUS_COLORS.degraded : 'var(--text-muted)') : 'var(--text-muted)',
@@ -180,13 +343,15 @@ function ComponentGrid({ components, filter, searchTerm, sourceFilter }) {
                 {c.fwd_us != null ? c.fwd_us.toFixed(1) : '-'}
               </td>
               <td style={{ fontSize: 11, color: 'var(--text-muted)', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {c.reasons && c.reasons.length > 0 ? c.reasons.join('; ') : ''}
+                {c.top_failure_reason || (c.reasons && c.reasons.length > 0 ? c.reasons.join('; ') : '')}
               </td>
             </tr>
           ))}
         </tbody>
       </table>
     </div>
+      )}
+    </>
   );
 }
 
@@ -713,12 +878,15 @@ export default function ComponentAnalyticsDashboard() {
   const [leaderboardData, setLeaderboardData] = useState({ daily: {}, recent_promotions: [] });
   const [insightData, setInsightData] = useState([]);
   const [filter, setFilter] = useState('all');
+  const [reasonFilter, setReasonFilter] = useState('all');
   const [sourceFilter, setSourceFilter] = useState('all');
   const [timeWindow, setTimeWindow] = useState('all');
+  const [sortPreset, setSortPreset] = useState('most_used');
   const [searchTerm, setSearchTerm] = useState('');
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const { slowPollTick } = useAriaData();
+  const hasComponentFilters = filter !== 'all' || reasonFilter !== 'all' || sourceFilter !== 'all' || timeWindow !== 'all' || sortPreset !== 'most_used' || searchTerm.trim() !== '';
 
   const fetchHealthOnly = useCallback(async () => {
     const windowParam = timeWindow !== 'all' ? `?window=${timeWindow}` : '';
@@ -809,6 +977,15 @@ export default function ComponentAnalyticsDashboard() {
             <option value="search+profiling">Search+Profiling</option>
             <option value="profiling_only">Profiling only</option>
           </select>
+          <select value={sortPreset} onChange={e => setSortPreset(e.target.value)} style={{
+            padding: '4px 8px', fontSize: 11, borderRadius: 6,
+            background: 'var(--bg-tertiary)', color: 'var(--text-primary)',
+            border: '1px solid var(--border-color)', cursor: 'pointer',
+          }}>
+            {SORT_PRESETS.map(preset => (
+              <option key={preset.key} value={preset.key}>{preset.label}</option>
+            ))}
+          </select>
           <button onClick={handleRefresh} disabled={refreshing} style={{
             padding: '4px 12px', fontSize: 12, borderRadius: 6,
             background: 'var(--bg-secondary)', color: 'var(--text-primary)',
@@ -848,7 +1025,45 @@ export default function ComponentAnalyticsDashboard() {
             ))}
           </div>
         </div>
-        <ComponentGrid components={health?.components} filter={filter} searchTerm={searchTerm} sourceFilter={sourceFilter} />
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', marginBottom: 10 }}>
+          {REASON_FILTERS.map(f => (
+            <button key={f.key} onClick={() => setReasonFilter(f.key)} style={{
+              padding: '3px 10px', fontSize: 11, borderRadius: 12, cursor: 'pointer',
+              background: reasonFilter === f.key ? 'var(--accent-blue)22' : 'var(--bg-tertiary)',
+              color: reasonFilter === f.key ? 'var(--accent-blue)' : 'var(--text-muted)',
+              border: `1px solid ${reasonFilter === f.key ? 'var(--accent-blue)' : 'var(--border-color)'}`,
+              fontWeight: reasonFilter === f.key ? 600 : 400,
+            }}>
+              {f.label}
+            </button>
+          ))}
+          <button
+            onClick={() => {
+              setFilter('all');
+              setReasonFilter('all');
+              setSourceFilter('all');
+              setTimeWindow('all');
+              setSortPreset('most_used');
+              setSearchTerm('');
+            }}
+            disabled={!hasComponentFilters}
+            style={{
+              padding: '3px 10px', fontSize: 11, borderRadius: 12,
+              background: 'var(--bg-secondary)', color: hasComponentFilters ? 'var(--text-primary)' : 'var(--text-muted)',
+              border: '1px solid var(--border-color)', cursor: hasComponentFilters ? 'pointer' : 'not-allowed',
+            }}
+          >
+            Reset
+          </button>
+        </div>
+        <ComponentGrid
+          components={health?.components}
+          filter={filter}
+          searchTerm={searchTerm}
+          sourceFilter={sourceFilter}
+          reasonFilter={reasonFilter}
+          sortPreset={sortPreset}
+        />
       </div>
 
       <OpPairHeatmap pairs={opPairs} />

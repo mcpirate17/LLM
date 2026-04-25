@@ -15,6 +15,7 @@ Usage:
 from __future__ import annotations
 
 import math
+import random
 import sqlite3
 import time
 from typing import Dict, Optional
@@ -148,7 +149,7 @@ class ThompsonScheduler:
         self._cache: Optional[Dict[str, float]] = None
         self._cache_expires: float = 0.0
         self._cache_ttl = cache_ttl
-        self._rng = __import__("random").Random(seed)
+        self._rng = random.Random(seed)
 
     def sample(self) -> Dict[str, float]:
         """Sample template weights from Beta posteriors.

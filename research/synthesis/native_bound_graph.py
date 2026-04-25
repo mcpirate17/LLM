@@ -8,13 +8,17 @@ import torch
 from ._json_compat import dumps_json
 from .compiler_op_utils import _get_stacked_params
 from .graph import ComputationGraph
+from .native_bound_common import (
+    rows_for_bound_tensor,
+    runtime_shape_key,
+    supports_bound_input,
+)
 from .native_support import (
     BOUND_BACKWARD_OPS,
     BOUND_BINARY_OPS,
     BOUND_PARAM_OPS,
     BOUND_POINTWISE_OPS,
     BOUND_STRUCTURAL_OPS,
-    BOUND_SUPPORTED_INPUT_RANKS,
     BOUND_SUPPORTED_OPS,
 )
 from ..scientist.native.dispatch import (
@@ -180,17 +184,13 @@ class BoundNativeSubgraphDispatcher:
         )
 
     def _runtime_shape_key(self, x: torch.Tensor) -> tuple[int, ...]:
-        return tuple(int(v) for v in x.shape)
+        return runtime_shape_key(x)
 
     def _rows(self, x: torch.Tensor) -> int:
-        if x.ndim == 3:
-            return int(x.shape[0] * x.shape[1])
-        if x.ndim == 2:
-            return int(x.shape[0])
-        raise ValueError(f"Unsupported bound native input rank: {x.ndim}")
+        return rows_for_bound_tensor(x, label="bound native input")
 
     def _supports_input(self, x: torch.Tensor) -> bool:
-        return x.ndim in BOUND_SUPPORTED_INPUT_RANKS
+        return supports_bound_input(x)
 
     def _seq(self, x: torch.Tensor) -> int:
         return int(x.shape[1]) if x.ndim == 3 else 1

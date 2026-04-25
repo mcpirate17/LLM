@@ -4024,7 +4024,7 @@ class TestAPI(unittest.TestCase):
                 ]
                 if session_events:
                     break
-                time.sleep(0.05)
+                time.sleep(0.005)
 
             self.assertTrue(session_events)
             self.assertIn("disk I/O error", session_events[-1].payload["error"])
@@ -4038,7 +4038,7 @@ class TestAPI(unittest.TestCase):
                 status_data = status_resp.get_json()
                 if not status_data["is_running"]:
                     break
-                time.sleep(0.05)
+                time.sleep(0.005)
 
             self.assertIsNotNone(status_data)
             self.assertFalse(status_data["is_running"])
@@ -4091,7 +4091,7 @@ class TestAPI(unittest.TestCase):
                 ]
                 if failed_events:
                     break
-                time.sleep(0.05)
+                time.sleep(0.005)
 
             self.assertTrue(failed_events)
             self.assertIn("disk I/O error", failed_events[-1].payload["error"])
@@ -4105,7 +4105,7 @@ class TestAPI(unittest.TestCase):
                 status_data = status_resp.get_json()
                 if not status_data["is_running"]:
                     break
-                time.sleep(0.05)
+                time.sleep(0.005)
 
             self.assertIsNotNone(status_data)
             self.assertFalse(status_data["is_running"])
@@ -4158,7 +4158,7 @@ class TestAPI(unittest.TestCase):
                 ]
                 if failed_events:
                     break
-                time.sleep(0.05)
+                time.sleep(0.005)
 
             self.assertTrue(failed_events)
             self.assertIn("disk I/O error", failed_events[-1].payload["error"])
@@ -4172,7 +4172,7 @@ class TestAPI(unittest.TestCase):
                 status_data = status_resp.get_json()
                 if not status_data["is_running"]:
                     break
-                time.sleep(0.05)
+                time.sleep(0.005)
 
             self.assertIsNotNone(status_data)
             self.assertFalse(status_data["is_running"])
@@ -4225,7 +4225,7 @@ class TestAPI(unittest.TestCase):
                 ]
                 if failed_events:
                     break
-                time.sleep(0.05)
+                time.sleep(0.005)
 
             self.assertTrue(failed_events)
             self.assertIn("disk I/O error", failed_events[-1].payload["error"])
@@ -4239,7 +4239,7 @@ class TestAPI(unittest.TestCase):
                 status_data = status_resp.get_json()
                 if not status_data["is_running"]:
                     break
-                time.sleep(0.05)
+                time.sleep(0.005)
 
             self.assertIsNotNone(status_data)
             self.assertFalse(status_data["is_running"])

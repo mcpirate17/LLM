@@ -104,6 +104,17 @@ def _sparse_density_sampled(mask: torch.Tensor, module: nn.Module) -> float:
     return getattr(module, "_sparse_density_cached", 1.0)
 
 
+def _telemetry_scalar(value, *, reduce: str = "sum") -> float:
+    if isinstance(value, torch.Tensor):
+        if value.numel() == 0:
+            return 0.0
+        data = value.detach()
+        if reduce == "mean":
+            return float(data.float().mean().item())
+        return float(data.sum().item())
+    return float(value)
+
+
 def _record_routing_telemetry(
     module: nn.Module,
     n_experts: int,
@@ -212,23 +223,29 @@ def _record_routing_telemetry(
 
     sparse_span_count = extras.get("sparse_span_count")
     if sparse_span_count is not None:
-        telemetry["sparse_span_count"] += int(sparse_span_count)
+        telemetry["sparse_span_count"] += int(_telemetry_scalar(sparse_span_count))
     sparse_span_width = extras.get("sparse_span_width")
     if sparse_span_width is not None:
-        telemetry["sparse_span_width_sum"] += float(sparse_span_width)
+        telemetry["sparse_span_width_sum"] += float(
+            _telemetry_scalar(sparse_span_width)
+        )
         telemetry["sparse_span_width_count"] += 1
     sparse_span_coverage_tokens = extras.get("sparse_span_coverage_tokens")
     if sparse_span_coverage_tokens is not None:
-        telemetry["sparse_span_coverage_tokens"] += int(sparse_span_coverage_tokens)
+        telemetry["sparse_span_coverage_tokens"] += int(
+            _telemetry_scalar(sparse_span_coverage_tokens)
+        )
     default_path_count = extras.get("default_path_count")
     if default_path_count is not None:
-        telemetry["default_path_count"] += int(default_path_count)
+        telemetry["default_path_count"] += int(_telemetry_scalar(default_path_count))
     routed_token_count = extras.get("routed_token_count")
     if routed_token_count is not None:
-        telemetry["routed_token_count"] += int(routed_token_count)
+        telemetry["routed_token_count"] += int(_telemetry_scalar(routed_token_count))
     route_strength = extras.get("route_strength")
     if route_strength is not None:
-        telemetry["route_strength_sum"] += float(route_strength)
+        telemetry["route_strength_sum"] += float(
+            _telemetry_scalar(route_strength, reduce="mean")
+        )
         telemetry["route_strength_count"] += 1
     branch_weights = extras.get("branch_weights")
     if isinstance(branch_weights, torch.Tensor):
@@ -243,16 +260,24 @@ def _record_routing_telemetry(
             telemetry["branch_weight_count"] += 1
     dominance = extras.get("branch_dominance")
     if dominance is not None:
-        telemetry["branch_dominance_sum"] += float(dominance)
+        telemetry["branch_dominance_sum"] += float(
+            _telemetry_scalar(dominance, reduce="mean")
+        )
     routed_share = extras.get("routed_branch_share")
     if routed_share is not None:
-        telemetry["routed_branch_share_sum"] += float(routed_share)
+        telemetry["routed_branch_share_sum"] += float(
+            _telemetry_scalar(routed_share, reduce="mean")
+        )
     medium_share = extras.get("medium_branch_share")
     if medium_share is not None:
-        telemetry["medium_branch_share_sum"] += float(medium_share)
+        telemetry["medium_branch_share_sum"] += float(
+            _telemetry_scalar(medium_share, reduce="mean")
+        )
     hard_share = extras.get("hard_branch_share")
     if hard_share is not None:
-        telemetry["hard_branch_share_sum"] += float(hard_share)
+        telemetry["hard_branch_share_sum"] += float(
+            _telemetry_scalar(hard_share, reduce="mean")
+        )
     for key in (
         "routing_mode",
         "gate_type",
@@ -381,6 +406,17 @@ def _c16(x):
         and x.dim() >= 1
         and x.numel() > 0
     )
+
+
+def _t(x):
+    """Check if tensor is eligible for Triton CUDA kernels.
+
+    Triton kernels write into freshly-allocated output tensors and bypass
+    autograd's tape, so skip them whenever the input requires gradients
+    (sensitivity probes, second-order metrics) — the pure-PyTorch fallback
+    in each op preserves the autograd graph.
+    """
+    return HAS_KERNELS and x.is_cuda and not x.requires_grad
 
 
 def _get_stacked_params(

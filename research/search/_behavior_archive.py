@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 import random as _random_module
 from heapq import nlargest
-from typing import List, Optional, Tuple
+from typing import Iterable, List, Optional, Tuple
 
 import numpy as np
 
@@ -20,10 +20,25 @@ class BehaviorArchive:
 
     _INITIAL_CAPACITY = 256
     _FEATURE_DIM = 16
+    _MAX_BATCH_DISTANCE_ELEMENTS = 1_000_000
+    __slots__ = (
+        "max_size",
+        "_graph_hashes",
+        "_hash_to_index",
+        "_individuals",
+        "_feature_buf",
+        "_capacity",
+        "_size",
+        "_total_seen",
+        "_rng",
+        "_density_cache",
+        "_exploit_order_cache",
+    )
 
     def __init__(self, max_size: int = 200):
         self.max_size = max_size
         self._graph_hashes: List[str] = []
+        self._hash_to_index: dict[str, int] = {}
         self._individuals: List[Optional[Individual]] = []
         self._feature_buf: np.ndarray = np.empty(
             (self._INITIAL_CAPACITY, self._FEATURE_DIM), dtype=np.float32
@@ -73,16 +88,27 @@ class BehaviorArchive:
         vector = _behavior_array(behavior)
         if vector is None:
             return
+
+        existing_idx = self._hash_to_index.get(graph_hash)
+        if existing_idx is not None:
+            self._individuals[existing_idx] = individual
+            self._replace_in_cache(existing_idx, vector)
+            return
+
         self._total_seen += 1
         if self._size < self.max_size:
             self._graph_hashes.append(graph_hash)
+            self._hash_to_index[graph_hash] = self._size
             self._individuals.append(individual)
             self._append_to_cache(vector)
             return
 
         j = self._rng.randint(0, self._total_seen - 1)
         if j < self.max_size:
+            old_hash = self._graph_hashes[j]
+            self._hash_to_index.pop(old_hash, None)
             self._graph_hashes[j] = graph_hash
+            self._hash_to_index[graph_hash] = j
             self._individuals[j] = individual
             self._replace_in_cache(j, vector)
 
@@ -109,6 +135,45 @@ class BehaviorArchive:
             np.partition(distances, k - 1)[:k] if len(distances) > k else distances
         )
         return float(np.mean(k_nearest))
+
+    def novelty_of_many(
+        self, behaviors: Iterable[BehavioralFingerprint], k: int = 15
+    ) -> List[float | None]:
+        targets = _behavior_matrix(behaviors)
+        if targets is None:
+            return []
+
+        valid_mask = ~np.isnan(targets[:, 0])
+        results: List[float | None] = [None] * int(targets.shape[0])
+        if not np.any(valid_mask):
+            return results
+
+        fm = self._feature_matrix
+        valid_indices = np.where(valid_mask)[0]
+        if fm is None or fm.shape[0] == 0:
+            for idx in valid_indices:
+                results[int(idx)] = 1.0
+            return results
+
+        used_k = min(max(int(k), 1), int(fm.shape[0]))
+        max_rows = max(
+            1,
+            self._MAX_BATCH_DISTANCE_ELEMENTS
+            // max(1, int(fm.shape[0]) * self._FEATURE_DIM),
+        )
+        for start in range(0, int(valid_indices.size), max_rows):
+            chunk_indices = valid_indices[start : start + max_rows]
+            chunk = targets[chunk_indices]
+            diffs = chunk[:, np.newaxis, :] - fm[np.newaxis, :, :]
+            distances = np.sqrt(np.mean(np.square(diffs), axis=2))
+            if distances.shape[1] > used_k:
+                nearest = np.partition(distances, used_k - 1, axis=1)[:, :used_k]
+            else:
+                nearest = distances
+            means = np.mean(nearest, axis=1)
+            for idx, novelty in zip(chunk_indices, means, strict=True):
+                results[int(idx)] = float(novelty)
+        return results
 
     def update_individuals(self, population: List[Individual]) -> None:
         by_hash = {ind.fingerprint: ind for ind in population}
@@ -153,14 +218,22 @@ class BehaviorArchive:
 
         ordered = self._exploit_order_cache
         if ordered is None:
-            candidates: List[Tuple[float, int]] = []
+            scores = np.full(self._size, -np.inf, dtype=np.float32)
             for i, ind in enumerate(self._individuals[: self._size]):
                 if ind is None:
                     continue
-                candidates.append((ind.fitness - 0.1 * neighbor_counts[i], i))
-            ordered = [idx for _, idx in sorted(candidates, reverse=True)]
+                scores[i] = float(ind.fitness) - 0.1 * float(neighbor_counts[i])
+            ordered = np.argsort(scores)[::-1].tolist()
             self._exploit_order_cache = ordered
-        return [self._individuals[idx] for idx in ordered[:k]]
+        targets: List[Individual] = []
+        for idx in ordered:
+            ind = self._individuals[idx]
+            if ind is None:
+                continue
+            targets.append(ind)
+            if len(targets) >= k:
+                break
+        return targets
 
 
 def _behavior_distance(a: BehavioralFingerprint, b: BehavioralFingerprint) -> float:
@@ -194,6 +267,22 @@ def _behavior_array(fp: BehavioralFingerprint) -> np.ndarray | None:
     return out
 
 
+def _behavior_matrix(
+    fps: Iterable[BehavioralFingerprint],
+) -> np.ndarray | None:
+    rows = list(fps)
+    if not rows:
+        return None
+    out = np.empty((len(rows), BehaviorArchive._FEATURE_DIM), dtype=np.float32)
+    for idx, fp in enumerate(rows):
+        vector = _behavior_array(fp)
+        if vector is None:
+            out[idx, :] = np.nan
+        else:
+            out[idx, :] = vector
+    return out
+
+
 def _all_behavior_features_missing(fp: BehavioralFingerprint) -> bool:
     return (
         fp.interaction_locality is None
@@ -216,34 +305,10 @@ def _all_behavior_features_missing(fp: BehavioralFingerprint) -> bool:
 
 
 def _behavior_vector(fp: BehavioralFingerprint) -> List[float] | None:
-    raw_features = [
-        fp.interaction_locality,
-        fp.interaction_sparsity,
-        fp.interaction_symmetry,
-        fp.interaction_hierarchy,
-        fp.isotropy,
-        fp.rank_ratio,
-        fp.sensitivity_uniformity,
-        fp.cka_vs_transformer,
-        fp.cka_vs_ssm,
-        fp.cka_vs_conv,
-        fp.jacobian_spectral_norm,
-        fp.jacobian_effective_rank,
-        fp.routing_selectivity,
-        fp.routing_compute_ratio,
-        fp.hierarchy_fitness,
-        fp.gromov_delta,
-    ]
-    if all(v is None for v in raw_features):
+    vector = _behavior_array(fp)
+    if vector is None:
         return None
-    sanitized = [_sanitize_unit_feature(v) for v in raw_features[:10]]
-    sanitized.append(_sanitize_scaled_feature(raw_features[10], scale=5.0))
-    sanitized.append(_sanitize_scaled_feature(raw_features[11], scale=16.0))
-    sanitized.append(_sanitize_unit_feature(raw_features[12]))
-    sanitized.append(_sanitize_scaled_feature(raw_features[13], scale=2.0))
-    sanitized.append(_sanitize_unit_feature(raw_features[14]))
-    sanitized.append(_sanitize_scaled_feature(raw_features[15], scale=0.3))
-    return sanitized
+    return vector.tolist()
 
 
 def _sanitize_unit_feature(value: float | None) -> float:

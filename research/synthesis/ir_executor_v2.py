@@ -43,6 +43,7 @@ class IRExecutorV2(nn.Module):
         self._exec_in1_indices = ()
         self._exec_in2_indices = ()
         self._exec_ops = ()
+        self._node_outputs_buf = []
         if self._has_bound_params:
             self._ensure_plan()
         native_cfg = ir_executor_v2_native.configure_ir_executor_v2_native(
@@ -97,6 +98,7 @@ class IRExecutorV2(nn.Module):
             self._exec_in1_indices = exec_plan.exec_in1_indices
             self._exec_in2_indices = exec_plan.exec_in2_indices
             self._exec_ops = exec_plan.exec_ops
+            self._node_outputs_buf = [None] * self._n_nodes
         return plan
 
     def _apply(self, fn):
@@ -136,6 +138,7 @@ class IRExecutorV2(nn.Module):
             input_node_indices=self._input_node_indices,
             x=x,
             capture_intermediates=capture_intermediates,
+            node_outputs_buf=None if capture_intermediates else self._node_outputs_buf,
         )
         execute_plan_loop(
             counts=counts,
@@ -150,6 +153,7 @@ class IRExecutorV2(nn.Module):
         result = node_outputs[plan.output_node_idx]
         if captured is not None:
             return result, captured
+        node_outputs[plan.output_node_idx] = None
         return result
 
     @property

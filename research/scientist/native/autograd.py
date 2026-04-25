@@ -16,6 +16,7 @@ from .dispatch import (
     dispatch_graph_native_cached,
     dispatch_op_native,
 )
+from ._dispatch_constants import _NATIVE_OP_ALIASES, _STANDALONE_NATIVE_DISABLED_OPS
 from .single_op_bound import dispatch_single_op_bound_native
 from .tensor_bridge import supports_host_array_bridge, to_device_tensor
 
@@ -488,6 +489,14 @@ class NativeForwardWrapper:
         the caller should use the original PyTorch implementation.
         """
         if op_name in self.supported_ops or op_name in _PER_OP_BRIDGE_ONLY_OPS:
+            native_op_name = _NATIVE_OP_ALIASES.get(op_name, op_name)
+            if (
+                op_name in _STANDALONE_NATIVE_DISABLED_OPS
+                or native_op_name in _STANDALONE_NATIVE_DISABLED_OPS
+            ):
+                self._fallback_count += 1
+                self._last_fallback_reason = "standalone_native_disabled_slow_backend"
+                return None
             try:
                 dispatch_tensors, dispatch_kwargs = self._module_dispatch_args(
                     op_name, module, tensors
@@ -497,11 +506,6 @@ class NativeForwardWrapper:
                 ):
                     self._last_fallback_reason = "host_array_bridge_unsupported_device"
                     return None
-                native_op_name = (
-                    "linear"
-                    if op_name in {"linear_proj", "linear_proj_down", "linear_proj_up"}
-                    else op_name
-                )
                 if kwargs:
                     dispatch_kwargs = {**dispatch_kwargs, **kwargs}
                 # Check if any torch input requires grad → use autograd path

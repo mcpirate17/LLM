@@ -1,5 +1,12 @@
 import sqlite3
 
+import pytest
+
+pytest.importorskip(
+    "tasks.induction_native_probe.fast_induction_probe",
+    reason="native induction probe task package is unavailable",
+)
+
 from research.scientist.notebook import LabNotebook
 from research.tools.backpopulate_screening_metrics import _target_post_fields
 from research.tools.backfill_binding import (

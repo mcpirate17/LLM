@@ -155,7 +155,36 @@ def pick_template_index_native(
             )
             return int(index), bool(explored)
         except Exception:
-            pass
+            return _pick_template_index_native_mapping(
+                rust,
+                handle,
+                override_weights,
+                allowed_names,
+                exploration_budget=exploration_budget,
+                exploration_draw=exploration_draw,
+                selection_draw=selection_draw,
+            )
+    return _pick_template_index_native_mapping(
+        rust,
+        handle,
+        override_weights,
+        allowed_names,
+        exploration_budget=exploration_budget,
+        exploration_draw=exploration_draw,
+        selection_draw=selection_draw,
+    )
+
+
+def _pick_template_index_native_mapping(
+    rust,
+    handle,
+    override_weights: Mapping[str, float] | None,
+    allowed_names: Iterable[str] | None,
+    *,
+    exploration_budget: float,
+    exploration_draw: float,
+    selection_draw: float,
+) -> tuple[int, bool] | None:
     try:
         index, explored = rust.select_template_index_compiled(
             handle,

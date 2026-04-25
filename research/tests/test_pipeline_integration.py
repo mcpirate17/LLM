@@ -1511,7 +1511,11 @@ class TestPipelineEndToEnd(unittest.TestCase):
         t0 = time.time()
         timeout_s = 180
         while runner.is_running and (time.time() - t0) < timeout_s:
-            time.sleep(0.2)
+            thread = getattr(runner, "_thread", None)
+            if thread is not None:
+                thread.join(timeout=0.05)
+            else:
+                time.sleep(0.05)
 
         self.assertFalse(runner.is_running, "continuous run timed out")
         self.assertIn(runner.progress.status, {"completed", "stopped"})
