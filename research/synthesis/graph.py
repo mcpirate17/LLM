@@ -26,8 +26,8 @@ from .graph_ir_builder import (
 from .native_analysis import analyze_ir
 from .native_topology import compute_topological_order
 from .primitives import (
+    OP_NAME_ALIASES,
     PrimitiveOp,
-    canonicalize_op_name,
     get_primitive,
     PRIMITIVE_REGISTRY,
 )
@@ -340,7 +340,8 @@ class ComputationGraph:
 
         Raises ValueError if shapes don't compose.
         """
-        canonical_name = canonicalize_op_name(op_name)
+        alias = OP_NAME_ALIASES.get(op_name)
+        canonical_name = op_name if alias is None else alias
         op = PRIMITIVE_REGISTRY.get(canonical_name)
         if op is None:
             if canonical_name != "input":
@@ -400,7 +401,7 @@ class ComputationGraph:
             output_shape=output_shape,
             depth=depth,
             config=config_dict,
-            _config_repr=_canonical_config_repr(config_dict),
+            _config_repr=_canonical_config_repr(config_dict) if config_dict else "",
         )
         self.nodes[node_id] = node
         self._ir_version += 1
@@ -420,7 +421,7 @@ class ComputationGraph:
         rule = op.shape_rule
 
         if rule in _UNCHANGED_UNARY_SHAPE_RULES:
-            return _shape_info(s0.dim, s0.seq)
+            return s0
 
         if rule == "binary_broadcast":
             if input_count != 2 or s1 is None:
@@ -433,10 +434,11 @@ class ComputationGraph:
                 raise ValueError(
                     f"Binary op {op.name}: incompatible seq {s0.seq} vs {s1.seq}"
                 )
-            return _shape_info(s0.dim if s0.dim >= s1.dim else s1.dim, s0.seq)
+            return s0 if s0.dim >= s1.dim else s1
 
         if rule == "linear":
-            return _shape_info(config.get("out_dim", s0.dim), s0.seq)
+            out_dim = config.get("out_dim", s0.dim)
+            return s0 if out_dim == s0.dim else _shape_info(out_dim, s0.seq)
 
         if rule == "reduce_last":
             return _shape_info(1, s0.seq)
@@ -447,7 +449,7 @@ class ComputationGraph:
         if rule == "matmul":
             if input_count != 2 or s1 is None:
                 raise ValueError("Matmul needs 2 inputs")
-            return _shape_info(s0.dim if s0.dim == s1.dim else s1.dim, s0.seq)
+            return s0 if s0.dim == s1.dim else _shape_info(s1.dim, s0.seq)
 
         if rule == "split":
             if op.name == "split2":

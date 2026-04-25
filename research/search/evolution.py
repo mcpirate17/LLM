@@ -18,7 +18,14 @@ from typing import Callable, Dict, List, Optional, Tuple
 import numpy as np
 
 from ..synthesis.graph import ComputationGraph
-from ..synthesis.grammar import GrammarConfig, generate_layer_graph
+from ..synthesis.grammar import (
+    GrammarConfig,
+    generate_layer_graph,
+)
+from ..synthesis.generation_runtime import (
+    build_generation_runtime_context,
+    normalize_generation_config,
+)
 from ._mutation import (
     crossover_graphs as _mutation_crossover_graphs,
     local_mutate_graph as _local_mutate_graph,
@@ -94,12 +101,17 @@ def _generate_context_valid_graph(
     grammar: GrammarConfig,
     rng: random.Random,
     max_attempts: int = 4,
+    runtime_context=None,
 ) -> ComputationGraph:
     """Retry generation a few times under stricter context validation."""
     last_error: Exception | None = None
     for _ in range(max_attempts):
         try:
-            return generate_layer_graph(grammar, seed=rng.randint(0, 2**32))
+            return generate_layer_graph(
+                grammar,
+                seed=rng.randint(0, 2**32),
+                _runtime_context=runtime_context,
+            )
         except (ValueError, RuntimeError) as exc:
             last_error = exc
     if last_error is not None:
@@ -135,14 +147,39 @@ def evolutionary_search(
         config = EvolutionConfig()
 
     rng = random.Random(seed)
-    grammar = config.grammar_config or GrammarConfig()
+    grammar = normalize_generation_config(config.grammar_config or GrammarConfig())
+    base_runtime_context = build_generation_runtime_context(grammar)
+
+    def generate_context_valid_graph(
+        target_grammar: GrammarConfig,
+        target_rng: random.Random,
+        max_attempts: int = 4,
+    ) -> ComputationGraph:
+        if target_grammar is grammar:
+            return _generate_context_valid_graph(
+                target_grammar,
+                target_rng,
+                max_attempts=max_attempts,
+                runtime_context=base_runtime_context,
+            )
+        target_grammar = normalize_generation_config(target_grammar)
+        return _generate_context_valid_graph(
+            target_grammar,
+            target_rng,
+            max_attempts=max_attempts,
+            runtime_context=build_generation_runtime_context(target_grammar),
+        )
 
     # Initialize population
     population = []
     init_failures = 0
     for i in range(config.population_size):
         try:
-            graph = generate_layer_graph(grammar, seed=seed + i * 137)
+            graph = generate_layer_graph(
+                grammar,
+                seed=seed + i * 137,
+                _runtime_context=base_runtime_context,
+            )
             ind = Individual(graph=graph, generation=0)
             population.append(ind)
         except (ValueError, RuntimeError) as e:
@@ -177,6 +214,7 @@ def evolutionary_search(
         grammar=grammar,
         rng=rng,
         generation=0,
+        generate_context_valid_graph=generate_context_valid_graph,
     )
 
     # Evolve
@@ -258,7 +296,7 @@ def evolutionary_search(
                         gen + 1,
                         tournament_select=_tournament_select,
                         individual_cls=Individual,
-                        generate_context_valid_graph=_generate_context_valid_graph,
+                        generate_context_valid_graph=generate_context_valid_graph,
                     )
                 elif reproduction_mode == "mutation":
                     child = _spawn_mutation_individual(
@@ -270,14 +308,14 @@ def evolutionary_search(
                         local_mutation_fitness_threshold,
                         tournament_select=_tournament_select,
                         individual_cls=Individual,
-                        generate_context_valid_graph=_generate_context_valid_graph,
+                        generate_context_valid_graph=generate_context_valid_graph,
                     )
                 else:
                     child = _spawn_fresh_individual(
                         grammar,
                         rng,
                         gen + 1,
-                        generate_context_valid_graph=_generate_context_valid_graph,
+                        generate_context_valid_graph=generate_context_valid_graph,
                         individual_cls=Individual,
                     )
                 new_population.append(child)
@@ -289,7 +327,7 @@ def evolutionary_search(
                                 grammar,
                                 rng,
                                 gen + 1,
-                                generate_context_valid_graph=_generate_context_valid_graph,
+                                generate_context_valid_graph=generate_context_valid_graph,
                                 individual_cls=Individual,
                             )
                         )
@@ -320,6 +358,7 @@ def evolutionary_search(
             grammar=grammar,
             rng=rng,
             generation=gen + 1,
+            generate_context_valid_graph=generate_context_valid_graph,
         )
 
         if gen % 5 == 0 or gen == config.n_generations - 1:
@@ -422,6 +461,7 @@ def _enforce_population_diversity(
     grammar: GrammarConfig,
     rng: random.Random,
     generation: int,
+    generate_context_valid_graph=_generate_context_valid_graph,
 ) -> List[Individual]:
     """Reduce fingerprint duplicates by replacing clone overflow with fresh individuals.
     Uses vectorized fingerprint comparisons for speed.
@@ -469,7 +509,7 @@ def _enforce_population_diversity(
     ):
         attempts += 1
         try:
-            graph = _generate_context_valid_graph(grammar, rng)
+            graph = generate_context_valid_graph(grammar, rng)
             fp = graph.fingerprint()
             if fp in seen_fingerprints:
                 continue

@@ -4,7 +4,13 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from inspect import Parameter, signature
 from typing import List, Optional
+
+from .generation_runtime import (
+    build_generation_runtime_context,
+    normalize_generation_config,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -105,7 +111,33 @@ def _validate_candidate_batch(grammar, candidates: list, config) -> tuple[list, 
     return valid_graphs, rejected
 
 
-def _generate_unvalidated_candidate(grammar, config, seed: int):
+def _accepts_runtime_context(generate_layer_graph) -> bool:
+    target = getattr(generate_layer_graph, "side_effect", None)
+    if not callable(target):
+        target = generate_layer_graph
+    try:
+        params = signature(target).parameters
+    except (TypeError, ValueError):
+        return True
+    return "_runtime_context" in params or any(
+        param.kind is Parameter.VAR_KEYWORD for param in params.values()
+    )
+
+
+def _generate_unvalidated_candidate(
+    grammar,
+    config,
+    seed: int,
+    runtime_context,
+    accepts_runtime_context: bool,
+):
+    if accepts_runtime_context:
+        return grammar.generate_layer_graph(
+            config,
+            seed=seed,
+            validate=False,
+            _runtime_context=runtime_context,
+        )
     return grammar.generate_layer_graph(config, seed=seed, validate=False)
 
 
@@ -117,6 +149,8 @@ def _generate_candidate_batch(
     start_attempt: int,
     max_attempts: int,
     target_count: int,
+    runtime_context,
+    accepts_runtime_context: bool,
 ) -> tuple[list, int, int]:
     candidates = []
     attempts = 0
@@ -128,6 +162,8 @@ def _generate_candidate_batch(
                 grammar,
                 config,
                 base_seed + (start_attempt + attempts) * 137,
+                runtime_context,
+                accepts_runtime_context,
             )
             candidates.append(graph)
         except (ValueError, RuntimeError):
@@ -161,6 +197,8 @@ def _fill_unique_graphs(
     n: int,
     graphs: list,
     fingerprints: set,
+    runtime_context,
+    accepts_runtime_context: bool,
 ) -> tuple[int, int, int]:
     n_rejected_grammar = 0
     n_rejected_dedup = 0
@@ -172,6 +210,8 @@ def _fill_unique_graphs(
             start_attempt=attempts,
             max_attempts=max_attempts - attempts,
             target_count=_candidate_batch_size(n - len(graphs)),
+            runtime_context=runtime_context,
+            accepts_runtime_context=accepts_runtime_context,
         )
         attempts += attempted
         n_rejected_grammar += rejected
@@ -207,6 +247,9 @@ def batch_generate(
     if config is None:
         config = grammar.GrammarConfig()
     config = grammar._config_with_efficiency_prior(config, prior)
+    config = normalize_generation_config(config)
+    runtime_context = build_generation_runtime_context(config)
+    accepts_runtime_context = _accepts_runtime_context(grammar.generate_layer_graph)
 
     graphs: list = []
     fingerprints: set = set()
@@ -224,6 +267,8 @@ def batch_generate(
         n=n,
         graphs=graphs,
         fingerprints=fingerprints,
+        runtime_context=runtime_context,
+        accepts_runtime_context=accepts_runtime_context,
     )
     n_rejected_grammar += rejected_grammar
     n_rejected_dedup += rejected_dedup
@@ -242,6 +287,8 @@ def batch_generate(
             relaxed.template_exploration_budget * 100,
         )
         retry_start = attempts
+        relaxed = normalize_generation_config(relaxed)
+        relaxed_runtime_context = build_generation_runtime_context(relaxed)
         attempts, rejected_grammar, rejected_dedup = _fill_unique_graphs(
             grammar=grammar,
             config=relaxed,
@@ -251,6 +298,8 @@ def batch_generate(
             n=n,
             graphs=graphs,
             fingerprints=fingerprints,
+            runtime_context=relaxed_runtime_context,
+            accepts_runtime_context=accepts_runtime_context,
         )
         n_rejected_grammar += rejected_grammar
         n_rejected_dedup += rejected_dedup
@@ -277,19 +326,34 @@ def batch_generate(
 class AdaptiveGenerator:
     """Adaptive generator - delegates to motif-based generation."""
 
-    __slots__ = ("config", "prior", "model_dim", "max_params", "max_flops")
+    __slots__ = (
+        "config",
+        "prior",
+        "model_dim",
+        "max_params",
+        "max_flops",
+        "_generation_config",
+        "_runtime_context",
+    )
 
     def __init__(self, config, prior: Optional[object] = None):
+        from . import grammar
+
         self.config = config
         self.prior = prior
         self.model_dim = config.model_dim
         self.max_params = 4 * self.model_dim * self.model_dim * 12
         self.max_flops = 4 * (12 * self.model_dim * self.model_dim * 128)
+        generation_config = grammar._config_with_efficiency_prior(config, prior)
+        generation_config = normalize_generation_config(generation_config)
+        self._generation_config = generation_config
+        self._runtime_context = build_generation_runtime_context(generation_config)
 
     def generate(self, seed: Optional[int] = None):
         from . import grammar
 
         return grammar.generate_layer_graph(
-            grammar._config_with_efficiency_prior(self.config, self.prior),
+            self._generation_config,
             seed=seed,
+            _runtime_context=self._runtime_context,
         )

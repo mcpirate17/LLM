@@ -216,6 +216,25 @@ def test_routing_capable_templates_cache_populated():
     )
 
 
+def test_generation_runtime_context_cache_tracks_config_mutation():
+    """Direct single-graph callers may reuse generation state, but not after
+    the mutable config's generation-relevant fields change."""
+    from research.synthesis import generation_runtime as gr
+    from research.synthesis.grammar import GrammarConfig
+
+    gr._runtime_context_cache.clear()
+    config = GrammarConfig(use_db_weights=False, op_weights={"gelu": 1.0})
+
+    first = gr.runtime_context_for_config(config)
+    assert gr.runtime_context_for_config(config) is first
+
+    config.op_weights["gelu"] = 3.0
+    second = gr.runtime_context_for_config(config)
+
+    assert second is not first
+    assert second.effective_op_weights["gelu"] == 3.0
+
+
 # ── P1.7: motif lift floor ───────────────────────────────────────────
 
 

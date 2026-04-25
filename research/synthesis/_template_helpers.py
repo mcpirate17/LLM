@@ -455,11 +455,12 @@ def _pick_compatible_motif(
         wildcard_prob = graph.metadata.get("_wildcard_slot_prob", 0.0)
     is_wildcard = wildcard_prob > 0 and rng.random() < wildcard_prob
 
+    slot_key = _normalize_slot_key(_current_slot_key(graph))
+
     # Slot adaptations: learned class expansions from DB (multi-class only)
     if len(classes) > 1:
         slot_adaptations = graph.metadata.get("_slot_adaptations")
         if slot_adaptations:
-            slot_key = _normalize_slot_key(_current_slot_key(graph))
             extra_classes = slot_adaptations.get(slot_key, ())
             if extra_classes:
                 classes = tuple(set(classes) | set(extra_classes))
@@ -471,7 +472,6 @@ def _pick_compatible_motif(
         if not candidates and wildcard_prob > 0:
             candidates = _compatible_from_classes(graph, node_id, _ALL_CLASSES)
             is_wildcard = True
-    slot_key = _normalize_slot_key(_current_slot_key(graph))
     candidates = _filter_slot_candidates(graph, candidates, slot_key=slot_key)
 
     # Graph-level wildcard breadcrumb. Per-slot `wildcard` is already on

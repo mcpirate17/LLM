@@ -28,17 +28,10 @@ logger = logging.getLogger(__name__)
 from research.defaults import MODEL_DIM
 from .graph import ComputationGraph, OpNode
 from .grammar_support import (
-    DBOpWeightCache,
-    DBTemplateWeightCache,
-    EFFICIENCY_TEMPLATES,
     EfficiencyPrior,
-    OP_TO_TEMPLATE,
     ROUTING_COMPRESSION_MOE_OPS,
-    SlotAdaptationCache,
-    blend_template_weights_with_db,
     check_graph_space_consistency,
     check_shape_compat,
-    compute_motif_weights_from_op_weights,
 )
 from .grammar_defaults import default_category_weights
 from .primitives import (
@@ -58,6 +51,11 @@ from .native_template_selection import (
 )
 from ._routing_capable_manifest import (
     ROUTING_CAPABLE_TEMPLATE_NAMES as _ROUTING_CAPABLE_TEMPLATE_NAMES,
+)
+from .generation_runtime import (
+    GenerationRuntimeContext as _GenerationRuntimeContext,
+    normalize_generation_config as _normalize_generation_config,
+    runtime_context_for_config as _runtime_context_for_config,
 )
 
 
@@ -481,11 +479,6 @@ class GrammarConfig:
 
 
 # ── DB-backed template weight loader ────────────────────────────────
-
-
-_db_weight_cache = DBTemplateWeightCache(ttl=60.0)
-_db_op_weight_cache = DBOpWeightCache(ttl=60.0)
-_slot_adaptation_cache = SlotAdaptationCache(ttl=120.0)
 _ROUTING_COMPRESSION_MOE_OPS = ROUTING_COMPRESSION_MOE_OPS
 
 
@@ -587,6 +580,7 @@ def generate_layer_graph(
     seed: Optional[int] = None,
     *,
     validate: bool = True,
+    _runtime_context: _GenerationRuntimeContext | None = None,
 ) -> ComputationGraph:
     """Generate a computation graph for a single layer.
 
@@ -599,20 +593,8 @@ def generate_layer_graph(
     if config is None:
         config = GrammarConfig()
 
-    # A single positive template weight is not a soft preference; it's a
-    # targeted generation request. Treat it as forced_template so routing
-    # rescue and fallback selection cannot silently swap in unrelated graphs.
-    if not config.forced_template and config.template_weights:
-        positive_templates = [
-            name for name, weight in config.template_weights.items() if weight > 0.0
-        ]
-        if len(positive_templates) == 1:
-            config = replace(config, forced_template=positive_templates[0])
-
-    # Forced template: default to 1 block (stacking the same template 3x
-    # usually exceeds depth/ops limits and fails validation).
-    if config.forced_template and config.composition_depth > 1:
-        config = replace(config, composition_depth=1)
+    config = _normalize_generation_config(config)
+    runtime = _runtime_context or _runtime_context_for_config(config)
 
     rng = random.Random(seed)
     graph = ComputationGraph(config.model_dim)
@@ -624,102 +606,26 @@ def generate_layer_graph(
     else:
         n_templates = rng.choices([1, 2, 3], weights=[3, 5, 2], k=1)[0]
 
-    # Template and motif weights flow directly into template/motif pickers.
-    # Non-empty dicts carry research-signal priors from execution_screening.
-    # If config has explicit weights, use them. If use_db_weights, try DB.
-    db_tpl_weights = _db_weight_cache.get() if config.use_db_weights else None
-    if config.template_weights:
-        tpl_weights = blend_template_weights_with_db(
-            dict(config.template_weights),
-            db_tpl_weights,
-        )
-    elif db_tpl_weights:
-        tpl_weights = db_tpl_weights  # TTL-cached, returns None if unavailable
-    else:
-        tpl_weights = None
-    motif_weights = dict(config.motif_weights) if config.motif_weights else {}
-    effective_op_weights = dict(config.op_weights) if config.op_weights else {}
-    if config.use_db_weights:
-        db_op_weights = _db_op_weight_cache.get()
-        if db_op_weights:
-            for op_name, weight in db_op_weights.items():
-                effective_op_weights.setdefault(op_name, weight)
-
-    # Bridge op_weights → motif_weights: geometric mean of constituent op weights.
-    # Always applied (not just boosts) so penalties propagate through motifs.
-    if effective_op_weights or config.exploration_targets:
-        from .motifs import ALL_MOTIFS
-
-    if effective_op_weights:
-        cached_factors = compute_motif_weights_from_op_weights(effective_op_weights)
-        for motif_name, (factor, default_lift) in cached_factors.items():
-            current = motif_weights.get(motif_name, default_lift)
-            motif_weights[motif_name] = current * factor
-
-    # Boost motifs containing under-observed ops (exploration targets)
-    if config.exploration_targets:
-        for motif in ALL_MOTIFS:
-            motif_ops = {step.op_name for step in motif.steps}
-            if motif_ops & config.exploration_targets:
-                current = motif_weights.get(motif.name, motif.lift)
-                motif_weights[motif.name] = current * config.exploration_boost_factor
-
-        if tpl_weights is None:
-            from .templates import DEFAULT_TEMPLATE_WEIGHTS
-
-            tpl_weights = dict(DEFAULT_TEMPLATE_WEIGHTS)
-        for op_name in config.exploration_targets:
-            tpl_name = OP_TO_TEMPLATE.get(op_name)
-            if tpl_name and tpl_name in tpl_weights:
-                tpl_weights[tpl_name] *= config.exploration_boost_factor
-
-    motif_weights = motif_weights or None
     graph.metadata["context_rules_version"] = "low_s1_v1"
     if config.wildcard_slot_prob > 0:
         graph.metadata["_wildcard_slot_prob"] = config.wildcard_slot_prob
-    if config.slot_motif_weight_multipliers:
-        graph.metadata["_slot_motif_weight_multipliers"] = {
-            str(slot_key): {
-                str(name): float(weight) for name, weight in weights.items()
-            }
-            for slot_key, weights in config.slot_motif_weight_multipliers.items()
-            if weights
-        }
-    if config.slot_motif_denylist:
-        graph.metadata["_slot_motif_denylist"] = {
-            str(slot_key): tuple(sorted({str(name) for name in denied if str(name)}))
-            for slot_key, denied in config.slot_motif_denylist.items()
-            if denied
-        }
-    # Load learned slot class expansions from wildcard success data
-    if config.use_db_weights:
-        slot_adaptations = _slot_adaptation_cache.get()
-        if slot_adaptations:
-            graph.metadata["_slot_adaptations"] = slot_adaptations
-    if effective_op_weights:
-        graph.metadata["_op_weights"] = dict(effective_op_weights)
-
-    # High sparsity bias → force first template from efficiency pool
-    if config.structured_sparsity_bias > 0.5 and tpl_weights:
-        _first_tpl_weights = {
-            k: (v if k in EFFICIENCY_TEMPLATES else 0.0) for k, v in tpl_weights.items()
-        }
-        # Only use if at least one efficiency template has positive weight
-        if any(v > 0 for v in _first_tpl_weights.values()):
-            _use_efficiency_first = True
-        else:
-            _first_tpl_weights = None
-            _use_efficiency_first = False
-    else:
-        _first_tpl_weights = None
-        _use_efficiency_first = False
+    if runtime.slot_motif_weight_multipliers:
+        graph.metadata["_slot_motif_weight_multipliers"] = (
+            runtime.slot_motif_weight_multipliers
+        )
+    if runtime.slot_motif_denylist:
+        graph.metadata["_slot_motif_denylist"] = runtime.slot_motif_denylist
+    if runtime.slot_adaptations:
+        graph.metadata["_slot_adaptations"] = runtime.slot_adaptations
+    if runtime.effective_op_weights:
+        graph.metadata["_op_weights"] = runtime.effective_op_weights
 
     current = input_id
     for t_idx in range(n_templates):
         _iter_weights = (
-            _first_tpl_weights
-            if (t_idx == 0 and _use_efficiency_first)
-            else tpl_weights
+            runtime.first_tpl_weights
+            if (t_idx == 0 and runtime.use_efficiency_first)
+            else runtime.tpl_weights
         )
         _iter_allowed_names = None
 
@@ -737,6 +643,20 @@ def generate_layer_graph(
         # registry. An explicit zero weight does stick.
         if config.routing_mandatory and t_idx == 0 and not config.forced_template:
             _iter_allowed_names = _get_routing_capable_templates()
+
+        remaining_ops, remaining_depth = _template_budget_remaining(
+            graph, current, config
+        )
+        if remaining_ops <= 0 or remaining_depth <= 0:
+            break
+        if not config.forced_template:
+            _iter_allowed_names = _budget_allowed_template_names(
+                _iter_allowed_names,
+                remaining_ops=remaining_ops,
+                remaining_depth=remaining_depth,
+            )
+            if _iter_allowed_names == ():
+                break
 
         # Depth-aware template biasing: early blocks favor FFN/conv,
         # late blocks favor attention/SSM (per GPT-2 layer importance research).
@@ -759,10 +679,16 @@ def generate_layer_graph(
             rng,
             template_name=config.forced_template,
             template_weights=_iter_weights,
-            motif_weights=motif_weights,
-            op_weights=effective_op_weights or None,
+            motif_weights=runtime.motif_weights,
+            op_weights=runtime.effective_op_weights,
             exploration_budget=config.template_exploration_budget,
             allowed_template_names=_iter_allowed_names,
+        )
+        template_name = graph.metadata.get("templates_used", [None])[-1]
+        _record_template_cost(
+            template_name,
+            added_ops=graph._next_id - prev_next_id,
+            added_depth=graph.nodes[trial_current].depth - graph.nodes[current].depth,
         )
 
         # depth() returns 0 without a set output — point it at the trial tail
