@@ -23,6 +23,23 @@ from ._template_helpers import (
 )
 
 
+def _codex_tail_mlp_ratio(rng: random.Random) -> float:
+    return 2.0 if rng.random() < 0.5 else 3.0
+
+
+def _codex_tail_ffn(
+    graph: ComputationGraph, tail: int, rng: random.Random, *, context: str
+) -> int:
+    ffned = _add(
+        graph,
+        "swiglu_mlp",
+        [tail],
+        {"mlp_ratio": _codex_tail_mlp_ratio(rng)},
+        context=context,
+    )
+    return _fix_dim(graph, ffned)
+
+
 def _tpl_novel_mixing_block(
     graph: ComputationGraph,
     input_id: int,
@@ -302,8 +319,7 @@ def tpl_codex_ssm_retention_block(
         {"out_dim": D},
         context=f"{name}.tail_basis",
     )
-    ffned = _add(graph, "swiglu_mlp", [tail], {"mlp_ratio": 2.0}, context=f"{name}.ffn")
-    ffned = _fix_dim(graph, ffned)
+    ffned = _codex_tail_ffn(graph, tail, rng, context=f"{name}.ffn")
     return _residual(graph, mid, ffned, context=f"{name}.output")
 
 
@@ -373,8 +389,7 @@ def tpl_codex_ssm_delta_memory_block(
         {"out_dim": D},
         context=f"{name}.tail_restore",
     )
-    ffned = _add(graph, "swiglu_mlp", [tail], {"mlp_ratio": 2.0}, context=f"{name}.ffn")
-    ffned = _fix_dim(graph, ffned)
+    ffned = _codex_tail_ffn(graph, tail, rng, context=f"{name}.ffn")
     return _residual(graph, mid, ffned, context=f"{name}.output")
 
 
