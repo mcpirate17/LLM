@@ -82,15 +82,69 @@ def move_batches_to_device(
     return out
 
 
-def tokenize_string(text: str, vocab_size: int) -> np.ndarray:
-    """Tokenize text as UTF-8 bytes modulo vocab size (native C++)."""
+# tiktoken adapters are cached per encoding so repeated calls don't re-init.
+_TIKTOKEN_CACHE: dict[str, "Any"] = {}
+
+
+def _get_tiktoken_encoder(encoding_name: str = "cl100k_base"):
+    """Return a tiktoken Encoding, cached per encoding name."""
+    enc = _TIKTOKEN_CACHE.get(encoding_name)
+    if enc is None:
+        import tiktoken  # local import — only required on the BPE path
+
+        enc = tiktoken.get_encoding(encoding_name)
+        _TIKTOKEN_CACHE[encoding_name] = enc
+    return enc
+
+
+def tokenize_string(
+    text: str,
+    vocab_size: int,
+    *,
+    tokenizer: str = "tiktoken",
+    tiktoken_encoding: str = "cl100k_base",
+) -> np.ndarray:
+    """Tokenize text. Default is cl100k_base BPE to match the training
+    corpus (research/corpus/wikitext103_train.npy). ``tokenizer='byte'``
+    selects the legacy UTF-8 byte path."""
     if not text:
         return np.empty(0, dtype=np.int64)
+    tok = (tokenizer or "byte").strip().lower()
+    if tok in ("tiktoken", "bpe", "gpt2", "cl100k", "cl100k_base"):
+        enc_name = tiktoken_encoding
+        if tok in ("gpt2",):
+            enc_name = "gpt2"
+        elif tok in ("cl100k", "cl100k_base"):
+            enc_name = "cl100k_base"
+        ids = _get_tiktoken_encoder(enc_name).encode(text, allowed_special=set())
+        arr = np.asarray(ids, dtype=np.int64)
+        # Clip to model's vocab to mirror the byte path's behavior.
+        if vocab_size and arr.size:
+            np.minimum(arr, int(vocab_size) - 1, out=arr)
+        return arr
     return load_data_native().byte_tokenize_utf8(text, int(vocab_size)).numpy()
 
 
-def tokenize_file(path: Path, vocab_size: int) -> np.ndarray:
-    """Tokenize a text file as UTF-8 bytes modulo vocab size (native C++)."""
+def tokenize_file(
+    path: Path,
+    vocab_size: int,
+    *,
+    tokenizer: str = "tiktoken",
+    tiktoken_encoding: str = "cl100k_base",
+) -> np.ndarray:
+    """Tokenize a text file. Default is cl100k_base BPE to match the training
+    corpus. ``tokenizer='byte'`` selects the legacy native-C++ byte path.
+    """
+    tok = (tokenizer or "byte").strip().lower()
+    if tok in ("tiktoken", "bpe", "gpt2", "cl100k", "cl100k_base"):
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            text = f.read()
+        return tokenize_string(
+            text,
+            vocab_size,
+            tokenizer=tok,
+            tiktoken_encoding=tiktoken_encoding,
+        )
     return (
         load_data_native().byte_tokenize_file_utf8(str(path), int(vocab_size)).numpy()
     )

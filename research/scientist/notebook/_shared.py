@@ -1105,6 +1105,47 @@ _PROGRAM_RESULTS_NEW_COLUMNS = {
     "fp_cka_vs_transformer": "REAL",
     "fp_cka_vs_ssm": "REAL",
     "fp_cka_vs_conv": "REAL",
+    # ── Gemini trajectory metrics (v9 scoring). Populated by
+    # research/eval/trajectory_metrics.compute_trajectory_metrics().
+    # fp_metric_phase tags WHEN the measurement was taken so ML
+    # training can condition on lifecycle stage.
+    "fp_metric_phase": "TEXT",
+    "fp_spec_norm_status": "TEXT",
+    # Jacobian ERF (information-routing density across input positions)
+    "fp_jacobian_erf_density": "REAL",
+    "fp_jacobian_erf_variance": "REAL",
+    "fp_jacobian_erf_decay_slope": "REAL",
+    "fp_jacobian_erf_last_norm": "REAL",
+    "fp_jacobian_erf_first_norm": "REAL",
+    "fp_jacobian_erf_status": "TEXT",
+    "fp_jacobian_erf_elapsed_ms": "REAL",
+    # ICLD velocity (in-context loss decay slope on synthetic Dyck)
+    "fp_icld_velocity": "REAL",
+    "fp_icld_early_loss": "REAL",
+    "fp_icld_late_loss": "REAL",
+    "fp_icld_delta_loss": "REAL",
+    "fp_icld_seq_len": "INTEGER",
+    "fp_icld_status": "TEXT",
+    "fp_icld_elapsed_ms": "REAL",
+    # Intrinsic-dimension collapse rate between training-step snapshots
+    "fp_id_pr_early": "REAL",
+    "fp_id_pr_late": "REAL",
+    "fp_id_norm_early": "REAL",
+    "fp_id_norm_late": "REAL",
+    "fp_id_step_early": "INTEGER",
+    "fp_id_step_late": "INTEGER",
+    "fp_id_collapse_rate": "REAL",
+    "fp_id_collapse_rate_normalized": "REAL",
+    "fp_id_collapse_status": "TEXT",
+    "fp_id_collapse_elapsed_ms": "REAL",
+    # Continuous logit margin trajectory on transitive triples
+    "fp_logit_margin_velocity": "REAL",
+    "fp_logit_margin_initial": "REAL",
+    "fp_logit_margin_final": "REAL",
+    "fp_logit_margin_delta": "REAL",
+    "fp_logit_margin_n_steps": "INTEGER",
+    "fp_logit_margin_status": "TEXT",
+    "fp_logit_margin_elapsed_ms": "REAL",
     "graph_n_ops": "INTEGER",
     "graph_depth": "INTEGER",
     "graph_n_params_estimate": "INTEGER",

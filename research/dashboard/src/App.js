@@ -416,11 +416,13 @@ function AppContent({ autoRefresh, onAutoRefreshChange, onRunningChange }) {
 
   const {
     handleActionComplete,
+    handleConfirm,
     handleCycleControl,
     handleFillGapsExperiment,
     handleForceStart,
     handleInvestigate,
     handlePromoteScreening,
+    handleQueueConfirm,
     handleQueueInvestigate,
     handleQueueValidate,
     handleRescreen,
@@ -490,6 +492,7 @@ function AppContent({ autoRefresh, onAutoRefreshChange, onRunningChange }) {
           onForceStart={handleForceStart}
           onOpenLiveView={() => setActiveTab('command')}
           onQueueClear={handleQueueClear}
+          onQueueConfirm={handleQueueConfirm}
           onQueueInvestigate={handleQueueInvestigate}
           onQueueValidate={handleQueueValidate}
           queueBreakdown={queueBreakdown}
@@ -513,6 +516,7 @@ function AppContent({ autoRefresh, onAutoRefreshChange, onRunningChange }) {
           handleBackFromExperiment={handleBackFromExperiment}
           handleCycleControl={handleCycleControl}
           handleFillGapsExperiment={handleFillGapsExperiment}
+          handleConfirm={handleConfirm}
           handleHypothesisHandoff={handleHypothesisHandoff}
           handleInvestigate={handleInvestigate}
           handleLoadMoreExperiments={handleLoadMoreExperiments}

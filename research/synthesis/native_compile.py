@@ -73,16 +73,24 @@ def attach_partial_native_wrapper(layer: nn.Module, graph: ComputationGraph) -> 
 
     op_values = ops.values() if hasattr(ops, "values") else ops
     wrapper = NativeForwardWrapper(layer, supported_ops)
+    deferred_disabled: list[object] = []
     propagated = False
     for op in op_values:
         if hasattr(op, "forward"):
             op_name = getattr(op, "op_name", "")
             native_op_name = _NATIVE_OP_ALIASES.get(op_name, op_name)
+            if op_name not in supported_ops and native_op_name not in supported_ops:
+                continue
             if (
                 op_name in _STANDALONE_NATIVE_DISABLED_OPS
                 or native_op_name in _STANDALONE_NATIVE_DISABLED_OPS
             ):
+                deferred_disabled.append(op)
                 continue
+            op._native_wrapper = wrapper
+            propagated = True
+    if not propagated:
+        for op in deferred_disabled:
             op._native_wrapper = wrapper
             propagated = True
     if propagated:

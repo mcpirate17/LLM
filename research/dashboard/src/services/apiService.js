@@ -3,14 +3,9 @@
  * Handles all REST communication with the backend.
  */
 
-// Chrome 128+ blocks 0.0.0.0 for subresource/iframe requests (PNA).
-// Normalize to localhost so fetch/iframe calls succeed.
 function _resolveApiBase() {
   const env = process.env.REACT_APP_API_URL;
   if (env) return env;
-  if (typeof window !== 'undefined' && window.location.hostname === '0.0.0.0') {
-    return `${window.location.protocol}//localhost:${window.location.port}`;
-  }
   return '';
 }
 const API_BASE = _resolveApiBase();
@@ -98,6 +93,21 @@ export const apiService = {
   getPrograms: (limit = 100) => get(`/api/programs?limit=${limit}`),
   getProgram: (id) => get(`/api/programs/${id}`),
   getProgramLineage: (id) => get(`/api/programs/${id}/lineage`),
+  // Score-stability validation reruns — queue N tasks for the runner.
+  queueValidationRerun: (id, body = {}) =>
+    post(`/api/programs/${id}/queue-validation-rerun`, body),
+  getPendingReruns: (id) => get(`/api/programs/${id}/pending-reruns`),
+  cancelPendingRerun: (id, taskId) =>
+    post(`/api/programs/${id}/pending-reruns/${taskId}/cancel`),
+  // Bulk auto rerun (striking-distance rule).
+  previewQueueRerunAuto: (params = '') =>
+    get(`/api/leaderboard/queue-rerun-preview${params}`),
+  applyQueueRerunAuto: (body) =>
+    post(`/api/leaderboard/queue-rerun-apply`, body),
+  // Manually drain one pending validation rerun (without starting
+  // continuous mode).  Returns 409 if an experiment is already running.
+  drainPendingValidationRerun: () =>
+    post(`/api/runner/drain-pending-validation-rerun`),
   getLiveFeed: (experimentId, n = 100) => get(`/api/live-feed?experiment_id=${encodeURIComponent(experimentId)}&n=${n}`),
   getTrainingCurve: (id) => get(`/api/programs/${id}/training-curve`),
   getReproducibilityManifest: (id) => get(`/api/reproducibility-manifest/${id}`),

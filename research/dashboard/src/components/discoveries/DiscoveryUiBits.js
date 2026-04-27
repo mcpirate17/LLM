@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { scoreColor } from '../../utils/format';
+import { SCORE_MAX, scoreColor, scoreGradient, scoreGradientStops, scoreScaleDomain, scoreScaleRatio, scoreToneLabel } from '../../utils/format';
 import { lossColor, noveltyColor } from '../../utils/colors';
 import { TIER_COLORS } from '../../utils/scoringEngine';
 import {
@@ -228,6 +228,7 @@ export function ScoreCell({ entry }) {
   const score = canonicalCompositeScore(entry);
   const components = canonicalScoreComponents(entry);
   const total = components.reduce((acc, component) => acc + (Number(component.weight) || 0), 0) || 1;
+  const scorePercent = score == null ? 0 : Math.max(4, Math.min(100, (score / SCORE_MAX) * 100));
 
   return (
     <div
@@ -235,11 +236,26 @@ export function ScoreCell({ entry }) {
       onMouseEnter={() => setShow(true)}
       onMouseLeave={() => setShow(false)}
     >
-      <div style={{ fontWeight: 600, color: score != null ? scoreColor(score) : 'var(--text-muted)' }}>
+      <div
+        title={score != null ? `${scoreToneLabel(score)} score` : undefined}
+        style={{
+          fontWeight: 700,
+          color: score != null ? scoreColor(score) : 'var(--text-muted)',
+          fontVariantNumeric: 'tabular-nums',
+        }}
+      >
         {score != null ? Number(score).toFixed(1) : '—'}
       </div>
+      {score != null && (
+        <div className="champion-strip" style={{ marginTop: 2 }}>
+          <div
+            className="champion-strip-fill"
+            style={{ width: `${scorePercent}%`, background: scoreGradient(score) }}
+          />
+        </div>
+      )}
       {components.length > 0 && (
-        <div style={{ display: 'flex', height: 3, borderRadius: 2, overflow: 'hidden', background: 'var(--bg-tertiary)', marginTop: 2 }}>
+        <div style={{ display: 'flex', height: 2, borderRadius: 2, overflow: 'hidden', background: 'var(--bg-tertiary)', marginTop: 3 }}>
           {components.map((component) => (
             <div key={component.key} style={{ width: `${(component.weight / total) * 100}%`, background: component.color, height: '100%' }} />
           ))}
@@ -265,6 +281,11 @@ export function ScoreCell({ entry }) {
           }}
         >
           <div style={{ fontWeight: 600, marginBottom: 4 }}>Canonical Score Breakdown</div>
+          {score != null && (
+            <div style={{ color: scoreColor(score), fontSize: 10, marginBottom: 8 }}>
+              {scoreToneLabel(score)} band after tiktoken/BPE rescore
+            </div>
+          )}
           {components.map((component) => (
             <div key={component.key} style={{ marginBottom: 4 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 1 }}>
@@ -288,6 +309,7 @@ function ExpandedDetailBody({
   onPromoteScreening,
   onInvestigate,
   onValidate,
+  onConfirm,
   onQueueAdd,
   onQueueRemove,
   onDelete,
@@ -397,27 +419,32 @@ function ExpandedDetailBody({
           </div>
 
           <div style={{ padding: 10, borderRadius: 8, border: '1px solid var(--border)', background: 'rgba(255,255,255,0.02)' }}>
-            <div style={{ fontWeight: 600, marginBottom: 6, textTransform: 'uppercase', fontSize: 10, color: 'var(--text-muted)' }}>Canonical Breakdown</div>
+            <div style={{ fontWeight: 600, marginBottom: 6, textTransform: 'uppercase', fontSize: 10, color: 'var(--text-muted)' }}>Score Totals</div>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 10 }}>
-              <span style={{ color: 'var(--text-muted)' }}>Composite score</span>
+              <span style={{ color: 'var(--text-muted)' }}>Composite total</span>
               <span style={{ color: score != null ? scoreColor(score) : 'var(--text-primary)', fontWeight: 700, fontFamily: 'monospace' }}>
                 {score != null ? Number(score).toFixed(1) : '--'}
               </span>
             </div>
             {scoreComponents.length > 0 ? (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                {scoreComponents.map((component) => (
-                  <div key={component.key}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 3 }}>
-                      <span style={{ color: component.color }}>{component.label}</span>
-                      <span style={{ color: component.color, fontFamily: 'monospace' }}>{component.weight.toFixed(1)}</span>
+              <>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {scoreComponents.map((component) => (
+                    <div key={component.key}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 3 }}>
+                        <span style={{ color: component.color }}>{component.label}</span>
+                        <span style={{ color: component.color, fontFamily: 'monospace' }}>{component.weight.toFixed(1)}</span>
+                      </div>
+                      <div style={{ height: 5, background: 'var(--bg-tertiary)', borderRadius: 999, overflow: 'hidden' }}>
+                        <div style={{ width: `${(component.weight / scoreTotal) * 100}%`, height: '100%', background: component.color }} />
+                      </div>
                     </div>
-                    <div style={{ height: 5, background: 'var(--bg-tertiary)', borderRadius: 999, overflow: 'hidden' }}>
-                      <div style={{ width: `${(component.weight / scoreTotal) * 100}%`, height: '100%', background: component.color }} />
-                    </div>
-                  </div>
-                ))}
-              </div>
+                  ))}
+                </div>
+                <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 8 }}>
+                  These are additive v10 subtotals. Detailed metrics live inside the subtotals and are not added again.
+                </div>
+              </>
             ) : (
               <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>No score breakdown recorded for this row.</div>
             )}
@@ -484,6 +511,20 @@ function ExpandedDetailBody({
                   {eligibility?.validationEligible ? 'Validate' : 'Force Validate'}
                 </button>
               )}
+              {eligibility?.confirmationEligible && (
+                <button
+                  onClick={() => onConfirm?.([entry.result_id])}
+                  style={{
+                    ...actionBtnStyle,
+                    background: 'rgba(255, 184, 108, 0.12)',
+                    border: '1px solid rgba(255, 184, 108, 0.48)',
+                    color: 'var(--score-elite)',
+                  }}
+                  title="Run post-validation champion confirmation at 4x validation steps"
+                >
+                  Confirm
+                </button>
+              )}
               {entry.result_id && (onQueueAdd || onQueueRemove) && (
                 <button
                   onClick={() => {
@@ -495,10 +536,15 @@ function ExpandedDetailBody({
                         fingerprint: entry.graph_fingerprint,
                         source: 'discoveries',
                         architectureFamily: entry.architecture_family,
-                        intent: eligibility?.validationEligible ? 'validation' : 'investigation',
+                        intent: eligibility?.confirmationEligible
+                          ? 'confirmation'
+                          : eligibility?.validationEligible
+                            ? 'validation'
+                            : 'investigation',
                         queueEligible: true,
                         investigationEligible: eligibility?.investigationEligible,
                         validationEligible: eligibility?.validationEligible,
+                        confirmationEligible: eligibility?.confirmationEligible,
                       });
                     }
                   }}
@@ -513,7 +559,7 @@ function ExpandedDetailBody({
                   {isQueued
                     ? 'Queued'
                     : (!eligibility?.queueEligible && (entry.tier === 'validation' || entry.tier === 'breakthrough'))
-                      ? 'Fully Validated'
+                      ? 'No Action'
                       : !eligibility?.queueEligible
                         ? 'Ineligible'
                         : 'Add to Queue'}
@@ -631,34 +677,72 @@ function MetricRow({ label, value, color }) {
   );
 }
 
-export function FingerprintLeaderboardChart({ entries }) {
+export function FingerprintLeaderboardChart({ entries, scoreScale }) {
   if (!entries || entries.length < 2) return null;
 
   const top = entries.slice(0, 15);
-  const width = 600;
-  const height = 160;
-  const padX = 40;
-  const padY = 20;
+  const width = 1040;
+  const height = 190;
+  const padX = 48;
+  const padTop = 22;
+  const padBottom = 34;
   const barWidth = (width - 2 * padX) / top.length - 8;
-  const maxScore = Math.max(...top.map((entry) => entry._score), 80);
+  const apiMin = Number(scoreScale?.p25);
+  const apiMax = Number(scoreScale?.max_possible);
+  const scoreDomain = Number.isFinite(apiMin) && Number.isFinite(apiMax) && apiMax > apiMin
+    ? { min: apiMin, max: apiMax }
+    : scoreScaleDomain(entries.map((entry) => entry._score), { minMode: 'p25' });
+  const minScore = scoreDomain.min;
+  const maxScore = scoreDomain.max;
+  const chartHeight = height - padTop - padBottom;
 
   return (
-    <div style={{ marginBottom: 20, padding: '10px 0' }}>
-      <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 8, textTransform: 'uppercase', fontWeight: 600 }}>
-        Fingerprint Performance Ranking (Top {top.length})
+    <div style={{ marginBottom: 20, padding: '10px 0 4px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap', marginBottom: 8 }}>
+        <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 600 }}>
+          Canonical Composite Ranking (Top {top.length})
+        </div>
+        <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+          Chart range: DB p25 ({Math.round(minScore)}) to scorer ceiling ({Math.round(maxScore)}). Colors use the same rubric.
+        </div>
+        <div
+          aria-hidden="true"
+          style={{
+            width: 150,
+            height: 5,
+            borderRadius: 999,
+            background: 'linear-gradient(90deg, #58a6ff, #2dd4bf, #e3b341, #ffd166, #ff7b72)',
+            boxShadow: '0 0 16px rgba(255, 209, 102, 0.12)',
+          }}
+        />
       </div>
       <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} style={{ width: '100%', height: 'auto', maxWidth: width }}>
+        <defs>
+          {top.map((entry, index) => {
+            const score = Number(entry._score) || 0;
+            const isPinnedReference = Boolean(entry?.is_reference)
+              || String(entry?.model_source || '').toLowerCase() === 'reference'
+              || Boolean(entry?.reference_name);
+            const [start, end] = isPinnedReference ? ['#00d4ff', '#2dd4bf'] : scoreGradientStops(score);
+            return (
+              <linearGradient key={`grad-${entry.result_id || index}`} id={`score-grad-${index}`} x1="0" x2="0" y1="1" y2="0">
+                <stop offset="0%" stopColor={start} stopOpacity="0.72" />
+                <stop offset="100%" stopColor={end} stopOpacity="0.98" />
+              </linearGradient>
+            );
+          })}
+        </defs>
         {[0, 0.5, 1].map((fraction) => (
           <text
             key={fraction}
             x={padX - 5}
-            y={height - padY - fraction * (height - 2 * padY)}
+            y={height - padBottom - fraction * chartHeight}
             fontSize={9}
             fill="var(--text-muted)"
             textAnchor="end"
             alignmentBaseline="middle"
           >
-            {Math.round(fraction * maxScore)}
+            {Math.round(minScore + fraction * (maxScore - minScore))}
           </text>
         ))}
 
@@ -666,9 +750,9 @@ export function FingerprintLeaderboardChart({ entries }) {
           <line
             key={`grid-${fraction}`}
             x1={padX}
-            y1={height - padY - fraction * (height - 2 * padY)}
+            y1={height - padBottom - fraction * chartHeight}
             x2={width - padX}
-            y2={height - padY - fraction * (height - 2 * padY)}
+            y2={height - padBottom - fraction * chartHeight}
             stroke="var(--border)"
             strokeWidth={0.5}
             strokeDasharray="2 2"
@@ -677,9 +761,9 @@ export function FingerprintLeaderboardChart({ entries }) {
 
         {top.map((entry, index) => {
           const score = entry._score || 0;
-          const barHeight = (score / maxScore) * (height - 2 * padY);
+          const barHeight = Math.max(3, scoreScaleRatio(score, scoreDomain) * chartHeight);
           const x = padX + index * (barWidth + 8);
-          const y = height - padY - barHeight;
+          const y = height - padBottom - barHeight;
           const isPinnedReference = Boolean(entry?.is_reference)
             || String(entry?.model_source || '').toLowerCase() === 'reference'
             || Boolean(entry?.reference_name);
@@ -687,18 +771,37 @@ export function FingerprintLeaderboardChart({ entries }) {
 
           return (
             <g key={entry.result_id || index}>
-              <rect x={x} y={y} width={barWidth} height={barHeight} fill={`${color}88`} stroke={color} strokeWidth={1} rx={2} />
+              <rect
+                x={x}
+                y={y}
+                width={barWidth}
+                height={barHeight}
+                fill={`url(#score-grad-${index})`}
+                stroke={color}
+                strokeWidth={isPinnedReference ? 1.5 : 1}
+                strokeDasharray={isPinnedReference ? '3 2' : undefined}
+                rx={3}
+              />
               <text
                 x={x + barWidth / 2}
-                y={height - 5}
+                y={Math.max(10, y - 5)}
+                fontSize={9}
+                fill={color}
+                textAnchor="middle"
+                fontWeight="700"
+              >
+                {Math.round(score)}
+              </text>
+              <text
+                x={x + barWidth / 2}
+                y={height - 12}
                 fontSize={8}
                 fill="var(--text-muted)"
                 textAnchor="middle"
-                transform={`rotate(45 ${x + barWidth / 2} ${height - 5})`}
               >
-                {entry.display_name?.slice(0, 8) || entry.graph_fingerprint?.slice(0, 6)}
+                {index + 1}
               </text>
-              <title>{entry.display_name || entry.graph_fingerprint}: Discovery Score {score}</title>
+              <title>{entry.display_name || entry.graph_fingerprint}: Composite Score {score}</title>
             </g>
           );
         })}

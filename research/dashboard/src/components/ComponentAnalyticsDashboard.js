@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { apiCall } from '../services/apiService';
 import MiniChart from './charts/MiniChart';
 import { fmtPct as _fmtPct, fmtLoss } from '../utils/format';
@@ -57,29 +57,56 @@ function HealthSummary({ health }) {
 
 // ─── Sortable Column Header ───
 const SORT_COLUMNS = [
-  { key: 'status', label: 'Status', tooltip: 'Current component health classification.', sticky: true, left: 0, width: 58 },
-  { key: 'op', label: 'Op Name', tooltip: 'Component/operator name.', sticky: true, left: 58, width: 260 },
-  { key: 'n_used', label: 'Used', tooltip: 'Number of observed programs containing this op.' },
-  { key: 's0_rate', label: 'S0', tooltip: 'Share of observed programs containing this op that passed Stage 0.' },
-  { key: 's05_rate', label: 'S0.5', tooltip: 'Share of observed programs containing this op that passed the stability band.' },
-  { key: 's1_rate', label: 'S1', tooltip: 'Share of Stage 0 passes that reached Stage 1.' },
-  { key: 'avg_loss_ratio', label: 'Train LR', tooltip: 'Average training loss ratio for programs containing this op.' },
-  { key: 'avg_validation_loss_ratio', label: 'Val LR', tooltip: 'Average validation loss ratio for programs containing this op.' },
-  { key: 'avg_induction_auc', label: 'Ind', tooltip: 'Average induction-task AUC for programs containing this op.' },
-  { key: 'avg_binding_auc', label: 'Bind', tooltip: 'Average binding/copy-task AUC for programs containing this op.' },
-  { key: 'avg_hellaswag_acc', label: 'Hella', tooltip: 'Average HellaSwag accuracy signal for programs containing this op.' },
-  { key: 'grad_norm', label: 'Grad Norm', tooltip: 'Gradient norm from component profiling.' },
-  { key: 'fwd_us', label: 'Fwd (us)', tooltip: 'Forward-pass runtime in microseconds from component profiling.' },
-  { key: 'reasons', label: 'Issues', tooltip: 'Dominant failure reason or health-grid diagnostic.' },
+  { key: 'status', label: 'Status', tooltip: 'Current component health classification.', sticky: true, left: 0, width: 58, group: 'identity', always: true },
+  { key: 'op', label: 'Op Name', tooltip: 'Component/operator name.', sticky: true, left: 58, width: 260, group: 'identity', always: true },
+  { key: 'n_used', label: 'Used', tooltip: 'Number of observed programs containing this op.', group: 'health' },
+  { key: 's0_rate', label: 'S0', tooltip: 'Share of observed programs containing this op that passed Stage 0.', group: 'health' },
+  { key: 's05_rate', label: 'S0.5', tooltip: 'Share of observed programs containing this op that passed the stability band.', group: 'health' },
+  { key: 's1_rate', label: 'S1', tooltip: 'Share of Stage 0 passes that reached Stage 1.', group: 'health' },
+  { key: 'avg_composite_score', label: 'Score', tooltip: 'Average leaderboard composite score for programs containing this op.', group: 'learning' },
+  { key: 'avg_loss_ratio', label: 'Train LR', tooltip: 'Average training loss ratio for programs containing this op.', group: 'learning' },
+  { key: 'avg_validation_loss_ratio', label: 'Val LR', tooltip: 'Average validation loss ratio for programs containing this op.', group: 'learning' },
+  { key: 'avg_induction_auc', label: 'Ind', tooltip: 'Average induction-task AUC for programs containing this op.', group: 'benchmarks' },
+  { key: 'avg_induction_v2_auc', label: 'Ind v2', tooltip: 'Average induction v2 investigation AUC for programs containing this op.', group: 'benchmarks' },
+  { key: 'avg_binding_auc', label: 'Bind', tooltip: 'Average binding/copy-task AUC for programs containing this op.', group: 'benchmarks' },
+  { key: 'avg_binding_v2_auc', label: 'Bind v2', tooltip: 'Average binding v2 investigation AUC for programs containing this op.', group: 'benchmarks' },
+  { key: 'avg_hellaswag_acc', label: 'Hella', tooltip: 'Average HellaSwag accuracy signal for programs containing this op.', group: 'benchmarks' },
+  { key: 'avg_blimp_overall_accuracy', label: 'BLiMP', tooltip: 'Average BLiMP grammatical reasoning accuracy for programs containing this op.', group: 'benchmarks' },
+  { key: 'avg_erf_density', label: 'ERF Dens', tooltip: 'Average ERF density for programs containing this op. Strong binding v2 predictor.', group: 'architecture' },
+  { key: 'avg_id_collapse_rate', label: 'ID Coll', tooltip: 'Average intrinsic-dimension collapse rate. Strong binding v2 signal, sparse but meaningful.', group: 'architecture' },
+  { key: 'avg_id_collapse_rate_normalized', label: 'ID CollN', tooltip: 'Average normalized intrinsic-dimension collapse rate.', group: 'architecture' },
+  { key: 'avg_erf_decay_slope', label: 'ERF Decay', tooltip: 'Average ERF decay slope. Moderate binding and induction v2 signal.', group: 'architecture' },
+  { key: 'avg_erf_first_norm', label: 'ERF First', tooltip: 'Average ERF first-position norm.', group: 'architecture' },
+  { key: 'avg_erf_last_norm', label: 'ERF Last', tooltip: 'Average ERF last-position norm.', group: 'architecture' },
+  { key: 'avg_logit_margin_velocity', label: 'Margin Vel', tooltip: 'Average logit-margin velocity. Weak positive capability signal.', group: 'architecture' },
+  { key: 'avg_logit_margin_delta', label: 'Margin Δ', tooltip: 'Average logit-margin delta.', group: 'architecture' },
+  { key: 'avg_erf_variance_log', label: 'ERF VarLog', tooltip: 'Average log-scaled ERF variance. Mild negative capability correlation.', group: 'architecture' },
+  { key: 'avg_spec_norm_log', label: 'SpecLog', tooltip: 'Average log-scaled spectral norm. Mostly stability/loss signal.', group: 'architecture' },
+  { key: 'avg_icld_velocity', label: 'ICLD Vel', tooltip: 'Average ICLD velocity. Empirically near-noise; audit only.', group: 'architecture' },
+  { key: 'avg_icld_delta_loss', label: 'ICLD ΔLoss', tooltip: 'Average ICLD early-to-late loss delta.', group: 'architecture' },
+  { key: 'avg_jacobian_effective_rank', label: 'JRank', tooltip: 'Average Jacobian effective rank.', group: 'architecture' },
+  { key: 'avg_sensitivity_uniformity', label: 'SensUnif', tooltip: 'Average sensitivity uniformity.', group: 'architecture' },
+  { key: 'grad_norm', label: 'Grad Norm', tooltip: 'Gradient norm from component profiling.', group: 'runtime' },
+  { key: 'fwd_us', label: 'Fwd (us)', tooltip: 'Forward-pass runtime in microseconds from component profiling.', group: 'runtime' },
+  { key: 'reasons', label: 'Issues', tooltip: 'Dominant failure reason or health-grid diagnostic.', group: 'diagnosis' },
 ];
 
 const COLUMN_GROUPS = [
-  { label: 'Identity', span: 2 },
-  { label: 'Health', span: 4 },
-  { label: 'Learning', span: 2 },
-  { label: 'Benchmarks', span: 3 },
-  { label: 'Runtime', span: 2 },
-  { label: 'Diagnosis', span: 1 },
+  { key: 'health', label: 'Health' },
+  { key: 'learning', label: 'Learning' },
+  { key: 'benchmarks', label: 'Benchmarks' },
+  { key: 'architecture', label: 'Architecture' },
+  { key: 'runtime', label: 'Runtime' },
+  { key: 'diagnosis', label: 'Diagnosis' },
+];
+
+const COMPONENT_VIEW_PRESETS = [
+  { key: 'triage', label: 'Triage', columns: ['avg_composite_score', 'n_used', 's1_rate', 'avg_loss_ratio', 'avg_validation_loss_ratio', 'avg_induction_v2_auc', 'avg_binding_v2_auc', 'avg_hellaswag_acc', 'avg_blimp_overall_accuracy', 'avg_erf_density', 'avg_id_collapse_rate', 'reasons'] },
+  { key: 'learning', label: 'Learning', columns: ['avg_composite_score', 'n_used', 's0_rate', 's05_rate', 's1_rate', 'avg_loss_ratio', 'avg_validation_loss_ratio', 'avg_induction_v2_auc', 'avg_binding_v2_auc', 'reasons'] },
+  { key: 'benchmarks', label: 'Benchmarks', columns: ['avg_composite_score', 'n_used', 'avg_induction_auc', 'avg_induction_v2_auc', 'avg_binding_auc', 'avg_binding_v2_auc', 'avg_hellaswag_acc', 'avg_blimp_overall_accuracy', 'reasons'] },
+  { key: 'architecture', label: 'Architecture', columns: ['n_used', 'avg_binding_v2_auc', 'avg_erf_density', 'avg_id_collapse_rate', 'avg_id_collapse_rate_normalized', 'avg_erf_decay_slope', 'avg_logit_margin_velocity', 'avg_jacobian_effective_rank', 'reasons'] },
+  { key: 'runtime', label: 'Runtime', columns: ['n_used', 'grad_norm', 'fwd_us', 'reasons'] },
+  { key: 'all', label: 'All Columns', columns: SORT_COLUMNS.map(col => col.key) },
 ];
 
 const REASON_FILTERS = [
@@ -103,6 +130,27 @@ const SORT_PRESETS = [
 ];
 
 const STATUS_ORDER = { broken: 0, degraded: 1, structural: 2, healthy: 3 };
+
+function usePersistentState(key, initialValue) {
+  const [value, setValue] = useState(() => {
+    if (typeof window === 'undefined') return initialValue;
+    try {
+      const stored = window.localStorage.getItem(key);
+      return stored === null ? initialValue : JSON.parse(stored);
+    } catch {
+      return initialValue;
+    }
+  });
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      window.localStorage.setItem(key, JSON.stringify(value));
+    } catch {
+      // Ignore localStorage failures.
+    }
+  }, [key, value]);
+  return [value, setValue];
+}
 
 function getComponentSortValue(row, key) {
   if (key === 'status') return STATUS_ORDER[row.status] ?? 3;
@@ -164,7 +212,7 @@ function stickyCellStyle(col, extra = {}) {
     minWidth: col.width,
     maxWidth: col.width,
     width: col.width,
-    background: 'var(--bg-primary)',
+    background: extra.background || 'var(--table-row-bg)',
     zIndex: extra.zIndex || 2,
     overflow: 'hidden',
     textOverflow: 'ellipsis',
@@ -172,8 +220,169 @@ function stickyCellStyle(col, extra = {}) {
   };
 }
 
+function presetComponentColumns(columnView) {
+  const preset = COMPONENT_VIEW_PRESETS.find(item => item.key === columnView) || COMPONENT_VIEW_PRESETS[0];
+  const allowed = new Set(['status', 'op', ...preset.columns]);
+  return SORT_COLUMNS.filter(col => col.always || allowed.has(col.key));
+}
+
+function normalizeColumnKeys(columns, keys) {
+  const valid = new Set(columns.map(col => col.key));
+  const normalized = Array.isArray(keys) ? keys.filter(key => valid.has(key)) : [];
+  const always = columns.filter(col => col.always).map(col => col.key);
+  return Array.from(new Set([...always, ...normalized]));
+}
+
+function visibleComponentColumns(columnView, customColumnKeys) {
+  if (Array.isArray(customColumnKeys) && customColumnKeys.length > 0) {
+    const allowed = new Set(normalizeColumnKeys(SORT_COLUMNS, customColumnKeys));
+    return SORT_COLUMNS.filter(col => allowed.has(col.key));
+  }
+  return presetComponentColumns(columnView);
+}
+
+function componentTableMinWidth(columns) {
+  return columns.reduce((total, col) => total + (col.width || 88), 0);
+}
+
+function ColumnPickerPanel({ columns, selectedKeys, onChange, onReset }) {
+  const selected = new Set(normalizeColumnKeys(columns, selectedKeys));
+  return (
+    <div style={{
+      display: 'flex',
+      gap: 10,
+      flexWrap: 'wrap',
+      padding: 10,
+      marginBottom: 10,
+      border: '1px solid var(--border-color)',
+      borderRadius: 6,
+      background: 'var(--bg-secondary)',
+    }}>
+      {columns.filter(col => !col.always).map(col => (
+        <label key={col.key} title={col.tooltip} style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11, color: 'var(--text-primary)', cursor: 'pointer' }}>
+          <input
+            type="checkbox"
+            checked={selected.has(col.key)}
+            onChange={(event) => {
+              const next = new Set(selected);
+              if (event.target.checked) next.add(col.key);
+              else next.delete(col.key);
+              onChange(normalizeColumnKeys(columns, Array.from(next)));
+            }}
+          />
+          {col.label}
+        </label>
+      ))}
+      <button onClick={onReset} style={{ padding: '2px 8px', fontSize: 11, borderRadius: 10, border: '1px solid var(--border-color)', background: 'var(--bg-tertiary)', color: 'var(--text-muted)', cursor: 'pointer' }}>
+        Preset
+      </button>
+    </div>
+  );
+}
+
+function renderComponentCell(c, col) {
+  if (col.key === 'status') {
+    return (
+      <td style={stickyCellStyle(col, {
+        background: c.status === 'broken' ? '#18161a' : c.status === 'degraded' ? '#1b1a15' : 'var(--bg-secondary)',
+        zIndex: 3,
+      })}>
+        <span style={{
+          display: 'inline-block', width: 8, height: 8, borderRadius: '50%',
+          background: STATUS_COLORS[c.status],
+          boxShadow: c.status !== 'healthy' ? `0 0 4px ${STATUS_COLORS[c.status]}66` : 'none',
+        }} />
+      </td>
+    );
+  }
+  if (col.key === 'op') {
+    return (
+      <td style={stickyCellStyle(col, {
+        fontFamily: 'monospace',
+        fontWeight: c.status !== 'healthy' ? 600 : 400,
+        background: c.status === 'broken' ? '#18161a' : c.status === 'degraded' ? '#1b1a15' : 'var(--bg-secondary)',
+        zIndex: 3,
+        whiteSpace: 'nowrap',
+      })}>
+        {c.op}
+        {c.data_source && (
+          <span style={{
+            marginLeft: 6, padding: '1px 5px', borderRadius: 4, fontSize: 9,
+            background: (SOURCE_COLORS[c.data_source] || '#666') + '22',
+            color: SOURCE_COLORS[c.data_source] || '#666',
+          }}>
+            {c.data_source === 'profiling_only' ? 'prof' : c.data_source === 'search+profiling' ? 's+p' : 'src'}
+          </span>
+        )}
+      </td>
+    );
+  }
+  if (col.key === 'n_used') return <td style={{ textAlign: 'right' }}>{c.n_used || 0}</td>;
+  if (col.key === 's0_rate') {
+    return <td style={{ textAlign: 'right', color: c.s0_rate !== null ? (c.s0_rate < 0.3 ? STATUS_COLORS.broken : c.s0_rate < 0.6 ? STATUS_COLORS.degraded : 'var(--text-primary)') : 'var(--text-muted)' }}>{c.s0_rate !== null ? `${(c.s0_rate * 100).toFixed(0)}%` : '-'}</td>;
+  }
+  if (col.key === 's05_rate') {
+    return <td style={{ textAlign: 'right', color: c.s05_rate !== null && c.s05_rate !== undefined ? (c.s05_rate < 0.3 ? STATUS_COLORS.broken : c.s05_rate < 0.6 ? STATUS_COLORS.degraded : 'var(--text-primary)') : 'var(--text-muted)' }}>{c.s05_rate !== null && c.s05_rate !== undefined ? `${(c.s05_rate * 100).toFixed(0)}%` : '-'}</td>;
+  }
+  if (col.key === 's1_rate') {
+    return <td style={{ textAlign: 'right', color: c.s1_rate !== null ? (c.s1_rate < 0.05 ? STATUS_COLORS.broken : c.s1_rate < 0.15 ? STATUS_COLORS.degraded : 'var(--text-primary)') : 'var(--text-muted)' }}>{c.s1_rate !== null ? `${(c.s1_rate * 100).toFixed(1)}%` : '-'}</td>;
+  }
+  if (col.key === 'avg_composite_score') return <td style={{ textAlign: 'right', color: c.avg_composite_score != null && c.avg_composite_score >= 80 ? 'var(--accent-green)' : 'var(--text-primary)' }}>{metricText(c.avg_composite_score)}</td>;
+  if (col.key === 'avg_loss_ratio') return <td style={{ textAlign: 'right' }}>{fmtLoss(c.avg_loss_ratio)}</td>;
+  if (col.key === 'avg_validation_loss_ratio') {
+    return (
+      <td
+        title={Number.isFinite(Number(c.avg_validation_loss_ratio)) && Number.isFinite(Number(c.avg_loss_ratio)) ? `Gap ${(Number(c.avg_validation_loss_ratio) - Number(c.avg_loss_ratio)).toFixed(3)}` : undefined}
+        style={{ textAlign: 'right', color: componentValLossTone(c) }}
+      >
+        {fmtLoss(c.avg_validation_loss_ratio)}
+      </td>
+    );
+  }
+  if (col.key === 'avg_induction_auc') return <td style={{ textAlign: 'right' }}>{metricText(c.avg_induction_auc)}</td>;
+  if (col.key === 'avg_induction_v2_auc') return <td style={{ textAlign: 'right' }}>{metricText(c.avg_induction_v2_auc)}</td>;
+  if (col.key === 'avg_binding_auc') return <td style={{ textAlign: 'right' }}>{metricText(c.avg_binding_auc)}</td>;
+  if (col.key === 'avg_binding_v2_auc') return <td style={{ textAlign: 'right', color: c.avg_binding_v2_auc != null && c.avg_binding_v2_auc >= 0.30 ? 'var(--accent-green)' : 'var(--text-primary)' }}>{metricText(c.avg_binding_v2_auc)}</td>;
+  if (col.key === 'avg_hellaswag_acc') return <td style={{ textAlign: 'right' }}>{metricText(c.avg_hellaswag_acc)}</td>;
+  if (col.key === 'avg_blimp_overall_accuracy') return <td style={{ textAlign: 'right' }}>{metricText(c.avg_blimp_overall_accuracy)}</td>;
+  if (col.key === 'avg_erf_density') return <td style={{ textAlign: 'right', color: c.avg_erf_density != null && c.avg_erf_density >= 0.18 ? 'var(--accent-green)' : 'var(--text-primary)' }}>{metricText(c.avg_erf_density)}</td>;
+  if (col.key === 'avg_id_collapse_rate') return <td style={{ textAlign: 'right', color: c.avg_id_collapse_rate != null && c.avg_id_collapse_rate >= 0.10 ? 'var(--accent-green)' : 'var(--text-primary)' }}>{metricText(c.avg_id_collapse_rate)}</td>;
+  if (col.key === 'avg_id_collapse_rate_normalized') return <td style={{ textAlign: 'right', color: c.avg_id_collapse_rate_normalized != null && c.avg_id_collapse_rate_normalized >= 0.10 ? 'var(--accent-green)' : 'var(--text-primary)' }}>{metricText(c.avg_id_collapse_rate_normalized)}</td>;
+  if (col.key === 'avg_erf_decay_slope') return <td style={{ textAlign: 'right', color: c.avg_erf_decay_slope != null && c.avg_erf_decay_slope >= 0.20 ? 'var(--accent-green)' : 'var(--text-primary)' }}>{metricText(c.avg_erf_decay_slope)}</td>;
+  if (col.key === 'avg_erf_first_norm') return <td style={{ textAlign: 'right' }}>{metricText(c.avg_erf_first_norm)}</td>;
+  if (col.key === 'avg_erf_last_norm') return <td style={{ textAlign: 'right' }}>{metricText(c.avg_erf_last_norm)}</td>;
+  if (col.key === 'avg_logit_margin_velocity') return <td style={{ textAlign: 'right' }}>{metricText(c.avg_logit_margin_velocity)}</td>;
+  if (col.key === 'avg_logit_margin_delta') return <td style={{ textAlign: 'right' }}>{metricText(c.avg_logit_margin_delta)}</td>;
+  if (col.key === 'avg_erf_variance_log') return <td style={{ textAlign: 'right' }}>{metricText(c.avg_erf_variance_log)}</td>;
+  if (col.key === 'avg_spec_norm_log') return <td style={{ textAlign: 'right' }}>{metricText(c.avg_spec_norm_log)}</td>;
+  if (col.key === 'avg_icld_velocity') return <td style={{ textAlign: 'right', color: 'var(--text-muted)' }}>{metricText(c.avg_icld_velocity)}</td>;
+  if (col.key === 'avg_icld_delta_loss') return <td style={{ textAlign: 'right', color: 'var(--text-muted)' }}>{metricText(c.avg_icld_delta_loss)}</td>;
+  if (col.key === 'avg_jacobian_effective_rank') return <td style={{ textAlign: 'right' }}>{metricText(c.avg_jacobian_effective_rank)}</td>;
+  if (col.key === 'avg_sensitivity_uniformity') return <td style={{ textAlign: 'right' }}>{metricText(c.avg_sensitivity_uniformity)}</td>;
+  if (col.key === 'grad_norm') {
+    return (
+      <td style={{ textAlign: 'right', fontFamily: 'monospace', fontSize: 11, color: c.grad_norm !== null ? (c.grad_norm > 50000 ? STATUS_COLORS.broken : c.grad_norm > 3000 ? STATUS_COLORS.degraded : 'var(--text-muted)') : 'var(--text-muted)' }}>
+        {c.grad_norm !== null ? (c.grad_norm > 1e6 ? `${(c.grad_norm / 1e6).toFixed(1)}M` : c.grad_norm > 1e3 ? `${(c.grad_norm / 1e3).toFixed(1)}K` : c.grad_norm.toFixed(0)) : '-'}
+      </td>
+    );
+  }
+  if (col.key === 'fwd_us') return <td style={{ textAlign: 'right', fontFamily: 'monospace', fontSize: 11, color: 'var(--text-muted)' }}>{c.fwd_us != null ? c.fwd_us.toFixed(1) : '-'}</td>;
+  if (col.key === 'reasons') {
+    return <td style={{ fontSize: 11, color: 'var(--text-muted)', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.top_failure_reason || (c.reasons && c.reasons.length > 0 ? c.reasons.join('; ') : '')}</td>;
+  }
+  return <td>{c[col.key]}</td>;
+}
+
 // ─── Component Health Grid ───
-function ComponentGrid({ components, filter, searchTerm, sourceFilter, reasonFilter, sortPreset }) {
+function ComponentGrid({ components, filter, searchTerm, sourceFilter, reasonFilter, sortPreset, columnView, customColumnKeys }) {
+  const tableScrollRef = useRef(null);
+  const visibleColumns = useMemo(() => visibleComponentColumns(columnView, customColumnKeys), [columnView, customColumnKeys]);
+  const groupSpans = useMemo(() => COLUMN_GROUPS.map(group => ({
+    ...group,
+    span: visibleColumns.filter(col => col.group === group.key).length,
+  })).filter(group => group.span > 0), [visibleColumns]);
+  const minWidth = Math.max(720, componentTableMinWidth(visibleColumns));
+
   // Pre-filter rows before passing to the hook (custom filtering not suited to filterRowsByQuery)
   const preFiltered = useMemo(() => {
     let list = components || [];
@@ -209,6 +418,12 @@ function ComponentGrid({ components, filter, searchTerm, sourceFilter, reasonFil
     setSortDesc(preset.desc);
   }, [setSortDesc, setSortKey, sortPreset]);
 
+  useEffect(() => {
+    if (!tableScrollRef.current || typeof window === 'undefined') return;
+    const saved = Number(window.localStorage.getItem('aria.componentTable.scrollLeft') || 0);
+    if (Number.isFinite(saved)) tableScrollRef.current.scrollLeft = saved;
+  }, [columnView]);
+
   const uniqueCount = useMemo(() => {
     const seen = new Set();
     for (const component of components || []) {
@@ -226,11 +441,39 @@ function ComponentGrid({ components, filter, searchTerm, sourceFilter, reasonFil
       {filtered.length === 0 ? (
         <p className="ux-state ux-state-empty">No components match the current filter.</p>
       ) : (
-    <div style={{ overflowX: 'auto', maxHeight: 600, overflowY: 'auto' }}>
-      <table className="data-table" style={{ fontSize: 12, borderCollapse: 'separate', borderSpacing: 0, minWidth: 1340 }}>
+    <div
+      ref={tableScrollRef}
+      onScroll={(event) => {
+        if (typeof window !== 'undefined') window.localStorage.setItem('aria.componentTable.scrollLeft', String(event.currentTarget.scrollLeft));
+      }}
+      style={{ overflowX: 'auto', maxHeight: 600, overflowY: 'auto' }}
+    >
+      <table className="data-table" style={{ fontSize: 12, borderCollapse: 'separate', borderSpacing: 0, minWidth }}>
         <thead style={{ position: 'sticky', top: 0, zIndex: 1, background: 'var(--bg-primary)' }}>
           <tr>
-            {COLUMN_GROUPS.map(group => (
+            <th style={stickyCellStyle(SORT_COLUMNS[0], {
+              textAlign: 'center',
+              fontSize: 10,
+              color: 'var(--text-muted)',
+              textTransform: 'uppercase',
+              letterSpacing: 0,
+              background: 'var(--bg-primary)',
+              top: 0,
+              zIndex: 6,
+            })} />
+            <th style={stickyCellStyle(SORT_COLUMNS[1], {
+              textAlign: 'center',
+              fontSize: 10,
+              color: 'var(--text-muted)',
+              textTransform: 'uppercase',
+              letterSpacing: 0,
+              background: 'var(--bg-primary)',
+              top: 0,
+              zIndex: 6,
+            })}>
+              Identity
+            </th>
+            {groupSpans.map(group => (
               <th
                 key={group.label}
                 colSpan={group.span}
@@ -251,7 +494,7 @@ function ComponentGrid({ components, filter, searchTerm, sourceFilter, reasonFil
             ))}
           </tr>
           <tr>
-            {SORT_COLUMNS.map(col => (
+            {visibleColumns.map(col => (
               <th
                 key={col.key}
                 title={col.tooltip}
@@ -276,75 +519,7 @@ function ComponentGrid({ components, filter, searchTerm, sourceFilter, reasonFil
             <tr key={c.op} style={{
               background: c.status === 'broken' ? '#ef444408' : c.status === 'degraded' ? '#eab30808' : undefined,
             }}>
-              <td style={stickyCellStyle(SORT_COLUMNS[0], {
-                background: c.status === 'broken' ? '#18161a' : c.status === 'degraded' ? '#1b1a15' : 'var(--bg-secondary)',
-                zIndex: 3,
-              })}>
-                <span style={{
-                  display: 'inline-block', width: 8, height: 8, borderRadius: '50%',
-                  background: STATUS_COLORS[c.status],
-                  boxShadow: c.status !== 'healthy' ? `0 0 4px ${STATUS_COLORS[c.status]}66` : 'none',
-                }} />
-              </td>
-              <td style={stickyCellStyle(SORT_COLUMNS[1], {
-                fontFamily: 'monospace',
-                fontWeight: c.status !== 'healthy' ? 600 : 400,
-                background: c.status === 'broken' ? '#18161a' : c.status === 'degraded' ? '#1b1a15' : 'var(--bg-secondary)',
-                zIndex: 3,
-                whiteSpace: 'nowrap',
-              })}>
-                {c.op}
-                {c.data_source && (
-                  <span style={{
-                    marginLeft: 6, padding: '1px 5px', borderRadius: 4, fontSize: 9,
-                    background: (SOURCE_COLORS[c.data_source] || '#666') + '22',
-                    color: SOURCE_COLORS[c.data_source] || '#666',
-                  }}>
-                    {c.data_source === 'profiling_only' ? 'prof' : c.data_source === 'search+profiling' ? 's+p' : 'src'}
-                  </span>
-                )}
-              </td>
-              <td style={{ textAlign: 'right' }}>{c.n_used || 0}</td>
-              <td style={{
-                textAlign: 'right',
-                color: c.s0_rate !== null ? (c.s0_rate < 0.3 ? STATUS_COLORS.broken : c.s0_rate < 0.6 ? STATUS_COLORS.degraded : 'var(--text-primary)') : 'var(--text-muted)',
-              }}>
-                {c.s0_rate !== null ? `${(c.s0_rate * 100).toFixed(0)}%` : '-'}
-              </td>
-              <td style={{
-                textAlign: 'right',
-                color: c.s05_rate !== null && c.s05_rate !== undefined ? (c.s05_rate < 0.3 ? STATUS_COLORS.broken : c.s05_rate < 0.6 ? STATUS_COLORS.degraded : 'var(--text-primary)') : 'var(--text-muted)',
-              }}>
-                {c.s05_rate !== null && c.s05_rate !== undefined ? `${(c.s05_rate * 100).toFixed(0)}%` : '-'}
-              </td>
-              <td style={{
-                textAlign: 'right',
-                color: c.s1_rate !== null ? (c.s1_rate < 0.05 ? STATUS_COLORS.broken : c.s1_rate < 0.15 ? STATUS_COLORS.degraded : 'var(--text-primary)') : 'var(--text-muted)',
-              }}>
-                {c.s1_rate !== null ? `${(c.s1_rate * 100).toFixed(1)}%` : '-'}
-              </td>
-              <td style={{ textAlign: 'right' }}>{fmtLoss(c.avg_loss_ratio)}</td>
-              <td
-                title={Number.isFinite(Number(c.avg_validation_loss_ratio)) && Number.isFinite(Number(c.avg_loss_ratio)) ? `Gap ${(Number(c.avg_validation_loss_ratio) - Number(c.avg_loss_ratio)).toFixed(3)}` : undefined}
-                style={{ textAlign: 'right', color: componentValLossTone(c) }}
-              >
-                {fmtLoss(c.avg_validation_loss_ratio)}
-              </td>
-              <td style={{ textAlign: 'right' }}>{metricText(c.avg_induction_auc)}</td>
-              <td style={{ textAlign: 'right' }}>{metricText(c.avg_binding_auc)}</td>
-              <td style={{ textAlign: 'right' }}>{metricText(c.avg_hellaswag_acc)}</td>
-              <td style={{
-                textAlign: 'right', fontFamily: 'monospace', fontSize: 11,
-                color: c.grad_norm !== null ? (c.grad_norm > 50000 ? STATUS_COLORS.broken : c.grad_norm > 3000 ? STATUS_COLORS.degraded : 'var(--text-muted)') : 'var(--text-muted)',
-              }}>
-                {c.grad_norm !== null ? (c.grad_norm > 1e6 ? `${(c.grad_norm / 1e6).toFixed(1)}M` : c.grad_norm > 1e3 ? `${(c.grad_norm / 1e3).toFixed(1)}K` : c.grad_norm.toFixed(0)) : '-'}
-              </td>
-              <td style={{ textAlign: 'right', fontFamily: 'monospace', fontSize: 11, color: 'var(--text-muted)' }}>
-                {c.fwd_us != null ? c.fwd_us.toFixed(1) : '-'}
-              </td>
-              <td style={{ fontSize: 11, color: 'var(--text-muted)', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {c.top_failure_reason || (c.reasons && c.reasons.length > 0 ? c.reasons.join('; ') : '')}
-              </td>
+              {visibleColumns.map(col => <React.Fragment key={col.key}>{renderComponentCell(c, col)}</React.Fragment>)}
             </tr>
           ))}
         </tbody>
@@ -877,16 +1052,19 @@ export default function ComponentAnalyticsDashboard() {
   const [failurePatterns, setFailurePatterns] = useState([]);
   const [leaderboardData, setLeaderboardData] = useState({ daily: {}, recent_promotions: [] });
   const [insightData, setInsightData] = useState([]);
-  const [filter, setFilter] = useState('all');
-  const [reasonFilter, setReasonFilter] = useState('all');
-  const [sourceFilter, setSourceFilter] = useState('all');
-  const [timeWindow, setTimeWindow] = useState('all');
-  const [sortPreset, setSortPreset] = useState('most_used');
-  const [searchTerm, setSearchTerm] = useState('');
+  const [filter, setFilter] = usePersistentState('aria.componentTable.filter', 'all');
+  const [reasonFilter, setReasonFilter] = usePersistentState('aria.componentTable.reasonFilter', 'all');
+  const [sourceFilter, setSourceFilter] = usePersistentState('aria.componentTable.sourceFilter', 'all');
+  const [timeWindow, setTimeWindow] = usePersistentState('aria.componentTable.timeWindow', 'all');
+  const [sortPreset, setSortPreset] = usePersistentState('aria.componentTable.sortPreset', 'most_used');
+  const [columnView, setColumnView] = usePersistentState('aria.componentTable.columnView', 'triage');
+  const [customColumnKeys, setCustomColumnKeys] = usePersistentState('aria.componentTable.customColumns', null);
+  const [showColumnPicker, setShowColumnPicker] = useState(false);
+  const [searchTerm, setSearchTerm] = usePersistentState('aria.componentTable.searchTerm', '');
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const { slowPollTick } = useAriaData();
-  const hasComponentFilters = filter !== 'all' || reasonFilter !== 'all' || sourceFilter !== 'all' || timeWindow !== 'all' || sortPreset !== 'most_used' || searchTerm.trim() !== '';
+  const hasComponentFilters = filter !== 'all' || reasonFilter !== 'all' || sourceFilter !== 'all' || timeWindow !== 'all' || sortPreset !== 'most_used' || columnView !== 'triage' || Boolean(customColumnKeys) || searchTerm.trim() !== '';
 
   const fetchHealthOnly = useCallback(async () => {
     const windowParam = timeWindow !== 'all' ? `?window=${timeWindow}` : '';
@@ -986,6 +1164,27 @@ export default function ComponentAnalyticsDashboard() {
               <option key={preset.key} value={preset.key}>{preset.label}</option>
             ))}
           </select>
+          <select value={columnView} onChange={e => { setColumnView(e.target.value); setCustomColumnKeys(null); }} style={{
+            padding: '4px 8px', fontSize: 11, borderRadius: 6,
+            background: 'var(--bg-tertiary)', color: 'var(--text-primary)',
+            border: '1px solid var(--border-color)', cursor: 'pointer',
+          }}>
+            {COMPONENT_VIEW_PRESETS.map(preset => (
+              <option key={preset.key} value={preset.key}>{preset.label}</option>
+            ))}
+          </select>
+          <button onClick={() => {
+            if (!customColumnKeys) setCustomColumnKeys(presetComponentColumns(columnView).map(col => col.key));
+            setShowColumnPicker(value => !value);
+          }} style={{
+            padding: '4px 10px', fontSize: 11, borderRadius: 6,
+            background: showColumnPicker ? 'var(--accent-blue)22' : 'var(--bg-secondary)',
+            color: showColumnPicker ? 'var(--accent-blue)' : 'var(--text-primary)',
+            border: `1px solid ${showColumnPicker ? 'var(--accent-blue)' : 'var(--border-color)'}`,
+            cursor: 'pointer',
+          }}>
+            Columns
+          </button>
           <button onClick={handleRefresh} disabled={refreshing} style={{
             padding: '4px 12px', fontSize: 12, borderRadius: 6,
             background: 'var(--bg-secondary)', color: 'var(--text-primary)',
@@ -1044,6 +1243,8 @@ export default function ComponentAnalyticsDashboard() {
               setSourceFilter('all');
               setTimeWindow('all');
               setSortPreset('most_used');
+              setColumnView('triage');
+              setCustomColumnKeys(null);
               setSearchTerm('');
             }}
             disabled={!hasComponentFilters}
@@ -1056,6 +1257,14 @@ export default function ComponentAnalyticsDashboard() {
             Reset
           </button>
         </div>
+        {showColumnPicker && (
+          <ColumnPickerPanel
+            columns={SORT_COLUMNS}
+            selectedKeys={customColumnKeys || presetComponentColumns(columnView).map(col => col.key)}
+            onChange={setCustomColumnKeys}
+            onReset={() => setCustomColumnKeys(null)}
+          />
+        )}
         <ComponentGrid
           components={health?.components}
           filter={filter}
@@ -1063,6 +1272,8 @@ export default function ComponentAnalyticsDashboard() {
           sourceFilter={sourceFilter}
           reasonFilter={reasonFilter}
           sortPreset={sortPreset}
+          columnView={columnView}
+          customColumnKeys={customColumnKeys}
         />
       </div>
 

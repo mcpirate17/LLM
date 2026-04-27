@@ -193,6 +193,7 @@ function LiveFeed({ apiBase, experimentId = null, progress = null }) {
   useEventBus('scale_up_started', addEvent('scaleup_start'));
   useEventBus('scale_up_progress', addEvent('scaleup_progress'));
   useEventBus('scale_up_completed', addEvent('scaleup_complete'));
+  useEventBus('champion_confirmation_started', addEvent('confirm_start'));
   useEventBus('auto_scale_up_queued', addEvent('auto_scaleup'));
   useEventBus('mode_selected', addEvent('mode_selected'));
   useEventBus('investigation_started', addEvent('invest_start'));

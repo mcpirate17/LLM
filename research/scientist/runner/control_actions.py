@@ -34,6 +34,7 @@ _PERSISTED_LIVE_FEED_EVENTS = {
     "scale_up_started",
     "scale_up_progress",
     "scale_up_completed",
+    "champion_confirmation_started",
     "investigation_started",
     "investigation_progress",
     "investigation_completed",

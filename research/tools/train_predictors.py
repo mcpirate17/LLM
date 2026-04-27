@@ -1153,6 +1153,7 @@ def generate_heatmaps() -> None:
 
 
 def main() -> None:
+    global _NOTEBOOK_DB
     parser = argparse.ArgumentParser(description="Train and evaluate ML predictors")
     parser.add_argument(
         "--component",
@@ -1170,6 +1171,12 @@ def main() -> None:
         help="Which component to train",
     )
     parser.add_argument(
+        "--db",
+        type=Path,
+        default=_NOTEBOOK_DB,
+        help=f"Path to lab notebook DB (default: {_NOTEBOOK_DB}).",
+    )
+    parser.add_argument(
         "--evaluate", action="store_true", help="Run evaluation after training"
     )
     parser.add_argument(
@@ -1181,6 +1188,7 @@ def main() -> None:
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+    _NOTEBOOK_DB = Path(args.db)
 
     results = {}
     t0 = time.time()
@@ -1192,6 +1200,7 @@ def main() -> None:
             "evaluate": bool(args.evaluate),
             "save_state": bool(args.save_state),
             "heatmaps": bool(args.heatmaps),
+            "db_path": str(_NOTEBOOK_DB),
         },
         source_script="train_predictors",
         hypothesis=f"Train predictor components ({args.component})",

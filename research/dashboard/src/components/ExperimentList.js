@@ -67,7 +67,7 @@ function ExperimentKpiStrip({ experiments }) {
       key: 'passRate',
       label: 'S1 pass',
       values: series.passRate,
-      color: 'var(--accent-green)',
+      color: 'var(--score-reference, var(--accent-green))',
       higherBetter: true,
       format: (v) => `${v.toFixed(1)}%`,
     },
@@ -91,7 +91,7 @@ function ExperimentKpiStrip({ experiments }) {
       key: 'failureRate',
       label: 'Compile failure',
       values: series.failureRate,
-      color: 'var(--accent-red)',
+      color: 'var(--accent-yellow)',
       higherBetter: false,
       format: (v) => `${v.toFixed(1)}%`,
     },
@@ -119,7 +119,7 @@ function ExperimentKpiStrip({ experiments }) {
               </span>
             </div>
             <MiniSparkline values={kpi.values} color={kpi.color} />
-            <div style={{ marginTop: 3, fontSize: 10, color: delta == null ? 'var(--text-muted)' : (positiveDelta ? 'var(--accent-green)' : 'var(--accent-red)') }}>
+            <div style={{ marginTop: 3, fontSize: 10, color: delta == null ? 'var(--text-muted)' : (positiveDelta ? 'var(--score-reference, var(--accent-green))' : 'var(--accent-yellow)') }}>
               {delta == null ? 'No prior point' : `${delta > 0 ? '+' : ''}${kpi.format(delta)}`}
             </div>
           </div>
@@ -152,7 +152,7 @@ function StageFunnel({ generated, s0, s05, s1 }) {
   const stages = [
     { label: 'S0', value: s0 || 0, color: 'var(--accent-blue)', total: generated },
     { label: 'S0.5', value: s05 || 0, color: 'var(--accent-yellow)', total: generated },
-    { label: 'S1', value: s1 || 0, color: 'var(--accent-green)', total: generated },
+    { label: 'S1', value: s1 || 0, color: 'var(--score-reference, var(--accent-green))', total: generated },
   ];
 
   return (
@@ -450,9 +450,9 @@ function ExperimentList({
 
   return (
     <div className="card">
-      <div className="card-title" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+      <div className="card-title" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
         <span>Experiments</span>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', minWidth: 0 }}>
           <input
             value={filterQuery}
             onChange={(e) => setFilterQuery(e.target.value)}
@@ -646,7 +646,7 @@ function ExperimentList({
                           {exp.best_loss_ratio != null && (
                             <span 
                               title={`Best Loss: ${exp.best_loss_ratio.toFixed(4)}`}
-                              style={{ fontSize: 10, padding: '1px 4px', borderRadius: 3, background: 'rgba(63, 185, 80, 0.15)', color: 'var(--accent-green)', border: '1px solid rgba(63, 185, 80, 0.3)' }}
+                              style={{ fontSize: 10, padding: '1px 4px', borderRadius: 3, background: 'rgba(45, 212, 191, 0.12)', color: 'var(--score-reference)', border: '1px solid rgba(45, 212, 191, 0.35)' }}
                             >
                               Loss: {exp.best_loss_ratio.toFixed(2)}
                             </span>
@@ -663,7 +663,7 @@ function ExperimentList({
                             <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>awaiting eval</span>
                           )}
                           {exp.n_stage1_passed === 0 && exp.status === 'completed' && (
-                            <span style={{ fontSize: 10, color: 'var(--accent-red)', opacity: 0.6 }}>no survivors</span>
+                            <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>no survivors</span>
                           )}
                         </div>
                       </td>
@@ -774,7 +774,7 @@ function ExperimentList({
                   }
                   if (col.key === 'n_stage1_passed') {
                     return (
-                      <td key="s1" style={{ ...compactCellStyle, color: s1Count > 0 ? 'var(--accent-green)' : 'var(--text-muted)' }}>
+                      <td key="s1" style={{ ...compactCellStyle, color: s1Count > 0 ? 'var(--score-reference, var(--accent-green))' : 'var(--text-muted)', fontWeight: s1Count > 0 ? 600 : 400 }}>
                         {s1Count}
                         <span style={{ marginLeft: 4, fontSize: 11, color: 'var(--text-muted)' }}>
                           / {nUsed}
@@ -852,9 +852,9 @@ function ExperimentList({
       </table>
       </div>
       <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 8, display: 'flex', gap: 16 }}>
-        <span><span style={{ color: 'var(--accent-green)' }}>Green</span> = good results (learnable architectures found)</span>
-        <span><span style={{ color: 'var(--accent-yellow)' }}>Amber</span> = some results (limited learning)</span>
-        <span><span style={{ color: 'var(--accent-red)' }}>Red</span> = no learning (grammar needs adjustment)</span>
+        <span><span style={{ color: 'var(--score-reference)' }}>Cyan</span> = learnable architectures found</span>
+        <span><span style={{ color: 'var(--accent-yellow)' }}>Amber</span> = limited learning or needs review</span>
+        <span><span style={{ color: 'var(--text-muted)' }}>Muted</span> = no survivor signal yet</span>
         {onSelectExperiment && <span style={{ marginLeft: 'auto' }}>Click a row for details</span>}
       </div>
       <div style={{ marginTop: 10, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>

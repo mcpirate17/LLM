@@ -37,7 +37,13 @@ SELECT
     pr.binding_auc,
     pr.ar_auc,
     pr.hellaswag_acc,
-    pr.wikitext_perplexity,
+    -- Mask byte-era PPL: rows whose screening_wikitext_metric_version is
+    -- not 'bpe_eval_v1' have wikitext_perplexity in different units
+    -- (range 23 – 485M).  Returning NULL lets downstream filters (which
+    -- already handle missing PPL) skip them cleanly without needing
+    -- per-call guards everywhere analytics reads this column.
+    CASE WHEN COALESCE(pr.screening_wikitext_metric_version, '') = 'bpe_eval_v1'
+         THEN pr.wikitext_perplexity END AS wikitext_perplexity,
     pr.wikitext_score,
     pr.stability_score,
     pr.validation_robustness_score,

@@ -206,3 +206,87 @@ def test_record_investigation_result_persists_v2_to_source_and_rerun_row():
     assert rerun_row is not None
     assert rerun_row["induction_v2_investigation_auc"] == pytest.approx(0.021)
     assert rerun_row["binding_v2_investigation_auc"] == pytest.approx(0.077)
+
+
+def test_record_investigation_result_persists_v9_trajectory_to_source_row():
+    """Investigation tier overwrites earlier-phase v9 trajectory fields.
+
+    Regression for the bug where ``_record_investigation_result`` dropped
+    Gemini trajectory metrics on the floor — ``fp_metric_phase`` stayed
+    ``init`` or ``screening_750`` even when investigation produced a fresh
+    measurement. The fix routes them through ``v9_trajectory_fields()``.
+    """
+    db_path = _tmp_db()
+    nb = LabNotebook(db_path, use_native=False)
+    source_exp = nb.start_experiment("synthesis", {}, "source-v9")
+    source_result_id = nb.record_program_result(
+        experiment_id=source_exp,
+        graph_fingerprint="fp_inv_v9",
+        graph_json=_graph_json(),
+        stage0_passed=True,
+        stage05_passed=True,
+        stage1_passed=True,
+        loss_ratio=0.3,
+        novelty_score=0.2,
+        model_source="graph_synthesis",
+        fp_metric_phase="init",
+        fp_jacobian_erf_density=0.1,
+        fp_jacobian_erf_variance=10.0,
+        fp_logit_margin_velocity=0.001,
+    )
+    inv_exp = nb.start_experiment("investigation", {}, "investigation-v9")
+
+    benchmark_result = {
+        "inv_wikitext_ppl": 4.2,
+        "fp_metric_phase": "investigation_full",
+        "fp_jacobian_erf_density": 0.55,
+        "fp_jacobian_erf_variance": 50000.0,
+        "fp_jacobian_erf_status": "ok",
+        "fp_jacobian_spectral_norm": 1.25,
+        "fp_spec_norm_status": "ok",
+        "fp_icld_velocity": -0.05,
+        "fp_icld_status": "ok",
+        "fp_logit_margin_velocity": 0.012,
+        "fp_logit_margin_status": "ok",
+    }
+    source = {
+        "graph_fingerprint": "fp_inv_v9",
+        "loss_ratio": 0.3,
+        "novelty_score": 0.2,
+    }
+
+    _record_investigation_result(
+        nb=nb,
+        exp_id=inv_exp,
+        source_result_id=source_result_id,
+        source=source,
+        model_source="graph_synthesis",
+        graph_json_str=_graph_json(),
+        arch_spec_json_str=None,
+        n_passed=1,
+        n_programs_tested=3,
+        best_lr=0.22,
+        best_tp_json=json.dumps({"recipe": "test"}),
+        robustness=1.0 / 3.0,
+        investigation_passed=True,
+        benchmark_result=benchmark_result,
+    )
+    nb.flush_writes()
+
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    source_row = conn.execute(
+        """SELECT fp_metric_phase, fp_jacobian_erf_density, fp_jacobian_erf_variance,
+                  fp_jacobian_spectral_norm, fp_icld_velocity, fp_logit_margin_velocity
+           FROM program_results WHERE result_id = ?""",
+        (source_result_id,),
+    ).fetchone()
+    conn.close()
+    nb.close()
+
+    assert source_row["fp_metric_phase"] == "investigation_full"
+    assert source_row["fp_jacobian_erf_density"] == pytest.approx(0.55)
+    assert source_row["fp_jacobian_erf_variance"] == pytest.approx(50000.0)
+    assert source_row["fp_jacobian_spectral_norm"] == pytest.approx(1.25)
+    assert source_row["fp_icld_velocity"] == pytest.approx(-0.05)
+    assert source_row["fp_logit_margin_velocity"] == pytest.approx(0.012)

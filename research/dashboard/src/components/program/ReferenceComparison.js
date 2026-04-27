@@ -73,13 +73,13 @@ export function ReferenceComparison({ program, leaderboardEntry }) {
   };
 
   return (
-    <div className="card" style={{ padding: 12, marginTop: 16 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+    <div className="card" style={{ padding: 12, minWidth: 0 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, marginBottom: 12 }}>
         <div className="card-title" style={{ margin: 0 }}>Reference Comparison</div>
         <select 
           value={selectedRefId} 
           onChange={e => setSelectedRefId(e.target.value)}
-          style={{ background: 'var(--bg-secondary)', color: 'var(--text-primary)', border: '1px solid var(--border)', borderRadius: 4, fontSize: 11, padding: '2px 4px' }}
+          style={{ background: 'var(--bg-secondary)', color: 'var(--text-primary)', border: '1px solid var(--border)', borderRadius: 4, fontSize: 11, padding: '2px 4px', minWidth: 0, maxWidth: 180 }}
         >
           {references.map(r => (
             <option key={r.result_id} value={r.result_id}>
@@ -94,7 +94,7 @@ export function ReferenceComparison({ program, leaderboardEntry }) {
           {loading ? 'Loading references...' : 'No reference selected'}
         </div>
       ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 8 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(88px, 1fr))', gap: 8 }}>
           {metrics.map(m => {
             const candVal = getCandidateValue(m.key);
             const refVal = getReferenceValue(m.key, selectedRef);

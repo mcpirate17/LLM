@@ -50,15 +50,20 @@ export function candidateEligibility(entry) {
     (tier === 'investigation' && Boolean(entry.investigation_passed))
     || (tier === 'validation' && !isCapabilityQualified)
   );
+  const confirmationEligible = (
+    !entry.is_reference
+    && (tier === 'validation' || tier === 'breakthrough' || Boolean(entry.validation_passed))
+    && (Boolean(entry.validation_passed) || tier === 'breakthrough')
+  );
 
   let queueReason = null;
-  if (!investigationEligible && !validationEligible) {
+  if (!investigationEligible && !validationEligible && !confirmationEligible) {
     if (tier === 'screening' && hasInvestigationEvidence) {
       queueReason = 'already_investigated_unchanged';
     } else if (tier === 'investigation' && !entry.investigation_passed) {
       queueReason = 'not_investigation_passed';
-    } else if ((tier === 'validation' && isCapabilityQualified) || tier === 'breakthrough') {
-      queueReason = 'already_promoted';
+    } else if (tier === 'validation' && hasValidationEvidence && !entry.validation_passed) {
+      queueReason = 'not_validation_passed';
     } else if (tier === 'validation' && hasValidationEvidence) {
       queueReason = 'needs_capability_revalidation';
     } else {
@@ -69,7 +74,8 @@ export function candidateEligibility(entry) {
   return {
     investigationEligible,
     validationEligible,
-    queueEligible: investigationEligible || validationEligible,
+    confirmationEligible,
+    queueEligible: investigationEligible || validationEligible || confirmationEligible,
     queueReason,
   };
 }

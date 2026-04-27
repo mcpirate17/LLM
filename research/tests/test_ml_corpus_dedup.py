@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 
@@ -7,6 +8,194 @@ import numpy as np
 import pytest
 
 from research.tests._ml_corpus_test_support import create_test_db, graph_json
+
+
+def _create_rich_ml_corpus_db(path: Path) -> None:
+    conn = sqlite3.connect(path)
+    conn.executescript(
+        """
+        CREATE TABLE program_results (
+            result_id TEXT,
+            experiment_id TEXT,
+            graph_json TEXT,
+            graph_fingerprint TEXT,
+            fingerprint_json TEXT,
+            novelty_score REAL,
+            structural_novelty REAL,
+            loss_ratio REAL,
+            wikitext_perplexity REAL,
+            stage0_passed INTEGER,
+            stage05_passed INTEGER,
+            stage1_passed INTEGER,
+            timestamp REAL,
+            trust_label TEXT,
+            comparability_label TEXT,
+            result_cohort TEXT,
+            data_provenance_json TEXT,
+            tokenizer_mode TEXT,
+            screening_wikitext_metric_version TEXT,
+            graph_n_ops INTEGER,
+            hellaswag_acc REAL,
+            binding_auc REAL,
+            induction_auc REAL,
+            ar_auc REAL,
+            blimp_overall_accuracy REAL,
+            binding_composite REAL,
+            induction_v2_investigation_auc REAL,
+            binding_v2_investigation_auc REAL,
+            validation_loss_ratio REAL,
+            rapid_screening_passed INTEGER,
+            initial_loss REAL,
+            mean_grad_norm REAL,
+            max_grad_norm REAL,
+            grad_norm_std REAL,
+            fp_jacobian_erf_density REAL,
+            fp_jacobian_erf_variance REAL,
+            fp_icld_velocity REAL,
+            fp_logit_margin_velocity REAL,
+            fp_id_collapse_rate REAL,
+            fp_jacobian_spectral_norm REAL,
+            diagnostic_score REAL,
+            cross_task_score REAL,
+            param_count INTEGER,
+            graph_n_params_estimate INTEGER,
+            graph_depth INTEGER,
+            graph_uses_math_spaces INTEGER
+        );
+
+        CREATE TABLE leaderboard (
+            result_id TEXT,
+            investigation_loss_ratio REAL,
+            tier TEXT,
+            composite_score REAL
+        );
+        """
+    )
+
+    def insert_row(
+        result_id: str,
+        *,
+        graph: str,
+        loss_ratio: float,
+        wikitext_perplexity: float,
+        tokenizer_mode: str,
+        metric_version: str,
+        provenance_tokenizer: str,
+        timestamp: float,
+    ) -> None:
+        provenance = {
+            "eligible_for_screening_model_training": True,
+            "screening_model_training_role": "positive",
+            "tokenizer_mode": provenance_tokenizer,
+            "screening_wikitext_metric_version": metric_version,
+        }
+        conn.execute(
+            """
+            INSERT INTO program_results (
+                result_id, experiment_id, graph_json, graph_fingerprint,
+                fingerprint_json, novelty_score, structural_novelty, loss_ratio,
+                wikitext_perplexity, stage0_passed, stage05_passed, stage1_passed,
+                timestamp, trust_label, comparability_label, result_cohort,
+                data_provenance_json, tokenizer_mode, screening_wikitext_metric_version,
+                graph_n_ops, hellaswag_acc, binding_auc, induction_auc, ar_auc,
+                blimp_overall_accuracy, binding_composite,
+                induction_v2_investigation_auc, binding_v2_investigation_auc,
+                validation_loss_ratio, rapid_screening_passed, initial_loss,
+                mean_grad_norm, max_grad_norm, grad_norm_std,
+                fp_jacobian_erf_density, fp_jacobian_erf_variance,
+                fp_icld_velocity, fp_logit_margin_velocity, fp_id_collapse_rate,
+                fp_jacobian_spectral_norm, diagnostic_score, cross_task_score,
+                param_count, graph_n_params_estimate, graph_depth,
+                graph_uses_math_spaces
+            )
+            VALUES (
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, 1, ?, 'candidate_grade',
+                'candidate_comparable', 'search', ?, ?, ?, 3, ?, ?, ?, ?, ?, ?, ?,
+                ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0
+            )
+            """,
+            (
+                result_id,
+                f"exp_{result_id}",
+                graph,
+                f"stale_{result_id}",
+                json.dumps({"isotropy": 0.1, "rank": 0.9}),
+                0.2,
+                0.3,
+                loss_ratio,
+                wikitext_perplexity,
+                timestamp,
+                json.dumps(provenance),
+                tokenizer_mode,
+                metric_version,
+                0.25,
+                0.7,
+                0.8,
+                0.1,
+                0.6,
+                0.7,
+                0.9,
+                0.95,
+                loss_ratio,
+                3.0,
+                0.2,
+                0.4,
+                0.05,
+                0.8,
+                0.1,
+                -0.2,
+                0.4,
+                0.01,
+                2.0,
+                0.35,
+                0.45,
+                1024,
+                2048,
+                3,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO leaderboard (
+                result_id, investigation_loss_ratio, tier, composite_score
+            )
+            VALUES (?, ?, 'validation', ?)
+            """,
+            (result_id, loss_ratio, 300.0 - loss_ratio),
+        )
+
+    insert_row(
+        "good",
+        graph=graph_json('{"templates_used":["good"]}'),
+        loss_ratio=0.8,
+        wikitext_perplexity=80.0,
+        tokenizer_mode="tiktoken",
+        metric_version="bpe_eval_v1",
+        provenance_tokenizer="tiktoken",
+        timestamp=3.0,
+    )
+    insert_row(
+        "byte",
+        graph=graph_json('{"templates_used":["byte"]}'),
+        loss_ratio=0.01,
+        wikitext_perplexity=1.0,
+        tokenizer_mode="byte",
+        metric_version="screening_wikitext_v1",
+        provenance_tokenizer="byte",
+        timestamp=2.0,
+    )
+    insert_row(
+        "byte_metric",
+        graph=graph_json('{"templates_used":["byte_metric"]}'),
+        loss_ratio=0.02,
+        wikitext_perplexity=2.0,
+        tokenizer_mode="tiktoken",
+        metric_version="byte_eval_v1",
+        provenance_tokenizer="tiktoken",
+        timestamp=1.0,
+    )
+    conn.commit()
+    conn.close()
 
 
 def test_graph_training_corpus_dedupes_metadata_only_reruns(tmp_path: Path) -> None:
@@ -169,6 +358,45 @@ def test_graph_training_corpus_excludes_untrusted_rows_when_labels_exist(
     assert row["n_rows"] == 1
     assert row["loss_ratio_best"] == 0.7
     assert row["wikitext_perplexity_best"] == 9.0
+
+
+def test_ml_training_corpora_exclude_byte_metric_rows(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from research.scientist.intelligence import ml_corpus
+    from research.scientist.intelligence.graph_segments import (
+        load_stage05_native_segment_corpus,
+    )
+
+    db_path = tmp_path / "ml_corpus_byte_filter.sqlite3"
+    _create_rich_ml_corpus_db(db_path)
+    monkeypatch.setattr(ml_corpus, "_try_import_rust_scheduler", lambda: None)
+    ml_corpus._clear_corpus_cache()
+
+    graph_rows = ml_corpus.load_deduped_graph_training_rows(db_path)
+    predictor_rows = ml_corpus.load_deduped_predictor_training_rows(db_path)
+    screening_rows = ml_corpus.load_screening_predictor_corpus_rows(db_path)
+    analysis_rows = ml_corpus.load_deduped_graph_analysis_rows(db_path)
+    segment_rows = load_stage05_native_segment_corpus(db_path)
+
+    assert len(graph_rows) == 1
+    assert graph_rows[0]["loss_ratio_best"] == 0.8
+    assert graph_rows[0]["wikitext_perplexity_best"] == 80.0
+
+    assert len(predictor_rows) == 1
+    assert predictor_rows[0]["target_loss_ratio"] == 0.8
+
+    assert len(screening_rows) == 1
+    assert screening_rows[0]["loss_ratio_best"] == 0.8
+    assert screening_rows[0]["hellaswag_acc_best"] == 0.25
+
+    assert len(analysis_rows) == 1
+    assert analysis_rows[0]["result_id"] == "good"
+    assert analysis_rows[0]["loss_ratio"] == 0.8
+
+    assert len(segment_rows) == 1
+    assert segment_rows[0].loss_ratio_best == 0.8
+    assert segment_rows[0].hellaswag_acc == 0.25
 
 
 def test_graph_training_corpus_cache_hits_when_db_unchanged(monkeypatch) -> None:

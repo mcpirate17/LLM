@@ -6,7 +6,7 @@ const LONG_ACTION_TIMEOUT_MS = 120000;
 function EvalResultsPanel({
   program, leaderboardEntry, resultId, dispatch, state,
   onActionComplete, onClose,
-  canInvestigate, canValidate, alreadyInvestigated, alreadyValidated,
+  canInvestigate, canValidate, canConfirm, alreadyInvestigated, alreadyValidated,
 }) {
   const {
     scaleUpOpen, scaleUpConfig, scaleUpStarting,
@@ -19,6 +19,7 @@ function EvalResultsPanel({
 
   const investigateDisabled = actionStarting === 'investigate';
   const validateDisabled = actionStarting === 'validate';
+  const confirmDisabled = scaleUpStarting || actionStarting === 'confirmation';
   const investigateTitle = canInvestigate
     ? 'Deep study with multiple training programs'
     : 'Deep study with multiple training programs. This run will use override if needed.';
@@ -30,7 +31,7 @@ function EvalResultsPanel({
 
   return (
     <>
-      {/* Scale-Up */}
+      {/* Champion Confirmation */}
       <div style={{
         padding: 12, background: 'var(--bg-tertiary)', borderRadius: 6,
         border: '1px solid var(--border)',
@@ -39,21 +40,23 @@ function EvalResultsPanel({
           <button
             className="start-btn"
             onClick={() => dispatch({ type: 'SET_MODAL', payload: { scaleUpOpen: true } })}
-            style={{ padding: '6px 16px', fontSize: 12, background: 'rgba(88, 166, 255, 0.15)', border: '1px solid rgba(88, 166, 255, 0.4)', color: 'var(--accent-blue)' }}
+            disabled={!canConfirm && !overrideIneligible}
+            style={{ padding: '6px 16px', fontSize: 12, background: 'rgba(255, 184, 108, 0.14)', border: '1px solid rgba(255, 184, 108, 0.45)', color: 'var(--score-elite)', opacity: (!canConfirm && !overrideIneligible) ? 0.55 : 1 }}
+            title={canConfirm ? 'Run post-validation champion confirmation' : 'Confirmation requires a passed validation result'}
           >
-            Scale Up This Architecture
+            Champion Confirmation
           </button>
         ) : (
           <div>
             <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8, color: 'var(--text-secondary)' }}>
-              Scale-Up Configuration
+              Champion Confirmation Configuration
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8, marginBottom: 8 }}>
               <div>
                 <label style={{ fontSize: 11, color: 'var(--text-muted)' }}>Steps</label>
                 <input type="number" min="1000" max="50000" step="1000"
                   value={scaleUpConfig.steps}
-                  onChange={e => dispatch({ type: 'SET_MODAL', payload: { scaleUpConfig: { ...scaleUpConfig, steps: parseInt(e.target.value) || 5000 } } })}
+                  onChange={e => dispatch({ type: 'SET_MODAL', payload: { scaleUpConfig: { ...scaleUpConfig, steps: parseInt(e.target.value) || 40000 } } })}
                   style={{ width: '100%', padding: '4px 6px', fontSize: 12 }}
                 />
               </div>
@@ -77,24 +80,28 @@ function EvalResultsPanel({
             <div style={{ display: 'flex', gap: 8 }}>
               <button
                 className="start-btn"
-                disabled={scaleUpStarting}
+                disabled={confirmDisabled}
                 onClick={async () => {
                   dispatch({ type: 'SET_MODAL', payload: { scaleUpStarting: true } });
                   try {
-                    dispatch({ type: 'SET_ACTION', payload: { starting: null, error: null } });
+                    const forceRun = Boolean(overrideIneligible || !canConfirm);
+                    dispatch({ type: 'SET_ACTION', payload: { starting: 'confirmation', error: null } });
                     const res = await postJson('/api/experiments/start', {
-                      mode: 'scale_up',
+                      mode: 'confirmation',
                       result_ids: [resultId],
                       scale_up_steps: scaleUpConfig.steps,
                       scale_up_batch_size: scaleUpConfig.batch_size,
                       scale_up_seq_len: scaleUpConfig.seq_len,
+                      force: forceRun,
+                      override_ineligible: forceRun,
                       preflight_override: true,
                       enforce_preflight: true,
                     }, { timeoutMs: LONG_ACTION_TIMEOUT_MS });
                     if (!res.ok) {
                       const err = await res.json();
-                      dispatch({ type: 'SET_ACTION', payload: { starting: null, error: err.error || 'Failed to start scale-up' } });
+                      dispatch({ type: 'SET_ACTION', payload: { starting: null, error: err.error || 'Failed to start champion confirmation' } });
                     } else {
+                      dispatch({ type: 'SET_ACTION', payload: { starting: null, error: null } });
                       dispatch({ type: 'SET_MODAL', payload: { scaleUpOpen: false } });
                       if (onActionComplete) onActionComplete();
                       onClose();
@@ -106,7 +113,7 @@ function EvalResultsPanel({
                 }}
                 style={{ padding: '6px 16px', fontSize: 12 }}
               >
-                {scaleUpStarting ? 'Starting...' : 'Start Scale-Up'}
+                {scaleUpStarting ? 'Starting...' : 'Start Confirmation'}
               </button>
               <button
                 className="refresh-btn"
@@ -117,7 +124,7 @@ function EvalResultsPanel({
               </button>
             </div>
             <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6 }}>
-              Trains for {scaleUpConfig.steps} steps with batch={scaleUpConfig.batch_size}, seq={scaleUpConfig.seq_len}
+              Post-validation run: {scaleUpConfig.steps} steps with batch={scaleUpConfig.batch_size}, seq={scaleUpConfig.seq_len}
             </div>
           </div>
         )}

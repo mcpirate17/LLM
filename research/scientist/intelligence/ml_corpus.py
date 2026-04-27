@@ -562,6 +562,82 @@ def _sql_membership_clause(column: str, values: tuple[str, ...]) -> str:
     return f"COALESCE({column}, '') IN ({quoted_values})"
 
 
+_BYTE_TRAINING_TOKENIZER_VALUES = (
+    "byte",
+    "bytes",
+    "raw_byte",
+    "raw_bytes",
+)
+# Marker substrings that flag byte-era / pre-BPE rows whose
+# wikitext_perplexity is in the wrong units.  IMPORTANT: do NOT add
+# "bpe" here — `bpe_eval_v1` is the GOOD post-backfill version and
+# matching it as a "byte" marker was previously excluding the rows we
+# wanted to keep while passing the byte-era ones (which have no marker
+# substring in `screening_wikitext_v1`).
+_BYTE_TRAINING_VERSION_MARKERS = ("byte",)
+# Positive identifier for the post-BPE-backfill metric version.  Used
+# to conditionally aggregate wikitext_perplexity in the predictor /
+# analytics paths so only comparable PPLs feed the labels.
+BPE_EVAL_METRIC_VERSION = "bpe_eval_v1"
+_BYTE_TRAINING_PROVENANCE_PATHS = (
+    "$.tokenizer_mode",
+    "$.tokenizer_id",
+    "$.tokenizer_version",
+    "$.screening_wikitext_metric_version",
+    "$.metric_version",
+    "$.wikitext_metric_version",
+)
+
+
+def _qualified_col(name: str, alias: str | None) -> str:
+    return f"{alias}.{name}" if alias else name
+
+
+def _lower_coalesce_expr(expr: str) -> str:
+    return f"LOWER(COALESCE(CAST({expr} AS TEXT), ''))"
+
+
+def _json_text_expr(json_col: str, path: str) -> str:
+    return (
+        f"CASE WHEN json_valid(COALESCE({json_col}, '{{}}')) "
+        f"THEN json_extract({json_col}, '{path}') ELSE NULL END"
+    )
+
+
+def _sql_not_contains_markers(expr: str) -> str:
+    lowered = _lower_coalesce_expr(expr)
+    return "(" + " AND ".join(
+        f"{lowered} NOT LIKE '%{marker}%'"
+        for marker in _BYTE_TRAINING_VERSION_MARKERS
+    ) + ")"
+
+
+def _non_byte_training_data_clauses(
+    available: set[str], *, alias: str | None = None
+) -> List[str]:
+    """SQL predicates that keep byte-era evaluation rows out of ML corpora."""
+    clauses: List[str] = []
+    if "tokenizer_mode" in available:
+        tokenizer_values = ", ".join(
+            f"'{value}'" for value in _BYTE_TRAINING_TOKENIZER_VALUES
+        )
+        clauses.append(
+            f"{_lower_coalesce_expr(_qualified_col('tokenizer_mode', alias))} "
+            f"NOT IN ({tokenizer_values})"
+        )
+    if "screening_wikitext_metric_version" in available:
+        clauses.append(
+            _sql_not_contains_markers(
+                _qualified_col("screening_wikitext_metric_version", alias)
+            )
+        )
+    if "data_provenance_json" in available:
+        json_col = _qualified_col("data_provenance_json", alias)
+        for path in _BYTE_TRAINING_PROVENANCE_PATHS:
+            clauses.append(_sql_not_contains_markers(_json_text_expr(json_col, path)))
+    return clauses
+
+
 def _program_results_columns(db_path: str) -> set[str]:
     from ..notebook.shared_conn import get_notebook_conn
 
@@ -603,10 +679,12 @@ def _fallback_graph_training_rows(db_path: str) -> List[Dict[str, Any]]:
     from ..notebook.shared_conn import get_notebook_conn
 
     conn = get_notebook_conn(db_path)
+    pr_cols = _table_columns(conn, "program_results")
     where = [
         "TRIM(COALESCE(graph_json, '')) <> ''",
         "graph_json <> '{}'",
     ]
+    where.extend(_non_byte_training_data_clauses(pr_cols))
     if _has_trust_columns(conn, "program_results"):
         where.extend(
             [
@@ -616,10 +694,17 @@ def _fallback_graph_training_rows(db_path: str) -> List[Dict[str, Any]]:
                 ),
             ]
         )
+    # Pull screening_wikitext_metric_version so the PPL aggregation
+    # below can skip byte-era rows whose units differ from BPE rows.
+    metric_version_select = (
+        ", screening_wikitext_metric_version"
+        if "screening_wikitext_metric_version" in pr_cols
+        else ""
+    )
     rows = conn.execute(
         f"""
         SELECT graph_json, stage1_passed, wikitext_perplexity, loss_ratio,
-               stage0_passed, stage05_passed, timestamp
+               stage0_passed, stage05_passed, timestamp{metric_version_select}
         FROM program_results
         WHERE {" AND ".join(where)}
         """
@@ -656,9 +741,23 @@ def _fallback_graph_training_rows(db_path: str) -> List[Dict[str, Any]]:
         group["stage05_any_passed"] = bool(
             group["stage05_any_passed"] or bool(row["stage05_passed"])
         )
-        group["wikitext_perplexity_best"] = _min_opt(
-            group["wikitext_perplexity_best"], row["wikitext_perplexity"]
+        # Only fold this row's PPL into the per-fingerprint best PPL
+        # when its metric version is the BPE backfilled one.  Byte-era
+        # rows have PPL in different units (range 23 – 485M) and
+        # silently corrupted the predictor's labels here for months.
+        ppl_keys = (
+            row.keys() if hasattr(row, "keys") else None
         )
+        metric_version = (
+            str(row["screening_wikitext_metric_version"] or "").strip()
+            if ppl_keys is not None
+               and "screening_wikitext_metric_version" in ppl_keys
+            else ""
+        )
+        if metric_version == BPE_EVAL_METRIC_VERSION:
+            group["wikitext_perplexity_best"] = _min_opt(
+                group["wikitext_perplexity_best"], row["wikitext_perplexity"]
+            )
         group["loss_ratio_best"] = _min_opt(group["loss_ratio_best"], row["loss_ratio"])
         group["latest_timestamp"] = max(
             float(group["latest_timestamp"]), float(row["timestamp"] or 0.0)
@@ -690,12 +789,14 @@ def _fallback_predictor_training_rows(db_path: str) -> List[Dict[str, Any]]:
     from ..notebook.shared_conn import get_notebook_conn
 
     conn = get_notebook_conn(db_path)
+    pr_cols = _table_columns(conn, "program_results")
     where = [
         "TRIM(COALESCE(pr.graph_json, '')) <> ''",
         "pr.graph_json <> '{}'",
         "pr.fingerprint_json IS NOT NULL",
         "COALESCE(l.investigation_loss_ratio, pr.loss_ratio) IS NOT NULL",
     ]
+    where.extend(_non_byte_training_data_clauses(pr_cols, alias="pr"))
     if _has_trust_columns(conn, "program_results"):
         where.extend(
             [
@@ -771,6 +872,7 @@ def _fallback_screening_predictor_rows(db_path: str) -> List[Dict[str, Any]]:
         # for every caller. Rows with NULL graph_n_ops (older schema) pass.
         "(pr.graph_n_ops IS NULL OR pr.graph_n_ops >= 2)",
     ]
+    where.extend(_non_byte_training_data_clauses(pr_cols, alias="pr"))
     if use_explicit_flags:
         where.append(
             "("
@@ -812,6 +914,11 @@ def _fallback_screening_predictor_rows(db_path: str) -> List[Dict[str, Any]]:
             )
             + "))"
         )
+    metric_version_select = (
+        ", pr.screening_wikitext_metric_version"
+        if "screening_wikitext_metric_version" in pr_cols
+        else ""
+    )
     rows = conn.execute(
         f"""
         SELECT pr.graph_json, pr.stage1_passed, pr.wikitext_perplexity, pr.loss_ratio,
@@ -823,7 +930,12 @@ def _fallback_screening_predictor_rows(db_path: str) -> List[Dict[str, Any]]:
                pr.validation_loss_ratio, pr.rapid_screening_passed,
                pr.initial_loss, pr.mean_grad_norm, pr.max_grad_norm,
                pr.grad_norm_std,
-               l.composite_score
+               -- Gemini trajectory metrics (v9 scoring + ML predictor features)
+               pr.fp_jacobian_erf_density, pr.fp_jacobian_erf_variance,
+               pr.fp_icld_velocity, pr.fp_logit_margin_velocity,
+               pr.fp_id_collapse_rate, pr.fp_jacobian_spectral_norm,
+               pr.diagnostic_score, pr.cross_task_score,
+               l.composite_score{metric_version_select}
         FROM program_results pr
         LEFT JOIN leaderboard l ON l.result_id = pr.result_id
         WHERE {" AND ".join(where)}
@@ -859,6 +971,18 @@ def _fallback_screening_predictor_rows(db_path: str) -> List[Dict[str, Any]]:
                 "mean_grad_norm_best": None,
                 "max_grad_norm_best": None,
                 "grad_norm_std_best": None,
+                # Gemini trajectory metrics — feature inputs for v9+ ML
+                # predictor. Aggregator picks the most-informative
+                # value across rows sharing this fingerprint.
+                "fp_jacobian_erf_density_best": None,
+                "fp_jacobian_erf_variance_best": None,
+                "fp_icld_velocity_best": None,
+                "fp_logit_margin_velocity_best": None,
+                "fp_id_collapse_rate_best": None,
+                "fp_jacobian_spectral_norm_best": None,
+                # Understanding-tier scoring features (added 2026-04-26).
+                "diagnostic_score_best": None,
+                "cross_task_score_best": None,
                 "n_rows": 0,
                 "latest_timestamp": 0.0,
                 "has_trusted_positive": False,
@@ -906,9 +1030,18 @@ def _fallback_screening_predictor_rows(db_path: str) -> List[Dict[str, Any]]:
         group["has_runtime_negative"] = bool(
             group["has_runtime_negative"] or is_runtime_negative
         )
-        group["wikitext_perplexity_best"] = _min_opt(
-            group["wikitext_perplexity_best"], row["wikitext_perplexity"]
+        # Skip byte-era PPL: row in different units would corrupt the
+        # min() across runs.  See _BYTE_TRAINING_VERSION_MARKERS notes.
+        _row_keys = row.keys() if hasattr(row, "keys") else ()
+        _metric_version = (
+            str(row["screening_wikitext_metric_version"] or "").strip()
+            if "screening_wikitext_metric_version" in _row_keys
+            else ""
         )
+        if _metric_version == BPE_EVAL_METRIC_VERSION:
+            group["wikitext_perplexity_best"] = _min_opt(
+                group["wikitext_perplexity_best"], row["wikitext_perplexity"]
+            )
         group["loss_ratio_best"] = _min_opt(group["loss_ratio_best"], row["loss_ratio"])
         group["validation_loss_ratio_best"] = _min_opt(
             group["validation_loss_ratio_best"], row["validation_loss_ratio"]
@@ -930,14 +1063,26 @@ def _fallback_screening_predictor_rows(db_path: str) -> List[Dict[str, Any]]:
             # 0/1 int → max() == OR
             ("rapid_screening_passed_best", "rapid_screening_passed"),
             ("composite_score_best", "composite_score"),
+            # Gemini trajectory metrics where higher = better.
+            ("fp_jacobian_erf_density_best", "fp_jacobian_erf_density"),
+            ("fp_jacobian_erf_variance_best", "fp_jacobian_erf_variance"),
+            ("fp_logit_margin_velocity_best", "fp_logit_margin_velocity"),
+            ("fp_jacobian_spectral_norm_best", "fp_jacobian_spectral_norm"),
+            # Understanding-tier (higher = better)
+            ("diagnostic_score_best", "diagnostic_score"),
+            ("cross_task_score_best", "cross_task_score"),
         ):
             group[probe_key] = _max_opt(group[probe_key], row[row_key])
-        # Training dynamics: take min (best-behaved run)
+        # Training dynamics: take min (best-behaved run).
+        # ICLD velocity and ID Collapse rate are also "min is better"
+        # (more negative = stronger signal).
         for dyn_key, row_key in (
             ("initial_loss_best", "initial_loss"),
             ("mean_grad_norm_best", "mean_grad_norm"),
             ("max_grad_norm_best", "max_grad_norm"),
             ("grad_norm_std_best", "grad_norm_std"),
+            ("fp_icld_velocity_best", "fp_icld_velocity"),
+            ("fp_id_collapse_rate_best", "fp_id_collapse_rate"),
         ):
             group[dyn_key] = _min_opt(group[dyn_key], row[row_key])
         group["latest_timestamp"] = max(
@@ -1109,13 +1254,18 @@ def _fallback_graph_analysis_rows(db_path: str) -> List[Dict[str, Any]]:
     from ..notebook.shared_conn import get_notebook_conn
 
     conn = get_notebook_conn(db_path)
-    select_cols = _graph_analysis_select_cols(_table_columns(conn, "program_results"))
+    pr_cols = _table_columns(conn, "program_results")
+    select_cols = _graph_analysis_select_cols(pr_cols)
+    where = [
+        "TRIM(COALESCE(graph_json, '')) <> ''",
+        "graph_json <> '{}'",
+        *_non_byte_training_data_clauses(pr_cols),
+    ]
     rows = conn.execute(
         f"""
         SELECT {", ".join(select_cols)}
         FROM program_results
-        WHERE TRIM(COALESCE(graph_json, '')) <> ''
-          AND graph_json <> '{{}}'
+        WHERE {" AND ".join(where)}
         """
     ).fetchall()
 

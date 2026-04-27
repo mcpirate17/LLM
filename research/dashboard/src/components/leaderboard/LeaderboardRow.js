@@ -1,8 +1,20 @@
 import React from 'react';
-import { decisionGate } from '../shared/TierBadge';
 import { compressionSummary } from '../report/reportUtils';
-import { metricChips, qualityFlags, reproducibilityPacketStatus, candidateEligibility } from './leaderboardUtils';
+import { metricChips, reproducibilityPacketStatus, candidateEligibility } from './leaderboardUtils';
 import { RENDERERS, TD_STYLE_OVERRIDES } from './columnRenderers';
+
+function rowBackground(entry, isHighlighted) {
+  const score = Number(entry?.composite_score);
+  if (isHighlighted) return 'color-mix(in srgb, var(--table-row-bg) 78%, var(--accent-blue))';
+  if (entry.is_reference || entry.model_source === 'reference') {
+    return 'color-mix(in srgb, var(--table-row-bg) 88%, var(--score-reference))';
+  }
+  if (Number.isFinite(score) && score >= 230) return 'color-mix(in srgb, var(--table-row-bg) 91%, var(--score-champion))';
+  if (Number.isFinite(score) && score >= 200) return 'color-mix(in srgb, var(--table-row-bg) 93%, var(--score-elite))';
+  if (Number.isFinite(score) && score >= 150) return 'color-mix(in srgb, var(--table-row-bg) 94%, var(--score-reference))';
+  if (entry.tier === 'breakthrough') return 'color-mix(in srgb, var(--table-row-bg) 92%, var(--score-elite))';
+  return undefined;
+}
 
 const tdStyle = {
   padding: '6px 8px',
@@ -39,10 +51,10 @@ export const LeaderboardRow = React.memo(({
   onToggleExpand,
   onInvestigate,
   onValidate,
+  onConfirm,
   onDelete,
   eligibilityFromParent
 }) => {
-  const gate = decisionGate(entry);
   const compression = visibleColumns.includes('_compression_ratio') ? (entry._compression_summary || compressionSummary(entry)) : null;
   const chips = visibleColumns.includes('_metric_quality') ? metricChips(entry) : [];
   const reproPacket = visibleColumns.includes('_metric_quality') ? reproducibilityPacketStatus(entry) : { label: '--' };
@@ -67,11 +79,7 @@ export const LeaderboardRow = React.memo(({
       style={{
         borderBottom: '1px solid var(--border)',
         cursor: 'pointer',
-        background: isHighlighted
-          ? 'rgba(88, 166, 255, 0.2)'
-          : (entry.is_reference || entry.model_source === 'reference')
-            ? 'rgba(136, 87, 204, 0.10)'
-            : entry.tier === 'breakthrough' ? 'rgba(63, 185, 80, 0.08)' : undefined,
+        background: rowBackground(entry, isHighlighted),
         animation: isHighlighted ? 'leaderboard-pulse 1.5s ease-in-out 2' : undefined,
       }}
       onClick={() => onSelect(entry.result_id)}
@@ -127,6 +135,16 @@ export const LeaderboardRow = React.memo(({
                     title={eligibility.validationEligible ? 'Run validation stage' : 'Not yet eligible \u2014 click to override and force-validate'}
                   >
                     Validate
+                  </button>
+                )}
+                {eligibility.confirmationEligible && (
+                  <button
+                    onClick={(e) => handleActionClick(e, () => onConfirm?.([entry.result_id]))}
+                    style={{ ...actionBtnStyle, borderColor: 'rgba(255, 184, 108, 0.5)', color: 'var(--score-elite)' }}
+                    aria-label={`Confirm ${entry.result_id}`}
+                    title="Run post-validation champion confirmation"
+                  >
+                    Confirm
                   </button>
                 )}
                 <button

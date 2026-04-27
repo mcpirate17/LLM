@@ -158,7 +158,7 @@ class _ExecutionTrainingPostMixin:
 
             # Corpus-aware learning gate (replaces fixed threshold)
             corpus_type = _corpus_type_from_config(config)
-            tokenizer = str(config.tokenizer_mode or "byte")
+            tokenizer = str(config.tokenizer_mode or "tiktoken")
             try:
                 ref_losses = get_reference_losses(
                     str(getattr(self, "notebook_path", "research/lab_notebook.db"))
@@ -685,5 +685,50 @@ class _ExecutionTrainingPostMixin:
                     )
             except (RuntimeError, ValueError, TypeError) as e_tri:
                 logger.debug("Triage eval skipped: %s", e_tri)
+
+            # Gemini trajectory metrics — Jacobian ERF, ICLD velocity, logit
+            # margin slope, spec_norm, AND ID Collapse Rate. The latter
+            # uses snapshots captured in execution_training_program at
+            # ~20% and ~100% of training; if the trainer didn't capture
+            # them (short run, exception, etc.) compute_trajectory_metrics
+            # gracefully reports id_collapse=None. Phase tag matches the
+            # screening lifecycle stage so ML training can condition on it.
+            try:
+                from ...eval.trajectory_metrics import compute_trajectory_metrics
+
+                _id_early = getattr(self, "_id_collapse_early_snap", None)
+                _id_late = getattr(self, "_id_collapse_late_snap", None)
+                _traj = compute_trajectory_metrics(
+                    model,
+                    metric_phase="screening_750",
+                    device=str(getattr(model, "_aria_device", "cuda")),
+                    spec_norm_vocab_size=int(getattr(config, "vocab_size", 32000)),
+                    id_collapse_early=_id_early,
+                    id_collapse_late=_id_late,
+                )
+                result.update(_traj.to_column_dict())
+                _id_rate = (
+                    _traj.id_collapse.collapse_rate
+                    if _traj.id_collapse is not None
+                    else None
+                )
+                logger.info(
+                    "    Trajectory: erf_d=%.2f erf_var=%.0f icld=%+.4f margin=%+.4f "
+                    "sn=%.1f id_rate=%s",
+                    _traj.jacobian_erf.density or 0.0,
+                    _traj.jacobian_erf.variance or 0.0,
+                    _traj.icld.velocity or 0.0,
+                    _traj.logit_margin.velocity or 0.0,
+                    _traj.spec_norm or 0.0,
+                    f"{_id_rate:+.4f}" if _id_rate is not None else "n/a",
+                )
+            except (RuntimeError, ValueError, TypeError) as e_traj:
+                logger.debug("Trajectory metrics skipped: %s", e_traj)
+            finally:
+                # Clear so the next program in this experiment starts
+                # without inheriting stale snapshots.
+                self._id_collapse_early_snap = None
+                self._id_collapse_late_snap = None
+                self._id_collapse_probe_ids = None
 
     # ── Scale-Up Mode ──

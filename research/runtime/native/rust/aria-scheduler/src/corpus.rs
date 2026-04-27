@@ -13,6 +13,7 @@ struct GraphTrainingInput {
     graph_json: String,
     stage1_passed: bool,
     wikitext_perplexity: Option<f64>,
+    wikitext_metric_version: String,
     loss_ratio: Option<f64>,
     stage0_passed: bool,
     stage05_passed: bool,
@@ -89,8 +90,10 @@ impl GraphAccumulator {
         }
         self.stage0_any_passed |= row.stage0_passed;
         self.stage05_any_passed |= row.stage05_passed;
-        self.wikitext_perplexity_best =
-            min_option(self.wikitext_perplexity_best, row.wikitext_perplexity);
+        if row.wikitext_metric_version == "bpe_eval_v1" {
+            self.wikitext_perplexity_best =
+                min_option(self.wikitext_perplexity_best, row.wikitext_perplexity);
+        }
         self.loss_ratio_best = min_option(self.loss_ratio_best, row.loss_ratio);
         self.latest_timestamp = self.latest_timestamp.max(row.timestamp);
 
@@ -173,6 +176,12 @@ pub fn fingerprint_notebook_graph_json(graph_json: &str) -> Result<String, AriaE
 pub fn build_graph_training_corpus_json(db_path: &Path) -> Result<String, AriaError> {
     let conn = open_notebook_db(db_path)?;
     let program_results_columns = table_columns(&conn, "program_results")?;
+    let metric_version_select =
+        if program_results_columns.contains("screening_wikitext_metric_version") {
+            ", COALESCE(screening_wikitext_metric_version, '')"
+        } else {
+            ", ''"
+        };
     let mut query = String::from(
         "
             SELECT graph_json, stage1_passed, wikitext_perplexity, loss_ratio,
@@ -182,6 +191,13 @@ pub fn build_graph_training_corpus_json(db_path: &Path) -> Result<String, AriaEr
               AND graph_json <> '{}'
         ",
     );
+    query = query.replace(
+        "stage0_passed, stage05_passed, timestamp",
+        &format!(
+            "stage0_passed, stage05_passed, timestamp{}",
+            metric_version_select
+        ),
+    );
     if has_trust_columns(&program_results_columns) {
         query.push_str(
             "
@@ -190,6 +206,7 @@ pub fn build_graph_training_corpus_json(db_path: &Path) -> Result<String, AriaEr
             ",
         );
     }
+    push_non_byte_training_data_filters(&mut query, &program_results_columns, None);
     let mut stmt = conn
         .prepare(&query)
         .map_err(|e| AriaError::ExecutionFailed(e.to_string()))?;
@@ -204,6 +221,7 @@ pub fn build_graph_training_corpus_json(db_path: &Path) -> Result<String, AriaEr
                 stage0_passed: row.get::<_, Option<i64>>(4)?.unwrap_or(0) != 0,
                 stage05_passed: row.get::<_, Option<i64>>(5)?.unwrap_or(0) != 0,
                 timestamp: row.get::<_, Option<f64>>(6)?.unwrap_or(0.0),
+                wikitext_metric_version: row.get::<_, Option<String>>(7)?.unwrap_or_default(),
             })
         })
         .map_err(|e| AriaError::ExecutionFailed(e.to_string()))?;
@@ -254,6 +272,7 @@ pub fn build_predictor_training_corpus_json(db_path: &Path) -> Result<String, Ar
             ",
         );
     }
+    push_non_byte_training_data_filters(&mut query, &program_results_columns, Some("pr"));
     let mut stmt = conn
         .prepare(&query)
         .map_err(|e| AriaError::ExecutionFailed(e.to_string()))?;
@@ -325,6 +344,64 @@ fn has_trust_columns(columns: &HashSet<String>) -> bool {
     columns.contains("trust_label") && columns.contains("comparability_label")
 }
 
+fn qualified_col(name: &str, alias: Option<&str>) -> String {
+    match alias {
+        Some(alias) => format!("{}.{}", alias, name),
+        None => name.to_string(),
+    }
+}
+
+fn lower_coalesce_expr(expr: &str) -> String {
+    format!("LOWER(COALESCE(CAST({} AS TEXT), ''))", expr)
+}
+
+fn json_text_expr(json_col: &str, path: &str) -> String {
+    format!(
+        "CASE WHEN json_valid(COALESCE({}, '{{}}')) THEN json_extract({}, '{}') ELSE NULL END",
+        json_col, json_col, path
+    )
+}
+
+fn not_contains_byte_markers(expr: &str) -> String {
+    let lowered = lower_coalesce_expr(expr);
+    format!("({} NOT LIKE '%byte%')", lowered)
+}
+
+fn push_non_byte_training_data_filters(
+    query: &mut String,
+    columns: &HashSet<String>,
+    alias: Option<&str>,
+) {
+    if columns.contains("tokenizer_mode") {
+        query.push_str(&format!(
+            "\n              AND {} NOT IN ('byte', 'bytes', 'raw_byte', 'raw_bytes')",
+            lower_coalesce_expr(&qualified_col("tokenizer_mode", alias))
+        ));
+    }
+    if columns.contains("screening_wikitext_metric_version") {
+        query.push_str(&format!(
+            "\n              AND {}",
+            not_contains_byte_markers(&qualified_col("screening_wikitext_metric_version", alias))
+        ));
+    }
+    if columns.contains("data_provenance_json") {
+        let json_col = qualified_col("data_provenance_json", alias);
+        for path in [
+            "$.tokenizer_mode",
+            "$.tokenizer_id",
+            "$.tokenizer_version",
+            "$.screening_wikitext_metric_version",
+            "$.metric_version",
+            "$.wikitext_metric_version",
+        ] {
+            query.push_str(&format!(
+                "\n              AND {}",
+                not_contains_byte_markers(&json_text_expr(&json_col, path))
+            ));
+        }
+    }
+}
+
 fn min_option(current: Option<f64>, candidate: Option<f64>) -> Option<f64> {
     match (current, candidate) {
         (Some(a), Some(b)) => Some(a.min(b)),
@@ -374,7 +451,7 @@ mod tests {
     use std::thread;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use rusqlite::Connection;
+    use rusqlite::{params, Connection};
 
     use super::{
         build_graph_training_corpus_json, build_predictor_training_corpus_json,
@@ -511,6 +588,113 @@ mod tests {
             let payload = build_predictor_training_corpus_json(&path).unwrap();
             assert!(payload.contains(r#""tier":"validation""#));
             assert!(payload.contains(r#""target_loss_ratio":0.4"#));
+
+            let _ = fs::remove_file(path);
+        });
+    }
+
+    #[test]
+    fn corpus_filters_byte_eval_rows() {
+        run_with_large_stack("corpus_filters_byte_eval_rows", || {
+            let path = temp_db_path("corpus_byte_filter");
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "
+                CREATE TABLE program_results (
+                    result_id TEXT,
+                    graph_json TEXT,
+                    fingerprint_json TEXT,
+                    novelty_score REAL,
+                    structural_novelty REAL,
+                    loss_ratio REAL,
+                    wikitext_perplexity REAL,
+                    stage1_passed INTEGER,
+                    stage0_passed INTEGER,
+                    stage05_passed INTEGER,
+                    timestamp REAL,
+                    tokenizer_mode TEXT,
+                    screening_wikitext_metric_version TEXT,
+                    data_provenance_json TEXT
+                );
+                CREATE TABLE leaderboard (
+                    result_id TEXT,
+                    investigation_loss_ratio REAL,
+                    tier TEXT
+                );
+                ",
+            )
+            .unwrap();
+
+            for (
+                result_id,
+                graph_json,
+                loss_ratio,
+                wikitext_perplexity,
+                tokenizer_mode,
+                metric_version,
+                provenance,
+            ) in [
+                (
+                    "good",
+                    sample_graph_json(r#"{"templates_used":["good"]}"#),
+                    0.8,
+                    80.0,
+                    "tiktoken",
+                    "bpe_eval_v1",
+                    r#"{"tokenizer_mode":"tiktoken","screening_wikitext_metric_version":"bpe_eval_v1"}"#,
+                ),
+                (
+                    "byte",
+                    sample_graph_json(r#"{"templates_used":["byte"]}"#),
+                    0.01,
+                    1.0,
+                    "byte",
+                    "screening_wikitext_v1",
+                    r#"{"tokenizer_mode":"byte","screening_wikitext_metric_version":"screening_wikitext_v1"}"#,
+                ),
+                (
+                    "byte_metric",
+                    sample_graph_json(r#"{"templates_used":["byte_metric"]}"#),
+                    0.02,
+                    2.0,
+                    "tiktoken",
+                    "byte_eval_v1",
+                    r#"{"tokenizer_mode":"tiktoken","screening_wikitext_metric_version":"byte_eval_v1"}"#,
+                ),
+            ] {
+                conn.execute(
+                    "INSERT INTO program_results VALUES (?1, ?2, '{\"k\":1}', 1.0, 2.0, ?3, ?4, 1, 1, 1, 1.0, ?5, ?6, ?7)",
+                    params![
+                        result_id,
+                        graph_json,
+                        loss_ratio,
+                        wikitext_perplexity,
+                        tokenizer_mode,
+                        metric_version,
+                        provenance,
+                    ],
+                )
+                .unwrap();
+                conn.execute(
+                    "INSERT INTO leaderboard VALUES (?1, ?2, 'validation')",
+                    params![result_id, loss_ratio],
+                )
+                .unwrap();
+            }
+
+            let graph_payload = build_graph_training_corpus_json(&path).unwrap();
+            let graph_rows: serde_json::Value = serde_json::from_str(&graph_payload).unwrap();
+            let graph_rows = graph_rows.as_array().unwrap();
+            assert_eq!(graph_rows.len(), 1);
+            assert_eq!(graph_rows[0]["loss_ratio_best"], 0.8);
+            assert_eq!(graph_rows[0]["wikitext_perplexity_best"], 80.0);
+
+            let predictor_payload = build_predictor_training_corpus_json(&path).unwrap();
+            let predictor_rows: serde_json::Value =
+                serde_json::from_str(&predictor_payload).unwrap();
+            let predictor_rows = predictor_rows.as_array().unwrap();
+            assert_eq!(predictor_rows.len(), 1);
+            assert_eq!(predictor_rows[0]["target_loss_ratio"], 0.8);
 
             let _ = fs::remove_file(path);
         });

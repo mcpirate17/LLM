@@ -126,7 +126,7 @@ The system status badge on the dashboard shows whether an LLM backend is active.
 - **Overview** - Aria's status, control panel, summary stats, live feed, top programs and insights
 - **Experiments** - All experiments with pass rates and key metrics. Click to drill down
 - **Programs (Raw)** - S1 survivors ranked by novelty or loss. Click for full detail
-- **Leaderboard (Curated)** - Promotion pipeline: screening → investigation → validation → breakthrough
+- **Leaderboard (Curated)** - Promotion pipeline: screening → investigation → validation → champion confirmation → breakthrough
 
 **Analysis** — Trends and learning signals
 - **Analytics** - Cross-experiment charts (S1 pass rate, novelty, loss ratio over time)
@@ -154,7 +154,8 @@ The system status badge on the dashboard shows whether an LLM backend is active.
 - Blue — Screening (initial candidates)
 - Yellow — Investigation (promising, under study)
 - Purple — Validation (strong, multi-seed testing)
-- Green — Breakthrough (beats baseline, publication-ready)
+- Amber — Champion confirmation (extended post-validation stability check)
+- Green — Breakthrough (beats baseline, publication-ready after confirmation)
 
 **Rating colors** (Programs, Experiments):
 - Green — Excellent/Strong: beats transformer baseline or high S1 rate
@@ -183,7 +184,7 @@ The system status badge on the dashboard shows whether an LLM backend is active.
 
 **Program Score** (Programs tab): Loss ratio (35%) + Novelty (25%) + Baseline ratio (25%) + Throughput (15%)
 
-**Leaderboard Score** (Leaderboard tab): Adaptive by tier — earlier tiers weight the tier bonus higher, later tiers weight validation metrics (baseline ratio, multi-seed consistency) higher.
+**Leaderboard Score** (Leaderboard tab): Canonical composite total from additive subtotals. Because score variability can move near-tied leaders, champion confirmation uses extended training evidence before treating a leader as settled.
 
 **Trend Score** (Analytics tab): S1 rate (35%) + Loss ratio (30%) + Novelty (25%) + Efficiency (10%)
 

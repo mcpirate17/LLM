@@ -631,8 +631,17 @@ class _KnowledgeMixin:
         priority_score: float = 0.0,
         priority_reasons: Optional[Dict[str, Any]] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        bypass_dedup: bool = False,
     ) -> str:
-        """Enqueue a follow-up task, deduplicating active duplicates."""
+        """Enqueue a follow-up task, deduplicating active duplicates.
+
+        ``bypass_dedup=True`` forces an insert even if an active task
+        already exists for this stage+result_ids.  Use this for
+        explicitly-batched reruns (e.g. score-stability confirmation
+        rounds) where multiple in-flight tasks for the same fingerprint
+        is the intended behavior — the runner will claim them
+        sequentially.
+        """
         cleaned_stage = str(stage or "").strip().lower()
         if not cleaned_stage:
             raise ValueError("stage is required")
@@ -645,7 +654,10 @@ class _KnowledgeMixin:
         task_metadata = self._followup_metadata(
             metadata, requested_result_ids, cleaned_result_ids
         )
-        existing = self._find_active_followup_task(cleaned_stage, result_ids_json)
+        existing = (
+            None if bypass_dedup
+            else self._find_active_followup_task(cleaned_stage, result_ids_json)
+        )
         if existing is not None:
             return self._update_followup_task(
                 str(existing["task_id"]),

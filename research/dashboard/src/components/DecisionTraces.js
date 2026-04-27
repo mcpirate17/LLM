@@ -18,20 +18,18 @@ export function DecisionTraces() {
     let active = true;
     const fetchDecisions = async () => {
       try {
-        // Fetch standard decisions
-        const data = await apiService.getLeaderboard('?limit=100&trusted_only=1');
-        // We also want actual decision events if available
         const resp = await apiService.getDashboardSummary();
 
         if (!active) return;
 
-        // Flatten various decision types into a unified "trace"
-        const traces = [];
-
-        // 1. From decisions table (via campaigns or direct)
-        const campaignDecisions = await apiService.getCampaignDecisions('latest').catch(() => []);
-        if (Array.isArray(campaignDecisions)) {
-          campaignDecisions.forEach(d => traces.push({
+        const source = Array.isArray(resp?.decision_traces)
+          ? resp.decision_traces
+          : Array.isArray(resp?.recent_decisions)
+            ? resp.recent_decisions
+            : Array.isArray(resp?.decisions)
+              ? resp.decisions
+              : [];
+        const traces = source.map(d => ({
             id: d.decision_id,
             timestamp: d.timestamp,
             subject: d.subject,
@@ -40,7 +38,6 @@ export function DecisionTraces() {
             score: d.evidence_pack?.confidence || d.evidence_pack?.total_score,
             top_signal: d.evidence_pack?.top_signal || d.decision_type
           }));
-        }
 
         setDecisions(traces.sort((a, b) => b.timestamp - a.timestamp));
         setError(null);
@@ -63,7 +60,12 @@ export function DecisionTraces() {
     return (
       <div className="card">
         <div className="card-title">Decision Traces</div>
-        <p className="ux-state ux-state-empty">No recent decision traces recorded.</p>
+        <div className="empty-state" style={{ padding: 28 }}>
+          <div className="empty-state-title">No decision traces recorded</div>
+          <p className="empty-state-hint">
+            Automated promotion and rejection traces will appear here once the backend publishes decision events.
+          </p>
+        </div>
       </div>
     );
   }

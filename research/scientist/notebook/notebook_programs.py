@@ -8,7 +8,11 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional
 
-from ..leaderboard_scoring import build_score_kwargs_from_prefetch, compute_composite
+from ..leaderboard_scoring import (
+    build_score_kwargs_from_prefetch,
+    compute_composite,
+    prefetch_program_results,
+)
 from .leaderboard_maintenance import (
     leaderboard_consistency_report,
     sync_fingerprint_leaderboard,
@@ -708,6 +712,115 @@ class _ProgramsMixin(
             "novelty_std": row["novelty_std"],
         }
 
+    # Stochastic eval metrics that should be aggregated across runs of the
+    # same graph_fingerprint. Each tuple = (column_name, tier_for_cv).
+    # Tier "loss"  feeds cv_loss; tier "und"/"cap" feed cv_understanding /
+    # cv_capability respectively. Tier None = aggregated mean exposed but
+    # not folded into a tier-CV summary.
+    _STOCHASTIC_METRICS_FOR_AGG: tuple[tuple[str, Optional[str]], ...] = (
+        ("wikitext_perplexity", "loss"),
+        ("blimp_overall_accuracy", "und"),
+        ("hellaswag_acc", "und"),
+        ("tinystories_score", "und"),
+        ("cross_task_score", "und"),
+        ("diagnostic_score", "und"),
+        ("fp_hierarchy_fitness", "und"),
+        ("ar_auc", "cap"),
+        ("induction_auc", "cap"),
+        ("binding_auc", "cap"),
+        ("induction_v2_investigation_auc", "cap"),
+        ("binding_v2_investigation_auc", "cap"),
+    )
+
+    # Metrics that need a per-row provenance filter to be safe to
+    # aggregate.  byte-era tokenized rows have ``wikitext_perplexity``
+    # in different units from BPE-tokenized rows — they share the column
+    # but are NOT comparable.  The filter excludes any row whose
+    # screening_wikitext_metric_version is not ``bpe_eval_v1``.
+    _METRIC_PROVENANCE_FILTER = {
+        "wikitext_perplexity": (
+            "screening_wikitext_metric_version = 'bpe_eval_v1'"
+        ),
+    }
+
+    def get_fingerprint_metric_aggregates(self, graph_fingerprint: str) -> dict:
+        """Per-metric mean / std / n / CV across all runs of a fingerprint.
+
+        Returns ``{metric: {"mean", "std", "n", "cv"}, "_tier_cv": {...},
+        "_n_runs_max"}``.  CV is std / |mean| (0 if mean=0).  std is set
+        to None for n<2 (single-sample variance is meaningless).
+
+        Rows whose tokenizer/metric provenance does not match the active
+        scoring units are excluded per-metric.  Specifically,
+        ``wikitext_perplexity`` is only aggregated from rows backfilled
+        to BPE (``screening_wikitext_metric_version = 'bpe_eval_v1'``);
+        byte-era rows stay in the database but are skipped here.
+
+        ``_tier_cv`` aggregates per-metric CVs into three tier-level
+        summaries used by the score-stability penalty:
+            - "loss"  = CV(wikitext_perplexity)
+            - "und"   = mean of populated understanding-metric CVs
+            - "cap"   = mean of populated capability-metric CVs
+        Tier-CVs are None if no metric in that tier has n>=2.
+        """
+        if not graph_fingerprint:
+            return {}
+        cols = [m for m, _ in self._STOCHASTIC_METRICS_FOR_AGG]
+        select_parts: list[str] = ["COUNT(*) AS _n_total"]
+        for c in cols:
+            extra_filter = self._METRIC_PROVENANCE_FILTER.get(c)
+            # Per-metric guard: only count / sum / avg rows whose
+            # provenance is compatible with the column's units.
+            guard = f"{c} IS NOT NULL"
+            if extra_filter:
+                guard = f"({guard}) AND ({extra_filter})"
+            select_parts.append(
+                f"SUM(CASE WHEN {guard} THEN 1 ELSE 0 END) AS n_{c}"
+            )
+            select_parts.append(
+                f"AVG(CASE WHEN {guard} THEN {c} END) AS mean_{c}"
+            )
+            select_parts.append(
+                f"CASE WHEN SUM(CASE WHEN {guard} THEN 1 ELSE 0 END) > 1 THEN "
+                f"SQRT(MAX(0, "
+                f"AVG(CASE WHEN {guard} THEN {c}*{c} END) - "
+                f"AVG(CASE WHEN {guard} THEN {c} END) * "
+                f"AVG(CASE WHEN {guard} THEN {c} END)"
+                f")) ELSE NULL END AS std_{c}"
+            )
+        sql = (
+            f"SELECT {', '.join(select_parts)} FROM program_results "
+            f"WHERE graph_fingerprint = ?"
+        )
+        row = self.conn.execute(sql, (graph_fingerprint,)).fetchone()
+        if not row or row["_n_total"] == 0:
+            return {}
+
+        per_metric: dict[str, dict] = {}
+        tier_cv_lists: dict[str, list[float]] = {"loss": [], "und": [], "cap": []}
+        n_runs_max = 0
+        for c, tier in self._STOCHASTIC_METRICS_FOR_AGG:
+            n = int(row[f"n_{c}"] or 0)
+            mean = row[f"mean_{c}"]
+            std = row[f"std_{c}"]
+            cv: Optional[float] = None
+            if n >= 2 and mean is not None and std is not None:
+                denom = abs(float(mean))
+                cv = (float(std) / denom) if denom > 0 else 0.0
+                if tier in tier_cv_lists:
+                    tier_cv_lists[tier].append(cv)
+            per_metric[c] = {"mean": mean, "std": std, "n": n, "cv": cv}
+            if n > n_runs_max:
+                n_runs_max = n
+
+        tier_cv: dict[str, Optional[float]] = {}
+        for tier, vals in tier_cv_lists.items():
+            tier_cv[tier] = (sum(vals) / len(vals)) if vals else None
+
+        per_metric["_tier_cv"] = tier_cv
+        per_metric["_n_runs_max"] = n_runs_max
+        return per_metric
+
     def get_fingerprint_aggregates_batch(
         self,
         fingerprints: list[str],
@@ -890,7 +1003,9 @@ class _ProgramsMixin(
             if row.get("result_id")
         ]
         leaderboard_by_id: Dict[str, Dict[str, Any]] = {}
+        program_by_id: Dict[str, Dict[str, Any]] = {}
         if result_ids:
+            program_by_id = prefetch_program_results(self.conn, result_ids)
             chunk_size = 900
             for start in range(0, len(result_ids), chunk_size):
                 chunk = result_ids[start : start + chunk_size]
@@ -973,7 +1088,9 @@ class _ProgramsMixin(
                 result = compute_composite(
                     decompose=True,
                     **build_score_kwargs_from_prefetch(
-                        row, score_context, is_reference
+                        dict(program_by_id.get(result_id) or row),
+                        score_context,
+                        is_reference,
                     ),
                 )
             except (TypeError, ValueError, KeyError):

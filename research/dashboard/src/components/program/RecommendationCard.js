@@ -6,7 +6,6 @@ export function RecommendationCard({ recommendation }) {
   
   return (
     <div style={{
-      marginTop: 12,
       padding: 12,
       background: 'var(--bg-tertiary)',
       borderRadius: 8,

@@ -83,7 +83,6 @@ def cache_hf_text_splits(
         shared_dataset = load_dataset(
             dataset_name,
             config_name,
-            trust_remote_code=trust_remote_code,
             **load_kwargs,
         )
 
@@ -97,7 +96,6 @@ def cache_hf_text_splits(
                 config_name,
                 split=spec.split,
                 streaming=True,
-                trust_remote_code=trust_remote_code,
                 **load_kwargs,
             )
         else:

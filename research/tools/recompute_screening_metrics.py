@@ -21,6 +21,9 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--stage1-only", action="store_true")
     parser.add_argument("--missing-only", action="store_true")
+    parser.add_argument("--skip-rapid", action="store_true")
+    parser.add_argument("--skip-fingerprint", action="store_true")
+    parser.add_argument("--skip-post-train", action="store_true")
     parser.add_argument(
         "--allow-insufficient-learning-metrics",
         action="store_true",
@@ -97,6 +100,9 @@ def main() -> None:
                 notebook_path=args.db,
                 result_id=result_id,
                 device=str(args.device),
+                include_rapid=not bool(args.skip_rapid),
+                include_fingerprint=not bool(args.skip_fingerprint),
+                include_post_train=not bool(args.skip_post_train),
                 allow_insufficient_learning_metrics=bool(
                     args.allow_insufficient_learning_metrics
                 ),

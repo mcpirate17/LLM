@@ -36,9 +36,19 @@ research/dashboard/build/
 
 # SQLite databases & WAL files
 *.db
+*.sqlite
 *.db-journal
 *.db-shm
 *.db-wal
+*.db.snap_*
+*.db.corrupt_*
+*.db.malformed_*
+*.db.pre_*
+*.db.recover_*
+*.db.recovered*
+*.db?mode=*
+*.writer-lock
+.gpu-lock
 
 # PID files
 *.pid

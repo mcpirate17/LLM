@@ -65,6 +65,19 @@ _POST_EVAL_FEATURE_NAMES = (
     "mean_grad_norm_best",
     "max_grad_norm_best",
     "grad_norm_std_best",
+    # v9 Gemini trajectory metrics — added 2026-04-25. These should
+    # noticeably move the predictor's ROC AUC if the smoke-data signal
+    # holds at scale (top-ind-1 had 400× erf_variance vs GPT-2).
+    "fp_jacobian_erf_density_best",
+    "fp_jacobian_erf_variance_best",
+    "fp_icld_velocity_best",
+    "fp_logit_margin_velocity_best",
+    "fp_id_collapse_rate_best",
+    "fp_jacobian_spectral_norm_best",
+    # Understanding-tier eval features (added 2026-04-26 after the
+    # diagnostic + cross_task backfill closed the population gap).
+    "diagnostic_score_best",
+    "cross_task_score_best",
 )
 _PROBE_FEATURE_NAMES = set(_POST_EVAL_FEATURE_NAMES)
 
@@ -884,10 +897,19 @@ def train_gbm(
 
 def evaluate_gbm(
     db_path: str = "research/lab_notebook.db",
+    *,
+    excluded_feature_names: Optional[set] = None,
 ) -> Dict[str, Any]:
     """Train + evaluate GBM predictor with hold-out metrics.
 
     Returns dict with gate_auc, rank_spearman, skip_rate, n_train, n_test.
+
+    ``excluded_feature_names`` drops the listed feature columns from BOTH
+    the gate matrix and the rank-head matrix before training. This is
+    how the A/B harness compares "with vs without Gemini features" —
+    pass ``{"fp_jacobian_erf_density_best", ...}`` to disable them.
+    The drop happens after dense-matrix construction, so the corpus
+    query is unchanged.
     """
     try:
         import lightgbm as lgb
@@ -908,6 +930,14 @@ def evaluate_gbm(
         return {"error": "insufficient_data", "n_total": n_total}
 
     X, feature_names = build_dense_feature_matrix(feat_dicts)
+
+    # Drop A/B-excluded columns from BOTH gate and rank matrices.
+    if excluded_feature_names:
+        keep_mask = np.array(
+            [fn not in excluded_feature_names for fn in feature_names], dtype=bool
+        )
+        X = X[:, keep_mask]
+        feature_names = [fn for fn in feature_names if fn not in excluded_feature_names]
 
     # Strip post-eval probe features from gate evaluation — same as train_gbm().
     # These features leak the gate label (only non-NaN for entries that completed

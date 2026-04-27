@@ -11,6 +11,44 @@ import {
 import MorphPanel from './architecture/MorphPanel';
 import LineagePanel from './architecture/LineagePanel';
 
+function GraphHealthCard({ label, check, status, detail }) {
+  const ok = check ? check.hasInputPath && check.deadNodeCount === 0 : status === 'ready';
+  const color = check == null && status !== 'ready'
+    ? 'var(--text-muted)'
+    : ok
+      ? 'var(--accent-green)'
+      : 'var(--accent-yellow)';
+  return (
+    <div style={{
+      minWidth: 0,
+      padding: '8px 10px',
+      borderRadius: 6,
+      border: '1px solid var(--border)',
+      background: 'var(--bg-tertiary)',
+    }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center', marginBottom: 4 }}>
+        <span style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 650 }}>{label}</span>
+        <span style={{ fontSize: 10, color, fontWeight: 700, textTransform: 'uppercase' }}>
+          {check ? (ok ? 'connected' : 'check') : (status || 'pending')}
+        </span>
+      </div>
+      {check ? (
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', fontSize: 11, color: 'var(--text-secondary)' }}>
+          <span>{check.nodeCount} nodes</span>
+          <span>{check.edgeCount} edges</span>
+          <span style={{ color: check.deadNodeCount === 0 ? 'var(--accent-green)' : 'var(--accent-yellow)' }}>
+            {check.deadNodeCount} unreachable
+          </span>
+        </div>
+      ) : (
+        <div style={{ fontSize: 11, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {detail || 'Waiting for graph data'}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /**
  * ArchitectureDrawer — Slide-out panel embedding aria_designer in an iframe.
  */
@@ -151,16 +189,14 @@ function ArchitectureDrawer({ resultId, onClose, readOnly = true, onGraphLoaded,
     setBridgeStep(readOnly ? 'loading-iframe' : 'starting-services');
     setLoading(true);
 
-    const checkDesigner = readOnly
-      ? Promise.resolve()
-      : postJson('/api/designer/ensure-running', { force_restart: false }, {
-          signal: abortController.signal,
-          timeoutMs: 60000,
-        }).then(res => res.json().then(payload => {
-          if (!res.ok || payload?.ok === false) {
-            throw new Error(payload?.error || `HTTP ${res.status}`);
-          }
-        }));
+    const checkDesigner = postJson('/api/designer/ensure-running', { force_restart: false }, {
+      signal: abortController.signal,
+      timeoutMs: 60000,
+    }).then(res => res.json().then(payload => {
+      if (!res.ok || payload?.ok === false) {
+        throw new Error(payload?.error || `HTTP ${res.status}`);
+      }
+    }));
 
     const fetchSource = resultId
       ? apiCall(`/api/programs/${resultId}`, { signal: abortController.signal }).then(r => r.json())
@@ -208,13 +244,9 @@ function ArchitectureDrawer({ resultId, onClose, readOnly = true, onGraphLoaded,
     // Only use the standalone Vite server when the dashboard itself is running
     // from CRA dev-server (port 3000). Otherwise, force same-origin proxy.
     const onDashboardDevServer = window.location.port === '3000';
-    // Chrome 128+ blocks 0.0.0.0 for iframe/subresource requests (PNA).
-    const safeOrigin = window.location.hostname === '0.0.0.0'
-      ? `${window.location.protocol}//localhost:${window.location.port}`
-      : window.location.origin;
     const base = onDashboardDevServer
       ? 'http://localhost:5174/'
-      : new URL('/designer-proxy/', safeOrigin).toString();
+      : new URL('/designer-proxy/', window.location.origin).toString();
 
     return `${base.replace(/\/?$/, '/')}?${params.toString()}`;
   }, [resultId, readOnly]);
@@ -321,6 +353,20 @@ function ArchitectureDrawer({ resultId, onClose, readOnly = true, onGraphLoaded,
           <>
             {error && <div className="error-banner">{error}</div>}
             {integrityWarning && <div className="warn-banner">{integrityWarning}</div>}
+            <div style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+              gap: 8,
+              marginBottom: 10,
+            }}>
+              <GraphHealthCard label="Backend Graph" check={sourceGraphCheck} status={graphInfo ? 'loaded' : 'pending'} />
+              <GraphHealthCard label="Viewer Graph" check={designerGraphCheck} status={loading ? 'loading' : designerReady ? 'ready' : bridgeStep} />
+              <GraphHealthCard
+                label="Bridge"
+                status={bridgeReady || designerReady ? 'ready' : bridgeStep}
+                detail={readOnly ? 'Read-only embedded viewer' : 'Editable designer session'}
+              />
+            </div>
             
             <div style={{ display: 'flex', flexDirection: 'column', height: '100%', flex: 1 }}>
               <div style={{ flex: 1, position: 'relative', minHeight: 0, display: 'flex', flexDirection: 'column' }}>

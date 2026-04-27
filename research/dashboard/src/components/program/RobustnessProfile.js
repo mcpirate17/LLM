@@ -5,13 +5,14 @@ export function RobustnessProfile({ program, leaderboardEntry }) {
   const source = leaderboardEntry || program || {};
   const noise = source?.robustness_noise_score;
   const longCtx = source?.robustness_long_ctx_score;
-  const longCtxBench = program?.external_benchmarks?.long_context || {};
+  const externalBenchmarks = program?.external_benchmarks || program?.external_benchmarks_json_parsed || {};
+  const longCtxBench = externalBenchmarks?.long_context || {};
   const longCtxScalingScore = longCtxBench?.scaling_score;
   const longCtxAssocScore = longCtxBench?.assoc_retrieval_score;
   const longCtxMultiHopScore = longCtxBench?.multi_hop_score;
   const longCtxPasskeyScore = longCtxBench?.passkey_score;
   const longCtxRetrievalAgg = longCtxBench?.retrieval_aggregate_score;
-  const longCtxCombined = longCtxBench?.combined_score;
+  const longCtxCombined = longCtxBench?.combined_score ?? longCtxBench?.long_context_score;
   const longCtxMaxViable = longCtxBench?.scaling?.max_viable_len;
   const longCtxBenchmarkVersion = longCtxBench?.benchmark_version;
   const initStd = source?.init_sensitivity_std;

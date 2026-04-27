@@ -1,12 +1,46 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
-from tasks.induction_native_probe.fast_induction_probe import (
-    NativeProbeConfig,
-    induction_score_fast,
-    load_native_induction_probe,
-)
+try:
+    from tasks.induction_native_probe.fast_induction_probe import (
+        NativeProbeConfig,
+        induction_score_fast,
+        load_native_induction_probe,
+    )
+except ModuleNotFoundError:
+    from research.eval.induction_probe import induction_score
+
+    @dataclass(slots=True)
+    class NativeProbeConfig:
+        gaps: tuple[int, ...] = (4, 8, 16, 32, 64)
+        n_train_steps: int = 1000
+        n_eval: int = 200
+        lr: float = 1e-3
+        batch_size: int = 32
+        device: str = "cuda"
+        timeout_s: float = 120.0
+        seed: int | None = None
+        pool_size: int = 0
+        use_native_generator: bool = False
+
+    def load_native_induction_probe():
+        return None
+
+    def induction_score_fast(model, *, config: NativeProbeConfig | None = None):
+        cfg = config or NativeProbeConfig()
+        return induction_score(
+            model,
+            gaps=cfg.gaps,
+            n_train_steps=cfg.n_train_steps,
+            n_eval=cfg.n_eval,
+            lr=cfg.lr,
+            batch_size=cfg.batch_size,
+            device=cfg.device,
+            timeout_s=cfg.timeout_s,
+            seed=cfg.seed,
+        )
 
 INDUCTION_METRIC_VERSION = "native_pool_64_v1"
 INDUCTION_SPEED_MODE = "native_pool_64"

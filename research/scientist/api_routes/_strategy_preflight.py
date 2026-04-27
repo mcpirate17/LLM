@@ -24,6 +24,7 @@ _VALID_START_MODES = frozenset(
         "novelty",
         "investigation",
         "validation",
+        "confirmation",
         "scale_up",
         "refine_fingerprint",
         "compact_synthesis",
@@ -243,6 +244,28 @@ def _evaluate_mode_eligibility(
             }
         return None
 
+    if mode == "confirmation":
+        if tier not in {"validation", "breakthrough"} and not bool(
+            lb.get("validation_passed")
+        ):
+            return {
+                "result_id": result_id,
+                "reason": "not_validation_tier",
+                "detail": (
+                    f"Current tier is '{tier or 'unknown'}'; confirmation requires "
+                    "a validation-tier or breakthrough candidate."
+                ),
+                "tier": tier or None,
+            }
+        if not (bool(lb.get("validation_passed")) or tier == "breakthrough"):
+            return {
+                "result_id": result_id,
+                "reason": "not_validation_passed",
+                "detail": "Champion confirmation requires a passed validation result.",
+                "tier": tier,
+            }
+        return None
+
     return {
         "result_id": result_id,
         "reason": "unsupported_mode",
@@ -335,6 +358,8 @@ def build_start_mode_eligibility(
 def normalize_start_mode(raw_mode: str) -> str:
     """Normalize and validate experiment start mode string."""
     mode = str(raw_mode or "single").strip().lower().replace("-", "_")
+    if mode in {"confirm", "champion_confirmation"}:
+        return "confirmation"
     if mode in _VALID_START_MODES:
         return mode
     return "single"
@@ -470,6 +495,8 @@ _BRIEFING_MODE_MAP = {
     "investigation": "investigation",
     "investigate": "investigation",
     "validation": "validation",
+    "confirmation": "confirmation",
+    "champion_confirmation": "confirmation",
     "scale_up": "scale_up",
     "compact_synthesis": "compact_synthesis",
     "sparse_morph": "sparse_morph",
@@ -497,6 +524,7 @@ def briefing_action_from_mode(mode: Optional[str]) -> Optional[str]:
         "live_screening": "continuous",
         "investigation": "investigate",
         "validation": "validate",
+        "confirmation": "confirm",
         "scale_up": "scale_up",
         "compact_synthesis": "compact_synthesis",
         "sparse_morph": "novelty_search",
@@ -514,6 +542,7 @@ def briefing_action_label(mode: Optional[str], hypothesis: Optional[str] = None)
         "live_screening": "Run Live Screening",
         "investigation": "Investigate Candidates",
         "validation": "Validate Candidates",
+        "confirmation": "Champion Confirmation",
         "scale_up": "Scale Up",
         "compact_synthesis": "Run Compact Synthesis",
         "sparse_morph": "Run Sparse Morphology",

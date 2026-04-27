@@ -1,9 +1,10 @@
 import React from 'react';
 import useProgramData from '../hooks/useProgramData';
 import ProgramHeader from './programDetail/ProgramHeader';
-import TrainingMetricsPanel, { CoreMetricsColumn } from './programDetail/TrainingMetricsPanel';
+import TrainingMetricsPanel, { BenchmarkTestMatrix, CoreMetricsColumn, ProgramSupportCards } from './programDetail/TrainingMetricsPanel';
 import ArchitectureView, { FingerprintColumn } from './programDetail/ArchitectureView';
 import EvalResultsPanel from './programDetail/EvalResultsPanel';
+import RerunQueuePanel from './programDetail/RerunQueuePanel';
 
 function ProgramDetail({ resultId, onClose, onActionComplete, onSelectExperiment, onViewInLeaderboard, onSelectCampaign, onOpenInDesigner, onAddToComparison, eligibilityByResultId, defaultOverrideIneligible = false }) {
   const {
@@ -14,6 +15,7 @@ function ProgramDetail({ resultId, onClose, onActionComplete, onSelectExperiment
     alreadyValidated,
     canInvestigate,
     canValidate,
+    canConfirm,
     handleLaunchRefinement,
     fetchDecisionPacket,
     fetchAndCopyManifest,
@@ -133,7 +135,6 @@ function ProgramDetail({ resultId, onClose, onActionComplete, onSelectExperiment
               <CoreMetricsColumn
                 program={program}
                 leaderboardEntry={leaderboardEntry}
-                refineAnalysis={refineAnalysis}
                 fmt={fmt}
                 fmtMs={fmtMs}
                 fmtMem={fmtMem}
@@ -146,6 +147,12 @@ function ProgramDetail({ resultId, onClose, onActionComplete, onSelectExperiment
                 fmtInt={fmtInt}
               />
             </div>
+            <BenchmarkTestMatrix program={program} leaderboardEntry={leaderboardEntry} />
+            <ProgramSupportCards
+              program={program}
+              leaderboardEntry={leaderboardEntry}
+              refineAnalysis={refineAnalysis}
+            />
             <TrainingMetricsPanel
               program={program}
               resultId={resultId}
@@ -177,8 +184,13 @@ function ProgramDetail({ resultId, onClose, onActionComplete, onSelectExperiment
               onClose={onClose}
               canInvestigate={canInvestigate}
               canValidate={canValidate}
+              canConfirm={canConfirm}
               alreadyInvestigated={alreadyInvestigated}
               alreadyValidated={alreadyValidated}
+            />
+            <RerunQueuePanel
+              resultId={resultId}
+              leaderboardEntry={leaderboardEntry}
             />
           </div>
         )}

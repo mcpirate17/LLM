@@ -434,7 +434,49 @@ def _attach_component_observability_metrics(
     )
     component["avg_induction_auc"] = _rounded_metric(overlay.get("avg_induction_auc"))
     component["avg_binding_auc"] = _rounded_metric(overlay.get("avg_binding_auc"))
+    component["avg_induction_v2_auc"] = _rounded_metric(
+        overlay.get("avg_induction_v2_auc")
+    )
+    component["avg_binding_v2_auc"] = _rounded_metric(overlay.get("avg_binding_v2_auc"))
     component["avg_hellaswag_acc"] = _rounded_metric(overlay.get("avg_hellaswag_acc"))
+    component["avg_blimp_overall_accuracy"] = _rounded_metric(
+        overlay.get("avg_blimp_overall_accuracy")
+    )
+    component["avg_composite_score"] = _rounded_metric(
+        overlay.get("avg_composite_score")
+    )
+    component["avg_erf_density"] = _rounded_metric(overlay.get("avg_erf_density"))
+    component["avg_id_collapse_rate"] = _rounded_metric(
+        overlay.get("avg_id_collapse_rate")
+    )
+    component["avg_id_collapse_rate_normalized"] = _rounded_metric(
+        overlay.get("avg_id_collapse_rate_normalized")
+    )
+    component["avg_erf_decay_slope"] = _rounded_metric(
+        overlay.get("avg_erf_decay_slope")
+    )
+    component["avg_erf_first_norm"] = _rounded_metric(overlay.get("avg_erf_first_norm"))
+    component["avg_erf_last_norm"] = _rounded_metric(overlay.get("avg_erf_last_norm"))
+    component["avg_logit_margin_velocity"] = _rounded_metric(
+        overlay.get("avg_logit_margin_velocity")
+    )
+    component["avg_logit_margin_delta"] = _rounded_metric(
+        overlay.get("avg_logit_margin_delta")
+    )
+    component["avg_erf_variance_log"] = _rounded_metric(
+        overlay.get("avg_erf_variance_log")
+    )
+    component["avg_spec_norm_log"] = _rounded_metric(overlay.get("avg_spec_norm_log"))
+    component["avg_icld_velocity"] = _rounded_metric(overlay.get("avg_icld_velocity"))
+    component["avg_icld_delta_loss"] = _rounded_metric(
+        overlay.get("avg_icld_delta_loss")
+    )
+    component["avg_jacobian_effective_rank"] = _rounded_metric(
+        overlay.get("avg_jacobian_effective_rank")
+    )
+    component["avg_sensitivity_uniformity"] = _rounded_metric(
+        overlay.get("avg_sensitivity_uniformity")
+    )
     component["top_failure_reason"] = overlay.get("top_failure_reason")
     return component
 
@@ -608,7 +650,25 @@ def _build_profile_only_component(op_name: str, prof: dict[str, Any]) -> dict[st
         "avg_validation_loss_ratio": None,
         "avg_induction_auc": None,
         "avg_binding_auc": None,
+        "avg_induction_v2_auc": None,
+        "avg_binding_v2_auc": None,
         "avg_hellaswag_acc": None,
+        "avg_blimp_overall_accuracy": None,
+        "avg_composite_score": None,
+        "avg_erf_density": None,
+        "avg_id_collapse_rate": None,
+        "avg_id_collapse_rate_normalized": None,
+        "avg_erf_decay_slope": None,
+        "avg_erf_first_norm": None,
+        "avg_erf_last_norm": None,
+        "avg_logit_margin_velocity": None,
+        "avg_logit_margin_delta": None,
+        "avg_erf_variance_log": None,
+        "avg_spec_norm_log": None,
+        "avg_icld_velocity": None,
+        "avg_icld_delta_loss": None,
+        "avg_jacobian_effective_rank": None,
+        "avg_sensitivity_uniformity": None,
         "top_failure_reason": None,
         "grad_norm": round(prof["grad_norm"], 1)
         if prof.get("grad_norm") is not None
@@ -644,7 +704,9 @@ def _load_component_metric_overlays(nb, window: str) -> Dict[str, Dict[str, Any]
                     pr.loss_ratio AS loss_ratio,
                     pr.validation_loss_ratio AS validation_loss_ratio,
                     pr.induction_auc AS induction_auc,
+                    pr.induction_v2_investigation_auc AS induction_v2_auc,
                     COALESCE(pr.binding_auc_curriculum, pr.binding_auc) AS binding_auc,
+                    pr.binding_v2_investigation_auc AS binding_v2_auc,
                     COALESCE(
                         pr.hellaswag_acc,
                         CASE
@@ -653,9 +715,32 @@ def _load_component_metric_overlays(nb, window: str) -> Dict[str, Dict[str, Any]
                                  / pr.screening_hellaswag_total
                             ELSE NULL
                         END
-                    ) AS hellaswag_acc
+                    ) AS hellaswag_acc,
+                    pr.blimp_overall_accuracy AS blimp_overall_accuracy,
+                    l.composite_score AS composite_score,
+                    pr.fp_jacobian_effective_rank AS jacobian_effective_rank,
+                    pr.fp_sensitivity_uniformity AS sensitivity_uniformity,
+                    pr.fp_jacobian_erf_density AS erf_density,
+                    pr.fp_id_collapse_rate AS id_collapse_rate,
+                    pr.fp_id_collapse_rate_normalized AS id_collapse_rate_normalized,
+                    pr.fp_jacobian_erf_decay_slope AS erf_decay_slope,
+                    pr.fp_jacobian_erf_first_norm AS erf_first_norm,
+                    pr.fp_jacobian_erf_last_norm AS erf_last_norm,
+                    pr.fp_logit_margin_velocity AS logit_margin_velocity,
+                    pr.fp_logit_margin_delta AS logit_margin_delta,
+                    CASE WHEN pr.fp_jacobian_erf_variance IS NOT NULL
+                         THEN log(abs(pr.fp_jacobian_erf_variance) + 0.000000001)
+                         ELSE NULL
+                    END AS erf_variance_log,
+                    CASE WHEN pr.fp_jacobian_spectral_norm IS NOT NULL
+                         THEN log(abs(pr.fp_jacobian_spectral_norm) + 0.000000001)
+                         ELSE NULL
+                    END AS spec_norm_log,
+                    pr.fp_icld_velocity AS icld_velocity,
+                    pr.fp_icld_delta_loss AS icld_delta_loss
                 FROM program_results pr
                 JOIN program_graph_ops gpo ON gpo.result_id = pr.result_id
+                LEFT JOIN leaderboard l ON l.result_id = pr.result_id
                 WHERE {where}
             )
             SELECT
@@ -664,7 +749,25 @@ def _load_component_metric_overlays(nb, window: str) -> Dict[str, Dict[str, Any]
                 AVG(validation_loss_ratio) AS avg_validation_loss_ratio,
                 AVG(induction_auc) AS avg_induction_auc,
                 AVG(binding_auc) AS avg_binding_auc,
-                AVG(hellaswag_acc) AS avg_hellaswag_acc
+                AVG(induction_v2_auc) AS avg_induction_v2_auc,
+                AVG(binding_v2_auc) AS avg_binding_v2_auc,
+                AVG(hellaswag_acc) AS avg_hellaswag_acc,
+                AVG(blimp_overall_accuracy) AS avg_blimp_overall_accuracy,
+                AVG(composite_score) AS avg_composite_score,
+                AVG(erf_density) AS avg_erf_density,
+                AVG(id_collapse_rate) AS avg_id_collapse_rate,
+                AVG(id_collapse_rate_normalized) AS avg_id_collapse_rate_normalized,
+                AVG(erf_decay_slope) AS avg_erf_decay_slope,
+                AVG(erf_first_norm) AS avg_erf_first_norm,
+                AVG(erf_last_norm) AS avg_erf_last_norm,
+                AVG(logit_margin_velocity) AS avg_logit_margin_velocity,
+                AVG(logit_margin_delta) AS avg_logit_margin_delta,
+                AVG(erf_variance_log) AS avg_erf_variance_log,
+                AVG(spec_norm_log) AS avg_spec_norm_log,
+                AVG(icld_velocity) AS avg_icld_velocity,
+                AVG(icld_delta_loss) AS avg_icld_delta_loss,
+                AVG(jacobian_effective_rank) AS avg_jacobian_effective_rank,
+                AVG(sensitivity_uniformity) AS avg_sensitivity_uniformity
             FROM op_rows
             GROUP BY op_name
             """,
@@ -676,7 +779,27 @@ def _load_component_metric_overlays(nb, window: str) -> Dict[str, Dict[str, Any]
                 "avg_validation_loss_ratio": row["avg_validation_loss_ratio"],
                 "avg_induction_auc": row["avg_induction_auc"],
                 "avg_binding_auc": row["avg_binding_auc"],
+                "avg_induction_v2_auc": row["avg_induction_v2_auc"],
+                "avg_binding_v2_auc": row["avg_binding_v2_auc"],
                 "avg_hellaswag_acc": row["avg_hellaswag_acc"],
+                "avg_blimp_overall_accuracy": row["avg_blimp_overall_accuracy"],
+                "avg_composite_score": row["avg_composite_score"],
+                "avg_erf_density": row["avg_erf_density"],
+                "avg_id_collapse_rate": row["avg_id_collapse_rate"],
+                "avg_id_collapse_rate_normalized": row[
+                    "avg_id_collapse_rate_normalized"
+                ],
+                "avg_erf_decay_slope": row["avg_erf_decay_slope"],
+                "avg_erf_first_norm": row["avg_erf_first_norm"],
+                "avg_erf_last_norm": row["avg_erf_last_norm"],
+                "avg_logit_margin_velocity": row["avg_logit_margin_velocity"],
+                "avg_logit_margin_delta": row["avg_logit_margin_delta"],
+                "avg_erf_variance_log": row["avg_erf_variance_log"],
+                "avg_spec_norm_log": row["avg_spec_norm_log"],
+                "avg_icld_velocity": row["avg_icld_velocity"],
+                "avg_icld_delta_loss": row["avg_icld_delta_loss"],
+                "avg_jacobian_effective_rank": row["avg_jacobian_effective_rank"],
+                "avg_sensitivity_uniformity": row["avg_sensitivity_uniformity"],
             }
 
         reason_rows = nb.conn.execute(

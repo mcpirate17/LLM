@@ -28,7 +28,11 @@ export function buildEligibilityFilter(eligibilityByResultId) {
       };
     }
 
-    const eligibilityKey = mode === 'validation' ? 'validationEligible' : 'investigationEligible';
+    const eligibilityKey = mode === 'confirmation'
+      ? 'confirmationEligible'
+      : mode === 'validation'
+        ? 'validationEligible'
+        : 'investigationEligible';
     const eligibleIds = [];
     const ineligibleIds = [];
     for (const resultId of ids) {

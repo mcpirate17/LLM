@@ -1,13 +1,14 @@
 import React from 'react';
 
 export function ExternalBenchmarkCard({ program }) {
-  const raw = program?.external_benchmarks || program?.benchmark_scores || program?.external_benchmark_scores;
+  const raw = program?.external_benchmarks || program?.external_benchmarks_json_parsed || program?.benchmark_scores || program?.external_benchmark_scores;
   
   const entries = (() => {
     if (Array.isArray(raw)) return raw;
     if (raw && typeof raw === 'object') {
       return Object.entries(raw)
         .filter(([k]) => !['long_context', 'combined_score', 'benchmark_version', 'scaling'].includes(k))
+        .filter(([, score]) => score == null || ['number', 'string', 'boolean'].includes(typeof score))
         .map(([name, score]) => ({ name, score }));
     }
     return [];
@@ -23,17 +24,27 @@ export function ExternalBenchmarkCard({ program }) {
   };
 
   return (
-    <div className="card" style={{ padding: 12, marginTop: 16 }}>
+    <div className="card" style={{ padding: 12, minWidth: 0 }}>
       <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 600, marginBottom: 10 }}>
         External Benchmarks
       </div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(120px, 1fr))', gap: 12 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(118px, 1fr))', gap: 10 }}>
         {entries.map((b, i) => (
-          <div key={i} style={{ padding: '8px', background: 'var(--bg-secondary)', borderRadius: 4, border: '1px solid var(--border)' }}>
+          <div key={i} style={{ padding: '8px', background: 'var(--bg-secondary)', borderRadius: 4, border: '1px solid var(--border)', minWidth: 0 }}>
             <div style={{ fontSize: 9, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 4, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={b.name}>
               {b.name.replace(/_/g, ' ')}
             </div>
-            <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--text-primary)' }}>
+            <div
+              title={formatBenchmarkScore(b.score)}
+              style={{
+                fontSize: 16,
+                fontWeight: 700,
+                color: 'var(--text-primary)',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+              }}
+            >
               {formatBenchmarkScore(b.score)}
             </div>
           </div>

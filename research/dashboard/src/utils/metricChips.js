@@ -3,6 +3,8 @@
  * for the shared MetricChipBadge component.
  */
 
+import { evalMetricQuality } from './backendScore';
+
 function reliabilityFromConfidence(value, high = 0.7, med = 0.4) {
   if (value == null) return 'low';
   return value >= high ? 'high' : value >= med ? 'medium' : 'low';
@@ -47,6 +49,12 @@ export function programMetricChips(program) {
 export function leaderboardMetricChips(entry) {
   if (!entry) return [];
   const chips = [];
+  const evalQuality = evalMetricQuality(entry);
+  chips.push({
+    label: evalQuality.label,
+    source: evalQuality.version,
+    reliability: evalQuality.reliability,
+  });
   chips.push({
     label: 'Loss',
     source: 'measured',

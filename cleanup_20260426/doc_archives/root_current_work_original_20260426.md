@@ -1,0 +1,1209 @@
+# Current Work
+
+## 2026-04-24 — Codex — batch native graph validation [DONE]
+
+Claiming the research graph-validation batch boundary while this entry is
+active. The plan is to measure repeated packed validation first, add a compact C
+batch ABI only if it can amortize real per-graph native-call overhead, bind it
+through the existing `native_analysis` surface, and integrate it only where
+batch call sites can consume it without duplicate implementations. This does
+not revive the previously measured slower single-graph fused opcode-table path.
+
+Status: implemented and measured in `research/`. Repeated packed validation over
+512 graphs improved from `12.979 ms` to `3.923 ms` median; warmed
+same-process `batch_generate` improved from `77.181 ms` to `66.653 ms` at 128
+graphs and from `163.720 ms` to `141.375 ms` at 256 graphs. Fixed the
+targeted-backfill breakage surfaced by the broader suite by retiring the stale
+`attn_linear_no_matmul_ffn_v2` surface and making deterministic Codex SSM
+templates emit distinct valid variants. Latest focused native/generation suite:
+`133 passed in 16.25s`.
+Remaining high-ROI target is native/Rust/C++ motif compatibility and template
+selection, not more single-graph validation wrappers.
+
+## 2026-04-19 15:00Z — claude-opus-4.7 — leaderboard dup cleanup + fingerprint dedup governance [DONE]
+
+Plan: extension of `/home/tim/.claude/plans/fluttering-stirring-snail.md`.
+
+Problem: 99 leaderboard fingerprint-dup groups (118 excess rows) had accumulated — my own 13 from the earlier backlog-promotion batch, plus 105 historical ones. Root cause: `_api_program_promote_screening` looked up existing entries by `result_id` instead of `graph_fingerprint`, and there was no schema-level or Python-level constraint on fingerprint uniqueness in the leaderboard.
+
+Released:
+
+- `research/tools/leaderboard_dedup_by_fingerprint.py` (NEW) — per-fingerprint group collapse. Keeper priority: (1) has v2 probe data, (2) higher tier, (3) higher composite_score, (4) newer timestamp. Merges non-null probe/validation/robustness columns from losers onto keeper, deletes losers, backs up both pre-merge keeper snapshot + all deleted losers to `leaderboard_dedup_backup` with audit trail (`dedup_at`, `dedup_role`, `dedup_keeper_entry_id`, `dedup_merged_columns`).
+  - **Run with `--apply`**: 99 groups → 99 keepers, 118 rows deleted, 185 field-values merged. 50/99 keepers chosen by v2-probe priority. Backup has 217 rows.
+- `research/scientist/notebook/notebook_leaderboard.py` — `DuplicateLeaderboardFingerprintError` + `allow_fingerprint_duplicate` kwarg + pre-INSERT fingerprint gate in `upsert_leaderboard`. References bypass. INSERT path denormalizes `graph_fingerprint` onto the row.
+- `research/scientist/notebook/notebook_programs.py` — `get_leaderboard_entry_by_fingerprint()` helper.
+- `research/scientist/api_routes/programs_bp.py` — `_api_program_promote_screening` routes dup-fingerprint promotions to the pre-existing entry.
+- `research/tools/promote_backlog_batch.py` — mirror fix.
+- `research/scientist/notebook/notebook_core.py` — `_migrate_leaderboard_fp_dedup`: adds `graph_fingerprint TEXT` column, backfills from program_results, installs `idx_leaderboard_fp UNIQUE(graph_fingerprint) WHERE graph_fingerprint IS NOT NULL AND graph_fingerprint != '' AND COALESCE(is_reference, 0) = 0`. References excluded (legit namespace overlap).
+- `research/tests/test_leaderboard_fingerprint_dedup.py` (NEW) — 5 tests all passing (unannotated dup raises, Python-bypass + schema-backstop, self-update unaffected, lookup helper, references bypass gate).
+- `research/tests/test_notebook.py::TestLeaderboardDedup::test_leaderboard_dedup_by_fingerprint` — drops the schema index before inserting historical-dup fixture.
+
+Live state:
+- Leaderboard: 2,705 → 2,587 rows (−118)
+- Non-reference dup fingerprints: 0 (was 99)
+- `idx_leaderboard_fp` UNIQUE partial index: **enforced**
+- Defense-in-depth: Python gate + schema index + API-layer promotion routing
+
+Pre-existing unrelated failure I did NOT touch: `test_runtime_events.py::test_status_prefers_projected_lifecycle_before_legacy_notebook_heuristic`.
+
+## 2026-04-19 14:50Z — claude-opus-4.7 — three_way_split + recommendations 3/4/5 [DONE]
+
+Released:
+
+**`tpl_three_way_split` (item: monoculture fix)**
+- `research/synthesis/_templates_core.py` — replaced hardcoded `conv1d_seq`/`linear_proj+gelu`/`linear_proj+sigmoid` lane ops with curated rng-picked motif sets per lane:
+  - Lane 0 (sequence mixing): `conv1d_seq` | `conv_only` | `linear_attention` | `gated_linear_attention` | `rwkv_time_mixing`
+  - Lane 1 (channel/FFN): `fused_linear_gelu` | `swiglu_mlp` | `gated_linear` | `linear_proj+silu`
+  - Lane 2 (gating/routing): `learned_token_gate` | `cheap_verify_blend` | `depth_token_mask` | `gated_delta` | `rwkv_channel`
+- All ops verified compatible at D/3 dims (D=128 → lane width 42).
+- Added 3-way merge `rmsnorm` before residual injection.
+- Verified: 80 random seeds produce 52 distinct lane-op signatures (was 1 — pure monoculture).
+
+**Composite-score floor reform (item 4)**
+- `research/scientist/notebook/notebook_references.py:get_investigation_eligible` — floor now `min(p25 of non-ref investigation tier, p90 of non-ref screening tier)`.
+- Was: 56.32 (only 12 of 2,580 screening eligible).
+- Now: 35.61 (~150-300 eligible). Anchored to actual screening achievability, doesn't drift up as a few exceptional candidates promote.
+
+**Slot-init √(2L) scaling (item 3)**
+- `research/synthesis/compiled_op_params.py` — `linear_proj`, `linear_proj_down`, `linear_proj_up`, `fused_linear_gelu` now respect optional `init_scale` config key. `std = 0.02 * init_scale` (default 1.0). Verified: passing `init_scale=0.577` produces weight std 0.0115 vs default 0.0200.
+- `research/synthesis/_templates_core.py:tpl_three_way_split` — output projection uses `init_scale=0.5` (3 lane paths + skip).
+- `research/synthesis/_templates_attention_hybrid.py` — output projections in `tpl_latent_attn_ssm_hybrid`, `tpl_local_attn_ssm_hybrid`, `tpl_latent_attn_conv_hybrid`, `tpl_diff_attn_conv_hybrid` use `init_scale=0.577` (2 lane paths + skip).
+
+**signal_routed_compression overfit audit (item 5) — DIAGNOSIS ONLY, no code change**
+- The "best" loss_ratio of 0.031 for `signal_routed_compression` is NOT a leak.
+- Top 5 entries by loss_ratio: `final_loss = 4.6, 13.0, 13.4, 13.5, 13.5`. Their `initial_loss = 149.5, 249.1, 251.5, 251.4, 248.3` (all absurdly high; typical NLM should be log(vocab_size) ≈ 5-7).
+- The low loss_ratio is an artifact of `loss_ratio = final/initial` divided by an anomalous initial. The model is NOT actually learning well — the ratio just looks great because the initial state was pathological.
+- Same pattern across other templates: `recursive_depth_router` 0.0009, `sparse_ffn`+`token_merge_block` 0.0061, `residual_block` 0.0079.
+- **Root cause: `eval/screening_rapid.py:311` sets `initial_loss = metrics["losses"][0]` — the first training-step loss. Unstable architectures produce huge first-step losses, inflating all downstream loss_ratio values and downstream composite_score components that consume it.**
+- **Recommended follow-up (NOT shipped this session)**: clip `initial_loss` at a sensible ceiling (e.g., `4 * log(vocab_size)` ≈ 36) before using it in any ratio. Touches `leaderboard_scoring.py` and likely many tests; deserves its own change.
+
+Verification: 9/9 modified templates pass smoke (8/8 seeds each). 221/221 tests pass across `test_template_optimization`, `test_template_audit_repairs`, `test_slot_template_wiring`, `test_notebook`, `test_dedup_governance`.
+
+NOT touched (defer): leaderboard_scoring.py (item 5 follow-up), dedup/governance code (slice 4 complete), runner control flow, other agents' claims.
+
+## 2026-04-19 14:30Z — claude-opus-4.7 — ghost-template fix (attention slot pinning + multi-path renorm) [DONE]
+
+Diagnosis: 65 templates have ≥10 s1 passes and 0 advance to investigation. Two dominant blockers: (1) Jacobian spectral norm out of [0.5, 10.0] band on multi-path templates; (2) attention-named templates use the 5-class `_MIXER_CLASSES` lottery so `tpl_transformer_block` only got attention ~1/5 of the time.
+
+Released:
+- `research/synthesis/_templates_core.py` — `tpl_transformer_block` mixer slot pinned to `MOTIF_CLASS_ATTENTION` (was `_MIXER_CLASSES`). Verified: 20/20 sampled instances now contain an attention motif (softmax_attention, strided_attention, diff_attention, gated_progressive_attention, linear_attention, tropical_attention, latent_attention_compressor, etc.). Was: ~1/5.
+- `research/synthesis/_templates_attention_hybrid.py` — added merge-output `rmsnorm` to: `tpl_latent_attn_ssm_hybrid`, `tpl_local_attn_ssm_hybrid`, `tpl_latent_attn_conv_hybrid`, `tpl_diff_attn_conv_hybrid`. Each had a 2-path residual sum that compounded variance before rejoining the residual stream.
+- `research/synthesis/_templates_routing_gated.py` — added output `rmsnorm` to `tpl_signal_routed_compression` (was 113/186 spectral-bad) and `tpl_dual_routing_stack` before the final residual add.
+- `research/synthesis/_templates_exotic.py` — added output `rmsnorm` to `tpl_n_way_moe_block` (was 55/92 spectral-bad).
+
+Verification:
+- 8/8 modified templates pass smoke test (8/8 random seeds each).
+- rmsnorm presence confirmed in generated graphs (e.g., `latent_attn_ssm_hybrid` now has 3 rmsnorm ops, `n_way_moe_block` has 3, `signal_routed_compression` has 1, `dual_routing_stack` has 1).
+- Existing tests: 143/143 passing (`test_template_optimization.py`, `test_template_audit_repairs.py`, `test_slot_template_wiring.py`).
+
+Effect (predicted, to be confirmed in next screening cycle): the spectral-norm gate failure rate on these 6 templates should drop from 60-100% → <20%, freeing the bulk of the 65 ghost templates' s1-passing population to clear the investigation eligibility threshold.
+
+NOT touched (deferred):
+- Slot-init √(2L) scaling (recommendation #3) — separate change.
+- composite_score floor reform (recommendation #4) — investigation tier floor of 56.3 is heavily influenced by reference architectures.
+- `tpl_signal_routed_compression` overfitting investigation (recommendation #5) — best loss 0.031 is suspiciously low.
+- The remaining 50+ smaller-population ghost templates — most should benefit from the same renorm pattern; identified via the same SQL query.
+
+## 2026-04-19 13:50Z — claude-opus-4.7 — slice 4 (cross-experiment dedup gate) [DONE]
+
+Plan: extension of `/home/tim/.claude/plans/virtual-snacking-rain.md` (slice 4).
+
+Released:
+
+- `research/scientist/notebook/notebook_programs.py` — added `DuplicateFingerprintError` exception and `intentional_rerun_reason: Optional[str] = None` parameter to `record_program_result`. Pre-write gate at top: if fp already exists in `program_results` AND no reason → log WARNING with caller info, increment class-level counter `_dup_rejection_count`, raise `DuplicateFingerprintError` carrying the existing rid + experiment_id.
+- `research/scientist/notebook/notebook_core.py` — added migrations: `intentional_rerun_reason TEXT` column on program_results, and `reject_dup_fingerprint_no_reason` BEFORE INSERT trigger. Trigger raises ABORT for any INSERT of an existing fp without a reason. Installed and verified live.
+- Annotated 4 intentional cross-experiment callers:
+  - `runner/_helpers_benchmark.py:483` → `intentional_rerun_reason="exact_graph_replay"` (Rescreen button path)
+  - `runner/continuous_validation.py:685`, `runner/execution_validation_candidate.py:553`, `runner/execution_validation_scale.py:540` → `intentional_rerun_reason="validation_promotion"`
+  - `tools/register_references.py` already had a `nb.has_fingerprint()` guard skipping the INSERT path; no annotation needed.
+- `research/scientist/api_routes/observability_bp.py` — extended `/api/governance/duplicate-fingerprints` with `rejection_counter` block: `since_dashboard_boot` count + `guards_installed` map confirming both `idx_pr_fp_per_experiment` and `reject_dup_fingerprint_no_reason` are live.
+- `research/tests/test_dedup_governance.py` (NEW) — 5 tests: unannotated duplicate raises, annotated bypass works, fresh fp unaffected, schema trigger blocks direct INSERT bypassing the application layer, schema trigger allows direct INSERT with reason. All passing.
+- `research/tests/test_notebook.py` — annotated 3 test sites that intentionally model cross-experiment same-fp scenarios (`test_data_accounting_summary_*`, `test_leaderboard_dedup_by_fingerprint`, `test_leaderboard_consistency_report_distinguishes_descendants`) with `intentional_rerun_reason="validation_promotion"`. 78 tests in dedup + notebook pass.
+
+Live state on `lab_notebook.db` after restart:
+- `idx_pr_fp_per_experiment` UNIQUE: enforced
+- `reject_dup_fingerprint_no_reason` trigger: enforced
+- rejection counter: 0 (fresh boot)
+- historical 1,564 cross-experiment dup fingerprints / 3,560 excess experiments: grandfathered (trigger only fires on INSERT)
+- dashboard restarted on PID 207436+ (port 5000)
+
+Per user: any unannotated synthesis/evolution/novelty/screening/forced_exploration/backfill INSERT of an existing fingerprint now hard-fails with both:
+1. `DuplicateFingerprintError` raised at the Python API boundary
+2. `OperationalError: duplicate graph_fingerprint without intentional_rerun_reason` from the SQLite trigger if anything bypasses the Python layer
+
+Coordination: did NOT touch the other agent's claimed files (`cross_exp_probe_merge.py`, `intelligence/ml_corpus.py`, `intelligence/predictor_gbm.py`). Their merge tool reads/UPDATEs only — no INSERTs — so it is unaffected by the new gate.
+
+## 2026-04-19 13:40Z — claude-opus-4.7 — cross-experiment probe merge (Phase 1+2) [DONE; Phase 3 queued]
+
+Plan: `/home/tim/.claude/plans/fluttering-stirring-snail.md`
+
+### Phase 1 applied (user-approved at 13:58Z)
+
+- `research/tools/cross_exp_probe_merge.py` (NEW) — cross-experiment probe merge tool. Mirrors `dedup_within_experiment.py` structure; canonical-row parity with `ml_corpus.py::_best_rank`; writer-lock check that aborts if another live PID holds the flock; explicit `MERGE_COLUMNS_BY_FAMILY` allow-list (v2 probes, v1 probes, language, wikitext, validation, rapid_screening, robustness, routing_fast_lane, diagnostics). No deletions.
+- `research/tests/test_cross_exp_probe_merge.py` (NEW) — 4 tests passing (dry-run identifies plan, apply merges onto canonical + writes audit trail, intentional experiments are excluded, column-family filter restricts scope). Test fixtures annotated with `intentional_rerun_reason="test_fixture_historical_dup"` to pass the slice-4 gate.
+- `research/reports/cross_exp_probe_merge_dryrun_2026-04-19.md` (NEW) — dry-run report.
+
+**Apply results (committed):** 1,119 fingerprints gained probe data, **14,550 field-values promoted** onto canonical rows. Zero deletions. Backup in `program_results_cross_exp_merge_backup` (1,119 rows with `merged_at`, `merged_from_result_ids`, `merged_columns` audit trail). iv2 coverage 771 → 849 on program_results. Top recoveries: induction_auc (653 fp), binding_auc (319), hellaswag_acc (143), plus v2 probes and BLiMP where measured.
+
+### Phase 2 landed
+
+- `research/scientist/intelligence/ml_corpus.py` — `load_deduped_screening_predictor_rows` now MAX-aggregates `induction_v2_investigation_auc_best`, `binding_v2_investigation_auc_best`, `rapid_screening_passed_best` and MIN-aggregates `validation_loss_ratio_best` across fingerprint siblings. SELECT clause extended to pull the new columns.
+- `research/scientist/intelligence/predictor_gbm.py` — new `_best` keys added to `_query_graph_training_data` feature-dict construction (line ~230) and both `_PROBE_FEATURE_NAMES` gate-exclusion sets (lines ~405 and ~625). Post-eval features: kept for the rank model, excluded from the gate.
+
+Unit-marker predictor/corpus/intelligence tests: **15 passed + 1 passed, 3 skipped**. No regressions.
+
+### Phase 3 queued
+
+`predictor --retrain` (or equivalent entry point) to be run once writer-lock clears. Will measure ensemble ROC / gbm_rank spearman deltas vs. the 2026-04-17 baseline in `predictor_metrics_report.json`.
+
+## 2026-04-19 13:15Z — claude-opus-4.7 — slice 3 dedup governance [DONE]
+
+Plan: `/home/tim/.claude/plans/virtual-snacking-rain.md`
+
+Released:
+
+- `research/tools/dedup_within_experiment.py` (NEW) — within-experiment cleanup script. Per `(graph_fingerprint, experiment_id)` group: keep latest by timestamp; merge NULL fields on the keeper from the most-recent non-NULL value across siblings (so probe metrics from earlier dup runs are preserved). Backs up deleted rows to `program_results_dedup_backup`. Dry-run by default; `--apply` executes.
+  - **Run with `--apply`**: 162 dup groups collapsed, 709 rows deleted, 895 field-values merged (recovered induction/binding v2 AUCs, BLiMP, hellaswag screening counts, loss metrics).
+- `research/scientist/notebook/notebook_core.py` — added `_migrate_program_results_dedup_index` to `_migrate_impl`. Probes for existing within-experiment dupes first; if any remain, logs a loud warning and skips index creation (dashboard keeps booting). Otherwise installs `idx_pr_fp_per_experiment UNIQUE(graph_fingerprint, experiment_id) WHERE graph_fingerprint <> ''`.
+  - **Index installed**: verified via direct INSERT — duplicate `(fp, experiment_id)` writes now raise `IntegrityError: UNIQUE constraint failed: program_results.graph_fingerprint, program_results.experiment_id`.
+- `research/scientist/runner/results_analysis.py` — added `_check_intra_experiment_dedup(nb, exp_id, fingerprint)` helper + gate at the top of `_on_program_evaluated`. Lazily caches per-experiment fingerprint sets, short-circuits duplicate `record_program_result` calls, bumps `eval_counters['skipped_intra_experiment_dedup']`, logs a regression warning. Covers all 4 call sites of `_on_program_evaluated` (continuous_modes ×2, execution_search ×2).
+- `research/scientist/api_routes/observability_bp.py` — added `/api/governance/duplicate-fingerprints` (registered via new `_register_governance_routes`). Returns within-experiment summary + cross-experiment unintentional fingerprints (excludes `exact_graph_replay`, `reference`, `reference_registration`, `validation`, `backfill` since those are intentional re-runs).
+- `research/tests/test_notebook.py` — updated `test_data_accounting_summary_separates_rows_runs_graphs_and_curves` and `TestLeaderboardDedup::test_leaderboard_dedup_by_fingerprint` to use cross-experiment dupes (the schema constraint forbids the within-experiment pattern they previously exercised). 73/73 notebook tests passing.
+
+Live state on `lab_notebook.db` after this session:
+- within-experiment dup pairs: **0** (was 162)
+- backup table `program_results_dedup_backup`: **709 rows** (recoverable)
+- `idx_pr_fp_per_experiment` UNIQUE: **enforced**
+- cross-experiment unintentional dups (slice 3b's runtime target going forward): 1,564 fingerprints / 3,560 excess experiments — historical baggage, but no new dupes will accumulate now that the gate is live in `_on_program_evaluated`
+
+Dashboard restarted on PID 203516 (port 5000). React bundle untouched in this session — no UI added for the governance endpoint yet (curl-only). Could add a Diagnostics-tab panel as a follow-up.
+
+Pre-existing failure I did NOT touch: `research/scientist/api_routes/analytics_bp.py:304` references `notebook_path` undefined → `test_api_analytics_grammar_weights_schema` fails. Diff was already on disk before this session. Flagging here for whoever owns analytics.
+
+## 2026-04-19 13:05Z — claude-opus-4.7 — v2 probe priority-driven backfill [STOPPED by user 13:18Z]
+
+Plan: `research/reports/predictor_v2_retrain_plan_2026-04-19.md`
+
+Writer lock + GPU RELEASED. PID 201930 killed via SIGINT after 3 fingerprints. Log: `research/logs/probe_backfill/priority_run.log`.
+
+Code landed (kept — safe, unshipped by my stop):
+- `research/tools/backfill.py` — `--fingerprint-file <jsonl>` + `query_fingerprint_file_candidates()`.
+- `research/tests/test_backfill_fingerprint_file.py` — 3 passing tests.
+- `research/scientist/intelligence/ml_corpus.py` — `_fallback_predictor_training_rows` LEFT JOIN (corpus 2,214 → 3,651 when retraining runs).
+- `research/tools/probe_backfill_priority.py` — read-only priority ranker.
+- `research/reports/probe_priority_next_2026-04-19.jsonl` — 2,961 candidates.
+- `research/reports/predictor_v2_retrain_plan_2026-04-19.md` — retrain plan.
+
+No DB writes occurred — aria-db single-writer flock prevented anything from being persisted before the SIGINT reached the Python process.
+
+## 2026-04-19 12:15Z — claude-opus-4.7 — Discoveries Backlog source filter [DONE]
+
+Released:
+- `research/scientist/api_routes/leaderboard_bp.py` — added `view=backlog` branch on `/api/discoveries`. Selects `program_results LEFT JOIN leaderboard WHERE leaderboard.entry_id IS NULL AND stage1_passed=1 AND graph_fingerprint != ''`, annotates each row with `missing_metrics`, `missing_metrics_count`, `completeness_ratio` over `{rapid_screening_passed, wikitext_perplexity, hellaswag_acc, induction_v2_investigation_auc, binding_v2_investigation_auc, discovery_loss_ratio, validation_loss_ratio}`. SQL-verified to return target fingerprint `fb8eecd9d0719d7a` (result_id `9f0c3875-405`).
+- `research/dashboard/src/components/Discoveries.js` — added `'backlog'` to the Source dropdown valid values, dropdown option `<option value="backlog">Backlog (unranked)</option>`, fetchData branch sending `view=backlog&sort=loss_ratio` (omits `tier` since backlog rows have no leaderboard tier), and `sourceFiltered` short-circuit `!entry?.entry_id` for backlog mode.
+
+Backlog SQL count today: 1,612 rows (1,213 forced_exploration, 241 backfill_observation, 158 other). Dashboard restarted (new PID 196129) — `/api/discoveries?view=backlog` confirmed live.
+
+## 2026-04-19 12:50Z — claude-opus-4.7 — Discoveries visibility + probe columns (slices 1+2 of governance plan) [DONE]
+
+Plan: `/home/tim/.claude/plans/virtual-snacking-rain.md`
+
+Released:
+- `research/scientist/api_routes/leaderboard_bp.py` — folded `view=backlog` + new `view=all_graphs` into one branch with `include_failed` (default true), `unranked_only` (only for backlog), and a SQL-pushed search filter (`pr.graph_fingerprint LIKE / pr.result_id LIKE / pr.model_source LIKE`). `all_graphs` returns every program_results row with a fingerprint regardless of stage1/leaderboard status, capped at 5000 server-side. Annotates `missing_metrics`, `missing_metrics_count`, `completeness_ratio`. Promotes `leaderboard_entry_id` → `entry_id` so the client filter for backlog still works.
+- `research/dashboard/src/components/Discoveries.js`:
+  - Source dropdown collapsed to `Trusted | Backlog | All graphs` with an `Adv ▾` toggle that re-exposes `All (ranked, mixed trust) | Untrusted | Backfill | Replay`. Pref persisted as `showAdvancedSourceFilter`.
+  - 16 new probe/diagnostic columns added to `COLUMNS`: `wikitext_perplexity`, `hellaswag_acc`, `induction_auc`, `induction_v2_investigation_auc`, `binding_auc`, `binding_v2_investigation_auc`, `binding_composite`, `ar_auc`, `blimp_overall_accuracy`, `ncd_score`, `rapid_screening_passed`, `stage_at_death`, `error_type`, `completeness_ratio`, `missing_metrics_count`, plus their render cases in the table cell switch.
+  - New `PROBES_VISIBLE_COLUMNS` preset + `Probes` button alongside `Core | Research | All`.
+  - `fetchData` switches to `view=all_graphs&sort=loss_ratio&include_failed=1&limit=5000` when source=`all_graphs`; backlog stays on `view=backlog`.
+  - `sourceFiltered` no-ops on `all_graphs` (server already returns the full set).
+
+Verified end-to-end: `curl /api/discoveries?view=all_graphs&q=4c287667&scope=all` returns the target row with `induction_v2_investigation_auc=0.433`, `binding_v2_investigation_auc=0.1214`, `stage_at_death=stage1`, `error_type=unstable_dynamics`, `completeness_ratio=0.43`. Searching the fingerprint `8c8b7471` returns all 3 duplicate runs (the dedup violation we'll fix in slice 3).
+
+Dashboard restarted (PID 201163, fresh 13:02Z); React bundle rebuilt at 13:04Z (`research/dashboard/build/static/js/`). No tests added — this is route + UI plumbing; existing tests in `test_api_integration.py` still green.
+
+**Slice 3 (dedup governance)** intentionally deferred until the overnight backfill releases the writer lock. Plan calls for: (3a) `CREATE UNIQUE INDEX idx_pr_fp_per_experiment ON program_results(graph_fingerprint, experiment_id) WHERE graph_fingerprint <> ''` migration in `notebook_core.py:_migrate`; (3b) per-experiment fingerprint cache in `runner/results_analysis.py:_on_program_evaluated` + matching synthesis sites; (3c) `/api/governance/duplicate-fingerprints` endpoint and a Diagnostics panel. Other agents: please don't touch `notebook_core.py:_migrate`, `runner/results_analysis.py`, or `runner/synthesis.py` for unrelated reasons without coordinating here, or slice 3 will conflict on merge.
+
+## 2026-04-19 03:20Z — claude-opus-4.7 — screening v2-probe backfill [ACTIVE, OVERNIGHT]
+
+- CLAIMED: `research/lab_notebook.db` writer (aria-db flock). Sole writer.
+- RUN: `python -m research.tools.backfill --probe induction_v2,binding_v2 --tier screening --top 3000`
+- Logs: `research/logs/probe_backfill/screening_full.log`
+- ETA: ~50–60h serial (aria-db enforces single-writer; parallel workers not possible).
+- Other agents: please do NOT start writer processes against `lab_notebook.db` until this completes. Read-only (`aria_db.get_manager_readonly`) is fine.
+- Concurrent writes attempted will fail fast with `RuntimeError: another process already holds the writer lock`.
+
+## 2026-04-19 01:30Z — claude-opus-4.7 — training/ + eval/ fallback cleanup [DONE]
+
+Scope: continued the pass into `research/eval/` to strip dead native-fallback twins, remove unused parameters, and consolidate the grad-clip branch. No scientist/runner or notebook files touched.
+
+Files released:
+- `research/eval/utils.py` — dropped try/except fallbacks around `load_data_native()` in `tokenize_string`, `tokenize_file`, `make_batches`; dropped `torch._foreach_norm` fallback in `compute_grad_norm`. All paths are now unconditionally native — native is mandatory, not optional.
+- `research/eval/training_core.py` — removed the Python `_grad_stats` fallback (40 lines of dead code) and the `use_native_clip` branch (native clip works on CPU too after consolidation).
+- `research/training/_loss_components.py` — dropped unused `probs` parameter from all loss functions, `compute_component_fast`, and dispatch table. Updated `loss_synthesis.py` to match.
+- `research/training/data_pipeline.py`, `research/training/checkpointing.py` — replaced `raise e` with `raise` (preserves traceback); switched checkpoint loader errors to `logger.exception`.
+- `research/tests/test_loss_optimizer_synthesis.py` — updated call sites for the dropped `probs` param.
+
+Verified against `test_eval_runner_native`, `test_loss_optimizer_synthesis`, `test_tokenizer_parity`, `test_backfill_micro_train`, `test_native_training`, `test_sparse_ablation`, `test_execution_training_native_boundary`, `test_training_core_diagnostics`, `test_training_perf_regressions`, `test_hybrid_sparse_router_{abi,integration,native_copy}` — 66 passed, 8 skipped.
+
+The 54 other unit failures in the tree are in scientist/ / notebook/ / synthesis/ territory, all in other agents' active claims (audit governance, selection policy, runtime events contract guard, etc.). None are training/eval-related.
+
+## 2026-04-19 01:00Z — claude-opus-4.7 — training/ native consolidation [DONE]
+
+Scope: tight pass over `research/training/` to collapse split CE/grad-clip paths into one native module, add native RigL mask update, and tighten the Muon NS loop. Training-tree only — no overlap with the runtime-events / lifecycle migration below.
+
+Files released (all tests green — `test_eval_runner_native`, `test_loss_optimizer_synthesis`, `test_tokenizer_parity`, `test_backfill_micro_train`, `test_native_training`, `test_sparse_ablation`, `test_execution_training_native_boundary`):
+- `research/training/_loss_native.cpp` — now hosts CE + `clip_grad_norm_` + RigL `rigl_compute_new_mask` alongside rank/entropy/tropical losses; ext renamed to `training_native_ext_v1`.
+- `research/training/_loss_native.py` — loader renamed.
+- `research/training/loss_ops.py` — delegates through eval.utils (fallback-free).
+- `research/training/sparse_training.py` — RigL uses native mask update; momentum reset on grown-only indices.
+- `research/training/_optimizer_muon.py` — NS inner loop fused via `.mul_/.add_/.addmm_` (two fewer temporaries per iteration).
+- `research/eval/_runner_native.cpp` — duplicate CE/clip removed (canonical now in training); ext renamed to `eval_runner_native_ext_v5`. Keeps sgd/adamw step, summarize, grad_stats_fused.
+- `research/eval/_runner_native.py` — loader renamed.
+- `research/eval/utils.py` — routes CE/clip through `training._loss_native`, no try/except fallback.
+
+Notes for other agents: `data_pipeline.py` already had strong improvements (native JSONL, zero-copy .npy, pinned gather) when I arrived. No changes needed there.
+
+## 2026-04-18 — claude-opus — research/ audit cleanup [DONE]
+
+Strict performance/hygiene audit pass. All files released; regressions green.
+
+Landed:
+- Silent native-fallback swallows removed (intelligence/{gnn_predictor, op_embeddings, interaction_model, graph_ops}) — native failures now raise. Python twins kept only as test oracles.
+- Native-fallback telemetry counters on `gnn_predictor` (`get_native_fallback_counters()`) — alerts if Python path fires in prod.
+- God-function splits: `GraphPredictor.train` 432→154, `screen_and_investigate` 420→185, `run_exploration` 206→125, `write_reports` 139→34, `main`-in-{explore,backpopulate} 187/175→90/60.
+- God-file split: `scientist/native/dispatch.py` 1460→1144 (split into `_dispatch_constants.py` + `_dispatch_rust_exec.py` with late-bind monkeypatch compatibility).
+- Code reuse: `tools/screen_template.py::_train_loop` now delegates to `eval.training_core.run_training_loop`.
+- test_api_integration.py: 10 smoke-only tests dropped where a `_schema` counterpart already enforces full contract; 193 tests remain, all collect cleanly.
+- Dead-code removals (~450 LOC): `reference_novelty_for_display` [deferred — claude-opus claim], `get_dashboard_data` [deferred — runner claim], `invalidate_cache` ×2, `check_param_budget`, `ops_by_role`, `nearest_to`, `_db_has_trust_columns`, `_tpl_stabilized_attn_ffn_block`, `_block_sparse_matmul_kernel`, `_smooth_min_dim`, `batch_has_gradient_path`, `_designer_proxy`/`_proxy_or_error`, `_code_agent_task_snapshot`, `import_research_program`, `_query_pair`, `_designer_runtime_lib_path`, `straight_through_estimator`, `reset_native_graph_mutation_lib`, `compatible_space`, `inverse_sigmoid`, `interaction_model.{stability_matrix,loss_matrix,motif_viability,pair_adjusted_op_weight}`, `native_conn.fetchmany`, `native_induction.induction_gap_json`, `_set_result_error`.
+- 4 thin backfill wrappers deleted: `backfill_{triage,hellaswag,cka_novelty}.py`, `run_hellaswag_backfill.py`. REGISTRY.md updated.
+- 9 gitignored trash files removed at repo root (0-byte DBs, stale monitor/log JSONs).
+- Fixed 2 pre-existing broken test imports: `test_evolution_pareto.py`, `test_novelty_search_scaling.py`.
+
+Perf-verified: `benchmark_reference_runner` 1.334× native speedup (22.4ms→16.7ms legacy vs native), parity intact (identical final_loss 5.510972).
+
+Deferred / not done:
+- `reference_novelty_for_display` in `leaderboard_scoring.py` (claude-opus claim).
+- `runner/dashboard_panel.py::get_dashboard_data` (runner/ claim).
+- `tools/backpopulate_screening_metrics.py::{_is_binding_only_target,_run_binding_probe_only}` (admin territory per coord note).
+
+## Runtime Event Bus Migration
+
+- Added runtime event scaffolding under `research/scientist/runtime_events/`
+  - bus, spool, registry, lifecycle projector, projector worker, bootstrap
+- Added/updated tests:
+  - `research/tests/test_runtime_events.py`
+  - `research/tests/test_runtime_event_contract_guard.py`
+- Added docs:
+  - `research/docs/event_bus_migration_plan_2026-04-13.md`
+  - `research/docs/runtime_event_bus_contract_audit_2026-04-13.md`
+  - `research/docs/runtime_event_bus_migration_matrix_2026-04-13.md`
+
+## Current Slice In Progress
+
+- Reducing direct runtime notebook lifecycle writes one execution family at a time
+- Completed:
+  - `research/scientist/runner/execution_validation.py`
+    - canonical terminal publish before notebook compatibility sink
+    - notebook sink dedupe verified in `test_runtime_events.py`
+  - `research/scientist/runner/execution_search.py`
+    - evolution + novelty terminal paths now publish canonical lifecycle events first
+    - notebook terminal writes pushed behind compatibility helpers
+  - `research/scientist/runner/execution_investigation.py`
+    - canonical terminal publish before notebook compatibility sink
+    - no remaining direct `nb.complete_experiment(...)` / `nb.fail_experiment(...)`
+  - `research/scientist/runner/execution_screening.py`
+    - canonical terminal publish before notebook compatibility sink
+    - direct screening terminal notebook lifecycle calls removed
+  - `research/scientist/runner/continuous_validation.py`
+    - canonical terminal publish before notebook compatibility sink
+    - keep notebook completion/failure as compatibility sink only
+  - `research/scientist/runner/continuous_investigation.py`
+    - canonical terminal publish before notebook compatibility sink
+    - keep notebook completion/failure as compatibility sink only
+  - `research/scientist/runner/cycle.py`
+    - cycle-abort compensation now publishes canonical failure before notebook sink
+    - focused dedupe regression added in `test_runtime_events.py`
+  - end-to-end API coverage
+    - `/api/status` registry-first runtime lifecycle case covered in `test_api_integration.py`
+    - `/api/experiments/<id>/cancel` plus `/api/status` cleared-state path covered in `test_api_integration.py`
+  - `research/scientist/runner/continuous_modes.py`
+    - fixed contract bug where terminal publishes used `completed` instead of canonical `experiment_completed`
+    - focused regression added to keep continuous terminal events on the lifecycle contract
+  - `research/scientist/notebook/notebook_experiments.py`
+    - `cleanup_stale_experiments()` now publishes compensating `experiment_failed` lifecycle events
+    - runtime/status coverage added so stale recovery clears registry truth, not just SQLite rows
+  - interrupted resume contract
+    - `get_resumable_experiment()` now allows `interrupted`
+    - `start_resume()` now restores interrupted rows to `running` before emitting canonical resume lifecycle
+    - runtime regression added for interrupted-run resume
+  - continuous session contract
+    - `continuous_loop.py` now emits terminal session events:
+      - `continuous_session_completed`
+      - `continuous_session_stopped`
+      - `continuous_session_failed`
+    - focused runtime regressions added for limit-reached, user-stop, and fatal thread failure
+    - end-to-end API regression added for continuous start -> fatal `sqlite3.OperationalError("disk I/O error")` -> persisted `continuous_session_failed` -> `/api/status` failed/not-running
+  - additional end-to-end API coverage
+    - `single`, `evolution`, and `novelty` starts now have e2e fatal-I/O regressions that verify persisted `experiment_failed` plus `/api/status` convergence
+    - template-backfill result promotion to screening covered through `/api/programs/<id>/promote-screening`
+    - runtime-event-backed live state smoke-covered against:
+      - `/api/report` template observability
+      - `/api/reporting/slot-compatibility`
+      - `/api/observability/op-pairs`
+      - `/api/aria/chat`
+  - guardrail cleanup
+    - `test_runtime_event_contract_guard.py` now detects helper-indirected compatibility sinks (`getattr(nb, "complete_experiment")`, etc.) and `nb._maybe_commit()`
+    - reviewed compatibility/admin/telemetry exceptions are now explicit in the allowlist instead of implicitly escaping the scan
+- Target now:
+  - telemetry cleanup
+    - reduce direct `log_learning_event(...)` callsites in `continuous_modes.py` and `synthesis.py`
+    - keep notebook telemetry mirroring behavior unchanged
+
+## Coordination Notes
+
+- `runtime_events/bootstrap.py` is the shared singleton seam
+- `api_routes/_helpers.py` already prefers registry/projector state for status
+- `control_start.py` already emits canonical `experiment_started` for non-synthesis modes; tests cover this in `test_runtime_events.py`
+- Remaining largest contract questions are recovery/cancel edges, cycle-abort compensation, and continuous-session semantics
+- Current telemetry slice:
+  - `research/scientist/runner/continuous_modes.py`
+  - `research/scientist/runner/synthesis.py`
+- Do not touch these without coordination; already modified on this branch:
+  - `research/scientist/runtime_events/bus.py`
+  - `research/scientist/runtime_events/bootstrap.py`
+  - `research/scientist/runtime_events/workers.py`
+  - `research/tests/test_runtime_event_contract_guard.py`
+- Treat these as out-of-contract admin-only direct writes unless we explicitly reclassify them:
+  - `research/tools/backfill*.py`
+  - `research/tools/*replay*.py`
+  - `research/tools/repair_*.py`
+  - reporting/program/admin backfill endpoints in `api_routes/`
+
+## Runtime Events
+
+- Runtime-side lifecycle integration advanced in this branch:
+  - registry-first `/api/status`
+  - projected-runtime fallback before legacy notebook heuristic
+  - lifecycle bootstrap owns spool, bus, registry, projector worker
+  - notebook lifecycle helpers now also publish canonical lifecycle events
+  - resume / cancel / shutdown now publish lifecycle state
+  - canonical `experiment_started` added across `control_start.py` start families
+- Runtime telemetry side started:
+  - `log_learning_event()` now mirrors to best-effort runtime event
+  - continuous mode now emits explicit session events instead of pretending to be experiment lifecycle
+
+## Coordination Notes
+
+- Another Codex is handling pub/sub and likely the direct-write guard test.
+- I am avoiding bus contract refactors and focusing on producer/read-path migration.
+- Backfill/replay/repair scripts are intentionally excluded from the live runtime contract for now; they should be allowlisted or otherwise excluded in guard work.
+- Immediate runtime-side follow-up is edge cleanup, not broad backfill-script migration.
+
+## 2026-04-16 — claude-opus — Capability-first discovery pipeline
+
+Building on codex's role-slot taxonomy + 3 new templates. Goal: beat GPT-2 on ppl AND binding AND induction AND ar AND hs simultaneously. Plan lives in `tasks/todo.md`.
+
+Files claimed (do not co-edit without coordination):
+- `research/synthesis/_templates_routing.py` (add role-slot templates to ROUTING_TEMPLATES)
+- `research/synthesis/grammar.py` (add capability_first preset)
+- `research/scientist/runner/execution_screening_graphs.py` (gate8_retrieval_dead)
+- `research/scientist/leaderboard_scoring.py` (binding penalty rebalance, v8.1 dispatcher)
+- `research/synthesis/primitives.py` (OP_WIRING_RULES op-pair priors for role:global_retrieval)
+- `research/tools/seed_breed.py` (NEW — seeded breeding runs from bb120386-3bc and 903157e5-219 donors)
+- `research/dashboard/src/components/TemplateSlotObservability.js` (role-slot rollup — step 7)
+
+Not touching any runtime_events/ or runtime contract guard files. No overlap with codex's lifecycle-migration slice.
+
+## 2026-04-13 Live Run Follow-Up
+
+- Continuous smoke rerun exposed two remaining notebook compatibility failures on degraded SQLite:
+  - `research/scientist/notebook/notebook_leaderboard.py`
+    - `get_leaderboard(...)` was still raising `sqlite3.OperationalError("disk I/O error")`
+    - live impact: killed continuous mode selection and cycle switch-guardrail evaluation
+  - `research/scientist/notebook/notebook_experiments.py`
+    - `complete_experiment(...)` still had a fatal primary read/write path before fallback
+    - live impact: a successful run could still be marked failed after lifecycle completion had already published
+- Current patch set:
+  - `get_leaderboard(...)` now degrades to `[]` on SQLite operational errors
+  - `complete_experiment(...)` now treats notebook completion persistence as best-effort and does not re-raise if both primary and direct writes fail
+  - focused notebook regressions added for both cases
+  - `get_knowledge(...)` now degrades to `[]` on SQLite operational errors
+  - `fail_experiment(...)` now treats notebook failure persistence/follow-up reads as best-effort and does not re-raise if primary/direct writes fail
+  - `continuous_modes.py` terminal event payloads now use `time.time()` instead of the nonexistent `self._time()`
+
+## 2026-04-19 — claude-opus — v2 probe native acceleration
+
+Scope: maximize native/compiled paths in `research/eval/{induction,binding}_probe_v2_investigation.py` before launching the 2,580-row screening backfill. At ~74s/fp observed, trimming per-fp overhead × 2,500 rows saves hours.
+
+Files claimed (do not co-edit until released):
+- `research/eval/induction_probe_v2_investigation.py`
+- `research/eval/binding_probe_v2_investigation.py`
+
+Not touching: `eval/utils.py`, `training/_loss_native.cpp` (owned by other training-consolidation pass above).
+
+Targets:
+1. torch.compile(reduce-overhead) on probe_model to cut kernel-launch overhead
+2. Pre-generate training batches in one vectorized call (vs 500-2400 per-step randints)
+3. Replace 3× deepcopy with 1× deepcopy + state_dict reload per seed
+4. CUDA graph capture on inner train step (static shapes make this tractable)
+5. Re-enable native scheduler for probes (investigate `disable_native_probe_dispatch` mask) — diagnostic pass, may punt to follow-up
+
+Will measure before/after on a validation-tier fingerprint and report deltas.
+
+## 2026-04-24 — Codex — research graph validation native boundary
+
+User asked to proceed from the `research/` duplication audit into the high-ROI
+native graph-generation/validation boundary. This overlaps the performance
+audit notes in `research/.current_work.md`; this root note is for coordination
+with other active Codex/Claude chats.
+
+Current direction:
+- Do not port individual Python templates one by one.
+- Build a packed C/C++/Rust boundary around graph validation first:
+  - reachability / depth / cycle / param analysis
+  - dim-flow summary
+  - edge validation masks
+  - dead-parameterized-node mask
+- Then wire Python graph generation to call that single packed boundary instead
+  of rebuilding arrays and crossing native/Python multiple times.
+
+Files currently touched/claimed by this pass:
+- `research/runtime/native/include/graph_analysis.h`
+- `research/runtime/native/src/graph_analysis.c`
+- `research/synthesis/native_analysis_bindings.py`
+- `research/synthesis/native_analysis.py`
+
+Current implementation state:
+- Added staged C ABI draft:
+  - `aria_packed_validation_result_t`
+  - `aria_graph_validate_packed_ir(...)`
+- The C function combines existing native analysis, dim-flow summary,
+  edge-validation, and dead-parameterized-mask logic into one packed call.
+- Added ctypes binding declarations for `aria_graph_validate_packed_ir`.
+- Started Python wrapper `validate_packed_ir_natively(...)` returning a
+  `PackedGraphValidationResult`.
+
+Initial incomplete state:
+- `research/synthesis/graph_validator.py::validate_dim_flow()` was not wired to
+  the packed result yet.
+- Native runtime had not been rebuilt after the ABI addition.
+- Parity/perf tests had not been run for this new packed boundary.
+
+Immediate execution plan:
+- Keep packed validation only where it removes work: standalone
+  `validate_dim_flow()` calls without caller-supplied analysis can use the
+  packed result; `validate_graph()` must keep reusing its existing
+  `analysis_ir` / `analysis` rather than calling a packed function that repeats
+  structural analysis.
+- Keep the public dim-flow exports stable for legacy callers while routing new
+  work through `dim_flow_opcode_tables`.
+- Keep focused real-native parity coverage for packed dim-flow/edge/dead-mask
+  output.
+- Rebuild `libaria_native_runtime.so` so the new ABI is actually present.
+- Run focused synthesis/native validation tests, then a medium hotpath profile
+  to verify whether the retained boundary moves graph-generation wall time.
+
+Important coordination notes:
+- Several `research/synthesis/*` and `research/runtime/native/*` files were
+  already dirty from other work before this pass. Avoid broad rewrites here.
+- Other chats should not independently edit the four files listed above until
+  this packed validation boundary is either finished or explicitly released.
+- The intended validation commands after wiring are:
+  - native runtime rebuild under `research/runtime/native/build_current`
+  - `python -m py_compile research/synthesis/native_analysis.py research/synthesis/graph_validator.py`
+  - focused synthesis native/dim-flow tests
+  - `research.tools.profile_research_runtime_hotpaths` medium profile before/after
+
+Packed-boundary probe update:
+- `validate_packed_ir_natively(...)` is present, parity-tested, and retained for
+  standalone `validate_dim_flow()` calls without caller-supplied analysis.
+- It is deliberately not used below `validate_graph()`, because that caller
+  already computed structural analysis and the packed call would repeat it.
+- Direct validation benchmark on 256 generated graphs:
+  - forced split fallback: `9.411 ms` median
+  - packed path after wrapper copy removal: `9.497 ms` median
+- Rebuilt runtime successfully:
+  `cmake --build research/runtime/native/build_current`.
+- Retained:
+  - ctypes/native wrapper and packed-result copy cleanup
+  - real-native parity coverage comparing packed dim-flow/edge/dead-mask output
+    against the split reference path
+- Reverted:
+  - packed wiring for caller-supplied-analysis paths
+  - monkeypatched test asserting the packed path should always bypass the split
+    validator
+- Validation completed after keeping only the measured-safe default:
+  - `python -m compileall -q research/synthesis/graph_validator.py research/synthesis/dim_flow_support.py research/synthesis/native_analysis.py research/synthesis/native_analysis_bindings.py research/tests/test_dim_flow_support.py`
+  - `pytest -q research/tests/test_dim_flow_support.py research/tests/test_synthesis_integration.py research/tests/test_context_rules.py research/tests/test_semantic_depth.py research/tests/test_synthesis_validation_cleanup.py -m unit` -> `22 passed, 23 deselected`
+- Final retained-code hotpath profile written to:
+  `research/perf_artifacts/research/2026-04-24/runtime_hotpaths_after_native_boundary_probe.json`
+- Measurement note: enabling packed validation below an already-computed
+  `validate_graph()` analysis is performance theater. The next useful boundary
+  must move packed validation up into `validate_graph()` or add a C entry point
+  that reuses the existing reachable mask/analysis instead of recomputing it.
+
+Proceeding notes:
+- Active owner for this continuation: Codex in this chat.
+- Files additionally claimed while wiring/testing:
+  - `research/synthesis/dim_flow_support.py`
+  - `research/synthesis/graph_validator.py`
+  - `research/tests/test_synthesis_native_hotpaths.py`
+  - `research/.current_work.md`
+- I will not make broad rewrites in the claimed native files. The work is to
+  finish the staged packed boundary, prove parity/perf, and then either release
+  ownership here or leave a concrete blocker.
+- Do not force packed validation for caller-supplied-analysis paths without
+  first removing the duplicated structural analysis cost.
+- Preserve the pass10 cleanup: caller-supplied `analysis_ir` and `analysis`
+  must still be reused; do not reintroduce a second Python-side analysis pass.
+- Before/after measurement plan:
+  - baseline current `validate_dim_flow()` and `validate_graph()` on the same
+    generated 800-graph fixture used by the synthesis audit
+  - direct prepared-input packed-vs-current microbench to avoid wiring a
+    regression when caller-supplied analysis is already available
+  - rebuild `research/runtime/native/build_current`
+  - rerun the same fixture after wiring
+  - run focused synthesis native/dim-flow tests and record exact results
+- Primary risks:
+  - stale native runtime without the new ABI silently takes the fallback path;
+    this is correct but will not show the intended speedup until rebuilt.
+  - packed result parity can drift from Python formatting semantics; focused
+    tests must compare summary counts, edge errors, and dead-parameter warnings.
+  - adding more tiny native calls would undo the point of this boundary; keep
+    the call coarse and singular.
+
+Completion update from active owner:
+- Finished the narrow packed dim-flow wiring without forcing it under
+  caller-supplied analysis.
+- Retained behavior:
+  - standalone `validate_dim_flow()` calls without supplied analysis prepare
+    dim-flow arrays without first running structure analysis, then try
+    `validate_packed_ir_natively(...)`.
+  - `validate_graph()` and any caller that passes `analysis_ir` / `analysis`
+    keep the split path so structural analysis is reused rather than repeated
+    inside the packed ABI.
+- Before/after on the generated 800-graph fixture after rebuilding native:
+  - `validate_dim_flow`: `0.030194s -> 0.023917s` (`20.8% faster`)
+  - `validate_graph`: `0.048634s -> 0.048190s` (`0.9% faster`, effectively
+    flat as intended because analysis reuse is preserved)
+- Prepared-input direct microbench confirmed why packed is not forced under
+  supplied analysis:
+  - current split pieces: `0.042392s`
+  - packed call over already-prepared inputs: `0.046475s`
+- Validation:
+  - native runtime rebuild succeeded:
+    `cmake -S research/runtime/native -B research/runtime/native/build_current &&
+    cmake --build research/runtime/native/build_current -j2`
+  - focused tests:
+    `pytest -q research/tests/test_dim_flow_support.py research/tests/test_synthesis_validation_cleanup.py research/tests/test_synthesis_native_hotpaths.py`
+    -> `63 passed in 5.52s`
+  - broader synthesis validation/native suite:
+    `119 passed in 16.69s`
+  - `git diff --check` clean for the coordinated files
+- Medium profile artifact:
+  `research/perf_artifacts/research/2026-04-24/runtime_hotpaths_after_packed_dimflow_standalone.json`
+- Ownership release:
+  - `research/synthesis/dim_flow_support.py`,
+    `research/synthesis/graph_validator.py`, and
+    `research/tests/test_synthesis_validation_cleanup.py` are released from
+    this continuation.
+  - The native ABI files remain owned only by the earlier packed-boundary pass
+    if that chat is still active; this continuation did not broaden them.
+  - Do not re-enable packed validation below `validate_graph()` unless the
+    duplicated structural-analysis cost is removed or a profile proves a win.
+
+Next continuation ownership:
+- Active owner: Codex in this chat.
+- Best next choice: move the packed boundary up into `validate_graph()` and add
+  effective-depth output to that same packed native call. The medium profile
+  shows `effective_depth_natively` is now a major graph-generation cost, so a
+  fused validation call has higher ROI than another dim-flow tweak.
+- Claimed files while executing:
+  - `research/runtime/native/include/graph_analysis.h`
+  - `research/runtime/native/src/graph_analysis.c`
+  - `research/synthesis/native_analysis_bindings.py`
+  - `research/synthesis/native_analysis.py`
+  - `research/synthesis/native_validation.py`
+  - `research/synthesis/validator.py`
+  - `research/tests/test_synthesis_native_hotpaths.py`
+  - `research/tests/test_synthesis_validation_cleanup.py`
+  - `research/.current_work.md`
+- Execution rules:
+  - Baseline current `validate_graph()` and generation profile before wiring.
+  - Extend the packed C ABI to include effective depth in the same call.
+  - Wire `validate_graph()` to use packed analysis/effective-depth/dim-flow
+    results together, with fallback to the existing split path.
+  - Keep standalone `validate_dim_flow()` behavior intact.
+  - Retain only if `validate_graph()` improves or stays flat with simpler
+    native-call structure; revert the wiring if it is a measured regression.
+
+Fused effective-depth completion:
+- Retained. The packed validation ABI now optionally computes effective depth
+  in the same call as structural analysis, dim-flow summary, edge masks, and
+  dead-parameter masks.
+- Cache-aware wiring:
+  - generation / first validation passes effective-depth tables into the packed
+    ABI and caches the result on the IR.
+  - repeated `validate_graph()` calls with cached effective depth do not ask the
+    packed ABI to recompute it.
+  - standalone `validate_dim_flow()` remains unchanged and does not request
+    effective depth.
+- Before/after from this continuation:
+  - generation n=20: `0.010834s -> 0.010335s`
+  - generation n=100: `0.035868s -> 0.036210s` (noise/slight regression)
+  - generation n=300: `0.108259s -> 0.103207s` (`4.7% faster`)
+  - repeated 800-graph `validate_graph`: `0.046724s -> 0.043788s`
+  - repeated 800-graph `validate_dim_flow`: `0.027243s -> 0.024755s`
+  - medium profile graph-generation median:
+    `131.410 ms -> 129.751 ms`
+- Validation:
+  - native rebuild succeeded:
+    `cmake -S research/runtime/native -B research/runtime/native/build_current &&
+    cmake --build research/runtime/native/build_current -j2`
+  - focused tests:
+    `pytest -q research/tests/test_dim_flow_support.py research/tests/test_synthesis_validation_cleanup.py research/tests/test_synthesis_native_hotpaths.py`
+    -> `63 passed in 6.72s`
+  - broader synthesis/native suite:
+    `119 passed in 16.20s`
+  - medium profile artifact:
+    `research/perf_artifacts/research/2026-04-24/runtime_hotpaths_after_fused_effective_depth.json`
+  - `git diff --check` clean for coordinated files
+- Ownership release:
+  - Released the files claimed by this continuation.
+  - Next meaningful owner should focus on template lowering / graph assembly or
+    a larger validator fusion that removes IR packing/table prep, not another
+    small validation ctypes tweak.
+
+Template-lowering continuation:
+- Active owner: Codex in this chat.
+- Best current target: template/motif selection overhead inside graph
+  construction. The latest profile shows graph generation is again dominated by
+  `apply_template`, `_pick_compatible_motif`, `add_op`, `_instantiate_motif`,
+  native template selection overhead, and IR packing.
+- Claimed files while measuring/executing:
+  - `research/synthesis/templates.py`
+  - `research/synthesis/native_template_selection.py`
+  - `research/synthesis/_template_helpers.py`
+  - `research/tests/test_native_template_selector.py`
+  - `research/.current_work.md`
+- Plan:
+  - Benchmark native vs Python template selection in the actual call shape.
+  - Retain a change only if it reduces generation wall time, not just isolated
+    function cost.
+  - Prefer deleting/bypassing slow selection overhead over adding another
+    abstraction.
+  - If selector work is already low ROI, stop and document that the next real
+    step is a compiled graph-builder/template-lowering plan rather than
+    more Python cleanup.
+
+Execution update:
+- Completed a lower-risk version of the fused-validation plan without changing
+  the C ABI:
+  - `validate_graph()` now prepares dim-flow inputs once, tries the existing
+    packed native validation call before running separate structural analysis,
+    and passes the packed result into `validate_dim_flow()`.
+  - `validate_dim_flow()` accepts prepared inputs / packed results so the graph
+    validation path does not rebuild those arrays or rescan the split dim-flow
+    path.
+  - Non-array analysis objects still bypass packed validation cleanly; this
+    preserves the test fixtures and custom IR compatibility path.
+- Measured result versus the immediately previous packed-validation profile:
+  - `graph_generation` medium median: `142.832 ms -> 131.188 ms`
+    (`8.2% faster`).
+  - `graph_generation` large median: `581.958 ms -> 555.541 ms`
+    (`4.5% faster`).
+  - `validate_graph` cumulative profile cost: `78.588 ms -> 69.981 ms`
+    over roughly the same medium generation workload (`10.9% faster`).
+  - direct `validate_graph()` microbench on 256 generated graphs:
+    `15.123 ms -> 13.078 ms` (`13.5% faster`).
+  - full hotpath harness graph-generation medians versus pass10:
+    small `36.514 ms -> 32.487 ms` (`11.0% faster`), medium
+    `131.637 ms -> 116.429 ms` (`11.6% faster`), large
+    `597.230 ms -> 575.195 ms` (`3.7% faster`).
+  - Compared with pass10 before packed validation work, medium generation is
+    flat/slightly faster: `131.637 ms -> 131.188 ms`; large is faster:
+    `597.230 ms -> 555.541 ms`.
+- Validation:
+  - `cmake --build research/runtime/native/build_current`
+  - `python -m py_compile research/synthesis/native_analysis.py research/synthesis/graph_validator.py research/synthesis/dim_flow_support.py research/synthesis/validator.py research/tests/test_dim_flow_support.py research/tests/test_synthesis_validation_cleanup.py research/tests/test_synthesis_native_hotpaths.py`
+  - `python -m pytest research/tests/test_dim_flow_support.py research/tests/test_synthesis_validation_cleanup.py -q`
+    -> `13 passed in 2.37s`
+  - `python -m pytest research/tests/test_synthesis_native_hotpaths.py research/tests/test_dim_flow_support.py research/tests/test_synthesis_validation_cleanup.py -q`
+    -> `63 passed in 6.49s`
+  - `pytest -q research/tests/test_dim_flow_support.py research/tests/test_synthesis_integration.py research/tests/test_context_rules.py research/tests/test_semantic_depth.py research/tests/test_synthesis_validation_cleanup.py -m unit`
+    -> `22 passed, 25 deselected in 4.11s`
+  - `pytest -q research/tests/test_synthesis_integration.py::TestMorphologicalConstraints::test_generated_graphs_respect_final_depth_and_op_budget -m unit`
+    -> `1 passed in 1.07s`
+  - `git diff --check` clean for the touched validation/doc files.
+- New profile artifact:
+  `research/perf_artifacts/research/2026-04-24/runtime_hotpaths_after_analysis_reuse.json`
+- Final profile artifact:
+  `research/perf_artifacts/research/2026-04-24/runtime_hotpaths_after_packed_validate_graph.json`
+- Files touched by this continuation:
+  - `research/synthesis/graph_validator.py`
+  - `research/synthesis/validator.py`
+  - `.current_work.md`
+  - `research/.current_work.md`
+- Risk:
+  - stale native runtime builds can crash at the ctypes boundary after ABI
+    movement; rebuild `research/runtime/native/build_current` before packed
+    validation tests or profiles.
+- Remaining ROI after this step:
+  - Do not extend the packed validation ABI again unless it also fuses
+    effective depth or removes another visible profile line.
+  - The biggest remaining generation costs are template application/motif
+    selection/object-heavy graph assembly, not dim-flow bookkeeping.
+
+Follow-up graph-construction pass:
+- Implemented in `research/synthesis/_template_helpers.py`.
+- Motif selection now:
+  - reuses tuple candidate pools instead of allocating a list for every
+    compatible-motif query;
+  - computes the active slot key once per pick and passes it through filtering,
+    selection, and telemetry recording;
+  - uses a no-allocation weighted-by-lift fast path for the common unweighted
+    case, while retaining the existing `rng.choices(...)` path for explicit
+    motif weights and dynamic slot multipliers;
+  - splits the compatibility cache into base algebraic/context compatibility
+    and active-template allow filtering, so changing template names does not
+    force the expensive compatibility checks to rerun.
+- Standard hot-path profile artifacts:
+  - before this pass:
+    `research/perf_artifacts/research/2026-04-24/runtime_hotpaths_after_analysis_reuse.json`
+  - after selector fast path:
+    `research/perf_artifacts/research/2026-04-24/runtime_hotpaths_after_motif_fastpath.json`
+  - after cache split:
+    `research/perf_artifacts/research/2026-04-24/runtime_hotpaths_after_motif_cache_split.json`
+- Measured standard-profile movement versus `runtime_hotpaths_after_analysis_reuse.json`:
+  - `graph_generation` medium median: `131.188 ms -> 120.548 ms`
+    (`8.1% faster`).
+  - `graph_generation` small median: `34.859 ms -> 30.926 ms`
+    (`11.3% faster`).
+  - `graph_generation` large median: `555.541 ms -> 541.255 ms`
+    (`2.6% faster`, noisy but positive).
+  - `_select_from_candidates` cumulative: `19.451 ms -> 16.560 ms`
+    (`14.9% faster`) in the profiled medium generation run.
+  - `_pick_compatible_motif` cumulative: `38.349 ms -> 34.041 ms`
+    (`11.2% faster`) in the standard warmed-cache profile.
+- Fixed-seed cold cProfile on `_build_graphs(128, 424242)` showed the cache
+  split more clearly:
+  - total calls: `1,688,352 -> 1,423,700`
+  - `_pick_compatible_motif`: `155 ms -> 77 ms`
+  - `_compatible_from_context`: `100 ms -> 23 ms`
+  - `_motif_is_compatible_from_context`: `87 ms -> 11 ms`
+- Validation:
+  - `python -m py_compile research/synthesis/_template_helpers.py research/synthesis/templates.py research/synthesis/grammar.py`
+  - `python -m pytest research/tests/test_learning_feedback_loops.py research/tests/test_synthesis_native_hotpaths.py research/tests/test_synthesis_validation_cleanup.py -q`
+    -> `68 passed`
+  - broader synthesis/native selection suite:
+    `128 passed in 21.13s`
+- Remaining ROI:
+  - The next real target is compiled graph assembly/template lowering. Current
+    Python `add_op`, `template_add_op`, `_instantiate_motif`, and template body
+    execution still dominate. Small Python tweaks are now lower leverage unless
+    they remove object creation or fuse repeated template skeletons.
+
+Template-lowering alias finalization:
+- Coordinated details are in `research/.current_work.md` under
+  `2026-04-24 — Codex template-lowering alias finalization`.
+- Retained:
+  - `research/synthesis/graph.py`: `ComputationGraph.add_op()` canonicalizes
+    operation aliases before registry lookup, so newly generated graphs store
+    canonical op names even though old aliases remain loadable.
+  - This fixed the template wiring failures for `route_topk` and
+    `n_way_sparse_router` aliases.
+- Rejected:
+  - A one-pass `_select_by_weight()` experiment. Alternated timing was negative
+    (`128` graphs `-1.2%`, `300` graphs `-3.3%` median), so it was removed.
+- Final fixed-seed graph-generation timings from this continuation:
+  - `32` graphs: `29.346 ms -> 31.563 ms` (`7.6% slower`, small-run noise /
+    alias overhead).
+  - `128` graphs: `127.843 ms -> 121.396 ms` (`5.0% faster`).
+  - `300` graphs: `311.538 ms -> 294.022 ms` (`5.6% faster`).
+- Standard artifact:
+  `research/perf_artifacts/research/2026-04-24/runtime_hotpaths_after_template_lowering_alias_fix.json`
+- Validation:
+  - alias template wiring target: `27 passed in 3.82s`
+  - broader synthesis/native suite: `229 passed in 30.37s`
+- Current performance call:
+  - stop spending time on Python selector micro-edits unless a fresh profile
+    proves a new regression.
+  - next high-ROI implementation is a Rust/C++ batch graph-builder /
+    template-lowering boundary.
+
+Template legality and final graph-generation profile:
+- Coordinated details are in `research/.current_work.md` under
+  `2026-04-24 — Codex template legality repair and final graph-generation profile`.
+- Compared against the alias-finalization and motif-cache notes; this did not
+  duplicate those selector/cache changes and did not lower template count.
+- Retained:
+  - template pre-norm lowering for `MATH_SPACE_RULES.must_precede` ops;
+  - rule-table reconciliation for bounded predecessor cases already allowed by
+    activation/context rules;
+  - explicit residual bypass/projection repairs for the broken token-routing,
+    p-adic, Clifford, Poincare, tropical, and conv templates.
+- Forced-template smoke:
+  - before this pass: `26 / 175` zero-success templates;
+  - after this pass: `0 / 175` zero-success templates at `max_ops=24`,
+    `max_depth=8`, 10 seeds each;
+  - no templates deleted or retired.
+- Final graph-generation benchmark versus the pre graph-assembly artifact:
+  - small median: `29.600 ms -> 20.106 ms` (`32.1% faster`);
+  - medium median: `130.410 ms -> 85.320 ms` (`34.6% faster`);
+  - large median: `575.994 ms -> 380.555 ms` (`33.9% faster`).
+- Rejected:
+  - routing telemetry in-place histogram accumulation; it regressed the local
+    routing workload, so the edit was reverted.
+- Validation:
+  - focused forced-template smoke clean;
+  - `141 passed in 19.42s` for the synthesis/routing/eval suite used in this
+    continuation;
+  - `git diff --check` clean.
+- Remaining ROI:
+  - Python template lowering is still the blocker. Next serious move should be
+    a Rust/C++ batch graph-builder/template-lowering boundary that emits packed
+    graph IR directly; more Python wrapper tweaks are low ROI unless a fresh
+    profile identifies a specific high-frequency regression.
+
+Graph-construction shape/template-rule reuse:
+- Coordinated details are in `research/.current_work.md` under
+  `2026-04-24 — Codex graph-construction native-boundary continuation`.
+- Retained:
+  - `research/synthesis/graph.py`: shared immutable-by-convention `ShapeInfo`
+    instances for repeated `(seq, dim)` graph-construction outputs.
+  - `research/synthesis/template_rules.py`: one shared children map across
+    template lane-diversity and bottleneck-dimension checks.
+- Rejected:
+  - inlined alias lookup inside `add_op()`; timing regressed.
+  - stored-depth reuse inside `_validate_graph()`; timing regressed.
+  - packed-IR loop-localization in `pack_ir_inputs()`; timing regressed.
+- Standard graph-generation movement versus
+  `runtime_hotpaths_after_template_fix_final.json`:
+  - small: `20.106 ms -> 19.537 ms` (`2.8% faster`);
+  - medium: `85.320 ms -> 78.134 ms` (`8.4% faster`);
+  - large: `380.555 ms -> 359.908 ms` (`5.4% faster`);
+  - peak allocation: `2,539,774 B -> 2,451,242 B` (`3.5% lower`).
+- Artifact:
+  `research/perf_artifacts/research/2026-04-24/runtime_hotpaths_after_shape_template_rule_reuse.json`
+- Validation:
+  - focused suite: `160 passed in 14.22s`;
+  - broader synthesis/native/routing/eval suite: `298 passed in 41.95s`;
+  - `git diff --check` clean.
+- Dirty-file note:
+  - concurrent/unowned dirty files remain in native scheduler / native template
+    selection areas; this continuation did not edit them.
+- Current performance call:
+  - remaining Python object-churn wins are getting smaller. The next serious
+    ROI remains a Rust/C++ batch graph-builder/template-lowering boundary that
+    lowers template skeletons and emits packed IR directly.
+
+Template selector native-boundary prep cache:
+- Coordinated details are in `research/.current_work.md` under
+  `2026-04-24 — Codex template selector native-boundary prep cache`.
+- Compared against the graph-construction and native token-merge-conv notes;
+  this does not duplicate template legality repair, shape reuse, or the C
+  token-merge-conv lowering track.
+- Retained:
+  - immutable selector-ready `TemplateWeightOverrides`;
+  - cached depth-adjusted template weight views in `grammar.py`;
+  - cached immutable routing-capable allowed-template-name key.
+- Standard graph-generation movement versus
+  `runtime_hotpaths_current_more_c_pre.json`:
+  - small: `20.081 ms -> 14.835 ms` (`26.1% faster`);
+  - medium: `78.209 ms -> 61.376 ms` (`21.5% faster`);
+  - large: `353.897 ms -> 284.726 ms` (`19.5% faster`).
+- Selector cProfile movement:
+  - `pick_template_index_native`: `30.589 ms -> 7.558 ms` cumulative;
+  - `_override_key`: `19.013 ms` cumulative before, no longer top-40 after.
+- Artifacts:
+  - `research/perf_artifacts/research/2026-04-24/runtime_hotpaths_current_more_c_pre.json`
+  - `research/perf_artifacts/research/2026-04-24/runtime_hotpaths_after_prepared_template_weights_allowed_cache.json`
+- Validation:
+  - selector test: `3 passed in 7.38s`;
+  - focused synthesis/native suite: `168 passed in 18.31s`;
+  - `git diff --check` clean before documentation append.
+- Risk:
+  - this is still Python-side prep around a native selector. It is a real
+    runtime win, but the strategic fix remains whole-template C/C++/Rust
+    lowering that moves skeleton batches across the boundary.
+
+Native template-lowering prune:
+- Coordinated details are in `research/.current_work.md` under
+  `2026-04-24 — Codex native template-lowering prune`.
+- Tested the tiny native `token_merge_conv` planner before deciding whether to keep it:
+  - native/ctypes planner: `18.68 us/template`;
+  - plain Python template body: `10.05 us/template`;
+  - native planner was `86% slower`.
+- Removed:
+  - the native token-merge-conv planner path;
+  - the unused `ComputationGraph.append_precomputed_ops(...)` helper left
+    behind by that path.
+- GitHub Actions cleanup:
+  - added `concurrency.cancel-in-progress` to Research Native and Weekly
+    Audit so superseded runs stop stacking up.
+  - deleted dead Hive CI after GitHub proved it was failing on missing
+    `hive/requirements.txt`; there is no `hive/` tree in this checkout.
+- Native runtime rebuild succeeded and still exports
+  `aria_graph_validate_packed_ir`; the token-merge-conv planner symbol is gone.
+- Validation:
+  - `129 passed in 21.27s` for the synthesis/native suite used here.
+- Final retained-code profile artifact:
+  `research/perf_artifacts/research/2026-04-24/runtime_hotpaths_after_template_prune_final.json`
+- Current graph-generation medians:
+  - small: `15.010 ms`;
+  - medium: `60.361 ms`;
+  - large: `265.576 ms`.
+- Blunt assessment:
+  - small native calls are the wrong level for template lowering. The next
+    native move must lower larger template batches or emit packed IR directly;
+    otherwise ctypes/object materialization dominates.
+
+Batch graph-builder ROI recheck:
+- Coordinated details are in `research/.current_work.md` under
+  `2026-04-24 — Codex batch graph-builder ROI recheck`.
+- Re-tested a non-ctypes `token_merge_conv` batch append before keeping any
+  code:
+  - forced 128 graphs: `16.924 ms -> 16.901 ms` (`0.14% faster`);
+  - forced 512 graphs: `67.991 ms -> 67.972 ms` (`0.03% faster`);
+  - forced 2048 graphs: `271.577 ms -> 271.179 ms` (`0.15% faster`).
+- Rejected the batch path and removed the unused
+  `ComputationGraph.append_precomputed_ops(...)` helper.
+- Blunt call:
+  - Rust/C++ is still worth it only for a larger packed-IR graph builder that
+    owns whole template batches or whole graphs. A nine-node template boundary
+    is below ROI.
+
+Expanded packed-IR graph-builder boundary:
+- Coordinated details are in `research/.current_work.md` under
+  `2026-04-24 — Codex expanded packed-IR graph-builder boundary`.
+- This expands beyond the rejected one-template batch builder into the shared
+  packed-IR preparation path used by validation and evals.
+- Initial ownership excludes the existing unowned dirty file
+  `research/scientist/runner/execution_training.py`.
+
+Routing-capable startup prune:
+- Coordinated details are in `research/.current_work.md` under
+  `2026-04-24 — Codex routing-capable startup prune`.
+- Removed runtime dry-run probing from `_get_routing_capable_templates()`.
+  The runtime path now uses a maintained manifest; the old probe remains only
+  as an audit/test parity check.
+- Measured reset lookup cost:
+  - before: `27.218 ms` median after imports;
+  - after: `0.00139 ms` median;
+  - startup lookup is effectively eliminated.
+- Rejected attempted motif-template filter rewrite:
+  - warmed `workload_graph_generation(128)` moved `65.510 ms -> 68.046 ms`;
+  - removed it as no-ROI performance theater.
+- Validation:
+  - routing manifest tests: `2 passed in 1.07s`;
+  - focused synthesis/native suite: `129 passed in 24.01s`.
+- Current retained-code profile artifact:
+  `research/perf_artifacts/research/2026-04-24/runtime_hotpaths_after_routing_manifest.json`
+
+Expanded packed-IR graph-builder boundary result:
+- Retained a whole-graph packed-IR reuse path:
+  - IR now carries node dims / seq flags and contiguous-id metadata;
+  - `_analysis_ir()` skips sorting/id-map construction for generated contiguous
+    graphs;
+  - dim-flow validation prep reuses the IR arrays instead of walking `OpNode`s
+    again.
+- Rejected active use of the fused C opcode-table validator after measurement:
+  - built symbol regressed standard large graph generation
+    `313.184 ms -> 325.808 ms`;
+  - synthetic chains through 2048 nodes remained slower than eager flags.
+- Retained profile movement:
+  - small: `16.157 ms -> 15.628 ms` (`3.3% faster`);
+  - medium: `64.158 ms -> 63.706 ms` (`0.7% faster`);
+  - large: `313.184 ms -> 286.642 ms` (`8.5% faster`).
+- Validation:
+  - focused tests: `8 passed in 1.34s`;
+  - broader synthesis/native suite: `130 passed in 23.26s`;
+  - `git diff --check` clean.
+
+Research runtime native-first continuation:
+- Coordinated details are in `research/.current_work.md` under
+  `2026-04-24 — Codex native-first IR analysis and telemetry totals`.
+- Compared against the packed-IR boundary notes above. This does not revive
+  the rejected fused opcode-table C validator; that boundary remains rejected
+  for this workload.
+- Retained:
+  - packed-IR structural analysis now tries the existing C runtime analyzer
+    before the Python-extension `aria_core` path, then falls back to the Python
+    reference. The rejected fused opcode-table validator remains inactive.
+  - routing telemetry accumulation now uses a slotted totals object instead of
+    a hot dict-of-fields accumulator.
+- Final profile artifact:
+  `research/perf_artifacts/research/2026-04-24/runtime_hotpaths_final_c_runtime_ir_and_routing_totals.json`
+- Latest full-profile median movement versus
+  `runtime_hotpaths_current_final_selector_and_template_batch.json`:
+  - graph fingerprint: small `1.506 -> 1.544 ms`, medium `5.760 -> 5.939 ms`,
+    large `24.092 -> 24.450 ms` in the noisy full run;
+  - novelty scores: small `2.248 -> 2.314 ms`, medium `8.377 -> 8.650 ms`,
+    large `33.202 -> 36.190 ms` in the noisy full run;
+  - routing telemetry: small `1.427 -> 1.333 ms`, medium `7.786 -> 7.242 ms`,
+    large `29.512 -> 27.513 ms`;
+  - graph generation: small `15.369 -> 14.254 ms`, medium
+    `62.427 -> 64.965 ms`, large `293.802 -> 287.199 ms`.
+- Controlled same-process native-vs-aria isolation over 512 cached graph IRs:
+  - structural analysis only: `aria_core 7.785 ms -> C runtime 2.983 ms`
+    (`61.7%` faster);
+  - with reachable mask: `aria_core 7.902 ms -> C runtime 3.792 ms`
+    (`52.0%` faster);
+  - `workload_fingerprint(512)`: `26.723 ms -> 21.264 ms` (`20.4%`
+    faster);
+  - `workload_novelty(512)`: `37.567 ms -> 33.262 ms` (`11.5%` faster).
+- Validation:
+  - focused graph/native/routing suite: `97 passed in 8.94s`.
+- Blunt assessment:
+  - the useful C move here is targeted runtime selection: use the existing C
+    packed-IR analyzer before Python-extension paths that require Python object
+    materialization.
+  - the next serious C/C++ target is not another single-graph ctypes call; it is
+    a multi-graph packed validator or C++/Rust graph emitter that removes
+    Python `OpNode` construction and canonical topology packing from batches.
+
+Routing telemetry continuation update:
+- Coordinated details were appended to `research/.current_work.md` under the
+  same native-first IR analysis / telemetry totals section.
+- Retained only the slots totals + existing batched torch histogram reduction:
+  - isolated `workload_routing_telemetry(128)` moved
+    `7.731 ms -> 7.302 ms` median (`5.6% faster`).
+- Rejected:
+  - per-histogram `add_` accumulation (`10.329 ms`, slower);
+  - local `rt.get` micro-change (`7.468 ms`, slower than retained slots path).
+- Retested the backend-order concern and kept packed IR native-first:
+  - the C runtime is materially faster than the Python-extension edge-list
+    route in controlled same-process analysis;
+  - non-packed or failed native cases still fall through to `aria_core` and then
+    Python.
+- Validation:
+  - routing/eval tests: `83 passed in 12.58s`;
+  - broader synthesis/native suite: `130 passed in 21.47s`.
+- Latest profile artifact:
+  `research/perf_artifacts/research/2026-04-24/runtime_hotpaths_after_routing_telemetry_slots.json`
+
+Topology/fingerprint and IR reuse fast paths:
+- Coordinated details are in `research/.current_work.md` under
+  `2026-04-24 — Codex topology/fingerprint and IR reuse fast paths`.
+- Compared against the previous native-first IR/telemetry notes; this is the
+  follow-through on the canonical topology/fingerprint target, not a duplicate
+  of the rejected fused-validator or one-template native-builder work.
+- Retained:
+  - cached canonical config strings on `OpNode`, reused by native topology and
+    fingerprint packing;
+  - contiguous-id rank-string fingerprint packing;
+  - direct maintained-depth and reachable-param fast paths, avoiding whole-IR
+    analysis for `depth()` / `n_params_estimate()`;
+  - one-pass `lower_to_ir()` reachability, avoiding the prior analysis-IR build
+    followed by a second reachable IR build;
+  - table-generated exact `maximum` / `minimum` dispatch, deleting the duplicate
+    smooth custom implementations.
+- Measured improvements:
+  - fingerprint-only 512 graphs: `9.323 ms -> 7.288 ms` after topology/config
+    packing (`21.8%` faster);
+  - depth+params 512 graphs: `8.401 ms -> 1.142 ms` (`86.4%` faster);
+  - `lower_to_ir()` 512 graphs: `16.784 ms -> 5.986 ms` (`64.3%` faster).
+- Final retained full-profile artifact:
+  `research/perf_artifacts/research/2026-04-24/runtime_hotpaths_after_lower_to_ir_single_build.json`
+- Final full-profile median movement versus
+  `runtime_hotpaths_after_routing_telemetry_slots.json`:
+  - `graph_fingerprint`: small `1.539 -> 0.555 ms`, medium
+    `5.948 -> 2.164 ms`, large `25.152 -> 9.442 ms`;
+  - `novelty_scores`: small `2.336 -> 1.230 ms`, medium
+    `8.567 -> 4.452 ms`, large `36.099 -> 17.943 ms`.
+- Validation:
+  - py_compile clean on edited synthesis modules;
+  - focused regression suite: `108 passed in 9.49s`.
+- Remaining ROI:
+  - `behavior_archive` large workload is now the biggest outlier (`169 ms`)
+    despite native nearest-neighbor kernels; next real win is a batched native
+    query API instead of 1024 per-query Python/ctypes calls.
+  - `graph_generation` still needs a C++/Rust whole-graph or multi-graph
+    builder that emits packed IR directly. More one-node Python wrapper tweaks
+    are low ROI.
+
+Behavior archive native selection pass:
+- Coordinated details are in `research/.current_work.md` under
+  `2026-04-24 — Codex behavior archive native selection pass`.
+- This follows the topology/fingerprint note that `behavior_archive` had become
+  the largest outlier; it does not duplicate graph topology or IR lowering.
+- Retained:
+  - bounded k-nearest accumulator in C for `aria_behavior_mean_k_nearest()`;
+  - combined native pairwise median + neighbor-count function to avoid a second
+    pair-distance pass;
+  - cached exploit-target ranking inside `BehaviorArchive`;
+  - numeric fast paths in feature sanitation;
+  - one-key canonical config repr fast path in graph construction.
+- Measured movement:
+  - `workload_behavior_archive(1024)`: prior full artifact `169.331 ms`, after
+    bounded nearest `120.895 ms`, final isolated `33.158 ms`, final full-profile
+    `32.457 ms`;
+  - `workload_behavior_archive(256)`: `12.206 ms -> 5.156 ms`;
+  - `_behavior_array()` 10k calls: `21.656 ms -> 13.014 ms`.
+- Final profile artifact:
+  `research/perf_artifacts/research/2026-04-24/runtime_hotpaths_after_behavior_archive_final.json`
+- Validation:
+  - rebuilt both native runtime build dirs;
+  - py_compile clean on edited modules;
+  - focused regression suite: `106 passed in 9.91s`;
+  - `git diff --check` clean.
+- Remaining ROI:
+  - behavior archive is no longer the top outlier; a batched native query API is
+    only worth adding once a real call site can use batched novelty queries
+    without changing archive-update semantics.
+  - graph generation is back to the dominant path and needs a C++/Rust
+    whole-graph or multi-graph builder/validator boundary for meaningful gains.
+
+Graph/search continuation:
+- Coordinated details are in `research/.current_work.md` under
+  `2026-04-24 — Codex graph/search continuation`.
+- Retained:
+  - per-batch generation runtime context for template/motif/db/slot setup;
+  - mean-square-distance ranking in native search metrics, preserving RMS return
+    values while avoiding unnecessary square roots;
+  - fused C pairwise density API remains the archive path;
+  - graph config repr caching and direct alias lookup in `add_op()`.
+- Measured movement:
+  - clean temp-worktree comparison for `batch_generate(256)`: `177.700 ms ->
+    120.882 ms` median (`32.0%`);
+  - `batch_generate(256)`: `150.714 ms -> 140.743 ms` median in this
+    continuation;
+  - fused native density vs old two-call native at `n=512`: `11.189 ms ->
+    1.865 ms`.
+- Rejected and reverted:
+  - routing telemetry in-place Tensor aggregation (`~7.18 ms -> 10.425 ms`);
+  - manual choice-token preallocation (neutral at `~2.10 ms` medium).
+- Validation:
+  - native C runtime rebuilt;
+  - `ctest` native runtime: `1/1` passed;
+  - focused Python suite: `70 passed in 7.78s`.
+  - batch/motif focused suite: `96 passed in 11.35s`.
+  - final combined focused suite: `112 passed in 16.04s`.
+- Remaining ROI:
+  - graph generation still needs a C++/Rust whole-graph builder/validator
+    boundary; more tiny Python wrapper changes are now low ROI.
+
+Batch generation runtime-context follow-up:
+- Coordinated details are in `research/.current_work.md` under
+  `2026-04-24 — Codex batch generation runtime-context follow-up`.
+- Retained:
+  - `research/synthesis/generation_runtime.py` as the single generation-state
+    boundary for template/motif/db/slot setup;
+  - per-batch runtime context reuse in `batch_generate()`;
+  - runtime context reuse in `AdaptiveGenerator`;
+  - direct alias and shape fast paths in graph construction;
+  - one active-slot-key computation per motif pick.
+- Clean temp-worktree movement against `HEAD`:
+  - `batch_generate(64)`: `39.577 ms -> 26.652 ms`;
+  - `batch_generate(256)`: `178.545 ms -> 116.431 ms`;
+  - `batch_generate(512)`: `430.795 ms -> 292.207 ms`;
+  - `AdaptiveGenerator.generate()` 100-call fixture: `28.646 ms -> 20.911 ms`;
+  - direct `generate_layer_graph()` 100-call fixture: `24.896 ms -> 19.754 ms`.
+- Rejected and reverted:
+  - two-pass Python weighted motif selector;
+  - candidate validation batch cap `64`;
+  - `_validate_graph()` scan consolidation.
+- Remaining ROI:
+  - the next worthwhile move is a Rust/C++ batch graph builder that owns
+    template application, motif compatibility, slot metadata emission, packed
+    IR construction, and validation input packing together.

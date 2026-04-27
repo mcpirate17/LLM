@@ -103,7 +103,9 @@ class IRExecutor(nn.Module):
         self._subgraph_dispatcher = native_cfg.subgraph_dispatcher
         self._native_chain_segments = native_cfg.native_chain_segments
         self._native_chain_segment_slots = native_cfg.native_chain_segment_slots
-        self._has_native_chain_slots = bool(self._native_chain_segment_slots)
+        self._has_native_chain_slots = any(
+            slot is not None for slot in self._native_chain_segment_slots
+        )
         self._native_forward_wrapper = native_cfg.native_forward_wrapper
         self._native_setup_reason = native_cfg.setup_reason
         self._native_setup_detail = native_cfg.setup_detail

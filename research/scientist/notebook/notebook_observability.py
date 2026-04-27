@@ -343,7 +343,31 @@ class _ObservabilityMixin:
                 pr.novelty_score, pr.novelty_confidence,
                 pr.error_type, pr.stage_at_death, pr.failure_details_json,
                 pr.induction_auc, pr.binding_auc, pr.binding_auc_curriculum,
-                pr.ar_auc, pr.hellaswag_acc,
+                pr.ar_auc, pr.hellaswag_acc, pr.blimp_overall_accuracy,
+                l.composite_score,
+                pr.induction_v2_investigation_auc,
+                pr.binding_v2_investigation_auc,
+                pr.fp_jacobian_effective_rank,
+                pr.fp_sensitivity_uniformity,
+                pr.fp_jacobian_erf_density,
+                pr.fp_id_collapse_rate,
+                pr.fp_id_collapse_rate_normalized,
+                pr.fp_jacobian_erf_decay_slope,
+                pr.fp_jacobian_erf_first_norm,
+                pr.fp_jacobian_erf_last_norm,
+                pr.fp_logit_margin_velocity,
+                pr.fp_logit_margin_delta,
+                pr.fp_jacobian_erf_variance,
+                CASE WHEN pr.fp_jacobian_erf_variance IS NOT NULL
+                     THEN log(abs(pr.fp_jacobian_erf_variance) + 0.000000001)
+                     ELSE NULL
+                END AS fp_jacobian_erf_variance_log,
+                CASE WHEN pr.fp_jacobian_spectral_norm IS NOT NULL
+                     THEN log(abs(pr.fp_jacobian_spectral_norm) + 0.000000001)
+                     ELSE NULL
+                END AS fp_jacobian_spectral_norm_log,
+                pr.fp_icld_velocity,
+                pr.fp_icld_delta_loss,
                 pr.screening_hellaswag_correct, pr.screening_hellaswag_total,
                 pr.screening_wikitext_status,
                 pr.routing_fast_lane_applied, pr.routing_fast_lane_status,
@@ -353,6 +377,7 @@ class _ObservabilityMixin:
                 pr.routing_fast_lane_slope_consistent
             FROM program_results pr
             JOIN program_graph_features gf ON gf.result_id = pr.result_id
+            LEFT JOIN leaderboard l ON l.result_id = pr.result_id
             """
         ).fetchall()
 
@@ -490,6 +515,24 @@ class _ObservabilityMixin:
             )
             ar_auc = row["ar_auc"]
             hellaswag_acc = row["hellaswag_acc"]
+            blimp_overall_accuracy = row["blimp_overall_accuracy"]
+            composite_score = row["composite_score"]
+            induction_v2_auc = row["induction_v2_investigation_auc"]
+            binding_v2_auc = row["binding_v2_investigation_auc"]
+            jacobian_effective_rank = row["fp_jacobian_effective_rank"]
+            sensitivity_uniformity = row["fp_sensitivity_uniformity"]
+            erf_density = row["fp_jacobian_erf_density"]
+            id_collapse_rate = row["fp_id_collapse_rate"]
+            id_collapse_rate_normalized = row["fp_id_collapse_rate_normalized"]
+            erf_decay_slope = row["fp_jacobian_erf_decay_slope"]
+            erf_first_norm = row["fp_jacobian_erf_first_norm"]
+            erf_last_norm = row["fp_jacobian_erf_last_norm"]
+            logit_margin_velocity = row["fp_logit_margin_velocity"]
+            logit_margin_delta = row["fp_logit_margin_delta"]
+            erf_variance_log = row["fp_jacobian_erf_variance_log"]
+            spec_norm_log = row["fp_jacobian_spectral_norm_log"]
+            icld_velocity = row["fp_icld_velocity"]
+            icld_delta_loss = row["fp_icld_delta_loss"]
             screening_hs_correct = row["screening_hellaswag_correct"]
             screening_hs_total = row["screening_hellaswag_total"]
             screening_wikitext_status = row["screening_wikitext_status"]
@@ -558,6 +601,67 @@ class _ObservabilityMixin:
                     stat["ar_aucs"].append(float(ar_auc))
                 if hellaswag_acc is not None and math.isfinite(hellaswag_acc):
                     stat["hellaswag_accs"].append(float(hellaswag_acc))
+                if (
+                    blimp_overall_accuracy is not None
+                    and math.isfinite(blimp_overall_accuracy)
+                ):
+                    stat["blimp_overall_accuracies"].append(
+                        float(blimp_overall_accuracy)
+                    )
+                if composite_score is not None and math.isfinite(composite_score):
+                    stat["composite_scores"].append(float(composite_score))
+                if induction_v2_auc is not None and math.isfinite(induction_v2_auc):
+                    stat["induction_v2_aucs"].append(float(induction_v2_auc))
+                if binding_v2_auc is not None and math.isfinite(binding_v2_auc):
+                    stat["binding_v2_aucs"].append(float(binding_v2_auc))
+                if erf_density is not None and math.isfinite(erf_density):
+                    stat["erf_densities"].append(float(erf_density))
+                if id_collapse_rate is not None and math.isfinite(id_collapse_rate):
+                    stat["id_collapse_rates"].append(float(id_collapse_rate))
+                if (
+                    id_collapse_rate_normalized is not None
+                    and math.isfinite(id_collapse_rate_normalized)
+                ):
+                    stat["id_collapse_rate_normalizeds"].append(
+                        float(id_collapse_rate_normalized)
+                    )
+                if erf_decay_slope is not None and math.isfinite(erf_decay_slope):
+                    stat["erf_decay_slopes"].append(float(erf_decay_slope))
+                if erf_first_norm is not None and math.isfinite(erf_first_norm):
+                    stat["erf_first_norms"].append(float(erf_first_norm))
+                if erf_last_norm is not None and math.isfinite(erf_last_norm):
+                    stat["erf_last_norms"].append(float(erf_last_norm))
+                if (
+                    logit_margin_velocity is not None
+                    and math.isfinite(logit_margin_velocity)
+                ):
+                    stat["logit_margin_velocities"].append(
+                        float(logit_margin_velocity)
+                    )
+                if logit_margin_delta is not None and math.isfinite(logit_margin_delta):
+                    stat["logit_margin_deltas"].append(float(logit_margin_delta))
+                if erf_variance_log is not None and math.isfinite(erf_variance_log):
+                    stat["erf_variance_logs"].append(float(erf_variance_log))
+                if spec_norm_log is not None and math.isfinite(spec_norm_log):
+                    stat["spec_norm_logs"].append(float(spec_norm_log))
+                if icld_velocity is not None and math.isfinite(icld_velocity):
+                    stat["icld_velocities"].append(float(icld_velocity))
+                if icld_delta_loss is not None and math.isfinite(icld_delta_loss):
+                    stat["icld_delta_losses"].append(float(icld_delta_loss))
+                if (
+                    jacobian_effective_rank is not None
+                    and math.isfinite(jacobian_effective_rank)
+                ):
+                    stat["jacobian_effective_ranks"].append(
+                        float(jacobian_effective_rank)
+                    )
+                if (
+                    sensitivity_uniformity is not None
+                    and math.isfinite(sensitivity_uniformity)
+                ):
+                    stat["sensitivity_uniformities"].append(
+                        float(sensitivity_uniformity)
+                    )
                 if (
                     screening_hs_correct is not None
                     and screening_hs_total is not None
@@ -645,6 +749,7 @@ class _ObservabilityMixin:
                         "n_used": 0,
                         "n_stage1": 0,
                         "losses": [],
+                        "composite_scores": [],
                         "failure_reasons": {},
                         "selected_motifs": {},
                     },
@@ -653,6 +758,8 @@ class _ObservabilityMixin:
                 sstat["n_stage1"] += 1 if row["stage1_passed"] else 0
                 if loss_ratio is not None and math.isfinite(loss_ratio):
                     sstat["losses"].append(float(loss_ratio))
+                if composite_score is not None and math.isfinite(composite_score):
+                    sstat["composite_scores"].append(float(composite_score))
                 motif_name = slot.get("selected_motif")
                 if motif_name:
                     sstat["selected_motifs"][str(motif_name)] = (
@@ -814,6 +921,11 @@ class _ObservabilityMixin:
                     "slot_classes": stat["slot_classes"],
                     "n_used": stat["n_used"],
                     "s1_rate": stat["n_stage1"] / max(stat["n_used"], 1),
+                    "avg_composite_score": (
+                        sum(stat["composite_scores"]) / len(stat["composite_scores"])
+                        if stat.get("composite_scores")
+                        else None
+                    ),
                     "avg_loss_ratio": (
                         sum(stat["losses"]) / len(stat["losses"])
                         if stat["losses"]

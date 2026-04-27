@@ -102,13 +102,14 @@ def test_default_scoring_version_is_v81():
     import research.scientist.leaderboard_scoring as ls
 
     importlib.reload(ls)  # re-evaluate module-level os.environ.get
-    # v8.1 is the capability-first default; v8 retained for back-compat only.
-    assert ls.SCORING_VERSION in ("v8.1", "v8"), ls.SCORING_VERSION
-    # Strictest check: in a clean env (no override), it should be v8.1.
+    # v10 is the locked-in three-bucket default (2026-04-25); earlier versions
+    # are retained for historical-row comparability.
+    assert ls.SCORING_VERSION in ("v10", "v9", "v8.1", "v8"), ls.SCORING_VERSION
+    # Strictest check: in a clean env (no override), it should be v10.
     import os
 
     if "ARIA_SCORING_VERSION" not in os.environ:
-        assert ls.SCORING_VERSION == "v8.1"
+        assert ls.SCORING_VERSION == "v10"
 
 
 def test_tinystories_and_diagnostic_score_at_investigation_tier():

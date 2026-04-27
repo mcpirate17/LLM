@@ -66,6 +66,7 @@ self.onmessage = function(e) {
       'evolution_generation', 'evolution_completed', 'novelty_started',
       'novelty_generation', 'novelty_completed',
       'scale_up_started', 'scale_up_progress', 'scale_up_completed',
+      'champion_confirmation_started',
       'mode_selected', 'investigation_started', 'investigation_progress',
       'investigation_completed', 'investigation_failed',
       'validation_started', 'validation_progress',

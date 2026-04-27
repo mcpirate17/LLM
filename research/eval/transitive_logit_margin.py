@@ -201,14 +201,24 @@ def compute_transitive_logit_margin(
         result.elapsed_ms = round((time.perf_counter() - t0) * 1000, 1)
         return result
 
+    # SynthesizedModel/CompiledLayer hold non-leaf tensors as module
+    # attributes (op caches, _outputs_buf, etc.) that copy.deepcopy
+    # refuses. Use a state_dict snapshot+restore instead — params are
+    # leaf tensors and serialize cleanly. We train the original model
+    # in place, capture margin trajectory, then restore weights.
     try:
-        probe = copy.deepcopy(model).to(dev)
+        param_snapshot = {
+            name: p.detach().clone()
+            for name, p in model.state_dict(keep_vars=True).items()
+            if isinstance(p, torch.Tensor)
+        }
     except RuntimeError as exc:
-        logger.warning("Logit-margin deepcopy failed: %s", exc)
-        result.status = f"deepcopy_failed: {exc.__class__.__name__}"
+        logger.warning("Logit-margin state_dict snapshot failed: %s", exc)
+        result.status = f"snapshot_failed: {exc.__class__.__name__}"
         result.elapsed_ms = round((time.perf_counter() - t0) * 1000, 1)
         return result
 
+    probe = model
     try:
         gen = torch.Generator(device=dev).manual_seed(int(seed))
 
@@ -243,7 +253,15 @@ def compute_transitive_logit_margin(
         elif result.status == "ok":
             result.status = "trajectory_too_short"
     finally:
-        del probe
+        # Always restore the original model weights so callers see the
+        # model in the same state they passed in. param_snapshot is on
+        # the same device as the model (we cloned with .detach()).
+        with torch.no_grad():
+            for name, original in param_snapshot.items():
+                current = probe.state_dict(keep_vars=True).get(name)
+                if isinstance(current, torch.Tensor):
+                    current.copy_(original)
+        del param_snapshot
         if device_str.startswith("cuda"):
             torch.cuda.empty_cache()
         result.elapsed_ms = round((time.perf_counter() - t0) * 1000, 1)

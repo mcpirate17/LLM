@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUN_DIR="$ROOT_DIR/.run"
 API_DIR="$ROOT_DIR/api"
+UI_DIR="$ROOT_DIR/ui"
 mkdir -p "$RUN_DIR"
 
 resolve_python() {
@@ -44,6 +45,15 @@ start_detached() {
   nohup setsid bash -lc "$command" >>"$log_file" 2>&1 </dev/null &
   echo $! > "$pid_file"
 }
+
+if [[ ! -f "$UI_DIR/dist/index.html" ]]; then
+  if [[ -f "$UI_DIR/package.json" ]] && command -v npm >/dev/null 2>&1; then
+    echo "Building embedded UI..."
+    (cd "$UI_DIR" && npm run build)
+  else
+    echo "Embedded UI build missing and npm/package.json are unavailable." >&2
+  fi
+fi
 
 if curl -sf http://127.0.0.1:8091/health >/dev/null 2>&1; then
   echo "API already running on port 8091"

@@ -25,6 +25,7 @@ export const EVENT_TYPE_ALIASES = {
   scale_up_started: 'scaleup_start',
   scale_up_progress: 'scaleup_progress',
   scale_up_completed: 'scaleup_complete',
+  champion_confirmation_started: 'confirm_start',
   auto_scale_up_queued: 'auto_scaleup',
   investigation_started: 'invest_start',
   investigation_progress: 'invest_progress',
@@ -67,6 +68,7 @@ export const RENDERABLE_EVENT_TYPES = new Set([
   'scaleup_start',
   'scaleup_progress',
   'scaleup_complete',
+  'confirm_start',
   'auto_scaleup',
   'mode_selected',
   'invest_start',
@@ -95,7 +97,7 @@ export const RENDERABLE_EVENT_TYPES = new Set([
 ]);
 
 export const GENERATION_EVENT_TYPES = new Set(['evo_gen', 'nov_gen']);
-export const RUN_START_EVENT_TYPES = new Set(['start', 'evo_start', 'nov_start', 'invest_start', 'validate_start', 'scaleup_start']);
+export const RUN_START_EVENT_TYPES = new Set(['start', 'evo_start', 'nov_start', 'invest_start', 'validate_start', 'scaleup_start', 'confirm_start']);
 export const CONTEXT_SWITCH_EVENT_TYPES = new Set([
   ...RUN_START_EVENT_TYPES,
   'invest_progress',
@@ -115,6 +117,7 @@ export const PROGRESSION_EVENT_TYPES = new Set([
   'scaleup_start',
   'scaleup_progress',
   'scaleup_complete',
+  'confirm_start',
   'auto_scaleup',
   'invest_start',
   'invest_progress',

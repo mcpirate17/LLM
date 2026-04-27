@@ -74,7 +74,7 @@ const initialState = {
   loading: true,
   error: null,
   scaleUpOpen: false,
-  scaleUpConfig: { steps: 5000, batch_size: 8, seq_len: 512 },
+  scaleUpConfig: { steps: 40000, batch_size: 8, seq_len: 512 },
   scaleUpStarting: false,
   manualRunOpen: false,
   manualRunStarting: false,
@@ -326,10 +326,16 @@ export default function useProgramData({ resultId, defaultOverrideIneligible, on
       (tier === 'investigation' && Boolean(leaderboardEntry?.investigation_passed ?? program?.investigation_passed))
       || (tier === 'validation' && !isCapabilityQualified)
     ),
+    confirmationEligible: (
+      !Boolean(program?.is_reference)
+      && (tier === 'validation' || tier === 'breakthrough' || Boolean(leaderboardEntry?.validation_passed ?? program?.validation_passed))
+      && (Boolean(leaderboardEntry?.validation_passed ?? program?.validation_passed) || tier === 'breakthrough')
+    ),
   };
   const resolvedEligibility = eligibilityByResultId?.[resultId] || fallbackEligibility;
   const canInvestigate = Boolean(resolvedEligibility.investigationEligible || overrideIneligible);
   const canValidate = Boolean(resolvedEligibility.validationEligible || overrideIneligible);
+  const canConfirm = Boolean(resolvedEligibility.confirmationEligible || overrideIneligible);
 
   // Action handlers
   const handleLaunchRefinement = async (intent, actionKey, failureLabel) => {
@@ -393,6 +399,7 @@ export default function useProgramData({ resultId, defaultOverrideIneligible, on
     alreadyValidated,
     canInvestigate,
     canValidate,
+    canConfirm,
     // Handlers
     handleLaunchRefinement,
     fetchDecisionPacket,

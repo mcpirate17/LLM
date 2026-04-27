@@ -11,6 +11,8 @@ from typing import Any, Dict, Optional
 
 from flask import jsonify
 
+from research.defaults import VALIDATION_BATCH_SIZE, VALIDATION_SEQ_LEN, VALIDATION_STEPS
+
 from ..runner._types import RunConfig
 from ..runtime_events import publish_lifecycle_event
 from ._helpers import (
@@ -121,6 +123,10 @@ def parse_start_request(body: Dict[str, Any]) -> StartExperimentRequest:
     exploratory = bool(body.pop("exploratory", False))
     refine_analysis_json = body.pop("refine_analysis_json", "")
     mode = normalize_start_mode(body.pop("mode", "single"))
+    if mode == "confirmation":
+        body.setdefault("scale_up_steps", VALIDATION_STEPS * 4)
+        body.setdefault("scale_up_batch_size", VALIDATION_BATCH_SIZE)
+        body.setdefault("scale_up_seq_len", VALIDATION_SEQ_LEN)
     config = RunConfig.from_dict(body) if body else RunConfig()
     if refine_analysis_json:
         config.refine_analysis_json = (
@@ -251,6 +257,35 @@ def _launch_result_id_mode(start: StartExperimentRequest, *, nb, runner):
             force=force,
         )
         return exp_id, eligibility, None
+    if mode == "confirmation":
+        result_ids, error = _require_result_ids(start, mode)
+        if error:
+            return None, None, error
+        force = bool(
+            start.body.get("force")
+            or start.body.get("force_confirmation")
+            or start.body.get("force_override")
+            or start.body.get("allow_ineligible")
+            or start.body.get("override_ineligible")
+        )
+        eligibility, error = _maybe_block_ineligible(nb, mode, result_ids, force)
+        if error:
+            return None, eligibility, error
+        config.scale_up = True
+        config.scale_up_result_ids = ",".join(result_ids)
+        hypothesis = start.hypothesis or (
+            f"Champion confirmation: post-validation scale training for "
+            f"{len(result_ids)} candidate(s) at 4x validation steps."
+        )
+        exp_id = runner.start_scale_up(
+            result_ids,
+            config,
+            hypothesis=hypothesis,
+            preregistration=start.preregistration,
+            exploratory=start.exploratory,
+            workflow_mode="confirmation",
+        )
+        return exp_id, eligibility, None
     if mode != "validation":
         return None, None, None
     result_ids, error = _require_result_ids(start, mode)
@@ -351,7 +386,7 @@ def launch_experiment_mode(start: StartExperimentRequest, *, nb, runner):
     if simple_exp_id is not None:
         return simple_exp_id, None, None, None, None
 
-    if start.mode in {"investigation", "validation"}:
+    if start.mode in {"investigation", "validation", "confirmation"}:
         exp_id, eligibility, error = _launch_result_id_mode(start, nb=nb, runner=runner)
         return exp_id, eligibility, None, None, error
 

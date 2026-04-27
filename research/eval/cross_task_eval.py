@@ -109,15 +109,16 @@ def _download_code_corpus(max_chars: int = _DEFAULT_MAX_CHARS) -> Path:
     if path.exists():
         return path
 
+    # codeparrot/github-code-clean was retired by HF (script-based loading
+    # is no longer supported). Swapped to codeparrot/codeparrot-clean — same
+    # org, parquet-backed, pure-python content field.
     logger.info("Downloading Python code corpus ...")
     paths = cache_hf_text_splits(
         cache_dir=_CACHE_DIR,
-        dataset_name="codeparrot/github-code-clean",
+        dataset_name="codeparrot/codeparrot-clean",
         split_specs=(TextSplitSpec("train", "python_code.txt", max_chars),),
         streaming=True,
-        trust_remote_code=True,
-        load_kwargs={"languages": ["Python"]},
-        sample_to_text=lambda sample: sample.get("code", ""),
+        sample_to_text=lambda sample: sample.get("content", ""),
     )
     return paths["train"]
 
@@ -259,11 +260,24 @@ def evaluate_cross_task_robustness(
 
     # Cross-task score: measure domain gap
     # Lower gap = more robust. Score = 1 / (1 + |log(code_ppl/nl_ppl)|)
+    #
+    # Divergence guard: a model that fails uniformly on BOTH domains gets
+    # a small ppl_gap and a high score, gaming the metric without learning
+    # anything. Drop the score when either domain's PPL exceeds a sanity
+    # threshold so divergent architectures don't pollute the column.
+    _DIVERGED_PPL_THRESHOLD = 5000.0
     cross_task_score = None
     ppl_gap = None
     if code_ppl is not None and nl_ppl is not None and code_ppl > 0 and nl_ppl > 0:
-        ppl_gap = round(abs(math.log(code_ppl / nl_ppl)), 4)
-        cross_task_score = round(1.0 / (1.0 + ppl_gap), 4)
+        if max(code_ppl, nl_ppl) > _DIVERGED_PPL_THRESHOLD:
+            logger.info(
+                "cross_task: declining to score — diverged "
+                "(code_ppl=%.0f nl_ppl=%.0f, threshold=%.0f)",
+                code_ppl, nl_ppl, _DIVERGED_PPL_THRESHOLD,
+            )
+        else:
+            ppl_gap = round(abs(math.log(code_ppl / nl_ppl)), 4)
+            cross_task_score = round(1.0 / (1.0 + ppl_gap), 4)
 
     return {
         "cross_task_score": cross_task_score,

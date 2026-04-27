@@ -16,7 +16,9 @@ function normalizeQueue(items) {
       fingerprint: item?.fingerprint || null,
       source: item?.source || 'unknown',
       architectureFamily: item?.architectureFamily || null,
-      intent: item?.intent === 'validation' ? 'validation' : 'investigation',
+      intent: ['investigation', 'validation', 'confirmation'].includes(item?.intent)
+        ? item.intent
+        : 'investigation',
     });
   }
   return normalized;
@@ -32,15 +34,21 @@ function queueReasonLabel(reason) {
   if (reason === 'already_promoted') {
     return 'Candidate is already in validation/breakthrough tier.';
   }
+  if (reason === 'not_validation_passed') {
+    return 'Candidate has validation evidence but has not passed validation.';
+  }
   if (reason === 'not_progression_eligible') {
-    return 'Candidate is not currently eligible for investigation/validation progression.';
+    return 'Candidate is not currently eligible for progression.';
   }
   return 'Candidate is not eligible for this queue action.';
 }
 
 function resolveQueueIntent(candidate, eligibility) {
-  if (candidate?.intent === 'investigation' || candidate?.intent === 'validation') {
+  if (['investigation', 'validation', 'confirmation'].includes(candidate?.intent)) {
     return candidate.intent;
+  }
+  if (candidate?.confirmationEligible || eligibility?.confirmationEligible) {
+    return 'confirmation';
   }
   if (candidate?.validationEligible || eligibility?.validationEligible) {
     return 'validation';
@@ -93,7 +101,9 @@ export default function useInvestigationQueue({ eligibilityByResultId, setAction
       let changed = false;
       const next = [];
       for (const item of prev) {
-        const intent = item?.intent === 'validation' ? 'validation' : 'investigation';
+        const intent = ['investigation', 'validation', 'confirmation'].includes(item?.intent)
+          ? item.intent
+          : 'investigation';
         const eligibility = eligibilityByResultId[item.resultId];
         if (!eligibility) {
           if (item.intent !== intent) {
@@ -104,9 +114,11 @@ export default function useInvestigationQueue({ eligibilityByResultId, setAction
           }
           continue;
         }
-        const stillEligibleForIntent = intent === 'validation'
-          ? eligibility.validationEligible
-          : eligibility.investigationEligible;
+        const stillEligibleForIntent = intent === 'confirmation'
+          ? eligibility.confirmationEligible
+          : intent === 'validation'
+            ? eligibility.validationEligible
+            : eligibility.investigationEligible;
         if (!stillEligibleForIntent) {
           changed = true;
           continue;
@@ -124,13 +136,15 @@ export default function useInvestigationQueue({ eligibilityByResultId, setAction
 
   const queueBreakdown = useMemo(() => {
     return investigationQueue.reduce((acc, item) => {
-      if (item.intent === 'validation') {
+      if (item.intent === 'confirmation') {
+        acc.confirmation += 1;
+      } else if (item.intent === 'validation') {
         acc.validation += 1;
       } else {
         acc.investigation += 1;
       }
       return acc;
-    }, { investigation: 0, validation: 0 });
+    }, { investigation: 0, validation: 0, confirmation: 0 });
   }, [investigationQueue]);
 
   return {

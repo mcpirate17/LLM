@@ -340,6 +340,69 @@ def trajectory_probe_fields(row: Dict[str, Any]) -> Dict[str, Any]:
     return fields
 
 
+# Every column written by ``TrajectoryMetricsResult.to_column_dict()`` —
+# the canonical list of v9 fingerprint columns on program_results.
+# Sourced once so callers (screening recorder, investigation updater,
+# backfill scripts) can't drift apart.
+_V9_TRAJECTORY_COLUMNS: Tuple[str, ...] = (
+    "fp_metric_phase",
+    "fp_jacobian_spectral_norm",
+    "fp_jacobian_effective_rank",
+    "fp_sensitivity_uniformity",
+    "fp_spec_norm_status",
+    "fp_jacobian_erf_density",
+    "fp_jacobian_erf_variance",
+    "fp_jacobian_erf_decay_slope",
+    "fp_jacobian_erf_last_norm",
+    "fp_jacobian_erf_first_norm",
+    "fp_jacobian_erf_status",
+    "fp_jacobian_erf_elapsed_ms",
+    "fp_icld_velocity",
+    "fp_icld_early_loss",
+    "fp_icld_late_loss",
+    "fp_icld_delta_loss",
+    "fp_icld_seq_len",
+    "fp_icld_status",
+    "fp_icld_elapsed_ms",
+    "fp_logit_margin_velocity",
+    "fp_logit_margin_initial",
+    "fp_logit_margin_final",
+    "fp_logit_margin_delta",
+    "fp_logit_margin_n_steps",
+    "fp_logit_margin_status",
+    "fp_logit_margin_elapsed_ms",
+    "fp_id_pr_early",
+    "fp_id_pr_late",
+    "fp_id_norm_early",
+    "fp_id_norm_late",
+    "fp_id_step_early",
+    "fp_id_step_late",
+    "fp_id_collapse_rate",
+    "fp_id_collapse_rate_normalized",
+    "fp_id_collapse_status",
+    "fp_id_collapse_elapsed_ms",
+)
+
+
+def v9_trajectory_fields(row: Dict[str, Any]) -> Dict[str, Any]:
+    """Extract v9 trajectory-metric columns from a benchmark result dict.
+
+    Pairs with ``compute_trajectory_metrics(...).to_column_dict()``: every
+    column landing in that dict has a matching ``program_results`` schema
+    entry. The investigation path uses this to thread its
+    ``metric_phase="investigation_full"`` measurements through the
+    ``UPDATE program_results SET …`` write, since investigation reuses the
+    screening row instead of inserting a fresh one. Returns only keys
+    whose value is not None to preserve any earlier-phase data when
+    investigation didn't measure that particular metric.
+    """
+    return {
+        col: row[col]
+        for col in _V9_TRAJECTORY_COLUMNS
+        if col in row and row[col] is not None
+    }
+
+
 def _load_best_reference_probe_ppl(step: int) -> Optional[float]:
     """Return the best cached reference PPL at the requested checkpoint."""
     try:

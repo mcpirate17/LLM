@@ -7,7 +7,9 @@
  * Eliminates the 47-case switch statement in LeaderboardRow.
  */
 import React from 'react';
-import { reliabilityColor } from '../../utils/colors';
+import { blimpColor, hellaswagColor, pplColor, probeAucColor, reliabilityColor } from '../../utils/colors';
+import { scoreColor } from '../../utils/format';
+import { evalMetricQuality } from '../../utils/backendScore';
 import TierBadge from '../shared/TierBadge';
 import StatusBadge from '../shared/StatusBadge';
 import Sparkline from '../shared/Sparkline';
@@ -56,15 +58,14 @@ const RENDERERS = {
   tier: (entry) => <TierBadge tier={entry.tier} entry={entry} />,
 
   _verified: (entry) => {
-    const tags = (entry.tags || '').toLowerCase();
-    const isRef = entry.is_reference;
-    const hasTiktoken = tags.includes('tiktoken_native') || isRef;
-    const hasWikitext = tags.includes('wikitext103') || isRef;
-    let vLabel, vColor;
-    if (hasTiktoken && hasWikitext) { vLabel = '\u2713'; vColor = 'var(--accent-green)'; }
-    else if (hasTiktoken) { vLabel = '\u26A0'; vColor = 'var(--accent-yellow)'; }
-    else { vLabel = '\u2717'; vColor = 'var(--accent-red)'; }
-    return <span style={{ fontSize: 12, color: vColor, fontWeight: 700 }}>{vLabel}</span>;
+    const quality = evalMetricQuality(entry);
+    const icon = quality.key === 'trusted_bpe' ? '\u2713'
+      : quality.key === 'partial_bpe' ? '\u25D0'
+        : quality.key === 'legacy_eval' ? '\u26A0' : '\u2717';
+    const title = quality.missing?.length
+      ? `${quality.label}: missing ${quality.missing.join(', ')}`
+      : `${quality.label}: ${quality.version}`;
+    return <span style={{ fontSize: 12, color: quality.color, fontWeight: 700 }} title={title}>{icon}</span>;
   },
 
   _rate: (entry) => {
@@ -119,14 +120,15 @@ const RENDERERS = {
   _vs_reference: (entry) => entry._vs_reference != null ? `${entry._vs_reference.toFixed(0)}%` : '--',
 
   composite_score: (entry) => {
-    const tags = (entry.tags || '').toLowerCase();
-    const hasTiktoken = tags.includes('tiktoken_native') || entry.is_reference;
-    const tokIcon = hasTiktoken ? '\u2713' : '\u26A0';
-    const tokColor = hasTiktoken ? 'var(--accent-green)' : 'var(--accent-yellow)';
+    const quality = evalMetricQuality(entry);
+    const tokIcon = quality.key === 'trusted_bpe' ? '\u2713'
+      : quality.key === 'partial_bpe' ? '\u25D0'
+        : quality.key === 'legacy_eval' ? '\u26A0' : '\u2717';
+    const score = Number(entry.composite_score);
     return (
-      <span style={{ color: 'var(--accent-green)' }}>
+      <span style={{ color: Number.isFinite(score) ? scoreColor(score) : 'var(--text-muted)', fontWeight: 700 }}>
         {fmt(entry.composite_score, 3)}
-        <span style={{ fontSize: 10, marginLeft: 4, color: tokColor }} title={hasTiktoken ? 'tiktoken-native' : 'byte-era'}>{tokIcon}</span>
+        <span style={{ fontSize: 10, marginLeft: 4, color: quality.color }} title={`${quality.label}: ${quality.version}`}>{tokIcon}</span>
       </span>
     );
   },
@@ -148,6 +150,28 @@ const RENDERERS = {
   robustness_long_ctx_combined_score: (e) => fmt(e.robustness_long_ctx_combined_score, 3),
   init_sensitivity_std: (e) => fmt(e.init_sensitivity_std, 4),
   jacobian_spectral_norm: (e) => fmt(e.jacobian_spectral_norm ?? e.fp_jacobian_spectral_norm, 4),
+  fp_jacobian_effective_rank: (e) => fmt(e.fp_jacobian_effective_rank, 3),
+  fp_sensitivity_uniformity: (e) => fmt(e.fp_sensitivity_uniformity, 3),
+  fp_jacobian_erf_density: (e) => coloredMetric(e.fp_jacobian_erf_density, [
+    [null, 0.08, 'var(--text-muted)'], [0.18, null, 'var(--accent-green)'], [0.08, 0.18, 'var(--accent-yellow)'],
+  ], 3),
+  fp_id_collapse_rate: (e) => coloredMetric(e.fp_id_collapse_rate, [
+    [null, 0.02, 'var(--text-muted)'], [0.10, null, 'var(--accent-green)'], [0.02, 0.10, 'var(--accent-yellow)'],
+  ], 3),
+  fp_id_collapse_rate_normalized: (e) => coloredMetric(e.fp_id_collapse_rate_normalized, [
+    [null, 0.02, 'var(--text-muted)'], [0.10, null, 'var(--accent-green)'], [0.02, 0.10, 'var(--accent-yellow)'],
+  ], 3),
+  fp_jacobian_erf_decay_slope: (e) => coloredMetric(e.fp_jacobian_erf_decay_slope, [
+    [null, 0.00, 'var(--text-muted)'], [0.20, null, 'var(--accent-green)'], [0.00, 0.20, 'var(--accent-yellow)'],
+  ], 3),
+  fp_jacobian_erf_first_norm: (e) => fmt(e.fp_jacobian_erf_first_norm, 3),
+  fp_jacobian_erf_last_norm: (e) => fmt(e.fp_jacobian_erf_last_norm, 3),
+  fp_logit_margin_velocity: (e) => fmt(e.fp_logit_margin_velocity, 3),
+  fp_logit_margin_delta: (e) => fmt(e.fp_logit_margin_delta, 3),
+  fp_jacobian_erf_variance_log: (e) => fmt(e.fp_jacobian_erf_variance_log, 3),
+  fp_jacobian_spectral_norm_log: (e) => fmt(e.fp_jacobian_spectral_norm_log, 3),
+  fp_icld_velocity: (e) => <span style={{ color: 'var(--text-muted)' }}>{fmt(e.fp_icld_velocity, 3)}</span>,
+  fp_icld_delta_loss: (e) => <span style={{ color: 'var(--text-muted)' }}>{fmt(e.fp_icld_delta_loss, 3)}</span>,
   max_viable_seq_len: (e) => e.max_viable_seq_len != null ? Number(e.max_viable_seq_len).toFixed(0) : '--',
   quant_int8_retention: (e) => e._quant_retention_pct != null ? `${e._quant_retention_pct.toFixed(1)}%` : '--',
   divergence_step: (e) => e.divergence_step || '--',
@@ -163,31 +187,26 @@ const RENDERERS = {
       {fmt(e.investigation_robustness, 2)}
     </span>
   ),
-  wikitext_ppl: (e) => <span style={{ color: 'var(--accent-blue)', fontWeight: 600 }}>{fmt(e.wikitext_ppl ?? e.wikitext_perplexity, 2)}</span>,
+  wikitext_ppl: (e) => {
+    const value = e.wikitext_ppl ?? e.wikitext_perplexity;
+    return <span style={{ color: pplColor(value), fontWeight: 600 }}>{fmt(value, 2)}</span>;
+  },
   peak_ppl: (e) => <span style={{ color: 'var(--accent-cyan)', fontWeight: 600 }}>{fmt(e.peak_ppl, 2)}</span>,
   validation_baseline_ratio: (e) => <span style={{ color: e.validation_baseline_ratio < 1 ? 'var(--accent-green)' : 'var(--accent-red)' }}>{fmt(e.validation_baseline_ratio)}</span>,
 
-  hellaswag_acc: (e) => coloredMetric(e.hellaswag_acc, [
-    [null, 0.281, 'var(--accent-red)'], [0.31, null, 'var(--accent-green)'], [0.281, 0.31, 'var(--accent-yellow)'],
-  ], 1, true),
-  induction_auc: (e) => coloredMetric(e.induction_auc, [
-    [null, 0.10, 'var(--accent-red)'], [0.35, null, 'var(--accent-green)'], [0.10, 0.35, 'var(--accent-yellow)'],
-  ]),
-  induction_v2_investigation_auc: (e) => coloredMetric(e.induction_v2_investigation_auc, [
-    [null, 0.30, 'var(--accent-red)'], [0.70, null, 'var(--accent-green)'], [0.30, 0.70, 'var(--accent-yellow)'],
-  ]),
-  ar_auc: (e) => coloredMetric(e.ar_auc, [
-    [null, 0.05, 'var(--accent-red)'], [0.20, null, 'var(--accent-green)'], [0.05, 0.20, 'var(--accent-yellow)'],
-  ]),
-  binding_auc: (e) => coloredMetric(e.binding_auc, [
-    [null, 0.10, 'var(--accent-red)'], [0.30, null, 'var(--accent-green)'], [0.10, 0.30, 'var(--accent-yellow)'],
-  ]),
-  binding_v2_investigation_auc: (e) => coloredMetric(e.binding_v2_investigation_auc, [
-    [null, 0.30, 'var(--accent-red)'], [0.70, null, 'var(--accent-green)'], [0.30, 0.70, 'var(--accent-yellow)'],
-  ]),
-  blimp_overall_accuracy: (e) => coloredMetric(e.blimp_overall_accuracy, [
-    [null, 0.501, 'var(--accent-red)'], [0.60, null, 'var(--accent-green)'], [0.501, 0.60, 'var(--accent-yellow)'],
-  ], 1, true),
+  hellaswag_acc: (e) => {
+    if (e.hellaswag_acc == null) return '--';
+    return <span style={{ color: hellaswagColor(e.hellaswag_acc), fontWeight: 600 }}>{(Number(e.hellaswag_acc) * 100).toFixed(1)}%</span>;
+  },
+  induction_auc: (e) => <span style={{ color: probeAucColor(e.induction_auc), fontWeight: 600 }}>{fmt(e.induction_auc, 3)}</span>,
+  induction_v2_investigation_auc: (e) => <span style={{ color: probeAucColor(e.induction_v2_investigation_auc), fontWeight: 600 }}>{fmt(e.induction_v2_investigation_auc, 3)}</span>,
+  ar_auc: (e) => <span style={{ color: probeAucColor(e.ar_auc), fontWeight: 600 }}>{fmt(e.ar_auc, 3)}</span>,
+  binding_auc: (e) => <span style={{ color: probeAucColor(e.binding_auc), fontWeight: 600 }}>{fmt(e.binding_auc, 3)}</span>,
+  binding_v2_investigation_auc: (e) => <span style={{ color: probeAucColor(e.binding_v2_investigation_auc), fontWeight: 600 }}>{fmt(e.binding_v2_investigation_auc, 3)}</span>,
+  blimp_overall_accuracy: (e) => {
+    if (e.blimp_overall_accuracy == null) return '--';
+    return <span style={{ color: blimpColor(e.blimp_overall_accuracy), fontWeight: 600 }}>{(Number(e.blimp_overall_accuracy) * 100).toFixed(1)}%</span>;
+  },
 
   pre_inv_score: (e) => {
     const pis = Number(e.pre_inv_score);

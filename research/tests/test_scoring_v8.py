@@ -305,14 +305,19 @@ class TestV8Dispatcher:
     def test_dispatcher_uses_active_version(self):
         """Dispatcher must route to whichever version SCORING_VERSION names.
 
-        As of 2026-04-17 the default is "v8.1" (capability-first). The test
+        As of 2026-04-26 the default is "v11" (breakthrough-aligned). The test
         no longer pins a specific version — it pins the dispatcher contract:
         ``compute_composite`` must equal the direct call to whichever version
         is active.
         """
-        from research.scientist.leaderboard_scoring import compute_composite_v8_1
+        from research.scientist.leaderboard_scoring import (
+            compute_composite_v8_1,
+            compute_composite_v9,
+            compute_composite_v10,
+            compute_composite_v11,
+        )
 
-        assert SCORING_VERSION in ("v8", "v8.1")
+        assert SCORING_VERSION in ("v8", "v8.1", "v9", "v10", "v11")
         kw = dict(
             ppl_screening=8.0,
             tier="validation",
@@ -320,7 +325,13 @@ class TestV8Dispatcher:
             diagnostic_score=0.40,
         )
         dispatched = compute_composite(**kw)
-        if SCORING_VERSION == "v8.1":
+        if SCORING_VERSION == "v11":
+            assert dispatched == compute_composite_v11(**kw)
+        elif SCORING_VERSION == "v10":
+            assert dispatched == compute_composite_v10(**kw)
+        elif SCORING_VERSION == "v9":
+            assert dispatched == compute_composite_v9(**kw)
+        elif SCORING_VERSION == "v8.1":
             assert dispatched == compute_composite_v8_1(**kw)
         else:
             assert dispatched == compute_composite_v8(**kw)

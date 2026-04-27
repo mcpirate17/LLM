@@ -392,6 +392,20 @@ class _LeaderboardMixin:
                     "replication_best_vs_mean_gap", agg["best_vs_mean_gap"]
                 )
 
+        # Per-metric mean+CV across all runs of this fingerprint.  Means
+        # override single-row values in score_kwargs (so we score the
+        # architecture, not the lucky run).  Per-tier CVs feed the
+        # score-stability penalty inside compute_composite_v10.
+        metric_agg: dict = {}
+        if _fp:
+            metric_agg = self.get_fingerprint_metric_aggregates(_fp) or {}
+            tier_cv = metric_agg.get("_tier_cv") or {}
+            n_runs_max = int(metric_agg.get("_n_runs_max") or 0)
+            kwargs.setdefault("n_runs", n_runs_max)
+            kwargs.setdefault("cv_loss", tier_cv.get("loss"))
+            kwargs.setdefault("cv_understanding", tier_cv.get("und"))
+            kwargs.setdefault("cv_capability", tier_cv.get("cap"))
+
         update_items = self._leaderboard_update_items(kwargs)
 
         score_kwargs = build_score_kwargs(
@@ -410,7 +424,72 @@ class _LeaderboardMixin:
             score_kwargs["replication_best_vs_mean_gap"] = agg.get(
                 "replication_best_vs_mean_gap"
             )
-        composite = compute_composite(**score_kwargs)
+
+        # Override per-metric values in score_kwargs with the cross-run
+        # mean from program_results.  Mapping: source column on
+        # program_results -> kwarg name on compute_composite_v10.  Means
+        # are only injected when n>=2; for n=1 we leave the single-row
+        # value alone (no aggregation possible).
+        if metric_agg:
+            metric_to_kwarg = {
+                "wikitext_perplexity": (
+                    "ppl_screening", "ppl_investigation", "ppl_validation"
+                ),
+                "blimp_overall_accuracy": ("blimp_accuracy",),
+                "hellaswag_acc": (
+                    "hellaswag_acc_screening",
+                    "hellaswag_acc_investigation",
+                    "hellaswag_acc_validation",
+                ),
+                "tinystories_score": ("tinystories_score",),
+                "cross_task_score": ("cross_task_score",),
+                "diagnostic_score": ("diagnostic_score",),
+                "fp_hierarchy_fitness": ("hierarchy_fitness",),
+                "ar_auc": ("ar_auc",),
+                "induction_auc": ("induction_auc",),
+                "binding_auc": ("binding_auc",),
+                "induction_v2_investigation_auc": ("induction_v2_inv_auc",),
+                "binding_v2_investigation_auc": ("binding_v2_inv_auc",),
+            }
+            for col, kwarg_names in metric_to_kwarg.items():
+                stat = metric_agg.get(col) or {}
+                if int(stat.get("n") or 0) >= 2 and stat.get("mean") is not None:
+                    mean_val = stat["mean"]
+                    for kn in kwarg_names:
+                        # Only override if the original value was non-None
+                        # (preserves None semantics: a stage that hasn't
+                        # populated a metric stays None even if other
+                        # stages produced one).
+                        if score_kwargs.get(kn) is not None:
+                            score_kwargs[kn] = mean_val
+            score_kwargs["cv_loss"] = kwargs.get("cv_loss")
+            score_kwargs["cv_understanding"] = kwargs.get("cv_understanding")
+            score_kwargs["cv_capability"] = kwargs.get("cv_capability")
+            score_kwargs["n_runs"] = kwargs.get("n_runs")
+
+        # Score with decompose to capture the CV penalty multipliers so
+        # we can persist the effective stability multiplier (geomean of
+        # the three tier-pens, or 1.0 when not applied).
+        composite_dec = compute_composite(decompose=True, **score_kwargs)
+        if isinstance(composite_dec, dict):
+            composite = float(composite_dec.get("composite_score") or 0.0)
+            _bd = composite_dec.get("breakdown") or {}
+            if _bd.get("_cv_penalty_applied"):
+                _pl = float(_bd.get("_cv_penalty_loss") or 1.0)
+                _pu = float(_bd.get("_cv_penalty_und") or 1.0)
+                _pc = float(_bd.get("_cv_penalty_cap") or 1.0)
+                # Geomean as a single-number summary; per-tier values live
+                # in cv_loss/cv_understanding/cv_capability.
+                stability = (_pl * _pu * _pc) ** (1.0 / 3.0)
+                kwargs.setdefault("score_stability_penalty", stability)
+            else:
+                kwargs.setdefault("score_stability_penalty", 1.0)
+        else:
+            composite = float(composite_dec)
+            kwargs.setdefault("score_stability_penalty", 1.0)
+        # Re-derive update_items so the new cv/n_runs/penalty cols hit
+        # the SQL UPDATE/INSERT below.
+        update_items = self._leaderboard_update_items(kwargs)
 
         # Compute efficiency_multiple from program_results operational metrics.
         # MoE models: skip param count penalty (active params < total params).
@@ -585,6 +664,27 @@ class _LeaderboardMixin:
             "pr.stage1_passed AS stage1_passed, "
             "pr.routing_confidence_mean AS _routing_confidence_mean, "
             "pr.fp_jacobian_spectral_norm AS jacobian_spectral_norm, "
+            "pr.fp_jacobian_effective_rank AS fp_jacobian_effective_rank, "
+            "pr.fp_sensitivity_uniformity AS fp_sensitivity_uniformity, "
+            "pr.fp_jacobian_erf_density AS fp_jacobian_erf_density, "
+            "pr.fp_id_collapse_rate AS fp_id_collapse_rate, "
+            "pr.fp_id_collapse_rate_normalized AS fp_id_collapse_rate_normalized, "
+            "pr.fp_jacobian_erf_decay_slope AS fp_jacobian_erf_decay_slope, "
+            "pr.fp_jacobian_erf_first_norm AS fp_jacobian_erf_first_norm, "
+            "pr.fp_jacobian_erf_last_norm AS fp_jacobian_erf_last_norm, "
+            "pr.fp_logit_margin_velocity AS fp_logit_margin_velocity, "
+            "pr.fp_logit_margin_initial AS fp_logit_margin_initial, "
+            "pr.fp_logit_margin_final AS fp_logit_margin_final, "
+            "pr.fp_logit_margin_delta AS fp_logit_margin_delta, "
+            "pr.fp_jacobian_erf_variance AS fp_jacobian_erf_variance, "
+            "CASE WHEN pr.fp_jacobian_erf_variance IS NOT NULL "
+            "THEN log(abs(pr.fp_jacobian_erf_variance) + 0.000000001) ELSE NULL END AS fp_jacobian_erf_variance_log, "
+            "CASE WHEN pr.fp_jacobian_spectral_norm IS NOT NULL "
+            "THEN log(abs(pr.fp_jacobian_spectral_norm) + 0.000000001) ELSE NULL END AS fp_jacobian_spectral_norm_log, "
+            "pr.fp_icld_velocity AS fp_icld_velocity, "
+            "pr.fp_icld_early_loss AS fp_icld_early_loss, "
+            "pr.fp_icld_late_loss AS fp_icld_late_loss, "
+            "pr.fp_icld_delta_loss AS fp_icld_delta_loss, "
             # Program-side fields used by canonical backend score attachment
             "pr.loss_ratio AS loss_ratio, "
             "pr.discovery_loss AS discovery_loss, "
@@ -592,8 +692,17 @@ class _LeaderboardMixin:
             "pr.validation_loss AS validation_loss, "
             "pr.validation_loss_ratio AS _pr_validation_loss_ratio, "
             "pr.wikitext_perplexity AS _pr_wikitext_perplexity, "
+            "pr.wikitext_score AS _pr_wikitext_score, "
             "pr.tinystories_perplexity AS _pr_tinystories_perplexity, "
+            "pr.tinystories_score AS _pr_tinystories_score, "
             "pr.hellaswag_acc AS _pr_hellaswag_acc, "
+            "pr.blimp_overall_accuracy AS _pr_blimp_overall_accuracy, "
+            "pr.blimp_n_subtasks AS _pr_blimp_n_subtasks, "
+            "pr.blimp_status AS _pr_blimp_status, "
+            "pr.screening_wikitext_metric_version AS _pr_screening_wikitext_metric_version, "
+            "pr.tokenizer_mode AS _pr_tokenizer_mode, "
+            "pr.corpus_path AS _pr_corpus_path, "
+            "pr.evaluation_protocol_version AS _pr_evaluation_protocol_version, "
             "pr.generalization_gap AS generalization_gap, "
             "pr.novelty_score AS novelty_score, "
             "pr.final_loss AS final_loss, "
@@ -715,21 +824,59 @@ class _LeaderboardMixin:
                 and d.get("_pr_validation_loss_ratio") is not None
             ):
                 d["validation_loss_ratio"] = d.get("_pr_validation_loss_ratio")
+            pr_eval_is_bpe = d.get("_pr_screening_wikitext_metric_version") == "bpe_eval_v1"
             if (
-                d.get("wikitext_perplexity") is None
+                (pr_eval_is_bpe or d.get("wikitext_perplexity") is None)
                 and d.get("_pr_wikitext_perplexity") is not None
             ):
                 d["wikitext_perplexity"] = d.get("_pr_wikitext_perplexity")
             if (
-                d.get("tinystories_perplexity") is None
+                (pr_eval_is_bpe or d.get("wikitext_score") is None)
+                and d.get("_pr_wikitext_score") is not None
+            ):
+                d["wikitext_score"] = d.get("_pr_wikitext_score")
+            if (
+                (pr_eval_is_bpe or d.get("tinystories_perplexity") is None)
                 and d.get("_pr_tinystories_perplexity") is not None
             ):
                 d["tinystories_perplexity"] = d.get("_pr_tinystories_perplexity")
             if (
-                d.get("hellaswag_acc") is None
+                (pr_eval_is_bpe or d.get("tinystories_score") is None)
+                and d.get("_pr_tinystories_score") is not None
+            ):
+                d["tinystories_score"] = d.get("_pr_tinystories_score")
+            if (
+                (pr_eval_is_bpe or d.get("hellaswag_acc") is None)
                 and d.get("_pr_hellaswag_acc") is not None
             ):
                 d["hellaswag_acc"] = d.get("_pr_hellaswag_acc")
+            if (
+                (pr_eval_is_bpe or d.get("blimp_overall_accuracy") is None)
+                and d.get("_pr_blimp_overall_accuracy") is not None
+            ):
+                d["blimp_overall_accuracy"] = d.get("_pr_blimp_overall_accuracy")
+            if (
+                (pr_eval_is_bpe or d.get("blimp_n_subtasks") is None)
+                and d.get("_pr_blimp_n_subtasks") is not None
+            ):
+                d["blimp_n_subtasks"] = d.get("_pr_blimp_n_subtasks")
+            if (
+                (pr_eval_is_bpe or d.get("blimp_status") is None)
+                and d.get("_pr_blimp_status") is not None
+            ):
+                d["blimp_status"] = d.get("_pr_blimp_status")
+            if pr_eval_is_bpe or not d.get("screening_wikitext_metric_version"):
+                d["screening_wikitext_metric_version"] = d.get(
+                    "_pr_screening_wikitext_metric_version"
+                ) or d.get("screening_wikitext_metric_version")
+            if pr_eval_is_bpe or not d.get("tokenizer_mode"):
+                d["tokenizer_mode"] = d.get("_pr_tokenizer_mode") or d.get("tokenizer_mode")
+            if pr_eval_is_bpe or not d.get("corpus_path"):
+                d["corpus_path"] = d.get("_pr_corpus_path") or d.get("corpus_path")
+            if pr_eval_is_bpe or not d.get("evaluation_protocol_version"):
+                d["evaluation_protocol_version"] = d.get(
+                    "_pr_evaluation_protocol_version"
+                ) or d.get("evaluation_protocol_version")
             d["routing_mode"] = d.pop("_routing_mode", None)
             d["arch_spec_json"] = d.pop("_arch_spec_json", None)
             d["param_count"] = d.pop("_param_count", None)
@@ -745,8 +892,17 @@ class _LeaderboardMixin:
             d.pop("_pr_discovery_loss_ratio", None)
             d.pop("_pr_validation_loss_ratio", None)
             d.pop("_pr_wikitext_perplexity", None)
+            d.pop("_pr_wikitext_score", None)
             d.pop("_pr_tinystories_perplexity", None)
+            d.pop("_pr_tinystories_score", None)
             d.pop("_pr_hellaswag_acc", None)
+            d.pop("_pr_blimp_overall_accuracy", None)
+            d.pop("_pr_blimp_n_subtasks", None)
+            d.pop("_pr_blimp_status", None)
+            d.pop("_pr_screening_wikitext_metric_version", None)
+            d.pop("_pr_tokenizer_mode", None)
+            d.pop("_pr_corpus_path", None)
+            d.pop("_pr_evaluation_protocol_version", None)
             d.pop("_pr_efficiency_multiple", None)
             self._normalize_benchmark_fields(d)
 

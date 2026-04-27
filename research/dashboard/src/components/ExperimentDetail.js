@@ -2,7 +2,7 @@ import { apiCall } from "../services/apiService";
 import React, { useState, useEffect, useMemo } from 'react';
 import FailureAnalysis from './FailureAnalysis';
 import ProgramDetail from './ProgramDetail';
-import { formatTime, formatDuration } from '../utils/format';
+import { formatTime, formatDuration, scoreColor, scoreGradient, scoreToneLabel } from '../utils/format';
 import { lossColor, noveltyColor } from '../utils/colors';
 import useInteractiveTable from './shared/useInteractiveTable';
 import SortIndicator from './shared/SortIndicator';
@@ -50,10 +50,29 @@ function programRowRating(p) {
 }
 
 function progScoreColor(score) {
-  if (score >= 70) return 'var(--accent-green)';
-  if (score >= 40) return 'var(--accent-yellow)';
-  if (score >= 20) return 'var(--accent-orange, #f0883e)';
-  return 'var(--accent-red)';
+  if (score == null) return 'var(--text-muted)';
+  return scoreColor(score);
+}
+
+function metricTone(value, kind) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return { tone: 'missing', color: 'var(--text-muted)', label: '--' };
+  if (kind === 'loss') {
+    if (n < 0.7) return { tone: 'positive', color: 'var(--accent-green)', label: 'positive' };
+    if (n < 1.0) return { tone: 'neutral', color: 'var(--accent-yellow)', label: 'neutral' };
+    return { tone: 'negative', color: 'var(--accent-red)', label: 'negative' };
+  }
+  if (kind === 'baseline') {
+    if (n < 1.0) return { tone: 'positive', color: 'var(--accent-green)', label: 'beats baseline' };
+    if (n < 1.1) return { tone: 'neutral', color: 'var(--accent-yellow)', label: 'near baseline' };
+    return { tone: 'negative', color: 'var(--accent-red)', label: 'below baseline' };
+  }
+  if (kind === 'novelty') {
+    if (n >= 0.8) return { tone: 'positive', color: 'var(--accent-green)', label: 'novel' };
+    if (n >= 0.5) return { tone: 'neutral', color: 'var(--accent-yellow)', label: 'mixed' };
+    return { tone: 'negative', color: 'var(--text-muted)', label: 'familiar' };
+  }
+  return { tone: 'neutral', color: 'var(--text-muted)', label: 'recorded' };
 }
 
 function canonicalScore(row) {
@@ -130,7 +149,7 @@ function ExperimentSummaryHeader({ experiment, programs }) {
   }, [programs]);
 
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 16, marginBottom: 16 }}>
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 16, marginBottom: 16 }}>
       <div className="card" style={{ borderLeft: '4px solid var(--accent-blue)' }}>
         <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 4 }}>RESEARCH HYPOTHESIS</div>
         <div style={{ fontSize: 16, fontWeight: 600, color: 'var(--text-primary)', lineHeight: 1.4 }}>
@@ -144,8 +163,8 @@ function ExperimentSummaryHeader({ experiment, programs }) {
       </div>
 
       {bestProgram && (
-        <div className="card" style={{ borderLeft: '4px solid var(--accent-green)', background: 'linear-gradient(135deg, var(--bg-secondary) 0%, rgba(63, 185, 80, 0.05) 100%)' }}>
-          <div style={{ fontSize: 10, color: 'var(--accent-green)', fontWeight: 700, marginBottom: 4 }}>TOP DISCOVERY</div>
+        <div className="card" style={{ borderLeft: `4px solid ${scoreColor(canonicalScore(bestProgram))}`, background: 'linear-gradient(135deg, var(--bg-secondary) 0%, rgba(63, 185, 80, 0.05) 100%)' }}>
+          <div style={{ fontSize: 10, color: scoreColor(canonicalScore(bestProgram)), fontWeight: 700, marginBottom: 4 }}>TOP DISCOVERY</div>
           <div style={{ fontSize: 14, fontWeight: 700, fontFamily: 'monospace' }}>{bestProgram.graph_fingerprint?.slice(0, 12)}</div>
           <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 8 }}>
             <div style={{ fontSize: 11 }}>
@@ -158,14 +177,52 @@ function ExperimentSummaryHeader({ experiment, programs }) {
             </div>
           </div>
           <div style={{ marginTop: 10, fontSize: 10, color: 'var(--text-muted)' }}>
-            Score: <span style={{ color: 'var(--text-primary)', fontWeight: 700 }}>{canonicalScore(bestProgram)?.toFixed(1) ?? '—'}</span>
+            Score: <span style={{ color: scoreColor(canonicalScore(bestProgram)), fontWeight: 700 }}>{canonicalScore(bestProgram)?.toFixed(1) ?? '—'}</span>
+            {canonicalScore(bestProgram) != null && (
+              <span style={{ marginLeft: 6, color: 'var(--text-muted)' }}>{scoreToneLabel(canonicalScore(bestProgram))}</span>
+            )}
           </div>
+          {canonicalScore(bestProgram) != null && (
+            <div className="champion-strip" style={{ marginTop: 8 }}>
+              <div
+                className="champion-strip-fill"
+                style={{
+                  width: `${Math.max(4, Math.min(100, (canonicalScore(bestProgram) / 320) * 100))}%`,
+                  background: scoreGradient(canonicalScore(bestProgram)),
+                }}
+              />
+            </div>
+          )}
         </div>
       )}
     </div>
   );
 }
 
+function ExperimentSignalStrip({ programs }) {
+  const total = programs.length || 0;
+  const learned = programs.filter(p => p.stage1_passed).length;
+  const baselineWins = programs.filter(p => p.baseline_loss_ratio != null && p.baseline_loss_ratio < 1).length;
+  const scored = programs.map(canonicalScore).filter(v => v != null);
+  const bestScore = scored.length ? Math.max(...scored) : null;
+  const strongLoss = programs.filter(p => p.loss_ratio != null && Number(p.loss_ratio) < 0.7).length;
+  const cells = [
+    { label: 'Learned', value: total ? `${learned}/${total}` : '--', color: learned > 0 ? 'var(--accent-green)' : 'var(--text-muted)', hint: 'Stage 1 pass count' },
+    { label: 'Baseline Wins', value: baselineWins, color: baselineWins > 0 ? 'var(--accent-green)' : 'var(--text-muted)', hint: 'Baseline ratio < 1.0' },
+    { label: 'Strong Loss', value: strongLoss, color: strongLoss > 0 ? 'var(--accent-green)' : 'var(--text-muted)', hint: 'Loss ratio < 0.7' },
+    { label: 'Best Score', value: bestScore != null ? bestScore.toFixed(1) : '--', color: scoreColor(bestScore), hint: 'Highest composite score in this experiment' },
+  ];
+  return (
+    <div className="card" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 12 }}>
+      {cells.map(cell => (
+        <div key={cell.label} title={cell.hint} style={{ minWidth: 0 }}>
+          <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 4 }}>{cell.label}</div>
+          <div style={{ fontSize: 20, fontWeight: 750, color: cell.color, fontVariantNumeric: 'tabular-nums' }}>{cell.value}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
 const PROG_FILTER_FIELDS = [
   'graph_fingerprint',
   'result_id',
@@ -291,7 +348,7 @@ function ProgramsTable({ programs, onSelectProgram }) {
                   style={{ cursor: 'pointer' }}
                   onClick={() => onSelectProgram && onSelectProgram(p.result_id)}>
                   <td style={{ ...cellStyle('_score'), fontWeight: 600, color: progScoreColor(p._score) }}>
-                    {p._score}
+                    {p._score != null ? Number(p._score).toFixed(1) : '--'}
                   </td>
                   <td style={cellStyle('rating')} title={rating.tip}>
                     <span style={{
@@ -310,10 +367,16 @@ function ProgramsTable({ programs, onSelectProgram }) {
                   <td style={cellStyle('stage0_passed')}><span className={`badge ${p.stage0_passed ? 'pass' : 'fail'}`}>{p.stage0_passed ? 'P' : 'F'}</span></td>
                   <td style={cellStyle('stage05_passed')}><span className={`badge ${p.stage05_passed ? 'pass' : 'fail'}`}>{p.stage05_passed ? 'P' : 'F'}</span></td>
                   <td style={cellStyle('stage1_passed')}><span className={`badge ${p.stage1_passed ? 'pass' : 'fail'}`}>{p.stage1_passed ? 'P' : 'F'}</span></td>
-                  <td style={{ ...cellStyle('novelty_score'), color: noveltyColor(p.novelty_score) }}>
+                  <td
+                    style={{ ...cellStyle('novelty_score'), color: metricTone(p.novelty_score, 'novelty').color }}
+                    title={p.novelty_score != null ? `${metricTone(p.novelty_score, 'novelty').label}: higher is more novel` : undefined}
+                  >
                     {p.novelty_score?.toFixed(3) || '--'}
                   </td>
-                  <td style={{ ...cellStyle('loss_ratio'), color: lossColor(p.loss_ratio) }}>
+                  <td
+                    style={{ ...cellStyle('loss_ratio'), color: lossColor(p.loss_ratio), fontWeight: p.loss_ratio != null && Number(p.loss_ratio) < 0.7 ? 650 : 400 }}
+                    title={p.loss_ratio != null ? `${metricTone(p.loss_ratio, 'loss').label}: lower is better` : undefined}
+                  >
                     {p.loss_ratio?.toFixed(4) || '--'}
                   </td>
                   <td style={cellStyle('param_count')}>{p.param_count ? `${(p.param_count / 1e6).toFixed(1)}M` : '--'}</td>
@@ -323,10 +386,10 @@ function ProgramsTable({ programs, onSelectProgram }) {
                     ...cellStyle('baseline_loss_ratio'),
                     fontSize: 11,
                     fontWeight: p.baseline_loss_ratio != null && p.baseline_loss_ratio < 1 ? 600 : 'normal',
-                    color: p.baseline_loss_ratio != null
-                      ? (p.baseline_loss_ratio < 1 ? 'var(--accent-green)' : 'var(--accent-red)')
-                      : 'var(--text-muted)'
-                  }}>
+                    color: metricTone(p.baseline_loss_ratio, 'baseline').color,
+                  }}
+                    title={p.baseline_loss_ratio != null ? `${metricTone(p.baseline_loss_ratio, 'baseline').label}: < 1.0 beats baseline` : undefined}
+                  >
                     {p.baseline_loss_ratio?.toFixed(3) || '--'}
                   </td>
                 </tr>
@@ -429,10 +492,10 @@ function ExperimentDetail({ experimentId, onBack, onSelectProgram }) {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       {/* Header Info */}
       <div className="card">
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <div style={{ display: 'flex', alignItems: 'center' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', minWidth: 0 }}>
             <button className="refresh-btn" onClick={() => onBack && onBack()} style={{ marginRight: 12 }}>&larr; Back</button>
-            <span style={{ fontFamily: 'monospace', color: 'var(--accent-blue)', marginRight: 8 }}>{experimentId}</span>
+            <span style={{ fontFamily: 'monospace', color: 'var(--accent-blue)', marginRight: 8, overflowWrap: 'anywhere' }}>{experimentId}</span>
             <span className={`badge ${exp.status === 'completed' ? 'pass' : exp.status === 'running' ? 'running' : 'fail'}`}>
               {exp.status}
             </span>
@@ -457,6 +520,7 @@ function ExperimentDetail({ experimentId, onBack, onSelectProgram }) {
       </div>
 
       <ExperimentSummaryHeader experiment={exp} programs={programs} />
+      <ExperimentSignalStrip programs={programs} />
 
       {/* Funnel */}
       <div className="card">
@@ -499,7 +563,7 @@ function ExperimentDetail({ experimentId, onBack, onSelectProgram }) {
       </div>
 
       {/* Two-column: Failure Analysis + Programs Table */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: 16 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(260px, 1fr) minmax(0, 2fr)', gap: 16 }}>
         <FailureAnalysis experimentId={experimentId} />
 
         {/* Programs Table */}

@@ -38,6 +38,7 @@ export default function AppTabContent(props) {
     handleAddToComparison,
     handleBackFromExperiment,
     handleFillGapsExperiment,
+    handleConfirm,
     handleHypothesisHandoff,
     handleInvestigate,
     handleLoadMoreExperiments,
@@ -139,6 +140,7 @@ export default function AppTabContent(props) {
           onPromoteScreening={handlePromoteScreening}
           onInvestigate={handleInvestigate}
           onValidate={handleValidate}
+          onConfirm={handleConfirm}
           highlightResultId={leaderboardHighlight}
           onHighlightClear={onHighlightClear}
           onQueueAdd={handleQueueAdd}
@@ -246,6 +248,7 @@ export default function AppTabContent(props) {
         eligibilityByResultId={eligibilityByResultId}
         handleHypothesisHandoff={handleHypothesisHandoff}
         handleInvestigate={handleInvestigate}
+        handleConfirm={handleConfirm}
         handleQueueAdd={handleQueueAdd}
         handleQueueRemove={handleQueueRemove}
         handleSelectCampaign={handleSelectCampaign}

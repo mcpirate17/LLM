@@ -10,6 +10,16 @@ At a high level:
 
 This README is the authoritative top-level guide for the workspace. Per-project READMEs still exist for local detail, but this file is the main starting point.
 
+## Current State
+
+Documentation and cleanup were reviewed on 2026-04-26.
+
+- Active product directories are `research/`, `aria_designer/`, and `aria_core/`.
+- `HYDRA/`, `LA3/`, and `personaplex/` are present as separate or older side projects. Treat them as independent unless a task explicitly targets them.
+- Generated dependency/build directories may be absent after cleanup. Recreate them with `make setup`, `npm install`, `python setup.py build_ext --inplace`, or the project-specific commands below.
+- SQLite notebooks, snapshots, WAL/SHM files, corruption captures, and recovery files under `research/` are intentionally left alone. The database cleanup/corruption issue is a separate project, not routine junk cleanup.
+- Cleanup notes live in [`CLEANUP_AUDIT_20260426.md`](/home/tim/Projects/LLM/CLEANUP_AUDIT_20260426.md) and [`DIRECTORY_USAGE_AUDIT_20260426.md`](/home/tim/Projects/LLM/DIRECTORY_USAGE_AUDIT_20260426.md).
+
 ## Quickstart
 
 Minimal path to a working local environment:
@@ -75,6 +85,13 @@ Native extension and reusable low-level kernels.
 - CPU kernels: [`aria_core/src/cpu/`](/home/tim/Projects/LLM/aria_core/src/cpu)
 - CUDA kernels: [`aria_core/src/gpu/`](/home/tim/Projects/LLM/aria_core/src/gpu)
 - Headers: [`aria_core/include/`](/home/tim/Projects/LLM/aria_core/include)
+
+### Other Top-Level Directories
+
+- `HYDRA/`: older/standalone project with its own README and diagnostics docs.
+- `LA3/`: small standalone project with its own README.
+- `personaplex/`: standalone service/client project with its own README files.
+- `.claude/`, `.github/`, `.vscode/`: local/tooling configuration, not runtime packages.
 
 ## How The Three Directories Relate
 
@@ -261,6 +278,7 @@ LLM backend knobs used by `research/scientist/llm`:
 - Existing docs assume a local venv at `/home/tim/venvs/llm/bin/activate`.
 - `research` expects to be run from the workspace root, not from inside `research/`.
 - `research/lab_notebook.db` is the default notebook path from [`research/defaults.py`](/home/tim/Projects/LLM/research/defaults.py).
+- Database sidecars, snapshots, corruption captures, and recovery files are operational evidence. Do not delete or rename them as part of casual cleanup.
 - Designer lifecycle management assumes the scripts in [`aria_designer/tools/`](/home/tim/Projects/LLM/aria_designer/tools) are available and executable.
 
 ## How To Run
@@ -328,7 +346,7 @@ npm run dev
 - [`research/scientist/native_runner_adapter.py`](/home/tim/Projects/LLM/research/scientist/native_runner_adapter.py): dynamic bridge from research into Designer runtime modules
 - [`research/scientist/designer_utils.py`](/home/tim/Projects/LLM/research/scientist/designer_utils.py): older research-side Designer helper surface
 - [`research/artifacts/`](/home/tim/Projects/LLM/research/artifacts): reference artifacts and generated outputs
-- [`research/perf_artifacts/`](/home/tim/Projects/LLM/research/perf_artifacts): emitted perf contracts for `research` and `aria_designer`
+- [`research/perf_artifacts/`](/home/tim/Projects/LLM/research/perf_artifacts): summarized perf/backfill artifacts plus any currently running logs
 - [`research/tests/`](/home/tim/Projects/LLM/research/tests): broad regression suite
 - [`aria_designer/api/app/routers/workflows.py`](/home/tim/Projects/LLM/aria_designer/api/app/routers/workflows.py): workflow validation/compile/run endpoints
 - [`aria_designer/api/app/routers/eval.py`](/home/tim/Projects/LLM/aria_designer/api/app/routers/eval.py): evaluation routes and perf artifact emission
@@ -354,7 +372,8 @@ npm run dev
 - `research/scientist/designer_utils.py` overlaps conceptually with `aria_designer/runtime/bridge.py` and `aria_designer/runtime/importer.py`; this is an integration seam, not a crisp ownership boundary.
 - `aria_designer/runtime/Makefile` recompiles code from `aria_core/src/cpu/` instead of consuming a versioned shared library or package boundary.
 - Naming still reflects older project history. `research/__main__.py` describes itself as `"HYDRA Architecture Explorer"`, and several `aria_core` GPU flags remain under `HYDRA_*`.
-- The repo contains generated and machine-local artifacts under versioned directories such as `aria_designer/ui/node_modules`, `aria_designer/ui/dist`, `aria_designer/.venv`, `aria_core/build`, and runtime `.so` outputs. That makes onboarding and review noisier.
+- The repo has historically accumulated generated and machine-local artifacts under versioned directories such as dependency folders, build outputs, runtime logs, and database snapshots. Routine generated clutter was cleaned on 2026-04-26, but tracked build/native outputs still need a deliberate follow-up.
+- The `research` SQLite notebook has active corruption/recovery history. Treat database cleanup as its own migration/repair project with backups, not as a file-pruning task.
 - `research` is the operational center of gravity, but it is not packaged as a standalone installable Python project in the same way `aria_core` is.
 
 ## Recommended Future Cleanup
@@ -364,6 +383,7 @@ npm run dev
 - Decide whether `aria_designer/runtime/lib/libaria_runtime.so` should remain a separately built copy of selected `aria_core` sources or become a formal `aria_core` deliverable.
 - Standardize naming from legacy `HYDRA` to `ARIA` where those names are still externally visible.
 - Add one reproducible workspace bootstrap path for `research`, since that package currently relies on convention rather than a published dependency file.
+- Decide whether old side projects (`HYDRA/`, `LA3/`, `personaplex/`) should stay in this workspace or move/archive separately.
 
 ## Testing Guidance
 
@@ -392,5 +412,3 @@ Based on actual code structure, this is one product with three subsystems, not t
 - `research` and `aria_designer` are distinct at the app level, but not independent at the package level.
 - The current sibling layout works, but it hides how tightly related these directories are.
 - The smallest structural improvement would be to group them under a common `aria/` parent while preserving separate subpackages and deployment surfaces.
-
-That recommendation is explained in the final response.

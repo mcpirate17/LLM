@@ -36,6 +36,7 @@ from ._helpers_metrics import (  # noqa: F401
     screening_probe_fields,
     screening_wikitext_fields,
     trajectory_probe_fields,
+    v9_trajectory_fields,
 )
 from ._helpers_benchmark import (  # noqa: F401
     SSELogHandler,
@@ -80,6 +81,7 @@ __all__ = [
     "screening_probe_fields",
     "screening_wikitext_fields",
     "trajectory_probe_fields",
+    "v9_trajectory_fields",
     "SSELogHandler",
     "_build_benchmark_model",
     "_evaluate_investigation_benchmarks",

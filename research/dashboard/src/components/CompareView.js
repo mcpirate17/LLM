@@ -60,9 +60,14 @@ function CompareView({ comparisonList, onRemoveProgram, onSelectProgram }) {
 
   if (comparisonList.length === 0) {
     return (
-      <div className="card" style={{ padding: 40, textAlign: 'center', color: 'var(--text-muted)' }}>
-        <h3>No architectures selected for comparison</h3>
-        <p>Add architectures to compare from the Program Detail or Leaderboard views.</p>
+      <div className="card">
+        <div className="card-title">Comparison</div>
+        <div className="empty-state" style={{ padding: 34 }}>
+          <div className="empty-state-title">No architectures selected</div>
+          <p className="empty-state-hint">
+            Add architectures from Discoveries or Program Detail to compare fingerprints, losses, probes, and robustness side by side.
+          </p>
+        </div>
       </div>
     );
   }
@@ -151,7 +156,7 @@ function CompareView({ comparisonList, onRemoveProgram, onSelectProgram }) {
   }, [details, onSelectProgram]);
 
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: '1fr 3fr', gap: 16 }}>
+    <div style={{ display: 'grid', gridTemplateColumns: 'minmax(220px, 1fr) minmax(0, 3fr)', gap: 16 }}>
       <div className="card" style={{ padding: 12 }}>
         <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 12 }}>Selected ({comparisonList.length})</div>
         {details.map((d, i) => (

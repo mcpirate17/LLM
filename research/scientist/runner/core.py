@@ -341,7 +341,7 @@ class _CoreMixin:
             str(config.corpus_path or ""),
             str(config.corpus_format or "auto"),
             str(config.corpus_text_key or "text"),
-            str(config.tokenizer_mode or "byte"),
+            str(config.tokenizer_mode or "tiktoken"),
             int(config.corpus_max_chars),
             int(config.vocab_size),
             float(getattr(config, "corpus_train_fraction", 0.9) or 0.9),
@@ -363,7 +363,7 @@ class _CoreMixin:
                 path=path,
                 fmt=str(config.corpus_format or "auto"),
                 text_key=str(config.corpus_text_key or "text"),
-                tokenizer=str(config.tokenizer_mode or "byte"),
+                tokenizer=str(config.tokenizer_mode or "tiktoken"),
                 max_chars=int(config.corpus_max_chars),
                 train_fraction=float(
                     getattr(config, "corpus_train_fraction", 0.9) or 0.9
@@ -444,7 +444,7 @@ class _CoreMixin:
                     path=tmp.name,
                     fmt="txt",
                     text_key=text_key,
-                    tokenizer=str(config.tokenizer_mode or "byte"),
+                    tokenizer=str(config.tokenizer_mode or "tiktoken"),
                     max_chars=char_budget,
                     train_fraction=0.9,
                     val_fraction=0.1,

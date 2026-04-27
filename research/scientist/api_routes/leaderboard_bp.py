@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import json
 import logging
+import math
+import statistics
 from typing import Any, Dict, List
 from flask import jsonify, request
 from ..json_utils import json_safe as _json_safe
+from ..leaderboard_scoring import composite_score_ceiling, get_scoring_version
 from ..leaderboard_rescore import rescore_leaderboard
 from ..naming import annotate_display_names
 from ..trust_policy import is_trusted_entry, sql_trusted_clause
@@ -43,6 +46,27 @@ def _to_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _log_abs_metric(value: Any) -> float | None:
+    numeric = _to_float(value)
+    if numeric is None:
+        return None
+    return math.log10(abs(numeric) + 0.000000001)
+
+
+def _attach_derived_fingerprint_metrics(entries: List[Dict[str, Any]]) -> None:
+    for entry in entries:
+        if entry.get("fp_jacobian_erf_variance_log") is None:
+            entry["fp_jacobian_erf_variance_log"] = _log_abs_metric(
+                entry.get("fp_jacobian_erf_variance")
+            )
+        if entry.get("fp_jacobian_spectral_norm_log") is None:
+            entry["fp_jacobian_spectral_norm_log"] = _log_abs_metric(
+                entry.get("fp_jacobian_spectral_norm")
+                if entry.get("fp_jacobian_spectral_norm") is not None
+                else entry.get("jacobian_spectral_norm")
+            )
 
 
 def _semantic_warning_for_entry(entry: Dict[str, Any]) -> Dict[str, Any] | None:
@@ -355,6 +379,27 @@ def _compact_leaderboard_entry(entry: dict) -> dict:
         "activation_sparsity_score": entry.get("activation_sparsity_score"),
         # Robustness
         "fp_jacobian_spectral_norm": entry.get("fp_jacobian_spectral_norm"),
+        "fp_jacobian_effective_rank": entry.get("fp_jacobian_effective_rank"),
+        "fp_sensitivity_uniformity": entry.get("fp_sensitivity_uniformity"),
+        "fp_jacobian_erf_density": entry.get("fp_jacobian_erf_density"),
+        "fp_id_collapse_rate": entry.get("fp_id_collapse_rate"),
+        "fp_id_collapse_rate_normalized": entry.get(
+            "fp_id_collapse_rate_normalized"
+        ),
+        "fp_jacobian_erf_decay_slope": entry.get("fp_jacobian_erf_decay_slope"),
+        "fp_jacobian_erf_first_norm": entry.get("fp_jacobian_erf_first_norm"),
+        "fp_jacobian_erf_last_norm": entry.get("fp_jacobian_erf_last_norm"),
+        "fp_logit_margin_velocity": entry.get("fp_logit_margin_velocity"),
+        "fp_logit_margin_initial": entry.get("fp_logit_margin_initial"),
+        "fp_logit_margin_final": entry.get("fp_logit_margin_final"),
+        "fp_logit_margin_delta": entry.get("fp_logit_margin_delta"),
+        "fp_jacobian_erf_variance": entry.get("fp_jacobian_erf_variance"),
+        "fp_jacobian_erf_variance_log": entry.get("fp_jacobian_erf_variance_log"),
+        "fp_jacobian_spectral_norm_log": entry.get("fp_jacobian_spectral_norm_log"),
+        "fp_icld_velocity": entry.get("fp_icld_velocity"),
+        "fp_icld_early_loss": entry.get("fp_icld_early_loss"),
+        "fp_icld_late_loss": entry.get("fp_icld_late_loss"),
+        "fp_icld_delta_loss": entry.get("fp_icld_delta_loss"),
         "robustness_noise_score": entry.get("robustness_noise_score"),
         "quant_int8_retention": entry.get("quant_int8_retention"),
         "robustness_long_ctx_score": entry.get("robustness_long_ctx_score"),
@@ -373,6 +418,12 @@ def _compact_leaderboard_entry(entry: dict) -> dict:
         "wikitext_perplexity": entry.get("wikitext_perplexity"),
         "wikitext_ppl": entry.get("wikitext_ppl"),
         "wikitext_score": entry.get("wikitext_score"),
+        "screening_wikitext_metric_version": entry.get(
+            "screening_wikitext_metric_version"
+        ),
+        "tokenizer_mode": entry.get("tokenizer_mode"),
+        "corpus_path": entry.get("corpus_path"),
+        "evaluation_protocol_version": entry.get("evaluation_protocol_version"),
         "peak_ppl": entry.get("peak_ppl"),
         "robustness_grade": entry.get("robustness_grade"),
         "evaluation_stage": entry.get("evaluation_stage"),
@@ -411,6 +462,12 @@ def _compact_leaderboard_entry(entry: dict) -> dict:
         ),
         # BLiMP linguistic minimal pairs
         "blimp_overall_accuracy": entry.get("blimp_overall_accuracy"),
+        "blimp_n_subtasks": entry.get("blimp_n_subtasks"),
+        "blimp_status": entry.get("blimp_status"),
+        "tinystories_perplexity": entry.get("tinystories_perplexity"),
+        "tinystories_score": entry.get("tinystories_score"),
+        "diagnostic_score": entry.get("diagnostic_score"),
+        "cross_task_score": entry.get("cross_task_score"),
     }
 
 
@@ -539,6 +596,42 @@ def _discoveries_payload(
     return payload
 
 
+def _leaderboard_score_scale(nb) -> Dict[str, Any]:
+    rows = nb.conn.execute(
+        """
+        SELECT composite_score
+        FROM leaderboard
+        WHERE composite_score IS NOT NULL
+          AND COALESCE(is_reference, 0) = 0
+        ORDER BY composite_score ASC
+        """
+    ).fetchall()
+    scores = [float(row["composite_score"]) for row in rows]
+    max_possible = composite_score_ceiling(get_scoring_version())
+    if not scores:
+        return {
+            "min": 0.0,
+            "p25": 0.0,
+            "average": 0.0,
+            "max_observed": 0.0,
+            "max_possible": max_possible,
+            "count": 0,
+            "min_source": "db_p25",
+            "max_source": "scoring_ceiling",
+        }
+    p25_index = int((len(scores) - 1) * 0.25)
+    return {
+        "min": scores[0],
+        "p25": scores[p25_index],
+        "average": statistics.fmean(scores),
+        "max_observed": scores[-1],
+        "max_possible": max_possible,
+        "count": len(scores),
+        "min_source": "db_p25",
+        "max_source": "scoring_ceiling",
+    }
+
+
 def _all_discoveries_payload(
     nb,
     *,
@@ -554,6 +647,7 @@ def _all_discoveries_payload(
         trusted_only=trusted_only,
     )
     attach_long_context_breakdown(nb, programs)
+    _attach_derived_fingerprint_metrics(programs)
     annotate_qkv_usage(programs, analytics)
     _classify_and_name_program_entries(nb, programs)
     return _discoveries_payload(
@@ -648,6 +742,7 @@ def _program_graph_discoveries_payload(
     _promote_leaderboard_entry_ids(programs)
     _attach_metric_completeness(programs)
     attach_long_context_breakdown(nb, programs)
+    _attach_derived_fingerprint_metrics(programs)
     annotate_qkv_usage(programs, analytics)
     _classify_and_name_program_entries(nb, programs)
     return _discoveries_payload(
@@ -712,6 +807,7 @@ def _ranked_discoveries_payload(
         trusted_only=trusted_only,
     )
     stability = _enrich_ranked_entries(nb, entries, analytics=analytics)
+    _attach_derived_fingerprint_metrics(entries)
     _attach_dashboard_entry_metadata(entries)
     annotate_display_names(entries)
     return _discoveries_payload(
@@ -907,6 +1003,83 @@ def register_leaderboard_routes(app, context: ApiRouteContext):
             }
         )
 
+    def api_leaderboard_queue_rerun_preview(nb=None):
+        """Dry-run preview of the auto rerun rule.
+
+        Computes which fingerprints are within striking distance of the
+        rank-N composite boundary using the per-tier CV plumbing.  Does
+        NOT enqueue anything — caller chooses to apply via the
+        sibling POST endpoint.
+
+        Query / body params:
+            top_n        int   boundary rank (default 15)
+            n            int   reruns per fingerprint (default 2; cosmetic
+                               here, only used in the preview output)
+            n_runs_cap   int   exclude fps already at this many runs (default 4)
+        """
+        from research.tools import queue_rerun as qr
+
+        if request.method == "POST":
+            body = request.get_json(silent=True) or {}
+        else:
+            body = request.args
+        try:
+            top_n = int(body.get("top_n") or 15)
+            n_per_fp = int(body.get("n") or 2)
+            n_cap = int(body.get("n_runs_cap") or qr.N_RUNS_CAP_DEFAULT)
+        except (TypeError, ValueError):
+            return jsonify({"error": "top_n / n / n_runs_cap must be ints"}), 400
+
+        report = qr.evaluate(
+            context.notebook_path,
+            top_n=top_n,
+            n_runs_cap=n_cap,
+            explicit_fingerprints=None,
+        )
+        report["n_per_fp"] = n_per_fp
+        return jsonify(report)
+
+    def api_leaderboard_queue_rerun_apply(nb=None):
+        """Apply the auto rerun rule and enqueue followup_tasks.
+
+        Body:
+            top_n        int   default 15
+            n            int   reruns per fp (default 2, max 5)
+            n_runs_cap   int   default 4
+            fingerprints list  optional override — apply manual mode to these
+                               specific fingerprints instead of the auto rule
+        """
+        from research.tools import queue_rerun as qr
+
+        body = request.get_json(silent=True) or {}
+        try:
+            top_n = int(body.get("top_n") or 15)
+            n_per_fp = int(body.get("n") or 2)
+            n_cap = int(body.get("n_runs_cap") or qr.N_RUNS_CAP_DEFAULT)
+        except (TypeError, ValueError):
+            return jsonify({"error": "top_n / n / n_runs_cap must be ints"}), 400
+        if n_per_fp < 1 or n_per_fp > 5:
+            return jsonify({"error": "n must be in [1, 5]"}), 400
+        fps_in = body.get("fingerprints") or None
+        if fps_in is not None and not isinstance(fps_in, list):
+            return jsonify({"error": "fingerprints must be a list"}), 400
+
+        report = qr.evaluate(
+            context.notebook_path,
+            top_n=top_n,
+            n_runs_cap=n_cap,
+            explicit_fingerprints=fps_in,
+        )
+        queued = qr.queue(
+            context.notebook_path,
+            eligible=report["eligible"],
+            n_per_fp=n_per_fp,
+            apply=True,
+        )
+        report["queued"] = queued
+        report["n_per_fp"] = n_per_fp
+        return jsonify(report)
+
     def api_discoveries(nb=None):
         """Unified discoveries endpoint merging leaderboard + raw candidates."""
         tier = request.args.get("tier")
@@ -921,49 +1094,56 @@ def register_leaderboard_routes(app, context: ApiRouteContext):
         analytics = ExperimentAnalytics(nb)
         tier_counts = count_discovery_tiers(nb)
         references = _discovery_references(nb, search_query)
+        score_scale = _leaderboard_score_scale(nb)
 
         if view == "all":
+            payload = _all_discoveries_payload(
+                nb,
+                limit=limit,
+                trusted_only=trusted_only,
+                references=references,
+                tier_counts=tier_counts,
+                analytics=analytics,
+            )
+            payload["score_scale"] = score_scale
             return jsonify(
-                _all_discoveries_payload(
-                    nb,
-                    limit=limit,
-                    trusted_only=trusted_only,
-                    references=references,
-                    tier_counts=tier_counts,
-                    analytics=analytics,
-                )
+                payload
             )
 
         if view in ("backlog", "all_graphs"):
             include_failed = parse_bool_query(
                 request.args.get("include_failed"), default=True
             )
-            return jsonify(
-                _program_graph_discoveries_payload(
-                    nb,
-                    view=view,
-                    limit=limit,
-                    include_failed=include_failed,
-                    search_query=search_query,
-                    references=references,
-                    tier_counts=tier_counts,
-                    analytics=analytics,
-                )
-            )
-
-        return jsonify(
-            _ranked_discoveries_payload(
+            payload = _program_graph_discoveries_payload(
                 nb,
-                tier=tier,
+                view=view,
                 limit=limit,
-                sort_by=sort_by,
+                include_failed=include_failed,
                 search_query=search_query,
-                search_scope=search_scope,
-                trusted_only=trusted_only,
                 references=references,
                 tier_counts=tier_counts,
                 analytics=analytics,
             )
+            payload["score_scale"] = score_scale
+            return jsonify(
+                payload
+            )
+
+        payload = _ranked_discoveries_payload(
+            nb,
+            tier=tier,
+            limit=limit,
+            sort_by=sort_by,
+            search_query=search_query,
+            search_scope=search_scope,
+            trusted_only=trusted_only,
+            references=references,
+            tier_counts=tier_counts,
+            analytics=analytics,
+        )
+        payload["score_scale"] = score_scale
+        return jsonify(
+            payload
         )
 
     register_notebook_routes(
@@ -987,6 +1167,17 @@ def register_leaderboard_routes(app, context: ApiRouteContext):
                 "/api/leaderboard/rescore",
                 "api_leaderboard_rescore",
                 api_leaderboard_rescore,
+                ("POST",),
+            ),
+            (
+                "/api/leaderboard/queue-rerun-preview",
+                "api_leaderboard_queue_rerun_preview",
+                api_leaderboard_queue_rerun_preview,
+            ),
+            (
+                "/api/leaderboard/queue-rerun-apply",
+                "api_leaderboard_queue_rerun_apply",
+                api_leaderboard_queue_rerun_apply,
                 ("POST",),
             ),
             ("/api/discoveries", "api_discoveries", api_discoveries),

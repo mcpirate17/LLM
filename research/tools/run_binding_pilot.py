@@ -84,9 +84,16 @@ def _choose_manifest(limit: int, order: str) -> list[dict[str, Any]]:
                 limit=fetch_limit,
             )
         else:
+            # Mask byte-era PPL inline: a row whose
+            # screening_wikitext_metric_version != 'bpe_eval_v1' has PPL
+            # in different units (typical byte-era values 20–50 sort to
+            # the top of an ASC ordering and pollute the pilot pick).
             sql = """
             SELECT pr.result_id, pr.graph_fingerprint, pr.graph_json, e.timestamp AS ts,
-                   COALESCE(l.composite_score, 0) AS composite_score
+                   COALESCE(l.composite_score, 0) AS composite_score,
+                   CASE WHEN COALESCE(pr.screening_wikitext_metric_version, '')
+                              = 'bpe_eval_v1'
+                        THEN pr.wikitext_perplexity END AS bpe_ppl
             FROM leaderboard l
             JOIN program_results pr ON pr.result_id = l.result_id
             JOIN experiments e ON e.experiment_id = pr.experiment_id
@@ -97,8 +104,8 @@ def _choose_manifest(limit: int, order: str) -> list[dict[str, Any]]:
               AND pr.graph_json <> '{}'
               AND pr.binding_auc IS NULL
             ORDER BY l.composite_score DESC,
-                     CASE WHEN pr.wikitext_perplexity IS NULL THEN 1 ELSE 0 END ASC,
-                     pr.wikitext_perplexity ASC,
+                     CASE WHEN bpe_ppl IS NULL THEN 1 ELSE 0 END ASC,
+                     bpe_ppl ASC,
                      COALESCE(pr.induction_auc, -1.0) DESC,
                      e.timestamp DESC,
                      pr.result_id DESC

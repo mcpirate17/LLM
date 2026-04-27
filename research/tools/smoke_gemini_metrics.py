@@ -39,12 +39,18 @@ from research.eval.trajectory_metrics import (
     capture_hidden_state_snapshot,
     compute_trajectory_metrics,
 )
+from research.tools._concurrency import (
+    acquire_gpu_lock,
+    assert_gpu_quiet,
+    cap_gpu_memory,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
 DB_PATH = ROOT / "research" / "lab_notebook.db"
 CORPUS_PATH = ROOT / "research" / "corpus" / "wikitext103_train.npy"
 ARTIFACT_DIR = ROOT / "research" / "perf_artifacts"
+TOOL_NAME = "smoke_gemini_metrics"
 
 
 # Step budgets per tier — chosen to match what production screening /
@@ -441,7 +447,35 @@ def main() -> None:
         default=None,
         help="Output JSON path (default: research/perf_artifacts/gemini_smoke_<ts>.json)",
     )
+    parser.add_argument(
+        "--max-other-gpu-mib",
+        type=int,
+        default=4096,
+        help=(
+            "Refuse to start if any other GPU process holds more than this "
+            "many MiB of VRAM. Set to a large value to override (e.g. 30000)."
+        ),
+    )
+    parser.add_argument(
+        "--gpu-memory-fraction",
+        type=float,
+        default=0.5,
+        help="Cap our process's CUDA memory at this fraction of the card.",
+    )
+    parser.add_argument(
+        "--wait-for-gpu",
+        action="store_true",
+        help="Sleep-poll until the GPU is quiet instead of exiting on busy.",
+    )
     args = parser.parse_args()
+
+    if args.device.startswith("cuda"):
+        assert_gpu_quiet(
+            max_other_used_mib=args.max_other_gpu_mib,
+            tool_name=TOOL_NAME,
+            sleep_until_quiet=args.wait_for_gpu,
+        )
+        cap_gpu_memory(fraction=args.gpu_memory_fraction)
 
     ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
     out_path = (
@@ -450,16 +484,17 @@ def main() -> None:
         else ARTIFACT_DIR / f"gemini_smoke_{time.strftime('%Y%m%dT%H%M%S')}.json"
     )
 
-    result = run_smoke(
-        DEFAULT_TARGETS,
-        device=args.device,
-        seq_len=args.seq_len,
-        batch_size=args.batch_size,
-        max_corpus_tokens=args.max_corpus_tokens,
-        vocab_size=args.vocab_size,
-    )
-    with open(out_path, "w") as f:
-        json.dump(result, f, indent=2, default=str)
+    with acquire_gpu_lock(tool_name=TOOL_NAME):
+        result = run_smoke(
+            DEFAULT_TARGETS,
+            device=args.device,
+            seq_len=args.seq_len,
+            batch_size=args.batch_size,
+            max_corpus_tokens=args.max_corpus_tokens,
+            vocab_size=args.vocab_size,
+        )
+        with open(out_path, "w") as f:
+            json.dump(result, f, indent=2, default=str)
     print(f"\n[done] artifact written: {out_path}")
 
 

@@ -380,6 +380,24 @@ class _ExecutionTrainingProgramMixin:
             _es_best_loss = ckpt["es_best_loss"]
             _es_steps_since_improve = ckpt["es_steps_since_improve"]
 
+            # ID Collapse snapshots — capture hidden-state participation
+            # ratio at 20% and 100% of training so execution_training_post
+            # can compute the rate. Adaptive to n_steps so short runs
+            # still get a signal. Stored on self so the post-eval mixin
+            # can read them after this method returns.
+            #
+            # Probe-id stash and "early" capture happen on the first loop
+            # iteration we actually run, not strictly step 0 — that way
+            # checkpoint resumes still produce snapshots. The "late"
+            # capture is also re-attempted post-loop so early-stop /
+            # NaN-abort runs still populate id_collapse.
+            _id_collapse_early_at = max(1, int(n_steps * 0.2))
+            _id_collapse_late_at = max(_id_collapse_early_at + 1, n_steps - 1)
+            self._id_collapse_early_snap = None
+            self._id_collapse_late_snap = None
+            self._id_collapse_probe_ids = None
+            last_completed_step: Optional[int] = None
+
             for step in range(step_start, n_steps):
                 if self._stop_event.is_set():
                     break
@@ -442,8 +460,55 @@ class _ExecutionTrainingProgramMixin:
                     _es_best_loss = loss_val
                     _es_steps_since_improve = 0
                     _inflight_state_inv = InflightState()
+                # Stash a fixed probe batch on the first iteration we
+                # actually execute (handles checkpoint resumes too) so the
+                # early/late ID-collapse snapshots use identical inputs
+                # (otherwise the PR delta confounds with different input
+                # distributions). When resuming past _id_collapse_early_at
+                # the original early target is unreachable, so retarget
+                # early to the resume step — id_collapse rate then covers
+                # "from resume to end of training", a weaker but still
+                # meaningful signal.
+                if self._id_collapse_probe_ids is None:
+                    self._id_collapse_probe_ids = (
+                        input_ids[: min(8, batch_size)].detach().clone()
+                    )
+                    if step > _id_collapse_early_at:
+                        _id_collapse_early_at = step
+                        _id_collapse_late_at = max(
+                            _id_collapse_early_at + 1, _id_collapse_late_at
+                        )
                 final_loss = loss_val
                 min_loss = min(min_loss, loss_val)
+
+                # ID Collapse hidden-state snapshots. Cheap (~50 ms each:
+                # one fwd-pass + one 256x256 eigvalsh) compared to the
+                # training step itself, so unconditional capture is fine.
+                if (
+                    self._id_collapse_probe_ids is not None
+                    and (step == _id_collapse_early_at or step == _id_collapse_late_at)
+                ):
+                    try:
+                        from research.eval.intrinsic_dim_collapse import (
+                            capture_hidden_state_snapshot,
+                        )
+
+                        snap = capture_hidden_state_snapshot(
+                            model,
+                            self._id_collapse_probe_ids,
+                            step=step,
+                            device=str(dev),
+                        )
+                        if step == _id_collapse_early_at:
+                            self._id_collapse_early_snap = snap
+                        else:
+                            self._id_collapse_late_snap = snap
+                        model.train()
+                    except (RuntimeError, ValueError):
+                        # Snapshot is opportunistic — never let it break
+                        # training itself.
+                        pass
+                last_completed_step = step
                 total_tokens += input_ids.numel()
 
                 # Inflight health checks — abort hopeless runs early
@@ -540,6 +605,35 @@ class _ExecutionTrainingProgramMixin:
 
             t_end = time.perf_counter()
             total_time_ms = (t_end - t_start) * 1000
+
+            # Fallback late-snapshot: if training broke out before reaching
+            # _id_collapse_late_at (early-stop, inflight gate, NaN return
+            # would have already exited via `return`), use whichever step
+            # we last completed. id_collapse_rate is then computed over
+            # the actual training span, not the planned one. Without this
+            # fallback, ~13% of screening_750 rows have early_snap but no
+            # late_snap and id_collapse stays NULL.
+            if (
+                self._id_collapse_early_snap is not None
+                and self._id_collapse_late_snap is None
+                and self._id_collapse_probe_ids is not None
+                and last_completed_step is not None
+                and last_completed_step > _id_collapse_early_at
+            ):
+                try:
+                    from research.eval.intrinsic_dim_collapse import (
+                        capture_hidden_state_snapshot,
+                    )
+
+                    self._id_collapse_late_snap = capture_hidden_state_snapshot(
+                        model,
+                        self._id_collapse_probe_ids,
+                        step=last_completed_step,
+                        device=str(dev),
+                    )
+                    model.train()
+                except (RuntimeError, ValueError):
+                    pass
 
             self._train_finalize_metrics(
                 result=result,
@@ -714,7 +808,7 @@ class _ExecutionTrainingProgramMixin:
             val_frac = float(getattr(config, "corpus_val_fraction", 0.1) or 0.1)
             fmt = str(config.corpus_format or "auto")
             text_key = str(config.corpus_text_key or "text")
-            tok = str(config.tokenizer_mode or "byte")
+            tok = str(config.tokenizer_mode or "tiktoken")
             max_chars = int(config.corpus_max_chars)
             split_tag = str(split or "train").lower()
             data_tag = (

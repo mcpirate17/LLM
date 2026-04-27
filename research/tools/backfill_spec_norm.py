@@ -14,11 +14,8 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import fcntl
 import sqlite3
-import sys
 import time
-from contextlib import contextmanager
 from pathlib import Path
 
 import torch
@@ -28,35 +25,15 @@ import research.synthesis.compiler  # noqa: F401
 from research.synthesis import graph_from_json
 from research.synthesis.compiled_model import SynthesizedModel
 from research.eval.fingerprint_sensitivity import analyze_sensitivity
+from research.tools._concurrency import (
+    acquire_gpu_lock,
+    acquire_writer_lock,
+    assert_gpu_quiet,
+    cap_gpu_memory,
+)
 
 DB_PATH = Path(__file__).resolve().parents[1] / "lab_notebook.db"
-WRITER_LOCK_PATH = DB_PATH.with_name(DB_PATH.name + ".writer-lock")
-
-
-@contextmanager
-def acquire_writer_lock():
-    """Acquire the aria-db writer flock so we don't race the dashboard.
-
-    Concurrent writers without this lock corrupted the b-tree on
-    2026-04-25; the lock is the project's mutual-exclusion contract for
-    write access (see memory note feedback_aria_db_wal_hygiene).
-    """
-    WRITER_LOCK_PATH.touch(exist_ok=True)
-    fd = open(WRITER_LOCK_PATH, "r+b")
-    try:
-        try:
-            fcntl.flock(fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            print(
-                "writer lock held — another writer (likely the dashboard) is "
-                "running. Stop it before backfilling.",
-                file=sys.stderr,
-            )
-            raise SystemExit(2)
-        yield
-    finally:
-        fcntl.flock(fd.fileno(), fcntl.LOCK_UN)
-        fd.close()
+TOOL_NAME = "backfill_spec_norm"
 
 
 def _candidate_fingerprints(conn: sqlite3.Connection, limit: int | None) -> list[str]:
@@ -150,9 +127,40 @@ def main() -> None:
         default=25,
         help="Commit DB writes every N successful fingerprints",
     )
+    parser.add_argument(
+        "--max-other-gpu-mib",
+        type=int,
+        default=4096,
+        help=(
+            "Refuse to start if any other GPU process is using more than this "
+            "many MiB of VRAM. Set to a large value to override (e.g. 30000)."
+        ),
+    )
+    parser.add_argument(
+        "--gpu-memory-fraction",
+        type=float,
+        default=0.5,
+        help="Cap our process's CUDA memory at this fraction of the card.",
+    )
+    parser.add_argument(
+        "--wait-for-gpu",
+        action="store_true",
+        help="Sleep-poll until the GPU is quiet instead of exiting on busy.",
+    )
     args = parser.parse_args()
 
-    with acquire_writer_lock():
+    if args.device.startswith("cuda"):
+        assert_gpu_quiet(
+            max_other_used_mib=args.max_other_gpu_mib,
+            tool_name=TOOL_NAME,
+            sleep_until_quiet=args.wait_for_gpu,
+        )
+        cap_gpu_memory(fraction=args.gpu_memory_fraction)
+
+    with (
+        acquire_gpu_lock(tool_name=TOOL_NAME),
+        acquire_writer_lock(tool_name=TOOL_NAME),
+    ):
         _run_backfill(args)
 
 
@@ -184,9 +192,17 @@ def _run_backfill(args: argparse.Namespace) -> None:
                 seq_len=args.seq_len,
                 vocab_size=args.vocab_size,
             )
-        except (RuntimeError, ValueError) as exc:
+        except (RuntimeError, ValueError, KeyError, TypeError) as exc:
+            # KeyError: stored graph_json missing required field
+            #   (e.g. 'model_dim' from very old rows).
+            # TypeError: malformed graph_json structure.
+            # RuntimeError: forward-pass shape mismatch / OOM.
+            # ValueError: graph reconstruction issue.
             failed += 1
-            print(f"  [{idx}/{total}] {fingerprint[:12]} measure-failed: {exc}")
+            print(
+                f"  [{idx}/{total}] {fingerprint[:12]} measure-failed "
+                f"({type(exc).__name__}): {exc}"
+            )
             continue
         if payload is None:
             failed += 1

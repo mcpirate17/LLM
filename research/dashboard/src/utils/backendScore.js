@@ -4,7 +4,76 @@ function finiteNumber(value) {
   return Number.isFinite(num) ? num : null;
 }
 
+const BPE_METRIC_VERSION = 'bpe_eval_v1';
+
+export function evalMetricQuality(entry) {
+  const version = String(entry?.screening_wikitext_metric_version || '').trim();
+  const tokenizer = String(entry?.tokenizer_mode || '').trim().toLowerCase();
+  const status = String(entry?.rescore_status || entry?.blimp_status || entry?.screening_wikitext_status || '').trim().toLowerCase();
+  const tags = String(entry?.tags || '').trim().toLowerCase();
+  const isBpe = version === BPE_METRIC_VERSION || ['tiktoken', 'bpe', 'cl100k_base'].includes(tokenizer);
+  const explicitFailure = (
+    status.includes('failed')
+    || status.includes('error')
+    || tags.includes('bpe_eval_failed')
+  );
+  const required = [
+    ['WikiText', entry?.wikitext_perplexity],
+    ['TinyStories', entry?.tinystories_perplexity],
+    ['HellaSwag', entry?.hellaswag_acc],
+    ['BLiMP', entry?.blimp_overall_accuracy],
+  ];
+  const missing = required
+    .filter(([, value]) => finiteNumber(value) == null)
+    .map(([label]) => label);
+
+  if (isBpe && missing.length === 0) {
+    return {
+      key: 'trusted_bpe',
+      label: 'Trusted BPE',
+      reliability: 'high',
+      color: 'var(--accent-green)',
+      missing,
+      version: version || tokenizer,
+    };
+  }
+
+  if (isBpe) {
+    return {
+      key: 'partial_bpe',
+      label: 'Partial BPE',
+      reliability: 'medium',
+      color: 'var(--accent-yellow)',
+      missing,
+      version: version || tokenizer,
+    };
+  }
+
+  if (explicitFailure || required.every(([, value]) => finiteNumber(value) == null)) {
+    return {
+      key: 'failed_eval',
+      label: 'Eval Missing',
+      reliability: 'low',
+      color: 'var(--accent-red)',
+      missing,
+      version: version || 'unversioned',
+    };
+  }
+
+  return {
+    key: 'legacy_eval',
+    label: 'Legacy Eval',
+    reliability: 'low',
+    color: 'var(--text-muted)',
+    missing,
+    version: version || 'legacy',
+  };
+}
+
 export const CANONICAL_SCORE_COMPONENT_META = {
+  _v10_base_v8style_total: { label: 'Loss + Understanding Base', color: 'var(--accent-green)' },
+  _v10_capability_total: { label: 'Capability Total', color: '#79c0ff' },
+  _v10_aux_trajectory_total: { label: 'Aux Trajectory Total', color: 'var(--accent-yellow)' },
   perf_short: { label: 'Screening Loss', color: 'var(--accent-blue)' },
   perf_medium: { label: 'Investigation Loss', color: '#1f6feb' },
   perf_long: { label: 'Validation Loss', color: 'var(--accent-green)' },
@@ -39,7 +108,39 @@ export const CANONICAL_SCORE_COMPONENT_META = {
   tinystories: { label: 'TinyStories', color: '#56d364' },
   tierBonus: { label: 'Tier Bonus', color: 'var(--accent-orange)' },
   referenceDeltaBonus: { label: 'Baseline Delta', color: 'var(--accent-orange)' },
+  cap_ar: { label: 'AR Probe', color: '#a371f7' },
+  cap_induction: { label: 'Induction Probe', color: '#79c0ff' },
+  cap_binding: { label: 'Binding Probe', color: '#a371f7' },
+  cap_erf_density: { label: 'ERF Density', color: '#56d364' },
+  cap_id_collapse: { label: 'ID Collapse', color: '#3fb950' },
+  cap_erf_decay: { label: 'ERF Decay', color: '#c77dff' },
+  cap_logit_margin: { label: 'Logit Margin', color: '#f0883e' },
+  aux_erf_variance: { label: 'ERF Variance', color: 'var(--text-muted)' },
+  aux_icld: { label: 'ICLD Velocity', color: 'var(--text-muted)' },
 };
+
+const V10_ADDITIVE_TOTAL_KEYS = [
+  '_v10_base_v8style_total',
+  '_v10_capability_total',
+  '_v10_aux_trajectory_total',
+];
+
+function scoreComponentFor(key, weight) {
+  return {
+    key,
+    weight: Number(weight),
+    ...(CANONICAL_SCORE_COMPONENT_META[key] || { label: key, color: 'var(--text-muted)' }),
+  };
+}
+
+function isDisplayableScoreComponent(key, weight) {
+  return (
+    Number.isFinite(Number(weight))
+    && Number(weight) > 0
+    && !String(key).includes('penalty')
+    && !String(key).startsWith('_')
+  );
+}
 
 export function canonicalCompositeScore(entry) {
   return finiteNumber(entry?.composite_score);
@@ -53,13 +154,17 @@ export function canonicalScoreBreakdown(entry) {
 
 export function canonicalScoreComponents(entry) {
   const breakdown = canonicalScoreBreakdown(entry);
+  const v10Totals = V10_ADDITIVE_TOTAL_KEYS
+    .filter(key => Number.isFinite(Number(breakdown[key])) && Number(breakdown[key]) > 0)
+    .map(key => scoreComponentFor(key, breakdown[key]));
+
+  if (v10Totals.length > 0) {
+    return v10Totals;
+  }
+
   return Object.entries(breakdown)
-    .filter(([key, weight]) => Number.isFinite(Number(weight)) && Number(weight) > 0 && !String(key).includes('penalty'))
-    .map(([key, weight]) => ({
-      key,
-      weight: Number(weight),
-      ...(CANONICAL_SCORE_COMPONENT_META[key] || { label: key, color: 'var(--text-muted)' }),
-    }));
+    .filter(([key, weight]) => isDisplayableScoreComponent(key, weight))
+    .map(([key, weight]) => scoreComponentFor(key, weight));
 }
 
 export function canonicalDiscoveryScore(entry) {

@@ -440,6 +440,24 @@ def _summarize_template_stat(stat: Dict[str, Any]) -> Dict[str, Any]:
     binding_aucs = stat["binding_aucs"]
     ar_aucs = stat["ar_aucs"]
     hellaswag_accs = stat["hellaswag_accs"]
+    blimp_overall_accuracies = stat.get("blimp_overall_accuracies") or []
+    composite_scores = stat.get("composite_scores") or []
+    induction_v2_aucs = stat.get("induction_v2_aucs") or []
+    binding_v2_aucs = stat.get("binding_v2_aucs") or []
+    erf_densities = stat.get("erf_densities") or []
+    id_collapse_rates = stat.get("id_collapse_rates") or []
+    id_collapse_rate_normalizeds = stat.get("id_collapse_rate_normalizeds") or []
+    erf_decay_slopes = stat.get("erf_decay_slopes") or []
+    erf_first_norms = stat.get("erf_first_norms") or []
+    erf_last_norms = stat.get("erf_last_norms") or []
+    logit_margin_velocities = stat.get("logit_margin_velocities") or []
+    logit_margin_deltas = stat.get("logit_margin_deltas") or []
+    erf_variance_logs = stat.get("erf_variance_logs") or []
+    spec_norm_logs = stat.get("spec_norm_logs") or []
+    icld_velocities = stat.get("icld_velocities") or []
+    icld_delta_losses = stat.get("icld_delta_losses") or []
+    jacobian_effective_ranks = stat.get("jacobian_effective_ranks") or []
+    sensitivity_uniformities = stat.get("sensitivity_uniformities") or []
     screening_hellaswag_accs = stat["screening_hellaswag_accs"]
     reasons = stat["failure_reasons"]
     fast_lane_scores = stat["routing_fast_lane_scores"]
@@ -478,6 +496,84 @@ def _summarize_template_stat(stat: Dict[str, Any]) -> Dict[str, Any]:
         "avg_hellaswag_acc": (
             sum(hellaswag_accs) / len(hellaswag_accs) if hellaswag_accs else None
         ),
+        "avg_blimp_overall_accuracy": (
+            sum(blimp_overall_accuracies) / len(blimp_overall_accuracies)
+            if blimp_overall_accuracies
+            else None
+        ),
+        "avg_composite_score": (
+            sum(composite_scores) / len(composite_scores) if composite_scores else None
+        ),
+        "avg_induction_v2_auc": (
+            sum(induction_v2_aucs) / len(induction_v2_aucs)
+            if induction_v2_aucs
+            else None
+        ),
+        "avg_binding_v2_auc": (
+            sum(binding_v2_aucs) / len(binding_v2_aucs)
+            if binding_v2_aucs
+            else None
+        ),
+        "avg_erf_density": (
+            sum(erf_densities) / len(erf_densities) if erf_densities else None
+        ),
+        "avg_id_collapse_rate": (
+            sum(id_collapse_rates) / len(id_collapse_rates)
+            if id_collapse_rates
+            else None
+        ),
+        "avg_id_collapse_rate_normalized": (
+            sum(id_collapse_rate_normalizeds) / len(id_collapse_rate_normalizeds)
+            if id_collapse_rate_normalizeds
+            else None
+        ),
+        "avg_erf_decay_slope": (
+            sum(erf_decay_slopes) / len(erf_decay_slopes)
+            if erf_decay_slopes
+            else None
+        ),
+        "avg_erf_first_norm": (
+            sum(erf_first_norms) / len(erf_first_norms) if erf_first_norms else None
+        ),
+        "avg_erf_last_norm": (
+            sum(erf_last_norms) / len(erf_last_norms) if erf_last_norms else None
+        ),
+        "avg_logit_margin_velocity": (
+            sum(logit_margin_velocities) / len(logit_margin_velocities)
+            if logit_margin_velocities
+            else None
+        ),
+        "avg_logit_margin_delta": (
+            sum(logit_margin_deltas) / len(logit_margin_deltas)
+            if logit_margin_deltas
+            else None
+        ),
+        "avg_erf_variance_log": (
+            sum(erf_variance_logs) / len(erf_variance_logs)
+            if erf_variance_logs
+            else None
+        ),
+        "avg_spec_norm_log": (
+            sum(spec_norm_logs) / len(spec_norm_logs) if spec_norm_logs else None
+        ),
+        "avg_icld_velocity": (
+            sum(icld_velocities) / len(icld_velocities) if icld_velocities else None
+        ),
+        "avg_icld_delta_loss": (
+            sum(icld_delta_losses) / len(icld_delta_losses)
+            if icld_delta_losses
+            else None
+        ),
+        "avg_jacobian_effective_rank": (
+            sum(jacobian_effective_ranks) / len(jacobian_effective_ranks)
+            if jacobian_effective_ranks
+            else None
+        ),
+        "avg_sensitivity_uniformity": (
+            sum(sensitivity_uniformities) / len(sensitivity_uniformities)
+            if sensitivity_uniformities
+            else None
+        ),
         "avg_screening_hellaswag_acc": (
             sum(screening_hellaswag_accs) / len(screening_hellaswag_accs)
             if screening_hellaswag_accs
@@ -494,7 +590,17 @@ def _summarize_template_stat(stat: Dict[str, Any]) -> Dict[str, Any]:
             "binding": len(binding_aucs),
             "associative_recall": len(ar_aucs),
             "hellaswag": len(hellaswag_accs) + len(screening_hellaswag_accs),
+            "blimp": len(blimp_overall_accuracies),
+            "composite": len(composite_scores),
             "wikitext": int(stat.get("screening_wikitext_runs") or 0),
+            "induction_v2": len(induction_v2_aucs),
+            "binding_v2": len(binding_v2_aucs),
+            "erf_density": len(erf_densities),
+            "id_collapse": len(id_collapse_rates),
+            "id_collapse_norm": len(id_collapse_rate_normalizeds),
+            "erf_decay": len(erf_decay_slopes),
+            "logit_margin": len(logit_margin_velocities),
+            "jacobian_rank": len(jacobian_effective_ranks),
         },
         "slot_count": int(stat.get("slot_count") or 0),
         "routing_fast_lane_runs": int(stat.get("routing_fast_lane_runs") or 0),
@@ -633,6 +739,24 @@ def _empty_template_stat(name: str, slot_count: int) -> Dict[str, Any]:
         "binding_aucs": [],
         "ar_aucs": [],
         "hellaswag_accs": [],
+        "blimp_overall_accuracies": [],
+        "composite_scores": [],
+        "induction_v2_aucs": [],
+        "binding_v2_aucs": [],
+        "erf_densities": [],
+        "id_collapse_rates": [],
+        "id_collapse_rate_normalizeds": [],
+        "erf_decay_slopes": [],
+        "erf_first_norms": [],
+        "erf_last_norms": [],
+        "logit_margin_velocities": [],
+        "logit_margin_deltas": [],
+        "erf_variance_logs": [],
+        "spec_norm_logs": [],
+        "icld_velocities": [],
+        "icld_delta_losses": [],
+        "jacobian_effective_ranks": [],
+        "sensitivity_uniformities": [],
         "screening_hellaswag_accs": [],
         "screening_wikitext_runs": 0,
         "screening_wikitext_ok": 0,

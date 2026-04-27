@@ -1,5 +1,6 @@
 import React from 'react';
-import { lossColor, noveltyColor } from '../../utils/colors';
+import { lossColor, noveltyColor, pplColor, hellaswagColor, blimpColor, probeAucColor } from '../../utils/colors';
+import { scoreColor } from '../../utils/format';
 import MetricRow from '../program/MetricRow';
 import BenchmarkEvidenceSnapshot from '../program/BenchmarkEvidenceSnapshot';
 import RobustnessProfile from '../program/RobustnessProfile';
@@ -9,10 +10,474 @@ import ExternalBenchmarkCard from '../program/ExternalBenchmarkCard';
 import TrainingCurve from '../program/TrainingCurve';
 import HypothesisInfo from '../program/HypothesisInfo';
 
+const TONE_COLOR = {
+  positive: 'var(--accent-green)',
+  neutral: 'var(--accent-yellow)',
+  negative: 'var(--accent-red)',
+};
+
+function finite(value) {
+  if (value == null) return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function firstMetric(...values) {
+  for (const value of values) {
+    const n = finite(value);
+    if (n != null) return n;
+  }
+  return null;
+}
+
+function valueFor(program, leaderboardEntry, ...keys) {
+  for (const key of keys) {
+    const value = firstMetric(program?.[key], leaderboardEntry?.[key], program?.leaderboard?.[key]);
+    if (value != null) return value;
+  }
+  return null;
+}
+
+function toneHigher(value, good, neutral) {
+  const n = finite(value);
+  if (n == null) return null;
+  if (n >= good) return 'positive';
+  if (n >= neutral) return 'neutral';
+  return 'negative';
+}
+
+function toneLower(value, good, neutral) {
+  const n = finite(value);
+  if (n == null) return null;
+  if (n <= good) return 'positive';
+  if (n <= neutral) return 'neutral';
+  return 'negative';
+}
+
+function MetricValue({ value, digits = 3, suffix = '', tone, note, title }) {
+  if (value == null) return null;
+  const formatted = typeof value === 'number' ? value.toFixed(digits) : String(value);
+  const color = TONE_COLOR[tone] || 'var(--text-primary)';
+  return (
+    <span title={title} style={{ color, fontWeight: tone === 'positive' || tone === 'negative' ? 650 : 500 }}>
+      {formatted}{suffix}
+      {tone && (
+        <span style={{
+          marginLeft: 6,
+          fontSize: 10,
+          color,
+          textTransform: 'uppercase',
+          letterSpacing: 0,
+        }}>
+          {tone}
+        </span>
+      )}
+      {note && <span style={{ marginLeft: 6, fontSize: 11, color: 'var(--text-muted)' }}>{note}</span>}
+    </span>
+  );
+}
+
+export function BenchmarkTestMatrix({ program, leaderboardEntry }) {
+  const externalBenchmarks = program?.external_benchmarks || program?.external_benchmarks_json_parsed || {};
+  const longCtx = externalBenchmarks?.long_context || {};
+  const tests = [
+    {
+      group: 'Language',
+      rows: [
+        {
+          key: 'wikitext_perplexity',
+          label: 'WikiText PPL',
+          value: valueFor(program, leaderboardEntry, 'wikitext_perplexity', 'wikitext_ppl'),
+          digits: 1,
+          tone: value => toneLower(value, 25, 120),
+          color: pplColor,
+          note: 'lower is better',
+          title: 'Real-token WikiText perplexity after tiktoken/BPE rescreen. Lower is better.',
+        },
+        {
+          key: 'wikitext_score',
+          label: 'WikiText score',
+          value: valueFor(program, leaderboardEntry, 'wikitext_score'),
+          digits: 3,
+          tone: value => toneHigher(value, 0.55, 0.25),
+          note: 'higher is better',
+        },
+        {
+          key: 'tinystories_perplexity',
+          label: 'TinyStories PPL',
+          value: valueFor(program, leaderboardEntry, 'tinystories_perplexity'),
+          digits: 1,
+          tone: value => toneLower(value, 25, 120),
+          note: 'lower is better',
+        },
+        {
+          key: 'tinystories_score',
+          label: 'TinyStories score',
+          value: valueFor(program, leaderboardEntry, 'tinystories_score'),
+          digits: 3,
+          tone: value => toneHigher(value, 0.55, 0.25),
+          note: 'higher is better',
+        },
+        {
+          key: 'hellaswag_acc',
+          label: 'HellaSwag',
+          value: valueFor(program, leaderboardEntry, 'hellaswag_acc'),
+          digits: 3,
+          tone: value => toneHigher(value, 0.25, 0.18),
+          color: hellaswagColor,
+          note: 'higher is better',
+          title: 'Commonsense multiple-choice accuracy. Higher is better.',
+        },
+        {
+          key: 'blimp_overall_accuracy',
+          label: 'BLiMP',
+          value: valueFor(program, leaderboardEntry, 'blimp_overall_accuracy'),
+          digits: 3,
+          tone: value => toneHigher(value, 0.50, 0.45),
+          color: blimpColor,
+          note: 'higher is better',
+          title: 'BLiMP grammatical acceptability accuracy. Higher is better.',
+        },
+      ],
+    },
+    {
+      group: 'Capability Probes',
+      rows: [
+        {
+          key: 'induction_v2_investigation_auc',
+          label: 'Induction v2',
+          value: valueFor(program, leaderboardEntry, 'induction_v2_investigation_auc'),
+          digits: 3,
+          tone: value => toneHigher(value, 0.45, 0.20),
+          color: probeAucColor,
+          note: 'higher is better',
+        },
+        {
+          key: 'induction_auc',
+          label: 'Induction v1',
+          value: valueFor(program, leaderboardEntry, 'induction_auc'),
+          digits: 3,
+          tone: value => toneHigher(value, 0.45, 0.20),
+          color: probeAucColor,
+          note: 'higher is better',
+        },
+        {
+          key: 'binding_v2_investigation_auc',
+          label: 'Binding v2',
+          value: valueFor(program, leaderboardEntry, 'binding_v2_investigation_auc'),
+          digits: 3,
+          tone: value => toneHigher(value, 0.45, 0.20),
+          color: probeAucColor,
+          note: 'higher is better',
+        },
+        {
+          key: 'binding_auc',
+          label: 'Binding v1',
+          value: valueFor(program, leaderboardEntry, 'binding_auc'),
+          digits: 3,
+          tone: value => toneHigher(value, 0.45, 0.20),
+          color: probeAucColor,
+          note: 'higher is better',
+        },
+        {
+          key: 'ar_auc',
+          label: 'Associative recall',
+          value: valueFor(program, leaderboardEntry, 'ar_auc'),
+          digits: 3,
+          tone: value => toneHigher(value, 0.45, 0.10),
+          color: probeAucColor,
+          note: 'higher is better',
+        },
+      ],
+    },
+    {
+      group: 'Generalization',
+      rows: [
+        {
+          key: 'loss_ratio',
+          label: 'Loss ratio',
+          value: valueFor(program, leaderboardEntry, 'loss_ratio', 'screening_loss_ratio'),
+          digits: 4,
+          tone: value => toneLower(value, 0.70, 1.00),
+          note: 'lower is better',
+        },
+        {
+          key: 'baseline_loss_ratio',
+          label: 'Baseline ratio',
+          value: valueFor(program, leaderboardEntry, 'baseline_loss_ratio', 'validation_baseline_ratio'),
+          digits: 4,
+          tone: value => toneLower(value, 1.00, 1.10),
+          note: '< 1 beats baseline',
+        },
+        {
+          key: 'validation_loss_ratio',
+          label: 'Validation LR',
+          value: valueFor(program, leaderboardEntry, 'validation_loss_ratio'),
+          digits: 4,
+          tone: value => toneLower(value, 0.70, 1.00),
+          note: 'lower is better',
+        },
+        {
+          key: 'generalization_gap',
+          label: 'Generalization gap',
+          value: valueFor(program, leaderboardEntry, 'generalization_gap'),
+          digits: 4,
+          tone: value => toneLower(value, 0.10, 0.35),
+          note: 'lower is better',
+        },
+      ],
+    },
+    {
+      group: 'Robustness',
+      rows: [
+        {
+          key: 'investigation_robustness',
+          label: 'Investigation robustness',
+          value: valueFor(program, leaderboardEntry, 'investigation_robustness'),
+          digits: 3,
+          tone: value => toneHigher(value, 0.80, 0.50),
+          note: 'higher is better',
+        },
+        {
+          key: 'robustness_noise_score',
+          label: 'Noise sensitivity',
+          value: valueFor(program, leaderboardEntry, 'robustness_noise_score'),
+          digits: 3,
+          tone: value => toneLower(value, 0.15, 0.35),
+          note: 'lower is better',
+        },
+        {
+          key: 'robustness_long_ctx_score',
+          label: 'Long-context score',
+          value: firstMetric(valueFor(program, leaderboardEntry, 'robustness_long_ctx_score'), longCtx.long_context_score),
+          digits: 3,
+          tone: value => toneHigher(value, 0.70, 0.35),
+          note: 'higher is better',
+        },
+        {
+          key: 'robustness_long_ctx_scaling_score',
+          label: 'LC scaling',
+          value: firstMetric(valueFor(program, leaderboardEntry, 'robustness_long_ctx_scaling_score'), longCtx.scaling_score, longCtx.long_context_score),
+          digits: 3,
+          tone: value => toneHigher(value, 0.70, 0.35),
+          note: 'higher is better',
+        },
+        {
+          key: 'robustness_long_ctx_assoc_score',
+          label: 'LC assoc retrieval',
+          value: firstMetric(valueFor(program, leaderboardEntry, 'robustness_long_ctx_assoc_score'), longCtx.assoc_retrieval_score),
+          digits: 3,
+          tone: value => toneHigher(value, 0.70, 0.35),
+          note: 'higher is better',
+        },
+        {
+          key: 'robustness_long_ctx_multi_hop_score',
+          label: 'LC multi-hop',
+          value: firstMetric(valueFor(program, leaderboardEntry, 'robustness_long_ctx_multi_hop_score'), longCtx.multi_hop_score),
+          digits: 3,
+          tone: value => toneHigher(value, 0.70, 0.35),
+          note: 'higher is better',
+        },
+        {
+          key: 'robustness_long_ctx_passkey_score',
+          label: 'LC passkey',
+          value: firstMetric(valueFor(program, leaderboardEntry, 'robustness_long_ctx_passkey_score'), longCtx.passkey_score),
+          digits: 3,
+          tone: value => toneHigher(value, 0.70, 0.35),
+          note: 'higher is better',
+        },
+        {
+          key: 'robustness_long_ctx_combined_score',
+          label: 'LC combined',
+          value: firstMetric(valueFor(program, leaderboardEntry, 'robustness_long_ctx_combined_score'), longCtx.combined_score, longCtx.long_context_score),
+          digits: 3,
+          tone: value => toneHigher(value, 0.70, 0.35),
+          note: 'higher is better',
+        },
+      ],
+    },
+    {
+      group: 'Fingerprint Trajectory',
+      rows: [
+        {
+          key: 'fp_jacobian_erf_density',
+          label: 'ERF density',
+          value: valueFor(program, leaderboardEntry, 'fp_jacobian_erf_density'),
+          digits: 3,
+          tone: value => toneHigher(value, 0.50, 0.20),
+          note: 'higher is better',
+        },
+        {
+          key: 'fp_id_collapse_rate',
+          label: 'ID collapse rate',
+          value: valueFor(program, leaderboardEntry, 'fp_id_collapse_rate'),
+          digits: 4,
+          tone: value => toneLower(value, -0.01, 0.01),
+          note: 'lower is better',
+        },
+        {
+          key: 'fp_jacobian_erf_decay_slope',
+          label: 'ERF decay slope',
+          value: valueFor(program, leaderboardEntry, 'fp_jacobian_erf_decay_slope'),
+          digits: 4,
+          tone: value => toneLower(value, -0.05, 0.02),
+          note: 'more negative is better',
+        },
+        {
+          key: 'fp_logit_margin_velocity',
+          label: 'Logit margin velocity',
+          value: valueFor(program, leaderboardEntry, 'fp_logit_margin_velocity'),
+          digits: 4,
+          tone: value => toneHigher(value, 0.005, 0.001),
+          note: 'higher is better',
+        },
+        {
+          key: 'fp_icld_velocity',
+          label: 'ICLD velocity',
+          value: valueFor(program, leaderboardEntry, 'fp_icld_velocity'),
+          digits: 4,
+          tone: value => toneLower(value, -0.02, 0.00),
+          note: 'more negative is better',
+        },
+        {
+          key: 'fp_jacobian_erf_variance',
+          label: 'ERF variance',
+          value: valueFor(program, leaderboardEntry, 'fp_jacobian_erf_variance'),
+          digits: 1,
+          tone: value => toneHigher(value, 50000, 5000),
+          note: 'higher is better',
+        },
+      ],
+    },
+    {
+      group: 'Efficiency',
+      rows: [
+        {
+          key: 'composite_score',
+          label: 'Composite score',
+          value: valueFor(program, leaderboardEntry, 'composite_score'),
+          digits: 1,
+          tone: value => toneHigher(value, 205, 150),
+          color: scoreColor,
+          note: 'higher is better',
+        },
+        {
+          key: 'param_efficiency',
+          label: 'Parameter efficiency',
+          value: firstMetric(
+            valueFor(program, leaderboardEntry, 'param_efficiency'),
+            externalBenchmarks.best_param_efficiency,
+            externalBenchmarks.scaling_comparison?.best_param_efficiency,
+          ),
+          digits: 4,
+          tone: value => toneHigher(value, 0.50, 0.10),
+          note: 'higher is better',
+        },
+        {
+          key: 'sample_efficiency',
+          label: 'Sample efficiency',
+          value: valueFor(program, leaderboardEntry, 'sample_efficiency'),
+          digits: 3,
+          tone: value => toneHigher(value, 0.80, 0.50),
+          note: 'higher is better',
+        },
+        {
+          key: 'activation_sparsity_score',
+          label: 'Activation sparsity',
+          value: valueFor(program, leaderboardEntry, 'activation_sparsity_score'),
+          digits: 3,
+          tone: value => toneHigher(value, 0.70, 0.35),
+          note: 'higher is better',
+        },
+        {
+          key: 'compression_ratio',
+          label: 'Compression ratio',
+          value: valueFor(program, leaderboardEntry, 'compression_ratio'),
+          digits: 3,
+          tone: value => toneHigher(value, 0.70, 0.25),
+          note: 'higher is better',
+        },
+        {
+          key: 'quant_int8_retention',
+          label: 'INT8 retention',
+          value: valueFor(program, leaderboardEntry, 'quant_int8_retention'),
+          digits: 3,
+          tone: value => toneHigher(value, 0.90, 0.75),
+          note: 'higher is better',
+        },
+      ],
+    },
+  ];
+
+  const populated = tests
+    .map(group => ({
+      ...group,
+      rows: group.rows.filter(row => row.value != null),
+    }))
+    .filter(group => group.rows.length > 0);
+
+  if (populated.length === 0) return null;
+
+  const allRows = populated.flatMap(group => group.rows);
+  const counts = allRows.reduce((acc, row) => {
+    const tone = row.tone?.(row.value) || 'neutral';
+    acc[tone] = (acc[tone] || 0) + 1;
+    return acc;
+  }, {});
+
+  return (
+    <div className="card" style={{ padding: 12, marginTop: 12 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'baseline', marginBottom: 8, flexWrap: 'wrap' }}>
+        <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 600 }}>
+          Evaluation Tests
+        </div>
+        <div style={{ display: 'flex', gap: 8, fontSize: 10, color: 'var(--text-muted)', flexWrap: 'wrap' }}>
+          {['positive', 'neutral', 'negative'].map(tone => (
+            <span key={tone} style={{ color: TONE_COLOR[tone] }}>
+              {counts[tone] || 0} {tone}
+            </span>
+          ))}
+        </div>
+      </div>
+      <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 10 }}>
+        Every recorded test with direction-of-goodness applied.
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 14 }}>
+        {populated.map(group => (
+          <div key={group.group} style={{ minWidth: 0 }}>
+            <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 4, fontWeight: 600 }}>
+              {group.group}
+            </div>
+            {group.rows.map(row => {
+              const tone = row.tone?.(row.value) || 'neutral';
+              return (
+                <MetricRow
+                  key={row.key}
+                  label={row.label}
+                  title={row.title || `${row.note || ''}`}
+                  value={(
+                    <MetricValue
+                      value={row.value}
+                      digits={row.digits}
+                      tone={tone}
+                      note={row.note}
+                      title={row.title}
+                    />
+                  )}
+                />
+              );
+            })}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 /**
  * Left column of the two-column grid: core metrics, benchmarks, timing.
  */
-export function CoreMetricsColumn({ program, leaderboardEntry, refineAnalysis, fmt, fmtMs, fmtMem, fmtInt }) {
+export function CoreMetricsColumn({ program, leaderboardEntry, fmt, fmtMs, fmtMem, fmtInt }) {
   return (
     <div>
       <div style={{ fontSize: 12, color: 'var(--text-secondary)', fontWeight: 600, textTransform: 'uppercase', marginBottom: 8 }}>
@@ -83,9 +548,6 @@ export function CoreMetricsColumn({ program, leaderboardEntry, refineAnalysis, f
       </div>
       <BenchmarkEvidenceSnapshot program={program} leaderboardEntry={leaderboardEntry} />
       <RobustnessProfile program={program} leaderboardEntry={leaderboardEntry} />
-      <AriaAdvice analysis={refineAnalysis} />
-      <ReferenceComparison program={program} leaderboardEntry={leaderboardEntry} />
-      <ExternalBenchmarkCard program={program} />
       <div style={{ fontSize: 12, color: 'var(--text-secondary)', fontWeight: 600, textTransform: 'uppercase', marginBottom: 8, marginTop: 12 }}>
         Sandbox Timing
       </div>
@@ -96,6 +558,21 @@ export function CoreMetricsColumn({ program, leaderboardEntry, refineAnalysis, f
         <MetricRow label="Peak Memory" value={fmtMem(program.peak_memory_mb)} />
         <MetricRow label="FLOPs (fwd)" value={program.flops_forward ? fmtInt(program.flops_forward) : null} />
       </div>
+    </div>
+  );
+}
+
+export function ProgramSupportCards({ program, leaderboardEntry, refineAnalysis }) {
+  return (
+    <div style={{
+      display: 'grid',
+      gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))',
+      gap: 16,
+      alignItems: 'start',
+    }}>
+      <AriaAdvice analysis={refineAnalysis} />
+      <ReferenceComparison program={program} leaderboardEntry={leaderboardEntry} />
+      <ExternalBenchmarkCard program={program} />
     </div>
   );
 }

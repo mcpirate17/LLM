@@ -18,6 +18,8 @@ from research.scientist.intelligence.metrics_utils import (
 )
 from research.scientist.intelligence.ml_corpus import (
     _graph_fingerprint,
+    _non_byte_training_data_clauses,
+    _table_columns,
     build_dense_feature_matrix,
 )
 from research.synthesis.context_rules import find_byte_safety_violations
@@ -223,16 +225,27 @@ def load_stage05_native_segment_corpus(
     from ..notebook.shared_conn import get_notebook_conn
 
     conn = get_notebook_conn(db_path)
+    pr_cols = _table_columns(conn, "program_results")
+    metric_version_select = (
+        "COALESCE(screening_wikitext_metric_version, '') AS _metric_version"
+        if "screening_wikitext_metric_version" in pr_cols
+        else "'' AS _metric_version"
+    )
+    where = [
+        "TRIM(COALESCE(graph_json, '')) <> ''",
+        "graph_json <> '{}'",
+        "COALESCE(stage0_passed, 0) = 1",
+        "COALESCE(stage05_passed, 0) = 1",
+        *_non_byte_training_data_clauses(pr_cols),
+    ]
     rows = conn.execute(
-        """
+        f"""
         SELECT graph_json, graph_fingerprint, stage0_passed, stage05_passed, stage1_passed,
                loss_ratio, wikitext_perplexity, binding_auc, induction_auc, hellaswag_acc,
-               timestamp
+               timestamp,
+               {metric_version_select}
         FROM program_results
-        WHERE TRIM(COALESCE(graph_json, '')) <> ''
-          AND graph_json <> '{}'
-          AND COALESCE(stage0_passed, 0) = 1
-          AND COALESCE(stage05_passed, 0) = 1
+        WHERE {" AND ".join(where)}
         """
     ).fetchall()
 
@@ -266,9 +279,13 @@ def load_stage05_native_segment_corpus(
         group["stage1_any_passed"] = bool(group["stage1_any_passed"] or stage1)
         group["latest_timestamp"] = max(float(group["latest_timestamp"]), timestamp)
         group["loss_ratio_best"] = _min_opt(group["loss_ratio_best"], row["loss_ratio"])
-        group["wikitext_perplexity_best"] = _min_opt(
-            group["wikitext_perplexity_best"], row["wikitext_perplexity"]
-        )
+        # Only fold this row's PPL into the per-fingerprint min when
+        # the row was BPE-evaluated.  Byte-era rows have PPL in the
+        # wrong units and would dominate min() with values like 23.
+        if str(row["_metric_version"] or "").strip() == "bpe_eval_v1":
+            group["wikitext_perplexity_best"] = _min_opt(
+                group["wikitext_perplexity_best"], row["wikitext_perplexity"]
+            )
         group["binding_auc"] = _max_opt(group["binding_auc"], row["binding_auc"])
         group["induction_auc"] = _max_opt(group["induction_auc"], row["induction_auc"])
         group["hellaswag_acc"] = _max_opt(group["hellaswag_acc"], row["hellaswag_acc"])

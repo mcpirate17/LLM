@@ -33,6 +33,15 @@ python -m research --mode=dashboard --port 5000
 Then open Designer from dashboard buttons (Discoveries / Leaderboard / Program details / Report rankings).  
 Aria will auto-start Designer services via lifecycle endpoints.
 
+## Current Operating State
+
+Reviewed on 2026-04-26.
+
+- Preferred entrypoint is through the `research` dashboard because it manages Designer lifecycle and lineage integration.
+- Standalone mode is still supported with `make setup` and `make dev`.
+- Generated directories such as UI dependencies, build outputs, `.run/` logs, and runtime native outputs may be absent after cleanup. Recreate them with the commands in this README.
+- Designer imports `research` for defaults, evaluation, notebook import, perf contracts, and recommendation signals, so run it from this workspace layout unless packaging is cleaned up later.
+
 ## Core Features
 
 - Component palette + drag/drop graph editing
@@ -109,8 +118,3 @@ make test-native
 - If designer launched by Aria but blank, inspect:
   - `aria_designer/.run/research_designer_boot.log`
   - browser devtools network for `/api/designer/ensure-running`.
-
-## Collaboration
-
-- Active plan: `.current_plan.md` (single source of truth)
-- Completed history: `.current_plan.archive.md`

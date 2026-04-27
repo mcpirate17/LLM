@@ -16,6 +16,7 @@ from ._helpers_metrics import (
     _trajectory_probe_capability_tier,
     screening_wikitext_fields,
     trajectory_probe_fields,
+    v9_trajectory_fields,
 )
 
 logger = logging.getLogger(__name__)
@@ -298,6 +299,33 @@ def _evaluate_investigation_benchmarks(
             )
     except (ImportError, RuntimeError, ValueError) as exc:
         logger.debug("Investigation binding probes skipped: %s", exc)
+
+    if stop_event is not None and stop_event.is_set():
+        del model
+        return result
+
+    # Gemini trajectory metrics on the trained investigation model.
+    # Phase tag investigation_full so ML training distinguishes lifecycle.
+    try:
+        from ...eval.trajectory_metrics import compute_trajectory_metrics
+
+        _traj = compute_trajectory_metrics(
+            model,
+            metric_phase="investigation_full",
+            device=str(dev),
+            spec_norm_vocab_size=int(getattr(config, "vocab_size", 32000)),
+        )
+        result.update(_traj.to_column_dict())
+        logger.info(
+            "Investigation trajectory: erf_d=%.2f erf_var=%.0f icld=%+.4f margin=%+.4f sn=%.1f",
+            _traj.jacobian_erf.density or 0.0,
+            _traj.jacobian_erf.variance or 0.0,
+            _traj.icld.velocity or 0.0,
+            _traj.logit_margin.velocity or 0.0,
+            _traj.spec_norm or 0.0,
+        )
+    except (ImportError, RuntimeError, ValueError, TypeError) as exc:
+        logger.debug("Investigation trajectory metrics skipped: %s", exc)
 
     del model
     return result
@@ -777,6 +805,10 @@ def _record_investigation_result(
         "binding_composite": benchmark_result.get("binding_composite"),
         "local_only": benchmark_result.get("local_only"),
         **v2_fields,
+        # v9 trajectory metrics — overwrite earlier-phase init/screening
+        # values with investigation_full measurements. Phase tag flips so
+        # ML training distinguishes the two.
+        **v9_trajectory_fields(benchmark_result),
     }
     set_parts = []
     set_params: List[Any] = []

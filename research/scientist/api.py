@@ -68,6 +68,11 @@ def create_app(
 
     ensure_designer_idle_watchdog()
 
+    # Hourly notebook snapshot rotation (redundancy baseline).
+    from .snapshot_rotator import ensure_snapshot_rotator
+
+    ensure_snapshot_rotator(notebook_path)
+
     def _dashboard_index_path() -> Optional[Path]:
         if not app.static_folder:
             return None

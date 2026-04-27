@@ -3395,6 +3395,148 @@ class TestAPI(unittest.TestCase):
         self.assertEqual(eligibility["ineligible"], [])
         fake_runner.start_validation.assert_called_once()
 
+    def test_confirmation_eligibility_requires_passed_validation(self):
+        from research.scientist.api_routes._strategy_preflight import (
+            build_start_mode_eligibility,
+            normalize_start_mode,
+        )
+
+        self.assertEqual(normalize_start_mode("champion_confirmation"), "confirmation")
+
+        nb = LabNotebook(self.db_path)
+        exp_id = nb.start_experiment(
+            "validation", {"n_programs": 2}, "confirmation eligibility"
+        )
+        passed_id = nb.record_program_result(
+            experiment_id=exp_id,
+            graph_fingerprint="fp_confirm_passed",
+            graph_json=_MINIMAL_GRAPH_JSON,
+            stage0_passed=True,
+            stage05_passed=True,
+            stage1_passed=True,
+            loss_ratio=0.21,
+            novelty_score=0.72,
+        )
+        failed_id = nb.record_program_result(
+            experiment_id=exp_id,
+            graph_fingerprint="fp_confirm_failed",
+            graph_json=_MINIMAL_GRAPH_JSON,
+            stage0_passed=True,
+            stage05_passed=True,
+            stage1_passed=True,
+            loss_ratio=0.71,
+            novelty_score=0.61,
+        )
+        nb.upsert_leaderboard(
+            result_id=passed_id,
+            model_source="graph_synthesis",
+            validation_loss_ratio=0.21,
+            validation_baseline_ratio=0.82,
+            validation_passed=True,
+            tier="validation",
+        )
+        nb.upsert_leaderboard(
+            result_id=failed_id,
+            model_source="graph_synthesis",
+            validation_loss_ratio=0.71,
+            validation_baseline_ratio=1.12,
+            validation_passed=False,
+            tier="validation",
+        )
+        nb.conn.execute(
+            "UPDATE leaderboard SET tier = 'validation' WHERE result_id IN (?, ?)",
+            (passed_id, failed_id),
+        )
+        nb.conn.commit()
+
+        eligibility = build_start_mode_eligibility(
+            nb, "confirmation", [passed_id, failed_id]
+        )
+        nb.close()
+
+        self.assertEqual(eligibility["eligible_result_ids"], [passed_id])
+        self.assertEqual(eligibility["summary"]["ineligible"], 1)
+        self.assertEqual(
+            eligibility["ineligible"][0]["reason"], "not_validation_passed"
+        )
+
+    def test_api_start_confirmation_uses_champion_workflow_defaults(self):
+        from research.scientist.api_routes import _helpers as _helpers_mod
+
+        nb = LabNotebook(self.db_path)
+        exp_id = nb.start_experiment(
+            "validation", {"n_programs": 1}, "confirmation start"
+        )
+        result_id = nb.record_program_result(
+            experiment_id=exp_id,
+            graph_fingerprint="fp_confirm_start",
+            graph_json=_MINIMAL_GRAPH_JSON,
+            stage0_passed=True,
+            stage05_passed=True,
+            stage1_passed=True,
+            loss_ratio=0.24,
+            novelty_score=0.68,
+        )
+        nb.upsert_leaderboard(
+            result_id=result_id,
+            model_source="graph_synthesis",
+            validation_loss_ratio=0.24,
+            validation_baseline_ratio=0.86,
+            validation_passed=True,
+            tier="validation",
+        )
+        nb.close()
+
+        fake_runner = MagicMock()
+        fake_runner.is_running = False
+        fake_runner.start_scale_up = MagicMock(return_value="exp-confirm")
+        fake_runner.prescreen_run_config = MagicMock(
+            side_effect=lambda config, mode="single", auto_harden=True: (
+                config,
+                {
+                    "checked": True,
+                    "mode": mode,
+                    "auto_hardened": auto_harden,
+                    "issues": [],
+                    "adjustments": [],
+                    "risk_score": 0,
+                    "risk_level": "low",
+                },
+            )
+        )
+        fake_runner.progress = MagicMock(
+            aria_message="Champion confirmation started",
+            hypothesis_critique=None,
+        )
+
+        _pass_preflight = {
+            "verdict": "pass",
+            "checks": [{"name": "all_clear", "status": "pass", "details": None}],
+            "sample_n": 4,
+        }
+        with (
+            patch.object(_helpers_mod, "_runner", fake_runner),
+            patch(
+                "research.scientist.api_routes.experiments_bp.run_launch_preflight",
+                return_value=_pass_preflight,
+            ),
+        ):
+            r = self.client.post(
+                "/api/experiments/start",
+                json={
+                    "mode": "champion_confirmation",
+                    "result_ids": [result_id],
+                },
+            )
+
+        self.assertEqual(r.status_code, 200)
+        data = r.get_json()
+        self.assertEqual(data["config"]["scale_up_steps"], 40000)
+        self.assertEqual(data["eligibility"]["eligible_result_ids"], [result_id])
+        fake_runner.start_scale_up.assert_called_once()
+        _args, kwargs = fake_runner.start_scale_up.call_args
+        self.assertEqual(kwargs.get("workflow_mode"), "confirmation")
+
     def test_api_start_requires_result_ids_for_scale_up(self):
         r = self.client.post(
             "/api/experiments/start",

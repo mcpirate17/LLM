@@ -247,6 +247,13 @@ class _ReferencesMixin:
                 min_composite_score = inv_floor
             else:
                 min_composite_score = screen_p75
+        # v9 Gemini hard gates — see leaderboard_scoring.GEMINI_HARD_GATE_*.
+        # Imported lazily to avoid a circular import at module load.
+        from ..leaderboard_scoring import (
+            GEMINI_HARD_GATE_ERF_DENSITY,
+            GEMINI_HARD_GATE_ERF_VARIANCE,
+        )
+
         rows = self.conn.execute(
             """SELECT pr.*, l.entry_id, l.tier, l.composite_score,
                       l.screening_loss_ratio, l.screening_novelty,
@@ -266,6 +273,12 @@ class _ReferencesMixin:
                       OR (pr.fp_jacobian_spectral_norm >= ? AND pr.fp_jacobian_spectral_norm <= ?))
                  AND COALESCE(pr.loss_improvement_rate, 0) >= ?
                  AND COALESCE(l.composite_score, 0) >= ?
+                 -- v9 Gemini gates: NULL-tolerant (rows pre-backfill pass)
+                 -- but populated rows must clear the architectural floors.
+                 AND (pr.fp_jacobian_erf_density IS NULL
+                      OR pr.fp_jacobian_erf_density >= ?)
+                 AND (pr.fp_jacobian_erf_variance IS NULL
+                      OR pr.fp_jacobian_erf_variance >= ?)
                ORDER BY l.composite_score DESC""",
             (
                 min_stability,
@@ -273,6 +286,8 @@ class _ReferencesMixin:
                 max_spectral_norm,
                 min_improvement_rate,
                 min_composite_score,
+                GEMINI_HARD_GATE_ERF_DENSITY,
+                GEMINI_HARD_GATE_ERF_VARIANCE,
             ),
         ).fetchall()
         return [dict(r) for r in rows]

@@ -57,6 +57,7 @@ class _ExecutionCandidatesMixin:
             "config": config,
             "hypothesis": str(task.get("hypothesis") or ""),
             "evidence_pack": task.get("evidence_pack_json") or {},
+            "source_context": task.get("source_context"),
         }
 
     def _finalize_followup_task(
@@ -127,6 +128,16 @@ class _ExecutionCandidatesMixin:
         ]
         hypothesis = str(task.get("hypothesis") or "Active-learning exact replay")
 
+        # Score-stability reruns explicitly want a NEW program_results row
+        # per replay (each rerun is a child experiment under the same
+        # graph_fingerprint parent), not a patch on the source row.
+        # Detect these by source_context.  Original "rescreen / triage"
+        # uses still patch the source row by default.
+        source_context = str(task.get("source_context") or "").strip()
+        independent_sample = source_context in {
+            "program_detail_rerun", "queue_rerun"
+        }
+
         try:
             from research.tools.exact_graph_replay import run_exact_replay
 
@@ -138,6 +149,7 @@ class _ExecutionCandidatesMixin:
                 hypothesis=hypothesis,
                 fast=fast,
                 verbose=False,
+                independent_sample=independent_sample,
             )
             nb_done = None
             try:
@@ -841,11 +853,18 @@ class _ExecutionCandidatesMixin:
                 return
         self._pending_investigation = None
 
+        # Score-stability reruns intentionally re-investigate already-
+        # investigated candidates to grow n_runs / shrink CV.  Bypass
+        # the tier-redundancy guard for these source contexts only.
+        source_ctx = str(pending.get("source_context") or "").strip()
+        force = source_ctx in {"queue_rerun", "program_detail_rerun"}
+
         try:
             self.start_investigation(
                 result_ids=pending["result_ids"],
                 config=pending["config"],
                 hypothesis=pending["hypothesis"],
+                force=force,
             )
             self._finalize_followup_task(
                 pending.get("task_id"),
@@ -872,12 +891,23 @@ class _ExecutionCandidatesMixin:
                 return
         self._pending_validation = None
 
+        # Score-stability reruns (queue_rerun CLI and program_detail
+        # rerun panel) intentionally re-run already-validated candidates
+        # to grow n_runs / shrink CV.  start_validation() guards against
+        # tier-redundant runs by default, so we bypass that guard for
+        # these source contexts only — every other auto-escalation path
+        # keeps the guard.
+        source_ctx = str(pending.get("source_context") or "").strip()
+        force = source_ctx in {"queue_rerun", "program_detail_rerun"}
+        trigger = "score_stability_rerun" if force else "auto_escalate"
+
         try:
             self.start_validation(
                 result_ids=pending["result_ids"],
                 config=pending["config"],
                 hypothesis=pending["hypothesis"],
-                trigger="auto_escalate",
+                trigger=trigger,
+                force=force,
             )
             self._finalize_followup_task(
                 pending.get("task_id"),

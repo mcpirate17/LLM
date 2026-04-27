@@ -81,10 +81,25 @@ _PR_SELECT_COLS = (
     "tinystories_score, cross_task_score, diagnostic_score, "
     "fp_gromov_delta, fp_hierarchy_fitness, "
     "induction_v2_investigation_auc, binding_v2_investigation_auc, "
+    # v9 trajectory metrics — read by compute_composite_v10's capability
+    # tier (cap_erf_density, cap_id_collapse, cap_erf_decay, cap_logit_margin)
+    # and aux trajectory tier (aux_erf_variance, aux_icld). Without these
+    # selected here, _pr_dict_to_score_kwargs would silently pass None for
+    # all four and v10 would zero-out the entire 175pt capability tier
+    # (minus the 75pt induction/binding/ar block).
+    "fp_jacobian_erf_density, fp_jacobian_erf_variance, "
+    "fp_jacobian_erf_decay_slope, fp_id_collapse_rate, "
+    "fp_logit_margin_velocity, fp_icld_velocity, "
     # routing_collapse_score is a misnomer: it is actually a routing-health
     # score in [0,1] (higher = healthier). Selected here so consumers can
     # build a routing-quality subscore. Not yet used by composite scoring.
-    "routing_collapse_score"
+    "routing_collapse_score, tokenizer_mode, "
+    # screening_wikitext_metric_version is the *reliable* indicator that
+    # wikitext_perplexity is in BPE units (vs the byte-era stale rows).
+    # tokenizer_mode is unreliable — it was set to 'tiktoken' on some
+    # byte-era rows and missing on many legitimate ones.  v11's tokenizer
+    # integrity penalty reads metric_version, not tokenizer_mode.
+    "screening_wikitext_metric_version"
 )
 
 
@@ -114,7 +129,14 @@ def _pr_dict_to_score_kwargs(
     eval_steps = pr_dict.get("wikitext_eval_steps")
 
     ppl_screening = ppl_final
-    ppl_at_1000 = ppl_final if (eval_steps is not None and eval_steps >= 1000) else None
+    # Threshold was 1000 when training ran 1000 steps; current eval pipeline
+    # runs 750 steps so every row tripped the >= 1000 gate and learning_efficiency
+    # silently stayed 0 for everyone. Lowered to 500 to capture the 750-step regime.
+    # NOTE: wikitext_ppl_200/500 are still byte-era stale (BPE backfill only
+    # refreshed wikitext_perplexity), so the ratio is currently mismatched
+    # tokenizations and learn_eff produces ~0 across the cohort. Re-anchoring
+    # learn_eff after a BPE trajectory backfill is the proper fix.
+    ppl_at_1000 = ppl_final if (eval_steps is not None and eval_steps >= 500) else None
 
     tier = d.get("tier") or "screening"
 
@@ -195,6 +217,21 @@ def _pr_dict_to_score_kwargs(
         "cross_task_score": pr_dict.get("cross_task_score"),
         "diagnostic_score": pr_dict.get("diagnostic_score"),
         "hierarchy_fitness": pr_dict.get("fp_hierarchy_fitness"),
+        # v9 trajectory metrics — feed compute_composite_v10's capability
+        # and aux trajectory tiers. Without these, the v10 dispatcher
+        # silently zeros 4×25pt capability components and 2×10pt aux
+        # components (~120pts of headroom on a frontier model).
+        "fp_jacobian_erf_density": pr_dict.get("fp_jacobian_erf_density"),
+        "fp_jacobian_erf_variance": pr_dict.get("fp_jacobian_erf_variance"),
+        "fp_jacobian_erf_decay_slope": pr_dict.get("fp_jacobian_erf_decay_slope"),
+        "fp_id_collapse_rate": pr_dict.get("fp_id_collapse_rate"),
+        "fp_logit_margin_velocity": pr_dict.get("fp_logit_margin_velocity"),
+        "fp_icld_velocity": pr_dict.get("fp_icld_velocity"),
+        "tokenizer_mode": pr_dict.get("tokenizer_mode") or d.get("tokenizer_mode"),
+        "screening_wikitext_metric_version": (
+            pr_dict.get("screening_wikitext_metric_version")
+            or d.get("screening_wikitext_metric_version")
+        ),
     }
     if extra:
         kw.update(extra)
@@ -708,9 +745,10 @@ def _score_robustness_linguistics(
     bd["binding"] = binding_pts
     total += binding_pts
 
+    w_blimp = cfg.get("w_blimp", 40.0)
     blimp_pts = 0.0
     if not inv_failed and blimp_accuracy is not None and blimp_accuracy > 0.50:
-        blimp_pts = min(40.0, 40.0 * _scurve(blimp_accuracy / cfg["blimp"], k=6))
+        blimp_pts = min(w_blimp, w_blimp * _scurve(blimp_accuracy / cfg["blimp"], k=6))
     bd["blimp"] = blimp_pts
     total += blimp_pts
 
@@ -770,7 +808,11 @@ def _score_understanding_v8(
     if w_hs > 0:
         pts = 0.0
         _acc = hellaswag_acc_investigation or hellaswag_acc_validation
-        if is_investigated and _acc is not None and _acc > 0.26:
+        # Gate was 0.26 (above random chance for 4-way); cohort p99 sits at
+        # 0.265 so 99% of rows scored 0. Lowered to strictly above random
+        # (0.25) so the metric actually contributes signal. The anchor (0.30)
+        # and steep k=6 already make sub-random scores irrelevant.
+        if is_investigated and _acc is not None and _acc > 0.25:
             pts = min(w_hs, w_hs * _scurve(_acc / cfg["hellaswag"], k=6))
         bd["hellaswag"] = pts
         total += pts
@@ -1154,17 +1196,703 @@ def compute_composite_v8_1(
 
 
 # ---------------------------------------------------------------------------
+# v9 — Gemini trajectory metrics block (2026-04-25).
+# ---------------------------------------------------------------------------
+# v9 adds 4 new screening-budget signals on top of v8.1:
+#   * fp_jacobian_erf_density          — info-routing density (∈ [0,1])
+#   * fp_jacobian_erf_variance         — info-routing variance across positions
+#   * fp_icld_velocity                 — in-context loss decay slope
+#   * fp_logit_margin_velocity         — relational composition emergence
+# Plus fp_jacobian_spectral_norm (already populated for live + backfilled rows).
+#
+# Combination rule: the Gemini block contributes 50% of the v9 composite by
+# averaging four normalized metrics with equal weight (HELM/Abdelfattah/AZ-NAS
+# precedent — see tasks/gemini_metrics_scoring_spec.md §1). The remaining 50%
+# comes from v8.1's full composite, normalized to its theoretical max so the
+# two blocks combine in a comparable scale.
+#
+# Empirical anchors come from the 2026-04-25 smoke run on 4 reference
+# architectures + 3 top-induction passers — see research/perf_artifacts/
+# gemini_smoke_20260425T125115.json. Anchors are screening_750 medians, used
+# only as normalization ceilings; the block stays linear so rare graphs that
+# blow past the ceiling earn extra credit (top-ind-1 at 400× GPT-2 erf_var).
+_V9_GEMINI_BLOCK_FRACTION = 0.5
+_V9_V8_1_NORMALIZER = 800.0  # representative v8.1 composite at frontier
+_V9_GEMINI_MAX_POINTS = 100.0  # block contributes up to 100 points
+
+# Anchors below are screening_750 medians from the 7-architecture smoke run.
+# Live values normalize against these with a soft cap at 2× anchor so a single
+# outlier metric can't dominate the block.
+_V9_ERF_DENSITY_ANCHOR = 1.0  # transformer-class saturates at 1.0
+_V9_ERF_VARIANCE_ANCHOR = 5000.0  # GPT-2 / Retrieval-Augmented post-screening
+_V9_ICLD_VELOCITY_ANCHOR_ABS = 0.025  # |slope| at frontier; more-negative is better
+_V9_LOGIT_MARGIN_ANCHOR = 0.10  # GPT-2 / Mamba post-screening; ind=1 archs are 2.5×
+
+# Hard gates applied at the pre-investigation gate (notebook_references
+# .get_investigation_eligible). Below these floors the architecture cannot
+# route information and shouldn't reach investigation regardless of
+# composite score. Tuned from smoke data: SSMs at init have erf_density≈0.3
+# so the floor must be below that to avoid gating Mamba/RWKV-class graphs.
+GEMINI_HARD_GATE_ERF_DENSITY = 0.20
+GEMINI_HARD_GATE_ERF_VARIANCE = 800.0
+
+
+def _v9_normalized_metric(value: Optional[float], anchor: float) -> float:
+    """Linear-saturating normalization to [0, 1] with a 2× cap at anchor.
+
+    Returns 0.5 at anchor, 1.0 at 2×, 0.0 at zero or negative. Values above
+    2× clamp to 1.0 — a single dominant metric should not crowd out the
+    other three in the uniform-weighted block.
+    """
+    if value is None or value <= 0.0:
+        return 0.0
+    ratio = value / max(anchor, 1e-9)
+    if ratio >= 2.0:
+        return 1.0
+    return min(1.0, ratio / 2.0)
+
+
+def _v9_gemini_block_score(kw: Dict[str, Any]) -> tuple[float, Dict[str, float]]:
+    """Compute the 0..100 Gemini block contribution.
+
+    Tier-aware composition (2026-04-25 calibration on n=16k data):
+
+    * **Screening tier** (``fp_metric_phase`` in ``init`` / ``screening_750``
+      / unset): use 3 metrics — ERF density, ERF variance, logit-margin
+      velocity. ICLD is dropped because Spearman ρ vs binding/induction
+      AUC is ~0.03 at this phase (noise floor). Empirically the loss-vs-
+      position slope on a synthetic Dyck probe doesn't discriminate
+      architectures until in-context-learning capability has had time
+      to crystallize during training.
+
+    * **Investigation / validation tier** (``investigation_full`` /
+      ``validation_full``): use all 4 metrics. By this phase the model
+      has trained ~5000+ steps and ICLD's correlation with induction
+      AUC sharpens to ρ=-0.259 — real signal. We include it at equal
+      weight with the other three.
+
+    ICLD velocity is more-negative-is-better, so we flip the sign before
+    normalization. Returns ``(block_score, breakdown)`` where breakdown
+    reports each component's normalized [0,1] contribution.
+    """
+    phase = (kw.get("fp_metric_phase") or "").strip()
+    # ICLD only earns scoring weight once the model has trained enough
+    # for in-context learning to emerge (~5000+ steps). Screening (~750
+    # steps) and at-init backfill are below that threshold.
+    include_icld = phase in ("investigation_full", "validation_full")
+
+    erf_density = kw.get("fp_jacobian_erf_density")
+    erf_variance = kw.get("fp_jacobian_erf_variance")
+    logit_margin = kw.get("fp_logit_margin_velocity")
+
+    n_density = _v9_normalized_metric(erf_density, _V9_ERF_DENSITY_ANCHOR)
+    n_variance = _v9_normalized_metric(erf_variance, _V9_ERF_VARIANCE_ANCHOR)
+    n_margin = _v9_normalized_metric(logit_margin, _V9_LOGIT_MARGIN_ANCHOR)
+
+    block_components: Dict[str, float] = {
+        "fp_jacobian_erf_density": n_density,
+        "fp_jacobian_erf_variance": n_variance,
+        "fp_logit_margin_velocity": n_margin,
+    }
+    if include_icld:
+        icld_velocity = kw.get("fp_icld_velocity")
+        icld_abs = (
+            -icld_velocity if isinstance(icld_velocity, (int, float)) else None
+        )
+        block_components["fp_icld_velocity_abs"] = _v9_normalized_metric(
+            icld_abs, _V9_ICLD_VELOCITY_ANCHOR_ABS
+        )
+
+    # Uniform mean of N normalized signals (3 at screening, 4 at
+    # investigation/validation). Components missing entirely (live rows
+    # before metric writes complete) contribute 0 — same as a weak
+    # architecture. ``fp_metric_phase`` tags rows so ML training can
+    # distinguish "missing" from "measured weak".
+    n = max(1, len(block_components))
+    block_score = (sum(block_components.values()) / n) * _V9_GEMINI_MAX_POINTS
+    return block_score, block_components
+
+
+def compute_composite_v9(
+    *,
+    decompose: bool = False,
+    **kw: Any,
+) -> Union[float, Dict[str, Any]]:
+    """Composite v9 — Gemini trajectory metrics block at 50% (2026-04-25).
+
+    Builds on v8.1 by adding a 4-metric trajectory block (Jacobian ERF
+    density + variance, ICLD velocity, transitive logit-margin slope) at
+    HELM/Abdelfattah-style uniform weighting. Spec at
+    ``tasks/gemini_metrics_scoring_spec.md``. Hard gates live at the
+    pre-investigation gate (see GEMINI_HARD_GATE_*).
+
+    Combination:
+        composite_v9 = (1 - F) * v8.1_normalized + F * gemini_block
+    where F = 0.5 and gemini_block ∈ [0, 100] is the uniform mean of the
+    four normalized trajectory metrics. v8.1_normalized rescales the v8.1
+    composite to a 0..100 frontier-anchor range.
+
+    Rows with no trajectory metrics yet (live runs pre-backfill) get a
+    block_score = 0; the v8.1 component still contributes its 50%.
+    """
+    # v8.1 component — pull the float, not the breakdown, for arithmetic.
+    if decompose:
+        v8_1_result = compute_composite_v8_1(decompose=True, **kw)
+        v8_1_score = float(v8_1_result["composite_score"])
+        v8_1_bd = v8_1_result.get("breakdown") or {}
+    else:
+        v8_1_score = float(compute_composite_v8_1(decompose=False, **kw))
+        v8_1_bd = {}
+
+    # Linear normalize to a 0..100 range before combining.
+    v8_1_normalized = max(
+        0.0, min(_V9_GEMINI_MAX_POINTS, v8_1_score / _V9_V8_1_NORMALIZER * _V9_GEMINI_MAX_POINTS)
+    )
+
+    gemini_score, gemini_bd = _v9_gemini_block_score(kw)
+    composite = (
+        (1.0 - _V9_GEMINI_BLOCK_FRACTION) * v8_1_normalized
+        + _V9_GEMINI_BLOCK_FRACTION * gemini_score
+    )
+
+    if decompose:
+        v8_1_bd["_v9_v8_1_raw"] = v8_1_score
+        v8_1_bd["_v9_v8_1_normalized"] = v8_1_normalized
+        v8_1_bd["_v9_gemini_block_score"] = gemini_score
+        v8_1_bd["_v9_gemini_components"] = gemini_bd
+        return {"composite_score": composite, "breakdown": v8_1_bd}
+    return composite
+
+
+# ---------------------------------------------------------------------------
+# v10 — three equal buckets (capability / loss / understanding), all S-curves,
+# binding multiplicative gates retired (2026-04-25).
+# ---------------------------------------------------------------------------
+# Three structural changes from v9:
+#   1. Binding/induction/AR are unrolled from one 85pt S-curve into three
+#      independent 25pt S-curves, sitting alongside four trajectory metrics
+#      (erf_density, id_collapse_rate, erf_decay_slope, logit_margin_velocity)
+#      at equal 25pt weight — all seven form a 175pt capability tier.
+#   2. Loss tier (perf_short/medium/long + learn_eff + early_conv) and
+#      understanding tier (blimp + tinystories + cross_task + diagnostic +
+#      hellaswag + hierarchy) are sized to ~175pts each so capability,
+#      loss, and understanding contribute roughly equally.
+#   3. binding_all_below_penalty (×0.50) and binding_composite_boost (×1.15)
+#      are retired. With understanding properly weighted at 175pts a
+#      ppl-only graph already loses on the additive scoreboard; the
+#      multiplicative gate was redundant and penalized SSMs (Mamba-class)
+#      that bind weakly by architecture but are otherwise capable.
+#
+# Anchors come from the 2026-04-25 distribution analysis on the 16k+ rows
+# that have at least one Gemini metric populated (see lab_notebook query
+# in the v10 design discussion). Lower-is-better metrics (id_collapse_rate,
+# erf_decay_slope, icld_velocity) are negated before S-curve normalization.
+_V10_CONFIG: Dict[str, float] = {
+    **_V8_CONFIG,
+    # Loss tier (~175pts total): unchanged from v8 except learn_eff trimmed
+    "w_perf_short": 35.0,
+    "w_perf_medium": 50.0,
+    "w_perf_long": 65.0,
+    "w_param_eff": 30.0,
+    "w_learn_eff": 15.0,
+    # Capability tier disabled in the legacy rollup; new unrolled scorer
+    # handles ar/induction/binding individually below.
+    "w_binding": 0.0,
+    # Understanding tier (~175pts total): hellaswag halved, diagnostic
+    # trimmed, hierarchy bumped — keeps tier total at parity with capability
+    # without leaving any single metric overweighted.
+    "w_blimp": 35.0,
+    "w_tinystories": 30.0,
+    "w_cross_task": 30.0,
+    "w_diagnostic": 40.0,
+    "w_hellaswag": 15.0,
+    "w_hierarchy": 25.0,
+    # Capability tier (~175pts total): 7 × 25pts each, all S-curved.
+    "w_cap_ar": 25.0,
+    "w_cap_induction": 25.0,
+    "w_cap_binding": 25.0,
+    "w_cap_erf_density": 25.0,
+    "w_cap_id_collapse": 25.0,
+    "w_cap_erf_decay": 25.0,
+    "w_cap_logit_margin": 25.0,
+    # Aux trajectory tier (lower-ρ, kept for ML signal): 10pts each.
+    "w_aux_erf_variance": 10.0,
+    "w_aux_icld": 10.0,
+    # Anchors recalibrated 2026-04-26 to the cohort median of each metric.
+    # Methodology: anchor = median of populated rows in the cohort that the
+    # component scores at. S-curve evaluates ratio=anchor/value (lower-better)
+    # or value/anchor (higher-better); ratio=1 → score 0.5. So a row at the
+    # cohort median earns half of the component's weight; above-median earns
+    # more, below-median less. Replaces ad-hoc / aspirational anchors that
+    # were either unreachable (most rows scored zero) or arbitrary.
+    # Cohorts: PPL anchors use the appropriate stage cohort; understanding,
+    # capability, and aux anchors use val+bt (where they fire).
+    "ppl_1000":   744.0,   # median screening wikitext_perplexity (n=1871)
+    "ppl_2500":   823.0,   # median investigation wikitext_perplexity (n=159)
+    "ppl_10000":  754.0,   # median val+bt wikitext_perplexity (n=2453)
+    "blimp":      0.525,   # median val+bt blimp_overall_accuracy (n=2452)
+    "hellaswag":  0.225,   # median val+bt hellaswag_acc (n=2453)
+    "tinystories": 0.542,  # median val+bt tinystories_score (n=2452)
+    "cross_task": 0.279,   # median val+bt cross_task_score (n=2441)
+    "diagnostic": 0.004,   # median val+bt diagnostic_score (n=2447)
+    "hierarchy":  0.848,   # median val+bt fp_hierarchy_fitness (n=2283)
+    "cap_ar_anchor":            0.002,  # median val+bt ar_auc (n=2076)
+    "cap_induction_anchor":     0.006,  # median val+bt induction_auc v1 (n=2163)
+    "cap_binding_anchor":       0.004,  # median val+bt binding_auc v1 (n=405)
+    "cap_erf_density_anchor":   0.047,  # median val+bt fp_jacobian_erf_density
+    "cap_id_collapse_anchor":   0.010,  # |median| of negative fp_id_collapse_rate (n_neg=1498)
+    "cap_erf_decay_anchor":     0.050,  # |median| of negative fp_jacobian_erf_decay_slope (n_neg=2311)
+    "cap_logit_margin_anchor":  0.003,  # median val+bt fp_logit_margin_velocity (n=2284)
+    "aux_erf_variance_anchor":  14280.0,  # median val+bt fp_jacobian_erf_variance (n=2452)
+    "aux_icld_anchor":          0.017,  # |median| of negative fp_icld_velocity (n_neg=2412)
+    # Multiplicative gates retired.
+    "binding_all_below_penalty": 1.0,
+    "binding_composite_boost": 1.0,
+    "binding_composite_boost_floor": 0.0,
+    # Score-stability (CV) penalty — applied only at validation/breakthrough.
+    # Per-tier multiplier = max(floor, 1 - lambda * tier_CV).
+    # CV = std/|mean| across runs of the same graph_fingerprint.  Tiers
+    # without enough runs (n<2) get penalty=1.0 (no penalty until we
+    # have signal).  Loss tier carries the most points so it gets the
+    # strongest lambda.
+    "cv_lambda_loss":   0.5,
+    "cv_lambda_und":    0.3,
+    "cv_lambda_cap":    0.4,
+    "cv_penalty_floor": 0.6,
+}
+
+# ---------------------------------------------------------------------------
+# v11 — Breakthrough alignment (2026-04-26).
+# ---------------------------------------------------------------------------
+# Structural changes from v10:
+#   1. High-ceiling capability anchors: cap_binding_anchor (0.004 -> 0.500)
+#      and cap_induction_anchor (0.006 -> 0.300).
+#   2. Higher capability weights: cap_binding and cap_induction (25 -> 50).
+#   3. Breakthrough multiplier: 1.2x boost to Understanding tier if
+#      binding_auc > 0.8 AND induction_auc > 0.3.
+#   4. Tokenizer Integrity: 0.1x total multiplier if tokenizer_mode != 'tiktoken'.
+_V11_CONFIG: Dict[str, float] = {
+    **_V10_CONFIG,
+    "w_cap_induction": 50.0,
+    "w_cap_binding": 50.0,
+    "cap_induction_anchor": 0.300,
+    "cap_binding_anchor": 0.500,
+}
+
+
+_V11_CAP_INDUCTION_MULTIPLIER = (
+    _V11_CONFIG["w_cap_induction"] / _V10_CONFIG["w_cap_induction"]
+)
+_V11_CAP_BINDING_MULTIPLIER = (
+    _V11_CONFIG["w_cap_binding"] / _V10_CONFIG["w_cap_binding"]
+)
+# v11 tokenizer-integrity penalty (graded).  ``screening_wikitext_metric_version``
+# is the reliable signal that PPL is in BPE units; ``tokenizer_mode`` is
+# unreliable (was set to 'tiktoken' on some byte-era rows AND missing on
+# many legitimate ones).
+#
+#   * 'bpe_eval_v1'         → 1.00  (good, full credit)
+#   * 'screening_wikitext_v1' → 0.10  (definitively byte-era, hammer)
+#   * NULL / empty / other  → 0.70  (unknown — soft uncertainty discount)
+_V11_TOKENIZER_PENALTY_BPE = 1.0
+_V11_TOKENIZER_PENALTY_BYTE = 0.1
+_V11_TOKENIZER_PENALTY_UNKNOWN = 0.7
+
+
+def _v11_tokenizer_penalty(metric_version: Optional[str]) -> float:
+    if metric_version is None:
+        return _V11_TOKENIZER_PENALTY_UNKNOWN
+    mv = str(metric_version).strip().lower()
+    if mv == "bpe_eval_v1":
+        return _V11_TOKENIZER_PENALTY_BPE
+    if mv == "screening_wikitext_v1":
+        return _V11_TOKENIZER_PENALTY_BYTE
+    return _V11_TOKENIZER_PENALTY_UNKNOWN
+
+
+def compute_composite_v11(
+    *,
+    decompose: bool = False,
+    **kw: Any,
+) -> Union[float, Dict[str, Any]]:
+    """Composite v11 — Breakthrough-first alignment.
+
+    Builds on v10 with high-ceiling capability weights for binding /
+    induction, a breakthrough multiplier for logic-probes, and a graded
+    tokenizer-integrity penalty.
+
+    Implementation note: ``compute_composite_v10`` hardcodes
+    ``_V10_CONFIG`` internally, so ``_V11_CONFIG``'s cap-tier weight
+    bumps cannot take effect through the v10 call directly.  We
+    recompose them here by multiplying ``cap_induction`` /
+    ``cap_binding`` in the breakdown by the v11/v10 weight ratios.
+    Anchors are NOT rescaled here — that would require re-evaluating
+    ``_score_capability_tier_v10``, and the larger weights already
+    deliver the intended "frontier-archs win bigger" effect on top of
+    v10's anchors.
+    """
+    # Use v10 as the structural base.  Inside v10 the CV penalty (if any)
+    # has already been applied to loss/und/cap subscores per tier.
+    result = compute_composite_v10(decompose=True, **kw)
+    score = float(result["composite_score"])
+    bd = result.get("breakdown") or {}
+
+    # 1. v11 capability rescale: lift cap_induction / cap_binding to the
+    #    v11 weights (50pts each) by multiplying the v10 contribution.
+    cap_ind_old = float(bd.get("cap_induction", 0.0) or 0.0)
+    cap_bind_old = float(bd.get("cap_binding", 0.0) or 0.0)
+    cap_ind_new = cap_ind_old * _V11_CAP_INDUCTION_MULTIPLIER
+    cap_bind_new = cap_bind_old * _V11_CAP_BINDING_MULTIPLIER
+    score += (cap_ind_new - cap_ind_old) + (cap_bind_new - cap_bind_old)
+    bd["cap_induction"] = cap_ind_new
+    bd["cap_binding"] = cap_bind_new
+
+    # 2. Breakthrough multiplier — 1.2× understanding tier when both
+    #    induction and binding clear their gates.  Uses v2 probes when
+    #    populated, falls back to v1.
+    eff_ind = (
+        kw.get("induction_v2_inv_auc")
+        if kw.get("induction_v2_inv_auc") is not None
+        else kw.get("induction_auc")
+    )
+    eff_bind = (
+        kw.get("binding_v2_inv_auc")
+        if kw.get("binding_v2_inv_auc") is not None
+        else kw.get("binding_auc")
+    )
+    is_breakthrough = (
+        eff_ind is not None and eff_ind > 0.3
+        and eff_bind is not None and eff_bind > 0.8
+    )
+    if is_breakthrough:
+        und_sum = sum(float(bd.get(k, 0.0) or 0.0) for k in _UND_TIER_BD_KEYS)
+        boost = und_sum * 0.2
+        score += boost
+        bd["_v11_breakthrough_boost"] = boost
+        for k in _UND_TIER_BD_KEYS:
+            if k in bd and bd[k]:
+                bd[k] = float(bd[k]) * 1.2
+
+    # 3. Tokenizer integrity penalty (graded by metric_version).
+    metric_version = kw.get("screening_wikitext_metric_version")
+    tok_pen = _v11_tokenizer_penalty(metric_version)
+    if tok_pen < 1.0:
+        score *= tok_pen
+        bd["_v11_tokenizer_penalty"] = tok_pen
+        bd["_v11_tokenizer_penalty_metric_version"] = metric_version
+
+    if decompose:
+        result["composite_score"] = score
+        result["breakdown"] = bd
+        return result
+    return score
+
+
+_LOSS_TIER_BD_KEYS = (
+    "perf_short", "perf_medium", "perf_long",
+    "param_efficiency", "learning_efficiency", "early_convergence",
+    "speed",
+)
+_UND_TIER_BD_KEYS = (
+    "blimp", "tinystories", "cross_task",
+    "diagnostic", "hellaswag", "hierarchy",
+)
+
+
+def _cv_penalty_multiplier(
+    cv: Optional[float],
+    lam: float,
+    floor: float,
+) -> float:
+    """1.0 if cv is None or non-positive; else max(floor, 1 - lambda * cv)."""
+    if cv is None:
+        return 1.0
+    try:
+        cv_f = float(cv)
+    except (TypeError, ValueError):
+        return 1.0
+    if cv_f <= 0.0:
+        return 1.0
+    return max(floor, 1.0 - lam * cv_f)
+
+
+def _scurve_lower_better(value: Optional[float], anchor: float) -> float:
+    """S-curve where MORE NEGATIVE is better (id_collapse, erf_decay, icld).
+
+    Negates the value (so negative inputs become positive ratios) then
+    runs the standard _scurve. Anchor is the absolute value of the
+    frontier-equivalent (e.g. 0.01 for id_collapse means a frontier rate
+    of -0.01). Returns 0.0 for missing/positive values (positive =
+    collapsing, which is the bad direction).
+    """
+    if value is None:
+        return 0.0
+    flipped = -float(value)
+    if flipped <= 0.0:
+        return 0.0
+    return _scurve(flipped / max(anchor, 1e-9))
+
+
+def _scurve_higher_better(value: Optional[float], anchor: float) -> float:
+    """S-curve where higher is better (erf_density, logit_margin, etc.)."""
+    if value is None or value <= 0.0:
+        return 0.0
+    return _scurve(value / max(anchor, 1e-9))
+
+
+def _score_capability_tier_v10(
+    cfg: Dict[str, float],
+    *,
+    inv_failed: bool,
+    effective_ar_auc: Optional[float],
+    effective_induction_auc: Optional[float],
+    effective_binding_auc: Optional[float],
+    erf_density: Optional[float],
+    id_collapse_rate: Optional[float],
+    erf_decay_slope: Optional[float],
+    logit_margin_velocity: Optional[float],
+) -> tuple[float, Dict[str, float]]:
+    """v10 capability tier — 7 metrics × 25pts, each S-curved independently."""
+    bd: Dict[str, float] = {}
+    total = 0.0
+
+    if inv_failed:
+        for k in (
+            "cap_ar", "cap_induction", "cap_binding",
+            "cap_erf_density", "cap_id_collapse",
+            "cap_erf_decay", "cap_logit_margin",
+        ):
+            bd[k] = 0.0
+        return 0.0, bd
+
+    pairs = (
+        ("cap_ar", _scurve_higher_better(effective_ar_auc, cfg["cap_ar_anchor"])),
+        ("cap_induction", _scurve_higher_better(effective_induction_auc, cfg["cap_induction_anchor"])),
+        ("cap_binding", _scurve_higher_better(effective_binding_auc, cfg["cap_binding_anchor"])),
+        ("cap_erf_density", _scurve_higher_better(erf_density, cfg["cap_erf_density_anchor"])),
+        ("cap_id_collapse", _scurve_lower_better(id_collapse_rate, cfg["cap_id_collapse_anchor"])),
+        ("cap_erf_decay", _scurve_lower_better(erf_decay_slope, cfg["cap_erf_decay_anchor"])),
+        ("cap_logit_margin", _scurve_higher_better(logit_margin_velocity, cfg["cap_logit_margin_anchor"])),
+    )
+    for key, frac in pairs:
+        pts = cfg[f"w_{key}"] * frac
+        bd[key] = pts
+        total += pts
+    return total, bd
+
+
+def _score_trajectory_aux_v10(
+    cfg: Dict[str, float],
+    *,
+    inv_failed: bool,
+    is_investigated: bool,
+    is_validation: bool,
+    erf_variance: Optional[float],
+    icld_velocity: Optional[float],
+) -> tuple[float, Dict[str, float]]:
+    """v10 aux trajectory — erf_variance always, icld only post-screening."""
+    bd: Dict[str, float] = {}
+    total = 0.0
+    if inv_failed:
+        bd["aux_erf_variance"] = 0.0
+        bd["aux_icld"] = 0.0
+        return 0.0, bd
+
+    var_pts = cfg["w_aux_erf_variance"] * _scurve_higher_better(
+        erf_variance, cfg["aux_erf_variance_anchor"]
+    )
+    bd["aux_erf_variance"] = var_pts
+    total += var_pts
+
+    icld_pts = 0.0
+    if is_investigated or is_validation:
+        icld_pts = cfg["w_aux_icld"] * _scurve_lower_better(
+            icld_velocity, cfg["aux_icld_anchor"]
+        )
+    bd["aux_icld"] = icld_pts
+    total += icld_pts
+    return total, bd
+
+
+def compute_composite_v10(
+    *,
+    decompose: bool = False,
+    **kw: Any,
+) -> Union[float, Dict[str, Any]]:
+    """Composite v10 — three equal tiers, all S-curves, no binding gates.
+
+    Pulls trajectory metrics from kw (fp_jacobian_erf_density,
+    fp_id_collapse_rate, fp_jacobian_erf_decay_slope,
+    fp_logit_margin_velocity, fp_jacobian_erf_variance, fp_icld_velocity)
+    and routes them through the new capability + aux-trajectory scorers.
+    Everything else (loss curves, understanding, efficiency, novelty,
+    robustness, long-context) flows through the existing v8 generic
+    scorer with the v10 weights.
+    """
+    cfg = _V10_CONFIG
+    base = _compute_composite_generic(cfg, decompose=True, **kw)
+    base_score = float(base["composite_score"])
+    base_bd = base.get("breakdown") or {}
+
+    # Determine tier flags consistent with the generic scorer.
+    tier = kw.get("tier")
+    inv_failed = tier in ("investigation_failed", "screened_out")
+    is_investigated = (
+        tier in ("investigation", "validation", "breakthrough")
+        if tier
+        else (kw.get("ppl_investigation") is not None)
+    )
+    is_validation = (
+        tier in ("validation", "breakthrough") if tier else (kw.get("ppl_validation") is not None)
+    )
+
+    ar_timed_out = kw.get("ar_timed_out")
+    effective_ar = None if ar_timed_out else kw.get("ar_auc")
+    eff_ind = (
+        kw.get("induction_v2_inv_auc")
+        if kw.get("induction_v2_inv_auc") is not None
+        else kw.get("induction_auc")
+    )
+    eff_bind = (
+        kw.get("binding_v2_inv_auc")
+        if kw.get("binding_v2_inv_auc") is not None
+        else kw.get("binding_auc")
+    )
+
+    cap_pts, cap_bd = _score_capability_tier_v10(
+        cfg,
+        inv_failed=inv_failed,
+        effective_ar_auc=effective_ar,
+        effective_induction_auc=eff_ind,
+        effective_binding_auc=eff_bind,
+        erf_density=kw.get("fp_jacobian_erf_density"),
+        id_collapse_rate=kw.get("fp_id_collapse_rate"),
+        erf_decay_slope=kw.get("fp_jacobian_erf_decay_slope"),
+        logit_margin_velocity=kw.get("fp_logit_margin_velocity"),
+    )
+    aux_pts, aux_bd = _score_trajectory_aux_v10(
+        cfg,
+        inv_failed=inv_failed,
+        is_investigated=is_investigated,
+        is_validation=is_validation,
+        erf_variance=kw.get("fp_jacobian_erf_variance"),
+        icld_velocity=kw.get("fp_icld_velocity"),
+    )
+
+    # Score-stability (CV) penalty — only fires at validation/breakthrough,
+    # only when the per-tier CV is populated (n>=2 runs for that tier).
+    apply_cv_penalty = is_validation and not inv_failed
+    loss_pen = und_pen = cap_pen = 1.0
+    if apply_cv_penalty:
+        loss_pen = _cv_penalty_multiplier(
+            kw.get("cv_loss"), cfg["cv_lambda_loss"], cfg["cv_penalty_floor"]
+        )
+        und_pen = _cv_penalty_multiplier(
+            kw.get("cv_understanding"), cfg["cv_lambda_und"], cfg["cv_penalty_floor"]
+        )
+        cap_pen = _cv_penalty_multiplier(
+            kw.get("cv_capability"), cfg["cv_lambda_cap"], cfg["cv_penalty_floor"]
+        )
+
+    # Decompose base_score into loss-tier, understanding-tier, and the
+    # rest (legacy: routing/compression/sparsity/adaptive/novelty/ncd/
+    # robustness/long_context/binding-rollup).  Apply per-tier CV
+    # penalty, then recompose.
+    loss_sum = sum(float(base_bd.get(k, 0.0) or 0.0) for k in _LOSS_TIER_BD_KEYS)
+    und_sum = sum(float(base_bd.get(k, 0.0) or 0.0) for k in _UND_TIER_BD_KEYS)
+    legacy_sum = base_score - loss_sum - und_sum
+
+    base_score_penalized = (
+        loss_sum * loss_pen + und_sum * und_pen + legacy_sum
+    )
+    cap_pts_penalized = cap_pts * cap_pen
+    composite = base_score_penalized + cap_pts_penalized + aux_pts
+
+    if decompose:
+        bd: Dict[str, Any] = dict(base_bd)
+        bd.update(cap_bd)
+        bd.update(aux_bd)
+        # Apply penalty in-place so callers reading individual tier
+        # points see the penalized values.
+        if apply_cv_penalty:
+            for k in _LOSS_TIER_BD_KEYS:
+                if k in bd and bd[k]:
+                    bd[k] = float(bd[k]) * loss_pen
+            for k in _UND_TIER_BD_KEYS:
+                if k in bd and bd[k]:
+                    bd[k] = float(bd[k]) * und_pen
+            for k in cap_bd:
+                if bd.get(k):
+                    bd[k] = float(bd[k]) * cap_pen
+        bd["_v10_capability_total"] = cap_pts_penalized
+        bd["_v10_aux_trajectory_total"] = aux_pts
+        bd["_v10_base_v8style_total"] = base_score_penalized
+        bd["_cv_penalty_loss"] = loss_pen
+        bd["_cv_penalty_und"] = und_pen
+        bd["_cv_penalty_cap"] = cap_pen
+        bd["_cv_penalty_applied"] = bool(apply_cv_penalty)
+        return {"composite_score": composite, "breakdown": bd}
+    return composite
+
+
+def composite_score_ceiling(version: str | None = None) -> float:
+    """Return the theoretical maximum score for a scoring version.
+
+    This is derived from the same weight config used by the scorer so UI scale
+    ceilings do not drift into hard-coded folklore.
+    """
+    active = version or SCORING_VERSION
+    cfg = _V10_CONFIG if active == "v10" else _V8_CONFIG
+    base_max = (
+        cfg["w_perf_short"]
+        + cfg["w_perf_medium"]
+        + cfg["w_perf_long"]
+        + cfg["w_param_eff"]
+        + cfg["w_learn_eff"]
+        + 50.0  # routing_savings
+        + 30.0  # compression
+        + 30.0  # sparsity
+        + 25.0  # adaptive_computation
+        + 40.0  # novelty
+        + 15.0  # ncd
+        + 40.0  # robustness
+        + 25.0  # long_context
+        + cfg["w_binding"]
+        + cfg.get("w_blimp", 40.0)
+        + cfg["w_tinystories"]
+        + cfg["w_cross_task"]
+        + cfg["w_diagnostic"]
+        + cfg["w_hellaswag"]
+        + cfg["w_hierarchy"]
+        + 25.0  # speed
+        + 10.0  # early_convergence
+    )
+    if active == "v10":
+        base_max += (
+            cfg["w_cap_ar"]
+            + cfg["w_cap_induction"]
+            + cfg["w_cap_binding"]
+            + cfg["w_cap_erf_density"]
+            + cfg["w_cap_id_collapse"]
+            + cfg["w_cap_erf_decay"]
+            + cfg["w_cap_logit_margin"]
+            + cfg["w_aux_erf_variance"]
+            + cfg["w_aux_icld"]
+        )
+    return float(base_max)
+
+
+# ---------------------------------------------------------------------------
 # Version dispatcher
 # ---------------------------------------------------------------------------
 # Default to v8 for backward compatibility; ARIA_SCORING_VERSION sets the
 # initial value at process start. The dashboard can change it at runtime via
 # set_scoring_version() / API so operators don't need to restart the server
 # just to flip between v8 and v8.1.
-SUPPORTED_SCORING_VERSIONS: tuple[str, ...] = ("v7", "v8", "v8.1")
-# v8.1 is the capability-first default (2026-04-17): tightens the binding-all-
-# below penalty to 0.50× and rewards graphs that clear the binding_composite
-# floor. Set ARIA_SCORING_VERSION=v8 to reproduce historical scoring.
-SCORING_VERSION = os.environ.get("ARIA_SCORING_VERSION", "v8.1")
+SUPPORTED_SCORING_VERSIONS: tuple[str, ...] = ("v7", "v8", "v8.1", "v9", "v10", "v11")
+# v11 is the breakthrough-aligned default (2026-04-26): capability-first,
+# high-ceiling anchors, and breakthrough multipliers.
+SCORING_VERSION = os.environ.get("ARIA_SCORING_VERSION", "v11")
 
 
 def get_scoring_version() -> str:
@@ -1198,6 +1926,12 @@ def compute_composite(
     # Read the module attribute at call time so runtime changes via
     # set_scoring_version() take effect without re-importing.
     version = SCORING_VERSION
+    if version == "v11":
+        return compute_composite_v11(decompose=decompose, **kw)
+    if version == "v10":
+        return compute_composite_v10(decompose=decompose, **kw)
+    if version == "v9":
+        return compute_composite_v9(decompose=decompose, **kw)
     if version == "v8.1":
         return compute_composite_v8_1(decompose=decompose, **kw)
     if version == "v8":

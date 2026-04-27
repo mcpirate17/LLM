@@ -1,11 +1,12 @@
 import React, { useState } from 'react';
-import { scoreColor } from '../../utils/format';
+import { SCORE_MAX, scoreColor, scoreGradient, scoreToneLabel } from '../../utils/format';
 import { canonicalScoreComponents } from '../../utils/backendScore';
 
 export function ScoreBreakdown({ entry }) {
   const [show, setShow] = useState(false);
   const score = Number(entry?.composite_score || 0);
   const positives = canonicalScoreComponents(entry);
+  const scorePercent = Math.max(4, Math.min(100, (score / SCORE_MAX) * 100));
 
   const total = positives.reduce((acc, c) => acc + (Number(c.weight) || 0), 0) || 1;
 
@@ -15,10 +16,27 @@ export function ScoreBreakdown({ entry }) {
       onMouseEnter={() => setShow(true)}
       onMouseLeave={() => setShow(false)}
     >
-      <div style={{ fontWeight: 600, color: scoreColor(score), marginBottom: 4 }}>
-        {score}
+      <div
+        title={`${scoreToneLabel(score)} score`}
+        style={{
+          fontWeight: 700,
+          color: scoreColor(score),
+          marginBottom: 4,
+          fontVariantNumeric: 'tabular-nums',
+        }}
+      >
+        {Number.isFinite(score) ? score.toFixed(1) : '--'}
       </div>
-      <div style={{ display: 'flex', height: 4, borderRadius: 2, overflow: 'hidden', background: 'var(--bg-tertiary)' }}>
+      <div className="champion-strip" title="Post-BPE champion score ramp">
+        <div
+          className="champion-strip-fill"
+          style={{
+            width: `${scorePercent}%`,
+            background: scoreGradient(score),
+          }}
+        />
+      </div>
+      <div style={{ display: 'flex', height: 3, borderRadius: 2, overflow: 'hidden', background: 'var(--bg-tertiary)', marginTop: 3 }}>
         {positives.map(c => (
           <div
             key={c.key}
@@ -47,7 +65,10 @@ export function ScoreBreakdown({ entry }) {
           fontSize: 11,
           color: 'var(--text-primary)',
         }}>
-          <div style={{ fontWeight: 600, marginBottom: 6 }}>Score Breakdown</div>
+          <div style={{ fontWeight: 600, marginBottom: 6 }}>Score Totals</div>
+          <div style={{ color: scoreColor(score), fontSize: 10, marginBottom: 8 }}>
+            {scoreToneLabel(score)} band after tiktoken/BPE rescore
+          </div>
           {positives.map(c => (
             <div key={`break-${c.key}`} style={{ marginBottom: 6 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 2 }}>
@@ -59,7 +80,9 @@ export function ScoreBreakdown({ entry }) {
               </div>
             </div>
           ))}
-          <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>Internal composite only.</div>
+          <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+            Additive v10 subtotals only; metric rows are not double-counted.
+          </div>
         </div>
       )}
     </div>

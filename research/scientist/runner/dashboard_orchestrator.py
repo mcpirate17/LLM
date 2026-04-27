@@ -18,6 +18,7 @@ from ..native_runner import compile_model_native_first as compile_model
 from ..json_utils import json_safe
 from ..notebook import LabNotebook
 from ...eval.fingerprint import BehavioralFingerprint
+from ...eval.cross_task_eval import evaluate_cross_task_robustness
 from ...eval.diagnostic_tasks import run_diagnostic_suite
 from ...eval.metrics import novelty_score
 from ...synthesis.serializer import graph_to_json
@@ -431,9 +432,21 @@ class _DashboardOrchestratorMixin:
         throughput,
     ) -> Optional[str]:
         source_result_id = str(program_metrics.get("source_result_id") or "").strip()
+        # ``intentional_independent_sample`` is set by score-stability
+        # reruns (program_detail_rerun / queue_rerun source contexts).
+        # When true, we MUST write a new row via record_program_result
+        # rather than patching the source row in place — the whole
+        # point of the rerun is to grow the per-fingerprint sample
+        # pool for mean / CV math.  The legacy merge path is preserved
+        # for the original "fix incomplete data" use case where the
+        # source row genuinely should be patched.
+        independent_sample = bool(
+            program_metrics.get("intentional_independent_sample")
+        )
         if (
             source_result_id
             and program_metrics.get("model_source") == "exact_graph_replay"
+            and not independent_sample
         ):
             nb.merge_program_result_patch(
                 result_id=source_result_id,
@@ -451,6 +464,13 @@ class _DashboardOrchestratorMixin:
                 **program_metrics,
             )
             return source_result_id
+        # ``intentional_independent_sample`` is metadata the persist
+        # path doesn't pass to the DB schema directly; strip it before
+        # **expanding into record_program_result.
+        clean_metrics = {
+            k: v for k, v in program_metrics.items()
+            if k != "intentional_independent_sample"
+        }
         return nb.record_program_result(
             experiment_id=exp_id,
             graph_fingerprint=graph.fingerprint(),
@@ -462,7 +482,7 @@ class _DashboardOrchestratorMixin:
             loss_ratio=loss_ratio,
             throughput_tok_s=throughput,
             **novelty_kwargs,
-            **program_metrics,
+            **clean_metrics,
         )
 
     def _persist_training_curve_if_missing(self, nb, rid, training_curve) -> None:
@@ -647,8 +667,47 @@ class _DashboardOrchestratorMixin:
                 json_safe(diag_result.to_dict())
             )
         except (ImportError, RuntimeError, ValueError) as e:
-            logger.debug(
+            logger.warning(
                 "Diagnostic suite failed for %s: %s", graph.fingerprint()[:10], e
+            )
+
+    def _run_cross_task_for_survivor(
+        self, graph, config, program_metrics: Dict[str, Any]
+    ) -> None:
+        """Cross-task robustness eval for S1 survivors. Populates
+        ``cross_task_score`` (v8/v10 understanding tier, 30pt weight).
+        Without this hook, screening rows historically had 100% NULL
+        cross_task_score because the eval only ran during validation."""
+        try:
+            ct_dev = torch.device(
+                str(config.device) if torch.cuda.is_available() else "cpu"
+            )
+
+            def _make_model():
+                return compile_model(
+                    [graph], vocab_size=config.vocab_size, max_seq_len=128
+                )
+
+            ct = evaluate_cross_task_robustness(
+                make_model_fn=_make_model,
+                vocab_size=config.vocab_size,
+                device=ct_dev,
+                n_train_steps=80,
+                batch_size=4,
+                seq_len=128,
+            )
+            cts = ct.get("cross_task_score")
+            if cts is not None:
+                program_metrics["cross_task_score"] = float(cts)
+            elif ct.get("error"):
+                logger.warning(
+                    "Cross-task eval no-score for %s: %s",
+                    graph.fingerprint()[:10],
+                    ct.get("error"),
+                )
+        except (ImportError, RuntimeError, ValueError) as e:
+            logger.warning(
+                "Cross-task eval failed for %s: %s", graph.fingerprint()[:10], e
             )
 
     def _emit_program_evaluated_event(
@@ -708,6 +767,7 @@ class _DashboardOrchestratorMixin:
             final_loss, s1_result, config, program_metrics
         )
         self._run_diagnostic_suite_for_survivor(graph, config, program_metrics)
+        self._run_cross_task_for_survivor(graph, config, program_metrics)
 
     def _record_orchestrator_result(self, jr, nb, exp_id, results, config):
         """Record a single result from the orchestrator into the notebook."""

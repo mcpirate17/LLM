@@ -14,6 +14,17 @@ Run from the parent directory (important):
 cd /home/tim/Projects/LLM
 ```
 
+## Current Operating State
+
+Reviewed on 2026-04-26.
+
+- Run `research` from `/home/tim/Projects/LLM`, not from inside this directory.
+- `lab_notebook.db` is the active SQLite notebook. Snapshot, WAL/SHM, corruption, malformed, recovered, and pre-repair files in this directory are intentionally retained until the database repair project is handled.
+- Generated caches/build outputs may have been cleaned. Recreate frontend deps with `npm install` in `research/dashboard` and native/runtime outputs with the relevant build commands.
+- `perf_artifacts/` has been condensed into handoff summaries where possible. Any live backfill log should be treated as active until its writer process exits.
+- `.continuous_paused` indicates the continuous loop was paused intentionally.
+- Cleanup context is recorded in `../CLEANUP_AUDIT_20260426.md` and `../DIRECTORY_USAGE_AUDIT_20260426.md`.
+
 ## Run Modes
 
 ```bash
@@ -81,15 +92,12 @@ Native runner telemetry endpoint:
 }
 ```
 
-Native runner cutover env controls:
+Native runner env controls:
 - `NATIVE_RUNNER_MAX_FALLBACK_RATE` (0..1): fail when fallback ratio exceeds threshold
 - `NATIVE_RUNNER_MAX_LEGACY_COMPILE_INVOCATIONS` (int): fail when legacy compile usage exceeds threshold
 - `NATIVE_RUNNER_REQUIRE_PARITY_PASS` (`1|0`): include sampled ABI parity as required cutover gate
 - `NATIVE_RUNNER_DISABLE_LEGACY_COMPILE` (`1|0`): hard gate that rejects compile when legacy compile path would be used (use for final cutover canaries)
 - `NATIVE_RUNNER_DISABLE_LEGACY_COMPILE_NATIVE_ENABLED` (`1|0`): rejects legacy compile whenever native-runner mode is enabled (`NATIVE_RUNNER_ENABLED=1`), while leaving disabled-mode fallback behavior unchanged
-
-Deprecated (compatibility window before Phase-D removal):
-- `NATIVE_RUNNER_LEGACY_ONLY` (`1|0`): deprecated emergency bypass for native logic.
 
 Strict native no-legacy canary lane (CI/verification):
 - `NATIVE_RUNNER_ENABLED=1`
@@ -102,9 +110,6 @@ Execution mode classification (capability payload):
 - `native_abi_model_only`
 - `native_legacy_fallback`
 - `legacy_only`
-
-Legacy removal rollout plan:
-- `research/CUTOVER_REMOVAL_PLAN.md`
 
 Cutover gate helper:
 - `python -m research.tools.check_cutover_gate --base-url http://127.0.0.1:5000`
@@ -164,8 +169,8 @@ Op-pair bigrams are tracked in `failure_signatures`. Combinations that fail >85%
 - `eval/` — sandbox, metrics, fingerprinting, pruning/perf helpers
 - `dashboard/` — React app (used by `--mode=dashboard`)
 - `search/`, `training/`, `tools/` — search/training/utilities
-- `../archive/research-tools/` — quarantined maintenance scripts that are not
-  part of the active `research` runtime or import surface
+- `perf_artifacts/` — compact handoff summaries and live performance/backfill logs
+- `runtime/native/` — C/Cython/Rust native runtime experiments and benchmarks
 
 ## Frontend Dev (optional)
 
@@ -205,3 +210,4 @@ npm run check:hook-order
 
 - `No module named research`: you ran from inside `research/`; move to `/home/tim/Projects/LLM`.
 - Designer fails to embed: verify `aria_designer/tools/dev_up.sh` and `dev_down.sh` exist and are executable.
+- Do not delete database sidecars or recovery files to fix space/noise. Back up and repair the notebook deliberately.

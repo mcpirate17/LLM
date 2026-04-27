@@ -6,7 +6,6 @@ export function AriaAdvice({ analysis }) {
 
   return (
     <div style={{
-      marginTop: 12,
       padding: 12,
       background: 'rgba(0, 212, 255, 0.05)',
       borderRadius: 8,

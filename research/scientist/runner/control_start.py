@@ -754,6 +754,7 @@ class _ControlStartMixin:
         hypothesis: Optional[str] = None,
         preregistration: Optional[Dict[str, Any]] = None,
         exploratory: bool = False,
+        workflow_mode: str = "scale_up",
     ) -> str:
         """Start scale-up validation of specific programs in a background thread."""
         if self.is_running:
@@ -764,15 +765,22 @@ class _ControlStartMixin:
 
         nb = self._make_notebook()
         source = "user_input" if hypothesis is not None else "runner_template"
+        is_confirmation = workflow_mode == "confirmation"
         if hypothesis is None:
-            hypothesis = (
-                f"Scale-up validation: testing whether {len(result_ids)} "
-                f"top performer(s) maintain their advantage at 10x training scale."
-            )
+            if is_confirmation:
+                hypothesis = (
+                    f"Champion confirmation: post-validation stability check for "
+                    f"{len(result_ids)} candidate(s) at extended training budget."
+                )
+            else:
+                hypothesis = (
+                    f"Scale-up validation: testing whether {len(result_ids)} "
+                    f"top performer(s) maintain their advantage at 10x training scale."
+                )
 
         exp_id = self._start_preregistered_experiment(
             nb=nb,
-            experiment_type="scale_up",
+            experiment_type="champion_confirmation" if is_confirmation else "scale_up",
             config=config.to_dict(),
             hypothesis=hypothesis,
             hypothesis_metadata=self._build_hypothesis_metadata(
@@ -783,7 +791,7 @@ class _ControlStartMixin:
             ),
             preregistration=preregistration,
             exploratory=exploratory,
-            created_by="start_scale_up",
+            created_by="start_champion_confirmation" if is_confirmation else "start_scale_up",
         )
         nb.close()
 
@@ -792,22 +800,27 @@ class _ControlStartMixin:
                 experiment_id=exp_id,
                 status="generating",
                 total_programs=len(result_ids),
-                aria_message=f"{self.aria.NAME}: Starting scale-up validation of {len(result_ids)} program(s)...",
+                aria_message=(
+                    f"{self.aria.NAME}: Starting champion confirmation of {len(result_ids)} candidate(s)..."
+                    if is_confirmation
+                    else f"{self.aria.NAME}: Starting scale-up validation of {len(result_ids)} program(s)..."
+                ),
             )
 
         self._emit_canonical_experiment_started(
             experiment_id=exp_id,
             hypothesis=hypothesis,
             config=config.to_dict(),
-            mode="scale_up",
+            mode="confirmation" if is_confirmation else "scale_up",
             result_ids=result_ids,
         )
         self._emit_event(
-            "scale_up_started",
+            "champion_confirmation_started" if is_confirmation else "scale_up_started",
             {
                 "experiment_id": exp_id,
                 "hypothesis": hypothesis,
                 "result_ids": result_ids,
+                "workflow_mode": "confirmation" if is_confirmation else "scale_up",
                 "config": {
                     "steps": config.scale_up_steps,
                     "batch_size": config.scale_up_batch_size,

@@ -1,6 +1,6 @@
 import { apiCall, postJson } from "../services/apiService";
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { scoreColor } from '../utils/format';
+import { SCORE_MAX, scoreColor } from '../utils/format';
 import { bestLoss, percentOfReference, TIER_ORDER, TIER_COLORS, TIER_LABELS } from '../utils/scoringEngine';
 import { compressionSummary } from './report/reportUtils';
 import { useAriaData } from '../hooks/useAriaData';
@@ -8,6 +8,7 @@ import { LEADERBOARD_PREFS_KEY, COLUMNS } from './leaderboard/leaderboardConfig'
 import { candidateEligibility, toRetentionPercent } from './leaderboard/leaderboardUtils';
 import { capabilityQualityRank, capabilityQualityStatus } from '../utils/discoveryStatus';
 import LeaderboardRow from './leaderboard/LeaderboardRow';
+import RerunAutoModal from './leaderboard/RerunAutoModal';
 import SortIndicator from './shared/SortIndicator';
 import useResizableColumns from './shared/useResizableColumns';
 
@@ -29,6 +30,7 @@ function Leaderboard({
   onSelectProgram,
   onInvestigate,
   onValidate,
+  onConfirm,
   highlightResultId,
   onHighlightClear,
   onQueueAdd,
@@ -77,8 +79,12 @@ function Leaderboard({
     return typeof leaderboardPrefs?.onlyRobust === 'boolean' ? leaderboardPrefs.onlyRobust : false;
   });
   const [visibleColumns, setVisibleColumns] = useState(() => {
-    const baseline = ['_score', 'tier', '_verified', '_rate', '_gap', 'architecture_family', '_composition', 'composite_score', 'screening_loss_ratio', 'screening_novelty', 'validation_loss_ratio', 'validation_baseline_ratio', '_actions'];
-    const saved = Array.isArray(leaderboardPrefs?.visibleColumns) ? leaderboardPrefs.visibleColumns : baseline;
+    const baseline = ['_score', 'tier', '_verified', '_rate', '_gap', 'architecture_family', '_composition', 'composite_score', 'screening_loss_ratio', 'validation_loss_ratio', 'induction_v2_investigation_auc', 'binding_v2_investigation_auc', 'hellaswag_acc', 'blimp_overall_accuracy', 'ar_auc', 'fp_jacobian_erf_density', 'fp_id_collapse_rate', 'fp_jacobian_erf_decay_slope', '_actions'];
+    const saved = Array.isArray(leaderboardPrefs?.visibleColumns) ? [...leaderboardPrefs.visibleColumns] : baseline;
+    for (const key of ['induction_v2_investigation_auc', 'binding_v2_investigation_auc', 'hellaswag_acc', 'blimp_overall_accuracy', 'ar_auc', 'fp_jacobian_erf_density', 'fp_id_collapse_rate', 'fp_jacobian_erf_decay_slope']) {
+      const actionIndex = saved.indexOf('_actions');
+      if (!saved.includes(key)) saved.splice(actionIndex >= 0 ? actionIndex : saved.length, 0, key);
+    }
     return saved;
   });
   const [capabilityFilter, setCapabilityFilter] = useState(() => {
@@ -87,6 +93,7 @@ function Leaderboard({
   });
   const [highlightId, setHighlightId] = useState(null);
   const [showColumnPicker, setShowColumnPicker] = useState(false);
+  const [showAutoRerunModal, setShowAutoRerunModal] = useState(false);
   const { columnWidths, onResizeStart } = useResizableColumns('aria_leaderboard_col_widths');
   const queuedSet = useMemo(() => new Set(queuedResultIds || []), [queuedResultIds]);
 
@@ -245,7 +252,8 @@ function Leaderboard({
         </span>
       </div>
       <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 14 }}>
-        Score {'>'} 100 = beats GPT-2 | Score = 100 = GPT-2 level | Score {'<'} 100 = below GPT-2
+        Canonical v10 score scale: colors use fixed 15/30/45/60/75/90% bands of the{' '}
+        {SCORE_MAX}-point rubric ceiling.
       </p>
 
       {/* Tier filter tabs */}
@@ -271,6 +279,14 @@ function Leaderboard({
         </button>
         <button onClick={fetchLeaderboard} className="refresh-btn" style={{ fontSize: 11 }}>
           Refresh
+        </button>
+        <button
+          onClick={() => setShowAutoRerunModal(true)}
+          className="refresh-btn"
+          style={{ fontSize: 11, borderColor: 'rgba(88, 166, 255, 0.45)', color: 'var(--accent-blue)' }}
+          title="Preview & queue score-stability reruns for fingerprints in striking distance of the top-N boundary"
+        >
+          Auto Reruns…
         </button>
         <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--text-secondary)' }}>
           <span style={{ color: 'var(--text-muted)' }}>Capability</span>
@@ -403,6 +419,7 @@ function Leaderboard({
                     onToggleExpand={(id) => setExpandedRowId(expandedRowId === id ? null : id)}
                     onInvestigate={handleInvestigate}
                     onValidate={handleValidate}
+                    onConfirm={onConfirm}
                     onDelete={handleDelete}
                     onOpenInDesigner={onOpenInDesigner}
                     onQueueAdd={onQueueAdd}
@@ -415,6 +432,10 @@ function Leaderboard({
           </table>
         </div>
       )}
+      <RerunAutoModal
+        open={showAutoRerunModal}
+        onClose={() => setShowAutoRerunModal(false)}
+      />
     </div>
   );
 }

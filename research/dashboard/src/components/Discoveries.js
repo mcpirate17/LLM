@@ -1,7 +1,7 @@
 import { apiCall, postJson } from "../services/apiService";
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { scoreColor } from '../utils/format';
-import { lossColor, noveltyColor, reliabilityColor } from '../utils/colors';
+import { SCORE_MAX, scoreColor, scoreGradient, scoreToneLabel } from '../utils/format';
+import { blimpColor, hellaswagColor, lossColor, noveltyColor, pplColor, probeAucColor } from '../utils/colors';
 import { useAriaData } from '../hooks/useAriaData';
 import { TIER_COLORS, TIER_LABELS, TIER_ORDER, bestLoss, percentOfReference } from '../utils/scoringEngine';
 import { DISCOVERY_TIER_FILTERS, capabilityQualityRank, capabilityQualityStatus, getDiscoveryDisplayStatus, matchesActiveTier } from '../utils/discoveryStatus';
@@ -97,34 +97,53 @@ function provenanceBucket(entry) {
   return 'untrusted';
 }
 
-function rowBackgrounds({ index, isHighlighted, isPinnedReference, isExpanded, tier }) {
+function rowBackgrounds({ index, isHighlighted, isPinnedReference, isExpanded, tier, score }) {
+  const numericScore = Number(score);
   if (isPinnedReference) {
     return {
-      base: 'rgba(188, 140, 255, 0.14)',
-      hover: 'rgba(188, 140, 255, 0.18)',
+      base: 'color-mix(in srgb, var(--table-row-bg) 88%, var(--score-reference))',
+      hover: 'color-mix(in srgb, var(--table-row-bg) 83%, var(--score-reference))',
     };
   }
   if (isHighlighted) {
     return {
-      base: 'rgba(88, 166, 255, 0.20)',
-      hover: 'rgba(88, 166, 255, 0.26)',
+      base: 'color-mix(in srgb, var(--table-row-bg) 80%, var(--accent-blue))',
+      hover: 'color-mix(in srgb, var(--table-row-bg) 74%, var(--accent-blue))',
     };
   }
   if (isExpanded) {
     return {
-      base: 'rgba(88, 166, 255, 0.12)',
-      hover: 'rgba(88, 166, 255, 0.16)',
+      base: 'color-mix(in srgb, var(--table-row-bg) 88%, var(--accent-blue))',
+      hover: 'color-mix(in srgb, var(--table-row-bg) 84%, var(--accent-blue))',
+    };
+  }
+  if (Number.isFinite(numericScore) && numericScore >= 245) {
+    return {
+      base: 'color-mix(in srgb, var(--table-row-bg) 91%, var(--score-champion))',
+      hover: 'color-mix(in srgb, var(--table-row-bg) 86%, var(--score-champion))',
+    };
+  }
+  if (Number.isFinite(numericScore) && numericScore >= 205) {
+    return {
+      base: 'color-mix(in srgb, var(--table-row-bg) 93%, var(--score-elite))',
+      hover: 'color-mix(in srgb, var(--table-row-bg) 88%, var(--score-elite))',
+    };
+  }
+  if (Number.isFinite(numericScore) && numericScore >= 150) {
+    return {
+      base: 'color-mix(in srgb, var(--table-row-bg) 94%, var(--score-reference))',
+      hover: 'color-mix(in srgb, var(--table-row-bg) 89%, var(--score-reference))',
     };
   }
   if (tier === 'breakthrough') {
     return {
-      base: 'rgba(63, 185, 80, 0.08)',
-      hover: 'rgba(63, 185, 80, 0.13)',
+      base: 'color-mix(in srgb, var(--table-row-bg) 92%, var(--score-elite))',
+      hover: 'color-mix(in srgb, var(--table-row-bg) 87%, var(--score-elite))',
     };
   }
   return {
-    base: index % 2 === 1 ? 'rgba(255, 255, 255, 0.012)' : 'transparent',
-    hover: 'rgba(88, 166, 255, 0.10)',
+    base: index % 2 === 1 ? 'var(--table-row-alt-bg)' : 'var(--table-row-bg)',
+    hover: 'var(--table-row-hover-bg)',
   };
 }
 
@@ -157,10 +176,45 @@ function finiteOrNull(value) {
   return Number.isFinite(num) ? num : null;
 }
 
+function metricDisplay(value, decimals = 3) {
+  const num = finiteOrNull(value);
+  if (num == null) return '--';
+  if (num !== 0 && Math.abs(num) < 0.0001) return num.toExponential(2);
+  return num.toFixed(decimals);
+}
+
+function fingerprintTone(key, value) {
+  const num = finiteOrNull(value);
+  if (num == null) return 'var(--text-muted)';
+  if (key === 'fp_jacobian_erf_density' && num >= 0.18) return 'var(--accent-green)';
+  if (key === 'fp_id_collapse_rate' && num >= 0.10) return 'var(--accent-green)';
+  if (key === 'fp_id_collapse_rate_normalized' && num >= 0.10) return 'var(--accent-green)';
+  if (key === 'fp_jacobian_erf_decay_slope' && num >= 0.20) return 'var(--accent-green)';
+  if (key === 'fp_icld_velocity' || key === 'fp_icld_delta_loss') return 'var(--text-muted)';
+  return 'var(--text-primary)';
+}
+
+function scoreCellTone(key, value) {
+  if (key === 'wikitext_perplexity') return pplColor(value);
+  if (key === 'hellaswag_acc') return hellaswagColor(value);
+  if (key === 'blimp_overall_accuracy') return blimpColor(value);
+  if (
+    key === 'induction_auc'
+    || key === 'induction_v2_investigation_auc'
+    || key === 'binding_auc'
+    || key === 'binding_v2_investigation_auc'
+    || key === 'binding_composite'
+    || key === 'ar_auc'
+  ) {
+    return probeAucColor(value);
+  }
+  return 'var(--text-primary)';
+}
+
 // ── Main Component ─────────────────────────────────────────────────
 
 const COLUMNS = [
-  { key: '_score', label: 'Discovery Score', width: 124, title: 'Canonical backend composite score used for ranking discoveries.' },
+  { key: '_score', label: 'Composite Score', width: 124, title: `Canonical post-BPE + understanding composite used for ranking discoveries. Color bands are fixed percentages of the ${SCORE_MAX}-point v10 rubric ceiling.` },
   { key: '_capability_quality', label: 'Capability', width: 134, title: 'Quality state separate from workflow stage: Capability-Qualified, Training-Only, Validation Pending, etc.' },
   { key: 'display_name', label: 'Architecture', width: 240, title: 'Human-readable name or fingerprint of the model topology.' },
   { key: 'architecture_family', label: 'Family', width: 120, title: 'The architectural category (e.g., Attention, SSM, Hybrid).' },
@@ -180,6 +234,20 @@ const COLUMNS = [
   { key: 'robustness_long_ctx_retrieval_aggregate', label: 'LC-Retr', width: 82, title: 'Aggregate retrieval score across long-context benchmarks.' },
   { key: 'max_viable_seq_len', label: 'MaxLen', width: 86, title: 'Maximum viable sequence length from long-context scaling sweep.' },
   { key: 'jacobian_spectral_norm', label: 'Spectral', width: 82, title: 'Jacobian Spectral Norm: stability of gradient propagation (lower is better).' },
+  { key: 'fp_jacobian_effective_rank', label: 'JRank', width: 78, title: 'Jacobian effective rank from the fingerprint pass.' },
+  { key: 'fp_sensitivity_uniformity', label: 'SensUnif', width: 86, title: 'Sensitivity uniformity from fingerprinting.' },
+  { key: 'fp_jacobian_erf_density', label: 'ERF Dens', width: 88, title: 'Effective receptive-field density. Strongest observed binding v2 predictor.' },
+  { key: 'fp_id_collapse_rate', label: 'ID Coll', width: 82, title: 'Intrinsic-dimension collapse rate. Strong binding v2 signal but sparse.' },
+  { key: 'fp_id_collapse_rate_normalized', label: 'ID CollN', width: 84, title: 'Normalized intrinsic-dimension collapse rate.' },
+  { key: 'fp_jacobian_erf_decay_slope', label: 'ERF Decay', width: 88, title: 'ERF influence decay slope. Moderate binding and induction v2 signal.' },
+  { key: 'fp_jacobian_erf_first_norm', label: 'ERF First', width: 84, title: 'ERF norm at the first input position.' },
+  { key: 'fp_jacobian_erf_last_norm', label: 'ERF Last', width: 84, title: 'ERF norm at the last input position.' },
+  { key: 'fp_logit_margin_velocity', label: 'Margin Vel', width: 88, title: 'Logit-margin velocity. Weak positive capability signal.' },
+  { key: 'fp_logit_margin_delta', label: 'Margin Δ', width: 84, title: 'Total logit-margin change during fingerprinting.' },
+  { key: 'fp_jacobian_erf_variance_log', label: 'ERF VarLog', width: 92, title: 'Log-scaled ERF variance.' },
+  { key: 'fp_jacobian_spectral_norm_log', label: 'SpecLog', width: 82, title: 'Log-scaled Jacobian spectral norm.' },
+  { key: 'fp_icld_velocity', label: 'ICLD Vel', width: 82, title: 'ICLD velocity. Empirically near-noise for capability.' },
+  { key: 'fp_icld_delta_loss', label: 'ICLD ΔLoss', width: 92, title: 'ICLD early-to-late loss delta.' },
   { key: 'init_sensitivity_std', label: 'InitStd', width: 82, title: 'Sensitivity to weight initialization (lower means more predictable).' },
   { key: 'wikitext_perplexity', label: 'WikiPPL', width: 90, title: 'WikiText-103 validation perplexity (lower is better).' },
   { key: 'hellaswag_acc', label: 'HellaSwag', width: 90, title: 'HellaSwag accuracy (commonsense reasoning).' },
@@ -209,8 +277,13 @@ const CORE_VISIBLE_COLUMNS = [
   'discovery_loss_ratio',
   'validation_loss_ratio',
   '_best_loss',
-  '_novelty',
-  'jacobian_spectral_norm',
+  'induction_v2_investigation_auc',
+  'binding_v2_investigation_auc',
+  'hellaswag_acc',
+  'blimp_overall_accuracy',
+  'ar_auc',
+  'fp_jacobian_erf_density',
+  'fp_id_collapse_rate',
   'tier',
   '_details',
   '_compare',
@@ -226,6 +299,16 @@ const RESEARCH_VISIBLE_COLUMNS = [
   'robustness_long_ctx_score',
   'max_viable_seq_len',
   'init_sensitivity_std',
+];
+
+const DEFAULT_DISCOVERY_COLUMN_ADDONS = [
+  'induction_v2_investigation_auc',
+  'binding_v2_investigation_auc',
+  'hellaswag_acc',
+  'blimp_overall_accuracy',
+  'ar_auc',
+  'fp_jacobian_erf_density',
+  'fp_id_collapse_rate',
 ];
 
 const PROBES_VISIBLE_COLUMNS = [
@@ -252,6 +335,25 @@ const PROBES_VISIBLE_COLUMNS = [
   '_designer',
 ];
 
+const ARCHITECTURE_VISIBLE_COLUMNS = [
+  '_score',
+  'display_name',
+  'architecture_family',
+  'induction_v2_investigation_auc',
+  'binding_v2_investigation_auc',
+  'fp_jacobian_erf_density',
+  'fp_id_collapse_rate',
+  'fp_id_collapse_rate_normalized',
+  'fp_jacobian_erf_decay_slope',
+  'fp_logit_margin_velocity',
+  'fp_jacobian_effective_rank',
+  'fp_sensitivity_uniformity',
+  'fp_icld_velocity',
+  'tier',
+  '_details',
+  '_designer',
+];
+
 function Discoveries({
   onSelectProgram,
   onAddToComparison,
@@ -259,6 +361,7 @@ function Discoveries({
   onPromoteScreening,
   onInvestigate,
   onValidate,
+  onConfirm,
   highlightResultId,
   onHighlightClear,
   onQueueAdd,
@@ -340,10 +443,18 @@ function Discoveries({
         ? prefs.visibleColumns.filter((key) => validKeys.has(key))
         : null;
 
-      // Respect saved user choices exactly. Only inject long-context defaults
-      // for first-time users with no saved column preferences.
       if (saved && saved.length > 0) {
-        return saved;
+        const next = [...saved];
+        const insertAt = Math.max(
+          next.findIndex((key) => key === 'tier'),
+          0
+        );
+        for (const key of DEFAULT_DISCOVERY_COLUMN_ADDONS) {
+          if (validKeys.has(key) && !next.includes(key)) {
+            next.splice(insertAt, 0, key);
+          }
+        }
+        return next;
       }
 
       const defaults = [...COLUMNS.map(c => c.key)];
@@ -794,7 +905,7 @@ function Discoveries({
       </div>
 
       {showChart && filtered.length > 0 && (
-        <FingerprintLeaderboardChart entries={filtered} />
+        <FingerprintLeaderboardChart entries={filtered} scoreScale={data?.score_scale} />
       )}
 
       {/* Tier filter tabs */}
@@ -1013,6 +1124,13 @@ function Discoveries({
             Probes
           </button>
           <button
+            onClick={() => applyColumnPreset(ARCHITECTURE_VISIBLE_COLUMNS)}
+            style={presetButtonStyle(hasExactVisibleColumns(ARCHITECTURE_VISIBLE_COLUMNS))}
+            title="Show fingerprint architecture metrics from the recent backfill"
+          >
+            Architecture
+          </button>
+          <button
             onClick={() => applyColumnPreset(COLUMNS.map((col) => col.key))}
             style={presetButtonStyle(hasExactVisibleColumns(COLUMNS.map((col) => col.key)))}
             title="Show all available columns"
@@ -1140,27 +1258,45 @@ function Discoveries({
       {showReferences && references.length > 0 && (
         <div style={{
           marginBottom: 14, padding: '10px 14px',
-          background: 'rgba(188, 140, 255, 0.06)',
-          border: '1px solid rgba(188, 140, 255, 0.25)',
-          borderRadius: 6,
+          background: 'linear-gradient(135deg, rgba(45, 212, 191, 0.08), rgba(255, 209, 102, 0.06))',
+          border: '1px solid rgba(227, 179, 65, 0.28)',
+          borderRadius: 8,
         }}>
-          <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--accent-purple)', marginBottom: 8 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--score-elite)', marginBottom: 8, textTransform: 'uppercase' }}>
             Reference Baselines
           </div>
           <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 10 }}>
-            Baselines stay visible independently of discovery stage filters.
+            Post-BPE anchors for the champion scale. These rows stay visible independently of discovery stage filters.
           </div>
           <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
             {references.map(ref => (
               <div key={ref.entry_id || ref.result_id} style={{
                 padding: '6px 12px', borderRadius: 5,
-                background: 'rgba(188, 140, 255, 0.10)',
-                border: '1px solid rgba(188, 140, 255, 0.18)',
+                background: 'rgba(13, 17, 23, 0.42)',
+                border: `1px solid ${scoreColor(ref._score)}`,
                 fontSize: 11, lineHeight: 1.5, minWidth: 150,
               }}>
-                <div style={{ fontWeight: 600, color: 'var(--text-primary)' }}>
-                  {ref.reference_name || ref.display_name || ref.architecture_desc || 'Reference'}
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'baseline' }}>
+                  <div style={{ fontWeight: 700, color: 'var(--text-primary)' }}>
+                    {ref.reference_name || ref.display_name || ref.architecture_desc || 'Reference'}
+                  </div>
+                  {ref._score != null && (
+                    <div style={{ color: scoreColor(ref._score), fontWeight: 700, fontFamily: 'monospace' }}>
+                      {Number(ref._score).toFixed(1)}
+                    </div>
+                  )}
                 </div>
+                {ref._score != null && (
+                  <div className="champion-strip" title={scoreToneLabel(ref._score)} style={{ margin: '4px 0 5px' }}>
+                    <div
+                      className="champion-strip-fill"
+                      style={{
+                        width: `${Math.max(4, Math.min(100, (Number(ref._score) / 320) * 100))}%`,
+                        background: scoreGradient(ref._score),
+                      }}
+                    />
+                  </div>
+                )}
                 <div style={{ color: 'var(--text-muted)' }}>
                   {ref.architecture_family || '--'}
                   {ref._best_loss != null && <span style={{ marginLeft: 8 }}>Loss: {ref._best_loss.toFixed(4)}</span>}
@@ -1289,6 +1425,7 @@ function Discoveries({
                     onPromoteScreening={onPromoteScreening}
                     onInvestigate={onInvestigate}
                     onValidate={onValidate}
+                    onConfirm={onConfirm}
                     onQueueAdd={onQueueAdd}
                     onQueueRemove={onQueueRemove}
                     statusDrafts={statusDrafts}
@@ -1310,6 +1447,7 @@ function Discoveries({
             onPromoteScreening={onPromoteScreening}
             onInvestigate={onInvestigate}
             onValidate={onValidate}
+            onConfirm={onConfirm}
             onQueueAdd={onQueueAdd}
             onQueueRemove={onQueueRemove}
             onDelete={handleDelete}
@@ -1392,6 +1530,7 @@ const DiscoveryRow = React.memo(function DiscoveryRow({
   onPromoteScreening,
   onInvestigate,
   onValidate,
+  onConfirm,
   onQueueAdd,
   onQueueRemove,
   statusDrafts,
@@ -1406,6 +1545,7 @@ const DiscoveryRow = React.memo(function DiscoveryRow({
     isPinnedReference,
     isExpanded,
     tier: entry.tier,
+    score: entry._score ?? entry.composite_score,
   });
 
   return (
@@ -1533,26 +1673,41 @@ const DiscoveryRow = React.memo(function DiscoveryRow({
             case 'jacobian_spectral_norm':
               const specVal = finitePositiveOrNull(entry.jacobian_spectral_norm ?? entry.fp_jacobian_spectral_norm);
               return <td key={col.key} style={{ ...tdStyle, textAlign: 'right', fontFamily: 'monospace' }}>{specVal != null ? Number(specVal).toFixed(4) : '--'}</td>;
+            case 'fp_jacobian_effective_rank':
+            case 'fp_sensitivity_uniformity':
+            case 'fp_jacobian_erf_density':
+            case 'fp_id_collapse_rate':
+            case 'fp_id_collapse_rate_normalized':
+            case 'fp_jacobian_erf_decay_slope':
+            case 'fp_jacobian_erf_first_norm':
+            case 'fp_jacobian_erf_last_norm':
+            case 'fp_logit_margin_velocity':
+            case 'fp_logit_margin_delta':
+            case 'fp_jacobian_erf_variance_log':
+            case 'fp_jacobian_spectral_norm_log':
+            case 'fp_icld_velocity':
+            case 'fp_icld_delta_loss':
+              return (
+                <td key={col.key} style={{ ...tdStyle, textAlign: 'right', fontFamily: 'monospace', color: fingerprintTone(col.key, entry[col.key]) }}>
+                  {metricDisplay(entry[col.key], 3)}
+                </td>
+              );
             case 'init_sensitivity_std':
               return <td key={col.key} style={{ ...tdStyle, textAlign: 'right', fontFamily: 'monospace' }}>{entry.init_sensitivity_std != null ? Number(entry.init_sensitivity_std).toFixed(4) : '--'}</td>;
             case 'wikitext_perplexity':
-              return <td key={col.key} style={{ ...tdStyle, textAlign: 'right', fontFamily: 'monospace' }}>{entry.wikitext_perplexity != null ? Number(entry.wikitext_perplexity).toFixed(2) : '--'}</td>;
             case 'hellaswag_acc':
-              return <td key={col.key} style={{ ...tdStyle, textAlign: 'right', fontFamily: 'monospace' }}>{entry.hellaswag_acc != null ? Number(entry.hellaswag_acc).toFixed(3) : '--'}</td>;
             case 'induction_auc':
-              return <td key={col.key} style={{ ...tdStyle, textAlign: 'right', fontFamily: 'monospace' }}>{entry.induction_auc != null ? Number(entry.induction_auc).toFixed(3) : '--'}</td>;
             case 'induction_v2_investigation_auc':
-              return <td key={col.key} style={{ ...tdStyle, textAlign: 'right', fontFamily: 'monospace' }}>{entry.induction_v2_investigation_auc != null ? Number(entry.induction_v2_investigation_auc).toFixed(3) : '--'}</td>;
             case 'binding_auc':
-              return <td key={col.key} style={{ ...tdStyle, textAlign: 'right', fontFamily: 'monospace' }}>{entry.binding_auc != null ? Number(entry.binding_auc).toFixed(3) : '--'}</td>;
             case 'binding_v2_investigation_auc':
-              return <td key={col.key} style={{ ...tdStyle, textAlign: 'right', fontFamily: 'monospace' }}>{entry.binding_v2_investigation_auc != null ? Number(entry.binding_v2_investigation_auc).toFixed(3) : '--'}</td>;
             case 'binding_composite':
-              return <td key={col.key} style={{ ...tdStyle, textAlign: 'right', fontFamily: 'monospace' }}>{entry.binding_composite != null ? Number(entry.binding_composite).toFixed(3) : '--'}</td>;
             case 'ar_auc':
-              return <td key={col.key} style={{ ...tdStyle, textAlign: 'right', fontFamily: 'monospace' }}>{entry.ar_auc != null ? Number(entry.ar_auc).toFixed(3) : '--'}</td>;
             case 'blimp_overall_accuracy':
-              return <td key={col.key} style={{ ...tdStyle, textAlign: 'right', fontFamily: 'monospace' }}>{entry.blimp_overall_accuracy != null ? Number(entry.blimp_overall_accuracy).toFixed(3) : '--'}</td>;
+              return (
+                <td key={col.key} style={{ ...tdStyle, textAlign: 'right', fontFamily: 'monospace', color: scoreCellTone(col.key, entry[col.key]), fontWeight: 600 }}>
+                  {entry[col.key] != null ? Number(entry[col.key]).toFixed(col.key === 'wikitext_perplexity' ? 2 : 3) : '--'}
+                </td>
+              );
             case 'ncd_score':
               return <td key={col.key} style={{ ...tdStyle, textAlign: 'right', fontFamily: 'monospace' }}>{entry.ncd_score != null ? Number(entry.ncd_score).toFixed(3) : '--'}</td>;
             case 'rapid_screening_passed':
@@ -1576,20 +1731,38 @@ const DiscoveryRow = React.memo(function DiscoveryRow({
             case '_details':
               return (
                 <td key={col.key} style={actionCellStyle} onClick={e => e.stopPropagation()}>
-                  <button
-                    onClick={() => {
-                      if (entry.result_id) onSelectProgram?.(entry.result_id);
-                    }}
-                    style={{
-                      ...actionBtnStyle,
-                      borderColor: 'var(--accent-blue)',
-                      color: 'var(--accent-blue)',
-                      background: 'transparent',
-                    }}
-                    title={entry.result_id ? 'Open detailed fingerprint side panel' : 'Detail view unavailable: missing result ID'}
-                  >
-                    View
-                  </button>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <button
+                      onClick={() => {
+                        if (entry.result_id) onSelectProgram?.(entry.result_id);
+                      }}
+                      style={{
+                        ...actionBtnStyle,
+                        borderColor: 'var(--accent-blue)',
+                        color: 'var(--accent-blue)',
+                        background: 'transparent',
+                      }}
+                      title={entry.result_id ? 'Open detailed fingerprint side panel' : 'Detail view unavailable: missing result ID'}
+                    >
+                      View
+                    </button>
+                    {eligibility?.confirmationEligible && (
+                      <button
+                        onClick={() => {
+                          if (entry.result_id) onConfirm?.([entry.result_id]);
+                        }}
+                        style={{
+                          ...actionBtnStyle,
+                          borderColor: 'rgba(255, 184, 108, 0.55)',
+                          color: 'var(--score-elite)',
+                          background: 'rgba(255, 184, 108, 0.10)',
+                        }}
+                        title="Run champion confirmation to test score stability under extended post-validation training"
+                      >
+                        Confirm
+                      </button>
+                    )}
+                  </div>
                 </td>
               );
             case '_compare':

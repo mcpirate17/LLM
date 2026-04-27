@@ -28,10 +28,11 @@ describe('candidateEligibility', () => {
     });
     expect(eligibility.investigationEligible).toBe(false);
     expect(eligibility.validationEligible).toBe(true);
+    expect(eligibility.confirmationEligible).toBe(true);
     expect(eligibility.queueReason).toBe(null);
   });
 
-  test('capability-qualified validation rows are treated as already promoted', () => {
+  test('capability-qualified validation rows move to champion confirmation', () => {
     const eligibility = candidateEligibility({
       tier: 'validation',
       validation_passed: 1,
@@ -41,10 +42,11 @@ describe('candidateEligibility', () => {
     });
     expect(eligibility.investigationEligible).toBe(false);
     expect(eligibility.validationEligible).toBe(false);
-    expect(eligibility.queueReason).toBe('already_promoted');
+    expect(eligibility.confirmationEligible).toBe(true);
+    expect(eligibility.queueReason).toBe(null);
   });
 
-  test('breakthrough rows are not validation-eligible even if capability badge is present', () => {
+  test('breakthrough rows are confirmation-eligible even if validation is complete', () => {
     const eligibility = candidateEligibility({
       tier: 'breakthrough',
       validation_passed: 1,
@@ -52,6 +54,18 @@ describe('candidateEligibility', () => {
     });
     expect(eligibility.investigationEligible).toBe(false);
     expect(eligibility.validationEligible).toBe(false);
-    expect(eligibility.queueReason).toBe('already_promoted');
+    expect(eligibility.confirmationEligible).toBe(true);
+    expect(eligibility.queueReason).toBe(null);
+  });
+
+  test('failed validation rows do not enter confirmation', () => {
+    const eligibility = candidateEligibility({
+      tier: 'validation',
+      validation_passed: 0,
+      validation_loss_ratio: 1.22,
+    });
+    expect(eligibility.confirmationEligible).toBe(false);
+    expect(eligibility.queueEligible).toBe(true);
+    expect(eligibility.queueReason).toBe(null);
   });
 });

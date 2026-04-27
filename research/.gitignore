@@ -30,8 +30,20 @@ monitor_wake_prompt.md
 # Runtime artifacts
 *.db
 *.db.bak
+*.db.bak_*
+*.db.snap_*
+*.db.corrupt_*
+*.db.malformed_*
+*.db.pre_*
+*.db.recover_*
+*.db.recovered*
+*.db?mode=*
 *.db-wal
 *.db-shm
+*.db-journal
+*.sqlite
+*.writer-lock
+.gpu-lock
 *.log
 :memory:*
 *:memory:*

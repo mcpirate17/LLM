@@ -6,6 +6,11 @@ import {
   parseErrorPayload,
 } from './dashboardActionUtils';
 
+const CONFIRMATION_START_PAYLOAD = {
+  preflight_override: true,
+  enforce_preflight: true,
+};
+
 export default function useProgressionActions({
   eligibilityByResultId,
   emitAutoRepairStarted,
@@ -31,7 +36,13 @@ export default function useProgressionActions({
 
     const startForced = async (ids) => {
       try {
-        const res = await postJson('/api/experiments/start', { mode, result_ids: ids, force: true, override_ineligible: true });
+        const res = await postJson('/api/experiments/start', {
+          mode,
+          result_ids: ids,
+          force: true,
+          override_ineligible: true,
+          ...(mode === 'confirmation' ? CONFIRMATION_START_PAYLOAD : {}),
+        });
         if (!res.ok) {
           const err = await parseErrorPayload(res, `Failed to start forced ${mode}`);
           setActionError(err.error || `Failed to start forced ${mode}`);
@@ -68,7 +79,11 @@ export default function useProgressionActions({
     }
 
     try {
-      const res = await postJson('/api/experiments/start', { mode, result_ids: eligibility.eligibleIds });
+      const res = await postJson('/api/experiments/start', {
+        mode,
+        result_ids: eligibility.eligibleIds,
+        ...(mode === 'confirmation' ? CONFIRMATION_START_PAYLOAD : {}),
+      });
       if (!res.ok) {
         const err = await parseErrorPayload(res, `Failed to start ${mode}`);
         const startedRepair = emitAutoRepairStarted(err, `start_${mode}`);
@@ -89,6 +104,7 @@ export default function useProgressionActions({
 
   const handleInvestigate = useCallback((resultIds) => startProgression('investigation', resultIds), [startProgression]);
   const handleValidate = useCallback((resultIds) => startProgression('validation', resultIds), [startProgression]);
+  const handleConfirm = useCallback((resultIds) => startProgression('confirmation', resultIds), [startProgression]);
 
   const handleRescreen = useCallback(async (resultId) => {
     if (!resultId) {
@@ -145,7 +161,7 @@ export default function useProgressionActions({
     const templateMode = payload?.mode;
     let nextPayload = payload;
     let eligibilityMessage = null;
-    if (templateMode === 'investigation' || templateMode === 'validation') {
+    if (templateMode === 'investigation' || templateMode === 'validation' || templateMode === 'confirmation') {
       const rawResultIds = Array.isArray(payload.result_ids)
         ? payload.result_ids
         : payload.result_id
@@ -207,6 +223,19 @@ export default function useProgressionActions({
     handleValidate(overrideIneligibleAlways ? queuedIds : eligibleIds);
   }, [eligibilityByResultId, handleValidate, investigationQueue, overrideIneligibleAlways, setActionError]);
 
+  const handleQueueConfirm = useCallback(() => {
+    if (!investigationQueue.length) return;
+    const queuedIds = investigationQueue
+      .filter((item) => item.intent === 'confirmation')
+      .map((item) => item.resultId);
+    const eligibleIds = queuedIds.filter((resultId) => eligibilityByResultId[resultId]?.confirmationEligible);
+    if (!eligibleIds.length && !overrideIneligibleAlways) {
+      setActionError('No queued confirmation candidates are currently eligible.');
+      return;
+    }
+    handleConfirm(overrideIneligibleAlways ? queuedIds : eligibleIds);
+  }, [eligibilityByResultId, handleConfirm, investigationQueue, overrideIneligibleAlways, setActionError]);
+
   const handleActionComplete = useCallback(() => {
     fetchDashboard();
   }, [fetchDashboard]);
@@ -218,8 +247,10 @@ export default function useProgressionActions({
 
   return {
     handleActionComplete,
+    handleConfirm,
     handleInvestigate,
     handlePromoteScreening,
+    handleQueueConfirm,
     handleQueueInvestigate,
     handleQueueValidate,
     handleRescreen,

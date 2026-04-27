@@ -76,7 +76,7 @@ class IRExecutorV2(nn.Module):
     def _effective_setup_reason(self) -> str | None:
         if self._subgraph_dispatcher is not None:
             return self._native_setup_reason
-        if self._native_chain_segment_slots:
+        if any(slot is not None for slot in self._native_chain_segment_slots):
             return "partial_native_segments"
         if self._native_forward_wrapper is not None:
             return "per_op_native_wrapper"

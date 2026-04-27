@@ -176,6 +176,16 @@ export function ProvenancePanel({
 
 export function DecisionPacketPanel({ decisionPacket, decisionPacketError, decisionPacketOpen, setDecisionPacketOpen }) {
   if (!decisionPacket && !decisionPacketError) return null;
+  const evidenceCount = Array.isArray(decisionPacket?.evidence_flags)
+    ? decisionPacket.evidence_flags.length
+    : 0;
+  const phases = decisionPacket?.outcomes && typeof decisionPacket.outcomes === 'object'
+    ? Object.values(decisionPacket.outcomes).filter(Boolean)
+    : [];
+  const passedPhases = phases.filter(phase => phase?.passed).length;
+  const recommendation = decisionPacket?.recommendation || {};
+  const confidence = Number(recommendation.confidence);
+  const confidenceText = Number.isFinite(confidence) ? `${Math.round(confidence * 100)}%` : '--';
   return (
     <>
       {decisionPacketError && (
@@ -197,28 +207,45 @@ export function DecisionPacketPanel({ decisionPacket, decisionPacketError, decis
             </span>
           </div>
           {decisionPacketOpen && (
-            <div style={{ padding: '8px 12px 12px', display: 'flex', flexDirection: 'column', gap: 12 }}>
-              <div>
+            <div style={{ padding: '10px 12px 12px', display: 'flex', flexDirection: 'column', gap: 12 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 8 }}>
+                {[
+                  { label: 'Evidence', value: evidenceCount, color: evidenceCount > 0 ? 'var(--accent-green)' : 'var(--text-muted)' },
+                  { label: 'Passed Phases', value: `${passedPhases}/${phases.length || 0}`, color: passedPhases === phases.length && phases.length > 0 ? 'var(--accent-green)' : 'var(--accent-yellow)' },
+                  { label: 'Confidence', value: confidenceText, color: Number.isFinite(confidence) && confidence >= 0.7 ? 'var(--accent-green)' : 'var(--accent-yellow)' },
+                  { label: 'Recommendation', value: recommendation.title || recommendation.decision || '--', color: 'var(--accent-purple)' },
+                ].map(item => (
+                  <div key={item.label} style={{ minWidth: 0, padding: 8, border: '1px solid var(--border)', borderRadius: 6, background: 'rgba(255,255,255,0.02)' }}>
+                    <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 4 }}>{item.label}</div>
+                    <div style={{ fontSize: 14, color: item.color, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={String(item.value)}>
+                      {item.value}
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 12, alignItems: 'start' }}>
+              <div style={{ minWidth: 0 }}>
                 <div style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase', marginBottom: 6 }}>Evidence Flags</div>
                 <EvidenceFlagChips flags={decisionPacket.evidence_flags} />
               </div>
-              <div>
+              <div style={{ minWidth: 0 }}>
                 <div style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase', marginBottom: 6 }}>Hypothesis Lineage</div>
                 <HypothesisLineage chain={decisionPacket.hypothesis_chain} />
               </div>
-              <div>
+              <div style={{ minWidth: 0 }}>
                 <div style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase', marginBottom: 6 }}>Outcomes by Phase</div>
                 <OutcomesByPhase outcomes={decisionPacket.outcomes} />
               </div>
               {(decisionPacket.failure_context?.stage_at_death || decisionPacket.failure_context?.error_type) && (
-                <div>
+                <div style={{ minWidth: 0 }}>
                   <div style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase', marginBottom: 6 }}>Failure Context</div>
                   <FailureContext context={decisionPacket.failure_context} />
                 </div>
               )}
-              <div>
+              <div style={{ minWidth: 0 }}>
                 <div style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase', marginBottom: 6 }}>Recommendation</div>
                 <RecommendationCard recommendation={decisionPacket.recommendation} />
+              </div>
               </div>
             </div>
           )}
