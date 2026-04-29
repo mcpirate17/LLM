@@ -261,7 +261,18 @@ def test_training_step_error_reports_nonfinite_and_zero_grad():
 
 def test_build_training_step_event_includes_optional_metrics():
     event = _build_training_step_event(
-        {"exp_id": "exp-1", "phase": "screening"},
+        {
+            "exp_id": "exp-1",
+            "phase": "screening",
+            "source_result_id": "rid-1",
+            "candidate_index": 2,
+            "total_candidates": 5,
+            "training_program_index": 3,
+            "total_training_programs": 4,
+            "training_program_label": "tp-main",
+            "training_seed": 17,
+            "run_kind": "investigation",
+        },
         step=20,
         total_steps=100,
         loss_val=1.2345678,
@@ -275,6 +286,14 @@ def test_build_training_step_event_includes_optional_metrics():
         "loss": 1.234568,
         "total_steps": 100,
         "phase": "screening",
+        "run_kind": "investigation",
+        "source_result_id": "rid-1",
+        "candidate_index": 2,
+        "total_candidates": 5,
+        "training_program_index": 3,
+        "total_training_programs": 4,
+        "training_program_label": "tp-main",
+        "training_seed": 17,
         "routing_aux_loss": 0.001234,
         "grad_norm": 0.4322,
     }

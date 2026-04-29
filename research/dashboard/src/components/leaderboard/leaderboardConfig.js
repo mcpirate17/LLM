@@ -4,7 +4,7 @@ export const COLUMNS = [
   {
     key: '_score',
     label: 'Score',
-    title: 'Canonical v10 score out of 855 possible points. Colors use fixed 15/30/45/60/75/90% rubric bands.',
+    title: 'Canonical v12 score out of 850 possible points. Colors use fixed 15/30/45/60/75/90% rubric bands.',
   },
   {
     key: '_capability_quality',
@@ -21,7 +21,7 @@ export const COLUMNS = [
   { key: 'architecture_desc', label: 'Description', title: 'Human-readable summary or reference name.' },
   { key: '_composition', label: 'Composition', title: 'Architectural blocks and templates used to construct this layer.' },
   { key: '_vs_reference', label: 'vs Ref Loss', title: 'Percentage of the loss achieved by the nearest frontier baseline (lower is better).' },
-  { key: 'composite_score', label: 'Composite', title: 'Canonical v10 composite out of 855 possible points. Performance + convergence + efficiency + novelty + robustness + capability + understanding.' },
+  { key: 'composite_score', label: 'Composite', title: 'Canonical v12 composite out of 850 possible points. Performance + convergence + efficiency + novelty + robustness + capability + understanding.' },
   { key: 'discovery_loss_ratio', label: 'D.Loss', title: 'Loss ratio on random tokens (discovery phase).' },
   { key: 'validation_loss_ratio', label: 'V.Loss', title: 'Validation loss ratio on micro-corpus (Stage 1 or higher).' },
   { key: 'moe_routing_efficiency', label: 'MoE Eff', title: 'Mixture of Experts routing efficiency (higher is more selective).' },

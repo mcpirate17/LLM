@@ -731,9 +731,19 @@ class _ContinuousInvestigationMixin:
 
             resume_state = ckpt.load_phase(exp_id, "investigation", prog_idx, tp_i)
             base_ctx = {"exp_id": exp_id, "phase": "investigation"}
+            train_seed = self._stable_seed(
+                exp_id, source_result_id, tp_i, "investigation"
+            )
             self._live_training_context = {
                 **base_ctx,
                 "source_result_id": source_result_id,
+                "candidate_index": prog_idx + 1,
+                "total_candidates": len(result_ids),
+                "training_program_index": tp_i + 1,
+                "total_training_programs": len(training_programs),
+                "training_program_label": tp.name,
+                "training_seed": train_seed,
+                "run_kind": "investigation",
                 "checkpoint_manager": ckpt,
                 "checkpoint_phase": "investigation",
                 "checkpoint_candidate_idx": prog_idx,
@@ -753,9 +763,7 @@ class _ContinuousInvestigationMixin:
                     tp,
                     inv_config,
                     dev,
-                    seed=self._stable_seed(
-                        exp_id, source_result_id, tp_i, "investigation"
-                    ),
+                    seed=train_seed,
                 )
             finally:
                 self._live_training_context = base_ctx
@@ -970,7 +978,7 @@ class _ContinuousInvestigationMixin:
         # Submit benchmark evals to background thread so the
         # investigation loop can proceed to the next candidate.
         if n_passed > 0:
-            _submit_benchmark_eval(
+            future = _submit_benchmark_eval(
                 nb=nb,
                 exp_id=exp_id,
                 source_result_id=source_result_id,
@@ -990,8 +998,14 @@ class _ContinuousInvestigationMixin:
                 fingerprint_incomplete=_fp_incomplete,
                 stop_event=self._stop_event,
             )
+            self._register_investigation_eval_future(
+                exp_id=exp_id,
+                future=future,
+                kind="benchmark",
+                source_result_id=source_result_id,
+            )
         else:
-            _submit_v2_probe_eval(
+            future = _submit_v2_probe_eval(
                 nb=nb,
                 exp_id=exp_id,
                 source_result_id=source_result_id,
@@ -1010,6 +1024,12 @@ class _ContinuousInvestigationMixin:
                 cached_json_load=self._cached_json_load,
                 stop_event=self._stop_event,
                 fingerprint_incomplete=_fp_incomplete,
+            )
+            self._register_investigation_eval_future(
+                exp_id=exp_id,
+                future=future,
+                kind="v2-probe",
+                source_result_id=source_result_id,
             )
 
         try:
@@ -1354,6 +1374,22 @@ class _ContinuousInvestigationMixin:
                 exp_id,
                 ckpt,
             )
+            self._emit_event(
+                "investigation_training_complete",
+                {
+                    "experiment_id": exp_id,
+                    "results": results,
+                },
+            )
+            self._update_progress(
+                status="finalizing",
+                aria_message=(
+                    "Investigation training complete; finalizing benchmark/probe writes."
+                ),
+            )
+            eval_status = self._wait_for_investigation_eval_futures(exp_id)
+            if eval_status:
+                results["background_eval_status"] = eval_status
 
             # Complete experiment with LLM analysis
             results["perf_report"] = self._build_experiment_perf_report(results)

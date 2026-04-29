@@ -38,6 +38,14 @@ function valueFor(program, leaderboardEntry, ...keys) {
   return null;
 }
 
+function leaderboardValueFor(program, leaderboardEntry, ...keys) {
+  for (const key of keys) {
+    const value = firstMetric(leaderboardEntry?.[key], program?.leaderboard?.[key], program?.[key]);
+    if (value != null) return value;
+  }
+  return null;
+}
+
 function toneHigher(value, good, neutral) {
   const n = finite(value);
   if (n == null) return null;
@@ -146,7 +154,7 @@ export function BenchmarkTestMatrix({ program, leaderboardEntry }) {
         {
           key: 'induction_v2_investigation_auc',
           label: 'Induction v2',
-          value: valueFor(program, leaderboardEntry, 'induction_v2_investigation_auc'),
+          value: leaderboardValueFor(program, leaderboardEntry, 'induction_v2_investigation_auc'),
           digits: 3,
           tone: value => toneHigher(value, 0.45, 0.20),
           color: probeAucColor,
@@ -164,7 +172,7 @@ export function BenchmarkTestMatrix({ program, leaderboardEntry }) {
         {
           key: 'binding_v2_investigation_auc',
           label: 'Binding v2',
-          value: valueFor(program, leaderboardEntry, 'binding_v2_investigation_auc'),
+          value: leaderboardValueFor(program, leaderboardEntry, 'binding_v2_investigation_auc'),
           digits: 3,
           tone: value => toneHigher(value, 0.45, 0.20),
           color: probeAucColor,
@@ -478,6 +486,10 @@ export function BenchmarkTestMatrix({ program, leaderboardEntry }) {
  * Left column of the two-column grid: core metrics, benchmarks, timing.
  */
 export function CoreMetricsColumn({ program, leaderboardEntry, fmt, fmtMs, fmtMem, fmtInt }) {
+  const inductionV2 = leaderboardValueFor(program, leaderboardEntry, 'induction_v2_investigation_auc');
+  const inductionV1 = leaderboardValueFor(program, leaderboardEntry, 'induction_auc');
+  const bindingV2 = leaderboardValueFor(program, leaderboardEntry, 'binding_v2_investigation_auc');
+  const bindingV1 = leaderboardValueFor(program, leaderboardEntry, 'binding_auc');
   return (
     <div>
       <div style={{ fontSize: 12, color: 'var(--text-secondary)', fontWeight: 600, textTransform: 'uppercase', marginBottom: 8 }}>
@@ -506,24 +518,24 @@ export function CoreMetricsColumn({ program, leaderboardEntry, fmt, fmtMs, fmtMe
             {fmt(program.baseline_loss_ratio)} {program.baseline_loss_ratio < 1 ? '(beats transformer)' : ''}
           </span> : null} />
         <MetricRow label="HellaSwag" value={program.hellaswag_acc != null ? fmt(program.hellaswag_acc, 3) : null} />
-        <MetricRow label="Induction AUC" value={program.induction_auc != null ? fmt(program.induction_auc, 3) : null} />
-        <MetricRow label="Induction v2" value={program.induction_v2_investigation_auc != null ?
+        <MetricRow label="Induction AUC" value={inductionV1 != null ? fmt(inductionV1, 3) : null} />
+        <MetricRow label="Induction v2" value={inductionV2 != null ?
           <span title="Investigation-tier mixed-gap probe (500 steps, median-of-3 seeds). Overrides v1 in the binding composite when present.">
-            {fmt(program.induction_v2_investigation_auc, 3)}
-            {program.induction_auc != null && (
+            {fmt(inductionV2, 3)}
+            {inductionV1 != null && (
               <span style={{ marginLeft: 6, fontSize: 11, color: 'var(--text-muted)' }}>
-                (Δ{(program.induction_v2_investigation_auc - program.induction_auc).toFixed(3)} vs v1)
+                (Δ{(inductionV2 - inductionV1).toFixed(3)} vs v1)
               </span>
             )}
           </span> : null} />
         <MetricRow label="AR AUC" value={program.ar_auc != null ? fmt(program.ar_auc, 3) : null} />
-        <MetricRow label="Binding AUC" value={program.binding_auc != null ? fmt(program.binding_auc, 3) : null} />
-        <MetricRow label="Binding v2" value={program.binding_v2_investigation_auc != null ?
+        <MetricRow label="Binding AUC" value={bindingV1 != null ? fmt(bindingV1, 3) : null} />
+        <MetricRow label="Binding v2" value={bindingV2 != null ?
           <span title="Investigation-tier extended-budget probe (2400 steps, 5 distances incl. 64, median-of-3 seeds). Overrides v1 in the binding composite when present.">
-            {fmt(program.binding_v2_investigation_auc, 3)}
-            {program.binding_auc != null && (
+            {fmt(bindingV2, 3)}
+            {bindingV1 != null && (
               <span style={{ marginLeft: 6, fontSize: 11, color: 'var(--text-muted)' }}>
-                (Δ{(program.binding_v2_investigation_auc - program.binding_auc).toFixed(3)} vs v1)
+                (Δ{(bindingV2 - bindingV1).toFixed(3)} vs v1)
               </span>
             )}
           </span> : null} />

@@ -14,6 +14,7 @@ Supports background execution controlled from the dashboard.
 from __future__ import annotations
 
 import atexit
+from concurrent.futures import TimeoutError as FutureTimeoutError
 import hashlib
 import json
 import math
@@ -154,6 +155,7 @@ class _CoreMixin:
         }
         self._live_training_context: Optional[Dict[str, str]] = None  # {exp_id, phase}
         self._live_loss_curve: List[Dict] = []  # rolling buffer for dashboard chart
+        self._pending_investigation_eval_futures: List[Dict[str, Any]] = []
         self._grammar_weight_overrides: Dict[str, float] = {}
         try:
             with LabNotebook(
@@ -223,6 +225,79 @@ class _CoreMixin:
             logging.getLogger("research").removeHandler(sse_handler)
 
     # ── Progress helpers ─────────────────────────────────────────────
+
+    def _register_investigation_eval_future(
+        self,
+        *,
+        exp_id: str,
+        future: Any,
+        kind: str,
+        source_result_id: str,
+    ) -> None:
+        """Track background benchmark/probe writes that gate completion."""
+        with self._lock:
+            self._pending_investigation_eval_futures.append(
+                {
+                    "experiment_id": exp_id,
+                    "future": future,
+                    "kind": kind,
+                    "source_result_id": source_result_id,
+                }
+            )
+
+    def _wait_for_investigation_eval_futures(
+        self,
+        exp_id: str,
+        *,
+        timeout_s: float = 900.0,
+    ) -> List[Dict[str, Any]]:
+        """Wait for this investigation's background benchmark/probe writes.
+
+        Completion events should mean durable benchmark/probe state has either
+        landed or been explicitly reported as failed/timed out.
+        """
+        with self._lock:
+            pending = [
+                item
+                for item in self._pending_investigation_eval_futures
+                if item.get("experiment_id") == exp_id
+            ]
+
+        statuses: List[Dict[str, Any]] = []
+        deadline = time.time() + max(0.0, float(timeout_s))
+        for item in pending:
+            future = item.get("future")
+            remaining = max(0.0, deadline - time.time())
+            status = {
+                "source_result_id": item.get("source_result_id"),
+                "kind": item.get("kind"),
+            }
+            try:
+                if future is not None:
+                    future.result(timeout=remaining)
+                status["status"] = "completed"
+            except FutureTimeoutError:
+                status["status"] = "timed_out"
+            except Exception as exc:  # noqa: BLE001 - finalization must continue.
+                status["status"] = "failed"
+                status["error"] = str(exc)
+                logger.warning(
+                    "Investigation background %s eval failed for %s: %s",
+                    item.get("kind"),
+                    str(item.get("source_result_id") or "")[:8],
+                    exc,
+                )
+            statuses.append(status)
+
+        if pending:
+            with self._lock:
+                pending_ids = {id(item) for item in pending}
+                self._pending_investigation_eval_futures = [
+                    item
+                    for item in self._pending_investigation_eval_futures
+                    if id(item) not in pending_ids
+                ]
+        return statuses
 
     def _update_progress(self, **kwargs: object) -> None:
         """Thread-safe batch update of progress fields."""

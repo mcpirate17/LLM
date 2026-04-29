@@ -518,6 +518,22 @@ class _ExecutionInvestigationMixin:
         t_start: float,
     ) -> None:
         """Complete experiment, auto-escalate, emit events."""
+        self._emit_event(
+            "investigation_training_complete",
+            {
+                "experiment_id": exp_id,
+                "results": results,
+            },
+        )
+        self._update_progress(
+            status="finalizing",
+            elapsed_seconds=time.time() - t_start,
+            aria_message="Investigation training complete; finalizing benchmark/probe writes.",
+        )
+        eval_status = self._wait_for_investigation_eval_futures(exp_id)
+        if eval_status:
+            results["background_eval_status"] = eval_status
+
         context = self._build_rich_context_for_experiment(
             results, config, hypothesis, nb
         )
@@ -690,6 +706,8 @@ class _ExecutionInvestigationMixin:
                 model=model,
                 tp=tp,
                 tp_i=tp_i,
+                total_candidates=total_candidates,
+                total_training_programs=len(training_programs),
                 inv_config=inv_config,
                 config=config,
                 dev=dev,
@@ -780,6 +798,8 @@ class _ExecutionInvestigationMixin:
         model: Any,
         tp: Any,
         tp_i: int,
+        total_candidates: int,
+        total_training_programs: int,
         inv_config: RunConfig,
         config: RunConfig,
         dev: torch.device,
@@ -789,9 +809,19 @@ class _ExecutionInvestigationMixin:
         """Train model with one training program and return result dict."""
         resume_state = ckpt.load_phase(exp_id, "investigation", prog_idx, tp_i)
         base_ctx = {"exp_id": exp_id, "phase": "investigation"}
+        train_seed = self._stable_seed(
+            exp_id, source_result_id, tp_i, "investigation_inline"
+        )
         self._live_training_context = {
             **base_ctx,
             "source_result_id": source_result_id,
+            "candidate_index": prog_idx + 1,
+            "total_candidates": total_candidates,
+            "training_program_index": tp_i + 1,
+            "total_training_programs": total_training_programs,
+            "training_program_label": tp.name,
+            "training_seed": train_seed,
+            "run_kind": "investigation",
             "checkpoint_manager": ckpt,
             "checkpoint_candidate_idx": prog_idx,
             "checkpoint_seed_idx": tp_i,
@@ -810,9 +840,7 @@ class _ExecutionInvestigationMixin:
                 tp,
                 inv_config,
                 dev,
-                seed=self._stable_seed(
-                    exp_id, source_result_id, tp_i, "investigation_inline"
-                ),
+                seed=train_seed,
             )
         finally:
             self._live_training_context = base_ctx
@@ -1130,7 +1158,7 @@ class _ExecutionInvestigationMixin:
 
         # Submit benchmark evals to background thread
         if n_passed > 0:
-            _submit_benchmark_eval(
+            future = _submit_benchmark_eval(
                 nb=nb,
                 exp_id=exp_id,
                 source_result_id=source_result_id,
@@ -1149,8 +1177,14 @@ class _ExecutionInvestigationMixin:
                 cached_json_load=self._cached_json_load,
                 fingerprint_incomplete=fp_incomplete,
             )
+            self._register_investigation_eval_future(
+                exp_id=exp_id,
+                future=future,
+                kind="benchmark",
+                source_result_id=source_result_id,
+            )
         else:
-            _submit_v2_probe_eval(
+            future = _submit_v2_probe_eval(
                 nb=nb,
                 exp_id=exp_id,
                 source_result_id=source_result_id,
@@ -1168,6 +1202,12 @@ class _ExecutionInvestigationMixin:
                 dev=dev,
                 cached_json_load=self._cached_json_load,
                 fingerprint_incomplete=fp_incomplete,
+            )
+            self._register_investigation_eval_future(
+                exp_id=exp_id,
+                future=future,
+                kind="v2-probe",
+                source_result_id=source_result_id,
             )
 
         # Save checkpoint after each candidate completes

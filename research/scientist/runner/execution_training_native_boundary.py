@@ -482,7 +482,20 @@ def _build_training_step_event(
         "loss": round(loss_val, 6),
         "total_steps": total_steps,
         "phase": live_context.get("phase", ""),
+        "run_kind": live_context.get("run_kind") or live_context.get("phase", ""),
     }
+    for source_key, event_key in (
+        ("source_result_id", "source_result_id"),
+        ("candidate_index", "candidate_index"),
+        ("total_candidates", "total_candidates"),
+        ("training_program_index", "training_program_index"),
+        ("total_training_programs", "total_training_programs"),
+        ("training_program_label", "training_program_label"),
+        ("training_seed", "training_seed"),
+    ):
+        value = live_context.get(source_key)
+        if value is not None:
+            step_event[event_key] = value
     if routing_aux_loss is not None:
         step_event["routing_aux_loss"] = round(routing_aux_loss, 6)
     if grad_norm > 0:

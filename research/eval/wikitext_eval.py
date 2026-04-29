@@ -53,7 +53,15 @@ _SCREENING_N_TRAIN_STEPS = 50
 _SCREENING_N_TRAIN_BATCHES = 16
 _SCREENING_N_EVAL_BATCHES = 4
 _SCREENING_BATCH_SIZE = 4
-_SCREENING_METRIC_VERSION = "screening_wikitext_v1"
+# Bumped 2026-04-27 (claude+codex pairing).  Pre-bump rows tagged
+# "screening_wikitext_v1" are historically ambiguous: some were written
+# when tokenize_file defaulted to byte-level tokens, others after the
+# cl100k_base BPE default landed but before this rename.  Post-bump
+# rows are unambiguously BPE-tokenized (via tokenize_file default).
+# The aggregator filter in notebook_programs.py was updated in lockstep
+# to accept both this marker and the offline-backfill marker
+# `bpe_eval_v1` for wikitext_perplexity aggregation.
+_SCREENING_METRIC_VERSION = "screening_wikitext_v2_bpe"
 
 
 def screening_wikitext_payload(result: Dict[str, Any]) -> Optional[Dict[str, Any]]:

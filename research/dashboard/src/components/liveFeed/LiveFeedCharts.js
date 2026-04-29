@@ -1,5 +1,5 @@
 import React from 'react';
-import { splitCurveIntoSegments } from './utils';
+import { curveSegmentLabel, splitCurveIntoSegments } from './utils';
 
 export function MiniNoveltyChart({ points, label = '', width = 600 }) {
   if (!Array.isArray(points) || points.length === 0) return null;
@@ -125,7 +125,7 @@ export function MiniLossChart({
               fontSize="9"
               fontFamily="monospace"
             >
-              {`${segmentLabelPrefix} ${idx + 1}`}
+              {curveSegmentLabel(segments[idx], segmentLabelPrefix, idx)}
             </text>
           </g>
         ))}

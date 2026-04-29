@@ -1039,6 +1039,83 @@ def test_leaderboard_rescore_api_realigns_payload_with_backend_compute(tmp_path)
     assert isinstance(rows[rid].get("score_breakdown"), dict)
 
 
+def test_leaderboard_rescore_api_realigns_denormalized_probe_metrics(tmp_path):
+    db_path = str(tmp_path / "leaderboard_rescore_probe_metrics.db")
+    nb = LabNotebook(db_path)
+    exp_id = nb.start_experiment("synthesis", {})
+    rid = nb.record_program_result(
+        experiment_id=exp_id,
+        graph_fingerprint="fp-rescore-probes",
+        graph_json="{}",
+        model_source="graph_synthesis",
+        stage1_passed=True,
+        loss_ratio=0.58,
+        novelty_score=0.82,
+        induction_auc=0.006,
+        induction_v2_investigation_auc=0.402,
+        induction_v2_investigation_max_gap_acc=0.61,
+        induction_v2_investigation_protocol_version="induction_investigation_mixed_v2",
+        binding_auc=0.1678,
+        binding_v2_investigation_auc=0.176,
+        binding_v2_investigation_max_distance_acc=0.42,
+        binding_v2_investigation_protocol_version="binding_investigation_v2",
+    )
+    nb.flush_writes()
+    nb.upsert_leaderboard(
+        result_id=rid,
+        model_source="graph_synthesis",
+        screening_loss_ratio=0.58,
+        screening_novelty=0.82,
+        tier="validation",
+    )
+    nb.conn.execute(
+        """
+        UPDATE leaderboard
+        SET induction_v2_investigation_auc = NULL,
+            binding_v2_investigation_auc = NULL,
+            scoring_version = ?
+        WHERE result_id = ?
+        """,
+        ("stale-test-version", rid),
+    )
+    nb.conn.commit()
+    nb.close()
+
+    app = create_app(notebook_path=db_path)
+    client = app.test_client()
+    rescore = client.post(
+        "/api/leaderboard/rescore",
+        json={"result_ids": [rid], "only_stale": True},
+    )
+    assert rescore.status_code == 200
+
+    nb = LabNotebook(db_path)
+    row = nb.conn.execute(
+        """
+        SELECT induction_auc, induction_v2_investigation_auc,
+               induction_v2_investigation_max_gap_acc,
+               induction_v2_investigation_protocol_version,
+               binding_auc, binding_v2_investigation_auc,
+               binding_v2_investigation_max_distance_acc,
+               binding_v2_investigation_protocol_version
+        FROM leaderboard
+        WHERE result_id = ?
+        """,
+        (rid,),
+    ).fetchone()
+    nb.close()
+
+    assert row["induction_v2_investigation_auc"] == pytest.approx(0.402)
+    assert row["induction_v2_investigation_max_gap_acc"] == pytest.approx(0.61)
+    assert (
+        row["induction_v2_investigation_protocol_version"]
+        == "induction_investigation_mixed_v2"
+    )
+    assert row["binding_v2_investigation_auc"] == pytest.approx(0.176)
+    assert row["binding_v2_investigation_max_distance_acc"] == pytest.approx(0.42)
+    assert row["binding_v2_investigation_protocol_version"] == "binding_investigation_v2"
+
+
 def test_leaderboard_rescore_api_realigns_raw_persisted_rows_with_backend_compute(
     tmp_path,
 ):

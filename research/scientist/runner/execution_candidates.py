@@ -67,6 +67,7 @@ class _ExecutionCandidatesMixin:
         success: bool,
         stage: str,
         error: str | None = None,
+        permanent_failure: bool = False,
     ) -> None:
         if not task_id:
             return
@@ -82,6 +83,15 @@ class _ExecutionCandidatesMixin:
                     outcome="launched",
                     metadata={"stage": stage},
                 )
+            elif permanent_failure:
+                # Don't requeue — the task can never succeed (e.g. the
+                # candidate was promoted past this stage). Mark completed
+                # with a distinct outcome so audits can find these.
+                nb.complete_followup_task(
+                    task_id,
+                    outcome="permanent_failure",
+                    metadata={"stage": stage, "error": str(error or "")[:500]},
+                )
             else:
                 nb.requeue_followup_task(
                     task_id,
@@ -94,6 +104,17 @@ class _ExecutionCandidatesMixin:
             )
         finally:
             nb.close()
+
+    @staticmethod
+    def _is_tier_guard_failure(exc: BaseException) -> bool:
+        if not isinstance(exc, ValueError):
+            return False
+        msg = str(exc)
+        return (
+            "Cannot investigate" in msg
+            or "Cannot validate" in msg
+            or "already at or beyond" in msg
+        )
 
     def _run_pending_replay(self) -> bool:
         """Run one queued exact replay task through the canonical replay pipeline."""
@@ -134,9 +155,7 @@ class _ExecutionCandidatesMixin:
         # Detect these by source_context.  Original "rescreen / triage"
         # uses still patch the source row by default.
         source_context = str(task.get("source_context") or "").strip()
-        independent_sample = source_context in {
-            "program_detail_rerun", "queue_rerun"
-        }
+        independent_sample = source_context in {"program_detail_rerun", "queue_rerun"}
 
         try:
             from research.tools.exact_graph_replay import run_exact_replay
@@ -853,18 +872,18 @@ class _ExecutionCandidatesMixin:
                 return
         self._pending_investigation = None
 
-        # Score-stability reruns intentionally re-investigate already-
-        # investigated candidates to grow n_runs / shrink CV.  Bypass
-        # the tier-redundancy guard for these source contexts only.
-        source_ctx = str(pending.get("source_context") or "").strip()
-        force = source_ctx in {"queue_rerun", "program_detail_rerun"}
-
+        # Anything in the followup_tasks queue is a deliberate request
+        # (manual UI rerun, stale-screening recovery, backfill sweep,
+        # score-stability variance probing).  Bypass the tier guard so
+        # candidates already promoted past investigation can still be
+        # re-run for variance / score-stability — that's the whole point
+        # of queueing them.
         try:
             self.start_investigation(
                 result_ids=pending["result_ids"],
                 config=pending["config"],
                 hypothesis=pending["hypothesis"],
-                force=force,
+                force=True,
             )
             self._finalize_followup_task(
                 pending.get("task_id"),
@@ -878,6 +897,7 @@ class _ExecutionCandidatesMixin:
                 success=False,
                 stage="investigation",
                 error=str(e),
+                permanent_failure=self._is_tier_guard_failure(e),
             )
 
     def _run_pending_validation(self):
@@ -891,23 +911,17 @@ class _ExecutionCandidatesMixin:
                 return
         self._pending_validation = None
 
-        # Score-stability reruns (queue_rerun CLI and program_detail
-        # rerun panel) intentionally re-run already-validated candidates
-        # to grow n_runs / shrink CV.  start_validation() guards against
-        # tier-redundant runs by default, so we bypass that guard for
-        # these source contexts only — every other auto-escalation path
-        # keeps the guard.
-        source_ctx = str(pending.get("source_context") or "").strip()
-        force = source_ctx in {"queue_rerun", "program_detail_rerun"}
-        trigger = "score_stability_rerun" if force else "auto_escalate"
-
+        # Anything in the followup_tasks queue is a deliberate request
+        # — score-stability variance probes, manual reruns, recovery
+        # backfills.  Bypass the tier guard so already-validated
+        # candidates can be re-run for variance.
         try:
             self.start_validation(
                 result_ids=pending["result_ids"],
                 config=pending["config"],
                 hypothesis=pending["hypothesis"],
-                trigger=trigger,
-                force=force,
+                trigger="score_stability_rerun",
+                force=True,
             )
             self._finalize_followup_task(
                 pending.get("task_id"),
@@ -921,4 +935,5 @@ class _ExecutionCandidatesMixin:
                 success=False,
                 stage="validation",
                 error=str(e),
+                permanent_failure=self._is_tier_guard_failure(e),
             )

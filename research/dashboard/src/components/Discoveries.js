@@ -214,7 +214,7 @@ function scoreCellTone(key, value) {
 // ── Main Component ─────────────────────────────────────────────────
 
 const COLUMNS = [
-  { key: '_score', label: 'Composite Score', width: 124, title: `Canonical post-BPE + understanding composite used for ranking discoveries. Color bands are fixed percentages of the ${SCORE_MAX}-point v10 rubric ceiling.` },
+  { key: '_score', label: 'Composite Score', width: 124, title: `Canonical post-BPE + understanding composite used for ranking discoveries. Color bands are fixed percentages of the ${SCORE_MAX}-point v12 rubric ceiling.` },
   { key: '_capability_quality', label: 'Capability', width: 134, title: 'Quality state separate from workflow stage: Capability-Qualified, Training-Only, Validation Pending, etc.' },
   { key: 'display_name', label: 'Architecture', width: 240, title: 'Human-readable name or fingerprint of the model topology.' },
   { key: 'architecture_family', label: 'Family', width: 120, title: 'The architectural category (e.g., Attention, SSM, Hybrid).' },
@@ -1291,7 +1291,7 @@ function Discoveries({
                     <div
                       className="champion-strip-fill"
                       style={{
-                        width: `${Math.max(4, Math.min(100, (Number(ref._score) / 320) * 100))}%`,
+                        width: `${Math.max(4, Math.min(100, (Number(ref._score) / SCORE_MAX) * 100))}%`,
                         background: scoreGradient(ref._score),
                       }}
                     />

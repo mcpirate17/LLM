@@ -37,6 +37,7 @@ _PERSISTED_LIVE_FEED_EVENTS = {
     "champion_confirmation_started",
     "investigation_started",
     "investigation_progress",
+    "investigation_training_complete",
     "investigation_completed",
     "validation_started",
     "validation_progress",

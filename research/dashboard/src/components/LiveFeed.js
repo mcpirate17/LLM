@@ -170,6 +170,14 @@ function LiveFeed({ apiBase, experimentId = null, progress = null }) {
         loss: data.loss,
         total_steps: data.total_steps,
         phase: data.phase,
+        run_kind: data.run_kind,
+        source_result_id: data.source_result_id,
+        candidate_index: data.candidate_index,
+        total_candidates: data.total_candidates,
+        training_program_index: data.training_program_index,
+        total_training_programs: data.total_training_programs,
+        training_program_label: data.training_program_label,
+        training_seed: data.training_seed,
         received_ts: Date.now(),
       },
     };
@@ -198,6 +206,7 @@ function LiveFeed({ apiBase, experimentId = null, progress = null }) {
   useEventBus('mode_selected', addEvent('mode_selected'));
   useEventBus('investigation_started', addEvent('invest_start'));
   useEventBus('investigation_progress', addEvent('invest_progress'));
+  useEventBus('investigation_training_complete', addEvent('invest_train_complete'));
   useEventBus('investigation_completed', addEvent('invest_complete'));
   useEventBus('investigation_failed', addEvent('invest_failed'));
   useEventBus('validation_started', addEvent('validate_start'));
@@ -244,7 +253,13 @@ function LiveFeed({ apiBase, experimentId = null, progress = null }) {
             lossCurveExpRef.current = curveExpId;
             setLossCurve(curve.map(p => ({
               step: p.step, loss: p.loss,
-              total_steps: p.total_steps, phase: p.phase, received_ts: Date.now(),
+              total_steps: p.total_steps, phase: p.phase,
+              run_kind: p.run_kind, source_result_id: p.source_result_id,
+              candidate_index: p.candidate_index, total_candidates: p.total_candidates,
+              training_program_index: p.training_program_index,
+              total_training_programs: p.total_training_programs,
+              training_program_label: p.training_program_label, training_seed: p.training_seed,
+              received_ts: Date.now(),
             })));
           }
         }
@@ -283,7 +298,13 @@ function LiveFeed({ apiBase, experimentId = null, progress = null }) {
             lossCurveExpRef.current = curveExpId;
             setLossCurve(curve.map(p => ({
               step: p.step, loss: p.loss,
-              total_steps: p.total_steps, phase: p.phase, received_ts: Date.now(),
+              total_steps: p.total_steps, phase: p.phase,
+              run_kind: p.run_kind, source_result_id: p.source_result_id,
+              candidate_index: p.candidate_index, total_candidates: p.total_candidates,
+              training_program_index: p.training_program_index,
+              total_training_programs: p.total_training_programs,
+              training_program_label: p.training_program_label, training_seed: p.training_seed,
+              received_ts: Date.now(),
             })));
           }
         }

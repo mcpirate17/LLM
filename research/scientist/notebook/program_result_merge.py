@@ -327,12 +327,18 @@ class _ProgramResultMergeMixin:
                 updates["fingerprint_json"] = canonical_fp_json
                 current["fingerprint_json"] = canonical_fp_json
 
-        if clear_failure_if_stage1:
-            self._clear_stage1_failure_columns(
-                current=current,
-                updates=updates,
-                valid_columns=valid_columns,
-            )
+        # Failure columns are nonsensical once stage1 has passed. A later
+        # patch may carry an exception (e.g. exact_graph_replay re-runs that
+        # fail) but stage1_passed is max-merged so it stays 1; without this
+        # guard the row ends up reporting `stage_at_death="stage0"` next to
+        # `stage1_passed=1`, which renders as "died at stage0" in the UI.
+        # Apply unconditionally; `clear_failure_if_stage1` is kept for compat.
+        del clear_failure_if_stage1
+        self._clear_stage1_failure_columns(
+            current=current,
+            updates=updates,
+            valid_columns=valid_columns,
+        )
         if relabel_backfill_if_orphan:
             has_leaderboard = bool(
                 self.conn.execute(

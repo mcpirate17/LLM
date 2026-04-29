@@ -15,15 +15,15 @@ export function formatDuration(seconds) {
   return `${(seconds / 3600).toFixed(1)}h`;
 }
 
-export const SCORE_MAX = 855;
+export const SCORE_MAX = 850;
 
 /**
- * Canonical v10 score color ramp.
+ * Canonical v12 score color ramp.
  *
  * Colors are anchored to the scoring rubric ceiling, not to current references
- * or the live leaderboard distribution. v10 can award 855 points before
- * penalties: 660 legacy/base points + 175 capability points + 20 aux trajectory
- * points. Bands are fixed percentages of that ceiling.
+ * or the live leaderboard distribution. Keep this in sync with
+ * composite_score_ceiling("v12") in the backend scorer. Bands are fixed
+ * percentages of that ceiling.
  */
 export const SCORE_STOPS = [
   { min: SCORE_MAX * 0.90, color: 'var(--score-apex, #ff7b72)', start: '#ffd166', end: '#ff7b72', label: 'Near Ceiling' },

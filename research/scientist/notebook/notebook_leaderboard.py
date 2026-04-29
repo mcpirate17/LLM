@@ -9,7 +9,7 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from ._shared import LOGGER, sanitize_for_db
-from ..leaderboard_scoring import SCORING_VERSION, build_score_kwargs, compute_composite
+from ..leaderboard_scoring import build_score_kwargs, compute_composite, get_scoring_version
 from ..thresholds import TIER_RANK
 from ..trust_policy import is_promotable_entry, sql_trusted_clause
 
@@ -354,8 +354,9 @@ class _LeaderboardMixin:
             d["tier"] = existing_tier
         tier = allowed_tier
         d["model_source"] = model_source
-        d["scoring_version"] = SCORING_VERSION
-        kwargs.setdefault("scoring_version", SCORING_VERSION)
+        current_scoring_version = get_scoring_version()
+        d["scoring_version"] = current_scoring_version
+        kwargs.setdefault("scoring_version", current_scoring_version)
         if architecture_desc:
             d["architecture_desc"] = architecture_desc
         d["is_reference"] = int(is_reference)

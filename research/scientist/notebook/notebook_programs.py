@@ -687,7 +687,10 @@ class _ProgramsMixin(
                     ))
                 ELSE NULL END AS novelty_std
             FROM program_results
-            WHERE graph_fingerprint = ?""",
+            WHERE graph_fingerprint = ?
+              AND COALESCE(intentional_rerun_reason, '') IN (
+                    '', 'exact_graph_replay_independent_sample'
+              )""",
             (graph_fingerprint,),
         ).fetchone()
         if not row or row["n_runs_total"] == 0:
@@ -738,8 +741,19 @@ class _ProgramsMixin(
     # but are NOT comparable.  The filter excludes any row whose
     # screening_wikitext_metric_version is not ``bpe_eval_v1``.
     _METRIC_PROVENANCE_FILTER = {
+        # Accept both BPE markers:
+        #   - 'bpe_eval_v1' = offline BPE backfill tool (historical
+        #     re-eval of pre-BPE rows)
+        #   - 'screening_wikitext_v2_bpe' = live screening write after
+        #     the 2026-04-27 marker bump (see _SCREENING_METRIC_VERSION
+        #     in research/eval/wikitext_eval.py for the rename
+        #     rationale).
+        # Pre-bump 'screening_wikitext_v1' rows stay excluded — they
+        # are a mix of byte-era and BPE that we can't safely
+        # disambiguate without re-eval.
         "wikitext_perplexity": (
-            "screening_wikitext_metric_version = 'bpe_eval_v1'"
+            "screening_wikitext_metric_version IN "
+            "('bpe_eval_v1', 'screening_wikitext_v2_bpe')"
         ),
     }
 
@@ -774,12 +788,8 @@ class _ProgramsMixin(
             guard = f"{c} IS NOT NULL"
             if extra_filter:
                 guard = f"({guard}) AND ({extra_filter})"
-            select_parts.append(
-                f"SUM(CASE WHEN {guard} THEN 1 ELSE 0 END) AS n_{c}"
-            )
-            select_parts.append(
-                f"AVG(CASE WHEN {guard} THEN {c} END) AS mean_{c}"
-            )
+            select_parts.append(f"SUM(CASE WHEN {guard} THEN 1 ELSE 0 END) AS n_{c}")
+            select_parts.append(f"AVG(CASE WHEN {guard} THEN {c} END) AS mean_{c}")
             select_parts.append(
                 f"CASE WHEN SUM(CASE WHEN {guard} THEN 1 ELSE 0 END) > 1 THEN "
                 f"SQRT(MAX(0, "
@@ -790,7 +800,9 @@ class _ProgramsMixin(
             )
         sql = (
             f"SELECT {', '.join(select_parts)} FROM program_results "
-            f"WHERE graph_fingerprint = ?"
+            f"WHERE graph_fingerprint = ? "
+            "AND COALESCE(intentional_rerun_reason, '') IN "
+            "('', 'exact_graph_replay_independent_sample')"
         )
         row = self.conn.execute(sql, (graph_fingerprint,)).fetchone()
         if not row or row["_n_total"] == 0:
@@ -863,6 +875,9 @@ class _ProgramsMixin(
                     ELSE NULL END AS novelty_std
                 FROM program_results
                 WHERE graph_fingerprint IN ({placeholders})
+                  AND COALESCE(intentional_rerun_reason, '') IN (
+                        '', 'exact_graph_replay_independent_sample'
+                  )
                 GROUP BY graph_fingerprint""",
                 chunk,
             ).fetchall()

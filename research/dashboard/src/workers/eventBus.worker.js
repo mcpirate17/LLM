@@ -68,7 +68,7 @@ self.onmessage = function(e) {
       'scale_up_started', 'scale_up_progress', 'scale_up_completed',
       'champion_confirmation_started',
       'mode_selected', 'investigation_started', 'investigation_progress',
-      'investigation_completed', 'investigation_failed',
+      'investigation_training_complete', 'investigation_completed', 'investigation_failed',
       'validation_started', 'validation_progress',
       'validation_completed', 'hypothesis_generated', 'hypothesis_recorded',
       'hypothesis_resolved', 'decision_made', 'decision_recorded',

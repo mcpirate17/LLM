@@ -1,6 +1,6 @@
 import React, { useMemo } from 'react';
 import { lossColor, noveltyColor } from '../utils/colors';
-import { scoreColor, scoreGradient, scoreToneLabel } from '../utils/format';
+import { SCORE_MAX, scoreColor, scoreGradient, scoreToneLabel } from '../utils/format';
 
 /**
  * ReferenceArchitectures — Task 3G
@@ -63,7 +63,7 @@ export function ReferenceArchitectures({ leaderboardEntries, onSelectProgram }) 
               <div
                 className="champion-strip-fill"
                 style={{
-                  width: `${Number.isFinite(Number(ref.composite_score)) ? Math.max(4, Math.min(100, (Number(ref.composite_score) / 320) * 100)) : 4}%`,
+                  width: `${Number.isFinite(Number(ref.composite_score)) ? Math.max(4, Math.min(100, (Number(ref.composite_score) / SCORE_MAX) * 100)) : 4}%`,
                   background: scoreGradient(ref.composite_score),
                 }}
               />

@@ -93,23 +93,23 @@ def test_activation_fallback_never_returns_empty(monkeypatch):
     assert op_name == "gelu"
 
 
-# ── P0.7 + P0.8: scoring tier shifts and v8.1 default ───────────────
+# ── P0.7 + P0.8: scoring tier shifts and active default ───────────────
 
 
-def test_default_scoring_version_is_v81():
+def test_default_scoring_version_is_current_default():
     import importlib
 
     import research.scientist.leaderboard_scoring as ls
 
     importlib.reload(ls)  # re-evaluate module-level os.environ.get
-    # v10 is the locked-in three-bucket default (2026-04-25); earlier versions
-    # are retained for historical-row comparability.
-    assert ls.SCORING_VERSION in ("v10", "v9", "v8.1", "v8"), ls.SCORING_VERSION
-    # Strictest check: in a clean env (no override), it should be v10.
+    # v12 is the active default; earlier versions are retained for
+    # historical-row comparability and explicit runtime selection.
+    assert ls.SCORING_VERSION in ("v12", "v11", "v10", "v9", "v8.1", "v8"), ls.SCORING_VERSION
+    # Strictest check: in a clean env (no override), it should be v12.
     import os
 
     if "ARIA_SCORING_VERSION" not in os.environ:
-        assert ls.SCORING_VERSION == "v10"
+        assert ls.SCORING_VERSION == "v12"
 
 
 def test_tinystories_and_diagnostic_score_at_investigation_tier():

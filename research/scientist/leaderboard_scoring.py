@@ -69,7 +69,7 @@ def compute_efficiency_multiple(
 
 _PR_SELECT_COLS = (
     "result_id, novelty_confidence, loss_improvement_rate, final_loss, "
-    "param_count, n_train_steps, behavioral_novelty, structural_novelty, "
+    "graph_fingerprint, param_count, n_train_steps, behavioral_novelty, structural_novelty, "
     "fp_cka_vs_transformer, wikitext_perplexity, wikitext_score, "
     "wikitext_ppl_200, wikitext_ppl_500, wikitext_eval_steps, "
     "routing_savings_ratio, compression_ratio, activation_sparsity_score, "
@@ -80,7 +80,10 @@ _PR_SELECT_COLS = (
     "ar_above_chance, induction_auc, binding_auc, blimp_overall_accuracy, "
     "tinystories_score, cross_task_score, diagnostic_score, "
     "fp_gromov_delta, fp_hierarchy_fitness, "
-    "induction_v2_investigation_auc, binding_v2_investigation_auc, "
+    "induction_v2_investigation_auc, induction_v2_investigation_max_gap_acc, "
+    "induction_v2_investigation_protocol_version, binding_v2_investigation_auc, "
+    "binding_v2_investigation_max_distance_acc, "
+    "binding_v2_investigation_protocol_version, "
     # v9 trajectory metrics — read by compute_composite_v10's capability
     # tier (cap_erf_density, cap_id_collapse, cap_erf_decay, cap_logit_margin)
     # and aux trajectory tier (aux_erf_variance, aux_icld). Without these
@@ -1296,9 +1299,7 @@ def _v9_gemini_block_score(kw: Dict[str, Any]) -> tuple[float, Dict[str, float]]
     }
     if include_icld:
         icld_velocity = kw.get("fp_icld_velocity")
-        icld_abs = (
-            -icld_velocity if isinstance(icld_velocity, (int, float)) else None
-        )
+        icld_abs = -icld_velocity if isinstance(icld_velocity, (int, float)) else None
         block_components["fp_icld_velocity_abs"] = _v9_normalized_metric(
             icld_abs, _V9_ICLD_VELOCITY_ANCHOR_ABS
         )
@@ -1346,14 +1347,17 @@ def compute_composite_v9(
 
     # Linear normalize to a 0..100 range before combining.
     v8_1_normalized = max(
-        0.0, min(_V9_GEMINI_MAX_POINTS, v8_1_score / _V9_V8_1_NORMALIZER * _V9_GEMINI_MAX_POINTS)
+        0.0,
+        min(
+            _V9_GEMINI_MAX_POINTS,
+            v8_1_score / _V9_V8_1_NORMALIZER * _V9_GEMINI_MAX_POINTS,
+        ),
     )
 
     gemini_score, gemini_bd = _v9_gemini_block_score(kw)
     composite = (
-        (1.0 - _V9_GEMINI_BLOCK_FRACTION) * v8_1_normalized
-        + _V9_GEMINI_BLOCK_FRACTION * gemini_score
-    )
+        1.0 - _V9_GEMINI_BLOCK_FRACTION
+    ) * v8_1_normalized + _V9_GEMINI_BLOCK_FRACTION * gemini_score
 
     if decompose:
         v8_1_bd["_v9_v8_1_raw"] = v8_1_score
@@ -1427,24 +1431,24 @@ _V10_CONFIG: Dict[str, float] = {
     # were either unreachable (most rows scored zero) or arbitrary.
     # Cohorts: PPL anchors use the appropriate stage cohort; understanding,
     # capability, and aux anchors use val+bt (where they fire).
-    "ppl_1000":   744.0,   # median screening wikitext_perplexity (n=1871)
-    "ppl_2500":   823.0,   # median investigation wikitext_perplexity (n=159)
-    "ppl_10000":  754.0,   # median val+bt wikitext_perplexity (n=2453)
-    "blimp":      0.525,   # median val+bt blimp_overall_accuracy (n=2452)
-    "hellaswag":  0.225,   # median val+bt hellaswag_acc (n=2453)
+    "ppl_1000": 744.0,  # median screening wikitext_perplexity (n=1871)
+    "ppl_2500": 823.0,  # median investigation wikitext_perplexity (n=159)
+    "ppl_10000": 754.0,  # median val+bt wikitext_perplexity (n=2453)
+    "blimp": 0.525,  # median val+bt blimp_overall_accuracy (n=2452)
+    "hellaswag": 0.225,  # median val+bt hellaswag_acc (n=2453)
     "tinystories": 0.542,  # median val+bt tinystories_score (n=2452)
-    "cross_task": 0.279,   # median val+bt cross_task_score (n=2441)
-    "diagnostic": 0.004,   # median val+bt diagnostic_score (n=2447)
-    "hierarchy":  0.848,   # median val+bt fp_hierarchy_fitness (n=2283)
-    "cap_ar_anchor":            0.002,  # median val+bt ar_auc (n=2076)
-    "cap_induction_anchor":     0.006,  # median val+bt induction_auc v1 (n=2163)
-    "cap_binding_anchor":       0.004,  # median val+bt binding_auc v1 (n=405)
-    "cap_erf_density_anchor":   0.047,  # median val+bt fp_jacobian_erf_density
-    "cap_id_collapse_anchor":   0.010,  # |median| of negative fp_id_collapse_rate (n_neg=1498)
-    "cap_erf_decay_anchor":     0.050,  # |median| of negative fp_jacobian_erf_decay_slope (n_neg=2311)
-    "cap_logit_margin_anchor":  0.003,  # median val+bt fp_logit_margin_velocity (n=2284)
-    "aux_erf_variance_anchor":  14280.0,  # median val+bt fp_jacobian_erf_variance (n=2452)
-    "aux_icld_anchor":          0.017,  # |median| of negative fp_icld_velocity (n_neg=2412)
+    "cross_task": 0.279,  # median val+bt cross_task_score (n=2441)
+    "diagnostic": 0.004,  # median val+bt diagnostic_score (n=2447)
+    "hierarchy": 0.848,  # median val+bt fp_hierarchy_fitness (n=2283)
+    "cap_ar_anchor": 0.002,  # median val+bt ar_auc (n=2076)
+    "cap_induction_anchor": 0.006,  # median val+bt induction_auc v1 (n=2163)
+    "cap_binding_anchor": 0.004,  # median val+bt binding_auc v1 (n=405)
+    "cap_erf_density_anchor": 0.047,  # median val+bt fp_jacobian_erf_density
+    "cap_id_collapse_anchor": 0.010,  # |median| of negative fp_id_collapse_rate (n_neg=1498)
+    "cap_erf_decay_anchor": 0.050,  # |median| of negative fp_jacobian_erf_decay_slope (n_neg=2311)
+    "cap_logit_margin_anchor": 0.003,  # median val+bt fp_logit_margin_velocity (n=2284)
+    "aux_erf_variance_anchor": 14280.0,  # median val+bt fp_jacobian_erf_variance (n=2452)
+    "aux_icld_anchor": 0.017,  # |median| of negative fp_icld_velocity (n_neg=2412)
     # Multiplicative gates retired.
     "binding_all_below_penalty": 1.0,
     "binding_composite_boost": 1.0,
@@ -1455,9 +1459,9 @@ _V10_CONFIG: Dict[str, float] = {
     # without enough runs (n<2) get penalty=1.0 (no penalty until we
     # have signal).  Loss tier carries the most points so it gets the
     # strongest lambda.
-    "cv_lambda_loss":   0.5,
-    "cv_lambda_und":    0.3,
-    "cv_lambda_cap":    0.4,
+    "cv_lambda_loss": 0.5,
+    "cv_lambda_und": 0.3,
+    "cv_lambda_cap": 0.4,
     "cv_penalty_floor": 0.6,
 }
 
@@ -1486,6 +1490,78 @@ _V11_CAP_INDUCTION_MULTIPLIER = (
 _V11_CAP_BINDING_MULTIPLIER = (
     _V11_CONFIG["w_cap_binding"] / _V10_CONFIG["w_cap_binding"]
 )
+
+# Median-relative component anchors are useful for ranking noisy cohorts, but
+# champion range needs at least one reproduced trust signal: genuinely low BPE
+# PPL, above-chance understanding, or non-local binding plus induction.
+_V11_TRUST_CEILING = 360.0
+_V11_TRUST_PPL_FLOOR = 150.0
+_V11_TRUST_HELLASWAG_FLOOR = 0.25
+_V11_TRUST_BLIMP_FLOOR = 0.55
+_V11_TRUST_INDUCTION_FLOOR = 0.05
+_V11_TRUST_BINDING_FLOOR = 0.20
+
+
+def _v11_trust_ceiling(
+    score: float,
+    bd: Dict[str, Any],
+    kw: Dict[str, Any],
+) -> float:
+    """Cap untrusted validation-tier candidates below champion range."""
+    if score <= _V11_TRUST_CEILING or bool(kw.get("is_reference")):
+        return score
+
+    tier = str(kw.get("tier") or "").strip().lower()
+    if tier not in {"investigation", "validation", "breakthrough"}:
+        return score
+
+    has_reproduced_low_loss = any(
+        p is not None and float(p) > 0.0 and float(p) <= _V11_TRUST_PPL_FLOOR
+        for p in (
+            kw.get("ppl_validation"),
+            kw.get("ppl_investigation"),
+            kw.get("ppl_screening"),
+        )
+    )
+    has_understanding = any(
+        v is not None and float(v) > _V11_TRUST_HELLASWAG_FLOOR
+        for v in (
+            kw.get("hellaswag_acc_validation"),
+            kw.get("hellaswag_acc_investigation"),
+            kw.get("hellaswag_acc_screening"),
+        )
+    )
+    blimp = kw.get("blimp_accuracy")
+    if blimp is not None and float(blimp) >= _V11_TRUST_BLIMP_FLOOR:
+        has_understanding = True
+
+    eff_ind = (
+        kw.get("induction_v2_inv_auc")
+        if kw.get("induction_v2_inv_auc") is not None
+        else kw.get("induction_auc")
+    )
+    eff_bind = (
+        kw.get("binding_v2_inv_auc")
+        if kw.get("binding_v2_inv_auc") is not None
+        else kw.get("binding_auc")
+    )
+    has_nonlocal_binding = (
+        eff_ind is not None
+        and eff_bind is not None
+        and float(eff_ind) >= _V11_TRUST_INDUCTION_FLOOR
+        and float(eff_bind) >= _V11_TRUST_BINDING_FLOOR
+    )
+
+    if has_reproduced_low_loss or has_understanding or has_nonlocal_binding:
+        return score
+
+    bd["_v11_trust_ceiling"] = _V11_TRUST_CEILING
+    bd["_v11_trust_low_loss"] = has_reproduced_low_loss
+    bd["_v11_trust_understanding"] = has_understanding
+    bd["_v11_trust_nonlocal_binding"] = has_nonlocal_binding
+    return _V11_TRUST_CEILING
+
+
 # v11 tokenizer-integrity penalty (graded).  ``screening_wikitext_metric_version``
 # is the reliable signal that PPL is in BPE units; ``tokenizer_mode`` is
 # unreliable (was set to 'tiktoken' on some byte-era rows AND missing on
@@ -1561,8 +1637,10 @@ def compute_composite_v11(
         else kw.get("binding_auc")
     )
     is_breakthrough = (
-        eff_ind is not None and eff_ind > 0.3
-        and eff_bind is not None and eff_bind > 0.8
+        eff_ind is not None
+        and eff_ind > 0.3
+        and eff_bind is not None
+        and eff_bind > 0.8
     )
     if is_breakthrough:
         und_sum = sum(float(bd.get(k, 0.0) or 0.0) for k in _UND_TIER_BD_KEYS)
@@ -1581,6 +1659,184 @@ def compute_composite_v11(
         bd["_v11_tokenizer_penalty"] = tok_pen
         bd["_v11_tokenizer_penalty_metric_version"] = metric_version
 
+    # 4. Trust ceiling — a candidate cannot be a champion on efficiency and
+    # median-relative side metrics alone.
+    score = _v11_trust_ceiling(score, bd, kw)
+
+    if decompose:
+        result["composite_score"] = score
+        result["breakdown"] = bd
+        return result
+    return score
+
+
+_V12_LOSS_COMPONENT_FACTORS = {
+    "perf_short": 30.0 / 35.0,
+    "perf_medium": 40.0 / 50.0,
+    "perf_long": 55.0 / 65.0,
+    "param_efficiency": 20.0 / 30.0,
+    "learning_efficiency": 10.0 / 15.0,
+    "speed": 15.0 / 25.0,
+    "early_convergence": 5.0 / 10.0,
+}
+_V12_LOSS_BUDGET_MAX = 175.0
+_V12_CHAMPION_ELIGIBILITY_CEILING = 360.0
+_V12_INDUCTION_QUALIFIED = 0.05
+_V12_STRONG_INDUCTION = 0.30
+_V12_BINDING_QUALIFIED = 0.20
+_V12_STRONG_BINDING = 0.50
+
+
+def _v12_effective_signal(
+    kw: Dict[str, Any],
+    preferred: str,
+    fallback: str,
+) -> Optional[float]:
+    value = kw.get(preferred)
+    if value is None:
+        value = kw.get(fallback)
+    if value is None:
+        return None
+    return float(value)
+
+
+def _v12_is_non_attention_exception_family(kw: Dict[str, Any]) -> bool:
+    if bool(kw.get("non_attention_model")):
+        return True
+    haystack = " ".join(
+        str(kw.get(key) or "").lower()
+        for key in (
+            "architecture_family",
+            "model_family",
+            "mechanism",
+            "model_source",
+            "op_names",
+            "graph_ops",
+        )
+    )
+    return any(
+        token in haystack
+        for token in ("mamba", "ssm", "state_space", "selective_scan", "rwkv", "recurrent")
+    )
+
+
+def _v12_has_reproduced_bpe_loss(kw: Dict[str, Any]) -> bool:
+    metric_version = str(kw.get("screening_wikitext_metric_version") or "").strip().lower()
+    if metric_version != "bpe_eval_v1":
+        return False
+    return any(
+        p is not None and float(p) > 0.0 and float(p) <= _V11_TRUST_PPL_FLOOR
+        for p in (
+            kw.get("ppl_validation"),
+            kw.get("ppl_investigation"),
+            kw.get("ppl_screening"),
+        )
+    )
+
+
+def _v12_non_loss_sequence_signal_count(kw: Dict[str, Any]) -> int:
+    signal_values = [
+        kw.get("selective_copy_score"),
+        kw.get("long_ctx_passkey_score") or kw.get("robustness_long_ctx_passkey_score"),
+        kw.get("long_ctx_multi_hop_score") or kw.get("robustness_long_ctx_multi_hop_score"),
+        kw.get("long_ctx_scaling_score") or kw.get("robustness_long_ctx_scaling_score"),
+        kw.get("long_ctx_combined_score") or kw.get("robustness_long_ctx_combined_score"),
+        kw.get("icld_score") or kw.get("trajectory_learning_score"),
+    ]
+    count = sum(1 for value in signal_values if value is not None and float(value) >= 0.20)
+
+    hellaswag = max(
+        float(v)
+        for v in (
+            kw.get("hellaswag_acc_validation") or 0.0,
+            kw.get("hellaswag_acc_investigation") or 0.0,
+            kw.get("hellaswag_acc_screening") or 0.0,
+        )
+    )
+    if hellaswag >= _V11_TRUST_HELLASWAG_FLOOR:
+        count += 1
+
+    blimp = kw.get("blimp_accuracy")
+    if blimp is not None and float(blimp) >= _V11_TRUST_BLIMP_FLOOR:
+        count += 1
+    return count
+
+
+def _v12_champion_eligibility_gate(
+    score: float,
+    bd: Dict[str, Any],
+    kw: Dict[str, Any],
+) -> float:
+    if score <= _V12_CHAMPION_ELIGIBILITY_CEILING or bool(kw.get("is_reference")):
+        return score
+
+    tier = str(kw.get("tier") or "").strip().lower()
+    if tier not in {"investigation", "validation", "breakthrough"}:
+        return score
+
+    eff_ind = _v12_effective_signal(kw, "induction_v2_inv_auc", "induction_auc")
+    eff_bind = _v12_effective_signal(kw, "binding_v2_inv_auc", "binding_auc")
+    induction_qualified = eff_ind is not None and eff_ind >= _V12_INDUCTION_QUALIFIED
+    strong_induction = eff_ind is not None and eff_ind >= _V12_STRONG_INDUCTION
+    binding_qualified = eff_bind is not None and eff_bind >= _V12_BINDING_QUALIFIED
+    strong_binding = eff_bind is not None and eff_bind >= _V12_STRONG_BINDING
+    sequence_signal_count = _v12_non_loss_sequence_signal_count(kw)
+    exception_allowed = (
+        _v12_is_non_attention_exception_family(kw)
+        and _v12_has_reproduced_bpe_loss(kw)
+        and sequence_signal_count >= 2
+    )
+
+    if induction_qualified or exception_allowed:
+        bd["_v12_champion_induction_qualified"] = induction_qualified
+        bd["_v12_champion_binding_qualified"] = binding_qualified
+        bd["_v12_champion_exception_allowed"] = exception_allowed
+        bd["_v12_champion_sequence_signal_count"] = sequence_signal_count
+        bd["_v12_champion_strong_induction"] = strong_induction
+        bd["_v12_champion_strong_binding"] = strong_binding
+        return score
+
+    bd["_v12_champion_eligibility_ceiling"] = _V12_CHAMPION_ELIGIBILITY_CEILING
+    bd["_v12_champion_induction_qualified"] = induction_qualified
+    bd["_v12_champion_binding_qualified"] = binding_qualified
+    bd["_v12_champion_exception_allowed"] = exception_allowed
+    bd["_v12_champion_sequence_signal_count"] = sequence_signal_count
+    bd["_v12_champion_strong_induction"] = strong_induction
+    bd["_v12_champion_strong_binding"] = strong_binding
+    return _V12_CHAMPION_ELIGIBILITY_CEILING
+
+
+def compute_composite_v12(
+    *,
+    decompose: bool = False,
+    **kw: Any,
+) -> Union[float, Dict[str, Any]]:
+    """Composite v12 dry-run: v11 plus loss-budget rebalance and champion gate."""
+    result = compute_composite_v11(decompose=True, **kw)
+    score = float(result["composite_score"])
+    bd = result.get("breakdown") or {}
+
+    loss_before = sum(float(bd.get(key, 0.0) or 0.0) for key in _LOSS_TIER_BD_KEYS)
+    for key, factor in _V12_LOSS_COMPONENT_FACTORS.items():
+        if key not in bd or not bd[key]:
+            continue
+        old_value = float(bd[key])
+        new_value = old_value * factor
+        bd[key] = new_value
+        score += new_value - old_value
+    loss_after = sum(float(bd.get(key, 0.0) or 0.0) for key in _LOSS_TIER_BD_KEYS)
+    bd["_v12_loss_budget_before"] = loss_before
+    bd["_v12_loss_budget_after"] = loss_after
+    bd["_v12_loss_budget_max"] = _V12_LOSS_BUDGET_MAX
+    if "_v10_base_v8style_total" in bd:
+        bd["_v10_base_v8style_total"] = max(
+            0.0,
+            float(bd.get("_v10_base_v8style_total") or 0.0)
+            + (loss_after - loss_before),
+        )
+
+    score = _v12_champion_eligibility_gate(score, bd, kw)
+
     if decompose:
         result["composite_score"] = score
         result["breakdown"] = bd
@@ -1589,13 +1845,21 @@ def compute_composite_v11(
 
 
 _LOSS_TIER_BD_KEYS = (
-    "perf_short", "perf_medium", "perf_long",
-    "param_efficiency", "learning_efficiency", "early_convergence",
+    "perf_short",
+    "perf_medium",
+    "perf_long",
+    "param_efficiency",
+    "learning_efficiency",
+    "early_convergence",
     "speed",
 )
 _UND_TIER_BD_KEYS = (
-    "blimp", "tinystories", "cross_task",
-    "diagnostic", "hellaswag", "hierarchy",
+    "blimp",
+    "tinystories",
+    "cross_task",
+    "diagnostic",
+    "hellaswag",
+    "hierarchy",
 )
 
 
@@ -1658,21 +1922,45 @@ def _score_capability_tier_v10(
 
     if inv_failed:
         for k in (
-            "cap_ar", "cap_induction", "cap_binding",
-            "cap_erf_density", "cap_id_collapse",
-            "cap_erf_decay", "cap_logit_margin",
+            "cap_ar",
+            "cap_induction",
+            "cap_binding",
+            "cap_erf_density",
+            "cap_id_collapse",
+            "cap_erf_decay",
+            "cap_logit_margin",
         ):
             bd[k] = 0.0
         return 0.0, bd
 
     pairs = (
         ("cap_ar", _scurve_higher_better(effective_ar_auc, cfg["cap_ar_anchor"])),
-        ("cap_induction", _scurve_higher_better(effective_induction_auc, cfg["cap_induction_anchor"])),
-        ("cap_binding", _scurve_higher_better(effective_binding_auc, cfg["cap_binding_anchor"])),
-        ("cap_erf_density", _scurve_higher_better(erf_density, cfg["cap_erf_density_anchor"])),
-        ("cap_id_collapse", _scurve_lower_better(id_collapse_rate, cfg["cap_id_collapse_anchor"])),
-        ("cap_erf_decay", _scurve_lower_better(erf_decay_slope, cfg["cap_erf_decay_anchor"])),
-        ("cap_logit_margin", _scurve_higher_better(logit_margin_velocity, cfg["cap_logit_margin_anchor"])),
+        (
+            "cap_induction",
+            _scurve_higher_better(effective_induction_auc, cfg["cap_induction_anchor"]),
+        ),
+        (
+            "cap_binding",
+            _scurve_higher_better(effective_binding_auc, cfg["cap_binding_anchor"]),
+        ),
+        (
+            "cap_erf_density",
+            _scurve_higher_better(erf_density, cfg["cap_erf_density_anchor"]),
+        ),
+        (
+            "cap_id_collapse",
+            _scurve_lower_better(id_collapse_rate, cfg["cap_id_collapse_anchor"]),
+        ),
+        (
+            "cap_erf_decay",
+            _scurve_lower_better(erf_decay_slope, cfg["cap_erf_decay_anchor"]),
+        ),
+        (
+            "cap_logit_margin",
+            _scurve_higher_better(
+                logit_margin_velocity, cfg["cap_logit_margin_anchor"]
+            ),
+        ),
     )
     for key, frac in pairs:
         pts = cfg[f"w_{key}"] * frac
@@ -1743,7 +2031,9 @@ def compute_composite_v10(
         else (kw.get("ppl_investigation") is not None)
     )
     is_validation = (
-        tier in ("validation", "breakthrough") if tier else (kw.get("ppl_validation") is not None)
+        tier in ("validation", "breakthrough")
+        if tier
+        else (kw.get("ppl_validation") is not None)
     )
 
     ar_timed_out = kw.get("ar_timed_out")
@@ -1802,9 +2092,7 @@ def compute_composite_v10(
     und_sum = sum(float(base_bd.get(k, 0.0) or 0.0) for k in _UND_TIER_BD_KEYS)
     legacy_sum = base_score - loss_sum - und_sum
 
-    base_score_penalized = (
-        loss_sum * loss_pen + und_sum * und_pen + legacy_sum
-    )
+    base_score_penalized = loss_sum * loss_pen + und_sum * und_pen + legacy_sum
     cap_pts_penalized = cap_pts * cap_pen
     composite = base_score_penalized + cap_pts_penalized + aux_pts
 
@@ -1842,7 +2130,7 @@ def composite_score_ceiling(version: str | None = None) -> float:
     ceilings do not drift into hard-coded folklore.
     """
     active = version or SCORING_VERSION
-    cfg = _V10_CONFIG if active == "v10" else _V8_CONFIG
+    cfg = _V10_CONFIG if active in {"v10", "v11", "v12"} else _V8_CONFIG
     base_max = (
         cfg["w_perf_short"]
         + cfg["w_perf_medium"]
@@ -1867,11 +2155,11 @@ def composite_score_ceiling(version: str | None = None) -> float:
         + 25.0  # speed
         + 10.0  # early_convergence
     )
-    if active == "v10":
+    if active in {"v10", "v11", "v12"}:
         base_max += (
             cfg["w_cap_ar"]
-            + cfg["w_cap_induction"]
-            + cfg["w_cap_binding"]
+            + (50.0 if active in {"v11", "v12"} else cfg["w_cap_induction"])
+            + (50.0 if active in {"v11", "v12"} else cfg["w_cap_binding"])
             + cfg["w_cap_erf_density"]
             + cfg["w_cap_id_collapse"]
             + cfg["w_cap_erf_decay"]
@@ -1879,6 +2167,8 @@ def composite_score_ceiling(version: str | None = None) -> float:
             + cfg["w_aux_erf_variance"]
             + cfg["w_aux_icld"]
         )
+    if active == "v12":
+        base_max -= 55.0
     return float(base_max)
 
 
@@ -1889,10 +2179,19 @@ def composite_score_ceiling(version: str | None = None) -> float:
 # initial value at process start. The dashboard can change it at runtime via
 # set_scoring_version() / API so operators don't need to restart the server
 # just to flip between v8 and v8.1.
-SUPPORTED_SCORING_VERSIONS: tuple[str, ...] = ("v7", "v8", "v8.1", "v9", "v10", "v11")
-# v11 is the breakthrough-aligned default (2026-04-26): capability-first,
-# high-ceiling anchors, and breakthrough multipliers.
-SCORING_VERSION = os.environ.get("ARIA_SCORING_VERSION", "v11")
+SUPPORTED_SCORING_VERSIONS: tuple[str, ...] = (
+    "v7",
+    "v8",
+    "v8.1",
+    "v9",
+    "v10",
+    "v11",
+    "v12",
+)
+# v12 is the active leaderboard default (2026-04-28): v11's
+# breakthrough-aligned capability anchors plus reduced loss budget and
+# champion-range eligibility gates.
+SCORING_VERSION = os.environ.get("ARIA_SCORING_VERSION", "v12")
 
 
 def get_scoring_version() -> str:
@@ -1926,6 +2225,8 @@ def compute_composite(
     # Read the module attribute at call time so runtime changes via
     # set_scoring_version() take effect without re-importing.
     version = SCORING_VERSION
+    if version == "v12":
+        return compute_composite_v12(decompose=decompose, **kw)
     if version == "v11":
         return compute_composite_v11(decompose=decompose, **kw)
     if version == "v10":

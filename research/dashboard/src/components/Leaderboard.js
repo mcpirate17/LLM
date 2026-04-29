@@ -252,7 +252,7 @@ function Leaderboard({
         </span>
       </div>
       <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 14 }}>
-        Canonical v10 score scale: colors use fixed 15/30/45/60/75/90% bands of the{' '}
+        Canonical v12 score scale: colors use fixed 15/30/45/60/75/90% bands of the{' '}
         {SCORE_MAX}-point rubric ceiling.
       </p>
 

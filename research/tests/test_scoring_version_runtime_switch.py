@@ -11,6 +11,7 @@ from __future__ import annotations
 import pytest
 
 from research.scientist import leaderboard_scoring as ls
+from research.scientist.notebook import LabNotebook
 
 
 @pytest.fixture(autouse=True)
@@ -74,3 +75,32 @@ def test_compute_composite_dispatches_to_live_version() -> None:
         "up the runtime version change."
     )
     assert score_v81 < score_v8  # v8.1 penalty is harsher
+
+
+def test_leaderboard_upsert_persists_live_scoring_version(tmp_path) -> None:
+    """Leaderboard writes must not capture the import-time default version."""
+    db_path = str(tmp_path / "runtime_scoring_leaderboard.db")
+    nb = LabNotebook(db_path)
+    exp_id = nb.start_experiment("synthesis", {})
+    rid = nb.record_program_result(
+        experiment_id=exp_id,
+        graph_fingerprint="runtime-version-fp",
+        graph_json="{}",
+        model_source="test",
+        stage1_passed=True,
+        loss_ratio=0.6,
+        novelty_score=0.3,
+    )
+
+    ls.set_scoring_version("v12")
+    nb.upsert_leaderboard(
+        result_id=rid,
+        model_source="test",
+        screening_loss_ratio=0.6,
+        screening_novelty=0.3,
+        tier="screening",
+    )
+    row = nb.get_leaderboard_entry(rid)
+    nb.close()
+
+    assert row["scoring_version"] == "v12"

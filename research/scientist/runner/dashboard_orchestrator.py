@@ -440,9 +440,7 @@ class _DashboardOrchestratorMixin:
         # pool for mean / CV math.  The legacy merge path is preserved
         # for the original "fix incomplete data" use case where the
         # source row genuinely should be patched.
-        independent_sample = bool(
-            program_metrics.get("intentional_independent_sample")
-        )
+        independent_sample = bool(program_metrics.get("intentional_independent_sample"))
         if (
             source_result_id
             and program_metrics.get("model_source") == "exact_graph_replay"
@@ -468,12 +466,43 @@ class _DashboardOrchestratorMixin:
         # path doesn't pass to the DB schema directly; strip it before
         # **expanding into record_program_result.
         clean_metrics = {
-            k: v for k, v in program_metrics.items()
+            k: v
+            for k, v in program_metrics.items()
             if k != "intentional_independent_sample"
         }
+        # Pin the new program_results row to the SOURCE PARENT
+        # fingerprint when this is an independent score-stability
+        # sample.  graph_from_json(...).fingerprint() does not always
+        # match the source row's stored fingerprint (canonicalization
+        # / layered compile reshapes the graph), and the whole point
+        # of the score-stability rerun is to grow the source fp's
+        # sample pool — recomputing fp here would silently scatter
+        # samples under the wrong parent.  No fallback: if the source
+        # fp is missing, fail loudly so we never accumulate orphan
+        # independent samples.
+        if independent_sample:
+            source_fp = str(
+                program_metrics.get("source_graph_fingerprint") or ""
+            ).strip()
+            if not source_fp:
+                logger.error(
+                    "intentional_independent_sample replay missing "
+                    "source_graph_fingerprint in program_metrics; "
+                    "refusing to persist (would orphan the row).  "
+                    "exp_id=%s source_result_id=%s",
+                    exp_id,
+                    source_result_id or "<missing>",
+                )
+                raise ValueError(
+                    "independent_sample replay requires "
+                    "source_graph_fingerprint in program_metrics"
+                )
+            graph_fp_for_row = source_fp
+        else:
+            graph_fp_for_row = graph.fingerprint()
         return nb.record_program_result(
             experiment_id=exp_id,
-            graph_fingerprint=graph.fingerprint(),
+            graph_fingerprint=graph_fp_for_row,
             graph_json=graph_to_json(graph),
             stage0_passed=True,
             stage05_passed=True,
@@ -524,7 +553,56 @@ class _DashboardOrchestratorMixin:
         loss_ratio,
     ) -> None:
         """Upsert screening leaderboard entry and update best metrics."""
-        if s1_passed and rid:
+        # Score-stability independent samples: redirect the upsert to
+        # the EXISTING leaderboard entry for the source parent fp so
+        # its aggregator picks up the new program_results row we just
+        # wrote.  Pass a minimal payload — the aggregator re-reads all
+        # program_results rows for the fp and computes mean/CV/n_runs
+        # itself; the leaderboard's denormalized loss_ratio etc.
+        # should not be replaced by a single sample's values here.
+        independent_sample = bool(program_metrics.get("intentional_independent_sample"))
+        if s1_passed and rid and independent_sample:
+            source_fp = str(
+                program_metrics.get("source_graph_fingerprint") or ""
+            ).strip()
+            if not source_fp:
+                # Should already have been blocked at _persist_program_row,
+                # but be defensive.
+                raise ValueError(
+                    "independent_sample replay missing source_graph_fingerprint "
+                    "at leaderboard upsert"
+                )
+            nb.flush_writes()
+            existing = nb.get_leaderboard_entry_by_fingerprint(source_fp)
+            if existing is None:
+                logger.error(
+                    "independent-sample replay produced program_results row "
+                    "for fp=%s but no leaderboard entry exists for that "
+                    "source fp; refusing to silently create a fresh entry. "
+                    "Investigate provenance for source_result_id=%s.",
+                    source_fp,
+                    program_metrics.get("source_result_id"),
+                )
+                raise RuntimeError(
+                    f"no leaderboard entry for source fp {source_fp}; "
+                    "independent-sample replay cannot refresh parent"
+                )
+            from ._helpers import _upsert_screening_entry
+
+            # Per codex 2026-04-27 03:32: do NOT swallow refresh
+            # failures with a debug log in the independent-sample
+            # branch.  If the parent refresh fails after the child
+            # row was written, raise visibly so the orchestrator /
+            # top-3 gate stops accumulating orphaned samples.
+            _upsert_screening_entry(
+                nb,
+                {
+                    "result_id": existing["result_id"],
+                    "model_source": (existing.get("model_source") or "graph_synthesis"),
+                    "graph_fingerprint": source_fp,
+                },
+            )
+        elif s1_passed and rid:
             nb.flush_writes()
             try:
                 from ._helpers import _upsert_screening_entry

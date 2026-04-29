@@ -52,23 +52,27 @@ describe('canonicalScoreComponents', () => {
     expect(byKey.aux_erf_variance.label).toBe('ERF Variance');
   });
 
-  test('uses v10 additive totals instead of double-counting child metrics', () => {
+  test('splits v10 base total into loss, understanding, and other base totals', () => {
     const components = canonicalScoreComponents({
       score_breakdown: {
         _v10_aux_trajectory_total: 13.2,
-        _v10_base_v8style_total: 105.5,
+        _v10_base_v8style_total: 106.0,
         _v10_capability_total: 100.6,
         aux_erf_variance: 9.9,
         aux_icld: 3.3,
         cap_binding: 25,
         cap_induction: 25,
-        perf_short: 0.7,
-        tinystories: 21.4,
+        perf_short: 20.5,
+        learning_efficiency: 7.0,
+        tinystories: 21.5,
+        diagnostic: 10.0,
       },
     });
 
     expect(components).toEqual([
-      expect.objectContaining({ key: '_v10_base_v8style_total', label: 'Loss + Understanding Base', weight: 105.5 }),
+      expect.objectContaining({ key: '_loss_tier_total', label: 'Loss Total', weight: 27.5 }),
+      expect.objectContaining({ key: '_understanding_tier_total', label: 'Understanding Total', weight: 31.5 }),
+      expect.objectContaining({ key: '_other_base_total', label: 'Other Base', weight: 47.0 }),
       expect.objectContaining({ key: '_v10_capability_total', label: 'Capability Total', weight: 100.6 }),
       expect.objectContaining({ key: '_v10_aux_trajectory_total', label: 'Aux Trajectory Total', weight: 13.2 }),
     ]);

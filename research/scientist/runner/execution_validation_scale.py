@@ -233,6 +233,12 @@ class _ExecutionValidationScaleMixin:
         self._live_training_context = {
             **base_ctx,
             "source_result_id": source_result_id,
+            "candidate_index": prog_idx + 1,
+            "total_candidates": 1,
+            "training_program_index": 1,
+            "total_training_programs": 1,
+            "training_program_label": "scale-up",
+            "run_kind": "validation",
             "checkpoint_manager": ckpt,
             "checkpoint_phase": "validation",
             "checkpoint_candidate_idx": prog_idx,

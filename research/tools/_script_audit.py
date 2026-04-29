@@ -99,6 +99,20 @@ def complete_script_experiment(
         ),
     )
     nb._maybe_commit()
+    lifecycle_results = dict(payload)
+    lifecycle_results.setdefault("total", _result_count(payload))
+    nb._publish_lifecycle_event_safe(
+        event_type="experiment_completed",
+        run_id=experiment_id,
+        payload={
+            "completed_at": now,
+            "results": lifecycle_results,
+            "aria_summary": summary,
+            "aria_mood": "contemplative",
+            "insights": [],
+            "llm_analysis": None,
+        },
+    )
 
 
 def fail_script_experiment(
@@ -134,6 +148,17 @@ def fail_script_experiment(
         ),
     )
     nb._maybe_commit()
+    lifecycle_results = dict(payload)
+    lifecycle_results.setdefault("total", _result_count(payload))
+    nb._publish_lifecycle_event_safe(
+        event_type="experiment_failed",
+        run_id=experiment_id,
+        payload={
+            "completed_at": now,
+            "error": error,
+            "results": lifecycle_results,
+        },
+    )
 
 
 def build_metric_backfill_context(

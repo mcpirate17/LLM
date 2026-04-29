@@ -442,7 +442,7 @@ function ExpandedDetailBody({
                   ))}
                 </div>
                 <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 8 }}>
-                  These are additive v10 subtotals. Detailed metrics live inside the subtotals and are not added again.
+                  Loss and understanding are split from the v10 base total. Detailed metrics live inside the subtotals and are not added again.
                 </div>
               </>
             ) : (

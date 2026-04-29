@@ -2,7 +2,7 @@ import { apiCall } from "../services/apiService";
 import React, { useState, useEffect, useMemo } from 'react';
 import FailureAnalysis from './FailureAnalysis';
 import ProgramDetail from './ProgramDetail';
-import { formatTime, formatDuration, scoreColor, scoreGradient, scoreToneLabel } from '../utils/format';
+import { SCORE_MAX, formatTime, formatDuration, scoreColor, scoreGradient, scoreToneLabel } from '../utils/format';
 import { lossColor, noveltyColor } from '../utils/colors';
 import useInteractiveTable from './shared/useInteractiveTable';
 import SortIndicator from './shared/SortIndicator';
@@ -187,7 +187,7 @@ function ExperimentSummaryHeader({ experiment, programs }) {
               <div
                 className="champion-strip-fill"
                 style={{
-                  width: `${Math.max(4, Math.min(100, (canonicalScore(bestProgram) / 320) * 100))}%`,
+                  width: `${Math.max(4, Math.min(100, (canonicalScore(bestProgram) / SCORE_MAX) * 100))}%`,
                   background: scoreGradient(canonicalScore(bestProgram)),
                 }}
               />

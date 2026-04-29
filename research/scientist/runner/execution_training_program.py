@@ -572,7 +572,20 @@ class _ExecutionTrainingProgramMixin:
                         "loss": round(loss_val, 6),
                         "total_steps": n_steps,
                         "phase": ctx.get("phase", ""),
+                        "run_kind": ctx.get("run_kind") or ctx.get("phase", ""),
                     }
+                    for source_key, event_key in (
+                        ("source_result_id", "source_result_id"),
+                        ("candidate_index", "candidate_index"),
+                        ("total_candidates", "total_candidates"),
+                        ("training_program_index", "training_program_index"),
+                        ("total_training_programs", "total_training_programs"),
+                        ("training_program_label", "training_program_label"),
+                        ("training_seed", "training_seed"),
+                    ):
+                        value = ctx.get(source_key)
+                        if value is not None:
+                            step_event[event_key] = value
                     if grad_norm > 0:
                         step_event["grad_norm"] = round(grad_norm, 4)
                     self._emit_event("training_step", step_event)

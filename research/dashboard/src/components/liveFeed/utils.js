@@ -11,10 +11,14 @@ export function normalizeLiveFeedEvent(rawEvent) {
   if (!rawType) return null;
   const normalizedType = EVENT_TYPE_ALIASES[rawType] || rawType;
   if (!RENDERABLE_EVENT_TYPES.has(normalizedType)) return null;
+  const rawTs = Number(rawEvent.ts ?? rawEvent.timestamp ?? rawEvent.created_at);
+  const ts = Number.isFinite(rawTs)
+    ? (rawTs > 1e12 ? rawTs : rawTs * 1000)
+    : Date.now();
   return {
     ...rawEvent,
     type: normalizedType,
-    ts: rawEvent.ts || Date.now(),
+    ts,
   };
 }
 
@@ -68,15 +72,57 @@ export function reconcileTerminalEvents(events) {
 export function splitCurveIntoSegments(curve) {
   const segments = [];
   let current = [];
+  let currentKey = null;
   for (const point of curve || []) {
-    if (current.length > 0 && Number(point.step) < Number(current[current.length - 1].step)) {
+    const pointKey = [
+      point?.source_result_id || '',
+      point?.candidate_index ?? '',
+      point?.training_program_index ?? '',
+      point?.training_program_label || '',
+      point?.training_seed ?? '',
+      point?.run_kind || point?.phase || '',
+    ].join('|');
+    const hasExplicitSegment = Boolean(
+      point?.source_result_id
+      || point?.candidate_index != null
+      || point?.training_program_index != null
+      || point?.training_program_label
+      || point?.training_seed != null
+      || point?.run_kind
+    );
+    const shouldSplit = current.length > 0 && (
+      (hasExplicitSegment && currentKey !== null && pointKey !== currentKey)
+      || Number(point.step) < Number(current[current.length - 1].step)
+    );
+    if (shouldSplit) {
       segments.push(current);
       current = [];
+    }
+    if (current.length === 0) {
+      currentKey = hasExplicitSegment ? pointKey : null;
     }
     current.push(point);
   }
   if (current.length > 0) segments.push(current);
   return segments;
+}
+
+export function curveSegmentLabel(segment, fallbackPrefix = 'run', index = 0) {
+  const first = Array.isArray(segment) ? segment[0] : null;
+  if (!first) return `${fallbackPrefix} ${index + 1}`;
+  const candidate = first.candidate_index != null && first.total_candidates != null
+    ? `c${first.candidate_index}/${first.total_candidates}`
+    : first.candidate_index != null
+      ? `c${first.candidate_index}`
+      : '';
+  const program = first.training_program_label
+    || (first.training_program_index != null && first.total_training_programs != null
+      ? `p${first.training_program_index}/${first.total_training_programs}`
+      : first.training_program_index != null
+        ? `p${first.training_program_index}`
+        : '');
+  const label = [candidate, program].filter(Boolean).join(' ');
+  return label || `${fallbackPrefix} ${index + 1}`;
 }
 
 export function buildCurveSnapshot(experimentId, curve, overrides = {}) {

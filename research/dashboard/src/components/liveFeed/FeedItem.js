@@ -117,6 +117,7 @@ const FeedItem = React.memo(function FeedItem({ evt, prevExpId }) {
           </span>
         );
       })()}
+      {evt.type === 'invest_train_complete' && <span className="feed-event-msg" style={{ color: 'var(--accent-yellow)' }}>Investigation {evt.experiment_id?.slice(0, 8)} training complete; finalizing benchmark/probe writes</span>}
       {evt.type === 'invest_complete' && <span className="feed-event-msg feed-success">Investigation {evt.experiment_id?.slice(0, 8)} completed!{evt.n_passed != null && ` ${evt.n_passed} passed`}</span>}
       {evt.type === 'invest_failed' && (
         <span className="feed-event-msg feed-fail">

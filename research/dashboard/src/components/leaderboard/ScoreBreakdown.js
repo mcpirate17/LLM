@@ -81,7 +81,7 @@ export function ScoreBreakdown({ entry }) {
             </div>
           ))}
           <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>
-            Additive v10 subtotals only; metric rows are not double-counted.
+            Loss and understanding are split from the v10 base total; metric rows are not double-counted.
           </div>
         </div>
       )}

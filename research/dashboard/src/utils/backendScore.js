@@ -71,7 +71,10 @@ export function evalMetricQuality(entry) {
 }
 
 export const CANONICAL_SCORE_COMPONENT_META = {
-  _v10_base_v8style_total: { label: 'Loss + Understanding Base', color: 'var(--accent-green)' },
+  _v10_base_v8style_total: { label: 'Base Total', color: 'var(--accent-green)' },
+  _loss_tier_total: { label: 'Loss Total', color: 'var(--accent-blue)' },
+  _understanding_tier_total: { label: 'Understanding Total', color: '#56d364' },
+  _other_base_total: { label: 'Other Base', color: 'var(--text-muted)' },
   _v10_capability_total: { label: 'Capability Total', color: '#79c0ff' },
   _v10_aux_trajectory_total: { label: 'Aux Trajectory Total', color: 'var(--accent-yellow)' },
   perf_short: { label: 'Screening Loss', color: 'var(--accent-blue)' },
@@ -120,10 +123,35 @@ export const CANONICAL_SCORE_COMPONENT_META = {
 };
 
 const V10_ADDITIVE_TOTAL_KEYS = [
-  '_v10_base_v8style_total',
   '_v10_capability_total',
   '_v10_aux_trajectory_total',
 ];
+
+const LOSS_TIER_KEYS = [
+  'perf_short',
+  'perf_medium',
+  'perf_long',
+  'param_efficiency',
+  'learning_efficiency',
+  'early_convergence',
+  'speed',
+];
+
+const UNDERSTANDING_TIER_KEYS = [
+  'blimp',
+  'tinystories',
+  'cross_task',
+  'diagnostic',
+  'hellaswag',
+  'hierarchy',
+];
+
+function positiveBreakdownSum(breakdown, keys) {
+  return keys.reduce((acc, key) => {
+    const value = Number(breakdown[key]);
+    return Number.isFinite(value) && value > 0 ? acc + value : acc;
+  }, 0);
+}
 
 function scoreComponentFor(key, weight) {
   return {
@@ -154,9 +182,30 @@ export function canonicalScoreBreakdown(entry) {
 
 export function canonicalScoreComponents(entry) {
   const breakdown = canonicalScoreBreakdown(entry);
-  const v10Totals = V10_ADDITIVE_TOTAL_KEYS
+  const baseTotal = Number(breakdown._v10_base_v8style_total);
+  const lossTotal = positiveBreakdownSum(breakdown, LOSS_TIER_KEYS);
+  const understandingTotal = positiveBreakdownSum(breakdown, UNDERSTANDING_TIER_KEYS);
+  const splitBaseTotals = [];
+
+  if (Number.isFinite(baseTotal) && baseTotal > 0) {
+    if (lossTotal > 0) {
+      splitBaseTotals.push(scoreComponentFor('_loss_tier_total', lossTotal));
+    }
+    if (understandingTotal > 0) {
+      splitBaseTotals.push(scoreComponentFor('_understanding_tier_total', understandingTotal));
+    }
+    const otherBase = baseTotal - lossTotal - understandingTotal;
+    if (otherBase > 0.01) {
+      splitBaseTotals.push(scoreComponentFor('_other_base_total', otherBase));
+    }
+  }
+
+  const v10Totals = [
+    ...splitBaseTotals,
+    ...V10_ADDITIVE_TOTAL_KEYS
     .filter(key => Number.isFinite(Number(breakdown[key])) && Number(breakdown[key]) > 0)
-    .map(key => scoreComponentFor(key, breakdown[key]));
+    .map(key => scoreComponentFor(key, breakdown[key])),
+  ];
 
   if (v10Totals.length > 0) {
     return v10Totals;

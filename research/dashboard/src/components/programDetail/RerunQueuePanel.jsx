@@ -132,6 +132,7 @@ function RerunQueuePanel({ resultId, leaderboardEntry }) {
       setLastSubmit(resp);
       await refresh();
     } catch (e) {
+      await refresh();
       setError(String(e?.message || e));
     } finally {
       setSubmitting(false);
