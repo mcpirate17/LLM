@@ -10,6 +10,7 @@ function _resolveApiBase() {
 }
 const API_BASE = _resolveApiBase();
 const DEFAULT_TIMEOUT_MS = 30000;
+const RUNNER_DRAIN_TIMEOUT_MS = 15 * 60 * 1000;
 
 function buildTimeoutError(timeoutMs) {
   return new Error(
@@ -93,6 +94,30 @@ export const apiService = {
   getPrograms: (limit = 100) => get(`/api/programs?limit=${limit}`),
   getProgram: (id) => get(`/api/programs/${id}`),
   getProgramLineage: (id) => get(`/api/programs/${id}/lineage`),
+  getProgramCausalEvidence: (id) => get(`/api/programs/${id}/causal-evidence`),
+  startProgramCausalAblation: (id, body = {}) =>
+    post(`/api/programs/${id}/causal-ablation`, body),
+  startBulkCausalAblations: (body = {}) =>
+    post(`/api/ablations/bulk/start`, body),
+  getCausalAblationSummary: (limit = 80) =>
+    get(`/api/ablations/causal-summary?limit=${limit}`),
+  getCausalAblationChampions: (limit = 50) =>
+    get(`/api/ablations/champions?limit=${limit}`),
+  getCausalAblationComponents: (params = {}) => {
+    const q = new URLSearchParams(params).toString();
+    return get(`/api/ablations/components${q ? `?${q}` : ''}`);
+  },
+  getCausalAblationRecommendations: (params = {}) => {
+    const q = new URLSearchParams(params).toString();
+    return get(`/api/ablations/recommendations${q ? `?${q}` : ''}`);
+  },
+  getCausalAblationChildrenForRule: (params) => {
+    const q = new URLSearchParams(params).toString();
+    return get(`/api/ablations/children-for-rule?${q}`);
+  },
+  getConstructionPrior: () => get(`/api/ablations/construction-prior`),
+  refreshConstructionPrior: (body = {}) =>
+    post(`/api/ablations/construction-prior/refresh`, body),
   // Score-stability validation reruns — queue N tasks for the runner.
   queueValidationRerun: (id, body = {}) =>
     post(`/api/programs/${id}/queue-validation-rerun`, body),
@@ -107,7 +132,7 @@ export const apiService = {
   // Manually drain one pending validation rerun (without starting
   // continuous mode).  Returns 409 if an experiment is already running.
   drainPendingValidationRerun: () =>
-    post(`/api/runner/drain-pending-validation-rerun`),
+    postJson(`/api/runner/drain-pending-validation-rerun`, {}, { timeoutMs: RUNNER_DRAIN_TIMEOUT_MS }).then(handleResponse),
   getLiveFeed: (experimentId, n = 100) => get(`/api/live-feed?experiment_id=${encodeURIComponent(experimentId)}&n=${n}`),
   getTrainingCurve: (id) => get(`/api/programs/${id}/training-curve`),
   getReproducibilityManifest: (id) => get(`/api/reproducibility-manifest/${id}`),

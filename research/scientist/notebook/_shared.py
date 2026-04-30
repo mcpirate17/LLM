@@ -897,6 +897,78 @@ CREATE INDEX IF NOT EXISTS idx_program_graph_ops_op ON program_graph_ops(op_name
 CREATE INDEX IF NOT EXISTS idx_program_graph_pairs_fp ON program_graph_pairs(graph_fingerprint, signature);
 CREATE INDEX IF NOT EXISTS idx_program_graph_pairs_sig ON program_graph_pairs(signature);
 
+CREATE TABLE IF NOT EXISTS causal_rule_evidence (
+    evidence_id TEXT PRIMARY KEY,
+    timestamp REAL NOT NULL,
+    parent_experiment_id TEXT,
+    parent_result_id TEXT,
+    parent_fingerprint TEXT,
+    ablation_experiment_id TEXT,
+    rule_type TEXT NOT NULL,
+    rule_key TEXT NOT NULL,
+    rule_context TEXT,
+    original_loss_ratio REAL,
+    ablation_best_loss_ratio REAL,
+    effect_size REAL,
+    original_stage1_passed INTEGER,
+    ablation_stage1_pass_count INTEGER,
+    ablation_total INTEGER,
+    outcome TEXT NOT NULL,
+    confidence REAL NOT NULL DEFAULT 0.0,
+    evidence_json TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_causal_rule_evidence_rule ON causal_rule_evidence(rule_type, rule_key, timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_causal_rule_evidence_parent ON causal_rule_evidence(parent_experiment_id, parent_result_id);
+CREATE INDEX IF NOT EXISTS idx_causal_rule_evidence_ablation ON causal_rule_evidence(ablation_experiment_id);
+
+CREATE TABLE IF NOT EXISTS causal_ablation_child_observations (
+    observation_id TEXT PRIMARY KEY,
+    evidence_id TEXT NOT NULL REFERENCES causal_rule_evidence(evidence_id) ON DELETE CASCADE,
+    timestamp REAL NOT NULL,
+    parent_result_id TEXT,
+    parent_experiment_id TEXT,
+    parent_fingerprint TEXT,
+    child_result_id TEXT,
+    child_experiment_id TEXT,
+    child_fingerprint TEXT NOT NULL,
+    ablation_experiment_id TEXT,
+    source TEXT NOT NULL,
+    rule_type TEXT NOT NULL,
+    rule_key TEXT NOT NULL,
+    stage0_passed INTEGER,
+    stage05_passed INTEGER,
+    stage1_passed INTEGER,
+    loss_ratio REAL,
+    final_loss REAL,
+    model_source TEXT,
+    trust_label TEXT,
+    comparability_label TEXT,
+    provenance_json TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_causal_child_evidence ON causal_ablation_child_observations(evidence_id);
+CREATE INDEX IF NOT EXISTS idx_causal_child_fingerprint ON causal_ablation_child_observations(child_fingerprint);
+CREATE INDEX IF NOT EXISTS idx_causal_child_rule ON causal_ablation_child_observations(rule_type, rule_key, timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_causal_child_parent ON causal_ablation_child_observations(parent_result_id, parent_experiment_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_causal_child_unique ON causal_ablation_child_observations(evidence_id, child_result_id, child_fingerprint, source);
+
+-- Versioned construction-prior snapshots derived from multi-metric causal evidence.
+-- The grammar reads the active snapshot to bias generation toward USE-tagged
+-- ops/motifs and away from AVOID-tagged ones. Snapshots are immutable; activating
+-- a new one demotes the previous active snapshot to is_active=0.
+CREATE TABLE IF NOT EXISTS construction_prior_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    version TEXT NOT NULL UNIQUE,
+    created_at REAL NOT NULL,
+    is_active INTEGER NOT NULL DEFAULT 0,
+    payload_json TEXT NOT NULL,
+    summary_json TEXT,
+    notes TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_cps_active ON construction_prior_snapshots(is_active);
+CREATE INDEX IF NOT EXISTS idx_cps_created ON construction_prior_snapshots(created_at DESC);
+
 -- Analytics tables for feedback-driven template/op/motif selection
 CREATE TABLE IF NOT EXISTS template_stats (
     template_name TEXT PRIMARY KEY,
@@ -1228,6 +1300,8 @@ _PROGRAM_RESULTS_NEW_COLUMNS = {
     "wikitext_pre_perplexity": "REAL",
     "wikitext_ppl_improvement": "REAL",
     "screening_wikitext_status": "TEXT",
+    "tokenizer_mode": "TEXT",
+    "corpus_path": "TEXT",
     "screening_wikitext_metric_version": "TEXT",
     "screening_wikitext_variant": "TEXT",
     "screening_wikitext_elapsed_ms": "REAL",

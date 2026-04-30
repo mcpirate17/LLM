@@ -57,6 +57,12 @@ from .screening_signal_weights import (
     build_signal_weight_maps,
 )
 from .failure_provenance import infer_graph_failure_provenance
+from ..causal_attribution import causal_generation_adjustments
+from ..construction_priors import (
+    construction_prior_as_grammar_adjustments,
+    get_active_construction_prior,
+)
+from ..ml_influence_policy import component_is_allowed
 from ..notebook import LabNotebook, ExperimentEntry
 
 import logging
@@ -388,6 +394,10 @@ class _ExecutionScreeningMixin:
 
             # Flush async writes so auto-escalate can read back S1 survivors
             nb.flush_writes()
+            try:
+                self._maybe_run_causal_ablation_loop(nb, exp_id, config, results)
+            except Exception as exc:
+                logger.warning("Causal ablation loop failed for %s: %s", exp_id, exc)
             # Auto-escalation pipeline (investigation/validation)
             results["experiment_id"] = exp_id
             self._auto_escalate(results, config, nb, phase="screening")
@@ -400,9 +410,9 @@ class _ExecutionScreeningMixin:
 
             self._update_progress(
                 status="completed",
-                aria_message=summary.split("\n")[-1]
-                if summary
-                else "Experiment complete.",
+                aria_message=(
+                    summary.split("\n")[-1] if summary else "Experiment complete."
+                ),
             )
 
             self._emit_event(
@@ -526,7 +536,6 @@ class _ExecutionScreeningMixin:
         slot_motif_denylist: Dict[str, frozenset[str]] = {}
         analytics = None
         grammar_gate: Optional[Dict[str, Any]] = None
-        from ..ml_influence_policy import component_is_allowed
 
         learned_grammar_allowed = component_is_allowed(
             "learned_grammar_weights", config
@@ -734,6 +743,61 @@ class _ExecutionScreeningMixin:
                     )
             except (AttributeError, TypeError, ValueError) as e:
                 logger.debug("Failed building observability priors: %s", e)
+            try:
+                # Loss-only legacy path (kept as a baseline so we don't lose
+                # signal from old evidence rows that pre-date metric backfill).
+                causal_adjustments = causal_generation_adjustments(nb)
+                # Multi-metric construction prior — credits induction/binding/AR/
+                # BLiMP/HellaSwag/PPL deltas, not just loss. Active snapshot wins
+                # ties with the legacy path, since it's the policy of record.
+                active_prior = get_active_construction_prior(nb)
+                prior_adjustments = construction_prior_as_grammar_adjustments(active_prior)
+                for layer in (causal_adjustments, prior_adjustments):
+                    for op_name, weight in (layer.get("op_weights") or {}).items():
+                        op_weights[op_name] = (
+                            float(op_weights.get(op_name, 1.0)) * float(weight)
+                        ) ** 0.5
+                    for slot_key, weights in (
+                        layer.get("slot_motif_multipliers") or {}
+                    ).items():
+                        merged = dict(slot_motif_multipliers.get(str(slot_key), {}))
+                        for motif_name, weight in (weights or {}).items():
+                            current = float(merged.get(str(motif_name), 1.0))
+                            w = float(weight)
+                            merged[str(motif_name)] = (
+                                max(current, w) if w >= 1.0 else min(current, w)
+                            )
+                        slot_motif_multipliers[str(slot_key)] = merged
+                    for slot_key, denied in (
+                        layer.get("slot_motif_denylist") or {}
+                    ).items():
+                        existing = set(
+                            slot_motif_denylist.get(str(slot_key), frozenset())
+                        )
+                        existing.update(str(name) for name in (denied or []))
+                        if existing:
+                            slot_motif_denylist[str(slot_key)] = frozenset(existing)
+                if prior_adjustments.get("version"):
+                    logger.info(
+                        "Applied construction prior snapshot %s "
+                        "(op_weights=%d slot_motifs=%d denylist=%d)",
+                        prior_adjustments.get("version"),
+                        len(prior_adjustments.get("op_weights") or {}),
+                        sum(
+                            len(v)
+                            for v in (
+                                prior_adjustments.get("slot_motif_multipliers") or {}
+                            ).values()
+                        ),
+                        sum(
+                            len(v)
+                            for v in (
+                                prior_adjustments.get("slot_motif_denylist") or {}
+                            ).values()
+                        ),
+                    )
+            except (AttributeError, TypeError, ValueError) as e:
+                logger.debug("Failed applying causal generation priors: %s", e)
         else:
             template_weights, motif_weights = {}, {}
             logger.info("Screening signal weight maps disabled or blocked for this run")

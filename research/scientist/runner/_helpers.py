@@ -21,6 +21,7 @@ from ._helpers_gate import (  # noqa: F401
     stage1_learning_gate,
 )
 from ._helpers_metrics import (  # noqa: F401
+    S1_REQUIRED_POST_METRIC_COLUMNS,
     _graph_matching_ops,
     _load_best_reference_probe_ppl,
     _native_proactive_gating,
@@ -31,8 +32,10 @@ from ._helpers_metrics import (  # noqa: F401
     compute_seed_metrics,
     graph_observed_routing_ops,
     graph_routing_ops,
+    program_result_kwargs_from_s1,
     propose_ablation_suite,
     routing_fast_lane_fields,
+    s1_post_metric_completeness,
     screening_probe_fields,
     screening_wikitext_fields,
     trajectory_probe_fields,

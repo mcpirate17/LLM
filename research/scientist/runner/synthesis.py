@@ -37,12 +37,25 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-from ._types import RunConfig
+from ._types import LiveProgress, RunConfig
 
-from ._helpers import propose_ablation_suite
+from ._helpers import (
+    program_result_kwargs_from_s1,
+    propose_ablation_suite,
+    routing_fast_lane_fields,
+    screening_probe_fields,
+    screening_wikitext_fields,
+    v9_trajectory_fields,
+)
 
 
 from ...synthesis.op_roles import MOE_OPS
+from ..causal_attribution import (
+    CausalAblationCandidate,
+    run_ablation_suite,
+    select_causal_ablation_candidates,
+)
+from ..runtime_events import publish_runtime_event
 
 
 def _load_recent_synthesis_experiments(nb: LabNotebook, limit: int):
@@ -570,35 +583,9 @@ class _SynthesisMixin:
             ):
                 best_ablation_lr = loss_ratio
 
-            # Extract behavioral fingerprint from S1 worker if present
-            _fp_kwargs = {}
-            _fp_dict = s1.get("_behavioral_fingerprint") if s1 else None
-            if _fp_dict:
-                from ...eval.fingerprint import BehavioralFingerprint
-
-                _fp = BehavioralFingerprint()
-                for _k, _v in _fp_dict.items():
-                    if hasattr(_fp, _k):
-                        setattr(_fp, _k, _v)
-                _fp_kwargs = {
-                    "fingerprint_json": json.dumps(json_safe(_fp.to_dict())),
-                    "fp_interaction_locality": _fp.interaction_locality,
-                    "fp_interaction_sparsity": _fp.interaction_sparsity,
-                    "fp_interaction_symmetry": _fp.interaction_symmetry,
-                    "fp_interaction_hierarchy": _fp.interaction_hierarchy,
-                    "fp_intrinsic_dim": _fp.intrinsic_dim,
-                    "fp_isotropy": _fp.isotropy,
-                    "fp_rank_ratio": _fp.rank_ratio,
-                    "fp_jacobian_spectral_norm": _fp.jacobian_spectral_norm,
-                    "fp_jacobian_effective_rank": _fp.jacobian_effective_rank,
-                    "fp_sensitivity_uniformity": _fp.sensitivity_uniformity,
-                    "fp_cka_vs_transformer": _fp.cka_vs_transformer,
-                    "fp_cka_vs_ssm": _fp.cka_vs_ssm,
-                    "fp_cka_vs_conv": _fp.cka_vs_conv,
-                    "fp_hierarchy_fitness": _fp.hierarchy_fitness,
-                    "fp_gromov_delta": _fp.gromov_delta,
-                }
-
+            ablation_kwargs: Dict[str, Any] = (
+                program_result_kwargs_from_s1(s1, model_source="ablation") if s1 else {"model_source": "ablation"}
+            )
             rid = nb.record_program_result(
                 experiment_id=exp_id,
                 graph_fingerprint=graph.fingerprint(),
@@ -607,28 +594,36 @@ class _SynthesisMixin:
                 stage05_passed=s05_passed,
                 stage1_passed=s1_passed,
                 stage0_error=s0.error,
-                final_loss=final_loss,
-                loss_ratio=loss_ratio,
-                error_type=s1.get("error_type") if s1 else None,
-                error_message=s1.get("error") if s1 else None,
-                param_count=s1.get("param_count") if s1 else None,
-                model_source="ablation",
-                perf_report_json=json.dumps(json_safe(s1.get("perf_report", {})))
-                if s1_passed
-                else None,
-                kernel_timings_json=json.dumps(
-                    json_safe(s1.get("kernel_timings_ms", {}))
-                )
-                if s1_passed
-                else None,
-                starvation_report_json=json.dumps(
-                    json_safe(s1.get("starvation_report", {}))
-                )
-                if s1_passed
-                else None,
-                **_fp_kwargs,
+                intentional_rerun_reason="ablation_counterfactual",
+                **ablation_kwargs,
             )
             result_ids.append(rid)
+            publish_runtime_event(
+                notebook_path=self.notebook_path,
+                event_type="ablation_child_completed",
+                producer="runner.synthesis",
+                run_id=exp_id,
+                payload={
+                    "experiment_id": exp_id,
+                    "result_id": rid,
+                    "index": idx + 1,
+                    "total": len(evaluable_graphs),
+                    "stage0_passed": s0_passed,
+                    "stage05_passed": s05_passed,
+                    "stage1_passed": s1_passed,
+                    "loss_ratio": loss_ratio,
+                    "hellaswag_acc": ablation_kwargs.get("hellaswag_acc"),
+                    "blimp_overall_accuracy": ablation_kwargs.get(
+                        "blimp_overall_accuracy"
+                    ),
+                    "induction_auc": ablation_kwargs.get("induction_auc"),
+                    "binding_auc": ablation_kwargs.get("binding_auc"),
+                    "ar_auc": ablation_kwargs.get("ar_auc"),
+                    "wikitext_perplexity": ablation_kwargs.get(
+                        "wikitext_perplexity"
+                    ),
+                },
+            )
 
         total = len(result_ids)
         outcome = "supported" if total > 0 and stage1_pass == 0 else "not_supported"
@@ -698,6 +693,161 @@ class _SynthesisMixin:
 
         return ([exp_id], outcome)
 
+    def _run_causal_ablation_candidates(
+        self,
+        nb: LabNotebook,
+        config: RunConfig,
+        candidates: List[CausalAblationCandidate],
+        *,
+        max_graphs: int,
+    ) -> Dict[str, Any]:
+        """Run bounded causal ablations and persist rule evidence."""
+        if not candidates:
+            return {"planned": 0, "launched": 0, "evidence": []}
+        launched = 0
+        evidence_rows: List[Dict[str, Any]] = []
+        graph_budget = max(1, int(max_graphs or 1))
+        for candidate in candidates:
+            suite = propose_ablation_suite(candidate.graph, candidate.hypothesis)
+            if not suite:
+                continue
+            suite = suite[:graph_budget]
+            result = run_ablation_suite(
+                nb=nb,
+                runner=self,
+                config=config,
+                candidate=candidate,
+                graphs=suite,
+                campaign="causal_attribution",
+            )
+            if result is None:
+                continue
+            launched += 1
+            evidence_rows.append(result)
+            self._log_learning_event_compat(
+                nb,
+                "causal_ablation_evidence",
+                (
+                    f"Causal ablation {result['outcome']} for "
+                    f"{candidate.rule_type}:{candidate.rule_key}"
+                ),
+                evidence=json.dumps(json_safe(result), sort_keys=True),
+            )
+        return {
+            "planned": len(candidates),
+            "launched": launched,
+            "evidence": evidence_rows,
+        }
+
+    def _run_causal_ablation_for_result_thread(
+        self,
+        result_id: str,
+        config: RunConfig,
+    ) -> None:
+        """Background entry point for a manual program-detail ablation run."""
+        nb = self._make_notebook()
+        try:
+            with self._lock:
+                self._progress = LiveProgress(
+                    experiment_id=f"causal-ablation:{result_id[:12]}",
+                    status="evaluating",
+                    total_programs=max(1, int(config.causal_ablation_max_graphs or 4)),
+                    aria_message="Running causal ablation suite...",
+                )
+            row = nb.conn.execute(
+                """SELECT experiment_id
+                   FROM program_results
+                   WHERE result_id = ?""",
+                (result_id,),
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"Program not found: {result_id}")
+            parent_experiment_id = str(row["experiment_id"] or "")
+            candidates = [
+                item
+                for item in select_causal_ablation_candidates(
+                    nb,
+                    experiment_id=parent_experiment_id,
+                    max_survivors=max(1, int(config.causal_ablation_top_k or 1)),
+                    max_signals_per_survivor=max(
+                        1, int(config.causal_ablation_max_signals or 2)
+                    ),
+                )
+                if item.parent_result_id == result_id
+            ]
+            result = self._run_causal_ablation_candidates(
+                nb,
+                config,
+                candidates,
+                max_graphs=max(1, int(config.causal_ablation_max_graphs or 4)),
+            )
+            self._emit_event(
+                "causal_ablation_completed",
+                {"result_id": result_id, "result": result},
+            )
+            self._update_progress(
+                status="completed",
+                aria_message=(
+                    f"Causal ablation complete: {result.get('launched', 0)} suite(s)."
+                ),
+            )
+        except Exception as exc:
+            logger.exception("Causal ablation failed for %s", result_id)
+            self._update_progress(
+                status="failed", error=str(exc), aria_message=str(exc)
+            )
+            self._emit_event(
+                "causal_ablation_failed",
+                {"result_id": result_id, "error": str(exc)},
+            )
+        finally:
+            nb.close()
+
+    def _maybe_run_causal_ablation_loop(
+        self,
+        nb: LabNotebook,
+        exp_id: str,
+        config: RunConfig,
+        results: Dict[str, Any],
+    ) -> None:
+        """Optionally run causal ablations after a synthesis experiment."""
+        if not getattr(config, "enable_causal_ablation", False):
+            return
+        interval = int(getattr(config, "causal_ablation_interval", 0) or 0)
+        if interval <= 0:
+            return
+        completed_count = int(
+            nb.conn.execute(
+                "SELECT COUNT(*) FROM experiments WHERE status = 'completed'"
+            ).fetchone()[0]
+            or 0
+        )
+        if completed_count % interval != 0:
+            return
+        if int(results.get("stage1_passed") or 0) <= 0:
+            return
+        candidates = select_causal_ablation_candidates(
+            nb,
+            experiment_id=exp_id,
+            max_survivors=max(1, int(getattr(config, "causal_ablation_top_k", 1) or 1)),
+            max_signals_per_survivor=max(
+                1, int(getattr(config, "causal_ablation_max_signals", 2) or 2)
+            ),
+        )
+        summary = self._run_causal_ablation_candidates(
+            nb,
+            config,
+            candidates,
+            max_graphs=max(
+                1, int(getattr(config, "causal_ablation_max_graphs", 4) or 4)
+            ),
+        )
+        if summary.get("launched"):
+            results["causal_ablation"] = {
+                "planned": summary.get("planned", 0),
+                "launched": summary.get("launched", 0),
+            }
+
     def _evaluate_grammar_update_gate(
         self,
         nb: LabNotebook,
@@ -755,11 +905,9 @@ class _SynthesisMixin:
                 logger.debug("Ablation dedup check failed: %s", e)
 
         if strong_corr and top_signal_interpretable:
-            row = nb.conn.execute(
-                """SELECT graph_json, loss_ratio FROM program_results
+            row = nb.conn.execute("""SELECT graph_json, loss_ratio FROM program_results
                    WHERE stage1_passed = 1 AND graph_json IS NOT NULL
-                   ORDER BY loss_ratio ASC NULLS LAST LIMIT 1"""
-            ).fetchone()
+                   ORDER BY loss_ratio ASC NULLS LAST LIMIT 1""").fetchone()
             if row and row["graph_json"]:
                 try:
                     base_graph = graph_from_json(row["graph_json"])
@@ -969,12 +1117,14 @@ class _SynthesisMixin:
             eff_result = compute_efficiency_multiple(
                 loss_ratio=s1_result.get("loss_ratio") if s1_result else None,
                 param_count=param_count or None,
-                forward_time_ms=s1_result.get("forward_time_ms")
-                if s1_result
-                else (
-                    getattr(sandbox_result, "forward_time_ms", None)
-                    if sandbox_result
-                    else None
+                forward_time_ms=(
+                    s1_result.get("forward_time_ms")
+                    if s1_result
+                    else (
+                        getattr(sandbox_result, "forward_time_ms", None)
+                        if sandbox_result
+                        else None
+                    )
                 ),
                 peak_memory_mb=s1_result.get("peak_memory_mb") if s1_result else None,
                 throughput_tok_s=s1_result.get("throughput") if s1_result else None,
@@ -1228,9 +1378,9 @@ class _SynthesisMixin:
                         include_breakdown=True,
                     )
                     child.metadata["refinement"]["intent_score"] = score
-                    child.metadata["refinement"]["intent_score_breakdown"] = (
-                        score_breakdown
-                    )
+                    child.metadata["refinement"][
+                        "intent_score_breakdown"
+                    ] = score_breakdown
                     if analysis_data:
                         recipe = analysis_data.get("recipe", {})
                         child.metadata["refinement"]["analysis_driven"] = True

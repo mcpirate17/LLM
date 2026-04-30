@@ -403,6 +403,196 @@ def v9_trajectory_fields(row: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+_S1_SCALAR_COLUMNS: Tuple[str, ...] = (
+    "initial_loss",
+    "min_loss",
+    "loss_improvement_rate",
+    "avg_step_time_ms",
+    "total_train_time_ms",
+    "max_grad_norm",
+    "mean_grad_norm",
+    "grad_norm_std",
+    "n_train_steps",
+    "final_lr",
+    "validation_loss",
+    "validation_loss_ratio",
+    "generalization_gap",
+    "discovery_loss",
+    "discovery_loss_ratio",
+    "train_budget_steps",
+    "param_count",
+    "throughput_tok_s",
+)
+
+
+_BEHAVIORAL_FINGERPRINT_COLUMNS: Tuple[str, ...] = (
+    "fp_interaction_locality",
+    "fp_interaction_sparsity",
+    "fp_interaction_symmetry",
+    "fp_interaction_hierarchy",
+    "fp_intrinsic_dim",
+    "fp_isotropy",
+    "fp_rank_ratio",
+    "fp_jacobian_spectral_norm",
+    "fp_jacobian_effective_rank",
+    "fp_sensitivity_uniformity",
+    "fp_cka_vs_transformer",
+    "fp_cka_vs_ssm",
+    "fp_cka_vs_conv",
+    "fp_hierarchy_fitness",
+    "fp_gromov_delta",
+)
+
+
+# Columns that MUST be present on a row marked stage1_passed=True for it to
+# count as a complete post-S1 observation. The Causal Ablation Diagnostics
+# page treats anything missing one of these as "loss-only" and refuses to
+# present it as known-good/known-bad evidence.
+S1_REQUIRED_POST_METRIC_COLUMNS: Tuple[str, ...] = (
+    "wikitext_perplexity",
+    "wikitext_score",
+    "hellaswag_acc",
+    "blimp_overall_accuracy",
+    "induction_auc",
+    "binding_auc",
+    "binding_composite",
+    "ar_auc",
+    "fp_jacobian_erf_density",
+    "fp_icld_delta_loss",
+    "fp_logit_margin_delta",
+)
+
+
+def _behavioral_fingerprint_kwargs(
+    s1: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Reconstruct BehavioralFingerprint columns + fingerprint_json from s1.
+
+    The S1 worker returns a ``_behavioral_fingerprint`` dict (the canonical
+    intermediate representation between the worker and persistence). Both
+    the regular pipeline (dashboard_orchestrator._build_novelty_kwargs) and
+    the ablation pipeline must turn that into the same set of program_results
+    columns. Centralizing it here makes drift impossible.
+    """
+    fp_dict = s1.get("_behavioral_fingerprint")
+    if not isinstance(fp_dict, dict):
+        return {}
+    try:
+        from ...eval.fingerprint import BehavioralFingerprint
+    except ImportError:
+        return {}
+    fp = BehavioralFingerprint()
+    for k, v in fp_dict.items():
+        if hasattr(fp, k):
+            setattr(fp, k, v)
+    out: Dict[str, Any] = {
+        "fingerprint_json": json.dumps(json_safe(fp.to_dict())),
+    }
+    for col in _BEHAVIORAL_FINGERPRINT_COLUMNS:
+        if hasattr(fp, col[len("fp_") :]):
+            out[col] = getattr(fp, col[len("fp_") :], None)
+    # Drop None entries so the persistence layer's COALESCE-style upsert
+    # doesn't blow away earlier-phase values.
+    return {k: v for k, v in out.items() if v is not None}
+
+
+def program_result_kwargs_from_s1(
+    s1: Dict[str, Any],
+    *,
+    model_source: str,
+    extra: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Canonical adapter from ``_micro_train`` output → ``record_program_result`` kwargs.
+
+    Single source of truth used by every persistence path (regular synthesis,
+    ablation runner, ablation backfill) so a metric added in one place lands
+    in every place. Returns a flat dict of column-name → value that can be
+    expanded with ``**`` into ``record_program_result`` or
+    ``merge_program_result_patch``.
+
+    Includes:
+      - S1 scalar metrics (loss/perf/grad/throughput/etc.)
+      - WikiText screening fields
+      - HellaSwag, BLiMP, induction, binding, AR probe fields
+      - Routing fast-lane fields
+      - v9 trajectory/fingerprint fields (ERF, ICLD, logit margin, ID collapse)
+      - pruning_*  (anything starting with that prefix on the s1 dict)
+      - perf_report_json, kernel_timings_json, starvation_report_json
+      - Reconstructed BehavioralFingerprint columns + fingerprint_json
+      - ``model_source`` and final_loss/loss_ratio/error fields
+
+    Always passes through ``error_type``/``error_message`` from s1 even on a
+    failed S1 — caller decides whether to drop them. Caller is responsible
+    for adding stage gate flags (stage0/05/1_passed), graph_fingerprint,
+    graph_json, experiment_id, and any campaign-specific provenance labels
+    (intentional_rerun_reason, trust_label, etc).
+    """
+    if not isinstance(s1, dict):
+        s1 = {}
+
+    out: Dict[str, Any] = {"model_source": model_source}
+
+    if "final_loss" in s1:
+        out["final_loss"] = s1.get("final_loss")
+    if "loss_ratio" in s1:
+        out["loss_ratio"] = s1.get("loss_ratio")
+    if s1.get("error_type") is not None:
+        out["error_type"] = s1.get("error_type")
+    if s1.get("error") is not None:
+        out["error_message"] = s1.get("error")
+
+    for key in _S1_SCALAR_COLUMNS:
+        value = s1.get(key)
+        if value is not None:
+            out[key] = value
+
+    out.update(screening_wikitext_fields(s1))
+    out.update(screening_probe_fields(s1))
+    out.update(routing_fast_lane_fields(s1))
+    out.update(v9_trajectory_fields(s1))
+
+    for key, value in s1.items():
+        if isinstance(key, str) and key.startswith("pruning_") and value is not None:
+            out[key] = value
+
+    perf = s1.get("perf_report")
+    if perf is not None:
+        out["perf_report_json"] = json.dumps(json_safe(perf), sort_keys=True)
+    kernels = s1.get("kernel_timings_ms")
+    if kernels is not None:
+        out["kernel_timings_json"] = json.dumps(json_safe(kernels), sort_keys=True)
+    starvation = s1.get("starvation_report")
+    if starvation is not None:
+        out["starvation_report_json"] = json.dumps(json_safe(starvation), sort_keys=True)
+
+    out.update(_behavioral_fingerprint_kwargs(s1))
+
+    if extra:
+        out.update({k: v for k, v in extra.items() if v is not None})
+
+    return out
+
+
+def s1_post_metric_completeness(row: Dict[str, Any]) -> Dict[str, Any]:
+    """Audit a program_result row for post-S1 metric completeness.
+
+    Returns a dict suitable for diagnostics/tests with:
+      - missing: list of S1_REQUIRED_POST_METRIC_COLUMNS that are None
+      - present: list of columns that are populated
+      - is_complete: True iff every required column is non-None
+      - coverage: fraction (0..1) of required columns present
+    """
+    missing = [c for c in S1_REQUIRED_POST_METRIC_COLUMNS if row.get(c) is None]
+    present = [c for c in S1_REQUIRED_POST_METRIC_COLUMNS if row.get(c) is not None]
+    total = len(S1_REQUIRED_POST_METRIC_COLUMNS)
+    return {
+        "missing": missing,
+        "present": present,
+        "is_complete": not missing,
+        "coverage": (total - len(missing)) / total if total else 1.0,
+    }
+
+
 def _load_best_reference_probe_ppl(step: int) -> Optional[float]:
     """Return the best cached reference PPL at the requested checkpoint."""
     try:

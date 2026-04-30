@@ -28,6 +28,59 @@ BOOL_PROGRAM_RESULT_FIELDS = {
 }
 
 
+_S1_REQUIRED_POST_METRIC_COLUMNS_FOR_GUARDRAIL = (
+    "wikitext_perplexity",
+    "hellaswag_acc",
+    "blimp_overall_accuracy",
+    "induction_auc",
+    "binding_auc",
+    "binding_composite",
+    "ar_auc",
+)
+
+
+_LOSS_ONLY_GUARDED_SOURCES = frozenset({"ablation"})
+
+
+def _enforce_s1_metric_completeness_for_ablation(
+    *,
+    graph_fingerprint: str,
+    kwargs: Dict[str, Any],
+    logger,
+) -> None:
+    """Refuse to write a stage1_passed=True ablation row missing core post-S1 metrics.
+
+    The original ablation runner persisted only loss/basic fields and silently
+    shipped a 1500-row dataset that the diagnostics page then tried to draw
+    causal conclusions from. Enforce that any ablation S1-passed row coming
+    through this path is metric-complete (or explicitly marked partial via
+    trust_label='ablation_metric_backfill_replay' which the backfill tool sets
+    after the replay actually fills the columns). Fail loud, not silent.
+    """
+    if not kwargs.get("stage1_passed"):
+        return
+    model_source = str(kwargs.get("model_source") or "").lower()
+    if model_source not in _LOSS_ONLY_GUARDED_SOURCES:
+        return
+    if str(kwargs.get("trust_label") or "").startswith("ablation_metric_backfill"):
+        return
+    missing = [
+        c
+        for c in _S1_REQUIRED_POST_METRIC_COLUMNS_FOR_GUARDRAIL
+        if kwargs.get(c) is None
+    ]
+    if not missing:
+        return
+    msg = (
+        "BLOCKED ablation S1 write missing post-S1 metrics: "
+        f"fp={graph_fingerprint[:16]} missing={missing} "
+        "(use program_result_kwargs_from_s1 to assemble metrics, or set "
+        "trust_label starting with 'ablation_metric_backfill' for backfill paths)."
+    )
+    logger.error(msg)
+    raise ValueError(msg)
+
+
 def should_record_program_result(
     *,
     graph_fingerprint: str,
@@ -69,6 +122,12 @@ def should_record_program_result(
             graph_fingerprint,
         )
         return False
+
+    _enforce_s1_metric_completeness_for_ablation(
+        graph_fingerprint=graph_fingerprint,
+        kwargs=kwargs,
+        logger=logger,
+    )
     return True
 
 
