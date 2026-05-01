@@ -42,9 +42,12 @@ GOOGLE_BACKUP_ROOT = Path("/home/tim/GoogleDrive/Backups/LLM_Research")
 LOGGER = logging.getLogger("ablation_metric_backfill")
 
 
-CORE_MISSING_WHERE = """
-    e.experiment_type = 'ablation'
-    AND COALESCE(pr.stage1_passed, 0) = 1
+# Sweep mode (no --result-id): only ablation experiments are safe to backfill
+# in bulk. Targeted mode (--result-id supplied): caller has pinned a specific
+# row, so we drop the experiment_type filter — the ID itself is the safety.
+_BULK_SWEEP_TYPE_FILTER = "e.experiment_type = 'ablation' AND"
+_INCOMPLETE_METRICS_PREDICATE = """
+    COALESCE(pr.stage1_passed, 0) = 1
     AND pr.graph_json IS NOT NULL
     AND TRIM(CAST(pr.graph_json AS TEXT)) <> ''
     AND (
@@ -61,6 +64,7 @@ CORE_MISSING_WHERE = """
         OR pr.fp_logit_margin_delta IS NULL
     )
 """
+CORE_MISSING_WHERE = f"{_BULK_SWEEP_TYPE_FILTER} {_INCOMPLETE_METRICS_PREDICATE}"
 
 
 def configure_logging(log_file: str) -> Path:
@@ -95,10 +99,12 @@ def select_rows(
     nb: LabNotebook, *, limit: int, result_id: str = ""
 ) -> list[dict[str, Any]]:
     params: list[Any] = []
-    where = CORE_MISSING_WHERE
     if result_id:
-        where += " AND pr.result_id = ?"
+        # Targeted: trust the explicit ID, skip the ablation-only safety.
+        where = _INCOMPLETE_METRICS_PREDICATE + " AND pr.result_id = ?"
         params.append(result_id)
+    else:
+        where = CORE_MISSING_WHERE
     sql = f"""
         SELECT pr.*, e.config_json AS experiment_config_json
         FROM program_results pr
