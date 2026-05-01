@@ -31,6 +31,7 @@ demonstrates the full pattern.
 from __future__ import annotations
 
 import logging
+import math
 import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
@@ -53,6 +54,18 @@ from .transitive_logit_margin import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _logit_margin_core_is_finite(result: LogitMarginResult) -> bool:
+    for value in (
+        result.velocity,
+        result.initial_margin,
+        result.final_margin,
+        result.delta_margin,
+    ):
+        if value is None or not math.isfinite(float(value)):
+            return False
+    return True
 
 
 @dataclass
@@ -101,6 +114,8 @@ def compute_trajectory_metrics(
     icld_batch_size: int = 32,
     logit_margin_n_train_steps: int = 60,
     logit_margin_batch_size: int = 32,
+    logit_margin_lr: float = 1e-3,
+    logit_margin_retry_lr: float | None = 3e-4,
     id_collapse_early: HiddenStateSnapshot | None = None,
     id_collapse_late: HiddenStateSnapshot | None = None,
     spec_norm_vocab_size: int = 32000,
@@ -161,8 +176,22 @@ def compute_trajectory_metrics(
         model,
         n_train_steps=logit_margin_n_train_steps,
         batch_size=logit_margin_batch_size,
+        lr=logit_margin_lr,
         device=dev,
     )
+    if logit_margin_retry_lr is not None and not _logit_margin_core_is_finite(
+        out.logit_margin
+    ):
+        retry = compute_transitive_logit_margin(
+            model,
+            n_train_steps=logit_margin_n_train_steps,
+            batch_size=logit_margin_batch_size,
+            lr=logit_margin_retry_lr,
+            device=dev,
+        )
+        if _logit_margin_core_is_finite(retry):
+            retry.status = f"{retry.status}_lr{logit_margin_retry_lr:g}_fallback"
+            out.logit_margin = retry
 
     # 5) ID collapse — only if caller supplied snapshots.
     if id_collapse_early is not None and id_collapse_late is not None:

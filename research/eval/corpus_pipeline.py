@@ -78,6 +78,7 @@ def cache_hf_text_splits(
         ) from exc
 
     load_kwargs = dict(load_kwargs or {})
+    load_kwargs.setdefault("trust_remote_code", trust_remote_code)
     shared_dataset = None
     if not streaming:
         shared_dataset = load_dataset(

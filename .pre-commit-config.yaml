@@ -18,6 +18,16 @@ repos:
 
   - repo: local
     hooks:
+      - id: protected-data-deletes
+        name: Block protected research data deletes
+        language: system
+        entry: python conductor/check_protected_deletes.py
+        pass_filenames: false
+      - id: duplicate-function-bodies
+        name: Block copied Python function bodies
+        language: system
+        entry: python conductor/check_duplicate_function_bodies.py
+        pass_filenames: false
       - id: guardrail-audit
         name: Guardrail audit (staged files)
         language: system

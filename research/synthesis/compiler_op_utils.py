@@ -419,6 +419,13 @@ def _t(x):
     return HAS_KERNELS and x.is_cuda and not x.requires_grad
 
 
+def _is_inference_tensor(value: object) -> bool:
+    """Return True when *value* is a tensor created inside inference_mode."""
+    return isinstance(value, torch.Tensor) and bool(
+        getattr(value, "is_inference", lambda: False)()
+    )
+
+
 def _get_stacked_params(
     module: nn.Module, attr_name: str, n: int, dtype: torch.dtype
 ) -> torch.Tensor:
@@ -429,9 +436,10 @@ def _get_stacked_params(
     """
     cache_key = f"_stacked_{attr_name}_{dtype}"
     cached = getattr(module, cache_key, None)
-    if cached is not None:
+    if cached is not None and not _is_inference_tensor(cached):
         return cached
     params = getattr(module, attr_name)
     stacked = torch.stack([params[i].to(dtype) for i in range(n)])
-    object.__setattr__(module, cache_key, stacked)
+    if not torch.is_inference_mode_enabled():
+        object.__setattr__(module, cache_key, stacked)
     return stacked

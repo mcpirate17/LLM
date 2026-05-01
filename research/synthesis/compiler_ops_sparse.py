@@ -7,6 +7,7 @@ from .compiler_op_utils import (
     _build_block_sparse_mask,
     _build_nm_mask,
     _flatten_for_kernel,
+    _is_inference_tensor,
     _record_sparse_telemetry,
     _safe_linear,
     _sparse_density_sampled,
@@ -30,7 +31,11 @@ def _op_nm_sparse_linear(module, inputs, config):
     cache = getattr(module, "_nm_mask_cache", None)
     call_count = getattr(module, "_nm_call_count", 0) + 1
     module._nm_call_count = call_count
-    if cache is None or call_count % _NM_MASK_REFRESH_INTERVAL == 0:
+    if (
+        cache is None
+        or _is_inference_tensor(cache)
+        or call_count % _NM_MASK_REFRESH_INTERVAL == 0
+    ):
         if (
             HAS_ARIA_CORE
             and inputs[0].device.type == "cpu"
@@ -39,7 +44,8 @@ def _op_nm_sparse_linear(module, inputs, config):
             mask = aria_core.nm_sparse_mask_f32(module.weight, n, m).float()
         else:
             mask = _build_nm_mask(module.weight, n=n, m=m)
-        module._nm_mask_cache = mask
+        if not torch.is_inference_mode_enabled():
+            module._nm_mask_cache = mask
     else:
         mask = cache
     return _safe_linear(inputs[0], module.weight * mask)

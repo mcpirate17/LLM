@@ -14,6 +14,7 @@ from .compiler_op_utils import (
     aria_core,
     _c,
     _get_stacked_params,
+    _is_inference_tensor,
     _record_routing_telemetry,
     _safe_linear,
     record_kernel_fallback,
@@ -214,7 +215,7 @@ def _moe_get_stacked_weights(module, n_experts: int, dtype: torch.dtype):
     """Stack expert Linear→GELU→Linear weights into batched tensors, cached."""
     cache_key = f"_moe_stacked_{dtype}"
     cached = getattr(module, cache_key, None)
-    if cached is not None:
+    if cached is not None and not any(_is_inference_tensor(t) for t in cached):
         return cached
     W_downs = []
     W_ups = []
@@ -223,7 +224,8 @@ def _moe_get_stacked_weights(module, n_experts: int, dtype: torch.dtype):
         W_downs.append(expert[0].weight.to(dtype))  # Linear(D, H).weight is (H, D)
         W_ups.append(expert[2].weight.to(dtype))  # Linear(H, D).weight is (D, H)
     stacked = (torch.stack(W_downs), torch.stack(W_ups))  # (E,H,D), (E,D,H)
-    object.__setattr__(module, cache_key, stacked)
+    if not torch.is_inference_mode_enabled():
+        object.__setattr__(module, cache_key, stacked)
     return stacked
 
 
