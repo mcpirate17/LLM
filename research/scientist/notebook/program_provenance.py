@@ -419,19 +419,17 @@ def infer_trust_label(kwargs: Dict[str, Any], result_cohort: str) -> str:
         return "legacy_unlabeled"
     if result_cohort == "designer":
         return "exploratory"
+    # The universal metric-completeness guard
+    # (notebook/program_writes.py:_enforce_s1_metric_completeness) requires
+    # every stage1_passed=True row to carry the 7 post-S1 probe metrics, so
+    # a passing row always qualifies as candidate_grade. The 'candidate_
+    # screening' branch was for historical loss-only S1 rows; production
+    # cannot produce those any more (and historical rows keep their stored
+    # label since this function only fires on writes). 1565 historical rows
+    # with trust_label='candidate_screening' remain valid for reads via
+    # trust_policy.TRUSTED_TRUST_LABELS and notebook_dashboard filters.
     if kwargs.get("stage1_passed") in (1, True):
-        has_deep_eval = any(
-            kwargs.get(key) is not None
-            for key in (
-                "validation_loss_ratio",
-                "wikitext_perplexity",
-                "hellaswag_acc",
-                "induction_auc",
-                "binding_auc",
-                "binding_composite",
-            )
-        )
-        return "candidate_grade" if has_deep_eval else "candidate_screening"
+        return "candidate_grade"
     return "runtime_observation"
 
 
@@ -462,8 +460,6 @@ def infer_comparability_label(
     )
     if trust_label == "candidate_grade" and _has_complete_candidate_provenance(kwargs):
         return "candidate_comparable"
-    if trust_label == "candidate_screening":
-        return "screening_only"
     return "partial" if has_data_provenance else "noncomparable"
 
 
@@ -478,8 +474,6 @@ def infer_evaluation_protocol_version(
         return "designer_bridge_v1"
     if trust_label == "candidate_grade":
         return "candidate_grade_v1"
-    if trust_label == "candidate_screening":
-        return "screening_v1"
     if result_cohort == "reference":
         return "reference_v1"
     return "runtime_observation_v1"

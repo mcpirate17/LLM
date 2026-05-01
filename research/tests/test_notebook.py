@@ -652,16 +652,11 @@ class TestNotebook(unittest.TestCase):
         self.assertEqual(lb_row["tier"], "screening")
         self.assertEqual(int(lb_row["screening_passed"] or 0), 1)
 
-    @unittest.skip(
-        "Loss-only stage1_passed=True writes are blocked by the universal "
-        "metric-completeness guard (notebook/program_writes.py 2026-04-30). "
-        "The 'candidate_screening' trust_label inference branch this test "
-        "verified is unreachable in production. The auto-fill in "
-        "_patch_nb_for_test_fixtures injects wikitext_perplexity, pushing "
-        "inference to 'candidate_grade'. Rewrite to assert ValueError is "
-        "raised on the loss-only path, or remove the now-dead inference branch."
-    )
     def test_record_program_result_hydrates_model_source_from_experiment_config(self):
+        """model_source/result_cohort are pulled from the experiment config when
+        not explicitly set on the program row. Under the universal metric guard
+        (program_writes.py 2026-04-30), every stage1_passed=True row carries the
+        7 post-S1 probe metrics, so trust_label always infers to candidate_grade."""
         exp_id = self.nb.start_experiment(
             experiment_type="synthesis",
             config={
@@ -673,6 +668,7 @@ class TestNotebook(unittest.TestCase):
             },
             hypothesis="hydrate model source from experiment config",
         )
+        # _patch_nb_for_test_fixtures auto-fills the 7 post-S1 metrics.
         result_id = self.nb.record_program_result(
             experiment_id=exp_id,
             graph_fingerprint="prov_model_source_from_exp_cfg",
@@ -687,9 +683,36 @@ class TestNotebook(unittest.TestCase):
         payload = json.loads(row["data_provenance_json"])
         self.assertEqual(row["model_source"], "grammar")
         self.assertEqual(row["result_cohort"], "search")
-        self.assertEqual(row["trust_label"], "candidate_screening")
+        self.assertEqual(row["trust_label"], "candidate_grade")
         self.assertEqual(payload["model_source"], "grammar")
         self.assertEqual(payload["result_cohort"], "search")
+
+    def test_loss_only_s1_write_raises_under_universal_guard(self):
+        """Production paths cannot produce stage1_passed=True without the 7
+        post-S1 probe metrics; the guard in program_writes.py raises. This is
+        the test that pins the new behavior in place."""
+        # Bypass the test-fixture auto-fill by calling the original method.
+        from research.scientist.notebook.program_result_recording import (
+            _ProgramResultRecordingMixin,
+        )
+
+        exp_id = self.nb.start_experiment(
+            experiment_type="synthesis",
+            config={"model_source": "grammar"},
+            hypothesis="universal guard pin",
+        )
+        with self.assertRaises(ValueError) as ctx:
+            _ProgramResultRecordingMixin.record_program_result(
+                self.nb,
+                experiment_id=exp_id,
+                graph_fingerprint="prov_loss_only_must_raise",
+                graph_json='{"nodes": {}}',
+                stage0_passed=True,
+                stage05_passed=True,
+                stage1_passed=True,
+                loss_ratio=0.37,
+            )
+        self.assertIn("missing post-S1 metrics", str(ctx.exception))
 
     def test_record_program_result_hydrates_backfill_metadata_from_experiment_config(
         self,
@@ -1382,16 +1405,11 @@ class TestNotebook(unittest.TestCase):
         entry = self.nb.get_leaderboard_entry(result_id)
         self.assertEqual(entry["tier"], "screening")
 
-    @unittest.skip(
-        "The without-wikitext baseline this test compared against is now "
-        "auto-filled with wikitext_perplexity=200 by _patch_nb_for_test_fixtures "
-        "(needed to satisfy the universal metric guard). Both rows now end up "
-        "with comparable wikitext, so the score-must-rise assertion ties. "
-        "Rewrite to use explicit, unequal wikitext_perplexity values on the "
-        "two rows when revisiting the leaderboard scoring deltas."
-    )
     def test_upsert_leaderboard_uses_wikitext_and_investigation_flags(self):
-        """Leaderboard scoring should incorporate real-token quality and failed investigation evidence."""
+        """Leaderboard composite must incorporate WikiText quality. Two
+        identical-on-loss rows should differ when one has a lower (better)
+        wikitext_perplexity. Each row gets its own explicit metric values so
+        the test exercises real differentiation, not the auto-fill defaults."""
         exp_id = self.nb.start_experiment("synthesis", {}, "test")
         rid_a = self.nb.record_program_result(
             experiment_id=exp_id,
@@ -1401,6 +1419,13 @@ class TestNotebook(unittest.TestCase):
             loss_ratio=0.02,
             novelty_score=0.8,
             novelty_confidence=0.8,
+            wikitext_perplexity=180.0,
+            hellaswag_acc=0.25,
+            blimp_overall_accuracy=0.50,
+            induction_auc=0.05,
+            binding_auc=0.05,
+            binding_composite=0.02,
+            ar_auc=0.01,
         )
         rid_b = self.nb.record_program_result(
             experiment_id=exp_id,
@@ -1410,6 +1435,13 @@ class TestNotebook(unittest.TestCase):
             loss_ratio=0.02,
             novelty_score=0.8,
             novelty_confidence=0.8,
+            wikitext_perplexity=35.0,
+            hellaswag_acc=0.25,
+            blimp_overall_accuracy=0.50,
+            induction_auc=0.05,
+            binding_auc=0.05,
+            binding_composite=0.02,
+            ar_auc=0.01,
         )
 
         e_weak = self.nb.upsert_leaderboard(
