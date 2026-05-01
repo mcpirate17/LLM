@@ -751,7 +751,9 @@ class _ExecutionScreeningMixin:
                 # BLiMP/HellaSwag/PPL deltas, not just loss. Active snapshot wins
                 # ties with the legacy path, since it's the policy of record.
                 active_prior = get_active_construction_prior(nb)
-                prior_adjustments = construction_prior_as_grammar_adjustments(active_prior)
+                prior_adjustments = construction_prior_as_grammar_adjustments(
+                    active_prior
+                )
                 for layer in (causal_adjustments, prior_adjustments):
                     for op_name, weight in (layer.get("op_weights") or {}).items():
                         op_weights[op_name] = (

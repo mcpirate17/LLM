@@ -9,7 +9,7 @@ export const NAV_CATEGORIES = {
   },
   diagnostics: {
     label: 'Diagnostics',
-    tabs: ['templates', 'components', 'infrastructure', 'perf', 'references'],
+    tabs: ['ablations', 'templates', 'components', 'infrastructure', 'perf', 'references'],
   },
 };
 
@@ -19,6 +19,7 @@ export const TAB_LABELS = {
   experiments: 'Experiments',
   discoveries: 'Discoveries',
   comparison: 'Comparison',
+  ablations: 'Ablations',
   templates: 'Template & Slots',
   infrastructure: 'Infrastructure',
   components: 'Components',
@@ -35,6 +36,7 @@ export const TAB_TIPS = {
   experiments: 'Browse all experiments and their results (3)',
   discoveries: 'Best architectures found so far, ranked by tier (4)',
   comparison: 'Side-by-side architecture comparison (5)',
+  ablations: 'Causal ablation evidence, provenance, and component relationship diagnostics',
   templates: 'Dedicated page for template success, weak slots, fast-lane fairness, and structural trends',
   infrastructure: 'Pipeline health, alerts, live stream, throughput, resources',
   components: 'Component health, op analytics, grammar evolution, insights',
@@ -44,4 +46,3 @@ export const TAB_TIPS = {
   decisions: 'Recent automated research decision traces (9)',
   log: 'Raw notebook entries and cycle timeline (0)',
 };
-

@@ -303,6 +303,78 @@ function EvalResultsPanel({
           </div>
         )}
       </div>
+      {/* Causal Ablation */}
+      <div style={{
+        padding: 12, background: 'var(--bg-tertiary)', borderRadius: 6,
+        border: '1px solid var(--border)',
+      }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', marginBottom: 8 }}>
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)' }}>Causal Ablation</div>
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>
+              top=1 · signals=2 · variants=4
+            </div>
+          </div>
+          <button
+            className="start-btn"
+            disabled={actionStarting === 'causal_ablation'}
+            onClick={async () => {
+              dispatch({ type: 'SET_ACTION', payload: { starting: 'causal_ablation', error: null } });
+              try {
+                const res = await postJson(`/api/programs/${resultId}/causal-ablation`, {
+                  top_k: 1,
+                  max_signals: 2,
+                  max_graphs: 4,
+                }, { timeoutMs: LONG_ACTION_TIMEOUT_MS });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) {
+                  dispatch({ type: 'SET_ACTION', payload: { starting: null, error: data.error || 'Failed to start causal ablation' } });
+                } else {
+                  dispatch({ type: 'SET_ACTION', payload: { starting: null, error: null } });
+                  if (onActionComplete) onActionComplete();
+                  onClose();
+                }
+              } catch (e) {
+                dispatch({ type: 'SET_ACTION', payload: { starting: null, error: 'Error: ' + e.message } });
+              }
+            }}
+            style={{ padding: '6px 16px', fontSize: 12, background: 'rgba(0, 210, 190, 0.14)', border: '1px solid rgba(0, 210, 190, 0.45)', color: 'var(--accent-cyan)' }}
+            title="Launch matched counterfactual tests for this program"
+          >
+            {actionStarting === 'causal_ablation' ? 'Starting...' : 'Run Ablation Test'}
+          </button>
+        </div>
+        {Array.isArray(program.causal_rule_evidence) && program.causal_rule_evidence.length > 0 && (
+          <div style={{ display: 'grid', gap: 6 }}>
+            {program.causal_rule_evidence.slice(0, 3).map((row) => (
+              <div
+                key={row.evidence_id || `${row.rule_type}:${row.rule_key}`}
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: '90px 1fr 80px',
+                  gap: 8,
+                  alignItems: 'center',
+                  fontSize: 11,
+                  padding: '5px 7px',
+                  border: '1px solid var(--border)',
+                  borderRadius: 4,
+                  background: 'var(--bg-secondary)',
+                }}
+              >
+                <span style={{ color: row.outcome === 'supported' ? 'var(--accent-green)' : row.outcome?.startsWith('refuted') ? 'var(--accent-red)' : 'var(--text-muted)' }}>
+                  {row.outcome || 'unknown'}
+                </span>
+                <span style={{ color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={`${row.rule_type}:${row.rule_key}`}>
+                  {row.rule_type}:{row.rule_key}
+                </span>
+                <span style={{ textAlign: 'right', color: 'var(--text-muted)' }}>
+                  {row.effect_size != null ? Number(row.effect_size).toFixed(3) : '--'}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
       {/* Backfill Missing Metrics */}
       <BackfillSection
         program={program}

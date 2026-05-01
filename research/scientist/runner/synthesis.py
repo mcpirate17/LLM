@@ -42,10 +42,6 @@ from ._types import LiveProgress, RunConfig
 from ._helpers import (
     program_result_kwargs_from_s1,
     propose_ablation_suite,
-    routing_fast_lane_fields,
-    screening_probe_fields,
-    screening_wikitext_fields,
-    v9_trajectory_fields,
 )
 
 
@@ -564,7 +560,6 @@ class _SynthesisMixin:
                 stage05_pass += 1
             s1_passed = False
             s1 = {}
-            final_loss = None
             loss_ratio = None
             if s05_passed:
                 s1 = self._micro_train(
@@ -574,7 +569,6 @@ class _SynthesisMixin:
                     seed=self._stable_seed(exp_id, idx, "ablation"),
                 )
                 s1_passed = bool(s1.get("passed", False))
-                final_loss = s1.get("final_loss")
                 loss_ratio = s1.get("loss_ratio")
             if s1_passed:
                 stage1_pass += 1
@@ -584,7 +578,9 @@ class _SynthesisMixin:
                 best_ablation_lr = loss_ratio
 
             ablation_kwargs: Dict[str, Any] = (
-                program_result_kwargs_from_s1(s1, model_source="ablation") if s1 else {"model_source": "ablation"}
+                program_result_kwargs_from_s1(s1, model_source="ablation")
+                if s1
+                else {"model_source": "ablation"}
             )
             rid = nb.record_program_result(
                 experiment_id=exp_id,
@@ -619,9 +615,7 @@ class _SynthesisMixin:
                     "induction_auc": ablation_kwargs.get("induction_auc"),
                     "binding_auc": ablation_kwargs.get("binding_auc"),
                     "ar_auc": ablation_kwargs.get("ar_auc"),
-                    "wikitext_perplexity": ablation_kwargs.get(
-                        "wikitext_perplexity"
-                    ),
+                    "wikitext_perplexity": ablation_kwargs.get("wikitext_perplexity"),
                 },
             )
 
@@ -1378,9 +1372,9 @@ class _SynthesisMixin:
                         include_breakdown=True,
                     )
                     child.metadata["refinement"]["intent_score"] = score
-                    child.metadata["refinement"][
-                        "intent_score_breakdown"
-                    ] = score_breakdown
+                    child.metadata["refinement"]["intent_score_breakdown"] = (
+                        score_breakdown
+                    )
                     if analysis_data:
                         recipe = analysis_data.get("recipe", {})
                         child.metadata["refinement"]["analysis_driven"] = True

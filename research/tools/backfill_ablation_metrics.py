@@ -70,7 +70,10 @@ def configure_logging(log_file: str) -> Path:
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(message)s",
-        handlers=[logging.StreamHandler(sys.stdout), logging.FileHandler(path, encoding="utf-8")],
+        handlers=[
+            logging.StreamHandler(sys.stdout),
+            logging.FileHandler(path, encoding="utf-8"),
+        ],
     )
     return path
 
@@ -88,7 +91,9 @@ def make_backups(db_path: Path, *, dry_run: bool) -> dict[str, str]:
     return {"local": str(local_target), "google_drive": str(google_target)}
 
 
-def select_rows(nb: LabNotebook, *, limit: int, result_id: str = "") -> list[dict[str, Any]]:
+def select_rows(
+    nb: LabNotebook, *, limit: int, result_id: str = ""
+) -> list[dict[str, Any]]:
     params: list[Any] = []
     where = CORE_MISSING_WHERE
     if result_id:
@@ -201,7 +206,9 @@ def backfill_row(
     graph_json = str(row["graph_json"])
     graph = graph_from_json(graph_json)
     cfg = config_for_row(row, device=str(device))
-    model = compile_model([graph], vocab_size=cfg.vocab_size, max_seq_len=cfg.max_seq_len).to(device)
+    model = compile_model(
+        [graph], vocab_size=cfg.vocab_size, max_seq_len=cfg.max_seq_len
+    ).to(device)
     s1 = runner._micro_train(
         model,
         cfg,

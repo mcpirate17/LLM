@@ -20,10 +20,12 @@ pytestmark = pytest.mark.api
 class TestAblationDiagnosticsAPI(unittest.TestCase):
     def setUp(self) -> None:
         from research.scientist.api import create_app
+
         self._tmp = TemporaryDirectory()
         self.db_path = Path(self._tmp.name) / "lab_notebook.db"
         # Touch the file so the notebook auto-creates schema on first read
         from research.scientist.notebook import LabNotebook
+
         nb = LabNotebook(str(self.db_path))
         nb.close()
         self.app = create_app(notebook_path=str(self.db_path))
@@ -98,9 +100,7 @@ class TestAblationDiagnosticsAPI(unittest.TestCase):
         self.assertIn(resp.status_code, (200, 400, 409, 500))
 
     def test_drain_pending_validation_rerun_route_registered(self):
-        resp = self.client.post(
-            "/api/runner/drain-pending-validation-rerun", json={}
-        )
+        resp = self.client.post("/api/runner/drain-pending-validation-rerun", json={})
         self.assertIn(resp.status_code, (200, 400, 409, 500))
 
 

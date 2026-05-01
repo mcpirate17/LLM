@@ -35,6 +35,19 @@ class _ContinuousModesMixin:
     _complete_experiment_compat = _LifecycleMixin._complete_experiment_compat
     _log_learning_event_compat = _LifecycleMixin._log_learning_event_compat
 
+    def _run_continuous_causal_ablation_if_enabled(
+        self,
+        nb: LabNotebook,
+        exp_id: str,
+        config: RunConfig,
+        results: Dict[str, Any],
+    ) -> None:
+        """Run causal ablations after continuous screening results are durable."""
+        try:
+            self._maybe_run_causal_ablation_loop(nb, exp_id, config, results)
+        except Exception as exc:
+            logger.warning("Causal ablation loop failed for %s: %s", exp_id, exc)
+
     def _run_continuous_synthesis(
         self,
         config: RunConfig,
@@ -76,9 +89,11 @@ class _ContinuousModesMixin:
                         -5:
                     ]
                 hyp_context = build_hypothesis_context(
-                    campaign=nb.get_campaign(self._active_campaign_id)
-                    if self._active_campaign_id
-                    else None,
+                    campaign=(
+                        nb.get_campaign(self._active_campaign_id)
+                        if self._active_campaign_id
+                        else None
+                    ),
                     recent_hypotheses=recent_hyps,
                     knowledge=knowledge,
                     leaderboard=leaderboard,
@@ -373,6 +388,7 @@ class _ContinuousModesMixin:
 
         # Flush async writes so auto-escalate can read back S1 survivors
         nb.flush_writes()
+        self._run_continuous_causal_ablation_if_enabled(nb, exp_id, config, results)
 
         # Auto-escalation: promote S1 survivors to leaderboard and
         # queue investigation/validation if criteria met
@@ -531,6 +547,7 @@ class _ContinuousModesMixin:
         )
 
         nb.flush_writes()
+        self._run_continuous_causal_ablation_if_enabled(nb, exp_id, config, results)
         results["experiment_id"] = exp_id
         self._auto_escalate(results, config, nb, phase="screening")
         self._maybe_evaluate_campaign(config, nb)
@@ -777,6 +794,7 @@ class _ContinuousModesMixin:
         )
 
         nb.flush_writes()
+        self._run_continuous_causal_ablation_if_enabled(nb, exp_id, config, results)
         results["experiment_id"] = exp_id
         self._auto_escalate(results, config, nb, phase="screening")
         self._maybe_evaluate_campaign(config, nb)

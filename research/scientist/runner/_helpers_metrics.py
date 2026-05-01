@@ -563,7 +563,9 @@ def program_result_kwargs_from_s1(
         out["kernel_timings_json"] = json.dumps(json_safe(kernels), sort_keys=True)
     starvation = s1.get("starvation_report")
     if starvation is not None:
-        out["starvation_report_json"] = json.dumps(json_safe(starvation), sort_keys=True)
+        out["starvation_report_json"] = json.dumps(
+            json_safe(starvation), sort_keys=True
+        )
 
     out.update(_behavioral_fingerprint_kwargs(s1))
 

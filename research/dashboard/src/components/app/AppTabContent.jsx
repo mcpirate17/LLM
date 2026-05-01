@@ -1,4 +1,5 @@
 import React, { Suspense } from 'react';
+import AblationDiagnostics from '../AblationDiagnostics';
 import TemplateSlotObservability from '../TemplateSlotObservability';
 import {
   AnalyticsTab,
@@ -190,6 +191,10 @@ export default function AppTabContent(props) {
         <InfrastructureDashboard />
       </Suspense>
     );
+  }
+
+  if (activeTab === 'ablations') {
+    return <AblationDiagnostics />;
   }
 
   if (activeTab === 'templates') {

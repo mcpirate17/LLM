@@ -101,7 +101,9 @@ def load_parent(nb: LabNotebook, result_id: str) -> ParentProgram:
         raise SystemExit(f"parent result has no graph_json: {result_id}")
     graph = graph_from_json(graph_json)
     config_payload = json.loads(row["config_json"] or "{}")
-    config = RunConfig.from_dict(config_payload if isinstance(config_payload, dict) else {})
+    config = RunConfig.from_dict(
+        config_payload if isinstance(config_payload, dict) else {}
+    )
     return ParentProgram(
         result_id=str(row["result_id"]),
         experiment_id=str(row["experiment_id"]),
@@ -135,7 +137,9 @@ def prepare_config(
     config.auto_investigate = False
     config.auto_validate = False
     config.auto_scale_up = False
-    config.max_ops = max(int(config.max_ops or 1), _parent_op_count_hint(config) + max_ops_margin)
+    config.max_ops = max(
+        int(config.max_ops or 1), _parent_op_count_hint(config) + max_ops_margin
+    )
     if device:
         config.device = device
     if stage1_steps is not None:
@@ -154,7 +158,15 @@ def primitive_signature_map() -> dict[tuple[int, str], list[PrimitiveOp]]:
             continue
         grouped.setdefault((int(op.n_inputs), str(op.shape_rule)), []).append(op)
     for signature, ops in grouped.items():
-        grouped[signature] = sorted(ops, key=lambda op: (op.name not in SCAFFOLD_PRIORITY, SCAFFOLD_PRIORITY.get(op.name, 1000), op.category.value, op.name))
+        grouped[signature] = sorted(
+            ops,
+            key=lambda op: (
+                op.name not in SCAFFOLD_PRIORITY,
+                SCAFFOLD_PRIORITY.get(op.name, 1000),
+                op.category.value,
+                op.name,
+            ),
+        )
     return grouped
 
 
@@ -167,7 +179,9 @@ def replacement_ops(
     primitive = get_primitive(node_op)
     same_signature = [
         op
-        for op in signature_map.get((int(primitive.n_inputs), str(primitive.shape_rule)), [])
+        for op in signature_map.get(
+            (int(primitive.n_inputs), str(primitive.shape_rule)), []
+        )
         if op.name != node_op
     ]
     if max_replacements_per_node > 0:
@@ -194,7 +208,9 @@ def build_node_suites(
         try:
             primitive = get_primitive(node.op_name)
         except (KeyError, ValueError) as exc:
-            log(f"skip node={node_id} op={node.op_name}: primitive lookup failed: {exc}")
+            log(
+                f"skip node={node_id} op={node.op_name}: primitive lookup failed: {exc}"
+            )
             continue
 
         replacements = replacement_ops(
@@ -242,7 +258,9 @@ def build_node_suites(
                     "shape_rule": str(primitive.shape_rule),
                 },
                 "input_ids": list(node.input_ids),
-                "output_shape": getattr(node.output_shape, "__dict__", str(node.output_shape)),
+                "output_shape": getattr(
+                    node.output_shape, "__dict__", str(node.output_shape)
+                ),
             }
 
         if not graphs:
@@ -282,7 +300,9 @@ def build_node_suites(
     return suites
 
 
-def existing_evidence_rules(nb: LabNotebook, parent_result_id: str) -> set[tuple[str, str]]:
+def existing_evidence_rules(
+    nb: LabNotebook, parent_result_id: str
+) -> set[tuple[str, str]]:
     rows = nb.conn.execute(
         """SELECT rule_type, rule_key
            FROM causal_rule_evidence
@@ -327,7 +347,9 @@ def make_backups(db_path: Path, *, dry_run: bool) -> dict[str, str]:
     return {"local": str(local_target), "google_drive": str(google_target)}
 
 
-def inventory_payload(parent: ParentProgram, suites: list[PlannedSuite]) -> dict[str, Any]:
+def inventory_payload(
+    parent: ParentProgram, suites: list[PlannedSuite]
+) -> dict[str, Any]:
     return {
         "created_at": time.time(),
         "parent": {
@@ -379,12 +401,17 @@ def parse_args() -> argparse.Namespace:
 
 def configure_logging(log_file: str) -> Path:
     RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
-    path = Path(log_file) if log_file else RUNTIME_DIR / "champion_exhaustive_ablation.log"
+    path = (
+        Path(log_file) if log_file else RUNTIME_DIR / "champion_exhaustive_ablation.log"
+    )
     path.parent.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(message)s",
-        handlers=[logging.StreamHandler(sys.stdout), logging.FileHandler(path, encoding="utf-8")],
+        handlers=[
+            logging.StreamHandler(sys.stdout),
+            logging.FileHandler(path, encoding="utf-8"),
+        ],
     )
     return path
 
@@ -393,8 +420,13 @@ def main() -> int:
     args = parse_args()
     log_path = configure_logging(args.log_file)
     db_path = Path(args.db)
-    status_path = RUNTIME_DIR / f"champion_{args.target_result_id}_exhaustive_ablation_status.json"
-    inventory_path = RUNTIME_DIR / f"champion_{args.target_result_id}_ablation_inventory.json"
+    status_path = (
+        RUNTIME_DIR
+        / f"champion_{args.target_result_id}_exhaustive_ablation_status.json"
+    )
+    inventory_path = (
+        RUNTIME_DIR / f"champion_{args.target_result_id}_ablation_inventory.json"
+    )
 
     nb = LabNotebook(str(db_path), use_native=False)
     try:

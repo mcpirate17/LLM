@@ -33,5 +33,17 @@ echo "$CMD" | grep -qP 'rm\s+-r[f ]*\s+(/|~/|\.\./|/home)\b' && block "BLOCKED: 
 echo "$CMD" | grep -qP '^\s*pip\s+install\b' && block "BLOCKED: Use 'uv pip install' instead of raw pip."
 echo "$CMD" | grep -qP '^\s*python.*-m\s+pip\s+install\b' && block "BLOCKED: Use 'uv pip install' instead of python -m pip."
 
+# ── Impact analyzer for borderline-destructive commands ───────────────
+# Soft-allow but force the impact (file count / size / row count) into the
+# conversation, so the agent must surface it to the user before/after running.
+# Hands stdin a re-synthesized payload since the original was consumed above.
+HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -x "$HOOK_DIR/_bash_impact.py" ]; then
+    python3 "$HOOK_DIR/_bash_impact.py" <<EOF || echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow"}}'
+{"tool_input":{"command":$(printf '%s' "$CMD" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')}}
+EOF
+    exit 0
+fi
+
 # ── Allow everything else ─────────────────────────────────────────────
 echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow"}}'

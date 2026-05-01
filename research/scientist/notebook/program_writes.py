@@ -39,30 +39,53 @@ _S1_REQUIRED_POST_METRIC_COLUMNS_FOR_GUARDRAIL = (
 )
 
 
-_LOSS_ONLY_GUARDED_SOURCES = frozenset({"ablation"})
+_TRUST_LABEL_REPLAY_BYPASS_PREFIXES = (
+    "ablation_metric_backfill",
+    "metric_backfill",
+    "replay_",
+    "backfill_observation",
+    # test_fixture: synthetic rows in unit tests whose subject is not metric
+    # completeness itself (e.g. testing leaderboard dedup, accounting,
+    # provenance recovery). Production code will never produce this trust_label
+    # because production never sets trust_label='test_fixture'; the runner
+    # writes 'candidate_screening', 'candidate_grade', 'runtime_observation',
+    # 'exploratory', 'reference', 'backfill_observation', or '' depending on
+    # the inferred provenance — none of which start with 'test_fixture'.
+    "test_fixture",
+)
 
 
-def _enforce_s1_metric_completeness_for_ablation(
+def _enforce_s1_metric_completeness(
     *,
     graph_fingerprint: str,
     kwargs: Dict[str, Any],
     logger,
 ) -> None:
-    """Refuse to write a stage1_passed=True ablation row missing core post-S1 metrics.
+    """Refuse to write any stage1_passed=True row missing core post-S1 metrics.
 
-    The original ablation runner persisted only loss/basic fields and silently
-    shipped a 1500-row dataset that the diagnostics page then tried to draw
-    causal conclusions from. Enforce that any ablation S1-passed row coming
-    through this path is metric-complete (or explicitly marked partial via
-    trust_label='ablation_metric_backfill_replay' which the backfill tool sets
-    after the replay actually fills the columns). Fail loud, not silent.
+    Any row that claims to have passed Stage 1 must carry the full post-S1
+    metric set (wikitext_perplexity, hellaswag_acc, blimp_overall_accuracy,
+    induction_auc, binding_auc, binding_composite, ar_auc). Loss-only S1
+    rows are not allowed regardless of model_source — they corrupt
+    diagnostics, the leaderboard composite, the construction prior, and
+    every downstream rule that conditions on metric presence.
+
+    Originally this guarded only ablation writes (the 2026-04-29 incident
+    that shipped 1500 loss-only rows). The user's standing rule is broader:
+    "we never enter missing data for any experiments". Extended universally.
+
+    Replay/backfill paths that re-fill metrics in-place are exempted via
+    trust_label prefixes in _TRUST_LABEL_REPLAY_BYPASS_PREFIXES. A path
+    that legitimately cannot produce all probes must either:
+      - set stage1_passed=False explicitly, or
+      - tag the write with one of the bypass trust_labels above.
+
+    Fail loud, not silent.
     """
     if not kwargs.get("stage1_passed"):
         return
-    model_source = str(kwargs.get("model_source") or "").lower()
-    if model_source not in _LOSS_ONLY_GUARDED_SOURCES:
-        return
-    if str(kwargs.get("trust_label") or "").startswith("ablation_metric_backfill"):
+    trust_label = str(kwargs.get("trust_label") or "")
+    if any(trust_label.startswith(p) for p in _TRUST_LABEL_REPLAY_BYPASS_PREFIXES):
         return
     missing = [
         c
@@ -71,11 +94,13 @@ def _enforce_s1_metric_completeness_for_ablation(
     ]
     if not missing:
         return
+    model_source = str(kwargs.get("model_source") or "unknown")
     msg = (
-        "BLOCKED ablation S1 write missing post-S1 metrics: "
-        f"fp={graph_fingerprint[:16]} missing={missing} "
-        "(use program_result_kwargs_from_s1 to assemble metrics, or set "
-        "trust_label starting with 'ablation_metric_backfill' for backfill paths)."
+        f"BLOCKED S1 write missing post-S1 metrics: "
+        f"fp={graph_fingerprint[:16]} model_source={model_source} missing={missing} "
+        "(assemble via program_result_kwargs_from_s1; if a path legitimately "
+        "cannot produce all probes, set stage1_passed=False or tag the write "
+        f"with trust_label in {_TRUST_LABEL_REPLAY_BYPASS_PREFIXES})."
     )
     logger.error(msg)
     raise ValueError(msg)
@@ -91,6 +116,11 @@ def should_record_program_result(
     stage0_passed = kwargs.get("stage0_passed")
     stage1_passed = kwargs.get("stage1_passed")
     loss_ratio = kwargs.get("loss_ratio")
+    _enforce_s1_metric_completeness(
+        graph_fingerprint=graph_fingerprint,
+        kwargs=kwargs,
+        logger=logger,
+    )
     if bypass_quality_gate:
         logger.info(
             "Quality gate BYPASSED (debug mode): s0=%s s1=%s lr=%s fp=%s",
@@ -123,11 +153,6 @@ def should_record_program_result(
         )
         return False
 
-    _enforce_s1_metric_completeness_for_ablation(
-        graph_fingerprint=graph_fingerprint,
-        kwargs=kwargs,
-        logger=logger,
-    )
     return True
 
 

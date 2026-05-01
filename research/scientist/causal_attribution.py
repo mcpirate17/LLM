@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import logging
-from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
+from typing import Any, Iterable, Mapping, Optional, Sequence
 
 from research.synthesis.graph import ComputationGraph
 from research.synthesis.serializer import graph_from_json
@@ -143,8 +143,10 @@ def run_ablation_suite(
         experiment_ids=exp_ids,
     )
     meta = dict(child_meta_by_fingerprint or {})
-    observations = annotate_observations(historical + executed, meta) if meta else (
-        historical + executed
+    observations = (
+        annotate_observations(historical + executed, meta)
+        if meta
+        else (historical + executed)
     )
     if not observations and not exp_ids:
         return None

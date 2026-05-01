@@ -302,10 +302,8 @@ class _AdvancedAnalyticsMixin:
         """Compute soft failure-risk penalties with positive-evidence filtering."""
         support = self._top_performer_bigram_support()
         rows = list(
-            self.conn.execute(
-                """SELECT signature, n_failures, n_successes, error_types
-               FROM failure_signatures"""
-            ).fetchall()
+            self.conn.execute("""SELECT signature, n_failures, n_successes, error_types
+               FROM failure_signatures""").fetchall()
         )
         suppressions = self._effective_failure_signature_suppressions(
             rows=rows,
@@ -403,31 +401,25 @@ class _AdvancedAnalyticsMixin:
     def _top_performer_bigram_support(self) -> Dict[str, int]:
         self.flush_writes()
         self._ensure_graph_features()
-        survivor_row = self.conn.execute(
-            """SELECT COUNT(*) AS n
+        survivor_row = self.conn.execute("""SELECT COUNT(*) AS n
                FROM program_results
-               WHERE stage1_passed = 1 AND loss_ratio IS NOT NULL"""
-        ).fetchone()
+               WHERE stage1_passed = 1 AND loss_ratio IS NOT NULL""").fetchone()
         survivor_count = int(survivor_row["n"] or 0) if survivor_row else 0
         threshold = None
         if survivor_count >= 20:
-            threshold_row = self.conn.execute(
-                """SELECT loss_ratio FROM program_results
+            threshold_row = self.conn.execute("""SELECT loss_ratio FROM program_results
                    WHERE stage1_passed = 1 AND loss_ratio IS NOT NULL
                    ORDER BY loss_ratio ASC
                    LIMIT 1 OFFSET (
                        SELECT MAX(0, COUNT(*) / 4 - 1) FROM program_results
                        WHERE stage1_passed = 1 AND loss_ratio IS NOT NULL
-                   )"""
-            ).fetchone()
+                   )""").fetchone()
             threshold = float(threshold_row["loss_ratio"]) if threshold_row else None
-        rows = self.conn.execute(
-            """SELECT gp.signature, pr.loss_ratio, l.tier
+        rows = self.conn.execute("""SELECT gp.signature, pr.loss_ratio, l.tier
                FROM program_graph_pairs gp
                JOIN program_results pr ON pr.result_id = gp.result_id
                LEFT JOIN leaderboard l ON l.result_id = pr.result_id
-               WHERE pr.stage1_passed = 1"""
-        ).fetchall()
+               WHERE pr.stage1_passed = 1""").fetchall()
         support: Dict[str, int] = defaultdict(int)
         for row in rows:
             tier = str(row["tier"] or "").lower()
@@ -448,11 +440,9 @@ class _AdvancedAnalyticsMixin:
             for signature, reason in AUDITED_FALSE_FAILURE_SIGNATURES.items()
         }
         try:
-            rows = self.conn.execute(
-                """SELECT signature, reason, source
+            rows = self.conn.execute("""SELECT signature, reason, source
                    FROM failure_signature_suppressions
-                   WHERE active = 1"""
-            ).fetchall()
+                   WHERE active = 1""").fetchall()
         except sqlite3.OperationalError:
             return suppressions
         for row in rows:
@@ -849,8 +839,7 @@ class _AdvancedAnalyticsMixin:
         self.flush_writes()
         self._ensure_graph_features()
         suppressions = self._get_failure_signature_suppressions()
-        rows = self.conn.execute(
-            """
+        rows = self.conn.execute("""
             SELECT
                 gp.signature,
                 SUM(CASE WHEN pr.stage1_passed THEN 0 ELSE 1 END) AS n_failures,
@@ -864,8 +853,7 @@ class _AdvancedAnalyticsMixin:
             WHERE pr.stage0_passed = 1
               AND pr.stage05_passed = 1
             GROUP BY gp.signature
-            """
-        ).fetchall()
+            """).fetchall()
         rows = [row for row in rows if str(row["signature"] or "") not in suppressions]
         now = time.time()
         self.conn.executemany(
@@ -893,8 +881,7 @@ class _AdvancedAnalyticsMixin:
         self.flush_writes()
         self._ensure_graph_features()
         suppressions = self._get_failure_signature_suppressions()
-        rows = self.conn.execute(
-            """
+        rows = self.conn.execute("""
             SELECT
                 gp.signature,
                 SUM(CASE WHEN pr.stage1_passed THEN 0 ELSE 1 END) AS n_failures,
@@ -908,8 +895,7 @@ class _AdvancedAnalyticsMixin:
             WHERE pr.stage0_passed = 1
               AND pr.stage05_passed = 1
             GROUP BY gp.signature
-            """
-        ).fetchall()
+            """).fetchall()
         rows = [row for row in rows if str(row["signature"] or "") not in suppressions]
         now = time.time()
         self.conn.executemany(
@@ -1223,17 +1209,23 @@ class _AdvancedAnalyticsMixin:
                 graph_json,
                 graph_fingerprint,
                 metrics.get("compile_time_ms"),
-                int(bool(metrics.get("sandbox_passed")))
-                if metrics.get("sandbox_passed") is not None
-                else None,
+                (
+                    int(bool(metrics.get("sandbox_passed")))
+                    if metrics.get("sandbox_passed") is not None
+                    else None
+                ),
                 metrics.get("stability_score"),
-                int(bool(metrics.get("causality_passed")))
-                if metrics.get("causality_passed") is not None
-                else None,
+                (
+                    int(bool(metrics.get("causality_passed")))
+                    if metrics.get("causality_passed") is not None
+                    else None
+                ),
                 metrics.get("param_count"),
-                int(bool(metrics.get("passed")))
-                if metrics.get("passed") is not None
-                else None,
+                (
+                    int(bool(metrics.get("passed")))
+                    if metrics.get("passed") is not None
+                    else None
+                ),
                 metrics.get("loss_ratio"),
                 metrics.get("validation_loss_ratio"),
                 metrics.get("discovery_loss_ratio"),
@@ -1370,12 +1362,12 @@ class _AdvancedAnalyticsMixin:
                 "ok_rate": round(ok_rate, 4),
                 "sandbox_rate": round(sandbox_rate, 4),
                 "pass_rate": round(pass_rate, 4),
-                "avg_loss_ratio": round(avg_loss, 6)
-                if isinstance(avg_loss, float)
-                else None,
-                "avg_throughput_tok_s": round(avg_tp, 3)
-                if isinstance(avg_tp, float)
-                else None,
+                "avg_loss_ratio": (
+                    round(avg_loss, 6) if isinstance(avg_loss, float) else None
+                ),
+                "avg_throughput_tok_s": (
+                    round(avg_tp, 3) if isinstance(avg_tp, float) else None
+                ),
                 "quality_score": round(raw_quality, 4),
                 "prior_rate": round(prior_rate, 4),
                 "families": dict(bucket["family_counts"]),
@@ -1521,15 +1513,13 @@ class _AdvancedAnalyticsMixin:
 
     def get_report_snapshot_stats(self) -> Dict[str, Any]:
         now = time.time()
-        rows = self.conn.execute(
-            """SELECT scope,
+        rows = self.conn.execute("""SELECT scope,
                       COUNT(*) AS count,
                       MIN(updated_at) AS oldest_updated_at,
                       MAX(updated_at) AS newest_updated_at
                FROM report_snapshots
                GROUP BY scope
-               ORDER BY count DESC, scope ASC"""
-        ).fetchall()
+               ORDER BY count DESC, scope ASC""").fetchall()
 
         scopes: List[Dict[str, Any]] = []
         total = 0
@@ -1549,24 +1539,24 @@ class _AdvancedAnalyticsMixin:
                 {
                     "scope": row["scope"],
                     "count": count,
-                    "oldest_age_seconds": round(max(0.0, now - oldest), 2)
-                    if oldest > 0
-                    else None,
-                    "newest_age_seconds": round(max(0.0, now - newest), 2)
-                    if newest > 0
-                    else None,
+                    "oldest_age_seconds": (
+                        round(max(0.0, now - oldest), 2) if oldest > 0 else None
+                    ),
+                    "newest_age_seconds": (
+                        round(max(0.0, now - newest), 2) if newest > 0 else None
+                    ),
                 }
             )
 
         return {
             "total_snapshots": total,
             "n_scopes": len(scopes),
-            "oldest_age_seconds": round(max(0.0, now - oldest_seen), 2)
-            if oldest_seen
-            else None,
-            "newest_age_seconds": round(max(0.0, now - newest_seen), 2)
-            if newest_seen
-            else None,
+            "oldest_age_seconds": (
+                round(max(0.0, now - oldest_seen), 2) if oldest_seen else None
+            ),
+            "newest_age_seconds": (
+                round(max(0.0, now - newest_seen), 2) if newest_seen else None
+            ),
             "scopes": scopes,
         }
 
@@ -1598,6 +1588,409 @@ class _AdvancedAnalyticsMixin:
         )
         self._maybe_commit()
         return report_id
+
+    def record_causal_rule_evidence(self, evidence: Dict[str, Any]) -> str:
+        """Persist one causal ablation evidence row."""
+        evidence_id = str(evidence.get("evidence_id") or uuid.uuid4())[:12]
+        now = float(evidence.get("timestamp") or time.time())
+        self.conn.execute(
+            """INSERT OR REPLACE INTO causal_rule_evidence
+               (evidence_id, timestamp, parent_experiment_id, parent_result_id,
+                parent_fingerprint, ablation_experiment_id, rule_type, rule_key,
+                rule_context, original_loss_ratio, ablation_best_loss_ratio,
+                effect_size, original_stage1_passed, ablation_stage1_pass_count,
+                ablation_total, outcome, confidence, evidence_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                evidence_id,
+                now,
+                evidence.get("parent_experiment_id"),
+                evidence.get("parent_result_id"),
+                evidence.get("parent_fingerprint"),
+                evidence.get("ablation_experiment_id"),
+                str(evidence.get("rule_type") or "unknown"),
+                str(evidence.get("rule_key") or "unknown"),
+                evidence.get("rule_context"),
+                evidence.get("original_loss_ratio"),
+                evidence.get("ablation_best_loss_ratio"),
+                evidence.get("effect_size"),
+                int(bool(evidence.get("original_stage1_passed", True))),
+                int(evidence.get("ablation_stage1_pass_count") or 0),
+                int(evidence.get("ablation_total") or 0),
+                str(evidence.get("outcome") or "inconclusive"),
+                float(evidence.get("confidence") or 0.0),
+                evidence.get("evidence_json"),
+            ),
+        )
+        self._maybe_commit()
+        return evidence_id
+
+    def record_causal_ablation_child_observations(
+        self,
+        evidence_id: str,
+        observations: Sequence[Dict[str, Any]],
+    ) -> int:
+        """Persist child/provenance rows supporting one causal evidence item."""
+        if not evidence_id or not observations:
+            return 0
+        now = time.time()
+        rows = []
+        for observation in observations:
+            child_fingerprint = str(
+                observation.get("child_fingerprint")
+                or observation.get("graph_fingerprint")
+                or ""
+            )
+            if not child_fingerprint:
+                continue
+            observation_id = str(observation.get("observation_id") or uuid.uuid4())[:12]
+            rows.append(
+                (
+                    observation_id,
+                    evidence_id,
+                    float(observation.get("timestamp") or now),
+                    observation.get("parent_result_id"),
+                    observation.get("parent_experiment_id"),
+                    observation.get("parent_fingerprint"),
+                    observation.get("child_result_id") or observation.get("result_id"),
+                    observation.get("child_experiment_id")
+                    or observation.get("experiment_id"),
+                    child_fingerprint,
+                    observation.get("ablation_experiment_id"),
+                    str(observation.get("source") or "unknown"),
+                    str(observation.get("rule_type") or "unknown"),
+                    str(observation.get("rule_key") or "unknown"),
+                    observation.get("stage0_passed"),
+                    observation.get("stage05_passed"),
+                    observation.get("stage1_passed"),
+                    observation.get("loss_ratio"),
+                    observation.get("final_loss"),
+                    observation.get("model_source"),
+                    observation.get("trust_label"),
+                    observation.get("comparability_label"),
+                    json.dumps(json_safe(observation.get("provenance") or {})),
+                )
+            )
+        if not rows:
+            return 0
+        self.conn.executemany(
+            """INSERT OR IGNORE INTO causal_ablation_child_observations
+               (observation_id, evidence_id, timestamp, parent_result_id,
+                parent_experiment_id, parent_fingerprint, child_result_id,
+                child_experiment_id, child_fingerprint, ablation_experiment_id,
+                source, rule_type, rule_key, stage0_passed, stage05_passed,
+                stage1_passed, loss_ratio, final_loss, model_source, trust_label,
+                comparability_label, provenance_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            rows,
+        )
+        self._maybe_commit()
+        return len(rows)
+
+    def get_causal_ablation_child_observations(
+        self,
+        *,
+        evidence_id: Optional[str] = None,
+        result_id: Optional[str] = None,
+        rule_type: Optional[str] = None,
+        limit: int = 200,
+    ) -> List[Dict[str, Any]]:
+        """Return ablation child observations with provenance JSON hydrated."""
+        clauses = ["1=1"]
+        params: List[Any] = []
+        if evidence_id:
+            clauses.append("evidence_id = ?")
+            params.append(evidence_id)
+        if result_id:
+            clauses.append("parent_result_id = ?")
+            params.append(result_id)
+        if rule_type:
+            clauses.append("rule_type = ?")
+            params.append(rule_type)
+        params.append(max(1, min(int(limit or 200), 2000)))
+        rows = self.conn.execute(
+            f"""SELECT * FROM causal_ablation_child_observations
+                WHERE {" AND ".join(clauses)}
+                ORDER BY timestamp DESC
+                LIMIT ?""",
+            tuple(params),
+        ).fetchall()
+        out: List[Dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            raw = item.get("provenance_json")
+            if isinstance(raw, str) and raw.strip():
+                try:
+                    item["provenance"] = json.loads(raw)
+                except (json.JSONDecodeError, TypeError, ValueError):
+                    pass
+            out.append(item)
+        return out
+
+    def get_causal_component_interaction_summary(
+        self,
+        *,
+        limit: int = 50,
+    ) -> List[Dict[str, Any]]:
+        """Aggregate causal evidence by rule with compact provenance samples."""
+        capped_limit = max(1, min(int(limit or 50), 500))
+        rows = self.conn.execute(
+            """WITH evidence AS (
+                   SELECT rule_type,
+                          rule_key,
+                          COUNT(*) AS evidence_count,
+                          SUM(CASE WHEN outcome = 'supported' THEN 1 ELSE 0 END)
+                              AS supported_count,
+                          SUM(CASE WHEN outcome LIKE 'refuted%' THEN 1 ELSE 0 END)
+                              AS refuted_count,
+                          SUM(CASE WHEN outcome = 'inconclusive' THEN 1 ELSE 0 END)
+                              AS inconclusive_count,
+                          AVG(confidence) AS avg_confidence,
+                          AVG(effect_size) AS avg_effect_size,
+                          MIN(effect_size) AS min_effect_size,
+                          MAX(effect_size) AS max_effect_size
+                   FROM causal_rule_evidence
+                   GROUP BY rule_type, rule_key
+               ),
+               children AS (
+                   SELECT rule_type,
+                          rule_key,
+                          COUNT(DISTINCT child_result_id) AS child_result_count,
+                          COUNT(DISTINCT child_fingerprint)
+                              AS child_fingerprint_count,
+                          GROUP_CONCAT(DISTINCT source) AS child_sources,
+                          GROUP_CONCAT(DISTINCT child_experiment_id)
+                              AS child_experiments
+                   FROM causal_ablation_child_observations
+                   GROUP BY rule_type, rule_key
+               ),
+               metric_rows AS (
+                   SELECT obs.rule_type,
+                          obs.rule_key,
+                          cp.result_id AS child_result_id,
+                          CASE
+                              WHEN cp.hellaswag_acc IS NOT NULL
+                               AND cp.blimp_overall_accuracy IS NOT NULL
+                               AND cp.induction_auc IS NOT NULL
+                               AND cp.binding_auc IS NOT NULL
+                               AND cp.binding_composite IS NOT NULL
+                               AND cp.ar_auc IS NOT NULL
+                               AND cp.wikitext_perplexity IS NOT NULL
+                               AND cp.wikitext_score IS NOT NULL
+                               AND cp.fp_jacobian_erf_density IS NOT NULL
+                               AND cp.fp_icld_delta_loss IS NOT NULL
+                               AND cp.fp_logit_margin_delta IS NOT NULL
+                              THEN 1 ELSE 0
+                          END AS metric_complete,
+                          CASE
+                              WHEN cp.loss_ratio IS NOT NULL
+                               AND pp.loss_ratio IS NOT NULL
+                              THEN cp.loss_ratio - pp.loss_ratio
+                          END AS loss_support_effect,
+                          CASE
+                              WHEN cp.hellaswag_acc IS NOT NULL
+                               AND pp.hellaswag_acc IS NOT NULL
+                              THEN pp.hellaswag_acc - cp.hellaswag_acc
+                          END AS hellaswag_support_effect,
+                          CASE
+                              WHEN cp.blimp_overall_accuracy IS NOT NULL
+                               AND pp.blimp_overall_accuracy IS NOT NULL
+                              THEN pp.blimp_overall_accuracy - cp.blimp_overall_accuracy
+                          END AS blimp_support_effect,
+                          CASE
+                              WHEN cp.induction_auc IS NOT NULL
+                               AND pp.induction_auc IS NOT NULL
+                              THEN pp.induction_auc - cp.induction_auc
+                          END AS induction_support_effect,
+                          CASE
+                              WHEN cp.binding_composite IS NOT NULL
+                               AND pp.binding_composite IS NOT NULL
+                              THEN pp.binding_composite - cp.binding_composite
+                          END AS binding_support_effect,
+                          CASE
+                              WHEN cp.ar_auc IS NOT NULL
+                               AND pp.ar_auc IS NOT NULL
+                              THEN pp.ar_auc - cp.ar_auc
+                          END AS ar_support_effect,
+                          CASE
+                              WHEN cp.wikitext_score IS NOT NULL
+                               AND pp.wikitext_score IS NOT NULL
+                              THEN pp.wikitext_score - cp.wikitext_score
+                          END AS wikitext_support_effect
+                   FROM causal_ablation_child_observations obs
+                   LEFT JOIN program_results cp
+                     ON cp.result_id = obs.child_result_id
+                   LEFT JOIN program_results pp
+                     ON pp.result_id = obs.parent_result_id
+               ),
+               metric_scored AS (
+                   SELECT *,
+                          (
+                              CASE WHEN loss_support_effect IS NOT NULL THEN 0.35 ELSE 0 END
+                            + CASE WHEN hellaswag_support_effect IS NOT NULL THEN 0.10 ELSE 0 END
+                            + CASE WHEN blimp_support_effect IS NOT NULL THEN 0.10 ELSE 0 END
+                            + CASE WHEN induction_support_effect IS NOT NULL THEN 0.15 ELSE 0 END
+                            + CASE WHEN binding_support_effect IS NOT NULL THEN 0.15 ELSE 0 END
+                            + CASE WHEN ar_support_effect IS NOT NULL THEN 0.05 ELSE 0 END
+                            + CASE WHEN wikitext_support_effect IS NOT NULL THEN 0.10 ELSE 0 END
+                          ) AS metric_weight,
+                          (
+                              COALESCE(0.35 * loss_support_effect, 0.0)
+                            + COALESCE(0.10 * hellaswag_support_effect, 0.0)
+                            + COALESCE(0.10 * blimp_support_effect, 0.0)
+                            + COALESCE(0.15 * induction_support_effect, 0.0)
+                            + COALESCE(0.15 * binding_support_effect, 0.0)
+                            + COALESCE(0.05 * ar_support_effect, 0.0)
+                            + COALESCE(0.10 * wikitext_support_effect, 0.0)
+                          ) AS metric_effect_numerator
+                   FROM metric_rows
+               ),
+               metrics AS (
+                   SELECT rule_type,
+                          rule_key,
+                          COUNT(child_result_id) AS metric_observation_count,
+                          SUM(metric_complete) AS metric_complete_count,
+                          SUM(CASE WHEN metric_weight > 0 THEN 1 ELSE 0 END)
+                              AS metric_comparable_count,
+                          AVG(loss_support_effect) AS avg_loss_support_effect,
+                          AVG(hellaswag_support_effect)
+                              AS avg_hellaswag_support_effect,
+                          AVG(blimp_support_effect) AS avg_blimp_support_effect,
+                          AVG(induction_support_effect)
+                              AS avg_induction_support_effect,
+                          AVG(binding_support_effect)
+                              AS avg_binding_support_effect,
+                          AVG(ar_support_effect) AS avg_ar_support_effect,
+                          AVG(wikitext_support_effect)
+                              AS avg_wikitext_support_effect,
+                          AVG(
+                              CASE WHEN metric_weight > 0
+                                   THEN metric_effect_numerator / metric_weight
+                              END
+                          ) AS composite_support_effect
+                   FROM metric_scored
+                   GROUP BY rule_type, rule_key
+               )
+               SELECT evidence.*,
+                      COALESCE(children.child_result_count, 0)
+                          AS child_result_count,
+                      COALESCE(children.child_fingerprint_count, 0)
+                          AS child_fingerprint_count,
+                      CASE
+                          WHEN evidence.evidence_count > 0
+                          THEN CAST(evidence.supported_count AS REAL)
+                               / evidence.evidence_count
+                          ELSE 0.0
+                      END AS support_rate,
+                      CASE
+                          WHEN evidence.evidence_count > 0
+                          THEN CAST(evidence.refuted_count AS REAL)
+                               / evidence.evidence_count
+                          ELSE 0.0
+                      END AS refute_rate,
+                      (evidence.supported_count - evidence.refuted_count)
+                          AS net_support,
+                      (
+                          ABS(COALESCE(evidence.avg_effect_size, 0.0))
+                          * SQRT(CAST(evidence.evidence_count AS REAL))
+                          * COALESCE(evidence.avg_confidence, 0.0)
+                      ) AS stability_score,
+                      COALESCE(metrics.metric_observation_count, 0)
+                          AS metric_observation_count,
+                      COALESCE(metrics.metric_complete_count, 0)
+                          AS metric_complete_count,
+                      COALESCE(metrics.metric_comparable_count, 0)
+                          AS metric_comparable_count,
+                      CASE
+                          WHEN COALESCE(metrics.metric_observation_count, 0) > 0
+                          THEN CAST(metrics.metric_complete_count AS REAL)
+                               / metrics.metric_observation_count
+                          ELSE 0.0
+                      END AS metric_complete_rate,
+                      metrics.avg_loss_support_effect,
+                      metrics.avg_hellaswag_support_effect,
+                      metrics.avg_blimp_support_effect,
+                      metrics.avg_induction_support_effect,
+                      metrics.avg_binding_support_effect,
+                      metrics.avg_ar_support_effect,
+                      metrics.avg_wikitext_support_effect,
+                      metrics.composite_support_effect,
+                      children.child_sources,
+                      children.child_experiments
+               FROM evidence
+               LEFT JOIN children
+                 ON children.rule_type = evidence.rule_type
+                AND children.rule_key = evidence.rule_key
+               LEFT JOIN metrics
+                 ON metrics.rule_type = evidence.rule_type
+                AND metrics.rule_key = evidence.rule_key
+               ORDER BY
+                        CASE
+                            WHEN evidence.evidence_count >= 3
+                             AND COALESCE(children.child_fingerprint_count, 0) >= 3
+                             AND COALESCE(metrics.metric_complete_count, 0) >= 3
+                            THEN 0 ELSE 1
+                        END,
+                        ABS(COALESCE(metrics.composite_support_effect, 0.0)) DESC,
+                        stability_score DESC,
+                        evidence.evidence_count DESC,
+                        ABS(COALESCE(evidence.avg_effect_size, 0.0)) DESC
+               LIMIT ?""",
+            (capped_limit,),
+        ).fetchall()
+        out: List[Dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            experiments = [
+                token
+                for token in str(item.pop("child_experiments") or "").split(",")
+                if token
+            ]
+            item["child_experiment_samples"] = experiments[:12]
+            item["child_sources"] = [
+                token
+                for token in str(item.get("child_sources") or "").split(",")
+                if token
+            ]
+            out.append(item)
+        return out
+
+    def get_causal_rule_evidence(
+        self,
+        *,
+        result_id: Optional[str] = None,
+        rule_type: Optional[str] = None,
+        limit: int = 50,
+    ) -> List[Dict[str, Any]]:
+        """Return causal rule evidence rows, newest first."""
+        clauses = ["1=1"]
+        params: List[Any] = []
+        if result_id:
+            clauses.append("parent_result_id = ?")
+            params.append(result_id)
+        if rule_type:
+            clauses.append("rule_type = ?")
+            params.append(rule_type)
+        params.append(max(1, min(int(limit or 50), 500)))
+        rows = self.conn.execute(
+            f"""SELECT * FROM causal_rule_evidence
+                WHERE {" AND ".join(clauses)}
+                ORDER BY timestamp DESC
+                LIMIT ?""",
+            tuple(params),
+        ).fetchall()
+        out: List[Dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            for key in ("rule_context", "evidence_json"):
+                raw = item.get(key)
+                if isinstance(raw, str) and raw.strip():
+                    try:
+                        item[f"{key}_parsed"] = json.loads(raw)
+                    except (json.JSONDecodeError, TypeError, ValueError):
+                        pass
+            out.append(item)
+        return out
 
     def get_attribution_reports(
         self, hypothesis_id: Optional[str] = None, limit: int = 100

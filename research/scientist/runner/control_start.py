@@ -401,6 +401,43 @@ class _ControlStartMixin:
 
         return self.start_experiment(refine_config, hypothesis=hypothesis)
 
+    def start_causal_ablation(
+        self,
+        result_id: str,
+        config: Optional[RunConfig] = None,
+    ) -> str:
+        """Start a background causal ablation suite for one program."""
+        if self.is_running:
+            raise RuntimeError("An experiment is already running")
+        rid = str(result_id or "").strip()
+        if not rid:
+            raise ValueError("result_id required")
+        cfg = (config or RunConfig()).copy()
+        cfg.enable_causal_ablation = True
+        if cfg.causal_ablation_top_k <= 0:
+            cfg.causal_ablation_top_k = 1
+        if cfg.causal_ablation_max_signals <= 0:
+            cfg.causal_ablation_max_signals = 2
+        if cfg.causal_ablation_max_graphs <= 0:
+            cfg.causal_ablation_max_graphs = 4
+
+        self._ensure_math_spaces()
+        self._stop_event.clear()
+        self._thread = threading.Thread(
+            target=self._run_causal_ablation_for_result_thread,
+            args=(rid, cfg),
+            daemon=True,
+        )
+        self._thread.start()
+        self._emit_canonical_experiment_started(
+            experiment_id=f"causal-ablation:{rid[:12]}",
+            hypothesis="Manual causal ablation from program detail",
+            config=cfg.to_dict(),
+            mode="causal_ablation",
+            source_result_id=rid,
+        )
+        return f"causal-ablation:{rid[:12]}"
+
     def _recommend_refinement_intent(
         self,
         nb: LabNotebook,
@@ -791,7 +828,9 @@ class _ControlStartMixin:
             ),
             preregistration=preregistration,
             exploratory=exploratory,
-            created_by="start_champion_confirmation" if is_confirmation else "start_scale_up",
+            created_by=(
+                "start_champion_confirmation" if is_confirmation else "start_scale_up"
+            ),
         )
         nb.close()
 

@@ -450,6 +450,16 @@ class RunConfig:
     # primary reason the Bayesian tracker exists.
     use_thompson_sampling: bool = True
 
+    # Causal ablations: controlled counterfactual tests around S1 survivors.
+    # Disabled by default because each plan launches extra Stage 0/0.5/1 evals.
+    enable_causal_ablation: bool = False
+    causal_ablation_interval: int = (
+        0  # run every N completed experiments; 0 = manual only
+    )
+    causal_ablation_top_k: int = 1
+    causal_ablation_max_signals: int = 2
+    causal_ablation_max_graphs: int = 4
+
     # Force all generated graphs to use this template (bypass pick_template).
     # Set to a template name from TEMPLATES dict, e.g. "transformer_block".
     forced_template: Optional[str] = None

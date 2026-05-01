@@ -87,7 +87,8 @@ class TestAblationCompleteness(unittest.TestCase):
         rid = self._record(fp="fp_full_ablation", kwargs=kwargs)
         self.assertTrue(rid)
         row = self.nb.conn.execute(
-            "SELECT " + ",".join(S1_REQUIRED_POST_METRIC_COLUMNS)
+            "SELECT "
+            + ",".join(S1_REQUIRED_POST_METRIC_COLUMNS)
             + " FROM program_results WHERE result_id = ?",
             (rid,),
         ).fetchone()
@@ -134,19 +135,100 @@ class TestAblationCompleteness(unittest.TestCase):
         rid = self._record(fp="fp_replay_ablation", kwargs=kwargs)
         self.assertTrue(rid)
 
-    def test_screening_path_is_unaffected_by_ablation_guardrail(self) -> None:
-        """A normal screening row missing some optional probe columns is fine —
-        the guardrail only fires on model_source='ablation'."""
+    def test_universal_guardrail_blocks_synthesis_loss_only_s1(self) -> None:
+        """User rule: 'we never enter missing data for any experiments'.
+        The guardrail now applies to every model_source, not just ablation.
+        A graph_synthesis row claiming stage1_passed=True with only loss
+        populated must be rejected the same way an ablation row would be.
+        """
+        with self.assertRaises(ValueError) as ctx:
+            self._record(
+                fp="fp_screening_loss_only",
+                kwargs={
+                    "model_source": "graph_synthesis",
+                    "loss_ratio": 0.5,
+                    "final_loss": 5.0,
+                },
+                experiment_type="synthesis",
+            )
+        self.assertIn("missing post-S1 metrics", str(ctx.exception))
+
+    def test_universal_guardrail_blocks_fingerprint_refine_partial(self) -> None:
+        """fingerprint_refine candidate_grade rows that only ran wikitext+hellaswag
+        but skipped induction/binding/ar/blimp must also be rejected."""
+        with self.assertRaises(ValueError) as ctx:
+            self._record(
+                fp="fp_refine_partial",
+                kwargs={
+                    "model_source": "fingerprint_refine",
+                    "trust_label": "candidate_grade",
+                    "loss_ratio": 0.5,
+                    "wikitext_perplexity": 200.0,
+                    "hellaswag_acc": 0.25,
+                },
+                experiment_type="synthesis",
+            )
+        self.assertIn("missing post-S1 metrics", str(ctx.exception))
+
+    def test_loss_only_s1_blocked_for_any_model_source(self) -> None:
+        """Spot-check every common model_source: stage1_passed=True with no
+        post-S1 probe metrics must always raise."""
+        for source in (
+            "graph_synthesis",
+            "fingerprint_refine",
+            "novelty",
+            "forced_exploration",
+            "evolution",
+            "grammar",
+            "mixed",
+            "exact_graph_replay",
+        ):
+            with self.subTest(model_source=source):
+                with self.assertRaises(ValueError):
+                    self._record(
+                        fp=f"fp_loss_only_{source}",
+                        kwargs={
+                            "model_source": source,
+                            "loss_ratio": 0.5,
+                            "final_loss": 5.0,
+                        },
+                        experiment_type="synthesis",
+                    )
+
+    def test_explicit_backfill_observation_bypass(self) -> None:
+        """Reconstruction/init-variant backfills carry trust_label='backfill_observation'
+        and are exempted via the bypass-prefix whitelist."""
         rid = self._record(
-            fp="fp_screening_loss_only",
+            fp="fp_reconstruct",
             kwargs={
                 "model_source": "graph_synthesis",
+                "trust_label": "backfill_observation",
+                "comparability_label": "reconstructed_init_variant",
                 "loss_ratio": 0.5,
                 "final_loss": 5.0,
             },
             experiment_type="synthesis",
         )
         self.assertTrue(rid)
+
+    def test_debug_quality_gate_bypass_does_not_bypass_metric_completeness(
+        self,
+    ) -> None:
+        exp_id = self.nb.start_experiment("synthesis", {}, "debug bypass test")
+        with self.assertRaises(ValueError) as ctx:
+            self.nb.record_program_result(
+                experiment_id=exp_id,
+                graph_fingerprint="fp_debug_bypass_loss_only",
+                graph_json='{"nodes": {"0": {"op_name": "linear_proj"}}}',
+                bypass_quality_gate=True,
+                stage0_passed=True,
+                stage05_passed=True,
+                stage1_passed=True,
+                model_source="graph_synthesis",
+                loss_ratio=0.5,
+                final_loss=5.0,
+            )
+        self.assertIn("missing post-S1 metrics", str(ctx.exception))
 
     def test_failed_ablation_write_not_blocked(self) -> None:
         """An ablation child that failed S1 (stage1_passed=False) is allowed

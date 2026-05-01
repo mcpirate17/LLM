@@ -1,6 +1,7 @@
-import React, { Suspense } from 'react';
+import React, { Suspense, useState } from 'react';
 import HelpPanel from '../HelpPanel';
 import ProgramDetail from '../ProgramDetail';
+import { postJson } from '../../services/apiService';
 
 function OverlayFrame({ onClose, maxWidth, children, closeLabel, top = 60 }) {
   return (
@@ -112,6 +113,9 @@ export function SettingsOverlay({
   controlPanelProps,
   ControlPanelComponent,
 }) {
+  const [ablationStarting, setAblationStarting] = useState(false);
+  const [ablationMessage, setAblationMessage] = useState('');
+
   if (!open || !ControlPanelComponent) return null;
 
   return (
@@ -153,6 +157,62 @@ export function SettingsOverlay({
           </button>
         </div>
       )}
+      <div
+        style={{
+          marginBottom: 16,
+          padding: '10px 12px',
+          borderRadius: 6,
+          border: '1px solid var(--border)',
+          background: 'var(--bg-tertiary)',
+        }}
+      >
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center' }}>
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-secondary)' }}>Continuous Ablations</div>
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }}>
+              cycles=5 · interval=2 · top=1 · variants=4
+            </div>
+          </div>
+          <button
+            className="start-btn"
+            disabled={ablationStarting}
+            onClick={async () => {
+              setAblationStarting(true);
+              setAblationMessage('');
+              try {
+                const res = await postJson('/api/ablations/bulk/start', {
+                  max_experiments: 5,
+                  n_programs: 40,
+                  interval: 2,
+                  top_k: 1,
+                  max_signals: 2,
+                  max_graphs: 4,
+                  model_source: 'mixed',
+                }, { timeoutMs: 120000 });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) {
+                  setAblationMessage(data.error || 'Failed to start continuous ablations');
+                } else {
+                  setAblationMessage(`Started ${data.run_id || 'continuous'} with causal ablations`);
+                }
+              } catch (error) {
+                setAblationMessage(`Error: ${error.message}`);
+              } finally {
+                setAblationStarting(false);
+              }
+            }}
+            style={{ padding: '6px 12px', fontSize: 12, whiteSpace: 'nowrap' }}
+            title="Start a bounded continuous run that periodically launches causal ablation suites"
+          >
+            {ablationStarting ? 'Starting...' : 'Start Ablation Run'}
+          </button>
+        </div>
+        {ablationMessage && (
+          <div style={{ marginTop: 8, fontSize: 11, color: ablationMessage.startsWith('Error') || ablationMessage.startsWith('Failed') ? 'var(--accent-red)' : 'var(--accent-green)' }}>
+            {ablationMessage}
+          </div>
+        )}
+      </div>
       <Suspense fallback={<div style={{ padding: 20, color: 'var(--text-muted)', fontSize: 13 }}>Loading settings...</div>}>
         <ControlPanelComponent {...controlPanelProps} />
       </Suspense>

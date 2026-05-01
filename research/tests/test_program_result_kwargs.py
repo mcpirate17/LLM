@@ -162,9 +162,7 @@ def test_completeness_audit_partial_row():
     audit = s1_post_metric_completeness(partial)
     assert audit["is_complete"] is False
     assert len(audit["missing"]) == len(S1_REQUIRED_POST_METRIC_COLUMNS) - 5
-    assert audit["coverage"] == pytest.approx(
-        5 / len(S1_REQUIRED_POST_METRIC_COLUMNS)
-    )
+    assert audit["coverage"] == pytest.approx(5 / len(S1_REQUIRED_POST_METRIC_COLUMNS))
 
 
 def test_canonical_kwargs_passes_error_fields_when_failed():

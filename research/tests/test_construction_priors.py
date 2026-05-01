@@ -27,19 +27,32 @@ class TestCompositeScore(unittest.TestCase):
         self.assertEqual(weight, 0.0)
 
     def test_score_positive_when_metrics_indicate_useful(self):
-        score, weight = _composite_score({
-            "induction": 0.10, "binding": 0.08, "ar": 0.05,
-            "blimp": 0.02, "hellaswag": 0.02, "ppl_pct": 0.20, "loss": 0.10,
-        })
+        score, weight = _composite_score(
+            {
+                "induction": 0.10,
+                "binding": 0.08,
+                "ar": 0.05,
+                "blimp": 0.02,
+                "hellaswag": 0.02,
+                "ppl_pct": 0.20,
+                "loss": 0.10,
+            }
+        )
         self.assertGreater(score, 0.3)
         self.assertGreater(weight, 0.9)
 
     def test_score_negative_when_metrics_indicate_baggage(self):
-        score, _ = _composite_score({
-            "induction": -0.10, "binding": -0.08,
-            "ar": -0.05, "blimp": -0.02, "hellaswag": -0.02,
-            "ppl_pct": -0.20, "loss": -0.10,
-        })
+        score, _ = _composite_score(
+            {
+                "induction": -0.10,
+                "binding": -0.08,
+                "ar": -0.05,
+                "blimp": -0.02,
+                "hellaswag": -0.02,
+                "ppl_pct": -0.20,
+                "loss": -0.10,
+            }
+        )
         self.assertLess(score, -0.3)
 
     def test_score_partial_metric_coverage(self):
@@ -85,9 +98,17 @@ class TestConstructionPriorEndToEnd(unittest.TestCase):
         )
         self.nb.flush_writes()
 
-    def _write_child(self, *, parent_rid: str, parent_fp: str,
-                     rid: str, fp: str, rule_type: str, rule_key: str,
-                     **metrics) -> None:
+    def _write_child(
+        self,
+        *,
+        parent_rid: str,
+        parent_fp: str,
+        rid: str,
+        fp: str,
+        rule_type: str,
+        rule_key: str,
+        **metrics,
+    ) -> None:
         # Use intentional_rerun_reason to avoid duplicate-fingerprint blocks for
         # children that happen to share fingerprints across rules in tests.
         exp_id = self.nb.start_experiment(
@@ -96,8 +117,10 @@ class TestConstructionPriorEndToEnd(unittest.TestCase):
             f"ablation child for {rule_key}",
         )
         from research.scientist.runner._helpers import program_result_kwargs_from_s1
+
         s1 = {
-            "passed": True, "loss_ratio": metrics.get("loss_ratio", 0.5),
+            "passed": True,
+            "loss_ratio": metrics.get("loss_ratio", 0.5),
             "final_loss": 5.0,
             "wikitext_perplexity": metrics.get("wikitext_perplexity", 250.0),
             "wikitext_score": 0.4,
@@ -107,7 +130,8 @@ class TestConstructionPriorEndToEnd(unittest.TestCase):
             "binding_auc": metrics.get("binding_auc", 0.10),
             "binding_composite": metrics.get("binding_composite", 0.10),
             "ar_auc": metrics.get("ar_auc", 0.05),
-            "fp_jacobian_erf_density": 0.5, "fp_icld_delta_loss": -0.3,
+            "fp_jacobian_erf_density": 0.5,
+            "fp_icld_delta_loss": -0.3,
             "fp_logit_margin_delta": 0.2,
         }
         kwargs = program_result_kwargs_from_s1(s1, model_source="ablation")
@@ -116,69 +140,86 @@ class TestConstructionPriorEndToEnd(unittest.TestCase):
             graph_fingerprint=fp,
             graph_json='{"nodes": {"0": {"op_name": "linear_proj"}}}',
             result_id=rid,
-            stage0_passed=True, stage05_passed=True, stage1_passed=True,
+            stage0_passed=True,
+            stage05_passed=True,
+            stage1_passed=True,
             intentional_rerun_reason="ablation_counterfactual",
             **kwargs,
         )
         self.nb.flush_writes()
         # Record the linkage in causal_ablation_child_observations
-        evidence_id = self.nb.record_causal_rule_evidence({
-            "parent_experiment_id": "exp_parent",
-            "parent_result_id": parent_rid,
-            "parent_fingerprint": parent_fp,
-            "ablation_experiment_id": exp_id,
-            "rule_type": rule_type, "rule_key": rule_key,
-            "rule_context": "{}",
-            "original_loss_ratio": 0.4,
-            "ablation_best_loss_ratio": metrics.get("loss_ratio", 0.5),
-            "effect_size": metrics.get("loss_ratio", 0.5) - 0.4,
-            "original_stage1_passed": 1,
-            "ablation_stage1_pass_count": 1,
-            "ablation_total": 1,
-            "outcome": "supported",
-            "confidence": 0.5,
-            "evidence_json": "{}",
-        })
-        self.nb.record_causal_ablation_child_observations(evidence_id, [{
-            "parent_result_id": parent_rid,
-            "parent_experiment_id": "exp_parent",
-            "parent_fingerprint": parent_fp,
-            "child_result_id": rid_returned,
-            "child_experiment_id": exp_id,
-            "child_fingerprint": fp,
-            "ablation_experiment_id": exp_id,
-            "source": "executed",
-            "rule_type": rule_type,
-            "rule_key": rule_key,
-            "stage1_passed": 1,
-            "loss_ratio": metrics.get("loss_ratio", 0.5),
-            "model_source": "ablation",
-            "trust_label": "executed",
-            "comparability_label": "ablation_counterfactual",
-            "provenance": {},
-        }])
+        evidence_id = self.nb.record_causal_rule_evidence(
+            {
+                "parent_experiment_id": "exp_parent",
+                "parent_result_id": parent_rid,
+                "parent_fingerprint": parent_fp,
+                "ablation_experiment_id": exp_id,
+                "rule_type": rule_type,
+                "rule_key": rule_key,
+                "rule_context": "{}",
+                "original_loss_ratio": 0.4,
+                "ablation_best_loss_ratio": metrics.get("loss_ratio", 0.5),
+                "effect_size": metrics.get("loss_ratio", 0.5) - 0.4,
+                "original_stage1_passed": 1,
+                "ablation_stage1_pass_count": 1,
+                "ablation_total": 1,
+                "outcome": "supported",
+                "confidence": 0.5,
+                "evidence_json": "{}",
+            }
+        )
+        self.nb.record_causal_ablation_child_observations(
+            evidence_id,
+            [
+                {
+                    "parent_result_id": parent_rid,
+                    "parent_experiment_id": "exp_parent",
+                    "parent_fingerprint": parent_fp,
+                    "child_result_id": rid_returned,
+                    "child_experiment_id": exp_id,
+                    "child_fingerprint": fp,
+                    "ablation_experiment_id": exp_id,
+                    "source": "executed",
+                    "rule_type": rule_type,
+                    "rule_key": rule_key,
+                    "stage1_passed": 1,
+                    "loss_ratio": metrics.get("loss_ratio", 0.5),
+                    "model_source": "ablation",
+                    "trust_label": "executed",
+                    "comparability_label": "ablation_counterfactual",
+                    "provenance": {},
+                }
+            ],
+        )
         self.nb.flush_writes()
 
     def test_compute_use_verdict_for_helpful_op(self) -> None:
         # Parent has strong probes; children all show probes drop sharply when
         # this op is removed → verdict 'use'.
         self._write_parent(
-            rid="parent_useful", fp="fp_parent_useful",
-            induction_auc=0.50, binding_composite=0.40, ar_auc=0.20,
-            hellaswag_acc=0.32, blimp_overall_accuracy=0.60,
+            rid="parent_useful",
+            fp="fp_parent_useful",
+            induction_auc=0.50,
+            binding_composite=0.40,
+            ar_auc=0.20,
+            hellaswag_acc=0.32,
+            blimp_overall_accuracy=0.60,
             wikitext_perplexity=150.0,
         )
         for i in range(5):
             self._write_child(
-                parent_rid="parent_useful", parent_fp="fp_parent_useful",
-                rid=f"child_useful_{i}", fp=f"fp_child_useful_{i}",
-                rule_type="op", rule_key="proj_shared_basis",
-                induction_auc=0.30,           # Δ +0.20 helpful
-                binding_composite=0.25,        # Δ +0.15 helpful
-                ar_auc=0.10,                   # Δ +0.10 helpful
-                hellaswag_acc=0.27,            # Δ +0.05 helpful
-                blimp_overall_accuracy=0.55,   # Δ +0.05 helpful
-                wikitext_perplexity=250.0,     # Δ +66% helpful
+                parent_rid="parent_useful",
+                parent_fp="fp_parent_useful",
+                rid=f"child_useful_{i}",
+                fp=f"fp_child_useful_{i}",
+                rule_type="op",
+                rule_key="proj_shared_basis",
+                induction_auc=0.30,  # Δ +0.20 helpful
+                binding_composite=0.25,  # Δ +0.15 helpful
+                ar_auc=0.10,  # Δ +0.10 helpful
+                hellaswag_acc=0.27,  # Δ +0.05 helpful
+                blimp_overall_accuracy=0.55,  # Δ +0.05 helpful
+                wikitext_perplexity=250.0,  # Δ +66% helpful
             )
         prior = compute_construction_prior(self.nb, min_n=3, min_metric_complete=3)
         rules = prior["payload"]["rules"]
@@ -192,22 +233,29 @@ class TestConstructionPriorEndToEnd(unittest.TestCase):
     def test_compute_avoid_verdict_for_harmful_op(self) -> None:
         # Children improve across every metric when this op is removed → 'avoid'.
         self._write_parent(
-            rid="parent_bag", fp="fp_parent_bag",
-            induction_auc=0.10, binding_composite=0.05, ar_auc=0.03,
-            hellaswag_acc=0.27, blimp_overall_accuracy=0.50,
+            rid="parent_bag",
+            fp="fp_parent_bag",
+            induction_auc=0.10,
+            binding_composite=0.05,
+            ar_auc=0.03,
+            hellaswag_acc=0.27,
+            blimp_overall_accuracy=0.50,
             wikitext_perplexity=600.0,
         )
         for i in range(5):
             self._write_child(
-                parent_rid="parent_bag", parent_fp="fp_parent_bag",
-                rid=f"child_bag_{i}", fp=f"fp_child_bag_{i}",
-                rule_type="op", rule_key="bad_op",
-                induction_auc=0.40,           # Δ -0.30 (children better)
+                parent_rid="parent_bag",
+                parent_fp="fp_parent_bag",
+                rid=f"child_bag_{i}",
+                fp=f"fp_child_bag_{i}",
+                rule_type="op",
+                rule_key="bad_op",
+                induction_auc=0.40,  # Δ -0.30 (children better)
                 binding_composite=0.25,
                 ar_auc=0.18,
                 hellaswag_acc=0.32,
                 blimp_overall_accuracy=0.58,
-                wikitext_perplexity=150.0,    # children PPL much lower
+                wikitext_perplexity=150.0,  # children PPL much lower
             )
         prior = compute_construction_prior(self.nb, min_n=3, min_metric_complete=3)
         rules = prior["payload"]["rules"]
@@ -217,19 +265,29 @@ class TestConstructionPriorEndToEnd(unittest.TestCase):
 
     def test_snapshot_round_trip_and_grammar_adjustments(self) -> None:
         self._write_parent(
-            rid="p1", fp="fp_p1",
-            induction_auc=0.5, binding_composite=0.4, ar_auc=0.2,
-            hellaswag_acc=0.32, blimp_overall_accuracy=0.6,
+            rid="p1",
+            fp="fp_p1",
+            induction_auc=0.5,
+            binding_composite=0.4,
+            ar_auc=0.2,
+            hellaswag_acc=0.32,
+            blimp_overall_accuracy=0.6,
             wikitext_perplexity=150.0,
         )
         for i in range(4):
             self._write_child(
-                parent_rid="p1", parent_fp="fp_p1",
-                rid=f"c_{i}", fp=f"fp_c_{i}",
-                rule_type="op", rule_key="useful_op",
-                induction_auc=0.3, binding_composite=0.25,
-                ar_auc=0.10, hellaswag_acc=0.27,
-                blimp_overall_accuracy=0.55, wikitext_perplexity=250.0,
+                parent_rid="p1",
+                parent_fp="fp_p1",
+                rid=f"c_{i}",
+                fp=f"fp_c_{i}",
+                rule_type="op",
+                rule_key="useful_op",
+                induction_auc=0.3,
+                binding_composite=0.25,
+                ar_auc=0.10,
+                hellaswag_acc=0.27,
+                blimp_overall_accuracy=0.55,
+                wikitext_perplexity=250.0,
             )
         prior = compute_construction_prior(self.nb, min_n=3, min_metric_complete=3)
         version = record_construction_prior_snapshot(
@@ -248,18 +306,28 @@ class TestConstructionPriorEndToEnd(unittest.TestCase):
 
     def test_activating_new_snapshot_demotes_old(self) -> None:
         self._write_parent(
-            rid="p2", fp="fp_p2",
-            induction_auc=0.5, binding_composite=0.4, ar_auc=0.2,
-            hellaswag_acc=0.32, blimp_overall_accuracy=0.6,
+            rid="p2",
+            fp="fp_p2",
+            induction_auc=0.5,
+            binding_composite=0.4,
+            ar_auc=0.2,
+            hellaswag_acc=0.32,
+            blimp_overall_accuracy=0.6,
             wikitext_perplexity=150.0,
         )
         for i in range(3):
             self._write_child(
-                parent_rid="p2", parent_fp="fp_p2",
-                rid=f"c2_{i}", fp=f"fp_c2_{i}",
-                rule_type="op", rule_key="useful_op",
-                induction_auc=0.3, binding_composite=0.25, ar_auc=0.10,
-                hellaswag_acc=0.27, blimp_overall_accuracy=0.55,
+                parent_rid="p2",
+                parent_fp="fp_p2",
+                rid=f"c2_{i}",
+                fp=f"fp_c2_{i}",
+                rule_type="op",
+                rule_key="useful_op",
+                induction_auc=0.3,
+                binding_composite=0.25,
+                ar_auc=0.10,
+                hellaswag_acc=0.27,
+                blimp_overall_accuracy=0.55,
                 wikitext_perplexity=250.0,
             )
         prior_a = compute_construction_prior(self.nb, min_n=3, min_metric_complete=3)

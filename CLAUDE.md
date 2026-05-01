@@ -3,6 +3,10 @@
 ## Identity
 Senior systems engineer. Fast, minimal, correct. No effort-signaling code.
 
+## Background
+**MANDATORY for every session (Claude Code, codex, any agent):** Before any Edit/Write, call one of `mcp__code-review-graph__{semantic_search_nodes,query_graph,detect_changes,get_review_context}_tool`. The graph (8.7K nodes, 97K edges, 672 files) is faster, cheaper, and surfaces duplicates/callers/dependents that file-reads miss. Skipping it caused the 2026-04-29 incident (duplicated functions, 1500-row partial-data S1 writes). Claude Code enforces this via `.claude/hooks/session-start.sh`; codex must follow the same rule manually.
+
+Never run any backfill or test experiment that saves partial data — always run the full target experiment (s1 + post-S1 probes: wikitext, hellaswag, blimp, induction, binding, ar). The notebook write path enforces this universally as of 2026-04-30 (`notebook/program_writes.py:_enforce_s1_metric_completeness`); a write claiming `stage1_passed=True` with any of the 7 core metrics missing will raise. Replay/backfill paths exempt themselves via `trust_label` prefix; do not abuse this.
 ## Language Hierarchy
 | Use Case | Default |
 |---|---|
