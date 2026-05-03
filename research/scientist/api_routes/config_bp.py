@@ -21,16 +21,42 @@ def register_config_routes(app, context: ApiRouteContext):
         return jsonify(RunConfig().to_dict())
 
     def api_get_scoring_version():
-        """Return the active composite scoring formula identifier.
+        """Return the active scoring config hash + YAML path.
 
-        Single-version era (post-2026-05-03 collapse): always returns the
-        active version constant. The previous runtime-mutable dispatcher
-        across v7-v14 was retired — every rescore overwrote the stamp
-        anyway, so version pinning was illusory provenance.
+        ``version`` is the SHA-256 prefix of the active scoring_config.yaml
+        bytes (real provenance, replaces the v7-v14 string carousel).
         """
         from ..leaderboard_scoring import get_scoring_version
+        from ..scoring_config import get_config_path
 
-        return jsonify({"version": get_scoring_version(), "supported": []})
+        return jsonify(
+            {
+                "version": get_scoring_version(),
+                "config_path": str(get_config_path()),
+                "supported": [],
+            }
+        )
+
+    def api_reload_scoring_config():
+        """Re-read scoring_config.yaml and rotate the active hash.
+
+        Use after editing the YAML on disk to pick up new weights/anchors
+        without a process restart. Returns the new hash; subsequent rescores
+        will stamp rows with it.
+        """
+        from ..scoring_config import (
+            get_config_path,
+            reload_scoring_config,
+        )
+
+        try:
+            new_hash = reload_scoring_config()
+        except (FileNotFoundError, OSError) as exc:
+            return jsonify(
+                {"error": str(exc), "config_path": str(get_config_path())}
+            ), 500
+        logger.info("scoring config reloaded; new hash=%s", new_hash)
+        return jsonify({"version": new_hash, "config_path": str(get_config_path())})
 
     def api_llm_config():
         """Get current LLM backend configuration."""
@@ -112,6 +138,12 @@ def register_config_routes(app, context: ApiRouteContext):
                 "api_get_scoring_version",
                 api_get_scoring_version,
                 ("GET",),
+            ),
+            (
+                "/api/scoring/reload",
+                "api_reload_scoring_config",
+                api_reload_scoring_config,
+                ("POST",),
             ),
             ("/api/llm/config", "api_llm_config", api_llm_config),
             (

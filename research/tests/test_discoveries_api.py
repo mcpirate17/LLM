@@ -112,7 +112,7 @@ def test_discoveries_endpoint_returns_orphan_reference_separately(tmp_path):
             entry_id, result_id, timestamp, model_source, architecture_desc,
             tier, composite_score, is_reference, reference_name,
             result_cohort, trust_label, comparability_label,
-            evaluation_protocol_version, scoring_version
+            evaluation_protocol_version, scoring_config_hash
         ) VALUES (?, ?, strftime('%s','now'), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
@@ -1011,7 +1011,7 @@ def test_leaderboard_rescore_api_realigns_payload_with_backend_compute(tmp_path)
     nb.conn.execute(
         """
         UPDATE leaderboard
-        SET composite_score = ?, scoring_version = ?
+        SET composite_score = ?, scoring_config_hash = ?
         WHERE result_id = ?
         """,
         (-123.0, "stale-test-version", rid),
@@ -1083,7 +1083,7 @@ def test_leaderboard_rescore_api_realigns_denormalized_probe_metrics(tmp_path):
         UPDATE leaderboard
         SET induction_v2_investigation_auc = NULL,
             binding_v2_investigation_auc = NULL,
-            scoring_version = ?
+            scoring_config_hash = ?
         WHERE result_id = ?
         """,
         ("stale-test-version", rid),
@@ -1195,7 +1195,7 @@ def test_leaderboard_rescore_api_realigns_raw_persisted_rows_with_backend_comput
         nb.conn.execute(
             """
             UPDATE leaderboard
-            SET composite_score = ?, scoring_version = ?
+            SET composite_score = ?, scoring_config_hash = ?
             WHERE result_id = ?
             """,
             (-100.0 - index, "stale-test-version", rid),
@@ -1246,5 +1246,5 @@ def test_leaderboard_rescore_api_realigns_raw_persisted_rows_with_backend_comput
             or 0.0
         )
         assert float(row["composite_score"]) == pytest.approx(expected)
-        assert row.get("scoring_version") == current_version
+        assert row.get("scoring_config_hash") == current_version
     nb.close()

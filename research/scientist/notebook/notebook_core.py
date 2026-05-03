@@ -1185,7 +1185,6 @@ class _NotebookCore:
             "trust_label TEXT",
             "comparability_label TEXT",
             "evaluation_protocol_version TEXT",
-            "scoring_version TEXT",
             "scoring_config_hash TEXT",
         ):
             col_name = col.split()[0]
@@ -1194,6 +1193,23 @@ class _NotebookCore:
                     self.conn.execute(f"ALTER TABLE leaderboard ADD COLUMN {col}")
                 except sqlite3.OperationalError:
                     pass
+        # Drop the legacy ``scoring_version`` column. Backfill any rows whose
+        # new column is empty using the legacy value, then drop. SQLite's
+        # ALTER TABLE DROP COLUMN landed in 3.35 (2021); fall back to a
+        # no-op if running on an older SQLite.
+        if "scoring_version" in lb_cols:
+            try:
+                self.conn.execute(
+                    "UPDATE leaderboard "
+                    "SET scoring_config_hash = scoring_version "
+                    "WHERE scoring_config_hash IS NULL "
+                    "AND scoring_version IS NOT NULL"
+                )
+                self.conn.execute("ALTER TABLE leaderboard DROP COLUMN scoring_version")
+            except sqlite3.OperationalError:
+                # Older SQLite without DROP COLUMN support — leave the
+                # column in place; it's harmless once writers stop populating it.
+                pass
         if "is_reference" not in lb_cols:
             try:
                 self.conn.execute(

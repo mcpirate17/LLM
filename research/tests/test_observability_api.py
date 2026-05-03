@@ -147,9 +147,9 @@ class TestObservabilityAPI(unittest.TestCase):
         nb.conn.execute(
             "INSERT INTO leaderboard (entry_id, result_id, timestamp, model_source, tier, "
             "screening_loss_ratio, composite_score, result_cohort, trust_label, "
-            "comparability_label, evaluation_protocol_version, scoring_version) "
+            "comparability_label, evaluation_protocol_version, scoring_config_hash) "
             "VALUES (?, ?, ?, 'graph_synthesis', 'screening', 0.75, 0.6, "
-            "'search', 'candidate_screening', 'screening_only', 'screening_v1', 'v8')",
+            "'search', 'candidate_screening', 'screening_only', 'screening_v1', 'fixture_hash')",
             ("lb_test_001", first_rid, time.time()),
         )
         nb.conn.commit()

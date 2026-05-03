@@ -359,11 +359,7 @@ class _LeaderboardMixin:
         tier = allowed_tier
         d["model_source"] = model_source
         current_scoring_version = get_scoring_version()
-        # ``scoring_config_hash`` is the canonical provenance column post-2026-05-03;
-        # ``scoring_version`` is populated for legacy-reader backwards compat.
-        d["scoring_version"] = current_scoring_version
         d["scoring_config_hash"] = current_scoring_version
-        kwargs.setdefault("scoring_version", current_scoring_version)
         kwargs.setdefault("scoring_config_hash", current_scoring_version)
         if architecture_desc:
             d["architecture_desc"] = architecture_desc
