@@ -25,8 +25,6 @@ import pytest
 from research.scientist.leaderboard_scoring import (
     _pr_dict_to_score_kwargs,
     compute_composite,
-    get_scoring_version,
-    set_scoring_version,
 )
 
 
@@ -125,19 +123,10 @@ def test_v10_capability_tier_credits_v9_metrics_via_full_pipeline():
     )
     pr_empty = _make_pr_dict()
     d = _make_lb_row(tier="investigation")
-    prev = get_scoring_version()
-    try:
-        set_scoring_version("v10")
-        kw_dense = _pr_dict_to_score_kwargs(
-            copy.deepcopy(pr_dense), d, is_reference=False
-        )
-        kw_empty = _pr_dict_to_score_kwargs(
-            copy.deepcopy(pr_empty), d, is_reference=False
-        )
-        score_dense = float(compute_composite(**kw_dense))
-        score_empty = float(compute_composite(**kw_empty))
-    finally:
-        set_scoring_version(prev)
+    kw_dense = _pr_dict_to_score_kwargs(copy.deepcopy(pr_dense), d, is_reference=False)
+    kw_empty = _pr_dict_to_score_kwargs(copy.deepcopy(pr_empty), d, is_reference=False)
+    score_dense = float(compute_composite(**kw_dense))
+    score_empty = float(compute_composite(**kw_empty))
 
     delta = score_dense - score_empty
     assert delta > 30.0, (

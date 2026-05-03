@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import json
 import math
-import os
 from typing import Any, Dict, Optional, Sequence, Union
 
 from .thresholds import (
@@ -130,7 +129,7 @@ def _pr_dict_to_score_kwargs(
     is_reference: bool,
     extra: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Build kwargs for ``compute_composite_v7`` from a pr_dict + leaderboard row.
+    """Build kwargs for ``compute_composite`` from a pr_dict + leaderboard row.
 
     Pure logic — no I/O. Shared by both single and batch paths.
     """
@@ -321,7 +320,7 @@ def build_score_kwargs(
     is_reference: bool,
     **extra: Any,
 ) -> Dict[str, Any]:
-    """Build kwargs for ``compute_composite_v7`` from a leaderboard row.
+    """Build kwargs for ``compute_composite`` from a leaderboard row.
 
     Queries program_results for fields not on the leaderboard row.
     ``conn`` is a sqlite3 connection, ``notebook`` provides helper methods.
@@ -500,85 +499,6 @@ def compute_pre_investigation_score(
 # See BASELINE_SCORING_DO_NOT_DELETE.md for full design rationale.
 # ---------------------------------------------------------------------------
 
-# Frontier reference values shared by v7 and v8 (measured 2026-03-23 on wiki103)
-_FRONTIER_COMMON: Dict[str, float] = {
-    "ppl_1000": 10.0,  # screening anchor
-    "ppl_2500": 8.6,  # investigation anchor
-    "ppl_10000": 5.6,  # validation anchor
-    "param_eff": 1.09,  # (frontier_ppl/model_ppl) * (frontier_params/model_params)
-    "learn_eff": 1.13,  # ppl@500 / ppl@1000
-    "long_ctx": 0.375,  # average long context score
-    "avg_params": 28_561_920,  # average params across 4 refs
-    "convergence": 1.30,  # avg ppl@100 / ppl@500 across 4 refs
-    "binding": 0.15,  # binding composite for refs at nano scale
-    "blimp": 0.60,  # BLiMP frontier at GPT-2 nano scale
-}
-
-_V7_CONFIG: Dict[str, float] = {
-    **_FRONTIER_COMMON,
-    # Component max points
-    "w_perf_short": 50.0,
-    "w_perf_medium": 75.0,
-    "w_perf_long": 100.0,
-    "w_param_eff": 50.0,
-    "w_learn_eff": 25.0,
-    "w_binding": 120.0,
-    # v8-only understanding components (0 = disabled in v7)
-    "w_tinystories": 0.0,
-    "w_cross_task": 0.0,
-    "w_diagnostic": 0.0,
-    "w_hellaswag": 0.0,
-    "w_hierarchy": 0.0,
-    # v8-only frontier values (unused when weight=0, present for type safety)
-    "tinystories": 0.45,
-    "cross_task": 0.60,
-    "diagnostic": 0.35,
-    "hellaswag": 0.30,
-    "hierarchy": 0.50,
-}
-
-_V8_CONFIG: Dict[str, float] = {
-    **_FRONTIER_COMMON,
-    # Component max points (reduced perplexity weights)
-    "w_perf_short": 35.0,
-    "w_perf_medium": 50.0,
-    "w_perf_long": 65.0,
-    "w_param_eff": 30.0,
-    "w_learn_eff": 20.0,
-    "w_binding": 85.0,
-    # v8-only understanding components
-    "w_tinystories": 30.0,
-    "w_cross_task": 30.0,
-    "w_diagnostic": 45.0,
-    "w_hellaswag": 30.0,
-    "w_hierarchy": 15.0,
-    # v8-only frontier values
-    "tinystories": 0.45,
-    "cross_task": 0.60,
-    "diagnostic": 0.35,
-    "hellaswag": 0.30,
-    "hierarchy": 0.50,
-}
-
-# v8.1 rebalance (2026-04-16) — capability-first: make binding a multiplicative
-# signal instead of a mostly-additive bonus. The scoring_v8 penalty structure
-# let ppl-dominant graphs with zero binding still clear screening; v8.1 makes
-# that significantly more expensive while rewarding graphs that actually bind.
-_V8_1_CONFIG: Dict[str, float] = {
-    **_V8_CONFIG,
-    # Multiplier applied when all three binding signals fall below the soft
-    # gate thresholds. v7/v8 used 0.80 (a 20% haircut); 0.50 halves composite
-    # so a ppl-only graph cannot quietly occupy the investigation queue.
-    "binding_all_below_penalty": 0.50,
-    # Multiplier applied when binding_composite clears the floor. Small boost
-    # — large enough to let a graph that is 1-2 ppl worse than the frontier
-    # but actually binds outscore a ppl-only graph with zero binding.
-    "binding_composite_boost": 1.15,
-    # Threshold on binding_composite = 0.4*ar + 0.3*induction + 0.3*binding
-    # above which the boost activates.
-    "binding_composite_boost_floor": 0.05,
-}
-
 
 def _scurve(ratio: float, k: float = 4.0) -> float:
     """Sigmoid S-curve centered at ratio=1.0.
@@ -592,20 +512,6 @@ def _scurve(ratio: float, k: float = 4.0) -> float:
       ratio=0.5 → 0.12,  ratio=1.5 → 0.88,  ratio=2.0 → 0.98
     """
     return 1.0 / (1.0 + math.exp(-k * (ratio - 1.0)))
-
-
-# V7 frontier anchors — empirical reference metrics from 4 baseline architectures.
-_V7_FRONTIER_PPL_1000 = 10.0  # screening anchor
-_V7_FRONTIER_PPL_2500 = 8.6  # investigation anchor
-_V7_FRONTIER_PPL_10000 = 5.6  # validation anchor
-_V7_FRONTIER_PARAM_EFF = (
-    _V7_FRONTIER_PPL_1000 / 28_561_920
-)  # ppl/param ratio at screening
-_V7_FRONTIER_LEARN_EFF = 1.13  # ppl@500 / ppl@1000
-_V7_FRONTIER_LONG_CTX = 0.375  # average long context score
-_V7_FRONTIER_AVG_PARAMS = 28_561_920  # average params across 4 refs
-_V7_FRONTIER_CONVERGENCE = 1.30  # avg ppl@100 / ppl@500 across 4 refs
-_V7_FRONTIER_BINDING = 0.35  # composite binding score across 4 refs
 
 
 def _score_performance_curves(
@@ -1272,233 +1178,26 @@ def _compute_composite_generic(
     return final
 
 
-def compute_composite_v7(
-    *,
-    decompose: bool = False,
-    **kw: Any,
-) -> Union[float, Dict[str, Any]]:
-    """Composite score v7 -- 18 components, 710pt max (before penalties).
-
-    8 S-curved components use frontier reference averages as anchor.
-    7 additive components use old v5 formulas (frontier refs score 0).
-    1 binding range component (120pt, S-curved).
-    1 binding soft penalty (0.80x, 3-signal AND).
-    1 multiplicative param-size penalty for oversized models.
-
-    See BASELINE_SCORING_DO_NOT_DELETE.md for the full spec.
-    """
-    return _compute_composite_generic(_V7_CONFIG, decompose=decompose, **kw)
+# v7/v8/v8.1 retired 2026-05-03 — they were superseded by v10+ (which is
+# composed into v14, the active formula). _compute_composite_generic stays
+# because v10 still calls it for the loss/efficiency/novelty/understanding
+# tiers; the v7/v8/v8.1 dispatch wrappers were dead code paths.
 
 
-def compute_composite_v8(
-    *,
-    decompose: bool = False,
-    **kw: Any,
-) -> Union[float, Dict[str, Any]]:
-    """Composite score v8 -- rebalanced for understanding capability.
-
-    Key changes from v7:
-    - Perplexity-derived: 310pts -> 210pts (46% -> 26%)
-    - Binding probes: 120pts -> 85pts
-    - NEW: TinyStories (30pts), cross-task (30pts), diagnostic (45pts),
-      HellaSwag (30pts), hierarchy (15pts) = 150pts of new understanding
-    - Understanding hard gate added at promotion (separate from scoring)
-    """
-    return _compute_composite_generic(_V8_CONFIG, decompose=decompose, **kw)
-
-
-def compute_composite_v8_1(
-    *,
-    decompose: bool = False,
-    **kw: Any,
-) -> Union[float, Dict[str, Any]]:
-    """Composite score v8.1 -- capability-first rebalance (2026-04-16).
-
-    Same component weights as v8, but reshapes the binding signal from a
-    mostly-additive bonus into a multiplicative discriminator:
-
-    - All-binding-signals-below-soft-gate penalty: 0.80x -> 0.50x.
-      A ppl-dominant graph with zero binding now loses half its composite
-      instead of 20%. This is the change that stops ppl-only winners from
-      quietly occupying the investigation queue.
-    - Binding-composite boost: +15% when 0.4*ar + 0.3*ind + 0.3*bind >= 0.05.
-      Lets a graph that is 1-2 ppl behind the frontier but actually binds
-      outscore a ppl-only graph on the tuple.
-
-    Opt-in via ``ARIA_SCORING_VERSION=v8.1`` env var or by calling this
-    function directly. Historical rows stay on v8 for comparability.
-    """
-    return _compute_composite_generic(_V8_1_CONFIG, decompose=decompose, **kw)
-
-
-# ---------------------------------------------------------------------------
-# v9 — Gemini trajectory metrics block (2026-04-25).
-# ---------------------------------------------------------------------------
-# v9 adds 4 new screening-budget signals on top of v8.1:
-#   * fp_jacobian_erf_density          — info-routing density (∈ [0,1])
-#   * fp_jacobian_erf_variance         — info-routing variance across positions
-#   * fp_icld_velocity                 — in-context loss decay slope
-#   * fp_logit_margin_velocity         — relational composition emergence
-# Plus fp_jacobian_spectral_norm (already populated for live + backfilled rows).
-#
-# Combination rule: the Gemini block contributes 50% of the v9 composite by
-# averaging four normalized metrics with equal weight (HELM/Abdelfattah/AZ-NAS
-# precedent — see tasks/gemini_metrics_scoring_spec.md §1). The remaining 50%
-# comes from v8.1's full composite, normalized to its theoretical max so the
-# two blocks combine in a comparable scale.
-#
-# Empirical anchors come from the 2026-04-25 smoke run on 4 reference
-# architectures + 3 top-induction passers — see research/perf_artifacts/
-# gemini_smoke_20260425T125115.json. Anchors are screening_750 medians, used
-# only as normalization ceilings; the block stays linear so rare graphs that
-# blow past the ceiling earn extra credit (top-ind-1 at 400× GPT-2 erf_var).
-_V9_GEMINI_BLOCK_FRACTION = 0.5
-_V9_V8_1_NORMALIZER = 800.0  # representative v8.1 composite at frontier
-_V9_GEMINI_MAX_POINTS = 100.0  # block contributes up to 100 points
-
-# Anchors below are screening_750 medians from the 7-architecture smoke run.
-# Live values normalize against these with a soft cap at 2× anchor so a single
-# outlier metric can't dominate the block.
-_V9_ERF_DENSITY_ANCHOR = 1.0  # transformer-class saturates at 1.0
-_V9_ERF_VARIANCE_ANCHOR = 5000.0  # GPT-2 / Retrieval-Augmented post-screening
-_V9_ICLD_VELOCITY_ANCHOR_ABS = 0.025  # |slope| at frontier; more-negative is better
-_V9_LOGIT_MARGIN_ANCHOR = 0.10  # GPT-2 / Mamba post-screening; ind=1 archs are 2.5×
+# v9 retired 2026-05-03 — its 50/50 v8.1+gemini blend was superseded by
+# v10's unified S-curve capability tier. The 4 trajectory signals (erf_density,
+# id_collapse_rate, erf_decay_slope, logit_margin_velocity) live on in v10's
+# `_score_capability_tier_v10` instead.
 
 # Hard gates applied at the pre-investigation gate (notebook_references
 # .get_investigation_eligible). Below these floors the architecture cannot
 # route information and shouldn't reach investigation regardless of
 # composite score. Tuned from smoke data: SSMs at init have erf_density≈0.3
 # so the floor must be below that to avoid gating Mamba/RWKV-class graphs.
+# Kept across the v9 retirement (2026-05-03) because notebook_references
+# imports them by name.
 GEMINI_HARD_GATE_ERF_DENSITY = 0.20
 GEMINI_HARD_GATE_ERF_VARIANCE = 800.0
-
-
-def _v9_normalized_metric(value: Optional[float], anchor: float) -> float:
-    """Linear-saturating normalization to [0, 1] with a 2× cap at anchor.
-
-    Returns 0.5 at anchor, 1.0 at 2×, 0.0 at zero or negative. Values above
-    2× clamp to 1.0 — a single dominant metric should not crowd out the
-    other three in the uniform-weighted block.
-    """
-    if value is None or value <= 0.0:
-        return 0.0
-    ratio = value / max(anchor, 1e-9)
-    if ratio >= 2.0:
-        return 1.0
-    return min(1.0, ratio / 2.0)
-
-
-def _v9_gemini_block_score(kw: Dict[str, Any]) -> tuple[float, Dict[str, float]]:
-    """Compute the 0..100 Gemini block contribution.
-
-    Tier-aware composition (2026-04-25 calibration on n=16k data):
-
-    * **Screening tier** (``fp_metric_phase`` in ``init`` / ``screening_750``
-      / unset): use 3 metrics — ERF density, ERF variance, logit-margin
-      velocity. ICLD is dropped because Spearman ρ vs binding/induction
-      AUC is ~0.03 at this phase (noise floor). Empirically the loss-vs-
-      position slope on a synthetic Dyck probe doesn't discriminate
-      architectures until in-context-learning capability has had time
-      to crystallize during training.
-
-    * **Investigation / validation tier** (``investigation_full`` /
-      ``validation_full``): use all 4 metrics. By this phase the model
-      has trained ~5000+ steps and ICLD's correlation with induction
-      AUC sharpens to ρ=-0.259 — real signal. We include it at equal
-      weight with the other three.
-
-    ICLD velocity is more-negative-is-better, so we flip the sign before
-    normalization. Returns ``(block_score, breakdown)`` where breakdown
-    reports each component's normalized [0,1] contribution.
-    """
-    phase = (kw.get("fp_metric_phase") or "").strip()
-    # ICLD only earns scoring weight once the model has trained enough
-    # for in-context learning to emerge (~5000+ steps). Screening (~750
-    # steps) and at-init backfill are below that threshold.
-    include_icld = phase in ("investigation_full", "validation_full")
-
-    erf_density = kw.get("fp_jacobian_erf_density")
-    erf_variance = kw.get("fp_jacobian_erf_variance")
-    logit_margin = kw.get("fp_logit_margin_velocity")
-
-    n_density = _v9_normalized_metric(erf_density, _V9_ERF_DENSITY_ANCHOR)
-    n_variance = _v9_normalized_metric(erf_variance, _V9_ERF_VARIANCE_ANCHOR)
-    n_margin = _v9_normalized_metric(logit_margin, _V9_LOGIT_MARGIN_ANCHOR)
-
-    block_components: Dict[str, float] = {
-        "fp_jacobian_erf_density": n_density,
-        "fp_jacobian_erf_variance": n_variance,
-        "fp_logit_margin_velocity": n_margin,
-    }
-    if include_icld:
-        icld_velocity = kw.get("fp_icld_velocity")
-        icld_abs = -icld_velocity if isinstance(icld_velocity, (int, float)) else None
-        block_components["fp_icld_velocity_abs"] = _v9_normalized_metric(
-            icld_abs, _V9_ICLD_VELOCITY_ANCHOR_ABS
-        )
-
-    # Uniform mean of N normalized signals (3 at screening, 4 at
-    # investigation/validation). Components missing entirely (live rows
-    # before metric writes complete) contribute 0 — same as a weak
-    # architecture. ``fp_metric_phase`` tags rows so ML training can
-    # distinguish "missing" from "measured weak".
-    n = max(1, len(block_components))
-    block_score = (sum(block_components.values()) / n) * _V9_GEMINI_MAX_POINTS
-    return block_score, block_components
-
-
-def compute_composite_v9(
-    *,
-    decompose: bool = False,
-    **kw: Any,
-) -> Union[float, Dict[str, Any]]:
-    """Composite v9 — Gemini trajectory metrics block at 50% (2026-04-25).
-
-    Builds on v8.1 by adding a 4-metric trajectory block (Jacobian ERF
-    density + variance, ICLD velocity, transitive logit-margin slope) at
-    HELM/Abdelfattah-style uniform weighting. Spec at
-    ``tasks/gemini_metrics_scoring_spec.md``. Hard gates live at the
-    pre-investigation gate (see GEMINI_HARD_GATE_*).
-
-    Combination:
-        composite_v9 = (1 - F) * v8.1_normalized + F * gemini_block
-    where F = 0.5 and gemini_block ∈ [0, 100] is the uniform mean of the
-    four normalized trajectory metrics. v8.1_normalized rescales the v8.1
-    composite to a 0..100 frontier-anchor range.
-
-    Rows with no trajectory metrics yet (live runs pre-backfill) get a
-    block_score = 0; the v8.1 component still contributes its 50%.
-    """
-    # v8.1 component — pull the float, not the breakdown, for arithmetic.
-    if decompose:
-        v8_1_result = compute_composite_v8_1(decompose=True, **kw)
-        v8_1_score = float(v8_1_result["composite_score"])
-        v8_1_bd = v8_1_result.get("breakdown") or {}
-    else:
-        v8_1_score = float(compute_composite_v8_1(decompose=False, **kw))
-        v8_1_bd = {}
-
-    # Linear normalize to a 0..100 range before combining.
-    v8_1_normalized = max(
-        0.0,
-        min(
-            _V9_GEMINI_MAX_POINTS,
-            v8_1_score / _V9_V8_1_NORMALIZER * _V9_GEMINI_MAX_POINTS,
-        ),
-    )
-
-    gemini_score, gemini_bd = _v9_gemini_block_score(kw)
-    composite = (
-        1.0 - _V9_GEMINI_BLOCK_FRACTION
-    ) * v8_1_normalized + _V9_GEMINI_BLOCK_FRACTION * gemini_score
-
-    if decompose:
-        v8_1_bd["_v9_v8_1_raw"] = v8_1_score
-        v8_1_bd["_v9_v8_1_normalized"] = v8_1_normalized
-        v8_1_bd["_v9_gemini_block_score"] = gemini_score
-        v8_1_bd["_v9_gemini_components"] = gemini_bd
-        return {"composite_score": composite, "breakdown": v8_1_bd}
-    return composite
 
 
 # ---------------------------------------------------------------------------
@@ -1525,7 +1224,15 @@ def compute_composite_v9(
 # in the v10 design discussion). Lower-is-better metrics (id_collapse_rate,
 # erf_decay_slope, icld_velocity) are negated before S-curve normalization.
 _V10_CONFIG: Dict[str, float] = {
-    **_V8_CONFIG,
+    # Frontier reference values (formerly _FRONTIER_COMMON, inlined 2026-05-03
+    # when v7/v8/v8.1/v9 were retired — only param_eff/learn_eff/long_ctx/
+    # avg_params/convergence/binding survive; ppl + blimp are overridden below).
+    "param_eff": 1.09,
+    "learn_eff": 1.13,
+    "long_ctx": 0.375,
+    "avg_params": 28_561_920,
+    "convergence": 1.30,
+    "binding": 0.15,
     # Loss tier (~175pts total): unchanged from v8 except learn_eff trimmed
     "w_perf_short": 35.0,
     "w_perf_medium": 50.0,
@@ -2446,13 +2153,14 @@ def compute_composite_v10(
 
 
 def composite_score_ceiling(version: str | None = None) -> float:
-    """Return the theoretical maximum score for a scoring version.
+    """Return the theoretical maximum composite score under the active formula.
 
-    This is derived from the same weight config used by the scorer so UI scale
-    ceilings do not drift into hard-coded folklore.
+    Derived from the v14 weight config so UI scale ceilings stay in sync
+    with the scorer. ``version`` is accepted for backwards compatibility
+    with callers from the multi-version era; it is ignored.
     """
-    active = version or SCORING_VERSION
-    cfg = _V10_CONFIG if active in {"v10", "v11", "v12"} else _V8_CONFIG
+    del version  # Single-version era; argument retained for API stability.
+    cfg = _V14_CONFIG
     base_max = (
         cfg["w_perf_short"]
         + cfg["w_perf_medium"]
@@ -2476,90 +2184,44 @@ def composite_score_ceiling(version: str | None = None) -> float:
         + cfg["w_hierarchy"]
         + 25.0  # speed
         + 10.0  # early_convergence
+        + cfg["w_cap_ar"]
+        + cfg["w_cap_induction"]
+        + cfg["w_cap_binding"]
+        + cfg["w_cap_erf_density"]
+        + cfg["w_cap_id_collapse"]
+        + cfg["w_cap_erf_decay"]
+        + cfg["w_cap_logit_margin"]
+        + cfg["w_aux_erf_variance"]
+        + cfg["w_aux_icld"]
+        # Controlled-language ladder (v14 addition)
+        + cfg["w_cl_s05_sa"]
+        + cfg["w_cl_s05_order"]
+        + cfg["w_cl_s10_sa"]
+        + cfg["w_cl_s10_order"]
+        + cfg["w_cl_inv_sa"]
+        + cfg["w_cl_inv_order"]
     )
-    if active in {"v10", "v11", "v12"}:
-        base_max += (
-            cfg["w_cap_ar"]
-            + (50.0 if active in {"v11", "v12"} else cfg["w_cap_induction"])
-            + (50.0 if active in {"v11", "v12"} else cfg["w_cap_binding"])
-            + cfg["w_cap_erf_density"]
-            + cfg["w_cap_id_collapse"]
-            + cfg["w_cap_erf_decay"]
-            + cfg["w_cap_logit_margin"]
-            + cfg["w_aux_erf_variance"]
-            + cfg["w_aux_icld"]
-        )
-    if active == "v12":
-        base_max -= 55.0
     return float(base_max)
 
 
 # ---------------------------------------------------------------------------
-# Version dispatcher
+# Active scoring formula
 # ---------------------------------------------------------------------------
-# Default to v8 for backward compatibility; ARIA_SCORING_VERSION sets the
-# initial value at process start. The dashboard can change it at runtime via
-# set_scoring_version() / API so operators don't need to restart the server
-# just to flip between v8 and v8.1.
-SUPPORTED_SCORING_VERSIONS: tuple[str, ...] = (
-    "v7",
-    "v8",
-    "v8.1",
-    "v9",
-    "v10",
-    "v11",
-    "v12",
-    "v14",
-)
-# v12 is the active leaderboard default (2026-04-28): v11's
-# breakthrough-aligned capability anchors plus reduced loss budget and
-# champion-range eligibility gates.
-SCORING_VERSION = os.environ.get("ARIA_SCORING_VERSION", "v12")
+# Single canonical formula (v14, locked 2026-05-03). The prior multi-version
+# dispatcher (v7-v14) is gone — every rescore overwrote the version stamp
+# anyway, so version pinning was illusory provenance. Stage 2 of this refactor
+# will move the weights/anchors out of code into ``research/scoring_config.yaml``
+# so tuning becomes a config edit, not a code patch.
+ACTIVE_SCORING_VERSION: str = "v14"
 
 
 def get_scoring_version() -> str:
-    """Return the currently active scoring version string."""
-    return SCORING_VERSION
-
-
-def set_scoring_version(version: str) -> str:
-    """Change the active scoring version at runtime.
-
-    Raises ``ValueError`` if the version is not one of
-    :data:`SUPPORTED_SCORING_VERSIONS`. Returns the new value on success.
-    Callers should treat this as process-global: all subsequent calls to
-    :func:`compute_composite` dispatch to the new version. Historical
-    rows already written under the previous version are not rescored.
-    """
-    global SCORING_VERSION
-    if version not in SUPPORTED_SCORING_VERSIONS:
-        raise ValueError(
-            f"unsupported scoring version {version!r}; "
-            f"expected one of {SUPPORTED_SCORING_VERSIONS}"
-        )
-    SCORING_VERSION = version
-    return SCORING_VERSION
+    """Return the active scoring formula identifier (constant: ``v14``)."""
+    return ACTIVE_SCORING_VERSION
 
 
 def compute_composite(
     *, decompose: bool = False, **kw: Any
 ) -> Union[float, Dict[str, Any]]:
-    """Dispatch to the active scoring version."""
-    # Read the module attribute at call time so runtime changes via
-    # set_scoring_version() take effect without re-importing.
-    version = SCORING_VERSION
-    if version == "v14":
-        return compute_composite_v14(decompose=decompose, **kw)
-    if version == "v12":
-        return compute_composite_v12(decompose=decompose, **kw)
-    if version == "v11":
-        return compute_composite_v11(decompose=decompose, **kw)
-    if version == "v10":
-        return compute_composite_v10(decompose=decompose, **kw)
-    if version == "v9":
-        return compute_composite_v9(decompose=decompose, **kw)
-    if version == "v8.1":
-        return compute_composite_v8_1(decompose=decompose, **kw)
-    if version == "v8":
-        return compute_composite_v8(decompose=decompose, **kw)
-    return compute_composite_v7(decompose=decompose, **kw)
+    """Compute the leaderboard composite score under the active (v14) formula."""
+    return compute_composite_v14(decompose=decompose, **kw)

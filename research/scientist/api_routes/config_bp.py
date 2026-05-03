@@ -21,52 +21,16 @@ def register_config_routes(app, context: ApiRouteContext):
         return jsonify(RunConfig().to_dict())
 
     def api_get_scoring_version():
-        """Return the active composite scoring version.
+        """Return the active composite scoring formula identifier.
 
-        ``v8`` (default) uses the original v8 weights. ``v8.1`` applies the
-        capability-first rebalance (tighter binding penalty + boost for
-        graphs that actually bind). See research/tasks/todo.md for the full
-        rationale.
+        Single-version era (post-2026-05-03 collapse): always returns the
+        active version constant. The previous runtime-mutable dispatcher
+        across v7-v14 was retired — every rescore overwrote the stamp
+        anyway, so version pinning was illusory provenance.
         """
-        from ..leaderboard_scoring import (
-            SUPPORTED_SCORING_VERSIONS,
-            get_scoring_version,
-        )
+        from ..leaderboard_scoring import get_scoring_version
 
-        return jsonify(
-            {
-                "version": get_scoring_version(),
-                "supported": list(SUPPORTED_SCORING_VERSIONS),
-            }
-        )
-
-    def api_set_scoring_version():
-        """Switch the active composite scoring version at runtime.
-
-        Historical rows scored under the previous version are not
-        rescored — the switch only affects composites computed after the
-        call returns.
-        """
-        from ..leaderboard_scoring import (
-            SUPPORTED_SCORING_VERSIONS,
-            set_scoring_version,
-        )
-
-        body = request.get_json(silent=True) or {}
-        version = str(body.get("version", "")).strip()
-        if not version:
-            return jsonify({"error": "version is required"}), 400
-        try:
-            new_version = set_scoring_version(version)
-        except ValueError as exc:
-            return jsonify(
-                {
-                    "error": str(exc),
-                    "supported": list(SUPPORTED_SCORING_VERSIONS),
-                }
-            ), 400
-        logger.info("Scoring version changed to %s via API", new_version)
-        return jsonify({"version": new_version})
+        return jsonify({"version": get_scoring_version(), "supported": []})
 
     def api_llm_config():
         """Get current LLM backend configuration."""
@@ -148,12 +112,6 @@ def register_config_routes(app, context: ApiRouteContext):
                 "api_get_scoring_version",
                 api_get_scoring_version,
                 ("GET",),
-            ),
-            (
-                "/api/scoring/version",
-                "api_set_scoring_version",
-                api_set_scoring_version,
-                ("POST",),
             ),
             ("/api/llm/config", "api_llm_config", api_llm_config),
             (

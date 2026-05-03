@@ -314,14 +314,6 @@ class TestScoringMathIntegrity:
         score = compute_composite()
         assert score == 0.0
 
-    def test_composite_v7_missing_ppl_returns_zero(self):
-        """v7 with no perplexity data returns 0 or minimal score."""
-        from research.scientist.leaderboard_scoring import compute_composite_v7
-
-        score = compute_composite_v7()
-        assert isinstance(score, (int, float))
-        assert score >= 0.0
-
 
 # ---------------------------------------------------------------------------
 # Predictor ML model correctness
