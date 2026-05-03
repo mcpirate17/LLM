@@ -152,7 +152,11 @@ def rescore_entry(
     current_version = get_scoring_version()
     row = dict(existing)
     old_score = float(row.get("composite_score") or 0.0)
-    old_version = str(row.get("scoring_version") or "").strip()
+    # Provenance check: prefer the new scoring_config_hash column; fall back to
+    # legacy scoring_version for rows written before the 2026-05-03 cutover.
+    old_version = str(
+        row.get("scoring_config_hash") or row.get("scoring_version") or ""
+    ).strip()
     pr_dict = dict(pr_cache.get(result_id, {}))
     if pr_updates:
         pr_dict.update(pr_updates)
@@ -192,6 +196,13 @@ def rescore_entry(
         columns = nb._get_leaderboard_columns()
         sets = ["composite_score = ?"]
         params: list[Any] = [new_score]
+        # ``scoring_config_hash`` is the canonical provenance column (post-2026-05-03);
+        # ``scoring_version`` is the legacy column populated for backwards-compat
+        # readers. Both store the same SHA prefix for now; ``scoring_version``
+        # will be dropped in a future migration.
+        if "scoring_config_hash" in columns:
+            sets.append("scoring_config_hash = ?")
+            params.append(current_version)
         if "scoring_version" in columns:
             sets.append("scoring_version = ?")
             params.append(current_version)
@@ -237,12 +248,18 @@ def rescore_leaderboard(
         where.append(f"result_id IN ({placeholders})")
         params.extend(normalized_ids)
     if only_stale:
-        where.append("(scoring_version IS NULL OR scoring_version != ?)")
+        # Prefer the new column; fall back to legacy scoring_version for rows
+        # written before the 2026-05-03 cutover.
+        where.append(
+            "(COALESCE(scoring_config_hash, scoring_version) IS NULL "
+            "OR COALESCE(scoring_config_hash, scoring_version) != ?)"
+        )
         params.append(get_scoring_version())
 
     current_version = get_scoring_version()
     query = (
-        "SELECT entry_id, result_id, is_reference, composite_score, scoring_version "
+        "SELECT entry_id, result_id, is_reference, composite_score, "
+        "COALESCE(scoring_config_hash, scoring_version) AS scoring_version "
         "FROM leaderboard"
     )
     if where:

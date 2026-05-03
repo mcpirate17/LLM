@@ -9,6 +9,7 @@ import json
 import math
 from typing import Any, Dict, Optional, Sequence, Union
 
+from . import scoring_config as _scoring_config
 from .thresholds import (
     BINDING_AR_SOFT_GATE,
     BINDING_BINDING_AUC_SOFT_GATE,
@@ -17,6 +18,16 @@ from .thresholds import (
     GPT2_REF,
     INSUFFICIENT_LEARNING_LR,
 )
+
+__all__ = [
+    "compute_composite",
+    "compute_composite_v14",
+    "get_scoring_version",
+    "_V10_CONFIG",
+    "_V11_CONFIG",
+    "_V14_CONFIG",
+]
+_ = _scoring_config  # silence unused-import warning; consumed below at module scope
 
 
 def compute_efficiency_multiple(
@@ -1223,87 +1234,11 @@ GEMINI_HARD_GATE_ERF_VARIANCE = 800.0
 # that have at least one Gemini metric populated (see lab_notebook query
 # in the v10 design discussion). Lower-is-better metrics (id_collapse_rate,
 # erf_decay_slope, icld_velocity) are negated before S-curve normalization.
-_V10_CONFIG: Dict[str, float] = {
-    # Frontier reference values (formerly _FRONTIER_COMMON, inlined 2026-05-03
-    # when v7/v8/v8.1/v9 were retired — only param_eff/learn_eff/long_ctx/
-    # avg_params/convergence/binding survive; ppl + blimp are overridden below).
-    "param_eff": 1.09,
-    "learn_eff": 1.13,
-    "long_ctx": 0.375,
-    "avg_params": 28_561_920,
-    "convergence": 1.30,
-    "binding": 0.15,
-    # Loss tier (~175pts total): unchanged from v8 except learn_eff trimmed
-    "w_perf_short": 35.0,
-    "w_perf_medium": 50.0,
-    "w_perf_long": 65.0,
-    "w_param_eff": 30.0,
-    "w_learn_eff": 15.0,
-    # Capability tier disabled in the legacy rollup; new unrolled scorer
-    # handles ar/induction/binding individually below.
-    "w_binding": 0.0,
-    # Understanding tier (~175pts total): hellaswag halved, diagnostic
-    # trimmed, hierarchy bumped — keeps tier total at parity with capability
-    # without leaving any single metric overweighted.
-    "w_blimp": 35.0,
-    "w_tinystories": 30.0,
-    "w_cross_task": 30.0,
-    "w_diagnostic": 40.0,
-    "w_hellaswag": 15.0,
-    "w_hierarchy": 25.0,
-    # Capability tier (~175pts total): 7 × 25pts each, all S-curved.
-    "w_cap_ar": 25.0,
-    "w_cap_induction": 25.0,
-    "w_cap_binding": 25.0,
-    "w_cap_erf_density": 25.0,
-    "w_cap_id_collapse": 25.0,
-    "w_cap_erf_decay": 25.0,
-    "w_cap_logit_margin": 25.0,
-    # Aux trajectory tier (lower-ρ, kept for ML signal): 10pts each.
-    "w_aux_erf_variance": 10.0,
-    "w_aux_icld": 10.0,
-    # Anchors recalibrated 2026-04-26 to the cohort median of each metric.
-    # Methodology: anchor = median of populated rows in the cohort that the
-    # component scores at. S-curve evaluates ratio=anchor/value (lower-better)
-    # or value/anchor (higher-better); ratio=1 → score 0.5. So a row at the
-    # cohort median earns half of the component's weight; above-median earns
-    # more, below-median less. Replaces ad-hoc / aspirational anchors that
-    # were either unreachable (most rows scored zero) or arbitrary.
-    # Cohorts: PPL anchors use the appropriate stage cohort; understanding,
-    # capability, and aux anchors use val+bt (where they fire).
-    "ppl_1000": 744.0,  # median screening wikitext_perplexity (n=1871)
-    "ppl_2500": 823.0,  # median investigation wikitext_perplexity (n=159)
-    "ppl_10000": 754.0,  # median val+bt wikitext_perplexity (n=2453)
-    "blimp": 0.525,  # median val+bt blimp_overall_accuracy (n=2452)
-    "hellaswag": 0.225,  # median val+bt hellaswag_acc (n=2453)
-    "tinystories": 0.542,  # median val+bt tinystories_score (n=2452)
-    "cross_task": 0.279,  # median val+bt cross_task_score (n=2441)
-    "diagnostic": 0.004,  # median val+bt diagnostic_score (n=2447)
-    "hierarchy": 0.848,  # median val+bt fp_hierarchy_fitness (n=2283)
-    "cap_ar_anchor": 0.002,  # median val+bt ar_auc (n=2076)
-    "cap_induction_anchor": 0.006,  # median val+bt induction_auc v1 (n=2163)
-    "cap_binding_anchor": 0.004,  # median val+bt binding_auc v1 (n=405)
-    "cap_erf_density_anchor": 0.047,  # median val+bt fp_jacobian_erf_density
-    "cap_id_collapse_anchor": 0.010,  # |median| of negative fp_id_collapse_rate (n_neg=1498)
-    "cap_erf_decay_anchor": 0.050,  # |median| of negative fp_jacobian_erf_decay_slope (n_neg=2311)
-    "cap_logit_margin_anchor": 0.003,  # median val+bt fp_logit_margin_velocity (n=2284)
-    "aux_erf_variance_anchor": 14280.0,  # median val+bt fp_jacobian_erf_variance (n=2452)
-    "aux_icld_anchor": 0.017,  # |median| of negative fp_icld_velocity (n_neg=2412)
-    # Multiplicative gates retired.
-    "binding_all_below_penalty": 1.0,
-    "binding_composite_boost": 1.0,
-    "binding_composite_boost_floor": 0.0,
-    # Score-stability (CV) penalty — applied only at validation/breakthrough.
-    # Per-tier multiplier = max(floor, 1 - lambda * tier_CV).
-    # CV = std/|mean| across runs of the same graph_fingerprint.  Tiers
-    # without enough runs (n<2) get penalty=1.0 (no penalty until we
-    # have signal).  Loss tier carries the most points so it gets the
-    # strongest lambda.
-    "cv_lambda_loss": 0.5,
-    "cv_lambda_und": 0.3,
-    "cv_lambda_cap": 0.4,
-    "cv_penalty_floor": 0.6,
-}
+# v10/v11/v14 tunable knobs come from research/scoring_config.yaml so tuning
+# is a config edit, not a code patch. The three layers are kept distinct
+# because v11 applies a multiplicative weight rescale on top of v10 (see
+# compute_composite_v11) — flattening would change scoring semantics.
+_V10_CONFIG: Dict[str, float] = _scoring_config.get_layered_configs()["v10"]
 
 # ---------------------------------------------------------------------------
 # v11 — Breakthrough alignment (2026-04-26).
@@ -1315,22 +1250,7 @@ _V10_CONFIG: Dict[str, float] = {
 #   3. Breakthrough multiplier: 1.2x boost to Understanding tier if
 #      binding_auc > 0.8 AND induction_auc > 0.3.
 #   4. Tokenizer Integrity: 0.1x total multiplier if tokenizer_mode != 'tiktoken'.
-_V11_CONFIG: Dict[str, float] = {
-    **_V10_CONFIG,
-    # 2026-05-02 audit (tasks/scoring_audit_2026-05-02.md):
-    # BLiMP doesn't move with training at our 750-step eval scale. b0c38826
-    # at champion mode (12 layers × 10K steps, final_loss=0.000) scored
-    # BLiMP=0.514 vs baseline 0.502 — a 1.2pp gain inside the noise band
-    # (cohort std=0.013). Cohort ρ vs n_train_steps = +0.028. The metric
-    # is correctly detecting that nano-LLMs uniformly cannot do BLiMP at
-    # our budget. Drop weight 35 → 5; redirect to induction/binding which
-    # DO move with training and DO discriminate (ρ vs composite +0.42 / +0.19).
-    "w_blimp": 5.0,
-    "w_cap_induction": 65.0,
-    "w_cap_binding": 65.0,
-    "cap_induction_anchor": 0.300,
-    "cap_binding_anchor": 0.500,
-}
+_V11_CONFIG: Dict[str, float] = _scoring_config.get_layered_configs()["v11"]
 
 
 _V11_CAP_INDUCTION_MULTIPLIER = (
@@ -1362,35 +1282,17 @@ _V11_CAP_BINDING_MULTIPLIER = (
 # 12L/10K-step training moves BLiMP only 1.2pp inside the 0.013 noise band).
 # Real HellaSwag weight drops 15→5 (cohort spread 0.030, ρ vs composite
 # +0.088 — near-noise at screening eval scale).
-_V14_CONFIG: Dict[str, float] = {
-    **_V11_CONFIG,
-    # Real-benchmark weight reductions (insufficient signal at nano scale)
-    "w_hellaswag": 5.0,
-    # Controlled-language ladder weights — progressive credit by tier
-    "w_cl_s05_sa": 3.0,
-    "w_cl_s05_order": 2.0,
-    "w_cl_s10_sa": 9.0,
-    "w_cl_s10_order": 6.0,
-    "w_cl_inv_sa": 15.0,
-    "w_cl_inv_order": 10.0,
-    # Anchors = cohort median at each tier (S-curve gives half-credit at median)
-    "cl_s05_sa_anchor": 1.000,
-    "cl_s05_order_anchor": 0.605,
-    "cl_s10_sa_anchor": 1.000,
-    "cl_s10_order_anchor": 0.456,
-    "cl_inv_sa_anchor": 0.940,
-    "cl_inv_order_anchor": 0.420,
-}
+_V14_CONFIG: Dict[str, float] = _scoring_config.get_layered_configs()["v14"]
 
-# Median-relative component anchors are useful for ranking noisy cohorts, but
-# champion range needs at least one reproduced trust signal: genuinely low BPE
-# PPL, above-chance understanding, or non-local binding plus induction.
-_V11_TRUST_CEILING = 360.0
-_V11_TRUST_PPL_FLOOR = 150.0
-_V11_TRUST_HELLASWAG_FLOOR = 0.25
-_V11_TRUST_BLIMP_FLOOR = 0.55
-_V11_TRUST_INDUCTION_FLOOR = 0.05
-_V11_TRUST_BINDING_FLOOR = 0.20
+# Trust-ceiling thresholds (champion-range eligibility gates) — externalized
+# to research/scoring_config.yaml::trust_ceiling.
+_TRUST = _scoring_config.get_trust_ceiling()
+_V11_TRUST_CEILING = float(_TRUST["ceiling"])
+_V11_TRUST_PPL_FLOOR = float(_TRUST["ppl_floor"])
+_V11_TRUST_HELLASWAG_FLOOR = float(_TRUST["hellaswag_floor"])
+_V11_TRUST_BLIMP_FLOOR = float(_TRUST["blimp_floor"])
+_V11_TRUST_INDUCTION_FLOOR = float(_TRUST["induction_floor"])
+_V11_TRUST_BINDING_FLOOR = float(_TRUST["binding_floor"])
 
 
 def _v11_trust_ceiling(
@@ -2207,21 +2109,27 @@ def composite_score_ceiling(version: str | None = None) -> float:
 # ---------------------------------------------------------------------------
 # Active scoring formula
 # ---------------------------------------------------------------------------
-# Single canonical formula (v14, locked 2026-05-03). The prior multi-version
-# dispatcher (v7-v14) is gone — every rescore overwrote the version stamp
-# anyway, so version pinning was illusory provenance. Stage 2 of this refactor
-# will move the weights/anchors out of code into ``research/scoring_config.yaml``
-# so tuning becomes a config edit, not a code patch.
+# Single canonical formula. Tunable knobs live in research/scoring_config.yaml;
+# the dispatcher across v7-v14 was retired because every rescore overwrote
+# the version stamp, making it illusory provenance. The replacement is a
+# SHA256 digest of the YAML bytes — when the config changes, the hash
+# changes, and rescored rows pick up the new stamp.
 ACTIVE_SCORING_VERSION: str = "v14"
 
 
 def get_scoring_version() -> str:
-    """Return the active scoring formula identifier (constant: ``v14``)."""
-    return ACTIVE_SCORING_VERSION
+    """Return the active scoring config hash (12-char SHA256 prefix).
+
+    Replaces the multi-version era's ``v7``/``v8``/.../``v14`` strings with
+    real provenance: "this row was scored under config matching hash X."
+    Reload via ``scoring_config.reload_scoring_config()`` after editing the
+    YAML; the hash will rotate.
+    """
+    return _scoring_config.get_scoring_config_hash()
 
 
 def compute_composite(
     *, decompose: bool = False, **kw: Any
 ) -> Union[float, Dict[str, Any]]:
-    """Compute the leaderboard composite score under the active (v14) formula."""
+    """Compute the leaderboard composite score under the active formula."""
     return compute_composite_v14(decompose=decompose, **kw)

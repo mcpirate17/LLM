@@ -1,0 +1,118 @@
+# Active leaderboard scoring formula (v14).
+#
+# Single source of truth for weights / anchors / breakthrough gates. Loaded
+# by ``research/scientist/leaderboard_scoring.py`` at module import. A SHA-256
+# digest of the file (truncated to 12 hex chars) is stamped on every rescored
+# leaderboard row as ``scoring_config_hash``, replacing the meaningless
+# ``scoring_version`` column from the multi-version era.
+#
+# Internal composition layers — kept layered (not flattened) because v11
+# applies a multiplicative weight rescale on top of v10's base score (see
+# ``compute_composite_v11`` for the cap-induction/cap-binding bump logic).
+# Flattening would change scoring semantics. Treat the layers as
+# implementation detail; tune the layer where the knob originated.
+
+base:  # v10 base — three equal tiers, all S-curves
+  # Frontier reference values
+  param_eff: 1.09
+  learn_eff: 1.13
+  long_ctx: 0.375
+  avg_params: 28561920
+  convergence: 1.30
+  binding: 0.15
+  # Loss tier (~175pts total)
+  w_perf_short: 35.0
+  w_perf_medium: 50.0
+  w_perf_long: 65.0
+  w_param_eff: 30.0
+  w_learn_eff: 15.0
+  w_binding: 0.0  # Capability tier handles ar/ind/binding individually
+  # Understanding tier (~175pts total)
+  w_blimp: 35.0
+  w_tinystories: 30.0
+  w_cross_task: 30.0
+  w_diagnostic: 40.0
+  w_hellaswag: 15.0
+  w_hierarchy: 25.0
+  # Capability tier (~175pts total): 7 × 25pts S-curves
+  w_cap_ar: 25.0
+  w_cap_induction: 25.0
+  w_cap_binding: 25.0
+  w_cap_erf_density: 25.0
+  w_cap_id_collapse: 25.0
+  w_cap_erf_decay: 25.0
+  w_cap_logit_margin: 25.0
+  # Aux trajectory tier (10pts each)
+  w_aux_erf_variance: 10.0
+  w_aux_icld: 10.0
+  # Anchors (cohort medians, recalibrated 2026-04-26)
+  ppl_1000: 744.0    # screening wikitext_perplexity (n=1871)
+  ppl_2500: 823.0    # investigation wikitext_perplexity (n=159)
+  ppl_10000: 754.0   # val+bt wikitext_perplexity (n=2453)
+  blimp: 0.525       # val+bt blimp_overall_accuracy (n=2452)
+  hellaswag: 0.225   # val+bt hellaswag_acc (n=2453)
+  tinystories: 0.542 # val+bt tinystories_score (n=2452)
+  cross_task: 0.279  # val+bt cross_task_score (n=2441)
+  diagnostic: 0.004  # val+bt diagnostic_score (n=2447)
+  hierarchy: 0.848   # val+bt fp_hierarchy_fitness (n=2283)
+  cap_ar_anchor: 0.002
+  cap_induction_anchor: 0.006
+  cap_binding_anchor: 0.004
+  cap_erf_density_anchor: 0.047
+  cap_id_collapse_anchor: 0.010
+  cap_erf_decay_anchor: 0.050
+  cap_logit_margin_anchor: 0.003
+  aux_erf_variance_anchor: 14280.0
+  aux_icld_anchor: 0.017
+  # Multiplicative gates retired (kept at neutral values)
+  binding_all_below_penalty: 1.0
+  binding_composite_boost: 1.0
+  binding_composite_boost_floor: 0.0
+  # Score-stability (CV) penalty — applied at validation/breakthrough
+  cv_lambda_loss: 0.5
+  cv_lambda_und: 0.3
+  cv_lambda_cap: 0.4
+  cv_penalty_floor: 0.6
+
+v11_overrides:  # Breakthrough alignment (2026-04-26)
+  # Higher-ceiling capability anchors + larger weights
+  w_blimp: 5.0           # Real BLiMP doesn't move at nano scale (audit 2026-05-02)
+  w_cap_induction: 65.0
+  w_cap_binding: 65.0
+  cap_induction_anchor: 0.300
+  cap_binding_anchor: 0.500
+
+v14_overrides:  # Tier-progressive controlled-language ladder (2026-05-02)
+  # Real-benchmark weight reductions (insufficient signal at nano scale)
+  w_hellaswag: 5.0
+  # Controlled-language ladder weights — progressive credit by tier
+  w_cl_s05_sa: 3.0
+  w_cl_s05_order: 2.0
+  w_cl_s10_sa: 9.0
+  w_cl_s10_order: 6.0
+  w_cl_inv_sa: 15.0
+  w_cl_inv_order: 10.0
+  # Anchors = cohort median at each tier (S-curve gives half-credit at median)
+  cl_s05_sa_anchor: 1.000
+  cl_s05_order_anchor: 0.605
+  cl_s10_sa_anchor: 1.000
+  cl_s10_order_anchor: 0.456
+  cl_inv_sa_anchor: 0.940
+  cl_inv_order_anchor: 0.420
+
+trust_ceiling:  # Champion-range eligibility gates (v11 mechanism)
+  ceiling: 360.0
+  ppl_floor: 150.0
+  hellaswag_floor: 0.25
+  blimp_floor: 0.55
+  induction_floor: 0.05
+  binding_floor: 0.20
+
+breakthrough_gates:  # Tier-promotion floors (block d904-class false positives)
+  # Composite floor for the trajectory-aware fallback promotion. 450 sits
+  # above all current non-real-architecture composites and below the real
+  # reference architecture breakthrough.
+  composite_floor: 450.0
+  # Min capability signal across {induction_auc, binding_composite,
+  # induction_v2_investigation_auc, binding_v2_investigation_auc}.
+  capability_floor: 0.10

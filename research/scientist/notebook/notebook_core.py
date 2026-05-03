@@ -1186,6 +1186,7 @@ class _NotebookCore:
             "comparability_label TEXT",
             "evaluation_protocol_version TEXT",
             "scoring_version TEXT",
+            "scoring_config_hash TEXT",
         ):
             col_name = col.split()[0]
             if col_name not in lb_cols:

@@ -21,17 +21,16 @@ from __future__ import annotations
 
 from typing import Any, Iterable, Optional, Tuple
 
-# Composite floor for the trajectory-aware promotion fallback. 450 sits above
-# all current non-real-architecture composites (top false positive: d904 at
-# 499 originally, 335 after rescreen) and below the real reference architecture
-# breakthrough (b0c38826 at 515).
-BREAKTHROUGH_COMPOSITE_FLOOR = 450.0
+from . import scoring_config as _scoring_config
 
-# Minimum capability signal across all probes. The real breakthrough has every
-# signal >> 0.10 (induction_auc=0.966, binding_v2=0.921, induction_v2=0.994).
-# d904's strongest capability metric is binding_v2=0.091, so 0.10 is the
-# narrowest gap that separates them.
-BREAKTHROUGH_CAPABILITY_FLOOR = 0.10
+# Floors live in research/scoring_config.yaml::breakthrough_gates so tuning
+# is a config edit, not a code patch + redeploy. Cached here at module
+# import; call ``scoring_config.reload_scoring_config()`` to refresh
+# without a process restart. Original calibration (450/0.10) traces back
+# to the 2026-05-03 d904 incident audit — see git log for derivation.
+_GATES = _scoring_config.get_breakthrough_gates()
+BREAKTHROUGH_COMPOSITE_FLOOR: float = float(_GATES["composite_floor"])
+BREAKTHROUGH_CAPABILITY_FLOOR: float = float(_GATES["capability_floor"])
 
 # Names of capability metrics tracked. Helpers below accept any subset; missing
 # values are treated as 0.0 so all-None rows fail the floor.

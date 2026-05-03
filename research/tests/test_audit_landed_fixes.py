@@ -97,11 +97,21 @@ def test_activation_fallback_never_returns_empty(monkeypatch):
 
 
 def test_default_scoring_version_is_current_default():
-    """Single-version era (post-2026-05-03 collapse): the active formula is v14."""
-    import research.scientist.leaderboard_scoring as ls
+    """Post-stage-2: get_scoring_version returns the active config hash.
 
-    assert ls.ACTIVE_SCORING_VERSION == "v14"
-    assert ls.get_scoring_version() == "v14"
+    Single canonical formula (v14 internals) tunable via scoring_config.yaml.
+    The "version" identifier is now a SHA prefix that rotates when the YAML
+    changes — real provenance instead of a name carousel.
+    """
+    import re
+
+    import research.scientist.leaderboard_scoring as ls
+    from research.scientist import scoring_config
+
+    assert ls.ACTIVE_SCORING_VERSION == "v14"  # internal formula identifier
+    h = ls.get_scoring_version()
+    assert re.fullmatch(r"[0-9a-f]{12}", h), h
+    assert h == scoring_config.get_scoring_config_hash()
 
 
 def test_tinystories_and_diagnostic_score_at_investigation_tier():
