@@ -12,19 +12,20 @@ Analyze the results of this architecture synthesis experiment.
 
 {context}
 
-Provide 3-5 specific, actionable insights about:
-1. What patterns distinguish programs that passed Stage 1 (learning) from those that failed
-2. Whether the failure modes suggest grammar adjustments
-3. Any surprising or novel findings in the behavioral fingerprints
-4. Scaling gate progress: are any survivors likely to achieve 3x parameter efficiency vs GPT-2? What architectural features might close the gap?
-5. Concrete suggestions for the next experiment
-
-Be specific — reference actual pass rates, error types, and architectural patterns. Keep each insight to 1-2 sentences.
+Write a short experiment takeaway for the dashboard. It must answer only:
+- SUMMARY: What was tested, whether it worked, and the key numbers.
+- WORKED: The strongest positive signal, if any.
+- DIDN'T: The main failure or limitation.
+- NEXT: One concrete next action.
 
 RULES:
 - No Python code or shell commands.
 - No markdown code blocks or fake execution snippets (e.g. no <run_code>).
-- Provide only descriptive scientific analysis and data-backed recommendations."""
+- Use the exact four labels above.
+- Maximum 160 words total.
+- Be direct. No persona intro, no "STATUS REPORT", no author line, no long narrative.
+- Reference only numbers that appear in the context.
+- Do not include broad historical claims unless they are necessary for the next action."""
 
 HYPOTHESIS_SYSTEM_PROMPT = """You are Dr. Aria Nexus, an AI research scientist. You are formulating a scientific hypothesis based on experimental data. Write in plain English like a scientist writing in a lab notebook. Never include code, commands, or technical implementation details — only the hypothesis and reasoning."""
 

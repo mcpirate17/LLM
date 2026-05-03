@@ -23,6 +23,7 @@ POST_SCREENING_SIGNAL_COLUMNS = (
     "binding_composite",
     "induction_v2_investigation_auc",
     "binding_v2_investigation_auc",
+    "permutation_composition_score",
     "discovery_loss_ratio",
     "validation_loss_ratio",
 )
@@ -66,6 +67,9 @@ MERGE_HIGHER_BETTER_COLUMNS = {
     "induction_v2_investigation_max_gap_acc",
     "binding_v2_investigation_auc",
     "binding_v2_investigation_max_distance_acc",
+    "permutation_composition_score",
+    "permutation_composition_train_chain_acc",
+    "permutation_composition_extrapolation_acc",
 }
 
 MERGE_LOWER_BETTER_COLUMNS = {
@@ -126,6 +130,10 @@ MERGE_MAX_COLUMNS = {
     "screening_hellaswag_total",
     "induction_v2_investigation_steps_trained",
     "binding_v2_investigation_train_steps",
+    "permutation_composition_n_items",
+    "permutation_composition_train_chain_len",
+    "permutation_composition_eval_chain_len",
+    "permutation_composition_train_steps",
 }
 
 MERGE_REPLACE_COLUMNS = {
@@ -135,6 +143,11 @@ MERGE_REPLACE_COLUMNS = {
     "stage_at_death",
     "failure_op",
     "failure_details_json",
+    "hellaswag_metric_version",
+    "hellaswag_tokenizer_mode",
+    "hellaswag_tiktoken_encoding",
+    "permutation_composition_metric_version",
+    "permutation_composition_status",
 }
 
 BACKFILL_RELABEL_COLUMNS = {

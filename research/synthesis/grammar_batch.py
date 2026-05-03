@@ -5,12 +5,15 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from inspect import Parameter, signature
-from typing import List, Optional
+from typing import TYPE_CHECKING, List, Optional
 
 from .generation_runtime import (
     build_generation_runtime_context,
     normalize_generation_config,
 )
+
+if TYPE_CHECKING:
+    from .graph import ComputationGraph
 
 logger = logging.getLogger(__name__)
 

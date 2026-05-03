@@ -569,6 +569,9 @@ def run_hellaswag_probe(
         "hellaswag_acc": hs.get("hellaswag_acc"),
         "hellaswag_status": hs.get("hellaswag_status"),
         "hellaswag_n_examples": hs.get("hellaswag_total"),
+        "hellaswag_metric_version": hs.get("hellaswag_metric_version"),
+        "hellaswag_tokenizer_mode": hs.get("hellaswag_tokenizer_mode"),
+        "hellaswag_tiktoken_encoding": hs.get("hellaswag_tiktoken_encoding"),
     }
 
 

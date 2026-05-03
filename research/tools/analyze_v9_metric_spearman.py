@@ -30,7 +30,6 @@ import sys
 import time
 from pathlib import Path
 
-import numpy as np
 from scipy.stats import spearmanr
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -89,9 +88,7 @@ def main() -> None:
         else ARTIFACT_DIR / f"v9_spearman_{time.strftime('%Y%m%dT%H%M%S')}.json"
     )
 
-    where_phase = (
-        f" AND pr.fp_metric_phase = '{args.phase}'" if args.phase else ""
-    )
+    where_phase = f" AND pr.fp_metric_phase = '{args.phase}'" if args.phase else ""
 
     metric_cols = ", ".join(f"pr.{c}" for _, c, _ in GEMINI_METRICS)
     label_cols = ", ".join(f"({expr}) AS {name}" for name, expr, _ in LABELS)
@@ -140,8 +137,7 @@ def main() -> None:
             for label, col, log in GEMINI_METRICS
         },
         "label_descriptions": {
-            label: {"expr": expr, "kind": kind}
-            for label, expr, kind in LABELS
+            label: {"expr": expr, "kind": kind} for label, expr, kind in LABELS
         },
         "spearman": {},
         "n_rows_per_label": {},

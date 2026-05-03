@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from typing import Any, Dict, Iterable, Optional, Tuple
 
+from .breakthrough_gates import passes_breakthrough_from_row
 from .leaderboard_scoring import (
     build_score_kwargs_from_prefetch,
     compute_composite,
@@ -44,6 +45,9 @@ _DENORMALIZED_SCORE_METRIC_TO_KWARG = {
 }
 
 _DENORMALIZED_PROGRAM_RESULT_COLUMNS = (
+    "hellaswag_metric_version",
+    "hellaswag_tokenizer_mode",
+    "hellaswag_tiktoken_encoding",
     "induction_v2_investigation_max_gap_acc",
     "induction_v2_investigation_protocol_version",
     "binding_v2_investigation_max_distance_acc",
@@ -165,6 +169,25 @@ def rescore_entry(
         new_score = float(score_result or 0.0)
         aggregate_updates["score_stability_penalty"] = 1.0
 
+    # Tier demotion: if a breakthrough row no longer satisfies the gates with
+    # the new composite + the freshly aggregated capability metrics, drop it
+    # back to validation. Reference rows are left alone (they are pinned).
+    # Triggered by both the canonical rescore CLI and the post-rescreen
+    # ``sync_fingerprint_leaderboard`` path that funnels through here.
+    demote_to: Optional[str] = None
+    demote_reason: Optional[str] = None
+    if not is_ref and str(row.get("tier") or "").lower() == "breakthrough":
+        gate_row = dict(row)
+        for col, val in aggregate_updates.items():
+            if val is not None:
+                gate_row[col] = val
+        passed, demote_reason = passes_breakthrough_from_row(
+            gate_row, composite_score=new_score
+        )
+        if not passed:
+            demote_to = "validation"
+            aggregate_updates["tier"] = "validation"
+
     if new_score != old_score or old_version != current_version or aggregate_updates:
         columns = nb._get_leaderboard_columns()
         sets = ["composite_score = ?"]
@@ -182,7 +205,10 @@ def rescore_entry(
             params.append(old_score)
         if "rescore_reason" in columns:
             sets.append("rescore_reason = ?")
-            params.append(reason)
+            demote_suffix = (
+                f"; demoted_to={demote_to}({demote_reason})" if demote_to else ""
+            )
+            params.append(reason + demote_suffix)
         for col, val in aggregate_updates.items():
             if col in columns and val is not None:
                 sets.append(f"{col} = ?")

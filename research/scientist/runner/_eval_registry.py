@@ -247,6 +247,23 @@ def _run_binding_v2(ctx: EvalContext) -> dict[str, Any]:
     }
 
 
+def _run_permutation_composition(ctx: EvalContext) -> dict[str, Any]:
+    from ...eval.permutation_composition_probe import permutation_composition_score
+
+    n_items = max(4, min(8, int(ctx.config.vocab_size) - 4))
+    r = permutation_composition_score(
+        ctx.model,
+        n_items=n_items,
+        train_chain_len=2,
+        eval_chain_len=4,
+        n_train_steps=min(120, max(40, int(ctx.config.validation_steps) // 100)),
+        n_eval_batches=4,
+        batch_size=max(1, min(32, ctx.config.validation_batch_size)),
+        device=ctx.dev_str,
+    )
+    return r.to_dict()
+
+
 def _run_passkey(ctx: EvalContext) -> dict[str, Any]:
     from ...eval.passkey_retrieval import passkey_retrieval_score
 
@@ -546,7 +563,139 @@ EVAL_SPECS: tuple[EvalSpec, ...] = (
         requires_model=True,
         run=_run_binding_v2,
     ),
+    EvalSpec(
+        name="permutation composition",
+        result_keys=(
+            "permutation_composition_score",
+            "permutation_composition_train_chain_acc",
+            "permutation_composition_extrapolation_acc",
+            "permutation_composition_metric_version",
+        ),
+        requires_model=True,
+        run=_run_permutation_composition,
+    ),
 )
+
+
+def _compute_scaling_gate(
+    result: ExternalEvalResult, config: Any, scaling_enabled: bool
+) -> bool:
+    """Return whether the scaling gate passed for this result."""
+    passed = not scaling_enabled or (
+        result.scaling_param_efficiency is not None
+        and float(result.scaling_param_efficiency)
+        >= float(config.scaling_param_efficiency_target)
+        and (
+            result.scaling_flop_efficiency is None
+            or float(result.scaling_flop_efficiency)
+            <= float(config.scaling_flop_ceiling)
+        )
+    )
+    if result.scaling_gate_passed_val is not None:
+        passed = result.scaling_gate_passed_val
+    return bool(passed)
+
+
+def _apply_scaling_fallbacks(
+    result: ExternalEvalResult,
+    source: dict | None,
+    scaling_gate_passed: bool,
+    scaling_enabled: bool,
+) -> None:
+    """Fill in scaling confidence/family/result defaults when missing."""
+    if result.scaling_confidence is None:
+        result.scaling_confidence = (
+            "disabled"
+            if not scaling_enabled
+            else "high"
+            if scaling_gate_passed
+            else "low"
+        )
+    if result.scaling_best_family is None:
+        result.scaling_best_family = str(
+            (source or {}).get("most_similar_to") or "reference"
+        )
+    if result.scaling_result is None:
+        result.scaling_result = {
+            "param_efficiency": result.scaling_param_efficiency,
+            "flop_efficiency": result.scaling_flop_efficiency,
+            "gate_passed": scaling_gate_passed,
+            "confidence": result.scaling_confidence,
+            "enabled": scaling_enabled,
+        }
+    else:
+        result.scaling_result["enabled"] = scaling_enabled
+        result.scaling_result["gate_passed"] = scaling_gate_passed
+
+
+def _determine_breakthrough(
+    result: ExternalEvalResult,
+    config: Any,
+    val_loss_ratio: float | None,
+    val_baseline_ratio: float | None,
+    val_normalized_ratio: float | None,
+    passed_seeds: list,
+    scaling_gate_passed: bool,
+    source_result_id: str,
+) -> None:
+    """Set ``result.is_breakthrough`` based on val + scaling + capability gates."""
+    raw_threshold = float(getattr(config, "breakthrough_raw_threshold", 0.70) or 0.70)
+    norm_threshold = float(
+        getattr(config, "breakthrough_normalized_threshold", 0.85) or 0.85
+    )
+    raw_passed = val_loss_ratio is not None and float(val_loss_ratio) <= raw_threshold
+    norm_passed = (
+        val_normalized_ratio is not None
+        and float(val_normalized_ratio) >= norm_threshold
+    )
+    baseline_passed = val_baseline_ratio is None or float(val_baseline_ratio) < 1.0
+
+    seeds_count = len(passed_seeds) if passed_seeds else 0
+    seeds_total = int(getattr(config, "validation_n_seeds", 5) or 5)
+    seeds_can_promote = (seeds_total < 3) or (seeds_count >= 1)
+
+    # Capability floor: at least one probe (v1 or v2) must show real signal.
+    # Blocks loss-axis-only false positives like the d904 incident
+    # (2026-05-03) where val gates passed but every capability metric was
+    # near-random. v1 probes from the trajectory probe are checked later in
+    # ``handle_breakthrough`` via the same helper.
+    from ..breakthrough_gates import passes_capability_floor
+
+    capability_passed = passes_capability_floor(
+        induction_v2_investigation_auc=result.induction_v2_investigation_auc,
+        binding_v2_investigation_auc=result.binding_v2_investigation_auc,
+    )
+
+    val_gates_passed = (
+        raw_passed
+        and norm_passed
+        and scaling_gate_passed
+        and baseline_passed
+        and seeds_can_promote
+    )
+
+    if val_gates_passed and capability_passed:
+        result.is_breakthrough = True
+        return
+
+    result.is_breakthrough = False
+    if seeds_count == 0 and seeds_total >= 3:
+        logger.info(
+            "breakthrough_blocked_seeds_passed_zero: result_id=%s "
+            "val_loss_ratio=%s seeds_passed=%d seeds_total=%d",
+            source_result_id[:12],
+            val_loss_ratio,
+            seeds_count,
+            seeds_total,
+        )
+    elif val_gates_passed and not capability_passed:
+        logger.info(
+            "breakthrough_blocked_capability_floor: result_id=%s "
+            "induction_v2=%s binding_v2=%s",
+            source_result_id[:12],
+            result.induction_v2_investigation_auc,
+            result.binding_v2_investigation_auc,
+        )
 
 
 def apply_breakthrough_logic(
@@ -561,85 +710,19 @@ def apply_breakthrough_logic(
     source_result_id: str,
 ) -> None:
     """Post-eval: determine scaling gate, breakthrough status, confidence fallbacks."""
-    # Scaling gate
-    scaling_gate_passed = not scaling_enabled or (
-        result.scaling_param_efficiency is not None
-        and float(result.scaling_param_efficiency)
-        >= float(config.scaling_param_efficiency_target)
-        and (
-            result.scaling_flop_efficiency is None
-            or float(result.scaling_flop_efficiency)
-            <= float(config.scaling_flop_ceiling)
-        )
-    )
-    # Override with scaling result if present
-    if result.scaling_gate_passed_val is not None:
-        scaling_gate_passed = result.scaling_gate_passed_val
-
+    scaling_gate_passed = _compute_scaling_gate(result, config, scaling_enabled)
     result.scaling_gate_passed_val = scaling_gate_passed
-
-    # Confidence fallbacks
-    if result.scaling_confidence is None:
-        result.scaling_confidence = (
-            "disabled"
-            if not scaling_enabled
-            else "high"
-            if scaling_gate_passed
-            else "low"
-        )
-    if result.scaling_best_family is None:
-        result.scaling_best_family = str(
-            (source or {}).get("most_similar_to") or "reference"
-        )
-
-    # Scaling result fallback
-    if result.scaling_result is None:
-        result.scaling_result = {
-            "param_efficiency": result.scaling_param_efficiency,
-            "flop_efficiency": result.scaling_flop_efficiency,
-            "gate_passed": scaling_gate_passed,
-            "confidence": result.scaling_confidence,
-            "enabled": scaling_enabled,
-        }
-    else:
-        result.scaling_result["enabled"] = scaling_enabled
-        result.scaling_result["gate_passed"] = scaling_gate_passed
-
-    # Breakthrough determination
-    raw_threshold = float(getattr(config, "breakthrough_raw_threshold", 0.70) or 0.70)
-    norm_threshold = float(
-        getattr(config, "breakthrough_normalized_threshold", 0.85) or 0.85
+    _apply_scaling_fallbacks(result, source, scaling_gate_passed, scaling_enabled)
+    _determine_breakthrough(
+        result,
+        config,
+        val_loss_ratio,
+        val_baseline_ratio,
+        val_normalized_ratio,
+        passed_seeds,
+        scaling_gate_passed,
+        source_result_id,
     )
-    raw_passed = val_loss_ratio is not None and float(val_loss_ratio) <= raw_threshold
-    norm_passed = (
-        val_normalized_ratio is not None
-        and float(val_normalized_ratio) >= norm_threshold
-    )
-
-    seeds_count = len(passed_seeds) if passed_seeds else 0
-    seeds_total = int(getattr(config, "validation_n_seeds", 5) or 5)
-    seeds_can_promote = (seeds_total < 3) or (seeds_count >= 1)
-
-    if (
-        raw_passed
-        and norm_passed
-        and scaling_gate_passed
-        and (val_baseline_ratio is None or float(val_baseline_ratio) < 1.0)
-        and seeds_can_promote
-    ):
-        result.is_breakthrough = True
-    elif seeds_count == 0 and seeds_total >= 3:
-        result.is_breakthrough = False
-        logger.info(
-            "breakthrough_blocked_seeds_passed_zero: result_id=%s "
-            "val_loss_ratio=%s seeds_passed=%d seeds_total=%d",
-            source_result_id[:12],
-            val_loss_ratio,
-            seeds_count,
-            seeds_total,
-        )
-    else:
-        result.is_breakthrough = False
 
     result.flop_gated = bool(
         not scaling_gate_passed and result.scaling_flop_efficiency is not None

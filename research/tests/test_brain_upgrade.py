@@ -26,6 +26,7 @@ def test_pareto_logic(tmp_path):
         stage1_passed=1,
         loss_ratio=0.2,
         param_count=1000,
+        trust_label="test_fixture",
     )
     # Accurate and small
     r2 = nb.record_program_result(
@@ -36,6 +37,7 @@ def test_pareto_logic(tmp_path):
         stage1_passed=1,
         loss_ratio=0.2,
         param_count=100,
+        trust_label="test_fixture",
     )
     # Bad but tiny
     r3 = nb.record_program_result(
@@ -46,6 +48,7 @@ def test_pareto_logic(tmp_path):
         stage1_passed=1,
         loss_ratio=0.8,
         param_count=10,
+        trust_label="test_fixture",
     )
 
     nb.flush_writes()
@@ -76,6 +79,7 @@ def test_instability_attribution(tmp_path):
             stage0_passed=1,
             stage1_passed=1,
             fp_jacobian_spectral_norm=100.0,
+            trust_label="test_fixture",
         )
 
     nb.flush_writes()

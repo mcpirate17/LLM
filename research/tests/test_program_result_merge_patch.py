@@ -9,6 +9,7 @@ import pytest
 
 from research.scientist.notebook import LabNotebook
 from research.scientist.leaderboard_scoring import build_score_kwargs, compute_composite
+from research.scientist.runner._helpers import program_result_kwargs_from_s1
 from research.scientist.runner._helpers_benchmark import promote_validation_candidate
 from research.scientist.runner.execution_screening import _record_screening_failure
 
@@ -44,6 +45,9 @@ class _FakeGraph:
 def _validation_ev_res(**overrides):
     base = dict(
         is_breakthrough=False,
+        flop_gated=False,
+        ood_result=None,
+        sensitivity_result=None,
         quant_int8_retention=None,
         quant_quality_per_byte=None,
         long_context_score=None,
@@ -59,6 +63,17 @@ def _validation_ev_res(**overrides):
         binding_v2_investigation_auc=None,
         binding_v2_investigation_max_distance_acc=None,
         binding_v2_investigation_protocol_version=None,
+        permutation_composition_score=None,
+        permutation_composition_train_chain_acc=None,
+        permutation_composition_extrapolation_acc=None,
+        permutation_composition_n_items=None,
+        permutation_composition_train_chain_len=None,
+        permutation_composition_eval_chain_len=None,
+        permutation_composition_train_steps=None,
+        permutation_composition_chance=None,
+        permutation_composition_elapsed_ms=None,
+        permutation_composition_status=None,
+        permutation_composition_metric_version=None,
         noise_score=0.08,
         scaling_param_efficiency=None,
         scaling_d512_param_efficiency=None,
@@ -82,6 +97,42 @@ def _validation_ev_res(**overrides):
     )
     base.update(overrides)
     return SimpleNamespace(**base)
+
+
+def _stage1_kwargs(
+    *,
+    loss_ratio: float = 0.42,
+    novelty_score: float = 0.66,
+    model_source: str = "graph_synthesis",
+    **extra,
+) -> dict:
+    return program_result_kwargs_from_s1(
+        {
+            "passed": True,
+            "final_loss": 4.5,
+            "loss_ratio": loss_ratio,
+            "wikitext_perplexity": 150.0,
+            "wikitext_score": 0.55,
+            "screening_wikitext_metric_version": "unit_test_wikitext_v1",
+            "hellaswag_acc": 0.31,
+            "hellaswag_status": "ran",
+            "blimp_overall_accuracy": 0.55,
+            "blimp_status": "ran",
+            "induction_auc": 0.21,
+            "binding_auc": 0.18,
+            "binding_composite": 0.12,
+            "ar_auc": 0.06,
+        },
+        model_source=model_source,
+        extra={
+            "stage1_passed": True,
+            "novelty_score": novelty_score,
+            "data_mode": "random",
+            "tokenizer_mode": "byte",
+            "vocab_size": 256,
+            **extra,
+        },
+    )
 
 
 def _mark_promotable(nb: LabNotebook, result_id: str) -> None:
@@ -122,9 +173,7 @@ def test_merge_program_result_patch_clears_failure_when_stage1_recovers():
         nb.merge_program_result_patch(
             result_id=rid,
             clear_failure_if_stage1=True,
-            stage1_passed=True,
-            loss_ratio=0.41,
-            final_loss=1.8,
+            **_stage1_kwargs(loss_ratio=0.41, final_loss=1.8),
         )
         nb.flush_writes()
 
@@ -146,17 +195,17 @@ def test_sync_behavioral_fingerprint_result_updates_top_level_fields():
             experiment_id=exp_id,
             graph_fingerprint="fp_sync_top_level",
             graph_json="{}",
-            model_source="graph_synthesis",
             stage0_passed=True,
             stage05_passed=True,
-            stage1_passed=True,
-            novelty_score=0.28,
-            novelty_confidence=0.35,
-            cka_source="deferred",
-            novelty_valid_for_promotion=0,
-            novelty_validity_reason="cka_deferred_post_investigation",
-            fp_jacobian_spectral_norm=43610.9,
-            fingerprint_json=json.dumps({"novelty_score": 0.28}),
+            **_stage1_kwargs(
+                novelty_score=0.28,
+                novelty_confidence=0.35,
+                cka_source="deferred",
+                novelty_valid_for_promotion=0,
+                novelty_validity_reason="cka_deferred_post_investigation",
+                fp_jacobian_spectral_norm=43610.9,
+                fingerprint_json=json.dumps({"novelty_score": 0.28}),
+            ),
         )
         nb.flush_writes()
         nb.upsert_leaderboard(
@@ -236,21 +285,22 @@ def test_record_program_result_canonicalizes_fingerprint_json_from_explicit_nove
             experiment_id=exp_id,
             graph_fingerprint="fp_insert_sync",
             graph_json="{}",
-            stage1_passed=True,
-            novelty_score=0.62,
-            novelty_confidence=0.71,
-            cka_source="deferred",
-            novelty_validity_reason="cka_deferred_post_investigation",
-            fp_jacobian_spectral_norm=12.5,
-            fingerprint_json=json.dumps(
-                {
-                    "novelty_score": 0.0,
-                    "cka_source": "none",
-                    "novelty_validity_reason": "missing_reference",
-                    "jacobian_spectral_norm": 0.0,
-                    "quality": "partial",
-                    "analyses_succeeded": 3,
-                }
+            **_stage1_kwargs(
+                novelty_score=0.62,
+                novelty_confidence=0.71,
+                cka_source="deferred",
+                novelty_validity_reason="cka_deferred_post_investigation",
+                fp_jacobian_spectral_norm=12.5,
+                fingerprint_json=json.dumps(
+                    {
+                        "novelty_score": 0.0,
+                        "cka_source": "none",
+                        "novelty_validity_reason": "missing_reference",
+                        "jacobian_spectral_norm": 0.0,
+                        "quality": "partial",
+                        "analyses_succeeded": 3,
+                    }
+                ),
             ),
         )
         nb.flush_writes()
@@ -276,17 +326,18 @@ def test_merge_program_result_patch_keeps_fingerprint_json_synced_with_novelty_u
             experiment_id=exp_id,
             graph_fingerprint="fp_merge_sync",
             graph_json="{}",
-            stage1_passed=True,
-            novelty_score=0.4,
-            novelty_confidence=0.8,
-            fingerprint_json=json.dumps(
-                {
-                    "novelty_score": 0.4,
-                    "quality": "partial",
-                    "analyses_succeeded": 4,
-                    "cka_source": "deferred",
-                    "novelty_validity_reason": "cka_deferred_post_investigation",
-                }
+            **_stage1_kwargs(
+                novelty_score=0.4,
+                novelty_confidence=0.8,
+                fingerprint_json=json.dumps(
+                    {
+                        "novelty_score": 0.4,
+                        "quality": "partial",
+                        "analyses_succeeded": 4,
+                        "cka_source": "deferred",
+                        "novelty_validity_reason": "cka_deferred_post_investigation",
+                    }
+                ),
             ),
         )
         nb.flush_writes()
@@ -305,6 +356,54 @@ def test_merge_program_result_patch_keeps_fingerprint_json_synced_with_novelty_u
         assert row["novelty_score"] == 0.5
         assert row["novelty_confidence"] == 0.9
         assert fp_payload["novelty_score"] == 0.5
+        nb.close()
+
+
+def test_merge_program_result_patch_persists_permutation_composition_fields():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        nb = LabNotebook(f"{tmpdir}/permutation_merge.db")
+        exp_id = nb.start_experiment("validation", {}, "permutation merge")
+        rid = nb.record_program_result(
+            experiment_id=exp_id,
+            graph_fingerprint="fp_permutation_merge",
+            graph_json="{}",
+            **_stage1_kwargs(),
+        )
+        nb.flush_writes()
+
+        changed = nb.merge_program_result_patch(
+            result_id=rid,
+            permutation_composition_score=0.42,
+            permutation_composition_train_chain_acc=0.55,
+            permutation_composition_extrapolation_acc=0.31,
+            permutation_composition_n_items=8,
+            permutation_composition_train_chain_len=2,
+            permutation_composition_eval_chain_len=4,
+            permutation_composition_train_steps=40,
+            permutation_composition_chance=0.125,
+            permutation_composition_elapsed_ms=123.4,
+            permutation_composition_status="ok",
+            permutation_composition_metric_version="permutation_composition_v1",
+        )
+        nb.flush_writes()
+
+        assert changed is True
+        row = nb.get_program_detail(rid)
+        assert row is not None
+        assert row["permutation_composition_score"] == 0.42
+        assert row["permutation_composition_train_chain_acc"] == 0.55
+        assert row["permutation_composition_extrapolation_acc"] == 0.31
+        assert row["permutation_composition_n_items"] == 8
+        assert row["permutation_composition_train_chain_len"] == 2
+        assert row["permutation_composition_eval_chain_len"] == 4
+        assert row["permutation_composition_train_steps"] == 40
+        assert row["permutation_composition_chance"] == 0.125
+        assert row["permutation_composition_elapsed_ms"] == 123.4
+        assert row["permutation_composition_status"] == "ok"
+        assert (
+            row["permutation_composition_metric_version"]
+            == "permutation_composition_v1"
+        )
         nb.close()
 
 
@@ -371,14 +470,14 @@ def test_promote_validation_candidate_updates_source_row_without_duplicate():
             experiment_id=exp_id,
             graph_fingerprint="fp_validation_source",
             graph_json="{}",
-            model_source="graph_synthesis",
             stage0_passed=True,
             stage05_passed=True,
-            stage1_passed=True,
-            loss_ratio=0.42,
-            novelty_score=0.66,
-            novelty_confidence=0.71,
-            fp_jacobian_spectral_norm=1.3,
+            **_stage1_kwargs(
+                loss_ratio=0.42,
+                novelty_score=0.66,
+                novelty_confidence=0.71,
+                fp_jacobian_spectral_norm=1.3,
+            ),
         )
         nb.flush_writes()
         nb.upsert_leaderboard(
@@ -449,23 +548,23 @@ def test_promote_validation_candidate_novelty_cap_keeps_fingerprint_json_synced(
             experiment_id=exp_id,
             graph_fingerprint="fp_validation_cap",
             graph_json="{}",
-            model_source="graph_synthesis",
             stage0_passed=True,
             stage05_passed=True,
-            stage1_passed=True,
-            loss_ratio=0.42,
-            novelty_score=0.66,
-            novelty_confidence=0.71,
-            cka_source="deferred",
-            novelty_validity_reason="cka_deferred_post_investigation",
-            fingerprint_json=json.dumps(
-                {
-                    "novelty_score": 0.66,
-                    "quality": "partial",
-                    "analyses_succeeded": 3,
-                    "cka_source": "deferred",
-                    "novelty_validity_reason": "cka_deferred_post_investigation",
-                }
+            **_stage1_kwargs(
+                loss_ratio=0.42,
+                novelty_score=0.66,
+                novelty_confidence=0.71,
+                cka_source="deferred",
+                novelty_validity_reason="cka_deferred_post_investigation",
+                fingerprint_json=json.dumps(
+                    {
+                        "novelty_score": 0.66,
+                        "quality": "partial",
+                        "analyses_succeeded": 3,
+                        "cka_source": "deferred",
+                        "novelty_validity_reason": "cka_deferred_post_investigation",
+                    }
+                ),
             ),
         )
         nb.flush_writes()
@@ -519,14 +618,14 @@ def test_promote_validation_candidate_uses_fingerprint_canonical_row():
             experiment_id=screen_exp,
             graph_fingerprint="fp_validation_fingerprint",
             graph_json="{}",
-            model_source="graph_synthesis",
             stage0_passed=True,
             stage05_passed=True,
-            stage1_passed=True,
-            loss_ratio=0.41,
-            novelty_score=0.63,
-            novelty_confidence=0.72,
-            fp_jacobian_spectral_norm=1.4,
+            **_stage1_kwargs(
+                loss_ratio=0.41,
+                novelty_score=0.63,
+                novelty_confidence=0.72,
+                fp_jacobian_spectral_norm=1.4,
+            ),
         )
         _mark_promotable(nb, canonical_rid)
         nb.upsert_leaderboard(
@@ -543,14 +642,14 @@ def test_promote_validation_candidate_uses_fingerprint_canonical_row():
             experiment_id=inv_exp,
             graph_fingerprint="fp_validation_fingerprint",
             graph_json="{}",
-            model_source="graph_synthesis",
             stage0_passed=True,
             stage05_passed=True,
-            stage1_passed=True,
-            loss_ratio=0.33,
-            novelty_score=0.63,
-            novelty_confidence=0.72,
-            fp_jacobian_spectral_norm=1.4,
+            **_stage1_kwargs(
+                loss_ratio=0.33,
+                novelty_score=0.63,
+                novelty_confidence=0.72,
+                fp_jacobian_spectral_norm=1.4,
+            ),
         )
         _mark_promotable(nb, child_rid)
         nb.flush_writes()
@@ -632,10 +731,7 @@ def test_sync_fingerprint_leaderboard_preserves_child_validation_evidence():
             experiment_id=screen_exp,
             graph_fingerprint="fp_sync_validation",
             graph_json="{}",
-            model_source="graph_synthesis",
-            stage1_passed=True,
-            loss_ratio=0.46,
-            novelty_score=0.58,
+            **_stage1_kwargs(loss_ratio=0.46, novelty_score=0.58),
         )
         nb.upsert_leaderboard(
             result_id=anchor_rid,
@@ -651,13 +747,13 @@ def test_sync_fingerprint_leaderboard_preserves_child_validation_evidence():
             experiment_id=val_exp,
             graph_fingerprint="fp_sync_validation",
             graph_json="{}",
-            model_source="graph_synthesis",
-            stage1_passed=True,
-            loss_ratio=0.32,
-            validation_loss_ratio=0.27,
-            baseline_loss_ratio=0.81,
-            validation_multi_seed_std=0.019,
-            validation_passed=True,
+            **_stage1_kwargs(
+                loss_ratio=0.32,
+                validation_loss_ratio=0.27,
+                baseline_loss_ratio=0.81,
+                validation_multi_seed_std=0.019,
+                validation_passed=True,
+            ),
         )
         nb.flush_writes()
 
@@ -684,10 +780,11 @@ def test_sync_fingerprint_leaderboard_preserves_investigation_tier_without_pass(
             experiment_id=exp_id,
             graph_fingerprint="fp_sync_investigation",
             graph_json="{}",
-            model_source="graph_synthesis",
-            stage1_passed=True,
-            loss_ratio=0.58,
-            novelty_score=0.61,
+            **_stage1_kwargs(
+                loss_ratio=0.58,
+                novelty_score=0.61,
+                trust_label="test_fixture",
+            ),
         )
         _mark_promotable(nb, rid)
         nb.upsert_leaderboard(

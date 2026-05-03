@@ -33,6 +33,7 @@ def _record_result(nb: LabNotebook, result_id_hint: str | None = None) -> str:
         stage05_passed=True,
         stage1_passed=True,
         loss_ratio=0.2,
+        trust_label="test_fixture",
     )
 
 
@@ -132,6 +133,7 @@ def test_v2_repair_targets_include_failed_probe_status_with_numeric_zero():
         induction_v2_investigation_status="train_failed: optimizer device mismatch",
         binding_v2_investigation_auc=0.1,
         binding_v2_investigation_status="ok",
+        trust_label="test_fixture",
     )
     nb.close()
 

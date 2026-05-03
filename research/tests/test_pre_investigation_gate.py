@@ -351,7 +351,8 @@ class TestIntegration:
             "INSERT INTO experiments (experiment_id, experiment_type, timestamp, config_json) VALUES ('inv1', 'investigation', datetime('now'), '{}')"
         )
         nb.conn.execute(
-            "INSERT INTO program_results (result_id, experiment_id, graph_fingerprint, timestamp, graph_json) VALUES ('inv_r1', 'inv1', 'already_done', datetime('now'), '{}')"
+            "INSERT INTO program_results (result_id, experiment_id, graph_fingerprint, timestamp, graph_json, intentional_rerun_reason) "
+            "VALUES ('inv_r1', 'inv1', 'already_done', datetime('now'), '{}', 'investigation_rerun_test_fixture')"
         )
         nb.conn.commit()
 

@@ -77,6 +77,7 @@ export const CANONICAL_SCORE_COMPONENT_META = {
   _other_base_total: { label: 'Other Base', color: 'var(--text-muted)' },
   _v10_capability_total: { label: 'Capability Total', color: '#79c0ff' },
   _v10_aux_trajectory_total: { label: 'Aux Trajectory Total', color: 'var(--accent-yellow)' },
+  _v14_controlled_lang_total: { label: 'Controlled Lang', color: '#f0883e' },
   perf_short: { label: 'Screening Loss', color: 'var(--accent-blue)' },
   perf_medium: { label: 'Investigation Loss', color: '#1f6feb' },
   perf_long: { label: 'Validation Loss', color: 'var(--accent-green)' },
@@ -125,6 +126,7 @@ export const CANONICAL_SCORE_COMPONENT_META = {
 const V10_ADDITIVE_TOTAL_KEYS = [
   '_v10_capability_total',
   '_v10_aux_trajectory_total',
+  '_v14_controlled_lang_total',
 ];
 
 const LOSS_TIER_KEYS = [

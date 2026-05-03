@@ -2,11 +2,31 @@
 # Only enforce rules that are auto-fixable or represent real bugs.
 # E402 (import order) is structural in this codebase — many files need
 # sys.path manipulation or mixin _shared imports before other imports.
-# F821 (undefined name) flags forward references in TYPE_CHECKING blocks.
 # F403 (star import) is used in native/__init__.py for re-export.
+#
+# F821 (undefined name) is NOT in this global ignore list.  Disabling it
+# globally caused the 2026-05-02 incident where the dashboard
+# "Run causal ablation" and "Queue investigation/validation rerun"
+# buttons crashed with `name 'RunConfig' is not defined` because the
+# missing import had been silently passed by lint.  Forward references
+# go through `from __future__ import annotations` or
+# `if TYPE_CHECKING:` import blocks; closure references that ruff
+# can't statically resolve get a per-line `# noqa: F821`.
 ignore = [
     "E402",   # module import not at top — structural, can't fix without redesign
     "E741",   # ambiguous variable name — `l` in loops is idiomatic Python
-    "F821",   # undefined name — forward references in string annotations
     "F403",   # star import — used for native re-exports
 ]
+
+[lint.per-file-ignores]
+# vulture_whitelist.py intentionally lists names that vulture should treat
+# as "used" — every line is a deliberate undefined-name reference for the
+# dead-code detector.  F821 is the wrong rule for this file.
+"research/tools/vulture_whitelist.py" = ["F821"]
+# CLI tools have closure references and lazy-imported names that ruff
+# can't statically resolve.  Each script's runtime path is exercised
+# manually; the API/runner surfaces (where the dashboard hits the code
+# in production) keep F821 enforced.
+"research/tools/explore_under_observed.py" = ["F821"]
+"research/tools/probe_v2_rank_diff.py" = ["F821"]
+"research/tools/screen_template.py" = ["F821"]

@@ -1,0 +1,180 @@
+{
+  "audit_only": false,
+  "backup_paths": {
+    "google_drive": "/home/tim/GoogleDrive/Backups/LLM_Research/pre_proper_component_knockout_ablation_20260501_065002/lab_notebook.db",
+    "local": "/home/tim/Projects/LLM/research/db_backups/pre_proper_component_knockout_ablation_20260501_065002/lab_notebook.db"
+  },
+  "completed_at": 1777635400.4466808,
+  "created_at": 1777632602.2159357,
+  "db_path": "/home/tim/Projects/LLM/research/lab_notebook.db",
+  "dry_run": false,
+  "final_metric_audit": {
+    "574271ca-f37": {
+      "global_s1_missing_core": 0,
+      "global_s1_missing_extended": 0,
+      "parent_s1_missing_core": 0,
+      "parent_s1_missing_extended": 0
+    }
+  },
+  "investigation_evidence_ids": [
+    "5b1850bb-bd4",
+    "bf069192-8e7",
+    "e0f21e53-b54",
+    "3ae9592c-70f",
+    "3cf99974-344",
+    "9d445bf5-8c9",
+    "85ecb271-be4",
+    "22704063-f6c",
+    "54af4391-7e2",
+    "17fa3f40-f2c",
+    "5f1d87b0-d30",
+    "80acb65a-a6b",
+    "d8afea27-1ad"
+  ],
+  "investigation_only": true,
+  "investigation_steps": 2500,
+  "log_path": "research/runtime_events/proper_knockout_champion_investigation_20260501_064958.log",
+  "parent_count": 1,
+  "parent_result_ids": [
+    "574271ca-f37"
+  ],
+  "planned_children": 13,
+  "planned_program_rows": 13,
+  "plans": [
+    {
+      "accepted_children": [
+        {
+          "bypass_input_id": 0,
+          "fingerprint": "cf46160e2bccd226",
+          "node_id": 1,
+          "op_name": "rmsnorm",
+          "pruned_nodes": 0
+        },
+        {
+          "bypass_input_id": 1,
+          "fingerprint": "e469f5e6d7e9792c",
+          "node_id": 2,
+          "op_name": "adjacent_token_merge",
+          "pruned_nodes": 0
+        },
+        {
+          "bypass_input_id": 1,
+          "fingerprint": "78300d1014353216",
+          "node_id": 3,
+          "op_name": "add",
+          "pruned_nodes": 0
+        },
+        {
+          "bypass_input_id": 2,
+          "fingerprint": "553ed3bc44d83b40",
+          "node_id": 4,
+          "op_name": "rmsnorm",
+          "pruned_nodes": 0
+        },
+        {
+          "bypass_input_id": 4,
+          "fingerprint": "29e0a59d2e5259ca",
+          "node_id": 5,
+          "op_name": "swiglu_mlp",
+          "pruned_nodes": 0
+        },
+        {
+          "bypass_input_id": 5,
+          "fingerprint": "b2d9b44737212446",
+          "node_id": 6,
+          "op_name": "gelu",
+          "pruned_nodes": 0
+        },
+        {
+          "bypass_input_id": 3,
+          "fingerprint": "c6a10a92b547686e",
+          "node_id": 7,
+          "op_name": "add",
+          "pruned_nodes": 3
+        },
+        {
+          "bypass_input_id": 7,
+          "fingerprint": "952cb04e70df36ab",
+          "node_id": 8,
+          "op_name": "layernorm",
+          "pruned_nodes": 0
+        },
+        {
+          "bypass_input_id": 8,
+          "fingerprint": "2d68a329e46beafe",
+          "node_id": 9,
+          "op_name": "linear_proj",
+          "pruned_nodes": 0
+        },
+        {
+          "bypass_input_id": 8,
+          "fingerprint": "5fe0236b21fee72c",
+          "node_id": 10,
+          "op_name": "linear_proj",
+          "pruned_nodes": 0
+        },
+        {
+          "bypass_input_id": 9,
+          "fingerprint": "946461aef53d8984",
+          "node_id": 11,
+          "op_name": "matmul",
+          "pruned_nodes": 1
+        },
+        {
+          "bypass_input_id": 0,
+          "fingerprint": "9abcb396bf08e5c8",
+          "node_id": 13,
+          "op_name": "add",
+          "pruned_nodes": 12
+        },
+        {
+          "bypass_input_id": 13,
+          "fingerprint": "61e8fa8c10834bf0",
+          "node_id": 14,
+          "op_name": "rmsnorm",
+          "pruned_nodes": 0
+        }
+      ],
+      "metric_audit": {
+        "global_s1_missing_core": 0,
+        "global_s1_missing_extended": 0,
+        "parent_s1_missing_core": 0,
+        "parent_s1_missing_extended": 0
+      },
+      "parent": {
+        "composite_score": 455.98791480021515,
+        "experiment_id": "5e26ddbe-e5f",
+        "fingerprint": "6d746b2317f49deb",
+        "loss_ratio": 0.48807424492914686,
+        "result_id": "574271ca-f37"
+      },
+      "rejected_children": [
+        {
+          "fingerprint": "d59c5d4e511274be",
+          "node_id": 12,
+          "op_name": "add",
+          "reason": "duplicate_existing_fingerprint"
+        }
+      ]
+    }
+  ],
+  "rejected_children": 1,
+  "s1_evidence_ids": [
+    "29d5aef0-f25",
+    "4d32e877-3f4",
+    "8f9a6260-7e2",
+    "35bae70f-82d",
+    "448fdb1b-f6b",
+    "13cdd738-583",
+    "b13b8d21-b42",
+    "7d84830e-786",
+    "5c454b8b-593",
+    "e51f7225-cde",
+    "a39adc41-5b4",
+    "e3626588-164",
+    "14d54769-922"
+  ],
+  "s1_only": false,
+  "top_k": 2,
+  "updated_at": 1777635400.4293845
+}

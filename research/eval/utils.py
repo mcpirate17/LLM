@@ -7,7 +7,7 @@ from __future__ import annotations
 import logging
 import math
 from pathlib import Path
-from typing import Iterable, List, Optional, Sequence
+from typing import Any, Iterable, List, Optional, Sequence
 
 import numpy as np
 import torch
@@ -83,7 +83,7 @@ def move_batches_to_device(
 
 
 # tiktoken adapters are cached per encoding so repeated calls don't re-init.
-_TIKTOKEN_CACHE: dict[str, "Any"] = {}
+_TIKTOKEN_CACHE: dict[str, Any] = {}
 
 
 def _get_tiktoken_encoder(encoding_name: str = "cl100k_base"):

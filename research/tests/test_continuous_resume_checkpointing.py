@@ -65,6 +65,19 @@ class _ValidationRunner(_ContinuousValidationMixin):
         self._lock = threading.Lock()
         self.aria = _FakeAria()
         self.visited_candidates = []
+        # Production mixin reads self.notebook_path inside _publish_terminal_event;
+        # the test fixture has no real notebook so a placeholder string is enough
+        # to satisfy the attribute access during finalization paths.
+        self.notebook_path = ":memory:"
+
+    def _publish_terminal_event(self, **kwargs):
+        del kwargs
+
+    def _fail_experiment_compat(self, *args, **kwargs):
+        del args, kwargs
+
+    def _complete_experiment_compat(self, *args, **kwargs):
+        del args, kwargs
 
     def _inline_validation_candidate_ids(self, config, leaderboard):
         del config, leaderboard
@@ -209,6 +222,44 @@ class _InvestigationRunner(_ContinuousInvestigationMixin):
         self._lock = threading.Lock()
         self.aria = _FakeAria()
         self.captured = []
+        # Production code paths inside _record_inline_investigation_candidate
+        # call _register_investigation_eval_future (now indirected through
+        # _submit_investigation_eval) and _finalize_inline_investigation calls
+        # _wait_for_investigation_eval_futures + _publish_terminal_event.
+        # The test mocks the eval submitters to noops, so capture-and-discard
+        # implementations are sufficient.
+        self.notebook_path = ":memory:"
+        self._registered_futures: list = []
+
+    def _register_investigation_eval_future(
+        self, *, exp_id, future, kind, source_result_id
+    ):
+        del exp_id, future, kind, source_result_id
+
+    def _wait_for_investigation_eval_futures(self, exp_id):
+        del exp_id
+        return None
+
+    def _publish_terminal_event(self, **kwargs):
+        del kwargs
+
+    def _fail_experiment_compat(self, *args, **kwargs):
+        del args, kwargs
+
+    def _complete_experiment_compat(self, *args, **kwargs):
+        del args, kwargs
+
+    def _emit_event(self, *args, **kwargs):
+        del args, kwargs
+
+    def _update_progress(self, *args, **kwargs):
+        del args, kwargs
+
+    def _auto_escalate(self, *args, **kwargs):
+        del args, kwargs
+
+    def _maybe_extract_knowledge(self, *args, **kwargs):
+        del args, kwargs
 
     def _pre_investigation_gate(self, config, nb, leaderboard):
         del config, nb, leaderboard
@@ -444,7 +495,11 @@ def test_continuous_investigation_resumes_and_loads_tp_checkpoint(
         ),
     )
     monkeypatch.setattr(ci_mod, "_submit_benchmark_eval", lambda **kwargs: None)
-    monkeypatch.setattr(ci_mod, "_record_investigation_result", lambda **kwargs: None)
+    # _record_investigation_result lives in _helpers_benchmark, not ci_mod, and is
+    # called only via _submit_benchmark_eval — patching that to a no-op above
+    # already prevents the real record path from firing.  The previous monkeypatch
+    # of ci_mod._record_investigation_result was a stale ref from an earlier
+    # refactor that moved the function out.
     monkeypatch.setattr(ci_mod, "evaluate_perf_budget_gate", lambda report: report)
     monkeypatch.setattr(
         ci_mod, "resolve_device", lambda device: SimpleNamespace(type="cpu")

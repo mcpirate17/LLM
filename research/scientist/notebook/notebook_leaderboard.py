@@ -9,7 +9,11 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from ._shared import LOGGER, sanitize_for_db
-from ..leaderboard_scoring import build_score_kwargs, compute_composite, get_scoring_version
+from ..leaderboard_scoring import (
+    build_score_kwargs,
+    compute_composite,
+    get_scoring_version,
+)
 from ..thresholds import TIER_RANK
 from ..trust_policy import is_promotable_entry, sql_trusted_clause
 
@@ -434,7 +438,9 @@ class _LeaderboardMixin:
         if metric_agg:
             metric_to_kwarg = {
                 "wikitext_perplexity": (
-                    "ppl_screening", "ppl_investigation", "ppl_validation"
+                    "ppl_screening",
+                    "ppl_investigation",
+                    "ppl_validation",
                 ),
                 "blimp_overall_accuracy": ("blimp_accuracy",),
                 "hellaswag_acc": (
@@ -697,9 +703,22 @@ class _LeaderboardMixin:
             "pr.tinystories_perplexity AS _pr_tinystories_perplexity, "
             "pr.tinystories_score AS _pr_tinystories_score, "
             "pr.hellaswag_acc AS _pr_hellaswag_acc, "
+            "pr.hellaswag_metric_version AS _pr_hellaswag_metric_version, "
+            "pr.hellaswag_tokenizer_mode AS _pr_hellaswag_tokenizer_mode, "
+            "pr.hellaswag_tiktoken_encoding AS _pr_hellaswag_tiktoken_encoding, "
             "pr.blimp_overall_accuracy AS _pr_blimp_overall_accuracy, "
             "pr.blimp_n_subtasks AS _pr_blimp_n_subtasks, "
             "pr.blimp_status AS _pr_blimp_status, "
+            "pr.controlled_lang_metric_version AS controlled_lang_metric_version, "
+            "pr.controlled_lang_s05_sa_score AS controlled_lang_s05_sa_score, "
+            "pr.controlled_lang_s05_nb_order_acc AS controlled_lang_s05_nb_order_acc, "
+            "pr.controlled_lang_s05_nb_score AS controlled_lang_s05_nb_score, "
+            "pr.controlled_lang_s10_sa_score AS controlled_lang_s10_sa_score, "
+            "pr.controlled_lang_s10_nb_order_acc AS controlled_lang_s10_nb_order_acc, "
+            "pr.controlled_lang_s10_nb_score AS controlled_lang_s10_nb_score, "
+            "pr.controlled_lang_inv_sa_score AS controlled_lang_inv_sa_score, "
+            "pr.controlled_lang_inv_nb_order_acc AS controlled_lang_inv_nb_order_acc, "
+            "pr.controlled_lang_inv_nb_score AS controlled_lang_inv_nb_score, "
             "pr.screening_wikitext_metric_version AS _pr_screening_wikitext_metric_version, "
             "pr.tokenizer_mode AS _pr_tokenizer_mode, "
             "pr.corpus_path AS _pr_corpus_path, "
@@ -825,53 +844,61 @@ class _LeaderboardMixin:
                 and d.get("_pr_validation_loss_ratio") is not None
             ):
                 d["validation_loss_ratio"] = d.get("_pr_validation_loss_ratio")
-            pr_eval_is_bpe = d.get("_pr_screening_wikitext_metric_version") == "bpe_eval_v1"
-            if (
-                (pr_eval_is_bpe or d.get("wikitext_perplexity") is None)
-                and d.get("_pr_wikitext_perplexity") is not None
-            ):
+            pr_eval_is_bpe = (
+                d.get("_pr_screening_wikitext_metric_version") == "bpe_eval_v1"
+            )
+            if (pr_eval_is_bpe or d.get("wikitext_perplexity") is None) and d.get(
+                "_pr_wikitext_perplexity"
+            ) is not None:
                 d["wikitext_perplexity"] = d.get("_pr_wikitext_perplexity")
-            if (
-                (pr_eval_is_bpe or d.get("wikitext_score") is None)
-                and d.get("_pr_wikitext_score") is not None
-            ):
+            if (pr_eval_is_bpe or d.get("wikitext_score") is None) and d.get(
+                "_pr_wikitext_score"
+            ) is not None:
                 d["wikitext_score"] = d.get("_pr_wikitext_score")
-            if (
-                (pr_eval_is_bpe or d.get("tinystories_perplexity") is None)
-                and d.get("_pr_tinystories_perplexity") is not None
-            ):
+            if (pr_eval_is_bpe or d.get("tinystories_perplexity") is None) and d.get(
+                "_pr_tinystories_perplexity"
+            ) is not None:
                 d["tinystories_perplexity"] = d.get("_pr_tinystories_perplexity")
-            if (
-                (pr_eval_is_bpe or d.get("tinystories_score") is None)
-                and d.get("_pr_tinystories_score") is not None
-            ):
+            if (pr_eval_is_bpe or d.get("tinystories_score") is None) and d.get(
+                "_pr_tinystories_score"
+            ) is not None:
                 d["tinystories_score"] = d.get("_pr_tinystories_score")
-            if (
-                (pr_eval_is_bpe or d.get("hellaswag_acc") is None)
-                and d.get("_pr_hellaswag_acc") is not None
-            ):
+            if (pr_eval_is_bpe or d.get("hellaswag_acc") is None) and d.get(
+                "_pr_hellaswag_acc"
+            ) is not None:
                 d["hellaswag_acc"] = d.get("_pr_hellaswag_acc")
-            if (
-                (pr_eval_is_bpe or d.get("blimp_overall_accuracy") is None)
-                and d.get("_pr_blimp_overall_accuracy") is not None
-            ):
+            if pr_eval_is_bpe or not d.get("hellaswag_metric_version"):
+                d["hellaswag_metric_version"] = d.get(
+                    "_pr_hellaswag_metric_version"
+                ) or d.get("hellaswag_metric_version")
+            if pr_eval_is_bpe or not d.get("hellaswag_tokenizer_mode"):
+                d["hellaswag_tokenizer_mode"] = d.get(
+                    "_pr_hellaswag_tokenizer_mode"
+                ) or d.get("hellaswag_tokenizer_mode")
+            if pr_eval_is_bpe or not d.get("hellaswag_tiktoken_encoding"):
+                d["hellaswag_tiktoken_encoding"] = d.get(
+                    "_pr_hellaswag_tiktoken_encoding"
+                ) or d.get("hellaswag_tiktoken_encoding")
+            if (pr_eval_is_bpe or d.get("blimp_overall_accuracy") is None) and d.get(
+                "_pr_blimp_overall_accuracy"
+            ) is not None:
                 d["blimp_overall_accuracy"] = d.get("_pr_blimp_overall_accuracy")
-            if (
-                (pr_eval_is_bpe or d.get("blimp_n_subtasks") is None)
-                and d.get("_pr_blimp_n_subtasks") is not None
-            ):
+            if (pr_eval_is_bpe or d.get("blimp_n_subtasks") is None) and d.get(
+                "_pr_blimp_n_subtasks"
+            ) is not None:
                 d["blimp_n_subtasks"] = d.get("_pr_blimp_n_subtasks")
-            if (
-                (pr_eval_is_bpe or d.get("blimp_status") is None)
-                and d.get("_pr_blimp_status") is not None
-            ):
+            if (pr_eval_is_bpe or d.get("blimp_status") is None) and d.get(
+                "_pr_blimp_status"
+            ) is not None:
                 d["blimp_status"] = d.get("_pr_blimp_status")
             if pr_eval_is_bpe or not d.get("screening_wikitext_metric_version"):
                 d["screening_wikitext_metric_version"] = d.get(
                     "_pr_screening_wikitext_metric_version"
                 ) or d.get("screening_wikitext_metric_version")
             if pr_eval_is_bpe or not d.get("tokenizer_mode"):
-                d["tokenizer_mode"] = d.get("_pr_tokenizer_mode") or d.get("tokenizer_mode")
+                d["tokenizer_mode"] = d.get("_pr_tokenizer_mode") or d.get(
+                    "tokenizer_mode"
+                )
             if pr_eval_is_bpe or not d.get("corpus_path"):
                 d["corpus_path"] = d.get("_pr_corpus_path") or d.get("corpus_path")
             if pr_eval_is_bpe or not d.get("evaluation_protocol_version"):
@@ -897,6 +924,9 @@ class _LeaderboardMixin:
             d.pop("_pr_tinystories_perplexity", None)
             d.pop("_pr_tinystories_score", None)
             d.pop("_pr_hellaswag_acc", None)
+            d.pop("_pr_hellaswag_metric_version", None)
+            d.pop("_pr_hellaswag_tokenizer_mode", None)
+            d.pop("_pr_hellaswag_tiktoken_encoding", None)
             d.pop("_pr_blimp_overall_accuracy", None)
             d.pop("_pr_blimp_n_subtasks", None)
             d.pop("_pr_blimp_status", None)

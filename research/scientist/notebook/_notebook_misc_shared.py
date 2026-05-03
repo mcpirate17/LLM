@@ -22,6 +22,39 @@ _EMPTY_DATA_ACCOUNTING_SHAPE = {
     "leaderboard_tiers": {},
 }
 
+_CONTROLLED_LANG_FIELDS = (
+    "controlled_lang_s05_sa_score",
+    "controlled_lang_s05_nb_order_acc",
+    "controlled_lang_s05_nb_score",
+    "controlled_lang_s10_sa_score",
+    "controlled_lang_s10_nb_order_acc",
+    "controlled_lang_s10_nb_score",
+    "controlled_lang_inv_sa_score",
+    "controlled_lang_inv_nb_order_acc",
+    "controlled_lang_inv_nb_score",
+)
+
+_CONTROLLED_LANG_TIERS = (
+    (
+        "s05",
+        "controlled_lang_s05_sa_score",
+        "controlled_lang_s05_nb_order_acc",
+        "controlled_lang_s05_nb_score",
+    ),
+    (
+        "s10",
+        "controlled_lang_s10_sa_score",
+        "controlled_lang_s10_nb_order_acc",
+        "controlled_lang_s10_nb_score",
+    ),
+    (
+        "inv",
+        "controlled_lang_inv_sa_score",
+        "controlled_lang_inv_nb_order_acc",
+        "controlled_lang_inv_nb_score",
+    ),
+)
+
 
 @lru_cache(maxsize=1)
 def _synthesis_dir() -> Path:
@@ -48,6 +81,58 @@ def _load_template_source_map() -> Dict[str, str]:
 @lru_cache(maxsize=1)
 def _discover_template_names() -> tuple[str, ...]:
     return tuple(sorted(_load_template_source_map()))
+
+
+def _empty_controlled_lang_metrics() -> Dict[str, List[float]]:
+    return {field: [] for field in _CONTROLLED_LANG_FIELDS}
+
+
+def _append_controlled_lang_metrics(
+    stat: Dict[str, Any],
+    values: Dict[str, Any],
+) -> None:
+    metrics = stat.setdefault(
+        "controlled_lang_metrics", _empty_controlled_lang_metrics()
+    )
+    for field in _CONTROLLED_LANG_FIELDS:
+        value = values.get(field)
+        try:
+            number = float(value) if value is not None else None
+        except (TypeError, ValueError):
+            number = None
+        if number is not None and math.isfinite(number):
+            metrics.setdefault(field, []).append(number)
+
+
+def _avg_or_none(values: List[float]) -> float | None:
+    return sum(values) / len(values) if values else None
+
+
+def _controlled_lang_display_score(
+    sa_score: float | None,
+    nb_order_acc: float | None,
+    nb_score: float | None,
+) -> float | None:
+    values = [
+        value
+        for value in (sa_score, nb_score if nb_score is not None else nb_order_acc)
+        if value is not None
+    ]
+    return _avg_or_none(values)
+
+
+def _summarize_controlled_lang_metrics(stat: Dict[str, Any]) -> Dict[str, Any]:
+    metrics = stat.get("controlled_lang_metrics") or {}
+    result: Dict[str, Any] = {}
+    for field in _CONTROLLED_LANG_FIELDS:
+        result[f"avg_{field}"] = _avg_or_none(list(metrics.get(field) or []))
+    for tier, sa_field, order_field, nb_field in _CONTROLLED_LANG_TIERS:
+        result[f"avg_controlled_lang_{tier}_score"] = _controlled_lang_display_score(
+            result[f"avg_{sa_field}"],
+            result[f"avg_{order_field}"],
+            result[f"avg_{nb_field}"],
+        )
+    return result
 
 
 @lru_cache(maxsize=8192)
@@ -501,6 +586,7 @@ def _summarize_template_stat(stat: Dict[str, Any]) -> Dict[str, Any]:
             if blimp_overall_accuracies
             else None
         ),
+        **_summarize_controlled_lang_metrics(stat),
         "avg_composite_score": (
             sum(composite_scores) / len(composite_scores) if composite_scores else None
         ),
@@ -510,9 +596,7 @@ def _summarize_template_stat(stat: Dict[str, Any]) -> Dict[str, Any]:
             else None
         ),
         "avg_binding_v2_auc": (
-            sum(binding_v2_aucs) / len(binding_v2_aucs)
-            if binding_v2_aucs
-            else None
+            sum(binding_v2_aucs) / len(binding_v2_aucs) if binding_v2_aucs else None
         ),
         "avg_erf_density": (
             sum(erf_densities) / len(erf_densities) if erf_densities else None
@@ -528,9 +612,7 @@ def _summarize_template_stat(stat: Dict[str, Any]) -> Dict[str, Any]:
             else None
         ),
         "avg_erf_decay_slope": (
-            sum(erf_decay_slopes) / len(erf_decay_slopes)
-            if erf_decay_slopes
-            else None
+            sum(erf_decay_slopes) / len(erf_decay_slopes) if erf_decay_slopes else None
         ),
         "avg_erf_first_norm": (
             sum(erf_first_norms) / len(erf_first_norms) if erf_first_norms else None
@@ -595,6 +677,13 @@ def _summarize_template_stat(stat: Dict[str, Any]) -> Dict[str, Any]:
             "wikitext": int(stat.get("screening_wikitext_runs") or 0),
             "induction_v2": len(induction_v2_aucs),
             "binding_v2": len(binding_v2_aucs),
+            "controlled_lang": max(
+                (
+                    len(values)
+                    for values in (stat.get("controlled_lang_metrics") or {}).values()
+                ),
+                default=0,
+            ),
             "erf_density": len(erf_densities),
             "id_collapse": len(id_collapse_rates),
             "id_collapse_norm": len(id_collapse_rate_normalizeds),
@@ -743,6 +832,7 @@ def _empty_template_stat(name: str, slot_count: int) -> Dict[str, Any]:
         "composite_scores": [],
         "induction_v2_aucs": [],
         "binding_v2_aucs": [],
+        "controlled_lang_metrics": _empty_controlled_lang_metrics(),
         "erf_densities": [],
         "id_collapse_rates": [],
         "id_collapse_rate_normalizeds": [],

@@ -231,7 +231,15 @@ def _effective_fingerprint_tier(
 ) -> str:
     tier = _highest_tier(leaderboard_rows) or "screening"
     if TIER_RANK.get(tier, -1) >= TIER_RANK.get("breakthrough", 4):
-        return tier
+        # Recheck breakthrough gates against the merged row; rescreens that
+        # add new program_results can drop composite below the floor or
+        # reveal that capability signal never met the bar. Demote if so.
+        from ..breakthrough_gates import passes_breakthrough_from_row
+
+        passed, _ = passes_breakthrough_from_row(merged)
+        if passed:
+            return tier
+        return "validation"
 
     combo_rows = leaderboard_rows + program_rows
     has_validation = _has_stage_evidence(

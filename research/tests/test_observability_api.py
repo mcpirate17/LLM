@@ -23,6 +23,37 @@ except ImportError:
     HAS_TORCH = False
 
 
+def _stage1_fixture_kwargs(loss_ratio: float, novelty_score: float) -> dict:
+    from research.scientist.runner._helpers import program_result_kwargs_from_s1
+
+    return program_result_kwargs_from_s1(
+        {
+            "passed": True,
+            "final_loss": 4.5,
+            "loss_ratio": loss_ratio,
+            "wikitext_perplexity": 150.0,
+            "wikitext_score": 0.55,
+            "screening_wikitext_metric_version": "unit_test_wikitext_v1",
+            "hellaswag_acc": 0.31,
+            "hellaswag_status": "ran",
+            "blimp_overall_accuracy": 0.55,
+            "blimp_status": "ran",
+            "induction_auc": 0.21,
+            "binding_auc": 0.18,
+            "binding_composite": 0.12,
+            "ar_auc": 0.06,
+        },
+        model_source="graph_synthesis",
+        extra={
+            "stage1_passed": True,
+            "novelty_score": novelty_score,
+            "data_mode": "random",
+            "tokenizer_mode": "byte",
+            "vocab_size": 256,
+        },
+    )
+
+
 @unittest.skipUnless(HAS_TORCH and HAS_FLASK, "requires torch and flask")
 class TestObservabilityAPI(unittest.TestCase):
     """Test all observability endpoints return 200 with expected keys."""
@@ -60,10 +91,33 @@ class TestObservabilityAPI(unittest.TestCase):
                 stage1_passed=(i < 2),
                 loss_ratio=0.8 - i * 0.1 if i < 4 else None,
                 novelty_score=0.5,
+                wikitext_perplexity=8.0 + i,
+                hellaswag_acc=0.30 + i * 0.01,
+                blimp_overall_accuracy=0.52 + i * 0.01,
+                induction_auc=0.04 + i * 0.005,
+                binding_auc=0.05 + i * 0.005,
+                binding_composite=0.06 + i * 0.005,
+                ar_auc=0.03 + i * 0.005,
+                controlled_lang_s05_sa_score=0.80,
+                controlled_lang_s05_nb_order_acc=0.70,
+                controlled_lang_s05_nb_score=0.74,
+                controlled_lang_s10_sa_score=0.82,
+                controlled_lang_s10_nb_order_acc=0.72,
+                controlled_lang_s10_nb_score=0.76,
+                controlled_lang_inv_sa_score=0.84,
+                controlled_lang_inv_nb_order_acc=0.70,
+                controlled_lang_inv_nb_score=0.72,
                 error_type="shape_mismatch" if i >= 4 else None,
             )
             result_ids.append(rid)
         nb.flush_writes()
+        for rid in result_ids:
+            for op_name in ("linear_proj", "gelu", "layernorm"):
+                nb.conn.execute(
+                    "INSERT OR IGNORE INTO program_graph_ops "
+                    "(result_id, graph_fingerprint, op_name) VALUES (?, ?, ?)",
+                    (rid, f"ops_{rid}", op_name),
+                )
 
         # Seed a learning_log error entry
         nb.conn.execute(
@@ -100,9 +154,15 @@ class TestObservabilityAPI(unittest.TestCase):
         )
         nb.conn.commit()
 
+        nb.update_op_success_rates(exp_id)
         nb.complete_experiment(exp_id, {"n_programs": 5})
         nb.flush_writes()
         nb.close()
+        from research.scientist.api_routes._observability_core import (
+            refresh_observability_caches,
+        )
+
+        refresh_observability_caches()
 
     @classmethod
     def tearDownClass(cls):
@@ -391,9 +451,7 @@ class TestObservabilityAPI(unittest.TestCase):
                 graph_fingerprint=f"avg_fp1_{idx}",
                 graph_json=graph,
                 stage0_passed=True,
-                stage1_passed=True,
-                loss_ratio=1.0,
-                novelty_score=0.2,
+                **_stage1_fixture_kwargs(loss_ratio=1.0, novelty_score=0.2),
             )
         nb.flush_writes()
         nb.update_op_success_rates(exp1)
@@ -410,9 +468,7 @@ class TestObservabilityAPI(unittest.TestCase):
                 graph_fingerprint=f"avg_fp2_{idx}",
                 graph_json=graph,
                 stage0_passed=True,
-                stage1_passed=True,
-                loss_ratio=0.0,
-                novelty_score=0.8,
+                **_stage1_fixture_kwargs(loss_ratio=0.0, novelty_score=0.8),
             )
         nb.flush_writes()
         nb.update_op_success_rates(exp2)
@@ -486,10 +542,36 @@ class TestObservabilityAPI(unittest.TestCase):
             "avg_validation_loss_ratio",
             "avg_induction_auc",
             "avg_binding_auc",
+            "avg_controlled_lang_s05_score",
+            "avg_controlled_lang_s10_score",
+            "avg_controlled_lang_inv_score",
+            "avg_controlled_lang_inv_sa_score",
             "avg_hellaswag_acc",
             "top_failure_reason",
         ):
             self.assertIn(key, comp)
+        from research.scientist.api_routes._observability_core import (
+            _component_controlled_lang_metrics,
+            _load_component_metric_overlays,
+        )
+        from research.scientist.notebook import LabNotebook
+
+        nb = LabNotebook(self.db_path, read_only=True)
+        try:
+            overlays = _load_component_metric_overlays(nb, "all")
+        finally:
+            nb.close()
+        metric_overlay = next(
+            (
+                item
+                for item in overlays.values()
+                if item.get("avg_controlled_lang_inv_sa_score") is not None
+            ),
+            None,
+        )
+        self.assertIsNotNone(metric_overlay)
+        metric_payload = _component_controlled_lang_metrics(metric_overlay)
+        self.assertAlmostEqual(metric_payload["avg_controlled_lang_inv_score"], 0.78)
 
 
 if __name__ == "__main__":

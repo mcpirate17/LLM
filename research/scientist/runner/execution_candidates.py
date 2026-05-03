@@ -170,19 +170,70 @@ class _ExecutionCandidatesMixin:
                 verbose=False,
                 independent_sample=independent_sample,
             )
+            # Mark the task complete.  This MUST land — leaving a task at
+            # status='running' after its experiment has finished makes the
+            # dashboard queue look stuck and blocks `_run_pending_replay`
+            # from claiming the next task (it short-circuits when
+            # `is_running` is True).  Two-stage attempt: prefer the
+            # canonical complete_followup_task, fall back to a raw UPDATE
+            # if that raises (e.g. transient writer-lock contention).
+            task_id = str(task.get("task_id") or "")
+            completion_metadata = {
+                "stage": "replay",
+                "replay_experiment_id": exp_id,
+            }
             nb_done = None
             try:
                 nb_done = self._make_notebook()
                 nb_done.complete_followup_task(
-                    str(task.get("task_id") or ""),
+                    task_id,
                     outcome="completed",
-                    metadata={"stage": "replay", "replay_experiment_id": exp_id},
+                    metadata=completion_metadata,
                 )
             except Exception as e:
-                logger.warning("Failed to attach replay completion metadata: %s", e)
+                logger.error(
+                    "Failed canonical complete_followup_task for replay %s "
+                    "(exp=%s): %s — attempting raw UPDATE fallback",
+                    task_id[:14],
+                    exp_id,
+                    e,
+                )
+                try:
+                    if nb_done is None:
+                        nb_done = self._make_notebook()
+                    import json as _json
+                    import time as _time
+
+                    nb_done.conn.execute(
+                        """UPDATE followup_tasks
+                           SET status = 'completed',
+                               outcome = 'completed',
+                               completed_timestamp = ?,
+                               metadata_json = ?
+                           WHERE task_id = ?""",
+                        (
+                            _time.time(),
+                            _json.dumps(completion_metadata),
+                            task_id,
+                        ),
+                    )
+                    nb_done.conn.commit()
+                except Exception as e2:
+                    logger.error(
+                        "STUCK TASK: replay %s could not be marked complete via "
+                        "either path; experiment %s ran but the followup_task is "
+                        "still status='running'.  Manual fix: UPDATE followup_tasks "
+                        "SET status='completed', completed_timestamp=strftime('%%s','now') "
+                        "WHERE task_id='%s';   underlying error: %s",
+                        task_id[:14],
+                        exp_id,
+                        task_id,
+                        e2,
+                    )
             finally:
                 try:
-                    nb_done.close()
+                    if nb_done is not None:
+                        nb_done.close()
                 except Exception:
                     pass
             return True

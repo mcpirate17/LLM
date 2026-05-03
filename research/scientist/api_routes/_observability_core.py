@@ -33,6 +33,24 @@ _WINDOW_SECONDS: Dict[str, Optional[int]] = {
     "all": None,
 }
 
+_CONTROLLED_LANG_AVG_FIELDS = (
+    "avg_controlled_lang_s05_sa_score",
+    "avg_controlled_lang_s05_nb_order_acc",
+    "avg_controlled_lang_s05_nb_score",
+    "avg_controlled_lang_s10_sa_score",
+    "avg_controlled_lang_s10_nb_order_acc",
+    "avg_controlled_lang_s10_nb_score",
+    "avg_controlled_lang_inv_sa_score",
+    "avg_controlled_lang_inv_nb_order_acc",
+    "avg_controlled_lang_inv_nb_score",
+)
+
+_CONTROLLED_LANG_SCORE_FIELDS = (
+    "avg_controlled_lang_s05_score",
+    "avg_controlled_lang_s10_score",
+    "avg_controlled_lang_inv_score",
+)
+
 _health_cache: Dict[str, Any] = {}
 _health_cache_ts: float = 0.0
 _HEALTH_CACHE_TTL = 120.0
@@ -415,6 +433,44 @@ def _rounded_metric(value: Any, digits: int = 3) -> float | None:
     return round(number, digits) if number is not None else None
 
 
+def _controlled_lang_display_score(
+    sa_score: Any,
+    nb_order_acc: Any,
+    nb_score: Any,
+) -> float | None:
+    values = [
+        value
+        for value in (
+            _finite_float_or_none(sa_score),
+            _finite_float_or_none(nb_score)
+            if _finite_float_or_none(nb_score) is not None
+            else _finite_float_or_none(nb_order_acc),
+        )
+        if value is not None
+    ]
+    return sum(values) / len(values) if values else None
+
+
+def _component_controlled_lang_metrics(row: dict[str, Any]) -> dict[str, Any]:
+    metrics = {field: row.get(field) for field in _CONTROLLED_LANG_AVG_FIELDS}
+    metrics["avg_controlled_lang_s05_score"] = _controlled_lang_display_score(
+        metrics.get("avg_controlled_lang_s05_sa_score"),
+        metrics.get("avg_controlled_lang_s05_nb_order_acc"),
+        metrics.get("avg_controlled_lang_s05_nb_score"),
+    )
+    metrics["avg_controlled_lang_s10_score"] = _controlled_lang_display_score(
+        metrics.get("avg_controlled_lang_s10_sa_score"),
+        metrics.get("avg_controlled_lang_s10_nb_order_acc"),
+        metrics.get("avg_controlled_lang_s10_nb_score"),
+    )
+    metrics["avg_controlled_lang_inv_score"] = _controlled_lang_display_score(
+        metrics.get("avg_controlled_lang_inv_sa_score"),
+        metrics.get("avg_controlled_lang_inv_nb_order_acc"),
+        metrics.get("avg_controlled_lang_inv_nb_score"),
+    )
+    return metrics
+
+
 def _attach_component_observability_metrics(
     component: dict[str, Any],
     row: dict[str, Any],
@@ -442,6 +498,8 @@ def _attach_component_observability_metrics(
     component["avg_blimp_overall_accuracy"] = _rounded_metric(
         overlay.get("avg_blimp_overall_accuracy")
     )
+    for key, value in _component_controlled_lang_metrics(overlay).items():
+        component[key] = _rounded_metric(value)
     component["avg_composite_score"] = _rounded_metric(
         overlay.get("avg_composite_score")
     )
@@ -654,6 +712,8 @@ def _build_profile_only_component(op_name: str, prof: dict[str, Any]) -> dict[st
         "avg_binding_v2_auc": None,
         "avg_hellaswag_acc": None,
         "avg_blimp_overall_accuracy": None,
+        **{key: None for key in _CONTROLLED_LANG_AVG_FIELDS},
+        **{key: None for key in _CONTROLLED_LANG_SCORE_FIELDS},
         "avg_composite_score": None,
         "avg_erf_density": None,
         "avg_id_collapse_rate": None,
@@ -717,6 +777,15 @@ def _load_component_metric_overlays(nb, window: str) -> Dict[str, Dict[str, Any]
                         END
                     ) AS hellaswag_acc,
                     pr.blimp_overall_accuracy AS blimp_overall_accuracy,
+                    pr.controlled_lang_s05_sa_score AS controlled_lang_s05_sa_score,
+                    pr.controlled_lang_s05_nb_order_acc AS controlled_lang_s05_nb_order_acc,
+                    pr.controlled_lang_s05_nb_score AS controlled_lang_s05_nb_score,
+                    pr.controlled_lang_s10_sa_score AS controlled_lang_s10_sa_score,
+                    pr.controlled_lang_s10_nb_order_acc AS controlled_lang_s10_nb_order_acc,
+                    pr.controlled_lang_s10_nb_score AS controlled_lang_s10_nb_score,
+                    pr.controlled_lang_inv_sa_score AS controlled_lang_inv_sa_score,
+                    pr.controlled_lang_inv_nb_order_acc AS controlled_lang_inv_nb_order_acc,
+                    pr.controlled_lang_inv_nb_score AS controlled_lang_inv_nb_score,
                     l.composite_score AS composite_score,
                     pr.fp_jacobian_effective_rank AS jacobian_effective_rank,
                     pr.fp_sensitivity_uniformity AS sensitivity_uniformity,
@@ -753,6 +822,15 @@ def _load_component_metric_overlays(nb, window: str) -> Dict[str, Dict[str, Any]
                 AVG(binding_v2_auc) AS avg_binding_v2_auc,
                 AVG(hellaswag_acc) AS avg_hellaswag_acc,
                 AVG(blimp_overall_accuracy) AS avg_blimp_overall_accuracy,
+                AVG(controlled_lang_s05_sa_score) AS avg_controlled_lang_s05_sa_score,
+                AVG(controlled_lang_s05_nb_order_acc) AS avg_controlled_lang_s05_nb_order_acc,
+                AVG(controlled_lang_s05_nb_score) AS avg_controlled_lang_s05_nb_score,
+                AVG(controlled_lang_s10_sa_score) AS avg_controlled_lang_s10_sa_score,
+                AVG(controlled_lang_s10_nb_order_acc) AS avg_controlled_lang_s10_nb_order_acc,
+                AVG(controlled_lang_s10_nb_score) AS avg_controlled_lang_s10_nb_score,
+                AVG(controlled_lang_inv_sa_score) AS avg_controlled_lang_inv_sa_score,
+                AVG(controlled_lang_inv_nb_order_acc) AS avg_controlled_lang_inv_nb_order_acc,
+                AVG(controlled_lang_inv_nb_score) AS avg_controlled_lang_inv_nb_score,
                 AVG(composite_score) AS avg_composite_score,
                 AVG(erf_density) AS avg_erf_density,
                 AVG(id_collapse_rate) AS avg_id_collapse_rate,
@@ -783,6 +861,33 @@ def _load_component_metric_overlays(nb, window: str) -> Dict[str, Dict[str, Any]
                 "avg_binding_v2_auc": row["avg_binding_v2_auc"],
                 "avg_hellaswag_acc": row["avg_hellaswag_acc"],
                 "avg_blimp_overall_accuracy": row["avg_blimp_overall_accuracy"],
+                "avg_controlled_lang_s05_sa_score": row[
+                    "avg_controlled_lang_s05_sa_score"
+                ],
+                "avg_controlled_lang_s05_nb_order_acc": row[
+                    "avg_controlled_lang_s05_nb_order_acc"
+                ],
+                "avg_controlled_lang_s05_nb_score": row[
+                    "avg_controlled_lang_s05_nb_score"
+                ],
+                "avg_controlled_lang_s10_sa_score": row[
+                    "avg_controlled_lang_s10_sa_score"
+                ],
+                "avg_controlled_lang_s10_nb_order_acc": row[
+                    "avg_controlled_lang_s10_nb_order_acc"
+                ],
+                "avg_controlled_lang_s10_nb_score": row[
+                    "avg_controlled_lang_s10_nb_score"
+                ],
+                "avg_controlled_lang_inv_sa_score": row[
+                    "avg_controlled_lang_inv_sa_score"
+                ],
+                "avg_controlled_lang_inv_nb_order_acc": row[
+                    "avg_controlled_lang_inv_nb_order_acc"
+                ],
+                "avg_controlled_lang_inv_nb_score": row[
+                    "avg_controlled_lang_inv_nb_score"
+                ],
                 "avg_composite_score": row["avg_composite_score"],
                 "avg_erf_density": row["avg_erf_density"],
                 "avg_id_collapse_rate": row["avg_id_collapse_rate"],

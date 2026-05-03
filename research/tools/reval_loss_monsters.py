@@ -22,7 +22,6 @@ import argparse
 import json
 import logging
 import sqlite3
-import sys
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -59,7 +58,6 @@ def _reconstruct_model(graph_json: str, vocab_size: int, device: str):
     import research.synthesis.compiler  # noqa: F401  — populates OP_DISPATCH
     from research.synthesis import graph_from_json
     from research.synthesis.compiled_model import SynthesizedModel
-    import torch
 
     graph = graph_from_json(graph_json)
     model_dim = getattr(graph, "model_dim", None) or 256
@@ -132,7 +130,8 @@ def _eval_one(
     return {
         "result_id": result_id,
         "ppl_at_steps": {
-            str(k): (ckpts.get(k) or ckpts.get(str(k)) or {}).get("ppl") for k in checkpoints
+            str(k): (ckpts.get(k) or ckpts.get(str(k)) or {}).get("ppl")
+            for k in checkpoints
         },
         "peak_ppl": out.get("peak_ppl"),
         "peak_step": out.get("peak_step"),
@@ -145,15 +144,18 @@ def _eval_one(
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--db", default="research/lab_notebook.db",
+        "--db",
+        default="research/lab_notebook.db",
         help="Path to lab notebook (default: research/lab_notebook.db).",
     )
     parser.add_argument(
-        "--result-ids", default=",".join(DEFAULT_CANDIDATES),
+        "--result-ids",
+        default=",".join(DEFAULT_CANDIDATES),
         help="Comma-separated result_ids to re-evaluate.",
     )
     parser.add_argument(
-        "--variant", default="wikitext-103-raw-v1-full",
+        "--variant",
+        default="wikitext-103-raw-v1-full",
         help=(
             "Wikitext cache variant to use. The eval reads from "
             "~/.cache/aria/wikitext/<variant>/{train,validation}.txt — "
@@ -164,7 +166,9 @@ def main() -> None:
     parser.add_argument("--steps", type=int, default=1000)
     parser.add_argument("--seq-len", type=int, default=128)
     parser.add_argument(
-        "--n-eval-batches", type=int, default=128,
+        "--n-eval-batches",
+        type=int,
+        default=128,
         help="Eval batches × eval_batch_size × seq_len = total val tokens.",
     )
     parser.add_argument("--eval-batch-size", type=int, default=8)
@@ -176,10 +180,15 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 
     import torch
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    logger.info("device=%s variant=%s steps=%d val_tokens≈%d",
-                device, args.variant, args.steps,
-                args.n_eval_batches * args.eval_batch_size * args.seq_len)
+    logger.info(
+        "device=%s variant=%s steps=%d val_tokens≈%d",
+        device,
+        args.variant,
+        args.steps,
+        args.n_eval_batches * args.eval_batch_size * args.seq_len,
+    )
 
     # Verify which cache we're hitting
     cache_dir = Path.home() / ".cache" / "aria" / "wikitext" / args.variant
@@ -208,7 +217,10 @@ def main() -> None:
         recorded_ppl_200 = pr.get("wikitext_ppl_200")
         logger.info(
             "%s — recorded ppl_200=%s ppl_500=%s ppl_final=%s",
-            rid, recorded_ppl_200, recorded_ppl_500, recorded,
+            rid,
+            recorded_ppl_200,
+            recorded_ppl_500,
+            recorded,
         )
         out = _eval_one(
             rid,
@@ -232,22 +244,28 @@ def main() -> None:
             ratios = []
             for step, ppl in (out.get("ppl_at_steps") or {}).items():
                 rec = (
-                    recorded_ppl_200 if step == "200"
-                    else recorded_ppl_500 if step == "500"
+                    recorded_ppl_200
+                    if step == "200"
+                    else recorded_ppl_500
+                    if step == "500"
                     else recorded
                 )
                 ratio = (ppl / rec) if (ppl and rec) else None
                 ppl_str = f"{ppl:.2f}" if ppl else "n/a"
                 rec_str = f"{rec:.2f}" if rec else "n/a"
                 ratio_str = f"{ratio:.2f}x" if ratio else "n/a"
-                ratios.append(f"step{step}: new={ppl_str} rec={rec_str} ratio={ratio_str}")
+                ratios.append(
+                    f"step{step}: new={ppl_str} rec={rec_str} ratio={ratio_str}"
+                )
             logger.info("  %s  elapsed=%.1fs", " | ".join(ratios), out["elapsed_s"])
 
     print()
     print("─" * 100)
     print("RESULTS")
     print("─" * 100)
-    print(f"{'result_id':<14} {'rec_ppl1000':>11} {'new_ppl200':>10} {'new_ppl500':>10} {'new_ppl1000':>12} {'inflation×':>12}")
+    print(
+        f"{'result_id':<14} {'rec_ppl1000':>11} {'new_ppl200':>10} {'new_ppl500':>10} {'new_ppl1000':>12} {'inflation×':>12}"
+    )
     print("─" * 100)
     for r in results:
         if "error" in r:

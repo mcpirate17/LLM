@@ -412,6 +412,11 @@ class _ExecutionTrainingPostMixin:
                 result["hellaswag_acc"] = hs.get("hellaswag_acc")
                 result["hellaswag_status"] = hs.get("hellaswag_status")
                 result["hellaswag_n_examples"] = hs.get("hellaswag_total")
+                result["hellaswag_metric_version"] = hs.get("hellaswag_metric_version")
+                result["hellaswag_tokenizer_mode"] = hs.get("hellaswag_tokenizer_mode")
+                result["hellaswag_tiktoken_encoding"] = hs.get(
+                    "hellaswag_tiktoken_encoding"
+                )
                 result["screening_hellaswag_correct"] = hs.get("hellaswag_correct")
                 result["screening_hellaswag_total"] = hs.get("hellaswag_total")
                 result["screening_hellaswag_elapsed_ms"] = hs.get("elapsed_ms")

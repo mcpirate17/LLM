@@ -144,7 +144,7 @@ def train_reference_transformer(
             dtype=torch.bfloat16,
             enabled=(dev.type == "cuda"),
         ):
-            logits = model(input_ids)
+            logits = model(input_ids)  # noqa: F821 — closure capture from train_reference_transformer
             return language_model_loss(logits, input_ids, vocab_size)
 
     try:

@@ -81,6 +81,116 @@ function canonicalScore(row) {
   return Number.isFinite(score) ? score : null;
 }
 
+function asNumber(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function resultValue(experiment, key, fallbackKey = key) {
+  const fromResults = experiment?.results?.[key];
+  if (fromResults != null) return fromResults;
+  return experiment?.[fallbackKey];
+}
+
+function formatMetric(value, digits = 3) {
+  const n = asNumber(value);
+  return n == null ? '--' : n.toFixed(digits);
+}
+
+function formatPercent(part, total) {
+  const p = asNumber(part);
+  const t = asNumber(total);
+  if (p == null || !t) return '--';
+  return `${Math.round((p / t) * 100)}%`;
+}
+
+function stripMarkdown(text) {
+  return String(text || '')
+    .replace(/```[\s\S]*?```/g, '')
+    .replace(/^#{1,6}\s+/gm, '')
+    .replace(/[*_`]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function truncateWords(text, maxWords = 42) {
+  const clean = stripMarkdown(text);
+  const words = clean.split(/\s+/).filter(Boolean);
+  if (words.length <= maxWords) return clean;
+  return `${words.slice(0, maxWords).join(' ')}...`;
+}
+
+function insightPriority(insight) {
+  const text = String(insight || '');
+  if (!text.trim()) return -100;
+  if (/Overall survival rate/i.test(text)) return -10;
+  if (/^Op '.+' has .*S1 rate/i.test(text) && !/Consistently failing/i.test(text)) return 100;
+  if (/Graph size/i.test(text)) return 90;
+  if (/correlated with Stage 1/i.test(text)) return 82;
+  if (/Winning combination/i.test(text)) return 76;
+  if (/Consistently failing/i.test(text)) return 70;
+  if (/failure:/i.test(text)) return 45;
+  return 30;
+}
+
+function compactInsights(insights, limit = 5) {
+  if (!Array.isArray(insights)) return [];
+  return [...new Set(insights.map((i) => String(i || '').trim()).filter(Boolean))]
+    .map((content, index) => ({ content, index, priority: insightPriority(content) }))
+    .filter((item) => item.priority >= 0)
+    .sort((a, b) => (b.priority - a.priority) || (a.index - b.index))
+    .slice(0, limit)
+    .map((item) => item.content);
+}
+
+function buildExperimentTakeaways(experiment, programs) {
+  const total = asNumber(resultValue(experiment, 'total', 'n_programs_generated')) ?? programs.length;
+  const stage1 = asNumber(resultValue(experiment, 'stage1_passed', 'n_stage1_passed')) ?? 0;
+  const stage05 = asNumber(resultValue(experiment, 'stage05_passed', 'n_stage05_passed')) ?? 0;
+  const novel = asNumber(experiment?.results?.novel_count);
+  const bestLoss = resultValue(experiment, 'best_loss_ratio', 'best_loss_ratio');
+  const bestNovelty = resultValue(experiment, 'best_novelty_score', 'best_novelty_score');
+  const bestProgram = programs?.length
+    ? [...programs].sort((a, b) => (canonicalScore(b) ?? -Infinity) - (canonicalScore(a) ?? -Infinity))[0]
+    : null;
+  const mode = experiment?.experiment_type || experiment?.results?.mode || 'experiment';
+
+  const outcome = stage1 > 0
+    ? `${stage1}/${total || '?'} reached Stage 1 (${formatPercent(stage1, total)} yield); best loss ratio ${formatMetric(bestLoss, 4)}, novelty ${formatMetric(bestNovelty, 3)}.`
+    : `No Stage 1 survivors from ${total || 0} ${total === 1 ? 'program' : 'programs'}; best loss ratio ${formatMetric(bestLoss, 4)}.`;
+  const noveltyText = novel == null
+    ? null
+    : novel > 0
+    ? `${novel} novel ${novel === 1 ? 'survivor' : 'survivors'} found.`
+    : 'No novel survivors found.';
+
+  let worked = 'No strong positive signal recorded.';
+  if (bestProgram && stage1 > 0) {
+    worked = `Best candidate ${bestProgram.graph_fingerprint?.slice(0, 12) || 'unknown'} learned; architecture: ${extractArchSummary(bestProgram) || 'not summarized'}.`;
+  } else if (stage05 > 0) {
+    worked = `${stage05} reached S0.5, so some candidates were numerically stable even though learning did not hold.`;
+  }
+
+  const didnt = stage1 === 0
+    ? 'The run failed at the learning gate; prioritize gradient flow and simpler viable graphs before novelty claims.'
+    : novel === 0
+    ? 'The run mostly rediscovered known territory; validation may be working, but discovery is stalled.'
+    : 'The remaining gap is separating durable improvements from one-off survivors.';
+
+  const next = stage1 > 0 && novel === 0
+    ? 'Stop rerunning this exact candidate path; pivot to a constrained exploration around the ops that produced the survivor.'
+    : stage1 === 0
+    ? 'Tighten the grammar around stable, learnable structures and run a smaller diagnostic batch before scaling.'
+    : 'Run focused validation plus ablation on the best survivor before spending more search budget.';
+
+  return [
+    { label: 'Summary', text: `${mode}: ${outcome}${noveltyText ? ` ${noveltyText}` : ''}` },
+    { label: 'Worked', text: worked },
+    { label: "Didn't", text: didnt },
+    { label: 'Next', text: next },
+  ];
+}
+
 const PROG_COLUMNS = [
   { key: '_score', label: 'Score', initWidth: 52 },
   { key: 'rating', label: 'Rating', initWidth: 80 },
@@ -157,7 +267,7 @@ function ExperimentSummaryHeader({ experiment, programs }) {
         </div>
         {experiment.aria_summary && (
           <div style={{ marginTop: 12, fontSize: 13, color: 'var(--text-secondary)', borderTop: '1px solid var(--border)', paddingTop: 12 }}>
-            <strong>Outcome:</strong> {experiment.aria_summary}
+            <strong>Outcome:</strong> {truncateWords(experiment.aria_summary, 52)}
           </div>
         )}
       </div>
@@ -466,6 +576,8 @@ function ExperimentDetail({ experimentId, onBack, onSelectProgram }) {
   const entries = data.entries || [];
   const prereg = data.preregistration || null;
   const preregDeviations = data.preregistration_deviations || [];
+  const takeaways = buildExperimentTakeaways(exp, programs);
+  const visibleInsights = compactInsights(exp.insights);
 
   const handleRerun = async () => {
     if (!rerunConfirm) {
@@ -528,29 +640,36 @@ function ExperimentDetail({ experimentId, onBack, onSelectProgram }) {
         <FunnelViz experiment={exp} />
       </div>
 
-      {/* LLM Analysis */}
-      {analysis?.analysis && (
-        <div className="card">
-          <div className="card-title">
-            Deep Analysis
-            <span className="badge novel" style={{ marginLeft: 8, fontSize: 10 }}>
-              {analysis.source === 'stored' ? 'cached' : 'live'}
-            </span>
-          </div>
-          <div style={{ fontSize: 13, color: 'var(--text-secondary)', whiteSpace: 'pre-wrap', lineHeight: 1.6 }}>
-            {analysis.analysis}
-          </div>
+      <div className="card">
+        <div className="card-title">Experiment Takeaways</div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
+          {takeaways.map((item) => (
+            <div key={item.label} style={{ borderLeft: '3px solid var(--border)', paddingLeft: 12 }}>
+              <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 700, marginBottom: 6 }}>{item.label}</div>
+              <div style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.45 }}>{item.text}</div>
+            </div>
+          ))}
         </div>
-      )}
+        {analysis?.analysis && (
+          <details style={{ marginTop: 12 }}>
+            <summary style={{ cursor: 'pointer', fontSize: 12, color: 'var(--text-muted)' }}>
+              Cached LLM notes
+              <span className="badge novel" style={{ marginLeft: 8, fontSize: 10 }}>
+                {analysis.source === 'stored' ? 'cached' : 'live'}
+              </span>
+            </summary>
+            <div style={{ marginTop: 10, fontSize: 12, color: 'var(--text-muted)', whiteSpace: 'pre-wrap', lineHeight: 1.5 }}>
+              {truncateWords(analysis.analysis, 120)}
+            </div>
+          </details>
+        )}
+      </div>
 
       {/* Insights */}
       <div className="card">
         <div className="card-title">Insights</div>
-        <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12, lineHeight: 1.5 }}>
-          Patterns and takeaways Aria extracted from this experiment's results.
-        </p>
-        {exp.insights && exp.insights.length > 0 ? (
-          exp.insights.map((insight, i) => (
+        {visibleInsights.length > 0 ? (
+          visibleInsights.map((insight, i) => (
             <div key={i} className="insight-card">
               <div className="insight-content">{insight}</div>
             </div>

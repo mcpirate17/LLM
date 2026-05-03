@@ -167,7 +167,7 @@ def _evaluate_investigation_benchmarks(
                 result["capability_tier"],
             )
     except (ImportError, RuntimeError, ValueError) as exc:
-        logger.debug("Investigation WikiText eval skipped: %s", exc)
+        logger.warning("Investigation WikiText eval skipped: %s", exc)
 
     if stop_event is not None and stop_event.is_set():
         del model
@@ -192,7 +192,7 @@ def _evaluate_investigation_benchmarks(
                 result["inv_tinystories_score"] or 0,
             )
     except (ImportError, RuntimeError, ValueError) as exc:
-        logger.debug("Investigation TinyStories eval skipped: %s", exc)
+        logger.warning("Investigation TinyStories eval skipped: %s", exc)
 
     if stop_event is not None and stop_event.is_set():
         del model
@@ -209,6 +209,11 @@ def _evaluate_investigation_benchmarks(
         )
         result["hellaswag_acc"] = hs_result.get("hellaswag_acc")
         result["hellaswag_status"] = hs_result.get("hellaswag_status")
+        result["hellaswag_metric_version"] = hs_result.get("hellaswag_metric_version")
+        result["hellaswag_tokenizer_mode"] = hs_result.get("hellaswag_tokenizer_mode")
+        result["hellaswag_tiktoken_encoding"] = hs_result.get(
+            "hellaswag_tiktoken_encoding"
+        )
         if result["hellaswag_acc"] is not None:
             logger.info(
                 "Investigation HellaSwag acc=%.1f%% (%d/%d, %.0fms)",
@@ -218,7 +223,7 @@ def _evaluate_investigation_benchmarks(
                 hs_result.get("elapsed_ms", 0),
             )
     except (ImportError, RuntimeError, ValueError) as exc:
-        logger.debug("Investigation HellaSwag eval skipped: %s", exc)
+        logger.warning("Investigation HellaSwag eval skipped: %s", exc)
 
     if stop_event is not None and stop_event.is_set():
         del model
@@ -242,7 +247,7 @@ def _evaluate_investigation_benchmarks(
                 blimp.elapsed_ms,
             )
     except (ImportError, RuntimeError, ValueError) as exc:
-        logger.debug("Investigation BLiMP eval skipped: %s", exc)
+        logger.warning("Investigation BLiMP eval skipped: %s", exc)
 
     if stop_event is not None and stop_event.is_set():
         del model
@@ -298,7 +303,7 @@ def _evaluate_investigation_benchmarks(
                 _graph_str[:200],
             )
     except (ImportError, RuntimeError, ValueError) as exc:
-        logger.debug("Investigation binding probes skipped: %s", exc)
+        logger.warning("Investigation binding probes skipped: %s", exc)
 
     if stop_event is not None and stop_event.is_set():
         del model
@@ -325,7 +330,7 @@ def _evaluate_investigation_benchmarks(
             _traj.spec_norm or 0.0,
         )
     except (ImportError, RuntimeError, ValueError, TypeError) as exc:
-        logger.debug("Investigation trajectory metrics skipped: %s", exc)
+        logger.warning("Investigation trajectory metrics skipped: %s", exc)
 
     del model
     return result
@@ -369,7 +374,7 @@ def _run_investigation_v2_probes(model: Any, dev: Any) -> Dict[str, Any]:
             induction_v2.status,
         )
     except (ImportError, RuntimeError, ValueError, TypeError) as exc:
-        logger.debug("Investigation induction-v2 probe skipped: %s", exc)
+        logger.warning("Investigation induction-v2 probe skipped: %s", exc)
 
     try:
         from ...eval.binding_probe_v2_investigation import (
@@ -405,7 +410,7 @@ def _run_investigation_v2_probes(model: Any, dev: Any) -> Dict[str, Any]:
             binding_v2.status,
         )
     except (ImportError, RuntimeError, ValueError, TypeError) as exc:
-        logger.debug("Investigation binding-v2 probe skipped: %s", exc)
+        logger.warning("Investigation binding-v2 probe skipped: %s", exc)
 
     return result
 
@@ -699,6 +704,9 @@ def _record_investigation_result(
         compression_ratio=source.get("compression_ratio"),
         loss_improvement_rate=source.get("loss_improvement_rate"),
         hellaswag_acc=benchmark_result.get("hellaswag_acc"),
+        hellaswag_metric_version=benchmark_result.get("hellaswag_metric_version"),
+        hellaswag_tokenizer_mode=benchmark_result.get("hellaswag_tokenizer_mode"),
+        hellaswag_tiktoken_encoding=benchmark_result.get("hellaswag_tiktoken_encoding"),
         ar_auc=benchmark_result.get("ar_auc"),
         induction_auc=benchmark_result.get("induction_auc"),
         binding_auc=benchmark_result.get("binding_auc"),
@@ -751,6 +759,40 @@ def _record_investigation_result(
             "binding_v2_investigation_protocol_version"
         ),
     }
+    # Investigation S1 metric completeness gate.  The investigation pipeline
+    # runs blimp + v1 probes (induction/binding/ar) AND the v2 capability
+    # probes inside _evaluate_investigation_benchmarks.  When training trips
+    # an inflight check (e.g., inflight_no_progress) the model may survive
+    # but downstream probes can silently skip via their try/except blocks.
+    # If ANY of the 7 universal-guard required metrics is missing, claiming
+    # stage1_passed=True would write a partial-data row that the universal
+    # guard rejects entirely — losing the investigation observation.
+    # Persist what we measured but downgrade stage1_passed to False so the
+    # observation lands without violating the no-missing-data rule.
+    _inv_wikitext_ppl = benchmark_result.get(
+        "wikitext_perplexity"
+    ) or benchmark_result.get("inv_wikitext_ppl")
+    _required_s1_metrics = {
+        "wikitext_perplexity": _inv_wikitext_ppl,
+        "hellaswag_acc": benchmark_result.get("hellaswag_acc"),
+        "blimp_overall_accuracy": benchmark_result.get("blimp_overall_accuracy"),
+        "induction_auc": benchmark_result.get("induction_auc"),
+        "binding_auc": benchmark_result.get("binding_auc"),
+        "binding_composite": benchmark_result.get("binding_composite"),
+        "ar_auc": benchmark_result.get("ar_auc"),
+    }
+    _missing_s1_metrics = [k for k, v in _required_s1_metrics.items() if v is None]
+    _training_survived = bool(n_passed > 0)
+    _stage1_passed = _training_survived and not _missing_s1_metrics
+    if _training_survived and _missing_s1_metrics:
+        logger.warning(
+            "Investigation %s: training survived (n_passed=%d) but post-S1 probes "
+            "incomplete — missing %s.  Recording stage1_passed=False to honor the "
+            "no-missing-data rule; the row preserves whatever metrics did land.",
+            source_result_id[:10],
+            n_passed,
+            _missing_s1_metrics,
+        )
     result_id = nb.record_program_result(
         experiment_id=exp_id,
         graph_fingerprint=source.get("graph_fingerprint", source_result_id),
@@ -758,7 +800,7 @@ def _record_investigation_result(
         intentional_rerun_reason="exact_graph_replay",
         stage0_passed=True,
         stage05_passed=True,
-        stage1_passed=n_passed > 0,
+        stage1_passed=_stage1_passed,
         loss_ratio=best_lr,
         novelty_score=source.get("novelty_score"),
         novelty_confidence=source.get("novelty_confidence"),
@@ -771,7 +813,7 @@ def _record_investigation_result(
         training_program_json=best_tp_json,
         model_source=model_source,
         arch_spec_json=arch_spec_json_str,
-        wikitext_perplexity=benchmark_result.get("inv_wikitext_ppl"),
+        wikitext_perplexity=_inv_wikitext_ppl,
         wikitext_score=benchmark_result.get("inv_wikitext_score"),
         tinystories_perplexity=benchmark_result.get("inv_tinystories_ppl"),
         tinystories_score=benchmark_result.get("inv_tinystories_score"),
@@ -782,7 +824,29 @@ def _record_investigation_result(
         hellaswag_acc=benchmark_result.get("hellaswag_acc"),
         hellaswag_status=benchmark_result.get("hellaswag_status"),
         hellaswag_n_examples=benchmark_result.get("hellaswag_total"),
+        hellaswag_metric_version=benchmark_result.get("hellaswag_metric_version"),
+        hellaswag_tokenizer_mode=benchmark_result.get("hellaswag_tokenizer_mode"),
+        hellaswag_tiktoken_encoding=benchmark_result.get("hellaswag_tiktoken_encoding"),
+        # The 5 fields that prior to 2026-05-02 were silently dropped on the
+        # investigation rerun row, causing every investigation re-record to
+        # fail the universal S1 guard and discard the entire observation.
+        blimp_overall_accuracy=benchmark_result.get("blimp_overall_accuracy"),
+        blimp_subtask_accuracies_json=benchmark_result.get(
+            "blimp_subtask_accuracies_json"
+        ),
+        blimp_n_subtasks=benchmark_result.get("blimp_n_subtasks"),
+        blimp_status=benchmark_result.get("blimp_status"),
+        induction_auc=benchmark_result.get("induction_auc"),
+        binding_auc=benchmark_result.get("binding_auc"),
+        binding_auc_curriculum=benchmark_result.get("binding_auc_curriculum"),
+        binding_composite=benchmark_result.get("binding_composite"),
+        ar_auc=benchmark_result.get("ar_auc"),
+        ar_final_acc=benchmark_result.get("ar_final_acc"),
+        ar_timed_out=benchmark_result.get("ar_timed_out"),
+        ar_above_chance=benchmark_result.get("ar_above_chance"),
+        local_only=benchmark_result.get("local_only"),
         **v2_fields,
+        **v9_trajectory_fields(benchmark_result),
     )
     source_updates = {
         "wikitext_perplexity": benchmark_result.get("inv_wikitext_ppl"),
@@ -796,6 +860,11 @@ def _record_investigation_result(
         "hellaswag_acc": benchmark_result.get("hellaswag_acc"),
         "hellaswag_status": benchmark_result.get("hellaswag_status"),
         "hellaswag_n_examples": benchmark_result.get("hellaswag_total"),
+        "hellaswag_metric_version": benchmark_result.get("hellaswag_metric_version"),
+        "hellaswag_tokenizer_mode": benchmark_result.get("hellaswag_tokenizer_mode"),
+        "hellaswag_tiktoken_encoding": benchmark_result.get(
+            "hellaswag_tiktoken_encoding"
+        ),
         "ar_auc": benchmark_result.get("ar_auc"),
         "ar_final_acc": benchmark_result.get("ar_final_acc"),
         "ar_timed_out": benchmark_result.get("ar_timed_out"),
@@ -1100,6 +1169,17 @@ def promote_validation_candidate(
         binding_v2_investigation_auc=ev_res.binding_v2_investigation_auc,
         binding_v2_investigation_max_distance_acc=ev_res.binding_v2_investigation_max_distance_acc,
         binding_v2_investigation_protocol_version=ev_res.binding_v2_investigation_protocol_version,
+        permutation_composition_score=ev_res.permutation_composition_score,
+        permutation_composition_train_chain_acc=ev_res.permutation_composition_train_chain_acc,
+        permutation_composition_extrapolation_acc=ev_res.permutation_composition_extrapolation_acc,
+        permutation_composition_n_items=ev_res.permutation_composition_n_items,
+        permutation_composition_train_chain_len=ev_res.permutation_composition_train_chain_len,
+        permutation_composition_eval_chain_len=ev_res.permutation_composition_eval_chain_len,
+        permutation_composition_train_steps=ev_res.permutation_composition_train_steps,
+        permutation_composition_chance=ev_res.permutation_composition_chance,
+        permutation_composition_elapsed_ms=ev_res.permutation_composition_elapsed_ms,
+        permutation_composition_status=ev_res.permutation_composition_status,
+        permutation_composition_metric_version=ev_res.permutation_composition_metric_version,
         robustness_noise_score=ev_res.noise_score,
         init_sensitivity_std=metrics.init_sensitivity_std,
         fp_jacobian_spectral_norm=source_row.get("fp_jacobian_spectral_norm"),
@@ -1247,6 +1327,7 @@ def run_trajectory_probe(
 
         # HellaSwag validation probe (200 examples)
         _val_hellaswag_acc = None
+        hs_val = {}
         try:
             from ...eval.hellaswag_eval import evaluate_hellaswag
 
@@ -1263,7 +1344,7 @@ def run_trajectory_probe(
                     hs_val.get("elapsed_ms", 0),
                 )
         except (ImportError, RuntimeError, ValueError) as exc_hs:
-            logger.debug("Validation HellaSwag eval skipped: %s", exc_hs)
+            logger.warning("Validation HellaSwag eval skipped: %s", exc_hs)
 
         # Validation binding probes (full suite, more examples than investigation)
         _val_ar_auc = None
@@ -1301,7 +1382,7 @@ def run_trajectory_probe(
                 _probe.binding_elapsed_ms,
             )
         except (ImportError, RuntimeError, ValueError) as exc_bp:
-            logger.debug("Validation binding probes skipped: %s", exc_bp)
+            logger.warning("Validation binding probes skipped: %s", exc_bp)
 
         del traj_model
         clear_gpu_memory()
@@ -1328,6 +1409,18 @@ def run_trajectory_probe(
                 update["ppl_500"] = ppl_500
             if _val_hellaswag_acc is not None:
                 update["hellaswag_acc"] = _val_hellaswag_acc
+            if hs_val.get("hellaswag_metric_version") is not None:
+                update["hellaswag_metric_version"] = hs_val.get(
+                    "hellaswag_metric_version"
+                )
+            if hs_val.get("hellaswag_tokenizer_mode") is not None:
+                update["hellaswag_tokenizer_mode"] = hs_val.get(
+                    "hellaswag_tokenizer_mode"
+                )
+            if hs_val.get("hellaswag_tiktoken_encoding") is not None:
+                update["hellaswag_tiktoken_encoding"] = hs_val.get(
+                    "hellaswag_tiktoken_encoding"
+                )
             # Binding probe data
             if _val_ar_auc is not None:
                 update["ar_auc"] = _val_ar_auc
@@ -1410,17 +1503,33 @@ def handle_breakthrough(
 
     Returns final is_breakthrough value.
     """
+    from ..breakthrough_gates import passes_breakthrough_from_row
     from ..llm.context_experiment import build_validation_context
     from ..notebook import ExperimentEntry
 
-    # [CALIBRATION] source: judgment — 300.0 hardcoded; no config key
+    # Trajectory-aware fallback promotion: only fires when the row's full
+    # gate set passes (composite floor + baseline improvement + capability
+    # signal). The prior ``trajectory_composite > 300.0`` hardcode promoted
+    # the d904 false positive (composite 499 with all capability metrics
+    # near-random); the helper now blocks that family.
     if not is_breakthrough and trajectory_composite is not None:
-        if trajectory_composite > 300.0:
+        entry_row = nb.get_leaderboard_entry(source_result_id) or {}
+        passed, reason = passes_breakthrough_from_row(
+            dict(entry_row), composite_score=trajectory_composite
+        )
+        if passed:
             is_breakthrough = True
             logger.info(
                 "Trajectory-aware breakthrough: %s composite=%.1f",
                 source_result_id[:8],
                 trajectory_composite,
+            )
+        else:
+            logger.info(
+                "Trajectory-aware breakthrough blocked: %s composite=%.1f reason=%s",
+                source_result_id[:8],
+                trajectory_composite,
+                reason,
             )
 
     if is_breakthrough:

@@ -100,7 +100,7 @@ class _PersonaAnalysisMixin:
             from .llm.prompts import BRIEFING_SYSTEM_PROMPT, ANALYSIS_PROMPT
 
             prompt = ANALYSIS_PROMPT.format(context=context)
-            resp = llm.generate(prompt, system=BRIEFING_SYSTEM_PROMPT, max_tokens=1024)
+            resp = llm.generate(prompt, system=BRIEFING_SYSTEM_PROMPT, max_tokens=384)
             self._track_cost(resp)
             return resp.text.strip() if resp.text.strip() else None
         except Exception as e:

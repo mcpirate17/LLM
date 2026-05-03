@@ -58,6 +58,7 @@ describe('canonicalScoreComponents', () => {
         _v10_aux_trajectory_total: 13.2,
         _v10_base_v8style_total: 106.0,
         _v10_capability_total: 100.6,
+        _v14_controlled_lang_total: 31.4,
         aux_erf_variance: 9.9,
         aux_icld: 3.3,
         cap_binding: 25,
@@ -75,6 +76,7 @@ describe('canonicalScoreComponents', () => {
       expect.objectContaining({ key: '_other_base_total', label: 'Other Base', weight: 47.0 }),
       expect.objectContaining({ key: '_v10_capability_total', label: 'Capability Total', weight: 100.6 }),
       expect.objectContaining({ key: '_v10_aux_trajectory_total', label: 'Aux Trajectory Total', weight: 13.2 }),
+      expect.objectContaining({ key: '_v14_controlled_lang_total', label: 'Controlled Lang', weight: 31.4 }),
     ]);
   });
 });

@@ -383,9 +383,7 @@ def _compact_leaderboard_entry(entry: dict) -> dict:
         "fp_sensitivity_uniformity": entry.get("fp_sensitivity_uniformity"),
         "fp_jacobian_erf_density": entry.get("fp_jacobian_erf_density"),
         "fp_id_collapse_rate": entry.get("fp_id_collapse_rate"),
-        "fp_id_collapse_rate_normalized": entry.get(
-            "fp_id_collapse_rate_normalized"
-        ),
+        "fp_id_collapse_rate_normalized": entry.get("fp_id_collapse_rate_normalized"),
         "fp_jacobian_erf_decay_slope": entry.get("fp_jacobian_erf_decay_slope"),
         "fp_jacobian_erf_first_norm": entry.get("fp_jacobian_erf_first_norm"),
         "fp_jacobian_erf_last_norm": entry.get("fp_jacobian_erf_last_norm"),
@@ -432,6 +430,9 @@ def _compact_leaderboard_entry(entry: dict) -> dict:
         "baseline_loss_ratio": entry.get("baseline_loss_ratio"),
         # HellaSwag commonsense reasoning
         "hellaswag_acc": entry.get("hellaswag_acc"),
+        "hellaswag_metric_version": entry.get("hellaswag_metric_version"),
+        "hellaswag_tokenizer_mode": entry.get("hellaswag_tokenizer_mode"),
+        "hellaswag_tiktoken_encoding": entry.get("hellaswag_tiktoken_encoding"),
         # Binding probes
         "ar_auc": entry.get("ar_auc"),
         "ar_final_acc": entry.get("ar_final_acc"),
@@ -460,6 +461,23 @@ def _compact_leaderboard_entry(entry: dict) -> dict:
         "binding_v2_investigation_protocol_version": entry.get(
             "binding_v2_investigation_protocol_version"
         ),
+        # Controlled-language probe ladder (v14)
+        "controlled_lang_metric_version": entry.get("controlled_lang_metric_version"),
+        "controlled_lang_s05_sa_score": entry.get("controlled_lang_s05_sa_score"),
+        "controlled_lang_s05_nb_order_acc": entry.get(
+            "controlled_lang_s05_nb_order_acc"
+        ),
+        "controlled_lang_s05_nb_score": entry.get("controlled_lang_s05_nb_score"),
+        "controlled_lang_s10_sa_score": entry.get("controlled_lang_s10_sa_score"),
+        "controlled_lang_s10_nb_order_acc": entry.get(
+            "controlled_lang_s10_nb_order_acc"
+        ),
+        "controlled_lang_s10_nb_score": entry.get("controlled_lang_s10_nb_score"),
+        "controlled_lang_inv_sa_score": entry.get("controlled_lang_inv_sa_score"),
+        "controlled_lang_inv_nb_order_acc": entry.get(
+            "controlled_lang_inv_nb_order_acc"
+        ),
+        "controlled_lang_inv_nb_score": entry.get("controlled_lang_inv_nb_score"),
         # BLiMP linguistic minimal pairs
         "blimp_overall_accuracy": entry.get("blimp_overall_accuracy"),
         "blimp_n_subtasks": entry.get("blimp_n_subtasks"),
@@ -1106,9 +1124,7 @@ def register_leaderboard_routes(app, context: ApiRouteContext):
                 analytics=analytics,
             )
             payload["score_scale"] = score_scale
-            return jsonify(
-                payload
-            )
+            return jsonify(payload)
 
         if view in ("backlog", "all_graphs"):
             include_failed = parse_bool_query(
@@ -1125,9 +1141,7 @@ def register_leaderboard_routes(app, context: ApiRouteContext):
                 analytics=analytics,
             )
             payload["score_scale"] = score_scale
-            return jsonify(
-                payload
-            )
+            return jsonify(payload)
 
         payload = _ranked_discoveries_payload(
             nb,
@@ -1142,9 +1156,7 @@ def register_leaderboard_routes(app, context: ApiRouteContext):
             analytics=analytics,
         )
         payload["score_scale"] = score_scale
-        return jsonify(
-            payload
-        )
+        return jsonify(payload)
 
     register_notebook_routes(
         app,

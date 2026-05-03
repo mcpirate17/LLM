@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import sqlite3
 import subprocess
 import sys
@@ -42,13 +41,13 @@ STAGE_RUNNER = {"investigation": "investigation", "validation": "validation"}
 # archs (SSM-like, conv-based) need more steps to form induction
 # heads; others (attention-rich) saturate earlier.  Run one validation
 # rerun at SCALING_STEPS for each top-N fp and compare.
-SCALING_STEPS = 20000        # 2× the default 10K validation budget
+SCALING_STEPS = 20000  # 2× the default 10K validation budget
 SCALING_TIMEOUT_SEC = 60 * 90  # 90 min cap; 20K × 1 seed runs ~45-60
 # Per-stage timeouts (max wall-clock for a single task before we move on).
 STAGE_TIMEOUT_SEC = {
-    "screening": 60 * 15,        # S1 at 750 steps: ~5 min, give 15
-    "investigation": 60 * 30,    # 2500 steps: ~10-15 min, give 30
-    "validation": 60 * 60,       # 10k × 1 seed: ~30-45 min, give 60
+    "screening": 60 * 15,  # S1 at 750 steps: ~5 min, give 15
+    "investigation": 60 * 30,  # 2500 steps: ~10-15 min, give 30
+    "validation": 60 * 60,  # 10k × 1 seed: ~30-45 min, give 60
 }
 # How long to wait before declaring a drain "didn't claim anything"
 # vs the runner just took a moment.
@@ -96,7 +95,9 @@ def fetch_top_n(n: int) -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def queue_one(result_id: str, stage: str, n_steps: Optional[int] = None) -> Optional[str]:
+def queue_one(
+    result_id: str, stage: str, n_steps: Optional[int] = None
+) -> Optional[str]:
     body: dict[str, Any] = {"stage": stage, "n": 1, "reason": "overnight_orchestrator"}
     if n_steps is not None:
         body["n_steps"] = int(n_steps)
@@ -125,17 +126,26 @@ def queue_all(top: list[dict]) -> list[dict]:
             for i in range(RERUNS_PER_STAGE):
                 tid = queue_one(rid, stage)
                 if tid:
-                    queued.append({
-                        "task_id": tid,
-                        "fp": fp,
-                        "result_id": rid,
-                        "stage": stage,
-                        "rerun_index": i + 1,
-                    })
+                    queued.append(
+                        {
+                            "task_id": tid,
+                            "fp": fp,
+                            "result_id": rid,
+                            "stage": stage,
+                            "rerun_index": i + 1,
+                        }
+                    )
                 else:
-                    logger.warning("failed to queue %s rerun %d for %s", stage, i + 1, fp)
-    logger.info("queued %d total tasks across %d fps × %d stages × %d reruns",
-                len(queued), len(top), len(STAGES), RERUNS_PER_STAGE)
+                    logger.warning(
+                        "failed to queue %s rerun %d for %s", stage, i + 1, fp
+                    )
+    logger.info(
+        "queued %d total tasks across %d fps × %d stages × %d reruns",
+        len(queued),
+        len(top),
+        len(STAGES),
+        RERUNS_PER_STAGE,
+    )
     return queued
 
 
@@ -233,7 +243,11 @@ def latest_pr_row(fp: str, since_ts: float) -> Optional[dict]:
 
 
 def wait_for_completion(
-    task_id: str, fp: str, stage: str, max_sec: int, since_ts: float,
+    task_id: str,
+    fp: str,
+    stage: str,
+    max_sec: int,
+    since_ts: float,
 ) -> dict[str, Any]:
     """Poll until the experiment actually finishes, not just task launch.
 
@@ -258,7 +272,9 @@ def wait_for_completion(
         # Stuck-queued: drain didn't actually fire.
         if s == "queued" and time.time() - t0 > DRAIN_RETRY_SEC * 2:
             return {
-                "task_id": task_id, "stage": stage, "fp": fp,
+                "task_id": task_id,
+                "stage": stage,
+                "fp": fp,
                 "final_status": "stuck_queued",
                 "outcome": st.get("outcome"),
                 "duration_sec": round(time.time() - t0, 1),
@@ -267,7 +283,9 @@ def wait_for_completion(
         # Hard failure / cancellation.
         if s in ("failed", "cancelled"):
             return {
-                "task_id": task_id, "stage": stage, "fp": fp,
+                "task_id": task_id,
+                "stage": stage,
+                "fp": fp,
                 "final_status": s,
                 "outcome": st.get("outcome"),
                 "duration_sec": round(time.time() - t0, 1),
@@ -288,7 +306,9 @@ def wait_for_completion(
             else:
                 row = latest_pr_row(fp, since_ts)
             return {
-                "task_id": task_id, "stage": stage, "fp": fp,
+                "task_id": task_id,
+                "stage": stage,
+                "fp": fp,
                 "final_status": "completed",
                 "outcome": st.get("outcome"),
                 "duration_sec": round(time.time() - t0, 1),
@@ -304,7 +324,9 @@ def wait_for_completion(
                     break
                 time.sleep(1)
             return {
-                "task_id": task_id, "stage": stage, "fp": fp,
+                "task_id": task_id,
+                "stage": stage,
+                "fp": fp,
                 "final_status": "completed",
                 "outcome": st.get("outcome"),
                 "duration_sec": round(time.time() - t0, 1),
@@ -313,7 +335,9 @@ def wait_for_completion(
         time.sleep(8)
     # Timeout
     return {
-        "task_id": task_id, "stage": stage, "fp": fp,
+        "task_id": task_id,
+        "stage": stage,
+        "fp": fp,
         "final_status": "timeout",
         "outcome": task_state.get("outcome"),
         "duration_sec": round(max_sec, 1),
@@ -348,13 +372,20 @@ def drain_loop(queued: list[dict]) -> list[dict]:
         if status == "idle":
             # Maybe the runner cleared a backlog from a different source —
             # check for residual queued among ours.
-            resid = [tid for tid in by_id if tid not in seen and task_status(tid).get("status") == "queued"]
+            resid = [
+                tid
+                for tid in by_id
+                if tid not in seen and task_status(tid).get("status") == "queued"
+            ]
             if not resid:
                 logger.info("drain idle and no residual queued of ours — done")
                 break
             no_progress_streak += 1
             if no_progress_streak >= max_no_progress:
-                logger.warning("queued tasks remain but drain says idle %dx; abandoning", max_no_progress)
+                logger.warning(
+                    "queued tasks remain but drain says idle %dx; abandoning",
+                    max_no_progress,
+                )
                 break
             time.sleep(IDLE_SLEEP_SEC)
             continue
@@ -384,28 +415,37 @@ def drain_loop(queued: list[dict]) -> list[dict]:
         fp = meta["fp"]
         timeout = STAGE_TIMEOUT_SEC[stage]
         since_ts = time.time() - 5  # small backstep so we catch rows written ~now
-        logger.info("[drain] %s | %s | task=%s timeout=%ds",
-                    stage, fp, tid[:12], timeout)
+        logger.info(
+            "[drain] %s | %s | task=%s timeout=%ds", stage, fp, tid[:12], timeout
+        )
         result = wait_for_completion(tid, fp, stage, timeout, since_ts)
         results.append(result)
         seen.add(tid)
         new_row = result.get("new_pr_row")
         wrote = "OK row" if new_row else "NO ROW WRITTEN"
-        logger.info("[done]  %s | %s | %ds | status=%s outcome=%s | %s",
-                    stage, fp, result["duration_sec"], result["final_status"],
-                    result.get("outcome"), wrote)
+        logger.info(
+            "[done]  %s | %s | %ds | status=%s outcome=%s | %s",
+            stage,
+            fp,
+            result["duration_sec"],
+            result["final_status"],
+            result.get("outcome"),
+            wrote,
+        )
 
     # Mark any unprocessed
     for q in queued:
         if q["task_id"] not in seen:
-            results.append({
-                "task_id": q["task_id"],
-                "stage": q["stage"],
-                "fp": q["fp"],
-                "final_status": "not_drained",
-                "duration_sec": 0.0,
-                "new_pr_row": None,
-            })
+            results.append(
+                {
+                    "task_id": q["task_id"],
+                    "stage": q["stage"],
+                    "fp": q["fp"],
+                    "final_status": "not_drained",
+                    "duration_sec": 0.0,
+                    "new_pr_row": None,
+                }
+            )
     return results
 
 
@@ -428,18 +468,24 @@ def write_findings(
         by_fp_stage.setdefault((r["fp"], r["stage"]), []).append(r)
 
     with FINDINGS_PATH.open("w") as f:
-        f.write(f"# Overnight rerun orchestrator findings\n\n")
+        f.write("# Overnight rerun orchestrator findings\n\n")
         f.write(f"**Started:** {stamp}\n")
-        f.write(f"**Top {TOP_N} fingerprints, {RERUNS_PER_STAGE}× per stage, "
-                f"stages = {', '.join(STAGES)}**\n\n")
+        f.write(
+            f"**Top {TOP_N} fingerprints, {RERUNS_PER_STAGE}× per stage, "
+            f"stages = {', '.join(STAGES)}**\n\n"
+        )
 
         f.write("## Summary\n\n")
         n_total = len(results)
         n_with_row = sum(1 for r in results if r.get("new_pr_row"))
         n_completed = sum(1 for r in results if r["final_status"] == "completed")
         n_timeout = sum(1 for r in results if r["final_status"] == "timeout")
-        n_failed = sum(1 for r in results if r["final_status"] in ("failed", "cancelled"))
-        n_undrained = sum(1 for r in results if r["final_status"] in ("not_drained", "stuck_queued"))
+        n_failed = sum(
+            1 for r in results if r["final_status"] in ("failed", "cancelled")
+        )
+        n_undrained = sum(
+            1 for r in results if r["final_status"] in ("not_drained", "stuck_queued")
+        )
         f.write(f"- Tasks queued: {len(queued)}\n")
         f.write(f"- Tasks processed: {n_total}\n")
         f.write(f"- Produced new program_results row: **{n_with_row}**\n")
@@ -454,17 +500,21 @@ def write_findings(
         f.write("|---|---:|---:|---:|---:|---:|\n")
         for s in STAGES:
             sub = [r for r in results if r["stage"] == s]
-            f.write(f"| {s} | {len(sub)} "
-                    f"| {sum(1 for r in sub if r['final_status']=='completed')} "
-                    f"| {sum(1 for r in sub if r.get('new_pr_row'))} "
-                    f"| {sum(1 for r in sub if r['final_status']=='timeout')} "
-                    f"| {sum(1 for r in sub if r['final_status'] in ('failed','cancelled'))} |\n")
+            f.write(
+                f"| {s} | {len(sub)} "
+                f"| {sum(1 for r in sub if r['final_status'] == 'completed')} "
+                f"| {sum(1 for r in sub if r.get('new_pr_row'))} "
+                f"| {sum(1 for r in sub if r['final_status'] == 'timeout')} "
+                f"| {sum(1 for r in sub if r['final_status'] in ('failed', 'cancelled'))} |\n"
+            )
         f.write("\n")
 
         f.write("## Per-fingerprint breakdown\n\n")
         for entry in top:
             fp = entry["fp"]
-            f.write(f"### {fp} ({entry['tier']}, score {entry['composite_score']:.1f})\n\n")
+            f.write(
+                f"### {fp} ({entry['tier']}, score {entry['composite_score']:.1f})\n\n"
+            )
             f.write(f"- result_id: `{entry['result_id']}`\n")
             f.write(f"- starting n_runs: {entry.get('n_runs') or 1}\n")
             for s in STAGES:
@@ -503,13 +553,17 @@ def write_findings(
         # Phase-2 scaling probe: did extending validation steps help?
         if scaling_queued or score_after_scaling:
             f.write("## Phase 2 — scaling probe\n\n")
-            f.write(f"Each top-{TOP_N} fp got 1 validation rerun at "
-                    f"**{SCALING_STEPS} steps × 1 seed** (vs the default "
-                    f"10 000 steps used by the regular reruns).  This "
-                    f"tests the hypothesis that some architectures need "
-                    f"more steps to form induction heads / saturate.\n\n")
-            f.write("| fp | tier | post-reruns | post-scaling | Δ | "
-                    "PPL post-scaling | n_runs | CV(loss) |\n")
+            f.write(
+                f"Each top-{TOP_N} fp got 1 validation rerun at "
+                f"**{SCALING_STEPS} steps × 1 seed** (vs the default "
+                f"10 000 steps used by the regular reruns).  This "
+                f"tests the hypothesis that some architectures need "
+                f"more steps to form induction heads / saturate.\n\n"
+            )
+            f.write(
+                "| fp | tier | post-reruns | post-scaling | Δ | "
+                "PPL post-scaling | n_runs | CV(loss) |\n"
+            )
             f.write("|---|---|---:|---:|---:|---:|---:|---:|\n")
             for entry in top:
                 fp = entry["fp"]
@@ -535,11 +589,11 @@ def write_findings(
                     f"{ppl_str} | {n_runs} | {cv_str} |\n"
                 )
             f.write("\n")
-            n_scale_with_row = sum(
-                1 for r in scaling_results if r.get("new_pr_row")
+            n_scale_with_row = sum(1 for r in scaling_results if r.get("new_pr_row"))
+            f.write(
+                f"- Scaling probe: queued {len(scaling_queued)}, "
+                f"produced {n_scale_with_row} new program_results rows.\n\n"
             )
-            f.write(f"- Scaling probe: queued {len(scaling_queued)}, "
-                    f"produced {n_scale_with_row} new program_results rows.\n\n")
 
         f.write("## Raw results\n\n")
         f.write("```json\n")
@@ -572,23 +626,35 @@ def main() -> None:
         sys.exit(2)
     logger.info("top-%d fingerprints:", TOP_N)
     for i, entry in enumerate(top, start=1):
-        logger.info("  %2d. %s %-13s %.1f", i, entry["fp"], entry["tier"], entry["composite_score"])
+        logger.info(
+            "  %2d. %s %-13s %.1f",
+            i,
+            entry["fp"],
+            entry["tier"],
+            entry["composite_score"],
+        )
 
     # Tim's rule: if any fp needs validation first, do it before the 2x.
     # All top-10 are already at validation/breakthrough so the pre-step is a no-op.
     not_validated = [e for e in top if e["tier"] not in ("validation", "breakthrough")]
     if not_validated:
-        logger.info("pre-step: %d fps need an initial validation before 2x reruns",
-                    len(not_validated))
+        logger.info(
+            "pre-step: %d fps need an initial validation before 2x reruns",
+            len(not_validated),
+        )
         pre = []
         for entry in not_validated:
             tid = queue_one(entry["result_id"], "validation")
             if tid:
-                pre.append({
-                    "task_id": tid, "fp": entry["fp"],
-                    "result_id": entry["result_id"], "stage": "validation_pre",
-                    "rerun_index": 0,
-                })
+                pre.append(
+                    {
+                        "task_id": tid,
+                        "fp": entry["fp"],
+                        "result_id": entry["result_id"],
+                        "stage": "validation_pre",
+                        "rerun_index": 0,
+                    }
+                )
         if pre:
             drain_loop(pre)
 
@@ -611,23 +677,30 @@ def main() -> None:
     for entry in top:
         rid = str(entry["result_id"])
         body = {
-            "stage": "validation", "n": 1,
-            "n_steps": SCALING_STEPS, "n_seeds": 1,
+            "stage": "validation",
+            "n": 1,
+            "n_steps": SCALING_STEPS,
+            "n_seeds": 1,
             "reason": f"scaling_probe_{SCALING_STEPS}",
         }
         try:
             r = requests.post(
                 f"{DASHBOARD_BASE}/api/programs/{rid}/queue-validation-rerun",
-                json=body, timeout=15,
+                json=body,
+                timeout=15,
             )
             r.raise_for_status()
             ids = r.json().get("task_ids") or []
             if ids:
-                scaling_queued.append({
-                    "task_id": ids[0], "fp": entry["fp"],
-                    "result_id": rid, "stage": "validation_scaling",
-                    "rerun_index": 1,
-                })
+                scaling_queued.append(
+                    {
+                        "task_id": ids[0],
+                        "fp": entry["fp"],
+                        "result_id": rid,
+                        "stage": "validation_scaling",
+                        "rerun_index": 1,
+                    }
+                )
         except Exception as exc:
             logger.error("scaling-queue failed for %s: %s", entry["fp"], exc)
     logger.info("scaling probe queued %d tasks", len(scaling_queued))
@@ -644,7 +717,9 @@ def main() -> None:
     score_after_scaling = _snapshot_composites([t["fp"] for t in top])
 
     write_findings(
-        top, queued, results,
+        top,
+        queued,
+        results,
         scaling_queued=scaling_queued,
         scaling_results=scaling_results,
         score_after_reruns=score_after_reruns,

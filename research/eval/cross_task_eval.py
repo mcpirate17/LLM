@@ -36,6 +36,35 @@ logger = logging.getLogger(__name__)
 
 _CACHE_DIR = Path.home() / ".cache" / "aria" / "cross_task"
 _DEFAULT_MAX_CHARS = 200_000
+_CROSS_TASK_COMPETENCE_PPL_THRESHOLD = 200.0
+_CROSS_TASK_DIVERGED_PPL_THRESHOLD = 5000.0
+
+
+def cross_task_score_from_domain_ppl(
+    code_ppl: float | None,
+    nl_ppl: float | None,
+    *,
+    competence_ppl_threshold: float = _CROSS_TASK_COMPETENCE_PPL_THRESHOLD,
+    diverged_ppl_threshold: float = _CROSS_TASK_DIVERGED_PPL_THRESHOLD,
+) -> tuple[float | None, float | None, str | None]:
+    """Score domain balance only after at least one domain shows competence.
+
+    The cross-task metric is intended to reward robustness across code and
+    natural language. A model with PPL=2000 on both domains is balanced, but
+    it has not learned either task; returning a high balance score would
+    reward uniform failure.
+    """
+    if code_ppl is None or nl_ppl is None or code_ppl <= 0 or nl_ppl <= 0:
+        return None, None, "invalid_ppl"
+
+    if max(code_ppl, nl_ppl) > diverged_ppl_threshold:
+        return None, None, "diverged"
+
+    ppl_gap = round(abs(math.log(code_ppl / nl_ppl)), 4)
+    if min(code_ppl, nl_ppl) > competence_ppl_threshold:
+        return 0.0, ppl_gap, "uniform_failure"
+
+    return round(min(code_ppl, nl_ppl) / max(code_ppl, nl_ppl), 4), ppl_gap, None
 
 
 def _clone_functional_state(
@@ -258,32 +287,35 @@ def evaluate_cross_task_robustness(
 
     elapsed_ms = (time.perf_counter() - t0) * 1000.0
 
-    # Cross-task score: measure domain gap
-    # Lower gap = more robust. Score = 1 / (1 + |log(code_ppl/nl_ppl)|)
-    #
-    # Divergence guard: a model that fails uniformly on BOTH domains gets
-    # a small ppl_gap and a high score, gaming the metric without learning
-    # anything. Drop the score when either domain's PPL exceeds a sanity
-    # threshold so divergent architectures don't pollute the column.
-    _DIVERGED_PPL_THRESHOLD = 5000.0
-    cross_task_score = None
-    ppl_gap = None
-    if code_ppl is not None and nl_ppl is not None and code_ppl > 0 and nl_ppl > 0:
-        if max(code_ppl, nl_ppl) > _DIVERGED_PPL_THRESHOLD:
-            logger.info(
-                "cross_task: declining to score — diverged "
-                "(code_ppl=%.0f nl_ppl=%.0f, threshold=%.0f)",
-                code_ppl, nl_ppl, _DIVERGED_PPL_THRESHOLD,
-            )
-        else:
-            ppl_gap = round(abs(math.log(code_ppl / nl_ppl)), 4)
-            cross_task_score = round(1.0 / (1.0 + ppl_gap), 4)
+    # Cross-task score: measure domain balance only after basic competence.
+    # Balanced high-PPL failure should not earn robustness credit.
+    cross_task_score, ppl_gap, score_gate = cross_task_score_from_domain_ppl(
+        code_ppl,
+        nl_ppl,
+    )
+    if score_gate == "diverged":
+        logger.info(
+            "cross_task: declining to score — diverged "
+            "(code_ppl=%.0f nl_ppl=%.0f, threshold=%.0f)",
+            code_ppl,
+            nl_ppl,
+            _CROSS_TASK_DIVERGED_PPL_THRESHOLD,
+        )
+    elif score_gate == "uniform_failure":
+        logger.info(
+            "cross_task: zeroing balanced failure "
+            "(code_ppl=%.0f nl_ppl=%.0f, competence_threshold=%.0f)",
+            code_ppl,
+            nl_ppl,
+            _CROSS_TASK_COMPETENCE_PPL_THRESHOLD,
+        )
 
     return {
         "cross_task_score": cross_task_score,
         "code_perplexity": round(code_ppl, 2) if code_ppl is not None else None,
         "nl_perplexity": round(nl_ppl, 2) if nl_ppl is not None else None,
         "ppl_gap": ppl_gap,
+        "score_gate": score_gate,
         "code_train_loss": round(code_loss, 6),
         "nl_train_loss": round(nl_loss, 6),
         "n_train_steps": n_train_steps,

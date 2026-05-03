@@ -51,6 +51,7 @@ def test_selection_family_trials_resolve_from_realized_outcomes():
         flops_per_token=1.0,
         peak_memory_mb=220.0,
         stability_score=0.92,
+        trust_label="test_fixture",
     )
     nb.conn.execute(
         """INSERT INTO leaderboard
@@ -295,10 +296,11 @@ def test_followup_tasks_persist_and_runner_claims_highest_priority():
 
     captured = {}
 
-    def _fake_start_investigation(result_ids, config, hypothesis):
+    def _fake_start_investigation(result_ids, config, hypothesis, **kwargs):
         captured["result_ids"] = list(result_ids)
         captured["config"] = config
         captured["hypothesis"] = hypothesis
+        captured["kwargs"] = kwargs
 
     runner.start_investigation = _fake_start_investigation
     runner._run_pending_investigation()
@@ -332,6 +334,7 @@ def test_followup_tasks_canonicalize_duplicate_fingerprint_result_ids():
         stage05_passed=1,
         stage1_passed=1,
         loss_ratio=0.48,
+        trust_label="test_fixture",
     )
 
     exp_b = nb.start_experiment("exact_graph_replay", {"n_programs": 1}, "canonical-b")
@@ -345,6 +348,7 @@ def test_followup_tasks_canonicalize_duplicate_fingerprint_result_ids():
         loss_ratio=0.44,
         intentional_rerun_reason="exact_graph_replay",
         model_source="exact_graph_replay",
+        trust_label="test_fixture",
     )
 
     task_id = nb.enqueue_followup_task(
@@ -465,6 +469,7 @@ def test_pending_replay_uses_exact_replay_pipeline_and_completes_task(monkeypatc
         hypothesis,
         fast,
         verbose,
+        **kwargs,
     ):
         captured["db_path"] = str(db_path)
         captured["result_ids"] = list(result_ids)
@@ -473,6 +478,7 @@ def test_pending_replay_uses_exact_replay_pipeline_and_completes_task(monkeypatc
         captured["hypothesis"] = hypothesis
         captured["fast"] = fast
         captured["verbose"] = verbose
+        captured["replay_kwargs"] = kwargs
         return "exp_replay_123"
 
     monkeypatch.setattr(
@@ -514,6 +520,7 @@ def test_active_learning_replay_queue_skips_recent_and_duplicate_targets():
         stage05_passed=1,
         stage1_passed=1,
         loss_ratio=0.47,
+        trust_label="test_fixture",
     )
     exp_b = nb.start_experiment(
         "exact_graph_replay", {"n_programs": 1}, "replay-suppress-b"
@@ -528,6 +535,7 @@ def test_active_learning_replay_queue_skips_recent_and_duplicate_targets():
         loss_ratio=0.45,
         intentional_rerun_reason="exact_graph_replay",
         model_source="exact_graph_replay",
+        trust_label="test_fixture",
     )
     exp_c = nb.start_experiment("synthesis", {"n_programs": 1}, "replay-allow")
     rid_c = nb.record_program_result(
@@ -538,6 +546,7 @@ def test_active_learning_replay_queue_skips_recent_and_duplicate_targets():
         stage05_passed=1,
         stage1_passed=1,
         loss_ratio=0.49,
+        trust_label="test_fixture",
     )
 
     blocked_task_id = nb.enqueue_followup_task(

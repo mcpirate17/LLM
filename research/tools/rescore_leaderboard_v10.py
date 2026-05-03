@@ -22,9 +22,7 @@ from __future__ import annotations
 
 import argparse
 import logging
-import sys
 import time
-from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -97,7 +95,11 @@ def main() -> None:
         # leaderboard (cherry-picked best-of-runs) and miss the variance
         # signal entirely.
         metric_to_kwarg = {
-            "wikitext_perplexity": ("ppl_screening", "ppl_investigation", "ppl_validation"),
+            "wikitext_perplexity": (
+                "ppl_screening",
+                "ppl_investigation",
+                "ppl_validation",
+            ),
             "blimp_overall_accuracy": ("blimp_accuracy",),
             "hellaswag_acc": (
                 "hellaswag_acc_screening",
@@ -117,7 +119,10 @@ def main() -> None:
 
         # Update widening — these new cols may not exist on older DBs.
         agg_cols = {
-            "n_runs", "cv_loss", "cv_understanding", "cv_capability",
+            "n_runs",
+            "cv_loss",
+            "cv_understanding",
+            "cv_capability",
             "score_stability_penalty",
         } & cols
 
@@ -130,9 +135,7 @@ def main() -> None:
                 continue
             lb_row = dict(row)
             pr = dict(pr_cache.get(rid, {}))
-            kw = build_score_kwargs_from_prefetch(
-                pr, lb_row, bool(row["is_reference"])
-            )
+            kw = build_score_kwargs_from_prefetch(pr, lb_row, bool(row["is_reference"]))
             # Cross-run aggregation for this fingerprint.
             fp = lb_row.get("graph_fingerprint") or pr.get("graph_fingerprint")
             metric_agg = nb.get_fingerprint_metric_aggregates(fp) if fp else {}

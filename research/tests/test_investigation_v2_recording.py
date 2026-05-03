@@ -136,6 +136,7 @@ def test_record_investigation_result_persists_v2_to_source_and_rerun_row():
         loss_ratio=0.3,
         novelty_score=0.2,
         model_source="graph_synthesis",
+        trust_label="test_fixture",
     )
     inv_exp = nb.start_experiment("investigation", {}, "investigation")
 
@@ -229,6 +230,7 @@ def test_record_investigation_result_persists_v9_trajectory_to_source_row():
         loss_ratio=0.3,
         novelty_score=0.2,
         model_source="graph_synthesis",
+        trust_label="test_fixture",
         fp_metric_phase="init",
         fp_jacobian_erf_density=0.1,
         fp_jacobian_erf_variance=10.0,

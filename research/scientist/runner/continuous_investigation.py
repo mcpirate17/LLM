@@ -362,13 +362,94 @@ class _ContinuousInvestigationMixin:
 
         # ── Stage B: Composite score + rank ──
         ref_lr = self._get_reference_baseline_lr(nb)
+
+        # Predictor-driven capability multiplier.  The GBM v2 capability heads
+        # (P(induction_v2 ≥ 0.30), P(binding_v2 ≥ 0.30)) are the most
+        # discriminating signal we have for "will this graph actually learn
+        # induction/binding?".  Pre-2026-05-02 this gate ranked purely on
+        # screening loss/stability, so the search kept investigating
+        # architectures that pass S1 by reducing loss but never form heads
+        # (mixture_of_recursions_block: 66.7% S1, 0.000 induction).  We
+        # blend capability into the rank: multiplier = 0.5 + cap_score
+        # (range 0.5×–1.5×, centred at 1.0 when the head has no signal),
+        # so the predictor steers selection without overriding strong
+        # screening evidence.
+        cap_ensemble = None
+        cap_op_stats = None
+        cap_extract_features = None
+        cap_enrich_features = None
+        try:
+            from ..intelligence.predictor import load_runtime_ensemble
+            from ...synthesis.graph_features import (
+                extract_graph_features_bundle as _extract_features_bundle,
+                enrich_with_op_stats as _enrich_with_op_stats,
+                load_op_stats as _load_op_stats,
+            )
+
+            cap_ensemble = load_runtime_ensemble()
+            if cap_ensemble is not None and not cap_ensemble.is_fitted():
+                cap_ensemble = None
+            if (
+                cap_ensemble is not None
+                and hasattr(cap_ensemble, "has_capability_head")
+                and not cap_ensemble.has_capability_head()
+            ):
+                # Ensemble fitted but no v2 capability head — degrade silently
+                # to no-op (multiplier ≡ 1.0 via predict_capability_score==0.5).
+                pass
+            if cap_ensemble is not None:
+                cap_op_stats = _load_op_stats(str(nb.db_path))
+                cap_extract_features = _extract_features_bundle
+                cap_enrich_features = _enrich_with_op_stats
+        except Exception as exc:  # noqa: BLE001 - capability blend is best-effort
+            logger.debug("Capability blend unavailable: %s", exc)
+            cap_ensemble = None
+
+        cap_boosted = 0
+        cap_penalised = 0
         for row in eligible:
             base = LabNotebook.compute_pre_investigation_score(row, best_ref_lr=ref_lr)
             # Judgment boost: up to +15% for high-confidence candidates
             j = row.get("judgment_score")
             if j is not None and isinstance(j, (int, float)) and j > 0.5:
                 base *= 1.0 + 0.15 * min(1.0, (j - 0.5) * 2.0)
+            # Capability-score multiplier (predictor v2 heads).
+            cap_score: float = 0.5  # no-signal default
+            if cap_ensemble is not None and cap_extract_features is not None:
+                try:
+                    graph_json_str = row.get("graph_json") or ""
+                    if graph_json_str:
+                        graph_dict = json.loads(graph_json_str)
+                        feats, ops = cap_extract_features(graph_dict)
+                        if feats:
+                            for op in ops:
+                                if op:
+                                    feats[f"op_{op}"] = feats.get(f"op_{op}", 0.0) + 1.0
+                            cap_enrich_features(feats, ops, preloaded=cap_op_stats)
+                            cap_score = float(
+                                cap_ensemble.predict_capability_score(
+                                    graph_features=feats
+                                )
+                            )
+                except (
+                    json.JSONDecodeError,
+                    TypeError,
+                    ValueError,
+                    AttributeError,
+                ) as cap_exc:
+                    logger.debug(
+                        "Capability score skipped for %s: %s",
+                        str(row.get("result_id") or "")[:10],
+                        cap_exc,
+                    )
+            cap_multiplier = 0.5 + max(0.0, min(1.0, cap_score))
+            base *= cap_multiplier
+            if cap_multiplier > 1.05:
+                cap_boosted += 1
+            elif cap_multiplier < 0.95:
+                cap_penalised += 1
             row["_pre_inv_score"] = base
+            row["_pre_inv_capability_score"] = cap_score
             # Apply reprieve score multiplier
             multiplier = (
                 config.slope_reprieve_score_multiplier
@@ -376,6 +457,16 @@ class _ContinuousInvestigationMixin:
                 else 1.0
             )
             row["_pre_inv_effective_score"] = base * multiplier
+
+        if cap_ensemble is not None and (cap_boosted or cap_penalised):
+            logger.info(
+                "Pre-inv gate capability blend: %d boosted (cap≥0.55) / "
+                "%d penalised (cap≤0.45) / %d neutral across %d candidates",
+                cap_boosted,
+                cap_penalised,
+                len(eligible) - cap_boosted - cap_penalised,
+                len(eligible),
+            )
 
         eligible.sort(key=lambda r: r.get("_pre_inv_effective_score", 0), reverse=True)
         top_n = eligible[: config.pre_inv_top_n]
@@ -977,60 +1068,24 @@ class _ContinuousInvestigationMixin:
 
         # Submit benchmark evals to background thread so the
         # investigation loop can proceed to the next candidate.
-        if n_passed > 0:
-            future = _submit_benchmark_eval(
-                nb=nb,
-                exp_id=exp_id,
-                source_result_id=source_result_id,
-                source=source,
-                model_source=model_source,
-                graph_json_str=graph_json_str,
-                arch_spec_json_str=arch_spec_json_str,
-                n_passed=n_passed,
-                n_programs_tested=len(training_programs),
-                best_lr=best_lr,
-                best_tp_json=best_tp_json,
-                robustness=robustness,
-                investigation_passed=investigation_passed,
-                config=config,
-                dev=dev,
-                cached_json_load=self._cached_json_load,
-                fingerprint_incomplete=_fp_incomplete,
-                stop_event=self._stop_event,
-            )
-            self._register_investigation_eval_future(
-                exp_id=exp_id,
-                future=future,
-                kind="benchmark",
-                source_result_id=source_result_id,
-            )
-        else:
-            future = _submit_v2_probe_eval(
-                nb=nb,
-                exp_id=exp_id,
-                source_result_id=source_result_id,
-                source=source,
-                model_source=model_source,
-                graph_json_str=graph_json_str,
-                arch_spec_json_str=arch_spec_json_str,
-                n_passed=n_passed,
-                n_programs_tested=len(training_programs),
-                best_lr=best_lr,
-                best_tp_json=best_tp_json,
-                robustness=robustness,
-                investigation_passed=investigation_passed,
-                config=config,
-                dev=dev,
-                cached_json_load=self._cached_json_load,
-                stop_event=self._stop_event,
-                fingerprint_incomplete=_fp_incomplete,
-            )
-            self._register_investigation_eval_future(
-                exp_id=exp_id,
-                future=future,
-                kind="v2-probe",
-                source_result_id=source_result_id,
-            )
+        self._submit_investigation_eval(
+            nb=nb,
+            config=config,
+            exp_id=exp_id,
+            source=source,
+            source_result_id=source_result_id,
+            model_source=model_source,
+            graph_json_str=graph_json_str,
+            arch_spec_json_str=arch_spec_json_str,
+            n_passed=n_passed,
+            n_programs_tested=len(training_programs),
+            best_lr=best_lr,
+            best_tp_json=best_tp_json,
+            robustness=robustness,
+            investigation_passed=investigation_passed,
+            fingerprint_incomplete=_fp_incomplete,
+            dev=dev,
+        )
 
         try:
             ckpt.save_phase(
@@ -1059,6 +1114,78 @@ class _ContinuousInvestigationMixin:
                 prog_idx + 1,
                 e,
             )
+
+    def _submit_investigation_eval(
+        self,
+        *,
+        nb: LabNotebook,
+        config: RunConfig,
+        exp_id: str,
+        source: dict,
+        source_result_id: str,
+        model_source: str,
+        graph_json_str,
+        arch_spec_json_str,
+        n_passed: int,
+        n_programs_tested: int,
+        best_lr,
+        best_tp_json,
+        robustness: float,
+        investigation_passed: bool,
+        fingerprint_incomplete: bool,
+        dev,
+    ) -> None:
+        """Dispatch to benchmark eval (s1-passed) or v2-probe-only (s1-failed) and register the future."""
+        if n_passed > 0:
+            future = _submit_benchmark_eval(
+                nb=nb,
+                exp_id=exp_id,
+                source_result_id=source_result_id,
+                source=source,
+                model_source=model_source,
+                graph_json_str=graph_json_str,
+                arch_spec_json_str=arch_spec_json_str,
+                n_passed=n_passed,
+                n_programs_tested=n_programs_tested,
+                best_lr=best_lr,
+                best_tp_json=best_tp_json,
+                robustness=robustness,
+                investigation_passed=investigation_passed,
+                config=config,
+                dev=dev,
+                cached_json_load=self._cached_json_load,
+                fingerprint_incomplete=fingerprint_incomplete,
+                stop_event=self._stop_event,
+            )
+            kind = "benchmark"
+        else:
+            future = _submit_v2_probe_eval(
+                nb=nb,
+                exp_id=exp_id,
+                source_result_id=source_result_id,
+                source=source,
+                model_source=model_source,
+                graph_json_str=graph_json_str,
+                arch_spec_json_str=arch_spec_json_str,
+                n_passed=n_passed,
+                n_programs_tested=n_programs_tested,
+                best_lr=best_lr,
+                best_tp_json=best_tp_json,
+                robustness=robustness,
+                investigation_passed=investigation_passed,
+                config=config,
+                dev=dev,
+                cached_json_load=self._cached_json_load,
+                stop_event=self._stop_event,
+                fingerprint_incomplete=fingerprint_incomplete,
+            )
+            kind = "v2-probe"
+        self._register_investigation_eval_future(
+            exp_id=exp_id,
+            future=future,
+            kind=kind,
+            source_result_id=source_result_id,
+        )
 
     def _inline_investigate_one_candidate(
         self,
@@ -1374,72 +1501,13 @@ class _ContinuousInvestigationMixin:
                 exp_id,
                 ckpt,
             )
-            self._emit_event(
-                "investigation_training_complete",
-                {
-                    "experiment_id": exp_id,
-                    "results": results,
-                },
-            )
-            self._update_progress(
-                status="finalizing",
-                aria_message=(
-                    "Investigation training complete; finalizing benchmark/probe writes."
-                ),
-            )
-            eval_status = self._wait_for_investigation_eval_futures(exp_id)
-            if eval_status:
-                results["background_eval_status"] = eval_status
-
-            # Complete experiment with LLM analysis
-            results["perf_report"] = self._build_experiment_perf_report(results)
-            results["perf_budget_gate"] = evaluate_perf_budget_gate(
-                results["perf_report"]
-            )
-            context = self._build_rich_context_for_experiment(
-                results, config, hypothesis, nb
-            )
-            summary = self.aria.experiment_summary(results, context=context)
-            llm_analysis = self.aria.analyze_results(results, context=context)
-            insights = self._analyze_results(results, exp_id, nb, context=context)
-
-            self._publish_terminal_event(
-                producer="runner.continuous_investigation",
-                event_type="experiment_completed",
-                exp_id=exp_id,
-                payload={
-                    "completed_at": time.time(),
-                    "results": results,
-                    "aria_summary": summary,
-                    "aria_mood": self.aria.state.mood,
-                    "insights": insights,
-                    "llm_analysis": llm_analysis,
-                    "mode": "continuous_investigation",
-                },
-            )
-            self._complete_experiment_compat(
+            self._finalize_inline_investigation(
+                config=config,
                 nb=nb,
-                experiment_id=exp_id,
+                exp_id=exp_id,
+                hypothesis=hypothesis,
+                n_experiments=n_experiments,
                 results=results,
-                aria_summary=summary,
-                insights=insights,
-                llm_analysis=llm_analysis,
-            )
-
-            nb.flush_writes()
-            # Auto-escalate to validation if strong candidates found
-            self._auto_escalate(results, config, nb, phase="investigation")
-
-            # Knowledge extraction after investigation
-            self._maybe_extract_knowledge(config, nb, n_experiments)
-
-            self._emit_event(
-                "investigation_completed",
-                {
-                    "experiment_id": exp_id,
-                    "results": results,
-                    "summary": summary,
-                },
             )
 
         except Exception as e:
@@ -1469,3 +1537,86 @@ class _ContinuousInvestigationMixin:
             )
         finally:
             self._live_training_context = None
+
+    def _finalize_inline_investigation(
+        self,
+        *,
+        config: RunConfig,
+        nb: LabNotebook,
+        exp_id: str,
+        hypothesis: str,
+        n_experiments: int,
+        results: dict,
+    ) -> None:
+        """Run post-loop finalization: drain background evals, score, summarize, escalate.
+
+        Extracted from ``_run_inline_investigation`` solely to keep the
+        outer method under the 150-line structural limit.  All side
+        effects and state mutations happen here exactly as before — same
+        events emitted, same notebook writes, same auto-escalation.
+        """
+        self._emit_event(
+            "investigation_training_complete",
+            {
+                "experiment_id": exp_id,
+                "results": results,
+            },
+        )
+        self._update_progress(
+            status="finalizing",
+            aria_message=(
+                "Investigation training complete; finalizing benchmark/probe writes."
+            ),
+        )
+        eval_status = self._wait_for_investigation_eval_futures(exp_id)
+        if eval_status:
+            results["background_eval_status"] = eval_status
+
+        # Complete experiment with LLM analysis
+        results["perf_report"] = self._build_experiment_perf_report(results)
+        results["perf_budget_gate"] = evaluate_perf_budget_gate(results["perf_report"])
+        context = self._build_rich_context_for_experiment(
+            results, config, hypothesis, nb
+        )
+        summary = self.aria.experiment_summary(results, context=context)
+        llm_analysis = self.aria.analyze_results(results, context=context)
+        insights = self._analyze_results(results, exp_id, nb, context=context)
+
+        self._publish_terminal_event(
+            producer="runner.continuous_investigation",
+            event_type="experiment_completed",
+            exp_id=exp_id,
+            payload={
+                "completed_at": time.time(),
+                "results": results,
+                "aria_summary": summary,
+                "aria_mood": self.aria.state.mood,
+                "insights": insights,
+                "llm_analysis": llm_analysis,
+                "mode": "continuous_investigation",
+            },
+        )
+        self._complete_experiment_compat(
+            nb=nb,
+            experiment_id=exp_id,
+            results=results,
+            aria_summary=summary,
+            insights=insights,
+            llm_analysis=llm_analysis,
+        )
+
+        nb.flush_writes()
+        # Auto-escalate to validation if strong candidates found
+        self._auto_escalate(results, config, nb, phase="investigation")
+
+        # Knowledge extraction after investigation
+        self._maybe_extract_knowledge(config, nb, n_experiments)
+
+        self._emit_event(
+            "investigation_completed",
+            {
+                "experiment_id": exp_id,
+                "results": results,
+                "summary": summary,
+            },
+        )

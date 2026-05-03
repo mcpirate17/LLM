@@ -68,6 +68,7 @@ function ArchitectureDrawer({ resultId, onClose, readOnly = true, onGraphLoaded,
   const [bridgeStep, setBridgeStep] = useState('booting');
   const [committing, setCommitting] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
+  const [designerBaseUrl, setDesignerBaseUrl] = useState(null);
   const iframeRef = useRef(null);
   const pendingGraphRequestRef = useRef({ reason: null, requestId: null });
   const loadResultSentRef = useRef(false);
@@ -196,6 +197,7 @@ function ArchitectureDrawer({ resultId, onClose, readOnly = true, onGraphLoaded,
       if (!res.ok || payload?.ok === false) {
         throw new Error(payload?.error || `HTTP ${res.status}`);
       }
+      return payload;
     }));
 
     const fetchSource = resultId
@@ -203,8 +205,10 @@ function ArchitectureDrawer({ resultId, onClose, readOnly = true, onGraphLoaded,
       : Promise.resolve(null);
 
     Promise.all([checkDesigner, fetchSource])
-      .then(([_, sourceData]) => {
+      .then(([designerPayload, sourceData]) => {
         if (abortController.signal.aborted) return;
+        const lifecycleUrl = designerPayload?.status?.ui_health_url;
+        setDesignerBaseUrl(lifecycleUrl || null);
         setStartingDesigner(false);
         if (sourceData) {
           setGraphInfo(sourceData);
@@ -241,15 +245,10 @@ function ArchitectureDrawer({ resultId, onClose, readOnly = true, onGraphLoaded,
     });
     if (resultId) params.set('result_id', resultId);
 
-    // Only use the standalone Vite server when the dashboard itself is running
-    // from CRA dev-server (port 3000). Otherwise, force same-origin proxy.
-    const onDashboardDevServer = window.location.port === '3000';
-    const base = onDashboardDevServer
-      ? 'http://localhost:5174/'
-      : new URL('/designer-proxy/', window.location.origin).toString();
+    const base = designerBaseUrl || new URL('/designer-proxy/', window.location.origin).toString();
 
     return `${base.replace(/\/?$/, '/')}?${params.toString()}`;
-  }, [resultId, readOnly]);
+  }, [designerBaseUrl, resultId, readOnly]);
 
   return (
     <>

@@ -147,6 +147,16 @@ class TestV8NewComponents:
         assert pts > 0, "Cross-task should score > 0 at investigation"
         assert pts <= 30.0
 
+    def test_cross_task_not_scored_for_high_ppl_balanced_failure(self):
+        result = compute_composite_v8(
+            cross_task_score=0.99,
+            ppl_investigation=1200.0,
+            tier="investigation",
+            decompose=True,
+        )
+
+        assert result["breakdown"].get("cross_task", 0) == 0.0
+
     def test_diagnostic_none_returns_zero(self):
         result = compute_composite_v8(decompose=True, tier="validation")
         assert result["breakdown"].get("diagnostic", 0) == 0.0

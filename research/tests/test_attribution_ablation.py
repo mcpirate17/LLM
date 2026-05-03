@@ -60,6 +60,7 @@ def _make_notebook_with_fixed_programs() -> LabNotebook:
             stage1_passed=1 if i < 14 else 0,
             graph_depth=7,
             graph_uses_math_spaces=1,
+            trust_label="test_fixture",
         )
     for i in range(20):
         nb.record_program_result(
@@ -69,6 +70,7 @@ def _make_notebook_with_fixed_programs() -> LabNotebook:
             stage1_passed=1 if i < 4 else 0,
             graph_depth=3,
             graph_uses_math_spaces=0,
+            trust_label="test_fixture",
         )
 
     nb.complete_experiment(
@@ -132,6 +134,7 @@ def test_attribution_filters_unknown_depth_bucket_as_top_signal():
             stage1_passed=1 if i < 24 else 0,
             graph_depth=None,
             graph_uses_math_spaces=0,
+            trust_label="test_fixture",
         )
     for i in range(30):
         nb.record_program_result(
@@ -143,6 +146,7 @@ def test_attribution_filters_unknown_depth_bucket_as_top_signal():
             stage1_passed=1 if i < 3 else 0,
             graph_depth=4,
             graph_uses_math_spaces=0,
+            trust_label="test_fixture",
         )
 
     nb.flush_writes()

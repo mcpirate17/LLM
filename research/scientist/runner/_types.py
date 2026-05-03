@@ -578,6 +578,18 @@ class ExternalEvalResult:
     binding_v2_investigation_auc: Optional[float] = None
     binding_v2_investigation_max_distance_acc: Optional[float] = None
     binding_v2_investigation_protocol_version: Optional[str] = None
+    # Symbolic relation-composition probe
+    permutation_composition_score: Optional[float] = None
+    permutation_composition_train_chain_acc: Optional[float] = None
+    permutation_composition_extrapolation_acc: Optional[float] = None
+    permutation_composition_n_items: Optional[int] = None
+    permutation_composition_train_chain_len: Optional[int] = None
+    permutation_composition_eval_chain_len: Optional[int] = None
+    permutation_composition_train_steps: Optional[int] = None
+    permutation_composition_chance: Optional[float] = None
+    permutation_composition_elapsed_ms: Optional[float] = None
+    permutation_composition_status: Optional[str] = None
+    permutation_composition_metric_version: Optional[str] = None
     robustness_checks_attempted: int = 0
     robustness_checks_failed: int = 0
 

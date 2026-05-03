@@ -4,7 +4,7 @@ export const COLUMNS = [
   {
     key: '_score',
     label: 'Score',
-    title: 'Canonical v12 score out of 850 possible points. Colors use fixed 15/30/45/60/75/90% rubric bands.',
+    title: 'Canonical active scorer total. Colors use fixed 15/30/45/60/75/90% rubric bands.',
   },
   {
     key: '_capability_quality',
@@ -21,7 +21,7 @@ export const COLUMNS = [
   { key: 'architecture_desc', label: 'Description', title: 'Human-readable summary or reference name.' },
   { key: '_composition', label: 'Composition', title: 'Architectural blocks and templates used to construct this layer.' },
   { key: '_vs_reference', label: 'vs Ref Loss', title: 'Percentage of the loss achieved by the nearest frontier baseline (lower is better).' },
-  { key: 'composite_score', label: 'Composite', title: 'Canonical v12 composite out of 850 possible points. Performance + convergence + efficiency + novelty + robustness + capability + understanding.' },
+  { key: 'composite_score', label: 'Composite', title: 'Canonical active scorer composite. Performance + convergence + efficiency + novelty + robustness + capability + understanding.' },
   { key: 'discovery_loss_ratio', label: 'D.Loss', title: 'Loss ratio on random tokens (discovery phase).' },
   { key: 'validation_loss_ratio', label: 'V.Loss', title: 'Validation loss ratio on micro-corpus (Stage 1 or higher).' },
   { key: 'moe_routing_efficiency', label: 'MoE Eff', title: 'Mixture of Experts routing efficiency (higher is more selective).' },
@@ -70,6 +70,7 @@ export const COLUMNS = [
   { key: 'ar_auc', label: 'AR Score', title: 'Associative Recall AUC. Measures key-value binding across positions. Higher = stronger non-local memory.' },
   { key: 'binding_auc', label: 'Binding', title: 'Copy-at-distance AUC. Measures how far the model can copy tokens. Attention ~0.4+, SSM ~0.1-0.2, conv-3 ~0.01.' },
   { key: 'binding_v2_investigation_auc', label: 'Binding v2', title: 'Investigation-tier binding probe (2400 steps, 5 distances incl. 64, median-of-3 seeds). Bumped training budget exposes depth-dependent capability the screening probe misses. NULL for screening-tier entries.' },
+  { key: '_controlled_lang_ladder', label: 'CL Ladder', title: 'Controlled-language v14 ladder: S05, S10, and INV tier scores from synthetic association and nano-BLiMP fields. Yellow ! marks INV SA below 0.85.' },
   { key: 'blimp_overall_accuracy', label: 'BLiMP', title: 'Linguistic minimal pairs accuracy. 50% = chance. Measures grammatical knowledge across 67 subtasks (agreement, binding, control, etc.).' },
   { key: '_compression_ratio', label: 'Compression', title: 'Effective parameter reduction compared to a dense baseline.' },
   { key: '_metric_quality', label: 'Metric Quality', title: 'Reliability of recorded metrics based on evidence depth.' },

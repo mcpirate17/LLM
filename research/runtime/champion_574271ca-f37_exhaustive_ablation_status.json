@@ -1,0 +1,112 @@
+{
+  "audit_only": true,
+  "dry_run": false,
+  "inventory_path": "/home/tim/Projects/LLM/research/runtime/champion_574271ca-f37_ablation_inventory.json",
+  "known_evaluated_child_fingerprints": 52,
+  "log_path": "/home/tim/Projects/LLM/research/runtime/champion_exhaustive_ablation.log",
+  "metric_audit": {
+    "global_s1_missing_core": 0,
+    "global_s1_missing_extended": 0,
+    "parent_s1_missing_core": 0,
+    "parent_s1_missing_extended": 0
+  },
+  "parent_fingerprint": "6d746b2317f49deb",
+  "parent_result_id": "574271ca-f37",
+  "planned_children": 741,
+  "planned_suites": 13,
+  "remaining_children_estimate": 689,
+  "suite_resume": [
+    {
+      "already_evaluated_children": 45,
+      "planned_children": 99,
+      "remaining_children_estimate": 54,
+      "rule_key": "1:rmsnorm",
+      "rule_type": "node_ablation"
+    },
+    {
+      "already_evaluated_children": 1,
+      "planned_children": 99,
+      "remaining_children_estimate": 98,
+      "rule_key": "2:adjacent_token_merge",
+      "rule_type": "node_ablation"
+    },
+    {
+      "already_evaluated_children": 1,
+      "planned_children": 8,
+      "remaining_children_estimate": 7,
+      "rule_key": "3:add",
+      "rule_type": "node_ablation"
+    },
+    {
+      "already_evaluated_children": 1,
+      "planned_children": 99,
+      "remaining_children_estimate": 98,
+      "rule_key": "4:rmsnorm",
+      "rule_type": "node_ablation"
+    },
+    {
+      "already_evaluated_children": 0,
+      "planned_children": 99,
+      "remaining_children_estimate": 99,
+      "rule_key": "5:swiglu_mlp",
+      "rule_type": "node_ablation"
+    },
+    {
+      "already_evaluated_children": 0,
+      "planned_children": 99,
+      "remaining_children_estimate": 99,
+      "rule_key": "6:gelu",
+      "rule_type": "node_ablation"
+    },
+    {
+      "already_evaluated_children": 1,
+      "planned_children": 8,
+      "remaining_children_estimate": 7,
+      "rule_key": "7:add",
+      "rule_type": "node_ablation"
+    },
+    {
+      "already_evaluated_children": 0,
+      "planned_children": 99,
+      "remaining_children_estimate": 99,
+      "rule_key": "8:layernorm",
+      "rule_type": "node_ablation"
+    },
+    {
+      "already_evaluated_children": 1,
+      "planned_children": 8,
+      "remaining_children_estimate": 7,
+      "rule_key": "9:linear_proj",
+      "rule_type": "node_ablation"
+    },
+    {
+      "already_evaluated_children": 1,
+      "planned_children": 8,
+      "remaining_children_estimate": 7,
+      "rule_key": "10:linear_proj",
+      "rule_type": "node_ablation"
+    },
+    {
+      "already_evaluated_children": 0,
+      "planned_children": 8,
+      "remaining_children_estimate": 8,
+      "rule_key": "12:add",
+      "rule_type": "node_ablation"
+    },
+    {
+      "already_evaluated_children": 0,
+      "planned_children": 8,
+      "remaining_children_estimate": 8,
+      "rule_key": "13:add",
+      "rule_type": "node_ablation"
+    },
+    {
+      "already_evaluated_children": 1,
+      "planned_children": 99,
+      "remaining_children_estimate": 98,
+      "rule_key": "14:rmsnorm",
+      "rule_type": "node_ablation"
+    }
+  ],
+  "updated_at": 1777601529.2682192
+}

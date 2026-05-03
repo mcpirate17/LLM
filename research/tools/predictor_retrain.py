@@ -16,7 +16,6 @@ Usage::
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import sys
 from pathlib import Path
@@ -58,13 +57,13 @@ def main() -> None:
     logger.info("wrote artifacts to %s", out_dir)
 
     if args.print_summary:
-        gemini = [
-            fn for fn in predictor.feature_names if fn.startswith("fp_")
-        ]
+        gemini = [fn for fn in predictor.feature_names if fn.startswith("fp_")]
         metrics = predictor.train_metrics or {}
         print("─" * 64)
-        print(f"GBM retrain — {len(predictor.feature_names)} features, "
-              f"{predictor.n_train} train rows")
+        print(
+            f"GBM retrain — {len(predictor.feature_names)} features, "
+            f"{predictor.n_train} train rows"
+        )
         print("─" * 64)
         print(f"  gate_threshold         {predictor.gate_threshold:.4f}")
         gm = metrics.get("gate_metrics") or {}
@@ -73,7 +72,9 @@ def main() -> None:
             if isinstance(v, (int, float)):
                 print(f"  gate_{k:<19}{v:.4f}")
         print(f"  rank_spearman_ppl      {metrics.get('rank_spearman_ppl', 0):.4f}")
-        print(f"  rank_spearman_composite{metrics.get('rank_spearman_composite', 0):.4f}")
+        print(
+            f"  rank_spearman_composite{metrics.get('rank_spearman_composite', 0):.4f}"
+        )
         print()
         print(f"  v9 trajectory features wired in ({len(gemini)}):")
         for fn in sorted(gemini):

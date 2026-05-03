@@ -8,6 +8,7 @@ import time
 from typing import Any, Dict
 from flask import jsonify, request
 
+from ...runner._types import RunConfig
 from .._helpers import get_runner
 
 from ._shared import _leaderboard_backed_program_detail

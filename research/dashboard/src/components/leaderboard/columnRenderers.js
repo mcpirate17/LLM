@@ -35,6 +35,122 @@ const coloredMetric = (value, thresholds, decimals = 3, pct = false) => {
   return <span style={{ color, fontWeight: 600 }}>{display}</span>;
 };
 
+const controlledLangTiers = [
+  {
+    key: 's05',
+    label: 'S05',
+    maxPoints: 5,
+    sa: 'controlled_lang_s05_sa_score',
+    order: 'controlled_lang_s05_nb_order_acc',
+    nb: 'controlled_lang_s05_nb_score',
+    pointKeys: ['cl_s05_sa', 'cl_s05_order'],
+  },
+  {
+    key: 's10',
+    label: 'S10',
+    maxPoints: 15,
+    sa: 'controlled_lang_s10_sa_score',
+    order: 'controlled_lang_s10_nb_order_acc',
+    nb: 'controlled_lang_s10_nb_score',
+    pointKeys: ['cl_s10_sa', 'cl_s10_order'],
+  },
+  {
+    key: 'inv',
+    label: 'INV',
+    maxPoints: 25,
+    sa: 'controlled_lang_inv_sa_score',
+    order: 'controlled_lang_inv_nb_order_acc',
+    nb: 'controlled_lang_inv_nb_score',
+    pointKeys: ['cl_inv_sa', 'cl_inv_order'],
+  },
+];
+
+const finiteMetric = (value) => {
+  if (value == null) return null;
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : null;
+};
+
+const controlledLangColor = (value) => {
+  if (value == null) return 'var(--text-muted)';
+  if (value >= 0.85) return 'var(--accent-green)';
+  if (value >= 0.65) return 'var(--accent-yellow)';
+  return 'var(--accent-red)';
+};
+
+function controlledLangTierView(entry, tier) {
+  const breakdown = entry?.score_breakdown || {};
+  const sa = finiteMetric(entry?.[tier.sa]);
+  const order = finiteMetric(entry?.[tier.order]);
+  const nb = finiteMetric(entry?.[tier.nb]);
+  const hasRawData = sa != null || order != null || nb != null;
+  const rawValues = [sa, nb ?? order].filter((value) => value != null);
+  const displayScore = rawValues.length
+    ? rawValues.reduce((acc, value) => acc + value, 0) / rawValues.length
+    : null;
+  const points = tier.pointKeys.reduce((acc, key) => acc + (finiteMetric(breakdown[key]) || 0), 0);
+  const hasPoints = hasRawData && (points > 0 || tier.pointKeys.some((key) => breakdown[key] != null));
+  const fillRatio = hasPoints
+    ? points / tier.maxPoints
+    : displayScore;
+
+  return {
+    ...tier,
+    sa,
+    order,
+    nb,
+    hasRawData,
+    displayScore,
+    points: hasPoints ? points : null,
+    fillRatio: fillRatio == null ? 0 : Math.max(0, Math.min(1, fillRatio)),
+  };
+}
+
+function ControlledLangLadder({ entry }) {
+  const rows = controlledLangTiers.map((tier) => controlledLangTierView(entry, tier));
+  const hasAnyData = rows.some((row) => row.hasRawData);
+  const invSa = finiteMetric(entry?.controlled_lang_inv_sa_score);
+  const invSaFlag = invSa != null && invSa < 0.85;
+  const total = finiteMetric(entry?.score_breakdown?._v14_controlled_lang_total);
+
+  if (!hasAnyData) {
+    return <span style={{ color: 'var(--text-muted)', fontSize: 10 }}>--</span>;
+  }
+
+  return (
+    <div
+      title={[
+        entry?.controlled_lang_metric_version ? `version ${entry.controlled_lang_metric_version}` : null,
+        total != null ? `v14 controlled-lang points ${total.toFixed(1)}` : null,
+        ...rows.map((row) => `${row.label}: SA ${fmt(row.sa, 2)}, NB order ${fmt(row.order, 2)}, NB score ${fmt(row.nb, 2)}${row.points != null ? `, pts ${row.points.toFixed(1)}/${row.maxPoints}` : ''}`),
+        invSaFlag ? 'Flag: INV SA score is below 0.85' : null,
+      ].filter(Boolean).join('\n')}
+      style={{ minWidth: 86 }}
+    >
+      {rows.map((row) => {
+        const color = controlledLangColor(row.displayScore);
+        const muted = row.displayScore == null && row.points == null;
+        return (
+          <div key={row.key} style={{ display: 'grid', gridTemplateColumns: '24px 48px 30px', alignItems: 'center', gap: 4, marginBottom: 2 }}>
+            <span style={{ fontSize: 9, color: row.key === 'inv' && invSaFlag ? 'var(--accent-yellow)' : 'var(--text-muted)', fontWeight: 700 }}>
+              {row.label}
+            </span>
+            <span style={{ height: 5, borderRadius: 2, overflow: 'hidden', background: 'var(--bg-tertiary)' }}>
+              <span style={{ display: 'block', height: '100%', width: `${Math.max(3, row.fillRatio * 100)}%`, background: muted ? 'var(--text-muted)' : color }} />
+            </span>
+            <span style={{ fontSize: 10, color, fontVariantNumeric: 'tabular-nums', fontWeight: 700 }}>
+              {row.displayScore == null ? '--' : row.displayScore.toFixed(2)}
+              {row.key === 'inv' && invSaFlag && (
+                <span style={{ marginLeft: 3, color: 'var(--accent-yellow)' }} aria-label="INV SA below 0.85">!</span>
+              )}
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 /**
  * All column renderers. Each entry: (entry, ctx) => ReactNode.
  * ctx shape: { compression, chips, reproPacket, eligibility, isExpanded,
@@ -203,6 +319,7 @@ const RENDERERS = {
   ar_auc: (e) => <span style={{ color: probeAucColor(e.ar_auc), fontWeight: 600 }}>{fmt(e.ar_auc, 3)}</span>,
   binding_auc: (e) => <span style={{ color: probeAucColor(e.binding_auc), fontWeight: 600 }}>{fmt(e.binding_auc, 3)}</span>,
   binding_v2_investigation_auc: (e) => <span style={{ color: probeAucColor(e.binding_v2_investigation_auc), fontWeight: 600 }}>{fmt(e.binding_v2_investigation_auc, 3)}</span>,
+  _controlled_lang_ladder: (e) => <ControlledLangLadder entry={e} />,
   blimp_overall_accuracy: (e) => {
     if (e.blimp_overall_accuracy == null) return '--';
     return <span style={{ color: blimpColor(e.blimp_overall_accuracy), fontWeight: 600 }}>{(Number(e.blimp_overall_accuracy) * 100).toFixed(1)}%</span>;
@@ -258,6 +375,7 @@ const RENDERERS = {
 // Columns that need special td styling (not just tdStyle)
 const TD_STYLE_OVERRIDES = {
   architecture_desc: { maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  _controlled_lang_ladder: { minWidth: 110 },
 };
 
 export { RENDERERS, TD_STYLE_OVERRIDES, fmt };

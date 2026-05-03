@@ -1376,6 +1376,9 @@ _PROGRAM_RESULTS_NEW_COLUMNS = {
     "hellaswag_acc": "REAL",
     "hellaswag_status": "TEXT",
     "hellaswag_n_examples": "INTEGER",
+    "hellaswag_metric_version": "TEXT",
+    "hellaswag_tokenizer_mode": "TEXT",
+    "hellaswag_tiktoken_encoding": "TEXT",
     # Binding probes (associative recall, induction head, binding range)
     "ar_auc": "REAL",
     "ar_final_acc": "REAL",
@@ -1427,4 +1430,36 @@ _PROGRAM_RESULTS_NEW_COLUMNS = {
     "blimp_subtask_accuracies_json": "TEXT",
     "blimp_n_subtasks": "INTEGER",
     "blimp_status": "TEXT",
+    # Controlled-language probe ladder (claude+codex 2026-05-02). Tier-progressive
+    # nano-scale BLiMP/HellaSwag replacement: train the candidate on a tiny
+    # noun→verb / noun→adjective vocabulary and evaluate forced-choice (sa)
+    # plus minimal-pair grammaticality (nano_blimp). Three difficulty tiers:
+    #   S0.5 (screening): vocab=120 steps=40   — basic learning floor
+    #   S1.0 (investigation): vocab=200 steps=40 — real differentiator
+    #   Investigation: vocab=300 steps=40        — sharp discriminator
+    # Order_grammaticality_acc has the richest dynamic range across the cohort
+    # (std ~0.30) and is the primary signal; sa is the pass/fail anchor.
+    "controlled_lang_metric_version": "TEXT",
+    "controlled_lang_s05_sa_score": "REAL",
+    "controlled_lang_s05_nb_order_acc": "REAL",
+    "controlled_lang_s05_nb_score": "REAL",
+    "controlled_lang_s10_sa_score": "REAL",
+    "controlled_lang_s10_nb_order_acc": "REAL",
+    "controlled_lang_s10_nb_score": "REAL",
+    "controlled_lang_inv_sa_score": "REAL",
+    "controlled_lang_inv_nb_order_acc": "REAL",
+    "controlled_lang_inv_nb_score": "REAL",
+    # Permutation composition probe: symbolic transposition-chain task that
+    # tests cross-token relation composition and longer-chain extrapolation.
+    "permutation_composition_metric_version": "TEXT",
+    "permutation_composition_score": "REAL",
+    "permutation_composition_train_chain_acc": "REAL",
+    "permutation_composition_extrapolation_acc": "REAL",
+    "permutation_composition_n_items": "INTEGER",
+    "permutation_composition_train_chain_len": "INTEGER",
+    "permutation_composition_eval_chain_len": "INTEGER",
+    "permutation_composition_train_steps": "INTEGER",
+    "permutation_composition_chance": "REAL",
+    "permutation_composition_elapsed_ms": "REAL",
+    "permutation_composition_status": "TEXT",
 }

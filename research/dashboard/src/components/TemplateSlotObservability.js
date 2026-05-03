@@ -42,9 +42,35 @@ function architectureTone(key, value) {
   return 'var(--text-primary)';
 }
 
+function controlledLangTone(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return 'var(--text-muted)';
+  if (num >= 0.85) return 'var(--score-champion, var(--accent-green))';
+  if (num >= 0.65) return 'var(--accent-yellow)';
+  return 'var(--accent-red)';
+}
+
 function metricText(value, digits = 3) {
   if (value === null || value === undefined || !Number.isFinite(Number(value))) return '—';
   return Number(value).toFixed(digits);
+}
+
+function controlledLangFlag(row) {
+  const invSa = Number(row.avg_controlled_lang_inv_sa_score);
+  return Number.isFinite(invSa) && invSa < 0.85;
+}
+
+function controlledLangCell(row, key) {
+  const value = row[key];
+  return (
+    <td
+      title={controlledLangFlag(row) ? `INV SA ${metricText(row.avg_controlled_lang_inv_sa_score)} below 0.850` : undefined}
+      style={{ textAlign: 'right', color: controlledLangTone(value), fontWeight: 600, whiteSpace: 'nowrap' }}
+    >
+      {controlledLangFlag(row) && key === 'avg_controlled_lang_inv_score' ? <span style={{ color: 'var(--accent-yellow)', marginRight: 4 }}>!</span> : null}
+      {metricText(value)}
+    </td>
+  );
 }
 
 function usePersistentState(key, initialValue) {
@@ -110,16 +136,17 @@ function TemplateRow({ row }) {
         </div>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, minmax(0, 1fr))', gap: 8, marginBottom: 7, fontSize: 10 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, minmax(0, 1fr))', gap: 8, marginBottom: 7, fontSize: 10 }}>
         <div><span style={{ color: 'var(--text-muted)' }}>Ind</span> <span style={{ color: 'var(--text-primary)' }}>{metricText(row.avg_induction_auc)}</span></div>
         <div><span style={{ color: 'var(--text-muted)' }}>Bind</span> <span style={{ color: 'var(--text-primary)' }}>{metricText(row.avg_binding_auc)}</span></div>
         <div><span style={{ color: 'var(--text-muted)' }}>AR</span> <span style={{ color: 'var(--text-primary)' }}>{metricText(row.avg_ar_auc)}</span></div>
         <div><span style={{ color: 'var(--text-muted)' }}>Hella</span> <span style={{ color: 'var(--text-primary)' }}>{metricText(row.avg_hellaswag_acc)}</span></div>
+        <div><span style={{ color: 'var(--text-muted)' }}>CL Inv</span> <span style={{ color: controlledLangTone(row.avg_controlled_lang_inv_score) }}>{controlledLangFlag(row) ? '! ' : ''}{metricText(row.avg_controlled_lang_inv_score)}</span></div>
         <div><span style={{ color: 'var(--text-muted)' }}>Slots</span> <span style={{ color: 'var(--text-primary)' }}>{fmtNumber(row.slot_count)}</span></div>
       </div>
 
       <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 6 }}>
-        Coverage: ind {fmtNumber(coverage.induction)} · bind {fmtNumber(coverage.binding)} · ar {fmtNumber(coverage.associative_recall)} · hella {fmtNumber(coverage.hellaswag)} · wiki {fmtNumber(coverage.wikitext)}
+        Coverage: ind {fmtNumber(coverage.induction)} · bind {fmtNumber(coverage.binding)} · ar {fmtNumber(coverage.associative_recall)} · hella {fmtNumber(coverage.hellaswag)} · cl {fmtNumber(coverage.controlled_lang)} · wiki {fmtNumber(coverage.wikitext)}
       </div>
 
       {Array.isArray(row.diagnosis) && row.diagnosis.length > 0 && (
@@ -161,6 +188,9 @@ const TEMPLATE_COLUMNS = [
   { key: 'avg_induction_v2_auc', label: 'Ind v2', tooltip: 'Average induction v2 investigation AUC for runs using this template.', group: 'benchmarks' },
   { key: 'avg_binding_auc', label: 'Bind', tooltip: 'Average binding/copy-task AUC.', group: 'benchmarks' },
   { key: 'avg_binding_v2_auc', label: 'Bind v2', tooltip: 'Average binding v2 investigation AUC for runs using this template.', group: 'benchmarks' },
+  { key: 'avg_controlled_lang_s05_score', label: 'CL S05', tooltip: 'Average controlled-language S0.5 tier score: SA plus nano-BLiMP score/order.', group: 'benchmarks' },
+  { key: 'avg_controlled_lang_s10_score', label: 'CL S10', tooltip: 'Average controlled-language S1.0 tier score: SA plus nano-BLiMP score/order.', group: 'benchmarks' },
+  { key: 'avg_controlled_lang_inv_score', label: 'CL Inv', tooltip: 'Average controlled-language investigation tier score. Shows a yellow flag when investigation SA is below 0.850.', group: 'benchmarks' },
   { key: 'avg_hellaswag_acc', label: 'Hella', tooltip: 'Average HellaSwag accuracy signal.', group: 'benchmarks' },
   { key: 'avg_blimp_overall_accuracy', label: 'BLiMP', tooltip: 'Average BLiMP grammatical reasoning accuracy.', group: 'benchmarks' },
   { key: 'avg_erf_density', label: 'ERF Dens', tooltip: 'Average ERF density. Strongest observed binding v2 predictor.', group: 'architecture' },
@@ -188,6 +218,9 @@ const SLOT_COLUMNS = [
   { key: 's1_rate', label: 'S1', tooltip: 'Share of slot uses that reached Stage 1.', group: 'health' },
   { key: 'avg_composite_score', label: 'Score', tooltip: 'Average leaderboard composite score for this slot.', group: 'health' },
   { key: 'avg_loss_ratio', label: 'Train LR', tooltip: 'Average training loss ratio for this slot.', group: 'health' },
+  { key: 'avg_controlled_lang_s05_score', label: 'CL S05', tooltip: 'Average controlled-language S0.5 tier score for this slot.', group: 'benchmarks' },
+  { key: 'avg_controlled_lang_s10_score', label: 'CL S10', tooltip: 'Average controlled-language S1.0 tier score for this slot.', group: 'benchmarks' },
+  { key: 'avg_controlled_lang_inv_score', label: 'CL Inv', tooltip: 'Average controlled-language investigation tier score for this slot. Shows a yellow flag when investigation SA is below 0.850.', group: 'benchmarks' },
   { key: 'top_selected_motif', label: 'Selected', tooltip: 'Most frequently selected motif.', group: 'diagnosis' },
   { key: 'top_failure_reason', label: 'Issue', tooltip: 'Most common failure reason.', group: 'diagnosis' },
 ];
@@ -204,6 +237,7 @@ const TEMPLATE_GROUPS = [
 const SLOT_GROUPS = [
   { key: 'identity', label: 'Identity' },
   { key: 'health', label: 'Health' },
+  { key: 'benchmarks', label: 'Benchmarks' },
   { key: 'diagnosis', label: 'Diagnosis' },
 ];
 
@@ -225,14 +259,15 @@ const TEMPLATE_SORT_PRESETS = [
   { key: 'worst_gap', label: 'Worst Val Gap', sortKey: 'val_gap', desc: true },
   { key: 'best_ind', label: 'Best Ind', sortKey: 'avg_induction_auc', desc: true },
   { key: 'best_bind_v2', label: 'Best Bind v2', sortKey: 'avg_binding_v2_auc', desc: true },
+  { key: 'best_cl_inv', label: 'Best CL Inv', sortKey: 'avg_controlled_lang_inv_score', desc: true },
   { key: 'best_erf', label: 'Best ERF Density', sortKey: 'avg_erf_density', desc: true },
   { key: 'best_hella', label: 'Best Hella', sortKey: 'avg_hellaswag_acc', desc: true },
 ];
 
 const TEMPLATE_VIEW_PRESETS = [
-  { key: 'triage', label: 'Triage', columns: ['structural_category', 'evidence_level', 'avg_composite_score', 'n_used', 's1_rate', 'avg_loss_ratio', 'avg_validation_loss_ratio', 'avg_induction_v2_auc', 'avg_binding_v2_auc', 'avg_hellaswag_acc', 'avg_blimp_overall_accuracy', 'avg_erf_density', 'avg_id_collapse_rate', 'top_failure_reason'] },
-  { key: 'learning', label: 'Learning', columns: ['structural_category', 'evidence_level', 'avg_composite_score', 'n_used', 's0_rate', 's05_rate', 's1_rate', 'avg_loss_ratio', 'avg_validation_loss_ratio', 'avg_induction_v2_auc', 'avg_binding_v2_auc', 'top_failure_reason'] },
-  { key: 'benchmarks', label: 'Benchmarks', columns: ['structural_category', 'evidence_level', 'avg_composite_score', 'n_used', 'avg_induction_auc', 'avg_induction_v2_auc', 'avg_binding_auc', 'avg_binding_v2_auc', 'avg_hellaswag_acc', 'avg_blimp_overall_accuracy'] },
+  { key: 'triage', label: 'Triage', columns: ['structural_category', 'evidence_level', 'avg_composite_score', 'n_used', 's1_rate', 'avg_loss_ratio', 'avg_validation_loss_ratio', 'avg_induction_v2_auc', 'avg_binding_v2_auc', 'avg_controlled_lang_s05_score', 'avg_controlled_lang_s10_score', 'avg_controlled_lang_inv_score', 'avg_hellaswag_acc', 'avg_blimp_overall_accuracy', 'avg_erf_density', 'avg_id_collapse_rate', 'top_failure_reason'] },
+  { key: 'learning', label: 'Learning', columns: ['structural_category', 'evidence_level', 'avg_composite_score', 'n_used', 's0_rate', 's05_rate', 's1_rate', 'avg_loss_ratio', 'avg_validation_loss_ratio', 'avg_induction_v2_auc', 'avg_binding_v2_auc', 'avg_controlled_lang_s05_score', 'avg_controlled_lang_inv_score', 'top_failure_reason'] },
+  { key: 'benchmarks', label: 'Benchmarks', columns: ['structural_category', 'evidence_level', 'avg_composite_score', 'n_used', 'avg_induction_auc', 'avg_induction_v2_auc', 'avg_binding_auc', 'avg_binding_v2_auc', 'avg_controlled_lang_s05_score', 'avg_controlled_lang_s10_score', 'avg_controlled_lang_inv_score', 'avg_hellaswag_acc', 'avg_blimp_overall_accuracy'] },
   { key: 'architecture', label: 'Architecture', columns: ['structural_category', 'evidence_level', 'n_used', 'avg_erf_density', 'avg_id_collapse_rate', 'avg_id_collapse_rate_normalized', 'avg_erf_decay_slope', 'avg_logit_margin_velocity', 'avg_jacobian_effective_rank', 'avg_binding_v2_auc'] },
   { key: 'all', label: 'All Columns', columns: TEMPLATE_COLUMNS.map((col) => col.key) },
 ];
@@ -250,11 +285,12 @@ const SLOT_SORT_PRESETS = [
   { key: 'most_used', label: 'Most Used', sortKey: 'n_used', desc: true },
   { key: 'worst_s1', label: 'Worst S1', sortKey: 's1_rate', desc: false },
   { key: 'worst_loss', label: 'Worst Loss', sortKey: 'avg_loss_ratio', desc: true },
+  { key: 'best_cl_inv', label: 'Best CL Inv', sortKey: 'avg_controlled_lang_inv_score', desc: true },
 ];
 
 const SLOT_VIEW_PRESETS = [
-  { key: 'triage', label: 'Triage', columns: ['template_name', 'slot_index', 'avg_composite_score', 'n_used', 's1_rate', 'avg_loss_ratio', 'top_selected_motif', 'top_failure_reason'] },
-  { key: 'learning', label: 'Learning', columns: ['template_name', 'slot_index', 'avg_composite_score', 'n_used', 's1_rate', 'avg_loss_ratio', 'top_selected_motif', 'top_failure_reason'] },
+  { key: 'triage', label: 'Triage', columns: ['template_name', 'slot_index', 'avg_composite_score', 'n_used', 's1_rate', 'avg_loss_ratio', 'avg_controlled_lang_s05_score', 'avg_controlled_lang_s10_score', 'avg_controlled_lang_inv_score', 'top_selected_motif', 'top_failure_reason'] },
+  { key: 'learning', label: 'Learning', columns: ['template_name', 'slot_index', 'avg_composite_score', 'n_used', 's1_rate', 'avg_loss_ratio', 'avg_controlled_lang_s05_score', 'avg_controlled_lang_s10_score', 'avg_controlled_lang_inv_score', 'top_selected_motif', 'top_failure_reason'] },
   { key: 'all', label: 'All Columns', columns: SLOT_COLUMNS.map((col) => col.key) },
 ];
 
@@ -357,9 +393,18 @@ function normalizeColumnKeys(columns, keys) {
   return Array.from(new Set([...always, ...normalized]));
 }
 
+function requiredObservabilityColumns(columns) {
+  const valid = new Set(columns.map((col) => col.key));
+  return [
+    'avg_controlled_lang_s05_score',
+    'avg_controlled_lang_s10_score',
+    'avg_controlled_lang_inv_score',
+  ].filter((key) => valid.has(key));
+}
+
 function visibleColumns(columns, presets, view, customKeys) {
   if (Array.isArray(customKeys) && customKeys.length > 0) {
-    const allowed = new Set(normalizeColumnKeys(columns, customKeys));
+    const allowed = new Set(normalizeColumnKeys(columns, [...customKeys, ...requiredObservabilityColumns(columns)]));
     return columns.filter((col) => allowed.has(col.key));
   }
   return presetColumns(columns, presets, view);
@@ -437,6 +482,9 @@ function renderTemplateCell(row, col) {
   if (col.key === 'avg_induction_v2_auc') return <td style={{ textAlign: 'right', color: probeAucColor(row.avg_induction_v2_auc), fontWeight: 600 }}>{metricText(row.avg_induction_v2_auc)}</td>;
   if (col.key === 'avg_binding_auc') return <td style={{ textAlign: 'right', color: probeAucColor(row.avg_binding_auc), fontWeight: 600 }}>{metricText(row.avg_binding_auc)}</td>;
   if (col.key === 'avg_binding_v2_auc') return <td style={{ textAlign: 'right', color: probeAucColor(row.avg_binding_v2_auc), fontWeight: 600 }}>{metricText(row.avg_binding_v2_auc)}</td>;
+  if (col.key === 'avg_controlled_lang_s05_score') return controlledLangCell(row, col.key);
+  if (col.key === 'avg_controlled_lang_s10_score') return controlledLangCell(row, col.key);
+  if (col.key === 'avg_controlled_lang_inv_score') return controlledLangCell(row, col.key);
   if (col.key === 'avg_hellaswag_acc') return <td style={{ textAlign: 'right', color: hellaswagColor(row.avg_hellaswag_acc), fontWeight: 600 }}>{metricText(row.avg_hellaswag_acc)}</td>;
   if (col.key === 'avg_blimp_overall_accuracy') return <td style={{ textAlign: 'right', color: blimpColor(row.avg_blimp_overall_accuracy), fontWeight: 600 }}>{metricText(row.avg_blimp_overall_accuracy)}</td>;
   if (col.key === 'avg_erf_density') return <td style={{ textAlign: 'right', color: architectureTone(col.key, row.avg_erf_density), fontWeight: 600 }}>{metricText(row.avg_erf_density)}</td>;
@@ -467,6 +515,9 @@ function renderSlotCell(row, col) {
   if (col.key === 's1_rate') return <td style={{ textAlign: 'right', color: rateTone(row.s1_rate), fontWeight: 600 }}>{fmtPct(row.s1_rate, 1)}</td>;
   if (col.key === 'avg_composite_score') return <td style={{ textAlign: 'right', color: scoreColor(row.avg_composite_score), fontWeight: 700 }}>{metricText(row.avg_composite_score)}</td>;
   if (col.key === 'avg_loss_ratio') return <td style={{ textAlign: 'right' }}>{fmtLoss(row.avg_loss_ratio)}</td>;
+  if (col.key === 'avg_controlled_lang_s05_score') return controlledLangCell(row, col.key);
+  if (col.key === 'avg_controlled_lang_s10_score') return controlledLangCell(row, col.key);
+  if (col.key === 'avg_controlled_lang_inv_score') return controlledLangCell(row, col.key);
   if (col.key === 'top_selected_motif') return <td style={{ fontSize: 11, color: 'var(--text-muted)' }}>{row.top_selected_motif || ''}</td>;
   if (col.key === 'top_failure_reason') return <td style={{ fontSize: 11, color: 'var(--text-muted)' }}>{row.top_failure_reason || ''}</td>;
   return <td>{row[col.key]}</td>;

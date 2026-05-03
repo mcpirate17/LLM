@@ -18,6 +18,9 @@ from ._notebook_misc_shared import (
     _template_label_from_evidence,
     _summarize_template_stat,
     _empty_template_stat,
+    _append_controlled_lang_metrics,
+    _empty_controlled_lang_metrics,
+    _summarize_controlled_lang_metrics,
     _discover_template_names,
     _TEMPLATE_DEF_RE,
 )
@@ -347,6 +350,15 @@ class _ObservabilityMixin:
                 l.composite_score,
                 pr.induction_v2_investigation_auc,
                 pr.binding_v2_investigation_auc,
+                pr.controlled_lang_s05_sa_score,
+                pr.controlled_lang_s05_nb_order_acc,
+                pr.controlled_lang_s05_nb_score,
+                pr.controlled_lang_s10_sa_score,
+                pr.controlled_lang_s10_nb_order_acc,
+                pr.controlled_lang_s10_nb_score,
+                pr.controlled_lang_inv_sa_score,
+                pr.controlled_lang_inv_nb_order_acc,
+                pr.controlled_lang_inv_nb_score,
                 pr.fp_jacobian_effective_rank,
                 pr.fp_sensitivity_uniformity,
                 pr.fp_jacobian_erf_density,
@@ -519,6 +531,23 @@ class _ObservabilityMixin:
             composite_score = row["composite_score"]
             induction_v2_auc = row["induction_v2_investigation_auc"]
             binding_v2_auc = row["binding_v2_investigation_auc"]
+            controlled_lang_values = {
+                "controlled_lang_s05_sa_score": row["controlled_lang_s05_sa_score"],
+                "controlled_lang_s05_nb_order_acc": row[
+                    "controlled_lang_s05_nb_order_acc"
+                ],
+                "controlled_lang_s05_nb_score": row["controlled_lang_s05_nb_score"],
+                "controlled_lang_s10_sa_score": row["controlled_lang_s10_sa_score"],
+                "controlled_lang_s10_nb_order_acc": row[
+                    "controlled_lang_s10_nb_order_acc"
+                ],
+                "controlled_lang_s10_nb_score": row["controlled_lang_s10_nb_score"],
+                "controlled_lang_inv_sa_score": row["controlled_lang_inv_sa_score"],
+                "controlled_lang_inv_nb_order_acc": row[
+                    "controlled_lang_inv_nb_order_acc"
+                ],
+                "controlled_lang_inv_nb_score": row["controlled_lang_inv_nb_score"],
+            }
             jacobian_effective_rank = row["fp_jacobian_effective_rank"]
             sensitivity_uniformity = row["fp_sensitivity_uniformity"]
             erf_density = row["fp_jacobian_erf_density"]
@@ -601,9 +630,8 @@ class _ObservabilityMixin:
                     stat["ar_aucs"].append(float(ar_auc))
                 if hellaswag_acc is not None and math.isfinite(hellaswag_acc):
                     stat["hellaswag_accs"].append(float(hellaswag_acc))
-                if (
-                    blimp_overall_accuracy is not None
-                    and math.isfinite(blimp_overall_accuracy)
+                if blimp_overall_accuracy is not None and math.isfinite(
+                    blimp_overall_accuracy
                 ):
                     stat["blimp_overall_accuracies"].append(
                         float(blimp_overall_accuracy)
@@ -614,13 +642,13 @@ class _ObservabilityMixin:
                     stat["induction_v2_aucs"].append(float(induction_v2_auc))
                 if binding_v2_auc is not None and math.isfinite(binding_v2_auc):
                     stat["binding_v2_aucs"].append(float(binding_v2_auc))
+                _append_controlled_lang_metrics(stat, controlled_lang_values)
                 if erf_density is not None and math.isfinite(erf_density):
                     stat["erf_densities"].append(float(erf_density))
                 if id_collapse_rate is not None and math.isfinite(id_collapse_rate):
                     stat["id_collapse_rates"].append(float(id_collapse_rate))
-                if (
-                    id_collapse_rate_normalized is not None
-                    and math.isfinite(id_collapse_rate_normalized)
+                if id_collapse_rate_normalized is not None and math.isfinite(
+                    id_collapse_rate_normalized
                 ):
                     stat["id_collapse_rate_normalizeds"].append(
                         float(id_collapse_rate_normalized)
@@ -631,13 +659,10 @@ class _ObservabilityMixin:
                     stat["erf_first_norms"].append(float(erf_first_norm))
                 if erf_last_norm is not None and math.isfinite(erf_last_norm):
                     stat["erf_last_norms"].append(float(erf_last_norm))
-                if (
-                    logit_margin_velocity is not None
-                    and math.isfinite(logit_margin_velocity)
+                if logit_margin_velocity is not None and math.isfinite(
+                    logit_margin_velocity
                 ):
-                    stat["logit_margin_velocities"].append(
-                        float(logit_margin_velocity)
-                    )
+                    stat["logit_margin_velocities"].append(float(logit_margin_velocity))
                 if logit_margin_delta is not None and math.isfinite(logit_margin_delta):
                     stat["logit_margin_deltas"].append(float(logit_margin_delta))
                 if erf_variance_log is not None and math.isfinite(erf_variance_log):
@@ -648,16 +673,14 @@ class _ObservabilityMixin:
                     stat["icld_velocities"].append(float(icld_velocity))
                 if icld_delta_loss is not None and math.isfinite(icld_delta_loss):
                     stat["icld_delta_losses"].append(float(icld_delta_loss))
-                if (
-                    jacobian_effective_rank is not None
-                    and math.isfinite(jacobian_effective_rank)
+                if jacobian_effective_rank is not None and math.isfinite(
+                    jacobian_effective_rank
                 ):
                     stat["jacobian_effective_ranks"].append(
                         float(jacobian_effective_rank)
                     )
-                if (
-                    sensitivity_uniformity is not None
-                    and math.isfinite(sensitivity_uniformity)
+                if sensitivity_uniformity is not None and math.isfinite(
+                    sensitivity_uniformity
                 ):
                     stat["sensitivity_uniformities"].append(
                         float(sensitivity_uniformity)
@@ -750,6 +773,7 @@ class _ObservabilityMixin:
                         "n_stage1": 0,
                         "losses": [],
                         "composite_scores": [],
+                        "controlled_lang_metrics": _empty_controlled_lang_metrics(),
                         "failure_reasons": {},
                         "selected_motifs": {},
                     },
@@ -760,6 +784,7 @@ class _ObservabilityMixin:
                     sstat["losses"].append(float(loss_ratio))
                 if composite_score is not None and math.isfinite(composite_score):
                     sstat["composite_scores"].append(float(composite_score))
+                _append_controlled_lang_metrics(sstat, controlled_lang_values)
                 motif_name = slot.get("selected_motif")
                 if motif_name:
                     sstat["selected_motifs"][str(motif_name)] = (
@@ -931,6 +956,7 @@ class _ObservabilityMixin:
                         if stat["losses"]
                         else None
                     ),
+                    **_summarize_controlled_lang_metrics(stat),
                     "top_failure_reason": top_reason,
                     "top_selected_motif": top_motif,
                 }

@@ -839,6 +839,14 @@ def _run_compile_only_post_eval(
                 updates["hellaswag_acc"] = hs.get("hellaswag_acc")
             if hs.get("hellaswag_status") is not None:
                 updates["hellaswag_status"] = hs.get("hellaswag_status")
+            if hs.get("hellaswag_metric_version") is not None:
+                updates["hellaswag_metric_version"] = hs.get("hellaswag_metric_version")
+            if hs.get("hellaswag_tokenizer_mode") is not None:
+                updates["hellaswag_tokenizer_mode"] = hs.get("hellaswag_tokenizer_mode")
+            if hs.get("hellaswag_tiktoken_encoding") is not None:
+                updates["hellaswag_tiktoken_encoding"] = hs.get(
+                    "hellaswag_tiktoken_encoding"
+                )
             if hs.get("hellaswag_total") is not None:
                 updates["hellaswag_n_examples"] = hs.get("hellaswag_total")
                 updates["screening_hellaswag_correct"] = hs.get("hellaswag_correct")
@@ -994,6 +1002,12 @@ def _recover_hellaswag_after_gate_failure(
         updates["hellaswag_acc"] = hs.get("hellaswag_acc")
     if hs.get("hellaswag_status") is not None:
         updates["hellaswag_status"] = hs.get("hellaswag_status")
+    if hs.get("hellaswag_metric_version") is not None:
+        updates["hellaswag_metric_version"] = hs.get("hellaswag_metric_version")
+    if hs.get("hellaswag_tokenizer_mode") is not None:
+        updates["hellaswag_tokenizer_mode"] = hs.get("hellaswag_tokenizer_mode")
+    if hs.get("hellaswag_tiktoken_encoding") is not None:
+        updates["hellaswag_tiktoken_encoding"] = hs.get("hellaswag_tiktoken_encoding")
     if hs.get("hellaswag_total") is not None:
         updates["hellaswag_n_examples"] = hs.get("hellaswag_total")
     return updates

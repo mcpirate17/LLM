@@ -159,6 +159,18 @@ def _run_full_post_train(
             updates["hellaswag_status"] = s1_result.get("hellaswag_status")
         if s1_result.get("hellaswag_n_examples") is not None:
             updates["hellaswag_n_examples"] = s1_result.get("hellaswag_n_examples")
+        if s1_result.get("hellaswag_metric_version") is not None:
+            updates["hellaswag_metric_version"] = s1_result.get(
+                "hellaswag_metric_version"
+            )
+        if s1_result.get("hellaswag_tokenizer_mode") is not None:
+            updates["hellaswag_tokenizer_mode"] = s1_result.get(
+                "hellaswag_tokenizer_mode"
+            )
+        if s1_result.get("hellaswag_tiktoken_encoding") is not None:
+            updates["hellaswag_tiktoken_encoding"] = s1_result.get(
+                "hellaswag_tiktoken_encoding"
+            )
 
         tolerate_gate_failure = (
             allow_insufficient_learning_metrics

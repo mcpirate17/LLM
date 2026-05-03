@@ -428,7 +428,14 @@ def test_recover_hellaswag_after_gate_failure_returns_metrics(monkeypatch):
     def _fake_eval(model, vocab_size, device):
         assert vocab_size == 100277
         assert device == "cuda:0"
-        return {"hellaswag_acc": 0.31, "hellaswag_status": "ok", "hellaswag_total": 50}
+        return {
+            "hellaswag_acc": 0.31,
+            "hellaswag_status": "ok",
+            "hellaswag_total": 50,
+            "hellaswag_metric_version": "screening_hellaswag_v2_bpe",
+            "hellaswag_tokenizer_mode": "tiktoken",
+            "hellaswag_tiktoken_encoding": "cl100k_base",
+        }
 
     monkeypatch.setattr(
         "research.eval.hellaswag_eval.screening_hellaswag_eval",
@@ -443,6 +450,9 @@ def test_recover_hellaswag_after_gate_failure_returns_metrics(monkeypatch):
         "hellaswag_acc": 0.31,
         "hellaswag_status": "ok",
         "hellaswag_n_examples": 50,
+        "hellaswag_metric_version": "screening_hellaswag_v2_bpe",
+        "hellaswag_tokenizer_mode": "tiktoken",
+        "hellaswag_tiktoken_encoding": "cl100k_base",
     }
 
 

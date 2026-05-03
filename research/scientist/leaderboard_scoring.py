@@ -76,7 +76,9 @@ _PR_SELECT_COLS = (
     "depth_savings_ratio, recursion_depth_ratio, "
     "fp_jacobian_spectral_norm, validation_robustness_score, "
     "ncd_description_length_per_param, novelty_valid_for_promotion, "
-    "fingerprint_json, hellaswag_acc, ar_auc, ar_final_acc, ar_timed_out, "
+    "fingerprint_json, hellaswag_acc, hellaswag_metric_version, "
+    "hellaswag_tokenizer_mode, hellaswag_tiktoken_encoding, "
+    "ar_auc, ar_final_acc, ar_timed_out, "
     "ar_above_chance, induction_auc, binding_auc, blimp_overall_accuracy, "
     "tinystories_score, cross_task_score, diagnostic_score, "
     "fp_gromov_delta, fp_hierarchy_fitness, "
@@ -93,6 +95,22 @@ _PR_SELECT_COLS = (
     "fp_jacobian_erf_density, fp_jacobian_erf_variance, "
     "fp_jacobian_erf_decay_slope, fp_id_collapse_rate, "
     "fp_logit_margin_velocity, fp_icld_velocity, "
+    # Long-context retrieval probes — read by the v12 non-attention bypass
+    # in _v12_non_loss_sequence_signal_count. Without these, the bypass
+    # only sees HellaSwag and BLiMP and SSM-class architectures cannot
+    # accumulate the 2 sequence signals needed to clear the 360 ceiling.
+    "robustness_long_ctx_passkey_score, robustness_long_ctx_multi_hop_score, "
+    "robustness_long_ctx_scaling_score, robustness_long_ctx_combined_score, "
+    # Controlled-language probe ladder (v14): nano-scale BLiMP/HellaSwag
+    # replacement at three difficulty tiers. Read by the v14 composite
+    # scorer for the 45pt controlled_lang tier.
+    "controlled_lang_metric_version, "
+    "controlled_lang_s05_sa_score, controlled_lang_s05_nb_order_acc, "
+    "controlled_lang_s05_nb_score, "
+    "controlled_lang_s10_sa_score, controlled_lang_s10_nb_order_acc, "
+    "controlled_lang_s10_nb_score, "
+    "controlled_lang_inv_sa_score, controlled_lang_inv_nb_order_acc, "
+    "controlled_lang_inv_nb_score, "
     # routing_collapse_score is a misnomer: it is actually a routing-health
     # score in [0,1] (higher = healthier). Selected here so consumers can
     # build a routing-quality subscore. Not yet used by composite scoring.
@@ -230,6 +248,60 @@ def _pr_dict_to_score_kwargs(
         "fp_id_collapse_rate": pr_dict.get("fp_id_collapse_rate"),
         "fp_logit_margin_velocity": pr_dict.get("fp_logit_margin_velocity"),
         "fp_icld_velocity": pr_dict.get("fp_icld_velocity"),
+        # Long-context retrieval probes — passed through under the names the
+        # v12 non-attention bypass already falls back to. Source from
+        # program_results first, then leaderboard row (`d`).
+        "robustness_long_ctx_passkey_score": (
+            pr_dict.get("robustness_long_ctx_passkey_score")
+            or d.get("robustness_long_ctx_passkey_score")
+        ),
+        "robustness_long_ctx_multi_hop_score": (
+            pr_dict.get("robustness_long_ctx_multi_hop_score")
+            or d.get("robustness_long_ctx_multi_hop_score")
+        ),
+        "robustness_long_ctx_scaling_score": (
+            pr_dict.get("robustness_long_ctx_scaling_score")
+            or d.get("robustness_long_ctx_scaling_score")
+        ),
+        "robustness_long_ctx_combined_score": (
+            pr_dict.get("robustness_long_ctx_combined_score")
+            or d.get("robustness_long_ctx_combined_score")
+        ),
+        # In-context loss decay rate, exposed to the bypass under the name
+        # it expects (`icld_score`). fp_icld_velocity is signed: negative
+        # means loss is declining (good). The bypass treats higher = better,
+        # so we report the magnitude of the negative side; positive velocity
+        # (loss going up) maps to 0.
+        "icld_score": (
+            -float(pr_dict["fp_icld_velocity"])
+            if pr_dict.get("fp_icld_velocity") is not None
+            and float(pr_dict["fp_icld_velocity"]) < 0
+            else 0.0
+        ),
+        # Template name from program_graph_features — needed by the v12
+        # non-attention family detector. Joined in by build_score_kwargs and
+        # prefetch_program_results; absent for callers that bypass those
+        # helpers (the detector then falls back to its other haystack keys).
+        "template_name": pr_dict.get("template_name") or d.get("template_name"),
+        # Controlled-language probe ladder (v14): pass through the full
+        # recorded probe payload. The scorer consumes SA + NB order today;
+        # dashboard consumers also render NB score. Absent on un-probed rows
+        # (None scores -> 0pts via _scurve_higher_better).
+        "controlled_lang_s05_sa_score": pr_dict.get("controlled_lang_s05_sa_score"),
+        "controlled_lang_s05_nb_order_acc": pr_dict.get(
+            "controlled_lang_s05_nb_order_acc"
+        ),
+        "controlled_lang_s05_nb_score": pr_dict.get("controlled_lang_s05_nb_score"),
+        "controlled_lang_s10_sa_score": pr_dict.get("controlled_lang_s10_sa_score"),
+        "controlled_lang_s10_nb_order_acc": pr_dict.get(
+            "controlled_lang_s10_nb_order_acc"
+        ),
+        "controlled_lang_s10_nb_score": pr_dict.get("controlled_lang_s10_nb_score"),
+        "controlled_lang_inv_sa_score": pr_dict.get("controlled_lang_inv_sa_score"),
+        "controlled_lang_inv_nb_order_acc": pr_dict.get(
+            "controlled_lang_inv_nb_order_acc"
+        ),
+        "controlled_lang_inv_nb_score": pr_dict.get("controlled_lang_inv_nb_score"),
         "tokenizer_mode": pr_dict.get("tokenizer_mode") or d.get("tokenizer_mode"),
         "screening_wikitext_metric_version": (
             pr_dict.get("screening_wikitext_metric_version")
@@ -259,6 +331,12 @@ def build_score_kwargs(
         (result_id,),
     ).fetchone()
     pr_dict = dict(pr) if pr else {}
+    pgf = conn.execute(
+        "SELECT template_name FROM program_graph_features WHERE result_id = ?",
+        (result_id,),
+    ).fetchone()
+    if pgf and pgf["template_name"]:
+        pr_dict["template_name"] = pgf["template_name"]
     return _pr_dict_to_score_kwargs(pr_dict, d, is_reference, extra or None)
 
 
@@ -287,6 +365,17 @@ def prefetch_program_results(
         ).fetchall()
         for row in rows:
             out[row["result_id"]] = dict(row)
+        # Augment with template_name from program_graph_features so the v12
+        # non-attention family detector can identify SSM-class architectures.
+        pgf_rows = conn.execute(
+            f"SELECT result_id, template_name FROM program_graph_features "
+            f"WHERE result_id IN ({placeholders})",
+            chunk,
+        ).fetchall()
+        for row in pgf_rows:
+            rid = row["result_id"]
+            if rid in out and row["template_name"]:
+                out[rid]["template_name"] = row["template_name"]
     return out
 
 
@@ -758,6 +847,35 @@ def _score_robustness_linguistics(
     return total, bd
 
 
+_CROSS_TASK_COMPETENCE_PPL_THRESHOLD = 200.0
+
+
+def _cross_task_has_competence(
+    *,
+    ppl_screening: Optional[float],
+    ppl_investigation: Optional[float],
+    ppl_validation: Optional[float],
+    threshold: float = _CROSS_TASK_COMPETENCE_PPL_THRESHOLD,
+) -> bool:
+    """Return true when reproduced PPL shows enough learning to credit balance."""
+    ppls = []
+    for value in (ppl_validation, ppl_investigation, ppl_screening):
+        if value is None:
+            continue
+        try:
+            ppl = float(value)
+        except (TypeError, ValueError):
+            continue
+        if ppl > 0:
+            ppls.append(ppl)
+
+    # Some direct/unit callers only pass cross_task_score. Preserve that API
+    # surface; production score kwargs include at least one PPL when available.
+    if not ppls:
+        return True
+    return min(ppls) <= threshold
+
+
 def _score_understanding_v8(
     cfg: Dict[str, float],
     *,
@@ -770,6 +888,9 @@ def _score_understanding_v8(
     hellaswag_acc_investigation: Optional[float],
     hellaswag_acc_validation: Optional[float],
     hierarchy_fitness: Optional[float],
+    ppl_screening: Optional[float] = None,
+    ppl_investigation: Optional[float] = None,
+    ppl_validation: Optional[float] = None,
 ) -> tuple[float, Dict[str, float]]:
     """v8 understanding components (weights are 0 in v7 config)."""
     bd: Dict[str, float] = {}
@@ -790,7 +911,16 @@ def _score_understanding_v8(
     w_ct = cfg["w_cross_task"]
     if w_ct > 0:
         pts = 0.0
-        if is_investigated and cross_task_score is not None and cross_task_score > 0:
+        if (
+            is_investigated
+            and cross_task_score is not None
+            and cross_task_score > 0
+            and _cross_task_has_competence(
+                ppl_screening=ppl_screening,
+                ppl_investigation=ppl_investigation,
+                ppl_validation=ppl_validation,
+            )
+        ):
             pts = min(w_ct, w_ct * _scurve(cross_task_score / cfg["cross_task"]))
         bd["cross_task"] = pts
         total += pts
@@ -1102,6 +1232,9 @@ def _compute_composite_generic(
         hellaswag_acc_investigation=hellaswag_acc_investigation,
         hellaswag_acc_validation=hellaswag_acc_validation,
         hierarchy_fitness=hierarchy_fitness,
+        ppl_screening=ppl_screening,
+        ppl_investigation=ppl_investigation,
+        ppl_validation=ppl_validation,
     )
     speed_pts, speed_bd = _score_speed_convergence(
         cfg,
@@ -1477,8 +1610,17 @@ _V10_CONFIG: Dict[str, float] = {
 #   4. Tokenizer Integrity: 0.1x total multiplier if tokenizer_mode != 'tiktoken'.
 _V11_CONFIG: Dict[str, float] = {
     **_V10_CONFIG,
-    "w_cap_induction": 50.0,
-    "w_cap_binding": 50.0,
+    # 2026-05-02 audit (tasks/scoring_audit_2026-05-02.md):
+    # BLiMP doesn't move with training at our 750-step eval scale. b0c38826
+    # at champion mode (12 layers × 10K steps, final_loss=0.000) scored
+    # BLiMP=0.514 vs baseline 0.502 — a 1.2pp gain inside the noise band
+    # (cohort std=0.013). Cohort ρ vs n_train_steps = +0.028. The metric
+    # is correctly detecting that nano-LLMs uniformly cannot do BLiMP at
+    # our budget. Drop weight 35 → 5; redirect to induction/binding which
+    # DO move with training and DO discriminate (ρ vs composite +0.42 / +0.19).
+    "w_blimp": 5.0,
+    "w_cap_induction": 65.0,
+    "w_cap_binding": 65.0,
     "cap_induction_anchor": 0.300,
     "cap_binding_anchor": 0.500,
 }
@@ -1490,6 +1632,48 @@ _V11_CAP_INDUCTION_MULTIPLIER = (
 _V11_CAP_BINDING_MULTIPLIER = (
     _V11_CONFIG["w_cap_binding"] / _V10_CONFIG["w_cap_binding"]
 )
+
+
+# ---------------------------------------------------------------------------
+# v14 — Tier-progressive controlled-language probe ladder (2026-05-02)
+# ---------------------------------------------------------------------------
+# Replaces real BLiMP/HellaSwag noise at screening tier with a calibrated
+# nano-scale association probe. Three difficulty tiers credit progressively
+# more points as the test gets harder.
+#
+# Calibration data (top-30 leaderboard cohort, n=30, see
+# research/reports/nano_probe_audit_top30.json):
+#   v120/40 (S0.5): synthetic_assoc median 1.00, 67% saturate → basic floor
+#   v200/40 (S1.0): synthetic_assoc median 1.00, 47% saturate → real diff
+#   v300/40 (Inv):  synthetic_assoc median 0.94, 13% saturate → sharp
+#
+# Anchors set at the cohort median per tier so half the cohort earns half
+# the weight. nano_blimp.order_grammaticality_acc has the richest dynamic
+# range (cohort std ~0.30) and is the primary nano_blimp signal.
+#
+# Real BLiMP weight stays at 5pt floor (validated by champion-mode test:
+# 12L/10K-step training moves BLiMP only 1.2pp inside the 0.013 noise band).
+# Real HellaSwag weight drops 15→5 (cohort spread 0.030, ρ vs composite
+# +0.088 — near-noise at screening eval scale).
+_V14_CONFIG: Dict[str, float] = {
+    **_V11_CONFIG,
+    # Real-benchmark weight reductions (insufficient signal at nano scale)
+    "w_hellaswag": 5.0,
+    # Controlled-language ladder weights — progressive credit by tier
+    "w_cl_s05_sa": 3.0,
+    "w_cl_s05_order": 2.0,
+    "w_cl_s10_sa": 9.0,
+    "w_cl_s10_order": 6.0,
+    "w_cl_inv_sa": 15.0,
+    "w_cl_inv_order": 10.0,
+    # Anchors = cohort median at each tier (S-curve gives half-credit at median)
+    "cl_s05_sa_anchor": 1.000,
+    "cl_s05_order_anchor": 0.605,
+    "cl_s10_sa_anchor": 1.000,
+    "cl_s10_order_anchor": 0.456,
+    "cl_inv_sa_anchor": 0.940,
+    "cl_inv_order_anchor": 0.420,
+}
 
 # Median-relative component anchors are useful for ranking noisy cohorts, but
 # champion range needs at least one reproduced trust signal: genuinely low BPE
@@ -1712,16 +1896,31 @@ def _v12_is_non_attention_exception_family(kw: Dict[str, Any]) -> bool:
             "model_source",
             "op_names",
             "graph_ops",
+            # template_name is the most populated identifier in practice —
+            # the others are typically None unless the caller specifically
+            # set them. Templates like `latent_attn_ssm_hybrid`,
+            # `local_attn_ssm_hybrid`, `codex_ssm_*`, `spiking_*` all carry
+            # the family signal in their name.
+            "template_name",
         )
     )
     return any(
         token in haystack
-        for token in ("mamba", "ssm", "state_space", "selective_scan", "rwkv", "recurrent")
+        for token in (
+            "mamba",
+            "ssm",
+            "state_space",
+            "selective_scan",
+            "rwkv",
+            "recurrent",
+        )
     )
 
 
 def _v12_has_reproduced_bpe_loss(kw: Dict[str, Any]) -> bool:
-    metric_version = str(kw.get("screening_wikitext_metric_version") or "").strip().lower()
+    metric_version = (
+        str(kw.get("screening_wikitext_metric_version") or "").strip().lower()
+    )
     if metric_version != "bpe_eval_v1":
         return False
     return any(
@@ -1734,16 +1933,55 @@ def _v12_has_reproduced_bpe_loss(kw: Dict[str, Any]) -> bool:
     )
 
 
+# Per-signal bypass thresholds. AUC-style signals (passkey, multi_hop,
+# scaling, combined, selective_copy) keep the 0.20 floor because they
+# live on a [0,1] scale where chance is near 0 — 0.20 means "20pts above
+# noise". ICLD is on a different scale: it's a loss-decline rate in
+# nats/step. Cohort distribution (n=18,644 program_results rows) of
+# |fp_icld_velocity|: p50=0.016, p75=0.026, p90=0.034, p99=0.043,
+# max=0.160. The original 0.20 threshold qualified zero rows in the
+# entire database. Setting ICLD threshold to 0.030 (≈p85 of the
+# cohort) keeps it stringent — only the top ~15% of learners trigger
+# the bypass signal — while making it physically reachable.
+_V12_BYPASS_SIGNAL_THRESHOLDS: Dict[str, float] = {
+    "selective_copy": 0.20,
+    "long_ctx_passkey": 0.20,
+    "long_ctx_multi_hop": 0.20,
+    "long_ctx_scaling": 0.20,
+    "long_ctx_combined": 0.20,
+    "icld": 0.030,
+}
+
+
 def _v12_non_loss_sequence_signal_count(kw: Dict[str, Any]) -> int:
-    signal_values = [
-        kw.get("selective_copy_score"),
-        kw.get("long_ctx_passkey_score") or kw.get("robustness_long_ctx_passkey_score"),
-        kw.get("long_ctx_multi_hop_score") or kw.get("robustness_long_ctx_multi_hop_score"),
-        kw.get("long_ctx_scaling_score") or kw.get("robustness_long_ctx_scaling_score"),
-        kw.get("long_ctx_combined_score") or kw.get("robustness_long_ctx_combined_score"),
-        kw.get("icld_score") or kw.get("trajectory_learning_score"),
-    ]
-    count = sum(1 for value in signal_values if value is not None and float(value) >= 0.20)
+    thr = _V12_BYPASS_SIGNAL_THRESHOLDS
+    pairs = (
+        ("selective_copy", kw.get("selective_copy_score")),
+        (
+            "long_ctx_passkey",
+            kw.get("long_ctx_passkey_score")
+            or kw.get("robustness_long_ctx_passkey_score"),
+        ),
+        (
+            "long_ctx_multi_hop",
+            kw.get("long_ctx_multi_hop_score")
+            or kw.get("robustness_long_ctx_multi_hop_score"),
+        ),
+        (
+            "long_ctx_scaling",
+            kw.get("long_ctx_scaling_score")
+            or kw.get("robustness_long_ctx_scaling_score"),
+        ),
+        (
+            "long_ctx_combined",
+            kw.get("long_ctx_combined_score")
+            or kw.get("robustness_long_ctx_combined_score"),
+        ),
+        ("icld", kw.get("icld_score") or kw.get("trajectory_learning_score")),
+    )
+    count = sum(
+        1 for name, value in pairs if value is not None and float(value) >= thr[name]
+    )
 
     hellaswag = max(
         float(v)
@@ -1841,6 +2079,90 @@ def compute_composite_v12(
         result["composite_score"] = score
         result["breakdown"] = bd
         return result
+    return score
+
+
+_CL_TIER_BD_KEYS = (
+    "cl_s05_sa",
+    "cl_s05_order",
+    "cl_s10_sa",
+    "cl_s10_order",
+    "cl_inv_sa",
+    "cl_inv_order",
+)
+
+
+def _score_controlled_lang_tier(
+    cfg: Dict[str, float],
+    *,
+    inv_failed: bool,
+    kw: Dict[str, Any],
+) -> tuple[float, Dict[str, float]]:
+    """Score the controlled-language probe ladder. Each tier credits
+    progressively more points: S0.5 (5pt) → S1.0 (15pt) → Investigation
+    (25pt) = 45pt total. Anchors set at cohort medians per tier so half
+    the cohort earns half the weight. inv_failed rows zero out the tier."""
+    bd: Dict[str, float] = {k: 0.0 for k in _CL_TIER_BD_KEYS}
+    if inv_failed:
+        return 0.0, bd
+    pairs = (
+        ("cl_s05_sa", kw.get("controlled_lang_s05_sa_score"), cfg["cl_s05_sa_anchor"]),
+        (
+            "cl_s05_order",
+            kw.get("controlled_lang_s05_nb_order_acc"),
+            cfg["cl_s05_order_anchor"],
+        ),
+        ("cl_s10_sa", kw.get("controlled_lang_s10_sa_score"), cfg["cl_s10_sa_anchor"]),
+        (
+            "cl_s10_order",
+            kw.get("controlled_lang_s10_nb_order_acc"),
+            cfg["cl_s10_order_anchor"],
+        ),
+        ("cl_inv_sa", kw.get("controlled_lang_inv_sa_score"), cfg["cl_inv_sa_anchor"]),
+        (
+            "cl_inv_order",
+            kw.get("controlled_lang_inv_nb_order_acc"),
+            cfg["cl_inv_order_anchor"],
+        ),
+    )
+    total = 0.0
+    for key, value, anchor in pairs:
+        weight = float(cfg.get(f"w_{key}", 0.0))
+        pts = weight * _scurve_higher_better(value, anchor)
+        bd[key] = pts
+        total += pts
+    return total, bd
+
+
+def compute_composite_v14(
+    *,
+    decompose: bool = False,
+    **kw: Any,
+) -> Union[float, Dict[str, Any]]:
+    """Composite v14: v12 + tier-progressive controlled-language ladder.
+
+    Adds 45pt of nano-scale BLiMP/HellaSwag replacement signal across
+    three difficulty tiers (S0.5/S1.0/Investigation). Real BLiMP stays
+    at 5pt floor; real HellaSwag drops 15→5 (per cohort audit showing
+    near-noise discrimination at our 750-step eval scale).
+    """
+    base = compute_composite_v12(decompose=True, **kw)
+    score = float(base["composite_score"])
+    bd = base.get("breakdown") or {}
+
+    tier = kw.get("tier")
+    inv_failed = tier in ("investigation_failed", "screened_out")
+    cl_pts, cl_bd = _score_controlled_lang_tier(
+        _V14_CONFIG, inv_failed=inv_failed, kw=kw
+    )
+    score += cl_pts
+    bd.update(cl_bd)
+    bd["_v14_controlled_lang_total"] = cl_pts
+
+    if decompose:
+        base["composite_score"] = score
+        base["breakdown"] = bd
+        return base
     return score
 
 
@@ -2187,6 +2509,7 @@ SUPPORTED_SCORING_VERSIONS: tuple[str, ...] = (
     "v10",
     "v11",
     "v12",
+    "v14",
 )
 # v12 is the active leaderboard default (2026-04-28): v11's
 # breakthrough-aligned capability anchors plus reduced loss budget and
@@ -2225,6 +2548,8 @@ def compute_composite(
     # Read the module attribute at call time so runtime changes via
     # set_scoring_version() take effect without re-importing.
     version = SCORING_VERSION
+    if version == "v14":
+        return compute_composite_v14(decompose=decompose, **kw)
     if version == "v12":
         return compute_composite_v12(decompose=decompose, **kw)
     if version == "v11":

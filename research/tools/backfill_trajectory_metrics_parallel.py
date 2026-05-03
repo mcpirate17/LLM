@@ -37,11 +37,8 @@ Usage::
 from __future__ import annotations
 
 import argparse
-import os
-import queue
 import sqlite3
 import subprocess
-import sys
 import threading
 import time
 from dataclasses import dataclass
@@ -164,7 +161,7 @@ def _worker_init(
         cap_gpu_memory(fraction=gpu_memory_fraction)
 
     arr = np.load(corpus_path, mmap_mode="r")
-    arr = arr[: 4_000_000] if arr.size > 4_000_000 else arr
+    arr = arr[:4_000_000] if arr.size > 4_000_000 else arr
     tokens = torch.as_tensor(np.asarray(arr), dtype=torch.long)
     _WORKER_TOKENS = tokens % vocab_size
     _WORKER_VOCAB = vocab_size
@@ -259,7 +256,7 @@ def _worker_measure(task: FingerprintTask) -> TaskResult:
             metric_phase = "init"
         else:
             metric_phase = "screening_750"
-            probe_ids = _worker_sample_batch(dev)[:, : _WORKER_SEQ_LEN]
+            probe_ids = _worker_sample_batch(dev)[:, :_WORKER_SEQ_LEN]
             for step in range(1, SCREENING_STEPS + 1):
                 batch = _worker_sample_batch(dev)
                 _worker_train_step(model, optimizer, batch)
@@ -392,9 +389,7 @@ def _candidate_tasks(
     # LONGEST sibling graph_json for the fingerprint, not the latest:
     # the latest under a placeholder-fingerprint may itself be "{}",
     # while an older sibling can carry the full graph.
-    extra_sql = (
-        ("  AND " + " AND ".join(extra_clauses) + " ") if extra_clauses else ""
-    )
+    extra_sql = ("  AND " + " AND ".join(extra_clauses) + " ") if extra_clauses else ""
     sql = (
         "SELECT graph_fingerprint, "
         "       MAX(timestamp) AS ts, "
@@ -452,17 +447,21 @@ def _propagate(
 
 def _read_total_gpu_mib() -> int:
     try:
-        out = subprocess.run(
-            [
-                "nvidia-smi",
-                "--query-gpu=memory.used",
-                "--format=csv,noheader,nounits",
-            ],
-            capture_output=True,
-            text=True,
-            check=True,
-            timeout=3,
-        ).stdout.strip().splitlines()
+        out = (
+            subprocess.run(
+                [
+                    "nvidia-smi",
+                    "--query-gpu=memory.used",
+                    "--format=csv,noheader,nounits",
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=3,
+            )
+            .stdout.strip()
+            .splitlines()
+        )
         return int(out[0]) if out else 0
     except (
         FileNotFoundError,
@@ -556,9 +555,7 @@ def _run_parallel(
         ),
     )
 
-    update_columns = (
-        _LOGIT_MARGIN_COLUMNS if only_logit_margin else _TRAJECTORY_COLUMNS
-    )
+    update_columns = _LOGIT_MARGIN_COLUMNS if only_logit_margin else _TRAJECTORY_COLUMNS
 
     try:
         # Submit all tasks; imap_unordered yields results as they complete.

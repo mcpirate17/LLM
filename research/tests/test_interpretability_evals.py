@@ -413,6 +413,8 @@ class TestNotebookSchema:
         assert "routing_collapse_score" in _PROGRAM_RESULTS_NEW_COLUMNS
         assert "wikitext_perplexity" in _PROGRAM_RESULTS_NEW_COLUMNS
         assert "wikitext_score" in _PROGRAM_RESULTS_NEW_COLUMNS
+        assert "permutation_composition_score" in _PROGRAM_RESULTS_NEW_COLUMNS
+        assert "permutation_composition_metric_version" in _PROGRAM_RESULTS_NEW_COLUMNS
 
     def test_leaderboard_migration(self):
         """Verify the new columns get added to leaderboard on init."""
@@ -494,6 +496,24 @@ class TestCrossTaskEval:
             return M()
 
         return fn
+
+    def test_score_zeroes_balanced_high_ppl_failure(self):
+        from research.eval.cross_task_eval import cross_task_score_from_domain_ppl
+
+        score, gap, gate = cross_task_score_from_domain_ppl(1800.0, 1900.0)
+
+        assert score == 0.0
+        assert gap is not None
+        assert gate == "uniform_failure"
+
+    def test_score_allows_balance_when_one_domain_is_competent(self):
+        from research.eval.cross_task_eval import cross_task_score_from_domain_ppl
+
+        score, gap, gate = cross_task_score_from_domain_ppl(100.0, 200.0)
+
+        assert score == 0.5
+        assert gap is not None
+        assert gate is None
 
     def test_code_download_failure_returns_error(self, monkeypatch):
         """Cross-task eval should fail closed when the code corpus is unavailable."""

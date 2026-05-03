@@ -18,7 +18,6 @@ to actually win the argmax while logit margin tracks early progress.
 
 from __future__ import annotations
 
-import copy
 import logging
 import time
 from dataclasses import dataclass, field

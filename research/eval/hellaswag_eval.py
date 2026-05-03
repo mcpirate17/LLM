@@ -32,6 +32,10 @@ logger = logging.getLogger(__name__)
 
 _HELLASWAG_CACHE_DIR = Path.home() / ".cache" / "aria" / "hellaswag"
 _CACHE_FILE = _HELLASWAG_CACHE_DIR / "validation.json"
+_HELLASWAG_TOKENIZER_MODE = "tiktoken"
+_HELLASWAG_TIKTOKEN_ENCODING = "cl100k_base"
+_SCREENING_HELLASWAG_METRIC_VERSION = "screening_hellaswag_v2_bpe"
+_HELLASWAG_METRIC_VERSION = "hellaswag_v2_bpe"
 
 # Stage budgets (importable — used by the unified backfill runner)
 SCREENING_N_EXAMPLES = 50
@@ -325,6 +329,8 @@ def _hellaswag_data_failed_result(t0: float, exc: Exception) -> Dict[str, Any]:
     return {
         "hellaswag_acc": None,
         "hellaswag_status": "data_failed",
+        "hellaswag_tokenizer_mode": _HELLASWAG_TOKENIZER_MODE,
+        "hellaswag_tiktoken_encoding": _HELLASWAG_TIKTOKEN_ENCODING,
         "error": str(exc),
         "elapsed_ms": round((time.perf_counter() - t0) * 1000, 1),
     }
@@ -432,6 +438,8 @@ def _hellaswag_result(
             "hellaswag_total": 0,
             "hellaswag_status": "all_failed",
             "hellaswag_n_examples": 0,
+            "hellaswag_tokenizer_mode": _HELLASWAG_TOKENIZER_MODE,
+            "hellaswag_tiktoken_encoding": _HELLASWAG_TIKTOKEN_ENCODING,
             "elapsed_ms": elapsed_ms,
         }
         if first_error is not None:
@@ -447,6 +455,8 @@ def _hellaswag_result(
         "hellaswag_total": total,
         "hellaswag_n_examples": n_examples,
         "hellaswag_status": "ok",
+        "hellaswag_tokenizer_mode": _HELLASWAG_TOKENIZER_MODE,
+        "hellaswag_tiktoken_encoding": _HELLASWAG_TIKTOKEN_ENCODING,
         "elapsed_ms": elapsed_ms,
     }
     if oom_retries:
@@ -522,7 +532,7 @@ def screening_hellaswag_eval(
     finally:
         model.train(was_training)
 
-    result["hellaswag_metric_version"] = "screening_hellaswag_v1"
+    result["hellaswag_metric_version"] = _SCREENING_HELLASWAG_METRIC_VERSION
     return result
 
 
@@ -537,5 +547,5 @@ def evaluate_hellaswag(
     Does not save/restore model state (caller manages lifecycle).
     """
     result = _run_hellaswag(model, vocab_size, device, n_examples)
-    result["hellaswag_metric_version"] = "hellaswag_v1"
+    result["hellaswag_metric_version"] = _HELLASWAG_METRIC_VERSION
     return result

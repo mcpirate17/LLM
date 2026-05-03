@@ -19,9 +19,12 @@ import operator
 from dataclasses import dataclass, field
 from enum import Enum
 import logging
-from typing import Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 from .native_param_formula import evaluate_param_formula_natively
+
+if TYPE_CHECKING:
+    from .graph import ComputationGraph
 
 logger = logging.getLogger(__name__)
 

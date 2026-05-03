@@ -29,8 +29,6 @@ Usage::
 from __future__ import annotations
 
 import argparse
-import os
-import queue
 import sqlite3
 import subprocess
 import sys
@@ -72,6 +70,9 @@ _BPE_EVAL_COLUMNS = (
     "hellaswag_acc",
     "hellaswag_n_examples",
     "hellaswag_status",
+    "hellaswag_metric_version",
+    "hellaswag_tokenizer_mode",
+    "hellaswag_tiktoken_encoding",
     "tinystories_perplexity",
     "tinystories_score",
     "screening_wikitext_metric_version",
@@ -229,6 +230,7 @@ def _measure_zero_shot_ppl(model, device: torch.device) -> tuple[float | None, i
     if total_tokens == 0:
         return None, 0
     import math
+
     mean_nats = total_loss / total_tokens
     return math.exp(min(mean_nats, 20.0)), total_tokens
 
@@ -247,9 +249,9 @@ def _worker_measure(task: FingerprintTask) -> TaskResult:
     try:
         graph = graph_from_json(task.graph_json)
         model_dim = getattr(graph, "model_dim", None) or 256
-        model = SynthesizedModel(
-            [graph], vocab_size=_W_VOCAB, model_dim=model_dim
-        ).to(dev)
+        model = SynthesizedModel([graph], vocab_size=_W_VOCAB, model_dim=model_dim).to(
+            dev
+        )
         optimizer = torch.optim.AdamW(model.parameters(), lr=_W_LR)
 
         # Pre-train ppl (on val, no training yet)
@@ -276,7 +278,11 @@ def _worker_measure(task: FingerprintTask) -> TaskResult:
             blimp_n = blimp.n_subtasks
             blimp_status = blimp.status
         except Exception as exc:
-            blimp_acc, blimp_n, blimp_status = None, None, f"failed:{type(exc).__name__}"
+            blimp_acc, blimp_n, blimp_status = (
+                None,
+                None,
+                f"failed:{type(exc).__name__}",
+            )
 
         # HellaSwag (zero-shot, monkey-patched to use BPE)
         try:
@@ -289,10 +295,16 @@ def _worker_measure(task: FingerprintTask) -> TaskResult:
             hellaswag_acc = hella.get("hellaswag_acc")
             hellaswag_n = hella.get("hellaswag_n_examples")
             hellaswag_status = hella.get("hellaswag_status")
+            hellaswag_metric_version = hella.get("hellaswag_metric_version")
+            hellaswag_tokenizer_mode = hella.get("hellaswag_tokenizer_mode")
+            hellaswag_tiktoken_encoding = hella.get("hellaswag_tiktoken_encoding")
         except Exception as exc:
-            hellaswag_acc, hellaswag_n, hellaswag_status = (
-                None, None, f"failed:{type(exc).__name__}",
-            )
+            hellaswag_acc = None
+            hellaswag_n = None
+            hellaswag_status = f"failed:{type(exc).__name__}"
+            hellaswag_metric_version = None
+            hellaswag_tokenizer_mode = None
+            hellaswag_tiktoken_encoding = None
 
         # HellaSwag's native scorer leaks inference-mode tensors into
         # module buffers. Clone them out before tinystories micro-training
@@ -301,7 +313,8 @@ def _worker_measure(task: FingerprintTask) -> TaskResult:
         if n_decontam:
             print(
                 f"[ts-decontam] {task.fingerprint[:12]} cloned {n_decontam} inference tensors",
-                file=sys.stderr, flush=True,
+                file=sys.stderr,
+                flush=True,
             )
 
         # TinyStories perplexity (uses corpus_pipeline → tokenize_file
@@ -321,13 +334,15 @@ def _worker_measure(task: FingerprintTask) -> TaskResult:
                 err = ts.get("error") or "post_ppl=None (likely diverged)"
                 print(
                     f"[ts-fail] {task.fingerprint[:12]} {err}",
-                    file=sys.stderr, flush=True,
+                    file=sys.stderr,
+                    flush=True,
                 )
         except Exception as exc:
             ts_ppl, ts_score = None, None
             print(
                 f"[ts-fail] {task.fingerprint[:12]} {type(exc).__name__}: {str(exc)[:200]}",
-                file=sys.stderr, flush=True,
+                file=sys.stderr,
+                flush=True,
             )
 
         improvement = None
@@ -346,6 +361,9 @@ def _worker_measure(task: FingerprintTask) -> TaskResult:
             "hellaswag_acc": hellaswag_acc,
             "hellaswag_n_examples": hellaswag_n,
             "hellaswag_status": hellaswag_status,
+            "hellaswag_metric_version": hellaswag_metric_version,
+            "hellaswag_tokenizer_mode": hellaswag_tokenizer_mode,
+            "hellaswag_tiktoken_encoding": hellaswag_tiktoken_encoding,
             "tinystories_perplexity": ts_ppl,
             "tinystories_score": ts_score,
             "screening_wikitext_metric_version": _NEW_METRIC_VERSION,
@@ -380,12 +398,19 @@ def _decontaminate_inference_tensors(model: torch.nn.Module) -> int:
     cannot be saved for backward``. Returns the number of tensors replaced."""
     n = 0
     skip_attrs = {
-        "_parameters", "_buffers", "_modules",
-        "_forward_hooks", "_forward_pre_hooks",
-        "_backward_hooks", "_backward_pre_hooks",
-        "_state_dict_hooks", "_state_dict_pre_hooks",
-        "_load_state_dict_pre_hooks", "_load_state_dict_post_hooks",
-        "_non_persistent_buffers_set", "training",
+        "_parameters",
+        "_buffers",
+        "_modules",
+        "_forward_hooks",
+        "_forward_pre_hooks",
+        "_backward_hooks",
+        "_backward_pre_hooks",
+        "_state_dict_hooks",
+        "_state_dict_pre_hooks",
+        "_load_state_dict_pre_hooks",
+        "_load_state_dict_post_hooks",
+        "_non_persistent_buffers_set",
+        "training",
     }
     for module in model.modules():
         for name, buf in list(module._buffers.items()):
@@ -405,6 +430,7 @@ def _wikitext_score(ppl: float | None, vocab_size: int) -> float | None:
     if ppl is None or ppl <= 0:
         return None
     import math
+
     # Same shape as eval/wikitext_eval.py:wikitext_score_from_ppl —
     # bounded [0, 1], higher is better.
     return round(max(0.0, min(1.0, 1.0 - math.log(ppl) / math.log(vocab_size))), 4)
@@ -495,7 +521,10 @@ def _propagate(
     fingerprint: str,
     payload: dict,
 ) -> int:
-    columns = [c for c in _BPE_EVAL_COLUMNS if c in payload]
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(program_results)")}
+    columns = [c for c in _BPE_EVAL_COLUMNS if c in payload and c in existing]
+    if not columns:
+        return 0
     set_clause = ", ".join(f"{c} = ?" for c in columns)
     values = [payload.get(c) for c in columns]
     cursor = conn.execute(
@@ -507,19 +536,28 @@ def _propagate(
 
 def _read_total_gpu_mib() -> int:
     try:
-        out = subprocess.run(
-            [
-                "nvidia-smi",
-                "--query-gpu=memory.used",
-                "--format=csv,noheader,nounits",
-            ],
-            capture_output=True,
-            text=True,
-            check=True,
-            timeout=3,
-        ).stdout.strip().splitlines()
+        out = (
+            subprocess.run(
+                [
+                    "nvidia-smi",
+                    "--query-gpu=memory.used",
+                    "--format=csv,noheader,nounits",
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=3,
+            )
+            .stdout.strip()
+            .splitlines()
+        )
         return int(out[0]) if out else 0
-    except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired, ValueError):
+    except (
+        FileNotFoundError,
+        subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
+        ValueError,
+    ):
         return 0
 
 
@@ -533,10 +571,16 @@ def _vram_governor(
     while not stop_event.is_set():
         used = _read_total_gpu_mib()
         if used >= high_water_mib and not pause_event.is_set():
-            print(f"[governor] VRAM at {used} MiB ≥ {high_water_mib} — pausing dispatch", flush=True)
+            print(
+                f"[governor] VRAM at {used} MiB ≥ {high_water_mib} — pausing dispatch",
+                flush=True,
+            )
             pause_event.set()
         elif used <= low_water_mib and pause_event.is_set():
-            print(f"[governor] VRAM at {used} MiB ≤ {low_water_mib} — resuming dispatch", flush=True)
+            print(
+                f"[governor] VRAM at {used} MiB ≤ {low_water_mib} — resuming dispatch",
+                flush=True,
+            )
             pause_event.clear()
         stop_event.wait(timeout=poll_interval_s)
 
@@ -652,7 +696,7 @@ def _run_parallel(
     rate = succeeded / max(elapsed, 1e-6)
     print(
         f"[done] ok={succeeded} fail={failed} rows_updated={propagated} "
-        f"elapsed={elapsed/60:.1f}m peak_vram={peak_vram}MiB rate={rate:.2f}/s",
+        f"elapsed={elapsed / 60:.1f}m peak_vram={peak_vram}MiB rate={rate:.2f}/s",
         flush=True,
     )
     return {
@@ -674,10 +718,16 @@ def main() -> None:
     parser.add_argument("--train-steps", type=int, default=DEFAULT_TRAIN_STEPS)
     parser.add_argument("--lr", type=float, default=DEFAULT_LR)
     parser.add_argument("--val-tokens", type=int, default=DEFAULT_VAL_TOKENS)
-    parser.add_argument("--blimp-per-subtask", type=int, default=DEFAULT_BLIMP_PER_SUBTASK)
+    parser.add_argument(
+        "--blimp-per-subtask", type=int, default=DEFAULT_BLIMP_PER_SUBTASK
+    )
     parser.add_argument("--hellaswag-limit", type=int, default=DEFAULT_HELLASWAG_LIMIT)
     parser.add_argument("--limit", type=int, default=None)
-    parser.add_argument("--dry-run", action="store_true", help="Print selected fingerprints without running evals.")
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print selected fingerprints without running evals.",
+    )
     parser.add_argument("--commit-every", type=int, default=10)
     parser.add_argument("--gpu-memory-fraction", type=float, default=None)
     parser.add_argument("--vram-cap-mib", type=int, default=28000)
@@ -726,7 +776,9 @@ def main() -> None:
     tiers = tuple(t.strip() for t in args.tier.split(",") if t.strip())
 
     gpu_lock = nullcontext() if args.dry_run else acquire_gpu_lock(tool_name=TOOL_NAME)
-    writer_lock = nullcontext() if args.dry_run else acquire_writer_lock(tool_name=TOOL_NAME)
+    writer_lock = (
+        nullcontext() if args.dry_run else acquire_writer_lock(tool_name=TOOL_NAME)
+    )
     with (
         gpu_lock,
         writer_lock,
@@ -751,7 +803,10 @@ def main() -> None:
         )
         if args.dry_run:
             for task in tasks[:25]:
-                print(f"  dry_run fingerprint={task.fingerprint} cost={task.cost_score}", flush=True)
+                print(
+                    f"  dry_run fingerprint={task.fingerprint} cost={task.cost_score}",
+                    flush=True,
+                )
             if total > 25:
                 print(f"  dry_run omitted={total - 25}", flush=True)
             return
@@ -762,8 +817,8 @@ def main() -> None:
             costs = sorted(t.cost_score for t in tasks)
             print(
                 f"[setup] cost distribution: "
-                f"p10={costs[total//10]} p50={costs[total//2]} "
-                f"p90={costs[(9*total)//10]} max={costs[-1]}",
+                f"p10={costs[total // 10]} p50={costs[total // 2]} "
+                f"p90={costs[(9 * total) // 10]} max={costs[-1]}",
                 flush=True,
             )
 

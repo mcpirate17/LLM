@@ -329,6 +329,9 @@ def test_screening_hellaswag_bypasses_native_dispatch(monkeypatch, device):
     )
 
     assert result["hellaswag_status"] == "ok"
+    assert result["hellaswag_metric_version"] == "screening_hellaswag_v2_bpe"
+    assert result["hellaswag_tokenizer_mode"] == "tiktoken"
+    assert result["hellaswag_tiktoken_encoding"] == "cl100k_base"
     assert calls["device"] == device
     assert calls["enter"] == 1
     assert calls["exit"] == 1

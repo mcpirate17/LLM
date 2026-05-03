@@ -156,6 +156,21 @@ class TestNotebook(unittest.TestCase):
         for t in expected:
             self.assertIn(t, tables, f"Missing table: {t}")
 
+    def test_hellaswag_provenance_columns_exist(self):
+        program_cols = {
+            row[1] for row in self.nb.conn.execute("PRAGMA table_info(program_results)")
+        }
+        leaderboard_cols = {
+            row[1] for row in self.nb.conn.execute("PRAGMA table_info(leaderboard)")
+        }
+        expected = {
+            "hellaswag_metric_version",
+            "hellaswag_tokenizer_mode",
+            "hellaswag_tiktoken_encoding",
+        }
+        self.assertTrue(expected.issubset(program_cols))
+        self.assertTrue(expected.issubset(leaderboard_cols))
+
     def test_program_results_experiment_index_exists(self):
         """program_results(experiment_id) should be indexed for large-query performance."""
         indexes = self.nb.conn.execute(
@@ -803,6 +818,15 @@ class TestNotebook(unittest.TestCase):
             binding_auc=0.0,
             ar_auc=0.0,
             hellaswag_acc=0.25,
+            controlled_lang_s05_sa_score=0.70,
+            controlled_lang_s05_nb_order_acc=0.55,
+            controlled_lang_s05_nb_score=0.50,
+            controlled_lang_s10_sa_score=0.60,
+            controlled_lang_s10_nb_order_acc=0.45,
+            controlled_lang_s10_nb_score=0.40,
+            controlled_lang_inv_sa_score=0.72,
+            controlled_lang_inv_nb_order_acc=0.35,
+            controlled_lang_inv_nb_score=0.30,
             screening_hellaswag_correct=2,
             screening_hellaswag_total=8,
             screening_wikitext_status="ok",
@@ -822,6 +846,15 @@ class TestNotebook(unittest.TestCase):
             binding_auc=0.09,
             ar_auc=0.07,
             hellaswag_acc=0.31,
+            controlled_lang_s05_sa_score=0.90,
+            controlled_lang_s05_nb_order_acc=0.82,
+            controlled_lang_s05_nb_score=0.80,
+            controlled_lang_s10_sa_score=0.91,
+            controlled_lang_s10_nb_order_acc=0.84,
+            controlled_lang_s10_nb_score=0.83,
+            controlled_lang_inv_sa_score=0.92,
+            controlled_lang_inv_nb_order_acc=0.88,
+            controlled_lang_inv_nb_score=0.86,
             screening_hellaswag_correct=3,
             screening_hellaswag_total=8,
             screening_wikitext_status="ok",
@@ -846,12 +879,24 @@ class TestNotebook(unittest.TestCase):
         self.assertGreaterEqual(len(weak["actions"]), 1)
         self.assertEqual(weak["screening_metric_coverage"]["induction"], 1)
         self.assertEqual(weak["screening_metric_coverage"]["hellaswag"], 2)
+        self.assertEqual(weak["screening_metric_coverage"]["controlled_lang"], 1)
+        self.assertAlmostEqual(weak["avg_controlled_lang_inv_sa_score"], 0.72)
+        self.assertAlmostEqual(weak["avg_controlled_lang_inv_score"], 0.51)
         self.assertAlmostEqual(strong["avg_induction_auc"], 0.08)
         self.assertAlmostEqual(strong["avg_binding_auc"], 0.09)
+        self.assertAlmostEqual(strong["avg_controlled_lang_s05_score"], 0.85)
+        self.assertAlmostEqual(strong["avg_controlled_lang_s10_score"], 0.87)
+        self.assertAlmostEqual(strong["avg_controlled_lang_inv_score"], 0.89)
         self.assertEqual(strong["structural_category"], "untested")
         self.assertEqual(summary["summary"]["templates_tracked"], 2)
         self.assertIn("all_slots", summary)
         self.assertEqual(summary["all_slots"][0]["slot_key"], "attn_sparse_test.slot0")
+        self.assertAlmostEqual(
+            summary["all_slots"][0]["avg_controlled_lang_s05_score"], 0.60
+        )
+        self.assertAlmostEqual(
+            summary["all_slots"][0]["avg_controlled_lang_inv_sa_score"], 0.72
+        )
 
     def test_template_slot_observability_filters_legacy_templates_from_all_templates(
         self,

@@ -8,8 +8,44 @@ from research.scientist.leaderboard_scoring import (
     prefetch_program_results,
 )
 from research.scientist.notebook import LabNotebook
+from research.scientist.runner._helpers import program_result_kwargs_from_s1
 
 pytestmark = pytest.mark.api
+
+
+def _stage1_kwargs(
+    loss_ratio: float,
+    novelty_score: float,
+    *,
+    model_source: str = "graph_synthesis",
+) -> dict:
+    s1 = {
+        "passed": True,
+        "final_loss": 4.5,
+        "loss_ratio": loss_ratio,
+        "wikitext_perplexity": 150.0,
+        "wikitext_score": 0.55,
+        "screening_wikitext_metric_version": "unit_test_wikitext_v1",
+        "hellaswag_acc": 0.31,
+        "hellaswag_status": "ran",
+        "blimp_overall_accuracy": 0.55,
+        "blimp_status": "ran",
+        "induction_auc": 0.21,
+        "binding_auc": 0.18,
+        "binding_composite": 0.12,
+        "ar_auc": 0.06,
+    }
+    return program_result_kwargs_from_s1(
+        s1,
+        model_source=model_source,
+        extra={
+            "stage1_passed": True,
+            "novelty_score": novelty_score,
+            "data_mode": "random",
+            "tokenizer_mode": "byte",
+            "vocab_size": 256,
+        },
+    )
 
 
 def test_discoveries_endpoint_accepts_fingerprint_for_cross_run_stability(tmp_path):
@@ -20,10 +56,7 @@ def test_discoveries_endpoint_accepts_fingerprint_for_cross_run_stability(tmp_pa
         experiment_id=exp_id,
         graph_fingerprint="fp-discovery",
         graph_json="{}",
-        model_source="graph_synthesis",
-        stage1_passed=True,
-        loss_ratio=0.9,
-        novelty_score=0.7,
+        **_stage1_kwargs(loss_ratio=0.9, novelty_score=0.7),
     )
     nb.flush_writes()
     nb.complete_experiment(exp_id, results={"status": "ok"})
@@ -60,10 +93,7 @@ def test_discoveries_endpoint_returns_orphan_reference_separately(tmp_path):
         experiment_id=exp_id,
         graph_fingerprint="candidate-fp",
         graph_json="{}",
-        model_source="graph_synthesis",
-        stage1_passed=True,
-        loss_ratio=0.8,
-        novelty_score=0.9,
+        **_stage1_kwargs(loss_ratio=0.8, novelty_score=0.9),
     )
     nb.flush_writes()
     nb.upsert_leaderboard(
@@ -127,9 +157,7 @@ def test_program_detail_falls_back_to_reference_leaderboard_row(tmp_path):
         experiment_id=exp_id,
         graph_fingerprint="candidate-fp",
         graph_json="{}",
-        stage1_passed=True,
-        loss_ratio=0.8,
-        novelty_score=0.4,
+        **_stage1_kwargs(loss_ratio=0.8, novelty_score=0.4),
     )
     nb.flush_writes()
     nb.upsert_leaderboard(
@@ -188,17 +216,13 @@ def test_discoveries_search_scope_all_hits_non_leaderboard_fingerprint(tmp_path)
         experiment_id=exp_id,
         graph_fingerprint="fp-leaderboard",
         graph_json="{}",
-        stage1_passed=True,
-        loss_ratio=0.7,
-        novelty_score=0.8,
+        **_stage1_kwargs(loss_ratio=0.7, novelty_score=0.8),
     )
     hidden_rid = nb.record_program_result(
         experiment_id=exp_id,
         graph_fingerprint="fp-hidden-search-target",
         graph_json="{}",
-        stage1_passed=True,
-        loss_ratio=0.6,
-        novelty_score=0.5,
+        **_stage1_kwargs(loss_ratio=0.6, novelty_score=0.5),
     )
     nb.flush_writes()
     nb.upsert_leaderboard(
@@ -246,9 +270,7 @@ def test_discoveries_all_graphs_marks_non_leaderboard_failures_as_screened_out(
         graph_fingerprint="fp-passed-hidden",
         graph_json="{}",
         stage0_passed=True,
-        stage1_passed=True,
-        loss_ratio=0.8,
-        trust_label="candidate_screening",
+        **_stage1_kwargs(loss_ratio=0.8, novelty_score=0.5),
     )
     nb.flush_writes()
     nb.close()
@@ -275,19 +297,13 @@ def test_discoveries_and_leaderboard_default_to_trusted_slice(tmp_path):
         experiment_id=exp_id,
         graph_fingerprint="fp-trusted",
         graph_json="{}",
-        model_source="graph_synthesis",
-        stage1_passed=True,
-        loss_ratio=0.5,
-        novelty_score=0.8,
+        **_stage1_kwargs(loss_ratio=0.5, novelty_score=0.8),
     )
     untrusted_rid = nb.record_program_result(
         experiment_id=exp_id,
         graph_fingerprint="fp-untrusted",
         graph_json="{}",
-        model_source="backfill",
-        stage1_passed=True,
-        loss_ratio=0.4,
-        novelty_score=0.9,
+        **_stage1_kwargs(loss_ratio=0.4, novelty_score=0.9, model_source="backfill"),
     )
     nb.flush_writes()
     nb.upsert_leaderboard(
@@ -354,10 +370,7 @@ def test_discoveries_search_filters_trusted_slice_before_limit(tmp_path):
         experiment_id=exp_id,
         graph_fingerprint="fp-search-target-trusted",
         graph_json="{}",
-        model_source="graph_synthesis",
-        stage1_passed=True,
-        loss_ratio=0.7,
-        novelty_score=0.6,
+        **_stage1_kwargs(loss_ratio=0.7, novelty_score=0.6),
     )
     nb.flush_writes()
     nb.upsert_leaderboard(
@@ -373,10 +386,11 @@ def test_discoveries_search_filters_trusted_slice_before_limit(tmp_path):
             experiment_id=exp_id,
             graph_fingerprint=f"fp-search-target-untrusted-{idx}",
             graph_json="{}",
-            model_source="backfill",
-            stage1_passed=True,
-            loss_ratio=0.1 + idx * 0.01,
-            novelty_score=0.95,
+            **_stage1_kwargs(
+                loss_ratio=0.1 + idx * 0.01,
+                novelty_score=0.95,
+                model_source="backfill",
+            ),
         )
         nb.flush_writes()
         nb.upsert_leaderboard(
@@ -412,12 +426,13 @@ def test_designer_rows_stay_exploratory_even_if_stage1_passed(tmp_path):
         experiment_id=exp_id,
         graph_fingerprint="fp-designer",
         graph_json="{}",
-        model_source="designer_edit",
         stage0_passed=True,
         stage05_passed=True,
-        stage1_passed=True,
-        loss_ratio=0.4,
-        novelty_score=0.7,
+        **_stage1_kwargs(
+            loss_ratio=0.4,
+            novelty_score=0.7,
+            model_source="designer_edit",
+        ),
     )
     nb.flush_writes()
     nb.upsert_leaderboard(
@@ -430,7 +445,7 @@ def test_designer_rows_stay_exploratory_even_if_stage1_passed(tmp_path):
     row = nb.get_program_detail(rid)
     assert row is not None
     assert row["trust_label"] == "exploratory"
-    assert row["comparability_label"] == "noncomparable"
+    assert row["comparability_label"] == "partial"
     nb.close()
 
     app = create_app(notebook_path=db_path)
@@ -465,10 +480,7 @@ def test_discoveries_counts_use_current_status_not_stage_pass_history(tmp_path):
             experiment_id=exp_id,
             graph_fingerprint=fp,
             graph_json="{}",
-            model_source="graph_synthesis",
-            stage1_passed=True,
-            loss_ratio=0.4,
-            novelty_score=0.7,
+            **_stage1_kwargs(loss_ratio=0.4, novelty_score=0.7),
         )
         nb.flush_writes()
         nb.upsert_leaderboard(
@@ -544,10 +556,7 @@ def test_discoveries_tier_filter_uses_current_status_not_stage_history(tmp_path)
             experiment_id=exp_id,
             graph_fingerprint=fp,
             graph_json="{}",
-            model_source="graph_synthesis",
-            stage1_passed=True,
-            loss_ratio=0.4,
-            novelty_score=0.7,
+            **_stage1_kwargs(loss_ratio=0.4, novelty_score=0.7),
         )
         nb.flush_writes()
         nb.upsert_leaderboard(
@@ -606,10 +615,7 @@ def test_discoveries_validation_filter_excludes_validation_pending_rows(tmp_path
             experiment_id=exp_id,
             graph_fingerprint=fp,
             graph_json="{}",
-            model_source="graph_synthesis",
-            stage1_passed=True,
-            loss_ratio=0.4,
-            novelty_score=0.7,
+            **_stage1_kwargs(loss_ratio=0.4, novelty_score=0.7),
         )
         nb.flush_writes()
         nb.upsert_leaderboard(
@@ -664,10 +670,7 @@ def test_discoveries_expose_capability_quality_separate_from_validation_completi
             experiment_id=exp_id,
             graph_fingerprint=fp,
             graph_json="{}",
-            model_source="graph_synthesis",
-            stage1_passed=True,
-            loss_ratio=0.4,
-            novelty_score=0.7,
+            **_stage1_kwargs(loss_ratio=0.4, novelty_score=0.7),
         )
         nb.flush_writes()
         nb.upsert_leaderboard(
@@ -742,10 +745,7 @@ def test_compact_leaderboard_exposes_backend_score_payload(tmp_path):
         experiment_id=exp_id,
         graph_fingerprint="fp-compact-payload",
         graph_json="{}",
-        model_source="graph_synthesis",
-        stage1_passed=True,
-        loss_ratio=0.42,
-        novelty_score=0.66,
+        **_stage1_kwargs(loss_ratio=0.42, novelty_score=0.66),
     )
     nb.flush_writes()
     nb.complete_experiment(exp_id, results={"status": "ok"})
@@ -788,14 +788,14 @@ def test_backfill_metric_mismatch_warning_is_exposed_in_discoveries_and_compact_
         experiment_id=exp_id,
         graph_fingerprint="fp-backfill-mismatch",
         graph_json="{}",
-        model_source="graph_synthesis",
-        stage1_passed=True,
-        loss_ratio=0.04,
-        validation_loss_ratio=0.04,
-        wikitext_perplexity=812.0,
-        hellaswag_acc=0.11,
-        result_cohort="backfill",
-        trust_label="backfill_observation",
+        **{
+            **_stage1_kwargs(loss_ratio=0.04, novelty_score=0.33),
+            "validation_loss_ratio": 0.04,
+            "wikitext_perplexity": 812.0,
+            "hellaswag_acc": 0.11,
+            "result_cohort": "backfill",
+            "trust_label": "backfill_observation",
+        },
     )
     nb.flush_writes()
     nb.complete_experiment(exp_id, results={"status": "ok"})
@@ -856,11 +856,10 @@ def test_report_query_exposes_backend_discovery_score_and_evidence(tmp_path):
         experiment_id=exp_id,
         graph_fingerprint="fp-report-backend-score",
         graph_json="{}",
-        model_source="graph_synthesis",
-        stage1_passed=True,
-        loss_ratio=0.41,
-        novelty_score=0.71,
-        baseline_loss_ratio=0.96,
+        **{
+            **_stage1_kwargs(loss_ratio=0.41, novelty_score=0.71),
+            "baseline_loss_ratio": 0.96,
+        },
     )
     nb.flush_writes()
     nb.complete_experiment(exp_id, results={"status": "ok"})
@@ -903,12 +902,11 @@ def test_report_query_handles_duplicate_fingerprint_without_conflicting_insert(
         experiment_id=exp_id,
         graph_fingerprint="fp-report-dup",
         graph_json="{}",
-        model_source="graph_synthesis",
-        stage1_passed=True,
-        loss_ratio=0.42,
-        novelty_score=0.77,
-        trust_label="candidate_grade",
-        comparability_label="candidate_comparable",
+        **{
+            **_stage1_kwargs(loss_ratio=0.42, novelty_score=0.77),
+            "trust_label": "candidate_grade",
+            "comparability_label": "candidate_comparable",
+        },
     )
     nb.flush_writes()
     nb.upsert_leaderboard(
@@ -923,13 +921,12 @@ def test_report_query_handles_duplicate_fingerprint_without_conflicting_insert(
         experiment_id=replay_exp_id,
         graph_fingerprint="fp-report-dup",
         graph_json="{}",
-        model_source="graph_synthesis",
-        stage1_passed=True,
-        loss_ratio=0.41,
-        novelty_score=0.75,
-        trust_label="candidate_grade",
-        comparability_label="candidate_comparable",
-        intentional_rerun_reason="test_fixture_historical_dup",
+        **{
+            **_stage1_kwargs(loss_ratio=0.41, novelty_score=0.75),
+            "trust_label": "candidate_grade",
+            "comparability_label": "candidate_comparable",
+            "intentional_rerun_reason": "test_fixture_historical_dup",
+        },
     )
     nb.flush_writes()
     before_count = nb.conn.execute(
@@ -978,10 +975,16 @@ def test_leaderboard_rescore_api_realigns_payload_with_backend_compute(tmp_path)
         experiment_id=exp_id,
         graph_fingerprint="fp-rescore-api",
         graph_json="{}",
-        model_source="graph_synthesis",
-        stage1_passed=True,
-        loss_ratio=0.58,
-        novelty_score=0.82,
+        **{
+            **_stage1_kwargs(loss_ratio=0.58, novelty_score=0.82),
+            "wikitext_perplexity": 200.0,
+            "hellaswag_acc": 0.25,
+            "blimp_overall_accuracy": 0.5,
+            "induction_auc": 0.01,
+            "binding_auc": 0.01,
+            "binding_composite": 0.01,
+            "ar_auc": 0.01,
+        },
     )
     nb.flush_writes()
     nb.upsert_leaderboard(
@@ -1047,18 +1050,25 @@ def test_leaderboard_rescore_api_realigns_denormalized_probe_metrics(tmp_path):
         experiment_id=exp_id,
         graph_fingerprint="fp-rescore-probes",
         graph_json="{}",
-        model_source="graph_synthesis",
-        stage1_passed=True,
-        loss_ratio=0.58,
-        novelty_score=0.82,
-        induction_auc=0.006,
-        induction_v2_investigation_auc=0.402,
-        induction_v2_investigation_max_gap_acc=0.61,
-        induction_v2_investigation_protocol_version="induction_investigation_mixed_v2",
-        binding_auc=0.1678,
-        binding_v2_investigation_auc=0.176,
-        binding_v2_investigation_max_distance_acc=0.42,
-        binding_v2_investigation_protocol_version="binding_investigation_v2",
+        **{
+            **_stage1_kwargs(loss_ratio=0.58, novelty_score=0.82),
+            "wikitext_perplexity": 200.0,
+            "blimp_overall_accuracy": 0.52,
+            "induction_auc": 0.006,
+            "hellaswag_acc": 0.31,
+            "hellaswag_metric_version": "hellaswag_v2_bpe",
+            "hellaswag_tokenizer_mode": "tiktoken",
+            "hellaswag_tiktoken_encoding": "cl100k_base",
+            "induction_v2_investigation_auc": 0.402,
+            "induction_v2_investigation_max_gap_acc": 0.61,
+            "induction_v2_investigation_protocol_version": "induction_investigation_mixed_v2",
+            "binding_auc": 0.1678,
+            "binding_composite": 0.16,
+            "ar_auc": 0.02,
+            "binding_v2_investigation_auc": 0.176,
+            "binding_v2_investigation_max_distance_acc": 0.42,
+            "binding_v2_investigation_protocol_version": "binding_investigation_v2",
+        },
     )
     nb.flush_writes()
     nb.upsert_leaderboard(
@@ -1095,6 +1105,9 @@ def test_leaderboard_rescore_api_realigns_denormalized_probe_metrics(tmp_path):
         SELECT induction_auc, induction_v2_investigation_auc,
                induction_v2_investigation_max_gap_acc,
                induction_v2_investigation_protocol_version,
+               hellaswag_metric_version,
+               hellaswag_tokenizer_mode,
+               hellaswag_tiktoken_encoding,
                binding_auc, binding_v2_investigation_auc,
                binding_v2_investigation_max_distance_acc,
                binding_v2_investigation_protocol_version
@@ -1111,9 +1124,14 @@ def test_leaderboard_rescore_api_realigns_denormalized_probe_metrics(tmp_path):
         row["induction_v2_investigation_protocol_version"]
         == "induction_investigation_mixed_v2"
     )
+    assert row["hellaswag_metric_version"] == "hellaswag_v2_bpe"
+    assert row["hellaswag_tokenizer_mode"] == "tiktoken"
+    assert row["hellaswag_tiktoken_encoding"] == "cl100k_base"
     assert row["binding_v2_investigation_auc"] == pytest.approx(0.176)
     assert row["binding_v2_investigation_max_distance_acc"] == pytest.approx(0.42)
-    assert row["binding_v2_investigation_protocol_version"] == "binding_investigation_v2"
+    assert (
+        row["binding_v2_investigation_protocol_version"] == "binding_investigation_v2"
+    )
 
 
 def test_leaderboard_rescore_api_realigns_raw_persisted_rows_with_backend_compute(
@@ -1134,10 +1152,7 @@ def test_leaderboard_rescore_api_realigns_raw_persisted_rows_with_backend_comput
             experiment_id=exp_id,
             graph_fingerprint=fingerprint,
             graph_json="{}",
-            model_source="graph_synthesis",
-            stage1_passed=True,
-            loss_ratio=loss_ratio,
-            novelty_score=novelty_score,
+            **_stage1_kwargs(loss_ratio=loss_ratio, novelty_score=novelty_score),
         )
         result_ids.append(rid)
         nb.flush_writes()

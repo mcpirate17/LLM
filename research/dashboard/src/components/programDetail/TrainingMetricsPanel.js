@@ -46,6 +46,14 @@ function leaderboardValueFor(program, leaderboardEntry, ...keys) {
   return null;
 }
 
+function rawValueFor(program, leaderboardEntry, ...keys) {
+  for (const key of keys) {
+    const value = program?.[key] ?? leaderboardEntry?.[key] ?? program?.leaderboard?.[key];
+    if (value !== null && value !== undefined && value !== '') return value;
+  }
+  return null;
+}
+
 function toneHigher(value, good, neutral) {
   const n = finite(value);
   if (n == null) return null;
@@ -82,6 +90,86 @@ function MetricValue({ value, digits = 3, suffix = '', tone, note, title }) {
       )}
       {note && <span style={{ marginLeft: 6, fontSize: 11, color: 'var(--text-muted)' }}>{note}</span>}
     </span>
+  );
+}
+
+const CONTROLLED_LANG_TIERS = [
+  {
+    label: 'CL S05',
+    title: 'Controlled-language S0.5 tier: synthetic association plus nano-BLiMP order probe.',
+    saKey: 'controlled_lang_s05_sa_score',
+    orderKey: 'controlled_lang_s05_nb_order_acc',
+    nbKey: 'controlled_lang_s05_nb_score',
+  },
+  {
+    label: 'CL S10',
+    title: 'Controlled-language S1.0 tier: harder synthetic association plus nano-BLiMP order probe.',
+    saKey: 'controlled_lang_s10_sa_score',
+    orderKey: 'controlled_lang_s10_nb_order_acc',
+    nbKey: 'controlled_lang_s10_nb_score',
+  },
+  {
+    label: 'CL Inv',
+    title: 'Controlled-language investigation tier. Yellow flag when SA is below 0.85.',
+    saKey: 'controlled_lang_inv_sa_score',
+    orderKey: 'controlled_lang_inv_nb_order_acc',
+    nbKey: 'controlled_lang_inv_nb_score',
+  },
+];
+
+function ControlledLangMetricRows({ program, leaderboardEntry, fmt }) {
+  const version = rawValueFor(program, leaderboardEntry, 'controlled_lang_metric_version');
+  const rows = CONTROLLED_LANG_TIERS.map((tier) => {
+    const sa = valueFor(program, leaderboardEntry, tier.saKey);
+    const order = valueFor(program, leaderboardEntry, tier.orderKey);
+    const nb = valueFor(program, leaderboardEntry, tier.nbKey);
+    return { ...tier, sa, order, nb };
+  });
+  if (!rows.some((row) => row.sa != null || row.order != null || row.nb != null)) {
+    return null;
+  }
+  return (
+    <>
+      {version && (
+        <MetricRow
+          label="CL Version"
+          value={<span style={{ color: 'var(--text-muted)' }}>{version}</span>}
+          title="Controlled-language probe metric version."
+        />
+      )}
+      {rows.map((row) => {
+        if (row.sa == null && row.order == null && row.nb == null) return null;
+        const isInvFlag = row.label === 'CL Inv' && row.sa != null && row.sa < 0.85;
+        const tone = isInvFlag
+          ? 'neutral'
+          : row.sa != null && row.sa >= 0.85
+            ? 'positive'
+            : row.sa != null
+              ? 'negative'
+              : undefined;
+        return (
+          <MetricRow
+            key={row.label}
+            label={row.label}
+            tone={tone}
+            title={`${row.title} SA=${fmt(row.sa, 3)}, NB order=${fmt(row.order, 3)}, NB score=${fmt(row.nb, 3)}`}
+            value={
+              <span>
+                SA {fmt(row.sa, 3)}
+                <span style={{ marginLeft: 6, color: 'var(--text-muted)' }}>
+                  NB {fmt(row.nb ?? row.order, 3)}
+                </span>
+                {isInvFlag && (
+                  <span style={{ marginLeft: 6, color: 'var(--accent-yellow)', fontWeight: 700 }}>
+                    flag
+                  </span>
+                )}
+              </span>
+            }
+          />
+        );
+      })}
+    </>
   );
 }
 
@@ -540,6 +628,7 @@ export function CoreMetricsColumn({ program, leaderboardEntry, fmt, fmtMs, fmtMe
             )}
           </span> : null} />
         <MetricRow label="BLiMP" value={program.blimp_overall_accuracy != null ? fmt(program.blimp_overall_accuracy, 3) : null} />
+        <ControlledLangMetricRows program={program} leaderboardEntry={leaderboardEntry} fmt={fmt} />
         <MetricRow label="WikiText PPL" value={program.wikitext_perplexity != null ? fmt(program.wikitext_perplexity, 1) : null} />
         <MetricRow label="Composite" value={(program.composite_score ?? leaderboardEntry?.composite_score) != null ?
           fmt(program.composite_score ?? leaderboardEntry?.composite_score, 1) : null} />

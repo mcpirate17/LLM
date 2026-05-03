@@ -12,6 +12,22 @@ import RerunAutoModal from './leaderboard/RerunAutoModal';
 import SortIndicator from './shared/SortIndicator';
 import useResizableColumns from './shared/useResizableColumns';
 
+function finiteNumber(value) {
+  if (value == null) return null;
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : null;
+}
+
+function controlledLangSortValue(entry) {
+  const total = finiteNumber(entry?.score_breakdown?._v14_controlled_lang_total);
+  if (total != null) return total;
+  return finiteNumber(entry?.controlled_lang_inv_sa_score)
+    ?? finiteNumber(entry?.controlled_lang_inv_nb_score)
+    ?? finiteNumber(entry?.controlled_lang_inv_nb_order_acc)
+    ?? finiteNumber(entry?.controlled_lang_s10_sa_score)
+    ?? finiteNumber(entry?.controlled_lang_s05_sa_score);
+}
+
 const thStyle = {
   padding: '6px 8px',
   textAlign: 'left',
@@ -79,8 +95,15 @@ function Leaderboard({
     return typeof leaderboardPrefs?.onlyRobust === 'boolean' ? leaderboardPrefs.onlyRobust : false;
   });
   const [visibleColumns, setVisibleColumns] = useState(() => {
-    const baseline = ['_score', 'tier', '_verified', '_rate', '_gap', 'architecture_family', '_composition', 'composite_score', 'screening_loss_ratio', 'validation_loss_ratio', 'induction_v2_investigation_auc', 'binding_v2_investigation_auc', 'hellaswag_acc', 'blimp_overall_accuracy', 'ar_auc', 'fp_jacobian_erf_density', 'fp_id_collapse_rate', 'fp_jacobian_erf_decay_slope', '_actions'];
+    const baseline = ['_score', 'tier', '_verified', '_rate', '_gap', 'architecture_family', '_composition', 'composite_score', 'screening_loss_ratio', 'validation_loss_ratio', 'induction_v2_investigation_auc', 'binding_v2_investigation_auc', '_controlled_lang_ladder', 'hellaswag_acc', 'blimp_overall_accuracy', 'ar_auc', 'fp_jacobian_erf_density', 'fp_id_collapse_rate', 'fp_jacobian_erf_decay_slope', '_actions'];
     const saved = Array.isArray(leaderboardPrefs?.visibleColumns) ? [...leaderboardPrefs.visibleColumns] : baseline;
+    const ensureColumnAfter = (key, afterKey) => {
+      if (saved.includes(key)) return;
+      const afterIndex = saved.indexOf(afterKey);
+      const actionIndex = saved.indexOf('_actions');
+      saved.splice(afterIndex >= 0 ? afterIndex + 1 : actionIndex >= 0 ? actionIndex : saved.length, 0, key);
+    };
+    ensureColumnAfter('_controlled_lang_ladder', 'binding_v2_investigation_auc');
     for (const key of ['induction_v2_investigation_auc', 'binding_v2_investigation_auc', 'hellaswag_acc', 'blimp_overall_accuracy', 'ar_auc', 'fp_jacobian_erf_density', 'fp_id_collapse_rate', 'fp_jacobian_erf_decay_slope']) {
       const actionIndex = saved.indexOf('_actions');
       if (!saved.includes(key)) saved.splice(actionIndex >= 0 ? actionIndex : saved.length, 0, key);
@@ -193,6 +216,7 @@ function Leaderboard({
         _vs_reference: e.is_reference ? null : percentOfReference(bestLoss(e), bestLoss(matchedRef)),
         _matched_reference: matchedRef?.reference_name || matchedRef?.architecture_desc || null,
         _quant_retention_pct: toRetentionPercent(e?.quant_int8_retention),
+        _controlled_lang_ladder: controlledLangSortValue(e),
       };
     });
     augmented.sort((a, b) => {
@@ -252,7 +276,7 @@ function Leaderboard({
         </span>
       </div>
       <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 14 }}>
-        Canonical v12 score scale: colors use fixed 15/30/45/60/75/90% bands of the{' '}
+        Canonical score scale: colors use fixed 15/30/45/60/75/90% bands of the{' '}
         {SCORE_MAX}-point rubric ceiling.
       </p>
 
