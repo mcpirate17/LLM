@@ -178,6 +178,49 @@ def build_experiment_context(
     if results.get("best_novelty_score") is not None:
         lines.append(f"Best novelty: {results['best_novelty_score']:.3f}")
 
+    validation_results = [
+        entry
+        for entry in (results.get("validation_results") or [])
+        if isinstance(entry, dict)
+    ]
+    if validation_results:
+        passed = results.get("validation_passed_count")
+        if passed is None:
+            passed = sum(
+                1 for entry in validation_results if int(entry.get("seeds_passed") or 0) > 0
+            )
+        breakthroughs = results.get("breakthrough_count")
+        if breakthroughs is None:
+            breakthroughs = sum(
+                1 for entry in validation_results if bool(entry.get("is_breakthrough"))
+            )
+        novel_validated = results.get("novel_count", 0)
+        lines.append(
+            "\nValidation candidates: "
+            f"{passed}/{len(validation_results)} passed multi-seed validation; "
+            f"{breakthroughs} breakthrough; {novel_validated} with novelty_score > 0.5."
+        )
+        for entry in validation_results[:5]:
+            loss = entry.get("val_loss_ratio")
+            loss_str = f"{loss:.4f}" if isinstance(loss, (int, float)) else str(loss)
+            novelty = entry.get("novelty_score")
+            novelty_str = (
+                f", novelty={novelty:.3f}" if isinstance(novelty, (int, float)) else ""
+            )
+            baseline = entry.get("val_baseline_ratio")
+            baseline_str = (
+                f", baseline_ratio={baseline:.4f}"
+                if isinstance(baseline, (int, float))
+                else ""
+            )
+            tier = "breakthrough" if entry.get("is_breakthrough") else "validation"
+            lines.append(
+                f"  - {entry.get('result_id', '?')[:12]}: tier={tier}, "
+                f"val_loss_ratio={loss_str}{baseline_str}{novelty_str}, "
+                f"seeds={entry.get('seeds_passed', 0)}/{entry.get('total_seeds', 0)}, "
+                f"robustness={entry.get('robustness_score', 0):.3f}"
+            )
+
     survivors = results.get("survivors", [])
     if survivors:
         lines.append("\nTop survivors:")

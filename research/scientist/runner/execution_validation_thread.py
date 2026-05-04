@@ -6,6 +6,7 @@ import time
 import traceback
 from typing import Dict, List
 from ..shared_utils import resolve_device
+from ._helpers import finalize_validation_results_summary
 from ._types import RunConfig
 from .execution_validation import _fail_loud
 from ...training.checkpointing import CheckpointManager
@@ -98,6 +99,7 @@ class _ExecutionValidationThreadMixin:
 
             # Complete experiment
             _vstatus("generating experiment summary")
+            finalize_validation_results_summary(results)
             context = self._build_rich_context_for_experiment(
                 results, config, hypothesis, nb
             )

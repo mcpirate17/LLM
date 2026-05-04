@@ -664,7 +664,7 @@ def _record_investigation_result(
 
     # Binding probe: informational logging only. No hard gate — probes are
     # too noisy at nano scale (Mamba fluctuates 0.01-0.13 across runs).
-    # The soft penalty in compute_composite_v7 handles score reduction.
+    # The soft penalty in compute_composite handles score reduction.
     _bp_ind = benchmark_result.get("induction_auc")
     if _bp_ind is not None and _bp_ind < 0.03:
         logger.info(
@@ -1022,6 +1022,7 @@ def run_baseline_comparison(
 def build_validation_entry(
     *,
     source_result_id: str,
+    source: dict | None = None,
     metrics,  # ValidationMetrics
     ev_res,  # ExternalEvalResult
     nov_conf: float,
@@ -1032,6 +1033,9 @@ def build_validation_entry(
 
     return ValidationEntry(
         result_id=source_result_id,
+        source_experiment_id=(source or {}).get("experiment_id"),
+        graph_fingerprint=(source or {}).get("graph_fingerprint"),
+        novelty_score=(source or {}).get("novelty_score"),
         val_loss_ratio=metrics.val_loss_ratio,
         val_baseline_ratio=metrics.val_baseline_ratio,
         val_normalized_ratio=metrics.val_normalized_ratio,
@@ -1063,6 +1067,49 @@ def build_validation_entry(
         max_viable_seq_len=ev_res.max_viable_seq_len,
         scaling_regime=ev_res.scaling_regime,
     )
+
+
+def finalize_validation_results_summary(results: dict) -> None:
+    """Populate validation-specific counters before persistence and summaries."""
+    entries = [
+        entry
+        for entry in (results.get("validation_results") or [])
+        if isinstance(entry, dict)
+    ]
+    if not entries:
+        return
+
+    validation_passed = sum(
+        1 for entry in entries if int(entry.get("seeds_passed") or 0) > 0
+    )
+    breakthrough_count = sum(
+        1 for entry in entries if bool(entry.get("is_breakthrough"))
+    )
+
+    novel_count = 0
+    for entry in entries:
+        novelty = entry.get("novelty_score")
+        if novelty is None:
+            continue
+        try:
+            if float(novelty) > 0.5:
+                novel_count += 1
+        except (TypeError, ValueError):
+            continue
+    if (
+        novel_count == 0
+        and len(entries) == 1
+        and results.get("best_novelty_score") is not None
+    ):
+        try:
+            novel_count = int(float(results["best_novelty_score"]) > 0.5)
+        except (TypeError, ValueError):
+            novel_count = 0
+
+    results["validated_count"] = len(entries)
+    results["validation_passed_count"] = validation_passed
+    results["breakthrough_count"] = breakthrough_count
+    results["novel_count"] = novel_count
 
 
 def promote_validation_candidate(

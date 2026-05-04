@@ -392,11 +392,23 @@ class _ExecutionValidationCandidateMixin:
         rid_short: str,
     ) -> None:
         """Build validation entry, promote, run trajectory probe, record + checkpoint."""
+        entry_source = dict(source or {})
+        if novelty_cap is not None:
+            if entry_source.get("novelty_score") is not None:
+                entry_source["novelty_score"] = (
+                    float(entry_source["novelty_score"]) * novelty_cap
+                )
+            if entry_source.get("novelty_confidence") is not None:
+                entry_source["novelty_confidence"] = (
+                    float(entry_source["novelty_confidence"]) * novelty_cap
+                )
+
         validation_entry = build_validation_entry(
             source_result_id=source_result_id,
+            source=entry_source,
             metrics=_metrics,
             ev_res=ev_res,
-            nov_conf=nov_conf,
+            nov_conf=entry_source.get("novelty_confidence", nov_conf),
             config=config,
         )
         tier = "breakthrough" if ev_res.is_breakthrough else "validation"
@@ -437,7 +449,7 @@ class _ExecutionValidationCandidateMixin:
             passed_seeds=passed_seeds,
         )
 
-        handle_breakthrough(
+        final_breakthrough = handle_breakthrough(
             is_breakthrough=ev_res.is_breakthrough,
             trajectory_composite=trajectory_composite,
             aria=self.aria,
@@ -451,6 +463,11 @@ class _ExecutionValidationCandidateMixin:
             multi_seed_std=multi_seed_std,
             emit_event=self._emit_event,
         )
+        if results.get("validation_results"):
+            current = results["validation_results"][-1]
+            if current.get("result_id") == source_result_id:
+                current["is_breakthrough"] = bool(final_breakthrough)
+                current["tier"] = "breakthrough" if final_breakthrough else tier
 
         self._validation_record_and_checkpoint(
             source=source,

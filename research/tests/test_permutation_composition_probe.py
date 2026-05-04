@@ -60,6 +60,22 @@ class _TrainableProbeModel(torch.nn.Module):
         return logits
 
 
+class _LazyBufferBlock(torch.nn.Module):
+    def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
+        if "centroids" not in self._buffers:
+            self.register_buffer("centroids", torch.ones(3, device=input_ids.device))
+        return input_ids
+
+
+class _LazyBufferProbeModel(_TrainableProbeModel):
+    def __init__(self) -> None:
+        super().__init__()
+        self.ops = torch.nn.ModuleList([_LazyBufferBlock()])
+
+    def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
+        return super().forward(self.ops[0](input_ids))
+
+
 def test_apply_transpositions_composes_in_order():
     start = torch.tensor([4, 5, 6])
     left = torch.tensor(
@@ -156,6 +172,27 @@ def test_probe_restores_model_state_and_training_mode():
     assert before.keys() == after.keys()
     for key, expected in before.items():
         assert torch.allclose(after[key], expected), key
+
+
+def test_probe_restores_when_forward_registers_lazy_buffer():
+    model = _LazyBufferProbeModel()
+    before_keys = set(model.state_dict())
+
+    result = pcp.permutation_composition_score(
+        model,
+        n_items=6,
+        train_chain_len=1,
+        eval_chain_len=2,
+        n_train_steps=1,
+        n_eval_batches=1,
+        batch_size=8,
+        device="cpu",
+        seed=5,
+    )
+
+    assert result.status == "ok"
+    assert set(model.state_dict()) == before_keys
+    assert "ops.0.centroids" not in model.state_dict()
 
 
 def test_external_eval_result_accepts_permutation_fields():

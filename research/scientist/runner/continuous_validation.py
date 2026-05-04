@@ -17,6 +17,7 @@ from ._helpers import (
     promote_validation_candidate,
     run_trajectory_probe,
     handle_breakthrough,
+    finalize_validation_results_summary,
 )
 from ._eval_registry import (
     EvalContext,
@@ -630,6 +631,7 @@ class _ContinuousValidationMixin:
                 nov_conf = source.get("novelty_confidence", 0) if source else 0
                 validation_entry = build_validation_entry(
                     source_result_id=source_result_id,
+                    source=source,
                     metrics=metrics,
                     ev_res=ev_res,
                     nov_conf=nov_conf,
@@ -670,7 +672,7 @@ class _ContinuousValidationMixin:
                     passed_seeds=metrics.passed_seeds,
                 )
 
-                handle_breakthrough(
+                final_breakthrough = handle_breakthrough(
                     is_breakthrough=ev_res.is_breakthrough,
                     trajectory_composite=trajectory_composite,
                     aria=self.aria,
@@ -684,6 +686,11 @@ class _ContinuousValidationMixin:
                     multi_seed_std=metrics.multi_seed_std,
                     emit_event=self._emit_event,
                 )
+                if results.get("validation_results"):
+                    current = results["validation_results"][-1]
+                    if current.get("result_id") == source_result_id:
+                        current["is_breakthrough"] = bool(final_breakthrough)
+                        current["tier"] = "breakthrough" if final_breakthrough else tier
 
                 try:
                     ckpt.save_phase(
@@ -714,6 +721,7 @@ class _ContinuousValidationMixin:
                     )
 
             # Complete experiment with LLM analysis
+            finalize_validation_results_summary(results)
             results["perf_report"] = self._build_experiment_perf_report(results)
             results["perf_budget_gate"] = evaluate_perf_budget_gate(
                 results["perf_report"]

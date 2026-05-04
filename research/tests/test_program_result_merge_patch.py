@@ -9,8 +9,13 @@ import pytest
 
 from research.scientist.notebook import LabNotebook
 from research.scientist.leaderboard_scoring import build_score_kwargs, compute_composite
+from research.scientist.llm.context_experiment import build_experiment_context
+from research.scientist.persona import Aria
 from research.scientist.runner._helpers import program_result_kwargs_from_s1
-from research.scientist.runner._helpers_benchmark import promote_validation_candidate
+from research.scientist.runner._helpers_benchmark import (
+    finalize_validation_results_summary,
+    promote_validation_candidate,
+)
 from research.scientist.runner.execution_screening import _record_screening_failure
 
 
@@ -538,6 +543,101 @@ def test_promote_validation_candidate_updates_source_row_without_duplicate():
         assert lb["validation_multi_seed_std"] == 0.03
         assert int(lb["validation_passed"] or 0) == 1
         nb.close()
+
+
+def test_validation_experiment_programs_include_saved_source_views():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        nb = LabNotebook(f"{tmpdir}/validation_views.db")
+        source_exp = nb.start_experiment("synthesis", {}, "validation source")
+        rid = nb.record_program_result(
+            experiment_id=source_exp,
+            graph_fingerprint="fp_validation_view",
+            graph_json='{"nodes": {}}',
+            stage0_passed=True,
+            stage05_passed=True,
+            **_stage1_kwargs(loss_ratio=0.42, novelty_score=0.66),
+        )
+        nb.flush_writes()
+
+        val_exp = nb.start_experiment("validation", {}, "validation run")
+        results = {
+            "total": 1,
+            "stage0_passed": 1,
+            "stage05_passed": 1,
+            "stage1_passed": 1,
+            "best_loss_ratio": 0.31,
+            "best_novelty_score": 0.66,
+            "survivors": [],
+            "validation_results": [
+                {
+                    "result_id": rid,
+                    "source_experiment_id": source_exp,
+                    "graph_fingerprint": "fp_validation_view",
+                    "novelty_score": 0.66,
+                    "novelty_confidence": 0.71,
+                    "val_loss_ratio": 0.31,
+                    "val_baseline_ratio": 0.88,
+                    "val_normalized_ratio": 0.84,
+                    "multi_seed_std": 0.03,
+                    "robustness_score": 0.79,
+                    "is_unstable": False,
+                    "seeds_passed": 5,
+                    "total_seeds": 5,
+                    "is_breakthrough": True,
+                    "tier": "breakthrough",
+                }
+            ],
+        }
+        finalize_validation_results_summary(results)
+        nb.complete_experiment(val_exp, results=results)
+
+        programs = nb.get_program_results(val_exp)
+        assert len(programs) == 1
+        row = programs[0]
+        assert row["result_id"] == rid
+        assert row["experiment_id"] == val_exp
+        assert row["source_experiment_id"] == source_exp
+        assert row["validation_experiment_id"] == val_exp
+        assert row["is_validation_result_view"] is True
+        assert row["tier"] == "breakthrough"
+        assert row["validation_loss_ratio"] == 0.31
+        assert row["validation_is_breakthrough"] is True
+        nb.close()
+
+
+def test_validation_summary_context_uses_structured_breakthrough_counts():
+    results = {
+        "total": 1,
+        "stage0_passed": 1,
+        "stage05_passed": 1,
+        "stage1_passed": 1,
+        "best_loss_ratio": 0.31,
+        "best_novelty_score": 0.66,
+        "survivors": [],
+        "validation_results": [
+            {
+                "result_id": "abc123-validation",
+                "novelty_score": 0.66,
+                "novelty_confidence": 0.71,
+                "val_loss_ratio": 0.31,
+                "val_baseline_ratio": 0.88,
+                "multi_seed_std": 0.03,
+                "robustness_score": 0.79,
+                "seeds_passed": 5,
+                "total_seeds": 5,
+                "is_breakthrough": True,
+            }
+        ],
+    }
+    finalize_validation_results_summary(results)
+
+    context = build_experiment_context(results)
+    assert "1 breakthrough" in context
+    assert "1 with novelty_score > 0.5" in context
+
+    summary = Aria().experiment_summary(results, context=context)
+    assert "Breakthrough candidates:    1" in summary
+    assert "Novel validated candidates: 1" in summary
 
 
 def test_promote_validation_candidate_novelty_cap_keeps_fingerprint_json_synced():

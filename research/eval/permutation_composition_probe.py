@@ -154,6 +154,32 @@ def _make_batch(
     return input_ids, targets
 
 
+def _drop_state_keys_added_after_snapshot(
+    model: nn.Module, saved_keys: set[str] | frozenset[str]
+) -> None:
+    current_keys = set(model.state_dict().keys())
+    new_keys = sorted(
+        current_keys - saved_keys,
+        key=lambda item: item.count("."),
+        reverse=True,
+    )
+    for key in new_keys:
+        module_path, _, leaf = key.rpartition(".")
+        parent: object = model
+        if module_path:
+            for part in module_path.split("."):
+                if not isinstance(parent, nn.Module):
+                    parent = None
+                    break
+                parent = getattr(parent, part, None)
+        if not isinstance(parent, nn.Module):
+            continue
+        if leaf in parent._parameters:
+            del parent._parameters[leaf]
+        elif leaf in parent._buffers:
+            del parent._buffers[leaf]
+
+
 def _eval_accuracy(
     model: nn.Module,
     layout: PermutationLayout,
@@ -210,6 +236,7 @@ def permutation_composition_score(
         )
 
     saved_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
+    saved_keys = frozenset(saved_state)
     was_training = model.training
     rng = torch.Generator(device=device)
     rng.manual_seed(int(seed))
@@ -287,6 +314,7 @@ def permutation_composition_score(
             status=status,
         )
     finally:
+        _drop_state_keys_added_after_snapshot(model, saved_keys)
         model.load_state_dict(saved_state)
         model.train(was_training)
         if device == "cuda":

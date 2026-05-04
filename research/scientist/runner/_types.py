@@ -177,7 +177,7 @@ class RunConfig:
     # Capability-first: trunk+sidecar graphs with explicit retrieval path.
     # Enables ``GrammarConfig.capability_first()`` preset AND flips
     # ``binding_capable_required`` so screening rejects retrieval-dead
-    # graphs via gate8. Pairs well with ``ARIA_SCORING_VERSION=v8.1``.
+    # graphs via gate8.
     _capability_first_mode: bool = False
     # Continuous mode
     continuous: bool = False
@@ -602,6 +602,9 @@ class ValidationEntry:
     """
 
     result_id: str = ""
+    source_experiment_id: Optional[str] = None
+    graph_fingerprint: Optional[str] = None
+    novelty_score: Optional[float] = None
     val_loss_ratio: Optional[float] = None
     val_baseline_ratio: Optional[float] = None
     val_normalized_ratio: Optional[float] = None

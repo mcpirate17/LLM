@@ -59,6 +59,9 @@ class _PersonaAnalysisMixin:
         """Generate experiment summary. Uses analyst LLM if available."""
         self.state.experiments_today += 1
 
+        if results.get("validation_results"):
+            return self._rule_based_summary(results)
+
         llm = self._get_analyst_llm()
         if llm and context and not self._continuous_mode:
             try:

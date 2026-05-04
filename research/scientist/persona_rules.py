@@ -100,6 +100,14 @@ class _PersonaRulesMixin:
 
     def _rule_based_summary(self, results: Dict) -> str:
         """Original template-based experiment summary."""
+        validation_results = [
+            entry
+            for entry in (results.get("validation_results") or [])
+            if isinstance(entry, dict)
+        ]
+        if validation_results:
+            return self._validation_rule_based_summary(results, validation_results)
+
         n_total = results.get("total", 0)
         n_pass_s0 = results.get("stage0_passed", 0)
         n_pass_s05 = results.get("stage05_passed", 0)
@@ -157,6 +165,57 @@ class _PersonaRulesMixin:
             lines.append("High failure rate. The grammar may be too aggressive.")
             lines.append("Tightening constraints while keeping exotic ops available.")
 
+        return "\n".join(lines)
+
+    def _validation_rule_based_summary(
+        self, results: Dict, validation_results: List[Dict]
+    ) -> str:
+        total = len(validation_results)
+        passed = int(
+            results.get("validation_passed_count")
+            if results.get("validation_passed_count") is not None
+            else sum(1 for entry in validation_results if int(entry.get("seeds_passed") or 0) > 0)
+        )
+        breakthroughs = int(
+            results.get("breakthrough_count")
+            if results.get("breakthrough_count") is not None
+            else sum(1 for entry in validation_results if bool(entry.get("is_breakthrough")))
+        )
+        novel = int(results.get("novel_count") or 0)
+        best_loss = results.get("best_loss_ratio")
+        best_novelty = results.get("best_novelty_score")
+
+        self.state.mood = "triumphant" if breakthroughs else "excited" if passed else "frustrated"
+
+        lines = [
+            f"{'=' * 60}",
+            f"Validation Report — {self.NAME}",
+            f"{'=' * 60}",
+            "",
+            f"Candidates validated:       {total}",
+            f"Multi-seed pass count:      {passed}/{total}",
+            f"Breakthrough candidates:    {breakthroughs}",
+            f"Novel validated candidates: {novel}",
+        ]
+        if best_loss is not None:
+            lines.append(f"Best validation loss ratio: {float(best_loss):.4f}")
+        if best_novelty is not None:
+            lines.append(f"Best novelty score:         {float(best_novelty):.3f}")
+
+        top = validation_results[0]
+        tier = "breakthrough" if top.get("is_breakthrough") else "validation"
+        lines.extend(
+            [
+                "",
+                f"Top candidate {top.get('result_id', '?')[:12]} finished as {tier}.",
+            ]
+        )
+        if breakthroughs:
+            lines.append("The saved structured results support breakthrough handling.")
+        elif passed:
+            lines.append("The candidate validated, but did not clear breakthrough gates.")
+        else:
+            lines.append("No candidate cleared multi-seed validation.")
         return "\n".join(lines)
 
     def _rule_based_suggestion(self) -> Dict:

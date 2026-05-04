@@ -974,7 +974,11 @@ class _ProgramsMixin(
                LIMIT ?""",
             (experiment_id, limit),
         ).fetchall()
-        return self._attach_canonical_program_scores([dict(r) for r in rows])
+        records = self._attach_canonical_program_scores([dict(r) for r in rows])
+        existing_ids = {str(r.get("result_id")) for r in records if r.get("result_id")}
+        if len(records) < limit:
+            records.extend(self._validation_result_views(experiment_id, existing_ids))
+        return records[:limit]
 
     def get_program_detail(self, result_id: str) -> Optional[Dict]:
         """Get full detail for a single program result."""
@@ -1004,6 +1008,77 @@ class _ProgramsMixin(
             d = self._parse_program_json_fields(d)
             by_id[d.get("result_id")] = d
         return [by_id.get(rid) for rid in ids]
+
+    def _validation_result_views(
+        self, experiment_id: str, existing_result_ids: set[str]
+    ) -> List[Dict[str, Any]]:
+        """Return source program rows annotated as members of a validation run."""
+        row = self.conn.execute(
+            """
+            SELECT experiment_type, results_json
+            FROM experiments
+            WHERE experiment_id = ?
+            LIMIT 1
+            """,
+            (experiment_id,),
+        ).fetchone()
+        if not row or normalize_text(row["experiment_type"]) != "validation":
+            return []
+        payload = self._decompress(row["results_json"]) if row["results_json"] else {}
+        if not isinstance(payload, dict):
+            return []
+        validation_entries = [
+            entry
+            for entry in (payload.get("validation_results") or [])
+            if isinstance(entry, dict) and entry.get("result_id")
+        ]
+        missing_ids = [
+            str(entry["result_id"])
+            for entry in validation_entries
+            if str(entry["result_id"]) not in existing_result_ids
+        ]
+        if not missing_ids:
+            return []
+
+        source_rows = {
+            row.get("result_id"): row
+            for row in self.get_program_details(missing_ids)
+            if row is not None
+        }
+        views: List[Dict[str, Any]] = []
+        for entry in validation_entries:
+            result_id = str(entry.get("result_id") or "")
+            if result_id in existing_result_ids:
+                continue
+            source = source_rows.get(result_id)
+            if not source:
+                continue
+            view = dict(source)
+            view["source_experiment_id"] = source.get("experiment_id")
+            view["validation_experiment_id"] = experiment_id
+            view["experiment_id"] = experiment_id
+            view["is_validation_result_view"] = True
+            view["tier"] = entry.get("tier") or (
+                "breakthrough" if entry.get("is_breakthrough") else "validation"
+            )
+            mapping = {
+                "val_loss_ratio": "validation_loss_ratio",
+                "val_baseline_ratio": "validation_baseline_ratio",
+                "val_normalized_ratio": "normalized_baseline_ratio",
+                "multi_seed_std": "validation_multi_seed_std",
+                "robustness_score": "validation_robustness_score",
+                "is_unstable": "validation_is_unstable",
+                "param_efficiency": "param_efficiency",
+                "novelty_score": "novelty_score",
+                "novelty_confidence": "novelty_confidence",
+            }
+            for src_key, dst_key in mapping.items():
+                if entry.get(src_key) is not None:
+                    view[dst_key] = entry[src_key]
+            view["validation_passed"] = int(entry.get("seeds_passed") or 0) > 0
+            view["validation_is_breakthrough"] = bool(entry.get("is_breakthrough"))
+            views.append(view)
+        return views
 
     def _attach_canonical_program_scores(
         self, rows: List[Dict[str, Any]]
