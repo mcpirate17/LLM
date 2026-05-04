@@ -249,6 +249,65 @@ class _WeightsMixin:
         """Per-template weights from S1 success rates via contrast amplification."""
         return self._compute_metadata_weights("templates_used", since_ts, min_used)
 
+    def compute_trial_template_stats(
+        self, since_ts: float = 0.0, min_used: int = 3
+    ) -> Dict[str, Dict[str, float]]:
+        """Phase C.2 — split per-template stats by `_template_trial` flag.
+
+        Returns:
+          {template_name: {"n_trial": int, "s1_trial_rate": float,
+                           "n_prod": int,  "s1_prod_rate":  float}}
+
+        Used by the auto-demotion harness to identify trial templates that
+        underperform their production peers. Only templates appearing as
+        trial picks (graph.metadata["_template_trial"] == True) at least
+        `min_used` times are reported.
+        """
+        rows = [
+            row
+            for row in self._deduped_graph_rows(since_ts=since_ts)
+            if row.get("stage0_any_passed")
+        ]
+        n_trial: Dict[str, int] = defaultdict(int)
+        s1_trial: Dict[str, int] = defaultdict(int)
+        n_prod: Dict[str, int] = defaultdict(int)
+        s1_prod: Dict[str, int] = defaultdict(int)
+        for row in rows:
+            try:
+                meta = json.loads(str(row["graph_json"])).get("metadata", {})
+            except (json.JSONDecodeError, TypeError, KeyError):
+                continue
+            tpls = meta.get("templates_used")
+            if not isinstance(tpls, list):
+                continue
+            is_trial = bool(meta.get("_template_trial"))
+            passed = bool(row.get("stage1_any_passed"))
+            for tpl in tpls:
+                if not isinstance(tpl, str):
+                    continue
+                if is_trial:
+                    n_trial[tpl] += 1
+                    if passed:
+                        s1_trial[tpl] += 1
+                else:
+                    n_prod[tpl] += 1
+                    if passed:
+                        s1_prod[tpl] += 1
+        names = {n for n, c in n_trial.items() if c >= min_used}
+        return {
+            tpl: {
+                "n_trial": n_trial[tpl],
+                "s1_trial_rate": (s1_trial[tpl] / n_trial[tpl])
+                if n_trial[tpl]
+                else 0.0,
+                "n_prod": n_prod.get(tpl, 0),
+                "s1_prod_rate": (
+                    s1_prod[tpl] / n_prod[tpl] if n_prod.get(tpl) else 0.0
+                ),
+            }
+            for tpl in sorted(names)
+        }
+
     def compute_motif_weights(
         self, since_ts: float = 0.0, min_used: int = 3
     ) -> Dict[str, float]:

@@ -42,6 +42,9 @@ from .primitives import (
     algebraic_types_compatible,
 )
 from .context_rules import motif_allowed_in_template as _motif_allowed_in_template
+from ._slot_constraints_loader import (
+    derive_slot_classes,
+)  # Phase B.1 — used by _pick_compatible_motif
 
 # Type alias for motif weight dicts passed from judgment engine
 MotifWeights = Optional[Dict[str, float]]
@@ -478,6 +481,16 @@ def _pick_compatible_motif(
             extra_classes = slot_adaptations.get(slot_key, ())
             if extra_classes:
                 classes = tuple(set(classes) | set(extra_classes))
+
+    # Phase B.1 — derived slot constraints (empirical pass-cohort allow-list).
+    # Narrows the allowed-class tuple to motif classes that historically pass
+    # for this (template, slot_index). Falls back to current classes when meta
+    # DB is unavailable or no qualifying classes exist. Multi-class slots only.
+    if graph.metadata.get("_use_derived_slot_classes") and len(classes) > 1:
+        template = graph.metadata.get("_active_template")
+        slot_idx = graph.metadata.get("_active_template_slot_counter")
+        if template and slot_idx is not None:
+            classes = derive_slot_classes(str(template), int(slot_idx), classes)
 
     if is_wildcard:
         candidates = _compatible_from_classes(graph, node_id, _ALL_CLASSES)

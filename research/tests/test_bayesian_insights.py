@@ -130,7 +130,7 @@ class TestGrammarIntegration:
         """High-confidence structural insight reduces max_ops."""
         from research.synthesis.grammar import GrammarConfig
         from research.scientist.runner.execution_screening import (
-            _apply_insight_adjustments,
+            apply_insight_adjustments,
         )
 
         nb.record_insight(
@@ -146,14 +146,14 @@ class TestGrammarIntegration:
         grammar = GrammarConfig(max_ops=16)
         tw = dict(grammar.template_weights)
         mw = dict(grammar.motif_weights)
-        _apply_insight_adjustments(nb, grammar, tw, mw)
+        apply_insight_adjustments(nb, grammar, tw, mw)
         assert grammar.max_ops <= 12, f"Expected max_ops<=12, got {grammar.max_ops}"
 
     def test_low_confidence_insight_ignored(self, nb):
         """Insight with confidence < 0.6 doesn't affect grammar."""
         from research.synthesis.grammar import GrammarConfig
         from research.scientist.runner.execution_screening import (
-            _apply_insight_adjustments,
+            apply_insight_adjustments,
         )
 
         nb.record_insight(
@@ -169,7 +169,7 @@ class TestGrammarIntegration:
         grammar = GrammarConfig(max_ops=16)
         tw = dict(grammar.template_weights)
         mw = dict(grammar.motif_weights)
-        _apply_insight_adjustments(nb, grammar, tw, mw)
+        apply_insight_adjustments(nb, grammar, tw, mw)
         assert grammar.max_ops == 16, "Low-confidence insight should not change max_ops"
 
 

@@ -401,6 +401,7 @@ def pick_template(
     weights: Optional[Dict[str, float]] = None,
     exploration_budget: float = 0.0,
     allowed_template_names: Optional[Iterable[str]] = None,
+    trial_template_names: Iterable[str] = (),
 ) -> Tuple[str, TemplateFn, bool]:
     """Pick a template weighted by success priors.
 
@@ -408,10 +409,26 @@ def pick_template(
     and select uniformly from ALL templates — including zero-weighted ones.
     This guarantees every template gets coverage.
 
+    Phase C.1 — when `trial_template_names` is non-empty AND the exploration
+    draw fires, the pick comes from the trial set (uniform sample). This is
+    the A/B harness seam: callers pre-register trial templates in their
+    GrammarConfig; downstream aggregation can split sa_pass stats by trial
+    pick (graph.metadata['_template_trial']) once apply_template tags it.
+
     Returns (name, fn, was_exploration).
     """
     exploration_draw = rng.random() if exploration_budget > 0.0 else 1.0
     selection_draw = rng.random()
+    trial_list = [n for n in trial_template_names if n in TEMPLATES]
+    if trial_list and exploration_draw < exploration_budget:
+        # Uniform sample from registered trial set; tag exploration=True so
+        # downstream code (e.g., routing_mandatory bypass) treats it like
+        # any other exploration pick.
+        idx = int(selection_draw * len(trial_list))
+        idx = min(idx, len(trial_list) - 1)
+        name = trial_list[idx]
+        return name, TEMPLATES[name], True
+
     selection = pick_template_index_native(
         _TEMPLATE_NAME_ORDER,
         _TEMPLATE_DEFAULT_WEIGHT_VECTOR,
@@ -447,6 +464,7 @@ def apply_template(
     op_weights: Optional[Dict[str, float]] = None,
     exploration_budget: float = 0.0,
     allowed_template_names: Optional[Iterable[str]] = None,
+    trial_template_names: Iterable[str] = (),
 ) -> int:
     """Apply a template to the graph. Main entry point for grammar."""
     prev_next_id = graph._next_id
@@ -460,10 +478,18 @@ def apply_template(
         fn = TEMPLATES[name]
     else:
         name, fn, was_exploration = pick_template(
-            rng, template_weights, exploration_budget, allowed_template_names
+            rng,
+            template_weights,
+            exploration_budget,
+            allowed_template_names,
+            trial_template_names=trial_template_names,
         )
     if was_exploration:
         graph.metadata["_template_exploration_used"] = True
+    # Phase C.1 — tag trial picks for downstream split aggregation
+    trial_set = frozenset(n for n in trial_template_names if n in TEMPLATES)
+    if was_exploration and name in trial_set:
+        graph.metadata["_template_trial"] = True
     if op_weights:
         graph.metadata["_op_weights"] = op_weights
     graph.metadata.setdefault("templates_used", []).append(name)

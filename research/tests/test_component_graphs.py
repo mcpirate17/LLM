@@ -1695,8 +1695,24 @@ def test_all_target_ops_reachable_via_grammar():
         for step in m.steps:
             motif_ops.add(step.op_name)
 
-    # Ops in template source (directly wired structural/routing ops)
-    template_source = inspect.getsource(tmpl)
+    # Ops in template source (directly wired structural/routing ops).
+    # `templates.py` is now a thin registry; concrete bodies live in
+    # `_templates_*.py` siblings. Concatenate all of those so reachability
+    # via inline `_add(graph, "op_name", ...)` is detected.
+    import pkgutil
+    import importlib
+
+    template_source_chunks = [inspect.getsource(tmpl)]
+    pkg = importlib.import_module("research.synthesis")
+    for mod_info in pkgutil.iter_modules(pkg.__path__):
+        name = mod_info.name
+        if name.startswith("_templates_") or name.startswith("_template_"):
+            try:
+                mod = importlib.import_module(f"research.synthesis.{name}")
+            except Exception:  # noqa: BLE001 — skip optional imports
+                continue
+            template_source_chunks.append(inspect.getsource(mod))
+    template_source = "\n".join(template_source_chunks)
 
     target_ops = {
         "linear_proj",

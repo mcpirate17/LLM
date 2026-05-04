@@ -21,7 +21,7 @@ import logging
 import random
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
-from typing import Dict, FrozenSet, List, Mapping, Optional
+from typing import Dict, FrozenSet, List, Mapping, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -136,6 +136,22 @@ class GrammarConfig:
     # from ALL templates (including zero-weighted). Ensures every template
     # gets coverage regardless of routing_mandatory or weight settings.
     template_exploration_budget: float = 0.10
+
+    # ── Phase B (2026-05-04) — dynamically learned slots ─────────────
+    # When True, _pick_compatible_motif consults the slot_constraints loader
+    # and narrows the allowed motif_class tuple to those that empirically
+    # pass for (template, slot_index) in the cohort. Hardcoded class tuples
+    # remain as fallback when the meta DB is unavailable or no qualifying
+    # data exists. Off by default; enable per-config to A/B against the
+    # static-allow-list baseline.
+    use_derived_slot_classes: bool = False
+
+    # ── Phase C (2026-05-04) — trial template A/B harness ────────────
+    # When non-empty, the exploration draw forces a uniform pick from this
+    # list rather than the global weighted_pool. Picks are tagged with
+    # graph.metadata['_template_trial'] = True so downstream aggregators
+    # can split sa_pass stats by trial vs production.
+    trial_template_names: Tuple[str, ...] = ()
 
     # Force every graph to use this specific template (bypass pick_template).
     # Set to a template name from TEMPLATES dict, e.g. "transformer_block".
@@ -659,6 +675,13 @@ def generate_layer_graph(
         prev_metadata = dict(graph.metadata)
         graph._cache.clear()
 
+        # Phase B.2 — propagate the dynamic-slot flag through metadata so the
+        # picker (_pick_compatible_motif) can read it without altering the
+        # apply_template signature.
+        graph.metadata["_use_derived_slot_classes"] = bool(
+            config.use_derived_slot_classes
+        )
+
         trial_current = apply_template(
             graph,
             current,
@@ -669,6 +692,7 @@ def generate_layer_graph(
             op_weights=runtime.effective_op_weights,
             exploration_budget=config.template_exploration_budget,
             allowed_template_names=_iter_allowed_names,
+            trial_template_names=config.trial_template_names,
         )
 
         # depth() returns 0 without a set output — point it at the trial tail
