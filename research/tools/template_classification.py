@@ -300,12 +300,12 @@ def _try_a_plus(c: _Ctx) -> dict[str, Any] | None:
 
 
 def _try_a_keep(c: _Ctx) -> dict[str, Any] | None:
-    if (
-        c.mean_sa >= KEEP_MIN_MEAN_SA
-        and c.n >= KEEP_MIN_N
-        and c.has_dom_slot
-        and c.has_mixer
-    ):
+    """Bucket A — KEEP. Strict path requires dom_slot; soft path requires
+    mixer_op + n >= 30 (more samples to compensate for missing dom_slot).
+    """
+    if c.mean_sa < KEEP_MIN_MEAN_SA or c.n < KEEP_MIN_N:
+        return None
+    if c.has_dom_slot and c.has_mixer:
         return {
             "bucket": "A",
             "primary_reason": (
@@ -313,6 +313,18 @@ def _try_a_keep(c: _Ctx) -> dict[str, Any] | None:
                 f"mixer_op={c.mixer_op}"
             ),
             "action_summary": "keep; raise weight up to +50%",
+        }
+    # Soft A: mixer_op present, no dom_slot, but compensate by requiring
+    # n >= 30 AND combined pass_rate >= 0.50 (so a template with high fluency
+    # but failing nano_bind — e.g. token_merge_block — does not qualify).
+    if c.has_mixer and c.n >= CULL_MIN_N and c.pass_rate >= 0.50:
+        return {
+            "bucket": "A",
+            "primary_reason": (
+                f"mean_sa={c.mean_sa:.2f}>={KEEP_MIN_MEAN_SA} pass_rate={c.pass_rate:.2f} "
+                f"mixer_op={c.mixer_op} (soft-A: no dom_slot)"
+            ),
+            "action_summary": "keep; raise weight up to +50% (soft-A)",
         }
     return None
 

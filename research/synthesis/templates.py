@@ -157,6 +157,12 @@ COMPONENT_GRAPH_EXEMPT_TEMPLATES = frozenset(
         "conv_residual_retrieval_v2",
         "state_space_retrieval_v2",
         "latent_attn_retrieval_v2",
+        # Phase 3.1 (2026-05-04) Bucket D mines — factory-style hand-coded
+        # patterns; covered by research/tests/test_template_smoke.py rather
+        # than dedicated component-graph entries.
+        "tropical_attn_conv1d_seq_block",
+        "rwkv_channel_conv1d_seq_block",
+        "matmul_conv1d_seq_block",
     }
 )
 

@@ -577,6 +577,7 @@ class TestFrontierOps(unittest.TestCase):
             final_loss=0.3,
             flops_forward=1000,
             param_count=500,
+            trust_label="test_fixture",
         )
         self.nb.flush_writes()
         analytics = ExperimentAnalytics(self.nb)

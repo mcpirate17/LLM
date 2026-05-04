@@ -641,14 +641,26 @@ _ATTN_OP_CHAIN_TEMPLATE_SPECS = {
 
 _MOE_CLASSES = (MOTIF_CLASS_MOE, MOTIF_CLASS_GATE)
 
-# Phase 3.2 (2026-05-04) Bucket C rescue tightenings.
-# Drop SPARSE/EFFICIENT_PROJ (which routed to all 0%-pass fail-cohort fills)
-# and replace with CONV (the dominant pass-cohort class).
-_LATENT_ATTN_SPARSE_FFN_FFN_CLASSES = (MOTIF_CLASS_CONV, MOTIF_CLASS_FFN)
-# Add CHANNEL + CONV (the pass-cohort classes for slot2) on top of the
-# existing MOE base. The empirical failers (act_log_*, kronecker_proj) came
-# in via GATE; dropping GATE removes that path.
-_LATENT_ATTN_MOE_FFN_CLASSES = (MOTIF_CLASS_CHANNEL, MOTIF_CLASS_CONV, MOTIF_CLASS_MOE)
+# Phase 3.2 (2026-05-04) Bucket C rescue tightenings — fallbacks below.
+# Phase 4.1 (2026-05-04) makes these data-driven via _slot_constraints_loader.
+# At import time we ask the loader for the empirical pass-cohort qualifying
+# motif_classes (n>=5, conditional pass_rate >= 0.60). If the meta DB is
+# unreachable or the slot has no qualifying classes, the loader returns the
+# fallback tuple verbatim — keeping the pre-Phase-4.1 hand-curated behavior.
+from ._slot_constraints_loader import derive_slot_classes  # noqa: E402
+
+_LATENT_ATTN_SPARSE_FFN_FFN_CLASSES_FALLBACK = (MOTIF_CLASS_CONV, MOTIF_CLASS_FFN)
+_LATENT_ATTN_MOE_FFN_CLASSES_FALLBACK = (
+    MOTIF_CLASS_CHANNEL,
+    MOTIF_CLASS_CONV,
+    MOTIF_CLASS_MOE,
+)
+_LATENT_ATTN_SPARSE_FFN_FFN_CLASSES = derive_slot_classes(
+    "latent_attn_sparse_ffn", 2, _LATENT_ATTN_SPARSE_FFN_FFN_CLASSES_FALLBACK
+)
+_LATENT_ATTN_MOE_FFN_CLASSES = derive_slot_classes(
+    "latent_attn_moe", 2, _LATENT_ATTN_MOE_FFN_CLASSES_FALLBACK
+)
 
 _ATTN_FFN_TEMPLATE_SPECS = {
     "attn_dual_axis": {
@@ -751,12 +763,12 @@ GENERATED_ATTN_DEFAULT_WEIGHTS = {
     "latent_attn_ffn_block": 4.0,
     "diff_attn_ffn_block": 3.5,
     "latent_attn_sparse_ffn": 4.0,
-    "graph_attn_ffn_block": 3.5,
+    "graph_attn_ffn_block": 5.25,
     "attn_kronecker_hybrid": 3.0,
     "attn_log_gated": 3.0,
     "latent_attn_moe": 4.0,
     "diff_attn_moe": 3.5,
-    "graph_attn_moe": 3.5,
+    "graph_attn_moe": 5.25,
 }
 
 globals().update(

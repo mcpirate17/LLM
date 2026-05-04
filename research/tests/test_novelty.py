@@ -365,6 +365,7 @@ class TestNoveltyCalibration(unittest.TestCase):
                 novelty_confidence=0.9,
                 stage0_passed=True,
                 stage1_passed=True,
+                trust_label="test_fixture",
             )
             nb.record_program_result(
                 exp_id,
@@ -537,6 +538,7 @@ class TestNoveltyCalibration(unittest.TestCase):
                     novelty_confidence=0.9,
                     loss_ratio=0.4,
                     timestamp=time.time() + i,
+                    trust_label="test_fixture",
                 )
             for i in range(10):
                 nb.record_program_result(

@@ -83,7 +83,7 @@ ROUTING_TEMPLATE_DEFAULT_WEIGHTS = {
     # Reduced from 6.0: ops_mining_report shows mean_loss=0.804 inflated by
     # forced_exploration (48% of samples). Organic mean is 0.593 — decent but
     # not worth 12% of sampling budget. The op itself is sound.
-    "latent_compress_block": 0.5,
+    "latent_compress_block": 0.75,
     "latent_compress_rwkv": 0.5,
     "signal_routed_compression": 0.5,
     "dual_routing_stack": 6.0,
@@ -91,7 +91,7 @@ ROUTING_TEMPLATE_DEFAULT_WEIGHTS = {
     "routing_conditioned_moe": 4.5,
     "mixed_recursion": 5.5,
     "topk_retrieval": 3.5,
-    "depth_gated_block": 2.0,
+    "depth_gated_block": 3.0,
     "depth_gated_block_matmul_norm": 1.5,
     # Rewritten: added FFN sub-block after depth-gated matmul
     "depth_gated_block_matmul_stable": 3.0,
