@@ -412,8 +412,20 @@ class RunConfig:
     use_learned_grammar_weights: bool = False
     use_learned_candidate_weights: bool = False
     use_screening_signal_weights: bool = False
+    use_meta_analysis_priors: bool = False
+    meta_analysis_prior_target: str = (
+        "balanced"  # induction | induction_v2 | composite | balanced
+    )
+    meta_analysis_prior_path: str = "research/artifacts/meta_analysis_priors"
     allow_unproven_ml_influence: bool = False
     routing_mandatory: bool = True  # require routing/MoE ops in every graph
+    # Phase B (2026-05-04) — when True, _pick_compatible_motif consults
+    # research/meta_analysis.db slot_observations × pass-cohort filter and
+    # narrows multi-class slots to motif classes that empirically pass
+    # (n>=10 + class_pass_rate>=0.40). Falls back to hardcoded class tuples
+    # when meta DB is absent or no class qualifies. Off by default; flip
+    # per-iteration to A/B against the static-allow-list baseline.
+    use_derived_slot_classes: bool = False
     persist_screening_failures: bool = (
         True  # keep early failed graphs for data collection — produces
         # hard negatives (good ops, bad structure) that teach the gate

@@ -157,6 +157,16 @@ function AdvancedConfigPanels({ config, updateConfig, onCategoryWeightChange }) 
           )}
           <ScoringVersionSelector />
         </div>
+        <div style={{ marginTop: 12, padding: 12, background: 'rgba(247,178,103,0.06)', borderRadius: 6, border: '1px solid rgba(247,178,103,0.25)' }}>
+          <ConfigField label="Dynamically Learned Slots (narrows multi-class slots to empirical pass-cohort motif classes; falls back to hardcoded tuples when meta DB lacks data)">
+            <input type="checkbox" checked={!!config.use_derived_slot_classes} onChange={(e) => updateConfig('use_derived_slot_classes', e.target.checked)} />
+          </ConfigField>
+          {config.use_derived_slot_classes && (
+            <div style={{ marginTop: 6, fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.5 }}>
+              At synth-init, the picker consults <code>research/meta_analysis.db</code> for per-(template, slot_index) pass-cohort motif-class qualifying sets (n≥10, class_pass_rate≥0.40). When data exists, the slot's allow-list is replaced with the qualifying classes; otherwise the existing hardcoded tuple is used. Templates with strong cohort signal (latent_attn_*, attn_*) get tightened slots; templates without it (residual_block, transformer_block) are unchanged. See <code>research/synthesis/_slot_constraints_loader.py</code>.
+            </div>
+          )}
+        </div>
       </details>
 
       <details style={{ marginTop: 8 }}>

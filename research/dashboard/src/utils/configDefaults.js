@@ -35,6 +35,10 @@ export const DEFAULT_CONFIG = {
   // retrieval path. Promotes role-slot templates and turns on the
   // gate8_retrieval_dead screener. See tasks/todo.md (2026-04-16).
   _capability_first_mode: false,
+  // Phase B (2026-05-04) — when on, the picker narrows multi-class slots
+  // to motif classes that empirically pass for (template, slot_index) in
+  // research/meta_analysis.db. Hardcoded class tuples remain as fallback.
+  use_derived_slot_classes: false,
   // Automation
   auto_scale_up: true,
   auto_scale_up_min_survivors: 3,

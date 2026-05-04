@@ -733,6 +733,7 @@ class _ExecutionCandidatesMixin:
             is None,  # skip DB weights when explicit
             routing_mandatory=config.routing_mandatory,
             forced_template=getattr(config, "forced_template", None),
+            use_derived_slot_classes=getattr(config, "use_derived_slot_classes", False),
         )
         if config.category_weights:
             grammar_kwargs["category_weights"] = dict(config.category_weights)
