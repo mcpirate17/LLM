@@ -14,7 +14,6 @@ from ._template_helpers import (
     MOTIF_CLASS_MOE,
     MOTIF_CLASS_NORM,
     MotifWeights,
-    _SPARSE_FFN_CLASSES,
     _fix_dim,
     _instantiate_motif,
     _pick_compatible_motif,
@@ -22,6 +21,11 @@ from ._template_helpers import (
     record_template_slot_binding,
     template_add_op as _add,
     template_add_residual as _residual,
+)
+from .motifs import (
+    MOTIF_CLASS_CHANNEL,
+    MOTIF_CLASS_CONV,
+    MOTIF_CLASS_FFN,
 )
 from ._selection_utils import with_local_wildcard_probability
 
@@ -637,6 +641,15 @@ _ATTN_OP_CHAIN_TEMPLATE_SPECS = {
 
 _MOE_CLASSES = (MOTIF_CLASS_MOE, MOTIF_CLASS_GATE)
 
+# Phase 3.2 (2026-05-04) Bucket C rescue tightenings.
+# Drop SPARSE/EFFICIENT_PROJ (which routed to all 0%-pass fail-cohort fills)
+# and replace with CONV (the dominant pass-cohort class).
+_LATENT_ATTN_SPARSE_FFN_FFN_CLASSES = (MOTIF_CLASS_CONV, MOTIF_CLASS_FFN)
+# Add CHANNEL + CONV (the pass-cohort classes for slot2) on top of the
+# existing MOE base. The empirical failers (act_log_*, kronecker_proj) came
+# in via GATE; dropping GATE removes that path.
+_LATENT_ATTN_MOE_FFN_CLASSES = (MOTIF_CLASS_CHANNEL, MOTIF_CLASS_CONV, MOTIF_CLASS_MOE)
+
 _ATTN_FFN_TEMPLATE_SPECS = {
     "attn_dual_axis": {
         "factory": _make_attn_ffn_template,
@@ -654,7 +667,13 @@ _ATTN_FFN_TEMPLATE_SPECS = {
         "factory": _make_attn_ffn_template,
         "factory_kwargs": {
             "attn_op": "latent_attention_compressor",
-            "ffn_classes": _SPARSE_FFN_CLASSES,
+            # Phase 3.2 (2026-05-04) tightened from _SPARSE_FFN_CLASSES =
+            # (SPARSE, EFFICIENT_PROJ, GATE). Empirical fail cohort fills
+            # (kronecker_proj, codebook_proj, proj_tied, bottleneck_sparse,
+            # ffn_bottleneck, proj_shared_basis) all came via SPARSE/
+            # EFFICIENT_PROJ; pass cohort dominated by conv_swiglu (CONV).
+            # See research/reports/slot_tightening_proposal.json.
+            "ffn_classes": _LATENT_ATTN_SPARSE_FFN_FFN_CLASSES,
         },
     },
     "graph_attn_ffn_block": {
@@ -669,7 +688,11 @@ _ATTN_FFN_TEMPLATE_SPECS = {
         "factory": _make_attn_ffn_template,
         "factory_kwargs": {
             "attn_op": "latent_attention_compressor",
-            "ffn_classes": _MOE_CLASSES,
+            # Phase 3.2 (2026-05-04) tightened from _MOE_CLASSES = (MOE, GATE).
+            # Pass cohort uses channel_rwkv (CHANNEL) + conv_swiglu (CONV);
+            # fail cohort uses act_log_*/kronecker_proj/codebook_proj.
+            # See research/reports/slot_tightening_proposal.json.
+            "ffn_classes": _LATENT_ATTN_MOE_FFN_CLASSES,
         },
     },
     "diff_attn_moe": {

@@ -529,11 +529,56 @@ def _load_template_slot_context(conn) -> Dict[str, dict]:
 
 def _fetch_template_weight_rows(conn):
     columns = {row[1] for row in conn.execute("PRAGMA table_info(template_stats)")}
+    # CTE folds in per-template controlled_lang_s05_sa pass rate. Pass criterion
+    # combines fluency (sa>=0.95) with the nano_bind binding gate, matching the
+    # combined cohort definition used by template_pass_<date>_summary.md.
     return conn.execute(
-        f"""SELECT template_name, eval_count, s1_pass_count, mean_loss,
-                   {_metric_select_list(columns, _DB_METRIC_COLUMNS)}
-            FROM template_stats WHERE eval_count >= 5"""
+        f"""WITH sa_stats AS (
+                SELECT pgf.template_name AS template_name,
+                       SUM(CASE WHEN pr.controlled_lang_s05_sa_score >= 0.95
+                                 AND COALESCE(pr.failure_op,'') != 'nano_bind'
+                                THEN 1 ELSE 0 END) AS sa_pass,
+                       COUNT(*) AS sa_n
+                  FROM program_results pr
+                  JOIN program_graph_features pgf
+                    ON pgf.result_id = pr.result_id
+                 WHERE pr.controlled_lang_s05_sa_score IS NOT NULL
+                   AND pgf.template_name IS NOT NULL
+                 GROUP BY pgf.template_name
+            )
+            SELECT ts.template_name, ts.eval_count, ts.s1_pass_count, ts.mean_loss,
+                   {_metric_select_list(columns, _DB_METRIC_COLUMNS)},
+                   COALESCE(sa.sa_pass, 0) AS sa_pass_count,
+                   COALESCE(sa.sa_n,    0) AS sa_eval_count
+              FROM template_stats ts
+              LEFT JOIN sa_stats sa ON sa.template_name = ts.template_name
+             WHERE ts.eval_count >= 5"""
     ).fetchall()
+
+
+_SA_FACTOR_MIN_N = 20
+_SA_FACTOR_NORMALIZER = 0.40
+_SA_FACTOR_FLOOR = 0.1
+_TEMPLATE_WEIGHT_CLAMP = (0.5, 8.0)
+
+
+def _sa_factor(sa_pass_count, sa_eval_count) -> float:
+    """Phase 3.4 — combined controlled_lang_s05_sa + nano_bind pass multiplier.
+
+    Templates with n < _SA_FACTOR_MIN_N pass-eligible rows get sa_factor=1.0
+    (no penalty, no boost). Otherwise sa_factor = max(_SA_FACTOR_FLOOR,
+    sa_pass_rate / _SA_FACTOR_NORMALIZER), where _SA_FACTOR_NORMALIZER=0.40
+    is the empirical mid-cohort pass rate.
+    """
+    try:
+        n = int(sa_eval_count or 0)
+        passes = int(sa_pass_count or 0)
+    except (TypeError, ValueError):
+        return 1.0
+    if n < _SA_FACTOR_MIN_N:
+        return 1.0
+    sa_pass_rate = passes / n
+    return max(_SA_FACTOR_FLOOR, sa_pass_rate / _SA_FACTOR_NORMALIZER)
 
 
 def _template_dynamic_weight(
@@ -542,7 +587,7 @@ def _template_dynamic_weight(
     template_slot_context: Dict[str, dict],
     default_template_weights: Dict[str, float],
     k: float,
-) -> tuple[str, int, float]:
+) -> tuple[str, int, float, float]:
     (
         tpl_name,
         eval_count,
@@ -557,6 +602,8 @@ def _template_dynamic_weight(
         avg_induction_v2_investigation_auc,
         avg_binding_v2_investigation_auc,
         math_space_rate,
+        sa_pass_count,
+        sa_eval_count,
     ) = row
     s1_rate = s1_count / max(eval_count, 1)
     static_weight = default_template_weights.get(tpl_name, 1.0)
@@ -603,9 +650,14 @@ def _template_dynamic_weight(
             dynamic_weight = ((1.0 - rescue_mix) * dynamic_weight) + (
                 rescue_mix * rescue_weight
             )
+    sa_factor = _sa_factor(sa_pass_count, sa_eval_count)
+    dynamic_weight *= sa_factor
     confidence = eval_count / max(eval_count + 12.0, 1.0)
     weight = ((1.0 - confidence) * static_weight) + (confidence * dynamic_weight)
-    return str(tpl_name), int(eval_count), weight
+    weight = _bounded(
+        weight, lo=_TEMPLATE_WEIGHT_CLAMP[0], hi=_TEMPLATE_WEIGHT_CLAMP[1]
+    )
+    return str(tpl_name), int(eval_count), float(weight), float(sa_factor)
 
 
 def _build_db_template_weights(rows, template_slot_context: Dict[str, dict]):
@@ -613,8 +665,9 @@ def _build_db_template_weights(rows, template_slot_context: Dict[str, dict]):
 
     db_weights: Dict[str, float] = {}
     eval_counts: Dict[str, int] = {}
+    sa_factors: Dict[str, float] = {}
     for row in rows:
-        tpl_name, eval_count, weight = _template_dynamic_weight(
+        tpl_name, eval_count, weight, sa_factor = _template_dynamic_weight(
             row,
             template_slot_context=template_slot_context,
             default_template_weights=DEFAULT_TEMPLATE_WEIGHTS,
@@ -622,6 +675,7 @@ def _build_db_template_weights(rows, template_slot_context: Dict[str, dict]):
         )
         db_weights[tpl_name] = weight
         eval_counts[tpl_name] = eval_count
+        sa_factors[tpl_name] = sa_factor
 
     for tpl_name, weight in DEFAULT_TEMPLATE_WEIGHTS.items():
         db_weights.setdefault(tpl_name, weight)
@@ -634,7 +688,50 @@ def _build_db_template_weights(rows, template_slot_context: Dict[str, dict]):
                 n = eval_counts.get(tpl_name, 0)
                 if n < median_evals:
                     db_weights[tpl_name] *= 1.0 + (1.0 - n / median_evals)
+    # Final clamp per Phase 3.4 acceptance — applies AFTER under-median boost.
+    for tpl_name, w in list(db_weights.items()):
+        db_weights[tpl_name] = _bounded(
+            w, lo=_TEMPLATE_WEIGHT_CLAMP[0], hi=_TEMPLATE_WEIGHT_CLAMP[1]
+        )
+    _emit_template_weight_events(db_weights, eval_counts, sa_factors)
     return db_weights
+
+
+def _emit_template_weight_events(
+    db_weights: Dict[str, float],
+    eval_counts: Dict[str, int],
+    sa_factors: Dict[str, float],
+) -> None:
+    """Phase 3.4 acceptance §8: log sa_factor per template once at synth-init.
+
+    Append-only ndjson at research/runtime_events/template_weights.ndjson.
+    Best-effort; logging failures must never break grammar weight resolution.
+    """
+    import json as _json
+    import time as _time
+    from pathlib import Path as _Path
+
+    try:
+        events_dir = _Path("research/runtime_events")
+        events_dir.mkdir(parents=True, exist_ok=True)
+        path = events_dir / "template_weights.ndjson"
+        ts = _time.time()
+        with path.open("a") as fh:
+            for tpl_name, sa_factor in sa_factors.items():
+                fh.write(
+                    _json.dumps(
+                        {
+                            "ts": ts,
+                            "template_name": tpl_name,
+                            "sa_factor": float(sa_factor),
+                            "eval_count": int(eval_counts.get(tpl_name, 0)),
+                            "final_weight": float(db_weights.get(tpl_name, 0.0)),
+                        }
+                    )
+                    + "\n"
+                )
+    except Exception:  # noqa: BLE001 — observability must never block synth init
+        logger.exception("template_weights ndjson emission failed")
 
 
 def _fetch_op_weight_rows(conn):

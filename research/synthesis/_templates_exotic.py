@@ -908,3 +908,123 @@ def tpl_recurrent_delta_block(
         return graph.add_op("add", [input_id, processed])
     except ValueError:
         return processed
+
+
+# ── Bucket D mines (Phase 3.1, 2026-05-04) ─────────────────────────
+#
+# Three new templates extracted from passing-cohort sub-patterns that pair an
+# `exotic_functional` op (passes solo at >=60% with no other mixer in graph)
+# with a certified `mixer` op. Empirical evidence in
+# research/reports/op_mixer_certification_v2.csv +
+# research/reports/new_templates_proposal.json.
+
+
+def _tpl_exotic_after_mixer(
+    graph: "ComputationGraph",
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights,
+    *,
+    exotic_op: str,
+    name: str,
+    add_post_proj: bool = True,
+) -> int:
+    """Shared body: norm -> conv1d_seq -> residual -> norm -> exotic -> [proj] -> residual."""
+    D = graph.model_dim
+    norm1 = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
+    normed1 = _instantiate_motif(graph, input_id, norm1, rng) if norm1 else input_id
+    mixed = _add(graph, "conv1d_seq", [normed1], context=f"{name}.mixer")
+    mixed = _fix_dim(graph, mixed)
+    mid = _residual(graph, input_id, mixed, context=f"{name}.mixer_resid")
+    norm2 = _add(graph, "rmsnorm", [mid], context=f"{name}.norm2")
+    refined = _add(graph, exotic_op, [norm2], context=f"{name}.exotic")
+    if add_post_proj:
+        refined = _add(
+            graph,
+            "linear_proj",
+            [refined],
+            {"out_dim": D},
+            context=f"{name}.refine_proj",
+        )
+    refined = _fix_dim(graph, refined)
+    return _residual(graph, mid, refined, context=f"{name}.exotic_resid")
+
+
+def tpl_tropical_attn_conv1d_seq_block(
+    graph: "ComputationGraph",
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """norm → conv1d_seq → residual → norm → tropical_attention → linear_proj → residual.
+
+    Bucket D mine: tropical_attention (exotic_functional, solo pass=0.67) +
+    conv1d_seq (mixer, solo pass=0.84). Sub-pattern observed in passing graphs
+    of `conditional_compute` and `mixed_recursion`.
+    """
+    return _tpl_exotic_after_mixer(
+        graph,
+        input_id,
+        rng,
+        weights,
+        exotic_op="tropical_attention",
+        name="tropical_attn_conv1d_seq_block",
+    )
+
+
+def tpl_rwkv_channel_conv1d_seq_block(
+    graph: "ComputationGraph",
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """norm → conv1d_seq → residual → norm → rwkv_channel → linear_proj → residual.
+
+    Bucket D mine: rwkv_channel (exotic_functional, solo pass=0.81) + conv1d_seq.
+    Sub-pattern from passing `recursive_depth_router` and `residual_block` graphs.
+    """
+    return _tpl_exotic_after_mixer(
+        graph,
+        input_id,
+        rng,
+        weights,
+        exotic_op="rwkv_channel",
+        name="rwkv_channel_conv1d_seq_block",
+    )
+
+
+def tpl_matmul_conv1d_seq_block(
+    graph: "ComputationGraph",
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """norm → conv1d_seq → residual → norm → proj_a × proj_b (matmul) → linear_proj → residual.
+
+    Bucket D mine: matmul refinement (exotic_functional, solo pass=0.71) +
+    conv1d_seq. Sub-pattern from passing `token_merge_block` graphs. Matmul is
+    binary, so two parallel projections feed it.
+    """
+    D = graph.model_dim
+    norm1 = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
+    normed1 = _instantiate_motif(graph, input_id, norm1, rng) if norm1 else input_id
+    mixed = _add(graph, "conv1d_seq", [normed1], context="matmul_conv1d.mixer")
+    mixed = _fix_dim(graph, mixed)
+    mid = _residual(graph, input_id, mixed, context="matmul_conv1d.mixer_resid")
+    norm2 = _add(graph, "rmsnorm", [mid], context="matmul_conv1d.norm2")
+    proj_a = _add(
+        graph, "linear_proj", [norm2], {"out_dim": D}, context="matmul_conv1d.proj_a"
+    )
+    proj_b = _add(
+        graph, "linear_proj", [norm2], {"out_dim": D}, context="matmul_conv1d.proj_b"
+    )
+    refined = _add(graph, "matmul", [proj_a, proj_b], context="matmul_conv1d.matmul")
+    refined = _add(
+        graph,
+        "linear_proj",
+        [refined],
+        {"out_dim": D},
+        context="matmul_conv1d.refine_proj",
+    )
+    refined = _fix_dim(graph, refined)
+    return _residual(graph, mid, refined, context="matmul_conv1d.exotic_resid")

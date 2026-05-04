@@ -70,10 +70,10 @@ ROUTING_TEMPLATE_REGISTRY = {
 
 
 ROUTING_TEMPLATE_DEFAULT_WEIGHTS = {
-    "difficulty_routed_block": 5.0,
-    "three_lane_adaptive": 5.0,
+    "difficulty_routed_block": 0.5,
+    "three_lane_adaptive": 0.5,
     "cascaded_early_exit": 4.5,
-    "hybrid_sparse_triplet_router": 6.0,
+    "hybrid_sparse_triplet_router": 0.5,
     "intelligent_multilane_router": 5.5,
     "multiscale_difficulty_router": 5.5,
     "multiscale_difficulty_router_adaptive_attn_ssm": 0.25,
@@ -85,9 +85,9 @@ ROUTING_TEMPLATE_DEFAULT_WEIGHTS = {
     # not worth 12% of sampling budget. The op itself is sound.
     "latent_compress_block": 0.5,
     "latent_compress_rwkv": 0.5,
-    "signal_routed_compression": 5.0,
+    "signal_routed_compression": 0.5,
     "dual_routing_stack": 6.0,
-    "dual_routing_deep": 5.0,
+    "dual_routing_deep": 0.5,
     "routing_conditioned_moe": 4.5,
     "mixed_recursion": 5.5,
     "topk_retrieval": 3.5,
@@ -98,7 +98,7 @@ ROUTING_TEMPLATE_DEFAULT_WEIGHTS = {
     "gated_lane_blend_block": 2.0,
     "feature_sparse_block": 2.0,
     "adaptive_sparse": 6.0,
-    "adaptive_conv_ffn": 5.5,
+    "adaptive_conv_ffn": 8.0,
     "adaptive_ssm_chain": 5.0,
     "adaptive_lane_recursion": 4.5,
 }

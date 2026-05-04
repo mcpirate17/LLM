@@ -394,16 +394,28 @@ class TestEndToEndDryRun:
 
 class TestEvaluateGraph:
     def test_compile_and_forward_cpu(self):
-        """Verify a simple graph compiles and passes forward on CPU."""
-        graph = generate_layer_graph(
-            GrammarConfig(composition_depth=1, max_ops=8, routing_mandatory=False),
-            seed=42,
-        )
-        result = evaluate_graph(graph, device="cpu", run_s1=False)
-        # At minimum it should compile
-        assert result.compile_ok, f"compile failed: {result.compile_error}"
-        assert result.param_count > 0
-        assert len(result.ops_present) > 0
+        """Verify a simple graph compiles and passes forward on CPU.
+
+        Iterates seeds because grammar weight changes can shift which template
+        a fixed seed picks; some templates have op counts that exceed max_ops.
+        Same retry pattern as test_forward_pass_basic below.
+        """
+        for seed in range(20):
+            try:
+                graph = generate_layer_graph(
+                    GrammarConfig(
+                        composition_depth=1, max_ops=8, routing_mandatory=False
+                    ),
+                    seed=seed,
+                )
+            except ValueError:
+                continue
+            result = evaluate_graph(graph, device="cpu", run_s1=False)
+            assert result.compile_ok, f"compile failed: {result.compile_error}"
+            assert result.param_count > 0
+            assert len(result.ops_present) > 0
+            return
+        pytest.fail("No seed in [0, 20) produced a graph fitting max_ops=8")
 
     def test_forward_pass_basic(self):
         """Multiple seeds to verify forward pass works."""
