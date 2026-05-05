@@ -24,10 +24,8 @@ from typing import Any
 import torch
 
 from research.eval.nano_controlled_holdout_probe import nano_controlled_holdout_probe
-from research.eval.utils import micro_train_loop
-from research.synthesis.compiler import compile_model
-from research.synthesis.serializer import graph_from_json
 from research.tools._db_maintenance import connect_readonly
+from research.tools._tuning_train import train_compiled_graph_base
 
 logger = logging.getLogger(__name__)
 
@@ -94,11 +92,12 @@ def _train_base(
     base_steps: int,
     device: str,
 ) -> torch.nn.Module:
-    graph = graph_from_json(graph_json_str)
-    model = compile_model([graph]).to(device)
-    batches = [torch.randint(0, VOCAB_SIZE, (4, 128), device=device) for _ in range(8)]
-    micro_train_loop(model, batches, vocab_size=VOCAB_SIZE, n_steps=base_steps, lr=3e-4)
-    return model
+    return train_compiled_graph_base(
+        graph_json_str,
+        base_steps=base_steps,
+        device=device,
+        vocab_size=VOCAB_SIZE,
+    )
 
 
 def _run_target(

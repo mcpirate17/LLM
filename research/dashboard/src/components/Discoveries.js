@@ -4,7 +4,7 @@ import { SCORE_MAX, scoreColor, scoreGradient, scoreToneLabel } from '../utils/f
 import { blimpColor, hellaswagColor, lossColor, noveltyColor, pplColor, probeAucColor } from '../utils/colors';
 import { useAriaData } from '../hooks/useAriaData';
 import { TIER_COLORS, TIER_LABELS, TIER_ORDER, bestLoss, percentOfReference } from '../utils/scoringEngine';
-import { DISCOVERY_TIER_FILTERS, capabilityQualityRank, capabilityQualityStatus, getDiscoveryDisplayStatus, matchesActiveTier } from '../utils/discoveryStatus';
+import { DISCOVERY_TIER_FILTERS, FAILED_DISCOVERY_TIERS, capabilityQualityRank, capabilityQualityStatus, getDiscoveryDisplayStatus, matchesActiveTier } from '../utils/discoveryStatus';
 import {
   ExpandedDetailPanel,
   FingerprintLeaderboardChart,
@@ -183,6 +183,14 @@ function metricDisplay(value, decimals = 3) {
   return num.toFixed(decimals);
 }
 
+function fingerprintFailureText(entry) {
+  const summary = entry?.fingerprint_failure_summary;
+  const failed = Array.isArray(summary?.failed_checks) ? summary.failed_checks : [];
+  if (!summary?.failed) return '--';
+  if (failed.length === 0) return 'Fingerprint incomplete';
+  return failed.map(check => `${check.label}: ${check.status}`).join('; ');
+}
+
 function fingerprintTone(key, value) {
   const num = finiteOrNull(value);
   if (num == null) return 'var(--text-muted)';
@@ -205,6 +213,14 @@ function scoreCellTone(key, value) {
     || key === 'binding_v2_investigation_auc'
     || key === 'binding_composite'
     || key === 'ar_auc'
+    || key === 'nano_ar_inv_score'
+    || key === 'nano_ar_inv_in_dist_pair_match_acc'
+    || key === 'nano_ar_inv_in_dist_class_acc'
+    || key === 'nano_ar_inv_held_pair_match_acc'
+    || key === 'nano_ar_inv_held_class_acc'
+    || key === 'controlled_lang_s05_nb_score'
+    || key === 'controlled_lang_s10_nb_score'
+    || key === 'controlled_lang_inv_nb_score'
   ) {
     return probeAucColor(value);
   }
@@ -248,6 +264,7 @@ const COLUMNS = [
   { key: 'fp_jacobian_spectral_norm_log', label: 'SpecLog', width: 82, title: 'Log-scaled Jacobian spectral norm.' },
   { key: 'fp_icld_velocity', label: 'ICLD Vel', width: 82, title: 'ICLD velocity. Empirically near-noise for capability.' },
   { key: 'fp_icld_delta_loss', label: 'ICLD ΔLoss', width: 92, title: 'ICLD early-to-late loss delta.' },
+  { key: '_fingerprint_failure', label: 'FP Failure', width: 220, title: 'Fingerprint checks that failed or blocked investigation completion.' },
   { key: 'init_sensitivity_std', label: 'InitStd', width: 82, title: 'Sensitivity to weight initialization (lower means more predictable).' },
   { key: 'wikitext_perplexity', label: 'WikiPPL', width: 90, title: 'WikiText-103 validation perplexity (lower is better).' },
   { key: 'hellaswag_acc', label: 'HellaSwag', width: 90, title: 'HellaSwag accuracy (commonsense reasoning).' },
@@ -257,6 +274,18 @@ const COLUMNS = [
   { key: 'binding_v2_investigation_auc', label: 'Bind v2', width: 78, title: 'Variable-binding probe AUC (v2 investigation protocol).' },
   { key: 'binding_composite', label: 'Bind Cmp', width: 84, title: 'Composite binding score (3-signal AND).' },
   { key: 'ar_auc', label: 'AR AUC', width: 78, title: 'Associative recall probe AUC.' },
+  { key: 'nano_ar_inv_score', label: 'Nano-AR', width: 78, title: 'Nano-AR investigation score: associative-recall pair/class aggregate used by the current binding composite.' },
+  { key: 'nano_ar_inv_in_dist_pair_match_acc', label: 'NAR ID Pair', width: 92, title: 'Nano-AR investigation in-distribution pair-match accuracy.' },
+  { key: 'nano_ar_inv_in_dist_class_acc', label: 'NAR ID Class', width: 94, title: 'Nano-AR investigation in-distribution class accuracy.' },
+  { key: 'nano_ar_inv_held_pair_match_acc', label: 'NAR Held Pair', width: 104, title: 'Nano-AR investigation held-out pair-match accuracy.' },
+  { key: 'nano_ar_inv_held_class_acc', label: 'NAR Held Class', width: 106, title: 'Nano-AR investigation held-out class accuracy.' },
+  { key: 'nano_ar_inv_status', label: 'NAR Status', width: 94, title: 'Nano-AR investigation probe status.' },
+  { key: 'nano_ar_inv_train_steps_done', label: 'NAR Steps', width: 90, title: 'Nano-AR investigation training steps completed.' },
+  { key: 'nano_ar_inv_elapsed_ms', label: 'NAR ms', width: 82, title: 'Nano-AR investigation elapsed runtime in milliseconds.' },
+  { key: 'nano_ar_inv_metric_version', label: 'NAR Ver', width: 118, title: 'Nano-AR investigation metric version.' },
+  { key: 'controlled_lang_s05_nb_score', label: 'NB S0.5', width: 82, title: 'Controlled-language Nano-Bind score at the S0.5 screening checkpoint.' },
+  { key: 'controlled_lang_s10_nb_score', label: 'NB S1.0', width: 82, title: 'Controlled-language Nano-Bind score at the S1.0 screening checkpoint.' },
+  { key: 'controlled_lang_inv_nb_score', label: 'NB Inv', width: 82, title: 'Controlled-language Nano-Bind score from the investigation checkpoint.' },
   { key: 'blimp_overall_accuracy', label: 'BLiMP', width: 78, title: 'BLiMP overall grammatical-acceptability accuracy.' },
   { key: 'ncd_score', label: 'NCD', width: 78, title: 'Normalized compression distance score.' },
   { key: 'rapid_screening_passed', label: 'Rapid', width: 70, title: 'Whether the rapid-screening pre-gate passed.' },
@@ -279,11 +308,10 @@ const CORE_VISIBLE_COLUMNS = [
   '_best_loss',
   'induction_v2_investigation_auc',
   'binding_v2_investigation_auc',
-  'hellaswag_acc',
-  'blimp_overall_accuracy',
-  'ar_auc',
+  'controlled_lang_s05_nb_score',
+  'controlled_lang_s10_nb_score',
+  'nano_ar_inv_score',
   'fp_jacobian_erf_density',
-  'fp_id_collapse_rate',
   'tier',
   '_details',
   '_compare',
@@ -296,6 +324,7 @@ const RESEARCH_VISIBLE_COLUMNS = [
   'param_efficiency',
   'sample_efficiency',
   'investigation_robustness',
+  'controlled_lang_inv_nb_score',
   'robustness_long_ctx_score',
   'max_viable_seq_len',
   'init_sensitivity_std',
@@ -304,11 +333,10 @@ const RESEARCH_VISIBLE_COLUMNS = [
 const DEFAULT_DISCOVERY_COLUMN_ADDONS = [
   'induction_v2_investigation_auc',
   'binding_v2_investigation_auc',
-  'hellaswag_acc',
-  'blimp_overall_accuracy',
-  'ar_auc',
+  'controlled_lang_s05_nb_score',
+  'controlled_lang_s10_nb_score',
+  'nano_ar_inv_score',
   'fp_jacobian_erf_density',
-  'fp_id_collapse_rate',
 ];
 
 const PROBES_VISIBLE_COLUMNS = [
@@ -323,6 +351,18 @@ const PROBES_VISIBLE_COLUMNS = [
   'binding_v2_investigation_auc',
   'binding_composite',
   'ar_auc',
+  'controlled_lang_s05_nb_score',
+  'controlled_lang_s10_nb_score',
+  'controlled_lang_inv_nb_score',
+  'nano_ar_inv_score',
+  'nano_ar_inv_in_dist_pair_match_acc',
+  'nano_ar_inv_in_dist_class_acc',
+  'nano_ar_inv_held_pair_match_acc',
+  'nano_ar_inv_held_class_acc',
+  'nano_ar_inv_status',
+  'nano_ar_inv_train_steps_done',
+  'nano_ar_inv_elapsed_ms',
+  'nano_ar_inv_metric_version',
   'blimp_overall_accuracy',
   'ncd_score',
   'rapid_screening_passed',
@@ -557,9 +597,9 @@ function Discoveries({
         sort: (isBacklog || isAllGraphs) ? 'loss_ratio' : 'composite_score',
         limit,
         view: isAllGraphs ? 'all_graphs' : (isBacklog ? 'backlog' : 'ranked'),
-        trusted_only: sourceFilter === 'trusted' ? '1' : '0',
+        trusted_only: sourceFilter === 'trusted' && activeTier !== 'failed' ? '1' : '0',
       });
-      if (isBacklog || isAllGraphs) params.set('include_failed', '1');
+      if (isBacklog || isAllGraphs || activeTier === 'failed') params.set('include_failed', '1');
       if (!isBacklog && !isAllGraphs && activeTier !== 'all') params.set('tier', activeTier);
       const q = debouncedSearchQuery.trim();
       if (q) {
@@ -721,6 +761,7 @@ function Discoveries({
 
   const sourceFiltered = useMemo(() => {
     return sorted.filter((entry) => {
+      if (activeTier === 'failed') return true;
       if (sourceFilter === 'backlog') return !entry?.entry_id;
       if (sourceFilter === 'all_graphs') return true;
       const bucket = provenanceBucket(entry);
@@ -729,7 +770,7 @@ function Discoveries({
       if (sourceFilter === 'untrusted') return bucket !== 'trusted';
       return bucket === sourceFilter;
     });
-  }, [sorted, sourceFilter]);
+  }, [sorted, sourceFilter, activeTier]);
 
   const tierFiltered = useMemo(() => {
     return sourceFiltered.filter((entry) => matchesActiveTier(entry, activeTier));
@@ -737,10 +778,12 @@ function Discoveries({
 
   const effectiveQualityFloorEnabled = useMemo(() => {
     if (!qualityFloorEnabled) return false;
+    if (activeTier === 'failed') return false;
     return sourceFilter === 'trusted' || sourceFilter === 'all';
-  }, [qualityFloorEnabled, sourceFilter]);
+  }, [qualityFloorEnabled, sourceFilter, activeTier]);
 
   const failedFiltered = useMemo(() => {
+    if (activeTier === 'failed') return tierFiltered;
     if (!hideFailed) return tierFiltered;
     return tierFiltered.filter(e => {
       if (e.is_reference) return true;
@@ -759,7 +802,7 @@ function Discoveries({
       if (tier === 'validation' && e.validation_baseline_ratio != null && !e.validation_passed) return false;
       return true;
     });
-  }, [tierFiltered, hideFailed]);
+  }, [tierFiltered, hideFailed, activeTier]);
 
   const capabilityFiltered = useMemo(() => {
     if (capabilityFilter === 'all') return failedFiltered;
@@ -815,6 +858,10 @@ function Discoveries({
     }
     base.backfill = backfill;
     base.replay = replay;
+    base.failed = base.failed ?? entries.reduce((total, entry) => {
+      const status = getDiscoveryDisplayStatus(entry);
+      return total + ((status.isFailure || FAILED_DISCOVERY_TIERS.has(status.tierKey)) ? 1 : 0);
+    }, 0);
     return base;
   }, [counts, data?.entries]);
   const tiers = DISCOVERY_TIER_FILTERS;
@@ -913,7 +960,7 @@ function Discoveries({
         {tiers.map(tier => {
           const count = tier === 'all'
             ? (counts.all || 0)
-            : (counts[tier] || 0);
+            : (summaryCounts[tier] || 0);
           return (
             <button
               key={tier}
@@ -1069,23 +1116,6 @@ function Discoveries({
               ? `Quality ≥ ${(QUALITY_FLOOR_THRESHOLD * 100).toFixed(0)}`
               : (qualityFloorEnabled ? 'Quality bypassed' : 'All quality')}
           </button>
-          {filtersDirty && (
-            <button
-              onClick={handleResetFilters}
-              style={{
-                fontSize: 11,
-                padding: '5px 12px',
-                cursor: 'pointer',
-                border: '1px solid var(--accent-orange)',
-                borderRadius: 4,
-                background: 'rgba(255, 166, 87, 0.10)',
-                color: 'var(--accent-orange)',
-              }}
-              title="Reset tier, search, provenance, quality, and reference filters"
-            >
-              Reset filters
-            </button>
-          )}
         </div>
 
         <div style={FILTER_PANEL_STYLE}>
@@ -1141,6 +1171,21 @@ function Discoveries({
 
         <div style={{ ...FILTER_PANEL_STYLE, justifyContent: 'space-between' }}>
           <span style={FILTER_PANEL_TITLE_STYLE}>Actions</span>
+          <button
+            onClick={handleResetFilters}
+            style={{
+              fontSize: 11,
+              padding: '5px 12px',
+              cursor: 'pointer',
+              border: `1px solid ${filtersDirty ? 'var(--accent-orange)' : 'var(--border)'}`,
+              borderRadius: 4,
+              background: filtersDirty ? 'rgba(255, 166, 87, 0.10)' : 'transparent',
+              color: filtersDirty ? 'var(--accent-orange)' : 'var(--text-secondary)',
+            }}
+            title="Reset tier, search, provenance, quality, and reference filters"
+          >
+            Reset filters
+          </button>
           <button
             onClick={fetchData}
             disabled={loading}
@@ -1538,7 +1583,7 @@ const DiscoveryRow = React.memo(function DiscoveryRow({
   handleSaveStatus,
   savingStatusRowId
 }) {
-  const canDelete = !entry.is_reference && (entry.tier === 'screening' || entry.tier === 'failed' || entry.tier === 'rejected' || entry.screening_passed === false || entry.investigation_passed === false || entry.validation_passed === false);
+  const canDelete = !entry.is_reference && (entry.tier === 'screening' || entry.tier === 'investigation_fingerprint_incomplete' || entry.tier === 'failed' || entry.tier === 'rejected' || entry.screening_passed === false || entry.investigation_passed === false || entry.validation_passed === false);
   const rowColors = rowBackgrounds({
     index: i,
     isHighlighted,
@@ -1692,6 +1737,24 @@ const DiscoveryRow = React.memo(function DiscoveryRow({
                   {metricDisplay(entry[col.key], 3)}
                 </td>
               );
+            case '_fingerprint_failure':
+              const failureText = fingerprintFailureText(entry);
+              return (
+                <td
+                  key={col.key}
+                  style={{
+                    ...tdStyle,
+                    whiteSpace: 'normal',
+                    overflowWrap: 'anywhere',
+                    fontFamily: 'monospace',
+                    color: entry.fingerprint_failure_summary?.failed ? 'var(--accent-red)' : 'var(--text-muted)',
+                    lineHeight: 1.3,
+                  }}
+                  title={failureText}
+                >
+                  {failureText}
+                </td>
+              );
             case 'init_sensitivity_std':
               return <td key={col.key} style={{ ...tdStyle, textAlign: 'right', fontFamily: 'monospace' }}>{entry.init_sensitivity_std != null ? Number(entry.init_sensitivity_std).toFixed(4) : '--'}</td>;
             case 'wikitext_perplexity':
@@ -1702,12 +1765,32 @@ const DiscoveryRow = React.memo(function DiscoveryRow({
             case 'binding_v2_investigation_auc':
             case 'binding_composite':
             case 'ar_auc':
+            case 'nano_ar_inv_score':
+            case 'nano_ar_inv_in_dist_pair_match_acc':
+            case 'nano_ar_inv_in_dist_class_acc':
+            case 'nano_ar_inv_held_pair_match_acc':
+            case 'nano_ar_inv_held_class_acc':
+            case 'controlled_lang_s05_nb_score':
+            case 'controlled_lang_s10_nb_score':
+            case 'controlled_lang_inv_nb_score':
             case 'blimp_overall_accuracy':
               return (
                 <td key={col.key} style={{ ...tdStyle, textAlign: 'right', fontFamily: 'monospace', color: scoreCellTone(col.key, entry[col.key]), fontWeight: 600 }}>
                   {entry[col.key] != null ? Number(entry[col.key]).toFixed(col.key === 'wikitext_perplexity' ? 2 : 3) : '--'}
                 </td>
               );
+            case 'nano_ar_inv_status':
+              return (
+                <td key={col.key} style={{ ...tdStyle, fontFamily: 'monospace', color: entry.nano_ar_inv_status === 'ok' ? 'var(--accent-green)' : (entry.nano_ar_inv_status ? 'var(--accent-yellow)' : 'var(--text-muted)') }}>
+                  {entry.nano_ar_inv_status || '--'}
+                </td>
+              );
+            case 'nano_ar_inv_train_steps_done':
+              return <td key={col.key} style={{ ...tdStyle, textAlign: 'right', fontFamily: 'monospace' }}>{entry.nano_ar_inv_train_steps_done != null ? Number(entry.nano_ar_inv_train_steps_done).toFixed(0) : '--'}</td>;
+            case 'nano_ar_inv_elapsed_ms':
+              return <td key={col.key} style={{ ...tdStyle, textAlign: 'right', fontFamily: 'monospace' }}>{entry.nano_ar_inv_elapsed_ms != null ? Number(entry.nano_ar_inv_elapsed_ms).toFixed(0) : '--'}</td>;
+            case 'nano_ar_inv_metric_version':
+              return <td key={col.key} style={{ ...tdStyle, fontFamily: 'monospace', color: entry.nano_ar_inv_metric_version ? 'var(--text-secondary)' : 'var(--text-muted)' }}>{entry.nano_ar_inv_metric_version || '--'}</td>;
             case 'ncd_score':
               return <td key={col.key} style={{ ...tdStyle, textAlign: 'right', fontFamily: 'monospace' }}>{entry.ncd_score != null ? Number(entry.ncd_score).toFixed(3) : '--'}</td>;
             case 'rapid_screening_passed':

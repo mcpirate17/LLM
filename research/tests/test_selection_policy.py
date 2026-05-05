@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 
 from research.scientist.notebook import LabNotebook
 from research.scientist.runner import ExperimentRunner, RunConfig
+from research.scientist.runner._helpers import program_result_kwargs_from_s1
 
 pytestmark = pytest.mark.unit
 
@@ -21,6 +22,38 @@ def _graph_json(op_name: str = "linear_proj") -> str:
     )
 
 
+def _stage1_result_kwargs(
+    *,
+    loss_ratio: float,
+    novelty_score: float,
+    graph_n_ops: int | None = None,
+    model_source: str = "graph_synthesis",
+    metric_offset: float = 0.0,
+) -> dict:
+    s1 = {
+        "passed": True,
+        "final_loss": 4.0 * loss_ratio,
+        "loss_ratio": loss_ratio,
+        "wikitext_perplexity": 160.0 + 20.0 * loss_ratio + metric_offset,
+        "wikitext_score": max(0.0, 1.0 - loss_ratio),
+        "hellaswag_acc": 0.30 + metric_offset * 0.001,
+        "hellaswag_status": "ran",
+        "blimp_overall_accuracy": 0.55 + metric_offset * 0.001,
+        "blimp_status": "ran",
+        "induction_auc": 0.12 + metric_offset * 0.001,
+        "binding_auc": 0.10 + metric_offset * 0.001,
+        "binding_composite": 0.11 + metric_offset * 0.001,
+        "ar_auc": 0.09 + metric_offset * 0.001,
+    }
+    extra = {
+        "stage1_passed": 1,
+        "novelty_score": novelty_score,
+    }
+    if graph_n_ops is not None:
+        extra["graph_n_ops"] = graph_n_ops
+    return program_result_kwargs_from_s1(s1, model_source=model_source, extra=extra)
+
+
 def _seed_candidates(nb: LabNotebook, exp_id: str):
     rows = [
         dict(
@@ -28,32 +61,30 @@ def _seed_candidates(nb: LabNotebook, exp_id: str):
             graph_json=_graph_json("attention"),
             stage0_passed=1,
             stage05_passed=1,
-            stage1_passed=1,
-            loss_ratio=0.52,
             baseline_loss_ratio=0.86,
-            novelty_score=0.33,
             throughput_tok_s=220.0,
             flops_per_token=1.3,
             peak_memory_mb=410.0,
             stability_score=0.80,
             has_nan_grad=0,
             has_zero_grad=0,
+            **_stage1_result_kwargs(loss_ratio=0.52, novelty_score=0.33),
         ),
         dict(
             graph_fingerprint="b1",
             graph_json=_graph_json("conv1d_seq"),
             stage0_passed=1,
             stage05_passed=1,
-            stage1_passed=1,
-            loss_ratio=0.58,
             baseline_loss_ratio=0.90,
-            novelty_score=0.77,
             throughput_tok_s=165.0,
             flops_per_token=1.1,
             peak_memory_mb=300.0,
             stability_score=0.92,
             has_nan_grad=0,
             has_zero_grad=0,
+            **_stage1_result_kwargs(
+                loss_ratio=0.58, novelty_score=0.77, metric_offset=1.0
+            ),
         ),
         dict(
             graph_fingerprint="c1",
@@ -285,10 +316,12 @@ def test_mode_selection_promotes_refinement_when_diverse_winners_exist():
             graph_json=_graph_json("attention" if idx % 2 == 0 else "conv1d_seq"),
             stage0_passed=1,
             stage05_passed=1,
-            stage1_passed=1,
-            loss_ratio=0.45 + 0.02 * idx,
-            novelty_score=0.25 + 0.08 * idx,
-            graph_n_ops=4 + idx,
+            **_stage1_result_kwargs(
+                loss_ratio=0.45 + 0.02 * idx,
+                novelty_score=0.25 + 0.08 * idx,
+                graph_n_ops=4 + idx,
+                metric_offset=float(idx),
+            ),
         )
     nb.complete_experiment(
         exp_id,
@@ -341,10 +374,12 @@ def test_refinement_source_selection_is_deterministic_and_diverse():
             graph_json=_graph_json("attention" if idx % 2 == 0 else "gelu"),
             stage0_passed=1,
             stage05_passed=1,
-            stage1_passed=1,
-            loss_ratio=0.40 + 0.03 * idx,
-            novelty_score=0.15 + 0.09 * idx,
-            graph_n_ops=3 + idx,
+            **_stage1_result_kwargs(
+                loss_ratio=0.40 + 0.03 * idx,
+                novelty_score=0.15 + 0.09 * idx,
+                graph_n_ops=3 + idx,
+                metric_offset=float(idx),
+            ),
         )
     nb.complete_experiment(
         exp_id,
@@ -399,6 +434,13 @@ def test_auto_recommend_records_next_experiment_plan_decision():
             loss_ratio=0.52 + 0.02 * idx,
             novelty_score=0.40 + 0.05 * idx,
             graph_n_ops=5 + idx,
+            wikitext_perplexity=180.0 + idx,
+            hellaswag_acc=0.31 + 0.01 * idx,
+            blimp_overall_accuracy=0.56 + 0.01 * idx,
+            induction_auc=0.12 + 0.01 * idx,
+            binding_auc=0.10 + 0.01 * idx,
+            binding_composite=0.11 + 0.01 * idx,
+            ar_auc=0.09 + 0.01 * idx,
         )
     nb.complete_experiment(
         exp_id,
@@ -468,10 +510,12 @@ def test_recursive_refinement_runs_generation_and_records_decision():
             graph_json=_graph_json("attention"),
             stage0_passed=1,
             stage05_passed=1,
-            stage1_passed=1,
-            loss_ratio=0.55 - 0.02 * idx,
-            novelty_score=0.30 + 0.07 * idx,
-            graph_n_ops=5 + idx,
+            **_stage1_result_kwargs(
+                loss_ratio=0.55 - 0.02 * idx,
+                novelty_score=0.30 + 0.07 * idx,
+                graph_n_ops=5 + idx,
+                metric_offset=float(idx),
+            ),
         )
         seed_ids.append(rid)
     nb.complete_experiment(
@@ -503,10 +547,12 @@ def test_recursive_refinement_runs_generation_and_records_decision():
                 graph_json=_graph_json("conv1d_seq"),
                 stage0_passed=1,
                 stage05_passed=1,
-                stage1_passed=1,
-                loss_ratio=0.48 - 0.01 * len(calls) - 0.001 * i,
-                novelty_score=0.32 + 0.03 * i,
-                graph_n_ops=6 + i,
+                **_stage1_result_kwargs(
+                    loss_ratio=0.48 - 0.01 * len(calls) - 0.001 * i,
+                    novelty_score=0.32 + 0.03 * i,
+                    graph_n_ops=6 + i,
+                    metric_offset=float(i),
+                ),
             )
         fake_nb.complete_experiment(
             exp,

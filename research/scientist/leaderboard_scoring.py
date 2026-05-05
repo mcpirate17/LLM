@@ -11,7 +11,6 @@ from typing import Any, Dict, Optional, Sequence, Union
 
 from . import scoring_config as _scoring_config
 from .thresholds import (
-    BINDING_AR_SOFT_GATE,
     BINDING_BINDING_AUC_SOFT_GATE,
     BINDING_INDUCTION_SOFT_GATE,
     BINDING_LOCAL_ONLY_PENALTY,
@@ -89,7 +88,7 @@ _PR_SELECT_COLS = (
     "fingerprint_json, hellaswag_acc, hellaswag_metric_version, "
     "hellaswag_tokenizer_mode, hellaswag_tiktoken_encoding, "
     "ar_auc, ar_final_acc, ar_timed_out, "
-    "ar_above_chance, induction_auc, binding_auc, blimp_overall_accuracy, "
+    "ar_above_chance, nano_ar_inv_score, induction_auc, binding_auc, blimp_overall_accuracy, "
     "tinystories_score, cross_task_score, diagnostic_score, "
     "fp_gromov_delta, fp_hierarchy_fitness, "
     "induction_v2_investigation_auc, induction_v2_investigation_max_gap_acc, "
@@ -213,7 +212,9 @@ def _pr_dict_to_score_kwargs(
         # a future revision — not yet wired into the points formula).
         "routing_health_score": pr_dict.get("routing_collapse_score"),
         "is_reference": is_reference,
-        # Binding probes
+        # Binding probes — ar_auc is read for legacy data display only; its
+        # weight in binding_composite was zeroed in favor of nano_ar_inv_score
+        # (V4 evidence: ar_auc max=0.015 across 8062 rows = pure noise).
         "ar_auc": pr_dict.get("ar_auc") or d.get("ar_auc"),
         "ar_timed_out": bool(pr_dict.get("ar_timed_out"))
         if pr_dict.get("ar_timed_out") is not None
@@ -221,6 +222,8 @@ def _pr_dict_to_score_kwargs(
         "ar_above_chance": bool(pr_dict.get("ar_above_chance"))
         if pr_dict.get("ar_above_chance") is not None
         else None,
+        "nano_ar_inv_score": pr_dict.get("nano_ar_inv_score")
+        or d.get("nano_ar_inv_score"),
         "induction_auc": pr_dict.get("induction_auc") or d.get("induction_auc"),
         "binding_auc": pr_dict.get("binding_auc") or d.get("binding_auc"),
         # v2 investigation-tier probes — overrides induction_auc/binding_auc
@@ -703,11 +706,18 @@ def _score_robustness_linguistics(
     quant_retention: Optional[float],
     long_ctx_score: Optional[float],
     blimp_accuracy: Optional[float],
-    effective_ar_auc: Optional[float],
+    effective_ar_auc: Optional[float],  # legacy passthrough; weight is now zero
     induction_auc: Optional[float],
     binding_auc_val: Optional[float],
+    nano_ar_inv_score: Optional[float] = None,
 ) -> tuple[float, Dict[str, float]]:
-    """Robustness (40pts), long context (25pts), binding probes, BLiMP (40pts)."""
+    """Robustness (40pts), long context (25pts), binding probes, BLiMP (40pts).
+
+    Binding composite formula (post-V4): ``0.4 * nano_ar_inv_score + 0.3 *
+    induction + 0.3 * binding``. ``effective_ar_auc`` is retained as a parameter
+    for legacy compatibility but no longer contributes to the score.
+    """
+    _ = effective_ar_auc
     bd: Dict[str, float] = {}
     total = 0.0
 
@@ -738,9 +748,11 @@ def _score_robustness_linguistics(
 
     binding_pts = 0.0
     if not inv_failed:
+        # ar_auc weight zeroed (V4 evidence: pure noise across 8062 rows).
+        # nano_ar_inv_score replaces it. nano_ar_inv_score is 0.6*pair + 0.4*class.
         _bc, _bc_n = 0.0, 0
-        if effective_ar_auc is not None:
-            _bc += 0.4 * effective_ar_auc
+        if nano_ar_inv_score is not None:
+            _bc += 0.4 * nano_ar_inv_score
             _bc_n += 1
         if induction_auc is not None:
             _bc += 0.3 * induction_auc
@@ -921,20 +933,21 @@ def _apply_scoring_penalties(
     param_count: Optional[float],
     induction_auc: Optional[float],
     binding_auc_val: Optional[float],
-    effective_ar_auc: Optional[float],
+    effective_ar_auc: Optional[float],  # legacy passthrough; soft-gate ignores
     ar_above_chance: Optional[bool],
     cfg: Optional[Dict[str, float]] = None,
+    nano_ar_inv_score: Optional[float] = None,
 ) -> tuple[float, float, float]:
     """Apply binding soft gate and param-size penalties.
 
     Returns (score, binding_pen, param_pen).
 
-    When ``cfg`` provides ``binding_all_below_penalty`` and/or
-    ``binding_composite_boost``, those override the default thresholds-based
-    multipliers. This lets v8.1 tighten the penalty from 0.80 → 0.50 and add
-    a +15% boost for graphs that actually bind, without disturbing the v7/v8
-    scoring behavior for historical rows.
+    Post-V4 the soft-gate uses ``nano_ar_inv_score`` (threshold 0.30) in place
+    of ``effective_ar_auc``. ``effective_ar_auc`` retains the parameter slot
+    for back-compat but no longer participates in the gate. The composite
+    boost likewise uses ``nano_ar_inv_score`` as the AR component.
     """
+    _ = effective_ar_auc
     cfg = cfg or {}
     _induction_below = (
         induction_auc is not None and induction_auc < BINDING_INDUCTION_SOFT_GATE
@@ -942,23 +955,26 @@ def _apply_scoring_penalties(
     _binding_below = (
         binding_auc_val is not None and binding_auc_val < BINDING_BINDING_AUC_SOFT_GATE
     )
+    # nano_ar_inv soft gate: pass at >=0.30 (V4 calibration). Legacy ar_above_chance
+    # still respected as a "model showed retrieval signal" override.
+    _NANO_AR_INV_SOFT_GATE = 0.30
     _ar_below = (
-        effective_ar_auc is not None
-        and effective_ar_auc < BINDING_AR_SOFT_GATE
+        nano_ar_inv_score is not None
+        and nano_ar_inv_score < _NANO_AR_INV_SOFT_GATE
         and not ar_above_chance
     )
     _signals = sum(
         [
             induction_auc is not None,
             binding_auc_val is not None,
-            effective_ar_auc is not None,
+            nano_ar_inv_score is not None,
         ]
     )
     _all_below = _signals >= 2 and all(
         [
             _induction_below or induction_auc is None,
             _binding_below or binding_auc_val is None,
-            _ar_below or effective_ar_auc is None,
+            _ar_below or nano_ar_inv_score is None,
         ]
     )
     binding_penalty = 1.0
@@ -976,8 +992,8 @@ def _apply_scoring_penalties(
     if not inv_failed and boost_mult > 1.0 and boost_floor > 0.0:
         _ind = float(induction_auc) if induction_auc is not None else 0.0
         _bind = float(binding_auc_val) if binding_auc_val is not None else 0.0
-        _ar = float(effective_ar_auc) if effective_ar_auc is not None else 0.0
-        _composite = 0.4 * _ar + 0.3 * _ind + 0.3 * _bind
+        _nai = float(nano_ar_inv_score) if nano_ar_inv_score is not None else 0.0
+        _composite = 0.4 * _nai + 0.3 * _ind + 0.3 * _bind
         if _composite >= boost_floor:
             score *= boost_mult
             # Fold the boost into binding_penalty so the breakdown reflects
@@ -1041,6 +1057,7 @@ def _compute_composite_generic(
     ar_auc: Optional[float] = None,
     ar_timed_out: Optional[bool] = None,
     ar_above_chance: Optional[bool] = None,
+    nano_ar_inv_score: Optional[float] = None,  # post-V4 replacement for ar_auc weight
     induction_auc: Optional[float] = None,
     binding_auc: Optional[float] = None,
     # v2 investigation-tier probes (override induction_auc/binding_auc when
@@ -1137,6 +1154,7 @@ def _compute_composite_generic(
         effective_ar_auc=_effective_ar_auc,
         induction_auc=_effective_induction_auc,
         binding_auc_val=_effective_binding_auc,
+        nano_ar_inv_score=nano_ar_inv_score,
     )
     understand_pts, understand_bd = _score_understanding_v8(
         cfg,
@@ -1173,6 +1191,7 @@ def _compute_composite_generic(
         effective_ar_auc=_effective_ar_auc,
         ar_above_chance=ar_above_chance,
         cfg=cfg,
+        nano_ar_inv_score=nano_ar_inv_score,
     )
 
     if decompose:
@@ -1696,9 +1715,30 @@ _CL_TIER_BD_KEYS = (
     "cl_s05_order",
     "cl_s10_sa",
     "cl_s10_order",
+    "cl_s10_nb_bucket",
     "cl_inv_sa",
     "cl_inv_order",
+    "cl_inv_nb_bucket",
 )
+
+
+def _controlled_nb_bucket_fraction(value: Optional[float]) -> float:
+    """Discrete bucket score for rank-order controlled NanoBind signals."""
+    if value is None:
+        return 0.0
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if v < 0.65:
+        return 0.0
+    if v < 0.75:
+        return 0.25
+    if v < 0.85:
+        return 0.50
+    if v < 0.95:
+        return 0.75
+    return 1.0
 
 
 def _score_controlled_lang_tier(
@@ -1707,10 +1747,13 @@ def _score_controlled_lang_tier(
     inv_failed: bool,
     kw: Dict[str, Any],
 ) -> tuple[float, Dict[str, float]]:
-    """Score the controlled-language probe ladder. Each tier credits
-    progressively more points: S0.5 (5pt) → S1.0 (15pt) → Investigation
-    (25pt) = 45pt total. Anchors set at cohort medians per tier so half
-    the cohort earns half the weight. inv_failed rows zero out the tier."""
+    """Score the controlled-language probe ladder.
+
+    S0.5 remains a small learning floor. S1.0/INV keep the calibrated SA/order
+    S-curves and add rank-order NanoBind buckets:
+    <.65=0, .65-.75=25%, .75-.85=50%, .85-.95=75%, >=.95=100%.
+    inv_failed rows zero out the tier.
+    """
     bd: Dict[str, float] = {k: 0.0 for k in _CL_TIER_BD_KEYS}
     if inv_failed:
         return 0.0, bd
@@ -1738,6 +1781,15 @@ def _score_controlled_lang_tier(
     for key, value, anchor in pairs:
         weight = float(cfg.get(f"w_{key}", 0.0))
         pts = weight * _scurve_higher_better(value, anchor)
+        bd[key] = pts
+        total += pts
+    bucket_pairs = (
+        ("cl_s10_nb_bucket", kw.get("controlled_lang_s10_nb_score")),
+        ("cl_inv_nb_bucket", kw.get("controlled_lang_inv_nb_score")),
+    )
+    for key, value in bucket_pairs:
+        weight = float(cfg.get(f"w_{key}", 0.0))
+        pts = weight * _controlled_nb_bucket_fraction(value)
         bd[key] = pts
         total += pts
     return total, bd
@@ -1839,15 +1891,21 @@ def _score_capability_tier_v10(
     cfg: Dict[str, float],
     *,
     inv_failed: bool,
-    effective_ar_auc: Optional[float],
+    effective_ar_auc: Optional[float],  # legacy — superseded by nano_ar_inv_score
     effective_induction_auc: Optional[float],
     effective_binding_auc: Optional[float],
     erf_density: Optional[float],
     id_collapse_rate: Optional[float],
     erf_decay_slope: Optional[float],
     logit_margin_velocity: Optional[float],
+    nano_ar_inv_score: Optional[float] = None,
 ) -> tuple[float, Dict[str, float]]:
-    """v10 capability tier — 7 metrics × 25pts, each S-curved independently."""
+    """v10 capability tier — 7 metrics × 25pts, each S-curved independently.
+
+    Post-V4: ``cap_ar`` is scored from ``nano_ar_inv_score`` rather than
+    ``effective_ar_auc`` (the legacy AR probe was uniformly noise across the DB).
+    """
+    _ = effective_ar_auc
     bd: Dict[str, float] = {}
     total = 0.0
 
@@ -1864,8 +1922,10 @@ def _score_capability_tier_v10(
             bd[k] = 0.0
         return 0.0, bd
 
+    # cap_ar uses nano_ar_inv_score (V4: legacy ar_auc was pure noise).
+    _cap_ar_input = nano_ar_inv_score
     pairs = (
-        ("cap_ar", _scurve_higher_better(effective_ar_auc, cfg["cap_ar_anchor"])),
+        ("cap_ar", _scurve_higher_better(_cap_ar_input, cfg["cap_ar_anchor"])),
         (
             "cap_induction",
             _scurve_higher_better(effective_induction_auc, cfg["cap_induction_anchor"]),
@@ -1990,6 +2050,7 @@ def compute_composite_v10(
         id_collapse_rate=kw.get("fp_id_collapse_rate"),
         erf_decay_slope=kw.get("fp_jacobian_erf_decay_slope"),
         logit_margin_velocity=kw.get("fp_logit_margin_velocity"),
+        nano_ar_inv_score=kw.get("nano_ar_inv_score"),
     )
     aux_pts, aux_bd = _score_trajectory_aux_v10(
         cfg,
@@ -2100,8 +2161,10 @@ def composite_score_ceiling(version: str | None = None) -> float:
         + cfg["w_cl_s05_order"]
         + cfg["w_cl_s10_sa"]
         + cfg["w_cl_s10_order"]
+        + cfg.get("w_cl_s10_nb_bucket", 0.0)
         + cfg["w_cl_inv_sa"]
         + cfg["w_cl_inv_order"]
+        + cfg.get("w_cl_inv_nb_bucket", 0.0)
     )
     return float(base_max)
 

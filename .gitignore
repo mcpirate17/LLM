@@ -99,6 +99,35 @@ research/perf_artifacts/
 research/profiling/
 profiles/
 
+# Generated reports, profiling, logs, and temp dirs
+research/**/reports/
+research/**/profiling/
+research/**/perf_artifacts/
+research/**/runtime_events/
+research/**/logs/
+research/**/tmp/
+research/**/temp/
+research/**/.tmp/
+research/**/.run/
+aria_core/**/reports/
+aria_core/**/profiling/
+aria_core/**/perf_artifacts/
+aria_core/**/runtime_events/
+aria_core/**/logs/
+aria_core/**/tmp/
+aria_core/**/temp/
+aria_core/**/.tmp/
+aria_core/**/.run/
+aria_designer/**/reports/
+aria_designer/**/profiling/
+aria_designer/**/perf_artifacts/
+aria_designer/**/runtime_events/
+aria_designer/**/logs/
+aria_designer/**/tmp/
+aria_designer/**/temp/
+aria_designer/**/.tmp/
+aria_designer/**/.run/
+
 # Backfill runtime state/logs
 research/runtime/backfill/*.log
 research/runtime/backfill/*_state.json

@@ -52,7 +52,9 @@ _TIMEOUT_S = 90.0
 _MAX_SEQ_LEN = 12
 _MAX_TEXT_WORDS = 6
 _PAD = 0
-_HELLASWAG_CACHE_FILE = Path.home() / ".cache" / "aria" / "hellaswag" / "validation.json"
+_HELLASWAG_CACHE_FILE = (
+    Path.home() / ".cache" / "aria" / "hellaswag" / "validation.json"
+)
 _BLIMP_CACHE_FILE = Path.home() / ".cache" / "aria" / "blimp" / "all_subtasks.json"
 _CONTROLLED_SENTENCE_CACHE_DIR = Path.home() / ".cache" / "aria" / "controlled_sentence"
 _BABI_CACHE_FILE = _CONTROLLED_SENTENCE_CACHE_DIR / "babi_qa_sentences.json"
@@ -152,7 +154,9 @@ def _dedupe(words: Sequence[str]) -> tuple[str, ...]:
 
 def _words(text: str) -> tuple[str, ...]:
     return tuple(
-        word for word in _WORD_RE.findall((text or "").lower()) if word not in _DROP_WORDS
+        word
+        for word in _WORD_RE.findall((text or "").lower())
+        if word not in _DROP_WORDS
     )
 
 
@@ -324,7 +328,9 @@ def _build_babi_items(
         if parts is None:
             continue
         prefix, location = parts
-        if require_allowed and not _all_words_allowed(f"{prefix} {location}", allowed_words):
+        if require_allowed and not _all_words_allowed(
+            f"{prefix} {location}", allowed_words
+        ):
             continue
         parsed.append((sentence, prefix, location))
         locations.append(location)
@@ -439,9 +445,7 @@ def _encode_text(
         enc_name = "gpt2" if tok == "gpt2" else tiktoken_encoding
         ids = tuple(
             int(i)
-            for i in _get_tiktoken_encoder(enc_name).encode(
-                text, allowed_special=set()
-            )
+            for i in _get_tiktoken_encoder(enc_name).encode(text, allowed_special=set())
         )
     if ids and max(ids) >= int(vocab_size):
         raise ValueError(
@@ -496,7 +500,9 @@ def _build_real_hellaswag_items(
             continue
         if not 0 <= label < 4:
             continue
-        prefix = _truncate_words(str(row.get("ctx") or ""), max_words=max_words, from_end=True)
+        prefix = _truncate_words(
+            str(row.get("ctx") or ""), max_words=max_words, from_end=True
+        )
         choices = [
             _truncate_words(str(ending), max_words=max_words, from_end=False)
             for ending in endings
@@ -508,11 +514,22 @@ def _build_real_hellaswag_items(
         if len(set(choices)) != 4:
             continue
         correct = choices[label]
-        distractors = tuple(choice for idx, choice in enumerate(choices) if idx != label)
+        distractors = tuple(
+            choice for idx, choice in enumerate(choices) if idx != label
+        )
         good_sentence = _sentence_with_min_words(f"{prefix} {correct}", min_words=4)
         bad_order = _bad_order_sentence(good_sentence)
-        bad_binding = _sentence_with_min_words(f"{prefix} {distractors[0]}", min_words=4)
-        candidates = (prefix, correct, *distractors, good_sentence, bad_order, bad_binding)
+        bad_binding = _sentence_with_min_words(
+            f"{prefix} {distractors[0]}", min_words=4
+        )
+        candidates = (
+            prefix,
+            correct,
+            *distractors,
+            good_sentence,
+            bad_order,
+            bad_binding,
+        )
         if not (
             _is_short_sentence(good_sentence, min_words=4, max_words=max_words * 2)
             and _is_short_sentence(bad_binding, min_words=4, max_words=max_words * 2)
@@ -585,7 +602,9 @@ def _build_real_train_sentences(
 ) -> tuple[str, ...]:
     candidates: list[str] = []
     for row in _cached_hellaswag_rows():
-        ctx = _truncate_words(str(row.get("ctx") or ""), max_words=max_words, from_end=True)
+        ctx = _truncate_words(
+            str(row.get("ctx") or ""), max_words=max_words, from_end=True
+        )
         endings = row.get("endings") or ()
         try:
             label = int(row.get("label"))
@@ -776,7 +795,9 @@ def build_sentence_probe_corpus(
     )
     n_roles = min(len(nouns), len(verbs), len(adjectives), len(adverbs))
     if n_roles < 8:
-        raise ValueError("not enough encodable real words for controlled sentence probe")
+        raise ValueError(
+            "not enough encodable real words for controlled sentence probe"
+        )
     nouns = nouns[:n_roles]
     verbs = verbs[:n_roles]
     adjectives = adjectives[:n_roles]
@@ -888,7 +909,9 @@ def _make_train_batch(
     return batch
 
 
-def _next_token_loss(model: nn.Module, batch: torch.Tensor, *, vocab_size: int) -> torch.Tensor:
+def _next_token_loss(
+    model: nn.Module, batch: torch.Tensor, *, vocab_size: int
+) -> torch.Tensor:
     logits = model(batch)
     if logits.shape[-1] > vocab_size:
         logits = logits[..., :vocab_size]
@@ -945,7 +968,9 @@ def _choice_accuracy(
     )
     if not scores:
         return 0.0
-    correct = sum(1 for row in scores if row and max(range(len(row)), key=row.__getitem__) == 0)
+    correct = sum(
+        1 for row in scores if row and max(range(len(row)), key=row.__getitem__) == 0
+    )
     return correct / len(scores)
 
 

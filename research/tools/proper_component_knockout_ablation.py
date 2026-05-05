@@ -41,7 +41,7 @@ from research.scientist.runner.execution_screening import (  # noqa: E402
 from research.scientist.runner._helpers import clear_gpu_memory  # noqa: E402
 from research.scientist.shared_utils import resolve_device  # noqa: E402
 from research.synthesis.compiler import compile_model  # noqa: E402
-from research.synthesis.serializer import graph_to_json  # noqa: E402
+from research.synthesis.serializer import graph_from_json, graph_to_json  # noqa: E402
 from research.tools.champion_exhaustive_ablation import (  # noqa: E402
     ensure_ablation_metric_completeness,
 )
@@ -70,9 +70,6 @@ S1_METRIC_COLUMNS = (
     "binding_auc",
     "binding_composite",
     "ar_auc",
-    "fp_jacobian_erf_density",
-    "fp_icld_velocity",
-    "fp_logit_margin_delta",
 )
 
 INVESTIGATION_METRIC_COLUMNS = (
@@ -92,9 +89,24 @@ INVESTIGATION_METRIC_COLUMNS = (
     "binding_v2_investigation_max_distance_acc",
     "binding_v2_investigation_status",
     "binding_v2_investigation_protocol_version",
-    "fp_jacobian_erf_density",
-    "fp_icld_velocity",
-    "fp_logit_margin_delta",
+)
+
+DEFAULT_TARGET_OPS = (
+    "rope_rotate",
+    "softmax_attention",
+    "token_entropy",
+    "entropy_score",
+    "semi_structured_2_4_linear",
+    "adjacent_token_merge",
+    "spectral_filter",
+    "latent_attention_compressor",
+    "matmul",
+    "selective_scan",
+    "rmsnorm",
+    "layernorm",
+    "cumsum",
+    "gather_topk",
+    "topk_gate",
 )
 
 
@@ -172,15 +184,20 @@ def _existing_fingerprints(nb: LabNotebook, fingerprints: list[str]) -> set[str]
 
 
 def _existing_knockout_s1_fingerprints(
-    nb: LabNotebook, fingerprints: list[str]
+    nb: LabNotebook,
+    fingerprints: list[str],
+    *,
+    stage1_passed_only: bool = False,
 ) -> set[str]:
     if not fingerprints:
         return set()
     placeholders = ",".join("?" for _ in fingerprints)
+    passed_clause = " AND stage1_passed = 1" if stage1_passed_only else ""
     rows = nb.conn.execute(
         f"""SELECT DISTINCT graph_fingerprint FROM program_results
             WHERE graph_fingerprint IN ({placeholders})
-              AND intentional_rerun_reason = 'proper_component_knockout_s1'""",
+              AND intentional_rerun_reason = 'proper_component_knockout_s1'
+              {passed_clause}""",
         tuple(fingerprints),
     ).fetchall()
     return {str(row["graph_fingerprint"]) for row in rows}
@@ -272,6 +289,7 @@ def build_component_children(
     *,
     global_seen: set[str],
     allow_existing_knockout_s1: bool = False,
+    target_op_names: set[str] | None = None,
 ) -> tuple[list[DeletionChild], list[dict[str, Any]]]:
     children: list[DeletionChild] = []
     rejected: list[dict[str, Any]] = []
@@ -279,6 +297,8 @@ def build_component_children(
     for node_id in parent.graph.topological_order():
         node = parent.graph.nodes[node_id]
         if node.is_input or node_id not in reachable:
+            continue
+        if target_op_names and node.op_name not in target_op_names:
             continue
         child, meta = _candidate_bypass_children(
             parent,
@@ -318,6 +338,81 @@ def build_component_children(
                 kept.append(child)
         children = kept
     return children, rejected
+
+
+def select_induction_v2_parents(
+    nb: LabNotebook,
+    *,
+    top_k: int,
+    include_references: bool,
+    parent_result_ids: set[str] | None = None,
+) -> list[ParentCandidate]:
+    leaderboard_cols = {
+        str(row["name"]) for row in nb.conn.execute("PRAGMA table_info(leaderboard)")
+    }
+    reference_clause = ""
+    if not include_references and "is_reference" in leaderboard_cols:
+        reference_clause = "AND COALESCE(l.is_reference, 0) = 0"
+    parent_filter = ""
+    params: list[Any] = []
+    if parent_result_ids:
+        placeholders = ",".join("?" for _ in parent_result_ids)
+        parent_filter = f"AND pr.result_id IN ({placeholders})"
+        params.extend(sorted(parent_result_ids))
+    params.append(max(1, int(top_k)))
+    rows = nb.conn.execute(
+        f"""
+        SELECT pr.result_id, pr.experiment_id, pr.graph_fingerprint, pr.graph_json,
+               pr.loss_ratio, e.config_json, l.composite_score,
+               pr.induction_v2_investigation_auc,
+               pr.binding_v2_investigation_auc
+        FROM leaderboard l
+        JOIN program_results pr ON pr.result_id = l.result_id
+        LEFT JOIN experiments e ON e.experiment_id = pr.experiment_id
+        WHERE COALESCE(pr.stage1_passed, 0) = 1
+          AND TRIM(COALESCE(pr.graph_json, '')) <> ''
+          AND pr.induction_v2_investigation_auc IS NOT NULL
+          AND pr.induction_v2_investigation_status = 'ok'
+          AND pr.wikitext_perplexity IS NOT NULL
+          AND pr.hellaswag_acc IS NOT NULL
+          AND pr.blimp_overall_accuracy IS NOT NULL
+          AND pr.induction_auc IS NOT NULL
+          AND pr.binding_auc IS NOT NULL
+          AND pr.binding_composite IS NOT NULL
+          AND pr.ar_auc IS NOT NULL
+          {reference_clause}
+          {parent_filter}
+        ORDER BY pr.induction_v2_investigation_auc DESC,
+                 COALESCE(l.composite_score, 0) DESC,
+                 pr.loss_ratio ASC
+        LIMIT ?
+        """,
+        tuple(params),
+    ).fetchall()
+    parents: list[ParentCandidate] = []
+    seen_fingerprints: set[str] = set()
+    for row in rows:
+        graph = graph_from_json(str(row["graph_json"]))
+        fingerprint = str(row["graph_fingerprint"] or graph.fingerprint())
+        if fingerprint in seen_fingerprints:
+            continue
+        seen_fingerprints.add(fingerprint)
+        config_payload = json.loads(row["config_json"] or "{}")
+        config = RunConfig.from_dict(
+            config_payload if isinstance(config_payload, dict) else {}
+        )
+        parents.append(
+            ParentCandidate(
+                result_id=str(row["result_id"]),
+                experiment_id=str(row["experiment_id"]),
+                fingerprint=fingerprint,
+                loss_ratio=_optional_float(row["loss_ratio"]),
+                composite_score=_optional_float(row["composite_score"]),
+                graph=graph,
+                config=config,
+            )
+        )
+    return parents
 
 
 def child_status(child: DeletionChild) -> dict[str, Any]:
@@ -867,6 +962,7 @@ def run_investigation_phase(
         str(s1_child_rows[child.fingerprint]["result_id"])
         for child in parent_plan.children
         if child.fingerprint in s1_child_rows
+        and s1_child_rows[child.fingerprint].get("stage1_passed")
         and s1_child_rows[child.fingerprint].get("result_id")
     ]
     if not source_result_ids:
@@ -904,7 +1000,10 @@ def run_investigation_phase(
         thread.join()
     nb.flush_writes()
     expected_children = [
-        child for child in parent_plan.children if child.fingerprint in s1_child_rows
+        child
+        for child in parent_plan.children
+        if child.fingerprint in s1_child_rows
+        and s1_child_rows[child.fingerprint].get("stage1_passed")
     ]
     rows = _wait_for_complete_phase_rows(
         nb,
@@ -924,12 +1023,22 @@ def build_plans(
     allow_existing_knockout_s1: bool = False,
     require_existing_knockout_s1: bool = False,
     parent_result_ids: set[str] | None = None,
+    rank_by: str = "composite",
+    target_op_names: set[str] | None = None,
 ) -> list[ParentPlan]:
-    parents = select_top_parents(
-        nb,
-        top_k=max(1, int(top_k)),
-        include_references=bool(include_references),
-    )
+    if rank_by == "induction_v2":
+        parents = select_induction_v2_parents(
+            nb,
+            top_k=max(1, int(top_k)),
+            include_references=bool(include_references),
+            parent_result_ids=parent_result_ids,
+        )
+    else:
+        parents = select_top_parents(
+            nb,
+            top_k=max(1, int(top_k)),
+            include_references=bool(include_references),
+        )
     plans: list[ParentPlan] = []
     global_seen: set[str] = set()
     for parent in parents:
@@ -945,10 +1054,13 @@ def build_plans(
             config,
             global_seen=global_seen,
             allow_existing_knockout_s1=allow_existing_knockout_s1,
+            target_op_names=target_op_names,
         )
         if require_existing_knockout_s1:
             existing_s1 = _existing_knockout_s1_fingerprints(
-                nb, [child.fingerprint for child in children]
+                nb,
+                [child.fingerprint for child in children],
+                stage1_passed_only=True,
             )
             kept_children: list[DeletionChild] = []
             for child in children:
@@ -957,7 +1069,7 @@ def build_plans(
                 else:
                     rejected.append(
                         {
-                            "reason": "no_existing_knockout_s1_row",
+                            "reason": "no_existing_passed_knockout_s1_row",
                             "node_id": child.node_id,
                             "op_name": child.op_name,
                             "fingerprint": child.fingerprint,
@@ -981,6 +1093,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--db", default=str(DB_PATH))
     parser.add_argument("--top-k", type=int, default=2)
     parser.add_argument(
+        "--rank-by",
+        choices=("composite", "induction_v2"),
+        default="composite",
+        help="Parent selection order. induction_v2 requires complete v2 parent rows.",
+    )
+    parser.add_argument(
         "--parent-result-id",
         action="append",
         default=[],
@@ -992,6 +1110,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--include-references", action="store_true")
     parser.add_argument("--device", default=None)
     parser.add_argument("--investigation-steps", type=int, default=2500)
+    parser.add_argument(
+        "--target-op",
+        action="append",
+        default=[],
+        help=(
+            "Restrict knockout children to this op name. May be passed multiple "
+            "times. If omitted, all reachable non-input ops are considered."
+        ),
+    )
+    parser.add_argument(
+        "--default-induction-targets",
+        action="store_true",
+        help="Use the curated induction-v2 target op set.",
+    )
     parser.add_argument("--s1-only", action="store_true")
     parser.add_argument("--investigation-only", action="store_true")
     parser.add_argument(
@@ -1017,6 +1149,9 @@ def main() -> int:
     status_path = RUNTIME_DIR / "proper_component_knockout_ablation_status.json"
     nb = LabNotebook(str(db_path), use_native=False)
     try:
+        target_op_names = set(args.target_op or [])
+        if args.default_induction_targets:
+            target_op_names.update(DEFAULT_TARGET_OPS)
         plans = build_plans(
             nb=nb,
             top_k=max(1, int(args.top_k)),
@@ -1027,6 +1162,8 @@ def main() -> int:
             ),
             require_existing_knockout_s1=bool(args.investigation_only),
             parent_result_ids=set(args.parent_result_id or []) or None,
+            rank_by=str(args.rank_by),
+            target_op_names=target_op_names or None,
         )
         if args.parent_result_id and not plans:
             requested = ", ".join(args.parent_result_id)
@@ -1039,6 +1176,8 @@ def main() -> int:
             "log_path": str(log_path),
             "db_path": str(db_path),
             "top_k": max(1, int(args.top_k)),
+            "rank_by": str(args.rank_by),
+            "target_op_names": sorted(target_op_names),
             "parent_result_ids": list(args.parent_result_id or []),
             "investigation_steps": int(args.investigation_steps),
             "audit_only": bool(args.audit_only),
@@ -1106,6 +1245,11 @@ def main() -> int:
                 )
                 for child in plan.children:
                     child_row = s1_rows.get(child.fingerprint)
+                    if child_row is None:
+                        status.setdefault("s1_evidence_skipped_no_row", []).append(
+                            child_status(child)
+                        )
+                        continue
                     evidence_id = record_phase_evidence(
                         nb,
                         parent=plan.parent,
@@ -1122,6 +1266,7 @@ def main() -> int:
                         """SELECT * FROM program_results
                            WHERE graph_fingerprint = ?
                              AND intentional_rerun_reason = 'proper_component_knockout_s1'
+                             AND stage1_passed = 1
                            ORDER BY timestamp DESC LIMIT 1""",
                         (child.fingerprint,),
                     ).fetchone()
@@ -1160,6 +1305,11 @@ def main() -> int:
                 if inv_exp_id:
                     for child in plan.children:
                         child_row = inv_rows.get(child.fingerprint)
+                        if child_row is None:
+                            status.setdefault(
+                                "investigation_evidence_skipped_no_row", []
+                            ).append(child_status(child))
+                            continue
                         evidence_id = record_phase_evidence(
                             nb,
                             parent=plan.parent,

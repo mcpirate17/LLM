@@ -8,6 +8,7 @@ Scaffold families:
     - gpt2_attn: GPT-2-style block with variable attention slot
     - gpt2_ffn: GPT-2-style block with variable FFN slot
     - gpt2_replace: GPT-2-style block with arbitrary post-attention replacement op
+    - hybrid_routing: valid token-gate/span/router/lane/merge routing block
     - mamba_mixer: Mamba-style block with variable mixer/SSM slot
     - pair_residual: two residualized candidate ops in sequence
 
@@ -97,6 +98,14 @@ _PAIR_OPS = (
     "low_rank_proj",
     "bottleneck_proj",
 )
+_HYBRID_ROUTING_OPS = (
+    "hybrid_token_gate",
+    "sparse_span_builder",
+    "hybrid_sparse_router",
+    "default_path",
+    "lane_conditioned_block",
+    "calibrated_branch_merge",
+)
 
 _CATALOG_SCAFFOLD_FAMILY_BY_OP: dict[str, str] = {
     "adaptive_rank_gate": "gpt2_replace",
@@ -114,16 +123,22 @@ _CATALOG_SCAFFOLD_FAMILY_BY_OP: dict[str, str] = {
     "feature_sparsity": "gpt2_replace",
     "gated_lane_blend": "mamba_mixer",
     "hetero_moe": "gpt2_ffn",
+    "hybrid_sparse_router": "hybrid_routing",
+    "hybrid_token_gate": "hybrid_routing",
     "kronecker_linear": "gpt2_ffn",
+    "lane_conditioned_block": "hybrid_routing",
     "learned_token_gate": "gpt2_replace",
     "n_way_sparse_router": "gpt2_ffn",
     "relu_gated_moe": "gpt2_ffn",
     "score_depth_blend": "gpt2_replace",
     "signal_conditioned_compression": "gpt2_replace",
+    "sparse_span_builder": "hybrid_routing",
     "sparse_bottleneck_moe": "gpt2_ffn",
     "spectral_filter": "gpt2_ffn",
     "token_class_proj": "gpt2_replace",
     "token_entropy": "gpt2_replace",
+    "calibrated_branch_merge": "hybrid_routing",
+    "default_path": "hybrid_routing",
 }
 
 _OP_CONFIGS: dict[str, dict[str, Any]] = {
@@ -183,6 +198,8 @@ def recommended_scaffold_family(op_name: str) -> str | None:
         return "mamba_mixer"
     if canonical in _PAIR_OPS:
         return "pair_residual"
+    if canonical in _HYBRID_ROUTING_OPS:
+        return "hybrid_routing"
     return _CATALOG_SCAFFOLD_FAMILY_BY_OP.get(canonical)
 
 
@@ -360,6 +377,79 @@ def build_pair_residual_scaffold(
     return graph
 
 
+def build_hybrid_routing_scaffold(
+    focus_op: str | None = None,
+    *,
+    model_dim: int = _DEFAULT_MODEL_DIM,
+) -> ComputationGraph:
+    canonical_focus = OP_NAME_ALIASES.get(focus_op, focus_op) if focus_op else None
+    if canonical_focus is not None and canonical_focus not in _HYBRID_ROUTING_OPS:
+        raise ValueError(f"Unsupported hybrid routing focus op: {focus_op}")
+
+    graph = ComputationGraph(model_dim=model_dim)
+    inp = graph.add_input()
+    norm1 = _add(graph, "rmsnorm", inp, model_dim=model_dim)
+
+    if canonical_focus is None:
+        proj = _add(graph, "linear_proj", norm1, model_dim=model_dim)
+        mid = graph.add_op("add", [inp, _fix_dim(graph, proj)])
+        norm2 = _add(graph, "rmsnorm", mid, model_dim=model_dim)
+        ffn = _add(graph, "swiglu_mlp", norm2, model_dim=model_dim)
+        out = graph.add_op("add", [mid, _fix_dim(graph, ffn)])
+        graph.set_output(out)
+        graph.metadata.update(
+            {
+                "scaffold_family": "hybrid_routing",
+                "candidate_ops": [],
+                "scaffold_control": True,
+            }
+        )
+        return graph
+
+    default = graph.add_op("default_path", [norm1], config={})
+    gate = graph.add_op("hybrid_token_gate", [norm1], config={"threshold": 0.45})
+    spans = graph.add_op(
+        "sparse_span_builder",
+        [gate],
+        config={"span_width": 3, "fallback_behavior": "default_path"},
+    )
+    routed = graph.add_op(
+        "hybrid_sparse_router",
+        [spans],
+        config={
+            "span_width": 3,
+            "lane_count": 3,
+            "confidence_threshold": 0.45,
+            "min_keep_fraction": 0.125,
+        },
+    )
+    lane = graph.add_op("lane_conditioned_block", [routed], config={"lane_id": 1})
+    merged = graph.add_op(
+        "calibrated_branch_merge",
+        [default, lane],
+        config={
+            "normalize_inputs": True,
+            "primary_role": "default",
+            "secondary_role": "routed",
+            "min_secondary_share": 0.08,
+            "max_secondary_share": 0.28,
+        },
+    )
+    mid = graph.add_op("add", [inp, _fix_dim(graph, merged)])
+    norm2 = _add(graph, "rmsnorm", mid, model_dim=model_dim)
+    ffn = _add(graph, "swiglu_mlp", norm2, model_dim=model_dim)
+    out = graph.add_op("add", [mid, _fix_dim(graph, ffn)])
+    graph.set_output(out)
+    graph.metadata.update(
+        {
+            "scaffold_family": "hybrid_routing",
+            "candidate_ops": [canonical_focus],
+            "scaffold_ops": list(_HYBRID_ROUTING_OPS),
+        }
+    )
+    return graph
+
+
 def build_scaffold(case: ScaffoldCase, *, model_dim: int) -> ComputationGraph:
     if case.family == "gpt2_attn":
         return build_gpt2_attn_scaffold(
@@ -381,6 +471,8 @@ def build_scaffold(case: ScaffoldCase, *, model_dim: int) -> ComputationGraph:
             case.op_b or "swiglu_mlp",
             model_dim=model_dim,
         )
+    if case.family == "hybrid_routing":
+        return build_hybrid_routing_scaffold(case.op_a, model_dim=model_dim)
     raise ValueError(f"Unknown scaffold family: {case.family}")
 
 
@@ -469,6 +561,19 @@ def generate_cases(
                         op_b=op_b,
                     )
                 )
+        elif family == "hybrid_routing":
+            cases.append(
+                ScaffoldCase(
+                    family=family,
+                    name="hybrid_routing:control",
+                    op_a=None,
+                )
+            )
+            candidates = _family_candidates(op_list, _HYBRID_ROUTING_OPS)
+            cases.extend(
+                ScaffoldCase(family=family, name=f"hybrid_routing:{op}", op_a=op)
+                for op in candidates
+            )
         else:
             raise ValueError(f"Unknown family: {family}")
     return cases
@@ -506,6 +611,7 @@ def _baseline_key(family: str) -> str:
         "gpt2_replace": "gpt2_replace:control",
         "mamba_mixer": "mamba_mixer:control",
         "pair_residual": "pair_residual:control",
+        "hybrid_routing": "hybrid_routing:control",
     }[family]
 
 
@@ -672,6 +778,7 @@ def main() -> None:
             "gpt2_attn",
             "gpt2_ffn",
             "gpt2_replace",
+            "hybrid_routing",
             "mamba_mixer",
             "pair_residual",
         ],

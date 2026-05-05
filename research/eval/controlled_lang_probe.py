@@ -38,7 +38,7 @@ from .utils import clip_grad_norm, make_adamw
 
 logger = logging.getLogger(__name__)
 
-CONTROLLED_LANG_METRIC_VERSION = "controlled_lang_v1"
+CONTROLLED_LANG_METRIC_VERSION = "controlled_lang_v2"
 
 _DEFAULT_ACTIVE_VOCAB = 80  # codex's calibrated default
 _DEFAULT_TRAIN_STEPS = 20  # codex's calibrated default
@@ -56,6 +56,7 @@ class ControlledLangResult:
     active_vocab_size: int
     elapsed_ms: float
     status: str
+    checkpoints: tuple[Dict[str, Any], ...] = ()
     metric_version: str = CONTROLLED_LANG_METRIC_VERSION
 
     def to_dict(self) -> Dict[str, Any]:
@@ -66,6 +67,8 @@ class ControlledLangResult:
             "controlled_lang_elapsed_ms": self.elapsed_ms,
             "controlled_lang_status": self.status,
         }
+        if self.checkpoints:
+            out["controlled_lang_checkpoints"] = list(self.checkpoints)
         out.update(self.nano_blimp)
         out.update(self.synthetic_association)
         return out
@@ -82,6 +85,8 @@ def controlled_lang_probe(
     device: str = "cuda",
     seed: int = 42,
     timeout_s: float = _TIMEOUT_S,
+    checkpoint_steps: tuple[int, ...] | None = None,
+    preserve_state: bool = True,
 ) -> ControlledLangResult:
     """Train once on the controlled-language association corpus, then
     evaluate both synthetic_association (4-way forced choice) and
@@ -104,43 +109,31 @@ def controlled_lang_probe(
 
     # state_dict snapshot — survives weight_norm parametrize where deepcopy
     # fails (the silent-fail bug we hit on adaptive_conv_ffn earlier).
-    saved_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
+    saved_state = (
+        {k: v.detach().clone() for k, v in model.state_dict().items()}
+        if preserve_state
+        else None
+    )
     was_training = model.training
 
     rng = torch.Generator(device=device)
     rng.manual_seed(int(seed))
     steps = 0
     train_status = "ok"
-    try:
-        model.train()
-        opt = make_adamw(model.parameters(), lr=lr)
-        for step in range(int(n_train_steps)):
-            if time.perf_counter() > deadline:
-                train_status = "timeout"
-                break
-            input_ids, targets = _make_train_batch(layout, batch_size, device, rng)
-            opt.zero_grad(set_to_none=True)
-            logits = model(input_ids)
-            pred_logits = logits[:, 1, layout.answer_lo : layout.answer_hi]
-            loss = F.cross_entropy(pred_logits, targets - layout.answer_lo)
-            if not torch.isfinite(loss):
-                train_status = "non_finite_loss"
-                break
-            loss.backward()
-            clip_grad_norm(model.parameters(), 1.0)
-            opt.step()
-            steps = step + 1
+    checkpoints = tuple(
+        sorted(
+            {
+                int(step)
+                for step in (checkpoint_steps or ())
+                if int(step) > 0 and int(step) <= int(n_train_steps)
+            }
+        )
+    )
+    checkpoint_set = set(checkpoints)
+    checkpoint_payloads: list[Dict[str, Any]] = []
+    checkpoint_results: dict[int, tuple[Dict[str, Any], Dict[str, Any]]] = {}
 
-        if train_status not in ("ok", "timeout"):
-            return ControlledLangResult(
-                nano_blimp={},
-                synthetic_association={},
-                n_train_steps=steps,
-                active_vocab_size=layout.active_vocab_size,
-                elapsed_ms=round((time.perf_counter() - t0) * 1000, 1),
-                status=train_status,
-            )
-
+    def _eval_current(current_steps: int) -> tuple[Dict[str, Any], Dict[str, Any]]:
         # Eval 1: synthetic_association (4-way forced choice). Reuse codex's
         # internal eval helper directly so we don't re-train.
         model.eval()
@@ -167,7 +160,7 @@ def controlled_lang_probe(
             adjective_accuracy=round(float(adj_acc), 4),
             n_words=layout.n_per_type * 3,
             n_pairs=layout.n_per_type * 2,
-            n_train_steps=steps,
+            n_train_steps=current_steps,
             active_vocab_size=layout.active_vocab_size,
             chance=layout.chance,
             elapsed_ms=0.0,
@@ -177,8 +170,77 @@ def controlled_lang_probe(
 
         # Eval 2: nano_blimp on the same trained state (minimal-pair log-prob).
         nb = nano_blimp_eval_only(model, layout, device=device).to_dict()
-        # Tag nb with the codex-shared version as well for traceability.
         nb.setdefault("nano_blimp_metric_version", NANO_BLIMP_METRIC_VERSION)
+        return sa, nb
+
+    def _checkpoint_payload(
+        current_steps: int, sa: Dict[str, Any], nb: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        return {
+            "steps": int(current_steps),
+            "active_vocab_size": int(layout.active_vocab_size),
+            "synthetic_association_score": sa.get("synthetic_association_score"),
+            "synthetic_association_verb_accuracy": sa.get(
+                "synthetic_association_verb_accuracy"
+            ),
+            "synthetic_association_adjective_accuracy": sa.get(
+                "synthetic_association_adjective_accuracy"
+            ),
+            "nano_blimp_score": nb.get("nano_blimp_score"),
+            "nano_blimp_order_grammaticality_acc": nb.get(
+                "nano_blimp_order_grammaticality_acc"
+            ),
+            "nano_blimp_binding_fidelity_acc": nb.get(
+                "nano_blimp_binding_fidelity_acc"
+            ),
+            "nano_blimp_binding_fidelity_held_out_acc": nb.get(
+                "nano_blimp_binding_fidelity_held_out_acc"
+            ),
+            "nano_blimp_held_out_score": nb.get("nano_blimp_held_out_score"),
+        }
+
+    try:
+        model.train()
+        opt = make_adamw(model.parameters(), lr=lr)
+        for step in range(int(n_train_steps)):
+            if time.perf_counter() > deadline:
+                train_status = "timeout"
+                break
+            input_ids, targets = _make_train_batch(layout, batch_size, device, rng)
+            opt.zero_grad(set_to_none=True)
+            logits = model(input_ids)
+            pred_logits = logits[:, 1, layout.answer_lo : layout.answer_hi]
+            loss = F.cross_entropy(pred_logits, targets - layout.answer_lo)
+            if not torch.isfinite(loss):
+                train_status = "non_finite_loss"
+                break
+            loss.backward()
+            clip_grad_norm(model.parameters(), 1.0)
+            opt.step()
+            steps = step + 1
+            if steps in checkpoint_set:
+                sa_cp, nb_cp = _eval_current(steps)
+                checkpoint_results[steps] = (sa_cp, nb_cp)
+                checkpoint_payloads.append(_checkpoint_payload(steps, sa_cp, nb_cp))
+
+        if train_status not in ("ok", "timeout"):
+            return ControlledLangResult(
+                nano_blimp={},
+                synthetic_association={},
+                n_train_steps=steps,
+                active_vocab_size=layout.active_vocab_size,
+                elapsed_ms=round((time.perf_counter() - t0) * 1000, 1),
+                status=train_status,
+            )
+
+        if checkpoint_payloads and checkpoint_payloads[-1]["steps"] == int(steps):
+            # The final checkpoint was just evaluated; reuse it instead of
+            # running the same forced-choice/minimal-pair eval a second time.
+            sa, nb = checkpoint_results[int(steps)]
+        else:
+            sa, nb = _eval_current(steps)
+            if checkpoints:
+                checkpoint_payloads.append(_checkpoint_payload(steps, sa, nb))
 
         return ControlledLangResult(
             nano_blimp=nb,
@@ -187,9 +249,11 @@ def controlled_lang_probe(
             active_vocab_size=layout.active_vocab_size,
             elapsed_ms=round((time.perf_counter() - t0) * 1000, 1),
             status=train_status,
+            checkpoints=tuple(checkpoint_payloads),
         )
     finally:
-        model.load_state_dict(saved_state)
+        if saved_state is not None:
+            model.load_state_dict(saved_state)
         model.train(was_training)
         if device == "cuda":
             torch.cuda.empty_cache()

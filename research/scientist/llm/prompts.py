@@ -209,6 +209,11 @@ Constraints:
 - Include diversity and novelty guardrails in the plan
 - Avoid overfitting to one metric (balance quality, novelty, and efficiency)
 - Use a deterministic configuration when possible
+- If Summary JSON contains an active `meta_profile_strategy`, treat it as
+  current advisory evidence for what to do next. Use its `recommended_next_mode`,
+  `config_bias`, top profile-refresh ops, compression-safety items, and guardrails
+  unless recent experiment outcomes clearly contradict it. Do not promote
+  unsupported harness ops that appear in `needs_scaffold_harness_ops`.
 
 Return JSON only:
 {{

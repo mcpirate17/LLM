@@ -29,17 +29,18 @@ def test_yaml_loads():
 
 def test_inheritance_actually_overrides():
     layers = scoring_config.get_layered_configs()
-    # v10 has w_blimp=35 -> v11 drops to 5 -> v14 keeps 5
-    assert layers["v10"]["w_blimp"] == 35.0
+    # The active YAML is flattened: v10/v11/v14 compose to the same weights.
+    assert layers["v10"]["w_blimp"] == 5.0
     assert layers["v11"]["w_blimp"] == 5.0
     assert layers["v14"]["w_blimp"] == 5.0
-    # v11 bumps cap_induction weight; v14 inherits
-    assert layers["v10"]["w_cap_induction"] == 25.0
-    assert layers["v11"]["w_cap_induction"] == 65.0
-    assert layers["v14"]["w_cap_induction"] == 65.0
-    # v14 adds controlled-language ladder keys absent from v11
+    assert layers["v10"]["w_cap_induction"] == 45.0
+    assert layers["v11"]["w_cap_induction"] == 45.0
+    assert layers["v14"]["w_cap_induction"] == 45.0
+    # Flattening keeps controlled-language ladder keys visible in every layer.
     assert "w_cl_inv_sa" in layers["v14"]
-    assert "w_cl_inv_sa" not in layers["v11"]
+    assert layers["v14"]["w_cl_s10_nb_bucket"] == 25.0
+    assert layers["v14"]["w_cl_inv_nb_bucket"] == 25.0
+    assert layers["v11"]["w_cl_inv_sa"] == 15.0
 
 
 def test_hash_format():

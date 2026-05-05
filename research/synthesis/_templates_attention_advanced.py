@@ -40,6 +40,66 @@ def _codex_tail_ffn(
     return _fix_dim(graph, ffned)
 
 
+_NOVEL_MIXING_MLP_RATIOS: tuple[float, ...] = (2.0, 3.0, 4.0)
+
+
+def _pick_norm_or_default(
+    graph: ComputationGraph,
+    src: int,
+    rng: random.Random,
+    weights: MotifWeights,
+    *,
+    fallback_context: str,
+) -> int:
+    motif = _pick_compatible_motif(graph, src, rng, MOTIF_CLASS_NORM, weights)
+    if motif:
+        return _instantiate_motif(graph, src, motif, rng)
+    return _add(graph, "rmsnorm", [src], context=fallback_context)
+
+
+def _record_fixed_core_slot(
+    graph: ComputationGraph,
+    *,
+    template_ctx: str,
+    template_instance: int,
+    slot_index: int,
+    role: str,
+    op_name: str,
+    input_node_id: int,
+) -> None:
+    record_template_slot_binding(
+        graph,
+        template_name=template_ctx,
+        template_instance=template_instance,
+        slot_index=slot_index,
+        slot_key=f"{template_ctx}[{template_instance}].{role}",
+        slot_classes=(role,),
+        selected_name=op_name,
+        selected_class="component",
+        input_node_id=input_node_id,
+    )
+
+
+def _pick_ffn_or_swiglu(
+    graph: ComputationGraph,
+    src: int,
+    rng: random.Random,
+    weights: MotifWeights,
+    *,
+    fallback_context: str,
+) -> int:
+    motif = _pick_compatible_motif_from_classes(graph, src, rng, _FFN_CLASSES, weights)
+    if motif:
+        return _instantiate_motif(graph, src, motif, rng)
+    return _add(
+        graph,
+        "swiglu_mlp",
+        [src],
+        {"mlp_ratio": rng.choice(_NOVEL_MIXING_MLP_RATIOS)},
+        context=fallback_context,
+    )
+
+
 def _tpl_novel_mixing_block(
     graph: ComputationGraph,
     input_id: int,
@@ -50,9 +110,28 @@ def _tpl_novel_mixing_block(
     complement_op: str = "state_space",
     template_ctx: str,
 ) -> int:
-    """Reusable pattern: rmsnorm → {primary_op || complement_op} → merge → residual → rmsnorm → swiglu(4x) → residual."""
+    """Reusable pattern: norm → {primary_op || complement_op} → merge → residual → norm → FFN → residual.
+
+    Head/tail norm and FFN are rng-picked from the standard motif classes so
+    each invocation produces a distinct graph fingerprint. Primary/complement
+    cores are recorded as fixed-component slot bindings for meta-analysis.
+    """
     D = graph.model_dim
-    normed = _add(graph, "rmsnorm", [input_id], context=f"{template_ctx}.norm1")
+    instance = int(graph.metadata.get("_active_template_instance", 0) or 0)
+
+    normed = _pick_norm_or_default(
+        graph, input_id, rng, weights, fallback_context=f"{template_ctx}.norm1"
+    )
+
+    _record_fixed_core_slot(
+        graph,
+        template_ctx=template_ctx,
+        template_instance=instance,
+        slot_index=1,
+        role="primary_core",
+        op_name=primary_op,
+        input_node_id=normed,
+    )
     pa = _add(graph, primary_op, [normed], context=f"{template_ctx}.primary")
     pa = _add(
         graph,
@@ -61,20 +140,31 @@ def _tpl_novel_mixing_block(
         {"out_dim": D},
         context=f"{template_ctx}.primary_proj",
     )
+
+    _record_fixed_core_slot(
+        graph,
+        template_ctx=template_ctx,
+        template_instance=instance,
+        slot_index=2,
+        role="complement_core",
+        op_name=complement_op,
+        input_node_id=normed,
+    )
     pb = _add(graph, complement_op, [normed], context=f"{template_ctx}.complement")
     pb = _fix_dim(graph, pb)
-    merged = _residual(graph, pa, pb, context=f"{template_ctx}.merge")
-    merged = _fix_dim(graph, merged)
+
+    merged = _fix_dim(graph, _residual(graph, pa, pb, context=f"{template_ctx}.merge"))
     mid = _residual(graph, input_id, merged, context=f"{template_ctx}.mid")
-    normed2 = _add(graph, "rmsnorm", [mid], context=f"{template_ctx}.norm2")
-    ffned = _add(
-        graph,
-        "swiglu_mlp",
-        [normed2],
-        {"mlp_ratio": 4.0},
-        context=f"{template_ctx}.ffn",
+
+    normed2 = _pick_norm_or_default(
+        graph, mid, rng, weights, fallback_context=f"{template_ctx}.norm2"
     )
-    ffned = _fix_dim(graph, ffned)
+    ffned = _fix_dim(
+        graph,
+        _pick_ffn_or_swiglu(
+            graph, normed2, rng, weights, fallback_context=f"{template_ctx}.ffn"
+        ),
+    )
     return _residual(graph, mid, ffned, context=f"{template_ctx}.output")
 
 

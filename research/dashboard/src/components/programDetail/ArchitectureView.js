@@ -8,6 +8,38 @@ import RefinementRationale from '../program/RefinementRationale';
 import RefinementLineage from '../program/RefinementLineage';
 import RefinementAdvisor from '../program/RefinementAdvisor';
 
+function FingerprintFailurePanel({ summary }) {
+  if (!summary?.failed) return null;
+  const failedChecks = Array.isArray(summary.failed_checks) ? summary.failed_checks : [];
+  const pendingChecks = Array.isArray(summary.pending_checks) ? summary.pending_checks : [];
+
+  return (
+    <div style={{
+      width: '100%',
+      padding: '12px',
+      background: 'rgba(248, 81, 73, 0.08)',
+      borderRadius: 8,
+      border: '1px solid rgba(248, 81, 73, 0.45)',
+    }}>
+      <div style={{ fontSize: 11, color: 'var(--accent-red)', fontWeight: 700, textTransform: 'uppercase', marginBottom: 6 }}>
+        Fingerprint Failure
+      </div>
+      <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 8 }}>
+        {failedChecks.length} failed check{failedChecks.length === 1 ? '' : 's'}
+        {pendingChecks.length > 0 ? `, ${pendingChecks.length} pending` : ''}.
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+        {failedChecks.map(check => (
+          <div key={`${check.field}-${check.status}`} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 11 }}>
+            <span style={{ color: 'var(--text-secondary)' }}>{check.label}</span>
+            <span style={{ color: 'var(--accent-red)', fontFamily: 'monospace', textAlign: 'right' }}>{check.status}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 /**
  * Right column of the two-column grid: fingerprint radar, CKA similarity, timing.
  */
@@ -28,6 +60,7 @@ export function FingerprintColumn({ program, fmtMs, fmtMem, fmtInt }) {
       <div style={{ fontSize: 12, color: 'var(--text-secondary)', fontWeight: 600, textTransform: 'uppercase', marginBottom: -8 }}>
         Fingerprint & Similarity
       </div>
+      <FingerprintFailurePanel summary={program.fingerprint_failure_summary} />
       <div style={{
         display: 'flex',
         flexDirection: 'column',

@@ -28,10 +28,8 @@ from research.eval.controlled_sentence_probe import (
     build_sentence_probe_corpus,
     controlled_sentence_probe,
 )
-from research.eval.utils import micro_train_loop
-from research.synthesis.compiler import compile_model
-from research.synthesis.serializer import graph_from_json
 from research.tools._db_maintenance import connect_readonly
+from research.tools._tuning_train import train_compiled_graph_base
 
 logger = logging.getLogger(__name__)
 
@@ -180,12 +178,15 @@ def _load_target(db: Path, target: str) -> dict[str, Any]:
     return dict(row) if row else {}
 
 
-def _train_base(graph_json_str: str, *, base_steps: int, device: str) -> torch.nn.Module:
-    graph = graph_from_json(graph_json_str)
-    model = compile_model([graph]).to(device)
-    batches = [torch.randint(0, VOCAB_SIZE, (4, 128), device=device) for _ in range(8)]
-    micro_train_loop(model, batches, vocab_size=VOCAB_SIZE, n_steps=base_steps, lr=3e-4)
-    return model
+def _train_base(
+    graph_json_str: str, *, base_steps: int, device: str
+) -> torch.nn.Module:
+    return train_compiled_graph_base(
+        graph_json_str,
+        base_steps=base_steps,
+        device=device,
+        vocab_size=VOCAB_SIZE,
+    )
 
 
 def _run_target(
@@ -247,11 +248,15 @@ def main() -> int:
     parser.add_argument("--n-eval-items", type=int, default=64)
     parser.add_argument("--seed", action="append", type=int, help="Probe seed.")
     parser.add_argument("--timeout-s", type=float, default=120.0)
-    parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument(
+        "--device", default="cuda" if torch.cuda.is_available() else "cpu"
+    )
     parser.add_argument(
         "--out",
         type=Path,
-        default=Path(f"research/reports/controlled_sentence_tune_{int(time.time())}.json"),
+        default=Path(
+            f"research/reports/controlled_sentence_tune_{int(time.time())}.json"
+        ),
     )
     args = parser.parse_args()
 
@@ -266,7 +271,9 @@ def main() -> int:
 
     report: list[dict[str, Any]] = []
     for row in rows:
-        logger.info("running %s (%s)", row["result_id"], row.get("template_name") or "?")
+        logger.info(
+            "running %s (%s)", row["result_id"], row.get("template_name") or "?"
+        )
         try:
             results = _run_target(
                 row,

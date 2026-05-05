@@ -174,18 +174,26 @@ class _PersonaRulesMixin:
         passed = int(
             results.get("validation_passed_count")
             if results.get("validation_passed_count") is not None
-            else sum(1 for entry in validation_results if int(entry.get("seeds_passed") or 0) > 0)
+            else sum(
+                1
+                for entry in validation_results
+                if int(entry.get("seeds_passed") or 0) > 0
+            )
         )
         breakthroughs = int(
             results.get("breakthrough_count")
             if results.get("breakthrough_count") is not None
-            else sum(1 for entry in validation_results if bool(entry.get("is_breakthrough")))
+            else sum(
+                1 for entry in validation_results if bool(entry.get("is_breakthrough"))
+            )
         )
         novel = int(results.get("novel_count") or 0)
         best_loss = results.get("best_loss_ratio")
         best_novelty = results.get("best_novelty_score")
 
-        self.state.mood = "triumphant" if breakthroughs else "excited" if passed else "frustrated"
+        self.state.mood = (
+            "triumphant" if breakthroughs else "excited" if passed else "frustrated"
+        )
 
         lines = [
             f"{'=' * 60}",
@@ -213,7 +221,9 @@ class _PersonaRulesMixin:
         if breakthroughs:
             lines.append("The saved structured results support breakthrough handling.")
         elif passed:
-            lines.append("The candidate validated, but did not clear breakthrough gates.")
+            lines.append(
+                "The candidate validated, but did not clear breakthrough gates."
+            )
         else:
             lines.append("No candidate cleared multi-seed validation.")
         return "\n".join(lines)

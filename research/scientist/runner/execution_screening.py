@@ -62,6 +62,10 @@ from ..construction_priors import (
     construction_prior_as_grammar_adjustments,
     get_active_construction_prior,
 )
+from ...meta_analysis.priors import (
+    apply_meta_analysis_prior_to_grammar,
+    load_latest_meta_analysis_prior,
+)
 from ..ml_influence_policy import component_is_allowed
 from ..notebook import LabNotebook, ExperimentEntry
 
@@ -966,6 +970,58 @@ class _ExecutionScreeningMixin:
                         )
             except (AttributeError, TypeError, ValueError) as e:
                 logger.debug("Hierarchy fitness lookup failed: %s", e)
+
+        if getattr(config, "use_meta_analysis_priors", False):
+            try:
+                prior_target = str(
+                    getattr(config, "meta_analysis_prior_target", "balanced")
+                    or "balanced"
+                )
+                prior_path = str(
+                    getattr(
+                        config,
+                        "meta_analysis_prior_path",
+                        "research/artifacts/meta_analysis_priors",
+                    )
+                    or "research/artifacts/meta_analysis_priors"
+                )
+                prior = load_latest_meta_analysis_prior(
+                    prior_path,
+                    target=prior_target,
+                )
+                if prior is None:
+                    logger.warning(
+                        "Meta-analysis priors enabled for %s but no prior artifact was found in %s",
+                        exp_id,
+                        prior_path,
+                    )
+                else:
+                    counts = apply_meta_analysis_prior_to_grammar(grammar, prior)
+                    # Explicit caller overrides remain authoritative even when
+                    # meta-analysis priors are enabled.
+                    if config.category_weights:
+                        grammar.category_weights.update(config.category_weights)
+                    if config.op_weights:
+                        grammar.op_weights.update(config.op_weights)
+                    if config.template_weights:
+                        grammar.template_weights.update(config.template_weights)
+                    prior_record = {
+                        "version": prior.get("version"),
+                        "target": prior.get("target"),
+                        "counts": counts,
+                    }
+                    results["meta_analysis_prior"] = prior_record
+                    results["applied_grammar_weights"] = dict(grammar.category_weights)
+                    self._log_learning_event_compat(
+                        nb,
+                        "meta_analysis_prior_applied",
+                        f"Applied meta-analysis prior {prior.get('version')} for {exp_id}",
+                        **prior_record,
+                    )
+            except (OSError, ValueError, TypeError, json.JSONDecodeError) as e:
+                logger.warning(
+                    "Failed applying meta-analysis priors for %s: %s", exp_id, e
+                )
 
         # Synthesized loss/optimizer exploration (20% of screening experiments)
         if random.random() < 0.2:

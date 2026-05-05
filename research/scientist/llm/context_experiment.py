@@ -187,7 +187,9 @@ def build_experiment_context(
         passed = results.get("validation_passed_count")
         if passed is None:
             passed = sum(
-                1 for entry in validation_results if int(entry.get("seeds_passed") or 0) > 0
+                1
+                for entry in validation_results
+                if int(entry.get("seeds_passed") or 0) > 0
             )
         breakthroughs = results.get("breakthrough_count")
         if breakthroughs is None:

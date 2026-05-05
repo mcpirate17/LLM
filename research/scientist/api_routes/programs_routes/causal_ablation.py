@@ -13,6 +13,186 @@ from ...json_utils import json_safe
 logger = logging.getLogger(__name__)
 
 
+_ABLATION_OBSERVATION_METRICS_CTE = """
+WITH ablation_observation_metrics AS (
+    SELECT obs.parent_result_id,
+           obs.parent_fingerprint,
+           obs.child_result_id,
+           obs.child_fingerprint,
+           obs.source,
+           obs.rule_type,
+           obs.rule_key,
+           obs.timestamp,
+           cp.stage1_passed AS child_stage1_passed,
+           cp.loss_ratio AS child_loss_ratio,
+           cp.wikitext_perplexity AS child_ppl,
+           cp.hellaswag_acc AS child_hellaswag,
+           cp.blimp_overall_accuracy AS child_blimp,
+           cp.induction_auc AS child_induction,
+           cp.binding_composite AS child_binding,
+           cp.ar_auc AS child_ar,
+           cp.fp_jacobian_erf_density AS child_erf_density,
+           cp.fp_icld_delta_loss AS child_icld_delta,
+           cp.trust_label AS child_trust_label,
+           cp.comparability_label AS child_comparability_label,
+           cp.induction_v2_investigation_auc AS child_induction_v2,
+           cp.induction_v2_investigation_status AS child_induction_v2_status,
+           cp.binding_v2_investigation_auc AS child_binding_v2,
+           cp.binding_v2_investigation_status AS child_binding_v2_status,
+           pp.loss_ratio AS parent_loss_ratio,
+           pp.wikitext_perplexity AS parent_ppl,
+           pp.hellaswag_acc AS parent_hellaswag,
+           pp.blimp_overall_accuracy AS parent_blimp,
+           pp.induction_auc AS parent_induction,
+           pp.binding_composite AS parent_binding,
+           pp.ar_auc AS parent_ar,
+           pp.fp_jacobian_erf_density AS parent_erf_density,
+           pp.induction_v2_investigation_auc AS parent_induction_v2,
+           pp.binding_v2_investigation_auc AS parent_binding_v2
+    FROM causal_ablation_child_observations obs
+    LEFT JOIN program_results cp ON cp.result_id = obs.child_result_id
+    LEFT JOIN program_results pp ON pp.result_id = obs.parent_result_id
+
+    UNION ALL
+
+    SELECT ev.parent_result_id,
+           ev.parent_fingerprint,
+           json_extract(ev.evidence_json, '$.child_result_id') AS child_result_id,
+           json_extract(ev.evidence_json, '$.child.fingerprint') AS child_fingerprint,
+           CASE
+               WHEN ev.rule_type = 'node_delete_investigation'
+               THEN 'knockout_investigation'
+               ELSE 'knockout_s1'
+           END AS source,
+           ev.rule_type,
+           ev.rule_key,
+           ev.timestamp,
+           COALESCE(
+               cp.stage1_passed,
+               json_extract(ev.evidence_json, '$.child_stage1_passed')
+           ) AS child_stage1_passed,
+           COALESCE(
+               cp.loss_ratio,
+               json_extract(ev.evidence_json, '$.child_metrics.loss_ratio')
+           ) AS child_loss_ratio,
+           COALESCE(
+               cp.wikitext_perplexity,
+               json_extract(ev.evidence_json, '$.child_metrics.wikitext_perplexity')
+           ) AS child_ppl,
+           COALESCE(
+               cp.hellaswag_acc,
+               json_extract(ev.evidence_json, '$.child_metrics.hellaswag_acc')
+           ) AS child_hellaswag,
+           COALESCE(
+               cp.blimp_overall_accuracy,
+               json_extract(ev.evidence_json, '$.child_metrics.blimp_overall_accuracy')
+           ) AS child_blimp,
+           COALESCE(
+               cp.induction_auc,
+               json_extract(ev.evidence_json, '$.child_metrics.induction_auc')
+           ) AS child_induction,
+           COALESCE(
+               cp.binding_composite,
+               json_extract(ev.evidence_json, '$.child_metrics.binding_composite')
+           ) AS child_binding,
+           COALESCE(
+               cp.ar_auc,
+               json_extract(ev.evidence_json, '$.child_metrics.ar_auc')
+           ) AS child_ar,
+           COALESCE(
+               cp.fp_jacobian_erf_density,
+               json_extract(ev.evidence_json, '$.child_metrics.fp_jacobian_erf_density')
+           ) AS child_erf_density,
+           COALESCE(
+               cp.fp_icld_delta_loss,
+               json_extract(ev.evidence_json, '$.child_metrics.fp_icld_delta_loss')
+           ) AS child_icld_delta,
+           cp.trust_label AS child_trust_label,
+           cp.comparability_label AS child_comparability_label,
+           COALESCE(
+               cp.induction_v2_investigation_auc,
+               json_extract(
+                   ev.evidence_json,
+                   '$.child_metrics.induction_v2_investigation_auc'
+               )
+           ) AS child_induction_v2,
+           COALESCE(
+               cp.induction_v2_investigation_status,
+               json_extract(
+                   ev.evidence_json,
+                   '$.child_metrics.induction_v2_investigation_status'
+               )
+           ) AS child_induction_v2_status,
+           COALESCE(
+               cp.binding_v2_investigation_auc,
+               json_extract(
+                   ev.evidence_json,
+                   '$.child_metrics.binding_v2_investigation_auc'
+               )
+           ) AS child_binding_v2,
+           COALESCE(
+               cp.binding_v2_investigation_status,
+               json_extract(
+                   ev.evidence_json,
+                   '$.child_metrics.binding_v2_investigation_status'
+               )
+           ) AS child_binding_v2_status,
+           COALESCE(
+               pp.loss_ratio,
+               json_extract(ev.evidence_json, '$.parent_metrics.loss_ratio')
+           ) AS parent_loss_ratio,
+           COALESCE(
+               pp.wikitext_perplexity,
+               json_extract(ev.evidence_json, '$.parent_metrics.wikitext_perplexity')
+           ) AS parent_ppl,
+           COALESCE(
+               pp.hellaswag_acc,
+               json_extract(ev.evidence_json, '$.parent_metrics.hellaswag_acc')
+           ) AS parent_hellaswag,
+           COALESCE(
+               pp.blimp_overall_accuracy,
+               json_extract(ev.evidence_json, '$.parent_metrics.blimp_overall_accuracy')
+           ) AS parent_blimp,
+           COALESCE(
+               pp.induction_auc,
+               json_extract(ev.evidence_json, '$.parent_metrics.induction_auc')
+           ) AS parent_induction,
+           COALESCE(
+               pp.binding_composite,
+               json_extract(ev.evidence_json, '$.parent_metrics.binding_composite')
+           ) AS parent_binding,
+           COALESCE(
+               pp.ar_auc,
+               json_extract(ev.evidence_json, '$.parent_metrics.ar_auc')
+           ) AS parent_ar,
+           COALESCE(
+               pp.fp_jacobian_erf_density,
+               json_extract(ev.evidence_json, '$.parent_metrics.fp_jacobian_erf_density')
+           ) AS parent_erf_density,
+           COALESCE(
+               pp.induction_v2_investigation_auc,
+               json_extract(
+                   ev.evidence_json,
+                   '$.parent_metrics.induction_v2_investigation_auc'
+               )
+           ) AS parent_induction_v2,
+           COALESCE(
+               pp.binding_v2_investigation_auc,
+               json_extract(
+                   ev.evidence_json,
+                   '$.parent_metrics.binding_v2_investigation_auc'
+               )
+           ) AS parent_binding_v2
+    FROM causal_rule_evidence ev
+    LEFT JOIN program_results cp
+      ON cp.result_id = json_extract(ev.evidence_json, '$.child_result_id')
+    LEFT JOIN program_results pp ON pp.result_id = ev.parent_result_id
+    WHERE ev.rule_type IN ('node_delete_s1', 'node_delete_investigation')
+      AND json_extract(ev.evidence_json, '$.child.fingerprint') IS NOT NULL
+)
+"""
+
+
 def _api_program_causal_evidence(result_id, nb=None):
     requested_result_id = str(result_id or "").strip()
     canonical_result_id = nb.resolve_canonical_result_id(requested_result_id)
@@ -99,14 +279,214 @@ def _api_bulk_causal_ablation_start(notebook_path: str, nb=None):
     )
 
 
+_CAUSAL_ABLATION_SUMMARY_SQL = f"""
+        {_ABLATION_OBSERVATION_METRICS_CTE},
+        evidence AS (
+            SELECT rule_type,
+                   rule_key,
+                   COUNT(*) AS evidence_count,
+                   SUM(CASE WHEN outcome = 'supported' THEN 1 ELSE 0 END)
+                       AS supported_count,
+                   SUM(CASE WHEN outcome LIKE 'refuted%' THEN 1 ELSE 0 END)
+                       AS refuted_count,
+                   SUM(CASE WHEN outcome = 'inconclusive' THEN 1 ELSE 0 END)
+                       AS inconclusive_count,
+                   AVG(confidence) AS avg_confidence,
+                   AVG(effect_size) AS avg_effect_size,
+                   MIN(effect_size) AS min_effect_size,
+                   MAX(effect_size) AS max_effect_size
+            FROM causal_rule_evidence
+            GROUP BY rule_type, rule_key
+        ),
+        children AS (
+            SELECT rule_type,
+                   rule_key,
+                   COUNT(DISTINCT child_result_id) AS child_result_count,
+                   COUNT(DISTINCT child_fingerprint) AS child_fingerprint_count,
+                   GROUP_CONCAT(DISTINCT source) AS child_sources,
+                   COUNT(*) AS child_observation_count
+            FROM ablation_observation_metrics
+            GROUP BY rule_type, rule_key
+        ),
+        metric_rows AS (
+            SELECT rule_type,
+                   rule_key,
+                   child_result_id,
+                   CASE
+                       WHEN child_hellaswag IS NOT NULL
+                        AND child_blimp IS NOT NULL
+                        AND child_induction IS NOT NULL
+                        AND child_binding IS NOT NULL
+                        AND child_ar IS NOT NULL
+                        AND child_ppl IS NOT NULL
+                       THEN 1 ELSE 0
+                   END AS metric_complete,
+                   CASE WHEN child_loss_ratio IS NOT NULL
+                              AND parent_loss_ratio IS NOT NULL
+                        THEN child_loss_ratio - parent_loss_ratio END
+                       AS loss_support_effect,
+                   CASE WHEN child_hellaswag IS NOT NULL
+                              AND parent_hellaswag IS NOT NULL
+                        THEN parent_hellaswag - child_hellaswag END
+                       AS hellaswag_support_effect,
+                   CASE WHEN child_blimp IS NOT NULL
+                              AND parent_blimp IS NOT NULL
+                        THEN parent_blimp - child_blimp END
+                       AS blimp_support_effect,
+                   CASE WHEN child_induction IS NOT NULL
+                              AND parent_induction IS NOT NULL
+                        THEN parent_induction - child_induction END
+                       AS induction_support_effect,
+                   CASE WHEN child_binding IS NOT NULL
+                              AND parent_binding IS NOT NULL
+                        THEN parent_binding - child_binding END
+                       AS binding_support_effect,
+                   CASE WHEN child_ar IS NOT NULL AND parent_ar IS NOT NULL
+                        THEN parent_ar - child_ar END
+                       AS ar_support_effect,
+                   CASE WHEN child_ppl IS NOT NULL
+                              AND parent_ppl IS NOT NULL
+                              AND parent_ppl > 0
+                        THEN (child_ppl - parent_ppl) / parent_ppl END
+                       AS wikitext_support_effect,
+                   CASE WHEN child_induction_v2 IS NOT NULL
+                              AND parent_induction_v2 IS NOT NULL
+                        THEN parent_induction_v2 - child_induction_v2 END
+                       AS induction_v2_support_effect,
+                   CASE WHEN child_binding_v2 IS NOT NULL
+                              AND parent_binding_v2 IS NOT NULL
+                        THEN parent_binding_v2 - child_binding_v2 END
+                       AS binding_v2_support_effect
+            FROM ablation_observation_metrics
+        ),
+        metric_scored AS (
+            SELECT *,
+                   (
+                       CASE WHEN loss_support_effect IS NOT NULL THEN 0.30 ELSE 0 END
+                     + CASE WHEN hellaswag_support_effect IS NOT NULL THEN 0.08 ELSE 0 END
+                     + CASE WHEN blimp_support_effect IS NOT NULL THEN 0.08 ELSE 0 END
+                     + CASE WHEN induction_support_effect IS NOT NULL THEN 0.10 ELSE 0 END
+                     + CASE WHEN binding_support_effect IS NOT NULL THEN 0.10 ELSE 0 END
+                     + CASE WHEN ar_support_effect IS NOT NULL THEN 0.04 ELSE 0 END
+                     + CASE WHEN wikitext_support_effect IS NOT NULL THEN 0.10 ELSE 0 END
+                     + CASE WHEN induction_v2_support_effect IS NOT NULL THEN 0.12 ELSE 0 END
+                     + CASE WHEN binding_v2_support_effect IS NOT NULL THEN 0.08 ELSE 0 END
+                   ) AS metric_weight,
+                   (
+                       COALESCE(0.30 * loss_support_effect, 0.0)
+                     + COALESCE(0.08 * hellaswag_support_effect, 0.0)
+                     + COALESCE(0.08 * blimp_support_effect, 0.0)
+                     + COALESCE(0.10 * induction_support_effect, 0.0)
+                     + COALESCE(0.10 * binding_support_effect, 0.0)
+                     + COALESCE(0.04 * ar_support_effect, 0.0)
+                     + COALESCE(0.10 * wikitext_support_effect, 0.0)
+                     + COALESCE(0.12 * induction_v2_support_effect, 0.0)
+                     + COALESCE(0.08 * binding_v2_support_effect, 0.0)
+                   ) AS metric_effect_numerator
+            FROM metric_rows
+        ),
+        metrics AS (
+            SELECT rule_type,
+                   rule_key,
+                   COUNT(child_result_id) AS metric_observation_count,
+                   SUM(metric_complete) AS metric_complete_count,
+                   SUM(CASE WHEN metric_weight > 0 THEN 1 ELSE 0 END)
+                       AS metric_comparable_count,
+                   AVG(loss_support_effect) AS avg_loss_support_effect,
+                   AVG(hellaswag_support_effect) AS avg_hellaswag_support_effect,
+                   AVG(blimp_support_effect) AS avg_blimp_support_effect,
+                   AVG(induction_support_effect) AS avg_induction_support_effect,
+                   AVG(binding_support_effect) AS avg_binding_support_effect,
+                   AVG(ar_support_effect) AS avg_ar_support_effect,
+                   AVG(wikitext_support_effect) AS avg_wikitext_support_effect,
+                   AVG(induction_v2_support_effect)
+                       AS avg_induction_v2_support_effect,
+                   AVG(binding_v2_support_effect)
+                       AS avg_binding_v2_support_effect,
+                   AVG(CASE WHEN metric_weight > 0
+                            THEN metric_effect_numerator / metric_weight END)
+                       AS composite_support_effect
+            FROM metric_scored
+            GROUP BY rule_type, rule_key
+        )
+        SELECT evidence.*,
+               COALESCE(children.child_result_count, 0) AS child_result_count,
+               COALESCE(children.child_fingerprint_count, 0)
+                   AS child_fingerprint_count,
+               CASE WHEN evidence.evidence_count > 0
+                    THEN CAST(evidence.supported_count AS REAL)
+                         / evidence.evidence_count
+                    ELSE 0.0 END AS support_rate,
+               CASE WHEN evidence.evidence_count > 0
+                    THEN CAST(evidence.refuted_count AS REAL)
+                         / evidence.evidence_count
+                    ELSE 0.0 END AS refute_rate,
+               (evidence.supported_count - evidence.refuted_count) AS net_support,
+               (
+                   ABS(COALESCE(evidence.avg_effect_size, 0.0))
+                   * SQRT(CAST(evidence.evidence_count AS REAL))
+                   * COALESCE(evidence.avg_confidence, 0.0)
+               ) AS stability_score,
+               COALESCE(metrics.metric_observation_count, 0)
+                   AS metric_observation_count,
+               COALESCE(metrics.metric_complete_count, 0)
+                   AS metric_complete_count,
+               COALESCE(metrics.metric_comparable_count, 0)
+                   AS metric_comparable_count,
+               CASE WHEN COALESCE(metrics.metric_observation_count, 0) > 0
+                    THEN CAST(metrics.metric_complete_count AS REAL)
+                         / metrics.metric_observation_count
+                    ELSE 0.0 END AS metric_complete_rate,
+               metrics.avg_loss_support_effect,
+               metrics.avg_hellaswag_support_effect,
+               metrics.avg_blimp_support_effect,
+               metrics.avg_induction_support_effect,
+               metrics.avg_binding_support_effect,
+               metrics.avg_ar_support_effect,
+               metrics.avg_wikitext_support_effect,
+               metrics.avg_induction_v2_support_effect,
+               metrics.avg_binding_v2_support_effect,
+               metrics.composite_support_effect,
+               children.child_sources
+        FROM evidence
+        LEFT JOIN children
+          ON children.rule_type = evidence.rule_type
+         AND children.rule_key = evidence.rule_key
+        LEFT JOIN metrics
+          ON metrics.rule_type = evidence.rule_type
+         AND metrics.rule_key = evidence.rule_key
+        ORDER BY
+                 CASE
+                     WHEN evidence.evidence_count >= 3
+                      AND COALESCE(children.child_fingerprint_count, 0) >= 3
+                      AND COALESCE(metrics.metric_complete_count, 0) >= 3
+                     THEN 0 ELSE 1
+                 END,
+                 ABS(COALESCE(metrics.composite_support_effect, 0.0)) DESC,
+                 stability_score DESC,
+                 evidence.evidence_count DESC,
+                 ABS(COALESCE(evidence.avg_effect_size, 0.0)) DESC
+        LIMIT ?
+
+"""
+
+
 def _api_causal_ablation_summary(nb=None):
     limit = request.args.get("limit", 50, type=int)
-    rows = nb.get_causal_component_interaction_summary(limit=limit)
+    capped_limit = max(1, min(int(limit or 50), 500))
+    rows = nb.conn.execute(
+        _CAUSAL_ABLATION_SUMMARY_SQL,
+        (capped_limit,),
+    ).fetchall()
+    rows = [dict(row) for row in rows]
     evidence_total = nb.conn.execute(
         "SELECT COUNT(*) AS n FROM causal_rule_evidence"
     ).fetchone()
     observation_total = nb.conn.execute(
-        "SELECT COUNT(*) AS n FROM causal_ablation_child_observations"
+        f"""
+        {_ABLATION_OBSERVATION_METRICS_CTE}
+        SELECT COUNT(*) AS n FROM ablation_observation_metrics
+        """
     ).fetchone()
     outcome_rows = nb.conn.execute(
         """
@@ -118,12 +498,13 @@ def _api_causal_ablation_summary(nb=None):
         """
     ).fetchall()
     source_rows = nb.conn.execute(
-        """
+        f"""
+        {_ABLATION_OBSERVATION_METRICS_CTE}
         SELECT source, COUNT(*) AS n,
-               SUM(CASE WHEN COALESCE(stage1_passed, 0) = 1 THEN 1 ELSE 0 END)
+               SUM(CASE WHEN COALESCE(child_stage1_passed, 0) = 1 THEN 1 ELSE 0 END)
                    AS stage1_count,
-               AVG(loss_ratio) AS avg_loss_ratio
-        FROM causal_ablation_child_observations
+               AVG(child_loss_ratio) AS avg_loss_ratio
+        FROM ablation_observation_metrics
         GROUP BY source
         ORDER BY n DESC
         """
@@ -142,15 +523,10 @@ def _api_causal_ablation_summary(nb=None):
                             OR pr.binding_composite IS NULL
                             OR pr.ar_auc IS NULL
                             OR pr.wikitext_perplexity IS NULL
-                            OR pr.wikitext_score IS NULL
-                            OR pr.fp_jacobian_erf_density IS NULL
-                            OR pr.fp_icld_delta_loss IS NULL
-                            OR pr.fp_logit_margin_delta IS NULL
                          )
                         THEN 1 ELSE 0 END) AS s1_missing_core_metrics
         FROM program_results pr
-        JOIN experiments e ON e.experiment_id = pr.experiment_id
-        WHERE e.experiment_type = 'ablation'
+        WHERE pr.model_source = 'ablation'
         """
     ).fetchone()
     recent_24h = nb.conn.execute(
@@ -185,52 +561,67 @@ def _api_causal_ablation_champions(nb=None):
     """
     limit = max(1, min(int(request.args.get("limit", 50, type=int) or 50), 500))
     rows = nb.conn.execute(
-        """
-        WITH children AS (
-            SELECT obs.parent_result_id,
-                   obs.parent_fingerprint,
+        f"""
+        {_ABLATION_OBSERVATION_METRICS_CTE},
+        children AS (
+            SELECT parent_result_id,
+                   parent_fingerprint,
                    COUNT(*) AS evidence_count,
-                   COUNT(DISTINCT obs.child_fingerprint) AS child_fingerprint_count,
-                   SUM(CASE WHEN cp.stage1_passed = 1 THEN 1 ELSE 0 END)
+                   COUNT(DISTINCT child_fingerprint) AS child_fingerprint_count,
+                   SUM(CASE WHEN child_stage1_passed = 1 THEN 1 ELSE 0 END)
                        AS s1_pass_count,
                    SUM(CASE WHEN
-                       cp.hellaswag_acc IS NOT NULL
-                       AND cp.blimp_overall_accuracy IS NOT NULL
-                       AND cp.induction_auc IS NOT NULL
-                       AND cp.binding_auc IS NOT NULL
-                       AND cp.binding_composite IS NOT NULL
-                       AND cp.ar_auc IS NOT NULL
-                       AND cp.wikitext_perplexity IS NOT NULL
+                       child_hellaswag IS NOT NULL
+                       AND child_blimp IS NOT NULL
+                       AND child_induction IS NOT NULL
+                       AND child_binding IS NOT NULL
+                       AND child_ar IS NOT NULL
+                       AND child_ppl IS NOT NULL
                        THEN 1 ELSE 0 END) AS metric_complete_count,
-                   AVG(CASE WHEN cp.loss_ratio IS NOT NULL AND pp.loss_ratio IS NOT NULL
-                            THEN cp.loss_ratio - pp.loss_ratio END)
+                   SUM(CASE WHEN child_induction_v2 IS NOT NULL
+                              OR child_induction_v2_status IS NOT NULL
+                       THEN 1 ELSE 0 END) AS induction_v2_count,
+                   SUM(CASE WHEN child_binding_v2 IS NOT NULL
+                              OR child_binding_v2_status IS NOT NULL
+                       THEN 1 ELSE 0 END) AS binding_v2_count,
+                   AVG(CASE WHEN child_loss_ratio IS NOT NULL
+                                  AND parent_loss_ratio IS NOT NULL
+                            THEN child_loss_ratio - parent_loss_ratio END)
                        AS avg_loss_delta,
-                   AVG(CASE WHEN cp.induction_auc IS NOT NULL AND pp.induction_auc IS NOT NULL
-                            THEN pp.induction_auc - cp.induction_auc END)
+                   AVG(CASE WHEN child_induction IS NOT NULL
+                                  AND parent_induction IS NOT NULL
+                            THEN parent_induction - child_induction END)
                        AS avg_induction_drop,
-                   AVG(CASE WHEN cp.binding_composite IS NOT NULL AND pp.binding_composite IS NOT NULL
-                            THEN pp.binding_composite - cp.binding_composite END)
+                   AVG(CASE WHEN child_binding IS NOT NULL
+                                  AND parent_binding IS NOT NULL
+                            THEN parent_binding - child_binding END)
                        AS avg_binding_drop,
-                   AVG(CASE WHEN cp.ar_auc IS NOT NULL AND pp.ar_auc IS NOT NULL
-                            THEN pp.ar_auc - cp.ar_auc END)
+                   AVG(CASE WHEN child_ar IS NOT NULL AND parent_ar IS NOT NULL
+                            THEN parent_ar - child_ar END)
                        AS avg_ar_drop,
-                   AVG(CASE WHEN cp.hellaswag_acc IS NOT NULL AND pp.hellaswag_acc IS NOT NULL
-                            THEN pp.hellaswag_acc - cp.hellaswag_acc END)
+                   AVG(CASE WHEN child_hellaswag IS NOT NULL
+                                  AND parent_hellaswag IS NOT NULL
+                            THEN parent_hellaswag - child_hellaswag END)
                        AS avg_hellaswag_drop,
-                   AVG(CASE WHEN cp.blimp_overall_accuracy IS NOT NULL
-                                 AND pp.blimp_overall_accuracy IS NOT NULL
-                            THEN pp.blimp_overall_accuracy - cp.blimp_overall_accuracy END)
+                   AVG(CASE WHEN child_blimp IS NOT NULL
+                                  AND parent_blimp IS NOT NULL
+                            THEN parent_blimp - child_blimp END)
                        AS avg_blimp_drop,
-                   AVG(CASE WHEN cp.wikitext_perplexity IS NOT NULL
-                                 AND pp.wikitext_perplexity IS NOT NULL
-                                 AND pp.wikitext_perplexity > 0
-                            THEN (cp.wikitext_perplexity - pp.wikitext_perplexity)
-                                 / pp.wikitext_perplexity END)
-                       AS avg_ppl_pct_change
-            FROM causal_ablation_child_observations obs
-            LEFT JOIN program_results cp ON cp.result_id = obs.child_result_id
-            LEFT JOIN program_results pp ON pp.result_id = obs.parent_result_id
-            GROUP BY obs.parent_result_id, obs.parent_fingerprint
+                   AVG(CASE WHEN child_ppl IS NOT NULL
+                                  AND parent_ppl IS NOT NULL
+                                  AND parent_ppl > 0
+                            THEN (child_ppl - parent_ppl) / parent_ppl END)
+                       AS avg_ppl_pct_change,
+                   AVG(CASE WHEN child_induction_v2 IS NOT NULL
+                                  AND parent_induction_v2 IS NOT NULL
+                            THEN parent_induction_v2 - child_induction_v2 END)
+                       AS avg_induction_v2_drop,
+                   AVG(CASE WHEN child_binding_v2 IS NOT NULL
+                                  AND parent_binding_v2 IS NOT NULL
+                            THEN parent_binding_v2 - child_binding_v2 END)
+                       AS avg_binding_v2_drop
+            FROM ablation_observation_metrics
+            GROUP BY parent_result_id, parent_fingerprint
         ),
         rules AS (
             SELECT parent_result_id,
@@ -252,6 +643,8 @@ def _api_causal_ablation_champions(nb=None):
                     THEN CAST(children.metric_complete_count AS REAL)
                          / children.evidence_count
                     ELSE 0.0 END AS metric_complete_rate,
+               children.induction_v2_count,
+               children.binding_v2_count,
                COALESCE(rules.rule_count, 0) AS rule_count,
                COALESCE(rules.supported_count, 0) AS supported_count,
                COALESCE(rules.refuted_count, 0) AS refuted_count,
@@ -262,6 +655,8 @@ def _api_causal_ablation_champions(nb=None):
                children.avg_hellaswag_drop,
                children.avg_blimp_drop,
                children.avg_ppl_pct_change,
+               children.avg_induction_v2_drop,
+               children.avg_binding_v2_drop,
                l.composite_score,
                l.tier,
                pp.loss_ratio AS parent_loss_ratio,
@@ -270,7 +665,9 @@ def _api_causal_ablation_champions(nb=None):
                pp.binding_composite AS parent_binding_composite,
                pp.hellaswag_acc AS parent_hellaswag_acc,
                pp.blimp_overall_accuracy AS parent_blimp,
-               pp.ar_auc AS parent_ar_auc
+               pp.ar_auc AS parent_ar_auc,
+               pp.induction_v2_investigation_auc AS parent_induction_v2,
+               pp.binding_v2_investigation_auc AS parent_binding_v2
         FROM children
         LEFT JOIN rules ON rules.parent_result_id = children.parent_result_id
         LEFT JOIN program_results pp ON pp.result_id = children.parent_result_id
@@ -296,31 +693,39 @@ def _api_causal_ablation_components(nb=None):
         params.append(rule_type)
     rows = nb.conn.execute(
         f"""
-        WITH metric_rows AS (
-            SELECT obs.rule_type,
-                   obs.rule_key,
-                   obs.parent_result_id,
-                   CASE WHEN cp.loss_ratio IS NOT NULL AND pp.loss_ratio IS NOT NULL
-                        THEN cp.loss_ratio - pp.loss_ratio END AS d_loss,
-                   CASE WHEN cp.induction_auc IS NOT NULL AND pp.induction_auc IS NOT NULL
-                        THEN pp.induction_auc - cp.induction_auc END AS d_induction,
-                   CASE WHEN cp.binding_composite IS NOT NULL AND pp.binding_composite IS NOT NULL
-                        THEN pp.binding_composite - cp.binding_composite END AS d_binding,
-                   CASE WHEN cp.ar_auc IS NOT NULL AND pp.ar_auc IS NOT NULL
-                        THEN pp.ar_auc - cp.ar_auc END AS d_ar,
-                   CASE WHEN cp.hellaswag_acc IS NOT NULL AND pp.hellaswag_acc IS NOT NULL
-                        THEN pp.hellaswag_acc - cp.hellaswag_acc END AS d_hellaswag,
-                   CASE WHEN cp.blimp_overall_accuracy IS NOT NULL
-                             AND pp.blimp_overall_accuracy IS NOT NULL
-                        THEN pp.blimp_overall_accuracy - cp.blimp_overall_accuracy END AS d_blimp,
-                   CASE WHEN cp.wikitext_perplexity IS NOT NULL
-                             AND pp.wikitext_perplexity IS NOT NULL
-                             AND pp.wikitext_perplexity > 0
-                        THEN (cp.wikitext_perplexity - pp.wikitext_perplexity)
-                             / pp.wikitext_perplexity END AS d_ppl_pct
-            FROM causal_ablation_child_observations obs
-            LEFT JOIN program_results cp ON cp.result_id = obs.child_result_id
-            LEFT JOIN program_results pp ON pp.result_id = obs.parent_result_id
+        {_ABLATION_OBSERVATION_METRICS_CTE},
+        metric_rows AS (
+            SELECT rule_type,
+                   rule_key,
+                   parent_result_id,
+                   CASE WHEN child_loss_ratio IS NOT NULL
+                              AND parent_loss_ratio IS NOT NULL
+                        THEN child_loss_ratio - parent_loss_ratio END AS d_loss,
+                   CASE WHEN child_induction IS NOT NULL
+                              AND parent_induction IS NOT NULL
+                        THEN parent_induction - child_induction END AS d_induction,
+                   CASE WHEN child_binding IS NOT NULL AND parent_binding IS NOT NULL
+                        THEN parent_binding - child_binding END AS d_binding,
+                   CASE WHEN child_ar IS NOT NULL AND parent_ar IS NOT NULL
+                        THEN parent_ar - child_ar END AS d_ar,
+                   CASE WHEN child_hellaswag IS NOT NULL
+                              AND parent_hellaswag IS NOT NULL
+                        THEN parent_hellaswag - child_hellaswag END AS d_hellaswag,
+                   CASE WHEN child_blimp IS NOT NULL AND parent_blimp IS NOT NULL
+                        THEN parent_blimp - child_blimp END AS d_blimp,
+                   CASE WHEN child_ppl IS NOT NULL
+                              AND parent_ppl IS NOT NULL
+                              AND parent_ppl > 0
+                        THEN (child_ppl - parent_ppl) / parent_ppl END AS d_ppl_pct,
+                   CASE WHEN child_induction_v2 IS NOT NULL
+                              AND parent_induction_v2 IS NOT NULL
+                        THEN parent_induction_v2 - child_induction_v2
+                   END AS d_induction_v2,
+                   CASE WHEN child_binding_v2 IS NOT NULL
+                              AND parent_binding_v2 IS NOT NULL
+                        THEN parent_binding_v2 - child_binding_v2
+                   END AS d_binding_v2
+            FROM ablation_observation_metrics
         )
         SELECT rule_type,
                rule_key,
@@ -333,13 +738,19 @@ def _api_causal_ablation_components(nb=None):
                AVG(d_hellaswag) AS avg_d_hellaswag,
                AVG(d_blimp) AS avg_d_blimp,
                AVG(d_ppl_pct) AS avg_d_ppl_pct,
+               AVG(d_induction_v2) AS avg_d_induction_v2,
+               AVG(d_binding_v2) AS avg_d_binding_v2,
                SUM(CASE WHEN d_loss IS NOT NULL THEN 1 ELSE 0 END) AS n_loss,
                SUM(CASE WHEN d_induction IS NOT NULL THEN 1 ELSE 0 END) AS n_induction,
                SUM(CASE WHEN d_binding IS NOT NULL THEN 1 ELSE 0 END) AS n_binding,
                SUM(CASE WHEN d_ar IS NOT NULL THEN 1 ELSE 0 END) AS n_ar,
                SUM(CASE WHEN d_hellaswag IS NOT NULL THEN 1 ELSE 0 END) AS n_hellaswag,
                SUM(CASE WHEN d_blimp IS NOT NULL THEN 1 ELSE 0 END) AS n_blimp,
-               SUM(CASE WHEN d_ppl_pct IS NOT NULL THEN 1 ELSE 0 END) AS n_ppl
+               SUM(CASE WHEN d_ppl_pct IS NOT NULL THEN 1 ELSE 0 END) AS n_ppl,
+               SUM(CASE WHEN d_induction_v2 IS NOT NULL THEN 1 ELSE 0 END)
+                   AS n_induction_v2,
+               SUM(CASE WHEN d_binding_v2 IS NOT NULL THEN 1 ELSE 0 END)
+                   AS n_binding_v2
         FROM metric_rows
         {where}
         GROUP BY rule_type, rule_key
@@ -359,38 +770,46 @@ def _api_causal_ablation_recommendations(nb=None):
     min_n = max(2, int(request.args.get("min_n", 4, type=int) or 4))
     rows = nb.conn.execute(
         f"""
-        WITH metric_rows AS (
-            SELECT obs.rule_type,
-                   obs.rule_key,
-                   obs.parent_result_id,
-                   CASE WHEN cp.loss_ratio IS NOT NULL AND pp.loss_ratio IS NOT NULL
-                        THEN cp.loss_ratio - pp.loss_ratio END AS d_loss,
-                   CASE WHEN cp.induction_auc IS NOT NULL AND pp.induction_auc IS NOT NULL
-                        THEN pp.induction_auc - cp.induction_auc END AS d_induction,
-                   CASE WHEN cp.binding_composite IS NOT NULL AND pp.binding_composite IS NOT NULL
-                        THEN pp.binding_composite - cp.binding_composite END AS d_binding,
-                   CASE WHEN cp.ar_auc IS NOT NULL AND pp.ar_auc IS NOT NULL
-                        THEN pp.ar_auc - cp.ar_auc END AS d_ar,
-                   CASE WHEN cp.hellaswag_acc IS NOT NULL AND pp.hellaswag_acc IS NOT NULL
-                        THEN pp.hellaswag_acc - cp.hellaswag_acc END AS d_hellaswag,
-                   CASE WHEN cp.blimp_overall_accuracy IS NOT NULL
-                             AND pp.blimp_overall_accuracy IS NOT NULL
-                        THEN pp.blimp_overall_accuracy - cp.blimp_overall_accuracy END AS d_blimp,
-                   CASE WHEN cp.wikitext_perplexity IS NOT NULL
-                             AND pp.wikitext_perplexity IS NOT NULL
-                             AND pp.wikitext_perplexity > 0
-                        THEN (cp.wikitext_perplexity - pp.wikitext_perplexity)
-                             / pp.wikitext_perplexity END AS d_ppl_pct,
-                   CASE WHEN cp.hellaswag_acc IS NOT NULL
-                             AND cp.blimp_overall_accuracy IS NOT NULL
-                             AND cp.induction_auc IS NOT NULL
-                             AND cp.binding_composite IS NOT NULL
-                             AND cp.ar_auc IS NOT NULL
-                             AND cp.wikitext_perplexity IS NOT NULL
+        {_ABLATION_OBSERVATION_METRICS_CTE},
+        metric_rows AS (
+            SELECT rule_type,
+                   rule_key,
+                   parent_result_id,
+                   CASE WHEN child_loss_ratio IS NOT NULL
+                              AND parent_loss_ratio IS NOT NULL
+                        THEN child_loss_ratio - parent_loss_ratio END AS d_loss,
+                   CASE WHEN child_induction IS NOT NULL
+                              AND parent_induction IS NOT NULL
+                        THEN parent_induction - child_induction END AS d_induction,
+                   CASE WHEN child_binding IS NOT NULL AND parent_binding IS NOT NULL
+                        THEN parent_binding - child_binding END AS d_binding,
+                   CASE WHEN child_ar IS NOT NULL AND parent_ar IS NOT NULL
+                        THEN parent_ar - child_ar END AS d_ar,
+                   CASE WHEN child_hellaswag IS NOT NULL
+                              AND parent_hellaswag IS NOT NULL
+                        THEN parent_hellaswag - child_hellaswag END AS d_hellaswag,
+                   CASE WHEN child_blimp IS NOT NULL AND parent_blimp IS NOT NULL
+                        THEN parent_blimp - child_blimp END AS d_blimp,
+                   CASE WHEN child_ppl IS NOT NULL
+                              AND parent_ppl IS NOT NULL
+                              AND parent_ppl > 0
+                        THEN (child_ppl - parent_ppl) / parent_ppl END AS d_ppl_pct,
+                   CASE WHEN child_induction_v2 IS NOT NULL
+                              AND parent_induction_v2 IS NOT NULL
+                        THEN parent_induction_v2 - child_induction_v2
+                   END AS d_induction_v2,
+                   CASE WHEN child_binding_v2 IS NOT NULL
+                              AND parent_binding_v2 IS NOT NULL
+                        THEN parent_binding_v2 - child_binding_v2
+                   END AS d_binding_v2,
+                   CASE WHEN child_hellaswag IS NOT NULL
+                             AND child_blimp IS NOT NULL
+                             AND child_induction IS NOT NULL
+                             AND child_binding IS NOT NULL
+                             AND child_ar IS NOT NULL
+                             AND child_ppl IS NOT NULL
                         THEN 1 ELSE 0 END AS metric_complete
-            FROM causal_ablation_child_observations obs
-            LEFT JOIN program_results cp ON cp.result_id = obs.child_result_id
-            LEFT JOIN program_results pp ON pp.result_id = obs.parent_result_id
+            FROM ablation_observation_metrics
         ),
         agg AS (
             SELECT rule_type,
@@ -405,12 +824,18 @@ def _api_causal_ablation_recommendations(nb=None):
                    AVG(d_hellaswag) AS avg_d_hellaswag,
                    AVG(d_blimp) AS avg_d_blimp,
                    AVG(d_ppl_pct) AS avg_d_ppl_pct,
+                   AVG(d_induction_v2) AS avg_d_induction_v2,
+                   AVG(d_binding_v2) AS avg_d_binding_v2,
                    SUM(CASE WHEN d_induction IS NOT NULL THEN 1 ELSE 0 END) AS n_induction,
                    SUM(CASE WHEN d_binding IS NOT NULL THEN 1 ELSE 0 END) AS n_binding,
                    SUM(CASE WHEN d_blimp IS NOT NULL THEN 1 ELSE 0 END) AS n_blimp,
                    SUM(CASE WHEN d_hellaswag IS NOT NULL THEN 1 ELSE 0 END) AS n_hellaswag,
                    SUM(CASE WHEN d_ar IS NOT NULL THEN 1 ELSE 0 END) AS n_ar,
-                   SUM(CASE WHEN d_ppl_pct IS NOT NULL THEN 1 ELSE 0 END) AS n_ppl
+                   SUM(CASE WHEN d_ppl_pct IS NOT NULL THEN 1 ELSE 0 END) AS n_ppl,
+                   SUM(CASE WHEN d_induction_v2 IS NOT NULL THEN 1 ELSE 0 END)
+                       AS n_induction_v2,
+                   SUM(CASE WHEN d_binding_v2 IS NOT NULL THEN 1 ELSE 0 END)
+                       AS n_binding_v2
             FROM metric_rows
             GROUP BY rule_type, rule_key
             HAVING COUNT(*) >= {int(min_n)} AND SUM(metric_complete) >= 3
@@ -430,45 +855,59 @@ def _api_causal_ablation_children_for_rule(nb=None):
     rule_type = request.args.get("rule_type", "")
     rule_key = request.args.get("rule_key", "")
     parent_result_id = request.args.get("parent_result_id", "")
-    if not rule_type or not rule_key:
-        return jsonify({"error": "rule_type and rule_key required"}), 400
+    if (not rule_type or not rule_key) and not parent_result_id:
+        return jsonify(
+            {"error": "rule_type/rule_key or parent_result_id required"}
+        ), 400
     limit = max(1, min(int(request.args.get("limit", 100, type=int) or 100), 500))
-    where = "obs.rule_type = ? AND obs.rule_key = ?"
-    params: list = [rule_type, rule_key]
+    clauses: list[str] = []
+    params: list = []
+    if rule_type:
+        clauses.append("rule_type = ?")
+        params.append(rule_type)
+    if rule_key:
+        clauses.append("rule_key = ?")
+        params.append(rule_key)
     if parent_result_id:
-        where += " AND obs.parent_result_id = ?"
+        clauses.append("parent_result_id = ?")
         params.append(parent_result_id)
+    where = " AND ".join(clauses)
     rows = nb.conn.execute(
         f"""
-        SELECT obs.parent_result_id,
-               obs.parent_fingerprint,
-               obs.child_result_id,
-               obs.child_fingerprint,
-               obs.source,
-               cp.loss_ratio AS child_loss_ratio,
-               cp.wikitext_perplexity AS child_ppl,
-               cp.hellaswag_acc AS child_hellaswag,
-               cp.blimp_overall_accuracy AS child_blimp,
-               cp.induction_auc AS child_induction,
-               cp.binding_composite AS child_binding,
-               cp.ar_auc AS child_ar,
-               cp.fp_jacobian_erf_density AS child_erf_density,
-               cp.fp_icld_delta_loss AS child_icld_delta,
-               cp.trust_label AS child_trust_label,
-               cp.comparability_label AS child_comparability_label,
-               pp.loss_ratio AS parent_loss_ratio,
-               pp.wikitext_perplexity AS parent_ppl,
-               pp.hellaswag_acc AS parent_hellaswag,
-               pp.blimp_overall_accuracy AS parent_blimp,
-               pp.induction_auc AS parent_induction,
-               pp.binding_composite AS parent_binding,
-               pp.ar_auc AS parent_ar,
-               pp.fp_jacobian_erf_density AS parent_erf_density
-        FROM causal_ablation_child_observations obs
-        LEFT JOIN program_results cp ON cp.result_id = obs.child_result_id
-        LEFT JOIN program_results pp ON pp.result_id = obs.parent_result_id
+        {_ABLATION_OBSERVATION_METRICS_CTE}
+        SELECT parent_result_id,
+               parent_fingerprint,
+               child_result_id,
+               child_fingerprint,
+               source,
+               child_loss_ratio,
+               child_ppl,
+               child_hellaswag,
+               child_blimp,
+               child_induction,
+               child_binding,
+               child_ar,
+               child_erf_density,
+               child_icld_delta,
+               child_trust_label,
+               child_comparability_label,
+               child_induction_v2,
+               child_induction_v2_status,
+               child_binding_v2,
+               child_binding_v2_status,
+               parent_loss_ratio,
+               parent_ppl,
+               parent_hellaswag,
+               parent_blimp,
+               parent_induction,
+               parent_binding,
+               parent_ar,
+               parent_erf_density,
+               parent_induction_v2,
+               parent_binding_v2
+        FROM ablation_observation_metrics
         WHERE {where}
-        ORDER BY obs.timestamp DESC
+        ORDER BY timestamp DESC
         LIMIT ?
         """,
         (*params, limit),

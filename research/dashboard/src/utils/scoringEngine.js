@@ -3,6 +3,7 @@ export const TIER_ORDER = {
   validation: 3,
   validation_pending: 2.5,
   investigation: 2,
+  failed: 1.5,
   validation_failed: 1.5,
   investigation_failed: 1,
   screening: 1,
@@ -11,6 +12,7 @@ export const TIER_ORDER = {
 
 export const TIER_COLORS = {
   screening: 'var(--accent-blue)',
+  failed: 'var(--accent-red)',
   screened_out: 'var(--text-muted)',
   investigation_failed: 'var(--accent-red)',
   validation_failed: 'var(--accent-red)',
@@ -22,6 +24,7 @@ export const TIER_COLORS = {
 
 export const TIER_LABELS = {
   screening: 'Screening',
+  failed: 'Failed',
   screened_out: 'Failed Screening',
   investigation_failed: 'Failed Investigation',
   validation_failed: 'Failed Validation',

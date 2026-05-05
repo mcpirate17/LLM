@@ -22,6 +22,8 @@ const shortRid = (rid) => (rid ? String(rid).slice(0, 12) : '');
 // Positive Δ ⇒ removing/changing the component HURT, so the component is USEFUL.
 // Negative Δ ⇒ removing/changing the component HELPED, so the component is BAGGAGE.
 const METRIC_AXES = [
+  { key: 'avg_d_induction_v2', n: 'n_induction_v2', label: 'Δ ind v2', helpful: 'pos' },
+  { key: 'avg_d_binding_v2',   n: 'n_binding_v2',   label: 'Δ bind v2', helpful: 'pos' },
   { key: 'avg_d_induction', n: 'n_induction', label: 'Δ ind', helpful: 'pos' },
   { key: 'avg_d_binding',   n: 'n_binding',   label: 'Δ bind', helpful: 'pos' },
   { key: 'avg_d_ar',        n: 'n_ar',        label: 'Δ ar',   helpful: 'pos' },
@@ -270,6 +272,8 @@ function RecommendationsView({ onDrill }) {
               <th>Rule</th>
               <th>n</th>
               <th>Contexts</th>
+              <th>Δ ind v2</th>
+              <th>Δ bind v2</th>
               <th>Δ ind</th>
               <th>Δ bind</th>
               <th>Δ ar</th>
@@ -299,6 +303,8 @@ function RecommendationsView({ onDrill }) {
                   </td>
                   <td>{fmtInt(n)}</td>
                   <td>{fmtInt(row.contexts)}</td>
+                  <td style={{ color: signColor(row.avg_d_induction_v2) }}>{fmtSigned(row.avg_d_induction_v2)}</td>
+                  <td style={{ color: signColor(row.avg_d_binding_v2) }}>{fmtSigned(row.avg_d_binding_v2)}</td>
                   <td style={{ color: signColor(row.avg_d_induction) }}>{fmtSigned(row.avg_d_induction)}</td>
                   <td style={{ color: signColor(row.avg_d_binding) }}>{fmtSigned(row.avg_d_binding)}</td>
                   <td style={{ color: signColor(row.avg_d_ar) }}>{fmtSigned(row.avg_d_ar)}</td>
@@ -311,7 +317,7 @@ function RecommendationsView({ onDrill }) {
               );
             })}
             {filtered.length === 0 && (
-              <tr><td colSpan="12" style={{ textAlign: 'center', padding: 18, color: 'var(--text-muted)' }}>
+              <tr><td colSpan="14" style={{ textAlign: 'center', padding: 18, color: 'var(--text-muted)' }}>
                 No recommendations at this filter / min n.
               </td></tr>
             )}
@@ -365,6 +371,8 @@ function ChampionsView({ onDrill }) {
               <th>Children</th>
               <th>Coverage</th>
               <th>Sup / Ref</th>
+              <th>Mean Δ ind v2</th>
+              <th>Mean Δ bind v2</th>
               <th>Mean Δ ind</th>
               <th>Mean Δ bind</th>
               <th>Mean Δ ar</th>
@@ -403,6 +411,14 @@ function ChampionsView({ onDrill }) {
                     {' / '}
                     <span style={{ color: 'var(--accent-red)' }}>{fmtInt(row.refuted_count)}</span>
                   </td>
+                  <td style={{ color: signColor(row.avg_induction_v2_drop) }}>
+                    {fmtSigned(row.avg_induction_v2_drop)}
+                    <div style={{ color: 'var(--text-muted)', fontSize: 10 }}>{fmtInt(row.induction_v2_count)} v2</div>
+                  </td>
+                  <td style={{ color: signColor(row.avg_binding_v2_drop) }}>
+                    {fmtSigned(row.avg_binding_v2_drop)}
+                    <div style={{ color: 'var(--text-muted)', fontSize: 10 }}>{fmtInt(row.binding_v2_count)} v2</div>
+                  </td>
                   <td style={{ color: signColor(row.avg_induction_drop) }}>{fmtSigned(row.avg_induction_drop)}</td>
                   <td style={{ color: signColor(row.avg_binding_drop) }}>{fmtSigned(row.avg_binding_drop)}</td>
                   <td style={{ color: signColor(row.avg_ar_drop) }}>{fmtSigned(row.avg_ar_drop)}</td>
@@ -414,7 +430,7 @@ function ChampionsView({ onDrill }) {
               );
             })}
             {rows.length === 0 && (
-              <tr><td colSpan="13" style={{ textAlign: 'center', padding: 18, color: 'var(--text-muted)' }}>No champions with ablation evidence yet.</td></tr>
+              <tr><td colSpan="15" style={{ textAlign: 'center', padding: 18, color: 'var(--text-muted)' }}>No champions with ablation evidence yet.</td></tr>
             )}
           </tbody>
         </table>
@@ -449,7 +465,16 @@ function ComponentsView({ onDrill }) {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
         <div className="card-title" style={{ margin: 0 }}>By Component</div>
         <div style={{ display: 'flex', gap: 4 }}>
-          {['', 'op', 'op_pair', 'slot_motif', 'node_ablation'].map((t) => (
+          {[
+            '',
+            'node_delete_investigation',
+            'node_delete_s1',
+            'node_delete',
+            'component_replace',
+            'op_pair',
+            'slot_motif',
+            'op',
+          ].map((t) => (
             <button
               key={t || 'all'}
               onClick={() => setRuleType(t)}
@@ -470,6 +495,8 @@ function ComponentsView({ onDrill }) {
               <th>Rule</th>
               <th>n</th>
               <th>Contexts</th>
+              <th>Δ ind v2 (n)</th>
+              <th>Δ bind v2 (n)</th>
               <th>Δ ind (n)</th>
               <th>Δ bind (n)</th>
               <th>Δ ar (n)</th>
@@ -492,6 +519,12 @@ function ComponentsView({ onDrill }) {
                 </td>
                 <td>{fmtInt(row.observation_count)}</td>
                 <td>{fmtInt(row.parent_count)}</td>
+                <td style={{ color: signColor(row.avg_d_induction_v2) }}>
+                  {fmtSigned(row.avg_d_induction_v2)} <span style={{ color: 'var(--text-muted)' }}>({fmtInt(row.n_induction_v2)})</span>
+                </td>
+                <td style={{ color: signColor(row.avg_d_binding_v2) }}>
+                  {fmtSigned(row.avg_d_binding_v2)} <span style={{ color: 'var(--text-muted)' }}>({fmtInt(row.n_binding_v2)})</span>
+                </td>
                 <td style={{ color: signColor(row.avg_d_induction) }}>
                   {fmtSigned(row.avg_d_induction)} <span style={{ color: 'var(--text-muted)' }}>({fmtInt(row.n_induction)})</span>
                 </td>
@@ -516,7 +549,7 @@ function ComponentsView({ onDrill }) {
               </tr>
             ))}
             {rows.length === 0 && (
-              <tr><td colSpan="10" style={{ textAlign: 'center', padding: 18, color: 'var(--text-muted)' }}>No components.</td></tr>
+              <tr><td colSpan="12" style={{ textAlign: 'center', padding: 18, color: 'var(--text-muted)' }}>No components.</td></tr>
             )}
           </tbody>
         </table>
@@ -580,6 +613,8 @@ function AllRulesView({ summary, onDrill }) {
               <th>Fingerprints</th>
               <th>Sup / Ref</th>
               <th>Composite Δ</th>
+              <th>Δ ind v2</th>
+              <th>Δ bind v2</th>
               <th>Δ ind</th>
               <th>Δ bind</th>
               <th>Δ ar</th>
@@ -605,6 +640,8 @@ function AllRulesView({ summary, onDrill }) {
                   <span style={{ color: 'var(--accent-red)' }}>{fmtInt(row.refuted_count)}</span>
                 </td>
                 <td style={{ color: signColor(row.composite_support_effect) }}>{fmtSigned(row.composite_support_effect)}</td>
+                <td style={{ color: signColor(row.avg_induction_v2_support_effect) }}>{fmtSigned(row.avg_induction_v2_support_effect)}</td>
+                <td style={{ color: signColor(row.avg_binding_v2_support_effect) }}>{fmtSigned(row.avg_binding_v2_support_effect)}</td>
                 <td style={{ color: signColor(row.avg_induction_support_effect) }}>{fmtSigned(row.avg_induction_support_effect)}</td>
                 <td style={{ color: signColor(row.avg_binding_support_effect) }}>{fmtSigned(row.avg_binding_support_effect)}</td>
                 <td style={{ color: signColor(row.avg_ar_support_effect) }}>{fmtSigned(row.avg_ar_support_effect)}</td>
@@ -612,7 +649,7 @@ function AllRulesView({ summary, onDrill }) {
               </tr>
             ))}
             {filtered.length === 0 && (
-              <tr><td colSpan="9" style={{ textAlign: 'center', padding: 18, color: 'var(--text-muted)' }}>No rows.</td></tr>
+              <tr><td colSpan="11" style={{ textAlign: 'center', padding: 18, color: 'var(--text-muted)' }}>No rows.</td></tr>
             )}
           </tbody>
         </table>
@@ -674,6 +711,8 @@ function DrillDrawer({ params, onClose }) {
                   <th>Source</th>
                   <th>Loss ratio (P → C)</th>
                   <th>PPL (P → C)</th>
+                  <th>Ind v2 (P → C)</th>
+                  <th>Bind v2 (P → C)</th>
                   <th>Induction (P → C)</th>
                   <th>Binding (P → C)</th>
                   <th>AR (P → C)</th>
@@ -692,6 +731,14 @@ function DrillDrawer({ params, onClose }) {
                     <td><span className={`tag tag-${c.source}`}>{c.source}</span></td>
                     <td>{fmtNum(c.parent_loss_ratio, 4)} → {fmtNum(c.child_loss_ratio, 4)}</td>
                     <td>{fmtNum(c.parent_ppl, 1)} → {fmtNum(c.child_ppl, 1)}</td>
+                    <td>
+                      {fmtNum(c.parent_induction_v2, 3)} → {fmtNum(c.child_induction_v2, 3)}
+                      <div style={{ color: 'var(--text-muted)', fontSize: 10 }}>{c.child_induction_v2_status || '—'}</div>
+                    </td>
+                    <td>
+                      {fmtNum(c.parent_binding_v2, 3)} → {fmtNum(c.child_binding_v2, 3)}
+                      <div style={{ color: 'var(--text-muted)', fontSize: 10 }}>{c.child_binding_v2_status || '—'}</div>
+                    </td>
                     <td>{fmtNum(c.parent_induction, 3)} → {fmtNum(c.child_induction, 3)}</td>
                     <td>{fmtNum(c.parent_binding, 3)} → {fmtNum(c.child_binding, 3)}</td>
                     <td>{fmtNum(c.parent_ar, 3)} → {fmtNum(c.child_ar, 3)}</td>
@@ -701,7 +748,7 @@ function DrillDrawer({ params, onClose }) {
                   </tr>
                 ))}
                 {children.length === 0 && (
-                  <tr><td colSpan="10" style={{ textAlign: 'center', padding: 18, color: 'var(--text-muted)' }}>No child observations.</td></tr>
+                  <tr><td colSpan="12" style={{ textAlign: 'center', padding: 18, color: 'var(--text-muted)' }}>No child observations.</td></tr>
                 )}
               </tbody>
             </table>

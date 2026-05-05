@@ -656,6 +656,14 @@ class _LeaderboardMixin:
         if sort_by not in valid_sorts:
             sort_by = "composite_score"
 
+        program_result_columns = self._get_program_results_columns()
+
+        def _optional_pr_select(column: str, alias: str | None = None) -> str:
+            target = alias or column
+            if column in program_result_columns:
+                return f"pr.{column} AS {target}, "
+            return f"NULL AS {target}, "
+
         query = (
             "SELECT l.*, pr.graph_json AS _graph_json, "
             "pr.routing_mode AS _routing_mode, "
@@ -709,6 +717,15 @@ class _LeaderboardMixin:
             "pr.blimp_overall_accuracy AS _pr_blimp_overall_accuracy, "
             "pr.blimp_n_subtasks AS _pr_blimp_n_subtasks, "
             "pr.blimp_status AS _pr_blimp_status, "
+            f"{_optional_pr_select('nano_ar_inv_metric_version')}"
+            f"{_optional_pr_select('nano_ar_inv_in_dist_pair_match_acc')}"
+            f"{_optional_pr_select('nano_ar_inv_in_dist_class_acc')}"
+            f"{_optional_pr_select('nano_ar_inv_held_pair_match_acc')}"
+            f"{_optional_pr_select('nano_ar_inv_held_class_acc')}"
+            f"{_optional_pr_select('nano_ar_inv_score')}"
+            f"{_optional_pr_select('nano_ar_inv_status')}"
+            f"{_optional_pr_select('nano_ar_inv_elapsed_ms')}"
+            f"{_optional_pr_select('nano_ar_inv_train_steps_done')}"
             "pr.controlled_lang_metric_version AS controlled_lang_metric_version, "
             "pr.controlled_lang_s05_sa_score AS controlled_lang_s05_sa_score, "
             "pr.controlled_lang_s05_nb_order_acc AS controlled_lang_s05_nb_order_acc, "
@@ -765,6 +782,16 @@ class _LeaderboardMixin:
             normalized_tier = str(tier).strip().lower()
             current_status_clause = {
                 "screening": "COALESCE(l.tier, 'screening') = 'screening'",
+                "failed": (
+                    "l.tier IN ("
+                    "'screened_out', "
+                    "'investigation_failed', "
+                    "'investigation_fingerprint_incomplete', "
+                    "'validation_failed', "
+                    "'failed', "
+                    "'rejected'"
+                    ")"
+                ),
                 "screened_out": "l.tier = 'screened_out'",
                 "investigation": "l.tier = 'investigation'",
                 "investigation_failed": "l.tier = 'investigation_failed'",

@@ -5,11 +5,21 @@ export function normalizeTier(value) {
 export const DISCOVERY_TIER_FILTERS = [
   'all',
   'screening',
+  'failed',
   'investigation',
   'validation_pending',
   'validation',
   'breakthrough',
 ];
+
+export const FAILED_DISCOVERY_TIERS = new Set([
+  'screened_out',
+  'investigation_failed',
+  'investigation_fingerprint_incomplete',
+  'validation_failed',
+  'failed',
+  'rejected',
+]);
 
 export const CAPABILITY_QUALITY_ORDER = {
   breakthrough: 5,
@@ -37,6 +47,14 @@ export function getDiscoveryDisplayStatus(entry) {
       tierKey: 'investigation_failed',
       label: 'Failed Investigation',
       tabTier: 'investigation_failed',
+      isFailure: true,
+    };
+  }
+  if (tier === 'investigation_fingerprint_incomplete') {
+    return {
+      tierKey: 'investigation_fingerprint_incomplete',
+      label: 'Fingerprint Failed',
+      tabTier: 'investigation_fingerprint_incomplete',
       isFailure: true,
     };
   }
@@ -78,5 +96,10 @@ export function capabilityQualityRank(entry) {
 
 export function matchesActiveTier(entry, activeTier) {
   if (!activeTier || activeTier === 'all') return true;
-  return getDiscoveryDisplayStatus(entry).tabTier === normalizeTier(activeTier);
+  const normalized = normalizeTier(activeTier);
+  const status = getDiscoveryDisplayStatus(entry);
+  if (normalized === 'failed') {
+    return status.isFailure || FAILED_DISCOVERY_TIERS.has(status.tierKey);
+  }
+  return status.tabTier === normalized;
 }

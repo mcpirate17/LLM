@@ -575,14 +575,75 @@ class _ExecutionTrainingPostMixin:
                 if result.get("ar_auc") is None:
                     result["ar_auc"] = None
 
-                # Binding composite: 0.4*AR + 0.3*induction + 0.3*binding
-                ar_val = result.get("ar_auc")
+                # nano-AR-INV (investigation-tier associative-recall probe).
+                # Runs on a deepcopy of the live S1 model — uses the wikitext
+                # priors the backbone already learned. ~20s on cuda.
+                # Replaces the dead ar_auc slot in binding_composite.
+                nai = None
+                if not getattr(config, "skip_nano_ar_inv", False):
+                    try:
+                        from ...eval.nano_ar_inv import (
+                            NanoARInvConfig,
+                            nano_ar_inv,
+                        )
+
+                        nai = nano_ar_inv(
+                            model=model,
+                            device=str(dev),
+                            cfg=NanoARInvConfig(from_s1=True),
+                        )
+                        result["nano_ar_inv_metric_version"] = nai.metric_version
+                        result["nano_ar_inv_in_dist_pair_match_acc"] = (
+                            nai.in_dist_pair_match_acc
+                        )
+                        result["nano_ar_inv_in_dist_class_acc"] = nai.in_dist_class_acc
+                        result["nano_ar_inv_held_pair_match_acc"] = (
+                            nai.held_pair_match_acc
+                        )
+                        result["nano_ar_inv_held_class_acc"] = nai.held_class_acc
+                        result["nano_ar_inv_score"] = round(
+                            0.6 * nai.in_dist_pair_match_acc + 0.4 * nai.held_class_acc,
+                            4,
+                        )
+                        result["nano_ar_inv_status"] = nai.status
+                        result["nano_ar_inv_elapsed_ms"] = nai.elapsed_ms
+                        result["nano_ar_inv_train_steps_done"] = nai.finetune_steps_done
+                        # Hard no-go gate (mirrors nano_bind's persistent-zero rule):
+                        # both pair-match and held-class < 0.10 ⇒ frequency-collapse
+                        # degenerate. The gate only flags status='ok' runs to avoid
+                        # punishing transient failures (timeout / non-finite loss).
+                        is_no_go = (
+                            nai.status == "ok"
+                            and nai.in_dist_pair_match_acc < 0.10
+                            and nai.held_class_acc < 0.10
+                        )
+                        result["nano_ar_inv_no_go"] = int(bool(is_no_go))
+                        if is_no_go:
+                            # Mirror nano_bind: set failure_op so downstream tier
+                            # logic + leaderboard demotion picks this up. Prefer
+                            # not to clobber an existing failure_op (e.g. earlier
+                            # hard rejects from S0/S0.5).
+                            if not result.get("failure_op"):
+                                result["failure_op"] = "nano_ar_inv"
+                            logger.info(
+                                "    nano-AR-INV NO-GO: pair=%.2f held_class=%.2f "
+                                "(both axes < 0.10 → frequency-collapse)",
+                                nai.in_dist_pair_match_acc,
+                                nai.held_class_acc,
+                            )
+                    except (RuntimeError, ValueError, TypeError, ImportError) as e_nai:
+                        logger.debug("nano-AR-INV probe skipped: %s", e_nai)
+
+                # Binding composite v2: 0.4 * nano_ar_inv_score + 0.3*induction + 0.3*binding
+                # ar_auc is zeroed out — V4 evidence (8062 rows, max=0.015) showed it
+                # contributed pure noise. nano_ar_inv_score replaces its weight.
+                nai_score = result.get("nano_ar_inv_score")
                 ind_val = ind.auc if ind is not None else None
                 bind_val = result.get("binding_auc")
                 if ind_val is not None and bind_val is not None:
-                    if ar_val is not None:
+                    if nai_score is not None:
                         result["binding_composite"] = round(
-                            0.4 * ar_val + 0.3 * ind_val + 0.3 * bind_val, 4
+                            0.4 * nai_score + 0.3 * ind_val + 0.3 * bind_val, 4
                         )
                     else:
                         result["binding_composite"] = round(

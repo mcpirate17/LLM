@@ -6,8 +6,10 @@ hypothesis generation and evolution-based synthesis."""
 from __future__ import annotations
 
 import logging
+import json
 import os
 import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from ..native_runner import compile_model_native_first as compile_model
@@ -18,6 +20,10 @@ from ._helpers import clear_gpu_memory
 from ._types import RunConfig
 
 logger = logging.getLogger(__name__)
+
+_REPORT_DIR = Path("research/reports")
+_META_QUEUE_GLOB = "meta_experiment_queue_*.json"
+_META_PROFILE_GLOB = "meta_profile_ml_analysis_*.json"
 
 
 class _DashboardHypothesisMixin:
@@ -129,6 +135,139 @@ class _DashboardHypothesisMixin:
             "best_loss_ratio": best_loss,
         }
 
+    @staticmethod
+    def _latest_json_report(
+        report_dir: Path,
+        pattern: str,
+    ) -> tuple[Path | None, Dict[str, Any]]:
+        candidates = sorted(
+            (path for path in report_dir.glob(pattern) if path.is_file()),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+        for path in candidates:
+            try:
+                payload = json.loads(path.read_text())
+            except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
+                logger.debug(
+                    "Skipping unreadable meta strategy report %s: %s", path, exc
+                )
+                continue
+            if isinstance(payload, dict):
+                return path, payload
+        return None, {}
+
+    @classmethod
+    def _load_meta_profile_strategy_brief(
+        cls,
+        report_dir: str | os.PathLike[str] = _REPORT_DIR,
+    ) -> Dict[str, Any]:
+        """Compact, read-only profile/queue brief for LLM and fallback strategy."""
+
+        root = Path(report_dir)
+        queue_path, queue_payload = cls._latest_json_report(root, _META_QUEUE_GLOB)
+        ml_path, ml_payload = cls._latest_json_report(root, _META_PROFILE_GLOB)
+        if not queue_payload and not ml_payload:
+            return {"active": False, "reason": "no_meta_profile_reports"}
+
+        profile_queue = list(queue_payload.get("profile_refresh_queue") or [])
+        compression_queue = list(queue_payload.get("compression_safety_queue") or [])
+        scaffoldable = [
+            row for row in profile_queue if row.get("recommended_scaffold_family")
+        ]
+        harness_needed = [
+            row
+            for row in profile_queue
+            if row.get("action") == "add_scaffold_family_or_component_profile_harness"
+        ]
+        top_ops = [str(row.get("op_name") or "") for row in scaffoldable[:6]]
+        top_missing_harness_ops = [
+            str(row.get("op_name") or "") for row in harness_needed[:5]
+        ]
+        top_compression_risks = [
+            {
+                "template_name": row.get("template_name"),
+                "selected_motif": row.get("selected_motif"),
+                "nano_bind_rate": row.get("nano_bind_rate"),
+                "mean_frequency_risk": row.get("mean_frequency_risk"),
+                "recommended_variant": row.get("recommended_variant"),
+            }
+            for row in compression_queue[:5]
+        ]
+        ml_summary = dict(ml_payload.get("summary") or {})
+        ml_recommendations = [
+            {
+                "target": row.get("target"),
+                "feature": row.get("feature"),
+                "evidence": row.get("evidence"),
+                "recommendation": row.get("recommendation"),
+            }
+            for row in list(ml_payload.get("recommendations") or [])[:8]
+        ]
+
+        op_weights = {op: 1.6 for op in top_ops[:4] if op}
+        for op in top_missing_harness_ops:
+            # Keep unsupported complex blocks from being over-promoted until
+            # they have scaffold/profile coverage.
+            if op:
+                op_weights.setdefault(op, 0.55)
+
+        return {
+            "active": True,
+            "source_reports": {
+                "queue": str(queue_path) if queue_path else "",
+                "ml": str(ml_path) if ml_path else "",
+            },
+            "recommended_next_mode": "synthesis",
+            "strategy_bias": "profile_refresh_guided_routing_compression_synthesis",
+            "rationale": (
+                "Recent profile-grounded analysis points to routing/compression "
+                "coverage gaps and NanoBind-sensitive compression motifs. Bias the "
+                "next cycle toward scaffoldable routing/compression candidates while "
+                "preserving positional/content mixers after compression."
+            ),
+            "config_bias": {
+                "n_programs": 80,
+                "max_ops": 14,
+                "max_depth": 10,
+                "model_source": "mixed",
+                "morph_focus_sparse": True,
+                "grammar_merge_prob": 0.18,
+                "grammar_freq_domain_prob": 0.35,
+                "category_weights": {
+                    "functional": 1.35,
+                    "frequency": 1.25,
+                    "linear_algebra": 1.2,
+                    "structural": 1.1,
+                },
+                "op_weights": op_weights,
+            },
+            "top_profile_refresh_ops": top_ops,
+            "needs_scaffold_harness_ops": top_missing_harness_ops,
+            "top_compression_safety_items": top_compression_risks,
+            "ml_summary": {
+                "n_graphs": ml_summary.get("n_graphs"),
+                "n_features": ml_summary.get("n_features"),
+                "target_nano_bind_failure_rate": ml_summary.get(
+                    "target_nano_bind_failure_rate"
+                ),
+                "target_routing_improved_rate": ml_summary.get(
+                    "target_routing_improved_rate"
+                ),
+            },
+            "ml_recommendations": ml_recommendations,
+            "guardrails": {
+                "no_hard_gates": True,
+                "do_not_promote_unsupported_harness_ops": top_missing_harness_ops,
+                "validate_compression_with": [
+                    "NanoBind",
+                    "controlled_lang_s05",
+                    "WikiText",
+                    "TinyStories",
+                ],
+            },
+        }
+
     def _build_next_experiment_summary(
         self,
         nb: LabNotebook,
@@ -187,6 +326,7 @@ class _DashboardHypothesisMixin:
                 }
                 for r in recent[:6]
             ],
+            "meta_profile_strategy": self._load_meta_profile_strategy_brief(),
         }
 
     # ── Analytics + designer telemetry ───────────────────────────────────

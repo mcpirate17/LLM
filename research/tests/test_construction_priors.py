@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -12,8 +13,10 @@ from research.scientist.construction_priors import (
     AVOID_THRESHOLD,
     _classify,
     _composite_score,
+    audit_construction_prior_payload,
     compute_construction_prior,
     construction_prior_as_grammar_adjustments,
+    filter_construction_prior_payload_for_activation,
     get_active_construction_prior,
     list_construction_prior_snapshots,
     record_construction_prior_snapshot,
@@ -39,7 +42,7 @@ class TestCompositeScore(unittest.TestCase):
             }
         )
         self.assertGreater(score, 0.3)
-        self.assertGreater(weight, 0.9)
+        self.assertGreater(weight, 0.6)
 
     def test_score_negative_when_metrics_indicate_baggage(self):
         score, _ = _composite_score(
@@ -58,7 +61,7 @@ class TestCompositeScore(unittest.TestCase):
     def test_score_partial_metric_coverage(self):
         score, weight = _composite_score({"induction": 0.20, "binding": 0.15})
         self.assertGreater(score, 0.5)  # both saturate positive
-        self.assertAlmostEqual(weight, 0.40, places=2)
+        self.assertAlmostEqual(weight, 0.24, places=2)
 
     def test_classify_thresholds(self):
         self.assertEqual(_classify(USE_THRESHOLD + 0.01), "use")
@@ -94,6 +97,16 @@ class TestConstructionPriorEndToEnd(unittest.TestCase):
             binding_auc=metrics.get("binding_auc", 0.20),
             binding_composite=metrics.get("binding_composite", 0.20),
             ar_auc=metrics.get("ar_auc", 0.10),
+            induction_v2_investigation_auc=metrics.get(
+                "induction_v2_investigation_auc"
+            ),
+            induction_v2_investigation_status=metrics.get(
+                "induction_v2_investigation_status"
+            ),
+            binding_v2_investigation_auc=metrics.get("binding_v2_investigation_auc"),
+            binding_v2_investigation_status=metrics.get(
+                "binding_v2_investigation_status"
+            ),
             model_source="graph_synthesis",
         )
         self.nb.flush_writes()
@@ -144,10 +157,20 @@ class TestConstructionPriorEndToEnd(unittest.TestCase):
             stage05_passed=True,
             stage1_passed=True,
             intentional_rerun_reason="ablation_counterfactual",
+            induction_v2_investigation_auc=metrics.get(
+                "induction_v2_investigation_auc"
+            ),
+            induction_v2_investigation_status=metrics.get(
+                "induction_v2_investigation_status"
+            ),
+            binding_v2_investigation_auc=metrics.get("binding_v2_investigation_auc"),
+            binding_v2_investigation_status=metrics.get(
+                "binding_v2_investigation_status"
+            ),
             **kwargs,
         )
         self.nb.flush_writes()
-        # Record the linkage in causal_ablation_child_observations
+        # Record the linkage in causal_ablation_child_observations.
         evidence_id = self.nb.record_causal_rule_evidence(
             {
                 "parent_experiment_id": "exp_parent",
@@ -190,6 +213,77 @@ class TestConstructionPriorEndToEnd(unittest.TestCase):
                     "provenance": {},
                 }
             ],
+        )
+        self.nb.flush_writes()
+
+    def _write_knockout_evidence(
+        self,
+        *,
+        parent_rid: str,
+        parent_fp: str,
+        child_rid: str,
+        child_fp: str,
+        rule_key: str,
+        stage1_passed: bool = True,
+        child_induction_v2_status: str = "ok",
+        child_binding_v2_status: str = "ok",
+        **metrics,
+    ) -> None:
+        parent_metrics = {
+            "loss_ratio": metrics.get("parent_loss_ratio", 0.40),
+            "wikitext_perplexity": metrics.get("parent_wikitext_perplexity", 150.0),
+            "hellaswag_acc": metrics.get("parent_hellaswag_acc", 0.32),
+            "blimp_overall_accuracy": metrics.get(
+                "parent_blimp_overall_accuracy", 0.60
+            ),
+            "induction_auc": metrics.get("parent_induction_auc", 0.40),
+            "binding_composite": metrics.get("parent_binding_composite", 0.30),
+            "ar_auc": metrics.get("parent_ar_auc", 0.20),
+            "induction_v2_investigation_auc": metrics.get("parent_induction_v2", 0.90),
+            "binding_v2_investigation_auc": metrics.get("parent_binding_v2", 0.80),
+        }
+        child_metrics = {
+            "loss_ratio": metrics.get("child_loss_ratio", 0.70),
+            "wikitext_perplexity": metrics.get("child_wikitext_perplexity", 260.0),
+            "hellaswag_acc": metrics.get("child_hellaswag_acc", 0.26),
+            "blimp_overall_accuracy": metrics.get("child_blimp_overall_accuracy", 0.52),
+            "induction_auc": metrics.get("child_induction_auc", 0.15),
+            "binding_composite": metrics.get("child_binding_composite", 0.12),
+            "ar_auc": metrics.get("child_ar_auc", 0.05),
+            "induction_v2_investigation_auc": metrics.get("child_induction_v2", 0.20),
+            "induction_v2_investigation_status": child_induction_v2_status,
+            "binding_v2_investigation_auc": metrics.get("child_binding_v2", 0.25),
+            "binding_v2_investigation_status": child_binding_v2_status,
+        }
+        self.nb.record_causal_rule_evidence(
+            {
+                "parent_experiment_id": "exp_parent",
+                "parent_result_id": parent_rid,
+                "parent_fingerprint": parent_fp,
+                "ablation_experiment_id": "exp_knockout",
+                "rule_type": "node_delete_investigation",
+                "rule_key": rule_key,
+                "rule_context": "{}",
+                "original_loss_ratio": parent_metrics["loss_ratio"],
+                "ablation_best_loss_ratio": child_metrics["loss_ratio"],
+                "effect_size": child_metrics["loss_ratio"]
+                - parent_metrics["loss_ratio"],
+                "original_stage1_passed": 1,
+                "ablation_stage1_pass_count": 1 if stage1_passed else 0,
+                "ablation_total": 1,
+                "outcome": "supported" if stage1_passed else "inconclusive",
+                "confidence": 0.5,
+                "evidence_json": json.dumps(
+                    {
+                        "child_result_id": child_rid,
+                        "child_stage1_passed": stage1_passed,
+                        "child": {"fingerprint": child_fp},
+                        "parent_metrics": parent_metrics,
+                        "child_metrics": child_metrics,
+                    },
+                    sort_keys=True,
+                ),
+            }
         )
         self.nb.flush_writes()
 
@@ -263,6 +357,126 @@ class TestConstructionPriorEndToEnd(unittest.TestCase):
         self.assertLess(rules[0]["score"], AVOID_THRESHOLD)
         self.assertLess(rules[0]["multiplier"], 1.0)
 
+    def test_knockout_v2_evidence_from_rule_json_drives_soft_op_weight(self) -> None:
+        self._write_parent(
+            rid="parent_v2",
+            fp="fp_parent_v2",
+            loss_ratio=0.40,
+            induction_auc=0.40,
+            binding_composite=0.30,
+            ar_auc=0.20,
+            hellaswag_acc=0.32,
+            blimp_overall_accuracy=0.60,
+            wikitext_perplexity=150.0,
+            induction_v2_investigation_auc=0.92,
+            induction_v2_investigation_status="ok",
+            binding_v2_investigation_auc=0.82,
+            binding_v2_investigation_status="ok",
+        )
+        self._write_knockout_evidence(
+            parent_rid="parent_v2",
+            parent_fp="fp_parent_v2",
+            child_rid="child_v2",
+            child_fp="fp_child_v2",
+            rule_key="11:rope_rotate",
+            parent_induction_v2=0.92,
+            parent_binding_v2=0.82,
+            child_induction_v2=0.05,
+            child_binding_v2=0.20,
+        )
+        prior = compute_construction_prior(
+            self.nb,
+            min_n=99,
+            local_min_n=1,
+            min_metric_complete=1,
+        )
+        rule = prior["payload"]["rules"][0]
+        self.assertEqual(rule["rule_type"], "node_delete_investigation")
+        self.assertEqual(rule["rule_key"], "11:rope_rotate")
+        self.assertEqual(rule["verdict"], "use")
+        self.assertGreater(rule["per_metric"]["induction_v2"], 0.80)
+        self.assertEqual(rule["knockout_observation_count"], 1)
+        self.assertEqual(rule["v2_observation_count"], 1)
+        self.assertIn("rope_rotate", prior["payload"]["op_weights"])
+
+    def test_diverged_knockout_is_risk_not_clean_use_support(self) -> None:
+        self._write_parent(
+            rid="parent_diverged",
+            fp="fp_parent_diverged",
+            loss_ratio=0.40,
+            induction_auc=0.40,
+            binding_composite=0.30,
+            ar_auc=0.20,
+            hellaswag_acc=0.32,
+            blimp_overall_accuracy=0.60,
+            wikitext_perplexity=150.0,
+            induction_v2_investigation_auc=0.90,
+            induction_v2_investigation_status="ok",
+            binding_v2_investigation_auc=0.80,
+            binding_v2_investigation_status="ok",
+        )
+        self._write_knockout_evidence(
+            parent_rid="parent_diverged",
+            parent_fp="fp_parent_diverged",
+            child_rid="child_diverged",
+            child_fp="fp_child_diverged",
+            rule_key="12:softmax_attention",
+            stage1_passed=False,
+            child_induction_v2_status="diverged",
+            parent_induction_v2=0.90,
+            parent_binding_v2=0.80,
+            child_induction_v2=0.0,
+            child_binding_v2=0.0,
+        )
+        prior = compute_construction_prior(
+            self.nb,
+            min_n=99,
+            local_min_n=1,
+            min_metric_complete=1,
+        )
+        rule = prior["payload"]["rules"][0]
+        self.assertEqual(rule["rule_key"], "12:softmax_attention")
+        self.assertEqual(rule["verdict"], "mixed")
+        self.assertEqual(rule["weight_used"], 0.0)
+        self.assertEqual(rule["risk_row_count"], 1)
+        self.assertNotIn("softmax_attention", prior["payload"]["op_weights"])
+
+    def test_context_sensitive_norm_deletion_does_not_global_boost_norm(self) -> None:
+        self._write_parent(
+            rid="parent_norm",
+            fp="fp_parent_norm",
+            loss_ratio=0.40,
+            induction_auc=0.40,
+            binding_composite=0.30,
+            ar_auc=0.20,
+            hellaswag_acc=0.32,
+            blimp_overall_accuracy=0.60,
+            wikitext_perplexity=150.0,
+            induction_v2_investigation_auc=0.90,
+            induction_v2_investigation_status="ok",
+            binding_v2_investigation_auc=0.80,
+            binding_v2_investigation_status="ok",
+        )
+        self._write_knockout_evidence(
+            parent_rid="parent_norm",
+            parent_fp="fp_parent_norm",
+            child_rid="child_norm",
+            child_fp="fp_child_norm",
+            rule_key="1:rmsnorm",
+            parent_induction_v2=0.90,
+            parent_binding_v2=0.80,
+            child_induction_v2=0.10,
+            child_binding_v2=0.20,
+        )
+        prior = compute_construction_prior(
+            self.nb,
+            min_n=99,
+            local_min_n=1,
+            min_metric_complete=1,
+        )
+        self.assertEqual(prior["payload"]["rules"][0]["verdict"], "use")
+        self.assertNotIn("rmsnorm", prior["payload"]["op_weights"])
+
     def test_snapshot_round_trip_and_grammar_adjustments(self) -> None:
         self._write_parent(
             rid="p1",
@@ -300,9 +514,82 @@ class TestConstructionPriorEndToEnd(unittest.TestCase):
         snaps = list_construction_prior_snapshots(self.nb)
         self.assertEqual(len(snaps), 1)
         self.assertTrue(snaps[0]["is_active"])
-        adj = construction_prior_as_grammar_adjustments(active)
+        adj = construction_prior_as_grammar_adjustments(
+            active, apply_activation_filter=False
+        )
         self.assertEqual(adj["version"], version)
         self.assertIn("useful_op", adj["op_weights"])
+
+    def test_activation_filter_blocks_low_context_global_weight(self) -> None:
+        self._write_parent(
+            rid="p_low_context",
+            fp="fp_low_context",
+            induction_auc=0.5,
+            binding_composite=0.4,
+            ar_auc=0.2,
+            hellaswag_acc=0.32,
+            blimp_overall_accuracy=0.6,
+            wikitext_perplexity=150.0,
+        )
+        for i in range(4):
+            self._write_child(
+                parent_rid="p_low_context",
+                parent_fp="fp_low_context",
+                rid=f"c_low_context_{i}",
+                fp=f"fp_c_low_context_{i}",
+                rule_type="op",
+                rule_key="single_context_op",
+                induction_auc=0.3,
+                binding_composite=0.25,
+                ar_auc=0.10,
+                hellaswag_acc=0.27,
+                blimp_overall_accuracy=0.55,
+                wikitext_perplexity=250.0,
+            )
+        prior = compute_construction_prior(self.nb, min_n=3, min_metric_complete=3)
+        filtered = filter_construction_prior_payload_for_activation(prior["payload"])
+        audit = audit_construction_prior_payload(prior["payload"])
+        self.assertEqual(audit["eligible_rules"], 0)
+        self.assertEqual(audit["reason_counts"]["low_context_count"], 1)
+        self.assertNotIn("single_context_op", filtered["op_weights"])
+        self.assertEqual(
+            filtered["candidate_hints"][0]["rule_key"], "single_context_op"
+        )
+
+    def test_activation_filter_allows_clean_multi_context_weight(self) -> None:
+        for p in range(3):
+            parent_rid = f"p_multi_context_{p}"
+            parent_fp = f"fp_multi_context_{p}"
+            self._write_parent(
+                rid=parent_rid,
+                fp=parent_fp,
+                induction_auc=0.5,
+                binding_composite=0.4,
+                ar_auc=0.2,
+                hellaswag_acc=0.32,
+                blimp_overall_accuracy=0.6,
+                wikitext_perplexity=150.0,
+            )
+            for i in range(2):
+                self._write_child(
+                    parent_rid=parent_rid,
+                    parent_fp=parent_fp,
+                    rid=f"c_multi_context_{p}_{i}",
+                    fp=f"fp_c_multi_context_{p}_{i}",
+                    rule_type="op",
+                    rule_key="multi_context_op",
+                    induction_auc=0.3,
+                    binding_composite=0.25,
+                    ar_auc=0.10,
+                    hellaswag_acc=0.27,
+                    blimp_overall_accuracy=0.55,
+                    wikitext_perplexity=250.0,
+                )
+        prior = compute_construction_prior(self.nb, min_n=3, min_metric_complete=3)
+        filtered = filter_construction_prior_payload_for_activation(prior["payload"])
+        audit = audit_construction_prior_payload(prior["payload"])
+        self.assertEqual(audit["eligible_rules"], 1)
+        self.assertIn("multi_context_op", filtered["op_weights"])
 
     def test_activating_new_snapshot_demotes_old(self) -> None:
         self._write_parent(

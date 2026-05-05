@@ -160,7 +160,9 @@ def _attach_quickcheck_scores(rows: list[dict[str, Any]]) -> None:
     }
     for row in rows:
         rid = str(row["result_id"])
-        core_vals = [percentiles[key][rid] for key in core_keys if rid in percentiles[key]]
+        core_vals = [
+            percentiles[key][rid] for key in core_keys if rid in percentiles[key]
+        ]
         breadth_vals = [
             percentiles[key][rid] for key in breadth_keys if rid in percentiles[key]
         ]
@@ -347,7 +349,9 @@ def build_report(db: Path) -> dict[str, Any]:
     return {
         "coverage": {
             "rows": len(rows),
-            "families": dict(sorted((k, len(v)) for k, v in _group_by_family(rows).items())),
+            "families": dict(
+                sorted((k, len(v)) for k, v in _group_by_family(rows).items())
+            ),
         },
         "correlations": correlations,
         "family_summary": _family_summary(rows),

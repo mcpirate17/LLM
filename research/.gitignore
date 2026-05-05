@@ -49,6 +49,18 @@ monitor_wake_prompt.md
 *:memory:*
 checkpoints/
 perf_artifacts/
+profiling/
+reports/
+runtime_events/
+**/runtime_events/
+**/reports/
+**/profiling/
+**/perf_artifacts/
+**/logs/
+**/tmp/
+**/temp/
+**/.tmp/
+**/.run/
 
 # Native runner build artifacts
 runtime/native/build/

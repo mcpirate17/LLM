@@ -13,6 +13,7 @@ const STATUS_LABELS = {
   screening: 'Screened',
   screened_out: 'Failed Screening',
   investigation_failed: 'Failed Investigation',
+  investigation_fingerprint_incomplete: 'Fingerprint Failed',
   validation_failed: 'Failed Validation',
   validation_pending: 'Validation Pending',
   investigation: 'Investigation',
@@ -24,6 +25,7 @@ const STATUS_OPTIONS = [
   { value: 'screening', label: 'Screened' },
   { value: 'screened_out', label: 'Failed Screening' },
   { value: 'investigation', label: 'Investigating' },
+  { value: 'investigation_fingerprint_incomplete', label: 'Fingerprint Failed' },
   { value: 'validation', label: 'Validated' },
   { value: 'breakthrough', label: 'Breakthrough' },
 ];
@@ -121,6 +123,7 @@ export function StatusBadge({ entry }) {
   const color = provenance?.color || TIER_COLORS[tier] || 'var(--text-muted)';
   const capability = entry?.capability_quality || null;
   const semanticWarning = entry?.semantic_warning || null;
+  const fingerprintFailure = entry?.fingerprint_failure_summary || null;
   const semanticWarningTitle = semanticWarning
     ? [semanticWarning.message, ...(semanticWarning.evidence || [])].join('\n')
     : '';
@@ -193,6 +196,27 @@ export function StatusBadge({ entry }) {
           }}
         >
           {semanticWarning.label || 'Warning'}
+        </span>
+      )}
+      {fingerprintFailure?.failed && (
+        <span
+          title={(fingerprintFailure.failed_checks || []).map(check => `${check.label}: ${check.status}`).join('\n')}
+          style={{
+            display: 'inline-block',
+            padding: '2px 8px',
+            borderRadius: 4,
+            fontSize: 10,
+            fontWeight: 700,
+            color: 'var(--accent-red)',
+            background: 'rgba(248, 81, 73, 0.12)',
+            border: '1px solid rgba(248, 81, 73, 0.5)',
+            whiteSpace: 'nowrap',
+            maxWidth: '100%',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+          }}
+        >
+          Fingerprint failed
         </span>
       )}
     </div>
@@ -336,7 +360,10 @@ function ExpandedDetailBody({
   const isTrusted = ['candidate_screening', 'candidate_grade', 'reference'].includes(String(entry.trust_label || '').trim().toLowerCase());
   const screeningActionLabel = 'Replay';
   const showPromoteScreening = entry.result_id && !entry.is_reference && !isTrusted;
-  const canDelete = !entry.is_reference && (entry.tier === 'screening' || entry.tier === 'failed' || entry.tier === 'rejected' || entry.screening_passed === false || entry.investigation_passed === false || entry.validation_passed === false);
+  const canDelete = !entry.is_reference && (entry.tier === 'screening' || entry.tier === 'investigation_fingerprint_incomplete' || entry.tier === 'failed' || entry.tier === 'rejected' || entry.screening_passed === false || entry.investigation_passed === false || entry.validation_passed === false);
+  const fingerprintFailure = entry.fingerprint_failure_summary || null;
+  const failedFingerprintChecks = Array.isArray(fingerprintFailure?.failed_checks) ? fingerprintFailure.failed_checks : [];
+  const pendingFingerprintChecks = Array.isArray(fingerprintFailure?.pending_checks) ? fingerprintFailure.pending_checks : [];
 
   return (
     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: 12, fontSize: 12 }}>
@@ -349,6 +376,35 @@ function ExpandedDetailBody({
               {entry.graph_fingerprint && <span>FP: {entry.graph_fingerprint}</span>}
             </div>
           </div>
+          {fingerprintFailure?.failed && (
+            <div style={{ gridColumn: '1 / -1', padding: 10, borderRadius: 8, border: '1px solid rgba(248, 81, 73, 0.45)', background: 'rgba(248, 81, 73, 0.08)' }}>
+              <div style={{ fontWeight: 700, marginBottom: 6, textTransform: 'uppercase', fontSize: 10, color: 'var(--accent-red)' }}>
+                Fingerprint Failure
+              </div>
+              <div style={{ color: 'var(--text-secondary)', marginBottom: 8 }}>
+                {failedFingerprintChecks.length} failed fingerprint check{failedFingerprintChecks.length === 1 ? '' : 's'}
+                {pendingFingerprintChecks.length > 0 ? `, ${pendingFingerprintChecks.length} not completed` : ''}.
+              </div>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                {failedFingerprintChecks.map(check => (
+                  <span
+                    key={`${check.field}-${check.status}`}
+                    style={{
+                      padding: '3px 7px',
+                      borderRadius: 4,
+                      border: '1px solid rgba(248, 81, 73, 0.45)',
+                      color: 'var(--accent-red)',
+                      background: 'rgba(248, 81, 73, 0.10)',
+                      fontFamily: 'monospace',
+                      fontSize: 10,
+                    }}
+                  >
+                    {check.label}: {check.status}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
           <div style={{ padding: 10, borderRadius: 8, border: '1px solid var(--border)', background: 'rgba(255,255,255,0.02)' }}>
             <div style={{ fontWeight: 600, marginBottom: 6, textTransform: 'uppercase', fontSize: 10, color: 'var(--text-muted)' }}>Full Metrics</div>
             <MetricRow label="Screening Loss" value={fmt(entry.screening_loss_ratio)} color={lossColor(entry.screening_loss_ratio)} />

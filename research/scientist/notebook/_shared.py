@@ -1114,6 +1114,17 @@ CREATE INDEX IF NOT EXISTS idx_induction_metrics_archive_fp ON induction_metrics
 
 # Columns added in the schema expansion — used for migration
 _PROGRAM_RESULTS_NEW_COLUMNS = {
+    # nano-AR-INV (investigation-tier associative-recall probe; replaces dead ar_auc weight)
+    "nano_ar_inv_metric_version": "TEXT",
+    "nano_ar_inv_in_dist_pair_match_acc": "REAL",
+    "nano_ar_inv_in_dist_class_acc": "REAL",
+    "nano_ar_inv_held_pair_match_acc": "REAL",
+    "nano_ar_inv_held_class_acc": "REAL",
+    "nano_ar_inv_score": "REAL",
+    "nano_ar_inv_status": "TEXT",
+    "nano_ar_inv_elapsed_ms": "REAL",
+    "nano_ar_inv_train_steps_done": "INTEGER",
+    "nano_ar_inv_no_go": "INTEGER",  # 1 = pair+held_class both < 0.10 → hard reject (mirrors nano_bind)
     # Candidate-readiness provenance
     "result_cohort": "TEXT",
     "trust_label": "TEXT",
@@ -1434,9 +1445,9 @@ _PROGRAM_RESULTS_NEW_COLUMNS = {
     # nano-scale BLiMP/HellaSwag replacement: train the candidate on a tiny
     # noun→verb / noun→adjective vocabulary and evaluate forced-choice (sa)
     # plus minimal-pair grammaticality (nano_blimp). Three difficulty tiers:
-    #   S0.5 (screening): vocab=120 steps=40   — basic learning floor
-    #   S1.0 (investigation): vocab=200 steps=40 — real differentiator
-    #   Investigation: vocab=300 steps=40        — sharp discriminator
+    #   S0.5 (screening): vocab=120 steps=40    — basic no-go floor
+    #   S1.0 (investigation): vocab=240 steps=2000, checkpoints=500/1000/2000
+    #   Investigation: vocab=360 steps=2000, checkpoints=500/1000/2000
     # Order_grammaticality_acc has the richest dynamic range across the cohort
     # (std ~0.30) and is the primary signal; sa is the pass/fail anchor.
     "controlled_lang_metric_version": "TEXT",
@@ -1446,9 +1457,11 @@ _PROGRAM_RESULTS_NEW_COLUMNS = {
     "controlled_lang_s10_sa_score": "REAL",
     "controlled_lang_s10_nb_order_acc": "REAL",
     "controlled_lang_s10_nb_score": "REAL",
+    "controlled_lang_s10_checkpoints_json": "TEXT",
     "controlled_lang_inv_sa_score": "REAL",
     "controlled_lang_inv_nb_order_acc": "REAL",
     "controlled_lang_inv_nb_score": "REAL",
+    "controlled_lang_inv_checkpoints_json": "TEXT",
     # Permutation composition probe: symbolic transposition-chain task that
     # tests cross-token relation composition and longer-chain extrapolation.
     "permutation_composition_metric_version": "TEXT",

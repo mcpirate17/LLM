@@ -91,13 +91,13 @@ class NextExperimentDecisionPlanner:
         fallback = self._fallback_plan(summary, fallback_plan=fallback_plan)
         if not self.config.enabled:
             fallback["planner"] = {"source": "disabled", "backend": None}
-            return fallback
+            return self._apply_meta_strategy_bias(fallback, summary)
         if (
             self.config.budget_dollars > 0
             and current_cost_dollars >= self.config.budget_dollars
         ):
             fallback["planner"] = {"source": "budget_exhausted", "backend": None}
-            return fallback
+            return self._apply_meta_strategy_bias(fallback, summary)
 
         prompt = NEXT_EXPERIMENT_PLAN_PROMPT.format(
             summary_json=json.dumps(summary, indent=2, sort_keys=True),
@@ -122,6 +122,7 @@ class NextExperimentDecisionPlanner:
                 plan = self._validate_and_harden(candidate, fallback=fallback)
                 if plan is None:
                     continue
+                plan = self._apply_meta_strategy_bias(plan, summary)
                 plan["planner"] = {
                     "source": source_name,
                     "backend": getattr(backend, "name", None),
@@ -133,7 +134,7 @@ class NextExperimentDecisionPlanner:
                 logger.debug("LLM planner (%s) failed: %s", source_name, exc)
 
         fallback["planner"] = {"source": "heuristic_fallback", "backend": None}
-        return fallback
+        return self._apply_meta_strategy_bias(fallback, summary)
 
     def _get_local_backend(self):
         if self._local_backend is not None:
@@ -257,11 +258,90 @@ class NextExperimentDecisionPlanner:
         }
 
     @staticmethod
+    def _apply_meta_strategy_bias(
+        plan: Dict[str, Any],
+        summary: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        meta_strategy = (
+            summary.get("meta_profile_strategy")
+            if isinstance(summary.get("meta_profile_strategy"), dict)
+            else {}
+        )
+        if not meta_strategy.get("active"):
+            return plan
+        out = dict(plan)
+        config = dict(out.get("config") if isinstance(out.get("config"), dict) else {})
+        config_bias = (
+            meta_strategy.get("config_bias")
+            if isinstance(meta_strategy.get("config_bias"), dict)
+            else {}
+        )
+        for key, value in config_bias.items():
+            if key == "op_weights" and isinstance(value, dict):
+                merged = dict(config.get("op_weights") or {})
+                for op_name, weight in value.items():
+                    if op_name not in merged:
+                        merged[str(op_name)] = weight
+                config["op_weights"] = merged
+            elif key == "category_weights" and isinstance(value, dict):
+                merged = dict(config.get("category_weights") or {})
+                for category, weight in value.items():
+                    if category not in merged:
+                        merged[str(category)] = weight
+                config["category_weights"] = merged
+            else:
+                config.setdefault(key, value)
+        out["config"] = config
+
+        guardrails = dict(
+            out.get("guardrails") if isinstance(out.get("guardrails"), dict) else {}
+        )
+        guardrails.setdefault(
+            "meta_profile_strategy",
+            meta_strategy.get("guardrails", {}),
+        )
+        out["guardrails"] = guardrails
+        out["meta_profile_strategy_used"] = True
+        excerpt = dict(
+            out.get("summary_excerpt")
+            if isinstance(out.get("summary_excerpt"), dict)
+            else {}
+        )
+        excerpt["meta_profile_strategy_bias"] = meta_strategy.get("strategy_bias")
+        excerpt["top_profile_refresh_ops"] = list(
+            meta_strategy.get("top_profile_refresh_ops") or []
+        )[:4]
+        out["summary_excerpt"] = excerpt
+        if meta_strategy.get("rationale"):
+            reasoning = str(out.get("reasoning") or "")
+            if "Meta-profile strategy:" not in reasoning:
+                out["reasoning"] = (
+                    f"{reasoning} Meta-profile strategy: {meta_strategy['rationale']}"
+                ).strip()
+        return out
+
+    @staticmethod
     def _fallback_plan(
         summary: Dict[str, Any], fallback_plan: Optional[Dict[str, Any]]
     ) -> Dict[str, Any]:
         fallback = fallback_plan if isinstance(fallback_plan, dict) else {}
+        meta_strategy = (
+            summary.get("meta_profile_strategy")
+            if isinstance(summary.get("meta_profile_strategy"), dict)
+            else {}
+        )
         mode = str(fallback.get("mode") or "synthesis").strip().lower()
+        if meta_strategy.get("active"):
+            meta_mode = str(meta_strategy.get("recommended_next_mode") or "").lower()
+            if meta_mode in {
+                "synthesis",
+                "evolution",
+                "novelty",
+                "investigation",
+                "validation",
+                "refinement",
+            }:
+                mode = meta_mode
         if mode not in {
             "synthesis",
             "evolution",
@@ -275,15 +355,43 @@ class NextExperimentDecisionPlanner:
             fallback.get("reasoning")
             or "Rule-based fallback plan from recent outcomes."
         )
+        if meta_strategy.get("active"):
+            meta_reason = str(meta_strategy.get("rationale") or "").strip()
+            if meta_reason:
+                reasoning = f"{reasoning} Meta-profile strategy: {meta_reason}"
         confidence = float(fallback.get("confidence", 0.45) or 0.45)
+        if meta_strategy.get("active"):
+            confidence = max(confidence, 0.62)
         config = (
             fallback.get("config") if isinstance(fallback.get("config"), dict) else {}
         )
+        config = dict(config)
+        if meta_strategy.get("active") and isinstance(
+            meta_strategy.get("config_bias"), dict
+        ):
+            config.update(meta_strategy["config_bias"])
+            # Preserve caller/fallback explicit diversity knobs if present.
+            fallback_config = (
+                fallback.get("config")
+                if isinstance(fallback.get("config"), dict)
+                else {}
+            )
+            for key in (
+                "novelty_weight",
+                "selection_family_bonus_weight",
+                "selection_policy",
+                "selection_epsilon",
+            ):
+                if key in fallback_config:
+                    config[key] = fallback_config[key]
         return {
             "mode": mode,
             "reasoning": reasoning,
             "confidence": confidence,
-            "config": dict(config),
+            "config": config,
+            "guardrails": {"meta_profile_strategy": meta_strategy.get("guardrails", {})}
+            if meta_strategy.get("active")
+            else {},
             "summary_excerpt": {
                 "recent_experiment_id": summary.get("recent_experiment_id"),
                 "stage1_survivors": summary.get("stage1_survivors", 0),
@@ -291,5 +399,8 @@ class NextExperimentDecisionPlanner:
                     "best_validation_loss_ratio", summary.get("best_loss_ratio")
                 ),
                 "best_novelty": summary.get("best_novelty"),
+                "meta_profile_strategy_bias": meta_strategy.get("strategy_bias")
+                if meta_strategy.get("active")
+                else None,
             },
         }

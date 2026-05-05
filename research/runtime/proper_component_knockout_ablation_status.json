@@ -1,180 +1,191 @@
 {
   "audit_only": false,
   "backup_paths": {
-    "google_drive": "/home/tim/GoogleDrive/Backups/LLM_Research/pre_proper_component_knockout_ablation_20260501_065002/lab_notebook.db",
-    "local": "/home/tim/Projects/LLM/research/db_backups/pre_proper_component_knockout_ablation_20260501_065002/lab_notebook.db"
+    "google_drive": "/home/tim/GoogleDrive/Backups/LLM_Research/pre_proper_component_knockout_ablation_20260504_164015/lab_notebook.db",
+    "local": "/home/tim/Projects/LLM/research/db_backups/pre_proper_component_knockout_ablation_20260504_164015/lab_notebook.db"
   },
-  "completed_at": 1777635400.4466808,
-  "created_at": 1777632602.2159357,
-  "db_path": "/home/tim/Projects/LLM/research/lab_notebook.db",
+  "completed_at": 1777929439.050488,
+  "created_at": 1777927215.5823603,
+  "db_path": "research/lab_notebook.db",
   "dry_run": false,
   "final_metric_audit": {
-    "574271ca-f37": {
-      "global_s1_missing_core": 0,
-      "global_s1_missing_extended": 0,
-      "parent_s1_missing_core": 0,
-      "parent_s1_missing_extended": 0
+    "13442e9f-aea": {
+      "missing": 0,
+      "present": 7,
+      "required": 7
+    },
+    "f70c17d0-d59": {
+      "missing": 0,
+      "present": 7,
+      "required": 7
     }
   },
   "investigation_evidence_ids": [
-    "5b1850bb-bd4",
-    "bf069192-8e7",
-    "e0f21e53-b54",
-    "3ae9592c-70f",
-    "3cf99974-344",
-    "9d445bf5-8c9",
-    "85ecb271-be4",
-    "22704063-f6c",
-    "54af4391-7e2",
-    "17fa3f40-f2c",
-    "5f1d87b0-d30",
-    "80acb65a-a6b",
-    "d8afea27-1ad"
+    "aa40275c-65c",
+    "38a0f003-9eb",
+    "f24eadfb-946",
+    "a0f0099e-500",
+    "618413fd-df9",
+    "5731d578-55d",
+    "d5b50b82-355",
+    "c1bd45a6-836",
+    "45a077bd-fd6",
+    "534a5f8f-2bb"
   ],
-  "investigation_only": true,
+  "investigation_only": false,
   "investigation_steps": 2500,
-  "log_path": "research/runtime_events/proper_knockout_champion_investigation_20260501_064958.log",
-  "parent_count": 1,
+  "log_path": "research/runtime/proper_component_knockout_high_roi.log",
+  "parent_count": 2,
   "parent_result_ids": [
-    "574271ca-f37"
+    "f70c17d0-d59",
+    "13442e9f-aea"
   ],
-  "planned_children": 13,
-  "planned_program_rows": 13,
+  "planned_children": 10,
+  "planned_program_rows": 20,
   "plans": [
     {
       "accepted_children": [
         {
           "bypass_input_id": 0,
-          "fingerprint": "cf46160e2bccd226",
+          "fingerprint": "bb0b8d5856da1f29",
           "node_id": 1,
-          "op_name": "rmsnorm",
-          "pruned_nodes": 0
-        },
-        {
-          "bypass_input_id": 1,
-          "fingerprint": "e469f5e6d7e9792c",
-          "node_id": 2,
-          "op_name": "adjacent_token_merge",
-          "pruned_nodes": 0
-        },
-        {
-          "bypass_input_id": 1,
-          "fingerprint": "78300d1014353216",
-          "node_id": 3,
-          "op_name": "add",
-          "pruned_nodes": 0
-        },
-        {
-          "bypass_input_id": 2,
-          "fingerprint": "553ed3bc44d83b40",
-          "node_id": 4,
-          "op_name": "rmsnorm",
-          "pruned_nodes": 0
-        },
-        {
-          "bypass_input_id": 4,
-          "fingerprint": "29e0a59d2e5259ca",
-          "node_id": 5,
-          "op_name": "swiglu_mlp",
-          "pruned_nodes": 0
-        },
-        {
-          "bypass_input_id": 5,
-          "fingerprint": "b2d9b44737212446",
-          "node_id": 6,
-          "op_name": "gelu",
-          "pruned_nodes": 0
-        },
-        {
-          "bypass_input_id": 3,
-          "fingerprint": "c6a10a92b547686e",
-          "node_id": 7,
-          "op_name": "add",
-          "pruned_nodes": 3
-        },
-        {
-          "bypass_input_id": 7,
-          "fingerprint": "952cb04e70df36ab",
-          "node_id": 8,
           "op_name": "layernorm",
           "pruned_nodes": 0
         },
         {
-          "bypass_input_id": 8,
-          "fingerprint": "2d68a329e46beafe",
-          "node_id": 9,
-          "op_name": "linear_proj",
+          "bypass_input_id": 5,
+          "fingerprint": "d19fe47c33cc4960",
+          "node_id": 6,
+          "op_name": "rmsnorm",
           "pruned_nodes": 0
         },
         {
-          "bypass_input_id": 8,
-          "fingerprint": "5fe0236b21fee72c",
-          "node_id": 10,
-          "op_name": "linear_proj",
+          "bypass_input_id": 6,
+          "fingerprint": "4a338c488a96fc62",
+          "node_id": 7,
+          "op_name": "selective_scan",
           "pruned_nodes": 0
         },
         {
-          "bypass_input_id": 9,
-          "fingerprint": "946461aef53d8984",
+          "bypass_input_id": 10,
+          "fingerprint": "47a30cd85c81ce4c",
           "node_id": 11,
-          "op_name": "matmul",
-          "pruned_nodes": 1
+          "op_name": "rmsnorm",
+          "pruned_nodes": 0
         },
         {
-          "bypass_input_id": 0,
-          "fingerprint": "9abcb396bf08e5c8",
-          "node_id": 13,
-          "op_name": "add",
-          "pruned_nodes": 12
-        },
-        {
-          "bypass_input_id": 13,
-          "fingerprint": "61e8fa8c10834bf0",
-          "node_id": 14,
+          "bypass_input_id": 14,
+          "fingerprint": "5c5013c79d1f0a51",
+          "node_id": 15,
           "op_name": "rmsnorm",
           "pruned_nodes": 0
         }
       ],
       "metric_audit": {
-        "global_s1_missing_core": 0,
-        "global_s1_missing_extended": 0,
-        "parent_s1_missing_core": 0,
-        "parent_s1_missing_extended": 0
+        "missing": 0,
+        "present": 7,
+        "required": 7
       },
       "parent": {
-        "composite_score": 455.98791480021515,
-        "experiment_id": "5e26ddbe-e5f",
-        "fingerprint": "6d746b2317f49deb",
-        "loss_ratio": 0.48807424492914686,
-        "result_id": "574271ca-f37"
+        "composite_score": 408.6472663103612,
+        "experiment_id": "be864c87-932",
+        "fingerprint": "742d2af0b36cc8e4",
+        "loss_ratio": 0.6280427510089452,
+        "result_id": "f70c17d0-d59"
       },
-      "rejected_children": [
+      "rejected_children": []
+    },
+    {
+      "accepted_children": [
         {
-          "fingerprint": "d59c5d4e511274be",
+          "bypass_input_id": 0,
+          "fingerprint": "48dcf5ad241c77cb",
+          "node_id": 1,
+          "op_name": "rmsnorm",
+          "pruned_nodes": 0
+        },
+        {
+          "bypass_input_id": 6,
+          "fingerprint": "addd426c1dcdbb47",
+          "node_id": 7,
+          "op_name": "layernorm",
+          "pruned_nodes": 0
+        },
+        {
+          "bypass_input_id": 7,
+          "fingerprint": "9a615b08b8147f55",
+          "node_id": 11,
+          "op_name": "rope_rotate",
+          "pruned_nodes": 0
+        },
+        {
+          "bypass_input_id": 11,
+          "fingerprint": "8983ba3a4de5be5b",
           "node_id": 12,
-          "op_name": "add",
-          "reason": "duplicate_existing_fingerprint"
+          "op_name": "softmax_attention",
+          "pruned_nodes": 0
+        },
+        {
+          "bypass_input_id": 8,
+          "fingerprint": "684a2ca719a48c9f",
+          "node_id": 9,
+          "op_name": "entropy_score",
+          "pruned_nodes": 0
         }
-      ]
+      ],
+      "metric_audit": {
+        "missing": 0,
+        "present": 7,
+        "required": 7
+      },
+      "parent": {
+        "composite_score": 339.5012532753081,
+        "experiment_id": "292fba84-563",
+        "fingerprint": "10cfec26d76e7d29",
+        "loss_ratio": 0.5386485814954912,
+        "result_id": "13442e9f-aea"
+      },
+      "rejected_children": []
     }
   ],
-  "rejected_children": 1,
+  "rank_by": "induction_v2",
+  "rejected_children": 0,
+  "running": {
+    "completed": 5,
+    "parent_result_id": "13442e9f-aea",
+    "phase": "s1",
+    "total": 5
+  },
   "s1_evidence_ids": [
-    "29d5aef0-f25",
-    "4d32e877-3f4",
-    "8f9a6260-7e2",
-    "35bae70f-82d",
-    "448fdb1b-f6b",
-    "13cdd738-583",
-    "b13b8d21-b42",
-    "7d84830e-786",
-    "5c454b8b-593",
-    "e51f7225-cde",
-    "a39adc41-5b4",
-    "e3626588-164",
-    "14d54769-922"
+    "9133ec5b-5da",
+    "ab0372da-107",
+    "707de88d-469",
+    "68c3f9e7-566",
+    "7af052b6-420",
+    "e02b0239-6e1",
+    "1547140c-bd0",
+    "38f5dfe2-75c",
+    "7364a610-d49",
+    "993980a5-4e5"
   ],
   "s1_only": false,
-  "top_k": 2,
-  "updated_at": 1777635400.4293845
+  "target_op_names": [
+    "adjacent_token_merge",
+    "cumsum",
+    "entropy_score",
+    "gather_topk",
+    "latent_attention_compressor",
+    "layernorm",
+    "matmul",
+    "rmsnorm",
+    "rope_rotate",
+    "selective_scan",
+    "semi_structured_2_4_linear",
+    "softmax_attention",
+    "spectral_filter",
+    "token_entropy",
+    "topk_gate"
+  ],
+  "top_k": 12,
+  "updated_at": 1777929439.0502405
 }

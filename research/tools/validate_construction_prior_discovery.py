@@ -22,7 +22,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from research.scientist.construction_priors import get_active_construction_prior  # noqa: E402
+from research.scientist.construction_priors import (  # noqa: E402
+    construction_prior_as_grammar_adjustments,
+    filter_construction_prior_payload_for_activation,
+    get_active_construction_prior,
+)
 from research.scientist.notebook import LabNotebook  # noqa: E402
 from research.scientist.runner import ExperimentRunner, RunConfig  # noqa: E402
 from research.scientist.runner.execution_screening import (  # noqa: E402
@@ -52,7 +56,6 @@ def _config(args: argparse.Namespace) -> RunConfig:
     cfg.auto_validate = False
     cfg.auto_scale_up = False
     cfg.enable_causal_ablation = False
-    cfg.use_construction_priors = not bool(args.disable_construction_priors)
     return cfg
 
 
@@ -124,6 +127,43 @@ def _compile_smoke(graphs: list[Any], config: RunConfig) -> dict[str, Any]:
     }
 
 
+def _load_prior_payload(nb: LabNotebook, version: str) -> dict[str, Any]:
+    row = nb.conn.execute(
+        """
+        SELECT payload_json
+        FROM construction_prior_snapshots
+        WHERE version = ?
+        """,
+        (version,),
+    ).fetchone()
+    if row is None:
+        raise SystemExit(f"construction prior snapshot not found: {version}")
+    return json.loads(row["payload_json"])
+
+
+def _apply_prior_payload(grammar: Any, payload: dict[str, Any]) -> None:
+    adjustments = construction_prior_as_grammar_adjustments(
+        {"payload": payload},
+        apply_activation_filter=False,
+    )
+    for op_name, weight in (adjustments.get("op_weights") or {}).items():
+        grammar.op_weights[op_name] = (
+            float(grammar.op_weights.get(op_name, 1.0)) * float(weight)
+        ) ** 0.5
+    for slot_key, weights in (adjustments.get("slot_motif_multipliers") or {}).items():
+        merged = dict(grammar.slot_motif_weight_multipliers.get(str(slot_key), {}))
+        for motif_name, weight in (weights or {}).items():
+            current = float(merged.get(str(motif_name), 1.0))
+            w = float(weight)
+            merged[str(motif_name)] = max(current, w) if w >= 1.0 else min(current, w)
+        grammar.slot_motif_weight_multipliers[str(slot_key)] = merged
+    for slot_key, denied in (adjustments.get("slot_motif_denylist") or {}).items():
+        existing = set(grammar.slot_motif_denylist.get(str(slot_key), frozenset()))
+        existing.update(str(name) for name in (denied or []))
+        if existing:
+            grammar.slot_motif_denylist[str(slot_key)] = frozenset(existing)
+
+
 def _audit_generation(
     *,
     runner: ExperimentRunner,
@@ -132,16 +172,26 @@ def _audit_generation(
     sample_n: int,
     use_learned_grammar: bool,
     seed: int,
+    label: str | None = None,
+    prior_payload: dict[str, Any] | None = None,
+    plain_grammar: bool = False,
 ) -> dict[str, Any]:
     results = _make_experiment_results()
-    label = "active_prior" if use_learned_grammar else "baseline_no_learned_prior"
-    grammar, _failure_blocklist, _analytics = runner._prepare_grammar_config(
-        f"prior_validation_{label}",
-        config,
-        nb,
-        results,
-        use_learned_grammar=use_learned_grammar,
+    label = label or (
+        "active_prior" if use_learned_grammar else "baseline_no_learned_prior"
     )
+    if plain_grammar or prior_payload is not None:
+        grammar = runner._build_grammar_config(config, op_weights={})
+        if prior_payload is not None:
+            _apply_prior_payload(grammar, prior_payload)
+    else:
+        grammar, _failure_blocklist, _analytics = runner._prepare_grammar_config(
+            f"prior_validation_{label}",
+            config,
+            nb,
+            results,
+            use_learned_grammar=use_learned_grammar,
+        )
     started = time.time()
     generated = batch_generate(
         max(1, int(sample_n)),
@@ -174,6 +224,8 @@ def _audit_generation(
     return {
         "label": label,
         "use_learned_grammar": bool(use_learned_grammar),
+        "plain_grammar": bool(plain_grammar),
+        "prior_payload_version": (prior_payload or {}).get("version"),
         "elapsed_sec": round(time.time() - started, 3),
         "generated": len(generated),
         "unique_fingerprints": len({graph.fingerprint() for graph in generated}),
@@ -265,6 +317,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--run-s1", action="store_true")
     parser.add_argument("--disable-construction-priors", action="store_true")
     parser.add_argument(
+        "--prior-version",
+        default="",
+        help="Compare this snapshot without activating it.",
+    )
+    parser.add_argument(
+        "--raw-prior",
+        action="store_true",
+        help="Use --prior-version without activation filtering.",
+    )
+    parser.add_argument(
         "--output",
         default=str(RUNTIME_DIR / "construction_prior_discovery_validation.json"),
     )
@@ -280,11 +342,22 @@ def main() -> int:
     try:
         active_prior = get_active_construction_prior(nb)
         runner = ExperimentRunner(str(db_path))
+        candidate_payload = None
+        if str(args.prior_version or "").strip():
+            candidate_payload = _load_prior_payload(nb, str(args.prior_version).strip())
+            if not bool(args.raw_prior):
+                candidate_payload = filter_construction_prior_payload_for_activation(
+                    candidate_payload
+                )
         audit = {
             "created_at": time.time(),
             "active_prior": {
                 "version": (active_prior or {}).get("version"),
                 "summary": (active_prior or {}).get("summary") or {},
+            },
+            "candidate_prior": {
+                "version": (candidate_payload or {}).get("version"),
+                "activation_filter": (candidate_payload or {}).get("activation_filter"),
             },
             "config": config.to_dict(),
             "sample_n": int(args.sample_n),
@@ -295,14 +368,26 @@ def main() -> int:
                 sample_n=int(args.sample_n),
                 use_learned_grammar=False,
                 seed=int(args.seed),
+                label=(
+                    "plain_no_prior"
+                    if candidate_payload is not None
+                    else "baseline_no_learned_prior"
+                ),
+                plain_grammar=bool(candidate_payload is not None),
             ),
             "active": _audit_generation(
                 runner=runner,
                 nb=nb,
                 config=config,
                 sample_n=int(args.sample_n),
-                use_learned_grammar=True,
+                use_learned_grammar=not bool(candidate_payload),
                 seed=int(args.seed),
+                label=(
+                    "candidate_filtered_prior"
+                    if candidate_payload is not None
+                    else "active_prior"
+                ),
+                prior_payload=candidate_payload,
             ),
         }
     finally:

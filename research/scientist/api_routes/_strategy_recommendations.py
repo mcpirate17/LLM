@@ -73,6 +73,7 @@ def count_discovery_tiers(nb: LabNotebook) -> dict:
 
     counts = {
         "screening": 0,
+        "failed": 0,
         "screened_out": 0,
         "investigation": 0,
         "investigation_failed": 0,
@@ -100,6 +101,15 @@ def count_discovery_tiers(nb: LabNotebook) -> dict:
         if tier not in counts:
             counts[tier] = 0
         counts[tier] += 1
+        if tier in {
+            "screened_out",
+            "investigation_failed",
+            "investigation_fingerprint_incomplete",
+            "validation_failed",
+            "failed",
+            "rejected",
+        }:
+            counts["failed"] += 1
 
     total_s1 = nb.conn.execute(
         "SELECT COUNT(*) AS cnt FROM program_results WHERE stage1_passed = 1"

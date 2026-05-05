@@ -10,6 +10,7 @@ from .._strategy_recommendations import (
     enrich_program_detail,
     program_lineage_chain,
 )
+from .._fingerprint_failures import attach_fingerprint_failure_metadata
 from ...json_utils import json_safe
 
 from ._shared import (
@@ -62,6 +63,7 @@ def _api_program_detail(result_id, nb=None):
         program["llm_explanation"] = cached_explanation
 
     program = enrich_program_detail(nb, program)
+    attach_fingerprint_failure_metadata([program])
 
     try:
         program["lineage_chain"] = program_lineage_chain(nb, result_id)

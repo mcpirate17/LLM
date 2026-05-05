@@ -84,6 +84,136 @@ def test_discoveries_endpoint_accepts_fingerprint_for_cross_run_stability(tmp_pa
     assert "seen_runs" in stability or "trend" in stability or "rank_delta" in stability
 
 
+def test_ranked_discoveries_exposes_nano_ar_investigation_fields(tmp_path):
+    db_path = str(tmp_path / "discoveries_nano_ar.db")
+    nb = LabNotebook(db_path)
+    exp_id = nb.start_experiment("synthesis", {})
+    rid = nb.record_program_result(
+        experiment_id=exp_id,
+        graph_fingerprint="fp-nano-ar",
+        graph_json="{}",
+        **{
+            **_stage1_kwargs(loss_ratio=0.7, novelty_score=0.8),
+            "nano_ar_inv_metric_version": "nano_ar_inv_v1",
+            "nano_ar_inv_in_dist_pair_match_acc": 0.61,
+            "nano_ar_inv_in_dist_class_acc": 0.72,
+            "nano_ar_inv_held_pair_match_acc": 0.43,
+            "nano_ar_inv_held_class_acc": 0.54,
+            "nano_ar_inv_score": 0.582,
+            "nano_ar_inv_status": "ok",
+            "nano_ar_inv_elapsed_ms": 1234.0,
+            "nano_ar_inv_train_steps_done": 500,
+            "controlled_lang_s05_nb_score": 0.71,
+            "controlled_lang_s10_nb_score": 0.79,
+            "controlled_lang_inv_nb_score": 0.86,
+        },
+    )
+    nb.flush_writes()
+    nb.upsert_leaderboard(
+        result_id=rid,
+        model_source="graph_synthesis",
+        screening_loss_ratio=0.7,
+        screening_novelty=0.8,
+        tier="investigation",
+    )
+    nb.close()
+
+    app = create_app(notebook_path=db_path)
+    client = app.test_client()
+
+    res = client.get("/api/discoveries?sort=composite_score&limit=50&view=ranked")
+
+    assert res.status_code == 200
+    entries = res.get_json()["entries"]
+    entry = next(row for row in entries if row["result_id"] == rid)
+    assert entry["nano_ar_inv_metric_version"] == "nano_ar_inv_v1"
+    assert entry["nano_ar_inv_in_dist_pair_match_acc"] == pytest.approx(0.61)
+    assert entry["nano_ar_inv_in_dist_class_acc"] == pytest.approx(0.72)
+    assert entry["nano_ar_inv_held_pair_match_acc"] == pytest.approx(0.43)
+    assert entry["nano_ar_inv_held_class_acc"] == pytest.approx(0.54)
+    assert entry["nano_ar_inv_score"] == pytest.approx(0.582)
+    assert entry["nano_ar_inv_status"] == "ok"
+    assert entry["nano_ar_inv_elapsed_ms"] == pytest.approx(1234.0)
+    assert entry["nano_ar_inv_train_steps_done"] == 500
+    assert entry["controlled_lang_s05_nb_score"] == pytest.approx(0.71)
+    assert entry["controlled_lang_s10_nb_score"] == pytest.approx(0.79)
+    assert entry["controlled_lang_inv_nb_score"] == pytest.approx(0.86)
+
+
+def test_discoveries_fingerprint_failed_view_explains_failed_checks(tmp_path):
+    db_path = str(tmp_path / "discoveries_fingerprint_failed.db")
+    nb = LabNotebook(db_path)
+    exp_id = nb.start_experiment("synthesis", {})
+    failed_rid = nb.record_program_result(
+        experiment_id=exp_id,
+        graph_fingerprint="fp-fingerprint-failed",
+        graph_json="{}",
+        **{
+            **_stage1_kwargs(loss_ratio=0.82, novelty_score=0.6),
+            "fp_spec_norm_status": "ok",
+            "fp_jacobian_erf_status": "output_no_grad",
+            "fp_icld_status": "ok",
+            "fp_id_collapse_status": "not_run",
+            "fp_logit_margin_status": "failed",
+        },
+    )
+    ok_rid = nb.record_program_result(
+        experiment_id=exp_id,
+        graph_fingerprint="fp-fingerprint-ok",
+        graph_json="{}",
+        **{
+            **_stage1_kwargs(loss_ratio=0.76, novelty_score=0.7),
+            "fp_spec_norm_status": "ok",
+            "fp_jacobian_erf_status": "ok",
+            "fp_icld_status": "ok",
+            "fp_id_collapse_status": "ok",
+            "fp_logit_margin_status": "ok",
+        },
+    )
+    nb.flush_writes()
+    nb.upsert_leaderboard(
+        result_id=failed_rid,
+        model_source="graph_synthesis",
+        screening_loss_ratio=0.82,
+        screening_novelty=0.6,
+        tier="investigation_fingerprint_incomplete",
+    )
+    nb.upsert_leaderboard(
+        result_id=ok_rid,
+        model_source="graph_synthesis",
+        screening_loss_ratio=0.76,
+        screening_novelty=0.7,
+        tier="investigation",
+    )
+    nb.close()
+
+    app = create_app(notebook_path=db_path)
+    client = app.test_client()
+
+    res = client.get("/api/discoveries?view=fingerprint_failed&limit=50&trusted_only=0")
+
+    assert res.status_code == 200
+    payload = res.get_json()
+    assert payload["view"] == "fingerprint_failed"
+    result_ids = {row["result_id"] for row in payload["entries"]}
+    assert failed_rid in result_ids
+    assert ok_rid not in result_ids
+    entry = next(row for row in payload["entries"] if row["result_id"] == failed_rid)
+    summary = entry["fingerprint_failure_summary"]
+    assert entry["fingerprint_failed"] is True
+    assert summary["failed"] is True
+    assert {check["field"] for check in summary["failed_checks"]} >= {
+        "fp_jacobian_erf_status",
+        "fp_logit_margin_status",
+    }
+
+    detail_res = client.get(f"/api/programs/{failed_rid}")
+    assert detail_res.status_code == 200
+    detail = detail_res.get_json()
+    assert detail["fingerprint_failure_summary"]["failed"] is True
+    assert detail["fingerprint_failure_count"] >= 2
+
+
 def test_discoveries_endpoint_returns_orphan_reference_separately(tmp_path):
     db_path = str(tmp_path / "discoveries_refs.db")
     nb = LabNotebook(db_path)

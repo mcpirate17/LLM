@@ -25,6 +25,11 @@ from ._strategy_recommendations import (
     promotion_evidence_for_entry,
 )
 from ._strategy_report import parse_bool_query
+from ._fingerprint_failures import (
+    FINGERPRINT_STATUS_FIELDS,
+    NON_FAILURE_STATUSES,
+    attach_fingerprint_failure_metadata,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -135,6 +140,16 @@ def _current_discovery_tier(entry: Dict[str, Any]) -> str:
     if tier == "validation" and not bool(entry.get("validation_passed")):
         return "validation_pending"
     return tier or "screening"
+
+
+FAILED_DISCOVERY_TIERS = {
+    "screened_out",
+    "investigation_failed",
+    "investigation_fingerprint_incomplete",
+    "validation_failed",
+    "failed",
+    "rejected",
+}
 
 
 def _search_discoveries(
@@ -254,8 +269,14 @@ def _search_discoveries(
             graph_json=entry.get("graph_json"),
             routing_mode=entry.get("routing_mode"),
         )
-        if tier and _current_discovery_tier(entry) != str(tier).strip().lower():
-            continue
+        if tier:
+            normalized_tier = str(tier).strip().lower()
+            current_tier = _current_discovery_tier(entry)
+            if normalized_tier == "failed":
+                if current_tier not in FAILED_DISCOVERY_TIERS:
+                    continue
+            elif current_tier != normalized_tier:
+                continue
         if not include_references and entry.get("is_reference"):
             continue
         if trusted_only and not is_trusted_entry(entry):
@@ -331,6 +352,9 @@ def _compact_leaderboard_entry(entry: dict) -> dict:
         "capability_quality": entry.get("capability_quality"),
         "semantic_warning": entry.get("semantic_warning"),
         "semantic_warning_count": entry.get("semantic_warning_count"),
+        "fingerprint_failed": entry.get("fingerprint_failed"),
+        "fingerprint_failure_count": entry.get("fingerprint_failure_count"),
+        "fingerprint_failure_summary": entry.get("fingerprint_failure_summary"),
         "promotion_evidence": entry.get("promotion_evidence"),
         "loss_ratio": entry.get("loss_ratio"),
         "screening_loss_ratio": entry.get("screening_loss_ratio"),
@@ -381,6 +405,7 @@ def _compact_leaderboard_entry(entry: dict) -> dict:
         "fp_jacobian_spectral_norm": entry.get("fp_jacobian_spectral_norm"),
         "fp_jacobian_effective_rank": entry.get("fp_jacobian_effective_rank"),
         "fp_sensitivity_uniformity": entry.get("fp_sensitivity_uniformity"),
+        "fp_spec_norm_status": entry.get("fp_spec_norm_status"),
         "fp_jacobian_erf_density": entry.get("fp_jacobian_erf_density"),
         "fp_id_collapse_rate": entry.get("fp_id_collapse_rate"),
         "fp_id_collapse_rate_normalized": entry.get("fp_id_collapse_rate_normalized"),
@@ -392,12 +417,16 @@ def _compact_leaderboard_entry(entry: dict) -> dict:
         "fp_logit_margin_final": entry.get("fp_logit_margin_final"),
         "fp_logit_margin_delta": entry.get("fp_logit_margin_delta"),
         "fp_jacobian_erf_variance": entry.get("fp_jacobian_erf_variance"),
+        "fp_jacobian_erf_status": entry.get("fp_jacobian_erf_status"),
         "fp_jacobian_erf_variance_log": entry.get("fp_jacobian_erf_variance_log"),
         "fp_jacobian_spectral_norm_log": entry.get("fp_jacobian_spectral_norm_log"),
         "fp_icld_velocity": entry.get("fp_icld_velocity"),
         "fp_icld_early_loss": entry.get("fp_icld_early_loss"),
         "fp_icld_late_loss": entry.get("fp_icld_late_loss"),
         "fp_icld_delta_loss": entry.get("fp_icld_delta_loss"),
+        "fp_icld_status": entry.get("fp_icld_status"),
+        "fp_id_collapse_status": entry.get("fp_id_collapse_status"),
+        "fp_logit_margin_status": entry.get("fp_logit_margin_status"),
         "robustness_noise_score": entry.get("robustness_noise_score"),
         "quant_int8_retention": entry.get("quant_int8_retention"),
         "robustness_long_ctx_score": entry.get("robustness_long_ctx_score"),
@@ -446,6 +475,18 @@ def _compact_leaderboard_entry(entry: dict) -> dict:
         "binding_auc": entry.get("binding_auc"),
         "binding_composite": entry.get("binding_composite"),
         "local_only": entry.get("local_only"),
+        # Nano-AR investigation probe
+        "nano_ar_inv_metric_version": entry.get("nano_ar_inv_metric_version"),
+        "nano_ar_inv_in_dist_pair_match_acc": entry.get(
+            "nano_ar_inv_in_dist_pair_match_acc"
+        ),
+        "nano_ar_inv_in_dist_class_acc": entry.get("nano_ar_inv_in_dist_class_acc"),
+        "nano_ar_inv_held_pair_match_acc": entry.get("nano_ar_inv_held_pair_match_acc"),
+        "nano_ar_inv_held_class_acc": entry.get("nano_ar_inv_held_class_acc"),
+        "nano_ar_inv_score": entry.get("nano_ar_inv_score"),
+        "nano_ar_inv_status": entry.get("nano_ar_inv_status"),
+        "nano_ar_inv_elapsed_ms": entry.get("nano_ar_inv_elapsed_ms"),
+        "nano_ar_inv_train_steps_done": entry.get("nano_ar_inv_train_steps_done"),
         # v2 investigation-tier probes
         "induction_v2_investigation_auc": entry.get("induction_v2_investigation_auc"),
         "induction_v2_investigation_max_gap_acc": entry.get(
@@ -492,6 +533,7 @@ def _compact_leaderboard_entry(entry: dict) -> dict:
 def _attach_dashboard_entry_metadata(entries: List[Dict[str, Any]]) -> None:
     if not entries:
         return
+    attach_fingerprint_failure_metadata(entries)
     for entry in entries:
         if not isinstance(entry, dict):
             continue
@@ -686,11 +728,30 @@ def _program_graph_rows(
     search_query: str,
 ) -> List[Dict[str, Any]]:
     unranked_only = view == "backlog"
+    fingerprint_failed_only = view == "fingerprint_failed"
     capped_limit = max(min(int(limit), 5000), 1)
     where = ["TRIM(COALESCE(pr.graph_fingerprint, '')) <> ''"]
     params: List[Any] = []
     if unranked_only:
         where.append("l.entry_id IS NULL")
+    if fingerprint_failed_only:
+        non_failure_placeholders = ",".join("?" for _ in NON_FAILURE_STATUSES)
+        status_clauses = [
+            (
+                f"(TRIM(COALESCE(pr.{field}, '')) <> '' "
+                f"AND LOWER(TRIM(COALESCE(pr.{field}, ''))) "
+                f"NOT IN ({non_failure_placeholders}))"
+            )
+            for field, _label in FINGERPRINT_STATUS_FIELDS
+        ]
+        where.append(
+            "("
+            "COALESCE(l.tier, '') = 'investigation_fingerprint_incomplete'"
+            f" OR {' OR '.join(status_clauses)}"
+            ")"
+        )
+        for _field, _label in FINGERPRINT_STATUS_FIELDS:
+            params.extend(sorted(NON_FAILURE_STATUSES))
     if not include_failed:
         where.append("COALESCE(pr.stage1_passed, 0) = 1")
     if search_query:
@@ -1126,7 +1187,7 @@ def register_leaderboard_routes(app, context: ApiRouteContext):
             payload["score_scale"] = score_scale
             return jsonify(payload)
 
-        if view in ("backlog", "all_graphs"):
+        if view in ("backlog", "all_graphs", "fingerprint_failed"):
             include_failed = parse_bool_query(
                 request.args.get("include_failed"), default=True
             )

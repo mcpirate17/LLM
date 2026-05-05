@@ -33,3 +33,20 @@ test-results/
 
 # Runtime PID/log files
 .run/
+reports/
+profiling/
+perf_artifacts/
+runtime_events/
+logs/
+tmp/
+temp/
+.tmp/
+**/reports/
+**/profiling/
+**/perf_artifacts/
+**/runtime_events/
+**/logs/
+**/tmp/
+**/temp/
+**/.tmp/
+**/.run/

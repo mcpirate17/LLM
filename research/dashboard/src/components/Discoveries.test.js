@@ -28,4 +28,12 @@ describe('matchesActiveTier', () => {
   test('exposes validation pending as a first-class tier filter', () => {
     expect(DISCOVERY_TIER_FILTERS).toContain('validation_pending');
   });
+
+  test('exposes failed rows as a grouped first-class tier filter', () => {
+    expect(DISCOVERY_TIER_FILTERS).toContain('failed');
+    expect(matchesActiveTier({ tier: 'screened_out' }, 'failed')).toBe(true);
+    expect(matchesActiveTier({ tier: 'investigation_failed' }, 'failed')).toBe(true);
+    expect(matchesActiveTier({ tier: 'validation_failed' }, 'failed')).toBe(true);
+    expect(matchesActiveTier({ tier: 'screening' }, 'failed')).toBe(false);
+  });
 });

@@ -56,6 +56,49 @@ SCAFFOLD_PRIORITY = {
     "mul": 10,
 }
 
+_REQUIRED_PARENT_METRICS = (
+    "wikitext_perplexity",
+    "hellaswag_acc",
+    "blimp_overall_accuracy",
+    "induction_auc",
+    "binding_auc",
+    "binding_composite",
+    "ar_auc",
+)
+
+
+def ensure_ablation_metric_completeness(
+    nb: LabNotebook,
+    *,
+    parent_result_id: str,
+) -> dict[str, int]:
+    """Fail before ablation if the parent S1 row is missing required metrics.
+
+    Several ablation entry points import this helper. Keeping it here gives
+    them one shared parent-data quality check instead of each runner silently
+    accepting partial parents.
+    """
+    row = nb.conn.execute(
+        f"""SELECT stage1_passed, {", ".join(_REQUIRED_PARENT_METRICS)}
+            FROM program_results
+            WHERE result_id = ?""",
+        (parent_result_id,),
+    ).fetchone()
+    if row is None:
+        raise RuntimeError(f"ablation parent not found: {parent_result_id}")
+    if not bool(row["stage1_passed"]):
+        raise RuntimeError(f"ablation parent is not S1-passed: {parent_result_id}")
+    missing = [name for name in _REQUIRED_PARENT_METRICS if row[name] is None]
+    if missing:
+        raise RuntimeError(
+            f"ablation parent {parent_result_id} missing required S1 metrics: {missing}"
+        )
+    return {
+        "required": len(_REQUIRED_PARENT_METRICS),
+        "present": len(_REQUIRED_PARENT_METRICS) - len(missing),
+        "missing": len(missing),
+    }
+
 
 @dataclasses.dataclass(slots=True)
 class ParentProgram:

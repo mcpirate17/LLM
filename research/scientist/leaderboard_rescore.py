@@ -32,6 +32,7 @@ _AGG_METRIC_TO_SCORE_KWARGS = {
     "diagnostic_score": ("diagnostic_score",),
     "fp_hierarchy_fitness": ("hierarchy_fitness",),
     "ar_auc": ("ar_auc",),
+    "nano_ar_inv_score": ("nano_ar_inv_score",),
     "induction_auc": ("induction_auc",),
     "binding_auc": ("binding_auc",),
     "induction_v2_investigation_auc": ("induction_v2_inv_auc",),
