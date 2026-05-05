@@ -1,4 +1,8 @@
-"""Smoke tests for templates added in Phase 3.1 (Bucket D mines, 2026-05-04).
+"""Smoke tests for mined-pattern templates (Bucket D, 2026-05-04).
+
+Covers Phase 3.1 chains (`tropical_attn_conv1d_seq_block`,
+`rwkv_channel_conv1d_seq_block`, `matmul_conv1d_seq_block`) plus the Phase 5
+V2 sparse-2:4 mine (`sparse_24_linear_block`).
 
 Each new template must:
   1. Be present in TEMPLATES + DEFAULT_TEMPLATE_WEIGHTS.
@@ -28,6 +32,8 @@ PHASE_3_1_NEW_TEMPLATES = (
     "tropical_attn_conv1d_seq_block",
     "rwkv_channel_conv1d_seq_block",
     "matmul_conv1d_seq_block",
+    # Phase 5 V2 (2026-05-04) — mined sparse-2:4 linear pattern
+    "sparse_24_linear_block",
 )
 
 

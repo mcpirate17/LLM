@@ -603,6 +603,47 @@ def tpl_sparse_ffn(
     return _residual(graph, input_id, processed, context="sparse_ffn.output")
 
 
+def tpl_sparse_24_linear_block(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """norm → semi_structured_2_4_linear → linear_proj → residual.
+
+    Bucket D mine (Phase 5 V2 — 2026-05-04). Empirical pattern from passing
+    ``latent_compress_block`` graphs: the 2:4 structured-sparse linear
+    projection keeps half the FLOPs of a dense linear at minimal accuracy
+    loss when paired with a re-densifying ``linear_proj`` projection. The
+    miner surfaced 4 distinct chain variants centered on this op with
+    n_pass≈200, pass_rate≈0.81, lift≈3.0; before this template the only
+    coverage was through the latent_compress_block family.
+    """
+    D = graph.model_dim
+    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
+    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
+
+    sparse = _add(
+        graph,
+        "semi_structured_2_4_linear",
+        [normed],
+        {"out_dim": D},
+        context="sparse_24_linear_block.sparse",
+    )
+    # Re-densify so downstream ops aren't bottlenecked on sparse outputs
+    projected = _add(
+        graph,
+        "linear_proj",
+        [sparse],
+        {"out_dim": D},
+        context="sparse_24_linear_block.densify",
+    )
+    projected = _fix_dim(graph, projected)
+    return _residual(
+        graph, input_id, projected, context="sparse_24_linear_block.output"
+    )
+
+
 def tpl_sparse_moe_block(
     graph: ComputationGraph,
     input_id: int,

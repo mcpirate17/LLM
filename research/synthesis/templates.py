@@ -163,6 +163,8 @@ COMPONENT_GRAPH_EXEMPT_TEMPLATES = frozenset(
         "tropical_attn_conv1d_seq_block",
         "rwkv_channel_conv1d_seq_block",
         "matmul_conv1d_seq_block",
+        # Phase 5 V2 (2026-05-04) — mined sparse-2:4 linear pattern
+        "sparse_24_linear_block",
     }
 )
 
@@ -226,6 +228,7 @@ from ._templates_core import (  # noqa: F401
     tpl_gated_residual,
     tpl_dense_cascade,
     tpl_sparse_ffn,
+    tpl_sparse_24_linear_block,
     tpl_sparse_moe_block,
     tpl_routed_bottleneck,
     tpl_token_merge_block,
@@ -289,6 +292,7 @@ TEMPLATES: Dict[str, TemplateFn] = {
     "gated_residual": tpl_gated_residual,
     "dense_cascade": tpl_dense_cascade,
     "sparse_ffn": tpl_sparse_ffn,
+    "sparse_24_linear_block": tpl_sparse_24_linear_block,
     "sparse_moe_block": tpl_sparse_moe_block,
     "routed_bottleneck": tpl_routed_bottleneck,
     "token_merge_block": tpl_token_merge_block,
@@ -341,6 +345,7 @@ DEFAULT_TEMPLATE_WEIGHTS: Dict[str, float] = {
     "gated_residual": 1.5,
     "dense_cascade": 0.8,
     "sparse_ffn": 0.5,
+    "sparse_24_linear_block": 3.0,
     "sparse_moe_block": 4.0,
     "routed_bottleneck": 0.5,
     "token_merge_block": 7.0,
