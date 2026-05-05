@@ -34,6 +34,8 @@ PHASE_3_1_NEW_TEMPLATES = (
     "matmul_conv1d_seq_block",
     # Phase 5 V2 (2026-05-04) — mined sparse-2:4 linear pattern
     "sparse_24_linear_block",
+    # Phase 5 V2 (2026-05-04) — Clifford versor template
+    "geometric_product_versor_block",
 )
 
 

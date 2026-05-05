@@ -136,6 +136,25 @@ def _op_grade_mix(module, inputs, config):
     return execute_grade_mix(module, inputs[0])
 
 
+def _op_clifford_inverse(module, inputs, config):
+    from ..mathspaces.clifford import execute_clifford_inverse
+
+    return execute_clifford_inverse(module, inputs[0])
+
+
+def _op_versor_apply(module, inputs, config):
+    """Versor sandwich product: versor · multivector · versor⁻¹.
+
+    Two-input op. Falls back to single-input self-versor when only one tensor
+    is provided so the picker can wire it into existing slot machinery.
+    """
+    from ..mathspaces.clifford import execute_versor_apply
+
+    versor = inputs[0]
+    mv = inputs[1] if len(inputs) > 1 else inputs[0]
+    return execute_versor_apply(module, versor, mv)
+
+
 # ── Hyperbolic ops ──
 
 
@@ -380,6 +399,10 @@ OP_IMPLS: Dict[str, Callable] = {
     "rotor_transform": _op_rotor_transform,
     "grade_select": _op_grade_select,
     "grade_mix": _op_grade_mix,
+    # Phase 5 V2 (2026-05-04) — Clifford companion ops per
+    # research/reports/novel_math_ops_proposal_20260504.md §3
+    "clifford_inverse": _op_clifford_inverse,
+    "versor_apply": _op_versor_apply,
     "padic_expand": _op_padic_expand,
     "padic_gate": _op_padic_gate,
     "padic_residual": _op_padic_residual,

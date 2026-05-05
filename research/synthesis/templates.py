@@ -165,6 +165,8 @@ COMPONENT_GRAPH_EXEMPT_TEMPLATES = frozenset(
         "matmul_conv1d_seq_block",
         # Phase 5 V2 (2026-05-04) — mined sparse-2:4 linear pattern
         "sparse_24_linear_block",
+        # Phase 5 V2 (2026-05-04) — Clifford companion ops template
+        "geometric_product_versor_block",
     }
 )
 
@@ -261,6 +263,7 @@ from ._templates_exotic import (  # noqa: F401
     tpl_tropical_residual,
     tpl_tropical_center_block,
     tpl_geometric_product_block,
+    tpl_geometric_product_versor_block,
     tpl_residual_difference,
     tpl_tropical_matmul_block,
     tpl_gated_minimum,
@@ -313,6 +316,7 @@ TEMPLATES: Dict[str, TemplateFn] = {
     "tropical_residual": tpl_tropical_residual,
     "tropical_matmul_block": tpl_tropical_matmul_block,
     "geometric_product_block": tpl_geometric_product_block,
+    "geometric_product_versor_block": tpl_geometric_product_versor_block,
     "gated_maximum": tpl_gated_maximum,
     "three_way_split": tpl_three_way_split,
     **RESEARCH_TEMPLATE_REGISTRY,
@@ -366,6 +370,7 @@ DEFAULT_TEMPLATE_WEIGHTS: Dict[str, float] = {
     "tropical_residual": 2.5,
     "tropical_matmul_block": 2.5,
     "geometric_product_block": 1.5,
+    "geometric_product_versor_block": 3.0,
     "gated_maximum": 1.5,
     "three_way_split": 0.5,
     **RESEARCH_TEMPLATE_DEFAULT_WEIGHTS,

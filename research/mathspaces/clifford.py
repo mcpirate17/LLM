@@ -317,6 +317,76 @@ def execute_grade_mix(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
     return result.to(orig_dtype)
 
 
+def clifford_reverse(mv: torch.Tensor) -> torch.Tensor:
+    """Reverse of a Cl(3,0) multivector ~mv: negate bivector + pseudoscalar parts."""
+    rev = mv.clone()
+    rev[..., 4:7] = -rev[..., 4:7]
+    rev[..., 7] = -rev[..., 7]
+    return rev
+
+
+def clifford_inverse(mv: torch.Tensor) -> torch.Tensor:
+    """Multiplicative inverse of a Cl(3,0) multivector.
+
+    For versors and unit multivectors mv⁻¹ = ~mv / ||mv||² where ~mv is the
+    reverse and ||mv||² = (mv * ~mv)_scalar. Falls back to ~mv / max(||mv||², eps)
+    for numerical stability on general multivectors.
+    """
+    rev = clifford_reverse(mv)
+    norm_sq = (mv * mv).sum(dim=-1, keepdim=True).clamp(min=1e-6)
+    return rev / norm_sq
+
+
+def versor_apply(versor: torch.Tensor, mv: torch.Tensor) -> torch.Tensor:
+    """Sandwich product v · mv · v⁻¹ — the canonical Clifford rotation primitive.
+
+    For unit-versor inputs this equals the rotor sandwich `R · mv · ~R` already
+    implemented by ``rotor_transform``. The general form using the inverse
+    handles arbitrary versors.
+    """
+    v_inv = clifford_inverse(versor)
+    temp = geometric_product(versor, mv)
+    return geometric_product(temp, v_inv)
+
+
+def execute_clifford_inverse(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
+    """Apply clifford_inverse to a tensor interpreted as packed multivectors."""
+    orig_dtype = x.dtype
+    B, S, D = x.shape
+    pad = (N_BASIS - D % N_BASIS) % N_BASIS
+    if pad > 0:
+        x = F.pad(x, (0, pad))
+    mv = _pack_multivector(x.float())
+    inv = clifford_inverse(mv)
+    result = _unpack_multivector(inv)
+    if pad > 0:
+        result = result[..., :D]
+    return result.to(orig_dtype)
+
+
+def execute_versor_apply(
+    module: nn.Module, versor_tensor: torch.Tensor, mv_tensor: torch.Tensor
+) -> torch.Tensor:
+    """Versor sandwich product on packed multivectors.
+
+    Both inputs are interpreted as Cl(3,0) multivectors of dimension D. Returns
+    the same dimension D.
+    """
+    orig_dtype = mv_tensor.dtype
+    B, S, D = mv_tensor.shape
+    pad = (N_BASIS - D % N_BASIS) % N_BASIS
+    if pad > 0:
+        versor_tensor = F.pad(versor_tensor, (0, pad))
+        mv_tensor = F.pad(mv_tensor, (0, pad))
+    versor = _pack_multivector(versor_tensor.float())
+    mv = _pack_multivector(mv_tensor.float())
+    result = versor_apply(versor, mv)
+    out = _unpack_multivector(result)
+    if pad > 0:
+        out = out[..., :D]
+    return out.to(orig_dtype)
+
+
 def execute_clifford_attention(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
     """Attention using geometric product instead of dot product."""
     orig_dtype = x.dtype

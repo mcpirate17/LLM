@@ -1612,6 +1612,8 @@ _ALGEBRAIC_SPACE_TAGS: Dict[str, str] = {
     "rotor_transform": "clifford",
     "grade_select": "clifford",
     "grade_mix": "clifford",
+    "clifford_inverse": "clifford",
+    "versor_apply": "clifford",
     # p-adic
     "padic_expand": "padic",
     "padic_gate": "padic",
@@ -1651,6 +1653,8 @@ _ALGEBRAIC_TYPE_TAGS: Dict[str, AlgebraicType] = {
     "rotor_transform": AlgebraicType("clifford", "real", "multivector"),
     "grade_select": AlgebraicType("clifford", "any", "real"),
     "grade_mix": AlgebraicType("clifford", "real", "real"),
+    "clifford_inverse": AlgebraicType("clifford", "multivector", "multivector"),
+    "versor_apply": AlgebraicType("clifford", "multivector", "multivector"),
     "lif_neuron": AlgebraicType("spiking", "real", "real"),
     "spike_rate_code": AlgebraicType("spiking", "real", "real"),
     "stdp_attention": AlgebraicType("spiking", "real", "real"),

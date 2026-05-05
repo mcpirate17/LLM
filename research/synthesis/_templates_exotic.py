@@ -343,6 +343,65 @@ def tpl_geometric_product_block(
         return processed
 
 
+def tpl_geometric_product_versor_block(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """norm → versor_proj → rotor_transform → versor_apply(versor, mv) → grade_select → proj → residual.
+
+    Phase 5 V2 Clifford companion (2026-05-04). Pairs the proven
+    ``geometric_product`` (op_certification: 84.7% pass solo, n=150) with
+    the new ``versor_apply`` op (sandwich product v · mv · v⁻¹) — the
+    canonical Clifford rotation primitive. Differs from the existing
+    ``geometric_product_block`` by passing a versor explicitly through
+    the sandwich pipeline rather than two parallel rotors → product.
+    """
+    D = graph.model_dim
+    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
+    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
+
+    # Versor source — independent linear projection bridges euclidean → multivector
+    versor_proj = _add(
+        graph,
+        "linear_proj",
+        [normed],
+        {"out_dim": D},
+        context="geometric_product_versor_block.versor_proj",
+    )
+    versor = _add(
+        graph,
+        "rotor_transform",
+        [versor_proj],
+        context="geometric_product_versor_block.versor",
+    )
+    # Sandwich application: rotates the input multivector by the versor
+    sandwiched = _add(
+        graph,
+        "versor_apply",
+        [versor, normed],
+        context="geometric_product_versor_block.sandwich",
+    )
+    selected = _add(
+        graph,
+        "grade_select",
+        [sandwiched],
+        context="geometric_product_versor_block.grade_select",
+    )
+    projected = _add(
+        graph,
+        "linear_proj",
+        [selected],
+        {"out_dim": D},
+        context="geometric_product_versor_block.project",
+    )
+    projected = _fix_dim(graph, projected)
+    return _residual(
+        graph, input_id, projected, context="geometric_product_versor_block.output"
+    )
+
+
 def tpl_residual_difference(
     graph: ComputationGraph,
     input_id: int,

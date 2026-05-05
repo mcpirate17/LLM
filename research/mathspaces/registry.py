@@ -225,6 +225,32 @@ def register_all_mathspaces():
     op = _with_execute(op, clifford.execute_grade_mix)
     register_external_primitive(op)
 
+    # Phase 5 V2 (2026-05-04) — Clifford companion ops per
+    # research/reports/novel_math_ops_proposal_20260504.md §3.1
+    op = PrimitiveOp(
+        name="clifford_inverse",
+        category=OpCategory.MATH_SPACE,
+        n_inputs=1,
+        shape_rule="identity",
+        description="Multiplicative inverse of a Cl(3,0) multivector "
+        "(~mv / ||mv||²); exact for versors, regularized fallback otherwise",
+        algebraic_space="clifford",
+    )
+    op = _with_execute(op, clifford.execute_clifford_inverse)
+    register_external_primitive(op)
+
+    op = PrimitiveOp(
+        name="versor_apply",
+        category=OpCategory.MATH_SPACE,
+        n_inputs=2,
+        shape_rule="binary_broadcast",
+        description="Versor sandwich product v · mv · v⁻¹ — canonical "
+        "Clifford rotation; generalizes rotor_transform to non-unit versors",
+        algebraic_space="clifford",
+    )
+    op = _with_execute(op, clifford.execute_versor_apply)
+    register_external_primitive(op)
+
     # ── Compound Cross-Space Primitives ──
 
     op = PrimitiveOp(
