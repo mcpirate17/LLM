@@ -406,10 +406,10 @@ class _LeaderboardMixin:
             metric_agg = self.get_fingerprint_metric_aggregates(_fp) or {}
             tier_cv = metric_agg.get("_tier_cv") or {}
             n_runs_max = int(metric_agg.get("_n_runs_max") or 0)
-            kwargs.setdefault("n_runs", n_runs_max)
-            kwargs.setdefault("cv_loss", tier_cv.get("loss"))
-            kwargs.setdefault("cv_understanding", tier_cv.get("und"))
-            kwargs.setdefault("cv_capability", tier_cv.get("cap"))
+            kwargs["n_runs"] = n_runs_max
+            kwargs["cv_loss"] = tier_cv.get("loss")
+            kwargs["cv_understanding"] = tier_cv.get("und")
+            kwargs["cv_capability"] = tier_cv.get("cap")
 
         update_items = self._leaderboard_update_items(kwargs)
 
@@ -453,6 +453,7 @@ class _LeaderboardMixin:
                 "diagnostic_score": ("diagnostic_score",),
                 "fp_hierarchy_fitness": ("hierarchy_fitness",),
                 "ar_auc": ("ar_auc",),
+                "nano_ar_inv_score": ("nano_ar_inv_score",),
                 "induction_auc": ("induction_auc",),
                 "binding_auc": ("binding_auc",),
                 "induction_v2_investigation_auc": ("induction_v2_inv_auc",),
@@ -488,12 +489,12 @@ class _LeaderboardMixin:
                 # Geomean as a single-number summary; per-tier values live
                 # in cv_loss/cv_understanding/cv_capability.
                 stability = (_pl * _pu * _pc) ** (1.0 / 3.0)
-                kwargs.setdefault("score_stability_penalty", stability)
+                kwargs["score_stability_penalty"] = stability
             else:
-                kwargs.setdefault("score_stability_penalty", 1.0)
+                kwargs["score_stability_penalty"] = 1.0
         else:
             composite = float(composite_dec)
-            kwargs.setdefault("score_stability_penalty", 1.0)
+            kwargs["score_stability_penalty"] = 1.0
         # Re-derive update_items so the new cv/n_runs/penalty cols hit
         # the SQL UPDATE/INSERT below.
         update_items = self._leaderboard_update_items(kwargs)

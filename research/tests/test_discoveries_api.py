@@ -140,6 +140,52 @@ def test_ranked_discoveries_exposes_nano_ar_investigation_fields(tmp_path):
     assert entry["controlled_lang_inv_nb_score"] == pytest.approx(0.86)
 
 
+def test_discoveries_search_uses_leaderboard_v2_rollup_for_parent(tmp_path):
+    db_path = str(tmp_path / "discoveries_search_v2_rollup.db")
+    nb = LabNotebook(db_path)
+    exp_id = nb.start_experiment("synthesis", {})
+    parent_rid = nb.record_program_result(
+        experiment_id=exp_id,
+        graph_fingerprint="fp-search-v2-rollup",
+        graph_json="{}",
+        **_stage1_kwargs(loss_ratio=0.7, novelty_score=0.8),
+    )
+    nb.flush_writes()
+    nb.upsert_leaderboard(
+        result_id=parent_rid,
+        model_source="graph_synthesis",
+        screening_loss_ratio=0.7,
+        screening_novelty=0.8,
+        tier="validation",
+        validation_passed=False,
+        induction_v2_investigation_auc=0.547,
+        induction_v2_investigation_max_gap_acc=1.0,
+        induction_v2_investigation_protocol_version="induction_v2_test",
+        binding_v2_investigation_auc=0.1224,
+        binding_v2_investigation_max_distance_acc=0.306,
+        binding_v2_investigation_protocol_version="binding_v2_test",
+    )
+    nb.close()
+
+    app = create_app(notebook_path=db_path)
+    client = app.test_client()
+
+    res = client.get(
+        "/api/discoveries?sort=composite_score&limit=50&view=ranked"
+        "&scope=all&q=fp-search-v2-rollup&trusted_only=0"
+    )
+
+    assert res.status_code == 200
+    entries = res.get_json()["entries"]
+    entry = next(row for row in entries if row["result_id"] == parent_rid)
+    assert entry["induction_v2_investigation_auc"] == pytest.approx(0.547)
+    assert entry["induction_v2_investigation_max_gap_acc"] == pytest.approx(1.0)
+    assert entry["induction_v2_investigation_protocol_version"] == "induction_v2_test"
+    assert entry["binding_v2_investigation_auc"] == pytest.approx(0.1224)
+    assert entry["binding_v2_investigation_max_distance_acc"] == pytest.approx(0.306)
+    assert entry["binding_v2_investigation_protocol_version"] == "binding_v2_test"
+
+
 def test_discoveries_fingerprint_failed_view_explains_failed_checks(tmp_path):
     db_path = str(tmp_path / "discoveries_fingerprint_failed.db")
     nb = LabNotebook(db_path)

@@ -45,6 +45,39 @@ class _ControlStartMixin:
         payload.update(extra)
         self._emit_event("experiment_started", payload)
 
+    def _resolve_validation_result_ids(self, nb, result_ids: List[str]) -> List[str]:
+        from ..api_routes._strategy_preflight import (
+            has_backfill_provenance,
+            resolve_confirmed_candidate_result_id,
+        )
+
+        resolved: List[str] = []
+        blocked: List[str] = []
+        for result_id in result_ids:
+            program = nb.get_program_detail(result_id)
+            entry = nb.get_leaderboard_entry(result_id)
+            if has_backfill_provenance(program) or has_backfill_provenance(entry):
+                confirmed_id = resolve_confirmed_candidate_result_id(
+                    nb,
+                    result_id,
+                    program=program,
+                    leaderboard_entry=entry,
+                )
+                if confirmed_id:
+                    result_id = confirmed_id
+                else:
+                    blocked.append(result_id)
+                    continue
+            if result_id not in resolved:
+                resolved.append(result_id)
+        if blocked:
+            labels = ", ".join(blocked)
+            raise ValueError(
+                "Cannot validate backfill-provenance result(s) without candidate "
+                f"confirmation: {labels}. Run S1 candidate confirmation first."
+            )
+        return resolved
+
     def start_experiment(
         self,
         config: RunConfig,
@@ -697,6 +730,11 @@ class _ControlStartMixin:
         self._stop_event.clear()
 
         nb = self._make_notebook()
+        try:
+            result_ids = self._resolve_validation_result_ids(nb, result_ids)
+        except Exception:
+            nb.close()
+            raise
 
         # Tier guards can be bypassed explicitly for manual override workflows.
         tiers = nb.get_tiers_for_result_ids(result_ids)

@@ -31,10 +31,13 @@ const STATUS_OPTIONS = [
 ];
 
 function provenanceStatus(entry) {
-  const cohort = String(entry?.result_cohort || '').trim().toLowerCase();
+  const cohort = String(entry?.display_result_cohort || entry?.result_cohort || '').trim().toLowerCase();
   const experimentType = String(entry?.experiment_type || '').trim().toLowerCase();
-  const trustLabel = String(entry?.trust_label || '').trim().toLowerCase();
+  const trustLabel = String(entry?.display_trust_label || entry?.trust_label || '').trim().toLowerCase();
 
+  if (cohort.startsWith('confirmation_') || trustLabel.startsWith('candidate confirmation')) {
+    return { label: 'Candidate confirmation', color: 'var(--accent-blue)' };
+  }
   if (experimentType === 'exact_graph_replay' || cohort === 'exact_graph_replay') {
     return { label: 'Replay', color: 'var(--accent-blue)' };
   }

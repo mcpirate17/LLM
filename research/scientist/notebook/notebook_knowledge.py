@@ -655,7 +655,8 @@ class _KnowledgeMixin:
             metadata, requested_result_ids, cleaned_result_ids
         )
         existing = (
-            None if bypass_dedup
+            None
+            if bypass_dedup
             else self._find_active_followup_task(cleaned_stage, result_ids_json)
         )
         if existing is not None:
@@ -705,19 +706,7 @@ class _KnowledgeMixin:
         rows = self.conn.execute(query, params)
         return [self._hydrate_followup_task_row(row) for row in rows]
 
-    def claim_followup_task(self, stage: str) -> Optional[Dict[str, Any]]:
-        """Claim the highest-priority queued follow-up task for a stage."""
-        cleaned_stage = str(stage or "").strip().lower()
-        if not cleaned_stage:
-            return None
-        row = self.conn.execute(
-            """SELECT * FROM followup_tasks
-               WHERE stage = ?
-                 AND status = 'queued'
-               ORDER BY priority_score DESC, timestamp ASC
-               LIMIT 1""",
-            (cleaned_stage,),
-        ).fetchone()
+    def _claim_followup_task_row(self, row: Any) -> Optional[Dict[str, Any]]:
         if row is None:
             return None
         task_id = str(row["task_id"])
@@ -737,6 +726,47 @@ class _KnowledgeMixin:
         if updated is None:
             return None
         return self._hydrate_followup_task_row(updated)
+
+    def claim_followup_task(self, stage: str) -> Optional[Dict[str, Any]]:
+        """Claim the highest-priority queued follow-up task for a stage."""
+        cleaned_stage = str(stage or "").strip().lower()
+        if not cleaned_stage:
+            return None
+        row = self.conn.execute(
+            """SELECT * FROM followup_tasks
+               WHERE stage = ?
+                 AND status = 'queued'
+               ORDER BY priority_score DESC, timestamp ASC
+               LIMIT 1""",
+            (cleaned_stage,),
+        ).fetchone()
+        return self._claim_followup_task_row(row)
+
+    def claim_followup_task_by_id(
+        self,
+        task_id: str,
+        *,
+        stage: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Claim a specific queued follow-up task by id."""
+        cleaned_task_id = str(task_id or "").strip()
+        if not cleaned_task_id:
+            return None
+        params: List[Any] = [cleaned_task_id]
+        stage_clause = ""
+        cleaned_stage = str(stage or "").strip().lower()
+        if cleaned_stage:
+            stage_clause = " AND stage = ?"
+            params.append(cleaned_stage)
+        row = self.conn.execute(
+            f"""SELECT * FROM followup_tasks
+                WHERE task_id = ?
+                  AND status = 'queued'
+                  {stage_clause}
+                LIMIT 1""",
+            tuple(params),
+        ).fetchone()
+        return self._claim_followup_task_row(row)
 
     def complete_followup_task(
         self,

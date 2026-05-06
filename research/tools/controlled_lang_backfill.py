@@ -25,11 +25,20 @@ from research.eval.controlled_lang_probe import (
 )
 from research.eval.utils import micro_train_loop
 from research.scientist.controlled_lang_gates import (
-    CONTROLLED_LANG_SCORE_GATES,
+    CONTROLLED_LANG_NB_GATES,
+    S05_SA_FAILURE_OP,
+    S05_SA_SCREENING_FAILURE_THRESHOLD,
     S05_NB_SCREENING_FAILURE_THRESHOLD,
-    apply_controlled_lang_screening_failure,
+    S10_NB_SA_FAILURE_OP,
+    S10_NB_SA_NB_SCREENING_FAILURE_THRESHOLD,
+    S10_NB_SA_SA_SCREENING_FAILURE_THRESHOLD,
+    apply_controlled_lang_nb_screening_failure,
+    apply_s05_sa_screening_failure,
+    apply_s10_nb_sa_screening_failure,
     allows_controlled_lang_advanced_tiers,
-    is_controlled_lang_screening_failure,
+    is_controlled_lang_nb_screening_failure,
+    is_s05_sa_screening_failure,
+    is_s10_nb_sa_screening_failure,
 )
 from research.synthesis.compiler import compile_model
 from research.synthesis.serializer import graph_from_json
@@ -77,6 +86,7 @@ def _select_targets(
     *,
     target_cohorts: tuple[str, ...] = (),
     missing_before_limit: bool = False,
+    require_s05_nb_pass: bool = False,
 ) -> list[dict]:
     """Top-N leaderboard rows; skip rows that already have the required
     tier sa_scores populated (idempotent resume)."""
@@ -84,6 +94,11 @@ def _select_targets(
     try:
         where_extra = ""
         params: list[object] = []
+        if require_s05_nb_pass:
+            where_extra += (
+                f" AND pr.controlled_lang_s05_nb_score >= "
+                f"{S05_NB_SCREENING_FAILURE_THRESHOLD}"
+            )
         if target_cohorts:
             cohort_clauses = []
             for cohort in target_cohorts:
@@ -113,28 +128,33 @@ def _select_targets(
         if missing_before_limit and not force:
             missing_clauses = []
             missing_clauses.append(
-                "pr.controlled_lang_s05_sa_score < "
-                f"{S05_NB_SCREENING_FAILURE_THRESHOLD}"
-            )
-            missing_clauses.append(
-                "pr.controlled_lang_s05_nb_order_acc < "
-                f"{S05_NB_SCREENING_FAILURE_THRESHOLD}"
-            )
-            missing_clauses.append(
                 "pr.controlled_lang_s05_nb_score < "
                 f"{S05_NB_SCREENING_FAILURE_THRESHOLD}"
+            )
+            missing_clauses.append(
+                "("
+                "pr.controlled_lang_s05_sa_score < "
+                f"{S05_SA_SCREENING_FAILURE_THRESHOLD} "
+                "AND NOT ("
+                "COALESCE(pr.fp_jacobian_erf_density, -1.0) >= 0.0625 "
+                "AND COALESCE(pr.fp_jacobian_erf_decay_slope, 1.0) <= -0.103282"
+                ") "
+                "AND COALESCE(pr.graph_category_histogram, '') NOT LIKE '%\"mixing\"%'"
+                ")"
             )
             if "s05" in required_tiers:
                 missing_clauses.append("pr.controlled_lang_s05_sa_score IS NULL")
             if "s10" in required_tiers:
                 missing_clauses.append(
                     "pr.controlled_lang_s10_sa_score IS NULL "
-                    "OR pr.controlled_lang_s10_sa_score < "
-                    f"{S05_NB_SCREENING_FAILURE_THRESHOLD} "
-                    "OR pr.controlled_lang_s10_nb_order_acc < "
-                    f"{S05_NB_SCREENING_FAILURE_THRESHOLD} "
                     "OR pr.controlled_lang_s10_nb_score < "
                     f"{S05_NB_SCREENING_FAILURE_THRESHOLD} "
+                    "OR ("
+                    "pr.controlled_lang_s10_nb_score < "
+                    f"{S10_NB_SA_NB_SCREENING_FAILURE_THRESHOLD} "
+                    "AND pr.controlled_lang_s10_sa_score < "
+                    f"{S10_NB_SA_SA_SCREENING_FAILURE_THRESHOLD}"
+                    ") "
                     "OR pr.controlled_lang_s10_checkpoints_json IS NULL "
                     f"OR COALESCE(pr.controlled_lang_metric_version, '') != "
                     f"'{CONTROLLED_LANG_METRIC_VERSION}'"
@@ -142,10 +162,6 @@ def _select_targets(
             if "inv" in required_tiers:
                 missing_clauses.append(
                     "pr.controlled_lang_inv_sa_score IS NULL "
-                    "OR pr.controlled_lang_inv_sa_score < "
-                    f"{S05_NB_SCREENING_FAILURE_THRESHOLD} "
-                    "OR pr.controlled_lang_inv_nb_order_acc < "
-                    f"{S05_NB_SCREENING_FAILURE_THRESHOLD} "
                     "OR pr.controlled_lang_inv_nb_score < "
                     f"{S05_NB_SCREENING_FAILURE_THRESHOLD} "
                     "OR pr.controlled_lang_inv_checkpoints_json IS NULL "
@@ -171,6 +187,9 @@ def _select_targets(
                    pr.controlled_lang_inv_nb_score AS inv_nb,
                    pr.controlled_lang_s10_checkpoints_json AS s10_checkpoints_json,
                    pr.controlled_lang_inv_checkpoints_json AS inv_checkpoints_json,
+                   pr.fp_jacobian_erf_density AS erf_density,
+                   pr.fp_jacobian_erf_decay_slope AS erf_decay_slope,
+                   pr.graph_category_histogram AS graph_category_histogram,
                    pgf.template_name
             FROM leaderboard l
             JOIN program_results pr ON pr.result_id=l.result_id
@@ -192,10 +211,10 @@ def _select_targets(
     for r in rows:
         d = dict(r)
         advanced_requested = any(t in {"s10", "inv"} for t in required_tiers)
-        existing_gate_label = _existing_gate_label(d, required_tiers, force=force)
-        if existing_gate_label:
-            d["_gate_only_label"] = existing_gate_label
-            d["_s05_gate_only"] = existing_gate_label.startswith("controlled_lang_s05_")
+        existing_gate_tier = _existing_gate_tier(d, required_tiers, force=force)
+        if existing_gate_tier:
+            d["_gate_only_tier"] = existing_gate_tier
+            d["_s05_gate_only"] = existing_gate_tier.startswith("s05_")
             out.append(d)
             skipped_s05_no_go += 1
             continue
@@ -214,7 +233,13 @@ def _select_targets(
         s05_requested = "s05" in required_tiers
         if advanced_requested:
             if not s05_requested:
-                if not allows_controlled_lang_advanced_tiers(d.get("s05_nb")):
+                if not allows_controlled_lang_advanced_tiers(
+                    d.get("s05_nb"),
+                    sa_score=d.get("s05"),
+                    erf_density=d.get("erf_density"),
+                    erf_decay_slope=d.get("erf_decay_slope"),
+                    graph_category_histogram=d.get("graph_category_histogram"),
+                ):
                     skipped_s05_no_go += 1
                     continue
         out.append(d)
@@ -222,13 +247,13 @@ def _select_targets(
         logger.info("skipping %d rows already fully populated", skipped)
     if skipped_s05_no_go:
         logger.info(
-            "found %d rows blocked by controlled-language score no-go",
+            "found %d rows blocked by controlled-language no-go",
             skipped_s05_no_go,
         )
     return out
 
 
-def _existing_gate_label(
+def _existing_gate_tier(
     row: dict,
     required_tiers: tuple[str, ...],
     *,
@@ -236,42 +261,44 @@ def _existing_gate_label(
 ) -> str | None:
     if force:
         return None
-    tiers_to_check = ["s05"]
-    tiers_to_check.extend(tier for tier in required_tiers if tier in {"s10", "inv"})
-    seen: set[str] = set()
-    for tier in tiers_to_check:
-        if tier in seen:
-            continue
-        seen.add(tier)
-        for gate in _gates_for_tier(tier):
-            if is_controlled_lang_screening_failure(row.get(_row_alias_for_gate(gate))):
-                return str(gate["label"])
+    if is_controlled_lang_nb_screening_failure(row.get("s05_nb")):
+        return "s05_nb"
+    if is_s05_sa_screening_failure(
+        row.get("s05"),
+        erf_density=row.get("erf_density"),
+        erf_decay_slope=row.get("erf_decay_slope"),
+        graph_category_histogram=row.get("graph_category_histogram"),
+    ):
+        return "s05_sa"
+    for tier in required_tiers:
+        if tier == "s10":
+            if is_controlled_lang_nb_screening_failure(row.get("s10_nb")):
+                return "s10_nb"
+            if is_s10_nb_sa_screening_failure(
+                nb_score=row.get("s10_nb"),
+                sa_score=row.get("s10"),
+            ):
+                return "s10_nb_sa"
+        elif tier == "inv" and is_controlled_lang_nb_screening_failure(
+            row.get("inv_nb")
+        ):
+            return "inv_nb"
     return None
 
 
-def _gates_for_tier(tier: str) -> tuple[dict[str, str], ...]:
-    prefix = f"controlled_lang_{tier}_"
-    return tuple(
-        gate
-        for gate in CONTROLLED_LANG_SCORE_GATES
-        if gate["score_key"].startswith(prefix)
-    )
-
-
-def _row_alias_for_gate(gate: dict[str, str]) -> str:
-    key = str(gate["score_key"])
-    if key.endswith("_sa_score"):
-        return key.removeprefix("controlled_lang_").removesuffix("_sa_score")
-    return (
-        key.removeprefix("controlled_lang_").removesuffix("_score").removesuffix("_acc")
-    )
-
-
 def _gate_only_updates(fp: dict, gate_label: str) -> dict:
-    for gate in CONTROLLED_LANG_SCORE_GATES:
-        if gate["label"] == gate_label:
-            return {str(gate["score_key"]): fp.get(_row_alias_for_gate(gate))}
-    raise ValueError(f"unknown controlled-language gate: {gate_label}")
+    if gate_label == "s05_sa":
+        return {
+            "controlled_lang_s05_sa_score": fp.get("s05"),
+        }
+    if gate_label == "s10_nb_sa":
+        return {
+            "controlled_lang_s10_sa_score": fp.get("s10"),
+            "controlled_lang_s10_nb_score": fp.get("s10_nb"),
+        }
+    tier = gate_label.removesuffix("_nb")
+    key = str(CONTROLLED_LANG_NB_GATES[tier]["score_key"])
+    return {key: fp.get(f"{tier}_nb")}
 
 
 def _apply_first_controlled_lang_failure(
@@ -279,20 +306,64 @@ def _apply_first_controlled_lang_failure(
     *,
     result_id: str,
     updates: dict,
+    context: dict | None = None,
     source: str,
 ) -> str | None:
-    for gate in CONTROLLED_LANG_SCORE_GATES:
-        score = updates.get(gate["score_key"])
-        if not is_controlled_lang_screening_failure(score):
-            continue
-        if apply_controlled_lang_screening_failure(
+    context = context or {}
+    s05_nb_gate = CONTROLLED_LANG_NB_GATES["s05"]
+    s05_nb_score = updates.get(s05_nb_gate["score_key"])
+    if is_controlled_lang_nb_screening_failure(s05_nb_score):
+        if apply_controlled_lang_nb_screening_failure(
             con,
             result_id=result_id,
-            gate=gate,
-            score=score,
+            tier="s05",
+            score=s05_nb_score,
             source=source,
         ):
-            return str(gate["failure_op"])
+            return str(s05_nb_gate["failure_op"])
+        return None
+    s05_sa_score = updates.get("controlled_lang_s05_sa_score")
+    if apply_s05_sa_screening_failure(
+        con,
+        result_id=result_id,
+        score=s05_sa_score,
+        erf_density=context.get("erf_density"),
+        erf_decay_slope=context.get("erf_decay_slope"),
+        graph_category_histogram=context.get("graph_category_histogram"),
+        source=source,
+    ):
+        return S05_SA_FAILURE_OP
+    s10_gate = CONTROLLED_LANG_NB_GATES["s10"]
+    s10_nb_score = updates.get(s10_gate["score_key"])
+    if is_controlled_lang_nb_screening_failure(s10_nb_score):
+        if apply_controlled_lang_nb_screening_failure(
+            con,
+            result_id=result_id,
+            tier="s10",
+            score=s10_nb_score,
+            source=source,
+        ):
+            return str(s10_gate["failure_op"])
+        return None
+    if apply_s10_nb_sa_screening_failure(
+        con,
+        result_id=result_id,
+        nb_score=s10_nb_score,
+        sa_score=updates.get("controlled_lang_s10_sa_score"),
+        source=source,
+    ):
+        return S10_NB_SA_FAILURE_OP
+    inv_gate = CONTROLLED_LANG_NB_GATES["inv"]
+    inv_nb_score = updates.get(inv_gate["score_key"])
+    if is_controlled_lang_nb_screening_failure(inv_nb_score):
+        if apply_controlled_lang_nb_screening_failure(
+            con,
+            result_id=result_id,
+            tier="inv",
+            score=inv_nb_score,
+            source=source,
+        ):
+            return str(inv_gate["failure_op"])
         return None
     return None
 
@@ -344,7 +415,7 @@ def _run_one(fp: dict, *, device: str, tier_names: tuple[str, ...]) -> dict | No
                 out[f"controlled_lang_{tier_name}_checkpoints_json"] = json.dumps(
                     checkpoints, sort_keys=True, separators=(",", ":")
                 )
-            failed_gate = _first_failed_gate_in_updates(out, tier_name)
+            failed_gate = _first_failed_gate_in_updates(out, tier_name, context=fp)
             if failed_gate is not None:
                 logger.info(
                     "  %s %s %.4f below no-go threshold; skipping later tiers",
@@ -364,10 +435,33 @@ def _run_one(fp: dict, *, device: str, tier_names: tuple[str, ...]) -> dict | No
 def _first_failed_gate_in_updates(
     updates: dict,
     tier_name: str,
+    *,
+    context: dict | None = None,
 ) -> dict[str, str] | None:
-    for gate in _gates_for_tier(tier_name):
-        if is_controlled_lang_screening_failure(updates.get(gate["score_key"])):
-            return gate
+    context = context or {}
+    gate = CONTROLLED_LANG_NB_GATES.get(tier_name)
+    if gate and is_controlled_lang_nb_screening_failure(updates.get(gate["score_key"])):
+        return gate
+    if tier_name == "s10" and is_s10_nb_sa_screening_failure(
+        nb_score=updates.get("controlled_lang_s10_nb_score"),
+        sa_score=updates.get("controlled_lang_s10_sa_score"),
+    ):
+        return {
+            "failure_op": S10_NB_SA_FAILURE_OP,
+            "score_key": "controlled_lang_s10_nb_score",
+            "label": "controlled_lang_s10_nb_sa",
+        }
+    if tier_name == "s05" and is_s05_sa_screening_failure(
+        updates.get("controlled_lang_s05_sa_score"),
+        erf_density=context.get("erf_density"),
+        erf_decay_slope=context.get("erf_decay_slope"),
+        graph_category_histogram=context.get("graph_category_histogram"),
+    ):
+        return {
+            "failure_op": S05_SA_FAILURE_OP,
+            "score_key": "controlled_lang_s05_sa_score",
+            "label": "controlled_lang_s05_sa",
+        }
     return None
 
 
@@ -425,6 +519,16 @@ def main() -> int:
         ),
     )
     ap.add_argument(
+        "--require-s05-nb-pass",
+        action="store_true",
+        help=(
+            "only select rows whose controlled_lang_s05_nb_score is at or above "
+            "the s05 nano-bind screening pass threshold "
+            f"({S05_NB_SCREENING_FAILURE_THRESHOLD}); use when promoting screening-tier "
+            "rows to s10 so we don't burn GPU on graphs that already failed s05 nano-bind"
+        ),
+    )
+    ap.add_argument(
         "--out",
         type=Path,
         default=Path(
@@ -447,6 +551,7 @@ def main() -> int:
         tier_names,
         target_cohorts=target_cohorts,
         missing_before_limit=bool(args.missing_before_limit),
+        require_s05_nb_pass=bool(args.require_s05_nb_pass),
     )
     logger.info(
         "selected %d targets (top-%d, tiers=%s, %s)",
@@ -468,10 +573,10 @@ def main() -> int:
         for idx, fp in enumerate(targets, 1):
             ent = fp["entry_id"]
             t0 = time.perf_counter()
-            gate_only_label = fp.get("_gate_only_label")
-            gate_only = bool(gate_only_label)
+            gate_only_tier = fp.get("_gate_only_tier")
+            gate_only = bool(gate_only_tier)
             updates = (
-                _gate_only_updates(fp, str(gate_only_label))
+                _gate_only_updates(fp, str(gate_only_tier))
                 if gate_only
                 else _run_one(fp, device=args.device, tier_names=tier_names)
             )
@@ -483,6 +588,7 @@ def main() -> int:
                     con,
                     result_id=fp["result_id"],
                     updates=updates,
+                    context=fp,
                     source="controlled_lang_backfill",
                 )
                 con.commit()
@@ -494,14 +600,20 @@ def main() -> int:
                     "template": fp.get("template_name"),
                     "composite": fp.get("composite_score"),
                     "elapsed_s": round(elapsed, 1),
-                    "controlled_lang_gate_only_label": gate_only_label,
-                    "s05_gate_only": str(gate_only_label or "").startswith(
-                        "controlled_lang_s05_"
-                    ),
+                    "controlled_lang_gate_only_label": gate_only_tier,
+                    "s05_gate_only": str(gate_only_tier or "").startswith("s05_"),
                     "controlled_lang_screening_failure_op": gate_failure_op,
-                    "controlled_lang_nb_screening_failure_op": gate_failure_op,
+                    "controlled_lang_nb_screening_failure_op": (
+                        gate_failure_op
+                        if str(gate_failure_op or "").endswith("_nb")
+                        else None
+                    ),
                     "s05_nb_screening_failure_applied": gate_failure_op
                     == "controlled_lang_s05_nb",
+                    "s05_sa_screening_failure_applied": gate_failure_op
+                    == S05_SA_FAILURE_OP,
+                    "s10_nb_sa_screening_failure_applied": gate_failure_op
+                    == S10_NB_SA_FAILURE_OP,
                     **updates,
                 }
                 out_fh.write(json.dumps(row) + "\n")

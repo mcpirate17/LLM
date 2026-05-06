@@ -1176,6 +1176,7 @@ class _ExecutionInvestigationMixin:
                 dev=dev,
                 cached_json_load=self._cached_json_load,
                 fingerprint_incomplete=fp_incomplete,
+                best_training_curve=(best_tp or {}).get("training_curve") or None,
             )
             self._register_investigation_eval_future(
                 exp_id=exp_id,

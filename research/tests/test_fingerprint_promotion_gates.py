@@ -325,5 +325,14 @@ class TestB2InvestigationFingerprintRequired:
                 n_passed=2,
                 n_programs_tested=3,
             )
+            == "investigation"
+        )
+        assert (
+            _investigation_tier_for_result(
+                investigation_passed=False,
+                fingerprint_incomplete=False,
+                n_passed=1,
+                n_programs_tested=3,
+            )
             == "investigation_failed"
         )

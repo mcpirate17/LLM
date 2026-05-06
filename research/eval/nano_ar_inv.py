@@ -133,39 +133,25 @@ def _get_encoder():
 
 
 def _tokenize_words(enc, words: list[str]) -> list[int]:
-    """Encode each word with a leading space (matches nano_bind convention).
+    from research.eval.utils import tokenize_words_serial
 
-    Always-leading-space gives a stable single-token form under cl100k_base —
-    the bare-word form may split (e.g. ``"wet"`` splits but ``" wet"`` is one
-    token).
-    """
-    out = []
-    for w in words:
-        ids = enc.encode(" " + w, allowed_special=set())
-        if len(ids) != 1:
-            raise ValueError(f"word {w!r} not single-token under {TIKTOKEN_ENCODING}")
-        out.append(int(ids[0]))
-    return out
-
-
-def _pack_token_rows(rows: list[list[int]], device: "torch.device") -> torch.Tensor:
-    max_len = max(len(r) for r in rows)
-    out = torch.full((len(rows), max_len), PAD_ID, dtype=torch.long, device=device)
-    for i, row in enumerate(rows):
-        out[i, : len(row)] = torch.tensor(row, dtype=torch.long, device=device)
-    return out
+    return tokenize_words_serial(enc, words, encoding_name=TIKTOKEN_ENCODING)
 
 
 def _build_train_tensor(enc, sentences: list[str], device) -> torch.Tensor:
+    from research.eval.utils import pack_token_rows
+
     rows = [_tokenize_words(enc, s.split()) for s in sentences]
-    return _pack_token_rows(rows, device)
+    return pack_token_rows(rows, device, pad_id=PAD_ID)
 
 
 def _build_prompt_tensor(
     enc, facts: tuple[Fact, ...], device
 ) -> tuple[torch.Tensor, list[int]]:
+    from research.eval.utils import pack_token_rows
+
     rows = [_tokenize_words(enc, query_prompt(f).split()) for f in facts]
-    out = _pack_token_rows(rows, device)
+    out = pack_token_rows(rows, device, pad_id=PAD_ID)
     last_pos = [len(r) - 1 for r in rows]
     return out, last_pos
 
@@ -474,11 +460,17 @@ def _setup_corpus_and_tensors(
 def _get_class_token_ids(
     enc, cfg: NanoARInvConfig
 ) -> tuple[dict[str, int], dict[str, int]]:
+    """Cached batch-encode of class vocabulary (adj + obj single-token IDs)."""
     cache_key = (TIKTOKEN_ENCODING, int(cfg.n_adjectives), int(cfg.n_objects))
     cached = _TOKEN_ID_CACHE.get(cache_key)
     if cached is not None:
         return cached
-    adj_token_ids, obj_token_ids = _get_class_token_ids(enc, cfg)
+    adj_words = list(ADJECTIVES[: cfg.n_adjectives])
+    obj_words = list(OBJECTS[: cfg.n_objects])
+    adj_ids = _tokenize_words(enc, adj_words)
+    obj_ids = _tokenize_words(enc, obj_words)
+    adj_token_ids = dict(zip(adj_words, adj_ids))
+    obj_token_ids = dict(zip(obj_words, obj_ids))
     cached = (adj_token_ids, obj_token_ids)
     _TOKEN_ID_CACHE[cache_key] = cached
     return cached
@@ -619,10 +611,7 @@ def nano_ar_inv(
     except Exception as exc:  # noqa: BLE001
         return _err_result(t0, "error", f"corpus_build:{exc}")
 
-    adj_token_ids = {
-        a: _tokenize_words(enc, [a])[0] for a in ADJECTIVES[: cfg.n_adjectives]
-    }
-    obj_token_ids = {o: _tokenize_words(enc, [o])[0] for o in OBJECTS[: cfg.n_objects]}
+    adj_token_ids, obj_token_ids = _get_class_token_ids(enc, cfg)
     deadline = t0 + float(cfg.timeout_s)
     try:
         warmup_done, finetune_done, status, error, per_prompt, c = _train_decode_grade(

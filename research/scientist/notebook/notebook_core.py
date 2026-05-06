@@ -25,6 +25,7 @@ from ._shared import (
     _PROGRAM_RESULTS_NEW_COLUMNS,
     infer_insight_identity,
 )
+from .knowledge_digest_store import KnowledgeDigestStore, default_cache_path
 
 
 class _SqliteConnectionAdapter:
@@ -1495,29 +1496,25 @@ class _NotebookCore:
     # ── Knowledge Digests ──
 
     def store_digest(self, digest_dict: Dict) -> str:
-        """Store a knowledge digest and return its ID."""
-        digest_id = str(uuid.uuid4())
-        ts = digest_dict.get("timestamp", time.time())
-        self.conn.execute(
-            """INSERT OR REPLACE INTO knowledge_digests
-               (digest_id, timestamp, cycle_number, digest_json,
-                narrative_summary, n_experiments_analyzed, n_curves_analyzed)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (
-                digest_id,
-                ts,
-                digest_dict.get("cycle_number"),
-                json.dumps(digest_dict),
-                digest_dict.get("narrative", "")[:2000],
-                digest_dict.get("n_experiments_analyzed"),
-                digest_dict.get("n_curves_analyzed"),
-            ),
-        )
-        self._maybe_commit()
-        return digest_id
+        """Store a derived knowledge digest in the side-cache DB."""
+        try:
+            return KnowledgeDigestStore(default_cache_path(self.db_path)).store(
+                digest_dict
+            )
+        except (OSError, sqlite3.DatabaseError) as e:
+            LOGGER.warning("Failed to persist knowledge digest cache: %s", e)
+            return str(digest_dict.get("digest_id") or uuid.uuid4())
 
     def get_latest_digest(self) -> Optional[Dict]:
-        """Return the most recent knowledge digest, or None."""
+        """Return the most recent knowledge digest, or None.
+
+        The side cache is authoritative. The legacy main-table fallback exists
+        only for compatibility during migration and must never make dashboard
+        reads fail.
+        """
+        cached = KnowledgeDigestStore(default_cache_path(self.db_path)).get_latest()
+        if cached:
+            return cached
         try:
             row = self.conn.execute(
                 "SELECT digest_json FROM knowledge_digests ORDER BY timestamp DESC LIMIT 1"

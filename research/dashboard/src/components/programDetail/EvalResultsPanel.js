@@ -494,8 +494,6 @@ function EvalResultsPanel({
 }
 
 function BackfillSection({ program, leaderboardEntry, resultId, dispatch, backfillRunning, backfillResult, lossBackfillRunning, lossBackfillResult }) {
-  const trustLabel = String(program?.trust_label || leaderboardEntry?.trust_label || '').trim().toLowerCase();
-  const canPromoteScreening = Boolean(resultId) && trustLabel !== 'candidate_screening' && trustLabel !== 'candidate_grade' && trustLabel !== 'reference';
   const metrics = [
     { key: 'novelty_score', label: 'Novelty' },
     { key: 'fp_jacobian_spectral_norm', label: 'Spectral Norm' },
@@ -524,44 +522,19 @@ function BackfillSection({ program, leaderboardEntry, resultId, dispatch, backfi
           : 'On-demand repair tools. Use these to rescreen, recompute metrics, or recover missing losses for this row.'}
       </div>
       <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-        {canPromoteScreening && (
-          <button
-            className="start-btn"
-            onClick={async () => {
-              dispatch({ type: 'SET_BACKFILL', payload: { backfillRunning: true, backfillResult: null } });
-              try {
-                dispatch({ type: 'SET_ACTION', payload: { starting: null, error: null } });
-                const res = await postJson(`/api/programs/${resultId}/promote-screening`);
-                const data = await res.json().catch(() => ({}));
-                if (!res.ok) {
-                  dispatch({ type: 'SET_ACTION', payload: { starting: null, error: data.error || 'Promote to screening failed' } });
-                  dispatch({ type: 'SET_BACKFILL', payload: { backfillRunning: false, backfillResult: { status: 'error' } } });
-                } else {
-                  dispatch({
-                    type: 'SET_BACKFILL',
-                    payload: {
-                      backfillRunning: false,
-                      backfillResult: { status: 'ok', mode: 'promote_screening' },
-                    }
-                  });
-                }
-              } catch (e) {
-                dispatch({ type: 'SET_ACTION', payload: { starting: null, error: 'Error: ' + e.message } });
-                dispatch({ type: 'SET_BACKFILL', payload: { backfillRunning: false, backfillResult: { status: 'error' } } });
-              }
-            }}
-            style={{ padding: '6px 16px', fontSize: 12, background: 'rgba(63, 185, 80, 0.15)', border: '1px solid rgba(63, 185, 80, 0.4)', color: 'var(--accent-green)' }}
-          >
-            {backfillRunning ? 'Promoting...' : 'Promote to Screening'}
-          </button>
-        )}
         <button
           className="start-btn"
           onClick={async () => {
             dispatch({ type: 'SET_BACKFILL', payload: { backfillRunning: true, backfillResult: null } });
             try {
               dispatch({ type: 'SET_ACTION', payload: { starting: null, error: null } });
-              const res = await postJson(`/api/programs/${resultId}/rescreen`, { device: 'cuda', fast: true, repeat_per_source: 1 }, { timeoutMs: LONG_ACTION_TIMEOUT_MS });
+              const res = await postJson(`/api/programs/${resultId}/rescreen`, {
+                device: 'cuda',
+                fast: false,
+                repeat_per_source: 1,
+                candidate_confirmation: true,
+                stage1_steps: 750,
+              }, { timeoutMs: LONG_ACTION_TIMEOUT_MS });
               if (!res.ok) {
                 const err = await res.json();
                 dispatch({ type: 'SET_ACTION', payload: { starting: null, error: err.error || 'Rescreen failed' } });
@@ -583,7 +556,7 @@ function BackfillSection({ program, leaderboardEntry, resultId, dispatch, backfi
           }}
           style={{ padding: '6px 16px', fontSize: 12, background: 'rgba(88, 166, 255, 0.15)', border: '1px solid rgba(88, 166, 255, 0.4)', color: 'var(--accent-blue)' }}
         >
-          {backfillRunning ? 'Starting...' : 'Rescreen'}
+          {backfillRunning ? 'Starting...' : 'Confirm Candidate'}
         </button>
         <button
           className="start-btn"
@@ -615,7 +588,7 @@ function BackfillSection({ program, leaderboardEntry, resultId, dispatch, backfi
             {backfillResult.mode === 'promote_screening'
               ? 'Promoted to screening candidate pool'
               : backfillResult.mode === 'rescreen'
-              ? `Rescreen queued${backfillResult.experiment_id ? ` (${String(backfillResult.experiment_id).slice(0, 8)})` : ''}`
+              ? `Confirmation queued${backfillResult.experiment_id ? ` (${String(backfillResult.experiment_id).slice(0, 8)})` : ''}`
               : 'Done — reload to see updates'}
           </span>
         )}

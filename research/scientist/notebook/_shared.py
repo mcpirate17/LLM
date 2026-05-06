@@ -852,18 +852,6 @@ CREATE INDEX IF NOT EXISTS idx_scaffold_profile_results_run ON scaffold_profile_
 CREATE INDEX IF NOT EXISTS idx_scaffold_profile_results_status ON scaffold_profile_results(status, family);
 CREATE INDEX IF NOT EXISTS idx_scaffold_profile_results_loss ON scaffold_profile_results(validation_loss_ratio, loss_ratio);
 
-CREATE TABLE IF NOT EXISTS knowledge_digests (
-    digest_id TEXT PRIMARY KEY,
-    timestamp REAL NOT NULL,
-    cycle_number INTEGER,
-    digest_json TEXT NOT NULL,
-    narrative_summary TEXT,
-    n_experiments_analyzed INTEGER,
-    n_curves_analyzed INTEGER
-);
-
-CREATE INDEX IF NOT EXISTS idx_knowledge_digests_ts ON knowledge_digests(timestamp DESC);
-
 CREATE TABLE IF NOT EXISTS program_graph_features (
     result_id TEXT PRIMARY KEY REFERENCES program_results(result_id) ON DELETE CASCADE,
     graph_fingerprint TEXT,

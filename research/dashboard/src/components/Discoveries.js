@@ -20,15 +20,13 @@ const DEFAULT_ACTIVE_TIER = 'all';
 const DEFAULT_SHOW_REFERENCES = true;
 const DEFAULT_HIDE_FAILED = true;
 const DEFAULT_QUALITY_FLOOR_ENABLED = true;
-const DEFAULT_SOURCE_FILTER = 'trusted';
+const DEFAULT_SOURCE_FILTER = 'all';
 const DEFAULT_CAPABILITY_FILTER = 'all';
 
 const SOURCE_FILTER_LABELS = {
-  trusted: 'Trusted ranked',
+  all: 'Composite ranked',
   backlog: 'Backlog',
-  all_graphs: 'All graphs',
-  all: 'Mixed trust ranked',
-  untrusted: 'Untrusted',
+  all_graphs: 'Raw graph inventory',
   backfill: 'Backfill',
   replay: 'Replay',
 };
@@ -39,6 +37,14 @@ const CAPABILITY_FILTER_LABELS = {
   training_only: 'Training-Only',
   pending: 'Validation Pending',
 };
+
+const SOURCE_FILTER_VALUES = ['all', 'all_graphs', 'backfill', 'replay', 'backlog'];
+
+function initialSourceFilterFromPrefs(prefs) {
+  return SOURCE_FILTER_VALUES.includes(prefs?.sourceFilter)
+    ? prefs.sourceFilter
+    : DEFAULT_SOURCE_FILTER;
+}
 
 const FILTER_PANEL_STYLE = {
   display: 'flex',
@@ -76,11 +82,14 @@ function toggleButtonStyle(active, activeColor, activeBackground) {
 }
 
 function provenanceBucket(entry) {
-  const cohort = String(entry?.result_cohort || '').trim().toLowerCase();
+  const cohort = String(entry?.display_result_cohort || entry?.result_cohort || '').trim().toLowerCase();
   const experimentType = String(entry?.experiment_type || '').trim().toLowerCase();
-  const trustLabel = String(entry?.trust_label || '').trim().toLowerCase();
+  const trustLabel = String(entry?.display_trust_label || entry?.trust_label || '').trim().toLowerCase();
   const comparabilityLabel = String(entry?.comparability_label || '').trim().toLowerCase();
 
+  if (cohort.startsWith('confirmation_') || trustLabel.startsWith('candidate confirmation')) {
+    return 'trusted';
+  }
   if (experimentType === 'exact_graph_replay' || cohort === 'exact_graph_replay') {
     return 'replay';
   }
@@ -452,11 +461,7 @@ function Discoveries({
   const [qualityFloorEnabled, setQualityFloorEnabled] = useState(() =>
     typeof prefs?.qualityFloorEnabled === 'boolean' ? prefs.qualityFloorEnabled : DEFAULT_QUALITY_FLOOR_ENABLED
   );
-  const [sourceFilter, setSourceFilter] = useState(() =>
-    ['trusted', 'all', 'all_graphs', 'untrusted', 'backfill', 'replay', 'backlog'].includes(prefs?.sourceFilter)
-      ? prefs.sourceFilter
-      : (typeof prefs?.trustedOnly === 'boolean' ? (prefs.trustedOnly ? 'trusted' : 'all') : DEFAULT_SOURCE_FILTER)
-  );
+  const [sourceFilter, setSourceFilter] = useState(() => initialSourceFilterFromPrefs(prefs));
   const [capabilityFilter, setCapabilityFilter] = useState(() =>
     ['all', 'qualified', 'training_only', 'pending'].includes(prefs?.capabilityFilter)
       ? prefs.capabilityFilter
@@ -465,7 +470,7 @@ function Discoveries({
   const [showAdvancedSourceFilter, setShowAdvancedSourceFilter] = useState(() =>
     typeof prefs?.showAdvancedSourceFilter === 'boolean'
       ? prefs.showAdvancedSourceFilter
-      : ['untrusted', 'backfill', 'replay'].includes(prefs?.sourceFilter)
+      : ['backfill', 'replay'].includes(prefs?.sourceFilter)
   );
   const [visibleColumns, setVisibleColumns] = useState(() =>
     {
@@ -592,12 +597,12 @@ function Discoveries({
     try {
       const isBacklog = sourceFilter === 'backlog';
       const isAllGraphs = sourceFilter === 'all_graphs';
-      const limit = sourceFilter === 'trusted' ? '200' : (isAllGraphs ? '5000' : '2500');
+      const limit = isAllGraphs ? '5000' : '2500';
       const params = new URLSearchParams({
         sort: (isBacklog || isAllGraphs) ? 'loss_ratio' : 'composite_score',
         limit,
         view: isAllGraphs ? 'all_graphs' : (isBacklog ? 'backlog' : 'ranked'),
-        trusted_only: sourceFilter === 'trusted' && activeTier !== 'failed' ? '1' : '0',
+        trusted_only: '0',
       });
       if (isBacklog || isAllGraphs || activeTier === 'failed') params.set('include_failed', '1');
       if (!isBacklog && !isAllGraphs && activeTier !== 'all') params.set('tier', activeTier);
@@ -766,8 +771,6 @@ function Discoveries({
       if (sourceFilter === 'all_graphs') return true;
       const bucket = provenanceBucket(entry);
       if (sourceFilter === 'all') return true;
-      if (sourceFilter === 'trusted') return bucket === 'trusted';
-      if (sourceFilter === 'untrusted') return bucket !== 'trusted';
       return bucket === sourceFilter;
     });
   }, [sorted, sourceFilter, activeTier]);
@@ -779,7 +782,7 @@ function Discoveries({
   const effectiveQualityFloorEnabled = useMemo(() => {
     if (!qualityFloorEnabled) return false;
     if (activeTier === 'failed') return false;
-    return sourceFilter === 'trusted' || sourceFilter === 'all';
+    return sourceFilter === 'all';
   }, [qualityFloorEnabled, sourceFilter, activeTier]);
 
   const failedFiltered = useMemo(() => {
@@ -1018,11 +1021,11 @@ function Discoveries({
               color: 'var(--text-secondary)',
             }}
           >
-            <span style={{ color: 'var(--text-muted)' }}>Source</span>
+            <span style={{ color: 'var(--text-muted)' }}>View</span>
             <select
               value={sourceFilter}
               onChange={(e) => setSourceFilter(e.target.value)}
-              aria-label="Filter by source provenance"
+              aria-label="Select discovery view"
               style={{
                 fontSize: 11,
                 border: '1px solid var(--border)',
@@ -1036,13 +1039,11 @@ function Discoveries({
                 minWidth: 132,
               }}
             >
-              <option value="trusted">Trusted ranked</option>
+              <option value="all">Composite ranked</option>
               <option value="backlog">Backlog (unranked)</option>
-              <option value="all_graphs">All graphs</option>
+              <option value="all_graphs">Raw graph inventory</option>
               {showAdvancedSourceFilter && (
                 <>
-                  <option value="all">Mixed trust ranked</option>
-                  <option value="untrusted">Untrusted</option>
                   <option value="backfill">Backfill</option>
                   <option value="replay">Replay</option>
                 </>
@@ -1052,8 +1053,8 @@ function Discoveries({
           <button
             type="button"
             onClick={() => setShowAdvancedSourceFilter((v) => !v)}
-            aria-label={showAdvancedSourceFilter ? 'Hide advanced source filters' : 'Show advanced source filters'}
-            title={showAdvancedSourceFilter ? 'Hide Untrusted/Backfill/Replay' : 'Show Untrusted/Backfill/Replay'}
+            aria-label={showAdvancedSourceFilter ? 'Hide advanced provenance filters' : 'Show advanced provenance filters'}
+            title={showAdvancedSourceFilter ? 'Hide Backfill/Replay filters' : 'Show Backfill/Replay filters'}
             style={presetButtonStyle(showAdvancedSourceFilter)}
           >
             {showAdvancedSourceFilter ? 'Advanced on' : 'Advanced off'}

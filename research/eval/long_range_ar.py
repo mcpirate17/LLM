@@ -24,11 +24,11 @@ from .associative_recall import (
     _VOCAB_HI,
     _VOCAB_LO,
     _VOCAB_N,
-    _eval_accuracy,
     _generate_ar_batch,
     _generate_eval_set,
     _get_special_tokens,
 )
+from .retrieval_eval_utils import eval_restricted_last_token_accuracy
 from .utils import clip_grad_norm, make_adamw
 
 logger = logging.getLogger(__name__)
@@ -114,7 +114,15 @@ def _train_ar_at_length(
             clip_grad_norm(probe_model.parameters(), 1.0)
             opt.step()
 
-        acc = _eval_accuracy(probe_model, eval_ids, eval_targets, batch_size)
+        acc = eval_restricted_last_token_accuracy(
+            probe_model,
+            eval_ids,
+            eval_targets,
+            batch_size=batch_size,
+            vocab_lo=_VOCAB_LO,
+            vocab_hi=_VOCAB_HI,
+            query_pos=ans_pos,
+        )
     finally:
         del eval_ids, eval_targets, probe_model
         if device == "cuda":

@@ -55,6 +55,8 @@ from ._helpers_benchmark import (  # noqa: F401
     handle_breakthrough,
     promote_validation_candidate,
     run_baseline_comparison,
+)
+from ._helpers_trajectory_probe import (  # noqa: F401
     run_trajectory_probe,
 )
 

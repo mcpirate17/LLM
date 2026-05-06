@@ -183,6 +183,12 @@ def _search_discoveries(
             l.validation_loss_ratio AS lb_validation_loss_ratio,
             l.validation_baseline_ratio AS lb_validation_baseline_ratio,
             l.validation_passed,
+            l.induction_v2_investigation_auc AS lb_induction_v2_investigation_auc,
+            l.induction_v2_investigation_max_gap_acc AS lb_induction_v2_investigation_max_gap_acc,
+            l.induction_v2_investigation_protocol_version AS lb_induction_v2_investigation_protocol_version,
+            l.binding_v2_investigation_auc AS lb_binding_v2_investigation_auc,
+            l.binding_v2_investigation_max_distance_acc AS lb_binding_v2_investigation_max_distance_acc,
+            l.binding_v2_investigation_protocol_version AS lb_binding_v2_investigation_protocol_version,
             l.discovery_loss_ratio AS leaderboard_discovery_loss_ratio,
             l.is_reference,
             l.reference_name,
@@ -255,6 +261,17 @@ def _search_discoveries(
             entry["validation_baseline_ratio"] = entry.get(
                 "lb_validation_baseline_ratio"
             )
+        for metric_key in (
+            "induction_v2_investigation_auc",
+            "induction_v2_investigation_max_gap_acc",
+            "induction_v2_investigation_protocol_version",
+            "binding_v2_investigation_auc",
+            "binding_v2_investigation_max_distance_acc",
+            "binding_v2_investigation_protocol_version",
+        ):
+            lb_key = f"lb_{metric_key}"
+            if entry.get(metric_key) is None and entry.get(lb_key) is not None:
+                entry[metric_key] = entry.get(lb_key)
         if (
             entry.get("discovery_loss_ratio") is None
             and entry.get("leaderboard_discovery_loss_ratio") is not None

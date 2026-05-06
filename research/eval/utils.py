@@ -97,6 +97,45 @@ def _get_tiktoken_encoder(encoding_name: str = "cl100k_base"):
     return enc
 
 
+def tokenize_words_serial(
+    enc, words: Sequence[str], *, encoding_name: str = "cl100k_base"
+) -> List[int]:
+    """Encode each word with a leading space; require single-token result.
+
+    Serial ``encode`` per word — measured ~10× faster than ``encode_batch``
+    for very short single-word inputs (rust thread/setup overhead dominates
+    when each item is just a few bytes). Use this for any nano-style probe
+    that builds tensors from short word lists.
+    """
+    out: List[int] = []
+    for w in words:
+        ids = enc.encode(" " + w, allowed_special=set())
+        if len(ids) != 1:
+            raise ValueError(f"word {w!r} not single-token under {encoding_name}")
+        out.append(int(ids[0]))
+    return out
+
+
+def pack_token_rows(
+    rows: Sequence[Sequence[int]],
+    device: torch.device,
+    *,
+    pad_id: int = 0,
+) -> torch.Tensor:
+    """Numpy fill + single H2D transfer (vs N per-row torch.tensor copies).
+
+    Wins on GPU (one transfer instead of N); near-parity on CPU. Used by
+    nano_ar_inv and nano_bind to pack ragged token-id rows into a padded
+    [N, max_len] tensor.
+    """
+    max_len = max(len(r) for r in rows)
+    out_np = np.full((len(rows), max_len), int(pad_id), dtype=np.int64)
+    for i, row in enumerate(rows):
+        if row:
+            out_np[i, : len(row)] = row
+    return torch.from_numpy(out_np).to(device)
+
+
 def tokenize_string(
     text: str,
     vocab_size: int,

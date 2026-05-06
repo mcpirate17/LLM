@@ -121,6 +121,27 @@ def _load_recent_experiments_with_funnel(nb, limit: int) -> List[Dict[str, Any]]
     if not recent_ids:
         return recent_experiments
     placeholders = ",".join("?" for _ in recent_ids)
+    metric_rows = nb.conn.execute(
+        f"""
+        SELECT
+            experiment_id,
+            MIN(loss_ratio) AS best_loss_ratio,
+            MAX(novelty_score) AS best_novelty_score,
+            COUNT(*) AS n_program_results
+        FROM program_results
+        WHERE experiment_id IN ({placeholders})
+        GROUP BY experiment_id
+        """,
+        recent_ids,
+    ).fetchall()
+    fallback_metrics = {
+        str(row["experiment_id"]): {
+            "best_loss_ratio": row["best_loss_ratio"],
+            "best_novelty_score": row["best_novelty_score"],
+            "n_program_results": int(row["n_program_results"] or 0),
+        }
+        for row in metric_rows
+    }
     rows = nb.conn.execute(
         f"""
         SELECT experiment_id, results_json
@@ -135,6 +156,20 @@ def _load_recent_experiments_with_funnel(nb, limit: int) -> List[Dict[str, Any]]
         if isinstance(parsed, dict):
             recent_results[str(row["experiment_id"])] = parsed
     for exp in recent_experiments:
+        metrics = fallback_metrics.get(str(exp.get("experiment_id"))) or {}
+        if (
+            exp.get("best_loss_ratio") is None
+            and metrics.get("best_loss_ratio") is not None
+        ):
+            exp["best_loss_ratio"] = metrics["best_loss_ratio"]
+        if (
+            exp.get("best_novelty_score") is None
+            and metrics.get("best_novelty_score") is not None
+        ):
+            exp["best_novelty_score"] = metrics["best_novelty_score"]
+        if metrics.get("n_program_results"):
+            exp["n_program_results"] = metrics["n_program_results"]
+
         parsed = recent_results.get(str(exp.get("experiment_id"))) or {}
         funnel_counts = parsed.get("funnel_counts")
         if isinstance(funnel_counts, dict) and funnel_counts:

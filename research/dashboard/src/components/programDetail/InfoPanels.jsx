@@ -62,6 +62,11 @@ export function ProvenancePanel({
   resultId,
 }) {
   if (!(program?.experiment_id || linkedHypothesis || leaderboardEntry || linkedCampaign)) return null;
+  const confirmationStatus = program?.candidate_confirmation_status || {};
+  const confirmationActive = ['queued', 'running'].includes(String(confirmationStatus.status || '').toLowerCase());
+  const experimentTypeLabel = confirmationActive
+    ? confirmationStatus.label
+    : (program?.display_experiment_type || linkedExperiment?.experiment_type);
   return (
     <div style={{ background: 'var(--bg-tertiary)', borderRadius: 6, border: '1px solid var(--border)', overflow: 'hidden' }}>
       <div
@@ -86,9 +91,9 @@ export function ProvenancePanel({
                   {formatUnixTimestamp(linkedExperiment.started_at)}
                 </span>
               )}
-              {linkedExperiment?.experiment_type && (
+              {experimentTypeLabel && (
                 <span style={{ fontSize: 10, color: 'var(--accent-blue)', border: '1px solid var(--accent-blue)', borderRadius: 3, padding: '0 4px' }}>
-                  {linkedExperiment.experiment_type}
+                  {experimentTypeLabel}
                 </span>
               )}
             </div>

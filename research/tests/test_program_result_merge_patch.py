@@ -15,7 +15,9 @@ from research.scientist.runner._helpers import program_result_kwargs_from_s1
 from research.scientist.runner._helpers_benchmark import (
     finalize_validation_results_summary,
     promote_validation_candidate,
+    _record_investigation_result,
 )
+from research.scientist.runner.dashboard_orchestrator import _DashboardOrchestratorMixin
 from research.scientist.runner.execution_screening import _record_screening_failure
 
 
@@ -906,4 +908,430 @@ def test_sync_fingerprint_leaderboard_preserves_investigation_tier_without_pass(
         assert row is not None
         assert row["tier"] == "investigation"
         assert int(row["investigation_passed"] or 0) == 0
+        nb.close()
+
+
+def test_sync_fingerprint_leaderboard_keeps_partial_investigation_visible():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        nb = LabNotebook(f"{tmpdir}/fingerprint_sync_partial_investigation.db")
+
+        source_exp = nb.start_experiment("exact_graph_replay", {}, "screening source")
+        rid = nb.record_program_result(
+            experiment_id=source_exp,
+            graph_fingerprint="fp_sync_partial_investigation",
+            graph_json="{}",
+            **_stage1_kwargs(loss_ratio=0.50, novelty_score=0.61),
+        )
+        _mark_promotable(nb, rid)
+        nb.upsert_leaderboard(
+            result_id=rid,
+            model_source="exact_graph_replay",
+            tier="investigation_failed",
+            screening_loss_ratio=0.50,
+            screening_novelty=0.61,
+            screening_passed=True,
+            investigation_loss_ratio=0.54,
+            investigation_robustness=2 / 3,
+            investigation_passed=False,
+        )
+        inv_exp = nb.start_experiment("investigation", {}, "partial investigation")
+        nb.record_program_result(
+            experiment_id=inv_exp,
+            graph_fingerprint="fp_sync_partial_investigation",
+            graph_json="{}",
+            intentional_rerun_reason="exact_graph_replay",
+            **_stage1_kwargs(loss_ratio=0.54, novelty_score=0.61),
+        )
+        nb.flush_writes()
+
+        nb._sync_fingerprint_leaderboard(rid)
+
+        row = nb.get_leaderboard_entry(rid)
+        assert row is not None
+        assert row["tier"] == "investigation"
+        assert int(row["investigation_passed"] or 0) == 0
+        assert row["investigation_loss_ratio"] == pytest.approx(0.54)
+        nb.close()
+
+
+def test_record_investigation_result_persists_best_training_curve():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        nb = LabNotebook(f"{tmpdir}/investigation_curve.db")
+        source_exp = nb.start_experiment("synthesis", {}, "screening source")
+        source_rid = nb.record_program_result(
+            experiment_id=source_exp,
+            graph_fingerprint="fp_investigation_curve",
+            graph_json="{}",
+            **_stage1_kwargs(loss_ratio=0.52, novelty_score=0.61),
+        )
+        nb.upsert_leaderboard(
+            result_id=source_rid,
+            model_source="graph_synthesis",
+            architecture_desc="fp_investigation_curve",
+            screening_loss_ratio=0.52,
+            screening_novelty=0.61,
+            screening_passed=True,
+            tier="screening",
+            result_cohort="backfill",
+            trust_label="backfill_observation",
+            comparability_label="reconstructed_init_variant",
+        )
+        nb.flush_writes()
+
+        inv_exp = nb.start_experiment("investigation", {}, "investigation child")
+        curve = [
+            {"step": 0, "loss": 4.0, "grad_norm": 1.5, "step_time_ms": 10.0},
+            {"step": 1, "loss": 3.0, "grad_norm": 1.2, "step_time_ms": 11.0},
+        ]
+        source = nb.get_program_detail(source_rid)
+        assert source is not None
+
+        _record_investigation_result(
+            nb=nb,
+            exp_id=inv_exp,
+            source_result_id=source_rid,
+            source=source,
+            model_source="graph_synthesis",
+            graph_json_str="{}",
+            arch_spec_json_str=None,
+            n_passed=1,
+            n_programs_tested=1,
+            best_lr=0.41,
+            best_tp_json=json.dumps({"name": "tp_best"}),
+            robustness=1.0,
+            investigation_passed=True,
+            benchmark_result={
+                "inv_wikitext_ppl": 111.0,
+                "inv_wikitext_score": 0.6,
+                "hellaswag_acc": 0.32,
+                "hellaswag_status": "ok",
+                "hellaswag_total": 10,
+                "blimp_overall_accuracy": 0.56,
+                "blimp_status": "ok",
+                "blimp_n_subtasks": 1,
+                "induction_auc": 0.44,
+                "binding_auc": 0.12,
+                "binding_composite": 0.25,
+                "ar_auc": 0.01,
+                "nano_ar_inv_score": 1.0,
+                "nano_ar_inv_status": "ok",
+            },
+            best_training_curve=curve,
+        )
+        nb.flush_writes()
+
+        child = nb.conn.execute(
+            """
+            SELECT result_id
+            FROM program_results
+            WHERE graph_fingerprint = ?
+              AND experiment_id = ?
+            """,
+            ("fp_investigation_curve", inv_exp),
+        ).fetchone()
+        assert child is not None
+        stored_curve = nb.get_training_curve(child["result_id"])
+        assert stored_curve == curve
+        child_detail = nb.get_program_detail(child["result_id"])
+        assert child_detail is not None
+        assert child_detail["result_cohort"] == "search"
+        assert child_detail["trust_label"] == "candidate_grade"
+        assert child_detail["comparability_label"] == "candidate_comparable"
+        parent_entry = nb.get_leaderboard_entry_by_fingerprint("fp_investigation_curve")
+        assert parent_entry is not None
+        assert parent_entry["result_id"] == source_rid
+        assert parent_entry["tier"] == "investigation"
+        assert parent_entry["result_cohort"] == "search"
+        assert parent_entry["trust_label"] == "candidate_grade"
+        assert parent_entry["comparability_label"] == "candidate_comparable"
+        nb.close()
+
+
+def test_record_investigation_result_passes_near_loss_with_capability_evidence():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        nb = LabNotebook(f"{tmpdir}/investigation_capability_override.db")
+        source_exp = nb.start_experiment("exact_graph_replay", {}, "confirmed source")
+        source_rid = nb.record_program_result(
+            experiment_id=source_exp,
+            graph_fingerprint="fp_investigation_capability_override",
+            graph_json="{}",
+            **_stage1_kwargs(
+                loss_ratio=0.498,
+                novelty_score=0.61,
+                model_source="exact_graph_replay",
+                result_cohort="search",
+                trust_label="candidate_grade",
+                comparability_label="candidate_comparable",
+            ),
+        )
+        nb.upsert_leaderboard(
+            result_id=source_rid,
+            model_source="exact_graph_replay",
+            architecture_desc="fp_investigation_capability_override",
+            screening_loss_ratio=0.498,
+            screening_novelty=0.61,
+            screening_passed=True,
+            tier="screening",
+            result_cohort="search",
+            trust_label="candidate_grade",
+            comparability_label="candidate_comparable",
+        )
+        nb.flush_writes()
+
+        inv_exp = nb.start_experiment("investigation", {}, "capability override")
+        source = nb.get_program_detail(source_rid)
+        assert source is not None
+
+        _record_investigation_result(
+            nb=nb,
+            exp_id=inv_exp,
+            source_result_id=source_rid,
+            source=source,
+            model_source="exact_graph_replay",
+            graph_json_str="{}",
+            arch_spec_json_str=None,
+            n_passed=2,
+            n_programs_tested=3,
+            best_lr=0.538,
+            best_tp_json=json.dumps({"name": "tp_best"}),
+            robustness=2 / 3,
+            investigation_passed=False,
+            benchmark_result={
+                "inv_wikitext_ppl": 386.7,
+                "inv_wikitext_score": 0.483,
+                "hellaswag_acc": 0.21,
+                "hellaswag_status": "ok",
+                "hellaswag_total": 100,
+                "blimp_overall_accuracy": 0.531,
+                "blimp_status": "ok",
+                "blimp_n_subtasks": 67,
+                "induction_auc": 0.33,
+                "binding_auc": 0.004,
+                "binding_composite": 0.101,
+                "ar_auc": 0.002,
+                "induction_v2_investigation_auc": 0.416,
+                "binding_v2_investigation_auc": 0.0928,
+                "nano_ar_inv_score": 1.0,
+                "nano_ar_inv_status": "ok",
+            },
+        )
+        nb.flush_writes()
+
+        row = nb.get_leaderboard_entry(source_rid)
+        assert row is not None
+        assert row["tier"] == "investigation"
+        assert int(row["investigation_passed"] or 0) == 1
+        assert row["investigation_loss_ratio"] == pytest.approx(0.538)
+        nb.close()
+
+
+def test_leaderboard_update_replaces_stale_fingerprint_cv_fields():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        nb = LabNotebook(f"{tmpdir}/leaderboard_stale_cv.db")
+        exp = nb.start_experiment("exact_graph_replay", {}, "cv aggregate")
+        exp_2 = nb.start_experiment("exact_graph_replay", {}, "cv aggregate rerun")
+        first_rid = nb.record_program_result(
+            experiment_id=exp,
+            graph_fingerprint="fp_stale_cv",
+            graph_json="{}",
+            **_stage1_kwargs(
+                loss_ratio=0.50,
+                novelty_score=0.60,
+                intentional_rerun_reason="",
+                ar_auc=0.10,
+                induction_auc=0.40,
+                binding_auc=0.10,
+                nano_ar_inv_score=1.0,
+                trust_label="candidate_grade",
+                comparability_label="candidate_comparable",
+                result_cohort="search",
+            ),
+        )
+        nb.record_program_result(
+            experiment_id=exp_2,
+            graph_fingerprint="fp_stale_cv",
+            graph_json="{}",
+            **_stage1_kwargs(
+                loss_ratio=0.51,
+                novelty_score=0.60,
+                intentional_rerun_reason="exact_graph_replay_independent_sample",
+                ar_auc=0.11,
+                induction_auc=0.42,
+                binding_auc=0.11,
+                nano_ar_inv_score=1.0,
+                trust_label="candidate_grade",
+                comparability_label="candidate_comparable",
+                result_cohort="search",
+            ),
+        )
+        nb.flush_writes()
+
+        nb.upsert_leaderboard(
+            result_id=first_rid,
+            model_source="exact_graph_replay",
+            architecture_desc="fp_stale_cv",
+            tier="validation",
+            screening_loss_ratio=0.50,
+            screening_novelty=0.60,
+            investigation_loss_ratio=0.50,
+            investigation_passed=True,
+            validation_loss_ratio=0.49,
+            validation_baseline_ratio=1.0,
+            validation_passed=True,
+            n_runs=99,
+            cv_loss=0.99,
+            cv_understanding=0.98,
+            cv_capability=0.97,
+            score_stability_penalty=0.50,
+        )
+        nb.flush_writes()
+
+        row = nb.get_leaderboard_entry(first_rid)
+        assert row is not None
+        assert row["n_runs"] == 2
+        assert row["cv_capability"] != pytest.approx(0.97)
+        assert row["cv_capability"] < 0.10
+        assert row["score_stability_penalty"] != pytest.approx(0.50)
+        nb.close()
+
+
+def test_candidate_confirmation_rebind_preserves_fingerprint_evidence():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        nb = LabNotebook(f"{tmpdir}/candidate_confirmation_rebind.db")
+
+        backfill_exp = nb.start_experiment("backfill", {}, "backfill source")
+        backfill_rid = nb.record_program_result(
+            experiment_id=backfill_exp,
+            graph_fingerprint="fp_confirmed_backfill",
+            graph_json="{}",
+            stage0_passed=True,
+            stage05_passed=True,
+            **_stage1_kwargs(
+                loss_ratio=0.55,
+                novelty_score=0.11,
+                validation_loss_ratio=0.50,
+                baseline_loss_ratio=1.0,
+                result_cohort="backfill",
+                trust_label="backfill_observation",
+                comparability_label="reconstructed_init_variant",
+                fp_jacobian_erf_density=0.359,
+                fp_cka_vs_transformer=0.294,
+                cka_source="artifact",
+                nano_ar_inv_score=1.0,
+                nano_ar_inv_status="ok",
+                controlled_lang_s05_nb_score=1.0,
+                controlled_lang_s10_nb_score=1.0,
+                tinystories_score=0.568,
+            ),
+        )
+        nb.upsert_leaderboard(
+            result_id=backfill_rid,
+            model_source="graph_synthesis",
+            screening_loss_ratio=0.55,
+            screening_novelty=0.11,
+            screening_passed=True,
+            tier="screening",
+        )
+        nb.conn.execute(
+            """
+            UPDATE leaderboard
+            SET tier = 'validation',
+                investigation_loss_ratio = 0.62,
+                investigation_passed = 0,
+                validation_loss_ratio = 0.50,
+                validation_baseline_ratio = 1.0,
+                validation_passed = 0
+            WHERE result_id = ?
+            """,
+            (backfill_rid,),
+        )
+
+        replay_exp = nb.start_experiment(
+            "exact_graph_replay",
+            {"candidate_confirmation": True},
+            "confirmed candidate",
+        )
+        confirmed_rid = nb.record_program_result(
+            experiment_id=replay_exp,
+            graph_fingerprint="fp_confirmed_backfill",
+            graph_json="{}",
+            stage0_passed=True,
+            stage05_passed=True,
+            **_stage1_kwargs(
+                loss_ratio=0.50,
+                novelty_score=0.2,
+                validation_loss_ratio=0.49,
+                baseline_loss_ratio=1.0,
+                model_source="exact_graph_replay",
+                source_result_id=backfill_rid,
+                intentional_rerun_reason="exact_graph_replay_independent_sample",
+                result_cohort="search",
+                trust_label="candidate_grade",
+                comparability_label="candidate_comparable",
+                evaluation_protocol_version="candidate_grade_v1",
+            ),
+        )
+        nb.flush_writes()
+
+        _DashboardOrchestratorMixin()._record_leaderboard_and_best(
+            nb=nb,
+            rid=confirmed_rid,
+            graph=_FakeGraph("fp_confirmed_backfill"),
+            s1_passed=True,
+            program_metrics={
+                "intentional_independent_sample": True,
+                "candidate_confirmation": True,
+                "source_graph_fingerprint": "fp_confirmed_backfill",
+                "source_result_id": backfill_rid,
+                "model_source": "exact_graph_replay",
+                "validation_loss_ratio": 0.49,
+                "baseline_loss_ratio": 1.0,
+                "result_cohort": "search",
+                "trust_label": "candidate_grade",
+                "comparability_label": "candidate_comparable",
+                "evaluation_protocol_version": "candidate_grade_v1",
+            },
+            novelty_kwargs={"novelty_score": 0.2},
+            results={"best_loss_ratio": None, "best_novelty_score": None},
+            loss_ratio=0.50,
+        )
+        nb.flush_writes()
+
+        row = nb.get_leaderboard_entry(confirmed_rid)
+        assert row is not None
+        assert row["tier"] == "validation"
+        assert row["result_id"] == confirmed_rid
+        assert row["result_cohort"] == "search"
+        assert row["trust_label"] == "candidate_grade"
+        assert row["investigation_loss_ratio"] == pytest.approx(0.62)
+        assert row["validation_loss_ratio"] == pytest.approx(0.50)
+        assert row["validation_baseline_ratio"] == pytest.approx(1.0)
+        assert int(row["validation_passed"] or 0) == 0
+        confirmed = nb.conn.execute(
+            """
+            SELECT fp_jacobian_erf_density, fp_cka_vs_transformer, cka_source,
+                   nano_ar_inv_score, nano_ar_inv_status,
+                   controlled_lang_s05_nb_score, controlled_lang_s10_nb_score,
+                   tinystories_score
+            FROM program_results
+            WHERE result_id = ?
+            """,
+            (confirmed_rid,),
+        ).fetchone()
+        assert confirmed is not None
+        assert confirmed["fp_jacobian_erf_density"] == pytest.approx(0.359)
+        assert confirmed["fp_cka_vs_transformer"] == pytest.approx(0.294)
+        assert confirmed["cka_source"] == "artifact"
+        assert confirmed["nano_ar_inv_score"] == pytest.approx(1.0)
+        assert confirmed["nano_ar_inv_status"] == "ok"
+        assert confirmed["controlled_lang_s05_nb_score"] == pytest.approx(1.0)
+        assert confirmed["controlled_lang_s10_nb_score"] == pytest.approx(1.0)
+        assert confirmed["tinystories_score"] == pytest.approx(0.568)
+
+        nb._sync_fingerprint_leaderboard(confirmed_rid)
+        synced = nb.get_leaderboard_entry(confirmed_rid)
+        assert synced is not None
+        assert synced["tier"] == "validation"
+        assert synced["validation_loss_ratio"] == pytest.approx(0.49)
+        assert synced["investigation_loss_ratio"] == pytest.approx(0.62)
         nb.close()

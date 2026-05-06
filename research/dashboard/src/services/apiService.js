@@ -131,8 +131,12 @@ export const apiService = {
     post(`/api/leaderboard/queue-rerun-apply`, body),
   // Manually drain one pending validation rerun (without starting
   // continuous mode).  Returns 409 if an experiment is already running.
-  drainPendingValidationRerun: () =>
-    postJson(`/api/runner/drain-pending-validation-rerun`, {}, { timeoutMs: RUNNER_DRAIN_TIMEOUT_MS }).then(handleResponse),
+  drainPendingValidationRerun: (id = null) =>
+    postJson(
+      `/api/runner/drain-pending-validation-rerun`,
+      id ? { result_id: id } : {},
+      { timeoutMs: RUNNER_DRAIN_TIMEOUT_MS },
+    ).then(handleResponse),
   getLiveFeed: (experimentId, n = 100) => get(`/api/live-feed?experiment_id=${encodeURIComponent(experimentId)}&n=${n}`),
   getTrainingCurve: (id) => get(`/api/programs/${id}/training-curve`),
   getReproducibilityManifest: (id) => get(`/api/reproducibility-manifest/${id}`),

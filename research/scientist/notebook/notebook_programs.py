@@ -729,6 +729,7 @@ class _ProgramsMixin(
         ("diagnostic_score", "und"),
         ("fp_hierarchy_fitness", "und"),
         ("ar_auc", "cap"),
+        ("nano_ar_inv_score", "cap"),
         ("induction_auc", "cap"),
         ("binding_auc", "cap"),
         ("induction_v2_investigation_auc", "cap"),

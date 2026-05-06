@@ -148,6 +148,69 @@ def _program_is_screening_admissible(program: Optional[Dict[str, Any]]) -> bool:
     return bool(provenance.get("eligible_for_promotion"))
 
 
+def has_backfill_provenance(record: Optional[Dict[str, Any]]) -> bool:
+    """Return True when a row still carries reconstructed/backfill provenance."""
+    if not record:
+        return False
+    result_cohort = str(record.get("result_cohort") or "").strip().lower()
+    trust_label = str(record.get("trust_label") or "").strip().lower()
+    comparability_label = str(record.get("comparability_label") or "").strip().lower()
+    return (
+        result_cohort == "backfill"
+        or trust_label == "backfill_observation"
+        or comparability_label == "reconstructed_init_variant"
+    )
+
+
+def resolve_confirmed_candidate_result_id(
+    nb: LabNotebook,
+    result_id: str,
+    *,
+    program: Optional[Dict[str, Any]] = None,
+    leaderboard_entry: Optional[Dict[str, Any]] = None,
+) -> Optional[str]:
+    """Resolve a backfill result to its candidate-confirmed sibling, if any."""
+    graph_fingerprint = str(
+        (program or {}).get("graph_fingerprint")
+        or (leaderboard_entry or {}).get("graph_fingerprint")
+        or ""
+    ).strip()
+    if not graph_fingerprint:
+        row = nb.conn.execute(
+            "SELECT graph_fingerprint FROM program_results WHERE result_id = ?",
+            (result_id,),
+        ).fetchone()
+        graph_fingerprint = str((row or {}).get("graph_fingerprint") or "").strip()
+    if not graph_fingerprint:
+        return None
+
+    row = nb.conn.execute(
+        """
+        SELECT pr.result_id
+        FROM program_results pr
+        LEFT JOIN leaderboard lb ON lb.result_id = pr.result_id
+        WHERE pr.graph_fingerprint = ?
+          AND pr.result_id != ?
+          AND COALESCE(pr.stage1_passed, 0) = 1
+          AND COALESCE(pr.result_cohort, '') != 'backfill'
+          AND COALESCE(pr.trust_label, '') = 'candidate_grade'
+          AND COALESCE(pr.comparability_label, '') = 'candidate_comparable'
+        ORDER BY
+          CASE COALESCE(lb.tier, '')
+            WHEN 'breakthrough' THEN 0
+            WHEN 'validation' THEN 1
+            WHEN 'investigation' THEN 2
+            WHEN 'screening' THEN 3
+            ELSE 4
+          END,
+          pr.timestamp DESC
+        LIMIT 1
+        """,
+        (graph_fingerprint, result_id),
+    ).fetchone()
+    return str(row["result_id"]) if row is not None else None
+
+
 def _ensure_screening_leaderboard_entry(
     nb: LabNotebook,
     result_id: str,
@@ -273,6 +336,123 @@ def _evaluate_mode_eligibility(
     }
 
 
+def _fetch_start_mode_rows(nb: LabNotebook, result_ids: List[str]):
+    placeholders = ",".join("?" for _ in result_ids)
+    leaderboard_rows = nb.conn.execute(
+        f"""
+        SELECT result_id, tier, investigation_passed, validation_passed,
+               investigation_loss_ratio, validation_loss_ratio,
+               result_cohort, trust_label, comparability_label, graph_fingerprint
+        FROM leaderboard
+        WHERE result_id IN ({placeholders})
+        """,
+        tuple(result_ids),
+    ).fetchall()
+    program_rows = nb.conn.execute(
+        f"""
+        SELECT result_id, stage1_passed, graph_fingerprint, model_source, loss_ratio,
+               novelty_score, novelty_confidence, fp_jacobian_spectral_norm,
+               routing_savings_ratio, activation_sparsity_score,
+               depth_savings_ratio, compression_ratio, wikitext_perplexity,
+               wikitext_score, result_cohort, trust_label, comparability_label,
+               data_provenance_json
+        FROM program_results
+        WHERE result_id IN ({placeholders})
+        """,
+        tuple(result_ids),
+    ).fetchall()
+    return (
+        {row["result_id"]: dict(row) for row in leaderboard_rows},
+        {row["result_id"]: dict(row) for row in program_rows},
+    )
+
+
+def _append_confirmed_candidate_eligibility(
+    nb: LabNotebook,
+    *,
+    mode: str,
+    result_id: str,
+    program: Optional[Dict[str, Any]],
+    lb: Optional[Dict[str, Any]],
+    payload: Dict[str, Any],
+) -> bool:
+    if mode not in {"investigation", "validation"} or not (
+        has_backfill_provenance(program) or has_backfill_provenance(lb)
+    ):
+        return False
+    confirmed_id = resolve_confirmed_candidate_result_id(
+        nb,
+        result_id,
+        program=program,
+        leaderboard_entry=lb,
+    )
+    if not confirmed_id:
+        payload["ineligible"].append(
+            {
+                "result_id": result_id,
+                "reason": "candidate_confirmation_required",
+                "detail": (
+                    f"{mode.title()} requires a candidate-confirmed Stage-1 "
+                    "sibling; run S1 candidate confirmation first."
+                ),
+                "tier": str((lb or {}).get("tier") or "").lower() or None,
+            }
+        )
+        return True
+    confirmed_lb = nb.get_leaderboard_entry(confirmed_id)
+    if confirmed_lb is None:
+        payload["ineligible"].append(
+            {
+                "result_id": result_id,
+                "resolved_result_id": confirmed_id,
+                "reason": "confirmed_candidate_not_in_leaderboard",
+                "detail": (
+                    "A candidate-confirmed sibling exists, but it has no "
+                    "leaderboard progression record yet."
+                ),
+            }
+        )
+        return True
+    tier = str(confirmed_lb.get("tier") or "").lower()
+    failure = _evaluate_mode_eligibility(mode, confirmed_id, tier, dict(confirmed_lb))
+    if failure is None:
+        if confirmed_id not in payload["eligible_result_ids"]:
+            payload["eligible_result_ids"].append(confirmed_id)
+        payload.setdefault("resolved_result_ids", {})[result_id] = confirmed_id
+    else:
+        failure["requested_result_id"] = result_id
+        failure.setdefault("resolved_result_id", confirmed_id)
+        payload["ineligible"].append(failure)
+    return True
+
+
+def _append_direct_eligibility(
+    nb: LabNotebook,
+    *,
+    mode: str,
+    result_id: str,
+    program: Optional[Dict[str, Any]],
+    lb: Optional[Dict[str, Any]],
+    leaderboard_by_id: Dict[str, Dict[str, Any]],
+    payload: Dict[str, Any],
+) -> None:
+    if lb is None:
+        lb = _ensure_screening_leaderboard_entry(nb, result_id, program)
+        if lb is not None:
+            leaderboard_by_id[result_id] = lb
+        else:
+            payload["ineligible"].append(
+                _ineligible_from_missing_rows(result_id, program)
+            )
+            return
+    tier = str(lb.get("tier") or "").lower()
+    failure = _evaluate_mode_eligibility(mode, result_id, tier, lb)
+    if failure is None:
+        payload["eligible_result_ids"].append(result_id)
+    else:
+        payload["ineligible"].append(failure)
+
+
 def build_start_mode_eligibility(
     nb: LabNotebook,
     mode: str,
@@ -290,59 +470,31 @@ def build_start_mode_eligibility(
     if not result_ids:
         return payload
 
-    placeholders = ",".join("?" for _ in result_ids)
-    leaderboard_rows = nb.conn.execute(
-        f"""
-        SELECT result_id, tier, investigation_passed, validation_passed,
-               investigation_loss_ratio, validation_loss_ratio
-        FROM leaderboard
-        WHERE result_id IN ({placeholders})
-        """,
-        tuple(result_ids),
-    ).fetchall()
-    program_rows = nb.conn.execute(
-        f"""
-        SELECT result_id, stage1_passed, graph_fingerprint, model_source, loss_ratio,
-               novelty_score, novelty_confidence, fp_jacobian_spectral_norm,
-               routing_savings_ratio, activation_sparsity_score,
-               depth_savings_ratio, compression_ratio, wikitext_perplexity,
-               wikitext_score, trust_label, comparability_label,
-               data_provenance_json
-        FROM program_results
-        WHERE result_id IN ({placeholders})
-        """,
-        tuple(result_ids),
-    ).fetchall()
-
-    leaderboard_by_id = {row["result_id"]: dict(row) for row in leaderboard_rows}
-    program_by_id = {row["result_id"]: dict(row) for row in program_rows}
+    leaderboard_by_id, program_by_id = _fetch_start_mode_rows(nb, result_ids)
 
     for result_id in result_ids:
         lb = leaderboard_by_id.get(result_id)
         program = program_by_id.get(result_id)
 
-        if lb is None:
-            lb = _ensure_screening_leaderboard_entry(nb, result_id, program)
-            if lb is not None:
-                leaderboard_by_id[result_id] = lb
-                tier = str(lb.get("tier") or "").lower()
-                failure = _evaluate_mode_eligibility(mode, result_id, tier, lb)
-                if failure is None:
-                    payload["eligible_result_ids"].append(result_id)
-                else:
-                    payload["ineligible"].append(failure)
-                continue
-            payload["ineligible"].append(
-                _ineligible_from_missing_rows(result_id, program)
-            )
+        if _append_confirmed_candidate_eligibility(
+            nb,
+            mode=mode,
+            result_id=result_id,
+            program=program,
+            lb=lb,
+            payload=payload,
+        ):
             continue
 
-        tier = str(lb.get("tier") or "").lower()
-        failure = _evaluate_mode_eligibility(mode, result_id, tier, lb)
-        if failure is None:
-            payload["eligible_result_ids"].append(result_id)
-        else:
-            payload["ineligible"].append(failure)
+        _append_direct_eligibility(
+            nb,
+            mode=mode,
+            result_id=result_id,
+            program=program,
+            lb=lb,
+            leaderboard_by_id=leaderboard_by_id,
+            payload=payload,
+        )
 
     payload["all_eligible"] = (
         len(payload["ineligible"]) == 0 and len(payload["eligible_result_ids"]) > 0

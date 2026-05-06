@@ -3,15 +3,17 @@
 Runs as a daemon thread inside the dashboard process. Every
 ``SNAPSHOT_INTERVAL_S`` seconds it copies the live notebook to
 ``<db>.snap_<UTC ISO>`` using SQLite's online backup API (safe against
-concurrent writers), then prunes any snapshots beyond ``KEEP_LAST``.
+concurrent writers), checks snapshot health, then prunes any snapshots
+beyond ``KEEP_LAST``. The default retention keeps the last six hourly
+snapshots.
 
 This is the redundancy baseline that lets us drop the process-wide
 aria-db writer flock: if the main DB corrupts, we fall back to the
 most recent snapshot.
 
-The SQLite online backup is performed against a *separate read-only*
-sqlite3 connection opened with ``immutable=1`` so it never disturbs the
-aria-db writer thread or its DELETE-mode rollback journal.
+The SQLite online backup is performed against a separate read-only
+sqlite3 connection. Snapshots that fail ``PRAGMA quick_check`` are
+renamed with a ``.bad`` suffix and excluded from healthy retention.
 """
 
 from __future__ import annotations
@@ -26,10 +28,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 
+from research.tools.db_health import HealthCheckError, assert_sqlite_health
+
 logger = logging.getLogger(__name__)
 
 SNAPSHOT_INTERVAL_S = 3600.0
-KEEP_LAST = 24
+KEEP_LAST = 6
 SNAPSHOT_SUFFIX_PREFIX = ".snap_"
 SNAPSHOT_TS_RE = re.compile(r"\.snap_(\d{8}T\d{6})$")
 
@@ -68,6 +72,28 @@ def _prune_old_snapshots(db_path: Path, keep_last: int) -> int:
     return removed
 
 
+def _mark_bad_snapshot(path: Path, reason: BaseException) -> None:
+    bad = path.with_name(f"{path.name}.bad")
+    try:
+        path.replace(bad)
+        logger.warning("snapshot health failed; moved %s -> %s: %s", path, bad, reason)
+    except OSError as exc:
+        logger.warning(
+            "snapshot health failed and quarantine failed for %s: %s",
+            path,
+            exc,
+        )
+
+
+def _snapshot_is_healthy(path: Path) -> bool:
+    try:
+        assert_sqlite_health(path, label="notebook snapshot")
+        return True
+    except (HealthCheckError, sqlite3.Error, OSError) as exc:
+        _mark_bad_snapshot(path, exc)
+        return False
+
+
 def take_snapshot(db_path: str | os.PathLike[str]) -> Optional[Path]:
     """Take one snapshot of ``db_path`` using SQLite online backup.
 
@@ -79,7 +105,7 @@ def take_snapshot(db_path: str | os.PathLike[str]) -> Optional[Path]:
         logger.debug("snapshot skipped: %s does not exist", src)
         return None
     dst = src.with_name(f"{src.name}{SNAPSHOT_SUFFIX_PREFIX}{_utc_stamp()}")
-    src_uri = f"file:{src}?immutable=1"
+    src_uri = f"file:{src}?mode=ro"
     try:
         src_conn = sqlite3.connect(src_uri, uri=True, timeout=30.0)
     except sqlite3.OperationalError as exc:
@@ -94,7 +120,6 @@ def take_snapshot(db_path: str | os.PathLike[str]) -> Optional[Path]:
     try:
         with dst_conn:
             src_conn.backup(dst_conn, pages=2000, sleep=0.05)
-        return dst
     except sqlite3.Error as exc:
         logger.warning("snapshot backup failed for %s: %s", dst, exc)
         try:
@@ -105,6 +130,7 @@ def take_snapshot(db_path: str | os.PathLike[str]) -> Optional[Path]:
     finally:
         dst_conn.close()
         src_conn.close()
+    return dst if _snapshot_is_healthy(dst) else None
 
 
 def _rotator_loop(

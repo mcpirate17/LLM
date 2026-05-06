@@ -28,7 +28,12 @@ class _ExecutionCandidatesMixin:
 
     __slots__ = ()
 
-    def _claim_pending_followup_from_notebook(self, stage: str):
+    def _claim_pending_followup_from_notebook(
+        self,
+        stage: str,
+        *,
+        task_id: str | None = None,
+    ):
         try:
             nb = self._make_notebook()
         except Exception as e:
@@ -37,7 +42,11 @@ class _ExecutionCandidatesMixin:
             )
             return None
         try:
-            task = nb.claim_followup_task(stage)
+            task = (
+                nb.claim_followup_task_by_id(task_id, stage=stage)
+                if task_id
+                else nb.claim_followup_task(stage)
+            )
         except Exception as e:
             logger.warning("Failed to claim %s follow-up task: %s", stage, e)
             nb.close()
@@ -116,7 +125,7 @@ class _ExecutionCandidatesMixin:
             or "already at or beyond" in msg
         )
 
-    def _run_pending_replay(self) -> bool:
+    def _run_pending_replay(self, task_id: str | None = None) -> bool:
         """Run one queued exact replay task through the canonical replay pipeline."""
         if self.is_running:
             return False
@@ -126,7 +135,11 @@ class _ExecutionCandidatesMixin:
             logger.warning("Failed to open notebook for replay task claim: %s", e)
             return False
         try:
-            task = nb.claim_followup_task("replay")
+            task = (
+                nb.claim_followup_task_by_id(task_id, stage="replay")
+                if task_id
+                else nb.claim_followup_task("replay")
+            )
         except Exception as e:
             logger.warning("Failed to claim replay task: %s", e)
             nb.close()
@@ -142,6 +155,8 @@ class _ExecutionCandidatesMixin:
         )
         device = str(config_payload.get("device") or "cuda")
         fast = bool(config_payload.get("fast", True))
+        candidate_confirmation = bool(config_payload.get("candidate_confirmation"))
+        stage1_steps = config_payload.get("stage1_steps")
         result_ids = [
             str(rid).strip()
             for rid in (task.get("result_ids_json") or [])
@@ -169,6 +184,8 @@ class _ExecutionCandidatesMixin:
                 fast=fast,
                 verbose=False,
                 independent_sample=independent_sample,
+                candidate_confirmation=candidate_confirmation,
+                stage1_steps=int(stage1_steps) if stage1_steps is not None else None,
             )
             # Mark the task complete.  This MUST land — leaving a task at
             # status='running' after its experiment has finished makes the
@@ -913,13 +930,16 @@ class _ExecutionCandidatesMixin:
 
         return grammar
 
-    def _run_pending_investigation(self):
+    def _run_pending_investigation(self, task_id: str | None = None):
         """Launch pending auto-investigation if queued."""
         if self.is_running:
             return
         pending = getattr(self, "_pending_investigation", None)
         if pending is None:
-            pending = self._claim_pending_followup_from_notebook("investigation")
+            pending = self._claim_pending_followup_from_notebook(
+                "investigation",
+                task_id=task_id,
+            )
             if pending is None:
                 return
         self._pending_investigation = None
@@ -952,13 +972,16 @@ class _ExecutionCandidatesMixin:
                 permanent_failure=self._is_tier_guard_failure(e),
             )
 
-    def _run_pending_validation(self):
+    def _run_pending_validation(self, task_id: str | None = None):
         """Launch pending auto-validation if queued."""
         if self.is_running:
             return
         pending = getattr(self, "_pending_validation", None)
         if pending is None:
-            pending = self._claim_pending_followup_from_notebook("validation")
+            pending = self._claim_pending_followup_from_notebook(
+                "validation",
+                task_id=task_id,
+            )
             if pending is None:
                 return
         self._pending_validation = None

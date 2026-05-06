@@ -119,6 +119,16 @@ _MINIMAL_GRAPH_JSON = json.dumps(
     }
 )
 
+_S1_CORE_METRICS = {
+    "wikitext_perplexity": 420.0,
+    "hellaswag_acc": 0.24,
+    "blimp_overall_accuracy": 0.51,
+    "induction_auc": 0.58,
+    "binding_auc": 0.57,
+    "binding_composite": 0.56,
+    "ar_auc": 0.52,
+}
+
 
 # ── Test 6: API Endpoints ──
 
@@ -149,6 +159,7 @@ class TestAPI(unittest.TestCase):
                 stage1_passed=(i == 0),
                 loss_ratio=0.5 - i * 0.1 if i == 0 else None,
                 novelty_score=0.3 + i * 0.2,
+                **(_S1_CORE_METRICS if i == 0 else {}),
             )
         nb.complete_experiment(
             exp_id,
@@ -1068,11 +1079,11 @@ class TestAPI(unittest.TestCase):
         finally:
             nb.close()
 
-        from research.scientist import api_routes as api_routes_pkg
+        from research.scientist.api_routes.programs_routes import (
+            program_detail as program_detail_mod,
+        )
 
-        programs_bp = api_routes_pkg.programs_bp
-
-        original = getattr(programs_bp, "_generate_program_explanation")
+        original = program_detail_mod._generate_program_explanation
         try:
 
             def fail_generate(nb, rid, program):
@@ -1080,10 +1091,10 @@ class TestAPI(unittest.TestCase):
                     "GET detail should not trigger explanation generation"
                 )
 
-            programs_bp._generate_program_explanation = fail_generate
+            program_detail_mod._generate_program_explanation = fail_generate
             r_detail = self.client.get(f"/api/programs/{result_id}")
         finally:
-            programs_bp._generate_program_explanation = original
+            program_detail_mod._generate_program_explanation = original
 
         self.assertEqual(r_detail.status_code, 200)
         detail = r_detail.get_json()
@@ -1096,12 +1107,12 @@ class TestAPI(unittest.TestCase):
             return
         result_id = programs[0]["result_id"]
 
-        from research.scientist import api_routes as api_routes_pkg
-
-        programs_bp = api_routes_pkg.programs_bp
+        from research.scientist.api_routes.programs_routes import (
+            program_detail as program_detail_mod,
+        )
 
         calls = {"n": 0}
-        original = getattr(programs_bp, "_generate_program_explanation")
+        original = program_detail_mod._generate_program_explanation
         try:
 
             def fake_generate(nb, rid, program):
@@ -1113,7 +1124,7 @@ class TestAPI(unittest.TestCase):
                 nb.conn.commit()
                 return "cached explanation"
 
-            programs_bp._generate_program_explanation = fake_generate
+            program_detail_mod._generate_program_explanation = fake_generate
 
             first = self.client.post(f"/api/programs/{result_id}/explanation")
             self.assertEqual(first.status_code, 200)
@@ -1127,7 +1138,7 @@ class TestAPI(unittest.TestCase):
             self.assertEqual(second_data["source"], "cached")
             self.assertEqual(second_data["llm_explanation"], "cached explanation")
         finally:
-            programs_bp._generate_program_explanation = original
+            program_detail_mod._generate_program_explanation = original
 
         self.assertEqual(calls["n"], 1)
 
@@ -1147,6 +1158,7 @@ class TestAPI(unittest.TestCase):
                 stage1_passed=True,
                 loss_ratio=0.11,
                 novelty_score=0.42,
+                **_S1_CORE_METRICS,
             )
 
             inv_exp = nb.start_experiment(
@@ -1161,6 +1173,7 @@ class TestAPI(unittest.TestCase):
                 stage1_passed=True,
                 loss_ratio=0.21,
                 novelty_score=0.43,
+                **_S1_CORE_METRICS,
             )
 
             val_exp = nb.start_experiment(
@@ -1175,6 +1188,7 @@ class TestAPI(unittest.TestCase):
                 stage1_passed=True,
                 loss_ratio=0.31,
                 novelty_score=0.44,
+                **_S1_CORE_METRICS,
             )
             nb.flush_writes()
         finally:
@@ -1184,10 +1198,13 @@ class TestAPI(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         detail = r.get_json()
         self.assertEqual(detail["requested_result_id"], screening_id)
-        self.assertEqual(detail["canonical_result_id"], validation_id)
-        self.assertTrue(detail["superseded_requested_result"])
-        self.assertEqual(detail["result_id"], validation_id)
-        self.assertEqual(detail["experiment_id"], val_exp)
+        self.assertFalse(detail["superseded_requested_result"])
+        self.assertEqual(detail["result_id"], screening_id)
+        self.assertEqual(detail["experiment_id"], synth_exp)
+        same_fingerprint_ids = {
+            row["result_id"] for row in detail.get("same_fingerprint_results", [])
+        }
+        self.assertIn(validation_id, same_fingerprint_ids)
 
     def test_api_program_detail_sanitizes_non_finite_metrics(self):
         r = self.client.get("/api/programs")
@@ -1633,7 +1650,7 @@ class TestAPI(unittest.TestCase):
             patch("research.scientist.native_runner_adapter.os.environ", env),
             patch("research.scientist.native.compiler.os.environ", env),
             patch(
-                "research.scientist.native.compiler._legacy_compile_model",
+                "research.synthesis.compiler.compile_model",
                 return_value=DummyModel(),
             ),
         ):
@@ -1680,7 +1697,7 @@ class TestAPI(unittest.TestCase):
                 return_value=None,
             ),
             patch(
-                "research.scientist.native.compiler._legacy_compile_model",
+                "research.synthesis.compiler.compile_model",
                 return_value=DummyModel(),
             ),
         ):
@@ -2607,6 +2624,7 @@ class TestAPI(unittest.TestCase):
             stage1_passed=True,
             loss_ratio=0.33,
             novelty_score=0.62,
+            **_S1_CORE_METRICS,
         )
         nb.upsert_leaderboard(
             result_id=result_id,
@@ -2670,6 +2688,7 @@ class TestAPI(unittest.TestCase):
             stage1_passed=True,
             loss_ratio=0.29,
             novelty_score=0.57,
+            **_S1_CORE_METRICS,
         )
         nb.upsert_leaderboard(
             result_id=result_id,
@@ -3035,6 +3054,7 @@ class TestAPI(unittest.TestCase):
             stage1_passed=True,
             loss_ratio=0.41,
             novelty_score=0.52,
+            **_S1_CORE_METRICS,
         )
         nb.upsert_leaderboard(
             result_id=result_id,
@@ -3096,6 +3116,7 @@ class TestAPI(unittest.TestCase):
             trust_label="candidate_grade",
             comparability_label="candidate_comparable",
             evaluation_protocol_version="candidate_grade_v1",
+            **_S1_CORE_METRICS,
         )
         nb.flush_writes()
         nb.conn.execute(
@@ -3146,6 +3167,7 @@ class TestAPI(unittest.TestCase):
             trust_label="candidate_grade",
             comparability_label="candidate_comparable",
             evaluation_protocol_version="candidate_grade_v1",
+            **_S1_CORE_METRICS,
         )
         nb.flush_writes()
         nb.upsert_leaderboard(
@@ -3171,6 +3193,7 @@ class TestAPI(unittest.TestCase):
             comparability_label="candidate_comparable",
             evaluation_protocol_version="candidate_grade_v1",
             intentional_rerun_reason="test_fixture_historical_dup",
+            **_S1_CORE_METRICS,
         )
         nb.flush_writes()
 
@@ -3216,6 +3239,7 @@ class TestAPI(unittest.TestCase):
             trust_label="candidate_grade",
             comparability_label="candidate_comparable",
             evaluation_protocol_version="candidate_grade_v1",
+            **_S1_CORE_METRICS,
         )
         nb.flush_writes()
         nb.close()
@@ -3251,6 +3275,7 @@ class TestAPI(unittest.TestCase):
             stage1_passed=True,
             loss_ratio=0.19,
             novelty_score=0.61,
+            **_S1_CORE_METRICS,
         )
         nb.flush_writes()
         nb.close()
@@ -3281,6 +3306,7 @@ class TestAPI(unittest.TestCase):
             stage1_passed=True,
             loss_ratio=0.39,
             novelty_score=0.58,
+            **_S1_CORE_METRICS,
         )
         nb.upsert_leaderboard(
             result_id=result_id,
@@ -3328,6 +3354,7 @@ class TestAPI(unittest.TestCase):
             stage1_passed=True,
             loss_ratio=0.31,
             novelty_score=0.63,
+            **_S1_CORE_METRICS,
         )
         nb.upsert_leaderboard(
             result_id=result_id,
@@ -3416,6 +3443,7 @@ class TestAPI(unittest.TestCase):
             stage1_passed=True,
             loss_ratio=0.21,
             novelty_score=0.72,
+            **_S1_CORE_METRICS,
         )
         failed_id = nb.record_program_result(
             experiment_id=exp_id,
@@ -3426,6 +3454,7 @@ class TestAPI(unittest.TestCase):
             stage1_passed=True,
             loss_ratio=0.71,
             novelty_score=0.61,
+            **_S1_CORE_METRICS,
         )
         nb.upsert_leaderboard(
             result_id=passed_id,
@@ -3476,6 +3505,7 @@ class TestAPI(unittest.TestCase):
             stage1_passed=True,
             loss_ratio=0.24,
             novelty_score=0.68,
+            **_S1_CORE_METRICS,
         )
         nb.upsert_leaderboard(
             result_id=result_id,
@@ -3562,6 +3592,7 @@ class TestAPI(unittest.TestCase):
             stage1_passed=True,
             loss_ratio=0.12,
             novelty_score=0.8,
+            **_S1_CORE_METRICS,
         )
         nb.complete_experiment(
             exp_id,
@@ -3665,6 +3696,7 @@ class TestAPI(unittest.TestCase):
             stage1_passed=True,
             loss_ratio=0.10,
             novelty_score=0.85,
+            **_S1_CORE_METRICS,
         )
         nb.complete_experiment(
             exp_id,
@@ -3760,6 +3792,7 @@ class TestAPI(unittest.TestCase):
             stage1_passed=True,
             loss_ratio=0.20,
             novelty_score=0.60,
+            **_S1_CORE_METRICS,
         )
         nb.complete_experiment(
             exp_id,
@@ -3862,6 +3895,7 @@ class TestAPI(unittest.TestCase):
             stage1_passed=True,
             loss_ratio=0.25,
             novelty_score=0.55,
+            **_S1_CORE_METRICS,
         )
         child_result_id = nb.record_program_result(
             experiment_id=exp_id,
@@ -3918,6 +3952,7 @@ class TestAPI(unittest.TestCase):
             stage1_passed=True,
             loss_ratio=0.20,
             novelty_score=0.60,
+            **_S1_CORE_METRICS,
         )
         nb.complete_experiment(
             exp_id,
@@ -5190,9 +5225,12 @@ class TestSSEEventContract(unittest.TestCase):
             "experiment_started",
             "hypothesis_recorded",
             "hypothesis_resolved",
+            "champion_confirmation_started",
             "investigation_completed",
+            "investigation_failed",
             "investigation_progress",
             "investigation_started",
+            "investigation_training_complete",
             "knowledge_extracted",
             "learning_event",
             "log_message",

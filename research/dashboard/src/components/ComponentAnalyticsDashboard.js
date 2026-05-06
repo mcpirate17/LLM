@@ -1128,7 +1128,7 @@ export default function ComponentAnalyticsDashboard() {
         apiCall('/api/observability/loss-distribution'),
         apiCall('/api/observability/grammar-evolution'),
         apiCall('/api/observability/failure-patterns'),
-        apiCall('/api/observability/leaderboard-dynamics?trusted_only=1'),
+        apiCall('/api/observability/leaderboard-dynamics?trusted_only=0'),
         apiCall('/api/observability/insight-effectiveness'),
       ]);
       if (healthRes.ok) setHealth(await healthRes.json());

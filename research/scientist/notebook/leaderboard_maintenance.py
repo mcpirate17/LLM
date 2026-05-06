@@ -32,6 +32,12 @@ FINGERPRINT_PROGRAM_RESULT_COLUMNS = (
     "discovery_loss_ratio",
     "validation_loss_ratio",
     "baseline_loss_ratio",
+    "validation_multi_seed_std",
+    "validation_robustness_score",
+    "validation_is_unstable",
+    "validation_passed",
+    "normalized_baseline_ratio",
+    "param_efficiency",
     "efficiency_multiple",
     "max_viable_seq_len",
     "robustness_long_ctx_scaling_score",
@@ -224,6 +230,69 @@ def _has_stage_evidence(rows: List[Dict[str, Any]], columns: tuple[str, ...]) ->
     return False
 
 
+def _has_real_validation_evidence(
+    leaderboard_rows: List[Dict[str, Any]],
+    program_rows: List[Dict[str, Any]],
+) -> bool:
+    if _has_stage_evidence(
+        leaderboard_rows,
+        (
+            "validation_multi_seed_std",
+            "validation_robustness_score",
+            "validation_is_unstable",
+            "normalized_baseline_ratio",
+            "param_efficiency",
+        ),
+    ):
+        return True
+    if any(bool(row.get("validation_passed")) for row in leaderboard_rows):
+        return True
+    for row in program_rows:
+        experiment_type = str(row.get("experiment_type") or "").lower()
+        if experiment_type == "validation" and _has_stage_evidence(
+            [row],
+            (
+                "validation_loss_ratio",
+                "baseline_loss_ratio",
+                "validation_multi_seed_std",
+            ),
+        ):
+            return True
+        if _has_stage_evidence(
+            [row],
+            (
+                "validation_multi_seed_std",
+                "validation_robustness_score",
+                "validation_is_unstable",
+                "normalized_baseline_ratio",
+                "param_efficiency",
+            ),
+        ):
+            return True
+        if bool(row.get("validation_passed")):
+            return True
+    return False
+
+
+def _has_real_investigation_evidence(
+    leaderboard_rows: List[Dict[str, Any]],
+    program_rows: List[Dict[str, Any]],
+) -> bool:
+    if _has_stage_evidence(
+        leaderboard_rows,
+        (
+            "investigation_loss_ratio",
+            "investigation_robustness",
+        ),
+    ):
+        return True
+    return any(
+        str(row.get("experiment_type") or "").lower() == "investigation"
+        and _has_stage_evidence([row], ("discovery_loss_ratio", "loss_ratio"))
+        for row in program_rows
+    )
+
+
 def _effective_fingerprint_tier(
     leaderboard_rows: List[Dict[str, Any]],
     program_rows: List[Dict[str, Any]],
@@ -241,29 +310,11 @@ def _effective_fingerprint_tier(
             return tier
         return "validation"
 
-    combo_rows = leaderboard_rows + program_rows
-    has_validation = _has_stage_evidence(
-        combo_rows,
-        (
-            "validation_loss_ratio",
-            "validation_baseline_ratio",
-            "validation_multi_seed_std",
-        ),
-    )
+    has_validation = _has_real_validation_evidence(leaderboard_rows, program_rows)
     if has_validation:
         return "validation"
 
-    has_investigation = _has_stage_evidence(
-        combo_rows,
-        (
-            "investigation_loss_ratio",
-            "investigation_robustness",
-            "discovery_loss_ratio",
-        ),
-    ) or any(
-        str(row.get("experiment_type") or "").lower() == "investigation"
-        for row in program_rows
-    )
+    has_investigation = _has_real_investigation_evidence(leaderboard_rows, program_rows)
     if has_investigation:
         if tier in {"investigation", "validation", "breakthrough"}:
             return tier
@@ -271,9 +322,15 @@ def _effective_fingerprint_tier(
             return tier
         if bool(merged.get("investigation_passed")):
             return "investigation"
+        robustness = merged.get("investigation_robustness")
+        try:
+            if robustness is not None and float(robustness) >= 0.5:
+                return "investigation"
+        except (TypeError, ValueError):
+            pass
         return "investigation_failed"
 
-    return tier
+    return "screening"
 
 
 def _fingerprint_leaderboard_rows(nb, graph_fingerprint: str) -> List[Dict[str, Any]]:
@@ -392,8 +449,6 @@ def sync_fingerprint_leaderboard(nb, result_id: str) -> None:
                     val_rows, "baseline_loss_ratio"
                 )
         if tier_rank < 3:
-            merged["validation_loss_ratio"] = None
-            merged["validation_baseline_ratio"] = None
             merged["validation_multi_seed_std"] = None
             merged["validation_passed"] = 0
         if tier_rank < 2:

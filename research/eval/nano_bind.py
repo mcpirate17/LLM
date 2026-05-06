@@ -125,6 +125,28 @@ def _get_encoder():
     return _get_tiktoken_encoder(TIKTOKEN_ENCODING)
 
 
+_ADJ_TOKEN_ID_CACHE: dict[tuple[str, int], frozenset[int]] = {}
+
+
+def _get_adj_token_ids(enc, n_adjectives: int) -> frozenset[int]:
+    """Cached single-token IDs for the first ``n_adjectives`` adjectives.
+
+    Replaces the inline set comprehension at the start of ``nano_bind()`` so
+    a sweep across many archs only pays the encode cost once per
+    (encoding, n_adjectives) pair.
+    """
+    cache_key = (TIKTOKEN_ENCODING, int(n_adjectives))
+    cached = _ADJ_TOKEN_ID_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+    ids = frozenset(
+        int(enc.encode(" " + a, allowed_special=set())[0])
+        for a in ADJECTIVES[: int(n_adjectives)]
+    )
+    _ADJ_TOKEN_ID_CACHE[cache_key] = ids
+    return ids
+
+
 def _build_corpus_tensors(
     *,
     enc,
@@ -139,6 +161,8 @@ def _build_corpus_tensors(
     seed: int,
 ) -> tuple[torch.Tensor, torch.Tensor, list[int], list[str]]:
     import random
+
+    from research.eval.utils import pack_token_rows, tokenize_words_serial
 
     rng = random.Random(int(seed))
     held = frozenset(held_out)
@@ -156,33 +180,13 @@ def _build_corpus_tensors(
     prompt_sentences = list(_test_prompts(test_nouns))
 
     def _tok(words: list[str]) -> list[int]:
-        out = []
-        for w in words:
-            ids = enc.encode(" " + w, allowed_special=set())
-            if len(ids) != 1:
-                raise ValueError(
-                    f"word {w!r} not single-token under {TIKTOKEN_ENCODING}"
-                )
-            out.append(int(ids[0]))
-        return out
+        return tokenize_words_serial(enc, words, encoding_name=TIKTOKEN_ENCODING)
 
     train_rows = [_tok(s.split()) for s in train_sentences]
-    max_train = max(len(r) for r in train_rows)
-    train_ids = torch.full(
-        (len(train_rows), max_train), PAD_ID, dtype=torch.long, device=device
-    )
-    for i, row in enumerate(train_rows):
-        train_ids[i, : len(row)] = torch.tensor(row, dtype=torch.long, device=device)
-
+    train_ids = pack_token_rows(train_rows, device, pad_id=PAD_ID)
     prompt_rows = [_tok(s.split()) for s in prompt_sentences]
-    max_p = max(len(r) for r in prompt_rows)
-    prompt_ids = torch.full(
-        (len(prompt_rows), max_p), PAD_ID, dtype=torch.long, device=device
-    )
-    last_pos: list[int] = []
-    for i, row in enumerate(prompt_rows):
-        prompt_ids[i, : len(row)] = torch.tensor(row, dtype=torch.long, device=device)
-        last_pos.append(len(row) - 1)
+    prompt_ids = pack_token_rows(prompt_rows, device, pad_id=PAD_ID)
+    last_pos = [len(r) - 1 for r in prompt_rows]
     return train_ids, prompt_ids, last_pos, prompt_sentences
 
 
@@ -226,7 +230,7 @@ def _eval_checkpoint(
     prompt_sentences: list[str],
     *,
     held_out: frozenset[str],
-    adj_token_ids: set[int],
+    adj_token_ids: frozenset[int],
     enc,
 ) -> tuple[float, float, int, list[list[int]], list[list[str]]]:
     """Returns (top1_adj_acc, held_class_acc, n_unique, top5_ids, top5_tokens).
@@ -314,10 +318,7 @@ def nano_bind(
         return setup
     model, train_ids, prompt_ids, last_pos, prompts, dev = setup
 
-    adj_token_ids = {
-        int(enc.encode(" " + a, allowed_special=set())[0])
-        for a in ADJECTIVES[: int(n_adjectives)]
-    }
+    adj_token_ids = _get_adj_token_ids(enc, int(n_adjectives))
     sweep_state = _SweepState(checkpoints=checkpoints)
     deadline = t0 + float(timeout_s)
     try:
@@ -472,7 +473,7 @@ def _run_sweep(
     last_pos: list[int],
     prompts: list[str],
     *,
-    adj_token_ids: set[int],
+    adj_token_ids: frozenset[int],
     held_set: frozenset[str],
     enc,
     seed: int,

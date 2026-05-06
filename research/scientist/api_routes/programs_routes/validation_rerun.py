@@ -10,8 +10,15 @@ from flask import jsonify, request
 
 from ...runner._types import RunConfig
 from .._helpers import get_runner
+from .._strategy_preflight import (
+    has_backfill_provenance,
+    resolve_confirmed_candidate_result_id,
+)
 
-from ._shared import _leaderboard_backed_program_detail
+from ._shared import (
+    attach_candidate_confirmation_status,
+    _leaderboard_backed_program_detail,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +32,51 @@ _STAGE_QUEUE_NAMES = {
     "investigation": "investigation",
     "validation": "validation",
 }
+
+
+def _json_object(raw: Any) -> Dict[str, Any]:
+    if isinstance(raw, dict):
+        return raw
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _json_list(raw: Any) -> list[Any]:
+    if isinstance(raw, list):
+        return raw
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return []
+    return parsed if isinstance(parsed, list) else []
+
+
+def _task_matches_result(row: Any, result_id: str) -> bool:
+    """Return true when a queued task belongs on a program-detail screen.
+
+    Backfill reruns may execute against a candidate-confirmed sibling while
+    still being requested from the original backfill result.  The executable
+    result id lives in ``result_ids_json``; the screen owner lives in
+    ``metadata_json.requested_result_id``.
+    """
+    rid = str(result_id)
+    ids = [str(x) for x in _json_list(row["result_ids_json"])]
+    if rid in ids:
+        return True
+    metadata = _json_object(row["metadata_json"])
+    if str(metadata.get("requested_result_id") or "") == rid:
+        return True
+    requested_ids = metadata.get("requested_result_ids")
+    if isinstance(requested_ids, list) and rid in [str(x) for x in requested_ids]:
+        return True
+    return False
 
 
 def _api_program_queue_validation_rerun(result_id, nb=None):
@@ -43,6 +95,7 @@ def _api_program_queue_validation_rerun(result_id, nb=None):
         n      int   number of reruns (default 1, max 5).
         n_seeds int  seeds per rerun (default 1; only used at validation).
         n_steps int  step budget per rerun (default depends on stage).
+        candidate_confirmation bool  screening reruns always use this path.
         reason str   free-text shown in evidence_pack.
     """
     program = nb.get_program_detail(result_id)
@@ -77,6 +130,34 @@ def _api_program_queue_validation_rerun(result_id, nb=None):
 
     fp = (program.get("graph_fingerprint") or "").strip() or None
     queue_stage = _STAGE_QUEUE_NAMES[stage_in]
+    queue_result_id = str(result_id)
+
+    if queue_stage in {"investigation", "validation"} and has_backfill_provenance(
+        program
+    ):
+        confirmed_id = resolve_confirmed_candidate_result_id(
+            nb,
+            str(result_id),
+            program=program,
+            leaderboard_entry=nb.get_leaderboard_entry(str(result_id)),
+        )
+        if not confirmed_id:
+            return (
+                jsonify(
+                    {
+                        "error": (
+                            f"{stage_in.title()} rerun requires a candidate-confirmed "
+                            "Stage-1 sibling. Queue S1 confirmation first."
+                        ),
+                        "code": "candidate_confirmation_required",
+                        "result_id": str(result_id),
+                        "graph_fingerprint": fp,
+                    }
+                ),
+                409,
+            )
+        queue_result_id = confirmed_id
+        program = nb.get_program_detail(confirmed_id) or program
 
     if queue_stage == "replay":
         # S1 screening replay path: exact_graph_replay reads
@@ -92,6 +173,7 @@ def _api_program_queue_validation_rerun(result_id, nb=None):
             "device": "cuda",
             "fast": False,
             "stage1_steps": n_steps,
+            "candidate_confirmation": True,
         }
     else:
         config = RunConfig()
@@ -108,7 +190,7 @@ def _api_program_queue_validation_rerun(result_id, nb=None):
     for i in range(n_req):
         tid = nb.enqueue_followup_task(
             stage=queue_stage,
-            result_ids=[str(result_id)],
+            result_ids=[queue_result_id],
             hypothesis=(
                 f"User-triggered {stage_in} rerun: add a sample at "
                 f"{n_steps}-step budget for mean/CV aggregation within "
@@ -136,6 +218,7 @@ def _api_program_queue_validation_rerun(result_id, nb=None):
             metadata={
                 "source": "ui_program_detail",
                 "stage": stage_in,
+                "requested_result_id": str(result_id),
                 "n_steps": n_steps,
                 "n_seeds": n_seeds,
                 "rerun_index": i + 1,
@@ -148,7 +231,8 @@ def _api_program_queue_validation_rerun(result_id, nb=None):
     return jsonify(
         {
             "status": "queued",
-            "result_id": str(result_id),
+            "result_id": queue_result_id,
+            "requested_result_id": str(result_id),
             "graph_fingerprint": fp,
             "stage": stage_in,
             "n_steps": n_steps,
@@ -171,7 +255,8 @@ def _api_program_pending_reruns(result_id, nb=None):
     rows = nb.conn.execute("""SELECT task_id, stage, status, source_context,
                   result_ids_json, timestamp,
                   started_timestamp, completed_timestamp,
-                  outcome, priority_score, evidence_pack_json
+                  outcome, priority_score, evidence_pack_json,
+                  metadata_json
            FROM followup_tasks
            WHERE stage IN ('replay', 'investigation', 'validation')
              AND status IN ('queued','running')
@@ -180,16 +265,11 @@ def _api_program_pending_reruns(result_id, nb=None):
     rid = str(result_id)
     out: list[Dict[str, Any]] = []
     for r in rows:
-        try:
-            ids = json.loads(r["result_ids_json"] or "[]") or []
-        except (json.JSONDecodeError, TypeError):
-            ids = []
-        if rid not in [str(x) for x in ids]:
+        if not _task_matches_result(r, rid):
             continue
-        try:
-            evidence = json.loads(r["evidence_pack_json"] or "{}") or {}
-        except (json.JSONDecodeError, TypeError):
-            evidence = {}
+        ids = [str(x) for x in _json_list(r["result_ids_json"])]
+        evidence = _json_object(r["evidence_pack_json"])
+        metadata = _json_object(r["metadata_json"])
         # Map runner-stage back to user-facing label: 'replay' = S1
         # screening rerun.
         runner_stage = r["stage"]
@@ -210,6 +290,8 @@ def _api_program_pending_reruns(result_id, nb=None):
                 "completed_at": r["completed_timestamp"],
                 "outcome": r["outcome"],
                 "priority_score": r["priority_score"],
+                "result_ids": ids,
+                "requested_result_id": metadata.get("requested_result_id"),
                 "rerun_index": evidence.get("rerun_index"),
                 "rerun_total": evidence.get("rerun_total"),
                 "reason": evidence.get("reason"),
@@ -217,7 +299,18 @@ def _api_program_pending_reruns(result_id, nb=None):
         )
         if len(out) >= 50:
             break
-    return jsonify({"result_id": rid, "tasks": out})
+    program = {"result_id": rid}
+    attach_candidate_confirmation_status(nb, program)
+    return jsonify(
+        {
+            "result_id": rid,
+            "tasks": out,
+            "candidate_confirmation_status": program.get(
+                "candidate_confirmation_status",
+                {"status": "none"},
+            ),
+        }
+    )
 
 
 def _api_drain_pending_validation_rerun(notebook_path: str, nb=None):
@@ -244,19 +337,80 @@ def _api_drain_pending_validation_rerun(notebook_path: str, nb=None):
             409,
         )
 
+    body = request.get_json(silent=True) or {}
+    target_result_id = str(body.get("result_id") or "").strip()
+
     drain_stages = (
         ("replay", runner._run_pending_replay),
         ("investigation", runner._run_pending_investigation),
         ("validation", runner._run_pending_validation),
     )
+    if target_result_id:
+        return _drain_targeted_rerun(nb, runner, target_result_id, drain_stages)
+
+    return _drain_next_rerun(nb, runner, drain_stages)
+
+
+def _drain_targeted_rerun(nb, runner, target_result_id: str, drain_stages):
     for stage_name, drain_fn in drain_stages:
-        pre = {
-            row["task_id"]
-            for row in nb.conn.execute(
-                "SELECT task_id FROM followup_tasks WHERE stage = ? AND status='queued'",
-                (stage_name,),
-            ).fetchall()
+        rows = nb.conn.execute(
+            """
+            SELECT task_id, result_ids_json, metadata_json
+            FROM followup_tasks
+            WHERE stage = ?
+              AND status = 'queued'
+            ORDER BY priority_score DESC, timestamp ASC
+            """,
+            (stage_name,),
+        ).fetchall()
+        row = next((r for r in rows if _task_matches_result(r, target_result_id)), None)
+        if row is None:
+            continue
+        task_id = str(row["task_id"])
+        try:
+            drain_fn(task_id=task_id)
+        except Exception as exc:
+            logger.exception("Failed to drain pending %s rerun", stage_name)
+            return jsonify({"error": f"drain failed: {exc}"}), 500
+        refreshed = nb.conn.execute(
+            "SELECT status FROM followup_tasks WHERE task_id = ?",
+            (task_id,),
+        ).fetchone()
+        status = refreshed["status"] if refreshed is not None else None
+        if status != "queued":
+            return jsonify(
+                {
+                    "status": "launched",
+                    "stage": stage_name,
+                    "task_ids": [task_id],
+                    "result_id": target_result_id,
+                    "running_experiment_id": getattr(
+                        runner, "current_experiment_id", None
+                    ),
+                }
+            )
+    return jsonify(
+        {
+            "status": "idle",
+            "result_id": target_result_id,
+            "message": "no queued rerun task for this program",
         }
+    )
+
+
+def _queued_task_ids(nb, stage_name: str) -> set[str]:
+    return {
+        row["task_id"]
+        for row in nb.conn.execute(
+            "SELECT task_id FROM followup_tasks WHERE stage = ? AND status='queued'",
+            (stage_name,),
+        ).fetchall()
+    }
+
+
+def _drain_next_rerun(nb, runner, drain_stages):
+    for stage_name, drain_fn in drain_stages:
+        pre = _queued_task_ids(nb, stage_name)
         if not pre:
             continue
         try:
@@ -264,14 +418,7 @@ def _api_drain_pending_validation_rerun(notebook_path: str, nb=None):
         except Exception as exc:
             logger.exception("Failed to drain pending %s rerun", stage_name)
             return jsonify({"error": f"drain failed: {exc}"}), 500
-        post = {
-            row["task_id"]
-            for row in nb.conn.execute(
-                "SELECT task_id FROM followup_tasks WHERE stage = ? AND status='queued'",
-                (stage_name,),
-            ).fetchall()
-        }
-        launched = list(pre - post)
+        launched = list(pre - _queued_task_ids(nb, stage_name))
         if launched:
             return jsonify(
                 {
@@ -293,16 +440,14 @@ def _api_program_cancel_rerun(result_id, task_id, nb=None):
     the runner owns it.
     """
     row = nb.conn.execute(
-        "SELECT status, result_ids_json FROM followup_tasks WHERE task_id = ?",
+        """SELECT status, result_ids_json, metadata_json
+           FROM followup_tasks
+           WHERE task_id = ?""",
         (task_id,),
     ).fetchone()
     if row is None:
         return jsonify({"error": "task not found"}), 404
-    try:
-        ids = json.loads(row["result_ids_json"] or "[]") or []
-    except (json.JSONDecodeError, TypeError):
-        ids = []
-    if str(result_id) not in [str(x) for x in ids]:
+    if not _task_matches_result(row, str(result_id)):
         return jsonify({"error": "task does not belong to this program"}), 400
     if row["status"] != "queued":
         return (

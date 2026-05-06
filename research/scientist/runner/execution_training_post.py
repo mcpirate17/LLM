@@ -619,15 +619,16 @@ class _ExecutionTrainingPostMixin:
                         )
                         result["nano_ar_inv_no_go"] = int(bool(is_no_go))
                         if is_no_go:
-                            # Mirror nano_bind: set failure_op so downstream tier
-                            # logic + leaderboard demotion picks this up. Prefer
-                            # not to clobber an existing failure_op (e.g. earlier
-                            # hard rejects from S0/S0.5).
-                            if not result.get("failure_op"):
-                                result["failure_op"] = "nano_ar_inv"
+                            # Diagnostic flag only — do NOT set failure_op or
+                            # demote tier. Demotion would hide the row from the
+                            # dashboard listing (per
+                            # ``_entry_has_promotion_path``) and lose existing
+                            # metric data from view. The composite_score already
+                            # penalizes the row via cap_ar=0 from nai=0.
                             logger.info(
-                                "    nano-AR-INV NO-GO: pair=%.2f held_class=%.2f "
-                                "(both axes < 0.10 → frequency-collapse)",
+                                "    nano-AR-INV NO-GO flagged: pair=%.2f "
+                                "held_class=%.2f (frequency-collapse; row stays "
+                                "in tier — composite_score handles ranking)",
                                 nai.in_dist_pair_match_acc,
                                 nai.held_class_acc,
                             )

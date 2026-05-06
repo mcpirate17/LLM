@@ -102,6 +102,25 @@ def test_run_retrieval_probe_config_returns_timeout_without_training() -> None:
     assert 0.0 <= acc <= 1.0
 
 
+def test_long_range_ar_uses_shared_restricted_accuracy_helper() -> None:
+    from research.eval.long_range_ar import _train_ar_at_length
+
+    model = _TrainableProbe(vocab_size=512)
+    acc, timed_out = _train_ar_at_length(
+        model,
+        n_pairs=5,
+        n_train_steps=0,
+        n_eval=2,
+        lr=1e-3,
+        batch_size=1,
+        device="cpu",
+        deadline=1e9,
+    )
+
+    assert timed_out is False
+    assert 0.0 <= acc <= 1.0
+
+
 def test_passkey_and_multi_hop_use_shared_probe_runner(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

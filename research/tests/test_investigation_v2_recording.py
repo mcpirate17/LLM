@@ -78,6 +78,145 @@ def test_investigation_v2_probe_helper_maps_probe_outputs(monkeypatch):
     }
 
 
+def test_investigation_probe_helper_maps_nano_ar_when_enabled(monkeypatch):
+    induction_result = SimpleNamespace(
+        auc=0.12,
+        max_gap_acc=0.34,
+        gap_accuracies={},
+        steps_trained=500,
+        status="ok",
+        elapsed_ms=123.0,
+        protocol_version="induction-test",
+    )
+    binding_result = SimpleNamespace(
+        auc=0.56,
+        max_distance_acc=0.78,
+        distance_accuracies={},
+        train_steps=2400,
+        status="ok",
+        elapsed_ms=456.0,
+        protocol_version="binding-test",
+    )
+    nano_result = SimpleNamespace(
+        metric_version="nano_ar_inv_test",
+        in_dist_pair_match_acc=0.8,
+        in_dist_class_acc=0.9,
+        held_pair_match_acc=0.2,
+        held_class_acc=0.5,
+        status="ok",
+        elapsed_ms=789.0,
+        finetune_steps_done=400,
+    )
+    captured = {}
+
+    def _nano_ar_inv(**kwargs):
+        captured.update(kwargs)
+        return nano_result
+
+    monkeypatch.setitem(
+        sys.modules,
+        "research.eval.induction_probe_v2_investigation",
+        SimpleNamespace(
+            run_induction_v2_investigation=lambda model, device: induction_result
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "research.eval.binding_probe_v2_investigation",
+        SimpleNamespace(
+            run_binding_v2_investigation=lambda model, device: binding_result
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "research.eval.nano_ar_inv",
+        SimpleNamespace(
+            NanoARInvConfig=lambda **kwargs: SimpleNamespace(**kwargs),
+            nano_ar_inv=_nano_ar_inv,
+        ),
+    )
+
+    updates = _run_investigation_v2_probes(
+        object(),
+        "cpu",
+        graph_json_str=_graph_json(),
+        run_nano_ar=True,
+    )
+
+    assert captured["graph_json"] == _graph_json()
+    assert captured["cfg"].from_s1 is False
+    assert captured["cfg"].wikitext_warmup_steps == 2500
+    assert updates["nano_ar_inv_metric_version"] == "nano_ar_inv_test"
+    assert updates["nano_ar_inv_score"] == pytest.approx(0.68)
+    assert updates["nano_ar_inv_in_dist_pair_match_acc"] == pytest.approx(0.8)
+    assert updates["nano_ar_inv_held_class_acc"] == pytest.approx(0.5)
+    assert updates["nano_ar_inv_status"] == "ok"
+    assert updates["nano_ar_inv_train_steps_done"] == 400
+
+
+def test_investigation_probe_helper_keeps_failed_nano_ar_score_empty(monkeypatch):
+    monkeypatch.setitem(
+        sys.modules,
+        "research.eval.induction_probe_v2_investigation",
+        SimpleNamespace(
+            run_induction_v2_investigation=lambda model, device: SimpleNamespace(
+                auc=0.12,
+                max_gap_acc=0.34,
+                gap_accuracies={},
+                steps_trained=500,
+                status="ok",
+                elapsed_ms=123.0,
+                protocol_version="induction-test",
+            )
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "research.eval.binding_probe_v2_investigation",
+        SimpleNamespace(
+            run_binding_v2_investigation=lambda model, device: SimpleNamespace(
+                auc=0.56,
+                max_distance_acc=0.78,
+                distance_accuracies={},
+                train_steps=2400,
+                status="ok",
+                elapsed_ms=456.0,
+                protocol_version="binding-test",
+            )
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "research.eval.nano_ar_inv",
+        SimpleNamespace(
+            NanoARInvConfig=lambda **kwargs: SimpleNamespace(**kwargs),
+            nano_ar_inv=lambda **kwargs: SimpleNamespace(
+                metric_version="nano_ar_inv_test",
+                in_dist_pair_match_acc=0.8,
+                in_dist_class_acc=0.9,
+                held_pair_match_acc=0.2,
+                held_class_acc=0.5,
+                status="compile_failed",
+                elapsed_ms=789.0,
+                finetune_steps_done=0,
+            ),
+        ),
+    )
+
+    updates = _run_investigation_v2_probes(
+        object(),
+        "cpu",
+        graph_json_str=_graph_json(),
+        run_nano_ar=True,
+    )
+
+    assert updates["nano_ar_inv_score"] is None
+    assert updates["nano_ar_inv_in_dist_pair_match_acc"] is None
+    assert updates["nano_ar_inv_held_class_acc"] is None
+    assert updates["nano_ar_inv_status"] == "compile_failed"
+    assert updates["nano_ar_inv_train_steps_done"] == 0
+
+
 def test_investigation_v2_probe_failures_keep_status_without_zero_metric(monkeypatch):
     induction_result = SimpleNamespace(
         auc=0.0,
@@ -156,6 +295,15 @@ def test_record_investigation_result_persists_v2_to_source_and_rerun_row():
         "binding_v2_investigation_status": "ok",
         "binding_v2_investigation_elapsed_ms": 2000.0,
         "binding_v2_investigation_protocol_version": "binding-test",
+        "nano_ar_inv_metric_version": "nano_ar_inv_test",
+        "nano_ar_inv_in_dist_pair_match_acc": 0.8,
+        "nano_ar_inv_in_dist_class_acc": 0.9,
+        "nano_ar_inv_held_pair_match_acc": 0.2,
+        "nano_ar_inv_held_class_acc": 0.5,
+        "nano_ar_inv_score": 0.68,
+        "nano_ar_inv_status": "ok",
+        "nano_ar_inv_elapsed_ms": 3000.0,
+        "nano_ar_inv_train_steps_done": 400,
     }
     source = {
         "graph_fingerprint": "fp_inv_v2",
@@ -185,13 +333,19 @@ def test_record_investigation_result_persists_v2_to_source_and_rerun_row():
     conn.row_factory = sqlite3.Row
     source_row = conn.execute(
         """SELECT induction_v2_investigation_auc, binding_v2_investigation_auc,
-                  induction_v2_investigation_status, binding_v2_investigation_status
+                  induction_v2_investigation_status, binding_v2_investigation_status,
+                  nano_ar_inv_score, nano_ar_inv_in_dist_pair_match_acc,
+                  nano_ar_inv_held_class_acc, nano_ar_inv_status,
+                  nano_ar_inv_train_steps_done
            FROM program_results WHERE result_id = ?""",
         (source_result_id,),
     ).fetchone()
     rerun_row = conn.execute(
         """SELECT result_id, induction_v2_investigation_auc, binding_v2_investigation_auc,
-                  induction_v2_investigation_status, binding_v2_investigation_status
+                  induction_v2_investigation_status, binding_v2_investigation_status,
+                  nano_ar_inv_score, nano_ar_inv_in_dist_pair_match_acc,
+                  nano_ar_inv_held_class_acc, nano_ar_inv_status,
+                  nano_ar_inv_train_steps_done
            FROM program_results
            WHERE experiment_id = ? AND result_id != ?
            ORDER BY timestamp DESC LIMIT 1""",
@@ -204,9 +358,19 @@ def test_record_investigation_result_persists_v2_to_source_and_rerun_row():
     assert source_row["binding_v2_investigation_auc"] == pytest.approx(0.077)
     assert source_row["induction_v2_investigation_status"] == "ok"
     assert source_row["binding_v2_investigation_status"] == "ok"
+    assert source_row["nano_ar_inv_score"] == pytest.approx(0.68)
+    assert source_row["nano_ar_inv_in_dist_pair_match_acc"] == pytest.approx(0.8)
+    assert source_row["nano_ar_inv_held_class_acc"] == pytest.approx(0.5)
+    assert source_row["nano_ar_inv_status"] == "ok"
+    assert source_row["nano_ar_inv_train_steps_done"] == 400
     assert rerun_row is not None
     assert rerun_row["induction_v2_investigation_auc"] == pytest.approx(0.021)
     assert rerun_row["binding_v2_investigation_auc"] == pytest.approx(0.077)
+    assert rerun_row["nano_ar_inv_score"] == pytest.approx(0.68)
+    assert rerun_row["nano_ar_inv_in_dist_pair_match_acc"] == pytest.approx(0.8)
+    assert rerun_row["nano_ar_inv_held_class_acc"] == pytest.approx(0.5)
+    assert rerun_row["nano_ar_inv_status"] == "ok"
+    assert rerun_row["nano_ar_inv_train_steps_done"] == 400
 
 
 def test_record_investigation_result_persists_v9_trajectory_to_source_row():

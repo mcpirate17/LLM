@@ -121,7 +121,7 @@ export function AriaDataProvider({ apiBase, isRunning, autoRefreshEnabled = true
     try {
       const [ltRes, lbRes, mcRes, fpRes] = await Promise.all([
         apiCall(`/api/analytics/learning-trajectory`, { signal: controller.signal }),
-        apiCall(`/api/leaderboard?sort=composite_score&limit=80&quality=promotable&include_references=0&compact=1&trusted_only=1`, { signal: controller.signal }),
+        apiCall(`/api/leaderboard?sort=composite_score&limit=80&quality=promotable&include_references=0&compact=1&trusted_only=0`, { signal: controller.signal }),
         apiCall(`/api/analytics/math-family-coverage`, { signal: controller.signal }),
         apiCall(`/api/diagnostics/fingerprint`, { signal: controller.signal }),
       ]);

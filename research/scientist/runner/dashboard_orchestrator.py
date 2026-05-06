@@ -22,6 +22,7 @@ from ...eval.cross_task_eval import evaluate_cross_task_robustness
 from ...eval.diagnostic_tasks import run_diagnostic_suite
 from ...eval.metrics import novelty_score
 from ...synthesis.serializer import graph_to_json
+from .dashboard_orchestrator_constants import CANDIDATE_CONFIRMATION_EVIDENCE_COLUMNS
 
 logger = logging.getLogger(__name__)
 
@@ -468,7 +469,7 @@ class _DashboardOrchestratorMixin:
         clean_metrics = {
             k: v
             for k, v in program_metrics.items()
-            if k != "intentional_independent_sample"
+            if k not in {"intentional_independent_sample", "candidate_confirmation"}
         }
         # Pin the new program_results row to the SOURCE PARENT
         # fingerprint when this is an independent score-stability
@@ -541,6 +542,214 @@ class _DashboardOrchestratorMixin:
                 "Screening benchmark payload persist failed for %s: %s", rid, e
             )
 
+    def _hydrate_candidate_confirmation_evidence(
+        self, nb, target_result_id: str, source_result_id: Optional[str]
+    ) -> None:
+        """Carry fingerprint-level evidence forward to a confirmed candidate row.
+
+        Exact replays remeasure training metrics, but they may skip expensive
+        fingerprint/probe backfills already attached to the source fingerprint.
+        Hydrate only missing target columns so replay-measured values win.
+        """
+        if not target_result_id or not source_result_id:
+            return
+        available = nb._get_program_results_columns()
+        assignments = [
+            f"{column} = COALESCE({column}, "
+            f"(SELECT {column} FROM program_results WHERE result_id = ?))"
+            for column in CANDIDATE_CONFIRMATION_EVIDENCE_COLUMNS
+            if column in available
+        ]
+        params: List[Any] = [source_result_id] * len(assignments)
+        if "cka_source" in available:
+            assignments.append(
+                "cka_source = CASE "
+                "WHEN cka_source IS NULL OR cka_source = 'deferred' "
+                "THEN (SELECT cka_source FROM program_results WHERE result_id = ?) "
+                "ELSE cka_source END"
+            )
+            params.append(source_result_id)
+        if not assignments:
+            return
+        params.append(target_result_id)
+        nb.conn.execute(
+            f"UPDATE program_results SET {', '.join(assignments)} WHERE result_id = ?",
+            params,
+        )
+
+    def _record_independent_sample_leaderboard(
+        self,
+        nb,
+        rid: str,
+        program_metrics: Dict[str, Any],
+        novelty_kwargs: Dict[str, Any],
+        loss_ratio,
+    ) -> None:
+        source_fp = str(program_metrics.get("source_graph_fingerprint") or "").strip()
+        if not source_fp:
+            raise ValueError(
+                "independent_sample replay missing source_graph_fingerprint "
+                "at leaderboard upsert"
+            )
+        nb.flush_writes()
+        existing = nb.get_leaderboard_entry_by_fingerprint(source_fp)
+        if bool(program_metrics.get("candidate_confirmation")):
+            self._record_candidate_confirmation_leaderboard(
+                nb,
+                rid,
+                source_fp,
+                existing,
+                program_metrics,
+                novelty_kwargs,
+                loss_ratio,
+            )
+            return
+        if existing is None:
+            logger.error(
+                "independent-sample replay produced program_results row "
+                "for fp=%s but no leaderboard entry exists for that "
+                "source fp; refusing to silently create a fresh entry. "
+                "Investigate provenance for source_result_id=%s.",
+                source_fp,
+                program_metrics.get("source_result_id"),
+            )
+            raise RuntimeError(
+                f"no leaderboard entry for source fp {source_fp}; "
+                "independent-sample replay cannot refresh parent"
+            )
+        from ._helpers import _upsert_screening_entry
+
+        _upsert_screening_entry(
+            nb,
+            {
+                "result_id": existing["result_id"],
+                "model_source": (existing.get("model_source") or "graph_synthesis"),
+                "graph_fingerprint": source_fp,
+            },
+        )
+
+    def _record_candidate_confirmation_leaderboard(
+        self,
+        nb,
+        rid: str,
+        source_fp: str,
+        existing: Optional[Dict[str, Any]],
+        program_metrics: Dict[str, Any],
+        novelty_kwargs: Dict[str, Any],
+        loss_ratio,
+    ) -> None:
+        self._hydrate_candidate_confirmation_evidence(
+            nb, rid, program_metrics.get("source_result_id")
+        )
+        if existing is not None:
+            nb.conn.execute(
+                """
+                UPDATE leaderboard
+                SET result_id = ?,
+                    model_source = ?,
+                    graph_fingerprint = ?,
+                    result_cohort = ?,
+                    trust_label = ?,
+                    comparability_label = ?,
+                    evaluation_protocol_version = ?
+                WHERE entry_id = ?
+                """,
+                (
+                    rid,
+                    program_metrics.get("model_source", "exact_graph_replay"),
+                    source_fp,
+                    program_metrics.get("result_cohort"),
+                    program_metrics.get("trust_label"),
+                    program_metrics.get("comparability_label"),
+                    program_metrics.get("evaluation_protocol_version"),
+                    existing["entry_id"],
+                ),
+            )
+            return
+        from ._helpers import _upsert_screening_entry
+
+        _upsert_screening_entry(
+            nb,
+            {
+                "result_id": rid,
+                "model_source": program_metrics.get(
+                    "model_source", "exact_graph_replay"
+                ),
+                "graph_fingerprint": source_fp,
+                "loss_ratio": loss_ratio,
+                "novelty_score": novelty_kwargs.get("novelty_score"),
+                "novelty_confidence": novelty_kwargs.get("novelty_confidence"),
+                **program_metrics,
+            },
+        )
+
+    def _upsert_standard_screening_entry(
+        self,
+        nb,
+        rid: str,
+        graph,
+        program_metrics: Dict[str, Any],
+        novelty_kwargs: Dict[str, Any],
+        loss_ratio,
+    ) -> None:
+        nb.flush_writes()
+        try:
+            from ._helpers import _upsert_screening_entry
+
+            _upsert_screening_entry(
+                nb,
+                {
+                    "result_id": rid,
+                    "model_source": program_metrics.get(
+                        "model_source", "graph_synthesis"
+                    ),
+                    "graph_fingerprint": graph.fingerprint(),
+                    "loss_ratio": loss_ratio,
+                    "novelty_score": novelty_kwargs.get("novelty_score"),
+                    "novelty_confidence": novelty_kwargs.get("novelty_confidence"),
+                    "fp_jacobian_spectral_norm": program_metrics.get(
+                        "fp_jacobian_spectral_norm"
+                    ),
+                    "routing_savings_ratio": program_metrics.get(
+                        "routing_savings_ratio"
+                    ),
+                    "activation_sparsity_score": program_metrics.get(
+                        "activation_sparsity_score"
+                    ),
+                    "depth_savings_ratio": program_metrics.get("depth_savings_ratio"),
+                    "compression_ratio": program_metrics.get("compression_ratio"),
+                    "wikitext_perplexity": program_metrics.get("wikitext_perplexity"),
+                    "wikitext_score": program_metrics.get("wikitext_score"),
+                },
+            )
+        except (ImportError, OSError, RuntimeError) as e:
+            logger.debug("Screening leaderboard upsert failed for %s: %s", rid, e)
+
+    @staticmethod
+    def _update_best_summary_metrics(
+        results: Dict,
+        program_metrics: Dict[str, Any],
+        novelty_kwargs: Dict[str, Any],
+        loss_ratio,
+    ) -> None:
+        if loss_ratio is not None and (
+            results["best_loss_ratio"] is None
+            or loss_ratio < results["best_loss_ratio"]
+        ):
+            results["best_loss_ratio"] = loss_ratio
+
+        try:
+            nov = novelty_kwargs.get("novelty_score") or program_metrics.get(
+                "novelty_score"
+            )
+            if nov is not None and (
+                results["best_novelty_score"] is None
+                or nov > results["best_novelty_score"]
+            ):
+                results["best_novelty_score"] = nov
+        except (KeyError, TypeError) as e:
+            logger.debug("Best novelty score update failed: %s", e)
+
     def _record_leaderboard_and_best(
         self,
         nb,
@@ -562,104 +771,17 @@ class _DashboardOrchestratorMixin:
         # should not be replaced by a single sample's values here.
         independent_sample = bool(program_metrics.get("intentional_independent_sample"))
         if s1_passed and rid and independent_sample:
-            source_fp = str(
-                program_metrics.get("source_graph_fingerprint") or ""
-            ).strip()
-            if not source_fp:
-                # Should already have been blocked at _persist_program_row,
-                # but be defensive.
-                raise ValueError(
-                    "independent_sample replay missing source_graph_fingerprint "
-                    "at leaderboard upsert"
-                )
-            nb.flush_writes()
-            existing = nb.get_leaderboard_entry_by_fingerprint(source_fp)
-            if existing is None:
-                logger.error(
-                    "independent-sample replay produced program_results row "
-                    "for fp=%s but no leaderboard entry exists for that "
-                    "source fp; refusing to silently create a fresh entry. "
-                    "Investigate provenance for source_result_id=%s.",
-                    source_fp,
-                    program_metrics.get("source_result_id"),
-                )
-                raise RuntimeError(
-                    f"no leaderboard entry for source fp {source_fp}; "
-                    "independent-sample replay cannot refresh parent"
-                )
-            from ._helpers import _upsert_screening_entry
-
-            # Per codex 2026-04-27 03:32: do NOT swallow refresh
-            # failures with a debug log in the independent-sample
-            # branch.  If the parent refresh fails after the child
-            # row was written, raise visibly so the orchestrator /
-            # top-3 gate stops accumulating orphaned samples.
-            _upsert_screening_entry(
-                nb,
-                {
-                    "result_id": existing["result_id"],
-                    "model_source": (existing.get("model_source") or "graph_synthesis"),
-                    "graph_fingerprint": source_fp,
-                },
+            self._record_independent_sample_leaderboard(
+                nb, rid, program_metrics, novelty_kwargs, loss_ratio
             )
         elif s1_passed and rid:
-            nb.flush_writes()
-            try:
-                from ._helpers import _upsert_screening_entry
-
-                _upsert_screening_entry(
-                    nb,
-                    {
-                        "result_id": rid,
-                        "model_source": program_metrics.get(
-                            "model_source", "graph_synthesis"
-                        ),
-                        "graph_fingerprint": graph.fingerprint(),
-                        "loss_ratio": loss_ratio,
-                        "novelty_score": novelty_kwargs.get("novelty_score"),
-                        "novelty_confidence": novelty_kwargs.get("novelty_confidence"),
-                        "fp_jacobian_spectral_norm": program_metrics.get(
-                            "fp_jacobian_spectral_norm"
-                        ),
-                        "routing_savings_ratio": program_metrics.get(
-                            "routing_savings_ratio"
-                        ),
-                        "activation_sparsity_score": program_metrics.get(
-                            "activation_sparsity_score"
-                        ),
-                        "depth_savings_ratio": program_metrics.get(
-                            "depth_savings_ratio"
-                        ),
-                        "compression_ratio": program_metrics.get("compression_ratio"),
-                        "wikitext_perplexity": program_metrics.get(
-                            "wikitext_perplexity"
-                        ),
-                        "wikitext_score": program_metrics.get("wikitext_score"),
-                    },
-                )
-            except (ImportError, OSError, RuntimeError) as e:
-                logger.debug("Screening leaderboard upsert failed for %s: %s", rid, e)
-
-        # Update best metrics in experiment summary
-        if loss_ratio is not None:
-            if (
-                results["best_loss_ratio"] is None
-                or loss_ratio < results["best_loss_ratio"]
-            ):
-                results["best_loss_ratio"] = loss_ratio
-
-        try:
-            nov = novelty_kwargs.get("novelty_score") or program_metrics.get(
-                "novelty_score"
+            self._upsert_standard_screening_entry(
+                nb, rid, graph, program_metrics, novelty_kwargs, loss_ratio
             )
-            if nov is not None:
-                if (
-                    results["best_novelty_score"] is None
-                    or nov > results["best_novelty_score"]
-                ):
-                    results["best_novelty_score"] = nov
-        except (KeyError, TypeError) as e:
-            logger.debug("Best novelty score update failed: %s", e)
+
+        self._update_best_summary_metrics(
+            results, program_metrics, novelty_kwargs, loss_ratio
+        )
 
     def _record_merge_metrics(
         self,
@@ -808,12 +930,16 @@ class _DashboardOrchestratorMixin:
                 "result_id": rid,
                 "throughput": f"{throughput:.0f}" if throughput else None,
                 "params": program_metrics.get("param_count"),
-                "memory_mb": f"{program_metrics.get('peak_memory_mb', 0):.1f}"
-                if program_metrics.get("peak_memory_mb")
-                else None,
-                "novelty": f"{program_metrics.get('novelty_score', 0):.3f}"
-                if program_metrics.get("novelty_score") is not None
-                else None,
+                "memory_mb": (
+                    f"{program_metrics.get('peak_memory_mb', 0):.1f}"
+                    if program_metrics.get("peak_memory_mb")
+                    else None
+                ),
+                "novelty": (
+                    f"{program_metrics.get('novelty_score', 0):.3f}"
+                    if program_metrics.get("novelty_score") is not None
+                    else None
+                ),
             },
         )
 
@@ -887,6 +1013,16 @@ class _DashboardOrchestratorMixin:
                 program_metrics,
                 results,
             )
+            if program_metrics.get("candidate_confirmation"):
+                program_metrics.update(
+                    {
+                        "result_cohort": "search",
+                        "trust_label": "candidate_grade",
+                        "comparability_label": "candidate_comparable",
+                        "evaluation_protocol_version": "candidate_grade_v1",
+                        "init_regime": "runtime_default",
+                    }
+                )
 
         # Step 4: Novelty scoring
         novelty_kwargs: Dict[str, Any] = {}

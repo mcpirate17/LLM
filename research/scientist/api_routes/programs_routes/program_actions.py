@@ -251,7 +251,7 @@ def _api_program_external_benchmarks(result_id, nb=None):
 
 
 def _api_program_backfill_metrics(notebook_path: str, result_id, nb=None):
-    from ..screening_recompute import recompute_screening_metrics
+    from ...screening_recompute import recompute_screening_metrics
 
     program = nb.get_program_detail(result_id)
     if not program:
@@ -465,6 +465,17 @@ def _api_program_rescreen(notebook_path: str, result_id, nb=None):
     repeat_per_source = int(body.get("repeat_per_source") or 1)
     repeat_per_source = max(1, min(repeat_per_source, 8))
     fast = bool(body.get("fast", True))
+    candidate_confirmation = bool(body.get("candidate_confirmation"))
+    try:
+        stage1_steps = (
+            int(body.get("stage1_steps"))
+            if body.get("stage1_steps") is not None
+            else None
+        )
+    except (TypeError, ValueError):
+        return jsonify({"error": "stage1_steps must be an integer"}), 400
+    if stage1_steps is not None:
+        stage1_steps = max(50, min(50000, stage1_steps))
     hypothesis = (
         body.get("hypothesis") or f"UI-triggered exact replay for {result_id[:8]}"
     )
@@ -477,6 +488,9 @@ def _api_program_rescreen(notebook_path: str, result_id, nb=None):
             device=device,
             fast=fast,
             verbose=False,
+            independent_sample=candidate_confirmation,
+            candidate_confirmation=candidate_confirmation,
+            stage1_steps=stage1_steps,
             hypothesis=str(hypothesis),
         )
     except Exception as exc:
@@ -492,6 +506,8 @@ def _api_program_rescreen(notebook_path: str, result_id, nb=None):
             "repeat_per_source": repeat_per_source,
             "device": device,
             "fast": fast,
+            "candidate_confirmation": candidate_confirmation,
+            "stage1_steps": stage1_steps,
         }
     )
 
@@ -501,17 +517,14 @@ def _api_program_rescreen(notebook_path: str, result_id, nb=None):
 # in the same regime as the existing tier rows.
 
 
-def _api_program_promote_screening(result_id, nb=None):
+def _resolve_screening_promotion_target(result_id, nb):
     program = nb.get_program_detail(result_id)
     if program is None:
         program = _leaderboard_backed_program_detail(nb, result_id)
     if program is None:
-        return jsonify({"error": "Program not found"}), 404
+        return result_id, None, None
 
     entry = nb.get_leaderboard_entry(result_id)
-    # Fingerprint-level dedup: if an entry already exists for this fingerprint
-    # under a different result_id, route the promotion to that entry instead
-    # of creating a duplicate leaderboard row.
     if entry is None:
         fp = str(program.get("graph_fingerprint") or "").strip()
         if fp:
@@ -520,6 +533,39 @@ def _api_program_promote_screening(result_id, nb=None):
                 entry = sibling_entry
                 result_id = sibling_entry.get("result_id")
                 program = nb.get_program_detail(result_id) or program
+    return result_id, program, entry
+
+
+def _is_backfill_program(program: dict, entry: dict | None) -> bool:
+    current_result_cohort = (
+        str(
+            program.get("result_cohort")
+            or (entry.get("result_cohort") if entry else "")
+        )
+        .strip()
+        .lower()
+    )
+    current_trust_label = (
+        str(program.get("trust_label") or (entry.get("trust_label") if entry else ""))
+        .strip()
+        .lower()
+    )
+    current_comparability_label = (
+        str(
+            program.get("comparability_label")
+            or (entry.get("comparability_label") if entry else "")
+        )
+        .strip()
+        .lower()
+    )
+    return (
+        current_result_cohort == "backfill"
+        or current_trust_label == "backfill_observation"
+        or current_comparability_label == "reconstructed_init_variant"
+    )
+
+
+def _screening_promotion_labels(program: dict, entry: dict | None) -> tuple[str, str]:
     trust_label = _preserve_stronger_label(
         program.get("trust_label"),
         entry.get("trust_label") if entry else None,
@@ -532,6 +578,13 @@ def _api_program_promote_screening(result_id, nb=None):
         ranks=_COMPARABILITY_LABEL_RANK,
         fallback="screening_only",
     )
+    return trust_label, comparability_label
+
+
+def _upsert_manual_screening_promotion(
+    nb, result_id: str, program: dict, entry: dict | None
+) -> dict:
+    trust_label, comparability_label = _screening_promotion_labels(program, entry)
     if not entry:
         entry_id = nb.upsert_leaderboard(
             result_id=result_id,
@@ -545,7 +598,7 @@ def _api_program_promote_screening(result_id, nb=None):
             comparability_label=comparability_label,
             notes="Manual screening promotion from Discoveries",
         )
-        entry = nb.get_leaderboard_entry(result_id) or {"entry_id": entry_id}
+        return nb.get_leaderboard_entry(result_id) or {"entry_id": entry_id}
     else:
         existing_notes = str(entry.get("notes") or "").strip()
         note_prefix = "Manual screening promotion from Discoveries"
@@ -568,6 +621,29 @@ def _api_program_promote_screening(result_id, nb=None):
             screening_novelty=program.get("novelty_score"),
             notes=note_value,
         )
+        return entry
+
+
+def _api_program_promote_screening(result_id, nb=None):
+    result_id, program, entry = _resolve_screening_promotion_target(result_id, nb)
+    if program is None:
+        return jsonify({"error": "Program not found"}), 404
+
+    if _is_backfill_program(program, entry):
+        return (
+            jsonify(
+                {
+                    "error": (
+                        "Backfill rows cannot be manually promoted into candidate "
+                        "provenance. Run candidate confirmation instead."
+                    )
+                }
+            ),
+            409,
+        )
+
+    entry = _upsert_manual_screening_promotion(nb, result_id, program, entry)
+    trust_label, comparability_label = _screening_promotion_labels(program, entry)
 
     nb.conn.execute(
         """

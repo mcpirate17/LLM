@@ -53,10 +53,24 @@ function CountBadge({ children, color = 'var(--accent-blue)' }) {
 
 // Default budgets per stage — match research/defaults.py.
 const STAGE_DEFAULTS = {
-  screening: { steps: 750, seeds: 1, label: 'S1 screen', color: 'rgba(255, 184, 108, 0.45)', textColor: 'var(--score-elite)' },
+  screening: { steps: 750, seeds: 1, label: 'S1 confirmation', color: 'rgba(255, 184, 108, 0.45)', textColor: 'var(--score-elite)' },
   investigation: { steps: 2500, seeds: 1, label: 'Investigation', color: 'rgba(88, 166, 255, 0.45)', textColor: 'var(--accent-blue)' },
   validation: { steps: 10000, seeds: 1, label: 'Validation', color: 'rgba(63, 185, 80, 0.45)', textColor: 'var(--score-good)' },
 };
+
+const STAGE_DETAILS = {
+  screening: 'exact replay: S0, S0.5, S0.75, rapid, S1',
+  investigation: 'investigation tier',
+  validation: 'validation tier',
+};
+
+function formatQueueError(error) {
+  const message = String(error?.message || error || '');
+  if (message.includes('Database temporarily busy')) {
+    return 'Database is busy with another write. Retry shortly; queued tasks are still queued.';
+  }
+  return message;
+}
 
 function RerunQueuePanel({ resultId, leaderboardEntry }) {
   const [pending, setPending] = useState([]);
@@ -81,7 +95,7 @@ function RerunQueuePanel({ resultId, leaderboardEntry }) {
       const data = await apiService.getPendingReruns(resultId);
       setPending(Array.isArray(data?.tasks) ? data.tasks : []);
     } catch (e) {
-      setError(String(e?.message || e));
+      setError(formatQueueError(e));
     } finally {
       setLoading(false);
     }
@@ -100,6 +114,7 @@ function RerunQueuePanel({ resultId, leaderboardEntry }) {
         reason: 'program_detail_panel',
         n_steps: stageSteps[stage],
         n_seeds: stage === 'validation' ? valSeeds : 1,
+        candidate_confirmation: stage === 'screening',
       });
       setLastSubmit(resp);
       await refresh();
@@ -117,7 +132,7 @@ function RerunQueuePanel({ resultId, leaderboardEntry }) {
       await apiService.cancelPendingRerun(resultId, taskId);
       await refresh();
     } catch (e) {
-      setError(String(e?.message || e));
+      setError(formatQueueError(e));
     } finally {
       setSubmitting(false);
     }
@@ -128,12 +143,12 @@ function RerunQueuePanel({ resultId, leaderboardEntry }) {
     setSubmitting(true);
     setError(null);
     try {
-      const resp = await apiService.drainPendingValidationRerun();
+      const resp = await apiService.drainPendingValidationRerun(resultId);
       setLastSubmit(resp);
       await refresh();
     } catch (e) {
       await refresh();
-      setError(String(e?.message || e));
+      setError(formatQueueError(e));
     } finally {
       setSubmitting(false);
     }
@@ -169,12 +184,11 @@ function RerunQueuePanel({ resultId, leaderboardEntry }) {
       </div>
 
       <div style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.5 }}>
-        Each rerun re-executes this fingerprint at the validation tier (training,
-        wikitext PPL, BLiMP, hellaswag, tinystories, cross-task, diagnostic,
-        hierarchy probe, ar/induction/binding probes, trajectory metrics). New
-        rows on <code>program_results</code> are aggregated by mean ± std on the
-        next leaderboard write — the CV penalty shrinks as <code>n_runs</code>
-        grows and the architecture proves stable.
+        Adds independent rerun rows for this fingerprint. S1 confirmation uses
+        exact replay through S0/S0.5/S0.75/rapid/S1; investigation and validation
+        use their own tier pipelines. Completed rows are aggregated by mean ± std
+        on the next leaderboard write; consistent metrics raise <code>n_runs</code>{' '}
+        and reduce the CV penalty.
       </div>
 
       <div style={STAT_GRID_STYLE}>
@@ -229,9 +243,9 @@ function RerunQueuePanel({ resultId, leaderboardEntry }) {
                   borderRadius: 4, cursor: submitting ? 'not-allowed' : 'pointer',
                   textAlign: 'left',
                 }}
-                title={`Queue 1 ${cfg.label} rerun at the configured step budget — click again to queue another`}
+                title={`Queue 1 ${cfg.label} run at the configured step budget — click again to queue another`}
               >
-                Queue {cfg.label} rerun
+                Queue {cfg.label}
               </button>
               <label style={{ fontSize: 10, color: 'var(--text-muted)' }}>
                 steps
@@ -257,7 +271,7 @@ function RerunQueuePanel({ resultId, leaderboardEntry }) {
                 </label>
               )}
               <span style={{ fontSize: 10, color: 'var(--text-muted)', alignSelf: 'center', textAlign: 'right' }}>
-                default {cfg.steps}
+                {STAGE_DETAILS[stage]} · default {cfg.steps}
               </span>
             </div>
           );

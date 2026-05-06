@@ -11,7 +11,11 @@ from typing import Any, Dict, Optional
 
 from flask import jsonify
 
-from research.defaults import VALIDATION_BATCH_SIZE, VALIDATION_SEQ_LEN, VALIDATION_STEPS
+from research.defaults import (
+    VALIDATION_BATCH_SIZE,
+    VALIDATION_SEQ_LEN,
+    VALIDATION_STEPS,
+)
 
 from ..runner._types import RunConfig
 from ..runtime_events import publish_lifecycle_event
@@ -301,6 +305,8 @@ def _launch_result_id_mode(start: StartExperimentRequest, *, nb, runner):
     eligibility, error = _maybe_block_ineligible(nb, mode, result_ids, force)
     if error:
         return None, eligibility, error
+    if eligibility and eligibility.get("eligible_result_ids"):
+        result_ids = list(eligibility["eligible_result_ids"])
     exp_id = runner.start_validation(
         result_ids,
         config,

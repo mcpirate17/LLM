@@ -1,18 +1,18 @@
 #!/usr/bin/env python
-"""Flag and demote nano-AR-INV no-go archs (offline scan).
+"""Flag (do NOT demote) nano-AR-INV no-go archs (offline scan).
 
-Mirrors ``research/tools/nano_bind_backfill.py``'s post-hoc gate semantics
-but for ``nano_ar_inv_score``. Two thresholds (configurable):
+Diagnostic-only flag — row keeps its tier so the dashboard does not hide
+existing metric data via the screened_out promotion-path filter (see
+``_entry_has_promotion_path`` in ``leaderboard_bp.py``). The composite_score
+already penalizes the row via ``cap_ar=0`` from ``nai=0``; that handles
+ranking without removing the row from view.
 
   - ``hard``: both ``in_dist_pair_match_acc < 0.10`` AND
     ``held_class_acc < 0.10`` ⇒ frequency-collapse degenerate ⇒
-    set ``failure_op='nano_ar_inv'``, ``nano_ar_inv_no_go=1``,
-    demote ``leaderboard.tier`` to ``'screened_out'``.
+    set ``nano_ar_inv_no_go=1``. NOT demoted. NOT failure_op-stamped.
 
-  - ``soft``: ``nano_ar_inv_score < 0.50`` ⇒ leave the row in place,
-    just mark ``nano_ar_inv_no_go=0`` to confirm the gate ran. The
-    composite_score already penalizes these; tier promotion logic
-    handles them.
+  - ``soft``: ``nano_ar_inv_score < 0.50`` ⇒ mark ``nano_ar_inv_no_go=0``
+    (gate ran but didn't trip).
 
 Distribution-derived thresholds (V4 evidence + 170-arch backfill data,
 2026-05-05):
@@ -36,7 +36,6 @@ Usage::
 
     python -m research.tools.nano_ar_inv_no_go_flag --dry-run
     python -m research.tools.nano_ar_inv_no_go_flag             # apply
-    python -m research.tools.nano_ar_inv_no_go_flag --soft-only  # don't demote
 """
 
 from __future__ import annotations
@@ -77,11 +76,6 @@ def parse_args() -> argparse.Namespace:
         "--dry-run",
         action="store_true",
         help="Print what would change; do not write.",
-    )
-    p.add_argument(
-        "--soft-only",
-        action="store_true",
-        help="Mark nano_ar_inv_no_go but do NOT demote tier or set failure_op.",
     )
     p.add_argument(
         "--include-already-screened",
@@ -150,8 +144,7 @@ def apply_updates(args: argparse.Namespace, rows: list[dict]) -> dict:
         "n_hard_no_go": 0,
         "n_soft_below": 0,
         "n_pass": 0,
-        "demoted_to_screened_out": 0,
-        "failure_op_set": 0,
+        "no_go_flag_set": 0,
     }
     if not rows:
         return counts
@@ -165,36 +158,13 @@ def apply_updates(args: argparse.Namespace, rows: list[dict]) -> dict:
         counts[f"n_{verdict}"] += 1
         if write_conn is None:
             continue
-        if verdict == "hard_no_go":
-            # Mirror nano_bind_backfill: set failure_op + demote tier.
-            existing_failure = row["failure_op"]
-            new_failure = existing_failure or "nano_ar_inv"
-            if not existing_failure:
-                counts["failure_op_set"] += 1
-            write_conn.execute(
-                "UPDATE program_results SET nano_ar_inv_no_go = 1, "
-                "failure_op = COALESCE(failure_op, ?) "
-                "WHERE result_id = ?",
-                (new_failure, row["result_id"]),
-            )
-            if not args.soft_only and row["tier"] != "screened_out":
-                write_conn.execute(
-                    "UPDATE leaderboard SET tier = 'screened_out' WHERE result_id = ?",
-                    (row["result_id"],),
-                )
-                counts["demoted_to_screened_out"] += 1
-        elif verdict == "soft_below":
-            write_conn.execute(
-                "UPDATE program_results SET nano_ar_inv_no_go = 0 "
-                "WHERE result_id = ? AND nano_ar_inv_no_go IS NULL",
-                (row["result_id"],),
-            )
-        else:  # pass
-            write_conn.execute(
-                "UPDATE program_results SET nano_ar_inv_no_go = 0 "
-                "WHERE result_id = ? AND nano_ar_inv_no_go IS NULL",
-                (row["result_id"],),
-            )
+        flag_value = 1 if verdict == "hard_no_go" else 0
+        write_conn.execute(
+            "UPDATE program_results SET nano_ar_inv_no_go = ? WHERE result_id = ?",
+            (flag_value, row["result_id"]),
+        )
+        if flag_value == 1:
+            counts["no_go_flag_set"] += 1
 
     if write_conn is not None:
         write_conn.commit()
@@ -223,15 +193,12 @@ def main() -> None:
     counts = apply_updates(args, rows)
     mode = "DRY-RUN" if args.dry_run else "APPLIED"
     logger.info("=== %s ===", mode)
-    logger.info("  total scanned:           %d", counts["n_total"])
-    logger.info("  hard no-go (demote):     %d", counts["n_hard_no_go"])
-    logger.info("  soft below (mark only):  %d", counts["n_soft_below"])
-    logger.info("  pass:                    %d", counts["n_pass"])
+    logger.info("  total scanned:    %d", counts["n_total"])
+    logger.info("  hard no-go flagged (no demote): %d", counts["n_hard_no_go"])
+    logger.info("  soft below (composite handles): %d", counts["n_soft_below"])
+    logger.info("  pass:             %d", counts["n_pass"])
     if not args.dry_run:
-        logger.info(
-            "  rows demoted to screened_out: %d", counts["demoted_to_screened_out"]
-        )
-        logger.info("  failure_op set:          %d", counts["failure_op_set"])
+        logger.info("  no_go=1 flag set: %d", counts["no_go_flag_set"])
 
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
     out = REPORTS_DIR / f"nano_ar_inv_no_go_{int(time.time())}.json"

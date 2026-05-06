@@ -9,8 +9,12 @@ mkdir -p "$RUN_DIR"
 
 resolve_python() {
   local candidate
+  if [[ -n "${VIRTUAL_ENV:-}" && -x "${VIRTUAL_ENV}/bin/python" ]]; then
+    printf '%s\n' "${VIRTUAL_ENV}/bin/python"
+    return 0
+  fi
+
   for candidate in \
-    "${VIRTUAL_ENV:-}/bin/python" \
     "$ROOT_DIR/.venv/bin/python" \
     "$(cd "$ROOT_DIR/.." && pwd)/.venv/bin/python"
   do

@@ -14,6 +14,12 @@ FINGERPRINT_STATUS_FIELDS = (
     ("fp_logit_margin_status", "Logit margin"),
 )
 
+POST_INVESTIGATION_FINGERPRINT_REQUIRED_TIERS = {
+    "investigation",
+    "validation",
+    "breakthrough",
+}
+
 NON_FAILURE_STATUSES = {
     "",
     "init",
@@ -44,6 +50,21 @@ def _fingerprint_json_meta(entry: Dict[str, Any]) -> Dict[str, Any]:
     except (TypeError, ValueError, json.JSONDecodeError):
         return {"parse_error": True}
     return parsed if isinstance(parsed, dict) else {}
+
+
+def _is_screening_replay_entry(entry: Dict[str, Any]) -> bool:
+    return _normalize_status(entry.get("model_source")) == "exact_graph_replay"
+
+
+def _is_deferred_observation_entry(entry: Dict[str, Any]) -> bool:
+    trust_label = _normalize_status(entry.get("trust_label"))
+    result_cohort = _normalize_status(entry.get("result_cohort") or entry.get("cohort"))
+    model_source = _normalize_status(entry.get("model_source"))
+    return (
+        trust_label == "backfill_observation"
+        or result_cohort == "backfill"
+        or model_source == "exact_graph_replay"
+    )
 
 
 def fingerprint_failure_summary(entry: Dict[str, Any]) -> Dict[str, Any]:
@@ -78,7 +99,10 @@ def fingerprint_failure_summary(entry: Dict[str, Any]) -> Dict[str, Any]:
 
     tier = _normalize_status(entry.get("tier") or entry.get("leaderboard_tier"))
     incomplete_tier = tier == "investigation_fingerprint_incomplete"
-    if completed_marker_present and completed is False:
+    post_investigation_required = not _is_deferred_observation_entry(entry) and (
+        incomplete_tier or tier in POST_INVESTIGATION_FINGERPRINT_REQUIRED_TIERS
+    )
+    if completed_marker_present and completed is False and post_investigation_required:
         failed_checks.append(
             {
                 "field": "fingerprint_completed_post_investigation",

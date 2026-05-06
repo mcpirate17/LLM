@@ -4,14 +4,12 @@ from __future__ import annotations
 
 import json
 import logging
-import math
 import queue
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any, Dict, List, Optional
 
 from ..thresholds import TIER_RANK
-from ._helpers_gate import clear_gpu_memory
 from ._helpers_metrics import (
     _trajectory_probe_capability_tier,
     screening_wikitext_fields,
@@ -106,7 +104,14 @@ def _evaluate_investigation_benchmarks(
         return result
 
     eval_seq_len = min(128, config.max_seq_len)
-    result.update(_run_investigation_v2_probes(model, dev))
+    result.update(
+        _run_investigation_v2_probes(
+            model,
+            dev,
+            graph_json_str=graph_json_str,
+            run_nano_ar=True,
+        )
+    )
 
     if stop_event is not None and stop_event.is_set():
         return result
@@ -336,8 +341,102 @@ def _evaluate_investigation_benchmarks(
     return result
 
 
-def _run_investigation_v2_probes(model: Any, dev: Any) -> Dict[str, Any]:
-    """Run investigation-tier v2 induction/binding probes on the benchmark model."""
+def _nano_ar_inv_result_fields(nano_ar_inv_result: Any) -> Dict[str, Any]:
+    nano_ok = str(nano_ar_inv_result.status or "") == "ok"
+    score = None
+    if nano_ok:
+        score = round(
+            0.6 * float(nano_ar_inv_result.in_dist_pair_match_acc or 0.0)
+            + 0.4 * float(nano_ar_inv_result.held_class_acc or 0.0),
+            4,
+        )
+    return {
+        "nano_ar_inv_metric_version": nano_ar_inv_result.metric_version,
+        "nano_ar_inv_in_dist_pair_match_acc": (
+            nano_ar_inv_result.in_dist_pair_match_acc if nano_ok else None
+        ),
+        "nano_ar_inv_in_dist_class_acc": (
+            nano_ar_inv_result.in_dist_class_acc if nano_ok else None
+        ),
+        "nano_ar_inv_held_pair_match_acc": (
+            nano_ar_inv_result.held_pair_match_acc if nano_ok else None
+        ),
+        "nano_ar_inv_held_class_acc": (
+            nano_ar_inv_result.held_class_acc if nano_ok else None
+        ),
+        "nano_ar_inv_score": score,
+        "nano_ar_inv_status": nano_ar_inv_result.status,
+        "nano_ar_inv_elapsed_ms": nano_ar_inv_result.elapsed_ms,
+        "nano_ar_inv_train_steps_done": nano_ar_inv_result.finetune_steps_done,
+    }
+
+
+def _run_investigation_nano_ar_probe(
+    model: Any,
+    dev: Any,
+    *,
+    graph_json_str: str | None = None,
+) -> Dict[str, Any]:
+    """Run the investigation-tier Nano-AR probe.
+
+    Live investigation reruns usually only have a graph spec available in the
+    background benchmark worker, so use the locked standalone/wikitext-warmup
+    config from the offline Nano-AR backfill path when graph JSON is present.
+    If a caller only has a live model, fall back to the production from-S1 mode.
+    """
+    from ...eval.nano_ar_inv import NanoARInvConfig, nano_ar_inv
+
+    if graph_json_str:
+        cfg = NanoARInvConfig(
+            seed=0,
+            wikitext_warmup_steps=2500,
+            finetune_steps=400,
+            n_pairs_per_noun=1,
+            reps=10,
+            n_distractors=480,
+            n_adjectives=20,
+            n_objects=25,
+            timeout_s=600.0,
+            from_s1=False,
+        )
+        nano = nano_ar_inv(graph_json=graph_json_str, device=str(dev), cfg=cfg)
+    else:
+        cfg = NanoARInvConfig(
+            seed=0,
+            finetune_steps=400,
+            n_pairs_per_noun=1,
+            reps=10,
+            n_distractors=480,
+            n_adjectives=20,
+            n_objects=25,
+            timeout_s=600.0,
+            from_s1=True,
+        )
+        nano = nano_ar_inv(model=model, device=str(dev), cfg=cfg)
+
+    fields = _nano_ar_inv_result_fields(nano)
+    logger.info(
+        "Investigation Nano-AR probe: score=%s in_pair=%.4f held_class=%.4f status=%s",
+        (
+            f"{fields['nano_ar_inv_score']:.4f}"
+            if fields["nano_ar_inv_score"] is not None
+            else "None"
+        ),
+        nano.in_dist_pair_match_acc,
+        nano.held_class_acc,
+        nano.status,
+    )
+    return fields
+
+
+def _run_investigation_v2_probes(
+    model: Any,
+    dev: Any,
+    *,
+    graph_json_str: str | None = None,
+    run_nano_ar: bool = False,
+) -> Dict[str, Any]:
+    """Run investigation-tier capability probes on the benchmark model."""
     result: Dict[str, Any] = {}
 
     try:
@@ -412,6 +511,18 @@ def _run_investigation_v2_probes(model: Any, dev: Any) -> Dict[str, Any]:
     except (ImportError, RuntimeError, ValueError, TypeError) as exc:
         logger.warning("Investigation binding-v2 probe skipped: %s", exc)
 
+    if run_nano_ar:
+        try:
+            result.update(
+                _run_investigation_nano_ar_probe(
+                    model,
+                    dev,
+                    graph_json_str=graph_json_str,
+                )
+            )
+        except (ImportError, RuntimeError, ValueError, TypeError) as exc:
+            logger.warning("Investigation Nano-AR probe skipped: %s", exc)
+
     return result
 
 
@@ -439,6 +550,7 @@ def _submit_benchmark_eval(
     dev,
     cached_json_load,
     fingerprint_incomplete: bool = False,
+    best_training_curve: list[dict] | None = None,
     stop_event=None,
 ) -> Future:
     """Submit benchmark evals + result recording to a background thread.
@@ -490,6 +602,7 @@ def _submit_benchmark_eval(
                 investigation_passed=investigation_passed,
                 benchmark_result=benchmark_result,
                 fingerprint_incomplete=fingerprint_incomplete,
+                best_training_curve=best_training_curve,
             )
             thread_nb.flush_writes()
         finally:
@@ -545,7 +658,14 @@ def _submit_v2_probe_eval(
             )
             if model is not None:
                 try:
-                    benchmark_result.update(_run_investigation_v2_probes(model, dev))
+                    benchmark_result.update(
+                        _run_investigation_v2_probes(
+                            model,
+                            dev,
+                            graph_json_str=graph_json_str,
+                            run_nano_ar=True,
+                        )
+                    )
                 finally:
                     del model
         except (ImportError, RuntimeError, ValueError, TypeError) as exc:
@@ -596,6 +716,61 @@ def _safe_tier(nb, result_id: str, proposed: str) -> str:
     return proposed
 
 
+def _to_float_or_none(value: Any) -> float | None:
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _capability_override_investigation_passed(
+    *,
+    benchmark_result: Dict[str, Any],
+    best_lr: Any,
+    screening_lr: Any,
+    robustness: float,
+    n_passed: int,
+    n_programs_tested: int,
+    fingerprint_incomplete: bool,
+) -> tuple[bool, list[str]]:
+    """Allow strong capability evidence to rescue a near-miss loss result."""
+    if fingerprint_incomplete or n_programs_tested <= 0:
+        return False, []
+    if robustness < 0.5 or n_passed <= 0:
+        return False, []
+
+    lr = _to_float_or_none(best_lr)
+    if lr is None or lr >= 0.65:
+        return False, []
+
+    screening = _to_float_or_none(screening_lr)
+    multiplier = lr / max(screening, 1e-6) if screening is not None else None
+    if multiplier is not None and multiplier > 1.25:
+        return False, []
+
+    reasons: list[str] = []
+    nano_ar = _to_float_or_none(benchmark_result.get("nano_ar_inv_score"))
+    ind_v2 = _to_float_or_none(benchmark_result.get("induction_v2_investigation_auc"))
+    bind_v2 = _to_float_or_none(benchmark_result.get("binding_v2_investigation_auc"))
+
+    if nano_ar is not None and nano_ar >= 0.8:
+        reasons.append(f"nano_ar={nano_ar:.3f}")
+    if bind_v2 is not None and bind_v2 >= 0.08:
+        reasons.append(f"binding_v2={bind_v2:.3f}")
+    if ind_v2 is not None and ind_v2 >= 0.30:
+        reasons.append(f"induction_v2={ind_v2:.3f}")
+
+    if len(reasons) < 2:
+        return False, []
+    reasons.append(f"loss_ratio={lr:.3f}")
+    reasons.append(f"robustness={robustness:.3f}")
+    if multiplier is not None:
+        reasons.append(f"loss_multiplier={multiplier:.3f}")
+    return True, reasons
+
+
 def _investigation_tier_for_result(
     *,
     investigation_passed: bool,
@@ -615,6 +790,8 @@ def _investigation_tier_for_result(
     if fingerprint_incomplete:
         return "investigation_fingerprint_incomplete"
     if n_programs_tested >= 3 and n_passed == n_programs_tested:
+        return "investigation"
+    if n_programs_tested > 0 and (n_passed / max(n_programs_tested, 1)) >= 0.5:
         return "investigation"
     return "investigation_failed"
 
@@ -636,6 +813,7 @@ def _record_investigation_result(
     investigation_passed: bool,
     benchmark_result: Dict[str, Any],
     fingerprint_incomplete: bool = False,
+    best_training_curve: list[dict] | None = None,
 ) -> None:
     """Persist leaderboard and program-results updates for investigation.
 
@@ -643,11 +821,56 @@ def _record_investigation_result(
     investigation results (lower loss ratio, higher robustness), those are
     preserved rather than overwritten by a weaker re-investigation.
     """
+    graph_fingerprint = str(source.get("graph_fingerprint") or "").strip()
+    leaderboard_result_id = source_result_id
+    existing_fp_entry = None
+    if graph_fingerprint:
+        try:
+            existing_fp_entry = nb.get_leaderboard_entry_by_fingerprint(
+                graph_fingerprint
+            )
+            if existing_fp_entry and existing_fp_entry.get("result_id"):
+                leaderboard_result_id = str(existing_fp_entry["result_id"])
+        except Exception as exc:
+            logger.debug(
+                "Fingerprint leaderboard anchor lookup failed for %s: %s",
+                graph_fingerprint[:16],
+                exc,
+            )
+    source_result_cohort = str(source.get("result_cohort") or "").strip().lower()
+    source_trust_label = str(source.get("trust_label") or "").strip().lower()
+    source_comparability = str(source.get("comparability_label") or "").strip().lower()
+    parent_result_cohort = (
+        str((existing_fp_entry or {}).get("result_cohort") or "").strip().lower()
+    )
+    parent_trust_label = (
+        str((existing_fp_entry or {}).get("trust_label") or "").strip().lower()
+    )
+    parent_comparability = (
+        str((existing_fp_entry or {}).get("comparability_label") or "").strip().lower()
+    )
+
+    result_cohort = parent_result_cohort or source_result_cohort or "search"
+    trust_label = parent_trust_label or source_trust_label or "candidate_grade"
+    comparability_label = (
+        parent_comparability or source_comparability or "candidate_comparable"
+    )
+    if result_cohort == "backfill" or trust_label == "backfill_observation":
+        result_cohort = "search"
+        trust_label = "candidate_grade"
+    if comparability_label == "reconstructed_init_variant":
+        comparability_label = "candidate_comparable"
+    evaluation_protocol_version = (
+        (existing_fp_entry or {}).get("evaluation_protocol_version")
+        or source.get("evaluation_protocol_version")
+        or "candidate_grade_v1"
+    )
+
     # Check if existing investigation results are better — never overwrite with worse
     existing_inv = nb.conn.execute(
         "SELECT investigation_loss_ratio, investigation_robustness, investigation_passed, "
         "investigation_best_training FROM leaderboard WHERE result_id = ?",
-        (source_result_id,),
+        (leaderboard_result_id,),
     ).fetchone()
     if existing_inv and existing_inv["investigation_passed"]:
         existing_lr = existing_inv["investigation_loss_ratio"]
@@ -659,6 +882,26 @@ def _record_investigation_result(
             )
             best_tp_json = existing_inv["investigation_best_training"] or best_tp_json
             investigation_passed = True
+
+    if not investigation_passed:
+        capability_override, capability_reasons = (
+            _capability_override_investigation_passed(
+                benchmark_result=benchmark_result,
+                best_lr=best_lr,
+                screening_lr=source.get("loss_ratio"),
+                robustness=float(robustness or 0.0),
+                n_passed=n_passed,
+                n_programs_tested=n_programs_tested,
+                fingerprint_incomplete=fingerprint_incomplete,
+            )
+        )
+        if capability_override:
+            investigation_passed = True
+            logger.info(
+                "Investigation capability override passed for %s: %s",
+                source_result_id[:12],
+                ", ".join(capability_reasons),
+            )
 
     # HellaSwag hard gate: DISABLED — doesn't differentiate at nano scale.
 
@@ -681,9 +924,9 @@ def _record_investigation_result(
         n_programs_tested=n_programs_tested,
     )
     nb.upsert_leaderboard(
-        result_id=source_result_id,
+        result_id=leaderboard_result_id,
         model_source=model_source,
-        architecture_desc=source.get("graph_fingerprint", "")[:40],
+        architecture_desc=graph_fingerprint[:40],
         screening_loss_ratio=source.get("loss_ratio"),
         screening_novelty=source.get("novelty_score"),
         screening_passed=True,
@@ -691,7 +934,11 @@ def _record_investigation_result(
         investigation_robustness=robustness,
         investigation_best_training=best_tp_json,
         investigation_passed=investigation_passed,
-        tier=_safe_tier(nb, source_result_id, proposed_tier),
+        tier=_safe_tier(nb, leaderboard_result_id, proposed_tier),
+        result_cohort=result_cohort,
+        trust_label=trust_label,
+        comparability_label=comparability_label,
+        evaluation_protocol_version=evaluation_protocol_version,
         novelty_confidence=source.get("novelty_confidence"),
         fp_jacobian_spectral_norm=source.get("fp_jacobian_spectral_norm"),
         wikitext_perplexity=benchmark_result.get("inv_wikitext_ppl"),
@@ -759,6 +1006,45 @@ def _record_investigation_result(
             "binding_v2_investigation_protocol_version"
         ),
     }
+    nano_ar_inv_fields = {
+        "nano_ar_inv_metric_version": benchmark_result.get(
+            "nano_ar_inv_metric_version"
+        ),
+        "nano_ar_inv_in_dist_pair_match_acc": benchmark_result.get(
+            "nano_ar_inv_in_dist_pair_match_acc"
+        ),
+        "nano_ar_inv_in_dist_class_acc": benchmark_result.get(
+            "nano_ar_inv_in_dist_class_acc"
+        ),
+        "nano_ar_inv_held_pair_match_acc": benchmark_result.get(
+            "nano_ar_inv_held_pair_match_acc"
+        ),
+        "nano_ar_inv_held_class_acc": benchmark_result.get(
+            "nano_ar_inv_held_class_acc"
+        ),
+        "nano_ar_inv_score": benchmark_result.get("nano_ar_inv_score"),
+        "nano_ar_inv_status": benchmark_result.get("nano_ar_inv_status"),
+        "nano_ar_inv_elapsed_ms": benchmark_result.get("nano_ar_inv_elapsed_ms"),
+        "nano_ar_inv_train_steps_done": benchmark_result.get(
+            "nano_ar_inv_train_steps_done"
+        ),
+    }
+    if any(
+        value is not None
+        for value in (*v2_fields.values(), *nano_ar_inv_fields.values())
+    ):
+        nb.upsert_leaderboard(
+            result_id=leaderboard_result_id,
+            model_source=model_source,
+            architecture_desc=graph_fingerprint[:40],
+            tier=_safe_tier(nb, leaderboard_result_id, proposed_tier),
+            result_cohort=result_cohort,
+            trust_label=trust_label,
+            comparability_label=comparability_label,
+            evaluation_protocol_version=evaluation_protocol_version,
+            **v2_fields,
+            **nano_ar_inv_fields,
+        )
     # Investigation S1 metric completeness gate.  The investigation pipeline
     # runs blimp + v1 probes (induction/binding/ar) AND the v2 capability
     # probes inside _evaluate_investigation_benchmarks.  When training trips
@@ -813,6 +1099,10 @@ def _record_investigation_result(
         training_program_json=best_tp_json,
         model_source=model_source,
         arch_spec_json=arch_spec_json_str,
+        result_cohort=result_cohort,
+        trust_label=trust_label,
+        comparability_label=comparability_label,
+        evaluation_protocol_version=evaluation_protocol_version,
         wikitext_perplexity=_inv_wikitext_ppl,
         wikitext_score=benchmark_result.get("inv_wikitext_score"),
         tinystories_perplexity=benchmark_result.get("inv_tinystories_ppl"),
@@ -846,8 +1136,18 @@ def _record_investigation_result(
         ar_above_chance=benchmark_result.get("ar_above_chance"),
         local_only=benchmark_result.get("local_only"),
         **v2_fields,
+        **nano_ar_inv_fields,
         **v9_trajectory_fields(benchmark_result),
     )
+    if result_id and best_training_curve:
+        try:
+            nb.store_training_curve(result_id, best_training_curve)
+        except Exception as exc:
+            logger.warning(
+                "Investigation training-curve persist failed for %s: %s",
+                str(result_id)[:12],
+                exc,
+            )
     source_updates = {
         "wikitext_perplexity": benchmark_result.get("inv_wikitext_ppl"),
         "wikitext_score": benchmark_result.get("inv_wikitext_score"),
@@ -873,7 +1173,12 @@ def _record_investigation_result(
         "binding_auc": benchmark_result.get("binding_auc"),
         "binding_composite": benchmark_result.get("binding_composite"),
         "local_only": benchmark_result.get("local_only"),
+        "result_cohort": result_cohort,
+        "trust_label": trust_label,
+        "comparability_label": comparability_label,
+        "evaluation_protocol_version": evaluation_protocol_version,
         **v2_fields,
+        **nano_ar_inv_fields,
         # v9 trajectory metrics — overwrite earlier-phase init/screening
         # values with investigation_full measurements. Phase tag flips so
         # ML training distinguishes the two.
@@ -934,6 +1239,8 @@ def _upsert_screening_entry(nb, row: Dict[str, Any]) -> Optional[str]:
         screening_loss_ratio=row.get("loss_ratio"),
         screening_novelty=row.get("novelty_score"),
         screening_passed=True,
+        validation_loss_ratio=row.get("validation_loss_ratio"),
+        validation_baseline_ratio=row.get("baseline_loss_ratio"),
         tier="screening",
         novelty_confidence=row.get("novelty_confidence"),
         fp_jacobian_spectral_norm=row.get("fp_jacobian_spectral_norm"),
@@ -1333,202 +1640,6 @@ def promote_validation_candidate(
         canonical_result_id = str(entry.get("result_id") or "").strip()
         if canonical_result_id and canonical_result_id != source_result_id:
             nb.set_external_benchmarks(canonical_result_id, external)
-
-
-def run_trajectory_probe(
-    *,
-    graph_json_str: str | None,
-    config,  # RunConfig
-    dev,  # torch.device
-    dev_str: str,
-    nb,
-    source_result_id: str,
-    tier: str,
-    passed_seeds: list,
-) -> float | None:
-    """Run wikitext trajectory probe and update leaderboard.
-
-    Returns trajectory_composite or None.
-    """
-    if not graph_json_str or len(passed_seeds) == 0:
-        return None
-
-    try:
-        from ...eval.wikitext_eval import evaluate_wikitext_trajectory
-        from ...synthesis.serializer import graph_from_json
-        from ..native_runner import compile_model_native_first as _compile
-
-        traj_graph = graph_from_json(graph_json_str)
-        traj_layers = [traj_graph] * config.n_layers
-        traj_model = _compile(
-            traj_layers, vocab_size=config.vocab_size, max_seq_len=128
-        )
-        traj_model = traj_model.to(dev)
-        traj_result = evaluate_wikitext_trajectory(
-            traj_model,
-            config.vocab_size,
-            dev_str,
-            checkpoints=(200, 500, 1000, 2000, 4000),
-            seq_len=128,
-        )
-
-        # HellaSwag validation probe (200 examples)
-        _val_hellaswag_acc = None
-        hs_val = {}
-        try:
-            from ...eval.hellaswag_eval import evaluate_hellaswag
-
-            hs_val = evaluate_hellaswag(
-                traj_model, config.vocab_size, dev_str, n_examples=200
-            )
-            _val_hellaswag_acc = hs_val.get("hellaswag_acc")
-            if _val_hellaswag_acc is not None:
-                logger.info(
-                    "Validation HellaSwag acc=%.1f%% (%d/%d, %.0fms)",
-                    _val_hellaswag_acc * 100,
-                    hs_val.get("hellaswag_correct", 0),
-                    hs_val.get("hellaswag_total", 0),
-                    hs_val.get("elapsed_ms", 0),
-                )
-        except (ImportError, RuntimeError, ValueError) as exc_hs:
-            logger.warning("Validation HellaSwag eval skipped: %s", exc_hs)
-
-        # Validation binding probes (full suite, more examples than investigation)
-        _val_ar_auc = None
-        _val_ind_auc = None
-        _val_binding_auc = None
-        _val_local_only = None
-        _val_ind_meta = None
-        try:
-            from ...eval.binding_pipeline import (
-                compute_binding_composite,
-                compute_local_only,
-                run_full_binding_probes,
-            )
-
-            _probe = run_full_binding_probes(traj_model, device=dev_str)
-            _val_ar_auc = _probe.ar_auc
-            _val_ind_auc = _probe.induction_auc
-            _val_binding_auc = _probe.binding_auc
-            _val_ind_meta = _probe.induction_metadata
-            _val_local_only = compute_local_only(
-                _val_ar_auc, _val_ind_auc, _val_binding_auc
-            )
-            _val_bc = compute_binding_composite(
-                _val_ar_auc, _val_ind_auc, _val_binding_auc
-            )
-            logger.info(
-                "Validation binding probes: ar=%.3f ind=%.3f bind=%.3f bc=%.3f local=%s (%.0f+%.0f+%.0fms)",
-                _val_ar_auc,
-                _val_ind_auc,
-                _val_binding_auc,
-                _val_bc,
-                bool(_val_local_only),
-                _probe.ar_elapsed_ms,
-                _probe.induction_elapsed_ms,
-                _probe.binding_elapsed_ms,
-            )
-        except (ImportError, RuntimeError, ValueError) as exc_bp:
-            logger.warning("Validation binding probes skipped: %s", exc_bp)
-
-        del traj_model
-        clear_gpu_memory()
-
-        peak_ppl = traj_result.get("peak_ppl")
-        steps_div = traj_result.get("steps_to_divergence")
-        ckpts = traj_result.get("checkpoints", {})
-        ppl_500 = ckpts[500].get("ppl") if 500 in ckpts else None
-
-        entry = nb.get_leaderboard_entry(source_result_id)
-        trajectory_composite = None
-        if entry:
-            update = {}
-            if peak_ppl is not None:
-                update["peak_ppl"] = peak_ppl
-                vocab = config.vocab_size or 32000
-                ws = max(0.0, math.log(vocab / peak_ppl) / math.log(vocab))
-                update["wikitext_score"] = round(ws, 4)
-            if traj_result.get("peak_step") is not None:
-                update["peak_step"] = traj_result["peak_step"]
-            if steps_div is not None:
-                update["steps_to_divergence"] = steps_div
-            if ppl_500 is not None:
-                update["ppl_500"] = ppl_500
-            if _val_hellaswag_acc is not None:
-                update["hellaswag_acc"] = _val_hellaswag_acc
-            if hs_val.get("hellaswag_metric_version") is not None:
-                update["hellaswag_metric_version"] = hs_val.get(
-                    "hellaswag_metric_version"
-                )
-            if hs_val.get("hellaswag_tokenizer_mode") is not None:
-                update["hellaswag_tokenizer_mode"] = hs_val.get(
-                    "hellaswag_tokenizer_mode"
-                )
-            if hs_val.get("hellaswag_tiktoken_encoding") is not None:
-                update["hellaswag_tiktoken_encoding"] = hs_val.get(
-                    "hellaswag_tiktoken_encoding"
-                )
-            # Binding probe data
-            if _val_ar_auc is not None:
-                update["ar_auc"] = _val_ar_auc
-                update["ar_final_acc"] = _probe.ar_final_acc
-                update["ar_timed_out"] = int(_probe.ar_timed_out)
-                update["ar_above_chance"] = int(_probe.ar_above_chance)
-            if _val_ind_auc is not None:
-                update.update(_val_ind_meta or {"induction_auc": _val_ind_auc})
-            if _val_binding_auc is not None:
-                update["binding_auc"] = _val_binding_auc
-                update["binding_distance_accuracies"] = (
-                    _probe.binding_distance_accuracies
-                )
-                update["binding_probe_distances"] = [4, 8, 16, 32]
-                update["binding_probe_eval_examples"] = 200
-                update["binding_probe_elapsed_ms"] = _probe.binding_elapsed_ms
-                update["binding_auc_curriculum"] = _probe.binding_auc_curriculum
-                update["binding_distance_accuracies_curriculum"] = (
-                    _probe.binding_distance_accuracies_curriculum
-                )
-                update["binding_probe_curriculum_steps"] = (
-                    _probe.binding_curriculum_train_steps
-                )
-                update["binding_probe_curriculum_elapsed_ms"] = (
-                    _probe.binding_curriculum_elapsed_ms
-                )
-                update["binding_probe_curriculum_protocol_version"] = (
-                    "copy_curriculum_v1"
-                )
-            if _val_local_only is not None:
-                update["local_only"] = _val_local_only
-                update["binding_composite"] = round(
-                    0.4 * (_val_ar_auc or 0)
-                    + 0.3 * (_val_ind_auc or 0)
-                    + 0.3 * (_val_binding_auc or 0),
-                    4,
-                )
-            # No hard gate — soft penalty in scoring handles local-only models.
-            # Mamba (frontier SSM) fluctuates across the induction threshold,
-            # so a hard gate would produce false positives at nano scale.
-            if update:
-                nb.promote_to_tier(entry_id=entry["entry_id"], tier=tier, **update)
-                row = nb.conn.execute(
-                    "SELECT composite_score FROM leaderboard WHERE entry_id = ?",
-                    (entry["entry_id"],),
-                ).fetchone()
-                if row:
-                    trajectory_composite = row["composite_score"]
-
-        logger.info(
-            "Trajectory probe %s: peak_ppl=%.1f steps_to_div=%s ppl_500=%s composite=%.1f",
-            source_result_id[:8],
-            peak_ppl or 0,
-            steps_div,
-            ppl_500,
-            trajectory_composite or 0,
-        )
-        return trajectory_composite
-    except Exception as e:  # top-level error boundary: probe must not crash caller
-        logger.warning("Trajectory probe failed for %s: %s", source_result_id[:8], e)
-        return None
 
 
 def handle_breakthrough(

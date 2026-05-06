@@ -34,7 +34,6 @@ from research.scientist.native_runner import (
     compile_model_native_first as compile_model,
 )
 
-
 _DEFAULT_DB = Path("research/lab_notebook.db")
 
 
@@ -128,6 +127,7 @@ def _evaluate_exact_replay(
     replay_rows: Sequence[Dict[str, Any]],
     verbose: bool = False,
     independent_sample: bool = False,
+    candidate_confirmation: bool = False,
 ) -> Dict[str, Any]:
     dev = resolve_device(config.device)
     dev_str = str(dev)
@@ -177,6 +177,7 @@ def _evaluate_exact_replay(
             "source_graph_fingerprint": row.get("graph_fingerprint"),
             "replay_index": row.get("replay_index", 0),
             "source_loss_ratio": row.get("loss_ratio"),
+            "candidate_confirmation": bool(candidate_confirmation),
             # When True, _persist_program_row writes a NEW program_results
             # row (independent sample for CV math).  When False / absent,
             # it patches the source row in place (legacy fix-incomplete-
@@ -441,6 +442,8 @@ def run_exact_replay(
     fast: bool = False,
     verbose: bool = False,
     independent_sample: bool = False,
+    candidate_confirmation: bool = False,
+    stage1_steps: int | None = None,
 ) -> str:
     rows = _fetch_source_rows(db_path, result_ids)
     if not rows:
@@ -449,6 +452,8 @@ def run_exact_replay(
 
     runner = ExperimentRunner(str(db_path))
     config = _build_config(device=device, repeat_count=len(replay_rows))
+    if stage1_steps is not None:
+        config.stage1_steps = max(1, int(stage1_steps))
     if fast:
         _apply_fast_replay_budget(config)
     config, _ = runner.prescreen_run_config(config, mode="single", auto_harden=True)
@@ -485,6 +490,7 @@ def run_exact_replay(
             replay_rows,
             verbose=verbose,
             independent_sample=independent_sample,
+            candidate_confirmation=candidate_confirmation,
         )
         results["elapsed_seconds"] = float(results.get("elapsed_seconds") or 0.0)
         nb.complete_experiment(
@@ -521,6 +527,8 @@ def start_exact_replay_async(
     fast: bool = False,
     verbose: bool = False,
     independent_sample: bool = False,
+    candidate_confirmation: bool = False,
+    stage1_steps: int | None = None,
 ) -> str:
     """Launch exact replay in a background thread and return the experiment id."""
     rows = _fetch_source_rows(db_path, result_ids)
@@ -530,6 +538,8 @@ def start_exact_replay_async(
 
     runner = ExperimentRunner(str(db_path))
     config = _build_config(device=device, repeat_count=len(replay_rows))
+    if stage1_steps is not None:
+        config.stage1_steps = max(1, int(stage1_steps))
     if fast:
         _apply_fast_replay_budget(config)
     config, _ = runner.prescreen_run_config(config, mode="single", auto_harden=True)
@@ -565,6 +575,7 @@ def start_exact_replay_async(
                 replay_rows,
                 verbose=verbose,
                 independent_sample=independent_sample,
+                candidate_confirmation=candidate_confirmation,
             )
             results["elapsed_seconds"] = float(results.get("elapsed_seconds") or 0.0)
             nb.complete_experiment(

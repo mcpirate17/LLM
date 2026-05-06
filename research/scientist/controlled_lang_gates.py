@@ -7,12 +7,26 @@ import sqlite3
 from typing import Any
 
 
-CONTROLLED_LANG_SCREENING_FAILURE_THRESHOLD = 0.65
-CONTROLLED_LANG_NB_SCREENING_FAILURE_THRESHOLD = (
-    CONTROLLED_LANG_SCREENING_FAILURE_THRESHOLD
-)
-S05_NB_SCREENING_FAILURE_THRESHOLD = CONTROLLED_LANG_SCREENING_FAILURE_THRESHOLD
+CONTROLLED_LANG_NB_SCREENING_FAILURE_THRESHOLD = 0.65
+S05_NB_SCREENING_FAILURE_THRESHOLD = CONTROLLED_LANG_NB_SCREENING_FAILURE_THRESHOLD
 S05_NB_FAILURE_OP = "controlled_lang_s05_nb"
+S05_SA_SCREENING_FAILURE_THRESHOLD = 0.65
+S05_SA_ERF_DENSITY_ESCAPE_THRESHOLD = 0.0625
+S05_SA_ERF_DECAY_ESCAPE_THRESHOLD = -0.103282
+S05_SA_FAILURE_OP = "controlled_lang_s05_sa"
+S10_NB_SA_NB_SCREENING_FAILURE_THRESHOLD = 0.80
+S10_NB_SA_SA_SCREENING_FAILURE_THRESHOLD = 0.65
+S10_NB_SA_FAILURE_OP = "controlled_lang_s10_nb_sa"
+
+CONTROLLED_LANG_GATE_MANUAL_OVERRIDES = {
+    "1b70ab74-c98": {
+        "entry_id": "c03cdadf-af7",
+        "failure_ops": (S05_SA_FAILURE_OP,),
+        "reason": "manual_pass_harder_nano_ar_good",
+        "reviewer": "tim",
+        "reviewed_on": "2026-05-06",
+    },
+}
 
 CONTROLLED_LANG_NB_GATES = {
     "s05": {
@@ -35,63 +49,41 @@ CONTROLLED_LANG_NB_GATES = {
     },
 }
 
-CONTROLLED_LANG_SCORE_GATES = (
-    {
-        "failure_op": "controlled_lang_s05_sa",
-        "stage": "s0.5",
-        "score_key": "controlled_lang_s05_sa_score",
-        "label": "controlled_lang_s05_sa",
-    },
-    {
-        "failure_op": "controlled_lang_s05_nb_order",
-        "stage": "s0.5",
-        "score_key": "controlled_lang_s05_nb_order_acc",
-        "label": "controlled_lang_s05_nb_order",
-    },
-    CONTROLLED_LANG_NB_GATES["s05"],
-    {
-        "failure_op": "controlled_lang_s10_sa",
-        "stage": "s1.0",
-        "score_key": "controlled_lang_s10_sa_score",
-        "label": "controlled_lang_s10_sa",
-    },
-    {
-        "failure_op": "controlled_lang_s10_nb_order",
-        "stage": "s1.0",
-        "score_key": "controlled_lang_s10_nb_order_acc",
-        "label": "controlled_lang_s10_nb_order",
-    },
-    CONTROLLED_LANG_NB_GATES["s10"],
-    {
-        "failure_op": "controlled_lang_inv_sa",
-        "stage": "investigation",
-        "score_key": "controlled_lang_inv_sa_score",
-        "label": "controlled_lang_inv_sa",
-    },
-    {
-        "failure_op": "controlled_lang_inv_nb_order",
-        "stage": "investigation",
-        "score_key": "controlled_lang_inv_nb_order_acc",
-        "label": "controlled_lang_inv_nb_order",
-    },
-    CONTROLLED_LANG_NB_GATES["inv"],
-)
+
+def controlled_lang_gate_manual_override(
+    *,
+    result_id: Any,
+    failure_op: str,
+    entry_id: Any = None,
+) -> dict[str, Any] | None:
+    """Return manual override metadata for a specific controlled-language gate."""
+    if result_id is None:
+        return None
+    payload = CONTROLLED_LANG_GATE_MANUAL_OVERRIDES.get(str(result_id))
+    if payload is None:
+        return None
+    expected_entry_id = payload.get("entry_id")
+    if (
+        entry_id is not None
+        and expected_entry_id
+        and str(entry_id) != expected_entry_id
+    ):
+        return None
+    failure_ops = tuple(str(op) for op in payload.get("failure_ops", ()))
+    if str(failure_op) not in failure_ops:
+        return None
+    return dict(payload)
 
 
-def is_controlled_lang_screening_failure(score: Any) -> bool:
-    """Return true when a controlled-language accuracy score is a hard no-go."""
+def is_controlled_lang_nb_screening_failure(score: Any) -> bool:
+    """Return true when a controlled-language NanoBind/NanoBLiMP score is a hard no-go."""
     if score is None:
         return False
     try:
         value = float(score)
     except (TypeError, ValueError):
         return False
-    return value < CONTROLLED_LANG_SCREENING_FAILURE_THRESHOLD
-
-
-def is_controlled_lang_nb_screening_failure(score: Any) -> bool:
-    """Return true when a controlled-language NanoBind/NanoBLiMP score is a hard no-go."""
-    return is_controlled_lang_screening_failure(score)
+    return value < CONTROLLED_LANG_NB_SCREENING_FAILURE_THRESHOLD
 
 
 def is_s05_nb_screening_failure(score: Any) -> bool:
@@ -99,29 +91,97 @@ def is_s05_nb_screening_failure(score: Any) -> bool:
     return is_controlled_lang_nb_screening_failure(score)
 
 
-def allows_controlled_lang_advanced_tiers(score: Any) -> bool:
-    """Return true when S1.0/INV controlled-language probes may run."""
-    if score is None:
+def _float_or_none(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def graph_category_has_mixing(category_histogram: Any) -> bool:
+    """Return true when graph category metadata includes a mixing op."""
+    if category_histogram is None:
         return False
-    return not is_s05_nb_screening_failure(score)
+    if isinstance(category_histogram, dict):
+        return bool(category_histogram.get("mixing", 0))
+    if not isinstance(category_histogram, str):
+        return False
+    try:
+        parsed = json.loads(category_histogram)
+    except json.JSONDecodeError:
+        return False
+    return isinstance(parsed, dict) and bool(parsed.get("mixing", 0))
 
 
-def controlled_lang_failure_details(
-    gate: dict[str, str],
+def has_s05_sa_escape(
+    *,
+    erf_density: Any,
+    erf_decay_slope: Any,
+    graph_category_histogram: Any,
+) -> bool:
+    """Return true when a low S0.5 SA row has a rescue signal."""
+    density = _float_or_none(erf_density)
+    decay = _float_or_none(erf_decay_slope)
+    has_erf_pair = (
+        density is not None
+        and density >= S05_SA_ERF_DENSITY_ESCAPE_THRESHOLD
+        and decay is not None
+        and decay <= S05_SA_ERF_DECAY_ESCAPE_THRESHOLD
+    )
+    return has_erf_pair or graph_category_has_mixing(graph_category_histogram)
+
+
+def is_s05_sa_screening_failure(
     score: Any,
     *,
-    source: str,
-) -> str:
-    score_key = str(gate["score_key"])
-    payload = {
-        "failure_op": gate["failure_op"],
-        "reason": f"{gate['label']}_below_threshold",
-        "stage": gate["stage"],
-        score_key: float(score),
-        "threshold": CONTROLLED_LANG_SCREENING_FAILURE_THRESHOLD,
-        "source": source,
-    }
-    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    erf_density: Any,
+    erf_decay_slope: Any,
+    graph_category_histogram: Any,
+) -> bool:
+    """Return true when S0.5 exact-answer accuracy is too low without escape."""
+    value = _float_or_none(score)
+    if value is None or value >= S05_SA_SCREENING_FAILURE_THRESHOLD:
+        return False
+    return not has_s05_sa_escape(
+        erf_density=erf_density,
+        erf_decay_slope=erf_decay_slope,
+        graph_category_histogram=graph_category_histogram,
+    )
+
+
+def is_s10_nb_sa_screening_failure(*, nb_score: Any, sa_score: Any) -> bool:
+    """Return true when S1.0 NB is weak and S1.0 exact-answer accuracy is also weak."""
+    nb_value = _float_or_none(nb_score)
+    sa_value = _float_or_none(sa_score)
+    if nb_value is None or sa_value is None:
+        return False
+    return (
+        nb_value < S10_NB_SA_NB_SCREENING_FAILURE_THRESHOLD
+        and sa_value < S10_NB_SA_SA_SCREENING_FAILURE_THRESHOLD
+    )
+
+
+def allows_controlled_lang_advanced_tiers(
+    nb_score: Any,
+    *,
+    sa_score: Any = None,
+    erf_density: Any = None,
+    erf_decay_slope: Any = None,
+    graph_category_histogram: Any = None,
+) -> bool:
+    """Return true when S1.0/INV controlled-language probes may run."""
+    if nb_score is None:
+        return False
+    if is_s05_nb_screening_failure(nb_score):
+        return False
+    return not is_s05_sa_screening_failure(
+        sa_score,
+        erf_density=erf_density,
+        erf_decay_slope=erf_decay_slope,
+        graph_category_histogram=graph_category_histogram,
+    )
 
 
 def controlled_lang_nb_failure_details(
@@ -130,30 +190,87 @@ def controlled_lang_nb_failure_details(
     *,
     source: str,
 ) -> str:
-    return controlled_lang_failure_details(
-        CONTROLLED_LANG_NB_GATES[tier],
-        score,
-        source=source,
-    )
+    gate = CONTROLLED_LANG_NB_GATES[tier]
+    score_key = str(gate["score_key"])
+    payload = {
+        "failure_op": gate["failure_op"],
+        "reason": f"{gate['label']}_below_threshold",
+        "stage": gate["stage"],
+        score_key: float(score),
+        "threshold": CONTROLLED_LANG_NB_SCREENING_FAILURE_THRESHOLD,
+        "source": source,
+    }
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
 
 def s05_nb_failure_details(score: Any, *, source: str) -> str:
     return controlled_lang_nb_failure_details("s05", score, source=source)
 
 
-def apply_controlled_lang_screening_failure(
+def s05_sa_failure_details(
+    score: Any,
+    *,
+    erf_density: Any,
+    erf_decay_slope: Any,
+    graph_category_histogram: Any,
+    source: str,
+) -> str:
+    payload = {
+        "failure_op": S05_SA_FAILURE_OP,
+        "reason": "controlled_lang_s05_sa_below_threshold_without_escape",
+        "stage": "s0.5",
+        "controlled_lang_s05_sa_score": float(score),
+        "threshold": S05_SA_SCREENING_FAILURE_THRESHOLD,
+        "erf_density": _float_or_none(erf_density),
+        "erf_density_escape_threshold": S05_SA_ERF_DENSITY_ESCAPE_THRESHOLD,
+        "erf_decay_slope": _float_or_none(erf_decay_slope),
+        "erf_decay_escape_threshold": S05_SA_ERF_DECAY_ESCAPE_THRESHOLD,
+        "graph_has_mixing": graph_category_has_mixing(graph_category_histogram),
+        "source": source,
+    }
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+
+def s10_nb_sa_failure_details(
+    *,
+    nb_score: Any,
+    sa_score: Any,
+    source: str,
+) -> str:
+    payload = {
+        "failure_op": S10_NB_SA_FAILURE_OP,
+        "reason": "controlled_lang_s10_nb_sa_below_threshold",
+        "stage": "s1.0",
+        "controlled_lang_s10_nb_score": float(nb_score),
+        "controlled_lang_s10_nb_threshold": S10_NB_SA_NB_SCREENING_FAILURE_THRESHOLD,
+        "controlled_lang_s10_sa_score": float(sa_score),
+        "controlled_lang_s10_sa_threshold": S10_NB_SA_SA_SCREENING_FAILURE_THRESHOLD,
+        "source": source,
+    }
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+
+def apply_controlled_lang_nb_screening_failure(
     conn: sqlite3.Connection,
     *,
     result_id: str,
-    gate: dict[str, str],
+    tier: str,
     score: Any,
     source: str,
 ) -> bool:
-    """Downgrade a non-reference leaderboard row that fails a controlled-language gate."""
-    if not is_controlled_lang_screening_failure(score):
+    """Downgrade a non-reference leaderboard row that fails a controlled-language NB gate."""
+    if tier not in CONTROLLED_LANG_NB_GATES:
+        raise ValueError(f"unknown controlled-language NB gate tier: {tier}")
+    if not is_controlled_lang_nb_screening_failure(score):
         return False
 
-    details_json = controlled_lang_failure_details(gate, score, source=source)
+    gate = CONTROLLED_LANG_NB_GATES[tier]
+    if controlled_lang_gate_manual_override(
+        result_id=result_id,
+        failure_op=str(gate["failure_op"]),
+    ):
+        return False
+    details_json = controlled_lang_nb_failure_details(tier, score, source=source)
     cur = conn.execute(
         """
         UPDATE leaderboard
@@ -175,7 +292,7 @@ def apply_controlled_lang_screening_failure(
         (
             gate["label"],
             float(score),
-            CONTROLLED_LANG_SCREENING_FAILURE_THRESHOLD,
+            CONTROLLED_LANG_NB_SCREENING_FAILURE_THRESHOLD,
             result_id,
         ),
     )
@@ -194,24 +311,136 @@ def apply_controlled_lang_screening_failure(
     return True
 
 
-def apply_controlled_lang_nb_screening_failure(
+def apply_s10_nb_sa_screening_failure(
     conn: sqlite3.Connection,
     *,
     result_id: str,
-    tier: str,
-    score: Any,
+    nb_score: Any,
+    sa_score: Any,
     source: str,
 ) -> bool:
-    """Downgrade a non-reference leaderboard row that fails a controlled-language NB gate."""
-    if tier not in CONTROLLED_LANG_NB_GATES:
-        raise ValueError(f"unknown controlled-language NB gate tier: {tier}")
-    return apply_controlled_lang_screening_failure(
-        conn,
+    """Downgrade a non-reference row that fails the combined S1.0 NB/SA gate."""
+    if not is_s10_nb_sa_screening_failure(nb_score=nb_score, sa_score=sa_score):
+        return False
+    if controlled_lang_gate_manual_override(
         result_id=result_id,
-        gate=CONTROLLED_LANG_NB_GATES[tier],
-        score=score,
+        failure_op=S10_NB_SA_FAILURE_OP,
+    ):
+        return False
+
+    details_json = s10_nb_sa_failure_details(
+        nb_score=nb_score,
+        sa_score=sa_score,
         source=source,
     )
+    cur = conn.execute(
+        """
+        UPDATE leaderboard
+        SET tier = 'screened_out',
+            validation_passed = 0,
+            notes = TRIM(
+                COALESCE(notes, '') ||
+                CASE WHEN COALESCE(notes, '') = '' THEN '' ELSE ' | ' END ||
+                'controlled_lang_s10_nb_sa: nb ' ||
+                printf('%.4f', ?) ||
+                ' below ' ||
+                printf('%.2f', ?) ||
+                ' and sa ' ||
+                printf('%.4f', ?) ||
+                ' below ' ||
+                printf('%.2f', ?)
+            )
+        WHERE result_id = ?
+          AND COALESCE(is_reference, 0) = 0
+          AND COALESCE(tier, '') NOT IN ('screened_out', 'retired')
+        """,
+        (
+            float(nb_score),
+            S10_NB_SA_NB_SCREENING_FAILURE_THRESHOLD,
+            float(sa_score),
+            S10_NB_SA_SA_SCREENING_FAILURE_THRESHOLD,
+            result_id,
+        ),
+    )
+    if cur.rowcount <= 0:
+        return False
+
+    conn.execute(
+        """
+        UPDATE program_results
+        SET failure_op = ?,
+            failure_details_json = ?
+        WHERE result_id = ?
+        """,
+        (S10_NB_SA_FAILURE_OP, details_json, result_id),
+    )
+    return True
+
+
+def apply_s05_sa_screening_failure(
+    conn: sqlite3.Connection,
+    *,
+    result_id: str,
+    score: Any,
+    erf_density: Any,
+    erf_decay_slope: Any,
+    graph_category_histogram: Any,
+    source: str,
+) -> bool:
+    """Downgrade a non-reference leaderboard row that fails the S0.5 SA gate."""
+    if not is_s05_sa_screening_failure(
+        score,
+        erf_density=erf_density,
+        erf_decay_slope=erf_decay_slope,
+        graph_category_histogram=graph_category_histogram,
+    ):
+        return False
+    if controlled_lang_gate_manual_override(
+        result_id=result_id,
+        failure_op=S05_SA_FAILURE_OP,
+    ):
+        return False
+
+    details_json = s05_sa_failure_details(
+        score,
+        erf_density=erf_density,
+        erf_decay_slope=erf_decay_slope,
+        graph_category_histogram=graph_category_histogram,
+        source=source,
+    )
+    cur = conn.execute(
+        """
+        UPDATE leaderboard
+        SET tier = 'screened_out',
+            validation_passed = 0,
+            notes = TRIM(
+                COALESCE(notes, '') ||
+                CASE WHEN COALESCE(notes, '') = '' THEN '' ELSE ' | ' END ||
+                'controlled_lang_s05_sa: score ' ||
+                printf('%.4f', ?) ||
+                ' below screening threshold ' ||
+                printf('%.2f', ?) ||
+                ' without ERF/mixing escape'
+            )
+        WHERE result_id = ?
+          AND COALESCE(is_reference, 0) = 0
+          AND COALESCE(tier, '') NOT IN ('screened_out', 'retired')
+        """,
+        (float(score), S05_SA_SCREENING_FAILURE_THRESHOLD, result_id),
+    )
+    if cur.rowcount <= 0:
+        return False
+
+    conn.execute(
+        """
+        UPDATE program_results
+        SET failure_op = ?,
+            failure_details_json = ?
+        WHERE result_id = ?
+        """,
+        (S05_SA_FAILURE_OP, details_json, result_id),
+    )
+    return True
 
 
 def apply_s05_nb_screening_failure(
