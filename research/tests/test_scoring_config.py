@@ -17,7 +17,6 @@ import pytest
 
 from research.scientist import scoring_config
 
-
 pytestmark = pytest.mark.unit
 
 
@@ -30,9 +29,11 @@ def test_yaml_loads():
 def test_inheritance_actually_overrides():
     layers = scoring_config.get_layered_configs()
     # The active YAML is flattened: v10/v11/v14 compose to the same weights.
-    assert layers["v10"]["w_blimp"] == 5.0
-    assert layers["v11"]["w_blimp"] == 5.0
-    assert layers["v14"]["w_blimp"] == 5.0
+    assert layers["v10"]["w_blimp"] == 10.0
+    assert layers["v11"]["w_blimp"] == 10.0
+    assert layers["v14"]["w_blimp"] == 10.0
+    assert layers["v14"]["w_hellaswag"] == 10.0
+    assert layers["v14"]["w_legacy_ar"] == 10.0
     assert layers["v10"]["w_cap_induction"] == 45.0
     assert layers["v11"]["w_cap_induction"] == 45.0
     assert layers["v14"]["w_cap_induction"] == 45.0
@@ -87,6 +88,29 @@ def test_reload_recomputes_hash(tmp_path, monkeypatch):
     assert h1 != h0
 
     # Restore original via reload after monkeypatch teardown (auto-revert).
+
+
+def test_api_scoring_reload_route_recomputes_hash(tmp_path, monkeypatch):
+    from research.scientist.api import create_app
+
+    original_path = scoring_config._CONFIG_PATH
+    original = original_path.read_bytes()
+    h0 = scoring_config.get_scoring_config_hash()
+    fake = tmp_path / "scoring_config.yaml"
+    fake.write_bytes(original + b"\n# api touched\n")
+
+    monkeypatch.setattr(scoring_config, "_CONFIG_PATH", fake)
+    try:
+        client = create_app(notebook_path=":memory:").test_client()
+        response = client.post("/api/scoring/reload")
+        payload = response.get_json()
+
+        assert response.status_code == 200
+        assert payload["version"] != h0
+        assert payload["config_path"] == str(fake)
+    finally:
+        monkeypatch.setattr(scoring_config, "_CONFIG_PATH", original_path)
+        scoring_config.reload_scoring_config()
 
 
 def test_trust_ceiling_section():

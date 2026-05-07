@@ -32,6 +32,7 @@ class TestCrossExperimentDedupGate(unittest.TestCase):
             stage1_passed=True,
             loss_ratio=0.5,
             model_source="graph_synthesis",
+            trust_label="test_fixture",
         )
         self.nb.flush_writes()
         self.assertTrue(rid)
@@ -49,6 +50,7 @@ class TestCrossExperimentDedupGate(unittest.TestCase):
                 stage1_passed=True,
                 loss_ratio=0.4,
                 model_source="evolution",
+                trust_label="test_fixture",
             )
         err = ctx.exception
         self.assertEqual(err.fingerprint, "fp_canonical")
@@ -68,6 +70,7 @@ class TestCrossExperimentDedupGate(unittest.TestCase):
             stage1_passed=True,
             loss_ratio=0.3,
             model_source="validation",
+            trust_label="test_fixture",
         )
         self.nb.flush_writes()
         self.assertTrue(rid)
@@ -87,6 +90,7 @@ class TestCrossExperimentDedupGate(unittest.TestCase):
             stage1_passed=True,
             loss_ratio=0.4,
             model_source="graph_synthesis",
+            trust_label="test_fixture",
         )
         self.nb.flush_writes()
         self.assertTrue(rid)

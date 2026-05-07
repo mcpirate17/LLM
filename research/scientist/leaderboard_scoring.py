@@ -216,12 +216,16 @@ def _pr_dict_to_score_kwargs(
         # weight in binding_composite was zeroed in favor of nano_ar_inv_score
         # (V4 evidence: ar_auc max=0.015 across 8062 rows = pure noise).
         "ar_auc": pr_dict.get("ar_auc") or d.get("ar_auc"),
-        "ar_timed_out": bool(pr_dict.get("ar_timed_out"))
-        if pr_dict.get("ar_timed_out") is not None
-        else None,
-        "ar_above_chance": bool(pr_dict.get("ar_above_chance"))
-        if pr_dict.get("ar_above_chance") is not None
-        else None,
+        "ar_timed_out": (
+            bool(pr_dict.get("ar_timed_out"))
+            if pr_dict.get("ar_timed_out") is not None
+            else None
+        ),
+        "ar_above_chance": (
+            bool(pr_dict.get("ar_above_chance"))
+            if pr_dict.get("ar_above_chance") is not None
+            else None
+        ),
         "nano_ar_inv_score": pr_dict.get("nano_ar_inv_score")
         or d.get("nano_ar_inv_score"),
         "induction_auc": pr_dict.get("induction_auc") or d.get("induction_auc"),
@@ -240,12 +244,12 @@ def _pr_dict_to_score_kwargs(
         # HellaSwag commonsense reasoning
         "hellaswag_acc_screening": pr_dict.get("hellaswag_acc")
         or d.get("hellaswag_acc"),
-        "hellaswag_acc_investigation": d.get("hellaswag_acc")
-        if tier in _inv_tiers
-        else None,
-        "hellaswag_acc_validation": d.get("hellaswag_acc")
-        if tier in _val_tiers
-        else None,
+        "hellaswag_acc_investigation": (
+            d.get("hellaswag_acc") if tier in _inv_tiers else None
+        ),
+        "hellaswag_acc_validation": (
+            d.get("hellaswag_acc") if tier in _val_tiers else None
+        ),
         # v8 understanding metrics
         "tinystories_score": pr_dict.get("tinystories_score"),
         "cross_task_score": pr_dict.get("cross_task_score"),
@@ -1633,9 +1637,6 @@ def _v12_champion_eligibility_gate(
     bd: Dict[str, Any],
     kw: Dict[str, Any],
 ) -> float:
-    if score <= _V12_CHAMPION_ELIGIBILITY_CEILING or bool(kw.get("is_reference")):
-        return score
-
     tier = str(kw.get("tier") or "").strip().lower()
     if tier not in {"investigation", "validation", "breakthrough"}:
         return score
@@ -1653,22 +1654,20 @@ def _v12_champion_eligibility_gate(
         and sequence_signal_count >= 2
     )
 
-    if induction_qualified or exception_allowed:
-        bd["_v12_champion_induction_qualified"] = induction_qualified
-        bd["_v12_champion_binding_qualified"] = binding_qualified
-        bd["_v12_champion_exception_allowed"] = exception_allowed
-        bd["_v12_champion_sequence_signal_count"] = sequence_signal_count
-        bd["_v12_champion_strong_induction"] = strong_induction
-        bd["_v12_champion_strong_binding"] = strong_binding
-        return score
-
-    bd["_v12_champion_eligibility_ceiling"] = _V12_CHAMPION_ELIGIBILITY_CEILING
     bd["_v12_champion_induction_qualified"] = induction_qualified
     bd["_v12_champion_binding_qualified"] = binding_qualified
     bd["_v12_champion_exception_allowed"] = exception_allowed
     bd["_v12_champion_sequence_signal_count"] = sequence_signal_count
     bd["_v12_champion_strong_induction"] = strong_induction
     bd["_v12_champion_strong_binding"] = strong_binding
+
+    if score <= _V12_CHAMPION_ELIGIBILITY_CEILING or bool(kw.get("is_reference")):
+        return score
+
+    if induction_qualified or exception_allowed:
+        return score
+
+    bd["_v12_champion_eligibility_ceiling"] = _V12_CHAMPION_ELIGIBILITY_CEILING
     return _V12_CHAMPION_ELIGIBILITY_CEILING
 
 
@@ -1803,9 +1802,8 @@ def compute_composite_v14(
     """Composite v14: v12 + tier-progressive controlled-language ladder.
 
     Adds 45pt of nano-scale BLiMP/HellaSwag replacement signal across
-    three difficulty tiers (S0.5/S1.0/Investigation). Real BLiMP stays
-    at 5pt floor; real HellaSwag drops 15→5 (per cohort audit showing
-    near-noise discrimination at our 750-step eval scale).
+    three difficulty tiers (S0.5/S1.0/Investigation). Real BLiMP and
+    HellaSwag keep 10pt floors for champion-length hard-probe reruns.
     """
     base = compute_composite_v12(decompose=True, **kw)
     score = float(base["composite_score"])
@@ -1891,7 +1889,7 @@ def _score_capability_tier_v10(
     cfg: Dict[str, float],
     *,
     inv_failed: bool,
-    effective_ar_auc: Optional[float],  # legacy — superseded by nano_ar_inv_score
+    effective_ar_auc: Optional[float],
     effective_induction_auc: Optional[float],
     effective_binding_auc: Optional[float],
     erf_density: Optional[float],
@@ -1900,18 +1898,19 @@ def _score_capability_tier_v10(
     logit_margin_velocity: Optional[float],
     nano_ar_inv_score: Optional[float] = None,
 ) -> tuple[float, Dict[str, float]]:
-    """v10 capability tier — 7 metrics × 25pts, each S-curved independently.
+    """v10 capability tier — trajectory, binding, nano-AR, and full-AR signals.
 
-    Post-V4: ``cap_ar`` is scored from ``nano_ar_inv_score`` rather than
-    ``effective_ar_auc`` (the legacy AR probe was uniformly noise across the DB).
+    ``cap_ar`` stays tied to ``nano_ar_inv_score`` for screening/investigation
+    continuity. ``cap_legacy_ar`` gives the full AR probe a separate champion
+    path when longer training makes that harder test meaningful.
     """
-    _ = effective_ar_auc
     bd: Dict[str, float] = {}
     total = 0.0
 
     if inv_failed:
         for k in (
             "cap_ar",
+            "cap_legacy_ar",
             "cap_induction",
             "cap_binding",
             "cap_erf_density",
@@ -1922,10 +1921,17 @@ def _score_capability_tier_v10(
             bd[k] = 0.0
         return 0.0, bd
 
-    # cap_ar uses nano_ar_inv_score (V4: legacy ar_auc was pure noise).
+    # cap_ar uses nano_ar_inv_score; full AR is scored separately below.
     _cap_ar_input = nano_ar_inv_score
     pairs = (
         ("cap_ar", _scurve_higher_better(_cap_ar_input, cfg["cap_ar_anchor"])),
+        (
+            "cap_legacy_ar",
+            _scurve_higher_better(
+                effective_ar_auc,
+                cfg.get("legacy_ar_anchor", 0.15),
+            ),
+        ),
         (
             "cap_induction",
             _scurve_higher_better(effective_induction_auc, cfg["cap_induction_anchor"]),
@@ -1954,7 +1960,10 @@ def _score_capability_tier_v10(
         ),
     )
     for key, frac in pairs:
-        pts = cfg[f"w_{key}"] * frac
+        weight = cfg.get(f"w_{key}", 0.0)
+        if key == "cap_legacy_ar":
+            weight = cfg.get("w_cap_legacy_ar", cfg.get("w_legacy_ar", weight))
+        pts = weight * frac
         bd[key] = pts
         total += pts
     return total, bd
@@ -2148,6 +2157,7 @@ def composite_score_ceiling(version: str | None = None) -> float:
         + 25.0  # speed
         + 10.0  # early_convergence
         + cfg["w_cap_ar"]
+        + cfg.get("w_legacy_ar", 0.0)
         + cfg["w_cap_induction"]
         + cfg["w_cap_binding"]
         + cfg["w_cap_erf_density"]
@@ -2159,6 +2169,7 @@ def composite_score_ceiling(version: str | None = None) -> float:
         # Controlled-language ladder (v14 addition)
         + cfg["w_cl_s05_sa"]
         + cfg["w_cl_s05_order"]
+        + cfg.get("w_cl_s05_nb_bucket", 0.0)
         + cfg["w_cl_s10_sa"]
         + cfg["w_cl_s10_order"]
         + cfg.get("w_cl_s10_nb_bucket", 0.0)

@@ -31,6 +31,7 @@ research/dashboard/build/
 # Logs & DB backups
 *.log
 *.log.[0-9]
+*.sql
 *.db.bak.*
 *.db.bak_*
 
@@ -53,6 +54,7 @@ research/dashboard/build/
 # PID files
 *.pid
 .claude/*.lock
+**/.claude/*.lock
 
 # CMake build artifacts
 research/runtime/native/build_current/
@@ -78,6 +80,11 @@ research/rescore_artifacts/
 
 # Auto-generated reports
 research/reports/
+*_task_*.md
+tasks/*coordination*.md
+tasks/codex_journal/*.md
+tasks/notebooklm/*.md
+**/.testmondata*
 
 # Root-level junk patterns
 :memory:*
@@ -93,6 +100,9 @@ research/artifacts/
 
 # Runtime learning state
 research/runtime/learning/
+research/runtime/**/*.jsonl
+research/runtime/**/*.log
+research/runtime/**/summary_*.json
 
 # Performance artifacts
 research/perf_artifacts/

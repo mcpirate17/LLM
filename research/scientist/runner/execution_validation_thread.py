@@ -183,6 +183,7 @@ class _ExecutionValidationThreadMixin:
                 "stage05_passed": 0,
                 "stage1_passed": 0,
                 "novel_count": 0,
+                "confirmed_count": 0,
                 "best_loss_ratio": None,
                 "best_novelty_score": None,
                 "survivors": [],

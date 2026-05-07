@@ -2,8 +2,16 @@
 # Automated build pipeline (Phase 4, DRY_HIGH_PERF_TODO.md)
 
 PYTHON ?= python
+UV ?= uv
+TESTMON_MARKERS ?= unit or api
+TESTMON_TARGET ?= research/tests
+SCALENE_CMD ?=
+BENCH ?=
+JOURNAL_NOTE ?=
+JOURNAL_TEST ?=
+NOTEBOOKLM_OUT ?= tasks/notebooklm/codex_context_bundle.md
 
-.PHONY: all aria_core test test-aria_core test-designer test-research test-integration clean clean-junk clean-docs clean-all help guardrails-dry guardrails-dry-report perf-summary governance-check governance-audit profile-hotpaths profile-screening-hotpaths profile-screening-hotpaths-quick
+.PHONY: all aria_core test test-aria_core test-designer test-research test-integration test-changed watch-test-changed profile-scalene bench codex-journal notebooklm-bundle clean clean-junk clean-docs clean-all help guardrails-dry guardrails-dry-report perf-summary governance-check governance-audit profile-hotpaths profile-screening-hotpaths profile-screening-hotpaths-quick
 
 all: aria_core  ## Build everything
 
@@ -39,6 +47,26 @@ test-research-all:  ## Run all research test markers
 test-integration:  ## Run cross-project observability/bridge contract tests
 	$(PYTHON) -m pytest research/tests/test_api_integration.py -k experiment_failures -x --tb=short
 	cd aria_designer && $(PYTHON) -m pytest tests/test_api.py -k "structured_error_details or eval_run_store_persists_to_database" -x --tb=short
+
+test-changed:  ## Run testmon-selected Python tests for changed code
+	$(PYTHON) -m pytest --testmon --testmon-forceselect -m "$(TESTMON_MARKERS)" $(TESTMON_TARGET) -x --tb=short
+
+watch-test-changed:  ## Re-run test-changed when source or tests change
+	watchexec --restart --watch research --watch aria_core --watch aria_designer --exts py,js,jsx,ts,tsx -- make test-changed
+
+profile-scalene:  ## Profile SCALENE_CMD='python -m module' with Scalene
+	@test -n "$(SCALENE_CMD)" || { echo "Set SCALENE_CMD='python -m module_or_script ...'"; exit 2; }
+	$(PYTHON) -m scalene $(SCALENE_CMD)
+
+bench:  ## Benchmark BENCH='cmd one' or BENCH='cmd one ::: cmd two' with hyperfine
+	@test -n "$(BENCH)" || { echo "Set BENCH='command to benchmark'"; exit 2; }
+	hyperfine $(BENCH)
+
+codex-journal:  ## Append an Obsidian-compatible Codex journal entry
+	$(UV) run python conductor/codex_journal.py --note "$(JOURNAL_NOTE)" $(if $(JOURNAL_TEST),--test "$(JOURNAL_TEST)",)
+
+notebooklm-bundle:  ## Build a curated Markdown bundle for manual NotebookLM upload
+	$(UV) run python conductor/notebooklm_bundle.py --out "$(NOTEBOOKLM_OUT)"
 
 guardrails-dry:  ## Enforce DRY/language guardrails against baseline
 	$(PYTHON) -m research.tools.dry_language_guardrails --strict

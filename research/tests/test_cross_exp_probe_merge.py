@@ -30,7 +30,7 @@ def _seed_two_experiments(nb: LabNotebook) -> dict[str, str]:
         loss_ratio=0.50,
         result_id="canon-rid",
         timestamp=2000.0,
-        trust_label="candidate_grade",
+        trust_label="test_fixture",
         hellaswag_acc=0.32,
     )
     # Different experiment, worse loss — stays non-canonical by loss ordering.
@@ -49,7 +49,7 @@ def _seed_two_experiments(nb: LabNotebook) -> dict[str, str]:
         loss_ratio=0.78,
         result_id="mid-rid",
         timestamp=1500.0,
-        trust_label="candidate_grade",
+        trust_label="test_fixture",
         intentional_rerun_reason="test_fixture_historical_dup",
     )
     # Oldest but has the probe measurements
@@ -63,7 +63,7 @@ def _seed_two_experiments(nb: LabNotebook) -> dict[str, str]:
         loss_ratio=0.62,
         result_id="probe-rid",
         timestamp=1000.0,
-        trust_label="candidate_grade",
+        trust_label="test_fixture",
         induction_auc=0.04,
         binding_auc=0.08,
         blimp_overall_accuracy=0.55,
@@ -80,7 +80,7 @@ def _seed_two_experiments(nb: LabNotebook) -> dict[str, str]:
         loss_ratio=0.55,
         result_id="replay-rid",
         timestamp=2500.0,
-        trust_label="candidate_grade",
+        trust_label="test_fixture",
         intentional_rerun_reason="exact_graph_replay",
     )
     nb.flush_writes()
@@ -177,6 +177,7 @@ def test_intentional_experiments_are_excluded(tmp_path):
             result_id=f"replay-{i}",
             timestamp=1000.0 + i,
             induction_auc=0.1 if i == 0 else None,
+            trust_label="test_fixture",
             intentional_rerun_reason="exact_graph_replay",
         )
     nb.flush_writes()

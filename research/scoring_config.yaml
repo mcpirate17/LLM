@@ -33,11 +33,11 @@ base:  # Single active config (flattened from v10 + v11 + v14)
   w_binding: 0.0  # Capability tier handles ar/ind/binding individually
 
   # ── Understanding tier ─────────────────────────────────────
-  w_blimp: 5.0           # was 35; nano-scale BLiMP doesn't move (2026-05-02)
+  w_blimp: 10.0          # champion hard probe floor; low-step nano runs remain noisy
   w_tinystories: 30.0
   w_cross_task: 30.0
   w_diagnostic: 40.0
-  w_hellaswag: 5.0       # was 15; insufficient signal at nano scale
+  w_hellaswag: 10.0      # champion hard probe floor; insufficient signal at nano scale
   w_hierarchy: 25.0
 
   # ── Controlled-language ladder (per-tier nano-binding) ─────
@@ -60,12 +60,13 @@ base:  # Single active config (flattened from v10 + v11 + v14)
   cl_inv_order_anchor: 0.420
 
   # ── Capability tier ────────────────────────────────────────
-  # Total 280pt: 90 (cap_ar/nano_ar_inv) + 45 (cap_induction) + 45 (cap_binding)
-  # + 25 × 4 (ERF density/decay, id_collapse, logit_margin).
+  # Total 290pt: 90 (cap_ar/nano_ar_inv) + 10 full AR + 45 (cap_induction)
+  # + 45 (cap_binding) + 25 × 4 (ERF density/decay, id_collapse, logit_margin).
   # 2026-05-05: cap_ar bumped 25→90 — nano_ar_inv replaces dead ar_auc and is
   # now the most trusted binding discriminator. cap_induction/cap_binding
   # cut from 65 to 45 to reduce attention-class dominance.
   w_cap_ar: 90.0
+  w_legacy_ar: 10.0      # full AR probe only; separate from nano_ar_inv cap_ar
   w_cap_induction: 45.0
   w_cap_binding: 45.0
   w_cap_erf_density: 25.0
@@ -88,6 +89,7 @@ base:  # Single active config (flattened from v10 + v11 + v14)
   diagnostic: 0.004     # val+bt diagnostic_score (n=2447)
   hierarchy: 0.848      # val+bt fp_hierarchy_fitness (n=2283)
   cap_ar_anchor: 0.50           # 2026-05-05: re-anchored for nano_ar_inv [0,1] range
+  legacy_ar_anchor: 0.15        # full AR pass signal after longer champion training
   cap_induction_anchor: 0.006   # original V10 anchor — paired with weight 45 produces
   cap_binding_anchor: 0.004     # the same s-curve credit V11's multiplier gave (1.8x ✕ V10)
   cap_erf_density_anchor: 0.047

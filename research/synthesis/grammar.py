@@ -58,7 +58,6 @@ from .generation_runtime import (
     runtime_context_for_config as _runtime_context_for_config,
 )
 
-
 # Alias for backward compatibility — some test files import Node from grammar
 Node = OpNode
 _check_graph_space_consistency = check_graph_space_consistency
@@ -668,53 +667,64 @@ def generate_layer_graph(
                 _iter_weights, t_idx, n_templates
             )
 
-        # Snapshot graph state for lightweight rollback instead of full copy.
-        # Only need to track node IDs added and metadata changes.
-        prev_next_id = graph._next_id
-        prev_output_id = graph._output_node_id
-        prev_metadata = dict(graph.metadata)
-        graph._cache.clear()
-
-        # Phase B.2 — propagate the dynamic-slot flag through metadata so the
-        # picker (_pick_compatible_motif) can read it without altering the
-        # apply_template signature.
-        graph.metadata["_use_derived_slot_classes"] = bool(
-            config.use_derived_slot_classes
+        max_attempts = (
+            4
+            if config.routing_mandatory and t_idx == 0 and not config.forced_template
+            else 1
         )
-
-        trial_current = apply_template(
-            graph,
-            current,
-            rng,
-            template_name=config.forced_template,
-            template_weights=_iter_weights,
-            motif_weights=runtime.motif_weights,
-            op_weights=runtime.effective_op_weights,
-            exploration_budget=config.template_exploration_budget,
-            allowed_template_names=_iter_allowed_names,
-            trial_template_names=config.trial_template_names,
-        )
-
-        # depth() returns 0 without a set output — point it at the trial tail
-        # so the budget check sees the actual longest input-to-trail path.
-        # Skip for very tight budgets where a real depth signal starves the
-        # grammar: the validator's +2 headroom is the sole depth backstop
-        # in that regime.
-        if config.max_depth > 10:
-            graph._output_node_id = trial_current
-            graph._cache.pop("depth", None)
-
-        if _graph_exceeds_final_budget(graph, config):
-            # Roll back only the suffix allocated by this template. Node IDs are
-            # monotonic, so there is no reason to rebuild a full key set here.
-            for nid in range(prev_next_id, graph._next_id):
-                del graph.nodes[nid]
-            graph._next_id = prev_next_id
-            graph._output_node_id = prev_output_id
-            graph.metadata = prev_metadata
+        template_applied = False
+        for _attempt in range(max_attempts):
+            # Snapshot graph state for lightweight rollback instead of full copy.
+            # Only need to track node IDs added and metadata changes.
+            prev_next_id = graph._next_id
+            prev_output_id = graph._output_node_id
+            prev_metadata = dict(graph.metadata)
             graph._cache.clear()
+
+            # Phase B.2 — propagate the dynamic-slot flag through metadata so the
+            # picker (_pick_compatible_motif) can read it without altering the
+            # apply_template signature.
+            graph.metadata["_use_derived_slot_classes"] = bool(
+                config.use_derived_slot_classes
+            )
+
+            trial_current = apply_template(
+                graph,
+                current,
+                rng,
+                template_name=config.forced_template,
+                template_weights=_iter_weights,
+                motif_weights=runtime.motif_weights,
+                op_weights=runtime.effective_op_weights,
+                exploration_budget=config.template_exploration_budget,
+                allowed_template_names=_iter_allowed_names,
+                trial_template_names=config.trial_template_names,
+            )
+
+            # depth() returns 0 without a set output — point it at the trial tail
+            # so the budget check sees the actual longest input-to-trail path.
+            # Skip for very tight budgets where a real depth signal starves the
+            # grammar: the validator's +2 headroom is the sole depth backstop
+            # in that regime.
+            if config.max_depth > 10:
+                graph._output_node_id = trial_current
+                graph._cache.pop("depth", None)
+
+            if _graph_exceeds_final_budget(graph, config):
+                # Roll back only the suffix allocated by this template. Node IDs
+                # are monotonic, so there is no reason to rebuild a full key set.
+                for nid in range(prev_next_id, graph._next_id):
+                    del graph.nodes[nid]
+                graph._next_id = prev_next_id
+                graph._output_node_id = prev_output_id
+                graph.metadata = prev_metadata
+                graph._cache.clear()
+                continue
+            current = trial_current
+            template_applied = True
             break
-        current = trial_current
+        if not template_applied:
+            break
 
     # Record depth placement for leaderboard analysis
     tpls_used = graph.metadata.get("templates_used", [])

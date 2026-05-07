@@ -22,6 +22,7 @@ kill_pid_file "$RUN_DIR/runtime_api.pid"
 
 runtime_pids="$(lsof -ti tcp:8091 2>/dev/null || true)"
 if [[ -n "$runtime_pids" ]]; then
+  # shellcheck disable=SC2086
   kill $runtime_pids 2>/dev/null || true
 fi
 

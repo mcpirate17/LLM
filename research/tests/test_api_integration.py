@@ -3562,10 +3562,19 @@ class TestAPI(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         data = r.get_json()
         self.assertEqual(data["config"]["scale_up_steps"], 40000)
+        self.assertEqual(data["config"]["n_layers"], 4)
+        self.assertGreater(data["config"]["early_stop_min_steps"], 40000)
+        self.assertGreater(data["config"]["early_stop_patience"], 40000)
+        self.assertEqual(data["config"]["phase_checkpoint_step_interval"], 10000)
         self.assertEqual(data["eligibility"]["eligible_result_ids"], [result_id])
         fake_runner.start_scale_up.assert_called_once()
         _args, kwargs = fake_runner.start_scale_up.call_args
         self.assertEqual(kwargs.get("workflow_mode"), "confirmation")
+        started_config = fake_runner.start_scale_up.call_args.args[1]
+        self.assertEqual(started_config.mode, "confirmation")
+        self.assertEqual(started_config.n_layers, 4)
+        self.assertGreater(started_config.early_stop_min_steps, 40000)
+        self.assertGreater(started_config.early_stop_patience, 40000)
 
     def test_api_start_requires_result_ids_for_scale_up(self):
         r = self.client.post(

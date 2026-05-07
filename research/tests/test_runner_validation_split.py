@@ -8,6 +8,7 @@ import inspect
 import os
 import sys
 import unittest
+from unittest.mock import patch
 
 import pytest
 
@@ -20,6 +21,7 @@ if _WORKSPACE_ROOT not in sys.path:
 from research.scientist.runner.execution_validation import (
     _ExecutionValidationMixin,
 )
+from research.scientist.runner._types import RunConfig
 
 pytestmark = pytest.mark.unit
 
@@ -92,6 +94,86 @@ class TestMixinComposition(unittest.TestCase):
         self.assertIsInstance(obj, _ExecutionValidationMixin)
         for name in TestExtractedMethodsExist.EXPECTED_METHODS:
             self.assertTrue(hasattr(obj, name))
+
+
+class TestChampionConfirmationPolicy(unittest.TestCase):
+    def test_confirmation_survivor_is_not_novelty_gated(self):
+        class _Stub(_ExecutionValidationMixin):
+            def __init__(self):
+                self.events = []
+
+            def _resolve_novelty_promotion_validity(self, *_args):
+                return False, "duplicate_champion", False
+
+            def _emit_event(self, event_type, payload):
+                self.events.append((event_type, payload))
+
+        class _Graph:
+            def fingerprint(self):
+                return "fp_parent"
+
+        class _Novelty:
+            novelty_valid_for_promotion = False
+            novelty_validity_reason = "duplicate_champion"
+            structural_novelty = 0.1
+            behavioral_novelty = 0.2
+            novelty_confidence = 0.3
+            most_similar_to = "parent"
+
+        class _Notebook:
+            conn = None
+
+            def get_program_detail(self, result_id):
+                return {"graph_fingerprint": "fp_parent"}
+
+            def record_program_result(self, **kwargs):
+                self.recorded = kwargs
+                return "child-confirm"
+
+            def store_training_curve(self, *_args):
+                raise AssertionError("no curve should be stored in this test")
+
+        config = RunConfig(mode="confirmation")
+        results = {
+            "novel_count": 0,
+            "confirmed_count": 0,
+            "survivors": [],
+            "best_loss_ratio": None,
+            "best_novelty_score": None,
+        }
+        nb = _Notebook()
+
+        with patch(
+            "research.scientist.runner.execution_validation_scale.graph_to_json",
+            return_value="{}",
+        ):
+            _Stub()._scale_up_record_result(
+                exp_id="exp-confirm",
+                source_result_id="parent-rid",
+                prog_idx=0,
+                total=1,
+                config=config,
+                nb=nb,
+                results=results,
+                graph=_Graph(),
+                model=None,
+                s1_passed=True,
+                loss_ratio=0.53,
+                final_loss=6.3,
+                throughput=None,
+                training_curve=None,
+                n_score=0.1,
+                nov=_Novelty(),
+                program_metrics={},
+            )
+
+        self.assertEqual(results["confirmed_count"], 1)
+        self.assertEqual(results["novel_count"], 1)
+        self.assertTrue(results["survivors"][0]["confirmation"])
+        self.assertEqual(
+            nb.recorded["intentional_rerun_reason"], "champion_confirmation"
+        )
+        self.assertEqual(nb.recorded["graph_fingerprint"], "fp_parent")
 
 
 if __name__ == "__main__":

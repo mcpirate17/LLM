@@ -9,7 +9,7 @@
 #   WAIT_PID=12345 research/tools/run_screening_s10_chunks.sh # block until PID exits
 
 set -u
-cd /home/tim/Projects/LLM
+cd /home/tim/Projects/LLM || exit
 
 START_CHUNK="${START_CHUNK:-01}"
 END_CHUNK="${END_CHUNK:-10}"

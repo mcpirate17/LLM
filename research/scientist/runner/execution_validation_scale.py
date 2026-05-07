@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import sqlite3
 
-
 from ..json_utils import json_safe
 from ..native_runner import compile_model_native_first as compile_model
 from ._helpers import (
@@ -14,11 +13,12 @@ from ._helpers import (
     screening_wikitext_fields,
 )
 from ._types import RunConfig
+from .execution_champion_confirmation import run_champion_milestone_evals
 from .execution_validation import _fail_loud
 from ...eval.diagnostic_tasks import run_diagnostic_suite
 from ...eval.fingerprint import compute_fingerprint
 from ...eval.metrics import novelty_score
-from ...synthesis.serializer import graph_from_json
+from ...synthesis.serializer import graph_from_json, graph_to_json
 from ...training.checkpointing import CheckpointManager
 
 import logging
@@ -102,6 +102,18 @@ class _ExecutionValidationScaleMixin:
             config=config,
             program_metrics=program_metrics,
             source_result_id=source_result_id,
+        )
+        run_champion_milestone_evals(
+            self,
+            exp_id=exp_id,
+            source_result_id=source_result_id,
+            prog_idx=prog_idx,
+            graph=graph,
+            config=config,
+            dev=dev,
+            dev_str=dev_str,
+            s1_passed=s1_passed,
+            program_metrics=program_metrics,
         )
 
         n_score, nov = self._scale_up_novelty(
@@ -229,6 +241,7 @@ class _ExecutionValidationScaleMixin:
         """Run micro-training for a scale-up candidate with checkpoint support."""
         ckpt = CheckpointManager(checkpoint_dir=str(config.checkpoint_dir))
         resume_state = ckpt.load_phase(exp_id, "validation", prog_idx, 0)
+        is_confirmation = str(getattr(config, "mode", "") or "") == "confirmation"
         base_ctx = {"exp_id": exp_id, "phase": "scale_up"}
         self._live_training_context = {
             **base_ctx,
@@ -245,6 +258,9 @@ class _ExecutionValidationScaleMixin:
             "checkpoint_seed_idx": 0,
             "checkpoint_interval_steps": int(
                 getattr(config, "phase_checkpoint_step_interval", 0) or 0
+            ),
+            "checkpoint_milestone_steps": (
+                [10_000, 20_000, 40_000] if is_confirmation else []
             ),
             "checkpoint_resume_state": (
                 resume_state
@@ -371,6 +387,8 @@ class _ExecutionValidationScaleMixin:
         source_result_id: str,
     ) -> None:
         """Run diagnostics + benchmark evals for scale-up survivors."""
+        if str(getattr(config, "mode", "") or "") == "confirmation":
+            return
         if s1_passed and model is not None:
             try:
                 diag = run_diagnostic_suite(model, device=dev_str)
@@ -487,6 +505,137 @@ class _ExecutionValidationScaleMixin:
 
         return n_score, nov
 
+    def _scale_up_record_confirmation_result(
+        self,
+        exp_id: str,
+        source_result_id: str,
+        nb,
+        graph,
+        s1_passed: bool,
+        loss_ratio: float | None,
+        final_loss: float | None,
+        throughput: float | None,
+        n_score: float,
+        nov,
+        program_metrics: dict,
+    ) -> str:
+        source_program = nb.get_program_detail(source_result_id) or {}
+        source_fp = str(
+            source_program.get("graph_fingerprint") or graph.fingerprint()
+        ).strip()
+        confirmation_metrics = dict(program_metrics)
+        confirmation_metrics.update(
+            {
+                "model_source": "champion_confirmation",
+                "result_cohort": "champion_confirmation",
+                "trust_label": "champion_confirmation",
+                "comparability_label": "champion_confirmation",
+                "evaluation_protocol_version": "champion_confirmation_v1",
+                "novelty_score": n_score,
+                "structural_novelty": getattr(nov, "structural_novelty", None),
+                "behavioral_novelty": getattr(nov, "behavioral_novelty", None),
+                "novelty_confidence": getattr(nov, "novelty_confidence", None),
+                "most_similar_to": getattr(nov, "most_similar_to", None),
+                "source_result_id": source_result_id,
+            }
+        )
+        return nb.record_program_result(
+            experiment_id=exp_id,
+            graph_fingerprint=source_fp,
+            graph_json=graph_to_json(graph),
+            stage0_passed=True,
+            stage05_passed=True,
+            stage1_passed=s1_passed,
+            final_loss=final_loss,
+            loss_ratio=loss_ratio,
+            throughput_tok_s=throughput,
+            intentional_rerun_reason="champion_confirmation",
+            bypass_quality_gate=True,
+            **confirmation_metrics,
+        )
+
+    def _scale_up_update_result_summary(
+        self,
+        *,
+        results: dict,
+        graph,
+        s1_passed: bool,
+        loss_ratio: float | None,
+        n_score: float,
+        novelty_valid: bool,
+        is_confirmation: bool,
+    ) -> None:
+        if s1_passed and (n_score > 0.5 or is_confirmation):
+            results["novel_count"] += 1
+            if is_confirmation:
+                results["confirmed_count"] = (
+                    int(results.get("confirmed_count") or 0) + 1
+                )
+            results["survivors"].append(
+                {
+                    "fingerprint": graph.fingerprint(),
+                    "novelty": n_score,
+                    "loss_ratio": loss_ratio,
+                    "novelty_valid_for_promotion": novelty_valid,
+                    "confirmation": is_confirmation,
+                }
+            )
+
+        if loss_ratio and (
+            results["best_loss_ratio"] is None
+            or loss_ratio < results["best_loss_ratio"]
+        ):
+            results["best_loss_ratio"] = loss_ratio
+        if n_score and (
+            results["best_novelty_score"] is None
+            or n_score > results["best_novelty_score"]
+        ):
+            results["best_novelty_score"] = n_score
+
+    def _scale_up_store_training_curve_once(
+        self, nb, result_id: str, training_curve: list | None
+    ) -> None:
+        if not (training_curve and result_id):
+            return
+        try:
+            existing_curve = nb.conn.execute(
+                "SELECT 1 FROM training_curves WHERE result_id = ? LIMIT 1",
+                (result_id,),
+            ).fetchone()
+            if existing_curve is None:
+                nb.store_training_curve(result_id, training_curve)
+        except (sqlite3.OperationalError, RuntimeError) as exc:
+            _fail_loud(
+                "scale_up",
+                f"training curve persistence failed for {result_id[:8]}",
+                exc,
+            )
+
+    def _scale_up_emit_result_completed(
+        self,
+        *,
+        exp_id: str,
+        source_result_id: str,
+        prog_idx: int,
+        total: int,
+        s1_passed: bool,
+        loss_ratio: float | None,
+        final_loss: float | None,
+    ) -> None:
+        self._emit_event(
+            "scale_up_progress",
+            {
+                "experiment_id": exp_id,
+                "current_program": prog_idx + 1,
+                "total_programs": total,
+                "source_result_id": source_result_id,
+                "status": "completed",
+                "passed": s1_passed,
+                "loss_ratio": round(loss_ratio, 4) if loss_ratio else None,
+                "final_loss": round(final_loss, 4) if final_loss else None,
+            },
+        )
+
     def _scale_up_record_result(
         self,
         exp_id: str,
@@ -508,6 +657,7 @@ class _ExecutionValidationScaleMixin:
         program_metrics: dict,
     ) -> None:
         """Resolve novelty validity, update results, persist to notebook."""
+        is_confirmation = str(getattr(config, "mode", "") or "") == "confirmation"
         novelty_valid, novelty_valid_reason, novelty_requires_justification = (
             self._resolve_novelty_promotion_validity(
                 config,
@@ -521,57 +671,41 @@ class _ExecutionValidationScaleMixin:
             novelty_requires_justification
         )
 
-        if s1_passed and n_score > 0.5:
-            results["novel_count"] += 1
-            results["survivors"].append(
-                {
-                    "fingerprint": graph.fingerprint(),
-                    "novelty": n_score,
-                    "loss_ratio": loss_ratio,
-                    "novelty_valid_for_promotion": novelty_valid,
-                }
-            )
-
-        if loss_ratio and (
-            results["best_loss_ratio"] is None
-            or loss_ratio < results["best_loss_ratio"]
-        ):
-            results["best_loss_ratio"] = loss_ratio
-        if n_score and (
-            results["best_novelty_score"] is None
-            or n_score > results["best_novelty_score"]
-        ):
-            results["best_novelty_score"] = n_score
+        self._scale_up_update_result_summary(
+            results=results,
+            graph=graph,
+            s1_passed=s1_passed,
+            loss_ratio=loss_ratio,
+            n_score=n_score,
+            novelty_valid=novelty_valid,
+            is_confirmation=is_confirmation,
+        )
 
         result_id = source_result_id
+        if is_confirmation:
+            result_id = self._scale_up_record_confirmation_result(
+                exp_id,
+                source_result_id,
+                nb,
+                graph,
+                s1_passed,
+                loss_ratio,
+                final_loss,
+                throughput,
+                n_score,
+                nov,
+                program_metrics,
+            )
 
-        if training_curve and result_id:
-            try:
-                existing_curve = nb.conn.execute(
-                    "SELECT 1 FROM training_curves WHERE result_id = ? LIMIT 1",
-                    (result_id,),
-                ).fetchone()
-                if existing_curve is None:
-                    nb.store_training_curve(result_id, training_curve)
-            except (sqlite3.OperationalError, RuntimeError) as exc:
-                _fail_loud(
-                    "scale_up",
-                    f"training curve persistence failed for {result_id[:8]}",
-                    exc,
-                )
-
-        self._emit_event(
-            "scale_up_progress",
-            {
-                "experiment_id": exp_id,
-                "current_program": prog_idx + 1,
-                "total_programs": total,
-                "source_result_id": source_result_id,
-                "status": "completed",
-                "passed": s1_passed,
-                "loss_ratio": round(loss_ratio, 4) if loss_ratio else None,
-                "final_loss": round(final_loss, 4) if final_loss else None,
-            },
+        self._scale_up_store_training_curve_once(nb, result_id, training_curve)
+        self._scale_up_emit_result_completed(
+            exp_id=exp_id,
+            source_result_id=source_result_id,
+            prog_idx=prog_idx,
+            total=total,
+            s1_passed=s1_passed,
+            loss_ratio=loss_ratio,
+            final_loss=final_loss,
         )
 
         del model

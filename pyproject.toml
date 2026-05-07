@@ -7,11 +7,14 @@ name = "llm-workspace"
 version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
-    "flask-cors>=6.0.0",
-    "lightgbm>=4.6.0",
-    "pyyaml>=6.0",
-    "xxhash>=3.0.0",
+  "flask-cors>=6.0.0",
+  "lightgbm>=4.6.0",
+  "pyyaml>=6.0",
+  "xxhash>=3.0.0",
 ]
 
 [tool.hatch.build.targets.wheel]
 packages = ["research", "aria_designer"]
+
+[dependency-groups]
+dev = ["pytest-testmon>=2.2.0", "scalene>=2.2.1"]

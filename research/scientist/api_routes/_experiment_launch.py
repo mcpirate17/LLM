@@ -128,9 +128,19 @@ def parse_start_request(body: Dict[str, Any]) -> StartExperimentRequest:
     refine_analysis_json = body.pop("refine_analysis_json", "")
     mode = normalize_start_mode(body.pop("mode", "single"))
     if mode == "confirmation":
+        body["mode"] = "confirmation"
+        body["n_layers"] = 4
         body.setdefault("scale_up_steps", VALIDATION_STEPS * 4)
         body.setdefault("scale_up_batch_size", VALIDATION_BATCH_SIZE)
         body.setdefault("scale_up_seq_len", VALIDATION_SEQ_LEN)
+        scale_steps = int(body.get("scale_up_steps") or (VALIDATION_STEPS * 4))
+        body["early_stop_min_steps"] = max(
+            int(body.get("early_stop_min_steps") or 0), scale_steps + 1
+        )
+        body["early_stop_patience"] = max(
+            int(body.get("early_stop_patience") or 0), scale_steps + 1
+        )
+        body["phase_checkpoint_step_interval"] = 10_000
     config = RunConfig.from_dict(body) if body else RunConfig()
     if refine_analysis_json:
         config.refine_analysis_json = (

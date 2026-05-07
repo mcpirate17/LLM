@@ -7,12 +7,14 @@ VENV_PATH="/home/tim/venvs/llm/bin/activate"
 
 # 1. Environment Setup
 if [ -f "$VENV_PATH" ]; then
+    # shellcheck source=/home/tim/venvs/llm/bin/activate
+    # shellcheck disable=SC1091
     source "$VENV_PATH"
 else
     echo "⚠️  Warning: venv not found at $VENV_PATH"
 fi
 
-cd "$PROJECT_ROOT"
+cd "$PROJECT_ROOT" || exit
 
 # 2. Export Bus Path for all sub-processes
 export LLM_BUS_SOCKET="/tmp/llm_hive.sock"

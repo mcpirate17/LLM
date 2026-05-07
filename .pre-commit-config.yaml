@@ -18,6 +18,21 @@ repos:
 
   - repo: local
     hooks:
+      - id: code-review-graph-detect
+        name: Code review graph changed-symbol hint
+        language: system
+        entry: bash -c 'command -v code-review-graph >/dev/null 2>&1 && code-review-graph detect-changes --brief || true'
+        pass_filenames: false
+      - id: shellcheck
+        name: ShellCheck staged shell scripts
+        language: system
+        entry: bash -c 'if ! command -v shellcheck >/dev/null 2>&1; then echo "shellcheck not installed; skipping"; exit 0; fi; shellcheck "$@"' --
+        types: [shell]
+      - id: taplo-format-check
+        name: Taplo TOML format check
+        language: system
+        entry: bash -c 'if ! command -v taplo >/dev/null 2>&1; then echo "taplo not installed; skipping"; exit 0; fi; taplo fmt --check "$@"' --
+        types: [toml]
       - id: protected-data-deletes
         name: Block protected research data deletes
         language: system

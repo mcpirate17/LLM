@@ -8,6 +8,8 @@ import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
+from research.defaults import VALIDATION_STEPS
+
 from ..json_utils import json_safe
 from ..runtime_events import publish_lifecycle_event, publish_runtime_event
 
@@ -822,6 +824,24 @@ class _ControlStartMixin:
         self._thread.start()
         return exp_id
 
+    @staticmethod
+    def _confirmation_scale_config(config: RunConfig) -> RunConfig:
+        """Return scale-up config pinned to champion-confirmation defaults."""
+        confirmed = config.copy()
+        confirmed.mode = "confirmation"
+        confirmed.n_layers = 4
+        confirmed.scale_up_steps = max(
+            int(confirmed.scale_up_steps), VALIDATION_STEPS * 4
+        )
+        confirmed.early_stop_min_steps = max(
+            int(confirmed.early_stop_min_steps), int(confirmed.scale_up_steps) + 1
+        )
+        confirmed.early_stop_patience = max(
+            int(confirmed.early_stop_patience), int(confirmed.scale_up_steps) + 1
+        )
+        confirmed.phase_checkpoint_step_interval = 10_000
+        return confirmed
+
     def start_scale_up(
         self,
         result_ids: List[str],
@@ -841,6 +861,8 @@ class _ControlStartMixin:
         nb = self._make_notebook()
         source = "user_input" if hypothesis is not None else "runner_template"
         is_confirmation = workflow_mode == "confirmation"
+        if is_confirmation:
+            config = self._confirmation_scale_config(config)
         if hypothesis is None:
             if is_confirmation:
                 hypothesis = (

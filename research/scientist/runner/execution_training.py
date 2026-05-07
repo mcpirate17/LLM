@@ -356,8 +356,26 @@ def _maybe_save_phase_training_state(
     if context is None:
         return
     interval = int(context.get("checkpoint_interval_steps", 0) or 0)
-    if interval <= 0 or completed_steps <= 0 or (completed_steps % interval) != 0:
+    milestone_steps = {
+        int(step)
+        for step in (context.get("checkpoint_milestone_steps") or [])
+        if int(step or 0) > 0
+    }
+    is_interval_step = (
+        interval > 0 and completed_steps > 0 and (completed_steps % interval) == 0
+    )
+    is_milestone_step = completed_steps in milestone_steps
+    if not is_interval_step and not is_milestone_step:
         return
+    metrics = {
+        "source_result_id": context.get("source_result_id"),
+        "total_steps": int(total_steps),
+        "elapsed_ms": float(elapsed_ms),
+        "progress": _serialize_progress(progress),
+        "inflight_state": _serialize_inflight_state(inflight_state),
+        "early_stop_best_loss": early_stop_best_loss,
+        "early_stop_steps_since_improve": int(early_stop_steps_since_improve),
+    }
     context["checkpoint_manager"].save_phase(
         experiment_id=str(context["exp_id"]),
         phase=str(context.get("checkpoint_phase", context["phase"])),
@@ -366,16 +384,17 @@ def _maybe_save_phase_training_state(
         model_state_dict=model.state_dict(),
         optimizer_state_dict=optimizer.state_dict(),
         step=completed_steps,
-        metrics={
-            "source_result_id": context.get("source_result_id"),
-            "total_steps": int(total_steps),
-            "elapsed_ms": float(elapsed_ms),
-            "progress": _serialize_progress(progress),
-            "inflight_state": _serialize_inflight_state(inflight_state),
-            "early_stop_best_loss": early_stop_best_loss,
-            "early_stop_steps_since_improve": int(early_stop_steps_since_improve),
-        },
+        metrics=metrics,
     )
+    if is_milestone_step:
+        context["checkpoint_manager"].save_investigation_artifact(
+            experiment_id=str(context["exp_id"]),
+            source_result_id=str(context.get("source_result_id") or "unknown"),
+            training_program_idx=int(context["checkpoint_candidate_idx"]),
+            payload={**metrics, "step": int(completed_steps)},
+            model_state_dict=model.state_dict(),
+            artifact_kind=f"{context.get('phase', 'phase')}_step{completed_steps}",
+        )
 
 
 @dataclass

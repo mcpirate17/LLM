@@ -25,6 +25,7 @@ kill_pid_file "$RUN_DIR/ui.pid"
 for p in 8091 $(seq 5174 5200); do
   pids="$(lsof -ti tcp:"$p" 2>/dev/null || true)"
   if [[ -n "$pids" ]]; then
+    # shellcheck disable=SC2086
     kill $pids 2>/dev/null || true
   fi
 done

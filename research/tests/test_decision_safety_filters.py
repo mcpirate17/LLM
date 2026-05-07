@@ -22,6 +22,7 @@ def test_get_top_programs_returns_stage1_survivors(tmp_path):
             stage1_passed=True,
             loss_ratio=0.4,
             novelty_score=0.6,
+            trust_label="test_fixture",
         )
         nb.complete_experiment(
             exp_good,
@@ -39,6 +40,7 @@ def test_get_top_programs_returns_stage1_survivors(tmp_path):
             stage1_passed=True,
             loss_ratio=0.2,
             novelty_score=0.9,
+            trust_label="test_fixture",
         )
         nb.complete_experiment(
             exp_bad,

@@ -13,9 +13,9 @@
 # `if TYPE_CHECKING:` import blocks; closure references that ruff
 # can't statically resolve get a per-line `# noqa: F821`.
 ignore = [
-    "E402",   # module import not at top — structural, can't fix without redesign
-    "E741",   # ambiguous variable name — `l` in loops is idiomatic Python
-    "F403",   # star import — used for native re-exports
+  "E402", # module import not at top — structural, can't fix without redesign
+  "E741", # ambiguous variable name — `l` in loops is idiomatic Python
+  "F403", # star import — used for native re-exports
 ]
 
 [lint.per-file-ignores]

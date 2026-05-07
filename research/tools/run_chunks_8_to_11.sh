@@ -1,6 +1,6 @@
 #!/bin/bash
 set -u
-cd /home/tim/Projects/LLM
+cd /home/tim/Projects/LLM || exit
 
 WAIT_PID=723840
 LOG=research/reports/chunk_runner.log

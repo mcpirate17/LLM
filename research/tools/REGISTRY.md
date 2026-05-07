@@ -48,7 +48,6 @@ cleanup pass.
 | `profile_templates.py` | pipeline | Profile template screening performance and failure modes | `python -m research.tools.profile_templates` | - |
 | `recompute_screening_metrics.py` | pipeline | Recompute persisted screening metrics from canonical sources | `python -m research.tools.recompute_screening_metrics` | - |
 | `register_references.py` | pipeline | Register reference architectures to the leaderboard | `python -m research --mode=register-references` | - |
-| `rescore_all_v7.py` | pipeline | Rescore the full leaderboard through the canonical composite implementation | `python -m research.tools.rescore_all_v7` | Remove after callers switch to `backfill.py --probe rescore` |
 | `run_binding_pilot.py` | pipeline | Run staged binding-pilot backpopulation campaigns | `python -m research.tools.run_binding_pilot` | - |
 | `run_probe_backfill.py` | pipeline | Generic concurrent probe backfill runner for post-train targets | `python -m research.tools.run_probe_backfill` | - |
 | `run_s1_backpopulate.py` | pipeline | Run guarded S1 backpopulate campaigns over selected cohorts | `python -m research.tools.run_s1_backpopulate` | - |

@@ -63,15 +63,13 @@ def test_cleanup_merges_orphan_duplicates_and_relabels_backfill(tmp_path):
 
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
-    kept = conn.execute(
-        """
+    kept = conn.execute("""
         SELECT result_id, induction_auc, binding_auc, hellaswag_acc,
                result_cohort, trust_label, comparability_label,
                evaluation_protocol_version, init_regime
         FROM program_results
         WHERE graph_fingerprint = 'dup-fp-001'
-        """
-    ).fetchall()
+        """).fetchall()
     assert len(kept) == 1
     row = kept[0]
     assert row["induction_auc"] == 0.04
@@ -122,6 +120,7 @@ def test_cleanup_skips_groups_with_leaderboard_rows(tmp_path):
         stage1_passed=True,
         loss_ratio=0.8,
         timestamp=100.0,
+        trust_label="test_fixture",
     )
     nb.record_program_result(
         experiment_id=exp_b,
@@ -134,6 +133,7 @@ def test_cleanup_skips_groups_with_leaderboard_rows(tmp_path):
         loss_ratio=0.7,
         timestamp=200.0,
         induction_auc=0.05,
+        trust_label="test_fixture",
     )
     nb.flush_writes()
     nb.upsert_leaderboard(
@@ -178,6 +178,7 @@ def test_single_lb_cleanup_merges_into_leaderboard_row(tmp_path):
         stage1_passed=True,
         loss_ratio=0.8,
         timestamp=100.0,
+        trust_label="test_fixture",
     )
     dup_id = nb.record_program_result(
         experiment_id=exp_val,
@@ -191,6 +192,7 @@ def test_single_lb_cleanup_merges_into_leaderboard_row(tmp_path):
         validation_loss_ratio=0.45,
         induction_auc=0.05,
         timestamp=200.0,
+        trust_label="test_fixture",
     )
     nb.flush_writes()
     nb.upsert_leaderboard(
@@ -221,13 +223,11 @@ def test_single_lb_cleanup_merges_into_leaderboard_row(tmp_path):
 
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
-    rows = conn.execute(
-        """
+    rows = conn.execute("""
         SELECT result_id, loss_ratio, validation_loss_ratio, induction_auc
         FROM program_results
         WHERE graph_fingerprint = 'dup-fp-single-lb'
-        """
-    ).fetchall()
+        """).fetchall()
     assert len(rows) == 1
     row = rows[0]
     assert row["result_id"] == lb_id
@@ -268,6 +268,7 @@ def test_single_lb_cleanup_handles_missing_experiment_row(tmp_path):
         stage0_passed=True,
         stage1_passed=True,
         loss_ratio=0.5,
+        trust_label="test_fixture",
     )
     missing_id = nb.record_program_result(
         experiment_id="missing-exp-id",
@@ -279,6 +280,7 @@ def test_single_lb_cleanup_handles_missing_experiment_row(tmp_path):
         stage1_passed=True,
         loss_ratio=0.4,
         induction_auc=0.07,
+        trust_label="test_fixture",
     )
     nb.flush_writes()
     nb.upsert_leaderboard(

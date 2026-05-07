@@ -7,6 +7,7 @@ __pycache__/
 
 # Testing
 .pytest_cache/
+.testmondata*
 
 # IDE
 .vscode/settings.json
@@ -28,6 +29,7 @@ monitor_wake_prompt.md
 <MagicMock*
 
 # Runtime artifacts
+*.sql
 *.db
 *.db.bak
 *.db.bak_*
@@ -45,6 +47,7 @@ monitor_wake_prompt.md
 *.writer-lock
 .gpu-lock
 *.log
+.claude/*.lock
 :memory:*
 *:memory:*
 checkpoints/
@@ -52,6 +55,9 @@ perf_artifacts/
 profiling/
 reports/
 runtime_events/
+runtime/**/*.jsonl
+runtime/**/*.log
+runtime/**/summary_*.json
 **/runtime_events/
 **/reports/
 **/profiling/

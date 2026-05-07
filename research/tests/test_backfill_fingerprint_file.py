@@ -21,6 +21,7 @@ def _seed_rows(nb: LabNotebook) -> list[tuple[str, str]]:
             stage1_passed=True,
             loss_ratio=0.5,
             result_id=rid,
+            trust_label="test_fixture",
         )
         rows.append((rid, fp))
     nb.flush_writes()
@@ -46,7 +47,7 @@ def test_fingerprint_file_preserves_priority_order(tmp_path):
     )
 
     assert [c.graph_fingerprint for c in candidates] == [fp for _, fp in reversed(rows)]
-    assert all(c.tier == "priority" for c in candidates)
+    assert all(c.tier == "screening" for c in candidates)
     assert all(c.graph_json is not None for c in candidates)
 
 
