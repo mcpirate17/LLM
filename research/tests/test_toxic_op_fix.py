@@ -103,6 +103,7 @@ def test_failure_signatures_count_genuine_s1_failures(nb):
         stage05_passed=True,
         stage1_passed=True,
         loss_ratio=0.5,
+        trust_label="test_fixture",
     )
 
     nb.flush_writes()

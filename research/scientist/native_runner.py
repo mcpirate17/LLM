@@ -11,9 +11,14 @@ from .native.abi import (
     _try_load_native_lib,
 )
 from .native.compiler import _legacy_compile_model
+from .native.core import _try_import_rust_scheduler as _try_import_rust_scheduler
 from .native.dispatch import (
     dispatch_graph_native as dispatch_graph_native,  # noqa: F401
     dispatch_op_native as dispatch_op_native,  # noqa: F401
+)
+from .native.profiling import (
+    enable_native_profiling as enable_native_profiling,
+    get_native_profile as get_native_profile,
 )
 
 

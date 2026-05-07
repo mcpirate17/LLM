@@ -190,6 +190,11 @@ from ._helpers import (
     screening_probe_fields,
     screening_wikitext_fields,
 )
+from .execution_screening_graphs import (
+    analyze_graph_for_screening as analyze_graph_for_screening,
+    structural_gate_failure as structural_gate_failure,
+    toxic_failure_ratio as toxic_failure_ratio,
+)
 
 # S0.75 initial-loss threshold: architectures with initial CE loss above this
 # are killed before rapid screening. Calibrated from diagnosis (2026-03-20):

@@ -23,9 +23,15 @@ def _make_graph(dim: int = 64) -> tuple[ComputationGraph, int]:
     return g, inp
 
 
+def _math_config() -> GrammarConfig:
+    """Keep tests focused on math-space placement, not global routing gates."""
+    return GrammarConfig(routing_mandatory=False)
+
+
 def _finalize(g: ComputationGraph, last_id: int) -> ComputationGraph:
     """Set output and return the graph."""
-    g.set_output(last_id)
+    final = g.add_op("rmsnorm", [last_id])
+    g.set_output(final)
     return g
 
 
@@ -42,7 +48,7 @@ def test_sparse_threshold_after_lif_neuron_accepted():
     proj = g.add_op("linear_proj", [stdp])
     res = g.add_op("add", [inp, proj])
     _finalize(g, res)
-    _validate_graph(g, GrammarConfig())  # should not raise
+    _validate_graph(g, _math_config())  # should not raise
 
 
 def test_sparse_threshold_after_linear_proj_rejected():
@@ -56,7 +62,7 @@ def test_sparse_threshold_after_linear_proj_rejected():
     # Rejected by context_rules.py (requires stdp_attention successor) or
     # MATH_SPACE_RULES (must_follow spiking predecessor) — either fires
     with pytest.raises(ValueError, match="sparse_threshold"):
-        _validate_graph(g, GrammarConfig())
+        _validate_graph(g, _math_config())
 
 
 # ── Spiking: stdp_attention must_follow {sparse_threshold, spike_rate_code, lif_neuron} ──
@@ -71,7 +77,7 @@ def test_stdp_attention_after_sparse_threshold_accepted():
     proj = g.add_op("linear_proj", [stdp])
     res = g.add_op("add", [inp, proj])
     _finalize(g, res)
-    _validate_graph(g, GrammarConfig())  # should not raise
+    _validate_graph(g, _math_config())  # should not raise
 
 
 def test_stdp_attention_after_gelu_rejected():
@@ -84,7 +90,7 @@ def test_stdp_attention_after_gelu_rejected():
     _finalize(g, res)
     # Rejected by context_rules.py or MATH_SPACE_RULES
     with pytest.raises(ValueError, match="stdp_attention"):
-        _validate_graph(g, GrammarConfig())
+        _validate_graph(g, _math_config())
 
 
 # ── Spiking: lif_neuron must_follow_with {spike_rate_code, sparse_threshold, linear_proj} ──
@@ -99,7 +105,7 @@ def test_lif_neuron_followed_by_sparse_threshold_accepted():
     proj = g.add_op("linear_proj", [stdp])
     res = g.add_op("add", [inp, proj])
     _finalize(g, res)
-    _validate_graph(g, GrammarConfig())  # should not raise
+    _validate_graph(g, _math_config())  # should not raise
 
 
 def test_lif_neuron_followed_by_spike_rate_code_accepted():
@@ -110,7 +116,7 @@ def test_lif_neuron_followed_by_spike_rate_code_accepted():
     proj = g.add_op("linear_proj", [src])
     res = g.add_op("add", [inp, proj])
     _finalize(g, res)
-    _validate_graph(g, GrammarConfig())  # should not raise
+    _validate_graph(g, _math_config())  # should not raise
 
 
 def test_lif_neuron_followed_only_by_gelu_rejected():
@@ -124,7 +130,7 @@ def test_lif_neuron_followed_only_by_gelu_rejected():
     # Rejected by either MATH_SPACE_RULES (must_follow_with) or
     # context_rules.py (requires spiking successor context)
     with pytest.raises(ValueError, match="lif_neuron"):
-        _validate_graph(g, GrammarConfig())
+        _validate_graph(g, _math_config())
 
 
 # ── Tropical: tropical_matmul must_precede {rmsnorm, layernorm} ──
@@ -139,7 +145,7 @@ def test_tropical_matmul_after_rmsnorm_accepted():
     proj = g.add_op("linear_proj", [tm])
     res = g.add_op("add", [inp, proj])
     _finalize(g, res)
-    _validate_graph(g, GrammarConfig())  # should not raise
+    _validate_graph(g, _math_config())  # should not raise
 
 
 def test_tropical_matmul_after_gelu_rejected():
@@ -153,7 +159,7 @@ def test_tropical_matmul_after_gelu_rejected():
     _finalize(g, res)
     # Rejected by context_rules.py or MATH_SPACE_RULES
     with pytest.raises(ValueError, match="tropical_matmul"):
-        _validate_graph(g, GrammarConfig())
+        _validate_graph(g, _math_config())
 
 
 # ── Tropical: tropical_matmul must_follow_with {linear_proj, linear_proj_down} ──
@@ -170,7 +176,7 @@ def test_tropical_matmul_without_proj_successor_rejected():
     _finalize(g, res)
     # Rejected by MATH_SPACE_RULES (must_follow_with) or context_rules.py
     with pytest.raises(ValueError, match="tropical_matmul"):
-        _validate_graph(g, GrammarConfig())
+        _validate_graph(g, _math_config())
 
 
 # ── Tropical: tropical_center must_follow {tropical_attention, tropical_gate} ──
@@ -180,11 +186,12 @@ def test_tropical_center_after_tropical_attention_accepted():
     g, inp = _make_graph()
     ln = g.add_op("rmsnorm", [inp])
     ta = g.add_op("tropical_attention", [ln])
-    tc = g.add_op("tropical_center", [ta])
-    proj = g.add_op("linear_proj", [tc])
+    gate = g.add_op("tropical_gate", [ta])
+    tc = g.add_op("tropical_center", [gate])
+    proj = g.add_op("linear_proj_down", [tc])
     res = g.add_op("add", [inp, proj])
     _finalize(g, res)
-    _validate_graph(g, GrammarConfig())  # should not raise
+    _validate_graph(g, _math_config())  # should not raise
 
 
 def test_tropical_center_after_linear_proj_rejected():
@@ -196,7 +203,7 @@ def test_tropical_center_after_linear_proj_rejected():
     res = g.add_op("add", [inp, proj2])
     _finalize(g, res)
     with pytest.raises(ValueError, match="tropical_center"):
-        _validate_graph(g, GrammarConfig())
+        _validate_graph(g, _math_config())
 
 
 # ── Hyperbolic: hyp_linear must_follow {exp_map} ──
@@ -212,7 +219,7 @@ def test_hyp_linear_after_exp_map_accepted():
     proj = g.add_op("linear_proj", [lm])
     res = g.add_op("add", [inp, proj])
     _finalize(g, res)
-    _validate_graph(g, GrammarConfig())  # should not raise
+    _validate_graph(g, _math_config())  # should not raise
 
 
 def test_hyp_linear_after_rmsnorm_rejected():
@@ -225,7 +232,7 @@ def test_hyp_linear_after_rmsnorm_rejected():
     res = g.add_op("add", [inp, proj])
     _finalize(g, res)
     with pytest.raises(ValueError, match="hyp_linear|Space conflict"):
-        _validate_graph(g, GrammarConfig())
+        _validate_graph(g, _math_config())
 
 
 # ── Hyperbolic: hyp_tangent_nonlinear must_follow {hyp_linear} ──
@@ -242,7 +249,7 @@ def test_hyp_tangent_nonlinear_after_gelu_rejected():
     res = g.add_op("add", [inp, proj])
     _finalize(g, res)
     with pytest.raises(ValueError, match="hyp_tangent_nonlinear|Space conflict"):
-        _validate_graph(g, GrammarConfig())
+        _validate_graph(g, _math_config())
 
 
 # ── Hyperbolic: hyp_tangent_nonlinear must_follow_with {log_map, linear_proj} ──
@@ -259,4 +266,4 @@ def test_hyp_tangent_nonlinear_without_log_map_rejected():
     res = g.add_op("add", [inp, ht])
     _finalize(g, res)
     with pytest.raises(ValueError, match="hyp_tangent_nonlinear"):
-        _validate_graph(g, GrammarConfig())
+        _validate_graph(g, _math_config())

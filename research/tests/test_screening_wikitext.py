@@ -206,7 +206,9 @@ class TestMetadataFields:
         assert "wikitext_perplexity" in result
         assert "wikitext_score" in result
         assert "elapsed_ms" in result
-        assert result["screening_wikitext_metric_version"] == "screening_wikitext_v1"
+        assert (
+            result["screening_wikitext_metric_version"] == "screening_wikitext_v2_bpe"
+        )
 
     def test_budget_fields(self, tiny_model):
         with patch("research.eval.wikitext_eval._prepare_batches") as mock_pb:

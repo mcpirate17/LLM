@@ -15,17 +15,16 @@ def register_native_routes(app, context: ApiRouteContext):
     def api_native_runner_profile():
         """Return per-node profiling data from the most recent native execution."""
         try:
-            from ..native.profiling import get_native_profile
-            from ..native.core import _try_import_rust_scheduler
+            from .. import native_runner
 
-            rust = _try_import_rust_scheduler()
+            rust = native_runner._try_import_rust_scheduler()
             profiling_enabled = bool(
                 rust is not None
                 and hasattr(rust, "profiler_enabled")
                 and rust.profiler_enabled()
             )
 
-            profile = get_native_profile()
+            profile = native_runner.get_native_profile()
             if profile is not None:
                 node_profiles = list(profile.get("node_profiles", []))
                 total_duration_us = sum(
@@ -57,15 +56,14 @@ def register_native_routes(app, context: ApiRouteContext):
     def api_native_runner_profile_enable():
         """Toggle native kernel profiling on or off."""
         try:
-            from ..native.profiling import enable_native_profiling
-            from ..native.core import _try_import_rust_scheduler
+            from .. import native_runner
 
             body = request.get_json(silent=True) or {}
             enable = bool(body.get("enable", True))
 
-            result = enable_native_profiling(enable)
+            result = native_runner.enable_native_profiling(enable)
 
-            rust = _try_import_rust_scheduler()
+            rust = native_runner._try_import_rust_scheduler()
             now_enabled = bool(
                 rust is not None
                 and hasattr(rust, "profiler_enabled")

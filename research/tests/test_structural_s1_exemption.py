@@ -9,8 +9,23 @@ Proves:
   5. Overall model S1 screening is unchanged
 """
 
+import json
 from unittest.mock import patch
 from research.synthesis.context_rules import S1_EXEMPT_OPS
+
+
+def _graph_rows_for_op(op_name: str, *, n_used: int, n_s1: int) -> list[dict]:
+    graph_json = json.dumps(
+        {"nodes": {"0": {"op_name": "input"}, "1": {"op_name": op_name}}}
+    )
+    return [
+        {
+            "graph_json": graph_json,
+            "stage0_any_passed": True,
+            "stage1_any_passed": idx < n_s1,
+        }
+        for idx in range(n_used)
+    ]
 
 
 class TestCategoryWeightExemption:
@@ -111,52 +126,14 @@ class TestPerOpWeightExemption:
         """compute_op_weights excludes structural ops from both mean and output."""
         from research.scientist.analytics.analytics_experiments import _ExperimentsMixin
 
-        fake_rates = {
-            "identity": {
-                "n_used": 100,
-                "n_s0": 80,
-                "s0_rate": 0.8,
-                "s05_rate": 0.5,
-                "s1_rate": 0.01,
-                "avg_loss_ratio": 0.9,
-                "avg_novelty": None,
-                "avg_novelty_confidence": None,
-            },
-            "concat": {
-                "n_used": 100,
-                "n_s0": 90,
-                "s0_rate": 0.9,
-                "s05_rate": 0.6,
-                "s1_rate": 0.02,
-                "avg_loss_ratio": 0.85,
-                "avg_novelty": None,
-                "avg_novelty_confidence": None,
-            },
-            "state_space": {
-                "n_used": 100,
-                "n_s0": 70,
-                "s0_rate": 0.7,
-                "s05_rate": 0.4,
-                "s1_rate": 0.3,
-                "avg_loss_ratio": 0.5,
-                "avg_novelty": 0.5,
-                "avg_novelty_confidence": 0.8,
-            },
-            "linear_proj": {
-                "n_used": 200,
-                "n_s0": 180,
-                "s0_rate": 0.9,
-                "s05_rate": 0.7,
-                "s1_rate": 0.5,
-                "avg_loss_ratio": 0.4,
-                "avg_novelty": 0.3,
-                "avg_novelty_confidence": 0.7,
-            },
-        }
+        rows = (
+            _graph_rows_for_op("identity", n_used=100, n_s1=1)
+            + _graph_rows_for_op("concat", n_used=100, n_s1=2)
+            + _graph_rows_for_op("state_space", n_used=100, n_s1=30)
+            + _graph_rows_for_op("linear_proj", n_used=200, n_s1=100)
+        )
 
-        with patch.object(
-            _ExperimentsMixin, "op_success_rates", return_value=fake_rates
-        ):
+        with patch.object(_ExperimentsMixin, "_deduped_graph_rows", return_value=rows):
             mixin = _ExperimentsMixin()
             weights = mixin.compute_op_weights(min_used=5)
 
@@ -173,32 +150,11 @@ class TestPerOpWeightExemption:
         from research.scientist.analytics.analytics_experiments import _ExperimentsMixin
 
         # Without exemption, identity (s1_rate=0) would drag mean from 0.4 to 0.2
-        fake_rates = {
-            "identity": {
-                "n_used": 100,
-                "n_s0": 80,
-                "s0_rate": 0.8,
-                "s05_rate": 0.5,
-                "s1_rate": 0.0,
-                "avg_loss_ratio": 0.9,
-                "avg_novelty": None,
-                "avg_novelty_confidence": None,
-            },
-            "state_space": {
-                "n_used": 100,
-                "n_s0": 70,
-                "s0_rate": 0.7,
-                "s05_rate": 0.4,
-                "s1_rate": 0.4,
-                "avg_loss_ratio": 0.5,
-                "avg_novelty": None,
-                "avg_novelty_confidence": None,
-            },
-        }
+        rows = _graph_rows_for_op("identity", n_used=100, n_s1=0) + _graph_rows_for_op(
+            "state_space", n_used=100, n_s1=40
+        )
 
-        with patch.object(
-            _ExperimentsMixin, "op_success_rates", return_value=fake_rates
-        ):
+        with patch.object(_ExperimentsMixin, "_deduped_graph_rows", return_value=rows):
             mixin = _ExperimentsMixin()
             weights = mixin.compute_op_weights(min_used=5)
 
@@ -219,6 +175,11 @@ class TestComponentHealthExemption:
             "split2",
             "split3",
             "concat",
+            "sub",
+            "maximum",
+            "minimum",
+            "cumsum",
+            "cumprod_safe",
             "causal_mask",
             "sliding_window_mask",
             "norm_last",

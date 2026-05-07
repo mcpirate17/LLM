@@ -21,7 +21,7 @@ def _seed(nb: LabNotebook, fp: str, rid: str, *, reason: str | None = None) -> N
         stage1_passed=True,
         loss_ratio=0.5,
         result_id=rid,
-        trust_label="candidate_grade",
+        trust_label="test_fixture",
     )
     if reason is not None:
         kwargs["intentional_rerun_reason"] = reason

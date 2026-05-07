@@ -32,6 +32,7 @@ def _make_notebook_with_novelty():
         cka_source="artifact",
         cka_artifact_version="v1",
         fingerprint_json=json.dumps(fingerprint),
+        trust_label="test_fixture",
     )
     nb.complete_experiment(
         exp_id,

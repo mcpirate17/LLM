@@ -56,13 +56,16 @@ def test_barely_learning_scores_low():
 @pytest.mark.unit
 def test_legitimate_model_not_capped():
     """A model with good loss ratio should not be capped by the insufficient-learning gate."""
-    score = compute_composite(
+    result = compute_composite(
         screening_lr=0.3,
         screening_nov=0.68,
         novelty_confidence=0.5,
+        decompose=True,
     )
-    # Must not be capped at the insufficient-learning threshold (10)
-    assert score > 10.0, f"Legitimate model scored {score}, should not be capped"
+    score = result["composite_score"]
+    # Must not be capped by the insufficient-learning path. Active v14 scoring
+    # can still apply tokenizer/provenance penalties to sparse test inputs.
+    assert "insufficient_learning_cap" not in result["breakdown"]
     # Should also beat a non-learning model
     bad = compute_composite(
         screening_lr=0.96, screening_nov=0.68, novelty_confidence=0.5

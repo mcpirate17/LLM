@@ -76,6 +76,7 @@ def test_integrity_check_rejects_unjustified_heuristic_promotion():
             novelty_valid_for_promotion=1,
             novelty_validity_reason="heuristic_fallback_reference",
             novelty_requires_justification=0,
+            trust_label="test_fixture",
         )
         nb.upsert_leaderboard(
             result_id=rid,

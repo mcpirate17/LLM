@@ -152,6 +152,7 @@ def test_backfill_persists_capability_metrics():
             blimp_overall_accuracy=0.72,
             induction_v2_investigation_auc=0.09,
             binding_v2_investigation_auc=0.08,
+            wikitext_perplexity=120.0,
             graph_uses_math_spaces=1,
         )
         nb.flush_writes()
@@ -205,6 +206,7 @@ def test_backfill_recency_weights_metric_averages():
             loss_ratio=0.9,
             novelty_score=0.1,
             induction_auc=0.0,
+            trust_label="test_fixture",
         )
         recent_id = nb.record_program_result(
             experiment_id=exp_id,
@@ -216,6 +218,7 @@ def test_backfill_recency_weights_metric_averages():
             loss_ratio=0.1,
             novelty_score=0.1,
             induction_auc=1.0,
+            trust_label="test_fixture",
         )
         nb.flush_writes()
         now = time.time()

@@ -46,6 +46,7 @@ def test_op_pair_priors_and_failure_risks_require_positive_evidence(nb):
             stage1_passed=True,
             loss_ratio=0.2 + (idx * 0.01),
             novelty_score=0.8,
+            trust_label="test_fixture",
         )
         nb.upsert_leaderboard(
             result_id=rid,
@@ -134,6 +135,7 @@ def test_failure_blocklist_suppresses_op_dominated_pairs(nb):
             stage05_passed=True,
             stage1_passed=True,
             loss_ratio=0.6,
+            trust_label="test_fixture",
         )
 
     for idx in range(20):
@@ -156,6 +158,7 @@ def test_failure_blocklist_suppresses_op_dominated_pairs(nb):
             stage05_passed=True,
             stage1_passed=True,
             loss_ratio=0.5,
+            trust_label="test_fixture",
         )
         nb.record_program_result(
             experiment_id=exp_id,
@@ -165,6 +168,7 @@ def test_failure_blocklist_suppresses_op_dominated_pairs(nb):
             stage05_passed=True,
             stage1_passed=True,
             loss_ratio=0.5,
+            trust_label="test_fixture",
         )
 
     nb.flush_writes()

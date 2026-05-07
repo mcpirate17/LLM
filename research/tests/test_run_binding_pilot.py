@@ -101,6 +101,7 @@ def test_load_completed_binding_result_ids_detects_existing_binding_rows(
             stage05_passed=True,
             stage1_passed=True,
             binding_auc=0.2,
+            trust_label="test_fixture",
         )
         rid_pending = nb.record_program_result(
             experiment_id=exp_id,
@@ -110,6 +111,7 @@ def test_load_completed_binding_result_ids_detects_existing_binding_rows(
             stage05_passed=True,
             stage1_passed=True,
             binding_auc=None,
+            trust_label="test_fixture",
         )
         nb.flush_writes()
     finally:

@@ -68,7 +68,10 @@ def _seed_strength_db(db_path: str) -> None:
             "validation_loss_ratio": 0.34,
             "induction_auc": 0.19,
             "binding_auc": 0.17,
+            "binding_composite": 0.18,
+            "ar_auc": 0.21,
             "hellaswag_acc": 0.36,
+            "blimp_overall_accuracy": 0.74,
             "wikitext_perplexity": 18.0,
             "wikitext_score": 0.68,
             "stability_score": 0.91,
@@ -99,7 +102,10 @@ def _seed_strength_db(db_path: str) -> None:
             "validation_loss_ratio": 0.37,
             "induction_auc": 0.15,
             "binding_auc": 0.14,
+            "binding_composite": 0.145,
+            "ar_auc": 0.18,
             "hellaswag_acc": 0.33,
+            "blimp_overall_accuracy": 0.70,
             "wikitext_perplexity": 20.0,
             "wikitext_score": 0.61,
             "stability_score": 0.86,
@@ -291,5 +297,7 @@ def test_slot_compatibility_endpoint_returns_generated_rules(tmp_path):
     payload = response.get_json()
     assert payload is not None
     rules = {row["slot_key"]: row for row in payload["slot_rules"]}
-    assert "routed_bottleneck.slot2" in rules
-    assert rules["routed_bottleneck.slot2"]["allowed_motifs"] == ["bottleneck_sparse"]
+    assert set(rules) == {"depth_token_mask_block.slot1"}
+    assert (
+        "route_lanes_block" in rules["depth_token_mask_block.slot1"]["blocked_motifs"]
+    )

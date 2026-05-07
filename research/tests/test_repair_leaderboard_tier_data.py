@@ -8,6 +8,16 @@ from research.scientist.notebook import LabNotebook
 pytestmark = pytest.mark.unit
 from research.tools.repair_leaderboard_tier_data import repair_leaderboard_tier_data
 
+_POST_S1_METRICS = {
+    "wikitext_perplexity": 118.0,
+    "hellaswag_acc": 0.31,
+    "blimp_overall_accuracy": 0.68,
+    "induction_auc": 0.57,
+    "binding_auc": 0.54,
+    "binding_composite": 0.16,
+    "ar_auc": 0.22,
+}
+
 
 def test_repair_leaderboard_tier_data_fills_missing_tier_fields():
     with tempfile.TemporaryDirectory() as td:
@@ -22,6 +32,7 @@ def test_repair_leaderboard_tier_data_fills_missing_tier_fields():
             stage1_passed=True,
             loss_ratio=0.4,
             novelty_score=0.7,
+            **_POST_S1_METRICS,
         )
         inv_rid = nb.record_program_result(
             experiment_id=exp_id,
@@ -33,6 +44,7 @@ def test_repair_leaderboard_tier_data_fills_missing_tier_fields():
             trust_label="candidate_grade",
             comparability_label="candidate_comparable",
             data_provenance_json='{"provenance_complete": true}',
+            **_POST_S1_METRICS,
         )
         val_rid = nb.record_program_result(
             experiment_id=exp_id,
@@ -47,6 +59,7 @@ def test_repair_leaderboard_tier_data_fills_missing_tier_fields():
             trust_label="candidate_grade",
             comparability_label="candidate_comparable",
             data_provenance_json='{"provenance_complete": true}',
+            **_POST_S1_METRICS,
         )
         nb.flush_writes()
 

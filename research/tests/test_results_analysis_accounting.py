@@ -7,6 +7,25 @@ from unittest.mock import patch
 from research.scientist.notebook import LabNotebook
 from research.scientist.runner.results_analysis import _ResultsAnalysisMixin
 
+_POST_S1_METRICS = {
+    "wikitext_perplexity": 119.0,
+    "hellaswag_acc": 0.32,
+    "blimp_overall_accuracy": 0.69,
+    "induction_auc": 0.58,
+    "binding_auc": 0.55,
+    "binding_composite": 0.17,
+    "ar_auc": 0.23,
+}
+
+
+def _passed_s1_result(final_loss: float = 0.4) -> dict:
+    return {
+        "passed": True,
+        "final_loss": final_loss,
+        "initial_loss": 1.0,
+        **_POST_S1_METRICS,
+    }
+
 
 class _FakeGraph:
     def __init__(self, fp: str = "fp_stage0_search_proxy"):
@@ -32,6 +51,9 @@ class _StubResultsAnalysis(_ResultsAnalysisMixin):
         }
 
     def _merge_s1_telemetry(self, graph_metrics, s1_result):
+        for key in _POST_S1_METRICS:
+            if key in s1_result:
+                graph_metrics[key] = s1_result[key]
         return None
 
 
@@ -87,6 +109,7 @@ class TestResultsAnalysisAccounting(unittest.TestCase):
                 stage1_passed=True,
                 loss_ratio=0.4,
                 model_source="graph_synthesis",
+                **_POST_S1_METRICS,
             )
             nb.flush_writes()
 
@@ -102,7 +125,7 @@ class TestResultsAnalysisAccounting(unittest.TestCase):
                     graph=_FakeGraph("fp_existing_evolution"),
                     fitness=0.8,
                     sandbox_result=None,
-                    s1_result={"passed": True, "final_loss": 0.4, "initial_loss": 1.0},
+                    s1_result=_passed_s1_result(),
                     eval_counters=counters,
                     nb=nb,
                     exp_id=exp_id,
@@ -139,7 +162,7 @@ class TestResultsAnalysisAccounting(unittest.TestCase):
                     graph=_FakeGraph("fp_evolution_screening"),
                     fitness=0.8,
                     sandbox_result=None,
-                    s1_result={"passed": True, "final_loss": 0.4, "initial_loss": 1.0},
+                    s1_result=_passed_s1_result(),
                     eval_counters={"total": 0, "s0": 0, "s1": 0},
                     nb=nb,
                     exp_id=exp_id,

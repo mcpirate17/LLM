@@ -48,49 +48,20 @@ _FORBIDDEN_PATTERNS = {
 # - admin/runtime direct writes: explicitly reviewed non-lifecycle writes
 _EXPECTED_BASELINE = {
     # API telemetry bridge
-    "scientist/api_routes/analytics_bp.py:145:nb.log_learning_event",
+    "scientist/api_routes/analytics_bp.py:148:nb.log_learning_event",
+    # API admin task cancellation write
+    "scientist/api_routes/programs_routes/validation_rerun.py:465:nb._maybe_commit",
     # Runtime benchmark/metric direct-write bridge
-    "scientist/runner/_helpers_benchmark.py:554:nb._maybe_commit",
-    # Continuous investigation compatibility sinks
-    "scientist/runner/continuous_investigation.py:71:getattr.complete_experiment",
-    "scientist/runner/continuous_investigation.py:87:getattr.fail_experiment",
-    # Continuous loop / session telemetry bridge
-    "scientist/runner/continuous_loop.py:35:getattr.log_learning_event",
-    # Continuous mode compatibility sinks + telemetry bridge
-    "scientist/runner/continuous_modes.py:34:getattr.log_learning_event",
-    "scientist/runner/continuous_modes.py:61:getattr.complete_experiment",
-    # Continuous validation compatibility sinks
-    "scientist/runner/continuous_validation.py:68:getattr.complete_experiment",
-    "scientist/runner/continuous_validation.py:84:getattr.fail_experiment",
-    # Admin maintenance writes and telemetry bridges
-    "scientist/runner/control_actions.py:56:getattr.log_learning_event",
-    "scientist/runner/control_actions.py:504:nb._maybe_commit",
-    "scientist/runner/control_actions.py:530:nb._maybe_commit",
-    # Cycle compatibility sinks + telemetry bridge
-    "scientist/runner/cycle.py:40:getattr.log_learning_event",
-    "scientist/runner/cycle.py:49:getattr.fail_experiment",
-    # Dashboard/runtime telemetry bridge
-    "scientist/runner/dashboard_panel.py:33:getattr.log_learning_event",
-    # Investigation compatibility sinks
-    "scientist/runner/execution_investigation.py:61:getattr.complete_experiment",
-    "scientist/runner/execution_investigation.py:78:getattr.fail_experiment",
-    # Screening compatibility sinks + telemetry bridges
-    "scientist/runner/execution_screening.py:80:getattr.log_learning_event",
-    "scientist/runner/execution_screening.py:288:getattr.log_learning_event",
-    "scientist/runner/execution_screening.py:315:getattr.complete_experiment",
-    "scientist/runner/execution_screening.py:331:getattr.fail_experiment",
-    # Search compatibility sinks
-    "scientist/runner/execution_search.py:40:getattr.complete_experiment",
-    "scientist/runner/execution_search.py:56:getattr.fail_experiment",
-    # Validation compatibility sinks (thread-per-experiment variant)
-    "scientist/runner/execution_validation_thread.py:57:getattr.complete_experiment",
-    "scientist/runner/execution_validation_thread.py:74:getattr.fail_experiment",
+    "scientist/runner/_helpers_benchmark.py:1210:nb._maybe_commit",
+    # Centralized lifecycle compatibility sinks
+    "scientist/runner/_lifecycle.py:41:getattr.complete_experiment",
+    "scientist/runner/_lifecycle.py:61:getattr.fail_experiment",
+    "scientist/runner/_lifecycle.py:64:getattr.log_learning_event",
+    # Admin maintenance writes
+    "scientist/runner/control_actions.py:503:nb._maybe_commit",
+    "scientist/runner/control_actions.py:529:nb._maybe_commit",
     # Automation telemetry bridges
-    "scientist/runner/results_auto_escalate_phase7.py:71:getattr.log_learning_event",
-    "scientist/runner/results_automation.py:25:getattr.log_learning_event",
-    # Synthesis compatibility sink + telemetry bridge
-    "scientist/runner/synthesis.py:58:getattr.log_learning_event",
-    "scientist/runner/synthesis.py:85:getattr.complete_experiment",
+    "scientist/runner/results_auto_escalate_phase7.py:530:nb.log_learning_event",
 }
 
 
