@@ -238,6 +238,8 @@ class RunConfig:
     scale_up_steps: int = SCALE_UP_STEPS
     scale_up_batch_size: int = SCALE_UP_BATCH_SIZE
     scale_up_seq_len: int = SCALE_UP_SEQ_LEN
+    champion_induction_v3_extended_budget: bool = False
+    champion_floor_checkpoint_interval_steps: int = 1000
     # One-shot pruning baseline
     one_shot_pruning_baseline: bool = False
     one_shot_pruning_method: str = "wanda"  # wanda | sparsegpt

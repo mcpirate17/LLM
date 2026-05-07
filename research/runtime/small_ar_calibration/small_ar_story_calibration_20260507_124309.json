@@ -1,0 +1,431 @@
+{
+  "config": {
+    "batch_size": 4,
+    "corpus": {
+      "bindings_per_story": 8,
+      "n_colors": 64,
+      "n_cross_story_groups": 0,
+      "n_held_key_stories": 0,
+      "n_in_dist_eval_stories": 16,
+      "n_objects": 128,
+      "n_train_stories": 64,
+      "n_values": 32,
+      "noise_sentences_per_story": 0,
+      "queries_per_story": 8,
+      "seed": 12
+    },
+    "dim": 192,
+    "dynamic_train_stories": true,
+    "eval_every": 500,
+    "heads": 8,
+    "include_in_story_unqueried_eval": false,
+    "layers": 6,
+    "loss_mode": "choice",
+    "lr": 0.001,
+    "seed": 12,
+    "train_steps": 2000
+  },
+  "corpus": {
+    "eval_items": 128,
+    "eval_stories": 16,
+    "max_seq_len": 246,
+    "sample_train": [
+      "Story 0.",
+      "The code for the walnut tablet is granite.",
+      "In this story, the yellow wheel means silver.",
+      "In this story, the silver star means linen.",
+      "The code for the bronze handle is amber.",
+      "For this story, the gold rudder points to harbor.",
+      "For this story, the teal button points to basalt.",
+      "Remember that the linen notebook maps to violet.",
+      "Inside this story, the brass jar names onyx.",
+      "Question: In Story 0, what does the linen notebook mean?",
+      "Answer: violet.",
+      "Question: For this story, which word belongs to the yellow wheel?",
+      "Answer: silver.",
+      "Question: What is the code word for the silver star in Story 0?",
+      "Answer: linen.",
+      "Question: Inside this story, the bronze handle maps to what?",
+      "Answer: amber.",
+      "Question: In Story 0, what does the gold rudder mean?",
+      "Answer: harbor.",
+      "Question: For this story, which word belongs to the teal button?",
+      "Answer: basalt.",
+      "Question: What is the code word for the brass jar in Story 0?",
+      "Answer: onyx.",
+      "Question: Inside this story, the walnut tablet maps to what?"
+    ],
+    "train_items": 512,
+    "train_stories": 64
+  },
+  "protocol_version": "small_ar_story_calibration_v1_bpe",
+  "rows": [
+    {
+      "elapsed_ms": 46986.7,
+      "family": "attention",
+      "final": {
+        "by_split": {
+          "in_dist": {
+            "choice_acc": 0.25,
+            "mean_margin": -0.884173,
+            "n": 128
+          }
+        },
+        "choice_acc": 0.25,
+        "examples": [
+          {
+            "answer": "juniper",
+            "correct": false,
+            "margin": -0.419542,
+            "pred": "crystal",
+            "scores": {
+              "coral": -53.887411,
+              "crystal": -52.509439,
+              "hazel": -54.960646,
+              "juniper": -52.928982
+            },
+            "split": "in_dist",
+            "story_id": 64
+          },
+          {
+            "answer": "forest",
+            "correct": false,
+            "margin": -0.634388,
+            "pred": "crystal",
+            "scores": {
+              "crystal": -52.509439,
+              "forest": -53.143827,
+              "hazel": -54.960648,
+              "juniper": -52.928981
+            },
+            "split": "in_dist",
+            "story_id": 64
+          },
+          {
+            "answer": "laurel",
+            "correct": false,
+            "margin": -1.333633,
+            "pred": "juniper",
+            "scores": {
+              "coral": -53.887419,
+              "forest": -53.143833,
+              "juniper": -52.928987,
+              "laurel": -54.26262
+            },
+            "split": "in_dist",
+            "story_id": 64
+          },
+          {
+            "answer": "marigold",
+            "correct": false,
+            "margin": -2.219086,
+            "pred": "crystal",
+            "scores": {
+              "coral": -53.887407,
+              "crystal": -52.509428,
+              "laurel": -54.262629,
+              "marigold": -54.728514
+            },
+            "split": "in_dist",
+            "story_id": 64
+          },
+          {
+            "answer": "crystal",
+            "correct": true,
+            "margin": 1.377975,
+            "pred": "crystal",
+            "scores": {
+              "coral": -53.887413,
+              "crystal": -52.509438,
+              "linen": -56.248564,
+              "marigold": -54.728509
+            },
+            "split": "in_dist",
+            "story_id": 64
+          },
+          {
+            "answer": "coral",
+            "correct": false,
+            "margin": -0.74358,
+            "pred": "forest",
+            "scores": {
+              "coral": -53.887411,
+              "forest": -53.143831,
+              "hazel": -54.960646,
+              "laurel": -54.262622
+            },
+            "split": "in_dist",
+            "story_id": 64
+          },
+          {
+            "answer": "hazel",
+            "correct": false,
+            "margin": -2.451229,
+            "pred": "crystal",
+            "scores": {
+              "crystal": -52.50943,
+              "hazel": -54.960659,
+              "laurel": -54.262632,
+              "marigold": -54.72852
+            },
+            "split": "in_dist",
+            "story_id": 64
+          },
+          {
+            "answer": "linen",
+            "correct": false,
+            "margin": -3.739141,
+            "pred": "crystal",
+            "scores": {
+              "crystal": -52.50942,
+              "hazel": -54.960658,
+              "juniper": -52.928982,
+              "linen": -56.248562
+            },
+            "split": "in_dist",
+            "story_id": 64
+          },
+          {
+            "answer": "summit",
+            "correct": false,
+            "margin": -0.394929,
+            "pred": "meadow",
+            "scores": {
+              "basalt": -55.359292,
+              "bronze": -55.744329,
+              "meadow": -55.240466,
+              "summit": -55.635395
+            },
+            "split": "in_dist",
+            "story_id": 65
+          },
+          {
+            "answer": "basalt",
+            "correct": false,
+            "margin": -2.430305,
+            "pred": "juniper",
+            "scores": {
+              "basalt": -55.359294,
+              "juniper": -52.928988,
+              "laurel": -54.26262,
+              "summit": -55.635397
+            },
+            "split": "in_dist",
+            "story_id": 65
+          }
+        ],
+        "n": 128
+      },
+      "learning_curve": [
+        {
+          "by_split": {
+            "in_dist": {
+              "choice_acc": 0.2188,
+              "mean_margin": -2.474837,
+              "n": 96
+            }
+          },
+          "choice_acc": 0.2188,
+          "loss": 5.446161,
+          "step": 500,
+          "train_choice_acc": 0.2292
+        },
+        {
+          "by_split": {
+            "in_dist": {
+              "choice_acc": 0.25,
+              "mean_margin": -1.552945,
+              "n": 96
+            }
+          },
+          "choice_acc": 0.25,
+          "loss": 2.365186,
+          "step": 1000,
+          "train_choice_acc": 0.2604
+        },
+        {
+          "by_split": {
+            "in_dist": {
+              "choice_acc": 0.2604,
+              "mean_margin": -0.882451,
+              "n": 96
+            }
+          },
+          "choice_acc": 0.2604,
+          "loss": 2.321498,
+          "step": 1500,
+          "train_choice_acc": 0.2396
+        },
+        {
+          "by_split": {
+            "in_dist": {
+              "choice_acc": 0.2396,
+              "mean_margin": -0.92291,
+              "n": 96
+            }
+          },
+          "choice_acc": 0.2396,
+          "loss": 0.36542,
+          "step": 2000,
+          "train_choice_acc": 0.2396
+        }
+      ],
+      "status": "ok",
+      "steps_done": 2000,
+      "train_final": {
+        "by_split": {
+          "train": {
+            "choice_acc": 0.2344,
+            "mean_margin": -0.9506,
+            "n": 256
+          }
+        },
+        "choice_acc": 0.2344,
+        "examples": [
+          {
+            "answer": "violet",
+            "correct": false,
+            "margin": -2.610821,
+            "pred": "silver",
+            "scores": {
+              "harbor": -55.117224,
+              "onyx": -55.190889,
+              "silver": -53.786997,
+              "violet": -56.397818
+            },
+            "split": "train",
+            "story_id": 0
+          },
+          {
+            "answer": "silver",
+            "correct": true,
+            "margin": 1.330223,
+            "pred": "silver",
+            "scores": {
+              "harbor": -55.117224,
+              "linen": -56.248571,
+              "onyx": -55.19089,
+              "silver": -53.787001
+            },
+            "split": "train",
+            "story_id": 0
+          },
+          {
+            "answer": "linen",
+            "correct": false,
+            "margin": -2.46158,
+            "pred": "silver",
+            "scores": {
+              "amber": -55.160339,
+              "basalt": -55.359295,
+              "linen": -56.248564,
+              "silver": -53.786983
+            },
+            "split": "train",
+            "story_id": 0
+          },
+          {
+            "answer": "amber",
+            "correct": false,
+            "margin": -0.043129,
+            "pred": "harbor",
+            "scores": {
+              "amber": -55.160355,
+              "basalt": -55.359294,
+              "harbor": -55.117226,
+              "onyx": -55.190891
+            },
+            "split": "train",
+            "story_id": 0
+          },
+          {
+            "answer": "harbor",
+            "correct": true,
+            "margin": 0.073671,
+            "pred": "harbor",
+            "scores": {
+              "basalt": -55.359291,
+              "harbor": -55.117218,
+              "onyx": -55.190889,
+              "violet": -56.397816
+            },
+            "split": "train",
+            "story_id": 0
+          },
+          {
+            "answer": "basalt",
+            "correct": false,
+            "margin": -1.572292,
+            "pred": "silver",
+            "scores": {
+              "basalt": -55.359292,
+              "linen": -56.248571,
+              "onyx": -55.19089,
+              "silver": -53.787001
+            },
+            "split": "train",
+            "story_id": 0
+          },
+          {
+            "answer": "onyx",
+            "correct": false,
+            "margin": -0.073678,
+            "pred": "harbor",
+            "scores": {
+              "amber": -55.160341,
+              "harbor": -55.117214,
+              "linen": -56.248564,
+              "onyx": -55.190893
+            },
+            "split": "train",
+            "story_id": 0
+          },
+          {
+            "answer": "granite",
+            "correct": false,
+            "margin": -2.64172,
+            "pred": "silver",
+            "scores": {
+              "amber": -55.160353,
+              "granite": -56.42872,
+              "linen": -56.248575,
+              "silver": -53.787001
+            },
+            "split": "train",
+            "story_id": 0
+          },
+          {
+            "answer": "velvet",
+            "correct": false,
+            "margin": -0.342588,
+            "pred": "silver",
+            "scores": {
+              "clover": -54.217607,
+              "silver": -53.786993,
+              "velvet": -54.129581,
+              "violet": -56.397818
+            },
+            "split": "train",
+            "story_id": 1
+          },
+          {
+            "answer": "crystal",
+            "correct": true,
+            "margin": 1.620146,
+            "pred": "crystal",
+            "scores": {
+              "crystal": -52.50943,
+              "hazel": -54.960658,
+              "velvet": -54.129576,
+              "violet": -56.39781
+            },
+            "split": "train",
+            "story_id": 1
+          }
+        ],
+        "n": 256
+      }
+    }
+  ],
+  "tokenizer": "cl100k_base"
+}

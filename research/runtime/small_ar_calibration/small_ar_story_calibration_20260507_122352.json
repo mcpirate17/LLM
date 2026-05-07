@@ -1,0 +1,762 @@
+{
+  "config": {
+    "batch_size": 8,
+    "corpus": {
+      "bindings_per_story": 8,
+      "n_colors": 64,
+      "n_cross_story_groups": 0,
+      "n_held_key_stories": 0,
+      "n_in_dist_eval_stories": 0,
+      "n_objects": 128,
+      "n_train_stories": 64,
+      "n_values": 32,
+      "noise_sentences_per_story": 0,
+      "queries_per_story": 4,
+      "seed": 7
+    },
+    "dim": 96,
+    "eval_every": 1000,
+    "heads": 4,
+    "include_in_story_unqueried_eval": true,
+    "layers": 2,
+    "lr": 0.001,
+    "seed": 7,
+    "train_steps": 3000
+  },
+  "corpus": {
+    "eval_items": 256,
+    "eval_stories": 0,
+    "max_seq_len": 117,
+    "sample_train": [
+      "Story 0.",
+      "Inside this story, the sky wand names quartz.",
+      "The code for the cobalt anchor is clover.",
+      "In this story, the coral kite means cedar.",
+      "For this story, the walnut crown points to onyx.",
+      "The code for the mint shell is laurel.",
+      "For this story, the coral lantern points to crystal.",
+      "Remember that the ivory key maps to basalt.",
+      "In this story, the indigo helmet means meadow.",
+      "Question: In Story 0, what does the walnut crown mean?",
+      "Answer: onyx.",
+      "Question: For this story, which word belongs to the cobalt anchor?",
+      "Answer: clover.",
+      "Question: What is the code word for the mint shell in Story 0?",
+      "Answer: laurel.",
+      "Question: Inside this story, the indigo helmet maps to what?",
+      "Answer: meadow."
+    ],
+    "train_items": 256,
+    "train_stories": 64
+  },
+  "protocol_version": "small_ar_story_calibration_v1_bpe",
+  "rows": [
+    {
+      "elapsed_ms": 16321.0,
+      "family": "attention",
+      "final": {
+        "by_split": {
+          "in_story_unqueried": {
+            "choice_acc": 0.125,
+            "mean_margin": -8.994507,
+            "n": 256
+          }
+        },
+        "choice_acc": 0.125,
+        "examples": [
+          {
+            "answer": "quartz",
+            "correct": false,
+            "margin": -15.900594,
+            "pred": "onyx",
+            "scores": {
+              "cedar": -18.271893,
+              "clover": -13.993579,
+              "onyx": -1e-06,
+              "quartz": -15.900595
+            },
+            "split": "in_story_unqueried",
+            "story_id": 0
+          },
+          {
+            "answer": "cedar",
+            "correct": false,
+            "margin": -18.794025,
+            "pred": "onyx",
+            "scores": {
+              "cedar": -18.794025,
+              "clover": -14.697152,
+              "onyx": -0.0,
+              "quartz": -14.803652
+            },
+            "split": "in_story_unqueried",
+            "story_id": 0
+          },
+          {
+            "answer": "crystal",
+            "correct": true,
+            "margin": 7.130288,
+            "pred": "crystal",
+            "scores": {
+              "cedar": -18.794392,
+              "clover": -14.697198,
+              "crystal": -7.56691,
+              "quartz": -14.805296
+            },
+            "split": "in_story_unqueried",
+            "story_id": 0
+          },
+          {
+            "answer": "basalt",
+            "correct": true,
+            "margin": 3.416295,
+            "pred": "basalt",
+            "scores": {
+              "basalt": -10.966128,
+              "cedar": -18.369221,
+              "clover": -14.43389,
+              "quartz": -14.382423
+            },
+            "split": "in_story_unqueried",
+            "story_id": 0
+          },
+          {
+            "answer": "basalt",
+            "correct": false,
+            "margin": -12.134993,
+            "pred": "maple",
+            "scores": {
+              "basalt": -12.134993,
+              "linen": -19.729633,
+              "maple": -0.0,
+              "silver": -7.811504
+            },
+            "split": "in_story_unqueried",
+            "story_id": 1
+          },
+          {
+            "answer": "linen",
+            "correct": false,
+            "margin": -17.577224,
+            "pred": "maple",
+            "scores": {
+              "basalt": -8.173773,
+              "linen": -17.577225,
+              "maple": -0.0,
+              "silver": -7.527153
+            },
+            "split": "in_story_unqueried",
+            "story_id": 1
+          },
+          {
+            "answer": "orchid",
+            "correct": false,
+            "margin": -16.425569,
+            "pred": "maple",
+            "scores": {
+              "basalt": -12.214472,
+              "linen": -19.782732,
+              "maple": -0.0,
+              "orchid": -16.425569
+            },
+            "split": "in_story_unqueried",
+            "story_id": 1
+          },
+          {
+            "answer": "crystal",
+            "correct": false,
+            "margin": -17.179279,
+            "pred": "maple",
+            "scores": {
+              "basalt": -10.666065,
+              "crystal": -17.179279,
+              "linen": -19.621918,
+              "maple": 0.0
+            },
+            "split": "in_story_unqueried",
+            "story_id": 1
+          },
+          {
+            "answer": "summit",
+            "correct": false,
+            "margin": -6.856012,
+            "pred": "quartz",
+            "scores": {
+              "amber": -5.889616,
+              "copper": -3.670515,
+              "quartz": -2.364126,
+              "summit": -9.220138
+            },
+            "split": "in_story_unqueried",
+            "story_id": 2
+          },
+          {
+            "answer": "laurel",
+            "correct": false,
+            "margin": -10.012739,
+            "pred": "quartz",
+            "scores": {
+              "copper": -11.744501,
+              "laurel": -10.012739,
+              "quartz": -0.0,
+              "summit": -17.834452
+            },
+            "split": "in_story_unqueried",
+            "story_id": 2
+          }
+        ],
+        "n": 256
+      },
+      "learning_curve": [
+        {
+          "by_split": {
+            "in_story_unqueried": {
+              "choice_acc": 0.1458,
+              "mean_margin": -6.049069,
+              "n": 96
+            }
+          },
+          "choice_acc": 0.1458,
+          "loss": 0.558712,
+          "step": 1000,
+          "train_choice_acc": 0.9688
+        },
+        {
+          "by_split": {
+            "in_story_unqueried": {
+              "choice_acc": 0.1771,
+              "mean_margin": -6.739869,
+              "n": 96
+            }
+          },
+          "choice_acc": 0.1771,
+          "loss": 6.1e-05,
+          "step": 2000,
+          "train_choice_acc": 1.0
+        },
+        {
+          "by_split": {
+            "in_story_unqueried": {
+              "choice_acc": 0.1771,
+              "mean_margin": -7.360888,
+              "n": 96
+            }
+          },
+          "choice_acc": 0.1771,
+          "loss": 9.8e-05,
+          "step": 3000,
+          "train_choice_acc": 0.9896
+        }
+      ],
+      "status": "ok",
+      "steps_done": 3000,
+      "train_final": {
+        "by_split": {
+          "train": {
+            "choice_acc": 0.9961,
+            "mean_margin": 10.849367,
+            "n": 256
+          }
+        },
+        "choice_acc": 0.9961,
+        "examples": [
+          {
+            "answer": "onyx",
+            "correct": true,
+            "margin": 13.883584,
+            "pred": "onyx",
+            "scores": {
+              "basalt": -14.238805,
+              "laurel": -13.883584,
+              "meadow": -15.297292,
+              "onyx": 0.0
+            },
+            "split": "train",
+            "story_id": 0
+          },
+          {
+            "answer": "clover",
+            "correct": true,
+            "margin": 10.542853,
+            "pred": "clover",
+            "scores": {
+              "clover": 0.0,
+              "meadow": -16.281117,
+              "onyx": -10.542853,
+              "quartz": -16.578985
+            },
+            "split": "train",
+            "story_id": 0
+          },
+          {
+            "answer": "laurel",
+            "correct": true,
+            "margin": 11.970874,
+            "pred": "laurel",
+            "scores": {
+              "clover": -14.266264,
+              "laurel": 0.0,
+              "meadow": -11.970874,
+              "quartz": -18.263813
+            },
+            "split": "train",
+            "story_id": 0
+          },
+          {
+            "answer": "meadow",
+            "correct": true,
+            "margin": 7.825246,
+            "pred": "meadow",
+            "scores": {
+              "basalt": -7.825246,
+              "clover": -19.694539,
+              "meadow": -0.0,
+              "quartz": -20.384317
+            },
+            "split": "train",
+            "story_id": 0
+          },
+          {
+            "answer": "maple",
+            "correct": true,
+            "margin": 7.353394,
+            "pred": "maple",
+            "scores": {
+              "crystal": -18.039015,
+              "linen": -18.017597,
+              "maple": 0.0,
+              "onyx": -7.353394
+            },
+            "split": "train",
+            "story_id": 1
+          },
+          {
+            "answer": "silver",
+            "correct": true,
+            "margin": 5.950238,
+            "pred": "silver",
+            "scores": {
+              "crystal": -17.824697,
+              "linen": -14.303975,
+              "onyx": -5.950238,
+              "silver": -0.0
+            },
+            "split": "train",
+            "story_id": 1
+          },
+          {
+            "answer": "juniper",
+            "correct": true,
+            "margin": 10.57021,
+            "pred": "juniper",
+            "scores": {
+              "crystal": -10.570336,
+              "juniper": -0.000127,
+              "maple": -11.080618,
+              "silver": -20.172127
+            },
+            "split": "train",
+            "story_id": 1
+          },
+          {
+            "answer": "onyx",
+            "correct": true,
+            "margin": 16.079922,
+            "pred": "onyx",
+            "scores": {
+              "juniper": -16.079922,
+              "maple": -22.90074,
+              "onyx": 0.0,
+              "silver": -23.780708
+            },
+            "split": "train",
+            "story_id": 1
+          },
+          {
+            "answer": "quartz",
+            "correct": true,
+            "margin": 10.22719,
+            "pred": "quartz",
+            "scores": {
+              "forest": -25.866957,
+              "ivy": -10.22719,
+              "quartz": 0.0,
+              "summit": -20.102131
+            },
+            "split": "train",
+            "story_id": 2
+          },
+          {
+            "answer": "ivy",
+            "correct": true,
+            "margin": 13.782075,
+            "pred": "ivy",
+            "scores": {
+              "amber": -16.802372,
+              "granite": -13.782075,
+              "ivy": 0.0,
+              "summit": -14.151773
+            },
+            "split": "train",
+            "story_id": 2
+          }
+        ],
+        "n": 256
+      }
+    },
+    {
+      "elapsed_ms": 13276.0,
+      "family": "no_context",
+      "final": {
+        "by_split": {
+          "in_story_unqueried": {
+            "choice_acc": 0.25,
+            "mean_margin": -0.336867,
+            "n": 256
+          }
+        },
+        "choice_acc": 0.25,
+        "examples": [
+          {
+            "answer": "quartz",
+            "correct": false,
+            "margin": -1.316336,
+            "pred": "onyx",
+            "scores": {
+              "cedar": -2.138824,
+              "clover": -1.326661,
+              "onyx": -1.000183,
+              "quartz": -2.316519
+            },
+            "split": "in_story_unqueried",
+            "story_id": 0
+          },
+          {
+            "answer": "cedar",
+            "correct": false,
+            "margin": -1.138641,
+            "pred": "onyx",
+            "scores": {
+              "cedar": -2.138824,
+              "clover": -1.326661,
+              "onyx": -1.000183,
+              "quartz": -2.316519
+            },
+            "split": "in_story_unqueried",
+            "story_id": 0
+          },
+          {
+            "answer": "crystal",
+            "correct": false,
+            "margin": -0.447803,
+            "pred": "clover",
+            "scores": {
+              "cedar": -2.138824,
+              "clover": -1.326661,
+              "crystal": -1.774464,
+              "quartz": -2.316519
+            },
+            "split": "in_story_unqueried",
+            "story_id": 0
+          },
+          {
+            "answer": "basalt",
+            "correct": true,
+            "margin": 0.165603,
+            "pred": "basalt",
+            "scores": {
+              "basalt": -1.161057,
+              "cedar": -2.138824,
+              "clover": -1.326661,
+              "quartz": -2.316519
+            },
+            "split": "in_story_unqueried",
+            "story_id": 0
+          },
+          {
+            "answer": "basalt",
+            "correct": true,
+            "margin": 0.361731,
+            "pred": "basalt",
+            "scores": {
+              "basalt": -1.161057,
+              "linen": -1.522788,
+              "maple": -1.903748,
+              "silver": -1.700244
+            },
+            "split": "in_story_unqueried",
+            "story_id": 1
+          },
+          {
+            "answer": "linen",
+            "correct": false,
+            "margin": -0.361731,
+            "pred": "basalt",
+            "scores": {
+              "basalt": -1.161057,
+              "linen": -1.522788,
+              "maple": -1.903748,
+              "silver": -1.700244
+            },
+            "split": "in_story_unqueried",
+            "story_id": 1
+          },
+          {
+            "answer": "orchid",
+            "correct": true,
+            "margin": 0.00117,
+            "pred": "orchid",
+            "scores": {
+              "basalt": -1.161057,
+              "linen": -1.522788,
+              "maple": -1.903748,
+              "orchid": -1.159887
+            },
+            "split": "in_story_unqueried",
+            "story_id": 1
+          },
+          {
+            "answer": "crystal",
+            "correct": false,
+            "margin": -0.613406,
+            "pred": "basalt",
+            "scores": {
+              "basalt": -1.161057,
+              "crystal": -1.774464,
+              "linen": -1.522788,
+              "maple": -1.903748
+            },
+            "split": "in_story_unqueried",
+            "story_id": 1
+          },
+          {
+            "answer": "summit",
+            "correct": false,
+            "margin": -0.248323,
+            "pred": "amber",
+            "scores": {
+              "amber": -1.592847,
+              "copper": -1.845249,
+              "quartz": -2.316518,
+              "summit": -1.841171
+            },
+            "split": "in_story_unqueried",
+            "story_id": 2
+          },
+          {
+            "answer": "laurel",
+            "correct": true,
+            "margin": 0.717783,
+            "pred": "laurel",
+            "scores": {
+              "copper": -1.845249,
+              "laurel": -1.123387,
+              "quartz": -2.316519,
+              "summit": -1.841171
+            },
+            "split": "in_story_unqueried",
+            "story_id": 2
+          }
+        ],
+        "n": 256
+      },
+      "learning_curve": [
+        {
+          "by_split": {
+            "in_story_unqueried": {
+              "choice_acc": 0.2708,
+              "mean_margin": -0.256449,
+              "n": 96
+            }
+          },
+          "choice_acc": 0.2708,
+          "loss": 1.6293,
+          "step": 1000,
+          "train_choice_acc": 0.2083
+        },
+        {
+          "by_split": {
+            "in_story_unqueried": {
+              "choice_acc": 0.2812,
+              "mean_margin": -0.281815,
+              "n": 96
+            }
+          },
+          "choice_acc": 0.2812,
+          "loss": 1.59714,
+          "step": 2000,
+          "train_choice_acc": 0.2083
+        },
+        {
+          "by_split": {
+            "in_story_unqueried": {
+              "choice_acc": 0.2708,
+              "mean_margin": -0.317407,
+              "n": 96
+            }
+          },
+          "choice_acc": 0.2708,
+          "loss": 1.467929,
+          "step": 3000,
+          "train_choice_acc": 0.3021
+        }
+      ],
+      "status": "ok",
+      "steps_done": 3000,
+      "train_final": {
+        "by_split": {
+          "train": {
+            "choice_acc": 0.2695,
+            "mean_margin": -0.269517,
+            "n": 256
+          }
+        },
+        "choice_acc": 0.2695,
+        "examples": [
+          {
+            "answer": "onyx",
+            "correct": true,
+            "margin": 0.123204,
+            "pred": "onyx",
+            "scores": {
+              "basalt": -1.161057,
+              "laurel": -1.123387,
+              "meadow": -1.142791,
+              "onyx": -1.000183
+            },
+            "split": "train",
+            "story_id": 0
+          },
+          {
+            "answer": "clover",
+            "correct": false,
+            "margin": -0.326478,
+            "pred": "onyx",
+            "scores": {
+              "clover": -1.326661,
+              "meadow": -1.142791,
+              "onyx": -1.000183,
+              "quartz": -2.316518
+            },
+            "split": "train",
+            "story_id": 0
+          },
+          {
+            "answer": "laurel",
+            "correct": true,
+            "margin": 0.019404,
+            "pred": "laurel",
+            "scores": {
+              "clover": -1.32666,
+              "laurel": -1.123387,
+              "meadow": -1.142791,
+              "quartz": -2.316519
+            },
+            "split": "train",
+            "story_id": 0
+          },
+          {
+            "answer": "meadow",
+            "correct": true,
+            "margin": 0.018266,
+            "pred": "meadow",
+            "scores": {
+              "basalt": -1.161057,
+              "clover": -1.326661,
+              "meadow": -1.142791,
+              "quartz": -2.316519
+            },
+            "split": "train",
+            "story_id": 0
+          },
+          {
+            "answer": "maple",
+            "correct": false,
+            "margin": -0.903566,
+            "pred": "onyx",
+            "scores": {
+              "crystal": -1.774464,
+              "linen": -1.522788,
+              "maple": -1.903748,
+              "onyx": -1.000183
+            },
+            "split": "train",
+            "story_id": 1
+          },
+          {
+            "answer": "silver",
+            "correct": false,
+            "margin": -0.700061,
+            "pred": "onyx",
+            "scores": {
+              "crystal": -1.774464,
+              "linen": -1.522788,
+              "onyx": -1.000183,
+              "silver": -1.700244
+            },
+            "split": "train",
+            "story_id": 1
+          },
+          {
+            "answer": "juniper",
+            "correct": true,
+            "margin": 0.366979,
+            "pred": "juniper",
+            "scores": {
+              "crystal": -1.774464,
+              "juniper": -1.333265,
+              "maple": -1.903749,
+              "silver": -1.700244
+            },
+            "split": "train",
+            "story_id": 1
+          },
+          {
+            "answer": "onyx",
+            "correct": true,
+            "margin": 0.333082,
+            "pred": "onyx",
+            "scores": {
+              "juniper": -1.333265,
+              "maple": -1.903749,
+              "onyx": -1.000183,
+              "silver": -1.700244
+            },
+            "split": "train",
+            "story_id": 1
+          },
+          {
+            "answer": "quartz",
+            "correct": false,
+            "margin": -0.981139,
+            "pred": "ivy",
+            "scores": {
+              "forest": -1.728645,
+              "ivy": -1.33538,
+              "quartz": -2.316519,
+              "summit": -1.841171
+            },
+            "split": "train",
+            "story_id": 2
+          },
+          {
+            "answer": "ivy",
+            "correct": true,
+            "margin": 0.257467,
+            "pred": "ivy",
+            "scores": {
+              "amber": -1.592847,
+              "granite": -1.642862,
+              "ivy": -1.33538,
+              "summit": -1.841171
+            },
+            "split": "train",
+            "story_id": 2
+          }
+        ],
+        "n": 256
+      }
+    }
+  ],
+  "tokenizer": "cl100k_base"
+}

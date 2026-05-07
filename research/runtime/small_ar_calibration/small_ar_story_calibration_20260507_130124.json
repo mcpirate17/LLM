@@ -1,0 +1,718 @@
+{
+  "config": {
+    "batch_size": 8,
+    "corpus": {
+      "bindings_per_story": 8,
+      "choices_per_query": 2,
+      "n_colors": 64,
+      "n_cross_story_groups": 0,
+      "n_held_key_stories": 0,
+      "n_in_dist_eval_stories": 16,
+      "n_objects": 128,
+      "n_train_stories": 64,
+      "n_values": 32,
+      "noise_sentences_per_story": 0,
+      "queries_per_story": 8,
+      "seed": 14
+    },
+    "dim": 96,
+    "dynamic_train_stories": true,
+    "eval_every": 500,
+    "heads": 4,
+    "include_in_story_unqueried_eval": false,
+    "layers": 2,
+    "loss_mode": "choice",
+    "lr": 0.001,
+    "seed": 14,
+    "train_steps": 2000
+  },
+  "corpus": {
+    "eval_items": 128,
+    "eval_stories": 16,
+    "max_seq_len": 240,
+    "sample_train": [
+      "Story 0.",
+      "The code for the cobalt vase is cotton.",
+      "In this story, the pink yarn means flower.",
+      "Remember that the pearl tablet maps to star.",
+      "For this story, the honey clock points to stone.",
+      "For this story, the wine inkwell points to bottle.",
+      "The code for the indigo drawer is chain.",
+      "In this story, the fern chain means anchor.",
+      "Inside this story, the ruby shell names basket.",
+      "Question: In Story 0, what does the pearl tablet mean?",
+      "Answer: star.",
+      "Question: For this story, which word belongs to the honey clock?",
+      "Answer: stone.",
+      "Question: What is the code word for the wine inkwell in Story 0?",
+      "Answer: bottle.",
+      "Question: Inside this story, the ruby shell maps to what?",
+      "Answer: basket.",
+      "Question: In Story 0, what does the fern chain mean?",
+      "Answer: anchor.",
+      "Question: For this story, which word belongs to the indigo drawer?",
+      "Answer: chain.",
+      "Question: What is the code word for the cobalt vase in Story 0?",
+      "Answer: cotton.",
+      "Question: Inside this story, the pink yarn maps to what?"
+    ],
+    "train_items": 512,
+    "train_stories": 64
+  },
+  "protocol_version": "small_ar_story_calibration_v1_bpe",
+  "rows": [
+    {
+      "elapsed_ms": 32364.8,
+      "family": "attention",
+      "final": {
+        "by_split": {
+          "in_dist": {
+            "choice_acc": 0.4766,
+            "mean_margin": -0.093448,
+            "n": 128
+          }
+        },
+        "choice_acc": 0.4766,
+        "examples": [
+          {
+            "answer": "drum",
+            "correct": true,
+            "margin": 0.853943,
+            "pred": "drum",
+            "scores": {
+              "drum": -44.213728,
+              "garden": -45.067671
+            },
+            "split": "in_dist",
+            "story_id": 64
+          },
+          {
+            "answer": "shell",
+            "correct": false,
+            "margin": -0.223259,
+            "pred": "drum",
+            "scores": {
+              "drum": -44.212059,
+              "shell": -44.435318
+            },
+            "split": "in_dist",
+            "story_id": 64
+          },
+          {
+            "answer": "cotton",
+            "correct": false,
+            "margin": -1.027822,
+            "pred": "coin",
+            "scores": {
+              "coin": -42.92215,
+              "cotton": -43.949972
+            },
+            "split": "in_dist",
+            "story_id": 64
+          },
+          {
+            "answer": "garden",
+            "correct": false,
+            "margin": -1.095404,
+            "pred": "cotton",
+            "scores": {
+              "cotton": -44.099842,
+              "garden": -45.195246
+            },
+            "split": "in_dist",
+            "story_id": 64
+          },
+          {
+            "answer": "star",
+            "correct": true,
+            "margin": 0.99658,
+            "pred": "star",
+            "scores": {
+              "coin": -42.960583,
+              "star": -41.964003
+            },
+            "split": "in_dist",
+            "story_id": 64
+          },
+          {
+            "answer": "jacket",
+            "correct": true,
+            "margin": 1.6696,
+            "pred": "jacket",
+            "scores": {
+              "drum": -44.169622,
+              "jacket": -42.500023
+            },
+            "split": "in_dist",
+            "story_id": 64
+          },
+          {
+            "answer": "apple",
+            "correct": false,
+            "margin": -1.651283,
+            "pred": "coin",
+            "scores": {
+              "apple": -44.609858,
+              "coin": -42.958574
+            },
+            "split": "in_dist",
+            "story_id": 64
+          },
+          {
+            "answer": "coin",
+            "correct": true,
+            "margin": 2.130644,
+            "pred": "coin",
+            "scores": {
+              "coin": -43.067436,
+              "garden": -45.19808
+            },
+            "split": "in_dist",
+            "story_id": 64
+          },
+          {
+            "answer": "flower",
+            "correct": false,
+            "margin": -0.066828,
+            "pred": "basket",
+            "scores": {
+              "basket": -45.05476,
+              "flower": -45.121588
+            },
+            "split": "in_dist",
+            "story_id": 65
+          },
+          {
+            "answer": "clock",
+            "correct": false,
+            "margin": -0.432669,
+            "pred": "basket",
+            "scores": {
+              "basket": -44.99958,
+              "clock": -45.432249
+            },
+            "split": "in_dist",
+            "story_id": 65
+          }
+        ],
+        "n": 128
+      },
+      "learning_curve": [
+        {
+          "by_split": {
+            "in_dist": {
+              "choice_acc": 0.5312,
+              "mean_margin": 0.250248,
+              "n": 96
+            }
+          },
+          "choice_acc": 0.5312,
+          "loss": 1.271061,
+          "step": 500,
+          "train_choice_acc": 0.5312
+        },
+        {
+          "by_split": {
+            "in_dist": {
+              "choice_acc": 0.4688,
+              "mean_margin": -0.049764,
+              "n": 96
+            }
+          },
+          "choice_acc": 0.4688,
+          "loss": 1.481198,
+          "step": 1000,
+          "train_choice_acc": 0.5417
+        },
+        {
+          "by_split": {
+            "in_dist": {
+              "choice_acc": 0.4583,
+              "mean_margin": -0.106689,
+              "n": 96
+            }
+          },
+          "choice_acc": 0.4583,
+          "loss": 0.929822,
+          "step": 1500,
+          "train_choice_acc": 0.5521
+        },
+        {
+          "by_split": {
+            "in_dist": {
+              "choice_acc": 0.5104,
+              "mean_margin": -0.031988,
+              "n": 96
+            }
+          },
+          "choice_acc": 0.5104,
+          "loss": 0.661877,
+          "step": 2000,
+          "train_choice_acc": 0.5104
+        }
+      ],
+      "status": "ok",
+      "steps_done": 2000,
+      "train_final": {
+        "by_split": {
+          "train": {
+            "choice_acc": 0.4883,
+            "mean_margin": -0.036787,
+            "n": 256
+          }
+        },
+        "choice_acc": 0.4883,
+        "examples": [
+          {
+            "answer": "star",
+            "correct": true,
+            "margin": 3.082685,
+            "pred": "star",
+            "scores": {
+              "basket": -45.028433,
+              "star": -41.945747
+            },
+            "split": "train",
+            "story_id": 0
+          },
+          {
+            "answer": "stone",
+            "correct": true,
+            "margin": 0.478891,
+            "pred": "stone",
+            "scores": {
+              "flower": -45.055912,
+              "stone": -44.577021
+            },
+            "split": "train",
+            "story_id": 0
+          },
+          {
+            "answer": "bottle",
+            "correct": false,
+            "margin": -1.597612,
+            "pred": "chain",
+            "scores": {
+              "bottle": -44.541069,
+              "chain": -42.943457
+            },
+            "split": "train",
+            "story_id": 0
+          },
+          {
+            "answer": "basket",
+            "correct": false,
+            "margin": -3.081768,
+            "pred": "star",
+            "scores": {
+              "basket": -45.063461,
+              "star": -41.981693
+            },
+            "split": "train",
+            "story_id": 0
+          },
+          {
+            "answer": "anchor",
+            "correct": true,
+            "margin": 0.274158,
+            "pred": "anchor",
+            "scores": {
+              "anchor": -44.753372,
+              "basket": -45.027531
+            },
+            "split": "train",
+            "story_id": 0
+          },
+          {
+            "answer": "chain",
+            "correct": true,
+            "margin": 1.549828,
+            "pred": "chain",
+            "scores": {
+              "chain": -42.990959,
+              "stone": -44.540787
+            },
+            "split": "train",
+            "story_id": 0
+          },
+          {
+            "answer": "cotton",
+            "correct": false,
+            "margin": -2.00156,
+            "pred": "star",
+            "scores": {
+              "cotton": -43.961561,
+              "star": -41.960001
+            },
+            "split": "train",
+            "story_id": 0
+          },
+          {
+            "answer": "flower",
+            "correct": false,
+            "margin": -3.111219,
+            "pred": "star",
+            "scores": {
+              "flower": -45.093628,
+              "star": -41.982409
+            },
+            "split": "train",
+            "story_id": 0
+          },
+          {
+            "answer": "apple",
+            "correct": false,
+            "margin": -1.621191,
+            "pred": "coin",
+            "scores": {
+              "apple": -44.57016,
+              "coin": -42.948969
+            },
+            "split": "train",
+            "story_id": 1
+          },
+          {
+            "answer": "book",
+            "correct": true,
+            "margin": 0.81912,
+            "pred": "book",
+            "scores": {
+              "book": -44.698351,
+              "clock": -45.517471
+            },
+            "split": "train",
+            "story_id": 1
+          }
+        ],
+        "n": 256
+      }
+    },
+    {
+      "elapsed_ms": 31045.8,
+      "family": "no_context",
+      "final": {
+        "by_split": {
+          "in_dist": {
+            "choice_acc": 0.4297,
+            "mean_margin": -0.032632,
+            "n": 128
+          }
+        },
+        "choice_acc": 0.4297,
+        "examples": [
+          {
+            "answer": "drum",
+            "correct": true,
+            "margin": 0.532533,
+            "pred": "drum",
+            "scores": {
+              "drum": -11.307525,
+              "garden": -11.840058
+            },
+            "split": "in_dist",
+            "story_id": 64
+          },
+          {
+            "answer": "shell",
+            "correct": false,
+            "margin": -0.133643,
+            "pred": "drum",
+            "scores": {
+              "drum": -11.307525,
+              "shell": -11.441168
+            },
+            "split": "in_dist",
+            "story_id": 64
+          },
+          {
+            "answer": "cotton",
+            "correct": false,
+            "margin": -0.744457,
+            "pred": "coin",
+            "scores": {
+              "coin": -10.772074,
+              "cotton": -11.516531
+            },
+            "split": "in_dist",
+            "story_id": 64
+          },
+          {
+            "answer": "garden",
+            "correct": false,
+            "margin": -0.323528,
+            "pred": "cotton",
+            "scores": {
+              "cotton": -11.516531,
+              "garden": -11.840058
+            },
+            "split": "in_dist",
+            "story_id": 64
+          },
+          {
+            "answer": "star",
+            "correct": true,
+            "margin": 0.148827,
+            "pred": "star",
+            "scores": {
+              "coin": -10.772074,
+              "star": -10.623247
+            },
+            "split": "in_dist",
+            "story_id": 64
+          },
+          {
+            "answer": "jacket",
+            "correct": true,
+            "margin": 0.00303,
+            "pred": "jacket",
+            "scores": {
+              "drum": -11.307525,
+              "jacket": -11.304495
+            },
+            "split": "in_dist",
+            "story_id": 64
+          },
+          {
+            "answer": "apple",
+            "correct": false,
+            "margin": -0.243597,
+            "pred": "coin",
+            "scores": {
+              "apple": -11.01567,
+              "coin": -10.772074
+            },
+            "split": "in_dist",
+            "story_id": 64
+          },
+          {
+            "answer": "coin",
+            "correct": true,
+            "margin": 1.067985,
+            "pred": "coin",
+            "scores": {
+              "coin": -10.772074,
+              "garden": -11.840058
+            },
+            "split": "in_dist",
+            "story_id": 64
+          },
+          {
+            "answer": "flower",
+            "correct": false,
+            "margin": -0.00449,
+            "pred": "basket",
+            "scores": {
+              "basket": -11.586382,
+              "flower": -11.590872
+            },
+            "split": "in_dist",
+            "story_id": 65
+          },
+          {
+            "answer": "clock",
+            "correct": false,
+            "margin": -0.101641,
+            "pred": "basket",
+            "scores": {
+              "basket": -11.586382,
+              "clock": -11.688023
+            },
+            "split": "in_dist",
+            "story_id": 65
+          }
+        ],
+        "n": 128
+      },
+      "learning_curve": [
+        {
+          "by_split": {
+            "in_dist": {
+              "choice_acc": 0.5104,
+              "mean_margin": 0.009953,
+              "n": 96
+            }
+          },
+          "choice_acc": 0.5104,
+          "loss": 0.828172,
+          "step": 500,
+          "train_choice_acc": 0.5625
+        },
+        {
+          "by_split": {
+            "in_dist": {
+              "choice_acc": 0.5104,
+              "mean_margin": -0.027669,
+              "n": 96
+            }
+          },
+          "choice_acc": 0.5104,
+          "loss": 0.701665,
+          "step": 1000,
+          "train_choice_acc": 0.4479
+        },
+        {
+          "by_split": {
+            "in_dist": {
+              "choice_acc": 0.4583,
+              "mean_margin": -0.017523,
+              "n": 96
+            }
+          },
+          "choice_acc": 0.4583,
+          "loss": 0.708128,
+          "step": 1500,
+          "train_choice_acc": 0.5729
+        },
+        {
+          "by_split": {
+            "in_dist": {
+              "choice_acc": 0.4375,
+              "mean_margin": -0.010894,
+              "n": 96
+            }
+          },
+          "choice_acc": 0.4375,
+          "loss": 0.688205,
+          "step": 2000,
+          "train_choice_acc": 0.5312
+        }
+      ],
+      "status": "ok",
+      "steps_done": 2000,
+      "train_final": {
+        "by_split": {
+          "train": {
+            "choice_acc": 0.5078,
+            "mean_margin": 0.003354,
+            "n": 256
+          }
+        },
+        "choice_acc": 0.5078,
+        "examples": [
+          {
+            "answer": "star",
+            "correct": true,
+            "margin": 0.963135,
+            "pred": "star",
+            "scores": {
+              "basket": -11.586382,
+              "star": -10.623247
+            },
+            "split": "train",
+            "story_id": 0
+          },
+          {
+            "answer": "stone",
+            "correct": true,
+            "margin": 0.376523,
+            "pred": "stone",
+            "scores": {
+              "flower": -11.590872,
+              "stone": -11.214349
+            },
+            "split": "train",
+            "story_id": 0
+          },
+          {
+            "answer": "bottle",
+            "correct": false,
+            "margin": -0.121272,
+            "pred": "chain",
+            "scores": {
+              "bottle": -11.448073,
+              "chain": -11.326801
+            },
+            "split": "train",
+            "story_id": 0
+          },
+          {
+            "answer": "basket",
+            "correct": false,
+            "margin": -0.963135,
+            "pred": "star",
+            "scores": {
+              "basket": -11.586382,
+              "star": -10.623247
+            },
+            "split": "train",
+            "story_id": 0
+          },
+          {
+            "answer": "anchor",
+            "correct": false,
+            "margin": -0.446469,
+            "pred": "basket",
+            "scores": {
+              "anchor": -12.032851,
+              "basket": -11.586382
+            },
+            "split": "train",
+            "story_id": 0
+          },
+          {
+            "answer": "chain",
+            "correct": false,
+            "margin": -0.112453,
+            "pred": "stone",
+            "scores": {
+              "chain": -11.326801,
+              "stone": -11.214349
+            },
+            "split": "train",
+            "story_id": 0
+          },
+          {
+            "answer": "cotton",
+            "correct": false,
+            "margin": -0.893284,
+            "pred": "star",
+            "scores": {
+              "cotton": -11.516531,
+              "star": -10.623247
+            },
+            "split": "train",
+            "story_id": 0
+          },
+          {
+            "answer": "flower",
+            "correct": false,
+            "margin": -0.967625,
+            "pred": "star",
+            "scores": {
+              "flower": -11.590872,
+              "star": -10.623247
+            },
+            "split": "train",
+            "story_id": 0
+          },
+          {
+            "answer": "apple",
+            "correct": false,
+            "margin": -0.243597,
+            "pred": "coin",
+            "scores": {
+              "apple": -11.01567,
+              "coin": -10.772074
+            },
+            "split": "train",
+            "story_id": 1
+          },
+          {
+            "answer": "book",
+            "correct": true,
+            "margin": 0.247204,
+            "pred": "book",
+            "scores": {
+              "book": -11.440819,
+              "clock": -11.688023
+            },
+            "split": "train",
+            "story_id": 1
+          }
+        ],
+        "n": 256
+      }
+    }
+  ],
+  "tokenizer": "cl100k_base"
+}

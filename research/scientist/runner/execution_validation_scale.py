@@ -259,6 +259,11 @@ class _ExecutionValidationScaleMixin:
             "checkpoint_interval_steps": int(
                 getattr(config, "phase_checkpoint_step_interval", 0) or 0
             ),
+            "checkpoint_artifact_interval_steps": (
+                int(getattr(config, "champion_floor_checkpoint_interval_steps", 0) or 0)
+                if is_confirmation
+                else 0
+            ),
             "checkpoint_milestone_steps": (
                 [10_000, 20_000, 40_000] if is_confirmation else []
             ),
@@ -302,6 +307,16 @@ class _ExecutionValidationScaleMixin:
         ]:
             program_metrics[key] = s1_result.get(key)
         program_metrics["train_budget_steps"] = config.scale_up_steps
+        curve = s1_result.get("training_curve") or []
+        if curve:
+            try:
+                from ...eval.champion_floor_metrics import (
+                    extract_champion_floor_metrics,
+                )
+
+                program_metrics.update(extract_champion_floor_metrics(curve).to_dict())
+            except (ImportError, RuntimeError, ValueError, TypeError) as exc:
+                program_metrics["champion_floor_protocol_version"] = f"failed: {exc}"
         program_metrics.update(screening_wikitext_fields(s1_result))
         program_metrics.update(screening_probe_fields(s1_result))
         program_metrics.update(screening_probe_fields(program_metrics))

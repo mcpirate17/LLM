@@ -64,6 +64,54 @@ _LEADERBOARD_MANAGED_COLUMNS = frozenset(
     }
 )
 
+_CHAMPION_DASHBOARD_FIELDS = (
+    "champion_floor_protocol_version",
+    "champion_steps_to_floor",
+    "champion_floor_loss",
+    "champion_floor_ppl",
+    "champion_floor_loss_std",
+    "champion_plateau_detected_step",
+    "champion_plateau_window",
+    "champion_baseline_result_id",
+    "champion_baseline_layers",
+    "champion_baseline_protocol_version",
+    "champion_steps_to_floor_score",
+    "champion_floor_quality_score",
+    "champion_floor_stability_score",
+    "champion_induction_v3_score",
+    "champion_binding_long_context_score",
+    "champion_small_ar_score",
+    "champion_tiny_model_score",
+    "champion_tiny_model_protocol_version",
+    "champion_hard_failure_reason",
+    "induction_v3_auc",
+    "induction_v3_max_gap_acc",
+    "induction_v3_gap_accuracy_cv",
+    "induction_v3_gap_accuracies_json",
+    "induction_v3_steps_trained",
+    "induction_v3_status",
+    "induction_v3_elapsed_ms",
+    "induction_v3_protocol_version",
+    "small_ar_champion_metric_version",
+    "small_ar_champion_final_acc",
+    "small_ar_champion_held_pair_match_acc",
+    "small_ar_champion_held_class_acc",
+    "small_ar_champion_learning_curve_json",
+    "small_ar_champion_steps_to_floor",
+    "small_ar_champion_score",
+    "small_ar_champion_status",
+    "small_ar_champion_elapsed_ms",
+)
+
+_V2_INVESTIGATION_DASHBOARD_FIELDS = (
+    "induction_v2_investigation_auc",
+    "induction_v2_investigation_max_gap_acc",
+    "induction_v2_investigation_protocol_version",
+    "binding_v2_investigation_auc",
+    "binding_v2_investigation_max_distance_acc",
+    "binding_v2_investigation_protocol_version",
+)
+
 
 class _LeaderboardMixin:
     """Leaderboard operations for the Lab Notebook."""
@@ -665,6 +713,15 @@ class _LeaderboardMixin:
                 return f"pr.{column} AS {target}, "
             return f"NULL AS {target}, "
 
+        champion_dashboard_select = "".join(
+            _optional_pr_select(column, f"_pr_{column}")
+            for column in _CHAMPION_DASHBOARD_FIELDS
+        )
+        v2_investigation_select = "".join(
+            _optional_pr_select(column, f"_pr_{column}")
+            for column in _V2_INVESTIGATION_DASHBOARD_FIELDS
+        )
+
         query = (
             "SELECT l.*, pr.graph_json AS _graph_json, "
             "pr.routing_mode AS _routing_mode, "
@@ -727,6 +784,8 @@ class _LeaderboardMixin:
             f"{_optional_pr_select('nano_ar_inv_status')}"
             f"{_optional_pr_select('nano_ar_inv_elapsed_ms')}"
             f"{_optional_pr_select('nano_ar_inv_train_steps_done')}"
+            f"{champion_dashboard_select}"
+            f"{v2_investigation_select}"
             "pr.controlled_lang_metric_version AS controlled_lang_metric_version, "
             "pr.controlled_lang_s05_sa_score AS controlled_lang_s05_sa_score, "
             "pr.controlled_lang_s05_nb_order_acc AS controlled_lang_s05_nb_order_acc, "
@@ -919,6 +978,14 @@ class _LeaderboardMixin:
                 "_pr_blimp_status"
             ) is not None:
                 d["blimp_status"] = d.get("_pr_blimp_status")
+            for col in _CHAMPION_DASHBOARD_FIELDS:
+                pr_key = f"_pr_{col}"
+                if d.get(col) is None and d.get(pr_key) is not None:
+                    d[col] = d.get(pr_key)
+            for col in _V2_INVESTIGATION_DASHBOARD_FIELDS:
+                pr_key = f"_pr_{col}"
+                if d.get(col) is None and d.get(pr_key) is not None:
+                    d[col] = d.get(pr_key)
             if pr_eval_is_bpe or not d.get("screening_wikitext_metric_version"):
                 d["screening_wikitext_metric_version"] = d.get(
                     "_pr_screening_wikitext_metric_version"
@@ -958,6 +1025,10 @@ class _LeaderboardMixin:
             d.pop("_pr_blimp_overall_accuracy", None)
             d.pop("_pr_blimp_n_subtasks", None)
             d.pop("_pr_blimp_status", None)
+            for col in _CHAMPION_DASHBOARD_FIELDS:
+                d.pop(f"_pr_{col}", None)
+            for col in _V2_INVESTIGATION_DASHBOARD_FIELDS:
+                d.pop(f"_pr_{col}", None)
             d.pop("_pr_screening_wikitext_metric_version", None)
             d.pop("_pr_tokenizer_mode", None)
             d.pop("_pr_corpus_path", None)

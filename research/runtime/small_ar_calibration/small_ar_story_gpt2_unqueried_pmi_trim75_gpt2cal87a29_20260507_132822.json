@@ -1,0 +1,380 @@
+{
+  "checkpoint": "/home/tim/Projects/LLM/checkpoints/_investigation_artifacts/ba70eb86-3f8/gpt2cal87a29_tp0_reference_calibration_step40000.pt",
+  "config": {
+    "batch_size": 4,
+    "context_keep_fraction": 0.75,
+    "corpus": {
+      "bindings_per_story": 8,
+      "choices_per_query": 2,
+      "n_colors": 64,
+      "n_cross_story_groups": 0,
+      "n_held_key_stories": 0,
+      "n_in_dist_eval_stories": 0,
+      "n_objects": 128,
+      "n_train_stories": 64,
+      "n_values": 32,
+      "noise_sentences_per_story": 0,
+      "queries_per_story": 4,
+      "seed": 15
+    },
+    "dynamic_train_stories": false,
+    "eval_every": 500,
+    "loss_mode": "choice",
+    "lr": 0.0001,
+    "score_mode": "pmi",
+    "seed": 15,
+    "train_steps": 3000
+  },
+  "curve": [
+    {
+      "by_split": {
+        "in_story_unqueried": {
+          "choice_acc": 0.418,
+          "mean_margin": -0.671415,
+          "n": 256
+        }
+      },
+      "choice_acc": 0.418,
+      "loss": 0.067125,
+      "step": 500,
+      "train_choice_acc": 0.9479
+    },
+    {
+      "by_split": {
+        "in_story_unqueried": {
+          "choice_acc": 0.3945,
+          "mean_margin": -1.496538,
+          "n": 256
+        }
+      },
+      "choice_acc": 0.3945,
+      "loss": 0.000366,
+      "step": 1000,
+      "train_choice_acc": 0.9896
+    },
+    {
+      "by_split": {
+        "in_story_unqueried": {
+          "choice_acc": 0.3828,
+          "mean_margin": -1.759582,
+          "n": 256
+        }
+      },
+      "choice_acc": 0.3828,
+      "loss": 7e-06,
+      "step": 1500,
+      "train_choice_acc": 1.0
+    },
+    {
+      "by_split": {
+        "in_story_unqueried": {
+          "choice_acc": 0.3711,
+          "mean_margin": -1.98802,
+          "n": 256
+        }
+      },
+      "choice_acc": 0.3711,
+      "loss": 5e-06,
+      "step": 2000,
+      "train_choice_acc": 1.0
+    },
+    {
+      "by_split": {
+        "in_story_unqueried": {
+          "choice_acc": 0.3711,
+          "mean_margin": -2.035365,
+          "n": 256
+        }
+      },
+      "choice_acc": 0.3711,
+      "loss": 1.1e-05,
+      "step": 2500,
+      "train_choice_acc": 1.0
+    },
+    {
+      "by_split": {
+        "in_story_unqueried": {
+          "choice_acc": 0.375,
+          "mean_margin": -2.070279,
+          "n": 256
+        }
+      },
+      "choice_acc": 0.375,
+      "loss": 2e-06,
+      "step": 3000,
+      "train_choice_acc": 1.0
+    }
+  ],
+  "elapsed_ms": 31418.7,
+  "final": {
+    "by_split": {
+      "in_story_unqueried": {
+        "choice_acc": 0.375,
+        "mean_margin": -2.070279,
+        "n": 256
+      }
+    },
+    "choice_acc": 0.375,
+    "examples": [
+      {
+        "answer": "flag",
+        "correct": false,
+        "margin": -0.036435,
+        "pred": "drum",
+        "scores": {
+          "drum": 0.048837,
+          "flag": 0.012402
+        },
+        "split": "in_story_unqueried",
+        "story_id": 0
+      },
+      {
+        "answer": "flower",
+        "correct": false,
+        "margin": -2.173662,
+        "pred": "drum",
+        "scores": {
+          "drum": 0.398202,
+          "flower": -1.77546
+        },
+        "split": "in_story_unqueried",
+        "story_id": 0
+      },
+      {
+        "answer": "bottle",
+        "correct": false,
+        "margin": -2.122579,
+        "pred": "drum",
+        "scores": {
+          "bottle": 8.877769,
+          "drum": 11.000347
+        },
+        "split": "in_story_unqueried",
+        "story_id": 0
+      },
+      {
+        "answer": "button",
+        "correct": true,
+        "margin": 2.705638,
+        "pred": "button",
+        "scores": {
+          "button": -1.699486,
+          "drum": -4.405124
+        },
+        "split": "in_story_unqueried",
+        "story_id": 0
+      },
+      {
+        "answer": "bucket",
+        "correct": true,
+        "margin": 2.9622,
+        "pred": "bucket",
+        "scores": {
+          "bucket": 7.836384,
+          "garden": 4.874185
+        },
+        "split": "in_story_unqueried",
+        "story_id": 1
+      },
+      {
+        "answer": "stone",
+        "correct": true,
+        "margin": 2.284573,
+        "pred": "stone",
+        "scores": {
+          "garden": 8.155169,
+          "stone": 10.439742
+        },
+        "split": "in_story_unqueried",
+        "story_id": 1
+      },
+      {
+        "answer": "bottle",
+        "correct": true,
+        "margin": 18.749357,
+        "pred": "bottle",
+        "scores": {
+          "bottle": 28.357726,
+          "garden": 9.608369
+        },
+        "split": "in_story_unqueried",
+        "story_id": 1
+      },
+      {
+        "answer": "mirror",
+        "correct": true,
+        "margin": 7.173945,
+        "pred": "mirror",
+        "scores": {
+          "garden": 8.602802,
+          "mirror": 15.776747
+        },
+        "split": "in_story_unqueried",
+        "story_id": 1
+      },
+      {
+        "answer": "window",
+        "correct": true,
+        "margin": 4.422498,
+        "pred": "window",
+        "scores": {
+          "stone": 1.105782,
+          "window": 5.52828
+        },
+        "split": "in_story_unqueried",
+        "story_id": 2
+      },
+      {
+        "answer": "stone",
+        "correct": false,
+        "margin": -3.995844,
+        "pred": "window",
+        "scores": {
+          "stone": 1.295328,
+          "window": 5.291173
+        },
+        "split": "in_story_unqueried",
+        "story_id": 2
+      }
+    ],
+    "n": 256
+  },
+  "label": "GPT-2 control 6L 40K",
+  "protocol_version": "small_ar_story_gpt2_unqueried_pmi_trim_ad_hoc_v1",
+  "target_id": "gpt2cal87a29",
+  "tokenizer": "cl100k_base",
+  "train_final": {
+    "by_split": {
+      "train": {
+        "choice_acc": 1.0,
+        "mean_margin": 15.011779,
+        "n": 256
+      }
+    },
+    "choice_acc": 1.0,
+    "examples": [
+      {
+        "answer": "ticket",
+        "correct": true,
+        "margin": 13.118838,
+        "pred": "ticket",
+        "scores": {
+          "flower": -7.726557,
+          "ticket": 5.392282
+        },
+        "split": "train",
+        "story_id": 0
+      },
+      {
+        "answer": "cotton",
+        "correct": true,
+        "margin": 14.226984,
+        "pred": "cotton",
+        "scores": {
+          "cotton": 17.624157,
+          "ticket": 3.397173
+        },
+        "split": "train",
+        "story_id": 0
+      },
+      {
+        "answer": "coin",
+        "correct": true,
+        "margin": 13.206048,
+        "pred": "coin",
+        "scores": {
+          "button": -6.357234,
+          "coin": 6.848814
+        },
+        "split": "train",
+        "story_id": 0
+      },
+      {
+        "answer": "drum",
+        "correct": true,
+        "margin": 22.88326,
+        "pred": "drum",
+        "scores": {
+          "coin": 7.677898,
+          "drum": 30.561158
+        },
+        "split": "train",
+        "story_id": 0
+      },
+      {
+        "answer": "card",
+        "correct": true,
+        "margin": 11.543234,
+        "pred": "card",
+        "scores": {
+          "card": 19.899562,
+          "garden": 8.356328
+        },
+        "split": "train",
+        "story_id": 1
+      },
+      {
+        "answer": "silver",
+        "correct": true,
+        "margin": 11.755824,
+        "pred": "silver",
+        "scores": {
+          "card": -0.635173,
+          "silver": 11.120651
+        },
+        "split": "train",
+        "story_id": 1
+      },
+      {
+        "answer": "garden",
+        "correct": true,
+        "margin": 18.562681,
+        "pred": "garden",
+        "scores": {
+          "garden": 0.733005,
+          "stone": -17.829676
+        },
+        "split": "train",
+        "story_id": 1
+      },
+      {
+        "answer": "star",
+        "correct": true,
+        "margin": 10.91389,
+        "pred": "star",
+        "scores": {
+          "bucket": 1.495025,
+          "star": 12.408916
+        },
+        "split": "train",
+        "story_id": 1
+      },
+      {
+        "answer": "flower",
+        "correct": true,
+        "margin": 11.395583,
+        "pred": "flower",
+        "scores": {
+          "cup": -10.706054,
+          "flower": 0.689529
+        },
+        "split": "train",
+        "story_id": 2
+      },
+      {
+        "answer": "wheel",
+        "correct": true,
+        "margin": 25.503822,
+        "pred": "wheel",
+        "scores": {
+          "flower": -4.005112,
+          "wheel": 21.498711
+        },
+        "split": "train",
+        "story_id": 2
+      }
+    ],
+    "n": 256
+  },
+  "vocab_size": 32000
+}

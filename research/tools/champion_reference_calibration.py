@@ -28,7 +28,7 @@ from research.scientist.runner._helpers import (
 from research.scientist.runner.execution_champion_confirmation import (
     ChampionConfirmationEvaluator,
 )
-from research.synthesis.reference_architectures import build_reference
+from research.synthesis.reference_architectures import build_reference, list_references
 from research.synthesis.serializer import graph_to_json
 from research.training.checkpointing import CheckpointManager
 
@@ -66,6 +66,16 @@ def calibration_milestones(total_steps: int, requested: Iterable[int]) -> list[i
     milestones = {int(step) for step in requested if 0 < int(step) <= total}
     milestones.add(total)
     return sorted(milestones)
+
+
+def calibration_floor_checkpoint_milestones(
+    total_steps: int, interval: int
+) -> list[int]:
+    step_interval = int(interval)
+    total = max(1, int(total_steps))
+    if step_interval <= 0:
+        return []
+    return list(range(step_interval, total + 1, step_interval))
 
 
 def _stable_id(prefix: str, *parts: Any) -> str:
@@ -210,13 +220,14 @@ def _run_probe_policy(
     result_id: str,
     event_writer: EventWriter,
     policy: str,
+    required_steps: Iterable[int] = (),
 ) -> dict[str, Any]:
     if policy == "none":
         return {}
     evaluator = ChampionConfirmationEvaluator(runner)
     steps = sorted(checkpoint_paths)
     if policy == "final":
-        steps = steps[-1:]
+        steps = sorted({steps[-1], *[int(step) for step in required_steps]})
     snapshots = []
     metrics: dict[str, Any] = {}
     for step in steps:
@@ -322,6 +333,9 @@ def _train_reference_model(
         "checkpoint_candidate_idx": 0,
         "checkpoint_seed_idx": 0,
         "checkpoint_interval_steps": 0,
+        "checkpoint_artifact_interval_steps": int(
+            getattr(args, "floor_checkpoint_interval", 0) or 0
+        ),
         "checkpoint_milestone_steps": milestone_steps,
         "checkpoint_resume_state": None,
     }
@@ -342,6 +356,7 @@ def _train_reference_model(
 def _reference_extra(
     *,
     probe_metrics: dict[str, Any],
+    arch: str,
     layers: int,
     steps: int,
     milestone_steps: list[int],
@@ -357,6 +372,7 @@ def _reference_extra(
             json_safe(
                 {
                     "tool": "research.tools.champion_reference_calibration",
+                    "arch": arch,
                     "layers": layers,
                     "steps": steps,
                     "probe_policy": args.probe_policy,
@@ -403,22 +419,27 @@ def _upsert_reference_leaderboard(
     *,
     result_id: str,
     full_fp: str,
+    arch: str,
+    reference_name: str,
     layers: int,
     steps: int,
     s1: dict[str, Any],
     kwargs: dict[str, Any],
     probe_metrics: dict[str, Any],
-    reference_name: str,
     args: argparse.Namespace,
 ) -> None:
     loss_ratio = s1.get("loss_ratio")
     nb.upsert_leaderboard(
         result_id=result_id,
         model_source="reference_calibration",
-        architecture_desc=f"GPT-2 softmax reference, {layers} layers, {steps} steps",
+        architecture_desc=(
+            f"{reference_name} reference, {layers} layers, {steps} steps"
+        ),
         tier="validation" if bool(s1.get("passed")) else "screening",
-        tags="reference_calibration,gpt2,champion_control",
-        notes=f"Champion-scale GPT-2 control; probe_policy={args.probe_policy}",
+        tags=f"reference_calibration,{arch},champion_control",
+        notes=(
+            f"Champion-scale {reference_name} control; probe_policy={args.probe_policy}"
+        ),
         is_reference=True,
         reference_name=reference_name,
         allow_fingerprint_duplicate=True,
@@ -440,6 +461,8 @@ def _upsert_reference_leaderboard(
 def _reference_summary(
     *,
     result_id: str,
+    arch: str,
+    reference_name: str,
     layers: int,
     steps: int,
     s1: dict[str, Any],
@@ -448,6 +471,8 @@ def _reference_summary(
 ) -> dict[str, Any]:
     return {
         "result_id": result_id,
+        "arch": arch,
+        "reference_name": reference_name,
         "layers": int(layers),
         "steps": int(steps),
         "passed": bool(s1.get("passed")),
@@ -467,6 +492,8 @@ def _write_reference_train_start(
     *,
     exp_id: str,
     result_id: str,
+    arch: str,
+    reference_name: str,
     layers: int,
     steps: int,
     milestone_steps: list[int],
@@ -477,6 +504,8 @@ def _write_reference_train_start(
         {
             "experiment_id": exp_id,
             "result_id": result_id,
+            "arch": arch,
+            "reference_name": reference_name,
             "layers": layers,
             "steps": steps,
             "milestones": milestone_steps,
@@ -496,6 +525,7 @@ def _run_reference_probes(
     result_id: str,
     event_writer: EventWriter,
     args: argparse.Namespace,
+    required_steps: Iterable[int] = (),
 ) -> dict[str, Any]:
     return _run_probe_policy(
         runner,
@@ -507,12 +537,14 @@ def _run_reference_probes(
         result_id=result_id,
         event_writer=event_writer,
         policy=str(args.probe_policy),
+        required_steps=required_steps,
     )
 
 
 def _build_reference_run_context(
     args: argparse.Namespace,
     *,
+    arch: str,
     layers: int,
     steps: int,
     exp_id: str,
@@ -520,20 +552,31 @@ def _build_reference_run_context(
     cfg = _configure_run(args, layers=layers, steps=steps)
     dev = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
     cfg.device = str(dev)
-    graph = build_reference("gpt2", d_model=cfg.model_dim)
+    graph = build_reference(arch, d_model=cfg.model_dim)
+    ref_meta = {row["key"]: row for row in list_references()}[arch]
+    reference_name = str(ref_meta["name"])
     graph_json = graph_to_json(graph)
     full_fp = calibration_fingerprint(
         graph.fingerprint(),
-        arch="gpt2",
+        arch=arch,
         layers=layers,
         steps=steps,
         model_dim=cfg.model_dim,
         seq_len=cfg.scale_up_seq_len,
         batch_size=cfg.scale_up_batch_size,
     )
-    result_id = _stable_id("gpt2cal", full_fp)
+    result_id = _stable_id(f"{arch[:6]}cal", full_fp)
     checkpoints = CheckpointManager(str(cfg.checkpoint_dir))
-    milestone_steps = calibration_milestones(steps, args.probe_milestones)
+    milestone_steps = calibration_milestones(
+        steps,
+        [
+            *args.probe_milestones,
+            *calibration_floor_checkpoint_milestones(
+                steps,
+                int(getattr(args, "floor_checkpoint_interval", 0) or 0),
+            ),
+        ],
+    )
     return {
         "cfg": cfg,
         "dev": dev,
@@ -541,7 +584,9 @@ def _build_reference_run_context(
         "graph_json": graph_json,
         "full_fp": full_fp,
         "result_id": result_id,
-        "reference_name": f"GPT-2 control {layers}L {steps // 1000}K",
+        "arch": arch,
+        "reference_name": f"{reference_name} control {layers}L {steps // 1000}K",
+        "reference_family_name": reference_name,
         "checkpoints": checkpoints,
         "milestone_steps": milestone_steps,
         "checkpoint_paths": _checkpoint_paths_for_result(
@@ -560,14 +605,23 @@ def run_one(
     runner: ExperimentRunner,
     event_writer: EventWriter,
     exp_id: str,
+    arch: str,
     layers: int,
     steps: int,
 ) -> dict[str, Any]:
-    ctx = _build_reference_run_context(args, layers=layers, steps=steps, exp_id=exp_id)
+    ctx = _build_reference_run_context(
+        args,
+        arch=arch,
+        layers=layers,
+        steps=steps,
+        exp_id=exp_id,
+    )
     _write_reference_train_start(
         event_writer,
         exp_id=exp_id,
         result_id=ctx["result_id"],
+        arch=ctx["arch"],
+        reference_name=ctx["reference_name"],
         layers=layers,
         steps=steps,
         milestone_steps=ctx["milestone_steps"],
@@ -588,6 +642,19 @@ def run_one(
         layers=layers,
         steps=steps,
     )
+    floor_probe_steps: list[int] = []
+    try:
+        from research.eval.champion_floor_metrics import extract_champion_floor_metrics
+
+        floor_metrics = extract_champion_floor_metrics(s1.get("training_curve") or [])
+        floor_step = floor_metrics.champion_steps_to_floor
+        interval = int(getattr(args, "floor_checkpoint_interval", 0) or 0)
+        if floor_step is not None and interval > 0:
+            rounded = int(round(float(floor_step) / float(interval)) * interval)
+            rounded = max(interval, min(int(steps), rounded))
+            floor_probe_steps.append(rounded)
+    except (ImportError, RuntimeError, ValueError, TypeError):
+        floor_probe_steps = []
     probe_metrics = _run_reference_probes(
         runner,
         graph=ctx["graph"],
@@ -598,9 +665,11 @@ def run_one(
         result_id=ctx["result_id"],
         event_writer=event_writer,
         args=args,
+        required_steps=floor_probe_steps,
     )
     extra = _reference_extra(
         probe_metrics=probe_metrics,
+        arch=ctx["arch"],
         layers=layers,
         steps=steps,
         milestone_steps=ctx["milestone_steps"],
@@ -622,16 +691,19 @@ def run_one(
         nb,
         result_id=result_id,
         full_fp=ctx["full_fp"],
+        arch=ctx["arch"],
+        reference_name=ctx["reference_family_name"],
         layers=layers,
         steps=steps,
         s1=s1,
         kwargs=kwargs,
         probe_metrics=probe_metrics,
-        reference_name=ctx["reference_name"],
         args=args,
     )
     summary = _reference_summary(
         result_id=result_id,
+        arch=ctx["arch"],
+        reference_name=ctx["reference_family_name"],
         layers=layers,
         steps=steps,
         s1=s1,
@@ -644,6 +716,13 @@ def run_one(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--archs",
+        nargs="+",
+        default=["gpt2"],
+        choices=[row["key"] for row in list_references()],
+        help="Reference architecture keys to calibrate.",
+    )
     parser.add_argument("--layers", type=int, nargs="+", default=[4, 6])
     parser.add_argument("--steps", type=int, nargs="+", default=[40000])
     parser.add_argument(
@@ -651,6 +730,15 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--probe-milestones", type=int, nargs="+", default=[10000, 20000, 40000]
+    )
+    parser.add_argument(
+        "--floor-checkpoint-interval",
+        type=int,
+        default=1000,
+        help=(
+            "Save regular artifacts so the nearest floor-entry checkpoint can be "
+            "evaluated after floor extraction. Set 0 to disable."
+        ),
     )
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--seq-len", type=int, default=512)
@@ -700,30 +788,33 @@ def main() -> int:
             "reference_calibration",
             config={
                 "tool": "champion_reference_calibration",
+                "archs": args.archs,
                 "layers": args.layers,
                 "steps": args.steps,
                 "probe_policy": args.probe_policy,
             },
-            hypothesis="Known-good GPT-2 controls calibrate champion-scale probes.",
+            hypothesis="Known-good reference controls calibrate champion-scale probes.",
             research_question=(
-                "Do 4L/6L softmax GPT-2 controls produce sane champion probe "
+                "Do known reference architectures produce sane champion probe "
                 "and scoring baselines under the current runner?"
             ),
         )
         try:
-            for layers in args.layers:
-                for steps in args.steps:
-                    summaries.append(
-                        run_one(
-                            args=args,
-                            nb=nb,
-                            runner=runner,
-                            event_writer=event_writer,
-                            exp_id=exp_id,
-                            layers=int(layers),
-                            steps=int(steps),
+            for arch in args.archs:
+                for layers in args.layers:
+                    for steps in args.steps:
+                        summaries.append(
+                            run_one(
+                                args=args,
+                                nb=nb,
+                                runner=runner,
+                                event_writer=event_writer,
+                                exp_id=exp_id,
+                                arch=str(arch),
+                                layers=int(layers),
+                                steps=int(steps),
+                            )
                         )
-                    )
             nb.complete_experiment(
                 exp_id,
                 {

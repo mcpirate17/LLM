@@ -1,0 +1,829 @@
+{
+  "config": {
+    "batch_size": 4,
+    "corpus": {
+      "bindings_per_story": 12,
+      "n_colors": 64,
+      "n_cross_story_groups": 8,
+      "n_held_key_stories": 16,
+      "n_objects": 128,
+      "n_train_stories": 64,
+      "n_values": 64,
+      "noise_sentences_per_story": 24,
+      "queries_per_story": 12,
+      "seed": 4
+    },
+    "dim": 96,
+    "eval_every": 1000,
+    "heads": 4,
+    "layers": 2,
+    "lr": 0.001,
+    "seed": 4,
+    "train_steps": 5000
+  },
+  "corpus": {
+    "eval_items": 384,
+    "eval_stories": 32,
+    "max_seq_len": 455,
+    "sample_train": [
+      "Story 0.",
+      "Inside this story, the charcoal acorn names slate.",
+      "For this story, the ivory bell points to violet.",
+      "In this story, the slate banner means ruby.",
+      "The code for the cream bridge is velvet.",
+      "Inside this story, the flax pebble names briar.",
+      "Remember that the coral oar maps to onyx.",
+      "For this story, the cream journal points to linen.",
+      "For this story, the indigo pebble points to crystal.",
+      "Remember that the lilac star maps to agate.",
+      "In this story, the rose wallet means cedar.",
+      "The code for the linen flute is willow.",
+      "In this story, the coral envelope means lichen.",
+      "The linen flute and onyx appeared in the same picture only by chance.",
+      "The indigo pebble and lichen appeared in the same picture only by chance.",
+      "The cream bridge was listed before the charcoal acorn.",
+      "A traveler mentioned linen during the pause.",
+      "The coral envelope was listed before the lilac star.",
+      "The charcoal acorn and briar appeared in the same picture only by chance.",
+      "A different story used the flax pebble for onyx.",
+      "cedar appeared on a separate label.",
+      "agate and lichen were both written on the page.",
+      "A note compared the coral oar with violet, but gave no code.",
+      "A different story used the slate banner for crystal."
+    ],
+    "train_items": 768,
+    "train_stories": 64
+  },
+  "protocol_version": "small_ar_story_calibration_v1_bpe",
+  "rows": [
+    {
+      "elapsed_ms": 41152.6,
+      "family": "attention",
+      "final": {
+        "by_split": {
+          "cross_story": {
+            "choice_acc": 0.2344,
+            "mean_margin": -0.939602,
+            "n": 192
+          },
+          "held_key": {
+            "choice_acc": 0.224,
+            "mean_margin": -0.988905,
+            "n": 192
+          }
+        },
+        "choice_acc": 0.2292,
+        "examples": [
+          {
+            "answer": "canyon",
+            "correct": false,
+            "margin": -1.232409,
+            "pred": "basalt",
+            "scores": {
+              "basalt": -0.635463,
+              "canyon": -1.867872,
+              "granite": -3.174448,
+              "marigold": -3.928482
+            },
+            "split": "held_key",
+            "story_id": 64
+          },
+          {
+            "answer": "moss",
+            "correct": false,
+            "margin": -3.244146,
+            "pred": "elm",
+            "scores": {
+              "basalt": -1.485757,
+              "elm": -1.319619,
+              "moss": -4.563765,
+              "quartz": -2.495959
+            },
+            "split": "held_key",
+            "story_id": 64
+          },
+          {
+            "answer": "marigold",
+            "correct": true,
+            "margin": 0.441,
+            "pred": "marigold",
+            "scores": {
+              "canyon": -4.670404,
+              "maple": -6.316399,
+              "marigold": -1.601002,
+              "willow": -2.042003
+            },
+            "split": "held_key",
+            "story_id": 64
+          },
+          {
+            "answer": "willow",
+            "correct": true,
+            "margin": 0.08821,
+            "pred": "willow",
+            "scores": {
+              "canyon": -2.620229,
+              "elm": -3.007898,
+              "hazel": -1.263532,
+              "willow": -1.175322
+            },
+            "split": "held_key",
+            "story_id": 64
+          },
+          {
+            "answer": "quartz",
+            "correct": false,
+            "margin": -1.552384,
+            "pred": "willow",
+            "scores": {
+              "canyon": -1.865006,
+              "quartz": -3.012142,
+              "river": -2.952865,
+              "willow": -1.459758
+            },
+            "split": "held_key",
+            "story_id": 64
+          },
+          {
+            "answer": "river",
+            "correct": false,
+            "margin": -1.516647,
+            "pred": "elm",
+            "scores": {
+              "basalt": -1.49467,
+              "elm": -1.32229,
+              "maple": -2.510205,
+              "river": -2.838937
+            },
+            "split": "held_key",
+            "story_id": 64
+          },
+          {
+            "answer": "hazel",
+            "correct": true,
+            "margin": 0.554789,
+            "pred": "hazel",
+            "scores": {
+              "granite": -3.212259,
+              "hazel": -1.785419,
+              "laurel": -2.340209,
+              "moss": -3.525841
+            },
+            "split": "held_key",
+            "story_id": 64
+          },
+          {
+            "answer": "laurel",
+            "correct": false,
+            "margin": -1.646437,
+            "pred": "basalt",
+            "scores": {
+              "basalt": -0.909993,
+              "elm": -3.007729,
+              "laurel": -2.55643,
+              "marigold": -1.411276
+            },
+            "split": "held_key",
+            "story_id": 64
+          },
+          {
+            "answer": "maple",
+            "correct": false,
+            "margin": -1.354877,
+            "pred": "canyon",
+            "scores": {
+              "canyon": -1.852676,
+              "laurel": -2.434028,
+              "maple": -3.207553,
+              "quartz": -3.012304
+            },
+            "split": "held_key",
+            "story_id": 64
+          },
+          {
+            "answer": "basalt",
+            "correct": true,
+            "margin": 0.41977,
+            "pred": "basalt",
+            "scores": {
+              "basalt": -1.492699,
+              "canyon": -1.91247,
+              "maple": -2.507002,
+              "quartz": -2.504326
+            },
+            "split": "held_key",
+            "story_id": 64
+          }
+        ],
+        "n": 384
+      },
+      "learning_curve": [
+        {
+          "by_split": {
+            "held_key": {
+              "choice_acc": 0.2396,
+              "mean_margin": -0.689031,
+              "n": 96
+            }
+          },
+          "choice_acc": 0.2396,
+          "loss": 1.719388,
+          "step": 1000,
+          "train_choice_acc": 0.3542
+        },
+        {
+          "by_split": {
+            "held_key": {
+              "choice_acc": 0.2083,
+              "mean_margin": -0.871086,
+              "n": 96
+            }
+          },
+          "choice_acc": 0.2083,
+          "loss": 0.553362,
+          "step": 2000,
+          "train_choice_acc": 0.4896
+        },
+        {
+          "by_split": {
+            "held_key": {
+              "choice_acc": 0.2708,
+              "mean_margin": -0.852751,
+              "n": 96
+            }
+          },
+          "choice_acc": 0.2708,
+          "loss": 1.413808,
+          "step": 3000,
+          "train_choice_acc": 0.5625
+        },
+        {
+          "by_split": {
+            "held_key": {
+              "choice_acc": 0.2083,
+              "mean_margin": -0.748851,
+              "n": 96
+            }
+          },
+          "choice_acc": 0.2083,
+          "loss": 1.100786,
+          "step": 4000,
+          "train_choice_acc": 0.6875
+        },
+        {
+          "by_split": {
+            "held_key": {
+              "choice_acc": 0.25,
+              "mean_margin": -0.93453,
+              "n": 96
+            }
+          },
+          "choice_acc": 0.25,
+          "loss": 0.970716,
+          "step": 5000,
+          "train_choice_acc": 0.7396
+        }
+      ],
+      "status": "ok",
+      "steps_done": 5000,
+      "train_final": {
+        "by_split": {
+          "train": {
+            "choice_acc": 0.7227,
+            "mean_margin": 0.828272,
+            "n": 256
+          }
+        },
+        "choice_acc": 0.7227,
+        "examples": [
+          {
+            "answer": "agate",
+            "correct": true,
+            "margin": 1.074664,
+            "pred": "agate",
+            "scores": {
+              "agate": -0.071687,
+              "cedar": -4.3088,
+              "crystal": -1.146352,
+              "willow": -2.892376
+            },
+            "split": "train",
+            "story_id": 0
+          },
+          {
+            "answer": "briar",
+            "correct": true,
+            "margin": 2.228038,
+            "pred": "briar",
+            "scores": {
+              "briar": -0.328009,
+              "lichen": -5.018859,
+              "ruby": -2.734711,
+              "violet": -2.556047
+            },
+            "split": "train",
+            "story_id": 0
+          },
+          {
+            "answer": "willow",
+            "correct": true,
+            "margin": 2.191674,
+            "pred": "willow",
+            "scores": {
+              "crystal": -2.215675,
+              "onyx": -2.960715,
+              "violet": -4.935737,
+              "willow": -0.024002
+            },
+            "split": "train",
+            "story_id": 0
+          },
+          {
+            "answer": "slate",
+            "correct": true,
+            "margin": 2.118816,
+            "pred": "slate",
+            "scores": {
+              "briar": -2.418556,
+              "crystal": -2.305009,
+              "linen": -2.632651,
+              "slate": -0.186193
+            },
+            "split": "train",
+            "story_id": 0
+          },
+          {
+            "answer": "crystal",
+            "correct": true,
+            "margin": 2.946468,
+            "pred": "crystal",
+            "scores": {
+              "agate": -3.367249,
+              "crystal": -0.01176,
+              "linen": -5.406053,
+              "slate": -2.958228
+            },
+            "split": "train",
+            "story_id": 0
+          },
+          {
+            "answer": "cedar",
+            "correct": false,
+            "margin": -1.229609,
+            "pred": "lichen",
+            "scores": {
+              "agate": -1.846145,
+              "cedar": -1.821715,
+              "lichen": -0.592106,
+              "willow": -1.864132
+            },
+            "split": "train",
+            "story_id": 0
+          },
+          {
+            "answer": "ruby",
+            "correct": false,
+            "margin": -1.108388,
+            "pred": "briar",
+            "scores": {
+              "briar": -1.409234,
+              "crystal": -2.213922,
+              "ruby": -2.517622,
+              "slate": -3.792271
+            },
+            "split": "train",
+            "story_id": 0
+          },
+          {
+            "answer": "linen",
+            "correct": true,
+            "margin": 0.285785,
+            "pred": "linen",
+            "scores": {
+              "agate": -2.097734,
+              "lichen": -1.260744,
+              "linen": -0.974959,
+              "slate": -2.68344
+            },
+            "split": "train",
+            "story_id": 0
+          },
+          {
+            "answer": "violet",
+            "correct": true,
+            "margin": 3.163268,
+            "pred": "violet",
+            "scores": {
+              "linen": -3.445147,
+              "onyx": -3.610977,
+              "violet": -0.051774,
+              "willow": -3.215042
+            },
+            "split": "train",
+            "story_id": 0
+          },
+          {
+            "answer": "lichen",
+            "correct": true,
+            "margin": 1.23534,
+            "pred": "lichen",
+            "scores": {
+              "cedar": -1.828279,
+              "lichen": -0.592938,
+              "ruby": -3.783639,
+              "violet": -2.128838
+            },
+            "split": "train",
+            "story_id": 0
+          }
+        ],
+        "n": 256
+      }
+    },
+    {
+      "elapsed_ms": 36846.7,
+      "family": "no_context",
+      "final": {
+        "by_split": {
+          "cross_story": {
+            "choice_acc": 0.2604,
+            "mean_margin": -0.296501,
+            "n": 192
+          },
+          "held_key": {
+            "choice_acc": 0.2604,
+            "mean_margin": -0.324657,
+            "n": 192
+          }
+        },
+        "choice_acc": 0.2604,
+        "examples": [
+          {
+            "answer": "canyon",
+            "correct": false,
+            "margin": -1.032715,
+            "pred": "marigold",
+            "scores": {
+              "basalt": -1.528541,
+              "canyon": -2.246274,
+              "granite": -2.04095,
+              "marigold": -1.21356
+            },
+            "split": "held_key",
+            "story_id": 64
+          },
+          {
+            "answer": "moss",
+            "correct": false,
+            "margin": -0.711079,
+            "pred": "basalt",
+            "scores": {
+              "basalt": -1.528541,
+              "elm": -2.113815,
+              "moss": -2.23962,
+              "quartz": -2.562468
+            },
+            "split": "held_key",
+            "story_id": 64
+          },
+          {
+            "answer": "marigold",
+            "correct": true,
+            "margin": 0.094724,
+            "pred": "marigold",
+            "scores": {
+              "canyon": -2.246274,
+              "maple": -2.082761,
+              "marigold": -1.21356,
+              "willow": -1.308284
+            },
+            "split": "held_key",
+            "story_id": 64
+          },
+          {
+            "answer": "willow",
+            "correct": false,
+            "margin": -0.249782,
+            "pred": "hazel",
+            "scores": {
+              "canyon": -2.246274,
+              "elm": -2.113815,
+              "hazel": -1.058502,
+              "willow": -1.308284
+            },
+            "split": "held_key",
+            "story_id": 64
+          },
+          {
+            "answer": "quartz",
+            "correct": false,
+            "margin": -1.254185,
+            "pred": "willow",
+            "scores": {
+              "canyon": -2.246274,
+              "quartz": -2.562468,
+              "river": -1.724773,
+              "willow": -1.308284
+            },
+            "split": "held_key",
+            "story_id": 64
+          },
+          {
+            "answer": "river",
+            "correct": false,
+            "margin": -0.196232,
+            "pred": "basalt",
+            "scores": {
+              "basalt": -1.528541,
+              "elm": -2.113815,
+              "maple": -2.082761,
+              "river": -1.724773
+            },
+            "split": "held_key",
+            "story_id": 64
+          },
+          {
+            "answer": "hazel",
+            "correct": true,
+            "margin": 0.370685,
+            "pred": "hazel",
+            "scores": {
+              "granite": -2.04095,
+              "hazel": -1.058502,
+              "laurel": -1.429187,
+              "moss": -2.23962
+            },
+            "split": "held_key",
+            "story_id": 64
+          },
+          {
+            "answer": "laurel",
+            "correct": false,
+            "margin": -0.215627,
+            "pred": "marigold",
+            "scores": {
+              "basalt": -1.528541,
+              "elm": -2.113815,
+              "laurel": -1.429187,
+              "marigold": -1.21356
+            },
+            "split": "held_key",
+            "story_id": 64
+          },
+          {
+            "answer": "maple",
+            "correct": false,
+            "margin": -0.653574,
+            "pred": "laurel",
+            "scores": {
+              "canyon": -2.246274,
+              "laurel": -1.429187,
+              "maple": -2.082761,
+              "quartz": -2.562468
+            },
+            "split": "held_key",
+            "story_id": 64
+          },
+          {
+            "answer": "basalt",
+            "correct": true,
+            "margin": 0.55422,
+            "pred": "basalt",
+            "scores": {
+              "basalt": -1.528541,
+              "canyon": -2.246274,
+              "maple": -2.082761,
+              "quartz": -2.562468
+            },
+            "split": "held_key",
+            "story_id": 64
+          }
+        ],
+        "n": 384
+      },
+      "learning_curve": [
+        {
+          "by_split": {
+            "held_key": {
+              "choice_acc": 0.2708,
+              "mean_margin": -0.423835,
+              "n": 96
+            }
+          },
+          "choice_acc": 0.2708,
+          "loss": 1.764362,
+          "step": 1000,
+          "train_choice_acc": 0.25
+        },
+        {
+          "by_split": {
+            "held_key": {
+              "choice_acc": 0.25,
+              "mean_margin": -0.348404,
+              "n": 96
+            }
+          },
+          "choice_acc": 0.25,
+          "loss": 1.415175,
+          "step": 2000,
+          "train_choice_acc": 0.2604
+        },
+        {
+          "by_split": {
+            "held_key": {
+              "choice_acc": 0.2917,
+              "mean_margin": -0.342012,
+              "n": 96
+            }
+          },
+          "choice_acc": 0.2917,
+          "loss": 1.736287,
+          "step": 3000,
+          "train_choice_acc": 0.2604
+        },
+        {
+          "by_split": {
+            "held_key": {
+              "choice_acc": 0.2917,
+              "mean_margin": -0.323604,
+              "n": 96
+            }
+          },
+          "choice_acc": 0.2917,
+          "loss": 1.513779,
+          "step": 4000,
+          "train_choice_acc": 0.25
+        },
+        {
+          "by_split": {
+            "held_key": {
+              "choice_acc": 0.2812,
+              "mean_margin": -0.335031,
+              "n": 96
+            }
+          },
+          "choice_acc": 0.2812,
+          "loss": 1.931899,
+          "step": 5000,
+          "train_choice_acc": 0.2396
+        }
+      ],
+      "status": "ok",
+      "steps_done": 5000,
+      "train_final": {
+        "by_split": {
+          "train": {
+            "choice_acc": 0.2461,
+            "mean_margin": -0.304446,
+            "n": 256
+          }
+        },
+        "choice_acc": 0.2461,
+        "examples": [
+          {
+            "answer": "agate",
+            "correct": false,
+            "margin": -0.190004,
+            "pred": "willow",
+            "scores": {
+              "agate": -1.498288,
+              "cedar": -2.127815,
+              "crystal": -2.102791,
+              "willow": -1.308284
+            },
+            "split": "train",
+            "story_id": 0
+          },
+          {
+            "answer": "briar",
+            "correct": true,
+            "margin": 0.276236,
+            "pred": "briar",
+            "scores": {
+              "briar": -1.37754,
+              "lichen": -1.653776,
+              "ruby": -2.03171,
+              "violet": -2.039666
+            },
+            "split": "train",
+            "story_id": 0
+          },
+          {
+            "answer": "willow",
+            "correct": true,
+            "margin": 0.357934,
+            "pred": "willow",
+            "scores": {
+              "crystal": -2.102791,
+              "onyx": -1.666218,
+              "violet": -2.039666,
+              "willow": -1.308284
+            },
+            "split": "train",
+            "story_id": 0
+          },
+          {
+            "answer": "slate",
+            "correct": false,
+            "margin": -1.052484,
+            "pred": "briar",
+            "scores": {
+              "briar": -1.37754,
+              "crystal": -2.102791,
+              "linen": -2.298018,
+              "slate": -2.430024
+            },
+            "split": "train",
+            "story_id": 0
+          },
+          {
+            "answer": "crystal",
+            "correct": false,
+            "margin": -0.604503,
+            "pred": "agate",
+            "scores": {
+              "agate": -1.498288,
+              "crystal": -2.102791,
+              "linen": -2.298018,
+              "slate": -2.430024
+            },
+            "split": "train",
+            "story_id": 0
+          },
+          {
+            "answer": "cedar",
+            "correct": false,
+            "margin": -0.819531,
+            "pred": "willow",
+            "scores": {
+              "agate": -1.498288,
+              "cedar": -2.127815,
+              "lichen": -1.653776,
+              "willow": -1.308284
+            },
+            "split": "train",
+            "story_id": 0
+          },
+          {
+            "answer": "ruby",
+            "correct": false,
+            "margin": -0.65417,
+            "pred": "briar",
+            "scores": {
+              "briar": -1.37754,
+              "crystal": -2.102791,
+              "ruby": -2.03171,
+              "slate": -2.430024
+            },
+            "split": "train",
+            "story_id": 0
+          },
+          {
+            "answer": "linen",
+            "correct": false,
+            "margin": -0.79973,
+            "pred": "agate",
+            "scores": {
+              "agate": -1.498288,
+              "lichen": -1.653776,
+              "linen": -2.298018,
+              "slate": -2.430024
+            },
+            "split": "train",
+            "story_id": 0
+          },
+          {
+            "answer": "violet",
+            "correct": false,
+            "margin": -0.731383,
+            "pred": "willow",
+            "scores": {
+              "linen": -2.298018,
+              "onyx": -1.666218,
+              "violet": -2.039666,
+              "willow": -1.308284
+            },
+            "split": "train",
+            "story_id": 0
+          },
+          {
+            "answer": "lichen",
+            "correct": true,
+            "margin": 0.377933,
+            "pred": "lichen",
+            "scores": {
+              "cedar": -2.127815,
+              "lichen": -1.653776,
+              "ruby": -2.03171,
+              "violet": -2.039666
+            },
+            "split": "train",
+            "story_id": 0
+          }
+        ],
+        "n": 256
+      }
+    }
+  ],
+  "tokenizer": "cl100k_base"
+}

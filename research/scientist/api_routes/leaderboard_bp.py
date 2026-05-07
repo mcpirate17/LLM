@@ -33,6 +33,45 @@ from ._fingerprint_failures import (
 
 logger = logging.getLogger(__name__)
 
+CHAMPION_DASHBOARD_FIELDS = (
+    "champion_floor_protocol_version",
+    "champion_steps_to_floor",
+    "champion_floor_loss",
+    "champion_floor_ppl",
+    "champion_floor_loss_std",
+    "champion_plateau_detected_step",
+    "champion_plateau_window",
+    "champion_baseline_result_id",
+    "champion_baseline_layers",
+    "champion_baseline_protocol_version",
+    "champion_steps_to_floor_score",
+    "champion_floor_quality_score",
+    "champion_floor_stability_score",
+    "champion_induction_v3_score",
+    "champion_binding_long_context_score",
+    "champion_small_ar_score",
+    "champion_tiny_model_score",
+    "champion_tiny_model_protocol_version",
+    "champion_hard_failure_reason",
+    "induction_v3_auc",
+    "induction_v3_max_gap_acc",
+    "induction_v3_gap_accuracy_cv",
+    "induction_v3_gap_accuracies_json",
+    "induction_v3_steps_trained",
+    "induction_v3_status",
+    "induction_v3_elapsed_ms",
+    "induction_v3_protocol_version",
+    "small_ar_champion_metric_version",
+    "small_ar_champion_final_acc",
+    "small_ar_champion_held_pair_match_acc",
+    "small_ar_champion_held_class_acc",
+    "small_ar_champion_learning_curve_json",
+    "small_ar_champion_steps_to_floor",
+    "small_ar_champion_score",
+    "small_ar_champion_status",
+    "small_ar_champion_elapsed_ms",
+)
+
 
 def _default_cross_run_stability() -> Dict[str, Any]:
     return {
@@ -492,6 +531,7 @@ def _compact_leaderboard_entry(entry: dict) -> dict:
         "binding_auc": entry.get("binding_auc"),
         "binding_composite": entry.get("binding_composite"),
         "local_only": entry.get("local_only"),
+        **{field: entry.get(field) for field in CHAMPION_DASHBOARD_FIELDS},
         # Nano-AR investigation probe
         "nano_ar_inv_metric_version": entry.get("nano_ar_inv_metric_version"),
         "nano_ar_inv_in_dist_pair_match_acc": entry.get(

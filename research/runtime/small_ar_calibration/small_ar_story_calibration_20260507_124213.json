@@ -1,0 +1,431 @@
+{
+  "config": {
+    "batch_size": 8,
+    "corpus": {
+      "bindings_per_story": 8,
+      "n_colors": 64,
+      "n_cross_story_groups": 0,
+      "n_held_key_stories": 0,
+      "n_in_dist_eval_stories": 16,
+      "n_objects": 128,
+      "n_train_stories": 64,
+      "n_values": 32,
+      "noise_sentences_per_story": 0,
+      "queries_per_story": 8,
+      "seed": 11
+    },
+    "dim": 96,
+    "dynamic_train_stories": true,
+    "eval_every": 500,
+    "heads": 4,
+    "include_in_story_unqueried_eval": false,
+    "layers": 8,
+    "loss_mode": "choice",
+    "lr": 0.001,
+    "seed": 11,
+    "train_steps": 2000
+  },
+  "corpus": {
+    "eval_items": 128,
+    "eval_stories": 16,
+    "max_seq_len": 246,
+    "sample_train": [
+      "Story 0.",
+      "For this story, the cream valve points to crystal.",
+      "For this story, the graphite shell points to clover.",
+      "In this story, the yellow parcel means orchid.",
+      "The code for the charcoal basket is bronze.",
+      "Inside this story, the iron wallet names forest.",
+      "Remember that the ruby vest maps to slate.",
+      "The code for the clay cup is juniper.",
+      "In this story, the cream map means laurel.",
+      "Question: In Story 0, what does the clay cup mean?",
+      "Answer: juniper.",
+      "Question: For this story, which word belongs to the cream valve?",
+      "Answer: crystal.",
+      "Question: What is the code word for the charcoal basket in Story 0?",
+      "Answer: bronze.",
+      "Question: Inside this story, the iron wallet maps to what?",
+      "Answer: forest.",
+      "Question: In Story 0, what does the cream map mean?",
+      "Answer: laurel.",
+      "Question: For this story, which word belongs to the graphite shell?",
+      "Answer: clover.",
+      "Question: What is the code word for the ruby vest in Story 0?",
+      "Answer: slate.",
+      "Question: Inside this story, the yellow parcel maps to what?"
+    ],
+    "train_items": 512,
+    "train_stories": 64
+  },
+  "protocol_version": "small_ar_story_calibration_v1_bpe",
+  "rows": [
+    {
+      "elapsed_ms": 61882.8,
+      "family": "attention",
+      "final": {
+        "by_split": {
+          "in_dist": {
+            "choice_acc": 0.2109,
+            "mean_margin": -0.540638,
+            "n": 128
+          }
+        },
+        "choice_acc": 0.2109,
+        "examples": [
+          {
+            "answer": "copper",
+            "correct": false,
+            "margin": -1.340448,
+            "pred": "velvet",
+            "scores": {
+              "copper": -38.459555,
+              "harbor": -38.829706,
+              "maple": -39.162645,
+              "velvet": -37.119106
+            },
+            "split": "in_dist",
+            "story_id": 64
+          },
+          {
+            "answer": "velvet",
+            "correct": true,
+            "margin": 1.323566,
+            "pred": "velvet",
+            "scores": {
+              "basalt": -38.880141,
+              "granite": -38.442556,
+              "harbor": -38.829592,
+              "velvet": -37.11899
+            },
+            "split": "in_dist",
+            "story_id": 64
+          },
+          {
+            "answer": "bronze",
+            "correct": true,
+            "margin": 0.376835,
+            "pred": "bronze",
+            "scores": {
+              "amber": -38.394526,
+              "bronze": -38.017691,
+              "granite": -38.442448,
+              "harbor": -38.829895
+            },
+            "split": "in_dist",
+            "story_id": 64
+          },
+          {
+            "answer": "harbor",
+            "correct": false,
+            "margin": -1.710592,
+            "pred": "velvet",
+            "scores": {
+              "bronze": -38.017582,
+              "granite": -38.442415,
+              "harbor": -38.829546,
+              "velvet": -37.118954
+            },
+            "split": "in_dist",
+            "story_id": 64
+          },
+          {
+            "answer": "amber",
+            "correct": false,
+            "margin": -0.376806,
+            "pred": "bronze",
+            "scores": {
+              "amber": -38.394497,
+              "bronze": -38.017691,
+              "copper": -38.459517,
+              "harbor": -38.829586
+            },
+            "split": "in_dist",
+            "story_id": 64
+          },
+          {
+            "answer": "basalt",
+            "correct": false,
+            "margin": -0.862204,
+            "pred": "bronze",
+            "scores": {
+              "basalt": -38.879992,
+              "bronze": -38.017788,
+              "copper": -38.45957,
+              "maple": -39.162661
+            },
+            "split": "in_dist",
+            "story_id": 64
+          },
+          {
+            "answer": "granite",
+            "correct": false,
+            "margin": -0.048006,
+            "pred": "amber",
+            "scores": {
+              "amber": -38.39463,
+              "copper": -38.459696,
+              "granite": -38.442636,
+              "maple": -39.1628
+            },
+            "split": "in_dist",
+            "story_id": 64
+          },
+          {
+            "answer": "maple",
+            "correct": false,
+            "margin": -2.043682,
+            "pred": "velvet",
+            "scores": {
+              "basalt": -38.879946,
+              "granite": -38.44241,
+              "maple": -39.16263,
+              "velvet": -37.118948
+            },
+            "split": "in_dist",
+            "story_id": 64
+          },
+          {
+            "answer": "cedar",
+            "correct": true,
+            "margin": 0.396566,
+            "pred": "cedar",
+            "scores": {
+              "cedar": -38.677813,
+              "crystal": -39.074379,
+              "marigold": -39.840424,
+              "pearl": -39.358374
+            },
+            "split": "in_dist",
+            "story_id": 65
+          },
+          {
+            "answer": "marigold",
+            "correct": false,
+            "margin": -1.162373,
+            "pred": "cedar",
+            "scores": {
+              "cedar": -38.678017,
+              "coral": -38.797079,
+              "harbor": -38.829817,
+              "marigold": -39.840389
+            },
+            "split": "in_dist",
+            "story_id": 65
+          }
+        ],
+        "n": 128
+      },
+      "learning_curve": [
+        {
+          "by_split": {
+            "in_dist": {
+              "choice_acc": 0.2812,
+              "mean_margin": -1.105977,
+              "n": 96
+            }
+          },
+          "choice_acc": 0.2812,
+          "loss": 1.924151,
+          "step": 500,
+          "train_choice_acc": 0.2604
+        },
+        {
+          "by_split": {
+            "in_dist": {
+              "choice_acc": 0.2604,
+              "mean_margin": -0.7979,
+              "n": 96
+            }
+          },
+          "choice_acc": 0.2604,
+          "loss": 1.968221,
+          "step": 1000,
+          "train_choice_acc": 0.2188
+        },
+        {
+          "by_split": {
+            "in_dist": {
+              "choice_acc": 0.2708,
+              "mean_margin": -0.696429,
+              "n": 96
+            }
+          },
+          "choice_acc": 0.2708,
+          "loss": 1.473845,
+          "step": 1500,
+          "train_choice_acc": 0.2188
+        },
+        {
+          "by_split": {
+            "in_dist": {
+              "choice_acc": 0.2083,
+              "mean_margin": -0.554736,
+              "n": 96
+            }
+          },
+          "choice_acc": 0.2083,
+          "loss": 1.599313,
+          "step": 2000,
+          "train_choice_acc": 0.2083
+        }
+      ],
+      "status": "ok",
+      "steps_done": 2000,
+      "train_final": {
+        "by_split": {
+          "train": {
+            "choice_acc": 0.2227,
+            "mean_margin": -0.532926,
+            "n": 256
+          }
+        },
+        "choice_acc": 0.2227,
+        "examples": [
+          {
+            "answer": "juniper",
+            "correct": false,
+            "margin": -1.363542,
+            "pred": "bronze",
+            "scores": {
+              "bronze": -38.017765,
+              "clover": -38.25236,
+              "crystal": -39.074511,
+              "juniper": -39.381307
+            },
+            "split": "train",
+            "story_id": 0
+          },
+          {
+            "answer": "crystal",
+            "correct": false,
+            "margin": -1.056747,
+            "pred": "bronze",
+            "scores": {
+              "bronze": -38.017778,
+              "crystal": -39.074526,
+              "juniper": -39.38133,
+              "laurel": -38.51296
+            },
+            "split": "train",
+            "story_id": 0
+          },
+          {
+            "answer": "bronze",
+            "correct": true,
+            "margin": 0.209303,
+            "pred": "bronze",
+            "scores": {
+              "bronze": -38.017878,
+              "clover": -38.252377,
+              "forest": -38.22718,
+              "laurel": -38.513028
+            },
+            "split": "train",
+            "story_id": 0
+          },
+          {
+            "answer": "forest",
+            "correct": false,
+            "margin": -0.209389,
+            "pred": "bronze",
+            "scores": {
+              "bronze": -38.017584,
+              "clover": -38.252295,
+              "forest": -38.226973,
+              "slate": -38.228514
+            },
+            "split": "train",
+            "story_id": 0
+          },
+          {
+            "answer": "laurel",
+            "correct": false,
+            "margin": -0.28591,
+            "pred": "forest",
+            "scores": {
+              "clover": -38.252366,
+              "forest": -38.227028,
+              "laurel": -38.512938,
+              "orchid": -38.433577
+            },
+            "split": "train",
+            "story_id": 0
+          },
+          {
+            "answer": "clover",
+            "correct": false,
+            "margin": -0.234598,
+            "pred": "bronze",
+            "scores": {
+              "bronze": -38.01778,
+              "clover": -38.252378,
+              "juniper": -39.381329,
+              "orchid": -38.433588
+            },
+            "split": "train",
+            "story_id": 0
+          },
+          {
+            "answer": "slate",
+            "correct": false,
+            "margin": -0.210718,
+            "pred": "bronze",
+            "scores": {
+              "bronze": -38.017876,
+              "forest": -38.22718,
+              "orchid": -38.433551,
+              "slate": -38.228594
+            },
+            "split": "train",
+            "story_id": 0
+          },
+          {
+            "answer": "orchid",
+            "correct": false,
+            "margin": -0.204978,
+            "pred": "slate",
+            "scores": {
+              "clover": -38.252304,
+              "crystal": -39.07439,
+              "orchid": -38.4335,
+              "slate": -38.228521
+            },
+            "split": "train",
+            "story_id": 0
+          },
+          {
+            "answer": "hazel",
+            "correct": false,
+            "margin": -1.550296,
+            "pred": "river",
+            "scores": {
+              "forest": -38.226887,
+              "hazel": -39.755694,
+              "river": -38.205399,
+              "silver": -38.509062
+            },
+            "split": "train",
+            "story_id": 1
+          },
+          {
+            "answer": "ivy",
+            "correct": false,
+            "margin": -1.494788,
+            "pred": "violet",
+            "scores": {
+              "forest": -38.227055,
+              "hazel": -39.755669,
+              "ivy": -38.953284,
+              "violet": -37.458496
+            },
+            "split": "train",
+            "story_id": 1
+          }
+        ],
+        "n": 256
+      }
+    }
+  ],
+  "tokenizer": "cl100k_base"
+}

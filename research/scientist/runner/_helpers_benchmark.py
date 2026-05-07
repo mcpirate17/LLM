@@ -429,12 +429,54 @@ def _run_investigation_nano_ar_probe(
     return fields
 
 
+def _small_ar_champion_result_fields(result: Any) -> Dict[str, Any]:
+    ok = str(result.status or "") == "ok"
+    return {
+        "small_ar_champion_metric_version": result.metric_version,
+        "small_ar_champion_final_acc": result.final_acc if ok else None,
+        "small_ar_champion_held_pair_match_acc": (
+            result.held_pair_match_acc if ok else None
+        ),
+        "small_ar_champion_held_class_acc": result.held_class_acc if ok else None,
+        "small_ar_champion_learning_curve_json": json.dumps(
+            result.learning_curve or [],
+            sort_keys=True,
+        ),
+        "small_ar_champion_steps_to_floor": result.steps_to_floor,
+        "small_ar_champion_score": result.score if ok else None,
+        "small_ar_champion_status": result.status,
+        "small_ar_champion_elapsed_ms": result.elapsed_ms,
+    }
+
+
+def _run_small_ar_champion_probe(model: Any, dev: Any) -> Dict[str, Any]:
+    from ...eval.small_ar_champion import run_small_ar_champion
+
+    result = run_small_ar_champion(model, device=str(dev))
+    fields = _small_ar_champion_result_fields(result)
+    logger.info(
+        "Champion Small-AR probe: score=%s held_pair=%.4f held_class=%.4f status=%s",
+        (
+            f"{fields['small_ar_champion_score']:.4f}"
+            if fields["small_ar_champion_score"] is not None
+            else "None"
+        ),
+        result.held_pair_match_acc,
+        result.held_class_acc,
+        result.status,
+    )
+    return fields
+
+
 def _run_investigation_v2_probes(
     model: Any,
     dev: Any,
     *,
     graph_json_str: str | None = None,
     run_nano_ar: bool = False,
+    run_induction_v3: bool = False,
+    induction_v3_extended_budget: bool = False,
+    run_small_ar_champion_probe: bool = False,
 ) -> Dict[str, Any]:
     """Run investigation-tier capability probes on the benchmark model."""
     result: Dict[str, Any] = {}
@@ -474,6 +516,47 @@ def _run_investigation_v2_probes(
         )
     except (ImportError, RuntimeError, ValueError, TypeError) as exc:
         logger.warning("Investigation induction-v2 probe skipped: %s", exc)
+
+    if run_induction_v3:
+        try:
+            from ...eval.induction_probe_v3_champion import (
+                run_induction_v3_champion,
+            )
+
+            induction_v3 = run_induction_v3_champion(
+                model,
+                device=dev,
+                extended_budget=induction_v3_extended_budget,
+            )
+            induction_v3_ok = str(induction_v3.status or "") == "ok"
+            result.update(
+                {
+                    "induction_v3_auc": (induction_v3.auc if induction_v3_ok else None),
+                    "induction_v3_max_gap_acc": (
+                        induction_v3.max_gap_acc if induction_v3_ok else None
+                    ),
+                    "induction_v3_gap_accuracy_cv": (
+                        induction_v3.gap_accuracy_cv if induction_v3_ok else None
+                    ),
+                    "induction_v3_gap_accuracies_json": json.dumps(
+                        induction_v3.gap_accuracies or {},
+                        sort_keys=True,
+                    ),
+                    "induction_v3_steps_trained": induction_v3.steps_trained,
+                    "induction_v3_status": induction_v3.status,
+                    "induction_v3_elapsed_ms": induction_v3.elapsed_ms,
+                    "induction_v3_protocol_version": induction_v3.protocol_version,
+                }
+            )
+            logger.info(
+                "Champion induction-v3 probe: auc=%.4f max_gap=%.4f cv=%.4f status=%s",
+                induction_v3.auc,
+                induction_v3.max_gap_acc,
+                induction_v3.gap_accuracy_cv,
+                induction_v3.status,
+            )
+        except (ImportError, RuntimeError, ValueError, TypeError) as exc:
+            logger.warning("Champion induction-v3 probe skipped: %s", exc)
 
     try:
         from ...eval.binding_probe_v2_investigation import (
@@ -522,6 +605,12 @@ def _run_investigation_v2_probes(
             )
         except (ImportError, RuntimeError, ValueError, TypeError) as exc:
             logger.warning("Investigation Nano-AR probe skipped: %s", exc)
+
+    if run_small_ar_champion_probe:
+        try:
+            result.update(_run_small_ar_champion_probe(model, dev))
+        except (ImportError, RuntimeError, ValueError, TypeError) as exc:
+            logger.warning("Champion Small-AR probe skipped: %s", exc)
 
     return result
 
@@ -1006,6 +1095,24 @@ def _record_investigation_result(
             "binding_v2_investigation_protocol_version"
         ),
     }
+    v3_fields = {
+        "induction_v3_auc": benchmark_result.get("induction_v3_auc"),
+        "induction_v3_max_gap_acc": benchmark_result.get("induction_v3_max_gap_acc"),
+        "induction_v3_gap_accuracy_cv": benchmark_result.get(
+            "induction_v3_gap_accuracy_cv"
+        ),
+        "induction_v3_gap_accuracies_json": benchmark_result.get(
+            "induction_v3_gap_accuracies_json"
+        ),
+        "induction_v3_steps_trained": benchmark_result.get(
+            "induction_v3_steps_trained"
+        ),
+        "induction_v3_status": benchmark_result.get("induction_v3_status"),
+        "induction_v3_elapsed_ms": benchmark_result.get("induction_v3_elapsed_ms"),
+        "induction_v3_protocol_version": benchmark_result.get(
+            "induction_v3_protocol_version"
+        ),
+    }
     nano_ar_inv_fields = {
         "nano_ar_inv_metric_version": benchmark_result.get(
             "nano_ar_inv_metric_version"
@@ -1029,9 +1136,39 @@ def _record_investigation_result(
             "nano_ar_inv_train_steps_done"
         ),
     }
+    small_ar_champion_fields = {
+        "small_ar_champion_metric_version": benchmark_result.get(
+            "small_ar_champion_metric_version"
+        ),
+        "small_ar_champion_final_acc": benchmark_result.get(
+            "small_ar_champion_final_acc"
+        ),
+        "small_ar_champion_held_pair_match_acc": benchmark_result.get(
+            "small_ar_champion_held_pair_match_acc"
+        ),
+        "small_ar_champion_held_class_acc": benchmark_result.get(
+            "small_ar_champion_held_class_acc"
+        ),
+        "small_ar_champion_learning_curve_json": benchmark_result.get(
+            "small_ar_champion_learning_curve_json"
+        ),
+        "small_ar_champion_steps_to_floor": benchmark_result.get(
+            "small_ar_champion_steps_to_floor"
+        ),
+        "small_ar_champion_score": benchmark_result.get("small_ar_champion_score"),
+        "small_ar_champion_status": benchmark_result.get("small_ar_champion_status"),
+        "small_ar_champion_elapsed_ms": benchmark_result.get(
+            "small_ar_champion_elapsed_ms"
+        ),
+    }
     if any(
         value is not None
-        for value in (*v2_fields.values(), *nano_ar_inv_fields.values())
+        for value in (
+            *v2_fields.values(),
+            *v3_fields.values(),
+            *nano_ar_inv_fields.values(),
+            *small_ar_champion_fields.values(),
+        )
     ):
         nb.upsert_leaderboard(
             result_id=leaderboard_result_id,
@@ -1043,7 +1180,9 @@ def _record_investigation_result(
             comparability_label=comparability_label,
             evaluation_protocol_version=evaluation_protocol_version,
             **v2_fields,
+            **v3_fields,
             **nano_ar_inv_fields,
+            **small_ar_champion_fields,
         )
     # Investigation S1 metric completeness gate.  The investigation pipeline
     # runs blimp + v1 probes (induction/binding/ar) AND the v2 capability
@@ -1136,7 +1275,9 @@ def _record_investigation_result(
         ar_above_chance=benchmark_result.get("ar_above_chance"),
         local_only=benchmark_result.get("local_only"),
         **v2_fields,
+        **v3_fields,
         **nano_ar_inv_fields,
+        **small_ar_champion_fields,
         **v9_trajectory_fields(benchmark_result),
     )
     if result_id and best_training_curve:
@@ -1178,7 +1319,9 @@ def _record_investigation_result(
         "comparability_label": comparability_label,
         "evaluation_protocol_version": evaluation_protocol_version,
         **v2_fields,
+        **v3_fields,
         **nano_ar_inv_fields,
+        **small_ar_champion_fields,
         # v9 trajectory metrics — overwrite earlier-phase init/screening
         # values with investigation_full measurements. Phase tag flips so
         # ML training distinguishes the two.

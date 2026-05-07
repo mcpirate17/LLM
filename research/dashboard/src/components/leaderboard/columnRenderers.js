@@ -23,6 +23,23 @@ const fmt = (v, d = 4) => {
   return num.toFixed(d);
 };
 
+const fmtInt = (v) => {
+  if (v == null) return '--';
+  const num = Number(v);
+  return Number.isFinite(num) ? num.toFixed(0) : '--';
+};
+
+const textMetric = (v) => {
+  if (v == null || v === '') return '--';
+  const text = String(v);
+  return <span title={text} style={{ fontSize: 10, color: 'var(--text-secondary)' }}>{text}</span>;
+};
+
+const jsonMetric = (v) => {
+  if (v == null || v === '') return '--';
+  return <span title={String(v)} style={{ fontSize: 10, color: 'var(--text-muted)', fontFamily: 'monospace' }}>json</span>;
+};
+
 // Helper: simple threshold-colored metric
 const coloredMetric = (value, thresholds, decimals = 3, pct = false) => {
   if (value == null) return '--';
@@ -264,6 +281,27 @@ const RENDERERS = {
   robustness_long_ctx_passkey_score: (e) => fmt(e.robustness_long_ctx_passkey_score, 3),
   robustness_long_ctx_retrieval_aggregate: (e) => fmt(e.robustness_long_ctx_retrieval_aggregate, 3),
   robustness_long_ctx_combined_score: (e) => fmt(e.robustness_long_ctx_combined_score, 3),
+  champion_tiny_model_score: (e) => coloredMetric(e.champion_tiny_model_score, [
+    [null, 20, 'var(--accent-red)'], [35, null, 'var(--accent-green)'], [20, 35, 'var(--accent-yellow)'],
+  ], 1),
+  champion_tiny_model_protocol_version: (e) => textMetric(e.champion_tiny_model_protocol_version),
+  champion_hard_failure_reason: (e) => textMetric(e.champion_hard_failure_reason),
+  champion_steps_to_floor: (e) => fmtInt(e.champion_steps_to_floor),
+  champion_floor_loss: (e) => fmt(e.champion_floor_loss, 3),
+  champion_floor_ppl: (e) => fmt(e.champion_floor_ppl, 2),
+  champion_floor_loss_std: (e) => fmt(e.champion_floor_loss_std, 4),
+  champion_plateau_detected_step: (e) => fmtInt(e.champion_plateau_detected_step),
+  champion_plateau_window: (e) => fmtInt(e.champion_plateau_window),
+  champion_floor_protocol_version: (e) => textMetric(e.champion_floor_protocol_version),
+  champion_baseline_result_id: (e) => textMetric(e.champion_baseline_result_id),
+  champion_baseline_layers: (e) => fmtInt(e.champion_baseline_layers),
+  champion_baseline_protocol_version: (e) => textMetric(e.champion_baseline_protocol_version),
+  champion_steps_to_floor_score: (e) => fmt(e.champion_steps_to_floor_score, 1),
+  champion_floor_quality_score: (e) => fmt(e.champion_floor_quality_score, 1),
+  champion_floor_stability_score: (e) => fmt(e.champion_floor_stability_score, 1),
+  champion_induction_v3_score: (e) => fmt(e.champion_induction_v3_score, 1),
+  champion_binding_long_context_score: (e) => fmt(e.champion_binding_long_context_score, 1),
+  champion_small_ar_score: (e) => fmt(e.champion_small_ar_score, 1),
   init_sensitivity_std: (e) => fmt(e.init_sensitivity_std, 4),
   jacobian_spectral_norm: (e) => fmt(e.jacobian_spectral_norm ?? e.fp_jacobian_spectral_norm, 4),
   fp_jacobian_effective_rank: (e) => fmt(e.fp_jacobian_effective_rank, 3),
@@ -316,7 +354,24 @@ const RENDERERS = {
   },
   induction_auc: (e) => <span style={{ color: probeAucColor(e.induction_auc), fontWeight: 600 }}>{fmt(e.induction_auc, 3)}</span>,
   induction_v2_investigation_auc: (e) => <span style={{ color: probeAucColor(e.induction_v2_investigation_auc), fontWeight: 600 }}>{fmt(e.induction_v2_investigation_auc, 3)}</span>,
+  induction_v3_auc: (e) => <span style={{ color: probeAucColor(e.induction_v3_auc), fontWeight: 600 }}>{fmt(e.induction_v3_auc, 3)}</span>,
+  induction_v3_max_gap_acc: (e) => fmt(e.induction_v3_max_gap_acc, 3),
+  induction_v3_gap_accuracy_cv: (e) => fmt(e.induction_v3_gap_accuracy_cv, 3),
+  induction_v3_gap_accuracies_json: (e) => jsonMetric(e.induction_v3_gap_accuracies_json),
+  induction_v3_steps_trained: (e) => fmtInt(e.induction_v3_steps_trained),
+  induction_v3_status: (e) => textMetric(e.induction_v3_status),
+  induction_v3_elapsed_ms: (e) => fmtInt(e.induction_v3_elapsed_ms),
+  induction_v3_protocol_version: (e) => textMetric(e.induction_v3_protocol_version),
   ar_auc: (e) => <span style={{ color: probeAucColor(e.ar_auc), fontWeight: 600 }}>{fmt(e.ar_auc, 3)}</span>,
+  small_ar_champion_score: (e) => fmt(e.small_ar_champion_score, 3),
+  small_ar_champion_final_acc: (e) => fmt(e.small_ar_champion_final_acc, 3),
+  small_ar_champion_held_pair_match_acc: (e) => fmt(e.small_ar_champion_held_pair_match_acc, 3),
+  small_ar_champion_held_class_acc: (e) => fmt(e.small_ar_champion_held_class_acc, 3),
+  small_ar_champion_learning_curve_json: (e) => jsonMetric(e.small_ar_champion_learning_curve_json),
+  small_ar_champion_steps_to_floor: (e) => fmtInt(e.small_ar_champion_steps_to_floor),
+  small_ar_champion_status: (e) => textMetric(e.small_ar_champion_status),
+  small_ar_champion_elapsed_ms: (e) => fmtInt(e.small_ar_champion_elapsed_ms),
+  small_ar_champion_metric_version: (e) => textMetric(e.small_ar_champion_metric_version),
   binding_auc: (e) => <span style={{ color: probeAucColor(e.binding_auc), fontWeight: 600 }}>{fmt(e.binding_auc, 3)}</span>,
   binding_v2_investigation_auc: (e) => <span style={{ color: probeAucColor(e.binding_v2_investigation_auc), fontWeight: 600 }}>{fmt(e.binding_v2_investigation_auc, 3)}</span>,
   _controlled_lang_ladder: (e) => <ControlledLangLadder entry={e} />,

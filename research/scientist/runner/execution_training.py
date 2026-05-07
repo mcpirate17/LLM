@@ -356,6 +356,7 @@ def _maybe_save_phase_training_state(
     if context is None:
         return
     interval = int(context.get("checkpoint_interval_steps", 0) or 0)
+    artifact_interval = int(context.get("checkpoint_artifact_interval_steps", 0) or 0)
     milestone_steps = {
         int(step)
         for step in (context.get("checkpoint_milestone_steps") or [])
@@ -365,7 +366,12 @@ def _maybe_save_phase_training_state(
         interval > 0 and completed_steps > 0 and (completed_steps % interval) == 0
     )
     is_milestone_step = completed_steps in milestone_steps
-    if not is_interval_step and not is_milestone_step:
+    is_artifact_interval_step = (
+        artifact_interval > 0
+        and completed_steps > 0
+        and (completed_steps % artifact_interval) == 0
+    )
+    if not is_interval_step and not is_milestone_step and not is_artifact_interval_step:
         return
     metrics = {
         "source_result_id": context.get("source_result_id"),
@@ -386,7 +392,7 @@ def _maybe_save_phase_training_state(
         step=completed_steps,
         metrics=metrics,
     )
-    if is_milestone_step:
+    if is_milestone_step or is_artifact_interval_step:
         context["checkpoint_manager"].save_investigation_artifact(
             experiment_id=str(context["exp_id"]),
             source_result_id=str(context.get("source_result_id") or "unknown"),

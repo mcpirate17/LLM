@@ -1,0 +1,815 @@
+{
+  "config": {
+    "batch_size": 8,
+    "corpus": {
+      "bindings_per_story": 8,
+      "n_colors": 64,
+      "n_cross_story_groups": 0,
+      "n_held_key_stories": 0,
+      "n_in_dist_eval_stories": 0,
+      "n_objects": 128,
+      "n_train_stories": 64,
+      "n_values": 32,
+      "noise_sentences_per_story": 0,
+      "queries_per_story": 4,
+      "seed": 8
+    },
+    "dim": 96,
+    "eval_every": 100,
+    "heads": 4,
+    "include_in_story_unqueried_eval": true,
+    "layers": 2,
+    "loss_mode": "choice",
+    "lr": 0.001,
+    "seed": 8,
+    "train_steps": 500
+  },
+  "corpus": {
+    "eval_items": 256,
+    "eval_stories": 0,
+    "max_seq_len": 116,
+    "sample_train": [
+      "Story 0.",
+      "In this story, the gold shell means silver.",
+      "The code for the scarlet whistle is marigold.",
+      "Inside this story, the tan flower names basalt.",
+      "Remember that the white nest maps to cedar.",
+      "In this story, the jade emblem means amber.",
+      "The code for the lilac marble is clover.",
+      "For this story, the ochre kite points to river.",
+      "For this story, the honey star points to meadow.",
+      "Question: In Story 0, what does the ochre kite mean?",
+      "Answer: river.",
+      "Question: For this story, which word belongs to the lilac marble?",
+      "Answer: clover.",
+      "Question: What is the code word for the white nest in Story 0?",
+      "Answer: cedar.",
+      "Question: Inside this story, the tan flower maps to what?",
+      "Answer: basalt."
+    ],
+    "train_items": 256,
+    "train_stories": 64
+  },
+  "protocol_version": "small_ar_story_calibration_v1_bpe",
+  "rows": [
+    {
+      "elapsed_ms": 12644.1,
+      "family": "attention",
+      "final": {
+        "by_split": {
+          "in_story_unqueried": {
+            "choice_acc": 0.1445,
+            "mean_margin": -9.633971,
+            "n": 256
+          }
+        },
+        "choice_acc": 0.1445,
+        "examples": [
+          {
+            "answer": "silver",
+            "correct": true,
+            "margin": 1.269147,
+            "pred": "silver",
+            "scores": {
+              "basalt": -52.800081,
+              "cedar": -48.030674,
+              "marigold": -46.804753,
+              "silver": -45.535606
+            },
+            "split": "in_story_unqueried",
+            "story_id": 0
+          },
+          {
+            "answer": "marigold",
+            "correct": true,
+            "margin": 10.547313,
+            "pred": "marigold",
+            "scores": {
+              "basalt": -53.492659,
+              "cedar": -53.095407,
+              "marigold": -42.548095,
+              "silver": -68.285873
+            },
+            "split": "in_story_unqueried",
+            "story_id": 0
+          },
+          {
+            "answer": "amber",
+            "correct": true,
+            "margin": 0.739941,
+            "pred": "amber",
+            "scores": {
+              "amber": -44.83737,
+              "basalt": -52.544476,
+              "marigold": -46.809505,
+              "silver": -45.577311
+            },
+            "split": "in_story_unqueried",
+            "story_id": 0
+          },
+          {
+            "answer": "meadow",
+            "correct": false,
+            "margin": -11.343081,
+            "pred": "silver",
+            "scores": {
+              "basalt": -52.455564,
+              "marigold": -46.745667,
+              "meadow": -57.074112,
+              "silver": -45.73103
+            },
+            "split": "in_story_unqueried",
+            "story_id": 0
+          },
+          {
+            "answer": "opal",
+            "correct": false,
+            "margin": -11.479927,
+            "pred": "summit",
+            "scores": {
+              "basalt": -50.621296,
+              "opal": -51.685551,
+              "river": -54.848539,
+              "summit": -40.205624
+            },
+            "split": "in_story_unqueried",
+            "story_id": 1
+          },
+          {
+            "answer": "river",
+            "correct": false,
+            "margin": -15.211012,
+            "pred": "summit",
+            "scores": {
+              "basalt": -50.423422,
+              "opal": -51.422735,
+              "river": -55.736042,
+              "summit": -40.52503
+            },
+            "split": "in_story_unqueried",
+            "story_id": 1
+          },
+          {
+            "answer": "meadow",
+            "correct": true,
+            "margin": 0.444562,
+            "pred": "meadow",
+            "scores": {
+              "basalt": -52.48628,
+              "meadow": -50.853174,
+              "opal": -51.297736,
+              "river": -55.369009
+            },
+            "split": "in_story_unqueried",
+            "story_id": 1
+          },
+          {
+            "answer": "copper",
+            "correct": true,
+            "margin": 1.789802,
+            "pred": "copper",
+            "scores": {
+              "basalt": -50.647378,
+              "copper": -48.857576,
+              "opal": -52.005146,
+              "river": -55.339067
+            },
+            "split": "in_story_unqueried",
+            "story_id": 1
+          },
+          {
+            "answer": "sapphire",
+            "correct": false,
+            "margin": -17.919277,
+            "pred": "basalt",
+            "scores": {
+              "basalt": -44.114049,
+              "crystal": -52.07255,
+              "hazel": -48.133818,
+              "sapphire": -62.033326
+            },
+            "split": "in_story_unqueried",
+            "story_id": 2
+          },
+          {
+            "answer": "basalt",
+            "correct": false,
+            "margin": -14.35878,
+            "pred": "hazel",
+            "scores": {
+              "basalt": -50.478558,
+              "crystal": -51.822201,
+              "hazel": -36.119778,
+              "sapphire": -54.695245
+            },
+            "split": "in_story_unqueried",
+            "story_id": 2
+          }
+        ],
+        "n": 256
+      },
+      "learning_curve": [
+        {
+          "by_split": {
+            "in_story_unqueried": {
+              "choice_acc": 0.1562,
+              "mean_margin": -4.028082,
+              "n": 96
+            }
+          },
+          "choice_acc": 0.1562,
+          "loss": 3.800253,
+          "step": 100,
+          "train_choice_acc": 0.5208
+        },
+        {
+          "by_split": {
+            "in_story_unqueried": {
+              "choice_acc": 0.1979,
+              "mean_margin": -4.717545,
+              "n": 96
+            }
+          },
+          "choice_acc": 0.1979,
+          "loss": 0.619733,
+          "step": 200,
+          "train_choice_acc": 0.6458
+        },
+        {
+          "by_split": {
+            "in_story_unqueried": {
+              "choice_acc": 0.1458,
+              "mean_margin": -6.292494,
+              "n": 96
+            }
+          },
+          "choice_acc": 0.1458,
+          "loss": 0.327321,
+          "step": 300,
+          "train_choice_acc": 0.8438
+        },
+        {
+          "by_split": {
+            "in_story_unqueried": {
+              "choice_acc": 0.0938,
+              "mean_margin": -8.166345,
+              "n": 96
+            }
+          },
+          "choice_acc": 0.0938,
+          "loss": 0.301978,
+          "step": 400,
+          "train_choice_acc": 0.8646
+        },
+        {
+          "by_split": {
+            "in_story_unqueried": {
+              "choice_acc": 0.2083,
+              "mean_margin": -8.496917,
+              "n": 96
+            }
+          },
+          "choice_acc": 0.2083,
+          "loss": 0.141557,
+          "step": 500,
+          "train_choice_acc": 0.9792
+        }
+      ],
+      "status": "ok",
+      "steps_done": 500,
+      "train_final": {
+        "by_split": {
+          "train": {
+            "choice_acc": 0.9492,
+            "mean_margin": 11.186565,
+            "n": 256
+          }
+        },
+        "choice_acc": 0.9492,
+        "examples": [
+          {
+            "answer": "river",
+            "correct": true,
+            "margin": 6.443869,
+            "pred": "river",
+            "scores": {
+              "amber": -49.908951,
+              "cedar": -53.885117,
+              "river": -43.465082,
+              "silver": -68.089794
+            },
+            "split": "train",
+            "story_id": 0
+          },
+          {
+            "answer": "clover",
+            "correct": true,
+            "margin": 11.073294,
+            "pred": "clover",
+            "scores": {
+              "basalt": -54.312904,
+              "clover": -31.253835,
+              "marigold": -42.327129,
+              "silver": -67.515554
+            },
+            "split": "train",
+            "story_id": 0
+          },
+          {
+            "answer": "cedar",
+            "correct": true,
+            "margin": 10.713075,
+            "pred": "cedar",
+            "scores": {
+              "cedar": -37.201933,
+              "marigold": -47.915008,
+              "meadow": -55.778572,
+              "silver": -58.528517
+            },
+            "split": "train",
+            "story_id": 0
+          },
+          {
+            "answer": "basalt",
+            "correct": true,
+            "margin": 15.138482,
+            "pred": "basalt",
+            "scores": {
+              "basalt": -29.460783,
+              "marigold": -44.599265,
+              "meadow": -53.084385,
+              "silver": -52.81971
+            },
+            "split": "train",
+            "story_id": 0
+          },
+          {
+            "answer": "forest",
+            "correct": true,
+            "margin": 3.078687,
+            "pred": "forest",
+            "scores": {
+              "copper": -48.936234,
+              "forest": -37.518706,
+              "silver": -45.228268,
+              "summit": -40.597393
+            },
+            "split": "train",
+            "story_id": 1
+          },
+          {
+            "answer": "summit",
+            "correct": true,
+            "margin": 10.99369,
+            "pred": "summit",
+            "scores": {
+              "basalt": -49.967163,
+              "copper": -52.324039,
+              "forest": -58.654222,
+              "summit": -38.973473
+            },
+            "split": "train",
+            "story_id": 1
+          },
+          {
+            "answer": "basalt",
+            "correct": true,
+            "margin": 6.480614,
+            "pred": "basalt",
+            "scores": {
+              "basalt": -49.939908,
+              "copper": -66.290163,
+              "forest": -56.420523,
+              "river": -69.501547
+            },
+            "split": "train",
+            "story_id": 1
+          },
+          {
+            "answer": "silver",
+            "correct": true,
+            "margin": 10.481386,
+            "pred": "silver",
+            "scores": {
+              "copper": -58.114157,
+              "forest": -52.750132,
+              "silver": -38.143177,
+              "summit": -48.624563
+            },
+            "split": "train",
+            "story_id": 1
+          },
+          {
+            "answer": "hazel",
+            "correct": true,
+            "margin": 9.067636,
+            "pred": "hazel",
+            "scores": {
+              "copper": -45.542045,
+              "hazel": -36.474409,
+              "opal": -50.97204,
+              "sapphire": -53.906745
+            },
+            "split": "train",
+            "story_id": 2
+          },
+          {
+            "answer": "copper",
+            "correct": true,
+            "margin": 2.33501,
+            "pred": "copper",
+            "scores": {
+              "copper": -47.755454,
+              "opal": -50.657683,
+              "sapphire": -52.906113,
+              "violet": -50.090464
+            },
+            "split": "train",
+            "story_id": 2
+          }
+        ],
+        "n": 256
+      }
+    },
+    {
+      "elapsed_ms": 10675.8,
+      "family": "no_context",
+      "final": {
+        "by_split": {
+          "in_story_unqueried": {
+            "choice_acc": 0.2812,
+            "mean_margin": -0.254558,
+            "n": 256
+          }
+        },
+        "choice_acc": 0.2812,
+        "examples": [
+          {
+            "answer": "silver",
+            "correct": false,
+            "margin": -0.206551,
+            "pred": "basalt",
+            "scores": {
+              "basalt": -11.516918,
+              "cedar": -12.516818,
+              "marigold": -11.646689,
+              "silver": -11.723468
+            },
+            "split": "in_story_unqueried",
+            "story_id": 0
+          },
+          {
+            "answer": "marigold",
+            "correct": false,
+            "margin": -0.129771,
+            "pred": "basalt",
+            "scores": {
+              "basalt": -11.516918,
+              "cedar": -12.516818,
+              "marigold": -11.646689,
+              "silver": -11.723468
+            },
+            "split": "in_story_unqueried",
+            "story_id": 0
+          },
+          {
+            "answer": "amber",
+            "correct": true,
+            "margin": 0.063239,
+            "pred": "amber",
+            "scores": {
+              "amber": -11.453678,
+              "basalt": -11.516918,
+              "marigold": -11.646689,
+              "silver": -11.723468
+            },
+            "split": "in_story_unqueried",
+            "story_id": 0
+          },
+          {
+            "answer": "meadow",
+            "correct": false,
+            "margin": -0.436095,
+            "pred": "basalt",
+            "scores": {
+              "basalt": -11.516918,
+              "marigold": -11.646689,
+              "meadow": -11.953012,
+              "silver": -11.723468
+            },
+            "split": "in_story_unqueried",
+            "story_id": 0
+          },
+          {
+            "answer": "opal",
+            "correct": false,
+            "margin": -0.140105,
+            "pred": "summit",
+            "scores": {
+              "basalt": -11.516918,
+              "opal": -11.461834,
+              "river": -11.929101,
+              "summit": -11.32173
+            },
+            "split": "in_story_unqueried",
+            "story_id": 1
+          },
+          {
+            "answer": "river",
+            "correct": false,
+            "margin": -0.607371,
+            "pred": "summit",
+            "scores": {
+              "basalt": -11.516918,
+              "opal": -11.461834,
+              "river": -11.929101,
+              "summit": -11.32173
+            },
+            "split": "in_story_unqueried",
+            "story_id": 1
+          },
+          {
+            "answer": "meadow",
+            "correct": false,
+            "margin": -0.491178,
+            "pred": "opal",
+            "scores": {
+              "basalt": -11.516918,
+              "meadow": -11.953012,
+              "opal": -11.461834,
+              "river": -11.929101
+            },
+            "split": "in_story_unqueried",
+            "story_id": 1
+          },
+          {
+            "answer": "copper",
+            "correct": false,
+            "margin": -0.391711,
+            "pred": "opal",
+            "scores": {
+              "basalt": -11.516918,
+              "copper": -11.853546,
+              "opal": -11.461834,
+              "river": -11.929101
+            },
+            "split": "in_story_unqueried",
+            "story_id": 1
+          },
+          {
+            "answer": "sapphire",
+            "correct": false,
+            "margin": -0.159891,
+            "pred": "basalt",
+            "scores": {
+              "basalt": -11.516918,
+              "crystal": -11.89709,
+              "hazel": -12.663559,
+              "sapphire": -11.676809
+            },
+            "split": "in_story_unqueried",
+            "story_id": 2
+          },
+          {
+            "answer": "basalt",
+            "correct": true,
+            "margin": 0.159891,
+            "pred": "basalt",
+            "scores": {
+              "basalt": -11.516918,
+              "crystal": -11.89709,
+              "hazel": -12.663559,
+              "sapphire": -11.676809
+            },
+            "split": "in_story_unqueried",
+            "story_id": 2
+          }
+        ],
+        "n": 256
+      },
+      "learning_curve": [
+        {
+          "by_split": {
+            "in_story_unqueried": {
+              "choice_acc": 0.1875,
+              "mean_margin": -0.281722,
+              "n": 96
+            }
+          },
+          "choice_acc": 0.1875,
+          "loss": 1.599332,
+          "step": 100,
+          "train_choice_acc": 0.2708
+        },
+        {
+          "by_split": {
+            "in_story_unqueried": {
+              "choice_acc": 0.2188,
+              "mean_margin": -0.395227,
+              "n": 96
+            }
+          },
+          "choice_acc": 0.2188,
+          "loss": 1.358386,
+          "step": 200,
+          "train_choice_acc": 0.2812
+        },
+        {
+          "by_split": {
+            "in_story_unqueried": {
+              "choice_acc": 0.3229,
+              "mean_margin": -0.243716,
+              "n": 96
+            }
+          },
+          "choice_acc": 0.3229,
+          "loss": 1.318589,
+          "step": 300,
+          "train_choice_acc": 0.2708
+        },
+        {
+          "by_split": {
+            "in_story_unqueried": {
+              "choice_acc": 0.2812,
+              "mean_margin": -0.374442,
+              "n": 96
+            }
+          },
+          "choice_acc": 0.2812,
+          "loss": 1.44728,
+          "step": 400,
+          "train_choice_acc": 0.2292
+        },
+        {
+          "by_split": {
+            "in_story_unqueried": {
+              "choice_acc": 0.2604,
+              "mean_margin": -0.258391,
+              "n": 96
+            }
+          },
+          "choice_acc": 0.2604,
+          "loss": 1.49846,
+          "step": 500,
+          "train_choice_acc": 0.3021
+        }
+      ],
+      "status": "ok",
+      "steps_done": 500,
+      "train_final": {
+        "by_split": {
+          "train": {
+            "choice_acc": 0.2969,
+            "mean_margin": -0.205751,
+            "n": 256
+          }
+        },
+        "choice_acc": 0.2969,
+        "examples": [
+          {
+            "answer": "river",
+            "correct": false,
+            "margin": -0.475423,
+            "pred": "amber",
+            "scores": {
+              "amber": -11.453678,
+              "cedar": -12.516818,
+              "river": -11.929101,
+              "silver": -11.723468
+            },
+            "split": "train",
+            "story_id": 0
+          },
+          {
+            "answer": "clover",
+            "correct": false,
+            "margin": -0.133721,
+            "pred": "basalt",
+            "scores": {
+              "basalt": -11.516918,
+              "clover": -11.650639,
+              "marigold": -11.646689,
+              "silver": -11.723468
+            },
+            "split": "train",
+            "story_id": 0
+          },
+          {
+            "answer": "cedar",
+            "correct": false,
+            "margin": -0.870129,
+            "pred": "marigold",
+            "scores": {
+              "cedar": -12.516818,
+              "marigold": -11.646689,
+              "meadow": -11.953012,
+              "silver": -11.723468
+            },
+            "split": "train",
+            "story_id": 0
+          },
+          {
+            "answer": "basalt",
+            "correct": true,
+            "margin": 0.129771,
+            "pred": "basalt",
+            "scores": {
+              "basalt": -11.516918,
+              "marigold": -11.646689,
+              "meadow": -11.953012,
+              "silver": -11.723468
+            },
+            "split": "train",
+            "story_id": 0
+          },
+          {
+            "answer": "forest",
+            "correct": false,
+            "margin": -0.201009,
+            "pred": "summit",
+            "scores": {
+              "copper": -11.853546,
+              "forest": -11.522739,
+              "silver": -11.723468,
+              "summit": -11.32173
+            },
+            "split": "train",
+            "story_id": 1
+          },
+          {
+            "answer": "summit",
+            "correct": true,
+            "margin": 0.195188,
+            "pred": "summit",
+            "scores": {
+              "basalt": -11.516918,
+              "copper": -11.853546,
+              "forest": -11.522739,
+              "summit": -11.32173
+            },
+            "split": "train",
+            "story_id": 1
+          },
+          {
+            "answer": "basalt",
+            "correct": true,
+            "margin": 0.005821,
+            "pred": "basalt",
+            "scores": {
+              "basalt": -11.516918,
+              "copper": -11.853546,
+              "forest": -11.522739,
+              "river": -11.929101
+            },
+            "split": "train",
+            "story_id": 1
+          },
+          {
+            "answer": "silver",
+            "correct": false,
+            "margin": -0.401739,
+            "pred": "summit",
+            "scores": {
+              "copper": -11.853546,
+              "forest": -11.522739,
+              "silver": -11.723468,
+              "summit": -11.32173
+            },
+            "split": "train",
+            "story_id": 1
+          },
+          {
+            "answer": "hazel",
+            "correct": false,
+            "margin": -1.201724,
+            "pred": "opal",
+            "scores": {
+              "copper": -11.853546,
+              "hazel": -12.663559,
+              "opal": -11.461834,
+              "sapphire": -11.676809
+            },
+            "split": "train",
+            "story_id": 2
+          },
+          {
+            "answer": "copper",
+            "correct": false,
+            "margin": -0.391711,
+            "pred": "opal",
+            "scores": {
+              "copper": -11.853546,
+              "opal": -11.461834,
+              "sapphire": -11.676809,
+              "violet": -11.99051
+            },
+            "split": "train",
+            "story_id": 2
+          }
+        ],
+        "n": 256
+      }
+    }
+  ],
+  "tokenizer": "cl100k_base"
+}

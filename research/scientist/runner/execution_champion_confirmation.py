@@ -124,15 +124,26 @@ class ChampionConfirmationEvaluator:
         s1_passed: bool,
         program_metrics: dict,
     ) -> None:
-        """Run champion-only hard probes from saved 10K/20K/40K checkpoints."""
+        """Run champion-only hard probes from saved final and floor checkpoints."""
         is_confirmation = str(getattr(config, "mode", "") or "") == "confirmation"
         if not (is_confirmation and s1_passed):
             return
-        milestones = [
+        milestones = {
             step
             for step in (10_000, 20_000, 40_000)
             if step <= int(config.scale_up_steps)
-        ]
+        }
+        floor_step = program_metrics.get("champion_steps_to_floor")
+        interval = int(
+            getattr(config, "champion_floor_checkpoint_interval_steps", 0) or 0
+        )
+        if floor_step is not None and interval > 0:
+            rounded_floor = int(round(float(floor_step) / float(interval)) * interval)
+            rounded_floor = max(
+                interval, min(int(config.scale_up_steps), rounded_floor)
+            )
+            milestones.add(rounded_floor)
+        milestones = sorted(milestones)
         payloads: list[dict] = []
         self._scale_up_emit_champion_probe_event(
             {
@@ -475,38 +486,36 @@ class ChampionConfirmationEvaluator:
     def _scale_up_run_investigation_v2_snapshot(
         self, model, dev_str: str, snapshot: dict, config: RunConfig | None = None
     ) -> None:
-        induction_steps = int(
-            getattr(config, "champion_induction_v2_steps", 5000) or 5000
-        )
         try:
-            from ...eval.induction_probe_v2_investigation import (
-                run_induction_v2_investigation,
+            from ...eval.induction_probe_v3_champion import (
+                run_induction_v3_champion,
             )
 
-            induction_v2 = run_induction_v2_investigation(
+            induction_v3 = run_induction_v3_champion(
                 model,
                 device=dev_str,
-                n_train_steps=induction_steps,
-                timeout_s=max(300.0, 0.08 * float(induction_steps)),
+                extended_budget=bool(
+                    getattr(config, "champion_induction_v3_extended_budget", False)
+                ),
             )
-            induction_fields = induction_v2.to_dict()
-            induction_fields["induction_v2_investigation_protocol_version"] = (
-                f"{induction_v2.protocol_version}_steps{induction_steps}"
+            induction_fields = induction_v3.to_dict()
+            induction_status = str(
+                getattr(induction_v3, "status", None)
+                or induction_fields.get("induction_v3_status")
+                or ""
             )
-            if "induction_v2_investigation_gap_accuracies" in induction_fields:
-                induction_fields["induction_v2_investigation_gap_accuracies_json"] = (
-                    json.dumps(
-                        json_safe(
-                            induction_fields.pop(
-                                "induction_v2_investigation_gap_accuracies"
-                            )
-                        ),
-                        sort_keys=True,
-                    )
+            if induction_status != "ok":
+                induction_fields["induction_v3_auc"] = None
+                induction_fields["induction_v3_max_gap_acc"] = None
+                induction_fields["induction_v3_gap_accuracy_cv"] = None
+            if "induction_v3_gap_accuracies" in induction_fields:
+                induction_fields["induction_v3_gap_accuracies_json"] = json.dumps(
+                    json_safe(induction_fields.pop("induction_v3_gap_accuracies")),
+                    sort_keys=True,
                 )
             snapshot.update(induction_fields)
         except (ImportError, RuntimeError, ValueError, TypeError, OSError) as exc:
-            snapshot["induction_v2_investigation_status"] = f"failed: {exc}"
+            snapshot["induction_v3_status"] = f"failed: {exc}"
 
         try:
             from ...eval.binding_probe_v2_investigation import (
@@ -529,6 +538,14 @@ class ChampionConfirmationEvaluator:
             snapshot.update(binding_fields)
         except (ImportError, RuntimeError, ValueError, TypeError, OSError) as exc:
             snapshot["binding_v2_investigation_status"] = f"failed: {exc}"
+
+        try:
+            from ...eval.small_ar_champion import run_small_ar_champion
+
+            small_ar = run_small_ar_champion(model, device=dev_str)
+            snapshot.update(small_ar.to_dict())
+        except (ImportError, RuntimeError, ValueError, TypeError, OSError) as exc:
+            snapshot["small_ar_champion_status"] = f"failed: {exc}"
 
     def _scale_up_run_trajectory_snapshot(
         self, model, config: RunConfig, dev, snapshot: dict
@@ -858,6 +875,14 @@ class ChampionConfirmationEvaluator:
             "ar_timed_out",
             "ar_above_chance",
             "induction_auc",
+            "induction_v3_auc",
+            "induction_v3_max_gap_acc",
+            "induction_v3_gap_accuracy_cv",
+            "induction_v3_gap_accuracies_json",
+            "induction_v3_steps_trained",
+            "induction_v3_status",
+            "induction_v3_elapsed_ms",
+            "induction_v3_protocol_version",
             "induction_v2_investigation_auc",
             "induction_v2_investigation_max_gap_acc",
             "induction_v2_investigation_gap_accuracies_json",
@@ -873,6 +898,15 @@ class ChampionConfirmationEvaluator:
             "binding_v2_investigation_status",
             "binding_v2_investigation_elapsed_ms",
             "binding_v2_investigation_protocol_version",
+            "small_ar_champion_metric_version",
+            "small_ar_champion_final_acc",
+            "small_ar_champion_held_pair_match_acc",
+            "small_ar_champion_held_class_acc",
+            "small_ar_champion_learning_curve_json",
+            "small_ar_champion_steps_to_floor",
+            "small_ar_champion_score",
+            "small_ar_champion_status",
+            "small_ar_champion_elapsed_ms",
             "binding_auc_curriculum",
             "binding_composite",
             "activation_sparsity_score",

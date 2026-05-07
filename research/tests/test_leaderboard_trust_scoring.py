@@ -1,6 +1,7 @@
 import pytest
 
 from research.scientist.leaderboard_scoring import (
+    compute_champion_tiny_model_score_v1,
     compute_composite_v11,
     compute_composite_v12,
 )
@@ -145,6 +146,131 @@ def test_v12_allows_induction_qualified_candidate_above_champion_range():
     assert result["composite_score"] > 360.0
     assert "_v12_champion_eligibility_ceiling" not in result["breakdown"]
     assert result["breakdown"]["_v12_champion_induction_qualified"] is True
+
+
+def _good_champion_tiny_model_protocol_kwargs(**overrides):
+    kw = dict(
+        champion_tiny_model_protocol_version="champion_tiny_model_score_v1",
+        champion_checkpoint_available=True,
+        champion_steps_to_floor=4_000,
+        champion_baseline_steps_to_floor=10_000,
+        champion_floor_ppl=148.41,
+        champion_baseline_floor_ppl=221.41,
+        champion_floor_loss_std=0.015,
+        champion_baseline_floor_loss_std=0.030,
+        induction_v3_auc=0.94,
+        induction_v3_gap_accuracy_cv=0.10,
+        binding_v2_investigation_auc=0.90,
+        robustness_long_ctx_combined_score=0.80,
+        champion_baseline_long_ctx_combined_score=0.80,
+        small_ar_champion_held_pair_match_acc=0.82,
+        small_ar_champion_held_class_acc=0.76,
+        small_ar_champion_steps_to_floor=5_000,
+        champion_baseline_small_ar_steps_to_floor=10_000,
+        final_loss=5.0,
+    )
+    kw.update(overrides)
+    return kw
+
+
+def _ce5_high_side_channel_overrides():
+    return dict(
+        ppl_screening=148.41,
+        ppl_investigation=148.41,
+        ppl_validation=148.41,
+        ppl_at_100=180.0,
+        ppl_at_500=150.0,
+        ppl_at_1000=148.41,
+        induction_v2_inv_auc=0.0,
+        binding_v2_inv_auc=0.0,
+        blimp_accuracy=0.0,
+        hellaswag_acc_screening=0.0,
+        hellaswag_acc_investigation=0.0,
+        hellaswag_acc_validation=0.0,
+        tinystories_score=1.0,
+        cross_task_score=1.0,
+        diagnostic_score=1.0,
+        hierarchy_fitness=1.0,
+        fp_jacobian_erf_density=10.0,
+        fp_id_collapse_rate=-1.0,
+        fp_jacobian_erf_decay_slope=-1.0,
+        fp_logit_margin_velocity=1.0,
+        fp_jacobian_erf_variance=10_000.0,
+        fp_icld_velocity=-1.0,
+    )
+
+
+def test_champion_tiny_model_score_v1_accepts_ce_around_five_with_good_evidence():
+    result = compute_champion_tiny_model_score_v1(
+        **_good_champion_tiny_model_protocol_kwargs(final_loss=5.04)
+    )
+
+    assert result["hard_failure_reason"] is None
+    assert result["total"] > 30.0
+    assert result["floor_quality"] > 0.0
+    assert result["induction_v3"] > 9.0
+
+
+def test_v12_champion_tiny_model_protocol_replaces_final_loss_ceiling():
+    old_gate = compute_composite_v12(
+        decompose=True,
+        **_high_side_channel_candidate(**_ce5_high_side_channel_overrides()),
+    )
+    redesigned = compute_composite_v12(
+        decompose=True,
+        **_high_side_channel_candidate(
+            **_ce5_high_side_channel_overrides(),
+            **_good_champion_tiny_model_protocol_kwargs(),
+        ),
+    )
+
+    assert old_gate["composite_score"] == pytest.approx(360.0)
+    assert redesigned["composite_score"] > 360.0
+    assert redesigned["breakdown"]["champion_hard_failure_reason"] is None
+    assert redesigned["breakdown"]["champion_tiny_model_score"] > 30.0
+    assert "_v12_champion_eligibility_ceiling" not in redesigned["breakdown"]
+
+
+def test_v12_champion_tiny_model_protocol_blocks_missing_required_metrics():
+    result = compute_composite_v12(
+        decompose=True,
+        **_high_side_channel_candidate(
+            **_ce5_high_side_channel_overrides(),
+            **_good_champion_tiny_model_protocol_kwargs(
+                small_ar_champion_held_pair_match_acc=None,
+            ),
+        ),
+    )
+
+    assert result["composite_score"] <= 360.0
+    assert result["breakdown"]["champion_hard_failure_reason"].startswith(
+        "missing_required_champion_metrics:"
+    )
+    assert result["breakdown"]["_champion_tiny_model_hard_failure_gate"] is True
+
+
+def test_champion_tiny_model_score_v1_allows_missing_small_ar_speed_as_zero():
+    result = compute_champion_tiny_model_score_v1(
+        **_good_champion_tiny_model_protocol_kwargs(
+            small_ar_champion_steps_to_floor=None,
+        )
+    )
+
+    assert result["hard_failure_reason"] is None
+    assert result["small_ar"] == pytest.approx(
+        6.0 * 0.82 + 2.0 * 0.76,
+    )
+
+
+def test_champion_tiny_model_score_v1_blocks_corrupt_required_metric():
+    result = compute_champion_tiny_model_score_v1(
+        **_good_champion_tiny_model_protocol_kwargs(induction_v3_auc=float("nan"))
+    )
+
+    assert result["total"] == 0.0
+    assert result["hard_failure_reason"].startswith(
+        "corrupt_required_champion_metrics:"
+    )
 
 
 def test_v12_mamba_exception_requires_bpe_loss_and_two_non_loss_sequence_signals():

@@ -4,6 +4,7 @@ from research.scientist.runner.execution_champion_confirmation import (
 )
 from research.tools.champion_reference_calibration import (
     calibration_fingerprint,
+    calibration_floor_checkpoint_milestones,
     calibration_milestones,
 )
 
@@ -14,6 +15,15 @@ def test_calibration_milestones_keep_requested_steps_and_final():
         20_000,
         25_000,
     ]
+
+
+def test_floor_checkpoint_milestones_keep_regular_floor_artifacts():
+    assert calibration_floor_checkpoint_milestones(3_500, 1_000) == [
+        1_000,
+        2_000,
+        3_000,
+    ]
+    assert calibration_floor_checkpoint_milestones(3_500, 0) == []
 
 
 def test_calibration_fingerprint_varies_by_layer_and_steps():

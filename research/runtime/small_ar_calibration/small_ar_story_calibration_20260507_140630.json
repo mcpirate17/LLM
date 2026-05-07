@@ -1,0 +1,649 @@
+{
+  "config": {
+    "batch_size": 16,
+    "context_keep_fraction": 1.0,
+    "corpus": {
+      "bindings_per_story": 6,
+      "choices_per_query": 2,
+      "n_colors": 64,
+      "n_cross_story_groups": 0,
+      "n_held_key_stories": 0,
+      "n_in_dist_eval_stories": 1,
+      "n_objects": 128,
+      "n_train_stories": 1,
+      "n_values": 24,
+      "noise_sentences_per_story": 0,
+      "queries_per_story": 1,
+      "seed": 22
+    },
+    "dim": 96,
+    "dynamic_train_stories": true,
+    "eval_every": 1000,
+    "heads": 4,
+    "include_in_story_unqueried_eval": false,
+    "layers": 2,
+    "loss_mode": "choice",
+    "lr": 0.001,
+    "micro_counterfactual_train": true,
+    "micro_retrieval": true,
+    "score_mode": "pmi",
+    "seed": 22,
+    "train_steps": 1000
+  },
+  "corpus": {
+    "eval_items": 128,
+    "eval_stories": 1,
+    "max_seq_len": 215,
+    "sample_train": [
+      "Story 0.",
+      "Inside this story, the denim rail names anchor.",
+      "For this story, the indigo jewel points to cotton.",
+      "Remember that the cobalt hammer maps to cup.",
+      "The code for the beige urn is flower.",
+      "In this story, the maroon wedge means button.",
+      "In this story, the denim key means leaf.",
+      "Question: In Story 0, what does the beige urn mean?",
+      "Answer: flower."
+    ],
+    "train_items": 128,
+    "train_stories": 1
+  },
+  "protocol_version": "small_ar_story_calibration_v1_bpe",
+  "rows": [
+    {
+      "elapsed_ms": 85428.5,
+      "family": "attention",
+      "final": {
+        "by_split": {
+          "micro_eval": {
+            "choice_acc": 0.5781,
+            "mean_margin": 0.103022,
+            "n": 64
+          },
+          "micro_eval_counterfactual_target": {
+            "choice_acc": 0.4844,
+            "mean_margin": -0.051583,
+            "n": 64
+          }
+        },
+        "choice_acc": 0.5312,
+        "examples": [
+          {
+            "answer": "book",
+            "correct": true,
+            "margin": 0.089188,
+            "pred": "book",
+            "scores": {
+              "book": -0.055809,
+              "mirror": -0.144997
+            },
+            "split": "micro_eval",
+            "story_id": 10000
+          },
+          {
+            "answer": "silver",
+            "correct": false,
+            "margin": -0.395374,
+            "pred": "mirror",
+            "scores": {
+              "mirror": -0.014469,
+              "silver": -0.409843
+            },
+            "split": "micro_eval",
+            "story_id": 10001
+          },
+          {
+            "answer": "river",
+            "correct": false,
+            "margin": -1.630909,
+            "pred": "stone",
+            "scores": {
+              "river": -0.726131,
+              "stone": 0.904778
+            },
+            "split": "micro_eval",
+            "story_id": 10002
+          },
+          {
+            "answer": "card",
+            "correct": false,
+            "margin": -1.077724,
+            "pred": "anchor",
+            "scores": {
+              "anchor": -0.292667,
+              "card": -1.370392
+            },
+            "split": "micro_eval",
+            "story_id": 10003
+          },
+          {
+            "answer": "stone",
+            "correct": true,
+            "margin": 0.545692,
+            "pred": "stone",
+            "scores": {
+              "flag": -0.230095,
+              "stone": 0.315598
+            },
+            "split": "micro_eval",
+            "story_id": 10004
+          },
+          {
+            "answer": "river",
+            "correct": true,
+            "margin": 0.638306,
+            "pred": "river",
+            "scores": {
+              "card": -0.101025,
+              "river": 0.537281
+            },
+            "split": "micro_eval",
+            "story_id": 10005
+          },
+          {
+            "answer": "compass",
+            "correct": false,
+            "margin": -0.217304,
+            "pred": "garden",
+            "scores": {
+              "compass": -0.676849,
+              "garden": -0.459545
+            },
+            "split": "micro_eval",
+            "story_id": 10006
+          },
+          {
+            "answer": "anchor",
+            "correct": true,
+            "margin": 0.014252,
+            "pred": "anchor",
+            "scores": {
+              "anchor": 0.177856,
+              "cotton": 0.163605
+            },
+            "split": "micro_eval",
+            "story_id": 10007
+          },
+          {
+            "answer": "card",
+            "correct": false,
+            "margin": -1.385773,
+            "pred": "ticket",
+            "scores": {
+              "card": -1.201218,
+              "ticket": 0.184555
+            },
+            "split": "micro_eval",
+            "story_id": 10008
+          },
+          {
+            "answer": "basket",
+            "correct": false,
+            "margin": -0.757683,
+            "pred": "anchor",
+            "scores": {
+              "anchor": -0.533997,
+              "basket": -1.291679
+            },
+            "split": "micro_eval",
+            "story_id": 10009
+          }
+        ],
+        "n": 128
+      },
+      "learning_curve": [
+        {
+          "by_split": {
+            "micro_eval": {
+              "choice_acc": 0.5781,
+              "mean_margin": 0.103022,
+              "n": 64
+            },
+            "micro_eval_counterfactual_target": {
+              "choice_acc": 0.375,
+              "mean_margin": -0.226106,
+              "n": 32
+            }
+          },
+          "choice_acc": 0.5104,
+          "loss": 0.929597,
+          "step": 1000,
+          "train_choice_acc": 0.4375
+        }
+      ],
+      "status": "ok",
+      "steps_done": 1000,
+      "train_final": {
+        "by_split": {
+          "micro_reference": {
+            "choice_acc": 0.4688,
+            "mean_margin": -0.07141,
+            "n": 128
+          }
+        },
+        "choice_acc": 0.4688,
+        "examples": [
+          {
+            "answer": "river",
+            "correct": true,
+            "margin": 0.34811,
+            "pred": "river",
+            "scores": {
+              "river": 0.524067,
+              "shell": 0.175957
+            },
+            "split": "micro_reference",
+            "story_id": 0
+          },
+          {
+            "answer": "apple",
+            "correct": false,
+            "margin": -0.065605,
+            "pred": "mirror",
+            "scores": {
+              "apple": -0.135826,
+              "mirror": -0.070221
+            },
+            "split": "micro_reference",
+            "story_id": 1
+          },
+          {
+            "answer": "button",
+            "correct": true,
+            "margin": 0.469105,
+            "pred": "button",
+            "scores": {
+              "button": -0.051861,
+              "forest": -0.520966
+            },
+            "split": "micro_reference",
+            "story_id": 2
+          },
+          {
+            "answer": "flag",
+            "correct": true,
+            "margin": 0.583481,
+            "pred": "flag",
+            "scores": {
+              "cup": -0.095207,
+              "flag": 0.488274
+            },
+            "split": "micro_reference",
+            "story_id": 3
+          },
+          {
+            "answer": "wheel",
+            "correct": true,
+            "margin": 0.178909,
+            "pred": "wheel",
+            "scores": {
+              "anchor": -0.282043,
+              "wheel": -0.103134
+            },
+            "split": "micro_reference",
+            "story_id": 4
+          },
+          {
+            "answer": "garden",
+            "correct": false,
+            "margin": -1.369186,
+            "pred": "flower",
+            "scores": {
+              "flower": 0.563984,
+              "garden": -0.805202
+            },
+            "split": "micro_reference",
+            "story_id": 5
+          },
+          {
+            "answer": "forest",
+            "correct": false,
+            "margin": -0.413559,
+            "pred": "card",
+            "scores": {
+              "card": -0.226151,
+              "forest": -0.639709
+            },
+            "split": "micro_reference",
+            "story_id": 6
+          },
+          {
+            "answer": "apple",
+            "correct": true,
+            "margin": 0.199993,
+            "pred": "apple",
+            "scores": {
+              "apple": 0.064285,
+              "basket": -0.135708
+            },
+            "split": "micro_reference",
+            "story_id": 7
+          },
+          {
+            "answer": "apple",
+            "correct": true,
+            "margin": 0.110329,
+            "pred": "apple",
+            "scores": {
+              "apple": -0.071198,
+              "card": -0.181526
+            },
+            "split": "micro_reference",
+            "story_id": 8
+          },
+          {
+            "answer": "coin",
+            "correct": false,
+            "margin": -0.505817,
+            "pred": "apple",
+            "scores": {
+              "apple": 0.143787,
+              "coin": -0.36203
+            },
+            "split": "micro_reference",
+            "story_id": 9
+          }
+        ],
+        "n": 128
+      }
+    },
+    {
+      "elapsed_ms": 82855.3,
+      "family": "no_context",
+      "final": {
+        "by_split": {
+          "micro_eval": {
+            "choice_acc": 0.4062,
+            "mean_margin": 0.0,
+            "n": 64
+          },
+          "micro_eval_counterfactual_target": {
+            "choice_acc": 0.4062,
+            "mean_margin": 0.0,
+            "n": 64
+          }
+        },
+        "choice_acc": 0.4062,
+        "examples": [
+          {
+            "answer": "book",
+            "correct": false,
+            "margin": 0.0,
+            "pred": "mirror",
+            "scores": {
+              "book": 0.0,
+              "mirror": 0.0
+            },
+            "split": "micro_eval",
+            "story_id": 10000
+          },
+          {
+            "answer": "silver",
+            "correct": false,
+            "margin": 0.0,
+            "pred": "mirror",
+            "scores": {
+              "mirror": 0.0,
+              "silver": 0.0
+            },
+            "split": "micro_eval",
+            "story_id": 10001
+          },
+          {
+            "answer": "river",
+            "correct": false,
+            "margin": 0.0,
+            "pred": "stone",
+            "scores": {
+              "river": 0.0,
+              "stone": 0.0
+            },
+            "split": "micro_eval",
+            "story_id": 10002
+          },
+          {
+            "answer": "card",
+            "correct": true,
+            "margin": 0.0,
+            "pred": "card",
+            "scores": {
+              "anchor": 0.0,
+              "card": 0.0
+            },
+            "split": "micro_eval",
+            "story_id": 10003
+          },
+          {
+            "answer": "stone",
+            "correct": false,
+            "margin": 0.0,
+            "pred": "flag",
+            "scores": {
+              "flag": 0.0,
+              "stone": 0.0
+            },
+            "split": "micro_eval",
+            "story_id": 10004
+          },
+          {
+            "answer": "river",
+            "correct": true,
+            "margin": 0.0,
+            "pred": "river",
+            "scores": {
+              "card": 0.0,
+              "river": 0.0
+            },
+            "split": "micro_eval",
+            "story_id": 10005
+          },
+          {
+            "answer": "compass",
+            "correct": false,
+            "margin": 0.0,
+            "pred": "garden",
+            "scores": {
+              "compass": 0.0,
+              "garden": 0.0
+            },
+            "split": "micro_eval",
+            "story_id": 10006
+          },
+          {
+            "answer": "anchor",
+            "correct": false,
+            "margin": 0.0,
+            "pred": "cotton",
+            "scores": {
+              "anchor": 0.0,
+              "cotton": 0.0
+            },
+            "split": "micro_eval",
+            "story_id": 10007
+          },
+          {
+            "answer": "card",
+            "correct": true,
+            "margin": 0.0,
+            "pred": "card",
+            "scores": {
+              "card": 0.0,
+              "ticket": 0.0
+            },
+            "split": "micro_eval",
+            "story_id": 10008
+          },
+          {
+            "answer": "basket",
+            "correct": true,
+            "margin": 0.0,
+            "pred": "basket",
+            "scores": {
+              "anchor": 0.0,
+              "basket": 0.0
+            },
+            "split": "micro_eval",
+            "story_id": 10009
+          }
+        ],
+        "n": 128
+      },
+      "learning_curve": [
+        {
+          "by_split": {
+            "micro_eval": {
+              "choice_acc": 0.4062,
+              "mean_margin": 0.0,
+              "n": 64
+            },
+            "micro_eval_counterfactual_target": {
+              "choice_acc": 0.5312,
+              "mean_margin": 0.0,
+              "n": 32
+            }
+          },
+          "choice_acc": 0.4479,
+          "loss": 0.693147,
+          "step": 1000,
+          "train_choice_acc": 0.4271
+        }
+      ],
+      "status": "ok",
+      "steps_done": 1000,
+      "train_final": {
+        "by_split": {
+          "micro_reference": {
+            "choice_acc": 0.4688,
+            "mean_margin": 0.0,
+            "n": 128
+          }
+        },
+        "choice_acc": 0.4688,
+        "examples": [
+          {
+            "answer": "river",
+            "correct": true,
+            "margin": 0.0,
+            "pred": "river",
+            "scores": {
+              "river": 0.0,
+              "shell": 0.0
+            },
+            "split": "micro_reference",
+            "story_id": 0
+          },
+          {
+            "answer": "apple",
+            "correct": false,
+            "margin": 0.0,
+            "pred": "mirror",
+            "scores": {
+              "apple": 0.0,
+              "mirror": 0.0
+            },
+            "split": "micro_reference",
+            "story_id": 1
+          },
+          {
+            "answer": "button",
+            "correct": true,
+            "margin": 0.0,
+            "pred": "button",
+            "scores": {
+              "button": 0.0,
+              "forest": 0.0
+            },
+            "split": "micro_reference",
+            "story_id": 2
+          },
+          {
+            "answer": "flag",
+            "correct": false,
+            "margin": 0.0,
+            "pred": "cup",
+            "scores": {
+              "cup": 0.0,
+              "flag": 0.0
+            },
+            "split": "micro_reference",
+            "story_id": 3
+          },
+          {
+            "answer": "wheel",
+            "correct": false,
+            "margin": 0.0,
+            "pred": "anchor",
+            "scores": {
+              "anchor": 0.0,
+              "wheel": 0.0
+            },
+            "split": "micro_reference",
+            "story_id": 4
+          },
+          {
+            "answer": "garden",
+            "correct": false,
+            "margin": 0.0,
+            "pred": "flower",
+            "scores": {
+              "flower": 0.0,
+              "garden": 0.0
+            },
+            "split": "micro_reference",
+            "story_id": 5
+          },
+          {
+            "answer": "forest",
+            "correct": false,
+            "margin": 0.0,
+            "pred": "card",
+            "scores": {
+              "card": 0.0,
+              "forest": 0.0
+            },
+            "split": "micro_reference",
+            "story_id": 6
+          },
+          {
+            "answer": "apple",
+            "correct": true,
+            "margin": 0.0,
+            "pred": "apple",
+            "scores": {
+              "apple": 0.0,
+              "basket": 0.0
+            },
+            "split": "micro_reference",
+            "story_id": 7
+          },
+          {
+            "answer": "apple",
+            "correct": true,
+            "margin": 0.0,
+            "pred": "apple",
+            "scores": {
+              "apple": 0.0,
+              "card": 0.0
+            },
+            "split": "micro_reference",
+            "story_id": 8
+          },
+          {
+            "answer": "coin",
+            "correct": false,
+            "margin": 0.0,
+            "pred": "apple",
+            "scores": {
+              "apple": 0.0,
+              "coin": 0.0
+            },
+            "split": "micro_reference",
+            "story_id": 9
+          }
+        ],
+        "n": 128
+      }
+    }
+  ],
+  "tokenizer": "cl100k_base"
+}

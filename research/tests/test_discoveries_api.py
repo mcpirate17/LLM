@@ -140,6 +140,111 @@ def test_ranked_discoveries_exposes_nano_ar_investigation_fields(tmp_path):
     assert entry["controlled_lang_inv_nb_score"] == pytest.approx(0.86)
 
 
+def test_program_detail_and_compact_leaderboard_expose_champion_display_fields(
+    tmp_path,
+):
+    db_path = str(tmp_path / "champion_display_fields.db")
+    nb = LabNotebook(db_path)
+    exp_id = nb.start_experiment("synthesis", {})
+    champion_fields = {
+        "champion_floor_protocol_version": "champion_floor_v1",
+        "champion_steps_to_floor": 1800,
+        "champion_floor_loss": 4.91,
+        "champion_floor_ppl": 135.6,
+        "champion_floor_loss_std": 0.018,
+        "champion_plateau_detected_step": 2300,
+        "champion_plateau_window": 500,
+        "champion_baseline_result_id": "gpt2cal490d5",
+        "champion_baseline_layers": 4,
+        "champion_baseline_protocol_version": "gpt2_baseline_v1",
+        "champion_steps_to_floor_score": 7.5,
+        "champion_floor_quality_score": 4.0,
+        "champion_floor_stability_score": 3.0,
+        "champion_induction_v3_score": 8.25,
+        "champion_binding_long_context_score": 2.5,
+        "champion_small_ar_score": 6.5,
+        "champion_tiny_model_score": 31.75,
+        "champion_tiny_model_protocol_version": "champion_tiny_model_v1",
+        "champion_hard_failure_reason": None,
+        "induction_v3_auc": 0.812,
+        "induction_v3_max_gap_acc": 0.91,
+        "induction_v3_gap_accuracy_cv": 0.12,
+        "induction_v3_gap_accuracies_json": '{"4": 0.91, "16": 0.77}',
+        "induction_v3_steps_trained": 5000,
+        "induction_v3_status": "ok",
+        "induction_v3_elapsed_ms": 4321.0,
+        "induction_v3_protocol_version": "induction_v3_head_counterfactual_5k",
+        "small_ar_champion_metric_version": "small_ar_champion_v1",
+        "small_ar_champion_final_acc": 0.74,
+        "small_ar_champion_held_pair_match_acc": 0.63,
+        "small_ar_champion_held_class_acc": 0.58,
+        "small_ar_champion_learning_curve_json": '[{"step": 500, "acc": 0.41}]',
+        "small_ar_champion_steps_to_floor": 3200,
+        "small_ar_champion_score": 6.7,
+        "small_ar_champion_status": "ok",
+        "small_ar_champion_elapsed_ms": 2468.0,
+        "induction_v2_investigation_auc": 0.547,
+        "induction_v2_investigation_max_gap_acc": 1.0,
+        "induction_v2_investigation_protocol_version": "induction_v2_test",
+        "nano_ar_inv_metric_version": "nano_ar_inv_v1",
+        "nano_ar_inv_score": 0.582,
+        "nano_ar_inv_status": "ok",
+        "nano_ar_inv_train_steps_done": 500,
+    }
+    rid = nb.record_program_result(
+        experiment_id=exp_id,
+        graph_fingerprint="fp-champion-display",
+        graph_json="{}",
+        **{
+            **_stage1_kwargs(loss_ratio=0.66, novelty_score=0.83),
+            **champion_fields,
+        },
+    )
+    nb.flush_writes()
+    nb.upsert_leaderboard(
+        result_id=rid,
+        model_source="graph_synthesis",
+        screening_loss_ratio=0.66,
+        screening_novelty=0.83,
+        tier="investigation",
+    )
+    nb.close()
+
+    app = create_app(notebook_path=db_path)
+    client = app.test_client()
+
+    detail = client.get(f"/api/programs/{rid}")
+    assert detail.status_code == 200
+    detail_payload = detail.get_json()
+    assert detail_payload["champion_tiny_model_score"] == pytest.approx(31.75)
+    assert detail_payload["champion_steps_to_floor"] == 1800
+    assert (
+        detail_payload["induction_v3_protocol_version"]
+        == "induction_v3_head_counterfactual_5k"
+    )
+    assert detail_payload["small_ar_champion_score"] == pytest.approx(6.7)
+    assert detail_payload["induction_v2_investigation_auc"] == pytest.approx(0.547)
+    assert detail_payload["nano_ar_inv_score"] == pytest.approx(0.582)
+
+    leaderboard = client.get(
+        "/api/leaderboard?compact=1&trusted_only=0&limit=10&sort=composite_score"
+    )
+    assert leaderboard.status_code == 200
+    rows = {row.get("result_id"): row for row in leaderboard.get_json()["entries"]}
+    entry = rows[rid]
+    assert entry["champion_tiny_model_score"] == pytest.approx(31.75)
+    assert entry["champion_floor_ppl"] == pytest.approx(135.6)
+    assert entry["champion_baseline_result_id"] == "gpt2cal490d5"
+    assert entry["induction_v3_auc"] == pytest.approx(0.812)
+    assert entry["induction_v3_gap_accuracies_json"] == '{"4": 0.91, "16": 0.77}'
+    assert entry["small_ar_champion_held_pair_match_acc"] == pytest.approx(0.63)
+    assert entry["small_ar_champion_learning_curve_json"] == (
+        '[{"step": 500, "acc": 0.41}]'
+    )
+    assert entry["induction_v2_investigation_auc"] == pytest.approx(0.547)
+    assert entry["nano_ar_inv_score"] == pytest.approx(0.582)
+
+
 def test_discoveries_search_uses_leaderboard_v2_rollup_for_parent(tmp_path):
     db_path = str(tmp_path / "discoveries_search_v2_rollup.db")
     nb = LabNotebook(db_path)

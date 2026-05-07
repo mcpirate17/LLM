@@ -1,0 +1,781 @@
+{
+  "config": {
+    "batch_size": 4,
+    "corpus": {
+      "bindings_per_story": 4,
+      "n_colors": 64,
+      "n_cross_story_groups": 0,
+      "n_held_key_stories": 0,
+      "n_in_dist_eval_stories": 0,
+      "n_objects": 128,
+      "n_train_stories": 16,
+      "n_values": 16,
+      "noise_sentences_per_story": 0,
+      "queries_per_story": 2,
+      "seed": 9
+    },
+    "dim": 64,
+    "eval_every": 250,
+    "heads": 4,
+    "include_in_story_unqueried_eval": true,
+    "layers": 2,
+    "loss_mode": "choice",
+    "lr": 0.001,
+    "seed": 9,
+    "train_steps": 1000
+  },
+  "corpus": {
+    "eval_items": 32,
+    "eval_stories": 0,
+    "max_seq_len": 69,
+    "sample_train": [
+      "Story 0.",
+      "The code for the iron wedge is meadow.",
+      "Remember that the ochre tile maps to juniper.",
+      "For this story, the bronze orb points to cedar.",
+      "In this story, the pink vase means harbor.",
+      "Question: In Story 0, what does the bronze orb mean?",
+      "Answer: cedar.",
+      "Question: For this story, which word belongs to the pink vase?",
+      "Answer: harbor."
+    ],
+    "train_items": 32,
+    "train_stories": 16
+  },
+  "protocol_version": "small_ar_story_calibration_v1_bpe",
+  "rows": [
+    {
+      "elapsed_ms": 7351.2,
+      "family": "attention",
+      "final": {
+        "by_split": {
+          "in_story_unqueried": {
+            "choice_acc": 0.0625,
+            "mean_margin": -18.469385,
+            "n": 32
+          }
+        },
+        "choice_acc": 0.0625,
+        "examples": [
+          {
+            "answer": "meadow",
+            "correct": false,
+            "margin": -16.810145,
+            "pred": "cedar",
+            "scores": {
+              "cedar": -25.67129,
+              "harbor": -42.065653,
+              "juniper": -49.945323,
+              "meadow": -42.481435
+            },
+            "split": "in_story_unqueried",
+            "story_id": 0
+          },
+          {
+            "answer": "juniper",
+            "correct": true,
+            "margin": 1.767124,
+            "pred": "juniper",
+            "scores": {
+              "cedar": -41.437159,
+              "harbor": -49.025801,
+              "juniper": -39.670035,
+              "meadow": -43.560283
+            },
+            "split": "in_story_unqueried",
+            "story_id": 0
+          },
+          {
+            "answer": "pearl",
+            "correct": false,
+            "margin": -29.072618,
+            "pred": "amber",
+            "scores": {
+              "amber": -19.884571,
+              "juniper": -41.184892,
+              "pearl": -48.95719,
+              "sapphire": -39.698549
+            },
+            "split": "in_story_unqueried",
+            "story_id": 1
+          },
+          {
+            "answer": "sapphire",
+            "correct": false,
+            "margin": -19.310763,
+            "pred": "amber",
+            "scores": {
+              "amber": -20.026143,
+              "juniper": -40.753506,
+              "pearl": -48.673435,
+              "sapphire": -39.336906
+            },
+            "split": "in_story_unqueried",
+            "story_id": 1
+          },
+          {
+            "answer": "coral",
+            "correct": false,
+            "margin": -11.426309,
+            "pred": "basalt",
+            "scores": {
+              "basalt": -30.627454,
+              "coral": -42.053762,
+              "harbor": -45.512949,
+              "juniper": -50.17944
+            },
+            "split": "in_story_unqueried",
+            "story_id": 2
+          },
+          {
+            "answer": "juniper",
+            "correct": false,
+            "margin": -13.471896,
+            "pred": "coral",
+            "scores": {
+              "basalt": -43.679235,
+              "coral": -31.404923,
+              "harbor": -52.003929,
+              "juniper": -44.876819
+            },
+            "split": "in_story_unqueried",
+            "story_id": 2
+          },
+          {
+            "answer": "silver",
+            "correct": false,
+            "margin": -15.005715,
+            "pred": "basalt",
+            "scores": {
+              "basalt": -27.928113,
+              "cedar": -42.332796,
+              "silver": -42.933828,
+              "violet": -48.143892
+            },
+            "split": "in_story_unqueried",
+            "story_id": 3
+          },
+          {
+            "answer": "cedar",
+            "correct": false,
+            "margin": -14.297995,
+            "pred": "basalt",
+            "scores": {
+              "basalt": -27.940553,
+              "cedar": -42.238548,
+              "silver": -42.893013,
+              "violet": -48.043106
+            },
+            "split": "in_story_unqueried",
+            "story_id": 3
+          },
+          {
+            "answer": "amber",
+            "correct": false,
+            "margin": -7.966443,
+            "pred": "willow",
+            "scores": {
+              "amber": -41.386307,
+              "meadow": -41.895912,
+              "pearl": -44.973375,
+              "willow": -33.419864
+            },
+            "split": "in_story_unqueried",
+            "story_id": 4
+          },
+          {
+            "answer": "meadow",
+            "correct": false,
+            "margin": -9.167653,
+            "pred": "willow",
+            "scores": {
+              "amber": -41.847826,
+              "meadow": -42.367744,
+              "pearl": -44.331047,
+              "willow": -33.200092
+            },
+            "split": "in_story_unqueried",
+            "story_id": 4
+          }
+        ],
+        "n": 32
+      },
+      "learning_curve": [
+        {
+          "by_split": {
+            "in_story_unqueried": {
+              "choice_acc": 0.0625,
+              "mean_margin": -14.53552,
+              "n": 32
+            }
+          },
+          "choice_acc": 0.0625,
+          "loss": 1e-05,
+          "step": 250,
+          "train_choice_acc": 1.0
+        },
+        {
+          "by_split": {
+            "in_story_unqueried": {
+              "choice_acc": 0.0625,
+              "mean_margin": -16.912028,
+              "n": 32
+            }
+          },
+          "choice_acc": 0.0625,
+          "loss": 9e-06,
+          "step": 500,
+          "train_choice_acc": 1.0
+        },
+        {
+          "by_split": {
+            "in_story_unqueried": {
+              "choice_acc": 0.0625,
+              "mean_margin": -17.536551,
+              "n": 32
+            }
+          },
+          "choice_acc": 0.0625,
+          "loss": 4.2e-05,
+          "step": 750,
+          "train_choice_acc": 1.0
+        },
+        {
+          "by_split": {
+            "in_story_unqueried": {
+              "choice_acc": 0.0625,
+              "mean_margin": -18.469385,
+              "n": 32
+            }
+          },
+          "choice_acc": 0.0625,
+          "loss": 3.7e-05,
+          "step": 1000,
+          "train_choice_acc": 1.0
+        }
+      ],
+      "status": "ok",
+      "steps_done": 1000,
+      "train_final": {
+        "by_split": {
+          "train": {
+            "choice_acc": 1.0,
+            "mean_margin": 16.311447,
+            "n": 32
+          }
+        },
+        "choice_acc": 1.0,
+        "examples": [
+          {
+            "answer": "cedar",
+            "correct": true,
+            "margin": 15.648344,
+            "pred": "cedar",
+            "scores": {
+              "cedar": -26.232008,
+              "harbor": -41.880352,
+              "juniper": -49.919749,
+              "meadow": -42.758621
+            },
+            "split": "train",
+            "story_id": 0
+          },
+          {
+            "answer": "harbor",
+            "correct": true,
+            "margin": 18.096058,
+            "pred": "harbor",
+            "scores": {
+              "cedar": -41.937664,
+              "harbor": -22.86656,
+              "juniper": -50.292498,
+              "meadow": -40.962617
+            },
+            "split": "train",
+            "story_id": 0
+          },
+          {
+            "answer": "amber",
+            "correct": true,
+            "margin": 20.092866,
+            "pred": "amber",
+            "scores": {
+              "amber": -19.728415,
+              "juniper": -41.062991,
+              "pearl": -48.778364,
+              "sapphire": -39.821281
+            },
+            "split": "train",
+            "story_id": 1
+          },
+          {
+            "answer": "juniper",
+            "correct": true,
+            "margin": 24.259337,
+            "pred": "juniper",
+            "scores": {
+              "amber": -39.37096,
+              "juniper": -15.111624,
+              "pearl": -44.383154,
+              "sapphire": -44.540925
+            },
+            "split": "train",
+            "story_id": 1
+          },
+          {
+            "answer": "basalt",
+            "correct": true,
+            "margin": 11.986673,
+            "pred": "basalt",
+            "scores": {
+              "basalt": -30.481709,
+              "coral": -42.468382,
+              "harbor": -45.776995,
+              "juniper": -50.276971
+            },
+            "split": "train",
+            "story_id": 2
+          },
+          {
+            "answer": "harbor",
+            "correct": true,
+            "margin": 23.449931,
+            "pred": "harbor",
+            "scores": {
+              "basalt": -46.631894,
+              "coral": -48.837034,
+              "harbor": -23.181963,
+              "juniper": -49.228395
+            },
+            "split": "train",
+            "story_id": 2
+          },
+          {
+            "answer": "basalt",
+            "correct": true,
+            "margin": 14.536668,
+            "pred": "basalt",
+            "scores": {
+              "basalt": -27.846356,
+              "cedar": -42.383024,
+              "silver": -42.964964,
+              "violet": -48.228317
+            },
+            "split": "train",
+            "story_id": 3
+          },
+          {
+            "answer": "violet",
+            "correct": true,
+            "margin": 17.038744,
+            "pred": "violet",
+            "scores": {
+              "basalt": -43.924782,
+              "cedar": -42.235558,
+              "silver": -44.646227,
+              "violet": -25.196814
+            },
+            "split": "train",
+            "story_id": 3
+          },
+          {
+            "answer": "willow",
+            "correct": true,
+            "margin": 11.776009,
+            "pred": "willow",
+            "scores": {
+              "amber": -48.530027,
+              "meadow": -48.352165,
+              "pearl": -52.417669,
+              "willow": -36.576157
+            },
+            "split": "train",
+            "story_id": 4
+          },
+          {
+            "answer": "pearl",
+            "correct": true,
+            "margin": 14.081551,
+            "pred": "pearl",
+            "scores": {
+              "amber": -46.213945,
+              "meadow": -47.419374,
+              "pearl": -26.990269,
+              "willow": -41.071819
+            },
+            "split": "train",
+            "story_id": 4
+          }
+        ],
+        "n": 32
+      }
+    },
+    {
+      "elapsed_ms": 6321.2,
+      "family": "no_context",
+      "final": {
+        "by_split": {
+          "in_story_unqueried": {
+            "choice_acc": 0.125,
+            "mean_margin": -2.277047,
+            "n": 32
+          }
+        },
+        "choice_acc": 0.125,
+        "examples": [
+          {
+            "answer": "meadow",
+            "correct": false,
+            "margin": -1.620277,
+            "pred": "harbor",
+            "scores": {
+              "cedar": -11.857829,
+              "harbor": -10.997218,
+              "juniper": -12.423125,
+              "meadow": -12.617494
+            },
+            "split": "in_story_unqueried",
+            "story_id": 0
+          },
+          {
+            "answer": "juniper",
+            "correct": false,
+            "margin": -1.425908,
+            "pred": "harbor",
+            "scores": {
+              "cedar": -11.857829,
+              "harbor": -10.997218,
+              "juniper": -12.423125,
+              "meadow": -12.617494
+            },
+            "split": "in_story_unqueried",
+            "story_id": 0
+          },
+          {
+            "answer": "pearl",
+            "correct": false,
+            "margin": -0.468016,
+            "pred": "amber",
+            "scores": {
+              "amber": -12.03222,
+              "juniper": -12.423125,
+              "pearl": -12.500236,
+              "sapphire": -21.590858
+            },
+            "split": "in_story_unqueried",
+            "story_id": 1
+          },
+          {
+            "answer": "sapphire",
+            "correct": false,
+            "margin": -9.558639,
+            "pred": "amber",
+            "scores": {
+              "amber": -12.03222,
+              "juniper": -12.423125,
+              "pearl": -12.500236,
+              "sapphire": -21.590858
+            },
+            "split": "in_story_unqueried",
+            "story_id": 1
+          },
+          {
+            "answer": "coral",
+            "correct": true,
+            "margin": 0.047444,
+            "pred": "coral",
+            "scores": {
+              "basalt": -11.679777,
+              "coral": -10.949773,
+              "harbor": -10.997218,
+              "juniper": -12.423125
+            },
+            "split": "in_story_unqueried",
+            "story_id": 2
+          },
+          {
+            "answer": "juniper",
+            "correct": false,
+            "margin": -1.473352,
+            "pred": "coral",
+            "scores": {
+              "basalt": -11.679777,
+              "coral": -10.949773,
+              "harbor": -10.997218,
+              "juniper": -12.423125
+            },
+            "split": "in_story_unqueried",
+            "story_id": 2
+          },
+          {
+            "answer": "silver",
+            "correct": false,
+            "margin": -1.377811,
+            "pred": "violet",
+            "scores": {
+              "basalt": -11.679777,
+              "cedar": -11.857829,
+              "silver": -11.961058,
+              "violet": -10.583247
+            },
+            "split": "in_story_unqueried",
+            "story_id": 3
+          },
+          {
+            "answer": "cedar",
+            "correct": false,
+            "margin": -1.274582,
+            "pred": "violet",
+            "scores": {
+              "basalt": -11.679777,
+              "cedar": -11.857829,
+              "silver": -11.961058,
+              "violet": -10.583247
+            },
+            "split": "in_story_unqueried",
+            "story_id": 3
+          },
+          {
+            "answer": "amber",
+            "correct": false,
+            "margin": -0.245385,
+            "pred": "willow",
+            "scores": {
+              "amber": -12.03222,
+              "meadow": -12.617494,
+              "pearl": -12.500236,
+              "willow": -11.786835
+            },
+            "split": "in_story_unqueried",
+            "story_id": 4
+          },
+          {
+            "answer": "meadow",
+            "correct": false,
+            "margin": -0.83066,
+            "pred": "willow",
+            "scores": {
+              "amber": -12.03222,
+              "meadow": -12.617494,
+              "pearl": -12.500236,
+              "willow": -11.786835
+            },
+            "split": "in_story_unqueried",
+            "story_id": 4
+          }
+        ],
+        "n": 32
+      },
+      "learning_curve": [
+        {
+          "by_split": {
+            "in_story_unqueried": {
+              "choice_acc": 0.0938,
+              "mean_margin": -1.499242,
+              "n": 32
+            }
+          },
+          "choice_acc": 0.0938,
+          "loss": 0.932295,
+          "step": 250,
+          "train_choice_acc": 0.4062
+        },
+        {
+          "by_split": {
+            "in_story_unqueried": {
+              "choice_acc": 0.0938,
+              "mean_margin": -1.95366,
+              "n": 32
+            }
+          },
+          "choice_acc": 0.0938,
+          "loss": 0.90432,
+          "step": 500,
+          "train_choice_acc": 0.4062
+        },
+        {
+          "by_split": {
+            "in_story_unqueried": {
+              "choice_acc": 0.0625,
+              "mean_margin": -2.175828,
+              "n": 32
+            }
+          },
+          "choice_acc": 0.0625,
+          "loss": 1.134962,
+          "step": 750,
+          "train_choice_acc": 0.4375
+        },
+        {
+          "by_split": {
+            "in_story_unqueried": {
+              "choice_acc": 0.125,
+              "mean_margin": -2.277047,
+              "n": 32
+            }
+          },
+          "choice_acc": 0.125,
+          "loss": 1.400562,
+          "step": 1000,
+          "train_choice_acc": 0.375
+        }
+      ],
+      "status": "ok",
+      "steps_done": 1000,
+      "train_final": {
+        "by_split": {
+          "train": {
+            "choice_acc": 0.375,
+            "mean_margin": -0.208964,
+            "n": 32
+          }
+        },
+        "choice_acc": 0.375,
+        "examples": [
+          {
+            "answer": "cedar",
+            "correct": false,
+            "margin": -0.860611,
+            "pred": "harbor",
+            "scores": {
+              "cedar": -11.857829,
+              "harbor": -10.997218,
+              "juniper": -12.423125,
+              "meadow": -12.617494
+            },
+            "split": "train",
+            "story_id": 0
+          },
+          {
+            "answer": "harbor",
+            "correct": true,
+            "margin": 0.860611,
+            "pred": "harbor",
+            "scores": {
+              "cedar": -11.857829,
+              "harbor": -10.997218,
+              "juniper": -12.423125,
+              "meadow": -12.617494
+            },
+            "split": "train",
+            "story_id": 0
+          },
+          {
+            "answer": "amber",
+            "correct": true,
+            "margin": 0.390905,
+            "pred": "amber",
+            "scores": {
+              "amber": -12.03222,
+              "juniper": -12.423125,
+              "pearl": -12.500236,
+              "sapphire": -21.590858
+            },
+            "split": "train",
+            "story_id": 1
+          },
+          {
+            "answer": "juniper",
+            "correct": false,
+            "margin": -0.390905,
+            "pred": "amber",
+            "scores": {
+              "amber": -12.03222,
+              "juniper": -12.423125,
+              "pearl": -12.500236,
+              "sapphire": -21.590858
+            },
+            "split": "train",
+            "story_id": 1
+          },
+          {
+            "answer": "basalt",
+            "correct": false,
+            "margin": -0.730003,
+            "pred": "coral",
+            "scores": {
+              "basalt": -11.679777,
+              "coral": -10.949773,
+              "harbor": -10.997218,
+              "juniper": -12.423125
+            },
+            "split": "train",
+            "story_id": 2
+          },
+          {
+            "answer": "harbor",
+            "correct": false,
+            "margin": -0.047444,
+            "pred": "coral",
+            "scores": {
+              "basalt": -11.679777,
+              "coral": -10.949773,
+              "harbor": -10.997218,
+              "juniper": -12.423125
+            },
+            "split": "train",
+            "story_id": 2
+          },
+          {
+            "answer": "basalt",
+            "correct": false,
+            "margin": -1.09653,
+            "pred": "violet",
+            "scores": {
+              "basalt": -11.679777,
+              "cedar": -11.857829,
+              "silver": -11.961058,
+              "violet": -10.583247
+            },
+            "split": "train",
+            "story_id": 3
+          },
+          {
+            "answer": "violet",
+            "correct": true,
+            "margin": 1.09653,
+            "pred": "violet",
+            "scores": {
+              "basalt": -11.679777,
+              "cedar": -11.857829,
+              "silver": -11.961058,
+              "violet": -10.583247
+            },
+            "split": "train",
+            "story_id": 3
+          },
+          {
+            "answer": "willow",
+            "correct": true,
+            "margin": 0.245385,
+            "pred": "willow",
+            "scores": {
+              "amber": -12.03222,
+              "meadow": -12.617494,
+              "pearl": -12.500236,
+              "willow": -11.786835
+            },
+            "split": "train",
+            "story_id": 4
+          },
+          {
+            "answer": "pearl",
+            "correct": false,
+            "margin": -0.713401,
+            "pred": "willow",
+            "scores": {
+              "amber": -12.03222,
+              "meadow": -12.617494,
+              "pearl": -12.500236,
+              "willow": -11.786835
+            },
+            "split": "train",
+            "story_id": 4
+          }
+        ],
+        "n": 32
+      }
+    }
+  ],
+  "tokenizer": "cl100k_base"
+}

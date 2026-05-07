@@ -1,0 +1,379 @@
+{
+  "checkpoint": "/home/tim/Projects/LLM/checkpoints/_investigation_artifacts/ba70eb86-3f8/gpt2cal87a29_tp0_reference_calibration_step40000.pt",
+  "config": {
+    "batch_size": 8,
+    "corpus": {
+      "bindings_per_story": 4,
+      "choices_per_query": 2,
+      "n_colors": 64,
+      "n_cross_story_groups": 0,
+      "n_held_key_stories": 0,
+      "n_in_dist_eval_stories": 1,
+      "n_objects": 128,
+      "n_train_stories": 1,
+      "n_values": 16,
+      "noise_sentences_per_story": 0,
+      "queries_per_story": 1,
+      "seed": 21
+    },
+    "eval_every": 250,
+    "loss_mode": "choice",
+    "lr": 0.0001,
+    "micro_counterfactual_train": true,
+    "micro_retrieval": true,
+    "score_mode": "pmi",
+    "seed": 21,
+    "train_steps": 1000
+  },
+  "curve": [
+    {
+      "by_split": {
+        "micro_eval": {
+          "choice_acc": 0.6719,
+          "mean_margin": 0.241653,
+          "n": 64
+        },
+        "micro_eval_counterfactual_target": {
+          "choice_acc": 0.375,
+          "mean_margin": -0.414249,
+          "n": 64
+        }
+      },
+      "choice_acc": 0.5234,
+      "loss": 0.784636,
+      "step": 250,
+      "train_choice_acc": 0.5312
+    },
+    {
+      "by_split": {
+        "micro_eval": {
+          "choice_acc": 0.6719,
+          "mean_margin": 0.699373,
+          "n": 64
+        },
+        "micro_eval_counterfactual_target": {
+          "choice_acc": 0.1719,
+          "mean_margin": -1.694244,
+          "n": 64
+        }
+      },
+      "choice_acc": 0.4219,
+      "loss": 0.31632,
+      "step": 500,
+      "train_choice_acc": 0.6719
+    },
+    {
+      "by_split": {
+        "micro_eval": {
+          "choice_acc": 0.5938,
+          "mean_margin": 0.565518,
+          "n": 64
+        },
+        "micro_eval_counterfactual_target": {
+          "choice_acc": 0.1562,
+          "mean_margin": -2.208702,
+          "n": 64
+        }
+      },
+      "choice_acc": 0.375,
+      "loss": 0.315011,
+      "step": 750,
+      "train_choice_acc": 0.6562
+    },
+    {
+      "by_split": {
+        "micro_eval": {
+          "choice_acc": 0.6562,
+          "mean_margin": 0.612012,
+          "n": 64
+        },
+        "micro_eval_counterfactual_target": {
+          "choice_acc": 0.1719,
+          "mean_margin": -2.042735,
+          "n": 64
+        }
+      },
+      "choice_acc": 0.4141,
+      "loss": 0.235283,
+      "step": 1000,
+      "train_choice_acc": 0.7188
+    }
+  ],
+  "elapsed_ms": 44931.8,
+  "final": {
+    "by_split": {
+      "micro_eval": {
+        "choice_acc": 0.6562,
+        "mean_margin": 0.612012,
+        "n": 64
+      },
+      "micro_eval_counterfactual_target": {
+        "choice_acc": 0.1719,
+        "mean_margin": -2.042735,
+        "n": 64
+      }
+    },
+    "choice_acc": 0.4141,
+    "examples": [
+      {
+        "answer": "shell",
+        "correct": false,
+        "margin": -1.766913,
+        "pred": "mirror",
+        "scores": {
+          "mirror": -1.777539,
+          "shell": -3.544453
+        },
+        "split": "micro_eval",
+        "story_id": 10000
+      },
+      {
+        "answer": "coin",
+        "correct": true,
+        "margin": 3.267923,
+        "pred": "coin",
+        "scores": {
+          "coin": 2.196508,
+          "garden": -1.071415
+        },
+        "split": "micro_eval",
+        "story_id": 10001
+      },
+      {
+        "answer": "mirror",
+        "correct": true,
+        "margin": 0.956141,
+        "pred": "mirror",
+        "scores": {
+          "mirror": 0.238973,
+          "shell": -0.717168
+        },
+        "split": "micro_eval",
+        "story_id": 10002
+      },
+      {
+        "answer": "wheel",
+        "correct": true,
+        "margin": 3.30228,
+        "pred": "wheel",
+        "scores": {
+          "coin": -1.322045,
+          "wheel": 1.980235
+        },
+        "split": "micro_eval",
+        "story_id": 10003
+      },
+      {
+        "answer": "button",
+        "correct": true,
+        "margin": 1.245908,
+        "pred": "button",
+        "scores": {
+          "button": -0.308969,
+          "ticket": -1.554877
+        },
+        "split": "micro_eval",
+        "story_id": 10004
+      },
+      {
+        "answer": "wheel",
+        "correct": true,
+        "margin": 3.397972,
+        "pred": "wheel",
+        "scores": {
+          "apple": -1.800017,
+          "wheel": 1.597955
+        },
+        "split": "micro_eval",
+        "story_id": 10005
+      },
+      {
+        "answer": "garden",
+        "correct": false,
+        "margin": -1.144918,
+        "pred": "compass",
+        "scores": {
+          "compass": 0.861393,
+          "garden": -0.283525
+        },
+        "split": "micro_eval",
+        "story_id": 10006
+      },
+      {
+        "answer": "garden",
+        "correct": true,
+        "margin": 2.511408,
+        "pred": "garden",
+        "scores": {
+          "garden": 0.728115,
+          "mirror": -1.783293
+        },
+        "split": "micro_eval",
+        "story_id": 10007
+      },
+      {
+        "answer": "ticket",
+        "correct": false,
+        "margin": -2.553724,
+        "pred": "button",
+        "scores": {
+          "button": 1.255349,
+          "ticket": -1.298375
+        },
+        "split": "micro_eval",
+        "story_id": 10008
+      },
+      {
+        "answer": "basket",
+        "correct": true,
+        "margin": 1.017848,
+        "pred": "basket",
+        "scores": {
+          "basket": -0.6834,
+          "window": -1.701248
+        },
+        "split": "micro_eval",
+        "story_id": 10009
+      }
+    ],
+    "n": 128
+  },
+  "label": "GPT-2 control 6L 40K",
+  "protocol_version": "small_ar_story_gpt2_micro_retrieval_ad_hoc_v1",
+  "target_id": "gpt2cal87a29",
+  "tokenizer": "cl100k_base",
+  "train_final": {
+    "by_split": {
+      "micro_reference": {
+        "choice_acc": 0.7188,
+        "mean_margin": 0.983579,
+        "n": 64
+      }
+    },
+    "choice_acc": 0.7188,
+    "examples": [
+      {
+        "answer": "wheel",
+        "correct": false,
+        "margin": -0.362784,
+        "pred": "cotton",
+        "scores": {
+          "cotton": 0.517619,
+          "wheel": 0.154835
+        },
+        "split": "micro_reference",
+        "story_id": 0
+      },
+      {
+        "answer": "flower",
+        "correct": true,
+        "margin": 2.312391,
+        "pred": "flower",
+        "scores": {
+          "flower": -1.320986,
+          "shell": -3.633377
+        },
+        "split": "micro_reference",
+        "story_id": 1
+      },
+      {
+        "answer": "basket",
+        "correct": true,
+        "margin": 0.880467,
+        "pred": "basket",
+        "scores": {
+          "basket": 0.980224,
+          "shell": 0.099756
+        },
+        "split": "micro_reference",
+        "story_id": 2
+      },
+      {
+        "answer": "window",
+        "correct": true,
+        "margin": 4.007498,
+        "pred": "window",
+        "scores": {
+          "river": -0.595551,
+          "window": 3.411948
+        },
+        "split": "micro_reference",
+        "story_id": 3
+      },
+      {
+        "answer": "garden",
+        "correct": false,
+        "margin": -1.58536,
+        "pred": "cotton",
+        "scores": {
+          "cotton": 0.272521,
+          "garden": -1.312839
+        },
+        "split": "micro_reference",
+        "story_id": 4
+      },
+      {
+        "answer": "window",
+        "correct": false,
+        "margin": -1.70298,
+        "pred": "button",
+        "scores": {
+          "button": 0.206879,
+          "window": -1.496101
+        },
+        "split": "micro_reference",
+        "story_id": 5
+      },
+      {
+        "answer": "silver",
+        "correct": true,
+        "margin": 0.298234,
+        "pred": "silver",
+        "scores": {
+          "cotton": -1.045547,
+          "silver": -0.747313
+        },
+        "split": "micro_reference",
+        "story_id": 6
+      },
+      {
+        "answer": "ticket",
+        "correct": true,
+        "margin": 2.183458,
+        "pred": "ticket",
+        "scores": {
+          "coin": -3.500637,
+          "ticket": -1.317179
+        },
+        "split": "micro_reference",
+        "story_id": 7
+      },
+      {
+        "answer": "compass",
+        "correct": true,
+        "margin": 0.110337,
+        "pred": "compass",
+        "scores": {
+          "compass": 0.208334,
+          "flower": 0.097997
+        },
+        "split": "micro_reference",
+        "story_id": 8
+      },
+      {
+        "answer": "apple",
+        "correct": false,
+        "margin": -1.143594,
+        "pred": "shell",
+        "scores": {
+          "apple": -0.754433,
+          "shell": 0.389162
+        },
+        "split": "micro_reference",
+        "story_id": 9
+      }
+    ],
+    "n": 64
+  },
+  "vocab_size": 32000
+}
