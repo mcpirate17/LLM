@@ -8,7 +8,7 @@ templates via `pick_template`. Tabulates per-bucket pick share to confirm:
   - Bucket A/A+ → boosted share
   - Bucket D new templates (tropical_attn_conv1d_seq_block etc.) → non-zero
 
-Pure read on lab_notebook.db (only `_fetch_template_weight_rows` SELECT). Safe
+Pure read on runs.db (only `_fetch_template_weight_rows` SELECT). Safe
 to run while the dashboard server holds its writer flock.
 
 Usage:
@@ -40,7 +40,7 @@ from research.synthesis.templates import (  # noqa: E402
 
 
 CLASSIFICATION_CSV = REPO / "research/reports/template_classification.csv"
-LAB_DB = REPO / "research/lab_notebook.db"
+LAB_DB = REPO / "research/runs.db"
 
 
 def load_bucket_map() -> dict[str, str]:

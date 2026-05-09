@@ -4,7 +4,7 @@ Builds research/reports/slot_inventory.json from:
   1. The TEMPLATES registry in research/synthesis/templates.py (175 names).
   2. Empirical slot usage in program_graph_features.slot_usage_json.
 
-Cohort filter: rows with controlled_lang_s05_sa_score, non-reference. Includes
+Cohort filter: rows with language_control_s05_sentence_assoc_score, non-reference. Includes
 screened_out tier — we want the template signature, not just non-failed graphs.
 
 Note: notebook_observability.py also aggregates slot_usage but bound to
@@ -29,7 +29,7 @@ from research.synthesis.templates import (  # noqa: E402
     TEMPLATES,
 )
 
-DB = f"file:{REPO / 'research/lab_notebook.db'}?mode=ro&immutable=0"
+DB = f"file:{REPO / 'research/runs.db'}?mode=ro&immutable=0"
 OUT = REPO / "research/reports/slot_inventory.json"
 
 SlotKey = tuple[str, int]
@@ -68,7 +68,7 @@ def load_slot_rows() -> list[tuple[str, str]]:
         FROM program_graph_features pgf
         JOIN program_results pr ON pr.result_id = pgf.result_id
         LEFT JOIN leaderboard l ON l.result_id = pr.result_id
-        WHERE pr.controlled_lang_s05_sa_score IS NOT NULL
+        WHERE pr.language_control_s05_sentence_assoc_score IS NOT NULL
           AND COALESCE(l.is_reference, 0) = 0
           AND pgf.slot_usage_json IS NOT NULL
           AND pgf.slot_usage_json NOT IN ('', '[]', 'null', '{}')

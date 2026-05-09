@@ -20,6 +20,8 @@ import logging
 import sys
 from pathlib import Path
 
+from research.defaults import RUNS_DB
+
 logger = logging.getLogger(__name__)
 
 
@@ -27,8 +29,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--db",
-        default="research/lab_notebook.db",
-        help="Path to lab notebook (default: research/lab_notebook.db).",
+        default=RUNS_DB,
+        help=f"Path to runs DB (default: {RUNS_DB}).",
     )
     parser.add_argument(
         "--out",

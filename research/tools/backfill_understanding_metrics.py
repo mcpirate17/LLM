@@ -38,9 +38,11 @@ from pathlib import Path
 import torch
 import torch.multiprocessing as mp
 
+from research.scientist.notebook.graph_artifacts import resolve_graph_json_value
+
 
 ROOT = Path(__file__).resolve().parents[2]
-DB_PATH = ROOT / "research" / "lab_notebook.db"
+DB_PATH = ROOT / "research" / "runs.db"
 TOOL_NAME = "backfill_understanding_metrics"
 
 DEFAULT_VOCAB = 100277  # cl100k_base
@@ -85,8 +87,10 @@ def _worker_init(
     """One-time setup per worker."""
     global _W_VOCAB, _W_DIAG_STEPS, _W_CT_STEPS, _W_CT_BATCH, _W_CT_SEQ_LEN
     import research.synthesis.compiler  # noqa: F401  populates op registry
+
     if torch.cuda.is_available():
         from research.tools._concurrency import cap_gpu_memory
+
         cap_gpu_memory(fraction=gpu_memory_fraction)
     _W_VOCAB = vocab_size
     _W_DIAG_STEPS = diag_steps
@@ -114,7 +118,9 @@ def _worker_measure(task: FingerprintTask) -> TaskResult:
             diag_model = SynthesizedModel(
                 [graph], vocab_size=_W_VOCAB, model_dim=model_dim
             ).to(dev)
-            diag = run_diagnostic_suite(diag_model, device=str(dev), n_steps=_W_DIAG_STEPS)
+            diag = run_diagnostic_suite(
+                diag_model, device=str(dev), n_steps=_W_DIAG_STEPS
+            )
             payload["diagnostic_score"] = float(diag.diagnostic_score)
             payload["diagnostic_tasks_json"] = json.dumps(diag.to_dict())
             del diag_model
@@ -123,7 +129,8 @@ def _worker_measure(task: FingerprintTask) -> TaskResult:
         except Exception as exc:
             print(
                 f"[diag-fail] {task.fingerprint[:12]} {type(exc).__name__}: {str(exc)[:160]}",
-                file=sys.stderr, flush=True,
+                file=sys.stderr,
+                flush=True,
             )
 
         # Cross-task: needs a model factory (rebuild fresh per domain).
@@ -145,20 +152,25 @@ def _worker_measure(task: FingerprintTask) -> TaskResult:
             elif ct.get("error"):
                 print(
                     f"[ct-fail] {task.fingerprint[:12]} {ct.get('error')}",
-                    file=sys.stderr, flush=True,
+                    file=sys.stderr,
+                    flush=True,
                 )
         except Exception as exc:
             print(
                 f"[ct-fail] {task.fingerprint[:12]} {type(exc).__name__}: {str(exc)[:160]}",
-                file=sys.stderr, flush=True,
+                file=sys.stderr,
+                flush=True,
             )
 
         if not payload:
-            return TaskResult(task.fingerprint, None, "no_metrics_produced", time.time() - t0)
+            return TaskResult(
+                task.fingerprint, None, "no_metrics_produced", time.time() - t0
+            )
         return TaskResult(task.fingerprint, payload, None, time.time() - t0)
     except Exception as exc:
         return TaskResult(
-            task.fingerprint, None,
+            task.fingerprint,
+            None,
             f"{type(exc).__name__}: {str(exc)[:160]}",
             time.time() - t0,
         )
@@ -195,7 +207,11 @@ def _candidate_tasks(
     if limit and limit > 0:
         sql += f" LIMIT {int(limit)}"
     return [
-        FingerprintTask(fingerprint=fp, graph_json=gj, cost_score=1)
+        FingerprintTask(
+            fingerprint=fp,
+            graph_json=resolve_graph_json_value(conn, DB_PATH, gj),
+            cost_score=1,
+        )
         for fp, _comp, gj in conn.execute(sql)
         if gj
     ]
@@ -236,7 +252,9 @@ def main() -> None:
 
     import research.synthesis.compiler  # noqa: F401  warm registry
     from research.tools._concurrency import (
-        acquire_gpu_lock, acquire_writer_lock, assert_gpu_quiet,
+        acquire_gpu_lock,
+        acquire_writer_lock,
+        assert_gpu_quiet,
     )
 
     if torch.cuda.is_available():
@@ -334,7 +352,7 @@ def main() -> None:
         rate = succeeded / max(elapsed, 1e-6)
         print(
             f"[done] ok={succeeded} fail={failed} rows_updated={propagated} "
-            f"elapsed={elapsed/60:.1f}m rate={rate:.2f}/s",
+            f"elapsed={elapsed / 60:.1f}m rate={rate:.2f}/s",
             flush=True,
         )
 

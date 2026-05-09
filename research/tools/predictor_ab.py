@@ -27,6 +27,8 @@ import sys
 from pathlib import Path
 from typing import Any, Dict
 
+from research.defaults import RUNS_DB
+
 logger = logging.getLogger(__name__)
 
 
@@ -104,9 +106,7 @@ def run_ab(db_path: str) -> Dict[str, Any]:
             _gate_metric(candidate, "precision_ppv"),
             _gate_metric(baseline, "precision_ppv"),
         ),
-        "npv": _delta(
-            _gate_metric(candidate, "npv"), _gate_metric(baseline, "npv")
-        ),
+        "npv": _delta(_gate_metric(candidate, "npv"), _gate_metric(baseline, "npv")),
         "recall": _delta(
             _gate_metric(candidate, "recall_tpr_sensitivity"),
             _gate_metric(baseline, "recall_tpr_sensitivity"),
@@ -179,12 +179,15 @@ def _print_summary(result: Dict[str, Any]) -> None:
     print("─" * 64)
     print(f"corpus n_train={baseline.get('n_train')} n_test={baseline.get('n_test')}")
     print()
-    print(
-        f"  {'metric':<25}{'baseline':>14}{'candidate':>14}{'delta':>14}"
-    )
+    print(f"  {'metric':<25}{'baseline':>14}{'candidate':>14}{'delta':>14}")
     print("  " + "─" * 64)
     rows = [
-        ("gate_auc", baseline.get("gate_auc"), candidate.get("gate_auc"), deltas["gate_auc"]),
+        (
+            "gate_auc",
+            baseline.get("gate_auc"),
+            candidate.get("gate_auc"),
+            deltas["gate_auc"],
+        ),
         (
             "gate_precision (PPV)",
             _gate_metric(baseline, "precision_ppv"),
@@ -203,7 +206,12 @@ def _print_summary(result: Dict[str, Any]) -> None:
             _gate_metric(candidate, "recall_tpr_sensitivity"),
             deltas["recall"],
         ),
-        ("gate_f1", _gate_metric(baseline, "f1"), _gate_metric(candidate, "f1"), deltas["f1"]),
+        (
+            "gate_f1",
+            _gate_metric(baseline, "f1"),
+            _gate_metric(candidate, "f1"),
+            deltas["f1"],
+        ),
         (
             "rank_spearman_ppl",
             _rank_metric(baseline, "ppl", "spearman"),
@@ -220,9 +228,7 @@ def _print_summary(result: Dict[str, Any]) -> None:
     for name, b, c, d in rows:
         b_str = f"{b:.4f}" if isinstance(b, (int, float)) else "n/a"
         c_str = f"{c:.4f}" if isinstance(c, (int, float)) else "n/a"
-        d_str = (
-            f"{d:+.4f}" if isinstance(d, (int, float)) else "n/a"
-        )
+        d_str = f"{d:+.4f}" if isinstance(d, (int, float)) else "n/a"
         print(f"  {name:<25}{b_str:>14}{c_str:>14}{d_str:>14}")
     print()
     print(f"VERDICT: keep_gemini_features={verdict['keep_gemini_features']}")
@@ -233,8 +239,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--db",
-        default="research/lab_notebook.db",
-        help="Path to lab notebook (default: research/lab_notebook.db).",
+        default=RUNS_DB,
+        help=f"Path to runs DB (default: {RUNS_DB}).",
     )
     parser.add_argument(
         "--out",

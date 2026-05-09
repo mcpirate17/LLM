@@ -26,8 +26,8 @@ LOGGER = logging.getLogger(__name__)
 # Reasoning probes (induction/binding/ar) are weighted higher than scalar
 # accuracy benchmarks because they measure mechanism, not just average ability.
 METRIC_WEIGHTS: Dict[str, float] = {
-    "induction_v2": 0.18,
-    "binding_v2": 0.18,
+    "induction_intermediate": 0.18,
+    "binding_intermediate": 0.18,
     "induction": 0.12,
     "binding": 0.12,
     "ar": 0.08,
@@ -40,8 +40,8 @@ METRIC_WEIGHTS: Dict[str, float] = {
 # Per-metric scale: a Δ of `scale` saturates the per-metric contribution.
 # Tuned to typical observed magnitudes; protects against one outlier metric.
 METRIC_SCALE: Dict[str, float] = {
-    "induction_v2": 0.25,
-    "binding_v2": 0.25,
+    "induction_intermediate": 0.25,
+    "binding_intermediate": 0.25,
     "induction": 0.20,
     "binding": 0.15,
     "ar": 0.10,
@@ -144,24 +144,24 @@ WITH metric_rows AS (
            COALESCE(cp.stage1_passed, obs.stage1_passed) AS child_stage1_passed,
            cp.loss_ratio AS child_loss,
            pp.loss_ratio AS parent_loss,
-           cp.induction_auc AS child_induction,
-           pp.induction_auc AS parent_induction,
-           cp.binding_composite AS child_binding,
-           pp.binding_composite AS parent_binding,
-           cp.ar_auc AS child_ar,
-           pp.ar_auc AS parent_ar,
+           cp.induction_screening_auc AS child_induction,
+           pp.induction_screening_auc AS parent_induction,
+           cp.binding_screening_composite AS child_binding,
+           pp.binding_screening_composite AS parent_binding,
+           cp.ar_legacy_auc AS child_ar,
+           pp.ar_legacy_auc AS parent_ar,
            cp.hellaswag_acc AS child_hellaswag,
            pp.hellaswag_acc AS parent_hellaswag,
            cp.blimp_overall_accuracy AS child_blimp,
            pp.blimp_overall_accuracy AS parent_blimp,
            cp.wikitext_perplexity AS child_ppl,
            pp.wikitext_perplexity AS parent_ppl,
-           cp.induction_v2_investigation_auc AS child_induction_v2,
-           pp.induction_v2_investigation_auc AS parent_induction_v2,
-           cp.induction_v2_investigation_status AS child_induction_v2_status,
-           cp.binding_v2_investigation_auc AS child_binding_v2,
-           pp.binding_v2_investigation_auc AS parent_binding_v2,
-           cp.binding_v2_investigation_status AS child_binding_v2_status
+           cp.induction_intermediate_auc AS child_induction_intermediate,
+           pp.induction_intermediate_auc AS parent_induction_intermediate,
+           cp.induction_intermediate_status AS child_induction_intermediate_status,
+           cp.binding_intermediate_auc AS child_binding_intermediate,
+           pp.binding_intermediate_auc AS parent_binding_intermediate,
+           cp.binding_intermediate_status AS child_binding_intermediate_status
     FROM causal_ablation_child_observations obs
     LEFT JOIN program_results cp ON cp.result_id = obs.child_result_id
     LEFT JOIN program_results pp ON pp.result_id = obs.parent_result_id
@@ -187,28 +187,28 @@ WITH metric_rows AS (
                json_extract(ev.evidence_json, '$.parent_metrics.loss_ratio')
            ) AS parent_loss,
            COALESCE(
-               cp.induction_auc,
-               json_extract(ev.evidence_json, '$.child_metrics.induction_auc')
+               cp.induction_screening_auc,
+               json_extract(ev.evidence_json, '$.child_metrics.induction_screening_auc')
            ) AS child_induction,
            COALESCE(
-               pp.induction_auc,
-               json_extract(ev.evidence_json, '$.parent_metrics.induction_auc')
+               pp.induction_screening_auc,
+               json_extract(ev.evidence_json, '$.parent_metrics.induction_screening_auc')
            ) AS parent_induction,
            COALESCE(
-               cp.binding_composite,
-               json_extract(ev.evidence_json, '$.child_metrics.binding_composite')
+               cp.binding_screening_composite,
+               json_extract(ev.evidence_json, '$.child_metrics.binding_screening_composite')
            ) AS child_binding,
            COALESCE(
-               pp.binding_composite,
-               json_extract(ev.evidence_json, '$.parent_metrics.binding_composite')
+               pp.binding_screening_composite,
+               json_extract(ev.evidence_json, '$.parent_metrics.binding_screening_composite')
            ) AS parent_binding,
            COALESCE(
-               cp.ar_auc,
-               json_extract(ev.evidence_json, '$.child_metrics.ar_auc')
+               cp.ar_legacy_auc,
+               json_extract(ev.evidence_json, '$.child_metrics.ar_legacy_auc')
            ) AS child_ar,
            COALESCE(
-               pp.ar_auc,
-               json_extract(ev.evidence_json, '$.parent_metrics.ar_auc')
+               pp.ar_legacy_auc,
+               json_extract(ev.evidence_json, '$.parent_metrics.ar_legacy_auc')
            ) AS parent_ar,
            COALESCE(
                cp.hellaswag_acc,
@@ -235,47 +235,47 @@ WITH metric_rows AS (
                json_extract(ev.evidence_json, '$.parent_metrics.wikitext_perplexity')
            ) AS parent_ppl,
            COALESCE(
-               cp.induction_v2_investigation_auc,
+               cp.induction_intermediate_auc,
                json_extract(
                    ev.evidence_json,
-                   '$.child_metrics.induction_v2_investigation_auc'
+                   '$.child_metrics.induction_intermediate_auc'
                )
-           ) AS child_induction_v2,
+           ) AS child_induction_intermediate,
            COALESCE(
-               pp.induction_v2_investigation_auc,
+               pp.induction_intermediate_auc,
                json_extract(
                    ev.evidence_json,
-                   '$.parent_metrics.induction_v2_investigation_auc'
+                   '$.parent_metrics.induction_intermediate_auc'
                )
-           ) AS parent_induction_v2,
+           ) AS parent_induction_intermediate,
            COALESCE(
-               cp.induction_v2_investigation_status,
+               cp.induction_intermediate_status,
                json_extract(
                    ev.evidence_json,
-                   '$.child_metrics.induction_v2_investigation_status'
+                   '$.child_metrics.induction_intermediate_status'
                )
-           ) AS child_induction_v2_status,
+           ) AS child_induction_intermediate_status,
            COALESCE(
-               cp.binding_v2_investigation_auc,
+               cp.binding_intermediate_auc,
                json_extract(
                    ev.evidence_json,
-                   '$.child_metrics.binding_v2_investigation_auc'
+                   '$.child_metrics.binding_intermediate_auc'
                )
-           ) AS child_binding_v2,
+           ) AS child_binding_intermediate,
            COALESCE(
-               pp.binding_v2_investigation_auc,
+               pp.binding_intermediate_auc,
                json_extract(
                    ev.evidence_json,
-                   '$.parent_metrics.binding_v2_investigation_auc'
+                   '$.parent_metrics.binding_intermediate_auc'
                )
-           ) AS parent_binding_v2,
+           ) AS parent_binding_intermediate,
            COALESCE(
-               cp.binding_v2_investigation_status,
+               cp.binding_intermediate_status,
                json_extract(
                    ev.evidence_json,
-                   '$.child_metrics.binding_v2_investigation_status'
+                   '$.child_metrics.binding_intermediate_status'
                )
-           ) AS child_binding_v2_status
+           ) AS child_binding_intermediate_status
     FROM causal_rule_evidence ev
     LEFT JOIN program_results cp
       ON cp.result_id = json_extract(ev.evidence_json, '$.child_result_id')
@@ -286,15 +286,15 @@ WITH metric_rows AS (
 clean_rows AS (
     SELECT *,
            CASE WHEN COALESCE(child_stage1_passed, 0) = 1
-                     AND LOWER(COALESCE(child_induction_v2_status, 'ok'))
+                     AND LOWER(COALESCE(child_induction_intermediate_status, 'ok'))
                          NOT IN ('diverged', 'failed', 'error')
-                     AND LOWER(COALESCE(child_binding_v2_status, 'ok'))
+                     AND LOWER(COALESCE(child_binding_intermediate_status, 'ok'))
                          NOT IN ('diverged', 'failed', 'error')
                 THEN 1 ELSE 0 END AS clean_comparable,
            CASE WHEN COALESCE(child_stage1_passed, 0) = 0
-                     OR LOWER(COALESCE(child_induction_v2_status, 'ok'))
+                     OR LOWER(COALESCE(child_induction_intermediate_status, 'ok'))
                          IN ('diverged', 'failed', 'error')
-                     OR LOWER(COALESCE(child_binding_v2_status, 'ok'))
+                     OR LOWER(COALESCE(child_binding_intermediate_status, 'ok'))
                          IN ('diverged', 'failed', 'error')
                 THEN 1 ELSE 0 END AS risk_row
     FROM metric_rows
@@ -309,15 +309,15 @@ deltas AS (
                      AND child_loss IS NOT NULL AND parent_loss IS NOT NULL
                 THEN child_loss - parent_loss END AS d_loss,
            CASE WHEN clean_comparable = 1
-                     AND child_induction_v2 IS NOT NULL
-                     AND parent_induction_v2 IS NOT NULL
-                THEN parent_induction_v2 - child_induction_v2
-           END AS d_induction_v2,
+                     AND child_induction_intermediate IS NOT NULL
+                     AND parent_induction_intermediate IS NOT NULL
+                THEN parent_induction_intermediate - child_induction_intermediate
+           END AS d_induction_intermediate,
            CASE WHEN clean_comparable = 1
-                     AND child_binding_v2 IS NOT NULL
-                     AND parent_binding_v2 IS NOT NULL
-                THEN parent_binding_v2 - child_binding_v2
-           END AS d_binding_v2,
+                     AND child_binding_intermediate IS NOT NULL
+                     AND parent_binding_intermediate IS NOT NULL
+                THEN parent_binding_intermediate - child_binding_intermediate
+           END AS d_binding_intermediate,
            CASE WHEN clean_comparable = 1
                      AND child_induction IS NOT NULL AND parent_induction IS NOT NULL
                 THEN parent_induction - child_induction END AS d_induction,
@@ -348,8 +348,8 @@ deltas AS (
                      AND child_ppl IS NOT NULL
                 THEN 1 ELSE 0 END AS metric_complete,
            CASE WHEN clean_comparable = 1
-                     AND (child_induction_v2 IS NOT NULL
-                          OR child_binding_v2 IS NOT NULL)
+                     AND (child_induction_intermediate IS NOT NULL
+                          OR child_binding_intermediate IS NOT NULL)
                 THEN 1 ELSE 0 END AS v2_observation,
            CASE WHEN evidence_source LIKE 'knockout_%' THEN 1 ELSE 0 END
                 AS knockout_observation
@@ -363,8 +363,8 @@ SELECT rule_type, rule_key,
        SUM(knockout_observation) AS knockout_observation_count,
        SUM(risk_row) AS risk_row_count,
        AVG(d_loss) AS avg_d_loss,
-       AVG(d_induction_v2) AS avg_d_induction_v2,
-       AVG(d_binding_v2) AS avg_d_binding_v2,
+       AVG(d_induction_intermediate) AS avg_d_induction_intermediate,
+       AVG(d_binding_intermediate) AS avg_d_binding_intermediate,
        AVG(d_induction) AS avg_d_induction,
        AVG(d_binding) AS avg_d_binding,
        AVG(d_ar) AS avg_d_ar,
@@ -631,8 +631,8 @@ def filter_construction_prior_payload_for_activation(
 def _classify_row(row: Any) -> Dict[str, Any]:
     """Score one aggregated row and return its rule dict (verdict, multiplier, per-metric)."""
     per_metric = {
-        "induction_v2": _row_value(row, "avg_d_induction_v2"),
-        "binding_v2": _row_value(row, "avg_d_binding_v2"),
+        "induction_intermediate": _row_value(row, "avg_d_induction_intermediate"),
+        "binding_intermediate": _row_value(row, "avg_d_binding_intermediate"),
         "induction": _row_value(row, "avg_d_induction"),
         "binding": _row_value(row, "avg_d_binding"),
         "ar": _row_value(row, "avg_d_ar"),

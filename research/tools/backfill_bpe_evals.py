@@ -43,9 +43,10 @@ import torch
 import torch.multiprocessing as mp
 import torch.nn.functional as F
 
+from research.scientist.notebook.graph_artifacts import resolve_graph_json_value
 
 ROOT = Path(__file__).resolve().parents[2]
-DB_PATH = ROOT / "research" / "lab_notebook.db"
+DB_PATH = ROOT / "research" / "runs.db"
 CORPUS_PATH = ROOT / "research" / "corpus" / "wikitext103_train.npy"
 TOOL_NAME = "backfill_bpe_evals"
 
@@ -509,7 +510,7 @@ def _candidate_tasks(
         tasks.append(
             FingerprintTask(
                 fingerprint=fp,
-                graph_json=gj,
+                graph_json=resolve_graph_json_value(conn, DB_PATH, gj),
                 cost_score=max(1, int(n_ops or 1)) * max(1, int(depth or 1)),
             )
         )

@@ -6,6 +6,7 @@ import json
 import math
 from typing import Any, Dict, Iterable, List
 
+from ..notebook.graph_artifacts import resolve_graph_json_value
 from ..trust_policy import sql_trusted_clause
 
 
@@ -123,15 +124,15 @@ def investigation_support_data(
         for row in score_rows
     }
     understanding_rows = nb.conn.execute(
-        f"""SELECT result_id, ar_auc, induction_auc, binding_auc, diagnostic_score, hellaswag_acc
+        f"""SELECT result_id, ar_legacy_auc, induction_screening_auc, binding_screening_auc, diagnostic_score, hellaswag_acc
             FROM program_results WHERE result_id IN ({placeholders})""",
         tuple(ids),
     ).fetchall()
     understanding = {
         row["result_id"]: {
-            "ar_auc": float(row["ar_auc"] or 0.0),
-            "induction_auc": float(row["induction_auc"] or 0.0),
-            "binding_auc": float(row["binding_auc"] or 0.0),
+            "ar_legacy_auc": float(row["ar_legacy_auc"] or 0.0),
+            "induction_screening_auc": float(row["induction_screening_auc"] or 0.0),
+            "binding_screening_auc": float(row["binding_screening_auc"] or 0.0),
             "diagnostic_score": float(row["diagnostic_score"] or 0.0),
             "hellaswag_acc": float(row["hellaswag_acc"] or 0.0),
         }
@@ -149,7 +150,16 @@ def graph_meta_by_result_id(nb, result_ids: Iterable[str]) -> Dict[str, Dict[str
         f"SELECT result_id, graph_json, routing_mode FROM program_results WHERE result_id IN ({placeholders})",
         tuple(ids),
     ).fetchall()
-    return {row["result_id"]: dict(row) for row in rows}
+    out = {}
+    for row in rows:
+        payload = dict(row)
+        payload["graph_json"] = resolve_graph_json_value(
+            nb.conn,
+            nb.db_path,
+            payload.get("graph_json"),
+        )
+        out[row["result_id"]] = payload
+    return out
 
 
 def effective_validation_threshold(

@@ -12,6 +12,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
+from research.defaults import RUNS_DB
+from research.scientist.notebook.graph_artifacts import resolve_graph_json_value
+
 from .metrics_utils import (
     binary_classification_metrics,
     operating_point_profiles,
@@ -53,12 +56,12 @@ _MIN_COMPOSITE_RANK_NDCG = 0.60
 
 _POST_EVAL_FEATURE_NAMES = (
     "hellaswag_acc_best",
-    "induction_auc_best",
-    "ar_auc_best",
+    "induction_screening_auc_best",
+    "ar_legacy_auc_best",
     "blimp_overall_accuracy_best",
-    "binding_composite_best",
-    "induction_v2_investigation_auc_best",
-    "binding_v2_investigation_auc_best",
+    "binding_screening_composite_best",
+    "induction_intermediate_auc_best",
+    "binding_intermediate_auc_best",
     "validation_loss_ratio_best",
     "rapid_screening_passed_best",
     "initial_loss_best",
@@ -315,7 +318,10 @@ def analyze_graph_label_quality(db_path: str) -> Dict[str, Any]:
     n_fail_s05 = 0
     n_fail_pre_s0 = 0
     for row in rows:
-        gj = row["graph_json"]
+        try:
+            gj = resolve_graph_json_value(conn, db_path, row["graph_json"])
+        except Exception:
+            continue
         try:
             gj_dict = json.loads(gj) if isinstance(gj, str) else gj
         except (json.JSONDecodeError, TypeError):
@@ -458,7 +464,7 @@ def _query_graph_training_data(
     Returns (feature_dicts, y_gate, y_rank_ppl, y_rank_composite, sample_weights,
     latest_timestamps, graph_signatures) where:
       - feature_dicts: list of dicts from extract_graph_features (with full op histogram
-        + probe features: hellaswag_acc, induction_auc, ar_auc, blimp, binding_composite)
+        + probe features: hellaswag_acc, induction_screening_auc, ar_legacy_auc, blimp, binding_screening_composite)
       - y_gate: binary array (1 = passed S1)
       - y_rank_ppl: float array of best wikitext perplexity (NaN where unavailable)
       - y_rank_composite: float array of best composite score (NaN where unavailable)
@@ -697,7 +703,7 @@ class GBMPredictor:
 
 
 def train_gbm(
-    db_path: str = "research/lab_notebook.db",
+    db_path: str = RUNS_DB,
 ) -> GBMPredictor:
     """Train GBM gate + rank models from notebook history.
 
@@ -896,7 +902,7 @@ def train_gbm(
 
 
 def evaluate_gbm(
-    db_path: str = "research/lab_notebook.db",
+    db_path: str = RUNS_DB,
     *,
     excluded_feature_names: Optional[set] = None,
 ) -> Dict[str, Any]:
@@ -1088,7 +1094,7 @@ def evaluate_gbm(
 
 
 def evaluate_gbm_induction(
-    db_path: str = "research/lab_notebook.db",
+    db_path: str = RUNS_DB,
 ) -> Dict[str, Any]:
     """Train + evaluate GBM models for canonical induction labels."""
     try:
@@ -1116,8 +1122,10 @@ def evaluate_gbm_induction(
     y_auc_list: List[float] = []
 
     for row in rows:
-        induction_auc = row.get("induction_auc_500")
-        if induction_auc is None or not np.isfinite(float(induction_auc)):
+        induction_screening_auc = row.get("induction_screening_auc_500")
+        if induction_screening_auc is None or not np.isfinite(
+            float(induction_screening_auc)
+        ):
             continue
         gj = row.get("graph_json")
         if not gj:
@@ -1141,7 +1149,7 @@ def evaluate_gbm_induction(
         feat_dicts.append(feats)
         sample_weights_list.append(rerun_confidence_weight(int(row.get("n_rows", 1))))
         graph_signatures.append(signature)
-        y_auc_list.append(float(induction_auc))
+        y_auc_list.append(float(induction_screening_auc))
 
     if len(feat_dicts) < _MIN_GBM_SAMPLES:
         return {

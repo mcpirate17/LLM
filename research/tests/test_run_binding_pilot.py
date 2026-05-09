@@ -100,7 +100,7 @@ def test_load_completed_binding_result_ids_detects_existing_binding_rows(
             stage0_passed=True,
             stage05_passed=True,
             stage1_passed=True,
-            binding_auc=0.2,
+            binding_screening_auc=0.2,
             trust_label="test_fixture",
         )
         rid_pending = nb.record_program_result(
@@ -110,7 +110,7 @@ def test_load_completed_binding_result_ids_detects_existing_binding_rows(
             stage0_passed=True,
             stage05_passed=True,
             stage1_passed=True,
-            binding_auc=None,
+            binding_screening_auc=None,
             trust_label="test_fixture",
         )
         nb.flush_writes()

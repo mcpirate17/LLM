@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 import time as _time
 
 from ..shared_utils import safe_float
+from ..notebook.graph_artifacts import resolve_graph_json_value
 from ..runner.auto_escalate_flow import understanding_gate_metrics
 
 if TYPE_CHECKING:
@@ -484,16 +485,16 @@ def capability_quality_for_entry(entry: Dict[str, Any]) -> Dict[str, Any]:
 
     understanding = {
         "diagnostic_score": safe_float(entry.get("diagnostic_score")),
-        "ar_auc": safe_float(entry.get("ar_auc")),
-        "induction_auc": safe_float(
-            entry.get("induction_v2_investigation_auc")
-            if entry.get("induction_v2_investigation_auc") is not None
-            else entry.get("induction_auc")
+        "ar_legacy_auc": safe_float(entry.get("ar_legacy_auc")),
+        "induction_screening_auc": safe_float(
+            entry.get("induction_intermediate_auc")
+            if entry.get("induction_intermediate_auc") is not None
+            else entry.get("induction_screening_auc")
         ),
-        "binding_auc": safe_float(
-            entry.get("binding_v2_investigation_auc")
-            if entry.get("binding_v2_investigation_auc") is not None
-            else entry.get("binding_auc")
+        "binding_screening_auc": safe_float(
+            entry.get("binding_intermediate_auc")
+            if entry.get("binding_intermediate_auc") is not None
+            else entry.get("binding_screening_auc")
         ),
         "hellaswag_acc": safe_float(
             entry.get("hellaswag_acc_validation")
@@ -501,7 +502,7 @@ def capability_quality_for_entry(entry: Dict[str, Any]) -> Dict[str, Any]:
             else entry.get("hellaswag_acc")
         ),
     }
-    passes_understanding, diagnostic, binding_composite, hellaswag = (
+    passes_understanding, diagnostic, binding_screening_composite, hellaswag = (
         understanding_gate_metrics(understanding)
     )
     gate = decision_gate_for_entry(entry)
@@ -549,7 +550,7 @@ def capability_quality_for_entry(entry: Dict[str, Any]) -> Dict[str, Any]:
         },
         "metrics": {
             "diagnostic": diagnostic,
-            "bindingComposite": binding_composite,
+            "bindingComposite": binding_screening_composite,
             "hellaswag": hellaswag,
         },
         "missing": missing,
@@ -1143,7 +1144,11 @@ def program_lineage_chain(nb: LabNotebook, result_id: str) -> List[Dict[str, Any
             parent_result_id = row["parent_result_id"]
         else:
             try:
-                graph_json = row["graph_json"]
+                graph_json = resolve_graph_json_value(
+                    nb.conn,
+                    nb.db_path,
+                    row["graph_json"],
+                )
                 parsed = (
                     json.loads(graph_json)
                     if isinstance(graph_json, str)

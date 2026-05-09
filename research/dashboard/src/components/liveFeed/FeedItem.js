@@ -88,6 +88,15 @@ const FeedItem = React.memo(function FeedItem({ evt, prevExpId }) {
           Champion confirmation started: {evt.experiment_id?.slice(0, 8)} — {evt.result_ids?.length} candidate(s), {evt.config?.steps} steps
         </span>
       )}
+      {evt.type === 'champion_probe' && (
+        <span className="feed-event-msg" style={{ color: 'var(--score-champion)' }}>
+          Champion probe {evt.probe || 'probe'} {evt.status || 'running'}
+          {evt.step != null && <> @ step {evt.step}</>}
+          {evt.source_result_id && <> — {evt.source_result_id.slice(0, 8)}</>}
+          {evt.elapsed_ms != null && <span style={{ marginLeft: 4 }}>{evt.elapsed_ms}ms</span>}
+          {evt.error && <span style={{ color: 'var(--accent-red)', marginLeft: 4 }}>{String(evt.error).slice(0, 80)}</span>}
+        </span>
+      )}
       {evt.type === 'scaleup_progress' && (
         <span className="feed-event-msg">
           Scale-up {evt.current_program}/{evt.total_programs}: {evt.source_result_id?.slice(0, 8)} — {evt.status}

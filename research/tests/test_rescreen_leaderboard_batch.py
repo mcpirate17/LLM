@@ -35,8 +35,8 @@ def _init_schema(db_path: Path) -> None:
                 loss_ratio REAL,
                 stage1_passed INTEGER,
                 hellaswag_acc REAL,
-                induction_auc REAL,
-                binding_auc REAL,
+                induction_screening_auc REAL,
+                binding_screening_auc REAL,
                 fp_jacobian_spectral_norm REAL,
                 activation_sparsity_score REAL,
                 validation_loss_ratio REAL,
@@ -70,7 +70,7 @@ def _init_schema(db_path: Path) -> None:
                 recursion_savings_ratio REAL,
                 init_sensitivity_std REAL,
                 blimp_overall_accuracy REAL,
-                ar_auc REAL
+                ar_legacy_auc REAL
             );
             """
         )
@@ -133,7 +133,7 @@ def _init_schema(db_path: Path) -> None:
             """
             INSERT INTO program_results (
                 result_id, graph_json, routing_mode, graph_fingerprint, loss_ratio,
-                stage1_passed, hellaswag_acc, induction_auc, binding_auc,
+                stage1_passed, hellaswag_acc, induction_screening_auc, binding_screening_auc,
                 fp_jacobian_spectral_norm, activation_sparsity_score,
                 validation_loss_ratio, discovery_loss_ratio, novelty_score,
                 trust_label, comparability_label, baseline_loss_ratio,
@@ -147,7 +147,7 @@ def _init_schema(db_path: Path) -> None:
                 routing_expert_utilization_json, routing_savings_ratio,
                 depth_savings_ratio, effective_depth_ratio,
                 recursion_savings_ratio, init_sensitivity_std,
-                blimp_overall_accuracy, ar_auc
+                blimp_overall_accuracy, ar_legacy_auc
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [

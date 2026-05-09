@@ -50,6 +50,7 @@ export const LeaderboardRow = React.memo(({
   onTogglePin,
   onToggleExpand,
   onInvestigate,
+  onCapabilityRank,
   onValidate,
   onConfirm,
   onDelete,
@@ -135,6 +136,16 @@ export const LeaderboardRow = React.memo(({
                     title={eligibility.validationEligible ? 'Run validation stage' : 'Not yet eligible \u2014 click to override and force-validate'}
                   >
                     Validate
+                  </button>
+                )}
+                {eligibility.capabilityRankingEligible && (
+                  <button
+                    onClick={(e) => handleActionClick(e, () => onCapabilityRank?.([entry.result_id]))}
+                    style={{ ...actionBtnStyle, opacity: 1 }}
+                    aria-label={`Rank capability for ${entry.result_id}`}
+                    title="Run selective induction/binding capability rankers"
+                  >
+                    Rank
                   </button>
                 )}
                 {eligibility.confirmationEligible && (

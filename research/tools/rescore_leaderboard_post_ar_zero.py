@@ -1,18 +1,18 @@
 #!/usr/bin/env python
-"""Rescore the entire leaderboard after ar_auc was zeroed and nano_ar_inv_score
+"""Rescore the entire leaderboard after ar_legacy_auc was zeroed and ar_gate_score
 was added to the scoring formula.
 
 Calls ``research.scientist.leaderboard_rescore.rescore_leaderboard()`` which
 recomputes ``composite_score`` for every leaderboard row using the current
 scoring backend (compute_composite_v10 in this repo at the time of writing).
-The new path threads ``nano_ar_inv_score`` through ``_pr_dict_to_score_kwargs``
+The new path threads ``ar_gate_score`` through ``_pr_dict_to_score_kwargs``
 into the binding-composite + capability-tier calculations.
 
-Rows without nano_ar_inv backfill data simply skip the AR component (same
-fallback the legacy code took when ar_auc was None) — composite_score becomes
-``0.3 * induction_auc + 0.3 * binding_auc`` for the binding tier instead of
-the previous ``0.4 * ar_auc + 0.3 * induction + 0.3 * binding``. Since the
-prior ar_auc contribution was uniformly ~0.005 (V4 evidence), removing it is
+Rows without ar_gate backfill data simply skip the AR component (same
+fallback the legacy code took when ar_legacy_auc was None) — composite_score becomes
+``0.3 * induction_screening_auc + 0.3 * binding_screening_auc`` for the binding tier instead of
+the previous ``0.4 * ar_legacy_auc + 0.3 * induction + 0.3 * binding``. Since the
+prior ar_legacy_auc contribution was uniformly ~0.005 (V4 evidence), removing it is
 a near-no-op for the un-backfilled rows.
 """
 
@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO))
 
-DB_PATH = REPO / "research/lab_notebook.db"
+DB_PATH = REPO / "research/runs.db"
 
 
 def main() -> None:
@@ -46,7 +46,7 @@ def main() -> None:
     )
     p.add_argument(
         "--reason",
-        default="ar_auc_zeroed_nano_ar_inv_added",
+        default="ar_legacy_auc_zeroed_ar_gate_added",
         help="Stamped into rescore_reason for audit.",
     )
     args = p.parse_args()

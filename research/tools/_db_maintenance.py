@@ -5,19 +5,26 @@ import sqlite3
 from pathlib import Path
 from typing import Iterable, Sequence
 
-DEFAULT_WRITER_LOCK = Path("research/lab_notebook.db.writer-lock")
+from research.defaults import RUNS_DB
+
+DEFAULT_WRITER_LOCK = Path(f"{RUNS_DB}.writer-lock")
 
 
 def connect_readonly(db_path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=30.0)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA query_only=ON")
+    conn.execute("PRAGMA busy_timeout=15000")
     return conn
 
 
 def connect_writer(db_path: Path) -> sqlite3.Connection:
+    check_writer_lock(Path(f"{db_path}.writer-lock"))
     conn = sqlite3.connect(str(db_path), timeout=30.0)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA journal_mode=DELETE")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA busy_timeout=15000")
     return conn
 
 

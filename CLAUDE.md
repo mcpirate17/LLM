@@ -46,7 +46,9 @@ types: feat | fix | perf | refactor | chore | test
 ## File Placement
 - Repo root: config only. No scripts, no data, no reports
 - Scripts: `research/tools/` or `aria_designer/tools/`
-- Reports: `research/reports/` (gitignored, auto-pruned 14d)
+- Reports: `research/reports/` (gitignored, auto-pruned 14d via `.claude/hooks/session-start.sh`). Anything that must persist does NOT belong here — it WILL be deleted.
+- Persistent eval inputs (corpora, train/eval splits, reference baselines): `research/data/<dataset>/`
+- Persistent knowledge artifacts (findings, roadmaps, proposals): `research/notes/`
 - No SQLite DBs in repo root
 - Completed plans: delete from `tasks/`, git history preserves them
 

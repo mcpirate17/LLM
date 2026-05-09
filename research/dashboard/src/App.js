@@ -416,12 +416,14 @@ function AppContent({ autoRefresh, onAutoRefreshChange, onRunningChange }) {
 
   const {
     handleActionComplete,
+    handleCapabilityRank,
     handleConfirm,
     handleCycleControl,
     handleFillGapsExperiment,
     handleForceStart,
     handleInvestigate,
     handlePromoteScreening,
+    handleQueueCapabilityRank,
     handleQueueConfirm,
     handleQueueInvestigate,
     handleQueueValidate,
@@ -492,6 +494,7 @@ function AppContent({ autoRefresh, onAutoRefreshChange, onRunningChange }) {
           onForceStart={handleForceStart}
           onOpenLiveView={() => setActiveTab('command')}
           onQueueClear={handleQueueClear}
+          onQueueCapabilityRank={handleQueueCapabilityRank}
           onQueueConfirm={handleQueueConfirm}
           onQueueInvestigate={handleQueueInvestigate}
           onQueueValidate={handleQueueValidate}
@@ -514,6 +517,7 @@ function AppContent({ autoRefresh, onAutoRefreshChange, onRunningChange }) {
           experimentsPageSize={experimentsPageSize}
           handleAddToComparison={handleAddToComparison}
           handleBackFromExperiment={handleBackFromExperiment}
+          handleCapabilityRank={handleCapabilityRank}
           handleCycleControl={handleCycleControl}
           handleFillGapsExperiment={handleFillGapsExperiment}
           handleConfirm={handleConfirm}

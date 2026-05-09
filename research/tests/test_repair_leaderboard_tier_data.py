@@ -12,10 +12,10 @@ _POST_S1_METRICS = {
     "wikitext_perplexity": 118.0,
     "hellaswag_acc": 0.31,
     "blimp_overall_accuracy": 0.68,
-    "induction_auc": 0.57,
-    "binding_auc": 0.54,
-    "binding_composite": 0.16,
-    "ar_auc": 0.22,
+    "induction_screening_auc": 0.57,
+    "binding_screening_auc": 0.54,
+    "binding_screening_composite": 0.16,
+    "ar_legacy_auc": 0.22,
 }
 
 

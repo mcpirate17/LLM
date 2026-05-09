@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import json
 import logging
+import sqlite3
 from typing import Any, Dict, Optional
+
+from ...notebook.graph_artifacts import resolve_graph_json_value
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +53,12 @@ def _leaderboard_backed_program_detail(nb, result_id: str) -> Optional[Dict[str,
     ).fetchone()
     if pr:
         merged.update(dict(pr))
+        if "graph_json" in merged:
+            merged["graph_json"] = resolve_graph_json_value(
+                nb.conn,
+                nb.db_path,
+                merged["graph_json"],
+            )
         merged = nb._parse_program_json_fields(merged)
 
     merged.setdefault("result_id", result_id)
@@ -114,81 +123,95 @@ def attach_candidate_confirmation_status(nb, program: Dict[str, Any]) -> None:
         return
 
     status: Dict[str, Any] = {"status": "none"}
-    task = nb.conn.execute(
-        """
-        SELECT task_id, status, stage, timestamp, started_timestamp
-        FROM followup_tasks
-        WHERE stage = 'replay'
-          AND status IN ('running', 'queued')
-          AND EXISTS (
-              SELECT 1
-              FROM json_each(followup_tasks.result_ids_json)
-              WHERE CAST(value AS TEXT) = ?
-          )
-        ORDER BY CASE status WHEN 'running' THEN 0 ELSE 1 END,
-                 timestamp DESC
-        LIMIT 1
-        """,
-        (result_id,),
-    ).fetchone()
-    if task is not None:
-        raw_status = str(task["status"] or "").strip().lower()
-        status = {
-            "status": raw_status,
-            "task_id": task["task_id"],
-            "stage": "screening",
-            "label": (
-                "candidate confirmation running"
-                if raw_status == "running"
-                else "candidate confirmation queued"
-            ),
-            "queued_at": task["timestamp"],
-            "started_at": task["started_timestamp"],
-        }
-    else:
-        exp = nb.conn.execute(
+    try:
+        task = nb.conn.execute(
             """
-            SELECT experiment_id, status, timestamp, completed_at
-            FROM experiments
-            WHERE experiment_type = 'exact_graph_replay'
+            SELECT task_id, status, stage, timestamp, started_timestamp
+            FROM followup_tasks
+            WHERE stage = 'replay'
+              AND status IN ('running', 'queued')
               AND EXISTS (
                   SELECT 1
-                  FROM json_each(experiments.config_json, '$.source_result_ids')
+                  FROM json_each(followup_tasks.result_ids_json)
                   WHERE CAST(value AS TEXT) = ?
               )
-            ORDER BY timestamp DESC
+            ORDER BY CASE status WHEN 'running' THEN 0 ELSE 1 END,
+                     timestamp DESC
             LIMIT 1
             """,
             (result_id,),
         ).fetchone()
-        if exp is not None:
-            replay_result = nb.conn.execute(
+        if task is not None:
+            raw_status = str(task["status"] or "").strip().lower()
+            status = {
+                "status": raw_status,
+                "task_id": task["task_id"],
+                "stage": "screening",
+                "label": (
+                    "candidate confirmation running"
+                    if raw_status == "running"
+                    else "candidate confirmation queued"
+                ),
+                "queued_at": task["timestamp"],
+                "started_at": task["started_timestamp"],
+            }
+        else:
+            exp = nb.conn.execute(
                 """
-                SELECT result_id
-                FROM program_results
-                WHERE experiment_id = ?
-                  AND COALESCE(model_source, '') = 'exact_graph_replay'
+                SELECT experiment_id, status, timestamp, completed_at
+                FROM experiments
+                WHERE experiment_type = 'exact_graph_replay'
+                  AND EXISTS (
+                      SELECT 1
+                      FROM json_each(experiments.config_json, '$.source_result_ids')
+                      WHERE CAST(value AS TEXT) = ?
+                  )
                 ORDER BY timestamp DESC
                 LIMIT 1
                 """,
-                (exp["experiment_id"],),
+                (result_id,),
             ).fetchone()
-            raw_status = str(exp["status"] or "").strip().lower()
-            status = {
-                "status": raw_status,
-                "experiment_id": exp["experiment_id"],
-                "stage": "screening",
-                "label": (
-                    "candidate confirmed"
-                    if raw_status == "completed" and replay_result is not None
-                    else f"candidate confirmation {raw_status or 'started'}"
-                ),
-                "queued_at": exp["timestamp"],
-                "completed_at": exp["completed_at"],
-                "confirmed_result_id": (
-                    replay_result["result_id"] if replay_result is not None else None
-                ),
-            }
+            if exp is not None:
+                replay_result = nb.conn.execute(
+                    """
+                    SELECT result_id
+                    FROM program_results
+                    WHERE experiment_id = ?
+                      AND COALESCE(model_source, '') = 'exact_graph_replay'
+                    ORDER BY timestamp DESC
+                    LIMIT 1
+                    """,
+                    (exp["experiment_id"],),
+                ).fetchone()
+                raw_status = str(exp["status"] or "").strip().lower()
+                status = {
+                    "status": raw_status,
+                    "experiment_id": exp["experiment_id"],
+                    "stage": "screening",
+                    "label": (
+                        "candidate confirmed"
+                        if raw_status == "completed" and replay_result is not None
+                        else f"candidate confirmation {raw_status or 'started'}"
+                    ),
+                    "queued_at": exp["timestamp"],
+                    "completed_at": exp["completed_at"],
+                    "confirmed_result_id": (
+                        replay_result["result_id"]
+                        if replay_result is not None
+                        else None
+                    ),
+                }
+    except sqlite3.DatabaseError as exc:
+        logger.warning(
+            "Candidate confirmation lookup degraded for result_id=%s: %s",
+            result_id,
+            exc,
+        )
+        status = {
+            "status": "none",
+            "degraded": True,
+            "error": str(exc),
+        }
 
     program["candidate_confirmation_status"] = status
     if status.get("status") in {"queued", "running"}:

@@ -535,9 +535,9 @@ def _compute_routing_overhead_penalty(entry: Dict[str, Any]) -> float:
 
 
 def _compute_binding_bonus(entry: Dict[str, Any]) -> Optional[float]:
-    ar = _to_float(entry.get("ar_auc"))
-    induction = _to_float(entry.get("induction_auc"))
-    binding = _to_float(entry.get("binding_auc"))
+    ar = _to_float(entry.get("ar_legacy_auc"))
+    induction = _to_float(entry.get("induction_screening_auc"))
+    binding = _to_float(entry.get("binding_screening_auc"))
     if ar is None and induction is None and binding is None:
         return None
     bc = 0.0

@@ -12,6 +12,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from ..json_utils import fast_dumps, fast_loads
 from ..native.core import _try_import_rust_scheduler
+from ..shared_utils import coerce_finite_float as _finite_float_or_none
+from ..notebook.graph_artifacts import resolve_graph_json_value
 from .deps import get_notebook
 
 logger = logging.getLogger(__name__)
@@ -33,22 +35,22 @@ _WINDOW_SECONDS: Dict[str, Optional[int]] = {
     "all": None,
 }
 
-_CONTROLLED_LANG_AVG_FIELDS = (
-    "avg_controlled_lang_s05_sa_score",
-    "avg_controlled_lang_s05_nb_order_acc",
-    "avg_controlled_lang_s05_nb_score",
-    "avg_controlled_lang_s10_sa_score",
-    "avg_controlled_lang_s10_nb_order_acc",
-    "avg_controlled_lang_s10_nb_score",
-    "avg_controlled_lang_inv_sa_score",
-    "avg_controlled_lang_inv_nb_order_acc",
-    "avg_controlled_lang_inv_nb_score",
+_LANGUAGE_CONTROL_AVG_FIELDS = (
+    "avg_language_control_s05_sentence_assoc_score",
+    "avg_language_control_s05_binding_order_acc",
+    "avg_language_control_s05_binding_score",
+    "avg_language_control_s10_sentence_assoc_score",
+    "avg_language_control_s10_binding_order_acc",
+    "avg_language_control_s10_binding_score",
+    "avg_language_control_investigation_sentence_assoc_score",
+    "avg_language_control_investigation_binding_order_acc",
+    "avg_language_control_investigation_binding_score",
 )
 
-_CONTROLLED_LANG_SCORE_FIELDS = (
-    "avg_controlled_lang_s05_score",
-    "avg_controlled_lang_s10_score",
-    "avg_controlled_lang_inv_score",
+_LANGUAGE_CONTROL_SCORE_FIELDS = (
+    "avg_language_control_s05_score",
+    "avg_language_control_s10_score",
+    "avg_language_control_investigation_score",
 )
 
 _health_cache: Dict[str, Any] = {}
@@ -119,7 +121,9 @@ def _build_op_index_result(payload: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _load_program_rows(nb, window: str) -> list[dict[str, Any]]:
+def _load_program_rows(
+    nb, window: str, db_path: str | Path | None = None
+) -> list[dict[str, Any]]:
     cutoff = None
     window_seconds = _WINDOW_SECONDS.get(window)
     if window_seconds is not None:
@@ -142,7 +146,9 @@ def _load_program_rows(nb, window: str) -> list[dict[str, Any]]:
         return []
     payload_rows: list[dict[str, Any]] = []
     for row in cursor:
-        graph_json = row["graph_json"]
+        graph_json = resolve_graph_json_value(
+            nb.conn, db_path or getattr(nb, "db_path", ""), row["graph_json"]
+        )
         if not isinstance(graph_json, str) or not graph_json:
             continue
         loss_ratio = row["loss_ratio"]
@@ -177,6 +183,11 @@ def build_op_index(notebook_path: str, window: str = "all") -> Dict[str, Any]:
             raise RuntimeError("aria_scheduler.build_op_index_from_rows is required")
 
         nb = get_notebook(notebook_path, read_only=True)
+        if not getattr(nb, "db_path", None):
+            try:
+                nb.db_path = notebook_path
+            except (AttributeError, TypeError):
+                pass
         payload_rows = _load_program_rows(nb, window)
         payload = fast_loads(rust.build_op_index_from_rows(fast_dumps(payload_rows)))
         result = _build_op_index_result(payload)
@@ -418,22 +429,12 @@ def _component_exclusion_reason(
     return f"excluded {n_excluded} runtime-only failures from displayed rates"
 
 
-def _finite_float_or_none(value: Any) -> float | None:
-    if value is None:
-        return None
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return None
-    return number if _math.isfinite(number) else None
-
-
 def _rounded_metric(value: Any, digits: int = 3) -> float | None:
     number = _finite_float_or_none(value)
     return round(number, digits) if number is not None else None
 
 
-def _controlled_lang_display_score(
+def _language_control_display_score(
     sa_score: Any,
     nb_order_acc: Any,
     nb_score: Any,
@@ -451,22 +452,24 @@ def _controlled_lang_display_score(
     return sum(values) / len(values) if values else None
 
 
-def _component_controlled_lang_metrics(row: dict[str, Any]) -> dict[str, Any]:
-    metrics = {field: row.get(field) for field in _CONTROLLED_LANG_AVG_FIELDS}
-    metrics["avg_controlled_lang_s05_score"] = _controlled_lang_display_score(
-        metrics.get("avg_controlled_lang_s05_sa_score"),
-        metrics.get("avg_controlled_lang_s05_nb_order_acc"),
-        metrics.get("avg_controlled_lang_s05_nb_score"),
+def _component_language_control_metrics(row: dict[str, Any]) -> dict[str, Any]:
+    metrics = {field: row.get(field) for field in _LANGUAGE_CONTROL_AVG_FIELDS}
+    metrics["avg_language_control_s05_score"] = _language_control_display_score(
+        metrics.get("avg_language_control_s05_sentence_assoc_score"),
+        metrics.get("avg_language_control_s05_binding_order_acc"),
+        metrics.get("avg_language_control_s05_binding_score"),
     )
-    metrics["avg_controlled_lang_s10_score"] = _controlled_lang_display_score(
-        metrics.get("avg_controlled_lang_s10_sa_score"),
-        metrics.get("avg_controlled_lang_s10_nb_order_acc"),
-        metrics.get("avg_controlled_lang_s10_nb_score"),
+    metrics["avg_language_control_s10_score"] = _language_control_display_score(
+        metrics.get("avg_language_control_s10_sentence_assoc_score"),
+        metrics.get("avg_language_control_s10_binding_order_acc"),
+        metrics.get("avg_language_control_s10_binding_score"),
     )
-    metrics["avg_controlled_lang_inv_score"] = _controlled_lang_display_score(
-        metrics.get("avg_controlled_lang_inv_sa_score"),
-        metrics.get("avg_controlled_lang_inv_nb_order_acc"),
-        metrics.get("avg_controlled_lang_inv_nb_score"),
+    metrics["avg_language_control_investigation_score"] = (
+        _language_control_display_score(
+            metrics.get("avg_language_control_investigation_sentence_assoc_score"),
+            metrics.get("avg_language_control_investigation_binding_order_acc"),
+            metrics.get("avg_language_control_investigation_binding_score"),
+        )
     )
     return metrics
 
@@ -488,17 +491,23 @@ def _attach_component_observability_metrics(
     component["avg_validation_loss_ratio"] = _rounded_metric(
         overlay.get("avg_validation_loss_ratio")
     )
-    component["avg_induction_auc"] = _rounded_metric(overlay.get("avg_induction_auc"))
-    component["avg_binding_auc"] = _rounded_metric(overlay.get("avg_binding_auc"))
-    component["avg_induction_v2_auc"] = _rounded_metric(
-        overlay.get("avg_induction_v2_auc")
+    component["avg_induction_screening_auc"] = _rounded_metric(
+        overlay.get("avg_induction_screening_auc")
     )
-    component["avg_binding_v2_auc"] = _rounded_metric(overlay.get("avg_binding_v2_auc"))
+    component["avg_binding_screening_auc"] = _rounded_metric(
+        overlay.get("avg_binding_screening_auc")
+    )
+    component["avg_induction_intermediate_auc"] = _rounded_metric(
+        overlay.get("avg_induction_intermediate_auc")
+    )
+    component["avg_binding_intermediate_auc"] = _rounded_metric(
+        overlay.get("avg_binding_intermediate_auc")
+    )
     component["avg_hellaswag_acc"] = _rounded_metric(overlay.get("avg_hellaswag_acc"))
     component["avg_blimp_overall_accuracy"] = _rounded_metric(
         overlay.get("avg_blimp_overall_accuracy")
     )
-    for key, value in _component_controlled_lang_metrics(overlay).items():
+    for key, value in _component_language_control_metrics(overlay).items():
         component[key] = _rounded_metric(value)
     component["avg_composite_score"] = _rounded_metric(
         overlay.get("avg_composite_score")
@@ -706,14 +715,14 @@ def _build_profile_only_component(op_name: str, prof: dict[str, Any]) -> dict[st
         "s1_rate": None,
         "avg_loss_ratio": None,
         "avg_validation_loss_ratio": None,
-        "avg_induction_auc": None,
-        "avg_binding_auc": None,
-        "avg_induction_v2_auc": None,
-        "avg_binding_v2_auc": None,
+        "avg_induction_screening_auc": None,
+        "avg_binding_screening_auc": None,
+        "avg_induction_intermediate_auc": None,
+        "avg_binding_intermediate_auc": None,
         "avg_hellaswag_acc": None,
         "avg_blimp_overall_accuracy": None,
-        **{key: None for key in _CONTROLLED_LANG_AVG_FIELDS},
-        **{key: None for key in _CONTROLLED_LANG_SCORE_FIELDS},
+        **{key: None for key in _LANGUAGE_CONTROL_AVG_FIELDS},
+        **{key: None for key in _LANGUAGE_CONTROL_SCORE_FIELDS},
         "avg_composite_score": None,
         "avg_erf_density": None,
         "avg_id_collapse_rate": None,
@@ -763,10 +772,10 @@ def _load_component_metric_overlays(nb, window: str) -> Dict[str, Dict[str, Any]
                     gpo.op_name AS op_name,
                     pr.loss_ratio AS loss_ratio,
                     pr.validation_loss_ratio AS validation_loss_ratio,
-                    pr.induction_auc AS induction_auc,
-                    pr.induction_v2_investigation_auc AS induction_v2_auc,
-                    COALESCE(pr.binding_auc_curriculum, pr.binding_auc) AS binding_auc,
-                    pr.binding_v2_investigation_auc AS binding_v2_auc,
+                    pr.induction_screening_auc AS induction_screening_auc,
+                    pr.induction_intermediate_auc AS induction_intermediate_auc,
+                    COALESCE(pr.binding_curriculum_auc, pr.binding_screening_auc) AS binding_screening_auc,
+                    pr.binding_intermediate_auc AS binding_intermediate_auc,
                     COALESCE(
                         pr.hellaswag_acc,
                         CASE
@@ -777,15 +786,15 @@ def _load_component_metric_overlays(nb, window: str) -> Dict[str, Dict[str, Any]
                         END
                     ) AS hellaswag_acc,
                     pr.blimp_overall_accuracy AS blimp_overall_accuracy,
-                    pr.controlled_lang_s05_sa_score AS controlled_lang_s05_sa_score,
-                    pr.controlled_lang_s05_nb_order_acc AS controlled_lang_s05_nb_order_acc,
-                    pr.controlled_lang_s05_nb_score AS controlled_lang_s05_nb_score,
-                    pr.controlled_lang_s10_sa_score AS controlled_lang_s10_sa_score,
-                    pr.controlled_lang_s10_nb_order_acc AS controlled_lang_s10_nb_order_acc,
-                    pr.controlled_lang_s10_nb_score AS controlled_lang_s10_nb_score,
-                    pr.controlled_lang_inv_sa_score AS controlled_lang_inv_sa_score,
-                    pr.controlled_lang_inv_nb_order_acc AS controlled_lang_inv_nb_order_acc,
-                    pr.controlled_lang_inv_nb_score AS controlled_lang_inv_nb_score,
+                    pr.language_control_s05_sentence_assoc_score AS language_control_s05_sentence_assoc_score,
+                    pr.language_control_s05_binding_order_acc AS language_control_s05_binding_order_acc,
+                    pr.language_control_s05_binding_score AS language_control_s05_binding_score,
+                    pr.language_control_s10_sentence_assoc_score AS language_control_s10_sentence_assoc_score,
+                    pr.language_control_s10_binding_order_acc AS language_control_s10_binding_order_acc,
+                    pr.language_control_s10_binding_score AS language_control_s10_binding_score,
+                    pr.language_control_investigation_sentence_assoc_score AS language_control_investigation_sentence_assoc_score,
+                    pr.language_control_investigation_binding_order_acc AS language_control_investigation_binding_order_acc,
+                    pr.language_control_investigation_binding_score AS language_control_investigation_binding_score,
                     l.composite_score AS composite_score,
                     pr.fp_jacobian_effective_rank AS jacobian_effective_rank,
                     pr.fp_sensitivity_uniformity AS sensitivity_uniformity,
@@ -816,21 +825,21 @@ def _load_component_metric_overlays(nb, window: str) -> Dict[str, Dict[str, Any]
                 op_name,
                 AVG(loss_ratio) AS avg_loss_ratio,
                 AVG(validation_loss_ratio) AS avg_validation_loss_ratio,
-                AVG(induction_auc) AS avg_induction_auc,
-                AVG(binding_auc) AS avg_binding_auc,
-                AVG(induction_v2_auc) AS avg_induction_v2_auc,
-                AVG(binding_v2_auc) AS avg_binding_v2_auc,
+                AVG(induction_screening_auc) AS avg_induction_screening_auc,
+                AVG(binding_screening_auc) AS avg_binding_screening_auc,
+                AVG(induction_intermediate_auc) AS avg_induction_intermediate_auc,
+                AVG(binding_intermediate_auc) AS avg_binding_intermediate_auc,
                 AVG(hellaswag_acc) AS avg_hellaswag_acc,
                 AVG(blimp_overall_accuracy) AS avg_blimp_overall_accuracy,
-                AVG(controlled_lang_s05_sa_score) AS avg_controlled_lang_s05_sa_score,
-                AVG(controlled_lang_s05_nb_order_acc) AS avg_controlled_lang_s05_nb_order_acc,
-                AVG(controlled_lang_s05_nb_score) AS avg_controlled_lang_s05_nb_score,
-                AVG(controlled_lang_s10_sa_score) AS avg_controlled_lang_s10_sa_score,
-                AVG(controlled_lang_s10_nb_order_acc) AS avg_controlled_lang_s10_nb_order_acc,
-                AVG(controlled_lang_s10_nb_score) AS avg_controlled_lang_s10_nb_score,
-                AVG(controlled_lang_inv_sa_score) AS avg_controlled_lang_inv_sa_score,
-                AVG(controlled_lang_inv_nb_order_acc) AS avg_controlled_lang_inv_nb_order_acc,
-                AVG(controlled_lang_inv_nb_score) AS avg_controlled_lang_inv_nb_score,
+                AVG(language_control_s05_sentence_assoc_score) AS avg_language_control_s05_sentence_assoc_score,
+                AVG(language_control_s05_binding_order_acc) AS avg_language_control_s05_binding_order_acc,
+                AVG(language_control_s05_binding_score) AS avg_language_control_s05_binding_score,
+                AVG(language_control_s10_sentence_assoc_score) AS avg_language_control_s10_sentence_assoc_score,
+                AVG(language_control_s10_binding_order_acc) AS avg_language_control_s10_binding_order_acc,
+                AVG(language_control_s10_binding_score) AS avg_language_control_s10_binding_score,
+                AVG(language_control_investigation_sentence_assoc_score) AS avg_language_control_investigation_sentence_assoc_score,
+                AVG(language_control_investigation_binding_order_acc) AS avg_language_control_investigation_binding_order_acc,
+                AVG(language_control_investigation_binding_score) AS avg_language_control_investigation_binding_score,
                 AVG(composite_score) AS avg_composite_score,
                 AVG(erf_density) AS avg_erf_density,
                 AVG(id_collapse_rate) AS avg_id_collapse_rate,
@@ -855,38 +864,38 @@ def _load_component_metric_overlays(nb, window: str) -> Dict[str, Dict[str, Any]
             overlays[row["op_name"]] = {
                 "avg_loss_ratio": row["avg_loss_ratio"],
                 "avg_validation_loss_ratio": row["avg_validation_loss_ratio"],
-                "avg_induction_auc": row["avg_induction_auc"],
-                "avg_binding_auc": row["avg_binding_auc"],
-                "avg_induction_v2_auc": row["avg_induction_v2_auc"],
-                "avg_binding_v2_auc": row["avg_binding_v2_auc"],
+                "avg_induction_screening_auc": row["avg_induction_screening_auc"],
+                "avg_binding_screening_auc": row["avg_binding_screening_auc"],
+                "avg_induction_intermediate_auc": row["avg_induction_intermediate_auc"],
+                "avg_binding_intermediate_auc": row["avg_binding_intermediate_auc"],
                 "avg_hellaswag_acc": row["avg_hellaswag_acc"],
                 "avg_blimp_overall_accuracy": row["avg_blimp_overall_accuracy"],
-                "avg_controlled_lang_s05_sa_score": row[
-                    "avg_controlled_lang_s05_sa_score"
+                "avg_language_control_s05_sentence_assoc_score": row[
+                    "avg_language_control_s05_sentence_assoc_score"
                 ],
-                "avg_controlled_lang_s05_nb_order_acc": row[
-                    "avg_controlled_lang_s05_nb_order_acc"
+                "avg_language_control_s05_binding_order_acc": row[
+                    "avg_language_control_s05_binding_order_acc"
                 ],
-                "avg_controlled_lang_s05_nb_score": row[
-                    "avg_controlled_lang_s05_nb_score"
+                "avg_language_control_s05_binding_score": row[
+                    "avg_language_control_s05_binding_score"
                 ],
-                "avg_controlled_lang_s10_sa_score": row[
-                    "avg_controlled_lang_s10_sa_score"
+                "avg_language_control_s10_sentence_assoc_score": row[
+                    "avg_language_control_s10_sentence_assoc_score"
                 ],
-                "avg_controlled_lang_s10_nb_order_acc": row[
-                    "avg_controlled_lang_s10_nb_order_acc"
+                "avg_language_control_s10_binding_order_acc": row[
+                    "avg_language_control_s10_binding_order_acc"
                 ],
-                "avg_controlled_lang_s10_nb_score": row[
-                    "avg_controlled_lang_s10_nb_score"
+                "avg_language_control_s10_binding_score": row[
+                    "avg_language_control_s10_binding_score"
                 ],
-                "avg_controlled_lang_inv_sa_score": row[
-                    "avg_controlled_lang_inv_sa_score"
+                "avg_language_control_investigation_sentence_assoc_score": row[
+                    "avg_language_control_investigation_sentence_assoc_score"
                 ],
-                "avg_controlled_lang_inv_nb_order_acc": row[
-                    "avg_controlled_lang_inv_nb_order_acc"
+                "avg_language_control_investigation_binding_order_acc": row[
+                    "avg_language_control_investigation_binding_order_acc"
                 ],
-                "avg_controlled_lang_inv_nb_score": row[
-                    "avg_controlled_lang_inv_nb_score"
+                "avg_language_control_investigation_binding_score": row[
+                    "avg_language_control_investigation_binding_score"
                 ],
                 "avg_composite_score": row["avg_composite_score"],
                 "avg_erf_density": row["avg_erf_density"],

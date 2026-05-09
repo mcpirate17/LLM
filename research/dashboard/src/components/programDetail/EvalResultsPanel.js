@@ -6,7 +6,7 @@ const LONG_ACTION_TIMEOUT_MS = 120000;
 function EvalResultsPanel({
   program, leaderboardEntry, resultId, dispatch, state,
   onActionComplete, onClose,
-  canInvestigate, canValidate, canConfirm, alreadyInvestigated, alreadyValidated,
+  canInvestigate, canCapabilityRank, canValidate, canConfirm, alreadyInvestigated, alreadyValidated,
 }) {
   const {
     scaleUpOpen, scaleUpConfig, scaleUpStarting,
@@ -18,6 +18,7 @@ function EvalResultsPanel({
   const fmt = (v, d = 4) => v != null ? Number(v).toFixed(d) : '--';
 
   const investigateDisabled = actionStarting === 'investigate';
+  const capabilityRankDisabled = actionStarting === 'capability_ranking';
   const validateDisabled = actionStarting === 'validate';
   const confirmDisabled = scaleUpStarting || actionStarting === 'confirmation';
   const investigateTitle = canInvestigate
@@ -26,6 +27,9 @@ function EvalResultsPanel({
   const validateTitle = canValidate
     ? 'Publication-grade multi-seed validation'
     : 'Publication-grade multi-seed validation. This run will use override if needed.';
+  const capabilityRankTitle = canCapabilityRank
+    ? 'Run selective induction/binding rankers'
+    : 'Run selective induction/binding rankers. This run will use override if needed.';
 
   if (!program.stage1_passed) return null;
 
@@ -440,6 +444,38 @@ function EvalResultsPanel({
             Already investigated
           </span>
         )}
+        <button
+          className="start-btn"
+          disabled={capabilityRankDisabled}
+          onClick={async () => {
+            const forceRun = Boolean(overrideIneligible || !canCapabilityRank);
+            dispatch({ type: 'SET_ACTION', payload: { starting: 'capability_ranking', error: null } });
+            try {
+              const res = await postJson('/api/experiments/start', {
+                mode: 'capability_ranking',
+                result_ids: [resultId],
+                force: forceRun,
+                override_ineligible: forceRun,
+                preflight_override: true,
+                enforce_preflight: true,
+              }, { timeoutMs: LONG_ACTION_TIMEOUT_MS });
+              if (!res.ok) {
+                const err = await res.json();
+                dispatch({ type: 'SET_ACTION', payload: { starting: null, error: err.error || 'Failed to start capability ranking' } });
+              } else {
+                dispatch({ type: 'SET_ACTION', payload: { starting: null, error: null } });
+                if (onActionComplete) onActionComplete();
+                onClose();
+              }
+            } catch (e) {
+              dispatch({ type: 'SET_ACTION', payload: { starting: null, error: 'Error: ' + e.message } });
+            }
+          }}
+          style={{ padding: '6px 16px', fontSize: 12, background: 'rgba(121, 192, 255, 0.15)', border: '1px solid rgba(121, 192, 255, 0.4)', color: 'var(--accent-blue)' }}
+          title={capabilityRankTitle}
+        >
+          {actionStarting === 'capability_ranking' ? 'Starting...' : 'Rank Capability'}
+        </button>
         <button
           className="start-btn"
           disabled={validateDisabled}

@@ -22,7 +22,8 @@ import torch
 from research.synthesis.compiler import compile_model
 from research.synthesis.serializer import graph_from_json
 from research.eval.utils import micro_train_loop
-from research.eval.controlled_lang_probe import controlled_lang_probe
+from research.eval.language_control_probe import language_control_probe
+from research.scientist.notebook.graph_artifacts import resolve_graph_json_value
 from research.tools._db_maintenance import connect_readonly
 
 logger = logging.getLogger(__name__)
@@ -74,7 +75,15 @@ def _load_arch(db: Path, entry_id: str) -> dict:
             """,
             (entry_id,),
         ).fetchone()
-        return dict(r) if r else {}
+        if not r:
+            return {}
+        payload = dict(r)
+        payload["graph_json"] = resolve_graph_json_value(
+            conn,
+            db,
+            payload.get("graph_json"),
+        )
+        return payload
     finally:
         conn.close()
 
@@ -92,12 +101,12 @@ def _train_base(
 
 
 def _run_one(model, *, vocab, n_train, device, seed=42) -> dict:
-    """One training pass on the controlled-language corpus, both evals.
+    """One training pass on the language-control corpus, both evals.
 
-    Uses the unified ``controlled_lang_probe`` so we don't duplicate the
+    Uses the unified ``language_control_probe`` so we don't duplicate the
     training pass between the synthetic_association and nano_blimp evals.
     """
-    res = controlled_lang_probe(
+    res = language_control_probe(
         model,
         active_vocab_size=vocab,
         n_train_steps=n_train,
@@ -115,9 +124,7 @@ def _run_one(model, *, vocab, n_train, device, seed=42) -> dict:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument(
-        "--db", default="research/lab_notebook.db", type=Path, help="lab notebook"
-    )
+    ap.add_argument("--db", default="research/runs.db", type=Path, help="lab notebook")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     ap.add_argument(
         "--base-train-steps",

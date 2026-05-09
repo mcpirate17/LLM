@@ -30,10 +30,10 @@ def _stage1_kwargs(
         "hellaswag_status": "ran",
         "blimp_overall_accuracy": 0.55,
         "blimp_status": "ran",
-        "induction_auc": 0.21,
-        "binding_auc": 0.18,
-        "binding_composite": 0.12,
-        "ar_auc": 0.06,
+        "induction_screening_auc": 0.21,
+        "binding_screening_auc": 0.18,
+        "binding_screening_composite": 0.12,
+        "ar_legacy_auc": 0.06,
     }
     return program_result_kwargs_from_s1(
         s1,
@@ -84,8 +84,8 @@ def test_discoveries_endpoint_accepts_fingerprint_for_cross_run_stability(tmp_pa
     assert "seen_runs" in stability or "trend" in stability or "rank_delta" in stability
 
 
-def test_ranked_discoveries_exposes_nano_ar_investigation_fields(tmp_path):
-    db_path = str(tmp_path / "discoveries_nano_ar.db")
+def test_ranked_discoveries_exposes_ar_gateestigation_fields(tmp_path):
+    db_path = str(tmp_path / "discoveries_ar_gate.db")
     nb = LabNotebook(db_path)
     exp_id = nb.start_experiment("synthesis", {})
     rid = nb.record_program_result(
@@ -94,18 +94,18 @@ def test_ranked_discoveries_exposes_nano_ar_investigation_fields(tmp_path):
         graph_json="{}",
         **{
             **_stage1_kwargs(loss_ratio=0.7, novelty_score=0.8),
-            "nano_ar_inv_metric_version": "nano_ar_inv_v1",
-            "nano_ar_inv_in_dist_pair_match_acc": 0.61,
-            "nano_ar_inv_in_dist_class_acc": 0.72,
-            "nano_ar_inv_held_pair_match_acc": 0.43,
-            "nano_ar_inv_held_class_acc": 0.54,
-            "nano_ar_inv_score": 0.582,
-            "nano_ar_inv_status": "ok",
-            "nano_ar_inv_elapsed_ms": 1234.0,
-            "nano_ar_inv_train_steps_done": 500,
-            "controlled_lang_s05_nb_score": 0.71,
-            "controlled_lang_s10_nb_score": 0.79,
-            "controlled_lang_inv_nb_score": 0.86,
+            "ar_gate_metric_version": "ar_gate_v1",
+            "ar_gate_in_dist_pair_acc": 0.61,
+            "ar_gate_in_dist_class_acc": 0.72,
+            "ar_gate_held_pair_acc": 0.43,
+            "ar_gate_held_class_acc": 0.54,
+            "ar_gate_score": 0.582,
+            "ar_gate_status": "ok",
+            "ar_gate_elapsed_ms": 1234.0,
+            "ar_gate_train_steps_done": 500,
+            "language_control_s05_binding_score": 0.71,
+            "language_control_s10_binding_score": 0.79,
+            "language_control_investigation_binding_score": 0.86,
         },
     )
     nb.flush_writes()
@@ -126,18 +126,18 @@ def test_ranked_discoveries_exposes_nano_ar_investigation_fields(tmp_path):
     assert res.status_code == 200
     entries = res.get_json()["entries"]
     entry = next(row for row in entries if row["result_id"] == rid)
-    assert entry["nano_ar_inv_metric_version"] == "nano_ar_inv_v1"
-    assert entry["nano_ar_inv_in_dist_pair_match_acc"] == pytest.approx(0.61)
-    assert entry["nano_ar_inv_in_dist_class_acc"] == pytest.approx(0.72)
-    assert entry["nano_ar_inv_held_pair_match_acc"] == pytest.approx(0.43)
-    assert entry["nano_ar_inv_held_class_acc"] == pytest.approx(0.54)
-    assert entry["nano_ar_inv_score"] == pytest.approx(0.582)
-    assert entry["nano_ar_inv_status"] == "ok"
-    assert entry["nano_ar_inv_elapsed_ms"] == pytest.approx(1234.0)
-    assert entry["nano_ar_inv_train_steps_done"] == 500
-    assert entry["controlled_lang_s05_nb_score"] == pytest.approx(0.71)
-    assert entry["controlled_lang_s10_nb_score"] == pytest.approx(0.79)
-    assert entry["controlled_lang_inv_nb_score"] == pytest.approx(0.86)
+    assert entry["ar_gate_metric_version"] == "ar_gate_v1"
+    assert entry["ar_gate_in_dist_pair_acc"] == pytest.approx(0.61)
+    assert entry["ar_gate_in_dist_class_acc"] == pytest.approx(0.72)
+    assert entry["ar_gate_held_pair_acc"] == pytest.approx(0.43)
+    assert entry["ar_gate_held_class_acc"] == pytest.approx(0.54)
+    assert entry["ar_gate_score"] == pytest.approx(0.582)
+    assert entry["ar_gate_status"] == "ok"
+    assert entry["ar_gate_elapsed_ms"] == pytest.approx(1234.0)
+    assert entry["ar_gate_train_steps_done"] == 500
+    assert entry["language_control_s05_binding_score"] == pytest.approx(0.71)
+    assert entry["language_control_s10_binding_score"] == pytest.approx(0.79)
+    assert entry["language_control_investigation_binding_score"] == pytest.approx(0.86)
 
 
 def test_program_detail_and_compact_leaderboard_expose_champion_display_fields(
@@ -160,36 +160,36 @@ def test_program_detail_and_compact_leaderboard_expose_champion_display_fields(
         "champion_steps_to_floor_score": 7.5,
         "champion_floor_quality_score": 4.0,
         "champion_floor_stability_score": 3.0,
-        "champion_induction_v3_score": 8.25,
+        "champion_induction_validation_score": 8.25,
         "champion_binding_long_context_score": 2.5,
-        "champion_small_ar_score": 6.5,
+        "champion_ar_validation_score": 6.5,
         "champion_tiny_model_score": 31.75,
         "champion_tiny_model_protocol_version": "champion_tiny_model_v1",
         "champion_hard_failure_reason": None,
-        "induction_v3_auc": 0.812,
-        "induction_v3_max_gap_acc": 0.91,
-        "induction_v3_gap_accuracy_cv": 0.12,
-        "induction_v3_gap_accuracies_json": '{"4": 0.91, "16": 0.77}',
-        "induction_v3_steps_trained": 5000,
-        "induction_v3_status": "ok",
-        "induction_v3_elapsed_ms": 4321.0,
-        "induction_v3_protocol_version": "induction_v3_head_counterfactual_5k",
-        "small_ar_champion_metric_version": "small_ar_champion_v1",
-        "small_ar_champion_final_acc": 0.74,
-        "small_ar_champion_held_pair_match_acc": 0.63,
-        "small_ar_champion_held_class_acc": 0.58,
-        "small_ar_champion_learning_curve_json": '[{"step": 500, "acc": 0.41}]',
-        "small_ar_champion_steps_to_floor": 3200,
-        "small_ar_champion_score": 6.7,
-        "small_ar_champion_status": "ok",
-        "small_ar_champion_elapsed_ms": 2468.0,
-        "induction_v2_investigation_auc": 0.547,
-        "induction_v2_investigation_max_gap_acc": 1.0,
-        "induction_v2_investigation_protocol_version": "induction_v2_test",
-        "nano_ar_inv_metric_version": "nano_ar_inv_v1",
-        "nano_ar_inv_score": 0.582,
-        "nano_ar_inv_status": "ok",
-        "nano_ar_inv_train_steps_done": 500,
+        "induction_validation_auc": 0.812,
+        "induction_validation_max_gap_acc": 0.91,
+        "induction_validation_gap_accuracy_cv": 0.12,
+        "induction_validation_gap_accuracies_json": '{"4": 0.91, "16": 0.77}',
+        "induction_validation_steps_trained": 2000,
+        "induction_validation_status": "ok",
+        "induction_validation_elapsed_ms": 4321.0,
+        "induction_validation_protocol_version": "induction_validation_full_counterfactual_2k",
+        "ar_validation_metric_version": "ar_validation_v1",
+        "ar_validation_final_acc": 0.74,
+        "ar_validation_held_pair_acc": 0.63,
+        "ar_validation_held_class_acc": 0.58,
+        "ar_validation_learning_curve_json": '[{"step": 500, "acc": 0.41}]',
+        "ar_validation_steps_to_floor": 3200,
+        "ar_validation_rank_score": 6.7,
+        "ar_validation_status": "ok",
+        "ar_validation_elapsed_ms": 2468.0,
+        "induction_intermediate_auc": 0.547,
+        "induction_intermediate_max_gap_acc": 1.0,
+        "induction_intermediate_protocol_version": "induction_intermediate_test",
+        "ar_gate_metric_version": "ar_gate_v1",
+        "ar_gate_score": 0.582,
+        "ar_gate_status": "ok",
+        "ar_gate_train_steps_done": 500,
     }
     rid = nb.record_program_result(
         experiment_id=exp_id,
@@ -219,12 +219,12 @@ def test_program_detail_and_compact_leaderboard_expose_champion_display_fields(
     assert detail_payload["champion_tiny_model_score"] == pytest.approx(31.75)
     assert detail_payload["champion_steps_to_floor"] == 1800
     assert (
-        detail_payload["induction_v3_protocol_version"]
-        == "induction_v3_head_counterfactual_5k"
+        detail_payload["induction_validation_protocol_version"]
+        == "induction_validation_full_counterfactual_2k"
     )
-    assert detail_payload["small_ar_champion_score"] == pytest.approx(6.7)
-    assert detail_payload["induction_v2_investigation_auc"] == pytest.approx(0.547)
-    assert detail_payload["nano_ar_inv_score"] == pytest.approx(0.582)
+    assert detail_payload["ar_validation_rank_score"] == pytest.approx(6.7)
+    assert detail_payload["induction_intermediate_auc"] == pytest.approx(0.547)
+    assert detail_payload["ar_gate_score"] == pytest.approx(0.582)
 
     leaderboard = client.get(
         "/api/leaderboard?compact=1&trusted_only=0&limit=10&sort=composite_score"
@@ -235,14 +235,16 @@ def test_program_detail_and_compact_leaderboard_expose_champion_display_fields(
     assert entry["champion_tiny_model_score"] == pytest.approx(31.75)
     assert entry["champion_floor_ppl"] == pytest.approx(135.6)
     assert entry["champion_baseline_result_id"] == "gpt2cal490d5"
-    assert entry["induction_v3_auc"] == pytest.approx(0.812)
-    assert entry["induction_v3_gap_accuracies_json"] == '{"4": 0.91, "16": 0.77}'
-    assert entry["small_ar_champion_held_pair_match_acc"] == pytest.approx(0.63)
-    assert entry["small_ar_champion_learning_curve_json"] == (
+    assert entry["induction_validation_auc"] == pytest.approx(0.812)
+    assert (
+        entry["induction_validation_gap_accuracies_json"] == '{"4": 0.91, "16": 0.77}'
+    )
+    assert entry["ar_validation_held_pair_acc"] == pytest.approx(0.63)
+    assert entry["ar_validation_learning_curve_json"] == (
         '[{"step": 500, "acc": 0.41}]'
     )
-    assert entry["induction_v2_investigation_auc"] == pytest.approx(0.547)
-    assert entry["nano_ar_inv_score"] == pytest.approx(0.582)
+    assert entry["induction_intermediate_auc"] == pytest.approx(0.547)
+    assert entry["ar_gate_score"] == pytest.approx(0.582)
 
 
 def test_discoveries_search_uses_leaderboard_v2_rollup_for_parent(tmp_path):
@@ -263,12 +265,12 @@ def test_discoveries_search_uses_leaderboard_v2_rollup_for_parent(tmp_path):
         screening_novelty=0.8,
         tier="validation",
         validation_passed=False,
-        induction_v2_investigation_auc=0.547,
-        induction_v2_investigation_max_gap_acc=1.0,
-        induction_v2_investigation_protocol_version="induction_v2_test",
-        binding_v2_investigation_auc=0.1224,
-        binding_v2_investigation_max_distance_acc=0.306,
-        binding_v2_investigation_protocol_version="binding_v2_test",
+        induction_intermediate_auc=0.547,
+        induction_intermediate_max_gap_acc=1.0,
+        induction_intermediate_protocol_version="induction_intermediate_test",
+        binding_intermediate_auc=0.1224,
+        binding_intermediate_max_distance_acc=0.306,
+        binding_intermediate_protocol_version="binding_intermediate_test",
     )
     nb.close()
 
@@ -283,12 +285,15 @@ def test_discoveries_search_uses_leaderboard_v2_rollup_for_parent(tmp_path):
     assert res.status_code == 200
     entries = res.get_json()["entries"]
     entry = next(row for row in entries if row["result_id"] == parent_rid)
-    assert entry["induction_v2_investigation_auc"] == pytest.approx(0.547)
-    assert entry["induction_v2_investigation_max_gap_acc"] == pytest.approx(1.0)
-    assert entry["induction_v2_investigation_protocol_version"] == "induction_v2_test"
-    assert entry["binding_v2_investigation_auc"] == pytest.approx(0.1224)
-    assert entry["binding_v2_investigation_max_distance_acc"] == pytest.approx(0.306)
-    assert entry["binding_v2_investigation_protocol_version"] == "binding_v2_test"
+    assert entry["induction_intermediate_auc"] == pytest.approx(0.547)
+    assert entry["induction_intermediate_max_gap_acc"] == pytest.approx(1.0)
+    assert (
+        entry["induction_intermediate_protocol_version"]
+        == "induction_intermediate_test"
+    )
+    assert entry["binding_intermediate_auc"] == pytest.approx(0.1224)
+    assert entry["binding_intermediate_max_distance_acc"] == pytest.approx(0.306)
+    assert entry["binding_intermediate_protocol_version"] == "binding_intermediate_test"
 
 
 def test_discoveries_fingerprint_failed_view_explains_failed_checks(tmp_path):
@@ -982,17 +987,17 @@ def test_discoveries_expose_capability_quality_separate_from_validation_completi
         validation_baseline_ratio=0.9,
         validation_multi_seed_std=0.05,
         hellaswag_acc=0.45,
-        ar_auc=0.12,
-        binding_auc=0.12,
-        induction_auc=0.12,
+        ar_legacy_auc=0.12,
+        binding_screening_auc=0.12,
+        induction_screening_auc=0.12,
     )
     training_only_rid = make_row(
         "fp-training-only",
         validation_baseline_ratio=1.1,
         validation_multi_seed_std=0.05,
         hellaswag_acc=0.22,
-        ar_auc=0.01,
-        binding_auc=0.02,
+        ar_legacy_auc=0.01,
+        binding_screening_auc=0.02,
     )
     nb.close()
 
@@ -1261,10 +1266,10 @@ def test_leaderboard_rescore_api_realigns_payload_with_backend_compute(tmp_path)
             "wikitext_perplexity": 200.0,
             "hellaswag_acc": 0.25,
             "blimp_overall_accuracy": 0.5,
-            "induction_auc": 0.01,
-            "binding_auc": 0.01,
-            "binding_composite": 0.01,
-            "ar_auc": 0.01,
+            "induction_screening_auc": 0.01,
+            "binding_screening_auc": 0.01,
+            "binding_screening_composite": 0.01,
+            "ar_legacy_auc": 0.01,
         },
     )
     nb.flush_writes()
@@ -1335,20 +1340,20 @@ def test_leaderboard_rescore_api_realigns_denormalized_probe_metrics(tmp_path):
             **_stage1_kwargs(loss_ratio=0.58, novelty_score=0.82),
             "wikitext_perplexity": 200.0,
             "blimp_overall_accuracy": 0.52,
-            "induction_auc": 0.006,
+            "induction_screening_auc": 0.006,
             "hellaswag_acc": 0.31,
             "hellaswag_metric_version": "hellaswag_v2_bpe",
             "hellaswag_tokenizer_mode": "tiktoken",
             "hellaswag_tiktoken_encoding": "cl100k_base",
-            "induction_v2_investigation_auc": 0.402,
-            "induction_v2_investigation_max_gap_acc": 0.61,
-            "induction_v2_investigation_protocol_version": "induction_investigation_mixed_v2",
-            "binding_auc": 0.1678,
-            "binding_composite": 0.16,
-            "ar_auc": 0.02,
-            "binding_v2_investigation_auc": 0.176,
-            "binding_v2_investigation_max_distance_acc": 0.42,
-            "binding_v2_investigation_protocol_version": "binding_investigation_v2",
+            "induction_intermediate_auc": 0.402,
+            "induction_intermediate_max_gap_acc": 0.61,
+            "induction_intermediate_protocol_version": "induction_investigation_mixed_v2",
+            "binding_screening_auc": 0.1678,
+            "binding_screening_composite": 0.16,
+            "ar_legacy_auc": 0.02,
+            "binding_intermediate_auc": 0.176,
+            "binding_intermediate_max_distance_acc": 0.42,
+            "binding_intermediate_protocol_version": "binding_investigation_v2",
         },
     )
     nb.flush_writes()
@@ -1362,8 +1367,8 @@ def test_leaderboard_rescore_api_realigns_denormalized_probe_metrics(tmp_path):
     nb.conn.execute(
         """
         UPDATE leaderboard
-        SET induction_v2_investigation_auc = NULL,
-            binding_v2_investigation_auc = NULL,
+        SET induction_intermediate_auc = NULL,
+            binding_intermediate_auc = NULL,
             scoring_config_hash = ?
         WHERE result_id = ?
         """,
@@ -1383,15 +1388,15 @@ def test_leaderboard_rescore_api_realigns_denormalized_probe_metrics(tmp_path):
     nb = LabNotebook(db_path)
     row = nb.conn.execute(
         """
-        SELECT induction_auc, induction_v2_investigation_auc,
-               induction_v2_investigation_max_gap_acc,
-               induction_v2_investigation_protocol_version,
+        SELECT induction_screening_auc, induction_intermediate_auc,
+               induction_intermediate_max_gap_acc,
+               induction_intermediate_protocol_version,
                hellaswag_metric_version,
                hellaswag_tokenizer_mode,
                hellaswag_tiktoken_encoding,
-               binding_auc, binding_v2_investigation_auc,
-               binding_v2_investigation_max_distance_acc,
-               binding_v2_investigation_protocol_version
+               binding_screening_auc, binding_intermediate_auc,
+               binding_intermediate_max_distance_acc,
+               binding_intermediate_protocol_version
         FROM leaderboard
         WHERE result_id = ?
         """,
@@ -1399,20 +1404,18 @@ def test_leaderboard_rescore_api_realigns_denormalized_probe_metrics(tmp_path):
     ).fetchone()
     nb.close()
 
-    assert row["induction_v2_investigation_auc"] == pytest.approx(0.402)
-    assert row["induction_v2_investigation_max_gap_acc"] == pytest.approx(0.61)
+    assert row["induction_intermediate_auc"] == pytest.approx(0.402)
+    assert row["induction_intermediate_max_gap_acc"] == pytest.approx(0.61)
     assert (
-        row["induction_v2_investigation_protocol_version"]
+        row["induction_intermediate_protocol_version"]
         == "induction_investigation_mixed_v2"
     )
     assert row["hellaswag_metric_version"] == "hellaswag_v2_bpe"
     assert row["hellaswag_tokenizer_mode"] == "tiktoken"
     assert row["hellaswag_tiktoken_encoding"] == "cl100k_base"
-    assert row["binding_v2_investigation_auc"] == pytest.approx(0.176)
-    assert row["binding_v2_investigation_max_distance_acc"] == pytest.approx(0.42)
-    assert (
-        row["binding_v2_investigation_protocol_version"] == "binding_investigation_v2"
-    )
+    assert row["binding_intermediate_auc"] == pytest.approx(0.176)
+    assert row["binding_intermediate_max_distance_acc"] == pytest.approx(0.42)
+    assert row["binding_intermediate_protocol_version"] == "binding_investigation_v2"
 
 
 def test_leaderboard_rescore_api_realigns_raw_persisted_rows_with_backend_compute(

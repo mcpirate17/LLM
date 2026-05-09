@@ -159,9 +159,9 @@ def test_understanding_gate_requires_two_of_three():
     passes, _, _, _ = understanding_gate_metrics(
         {
             "diagnostic_score": 0.15,
-            "ar_auc": 0.0,
-            "induction_auc": 0.0,
-            "binding_auc": 0.0,
+            "ar_legacy_auc": 0.0,
+            "induction_screening_auc": 0.0,
+            "binding_screening_auc": 0.0,
             "hellaswag_acc": 0.20,
         }
     )
@@ -171,9 +171,9 @@ def test_understanding_gate_requires_two_of_three():
     passes, _, _, _ = understanding_gate_metrics(
         {
             "diagnostic_score": 0.50,
-            "ar_auc": 0.40,
-            "induction_auc": 0.40,
-            "binding_auc": 0.40,
+            "ar_legacy_auc": 0.40,
+            "induction_screening_auc": 0.40,
+            "binding_screening_auc": 0.40,
             "hellaswag_acc": 0.20,
         }
     )
@@ -200,9 +200,9 @@ def test_screening_understanding_filter_blocks_measured_zero():
     allow, reason = screening_understanding_filter(
         {
             "diagnostic_score": 0.02,
-            "ar_auc": 0.0,
-            "induction_auc": 0.0,
-            "binding_auc": 0.0,
+            "ar_legacy_auc": 0.0,
+            "induction_screening_auc": 0.0,
+            "binding_screening_auc": 0.0,
             "hellaswag_acc": 0.25,
         }
     )

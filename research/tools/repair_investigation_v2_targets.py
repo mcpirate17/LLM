@@ -56,10 +56,10 @@ def find_repair_targets(
             """
             SELECT pr.result_id, pr.graph_fingerprint, pr.experiment_id, pr.timestamp,
                    pr.stage1_passed, pr.loss_ratio, pr.model_source, pr.result_cohort,
-                   pr.induction_v2_investigation_auc,
-                   pr.binding_v2_investigation_auc,
-                   pr.induction_v2_investigation_status,
-                   pr.binding_v2_investigation_status,
+                   pr.induction_intermediate_auc,
+                   pr.binding_intermediate_auc,
+                   pr.induction_intermediate_status,
+                   pr.binding_intermediate_status,
                    e.experiment_type, e.status AS experiment_status,
                    l.tier
             FROM program_results pr
@@ -73,15 +73,15 @@ def find_repair_targets(
                     OR (? AND l.tier IN ('investigation', 'validation', 'breakthrough'))
                   )
               AND (
-                    pr.induction_v2_investigation_auc IS NULL
-                    OR pr.binding_v2_investigation_auc IS NULL
-                    OR COALESCE(pr.induction_v2_investigation_status, '') NOT IN ('', 'ok')
-                    OR COALESCE(pr.binding_v2_investigation_status, '') NOT IN ('', 'ok')
+                    pr.induction_intermediate_auc IS NULL
+                    OR pr.binding_intermediate_auc IS NULL
+                    OR COALESCE(pr.induction_intermediate_status, '') NOT IN ('', 'ok')
+                    OR COALESCE(pr.binding_intermediate_status, '') NOT IN ('', 'ok')
                   )
               AND (
                     NOT ?
-                    OR COALESCE(pr.induction_v2_investigation_status, '') NOT IN ('', 'ok')
-                    OR COALESCE(pr.binding_v2_investigation_status, '') NOT IN ('', 'ok')
+                    OR COALESCE(pr.induction_intermediate_status, '') NOT IN ('', 'ok')
+                    OR COALESCE(pr.binding_intermediate_status, '') NOT IN ('', 'ok')
                   )
             """,
             (1 if include_leaderboard else 0, 1 if failed_only else 0),
@@ -101,20 +101,20 @@ def find_repair_targets(
             duplicate_rows += 1
         if current is None or _rank_key(row) > _rank_key(current):
             missing = []
-            if row.get("induction_v2_investigation_auc") is None:
-                missing.append("induction_v2_investigation_auc")
-            if row.get("binding_v2_investigation_auc") is None:
-                missing.append("binding_v2_investigation_auc")
+            if row.get("induction_intermediate_auc") is None:
+                missing.append("induction_intermediate_auc")
+            if row.get("binding_intermediate_auc") is None:
+                missing.append("binding_intermediate_auc")
             if (
-                row.get("induction_v2_investigation_status")
-                and row.get("induction_v2_investigation_status") != "ok"
+                row.get("induction_intermediate_status")
+                and row.get("induction_intermediate_status") != "ok"
             ):
-                missing.append("induction_v2_investigation_status")
+                missing.append("induction_intermediate_status")
             if (
-                row.get("binding_v2_investigation_status")
-                and row.get("binding_v2_investigation_status") != "ok"
+                row.get("binding_intermediate_status")
+                and row.get("binding_intermediate_status") != "ok"
             ):
-                missing.append("binding_v2_investigation_status")
+                missing.append("binding_intermediate_status")
             by_fp[fp] = {
                 "result_id": str(row.get("result_id") or ""),
                 "fp": fp,
@@ -178,7 +178,7 @@ def run_backfill(jsonl_path: Path, *, top: int, device: str, force: bool) -> Non
         "-m",
         "research.tools.backfill",
         "--probe",
-        "induction_v2,binding_v2",
+        "induction_intermediate,binding_intermediate",
         "--fingerprint-file",
         str(jsonl_path),
         "--top",
@@ -198,7 +198,7 @@ def run_backfill(jsonl_path: Path, *, top: int, device: str, force: bool) -> Non
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--db", default="research/lab_notebook.db")
+    parser.add_argument("--db", default="research/runs.db")
     parser.add_argument("--limit", type=int, default=50)
     parser.add_argument("--include-leaderboard", action="store_true", default=True)
     parser.add_argument("--investigation-only", action="store_true")

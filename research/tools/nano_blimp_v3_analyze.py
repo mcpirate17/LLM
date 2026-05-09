@@ -147,8 +147,8 @@ def _print_arch_table(
         print(
             f"{i:>4d} {r['result_id'][:30]:30s} {(r['template'] or '?')[:28]:28s} "
             f"{(m.get('composite') or 0):>6.0f} "
-            f"{m.get('induction_auc')!s:>6} "
-            f"{m.get('binding_auc')!s:>6} "
+            f"{m.get('induction_screening_auc')!s:>6} "
+            f"{m.get('binding_screening_auc')!s:>6} "
             f"{m.get('wikitext_perplexity')!s:>7} "
             f"{fmt('class_in_dist'):>11s} {fmt('class_held_out'):>11s} "
             f"{fmt('binding_in_dist'):>11s} {fmt('binding_held_out'):>11s} "
@@ -202,8 +202,8 @@ def _print_correlations(
         line = f"{v3_name:24s}"
         for meta_key in (
             "composite",
-            "induction_auc",
-            "binding_auc",
+            "induction_screening_auc",
+            "binding_screening_auc",
             "wikitext_perplexity",
         ):
             x, y = safe_pairs(v3_vals, col_meta(meta_key))

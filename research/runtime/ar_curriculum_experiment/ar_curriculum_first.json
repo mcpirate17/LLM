@@ -1,0 +1,715 @@
+{
+  "run_id": "ar_curriculum_first",
+  "vocab_size": 3200,
+  "vocab_lo": 1000,
+  "stage_configs": [
+    {
+      "n_keys": 32,
+      "n_values": 8,
+      "pairs_per_example": 2,
+      "n_train_pairs": 8,
+      "n_held_pairs": 4
+    },
+    {
+      "n_keys": 64,
+      "n_values": 12,
+      "pairs_per_example": 2,
+      "n_train_pairs": 16,
+      "n_held_pairs": 8
+    },
+    {
+      "n_keys": 128,
+      "n_values": 16,
+      "pairs_per_example": 3,
+      "n_train_pairs": 32,
+      "n_held_pairs": 16
+    },
+    {
+      "n_keys": 256,
+      "n_values": 24,
+      "pairs_per_example": 4,
+      "n_train_pairs": 64,
+      "n_held_pairs": 24
+    },
+    {
+      "n_keys": 512,
+      "n_values": 32,
+      "pairs_per_example": 6,
+      "n_train_pairs": 96,
+      "n_held_pairs": 32
+    },
+    {
+      "n_keys": 1024,
+      "n_values": 48,
+      "pairs_per_example": 9,
+      "n_train_pairs": 128,
+      "n_held_pairs": 48
+    }
+  ],
+  "archs": [
+    {
+      "arch_key": "gpt2",
+      "arch_name": "GPT-2",
+      "paradigm": "dense_attention_transformer",
+      "seed": 0,
+      "d_model": 256,
+      "n_layers": 6,
+      "steps_per_stage": 250,
+      "total_steps": 1500,
+      "elapsed_s": 6.08,
+      "status": "ok",
+      "error": null,
+      "auc_held_pair": 0.1406,
+      "auc_held_class": 0.2982,
+      "max_passing_stage": -1,
+      "per_stage_final": [
+        {
+          "stage": 0,
+          "n_key_tokens": 32,
+          "n_value_tokens": 8,
+          "pairs_per_example": 2,
+          "held_pair_acc": 0.3281,
+          "held_class_acc": 0.4531,
+          "chance_pair_acc": 0.125,
+          "chance_class_acc": 0.25
+        },
+        {
+          "stage": 1,
+          "n_key_tokens": 64,
+          "n_value_tokens": 12,
+          "pairs_per_example": 2,
+          "held_pair_acc": 0.1797,
+          "held_class_acc": 0.3203,
+          "chance_pair_acc": 0.0833,
+          "chance_class_acc": 0.25
+        },
+        {
+          "stage": 2,
+          "n_key_tokens": 128,
+          "n_value_tokens": 16,
+          "pairs_per_example": 3,
+          "held_pair_acc": 0.1406,
+          "held_class_acc": 0.3203,
+          "chance_pair_acc": 0.0625,
+          "chance_class_acc": 0.25
+        },
+        {
+          "stage": 3,
+          "n_key_tokens": 256,
+          "n_value_tokens": 24,
+          "pairs_per_example": 4,
+          "held_pair_acc": 0.0703,
+          "held_class_acc": 0.2578,
+          "chance_pair_acc": 0.0417,
+          "chance_class_acc": 0.25
+        },
+        {
+          "stage": 4,
+          "n_key_tokens": 512,
+          "n_value_tokens": 32,
+          "pairs_per_example": 6,
+          "held_pair_acc": 0.0547,
+          "held_class_acc": 0.2422,
+          "chance_pair_acc": 0.0312,
+          "chance_class_acc": 0.25
+        },
+        {
+          "stage": 5,
+          "n_key_tokens": 1024,
+          "n_value_tokens": 48,
+          "pairs_per_example": 9,
+          "held_pair_acc": 0.0703,
+          "held_class_acc": 0.1953,
+          "chance_pair_acc": 0.0208,
+          "chance_class_acc": 0.25
+        }
+      ],
+      "forgetting_matrix": [
+        [
+          0.4688,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        [
+          0.4844,
+          0.4688,
+          null,
+          null,
+          null,
+          null
+        ],
+        [
+          0.4844,
+          0.4297,
+          0.2656,
+          null,
+          null,
+          null
+        ],
+        [
+          0.3359,
+          0.3281,
+          0.3047,
+          0.1953,
+          null,
+          null
+        ],
+        [
+          0.4219,
+          0.1719,
+          0.1719,
+          0.1406,
+          0.0859,
+          null
+        ],
+        [
+          0.3281,
+          0.1797,
+          0.1406,
+          0.0703,
+          0.0547,
+          0.0703
+        ]
+      ],
+      "per_step_loss": [
+        2.6216,
+        1.2812,
+        1.2127,
+        1.156,
+        1.0303,
+        0.8055,
+        2.8379,
+        2.1552,
+        0.9784,
+        2.0338,
+        1.3138,
+        0.9603,
+        2.8476,
+        2.3013,
+        2.483,
+        2.0626,
+        2.1775,
+        2.1444,
+        3.1926,
+        3.1884,
+        3.0726,
+        2.4877,
+        2.7623,
+        3.0703,
+        3.5598,
+        3.5333,
+        3.3318,
+        3.4091,
+        3.2884,
+        3.3288,
+        3.9797,
+        3.8816,
+        4.1624,
+        3.907,
+        4.0995,
+        4.0373
+      ]
+    },
+    {
+      "arch_key": "mamba",
+      "arch_name": "Mamba",
+      "paradigm": "selective_state_space",
+      "seed": 0,
+      "d_model": 256,
+      "n_layers": 6,
+      "steps_per_stage": 250,
+      "total_steps": 1500,
+      "elapsed_s": 8.11,
+      "status": "ok",
+      "error": null,
+      "auc_held_pair": 0.2487,
+      "auc_held_class": 0.4036,
+      "max_passing_stage": 1,
+      "per_stage_final": [
+        {
+          "stage": 0,
+          "n_key_tokens": 32,
+          "n_value_tokens": 8,
+          "pairs_per_example": 2,
+          "held_pair_acc": 0.4609,
+          "held_class_acc": 0.5234,
+          "chance_pair_acc": 0.125,
+          "chance_class_acc": 0.25
+        },
+        {
+          "stage": 1,
+          "n_key_tokens": 64,
+          "n_value_tokens": 12,
+          "pairs_per_example": 2,
+          "held_pair_acc": 0.4219,
+          "held_class_acc": 0.5156,
+          "chance_pair_acc": 0.0833,
+          "chance_class_acc": 0.25
+        },
+        {
+          "stage": 2,
+          "n_key_tokens": 128,
+          "n_value_tokens": 16,
+          "pairs_per_example": 3,
+          "held_pair_acc": 0.25,
+          "held_class_acc": 0.4062,
+          "chance_pair_acc": 0.0625,
+          "chance_class_acc": 0.25
+        },
+        {
+          "stage": 3,
+          "n_key_tokens": 256,
+          "n_value_tokens": 24,
+          "pairs_per_example": 4,
+          "held_pair_acc": 0.2031,
+          "held_class_acc": 0.4766,
+          "chance_pair_acc": 0.0417,
+          "chance_class_acc": 0.25
+        },
+        {
+          "stage": 4,
+          "n_key_tokens": 512,
+          "n_value_tokens": 32,
+          "pairs_per_example": 6,
+          "held_pair_acc": 0.125,
+          "held_class_acc": 0.2812,
+          "chance_pair_acc": 0.0312,
+          "chance_class_acc": 0.25
+        },
+        {
+          "stage": 5,
+          "n_key_tokens": 1024,
+          "n_value_tokens": 48,
+          "pairs_per_example": 9,
+          "held_pair_acc": 0.0312,
+          "held_class_acc": 0.2188,
+          "chance_pair_acc": 0.0208,
+          "chance_class_acc": 0.25
+        }
+      ],
+      "forgetting_matrix": [
+        [
+          0.4922,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        [
+          0.4922,
+          0.4766,
+          null,
+          null,
+          null,
+          null
+        ],
+        [
+          0.4688,
+          0.3906,
+          0.2812,
+          null,
+          null,
+          null
+        ],
+        [
+          0.4688,
+          0.4531,
+          0.25,
+          0.1797,
+          null,
+          null
+        ],
+        [
+          0.4609,
+          0.4609,
+          0.2188,
+          0.2109,
+          0.1328,
+          null
+        ],
+        [
+          0.4609,
+          0.4219,
+          0.25,
+          0.2031,
+          0.125,
+          0.0312
+        ]
+      ],
+      "per_step_loss": [
+        2.7111,
+        1.2446,
+        0.8563,
+        1.0463,
+        0.8854,
+        0.8961,
+        3.0211,
+        2.2251,
+        1.4624,
+        0.8152,
+        1.15,
+        1.018,
+        3.2007,
+        2.436,
+        1.7758,
+        1.777,
+        2.2431,
+        1.9799,
+        3.5741,
+        2.7813,
+        2.8646,
+        2.0854,
+        2.5466,
+        2.4192,
+        3.5777,
+        3.2612,
+        3.4394,
+        3.3388,
+        3.1862,
+        2.7454,
+        3.9385,
+        3.8328,
+        3.9266,
+        3.6733,
+        3.8872,
+        3.7309
+      ]
+    },
+    {
+      "arch_key": "rwkv",
+      "arch_name": "RWKV",
+      "paradigm": "linear_attention_rnn",
+      "seed": 0,
+      "d_model": 256,
+      "n_layers": 6,
+      "steps_per_stage": 250,
+      "total_steps": 1500,
+      "elapsed_s": 11.24,
+      "status": "ok",
+      "error": null,
+      "auc_held_pair": 0.2799,
+      "auc_held_class": 0.4466,
+      "max_passing_stage": 1,
+      "per_stage_final": [
+        {
+          "stage": 0,
+          "n_key_tokens": 32,
+          "n_value_tokens": 8,
+          "pairs_per_example": 2,
+          "held_pair_acc": 0.5703,
+          "held_class_acc": 0.6172,
+          "chance_pair_acc": 0.125,
+          "chance_class_acc": 0.25
+        },
+        {
+          "stage": 1,
+          "n_key_tokens": 64,
+          "n_value_tokens": 12,
+          "pairs_per_example": 2,
+          "held_pair_acc": 0.4844,
+          "held_class_acc": 0.5781,
+          "chance_pair_acc": 0.0833,
+          "chance_class_acc": 0.25
+        },
+        {
+          "stage": 2,
+          "n_key_tokens": 128,
+          "n_value_tokens": 16,
+          "pairs_per_example": 3,
+          "held_pair_acc": 0.2812,
+          "held_class_acc": 0.4297,
+          "chance_pair_acc": 0.0625,
+          "chance_class_acc": 0.25
+        },
+        {
+          "stage": 3,
+          "n_key_tokens": 256,
+          "n_value_tokens": 24,
+          "pairs_per_example": 4,
+          "held_pair_acc": 0.1719,
+          "held_class_acc": 0.4219,
+          "chance_pair_acc": 0.0417,
+          "chance_class_acc": 0.25
+        },
+        {
+          "stage": 4,
+          "n_key_tokens": 512,
+          "n_value_tokens": 32,
+          "pairs_per_example": 6,
+          "held_pair_acc": 0.1016,
+          "held_class_acc": 0.3203,
+          "chance_pair_acc": 0.0312,
+          "chance_class_acc": 0.25
+        },
+        {
+          "stage": 5,
+          "n_key_tokens": 1024,
+          "n_value_tokens": 48,
+          "pairs_per_example": 9,
+          "held_pair_acc": 0.0703,
+          "held_class_acc": 0.3125,
+          "chance_pair_acc": 0.0208,
+          "chance_class_acc": 0.25
+        }
+      ],
+      "forgetting_matrix": [
+        [
+          0.5078,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        [
+          0.5469,
+          0.4609,
+          null,
+          null,
+          null,
+          null
+        ],
+        [
+          0.5469,
+          0.4297,
+          0.3672,
+          null,
+          null,
+          null
+        ],
+        [
+          0.5469,
+          0.4062,
+          0.3516,
+          0.1875,
+          null,
+          null
+        ],
+        [
+          0.5859,
+          0.4844,
+          0.3672,
+          0.1641,
+          0.1328,
+          null
+        ],
+        [
+          0.5703,
+          0.4844,
+          0.2812,
+          0.1719,
+          0.1016,
+          0.0703
+        ]
+      ],
+      "per_step_loss": [
+        2.914,
+        2.0698,
+        1.4713,
+        0.8317,
+        0.6811,
+        0.7404,
+        2.5135,
+        1.843,
+        1.1054,
+        1.0952,
+        0.8878,
+        0.9095,
+        3.2719,
+        2.0209,
+        2.0076,
+        2.3308,
+        1.8555,
+        1.5331,
+        3.732,
+        2.7161,
+        2.4131,
+        1.9132,
+        2.2138,
+        2.2416,
+        3.8941,
+        3.5014,
+        3.276,
+        3.2211,
+        3.3653,
+        2.6662,
+        3.9852,
+        3.8269,
+        3.8648,
+        3.8205,
+        3.7514,
+        3.6899
+      ]
+    },
+    {
+      "arch_key": "retrieval_augmented",
+      "arch_name": "Retrieval-Augmented",
+      "paradigm": "retrieval_augmented",
+      "seed": 0,
+      "d_model": 256,
+      "n_layers": 6,
+      "steps_per_stage": 250,
+      "total_steps": 1500,
+      "elapsed_s": 8.71,
+      "status": "ok",
+      "error": null,
+      "auc_held_pair": 0.1276,
+      "auc_held_class": 0.2826,
+      "max_passing_stage": -1,
+      "per_stage_final": [
+        {
+          "stage": 0,
+          "n_key_tokens": 32,
+          "n_value_tokens": 8,
+          "pairs_per_example": 2,
+          "held_pair_acc": 0.2969,
+          "held_class_acc": 0.3828,
+          "chance_pair_acc": 0.125,
+          "chance_class_acc": 0.25
+        },
+        {
+          "stage": 1,
+          "n_key_tokens": 64,
+          "n_value_tokens": 12,
+          "pairs_per_example": 2,
+          "held_pair_acc": 0.1875,
+          "held_class_acc": 0.3359,
+          "chance_pair_acc": 0.0833,
+          "chance_class_acc": 0.25
+        },
+        {
+          "stage": 2,
+          "n_key_tokens": 128,
+          "n_value_tokens": 16,
+          "pairs_per_example": 3,
+          "held_pair_acc": 0.125,
+          "held_class_acc": 0.2891,
+          "chance_pair_acc": 0.0625,
+          "chance_class_acc": 0.25
+        },
+        {
+          "stage": 3,
+          "n_key_tokens": 256,
+          "n_value_tokens": 24,
+          "pairs_per_example": 4,
+          "held_pair_acc": 0.0859,
+          "held_class_acc": 0.1875,
+          "chance_pair_acc": 0.0417,
+          "chance_class_acc": 0.25
+        },
+        {
+          "stage": 4,
+          "n_key_tokens": 512,
+          "n_value_tokens": 32,
+          "pairs_per_example": 6,
+          "held_pair_acc": 0.0469,
+          "held_class_acc": 0.3047,
+          "chance_pair_acc": 0.0312,
+          "chance_class_acc": 0.25
+        },
+        {
+          "stage": 5,
+          "n_key_tokens": 1024,
+          "n_value_tokens": 48,
+          "pairs_per_example": 9,
+          "held_pair_acc": 0.0234,
+          "held_class_acc": 0.1953,
+          "chance_pair_acc": 0.0208,
+          "chance_class_acc": 0.25
+        }
+      ],
+      "forgetting_matrix": [
+        [
+          0.5312,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        [
+          0.4141,
+          0.4688,
+          null,
+          null,
+          null,
+          null
+        ],
+        [
+          0.4062,
+          0.2422,
+          0.2344,
+          null,
+          null,
+          null
+        ],
+        [
+          0.3359,
+          0.2422,
+          0.2266,
+          0.1875,
+          null,
+          null
+        ],
+        [
+          0.25,
+          0.1641,
+          0.1875,
+          0.0859,
+          0.0312,
+          null
+        ],
+        [
+          0.2969,
+          0.1875,
+          0.125,
+          0.0859,
+          0.0469,
+          0.0234
+        ]
+      ],
+      "per_step_loss": [
+        2.8322,
+        2.1129,
+        1.9479,
+        1.3433,
+        0.9597,
+        1.0704,
+        2.9137,
+        2.6719,
+        1.369,
+        1.6672,
+        2.2155,
+        1.5712,
+        3.241,
+        2.3336,
+        2.6215,
+        2.7069,
+        2.7644,
+        2.6471,
+        3.854,
+        3.4688,
+        3.3689,
+        3.0789,
+        2.8609,
+        3.0706,
+        3.561,
+        3.682,
+        3.4132,
+        3.7137,
+        3.3619,
+        3.3458,
+        4.3385,
+        3.9093,
+        4.1092,
+        3.7453,
+        3.9066,
+        4.1318
+      ]
+    }
+  ]
+}

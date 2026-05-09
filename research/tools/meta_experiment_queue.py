@@ -80,7 +80,7 @@ def build_profile_refresh_queue(
                     ranked.failure_op,
                     ranked.routing_fast_lane_ppl_improvement,
                     ranked.wikitext_perplexity,
-                    ranked.controlled_lang_s05_sa_score,
+                    ranked.language_control_s05_sentence_assoc_score,
                     gp.profile_missing_op_count,
                     gp.profile_coverage_rate
                 FROM (
@@ -109,7 +109,7 @@ def build_profile_refresh_queue(
                     SUM(CASE WHEN gr.wikitext_perplexity < 200 THEN 1 ELSE 0 END)
                         AS good_wikitext_graphs,
                     AVG(gr.profile_coverage_rate) AS mean_profile_coverage,
-                    AVG(COALESCE(gr.controlled_lang_s05_sa_score, 0.0)) AS mean_controlled_sa
+                    AVG(COALESCE(gr.language_control_s05_sentence_assoc_score, 0.0)) AS mean_controlled_sa
                 FROM op_observations oo
                 JOIN graph_rows gr ON gr.result_id = oo.result_id
                 LEFT JOIN op_profile_catalog opc ON opc.op_name = oo.op_name
@@ -191,7 +191,7 @@ def build_compression_safety_queue(
                     AS good_wikitext_graphs,
                 AVG(frequency_collapse_risk) AS mean_frequency_risk,
                 AVG(has_effective_positional_mixer) AS effective_pos_mixer_rate,
-                AVG(COALESCE(controlled_lang_s05_sa_score, 0.0)) AS mean_controlled_sa
+                AVG(COALESCE(language_control_s05_sentence_assoc_score, 0.0)) AS mean_controlled_sa
             FROM slot_observations
             WHERE has_compression_motif = 1
               AND selected_motif IS NOT NULL
@@ -236,7 +236,7 @@ def build_compression_safety_queue(
                     "add_or_preserve_positional_or_content_mixer_after_compression"
                 ),
                 "evaluation_bundle": (
-                    "NanoBind + controlled_lang_s05 + WikiText + TinyStories + routing fast-lane"
+                    "NanoBind + language_control_s05 + WikiText + TinyStories + routing fast-lane"
                 ),
             }
         )

@@ -14,6 +14,7 @@ function ProgramDetail({ resultId, onClose, onActionComplete, onSelectExperiment
     alreadyInvestigated,
     alreadyValidated,
     canInvestigate,
+    canCapabilityRank,
     canValidate,
     canConfirm,
     handleLaunchRefinement,
@@ -183,6 +184,7 @@ function ProgramDetail({ resultId, onClose, onActionComplete, onSelectExperiment
               onActionComplete={onActionComplete}
               onClose={onClose}
               canInvestigate={canInvestigate}
+              canCapabilityRank={canCapabilityRank}
               canValidate={canValidate}
               canConfirm={canConfirm}
               alreadyInvestigated={alreadyInvestigated}

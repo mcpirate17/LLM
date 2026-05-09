@@ -29,6 +29,7 @@ class RuntimeEventServices:
     bus: RuntimeEventBus
     registry: RuntimeLifecycleRegistry
     projector_conn: Optional[sqlite3.Connection]
+    projector_state_conn: Optional[sqlite3.Connection]
     lifecycle_projector: Optional[LifecycleProjector]
     projector_worker: Optional[ProjectorWorker]
 
@@ -87,6 +88,7 @@ def get_runtime_event_services(
             bus=bus,
             registry=registry,
             projector_conn=None,
+            projector_state_conn=None,
             lifecycle_projector=None,
             projector_worker=None,
         )
@@ -199,6 +201,17 @@ def _shutdown_services(services: RuntimeEventServices) -> None:
             services.projector_conn.close()  # No-op for NativeConnectionWrapper
     except Exception:
         logger.debug("Failed to close projector connection cleanly", exc_info=True)
+    try:
+        if services.projector_state_conn is not None:
+            services.projector_state_conn.close()
+    except Exception:
+        logger.debug(
+            "Failed to close projector state connection cleanly", exc_info=True
+        )
+
+
+def runtime_events_state_db_for(notebook_path: str | Path) -> Path:
+    return Path(notebook_path).resolve().parent / "events.db"
 
 
 def _ensure_projector_initialized(
@@ -206,6 +219,7 @@ def _ensure_projector_initialized(
 ) -> None:
     if (
         services.projector_conn is not None
+        and services.projector_state_conn is not None
         and services.lifecycle_projector is not None
         and services.projector_worker is not None
     ):
@@ -217,9 +231,22 @@ def _ensure_projector_initialized(
     )
     projector_conn.execute("PRAGMA foreign_keys=ON")
     projector_conn.execute("PRAGMA busy_timeout=15000")
-    lifecycle_projector = LifecycleProjector(projector_conn, spool=services.spool)
+    state_db = runtime_events_state_db_for(notebook_path)
+    state_conn = sqlite3.connect(
+        str(state_db),
+        timeout=10.0,
+        check_same_thread=False,
+    )
+    state_conn.execute("PRAGMA busy_timeout=15000")
+    state_conn.execute("PRAGMA journal_mode=WAL")
+    lifecycle_projector = LifecycleProjector(
+        projector_conn,
+        spool=services.spool,
+        state_conn=state_conn,
+    )
     projector_worker = ProjectorWorker(lifecycle_projector.replay_once)
     services.projector_conn = projector_conn
+    services.projector_state_conn = state_conn
     services.lifecycle_projector = lifecycle_projector
     services.projector_worker = projector_worker
 

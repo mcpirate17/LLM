@@ -32,6 +32,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from research.orchestrator.executor import JobResult  # noqa: E402
 from research.scientist.notebook import LabNotebook  # noqa: E402
+from research.scientist.notebook.graph_artifacts import resolve_graph_json_value  # noqa: E402
 from research.scientist.runner import ExperimentRunner  # noqa: E402
 from research.scientist.runner._types import RunConfig  # noqa: E402
 from research.scientist.runner.execution_screening import (  # noqa: E402
@@ -56,7 +57,7 @@ from research.tools.focused_op_deletion_ablation import (  # noqa: E402
 from research.training.loss_ops import next_token_cross_entropy  # noqa: E402
 
 
-DB_PATH = PROJECT_ROOT / "research/lab_notebook.db"
+DB_PATH = PROJECT_ROOT / "research/runs.db"
 RUNTIME_DIR = PROJECT_ROOT / "research/runtime"
 GOOGLE_BACKUP_ROOT = Path("/home/tim/GoogleDrive/Backups/LLM_Research")
 LOGGER = logging.getLogger("proper_component_knockout_ablation")
@@ -66,10 +67,10 @@ S1_METRIC_COLUMNS = (
     "wikitext_perplexity",
     "hellaswag_acc",
     "blimp_overall_accuracy",
-    "induction_auc",
-    "binding_auc",
-    "binding_composite",
-    "ar_auc",
+    "induction_screening_auc",
+    "binding_screening_auc",
+    "binding_screening_composite",
+    "ar_legacy_auc",
 )
 
 INVESTIGATION_METRIC_COLUMNS = (
@@ -77,18 +78,18 @@ INVESTIGATION_METRIC_COLUMNS = (
     "wikitext_perplexity",
     "hellaswag_acc",
     "blimp_overall_accuracy",
-    "induction_auc",
-    "binding_auc",
-    "binding_composite",
-    "ar_auc",
-    "induction_v2_investigation_auc",
-    "induction_v2_investigation_max_gap_acc",
-    "induction_v2_investigation_status",
-    "induction_v2_investigation_protocol_version",
-    "binding_v2_investigation_auc",
-    "binding_v2_investigation_max_distance_acc",
-    "binding_v2_investigation_status",
-    "binding_v2_investigation_protocol_version",
+    "induction_screening_auc",
+    "binding_screening_auc",
+    "binding_screening_composite",
+    "ar_legacy_auc",
+    "induction_intermediate_auc",
+    "induction_intermediate_max_gap_acc",
+    "induction_intermediate_status",
+    "induction_intermediate_protocol_version",
+    "binding_intermediate_auc",
+    "binding_intermediate_max_distance_acc",
+    "binding_intermediate_status",
+    "binding_intermediate_protocol_version",
 )
 
 DEFAULT_TARGET_OPS = (
@@ -340,7 +341,7 @@ def build_component_children(
     return children, rejected
 
 
-def select_induction_v2_parents(
+def select_induction_intermediate_parents(
     nb: LabNotebook,
     *,
     top_k: int,
@@ -364,25 +365,25 @@ def select_induction_v2_parents(
         f"""
         SELECT pr.result_id, pr.experiment_id, pr.graph_fingerprint, pr.graph_json,
                pr.loss_ratio, e.config_json, l.composite_score,
-               pr.induction_v2_investigation_auc,
-               pr.binding_v2_investigation_auc
+               pr.induction_intermediate_auc,
+               pr.binding_intermediate_auc
         FROM leaderboard l
         JOIN program_results pr ON pr.result_id = l.result_id
         LEFT JOIN experiments e ON e.experiment_id = pr.experiment_id
         WHERE COALESCE(pr.stage1_passed, 0) = 1
           AND TRIM(COALESCE(pr.graph_json, '')) <> ''
-          AND pr.induction_v2_investigation_auc IS NOT NULL
-          AND pr.induction_v2_investigation_status = 'ok'
+          AND pr.induction_intermediate_auc IS NOT NULL
+          AND pr.induction_intermediate_status = 'ok'
           AND pr.wikitext_perplexity IS NOT NULL
           AND pr.hellaswag_acc IS NOT NULL
           AND pr.blimp_overall_accuracy IS NOT NULL
-          AND pr.induction_auc IS NOT NULL
-          AND pr.binding_auc IS NOT NULL
-          AND pr.binding_composite IS NOT NULL
-          AND pr.ar_auc IS NOT NULL
+          AND pr.induction_screening_auc IS NOT NULL
+          AND pr.binding_screening_auc IS NOT NULL
+          AND pr.binding_screening_composite IS NOT NULL
+          AND pr.ar_legacy_auc IS NOT NULL
           {reference_clause}
           {parent_filter}
-        ORDER BY pr.induction_v2_investigation_auc DESC,
+        ORDER BY pr.induction_intermediate_auc DESC,
                  COALESCE(l.composite_score, 0) DESC,
                  pr.loss_ratio ASC
         LIMIT ?
@@ -392,7 +393,8 @@ def select_induction_v2_parents(
     parents: list[ParentCandidate] = []
     seen_fingerprints: set[str] = set()
     for row in rows:
-        graph = graph_from_json(str(row["graph_json"]))
+        graph_json = resolve_graph_json_value(nb.conn, nb.db_path, row["graph_json"])
+        graph = graph_from_json(graph_json)
         fingerprint = str(row["graph_fingerprint"] or graph.fingerprint())
         if fingerprint in seen_fingerprints:
             continue
@@ -1026,8 +1028,8 @@ def build_plans(
     rank_by: str = "composite",
     target_op_names: set[str] | None = None,
 ) -> list[ParentPlan]:
-    if rank_by == "induction_v2":
-        parents = select_induction_v2_parents(
+    if rank_by == "induction_intermediate":
+        parents = select_induction_intermediate_parents(
             nb,
             top_k=max(1, int(top_k)),
             include_references=bool(include_references),
@@ -1094,9 +1096,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--top-k", type=int, default=2)
     parser.add_argument(
         "--rank-by",
-        choices=("composite", "induction_v2"),
+        choices=("composite", "induction_intermediate"),
         default="composite",
-        help="Parent selection order. induction_v2 requires complete v2 parent rows.",
+        help="Parent selection order. induction_intermediate requires complete v2 parent rows.",
     )
     parser.add_argument(
         "--parent-result-id",
@@ -1122,7 +1124,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--default-induction-targets",
         action="store_true",
-        help="Use the curated induction-v2 target op set.",
+        help="Use the curated induction-intermediate target op set.",
     )
     parser.add_argument("--s1-only", action="store_true")
     parser.add_argument("--investigation-only", action="store_true")

@@ -32,6 +32,8 @@ import torch
 from research.synthesis.compiler import compile_model
 from research.synthesis.serializer import graph_from_json
 from research.eval.utils import micro_train_loop
+from research.defaults import RUNS_DB
+from research.scientist.notebook.graph_artifacts import resolve_graph_json_value
 from research.tools._db_maintenance import connect_readonly
 
 logger = logging.getLogger(__name__)
@@ -52,8 +54,8 @@ def _select_entries(db: Path, n: int, entry_ids: list[str] | None) -> list[dict]
                 f"""
                 SELECT l.entry_id, l.composite_score, l.tier, l.result_id,
                        pr.graph_fingerprint, pr.graph_json,
-                       pr.induction_v2_investigation_auc AS iv2,
-                       pr.binding_v2_investigation_auc AS bv2,
+                       pr.induction_intermediate_auc AS iv2,
+                       pr.binding_intermediate_auc AS bv2,
                        pgf.template_name
                 FROM leaderboard l
                 JOIN program_results pr ON pr.result_id = l.result_id
@@ -63,15 +65,15 @@ def _select_entries(db: Path, n: int, entry_ids: list[str] | None) -> list[dict]
                 """,
                 entry_ids,
             ).fetchall()
-            by_id = {r["entry_id"]: dict(r) for r in rows}
+            by_id = {r["entry_id"]: _resolve_graph_row(conn, db, dict(r)) for r in rows}
             return [by_id[e] for e in entry_ids if e in by_id]
 
         rows = conn.execute(
             """
             SELECT l.entry_id, l.composite_score, l.tier, l.result_id,
                    pr.graph_fingerprint, pr.graph_json,
-                   pr.induction_v2_investigation_auc AS iv2,
-                   pr.binding_v2_investigation_auc AS bv2,
+                   pr.induction_intermediate_auc AS iv2,
+                   pr.binding_intermediate_auc AS bv2,
                    pgf.template_name
             FROM leaderboard l
             JOIN program_results pr ON pr.result_id = l.result_id
@@ -83,9 +85,18 @@ def _select_entries(db: Path, n: int, entry_ids: list[str] | None) -> list[dict]
             """,
             (n,),
         ).fetchall()
-        return [dict(r) for r in rows]
+        return [_resolve_graph_row(conn, db, dict(r)) for r in rows]
     finally:
         conn.close()
+
+
+def _resolve_graph_row(
+    conn,
+    db: Path,
+    row: dict,
+) -> dict:
+    row["graph_json"] = resolve_graph_json_value(conn, db, row.get("graph_json"))
+    return row
 
 
 def _train_model(
@@ -152,22 +163,22 @@ def _run_all_probes(model: torch.nn.Module, *, device: str) -> dict:
     out: dict = {}
 
     # 1. v2 induction (default gaps 4-64) — pre-trajectory so deepcopy works
-    from research.eval.induction_probe_v2_investigation import (
-        run_induction_v2_investigation,
+    from research.eval.induction_intermediate_probe import (
+        run_induction_intermediate,
     )
 
-    out["induction_v2_default"] = _safe_run(
-        "induction_v2_default",
-        lambda: run_induction_v2_investigation(model, device=device),
+    out["induction_intermediate_default"] = _safe_run(
+        "induction_intermediate_default",
+        lambda: run_induction_intermediate(model, device=device),
     )
 
     # 2. v2 binding
-    from research.eval.binding_probe_v2_investigation import (
-        run_binding_v2_investigation,
+    from research.eval.binding_intermediate_probe import (
+        run_binding_intermediate,
     )
 
-    out["binding_v2"] = _safe_run(
-        "binding_v2", lambda: run_binding_v2_investigation(model, device=device)
+    out["binding_intermediate"] = _safe_run(
+        "binding_intermediate", lambda: run_binding_intermediate(model, device=device)
     )
 
     # 3. passkey
@@ -227,9 +238,9 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument(
         "--db",
-        default="research/lab_notebook.db",
+        default=RUNS_DB,
         type=Path,
-        help="lab notebook path",
+        help=f"runs DB path (default: {RUNS_DB})",
     )
     ap.add_argument("--top-n", type=int, default=10)
     ap.add_argument(

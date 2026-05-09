@@ -12,6 +12,7 @@ from ..leaderboard_scoring import (
     compute_efficiency_multiple as _compute_efficiency_multiple,
     compute_pre_investigation_score as _compute_pre_investigation_score,
 )
+from .graph_artifacts import resolve_graph_json_value
 
 
 class _ReferencesMixin:
@@ -67,6 +68,11 @@ class _ReferencesMixin:
                 raw_graph_json = row[0] if row else None
             if not raw_graph_json:
                 return {"routing": None, "sparse": None, "moe": None}
+            raw_graph_json = resolve_graph_json_value(
+                self.conn,
+                self.db_path,
+                raw_graph_json,
+            )
             graph_data = _json_loads(raw_graph_json)
             nodes = graph_data.get("nodes", [])
             if isinstance(nodes, dict):
@@ -322,8 +328,15 @@ class _ReferencesMixin:
         for row in rows:
             entry = dict(row)
             entry["graph_fingerprint"] = entry.pop("_graph_fingerprint", None)
+            graph_json = entry.pop("_graph_json", None)
+            if graph_json:
+                graph_json = resolve_graph_json_value(
+                    self.conn,
+                    self.db_path,
+                    graph_json,
+                )
             family = self._classify_architecture_family(
-                graph_json=entry.pop("_graph_json", None),
+                graph_json=graph_json,
                 routing_mode=entry.pop("_routing_mode", None),
             )
             if family == "Unknown":

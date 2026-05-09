@@ -13,13 +13,14 @@ from pathlib import Path
 from typing import Any
 
 from research.scientist.notebook import LabNotebook
+from research.scientist.notebook.graph_artifacts import resolve_graph_json_value
 from research.synthesis.context_rules import find_byte_safety_violations
 from research.synthesis.serializer import graph_from_json
 from research.tools._candidate_selection import fetch_latest_unique_fingerprint_rows
 from research.tools._fingerprint_selection import dedupe_records_by_fingerprint
 
 BASE = Path(__file__).resolve().parents[2]
-DB_PATH = BASE / "research/lab_notebook.db"
+DB_PATH = BASE / "research/runs.db"
 OUT_DIR = BASE / "research/reports/binding_pilot"
 
 
@@ -79,7 +80,7 @@ def _choose_manifest(limit: int, order: str) -> list[dict[str, Any]]:
                 """,
                 extra_where_sql="""
                     AND COALESCE(pr.stage1_passed, 0) = 1
-                    AND pr.binding_auc IS NULL
+                    AND pr.binding_screening_auc IS NULL
                 """,
                 limit=fetch_limit,
             )
@@ -102,11 +103,11 @@ def _choose_manifest(limit: int, order: str) -> list[dict[str, Any]]:
               AND COALESCE(pr.stage05_passed, 0) = 1
               AND TRIM(COALESCE(pr.graph_json, '')) <> ''
               AND pr.graph_json <> '{}'
-              AND pr.binding_auc IS NULL
+              AND pr.binding_screening_auc IS NULL
             ORDER BY l.composite_score DESC,
                      CASE WHEN bpe_ppl IS NULL THEN 1 ELSE 0 END ASC,
                      bpe_ppl ASC,
-                     COALESCE(pr.induction_auc, -1.0) DESC,
+                     COALESCE(pr.induction_screening_auc, -1.0) DESC,
                      e.timestamp DESC,
                      pr.result_id DESC
             LIMIT ?
@@ -116,7 +117,11 @@ def _choose_manifest(limit: int, order: str) -> list[dict[str, Any]]:
             {
                 "result_id": str(row["result_id"]),
                 "graph_fingerprint": str(row["graph_fingerprint"] or ""),
-                "graph_json": str(row["graph_json"] or ""),
+                "graph_json": resolve_graph_json_value(
+                    nb.conn,
+                    nb.db_path,
+                    row["graph_json"],
+                ),
                 "timestamp": float(row["ts"]),
                 "composite_score": float(row["composite_score"] or 0.0),
             }
@@ -261,7 +266,7 @@ def _load_completed_binding_result_ids(result_ids: set[str]) -> set[str]:
             SELECT result_id
             FROM program_results
             WHERE result_id IN ({placeholders})
-              AND binding_auc IS NOT NULL
+              AND binding_screening_auc IS NOT NULL
             """,
             tuple(sorted(result_ids)),
         ).fetchall()

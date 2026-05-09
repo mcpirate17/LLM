@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import sqlite3
 import statistics
 import time
@@ -15,16 +14,22 @@ from typing import Any
 import torch
 
 from research.eval.champion_floor_metrics import lookup_gpt2_champion_baseline
-from research.eval.small_ar_champion import SmallARChampionConfig, run_small_ar_champion
-from research.scientist.leaderboard_scoring import compute_champion_tiny_model_score_v1
+from research.eval.ar_validation import ARValidationConfig, run_ar_validation
+from research.scientist.leaderboard_scoring import (
+    CHAMPION_INDUCTION_V3_PROTOCOLS,
+    compute_champion_tiny_model_score_v1,
+)
 from research.scientist.native_runner import compile_model_native_first
+from research.scientist.notebook.graph_artifacts import resolve_graph_json_value
 from research.scientist.notebook._shared import _PROGRAM_RESULTS_NEW_COLUMNS
+from research.scientist.runner._helpers import clear_gpu_memory
+from research.scientist.shared_utils import coerce_finite_float as _finite
 from research.synthesis.serializer import graph_from_json
 from research.tools.check_backup_freshness import main as check_backup_freshness_main
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_DB = PROJECT_ROOT / "research/lab_notebook.db"
+DEFAULT_DB = PROJECT_ROOT / "research/runs.db"
 DEFAULT_CHECKPOINT_ROOT = PROJECT_ROOT / "checkpoints/_investigation_artifacts"
 DEFAULT_REPORT_DIR = PROJECT_ROOT / "research/runtime/champion_reference_tests"
 
@@ -39,35 +44,6 @@ REFERENCE_TARGETS = {
         "kind": "frontier",
     },
 }
-
-
-def _finite(value: Any) -> float | None:
-    try:
-        out = float(value)
-    except (TypeError, ValueError):
-        return None
-    return out if math.isfinite(out) else None
-
-
-def _json_dict(value: Any) -> dict[str, Any]:
-    if isinstance(value, dict):
-        return value
-    if not value:
-        return {}
-    try:
-        loaded = json.loads(str(value))
-    except (TypeError, json.JSONDecodeError):
-        return {}
-    return loaded if isinstance(loaded, dict) else {}
-
-
-def _gap_cv(value: Any) -> float | None:
-    vals = [_finite(v) for v in _json_dict(value).values()]
-    nums = [v for v in vals if v is not None]
-    if len(nums) < 2:
-        return None
-    mean = statistics.fmean(nums)
-    return statistics.pstdev(nums) / mean if mean > 0.0 else None
 
 
 def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
@@ -85,7 +61,10 @@ def ensure_program_result_columns(conn: sqlite3.Connection) -> list[str]:
     return added
 
 
-def _select_rows(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
+def _select_rows(
+    conn: sqlite3.Connection,
+    db_path: Path,
+) -> dict[str, dict[str, Any]]:
     columns = _table_columns(conn, "program_results")
     wanted = [
         "result_id",
@@ -93,23 +72,37 @@ def _select_rows(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
         "graph_json",
         "final_loss",
         "wikitext_perplexity",
-        "induction_v2_investigation_auc",
-        "induction_v2_investigation_max_gap_acc",
-        "induction_v2_investigation_gap_accuracies_json",
-        "induction_v2_investigation_steps_trained",
-        "induction_v2_investigation_status",
-        "induction_v2_investigation_elapsed_ms",
-        "binding_v2_investigation_auc",
+        "induction_intermediate_auc",
+        "induction_intermediate_max_gap_acc",
+        "induction_intermediate_gap_accuracies_json",
+        "induction_intermediate_steps_trained",
+        "induction_intermediate_status",
+        "induction_intermediate_elapsed_ms",
+        "induction_validation_auc",
+        "induction_validation_max_gap_acc",
+        "induction_validation_gap_accuracy_cv",
+        "induction_validation_gap_accuracies_json",
+        "induction_validation_steps_trained",
+        "induction_validation_status",
+        "induction_validation_elapsed_ms",
+        "induction_validation_protocol_version",
+        "binding_intermediate_auc",
+        "binding_intermediate_max_distance_acc",
+        "binding_intermediate_distance_accuracies_json",
+        "binding_intermediate_train_steps",
+        "binding_intermediate_status",
+        "binding_intermediate_elapsed_ms",
+        "binding_intermediate_protocol_version",
         "robustness_long_ctx_combined_score",
-        "small_ar_champion_metric_version",
-        "small_ar_champion_final_acc",
-        "small_ar_champion_held_pair_match_acc",
-        "small_ar_champion_held_class_acc",
-        "small_ar_champion_learning_curve_json",
-        "small_ar_champion_steps_to_floor",
-        "small_ar_champion_score",
-        "small_ar_champion_status",
-        "small_ar_champion_elapsed_ms",
+        "ar_validation_metric_version",
+        "ar_validation_final_acc",
+        "ar_validation_held_pair_acc",
+        "ar_validation_held_class_acc",
+        "ar_validation_learning_curve_json",
+        "ar_validation_steps_to_floor",
+        "ar_validation_rank_score",
+        "ar_validation_status",
+        "ar_validation_elapsed_ms",
     ]
     selected = [col for col in wanted if col in columns]
     ids = list(REFERENCE_TARGETS)
@@ -119,7 +112,17 @@ def _select_rows(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
         f"WHERE result_id IN ({placeholders})",
         ids,
     ).fetchall()
-    return {str(row["result_id"]): dict(row) for row in rows}
+    out: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        payload = dict(row)
+        if "graph_json" in payload:
+            payload["graph_json"] = resolve_graph_json_value(
+                conn,
+                db_path,
+                payload["graph_json"],
+            )
+        out[str(row["result_id"])] = payload
+    return out
 
 
 def _checkpoint_path(row: dict[str, Any], checkpoint_root: Path) -> Path | None:
@@ -173,30 +176,119 @@ def _materialize_gpt2_floor(row: dict[str, Any], layers: int) -> dict[str, Any]:
     }
 
 
-def _materialize_induction_v3(row: dict[str, Any]) -> dict[str, Any]:
-    steps = int(row.get("induction_v2_investigation_steps_trained") or 0)
-    if steps != 5_000:
-        return {
-            "induction_v3_status": "missing_champion_budget",
-            "induction_v3_protocol_version": None,
-        }
-    return {
-        "induction_v3_auc": row.get("induction_v2_investigation_auc"),
-        "induction_v3_max_gap_acc": row.get("induction_v2_investigation_max_gap_acc"),
-        "induction_v3_gap_accuracy_cv": _gap_cv(
-            row.get("induction_v2_investigation_gap_accuracies_json")
-        ),
-        "induction_v3_gap_accuracies_json": row.get(
-            "induction_v2_investigation_gap_accuracies_json"
-        ),
-        "induction_v3_steps_trained": steps,
-        "induction_v3_status": row.get("induction_v2_investigation_status") or "ok",
-        "induction_v3_elapsed_ms": row.get("induction_v2_investigation_elapsed_ms"),
-        "induction_v3_protocol_version": "induction_v3_head_counterfactual_5k",
-    }
+def _existing_champion_probe_fields(row: dict[str, Any]) -> dict[str, Any]:
+    keys = (
+        "induction_validation_auc",
+        "induction_validation_max_gap_acc",
+        "induction_validation_gap_accuracy_cv",
+        "induction_validation_gap_accuracies_json",
+        "induction_validation_steps_trained",
+        "induction_validation_status",
+        "induction_validation_elapsed_ms",
+        "induction_validation_protocol_version",
+        "binding_intermediate_auc",
+        "binding_intermediate_max_distance_acc",
+        "binding_intermediate_distance_accuracies_json",
+        "binding_intermediate_train_steps",
+        "binding_intermediate_status",
+        "binding_intermediate_elapsed_ms",
+        "binding_intermediate_protocol_version",
+    )
+    fields = {key: row.get(key) for key in keys if row.get(key) is not None}
+    protocol = str(fields.get("induction_validation_protocol_version") or "").strip()
+    if protocol and protocol not in CHAMPION_INDUCTION_V3_PROTOCOLS:
+        fields["induction_validation_auc"] = None
+        fields["induction_validation_max_gap_acc"] = None
+        fields["induction_validation_gap_accuracy_cv"] = None
+        fields["induction_validation_status"] = f"invalid_protocol:{protocol}"
+    elif not protocol:
+        fields.setdefault("induction_validation_status", "missing_not_run")
+    return fields
 
 
-def _run_small_ar_if_requested(
+def _champion_probe_fields_from_model(model, *, device: str, induction_steps: int):
+    from research.eval.binding_intermediate_probe import (
+        run_binding_intermediate,
+    )
+    from research.eval.induction_validation_probe import (
+        run_induction_validation_champion,
+    )
+
+    metrics: dict[str, Any] = {}
+    induction = run_induction_validation_champion(
+        model,
+        device=device,
+        n_train_steps=int(induction_steps),
+    ).to_dict()
+    if "induction_validation_gap_accuracies" in induction:
+        induction["induction_validation_gap_accuracies_json"] = json.dumps(
+            induction.pop("induction_validation_gap_accuracies"),
+            sort_keys=True,
+        )
+    metrics.update(induction)
+
+    binding = run_binding_intermediate(model, device=device).to_dict()
+    if "binding_intermediate_distance_accuracies" in binding:
+        binding["binding_intermediate_distance_accuracies_json"] = json.dumps(
+            binding.pop("binding_intermediate_distance_accuracies"),
+            sort_keys=True,
+        )
+    metrics.update(binding)
+    return metrics
+
+
+def _run_champion_probes_if_requested(
+    row: dict[str, Any],
+    *,
+    target: dict[str, Any],
+    checkpoint_root: Path,
+    device: str,
+    induction_steps: int,
+    force: bool,
+    run_probe: bool,
+    allow_cpu: bool,
+) -> tuple[dict[str, Any], str | None]:
+    existing = _existing_champion_probe_fields(row)
+    protocol = str(existing.get("induction_validation_protocol_version") or "").strip()
+    has_valid_induction = (
+        protocol in CHAMPION_INDUCTION_V3_PROTOCOLS
+        and _finite(existing.get("induction_validation_auc")) is not None
+    )
+    has_binding = _finite(existing.get("binding_intermediate_auc")) is not None
+    if has_valid_induction and has_binding and not force:
+        return existing, None
+    if not run_probe:
+        return existing, None
+    if torch.device(device).type == "cpu" and not allow_cpu:
+        existing["induction_validation_status"] = "missing_accelerator"
+        existing["binding_intermediate_status"] = "missing_accelerator"
+        return existing, None
+    path = _checkpoint_path(row, checkpoint_root)
+    if path is None:
+        existing["induction_validation_status"] = "missing_checkpoint"
+        existing["binding_intermediate_status"] = "missing_checkpoint"
+        return existing, None
+    model = _load_checkpoint_model(
+        row,
+        layers=int(target["layers"]),
+        checkpoint_path=path,
+        device=device,
+    )
+    try:
+        return (
+            _champion_probe_fields_from_model(
+                model,
+                device=device,
+                induction_steps=int(induction_steps),
+            ),
+            str(path),
+        )
+    finally:
+        del model
+        clear_gpu_memory()
+
+
+def _run_ar_validation_if_requested(
     row: dict[str, Any],
     *,
     target: dict[str, Any],
@@ -206,14 +298,17 @@ def _run_small_ar_if_requested(
     timeout_s: float,
     force: bool,
     run_probe: bool,
+    allow_cpu: bool,
 ) -> tuple[dict[str, Any], str | None]:
-    if row.get("small_ar_champion_status") == "ok" and not force:
-        return {k: row.get(k) for k in row if k.startswith("small_ar_champion_")}, None
+    if row.get("ar_validation_status") == "ok" and not force:
+        return {k: row.get(k) for k in row if k.startswith("ar_validation_")}, None
     if not run_probe:
-        return {"small_ar_champion_status": "missing_not_run"}, None
+        return {"ar_validation_status": "missing_not_run"}, None
+    if torch.device(device).type == "cpu" and not allow_cpu:
+        return {"ar_validation_status": "missing_accelerator"}, None
     path = _checkpoint_path(row, checkpoint_root)
     if path is None:
-        return {"small_ar_champion_status": "missing_checkpoint"}, None
+        return {"ar_validation_status": "missing_checkpoint"}, None
     model = _load_checkpoint_model(
         row,
         layers=int(target["layers"]),
@@ -221,16 +316,15 @@ def _run_small_ar_if_requested(
         device=device,
     )
     try:
-        result = run_small_ar_champion(
+        result = run_ar_validation(
             model,
-            cfg=SmallARChampionConfig(train_steps=train_steps, timeout_s=timeout_s),
+            cfg=ARValidationConfig(train_steps=train_steps, timeout_s=timeout_s),
             device=device,
         )
         return result.to_dict(), str(path)
     finally:
         del model
-        if device == "cuda":
-            torch.cuda.empty_cache()
+        clear_gpu_memory()
 
 
 def _champion_score_fields(
@@ -248,35 +342,33 @@ def _champion_score_fields(
         champion_baseline_floor_loss_std=metrics.get(
             "champion_baseline_floor_loss_std"
         ),
-        induction_v3_auc=metrics.get("induction_v3_auc"),
-        induction_v3_gap_accuracy_cv=metrics.get("induction_v3_gap_accuracy_cv"),
-        binding_v2_investigation_auc=row.get("binding_v2_investigation_auc"),
+        induction_validation_auc=metrics.get("induction_validation_auc"),
+        induction_validation_gap_accuracy_cv=metrics.get(
+            "induction_validation_gap_accuracy_cv"
+        ),
+        binding_intermediate_auc=metrics.get("binding_intermediate_auc")
+        if metrics.get("binding_intermediate_auc") is not None
+        else row.get("binding_intermediate_auc"),
         robustness_long_ctx_combined_score=row.get(
             "robustness_long_ctx_combined_score"
         ),
         champion_baseline_long_ctx_combined_score=metrics.get(
             "champion_baseline_long_ctx_combined_score"
         ),
-        small_ar_champion_held_pair_match_acc=metrics.get(
-            "small_ar_champion_held_pair_match_acc"
-        ),
-        small_ar_champion_held_class_acc=metrics.get(
-            "small_ar_champion_held_class_acc"
-        ),
-        small_ar_champion_steps_to_floor=metrics.get(
-            "small_ar_champion_steps_to_floor"
-        ),
-        champion_baseline_small_ar_steps_to_floor=metrics.get(
-            "champion_baseline_small_ar_steps_to_floor"
+        ar_validation_held_pair_acc=metrics.get("ar_validation_held_pair_acc"),
+        ar_validation_held_class_acc=metrics.get("ar_validation_held_class_acc"),
+        ar_validation_steps_to_floor=metrics.get("ar_validation_steps_to_floor"),
+        champion_baseline_ar_validation_steps_to_floor=metrics.get(
+            "champion_baseline_ar_validation_steps_to_floor"
         ),
     )
     return {
         "champion_steps_to_floor_score": score["steps_to_floor"],
         "champion_floor_quality_score": score["floor_quality"],
         "champion_floor_stability_score": score["floor_stability"],
-        "champion_induction_v3_score": score["induction_v3"],
+        "champion_induction_validation_score": score["induction_validation"],
         "champion_binding_long_context_score": score["binding_long_context"],
-        "champion_small_ar_score": score["small_ar"],
+        "champion_ar_validation_score": score["ar_validation"],
         "champion_tiny_model_score": score["total"],
         "champion_tiny_model_protocol_version": score["protocol_version"],
         "champion_hard_failure_reason": score["hard_failure_reason"],
@@ -317,14 +409,14 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     }
     try:
         added = ensure_program_result_columns(conn) if args.write else []
-        rows = _select_rows(conn)
+        rows = _select_rows(conn, Path(args.db))
         long_ctx_vals = [
             _finite(row.get("robustness_long_ctx_combined_score"))
             for rid, row in rows.items()
             if rid.startswith("gpt2cal")
         ]
         long_ctx_base = statistics.fmean(v for v in long_ctx_vals if v is not None)
-        small_ar_steps: list[float] = []
+        ar_validation_steps: list[float] = []
         pending: list[tuple[str, dict[str, Any], dict[str, Any], dict[str, Any]]] = []
 
         for result_id, target in REFERENCE_TARGETS.items():
@@ -348,31 +440,48 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                         "champion_hard_failure_reason": "missing_training_curve",
                     }
                 )
-            metrics.update(_materialize_induction_v3(row))
-            small_ar, artifact_path = _run_small_ar_if_requested(
+            champion_probes, champion_artifact_path = _run_champion_probes_if_requested(
                 row,
                 target=target,
                 checkpoint_root=Path(args.checkpoint_root),
                 device=str(args.device),
-                train_steps=int(args.small_ar_train_steps),
-                timeout_s=float(args.small_ar_timeout_s),
-                force=bool(args.force_small_ar),
-                run_probe=bool(args.run_small_ar),
+                induction_steps=int(args.champion_induction_steps),
+                force=bool(args.force_champion_probes),
+                run_probe=bool(args.run_champion_probes),
+                allow_cpu=bool(args.allow_cpu),
             )
-            metrics.update(small_ar)
-            step = _finite(metrics.get("small_ar_champion_steps_to_floor"))
+            metrics.update(champion_probes)
+            ar_validation, artifact_path = _run_ar_validation_if_requested(
+                row,
+                target=target,
+                checkpoint_root=Path(args.checkpoint_root),
+                device=str(args.device),
+                train_steps=int(args.ar_validation_train_steps),
+                timeout_s=float(args.ar_validation_timeout_s),
+                force=bool(args.force_ar_validation),
+                run_probe=bool(args.run_ar_validation),
+                allow_cpu=bool(args.allow_cpu),
+            )
+            metrics.update(ar_validation)
+            step = _finite(metrics.get("ar_validation_steps_to_floor"))
             if step is not None:
-                small_ar_steps.append(step)
+                ar_validation_steps.append(step)
             pending.append(
-                (result_id, target, row, metrics | {"artifact_path": artifact_path})
+                (
+                    result_id,
+                    target,
+                    row,
+                    metrics
+                    | {"artifact_path": artifact_path or champion_artifact_path},
+                )
             )
 
-        baseline_small_ar_steps = (
-            statistics.fmean(small_ar_steps) if small_ar_steps else None
+        baseline_ar_validation_steps = (
+            statistics.fmean(ar_validation_steps) if ar_validation_steps else None
         )
         for result_id, target, row, metrics in pending:
-            metrics["champion_baseline_small_ar_steps_to_floor"] = (
-                baseline_small_ar_steps
+            metrics["champion_baseline_ar_validation_steps_to_floor"] = (
+                baseline_ar_validation_steps
             )
             metrics.update(_champion_score_fields(metrics, row))
             report["rows"].append(
@@ -401,10 +510,27 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--device", default="cuda" if torch.cuda.is_available() else "cpu"
     )
+    parser.add_argument(
+        "--run-champion-probes",
+        action="store_true",
+        help="Run actual champion induction v3 and binding v2 probes from checkpoints.",
+    )
+    parser.add_argument("--force-champion-probes", action="store_true")
+    parser.add_argument(
+        "--champion-induction-steps",
+        type=int,
+        choices=(2000, 5000, 10000),
+        default=2000,
+    )
     parser.add_argument("--small-ar-train-steps", type=int, default=5_000)
     parser.add_argument("--small-ar-timeout-s", type=float, default=900.0)
     parser.add_argument("--run-small-ar", action="store_true")
     parser.add_argument("--force-small-ar", action="store_true")
+    parser.add_argument(
+        "--allow-cpu",
+        action="store_true",
+        help="Allow champion-only probes to run on CPU for tiny local debugging only.",
+    )
     parser.add_argument("--write", action="store_true")
     return parser.parse_args(argv)
 

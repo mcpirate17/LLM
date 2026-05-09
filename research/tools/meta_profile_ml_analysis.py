@@ -208,7 +208,7 @@ def load_analysis_frame(meta_db: str | Path) -> AnalysisFrame:
             "ranked.stage1_passed",
             "ranked.wikitext_perplexity",
             "ranked.tinystories_score",
-            "ranked.controlled_lang_s05_sa_score",
+            "ranked.language_control_s05_sentence_assoc_score",
             "ranked.routing_fast_lane_ppl_improvement",
             "ranked.composite_score",
             *(f"ranked.{name} AS {name}" for name in _BASE_FEATURE_COLUMNS),
@@ -253,8 +253,8 @@ def load_analysis_frame(meta_db: str | Path) -> AnalysisFrame:
         )
         stage1 = _safe_float(record.get("stage1_passed"))
         record["target_stage1_passed"] = int(stage1 == 1.0)
-        sa = _safe_float(record.get("controlled_lang_s05_sa_score"))
-        record["target_controlled_lang_pass"] = int(
+        sa = _safe_float(record.get("language_control_s05_sentence_assoc_score"))
+        record["target_language_control_pass"] = int(
             sa is not None and sa >= 0.95 and record.get("failure_op") != "nano_bind"
         )
         ppl = _safe_float(record.get("wikitext_perplexity"))
@@ -448,7 +448,7 @@ def build_payload(
     frame = load_analysis_frame(meta_db)
     targets = [
         "target_nano_bind_failure",
-        "target_controlled_lang_pass",
+        "target_language_control_pass",
         "target_stage1_passed",
         "target_good_wikitext",
         "target_good_tinystories",

@@ -123,10 +123,10 @@ _S1_CORE_METRICS = {
     "wikitext_perplexity": 420.0,
     "hellaswag_acc": 0.24,
     "blimp_overall_accuracy": 0.51,
-    "induction_auc": 0.58,
-    "binding_auc": 0.57,
-    "binding_composite": 0.56,
-    "ar_auc": 0.52,
+    "induction_screening_auc": 0.58,
+    "binding_screening_auc": 0.57,
+    "binding_screening_composite": 0.56,
+    "ar_legacy_auc": 0.52,
 }
 
 
@@ -530,7 +530,8 @@ class TestAPI(unittest.TestCase):
                 self.assertIn("start_payload", first_template)
                 payload = first_template.get("start_payload") or {}
                 self.assertIn(
-                    payload.get("mode"), {"validation", "investigation", "scale_up"}
+                    payload.get("mode"),
+                    {"validation", "capability_ranking", "investigation", "scale_up"},
                 )
                 self.assertIsInstance(payload.get("result_ids"), list)
         recommendation = readiness["epic_switch_recommendation"]
@@ -1268,6 +1269,28 @@ class TestAPI(unittest.TestCase):
         self.assertIn("type", evt)
         self.assertIn("metadata", evt)
         self.assertIn("content", evt)
+
+    def test_api_live_feed_reads_runtime_spool_events(self):
+        from research.scientist.runtime_events.publishers import publish_live_feed_event
+
+        exp_id = "exp-live-spool-api"
+        publish_live_feed_event(
+            notebook_path=self.db_path,
+            event_type="validation_progress",
+            data={
+                "experiment_id": exp_id,
+                "status": "spool-backed feed event",
+                "progress": 0.25,
+            },
+        )
+
+        r = self.client.get(f"/api/live-feed?experiment_id={exp_id}&n=10")
+        self.assertEqual(r.status_code, 200)
+        data = r.get_json()
+        self.assertEqual(len(data), 1)
+        self.assertEqual(data[0]["type"], "validation_progress")
+        self.assertEqual(data[0]["content"], "spool-backed feed event")
+        self.assertEqual(data[0]["progress"], 0.25)
 
     def test_api_live_feed_defaults_to_latest_experiment_stream(self):
         nb = LabNotebook(self.db_path)
@@ -3422,6 +3445,89 @@ class TestAPI(unittest.TestCase):
         self.assertEqual(eligibility["ineligible"], [])
         fake_runner.start_validation.assert_called_once()
 
+    def test_api_start_capability_ranking_returns_eligibility_on_success(self):
+        nb = LabNotebook(self.db_path)
+        exp_id = nb.start_experiment(
+            "synthesis", {"n_programs": 1}, "capability ranking eligibility success"
+        )
+        result_id = nb.record_program_result(
+            experiment_id=exp_id,
+            graph_fingerprint="fp_cap_rank_ok",
+            graph_json=_MINIMAL_GRAPH_JSON,
+            stage0_passed=True,
+            stage05_passed=True,
+            stage1_passed=True,
+            loss_ratio=0.33,
+            novelty_score=0.61,
+            **_S1_CORE_METRICS,
+        )
+        nb.upsert_leaderboard(
+            result_id=result_id,
+            model_source="graph_synthesis",
+            screening_loss_ratio=0.33,
+            screening_novelty=0.61,
+            screening_passed=True,
+            investigation_loss_ratio=0.30,
+            investigation_robustness=0.74,
+            investigation_passed=True,
+            tier="investigation",
+        )
+        nb.close()
+
+        from research.scientist.api_routes import _helpers as _helpers_mod
+
+        fake_runner = MagicMock()
+        fake_runner.is_running = False
+        fake_runner.start_capability_ranking = MagicMock(return_value="exp-cap-rank")
+        fake_runner.prescreen_run_config = MagicMock(
+            side_effect=lambda config, mode="single", auto_harden=True: (
+                config,
+                {
+                    "checked": True,
+                    "mode": mode,
+                    "auto_hardened": auto_harden,
+                    "issues": [],
+                    "adjustments": [],
+                    "risk_score": 0,
+                    "risk_level": "low",
+                },
+            )
+        )
+        fake_runner.progress = MagicMock(
+            aria_message="Capability ranking started",
+            hypothesis_critique=None,
+        )
+
+        _pass_preflight = {
+            "verdict": "pass",
+            "checks": [{"name": "all_clear", "status": "pass", "details": None}],
+            "sample_n": 4,
+        }
+        with (
+            patch.object(_helpers_mod, "_runner", fake_runner),
+            patch(
+                "research.scientist.api_routes.experiments_bp.run_launch_preflight",
+                return_value=_pass_preflight,
+            ),
+        ):
+            r = self.client.post(
+                "/api/experiments/start",
+                json={
+                    "mode": "capability_ranking",
+                    "result_ids": [result_id],
+                },
+            )
+
+        self.assertEqual(r.status_code, 200)
+        data = r.get_json()
+        self.assertIn("eligibility", data)
+        eligibility = data["eligibility"]
+        self.assertEqual(eligibility["mode"], "capability_ranking")
+        self.assertTrue(eligibility["all_eligible"])
+        self.assertEqual(eligibility["eligible_result_ids"], [result_id])
+        self.assertEqual(eligibility["ineligible"], [])
+        fake_runner.start_capability_ranking.assert_called_once()
+
     def test_confirmation_eligibility_requires_passed_validation(self):
         from research.scientist.api_routes._strategy_preflight import (
             build_start_mode_eligibility,
@@ -3491,6 +3597,7 @@ class TestAPI(unittest.TestCase):
 
     def test_api_start_confirmation_uses_champion_workflow_defaults(self):
         from research.scientist.api_routes import _helpers as _helpers_mod
+        from research.scientist.runner._types import RunConfig
 
         nb = LabNotebook(self.db_path)
         exp_id = nb.start_experiment(
@@ -3562,7 +3669,7 @@ class TestAPI(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         data = r.get_json()
         self.assertEqual(data["config"]["scale_up_steps"], 40000)
-        self.assertEqual(data["config"]["n_layers"], 4)
+        self.assertEqual(data["config"]["n_layers"], RunConfig().n_layers)
         self.assertGreater(data["config"]["early_stop_min_steps"], 40000)
         self.assertGreater(data["config"]["early_stop_patience"], 40000)
         self.assertEqual(data["config"]["phase_checkpoint_step_interval"], 10000)
@@ -3572,7 +3679,7 @@ class TestAPI(unittest.TestCase):
         self.assertEqual(kwargs.get("workflow_mode"), "confirmation")
         started_config = fake_runner.start_scale_up.call_args.args[1]
         self.assertEqual(started_config.mode, "confirmation")
-        self.assertEqual(started_config.n_layers, 4)
+        self.assertEqual(started_config.n_layers, RunConfig().n_layers)
         self.assertGreater(started_config.early_stop_min_steps, 40000)
         self.assertGreater(started_config.early_stop_patience, 40000)
 

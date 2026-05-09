@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Sequence
 
 import torch
 
+from research.defaults import RUNS_DB
 from research.orchestrator.executor import JobResult
 from research.scientist.notebook import LabNotebook
 from research.scientist.runner import ExperimentRunner, RunConfig
@@ -33,8 +34,12 @@ from research.tools._db_maintenance import connect_readonly
 from research.scientist.native_runner import (
     compile_model_native_first as compile_model,
 )
+from research.scientist.notebook.graph_artifacts import (
+    is_nonempty_graph_json,
+    resolve_graph_json_value,
+)
 
-_DEFAULT_DB = Path("research/lab_notebook.db")
+_DEFAULT_DB = Path(RUNS_DB)
 
 
 def _load_ambiguous_result_ids(triage_json: Path, ambiguous_index: int) -> List[str]:
@@ -64,12 +69,28 @@ def _fetch_source_rows(
             FROM program_results
             WHERE result_id IN ({placeholders})
               AND TRIM(COALESCE(graph_json, '')) <> ''
-              AND graph_json <> '{{}}'
-              AND json_valid(graph_json) = 1""",
+              AND graph_json <> '{{}}'""",
         tuple(ids),
     ).fetchall()
+    resolved_rows: list[dict[str, Any]] = []
+    for row in rows:
+        if not is_nonempty_graph_json(row["graph_json"]):
+            continue
+        payload = dict(row)
+        payload["graph_json"] = resolve_graph_json_value(
+            conn, db_path, row["graph_json"]
+        )
+        graph_json = payload["graph_json"].strip()
+        if not graph_json or graph_json == "{}":
+            continue
+        try:
+            if not isinstance(json.loads(graph_json), dict):
+                continue
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        resolved_rows.append(payload)
     conn.close()
-    row_by_id = {str(row["result_id"]): dict(row) for row in rows}
+    row_by_id = {str(row["result_id"]): row for row in resolved_rows}
     ordered = [row_by_id[rid] for rid in ids if rid in row_by_id]
     deduped: List[Dict[str, Any]] = []
     seen_fingerprints: set[str] = set()

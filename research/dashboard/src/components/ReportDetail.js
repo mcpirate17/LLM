@@ -28,6 +28,7 @@ function ReportDetail({
   onSelectProgram,
   onSelectExperiment,
   onInvestigate,
+  onCapabilityRank,
   onValidate,
   onQueueAdd,
   onQueueRemove,
@@ -610,6 +611,7 @@ function ReportDetail({
           expandedPrograms={topExpanded}
           onSelectProgram={onSelectProgram}
           onInvestigate={onInvestigate}
+          onCapabilityRank={onCapabilityRank}
           onValidate={onValidate}
           onOpenInDesigner={onOpenInDesigner}
           onQueueAdd={onQueueAdd}

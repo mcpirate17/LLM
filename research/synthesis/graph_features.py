@@ -17,6 +17,8 @@ from collections import Counter, deque
 from functools import lru_cache
 from typing import Any, Dict, FrozenSet, List, Optional, Tuple
 
+from research.defaults import RUNS_DB
+
 from ._json_compat import loads_json
 from ..scientist.native.core import _try_import_rust_scheduler
 
@@ -339,7 +341,7 @@ _OP_STATS_TTL: float = 60.0  # seconds
 
 
 def load_op_stats(
-    db_path: str = "research/lab_notebook.db",
+    db_path: str = RUNS_DB,
 ) -> Dict[str, Tuple[float, float]]:
     """Load op_stats table with TTL cache (60s). Returns dict of op_name → (s1_rate, mean_loss)."""
     import time
@@ -382,7 +384,7 @@ def load_op_stats(
 def enrich_with_op_stats(
     features: Dict[str, float],
     op_names: List[str],
-    db_path: str = "research/lab_notebook.db",
+    db_path: str = RUNS_DB,
     *,
     preloaded: Optional[Dict[str, Tuple[float, float]]] = None,
 ) -> None:

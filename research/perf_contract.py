@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
 import time
@@ -8,12 +9,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
+from research.defaults import PROJECT_ROOT
 from research.eval.perf_budget import evaluate_perf_budget_gate
 from research.scientist.json_utils import json_safe
 from research.scientist.shared_utils import safe_float
 
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent
-_DEFAULT_ARTIFACT_ROOT = _PROJECT_ROOT / "research" / "perf_artifacts"
+logger = logging.getLogger(__name__)
+
+_DEFAULT_ARTIFACT_ROOT = PROJECT_ROOT / "research" / "perf_artifacts"
 
 
 def _utc_now_iso() -> str:
@@ -59,7 +62,6 @@ def build_perf_contract(
     budget_verdict: Optional[Dict[str, Any]] = None,
     duplicate_work: Optional[Dict[str, Any]] = None,
     warnings: Optional[Iterable[str]] = None,
-    artifact_path: Optional[str] = None,
 ) -> Dict[str, Any]:
     payload_metrics = json_safe(metrics or {})
     contract = {
@@ -80,7 +82,7 @@ def build_perf_contract(
         else None,
         "duplicate_work": json_safe(duplicate_work or build_duplicate_work_report()),
         "warnings": [str(w) for w in (warnings or []) if str(w).strip()],
-        "artifact_path": artifact_path,
+        "artifact_path": None,
     }
     return contract
 
@@ -153,9 +155,11 @@ def emit_perf_artifact(
     artifact_path = dated_dir / f"{safe_slug}.json"
     payload = dict(contract)
     payload["artifact_path"] = str(artifact_path)
-    with artifact_path.open("w", encoding="utf-8") as fh:
+    tmp_path = artifact_path.with_name(f".{artifact_path.name}.tmp")
+    with tmp_path.open("w", encoding="utf-8") as fh:
         json.dump(payload, fh, separators=(",", ":"))
         fh.write("\n")
+    os.replace(tmp_path, artifact_path)
     return str(artifact_path)
 
 
@@ -197,7 +201,8 @@ def list_recent_perf_artifacts(
         for path in files:
             try:
                 payload = load_perf_artifact(str(path))
-            except Exception:
+            except (OSError, json.JSONDecodeError) as exc:
+                logger.warning("skipping unreadable perf artifact %s: %s", path, exc)
                 continue
             if not isinstance(payload, dict):
                 continue

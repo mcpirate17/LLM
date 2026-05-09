@@ -30,11 +30,26 @@ export function resolveLossRatio(entry) {
   return loss != null && Number.isFinite(Number(loss)) ? Number(loss) : null;
 }
 
+export const CAPABILITY_RANKER_EVIDENCE_FIELDS = [
+  'induction_intermediate_auc',
+  'binding_intermediate_auc',
+  'ar_intermediate_diagnostic_score',
+  'binding_multislot_diagnostic_score',
+  'induction_validation_auc',
+  'ar_validation_rank_score',
+];
+
+export function hasCapabilityRankingEvidence(entry) {
+  return CAPABILITY_RANKER_EVIDENCE_FIELDS.some((field) => entry?.[field] != null);
+}
+
 export function candidateEligibility(entry) {
   if (!entry || typeof entry !== 'object') {
     return {
       investigationEligible: false,
+      capabilityRankingEligible: false,
       validationEligible: false,
+      confirmationEligible: false,
       queueEligible: false,
       queueReason: 'missing_candidate_data',
     };
@@ -43,11 +58,19 @@ export function candidateEligibility(entry) {
   const tier = typeof entry.tier === 'string' ? entry.tier.toLowerCase() : '';
   const capabilityStatus = String(entry?.capability_quality?.status || '').toLowerCase();
   const hasInvestigationEvidence = entry.investigation_loss_ratio != null || entry.investigation_robustness != null;
+  const hasRankerEvidence = hasCapabilityRankingEvidence(entry);
   const hasValidationEvidence = entry.validation_loss_ratio != null || entry.validation_baseline_ratio != null || Boolean(entry.validation_passed);
   const isCapabilityQualified = capabilityStatus === 'qualified' || capabilityStatus === 'breakthrough';
-  const investigationEligible = tier === 'screening' && !hasInvestigationEvidence;
+  const stage1KnownFailed = entry.stage1_passed === false || entry.stage1_passed === 0;
+  const investigationEligible = !stage1KnownFailed && tier === 'screening' && !hasInvestigationEvidence;
+  const capabilityRankingEligible = (
+    (tier === 'investigation' || tier === 'capability_ranking')
+    && Boolean(entry.investigation_passed)
+    && !hasRankerEvidence
+  );
   const validationEligible = (
     (tier === 'investigation' && Boolean(entry.investigation_passed))
+    || (tier === 'capability_ranking' && Boolean(entry.investigation_passed))
     || (tier === 'validation' && !isCapabilityQualified)
   );
   const confirmationEligible = (
@@ -57,7 +80,7 @@ export function candidateEligibility(entry) {
   );
 
   let queueReason = null;
-  if (!investigationEligible && !validationEligible && !confirmationEligible) {
+  if (!investigationEligible && !capabilityRankingEligible && !validationEligible && !confirmationEligible) {
     if (tier === 'screening' && hasInvestigationEvidence) {
       queueReason = 'already_investigated_unchanged';
     } else if (tier === 'investigation' && !entry.investigation_passed) {
@@ -73,9 +96,10 @@ export function candidateEligibility(entry) {
 
   return {
     investigationEligible,
+    capabilityRankingEligible,
     validationEligible,
     confirmationEligible,
-    queueEligible: investigationEligible || validationEligible || confirmationEligible,
+    queueEligible: investigationEligible || capabilityRankingEligible || validationEligible || confirmationEligible,
     queueReason,
   };
 }

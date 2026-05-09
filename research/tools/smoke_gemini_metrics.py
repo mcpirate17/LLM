@@ -28,6 +28,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
+
+from research.scientist.notebook.graph_artifacts import resolve_graph_json_value
 import torch.nn as nn
 import torch.nn.functional as F
 
@@ -47,7 +49,7 @@ from research.tools._concurrency import (
 
 
 ROOT = Path(__file__).resolve().parents[2]
-DB_PATH = ROOT / "research" / "lab_notebook.db"
+DB_PATH = ROOT / "research" / "runs.db"
 CORPUS_PATH = ROOT / "research" / "corpus" / "wikitext103_train.npy"
 ARTIFACT_DIR = ROOT / "research" / "perf_artifacts"
 TOOL_NAME = "smoke_gemini_metrics"
@@ -388,7 +390,8 @@ def run_smoke(
             print(f"[skip] {result_id} not found")
             continue
 
-        graph = graph_from_json(record["graph_json"])
+        graph_json = resolve_graph_json_value(conn, DB_PATH, record["graph_json"])
+        graph = graph_from_json(graph_json)
         rows.append(
             _run_target(
                 result_id=result_id,

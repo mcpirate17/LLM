@@ -24,29 +24,29 @@ logger = logging.getLogger(__name__)
 
 
 _FINGERPRINT_ROLLUP_FIELDS = (
-    "induction_v2_investigation_auc",
-    "induction_v2_investigation_max_gap_acc",
-    "induction_v2_investigation_gap_accuracies_json",
-    "induction_v2_investigation_steps_trained",
-    "induction_v2_investigation_status",
-    "induction_v2_investigation_elapsed_ms",
-    "induction_v2_investigation_protocol_version",
-    "binding_v2_investigation_auc",
-    "binding_v2_investigation_max_distance_acc",
-    "binding_v2_investigation_distance_accuracies_json",
-    "binding_v2_investigation_train_steps",
-    "binding_v2_investigation_status",
-    "binding_v2_investigation_elapsed_ms",
-    "binding_v2_investigation_protocol_version",
-    "nano_ar_inv_metric_version",
-    "nano_ar_inv_in_dist_pair_match_acc",
-    "nano_ar_inv_in_dist_class_acc",
-    "nano_ar_inv_held_pair_match_acc",
-    "nano_ar_inv_held_class_acc",
-    "nano_ar_inv_score",
-    "nano_ar_inv_status",
-    "nano_ar_inv_elapsed_ms",
-    "nano_ar_inv_train_steps_done",
+    "induction_intermediate_auc",
+    "induction_intermediate_max_gap_acc",
+    "induction_intermediate_gap_accuracies_json",
+    "induction_intermediate_steps_trained",
+    "induction_intermediate_status",
+    "induction_intermediate_elapsed_ms",
+    "induction_intermediate_protocol_version",
+    "binding_intermediate_auc",
+    "binding_intermediate_max_distance_acc",
+    "binding_intermediate_distance_accuracies_json",
+    "binding_intermediate_train_steps",
+    "binding_intermediate_status",
+    "binding_intermediate_elapsed_ms",
+    "binding_intermediate_protocol_version",
+    "ar_gate_metric_version",
+    "ar_gate_in_dist_pair_acc",
+    "ar_gate_in_dist_class_acc",
+    "ar_gate_held_pair_acc",
+    "ar_gate_held_class_acc",
+    "ar_gate_score",
+    "ar_gate_status",
+    "ar_gate_elapsed_ms",
+    "ar_gate_train_steps_done",
     "champion_floor_protocol_version",
     "champion_steps_to_floor",
     "champion_floor_loss",
@@ -60,29 +60,51 @@ _FINGERPRINT_ROLLUP_FIELDS = (
     "champion_steps_to_floor_score",
     "champion_floor_quality_score",
     "champion_floor_stability_score",
-    "champion_induction_v3_score",
+    "champion_induction_validation_score",
     "champion_binding_long_context_score",
-    "champion_small_ar_score",
+    "champion_ar_validation_score",
     "champion_tiny_model_score",
     "champion_tiny_model_protocol_version",
     "champion_hard_failure_reason",
-    "induction_v3_auc",
-    "induction_v3_max_gap_acc",
-    "induction_v3_gap_accuracy_cv",
-    "induction_v3_gap_accuracies_json",
-    "induction_v3_steps_trained",
-    "induction_v3_status",
-    "induction_v3_elapsed_ms",
-    "induction_v3_protocol_version",
-    "small_ar_champion_metric_version",
-    "small_ar_champion_final_acc",
-    "small_ar_champion_held_pair_match_acc",
-    "small_ar_champion_held_class_acc",
-    "small_ar_champion_learning_curve_json",
-    "small_ar_champion_steps_to_floor",
-    "small_ar_champion_score",
-    "small_ar_champion_status",
-    "small_ar_champion_elapsed_ms",
+    "induction_validation_auc",
+    "induction_validation_max_gap_acc",
+    "induction_validation_gap_accuracy_cv",
+    "induction_validation_gap_accuracies_json",
+    "induction_validation_steps_trained",
+    "induction_validation_status",
+    "induction_validation_elapsed_ms",
+    "induction_validation_protocol_version",
+    "ar_validation_metric_version",
+    "ar_validation_final_acc",
+    "ar_validation_held_pair_acc",
+    "ar_validation_held_class_acc",
+    "ar_validation_learning_curve_json",
+    "ar_validation_steps_to_floor",
+    "ar_validation_rank_score",
+    "ar_validation_status",
+    "ar_validation_elapsed_ms",
+    "ar_intermediate_metric_version",
+    "ar_intermediate_diagnostic_score",
+    "ar_intermediate_held_pair_acc",
+    "ar_intermediate_held_pair_lift",
+    "ar_intermediate_held_class_acc",
+    "ar_intermediate_auc_lift",
+    "ar_intermediate_best_held_pair_acc",
+    "ar_intermediate_improvement",
+    "ar_intermediate_status",
+    "ar_intermediate_elapsed_ms",
+    "binding_multislot_metric_version",
+    "binding_multislot_diagnostic_score",
+    "binding_multislot_held_entity_slot_acc",
+    "binding_multislot_held_slot_lift",
+    "binding_multislot_two_plus_slots_acc",
+    "binding_multislot_two_plus_slots_lift",
+    "binding_multislot_mixed_two_plus_slots_acc",
+    "binding_multislot_mixed_two_plus_slots_lift",
+    "binding_multislot_all_slots_acc",
+    "binding_multislot_auc_lift",
+    "binding_multislot_status",
+    "binding_multislot_elapsed_ms",
 )
 
 
@@ -127,12 +149,14 @@ def _attach_fingerprint_observation_rollup(nb, program):
         FROM program_results
         WHERE graph_fingerprint = ?
           AND (
-            induction_v2_investigation_auc IS NOT NULL
-            OR binding_v2_investigation_auc IS NOT NULL
-            OR nano_ar_inv_score IS NOT NULL
+            induction_intermediate_auc IS NOT NULL
+            OR binding_intermediate_auc IS NOT NULL
+            OR ar_gate_score IS NOT NULL
             OR champion_tiny_model_score IS NOT NULL
-            OR induction_v3_auc IS NOT NULL
-            OR small_ar_champion_score IS NOT NULL
+            OR induction_validation_auc IS NOT NULL
+            OR ar_validation_rank_score IS NOT NULL
+            OR ar_intermediate_diagnostic_score IS NOT NULL
+            OR binding_multislot_diagnostic_score IS NOT NULL
           )
         ORDER BY timestamp DESC
         LIMIT 1

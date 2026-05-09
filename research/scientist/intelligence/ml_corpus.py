@@ -18,6 +18,7 @@ from ..trust_policy import (
     TRUSTED_COMPARABILITY_LABELS,
     TRUSTED_TRUST_LABELS,
 )
+from ..notebook.graph_artifacts import resolve_graph_json_value
 
 logger = logging.getLogger(__name__)
 
@@ -309,10 +310,12 @@ def validate_graph_training_rows(rows: List[Dict[str, Any]]) -> None:
             raise CorpusIntegrityError(
                 f"graph corpus row {fp} marks stage1_any_passed with zero pass rate"
             )
-        induction_auc = row.get("induction_auc_500")
-        if induction_auc is not None and not math.isfinite(float(induction_auc)):
+        induction_screening_auc = row.get("induction_screening_auc_500")
+        if induction_screening_auc is not None and not math.isfinite(
+            float(induction_screening_auc)
+        ):
             raise CorpusIntegrityError(
-                f"graph corpus row {fp} has invalid induction_auc_500={induction_auc}"
+                f"graph corpus row {fp} has invalid induction_screening_auc_500={induction_screening_auc}"
             )
 
 
@@ -468,7 +471,7 @@ def _attach_induction_metrics(
 
     by_fp = {
         str(row["graph_fingerprint"]): {
-            "induction_auc_500": (
+            "induction_screening_auc_500": (
                 float(row["auc"]) if row["auc"] is not None else None
             ),
             "induction_gap_4": (
@@ -606,10 +609,14 @@ def _json_text_expr(json_col: str, path: str) -> str:
 
 def _sql_not_contains_markers(expr: str) -> str:
     lowered = _lower_coalesce_expr(expr)
-    return "(" + " AND ".join(
-        f"{lowered} NOT LIKE '%{marker}%'"
-        for marker in _BYTE_TRAINING_VERSION_MARKERS
-    ) + ")"
+    return (
+        "("
+        + " AND ".join(
+            f"{lowered} NOT LIKE '%{marker}%'"
+            for marker in _BYTE_TRAINING_VERSION_MARKERS
+        )
+        + ")"
+    )
 
 
 def _non_byte_training_data_clauses(
@@ -712,7 +719,7 @@ def _fallback_graph_training_rows(db_path: str) -> List[Dict[str, Any]]:
 
     grouped: Dict[str, Dict[str, Any]] = {}
     for row in rows:
-        graph_json = str(row["graph_json"])
+        graph_json = resolve_graph_json_value(conn, db_path, row["graph_json"])
         canonical = _graph_fingerprint(graph_json)
         group = grouped.setdefault(
             canonical,
@@ -745,13 +752,10 @@ def _fallback_graph_training_rows(db_path: str) -> List[Dict[str, Any]]:
         # when its metric version is the BPE backfilled one.  Byte-era
         # rows have PPL in different units (range 23 – 485M) and
         # silently corrupted the predictor's labels here for months.
-        ppl_keys = (
-            row.keys() if hasattr(row, "keys") else None
-        )
+        ppl_keys = row.keys() if hasattr(row, "keys") else None
         metric_version = (
             str(row["screening_wikitext_metric_version"] or "").strip()
-            if ppl_keys is not None
-               and "screening_wikitext_metric_version" in ppl_keys
+            if ppl_keys is not None and "screening_wikitext_metric_version" in ppl_keys
             else ""
         )
         if metric_version == BPE_EVAL_METRIC_VERSION:
@@ -821,7 +825,7 @@ def _fallback_predictor_training_rows(db_path: str) -> List[Dict[str, Any]]:
 
     grouped: Dict[str, Dict[str, Any]] = {}
     for row in rows:
-        graph_json = str(row["graph_json"])
+        graph_json = resolve_graph_json_value(conn, db_path, row["graph_json"])
         canonical = _graph_fingerprint(graph_json)
         group = grouped.setdefault(
             canonical,
@@ -924,9 +928,9 @@ def _fallback_screening_predictor_rows(db_path: str) -> List[Dict[str, Any]]:
         SELECT pr.graph_json, pr.stage1_passed, pr.wikitext_perplexity, pr.loss_ratio,
                pr.stage0_passed, pr.stage05_passed, pr.timestamp, pr.trust_label,
                pr.comparability_label, pr.result_cohort, pr.data_provenance_json,
-               pr.hellaswag_acc, pr.induction_auc, pr.ar_auc,
-               pr.blimp_overall_accuracy, pr.binding_composite,
-               pr.induction_v2_investigation_auc, pr.binding_v2_investigation_auc,
+               pr.hellaswag_acc, pr.induction_screening_auc, pr.ar_legacy_auc,
+               pr.blimp_overall_accuracy, pr.binding_screening_composite,
+               pr.induction_intermediate_auc, pr.binding_intermediate_auc,
                pr.validation_loss_ratio, pr.rapid_screening_passed,
                pr.initial_loss, pr.mean_grad_norm, pr.max_grad_norm,
                pr.grad_norm_std,
@@ -944,7 +948,7 @@ def _fallback_screening_predictor_rows(db_path: str) -> List[Dict[str, Any]]:
 
     grouped: Dict[str, Dict[str, Any]] = {}
     for row in rows:
-        graph_json = str(row["graph_json"])
+        graph_json = resolve_graph_json_value(conn, db_path, row["graph_json"])
         canonical = _graph_fingerprint(graph_json)
         group = grouped.setdefault(
             canonical,
@@ -958,12 +962,12 @@ def _fallback_screening_predictor_rows(db_path: str) -> List[Dict[str, Any]]:
                 "wikitext_perplexity_best": None,
                 "loss_ratio_best": None,
                 "hellaswag_acc_best": None,
-                "induction_auc_best": None,
-                "ar_auc_best": None,
+                "induction_screening_auc_best": None,
+                "ar_legacy_auc_best": None,
                 "blimp_overall_accuracy_best": None,
-                "binding_composite_best": None,
-                "induction_v2_investigation_auc_best": None,
-                "binding_v2_investigation_auc_best": None,
+                "binding_screening_composite_best": None,
+                "induction_intermediate_auc_best": None,
+                "binding_intermediate_auc_best": None,
                 "validation_loss_ratio_best": None,
                 "rapid_screening_passed_best": None,
                 "composite_score_best": None,
@@ -1048,17 +1052,17 @@ def _fallback_screening_predictor_rows(db_path: str) -> List[Dict[str, Any]]:
         )
         for probe_key, row_key in (
             ("hellaswag_acc_best", "hellaswag_acc"),
-            ("induction_auc_best", "induction_auc"),
-            ("ar_auc_best", "ar_auc"),
+            ("induction_screening_auc_best", "induction_screening_auc"),
+            ("ar_legacy_auc_best", "ar_legacy_auc"),
             ("blimp_overall_accuracy_best", "blimp_overall_accuracy"),
-            ("binding_composite_best", "binding_composite"),
+            ("binding_screening_composite_best", "binding_screening_composite"),
             (
-                "induction_v2_investigation_auc_best",
-                "induction_v2_investigation_auc",
+                "induction_intermediate_auc_best",
+                "induction_intermediate_auc",
             ),
             (
-                "binding_v2_investigation_auc_best",
-                "binding_v2_investigation_auc",
+                "binding_intermediate_auc_best",
+                "binding_intermediate_auc",
             ),
             # 0/1 int → max() == OR
             ("rapid_screening_passed_best", "rapid_screening_passed"),
@@ -1148,14 +1152,16 @@ def _graph_analysis_select_cols(available: set[str]) -> List[str]:
         col("stage05_passed"),
         col("stage1_passed"),
         col("timestamp"),
-        col("induction_auc"),
-        first("binding_auc", "binding_auc_curriculum", "binding_auc"),
-        col("binding_composite"),
-        col("ar_auc"),
+        col("induction_screening_auc"),
+        first(
+            "binding_screening_auc", "binding_curriculum_auc", "binding_screening_auc"
+        ),
+        col("binding_screening_composite"),
+        col("ar_legacy_auc"),
         col("hellaswag_acc"),
         col("blimp_overall_accuracy"),
-        col("induction_v2_investigation_auc"),
-        col("binding_v2_investigation_auc"),
+        col("induction_intermediate_auc"),
+        col("binding_intermediate_auc"),
     ]
 
 
@@ -1173,14 +1179,14 @@ def _initial_graph_analysis_group(
         "graph_n_params_estimate": row["graph_n_params_estimate"],
         "graph_depth": row["graph_depth"],
         "graph_uses_math_spaces": bool(row["graph_uses_math_spaces"]),
-        "induction_auc": row["induction_auc"],
-        "binding_auc": row["binding_auc"],
-        "binding_composite": row["binding_composite"],
-        "ar_auc": row["ar_auc"],
+        "induction_screening_auc": row["induction_screening_auc"],
+        "binding_screening_auc": row["binding_screening_auc"],
+        "binding_screening_composite": row["binding_screening_composite"],
+        "ar_legacy_auc": row["ar_legacy_auc"],
         "hellaswag_acc": row["hellaswag_acc"],
         "blimp_overall_accuracy": row["blimp_overall_accuracy"],
-        "induction_v2_investigation_auc": row["induction_v2_investigation_auc"],
-        "binding_v2_investigation_auc": row["binding_v2_investigation_auc"],
+        "induction_intermediate_auc": row["induction_intermediate_auc"],
+        "binding_intermediate_auc": row["binding_intermediate_auc"],
         "stage0_any_passed": False,
         "stage05_any_passed": False,
         "stage1_any_passed": False,
@@ -1208,14 +1214,14 @@ def _update_graph_analysis_group(
         float(group["latest_timestamp"]), float(row["timestamp"] or 0.0)
     )
     for metric_key in (
-        "induction_auc",
-        "binding_auc",
-        "binding_composite",
-        "ar_auc",
+        "induction_screening_auc",
+        "binding_screening_auc",
+        "binding_screening_composite",
+        "ar_legacy_auc",
         "hellaswag_acc",
         "blimp_overall_accuracy",
-        "induction_v2_investigation_auc",
-        "binding_v2_investigation_auc",
+        "induction_intermediate_auc",
+        "binding_intermediate_auc",
     ):
         group[metric_key] = _max_opt(group.get(metric_key), row[metric_key])
 
@@ -1271,7 +1277,7 @@ def _fallback_graph_analysis_rows(db_path: str) -> List[Dict[str, Any]]:
 
     grouped: Dict[str, Dict[str, Any]] = {}
     for row in rows:
-        graph_json = str(row["graph_json"])
+        graph_json = resolve_graph_json_value(conn, db_path, row["graph_json"])
         canonical = _graph_fingerprint(graph_json)
         group = grouped.setdefault(
             canonical,

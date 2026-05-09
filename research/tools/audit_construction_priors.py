@@ -25,7 +25,7 @@ from research.scientist.construction_priors import (  # noqa: E402
 from research.scientist.notebook import LabNotebook  # noqa: E402
 
 
-DB_PATH = PROJECT_ROOT / "research/lab_notebook.db"
+DB_PATH = PROJECT_ROOT / "research/runs.db"
 RUNTIME_DIR = PROJECT_ROOT / "research/runtime"
 
 

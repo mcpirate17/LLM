@@ -32,6 +32,7 @@ from typing import Any
 import torch
 
 from research.eval.nano_blimp_eval import nano_blimp_score
+from research.scientist.notebook.graph_artifacts import resolve_graph_json_value
 from research.tools._db_maintenance import connect_readonly
 from research.tools.nano_blimp_tune import _train_base
 
@@ -50,7 +51,7 @@ def _load_arch(db_path: Path, result_id: str) -> dict[str, Any] | None:
             SELECT pr.result_id, pr.graph_json, pr.graph_fingerprint,
                    pgf.template_name,
                    l.entry_id, l.composite_score, l.tier,
-                   l.induction_auc, l.binding_auc, l.wikitext_perplexity,
+                   l.induction_screening_auc, l.binding_screening_auc, l.wikitext_perplexity,
                    l.hellaswag_acc, l.blimp_overall_accuracy
             FROM program_results pr
             LEFT JOIN program_graph_features pgf ON pgf.result_id=pr.result_id
@@ -59,7 +60,15 @@ def _load_arch(db_path: Path, result_id: str) -> dict[str, Any] | None:
             """,
             (result_id,),
         ).fetchone()
-        return dict(row) if row else None
+        if not row:
+            return None
+        payload = dict(row)
+        payload["graph_json"] = resolve_graph_json_value(
+            conn,
+            db_path,
+            payload.get("graph_json"),
+        )
+        return payload
     finally:
         conn.close()
 
@@ -226,8 +235,8 @@ def _build_summary(
                 "template": meta.get("template_name"),
                 "tier": meta.get("tier"),
                 "composite": meta.get("composite_score"),
-                "induction_auc": meta.get("induction_auc"),
-                "binding_auc": meta.get("binding_auc"),
+                "induction_screening_auc": meta.get("induction_screening_auc"),
+                "binding_screening_auc": meta.get("binding_screening_auc"),
                 "wikitext_perplexity": meta.get("wikitext_perplexity"),
                 "held_out_count": ho,
                 "n_seeds": len(rows),
@@ -262,7 +271,7 @@ def _print_summary_table(summary: list[dict[str, Any]]) -> None:
 
 def _parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--db", default="research/lab_notebook.db", type=Path)
+    ap.add_argument("--db", default="research/runs.db", type=Path)
     ap.add_argument("--targets", nargs="+", required=True, help="result_id list")
     ap.add_argument("--seeds", nargs="+", type=int, default=[1, 2, 3])
     ap.add_argument("--held-out", nargs="+", type=int, default=[2, 3, 5])
@@ -297,8 +306,8 @@ def main() -> int:
             meta.get("template_name"),
             meta.get("tier"),
             meta.get("composite_score"),
-            meta.get("induction_auc"),
-            meta.get("binding_auc"),
+            meta.get("induction_screening_auc"),
+            meta.get("binding_screening_auc"),
             meta.get("wikitext_perplexity"),
         )
         for seed in args.seeds:

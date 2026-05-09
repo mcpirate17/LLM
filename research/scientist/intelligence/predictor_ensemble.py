@@ -11,6 +11,8 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 
+from research.defaults import RUNS_DB
+
 from .metrics_utils import (
     binary_classification_metrics,
     operating_point_profiles,
@@ -150,7 +152,7 @@ class EnsemblePredictor:
 
         return float(np.clip(final, 0.01, 0.99))
 
-    def predict_induction_auc(
+    def predict_induction_screening_auc(
         self,
         graph_json: Any = None,
         graph_features: Optional[Dict[str, float]] = None,
@@ -162,9 +164,11 @@ class EnsemblePredictor:
             self.graph_pred is not None
             and self.graph_pred.is_fitted()
             and graph_json is not None
-            and hasattr(self.graph_pred, "predict_induction_auc")
+            and hasattr(self.graph_pred, "predict_induction_screening_auc")
         ):
-            preds.append(float(self.graph_pred.predict_induction_auc(graph_json)))
+            preds.append(
+                float(self.graph_pred.predict_induction_screening_auc(graph_json))
+            )
 
         if self.gbm is not None and self.gbm.is_fitted() and graph_features is not None:
             logger.debug(
@@ -181,7 +185,7 @@ class EnsemblePredictor:
         graph_features: Optional[Dict[str, float]] = None,
     ) -> float:
         """Predict probability that a graph will be an induction learner."""
-        auc = self.predict_induction_auc(
+        auc = self.predict_induction_screening_auc(
             graph_json=graph_json, graph_features=graph_features
         )
         # 0.02 is the current learner threshold; scale around that boundary.
@@ -194,7 +198,7 @@ class EnsemblePredictor:
     ) -> Dict[str, float]:
         """Return a planning score that prioritizes likely survivors and likely winners."""
         p_pass = self.predict_gate(graph_json=graph_json, graph_features=graph_features)
-        induction_auc = self.predict_induction_auc(
+        induction_screening_auc = self.predict_induction_screening_auc(
             graph_json=graph_json, graph_features=graph_features
         )
         p_induction = self.predict_induction_learner_prob(
@@ -234,7 +238,7 @@ class EnsemblePredictor:
             blended = float(np.clip(p_pass, 0.0, 1.0))
         return {
             "p_pass": float(p_pass),
-            "predicted_induction_auc": float(induction_auc),
+            "predicted_induction_screening_auc": float(induction_screening_auc),
             "p_induction_learner": float(p_induction),
             "predicted_quality_score": float(quality_score),
             "planning_score": blended,
@@ -275,7 +279,7 @@ class EnsemblePredictor:
             and self.graph_pred.is_fitted(),
             "graph_pred_has_induction": self.graph_pred is not None
             and self.graph_pred.is_fitted()
-            and hasattr(self.graph_pred, "predict_induction_auc"),
+            and hasattr(self.graph_pred, "predict_induction_screening_auc"),
             "bayesian_loaded": self.bayesian is not None,
             "interaction_fitted": self.interaction is not None
             and self.interaction._trained,
@@ -418,7 +422,7 @@ def load_runtime_ensemble(
 
 
 def train_ensemble(
-    db_path: str = "research/lab_notebook.db",
+    db_path: str = RUNS_DB,
     profiling_db: str = "research/profiling/component_profiles.db",
 ) -> EnsemblePredictor:
     """Train the full ensemble predictor from notebook + profiling data.

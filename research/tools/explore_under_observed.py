@@ -1490,8 +1490,8 @@ def _build_cli_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--db",
-        default="research/lab_notebook.db",
-        help="Path to lab_notebook.db (default: research/lab_notebook.db)",
+        default="research/runs.db",
+        help="Path to runs.db (default: research/runs.db)",
     )
     parser.add_argument(
         "--dry-run",
@@ -1502,7 +1502,7 @@ def _build_cli_parser() -> argparse.ArgumentParser:
         "--record",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="Record results to lab_notebook.db (default: on)",
+        help="Record results to runs.db (default: on)",
     )
     parser.add_argument(
         "--ops",

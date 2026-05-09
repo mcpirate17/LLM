@@ -40,11 +40,11 @@ class CurriculumBindingResult:
 
     def to_dict(self) -> Dict[str, Any]:
         return {
-            "binding_auc": self.auc,
+            "binding_screening_auc": self.auc,
             "binding_distance_accuracies": self.distance_accuracies,
-            "binding_probe_elapsed_ms": self.elapsed_ms,
+            "binding_screening_elapsed_ms": self.elapsed_ms,
             "binding_probe_distances": [4, 8, 16, 32],
-            "binding_probe_eval_examples": None,
+            "binding_screening_eval_examples": None,
         }
 
 

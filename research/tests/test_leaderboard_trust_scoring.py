@@ -28,11 +28,11 @@ def _high_side_channel_candidate(**overrides):
         cross_task_score=0.29376,
         diagnostic_score=0.01175,
         hierarchy_fitness=0.8193,
-        ar_auc=0.0041,
-        induction_auc=0.0376,
-        binding_auc=0.00766,
-        induction_v2_inv_auc=0.755,
-        binding_v2_inv_auc=0.0946,
+        ar_legacy_auc=0.0041,
+        induction_screening_auc=0.0376,
+        binding_screening_auc=0.00766,
+        induction_intermediate_inv_auc=0.755,
+        binding_intermediate_inv_auc=0.0946,
         fp_jacobian_erf_density=1.0,
         fp_id_collapse_rate=-0.01,
         fp_jacobian_erf_decay_slope=-0.05,
@@ -76,8 +76,8 @@ def test_v11_allows_nonlocal_binding_candidate_above_ceiling():
     result = compute_composite_v11(
         decompose=True,
         **_high_side_channel_candidate(
-            induction_v2_inv_auc=0.20,
-            binding_v2_inv_auc=0.25,
+            induction_intermediate_inv_auc=0.20,
+            binding_intermediate_inv_auc=0.25,
         ),
     )
 
@@ -89,15 +89,15 @@ def test_v12_reduces_loss_budget():
     v11 = compute_composite_v11(
         decompose=True,
         **_high_side_channel_candidate(
-            induction_v2_inv_auc=0.20,
-            binding_v2_inv_auc=0.25,
+            induction_intermediate_inv_auc=0.20,
+            binding_intermediate_inv_auc=0.25,
         ),
     )
     result = compute_composite_v12(
         decompose=True,
         **_high_side_channel_candidate(
-            induction_v2_inv_auc=0.20,
-            binding_v2_inv_auc=0.25,
+            induction_intermediate_inv_auc=0.20,
+            binding_intermediate_inv_auc=0.25,
         ),
     )
 
@@ -117,8 +117,8 @@ def test_v12_caps_no_induction_loss_only_candidate_below_champion_range():
             ppl_screening=35.0,
             ppl_investigation=35.0,
             ppl_validation=35.0,
-            induction_v2_inv_auc=0.0,
-            binding_v2_inv_auc=0.0,
+            induction_intermediate_inv_auc=0.0,
+            binding_intermediate_inv_auc=0.0,
             blimp_accuracy=0.0,
             hellaswag_acc_validation=0.0,
             tinystories_score=0.0,
@@ -138,8 +138,8 @@ def test_v12_allows_induction_qualified_candidate_above_champion_range():
             ppl_screening=35.0,
             ppl_investigation=35.0,
             ppl_validation=35.0,
-            induction_v2_inv_auc=0.08,
-            binding_v2_inv_auc=0.25,
+            induction_intermediate_inv_auc=0.08,
+            binding_intermediate_inv_auc=0.25,
         ),
     )
 
@@ -158,15 +158,16 @@ def _good_champion_tiny_model_protocol_kwargs(**overrides):
         champion_baseline_floor_ppl=221.41,
         champion_floor_loss_std=0.015,
         champion_baseline_floor_loss_std=0.030,
-        induction_v3_auc=0.94,
-        induction_v3_gap_accuracy_cv=0.10,
-        binding_v2_investigation_auc=0.90,
+        induction_validation_auc=0.94,
+        induction_validation_gap_accuracy_cv=0.10,
+        induction_validation_protocol_version="induction_validation_full_counterfactual_2k",
+        binding_intermediate_auc=0.90,
         robustness_long_ctx_combined_score=0.80,
         champion_baseline_long_ctx_combined_score=0.80,
-        small_ar_champion_held_pair_match_acc=0.82,
-        small_ar_champion_held_class_acc=0.76,
-        small_ar_champion_steps_to_floor=5_000,
-        champion_baseline_small_ar_steps_to_floor=10_000,
+        ar_validation_held_pair_acc=0.82,
+        ar_validation_held_class_acc=0.76,
+        ar_validation_steps_to_floor=5_000,
+        champion_baseline_ar_validation_steps_to_floor=10_000,
         final_loss=5.0,
     )
     kw.update(overrides)
@@ -181,8 +182,8 @@ def _ce5_high_side_channel_overrides():
         ppl_at_100=180.0,
         ppl_at_500=150.0,
         ppl_at_1000=148.41,
-        induction_v2_inv_auc=0.0,
-        binding_v2_inv_auc=0.0,
+        induction_intermediate_inv_auc=0.0,
+        binding_intermediate_inv_auc=0.0,
         blimp_accuracy=0.0,
         hellaswag_acc_screening=0.0,
         hellaswag_acc_investigation=0.0,
@@ -208,7 +209,7 @@ def test_champion_tiny_model_score_v1_accepts_ce_around_five_with_good_evidence(
     assert result["hard_failure_reason"] is None
     assert result["total"] > 30.0
     assert result["floor_quality"] > 0.0
-    assert result["induction_v3"] > 9.0
+    assert result["induction_validation"] > 9.0
 
 
 def test_v12_champion_tiny_model_protocol_replaces_final_loss_ceiling():
@@ -237,7 +238,7 @@ def test_v12_champion_tiny_model_protocol_blocks_missing_required_metrics():
         **_high_side_channel_candidate(
             **_ce5_high_side_channel_overrides(),
             **_good_champion_tiny_model_protocol_kwargs(
-                small_ar_champion_held_pair_match_acc=None,
+                ar_validation_held_pair_acc=None,
             ),
         ),
     )
@@ -249,27 +250,43 @@ def test_v12_champion_tiny_model_protocol_blocks_missing_required_metrics():
     assert result["breakdown"]["_champion_tiny_model_hard_failure_gate"] is True
 
 
-def test_champion_tiny_model_score_v1_allows_missing_small_ar_speed_as_zero():
+def test_champion_tiny_model_score_v1_allows_missing_ar_validation_speed_as_zero():
     result = compute_champion_tiny_model_score_v1(
         **_good_champion_tiny_model_protocol_kwargs(
-            small_ar_champion_steps_to_floor=None,
+            ar_validation_steps_to_floor=None,
         )
     )
 
     assert result["hard_failure_reason"] is None
-    assert result["small_ar"] == pytest.approx(
+    assert result["ar_validation"] == pytest.approx(
         6.0 * 0.82 + 2.0 * 0.76,
     )
 
 
 def test_champion_tiny_model_score_v1_blocks_corrupt_required_metric():
     result = compute_champion_tiny_model_score_v1(
-        **_good_champion_tiny_model_protocol_kwargs(induction_v3_auc=float("nan"))
+        **_good_champion_tiny_model_protocol_kwargs(
+            induction_validation_auc=float("nan")
+        )
     )
 
     assert result["total"] == 0.0
     assert result["hard_failure_reason"].startswith(
         "corrupt_required_champion_metrics:"
+    )
+
+
+def test_champion_tiny_model_score_v1_blocks_legacy_induction_validation_protocol():
+    result = compute_champion_tiny_model_score_v1(
+        **_good_champion_tiny_model_protocol_kwargs(
+            induction_validation_protocol_version="induction_validation_5k"
+        )
+    )
+
+    assert result["total"] == 0.0
+    assert (
+        result["hard_failure_reason"]
+        == "corrupt_required_champion_metrics:induction_validation_protocol_version"
     )
 
 
@@ -281,8 +298,8 @@ def test_v12_mamba_exception_requires_bpe_loss_and_two_non_loss_sequence_signals
             ppl_screening=35.0,
             ppl_investigation=35.0,
             ppl_validation=35.0,
-            induction_v2_inv_auc=0.0,
-            binding_v2_inv_auc=0.0,
+            induction_intermediate_inv_auc=0.0,
+            binding_intermediate_inv_auc=0.0,
             long_ctx_score=1.0,
             long_ctx_passkey_score=0.4,
         ),
@@ -294,8 +311,8 @@ def test_v12_mamba_exception_requires_bpe_loss_and_two_non_loss_sequence_signals
             ppl_screening=35.0,
             ppl_investigation=35.0,
             ppl_validation=35.0,
-            induction_v2_inv_auc=0.0,
-            binding_v2_inv_auc=0.0,
+            induction_intermediate_inv_auc=0.0,
+            binding_intermediate_inv_auc=0.0,
             long_ctx_score=1.0,
             long_ctx_passkey_score=0.4,
             long_ctx_multi_hop_score=0.35,
@@ -318,11 +335,11 @@ def test_v12_caps_current_leader_like_non_inducer():
             ppl_at_500=66.0,
             ppl_at_1000=65.91,
             screening_lr=0.593741962632699,
-            induction_auc=0.002,
-            induction_v2_inv_auc=0.001,
-            binding_auc=0.3449,
-            binding_v2_inv_auc=0.4406,
-            ar_auc=0.003,
+            induction_screening_auc=0.002,
+            induction_intermediate_inv_auc=0.001,
+            binding_screening_auc=0.3449,
+            binding_intermediate_inv_auc=0.4406,
+            ar_legacy_auc=0.003,
             long_ctx_score=0.0004,
             blimp_accuracy=0.5248,
             hellaswag_acc_screening=0.225,
@@ -349,9 +366,9 @@ def test_v12_ssm_exception_rejects_ar_alone():
             ppl_screening=35.0,
             ppl_investigation=35.0,
             ppl_validation=35.0,
-            induction_v2_inv_auc=0.0,
-            binding_v2_inv_auc=0.0,
-            ar_auc=0.95,
+            induction_intermediate_inv_auc=0.0,
+            binding_intermediate_inv_auc=0.0,
+            ar_legacy_auc=0.95,
             long_ctx_score=1.0,
         ),
     )
@@ -369,8 +386,8 @@ def test_v12_ssm_exception_rejects_non_bpe_loss():
             ppl_screening=35.0,
             ppl_investigation=35.0,
             ppl_validation=35.0,
-            induction_v2_inv_auc=0.0,
-            binding_v2_inv_auc=0.0,
+            induction_intermediate_inv_auc=0.0,
+            binding_intermediate_inv_auc=0.0,
             long_ctx_score=1.0,
             long_ctx_passkey_score=0.4,
             long_ctx_multi_hop_score=0.35,
@@ -401,8 +418,8 @@ def test_v12_ssm_exception_detects_non_attention_metadata(metadata):
             ppl_screening=35.0,
             ppl_investigation=35.0,
             ppl_validation=35.0,
-            induction_v2_inv_auc=0.0,
-            binding_v2_inv_auc=0.0,
+            induction_intermediate_inv_auc=0.0,
+            binding_intermediate_inv_auc=0.0,
             long_ctx_score=1.0,
             long_ctx_passkey_score=0.4,
             long_ctx_multi_hop_score=0.35,
@@ -420,8 +437,8 @@ def test_v12_ssm_exception_accepts_downstream_language_signals():
             ppl_screening=35.0,
             ppl_investigation=35.0,
             ppl_validation=35.0,
-            induction_v2_inv_auc=0.0,
-            binding_v2_inv_auc=0.0,
+            induction_intermediate_inv_auc=0.0,
+            binding_intermediate_inv_auc=0.0,
             blimp_accuracy=0.58,
             hellaswag_acc_validation=0.28,
         ),
@@ -438,8 +455,8 @@ def test_hard_probe_floors_score_full_ar_hellaswag_and_blimp():
             ppl_screening=35.0,
             ppl_investigation=35.0,
             ppl_validation=35.0,
-            ar_auc=0.95,
-            nano_ar_inv_score=None,
+            ar_legacy_auc=0.95,
+            ar_gate_score=None,
             hellaswag_acc_investigation=0.50,
             hellaswag_acc_validation=0.50,
             blimp_accuracy=0.90,
@@ -451,3 +468,144 @@ def test_hard_probe_floors_score_full_ar_hellaswag_and_blimp():
     assert bd["cap_ar"] == 0.0
     assert bd["hellaswag"] > 9.0
     assert bd["blimp"] > 9.0
+
+
+def _validation_ar_candidate(**overrides):
+    kw = _high_side_channel_candidate(
+        tier="validation",
+        ppl_screening=90.0,
+        ppl_investigation=90.0,
+        ppl_validation=90.0,
+        ppl_at_100=110.0,
+        ppl_at_500=92.0,
+        ppl_at_1000=90.0,
+        induction_intermediate_inv_auc=0.0,
+        binding_intermediate_inv_auc=0.0,
+        blimp_accuracy=0.0,
+        hellaswag_acc_screening=0.0,
+        hellaswag_acc_investigation=0.0,
+        hellaswag_acc_validation=0.0,
+        tinystories_score=0.45,
+        cross_task_score=0.25,
+        diagnostic_score=0.003,
+        hierarchy_fitness=0.75,
+        ar_gate_score=0.80,
+        ar_validation_metric_version="ar_validation_v2_easy25",
+        ar_validation_rank_score=5.5,
+        ar_validation_held_pair_acc=0.62,
+        ar_validation_held_class_acc=0.54,
+    )
+    kw.update(overrides)
+    return kw
+
+
+def test_ar_gate_saturation_does_not_dominate_validation_rank_ordering():
+    saturated_nano_weak_small = compute_composite_v12(
+        decompose=True,
+        **_validation_ar_candidate(
+            ar_gate_score=1.0,
+            ar_validation_rank_score=2.5,
+            ar_validation_held_pair_acc=0.25,
+            ar_validation_held_class_acc=0.25,
+        ),
+    )
+    less_saturated_nano_strong_small = compute_composite_v12(
+        decompose=True,
+        **_validation_ar_candidate(
+            ar_gate_score=0.75,
+            ar_validation_rank_score=8.0,
+            ar_validation_held_pair_acc=0.82,
+            ar_validation_held_class_acc=0.74,
+        ),
+    )
+
+    assert (
+        less_saturated_nano_strong_small["composite_score"]
+        > saturated_nano_weak_small["composite_score"]
+    )
+    assert (
+        less_saturated_nano_strong_small["breakdown"]["cap_ar_validation_validation"]
+        > saturated_nano_weak_small["breakdown"]["cap_ar_validation_validation"]
+    )
+    assert (
+        saturated_nano_weak_small["breakdown"]["cap_ar"]
+        - less_saturated_nano_strong_small["breakdown"]["cap_ar"]
+    ) < 10.0
+
+
+def test_ar_validation_separates_otherwise_similar_validation_candidates():
+    weak = compute_composite_v12(
+        decompose=True,
+        **_validation_ar_candidate(ar_validation_rank_score=2.0),
+    )
+    strong = compute_composite_v12(
+        decompose=True,
+        **_validation_ar_candidate(ar_validation_rank_score=8.0),
+    )
+
+    assert strong["composite_score"] > weak["composite_score"]
+    assert (
+        strong["breakdown"]["cap_ar_validation_validation"]
+        > weak["breakdown"]["cap_ar_validation_validation"]
+    )
+
+
+def test_strong_loss_weak_ar_validation_does_not_automatically_win():
+    strong_loss_weak_small = compute_composite_v12(
+        decompose=True,
+        **_validation_ar_candidate(
+            ppl_screening=35.0,
+            ppl_investigation=35.0,
+            ppl_validation=35.0,
+            ar_validation_rank_score=1.1,
+            ar_validation_held_pair_acc=0.10,
+            ar_validation_held_class_acc=0.10,
+        ),
+    )
+    weaker_loss_strong_small = compute_composite_v12(
+        decompose=True,
+        **_validation_ar_candidate(
+            ppl_screening=135.0,
+            ppl_investigation=135.0,
+            ppl_validation=135.0,
+            ar_validation_rank_score=9.0,
+            ar_validation_held_pair_acc=0.90,
+            ar_validation_held_class_acc=0.82,
+        ),
+    )
+
+    assert (
+        weaker_loss_strong_small["composite_score"]
+        > strong_loss_weak_small["composite_score"]
+    )
+
+
+def test_missing_ar_validation_falls_back_without_penalty_or_error():
+    result = compute_composite_v12(
+        decompose=True,
+        **_validation_ar_candidate(
+            ar_validation_rank_score=None,
+            champion_ar_validation_score=None,
+            ar_validation_held_pair_acc=None,
+            ar_validation_held_class_acc=None,
+            ar_validation_learning_speed_score=None,
+        ),
+    )
+
+    assert result["composite_score"] > 0.0
+    assert result["breakdown"]["cap_ar_validation_validation"] == pytest.approx(0.0)
+    assert result["breakdown"]["_ar_validation_validation_signal"] == pytest.approx(0.0)
+
+
+def test_existing_scoring_api_accepts_rows_without_ar_validation_kwargs():
+    result = compute_composite_v12(
+        decompose=True,
+        **_high_side_channel_candidate(
+            tier="validation",
+            ar_gate_score=0.75,
+            induction_intermediate_inv_auc=0.08,
+        ),
+    )
+
+    assert result["composite_score"] > 0.0
+    assert "cap_ar_validation_validation" in result["breakdown"]

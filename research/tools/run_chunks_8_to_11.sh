@@ -10,10 +10,10 @@ tail --pid=${WAIT_PID} -f /dev/null
 echo "[$(date '+%F %T')] chunk07 pid=${WAIT_PID} exited" >> "$LOG"
 
 for n in 08 09 10 11; do
-    OUT="research/reports/controlled_lang_s10_validation_pending_chunk${n}.jsonl"
+    OUT="research/reports/language_control_s10_validation_pending_chunk${n}.jsonl"
     CLOG="research/reports/chunk${n}.log"
     echo "[$(date '+%F %T')] starting chunk${n} -> ${OUT}" >> "$LOG"
-    python -m research.tools.controlled_lang_backfill \
+    python -m research.tools.language_control_backfill \
         --top-n 200 \
         --tiers s10 \
         --target-cohorts validation_pending \

@@ -66,13 +66,13 @@ const SORT_COLUMNS = [
   { key: 'avg_composite_score', label: 'Score', tooltip: 'Average leaderboard composite score for programs containing this op.', group: 'learning' },
   { key: 'avg_loss_ratio', label: 'Train LR', tooltip: 'Average training loss ratio for programs containing this op.', group: 'learning' },
   { key: 'avg_validation_loss_ratio', label: 'Val LR', tooltip: 'Average validation loss ratio for programs containing this op.', group: 'learning' },
-  { key: 'avg_induction_auc', label: 'Ind', tooltip: 'Average induction-task AUC for programs containing this op.', group: 'benchmarks' },
-  { key: 'avg_induction_v2_auc', label: 'Ind v2', tooltip: 'Average induction v2 investigation AUC for programs containing this op.', group: 'benchmarks' },
-  { key: 'avg_binding_auc', label: 'Bind', tooltip: 'Average binding/copy-task AUC for programs containing this op.', group: 'benchmarks' },
-  { key: 'avg_binding_v2_auc', label: 'Bind v2', tooltip: 'Average binding v2 investigation AUC for programs containing this op.', group: 'benchmarks' },
-  { key: 'avg_controlled_lang_s05_score', label: 'CL S05', tooltip: 'Average controlled-language S0.5 tier score: SA plus nano-BLiMP score/order.', group: 'benchmarks' },
-  { key: 'avg_controlled_lang_s10_score', label: 'CL S10', tooltip: 'Average controlled-language S1.0 tier score: SA plus nano-BLiMP score/order.', group: 'benchmarks' },
-  { key: 'avg_controlled_lang_inv_score', label: 'CL Inv', tooltip: 'Average controlled-language investigation tier score. Shows a yellow flag when investigation SA is below 0.850.', group: 'benchmarks' },
+  { key: 'avg_induction_screening_auc', label: 'Ind', tooltip: 'Average induction-task AUC for programs containing this op.', group: 'benchmarks' },
+  { key: 'avg_induction_intermediate_auc', label: 'Ind INTER', tooltip: 'Average induction v2 investigation AUC for programs containing this op.', group: 'benchmarks' },
+  { key: 'avg_binding_screening_auc', label: 'Bind', tooltip: 'Average binding/copy-task AUC for programs containing this op.', group: 'benchmarks' },
+  { key: 'avg_binding_intermediate_auc', label: 'Bind INTER', tooltip: 'Average binding v2 investigation AUC for programs containing this op.', group: 'benchmarks' },
+  { key: 'avg_language_control_s05_score', label: 'LC S05', tooltip: 'Average language-control S0.5 tier score: SA plus nano-BLiMP score/order.', group: 'benchmarks' },
+  { key: 'avg_language_control_s10_score', label: 'LC S10', tooltip: 'Average language-control S1.0 tier score: SA plus nano-BLiMP score/order.', group: 'benchmarks' },
+  { key: 'avg_language_control_investigation_score', label: 'LC INTER', tooltip: 'Average language-control investigation tier score. Shows a yellow flag when investigation SA is below 0.850.', group: 'benchmarks' },
   { key: 'avg_hellaswag_acc', label: 'Hella', tooltip: 'Average HellaSwag accuracy signal for programs containing this op.', group: 'benchmarks' },
   { key: 'avg_blimp_overall_accuracy', label: 'BLiMP', tooltip: 'Average BLiMP grammatical reasoning accuracy for programs containing this op.', group: 'benchmarks' },
   { key: 'avg_erf_density', label: 'ERF Dens', tooltip: 'Average ERF density for programs containing this op. Strong binding v2 predictor.', group: 'architecture' },
@@ -104,10 +104,10 @@ const COLUMN_GROUPS = [
 ];
 
 const COMPONENT_VIEW_PRESETS = [
-  { key: 'triage', label: 'Triage', columns: ['avg_composite_score', 'n_used', 's1_rate', 'avg_loss_ratio', 'avg_validation_loss_ratio', 'avg_induction_v2_auc', 'avg_binding_v2_auc', 'avg_controlled_lang_s05_score', 'avg_controlled_lang_s10_score', 'avg_controlled_lang_inv_score', 'avg_hellaswag_acc', 'avg_blimp_overall_accuracy', 'avg_erf_density', 'avg_id_collapse_rate', 'reasons'] },
-  { key: 'learning', label: 'Learning', columns: ['avg_composite_score', 'n_used', 's0_rate', 's05_rate', 's1_rate', 'avg_loss_ratio', 'avg_validation_loss_ratio', 'avg_induction_v2_auc', 'avg_binding_v2_auc', 'avg_controlled_lang_s05_score', 'avg_controlled_lang_inv_score', 'reasons'] },
-  { key: 'benchmarks', label: 'Benchmarks', columns: ['avg_composite_score', 'n_used', 'avg_induction_auc', 'avg_induction_v2_auc', 'avg_binding_auc', 'avg_binding_v2_auc', 'avg_controlled_lang_s05_score', 'avg_controlled_lang_s10_score', 'avg_controlled_lang_inv_score', 'avg_hellaswag_acc', 'avg_blimp_overall_accuracy', 'reasons'] },
-  { key: 'architecture', label: 'Architecture', columns: ['n_used', 'avg_binding_v2_auc', 'avg_erf_density', 'avg_id_collapse_rate', 'avg_id_collapse_rate_normalized', 'avg_erf_decay_slope', 'avg_logit_margin_velocity', 'avg_jacobian_effective_rank', 'reasons'] },
+  { key: 'triage', label: 'Triage', columns: ['avg_composite_score', 'n_used', 's1_rate', 'avg_loss_ratio', 'avg_validation_loss_ratio', 'avg_induction_intermediate_auc', 'avg_binding_intermediate_auc', 'avg_language_control_s05_score', 'avg_language_control_s10_score', 'avg_language_control_investigation_score', 'avg_hellaswag_acc', 'avg_blimp_overall_accuracy', 'avg_erf_density', 'avg_id_collapse_rate', 'reasons'] },
+  { key: 'learning', label: 'Learning', columns: ['avg_composite_score', 'n_used', 's0_rate', 's05_rate', 's1_rate', 'avg_loss_ratio', 'avg_validation_loss_ratio', 'avg_induction_intermediate_auc', 'avg_binding_intermediate_auc', 'avg_language_control_s05_score', 'avg_language_control_investigation_score', 'reasons'] },
+  { key: 'benchmarks', label: 'Benchmarks', columns: ['avg_composite_score', 'n_used', 'avg_induction_screening_auc', 'avg_induction_intermediate_auc', 'avg_binding_screening_auc', 'avg_binding_intermediate_auc', 'avg_language_control_s05_score', 'avg_language_control_s10_score', 'avg_language_control_investigation_score', 'avg_hellaswag_acc', 'avg_blimp_overall_accuracy', 'reasons'] },
+  { key: 'architecture', label: 'Architecture', columns: ['n_used', 'avg_binding_intermediate_auc', 'avg_erf_density', 'avg_id_collapse_rate', 'avg_id_collapse_rate_normalized', 'avg_erf_decay_slope', 'avg_logit_margin_velocity', 'avg_jacobian_effective_rank', 'reasons'] },
   { key: 'runtime', label: 'Runtime', columns: ['n_used', 'grad_norm', 'fwd_us', 'reasons'] },
   { key: 'all', label: 'All Columns', columns: SORT_COLUMNS.map(col => col.key) },
 ];
@@ -128,8 +128,8 @@ const SORT_PRESETS = [
   { key: 'worst_s1', label: 'Worst S1', sortKey: 's1_rate', desc: false },
   { key: 'best_val', label: 'Best Val', sortKey: 'avg_validation_loss_ratio', desc: false },
   { key: 'worst_gap', label: 'Worst Val Gap', sortKey: 'val_gap', desc: true },
-  { key: 'best_ind', label: 'Best Ind', sortKey: 'avg_induction_auc', desc: true },
-  { key: 'best_cl_inv', label: 'Best CL Inv', sortKey: 'avg_controlled_lang_inv_score', desc: true },
+  { key: 'best_ind', label: 'Best Ind', sortKey: 'avg_induction_screening_auc', desc: true },
+  { key: 'best_cl_investigation', label: 'Best LC INTER', sortKey: 'avg_language_control_investigation_score', desc: true },
   { key: 'slowest', label: 'Slowest Runtime', sortKey: 'fwd_us', desc: true },
 ];
 
@@ -181,7 +181,7 @@ function metricText(value, digits = 3) {
   return Number(value).toFixed(digits);
 }
 
-function controlledLangTone(value) {
+function languageControlTone(value) {
   const num = Number(value);
   if (!Number.isFinite(num)) return 'var(--text-muted)';
   if (num >= 0.85) return 'var(--accent-green)';
@@ -189,18 +189,18 @@ function controlledLangTone(value) {
   return STATUS_COLORS.broken;
 }
 
-function controlledLangFlag(row) {
-  const invSa = Number(row.avg_controlled_lang_inv_sa_score);
+function languageControlFlag(row) {
+  const invSa = Number(row.avg_language_control_investigation_sentence_assoc_score);
   return Number.isFinite(invSa) && invSa < 0.85;
 }
 
-function controlledLangCell(row, key) {
+function languageControlCell(row, key) {
   return (
     <td
-      title={controlledLangFlag(row) ? `INV SA ${metricText(row.avg_controlled_lang_inv_sa_score)} below 0.850` : undefined}
-      style={{ textAlign: 'right', color: controlledLangTone(row[key]), fontWeight: 600, whiteSpace: 'nowrap' }}
+      title={languageControlFlag(row) ? `INV SA ${metricText(row.avg_language_control_investigation_sentence_assoc_score)} below 0.850` : undefined}
+      style={{ textAlign: 'right', color: languageControlTone(row[key]), fontWeight: 600, whiteSpace: 'nowrap' }}
     >
-      {controlledLangFlag(row) && key === 'avg_controlled_lang_inv_score' ? <span style={{ color: STATUS_COLORS.degraded, marginRight: 4 }}>!</span> : null}
+      {languageControlFlag(row) && key === 'avg_language_control_investigation_score' ? <span style={{ color: STATUS_COLORS.degraded, marginRight: 4 }}>!</span> : null}
       {metricText(row[key])}
     </td>
   );
@@ -216,8 +216,8 @@ function componentMatchesReason(component, reasonFilter) {
       val >= 0.65 || (Number.isFinite(train) && val > train * 1.15)
     );
   }
-  if (reasonFilter === 'low_ind') return component.avg_induction_auc != null && component.avg_induction_auc < 0.02;
-  if (reasonFilter === 'low_bind') return component.avg_binding_auc != null && component.avg_binding_auc < 0.05;
+  if (reasonFilter === 'low_ind') return component.avg_induction_screening_auc != null && component.avg_induction_screening_auc < 0.02;
+  if (reasonFilter === 'low_bind') return component.avg_binding_screening_auc != null && component.avg_binding_screening_auc < 0.05;
   if (reasonFilter === 'high_grad') return component.grad_norm != null && component.grad_norm > 3000;
   if (reasonFilter === 'slow_fwd') return component.fwd_us != null && component.fwd_us > 1000;
   if (reasonFilter === 'runtime_excluded') return Number(component.n_excluded || 0) > 0;
@@ -264,9 +264,9 @@ function normalizeColumnKeys(columns, keys) {
 
 function requiredComponentColumns() {
   return [
-    'avg_controlled_lang_s05_score',
-    'avg_controlled_lang_s10_score',
-    'avg_controlled_lang_inv_score',
+    'avg_language_control_s05_score',
+    'avg_language_control_s10_score',
+    'avg_language_control_investigation_score',
   ];
 }
 
@@ -376,13 +376,13 @@ function renderComponentCell(c, col) {
       </td>
     );
   }
-  if (col.key === 'avg_induction_auc') return <td style={{ textAlign: 'right' }}>{metricText(c.avg_induction_auc)}</td>;
-  if (col.key === 'avg_induction_v2_auc') return <td style={{ textAlign: 'right' }}>{metricText(c.avg_induction_v2_auc)}</td>;
-  if (col.key === 'avg_binding_auc') return <td style={{ textAlign: 'right' }}>{metricText(c.avg_binding_auc)}</td>;
-  if (col.key === 'avg_binding_v2_auc') return <td style={{ textAlign: 'right', color: c.avg_binding_v2_auc != null && c.avg_binding_v2_auc >= 0.30 ? 'var(--accent-green)' : 'var(--text-primary)' }}>{metricText(c.avg_binding_v2_auc)}</td>;
-  if (col.key === 'avg_controlled_lang_s05_score') return controlledLangCell(c, col.key);
-  if (col.key === 'avg_controlled_lang_s10_score') return controlledLangCell(c, col.key);
-  if (col.key === 'avg_controlled_lang_inv_score') return controlledLangCell(c, col.key);
+  if (col.key === 'avg_induction_screening_auc') return <td style={{ textAlign: 'right' }}>{metricText(c.avg_induction_screening_auc)}</td>;
+  if (col.key === 'avg_induction_intermediate_auc') return <td style={{ textAlign: 'right' }}>{metricText(c.avg_induction_intermediate_auc)}</td>;
+  if (col.key === 'avg_binding_screening_auc') return <td style={{ textAlign: 'right' }}>{metricText(c.avg_binding_screening_auc)}</td>;
+  if (col.key === 'avg_binding_intermediate_auc') return <td style={{ textAlign: 'right', color: c.avg_binding_intermediate_auc != null && c.avg_binding_intermediate_auc >= 0.30 ? 'var(--accent-green)' : 'var(--text-primary)' }}>{metricText(c.avg_binding_intermediate_auc)}</td>;
+  if (col.key === 'avg_language_control_s05_score') return languageControlCell(c, col.key);
+  if (col.key === 'avg_language_control_s10_score') return languageControlCell(c, col.key);
+  if (col.key === 'avg_language_control_investigation_score') return languageControlCell(c, col.key);
   if (col.key === 'avg_hellaswag_acc') return <td style={{ textAlign: 'right' }}>{metricText(c.avg_hellaswag_acc)}</td>;
   if (col.key === 'avg_blimp_overall_accuracy') return <td style={{ textAlign: 'right' }}>{metricText(c.avg_blimp_overall_accuracy)}</td>;
   if (col.key === 'avg_erf_density') return <td style={{ textAlign: 'right', color: c.avg_erf_density != null && c.avg_erf_density >= 0.18 ? 'var(--accent-green)' : 'var(--text-primary)' }}>{metricText(c.avg_erf_density)}</td>;

@@ -74,6 +74,58 @@ def test_legitimate_model_not_capped():
 
 
 @pytest.mark.unit
+def test_ar_gate_is_bounded_gate_not_full_rank_signal():
+    """Saturated AR Gate alone should not max the AR capability bucket."""
+    result = compute_composite(
+        screening_lr=0.3,
+        ar_gate_score=1.0,
+        decompose=True,
+    )
+    bd = result["breakdown"]
+
+    assert bd["cap_ar_nano_gate_fraction"] == pytest.approx(0.45)
+    assert bd["cap_ar_signal_fraction"] == pytest.approx(0.45)
+    assert bd["cap_ar"] < 45.0
+
+
+@pytest.mark.unit
+def test_ar_gate_below_gate_stays_low_but_monotonic():
+    low = compute_composite(
+        screening_lr=0.3,
+        ar_gate_score=0.10,
+        decompose=True,
+    )["breakdown"]
+    gated = compute_composite(
+        screening_lr=0.3,
+        ar_gate_score=0.50,
+        decompose=True,
+    )["breakdown"]
+
+    assert 0.0 < low["cap_ar"] < gated["cap_ar"]
+    assert gated["cap_ar_nano_gate_fraction"] >= 0.35
+
+
+@pytest.mark.unit
+def test_ar_validation_rank_signal_beats_saturated_nano_tie():
+    weak_ar_validation = compute_composite(
+        screening_lr=0.3,
+        ar_gate_score=1.0,
+        ar_validation_rank_score=2.0,
+        decompose=True,
+    )["breakdown"]
+    strong_ar_validation = compute_composite(
+        screening_lr=0.3,
+        ar_gate_score=1.0,
+        ar_validation_rank_score=6.0,
+        decompose=True,
+    )["breakdown"]
+
+    assert weak_ar_validation["cap_ar_nano_gate_fraction"] == pytest.approx(0.45)
+    assert strong_ar_validation["cap_ar_rank_signal"] == pytest.approx(0.60)
+    assert strong_ar_validation["cap_ar"] > weak_ar_validation["cap_ar"]
+
+
+@pytest.mark.unit
 def test_nonlearning_cannot_reach_validated():
     """A result with loss_ratio=0.9825 produces a score too low for validation."""
     score_v4 = compute_composite(

@@ -9,13 +9,14 @@ from typing import Any, Dict, Optional
 
 
 from ..native.telemetry import reset_native_runner_telemetry
-from ..notebook import ExperimentEntry, LabNotebook
+from ..notebook import LabNotebook
 from ..runtime_events import (
     LIFECYCLE_EVENT_TYPES,
     get_runtime_event_services,
     publish_lifecycle_event,
     publish_runtime_event,
 )
+from ..runtime_events.publishers import publish_live_feed_event
 
 from ._types import RunConfig
 
@@ -35,6 +36,7 @@ _PERSISTED_LIVE_FEED_EVENTS = {
     "scale_up_progress",
     "scale_up_completed",
     "champion_confirmation_started",
+    "champion_probe_progress",
     "investigation_started",
     "investigation_progress",
     "investigation_training_complete",
@@ -58,37 +60,14 @@ class _ControlActionsMixin:
         """Persist selected lifecycle events for feed replay in the dashboard."""
         if event_type not in _PERSISTED_LIVE_FEED_EVENTS:
             return
-        experiment_id = data.get("experiment_id")
-        title = event_type.replace("_", " ")
-        content = str(
-            data.get("aria_message")
-            or data.get("status")
-            or data.get("summary")
-            or data.get("error")
-            or data.get("hypothesis")
-            or title
-        )[:500]
-        nb = None
         try:
-            nb = self._make_notebook()
-            nb.add_entry(
-                ExperimentEntry(
-                    entry_type="live_feed",
-                    title=title,
-                    content=content,
-                    experiment_id=experiment_id,
-                    metadata={
-                        "live_feed_type": event_type,
-                        "event_type": event_type,
-                        "payload": data,
-                    },
-                )
+            publish_live_feed_event(
+                notebook_path=self.notebook_path,
+                event_type=event_type,
+                data=data,
             )
         except Exception as exc:
             logger.debug("Failed to persist live-feed event %s: %s", event_type, exc)
-        finally:
-            if nb is not None:
-                nb.close()
 
     def stop(self):
         """Stop the current experiment gracefully."""

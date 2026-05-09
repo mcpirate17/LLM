@@ -31,6 +31,13 @@ class _HealerMixin:
     ) -> str:
         task_id = f"heal-{uuid.uuid4().hex[:10]}"
         now = time.time()
+        trigger_payload_json = json.dumps(trigger_payload or {})
+        trigger_payload_json = self._maybe_store_json_artifact(
+            table_name="healer_tasks",
+            row_pk=task_id,
+            column_name="trigger_payload_json",
+            payload_json=trigger_payload_json,
+        )
         try:
             self.conn.execute(
                 """INSERT INTO healer_tasks
@@ -43,7 +50,7 @@ class _HealerMixin:
                     now,
                     experiment_id,
                     trigger_type,
-                    json.dumps(trigger_payload or {}),
+                    trigger_payload_json,
                     scope,
                     json.dumps(reproduction_steps or []),
                     json.dumps(acceptance_tests or []),
@@ -82,7 +89,15 @@ class _HealerMixin:
             params.append(risk_assessment)
         if result is not None:
             sets.append("result_json = ?")
-            params.append(json.dumps(result))
+            result_json = json.dumps(result)
+            params.append(
+                self._maybe_store_json_artifact(
+                    table_name="healer_tasks",
+                    row_pk=task_id,
+                    column_name="result_json",
+                    payload_json=result_json,
+                )
+            )
         if completed:
             sets.append("completed_at = ?")
             params.append(time.time())
@@ -152,8 +167,14 @@ class _HealerMixin:
             raw = out.get(field)
             if raw:
                 try:
-                    out[field] = json.loads(raw)
-                except (TypeError, json.JSONDecodeError):
+                    out[field] = self._json_loads_maybe_artifact(raw)
+                except (
+                    TypeError,
+                    json.JSONDecodeError,
+                    ValueError,
+                    FileNotFoundError,
+                    KeyError,
+                ):
                     pass
         return out
 
@@ -184,8 +205,14 @@ class _HealerMixin:
                 raw = item.get(key)
                 if raw:
                     try:
-                        item[key] = json.loads(raw)
-                    except (TypeError, json.JSONDecodeError):
+                        item[key] = self._json_loads_maybe_artifact(raw)
+                    except (
+                        TypeError,
+                        json.JSONDecodeError,
+                        ValueError,
+                        FileNotFoundError,
+                        KeyError,
+                    ):
                         pass
             out.append(item)
         return out

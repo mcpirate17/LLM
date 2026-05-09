@@ -26,6 +26,9 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from research.defaults import RUNS_DB
+from research.scientist.notebook.graph_artifacts import resolve_graph_json_value
+
 logger = logging.getLogger(__name__)
 
 
@@ -45,7 +48,15 @@ def _fetch_row(
     row = conn.execute(
         "SELECT * FROM program_results WHERE result_id = ?", (result_id,)
     ).fetchone()
-    return dict(row) if row else None
+    if not row:
+        return None
+    payload = dict(row)
+    payload["graph_json"] = resolve_graph_json_value(
+        conn,
+        RUNS_DB,
+        payload.get("graph_json"),
+    )
+    return payload
 
 
 def _reconstruct_model(graph_json: str, vocab_size: int, device: str):
@@ -145,8 +156,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--db",
-        default="research/lab_notebook.db",
-        help="Path to lab notebook (default: research/lab_notebook.db).",
+        default=RUNS_DB,
+        help=f"Path to runs DB (default: {RUNS_DB}).",
     )
     parser.add_argument(
         "--result-ids",

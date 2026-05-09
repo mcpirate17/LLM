@@ -9,6 +9,7 @@ import torch
 
 from research.scientist.native_runner import compile_model_native_first as compile_model
 from research.scientist.notebook import LabNotebook
+from research.scientist.notebook.graph_artifacts import resolve_graph_json_value
 from research.scientist.notebook.leaderboard_maintenance import (
     sync_fingerprint_leaderboard,
 )
@@ -51,7 +52,16 @@ def load_program_row(nb: LabNotebook, result_id: str) -> Dict[str, Any] | None:
         "SELECT * FROM program_results WHERE result_id = ?",
         (str(result_id),),
     ).fetchone()
-    return dict(row) if row else None
+    if not row:
+        return None
+    payload = dict(row)
+    if "graph_json" in payload:
+        payload["graph_json"] = resolve_graph_json_value(
+            nb.conn,
+            nb.db_path,
+            payload["graph_json"],
+        )
+    return payload
 
 
 def load_run_config(nb: LabNotebook, program: Dict[str, Any]) -> RunConfig:

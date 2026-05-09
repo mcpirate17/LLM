@@ -132,23 +132,35 @@ def test_lookup_by_fingerprint_helper(tmp_path):
     nb.close()
 
 
-def test_references_bypass_gate(tmp_path):
+def test_reference_upsert_reuses_existing_fingerprint_parent(tmp_path):
     db = tmp_path / "lab.db"
     nb = LabNotebook(db)
     _seed(nb, fp="sharedfp0005eeee", rid="rid-A")
     _seed(nb, fp="sharedfp0005eeee", rid="rid-B", reason="historical_dup")
-    nb.upsert_leaderboard(
+    first = nb.upsert_leaderboard(
         result_id="rid-A",
         model_source="test",
         tier="screening",
     )
-    # References bypass the gate (intentional sibling for GPT-2, Mamba, etc.)
+    nb.conn.execute(
+        "UPDATE leaderboard SET composite_score = ? WHERE entry_id = ?",
+        (500.0, first),
+    )
     second = nb.upsert_leaderboard(
         result_id="rid-B",
-        model_source="reference",
+        model_source="reference_calibration",
         tier="screening",
         is_reference=True,
         reference_name="gpt2_test",
     )
-    assert second
+    assert second == first
+    row = nb.conn.execute(
+        "SELECT result_id, is_reference, reference_name, composite_score FROM leaderboard "
+        "WHERE entry_id = ?",
+        (first,),
+    ).fetchone()
+    assert row["result_id"] == "rid-A"
+    assert int(row["is_reference"]) == 1
+    assert row["reference_name"] == "gpt2_test"
+    assert row["composite_score"] == pytest.approx(500.0)
     nb.close()

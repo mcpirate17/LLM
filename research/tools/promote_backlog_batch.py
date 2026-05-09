@@ -27,7 +27,7 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 DEFAULT_INPUT = Path("research/reports/promote_backlog_candidates_2026-04-19.jsonl")
-DEFAULT_DB = Path("research/lab_notebook.db")
+DEFAULT_DB = Path("research/runs.db")
 DEFAULT_AUDIT = Path("research/reports/promote_backlog_applied_2026-04-19.jsonl")
 
 

@@ -40,6 +40,7 @@ from research.eval.native_induction import (
     induction_score_gold,
 )
 from research.scientist.notebook import LabNotebook
+from research.scientist.notebook.graph_artifacts import resolve_graph_json_value
 from research.scientist.native_runner import compile_model_native_first as compile_model
 from research.scientist.runner import ExperimentRunner, RunConfig
 from research.scientist.runner.shared import get_shared_runner
@@ -53,7 +54,7 @@ from research.tools._candidate_selection import fetch_latest_unique_fingerprint_
 from research.tools._fingerprint_selection import dedupe_records_by_fingerprint
 from research.tools.backfill import store_probe_results
 
-DB_PATH = Path("research/lab_notebook.db")
+DB_PATH = Path("research/runs.db")
 REPORT_PATH = Path("research/reports/backpopulate_screening_metrics.tsv")
 DEFAULT_BATCH_COMMIT = 10
 DEFAULT_MAX_CONSECUTIVE_FAILURES = 10
@@ -69,9 +70,9 @@ RAPID_REQUIRED_FIELDS = (
 POST_REQUIRED_FIELDS = (
     "wikitext_perplexity",
     "hellaswag_acc",
-    "induction_auc",
-    "binding_auc",
-    "binding_composite",
+    "induction_screening_auc",
+    "binding_screening_auc",
+    "binding_screening_composite",
 )
 
 POST_TARGET_ALIASES = {
@@ -120,17 +121,22 @@ def _target_post_fields(target: str) -> tuple[str, ...]:
     if target == "hellaswag":
         return ("hellaswag_acc",)
     if target == "induction":
-        return ("induction_auc",)
+        return ("induction_screening_auc",)
     if target == "binding":
-        return ("binding_auc",)
+        return ("binding_screening_auc",)
     if target == "ar":
-        return ("ar_auc",)
+        return ("ar_legacy_auc",)
     if target == "blimp":
         return ("blimp_overall_accuracy",)
     if target == "ncd":
         return ("ncd_score",)
     if target == "all":
-        return ("hellaswag_acc", "induction_auc", "binding_auc", "binding_composite")
+        return (
+            "hellaswag_acc",
+            "induction_screening_auc",
+            "binding_screening_auc",
+            "binding_screening_composite",
+        )
     return POST_REQUIRED_FIELDS
 
 
@@ -299,17 +305,17 @@ def _has_replayable_train_budget(row: Mapping[str, Any]) -> bool:
 
 
 def _is_binding_only_target(target_fields: Sequence[str]) -> bool:
-    return tuple(target_fields) == ("binding_auc",)
+    return tuple(target_fields) == ("binding_screening_auc",)
 
 
 def _supports_compile_only_post_target(target_fields: Sequence[str]) -> bool:
     fields = set(target_fields)
     compile_only_fields = {
         "hellaswag_acc",
-        "induction_auc",
-        "binding_auc",
-        "binding_composite",
-        "ar_auc",
+        "induction_screening_auc",
+        "binding_screening_auc",
+        "binding_screening_composite",
+        "ar_legacy_auc",
         "blimp_overall_accuracy",
         "ncd_score",
     }
@@ -366,10 +372,10 @@ def _fetch_rows(
             pr.rapid_screening_max_steps,
             pr.wikitext_perplexity,
             pr.hellaswag_acc,
-            pr.induction_auc,
-            pr.binding_auc,
-            pr.binding_composite,
-            pr.ar_auc,
+            pr.induction_screening_auc,
+            pr.binding_screening_auc,
+            pr.binding_screening_composite,
+            pr.ar_legacy_auc,
             pr.blimp_overall_accuracy,
             pr.ncd_score,
             pr.trust_label,
@@ -453,9 +459,9 @@ def _fetch_rows(
                   ({budget_clause}) AND (
                     pr.wikitext_perplexity IS NULL OR
                     pr.hellaswag_acc IS NULL OR
-                    pr.induction_auc IS NULL OR
-                    pr.binding_auc IS NULL OR
-                    pr.binding_composite IS NULL
+                    pr.induction_screening_auc IS NULL OR
+                    pr.binding_screening_auc IS NULL OR
+                    pr.binding_screening_composite IS NULL
                   )
                 )
               )
@@ -480,10 +486,10 @@ def _fetch_rows(
                 pr.rapid_screening_max_steps,
                 pr.wikitext_perplexity,
                 pr.hellaswag_acc,
-                pr.induction_auc,
-                pr.binding_auc,
-                pr.binding_composite,
-                pr.ar_auc,
+                pr.induction_screening_auc,
+                pr.binding_screening_auc,
+                pr.binding_screening_composite,
+                pr.ar_legacy_auc,
                 pr.blimp_overall_accuracy,
                 pr.ncd_score,
                 pr.trust_label,
@@ -582,8 +588,20 @@ def _build_run_config(row: sqlite3.Row, device: str) -> RunConfig:
     return config
 
 
-def _row_to_payload(row: sqlite3.Row) -> Dict[str, Any]:
-    return {key: row[key] for key in row.keys()}
+def _row_to_payload(
+    row: sqlite3.Row,
+    *,
+    conn: sqlite3.Connection | None = None,
+    db_path: Path = DB_PATH,
+) -> Dict[str, Any]:
+    payload = {key: row[key] for key in row.keys()}
+    if conn is not None and "graph_json" in payload:
+        payload["graph_json"] = resolve_graph_json_value(
+            conn,
+            db_path,
+            payload["graph_json"],
+        )
+    return payload
 
 
 @contextlib.contextmanager
@@ -791,16 +809,16 @@ def _run_binding_probe_only(
         )
         return screening_probe_fields(
             {
-                "binding_auc": zero.auc,
+                "binding_screening_auc": zero.auc,
                 "binding_distance_accuracies": zero.distance_accuracies,
-                "binding_auc_curriculum": br.auc,
+                "binding_curriculum_auc": br.auc,
                 "binding_distance_accuracies_curriculum": br.distance_accuracies,
-                "binding_probe_eval_examples": CURRICULUM_BINDING_EVAL_SCREENING,
+                "binding_screening_eval_examples": CURRICULUM_BINDING_EVAL_SCREENING,
                 "binding_probe_distances": list(CURRICULUM_BINDING_DISTANCES),
-                "binding_probe_elapsed_ms": zero.elapsed_ms,
-                "binding_probe_curriculum_steps": br.train_steps,
-                "binding_probe_curriculum_elapsed_ms": br.elapsed_ms,
-                "binding_probe_curriculum_protocol_version": CURRICULUM_BINDING_PROTOCOL_VERSION,
+                "binding_screening_elapsed_ms": zero.elapsed_ms,
+                "binding_curriculum_steps": br.train_steps,
+                "binding_curriculum_elapsed_ms": br.elapsed_ms,
+                "binding_curriculum_protocol_version": CURRICULUM_BINDING_PROTOCOL_VERSION,
             }
         )
     finally:
@@ -854,7 +872,10 @@ def _run_compile_only_post_eval(
             if hs.get("elapsed_ms") is not None:
                 updates["screening_hellaswag_elapsed_ms"] = hs.get("elapsed_ms")
 
-        if "induction_auc" in target_set or "binding_composite" in target_set:
+        if (
+            "induction_screening_auc" in target_set
+            or "binding_screening_composite" in target_set
+        ):
             ind = induction_score_gold(
                 model,
                 device=str(dev),
@@ -862,7 +883,10 @@ def _run_compile_only_post_eval(
             )
             updates.update(induction_result_metadata(ind))
 
-        if "binding_auc" in target_set or "binding_composite" in target_set:
+        if (
+            "binding_screening_auc" in target_set
+            or "binding_screening_composite" in target_set
+        ):
             zero = binding_range_profile(
                 model,
                 distances=CURRICULUM_BINDING_DISTANCES,
@@ -905,20 +929,20 @@ def _run_compile_only_post_eval(
             )
             updates.update(
                 {
-                    "binding_auc": zero.auc,
+                    "binding_screening_auc": zero.auc,
                     "binding_distance_accuracies": zero.distance_accuracies,
-                    "binding_probe_eval_examples": CURRICULUM_BINDING_EVAL_SCREENING,
+                    "binding_screening_eval_examples": CURRICULUM_BINDING_EVAL_SCREENING,
                     "binding_probe_distances": list(CURRICULUM_BINDING_DISTANCES),
-                    "binding_probe_elapsed_ms": zero.elapsed_ms,
-                    "binding_auc_curriculum": br.auc,
+                    "binding_screening_elapsed_ms": zero.elapsed_ms,
+                    "binding_curriculum_auc": br.auc,
                     "binding_distance_accuracies_curriculum": br.distance_accuracies,
-                    "binding_probe_curriculum_steps": br.train_steps,
-                    "binding_probe_curriculum_elapsed_ms": br.elapsed_ms,
-                    "binding_probe_curriculum_protocol_version": CURRICULUM_BINDING_PROTOCOL_VERSION,
+                    "binding_curriculum_steps": br.train_steps,
+                    "binding_curriculum_elapsed_ms": br.elapsed_ms,
+                    "binding_curriculum_protocol_version": CURRICULUM_BINDING_PROTOCOL_VERSION,
                 }
             )
 
-        if "ar_auc" in target_set:
+        if "ar_legacy_auc" in target_set:
             from research.eval.associative_recall import associative_recall_score
 
             ar = associative_recall_score(
@@ -929,10 +953,10 @@ def _run_compile_only_post_eval(
                 batch_size=16,
                 device=str(dev),
             )
-            updates["ar_auc"] = ar.auc
-            updates["ar_final_acc"] = ar.final_acc
-            updates["ar_timed_out"] = int(ar.timed_out)
-            updates["ar_above_chance"] = int(ar.above_chance)
+            updates["ar_legacy_auc"] = ar.auc
+            updates["ar_legacy_final_acc"] = ar.final_acc
+            updates["ar_legacy_timed_out"] = int(ar.timed_out)
+            updates["ar_legacy_above_chance"] = int(ar.above_chance)
 
         if "blimp_overall_accuracy" in target_set:
             from research.eval.blimp_eval import evaluate_blimp
@@ -1042,25 +1066,25 @@ def _select_updates(
     return selected
 
 
-def _merge_binding_composite_from_existing(
+def _merge_binding_screening_composite_from_existing(
     row: Mapping[str, Any], updates: Dict[str, Any], force: bool
 ) -> None:
-    binding_auc = updates.get("binding_auc")
-    induction_auc = updates.get("induction_auc")
-    if induction_auc is None:
-        induction_auc = row.get("induction_auc")
-    if binding_auc is None:
-        binding_auc = row.get("binding_auc")
-    if induction_auc is None or binding_auc is None:
+    binding_screening_auc = updates.get("binding_screening_auc")
+    induction_screening_auc = updates.get("induction_screening_auc")
+    if induction_screening_auc is None:
+        induction_screening_auc = row.get("induction_screening_auc")
+    if binding_screening_auc is None:
+        binding_screening_auc = row.get("binding_screening_auc")
+    if induction_screening_auc is None or binding_screening_auc is None:
         return
     if (
         force
-        or row.get("binding_composite") is None
-        or "binding_auc" in updates
-        or "induction_auc" in updates
+        or row.get("binding_screening_composite") is None
+        or "binding_screening_auc" in updates
+        or "induction_screening_auc" in updates
     ):
-        updates["binding_composite"] = round(
-            0.3 * float(induction_auc) + 0.3 * float(binding_auc), 4
+        updates["binding_screening_composite"] = round(
+            0.3 * float(induction_screening_auc) + 0.3 * float(binding_screening_auc), 4
         )
 
 
@@ -1156,6 +1180,7 @@ def _evaluate_row_payload(
     selection_slice: str = DEFAULT_SELECTION_SLICE,
 ) -> Dict[str, Any]:
     row = payload
+    graph_json = str(row["graph_json"])
     target_post_fields = _target_post_fields(post_train_target)
     rapid_needed = (
         selection_slice != "trusted_candidates"
@@ -1176,11 +1201,13 @@ def _evaluate_row_payload(
     config.skip_screening_hellaswag = "hellaswag_acc" not in target_post_field_set or (
         not force and row.get("hellaswag_acc") is not None
     )
-    config.skip_induction_probe = "induction_auc" not in target_post_field_set or (
-        not force and row.get("induction_auc") is not None
+    config.skip_induction_probe = (
+        "induction_screening_auc" not in target_post_field_set
+        or (not force and row.get("induction_screening_auc") is not None)
     )
-    config.skip_binding_probe = "binding_auc" not in target_post_field_set or (
-        not force and row.get("binding_auc") is not None
+    config.skip_binding_probe = (
+        "binding_screening_auc" not in target_post_field_set
+        or (not force and row.get("binding_screening_auc") is not None)
     )
     config.skip_binding_probes = (
         config.skip_induction_probe and config.skip_binding_probe
@@ -1188,7 +1215,7 @@ def _evaluate_row_payload(
     if rapid_needed:
         updates.update(
             _run_rapid(
-                str(row["graph_json"]),
+                graph_json,
                 config,
                 device,
                 str(row["result_id"]),
@@ -1197,14 +1224,14 @@ def _evaluate_row_payload(
     if post_needed and _supports_compile_only_post_target(target_post_fields):
         updates.update(
             _run_compile_only_post_eval(
-                str(row["graph_json"]),
+                graph_json,
                 config,
                 device,
                 str(row["result_id"]),
                 target_post_fields,
             )
         )
-        _merge_binding_composite_from_existing(row, updates, force)
+        _merge_binding_screening_composite_from_existing(row, updates, force)
     elif post_needed:
         post_runs: List[Dict[str, Any]] = []
         runner = get_shared_runner(str(DB_PATH))
@@ -1212,7 +1239,7 @@ def _evaluate_row_payload(
             post_runs.append(
                 _run_post_train(
                     runner,
-                    str(row["graph_json"]),
+                    graph_json,
                     config,
                     device,
                     str(row["result_id"]),
@@ -1230,7 +1257,7 @@ def _evaluate_row_payload(
             probe_abs_tol=stability_probe_abs_tol,
         )
         updates.update(post_runs[-1])
-        _merge_binding_composite_from_existing(row, updates, force)
+        _merge_binding_screening_composite_from_existing(row, updates, force)
     updates = _select_updates(row, updates, force)
     missing_required = _missing_required_fields(
         row=row,
@@ -1253,9 +1280,9 @@ def _evaluate_row_payload(
 
 
 def _run_worker_subprocess(
-    row: sqlite3.Row, args: argparse.Namespace
+    conn: sqlite3.Connection, row: sqlite3.Row, args: argparse.Namespace
 ) -> Dict[str, Any]:
-    payload = _row_to_payload(row)
+    payload = _row_to_payload(row, conn=conn, db_path=args.db)
     with tempfile.TemporaryDirectory(prefix="backpopulate_screening_") as tmpdir:
         payload_path = Path(tmpdir) / "payload.json"
         output_path = Path(tmpdir) / "output.json"
@@ -1434,14 +1461,14 @@ def _run_worker_mode(args: argparse.Namespace) -> None:
 
 
 def _evaluate_one_row(
-    row: sqlite3.Row, args: argparse.Namespace
+    conn: sqlite3.Connection, row: sqlite3.Row, args: argparse.Namespace
 ) -> tuple[int, int, Dict[str, Any]]:
     """Run a row through worker (in-process or subprocess). Returns (rapid_needed, post_needed, updates)."""
     if args.isolate_subprocess:
-        worker = _run_worker_subprocess(row, args)
+        worker = _run_worker_subprocess(conn, row, args)
     else:
         worker = _evaluate_row_payload(
-            payload=_row_to_payload(row),
+            payload=_row_to_payload(row, conn=conn, db_path=args.db),
             device=args.device,
             force=args.force,
             skip_rapid=args.skip_rapid,
@@ -1477,7 +1504,7 @@ def _process_row(
     updates: Dict[str, Any] = {}
     source_device = str(args.device)
     try:
-        rapid_needed, post_needed, updates = _evaluate_one_row(row, args)
+        rapid_needed, post_needed, updates = _evaluate_one_row(nb.conn, row, args)
         if updates and not args.dry_run:
             # Keep the write transaction short. Holding nb.batch() open
             # across the expensive CUDA replay loop starves other writers.

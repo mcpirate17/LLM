@@ -17,6 +17,7 @@ from typing import Any, Iterable
 
 import torch
 
+from research.defaults import RUNTIME_DIR_ABS
 from research.scientist.json_utils import json_safe
 from research.scientist.native_runner import compile_model_native_first
 from research.scientist.notebook import LabNotebook
@@ -33,7 +34,7 @@ from research.synthesis.serializer import graph_to_json
 from research.training.checkpointing import CheckpointManager
 
 LOGGER = logging.getLogger(__name__)
-RUNTIME_DIR = Path("research/runtime/champion_reference_calibration")
+RUNTIME_DIR = RUNTIME_DIR_ABS / "champion_reference_calibration"
 
 
 def calibration_fingerprint(
@@ -46,6 +47,12 @@ def calibration_fingerprint(
     seq_len: int,
     batch_size: int,
 ) -> str:
+    """Stable run key for a calibration variant.
+
+    This is deliberately not the persisted graph_fingerprint.  Champion
+    calibration varies layer count, step budget, and batch settings, but those
+    are experiment/run dimensions under the same parent graph.
+    """
     payload = "|".join(
         [
             str(layer_fingerprint),
@@ -59,6 +66,49 @@ def calibration_fingerprint(
     )
     digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
     return f"{arch}_control_{digest}"
+
+
+def resolve_reference_parent_fingerprint(
+    nb: LabNotebook,
+    *,
+    arch: str,
+    reference_name: str,
+    layer_fingerprint: str,
+) -> str:
+    """Return the canonical parent graph fingerprint for a reference family."""
+    row = nb.conn.execute(
+        """
+        SELECT COALESCE(NULLIF(l.graph_fingerprint, ''), pr.graph_fingerprint) AS fp
+        FROM leaderboard l
+        LEFT JOIN program_results pr ON pr.result_id = l.result_id
+        WHERE COALESCE(l.is_reference, 0) = 1
+          AND COALESCE(l.model_source, '') != 'reference_calibration'
+          AND (
+                LOWER(COALESCE(l.reference_name, '')) = LOWER(?)
+             OR COALESCE(l.tags, '') LIKE ?
+             OR COALESCE(l.graph_fingerprint, '') = ?
+             OR COALESCE(pr.graph_fingerprint, '') = ?
+          )
+        ORDER BY
+          CASE
+            WHEN COALESCE(l.tags, '') LIKE ? THEN 0
+            WHEN LOWER(COALESCE(l.reference_name, '')) = LOWER(?) THEN 1
+            ELSE 2
+          END,
+          l.timestamp DESC
+        LIMIT 1
+        """,
+        (
+            reference_name,
+            f"%reference,{arch},%",
+            layer_fingerprint,
+            layer_fingerprint,
+            f"%reference,{arch},%",
+            reference_name,
+        ),
+    ).fetchone()
+    fp = str((row["fp"] if row else "") or "").strip()
+    return fp or layer_fingerprint
 
 
 def calibration_milestones(total_steps: int, requested: Iterable[int]) -> list[int]:
@@ -176,16 +226,16 @@ def _leaderboard_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
         "blimp_overall_accuracy",
         "blimp_n_subtasks",
         "blimp_status",
-        "ar_auc",
-        "induction_auc",
-        "binding_auc",
-        "binding_composite",
-        "induction_v2_investigation_auc",
-        "induction_v2_investigation_max_gap_acc",
-        "induction_v2_investigation_protocol_version",
-        "binding_v2_investigation_auc",
-        "binding_v2_investigation_max_distance_acc",
-        "binding_v2_investigation_protocol_version",
+        "ar_legacy_auc",
+        "induction_screening_auc",
+        "binding_screening_auc",
+        "binding_screening_composite",
+        "induction_intermediate_auc",
+        "induction_intermediate_max_gap_acc",
+        "induction_intermediate_protocol_version",
+        "binding_intermediate_auc",
+        "binding_intermediate_max_distance_acc",
+        "binding_intermediate_protocol_version",
         "activation_sparsity_score",
         "dead_neuron_ratio",
         "quant_int8_retention",
@@ -205,6 +255,42 @@ def _leaderboard_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
         "fp_icld_velocity",
         "fp_logit_margin_velocity",
         "fp_id_collapse_rate",
+        "champion_floor_protocol_version",
+        "champion_steps_to_floor",
+        "champion_floor_loss",
+        "champion_floor_ppl",
+        "champion_floor_loss_std",
+        "champion_plateau_detected_step",
+        "champion_plateau_window",
+        "champion_baseline_result_id",
+        "champion_baseline_layers",
+        "champion_baseline_protocol_version",
+        "champion_steps_to_floor_score",
+        "champion_floor_quality_score",
+        "champion_floor_stability_score",
+        "champion_induction_validation_score",
+        "champion_binding_long_context_score",
+        "champion_ar_validation_score",
+        "champion_tiny_model_score",
+        "champion_tiny_model_protocol_version",
+        "champion_hard_failure_reason",
+        "induction_validation_auc",
+        "induction_validation_max_gap_acc",
+        "induction_validation_gap_accuracy_cv",
+        "induction_validation_gap_accuracies_json",
+        "induction_validation_steps_trained",
+        "induction_validation_status",
+        "induction_validation_elapsed_ms",
+        "induction_validation_protocol_version",
+        "ar_validation_metric_version",
+        "ar_validation_final_acc",
+        "ar_validation_held_pair_acc",
+        "ar_validation_held_class_acc",
+        "ar_validation_learning_curve_json",
+        "ar_validation_steps_to_floor",
+        "ar_validation_rank_score",
+        "ar_validation_status",
+        "ar_validation_elapsed_ms",
     )
     return {key: metrics[key] for key in keys if metrics.get(key) is not None}
 
@@ -260,8 +346,8 @@ def _run_probe_policy(
                 "result_id": result_id,
                 "step": step,
                 "status": snapshot.get("status"),
-                "induction_v2": snapshot.get("induction_v2_investigation_auc"),
-                "binding_v2": snapshot.get("binding_v2_investigation_auc"),
+                "induction_intermediate": snapshot.get("induction_intermediate_auc"),
+                "binding_intermediate": snapshot.get("binding_intermediate_auc"),
             },
         )
     evaluator._scale_up_apply_champion_id_collapse(snapshots)
@@ -389,7 +475,7 @@ def _record_reference_program_result(
     nb: LabNotebook,
     exp_id: str,
     result_id: str,
-    full_fp: str,
+    parent_fp: str,
     graph_json: dict[str, Any],
     s1: dict[str, Any],
     extra: dict[str, Any],
@@ -402,7 +488,7 @@ def _record_reference_program_result(
     stored_result_id = nb.record_program_result(
         experiment_id=exp_id,
         result_id=result_id,
-        graph_fingerprint=full_fp,
+        graph_fingerprint=parent_fp,
         graph_json=graph_json,
         stage0_passed=True,
         stage05_passed=True,
@@ -418,7 +504,7 @@ def _upsert_reference_leaderboard(
     nb: LabNotebook,
     *,
     result_id: str,
-    full_fp: str,
+    parent_fp: str,
     arch: str,
     reference_name: str,
     layers: int,
@@ -442,12 +528,11 @@ def _upsert_reference_leaderboard(
         ),
         is_reference=True,
         reference_name=reference_name,
-        allow_fingerprint_duplicate=True,
         screening_loss_ratio=loss_ratio,
         screening_passed=True,
         validation_loss_ratio=loss_ratio,
         validation_passed=bool(s1.get("passed")),
-        graph_fingerprint=full_fp,
+        graph_fingerprint=parent_fp,
         eval_budget_steps=int(steps),
         evaluation_stage="reference_calibration",
         result_cohort="reference_calibration",
@@ -481,8 +566,8 @@ def _reference_summary(
         "min_loss": s1.get("min_loss"),
         "early_stopped": bool(s1.get("early_stopped")),
         "probe_policy": args.probe_policy,
-        "induction_v2": probe_metrics.get("induction_v2_investigation_auc"),
-        "binding_v2": probe_metrics.get("binding_v2_investigation_auc"),
+        "induction_intermediate": probe_metrics.get("induction_intermediate_auc"),
+        "binding_intermediate": probe_metrics.get("binding_intermediate_auc"),
         "wikitext_perplexity": probe_metrics.get("wikitext_perplexity"),
     }
 
@@ -542,6 +627,7 @@ def _run_reference_probes(
 
 
 def _build_reference_run_context(
+    nb: LabNotebook,
     args: argparse.Namespace,
     *,
     arch: str,
@@ -550,14 +636,29 @@ def _build_reference_run_context(
     exp_id: str,
 ) -> dict[str, Any]:
     cfg = _configure_run(args, layers=layers, steps=steps)
-    dev = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
+    requested = torch.device(str(cfg.device))
+    if requested.type == "cuda" and not torch.cuda.is_available():
+        if not bool(getattr(args, "allow_cpu", False)):
+            raise RuntimeError("champion reference calibration requires CUDA")
+        dev = torch.device("cpu")
+    else:
+        dev = requested
+    if dev.type == "cpu" and not bool(getattr(args, "allow_cpu", False)):
+        raise RuntimeError("champion reference calibration requires an accelerator")
     cfg.device = str(dev)
     graph = build_reference(arch, d_model=cfg.model_dim)
     ref_meta = {row["key"]: row for row in list_references()}[arch]
     reference_name = str(ref_meta["name"])
     graph_json = graph_to_json(graph)
-    full_fp = calibration_fingerprint(
-        graph.fingerprint(),
+    layer_fp = graph.fingerprint()
+    parent_fp = resolve_reference_parent_fingerprint(
+        nb,
+        arch=arch,
+        reference_name=reference_name,
+        layer_fingerprint=layer_fp,
+    )
+    run_fp = calibration_fingerprint(
+        layer_fp,
         arch=arch,
         layers=layers,
         steps=steps,
@@ -565,7 +666,7 @@ def _build_reference_run_context(
         seq_len=cfg.scale_up_seq_len,
         batch_size=cfg.scale_up_batch_size,
     )
-    result_id = _stable_id(f"{arch[:6]}cal", full_fp)
+    result_id = _stable_id(f"{arch[:6]}cal", run_fp)
     checkpoints = CheckpointManager(str(cfg.checkpoint_dir))
     milestone_steps = calibration_milestones(
         steps,
@@ -582,7 +683,8 @@ def _build_reference_run_context(
         "dev": dev,
         "graph": graph,
         "graph_json": graph_json,
-        "full_fp": full_fp,
+        "parent_fp": parent_fp,
+        "run_fp": run_fp,
         "result_id": result_id,
         "arch": arch,
         "reference_name": f"{reference_name} control {layers}L {steps // 1000}K",
@@ -610,6 +712,7 @@ def run_one(
     steps: int,
 ) -> dict[str, Any]:
     ctx = _build_reference_run_context(
+        nb,
         args,
         arch=arch,
         layers=layers,
@@ -679,7 +782,7 @@ def run_one(
         nb=nb,
         exp_id=exp_id,
         result_id=ctx["result_id"],
-        full_fp=ctx["full_fp"],
+        parent_fp=ctx["parent_fp"],
         graph_json=ctx["graph_json"],
         s1=s1,
         extra=extra,
@@ -690,7 +793,7 @@ def run_one(
     _upsert_reference_leaderboard(
         nb,
         result_id=result_id,
-        full_fp=ctx["full_fp"],
+        parent_fp=ctx["parent_fp"],
         arch=ctx["arch"],
         reference_name=ctx["reference_family_name"],
         layers=layers,
@@ -746,13 +849,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--vocab-size", type=int, default=32000)
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--device", default="cuda")
+    parser.add_argument(
+        "--allow-cpu",
+        action="store_true",
+        help="Allow CPU execution for tiny local debugging only.",
+    )
     parser.add_argument("--data-mode", default="corpus")
     parser.add_argument(
         "--corpus-path",
         default="/home/tim/Projects/LLM/research/corpus/wikitext103_train.npy",
     )
     parser.add_argument("--checkpoint-dir", default="checkpoints")
-    parser.add_argument("--notebook", default="research/lab_notebook.db")
+    parser.add_argument("--notebook", default="research/runs.db")
     parser.add_argument("--event-log", default="")
     parser.add_argument("--seed", type=int, default=20260506)
     parser.add_argument("--enable-cuda-graphs", action="store_true")
@@ -783,70 +891,73 @@ def main() -> int:
 
     runner._emit_event = mirror_emit
     summaries = []
+    batch_id = f"batch_{time.strftime('%Y%m%dT%H%M%S')}"
     with LabNotebook(args.notebook) as nb:
-        exp_id = nb.start_experiment(
-            "reference_calibration",
-            config={
-                "tool": "champion_reference_calibration",
-                "archs": args.archs,
-                "layers": args.layers,
-                "steps": args.steps,
-                "probe_policy": args.probe_policy,
-            },
-            hypothesis="Known-good reference controls calibrate champion-scale probes.",
-            research_question=(
-                "Do known reference architectures produce sane champion probe "
-                "and scoring baselines under the current runner?"
-            ),
-        )
-        try:
-            for arch in args.archs:
-                for layers in args.layers:
-                    for steps in args.steps:
-                        summaries.append(
-                            run_one(
-                                args=args,
-                                nb=nb,
-                                runner=runner,
-                                event_writer=event_writer,
-                                exp_id=exp_id,
-                                arch=str(arch),
-                                layers=int(layers),
-                                steps=int(steps),
-                            )
-                        )
-            nb.complete_experiment(
-                exp_id,
-                {
-                    "total": len(summaries),
-                    "stage0_passed": len(summaries),
-                    "stage05_passed": len(summaries),
-                    "stage1_passed": sum(1 for row in summaries if row["passed"]),
-                    "best_loss_ratio": min(
-                        (
-                            row["loss_ratio"]
-                            for row in summaries
-                            if row.get("loss_ratio") is not None
+        for arch in args.archs:
+            for layers in args.layers:
+                for steps in args.steps:
+                    exp_id = nb.start_experiment(
+                        "reference_calibration",
+                        config={
+                            "tool": "champion_reference_calibration",
+                            "batch_id": batch_id,
+                            "arch": str(arch),
+                            "layers": int(layers),
+                            "steps": int(steps),
+                            "probe_policy": args.probe_policy,
+                        },
+                        hypothesis=(
+                            "Known-good reference controls calibrate "
+                            "champion-scale probes."
                         ),
-                        default=None,
-                    ),
-                    "best_novelty_score": None,
-                    "summaries": summaries,
-                },
-                aria_summary="Reference calibration completed.",
-                aria_mood="focused",
-            )
-        except Exception:
-            nb.fail_experiment(
-                exp_id,
-                error="reference calibration failed",
-                results={"total": len(summaries), "summaries": summaries},
-            )
-            raise
-    summary_path = RUNTIME_DIR / f"summary_{exp_id}.json"
+                        research_question=(
+                            "Do known reference architectures produce sane "
+                            "champion probe and scoring baselines under the "
+                            "current runner?"
+                        ),
+                    )
+                    try:
+                        summary = run_one(
+                            args=args,
+                            nb=nb,
+                            runner=runner,
+                            event_writer=event_writer,
+                            exp_id=exp_id,
+                            arch=str(arch),
+                            layers=int(layers),
+                            steps=int(steps),
+                        )
+                        summaries.append(summary)
+                        nb.complete_experiment(
+                            exp_id,
+                            {
+                                "total": 1,
+                                "stage0_passed": 1,
+                                "stage05_passed": 1,
+                                "stage1_passed": int(bool(summary.get("passed"))),
+                                "best_loss_ratio": summary.get("loss_ratio"),
+                                "best_novelty_score": None,
+                                "summary": summary,
+                                "batch_id": batch_id,
+                            },
+                            aria_summary="Reference calibration completed.",
+                            aria_mood="focused",
+                        )
+                    except Exception:
+                        nb.fail_experiment(
+                            exp_id,
+                            error="reference calibration failed",
+                            results={
+                                "total": len(summaries),
+                                "summaries": summaries,
+                                "batch_id": batch_id,
+                            },
+                        )
+                        raise
+    summary_path = RUNTIME_DIR / f"summary_{batch_id}.json"
     summary_path.write_text(
         json.dumps(
-            json_safe({"experiment_id": exp_id, "summaries": summaries}),
+            json_safe({"batch_id": batch_id, "summaries": summaries}),
             indent=2,
             sort_keys=True,
         ),

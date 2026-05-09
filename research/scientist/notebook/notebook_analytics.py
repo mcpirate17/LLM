@@ -8,6 +8,8 @@ import time
 from functools import lru_cache
 from typing import Any, Dict, List, Optional
 
+from .graph_artifacts import resolve_graph_json_value
+
 
 # Lazy-loaded to avoid circular imports at module level
 _OP_CATEGORY_CACHE: Dict[str, str] = {}
@@ -350,7 +352,7 @@ class _AnalyticsMixin:
             op_stats: Dict[str, Dict] = {}
 
             for r in rows:
-                graph_json = r[0]
+                graph_json = resolve_graph_json_value(self.conn, self.db_path, r[0])
                 if not graph_json:
                     continue
                 ops_in_graph = _cached_extract_unique_ops(graph_json)
@@ -498,7 +500,7 @@ class _AnalyticsMixin:
         ).fetchall()
         op_stats: Dict[str, Dict] = {}
         for r in rows:
-            graph_json = r[0]
+            graph_json = resolve_graph_json_value(self.conn, self.db_path, r[0])
             if not graph_json:
                 continue
             ops_in_graph = _cached_extract_unique_ops(graph_json)

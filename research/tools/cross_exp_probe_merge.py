@@ -32,7 +32,6 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from research.tools._db_maintenance import (
-    DEFAULT_WRITER_LOCK,
     connect_readonly,
     connect_writer,
     ensure_backup_table,
@@ -41,7 +40,7 @@ from research.tools._db_maintenance import (
     table_row_count,
 )
 
-DEFAULT_DB = Path("research/lab_notebook.db")
+DEFAULT_DB = Path("research/runs.db")
 BACKUP_TABLE = "program_results_cross_exp_merge_backup"
 
 # Experiment types where re-evaluation of the same fingerprint is INTENTIONAL
@@ -61,47 +60,47 @@ INTENTIONAL_EXPERIMENT_TYPES = (
 # column requires deliberate review.
 MERGE_COLUMNS_BY_FAMILY: Dict[str, Tuple[str, ...]] = {
     "v2_probes": (
-        "induction_v2_investigation_auc",
-        "induction_v2_investigation_max_gap_acc",
-        "induction_v2_investigation_gap_accuracies_json",
-        "induction_v2_investigation_steps_trained",
-        "induction_v2_investigation_status",
-        "induction_v2_investigation_elapsed_ms",
-        "induction_v2_investigation_protocol_version",
-        "binding_v2_investigation_auc",
-        "binding_v2_investigation_max_distance_acc",
-        "binding_v2_investigation_distance_accuracies_json",
-        "binding_v2_investigation_train_steps",
-        "binding_v2_investigation_status",
-        "binding_v2_investigation_elapsed_ms",
-        "binding_v2_investigation_protocol_version",
+        "induction_intermediate_auc",
+        "induction_intermediate_max_gap_acc",
+        "induction_intermediate_gap_accuracies_json",
+        "induction_intermediate_steps_trained",
+        "induction_intermediate_status",
+        "induction_intermediate_elapsed_ms",
+        "induction_intermediate_protocol_version",
+        "binding_intermediate_auc",
+        "binding_intermediate_max_distance_acc",
+        "binding_intermediate_distance_accuracies_json",
+        "binding_intermediate_train_steps",
+        "binding_intermediate_status",
+        "binding_intermediate_elapsed_ms",
+        "binding_intermediate_protocol_version",
     ),
     "v1_probes": (
-        "induction_auc",
-        "binding_auc",
-        "binding_composite",
-        "ar_auc",
-        "ar_final_acc",
-        "ar_above_chance",
-        "ar_timed_out",
-        "induction_gap_accuracies_json",
-        "induction_probe_train_steps",
-        "induction_probe_eval_examples",
-        "induction_probe_batch_size",
-        "induction_probe_gaps_json",
-        "induction_probe_elapsed_ms",
-        "induction_probe_metric_version",
-        "induction_probe_speed_mode",
-        "induction_probe_pool_size",
-        "binding_distance_accuracies_json",
-        "binding_probe_eval_examples",
-        "binding_probe_distances_json",
-        "binding_probe_elapsed_ms",
-        "binding_auc_curriculum",
-        "binding_distance_accuracies_curriculum_json",
-        "binding_probe_curriculum_steps",
-        "binding_probe_curriculum_elapsed_ms",
-        "binding_probe_curriculum_protocol_version",
+        "induction_screening_auc",
+        "binding_screening_auc",
+        "binding_screening_composite",
+        "ar_legacy_auc",
+        "ar_legacy_final_acc",
+        "ar_legacy_above_chance",
+        "ar_legacy_timed_out",
+        "induction_screening_gap_accuracies_json",
+        "induction_screening_train_steps",
+        "induction_screening_eval_examples",
+        "induction_screening_batch_size",
+        "induction_screening_gaps_json",
+        "induction_screening_elapsed_ms",
+        "induction_screening_metric_version",
+        "induction_screening_speed_mode",
+        "induction_screening_pool_size",
+        "binding_screening_distance_accuracies_json",
+        "binding_screening_eval_examples",
+        "binding_screening_distances_json",
+        "binding_screening_elapsed_ms",
+        "binding_curriculum_auc",
+        "binding_curriculum_distance_accuracies_json",
+        "binding_curriculum_steps",
+        "binding_curriculum_elapsed_ms",
+        "binding_curriculum_protocol_version",
     ),
     "language": (
         "hellaswag_acc",
@@ -433,7 +432,7 @@ def run(
 
     from research.tools._db_maintenance import check_writer_lock
 
-    check_writer_lock(DEFAULT_WRITER_LOCK)
+    check_writer_lock(Path(f"{db_path}.writer-lock"))
     print(f"\nApplying merges to {db_path}...")
     write_conn = connect_writer(db_path)
     try:

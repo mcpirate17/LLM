@@ -110,8 +110,8 @@ def infer_comparability_gap_details(kwargs: Dict[str, Any]) -> Dict[str, Any]:
         "screening_wikitext_metric_version": _clean_text(
             kwargs.get("screening_wikitext_metric_version")
         ),
-        "induction_probe_metric_version": _clean_text(
-            kwargs.get("induction_probe_metric_version")
+        "induction_screening_metric_version": _clean_text(
+            kwargs.get("induction_screening_metric_version")
         ),
         "novelty_reference_version": _clean_text(
             kwargs.get("novelty_reference_version")
@@ -222,7 +222,7 @@ def derive_provenance_fields(kwargs: Dict[str, Any]) -> Dict[str, Any]:
         and split_id
         and (
             kwargs.get("screening_wikitext_metric_version")
-            or kwargs.get("induction_probe_metric_version")
+            or kwargs.get("induction_screening_metric_version")
             or kwargs.get("novelty_reference_version")
         )
     )
@@ -454,7 +454,7 @@ def infer_comparability_label(
             "corpus_id",
             "split_id",
             "screening_wikitext_metric_version",
-            "induction_probe_metric_version",
+            "induction_screening_metric_version",
             "novelty_reference_version",
         )
     )
@@ -609,8 +609,8 @@ def build_data_provenance(
             "screening_wikitext_metric_version": kwargs.get(
                 "screening_wikitext_metric_version"
             ),
-            "induction_probe_metric_version": kwargs.get(
-                "induction_probe_metric_version"
+            "induction_screening_metric_version": kwargs.get(
+                "induction_screening_metric_version"
             ),
             "novelty_reference_version": kwargs.get("novelty_reference_version"),
             "novelty_scoring_policy_version": kwargs.get(

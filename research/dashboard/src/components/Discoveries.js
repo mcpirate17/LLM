@@ -216,20 +216,24 @@ function scoreCellTone(key, value) {
   if (key === 'hellaswag_acc') return hellaswagColor(value);
   if (key === 'blimp_overall_accuracy') return blimpColor(value);
   if (
-    key === 'induction_auc'
-    || key === 'induction_v2_investigation_auc'
-    || key === 'binding_auc'
-    || key === 'binding_v2_investigation_auc'
-    || key === 'binding_composite'
-    || key === 'ar_auc'
-    || key === 'nano_ar_inv_score'
-    || key === 'nano_ar_inv_in_dist_pair_match_acc'
-    || key === 'nano_ar_inv_in_dist_class_acc'
-    || key === 'nano_ar_inv_held_pair_match_acc'
-    || key === 'nano_ar_inv_held_class_acc'
-    || key === 'controlled_lang_s05_nb_score'
-    || key === 'controlled_lang_s10_nb_score'
-    || key === 'controlled_lang_inv_nb_score'
+    key === 'induction_screening_auc'
+    || key === 'induction_intermediate_auc'
+    || key === 'binding_screening_auc'
+    || key === 'binding_intermediate_auc'
+    || key === 'binding_screening_composite'
+    || key === 'ar_legacy_auc'
+    || key === 'ar_gate_score'
+    || key === 'ar_gate_in_dist_pair_acc'
+    || key === 'ar_gate_in_dist_class_acc'
+    || key === 'ar_gate_held_pair_acc'
+    || key === 'ar_gate_held_class_acc'
+    || key === 'ar_validation_rank_score'
+    || key === 'ar_validation_final_acc'
+    || key === 'ar_validation_held_pair_acc'
+    || key === 'ar_validation_held_class_acc'
+    || key === 'language_control_s05_binding_score'
+    || key === 'language_control_s10_binding_score'
+    || key === 'language_control_investigation_binding_score'
   ) {
     return probeAucColor(value);
   }
@@ -277,24 +281,31 @@ const COLUMNS = [
   { key: 'init_sensitivity_std', label: 'InitStd', width: 82, title: 'Sensitivity to weight initialization (lower means more predictable).' },
   { key: 'wikitext_perplexity', label: 'WikiPPL', width: 90, title: 'WikiText-103 validation perplexity (lower is better).' },
   { key: 'hellaswag_acc', label: 'HellaSwag', width: 90, title: 'HellaSwag accuracy (commonsense reasoning).' },
-  { key: 'induction_auc', label: 'Ind v1', width: 78, title: 'Induction-head probe AUC (v1 protocol).' },
-  { key: 'induction_v2_investigation_auc', label: 'Ind v2', width: 78, title: 'Induction-head probe AUC (v2 investigation protocol).' },
-  { key: 'binding_auc', label: 'Bind v1', width: 78, title: 'Variable-binding probe AUC (v1 protocol).' },
-  { key: 'binding_v2_investigation_auc', label: 'Bind v2', width: 78, title: 'Variable-binding probe AUC (v2 investigation protocol).' },
-  { key: 'binding_composite', label: 'Bind Cmp', width: 84, title: 'Composite binding score (3-signal AND).' },
-  { key: 'ar_auc', label: 'AR AUC', width: 78, title: 'Associative recall probe AUC.' },
-  { key: 'nano_ar_inv_score', label: 'Nano-AR', width: 78, title: 'Nano-AR investigation score: associative-recall pair/class aggregate used by the current binding composite.' },
-  { key: 'nano_ar_inv_in_dist_pair_match_acc', label: 'NAR ID Pair', width: 92, title: 'Nano-AR investigation in-distribution pair-match accuracy.' },
-  { key: 'nano_ar_inv_in_dist_class_acc', label: 'NAR ID Class', width: 94, title: 'Nano-AR investigation in-distribution class accuracy.' },
-  { key: 'nano_ar_inv_held_pair_match_acc', label: 'NAR Held Pair', width: 104, title: 'Nano-AR investigation held-out pair-match accuracy.' },
-  { key: 'nano_ar_inv_held_class_acc', label: 'NAR Held Class', width: 106, title: 'Nano-AR investigation held-out class accuracy.' },
-  { key: 'nano_ar_inv_status', label: 'NAR Status', width: 94, title: 'Nano-AR investigation probe status.' },
-  { key: 'nano_ar_inv_train_steps_done', label: 'NAR Steps', width: 90, title: 'Nano-AR investigation training steps completed.' },
-  { key: 'nano_ar_inv_elapsed_ms', label: 'NAR ms', width: 82, title: 'Nano-AR investigation elapsed runtime in milliseconds.' },
-  { key: 'nano_ar_inv_metric_version', label: 'NAR Ver', width: 118, title: 'Nano-AR investigation metric version.' },
-  { key: 'controlled_lang_s05_nb_score', label: 'NB S0.5', width: 82, title: 'Controlled-language Nano-Bind score at the S0.5 screening checkpoint.' },
-  { key: 'controlled_lang_s10_nb_score', label: 'NB S1.0', width: 82, title: 'Controlled-language Nano-Bind score at the S1.0 screening checkpoint.' },
-  { key: 'controlled_lang_inv_nb_score', label: 'NB Inv', width: 82, title: 'Controlled-language Nano-Bind score from the investigation checkpoint.' },
+  { key: 'induction_screening_auc', label: 'Ind SCRN', width: 78, title: 'Induction-head probe AUC (v1 protocol).' },
+  { key: 'induction_intermediate_auc', label: 'Ind INTER', width: 78, title: 'Induction-head probe AUC (v2 investigation protocol).' },
+  { key: 'binding_screening_auc', label: 'Bind SCRN', width: 78, title: 'Variable-binding probe AUC (v1 protocol).' },
+  { key: 'binding_intermediate_auc', label: 'Bind INTER', width: 78, title: 'Variable-binding probe AUC (v2 investigation protocol).' },
+  { key: 'binding_screening_composite', label: 'Bind Cmp', width: 84, title: 'Composite binding score (3-signal AND).' },
+  { key: 'ar_legacy_auc', label: 'AR AUC', width: 78, title: 'Associative recall probe AUC.' },
+  { key: 'ar_gate_score', label: 'AR Gate', width: 78, title: 'AR Gate investigation score: associative-recall pair/class aggregate used by the current binding composite.' },
+  { key: 'ar_gate_in_dist_pair_acc', label: 'Gate ID Pair', width: 92, title: 'AR Gate investigation in-distribution pair-match accuracy.' },
+  { key: 'ar_gate_in_dist_class_acc', label: 'Gate ID Class', width: 94, title: 'AR Gate investigation in-distribution class accuracy.' },
+  { key: 'ar_gate_held_pair_acc', label: 'Gate Held Pair', width: 104, title: 'AR Gate investigation held-out pair-match accuracy.' },
+  { key: 'ar_gate_held_class_acc', label: 'Gate Held Class', width: 106, title: 'AR Gate investigation held-out class accuracy.' },
+  { key: 'ar_gate_status', label: 'Gate Status', width: 94, title: 'AR Gate investigation probe status.' },
+  { key: 'ar_gate_train_steps_done', label: 'Gate Steps', width: 90, title: 'AR Gate investigation training steps completed.' },
+  { key: 'ar_gate_elapsed_ms', label: 'Gate ms', width: 82, title: 'AR Gate investigation elapsed runtime in milliseconds.' },
+  { key: 'ar_gate_metric_version', label: 'Gate Ver', width: 118, title: 'AR Gate investigation metric version.' },
+  { key: 'ar_validation_rank_score', label: 'AR VAL', width: 82, title: 'AR Validation/easy25 validation-tier associative-recall score used for rank ordering after AR Gate saturation.' },
+  { key: 'ar_validation_final_acc', label: 'AR VAL Fin', width: 84, title: 'Final accuracy from the AR Validation/easy25 probe.' },
+  { key: 'ar_validation_held_pair_acc', label: 'AR VAL Pair', width: 104, title: 'Held-pair match accuracy from the AR Validation/easy25 probe.' },
+  { key: 'ar_validation_held_class_acc', label: 'AR VAL Class', width: 108, title: 'Held-class accuracy from the AR Validation/easy25 probe.' },
+  { key: 'ar_validation_steps_to_floor', label: 'AR VAL Floor', width: 92, title: 'Training step where AR Validation reached its learned floor band.' },
+  { key: 'ar_validation_status', label: 'AR VAL St', width: 96, title: 'AR Validation/easy25 probe status.' },
+  { key: 'ar_validation_metric_version', label: 'AR VAL Ver', width: 130, title: 'AR Validation/easy25 metric version.' },
+  { key: 'language_control_s05_binding_score', label: 'NB S0.5', width: 82, title: 'Language-control Nano-Bind score at the S0.5 screening checkpoint.' },
+  { key: 'language_control_s10_binding_score', label: 'NB S1.0', width: 82, title: 'Language-control Nano-Bind score at the S1.0 screening checkpoint.' },
+  { key: 'language_control_investigation_binding_score', label: 'NB INTER', width: 82, title: 'Language-control Nano-Bind score from the investigation checkpoint.' },
   { key: 'blimp_overall_accuracy', label: 'BLiMP', width: 78, title: 'BLiMP overall grammatical-acceptability accuracy.' },
   { key: 'ncd_score', label: 'NCD', width: 78, title: 'Normalized compression distance score.' },
   { key: 'rapid_screening_passed', label: 'Rapid', width: 70, title: 'Whether the rapid-screening pre-gate passed.' },
@@ -315,11 +326,12 @@ const CORE_VISIBLE_COLUMNS = [
   'discovery_loss_ratio',
   'validation_loss_ratio',
   '_best_loss',
-  'induction_v2_investigation_auc',
-  'binding_v2_investigation_auc',
-  'controlled_lang_s05_nb_score',
-  'controlled_lang_s10_nb_score',
-  'nano_ar_inv_score',
+  'induction_intermediate_auc',
+  'binding_intermediate_auc',
+  'language_control_s05_binding_score',
+  'language_control_s10_binding_score',
+  'ar_gate_score',
+  'ar_validation_rank_score',
   'fp_jacobian_erf_density',
   'tier',
   '_details',
@@ -333,18 +345,19 @@ const RESEARCH_VISIBLE_COLUMNS = [
   'param_efficiency',
   'sample_efficiency',
   'investigation_robustness',
-  'controlled_lang_inv_nb_score',
+  'language_control_investigation_binding_score',
   'robustness_long_ctx_score',
   'max_viable_seq_len',
   'init_sensitivity_std',
 ];
 
 const DEFAULT_DISCOVERY_COLUMN_ADDONS = [
-  'induction_v2_investigation_auc',
-  'binding_v2_investigation_auc',
-  'controlled_lang_s05_nb_score',
-  'controlled_lang_s10_nb_score',
-  'nano_ar_inv_score',
+  'induction_intermediate_auc',
+  'binding_intermediate_auc',
+  'language_control_s05_binding_score',
+  'language_control_s10_binding_score',
+  'ar_gate_score',
+  'ar_validation_rank_score',
   'fp_jacobian_erf_density',
 ];
 
@@ -354,24 +367,31 @@ const PROBES_VISIBLE_COLUMNS = [
   'architecture_family',
   'wikitext_perplexity',
   'hellaswag_acc',
-  'induction_auc',
-  'induction_v2_investigation_auc',
-  'binding_auc',
-  'binding_v2_investigation_auc',
-  'binding_composite',
-  'ar_auc',
-  'controlled_lang_s05_nb_score',
-  'controlled_lang_s10_nb_score',
-  'controlled_lang_inv_nb_score',
-  'nano_ar_inv_score',
-  'nano_ar_inv_in_dist_pair_match_acc',
-  'nano_ar_inv_in_dist_class_acc',
-  'nano_ar_inv_held_pair_match_acc',
-  'nano_ar_inv_held_class_acc',
-  'nano_ar_inv_status',
-  'nano_ar_inv_train_steps_done',
-  'nano_ar_inv_elapsed_ms',
-  'nano_ar_inv_metric_version',
+  'induction_screening_auc',
+  'induction_intermediate_auc',
+  'binding_screening_auc',
+  'binding_intermediate_auc',
+  'binding_screening_composite',
+  'ar_legacy_auc',
+  'language_control_s05_binding_score',
+  'language_control_s10_binding_score',
+  'language_control_investigation_binding_score',
+  'ar_gate_score',
+  'ar_gate_in_dist_pair_acc',
+  'ar_gate_in_dist_class_acc',
+  'ar_gate_held_pair_acc',
+  'ar_gate_held_class_acc',
+  'ar_gate_status',
+  'ar_gate_train_steps_done',
+  'ar_gate_elapsed_ms',
+  'ar_gate_metric_version',
+  'ar_validation_rank_score',
+  'ar_validation_final_acc',
+  'ar_validation_held_pair_acc',
+  'ar_validation_held_class_acc',
+  'ar_validation_steps_to_floor',
+  'ar_validation_status',
+  'ar_validation_metric_version',
   'blimp_overall_accuracy',
   'ncd_score',
   'rapid_screening_passed',
@@ -388,8 +408,8 @@ const ARCHITECTURE_VISIBLE_COLUMNS = [
   '_score',
   'display_name',
   'architecture_family',
-  'induction_v2_investigation_auc',
-  'binding_v2_investigation_auc',
+  'induction_intermediate_auc',
+  'binding_intermediate_auc',
   'fp_jacobian_erf_density',
   'fp_id_collapse_rate',
   'fp_id_collapse_rate_normalized',
@@ -409,6 +429,7 @@ function Discoveries({
   onRescreen,
   onPromoteScreening,
   onInvestigate,
+  onCapabilityRank,
   onValidate,
   onConfirm,
   highlightResultId,
@@ -1470,6 +1491,7 @@ function Discoveries({
                     onRescreen={onRescreen}
                     onPromoteScreening={onPromoteScreening}
                     onInvestigate={onInvestigate}
+                    onCapabilityRank={onCapabilityRank}
                     onValidate={onValidate}
                     onConfirm={onConfirm}
                     onQueueAdd={onQueueAdd}
@@ -1492,6 +1514,7 @@ function Discoveries({
             onRescreen={onRescreen}
             onPromoteScreening={onPromoteScreening}
             onInvestigate={onInvestigate}
+            onCapabilityRank={onCapabilityRank}
             onValidate={onValidate}
             onConfirm={onConfirm}
             onQueueAdd={onQueueAdd}
@@ -1575,6 +1598,7 @@ const DiscoveryRow = React.memo(function DiscoveryRow({
   onRescreen,
   onPromoteScreening,
   onInvestigate,
+  onCapabilityRank,
   onValidate,
   onConfirm,
   onQueueAdd,
@@ -1760,38 +1784,52 @@ const DiscoveryRow = React.memo(function DiscoveryRow({
               return <td key={col.key} style={{ ...tdStyle, textAlign: 'right', fontFamily: 'monospace' }}>{entry.init_sensitivity_std != null ? Number(entry.init_sensitivity_std).toFixed(4) : '--'}</td>;
             case 'wikitext_perplexity':
             case 'hellaswag_acc':
-            case 'induction_auc':
-            case 'induction_v2_investigation_auc':
-            case 'binding_auc':
-            case 'binding_v2_investigation_auc':
-            case 'binding_composite':
-            case 'ar_auc':
-            case 'nano_ar_inv_score':
-            case 'nano_ar_inv_in_dist_pair_match_acc':
-            case 'nano_ar_inv_in_dist_class_acc':
-            case 'nano_ar_inv_held_pair_match_acc':
-            case 'nano_ar_inv_held_class_acc':
-            case 'controlled_lang_s05_nb_score':
-            case 'controlled_lang_s10_nb_score':
-            case 'controlled_lang_inv_nb_score':
+            case 'induction_screening_auc':
+            case 'induction_intermediate_auc':
+            case 'binding_screening_auc':
+            case 'binding_intermediate_auc':
+            case 'binding_screening_composite':
+            case 'ar_legacy_auc':
+            case 'ar_gate_score':
+            case 'ar_gate_in_dist_pair_acc':
+            case 'ar_gate_in_dist_class_acc':
+            case 'ar_gate_held_pair_acc':
+            case 'ar_gate_held_class_acc':
+            case 'ar_validation_rank_score':
+            case 'ar_validation_final_acc':
+            case 'ar_validation_held_pair_acc':
+            case 'ar_validation_held_class_acc':
+            case 'language_control_s05_binding_score':
+            case 'language_control_s10_binding_score':
+            case 'language_control_investigation_binding_score':
             case 'blimp_overall_accuracy':
               return (
                 <td key={col.key} style={{ ...tdStyle, textAlign: 'right', fontFamily: 'monospace', color: scoreCellTone(col.key, entry[col.key]), fontWeight: 600 }}>
                   {entry[col.key] != null ? Number(entry[col.key]).toFixed(col.key === 'wikitext_perplexity' ? 2 : 3) : '--'}
                 </td>
               );
-            case 'nano_ar_inv_status':
+            case 'ar_gate_status':
               return (
-                <td key={col.key} style={{ ...tdStyle, fontFamily: 'monospace', color: entry.nano_ar_inv_status === 'ok' ? 'var(--accent-green)' : (entry.nano_ar_inv_status ? 'var(--accent-yellow)' : 'var(--text-muted)') }}>
-                  {entry.nano_ar_inv_status || '--'}
+                <td key={col.key} style={{ ...tdStyle, fontFamily: 'monospace', color: entry.ar_gate_status === 'ok' ? 'var(--accent-green)' : (entry.ar_gate_status ? 'var(--accent-yellow)' : 'var(--text-muted)') }}>
+                  {entry.ar_gate_status || '--'}
                 </td>
               );
-            case 'nano_ar_inv_train_steps_done':
-              return <td key={col.key} style={{ ...tdStyle, textAlign: 'right', fontFamily: 'monospace' }}>{entry.nano_ar_inv_train_steps_done != null ? Number(entry.nano_ar_inv_train_steps_done).toFixed(0) : '--'}</td>;
-            case 'nano_ar_inv_elapsed_ms':
-              return <td key={col.key} style={{ ...tdStyle, textAlign: 'right', fontFamily: 'monospace' }}>{entry.nano_ar_inv_elapsed_ms != null ? Number(entry.nano_ar_inv_elapsed_ms).toFixed(0) : '--'}</td>;
-            case 'nano_ar_inv_metric_version':
-              return <td key={col.key} style={{ ...tdStyle, fontFamily: 'monospace', color: entry.nano_ar_inv_metric_version ? 'var(--text-secondary)' : 'var(--text-muted)' }}>{entry.nano_ar_inv_metric_version || '--'}</td>;
+            case 'ar_gate_train_steps_done':
+              return <td key={col.key} style={{ ...tdStyle, textAlign: 'right', fontFamily: 'monospace' }}>{entry.ar_gate_train_steps_done != null ? Number(entry.ar_gate_train_steps_done).toFixed(0) : '--'}</td>;
+            case 'ar_gate_elapsed_ms':
+              return <td key={col.key} style={{ ...tdStyle, textAlign: 'right', fontFamily: 'monospace' }}>{entry.ar_gate_elapsed_ms != null ? Number(entry.ar_gate_elapsed_ms).toFixed(0) : '--'}</td>;
+            case 'ar_gate_metric_version':
+              return <td key={col.key} style={{ ...tdStyle, fontFamily: 'monospace', color: entry.ar_gate_metric_version ? 'var(--text-secondary)' : 'var(--text-muted)' }}>{entry.ar_gate_metric_version || '--'}</td>;
+            case 'ar_validation_steps_to_floor':
+              return <td key={col.key} style={{ ...tdStyle, textAlign: 'right', fontFamily: 'monospace' }}>{entry.ar_validation_steps_to_floor != null ? Number(entry.ar_validation_steps_to_floor).toFixed(0) : '--'}</td>;
+            case 'ar_validation_status':
+              return (
+                <td key={col.key} style={{ ...tdStyle, fontFamily: 'monospace', color: entry.ar_validation_status === 'ok' ? 'var(--accent-green)' : (entry.ar_validation_status ? 'var(--accent-yellow)' : 'var(--text-muted)') }}>
+                  {entry.ar_validation_status || '--'}
+                </td>
+              );
+            case 'ar_validation_metric_version':
+              return <td key={col.key} style={{ ...tdStyle, fontFamily: 'monospace', color: entry.ar_validation_metric_version ? 'var(--text-secondary)' : 'var(--text-muted)' }}>{entry.ar_validation_metric_version || '--'}</td>;
             case 'ncd_score':
               return <td key={col.key} style={{ ...tdStyle, textAlign: 'right', fontFamily: 'monospace' }}>{entry.ncd_score != null ? Number(entry.ncd_score).toFixed(3) : '--'}</td>;
             case 'rapid_screening_passed':
@@ -1830,6 +1868,22 @@ const DiscoveryRow = React.memo(function DiscoveryRow({
                     >
                       View
                     </button>
+                    {eligibility?.capabilityRankingEligible && (
+                      <button
+                        onClick={() => {
+                          if (entry.result_id) onCapabilityRank?.([entry.result_id]);
+                        }}
+                        style={{
+                          ...actionBtnStyle,
+                          borderColor: 'rgba(88, 166, 255, 0.55)',
+                          color: 'var(--accent-blue)',
+                          background: 'rgba(88, 166, 255, 0.10)',
+                        }}
+                        title="Run selective induction/binding capability rankers"
+                      >
+                        Rank
+                      </button>
+                    )}
                     {eligibility?.confirmationEligible && (
                       <button
                         onClick={() => {

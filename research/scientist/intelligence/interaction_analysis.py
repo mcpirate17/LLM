@@ -20,13 +20,15 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 import numpy as np
 
+from research.defaults import RUNS_DB
+
 from .ml_corpus import load_deduped_graph_training_rows
 from .profiling_db import load_op_categories as load_profiling_op_categories
 from .profiling_db import load_pair_profile_rows
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_NOTEBOOK_DB = Path(__file__).parents[2] / "lab_notebook.db"
+_DEFAULT_NOTEBOOK_DB = Path(__file__).parents[3] / RUNS_DB
 _DEFAULT_PROFILING_DB = (
     Path(__file__).parents[2] / "profiling" / "component_profiles.db"
 )

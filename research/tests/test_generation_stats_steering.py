@@ -119,14 +119,14 @@ def test_generation_stats_migration_adds_capability_columns():
         cols = {row[1] for row in nb.conn.execute("PRAGMA table_info(template_stats)")}
         nb.close()
 
-        assert "avg_induction_auc" in cols
-        assert "avg_binding_auc" in cols
-        assert "avg_binding_composite" in cols
-        assert "avg_ar_auc" in cols
+        assert "avg_induction_screening_auc" in cols
+        assert "avg_binding_screening_auc" in cols
+        assert "avg_binding_screening_composite" in cols
+        assert "avg_ar_legacy_auc" in cols
         assert "avg_hellaswag_acc" in cols
         assert "avg_blimp_overall_accuracy" in cols
-        assert "avg_induction_v2_investigation_auc" in cols
-        assert "avg_binding_v2_investigation_auc" in cols
+        assert "avg_induction_intermediate_auc" in cols
+        assert "avg_binding_intermediate_auc" in cols
         assert "math_space_rate" in cols
 
 
@@ -144,14 +144,14 @@ def test_backfill_persists_capability_metrics():
             stage1_passed=True,
             loss_ratio=0.4,
             novelty_score=0.3,
-            induction_auc=0.02,
-            binding_auc=0.01,
-            binding_composite=0.012,
-            ar_auc=0.06,
+            induction_screening_auc=0.02,
+            binding_screening_auc=0.01,
+            binding_screening_composite=0.012,
+            ar_legacy_auc=0.06,
             hellaswag_acc=0.34,
             blimp_overall_accuracy=0.72,
-            induction_v2_investigation_auc=0.09,
-            binding_v2_investigation_auc=0.08,
+            induction_intermediate_auc=0.09,
+            binding_intermediate_auc=0.08,
             wikitext_perplexity=120.0,
             graph_uses_math_spaces=1,
         )
@@ -165,9 +165,9 @@ def test_backfill_persists_capability_metrics():
         conn = sqlite3.connect(db_path)
         row = conn.execute(
             """
-            SELECT avg_induction_auc, avg_binding_auc, avg_binding_composite,
-                   avg_ar_auc, avg_hellaswag_acc, avg_blimp_overall_accuracy,
-                   avg_induction_v2_investigation_auc, avg_binding_v2_investigation_auc,
+            SELECT avg_induction_screening_auc, avg_binding_screening_auc, avg_binding_screening_composite,
+                   avg_ar_legacy_auc, avg_hellaswag_acc, avg_blimp_overall_accuracy,
+                   avg_induction_intermediate_auc, avg_binding_intermediate_auc,
                    math_space_rate
             FROM template_stats
             WHERE template_name = 'cap_template'
@@ -179,14 +179,14 @@ def test_backfill_persists_capability_metrics():
             "SELECT wildcard_class_outcomes FROM slot_stats WHERE slot_key = 'cap_template.slot0'"
         ).fetchone()
         payload = json.loads(slot_row[0])
-        assert payload["binding"]["mean_induction_auc"] == 0.02
-        assert payload["binding"]["mean_binding_auc"] == 0.01
-        assert payload["binding"]["mean_binding_composite"] == 0.012
-        assert payload["binding"]["mean_ar_auc"] == 0.06
+        assert payload["binding"]["mean_induction_screening_auc"] == 0.02
+        assert payload["binding"]["mean_binding_screening_auc"] == 0.01
+        assert payload["binding"]["mean_binding_screening_composite"] == 0.012
+        assert payload["binding"]["mean_ar_legacy_auc"] == 0.06
         assert payload["binding"]["mean_hellaswag_acc"] == 0.34
         assert payload["binding"]["mean_blimp_overall_accuracy"] == 0.72
-        assert payload["binding"]["mean_induction_v2_investigation_auc"] == 0.09
-        assert payload["binding"]["mean_binding_v2_investigation_auc"] == 0.08
+        assert payload["binding"]["mean_induction_intermediate_auc"] == 0.09
+        assert payload["binding"]["mean_binding_intermediate_auc"] == 0.08
         assert payload["binding"]["math_space_rate"] == 1.0
         conn.close()
 
@@ -205,7 +205,7 @@ def test_backfill_recency_weights_metric_averages():
             stage1_passed=True,
             loss_ratio=0.9,
             novelty_score=0.1,
-            induction_auc=0.0,
+            induction_screening_auc=0.0,
             trust_label="test_fixture",
         )
         recent_id = nb.record_program_result(
@@ -217,7 +217,7 @@ def test_backfill_recency_weights_metric_averages():
             stage1_passed=True,
             loss_ratio=0.1,
             novelty_score=0.1,
-            induction_auc=1.0,
+            induction_screening_auc=1.0,
             trust_label="test_fixture",
         )
         nb.flush_writes()
@@ -237,7 +237,7 @@ def test_backfill_recency_weights_metric_averages():
 
         conn = sqlite3.connect(db_path)
         avg_induction = conn.execute(
-            "SELECT avg_induction_auc FROM template_stats WHERE template_name = 'recency_template'"
+            "SELECT avg_induction_screening_auc FROM template_stats WHERE template_name = 'recency_template'"
         ).fetchone()[0]
         conn.close()
 
@@ -257,9 +257,9 @@ def test_db_caches_reward_capability_signals():
             INSERT INTO template_stats (
                 template_name, eval_count, s0_pass_count, s1_pass_count,
                 mean_loss, min_loss, std_loss, mean_novelty,
-                avg_induction_auc, avg_binding_auc, avg_binding_composite,
-                avg_ar_auc, avg_hellaswag_acc, avg_blimp_overall_accuracy,
-                avg_induction_v2_investigation_auc, avg_binding_v2_investigation_auc,
+                avg_induction_screening_auc, avg_binding_screening_auc, avg_binding_screening_composite,
+                avg_ar_legacy_auc, avg_hellaswag_acc, avg_blimp_overall_accuracy,
+                avg_induction_intermediate_auc, avg_binding_intermediate_auc,
                 math_space_rate, last_updated
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
@@ -289,9 +289,9 @@ def test_db_caches_reward_capability_signals():
             INSERT INTO template_stats (
                 template_name, eval_count, s0_pass_count, s1_pass_count,
                 mean_loss, min_loss, std_loss, mean_novelty,
-                avg_induction_auc, avg_binding_auc, avg_binding_composite,
-                avg_ar_auc, avg_hellaswag_acc, avg_blimp_overall_accuracy,
-                avg_induction_v2_investigation_auc, avg_binding_v2_investigation_auc,
+                avg_induction_screening_auc, avg_binding_screening_auc, avg_binding_screening_composite,
+                avg_ar_legacy_auc, avg_hellaswag_acc, avg_blimp_overall_accuracy,
+                avg_induction_intermediate_auc, avg_binding_intermediate_auc,
                 math_space_rate, last_updated
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
@@ -321,9 +321,9 @@ def test_db_caches_reward_capability_signals():
             INSERT INTO op_stats (
                 op_name, eval_count, s0_pass_count, s1_pass_count,
                 mean_loss, min_loss, std_loss, mean_novelty,
-                avg_induction_auc, avg_binding_auc, avg_binding_composite,
-                avg_ar_auc, avg_hellaswag_acc, avg_blimp_overall_accuracy,
-                avg_induction_v2_investigation_auc, avg_binding_v2_investigation_auc,
+                avg_induction_screening_auc, avg_binding_screening_auc, avg_binding_screening_composite,
+                avg_ar_legacy_auc, avg_hellaswag_acc, avg_blimp_overall_accuracy,
+                avg_induction_intermediate_auc, avg_binding_intermediate_auc,
                 math_space_rate, co_occurrence_json, last_updated
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
@@ -354,9 +354,9 @@ def test_db_caches_reward_capability_signals():
             INSERT INTO op_stats (
                 op_name, eval_count, s0_pass_count, s1_pass_count,
                 mean_loss, min_loss, std_loss, mean_novelty,
-                avg_induction_auc, avg_binding_auc, avg_binding_composite,
-                avg_ar_auc, avg_hellaswag_acc, avg_blimp_overall_accuracy,
-                avg_induction_v2_investigation_auc, avg_binding_v2_investigation_auc,
+                avg_induction_screening_auc, avg_binding_screening_auc, avg_binding_screening_composite,
+                avg_ar_legacy_auc, avg_hellaswag_acc, avg_blimp_overall_accuracy,
+                avg_induction_intermediate_auc, avg_binding_intermediate_auc,
                 math_space_rate, co_occurrence_json, last_updated
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
@@ -404,9 +404,9 @@ def test_slot_adaptation_promotes_capability_positive_wildcards():
             INSERT INTO slot_stats (
                 slot_key, template_name, slot_index, slot_classes,
                 eval_count, s1_pass_count, mean_loss, min_loss,
-                avg_induction_auc, avg_binding_auc, avg_binding_composite,
-                avg_ar_auc, avg_hellaswag_acc, avg_blimp_overall_accuracy,
-                avg_induction_v2_investigation_auc, avg_binding_v2_investigation_auc,
+                avg_induction_screening_auc, avg_binding_screening_auc, avg_binding_screening_composite,
+                avg_ar_legacy_auc, avg_hellaswag_acc, avg_blimp_overall_accuracy,
+                avg_induction_intermediate_auc, avg_binding_intermediate_auc,
                 math_space_rate, class_outcomes, wildcard_count,
                 wildcard_s1_count, wildcard_class_outcomes, last_updated
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -438,14 +438,14 @@ def test_slot_adaptation_promotes_capability_positive_wildcards():
                             "n": 5,
                             "s1": 1,
                             "mean_loss": 0.7,
-                            "mean_induction_auc": 0.02,
-                            "mean_binding_auc": 0.01,
-                            "mean_binding_composite": 0.012,
-                            "mean_ar_auc": 0.06,
+                            "mean_induction_screening_auc": 0.02,
+                            "mean_binding_screening_auc": 0.01,
+                            "mean_binding_screening_composite": 0.012,
+                            "mean_ar_legacy_auc": 0.06,
                             "mean_hellaswag_acc": 0.34,
                             "mean_blimp_overall_accuracy": 0.72,
-                            "mean_induction_v2_investigation_auc": 0.09,
-                            "mean_binding_v2_investigation_auc": 0.08,
+                            "mean_induction_intermediate_auc": 0.09,
+                            "mean_binding_intermediate_auc": 0.08,
                             "math_space_rate": 1.0,
                         }
                     }
@@ -472,9 +472,9 @@ def test_template_cache_avoids_overblaming_salvageable_templates():
             INSERT INTO template_stats (
                 template_name, eval_count, s0_pass_count, s1_pass_count,
                 mean_loss, min_loss, std_loss, mean_novelty,
-                avg_induction_auc, avg_binding_auc, avg_binding_composite,
-                avg_ar_auc, avg_hellaswag_acc, avg_blimp_overall_accuracy,
-                avg_induction_v2_investigation_auc, avg_binding_v2_investigation_auc,
+                avg_induction_screening_auc, avg_binding_screening_auc, avg_binding_screening_composite,
+                avg_ar_legacy_auc, avg_hellaswag_acc, avg_blimp_overall_accuracy,
+                avg_induction_intermediate_auc, avg_binding_intermediate_auc,
                 math_space_rate, last_updated
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
@@ -504,9 +504,9 @@ def test_template_cache_avoids_overblaming_salvageable_templates():
             INSERT INTO template_stats (
                 template_name, eval_count, s0_pass_count, s1_pass_count,
                 mean_loss, min_loss, std_loss, mean_novelty,
-                avg_induction_auc, avg_binding_auc, avg_binding_composite,
-                avg_ar_auc, avg_hellaswag_acc, avg_blimp_overall_accuracy,
-                avg_induction_v2_investigation_auc, avg_binding_v2_investigation_auc,
+                avg_induction_screening_auc, avg_binding_screening_auc, avg_binding_screening_composite,
+                avg_ar_legacy_auc, avg_hellaswag_acc, avg_blimp_overall_accuracy,
+                avg_induction_intermediate_auc, avg_binding_intermediate_auc,
                 math_space_rate, last_updated
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
@@ -536,9 +536,9 @@ def test_template_cache_avoids_overblaming_salvageable_templates():
             INSERT INTO slot_stats (
                 slot_key, template_name, slot_index, slot_classes,
                 eval_count, s1_pass_count, mean_loss, min_loss,
-                avg_induction_auc, avg_binding_auc, avg_binding_composite,
-                avg_ar_auc, avg_hellaswag_acc, avg_blimp_overall_accuracy,
-                avg_induction_v2_investigation_auc, avg_binding_v2_investigation_auc,
+                avg_induction_screening_auc, avg_binding_screening_auc, avg_binding_screening_composite,
+                avg_ar_legacy_auc, avg_hellaswag_acc, avg_blimp_overall_accuracy,
+                avg_induction_intermediate_auc, avg_binding_intermediate_auc,
                 math_space_rate, class_outcomes, wildcard_count,
                 wildcard_s1_count, wildcard_class_outcomes, last_updated
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -570,14 +570,14 @@ def test_template_cache_avoids_overblaming_salvageable_templates():
                             "n": 5,
                             "s1": 1,
                             "mean_loss": 0.7,
-                            "mean_induction_auc": 0.02,
-                            "mean_binding_auc": 0.01,
-                            "mean_binding_composite": 0.012,
-                            "mean_ar_auc": 0.06,
+                            "mean_induction_screening_auc": 0.02,
+                            "mean_binding_screening_auc": 0.01,
+                            "mean_binding_screening_composite": 0.012,
+                            "mean_ar_legacy_auc": 0.06,
                             "mean_hellaswag_acc": 0.34,
                             "mean_blimp_overall_accuracy": 0.72,
-                            "mean_induction_v2_investigation_auc": 0.09,
-                            "mean_binding_v2_investigation_auc": 0.08,
+                            "mean_induction_intermediate_auc": 0.09,
+                            "mean_binding_intermediate_auc": 0.08,
                             "math_space_rate": 1.0,
                         }
                     }
@@ -605,9 +605,9 @@ def test_template_rescue_requires_supported_slot_class_evidence():
                 INSERT INTO template_stats (
                     template_name, eval_count, s0_pass_count, s1_pass_count,
                     mean_loss, min_loss, std_loss, mean_novelty,
-                    avg_induction_auc, avg_binding_auc, avg_binding_composite,
-                    avg_ar_auc, avg_hellaswag_acc, avg_blimp_overall_accuracy,
-                    avg_induction_v2_investigation_auc, avg_binding_v2_investigation_auc,
+                    avg_induction_screening_auc, avg_binding_screening_auc, avg_binding_screening_composite,
+                    avg_ar_legacy_auc, avg_hellaswag_acc, avg_blimp_overall_accuracy,
+                    avg_induction_intermediate_auc, avg_binding_intermediate_auc,
                     math_space_rate, last_updated
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
@@ -637,9 +637,9 @@ def test_template_rescue_requires_supported_slot_class_evidence():
             INSERT INTO slot_stats (
                 slot_key, template_name, slot_index, slot_classes,
                 eval_count, s1_pass_count, mean_loss, min_loss,
-                avg_induction_auc, avg_binding_auc, avg_binding_composite,
-                avg_ar_auc, avg_hellaswag_acc, avg_blimp_overall_accuracy,
-                avg_induction_v2_investigation_auc, avg_binding_v2_investigation_auc,
+                avg_induction_screening_auc, avg_binding_screening_auc, avg_binding_screening_composite,
+                avg_ar_legacy_auc, avg_hellaswag_acc, avg_blimp_overall_accuracy,
+                avg_induction_intermediate_auc, avg_binding_intermediate_auc,
                 math_space_rate, class_outcomes, wildcard_count,
                 wildcard_s1_count, wildcard_class_outcomes, last_updated
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -671,14 +671,14 @@ def test_template_rescue_requires_supported_slot_class_evidence():
                             "n": 1,
                             "s1": 1,
                             "mean_loss": 0.1,
-                            "mean_induction_auc": 0.02,
-                            "mean_binding_auc": 0.01,
-                            "mean_binding_composite": 0.012,
-                            "mean_ar_auc": 0.06,
+                            "mean_induction_screening_auc": 0.02,
+                            "mean_binding_screening_auc": 0.01,
+                            "mean_binding_screening_composite": 0.012,
+                            "mean_ar_legacy_auc": 0.06,
                             "mean_hellaswag_acc": 0.34,
                             "mean_blimp_overall_accuracy": 0.72,
-                            "mean_induction_v2_investigation_auc": 0.09,
-                            "mean_binding_v2_investigation_auc": 0.08,
+                            "mean_induction_intermediate_auc": 0.09,
+                            "mean_binding_intermediate_auc": 0.08,
                             "math_space_rate": 1.0,
                         }
                     }

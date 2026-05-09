@@ -8,6 +8,7 @@ import time
 from typing import Any, Dict
 from flask import jsonify, request
 
+from ...capability_ranker_metrics import enable_capability_rankers
 from ...runner._types import RunConfig
 from .._helpers import get_runner
 from .._strategy_preflight import (
@@ -25,11 +26,13 @@ logger = logging.getLogger(__name__)
 _STAGE_DEFAULT_STEPS = {
     "screening": 750,  # STAGE1_STEPS
     "investigation": 2500,  # INVESTIGATION_STEPS
+    "capability_ranking": 2500,
     "validation": 10000,  # VALIDATION_STEPS
 }
 _STAGE_QUEUE_NAMES = {
     "screening": "replay",  # S1 reruns go through the exact_graph_replay path
     "investigation": "investigation",
+    "capability_ranking": "capability_ranking",
     "validation": "validation",
 }
 
@@ -90,7 +93,7 @@ def _api_program_queue_validation_rerun(result_id, nb=None):
     metrics across rows of the same fingerprint+tier.
 
     Body (optional):
-        stage  str   "screening" | "investigation" | "validation"
+        stage  str   "screening" | "investigation" | "capability_ranking" | "validation"
                      (default "validation").
         n      int   number of reruns (default 1, max 5).
         n_seeds int  seeds per rerun (default 1; only used at validation).
@@ -132,9 +135,11 @@ def _api_program_queue_validation_rerun(result_id, nb=None):
     queue_stage = _STAGE_QUEUE_NAMES[stage_in]
     queue_result_id = str(result_id)
 
-    if queue_stage in {"investigation", "validation"} and has_backfill_provenance(
-        program
-    ):
+    if queue_stage in {
+        "investigation",
+        "capability_ranking",
+        "validation",
+    } and has_backfill_provenance(program):
         confirmed_id = resolve_confirmed_candidate_result_id(
             nb,
             str(result_id),
@@ -181,6 +186,9 @@ def _api_program_queue_validation_rerun(result_id, nb=None):
         config.allow_unproven_ml_influence = False
         if queue_stage == "investigation":
             config.investigation_steps = n_steps
+        elif queue_stage == "capability_ranking":
+            config.investigation_steps = n_steps
+            enable_capability_rankers(config)
         else:  # validation
             config.validation_n_seeds = n_seeds
             config.validation_steps = n_steps
@@ -248,7 +256,7 @@ def _api_program_pending_reruns(result_id, nb=None):
     """List queued/running reruns for a program across all stages.
 
     Filters ``followup_tasks`` for stage in (replay, investigation,
-    validation) — i.e. the three stages exposed by the rerun panel.
+    capability_ranking, validation) — i.e. the stages exposed by the rerun panel.
     Returns the most recent 50 with status, queued time, source
     context, and the stage label inferred from evidence_pack.
     """
@@ -258,7 +266,7 @@ def _api_program_pending_reruns(result_id, nb=None):
                   outcome, priority_score, evidence_pack_json,
                   metadata_json
            FROM followup_tasks
-           WHERE stage IN ('replay', 'investigation', 'validation')
+           WHERE stage IN ('replay', 'investigation', 'capability_ranking', 'validation')
              AND status IN ('queued','running')
            ORDER BY timestamp DESC
            LIMIT 300""").fetchall()
@@ -316,7 +324,7 @@ def _api_program_pending_reruns(result_id, nb=None):
 def _api_drain_pending_validation_rerun(notebook_path: str, nb=None):
     """Pop one queued rerun (any stage) and start it now.
 
-    Stage priority: replay (S1) > investigation > validation.  Mirrors
+    Stage priority: replay (S1) > investigation > capability ranking > validation.  Mirrors
     what continuous mode does on each cycle tick.  Refuses if an
     experiment is already running.
 
@@ -343,6 +351,7 @@ def _api_drain_pending_validation_rerun(notebook_path: str, nb=None):
     drain_stages = (
         ("replay", runner._run_pending_replay),
         ("investigation", runner._run_pending_investigation),
+        ("capability_ranking", runner._run_pending_capability_ranking),
         ("validation", runner._run_pending_validation),
     )
     if target_result_id:

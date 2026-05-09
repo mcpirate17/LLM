@@ -56,9 +56,9 @@ CREATE TABLE program_results (
     rapid_screening_max_steps INTEGER,
     wikitext_perplexity REAL,
     hellaswag_acc REAL,
-    induction_auc REAL,
-    binding_auc REAL,
-    binding_composite REAL,
+    induction_screening_auc REAL,
+    binding_screening_auc REAL,
+    binding_screening_composite REAL,
     trust_label TEXT,
     comparability_label TEXT,
     data_provenance_json TEXT
@@ -81,9 +81,9 @@ _PROGRAM_ROW_DEFAULTS = {
     "rapid_screening_max_steps": 10,
     "wikitext_perplexity": 7.0,
     "hellaswag_acc": None,
-    "induction_auc": 0.2,
-    "binding_auc": 0.3,
-    "binding_composite": 0.25,
+    "induction_screening_auc": 0.2,
+    "binding_screening_auc": 0.3,
+    "binding_screening_composite": 0.25,
     "trust_label": "candidate_grade",
     "comparability_label": "candidate_comparable",
     "data_provenance_json": json.dumps({"graph": {"graph_family": "dense"}}),
@@ -113,9 +113,9 @@ _EVAL_PAYLOAD_DEFAULTS = {
     "rapid_screening_max_steps": 10,
     "wikitext_perplexity": 7.0,
     "hellaswag_acc": 0.31,
-    "induction_auc": 0.1,
-    "binding_auc": 0.2,
-    "binding_composite": 0.15,
+    "induction_screening_auc": 0.1,
+    "binding_screening_auc": 0.2,
+    "binding_screening_composite": 0.15,
     "trust_label": "candidate_grade",
     "comparability_label": "candidate_comparable",
     "data_provenance_json": "{}",
@@ -147,9 +147,9 @@ def test_needs_post_train_requires_train_steps():
         n_train_steps=None,
         wikitext_perplexity=None,
         hellaswag_acc=None,
-        induction_auc=None,
-        binding_auc=None,
-        binding_composite=None,
+        induction_screening_auc=None,
+        binding_screening_auc=None,
+        binding_screening_composite=None,
     )
     assert not _needs_post_train(
         row,
@@ -168,12 +168,12 @@ def test_needs_post_train_allows_reference_fallback_budget():
         train_budget_steps=None,
         trust_label="reference",
         comparability_label="reference_comparable",
-        binding_auc=None,
+        binding_screening_auc=None,
     )
     assert _needs_post_train(
         row,
         force=False,
-        target_fields=("binding_auc",),
+        target_fields=("binding_screening_auc",),
     )
 
 
@@ -186,12 +186,12 @@ def test_needs_post_train_binding_only_does_not_require_train_steps():
         train_budget_steps=None,
         trust_label="candidate_grade",
         comparability_label="candidate_comparable",
-        binding_auc=None,
+        binding_screening_auc=None,
     )
     assert _needs_post_train(
         row,
         force=False,
-        target_fields=("binding_auc",),
+        target_fields=("binding_screening_auc",),
     )
 
 
@@ -202,12 +202,12 @@ def test_needs_post_train_compile_only_induction_does_not_require_train_steps():
         stage1_passed=0,
         n_train_steps=None,
         train_budget_steps=None,
-        induction_auc=None,
+        induction_screening_auc=None,
     )
     assert _needs_post_train(
         row,
         force=False,
-        target_fields=("induction_auc",),
+        target_fields=("induction_screening_auc",),
     )
 
 
@@ -228,21 +228,25 @@ def test_needs_post_train_compile_only_hellaswag_does_not_require_train_steps():
 
 
 def test_select_updates_only_fills_missing_without_force():
-    row = _Row(induction_auc=0.1, binding_auc=None, rapid_screening_elapsed_ms=None)
+    row = _Row(
+        induction_screening_auc=0.1,
+        binding_screening_auc=None,
+        rapid_screening_elapsed_ms=None,
+    )
     updates = {
-        "induction_auc": 0.2,
-        "binding_auc": 0.3,
+        "induction_screening_auc": 0.2,
+        "binding_screening_auc": 0.3,
         "rapid_screening_elapsed_ms": 1812.0,
     }
     assert _select_updates(row, updates, force=False) == {
-        "binding_auc": 0.3,
+        "binding_screening_auc": 0.3,
         "rapid_screening_elapsed_ms": 1812.0,
     }
 
 
 def test_select_updates_overwrites_with_force():
-    row = _Row(induction_auc=0.1, binding_auc=None)
-    updates = {"induction_auc": 0.2, "binding_auc": 0.3}
+    row = _Row(induction_screening_auc=0.1, binding_screening_auc=None)
+    updates = {"induction_screening_auc": 0.2, "binding_screening_auc": 0.3}
     assert _select_updates(row, updates, force=True) == updates
 
 
@@ -257,7 +261,7 @@ def test_force_replays_existing_binding_metrics(monkeypatch):
 
     def _fake_compile_only(*args, **kwargs):
         called["compile_only"] += 1
-        return {"binding_auc": 0.35}
+        return {"binding_screening_auc": 0.35}
 
     monkeypatch.setattr(
         "research.tools.backpopulate_screening_metrics._run_compile_only_post_eval",
@@ -281,7 +285,7 @@ def test_force_replays_existing_binding_metrics(monkeypatch):
 
     assert called["compile_only"] == 1
     assert result["post_needed"] == 1
-    assert result["updates"]["binding_auc"] == 0.35
+    assert result["updates"]["binding_screening_auc"] == 0.35
 
 
 def test_binding_target_uses_binding_probe_only_path(monkeypatch):
@@ -291,18 +295,18 @@ def test_binding_target_uses_binding_probe_only_path(monkeypatch):
         experiment_id="exp-binding",
         n_train_steps=None,
         train_budget_steps=None,
-        binding_auc=None,
-        binding_composite=None,
+        binding_screening_auc=None,
+        binding_screening_composite=None,
     )
     called = {"compile_only": 0, "post_train": 0}
 
     def _fake_compile_only(*args, **kwargs):
         called["compile_only"] += 1
-        return {"binding_auc": 0.42}
+        return {"binding_screening_auc": 0.42}
 
     def _fake_run_post_train(*args, **kwargs):
         called["post_train"] += 1
-        return {"binding_auc": 0.99}
+        return {"binding_screening_auc": 0.99}
 
     monkeypatch.setattr(
         "research.tools.backpopulate_screening_metrics._run_compile_only_post_eval",
@@ -330,7 +334,7 @@ def test_binding_target_uses_binding_probe_only_path(monkeypatch):
 
     assert called == {"compile_only": 1, "post_train": 0}
     assert result["post_needed"] == 1
-    assert result["updates"]["binding_auc"] == 0.42
+    assert result["updates"]["binding_screening_auc"] == 0.42
 
 
 def test_all_target_uses_compile_only_path(monkeypatch):
@@ -350,9 +354,9 @@ def test_all_target_uses_compile_only_path(monkeypatch):
         "rapid_screening_max_steps": 10,
         "wikitext_perplexity": None,
         "hellaswag_acc": None,
-        "induction_auc": None,
-        "binding_auc": None,
-        "binding_composite": None,
+        "induction_screening_auc": None,
+        "binding_screening_auc": None,
+        "binding_screening_composite": None,
         "trust_label": "candidate_grade",
         "comparability_label": "candidate_comparable",
         "data_provenance_json": "{}",
@@ -365,14 +369,14 @@ def test_all_target_uses_compile_only_path(monkeypatch):
         called["compile_only"] += 1
         return {
             "hellaswag_acc": 0.27,
-            "induction_auc": 0.05,
-            "binding_auc": 0.09,
-            "binding_composite": 0.042,
+            "induction_screening_auc": 0.05,
+            "binding_screening_auc": 0.09,
+            "binding_screening_composite": 0.042,
         }
 
     def _fake_run_post_train(*args, **kwargs):
         called["post_train"] += 1
-        return {"binding_auc": 0.99}
+        return {"binding_screening_auc": 0.99}
 
     monkeypatch.setattr(
         "research.tools.backpopulate_screening_metrics._run_compile_only_post_eval",
@@ -401,8 +405,8 @@ def test_all_target_uses_compile_only_path(monkeypatch):
     assert called == {"compile_only": 1, "post_train": 0}
     assert result["post_needed"] == 1
     assert result["updates"]["hellaswag_acc"] == 0.27
-    assert result["updates"]["induction_auc"] == 0.05
-    assert result["updates"]["binding_auc"] == 0.09
+    assert result["updates"]["induction_screening_auc"] == 0.05
+    assert result["updates"]["binding_screening_auc"] == 0.09
 
 
 def test_recover_hellaswag_after_gate_failure_respects_skip(monkeypatch):
@@ -575,9 +579,9 @@ def test_fetch_rows_selects_reference_missing_binding_without_train_steps():
             n_train_steps=None,
             train_budget_steps=None,
             hellaswag_acc=0.3,
-            induction_auc=0.05,
-            binding_auc=None,
-            binding_composite=None,
+            induction_screening_auc=0.05,
+            binding_screening_auc=None,
+            binding_screening_composite=None,
             trust_label="reference",
             comparability_label="reference_comparable",
         ),
@@ -589,7 +593,7 @@ def test_fetch_rows_selects_reference_missing_binding_without_train_steps():
         force=False,
         selection_slice="backfill",
         balance_by_family=False,
-        target_post_fields=("binding_auc",),
+        target_post_fields=("binding_screening_auc",),
     )
     assert [row["result_id"] for row in selected] == ["ref_gpt2_test"]
     conn.close()
@@ -644,10 +648,10 @@ def test_fetch_rows_nonref_unique_fingerprints_dedupes_latest():
             rapid_screening_max_steps INTEGER,
             wikitext_perplexity REAL,
             hellaswag_acc REAL,
-            induction_auc REAL,
-            binding_auc REAL,
-            binding_composite REAL,
-            ar_auc REAL,
+            induction_screening_auc REAL,
+            binding_screening_auc REAL,
+            binding_screening_composite REAL,
+            ar_legacy_auc REAL,
             blimp_overall_accuracy REAL,
             ncd_score REAL,
             trust_label TEXT,
@@ -793,7 +797,7 @@ def test_fetch_rows_nonref_unique_fingerprints_dedupes_latest():
         force=True,
         selection_slice="nonref_unique_fingerprints",
         balance_by_family=False,
-        target_post_fields=("binding_auc",),
+        target_post_fields=("binding_screening_auc",),
     )
     assert [row["result_id"] for row in selected] == ["fp2_only", "fp1_new"]
     conn.close()

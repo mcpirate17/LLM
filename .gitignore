@@ -103,6 +103,24 @@ research/runtime/learning/
 research/runtime/**/*.jsonl
 research/runtime/**/*.log
 research/runtime/**/summary_*.json
+research/runtime/**/*.csv
+research/runtime/**/*.gguf
+
+# Runtime experiment scratch (regenerable; never commit checkpoints/sweeps)
+research/runtime/bim_scale_experiment/
+research/runtime/small_ar_fingerprint_sweep/
+research/runtime/ar_validation_fingerprint_sweep/
+research/runtime/intermediate_probe_calibration/
+research/runtime/ollama_models/
+research/runtime/ollama_reference_probe_audit/
+research/runtime/scaffold_profile/
+research/runtime/champion_reference_tests/
+research/runtime/champion_reference_calibration/
+research/runtime/small_ar_calibration/
+
+# Rust target dirs (regenerable build output)
+research/runtime/native/rust/aria-scheduler/target/
+research/runtime/native/rust/aria-db/target/
 
 # Performance artifacts
 research/perf_artifacts/
@@ -146,3 +164,7 @@ research/runtime/backfill/*_state.json
 tasks/induction_native_probe/*.csv
 # Added by code-review-graph
 .code-review-graph/
+
+# Persistent eval inputs and knowledge artifacts (relocated 2026-05-09 from research/reports/)
+research/data/
+research/notes/

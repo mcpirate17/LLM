@@ -11,6 +11,8 @@ from typing import Any, Dict, List, Set, Tuple
 
 import torch
 
+from research.defaults import RUNS_DB
+
 from ...orchestrator.executor import WorkerPoolOrchestrator
 from ...synthesis.grammar import batch_generate
 from ..notebook import ExperimentEntry, LabNotebook
@@ -264,11 +266,7 @@ class _ExecutionExperimentPhase3Mixin:
                 load_op_stats,
             )
 
-            db_path = (
-                str(nb.db_path)
-                if hasattr(nb, "db_path")
-                else "research/lab_notebook.db"
-            )
+            db_path = str(nb.db_path) if hasattr(nb, "db_path") else RUNS_DB
             profiling_db = "research/profiling/component_profiles.db"
             ensemble = load_runtime_ensemble(profiling_db=profiling_db)
             if ensemble is None or not ensemble.is_fitted():
@@ -329,7 +327,7 @@ class _ExecutionExperimentPhase3Mixin:
                         float(planning.get("planning_score", 0.0)),
                         float(planning.get("p_pass", 0.0)),
                         float(planning.get("p_induction_learner", 0.0)),
-                        float(planning.get("predicted_induction_auc", 0.0)),
+                        float(planning.get("predicted_induction_screening_auc", 0.0)),
                         graph,
                         graph_dict,
                     )
@@ -349,7 +347,7 @@ class _ExecutionExperimentPhase3Mixin:
                             status="predictor_skip",
                             metrics={
                                 "predicted_p_s1": p_pass,
-                                "predicted_induction_auc": pred_auc,
+                                "predicted_induction_screening_auc": pred_auc,
                                 "predicted_p_induction_learner": p_ind,
                                 "predictor_planning_score": planning_score,
                                 "screening_ensemble_p_pass_floor": p_pass_floor,

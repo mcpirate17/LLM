@@ -36,8 +36,8 @@ def test_cleanup_merges_orphan_duplicates_and_relabels_backfill(tmp_path):
         stage0_passed=True,
         stage1_passed=False,
         timestamp=100.0,
-        induction_auc=0.04,
-        binding_auc=0.08,
+        induction_screening_auc=0.04,
+        binding_screening_auc=0.08,
         hellaswag_acc=0.26,
         trust_label="runtime_observation",
         result_cohort="search",
@@ -64,7 +64,7 @@ def test_cleanup_merges_orphan_duplicates_and_relabels_backfill(tmp_path):
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     kept = conn.execute("""
-        SELECT result_id, induction_auc, binding_auc, hellaswag_acc,
+        SELECT result_id, induction_screening_auc, binding_screening_auc, hellaswag_acc,
                result_cohort, trust_label, comparability_label,
                evaluation_protocol_version, init_regime
         FROM program_results
@@ -72,8 +72,8 @@ def test_cleanup_merges_orphan_duplicates_and_relabels_backfill(tmp_path):
         """).fetchall()
     assert len(kept) == 1
     row = kept[0]
-    assert row["induction_auc"] == 0.04
-    assert row["binding_auc"] == 0.08
+    assert row["induction_screening_auc"] == 0.04
+    assert row["binding_screening_auc"] == 0.08
     assert row["hellaswag_acc"] == 0.30
     assert row["result_cohort"] == "backfill"
     assert row["trust_label"] == "backfill_observation"
@@ -132,7 +132,7 @@ def test_cleanup_skips_groups_with_leaderboard_rows(tmp_path):
         stage1_passed=True,
         loss_ratio=0.7,
         timestamp=200.0,
-        induction_auc=0.05,
+        induction_screening_auc=0.05,
         trust_label="test_fixture",
     )
     nb.flush_writes()
@@ -190,7 +190,7 @@ def test_single_lb_cleanup_merges_into_leaderboard_row(tmp_path):
         stage1_passed=True,
         loss_ratio=0.7,
         validation_loss_ratio=0.45,
-        induction_auc=0.05,
+        induction_screening_auc=0.05,
         timestamp=200.0,
         trust_label="test_fixture",
     )
@@ -224,7 +224,7 @@ def test_single_lb_cleanup_merges_into_leaderboard_row(tmp_path):
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     rows = conn.execute("""
-        SELECT result_id, loss_ratio, validation_loss_ratio, induction_auc
+        SELECT result_id, loss_ratio, validation_loss_ratio, induction_screening_auc
         FROM program_results
         WHERE graph_fingerprint = 'dup-fp-single-lb'
         """).fetchall()
@@ -233,7 +233,7 @@ def test_single_lb_cleanup_merges_into_leaderboard_row(tmp_path):
     assert row["result_id"] == lb_id
     assert row["loss_ratio"] == 0.7
     assert row["validation_loss_ratio"] == 0.45
-    assert row["induction_auc"] == 0.05
+    assert row["induction_screening_auc"] == 0.05
     curve = conn.execute(
         "SELECT COUNT(*) AS n FROM training_curves WHERE result_id = ?",
         (lb_id,),
@@ -279,7 +279,7 @@ def test_single_lb_cleanup_handles_missing_experiment_row(tmp_path):
         stage0_passed=True,
         stage1_passed=True,
         loss_ratio=0.4,
-        induction_auc=0.07,
+        induction_screening_auc=0.07,
         trust_label="test_fixture",
     )
     nb.flush_writes()
@@ -304,12 +304,12 @@ def test_single_lb_cleanup_handles_missing_experiment_row(tmp_path):
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     rows = conn.execute(
-        "SELECT result_id, loss_ratio, induction_auc FROM program_results WHERE graph_fingerprint = 'dup-fp-missing-exp'"
+        "SELECT result_id, loss_ratio, induction_screening_auc FROM program_results WHERE graph_fingerprint = 'dup-fp-missing-exp'"
     ).fetchall()
     assert len(rows) == 1
     assert rows[0]["result_id"] == keeper_id
     assert rows[0]["loss_ratio"] == 0.4
-    assert rows[0]["induction_auc"] == 0.07
+    assert rows[0]["induction_screening_auc"] == 0.07
     deleted = conn.execute(
         "SELECT result_id FROM program_results WHERE result_id = ?",
         (missing_id,),

@@ -16,7 +16,7 @@ function normalizeQueue(items) {
       fingerprint: item?.fingerprint || null,
       source: item?.source || 'unknown',
       architectureFamily: item?.architectureFamily || null,
-      intent: ['investigation', 'validation', 'confirmation'].includes(item?.intent)
+      intent: ['investigation', 'capability_ranking', 'validation', 'confirmation'].includes(item?.intent)
         ? item.intent
         : 'investigation',
     });
@@ -44,11 +44,14 @@ function queueReasonLabel(reason) {
 }
 
 function resolveQueueIntent(candidate, eligibility) {
-  if (['investigation', 'validation', 'confirmation'].includes(candidate?.intent)) {
+  if (['investigation', 'capability_ranking', 'validation', 'confirmation'].includes(candidate?.intent)) {
     return candidate.intent;
   }
   if (candidate?.confirmationEligible || eligibility?.confirmationEligible) {
     return 'confirmation';
+  }
+  if (candidate?.capabilityRankingEligible || eligibility?.capabilityRankingEligible) {
+    return 'capability_ranking';
   }
   if (candidate?.validationEligible || eligibility?.validationEligible) {
     return 'validation';
@@ -101,7 +104,7 @@ export default function useInvestigationQueue({ eligibilityByResultId, setAction
       let changed = false;
       const next = [];
       for (const item of prev) {
-        const intent = ['investigation', 'validation', 'confirmation'].includes(item?.intent)
+        const intent = ['investigation', 'capability_ranking', 'validation', 'confirmation'].includes(item?.intent)
           ? item.intent
           : 'investigation';
         const eligibility = eligibilityByResultId[item.resultId];
@@ -116,6 +119,8 @@ export default function useInvestigationQueue({ eligibilityByResultId, setAction
         }
         const stillEligibleForIntent = intent === 'confirmation'
           ? eligibility.confirmationEligible
+          : intent === 'capability_ranking'
+            ? eligibility.capabilityRankingEligible
           : intent === 'validation'
             ? eligibility.validationEligible
             : eligibility.investigationEligible;
@@ -138,13 +143,15 @@ export default function useInvestigationQueue({ eligibilityByResultId, setAction
     return investigationQueue.reduce((acc, item) => {
       if (item.intent === 'confirmation') {
         acc.confirmation += 1;
+      } else if (item.intent === 'capability_ranking') {
+        acc.capabilityRanking += 1;
       } else if (item.intent === 'validation') {
         acc.validation += 1;
       } else {
         acc.investigation += 1;
       }
       return acc;
-    }, { investigation: 0, validation: 0, confirmation: 0 });
+    }, { investigation: 0, capabilityRanking: 0, validation: 0, confirmation: 0 });
   }, [investigationQueue]);
 
   return {

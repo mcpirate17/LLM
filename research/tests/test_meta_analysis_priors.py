@@ -27,7 +27,7 @@ def _insert_op_rows(
         conn.execute(
             """
             INSERT INTO op_observations (
-                result_id, op_name, op_category, induction_auc, composite_score,
+                result_id, op_name, op_category, induction_screening_auc, composite_score,
                 stage1_passed, op_lambda_calculus_affinity,
                 op_alternative_math_affinity
             )
@@ -55,7 +55,7 @@ def test_meta_analysis_prior_builds_artifact_and_applies_to_grammar(tmp_path):
             result_id TEXT,
             op_name TEXT,
             op_category TEXT,
-            induction_auc REAL,
+            induction_screening_auc REAL,
             composite_score REAL,
             stage1_passed INTEGER,
             op_lambda_calculus_affinity REAL,
@@ -68,7 +68,7 @@ def test_meta_analysis_prior_builds_artifact_and_applies_to_grammar(tmp_path):
         CREATE TABLE template_observations (
             result_id TEXT,
             template_name TEXT,
-            induction_auc REAL,
+            induction_screening_auc REAL,
             composite_score REAL,
             stage1_passed INTEGER
         )
@@ -117,7 +117,7 @@ def test_meta_analysis_prior_builds_artifact_and_applies_to_grammar(tmp_path):
         conn.execute(
             """
             INSERT INTO template_observations (
-                result_id, template_name, induction_auc, composite_score, stage1_passed
+                result_id, template_name, induction_screening_auc, composite_score, stage1_passed
             )
             VALUES (?, ?, ?, ?, ?)
             """,
@@ -190,7 +190,7 @@ def test_meta_analysis_prior_config_fields_round_trip() -> None:
     assert reconstructed.meta_analysis_prior_path == "/tmp/meta_priors"
 
 
-def test_induction_v2_target_ignores_legacy_only_rows(tmp_path) -> None:
+def test_induction_intermediate_target_ignores_legacy_only_rows(tmp_path) -> None:
     meta_db = tmp_path / "meta_analysis.db"
     conn = sqlite3.connect(meta_db)
     conn.execute(
@@ -199,8 +199,8 @@ def test_induction_v2_target_ignores_legacy_only_rows(tmp_path) -> None:
             result_id TEXT,
             op_name TEXT,
             op_category TEXT,
-            induction_auc REAL,
-            induction_v2_investigation_auc REAL,
+            induction_screening_auc REAL,
+            induction_intermediate_auc REAL,
             composite_score REAL,
             stage1_passed INTEGER,
             op_lambda_calculus_affinity REAL,
@@ -213,8 +213,8 @@ def test_induction_v2_target_ignores_legacy_only_rows(tmp_path) -> None:
         CREATE TABLE template_observations (
             result_id TEXT,
             template_name TEXT,
-            induction_auc REAL,
-            induction_v2_investigation_auc REAL,
+            induction_screening_auc REAL,
+            induction_intermediate_auc REAL,
             composite_score REAL,
             stage1_passed INTEGER
         )
@@ -235,8 +235,8 @@ def test_induction_v2_target_ignores_legacy_only_rows(tmp_path) -> None:
         conn.execute(
             """
             INSERT INTO op_observations (
-                result_id, op_name, op_category, induction_auc,
-                induction_v2_investigation_auc, composite_score, stage1_passed,
+                result_id, op_name, op_category, induction_screening_auc,
+                induction_intermediate_auc, composite_score, stage1_passed,
                 op_lambda_calculus_affinity, op_alternative_math_affinity
             )
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -257,8 +257,8 @@ def test_induction_v2_target_ignores_legacy_only_rows(tmp_path) -> None:
         conn.execute(
             """
             INSERT INTO op_observations (
-                result_id, op_name, op_category, induction_auc,
-                induction_v2_investigation_auc, composite_score, stage1_passed,
+                result_id, op_name, op_category, induction_screening_auc,
+                induction_intermediate_auc, composite_score, stage1_passed,
                 op_lambda_calculus_affinity, op_alternative_math_affinity
             )
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -269,8 +269,8 @@ def test_induction_v2_target_ignores_legacy_only_rows(tmp_path) -> None:
         conn.execute(
             """
             INSERT INTO op_observations (
-                result_id, op_name, op_category, induction_auc,
-                induction_v2_investigation_auc, composite_score, stage1_passed,
+                result_id, op_name, op_category, induction_screening_auc,
+                induction_intermediate_auc, composite_score, stage1_passed,
                 op_lambda_calculus_affinity, op_alternative_math_affinity
             )
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -282,11 +282,11 @@ def test_induction_v2_target_ignores_legacy_only_rows(tmp_path) -> None:
 
     prior = build_meta_analysis_prior(
         meta_db_path=meta_db,
-        target="induction_v2",
+        target="induction_intermediate",
         min_support=2,
         created_at=1_800_000_000.0,
     )
 
-    assert prior["signals"]["target_metric"] == "induction_v2_investigation_auc"
+    assert prior["signals"]["target_metric"] == "induction_intermediate_auc"
     assert "legacy_only_winner" not in prior["op_weights"]
     assert prior["op_weights"]["v2_winner"] > 1.0

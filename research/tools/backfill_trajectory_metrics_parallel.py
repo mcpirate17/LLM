@@ -51,9 +51,10 @@ import torch.nn.functional as F
 
 # Defer heavy imports to worker init so spawn doesn't fork-import them
 # at master startup (slow on CUDA platforms).
+from research.scientist.notebook.graph_artifacts import resolve_graph_json_value
 
 ROOT = Path(__file__).resolve().parents[2]
-DB_PATH = ROOT / "research" / "lab_notebook.db"
+DB_PATH = ROOT / "research" / "runs.db"
 CORPUS_PATH = ROOT / "research" / "corpus" / "wikitext103_train.npy"
 TOOL_NAME = "backfill_trajectory_metrics_parallel"
 
@@ -419,6 +420,7 @@ def _candidate_tasks(
         fp, _ts, n_ops, depth, graph_json = row
         if not graph_json:
             continue
+        graph_json = resolve_graph_json_value(conn, DB_PATH, graph_json)
         cost = max(1, int(n_ops or 1)) * max(1, int(depth or 1))
         tasks.append(
             FingerprintTask(

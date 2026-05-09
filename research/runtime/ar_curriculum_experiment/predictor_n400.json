@@ -1,0 +1,116 @@
+{
+  "run_id": "n400",
+  "n_rows": 400,
+  "targets": [
+    {
+      "target": "ar_curriculum_auc_pair_final",
+      "n_total": 400,
+      "n_train": 320,
+      "n_test": 80,
+      "spearman_train": 0.938,
+      "spearman_test": 0.625,
+      "mae_train": 0.0449,
+      "mae_test": 0.0947,
+      "y_test_mean": 0.306,
+      "y_test_std": 0.157,
+      "feature_importances": [
+        {
+          "feature": "fp_jacobian_erf_decay_slope",
+          "importance": 0.3519
+        },
+        {
+          "feature": "fp_jacobian_erf_density",
+          "importance": 0.2942
+        },
+        {
+          "feature": "induction_screening_auc",
+          "importance": 0.083
+        },
+        {
+          "feature": "wikitext_perplexity",
+          "importance": 0.0733
+        },
+        {
+          "feature": "blimp_overall_accuracy",
+          "importance": 0.0563
+        },
+        {
+          "feature": "validation_loss_ratio",
+          "importance": 0.0504
+        },
+        {
+          "feature": "ar_legacy_auc",
+          "importance": 0.0282
+        },
+        {
+          "feature": "hellaswag_acc",
+          "importance": 0.0262
+        },
+        {
+          "feature": "binding_screening_auc",
+          "importance": 0.0258
+        },
+        {
+          "feature": "ar_validation_held_pair_acc",
+          "importance": 0.0107
+        }
+      ],
+      "status": "ok"
+    },
+    {
+      "target": "ar_curriculum_s0_retention",
+      "n_total": 400,
+      "n_train": 320,
+      "n_test": 80,
+      "spearman_train": 0.839,
+      "spearman_test": 0.448,
+      "mae_train": 0.1026,
+      "mae_test": 0.1926,
+      "y_test_mean": 0.487,
+      "y_test_std": 0.3,
+      "feature_importances": [
+        {
+          "feature": "fp_jacobian_erf_decay_slope",
+          "importance": 0.4389
+        },
+        {
+          "feature": "fp_jacobian_erf_density",
+          "importance": 0.1176
+        },
+        {
+          "feature": "wikitext_perplexity",
+          "importance": 0.0966
+        },
+        {
+          "feature": "validation_loss_ratio",
+          "importance": 0.0938
+        },
+        {
+          "feature": "blimp_overall_accuracy",
+          "importance": 0.0741
+        },
+        {
+          "feature": "induction_screening_auc",
+          "importance": 0.048
+        },
+        {
+          "feature": "ar_validation_held_pair_acc",
+          "importance": 0.0468
+        },
+        {
+          "feature": "hellaswag_acc",
+          "importance": 0.0409
+        },
+        {
+          "feature": "ar_legacy_auc",
+          "importance": 0.0248
+        },
+        {
+          "feature": "binding_screening_auc",
+          "importance": 0.0186
+        }
+      ],
+      "status": "ok"
+    }
+  ]
+}

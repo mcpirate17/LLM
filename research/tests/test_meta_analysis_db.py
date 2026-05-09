@@ -6,6 +6,7 @@ import sqlite3
 from research.meta_analysis import metadata_db
 from research.meta_analysis.metadata_db import build_meta_analysis_db
 from research.tools.meta_profile_ml_analysis import build_payload as build_ml_payload
+from research.tools.externalize_notebook_artifacts import run as externalize_artifacts
 
 
 def _create_profile_table(
@@ -73,8 +74,8 @@ def test_build_meta_analysis_db_materializes_separate_template_slot_tables(
             stage1_passed INTEGER,
             loss_ratio REAL,
             tinystories_score REAL,
-            induction_v2_investigation_auc REAL,
-            induction_v2_investigation_status TEXT,
+            induction_intermediate_auc REAL,
+            induction_intermediate_status TEXT,
             failure_op TEXT,
             failure_details_json TEXT
         )
@@ -107,8 +108,8 @@ def test_build_meta_analysis_db_materializes_separate_template_slot_tables(
         INSERT INTO program_results
             (result_id, graph_json, graph_fingerprint, stage0_passed,
              stage05_passed, stage1_passed, loss_ratio,
-             tinystories_score, induction_v2_investigation_auc,
-             induction_v2_investigation_status, failure_op, failure_details_json)
+             tinystories_score, induction_intermediate_auc,
+             induction_intermediate_status, failure_op, failure_details_json)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
@@ -322,7 +323,7 @@ def test_build_meta_analysis_db_materializes_separate_template_slot_tables(
     ).fetchone()
     metric = out.execute(
         "SELECT * FROM eval_metric_catalog WHERE metric_name = ?",
-        ("controlled_language_nanobind",),
+        ("language_controluage_nanobind",),
     ).fetchone()
     external_prior = out.execute(
         "SELECT * FROM external_component_prior_catalog WHERE external_family = ?",
@@ -358,8 +359,8 @@ def test_build_meta_analysis_db_materializes_separate_template_slot_tables(
     assert slot_obs["has_compression_motif"] == 1
     assert slot_obs["has_effective_positional_mixer"] == 0
     assert slot_obs["frequency_collapse_risk"] > 0.8
-    assert slot_obs["induction_v2_investigation_auc"] == 0.73
-    assert slot_obs["induction_v2_investigation_status"] == "ok"
+    assert slot_obs["induction_intermediate_auc"] == 0.73
+    assert slot_obs["induction_intermediate_status"] == "ok"
     assert op is not None
     assert op["op_algebraic_linearity_class"] == "bilinear"
     assert op["op_empirical_probe_needed"] == 1
@@ -379,11 +380,11 @@ def test_build_meta_analysis_db_materializes_separate_template_slot_tables(
     assert graph_profile["profile_triplet_divergent_count"] == 1
     assert metric is not None
     assert json.loads(metric["source_columns_json"]) == [
-        "controlled_lang_s05_sa_score",
-        "controlled_lang_s05_nb_order_acc",
-        "controlled_lang_s05_nb_score",
-        "controlled_lang_s10_sa_score",
-        "controlled_lang_inv_sa_score",
+        "language_control_s05_sentence_assoc_score",
+        "language_control_s05_binding_order_acc",
+        "language_control_s05_binding_score",
+        "language_control_s10_sentence_assoc_score",
+        "language_control_investigation_sentence_assoc_score",
         "failure_op",
         "failure_details_json",
     ]
@@ -409,3 +410,82 @@ def test_build_meta_analysis_db_materializes_separate_template_slot_tables(
         "program_graph_features",
         "program_graph_ops",
     }
+
+
+def test_build_meta_analysis_db_resolves_artifact_backed_graph_json(
+    tmp_path, monkeypatch
+):
+    source_db = tmp_path / "runs.db"
+    output_db = tmp_path / "meta_analysis.db"
+    graph = {
+        "nodes": {
+            "0": {"id": 0, "op_name": "input", "input_ids": []},
+            "1": {"id": 1, "op_name": "softmax_attention", "input_ids": [0]},
+        },
+        "metadata": {
+            "templates_used": ["typed_slot_memory_block"],
+            "template_slot_usage": [
+                {
+                    "template_name": "typed_slot_memory_block",
+                    "slot_index": 0,
+                    "slot_key": "typed_slot_memory_block[0].slot0",
+                    "slot_classes": ["attention"],
+                    "selected_motif": "softmax_attention",
+                }
+            ],
+        },
+    }
+    src = sqlite3.connect(source_db)
+    src.execute(
+        """
+        CREATE TABLE program_results (
+            result_id TEXT PRIMARY KEY,
+            graph_json TEXT NOT NULL,
+            graph_fingerprint TEXT,
+            stage0_passed INTEGER,
+            stage05_passed INTEGER,
+            stage1_passed INTEGER,
+            loss_ratio REAL
+        )
+        """
+    )
+    src.execute(
+        """
+        INSERT INTO program_results
+            (result_id, graph_json, graph_fingerprint, stage0_passed,
+             stage05_passed, stage1_passed, loss_ratio)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        ("r-artifact", json.dumps(graph), "fp-artifact", 1, 1, 1, 0.5),
+    )
+    src.commit()
+    src.close()
+
+    externalize_artifacts(
+        db_path=source_db,
+        min_bytes=16,
+        apply=True,
+        limit=None,
+        vacuum=False,
+        include_graph_json=True,
+        graph_json_cold_only=False,
+    )
+    monkeypatch.setattr(
+        "research.meta_analysis.metadata_db._infer_active_template_names",
+        lambda: {"typed_slot_memory_block"},
+    )
+
+    summary = build_meta_analysis_db(source_db=source_db, output_db=output_db)
+
+    assert summary.n_program_rows == 1
+    assert summary.n_template_observation_rows == 1
+    assert summary.n_slot_observation_rows == 1
+    out = sqlite3.connect(output_db)
+    assert (
+        out.execute(
+            "SELECT COUNT(*) FROM graph_profile_observations WHERE result_id = ?",
+            ("r-artifact",),
+        ).fetchone()[0]
+        == 1
+    )
+    out.close()

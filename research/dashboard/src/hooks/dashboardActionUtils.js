@@ -30,6 +30,8 @@ export function buildEligibilityFilter(eligibilityByResultId) {
 
     const eligibilityKey = mode === 'confirmation'
       ? 'confirmationEligible'
+      : mode === 'capability_ranking'
+        ? 'capabilityRankingEligible'
       : mode === 'validation'
         ? 'validationEligible'
         : 'investigationEligible';

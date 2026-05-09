@@ -48,6 +48,7 @@ def __getattr__(name: str):
         )
         from .execution_screening import _ExecutionScreeningMixin
         from .execution_screening_pipeline import _ExecutionScreeningPipelineMixin
+        from .execution_capability_ranking import _ExecutionCapabilityRankingMixin
         from .execution_investigation import _ExecutionInvestigationMixin
         from .execution_validation import _ExecutionValidationMixin
         from .execution_search import _ExecutionSearchMixin
@@ -82,6 +83,7 @@ def __getattr__(name: str):
             _ContinuousInlineValidationPhase7Mixin,
             _ExecutionScreeningMixin,
             _ExecutionScreeningPipelineMixin,
+            _ExecutionCapabilityRankingMixin,
             _ExecutionInvestigationMixin,
             _ExecutionValidationMixin,
             _ExecutionSearchMixin,

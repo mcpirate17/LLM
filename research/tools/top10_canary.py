@@ -16,7 +16,7 @@ from typing import Any
 
 from research.tools.exact_graph_replay import run_exact_replay
 
-DB = "/home/tim/Projects/LLM/research/lab_notebook.db"
+DB = "/home/tim/Projects/LLM/research/runs.db"
 RERUNS_PER_FP = 2
 
 TOP_10: list[tuple[str, str]] = [

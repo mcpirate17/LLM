@@ -58,35 +58,41 @@ def _run_validation_hellaswag(traj_model, *, config, dev_str: str) -> dict[str, 
 def _run_validation_binding_probes(traj_model, *, dev_str: str) -> dict[str, Any]:
     try:
         from ...eval.binding_pipeline import (
-            compute_binding_composite,
+            compute_binding_screening_composite,
             compute_local_only,
             run_full_binding_probes,
         )
 
         probe = run_full_binding_probes(traj_model, device=dev_str)
-        ar_auc = probe.ar_auc
-        induction_auc = probe.induction_auc
-        binding_auc = probe.binding_auc
-        binding_composite = compute_binding_composite(
-            ar_auc, induction_auc, binding_auc
+        ar_legacy_auc = probe.ar_legacy_auc
+        induction_screening_auc = probe.induction_screening_auc
+        binding_screening_auc = probe.binding_screening_auc
+        binding_screening_composite = compute_binding_screening_composite(
+            ar_legacy_auc, induction_screening_auc, binding_screening_auc
         )
         logger.info(
             "Validation binding probes: ar=%.3f ind=%.3f bind=%.3f bc=%.3f local=%s (%.0f+%.0f+%.0fms)",
-            ar_auc,
-            induction_auc,
-            binding_auc,
-            binding_composite,
-            bool(compute_local_only(ar_auc, induction_auc, binding_auc)),
+            ar_legacy_auc,
+            induction_screening_auc,
+            binding_screening_auc,
+            binding_screening_composite,
+            bool(
+                compute_local_only(
+                    ar_legacy_auc, induction_screening_auc, binding_screening_auc
+                )
+            ),
             probe.ar_elapsed_ms,
             probe.induction_elapsed_ms,
             probe.binding_elapsed_ms,
         )
         return {
-            "ar_auc": ar_auc,
-            "induction_auc": induction_auc,
-            "binding_auc": binding_auc,
-            "binding_composite": binding_composite,
-            "local_only": compute_local_only(ar_auc, induction_auc, binding_auc),
+            "ar_legacy_auc": ar_legacy_auc,
+            "induction_screening_auc": induction_screening_auc,
+            "binding_screening_auc": binding_screening_auc,
+            "binding_screening_composite": binding_screening_composite,
+            "local_only": compute_local_only(
+                ar_legacy_auc, induction_screening_auc, binding_screening_auc
+            ),
             "induction_metadata": probe.induction_metadata,
             "probe": probe,
         }
@@ -142,43 +148,39 @@ def _hellaswag_update_fields(result: dict[str, Any]) -> dict[str, Any]:
 def _binding_update_fields(result: dict[str, Any]) -> dict[str, Any]:
     update: dict[str, Any] = {}
     probe = result.get("probe")
-    if result.get("ar_auc") is not None:
-        update["ar_auc"] = result.get("ar_auc")
-        update["ar_final_acc"] = probe.ar_final_acc
-        update["ar_timed_out"] = int(probe.ar_timed_out)
-        update["ar_above_chance"] = int(probe.ar_above_chance)
-    if result.get("induction_auc") is not None:
+    if result.get("ar_legacy_auc") is not None:
+        update["ar_legacy_auc"] = result.get("ar_legacy_auc")
+        update["ar_legacy_final_acc"] = probe.ar_legacy_final_acc
+        update["ar_legacy_timed_out"] = int(probe.ar_legacy_timed_out)
+        update["ar_legacy_above_chance"] = int(probe.ar_legacy_above_chance)
+    if result.get("induction_screening_auc") is not None:
         update.update(
             result.get("induction_metadata")
-            or {"induction_auc": result.get("induction_auc")}
+            or {"induction_screening_auc": result.get("induction_screening_auc")}
         )
-    if result.get("binding_auc") is not None:
+    if result.get("binding_screening_auc") is not None:
         update.update(
             {
-                "binding_auc": result.get("binding_auc"),
+                "binding_screening_auc": result.get("binding_screening_auc"),
                 "binding_distance_accuracies": probe.binding_distance_accuracies,
                 "binding_probe_distances": [4, 8, 16, 32],
-                "binding_probe_eval_examples": 200,
-                "binding_probe_elapsed_ms": probe.binding_elapsed_ms,
-                "binding_auc_curriculum": probe.binding_auc_curriculum,
+                "binding_screening_eval_examples": 200,
+                "binding_screening_elapsed_ms": probe.binding_elapsed_ms,
+                "binding_curriculum_auc": probe.binding_curriculum_auc,
                 "binding_distance_accuracies_curriculum": (
                     probe.binding_distance_accuracies_curriculum
                 ),
-                "binding_probe_curriculum_steps": (
-                    probe.binding_curriculum_train_steps
-                ),
-                "binding_probe_curriculum_elapsed_ms": (
-                    probe.binding_curriculum_elapsed_ms
-                ),
-                "binding_probe_curriculum_protocol_version": "copy_curriculum_v1",
+                "binding_curriculum_steps": (probe.binding_curriculum_train_steps),
+                "binding_curriculum_elapsed_ms": (probe.binding_curriculum_elapsed_ms),
+                "binding_curriculum_protocol_version": "copy_curriculum_v1",
             }
         )
     if result.get("local_only") is not None:
         update["local_only"] = result.get("local_only")
-        update["binding_composite"] = round(
-            0.4 * (result.get("ar_auc") or 0)
-            + 0.3 * (result.get("induction_auc") or 0)
-            + 0.3 * (result.get("binding_auc") or 0),
+        update["binding_screening_composite"] = round(
+            0.4 * (result.get("ar_legacy_auc") or 0)
+            + 0.3 * (result.get("induction_screening_auc") or 0)
+            + 0.3 * (result.get("binding_screening_auc") or 0),
             4,
         )
     return update

@@ -20,7 +20,7 @@ def test_surrogate_uses_template_observations_for_template_risk(tmp_path):
             failure_op TEXT,
             wikitext_perplexity REAL,
             tinystories_score REAL,
-            controlled_lang_s05_sa_score REAL,
+            language_control_s05_sentence_assoc_score REAL,
             motif_count INTEGER,
             non_norm_motif_count INTEGER,
             norm_motif_count INTEGER,
@@ -46,7 +46,7 @@ def test_surrogate_uses_template_observations_for_template_risk(tmp_path):
             selected_motif TEXT,
             selected_motif_class TEXT,
             failure_op TEXT,
-            controlled_lang_s05_sa_score REAL,
+            language_control_s05_sentence_assoc_score REAL,
             frequency_collapse_risk REAL,
             has_effective_positional_mixer INTEGER
         )

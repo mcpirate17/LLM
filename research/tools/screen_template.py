@@ -148,15 +148,15 @@ def _run_probes(model, vocab_size: int, device: str) -> Dict[str, Any]:
         bp = run_screening_binding_probes(model, device=device)
         probe_results.update(
             {
-                "induction_auc": bp.get("induction_auc"),
-                "binding_auc": bp.get("binding_auc"),
-                "binding_composite": bp.get("binding_composite"),
+                "induction_screening_auc": bp.get("induction_screening_auc"),
+                "binding_screening_auc": bp.get("binding_screening_auc"),
+                "binding_screening_composite": bp.get("binding_screening_composite"),
             }
         )
         logger.info(
             "Binding: ind=%.4f bind=%.4f",
-            probe_results.get("induction_auc", 0),
-            probe_results.get("binding_auc", 0),
+            probe_results.get("induction_screening_auc", 0),
+            probe_results.get("binding_screening_auc", 0),
         )
     except Exception as e:
         logger.warning("Binding failed: %s", e)
@@ -172,8 +172,8 @@ def _run_probes(model, vocab_size: int, device: str) -> Dict[str, Any]:
             batch_size=8,
             device=device,
         )
-        probe_results["ar_auc"] = ar.auc
-        probe_results["ar_final_acc"] = ar.final_acc
+        probe_results["ar_legacy_auc"] = ar.auc
+        probe_results["ar_legacy_final_acc"] = ar.final_acc
         logger.info("AR: auc=%.4f acc=%.4f", ar.auc, ar.final_acc)
     except Exception as e:
         logger.warning("AR failed: %s", e)
@@ -348,12 +348,12 @@ def _run_investigation(
         from research.eval.binding_pipeline import run_screening_binding_probes
 
         bp2 = run_screening_binding_probes(model, device=device)
-        inv_result["inv_induction_auc"] = bp2.get("induction_auc")
-        inv_result["inv_binding_auc"] = bp2.get("binding_auc")
+        inv_result["inv_induction_screening_auc"] = bp2.get("induction_screening_auc")
+        inv_result["inv_binding_screening_auc"] = bp2.get("binding_screening_auc")
         logger.info(
             "Inv binding: ind=%.4f bind=%.4f",
-            inv_result.get("inv_induction_auc", 0),
-            inv_result.get("inv_binding_auc", 0),
+            inv_result.get("inv_induction_screening_auc", 0),
+            inv_result.get("inv_binding_screening_auc", 0),
         )
     except Exception as exc:
         logger.warning("Investigation binding probes failed: %s", exc)
@@ -367,10 +367,14 @@ def _run_investigation(
             "wikitext_perplexity": inv_ppl,
             "param_count": n_params,
         }
-        if inv_result.get("inv_induction_auc") is not None:
-            inv_lb_kwargs["induction_auc"] = inv_result["inv_induction_auc"]
-        if inv_result.get("inv_binding_auc") is not None:
-            inv_lb_kwargs["binding_auc"] = inv_result["inv_binding_auc"]
+        if inv_result.get("inv_induction_screening_auc") is not None:
+            inv_lb_kwargs["induction_screening_auc"] = inv_result[
+                "inv_induction_screening_auc"
+            ]
+        if inv_result.get("inv_binding_screening_auc") is not None:
+            inv_lb_kwargs["binding_screening_auc"] = inv_result[
+                "inv_binding_screening_auc"
+            ]
         nb.upsert_leaderboard(
             result_id=result_id,
             model_source="manual_template_screen",
@@ -546,9 +550,9 @@ def screen_and_investigate(
             f"  Investigation: val={result['investigation_val_loss']:.4f} ppl={result['investigation_ppl']:.1f} LR={result['investigation_loss_ratio']:.4f}"
         )
     for k in [
-        "induction_auc",
-        "binding_auc",
-        "ar_auc",
+        "induction_screening_auc",
+        "binding_screening_auc",
+        "ar_legacy_auc",
         "hellaswag_acc",
         "blimp_overall_accuracy",
     ]:

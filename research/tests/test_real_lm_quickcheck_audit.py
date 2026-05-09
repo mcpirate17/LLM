@@ -14,8 +14,8 @@ def _make_db(path):
             entry_id TEXT,
             tier TEXT,
             composite_score REAL,
-            induction_auc REAL,
-            binding_composite REAL
+            induction_screening_auc REAL,
+            binding_screening_composite REAL
         );
         CREATE TABLE program_results (
             result_id TEXT PRIMARY KEY,
@@ -24,8 +24,8 @@ def _make_db(path):
             hellaswag_acc REAL,
             blimp_overall_accuracy REAL,
             tinystories_score REAL,
-            controlled_lang_s05_sa_score REAL,
-            controlled_lang_inv_sa_score REAL
+            language_control_s05_sentence_assoc_score REAL,
+            language_control_investigation_sentence_assoc_score REAL
         );
         CREATE TABLE program_graph_features (
             result_id TEXT PRIMARY KEY,

@@ -230,13 +230,15 @@ def train_template(
             from research.eval.binding_pipeline import run_screening_binding_probes
 
             bp = run_screening_binding_probes(model, device=device)
-            result["induction_auc"] = bp.get("induction_auc")
-            result["binding_auc"] = bp.get("binding_auc")
-            result["binding_composite"] = bp.get("binding_composite")
+            result["induction_screening_auc"] = bp.get("induction_screening_auc")
+            result["binding_screening_auc"] = bp.get("binding_screening_auc")
+            result["binding_screening_composite"] = bp.get(
+                "binding_screening_composite"
+            )
             logger.info(
                 "  Binding: ind=%.4f bind=%.4f",
-                result["induction_auc"] or 0,
-                result["binding_auc"] or 0,
+                result["induction_screening_auc"] or 0,
+                result["binding_screening_auc"] or 0,
             )
         except Exception as e:
             logger.warning("Binding probes failed: %s", e)
@@ -252,8 +254,8 @@ def train_template(
                 batch_size=8,
                 device=device,
             )
-            result["ar_auc"] = ar.auc
-            result["ar_final_acc"] = ar.final_acc
+            result["ar_legacy_auc"] = ar.auc
+            result["ar_legacy_final_acc"] = ar.final_acc
             logger.info("  AR: auc=%.4f acc=%.4f", ar.auc, ar.final_acc)
         except Exception as e:
             logger.warning("AR failed: %s", e)
@@ -372,9 +374,9 @@ def main():
         probes = " ".join(
             f"{k}={r[k]:.4f}"
             for k in [
-                "induction_auc",
-                "binding_auc",
-                "ar_auc",
+                "induction_screening_auc",
+                "binding_screening_auc",
+                "ar_legacy_auc",
                 "hellaswag_acc",
                 "blimp_accuracy",
             ]

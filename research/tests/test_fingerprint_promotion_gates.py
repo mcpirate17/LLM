@@ -8,7 +8,9 @@ B3: Validation caps novelty without artifact CKA
 from __future__ import annotations
 
 import json
-from unittest.mock import MagicMock
+import sqlite3
+import time
+from unittest.mock import ANY, MagicMock
 
 
 # ---------------------------------------------------------------------------
@@ -53,9 +55,9 @@ class TestB1EscalationFingerprintGate:
         """Create a mock LabNotebook with the specified fingerprint state."""
         nb = MagicMock()
         understanding_metrics = understanding_metrics or {
-            "ar_auc": 0.10,
-            "induction_auc": 0.20,
-            "binding_auc": 0.10,
+            "ar_legacy_auc": 0.10,
+            "induction_screening_auc": 0.20,
+            "binding_screening_auc": 0.10,
             "diagnostic_score": 0.35,
             "hellaswag_acc": 0.45,
         }
@@ -93,9 +95,11 @@ class TestB1EscalationFingerprintGate:
         for rid in result_ids:
             _row_data = {
                 "result_id": rid,
-                "ar_auc": understanding_metrics["ar_auc"],
-                "induction_auc": understanding_metrics["induction_auc"],
-                "binding_auc": understanding_metrics["binding_auc"],
+                "ar_legacy_auc": understanding_metrics["ar_legacy_auc"],
+                "induction_screening_auc": understanding_metrics[
+                    "induction_screening_auc"
+                ],
+                "binding_screening_auc": understanding_metrics["binding_screening_auc"],
                 "diagnostic_score": understanding_metrics["diagnostic_score"],
                 "hellaswag_acc": understanding_metrics["hellaswag_acc"],
             }
@@ -110,7 +114,7 @@ class TestB1EscalationFingerprintGate:
                 result.fetchall = MagicMock(return_value=fp_rows)
             elif "composite_score" in query:
                 result.fetchall = MagicMock(return_value=score_rows)
-            elif "ar_auc" in query:
+            elif "ar_legacy_auc" in query:
                 result.fetchall = MagicMock(return_value=understanding_rows)
             else:
                 result.fetchall = MagicMock(return_value=[])
@@ -260,6 +264,202 @@ class TestB1EscalationFingerprintGate:
         mixin._auto_escalate_investigation(results, config, nb)
 
         mixin._score_candidate_pool.assert_called_once()
+
+    def test_auto_validation_policy_queues_capability_ranking_first(
+        self, tmp_path, monkeypatch
+    ):
+        """Validation-ready candidates without ranker evidence enter capability tier first."""
+        from research.scientist.notebook import LabNotebook
+        from research.scientist.runner import RunConfig
+        import research.scientist.runner.results_auto_escalate_phase7 as phase7
+        from research.scientist.runner.results_auto_escalate_phase7 import (
+            _ResultsAutoEscalatePhase7Mixin,
+        )
+
+        db_path = tmp_path / "auto_capability_policy.db"
+        nb = LabNotebook(str(db_path))
+        rid = "auto-cap-rank"
+        nb.conn.execute(
+            """
+            INSERT INTO leaderboard
+              (entry_id, result_id, timestamp, model_source, tier,
+               investigation_passed, investigation_loss_ratio, investigation_robustness,
+               composite_score)
+            VALUES (?, ?, ?, 'graph_synthesis', 'investigation', 1, 0.30, 0.78, 210.0)
+            """,
+            ("lb-auto-cap-rank", rid, time.time()),
+        )
+        nb.conn.commit()
+
+        strong = [
+            {
+                "result_id": rid,
+                "robustness": 0.78,
+                "best_loss_ratio": 0.30,
+                "baseline_loss_ratio": 0.55,
+                "novelty_confidence": 0.9,
+            }
+        ]
+        monkeypatch.setattr(phase7, "novelty_metadata", lambda nb_arg, ids: {})
+        monkeypatch.setattr(
+            phase7,
+            "investigation_support_data",
+            lambda nb_arg, ids: ({rid: 210.0}, {}, {}),
+        )
+        monkeypatch.setattr(
+            phase7,
+            "strong_investigation_candidates",
+            lambda **kwargs: (strong, 0),
+        )
+        monkeypatch.setattr(
+            phase7,
+            "graph_meta_by_result_id",
+            lambda nb_arg, ids: {},
+        )
+        monkeypatch.setattr(
+            phase7,
+            "prepare_validation_candidates",
+            lambda rows, graph_meta: list(rows),
+        )
+
+        mixin = _ResultsAutoEscalatePhase7Mixin()
+        mixin._active_learning_validation_rank = MagicMock(return_value=strong)
+        mixin._score_candidate_pool = MagicMock(
+            return_value={
+                "scored": [{"result_id": rid}],
+                "selected": [{"result_id": rid}],
+                "summary": {},
+                "policy": {},
+                "reason": "",
+            }
+        )
+        mixin._record_auto_validate_selection = MagicMock(return_value="decision-auto")
+        mixin._followup_priority_summary = MagicMock(return_value=(42.0, {"rank": 1}))
+        mixin._safe_build_evidence_pack = MagicMock(return_value={})
+        mixin._emit_event = MagicMock()
+
+        config = RunConfig()
+        config.auto_validate = True
+        config.auto_validate_min_composite_score = 0.0
+        config.auto_validate_top_n = 5
+        config.auto_validate_min_robustness = 0.5
+        config.auto_validate_max_baseline_ratio = 0.80
+        config.investigation_max_loss_ratio_multiplier = 10.0
+
+        mixin._auto_escalate_investigation(
+            {"investigation_results": strong, "experiment_id": "exp-auto"},
+            config,
+            nb,
+        )
+
+        cap_tasks = nb.get_followup_tasks(stage="capability_ranking", limit=10)
+        val_tasks = nb.get_followup_tasks(stage="validation", limit=10)
+        nb.close()
+
+        assert len(cap_tasks) == 1
+        assert cap_tasks[0]["result_ids_json"] == [rid]
+        assert val_tasks == []
+        mixin._emit_event.assert_any_call(
+            "auto_capability_ranking_queued",
+            ANY,
+        )
+
+    def test_auto_validation_policy_validates_already_ranked_candidates(
+        self, tmp_path, monkeypatch
+    ):
+        """Candidates with capability-ranker evidence keep the validation path."""
+        from research.scientist.notebook import LabNotebook
+        from research.scientist.runner import RunConfig
+        import research.scientist.runner.results_auto_escalate_phase7 as phase7
+        from research.scientist.runner.results_auto_escalate_phase7 import (
+            _ResultsAutoEscalatePhase7Mixin,
+        )
+
+        db_path = tmp_path / "auto_validation_after_capability.db"
+        nb = LabNotebook(str(db_path))
+        rid = "auto-val-ranked"
+        try:
+            nb.conn.execute(
+                "ALTER TABLE leaderboard ADD COLUMN binding_intermediate_auc REAL"
+            )
+        except sqlite3.OperationalError:
+            pass
+        nb.conn.execute(
+            """
+            INSERT INTO leaderboard
+              (entry_id, result_id, timestamp, model_source, tier,
+               investigation_passed, investigation_loss_ratio, investigation_robustness,
+               binding_intermediate_auc, composite_score)
+            VALUES (?, ?, ?, 'graph_synthesis', 'capability_ranking', 1, 0.30, 0.78, 0.72, 210.0)
+            """,
+            ("lb-auto-val-ranked", rid, time.time()),
+        )
+        nb.conn.commit()
+
+        strong = [
+            {
+                "result_id": rid,
+                "robustness": 0.78,
+                "best_loss_ratio": 0.30,
+                "baseline_loss_ratio": 0.55,
+                "novelty_confidence": 0.9,
+            }
+        ]
+        monkeypatch.setattr(phase7, "novelty_metadata", lambda nb_arg, ids: {})
+        monkeypatch.setattr(
+            phase7,
+            "investigation_support_data",
+            lambda nb_arg, ids: ({rid: 210.0}, {}, {}),
+        )
+        monkeypatch.setattr(
+            phase7,
+            "strong_investigation_candidates",
+            lambda **kwargs: (strong, 0),
+        )
+        monkeypatch.setattr(phase7, "graph_meta_by_result_id", lambda nb_arg, ids: {})
+        monkeypatch.setattr(
+            phase7,
+            "prepare_validation_candidates",
+            lambda rows, graph_meta: list(rows),
+        )
+
+        mixin = _ResultsAutoEscalatePhase7Mixin()
+        mixin._active_learning_validation_rank = MagicMock(return_value=strong)
+        mixin._score_candidate_pool = MagicMock(
+            return_value={
+                "scored": [{"result_id": rid}],
+                "selected": [{"result_id": rid}],
+                "summary": {},
+                "policy": {},
+                "reason": "",
+            }
+        )
+        mixin._record_auto_validate_selection = MagicMock(return_value="decision-auto")
+        mixin._followup_priority_summary = MagicMock(return_value=(42.0, {"rank": 1}))
+        mixin._safe_build_evidence_pack = MagicMock(return_value={})
+        mixin._emit_event = MagicMock()
+
+        config = RunConfig()
+        config.auto_validate = True
+        config.auto_validate_min_composite_score = 0.0
+        config.auto_validate_top_n = 5
+        config.auto_validate_min_robustness = 0.5
+        config.auto_validate_max_baseline_ratio = 0.80
+        config.investigation_max_loss_ratio_multiplier = 10.0
+
+        mixin._auto_escalate_investigation(
+            {"investigation_results": strong, "experiment_id": "exp-auto"},
+            config,
+            nb,
+        )
+
+        cap_tasks = nb.get_followup_tasks(stage="capability_ranking", limit=10)
+        val_tasks = nb.get_followup_tasks(stage="validation", limit=10)
+        nb.close()
+
+        assert cap_tasks == []
+        assert len(val_tasks) == 1
+        assert val_tasks[0]["result_ids_json"] == [rid]
 
 
 # ---------------------------------------------------------------------------

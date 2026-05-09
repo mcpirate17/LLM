@@ -30,9 +30,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+from research.scientist.notebook.graph_artifacts import resolve_graph_json_value
 from research.tools._db_maintenance import connect_readonly
 
-DB_PATH = Path(__file__).resolve().parents[1] / "lab_notebook.db"
+DB_PATH = Path(__file__).resolve().parents[1] / "runs.db"
 _VALID_TARGET_METRICS = ("eval", "s0", "s1")
 _VALID_WEIGHT_MODES = ("uniform", "random", "default", "scaffold_guided")
 _VALID_PHASES = ("isolation", "stack")
@@ -282,6 +283,7 @@ def get_template_stats(db_path: Path) -> dict[str, dict[str, int]]:
         ).fetchall()
         for gj, s0, s1 in rows:
             try:
+                gj = resolve_graph_json_value(db, db_path, gj)
                 g = json.loads(gj)
                 for t in set(g.get("metadata", {}).get("templates_used", [])):
                     bucket = stats.setdefault(t, {"eval": 0, "s0": 0, "s1": 0})

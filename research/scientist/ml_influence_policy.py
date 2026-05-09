@@ -4,9 +4,11 @@ import json
 from pathlib import Path
 from typing import Any, Dict
 
+from research.defaults import RUNTIME_DIR_ABS
+
 from .runner._types import RunConfig
 
-_PREDICTOR_REPORT_PATH = Path("research/runtime/learning/predictor_metrics_report.json")
+_PREDICTOR_REPORT_PATH = RUNTIME_DIR_ABS / "learning" / "predictor_metrics_report.json"
 
 # Lowered from 0.85/0.70 to reflect F1-optimal operating point.
 # Old high_precision threshold gave PPV≥0.70 but recall ~0.50 — starving

@@ -37,6 +37,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO))
 
+from research.scientist.notebook.graph_artifacts import resolve_graph_json_value  # noqa: E402
 from research.tools.mine_template_subpatterns import (  # noqa: E402
     DEFAULT_CHAIN_LENGTHS,
     NANO_BIND,
@@ -46,7 +47,7 @@ from research.tools.mine_template_subpatterns import (  # noqa: E402
     parse_graph,
 )
 
-LAB = REPO / "research/lab_notebook.db"
+LAB = REPO / "research/runs.db"
 REPORTS = REPO / "research/reports"
 
 V1_OUTPUT = REPORTS / "mined_chain_proposals.csv"
@@ -63,7 +64,7 @@ def fetch_template_grouped() -> dict[str, list[str]]:
         FROM program_graph_features pgf
         JOIN program_results pr ON pr.result_id = pgf.result_id
         LEFT JOIN leaderboard l ON l.result_id = pr.result_id
-        WHERE pr.controlled_lang_s05_sa_score >= {PASS_SA}
+        WHERE pr.language_control_s05_sentence_assoc_score >= {PASS_SA}
           AND COALESCE(pr.failure_op, '') != '{NANO_BIND}'
           AND COALESCE(l.is_reference, 0) = 0
           AND pr.graph_json IS NOT NULL
@@ -76,6 +77,7 @@ def fetch_template_grouped() -> dict[str, list[str]]:
             continue
         if len(by_template[tpl]) >= MAX_GRAPHS_PER_TEMPLATE:
             continue
+        graph_json = resolve_graph_json_value(conn, LAB, graph_json)
         by_template[tpl].append(graph_json)
     conn.close()
     return by_template

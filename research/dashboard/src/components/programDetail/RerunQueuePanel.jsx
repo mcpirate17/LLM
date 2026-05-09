@@ -55,12 +55,14 @@ function CountBadge({ children, color = 'var(--accent-blue)' }) {
 const STAGE_DEFAULTS = {
   screening: { steps: 750, seeds: 1, label: 'S1 confirmation', color: 'rgba(255, 184, 108, 0.45)', textColor: 'var(--score-elite)' },
   investigation: { steps: 2500, seeds: 1, label: 'Investigation', color: 'rgba(88, 166, 255, 0.45)', textColor: 'var(--accent-blue)' },
+  capability_ranking: { steps: 2500, seeds: 1, label: 'Capability ranking', color: 'rgba(88, 166, 255, 0.45)', textColor: 'var(--accent-blue)' },
   validation: { steps: 10000, seeds: 1, label: 'Validation', color: 'rgba(63, 185, 80, 0.45)', textColor: 'var(--score-good)' },
 };
 
 const STAGE_DETAILS = {
   screening: 'exact replay: S0, S0.5, S0.75, rapid, S1',
   investigation: 'investigation tier',
+  capability_ranking: 'selective capability rankers',
   validation: 'validation tier',
 };
 
@@ -185,8 +187,8 @@ function RerunQueuePanel({ resultId, leaderboardEntry }) {
 
       <div style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.5 }}>
         Adds independent rerun rows for this fingerprint. S1 confirmation uses
-        exact replay through S0/S0.5/S0.75/rapid/S1; investigation and validation
-        use their own tier pipelines. Completed rows are aggregated by mean ± std
+        exact replay through S0/S0.5/S0.75/rapid/S1; investigation, capability
+        ranking, and validation use their own tier pipelines. Completed rows are aggregated by mean ± std
         on the next leaderboard write; consistent metrics raise <code>n_runs</code>{' '}
         and reduce the CV penalty.
       </div>
@@ -222,7 +224,7 @@ function RerunQueuePanel({ resultId, leaderboardEntry }) {
         padding: 8, background: 'var(--bg-secondary)', borderRadius: 4,
         border: '1px solid var(--border)',
       }}>
-        {['screening', 'investigation', 'validation'].map(stage => {
+        {['screening', 'investigation', 'capability_ranking', 'validation'].map(stage => {
           const cfg = STAGE_DEFAULTS[stage];
           return (
             <div key={stage} style={{

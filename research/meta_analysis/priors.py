@@ -14,12 +14,15 @@ import time
 from pathlib import Path
 from typing import Any
 
+from ..scientist.shared_utils import clamp as _clamp, coerce_finite_float as _safe_float
 from .metadata_db import DEFAULT_META_ANALYSIS_DB
 
 
 DEFAULT_PRIOR_DIR = Path("research/artifacts/meta_analysis_priors")
 PRIOR_SCHEMA_VERSION = "meta_analysis_prior_v1"
-VALID_TARGETS = frozenset({"induction", "induction_v2", "composite", "balanced"})
+VALID_TARGETS = frozenset(
+    {"induction", "induction_intermediate", "composite", "balanced"}
+)
 
 _TEXT_COLUMNS = {
     "op_name",
@@ -39,7 +42,7 @@ _CATEGORY_POLICY: dict[str, dict[str, float]] = {
         "elementwise_unary": 0.85,
         "reduction": 0.75,
     },
-    "induction_v2": {
+    "induction_intermediate": {
         "frequency": 1.95,
         "functional": 1.80,
         "mixing": 1.30,
@@ -78,7 +81,7 @@ _SEEDED_OP_WEIGHTS: dict[str, dict[str, float]] = {
         "entropy_score": 1.35,
         "spectral_filter": 1.30,
     },
-    "induction_v2": {
+    "induction_intermediate": {
         "rope_rotate": 1.75,
         "token_entropy": 1.55,
         "entropy_score": 1.45,
@@ -116,14 +119,6 @@ def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
         return set()
 
 
-def _select_column(columns: set[str], name: str, alias: str | None = None) -> str:
-    out_name = alias or name
-    if name in columns:
-        return f'"{name}" AS "{out_name}"'
-    sql_type = "TEXT" if out_name in _TEXT_COLUMNS else "REAL"
-    return f'CAST(NULL AS {sql_type}) AS "{out_name}"'
-
-
 def _metric_expr(columns: set[str], preferred: str, fallback: str | None = None) -> str:
     if preferred in columns and fallback and fallback in columns:
         return f'COALESCE("{preferred}", "{fallback}")'
@@ -135,21 +130,11 @@ def _metric_expr(columns: set[str], preferred: str, fallback: str | None = None)
 
 
 def _induction_metric_expr(columns: set[str], target: str) -> str:
-    if target == "induction_v2":
-        return _metric_expr(columns, "induction_v2_investigation_auc")
-    return _metric_expr(columns, "induction_v2_investigation_auc", "induction_auc")
-
-
-def _safe_float(value: Any) -> float | None:
-    if value is None:
-        return None
-    try:
-        out = float(value)
-    except (TypeError, ValueError):
-        return None
-    if math.isnan(out) or math.isinf(out):
-        return None
-    return out
+    if target == "induction_intermediate":
+        return _metric_expr(columns, "induction_intermediate_auc")
+    return _metric_expr(
+        columns, "induction_intermediate_auc", "induction_screening_auc"
+    )
 
 
 def _relative_lift(value: float | None, baseline: float | None, floor: float) -> float:
@@ -157,10 +142,6 @@ def _relative_lift(value: float | None, baseline: float | None, floor: float) ->
         return 0.0
     denom = max(abs(float(baseline)), floor)
     return (float(value) - float(baseline)) / denom
-
-
-def _clamp(value: float, low: float, high: float) -> float:
-    return max(low, min(high, value))
 
 
 def _round_weight(value: float) -> float:
@@ -253,7 +234,7 @@ def _aggregate_table(
         induction_support = int(payload.get("induction_support") or 0)
         total_support = int(payload.get("total_support") or 0)
         payload["support"] = (
-            induction_support if target == "induction_v2" else total_support
+            induction_support if target == "induction_intermediate" else total_support
         )
         for metric in ("mean_induction", "mean_composite", "s1_rate"):
             payload[metric] = _safe_float(payload.get(metric))
@@ -288,7 +269,7 @@ def _aggregate_categories(
             "support": int(
                 (
                     row["induction_support"]
-                    if target == "induction_v2"
+                    if target == "induction_intermediate"
                     else row["total_support"]
                 )
                 or 0
@@ -319,7 +300,10 @@ def _build_category_weights(
         )
         current = weights.get(category)
         merged = learned if current is None else math.sqrt(float(current) * learned)
-        if category == "math_space" and target in {"induction", "induction_v2"}:
+        if category == "math_space" and target in {
+            "induction",
+            "induction_intermediate",
+        }:
             merged = min(merged, 1.00)
         elif category == "math_space" and target == "balanced":
             merged = min(merged, 1.05)
@@ -503,9 +487,9 @@ def build_meta_analysis_prior(
             "n_template_rows": len(template_rows),
             "n_category_rows": len(category_rows),
             "target_metric": (
-                "induction_v2_investigation_auc"
-                if target == "induction_v2"
-                else "coalesce(induction_v2_investigation_auc, induction_auc)"
+                "induction_intermediate_auc"
+                if target == "induction_intermediate"
+                else "coalesce(induction_intermediate_auc, induction_screening_auc)"
                 if target in {"induction", "balanced"}
                 else "composite_score"
             ),
@@ -514,21 +498,38 @@ def build_meta_analysis_prior(
     }
 
 
+PRIOR_RETENTION_PER_TARGET = 5
+
+
 def write_meta_analysis_prior(
     prior: dict[str, Any],
     *,
     output_dir: str | Path = DEFAULT_PRIOR_DIR,
+    retention: int = PRIOR_RETENTION_PER_TARGET,
 ) -> Path:
-    """Write a versioned prior artifact and update the target-specific latest file."""
+    """Write a versioned prior artifact and update the target-specific latest file.
+
+    Older ``meta_prior_<target>_*.json`` files beyond ``retention`` are deleted
+    so this directory does not grow unbounded under repeated runs.
+    """
 
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     target = str(prior.get("target") or "balanced")
     version = str(prior.get("version") or f"meta_prior_{target}_{int(time.time())}")
     path = out_dir / f"{version}.json"
-    payload = json.dumps(prior, indent=2, sort_keys=True)
+    payload = json.dumps(prior, sort_keys=True, separators=(",", ":"))
     path.write_text(payload + "\n")
     (out_dir / f"latest_{target}.json").write_text(payload + "\n")
+
+    if retention > 0:
+        versions = sorted(
+            out_dir.glob(f"meta_prior_{target}_*.json"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        for stale in versions[retention:]:
+            stale.unlink(missing_ok=True)
     return path
 
 

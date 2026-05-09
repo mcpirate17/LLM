@@ -9,7 +9,7 @@
 # The empty ``v11_overrides`` and ``v14_overrides`` sections are kept so the
 # loader's three-layer composition still works (v10 == v11 == v14 dict-wise).
 # The compute_composite_v11/v12/v14 functions in code retain their *behavioral*
-# layers — breakthrough boost, tokenizer penalty, controlled-language ladder,
+# layers — breakthrough boost, tokenizer penalty, language-control ladder,
 # trust ceiling — those aren't config-only knobs. Their internal weight
 # multipliers (``_V11_CAP_INDUCTION_MULTIPLIER`` etc) all evaluate to 1.0 now.
 #
@@ -40,7 +40,7 @@ base:  # Single active config (flattened from v10 + v11 + v14)
   w_hellaswag: 10.0      # champion hard probe floor; insufficient signal at nano scale
   w_hierarchy: 25.0
 
-  # ── Controlled-language ladder (per-tier nano-binding) ─────
+  # ── Language-control ladder (per-tier nano-binding) ─────
   # Progressive credit s05 → s10 → inv. nb_bucket axis = 55pt total
   # (2026-05-05 rebalance to match induction+binding's 90pt baseline).
   w_cl_s05_sa: 3.0
@@ -49,24 +49,25 @@ base:  # Single active config (flattened from v10 + v11 + v14)
   w_cl_s10_sa: 9.0
   w_cl_s10_order: 6.0
   w_cl_s10_nb_bucket: 25.0      # 2026-05-05: 20 → 25
-  w_cl_inv_sa: 15.0
-  w_cl_inv_order: 10.0
-  w_cl_inv_nb_bucket: 25.0      # 2026-05-05: 20 → 25
+  w_cl_investigation_sa: 15.0
+  w_cl_investigation_order: 10.0
+  w_cl_investigation_nb_bucket: 25.0      # 2026-05-05: 20 → 25
   cl_s05_sa_anchor: 1.000
   cl_s05_order_anchor: 0.605
   cl_s10_sa_anchor: 1.000
   cl_s10_order_anchor: 0.456
-  cl_inv_sa_anchor: 0.940
-  cl_inv_order_anchor: 0.420
+  cl_investigation_sa_anchor: 0.940
+  cl_investigation_order_anchor: 0.420
 
   # ── Capability tier ────────────────────────────────────────
-  # Total 290pt: 90 (cap_ar/nano_ar_inv) + 10 full AR + 45 (cap_induction)
-  # + 45 (cap_binding) + 25 × 4 (ERF density/decay, id_collapse, logit_margin).
-  # 2026-05-05: cap_ar bumped 25→90 — nano_ar_inv replaces dead ar_auc and is
-  # now the most trusted binding discriminator. cap_induction/cap_binding
-  # cut from 65 to 45 to reduce attention-class dominance.
-  w_cap_ar: 90.0
-  w_legacy_ar: 10.0      # full AR probe only; separate from nano_ar_inv cap_ar
+  # Total 300pt: 35 (ar_gate learner gate) + 70 AR Validation validation ranker
+  # + 10 full AR + 45 (cap_induction) + 45 (cap_binding) + 25 × 4
+  # (ERF density/decay, id_collapse, logit_margin). 2026-05-08: ar_gate
+  # keeps screening-gate credit but saturates quickly; AR Validation/easy25 becomes
+  # the validation-tier associative-recall rank-order metric.
+  w_cap_ar: 35.0
+  w_cap_ar_validation_validation: 70.0
+  w_legacy_ar: 10.0      # full AR probe only; separate from ar_gate cap_ar
   w_cap_induction: 45.0
   w_cap_binding: 45.0
   w_cap_erf_density: 25.0
@@ -88,7 +89,15 @@ base:  # Single active config (flattened from v10 + v11 + v14)
   cross_task: 0.279     # val+bt cross_task_score (n=2441)
   diagnostic: 0.004     # val+bt diagnostic_score (n=2447)
   hierarchy: 0.848      # val+bt fp_hierarchy_fitness (n=2283)
-  cap_ar_anchor: 0.50           # 2026-05-05: re-anchored for nano_ar_inv [0,1] range
+  cap_ar_anchor: 0.50           # 2026-05-05: re-anchored for ar_gate [0,1] range
+  cap_ar_validation_validation_anchor: 0.55
+  ar_gate_gate_threshold: 0.30
+  ar_gate_gate_plateau_start: 0.90
+  ar_gate_gate_below_max: 0.20
+  ar_gate_gate_floor: 0.35
+  ar_gate_gate_plateau: 0.45
+  ar_validation_rank_floor: 0.35
+  ar_validation_rank_span: 0.65
   legacy_ar_anchor: 0.15        # full AR pass signal after longer champion training
   cap_induction_anchor: 0.006   # original V10 anchor — paired with weight 45 produces
   cap_binding_anchor: 0.004     # the same s-curve credit V11's multiplier gave (1.8x ✕ V10)
@@ -101,8 +110,8 @@ base:  # Single active config (flattened from v10 + v11 + v14)
 
   # ── Multiplicative gates retired (kept at neutral values) ──
   binding_all_below_penalty: 1.0
-  binding_composite_boost: 1.0
-  binding_composite_boost_floor: 0.0
+  binding_screening_composite_boost: 1.0
+  binding_screening_composite_boost_floor: 0.0
 
   # ── Score-stability (CV) penalty — applied at validation/breakthrough ──
   cv_lambda_loss: 0.5
@@ -130,6 +139,6 @@ breakthrough_gates:  # Tier-promotion floors (block d904-class false positives)
   # above all current non-real-architecture composites and below the real
   # reference architecture breakthrough.
   composite_floor: 450.0
-  # Min capability signal across {induction_auc, binding_composite,
-  # induction_v2_investigation_auc, binding_v2_investigation_auc}.
+  # Min capability signal across {induction_screening_auc, binding_screening_composite,
+  # induction_intermediate_auc, binding_intermediate_auc}.
   capability_floor: 0.10

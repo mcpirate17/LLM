@@ -36,7 +36,7 @@ from urllib.request import Request, urlopen
 
 ROOT = Path(__file__).resolve().parents[2]
 RESEARCH_DIR = ROOT / "research"
-DB_PATH = ROOT / "research" / "lab_notebook.db"
+DB_PATH = ROOT / "research" / "runs.db"
 DASHBOARD_LOG = ROOT / "research" / "aria_dashboard.log"
 RUNTIME_EVENTS_DIR = ROOT / "research" / "runtime_events"
 LOG_DIR = ROOT / "research" / "logs"

@@ -14,7 +14,7 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Recompute full screening metrics in place for existing program rows."
     )
-    parser.add_argument("--db", type=Path, default=Path("research/lab_notebook.db"))
+    parser.add_argument("--db", type=Path, default=Path("research/runs.db"))
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--result-id", action="append", default=[])
     parser.add_argument("--fingerprint", action="append", default=[])
@@ -67,8 +67,8 @@ def _select_result_ids(args: argparse.Namespace) -> List[str]:
                 "fp_rank_ratio IS NULL OR "
                 "fp_sensitivity_uniformity IS NULL OR "
                 "hellaswag_acc IS NULL OR "
-                "induction_auc IS NULL OR "
-                "binding_auc IS NULL OR "
+                "induction_screening_auc IS NULL OR "
+                "binding_screening_auc IS NULL OR "
                 "discovery_loss_ratio IS NULL OR "
                 "validation_loss_ratio IS NULL"
                 ")"

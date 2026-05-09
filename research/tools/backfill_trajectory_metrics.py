@@ -48,9 +48,10 @@ from research.tools._concurrency import (
     assert_gpu_quiet,
     cap_gpu_memory,
 )
+from research.scientist.notebook.graph_artifacts import resolve_graph_json_value
 
 ROOT = Path(__file__).resolve().parents[2]
-DB_PATH = ROOT / "research" / "lab_notebook.db"
+DB_PATH = ROOT / "research" / "runs.db"
 CORPUS_PATH = ROOT / "research" / "corpus" / "wikitext103_train.npy"
 TOOL_NAME = "backfill_trajectory_metrics"
 
@@ -181,7 +182,7 @@ def _representative_graph_json(
         "ORDER BY timestamp DESC LIMIT 1",
         (fingerprint,),
     ).fetchone()
-    return None if row is None else row[0]
+    return None if row is None else resolve_graph_json_value(conn, DB_PATH, row[0])
 
 
 def _measure_screening_750(
@@ -243,8 +244,7 @@ def _propagate(conn: sqlite3.Connection, fingerprint: str, payload: dict) -> int
     set_clause = ", ".join(f"{c} = ?" for c in _TRAJECTORY_COLUMNS)
     values = [payload.get(c) for c in _TRAJECTORY_COLUMNS]
     cursor = conn.execute(
-        f"UPDATE program_results SET {set_clause} "
-        f"WHERE graph_fingerprint = ?",
+        f"UPDATE program_results SET {set_clause} WHERE graph_fingerprint = ?",
         (*values, fingerprint),
     )
     return cursor.rowcount

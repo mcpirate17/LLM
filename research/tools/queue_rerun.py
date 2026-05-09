@@ -38,7 +38,9 @@ from pathlib import Path
 from statistics import median
 from typing import Any, Optional
 
-DB_PATH_DEFAULT = "research/lab_notebook.db"
+from research.defaults import RUNS_DB
+
+DB_PATH_DEFAULT = RUNS_DB
 REPORT_DIR = Path("research/reports")
 HARD_PRIOR_CV_FALLBACK = 0.10
 PRIOR_CV_MIN_COHORT_N = 20  # need at least this many multi-run fps to
@@ -46,7 +48,7 @@ PRIOR_CV_MIN_COHORT_N = 20  # need at least this many multi-run fps to
 # (architectures get re-run for a reason — usually high variance —
 # so a small cohort over-estimates "typical" CV).  Below the threshold
 # we use HARD_PRIOR_CV_FALLBACK.
-N_RUNS_CAP_DEFAULT = 4   # max total runs (initial + reruns) before stopping
+N_RUNS_CAP_DEFAULT = 4  # max total runs (initial + reruns) before stopping
 Z_95 = 1.96
 
 
@@ -130,8 +132,8 @@ _TIER_WEIGHTS = {
     # Aux+legacy=~210 (no CV penalty).  Used to convert per-tier CVs
     # into a composite-equivalent CV without re-scoring per run.
     "loss": 225.0 / 785.0,
-    "und":  175.0 / 785.0,
-    "cap":  175.0 / 785.0,
+    "und": 175.0 / 785.0,
+    "cap": 175.0 / 785.0,
 }
 
 
@@ -249,9 +251,7 @@ def evaluate(
             "mode": mode,
             "top_n": int(top_n),
             "n_runs_cap": int(n_runs_cap),
-            "boundary_top_n": (
-                round(boundary, 2) if boundary is not None else None
-            ),
+            "boundary_top_n": (round(boundary, 2) if boundary is not None else None),
             "prior_cv": round(prior_cv, 4),
             "prior_cv_source": prior_dbg,
             "eligible": sorted(eligible, key=lambda e: -e["upper_bound_95"]),
@@ -367,20 +367,35 @@ def main() -> None:
         action="append",
         default=None,
         help="Manual mode: queue reruns for these fingerprint(s).  May be "
-             "repeated.  Skips the striking-distance check.",
+        "repeated.  Skips the striking-distance check.",
     )
-    parser.add_argument("--auto", action="store_true",
-                        help="Auto mode: scan leaderboard for striking-distance candidates.")
-    parser.add_argument("--top-n", type=int, default=15,
-                        help="Boundary rank for auto mode (default 15).")
-    parser.add_argument("--n-runs-cap", type=int, default=N_RUNS_CAP_DEFAULT,
-                        help=f"Max total runs before excluding (default {N_RUNS_CAP_DEFAULT}).")
-    parser.add_argument("--n", type=int, default=2,
-                        help="Reruns per eligible fingerprint (default 2).")
+    parser.add_argument(
+        "--auto",
+        action="store_true",
+        help="Auto mode: scan leaderboard for striking-distance candidates.",
+    )
+    parser.add_argument(
+        "--top-n",
+        type=int,
+        default=15,
+        help="Boundary rank for auto mode (default 15).",
+    )
+    parser.add_argument(
+        "--n-runs-cap",
+        type=int,
+        default=N_RUNS_CAP_DEFAULT,
+        help=f"Max total runs before excluding (default {N_RUNS_CAP_DEFAULT}).",
+    )
+    parser.add_argument(
+        "--n", type=int, default=2, help="Reruns per eligible fingerprint (default 2)."
+    )
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--investigation-steps", type=int, default=None)
-    parser.add_argument("--apply", action="store_true",
-                        help="Push tasks onto followup_tasks; default is dry-run.")
+    parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="Push tasks onto followup_tasks; default is dry-run.",
+    )
     parser.add_argument("--output-prefix", default="")
     args = parser.parse_args()
 

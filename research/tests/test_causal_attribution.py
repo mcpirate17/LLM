@@ -24,10 +24,10 @@ def _full_s1_metrics(loss_ratio: float = 0.5) -> dict:
         "wikitext_perplexity": 200.0,
         "hellaswag_acc": 0.25,
         "blimp_overall_accuracy": 0.5,
-        "induction_auc": 0.1,
-        "binding_auc": 0.1,
-        "binding_composite": 0.05,
-        "ar_auc": 0.05,
+        "induction_screening_auc": 0.1,
+        "binding_screening_auc": 0.1,
+        "binding_screening_composite": 0.05,
+        "ar_legacy_auc": 0.05,
     }
 
 

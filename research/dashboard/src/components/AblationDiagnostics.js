@@ -22,8 +22,8 @@ const shortRid = (rid) => (rid ? String(rid).slice(0, 12) : '');
 // Positive Δ ⇒ removing/changing the component HURT, so the component is USEFUL.
 // Negative Δ ⇒ removing/changing the component HELPED, so the component is BAGGAGE.
 const METRIC_AXES = [
-  { key: 'avg_d_induction_v2', n: 'n_induction_v2', label: 'Δ ind v2', helpful: 'pos' },
-  { key: 'avg_d_binding_v2',   n: 'n_binding_v2',   label: 'Δ bind v2', helpful: 'pos' },
+  { key: 'avg_d_induction_intermediate', n: 'n_induction_intermediate', label: 'Δ ind v2', helpful: 'pos' },
+  { key: 'avg_d_binding_intermediate',   n: 'n_binding_intermediate',   label: 'Δ bind v2', helpful: 'pos' },
   { key: 'avg_d_induction', n: 'n_induction', label: 'Δ ind', helpful: 'pos' },
   { key: 'avg_d_binding',   n: 'n_binding',   label: 'Δ bind', helpful: 'pos' },
   { key: 'avg_d_ar',        n: 'n_ar',        label: 'Δ ar',   helpful: 'pos' },
@@ -303,8 +303,8 @@ function RecommendationsView({ onDrill }) {
                   </td>
                   <td>{fmtInt(n)}</td>
                   <td>{fmtInt(row.contexts)}</td>
-                  <td style={{ color: signColor(row.avg_d_induction_v2) }}>{fmtSigned(row.avg_d_induction_v2)}</td>
-                  <td style={{ color: signColor(row.avg_d_binding_v2) }}>{fmtSigned(row.avg_d_binding_v2)}</td>
+                  <td style={{ color: signColor(row.avg_d_induction_intermediate) }}>{fmtSigned(row.avg_d_induction_intermediate)}</td>
+                  <td style={{ color: signColor(row.avg_d_binding_intermediate) }}>{fmtSigned(row.avg_d_binding_intermediate)}</td>
                   <td style={{ color: signColor(row.avg_d_induction) }}>{fmtSigned(row.avg_d_induction)}</td>
                   <td style={{ color: signColor(row.avg_d_binding) }}>{fmtSigned(row.avg_d_binding)}</td>
                   <td style={{ color: signColor(row.avg_d_ar) }}>{fmtSigned(row.avg_d_ar)}</td>
@@ -411,13 +411,13 @@ function ChampionsView({ onDrill }) {
                     {' / '}
                     <span style={{ color: 'var(--accent-red)' }}>{fmtInt(row.refuted_count)}</span>
                   </td>
-                  <td style={{ color: signColor(row.avg_induction_v2_drop) }}>
-                    {fmtSigned(row.avg_induction_v2_drop)}
-                    <div style={{ color: 'var(--text-muted)', fontSize: 10 }}>{fmtInt(row.induction_v2_count)} v2</div>
+                  <td style={{ color: signColor(row.avg_induction_intermediate_drop) }}>
+                    {fmtSigned(row.avg_induction_intermediate_drop)}
+                    <div style={{ color: 'var(--text-muted)', fontSize: 10 }}>{fmtInt(row.induction_intermediate_count)} v2</div>
                   </td>
-                  <td style={{ color: signColor(row.avg_binding_v2_drop) }}>
-                    {fmtSigned(row.avg_binding_v2_drop)}
-                    <div style={{ color: 'var(--text-muted)', fontSize: 10 }}>{fmtInt(row.binding_v2_count)} v2</div>
+                  <td style={{ color: signColor(row.avg_binding_intermediate_drop) }}>
+                    {fmtSigned(row.avg_binding_intermediate_drop)}
+                    <div style={{ color: 'var(--text-muted)', fontSize: 10 }}>{fmtInt(row.binding_intermediate_count)} v2</div>
                   </td>
                   <td style={{ color: signColor(row.avg_induction_drop) }}>{fmtSigned(row.avg_induction_drop)}</td>
                   <td style={{ color: signColor(row.avg_binding_drop) }}>{fmtSigned(row.avg_binding_drop)}</td>
@@ -519,11 +519,11 @@ function ComponentsView({ onDrill }) {
                 </td>
                 <td>{fmtInt(row.observation_count)}</td>
                 <td>{fmtInt(row.parent_count)}</td>
-                <td style={{ color: signColor(row.avg_d_induction_v2) }}>
-                  {fmtSigned(row.avg_d_induction_v2)} <span style={{ color: 'var(--text-muted)' }}>({fmtInt(row.n_induction_v2)})</span>
+                <td style={{ color: signColor(row.avg_d_induction_intermediate) }}>
+                  {fmtSigned(row.avg_d_induction_intermediate)} <span style={{ color: 'var(--text-muted)' }}>({fmtInt(row.n_induction_intermediate)})</span>
                 </td>
-                <td style={{ color: signColor(row.avg_d_binding_v2) }}>
-                  {fmtSigned(row.avg_d_binding_v2)} <span style={{ color: 'var(--text-muted)' }}>({fmtInt(row.n_binding_v2)})</span>
+                <td style={{ color: signColor(row.avg_d_binding_intermediate) }}>
+                  {fmtSigned(row.avg_d_binding_intermediate)} <span style={{ color: 'var(--text-muted)' }}>({fmtInt(row.n_binding_intermediate)})</span>
                 </td>
                 <td style={{ color: signColor(row.avg_d_induction) }}>
                   {fmtSigned(row.avg_d_induction)} <span style={{ color: 'var(--text-muted)' }}>({fmtInt(row.n_induction)})</span>
@@ -640,8 +640,8 @@ function AllRulesView({ summary, onDrill }) {
                   <span style={{ color: 'var(--accent-red)' }}>{fmtInt(row.refuted_count)}</span>
                 </td>
                 <td style={{ color: signColor(row.composite_support_effect) }}>{fmtSigned(row.composite_support_effect)}</td>
-                <td style={{ color: signColor(row.avg_induction_v2_support_effect) }}>{fmtSigned(row.avg_induction_v2_support_effect)}</td>
-                <td style={{ color: signColor(row.avg_binding_v2_support_effect) }}>{fmtSigned(row.avg_binding_v2_support_effect)}</td>
+                <td style={{ color: signColor(row.avg_induction_intermediate_support_effect) }}>{fmtSigned(row.avg_induction_intermediate_support_effect)}</td>
+                <td style={{ color: signColor(row.avg_binding_intermediate_support_effect) }}>{fmtSigned(row.avg_binding_intermediate_support_effect)}</td>
                 <td style={{ color: signColor(row.avg_induction_support_effect) }}>{fmtSigned(row.avg_induction_support_effect)}</td>
                 <td style={{ color: signColor(row.avg_binding_support_effect) }}>{fmtSigned(row.avg_binding_support_effect)}</td>
                 <td style={{ color: signColor(row.avg_ar_support_effect) }}>{fmtSigned(row.avg_ar_support_effect)}</td>
@@ -711,8 +711,8 @@ function DrillDrawer({ params, onClose }) {
                   <th>Source</th>
                   <th>Loss ratio (P → C)</th>
                   <th>PPL (P → C)</th>
-                  <th>Ind v2 (P → C)</th>
-                  <th>Bind v2 (P → C)</th>
+                  <th>Ind INTER (P → C)</th>
+                  <th>Bind INTER (P → C)</th>
                   <th>Induction (P → C)</th>
                   <th>Binding (P → C)</th>
                   <th>AR (P → C)</th>
@@ -732,12 +732,12 @@ function DrillDrawer({ params, onClose }) {
                     <td>{fmtNum(c.parent_loss_ratio, 4)} → {fmtNum(c.child_loss_ratio, 4)}</td>
                     <td>{fmtNum(c.parent_ppl, 1)} → {fmtNum(c.child_ppl, 1)}</td>
                     <td>
-                      {fmtNum(c.parent_induction_v2, 3)} → {fmtNum(c.child_induction_v2, 3)}
-                      <div style={{ color: 'var(--text-muted)', fontSize: 10 }}>{c.child_induction_v2_status || '—'}</div>
+                      {fmtNum(c.parent_induction_intermediate, 3)} → {fmtNum(c.child_induction_intermediate, 3)}
+                      <div style={{ color: 'var(--text-muted)', fontSize: 10 }}>{c.child_induction_intermediate_status || '—'}</div>
                     </td>
                     <td>
-                      {fmtNum(c.parent_binding_v2, 3)} → {fmtNum(c.child_binding_v2, 3)}
-                      <div style={{ color: 'var(--text-muted)', fontSize: 10 }}>{c.child_binding_v2_status || '—'}</div>
+                      {fmtNum(c.parent_binding_intermediate, 3)} → {fmtNum(c.child_binding_intermediate, 3)}
+                      <div style={{ color: 'var(--text-muted)', fontSize: 10 }}>{c.child_binding_intermediate_status || '—'}</div>
                     </td>
                     <td>{fmtNum(c.parent_induction, 3)} → {fmtNum(c.child_induction, 3)}</td>
                     <td>{fmtNum(c.parent_binding, 3)} → {fmtNum(c.child_binding, 3)}</td>

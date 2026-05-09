@@ -20,7 +20,7 @@ export default function generateMarkdown(data) {
   const top = data.top_programs || [];
   if (top.length > 0) {
     lines.push('## Discovery Rankings\n');
-    lines.push('| Rank | Fingerprint | Validation Loss Ratio | Novelty | Baseline | Similar To |');
+    lines.push('| Rank | Fingerprint | VAL Loss Ratio | Novelty | Baseline | Similar To |');
     lines.push('|------|-------------|-----------------------|---------|----------|------------|');
     top.forEach((p, i) => {
       const loss = p.validation_loss_ratio != null ? p.validation_loss_ratio : p.loss_ratio;

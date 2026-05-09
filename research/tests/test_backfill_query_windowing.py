@@ -12,9 +12,9 @@ def _insert_candidate(
     tier: str,
     score: float,
     hellaswag_acc: float | None = None,
-    induction_auc: float | None = None,
-    binding_auc: float | None = None,
-    ar_auc: float | None = None,
+    induction_screening_auc: float | None = None,
+    binding_screening_auc: float | None = None,
+    ar_legacy_auc: float | None = None,
     blimp_acc: float | None = None,
 ) -> None:
     nb.conn.execute(
@@ -25,9 +25,9 @@ def _insert_candidate(
             graph_json,
             graph_fingerprint,
             hellaswag_acc,
-            induction_auc,
-            binding_auc,
-            ar_auc,
+            induction_screening_auc,
+            binding_screening_auc,
+            ar_legacy_auc,
             blimp_overall_accuracy,
             stage1_passed,
             intentional_rerun_reason
@@ -38,9 +38,9 @@ def _insert_candidate(
             '{"nodes":[],"edges":[]}',
             fingerprint,
             hellaswag_acc,
-            induction_auc,
-            binding_auc,
-            ar_auc,
+            induction_screening_auc,
+            binding_screening_auc,
+            ar_legacy_auc,
             blimp_acc,
             "unit_test_duplicate" if result_id == "weak" else None,
         ),
@@ -117,7 +117,7 @@ def test_query_signal_candidates_dedupes_by_fingerprint_before_sharding(tmp_path
             fingerprint="fp_shared",
             tier="screening",
             score=10.0,
-            induction_auc=0.25,
+            induction_screening_auc=0.25,
         )
         _insert_candidate(
             nb,
@@ -125,7 +125,7 @@ def test_query_signal_candidates_dedupes_by_fingerprint_before_sharding(tmp_path
             fingerprint="fp_shared",
             tier="screening",
             score=9.0,
-            induction_auc=0.10,
+            induction_screening_auc=0.10,
         )
         _insert_candidate(
             nb,

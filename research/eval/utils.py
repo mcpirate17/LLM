@@ -14,10 +14,35 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from research.scientist.shared_utils import clamp
 from research.training._data_native import load_data_native
 from research.training._loss_native import load_loss_native
 
 logger = logging.getLogger(__name__)
+
+
+def clip01(value: float) -> float:
+    """Clamp a probability/accuracy lift to [0, 1]."""
+    return clamp(float(value), 0.0, 1.0)
+
+
+def chance_lift(acc: float, chance: float) -> float:
+    """Above-chance fraction: ``(acc - chance) / (1 - chance)``, clamped at chance ≥ 1."""
+    chance = clip01(chance)
+    if chance >= 1.0:
+        return 0.0
+    return (float(acc) - chance) / (1.0 - chance)
+
+
+def model_vocab_size(model: nn.Module) -> int | None:
+    """Best-effort vocab size: prefer ``model.vocab_size`` then first ``nn.Embedding``."""
+    vocab_size = getattr(model, "vocab_size", None)
+    if vocab_size is not None:
+        return int(vocab_size)
+    for module in model.modules():
+        if isinstance(module, nn.Embedding):
+            return int(module.num_embeddings)
+    return None
 
 
 def make_adamw(
@@ -125,7 +150,7 @@ def pack_token_rows(
     """Numpy fill + single H2D transfer (vs N per-row torch.tensor copies).
 
     Wins on GPU (one transfer instead of N); near-parity on CPU. Used by
-    nano_ar_inv and nano_bind to pack ragged token-id rows into a padded
+    ar_gate and nano_bind to pack ragged token-id rows into a padded
     [N, max_len] tensor.
     """
     max_len = max(len(r) for r in rows)

@@ -12,7 +12,7 @@ from research.scientist.notebook import LabNotebook
 from research.tools._db_maintenance import connect_readonly
 
 BASE = Path(__file__).resolve().parents[2]
-DB_PATH = BASE / "research/lab_notebook.db"
+DB_PATH = BASE / "research/runs.db"
 OUT_DIR = BASE / "research/reports/backpopulate_lanes"
 
 
@@ -78,18 +78,18 @@ def target_missing_clause(target: str) -> str:
     if normalized == "hellaswag":
         return "pr.hellaswag_acc IS NULL"
     if normalized == "induction":
-        return "pr.induction_auc IS NULL"
+        return "pr.induction_screening_auc IS NULL"
     if normalized == "binding":
-        return "pr.binding_auc IS NULL"
+        return "pr.binding_screening_auc IS NULL"
     if normalized == "all":
-        return "(pr.hellaswag_acc IS NULL OR pr.induction_auc IS NULL OR pr.binding_auc IS NULL OR pr.binding_composite IS NULL)"
+        return "(pr.hellaswag_acc IS NULL OR pr.induction_screening_auc IS NULL OR pr.binding_screening_auc IS NULL OR pr.binding_screening_composite IS NULL)"
     return (
         "("
         "pr.wikitext_perplexity IS NULL OR "
         "pr.hellaswag_acc IS NULL OR "
-        "pr.induction_auc IS NULL OR "
-        "pr.binding_auc IS NULL OR "
-        "pr.binding_composite IS NULL"
+        "pr.induction_screening_auc IS NULL OR "
+        "pr.binding_screening_auc IS NULL OR "
+        "pr.binding_screening_composite IS NULL"
         ")"
     )
 

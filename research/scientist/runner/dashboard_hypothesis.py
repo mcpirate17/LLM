@@ -261,7 +261,7 @@ class _DashboardHypothesisMixin:
                 "do_not_promote_unsupported_harness_ops": top_missing_harness_ops,
                 "validate_compression_with": [
                     "NanoBind",
-                    "controlled_lang_s05",
+                    "language_control_s05",
                     "WikiText",
                     "TinyStories",
                 ],

@@ -28,6 +28,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from research.eval.utils import _get_tiktoken_encoder, clip_grad_norm, make_adamw
+from research.scientist.notebook.graph_artifacts import resolve_graph_json_value
 from research.synthesis.compiler import compile_model
 from research.synthesis.serializer import graph_from_json
 from research.tools.nano_corpus_v0 import ADJECTIVES
@@ -50,11 +51,11 @@ def _load_graph_json(db: Path, result_id: str) -> str:
             "SELECT graph_json FROM program_results WHERE result_id = ? LIMIT 1",
             (result_id,),
         ).fetchone()
+        if not row or not row[0]:
+            raise RuntimeError(f"no graph_json for {result_id!r}")
+        return resolve_graph_json_value(conn, db, row[0])
     finally:
         conn.close()
-    if not row or not row[0]:
-        raise RuntimeError(f"no graph_json for {result_id!r}")
-    return row[0]
 
 
 def _read_corpus(path: Path) -> list[str]:
@@ -266,7 +267,7 @@ def _print_summary(report: dict[str, Any]) -> None:
 
 def _parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--db", type=Path, default=Path("research/lab_notebook.db"))
+    ap.add_argument("--db", type=Path, default=Path("research/runs.db"))
     ap.add_argument(
         "--corpus", type=Path, default=Path("research/reports/nano_corpus_v0.txt")
     )

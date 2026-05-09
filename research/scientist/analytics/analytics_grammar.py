@@ -7,6 +7,7 @@ from collections import defaultdict
 from typing import Any, Dict, List, Optional, Set, Tuple
 import numpy as np
 from ...synthesis.grammar_defaults import default_category_weights
+from ..notebook.graph_artifacts import resolve_graph_json_value
 from .frontier import pareto_mask
 
 logger = logging.getLogger(__name__)
@@ -173,7 +174,11 @@ class _GrammarMixin:
         pareto_ids = set(self.pareto_optimal_programs())
 
         for row in cursor:
-            graph_json = row["graph_json"]
+            graph_json = resolve_graph_json_value(
+                self.nb.conn,
+                self.nb.db_path,
+                row["graph_json"],
+            )
             if not graph_json:
                 continue
 
@@ -902,7 +907,12 @@ class _GrammarMixin:
                     continue
 
                 decline = decline_by_prefix[prefix]
-                ops = self._extract_ops_fast(row["graph_json"])
+                graph_json = resolve_graph_json_value(
+                    self.nb.conn,
+                    self.nb.db_path,
+                    row["graph_json"],
+                )
+                ops = self._extract_ops_fast(graph_json)
                 if not ops:
                     continue
 

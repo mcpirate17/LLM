@@ -6,14 +6,14 @@ import logging
 import os
 from flask import jsonify, request
 from ._utils import register_notebook_routes, register_routes, with_notebook_context
-from .deps import ApiRouteContext
+from .deps import ApiRouteContext, get_notebook
 
 logger = logging.getLogger(__name__)
 
 
 def register_diagnostics_routes(app, context: ApiRouteContext):
     notebook_path = context.notebook_path
-    wnb_writer = with_notebook_context(notebook_path, read_only=False)
+    wnb_readonly = with_notebook_context(notebook_path, read_only=True)
 
     def api_fingerprint_diagnostics():
         """Expose lightweight runtime diagnostics for fingerprint analysis."""
@@ -65,10 +65,16 @@ def register_diagnostics_routes(app, context: ApiRouteContext):
 
         cleanup_stats = None
         if cleanup:
-            cleanup_stats = nb.cleanup_report_snapshots(
-                ttl_seconds=max(60, ttl_seconds),
-                max_rows_per_scope=max(20, max_rows_per_scope),
-            )
+            writer_nb = None
+            try:
+                writer_nb = get_notebook(notebook_path, read_only=False)
+                cleanup_stats = writer_nb.cleanup_report_snapshots(
+                    ttl_seconds=max(60, ttl_seconds),
+                    max_rows_per_scope=max(20, max_rows_per_scope),
+                )
+            finally:
+                if writer_nb is not None:
+                    writer_nb.close()
 
         snapshot_stats = nb.get_report_snapshot_stats()
         return jsonify(
@@ -95,7 +101,7 @@ def register_diagnostics_routes(app, context: ApiRouteContext):
     )
     register_notebook_routes(
         app,
-        wnb_writer,
+        wnb_readonly,
         (
             (
                 "/api/diagnostics/report-cache",

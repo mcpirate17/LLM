@@ -32,10 +32,10 @@ _S1_REQUIRED_POST_METRIC_COLUMNS_FOR_GUARDRAIL = (
     "wikitext_perplexity",
     "hellaswag_acc",
     "blimp_overall_accuracy",
-    "induction_auc",
-    "binding_auc",
-    "binding_composite",
-    "ar_auc",
+    "induction_screening_auc",
+    "binding_screening_auc",
+    "binding_screening_composite",
+    "ar_legacy_auc",
 )
 
 
@@ -65,7 +65,7 @@ def _enforce_s1_metric_completeness(
 
     Any row that claims to have passed Stage 1 must carry the full post-S1
     metric set (wikitext_perplexity, hellaswag_acc, blimp_overall_accuracy,
-    induction_auc, binding_auc, binding_composite, ar_auc). Loss-only S1
+    induction_screening_auc, binding_screening_auc, binding_screening_composite, ar_legacy_auc). Loss-only S1
     rows are not allowed regardless of model_source — they corrupt
     diagnostics, the leaderboard composite, the construction prior, and
     every downstream rule that conditions on metric presence.

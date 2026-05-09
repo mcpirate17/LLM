@@ -6,6 +6,8 @@ import logging
 import re
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+from research.defaults import RUNS_DB
+
 from ..native.telemetry import reset_native_runner_telemetry
 from ..notebook import LabNotebook
 from ..preregistration import (
@@ -347,11 +349,7 @@ class _ResultsKnowledgeMixin:
         try:
             from ..intelligence.temporal_bayesian import TemporalBayesianTracker
 
-            db_path = (
-                str(nb.db_path)
-                if hasattr(nb, "db_path")
-                else "research/lab_notebook.db"
-            )
+            db_path = str(nb.db_path) if hasattr(nb, "db_path") else RUNS_DB
             tracker = TemporalBayesianTracker.from_db(
                 db_path=db_path,
                 apply_decay=True,

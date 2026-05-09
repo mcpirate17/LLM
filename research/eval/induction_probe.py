@@ -56,7 +56,7 @@ class InductionResult:
     def to_dict(self) -> Dict[str, Any]:
         return {
             "induction_gap_accuracies": self.gap_accuracies,
-            "induction_auc": self.auc,
+            "induction_screening_auc": self.auc,
             "induction_steps_trained": self.steps_trained,
             "induction_status": self.status,
             "induction_elapsed_ms": self.elapsed_ms,

@@ -28,6 +28,7 @@ from research.scientist.causal_attribution import (  # noqa: E402
     run_ablation_suite,
 )
 from research.scientist.notebook import LabNotebook  # noqa: E402
+from research.scientist.notebook.graph_artifacts import resolve_graph_json_value  # noqa: E402
 from research.scientist.runner import ExperimentRunner  # noqa: E402
 from research.scientist.runner._helpers_metrics import (  # noqa: E402
     _rebuild_graph_with_overrides,
@@ -37,7 +38,7 @@ from research.synthesis.primitives import PrimitiveOp, get_primitive, list_primi
 from research.synthesis.serializer import graph_from_json  # noqa: E402
 
 
-DB_PATH = PROJECT_ROOT / "research/lab_notebook.db"
+DB_PATH = PROJECT_ROOT / "research/runs.db"
 RUNTIME_DIR = PROJECT_ROOT / "research/runtime"
 GOOGLE_BACKUP_ROOT = Path("/home/tim/GoogleDrive/Backups/LLM_Research")
 DEFAULT_TARGET_RESULT_ID = "574271ca-f37"
@@ -60,10 +61,10 @@ _REQUIRED_PARENT_METRICS = (
     "wikitext_perplexity",
     "hellaswag_acc",
     "blimp_overall_accuracy",
-    "induction_auc",
-    "binding_auc",
-    "binding_composite",
-    "ar_auc",
+    "induction_screening_auc",
+    "binding_screening_auc",
+    "binding_screening_composite",
+    "ar_legacy_auc",
 )
 
 
@@ -139,7 +140,7 @@ def load_parent(nb: LabNotebook, result_id: str) -> ParentProgram:
     ).fetchone()
     if row is None:
         raise SystemExit(f"parent result not found: {result_id}")
-    graph_json = str(row["graph_json"] or "")
+    graph_json = resolve_graph_json_value(nb.conn, nb.db_path, row["graph_json"])
     if not graph_json.strip():
         raise SystemExit(f"parent result has no graph_json: {result_id}")
     graph = graph_from_json(graph_json)

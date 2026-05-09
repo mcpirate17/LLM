@@ -52,7 +52,7 @@ def test_queue_followups_is_dry_run_by_default(monkeypatch):
                     "rank": 1,
                     "rank_score": 0.7,
                     "result_id": result_id,
-                    "missing_signals": ["induction_v2_investigation_auc"],
+                    "missing_signals": ["induction_intermediate_auc"],
                 }
             ],
             {"generated_at": "test"},
@@ -93,13 +93,13 @@ def test_queue_followups_apply_suppresses_active_duplicate_ids(monkeypatch):
                     "rank": 1,
                     "rank_score": 0.9,
                     "result_id": first_id,
-                    "missing_signals": ["induction_v2_investigation_auc"],
+                    "missing_signals": ["induction_intermediate_auc"],
                 },
                 {
                     "rank": 2,
                     "rank_score": 0.8,
                     "result_id": second_id,
-                    "missing_signals": ["binding_v2_investigation_auc"],
+                    "missing_signals": ["binding_intermediate_auc"],
                 },
             ],
             {"generated_at": "test"},
@@ -129,10 +129,10 @@ def test_v2_repair_targets_include_failed_probe_status_with_numeric_zero():
         stage05_passed=True,
         stage1_passed=True,
         loss_ratio=0.2,
-        induction_v2_investigation_auc=0.0,
-        induction_v2_investigation_status="train_failed: optimizer device mismatch",
-        binding_v2_investigation_auc=0.1,
-        binding_v2_investigation_status="ok",
+        induction_intermediate_auc=0.0,
+        induction_intermediate_status="train_failed: optimizer device mismatch",
+        binding_intermediate_auc=0.1,
+        binding_intermediate_status="ok",
         trust_label="test_fixture",
     )
     nb.close()
@@ -141,4 +141,4 @@ def test_v2_repair_targets_include_failed_probe_status_with_numeric_zero():
 
     assert summary["n_targets"] == 1
     assert targets[0]["result_id"] == result_id
-    assert "induction_v2_investigation_status" in targets[0]["missing_signals"]
+    assert "induction_intermediate_status" in targets[0]["missing_signals"]

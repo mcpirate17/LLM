@@ -6,18 +6,18 @@ pytestmark = pytest.mark.unit
 
 
 def test_story_calibration_encodes_bpe_items_without_byte_tokenizer():
-    from research.eval.small_ar_champion_corpus import (
-        SmallARStoryCorpusConfig,
-        build_small_ar_story_corpus,
+    from research.eval.ar_validation_corpus import (
+        ARValidationStoryCorpusConfig,
+        build_ar_validation_story_corpus,
     )
     from research.eval.utils import _get_tiktoken_encoder
-    from research.tools.small_ar_story_calibration import (
+    from research.tools.ar_validation_story_calibration import (
         TIKTOKEN_ENCODING,
         encode_story_items,
     )
 
-    corpus = build_small_ar_story_corpus(
-        SmallARStoryCorpusConfig(
+    corpus = build_ar_validation_story_corpus(
+        ARValidationStoryCorpusConfig(
             seed=3,
             n_train_stories=2,
             n_held_key_stories=1,
@@ -40,14 +40,16 @@ def test_story_calibration_encodes_bpe_items_without_byte_tokenizer():
 
 
 def test_in_story_unqueried_queries_hold_out_some_train_story_bindings():
-    from research.eval.small_ar_champion_corpus import (
-        SmallARStoryCorpusConfig,
-        build_small_ar_story_corpus,
+    from research.eval.ar_validation_corpus import (
+        ARValidationStoryCorpusConfig,
+        build_ar_validation_story_corpus,
     )
-    from research.tools.small_ar_story_calibration import in_story_unqueried_queries
+    from research.tools.ar_validation_story_calibration import (
+        in_story_unqueried_queries,
+    )
 
-    corpus = build_small_ar_story_corpus(
-        SmallARStoryCorpusConfig(
+    corpus = build_ar_validation_story_corpus(
+        ARValidationStoryCorpusConfig(
             seed=4,
             n_train_stories=2,
             n_in_dist_eval_stories=0,
@@ -80,19 +82,19 @@ def test_in_story_unqueried_queries_hold_out_some_train_story_bindings():
 def test_choice_batch_marks_correct_candidate_index():
     import torch
 
-    from research.eval.small_ar_champion_corpus import (
-        SmallARStoryCorpusConfig,
-        build_small_ar_story_corpus,
+    from research.eval.ar_validation_corpus import (
+        ARValidationStoryCorpusConfig,
+        build_ar_validation_story_corpus,
     )
     from research.eval.utils import _get_tiktoken_encoder
-    from research.tools.small_ar_story_calibration import (
+    from research.tools.ar_validation_story_calibration import (
         TIKTOKEN_ENCODING,
         _pack_choice_batch,
         encode_story_items,
     )
 
-    corpus = build_small_ar_story_corpus(
-        SmallARStoryCorpusConfig(
+    corpus = build_ar_validation_story_corpus(
+        ARValidationStoryCorpusConfig(
             seed=5,
             n_train_stories=1,
             n_in_dist_eval_stories=0,
@@ -120,18 +122,18 @@ def test_choice_batch_marks_correct_candidate_index():
 
 
 def test_context_trim_keeps_target_binding_visible():
-    from research.eval.small_ar_champion_corpus import (
-        SmallARStoryCorpusConfig,
-        build_small_ar_story_corpus,
+    from research.eval.ar_validation_corpus import (
+        ARValidationStoryCorpusConfig,
+        build_ar_validation_story_corpus,
     )
     from research.eval.utils import _get_tiktoken_encoder
-    from research.tools.small_ar_story_calibration import (
+    from research.tools.ar_validation_story_calibration import (
         TIKTOKEN_ENCODING,
         encode_story_items,
     )
 
-    corpus = build_small_ar_story_corpus(
-        SmallARStoryCorpusConfig(
+    corpus = build_ar_validation_story_corpus(
+        ARValidationStoryCorpusConfig(
             seed=12,
             n_train_stories=1,
             n_in_dist_eval_stories=0,
@@ -168,14 +170,14 @@ def test_context_trim_keeps_target_binding_visible():
 def test_dynamic_story_train_items_generate_fresh_bpe_queries():
     import random
 
-    from research.eval.small_ar_champion_corpus import SmallARStoryCorpusConfig
+    from research.eval.ar_validation_corpus import ARValidationStoryCorpusConfig
     from research.eval.utils import _get_tiktoken_encoder
-    from research.tools.small_ar_story_calibration import (
+    from research.tools.ar_validation_story_calibration import (
         TIKTOKEN_ENCODING,
         dynamic_story_train_items,
     )
 
-    cfg = SmallARStoryCorpusConfig(
+    cfg = ARValidationStoryCorpusConfig(
         seed=6,
         n_train_stories=1,
         n_in_dist_eval_stories=0,
@@ -205,7 +207,7 @@ def test_micro_retrieval_items_are_canonical_fresh_and_have_context_controls():
     import random
 
     from research.eval.utils import _get_tiktoken_encoder
-    from research.tools.small_ar_story_calibration import (
+    from research.tools.ar_validation_story_calibration import (
         TIKTOKEN_ENCODING,
         _preset,
         micro_retrieval_items,
@@ -284,7 +286,7 @@ def test_micro_retrieval_items_are_canonical_fresh_and_have_context_controls():
 
 
 def test_curriculum00_is_minimal_binary_story_curriculum():
-    from research.tools.small_ar_story_calibration import _preset
+    from research.tools.ar_validation_story_calibration import _preset
 
     cfg = _preset("curriculum00", seed=9)
 
@@ -298,7 +300,7 @@ def test_curriculum00_is_minimal_binary_story_curriculum():
 
 
 def test_micro_retrieval_preset_is_single_query_binary_curriculum():
-    from research.tools.small_ar_story_calibration import _preset
+    from research.tools.ar_validation_story_calibration import _preset
 
     cfg = _preset("micro_retrieval", seed=9)
 
@@ -311,7 +313,7 @@ def test_micro_retrieval_preset_is_single_query_binary_curriculum():
 
 def test_micro_retrieval_preset_accepts_binding_and_noise_overrides():
     from research.eval.utils import _get_tiktoken_encoder
-    from research.tools.small_ar_story_calibration import (
+    from research.tools.ar_validation_story_calibration import (
         TIKTOKEN_ENCODING,
         _preset,
         micro_retrieval_items,

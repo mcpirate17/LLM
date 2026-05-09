@@ -8,6 +8,9 @@ from dataclasses import dataclass
 from functools import lru_cache
 from typing import Dict, FrozenSet, List, Optional
 
+from research.defaults import RUNS_DB, RUNTIME_EVENTS_DIR_ABS
+
+from ..scientist.shared_utils import coerce_finite_float as _finite_or_none
 from .graph import ComputationGraph, ShapeInfo
 from .primitives import (
     PRIMITIVE_REGISTRY,
@@ -183,32 +186,20 @@ _SLOT_OUTCOME_MIN_RESCUE_SUPPORT = 3
 _SLOT_OUTCOME_SUPPORT_PRIOR = 8.0
 _CAPABILITY_SUPPORT_PRIOR = 16.0
 _DB_METRIC_COLUMNS = (
-    "avg_induction_auc",
-    "avg_binding_auc",
-    "avg_binding_composite",
-    "avg_ar_auc",
+    "avg_induction_screening_auc",
+    "avg_binding_screening_auc",
+    "avg_binding_screening_composite",
+    "avg_ar_legacy_auc",
     "avg_hellaswag_acc",
     "avg_blimp_overall_accuracy",
-    "avg_induction_v2_investigation_auc",
-    "avg_binding_v2_investigation_auc",
+    "avg_induction_intermediate_auc",
+    "avg_binding_intermediate_auc",
     "math_space_rate",
 )
 
 
 def _bounded(value: float, *, lo: float, hi: float) -> float:
     return max(lo, min(hi, float(value)))
-
-
-def _finite_or_none(value) -> Optional[float]:
-    import math as _math
-
-    if value is None:
-        return None
-    try:
-        out = float(value)
-    except (TypeError, ValueError):
-        return None
-    return out if _math.isfinite(out) else None
 
 
 def _loss_quality_factor(mean_loss, *, k: float = 2.0) -> float:
@@ -254,34 +245,35 @@ def _support_shrunk_multiplier(
 
 
 def _capability_reward(
-    avg_induction_auc,
-    avg_binding_auc,
-    avg_binding_composite,
-    avg_ar_auc=None,
+    avg_induction_screening_auc,
+    avg_binding_screening_auc,
+    avg_binding_screening_composite,
+    avg_ar_legacy_auc=None,
     avg_hellaswag_acc=None,
     avg_blimp_overall_accuracy=None,
-    avg_induction_v2_investigation_auc=None,
-    avg_binding_v2_investigation_auc=None,
+    avg_induction_intermediate_auc=None,
+    avg_binding_intermediate_auc=None,
     math_space_rate=None,
 ) -> float:
     induction = _bounded(
-        (_finite_or_none(avg_induction_auc) or 0.0) / _INDUCTION_STEERING_TARGET,
+        (_finite_or_none(avg_induction_screening_auc) or 0.0)
+        / _INDUCTION_STEERING_TARGET,
         lo=0.0,
         hi=2.0,
     )
     binding = _bounded(
-        (_finite_or_none(avg_binding_auc) or 0.0) / _BINDING_STEERING_TARGET,
+        (_finite_or_none(avg_binding_screening_auc) or 0.0) / _BINDING_STEERING_TARGET,
         lo=0.0,
         hi=2.0,
     )
-    binding_composite = _bounded(
-        (_finite_or_none(avg_binding_composite) or 0.0)
+    binding_screening_composite = _bounded(
+        (_finite_or_none(avg_binding_screening_composite) or 0.0)
         / _BINDING_COMPOSITE_STEERING_TARGET,
         lo=0.0,
         hi=2.0,
     )
-    ar_auc = _bounded(
-        (_finite_or_none(avg_ar_auc) or 0.0) / _AR_STEERING_TARGET,
+    ar_legacy_auc = _bounded(
+        (_finite_or_none(avg_ar_legacy_auc) or 0.0) / _AR_STEERING_TARGET,
         lo=0.0,
         hi=2.0,
     )
@@ -295,14 +287,14 @@ def _capability_reward(
         lo=0.0,
         hi=2.0,
     )
-    induction_v2 = _bounded(
-        (_finite_or_none(avg_induction_v2_investigation_auc) or 0.0)
+    induction_intermediate = _bounded(
+        (_finite_or_none(avg_induction_intermediate_auc) or 0.0)
         / _INDUCTION_V2_STEERING_TARGET,
         lo=0.0,
         hi=2.0,
     )
-    binding_v2 = _bounded(
-        (_finite_or_none(avg_binding_v2_investigation_auc) or 0.0)
+    binding_intermediate = _bounded(
+        (_finite_or_none(avg_binding_intermediate_auc) or 0.0)
         / _BINDING_V2_STEERING_TARGET,
         lo=0.0,
         hi=2.0,
@@ -312,37 +304,37 @@ def _capability_reward(
         1.0
         + (0.16 * induction)
         + (0.14 * binding)
-        + (0.12 * binding_composite)
-        + (0.10 * ar_auc)
+        + (0.12 * binding_screening_composite)
+        + (0.10 * ar_legacy_auc)
         + (0.07 * hellaswag)
         + (0.07 * blimp)
-        + (0.17 * induction_v2)
-        + (0.17 * binding_v2)
+        + (0.17 * induction_intermediate)
+        + (0.17 * binding_intermediate)
         + (0.10 * math_share)
     )
 
 
 def _capability_score(
-    avg_induction_auc,
-    avg_binding_auc,
-    avg_binding_composite,
-    avg_ar_auc=None,
+    avg_induction_screening_auc,
+    avg_binding_screening_auc,
+    avg_binding_screening_composite,
+    avg_ar_legacy_auc=None,
     avg_hellaswag_acc=None,
     avg_blimp_overall_accuracy=None,
-    avg_induction_v2_investigation_auc=None,
-    avg_binding_v2_investigation_auc=None,
+    avg_induction_intermediate_auc=None,
+    avg_binding_intermediate_auc=None,
     math_space_rate=None,
 ) -> float:
     return (
         _capability_reward(
-            avg_induction_auc,
-            avg_binding_auc,
-            avg_binding_composite,
-            avg_ar_auc,
+            avg_induction_screening_auc,
+            avg_binding_screening_auc,
+            avg_binding_screening_composite,
+            avg_ar_legacy_auc,
             avg_hellaswag_acc,
             avg_blimp_overall_accuracy,
-            avg_induction_v2_investigation_auc,
-            avg_binding_v2_investigation_auc,
+            avg_induction_intermediate_auc,
+            avg_binding_intermediate_auc,
             math_space_rate,
         )
         - 1.0
@@ -385,14 +377,14 @@ def _connect_existing_db(db_path: str):
 
 def _slot_outcome_capability(vals: dict) -> float:
     return _capability_score(
-        vals.get("mean_induction_auc"),
-        vals.get("mean_binding_auc"),
-        vals.get("mean_binding_composite"),
-        vals.get("mean_ar_auc"),
+        vals.get("mean_induction_screening_auc"),
+        vals.get("mean_binding_screening_auc"),
+        vals.get("mean_binding_screening_composite"),
+        vals.get("mean_ar_legacy_auc"),
         vals.get("mean_hellaswag_acc"),
         vals.get("mean_blimp_overall_accuracy"),
-        vals.get("mean_induction_v2_investigation_auc"),
-        vals.get("mean_binding_v2_investigation_auc"),
+        vals.get("mean_induction_intermediate_auc"),
+        vals.get("mean_binding_intermediate_auc"),
         vals.get("math_space_rate"),
     )
 
@@ -529,20 +521,20 @@ def _load_template_slot_context(conn) -> Dict[str, dict]:
 
 def _fetch_template_weight_rows(conn):
     columns = {row[1] for row in conn.execute("PRAGMA table_info(template_stats)")}
-    # CTE folds in per-template controlled_lang_s05_sa pass rate. Pass criterion
+    # CTE folds in per-template language_control_s05_sa pass rate. Pass criterion
     # combines fluency (sa>=0.95) with the nano_bind binding gate, matching the
     # combined cohort definition used by template_pass_<date>_summary.md.
     return conn.execute(
         f"""WITH sa_stats AS (
                 SELECT pgf.template_name AS template_name,
-                       SUM(CASE WHEN pr.controlled_lang_s05_sa_score >= 0.95
+                       SUM(CASE WHEN pr.language_control_s05_sentence_assoc_score >= 0.95
                                  AND COALESCE(pr.failure_op,'') != 'nano_bind'
                                 THEN 1 ELSE 0 END) AS sa_pass,
                        COUNT(*) AS sa_n
                   FROM program_results pr
                   JOIN program_graph_features pgf
                     ON pgf.result_id = pr.result_id
-                 WHERE pr.controlled_lang_s05_sa_score IS NOT NULL
+                 WHERE pr.language_control_s05_sentence_assoc_score IS NOT NULL
                    AND pgf.template_name IS NOT NULL
                  GROUP BY pgf.template_name
             )
@@ -563,7 +555,7 @@ _TEMPLATE_WEIGHT_CLAMP = (0.5, 8.0)
 
 
 def _sa_factor(sa_pass_count, sa_eval_count) -> float:
-    """Phase 3.4 — combined controlled_lang_s05_sa + nano_bind pass multiplier.
+    """Phase 3.4 — combined language_control_s05_sa + nano_bind pass multiplier.
 
     Templates with n < _SA_FACTOR_MIN_N pass-eligible rows get sa_factor=1.0
     (no penalty, no boost). Otherwise sa_factor = max(_SA_FACTOR_FLOOR,
@@ -593,14 +585,14 @@ def _template_dynamic_weight(
         eval_count,
         s1_count,
         mean_loss,
-        avg_induction_auc,
-        avg_binding_auc,
-        avg_binding_composite,
-        avg_ar_auc,
+        avg_induction_screening_auc,
+        avg_binding_screening_auc,
+        avg_binding_screening_composite,
+        avg_ar_legacy_auc,
         avg_hellaswag_acc,
         avg_blimp_overall_accuracy,
-        avg_induction_v2_investigation_auc,
-        avg_binding_v2_investigation_auc,
+        avg_induction_intermediate_auc,
+        avg_binding_intermediate_auc,
         math_space_rate,
         sa_pass_count,
         sa_eval_count,
@@ -614,14 +606,14 @@ def _template_dynamic_weight(
     )
     signal_reward = _support_shrunk_reward(
         _capability_reward(
-            avg_induction_auc,
-            avg_binding_auc,
-            avg_binding_composite,
-            avg_ar_auc,
+            avg_induction_screening_auc,
+            avg_binding_screening_auc,
+            avg_binding_screening_composite,
+            avg_ar_legacy_auc,
             avg_hellaswag_acc,
             avg_blimp_overall_accuracy,
-            avg_induction_v2_investigation_auc,
-            avg_binding_v2_investigation_auc,
+            avg_induction_intermediate_auc,
+            avg_binding_intermediate_auc,
             math_space_rate,
         ),
         eval_count,
@@ -709,10 +701,9 @@ def _emit_template_weight_events(
     """
     import json as _json
     import time as _time
-    from pathlib import Path as _Path
 
     try:
-        events_dir = _Path("research/runtime_events")
+        events_dir = RUNTIME_EVENTS_DIR_ABS
         events_dir.mkdir(parents=True, exist_ok=True)
         path = events_dir / "template_weights.ndjson"
         ts = _time.time()
@@ -752,28 +743,28 @@ def _build_db_op_weights(rows) -> Dict[str, float]:
             eval_count,
             s1_count,
             mean_loss,
-            avg_induction_auc,
-            avg_binding_auc,
-            avg_binding_composite,
-            avg_ar_auc,
+            avg_induction_screening_auc,
+            avg_binding_screening_auc,
+            avg_binding_screening_composite,
+            avg_ar_legacy_auc,
             avg_hellaswag_acc,
             avg_blimp_overall_accuracy,
-            avg_induction_v2_investigation_auc,
-            avg_binding_v2_investigation_auc,
+            avg_induction_intermediate_auc,
+            avg_binding_intermediate_auc,
             math_space_rate,
         ) = row
         s1_rate = s1_count / max(eval_count, 1)
         perf_term = _loss_quality_factor(mean_loss, k=2.0) * _s1_quality_factor(s1_rate)
         capability_term = _support_shrunk_reward(
             _capability_reward(
-                avg_induction_auc,
-                avg_binding_auc,
-                avg_binding_composite,
-                avg_ar_auc,
+                avg_induction_screening_auc,
+                avg_binding_screening_auc,
+                avg_binding_screening_composite,
+                avg_ar_legacy_auc,
                 avg_hellaswag_acc,
                 avg_blimp_overall_accuracy,
-                avg_induction_v2_investigation_auc,
-                avg_binding_v2_investigation_auc,
+                avg_induction_intermediate_auc,
+                avg_binding_intermediate_auc,
                 math_space_rate,
             ),
             eval_count,
@@ -825,14 +816,14 @@ def _build_slot_adaptations(rows, *, min_evals: int, max_extra_classes: int):
                 continue
             cls_s1_rate = vals.get("s1", 0) / n
             cls_capability = _capability_score(
-                vals.get("mean_induction_auc"),
-                vals.get("mean_binding_auc"),
-                vals.get("mean_binding_composite"),
-                vals.get("mean_ar_auc"),
+                vals.get("mean_induction_screening_auc"),
+                vals.get("mean_binding_screening_auc"),
+                vals.get("mean_binding_screening_composite"),
+                vals.get("mean_ar_legacy_auc"),
                 vals.get("mean_hellaswag_acc"),
                 vals.get("mean_blimp_overall_accuracy"),
-                vals.get("mean_induction_v2_investigation_auc"),
-                vals.get("mean_binding_v2_investigation_auc"),
+                vals.get("mean_induction_intermediate_auc"),
+                vals.get("mean_binding_intermediate_auc"),
                 vals.get("math_space_rate"),
             )
             if cls_s1_rate > baseline_s1_rate or cls_capability > (
@@ -916,9 +907,7 @@ class DBTemplateWeightCache:
         self._expires: float = 0.0
         self._ttl = ttl
 
-    def get(
-        self, db_path: str = "research/lab_notebook.db"
-    ) -> Optional[Dict[str, float]]:
+    def get(self, db_path: str = RUNS_DB) -> Optional[Dict[str, float]]:
         import time as _time
 
         now = _time.time()
@@ -962,9 +951,7 @@ class DBOpWeightCache:
         self._expires: float = 0.0
         self._ttl = ttl
 
-    def get(
-        self, db_path: str = "research/lab_notebook.db"
-    ) -> Optional[Dict[str, float]]:
+    def get(self, db_path: str = RUNS_DB) -> Optional[Dict[str, float]]:
         import time as _time
 
         now = _time.time()
@@ -1007,7 +994,7 @@ class SlotAdaptationCache:
         self._expires: float = 0.0
         self._ttl = ttl
 
-    def get(self, db_path: str = "research/lab_notebook.db") -> Dict[str, list]:
+    def get(self, db_path: str = RUNS_DB) -> Dict[str, list]:
         import time as _time
 
         now = _time.time()

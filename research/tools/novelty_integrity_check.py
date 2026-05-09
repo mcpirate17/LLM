@@ -2,7 +2,7 @@
 """Novelty pipeline integrity checks.
 
 Usage:
-  PYTHONPATH=.. python tools/novelty_integrity_check.py --db lab_notebook.db
+  PYTHONPATH=.. python tools/novelty_integrity_check.py --db runs.db
 """
 
 from __future__ import annotations
@@ -104,9 +104,7 @@ def run_integrity_check(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Novelty scoring integrity checks")
-    parser.add_argument(
-        "--db", default="lab_notebook.db", help="Path to notebook SQLite DB"
-    )
+    parser.add_argument("--db", default="runs.db", help="Path to notebook SQLite DB")
     parser.add_argument("--calibrate-if-missing", action="store_true")
     parser.add_argument(
         "--runs", type=int, default=6, help="Calibration runs when generating"

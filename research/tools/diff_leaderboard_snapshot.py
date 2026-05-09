@@ -37,9 +37,10 @@ def _f(x, default=None):
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--snapshot", required=True, type=Path)
-    parser.add_argument("--db", default="research/lab_notebook.db")
+    parser.add_argument("--db", default="research/runs.db")
     parser.add_argument(
-        "--tier-filter", default=None,
+        "--tier-filter",
+        default=None,
         help="Comma-separated tiers to restrict the diff to (default: all).",
     )
     parser.add_argument("--top-n", type=int, default=20)
@@ -87,26 +88,32 @@ def main() -> None:
         pre_score = _f(pre_row["composite_score"], 0.0)
         post_score = _f(row["composite_score"], 0.0)
         delta = post_score - pre_score
-        deltas.append({
-            "entry_id": eid,
-            "result_id": str(row["result_id"]),
-            "tier": row["tier"],
-            "pre_score": pre_score,
-            "post_score": post_score,
-            "delta": delta,
-            "pre_wt_ppl": _f(pre_row["wikitext_perplexity"]),
-            "post_wt_ppl": _f(row["wikitext_perplexity"]),
-            "pre_blimp": _f(pre_row["blimp_overall_accuracy"]),
-            "post_blimp": _f(row["blimp_overall_accuracy"]),
-            "pre_hella": _f(pre_row["hellaswag_acc"]),
-            "post_hella": _f(row["hellaswag_acc"]),
-            "pre_ts": _f(pre_row["tinystories_perplexity"]),
-            "post_ts": _f(row["tinystories_perplexity"]),
-        })
+        deltas.append(
+            {
+                "entry_id": eid,
+                "result_id": str(row["result_id"]),
+                "tier": row["tier"],
+                "pre_score": pre_score,
+                "post_score": post_score,
+                "delta": delta,
+                "pre_wt_ppl": _f(pre_row["wikitext_perplexity"]),
+                "post_wt_ppl": _f(row["wikitext_perplexity"]),
+                "pre_blimp": _f(pre_row["blimp_overall_accuracy"]),
+                "post_blimp": _f(row["blimp_overall_accuracy"]),
+                "pre_hella": _f(pre_row["hellaswag_acc"]),
+                "post_hella": _f(row["hellaswag_acc"]),
+                "pre_ts": _f(pre_row["tinystories_perplexity"]),
+                "post_ts": _f(row["tinystories_perplexity"]),
+            }
+        )
         if any(
             _f(pre_row[k]) != _f(row[k])
-            for k in ("wikitext_perplexity", "blimp_overall_accuracy",
-                     "hellaswag_acc", "tinystories_perplexity")
+            for k in (
+                "wikitext_perplexity",
+                "blimp_overall_accuracy",
+                "hellaswag_acc",
+                "tinystories_perplexity",
+            )
             if pre_row[k] is not None or row[k] is not None
         ):
             metric_changes.append(eid)
@@ -134,11 +141,11 @@ def main() -> None:
         (eid, pre_rank[eid], post_rank[eid], post_rank[eid] - pre_rank[eid])
         for eid in pre_rank
     ]
-    biggest_climbers = sorted(rank_shifts, key=lambda x: x[3])[:args.top_n]
-    biggest_droppers = sorted(rank_shifts, key=lambda x: -x[3])[:args.top_n]
+    biggest_climbers = sorted(rank_shifts, key=lambda x: x[3])[: args.top_n]
+    biggest_droppers = sorted(rank_shifts, key=lambda x: -x[3])[: args.top_n]
 
     sorted_by_delta = sorted(deltas, key=lambda d: -abs(d["delta"]))
-    biggest_movers = sorted_by_delta[:args.top_n]
+    biggest_movers = sorted_by_delta[: args.top_n]
 
     report = {
         "snapshot": str(args.snapshot),
@@ -155,7 +162,9 @@ def main() -> None:
             "max": max(score_deltas),
             "abs_mean": statistics.mean(abs_deltas),
             "abs_median": statistics.median(abs_deltas),
-            "abs_p90": statistics.quantiles(abs_deltas, n=10)[-1] if len(abs_deltas) >= 10 else max(abs_deltas),
+            "abs_p90": statistics.quantiles(abs_deltas, n=10)[-1]
+            if len(abs_deltas) >= 10
+            else max(abs_deltas),
         },
         "by_tier": {
             t: {
@@ -169,8 +178,10 @@ def main() -> None:
         },
         "biggest_score_movers": [
             {
-                "entry_id": d["entry_id"], "tier": d["tier"],
-                "pre": round(d["pre_score"], 1), "post": round(d["post_score"], 1),
+                "entry_id": d["entry_id"],
+                "tier": d["tier"],
+                "pre": round(d["pre_score"], 1),
+                "post": round(d["post_score"], 1),
                 "delta": round(d["delta"], 1),
                 "wt_ppl": [d["pre_wt_ppl"], d["post_wt_ppl"]],
                 "blimp": [d["pre_blimp"], d["post_blimp"]],

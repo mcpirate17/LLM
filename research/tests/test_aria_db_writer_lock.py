@@ -130,3 +130,13 @@ def test_labnotebook_read_only_opens_without_lock(tmp_db) -> None:
     assert nb_ro.conn.execute("PRAGMA query_only").fetchall() is not None
     with pytest.raises(RuntimeError, match="read-only"):
         nb_ro.conn._mgr.submit_write("CREATE TABLE foo (x INT)", ())
+
+
+def test_api_write_notebook_uses_native_single_writer(tmp_db) -> None:
+    """Writable API notebooks must not bypass aria-db with raw sqlite3."""
+    from research.scientist.api_routes.deps import get_notebook
+
+    nb = get_notebook(tmp_db, read_only=False)
+
+    assert nb._use_native is True
+    assert nb.conn._mgr.holds_writer_lock is True

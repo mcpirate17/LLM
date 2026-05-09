@@ -2,6 +2,19 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
 
+const CHUNK_RELOAD_KEY = 'aria-dashboard-chunk-reload-attempted';
+const CHUNK_RELOAD_TTL_MS = 60000;
+
+function isChunkLoadError(error) {
+  const message = String(error?.message || '');
+  const name = String(error?.name || '');
+  return (
+    name === 'ChunkLoadError' ||
+    /Loading chunk \d+ failed/i.test(message) ||
+    /ChunkLoadError/i.test(message)
+  );
+}
+
 class RootErrorBoundary extends React.Component {
   constructor(props) {
     super(props);
@@ -12,9 +25,21 @@ class RootErrorBoundary extends React.Component {
   }
   componentDidCatch(error, errorInfo) {
     console.error("Root ErrorBoundary caught an error", error, errorInfo);
+    const lastReload = Number(window.sessionStorage.getItem(CHUNK_RELOAD_KEY) || 0);
+    if (isChunkLoadError(error) && Date.now() - lastReload > CHUNK_RELOAD_TTL_MS) {
+      window.sessionStorage.setItem(CHUNK_RELOAD_KEY, String(Date.now()));
+      window.location.reload();
+    }
+  }
+  componentDidMount() {
+    const lastReload = Number(window.sessionStorage.getItem(CHUNK_RELOAD_KEY) || 0);
+    if (lastReload && Date.now() - lastReload > CHUNK_RELOAD_TTL_MS) {
+      window.sessionStorage.removeItem(CHUNK_RELOAD_KEY);
+    }
   }
   render() {
     if (this.state.hasError) {
+      const isChunkError = isChunkLoadError(this.state.error);
       return (
         <div style={{
           padding: 40, maxWidth: 600, margin: '60px auto',
@@ -33,7 +58,13 @@ class RootErrorBoundary extends React.Component {
             {this.state.error?.message}
           </pre>
           <button
-            onClick={() => this.setState({ hasError: false, error: null })}
+            onClick={() => {
+              if (isChunkError) {
+                window.location.reload();
+                return;
+              }
+              this.setState({ hasError: false, error: null });
+            }}
             style={{
               marginTop: 12, padding: '8px 16px', borderRadius: 6,
               background: '#238636', color: '#fff', border: 'none',

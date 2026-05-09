@@ -14,6 +14,7 @@ from typing import Any, Iterable, Mapping, Optional, Sequence
 
 from research.synthesis.graph import ComputationGraph
 from research.synthesis.serializer import graph_from_json
+from research.scientist.notebook.graph_artifacts import resolve_graph_json_value
 
 LOGGER = logging.getLogger(__name__)
 
@@ -215,7 +216,12 @@ def select_causal_ablation_candidates(
     seen_rules: set[tuple[str, str, str]] = set()
     for row in rows:
         try:
-            graph = graph_from_json(str(row["graph_json"]))
+            graph_json = resolve_graph_json_value(
+                nb.conn,
+                nb.db_path,
+                row["graph_json"],
+            )
+            graph = graph_from_json(graph_json)
         except (TypeError, ValueError, RuntimeError, json.JSONDecodeError):
             continue
         parent_loss = _optional_float(row["loss_ratio"])

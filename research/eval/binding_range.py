@@ -51,7 +51,7 @@ class BindingResult:
     def to_dict(self) -> Dict[str, Any]:
         return {
             "binding_distance_accuracies": self.distance_accuracies,
-            "binding_auc": self.auc,
+            "binding_screening_auc": self.auc,
             "binding_status": self.status,
             "binding_elapsed_ms": self.elapsed_ms,
         }

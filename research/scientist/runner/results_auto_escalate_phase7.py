@@ -48,6 +48,10 @@ from .auto_escalate_flow import (
 )
 from .auto_escalate_active_learning import _ActiveLearningFollowupMixin
 from .auto_escalate_thresholds import calibrated_promotion_threshold
+from ..capability_ranker_metrics import (
+    available_capability_ranker_evidence_fields,
+    enable_capability_rankers,
+)
 from ..evidence import validate_selection_decision_log
 from ..llm.context_experiment import build_go_no_go_context
 from ..notebook import ExperimentEntry, LabNotebook
@@ -322,8 +326,25 @@ class _ResultsAutoEscalatePhase7Mixin(_ActiveLearningFollowupMixin):
         priority_score: float = 0.0,
         priority_reasons: Dict[str, Any] | None = None,
     ) -> str | None:
+        if not result_ids:
+            return None
         if stage == "investigation":
             return self._queue_pending_investigation_followup(
+                nb=nb,
+                result_ids=result_ids,
+                config=config,
+                blocked_incomplete_fingerprint=blocked_incomplete_fingerprint,
+                survivor_count=survivor_count,
+                qualifying_count=qualifying_count,
+                source_context=source_context,
+                source_decision_id=source_decision_id,
+                source_experiment_id=source_experiment_id,
+                priority_score=priority_score,
+                priority_reasons=priority_reasons,
+            )
+
+        if stage == "capability_ranking":
+            return self._queue_pending_capability_ranking_followup(
                 nb=nb,
                 result_ids=result_ids,
                 config=config,
@@ -431,6 +452,85 @@ class _ResultsAutoEscalatePhase7Mixin(_ActiveLearningFollowupMixin):
         )
         return task_id
 
+    def _queue_pending_capability_ranking_followup(
+        self,
+        *,
+        nb: LabNotebook,
+        result_ids: List[str],
+        config: RunConfig,
+        blocked_incomplete_fingerprint: int | None,
+        survivor_count: int | None,
+        qualifying_count: int | None,
+        source_context: str | None,
+        source_decision_id: str | None,
+        source_experiment_id: str | None,
+        priority_score: float,
+        priority_reasons: Dict[str, Any] | None,
+    ) -> str:
+        capability_config = enable_capability_rankers(
+            config.copy() if hasattr(config, "copy") else config
+        )
+        hypothesis = (
+            f"Auto-capability-ranking: selective induction/binding ranker probes for "
+            f"{len(result_ids)} robust investigation survivors before validation."
+        )
+        evidence_pack = self._safe_build_evidence_pack(
+            nb,
+            recommendation={"mode": "capability_ranking"},
+            decision_type="auto_capability_rank",
+        )
+        task_id = nb.enqueue_followup_task(
+            stage="capability_ranking",
+            result_ids=result_ids,
+            hypothesis=hypothesis,
+            config=capability_config.to_dict(),
+            evidence_pack=evidence_pack,
+            source_context=source_context or "auto_rank_capability_investigation",
+            source_decision_id=source_decision_id,
+            source_experiment_id=source_experiment_id,
+            priority_score=priority_score,
+            priority_reasons=priority_reasons,
+            metadata={
+                "survivor_count": survivor_count,
+                "qualifying_count": qualifying_count,
+                "blocked_incomplete_fingerprint": blocked_incomplete_fingerprint,
+            },
+        )
+        self._emit_event(
+            "auto_capability_ranking_queued",
+            {
+                "task_id": task_id,
+                "result_ids": result_ids,
+                "n_candidates": len(result_ids),
+                "blocked_incomplete_fingerprint": blocked_incomplete_fingerprint,
+                "reason": (
+                    f"{qualifying_count} candidates passed validation-readiness gates "
+                    "but need capability ranker evidence first"
+                ),
+                "priority_score": round(float(priority_score or 0.0), 6),
+                "priority_reasons": priority_reasons or {},
+                "evidence_pack": evidence_pack,
+            },
+        )
+        nb.add_entry(
+            ExperimentEntry(
+                entry_type="decision",
+                title="Auto-Capability-Ranking Triggered",
+                content=(
+                    f"Automatically queuing capability ranking for {len(result_ids)} "
+                    "robust investigation survivors before validation."
+                ),
+                metadata={
+                    "task_id": task_id,
+                    "result_ids": result_ids,
+                    "priority_score": priority_score,
+                    "priority_reasons": priority_reasons or {},
+                    "evidence_pack": evidence_pack,
+                },
+            )
+        )
+        return task_id
+
     def _queue_pending_validation_followup(
         self,
         *,
@@ -511,6 +611,57 @@ class _ResultsAutoEscalatePhase7Mixin(_ActiveLearningFollowupMixin):
             )
         )
         return task_id
+
+    @staticmethod
+    def _capability_ranked_result_ids(
+        nb: LabNotebook,
+        result_ids: List[str],
+    ) -> set[str]:
+        ids = [str(rid) for rid in result_ids if rid]
+        if not ids:
+            return set()
+        placeholders = ",".join("?" for _ in ids)
+        try:
+            available_columns = {
+                str(row["name"])
+                for row in nb.conn.execute("PRAGMA table_info(leaderboard)").fetchall()
+            }
+            evidence_fields = available_capability_ranker_evidence_fields(
+                available_columns
+            )
+            if not evidence_fields:
+                return set()
+            columns = ", ".join(evidence_fields)
+            rows = nb.conn.execute(
+                f"""
+                SELECT result_id, {columns}
+                FROM leaderboard
+                WHERE result_id IN ({placeholders})
+                """,
+                ids,
+            ).fetchall()
+        except sqlite3.Error as exc:
+            logger.warning(
+                "Capability-ranking evidence lookup failed; queuing all candidates for ranking: %s",
+                exc,
+            )
+            return set()
+        ranked: set[str] = set()
+        for row in rows:
+            if any(row[field] is not None for field in evidence_fields):
+                ranked.add(str(row["result_id"]))
+        return ranked
+
+    @classmethod
+    def _split_capability_ranking_required(
+        cls,
+        nb: LabNotebook,
+        result_ids: List[str],
+    ) -> tuple[List[str], List[str]]:
+        ranked = cls._capability_ranked_result_ids(nb, result_ids)
+        needs_ranking = [rid for rid in result_ids if rid not in ranked]
+        validation_ready = [rid for rid in result_ids if rid in ranked]
+        return needs_ranking, validation_ready
 
     @staticmethod
     def _apply_sparse_learning_signal(
@@ -872,6 +1023,8 @@ class _ResultsAutoEscalatePhase7Mixin(_ActiveLearningFollowupMixin):
         candidate_ids = [
             item["result_id"] for item in ranked[: config.auto_validate_top_n]
         ]
+        if not candidate_ids:
+            return
         decision_id = self._record_auto_validate_selection(
             nb,
             results=results,
@@ -887,21 +1040,59 @@ class _ResultsAutoEscalatePhase7Mixin(_ActiveLearningFollowupMixin):
             for rid in candidate_ids
             if rid in ranked_strong_by_id
         ]
-        priority_score, priority_reasons = self._followup_priority_summary(queue_rows)
 
-        self._queue_pending_followup(
-            nb=nb,
-            stage="validation",
-            result_ids=candidate_ids,
-            config=config,
-            blocked_incomplete_fingerprint=blocked_incomplete_fingerprint,
-            qualifying_count=len(strong),
-            source_context="auto_validate_investigation",
-            source_decision_id=decision_id,
-            source_experiment_id=str(results.get("experiment_id") or ""),
-            priority_score=priority_score,
-            priority_reasons=priority_reasons,
+        needs_ranking, validation_ready = self._split_capability_ranking_required(
+            nb,
+            candidate_ids,
         )
+
+        if needs_ranking:
+            needs_ranking_set = set(needs_ranking)
+            ranker_rows = [
+                row
+                for row in queue_rows
+                if str(row.get("result_id") or "") in needs_ranking_set
+            ]
+            ranker_priority, ranker_reasons = self._followup_priority_summary(
+                ranker_rows
+            )
+            self._queue_pending_followup(
+                nb=nb,
+                stage="capability_ranking",
+                result_ids=needs_ranking,
+                config=config,
+                blocked_incomplete_fingerprint=blocked_incomplete_fingerprint,
+                qualifying_count=len(strong),
+                source_context="auto_rank_capability_investigation",
+                source_decision_id=decision_id,
+                source_experiment_id=str(results.get("experiment_id") or ""),
+                priority_score=ranker_priority,
+                priority_reasons=ranker_reasons,
+            )
+
+        if validation_ready:
+            validation_ready_set = set(validation_ready)
+            validation_rows = [
+                row
+                for row in queue_rows
+                if str(row.get("result_id") or "") in validation_ready_set
+            ]
+            validation_priority, validation_reasons = self._followup_priority_summary(
+                validation_rows
+            )
+            self._queue_pending_followup(
+                nb=nb,
+                stage="validation",
+                result_ids=validation_ready,
+                config=config,
+                blocked_incomplete_fingerprint=blocked_incomplete_fingerprint,
+                qualifying_count=len(strong),
+                source_context="auto_validate_investigation",
+                source_decision_id=decision_id,
+                source_experiment_id=str(results.get("experiment_id") or ""),
+                priority_score=validation_priority,
+                priority_reasons=validation_reasons,
+            )
 
     def _record_auto_validate_selection(
         self,

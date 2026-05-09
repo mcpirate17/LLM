@@ -7,7 +7,7 @@ Usage:
 Evaluates each template by:
 1. Building a 2-layer model (dim=128, vocab=100277)
 2. Training for N steps on WikiText-103 with checkpoints
-3. Running binding probes (induction, AR, binding_auc) at final
+3. Running binding probes (induction, AR, binding_screening_auc) at final
 4. Running wikitext perplexity eval
 5. Comparing to GPT-2 reference baseline
 """
@@ -154,15 +154,19 @@ def run_binding_probes(model, device: str = DEVICE):
 
         result = run_screening_binding_probes(model, device=device)
         return {
-            "binding_auc": getattr(result, "binding_auc", None),
-            "induction_auc": getattr(result, "induction_auc", None),
-            "ar_auc": getattr(result, "ar_auc", None),
-            "ar_final_acc": getattr(result, "ar_final_acc", None),
-            "ar_timed_out": getattr(result, "ar_timed_out", None),
+            "binding_screening_auc": getattr(result, "binding_screening_auc", None),
+            "induction_screening_auc": getattr(result, "induction_screening_auc", None),
+            "ar_legacy_auc": getattr(result, "ar_legacy_auc", None),
+            "ar_legacy_final_acc": getattr(result, "ar_legacy_final_acc", None),
+            "ar_legacy_timed_out": getattr(result, "ar_legacy_timed_out", None),
         }
     except Exception as e:
         logger.warning("Binding probes failed: %s", e)
-        return {"binding_auc": None, "induction_auc": None, "ar_auc": None}
+        return {
+            "binding_screening_auc": None,
+            "induction_screening_auc": None,
+            "ar_legacy_auc": None,
+        }
 
 
 def run_wikitext_eval(model, device: str = DEVICE):
@@ -298,9 +302,9 @@ def main():
             gpt2_loss = r["final_loss"]
 
     for r in results:
-        ind = r.get("induction_auc")
-        ar = r.get("ar_auc")
-        bind = r.get("binding_auc")
+        ind = r.get("induction_screening_auc")
+        ar = r.get("ar_legacy_auc")
+        bind = r.get("binding_screening_auc")
         ind_s = f"{ind:.4f}" if ind is not None else "—"
         ar_s = f"{ar:.4f}" if ar is not None else "—"
         bind_s = f"{bind:.4f}" if bind is not None else "—"

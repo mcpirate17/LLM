@@ -482,7 +482,11 @@ def get_registry_running_experiment_snapshot(
 
 
 def _fetch_projected_running_experiment_row(nb: LabNotebook):
-    return nb.conn.execute(
+    services = start_runtime_event_projector(nb.db_path)
+    projector = services.lifecycle_projector
+    if projector is None:
+        return None
+    rows = nb.conn.execute(
         """
         SELECT
             e.experiment_id,
@@ -495,28 +499,22 @@ def _fetch_projected_running_experiment_row(nb: LabNotebook):
             e.n_programs_generated,
             e.n_stage0_passed,
             e.n_stage05_passed,
-            e.n_stage1_passed,
-            MAX(arev.applied_at) AS last_projected_at
-        FROM experiments e
-        JOIN applied_runtime_events arev
-          ON arev.run_id = e.experiment_id
-        WHERE e.status = 'running'
-        GROUP BY
-            e.experiment_id,
-            e.timestamp,
-            e.started_at,
-            e.experiment_type,
-            e.status,
-            e.hypothesis,
-            e.config_json,
-            e.n_programs_generated,
-            e.n_stage0_passed,
-            e.n_stage05_passed,
             e.n_stage1_passed
+        FROM experiments e
+        WHERE e.status = 'running'
         ORDER BY COALESCE(e.started_at, e.timestamp) DESC
-        LIMIT 1
+        LIMIT 25
         """
-    ).fetchone()
+    ).fetchall()
+    for row in rows:
+        exp_id = str(row["experiment_id"] or "")
+        last_projected_at = projector.latest_applied_at_for_run(exp_id)
+        if last_projected_at is None:
+            continue
+        out = dict(row)
+        out["last_projected_at"] = last_projected_at
+        return out
+    return None
 
 
 def _projected_total_programs(row, config: Dict[str, Any]) -> int:
@@ -598,7 +596,6 @@ def _build_projected_experiment_snapshot(
 def get_projected_running_experiment_snapshot(
     nb: LabNotebook,
 ) -> Optional[Dict[str, Any]]:
-    start_runtime_event_projector(nb.db_path)
     row = _fetch_projected_running_experiment_row(nb)
     if row is None:
         return None

@@ -248,15 +248,15 @@ function CompareView({ comparisonList, onRemoveProgram, onSelectProgram }) {
               </tr>
               <tr>
                 <td style={{ padding: 8, fontWeight: 600 }}>Induction AUC</td>
-                {details.map(d => <td key={d.result_id} style={{ padding: 8, textAlign: 'center' }}>{fmt(d.program?.induction_auc, 3)}</td>)}
+                {details.map(d => <td key={d.result_id} style={{ padding: 8, textAlign: 'center' }}>{fmt(d.program?.induction_screening_auc, 3)}</td>)}
               </tr>
               <tr>
                 <td style={{ padding: 8, fontWeight: 600 }}>AR AUC</td>
-                {details.map(d => <td key={d.result_id} style={{ padding: 8, textAlign: 'center' }}>{fmt(d.program?.ar_auc, 3)}</td>)}
+                {details.map(d => <td key={d.result_id} style={{ padding: 8, textAlign: 'center' }}>{fmt(d.program?.ar_legacy_auc, 3)}</td>)}
               </tr>
               <tr>
                 <td style={{ padding: 8, fontWeight: 600 }}>Binding AUC</td>
-                {details.map(d => <td key={d.result_id} style={{ padding: 8, textAlign: 'center' }}>{fmt(d.program?.binding_auc, 3)}</td>)}
+                {details.map(d => <td key={d.result_id} style={{ padding: 8, textAlign: 'center' }}>{fmt(d.program?.binding_screening_auc, 3)}</td>)}
               </tr>
               <tr>
                 <td style={{ padding: 8, fontWeight: 600 }}>BLiMP</td>

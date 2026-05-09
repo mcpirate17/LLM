@@ -5,6 +5,7 @@ that the mixin can be composed into a minimal stub class.
 """
 
 import inspect
+import json
 import os
 import sys
 import unittest
@@ -97,6 +98,85 @@ class TestMixinComposition(unittest.TestCase):
 
 
 class TestChampionConfirmationPolicy(unittest.TestCase):
+    def test_confirmation_uses_source_architecture_config(self):
+        class _Stub(_ExecutionValidationMixin):
+            pass
+
+        class _Conn:
+            def __init__(self):
+                self._rows = []
+
+            def execute(self, sql, params=None):
+                if "FROM program_results pr" in sql:
+                    self._rows = [
+                        {
+                            "result_id": "replay-rid",
+                            "experiment_id": "replay-exp",
+                            "data_provenance_json": json.dumps(
+                                {
+                                    "n_layers": 6,
+                                    "vocab_size": 100277,
+                                    "model_dim": 256,
+                                    "tokenizer_mode": "tiktoken",
+                                    "tiktoken_encoding": "cl100k_base",
+                                }
+                            ),
+                            "config_json": json.dumps(
+                                {
+                                    "n_layers": 6,
+                                    "vocab_size": 100277,
+                                    "model_dim": 256,
+                                    "tokenizer_mode": "tiktoken",
+                                    "tiktoken_encoding": "cl100k_base",
+                                }
+                            ),
+                        }
+                    ]
+                else:
+                    self._rows = [
+                        {
+                            "config_json": json.dumps(
+                                {
+                                    "n_layers": 3,
+                                    "vocab_size": 100277,
+                                    "model_dim": 256,
+                                    "tokenizer_mode": "tiktoken",
+                                    "tiktoken_encoding": "cl100k_base",
+                                    "scale_up_steps": 5000,
+                                }
+                            )
+                        }
+                    ]
+                return self
+
+            def fetchone(self):
+                return self._rows[0] if self._rows else None
+
+            def fetchall(self):
+                return self._rows
+
+        class _Notebook:
+            conn = _Conn()
+
+        config = RunConfig(mode="confirmation", n_layers=4, scale_up_steps=40000)
+        scale_config = config.copy()
+        scale_config.stage1_steps = config.scale_up_steps
+        source = {
+            "result_id": "source-rid",
+            "experiment_id": "source-exp",
+            "graph_fingerprint": "same-fp",
+            "data_provenance": {"n_layers": 6},
+        }
+
+        candidate, candidate_scale = _Stub()._scale_up_candidate_configs(
+            _Notebook(), source, config, scale_config
+        )
+
+        self.assertEqual(candidate.n_layers, 6)
+        self.assertEqual(candidate.scale_up_steps, 40000)
+        self.assertEqual(candidate_scale.n_layers, 6)
+        self.assertEqual(candidate_scale.stage1_steps, 40000)
+
     def test_confirmation_survivor_is_not_novelty_gated(self):
         class _Stub(_ExecutionValidationMixin):
             def __init__(self):

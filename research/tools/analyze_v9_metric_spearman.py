@@ -13,7 +13,7 @@ Three label types compared per metric:
 * ``loss_ratio`` (lower-is-better) — continuous post-training quality.
 * ``composite_score_v8_1`` — pre-v9 ranking we want to either match or
   beat empirically.
-* ``induction_v2_investigation_auc`` — capability landmark; only populated
+* ``induction_intermediate_auc`` — capability landmark; only populated
   on rows that reached investigation tier.
 
 Outputs ``research/perf_artifacts/v9_spearman_<ts>.json`` plus a stdout
@@ -32,8 +32,10 @@ from pathlib import Path
 
 from scipy.stats import spearmanr
 
+from research.defaults import RUNS_DB
+
 ROOT = Path(__file__).resolve().parents[2]
-DB_PATH = ROOT / "research" / "lab_notebook.db"
+DB_PATH = ROOT / RUNS_DB
 ARTIFACT_DIR = ROOT / "research" / "perf_artifacts"
 
 GEMINI_METRICS = [
@@ -53,11 +55,11 @@ LABELS = [
     ("neg_loss_ratio", "-pr.loss_ratio", "continuous"),
     ("composite_score_v8_1", "l.composite_score", "continuous"),
     (
-        "induction_v2_auc",
-        "pr.induction_v2_investigation_auc",
+        "induction_intermediate_auc",
+        "pr.induction_intermediate_auc",
         "continuous",
     ),
-    ("binding_v2_auc", "pr.binding_v2_investigation_auc", "continuous"),
+    ("binding_intermediate_auc", "pr.binding_intermediate_auc", "continuous"),
 ]
 
 
@@ -177,19 +179,23 @@ def main() -> None:
     # decision-relevant label for each metric. Use composite_score_v8_1 as
     # the "this is what we ranked on before" baseline — metrics with high
     # |ρ| against composite are largely re-encoding existing signal;
-    # metrics with high |ρ| against capability labels (induction_v2_auc,
-    # binding_v2_auc, neg_loss_ratio) are adding orthogonal signal worth
+    # metrics with high |ρ| against capability labels (induction_intermediate_auc,
+    # binding_intermediate_auc, neg_loss_ratio) are adding orthogonal signal worth
     # weighting heavily.
     print()
     print("=== weight-calibration suggestion (v9.1 candidate) ===")
     print(
-        "Heuristic: weight ∝ max(|ρ| vs neg_loss_ratio, |ρ| vs induction_v2_auc, "
-        "|ρ| vs binding_v2_auc).\n"
+        "Heuristic: weight ∝ max(|ρ| vs neg_loss_ratio, |ρ| vs induction_intermediate_auc, "
+        "|ρ| vs binding_intermediate_auc).\n"
         "This favors metrics that predict capability-relevant labels — "
         "what v9 was supposed to surface — over metrics that just re-encode "
         "the v8.1 composite.\n"
     )
-    capability_labels = ("neg_loss_ratio", "induction_v2_auc", "binding_v2_auc")
+    capability_labels = (
+        "neg_loss_ratio",
+        "induction_intermediate_auc",
+        "binding_intermediate_auc",
+    )
     raw_weights = {}
     for metric_label in metric_columns:
         rhos = [

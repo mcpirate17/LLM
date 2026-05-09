@@ -20,7 +20,7 @@ from typing import Any, Optional
 
 import requests
 
-DB = "/home/tim/Projects/LLM/research/lab_notebook.db"
+DB = "/home/tim/Projects/LLM/research/runs.db"
 DASHBOARD_BASE = "http://localhost:5000"
 ARTIFACT_DIR = Path("/home/tim/Projects/LLM/research/perf_artifacts")
 HAPPY_TIMES = "/home/tim/Projects/LLM/happy_times.py"

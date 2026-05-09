@@ -32,8 +32,8 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
+from research.defaults import RUNS_DB
 from research.tools._db_maintenance import (
-    DEFAULT_WRITER_LOCK,
     check_writer_lock,
     connect_readonly,
     connect_writer,
@@ -44,7 +44,7 @@ from research.tools._db_maintenance import (
 )
 from research.scientist.shared_utils import coerce_finite_float as _safe_float
 
-DEFAULT_DB = Path("research/lab_notebook.db")
+DEFAULT_DB = Path(RUNS_DB)
 BACKUP_TABLE = "program_results_orphan_fingerprint_cleanup_backup"
 
 INTENTIONAL_EXPERIMENT_TYPES = (
@@ -65,11 +65,11 @@ POST_SCREENING_SIGNAL_COLUMNS = (
     "wikitext_score",
     "hellaswag_acc",
     "blimp_overall_accuracy",
-    "induction_auc",
-    "binding_auc",
-    "binding_composite",
-    "induction_v2_investigation_auc",
-    "binding_v2_investigation_auc",
+    "induction_screening_auc",
+    "binding_screening_auc",
+    "binding_screening_composite",
+    "induction_intermediate_auc",
+    "binding_intermediate_auc",
     "discovery_loss_ratio",
     "validation_loss_ratio",
 )
@@ -90,11 +90,11 @@ HIGHER_BETTER_COLUMNS = {
     "compression_ratio",
     "hellaswag_acc",
     "blimp_overall_accuracy",
-    "ar_auc",
-    "ar_final_acc",
-    "induction_auc",
-    "binding_auc",
-    "binding_composite",
+    "ar_legacy_auc",
+    "ar_legacy_final_acc",
+    "induction_screening_auc",
+    "binding_screening_auc",
+    "binding_screening_composite",
     "validation_robustness_score",
     "wikitext_score",
     "tinystories_score",
@@ -109,10 +109,10 @@ HIGHER_BETTER_COLUMNS = {
     "robustness_long_ctx_passkey_score",
     "robustness_long_ctx_retrieval_aggregate",
     "robustness_long_ctx_combined_score",
-    "induction_v2_investigation_auc",
-    "induction_v2_investigation_max_gap_acc",
-    "binding_v2_investigation_auc",
-    "binding_v2_investigation_max_distance_acc",
+    "induction_intermediate_auc",
+    "induction_intermediate_max_gap_acc",
+    "binding_intermediate_auc",
+    "binding_intermediate_max_distance_acc",
 }
 
 LOWER_BETTER_COLUMNS = {
@@ -167,12 +167,12 @@ MAX_COLUMNS = {
     "hellaswag_tokenizer_mode",
     "hellaswag_tiktoken_encoding",
     "blimp_n_subtasks",
-    "induction_probe_train_steps",
-    "binding_probe_eval_examples",
+    "induction_screening_train_steps",
+    "binding_screening_eval_examples",
     "screening_hellaswag_correct",
     "screening_hellaswag_total",
-    "induction_v2_investigation_steps_trained",
-    "binding_v2_investigation_train_steps",
+    "induction_intermediate_steps_trained",
+    "binding_intermediate_train_steps",
 }
 
 RELABEL_COLUMNS = {
@@ -567,7 +567,7 @@ def run(
         print("\nDry-run only. Re-run with --apply to execute against the writer.")
         return 0
 
-    check_writer_lock(DEFAULT_WRITER_LOCK)
+    check_writer_lock(Path(f"{db_path}.writer-lock"))
     write_conn = connect_writer(db_path)
     backup_columns = _ensure_backup_table(write_conn)
     now = time.time()

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Dict, Iterable, List
 
+from .graph_artifacts import resolve_graph_json_value
 from ..trust_policy import sql_trusted_clause
 
 VALID_PROGRAM_SORTS = frozenset(
@@ -39,8 +40,15 @@ def ensure_architecture_family(nb, rows: Iterable[Dict]) -> List[Dict]:
     rows_dicts = [dict(r) for r in rows]
     for row in rows_dicts:
         if not row.get("architecture_family"):
+            graph_json = row.get("graph_json")
+            if isinstance(graph_json, str):
+                graph_json = resolve_graph_json_value(
+                    nb.conn,
+                    nb.db_path,
+                    graph_json,
+                )
             row["architecture_family"] = nb._classify_architecture_family(
-                graph_json=row.get("graph_json"),
+                graph_json=graph_json,
                 routing_mode=row.get("routing_mode"),
             )
     return rows_dicts

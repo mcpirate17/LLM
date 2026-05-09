@@ -25,6 +25,7 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
+from research.defaults import RUNTIME_DIR_ABS
 from research.tools.backfill_templates import DB_PATH, get_template_stats
 from research.tools._script_audit import (
     complete_script_experiment,
@@ -100,7 +101,7 @@ _TIER_TEMPLATES: "OrderedDict[str, list[str]]" = OrderedDict(
 
 
 def _default_runtime_dir() -> Path:
-    return Path("research/runtime/backfill")
+    return RUNTIME_DIR_ABS / "backfill"
 
 
 def _read_json(path: Path) -> dict[str, Any]:

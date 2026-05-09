@@ -30,6 +30,7 @@ from itertools import islice, product
 from pathlib import Path
 from typing import Any, Iterable
 
+from research.defaults import RUNTIME_DIR_ABS
 from research.scientist.native_runner import compile_model_native_first
 from research.scientist.runner import ExperimentRunner, RunConfig
 from research.scientist.shared_utils import resolve_device
@@ -49,7 +50,7 @@ _DEFAULT_SEQ_LEN = 128
 _DEFAULT_VOCAB_SIZE = 8192
 _DEFAULT_BATCH_SIZE = 4
 _DEFAULT_STAGE1_STEPS = 40
-_DEFAULT_LOG_PATH = Path("research/runtime/scaffold_profile/scaffold_profile.log")
+_DEFAULT_LOG_PATH = RUNTIME_DIR_ABS / "scaffold_profile" / "scaffold_profile.log"
 
 _ATTN_OPS = (
     "softmax_attention",
@@ -796,7 +797,7 @@ def main() -> None:
         default=False,
         help="Use --ops exactly as provided instead of filtering to each family's default candidate set",
     )
-    parser.add_argument("--db", type=Path, default=Path("research/lab_notebook.db"))
+    parser.add_argument("--db", type=Path, default=Path("research/runs.db"))
     parser.add_argument("--device", choices=["cpu", "cuda"], default="cuda")
     parser.add_argument("--data-mode", choices=["random", "corpus"], default="corpus")
     parser.add_argument("--optimizer", default="adamw")

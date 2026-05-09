@@ -75,7 +75,7 @@ def _time_micro_train(
 def benchmark_stage1_hotpath(*, fixture: str, repeats: int) -> Dict[str, Any]:
     config = _build_config(fixture=fixture)
     lean_config = _make_stage1_screening_config(config)
-    runner = ExperimentRunner("research/lab_notebook.db")
+    runner = ExperimentRunner("research/runs.db")
     base_runs = []
     lean_runs = []
     for _ in range(max(1, repeats)):
@@ -125,7 +125,7 @@ def benchmark_stage1_hotpath(*, fixture: str, repeats: int) -> Dict[str, Any]:
 def benchmark_orchestrator_hotpath(*, fixture: str) -> Dict[str, Any]:
     config = _build_config(fixture=fixture)
     lean_config = _make_stage1_screening_config(config)
-    runner = ExperimentRunner("research/lab_notebook.db")
+    runner = ExperimentRunner("research/runs.db")
     graph = build_gpt2_attn_scaffold("softmax_attention", model_dim=config.model_dim)
     orchestrator = WorkerPoolOrchestrator(
         train_fn=lambda model, cfg, seed, dev: runner._micro_train(

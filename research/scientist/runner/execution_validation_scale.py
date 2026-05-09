@@ -25,6 +25,21 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+_SOURCE_COMPAT_CONFIG_KEYS = (
+    "n_layers",
+    "vocab_size",
+    "model_dim",
+    "data_mode",
+    "corpus_path",
+    "corpus_format",
+    "corpus_text_key",
+    "corpus_max_chars",
+    "corpus_train_fraction",
+    "corpus_val_fraction",
+    "tokenizer_mode",
+    "tiktoken_encoding",
+)
+
 
 class _ExecutionValidationScaleMixin:
     """Scale-up: fetch/compile, train, metrics, baselines, evals, novelty, record."""
@@ -45,13 +60,32 @@ class _ExecutionValidationScaleMixin:
         results: dict,
     ) -> None:
         """Process a single scale-up candidate: fetch, compile, train, record."""
+        source_program = nb.get_program_detail(source_result_id)
+        if source_program is None:
+            self._emit_event(
+                "scale_up_progress",
+                {
+                    "experiment_id": exp_id,
+                    "current_program": prog_idx + 1,
+                    "total_programs": total,
+                    "source_result_id": source_result_id,
+                    "status": "skipped",
+                    "error": "Source program not found",
+                },
+            )
+            return
+        candidate_config, candidate_scale_config = self._scale_up_candidate_configs(
+            nb, source_program, config, scale_config
+        )
+
         result = self._scale_up_fetch_and_compile(
             exp_id=exp_id,
             source_result_id=source_result_id,
             prog_idx=prog_idx,
             total=total,
-            config=config,
+            config=candidate_config,
             nb=nb,
+            source_program=source_program,
         )
         if result is None:
             return
@@ -64,8 +98,8 @@ class _ExecutionValidationScaleMixin:
             exp_id=exp_id,
             source_result_id=source_result_id,
             prog_idx=prog_idx,
-            config=config,
-            scale_config=scale_config,
+            config=candidate_config,
+            scale_config=candidate_scale_config,
             dev=dev,
             model=model,
         )
@@ -79,7 +113,9 @@ class _ExecutionValidationScaleMixin:
         throughput = s1_result.get("throughput")
         training_curve = s1_result.get("training_curve")
 
-        self._scale_up_collect_training_metrics(program_metrics, s1_result, config)
+        self._scale_up_collect_training_metrics(
+            program_metrics, s1_result, candidate_config
+        )
 
         if s1_passed:
             results["stage1_passed"] += 1
@@ -88,7 +124,7 @@ class _ExecutionValidationScaleMixin:
                     program_metrics=program_metrics,
                     s1_result=s1_result,
                     final_loss=final_loss,
-                    config=config,
+                    config=candidate_config,
                     dev_str=dev_str,
                     source_result_id=source_result_id,
                 )
@@ -99,7 +135,7 @@ class _ExecutionValidationScaleMixin:
             s1_passed=s1_passed,
             model=model,
             dev_str=dev_str,
-            config=config,
+            config=candidate_config,
             program_metrics=program_metrics,
             source_result_id=source_result_id,
         )
@@ -109,7 +145,7 @@ class _ExecutionValidationScaleMixin:
             source_result_id=source_result_id,
             prog_idx=prog_idx,
             graph=graph,
-            config=config,
+            config=candidate_config,
             dev=dev,
             dev_str=dev_str,
             s1_passed=s1_passed,
@@ -120,7 +156,7 @@ class _ExecutionValidationScaleMixin:
             s1_passed=s1_passed,
             model=model,
             graph=graph,
-            config=config,
+            config=candidate_config,
             dev_str=dev_str,
             nb=nb,
             program_metrics=program_metrics,
@@ -132,7 +168,7 @@ class _ExecutionValidationScaleMixin:
             source_result_id=source_result_id,
             prog_idx=prog_idx,
             total=total,
-            config=config,
+            config=candidate_config,
             nb=nb,
             results=results,
             graph=graph,
@@ -155,12 +191,13 @@ class _ExecutionValidationScaleMixin:
         total: int,
         config: RunConfig,
         nb,
+        source_program: dict | None = None,
     ) -> tuple | None:
         """Fetch source, deserialize graph, compile model.
 
         Returns (graph, model) or None if skipped.
         """
-        source_program = nb.get_program_detail(source_result_id)
+        source_program = source_program or nb.get_program_detail(source_result_id)
         if source_program is None:
             self._emit_event(
                 "scale_up_progress",
@@ -227,6 +264,136 @@ class _ExecutionValidationScaleMixin:
             )
 
         return graph, model
+
+    def _scale_up_candidate_configs(
+        self,
+        nb,
+        source_program: dict,
+        config: RunConfig,
+        scale_config: RunConfig,
+    ) -> tuple[RunConfig, RunConfig]:
+        """Return per-source configs for comparable champion confirmation."""
+        if str(getattr(config, "mode", "") or "") != "confirmation":
+            return config, scale_config
+        source_cfg = self._scale_up_source_config_payload(nb, source_program)
+        if not source_cfg:
+            return config, scale_config
+        candidate = config.copy()
+        candidate_scale = scale_config.copy()
+        applied = {}
+        for key in _SOURCE_COMPAT_CONFIG_KEYS:
+            if key not in source_cfg or source_cfg.get(key) in (None, ""):
+                continue
+            old = getattr(candidate, key, None)
+            value = self._scale_up_coerce_config_value(key, source_cfg[key], old)
+            setattr(candidate, key, value)
+            if hasattr(candidate_scale, key):
+                setattr(candidate_scale, key, value)
+            if value != old:
+                applied[key] = {"from": old, "to": value}
+        candidate.mode = "confirmation"
+        candidate_scale.mode = "confirmation"
+        candidate_scale.stage1_steps = candidate.scale_up_steps
+        candidate_scale.stage1_batch_size = candidate.scale_up_batch_size
+        candidate_scale.max_seq_len = candidate.scale_up_seq_len
+        if applied:
+            logger.info(
+                "Champion confirmation using source-compatible config for %s: %s",
+                str(source_program.get("result_id") or "")[:8],
+                applied,
+            )
+        return candidate, candidate_scale
+
+    def _scale_up_source_config_payload(self, nb, source_program: dict) -> dict:
+        payload = {}
+        exp_id = source_program.get("experiment_id")
+        if exp_id and getattr(nb, "conn", None) is not None:
+            try:
+                row = nb.conn.execute(
+                    "SELECT config_json FROM experiments WHERE experiment_id = ?",
+                    (exp_id,),
+                ).fetchone()
+                if row:
+                    config_json = row["config_json"] if hasattr(row, "keys") else row[0]
+                    if config_json:
+                        payload.update(json.loads(config_json))
+            except (sqlite3.Error, json.JSONDecodeError, TypeError, KeyError):
+                logger.warning("Unable to read source experiment config for %s", exp_id)
+        provenance = source_program.get("data_provenance")
+        if not isinstance(provenance, dict):
+            raw = source_program.get("data_provenance_json")
+            if raw:
+                try:
+                    provenance = json.loads(raw)
+                except (json.JSONDecodeError, TypeError):
+                    provenance = {}
+        if isinstance(provenance, dict):
+            for key in _SOURCE_COMPAT_CONFIG_KEYS:
+                if key not in payload and provenance.get(key) not in (None, ""):
+                    payload[key] = provenance[key]
+        replay_payload = self._scale_up_replay_compat_config_payload(nb, source_program)
+        if replay_payload:
+            payload.update(replay_payload)
+        return payload
+
+    def _scale_up_replay_compat_config_payload(self, nb, source_program: dict) -> dict:
+        """Return latest exact-replay config for this fingerprint, if present."""
+        conn = getattr(nb, "conn", None)
+        graph_fingerprint = source_program.get("graph_fingerprint")
+        source_result_id = source_program.get("result_id")
+        if conn is None or not graph_fingerprint:
+            return {}
+        try:
+            rows = conn.execute(
+                """
+                SELECT
+                    pr.result_id,
+                    pr.experiment_id,
+                    pr.data_provenance_json,
+                    e.config_json
+                FROM program_results pr
+                LEFT JOIN experiments e ON e.experiment_id = pr.experiment_id
+                WHERE pr.graph_fingerprint = ?
+                  AND pr.result_id != ?
+                  AND (
+                    pr.intentional_rerun_reason = 'exact_graph_replay'
+                    OR pr.model_source = 'exact_graph_replay'
+                  )
+                ORDER BY pr.timestamp DESC
+                LIMIT 8
+                """,
+                (graph_fingerprint, source_result_id or ""),
+            ).fetchall()
+        except sqlite3.Error:
+            return {}
+        for row in rows or []:
+            payload = {}
+            config_json = row["config_json"] if hasattr(row, "keys") else row[3]
+            provenance_json = (
+                row["data_provenance_json"] if hasattr(row, "keys") else row[2]
+            )
+            for raw in (config_json, provenance_json):
+                if not raw:
+                    continue
+                try:
+                    data = json.loads(raw)
+                except (json.JSONDecodeError, TypeError):
+                    continue
+                for key in _SOURCE_COMPAT_CONFIG_KEYS:
+                    if data.get(key) not in (None, ""):
+                        payload[key] = data[key]
+            if payload:
+                return payload
+        return {}
+
+    def _scale_up_coerce_config_value(self, key: str, value, current):
+        if isinstance(current, bool):
+            return bool(value)
+        if isinstance(current, int) and not isinstance(current, bool):
+            return int(value)
+        if isinstance(current, float):
+            return float(value)
+        return value
 
     def _scale_up_train(
         self,

@@ -25,9 +25,23 @@ from ._template_helpers import (
     template_add_op as _add,
     template_add_residual as _residual,
 )
-from ._templates_attention_tail import (
-    _pick_with_local_wildcard,
-)
+from ._selection_utils import with_local_wildcard_probability
+
+
+def _pick_with_local_wildcard(
+    graph: ComputationGraph,
+    node_id: int,
+    rng: random.Random,
+    motif_classes,
+    weights: MotifWeights = None,
+    *,
+    wildcard_prob: float,
+):
+    return with_local_wildcard_probability(
+        graph,
+        lambda: _pick_compatible_motif(graph, node_id, rng, motif_classes, weights),
+        wildcard_prob=wildcard_prob,
+    )
 
 
 def tpl_linear_attn_ffn_block(

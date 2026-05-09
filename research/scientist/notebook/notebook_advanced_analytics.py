@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional, Sequence
 from ..json_utils import json_safe
 from ..runtime_events import publish_runtime_event
 from ._shared import LOGGER
+from .graph_artifacts import resolve_graph_json_value
 from .failure_signature_audits import (
     AUDITED_FALSE_FAILURE_SIGNATURES,
     AUDITED_FALSE_FAILURE_SIGNATURE_SET,
@@ -167,7 +168,12 @@ class _AdvancedAnalyticsMixin:
         if row.get("ops_blob") is not None:
             ops = {op for op in str(row.get("ops_blob") or "").split("\x1f") if op}
         else:
-            ops = set(self._extract_op_names(row.get("graph_json") or ""))
+            graph_json = resolve_graph_json_value(
+                self.conn,
+                self.db_path,
+                row.get("graph_json"),
+            )
+            ops = set(self._extract_op_names(graph_json))
         hist = self._json_dict(row.get("graph_category_histogram"))
         sparse = (
             float(row.get("fp_interaction_sparsity") or 0.0) >= 0.55
@@ -1771,10 +1777,10 @@ class _AdvancedAnalyticsMixin:
                           CASE
                               WHEN cp.hellaswag_acc IS NOT NULL
                                AND cp.blimp_overall_accuracy IS NOT NULL
-                               AND cp.induction_auc IS NOT NULL
-                               AND cp.binding_auc IS NOT NULL
-                               AND cp.binding_composite IS NOT NULL
-                               AND cp.ar_auc IS NOT NULL
+                               AND cp.induction_screening_auc IS NOT NULL
+                               AND cp.binding_screening_auc IS NOT NULL
+                               AND cp.binding_screening_composite IS NOT NULL
+                               AND cp.ar_legacy_auc IS NOT NULL
                                AND cp.wikitext_perplexity IS NOT NULL
                                AND cp.wikitext_score IS NOT NULL
                                AND cp.fp_jacobian_erf_density IS NOT NULL
@@ -1798,19 +1804,19 @@ class _AdvancedAnalyticsMixin:
                               THEN pp.blimp_overall_accuracy - cp.blimp_overall_accuracy
                           END AS blimp_support_effect,
                           CASE
-                              WHEN cp.induction_auc IS NOT NULL
-                               AND pp.induction_auc IS NOT NULL
-                              THEN pp.induction_auc - cp.induction_auc
+                              WHEN cp.induction_screening_auc IS NOT NULL
+                               AND pp.induction_screening_auc IS NOT NULL
+                              THEN pp.induction_screening_auc - cp.induction_screening_auc
                           END AS induction_support_effect,
                           CASE
-                              WHEN cp.binding_composite IS NOT NULL
-                               AND pp.binding_composite IS NOT NULL
-                              THEN pp.binding_composite - cp.binding_composite
+                              WHEN cp.binding_screening_composite IS NOT NULL
+                               AND pp.binding_screening_composite IS NOT NULL
+                              THEN pp.binding_screening_composite - cp.binding_screening_composite
                           END AS binding_support_effect,
                           CASE
-                              WHEN cp.ar_auc IS NOT NULL
-                               AND pp.ar_auc IS NOT NULL
-                              THEN pp.ar_auc - cp.ar_auc
+                              WHEN cp.ar_legacy_auc IS NOT NULL
+                               AND pp.ar_legacy_auc IS NOT NULL
+                              THEN pp.ar_legacy_auc - cp.ar_legacy_auc
                           END AS ar_support_effect,
                           CASE
                               WHEN cp.wikitext_score IS NOT NULL

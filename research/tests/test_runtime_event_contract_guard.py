@@ -39,7 +39,8 @@ _FORBIDDEN_PATTERNS = {
 }
 
 # Snapshot of reviewed exceptions during migration. New occurrences require
-# explicit review and matrix/audit updates.
+# explicit review and matrix/audit updates. The guard intentionally ignores line
+# numbers so unrelated edits do not force a baseline churn.
 #
 # Categories:
 # - compatibility sinks: runner-owned helper methods that deliberately keep
@@ -48,25 +49,24 @@ _FORBIDDEN_PATTERNS = {
 # - admin/runtime direct writes: explicitly reviewed non-lifecycle writes
 _EXPECTED_BASELINE = {
     # API telemetry bridge
-    "scientist/api_routes/analytics_bp.py:148:nb.log_learning_event",
+    "scientist/api_routes/analytics_bp.py:nb.log_learning_event": 1,
     # API admin task cancellation write
-    "scientist/api_routes/programs_routes/validation_rerun.py:465:nb._maybe_commit",
+    "scientist/api_routes/programs_routes/validation_rerun.py:nb._maybe_commit": 1,
     # Runtime benchmark/metric direct-write bridge
-    "scientist/runner/_helpers_benchmark.py:1210:nb._maybe_commit",
+    "scientist/runner/_helpers_benchmark.py:nb._maybe_commit": 2,
     # Centralized lifecycle compatibility sinks
-    "scientist/runner/_lifecycle.py:41:getattr.complete_experiment",
-    "scientist/runner/_lifecycle.py:61:getattr.fail_experiment",
-    "scientist/runner/_lifecycle.py:64:getattr.log_learning_event",
+    "scientist/runner/_lifecycle.py:getattr.complete_experiment": 1,
+    "scientist/runner/_lifecycle.py:getattr.fail_experiment": 1,
+    "scientist/runner/_lifecycle.py:getattr.log_learning_event": 1,
     # Admin maintenance writes
-    "scientist/runner/control_actions.py:503:nb._maybe_commit",
-    "scientist/runner/control_actions.py:529:nb._maybe_commit",
+    "scientist/runner/control_actions.py:nb._maybe_commit": 2,
     # Automation telemetry bridges
-    "scientist/runner/results_auto_escalate_phase7.py:530:nb.log_learning_event",
+    "scientist/runner/results_auto_escalate_phase7.py:nb.log_learning_event": 1,
 }
 
 
-def _scan_contract_violations() -> set[str]:
-    matches: set[str] = set()
+def _scan_contract_violations() -> dict[str, int]:
+    matches: dict[str, int] = {}
     for root in _SCAN_ROOTS:
         for path in sorted(root.rglob("*.py")):
             rel_path = path.relative_to(_ROOT).as_posix()
@@ -75,7 +75,8 @@ def _scan_contract_violations() -> set[str]:
             ):
                 for name, pattern in _FORBIDDEN_PATTERNS.items():
                     if pattern.search(line):
-                        matches.add(f"{rel_path}:{lineno}:{name}")
+                        key = f"{rel_path}:{name}"
+                        matches[key] = matches.get(key, 0) + 1
     return matches
 
 
@@ -85,6 +86,6 @@ def test_runtime_event_contract_guard_baseline():
         "Runtime event contract drift detected.\n"
         "New direct notebook/runtime lifecycle writes in runner/api_routes "
         "must be reviewed and classified in the migration matrix.\n"
-        f"Unexpected/new entries: {sorted(found - _EXPECTED_BASELINE)}\n"
-        f"Missing/removed entries: {sorted(_EXPECTED_BASELINE - found)}"
+        f"Found: {found}\n"
+        f"Expected: {_EXPECTED_BASELINE}"
     )

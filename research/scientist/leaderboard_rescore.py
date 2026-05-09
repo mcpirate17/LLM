@@ -31,28 +31,28 @@ _AGG_METRIC_TO_SCORE_KWARGS = {
     "cross_task_score": ("cross_task_score",),
     "diagnostic_score": ("diagnostic_score",),
     "fp_hierarchy_fitness": ("hierarchy_fitness",),
-    "ar_auc": ("ar_auc",),
-    "nano_ar_inv_score": ("nano_ar_inv_score",),
-    "induction_auc": ("induction_auc",),
-    "binding_auc": ("binding_auc",),
-    "induction_v2_investigation_auc": ("induction_v2_inv_auc",),
-    "binding_v2_investigation_auc": ("binding_v2_inv_auc",),
+    "ar_legacy_auc": ("ar_legacy_auc",),
+    "ar_gate_score": ("ar_gate_score",),
+    "induction_screening_auc": ("induction_screening_auc",),
+    "binding_screening_auc": ("binding_screening_auc",),
+    "induction_intermediate_auc": ("induction_intermediate_inv_auc",),
+    "binding_intermediate_auc": ("binding_intermediate_inv_auc",),
 }
 
 
 _DENORMALIZED_SCORE_METRIC_TO_KWARG = {
-    "induction_v2_investigation_auc": "induction_v2_inv_auc",
-    "binding_v2_investigation_auc": "binding_v2_inv_auc",
+    "induction_intermediate_auc": "induction_intermediate_inv_auc",
+    "binding_intermediate_auc": "binding_intermediate_inv_auc",
 }
 
 _DENORMALIZED_PROGRAM_RESULT_COLUMNS = (
     "hellaswag_metric_version",
     "hellaswag_tokenizer_mode",
     "hellaswag_tiktoken_encoding",
-    "induction_v2_investigation_max_gap_acc",
-    "induction_v2_investigation_protocol_version",
-    "binding_v2_investigation_max_distance_acc",
-    "binding_v2_investigation_protocol_version",
+    "induction_intermediate_max_gap_acc",
+    "induction_intermediate_protocol_version",
+    "binding_intermediate_max_distance_acc",
+    "binding_intermediate_protocol_version",
 )
 
 

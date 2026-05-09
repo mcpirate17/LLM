@@ -225,25 +225,25 @@ def _run_long_range_ar(ctx: EvalContext) -> dict[str, Any]:
     return {"long_ctx_assoc_score": ar.score}
 
 
-def _run_induction_v2(ctx: EvalContext) -> dict[str, Any]:
-    from ...eval.induction_probe_v2_investigation import run_induction_v2_investigation
+def _run_induction_intermediate(ctx: EvalContext) -> dict[str, Any]:
+    from ...eval.induction_intermediate_probe import run_induction_intermediate
 
-    r = run_induction_v2_investigation(ctx.model, device=ctx.dev_str)
+    r = run_induction_intermediate(ctx.model, device=ctx.dev_str)
     return {
-        "induction_v2_investigation_auc": r.auc,
-        "induction_v2_investigation_max_gap_acc": r.max_gap_acc,
-        "induction_v2_investigation_protocol_version": r.protocol_version,
+        "induction_intermediate_auc": r.auc,
+        "induction_intermediate_max_gap_acc": r.max_gap_acc,
+        "induction_intermediate_protocol_version": r.protocol_version,
     }
 
 
-def _run_binding_v2(ctx: EvalContext) -> dict[str, Any]:
-    from ...eval.binding_probe_v2_investigation import run_binding_v2_investigation
+def _run_binding_intermediate(ctx: EvalContext) -> dict[str, Any]:
+    from ...eval.binding_intermediate_probe import run_binding_intermediate
 
-    r = run_binding_v2_investigation(ctx.model, device=ctx.dev_str)
+    r = run_binding_intermediate(ctx.model, device=ctx.dev_str)
     return {
-        "binding_v2_investigation_auc": r.auc,
-        "binding_v2_investigation_max_distance_acc": r.max_distance_acc,
-        "binding_v2_investigation_protocol_version": r.protocol_version,
+        "binding_intermediate_auc": r.auc,
+        "binding_intermediate_max_distance_acc": r.max_distance_acc,
+        "binding_intermediate_protocol_version": r.protocol_version,
     }
 
 
@@ -546,22 +546,22 @@ EVAL_SPECS: tuple[EvalSpec, ...] = (
     EvalSpec(
         name="induction v2 (investigation)",
         result_keys=(
-            "induction_v2_investigation_auc",
-            "induction_v2_investigation_max_gap_acc",
-            "induction_v2_investigation_protocol_version",
+            "induction_intermediate_auc",
+            "induction_intermediate_max_gap_acc",
+            "induction_intermediate_protocol_version",
         ),
         requires_model=True,
-        run=_run_induction_v2,
+        run=_run_induction_intermediate,
     ),
     EvalSpec(
         name="binding v2 (investigation)",
         result_keys=(
-            "binding_v2_investigation_auc",
-            "binding_v2_investigation_max_distance_acc",
-            "binding_v2_investigation_protocol_version",
+            "binding_intermediate_auc",
+            "binding_intermediate_max_distance_acc",
+            "binding_intermediate_protocol_version",
         ),
         requires_model=True,
-        run=_run_binding_v2,
+        run=_run_binding_intermediate,
     ),
     EvalSpec(
         name="permutation composition",
@@ -662,8 +662,8 @@ def _determine_breakthrough(
     from ..breakthrough_gates import passes_capability_floor
 
     capability_passed = passes_capability_floor(
-        induction_v2_investigation_auc=result.induction_v2_investigation_auc,
-        binding_v2_investigation_auc=result.binding_v2_investigation_auc,
+        induction_intermediate_auc=result.induction_intermediate_auc,
+        binding_intermediate_auc=result.binding_intermediate_auc,
     )
 
     val_gates_passed = (
@@ -691,10 +691,10 @@ def _determine_breakthrough(
     elif val_gates_passed and not capability_passed:
         logger.info(
             "breakthrough_blocked_capability_floor: result_id=%s "
-            "induction_v2=%s binding_v2=%s",
+            "induction_intermediate=%s binding_intermediate=%s",
             source_result_id[:12],
-            result.induction_v2_investigation_auc,
-            result.binding_v2_investigation_auc,
+            result.induction_intermediate_auc,
+            result.binding_intermediate_auc,
         )
 
 

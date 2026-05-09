@@ -32,7 +32,7 @@ class GraphRow:
     failure_op: str
     wikitext_perplexity: float | None
     tinystories_score: float | None
-    controlled_lang_s05_sa_score: float | None
+    language_control_s05_sentence_assoc_score: float | None
     motif_count: int
     non_norm_motif_count: int
     norm_motif_count: int
@@ -107,7 +107,7 @@ def load_graph_rows(meta_db: str | Path) -> list[GraphRow]:
                 COALESCE(failure_op, '') AS failure_op,
                 wikitext_perplexity,
                 tinystories_score,
-                controlled_lang_s05_sa_score,
+                language_control_s05_sentence_assoc_score,
                 motif_count,
                 non_norm_motif_count,
                 norm_motif_count,
@@ -135,8 +135,8 @@ def load_graph_rows(meta_db: str | Path) -> list[GraphRow]:
             failure_op=str(row["failure_op"] or ""),
             wikitext_perplexity=_safe_float(row["wikitext_perplexity"]),
             tinystories_score=_safe_float(row["tinystories_score"]),
-            controlled_lang_s05_sa_score=_safe_float(
-                row["controlled_lang_s05_sa_score"]
+            language_control_s05_sentence_assoc_score=_safe_float(
+                row["language_control_s05_sentence_assoc_score"]
             ),
             motif_count=_safe_int(row["motif_count"]),
             non_norm_motif_count=_safe_int(row["non_norm_motif_count"]),
@@ -381,7 +381,7 @@ def analyze_slot_fills(meta_db: str | Path) -> list[dict[str, Any]]:
                 selected_motif_class,
                 COUNT(*) AS n,
                 SUM(CASE WHEN failure_op = 'nano_bind' THEN 1 ELSE 0 END) AS nano_bind_failures,
-                AVG(COALESCE(controlled_lang_s05_sa_score, 0.0)) AS mean_sa,
+                AVG(COALESCE(language_control_s05_sentence_assoc_score, 0.0)) AS mean_sa,
                 AVG(frequency_collapse_risk) AS mean_frequency_risk,
                 AVG(has_effective_positional_mixer) AS effective_pos_mixer_rate
             FROM slot_observations
@@ -446,9 +446,9 @@ def analyze_design_targets(rows: list[GraphRow]) -> list[dict[str, Any]]:
             row.tinystories_score for row in subset if row.tinystories_score is not None
         ]
         sa_values = [
-            row.controlled_lang_s05_sa_score
+            row.language_control_s05_sentence_assoc_score
             for row in subset
-            if row.controlled_lang_s05_sa_score is not None
+            if row.language_control_s05_sentence_assoc_score is not None
         ]
         score = (
             (1.0 / max(_median(ppl_values), 1.0) if ppl_values else 0.0)
@@ -471,7 +471,9 @@ def analyze_design_targets(rows: list[GraphRow]) -> list[dict[str, Any]]:
                 "mean_tinystories_score": round(sum(ts_values) / len(ts_values), 4)
                 if ts_values
                 else None,
-                "mean_controlled_lang_s05_sa": round(sum(sa_values) / len(sa_values), 4)
+                "mean_language_control_s05_sa": round(
+                    sum(sa_values) / len(sa_values), 4
+                )
                 if sa_values
                 else None,
                 "design_score": round(score, 4),
@@ -586,7 +588,7 @@ def write_markdown(path: Path, payload: dict[str, Any]) -> None:
                 "n",
                 "median_wikitext_ppl",
                 "mean_tinystories_score",
-                "mean_controlled_lang_s05_sa",
+                "mean_language_control_s05_sa",
                 "design_score",
             ],
             limit=20,

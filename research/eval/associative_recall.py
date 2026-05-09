@@ -62,11 +62,11 @@ class ARResult:
 
     def to_dict(self) -> Dict[str, Any]:
         return {
-            "ar_auc": self.auc,
-            "ar_final_acc": self.final_acc,
+            "ar_legacy_auc": self.auc,
+            "ar_legacy_final_acc": self.final_acc,
             "ar_learning_curve": self.learning_curve,
-            "ar_timed_out": self.timed_out,
-            "ar_above_chance": self.above_chance,
+            "ar_legacy_timed_out": self.timed_out,
+            "ar_legacy_above_chance": self.above_chance,
             "ar_steps_trained": self.steps_trained,
             "ar_status": self.status,
             "ar_elapsed_ms": self.elapsed_ms,

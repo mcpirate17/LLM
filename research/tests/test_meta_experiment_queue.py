@@ -17,7 +17,7 @@ def test_meta_experiment_queue_builds_profile_and_compression_actions(tmp_path):
             failure_op TEXT,
             routing_fast_lane_ppl_improvement REAL,
             wikitext_perplexity REAL,
-            controlled_lang_s05_sa_score REAL
+            language_control_s05_sentence_assoc_score REAL
         );
         CREATE TABLE graph_profile_observations (
             result_id TEXT,
@@ -39,7 +39,7 @@ def test_meta_experiment_queue_builds_profile_and_compression_actions(tmp_path):
             has_compression_motif INTEGER,
             failure_op TEXT,
             wikitext_perplexity REAL,
-            controlled_lang_s05_sa_score REAL,
+            language_control_s05_sentence_assoc_score REAL,
             frequency_collapse_risk REAL,
             has_effective_positional_mixer INTEGER
         );

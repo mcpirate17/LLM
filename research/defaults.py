@@ -7,6 +7,14 @@ instead of hardcoding values.  Keep this module dependency-free
 
 from __future__ import annotations
 
+from pathlib import Path
+
+# ── Project root (absolute, CWD-independent) ─────────────────────────
+# Anchored on this file's location: research/defaults.py → parent.parent = LLM/.
+# Use the *_ABS Path constants below (not the legacy relative strings) when
+# constructing filesystem paths in code that may run with cwd=research/.
+PROJECT_ROOT: Path = Path(__file__).resolve().parent.parent
+
 # ── Service ports ─────────────────────────────────────────────────────
 DASHBOARD_PORT: int = 5000
 DESIGNER_API_PORT: int = 8091
@@ -21,7 +29,18 @@ DESIGNER_API_HEALTH: str = f"{DESIGNER_API_BASE}/health"
 OLLAMA_BASE: str = f"http://localhost:{OLLAMA_PORT}"
 
 # ── Database paths (relative to project root) ────────────────────────
+# Legacy relative strings — kept for back-compat with consumers that already
+# anchor on PROJECT_ROOT externally. New code should prefer the *_ABS Paths.
 LAB_NOTEBOOK_DB: str = "research/lab_notebook.db"
+RUNS_DB: str = "research/runs.db"
+EVENTS_DB: str = "research/events.db"
+RUNTIME_EVENTS_DIR: str = "research/runtime_events"
+NOTEBOOK_ARTIFACTS_DIR: str = "research/artifacts/notebook"
+
+# Absolute Paths — use these when the consumer can't guarantee its CWD.
+# (CWD=research/ + relative "research/foo" silently writes to research/research/foo.)
+RUNTIME_EVENTS_DIR_ABS: Path = PROJECT_ROOT / "research" / "runtime_events"
+RUNTIME_DIR_ABS: Path = PROJECT_ROOT / "research" / "runtime"
 
 # ── Model architecture defaults ──────────────────────────────────────
 MODEL_DIM: int = 256

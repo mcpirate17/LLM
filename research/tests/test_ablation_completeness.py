@@ -27,10 +27,10 @@ def _full_s1() -> dict:
         "wikitext_score": 0.5,
         "hellaswag_acc": 0.31,
         "blimp_overall_accuracy": 0.55,
-        "induction_auc": 0.21,
-        "binding_auc": 0.18,
-        "binding_composite": 0.12,
-        "ar_auc": 0.06,
+        "induction_screening_auc": 0.21,
+        "binding_screening_auc": 0.18,
+        "binding_screening_composite": 0.12,
+        "ar_legacy_auc": 0.06,
         "fp_jacobian_erf_density": 0.55,
         "fp_icld_delta_loss": -0.4,
         "fp_logit_margin_delta": 0.3,
@@ -114,10 +114,12 @@ class TestAblationCompleteness(unittest.TestCase):
     def test_partial_metrics_still_blocked(self) -> None:
         """A row missing even one required metric must be rejected."""
         kwargs = program_result_kwargs_from_s1(_full_s1(), model_source="ablation")
-        kwargs.pop("induction_auc", None)  # ablation runner used to swallow this
+        kwargs.pop(
+            "induction_screening_auc", None
+        )  # ablation runner used to swallow this
         with self.assertRaises(ValueError) as ctx:
             self._record(fp="fp_partial_ablation", kwargs=kwargs)
-        self.assertIn("induction_auc", str(ctx.exception))
+        self.assertIn("induction_screening_auc", str(ctx.exception))
 
     def test_backfill_replay_provenance_bypasses_guardrail(self) -> None:
         """The backfill tool sets a trust_label and is the *fix* path; it must

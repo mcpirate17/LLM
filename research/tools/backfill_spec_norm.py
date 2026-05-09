@@ -31,8 +31,9 @@ from research.tools._concurrency import (
     assert_gpu_quiet,
     cap_gpu_memory,
 )
+from research.scientist.notebook.graph_artifacts import resolve_graph_json_value
 
-DB_PATH = Path(__file__).resolve().parents[1] / "lab_notebook.db"
+DB_PATH = Path(__file__).resolve().parents[1] / "runs.db"
 TOOL_NAME = "backfill_spec_norm"
 
 
@@ -59,7 +60,11 @@ def _representative_graph_json(
         "ORDER BY timestamp DESC LIMIT 1",
         (fingerprint,),
     ).fetchone()
-    return None if row is None else (row[0], row[1])
+    return (
+        None
+        if row is None
+        else (resolve_graph_json_value(conn, DB_PATH, row[0]), row[1])
+    )
 
 
 def _measure(

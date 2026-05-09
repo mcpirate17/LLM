@@ -22,10 +22,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from research.defaults import RUNS_DB  # noqa: E402
 from research.synthesis.serializer import graph_from_json  # noqa: E402
 
 
-DB_PATH = PROJECT_ROOT / "research/lab_notebook.db"
+DB_PATH = PROJECT_ROOT / RUNS_DB
 RUNTIME_DIR = PROJECT_ROOT / "research/runtime"
 
 ATTENTION_TOKENS = (
@@ -291,17 +292,17 @@ def _fetch_rows(
                pp.wikitext_perplexity AS parent_ppl,
                pp.hellaswag_acc AS parent_hellaswag,
                pp.blimp_overall_accuracy AS parent_blimp,
-               pp.induction_auc AS parent_induction,
-               pp.binding_composite AS parent_binding,
-               pp.ar_auc AS parent_ar,
+               pp.induction_screening_auc AS parent_induction,
+               pp.binding_screening_composite AS parent_binding,
+               pp.ar_legacy_auc AS parent_ar,
                cp.result_id AS child_result_id,
                cp.loss_ratio AS child_loss,
                cp.wikitext_perplexity AS child_ppl,
                cp.hellaswag_acc AS child_hellaswag,
                cp.blimp_overall_accuracy AS child_blimp,
-               cp.induction_auc AS child_induction,
-               cp.binding_composite AS child_binding,
-               cp.ar_auc AS child_ar
+               cp.induction_screening_auc AS child_induction,
+               cp.binding_screening_composite AS child_binding,
+               cp.ar_legacy_auc AS child_ar
         FROM causal_rule_evidence ev
         JOIN causal_ablation_child_observations obs ON obs.evidence_id = ev.evidence_id
         JOIN program_results pp ON pp.result_id = obs.parent_result_id
@@ -317,12 +318,12 @@ def _fetch_rows(
 def _default_parent_ids(conn: sqlite3.Connection, lookback_hours: int) -> list[str]:
     rows = conn.execute(
         """
-        SELECT DISTINCT ev.parent_result_id, pp.induction_auc
+        SELECT DISTINCT ev.parent_result_id, pp.induction_screening_auc
         FROM causal_rule_evidence ev
         JOIN program_results pp ON pp.result_id = ev.parent_result_id
         WHERE ev.timestamp > strftime('%s', 'now') - ?
-          AND pp.induction_auc IS NOT NULL
-        ORDER BY pp.induction_auc DESC
+          AND pp.induction_screening_auc IS NOT NULL
+        ORDER BY pp.induction_screening_auc DESC
         LIMIT 20
         """,
         (max(1, int(lookback_hours)) * 3600,),

@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
-DEFAULT_DB = Path("research/lab_notebook.db")
+DEFAULT_DB = Path("research/runs.db")
 
 
 def _safe_float(value: Any) -> float | None:
@@ -122,15 +122,15 @@ def _load_rows(db: Path) -> list[dict[str, Any]]:
                    l.entry_id,
                    l.tier,
                    l.composite_score,
-                   l.induction_auc,
-                   l.binding_composite,
+                   l.induction_screening_auc,
+                   l.binding_screening_composite,
                    pr.wikitext_perplexity,
                    pr.wikitext_score,
                    pr.hellaswag_acc,
                    pr.blimp_overall_accuracy,
                    pr.tinystories_score,
-                   pr.controlled_lang_s05_sa_score,
-                   pr.controlled_lang_inv_sa_score,
+                   pr.language_control_s05_sentence_assoc_score,
+                   pr.language_control_investigation_sentence_assoc_score,
                    pgf.template_name
             FROM leaderboard l
             JOIN program_results pr ON pr.result_id = l.result_id
@@ -330,8 +330,8 @@ def build_report(db: Path) -> dict[str, Any]:
         "hellaswag_acc",
         "blimp_overall_accuracy",
         "tinystories_score",
-        "controlled_lang_s05_sa_score",
-        "controlled_lang_inv_sa_score",
+        "language_control_s05_sentence_assoc_score",
+        "language_control_investigation_sentence_assoc_score",
     )
     correlations = [
         {

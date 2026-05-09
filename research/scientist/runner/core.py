@@ -29,6 +29,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import torch
 
+from research.defaults import RUNS_DB
+
 from ...eval.baseline import TransformerBaseline
 from ...training.data_pipeline import CorpusConfig, CorpusTokenBatcher
 from ..persona import get_aria
@@ -104,7 +106,7 @@ class _CoreMixin:
         ("steps_double", {"steps_mult": 2.0}),
     ]
 
-    def __init__(self, notebook_path: str = "research/lab_notebook.db"):
+    def __init__(self, notebook_path: str = RUNS_DB):
         self.notebook_path = notebook_path
         self.aria = get_aria()
         self._math_spaces_registered = False

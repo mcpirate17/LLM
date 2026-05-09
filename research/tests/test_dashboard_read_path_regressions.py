@@ -12,7 +12,13 @@ from research.scientist.api import create_app
 from research.scientist.api_routes._strategy_preflight import (
     build_start_mode_eligibility,
 )
+from research.scientist.api_routes.programs_routes._shared import (
+    attach_candidate_confirmation_status,
+)
 from research.scientist.notebook import LabNotebook
+from research.scientist.runner._helpers_benchmark import (
+    _record_capability_ranking_result,
+)
 
 pytestmark = [pytest.mark.api]
 
@@ -21,10 +27,10 @@ _S1_METRICS = {
     "wikitext_perplexity": 570.0,
     "hellaswag_acc": 0.2,
     "blimp_overall_accuracy": 0.51,
-    "induction_auc": 0.01,
-    "binding_auc": 0.0,
-    "binding_composite": 0.1,
-    "ar_auc": 0.01,
+    "induction_screening_auc": 0.01,
+    "binding_screening_auc": 0.0,
+    "binding_screening_composite": 0.1,
+    "ar_legacy_auc": 0.01,
 }
 
 
@@ -135,10 +141,10 @@ def test_program_detail_shows_requested_same_fingerprint_row(tmp_path):
         loss_ratio=0.33,
         novelty_score=0.7,
         intentional_rerun_reason="exact_graph_replay",
-        induction_v2_investigation_auc=0.547,
-        induction_v2_investigation_status="ok",
-        binding_v2_investigation_auc=0.1224,
-        binding_v2_investigation_status="ok",
+        induction_intermediate_auc=0.547,
+        induction_intermediate_status="ok",
+        binding_intermediate_auc=0.1224,
+        binding_intermediate_status="ok",
         **_S1_METRICS,
     )
     nb.flush_writes()
@@ -156,8 +162,8 @@ def test_program_detail_shows_requested_same_fingerprint_row(tmp_path):
     assert payload["display_trust_label"] == "candidate_grade"
     assert payload["display_experiment_type"] == "investigation"
     assert payload["fingerprint_metric_source_result_id"] == child_id
-    assert payload["induction_v2_investigation_auc"] == pytest.approx(0.547)
-    assert payload["binding_v2_investigation_auc"] == pytest.approx(0.1224)
+    assert payload["induction_intermediate_auc"] == pytest.approx(0.547)
+    assert payload["binding_intermediate_auc"] == pytest.approx(0.1224)
     assert not payload["superseded_requested_result"]
 
     child_response = client.get(f"/api/programs/{child_id}")
@@ -191,10 +197,10 @@ def test_dashboard_recent_experiments_uses_program_result_metrics_when_summary_m
         wikitext_perplexity=590.0,
         hellaswag_acc=0.21,
         blimp_overall_accuracy=0.53,
-        induction_auc=0.04,
-        binding_auc=0.03,
-        binding_composite=0.18,
-        ar_auc=0.02,
+        induction_screening_auc=0.04,
+        binding_screening_auc=0.03,
+        binding_screening_composite=0.18,
+        ar_legacy_auc=0.02,
         model_source="exact_graph_replay",
     )
     nb.complete_experiment(
@@ -260,6 +266,34 @@ def test_program_detail_marks_backfill_with_queued_candidate_confirmation(tmp_pa
     assert payload["candidate_confirmation_status"]["status"] == "queued"
     assert payload["display_result_cohort"] == "confirmation_queued"
     assert payload["display_trust_label"] == "candidate confirmation queued"
+
+
+def test_candidate_confirmation_status_degrades_on_malformed_replay_history():
+    class _Conn:
+        def __init__(self):
+            self.calls = 0
+
+        def execute(self, *_args, **_kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return self
+            raise sqlite3.OperationalError(
+                "row error: database disk image is malformed"
+            )
+
+        def fetchone(self):
+            return None
+
+    class _Notebook:
+        conn = _Conn()
+
+    program = {"result_id": "result-with-readable-program-row"}
+
+    attach_candidate_confirmation_status(_Notebook(), program)
+
+    assert program["candidate_confirmation_status"]["status"] == "none"
+    assert program["candidate_confirmation_status"]["degraded"] is True
+    assert "malformed" in program["candidate_confirmation_status"]["error"]
 
 
 def test_validation_eligibility_rejects_unconfirmed_backfill(tmp_path):
@@ -378,6 +412,84 @@ def test_validation_eligibility_resolves_backfill_to_confirmed_candidate(tmp_pat
     assert payload["resolved_result_ids"] == {backfill_id: confirmed_id}
 
 
+def test_capability_ranking_record_persists_ranker_metrics(tmp_path):
+    db_path = tmp_path / "capability_ranking_record.db"
+    nb = LabNotebook(str(db_path))
+    exp_id = nb.start_experiment(
+        experiment_type="capability_ranking",
+        config={"result_ids": ["cap-record"]},
+        hypothesis="capability ranking record",
+        require_preregistration=False,
+    )
+    result_id = nb.record_program_result(
+        experiment_id=exp_id,
+        graph_fingerprint="fp-cap-record",
+        graph_json=json.dumps({"nodes": []}),
+        stage0_passed=True,
+        stage05_passed=True,
+        stage1_passed=True,
+        loss_ratio=0.34,
+        novelty_score=0.62,
+        **_S1_METRICS,
+    )
+    nb.flush_writes()
+    nb.conn.execute(
+        """
+        UPDATE program_results
+        SET result_cohort = 'search',
+            trust_label = 'candidate_grade',
+            comparability_label = 'candidate_comparable',
+            evaluation_protocol_version = 'candidate_grade_v1',
+            data_provenance_json = ?
+        WHERE result_id = ?
+        """,
+        (json.dumps({"provenance_complete": True}), result_id),
+    )
+    nb.conn.commit()
+    nb.upsert_leaderboard(
+        result_id=result_id,
+        model_source="graph_synthesis",
+        screening_loss_ratio=0.34,
+        screening_novelty=0.62,
+        screening_passed=True,
+        investigation_loss_ratio=0.31,
+        investigation_robustness=0.73,
+        investigation_passed=True,
+        tier="investigation",
+        result_cohort="search",
+        trust_label="candidate_grade",
+        comparability_label="candidate_comparable",
+        evaluation_protocol_version="candidate_grade_v1",
+    )
+
+    source = nb.get_program_detail(result_id)
+    _record_capability_ranking_result(
+        nb=nb,
+        exp_id=exp_id,
+        source_result_id=result_id,
+        source=source,
+        model_source="graph_synthesis",
+        benchmark_result={
+            "induction_intermediate_auc": 0.77,
+            "induction_intermediate_status": "ok",
+            "binding_intermediate_auc": 0.69,
+            "binding_intermediate_status": "ok",
+            "ar_intermediate_diagnostic_score": 0.58,
+            "ar_intermediate_status": "ok",
+        },
+    )
+
+    leaderboard = nb.get_leaderboard_entry(result_id)
+    detail = nb.get_program_detail(result_id)
+    nb.close()
+
+    assert leaderboard["tier"] == "capability_ranking"
+    assert leaderboard["induction_intermediate_auc"] == pytest.approx(0.77)
+    assert leaderboard["binding_intermediate_auc"] == pytest.approx(0.69)
+    assert detail["induction_intermediate_auc"] == pytest.approx(0.77)
+    assert detail["binding_intermediate_auc"] == pytest.approx(0.69)
+
+
 def test_validation_rerun_rejects_backfill_without_confirmation(tmp_path):
     db_path = tmp_path / "dashboard_validation_rerun_backfill_guard.db"
     nb = LabNotebook(str(db_path))
@@ -491,6 +603,9 @@ def test_backfill_rerun_pending_and_drain_follow_requested_parent(
             raise AssertionError("drain should select investigation")
 
         def _run_pending_validation(self, task_id=None):
+            raise AssertionError("drain should select investigation")
+
+        def _run_pending_capability_ranking(self, task_id=None):
             raise AssertionError("drain should select investigation")
 
         def _run_pending_investigation(self, task_id=None):

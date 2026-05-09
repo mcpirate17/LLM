@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
+from research.defaults import RUNS_DB, RUNTIME_DIR_ABS
 
 from ...synthesis.grammar import GrammarConfig, batch_generate
 from ..native_runner import compile_model_native_first as compile_model
@@ -489,11 +490,7 @@ class _ExecutionCandidatesMixin:
                 logger.debug("compute_template_weights failed: %s", e)
             # Template selection scheduler — Thompson sampling or UCB1
             try:
-                db_path = (
-                    str(nb.db_path)
-                    if hasattr(nb, "db_path")
-                    else "research/lab_notebook.db"
-                )
+                db_path = str(nb.db_path) if hasattr(nb, "db_path") else RUNS_DB
                 _use_thompson = getattr(
                     getattr(self, "_current_config", None),
                     "use_thompson_sampling",
@@ -537,11 +534,7 @@ class _ExecutionCandidatesMixin:
             try:
                 from ..intelligence.temporal_bayesian import TemporalBayesianTracker
 
-                db_path = (
-                    str(nb.db_path)
-                    if hasattr(nb, "db_path")
-                    else "research/lab_notebook.db"
-                )
+                db_path = str(nb.db_path) if hasattr(nb, "db_path") else RUNS_DB
                 tracker = TemporalBayesianTracker.from_db(
                     db_path=db_path,
                     apply_decay=True,
@@ -780,10 +773,9 @@ class _ExecutionCandidatesMixin:
 
         # Apply Bayesian op priors from compressed learning (optional)
         try:
-            from pathlib import Path
             import json as _json
 
-            priors_path = Path("research/runtime/learning/op_priors.json")
+            priors_path = RUNTIME_DIR_ABS / "learning" / "op_priors.json"
             if priors_path.exists():
                 payload = _json.loads(priors_path.read_text())
                 op_penalties = (
@@ -805,10 +797,9 @@ class _ExecutionCandidatesMixin:
 
         # Apply cluster-based suggestions (optional)
         try:
-            from pathlib import Path
             import json as _json
 
-            sugg_path = Path("research/runtime/learning/cluster_suggestions.json")
+            sugg_path = RUNTIME_DIR_ABS / "learning" / "cluster_suggestions.json"
             if sugg_path.exists():
                 payload = _json.loads(sugg_path.read_text())
                 if isinstance(payload, dict):
@@ -870,10 +861,9 @@ class _ExecutionCandidatesMixin:
 
         # Apply designer feedback signals (from Aria suggestion outcomes)
         try:
-            from pathlib import Path
             import json as _json
 
-            feedback_path = Path("research/runtime/learning/designer_feedback.json")
+            feedback_path = RUNTIME_DIR_ABS / "learning" / "designer_feedback.json"
             if feedback_path.exists():
                 payload = _json.loads(feedback_path.read_text())
                 if isinstance(payload, dict):
@@ -1009,6 +999,38 @@ class _ExecutionCandidatesMixin:
                 pending.get("task_id"),
                 success=False,
                 stage="validation",
+                error=str(e),
+                permanent_failure=self._is_tier_guard_failure(e),
+            )
+
+    def _run_pending_capability_ranking(self, task_id: str | None = None):
+        """Launch one queued capability-ranking followup."""
+        if self.is_running:
+            return
+        pending = self._claim_pending_followup_from_notebook(
+            "capability_ranking",
+            task_id=task_id,
+        )
+        if pending is None:
+            return
+        try:
+            self.start_capability_ranking(
+                result_ids=pending["result_ids"],
+                config=pending["config"],
+                hypothesis=pending["hypothesis"],
+                force=True,
+            )
+            self._finalize_followup_task(
+                pending.get("task_id"),
+                success=True,
+                stage="capability_ranking",
+            )
+        except Exception as e:
+            logger.warning(f"Failed to launch capability ranking: {e}")
+            self._finalize_followup_task(
+                pending.get("task_id"),
+                success=False,
+                stage="capability_ranking",
                 error=str(e),
                 permanent_failure=self._is_tier_guard_failure(e),
             )

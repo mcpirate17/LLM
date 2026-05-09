@@ -3,6 +3,7 @@ import { apiCall, postJson } from '../services/apiService';
 import useCopyToClipboard from './useCopyToClipboard';
 import apiService from '../services/apiService';
 import { summarizeRefineTrace } from '../components/programDetail/refineTraceSummary';
+import { candidateEligibility } from '../utils/candidateState';
 
 function programDetailReducer(state, action) {
   switch (action.type) {
@@ -306,34 +307,28 @@ export default function useProgramData({ resultId, defaultOverrideIneligible, on
   // Derived eligibility
   const entryTier = typeof leaderboardEntry?.tier === 'string' ? leaderboardEntry.tier : (typeof program?.tier === 'string' ? program.tier : '');
   const tier = String(entryTier || '').toLowerCase();
-  const capabilityStatus = String(leaderboardEntry?.capability_quality?.status || '').toLowerCase();
-  const hasInvestigationEvidence = leaderboardEntry?.investigation_loss_ratio != null;
-  const hasValidationEvidence = (
-    leaderboardEntry?.validation_loss_ratio != null
-    || leaderboardEntry?.validation_baseline_ratio != null
-    || Boolean(leaderboardEntry?.validation_passed)
-  );
-  const isCapabilityQualified = capabilityStatus === 'qualified' || capabilityStatus === 'breakthrough';
+  const eligibilitySource = {
+    ...(program || {}),
+    ...(leaderboardEntry || {}),
+    tier: entryTier,
+    stage1_passed: program?.stage1_passed ?? leaderboardEntry?.stage1_passed,
+    investigation_passed: leaderboardEntry?.investigation_passed ?? program?.investigation_passed,
+    validation_passed: leaderboardEntry?.validation_passed ?? program?.validation_passed,
+    capability_quality: leaderboardEntry?.capability_quality ?? program?.capability_quality,
+    is_reference: Boolean(program?.is_reference ?? leaderboardEntry?.is_reference),
+  };
+  const capabilityStatus = String(eligibilitySource.capability_quality?.status || '').toLowerCase();
+  const hasInvestigationEvidence = eligibilitySource.investigation_loss_ratio != null || eligibilitySource.investigation_robustness != null;
+  const fallbackEligibility = candidateEligibility(eligibilitySource);
   const alreadyInvestigated = Boolean(
     hasInvestigationEvidence || tier === 'investigation' || tier === 'validation' || tier === 'breakthrough'
   );
   const alreadyValidated = Boolean(
-    tier === 'breakthrough' || isCapabilityQualified
+    tier === 'breakthrough' || capabilityStatus === 'qualified' || capabilityStatus === 'breakthrough'
   );
-  const fallbackEligibility = {
-    investigationEligible: Boolean(program?.stage1_passed) && (tier === 'screening' && !hasInvestigationEvidence),
-    validationEligible: (
-      (tier === 'investigation' && Boolean(leaderboardEntry?.investigation_passed ?? program?.investigation_passed))
-      || (tier === 'validation' && !isCapabilityQualified)
-    ),
-    confirmationEligible: (
-      !Boolean(program?.is_reference)
-      && (tier === 'validation' || tier === 'breakthrough' || Boolean(leaderboardEntry?.validation_passed ?? program?.validation_passed))
-      && (Boolean(leaderboardEntry?.validation_passed ?? program?.validation_passed) || tier === 'breakthrough')
-    ),
-  };
   const resolvedEligibility = eligibilityByResultId?.[resultId] || fallbackEligibility;
   const canInvestigate = Boolean(resolvedEligibility.investigationEligible || overrideIneligible);
+  const canCapabilityRank = Boolean(resolvedEligibility.capabilityRankingEligible || overrideIneligible);
   const canValidate = Boolean(resolvedEligibility.validationEligible || overrideIneligible);
   const canConfirm = Boolean(resolvedEligibility.confirmationEligible || overrideIneligible);
 
@@ -398,6 +393,7 @@ export default function useProgramData({ resultId, defaultOverrideIneligible, on
     alreadyInvestigated,
     alreadyValidated,
     canInvestigate,
+    canCapabilityRank,
     canValidate,
     canConfirm,
     // Handlers

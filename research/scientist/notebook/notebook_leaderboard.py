@@ -9,6 +9,7 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from ._shared import LOGGER, sanitize_for_db
+from .graph_artifacts import resolve_graph_json_value
 from ..leaderboard_scoring import (
     build_score_kwargs,
     compute_composite,
@@ -78,38 +79,63 @@ _CHAMPION_DASHBOARD_FIELDS = (
     "champion_steps_to_floor_score",
     "champion_floor_quality_score",
     "champion_floor_stability_score",
-    "champion_induction_v3_score",
+    "champion_induction_validation_score",
     "champion_binding_long_context_score",
-    "champion_small_ar_score",
+    "champion_ar_validation_score",
     "champion_tiny_model_score",
     "champion_tiny_model_protocol_version",
     "champion_hard_failure_reason",
-    "induction_v3_auc",
-    "induction_v3_max_gap_acc",
-    "induction_v3_gap_accuracy_cv",
-    "induction_v3_gap_accuracies_json",
-    "induction_v3_steps_trained",
-    "induction_v3_status",
-    "induction_v3_elapsed_ms",
-    "induction_v3_protocol_version",
-    "small_ar_champion_metric_version",
-    "small_ar_champion_final_acc",
-    "small_ar_champion_held_pair_match_acc",
-    "small_ar_champion_held_class_acc",
-    "small_ar_champion_learning_curve_json",
-    "small_ar_champion_steps_to_floor",
-    "small_ar_champion_score",
-    "small_ar_champion_status",
-    "small_ar_champion_elapsed_ms",
+    "induction_validation_auc",
+    "induction_validation_max_gap_acc",
+    "induction_validation_gap_accuracy_cv",
+    "induction_validation_gap_accuracies_json",
+    "induction_validation_steps_trained",
+    "induction_validation_status",
+    "induction_validation_elapsed_ms",
+    "induction_validation_protocol_version",
+    "ar_validation_metric_version",
+    "ar_validation_final_acc",
+    "ar_validation_held_pair_acc",
+    "ar_validation_held_class_acc",
+    "ar_validation_learning_curve_json",
+    "ar_validation_steps_to_floor",
+    "ar_validation_rank_score",
+    "ar_validation_status",
+    "ar_validation_elapsed_ms",
 )
 
 _V2_INVESTIGATION_DASHBOARD_FIELDS = (
-    "induction_v2_investigation_auc",
-    "induction_v2_investigation_max_gap_acc",
-    "induction_v2_investigation_protocol_version",
-    "binding_v2_investigation_auc",
-    "binding_v2_investigation_max_distance_acc",
-    "binding_v2_investigation_protocol_version",
+    "induction_intermediate_auc",
+    "induction_intermediate_max_gap_acc",
+    "induction_intermediate_protocol_version",
+    "binding_intermediate_auc",
+    "binding_intermediate_max_distance_acc",
+    "binding_intermediate_protocol_version",
+)
+
+_INTERMEDIATE_SCREEN_DASHBOARD_FIELDS = (
+    "ar_intermediate_metric_version",
+    "ar_intermediate_diagnostic_score",
+    "ar_intermediate_held_pair_acc",
+    "ar_intermediate_held_pair_lift",
+    "ar_intermediate_held_class_acc",
+    "ar_intermediate_auc_lift",
+    "ar_intermediate_best_held_pair_acc",
+    "ar_intermediate_improvement",
+    "ar_intermediate_status",
+    "ar_intermediate_elapsed_ms",
+    "binding_multislot_metric_version",
+    "binding_multislot_diagnostic_score",
+    "binding_multislot_held_entity_slot_acc",
+    "binding_multislot_held_slot_lift",
+    "binding_multislot_two_plus_slots_acc",
+    "binding_multislot_two_plus_slots_lift",
+    "binding_multislot_mixed_two_plus_slots_acc",
+    "binding_multislot_mixed_two_plus_slots_lift",
+    "binding_multislot_all_slots_acc",
+    "binding_multislot_auc_lift",
+    "binding_multislot_status",
+    "binding_multislot_elapsed_ms",
 )
 
 
@@ -318,6 +344,17 @@ class _LeaderboardMixin:
             "SELECT * FROM leaderboard WHERE result_id = ?",
             (resolved_result_id,),
         ).fetchone()
+        existing_matched_by_reference_fp = False
+        if existing is None and is_reference and pr_row and pr_row["graph_fingerprint"]:
+            fp = str(pr_row["graph_fingerprint"]).strip()
+            if fp:
+                existing = self.conn.execute(
+                    "SELECT * FROM leaderboard WHERE graph_fingerprint = ? "
+                    "ORDER BY COALESCE(is_reference, 0) DESC, timestamp DESC "
+                    "LIMIT 1",
+                    (fp,),
+                ).fetchone()
+                existing_matched_by_reference_fp = existing is not None
         if pr_row is None and existing is None and not is_reference:
             LOGGER.error(
                 "Blocked orphan leaderboard insert: result_id=%s architecture_desc=%s",
@@ -366,11 +403,26 @@ class _LeaderboardMixin:
         # Sanitize all incoming values
         kwargs = sanitize_for_db(kwargs)
 
+        preserve_reference_parent = (
+            existing_matched_by_reference_fp
+            and bool(is_reference)
+            and str(model_source or "") == "reference_calibration"
+        )
+
         # Merge caller kwargs into d first so derived fields can read them
         for col, val in self._leaderboard_update_items(kwargs):
             d[col] = val
         if tags is not None:
-            d["tags"] = tags
+            if preserve_reference_parent:
+                merged_tags = []
+                for item in f"{existing['tags'] or ''},{tags}".split(","):
+                    tag = item.strip()
+                    if tag and tag not in merged_tags:
+                        merged_tags.append(tag)
+                d["tags"] = ",".join(merged_tags)
+                tags = d["tags"]
+            else:
+                d["tags"] = tags
         if notes is not None:
             d["notes"] = notes
         if pr_row:
@@ -405,11 +457,12 @@ class _LeaderboardMixin:
             allowed_tier = existing_tier  # preserve existing tier for SQL write below
             d["tier"] = existing_tier
         tier = allowed_tier
-        d["model_source"] = model_source
+        if not preserve_reference_parent:
+            d["model_source"] = model_source
         current_scoring_version = get_scoring_version()
         d["scoring_config_hash"] = current_scoring_version
         kwargs.setdefault("scoring_config_hash", current_scoring_version)
-        if architecture_desc:
+        if architecture_desc and not preserve_reference_parent:
             d["architecture_desc"] = architecture_desc
         d["is_reference"] = int(is_reference)
         if reference_name:
@@ -500,12 +553,13 @@ class _LeaderboardMixin:
                 "cross_task_score": ("cross_task_score",),
                 "diagnostic_score": ("diagnostic_score",),
                 "fp_hierarchy_fitness": ("hierarchy_fitness",),
-                "ar_auc": ("ar_auc",),
-                "nano_ar_inv_score": ("nano_ar_inv_score",),
-                "induction_auc": ("induction_auc",),
-                "binding_auc": ("binding_auc",),
-                "induction_v2_investigation_auc": ("induction_v2_inv_auc",),
-                "binding_v2_investigation_auc": ("binding_v2_inv_auc",),
+                "ar_legacy_auc": ("ar_legacy_auc",),
+                "ar_gate_score": ("ar_gate_score",),
+                "ar_validation_rank_score": ("ar_validation_rank_score",),
+                "induction_screening_auc": ("induction_screening_auc",),
+                "binding_screening_auc": ("binding_screening_auc",),
+                "induction_intermediate_auc": ("induction_intermediate_inv_auc",),
+                "binding_intermediate_auc": ("binding_intermediate_inv_auc",),
             }
             for col, kwarg_names in metric_to_kwarg.items():
                 stat = metric_agg.get(col) or {}
@@ -543,6 +597,8 @@ class _LeaderboardMixin:
         else:
             composite = float(composite_dec)
             kwargs["score_stability_penalty"] = 1.0
+        if bool(is_reference) and existing and existing["composite_score"] is not None:
+            composite = max(composite, float(existing["composite_score"] or 0.0))
         # Re-derive update_items so the new cv/n_runs/penalty cols hit
         # the SQL UPDATE/INSERT below.
         update_items = self._leaderboard_update_items(kwargs)
@@ -554,7 +610,11 @@ class _LeaderboardMixin:
         _is_moe = False
         if pr_row and pr_row["graph_json"]:
             try:
-                _gj = pr_row["graph_json"]
+                _gj = resolve_graph_json_value(
+                    self.conn,
+                    self.db_path,
+                    pr_row["graph_json"],
+                )
                 if isinstance(_gj, str):
                     _gj = json.loads(_gj)
                 _is_moe = any(
@@ -594,9 +654,20 @@ class _LeaderboardMixin:
                 "composite_score = ?",
                 "is_reference = ?",
             ]
-            params = [time.time(), model_source, tier, composite, int(is_reference)]
+            params = [
+                time.time(),
+                d.get("model_source") or model_source,
+                tier,
+                composite,
+                int(is_reference),
+            ]
+            if not preserve_reference_parent and str(
+                existing["result_id"] or ""
+            ) != str(resolved_result_id):
+                sets.append("result_id = ?")
+                params.append(resolved_result_id)
 
-            if architecture_desc:
+            if architecture_desc and not preserve_reference_parent:
                 sets.append("architecture_desc = ?")
                 params.append(architecture_desc)
             if tags is not None:
@@ -721,6 +792,10 @@ class _LeaderboardMixin:
             _optional_pr_select(column, f"_pr_{column}")
             for column in _V2_INVESTIGATION_DASHBOARD_FIELDS
         )
+        intermediate_screen_select = "".join(
+            _optional_pr_select(column, f"_pr_{column}")
+            for column in _INTERMEDIATE_SCREEN_DASHBOARD_FIELDS
+        )
 
         query = (
             "SELECT l.*, pr.graph_json AS _graph_json, "
@@ -775,27 +850,28 @@ class _LeaderboardMixin:
             "pr.blimp_overall_accuracy AS _pr_blimp_overall_accuracy, "
             "pr.blimp_n_subtasks AS _pr_blimp_n_subtasks, "
             "pr.blimp_status AS _pr_blimp_status, "
-            f"{_optional_pr_select('nano_ar_inv_metric_version')}"
-            f"{_optional_pr_select('nano_ar_inv_in_dist_pair_match_acc')}"
-            f"{_optional_pr_select('nano_ar_inv_in_dist_class_acc')}"
-            f"{_optional_pr_select('nano_ar_inv_held_pair_match_acc')}"
-            f"{_optional_pr_select('nano_ar_inv_held_class_acc')}"
-            f"{_optional_pr_select('nano_ar_inv_score')}"
-            f"{_optional_pr_select('nano_ar_inv_status')}"
-            f"{_optional_pr_select('nano_ar_inv_elapsed_ms')}"
-            f"{_optional_pr_select('nano_ar_inv_train_steps_done')}"
+            f"{_optional_pr_select('ar_gate_metric_version')}"
+            f"{_optional_pr_select('ar_gate_in_dist_pair_acc')}"
+            f"{_optional_pr_select('ar_gate_in_dist_class_acc')}"
+            f"{_optional_pr_select('ar_gate_held_pair_acc')}"
+            f"{_optional_pr_select('ar_gate_held_class_acc')}"
+            f"{_optional_pr_select('ar_gate_score')}"
+            f"{_optional_pr_select('ar_gate_status')}"
+            f"{_optional_pr_select('ar_gate_elapsed_ms')}"
+            f"{_optional_pr_select('ar_gate_train_steps_done')}"
             f"{champion_dashboard_select}"
             f"{v2_investigation_select}"
-            "pr.controlled_lang_metric_version AS controlled_lang_metric_version, "
-            "pr.controlled_lang_s05_sa_score AS controlled_lang_s05_sa_score, "
-            "pr.controlled_lang_s05_nb_order_acc AS controlled_lang_s05_nb_order_acc, "
-            "pr.controlled_lang_s05_nb_score AS controlled_lang_s05_nb_score, "
-            "pr.controlled_lang_s10_sa_score AS controlled_lang_s10_sa_score, "
-            "pr.controlled_lang_s10_nb_order_acc AS controlled_lang_s10_nb_order_acc, "
-            "pr.controlled_lang_s10_nb_score AS controlled_lang_s10_nb_score, "
-            "pr.controlled_lang_inv_sa_score AS controlled_lang_inv_sa_score, "
-            "pr.controlled_lang_inv_nb_order_acc AS controlled_lang_inv_nb_order_acc, "
-            "pr.controlled_lang_inv_nb_score AS controlled_lang_inv_nb_score, "
+            f"{intermediate_screen_select}"
+            "pr.language_control_metric_version AS language_control_metric_version, "
+            "pr.language_control_s05_sentence_assoc_score AS language_control_s05_sentence_assoc_score, "
+            "pr.language_control_s05_binding_order_acc AS language_control_s05_binding_order_acc, "
+            "pr.language_control_s05_binding_score AS language_control_s05_binding_score, "
+            "pr.language_control_s10_sentence_assoc_score AS language_control_s10_sentence_assoc_score, "
+            "pr.language_control_s10_binding_order_acc AS language_control_s10_binding_order_acc, "
+            "pr.language_control_s10_binding_score AS language_control_s10_binding_score, "
+            "pr.language_control_investigation_sentence_assoc_score AS language_control_investigation_sentence_assoc_score, "
+            "pr.language_control_investigation_binding_order_acc AS language_control_investigation_binding_order_acc, "
+            "pr.language_control_investigation_binding_score AS language_control_investigation_binding_score, "
             "pr.screening_wikitext_metric_version AS _pr_screening_wikitext_metric_version, "
             "pr.tokenizer_mode AS _pr_tokenizer_mode, "
             "pr.corpus_path AS _pr_corpus_path, "
@@ -986,6 +1062,10 @@ class _LeaderboardMixin:
                 pr_key = f"_pr_{col}"
                 if d.get(col) is None and d.get(pr_key) is not None:
                     d[col] = d.get(pr_key)
+            for col in _INTERMEDIATE_SCREEN_DASHBOARD_FIELDS:
+                pr_key = f"_pr_{col}"
+                if d.get(col) is None and d.get(pr_key) is not None:
+                    d[col] = d.get(pr_key)
             if pr_eval_is_bpe or not d.get("screening_wikitext_metric_version"):
                 d["screening_wikitext_metric_version"] = d.get(
                     "_pr_screening_wikitext_metric_version"
@@ -1028,6 +1108,8 @@ class _LeaderboardMixin:
             for col in _CHAMPION_DASHBOARD_FIELDS:
                 d.pop(f"_pr_{col}", None)
             for col in _V2_INVESTIGATION_DASHBOARD_FIELDS:
+                d.pop(f"_pr_{col}", None)
+            for col in _INTERMEDIATE_SCREEN_DASHBOARD_FIELDS:
                 d.pop(f"_pr_{col}", None)
             d.pop("_pr_screening_wikitext_metric_version", None)
             d.pop("_pr_tokenizer_mode", None)
@@ -1117,6 +1199,12 @@ class _LeaderboardMixin:
                     merged.append(ref)
         for entry in merged:
             graph_json = entry.pop("_graph_json", None)
+            if graph_json:
+                graph_json = resolve_graph_json_value(
+                    self.conn,
+                    self.db_path,
+                    graph_json,
+                )
             if include_family:
                 entry["architecture_family"] = self._classify_architecture_family(
                     graph_json=graph_json,

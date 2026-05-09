@@ -33,9 +33,9 @@ SELECT
     pr.loss_ratio,
     pr.validation_loss_ratio,
     pr.discovery_loss_ratio,
-    pr.induction_auc,
-    pr.binding_auc,
-    pr.ar_auc,
+    pr.induction_screening_auc,
+    pr.binding_screening_auc,
+    pr.ar_legacy_auc,
     pr.hellaswag_acc,
     -- Mask byte-era PPL: rows whose screening_wikitext_metric_version is
     -- not 'bpe_eval_v1' have wikitext_perplexity in different units
@@ -90,8 +90,8 @@ WHERE COALESCE(pr.graph_json, '') NOT IN ('', '{}')
 
 PRIMARY_METRICS: tuple[tuple[str, bool, float], ...] = (
     ("quality_metric", False, 0.34),
-    ("induction_auc", True, 0.18),
-    ("binding_auc", True, 0.14),
+    ("induction_screening_auc", True, 0.18),
+    ("binding_screening_auc", True, 0.14),
     ("hellaswag_acc", True, 0.14),
     ("wikitext_quality", True, 0.20),
 )
@@ -107,8 +107,8 @@ SECONDARY_METRICS: tuple[tuple[str, bool, float], ...] = (
 ANALYSIS_METRICS: dict[str, dict[str, Any]] = {
     "great_score": {"higher_is_better": True, "cohort": "promotable"},
     "quality_metric": {"higher_is_better": True, "cohort": "trusted"},
-    "induction_auc": {"higher_is_better": True, "cohort": "promotable"},
-    "binding_auc": {"higher_is_better": True, "cohort": "promotable"},
+    "induction_screening_auc": {"higher_is_better": True, "cohort": "promotable"},
+    "binding_screening_auc": {"higher_is_better": True, "cohort": "promotable"},
     "hellaswag_acc": {"higher_is_better": True, "cohort": "promotable"},
     "wikitext_quality": {"higher_is_better": True, "cohort": "promotable"},
     "stability_score": {"higher_is_better": True, "cohort": "trusted"},
@@ -442,12 +442,18 @@ def _compose_score(df: pd.DataFrame) -> pd.DataFrame:
 
 def _load_strength_records(db_path: str | Path) -> list[dict[str, Any]]:
     from ..notebook.shared_conn import get_notebook_conn
+    from ..notebook.graph_artifacts import resolve_graph_json_value
 
     conn = get_notebook_conn(str(db_path))
     rows = conn.execute(BASE_ANALYSIS_QUERY).fetchall()
     records: list[dict[str, Any]] = []
     for row in rows:
         record = dict(row)
+        record["graph_json"] = resolve_graph_json_value(
+            conn,
+            db_path,
+            record.get("graph_json"),
+        )
         record.update(_parse_config_features(record.get("config_json")))
         record.update(_graph_features(record.get("graph_json")))
         records.append(record)
@@ -1121,11 +1127,11 @@ def _support_summary(df: pd.DataFrame) -> dict[str, Any]:
         "loss_ratio_coverage": int(df["loss_ratio"].notna().sum())
         if "loss_ratio" in df
         else 0,
-        "induction_coverage": int(df["induction_auc"].notna().sum())
-        if "induction_auc" in df
+        "induction_coverage": int(df["induction_screening_auc"].notna().sum())
+        if "induction_screening_auc" in df
         else 0,
-        "binding_coverage": int(df["binding_auc"].notna().sum())
-        if "binding_auc" in df
+        "binding_coverage": int(df["binding_screening_auc"].notna().sum())
+        if "binding_screening_auc" in df
         else 0,
         "hellaswag_coverage": int(df["hellaswag_acc"].notna().sum())
         if "hellaswag_acc" in df

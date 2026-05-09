@@ -824,12 +824,101 @@ class _ControlStartMixin:
         self._thread.start()
         return exp_id
 
+    def start_capability_ranking(
+        self,
+        result_ids: List[str],
+        config: RunConfig,
+        hypothesis: Optional[str] = None,
+        preregistration: Optional[Dict[str, Any]] = None,
+        exploratory: bool = False,
+        force: bool = False,
+    ) -> str:
+        """Start selective capability rankers for investigated candidates."""
+        if self.is_running:
+            raise RuntimeError("An experiment is already running")
+
+        self._ensure_math_spaces()
+        self._stop_event.clear()
+
+        nb = self._make_notebook()
+        if not force:
+            tiers = nb.get_tiers_for_result_ids(result_ids)
+            not_investigated = {
+                rid
+                for rid in result_ids
+                if tiers.get(rid) not in {"investigation", "capability_ranking"}
+            }
+            if not_investigated:
+                nb.close()
+                raise ValueError(
+                    "Cannot capability-rank: candidates must be investigation tier: "
+                    f"{', '.join(sorted(not_investigated))}"
+                )
+
+        source = "user_input" if hypothesis is not None else "runner_template"
+        if hypothesis is None:
+            hypothesis = (
+                "Capability ranking: selective induction/binding ranker probes for "
+                f"{len(result_ids)} investigation candidate(s) before validation."
+            )
+
+        exp_id = self._start_preregistered_experiment(
+            nb=nb,
+            experiment_type="capability_ranking",
+            config={**config.to_dict(), "result_ids": list(result_ids)},
+            hypothesis=hypothesis,
+            hypothesis_metadata=self._build_hypothesis_metadata(
+                source=source,
+                llm_used=False,
+                fallback_used=False,
+                used_context=False,
+            ),
+            preregistration=preregistration,
+            exploratory=exploratory,
+            created_by="start_capability_ranking",
+        )
+        nb.close()
+
+        with self._lock:
+            self._progress = LiveProgress(
+                experiment_id=exp_id,
+                status="generating",
+                total_programs=len(result_ids),
+                aria_message=(
+                    f"{self.aria.NAME}: Starting capability ranking of "
+                    f"{len(result_ids)} candidate(s)..."
+                ),
+            )
+
+        self._emit_canonical_experiment_started(
+            experiment_id=exp_id,
+            hypothesis=hypothesis,
+            config=config.to_dict(),
+            mode="capability_ranking",
+            result_ids=result_ids,
+        )
+        self._emit_event(
+            "capability_ranking_started",
+            {
+                "experiment_id": exp_id,
+                "hypothesis": hypothesis,
+                "result_ids": result_ids,
+            },
+        )
+
+        self._thread = threading.Thread(
+            target=self._run_capability_ranking_thread,
+            args=(exp_id, result_ids, config, hypothesis),
+            daemon=True,
+        )
+        self._thread.start()
+        return exp_id
+
     @staticmethod
     def _confirmation_scale_config(config: RunConfig) -> RunConfig:
         """Return scale-up config pinned to champion-confirmation defaults."""
         confirmed = config.copy()
         confirmed.mode = "confirmation"
-        confirmed.n_layers = 4
         confirmed.scale_up_steps = max(
             int(confirmed.scale_up_steps), VALIDATION_STEPS * 4
         )

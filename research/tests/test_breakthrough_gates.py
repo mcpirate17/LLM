@@ -24,10 +24,10 @@ def _real_breakthrough_row() -> dict:
         "tier": "breakthrough",
         "composite_score": 515.46,
         "validation_baseline_ratio": 0.925,
-        "induction_auc": 0.966,
-        "binding_composite": 0.292,
-        "induction_v2_investigation_auc": 0.994,
-        "binding_v2_investigation_auc": 0.921,
+        "induction_screening_auc": 0.966,
+        "binding_screening_composite": 0.292,
+        "induction_intermediate_auc": 0.994,
+        "binding_intermediate_auc": 0.921,
     }
 
 
@@ -37,10 +37,10 @@ def _d904_false_breakthrough_row() -> dict:
         "tier": "breakthrough",
         "composite_score": 334.83,
         "validation_baseline_ratio": 0.939,
-        "induction_auc": 0.016,
-        "binding_composite": 0.008,
-        "induction_v2_investigation_auc": 0.026,
-        "binding_v2_investigation_auc": 0.091,
+        "induction_screening_auc": 0.016,
+        "binding_screening_composite": 0.008,
+        "induction_intermediate_auc": 0.026,
+        "binding_intermediate_auc": 0.091,
     }
 
 
@@ -48,19 +48,19 @@ class TestCapabilityFloor:
     def test_real_breakthrough_passes(self):
         row = _real_breakthrough_row()
         assert passes_capability_floor(
-            induction_auc=row["induction_auc"],
-            binding_composite=row["binding_composite"],
-            induction_v2_investigation_auc=row["induction_v2_investigation_auc"],
-            binding_v2_investigation_auc=row["binding_v2_investigation_auc"],
+            induction_screening_auc=row["induction_screening_auc"],
+            binding_screening_composite=row["binding_screening_composite"],
+            induction_intermediate_auc=row["induction_intermediate_auc"],
+            binding_intermediate_auc=row["binding_intermediate_auc"],
         )
 
     def test_d904_fails(self):
         row = _d904_false_breakthrough_row()
         assert not passes_capability_floor(
-            induction_auc=row["induction_auc"],
-            binding_composite=row["binding_composite"],
-            induction_v2_investigation_auc=row["induction_v2_investigation_auc"],
-            binding_v2_investigation_auc=row["binding_v2_investigation_auc"],
+            induction_screening_auc=row["induction_screening_auc"],
+            binding_screening_composite=row["binding_screening_composite"],
+            induction_intermediate_auc=row["induction_intermediate_auc"],
+            binding_intermediate_auc=row["binding_intermediate_auc"],
         )
 
     def test_all_none_fails(self):
@@ -68,16 +68,18 @@ class TestCapabilityFloor:
 
     def test_single_signal_above_floor_passes(self):
         # Only one metric populated, exactly at the floor — passes.
-        assert passes_capability_floor(induction_auc=BREAKTHROUGH_CAPABILITY_FLOOR)
+        assert passes_capability_floor(
+            induction_screening_auc=BREAKTHROUGH_CAPABILITY_FLOOR
+        )
 
     def test_string_values_coerced(self):
         # Some callers pass strings from JSON — must coerce safely.
-        assert passes_capability_floor(induction_auc="0.5")
-        assert not passes_capability_floor(induction_auc="nope")
+        assert passes_capability_floor(induction_screening_auc="0.5")
+        assert not passes_capability_floor(induction_screening_auc="nope")
 
     def test_floor_override(self):
-        assert passes_capability_floor(induction_auc=0.05, floor=0.05)
-        assert not passes_capability_floor(induction_auc=0.05, floor=0.06)
+        assert passes_capability_floor(induction_screening_auc=0.05, floor=0.05)
+        assert not passes_capability_floor(induction_screening_auc=0.05, floor=0.06)
 
 
 class TestBreakthroughGates:
@@ -106,13 +108,13 @@ class TestBreakthroughGates:
         passed, reason = passes_breakthrough_gates(
             composite_score=600.0,
             val_baseline_ratio=1.0,
-            induction_auc=0.9,
+            induction_screening_auc=0.9,
         )
         assert not passed
         assert reason == "no_baseline_improvement"
 
     def test_missing_composite_fails(self):
-        passed, reason = passes_breakthrough_gates(induction_auc=0.9)
+        passed, reason = passes_breakthrough_gates(induction_screening_auc=0.9)
         assert not passed
         assert reason == "composite_below_floor"
 
@@ -128,7 +130,7 @@ class TestBreakthroughGates:
         passed, _ = passes_breakthrough_gates(
             composite_score=BREAKTHROUGH_COMPOSITE_FLOOR,
             val_baseline_ratio=0.5,
-            induction_auc=BREAKTHROUGH_CAPABILITY_FLOOR,
+            induction_screening_auc=BREAKTHROUGH_CAPABILITY_FLOOR,
         )
         assert passed
 
@@ -148,7 +150,7 @@ def test_gate_matrix(composite, baseline, induction, binding, expected_passed):
     passed, _ = passes_breakthrough_gates(
         composite_score=composite,
         val_baseline_ratio=baseline,
-        induction_auc=induction,
-        binding_composite=binding,
+        induction_screening_auc=induction,
+        binding_screening_composite=binding,
     )
     assert passed is expected_passed

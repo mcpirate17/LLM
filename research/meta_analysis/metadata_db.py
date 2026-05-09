@@ -1,8 +1,8 @@
 """Build a separate SQLite meta-analysis database.
 
-This module reads the lab notebook in read-only mode and writes derived,
+This module reads the runs database in read-only mode and writes derived,
 wide template/slot property tables to a standalone database. It deliberately
-does not migrate or mutate ``lab_notebook.db``.
+does not migrate or mutate ``runs.db``.
 """
 
 from __future__ import annotations
@@ -15,7 +15,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
-from research.defaults import LAB_NOTEBOOK_DB
+from research.defaults import RUNS_DB
+from research.scientist.notebook.graph_artifacts import resolve_graph_json_value
 
 from .descriptive_properties import (
     ALTERNATIVE_MATH_CANDIDATE_COLUMNS,
@@ -139,24 +140,24 @@ _OUTCOME_COLUMNS = (
     "discovery_loss_ratio",
     "novelty_score",
     "novelty_confidence",
-    "induction_auc",
-    "induction_v2_investigation_auc",
-    "induction_v2_investigation_max_gap_acc",
-    "induction_v2_investigation_gap_accuracies_json",
-    "induction_v2_investigation_steps_trained",
-    "induction_v2_investigation_status",
-    "induction_v2_investigation_elapsed_ms",
-    "induction_v2_investigation_protocol_version",
-    "binding_auc",
-    "binding_auc_curriculum",
-    "binding_v2_investigation_auc",
-    "binding_v2_investigation_max_gap_acc",
-    "binding_v2_investigation_gap_accuracies_json",
-    "binding_v2_investigation_steps_trained",
-    "binding_v2_investigation_status",
-    "binding_v2_investigation_elapsed_ms",
-    "binding_v2_investigation_protocol_version",
-    "ar_auc",
+    "induction_screening_auc",
+    "induction_intermediate_auc",
+    "induction_intermediate_max_gap_acc",
+    "induction_intermediate_gap_accuracies_json",
+    "induction_intermediate_steps_trained",
+    "induction_intermediate_status",
+    "induction_intermediate_elapsed_ms",
+    "induction_intermediate_protocol_version",
+    "binding_screening_auc",
+    "binding_curriculum_auc",
+    "binding_intermediate_auc",
+    "binding_intermediate_max_distance_acc",
+    "binding_intermediate_gap_accuracies_json",
+    "binding_intermediate_steps_trained",
+    "binding_intermediate_status",
+    "binding_intermediate_elapsed_ms",
+    "binding_intermediate_protocol_version",
+    "ar_legacy_auc",
     "hellaswag_acc",
     "blimp_overall_accuracy",
     "wikitext_perplexity",
@@ -198,16 +199,16 @@ _OUTCOME_COLUMNS = (
     "routing_fast_lane_ppl_improvement",
     "routing_fast_lane_slope",
     "routing_fast_lane_slope_consistent",
-    "controlled_lang_metric_version",
-    "controlled_lang_s05_sa_score",
-    "controlled_lang_s05_nb_order_acc",
-    "controlled_lang_s05_nb_score",
-    "controlled_lang_s10_sa_score",
-    "controlled_lang_s10_nb_order_acc",
-    "controlled_lang_s10_nb_score",
-    "controlled_lang_inv_sa_score",
-    "controlled_lang_inv_nb_order_acc",
-    "controlled_lang_inv_nb_score",
+    "language_control_metric_version",
+    "language_control_s05_sentence_assoc_score",
+    "language_control_s05_binding_order_acc",
+    "language_control_s05_binding_score",
+    "language_control_s10_sentence_assoc_score",
+    "language_control_s10_binding_order_acc",
+    "language_control_s10_binding_score",
+    "language_control_investigation_sentence_assoc_score",
+    "language_control_investigation_binding_order_acc",
+    "language_control_investigation_binding_score",
     "failure_op",
     "failure_details_json",
     "semantic_warnings_json",
@@ -229,16 +230,16 @@ _TEXT_OUTCOME_COLUMNS = frozenset(
         "screening_wikitext_variant",
         "routing_fast_lane_status",
         "routing_fast_lane_metric_version",
-        "controlled_lang_metric_version",
+        "language_control_metric_version",
         "failure_op",
         "failure_details_json",
         "semantic_warnings_json",
-        "induction_v2_investigation_gap_accuracies_json",
-        "induction_v2_investigation_status",
-        "induction_v2_investigation_protocol_version",
-        "binding_v2_investigation_gap_accuracies_json",
-        "binding_v2_investigation_status",
-        "binding_v2_investigation_protocol_version",
+        "induction_intermediate_gap_accuracies_json",
+        "induction_intermediate_status",
+        "induction_intermediate_protocol_version",
+        "binding_intermediate_gap_accuracies_json",
+        "binding_intermediate_status",
+        "binding_intermediate_protocol_version",
     }
 )
 _DERIVED_GRAPH_COLUMNS = (
@@ -578,18 +579,18 @@ _EVAL_METRIC_ROWS: tuple[dict[str, Any], ...] = (
         "reliability_status": "capability_probe",
         "primary_use": "mechanistic_capability",
         "source_columns_json": [
-            "induction_auc",
-            "induction_v2_investigation_auc",
-            "binding_auc",
-            "binding_auc_curriculum",
-            "binding_v2_investigation_auc",
-            "ar_auc",
+            "induction_screening_auc",
+            "induction_intermediate_auc",
+            "binding_screening_auc",
+            "binding_curriculum_auc",
+            "binding_intermediate_auc",
+            "ar_legacy_auc",
         ],
         "active_for_priors": 1,
     },
     {
-        "metric_name": "controlled_language_nanobind",
-        "metric_family": "controlled_language",
+        "metric_name": "language_controluage_nanobind",
+        "metric_family": "language_controluage",
         "metric_scale": "score_accuracy_failure",
         "data_type": "mixed",
         "metric_direction": "higher_score_lower_failure",
@@ -598,11 +599,11 @@ _EVAL_METRIC_ROWS: tuple[dict[str, Any], ...] = (
         "reliability_status": "primary_failure_signal",
         "primary_use": "routing_compression_failure_analysis",
         "source_columns_json": [
-            "controlled_lang_s05_sa_score",
-            "controlled_lang_s05_nb_order_acc",
-            "controlled_lang_s05_nb_score",
-            "controlled_lang_s10_sa_score",
-            "controlled_lang_inv_sa_score",
+            "language_control_s05_sentence_assoc_score",
+            "language_control_s05_binding_order_acc",
+            "language_control_s05_binding_score",
+            "language_control_s10_sentence_assoc_score",
+            "language_control_investigation_sentence_assoc_score",
             "failure_op",
             "failure_details_json",
         ],
@@ -841,7 +842,9 @@ def _select_expr(conn: sqlite3.Connection, table: str, column: str) -> str:
     )
 
 
-def _fetch_program_rows(src: sqlite3.Connection) -> list[sqlite3.Row]:
+def _fetch_program_rows(
+    src: sqlite3.Connection, source_path: Path
+) -> list[dict[str, Any]]:
     gf_join = (
         "LEFT JOIN program_graph_features gf ON gf.result_id = pr.result_id"
         if _table_exists(src, "program_graph_features")
@@ -881,7 +884,14 @@ def _fetch_program_rows(src: sqlite3.Connection) -> list[sqlite3.Row]:
         {lb_join}
         WHERE COALESCE(pr.graph_json, '') NOT IN ('', '{{}}')
     """
-    return src.execute(sql).fetchall()
+    rows = []
+    for row in src.execute(sql).fetchall():
+        payload = dict(row)
+        payload["graph_json"] = resolve_graph_json_value(
+            src, source_path, row["graph_json"]
+        )
+        rows.append(payload)
+    return rows
 
 
 def _fetch_program_op_rows(src: sqlite3.Connection) -> list[sqlite3.Row]:
@@ -1561,7 +1571,7 @@ def _primitive_metadata_by_name() -> dict[str, dict[str, Any]]:
 
 def build_meta_analysis_db(
     *,
-    source_db: str | os.PathLike[str] = LAB_NOTEBOOK_DB,
+    source_db: str | os.PathLike[str] = RUNS_DB,
     output_db: str | os.PathLike[str] = DEFAULT_META_ANALYSIS_DB,
     profiling_db: str | os.PathLike[str] = DEFAULT_PROFILING_DB,
     replace: bool = True,
@@ -1572,7 +1582,7 @@ def build_meta_analysis_db(
     profile_path = Path(profiling_db)
     src = _connect_source_readonly(source_path)
     try:
-        rows = _fetch_program_rows(src)
+        rows = _fetch_program_rows(src, source_path)
         op_rows = _fetch_program_op_rows(src)
         op_stats = _fetch_op_stats_rows(src)
     finally:

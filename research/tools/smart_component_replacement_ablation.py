@@ -58,7 +58,7 @@ from research.tools.focused_op_deletion_ablation import (  # noqa: E402
 )
 
 
-DB_PATH = PROJECT_ROOT / "research/lab_notebook.db"
+DB_PATH = PROJECT_ROOT / "research/runs.db"
 RUNTIME_DIR = PROJECT_ROOT / "research/runtime"
 GOOGLE_BACKUP_ROOT = Path("/home/tim/GoogleDrive/Backups/LLM_Research")
 LOGGER = logging.getLogger("smart_component_replacement_ablation")

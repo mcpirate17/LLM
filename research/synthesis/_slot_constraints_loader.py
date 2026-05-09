@@ -10,7 +10,7 @@ Caller-friendly: pass a fallback tuple in case the meta DB is unreachable or
 the slot lacks sufficient data. Idempotent: results cached per process.
 
 Pass criterion matches the rest of the pipeline:
-  controlled_lang_s05_sa_score >= 0.95 AND failure_op != 'nano_bind'
+  language_control_s05_sentence_assoc_score >= 0.95 AND failure_op != 'nano_bind'
 """
 
 from __future__ import annotations
@@ -22,11 +22,13 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Tuple
 
+from research.defaults import RUNS_DB
+
 logger = logging.getLogger(__name__)
 
 REPO = Path(__file__).resolve().parents[2]
 META_DB = REPO / "research/meta_analysis.db"
-LAB_DB = REPO / "research/lab_notebook.db"
+LAB_DB = REPO / RUNS_DB
 
 MIN_N_PER_CLASS = 10
 MIN_PASS_RATE_PER_CLASS = 0.40
@@ -57,14 +59,14 @@ def _query_pass_cohort_fills() -> dict[tuple[str, int], list[tuple[str, int, int
             SELECT so.template_name,
                    so.slot_index,
                    so.selected_motif_class,
-                   SUM(CASE WHEN pr.controlled_lang_s05_sa_score >= 0.95
+                   SUM(CASE WHEN pr.language_control_s05_sentence_assoc_score >= 0.95
                               AND COALESCE(pr.failure_op,'') != 'nano_bind'
                             THEN 1 ELSE 0 END) AS n_pass,
                    COUNT(*) AS n_total
               FROM slot_observations so
               JOIN lab.program_results pr ON pr.result_id = so.result_id
               LEFT JOIN lab.leaderboard l ON l.result_id = pr.result_id
-             WHERE pr.controlled_lang_s05_sa_score IS NOT NULL
+             WHERE pr.language_control_s05_sentence_assoc_score IS NOT NULL
                AND COALESCE(l.is_reference, 0) = 0
                AND so.selected_motif_class IS NOT NULL
              GROUP BY so.template_name, so.slot_index, so.selected_motif_class

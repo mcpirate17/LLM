@@ -24,6 +24,7 @@ export default function DiscoveryRankings({
   expandedPrograms,
   onSelectProgram,
   onInvestigate,
+  onCapabilityRank,
   onValidate,
   onQueueAdd,
   onQueueRemove,
@@ -215,11 +216,13 @@ export default function DiscoveryRankings({
                 queueEligible: false,
                 queueReason: 'not_progression_eligible',
               };
-              const queueIntent = eligibility.validationEligible
-                ? 'validation'
-                : eligibility.investigationEligible
-                  ? 'investigation'
-                  : null;
+              const queueIntent = eligibility.capabilityRankingEligible
+                ? 'capability_ranking'
+                : eligibility.validationEligible
+                  ? 'validation'
+                  : eligibility.investigationEligible
+                    ? 'investigation'
+                    : null;
               
               const hasBeenInvestigated = p.investigation_loss_ratio != null || ['investigation', 'validation', 'breakthrough'].includes(p.tier);
               const hasBeenValidated = p.validation_loss_ratio != null || ['validation', 'breakthrough'].includes(p.tier);
@@ -405,6 +408,16 @@ export default function DiscoveryRankings({
                           {eligibility.validationEligible ? 'Validate' : 'Force Validate'}
                         </button>
                       )}
+                      {onCapabilityRank && eligibility.capabilityRankingEligible && (
+                        <button
+                          style={{ fontSize: 10, padding: '1px 6px', borderRadius: 4, cursor: 'pointer', background: 'rgba(88, 166, 255, 0.12)', border: '1px solid rgba(88, 166, 255, 0.4)', color: 'var(--accent-blue)' }}
+                          onClick={() => onCapabilityRank([p.result_id])}
+                          aria-label={`Rank capability for program ${p.result_id}`}
+                          title="Run selective induction/binding capability rankers"
+                        >
+                          Rank
+                        </button>
+                      )}
                       {onSelectProgram && (
                         <button
                           className="refresh-btn"
@@ -457,6 +470,7 @@ export default function DiscoveryRankings({
                                   intent: queueIntent,
                                   queueEligible: eligibility.queueEligible,
                                   investigationEligible: eligibility.investigationEligible,
+                                  capabilityRankingEligible: eligibility.capabilityRankingEligible,
                                   validationEligible: eligibility.validationEligible,
                                   queueReason: eligibility.queueReason,
                                 });
@@ -468,22 +482,26 @@ export default function DiscoveryRankings({
                                 ? (p.tier === 'validation' || p.tier === 'breakthrough' 
                                     ? 'Architecture is fully validated.' 
                                     : reportQueueReasonLabel(eligibility.queueReason))
-                                : queueIntent === 'validation'
-                                  ? 'Add to validation queue'
-                                  : 'Add to investigation queue'}
+                                : queueIntent === 'capability_ranking'
+                                  ? 'Add to capability-ranking queue'
+                                  : queueIntent === 'validation'
+                                    ? 'Add to validation queue'
+                                    : 'Add to investigation queue'}
                             aria-label={`${isQueued ? 'Remove' : 'Add'} ${p.result_id} ${isQueued ? 'from' : 'to'} investigation queue`}
                           >
                             {isQueued
                               ? 'Queued'
                               : queueDisabled
                                 ? (p.tier === 'validation' || p.tier === 'breakthrough' ? 'Validated' : 'Ineligible')
-                                : queueIntent === 'validation'
-                                  ? 'Queue Validate'
-                                  : 'Queue Investigate'}
+                                : queueIntent === 'capability_ranking'
+                                  ? 'Queue Rank'
+                                  : queueIntent === 'validation'
+                                    ? 'Queue Validate'
+                                    : 'Queue Investigate'}
                           </button>
                         );
                       })()}
-                      {!eligibility.investigationEligible && !eligibility.validationEligible && (
+                      {!eligibility.investigationEligible && !eligibility.capabilityRankingEligible && !eligibility.validationEligible && (
                         <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>
                           {reportQueueReasonLabel(eligibility.queueReason)}
                         </span>

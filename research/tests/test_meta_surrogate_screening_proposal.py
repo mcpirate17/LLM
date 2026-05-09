@@ -14,7 +14,7 @@ def test_escape_hatches_capture_strong_metrics_and_mixer_presence():
         failure_op="",
         wikitext_perplexity=42.0,
         tinystories_score=0.61,
-        controlled_lang_s05_sa_score=0.98,
+        language_control_s05_sentence_assoc_score=0.98,
         motif_count=4,
         non_norm_motif_count=2,
         norm_motif_count=2,

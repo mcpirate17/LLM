@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from research.scientist.notebook.graph_artifacts import resolve_graph_json_value
 from research.synthesis.grammar_support import (
     DBOpWeightCache,
     DBTemplateWeightCache,
@@ -24,14 +25,14 @@ from research.synthesis.templates import DEFAULT_TEMPLATE_WEIGHTS
 
 REPORT_DIR = Path("research/reports")
 METRIC_COLUMNS = (
-    "avg_induction_auc",
-    "avg_binding_auc",
-    "avg_binding_composite",
-    "avg_ar_auc",
+    "avg_induction_screening_auc",
+    "avg_binding_screening_auc",
+    "avg_binding_screening_composite",
+    "avg_ar_legacy_auc",
     "avg_hellaswag_acc",
     "avg_blimp_overall_accuracy",
-    "avg_induction_v2_investigation_auc",
-    "avg_binding_v2_investigation_auc",
+    "avg_induction_intermediate_auc",
+    "avg_binding_intermediate_auc",
     "math_space_rate",
 )
 
@@ -67,14 +68,14 @@ def _capability_from_values(values: list[Any]) -> float:
 
 def _capability_from_slot_payload(payload: dict[str, Any]) -> float:
     return _capability_score(
-        payload.get("mean_induction_auc"),
-        payload.get("mean_binding_auc"),
-        payload.get("mean_binding_composite"),
-        payload.get("mean_ar_auc"),
+        payload.get("mean_induction_screening_auc"),
+        payload.get("mean_binding_screening_auc"),
+        payload.get("mean_binding_screening_composite"),
+        payload.get("mean_ar_legacy_auc"),
         payload.get("mean_hellaswag_acc"),
         payload.get("mean_blimp_overall_accuracy"),
-        payload.get("mean_induction_v2_investigation_auc"),
-        payload.get("mean_binding_v2_investigation_auc"),
+        payload.get("mean_induction_intermediate_auc"),
+        payload.get("mean_binding_intermediate_auc"),
         payload.get("math_space_rate"),
     )
 
@@ -228,6 +229,7 @@ def _parse_graph_template_ops(graph_json: str) -> tuple[list[str], list[str]]:
 
 def _load_template_op_context(
     conn: sqlite3.Connection,
+    db_path: str,
     op_weights: dict[str, float],
 ) -> dict[str, dict[str, Any]]:
     rows = conn.execute(
@@ -238,7 +240,12 @@ def _load_template_op_context(
     ).fetchall()
     counts: dict[str, Counter[str]] = defaultdict(Counter)
     for row in rows:
-        templates, ops = _parse_graph_template_ops(str(row["graph_json"] or ""))
+        graph_json = resolve_graph_json_value(
+            conn,
+            db_path,
+            row["graph_json"],
+        )
+        templates, ops = _parse_graph_template_ops(graph_json)
         if not templates or not ops:
             continue
         unique_ops = set(ops)
@@ -307,7 +314,7 @@ def build_attribution_audit(
         template_weights = DBTemplateWeightCache(ttl=0.0).get(db_path) or {}
         op_weights = DBOpWeightCache(ttl=0.0).get(db_path) or {}
         slot_context = _load_slot_context(conn)
-        op_context = _load_template_op_context(conn, op_weights)
+        op_context = _load_template_op_context(conn, db_path, op_weights)
     finally:
         conn.close()
 
@@ -414,7 +421,7 @@ def write_reports(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--db", default="research/lab_notebook.db")
+    parser.add_argument("--db", default="research/runs.db")
     parser.add_argument("--limit", type=int, default=200)
     parser.add_argument(
         "--output-prefix",

@@ -50,19 +50,19 @@ _REQUIRED_S1_METRIC_COLS = (
     "wikitext_perplexity",
     "hellaswag_acc",
     "blimp_overall_accuracy",
-    "induction_auc",
-    "binding_auc",
-    "binding_composite",
-    "ar_auc",
+    "induction_screening_auc",
+    "binding_screening_auc",
+    "binding_screening_composite",
+    "ar_legacy_auc",
 )
 _DEFAULT_S1_METRIC_VALUES = {
     "wikitext_perplexity": 200.0,
     "hellaswag_acc": 0.25,
     "blimp_overall_accuracy": 0.5,
-    "induction_auc": 0.05,
-    "binding_auc": 0.05,
-    "binding_composite": 0.02,
-    "ar_auc": 0.01,
+    "induction_screening_auc": 0.05,
+    "binding_screening_auc": 0.05,
+    "binding_screening_composite": 0.02,
+    "ar_legacy_auc": 0.01,
 }
 
 
@@ -351,7 +351,7 @@ class TestNotebook(unittest.TestCase):
             tokenizer_mode="tiktoken",
             tiktoken_encoding="cl100k_base",
             screening_wikitext_metric_version="screening_wikitext_v1",
-            induction_probe_metric_version="induction_probe_v2",
+            induction_screening_metric_version="induction_probe_v2",
         )
         self.nb.flush_writes()
         row = self.nb.get_program_detail(result_id)
@@ -390,8 +390,8 @@ class TestNotebook(unittest.TestCase):
             evaluation_protocol_version="candidate_grade_v1",
             train_budget_steps=128,
             hellaswag_acc=0.3,
-            induction_auc=0.02,
-            binding_auc=0.01,
+            induction_screening_auc=0.02,
+            binding_screening_auc=0.01,
             wikitext_perplexity=12.0,
             data_provenance_json=json.dumps(
                 {"eligible_for_screening_model_training": True}
@@ -573,7 +573,7 @@ class TestNotebook(unittest.TestCase):
             stage1_passed=False,
             novelty_score=0.1,
             screening_wikitext_metric_version="screening_wikitext_v1",
-            induction_probe_metric_version="induction_probe_v2",
+            induction_screening_metric_version="induction_probe_v2",
         )
         self.nb.flush_writes()
         row = self.nb.get_program_detail(result_id)
@@ -644,8 +644,8 @@ class TestNotebook(unittest.TestCase):
             stage05_passed=True,
             stage1_passed=True,
             loss_ratio=0.39,
-            induction_auc=0.04,
-            induction_probe_metric_version="induction_probe_v2",
+            induction_screening_auc=0.04,
+            induction_screening_metric_version="induction_probe_v2",
         )
         self.nb.flush_writes()
         row = self.nb.get_program_detail(result_id)
@@ -814,19 +814,19 @@ class TestNotebook(unittest.TestCase):
             loss_ratio=0.92,
             validation_loss_ratio=0.97,
             novelty_confidence=0.4,
-            induction_auc=0.0,
-            binding_auc=0.0,
-            ar_auc=0.0,
+            induction_screening_auc=0.0,
+            binding_screening_auc=0.0,
+            ar_legacy_auc=0.0,
             hellaswag_acc=0.25,
-            controlled_lang_s05_sa_score=0.70,
-            controlled_lang_s05_nb_order_acc=0.55,
-            controlled_lang_s05_nb_score=0.50,
-            controlled_lang_s10_sa_score=0.60,
-            controlled_lang_s10_nb_order_acc=0.45,
-            controlled_lang_s10_nb_score=0.40,
-            controlled_lang_inv_sa_score=0.72,
-            controlled_lang_inv_nb_order_acc=0.35,
-            controlled_lang_inv_nb_score=0.30,
+            language_control_s05_sentence_assoc_score=0.70,
+            language_control_s05_binding_order_acc=0.55,
+            language_control_s05_binding_score=0.50,
+            language_control_s10_sentence_assoc_score=0.60,
+            language_control_s10_binding_order_acc=0.45,
+            language_control_s10_binding_score=0.40,
+            language_control_investigation_sentence_assoc_score=0.72,
+            language_control_investigation_binding_order_acc=0.35,
+            language_control_investigation_binding_score=0.30,
             screening_hellaswag_correct=2,
             screening_hellaswag_total=8,
             screening_wikitext_status="ok",
@@ -842,19 +842,19 @@ class TestNotebook(unittest.TestCase):
             loss_ratio=0.32,
             validation_loss_ratio=0.35,
             novelty_confidence=0.8,
-            induction_auc=0.08,
-            binding_auc=0.09,
-            ar_auc=0.07,
+            induction_screening_auc=0.08,
+            binding_screening_auc=0.09,
+            ar_legacy_auc=0.07,
             hellaswag_acc=0.31,
-            controlled_lang_s05_sa_score=0.90,
-            controlled_lang_s05_nb_order_acc=0.82,
-            controlled_lang_s05_nb_score=0.80,
-            controlled_lang_s10_sa_score=0.91,
-            controlled_lang_s10_nb_order_acc=0.84,
-            controlled_lang_s10_nb_score=0.83,
-            controlled_lang_inv_sa_score=0.92,
-            controlled_lang_inv_nb_order_acc=0.88,
-            controlled_lang_inv_nb_score=0.86,
+            language_control_s05_sentence_assoc_score=0.90,
+            language_control_s05_binding_order_acc=0.82,
+            language_control_s05_binding_score=0.80,
+            language_control_s10_sentence_assoc_score=0.91,
+            language_control_s10_binding_order_acc=0.84,
+            language_control_s10_binding_score=0.83,
+            language_control_investigation_sentence_assoc_score=0.92,
+            language_control_investigation_binding_order_acc=0.88,
+            language_control_investigation_binding_score=0.86,
             screening_hellaswag_correct=3,
             screening_hellaswag_total=8,
             screening_wikitext_status="ok",
@@ -879,23 +879,28 @@ class TestNotebook(unittest.TestCase):
         self.assertGreaterEqual(len(weak["actions"]), 1)
         self.assertEqual(weak["screening_metric_coverage"]["induction"], 1)
         self.assertEqual(weak["screening_metric_coverage"]["hellaswag"], 2)
-        self.assertEqual(weak["screening_metric_coverage"]["controlled_lang"], 1)
-        self.assertAlmostEqual(weak["avg_controlled_lang_inv_sa_score"], 0.72)
-        self.assertAlmostEqual(weak["avg_controlled_lang_inv_score"], 0.51)
-        self.assertAlmostEqual(strong["avg_induction_auc"], 0.08)
-        self.assertAlmostEqual(strong["avg_binding_auc"], 0.09)
-        self.assertAlmostEqual(strong["avg_controlled_lang_s05_score"], 0.85)
-        self.assertAlmostEqual(strong["avg_controlled_lang_s10_score"], 0.87)
-        self.assertAlmostEqual(strong["avg_controlled_lang_inv_score"], 0.89)
+        self.assertEqual(weak["screening_metric_coverage"]["language_control"], 1)
+        self.assertAlmostEqual(
+            weak["avg_language_control_investigation_sentence_assoc_score"], 0.72
+        )
+        self.assertAlmostEqual(weak["avg_language_control_investigation_score"], 0.51)
+        self.assertAlmostEqual(strong["avg_induction_screening_auc"], 0.08)
+        self.assertAlmostEqual(strong["avg_binding_screening_auc"], 0.09)
+        self.assertAlmostEqual(strong["avg_language_control_s05_score"], 0.85)
+        self.assertAlmostEqual(strong["avg_language_control_s10_score"], 0.87)
+        self.assertAlmostEqual(strong["avg_language_control_investigation_score"], 0.89)
         self.assertEqual(strong["structural_category"], "untested")
         self.assertEqual(summary["summary"]["templates_tracked"], 2)
         self.assertIn("all_slots", summary)
         self.assertEqual(summary["all_slots"][0]["slot_key"], "attn_sparse_test.slot0")
         self.assertAlmostEqual(
-            summary["all_slots"][0]["avg_controlled_lang_s05_score"], 0.60
+            summary["all_slots"][0]["avg_language_control_s05_score"], 0.60
         )
         self.assertAlmostEqual(
-            summary["all_slots"][0]["avg_controlled_lang_inv_sa_score"], 0.72
+            summary["all_slots"][0][
+                "avg_language_control_investigation_sentence_assoc_score"
+            ],
+            0.72,
         )
 
     def test_template_slot_observability_filters_legacy_templates_from_all_templates(
@@ -1021,9 +1026,9 @@ class TestNotebook(unittest.TestCase):
                 stage1_passed=True,
                 loss_ratio=0.50,
                 validation_loss_ratio=0.52,
-                induction_auc=0.02,
-                binding_auc=0.03,
-                ar_auc=0.03,
+                induction_screening_auc=0.02,
+                binding_screening_auc=0.03,
+                ar_legacy_auc=0.03,
                 hellaswag_acc=0.28,
             )
         for idx in range(12):
@@ -1036,9 +1041,9 @@ class TestNotebook(unittest.TestCase):
                 stage1_passed=True,
                 loss_ratio=0.39 if idx < 8 else 0.44,
                 validation_loss_ratio=0.43 if idx < 8 else 0.46,
-                induction_auc=0.05,
-                binding_auc=0.08,
-                ar_auc=0.07,
+                induction_screening_auc=0.05,
+                binding_screening_auc=0.08,
+                ar_legacy_auc=0.07,
                 hellaswag_acc=0.33,
             )
         for idx in range(2):
@@ -1051,9 +1056,9 @@ class TestNotebook(unittest.TestCase):
                 stage1_passed=True,
                 loss_ratio=0.36,
                 validation_loss_ratio=0.40,
-                induction_auc=0.06,
-                binding_auc=0.09,
-                ar_auc=0.08,
+                induction_screening_auc=0.06,
+                binding_screening_auc=0.09,
+                ar_legacy_auc=0.08,
                 hellaswag_acc=0.34,
             )
         self.nb.flush_writes()
@@ -1113,8 +1118,8 @@ class TestNotebook(unittest.TestCase):
                 stage1_passed=True,
                 loss_ratio=loss,
                 validation_loss_ratio=loss + 0.02,
-                induction_auc=0.01,
-                binding_auc=0.004,
+                induction_screening_auc=0.01,
+                binding_screening_auc=0.004,
                 hellaswag_acc=0.24,
             )
         self.nb.record_program_result(
@@ -1126,8 +1131,8 @@ class TestNotebook(unittest.TestCase):
             stage1_passed=True,
             loss_ratio=0.52,
             validation_loss_ratio=0.56,
-            induction_auc=0.03,
-            binding_auc=0.02,
+            induction_screening_auc=0.03,
+            binding_screening_auc=0.02,
             hellaswag_acc=0.31,
         )
         self.nb.flush_writes()
@@ -1467,10 +1472,10 @@ class TestNotebook(unittest.TestCase):
             wikitext_perplexity=180.0,
             hellaswag_acc=0.25,
             blimp_overall_accuracy=0.50,
-            induction_auc=0.05,
-            binding_auc=0.05,
-            binding_composite=0.02,
-            ar_auc=0.01,
+            induction_screening_auc=0.05,
+            binding_screening_auc=0.05,
+            binding_screening_composite=0.02,
+            ar_legacy_auc=0.01,
         )
         rid_b = self.nb.record_program_result(
             experiment_id=exp_id,
@@ -1483,10 +1488,10 @@ class TestNotebook(unittest.TestCase):
             wikitext_perplexity=35.0,
             hellaswag_acc=0.25,
             blimp_overall_accuracy=0.50,
-            induction_auc=0.05,
-            binding_auc=0.05,
-            binding_composite=0.02,
-            ar_auc=0.01,
+            induction_screening_auc=0.05,
+            binding_screening_auc=0.05,
+            binding_screening_composite=0.02,
+            ar_legacy_auc=0.01,
         )
 
         e_weak = self.nb.upsert_leaderboard(
@@ -1664,19 +1669,19 @@ class TestNotebook(unittest.TestCase):
             rapid_screening_degraded=False,
             rapid_screening_degraded_reasons_json='["loss_spike"]',
             rapid_screening_metrics_json='{"steps_completed":150,"has_routing":false}',
-            induction_auc=0.008,
-            induction_gap_accuracies_json='{"4":0.1,"8":0.2}',
-            induction_probe_train_steps=1000,
-            induction_probe_eval_examples=100,
-            induction_probe_batch_size=16,
-            induction_probe_gaps_json="[4,8,16,32,64]",
-            induction_probe_elapsed_ms=5976.0,
-            binding_auc=0.006,
-            binding_distance_accuracies_json='{"2":0.2,"4":0.1}',
-            binding_probe_eval_examples=100,
-            binding_probe_distances_json="[2,4,8,16,32,64]",
-            binding_probe_elapsed_ms=606.0,
-            binding_composite=0.004,
+            induction_screening_auc=0.008,
+            induction_screening_gap_accuracies_json='{"4":0.1,"8":0.2}',
+            induction_screening_train_steps=1000,
+            induction_screening_eval_examples=100,
+            induction_screening_batch_size=16,
+            induction_screening_gaps_json="[4,8,16,32,64]",
+            induction_screening_elapsed_ms=5976.0,
+            binding_screening_auc=0.006,
+            binding_screening_distance_accuracies_json='{"2":0.2,"4":0.1}',
+            binding_screening_eval_examples=100,
+            binding_screening_distances_json="[2,4,8,16,32,64]",
+            binding_screening_elapsed_ms=606.0,
+            binding_screening_composite=0.004,
             train_budget_steps=500,
             screening_hellaswag_correct=7,
             screening_hellaswag_total=10,
@@ -1687,13 +1692,13 @@ class TestNotebook(unittest.TestCase):
             "SELECT rapid_screening_passed, rapid_screening_elapsed_ms, "
             "rapid_screening_steps_completed, rapid_screening_max_steps, "
             "rapid_screening_degraded_reasons_json, rapid_screening_metrics_json, "
-            "induction_auc, induction_gap_accuracies_json, "
-            "induction_probe_train_steps, induction_probe_eval_examples, "
-            "induction_probe_batch_size, induction_probe_gaps_json, "
-            "induction_probe_elapsed_ms, binding_auc, "
-            "binding_distance_accuracies_json, binding_probe_eval_examples, "
-            "binding_probe_distances_json, binding_probe_elapsed_ms, "
-            "binding_composite, train_budget_steps, "
+            "induction_screening_auc, induction_screening_gap_accuracies_json, "
+            "induction_screening_train_steps, induction_screening_eval_examples, "
+            "induction_screening_batch_size, induction_screening_gaps_json, "
+            "induction_screening_elapsed_ms, binding_screening_auc, "
+            "binding_screening_distance_accuracies_json, binding_screening_eval_examples, "
+            "binding_screening_distances_json, binding_screening_elapsed_ms, "
+            "binding_screening_composite, train_budget_steps, "
             "screening_hellaswag_correct, screening_hellaswag_total, "
             "screening_hellaswag_elapsed_ms "
             "FROM program_results WHERE result_id = ?",
@@ -1709,19 +1714,23 @@ class TestNotebook(unittest.TestCase):
             row["rapid_screening_metrics_json"],
             '{"steps_completed":150,"has_routing":false}',
         )
-        self.assertAlmostEqual(row["induction_auc"], 0.008)
-        self.assertEqual(row["induction_gap_accuracies_json"], '{"4":0.1,"8":0.2}')
-        self.assertEqual(row["induction_probe_train_steps"], 1000)
-        self.assertEqual(row["induction_probe_eval_examples"], 100)
-        self.assertEqual(row["induction_probe_batch_size"], 16)
-        self.assertEqual(row["induction_probe_gaps_json"], "[4,8,16,32,64]")
-        self.assertAlmostEqual(row["induction_probe_elapsed_ms"], 5976.0)
-        self.assertAlmostEqual(row["binding_auc"], 0.006)
-        self.assertEqual(row["binding_distance_accuracies_json"], '{"2":0.2,"4":0.1}')
-        self.assertEqual(row["binding_probe_eval_examples"], 100)
-        self.assertEqual(row["binding_probe_distances_json"], "[2,4,8,16,32,64]")
-        self.assertAlmostEqual(row["binding_probe_elapsed_ms"], 606.0)
-        self.assertAlmostEqual(row["binding_composite"], 0.004)
+        self.assertAlmostEqual(row["induction_screening_auc"], 0.008)
+        self.assertEqual(
+            row["induction_screening_gap_accuracies_json"], '{"4":0.1,"8":0.2}'
+        )
+        self.assertEqual(row["induction_screening_train_steps"], 1000)
+        self.assertEqual(row["induction_screening_eval_examples"], 100)
+        self.assertEqual(row["induction_screening_batch_size"], 16)
+        self.assertEqual(row["induction_screening_gaps_json"], "[4,8,16,32,64]")
+        self.assertAlmostEqual(row["induction_screening_elapsed_ms"], 5976.0)
+        self.assertAlmostEqual(row["binding_screening_auc"], 0.006)
+        self.assertEqual(
+            row["binding_screening_distance_accuracies_json"], '{"2":0.2,"4":0.1}'
+        )
+        self.assertEqual(row["binding_screening_eval_examples"], 100)
+        self.assertEqual(row["binding_screening_distances_json"], "[2,4,8,16,32,64]")
+        self.assertAlmostEqual(row["binding_screening_elapsed_ms"], 606.0)
+        self.assertAlmostEqual(row["binding_screening_composite"], 0.004)
         self.assertEqual(row["train_budget_steps"], 500)
         self.assertEqual(row["screening_hellaswag_correct"], 7)
         self.assertEqual(row["screening_hellaswag_total"], 10)
@@ -2608,7 +2617,7 @@ class TestStaleExperimentCleanup(unittest.TestCase):
             stage05_passed=True,
             stage1_passed=True,
             loss_ratio=0.5,
-            induction_auc=0.9,
+            induction_screening_auc=0.9,
         )
         self.nb.conn.execute(
             "INSERT INTO training_curves (result_id, step, loss, grad_norm, step_time_ms) "

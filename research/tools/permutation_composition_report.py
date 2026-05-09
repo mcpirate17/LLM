@@ -23,13 +23,14 @@ from research.eval.permutation_composition_probe import (
     PERMUTATION_COMPOSITION_METRIC_VERSION,
     permutation_composition_score,
 )
+from research.scientist.notebook.graph_artifacts import resolve_graph_json_value
 from research.synthesis.compiler import compile_model
 from research.synthesis.serializer import graph_from_json
 from research.tools._db_maintenance import connect_readonly
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_DB = Path("research/lab_notebook.db")
+DEFAULT_DB = Path("research/runs.db")
 DEFAULT_REPORT_DIR = Path("research/reports")
 
 
@@ -47,8 +48,8 @@ def _select_targets(
                    l.wikitext_perplexity AS lb_wikitext_perplexity,
                    pr.graph_fingerprint, pr.graph_json,
                    pr.wikitext_perplexity,
-                   pr.induction_v2_investigation_auc,
-                   pr.binding_v2_investigation_auc,
+                   pr.induction_intermediate_auc,
+                   pr.binding_intermediate_auc,
                    pr.diagnostic_score,
                    pgf.template_name
             FROM leaderboard l
@@ -63,7 +64,14 @@ def _select_targets(
             """,
             (int(top_n),),
         ).fetchall()
-        return [dict(row) for row in rows]
+        payloads = []
+        for row in rows:
+            payload = dict(row)
+            payload["graph_json"] = resolve_graph_json_value(
+                conn, db, payload["graph_json"]
+            )
+            payloads.append(payload)
+        return payloads
     finally:
         conn.close()
 
@@ -115,8 +123,8 @@ def _finite_float(value: Any) -> float | None:
 def _correlations(rows: Iterable[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     metrics = {
         "composite_score": "composite_score",
-        "induction_v2_investigation_auc": "induction_v2_investigation_auc",
-        "binding_v2_investigation_auc": "binding_v2_investigation_auc",
+        "induction_intermediate_auc": "induction_intermediate_auc",
+        "binding_intermediate_auc": "binding_intermediate_auc",
         "diagnostic_score": "diagnostic_score",
         "wikitext_perplexity_inv": "wikitext_perplexity_inv",
     }
@@ -185,8 +193,8 @@ def _run_one(
         "template_name": row.get("template_name"),
         "composite_score": row.get("composite_score"),
         "wikitext_perplexity_inv": ppl,
-        "induction_v2_investigation_auc": row.get("induction_v2_investigation_auc"),
-        "binding_v2_investigation_auc": row.get("binding_v2_investigation_auc"),
+        "induction_intermediate_auc": row.get("induction_intermediate_auc"),
+        "binding_intermediate_auc": row.get("binding_intermediate_auc"),
         "diagnostic_score": row.get("diagnostic_score"),
         "elapsed_s": round(time.perf_counter() - t0, 2),
         **payload,

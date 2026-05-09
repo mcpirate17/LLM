@@ -401,6 +401,11 @@ class _ResultsAutomationMixin:
         if self.is_running:
             return
 
+        # Then selective capability rankers before validation.
+        self._run_pending_capability_ranking()
+        if self.is_running:
+            return
+
         # Then validation
         self._run_pending_validation()
         if self.is_running:

@@ -143,7 +143,7 @@ def run_comparison(
     load_runner_native()
 
     config = _build_config(fixture=fixture)
-    runner = ExperimentRunner("research/lab_notebook.db")
+    runner = ExperimentRunner("research/runs.db")
     pairs = []
     reference_times = []
     native_times = []

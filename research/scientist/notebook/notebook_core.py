@@ -13,11 +13,20 @@ import time
 import uuid
 import zlib
 from contextlib import contextmanager
+from functools import cache
 from os import PathLike
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
 
+from research.defaults import RUNS_DB
+
 from .graph_features import build_graph_feature_rows
+from .artifact_store import (
+    NotebookArtifactStore,
+    artifact_pointer_json,
+    parse_artifact_pointer,
+)
+from .graph_artifacts import resolve_graph_json_value
 from .native_conn import NativeConnectionWrapper, is_native_available
 from ._shared import (
     LOGGER,
@@ -119,6 +128,8 @@ class _NotebookCore:
     _cached_code_version: Optional[str] = None
     _last_report_snapshot_cleanup_at: float = 0.0
     _schema_bootstrapped_paths: set[str] = set()
+    _health_checked_paths: set[str] = set()
+    _last_health_check_at_by_path: dict[str, float] = {}
 
     @staticmethod
     def _configure_sqlite_connection(
@@ -184,6 +195,251 @@ class _NotebookCore:
         _run_pragma("PRAGMA busy_timeout=15000", desc="busy timeout")
 
     @staticmethod
+    def _health_checks_enabled() -> bool:
+        return os.environ.get("ARIA_NOTEBOOK_QUICK_CHECK", "1") not in {
+            "0",
+            "false",
+            "False",
+        }
+
+    @staticmethod
+    @cache
+    def _post_write_health_interval_s() -> float:
+        raw = os.environ.get("ARIA_NOTEBOOK_QUICK_CHECK_INTERVAL_S", "300")
+        try:
+            return max(0.0, float(raw))
+        except ValueError as exc:
+            raise ValueError(
+                f"ARIA_NOTEBOOK_QUICK_CHECK_INTERVAL_S={raw!r} is not a number"
+            ) from exc
+
+    @staticmethod
+    @cache
+    def _post_write_health_threshold() -> int:
+        raw = os.environ.get("ARIA_NOTEBOOK_QUICK_CHECK_WRITE_THRESHOLD", "1000")
+        try:
+            return max(1, int(raw))
+        except ValueError as exc:
+            raise ValueError(
+                f"ARIA_NOTEBOOK_QUICK_CHECK_WRITE_THRESHOLD={raw!r} is not an integer"
+            ) from exc
+
+    @classmethod
+    def _assert_sqlite_health_or_raise(cls, db_path: Path, *, reason: str) -> None:
+        if not cls._health_checks_enabled():
+            return
+        if str(db_path) == ":memory:":
+            return
+        try:
+            from research.tools.db_health import assert_sqlite_health
+
+            assert_sqlite_health(db_path, label=f"notebook {reason}")
+        except FileNotFoundError:
+            return
+        except Exception as exc:
+            raise sqlite3.DatabaseError(
+                f"database corrupt or failed quick_check during {reason}: {exc}"
+            ) from exc
+
+    @classmethod
+    def _run_startup_health_check_once(cls, db_path: Path) -> None:
+        key = str(db_path)
+        if key in cls._health_checked_paths:
+            return
+        cls._assert_sqlite_health_or_raise(db_path, reason="startup")
+        cls._health_checked_paths.add(key)
+        cls._last_health_check_at_by_path[key] = time.monotonic()
+
+    @staticmethod
+    def _artifact_min_bytes() -> int:
+        raw = os.environ.get("ARIA_NOTEBOOK_ARTIFACT_MIN_BYTES", "2048")
+        try:
+            return max(1, int(raw))
+        except ValueError:
+            return 2048
+
+    @staticmethod
+    def _program_result_artifact_columns() -> set[str]:
+        return {
+            "rapid_screening_metrics_json",
+            "data_provenance_json",
+            "external_benchmarks_json",
+            "failure_details_json",
+            "blimp_subtask_accuracies_json",
+            "diagnostic_tasks_json",
+            "language_control_s10_checkpoints_json",
+            "language_control_investigation_checkpoints_json",
+            "ar_validation_learning_curve_json",
+        }
+
+    def _ensure_artifacts_table(self) -> None:
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS notebook_artifacts (
+                artifact_id TEXT PRIMARY KEY,
+                table_name TEXT NOT NULL,
+                row_pk TEXT NOT NULL,
+                column_name TEXT NOT NULL,
+                path TEXT NOT NULL,
+                compression TEXT NOT NULL,
+                content_type TEXT NOT NULL,
+                sha256_uncompressed TEXT NOT NULL,
+                sha256_compressed TEXT NOT NULL,
+                uncompressed_bytes INTEGER NOT NULL,
+                compressed_bytes INTEGER NOT NULL,
+                created_at REAL NOT NULL
+            )
+            """
+        )
+        self.conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_notebook_artifacts_lookup
+            ON notebook_artifacts(table_name, row_pk, column_name)
+            """
+        )
+
+    def _insert_artifact_metadata(self, metadata: dict[str, Any]) -> None:
+        self.conn.execute(
+            """
+            INSERT OR REPLACE INTO notebook_artifacts
+            (artifact_id, table_name, row_pk, column_name, path, compression,
+             content_type, sha256_uncompressed, sha256_compressed,
+             uncompressed_bytes, compressed_bytes, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                metadata["artifact_id"],
+                metadata["table_name"],
+                metadata["row_pk"],
+                metadata["column_name"],
+                metadata["path"],
+                metadata["compression"],
+                metadata["content_type"],
+                metadata["sha256_uncompressed"],
+                metadata["sha256_compressed"],
+                metadata["uncompressed_bytes"],
+                metadata["compressed_bytes"],
+                metadata["created_at"],
+            ),
+        )
+        self.conn.commit()
+
+    def _store_artifact_payload(
+        self,
+        *,
+        table_name: str,
+        row_pk: str,
+        column_name: str,
+        payload: Any,
+        content_type: str = "application/json",
+    ) -> str:
+        metadata = self._artifact_store.write(
+            table_name=table_name,
+            row_pk=row_pk,
+            column_name=column_name,
+            payload=payload,
+            content_type=content_type,
+        )
+        self._insert_artifact_metadata(metadata)
+        return artifact_pointer_json(
+            metadata["artifact_id"],
+            path=metadata["path"],
+        )
+
+    def _artifact_metadata_from_pointer(
+        self, pointer_value: Any
+    ) -> dict[str, Any] | None:
+        pointer = parse_artifact_pointer(pointer_value)
+        if not pointer:
+            return None
+        artifact_id = str(pointer.get("_notebook_artifact") or "")
+        if not artifact_id:
+            return None
+        try:
+            row = self.conn.execute(
+                "SELECT * FROM notebook_artifacts WHERE artifact_id = ?",
+                (artifact_id,),
+            ).fetchone()
+        except sqlite3.OperationalError:
+            row = None
+        if row is not None:
+            return dict(row)
+        if pointer.get("path"):
+            return {
+                "artifact_id": artifact_id,
+                "path": pointer["path"],
+                "compression": pointer.get("compression") or "zstd",
+            }
+        return None
+
+    def _resolve_artifact_bytes(self, pointer_value: Any) -> bytes:
+        metadata = self._artifact_metadata_from_pointer(pointer_value)
+        if metadata is None:
+            raise ValueError("value is not a notebook artifact pointer")
+        return self._artifact_store.read_bytes(metadata)
+
+    def _resolve_artifact_text(self, pointer_value: Any) -> str:
+        return self._resolve_artifact_bytes(pointer_value).decode("utf-8")
+
+    def _json_loads_maybe_artifact(self, raw: Any) -> Any:
+        if parse_artifact_pointer(raw):
+            raw = self._resolve_artifact_text(raw)
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8")
+        return json.loads(raw)
+
+    def _maybe_store_json_artifact(
+        self,
+        *,
+        table_name: str,
+        row_pk: str,
+        column_name: str,
+        payload_json: str,
+    ) -> str:
+        if (
+            self._is_memory
+            or len(payload_json.encode("utf-8")) < type(self)._artifact_min_bytes()
+        ):
+            return payload_json
+        if parse_artifact_pointer(payload_json):
+            return payload_json
+        return self._store_artifact_payload(
+            table_name=table_name,
+            row_pk=row_pk,
+            column_name=column_name,
+            payload=payload_json,
+            content_type="application/json",
+        )
+
+    def _maybe_externalize_program_result_artifacts(
+        self,
+        *,
+        result_id: str,
+        filtered_kwargs: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        if self._is_memory:
+            return filtered_kwargs
+        min_bytes = type(self)._artifact_min_bytes()
+        artifact_columns = type(self)._program_result_artifact_columns()
+        updated = dict(filtered_kwargs)
+        for column in artifact_columns.intersection(updated):
+            value = updated.get(column)
+            if not isinstance(value, str) or len(value) < min_bytes:
+                continue
+            if parse_artifact_pointer(value):
+                continue
+            if len(value.encode("utf-8")) < min_bytes:
+                continue
+            updated[column] = self._store_artifact_payload(
+                table_name="program_results",
+                row_pk=result_id,
+                column_name=column,
+                payload=value,
+                content_type="application/json",
+            )
+        return updated
+
+    @staticmethod
     def validate_db_path_arg(db_path: str | PathLike[str]) -> str | PathLike[str]:
         """Reject obviously bogus notebook paths before any filesystem side effects.
 
@@ -233,7 +489,7 @@ class _NotebookCore:
 
     def __init__(
         self,
-        db_path: str | PathLike[str] = "research/lab_notebook.db",
+        db_path: str | PathLike[str] = RUNS_DB,
         *,
         skip_migrate: bool = False,
         check_same_thread: bool = False,
@@ -261,6 +517,10 @@ class _NotebookCore:
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._read_only = bool(read_only)
         self._use_native = bool(use_native) and not self._is_memory
+        self._writes_since_health_check = 0
+        self._artifact_store = NotebookArtifactStore(self.db_path)
+        if not self._read_only and not self._is_memory:
+            type(self)._run_startup_health_check_once(self.db_path)
         if self._use_native and not is_native_available():
             LOGGER.warning(
                 "aria_db is unavailable; opening %s with the sqlite fallback",
@@ -483,6 +743,7 @@ class _NotebookCore:
     def _submit_write(self, sql: str, params: Any):
         """Submit a write task to the background queue."""
         self._invalidate_dashboard_summary_cache()
+        self._record_write_for_health_check(params)
         if getattr(self, "_use_native", False):
             # Delegate to the Rust writer thread.
             mgr = self.conn._mgr
@@ -497,6 +758,31 @@ class _NotebookCore:
             return
         self._ensure_writer_thread()
         self._write_queue.put((sql, params))
+
+    def _record_write_for_health_check(self, params: Any = None) -> None:
+        if getattr(self, "_read_only", False) or getattr(self, "_is_memory", False):
+            return
+        amount = 1
+        if isinstance(params, list):
+            amount = max(1, len(params))
+        self._writes_since_health_check = (
+            getattr(self, "_writes_since_health_check", 0) + amount
+        )
+
+    def _maybe_run_post_write_health_check(self, *, reason: str) -> None:
+        if getattr(self, "_read_only", False) or getattr(self, "_is_memory", False):
+            return
+        threshold = type(self)._post_write_health_threshold()
+        if self._writes_since_health_check < threshold:
+            return
+        key = str(self.db_path)
+        now = time.monotonic()
+        last = type(self)._last_health_check_at_by_path.get(key, 0.0)
+        if now - last < type(self)._post_write_health_interval_s():
+            return
+        type(self)._assert_sqlite_health_or_raise(self.db_path, reason=reason)
+        type(self)._last_health_check_at_by_path[key] = now
+        self._writes_since_health_check = 0
 
     def _store_graph_features_async(
         self,
@@ -580,7 +866,11 @@ class _NotebookCore:
             built = build_graph_feature_rows(
                 result_id=result_id,
                 graph_fingerprint=str(row["graph_fingerprint"] or ""),
-                graph_json=str(row["graph_json"] or ""),
+                graph_json=resolve_graph_json_value(
+                    self.conn,
+                    getattr(self, "db_path", ""),
+                    row["graph_json"],
+                ),
             )
             result_keys.append((result_id,))
             feature_rows.append(built["feature_row"])
@@ -644,6 +934,7 @@ class _NotebookCore:
             return
         if getattr(self, "_use_native", False):
             self.conn._mgr.flush_writes(timeout)
+            self._maybe_run_post_write_health_check(reason="post-write flush")
             return
         if not self._writer_thread_started:
             return
@@ -654,6 +945,7 @@ class _NotebookCore:
         # Refresh the reader connection so subsequent reads observe the
         # writer thread's committed WAL snapshot immediately.
         self.conn.commit()
+        self._maybe_run_post_write_health_check(reason="post-write flush")
 
     def _migrate(self):
         """Add any missing columns to existing databases.
@@ -735,47 +1027,47 @@ class _NotebookCore:
     def _migrate_generation_stats_tables(self) -> None:
         expected_columns = {
             "template_stats": {
-                "avg_induction_auc": "REAL",
-                "avg_binding_auc": "REAL",
-                "avg_binding_composite": "REAL",
-                "avg_ar_auc": "REAL",
+                "avg_induction_screening_auc": "REAL",
+                "avg_binding_screening_auc": "REAL",
+                "avg_binding_screening_composite": "REAL",
+                "avg_ar_legacy_auc": "REAL",
                 "avg_hellaswag_acc": "REAL",
                 "avg_blimp_overall_accuracy": "REAL",
-                "avg_induction_v2_investigation_auc": "REAL",
-                "avg_binding_v2_investigation_auc": "REAL",
+                "avg_induction_intermediate_auc": "REAL",
+                "avg_binding_intermediate_auc": "REAL",
                 "math_space_rate": "REAL",
             },
             "op_stats": {
-                "avg_induction_auc": "REAL",
-                "avg_binding_auc": "REAL",
-                "avg_binding_composite": "REAL",
-                "avg_ar_auc": "REAL",
+                "avg_induction_screening_auc": "REAL",
+                "avg_binding_screening_auc": "REAL",
+                "avg_binding_screening_composite": "REAL",
+                "avg_ar_legacy_auc": "REAL",
                 "avg_hellaswag_acc": "REAL",
                 "avg_blimp_overall_accuracy": "REAL",
-                "avg_induction_v2_investigation_auc": "REAL",
-                "avg_binding_v2_investigation_auc": "REAL",
+                "avg_induction_intermediate_auc": "REAL",
+                "avg_binding_intermediate_auc": "REAL",
                 "math_space_rate": "REAL",
             },
             "motif_stats": {
-                "avg_induction_auc": "REAL",
-                "avg_binding_auc": "REAL",
-                "avg_binding_composite": "REAL",
-                "avg_ar_auc": "REAL",
+                "avg_induction_screening_auc": "REAL",
+                "avg_binding_screening_auc": "REAL",
+                "avg_binding_screening_composite": "REAL",
+                "avg_ar_legacy_auc": "REAL",
                 "avg_hellaswag_acc": "REAL",
                 "avg_blimp_overall_accuracy": "REAL",
-                "avg_induction_v2_investigation_auc": "REAL",
-                "avg_binding_v2_investigation_auc": "REAL",
+                "avg_induction_intermediate_auc": "REAL",
+                "avg_binding_intermediate_auc": "REAL",
                 "math_space_rate": "REAL",
             },
             "slot_stats": {
-                "avg_induction_auc": "REAL",
-                "avg_binding_auc": "REAL",
-                "avg_binding_composite": "REAL",
-                "avg_ar_auc": "REAL",
+                "avg_induction_screening_auc": "REAL",
+                "avg_binding_screening_auc": "REAL",
+                "avg_binding_screening_composite": "REAL",
+                "avg_ar_legacy_auc": "REAL",
                 "avg_hellaswag_acc": "REAL",
                 "avg_blimp_overall_accuracy": "REAL",
-                "avg_induction_v2_investigation_auc": "REAL",
-                "avg_binding_v2_investigation_auc": "REAL",
+                "avg_induction_intermediate_auc": "REAL",
+                "avg_binding_intermediate_auc": "REAL",
                 "math_space_rate": "REAL",
             },
         }
@@ -1151,9 +1443,9 @@ class _NotebookCore:
             "champion_steps_to_floor_score REAL",
             "champion_floor_quality_score REAL",
             "champion_floor_stability_score REAL",
-            "champion_induction_v3_score REAL",
+            "champion_induction_validation_score REAL",
             "champion_binding_long_context_score REAL",
-            "champion_small_ar_score REAL",
+            "champion_ar_validation_score REAL",
             "champion_tiny_model_score REAL",
             "champion_tiny_model_protocol_version TEXT",
             "champion_hard_failure_reason TEXT",
@@ -1190,33 +1482,33 @@ class _NotebookCore:
             "hellaswag_metric_version TEXT",
             "hellaswag_tokenizer_mode TEXT",
             "hellaswag_tiktoken_encoding TEXT",
-            "ar_auc REAL",
-            "induction_auc REAL",
-            "binding_auc REAL",
-            "binding_composite REAL",
-            "induction_v2_investigation_auc REAL",
-            "induction_v2_investigation_max_gap_acc REAL",
-            "induction_v2_investigation_protocol_version TEXT",
-            "binding_v2_investigation_auc REAL",
-            "binding_v2_investigation_max_distance_acc REAL",
-            "binding_v2_investigation_protocol_version TEXT",
-            "induction_v3_auc REAL",
-            "induction_v3_max_gap_acc REAL",
-            "induction_v3_gap_accuracy_cv REAL",
-            "induction_v3_gap_accuracies_json TEXT",
-            "induction_v3_steps_trained INTEGER",
-            "induction_v3_status TEXT",
-            "induction_v3_elapsed_ms REAL",
-            "induction_v3_protocol_version TEXT",
-            "small_ar_champion_metric_version TEXT",
-            "small_ar_champion_final_acc REAL",
-            "small_ar_champion_held_pair_match_acc REAL",
-            "small_ar_champion_held_class_acc REAL",
-            "small_ar_champion_learning_curve_json TEXT",
-            "small_ar_champion_steps_to_floor INTEGER",
-            "small_ar_champion_score REAL",
-            "small_ar_champion_status TEXT",
-            "small_ar_champion_elapsed_ms REAL",
+            "ar_legacy_auc REAL",
+            "induction_screening_auc REAL",
+            "binding_screening_auc REAL",
+            "binding_screening_composite REAL",
+            "induction_intermediate_auc REAL",
+            "induction_intermediate_max_gap_acc REAL",
+            "induction_intermediate_protocol_version TEXT",
+            "binding_intermediate_auc REAL",
+            "binding_intermediate_max_distance_acc REAL",
+            "binding_intermediate_protocol_version TEXT",
+            "induction_validation_auc REAL",
+            "induction_validation_max_gap_acc REAL",
+            "induction_validation_gap_accuracy_cv REAL",
+            "induction_validation_gap_accuracies_json TEXT",
+            "induction_validation_steps_trained INTEGER",
+            "induction_validation_status TEXT",
+            "induction_validation_elapsed_ms REAL",
+            "induction_validation_protocol_version TEXT",
+            "ar_validation_metric_version TEXT",
+            "ar_validation_final_acc REAL",
+            "ar_validation_held_pair_acc REAL",
+            "ar_validation_held_class_acc REAL",
+            "ar_validation_learning_curve_json TEXT",
+            "ar_validation_steps_to_floor INTEGER",
+            "ar_validation_rank_score REAL",
+            "ar_validation_status TEXT",
+            "ar_validation_elapsed_ms REAL",
             "local_only INTEGER DEFAULT 0",
             "result_cohort TEXT",
             "trust_label TEXT",
@@ -1265,6 +1557,7 @@ class _NotebookCore:
     def _migrate_impl(self):
         """Internal migration logic — delegates to per-table helpers."""
         self._migrate_schema_artifacts()
+        self._ensure_artifacts_table()
         self._migrate_experiments_table()
         self._migrate_program_results_table()
         self._migrate_generation_stats_tables()
@@ -1597,6 +1890,9 @@ class _NotebookCore:
         """Decompress zlib blob and JSON-decode with fallback for raw strings."""
         if not blob:
             return None
+        pointer = parse_artifact_pointer(blob)
+        if pointer:
+            blob = self._resolve_artifact_bytes(pointer)
         if not isinstance(blob, bytes):
             # Already a string (old data)
             try:
@@ -1631,6 +1927,8 @@ class _NotebookCore:
         if self._batch_depth == 0:
             self._invalidate_dashboard_summary_cache()
             self.conn.commit()
+            self._record_write_for_health_check()
+            self._maybe_run_post_write_health_check(reason="post-commit")
 
     def _invalidate_dashboard_summary_cache(self) -> None:
         """Clear the short-lived dashboard summary cache after writes."""

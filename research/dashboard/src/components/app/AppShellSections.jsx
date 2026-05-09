@@ -173,6 +173,7 @@ export const DashboardStatusBanners = memo(function DashboardStatusBanners({
   onForceStart,
   onOpenLiveView,
   onQueueClear,
+  onQueueCapabilityRank,
   onQueueConfirm,
   onQueueInvestigate,
   onQueueValidate,
@@ -287,7 +288,7 @@ export const DashboardStatusBanners = memo(function DashboardStatusBanners({
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
             <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
               Progression Queue: {investigationQueue.length} candidate{investigationQueue.length === 1 ? '' : 's'} pinned
-              {' '}({queueBreakdown.investigation} investigate, {queueBreakdown.validation} validate, {queueBreakdown.confirmation || 0} confirm).
+              {' '}({queueBreakdown.investigation} investigate, {queueBreakdown.capabilityRanking || 0} rank, {queueBreakdown.validation} validate, {queueBreakdown.confirmation || 0} confirm).
             </div>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
               <button
@@ -296,6 +297,13 @@ export const DashboardStatusBanners = memo(function DashboardStatusBanners({
                 disabled={queueBreakdown.investigation === 0}
               >
                 Investigate Queue
+              </button>
+              <button
+                className="refresh-btn"
+                onClick={onQueueCapabilityRank}
+                disabled={(queueBreakdown.capabilityRanking || 0) === 0}
+              >
+                Rank Queue
               </button>
               <button
                 className="refresh-btn"

@@ -23,6 +23,7 @@ _VALID_START_MODES = frozenset(
         "evolve",
         "novelty",
         "investigation",
+        "capability_ranking",
         "validation",
         "confirmation",
         "scale_up",
@@ -307,6 +308,33 @@ def _evaluate_mode_eligibility(
             }
         return None
 
+    if mode == "capability_ranking":
+        has_investigation_evidence = (
+            lb.get("investigation_loss_ratio") is not None
+            or lb.get("investigation_passed") is not None
+        )
+        if (
+            tier not in {"investigation", "capability_ranking"}
+            and not has_investigation_evidence
+        ):
+            return {
+                "result_id": result_id,
+                "reason": "not_investigation_tier",
+                "detail": (
+                    f"Current tier is '{tier or 'unknown'}'; capability ranking "
+                    "requires investigation evidence."
+                ),
+                "tier": tier or None,
+            }
+        if not bool(lb.get("investigation_passed")):
+            return {
+                "result_id": result_id,
+                "reason": "not_investigation_passed",
+                "detail": "Capability ranking requires a passed investigation result.",
+                "tier": tier,
+            }
+        return None
+
     if mode == "confirmation":
         if tier not in {"validation", "breakthrough"} and not bool(
             lb.get("validation_passed")
@@ -512,6 +540,13 @@ def normalize_start_mode(raw_mode: str) -> str:
     mode = str(raw_mode or "single").strip().lower().replace("-", "_")
     if mode in {"confirm", "champion_confirmation"}:
         return "confirmation"
+    if mode in {
+        "capability_rank",
+        "capability_ranker",
+        "capability_rankers",
+        "ranking",
+    }:
+        return "capability_ranking"
     if mode in _VALID_START_MODES:
         return mode
     return "single"

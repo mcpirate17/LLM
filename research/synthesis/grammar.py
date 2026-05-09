@@ -388,7 +388,7 @@ class GrammarConfig:
         primitives.
 
         Use this preset when seeding runs aimed at the full metric tuple
-        (ppl + binding_auc + induction + ar + hellaswag). The companion
+        (ppl + binding_screening_auc + induction + ar + hellaswag). The companion
         ``routing_first`` preset still exists for pure MoE/difficulty
         routing experiments.
         """

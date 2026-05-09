@@ -1,0 +1,570 @@
+{
+  "run_id": "v1",
+  "arch_keys": [
+    "gpt2",
+    "mamba",
+    "rwkv",
+    "retrieval_augmented"
+  ],
+  "seeds": [
+    0,
+    1
+  ],
+  "probes": [
+    "intermediate",
+    "validation",
+    "curriculum"
+  ],
+  "outcomes": [
+    {
+      "arch_key": "gpt2",
+      "arch_name": "GPT-2",
+      "seed": 0,
+      "probe": "ar_intermediate",
+      "headline": 0.0824,
+      "headline_label": "held_pair_lift",
+      "wall_s": 5.9,
+      "status": "ok",
+      "extras": {
+        "held_pair_acc": 0.1016,
+        "held_class_acc": 0.168,
+        "held_pair_lift": 0.0824,
+        "auc": 0.0902,
+        "auc_lift": 0.0709,
+        "score": 0.8793,
+        "status": "ok"
+      }
+    },
+    {
+      "arch_key": "gpt2",
+      "arch_name": "GPT-2",
+      "seed": 0,
+      "probe": "ar_validation",
+      "headline": 0.0664,
+      "headline_label": "held_pair_acc",
+      "wall_s": 17.5,
+      "status": "ok",
+      "extras": {
+        "final_acc": 0.0664,
+        "held_pair_acc": 0.0664,
+        "held_class_acc": 0.125,
+        "score": 2.0484,
+        "steps_to_floor": 1500,
+        "status": "ok"
+      }
+    },
+    {
+      "arch_key": "gpt2",
+      "arch_name": "GPT-2",
+      "seed": 0,
+      "probe": "ar_curriculum",
+      "headline": 0.0095,
+      "headline_label": "curriculum_learning (cum_AUC - frozen_S0_AUC)",
+      "wall_s": 65.8,
+      "status": "ok",
+      "extras": {
+        "cumulative_auc": 0.2005,
+        "frozen_s0_auc": 0.191,
+        "curriculum_learning": 0.0095,
+        "s0_retention": 0.234,
+        "cumulative_status": "ok",
+        "frozen_status": "ok",
+        "cumulative_wall_s": 33.48,
+        "frozen_wall_s": 32.32
+      }
+    },
+    {
+      "arch_key": "gpt2",
+      "arch_name": "GPT-2",
+      "seed": 1,
+      "probe": "ar_intermediate",
+      "headline": 0.0944,
+      "headline_label": "held_pair_lift",
+      "wall_s": 5.3,
+      "status": "ok",
+      "extras": {
+        "held_pair_acc": 0.1133,
+        "held_class_acc": 0.1602,
+        "held_pair_lift": 0.0944,
+        "auc": 0.132,
+        "auc_lift": 0.1136,
+        "score": 1.3713,
+        "status": "ok"
+      }
+    },
+    {
+      "arch_key": "gpt2",
+      "arch_name": "GPT-2",
+      "seed": 1,
+      "probe": "ar_validation",
+      "headline": 0.0586,
+      "headline_label": "held_pair_acc",
+      "wall_s": 17.4,
+      "status": "ok",
+      "extras": {
+        "final_acc": 0.0586,
+        "held_pair_acc": 0.0586,
+        "held_class_acc": 0.1211,
+        "score": 1.1938,
+        "steps_to_floor": 3500,
+        "status": "ok"
+      }
+    },
+    {
+      "arch_key": "gpt2",
+      "arch_name": "GPT-2",
+      "seed": 1,
+      "probe": "ar_curriculum",
+      "headline": 0.0243,
+      "headline_label": "curriculum_learning (cum_AUC - frozen_S0_AUC)",
+      "wall_s": 65.7,
+      "status": "ok",
+      "extras": {
+        "cumulative_auc": 0.2203,
+        "frozen_s0_auc": 0.196,
+        "curriculum_learning": 0.0243,
+        "s0_retention": 0.254,
+        "cumulative_status": "ok",
+        "frozen_status": "ok",
+        "cumulative_wall_s": 33.3,
+        "frozen_wall_s": 32.44
+      }
+    },
+    {
+      "arch_key": "mamba",
+      "arch_name": "Mamba",
+      "seed": 0,
+      "probe": "ar_intermediate",
+      "headline": 0.1662,
+      "headline_label": "held_pair_lift",
+      "wall_s": 8.3,
+      "status": "ok",
+      "extras": {
+        "held_pair_acc": 0.1836,
+        "held_class_acc": 0.25,
+        "held_pair_lift": 0.1662,
+        "auc": 0.1402,
+        "auc_lift": 0.1219,
+        "score": 1.8811,
+        "status": "ok"
+      }
+    },
+    {
+      "arch_key": "mamba",
+      "arch_name": "Mamba",
+      "seed": 0,
+      "probe": "ar_validation",
+      "headline": 0.0859,
+      "headline_label": "held_pair_acc",
+      "wall_s": 26.3,
+      "status": "ok",
+      "extras": {
+        "final_acc": 0.0977,
+        "held_pair_acc": 0.0859,
+        "held_class_acc": 0.1758,
+        "score": 2.0672,
+        "steps_to_floor": 2000,
+        "status": "ok"
+      }
+    },
+    {
+      "arch_key": "mamba",
+      "arch_name": "Mamba",
+      "seed": 0,
+      "probe": "ar_curriculum",
+      "headline": 0.1612,
+      "headline_label": "curriculum_learning (cum_AUC - frozen_S0_AUC)",
+      "wall_s": 96.6,
+      "status": "ok",
+      "extras": {
+        "cumulative_auc": 0.3637,
+        "frozen_s0_auc": 0.2025,
+        "curriculum_learning": 0.1612,
+        "s0_retention": 0.76,
+        "cumulative_status": "ok",
+        "frozen_status": "ok",
+        "cumulative_wall_s": 49.23,
+        "frozen_wall_s": 47.38
+      }
+    },
+    {
+      "arch_key": "mamba",
+      "arch_name": "Mamba",
+      "seed": 1,
+      "probe": "ar_intermediate",
+      "headline": 0.1622,
+      "headline_label": "held_pair_lift",
+      "wall_s": 8.1,
+      "status": "ok",
+      "extras": {
+        "held_pair_acc": 0.1797,
+        "held_class_acc": 0.2461,
+        "held_pair_lift": 0.1622,
+        "auc": 0.1285,
+        "auc_lift": 0.11,
+        "score": 1.7708,
+        "status": "ok"
+      }
+    },
+    {
+      "arch_key": "mamba",
+      "arch_name": "Mamba",
+      "seed": 1,
+      "probe": "ar_validation",
+      "headline": 0.0859,
+      "headline_label": "held_pair_acc",
+      "wall_s": 26.7,
+      "status": "ok",
+      "extras": {
+        "final_acc": 0.1055,
+        "held_pair_acc": 0.0859,
+        "held_class_acc": 0.1406,
+        "score": 1.7969,
+        "steps_to_floor": 2500,
+        "status": "ok"
+      }
+    },
+    {
+      "arch_key": "mamba",
+      "arch_name": "Mamba",
+      "seed": 1,
+      "probe": "ar_curriculum",
+      "headline": 0.1908,
+      "headline_label": "curriculum_learning (cum_AUC - frozen_S0_AUC)",
+      "wall_s": 97.2,
+      "status": "ok",
+      "extras": {
+        "cumulative_auc": 0.3674,
+        "frozen_s0_auc": 0.1766,
+        "curriculum_learning": 0.1908,
+        "s0_retention": 0.781,
+        "cumulative_status": "ok",
+        "frozen_status": "ok",
+        "cumulative_wall_s": 49.11,
+        "frozen_wall_s": 48.09
+      }
+    },
+    {
+      "arch_key": "rwkv",
+      "arch_name": "RWKV",
+      "seed": 0,
+      "probe": "ar_intermediate",
+      "headline": 0.1702,
+      "headline_label": "held_pair_lift",
+      "wall_s": 11.3,
+      "status": "ok",
+      "extras": {
+        "held_pair_acc": 0.1875,
+        "held_class_acc": 0.25,
+        "held_pair_lift": 0.1702,
+        "auc": 0.1399,
+        "auc_lift": 0.1215,
+        "score": 1.8842,
+        "status": "ok"
+      }
+    },
+    {
+      "arch_key": "rwkv",
+      "arch_name": "RWKV",
+      "seed": 0,
+      "probe": "ar_validation",
+      "headline": 0.082,
+      "headline_label": "held_pair_acc",
+      "wall_s": 36.8,
+      "status": "ok",
+      "extras": {
+        "final_acc": 0.0742,
+        "held_pair_acc": 0.082,
+        "held_class_acc": 0.1797,
+        "score": 1.2516,
+        "steps_to_floor": 4000,
+        "status": "ok"
+      }
+    },
+    {
+      "arch_key": "rwkv",
+      "arch_name": "RWKV",
+      "seed": 0,
+      "probe": "ar_curriculum",
+      "headline": 0.0885,
+      "headline_label": "curriculum_learning (cum_AUC - frozen_S0_AUC)",
+      "wall_s": 135.5,
+      "status": "ok",
+      "extras": {
+        "cumulative_auc": 0.2823,
+        "frozen_s0_auc": 0.1938,
+        "curriculum_learning": 0.0885,
+        "s0_retention": 0.234,
+        "cumulative_status": "ok",
+        "frozen_status": "ok",
+        "cumulative_wall_s": 68.52,
+        "frozen_wall_s": 66.97
+      }
+    },
+    {
+      "arch_key": "rwkv",
+      "arch_name": "RWKV",
+      "seed": 1,
+      "probe": "ar_intermediate",
+      "headline": 0.2021,
+      "headline_label": "held_pair_lift",
+      "wall_s": 11.3,
+      "status": "ok",
+      "extras": {
+        "held_pair_acc": 0.2188,
+        "held_class_acc": 0.2617,
+        "held_pair_lift": 0.2021,
+        "auc": 0.1254,
+        "auc_lift": 0.1068,
+        "score": 1.952,
+        "status": "ok"
+      }
+    },
+    {
+      "arch_key": "rwkv",
+      "arch_name": "RWKV",
+      "seed": 1,
+      "probe": "ar_validation",
+      "headline": 0.0508,
+      "headline_label": "held_pair_acc",
+      "wall_s": 37.1,
+      "status": "ok",
+      "extras": {
+        "final_acc": 0.0586,
+        "held_pair_acc": 0.0508,
+        "held_class_acc": 0.1172,
+        "score": 0.5391,
+        "steps_to_floor": 5000,
+        "status": "ok"
+      }
+    },
+    {
+      "arch_key": "rwkv",
+      "arch_name": "RWKV",
+      "seed": 1,
+      "probe": "ar_curriculum",
+      "headline": 0.102,
+      "headline_label": "curriculum_learning (cum_AUC - frozen_S0_AUC)",
+      "wall_s": 168.2,
+      "status": "ok",
+      "extras": {
+        "cumulative_auc": 0.2856,
+        "frozen_s0_auc": 0.1836,
+        "curriculum_learning": 0.102,
+        "s0_retention": 0.264,
+        "cumulative_status": "ok",
+        "frozen_status": "ok",
+        "cumulative_wall_s": 96.11,
+        "frozen_wall_s": 72.12
+      }
+    },
+    {
+      "arch_key": "retrieval_augmented",
+      "arch_name": "Retrieval-Augmented",
+      "seed": 0,
+      "probe": "ar_intermediate",
+      "headline": 0.0505,
+      "headline_label": "held_pair_lift",
+      "wall_s": 8.3,
+      "status": "ok",
+      "extras": {
+        "held_pair_acc": 0.0703,
+        "held_class_acc": 0.125,
+        "held_pair_lift": 0.0505,
+        "auc": 0.0668,
+        "auc_lift": 0.0469,
+        "score": 0.48,
+        "status": "ok"
+      }
+    },
+    {
+      "arch_key": "retrieval_augmented",
+      "arch_name": "Retrieval-Augmented",
+      "seed": 0,
+      "probe": "ar_validation",
+      "headline": 0.0078,
+      "headline_label": "held_pair_acc",
+      "wall_s": 27.3,
+      "status": "ok",
+      "extras": {
+        "final_acc": 0.0234,
+        "held_pair_acc": 0.0078,
+        "held_class_acc": 0.0859,
+        "score": 0.2188,
+        "steps_to_floor": null,
+        "status": "ok"
+      }
+    },
+    {
+      "arch_key": "retrieval_augmented",
+      "arch_name": "Retrieval-Augmented",
+      "seed": 0,
+      "probe": "ar_curriculum",
+      "headline": -0.0494,
+      "headline_label": "curriculum_learning (cum_AUC - frozen_S0_AUC)",
+      "wall_s": 104.2,
+      "status": "ok",
+      "extras": {
+        "cumulative_auc": 0.1413,
+        "frozen_s0_auc": 0.1907,
+        "curriculum_learning": -0.0494,
+        "s0_retention": 0.469,
+        "cumulative_status": "ok",
+        "frozen_status": "ok",
+        "cumulative_wall_s": 52.23,
+        "frozen_wall_s": 51.94
+      }
+    },
+    {
+      "arch_key": "retrieval_augmented",
+      "arch_name": "Retrieval-Augmented",
+      "seed": 1,
+      "probe": "ar_intermediate",
+      "headline": 0.0386,
+      "headline_label": "held_pair_lift",
+      "wall_s": 8.6,
+      "status": "ok",
+      "extras": {
+        "held_pair_acc": 0.0586,
+        "held_class_acc": 0.1211,
+        "held_pair_lift": 0.0386,
+        "auc": 0.0523,
+        "auc_lift": 0.0322,
+        "score": 0.3562,
+        "status": "ok"
+      }
+    },
+    {
+      "arch_key": "retrieval_augmented",
+      "arch_name": "Retrieval-Augmented",
+      "seed": 1,
+      "probe": "ar_validation",
+      "headline": 0.0195,
+      "headline_label": "held_pair_acc",
+      "wall_s": 28.0,
+      "status": "ok",
+      "extras": {
+        "final_acc": 0.0078,
+        "held_pair_acc": 0.0195,
+        "held_class_acc": 0.0977,
+        "score": 0.3125,
+        "steps_to_floor": null,
+        "status": "ok"
+      }
+    },
+    {
+      "arch_key": "retrieval_augmented",
+      "arch_name": "Retrieval-Augmented",
+      "seed": 1,
+      "probe": "ar_curriculum",
+      "headline": -0.0955,
+      "headline_label": "curriculum_learning (cum_AUC - frozen_S0_AUC)",
+      "wall_s": 101.3,
+      "status": "ok",
+      "extras": {
+        "cumulative_auc": 0.105,
+        "frozen_s0_auc": 0.2005,
+        "curriculum_learning": -0.0955,
+        "s0_retention": 0.264,
+        "cumulative_status": "ok",
+        "frozen_status": "ok",
+        "cumulative_wall_s": 51.29,
+        "frozen_wall_s": 49.98
+      }
+    }
+  ],
+  "aggregated": {
+    "gpt2": {
+      "ar_intermediate": {
+        "headline_mean": 0.0884,
+        "headline_std": 0.0085,
+        "wall_mean_s": 5.6,
+        "headline_label": "held_pair_lift"
+      },
+      "ar_validation": {
+        "headline_mean": 0.0625,
+        "headline_std": 0.0055,
+        "wall_mean_s": 17.4,
+        "headline_label": "held_pair_acc"
+      },
+      "ar_curriculum": {
+        "headline_mean": 0.0169,
+        "headline_std": 0.0105,
+        "wall_mean_s": 65.8,
+        "headline_label": "curriculum_learning (cum_AUC - frozen_S0_AUC)"
+      }
+    },
+    "mamba": {
+      "ar_intermediate": {
+        "headline_mean": 0.1642,
+        "headline_std": 0.0028,
+        "wall_mean_s": 8.2,
+        "headline_label": "held_pair_lift"
+      },
+      "ar_validation": {
+        "headline_mean": 0.0859,
+        "headline_std": 0.0,
+        "wall_mean_s": 26.5,
+        "headline_label": "held_pair_acc"
+      },
+      "ar_curriculum": {
+        "headline_mean": 0.176,
+        "headline_std": 0.0209,
+        "wall_mean_s": 96.9,
+        "headline_label": "curriculum_learning (cum_AUC - frozen_S0_AUC)"
+      }
+    },
+    "rwkv": {
+      "ar_intermediate": {
+        "headline_mean": 0.1861,
+        "headline_std": 0.0226,
+        "wall_mean_s": 11.3,
+        "headline_label": "held_pair_lift"
+      },
+      "ar_validation": {
+        "headline_mean": 0.0664,
+        "headline_std": 0.0221,
+        "wall_mean_s": 37.0,
+        "headline_label": "held_pair_acc"
+      },
+      "ar_curriculum": {
+        "headline_mean": 0.0953,
+        "headline_std": 0.0095,
+        "wall_mean_s": 151.8,
+        "headline_label": "curriculum_learning (cum_AUC - frozen_S0_AUC)"
+      }
+    },
+    "retrieval_augmented": {
+      "ar_intermediate": {
+        "headline_mean": 0.0446,
+        "headline_std": 0.0084,
+        "wall_mean_s": 8.4,
+        "headline_label": "held_pair_lift"
+      },
+      "ar_validation": {
+        "headline_mean": 0.0136,
+        "headline_std": 0.0083,
+        "wall_mean_s": 27.6,
+        "headline_label": "held_pair_acc"
+      },
+      "ar_curriculum": {
+        "headline_mean": -0.0725,
+        "headline_std": 0.0326,
+        "wall_mean_s": 102.8,
+        "headline_label": "curriculum_learning (cum_AUC - frozen_S0_AUC)"
+      }
+    }
+  },
+  "correlations": {
+    "ar_intermediate": {
+      "ar_validation": 0.8,
+      "ar_validation_pearson": 0.823
+    },
+    "ar_curriculum": {
+      "ar_intermediate": 0.8,
+      "ar_intermediate_pearson": 0.896,
+      "ar_validation": 1.0,
+      "ar_validation_pearson": 0.937
+    }
+  }
+}

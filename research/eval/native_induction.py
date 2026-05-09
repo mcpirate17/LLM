@@ -42,6 +42,7 @@ except ModuleNotFoundError:
             seed=cfg.seed,
         )
 
+
 INDUCTION_METRIC_VERSION = "native_pool_64_v1"
 INDUCTION_SPEED_MODE = "native_pool_64"
 INDUCTION_GAPS = (4, 8, 16, 32, 64)
@@ -69,14 +70,14 @@ def induction_score_gold(model, *, device: str, seed: int | None = None):
 
 def induction_result_metadata(result) -> dict[str, Any]:
     return {
-        "induction_auc": result.auc,
+        "induction_screening_auc": result.auc,
         "induction_gap_accuracies": dict(result.gap_accuracies or {}),
-        "induction_probe_train_steps": INDUCTION_TRAIN_STEPS,
-        "induction_probe_eval_examples": INDUCTION_EVAL_EXAMPLES,
-        "induction_probe_batch_size": INDUCTION_BATCH_SIZE,
+        "induction_screening_train_steps": INDUCTION_TRAIN_STEPS,
+        "induction_screening_eval_examples": INDUCTION_EVAL_EXAMPLES,
+        "induction_screening_batch_size": INDUCTION_BATCH_SIZE,
         "induction_probe_gaps": list(INDUCTION_GAPS),
-        "induction_probe_elapsed_ms": result.elapsed_ms,
-        "induction_probe_metric_version": INDUCTION_METRIC_VERSION,
-        "induction_probe_speed_mode": INDUCTION_SPEED_MODE,
-        "induction_probe_pool_size": INDUCTION_POOL_SIZE,
+        "induction_screening_elapsed_ms": result.elapsed_ms,
+        "induction_screening_metric_version": INDUCTION_METRIC_VERSION,
+        "induction_screening_speed_mode": INDUCTION_SPEED_MODE,
+        "induction_screening_pool_size": INDUCTION_POOL_SIZE,
     }

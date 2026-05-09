@@ -63,14 +63,14 @@ def main() -> None:
     )
     lines.append("- `slot_realization.csv` (per-slot motif pass rates, n≥20 published)")
     lines.append(
-        "- `high_capability_slot_fills.csv` (induction_v2_investigation_auc per slot)"
+        "- `high_capability_slot_fills.csv` (induction_intermediate_auc per slot)"
     )
     lines.append("")
     lines.append(
-        "Pass cohort: `controlled_lang_s05_sa_score >= 0.95 AND failure_op != 'nano_bind'`"
+        "Pass cohort: `language_control_s05_sentence_assoc_score >= 0.95 AND failure_op != 'nano_bind'`"
     )
     lines.append(
-        "Fail cohort: `controlled_lang_s05_sa_score < 0.30 OR failure_op = 'nano_bind'`"
+        "Fail cohort: `language_control_s05_sentence_assoc_score < 0.30 OR failure_op = 'nano_bind'`"
     )
     lines.append("")
     lines.append("## Bucket counts")

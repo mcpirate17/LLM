@@ -42,10 +42,11 @@ from research.tools._script_audit import (
     fail_script_experiment,
     start_script_experiment,
 )
+from research.defaults import RUNS_DB
 
 logger = logging.getLogger(__name__)
 
-_NOTEBOOK_DB = Path("research/lab_notebook.db")
+_NOTEBOOK_DB = Path(RUNS_DB)
 _PROFILING_DB = Path("research/profiling/component_profiles.db")
 _MODEL_REGISTRY_PATH = STATE_DIR / "model_registry.json"
 

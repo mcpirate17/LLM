@@ -22,36 +22,36 @@ _EMPTY_DATA_ACCOUNTING_SHAPE = {
     "leaderboard_tiers": {},
 }
 
-_CONTROLLED_LANG_FIELDS = (
-    "controlled_lang_s05_sa_score",
-    "controlled_lang_s05_nb_order_acc",
-    "controlled_lang_s05_nb_score",
-    "controlled_lang_s10_sa_score",
-    "controlled_lang_s10_nb_order_acc",
-    "controlled_lang_s10_nb_score",
-    "controlled_lang_inv_sa_score",
-    "controlled_lang_inv_nb_order_acc",
-    "controlled_lang_inv_nb_score",
+_LANGUAGE_CONTROL_FIELDS = (
+    "language_control_s05_sentence_assoc_score",
+    "language_control_s05_binding_order_acc",
+    "language_control_s05_binding_score",
+    "language_control_s10_sentence_assoc_score",
+    "language_control_s10_binding_order_acc",
+    "language_control_s10_binding_score",
+    "language_control_investigation_sentence_assoc_score",
+    "language_control_investigation_binding_order_acc",
+    "language_control_investigation_binding_score",
 )
 
-_CONTROLLED_LANG_TIERS = (
+_LANGUAGE_CONTROL_TIERS = (
     (
         "s05",
-        "controlled_lang_s05_sa_score",
-        "controlled_lang_s05_nb_order_acc",
-        "controlled_lang_s05_nb_score",
+        "language_control_s05_sentence_assoc_score",
+        "language_control_s05_binding_order_acc",
+        "language_control_s05_binding_score",
     ),
     (
         "s10",
-        "controlled_lang_s10_sa_score",
-        "controlled_lang_s10_nb_order_acc",
-        "controlled_lang_s10_nb_score",
+        "language_control_s10_sentence_assoc_score",
+        "language_control_s10_binding_order_acc",
+        "language_control_s10_binding_score",
     ),
     (
         "inv",
-        "controlled_lang_inv_sa_score",
-        "controlled_lang_inv_nb_order_acc",
-        "controlled_lang_inv_nb_score",
+        "language_control_investigation_sentence_assoc_score",
+        "language_control_investigation_binding_order_acc",
+        "language_control_investigation_binding_score",
     ),
 )
 
@@ -83,18 +83,18 @@ def _discover_template_names() -> tuple[str, ...]:
     return tuple(sorted(_load_template_source_map()))
 
 
-def _empty_controlled_lang_metrics() -> Dict[str, List[float]]:
-    return {field: [] for field in _CONTROLLED_LANG_FIELDS}
+def _empty_language_control_metrics() -> Dict[str, List[float]]:
+    return {field: [] for field in _LANGUAGE_CONTROL_FIELDS}
 
 
-def _append_controlled_lang_metrics(
+def _append_language_control_metrics(
     stat: Dict[str, Any],
     values: Dict[str, Any],
 ) -> None:
     metrics = stat.setdefault(
-        "controlled_lang_metrics", _empty_controlled_lang_metrics()
+        "language_control_metrics", _empty_language_control_metrics()
     )
-    for field in _CONTROLLED_LANG_FIELDS:
+    for field in _LANGUAGE_CONTROL_FIELDS:
         value = values.get(field)
         try:
             number = float(value) if value is not None else None
@@ -108,7 +108,7 @@ def _avg_or_none(values: List[float]) -> float | None:
     return sum(values) / len(values) if values else None
 
 
-def _controlled_lang_display_score(
+def _language_control_display_score(
     sa_score: float | None,
     nb_order_acc: float | None,
     nb_score: float | None,
@@ -121,17 +121,20 @@ def _controlled_lang_display_score(
     return _avg_or_none(values)
 
 
-def _summarize_controlled_lang_metrics(stat: Dict[str, Any]) -> Dict[str, Any]:
-    metrics = stat.get("controlled_lang_metrics") or {}
+def _summarize_language_control_metrics(stat: Dict[str, Any]) -> Dict[str, Any]:
+    metrics = stat.get("language_control_metrics") or {}
     result: Dict[str, Any] = {}
-    for field in _CONTROLLED_LANG_FIELDS:
+    for field in _LANGUAGE_CONTROL_FIELDS:
         result[f"avg_{field}"] = _avg_or_none(list(metrics.get(field) or []))
-    for tier, sa_field, order_field, nb_field in _CONTROLLED_LANG_TIERS:
-        result[f"avg_controlled_lang_{tier}_score"] = _controlled_lang_display_score(
+    for tier, sa_field, order_field, nb_field in _LANGUAGE_CONTROL_TIERS:
+        result[f"avg_language_control_{tier}_score"] = _language_control_display_score(
             result[f"avg_{sa_field}"],
             result[f"avg_{order_field}"],
             result[f"avg_{nb_field}"],
         )
+    result["avg_language_control_investigation_score"] = result[
+        "avg_language_control_inv_score"
+    ]
     return result
 
 
@@ -370,13 +373,19 @@ def _capability_signal_count(row: Dict[str, Any]) -> int:
     ):
         hits += 1
     if (
-        row.get("avg_induction_auc") is not None
-        and float(row["avg_induction_auc"]) >= 0.03
+        row.get("avg_induction_screening_auc") is not None
+        and float(row["avg_induction_screening_auc"]) >= 0.03
     ):
         hits += 1
-    if row.get("avg_binding_auc") is not None and float(row["avg_binding_auc"]) >= 0.05:
+    if (
+        row.get("avg_binding_screening_auc") is not None
+        and float(row["avg_binding_screening_auc"]) >= 0.05
+    ):
         hits += 1
-    if row.get("avg_ar_auc") is not None and float(row["avg_ar_auc"]) >= 0.05:
+    if (
+        row.get("avg_ar_legacy_auc") is not None
+        and float(row["avg_ar_legacy_auc"]) >= 0.05
+    ):
         hits += 1
     if (
         row.get("avg_hellaswag_acc") is not None
@@ -398,9 +407,9 @@ def _reference_metric_baselines(rows: List[Dict[str, Any]]) -> Dict[str, float]:
 
     lower_is_better = ("avg_validation_loss_ratio", "avg_loss_ratio")
     higher_is_better = (
-        "avg_induction_auc",
-        "avg_binding_auc",
-        "avg_ar_auc",
+        "avg_induction_screening_auc",
+        "avg_binding_screening_auc",
+        "avg_ar_legacy_auc",
         "avg_hellaswag_acc",
     )
     for metric in lower_is_better:
@@ -442,9 +451,9 @@ def _reference_beating_metrics(
     ):
         beats.append("train_loss")
     metric_pairs = (
-        ("avg_induction_auc", "induction"),
-        ("avg_binding_auc", "binding"),
-        ("avg_ar_auc", "ar"),
+        ("avg_induction_screening_auc", "induction"),
+        ("avg_binding_screening_auc", "binding"),
+        ("avg_ar_legacy_auc", "ar"),
         ("avg_hellaswag_acc", "hellaswag"),
     )
     for metric, label in metric_pairs:
@@ -521,14 +530,14 @@ def _summarize_template_stat(stat: Dict[str, Any]) -> Dict[str, Any]:
     discovery_vals = stat["discovery_losses"]
     novelties = stat["novelties"]
     novelty_confidences = stat["novelty_confidences"]
-    induction_aucs = stat["induction_aucs"]
-    binding_aucs = stat["binding_aucs"]
-    ar_aucs = stat["ar_aucs"]
+    induction_screening_aucs = stat["induction_screening_aucs"]
+    binding_screening_aucs = stat["binding_screening_aucs"]
+    ar_legacy_aucs = stat["ar_legacy_aucs"]
     hellaswag_accs = stat["hellaswag_accs"]
     blimp_overall_accuracies = stat.get("blimp_overall_accuracies") or []
     composite_scores = stat.get("composite_scores") or []
-    induction_v2_aucs = stat.get("induction_v2_aucs") or []
-    binding_v2_aucs = stat.get("binding_v2_aucs") or []
+    induction_intermediate_aucs = stat.get("induction_intermediate_aucs") or []
+    binding_intermediate_aucs = stat.get("binding_intermediate_aucs") or []
     erf_densities = stat.get("erf_densities") or []
     id_collapse_rates = stat.get("id_collapse_rates") or []
     id_collapse_rate_normalizeds = stat.get("id_collapse_rate_normalizeds") or []
@@ -571,13 +580,19 @@ def _summarize_template_stat(stat: Dict[str, Any]) -> Dict[str, Any]:
             if novelty_confidences
             else None
         ),
-        "avg_induction_auc": (
-            sum(induction_aucs) / len(induction_aucs) if induction_aucs else None
+        "avg_induction_screening_auc": (
+            sum(induction_screening_aucs) / len(induction_screening_aucs)
+            if induction_screening_aucs
+            else None
         ),
-        "avg_binding_auc": (
-            sum(binding_aucs) / len(binding_aucs) if binding_aucs else None
+        "avg_binding_screening_auc": (
+            sum(binding_screening_aucs) / len(binding_screening_aucs)
+            if binding_screening_aucs
+            else None
         ),
-        "avg_ar_auc": sum(ar_aucs) / len(ar_aucs) if ar_aucs else None,
+        "avg_ar_legacy_auc": sum(ar_legacy_aucs) / len(ar_legacy_aucs)
+        if ar_legacy_aucs
+        else None,
         "avg_hellaswag_acc": (
             sum(hellaswag_accs) / len(hellaswag_accs) if hellaswag_accs else None
         ),
@@ -586,17 +601,19 @@ def _summarize_template_stat(stat: Dict[str, Any]) -> Dict[str, Any]:
             if blimp_overall_accuracies
             else None
         ),
-        **_summarize_controlled_lang_metrics(stat),
+        **_summarize_language_control_metrics(stat),
         "avg_composite_score": (
             sum(composite_scores) / len(composite_scores) if composite_scores else None
         ),
-        "avg_induction_v2_auc": (
-            sum(induction_v2_aucs) / len(induction_v2_aucs)
-            if induction_v2_aucs
+        "avg_induction_intermediate_auc": (
+            sum(induction_intermediate_aucs) / len(induction_intermediate_aucs)
+            if induction_intermediate_aucs
             else None
         ),
-        "avg_binding_v2_auc": (
-            sum(binding_v2_aucs) / len(binding_v2_aucs) if binding_v2_aucs else None
+        "avg_binding_intermediate_auc": (
+            sum(binding_intermediate_aucs) / len(binding_intermediate_aucs)
+            if binding_intermediate_aucs
+            else None
         ),
         "avg_erf_density": (
             sum(erf_densities) / len(erf_densities) if erf_densities else None
@@ -668,19 +685,19 @@ def _summarize_template_stat(stat: Dict[str, Any]) -> Dict[str, Any]:
             else None
         ),
         "screening_metric_coverage": {
-            "induction": len(induction_aucs),
-            "binding": len(binding_aucs),
-            "associative_recall": len(ar_aucs),
+            "induction": len(induction_screening_aucs),
+            "binding": len(binding_screening_aucs),
+            "associative_recall": len(ar_legacy_aucs),
             "hellaswag": len(hellaswag_accs) + len(screening_hellaswag_accs),
             "blimp": len(blimp_overall_accuracies),
             "composite": len(composite_scores),
             "wikitext": int(stat.get("screening_wikitext_runs") or 0),
-            "induction_v2": len(induction_v2_aucs),
-            "binding_v2": len(binding_v2_aucs),
-            "controlled_lang": max(
+            "induction_intermediate": len(induction_intermediate_aucs),
+            "binding_intermediate": len(binding_intermediate_aucs),
+            "language_control": max(
                 (
                     len(values)
-                    for values in (stat.get("controlled_lang_metrics") or {}).values()
+                    for values in (stat.get("language_control_metrics") or {}).values()
                 ),
                 default=0,
             ),
@@ -732,8 +749,8 @@ def _summarize_template_stat(stat: Dict[str, Any]) -> Dict[str, Any]:
     s1_rate = core["s1_rate"]
     avg_loss_ratio = core["avg_loss_ratio"]
     avg_validation_loss_ratio = core["avg_validation_loss_ratio"]
-    avg_induction_auc = core["avg_induction_auc"]
-    avg_binding_auc = core["avg_binding_auc"]
+    avg_induction_screening_auc = core["avg_induction_screening_auc"]
+    avg_binding_screening_auc = core["avg_binding_screening_auc"]
     avg_hellaswag_acc = core["avg_hellaswag_acc"]
     evidence_level = core["evidence_level"]
 
@@ -765,10 +782,18 @@ def _summarize_template_stat(stat: Dict[str, Any]) -> Dict[str, Any]:
             "Validation materially trails training, suggesting brittle generalization."
         )
         actions.append("Reduce brittle motif mixes or extend slow-starter screening.")
-    if avg_induction_auc is not None and avg_induction_auc < 0.02 and s1_rate >= 0.2:
+    if (
+        avg_induction_screening_auc is not None
+        and avg_induction_screening_auc < 0.02
+        and s1_rate >= 0.2
+    ):
         diagnosis.append("Survivors train, but induction evidence remains weak.")
         actions.append("Bias backfills toward longer-range token-interaction motifs.")
-    if avg_binding_auc is not None and avg_binding_auc < 0.05 and s1_rate >= 0.2:
+    if (
+        avg_binding_screening_auc is not None
+        and avg_binding_screening_auc < 0.05
+        and s1_rate >= 0.2
+    ):
         diagnosis.append("Binding/copy behavior is weak relative to survivor rate.")
         actions.append("Probe slot choices that preserve non-local token access.")
     if avg_hellaswag_acc is not None and avg_hellaswag_acc <= 0.27:
@@ -824,15 +849,15 @@ def _empty_template_stat(name: str, slot_count: int) -> Dict[str, Any]:
         "discovery_losses": [],
         "novelties": [],
         "novelty_confidences": [],
-        "induction_aucs": [],
-        "binding_aucs": [],
-        "ar_aucs": [],
+        "induction_screening_aucs": [],
+        "binding_screening_aucs": [],
+        "ar_legacy_aucs": [],
         "hellaswag_accs": [],
         "blimp_overall_accuracies": [],
         "composite_scores": [],
-        "induction_v2_aucs": [],
-        "binding_v2_aucs": [],
-        "controlled_lang_metrics": _empty_controlled_lang_metrics(),
+        "induction_intermediate_aucs": [],
+        "binding_intermediate_aucs": [],
+        "language_control_metrics": _empty_language_control_metrics(),
         "erf_densities": [],
         "id_collapse_rates": [],
         "id_collapse_rate_normalizeds": [],

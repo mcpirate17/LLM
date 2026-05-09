@@ -1,0 +1,193 @@
+{
+  "run_id": "smoke_test",
+  "vocab_size": 3200,
+  "vocab_lo": 1000,
+  "stage_configs": [
+    {
+      "n_keys": 32,
+      "n_values": 8,
+      "pairs_per_example": 2,
+      "n_train_pairs": 8,
+      "n_held_pairs": 4
+    },
+    {
+      "n_keys": 64,
+      "n_values": 12,
+      "pairs_per_example": 2,
+      "n_train_pairs": 16,
+      "n_held_pairs": 8
+    },
+    {
+      "n_keys": 128,
+      "n_values": 16,
+      "pairs_per_example": 3,
+      "n_train_pairs": 32,
+      "n_held_pairs": 16
+    },
+    {
+      "n_keys": 256,
+      "n_values": 24,
+      "pairs_per_example": 4,
+      "n_train_pairs": 64,
+      "n_held_pairs": 24
+    },
+    {
+      "n_keys": 512,
+      "n_values": 32,
+      "pairs_per_example": 6,
+      "n_train_pairs": 96,
+      "n_held_pairs": 32
+    },
+    {
+      "n_keys": 1024,
+      "n_values": 48,
+      "pairs_per_example": 9,
+      "n_train_pairs": 128,
+      "n_held_pairs": 48
+    }
+  ],
+  "archs": [
+    {
+      "arch_key": "gpt2",
+      "arch_name": "GPT-2",
+      "paradigm": "dense_attention_transformer",
+      "seed": 0,
+      "d_model": 64,
+      "n_layers": 2,
+      "steps_per_stage": 20,
+      "total_steps": 120,
+      "elapsed_s": 0.9,
+      "status": "ok",
+      "error": null,
+      "auc_held_pair": 0.125,
+      "auc_held_class": 0.3333,
+      "max_passing_stage": -1,
+      "per_stage_final": [
+        {
+          "stage": 0,
+          "n_key_tokens": 32,
+          "n_value_tokens": 8,
+          "pairs_per_example": 2,
+          "held_pair_acc": 0.125,
+          "held_class_acc": 0.25,
+          "chance_pair_acc": 0.125,
+          "chance_class_acc": 0.25
+        },
+        {
+          "stage": 1,
+          "n_key_tokens": 64,
+          "n_value_tokens": 12,
+          "pairs_per_example": 2,
+          "held_pair_acc": 0.125,
+          "held_class_acc": 0.25,
+          "chance_pair_acc": 0.0833,
+          "chance_class_acc": 0.25
+        },
+        {
+          "stage": 2,
+          "n_key_tokens": 128,
+          "n_value_tokens": 16,
+          "pairs_per_example": 3,
+          "held_pair_acc": 0.125,
+          "held_class_acc": 0.25,
+          "chance_pair_acc": 0.0625,
+          "chance_class_acc": 0.25
+        },
+        {
+          "stage": 3,
+          "n_key_tokens": 256,
+          "n_value_tokens": 24,
+          "pairs_per_example": 4,
+          "held_pair_acc": 0.125,
+          "held_class_acc": 0.5,
+          "chance_pair_acc": 0.0417,
+          "chance_class_acc": 0.25
+        },
+        {
+          "stage": 4,
+          "n_key_tokens": 512,
+          "n_value_tokens": 32,
+          "pairs_per_example": 6,
+          "held_pair_acc": 0.25,
+          "held_class_acc": 0.625,
+          "chance_pair_acc": 0.0312,
+          "chance_class_acc": 0.25
+        },
+        {
+          "stage": 5,
+          "n_key_tokens": 1024,
+          "n_value_tokens": 48,
+          "pairs_per_example": 9,
+          "held_pair_acc": 0.0,
+          "held_class_acc": 0.125,
+          "chance_pair_acc": 0.0208,
+          "chance_class_acc": 0.25
+        }
+      ],
+      "forgetting_matrix": [
+        [
+          0.125,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        [
+          0.125,
+          0.125,
+          null,
+          null,
+          null,
+          null
+        ],
+        [
+          0.125,
+          0.125,
+          0.0,
+          null,
+          null,
+          null
+        ],
+        [
+          0.125,
+          0.125,
+          0.125,
+          0.0,
+          null,
+          null
+        ],
+        [
+          0.125,
+          0.125,
+          0.125,
+          0.125,
+          0.0,
+          null
+        ],
+        [
+          0.125,
+          0.125,
+          0.125,
+          0.125,
+          0.25,
+          0.0
+        ]
+      ],
+      "per_step_loss": [
+        2.4671,
+        2.0759,
+        3.0871,
+        2.6375,
+        3.0987,
+        2.5684,
+        3.8763,
+        2.7108,
+        4.4802,
+        3.9346,
+        5.2254,
+        4.2195
+      ]
+    }
+  ]
+}

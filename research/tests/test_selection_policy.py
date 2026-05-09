@@ -40,10 +40,10 @@ def _stage1_result_kwargs(
         "hellaswag_status": "ran",
         "blimp_overall_accuracy": 0.55 + metric_offset * 0.001,
         "blimp_status": "ran",
-        "induction_auc": 0.12 + metric_offset * 0.001,
-        "binding_auc": 0.10 + metric_offset * 0.001,
-        "binding_composite": 0.11 + metric_offset * 0.001,
-        "ar_auc": 0.09 + metric_offset * 0.001,
+        "induction_screening_auc": 0.12 + metric_offset * 0.001,
+        "binding_screening_auc": 0.10 + metric_offset * 0.001,
+        "binding_screening_composite": 0.11 + metric_offset * 0.001,
+        "ar_legacy_auc": 0.09 + metric_offset * 0.001,
     }
     extra = {
         "stage1_passed": 1,
@@ -437,10 +437,10 @@ def test_auto_recommend_records_next_experiment_plan_decision():
             wikitext_perplexity=180.0 + idx,
             hellaswag_acc=0.31 + 0.01 * idx,
             blimp_overall_accuracy=0.56 + 0.01 * idx,
-            induction_auc=0.12 + 0.01 * idx,
-            binding_auc=0.10 + 0.01 * idx,
-            binding_composite=0.11 + 0.01 * idx,
-            ar_auc=0.09 + 0.01 * idx,
+            induction_screening_auc=0.12 + 0.01 * idx,
+            binding_screening_auc=0.10 + 0.01 * idx,
+            binding_screening_composite=0.11 + 0.01 * idx,
+            ar_legacy_auc=0.09 + 0.01 * idx,
         )
     nb.complete_experiment(
         exp_id,

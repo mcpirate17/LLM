@@ -23,7 +23,6 @@ Reviewed on 2026-04-26.
 - Generated caches/build outputs may have been cleaned. Recreate frontend deps with `npm install` in `research/dashboard` and native/runtime outputs with the relevant build commands.
 - `perf_artifacts/` has been condensed into handoff summaries where possible. Any live backfill log should be treated as active until its writer process exits.
 - `.continuous_paused` indicates the continuous loop was paused intentionally.
-- Cleanup context is recorded in `../CLEANUP_AUDIT_20260426.md` and `../DIRECTORY_USAGE_AUDIT_20260426.md`.
 
 ## Run Modes
 

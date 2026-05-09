@@ -37,11 +37,14 @@ def test_inheritance_actually_overrides():
     assert layers["v10"]["w_cap_induction"] == 45.0
     assert layers["v11"]["w_cap_induction"] == 45.0
     assert layers["v14"]["w_cap_induction"] == 45.0
-    # Flattening keeps controlled-language ladder keys visible in every layer.
-    assert "w_cl_inv_sa" in layers["v14"]
+    assert layers["v14"]["ar_gate_gate_threshold"] == 0.30
+    assert layers["v14"]["ar_gate_gate_plateau"] == 0.45
+    assert layers["v14"]["ar_validation_rank_span"] == 0.65
+    # Flattening keeps language-control ladder keys visible in every layer.
+    assert "w_cl_investigation_sa" in layers["v14"]
     assert layers["v14"]["w_cl_s10_nb_bucket"] == 25.0
-    assert layers["v14"]["w_cl_inv_nb_bucket"] == 25.0
-    assert layers["v11"]["w_cl_inv_sa"] == 15.0
+    assert layers["v14"]["w_cl_investigation_nb_bucket"] == 25.0
+    assert layers["v11"]["w_cl_investigation_sa"] == 15.0
 
 
 def test_hash_format():

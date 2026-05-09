@@ -1,8 +1,6 @@
 import json
-import os
 import sqlite3
 import sys
-import tempfile
 from types import SimpleNamespace
 
 import pytest
@@ -12,10 +10,6 @@ from research.scientist.runner._helpers_benchmark import (
     _record_investigation_result,
     _run_investigation_v2_probes,
 )
-
-
-def _tmp_db() -> str:
-    return os.path.join(tempfile.mkdtemp(), "investigation_v2.db")
 
 
 def _graph_json() -> str:
@@ -51,34 +45,118 @@ def test_investigation_v2_probe_helper_maps_probe_outputs(monkeypatch):
     )
     monkeypatch.setitem(
         sys.modules,
-        "research.eval.induction_probe_v2_investigation",
+        "research.eval.induction_intermediate_probe",
         SimpleNamespace(
-            run_induction_v2_investigation=lambda model, device: induction_result
+            run_induction_intermediate=lambda model, device: induction_result
         ),
     )
     monkeypatch.setitem(
         sys.modules,
-        "research.eval.binding_probe_v2_investigation",
-        SimpleNamespace(
-            run_binding_v2_investigation=lambda model, device: binding_result
-        ),
+        "research.eval.binding_intermediate_probe",
+        SimpleNamespace(run_binding_intermediate=lambda model, device: binding_result),
     )
 
     updates = _run_investigation_v2_probes(object(), "cpu")
 
-    assert updates["induction_v2_investigation_auc"] == pytest.approx(0.12)
-    assert updates["binding_v2_investigation_auc"] == pytest.approx(0.56)
-    assert json.loads(updates["induction_v2_investigation_gap_accuracies_json"]) == {
+    assert updates["induction_intermediate_auc"] == pytest.approx(0.12)
+    assert updates["binding_intermediate_auc"] == pytest.approx(0.56)
+    assert json.loads(updates["induction_intermediate_gap_accuracies_json"]) == {
         "4": 0.2,
         "8": 0.3,
     }
-    assert json.loads(updates["binding_v2_investigation_distance_accuracies_json"]) == {
+    assert json.loads(updates["binding_intermediate_distance_accuracies_json"]) == {
         "4": 0.7,
         "8": 0.8,
     }
 
 
-def test_investigation_probe_helper_maps_nano_ar_when_enabled(monkeypatch):
+def test_investigation_v2_probe_helper_runs_intermediate_probes_only_when_flagged(
+    monkeypatch,
+):
+    induction_result = SimpleNamespace(
+        auc=0.12,
+        max_gap_acc=0.34,
+        gap_accuracies={4: 0.2},
+        steps_trained=500,
+        status="ok",
+        elapsed_ms=123.0,
+        protocol_version="induction-test",
+    )
+    binding_result = SimpleNamespace(
+        auc=0.56,
+        max_distance_acc=0.78,
+        distance_accuracies={4: 0.7},
+        train_steps=2400,
+        status="ok",
+        elapsed_ms=456.0,
+        protocol_version="binding-test",
+    )
+    ar_result = SimpleNamespace(
+        to_dict=lambda: {
+            "ar_intermediate_metric_version": "ar-int-test",
+            "ar_intermediate_diagnostic_score": 0.42,
+            "ar_intermediate_held_pair_acc": 0.08,
+            "ar_intermediate_held_pair_lift": 0.06,
+            "ar_intermediate_auc_lift": 0.05,
+            "ar_intermediate_status": "ok",
+            "ar_intermediate_elapsed_ms": 10.0,
+            "ar_intermediate_error": None,
+        }
+    )
+    multislot_result = SimpleNamespace(
+        to_dict=lambda: {
+            "binding_multislot_metric_version": "multislot-test",
+            "binding_multislot_diagnostic_score": 1.2,
+            "binding_multislot_held_entity_slot_acc": 0.1,
+            "binding_multislot_two_plus_slots_acc": 0.05,
+            "binding_multislot_auc_lift": 0.07,
+            "binding_multislot_status": "ok",
+            "binding_multislot_elapsed_ms": 20.0,
+            "binding_multislot_error": None,
+        }
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "research.eval.induction_intermediate_probe",
+        SimpleNamespace(
+            run_induction_intermediate=lambda model, device: induction_result
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "research.eval.binding_intermediate_probe",
+        SimpleNamespace(run_binding_intermediate=lambda model, device: binding_result),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "research.eval.ar_intermediate_probe",
+        SimpleNamespace(ar_intermediate_probe=lambda model, device: ar_result),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "research.eval.binding_multislot_probe",
+        SimpleNamespace(binding_multislot_probe=lambda model, device: multislot_result),
+    )
+
+    default_updates = _run_investigation_v2_probes(object(), "cpu")
+    flagged_updates = _run_investigation_v2_probes(
+        object(),
+        "cpu",
+        run_ar_intermediate=True,
+        run_binding_multislot=True,
+    )
+
+    assert "ar_intermediate_diagnostic_score" not in default_updates
+    assert "binding_multislot_diagnostic_score" not in default_updates
+    assert flagged_updates["ar_intermediate_diagnostic_score"] == pytest.approx(0.42)
+    assert flagged_updates["ar_intermediate_held_pair_acc"] == pytest.approx(0.08)
+    assert flagged_updates["binding_multislot_diagnostic_score"] == pytest.approx(1.2)
+    assert flagged_updates["binding_multislot_two_plus_slots_acc"] == pytest.approx(
+        0.05
+    )
+
+
+def test_investigation_probe_helper_maps_ar_gate_when_enabled(monkeypatch):
     induction_result = SimpleNamespace(
         auc=0.12,
         max_gap_acc=0.34,
@@ -98,10 +176,10 @@ def test_investigation_probe_helper_maps_nano_ar_when_enabled(monkeypatch):
         protocol_version="binding-test",
     )
     nano_result = SimpleNamespace(
-        metric_version="nano_ar_inv_test",
-        in_dist_pair_match_acc=0.8,
+        metric_version="ar_gate_test",
+        in_dist_pair_acc=0.8,
         in_dist_class_acc=0.9,
-        held_pair_match_acc=0.2,
+        held_pair_acc=0.2,
         held_class_acc=0.5,
         status="ok",
         elapsed_ms=789.0,
@@ -109,30 +187,28 @@ def test_investigation_probe_helper_maps_nano_ar_when_enabled(monkeypatch):
     )
     captured = {}
 
-    def _nano_ar_inv(**kwargs):
+    def _ar_gate(**kwargs):
         captured.update(kwargs)
         return nano_result
 
     monkeypatch.setitem(
         sys.modules,
-        "research.eval.induction_probe_v2_investigation",
+        "research.eval.induction_intermediate_probe",
         SimpleNamespace(
-            run_induction_v2_investigation=lambda model, device: induction_result
+            run_induction_intermediate=lambda model, device: induction_result
         ),
     )
     monkeypatch.setitem(
         sys.modules,
-        "research.eval.binding_probe_v2_investigation",
-        SimpleNamespace(
-            run_binding_v2_investigation=lambda model, device: binding_result
-        ),
+        "research.eval.binding_intermediate_probe",
+        SimpleNamespace(run_binding_intermediate=lambda model, device: binding_result),
     )
     monkeypatch.setitem(
         sys.modules,
-        "research.eval.nano_ar_inv",
+        "research.eval.ar_gate",
         SimpleNamespace(
-            NanoARInvConfig=lambda **kwargs: SimpleNamespace(**kwargs),
-            nano_ar_inv=_nano_ar_inv,
+            ARGateConfig=lambda **kwargs: SimpleNamespace(**kwargs),
+            ar_gate=_ar_gate,
         ),
     )
 
@@ -140,26 +216,26 @@ def test_investigation_probe_helper_maps_nano_ar_when_enabled(monkeypatch):
         object(),
         "cpu",
         graph_json_str=_graph_json(),
-        run_nano_ar=True,
+        run_ar_gate=True,
     )
 
     assert captured["graph_json"] == _graph_json()
     assert captured["cfg"].from_s1 is False
     assert captured["cfg"].wikitext_warmup_steps == 2500
-    assert updates["nano_ar_inv_metric_version"] == "nano_ar_inv_test"
-    assert updates["nano_ar_inv_score"] == pytest.approx(0.68)
-    assert updates["nano_ar_inv_in_dist_pair_match_acc"] == pytest.approx(0.8)
-    assert updates["nano_ar_inv_held_class_acc"] == pytest.approx(0.5)
-    assert updates["nano_ar_inv_status"] == "ok"
-    assert updates["nano_ar_inv_train_steps_done"] == 400
+    assert updates["ar_gate_metric_version"] == "ar_gate_test"
+    assert updates["ar_gate_score"] == pytest.approx(0.68)
+    assert updates["ar_gate_in_dist_pair_acc"] == pytest.approx(0.8)
+    assert updates["ar_gate_held_class_acc"] == pytest.approx(0.5)
+    assert updates["ar_gate_status"] == "ok"
+    assert updates["ar_gate_train_steps_done"] == 400
 
 
-def test_investigation_probe_helper_keeps_failed_nano_ar_score_empty(monkeypatch):
+def test_investigation_probe_helper_keeps_failed_ar_gate_score_empty(monkeypatch):
     monkeypatch.setitem(
         sys.modules,
-        "research.eval.induction_probe_v2_investigation",
+        "research.eval.induction_intermediate_probe",
         SimpleNamespace(
-            run_induction_v2_investigation=lambda model, device: SimpleNamespace(
+            run_induction_intermediate=lambda model, device: SimpleNamespace(
                 auc=0.12,
                 max_gap_acc=0.34,
                 gap_accuracies={},
@@ -172,9 +248,9 @@ def test_investigation_probe_helper_keeps_failed_nano_ar_score_empty(monkeypatch
     )
     monkeypatch.setitem(
         sys.modules,
-        "research.eval.binding_probe_v2_investigation",
+        "research.eval.binding_intermediate_probe",
         SimpleNamespace(
-            run_binding_v2_investigation=lambda model, device: SimpleNamespace(
+            run_binding_intermediate=lambda model, device: SimpleNamespace(
                 auc=0.56,
                 max_distance_acc=0.78,
                 distance_accuracies={},
@@ -187,14 +263,14 @@ def test_investigation_probe_helper_keeps_failed_nano_ar_score_empty(monkeypatch
     )
     monkeypatch.setitem(
         sys.modules,
-        "research.eval.nano_ar_inv",
+        "research.eval.ar_gate",
         SimpleNamespace(
-            NanoARInvConfig=lambda **kwargs: SimpleNamespace(**kwargs),
-            nano_ar_inv=lambda **kwargs: SimpleNamespace(
-                metric_version="nano_ar_inv_test",
-                in_dist_pair_match_acc=0.8,
+            ARGateConfig=lambda **kwargs: SimpleNamespace(**kwargs),
+            ar_gate=lambda **kwargs: SimpleNamespace(
+                metric_version="ar_gate_test",
+                in_dist_pair_acc=0.8,
                 in_dist_class_acc=0.9,
-                held_pair_match_acc=0.2,
+                held_pair_acc=0.2,
                 held_class_acc=0.5,
                 status="compile_failed",
                 elapsed_ms=789.0,
@@ -207,14 +283,14 @@ def test_investigation_probe_helper_keeps_failed_nano_ar_score_empty(monkeypatch
         object(),
         "cpu",
         graph_json_str=_graph_json(),
-        run_nano_ar=True,
+        run_ar_gate=True,
     )
 
-    assert updates["nano_ar_inv_score"] is None
-    assert updates["nano_ar_inv_in_dist_pair_match_acc"] is None
-    assert updates["nano_ar_inv_held_class_acc"] is None
-    assert updates["nano_ar_inv_status"] == "compile_failed"
-    assert updates["nano_ar_inv_train_steps_done"] == 0
+    assert updates["ar_gate_score"] is None
+    assert updates["ar_gate_in_dist_pair_acc"] is None
+    assert updates["ar_gate_held_class_acc"] is None
+    assert updates["ar_gate_status"] == "compile_failed"
+    assert updates["ar_gate_train_steps_done"] == 0
 
 
 def test_investigation_v2_probe_failures_keep_status_without_zero_metric(monkeypatch):
@@ -238,31 +314,29 @@ def test_investigation_v2_probe_failures_keep_status_without_zero_metric(monkeyp
     )
     monkeypatch.setitem(
         sys.modules,
-        "research.eval.induction_probe_v2_investigation",
+        "research.eval.induction_intermediate_probe",
         SimpleNamespace(
-            run_induction_v2_investigation=lambda model, device: induction_result
+            run_induction_intermediate=lambda model, device: induction_result
         ),
     )
     monkeypatch.setitem(
         sys.modules,
-        "research.eval.binding_probe_v2_investigation",
-        SimpleNamespace(
-            run_binding_v2_investigation=lambda model, device: binding_result
-        ),
+        "research.eval.binding_intermediate_probe",
+        SimpleNamespace(run_binding_intermediate=lambda model, device: binding_result),
     )
 
     updates = _run_investigation_v2_probes(object(), "cpu")
 
-    assert updates["induction_v2_investigation_auc"] is None
-    assert updates["induction_v2_investigation_max_gap_acc"] is None
-    assert updates["binding_v2_investigation_auc"] is None
-    assert updates["binding_v2_investigation_max_distance_acc"] is None
-    assert updates["induction_v2_investigation_status"].startswith("train_failed")
-    assert updates["binding_v2_investigation_status"].startswith("train_failed")
+    assert updates["induction_intermediate_auc"] is None
+    assert updates["induction_intermediate_max_gap_acc"] is None
+    assert updates["binding_intermediate_auc"] is None
+    assert updates["binding_intermediate_max_distance_acc"] is None
+    assert updates["induction_intermediate_status"].startswith("train_failed")
+    assert updates["binding_intermediate_status"].startswith("train_failed")
 
 
-def test_record_investigation_result_persists_v2_to_source_and_rerun_row():
-    db_path = _tmp_db()
+def test_record_investigation_result_persists_v2_to_source_and_rerun_row(tmp_path):
+    db_path = str(tmp_path / "investigation_v2.db")
     nb = LabNotebook(db_path, use_native=False)
     source_exp = nb.start_experiment("synthesis", {}, "source")
     source_result_id = nb.record_program_result(
@@ -281,29 +355,43 @@ def test_record_investigation_result_persists_v2_to_source_and_rerun_row():
 
     benchmark_result = {
         "inv_wikitext_ppl": 4.2,
-        "induction_v2_investigation_auc": 0.021,
-        "induction_v2_investigation_max_gap_acc": 0.12,
-        "induction_v2_investigation_gap_accuracies_json": json.dumps({"4": 0.1}),
-        "induction_v2_investigation_steps_trained": 500,
-        "induction_v2_investigation_status": "ok",
-        "induction_v2_investigation_elapsed_ms": 1000.0,
-        "induction_v2_investigation_protocol_version": "induction-test",
-        "binding_v2_investigation_auc": 0.077,
-        "binding_v2_investigation_max_distance_acc": 0.25,
-        "binding_v2_investigation_distance_accuracies_json": json.dumps({"4": 0.2}),
-        "binding_v2_investigation_train_steps": 2400,
-        "binding_v2_investigation_status": "ok",
-        "binding_v2_investigation_elapsed_ms": 2000.0,
-        "binding_v2_investigation_protocol_version": "binding-test",
-        "nano_ar_inv_metric_version": "nano_ar_inv_test",
-        "nano_ar_inv_in_dist_pair_match_acc": 0.8,
-        "nano_ar_inv_in_dist_class_acc": 0.9,
-        "nano_ar_inv_held_pair_match_acc": 0.2,
-        "nano_ar_inv_held_class_acc": 0.5,
-        "nano_ar_inv_score": 0.68,
-        "nano_ar_inv_status": "ok",
-        "nano_ar_inv_elapsed_ms": 3000.0,
-        "nano_ar_inv_train_steps_done": 400,
+        "induction_intermediate_auc": 0.021,
+        "induction_intermediate_max_gap_acc": 0.12,
+        "induction_intermediate_gap_accuracies_json": json.dumps({"4": 0.1}),
+        "induction_intermediate_steps_trained": 500,
+        "induction_intermediate_status": "ok",
+        "induction_intermediate_elapsed_ms": 1000.0,
+        "induction_intermediate_protocol_version": "induction-test",
+        "binding_intermediate_auc": 0.077,
+        "binding_intermediate_max_distance_acc": 0.25,
+        "binding_intermediate_distance_accuracies_json": json.dumps({"4": 0.2}),
+        "binding_intermediate_train_steps": 2400,
+        "binding_intermediate_status": "ok",
+        "binding_intermediate_elapsed_ms": 2000.0,
+        "binding_intermediate_protocol_version": "binding-test",
+        "ar_gate_metric_version": "ar_gate_test",
+        "ar_gate_in_dist_pair_acc": 0.8,
+        "ar_gate_in_dist_class_acc": 0.9,
+        "ar_gate_held_pair_acc": 0.2,
+        "ar_gate_held_class_acc": 0.5,
+        "ar_gate_score": 0.68,
+        "ar_gate_status": "ok",
+        "ar_gate_elapsed_ms": 3000.0,
+        "ar_gate_train_steps_done": 400,
+        "ar_intermediate_metric_version": "ar-int-test",
+        "ar_intermediate_diagnostic_score": 0.42,
+        "ar_intermediate_held_pair_acc": 0.08,
+        "ar_intermediate_held_pair_lift": 0.06,
+        "ar_intermediate_auc_lift": 0.05,
+        "ar_intermediate_status": "ok",
+        "ar_intermediate_elapsed_ms": 10.0,
+        "binding_multislot_metric_version": "multislot-test",
+        "binding_multislot_diagnostic_score": 1.2,
+        "binding_multislot_held_entity_slot_acc": 0.1,
+        "binding_multislot_two_plus_slots_acc": 0.05,
+        "binding_multislot_auc_lift": 0.07,
+        "binding_multislot_status": "ok",
+        "binding_multislot_elapsed_ms": 20.0,
     }
     source = {
         "graph_fingerprint": "fp_inv_v2",
@@ -332,20 +420,38 @@ def test_record_investigation_result_persists_v2_to_source_and_rerun_row():
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     source_row = conn.execute(
-        """SELECT induction_v2_investigation_auc, binding_v2_investigation_auc,
-                  induction_v2_investigation_status, binding_v2_investigation_status,
-                  nano_ar_inv_score, nano_ar_inv_in_dist_pair_match_acc,
-                  nano_ar_inv_held_class_acc, nano_ar_inv_status,
-                  nano_ar_inv_train_steps_done
+        """SELECT induction_intermediate_auc, binding_intermediate_auc,
+                  induction_intermediate_status, binding_intermediate_status,
+                  ar_gate_score, ar_gate_in_dist_pair_acc,
+                  ar_gate_held_class_acc, ar_gate_status,
+                  ar_gate_train_steps_done,
+                  ar_intermediate_diagnostic_score,
+                  ar_intermediate_held_pair_acc,
+                  ar_intermediate_auc_lift,
+                  ar_intermediate_status,
+                  binding_multislot_diagnostic_score,
+                  binding_multislot_held_entity_slot_acc,
+                  binding_multislot_two_plus_slots_acc,
+                  binding_multislot_auc_lift,
+                  binding_multislot_status
            FROM program_results WHERE result_id = ?""",
         (source_result_id,),
     ).fetchone()
     rerun_row = conn.execute(
-        """SELECT result_id, induction_v2_investigation_auc, binding_v2_investigation_auc,
-                  induction_v2_investigation_status, binding_v2_investigation_status,
-                  nano_ar_inv_score, nano_ar_inv_in_dist_pair_match_acc,
-                  nano_ar_inv_held_class_acc, nano_ar_inv_status,
-                  nano_ar_inv_train_steps_done
+        """SELECT result_id, induction_intermediate_auc, binding_intermediate_auc,
+                  induction_intermediate_status, binding_intermediate_status,
+                  ar_gate_score, ar_gate_in_dist_pair_acc,
+                  ar_gate_held_class_acc, ar_gate_status,
+                  ar_gate_train_steps_done,
+                  ar_intermediate_diagnostic_score,
+                  ar_intermediate_held_pair_acc,
+                  ar_intermediate_auc_lift,
+                  ar_intermediate_status,
+                  binding_multislot_diagnostic_score,
+                  binding_multislot_held_entity_slot_acc,
+                  binding_multislot_two_plus_slots_acc,
+                  binding_multislot_auc_lift,
+                  binding_multislot_status
            FROM program_results
            WHERE experiment_id = ? AND result_id != ?
            ORDER BY timestamp DESC LIMIT 1""",
@@ -354,26 +460,38 @@ def test_record_investigation_result_persists_v2_to_source_and_rerun_row():
     conn.close()
     nb.close()
 
-    assert source_row["induction_v2_investigation_auc"] == pytest.approx(0.021)
-    assert source_row["binding_v2_investigation_auc"] == pytest.approx(0.077)
-    assert source_row["induction_v2_investigation_status"] == "ok"
-    assert source_row["binding_v2_investigation_status"] == "ok"
-    assert source_row["nano_ar_inv_score"] == pytest.approx(0.68)
-    assert source_row["nano_ar_inv_in_dist_pair_match_acc"] == pytest.approx(0.8)
-    assert source_row["nano_ar_inv_held_class_acc"] == pytest.approx(0.5)
-    assert source_row["nano_ar_inv_status"] == "ok"
-    assert source_row["nano_ar_inv_train_steps_done"] == 400
+    assert source_row["induction_intermediate_auc"] == pytest.approx(0.021)
+    assert source_row["binding_intermediate_auc"] == pytest.approx(0.077)
+    assert source_row["induction_intermediate_status"] == "ok"
+    assert source_row["binding_intermediate_status"] == "ok"
+    assert source_row["ar_gate_score"] == pytest.approx(0.68)
+    assert source_row["ar_gate_in_dist_pair_acc"] == pytest.approx(0.8)
+    assert source_row["ar_gate_held_class_acc"] == pytest.approx(0.5)
+    assert source_row["ar_gate_status"] == "ok"
+    assert source_row["ar_gate_train_steps_done"] == 400
+    assert source_row["ar_intermediate_diagnostic_score"] == pytest.approx(0.42)
+    assert source_row["ar_intermediate_held_pair_acc"] == pytest.approx(0.08)
+    assert source_row["ar_intermediate_auc_lift"] == pytest.approx(0.05)
+    assert source_row["ar_intermediate_status"] == "ok"
+    assert source_row["binding_multislot_diagnostic_score"] == pytest.approx(1.2)
+    assert source_row["binding_multislot_held_entity_slot_acc"] == pytest.approx(0.1)
+    assert source_row["binding_multislot_two_plus_slots_acc"] == pytest.approx(0.05)
+    assert source_row["binding_multislot_auc_lift"] == pytest.approx(0.07)
+    assert source_row["binding_multislot_status"] == "ok"
     assert rerun_row is not None
-    assert rerun_row["induction_v2_investigation_auc"] == pytest.approx(0.021)
-    assert rerun_row["binding_v2_investigation_auc"] == pytest.approx(0.077)
-    assert rerun_row["nano_ar_inv_score"] == pytest.approx(0.68)
-    assert rerun_row["nano_ar_inv_in_dist_pair_match_acc"] == pytest.approx(0.8)
-    assert rerun_row["nano_ar_inv_held_class_acc"] == pytest.approx(0.5)
-    assert rerun_row["nano_ar_inv_status"] == "ok"
-    assert rerun_row["nano_ar_inv_train_steps_done"] == 400
+    assert rerun_row["induction_intermediate_auc"] == pytest.approx(0.021)
+    assert rerun_row["binding_intermediate_auc"] == pytest.approx(0.077)
+    assert rerun_row["ar_gate_score"] == pytest.approx(0.68)
+    assert rerun_row["ar_gate_in_dist_pair_acc"] == pytest.approx(0.8)
+    assert rerun_row["ar_gate_held_class_acc"] == pytest.approx(0.5)
+    assert rerun_row["ar_gate_status"] == "ok"
+    assert rerun_row["ar_gate_train_steps_done"] == 400
+    assert rerun_row["ar_intermediate_diagnostic_score"] == pytest.approx(0.42)
+    assert rerun_row["binding_multislot_diagnostic_score"] == pytest.approx(1.2)
+    assert rerun_row["binding_multislot_two_plus_slots_acc"] == pytest.approx(0.05)
 
 
-def test_record_investigation_result_persists_v9_trajectory_to_source_row():
+def test_record_investigation_result_persists_v9_trajectory_to_source_row(tmp_path):
     """Investigation tier overwrites earlier-phase v9 trajectory fields.
 
     Regression for the bug where ``_record_investigation_result`` dropped
@@ -381,7 +499,7 @@ def test_record_investigation_result_persists_v9_trajectory_to_source_row():
     ``init`` or ``screening_750`` even when investigation produced a fresh
     measurement. The fix routes them through ``v9_trajectory_fields()``.
     """
-    db_path = _tmp_db()
+    db_path = str(tmp_path / "investigation_v9.db")
     nb = LabNotebook(db_path, use_native=False)
     source_exp = nb.start_experiment("synthesis", {}, "source-v9")
     source_result_id = nb.record_program_result(

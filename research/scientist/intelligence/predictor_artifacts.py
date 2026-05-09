@@ -6,8 +6,9 @@ from typing import Any, Mapping
 
 import numpy as np
 
+from research.defaults import RUNTIME_DIR_ABS
 
-STATE_DIR = Path("research/runtime/learning")
+STATE_DIR = RUNTIME_DIR_ABS / "learning"
 METRICS_REPORT_PATH = STATE_DIR / "predictor_metrics_report.json"
 
 GBM_GATE_MODEL_PATH = STATE_DIR / "gbm_gate_model.txt"

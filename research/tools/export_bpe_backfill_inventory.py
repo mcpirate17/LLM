@@ -96,13 +96,15 @@ def export_inventory(
         "fingerprint_count": len(rows),
         "rows": rows,
     }
-    output.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    output.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
     return {"output_path": str(output), "fingerprint_count": len(rows)}
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--db", default="research/lab_notebook.db")
+    parser.add_argument("--db", default="research/runs.db")
     parser.add_argument("--output", default=None)
     parser.add_argument(
         "--scope",

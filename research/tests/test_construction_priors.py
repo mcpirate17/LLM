@@ -93,20 +93,16 @@ class TestConstructionPriorEndToEnd(unittest.TestCase):
             wikitext_perplexity=metrics.get("wikitext_perplexity", 200.0),
             hellaswag_acc=metrics.get("hellaswag_acc", 0.30),
             blimp_overall_accuracy=metrics.get("blimp_overall_accuracy", 0.55),
-            induction_auc=metrics.get("induction_auc", 0.30),
-            binding_auc=metrics.get("binding_auc", 0.20),
-            binding_composite=metrics.get("binding_composite", 0.20),
-            ar_auc=metrics.get("ar_auc", 0.10),
-            induction_v2_investigation_auc=metrics.get(
-                "induction_v2_investigation_auc"
+            induction_screening_auc=metrics.get("induction_screening_auc", 0.30),
+            binding_screening_auc=metrics.get("binding_screening_auc", 0.20),
+            binding_screening_composite=metrics.get(
+                "binding_screening_composite", 0.20
             ),
-            induction_v2_investigation_status=metrics.get(
-                "induction_v2_investigation_status"
-            ),
-            binding_v2_investigation_auc=metrics.get("binding_v2_investigation_auc"),
-            binding_v2_investigation_status=metrics.get(
-                "binding_v2_investigation_status"
-            ),
+            ar_legacy_auc=metrics.get("ar_legacy_auc", 0.10),
+            induction_intermediate_auc=metrics.get("induction_intermediate_auc"),
+            induction_intermediate_status=metrics.get("induction_intermediate_status"),
+            binding_intermediate_auc=metrics.get("binding_intermediate_auc"),
+            binding_intermediate_status=metrics.get("binding_intermediate_status"),
             model_source="graph_synthesis",
         )
         self.nb.flush_writes()
@@ -139,10 +135,12 @@ class TestConstructionPriorEndToEnd(unittest.TestCase):
             "wikitext_score": 0.4,
             "hellaswag_acc": metrics.get("hellaswag_acc", 0.27),
             "blimp_overall_accuracy": metrics.get("blimp_overall_accuracy", 0.52),
-            "induction_auc": metrics.get("induction_auc", 0.20),
-            "binding_auc": metrics.get("binding_auc", 0.10),
-            "binding_composite": metrics.get("binding_composite", 0.10),
-            "ar_auc": metrics.get("ar_auc", 0.05),
+            "induction_screening_auc": metrics.get("induction_screening_auc", 0.20),
+            "binding_screening_auc": metrics.get("binding_screening_auc", 0.10),
+            "binding_screening_composite": metrics.get(
+                "binding_screening_composite", 0.10
+            ),
+            "ar_legacy_auc": metrics.get("ar_legacy_auc", 0.05),
             "fp_jacobian_erf_density": 0.5,
             "fp_icld_delta_loss": -0.3,
             "fp_logit_margin_delta": 0.2,
@@ -157,16 +155,10 @@ class TestConstructionPriorEndToEnd(unittest.TestCase):
             stage05_passed=True,
             stage1_passed=True,
             intentional_rerun_reason="ablation_counterfactual",
-            induction_v2_investigation_auc=metrics.get(
-                "induction_v2_investigation_auc"
-            ),
-            induction_v2_investigation_status=metrics.get(
-                "induction_v2_investigation_status"
-            ),
-            binding_v2_investigation_auc=metrics.get("binding_v2_investigation_auc"),
-            binding_v2_investigation_status=metrics.get(
-                "binding_v2_investigation_status"
-            ),
+            induction_intermediate_auc=metrics.get("induction_intermediate_auc"),
+            induction_intermediate_status=metrics.get("induction_intermediate_status"),
+            binding_intermediate_auc=metrics.get("binding_intermediate_auc"),
+            binding_intermediate_status=metrics.get("binding_intermediate_status"),
             **kwargs,
         )
         self.nb.flush_writes()
@@ -225,8 +217,8 @@ class TestConstructionPriorEndToEnd(unittest.TestCase):
         child_fp: str,
         rule_key: str,
         stage1_passed: bool = True,
-        child_induction_v2_status: str = "ok",
-        child_binding_v2_status: str = "ok",
+        child_induction_intermediate_status: str = "ok",
+        child_binding_intermediate_status: str = "ok",
         **metrics,
     ) -> None:
         parent_metrics = {
@@ -236,24 +228,38 @@ class TestConstructionPriorEndToEnd(unittest.TestCase):
             "blimp_overall_accuracy": metrics.get(
                 "parent_blimp_overall_accuracy", 0.60
             ),
-            "induction_auc": metrics.get("parent_induction_auc", 0.40),
-            "binding_composite": metrics.get("parent_binding_composite", 0.30),
-            "ar_auc": metrics.get("parent_ar_auc", 0.20),
-            "induction_v2_investigation_auc": metrics.get("parent_induction_v2", 0.90),
-            "binding_v2_investigation_auc": metrics.get("parent_binding_v2", 0.80),
+            "induction_screening_auc": metrics.get(
+                "parent_induction_screening_auc", 0.40
+            ),
+            "binding_screening_composite": metrics.get(
+                "parent_binding_screening_composite", 0.30
+            ),
+            "ar_legacy_auc": metrics.get("parent_ar_legacy_auc", 0.20),
+            "induction_intermediate_auc": metrics.get(
+                "parent_induction_intermediate", 0.90
+            ),
+            "binding_intermediate_auc": metrics.get(
+                "parent_binding_intermediate", 0.80
+            ),
         }
         child_metrics = {
             "loss_ratio": metrics.get("child_loss_ratio", 0.70),
             "wikitext_perplexity": metrics.get("child_wikitext_perplexity", 260.0),
             "hellaswag_acc": metrics.get("child_hellaswag_acc", 0.26),
             "blimp_overall_accuracy": metrics.get("child_blimp_overall_accuracy", 0.52),
-            "induction_auc": metrics.get("child_induction_auc", 0.15),
-            "binding_composite": metrics.get("child_binding_composite", 0.12),
-            "ar_auc": metrics.get("child_ar_auc", 0.05),
-            "induction_v2_investigation_auc": metrics.get("child_induction_v2", 0.20),
-            "induction_v2_investigation_status": child_induction_v2_status,
-            "binding_v2_investigation_auc": metrics.get("child_binding_v2", 0.25),
-            "binding_v2_investigation_status": child_binding_v2_status,
+            "induction_screening_auc": metrics.get(
+                "child_induction_screening_auc", 0.15
+            ),
+            "binding_screening_composite": metrics.get(
+                "child_binding_screening_composite", 0.12
+            ),
+            "ar_legacy_auc": metrics.get("child_ar_legacy_auc", 0.05),
+            "induction_intermediate_auc": metrics.get(
+                "child_induction_intermediate", 0.20
+            ),
+            "induction_intermediate_status": child_induction_intermediate_status,
+            "binding_intermediate_auc": metrics.get("child_binding_intermediate", 0.25),
+            "binding_intermediate_status": child_binding_intermediate_status,
         }
         self.nb.record_causal_rule_evidence(
             {
@@ -293,9 +299,9 @@ class TestConstructionPriorEndToEnd(unittest.TestCase):
         self._write_parent(
             rid="parent_useful",
             fp="fp_parent_useful",
-            induction_auc=0.50,
-            binding_composite=0.40,
-            ar_auc=0.20,
+            induction_screening_auc=0.50,
+            binding_screening_composite=0.40,
+            ar_legacy_auc=0.20,
             hellaswag_acc=0.32,
             blimp_overall_accuracy=0.60,
             wikitext_perplexity=150.0,
@@ -308,9 +314,9 @@ class TestConstructionPriorEndToEnd(unittest.TestCase):
                 fp=f"fp_child_useful_{i}",
                 rule_type="op",
                 rule_key="proj_shared_basis",
-                induction_auc=0.30,  # Δ +0.20 helpful
-                binding_composite=0.25,  # Δ +0.15 helpful
-                ar_auc=0.10,  # Δ +0.10 helpful
+                induction_screening_auc=0.30,  # Δ +0.20 helpful
+                binding_screening_composite=0.25,  # Δ +0.15 helpful
+                ar_legacy_auc=0.10,  # Δ +0.10 helpful
                 hellaswag_acc=0.27,  # Δ +0.05 helpful
                 blimp_overall_accuracy=0.55,  # Δ +0.05 helpful
                 wikitext_perplexity=250.0,  # Δ +66% helpful
@@ -329,9 +335,9 @@ class TestConstructionPriorEndToEnd(unittest.TestCase):
         self._write_parent(
             rid="parent_bag",
             fp="fp_parent_bag",
-            induction_auc=0.10,
-            binding_composite=0.05,
-            ar_auc=0.03,
+            induction_screening_auc=0.10,
+            binding_screening_composite=0.05,
+            ar_legacy_auc=0.03,
             hellaswag_acc=0.27,
             blimp_overall_accuracy=0.50,
             wikitext_perplexity=600.0,
@@ -344,9 +350,9 @@ class TestConstructionPriorEndToEnd(unittest.TestCase):
                 fp=f"fp_child_bag_{i}",
                 rule_type="op",
                 rule_key="bad_op",
-                induction_auc=0.40,  # Δ -0.30 (children better)
-                binding_composite=0.25,
-                ar_auc=0.18,
+                induction_screening_auc=0.40,  # Δ -0.30 (children better)
+                binding_screening_composite=0.25,
+                ar_legacy_auc=0.18,
                 hellaswag_acc=0.32,
                 blimp_overall_accuracy=0.58,
                 wikitext_perplexity=150.0,  # children PPL much lower
@@ -362,16 +368,16 @@ class TestConstructionPriorEndToEnd(unittest.TestCase):
             rid="parent_v2",
             fp="fp_parent_v2",
             loss_ratio=0.40,
-            induction_auc=0.40,
-            binding_composite=0.30,
-            ar_auc=0.20,
+            induction_screening_auc=0.40,
+            binding_screening_composite=0.30,
+            ar_legacy_auc=0.20,
             hellaswag_acc=0.32,
             blimp_overall_accuracy=0.60,
             wikitext_perplexity=150.0,
-            induction_v2_investigation_auc=0.92,
-            induction_v2_investigation_status="ok",
-            binding_v2_investigation_auc=0.82,
-            binding_v2_investigation_status="ok",
+            induction_intermediate_auc=0.92,
+            induction_intermediate_status="ok",
+            binding_intermediate_auc=0.82,
+            binding_intermediate_status="ok",
         )
         self._write_knockout_evidence(
             parent_rid="parent_v2",
@@ -379,10 +385,10 @@ class TestConstructionPriorEndToEnd(unittest.TestCase):
             child_rid="child_v2",
             child_fp="fp_child_v2",
             rule_key="11:rope_rotate",
-            parent_induction_v2=0.92,
-            parent_binding_v2=0.82,
-            child_induction_v2=0.05,
-            child_binding_v2=0.20,
+            parent_induction_intermediate=0.92,
+            parent_binding_intermediate=0.82,
+            child_induction_intermediate=0.05,
+            child_binding_intermediate=0.20,
         )
         prior = compute_construction_prior(
             self.nb,
@@ -394,7 +400,7 @@ class TestConstructionPriorEndToEnd(unittest.TestCase):
         self.assertEqual(rule["rule_type"], "node_delete_investigation")
         self.assertEqual(rule["rule_key"], "11:rope_rotate")
         self.assertEqual(rule["verdict"], "use")
-        self.assertGreater(rule["per_metric"]["induction_v2"], 0.80)
+        self.assertGreater(rule["per_metric"]["induction_intermediate"], 0.80)
         self.assertEqual(rule["knockout_observation_count"], 1)
         self.assertEqual(rule["v2_observation_count"], 1)
         self.assertIn("rope_rotate", prior["payload"]["op_weights"])
@@ -404,16 +410,16 @@ class TestConstructionPriorEndToEnd(unittest.TestCase):
             rid="parent_diverged",
             fp="fp_parent_diverged",
             loss_ratio=0.40,
-            induction_auc=0.40,
-            binding_composite=0.30,
-            ar_auc=0.20,
+            induction_screening_auc=0.40,
+            binding_screening_composite=0.30,
+            ar_legacy_auc=0.20,
             hellaswag_acc=0.32,
             blimp_overall_accuracy=0.60,
             wikitext_perplexity=150.0,
-            induction_v2_investigation_auc=0.90,
-            induction_v2_investigation_status="ok",
-            binding_v2_investigation_auc=0.80,
-            binding_v2_investigation_status="ok",
+            induction_intermediate_auc=0.90,
+            induction_intermediate_status="ok",
+            binding_intermediate_auc=0.80,
+            binding_intermediate_status="ok",
         )
         self._write_knockout_evidence(
             parent_rid="parent_diverged",
@@ -422,11 +428,11 @@ class TestConstructionPriorEndToEnd(unittest.TestCase):
             child_fp="fp_child_diverged",
             rule_key="12:softmax_attention",
             stage1_passed=False,
-            child_induction_v2_status="diverged",
-            parent_induction_v2=0.90,
-            parent_binding_v2=0.80,
-            child_induction_v2=0.0,
-            child_binding_v2=0.0,
+            child_induction_intermediate_status="diverged",
+            parent_induction_intermediate=0.90,
+            parent_binding_intermediate=0.80,
+            child_induction_intermediate=0.0,
+            child_binding_intermediate=0.0,
         )
         prior = compute_construction_prior(
             self.nb,
@@ -446,16 +452,16 @@ class TestConstructionPriorEndToEnd(unittest.TestCase):
             rid="parent_norm",
             fp="fp_parent_norm",
             loss_ratio=0.40,
-            induction_auc=0.40,
-            binding_composite=0.30,
-            ar_auc=0.20,
+            induction_screening_auc=0.40,
+            binding_screening_composite=0.30,
+            ar_legacy_auc=0.20,
             hellaswag_acc=0.32,
             blimp_overall_accuracy=0.60,
             wikitext_perplexity=150.0,
-            induction_v2_investigation_auc=0.90,
-            induction_v2_investigation_status="ok",
-            binding_v2_investigation_auc=0.80,
-            binding_v2_investigation_status="ok",
+            induction_intermediate_auc=0.90,
+            induction_intermediate_status="ok",
+            binding_intermediate_auc=0.80,
+            binding_intermediate_status="ok",
         )
         self._write_knockout_evidence(
             parent_rid="parent_norm",
@@ -463,10 +469,10 @@ class TestConstructionPriorEndToEnd(unittest.TestCase):
             child_rid="child_norm",
             child_fp="fp_child_norm",
             rule_key="1:rmsnorm",
-            parent_induction_v2=0.90,
-            parent_binding_v2=0.80,
-            child_induction_v2=0.10,
-            child_binding_v2=0.20,
+            parent_induction_intermediate=0.90,
+            parent_binding_intermediate=0.80,
+            child_induction_intermediate=0.10,
+            child_binding_intermediate=0.20,
         )
         prior = compute_construction_prior(
             self.nb,
@@ -481,9 +487,9 @@ class TestConstructionPriorEndToEnd(unittest.TestCase):
         self._write_parent(
             rid="p1",
             fp="fp_p1",
-            induction_auc=0.5,
-            binding_composite=0.4,
-            ar_auc=0.2,
+            induction_screening_auc=0.5,
+            binding_screening_composite=0.4,
+            ar_legacy_auc=0.2,
             hellaswag_acc=0.32,
             blimp_overall_accuracy=0.6,
             wikitext_perplexity=150.0,
@@ -496,9 +502,9 @@ class TestConstructionPriorEndToEnd(unittest.TestCase):
                 fp=f"fp_c_{i}",
                 rule_type="op",
                 rule_key="useful_op",
-                induction_auc=0.3,
-                binding_composite=0.25,
-                ar_auc=0.10,
+                induction_screening_auc=0.3,
+                binding_screening_composite=0.25,
+                ar_legacy_auc=0.10,
                 hellaswag_acc=0.27,
                 blimp_overall_accuracy=0.55,
                 wikitext_perplexity=250.0,
@@ -524,9 +530,9 @@ class TestConstructionPriorEndToEnd(unittest.TestCase):
         self._write_parent(
             rid="p_low_context",
             fp="fp_low_context",
-            induction_auc=0.5,
-            binding_composite=0.4,
-            ar_auc=0.2,
+            induction_screening_auc=0.5,
+            binding_screening_composite=0.4,
+            ar_legacy_auc=0.2,
             hellaswag_acc=0.32,
             blimp_overall_accuracy=0.6,
             wikitext_perplexity=150.0,
@@ -539,9 +545,9 @@ class TestConstructionPriorEndToEnd(unittest.TestCase):
                 fp=f"fp_c_low_context_{i}",
                 rule_type="op",
                 rule_key="single_context_op",
-                induction_auc=0.3,
-                binding_composite=0.25,
-                ar_auc=0.10,
+                induction_screening_auc=0.3,
+                binding_screening_composite=0.25,
+                ar_legacy_auc=0.10,
                 hellaswag_acc=0.27,
                 blimp_overall_accuracy=0.55,
                 wikitext_perplexity=250.0,
@@ -563,9 +569,9 @@ class TestConstructionPriorEndToEnd(unittest.TestCase):
             self._write_parent(
                 rid=parent_rid,
                 fp=parent_fp,
-                induction_auc=0.5,
-                binding_composite=0.4,
-                ar_auc=0.2,
+                induction_screening_auc=0.5,
+                binding_screening_composite=0.4,
+                ar_legacy_auc=0.2,
                 hellaswag_acc=0.32,
                 blimp_overall_accuracy=0.6,
                 wikitext_perplexity=150.0,
@@ -578,9 +584,9 @@ class TestConstructionPriorEndToEnd(unittest.TestCase):
                     fp=f"fp_c_multi_context_{p}_{i}",
                     rule_type="op",
                     rule_key="multi_context_op",
-                    induction_auc=0.3,
-                    binding_composite=0.25,
-                    ar_auc=0.10,
+                    induction_screening_auc=0.3,
+                    binding_screening_composite=0.25,
+                    ar_legacy_auc=0.10,
                     hellaswag_acc=0.27,
                     blimp_overall_accuracy=0.55,
                     wikitext_perplexity=250.0,
@@ -595,9 +601,9 @@ class TestConstructionPriorEndToEnd(unittest.TestCase):
         self._write_parent(
             rid="p2",
             fp="fp_p2",
-            induction_auc=0.5,
-            binding_composite=0.4,
-            ar_auc=0.2,
+            induction_screening_auc=0.5,
+            binding_screening_composite=0.4,
+            ar_legacy_auc=0.2,
             hellaswag_acc=0.32,
             blimp_overall_accuracy=0.6,
             wikitext_perplexity=150.0,
@@ -610,9 +616,9 @@ class TestConstructionPriorEndToEnd(unittest.TestCase):
                 fp=f"fp_c2_{i}",
                 rule_type="op",
                 rule_key="useful_op",
-                induction_auc=0.3,
-                binding_composite=0.25,
-                ar_auc=0.10,
+                induction_screening_auc=0.3,
+                binding_screening_composite=0.25,
+                ar_legacy_auc=0.10,
                 hellaswag_acc=0.27,
                 blimp_overall_accuracy=0.55,
                 wikitext_perplexity=250.0,

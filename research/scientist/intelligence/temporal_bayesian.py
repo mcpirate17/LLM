@@ -24,11 +24,13 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 
+from research.defaults import RUNS_DB
+
 from .predictor_artifacts import read_json, write_json
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_DB = Path(__file__).parents[2] / "lab_notebook.db"
+_DEFAULT_DB = Path(__file__).parents[3] / RUNS_DB
 
 # Temporal decay: effective sample size shrinks by this factor per day
 _DECAY_PER_DAY = 0.95

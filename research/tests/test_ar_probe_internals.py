@@ -200,8 +200,8 @@ class TestARResult:
             learning_curve=[(0, 0.0), (500, 0.8)],
         )
         d = r.to_dict()
-        assert d["ar_auc"] == 0.5
-        assert d["ar_final_acc"] == 0.8
-        assert d["ar_timed_out"] is False
-        assert d["ar_above_chance"] is True
+        assert d["ar_legacy_auc"] == 0.5
+        assert d["ar_legacy_final_acc"] == 0.8
+        assert d["ar_legacy_timed_out"] is False
+        assert d["ar_legacy_above_chance"] is True
         assert len(d["ar_learning_curve"]) == 2

@@ -39,12 +39,17 @@ from research.scientist.runtime_events import (
     build_runtime_event,
     get_runtime_event_services,
     publish_lifecycle_event,
+    runtime_events_state_db_for,
     start_runtime_event_projector,
     stop_runtime_event_services,
 )
 from research.scientist.runtime_events.projectors import LifecycleProjector
 from research.scientist.runtime_events.spool import NdjsonEventSpool
 from research.scientist.runtime_events.bootstrap import _replay_registry_from_spool
+from research.scientist.runtime_events.publishers import (
+    publish_live_feed_event,
+    read_live_feed_events,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -209,6 +214,48 @@ def test_lifecycle_projector_is_idempotent_on_replay(tmp_path):
     assert second.applied_count == 0
     count = conn.execute("SELECT COUNT(*) FROM applied_runtime_events").fetchone()[0]
     assert count == 1
+
+
+def test_lifecycle_projector_stores_event_bookkeeping_in_state_db(tmp_path):
+    db_path = tmp_path / "status.db"
+    nb = LabNotebook(db_path, use_native=False)
+    try:
+        publish_lifecycle_event(
+            notebook_path=nb.db_path,
+            event_type="experiment_started",
+            producer="test",
+            run_id="state-split-exp",
+            sequence=1,
+            payload={
+                "experiment_type": "screening",
+                "hypothesis": "state split",
+                "config": {"mode": "state-split"},
+                "started_at": 10.0,
+            },
+        )
+        start_runtime_event_projector(nb.db_path)
+
+        try:
+            notebook_count = nb.conn.execute(
+                "SELECT COUNT(*) FROM applied_runtime_events WHERE run_id = ?",
+                ("state-split-exp",),
+            ).fetchone()[0]
+        except sqlite3.OperationalError:
+            notebook_count = 0
+        state_conn = sqlite3.connect(runtime_events_state_db_for(nb.db_path))
+        try:
+            state_count = state_conn.execute(
+                "SELECT COUNT(*) FROM applied_runtime_events WHERE run_id = ?",
+                ("state-split-exp",),
+            ).fetchone()[0]
+        finally:
+            state_conn.close()
+
+        assert notebook_count == 0
+        assert state_count == 1
+    finally:
+        stop_runtime_event_services(nb.db_path)
+        nb.close()
 
 
 def test_lifecycle_projector_skips_conflicting_terminal_event_without_poisoning_state(
@@ -583,6 +630,92 @@ class _StartedModeRunner(_ControlStartMixin, _ControlActionsMixin):
 
     def _run_novelty_thread(self, *args) -> None:
         return
+
+
+class _LiveFeedSpoolRunner(_ControlActionsMixin):
+    def __init__(self, notebook_path: str | Path) -> None:
+        self.notebook_path = str(notebook_path)
+
+    def _make_notebook(self):
+        raise AssertionError("live-feed persistence should not open the notebook DB")
+
+
+def test_live_feed_persistence_uses_runtime_spool_not_notebook_entries(tmp_path):
+    nb = LabNotebook(tmp_path / "lab_notebook.db", use_native=False)
+    path = nb.db_path
+    try:
+        before = nb.conn.execute(
+            "SELECT COUNT(*) FROM entries WHERE entry_type = 'live_feed'"
+        ).fetchone()[0]
+
+        runner = _LiveFeedSpoolRunner(path)
+        runner._persist_live_feed_event(
+            "validation_progress",
+            {
+                "experiment_id": "exp-live-spool",
+                "status": "validation step 1",
+                "progress": 0.5,
+            },
+        )
+
+        after = nb.conn.execute(
+            "SELECT COUNT(*) FROM entries WHERE entry_type = 'live_feed'"
+        ).fetchone()[0]
+        events = read_live_feed_events(path, experiment_id="exp-live-spool", limit=10)
+
+        assert after == before
+        assert len(events) == 1
+        assert events[0]["type"] == "validation_progress"
+        assert events[0]["content"] == "validation step 1"
+        assert events[0]["metadata"]["payload"]["progress"] == 0.5
+    finally:
+        stop_runtime_event_services(path)
+        nb.close()
+
+
+def test_live_feed_spool_handles_concurrent_writers(tmp_path):
+    nb = LabNotebook(tmp_path / "lab_notebook.db", use_native=False)
+    path = nb.db_path
+    errors = []
+
+    def _writer(worker_id: int) -> None:
+        try:
+            for idx in range(20):
+                publish_live_feed_event(
+                    notebook_path=path,
+                    event_type="validation_progress",
+                    data={
+                        "experiment_id": "exp-concurrent-feed",
+                        "status": f"worker {worker_id} step {idx}",
+                        "worker_id": worker_id,
+                        "idx": idx,
+                    },
+                )
+        except Exception as exc:
+            errors.append(exc)
+
+    try:
+        threads = [threading.Thread(target=_writer, args=(i,)) for i in range(5)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=5.0)
+
+        events = read_live_feed_events(
+            path,
+            experiment_id="exp-concurrent-feed",
+            limit=200,
+        )
+        notebook_rows = nb.conn.execute(
+            "SELECT COUNT(*) FROM entries WHERE entry_type = 'live_feed'"
+        ).fetchone()[0]
+
+        assert not errors
+        assert len(events) == 100
+        assert notebook_rows == 0
+    finally:
+        stop_runtime_event_services(path)
+        nb.close()
 
 
 class _ModeStartRunner(_ControlStartMixin):
@@ -1648,7 +1781,6 @@ def test_non_synthesis_start_modes_publish_canonical_started(
 def test_status_prefers_projected_lifecycle_before_legacy_notebook_heuristic(tmp_path):
     nb = _make_status_notebook(tmp_path)
     try:
-        start_runtime_event_projector(nb.db_path)
         now = time.time()
         nb.conn.execute(
             """
@@ -1679,14 +1811,16 @@ def test_status_prefers_projected_lifecycle_before_legacy_notebook_heuristic(tmp
                 0,
             ),
         )
-        nb.conn.execute(
+        nb.conn.commit()
+        services = start_runtime_event_projector(nb.db_path)
+        services.projector_state_conn.execute(
             """
             INSERT INTO applied_runtime_events (event_id, event_type, run_id, applied_at)
             VALUES (?, ?, ?, ?)
             """,
             ("evt-1", "experiment_started", "projected-running", now),
         )
-        nb.conn.commit()
+        services.projector_state_conn.commit()
 
         status = resolve_runner_status(nb, _IdleRunner())
 

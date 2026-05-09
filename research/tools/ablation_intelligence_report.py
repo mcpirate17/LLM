@@ -18,7 +18,7 @@ from typing import Any
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DB_PATH = PROJECT_ROOT / "research/lab_notebook.db"
+DB_PATH = PROJECT_ROOT / "research/runs.db"
 RUNTIME_DIR = PROJECT_ROOT / "research/runtime"
 
 CORE_METRICS = (
@@ -26,12 +26,12 @@ CORE_METRICS = (
     "wikitext_perplexity",
     "hellaswag_acc",
     "blimp_overall_accuracy",
-    "ar_auc",
-    "induction_auc",
-    "binding_auc",
-    "binding_composite",
-    "induction_v2_investigation_auc",
-    "binding_v2_investigation_auc",
+    "ar_legacy_auc",
+    "induction_screening_auc",
+    "binding_screening_auc",
+    "binding_screening_composite",
+    "induction_intermediate_auc",
+    "binding_intermediate_auc",
 )
 
 
@@ -182,14 +182,14 @@ def _classify(
     child_hs = _f(child.get("hellaswag_acc"))
     parent_blimp = _f(parent.get("blimp_overall_accuracy"))
     child_blimp = _f(child.get("blimp_overall_accuracy"))
-    parent_bc = _f(parent.get("binding_composite"))
-    child_bc = _f(child.get("binding_composite"))
-    parent_bind = _f(parent.get("binding_auc"))
-    child_bind = _f(child.get("binding_auc"))
-    parent_ind_v2 = _f(parent.get("induction_v2_investigation_auc"))
-    child_ind_v2 = _f(child.get("induction_v2_investigation_auc"))
-    parent_bind_v2 = _f(parent.get("binding_v2_investigation_auc"))
-    child_bind_v2 = _f(child.get("binding_v2_investigation_auc"))
+    parent_bc = _f(parent.get("binding_screening_composite"))
+    child_bc = _f(child.get("binding_screening_composite"))
+    parent_bind = _f(parent.get("binding_screening_auc"))
+    child_bind = _f(child.get("binding_screening_auc"))
+    parent_ind_v2 = _f(parent.get("induction_intermediate_auc"))
+    child_ind_v2 = _f(child.get("induction_intermediate_auc"))
+    parent_bind_v2 = _f(parent.get("binding_intermediate_auc"))
+    child_bind_v2 = _f(child.get("binding_intermediate_auc"))
 
     reasons: list[str] = []
     loss_delta = (
@@ -226,21 +226,25 @@ def _classify(
         and child_bind < parent_bind * 0.25
     ):
         metric_conflict = True
-        reasons.append("binding_auc collapsed")
+        reasons.append("binding_screening_auc collapsed")
     if (
         parent_ind_v2 is not None
         and child_ind_v2 is not None
         and child_ind_v2 < parent_ind_v2 - 0.15
     ):
         metric_conflict = True
-        reasons.append(f"induction-v2 down {child_ind_v2 - parent_ind_v2:+.3f}")
+        reasons.append(
+            f"induction-intermediate down {child_ind_v2 - parent_ind_v2:+.3f}"
+        )
     if (
         parent_bind_v2 is not None
         and child_bind_v2 is not None
         and child_bind_v2 < parent_bind_v2 - 0.15
     ):
         metric_conflict = True
-        reasons.append(f"binding-v2 down {child_bind_v2 - parent_bind_v2:+.3f}")
+        reasons.append(
+            f"binding-intermediate down {child_bind_v2 - parent_bind_v2:+.3f}"
+        )
 
     if metric_conflict:
         return "metric_conflict_do_not_prune", reasons
@@ -352,11 +356,11 @@ def render_markdown(report: dict[str, Any]) -> str:
                     wiki=_fmt(m["wikitext_perplexity"], 1),
                     hs=_fmt(m["hellaswag_acc"], 3),
                     blimp=_fmt(m["blimp_overall_accuracy"], 3),
-                    ind=_fmt(m["induction_auc"], 3),
-                    bind=_fmt(m["binding_auc"], 3),
-                    bc=_fmt(m["binding_composite"], 3),
-                    ind_v2=_fmt(m["induction_v2_investigation_auc"], 3),
-                    bind_v2=_fmt(m["binding_v2_investigation_auc"], 3),
+                    ind=_fmt(m["induction_screening_auc"], 3),
+                    bind=_fmt(m["binding_screening_auc"], 3),
+                    bc=_fmt(m["binding_screening_composite"], 3),
+                    ind_v2=_fmt(m["induction_intermediate_auc"], 3),
+                    bind_v2=_fmt(m["binding_intermediate_auc"], 3),
                     verdict=obs["verdict"],
                 )
             )

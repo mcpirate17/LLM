@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import time
 from typing import Any, Dict, Optional
 
@@ -346,30 +347,30 @@ class _DashboardNBMixin:
                     THEN graph_fingerprint END) AS graphs_any_s1_pass,
                 SUM(CASE
                     WHEN hellaswag_acc IS NOT NULL
-                      OR ar_auc IS NOT NULL
-                      OR induction_auc IS NOT NULL
-                      OR binding_auc IS NOT NULL
+                      OR ar_legacy_auc IS NOT NULL
+                      OR induction_screening_auc IS NOT NULL
+                      OR binding_screening_auc IS NOT NULL
                       OR wikitext_perplexity IS NOT NULL
                     THEN 1 ELSE 0 END) AS downstream_eval_runs,
                 COUNT(DISTINCT CASE
                     WHEN TRIM(COALESCE(graph_fingerprint, '')) <> ''
                      AND (hellaswag_acc IS NOT NULL
-                       OR ar_auc IS NOT NULL
-                       OR induction_auc IS NOT NULL
-                       OR binding_auc IS NOT NULL
+                       OR ar_legacy_auc IS NOT NULL
+                       OR induction_screening_auc IS NOT NULL
+                       OR binding_screening_auc IS NOT NULL
                        OR wikitext_perplexity IS NOT NULL)
                     THEN graph_fingerprint END) AS downstream_eval_graphs,
                 SUM(CASE
                     WHEN hellaswag_acc IS NOT NULL
-                     AND induction_auc IS NOT NULL
-                     AND binding_auc IS NOT NULL
+                     AND induction_screening_auc IS NOT NULL
+                     AND binding_screening_auc IS NOT NULL
                      AND wikitext_perplexity IS NOT NULL
                     THEN 1 ELSE 0 END) AS downstream_full_bundle_runs,
                 COUNT(DISTINCT CASE
                     WHEN TRIM(COALESCE(graph_fingerprint, '')) <> ''
                      AND hellaswag_acc IS NOT NULL
-                     AND induction_auc IS NOT NULL
-                     AND binding_auc IS NOT NULL
+                     AND induction_screening_auc IS NOT NULL
+                     AND binding_screening_auc IS NOT NULL
                      AND wikitext_perplexity IS NOT NULL
                     THEN graph_fingerprint END) AS downstream_full_bundle_graphs,
                 SUM(CASE
@@ -438,6 +439,30 @@ class _DashboardNBMixin:
             """
         ).fetchall()
         curve_counts = [int(row["curve_rows"] or 0) for row in curve_rows]
+        try:
+            artifact_rows = self.conn.execute(
+                """
+                SELECT *
+                FROM notebook_artifacts
+                WHERE table_name = 'training_curves'
+                  AND column_name = 'curve_json'
+                ORDER BY row_pk, created_at DESC
+                """
+            ).fetchall()
+        except sqlite3.OperationalError:
+            artifact_rows = []
+        seen_curve_artifacts: set[str] = set()
+        for artifact in artifact_rows:
+            row_pk = str(artifact["row_pk"])
+            if row_pk in seen_curve_artifacts:
+                continue
+            seen_curve_artifacts.add(row_pk)
+            try:
+                loaded = self._artifact_store.read_json(dict(artifact))
+            except Exception:
+                loaded = []
+            if isinstance(loaded, list):
+                curve_counts.append(len(loaded))
         training_curve_rows = sum(curve_counts)
         runs_with_training_curves = len(curve_counts)
         if curve_counts:

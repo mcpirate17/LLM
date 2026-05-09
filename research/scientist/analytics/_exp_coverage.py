@@ -7,6 +7,7 @@ import logging
 from typing import Dict, List, Optional
 
 from ..intelligence.graph_ops import extract_unique_graph_ops
+from ..notebook.graph_artifacts import resolve_graph_json_value
 
 logger = logging.getLogger(__name__)
 
@@ -184,7 +185,12 @@ class _CoverageMixin:
         total_tested = 0
         total_survived = 0
         for row in rows:
-            family = _family_from_row(row["graph_json"], row["arch_spec_json"])
+            graph_json = resolve_graph_json_value(
+                self.nb.conn,
+                self.nb.db_path,
+                row["graph_json"],
+            )
+            family = _family_from_row(graph_json, row["arch_spec_json"])
             bucket = stats.get(family, stats["euclidean"])
             bucket["n_tested"] += 1
             total_tested += 1
@@ -260,7 +266,11 @@ class _CoverageMixin:
         programs_with_mathspace = 0
 
         for row in rows:
-            graph_json = row["graph_json"]
+            graph_json = resolve_graph_json_value(
+                self.nb.conn,
+                self.nb.db_path,
+                row["graph_json"],
+            )
             if not graph_json:
                 continue
 

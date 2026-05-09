@@ -8,6 +8,16 @@ describe('candidateEligibility', () => {
     expect(eligibility.queueReason).toBe(null);
   });
 
+  test('known failed stage1 screening rows are not investigation-eligible', () => {
+    const eligibility = candidateEligibility({
+      tier: 'screening',
+      stage1_passed: false,
+    });
+    expect(eligibility.investigationEligible).toBe(false);
+    expect(eligibility.queueEligible).toBe(false);
+    expect(eligibility.queueReason).toBe('not_progression_eligible');
+  });
+
   test('screening rows with investigation evidence are no longer queued for investigation', () => {
     const eligibility = candidateEligibility({
       tier: 'screening',
@@ -16,6 +26,31 @@ describe('candidateEligibility', () => {
     expect(eligibility.investigationEligible).toBe(false);
     expect(eligibility.validationEligible).toBe(false);
     expect(eligibility.queueReason).toBe('already_investigated_unchanged');
+  });
+
+  test('passed investigation rows without ranker evidence enter capability ranking', () => {
+    const eligibility = candidateEligibility({
+      tier: 'investigation',
+      investigation_passed: 1,
+      investigation_loss_ratio: 0.38,
+    });
+    expect(eligibility.investigationEligible).toBe(false);
+    expect(eligibility.capabilityRankingEligible).toBe(true);
+    expect(eligibility.validationEligible).toBe(true);
+    expect(eligibility.queueEligible).toBe(true);
+    expect(eligibility.queueReason).toBe(null);
+  });
+
+  test('capability-ranked rows stop requeueing rankers', () => {
+    const eligibility = candidateEligibility({
+      tier: 'capability_ranking',
+      investigation_passed: 1,
+      investigation_loss_ratio: 0.38,
+      binding_intermediate_auc: 0.72,
+    });
+    expect(eligibility.capabilityRankingEligible).toBe(false);
+    expect(eligibility.validationEligible).toBe(true);
+    expect(eligibility.queueReason).toBe(null);
   });
 
   test('training-only validation rows stay validation-eligible', () => {

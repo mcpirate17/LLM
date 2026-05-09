@@ -1,7 +1,7 @@
 """Tune the controlled sentence diagnostic on selected leaderboard rows.
 
 Read-only calibration harness.  It compiles saved graph JSON from the notebook,
-does the same quick base train used by controlled-language backfills, then runs
+does the same quick base train used by language-control backfills, then runs
 ``controlled_sentence_probe`` across a vocab-size × train-step grid.  This is a
 language-shape and step-curve diagnostic; held-out slot/binding composition is
 owned by ``nano_blimp_v3``.
@@ -28,6 +28,7 @@ from research.eval.controlled_sentence_probe import (
     build_sentence_probe_corpus,
     controlled_sentence_probe,
 )
+from research.scientist.notebook.graph_artifacts import resolve_graph_json_value
 from research.tools._db_maintenance import connect_readonly
 from research.tools._tuning_train import train_compiled_graph_base
 
@@ -153,16 +154,16 @@ def _load_target(db: Path, target: str) -> dict[str, Any]:
         row = conn.execute(
             """
             SELECT l.entry_id, l.result_id, l.tier, l.composite_score,
-                   l.induction_auc, l.binding_composite,
-                   l.induction_v2_investigation_auc,
-                   l.binding_v2_investigation_auc,
+                   l.induction_screening_auc, l.binding_screening_composite,
+                   l.induction_intermediate_auc,
+                   l.binding_intermediate_auc,
                    pr.graph_json, pr.graph_fingerprint,
-                   pr.controlled_lang_s05_sa_score,
-                   pr.controlled_lang_s10_sa_score,
-                   pr.controlled_lang_inv_sa_score,
-                   pr.controlled_lang_s05_nb_order_acc,
-                   pr.controlled_lang_s10_nb_order_acc,
-                   pr.controlled_lang_inv_nb_order_acc,
+                   pr.language_control_s05_sentence_assoc_score,
+                   pr.language_control_s10_sentence_assoc_score,
+                   pr.language_control_investigation_sentence_assoc_score,
+                   pr.language_control_s05_binding_order_acc,
+                   pr.language_control_s10_binding_order_acc,
+                   pr.language_control_investigation_binding_order_acc,
                    pgf.template_name
             FROM leaderboard l
             JOIN program_results pr ON pr.result_id = l.result_id
@@ -173,9 +174,15 @@ def _load_target(db: Path, target: str) -> dict[str, Any]:
             """,
             (target, target, target),
         ).fetchone()
+        if row is None:
+            return {}
+        payload = dict(row)
+        payload["graph_json"] = resolve_graph_json_value(
+            conn, db, payload["graph_json"]
+        )
+        return payload
     finally:
         conn.close()
-    return dict(row) if row else {}
 
 
 def _train_base(
@@ -236,7 +243,7 @@ def _run_target(
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--db", default=Path("research/lab_notebook.db"), type=Path)
+    parser.add_argument("--db", default=Path("research/runs.db"), type=Path)
     parser.add_argument("--targets", nargs="*", default=list(DEFAULT_TARGETS))
     parser.add_argument(
         "--config",
@@ -297,16 +304,16 @@ def main() -> int:
                         "tier",
                         "composite_score",
                         "template_name",
-                        "induction_auc",
-                        "binding_composite",
-                        "induction_v2_investigation_auc",
-                        "binding_v2_investigation_auc",
-                        "controlled_lang_s05_sa_score",
-                        "controlled_lang_s10_sa_score",
-                        "controlled_lang_inv_sa_score",
-                        "controlled_lang_s05_nb_order_acc",
-                        "controlled_lang_s10_nb_order_acc",
-                        "controlled_lang_inv_nb_order_acc",
+                        "induction_screening_auc",
+                        "binding_screening_composite",
+                        "induction_intermediate_auc",
+                        "binding_intermediate_auc",
+                        "language_control_s05_sentence_assoc_score",
+                        "language_control_s10_sentence_assoc_score",
+                        "language_control_investigation_sentence_assoc_score",
+                        "language_control_s05_binding_order_acc",
+                        "language_control_s10_binding_order_acc",
+                        "language_control_investigation_binding_order_acc",
                     )
                 },
                 "results": results,

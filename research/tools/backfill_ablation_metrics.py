@@ -27,6 +27,7 @@ import torch  # noqa: E402
 
 from research.scientist.native_runner import compile_model_native_first as compile_model  # noqa: E402
 from research.scientist.notebook import LabNotebook  # noqa: E402
+from research.scientist.notebook.graph_artifacts import resolve_graph_json_value  # noqa: E402
 from research.scientist.runner import ExperimentRunner  # noqa: E402
 from research.scientist.runner._helpers import (  # noqa: E402
     program_result_kwargs_from_s1,
@@ -36,7 +37,7 @@ from research.scientist.runtime_events import publish_runtime_event  # noqa: E40
 from research.synthesis.serializer import graph_from_json  # noqa: E402
 
 
-DB_PATH = PROJECT_ROOT / "research/lab_notebook.db"
+DB_PATH = PROJECT_ROOT / "research/runs.db"
 RUNTIME_DIR = PROJECT_ROOT / "research/runtime"
 GOOGLE_BACKUP_ROOT = Path("/home/tim/GoogleDrive/Backups/LLM_Research")
 LOGGER = logging.getLogger("ablation_metric_backfill")
@@ -53,10 +54,10 @@ _INCOMPLETE_METRICS_PREDICATE = """
     AND (
         pr.hellaswag_acc IS NULL
         OR pr.blimp_overall_accuracy IS NULL
-        OR pr.induction_auc IS NULL
-        OR pr.binding_auc IS NULL
-        OR pr.binding_composite IS NULL
-        OR pr.ar_auc IS NULL
+        OR pr.induction_screening_auc IS NULL
+        OR pr.binding_screening_auc IS NULL
+        OR pr.binding_screening_composite IS NULL
+        OR pr.ar_legacy_auc IS NULL
         OR pr.wikitext_perplexity IS NULL
         OR pr.wikitext_score IS NULL
         OR pr.fp_jacobian_erf_density IS NULL
@@ -115,7 +116,14 @@ def select_rows(
     if limit > 0:
         sql += " LIMIT ?"
         params.append(int(limit))
-    return [dict(row) for row in nb.conn.execute(sql, tuple(params)).fetchall()]
+    rows = [dict(row) for row in nb.conn.execute(sql, tuple(params)).fetchall()]
+    for row in rows:
+        row["graph_json"] = resolve_graph_json_value(
+            nb.conn,
+            nb.db_path,
+            row.get("graph_json"),
+        )
+    return rows
 
 
 def count_missing(nb: LabNotebook) -> dict[str, int]:
@@ -248,10 +256,10 @@ def backfill_row(
         "loss_ratio_replay": s1.get("loss_ratio"),
         "hellaswag_acc": patch.get("hellaswag_acc"),
         "blimp_overall_accuracy": patch.get("blimp_overall_accuracy"),
-        "induction_auc": patch.get("induction_auc"),
-        "binding_auc": patch.get("binding_auc"),
-        "binding_composite": patch.get("binding_composite"),
-        "ar_auc": patch.get("ar_auc"),
+        "induction_screening_auc": patch.get("induction_screening_auc"),
+        "binding_screening_auc": patch.get("binding_screening_auc"),
+        "binding_screening_composite": patch.get("binding_screening_composite"),
+        "ar_legacy_auc": patch.get("ar_legacy_auc"),
         "wikitext_perplexity": patch.get("wikitext_perplexity"),
         "field_count": len(patch),
     }

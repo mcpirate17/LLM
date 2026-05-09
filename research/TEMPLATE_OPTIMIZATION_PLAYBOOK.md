@@ -3,7 +3,6 @@
 **Created**: 2026-04-15
 **Context**: Systematic template optimization to beat GPT-2/Mamba 5x
 **Companion files**:
-- `TEMPLATE_AUDIT.md` — Full catalog of ~163 templates categorized by strength
 - `tools/eval_templates.py` — Extended evaluation tool (train + binding probes)
 - `research.scientist.notebook.notebook_core.record_program_result()` — Store eval results in LabNotebook DB
 - `tests/test_template_optimization.py` — 34-test validation suite
@@ -79,9 +78,9 @@ python -m research.tools.eval_templates --steps 10000 --device cuda
 |--------|-----------------|--------|
 | `loss_ratio` | final_loss / init_loss | < 0.60 (screening) |
 | `perplexity` | exp(loss) on WikiText | < 10.0 (validation) |
-| `induction_auc` | Induction head formation | > 0.004 |
-| `binding_auc` | Copy-at-distance | > 0.004 |
-| `ar_auc` | Associative recall | > 0.05 |
+| `induction_screening_auc` | Induction head formation | > 0.004 |
+| `binding_screening_auc` | Copy-at-distance | > 0.004 |
+| `ar_legacy_auc` | Associative recall | > 0.05 |
 | `hellaswag_acc` | Commonsense reasoning | > 0.28 |
 | `s1_passed` | Passes screening stage 1 | True |
 
@@ -95,8 +94,8 @@ SELECT
     COUNT(*) AS n,
     AVG(CASE WHEN stage1_passed THEN 1.0 ELSE 0.0 END) AS s1_rate,
     AVG(loss_ratio) AS mean_loss_ratio,
-    AVG(induction_auc) AS mean_induction,
-    AVG(binding_auc) AS mean_binding
+    AVG(induction_screening_auc) AS mean_induction,
+    AVG(binding_screening_auc) AS mean_binding
 FROM program_results
 WHERE graph_json IS NOT NULL
 GROUP BY template
@@ -228,9 +227,9 @@ result_id = nb.record_program_result(
     loss_ratio=final_loss / init_loss,
     param_count=n_params,
     n_train_steps=1000,
-    induction_auc=probe_results["induction_auc"],
-    binding_auc=probe_results["binding_auc"],
-    ar_auc=probe_results.get("ar_auc"),
+    induction_screening_auc=probe_results["induction_screening_auc"],
+    binding_screening_auc=probe_results["binding_screening_auc"],
+    ar_legacy_auc=probe_results.get("ar_legacy_auc"),
     model_source="template_optimization_eval",
     bypass_quality_gate=True,  # Always store for analysis
 )
@@ -245,9 +244,9 @@ store_probe_results(
     nb,
     result_id="existing_result_id",
     updates={
-        "induction_auc": 0.038,
-        "binding_auc": 0.004,
-        "ar_auc": 0.05,
+        "induction_screening_auc": 0.038,
+        "binding_screening_auc": 0.004,
+        "ar_legacy_auc": 0.05,
         "hellaswag_acc": 0.29,
         "wikitext_perplexity": 8.5,
     },
@@ -272,8 +271,8 @@ rows = conn.execute("""
         COUNT(*) AS n,
         AVG(CASE WHEN stage1_passed THEN 1.0 ELSE 0.0 END) AS s1_rate,
         AVG(loss_ratio) AS mean_lr,
-        AVG(induction_auc) AS mean_ind,
-        AVG(binding_auc) AS mean_bind
+        AVG(induction_screening_auc) AS mean_ind,
+        AVG(binding_screening_auc) AS mean_bind
     FROM program_results
     WHERE graph_json IS NOT NULL
       AND template IS NOT NULL

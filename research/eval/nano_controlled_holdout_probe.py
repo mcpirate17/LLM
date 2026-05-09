@@ -5,7 +5,7 @@ This probe does NOT track ``wikitext_perplexity`` (Spearman ≈ 0 on top-50)
 and gives high scores to architectures with PPL > 600 (composite < 30).
 It measures *speed of overfitting a small curated synthetic corpus*, not
 language capability. Do not wire as a leaderboard metric without an
-audit of the entire ``controlled_lang_*`` family.  See
+audit of the entire ``language_control_*`` family.  See
 ``research/reports/nano_controlled_holdout_failuretest_*.json`` for evidence.
 
 What the probe DOES measure reliably:

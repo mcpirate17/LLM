@@ -364,7 +364,7 @@ class _ContinuousInvestigationMixin:
         ref_lr = self._get_reference_baseline_lr(nb)
 
         # Predictor-driven capability multiplier.  The GBM v2 capability heads
-        # (P(induction_v2 ≥ 0.30), P(binding_v2 ≥ 0.30)) are the most
+        # (P(induction_intermediate ≥ 0.30), P(binding_intermediate ≥ 0.30)) are the most
         # discriminating signal we have for "will this graph actually learn
         # induction/binding?".  Pre-2026-05-02 this gate ranked purely on
         # screening loss/stability, so the search kept investigating

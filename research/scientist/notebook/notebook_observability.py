@@ -9,6 +9,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from .graph_artifacts import resolve_graph_json_value
 from ._notebook_misc_shared import (
     _cached_extract_observability_metadata,
     _ObservabilityAccumulator,
@@ -18,9 +19,9 @@ from ._notebook_misc_shared import (
     _template_label_from_evidence,
     _summarize_template_stat,
     _empty_template_stat,
-    _append_controlled_lang_metrics,
-    _empty_controlled_lang_metrics,
-    _summarize_controlled_lang_metrics,
+    _append_language_control_metrics,
+    _empty_language_control_metrics,
+    _summarize_language_control_metrics,
     _discover_template_names,
     _TEMPLATE_DEF_RE,
 )
@@ -345,20 +346,20 @@ class _ObservabilityMixin:
                 pr.loss_ratio, pr.discovery_loss_ratio, pr.validation_loss_ratio,
                 pr.novelty_score, pr.novelty_confidence,
                 pr.error_type, pr.stage_at_death, pr.failure_details_json,
-                pr.induction_auc, pr.binding_auc, pr.binding_auc_curriculum,
-                pr.ar_auc, pr.hellaswag_acc, pr.blimp_overall_accuracy,
+                pr.induction_screening_auc, pr.binding_screening_auc, pr.binding_curriculum_auc,
+                pr.ar_legacy_auc, pr.hellaswag_acc, pr.blimp_overall_accuracy,
                 l.composite_score,
-                pr.induction_v2_investigation_auc,
-                pr.binding_v2_investigation_auc,
-                pr.controlled_lang_s05_sa_score,
-                pr.controlled_lang_s05_nb_order_acc,
-                pr.controlled_lang_s05_nb_score,
-                pr.controlled_lang_s10_sa_score,
-                pr.controlled_lang_s10_nb_order_acc,
-                pr.controlled_lang_s10_nb_score,
-                pr.controlled_lang_inv_sa_score,
-                pr.controlled_lang_inv_nb_order_acc,
-                pr.controlled_lang_inv_nb_score,
+                pr.induction_intermediate_auc,
+                pr.binding_intermediate_auc,
+                pr.language_control_s05_sentence_assoc_score,
+                pr.language_control_s05_binding_order_acc,
+                pr.language_control_s05_binding_score,
+                pr.language_control_s10_sentence_assoc_score,
+                pr.language_control_s10_binding_order_acc,
+                pr.language_control_s10_binding_score,
+                pr.language_control_investigation_sentence_assoc_score,
+                pr.language_control_investigation_binding_order_acc,
+                pr.language_control_investigation_binding_score,
                 pr.fp_jacobian_effective_rank,
                 pr.fp_sensitivity_uniformity,
                 pr.fp_jacobian_erf_density,
@@ -490,8 +491,13 @@ class _ObservabilityMixin:
                 except (json.JSONDecodeError, TypeError, ValueError):
                     slot_usage = ()
             else:
+                graph_json = resolve_graph_json_value(
+                    self.conn,
+                    self.db_path,
+                    row.get("graph_json"),
+                )
                 templates, motifs, slot_usage = _cached_extract_observability_metadata(
-                    str(row.get("graph_json") or "")
+                    graph_json
                 )
             experiment_id = str(row["experiment_id"] or "")
             exp_bucket = experiment_buckets.setdefault(
@@ -519,34 +525,46 @@ class _ObservabilityMixin:
             discovery_lr = row["discovery_loss_ratio"]
             novelty = row["novelty_score"]
             novelty_confidence = row["novelty_confidence"]
-            induction_auc = row["induction_auc"]
-            binding_auc = (
-                row["binding_auc_curriculum"]
-                if row["binding_auc_curriculum"] is not None
-                else row["binding_auc"]
+            induction_screening_auc = row["induction_screening_auc"]
+            binding_screening_auc = (
+                row["binding_curriculum_auc"]
+                if row["binding_curriculum_auc"] is not None
+                else row["binding_screening_auc"]
             )
-            ar_auc = row["ar_auc"]
+            ar_legacy_auc = row["ar_legacy_auc"]
             hellaswag_acc = row["hellaswag_acc"]
             blimp_overall_accuracy = row["blimp_overall_accuracy"]
             composite_score = row["composite_score"]
-            induction_v2_auc = row["induction_v2_investigation_auc"]
-            binding_v2_auc = row["binding_v2_investigation_auc"]
-            controlled_lang_values = {
-                "controlled_lang_s05_sa_score": row["controlled_lang_s05_sa_score"],
-                "controlled_lang_s05_nb_order_acc": row[
-                    "controlled_lang_s05_nb_order_acc"
+            induction_intermediate_auc = row["induction_intermediate_auc"]
+            binding_intermediate_auc = row["binding_intermediate_auc"]
+            language_control_values = {
+                "language_control_s05_sentence_assoc_score": row[
+                    "language_control_s05_sentence_assoc_score"
                 ],
-                "controlled_lang_s05_nb_score": row["controlled_lang_s05_nb_score"],
-                "controlled_lang_s10_sa_score": row["controlled_lang_s10_sa_score"],
-                "controlled_lang_s10_nb_order_acc": row[
-                    "controlled_lang_s10_nb_order_acc"
+                "language_control_s05_binding_order_acc": row[
+                    "language_control_s05_binding_order_acc"
                 ],
-                "controlled_lang_s10_nb_score": row["controlled_lang_s10_nb_score"],
-                "controlled_lang_inv_sa_score": row["controlled_lang_inv_sa_score"],
-                "controlled_lang_inv_nb_order_acc": row[
-                    "controlled_lang_inv_nb_order_acc"
+                "language_control_s05_binding_score": row[
+                    "language_control_s05_binding_score"
                 ],
-                "controlled_lang_inv_nb_score": row["controlled_lang_inv_nb_score"],
+                "language_control_s10_sentence_assoc_score": row[
+                    "language_control_s10_sentence_assoc_score"
+                ],
+                "language_control_s10_binding_order_acc": row[
+                    "language_control_s10_binding_order_acc"
+                ],
+                "language_control_s10_binding_score": row[
+                    "language_control_s10_binding_score"
+                ],
+                "language_control_investigation_sentence_assoc_score": row[
+                    "language_control_investigation_sentence_assoc_score"
+                ],
+                "language_control_investigation_binding_order_acc": row[
+                    "language_control_investigation_binding_order_acc"
+                ],
+                "language_control_investigation_binding_score": row[
+                    "language_control_investigation_binding_score"
+                ],
             }
             jacobian_effective_rank = row["fp_jacobian_effective_rank"]
             sensitivity_uniformity = row["fp_sensitivity_uniformity"]
@@ -622,12 +640,18 @@ class _ObservabilityMixin:
                     stat["novelties"].append(float(novelty))
                 if novelty_confidence is not None and math.isfinite(novelty_confidence):
                     stat["novelty_confidences"].append(float(novelty_confidence))
-                if induction_auc is not None and math.isfinite(induction_auc):
-                    stat["induction_aucs"].append(float(induction_auc))
-                if binding_auc is not None and math.isfinite(binding_auc):
-                    stat["binding_aucs"].append(float(binding_auc))
-                if ar_auc is not None and math.isfinite(ar_auc):
-                    stat["ar_aucs"].append(float(ar_auc))
+                if induction_screening_auc is not None and math.isfinite(
+                    induction_screening_auc
+                ):
+                    stat["induction_screening_aucs"].append(
+                        float(induction_screening_auc)
+                    )
+                if binding_screening_auc is not None and math.isfinite(
+                    binding_screening_auc
+                ):
+                    stat["binding_screening_aucs"].append(float(binding_screening_auc))
+                if ar_legacy_auc is not None and math.isfinite(ar_legacy_auc):
+                    stat["ar_legacy_aucs"].append(float(ar_legacy_auc))
                 if hellaswag_acc is not None and math.isfinite(hellaswag_acc):
                     stat["hellaswag_accs"].append(float(hellaswag_acc))
                 if blimp_overall_accuracy is not None and math.isfinite(
@@ -638,11 +662,19 @@ class _ObservabilityMixin:
                     )
                 if composite_score is not None and math.isfinite(composite_score):
                     stat["composite_scores"].append(float(composite_score))
-                if induction_v2_auc is not None and math.isfinite(induction_v2_auc):
-                    stat["induction_v2_aucs"].append(float(induction_v2_auc))
-                if binding_v2_auc is not None and math.isfinite(binding_v2_auc):
-                    stat["binding_v2_aucs"].append(float(binding_v2_auc))
-                _append_controlled_lang_metrics(stat, controlled_lang_values)
+                if induction_intermediate_auc is not None and math.isfinite(
+                    induction_intermediate_auc
+                ):
+                    stat["induction_intermediate_aucs"].append(
+                        float(induction_intermediate_auc)
+                    )
+                if binding_intermediate_auc is not None and math.isfinite(
+                    binding_intermediate_auc
+                ):
+                    stat["binding_intermediate_aucs"].append(
+                        float(binding_intermediate_auc)
+                    )
+                _append_language_control_metrics(stat, language_control_values)
                 if erf_density is not None and math.isfinite(erf_density):
                     stat["erf_densities"].append(float(erf_density))
                 if id_collapse_rate is not None and math.isfinite(id_collapse_rate):
@@ -773,7 +805,7 @@ class _ObservabilityMixin:
                         "n_stage1": 0,
                         "losses": [],
                         "composite_scores": [],
-                        "controlled_lang_metrics": _empty_controlled_lang_metrics(),
+                        "language_control_metrics": _empty_language_control_metrics(),
                         "failure_reasons": {},
                         "selected_motifs": {},
                     },
@@ -784,7 +816,7 @@ class _ObservabilityMixin:
                     sstat["losses"].append(float(loss_ratio))
                 if composite_score is not None and math.isfinite(composite_score):
                     sstat["composite_scores"].append(float(composite_score))
-                _append_controlled_lang_metrics(sstat, controlled_lang_values)
+                _append_language_control_metrics(sstat, language_control_values)
                 motif_name = slot.get("selected_motif")
                 if motif_name:
                     sstat["selected_motifs"][str(motif_name)] = (
@@ -956,7 +988,7 @@ class _ObservabilityMixin:
                         if stat["losses"]
                         else None
                     ),
-                    **_summarize_controlled_lang_metrics(stat),
+                    **_summarize_language_control_metrics(stat),
                     "top_failure_reason": top_reason,
                     "top_selected_motif": top_motif,
                 }
@@ -1085,7 +1117,7 @@ class _ObservabilityMixin:
             (
                 row
                 for row in active_template_rows
-                if (row.get("avg_induction_auc") or 0.0) < 0.02
+                if (row.get("avg_induction_screening_auc") or 0.0) < 0.02
                 and (row.get("n_used") or 0) >= 5
                 and (row.get("s1_rate") or 0.0) >= 0.2
             ),

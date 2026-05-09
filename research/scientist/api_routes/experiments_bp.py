@@ -107,10 +107,10 @@ def _experiment_delete_impact(nb, experiment_id: str) -> Dict[str, int]:
             COALESCE(SUM(CASE WHEN COALESCE(stage1_passed, 0) = 1 THEN 1 ELSE 0 END), 0)
                 AS stage1_results,
             COALESCE(SUM(CASE
-                WHEN COALESCE(induction_auc, 0) > 0
-                  OR COALESCE(binding_auc, 0) > 0
-                  OR COALESCE(induction_v2_investigation_auc, 0) > 0
-                  OR COALESCE(binding_v2_investigation_auc, 0) > 0
+                WHEN COALESCE(induction_screening_auc, 0) > 0
+                  OR COALESCE(binding_screening_auc, 0) > 0
+                  OR COALESCE(induction_intermediate_auc, 0) > 0
+                  OR COALESCE(binding_intermediate_auc, 0) > 0
                   OR COALESCE(hellaswag_acc, 0) > 0
                   OR COALESCE(blimp_overall_accuracy, 0) > 0
                 THEN 1 ELSE 0 END), 0) AS diagnostic_results

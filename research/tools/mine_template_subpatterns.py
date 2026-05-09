@@ -9,8 +9,8 @@ Outputs:
   research/reports/mined_chain_proposals.json — top-K with skeleton sketches
 
 Cohort filter (matches template_pass classification):
-  Pass: controlled_lang_s05_sa_score >= 0.95 AND failure_op != 'nano_bind'
-  Fail: controlled_lang_s05_sa_score < 0.30 OR failure_op = 'nano_bind'
+  Pass: language_control_s05_sentence_assoc_score >= 0.95 AND failure_op != 'nano_bind'
+  Fail: language_control_s05_sentence_assoc_score < 0.30 OR failure_op = 'nano_bind'
 
 Significance criteria (default — overridable via CLI):
   - n >= 30  (chain occurred in at least 30 cohort graphs)
@@ -32,8 +32,10 @@ import sys
 from collections import Counter
 from pathlib import Path
 
+from research.scientist.notebook.graph_artifacts import resolve_graph_json_value
+
 REPO = Path(__file__).resolve().parents[2]
-LAB = REPO / "research/lab_notebook.db"
+LAB = REPO / "research/runs.db"
 REPORTS = REPO / "research/reports"
 
 PASS_SA = 0.95
@@ -71,18 +73,24 @@ def fetch_cohort() -> list[dict]:
     cur = conn.execute(
         """
         SELECT pr.result_id,
-               pr.controlled_lang_s05_sa_score AS sa,
+               pr.language_control_s05_sentence_assoc_score AS sa,
                pr.failure_op,
                pr.graph_json
         FROM program_results pr
         LEFT JOIN leaderboard l ON l.result_id = pr.result_id
-        WHERE pr.controlled_lang_s05_sa_score IS NOT NULL
+        WHERE pr.language_control_s05_sentence_assoc_score IS NOT NULL
           AND COALESCE(l.is_reference, 0) = 0
           AND pr.graph_json IS NOT NULL
         """
     )
     cols = [c[0] for c in cur.description]
     rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+    for row in rows:
+        row["graph_json"] = resolve_graph_json_value(
+            conn,
+            LAB,
+            row.get("graph_json"),
+        )
     conn.close()
     return rows
 

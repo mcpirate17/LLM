@@ -38,10 +38,10 @@ def _stage1_fixture_kwargs(loss_ratio: float, novelty_score: float) -> dict:
             "hellaswag_status": "ran",
             "blimp_overall_accuracy": 0.55,
             "blimp_status": "ran",
-            "induction_auc": 0.21,
-            "binding_auc": 0.18,
-            "binding_composite": 0.12,
-            "ar_auc": 0.06,
+            "induction_screening_auc": 0.21,
+            "binding_screening_auc": 0.18,
+            "binding_screening_composite": 0.12,
+            "ar_legacy_auc": 0.06,
         },
         model_source="graph_synthesis",
         extra={
@@ -94,19 +94,19 @@ class TestObservabilityAPI(unittest.TestCase):
                 wikitext_perplexity=8.0 + i,
                 hellaswag_acc=0.30 + i * 0.01,
                 blimp_overall_accuracy=0.52 + i * 0.01,
-                induction_auc=0.04 + i * 0.005,
-                binding_auc=0.05 + i * 0.005,
-                binding_composite=0.06 + i * 0.005,
-                ar_auc=0.03 + i * 0.005,
-                controlled_lang_s05_sa_score=0.80,
-                controlled_lang_s05_nb_order_acc=0.70,
-                controlled_lang_s05_nb_score=0.74,
-                controlled_lang_s10_sa_score=0.82,
-                controlled_lang_s10_nb_order_acc=0.72,
-                controlled_lang_s10_nb_score=0.76,
-                controlled_lang_inv_sa_score=0.84,
-                controlled_lang_inv_nb_order_acc=0.70,
-                controlled_lang_inv_nb_score=0.72,
+                induction_screening_auc=0.04 + i * 0.005,
+                binding_screening_auc=0.05 + i * 0.005,
+                binding_screening_composite=0.06 + i * 0.005,
+                ar_legacy_auc=0.03 + i * 0.005,
+                language_control_s05_sentence_assoc_score=0.80,
+                language_control_s05_binding_order_acc=0.70,
+                language_control_s05_binding_score=0.74,
+                language_control_s10_sentence_assoc_score=0.82,
+                language_control_s10_binding_order_acc=0.72,
+                language_control_s10_binding_score=0.76,
+                language_control_investigation_sentence_assoc_score=0.84,
+                language_control_investigation_binding_order_acc=0.70,
+                language_control_investigation_binding_score=0.72,
                 error_type="shape_mismatch" if i >= 4 else None,
             )
             result_ids.append(rid)
@@ -540,18 +540,18 @@ class TestObservabilityAPI(unittest.TestCase):
             "s05_rate",
             "avg_loss_ratio",
             "avg_validation_loss_ratio",
-            "avg_induction_auc",
-            "avg_binding_auc",
-            "avg_controlled_lang_s05_score",
-            "avg_controlled_lang_s10_score",
-            "avg_controlled_lang_inv_score",
-            "avg_controlled_lang_inv_sa_score",
+            "avg_induction_screening_auc",
+            "avg_binding_screening_auc",
+            "avg_language_control_s05_score",
+            "avg_language_control_s10_score",
+            "avg_language_control_investigation_score",
+            "avg_language_control_investigation_sentence_assoc_score",
             "avg_hellaswag_acc",
             "top_failure_reason",
         ):
             self.assertIn(key, comp)
         from research.scientist.api_routes._observability_core import (
-            _component_controlled_lang_metrics,
+            _component_language_control_metrics,
             _load_component_metric_overlays,
         )
         from research.scientist.notebook import LabNotebook
@@ -565,13 +565,16 @@ class TestObservabilityAPI(unittest.TestCase):
             (
                 item
                 for item in overlays.values()
-                if item.get("avg_controlled_lang_inv_sa_score") is not None
+                if item.get("avg_language_control_investigation_sentence_assoc_score")
+                is not None
             ),
             None,
         )
         self.assertIsNotNone(metric_overlay)
-        metric_payload = _component_controlled_lang_metrics(metric_overlay)
-        self.assertAlmostEqual(metric_payload["avg_controlled_lang_inv_score"], 0.78)
+        metric_payload = _component_language_control_metrics(metric_overlay)
+        self.assertAlmostEqual(
+            metric_payload["avg_language_control_investigation_score"], 0.78
+        )
 
 
 if __name__ == "__main__":

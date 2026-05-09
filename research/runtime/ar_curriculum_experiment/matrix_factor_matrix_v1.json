@@ -1,0 +1,540 @@
+{
+  "run_id": "factor_matrix_v1",
+  "arch_keys": [
+    "gpt2",
+    "mamba",
+    "rwkv",
+    "retrieval_augmented"
+  ],
+  "seeds": [
+    0,
+    1,
+    2
+  ],
+  "conditions": [
+    {
+      "name": "baseline",
+      "stage_set": "default",
+      "d_model": 256,
+      "n_layers": 6,
+      "steps": 250
+    },
+    {
+      "name": "granular",
+      "stage_set": "fine",
+      "d_model": 256,
+      "n_layers": 6,
+      "steps": 250
+    },
+    {
+      "name": "bump",
+      "stage_set": "default",
+      "d_model": 384,
+      "n_layers": 8,
+      "steps": 250
+    },
+    {
+      "name": "s500",
+      "stage_set": "default",
+      "d_model": 256,
+      "n_layers": 6,
+      "steps": 500
+    },
+    {
+      "name": "s750",
+      "stage_set": "default",
+      "d_model": 256,
+      "n_layers": 6,
+      "steps": 750
+    },
+    {
+      "name": "s1000",
+      "stage_set": "default",
+      "d_model": 256,
+      "n_layers": 6,
+      "steps": 1000
+    }
+  ],
+  "matrix": {
+    "baseline": {
+      "gpt2": {
+        "arch_name": "GPT-2",
+        "paradigm": "dense_attention_transformer",
+        "n_seeds": 3,
+        "auc_final_mean": 0.15,
+        "auc_final_std": 0.025,
+        "auc_peak_mean": 0.279,
+        "auc_peak_std": 0.01,
+        "retention_mean": 0.536,
+        "wall_mean_s": 5.7,
+        "per_stage_mean": [
+          0.284,
+          0.216,
+          0.154,
+          0.094,
+          0.078,
+          0.073
+        ]
+      },
+      "mamba": {
+        "arch_name": "Mamba",
+        "paradigm": "selective_state_space",
+        "n_seeds": 3,
+        "auc_final_mean": 0.245,
+        "auc_final_std": 0.008,
+        "auc_peak_mean": 0.281,
+        "auc_peak_std": 0.01,
+        "retention_mean": 0.872,
+        "wall_mean_s": 8.2,
+        "per_stage_mean": [
+          0.458,
+          0.401,
+          0.247,
+          0.182,
+          0.115,
+          0.065
+        ]
+      },
+      "rwkv": {
+        "arch_name": "RWKV",
+        "paradigm": "linear_attention_rnn",
+        "n_seeds": 3,
+        "auc_final_mean": 0.263,
+        "auc_final_std": 0.019,
+        "auc_peak_mean": 0.307,
+        "auc_peak_std": 0.005,
+        "retention_mean": 0.858,
+        "wall_mean_s": 11.3,
+        "per_stage_mean": [
+          0.544,
+          0.464,
+          0.258,
+          0.156,
+          0.081,
+          0.078
+        ]
+      },
+      "retrieval_augmented": {
+        "arch_name": "Retrieval-Augmented",
+        "paradigm": "retrieval_augmented",
+        "n_seeds": 3,
+        "auc_final_mean": 0.143,
+        "auc_final_std": 0.041,
+        "auc_peak_mean": 0.263,
+        "auc_peak_std": 0.016,
+        "retention_mean": 0.54,
+        "wall_mean_s": 8.7,
+        "per_stage_mean": [
+          0.289,
+          0.193,
+          0.177,
+          0.099,
+          0.055,
+          0.047
+        ]
+      }
+    },
+    "granular": {
+      "gpt2": {
+        "arch_name": "GPT-2",
+        "paradigm": "dense_attention_transformer",
+        "n_seeds": 3,
+        "auc_final_mean": 0.203,
+        "auc_final_std": 0.044,
+        "auc_peak_mean": 0.35,
+        "auc_peak_std": 0.04,
+        "retention_mean": 0.577,
+        "wall_mean_s": 8.5,
+        "per_stage_mean": [
+          0.333,
+          0.367,
+          0.271,
+          0.286,
+          0.164,
+          0.164,
+          0.115,
+          0.086,
+          0.044
+        ]
+      },
+      "mamba": {
+        "arch_name": "Mamba",
+        "paradigm": "selective_state_space",
+        "n_seeds": 3,
+        "auc_final_mean": 0.311,
+        "auc_final_std": 0.054,
+        "auc_peak_mean": 0.385,
+        "auc_peak_std": 0.007,
+        "retention_mean": 0.808,
+        "wall_mean_s": 12.6,
+        "per_stage_mean": [
+          0.669,
+          0.505,
+          0.469,
+          0.422,
+          0.268,
+          0.208,
+          0.117,
+          0.089,
+          0.052
+        ]
+      },
+      "rwkv": {
+        "arch_name": "RWKV",
+        "paradigm": "linear_attention_rnn",
+        "n_seeds": 3,
+        "auc_final_mean": 0.305,
+        "auc_final_std": 0.013,
+        "auc_peak_mean": 0.4,
+        "auc_peak_std": 0.022,
+        "retention_mean": 0.763,
+        "wall_mean_s": 17.3,
+        "per_stage_mean": [
+          0.406,
+          0.526,
+          0.508,
+          0.445,
+          0.292,
+          0.253,
+          0.117,
+          0.109,
+          0.091
+        ]
+      },
+      "retrieval_augmented": {
+        "arch_name": "Retrieval-Augmented",
+        "paradigm": "retrieval_augmented",
+        "n_seeds": 3,
+        "auc_final_mean": 0.179,
+        "auc_final_std": 0.059,
+        "auc_peak_mean": 0.34,
+        "auc_peak_std": 0.05,
+        "retention_mean": 0.517,
+        "wall_mean_s": 13.1,
+        "per_stage_mean": [
+          0.25,
+          0.357,
+          0.299,
+          0.206,
+          0.164,
+          0.133,
+          0.091,
+          0.081,
+          0.034
+        ]
+      }
+    },
+    "bump": {
+      "gpt2": {
+        "arch_name": "GPT-2",
+        "paradigm": "dense_attention_transformer",
+        "n_seeds": 3,
+        "auc_final_mean": 0.131,
+        "auc_final_std": 0.042,
+        "auc_peak_mean": 0.257,
+        "auc_peak_std": 0.014,
+        "retention_mean": 0.504,
+        "wall_mean_s": 7.8,
+        "per_stage_mean": [
+          0.253,
+          0.201,
+          0.104,
+          0.117,
+          0.057,
+          0.052
+        ]
+      },
+      "mamba": {
+        "arch_name": "Mamba",
+        "paradigm": "selective_state_space",
+        "n_seeds": 3,
+        "auc_final_mean": 0.246,
+        "auc_final_std": 0.007,
+        "auc_peak_mean": 0.295,
+        "auc_peak_std": 0.002,
+        "retention_mean": 0.835,
+        "wall_mean_s": 10.7,
+        "per_stage_mean": [
+          0.424,
+          0.456,
+          0.26,
+          0.2,
+          0.086,
+          0.049
+        ]
+      },
+      "rwkv": {
+        "arch_name": "RWKV",
+        "paradigm": "linear_attention_rnn",
+        "n_seeds": 3,
+        "auc_final_mean": 0.238,
+        "auc_final_std": 0.018,
+        "auc_peak_mean": 0.306,
+        "auc_peak_std": 0.01,
+        "retention_mean": 0.778,
+        "wall_mean_s": 15.0,
+        "per_stage_mean": [
+          0.479,
+          0.365,
+          0.234,
+          0.156,
+          0.112,
+          0.083
+        ]
+      },
+      "retrieval_augmented": {
+        "arch_name": "Retrieval-Augmented",
+        "paradigm": "retrieval_augmented",
+        "n_seeds": 3,
+        "auc_final_mean": 0.099,
+        "auc_final_std": 0.034,
+        "auc_peak_mean": 0.196,
+        "auc_peak_std": 0.062,
+        "retention_mean": 0.498,
+        "wall_mean_s": 12.3,
+        "per_stage_mean": [
+          0.221,
+          0.117,
+          0.109,
+          0.091,
+          0.036,
+          0.016
+        ]
+      }
+    },
+    "s500": {
+      "gpt2": {
+        "arch_name": "GPT-2",
+        "paradigm": "dense_attention_transformer",
+        "n_seeds": 3,
+        "auc_final_mean": 0.222,
+        "auc_final_std": 0.055,
+        "auc_peak_mean": 0.318,
+        "auc_peak_std": 0.01,
+        "retention_mean": 0.696,
+        "wall_mean_s": 11.0,
+        "per_stage_mean": [
+          0.411,
+          0.299,
+          0.216,
+          0.188,
+          0.156,
+          0.062
+        ]
+      },
+      "mamba": {
+        "arch_name": "Mamba",
+        "paradigm": "selective_state_space",
+        "n_seeds": 3,
+        "auc_final_mean": 0.271,
+        "auc_final_std": 0.046,
+        "auc_peak_mean": 0.299,
+        "auc_peak_std": 0.023,
+        "retention_mean": 0.903,
+        "wall_mean_s": 16.1,
+        "per_stage_mean": [
+          0.437,
+          0.516,
+          0.302,
+          0.195,
+          0.125,
+          0.05
+        ]
+      },
+      "rwkv": {
+        "arch_name": "RWKV",
+        "paradigm": "linear_attention_rnn",
+        "n_seeds": 3,
+        "auc_final_mean": 0.304,
+        "auc_final_std": 0.01,
+        "auc_peak_mean": 0.329,
+        "auc_peak_std": 0.006,
+        "retention_mean": 0.924,
+        "wall_mean_s": 22.5,
+        "per_stage_mean": [
+          0.503,
+          0.562,
+          0.289,
+          0.24,
+          0.148,
+          0.081
+        ]
+      },
+      "retrieval_augmented": {
+        "arch_name": "Retrieval-Augmented",
+        "paradigm": "retrieval_augmented",
+        "n_seeds": 3,
+        "auc_final_mean": 0.175,
+        "auc_final_std": 0.073,
+        "auc_peak_mean": 0.28,
+        "auc_peak_std": 0.035,
+        "retention_mean": 0.625,
+        "wall_mean_s": 17.4,
+        "per_stage_mean": [
+          0.341,
+          0.263,
+          0.174,
+          0.109,
+          0.099,
+          0.062
+        ]
+      }
+    },
+    "s750": {
+      "gpt2": {
+        "arch_name": "GPT-2",
+        "paradigm": "dense_attention_transformer",
+        "n_seeds": 3,
+        "auc_final_mean": 0.201,
+        "auc_final_std": 0.022,
+        "auc_peak_mean": 0.305,
+        "auc_peak_std": 0.011,
+        "retention_mean": 0.657,
+        "wall_mean_s": 16.5,
+        "per_stage_mean": [
+          0.289,
+          0.286,
+          0.208,
+          0.208,
+          0.133,
+          0.081
+        ]
+      },
+      "mamba": {
+        "arch_name": "Mamba",
+        "paradigm": "selective_state_space",
+        "n_seeds": 3,
+        "auc_final_mean": 0.279,
+        "auc_final_std": 0.016,
+        "auc_peak_mean": 0.298,
+        "auc_peak_std": 0.016,
+        "retention_mean": 0.939,
+        "wall_mean_s": 24.1,
+        "per_stage_mean": [
+          0.479,
+          0.492,
+          0.315,
+          0.208,
+          0.122,
+          0.06
+        ]
+      },
+      "rwkv": {
+        "arch_name": "RWKV",
+        "paradigm": "linear_attention_rnn",
+        "n_seeds": 3,
+        "auc_final_mean": 0.284,
+        "auc_final_std": 0.029,
+        "auc_peak_mean": 0.317,
+        "auc_peak_std": 0.016,
+        "retention_mean": 0.895,
+        "wall_mean_s": 33.4,
+        "per_stage_mean": [
+          0.508,
+          0.477,
+          0.299,
+          0.219,
+          0.112,
+          0.091
+        ]
+      },
+      "retrieval_augmented": {
+        "arch_name": "Retrieval-Augmented",
+        "paradigm": "retrieval_augmented",
+        "n_seeds": 3,
+        "auc_final_mean": 0.146,
+        "auc_final_std": 0.112,
+        "auc_peak_mean": 0.271,
+        "auc_peak_std": 0.035,
+        "retention_mean": 0.51,
+        "wall_mean_s": 25.9,
+        "per_stage_mean": [
+          0.331,
+          0.182,
+          0.146,
+          0.104,
+          0.076,
+          0.036
+        ]
+      }
+    },
+    "s1000": {
+      "gpt2": {
+        "arch_name": "GPT-2",
+        "paradigm": "dense_attention_transformer",
+        "n_seeds": 3,
+        "auc_final_mean": 0.169,
+        "auc_final_std": 0.025,
+        "auc_peak_mean": 0.298,
+        "auc_peak_std": 0.02,
+        "retention_mean": 0.572,
+        "wall_mean_s": 21.7,
+        "per_stage_mean": [
+          0.253,
+          0.188,
+          0.214,
+          0.18,
+          0.115,
+          0.065
+        ]
+      },
+      "mamba": {
+        "arch_name": "Mamba",
+        "paradigm": "selective_state_space",
+        "n_seeds": 3,
+        "auc_final_mean": 0.289,
+        "auc_final_std": 0.015,
+        "auc_peak_mean": 0.303,
+        "auc_peak_std": 0.018,
+        "retention_mean": 0.952,
+        "wall_mean_s": 31.8,
+        "per_stage_mean": [
+          0.477,
+          0.5,
+          0.305,
+          0.219,
+          0.154,
+          0.078
+        ]
+      },
+      "rwkv": {
+        "arch_name": "RWKV",
+        "paradigm": "linear_attention_rnn",
+        "n_seeds": 3,
+        "auc_final_mean": 0.32,
+        "auc_final_std": 0.016,
+        "auc_peak_mean": 0.337,
+        "auc_peak_std": 0.016,
+        "retention_mean": 0.95,
+        "wall_mean_s": 44.2,
+        "per_stage_mean": [
+          0.589,
+          0.573,
+          0.32,
+          0.224,
+          0.156,
+          0.057
+        ]
+      },
+      "retrieval_augmented": {
+        "arch_name": "Retrieval-Augmented",
+        "paradigm": "retrieval_augmented",
+        "n_seeds": 3,
+        "auc_final_mean": 0.155,
+        "auc_final_std": 0.041,
+        "auc_peak_mean": 0.297,
+        "auc_peak_std": 0.007,
+        "retention_mean": 0.523,
+        "wall_mean_s": 34.3,
+        "per_stage_mean": [
+          0.148,
+          0.221,
+          0.211,
+          0.156,
+          0.102,
+          0.091
+        ]
+      }
+    }
+  }
+}

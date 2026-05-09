@@ -7,6 +7,18 @@
 
 set -euo pipefail
 
+# Auto-prune: delete root-level files in research/reports/ older than 14d.
+# Subdirs (nano_ar_inv_no_go/, nano_bind_backfill/) are intentionally preserved.
+# Output goes to stderr so the JSON payload below stays clean.
+REPO_ROOT="$(dirname "$(dirname "$(dirname "$(readlink -f "$0")")")")"
+REPORTS_DIR="$REPO_ROOT/research/reports"
+if [[ -d "$REPORTS_DIR" ]]; then
+  PRUNED=$(find "$REPORTS_DIR" -maxdepth 1 -type f -mtime +14 -print -delete 2>/dev/null | wc -l || true)
+  if [[ "${PRUNED:-0}" -gt 0 ]]; then
+    echo "[session-start] pruned $PRUNED file(s) from research/reports older than 14d" >&2
+  fi
+fi
+
 STATS=$(code-review-graph status 2>/dev/null | head -20 || echo "graph stats unavailable")
 
 # Drop a per-session sentinel so the pre-edit hook can tell whether CRG was used yet.

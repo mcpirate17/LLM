@@ -28,9 +28,10 @@ def get_notebook(notebook_path: str, *, read_only: bool) -> LabNotebook:
     """Return a notebook handle for the current request.
 
     Every request gets its own short-lived notebook so the dashboard does
-    not pin sqlite handles longer than necessary. Keep request-scoped access
-    on the disposable sqlite path for both read and write flows so callers
-    always observe the latest committed state after write-side flushes.
+    not pin sqlite read handles longer than necessary. Writable request
+    paths must go through aria-db's native single-writer manager so the API
+    cannot bypass the process-wide writer flock with an ad hoc sqlite3
+    connection.
     """
     from ..notebook import LabNotebook
 
@@ -39,7 +40,7 @@ def get_notebook(notebook_path: str, *, read_only: bool) -> LabNotebook:
             notebook_path,
             check_same_thread=False,
             read_only=read_only,
-            use_native=False,
+            use_native=not read_only,
         )
     except sqlite3.OperationalError:
         if read_only:
@@ -52,5 +53,5 @@ def get_notebook(notebook_path: str, *, read_only: bool) -> LabNotebook:
             notebook_path,
             check_same_thread=False,
             read_only=False,
-            use_native=False,
+            use_native=True,
         )

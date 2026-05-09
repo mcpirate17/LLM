@@ -35,10 +35,11 @@ from research.scientist.runner.execution_screening import (  # noqa: E402
 from research.synthesis.compiler import compile_model  # noqa: E402
 from research.synthesis.grammar import batch_generate  # noqa: E402
 from research.synthesis.validator import validate_graph  # noqa: E402
+from research.defaults import RUNS_DB  # noqa: E402
 
 
 RUNTIME_DIR = PROJECT_ROOT / "research/runtime"
-DB_PATH = PROJECT_ROOT / "research/lab_notebook.db"
+DB_PATH = PROJECT_ROOT / RUNS_DB
 
 
 def _config(args: argparse.Namespace) -> RunConfig:
@@ -260,8 +261,8 @@ def _run_screening_batch(
             """
             SELECT result_id, stage0_passed, stage05_passed, stage1_passed,
                    loss_ratio, wikitext_perplexity, hellaswag_acc,
-                   blimp_overall_accuracy, induction_auc, binding_auc,
-                   binding_composite, ar_auc, error_type, stage_at_death
+                   blimp_overall_accuracy, induction_screening_auc, binding_screening_auc,
+                   binding_screening_composite, ar_legacy_auc, error_type, stage_at_death
             FROM program_results
             WHERE experiment_id = ?
             ORDER BY timestamp DESC
@@ -274,10 +275,10 @@ def _run_screening_batch(
         "wikitext_perplexity",
         "hellaswag_acc",
         "blimp_overall_accuracy",
-        "induction_auc",
-        "binding_auc",
-        "binding_composite",
-        "ar_auc",
+        "induction_screening_auc",
+        "binding_screening_auc",
+        "binding_screening_composite",
+        "ar_legacy_auc",
     )
     s1_rows = [row for row in rows if int(row["stage1_passed"] or 0) == 1]
     return {

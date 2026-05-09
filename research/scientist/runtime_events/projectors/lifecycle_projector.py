@@ -27,8 +27,15 @@ class LifecycleProjector:
 
     PROJECTOR_NAME = "lifecycle"
 
-    def __init__(self, conn: sqlite3.Connection, *, spool: NdjsonEventSpool) -> None:
+    def __init__(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        spool: NdjsonEventSpool,
+        state_conn: sqlite3.Connection | None = None,
+    ) -> None:
         self.conn = conn
+        self.state_conn = state_conn if state_conn is not None else conn
         self.spool = spool
         self.machine = LifecycleStateMachine()
         self._ensure_tables()
@@ -55,6 +62,8 @@ class LifecycleProjector:
                     self._mark_applied(record.event)
                 self._store_checkpoint(record.offset)
                 self.conn.commit()
+                if self.state_conn is not self.conn:
+                    self.state_conn.commit()
                 logger.debug(
                     "Projected lifecycle event: type=%s run_id=%s event_id=%s offset=%s:%d accepted=%s",
                     record.event.event_type,
@@ -76,6 +85,8 @@ class LifecycleProjector:
                 exc,
             )
             self.conn.rollback()
+            if self.state_conn is not self.conn:
+                self.state_conn.rollback()
         return ProjectorStatus(
             last_offset=last_offset,
             last_event_id=last_event_id,
@@ -210,7 +221,7 @@ class LifecycleProjector:
         )
 
     def _ensure_tables(self) -> None:
-        self.conn.execute(
+        self.state_conn.execute(
             """CREATE TABLE IF NOT EXISTS applied_runtime_events (
                    event_id TEXT PRIMARY KEY,
                    event_type TEXT NOT NULL,
@@ -218,7 +229,7 @@ class LifecycleProjector:
                    applied_at REAL NOT NULL
                )"""
         )
-        self.conn.execute(
+        self.state_conn.execute(
             """CREATE TABLE IF NOT EXISTS runtime_projector_checkpoints (
                    projector_name TEXT PRIMARY KEY,
                    segment TEXT NOT NULL,
@@ -226,10 +237,10 @@ class LifecycleProjector:
                    updated_at REAL NOT NULL
                )"""
         )
-        self.conn.commit()
+        self.state_conn.commit()
 
     def _mark_applied(self, event: RuntimeEvent) -> None:
-        self.conn.execute(
+        self.state_conn.execute(
             """INSERT OR IGNORE INTO applied_runtime_events
                (event_id, event_type, run_id, applied_at)
                VALUES (?, ?, ?, ?)""",
@@ -237,14 +248,14 @@ class LifecycleProjector:
         )
 
     def _is_applied(self, event_id: str) -> bool:
-        row = self.conn.execute(
+        row = self.state_conn.execute(
             "SELECT 1 FROM applied_runtime_events WHERE event_id = ?",
             (event_id,),
         ).fetchone()
         return row is not None
 
     def _load_checkpoint(self) -> Optional[SpoolOffset]:
-        row = self.conn.execute(
+        row = self.state_conn.execute(
             """SELECT segment, line_number
                FROM runtime_projector_checkpoints
                WHERE projector_name = ?""",
@@ -255,7 +266,7 @@ class LifecycleProjector:
         return SpoolOffset(segment=row[0], line_number=int(row[1]))
 
     def _store_checkpoint(self, offset: SpoolOffset) -> None:
-        self.conn.execute(
+        self.state_conn.execute(
             """INSERT INTO runtime_projector_checkpoints
                (projector_name, segment, line_number, updated_at)
                VALUES (?, ?, ?, ?)
@@ -267,12 +278,21 @@ class LifecycleProjector:
         )
 
     def _load_current_event_type(self, run_id: str) -> Optional[str]:
-        row = self.conn.execute(
+        row = self.state_conn.execute(
             """SELECT event_type FROM applied_runtime_events
                WHERE run_id = ? ORDER BY applied_at DESC LIMIT 1""",
             (run_id,),
         ).fetchone()
         return str(row[0]) if row else None
+
+    def latest_applied_at_for_run(self, run_id: str) -> Optional[float]:
+        row = self.state_conn.execute(
+            """SELECT MAX(applied_at) FROM applied_runtime_events WHERE run_id = ?""",
+            (run_id,),
+        ).fetchone()
+        if row is None or row[0] is None:
+            return None
+        return float(row[0])
 
     def _fetch_started_at(self, run_id: str) -> Optional[float]:
         row = self.conn.execute(

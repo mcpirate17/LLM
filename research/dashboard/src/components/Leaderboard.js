@@ -18,14 +18,14 @@ function finiteNumber(value) {
   return Number.isFinite(numeric) ? numeric : null;
 }
 
-function controlledLangSortValue(entry) {
-  const total = finiteNumber(entry?.score_breakdown?._v14_controlled_lang_total);
+function languageControlSortValue(entry) {
+  const total = finiteNumber(entry?.score_breakdown?._v14_language_control_total);
   if (total != null) return total;
-  return finiteNumber(entry?.controlled_lang_inv_sa_score)
-    ?? finiteNumber(entry?.controlled_lang_inv_nb_score)
-    ?? finiteNumber(entry?.controlled_lang_inv_nb_order_acc)
-    ?? finiteNumber(entry?.controlled_lang_s10_sa_score)
-    ?? finiteNumber(entry?.controlled_lang_s05_sa_score);
+  return finiteNumber(entry?.language_control_investigation_sentence_assoc_score)
+    ?? finiteNumber(entry?.language_control_investigation_binding_score)
+    ?? finiteNumber(entry?.language_control_investigation_binding_order_acc)
+    ?? finiteNumber(entry?.language_control_s10_sentence_assoc_score)
+    ?? finiteNumber(entry?.language_control_s05_sentence_assoc_score);
 }
 
 const thStyle = {
@@ -45,6 +45,7 @@ const thStyle = {
 function Leaderboard({
   onSelectProgram,
   onInvestigate,
+  onCapabilityRank,
   onValidate,
   onConfirm,
   highlightResultId,
@@ -95,7 +96,7 @@ function Leaderboard({
     return typeof leaderboardPrefs?.onlyRobust === 'boolean' ? leaderboardPrefs.onlyRobust : false;
   });
   const [visibleColumns, setVisibleColumns] = useState(() => {
-    const baseline = ['_score', 'tier', '_verified', '_rate', '_gap', 'architecture_family', '_composition', 'composite_score', 'screening_loss_ratio', 'validation_loss_ratio', 'induction_v2_investigation_auc', 'binding_v2_investigation_auc', '_controlled_lang_ladder', 'hellaswag_acc', 'blimp_overall_accuracy', 'ar_auc', 'fp_jacobian_erf_density', 'fp_id_collapse_rate', 'fp_jacobian_erf_decay_slope', '_actions'];
+    const baseline = ['_score', 'tier', '_verified', '_rate', '_gap', 'architecture_family', '_composition', 'composite_score', 'screening_loss_ratio', 'validation_loss_ratio', 'induction_intermediate_auc', 'binding_intermediate_auc', '_language_control_ladder', 'hellaswag_acc', 'blimp_overall_accuracy', 'ar_legacy_auc', 'fp_jacobian_erf_density', 'fp_id_collapse_rate', 'fp_jacobian_erf_decay_slope', '_actions'];
     const saved = Array.isArray(leaderboardPrefs?.visibleColumns) ? [...leaderboardPrefs.visibleColumns] : baseline;
     const ensureColumnAfter = (key, afterKey) => {
       if (saved.includes(key)) return;
@@ -103,8 +104,8 @@ function Leaderboard({
       const actionIndex = saved.indexOf('_actions');
       saved.splice(afterIndex >= 0 ? afterIndex + 1 : actionIndex >= 0 ? actionIndex : saved.length, 0, key);
     };
-    ensureColumnAfter('_controlled_lang_ladder', 'binding_v2_investigation_auc');
-    for (const key of ['induction_v2_investigation_auc', 'binding_v2_investigation_auc', 'hellaswag_acc', 'blimp_overall_accuracy', 'ar_auc', 'fp_jacobian_erf_density', 'fp_id_collapse_rate', 'fp_jacobian_erf_decay_slope']) {
+    ensureColumnAfter('_language_control_ladder', 'binding_intermediate_auc');
+    for (const key of ['induction_intermediate_auc', 'binding_intermediate_auc', 'hellaswag_acc', 'blimp_overall_accuracy', 'ar_legacy_auc', 'fp_jacobian_erf_density', 'fp_id_collapse_rate', 'fp_jacobian_erf_decay_slope']) {
       const actionIndex = saved.indexOf('_actions');
       if (!saved.includes(key)) saved.splice(actionIndex >= 0 ? actionIndex : saved.length, 0, key);
     }
@@ -166,6 +167,15 @@ function Leaderboard({
     }
   }, [onValidate, fetchLeaderboard]);
 
+  const handleCapabilityRank = useCallback((resultIds) => {
+    if (onCapabilityRank) { setActionError(null); onCapabilityRank(resultIds); }
+    else {
+      postJson('/api/experiments/start', { mode: 'capability_ranking', result_ids: resultIds })
+        .then(() => fetchLeaderboard())
+        .catch((e) => setActionError('Failed: ' + e.message));
+    }
+  }, [onCapabilityRank, fetchLeaderboard]);
+
   const togglePin = useCallback(async (entryId, currentPinned) => {
     try {
       const res = await postJson('/api/leaderboard/pin', { entry_id: entryId, pinned: !currentPinned });
@@ -216,7 +226,7 @@ function Leaderboard({
         _vs_reference: e.is_reference ? null : percentOfReference(bestLoss(e), bestLoss(matchedRef)),
         _matched_reference: matchedRef?.reference_name || matchedRef?.architecture_desc || null,
         _quant_retention_pct: toRetentionPercent(e?.quant_int8_retention),
-        _controlled_lang_ladder: controlledLangSortValue(e),
+        _language_control_ladder: languageControlSortValue(e),
       };
     });
     augmented.sort((a, b) => {
@@ -442,6 +452,7 @@ function Leaderboard({
                     onTogglePin={togglePin}
                     onToggleExpand={(id) => setExpandedRowId(expandedRowId === id ? null : id)}
                     onInvestigate={handleInvestigate}
+                    onCapabilityRank={handleCapabilityRank}
                     onValidate={handleValidate}
                     onConfirm={onConfirm}
                     onDelete={handleDelete}

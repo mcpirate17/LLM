@@ -7,6 +7,7 @@ import logging
 import os
 from flask import jsonify, request
 from ..json_utils import json_safe as _json_safe
+from ..notebook.graph_artifacts import resolve_graph_json_value
 from ..runner._types import RunConfig
 from ._helpers import (
     get_aria_for_notebook,
@@ -130,7 +131,8 @@ def _register_decision_routes(app, notebook_path: str, wnb) -> None:
         from research.synthesis.serializer import graph_from_json
         from research.synthesis.workflow_converter import graph_to_workflow
 
-        graph = graph_from_json(row["graph_json"], model_dim=row["model_dim"])
+        graph_json = resolve_graph_json_value(nb.conn, nb.db_path, row["graph_json"])
+        graph = graph_from_json(graph_json, model_dim=row["model_dim"])
         workflow = graph_to_workflow(
             graph,
             workflow_id=f"aria_{result_id[:8]}",

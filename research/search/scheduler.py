@@ -20,6 +20,8 @@ import sqlite3
 import time
 from typing import Dict, Optional
 
+from research.defaults import RUNS_DB
+
 
 def _fetch_template_stats(db_path: str, query: str) -> list[tuple]:
     with sqlite3.connect(db_path, timeout=5.0) as conn:
@@ -57,7 +59,7 @@ class ExplorationScheduler:
 
     def __init__(
         self,
-        db_path: str = "research/lab_notebook.db",
+        db_path: str = RUNS_DB,
         exploration_constant: float = 1.5,
         min_evals: int = 50,
         cache_ttl: float = 120.0,
@@ -141,7 +143,7 @@ class ThompsonScheduler:
 
     def __init__(
         self,
-        db_path: str = "research/lab_notebook.db",
+        db_path: str = RUNS_DB,
         cache_ttl: float = 120.0,
         seed: Optional[int] = None,
     ):

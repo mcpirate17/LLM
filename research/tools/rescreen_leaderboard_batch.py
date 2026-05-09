@@ -27,11 +27,12 @@ from typing import Any, Dict, List, Optional
 import psutil
 from research.scientist.discovery_scoring import discovery_score
 from research.scientist.notebook import LabNotebook
+from research.scientist.notebook.graph_artifacts import resolve_graph_json_value
 from research.tools._db_maintenance import connect_readonly
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_DB = Path("research/lab_notebook.db")
+DEFAULT_DB = Path("research/runs.db")
 DEFAULT_AUDIT = Path(
     f"research/reports/rescreen_batch_{date.today().isoformat()}.jsonl"
 )
@@ -78,8 +79,8 @@ PROBE_COLUMNS = (
     "fp_rank_ratio",
     "fp_sensitivity_uniformity",
     "hellaswag_acc",
-    "induction_auc",
-    "binding_auc",
+    "induction_screening_auc",
+    "binding_screening_auc",
 )
 
 # Tiers considered "below screening" (backlog / pre-screening / failed states).
@@ -286,7 +287,7 @@ def _select_candidates(
             SELECT
                 l.entry_id, l.result_id, l.composite_score, l.tier,
                 pr.graph_fingerprint, pr.loss_ratio, pr.stage1_passed,
-                pr.hellaswag_acc, pr.induction_auc, pr.binding_auc,
+                pr.hellaswag_acc, pr.induction_screening_auc, pr.binding_screening_auc,
                 pr.fp_jacobian_spectral_norm, pr.activation_sparsity_score,
                 pr.validation_loss_ratio, pr.discovery_loss_ratio, pr.novelty_score,
                 pr.trust_label, pr.comparability_label,
@@ -302,7 +303,7 @@ def _select_candidates(
                 pr.routing_expert_utilization_json, pr.routing_savings_ratio,
                 pr.depth_savings_ratio, pr.effective_depth_ratio,
                 pr.recursion_savings_ratio,
-                pr.blimp_overall_accuracy, pr.ar_auc,
+                pr.blimp_overall_accuracy, pr.ar_legacy_auc,
                 pr.graph_json, pr.routing_mode,
                 l.investigation_loss_ratio, l.screening_loss_ratio,
                 l.validation_baseline_ratio, l.scaling_param_efficiency,
@@ -319,6 +320,11 @@ def _select_candidates(
 
         if rank_by == "dashboard":
             for row in rows:
+                row["graph_json"] = resolve_graph_json_value(
+                    con,
+                    db,
+                    row.get("graph_json"),
+                )
                 row["architecture_family"] = LabNotebook._classify_architecture_family(
                     row.get("graph_json"),
                     row.get("routing_mode"),

@@ -1,0 +1,130 @@
+{
+  "run_id": "n400_cv",
+  "n_rows": 405,
+  "targets": [
+    {
+      "target": "ar_curriculum_auc_pair_final",
+      "n_total": 405,
+      "n_folds": 5,
+      "spearman_train_mean": 0.923,
+      "spearman_train_std": 0.006,
+      "spearman_test_mean": 0.656,
+      "spearman_test_std": 0.077,
+      "mae_test_mean": 0.0887,
+      "y_mean": 0.315,
+      "y_std": 0.158,
+      "fold_test_spearmans": [
+        0.581,
+        0.56,
+        0.654,
+        0.747,
+        0.736
+      ],
+      "feature_importances": [
+        {
+          "feature": "fp_jacobian_erf_decay_slope",
+          "importance": 0.3104
+        },
+        {
+          "feature": "fp_jacobian_erf_density",
+          "importance": 0.2839
+        },
+        {
+          "feature": "wikitext_perplexity",
+          "importance": 0.1107
+        },
+        {
+          "feature": "induction_screening_auc",
+          "importance": 0.0701
+        },
+        {
+          "feature": "validation_loss_ratio",
+          "importance": 0.059
+        },
+        {
+          "feature": "blimp_overall_accuracy",
+          "importance": 0.0559
+        },
+        {
+          "feature": "binding_screening_auc",
+          "importance": 0.0417
+        },
+        {
+          "feature": "ar_legacy_auc",
+          "importance": 0.0304
+        },
+        {
+          "feature": "hellaswag_acc",
+          "importance": 0.0224
+        },
+        {
+          "feature": "ar_validation_held_pair_acc",
+          "importance": 0.0156
+        }
+      ],
+      "status": "ok"
+    },
+    {
+      "target": "ar_curriculum_s0_retention",
+      "n_total": 405,
+      "n_folds": 5,
+      "spearman_train_mean": 0.83,
+      "spearman_train_std": 0.011,
+      "spearman_test_mean": 0.475,
+      "spearman_test_std": 0.087,
+      "mae_test_mean": 0.1981,
+      "y_mean": 0.481,
+      "y_std": 0.302,
+      "fold_test_spearmans": [
+        0.415,
+        0.434,
+        0.422,
+        0.646,
+        0.455
+      ],
+      "feature_importances": [
+        {
+          "feature": "fp_jacobian_erf_decay_slope",
+          "importance": 0.3743
+        },
+        {
+          "feature": "wikitext_perplexity",
+          "importance": 0.122
+        },
+        {
+          "feature": "fp_jacobian_erf_density",
+          "importance": 0.1213
+        },
+        {
+          "feature": "validation_loss_ratio",
+          "importance": 0.088
+        },
+        {
+          "feature": "blimp_overall_accuracy",
+          "importance": 0.0692
+        },
+        {
+          "feature": "induction_screening_auc",
+          "importance": 0.0536
+        },
+        {
+          "feature": "binding_screening_auc",
+          "importance": 0.0503
+        },
+        {
+          "feature": "ar_validation_held_pair_acc",
+          "importance": 0.0473
+        },
+        {
+          "feature": "ar_legacy_auc",
+          "importance": 0.0386
+        },
+        {
+          "feature": "hellaswag_acc",
+          "importance": 0.0356
+        }
+      ],
+      "status": "ok"
+    }
+  ]
+}

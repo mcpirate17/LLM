@@ -52,33 +52,33 @@ const coloredMetric = (value, thresholds, decimals = 3, pct = false) => {
   return <span style={{ color, fontWeight: 600 }}>{display}</span>;
 };
 
-const controlledLangTiers = [
+const languageControlTiers = [
   {
     key: 's05',
     label: 'S05',
     maxPoints: 5,
-    sa: 'controlled_lang_s05_sa_score',
-    order: 'controlled_lang_s05_nb_order_acc',
-    nb: 'controlled_lang_s05_nb_score',
+    sa: 'language_control_s05_sentence_assoc_score',
+    order: 'language_control_s05_binding_order_acc',
+    nb: 'language_control_s05_binding_score',
     pointKeys: ['cl_s05_sa', 'cl_s05_order'],
   },
   {
     key: 's10',
     label: 'S10',
     maxPoints: 15,
-    sa: 'controlled_lang_s10_sa_score',
-    order: 'controlled_lang_s10_nb_order_acc',
-    nb: 'controlled_lang_s10_nb_score',
+    sa: 'language_control_s10_sentence_assoc_score',
+    order: 'language_control_s10_binding_order_acc',
+    nb: 'language_control_s10_binding_score',
     pointKeys: ['cl_s10_sa', 'cl_s10_order'],
   },
   {
     key: 'inv',
     label: 'INV',
     maxPoints: 25,
-    sa: 'controlled_lang_inv_sa_score',
-    order: 'controlled_lang_inv_nb_order_acc',
-    nb: 'controlled_lang_inv_nb_score',
-    pointKeys: ['cl_inv_sa', 'cl_inv_order'],
+    sa: 'language_control_investigation_sentence_assoc_score',
+    order: 'language_control_investigation_binding_order_acc',
+    nb: 'language_control_investigation_binding_score',
+    pointKeys: ['cl_investigation_sa', 'cl_investigation_order'],
   },
 ];
 
@@ -88,14 +88,14 @@ const finiteMetric = (value) => {
   return Number.isFinite(numeric) ? numeric : null;
 };
 
-const controlledLangColor = (value) => {
+const languageControlColor = (value) => {
   if (value == null) return 'var(--text-muted)';
   if (value >= 0.85) return 'var(--accent-green)';
   if (value >= 0.65) return 'var(--accent-yellow)';
   return 'var(--accent-red)';
 };
 
-function controlledLangTierView(entry, tier) {
+function languageControlTierView(entry, tier) {
   const breakdown = entry?.score_breakdown || {};
   const sa = finiteMetric(entry?.[tier.sa]);
   const order = finiteMetric(entry?.[tier.order]);
@@ -123,12 +123,12 @@ function controlledLangTierView(entry, tier) {
   };
 }
 
-function ControlledLangLadder({ entry }) {
-  const rows = controlledLangTiers.map((tier) => controlledLangTierView(entry, tier));
+function LanguageControlLadder({ entry }) {
+  const rows = languageControlTiers.map((tier) => languageControlTierView(entry, tier));
   const hasAnyData = rows.some((row) => row.hasRawData);
-  const invSa = finiteMetric(entry?.controlled_lang_inv_sa_score);
+  const invSa = finiteMetric(entry?.language_control_investigation_sentence_assoc_score);
   const invSaFlag = invSa != null && invSa < 0.85;
-  const total = finiteMetric(entry?.score_breakdown?._v14_controlled_lang_total);
+  const total = finiteMetric(entry?.score_breakdown?._v14_language_control_total);
 
   if (!hasAnyData) {
     return <span style={{ color: 'var(--text-muted)', fontSize: 10 }}>--</span>;
@@ -137,7 +137,7 @@ function ControlledLangLadder({ entry }) {
   return (
     <div
       title={[
-        entry?.controlled_lang_metric_version ? `version ${entry.controlled_lang_metric_version}` : null,
+        entry?.language_control_metric_version ? `version ${entry.language_control_metric_version}` : null,
         total != null ? `v14 controlled-lang points ${total.toFixed(1)}` : null,
         ...rows.map((row) => `${row.label}: SA ${fmt(row.sa, 2)}, NB order ${fmt(row.order, 2)}, NB score ${fmt(row.nb, 2)}${row.points != null ? `, pts ${row.points.toFixed(1)}/${row.maxPoints}` : ''}`),
         invSaFlag ? 'Flag: INV SA score is below 0.85' : null,
@@ -145,7 +145,7 @@ function ControlledLangLadder({ entry }) {
       style={{ minWidth: 86 }}
     >
       {rows.map((row) => {
-        const color = controlledLangColor(row.displayScore);
+        const color = languageControlColor(row.displayScore);
         const muted = row.displayScore == null && row.points == null;
         return (
           <div key={row.key} style={{ display: 'grid', gridTemplateColumns: '24px 48px 30px', alignItems: 'center', gap: 4, marginBottom: 2 }}>
@@ -299,9 +299,9 @@ const RENDERERS = {
   champion_steps_to_floor_score: (e) => fmt(e.champion_steps_to_floor_score, 1),
   champion_floor_quality_score: (e) => fmt(e.champion_floor_quality_score, 1),
   champion_floor_stability_score: (e) => fmt(e.champion_floor_stability_score, 1),
-  champion_induction_v3_score: (e) => fmt(e.champion_induction_v3_score, 1),
+  champion_induction_validation_score: (e) => fmt(e.champion_induction_validation_score, 1),
   champion_binding_long_context_score: (e) => fmt(e.champion_binding_long_context_score, 1),
-  champion_small_ar_score: (e) => fmt(e.champion_small_ar_score, 1),
+  champion_ar_validation_score: (e) => fmt(e.champion_ar_validation_score, 1),
   init_sensitivity_std: (e) => fmt(e.init_sensitivity_std, 4),
   jacobian_spectral_norm: (e) => fmt(e.jacobian_spectral_norm ?? e.fp_jacobian_spectral_norm, 4),
   fp_jacobian_effective_rank: (e) => fmt(e.fp_jacobian_effective_rank, 3),
@@ -352,29 +352,47 @@ const RENDERERS = {
     if (e.hellaswag_acc == null) return '--';
     return <span style={{ color: hellaswagColor(e.hellaswag_acc), fontWeight: 600 }}>{(Number(e.hellaswag_acc) * 100).toFixed(1)}%</span>;
   },
-  induction_auc: (e) => <span style={{ color: probeAucColor(e.induction_auc), fontWeight: 600 }}>{fmt(e.induction_auc, 3)}</span>,
-  induction_v2_investigation_auc: (e) => <span style={{ color: probeAucColor(e.induction_v2_investigation_auc), fontWeight: 600 }}>{fmt(e.induction_v2_investigation_auc, 3)}</span>,
-  induction_v3_auc: (e) => <span style={{ color: probeAucColor(e.induction_v3_auc), fontWeight: 600 }}>{fmt(e.induction_v3_auc, 3)}</span>,
-  induction_v3_max_gap_acc: (e) => fmt(e.induction_v3_max_gap_acc, 3),
-  induction_v3_gap_accuracy_cv: (e) => fmt(e.induction_v3_gap_accuracy_cv, 3),
-  induction_v3_gap_accuracies_json: (e) => jsonMetric(e.induction_v3_gap_accuracies_json),
-  induction_v3_steps_trained: (e) => fmtInt(e.induction_v3_steps_trained),
-  induction_v3_status: (e) => textMetric(e.induction_v3_status),
-  induction_v3_elapsed_ms: (e) => fmtInt(e.induction_v3_elapsed_ms),
-  induction_v3_protocol_version: (e) => textMetric(e.induction_v3_protocol_version),
-  ar_auc: (e) => <span style={{ color: probeAucColor(e.ar_auc), fontWeight: 600 }}>{fmt(e.ar_auc, 3)}</span>,
-  small_ar_champion_score: (e) => fmt(e.small_ar_champion_score, 3),
-  small_ar_champion_final_acc: (e) => fmt(e.small_ar_champion_final_acc, 3),
-  small_ar_champion_held_pair_match_acc: (e) => fmt(e.small_ar_champion_held_pair_match_acc, 3),
-  small_ar_champion_held_class_acc: (e) => fmt(e.small_ar_champion_held_class_acc, 3),
-  small_ar_champion_learning_curve_json: (e) => jsonMetric(e.small_ar_champion_learning_curve_json),
-  small_ar_champion_steps_to_floor: (e) => fmtInt(e.small_ar_champion_steps_to_floor),
-  small_ar_champion_status: (e) => textMetric(e.small_ar_champion_status),
-  small_ar_champion_elapsed_ms: (e) => fmtInt(e.small_ar_champion_elapsed_ms),
-  small_ar_champion_metric_version: (e) => textMetric(e.small_ar_champion_metric_version),
-  binding_auc: (e) => <span style={{ color: probeAucColor(e.binding_auc), fontWeight: 600 }}>{fmt(e.binding_auc, 3)}</span>,
-  binding_v2_investigation_auc: (e) => <span style={{ color: probeAucColor(e.binding_v2_investigation_auc), fontWeight: 600 }}>{fmt(e.binding_v2_investigation_auc, 3)}</span>,
-  _controlled_lang_ladder: (e) => <ControlledLangLadder entry={e} />,
+  induction_screening_auc: (e) => <span style={{ color: probeAucColor(e.induction_screening_auc), fontWeight: 600 }}>{fmt(e.induction_screening_auc, 3)}</span>,
+  induction_intermediate_auc: (e) => <span style={{ color: probeAucColor(e.induction_intermediate_auc), fontWeight: 600 }}>{fmt(e.induction_intermediate_auc, 3)}</span>,
+  induction_validation_auc: (e) => <span style={{ color: probeAucColor(e.induction_validation_auc), fontWeight: 600 }}>{fmt(e.induction_validation_auc, 3)}</span>,
+  induction_validation_max_gap_acc: (e) => fmt(e.induction_validation_max_gap_acc, 3),
+  induction_validation_gap_accuracy_cv: (e) => fmt(e.induction_validation_gap_accuracy_cv, 3),
+  induction_validation_gap_accuracies_json: (e) => jsonMetric(e.induction_validation_gap_accuracies_json),
+  induction_validation_steps_trained: (e) => fmtInt(e.induction_validation_steps_trained),
+  induction_validation_status: (e) => textMetric(e.induction_validation_status),
+  induction_validation_elapsed_ms: (e) => fmtInt(e.induction_validation_elapsed_ms),
+  induction_validation_protocol_version: (e) => textMetric(e.induction_validation_protocol_version),
+  ar_legacy_auc: (e) => <span style={{ color: probeAucColor(e.ar_legacy_auc), fontWeight: 600 }}>{fmt(e.ar_legacy_auc, 3)}</span>,
+  ar_validation_rank_score: (e) => fmt(e.ar_validation_rank_score, 3),
+  ar_validation_final_acc: (e) => fmt(e.ar_validation_final_acc, 3),
+  ar_validation_held_pair_acc: (e) => fmt(e.ar_validation_held_pair_acc, 3),
+  ar_validation_held_class_acc: (e) => fmt(e.ar_validation_held_class_acc, 3),
+  ar_validation_learning_curve_json: (e) => jsonMetric(e.ar_validation_learning_curve_json),
+  ar_validation_steps_to_floor: (e) => fmtInt(e.ar_validation_steps_to_floor),
+  ar_validation_status: (e) => textMetric(e.ar_validation_status),
+  ar_validation_elapsed_ms: (e) => fmtInt(e.ar_validation_elapsed_ms),
+  ar_validation_metric_version: (e) => textMetric(e.ar_validation_metric_version),
+  ar_curriculum_auc_pair_final: (e) => <span style={{ color: probeAucColor(e.ar_curriculum_auc_pair_final), fontWeight: 600 }}>{fmt(e.ar_curriculum_auc_pair_final, 3)}</span>,
+  ar_curriculum_s0_retention: (e) => {
+    if (e.ar_curriculum_s0_retention == null) return '--';
+    const v = Number(e.ar_curriculum_s0_retention);
+    const color = v < 0.30 ? 'var(--accent-red)' : v < 0.70 ? 'var(--accent-yellow)' : 'var(--accent-green)';
+    return <span style={{ color, fontWeight: 600 }} title={v < 0.30 ? 'catastrophic forgetting' : v < 0.70 ? 'partial retention' : 'retention preserved'}>{fmt(v, 2)}</span>;
+  },
+  ar_curriculum_max_passing_stage: (e) => {
+    const v = e.ar_curriculum_max_passing_stage;
+    if (v == null) return '--';
+    const n = Number(v);
+    const color = n < 0 ? 'var(--accent-red)' : n < 3 ? 'var(--accent-yellow)' : 'var(--accent-green)';
+    return <span style={{ color, fontWeight: 600 }}>{n}</span>;
+  },
+  ar_curriculum_per_stage_held_pair_acc: (e) => jsonMetric(e.ar_curriculum_per_stage_held_pair_acc),
+  ar_curriculum_status: (e) => textMetric(e.ar_curriculum_status),
+  ar_curriculum_elapsed_ms: (e) => fmtInt(e.ar_curriculum_elapsed_ms),
+  ar_curriculum_metric_version: (e) => textMetric(e.ar_curriculum_metric_version),
+  binding_screening_auc: (e) => <span style={{ color: probeAucColor(e.binding_screening_auc), fontWeight: 600 }}>{fmt(e.binding_screening_auc, 3)}</span>,
+  binding_intermediate_auc: (e) => <span style={{ color: probeAucColor(e.binding_intermediate_auc), fontWeight: 600 }}>{fmt(e.binding_intermediate_auc, 3)}</span>,
+  _language_control_ladder: (e) => <LanguageControlLadder entry={e} />,
   blimp_overall_accuracy: (e) => {
     if (e.blimp_overall_accuracy == null) return '--';
     return <span style={{ color: blimpColor(e.blimp_overall_accuracy), fontWeight: 600 }}>{(Number(e.blimp_overall_accuracy) * 100).toFixed(1)}%</span>;
@@ -430,7 +448,7 @@ const RENDERERS = {
 // Columns that need special td styling (not just tdStyle)
 const TD_STYLE_OVERRIDES = {
   architecture_desc: { maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-  _controlled_lang_ladder: { minWidth: 110 },
+  _language_control_ladder: { minWidth: 110 },
 };
 
 export { RENDERERS, TD_STYLE_OVERRIDES, fmt };

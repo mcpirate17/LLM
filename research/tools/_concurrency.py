@@ -10,7 +10,7 @@ This module provides four primitives, all designed to fail loudly and
 early rather than degrade silently:
 
 * :func:`acquire_writer_lock` — fcntl ``LOCK_EX`` on
-  ``lab_notebook.db.writer-lock``. The aria-db Rust path holds this for
+  the active runs DB writer-lock path. The aria-db Rust path holds this for
   the dashboard's lifetime; aux tools that write must serialize through
   it. Default behavior exits with code 2 when held; pass
   ``blocking=True`` to wait.
@@ -60,8 +60,10 @@ from typing import Iterator, Optional
 
 import torch
 
+from research.defaults import RUNS_DB
+
 ROOT = Path(__file__).resolve().parents[2]
-DB_WRITER_LOCK_PATH = ROOT / "research" / "lab_notebook.db.writer-lock"
+DB_WRITER_LOCK_PATH = ROOT / f"{RUNS_DB}.writer-lock"
 GPU_LOCK_PATH = ROOT / "research" / ".gpu-lock"
 
 _LOCK_HELD_EXIT_CODE = 2

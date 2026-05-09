@@ -47,7 +47,7 @@ def _load_rows(db: Path) -> list[dict[str, Any]]:
         cursor = conn.execute(
             """
             SELECT pr.result_id, pr.wikitext_perplexity, pr.tinystories_score,
-                   l.composite_score, l.tier, l.induction_v2_investigation_auc,
+                   l.composite_score, l.tier, l.induction_intermediate_auc,
                    pgf.template_name, pgf.motifs_json, pgf.op_count
             FROM program_results pr
             LEFT JOIN leaderboard l ON l.result_id = pr.result_id
@@ -122,7 +122,7 @@ def _write_csv(rows: list[dict[str, Any]], path: Path) -> None:
         "wikitext_perplexity",
         "composite_score",
         "tinystories_score",
-        "induction_v2_investigation_auc",
+        "induction_intermediate_auc",
         "op_count",
         *flag_cols,
     ]
@@ -137,7 +137,7 @@ def _write_csv(rows: list[dict[str, Any]], path: Path) -> None:
                 "wikitext_perplexity": r["wikitext_perplexity"],
                 "composite_score": r["composite_score"],
                 "tinystories_score": r["tinystories_score"],
-                "induction_v2_investigation_auc": r["induction_v2_investigation_auc"],
+                "induction_intermediate_auc": r["induction_intermediate_auc"],
                 "op_count": r["op_count"],
             }
             for label in OP_LABELS:
@@ -257,7 +257,7 @@ def _render_markdown(
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--db", default=Path("research/lab_notebook.db"), type=Path)
+    parser.add_argument("--db", default=Path("research/runs.db"), type=Path)
     parser.add_argument(
         "--out-csv",
         default=Path("research/reports/op_composition_audit_2026-05-03.csv"),

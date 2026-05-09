@@ -16,6 +16,7 @@ function renderReportsLoading() {
 export default function ReportsTab({
   eligibilityByResultId,
   handleHypothesisHandoff,
+  handleCapabilityRank,
   handleInvestigate,
   handleQueueAdd,
   handleQueueRemove,
@@ -38,6 +39,7 @@ export default function ReportsTab({
         onSelectProgram={handleSelectProgram}
         onSelectExperiment={handleSelectExperiment}
         onInvestigate={handleInvestigate}
+        onCapabilityRank={handleCapabilityRank}
         onValidate={handleValidate}
         onOpenInDesigner={onOpenDesignerForResult}
         onQueueAdd={handleQueueAdd}

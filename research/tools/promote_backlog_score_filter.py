@@ -29,18 +29,18 @@ from research.scientist.leaderboard_scoring import (  # noqa: E402
 )
 from research.tools._db_maintenance import connect_readonly
 
-DEFAULT_DB = Path("research/lab_notebook.db")
+DEFAULT_DB = Path("research/runs.db")
 
 # Optimistic upper bounds calibrated against the *actual* top-25 leaderboard.
 # Measured 2026-04-19: top-25 probe distributions are much narrower than
 # naive percentiles. Fills below are ~top-25 max; scoring higher than this
 # would require hitting a genuine outlier like the c9c7075e/10cfec26 cohort.
 OPTIMISTIC_FILL: Dict[str, float] = {
-    "induction_auc": 0.15,  # top-25 max ~0.44, but >0.15 is rare
-    "induction_v2_investigation_auc": 0.15,  # top-25 avg 0.052, max 0.808 (1 outlier)
-    "binding_auc": 0.10,  # top-25 avg 0.006
-    "binding_v2_investigation_auc": 0.10,  # top-25 max 0.095
-    "ar_auc": 0.02,  # top-25 max 0.009
+    "induction_screening_auc": 0.15,  # top-25 max ~0.44, but >0.15 is rare
+    "induction_intermediate_auc": 0.15,  # top-25 avg 0.052, max 0.808 (1 outlier)
+    "binding_screening_auc": 0.10,  # top-25 avg 0.006
+    "binding_intermediate_auc": 0.10,  # top-25 max 0.095
+    "ar_legacy_auc": 0.02,  # top-25 max 0.009
     "hellaswag_acc": 0.35,  # top-25 max 0.34
     "blimp_overall_accuracy": 0.55,  # modest
     "robustness_long_ctx_combined_score": 0.40,  # v7 frontier anchor
@@ -130,11 +130,11 @@ def main() -> None:
                 "loss_ratio": r["loss_ratio"],
                 "wikitext_perplexity": r["wikitext_perplexity"],
                 "hellaswag_acc": r["hellaswag_acc"],
-                "induction_v2_investigation_auc": r["induction_v2_investigation_auc"],
-                "binding_v2_investigation_auc": r["binding_v2_investigation_auc"],
-                "induction_auc": r["induction_auc"],
-                "binding_auc": r["binding_auc"],
-                "ar_auc": r["ar_auc"],
+                "induction_intermediate_auc": r["induction_intermediate_auc"],
+                "binding_intermediate_auc": r["binding_intermediate_auc"],
+                "induction_screening_auc": r["induction_screening_auc"],
+                "binding_screening_auc": r["binding_screening_auc"],
+                "ar_legacy_auc": r["ar_legacy_auc"],
                 "blimp_overall_accuracy": r["blimp_overall_accuracy"],
                 "timestamp": r["timestamp"],
             }

@@ -10,8 +10,8 @@ and cross-exp INSERT rules there; the leaderboard layer has no equivalent.
 This script cleans up the historical duplicates. Per fingerprint group:
 
 1. **Select keeper** with this priority (ties break downward):
-   a. Entry with non-NULL v2 probe data (`induction_v2_investigation_auc` or
-      `binding_v2_investigation_auc`) — per user hint: v2-bearing rescores
+   a. Entry with non-NULL v2 probe data (`induction_intermediate_auc` or
+      `binding_intermediate_auc`) — per user hint: v2-bearing rescores
       are the correct measurements.
    b. Higher tier ordering: validation > investigation > investigation_failed
       > screening > screened_out > other.
@@ -48,7 +48,7 @@ from research.tools._db_maintenance import (
     table_row_count,
 )
 
-DEFAULT_DB = Path("research/lab_notebook.db")
+DEFAULT_DB = Path("research/runs.db")
 BACKUP_TABLE = "leaderboard_dedup_backup"
 
 # Tier rank: lower number = preferred keeper
@@ -66,17 +66,17 @@ _TIER_RANK_DEFAULT = 5
 # Identity + rescore-audit + pin/reference fields are intentionally NOT here.
 MERGE_COLUMNS: Tuple[str, ...] = (
     # Probe metrics — v2 investigation (the "correct" measurements)
-    "induction_v2_investigation_auc",
-    "induction_v2_investigation_max_gap_acc",
-    "induction_v2_investigation_protocol_version",
-    "binding_v2_investigation_auc",
-    "binding_v2_investigation_max_distance_acc",
-    "binding_v2_investigation_protocol_version",
+    "induction_intermediate_auc",
+    "induction_intermediate_max_gap_acc",
+    "induction_intermediate_protocol_version",
+    "binding_intermediate_auc",
+    "binding_intermediate_max_distance_acc",
+    "binding_intermediate_protocol_version",
     # v1 probes
-    "induction_auc",
-    "binding_auc",
-    "binding_composite",
-    "ar_auc",
+    "induction_screening_auc",
+    "binding_screening_auc",
+    "binding_screening_composite",
+    "ar_legacy_auc",
     # Language / commonsense
     "hellaswag_acc",
     "blimp_overall_accuracy",
@@ -233,8 +233,8 @@ def _fetch_dup_groups(
 def _keeper_key(row: sqlite3.Row) -> Tuple[int, int, float, float]:
     """Lower tuple wins."""
     has_v2 = (
-        row["induction_v2_investigation_auc"] is not None
-        or row["binding_v2_investigation_auc"] is not None
+        row["induction_intermediate_auc"] is not None
+        or row["binding_intermediate_auc"] is not None
     )
     tier_rank = _TIER_RANK.get(row["tier"] or "", _TIER_RANK_DEFAULT)
     score = float(row["composite_score"] or 0.0)
@@ -274,8 +274,8 @@ def _plan_group(rows: List[sqlite3.Row]) -> Optional[Dict[str, Any]]:
         "keeper_tier": keeper.get("tier"),
         "keeper_composite": keeper.get("composite_score"),
         "keeper_has_v2": (
-            keeper.get("induction_v2_investigation_auc") is not None
-            or keeper.get("binding_v2_investigation_auc") is not None
+            keeper.get("induction_intermediate_auc") is not None
+            or keeper.get("binding_intermediate_auc") is not None
         ),
         "loser_entry_ids": [str(l.get("entry_id")) for l in losers],
         "loser_summary": [
@@ -284,8 +284,8 @@ def _plan_group(rows: List[sqlite3.Row]) -> Optional[Dict[str, Any]]:
                 "tier": l.get("tier"),
                 "composite": l.get("composite_score"),
                 "has_v2": (
-                    l.get("induction_v2_investigation_auc") is not None
-                    or l.get("binding_v2_investigation_auc") is not None
+                    l.get("induction_intermediate_auc") is not None
+                    or l.get("binding_intermediate_auc") is not None
                 ),
             }
             for l in losers

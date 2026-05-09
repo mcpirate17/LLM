@@ -16,7 +16,7 @@ from typing import Dict, List, Tuple
 
 from research.tools._db_maintenance import connect_readonly
 
-DB_PATH = "research/lab_notebook.db"
+DB_PATH = "research/runs.db"
 
 
 def _rank_by_score(rows: List[object], score_col: str) -> Dict[str, int]:
@@ -48,9 +48,9 @@ def main() -> None:
         SELECT l.entry_id, l.result_id, l.tier,
                l.composite_score, l.old_composite_score,
                pr.graph_fingerprint,
-               pr.induction_auc, pr.binding_auc, pr.ar_auc,
-               pr.induction_v2_investigation_auc,
-               pr.binding_v2_investigation_auc
+               pr.induction_screening_auc, pr.binding_screening_auc, pr.ar_legacy_auc,
+               pr.induction_intermediate_auc,
+               pr.binding_intermediate_auc
         FROM leaderboard l
         LEFT JOIN program_results pr ON l.result_id = pr.result_id
         WHERE l.tier IN ({ph})
@@ -61,8 +61,8 @@ def main() -> None:
     backfilled = [
         r
         for r in rows
-        if r["induction_v2_investigation_auc"] is not None
-        or r["binding_v2_investigation_auc"] is not None
+        if r["induction_intermediate_auc"] is not None
+        or r["binding_intermediate_auc"] is not None
     ]
     missing = [r for r in rows if r not in backfilled]
 
@@ -98,10 +98,10 @@ def main() -> None:
                 f"{arrow}{abs(delta):>3d} "
                 f"{float(r['old_composite_score'] or 0):>10.2f} "
                 f"{float(r['composite_score'] or 0):>10.2f} "
-                f"{_fmt(r['induction_auc'])} "
-                f"{_fmt(r['induction_v2_investigation_auc'])} "
-                f"{_fmt(r['binding_auc'])} "
-                f"{_fmt(r['binding_v2_investigation_auc'])}"
+                f"{_fmt(r['induction_screening_auc'])} "
+                f"{_fmt(r['induction_intermediate_auc'])} "
+                f"{_fmt(r['binding_screening_auc'])} "
+                f"{_fmt(r['binding_intermediate_auc'])}"
             )
         print()
 

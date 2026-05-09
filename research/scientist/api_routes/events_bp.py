@@ -6,6 +6,7 @@ import logging
 import time
 from flask import jsonify, request, Response
 from ..json_utils import fast_dumps as _json_dumps, fast_loads as _json_loads
+from ..runtime_events.publishers import latest_experiment_id, read_live_feed_events
 from ._helpers import get_runner, get_sse_timeout_seconds
 from ._utils import register_notebook_routes, register_routes, with_notebook_context
 from .deps import ApiRouteContext
@@ -44,33 +45,39 @@ def register_events_routes(app, context: ApiRouteContext):
         exp_id = request.args.get("experiment_id")
         n = request.args.get("n", 100, type=int)
         query_limit = max(n, 1000)
-        entries = nb.get_entries(
+        legacy_entries = nb.get_entries(
             experiment_id=exp_id,
             entry_type="live_feed",
             limit=query_limit,
         )
+        legacy_events = [
+            evt
+            for evt in (
+                _entry_to_live_feed_event(entry) for entry in reversed(legacy_entries)
+            )
+            if evt is not None
+        ]
+        try:
+            spool_events = read_live_feed_events(
+                notebook_path,
+                experiment_id=exp_id,
+                limit=query_limit,
+            )
+        except Exception:
+            logger.debug("Live-feed spool read failed", exc_info=True)
+            spool_events = []
+        events = legacy_events + spool_events
 
         if not exp_id:
-            latest_exp_id = next(
-                (
-                    entry.get("experiment_id")
-                    for entry in entries
-                    if entry.get("experiment_id")
-                ),
-                None,
-            )
+            latest_exp_id = latest_experiment_id(events)
             if latest_exp_id:
-                entries = [
-                    entry
-                    for entry in entries
-                    if entry.get("experiment_id") == latest_exp_id
+                events = [
+                    event
+                    for event in events
+                    if event.get("experiment_id") == latest_exp_id
                 ]
 
-        events = []
-        for entry in reversed(entries):
-            evt = _entry_to_live_feed_event(entry)
-            if evt is not None:
-                events.append(evt)
+        events.sort(key=lambda event: float(event.get("timestamp") or 0.0))
         if len(events) > n:
             events = events[-n:]
         return jsonify(events)

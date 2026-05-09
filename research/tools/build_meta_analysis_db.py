@@ -6,7 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 
-from research.defaults import LAB_NOTEBOOK_DB
+from research.defaults import RUNS_DB
 from research.meta_analysis.metadata_db import (
     DEFAULT_META_ANALYSIS_DB,
     DEFAULT_PROFILING_DB,
@@ -18,8 +18,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--source-db",
-        default=LAB_NOTEBOOK_DB,
-        help=f"Read-only notebook DB path (default: {LAB_NOTEBOOK_DB}).",
+        default=RUNS_DB,
+        help=f"Read-only runs DB path (default: {RUNS_DB}).",
     )
     parser.add_argument(
         "--output-db",

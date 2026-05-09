@@ -1,4 +1,4 @@
-"""Nano-BLiMP: minimal-pair grammaticality on the controlled-language vocab.
+"""Nano-BLiMP: minimal-pair grammaticality on the language-control vocab.
 
 Sister probe to ``synthetic_association_eval`` (codex). Both share the
 ``AssociationLayout`` and training step machinery, but evaluate

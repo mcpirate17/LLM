@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""GPU calibration harness for the natural-language Small-AR story corpus.
+"""GPU calibration harness for the natural-language AR Validation story corpus.
 
 This uses ``cl100k_base`` BPE tokenization end to end.  It trains compact
 reference models on story-local codebook examples and evaluates in-episode
@@ -22,12 +22,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from research.eval.small_ar_champion_corpus import (
-    SmallARStoryCorpusConfig,
+from research.eval.ar_validation_corpus import (
+    ARValidationStoryCorpusConfig,
     StoryBinding,
     StoryExample,
     StoryQuery,
-    build_small_ar_story_corpus,
+    build_ar_validation_story_corpus,
     _key_space,
     _story,
     _value_space,
@@ -36,8 +36,8 @@ from research.eval.utils import _get_tiktoken_encoder, clip_grad_norm, make_adam
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_OUT_DIR = PROJECT_ROOT / "research/runtime/small_ar_calibration"
-STORY_CALIBRATION_VERSION = "small_ar_story_calibration_v1_bpe"
+DEFAULT_OUT_DIR = PROJECT_ROOT / "research/runtime/ar_validation_calibration"
+STORY_CALIBRATION_VERSION = "ar_validation_story_calibration_v1_bpe"
 TIKTOKEN_ENCODING = "cl100k_base"
 PAD_ID = 0
 
@@ -60,7 +60,7 @@ class StoryCalibrationConfig:
     micro_retrieval: bool = False
     micro_counterfactual_train: bool = True
     include_in_story_unqueried_eval: bool = False
-    corpus: SmallARStoryCorpusConfig = SmallARStoryCorpusConfig()
+    corpus: ARValidationStoryCorpusConfig = ARValidationStoryCorpusConfig()
 
 
 @dataclass(frozen=True, slots=True)
@@ -312,7 +312,7 @@ def encode_story_items(
 
 
 def dynamic_story_train_items(
-    cfg: SmallARStoryCorpusConfig,
+    cfg: ARValidationStoryCorpusConfig,
     enc: Any,
     *,
     rng: random.Random,
@@ -347,7 +347,7 @@ def dynamic_story_train_items(
 
 
 def _micro_story(
-    cfg: SmallARStoryCorpusConfig,
+    cfg: ARValidationStoryCorpusConfig,
     *,
     rng: random.Random,
     story_id: int,
@@ -403,7 +403,7 @@ def _micro_story(
 
 
 def micro_retrieval_items(
-    cfg: SmallARStoryCorpusConfig,
+    cfg: ARValidationStoryCorpusConfig,
     enc: Any,
     *,
     rng: random.Random,
@@ -457,7 +457,7 @@ def micro_retrieval_items(
 
 
 def dynamic_micro_retrieval_train_items(
-    cfg: SmallARStoryCorpusConfig,
+    cfg: ARValidationStoryCorpusConfig,
     enc: Any,
     *,
     rng: random.Random,
@@ -917,7 +917,7 @@ def run_calibration(
     device: str,
 ) -> dict[str, Any]:
     enc = _get_tiktoken_encoder(TIKTOKEN_ENCODING)
-    corpus = build_small_ar_story_corpus(cfg.corpus)
+    corpus = build_ar_validation_story_corpus(cfg.corpus)
     if cfg.micro_retrieval:
         train_items = micro_retrieval_items(
             cfg.corpus,
@@ -1037,11 +1037,11 @@ def run_calibration(
 def write_report(report: dict[str, Any], out_dir: Path) -> tuple[Path, Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%Y%m%d_%H%M%S")
-    json_path = out_dir / f"small_ar_story_calibration_{stamp}.json"
-    md_path = out_dir / f"small_ar_story_calibration_{stamp}.md"
+    json_path = out_dir / f"ar_validation_story_calibration_{stamp}.json"
+    md_path = out_dir / f"ar_validation_story_calibration_{stamp}.md"
     json_path.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
     lines = [
-        f"# Small AR Story Calibration - {stamp}",
+        f"# AR Validation Story Calibration - {stamp}",
         "",
         f"- Protocol: `{report['protocol_version']}`",
         f"- Tokenizer: `{report['tokenizer']}`",
@@ -1073,11 +1073,11 @@ def _preset(
     queries_per_story: int | None = None,
     bindings_per_story: int | None = None,
     noise_sentences_per_story: int | None = None,
-) -> SmallARStoryCorpusConfig:
+) -> ARValidationStoryCorpusConfig:
     n_queries = queries_per_story
     if name == "micro_retrieval":
         bindings = int(bindings_per_story or 4)
-        return SmallARStoryCorpusConfig(
+        return ARValidationStoryCorpusConfig(
             seed=seed,
             n_train_stories=1,
             n_in_dist_eval_stories=1,
@@ -1090,7 +1090,7 @@ def _preset(
             n_values=max(16, bindings * 4),
         )
     if name == "curriculum00":
-        return SmallARStoryCorpusConfig(
+        return ARValidationStoryCorpusConfig(
             seed=seed,
             n_train_stories=64,
             n_in_dist_eval_stories=16,
@@ -1103,7 +1103,7 @@ def _preset(
             n_values=16,
         )
     if name == "curriculum0":
-        return SmallARStoryCorpusConfig(
+        return ARValidationStoryCorpusConfig(
             seed=seed,
             n_train_stories=64,
             n_in_dist_eval_stories=16,
@@ -1116,7 +1116,7 @@ def _preset(
             n_values=32,
         )
     if name == "curriculum0_binary":
-        return SmallARStoryCorpusConfig(
+        return ARValidationStoryCorpusConfig(
             seed=seed,
             n_train_stories=64,
             n_in_dist_eval_stories=16,
@@ -1129,7 +1129,7 @@ def _preset(
             n_values=32,
         )
     if name == "curriculum0_unqueried":
-        return SmallARStoryCorpusConfig(
+        return ARValidationStoryCorpusConfig(
             seed=seed,
             n_train_stories=64,
             n_in_dist_eval_stories=0,
@@ -1142,7 +1142,7 @@ def _preset(
             n_values=32,
         )
     if name == "curriculum1":
-        return SmallARStoryCorpusConfig(
+        return ARValidationStoryCorpusConfig(
             seed=seed,
             n_train_stories=64,
             n_in_dist_eval_stories=16,
@@ -1155,7 +1155,7 @@ def _preset(
             n_values=32,
         )
     if name == "curriculum2":
-        return SmallARStoryCorpusConfig(
+        return ARValidationStoryCorpusConfig(
             seed=seed,
             n_train_stories=64,
             n_in_dist_eval_stories=16,
@@ -1168,7 +1168,7 @@ def _preset(
             n_values=48,
         )
     if name == "tiny":
-        return SmallARStoryCorpusConfig(
+        return ARValidationStoryCorpusConfig(
             seed=seed,
             n_train_stories=24,
             n_in_dist_eval_stories=0,
@@ -1180,7 +1180,7 @@ def _preset(
             n_values=48,
         )
     if name == "v3a":
-        return SmallARStoryCorpusConfig(
+        return ARValidationStoryCorpusConfig(
             seed=seed,
             n_train_stories=64,
             n_in_dist_eval_stories=0,
@@ -1192,10 +1192,10 @@ def _preset(
             n_values=64,
         )
     if name == "v3b":
-        return SmallARStoryCorpusConfig(
+        return ARValidationStoryCorpusConfig(
             seed=seed,
             queries_per_story=int(
-                n_queries or SmallARStoryCorpusConfig().queries_per_story
+                n_queries or ARValidationStoryCorpusConfig().queries_per_story
             ),
         )
     raise ValueError(f"unknown preset: {name}")

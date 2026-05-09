@@ -278,6 +278,10 @@ class _ProgramResultRecordingMixin:
             kwargs=kwargs,
         )
         filtered_kwargs = self._known_program_result_kwargs(kwargs)
+        filtered_kwargs = self._maybe_externalize_program_result_artifacts(
+            result_id=result_id,
+            filtered_kwargs=filtered_kwargs,
+        )
         self._insert_program_result_row(
             result_id=result_id,
             experiment_id=experiment_id,

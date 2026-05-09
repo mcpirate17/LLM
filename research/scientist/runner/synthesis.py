@@ -30,6 +30,7 @@ from ...synthesis.validator import validate_graph
 from ...synthesis.serializer import graph_to_json, graph_from_json
 from ...eval.flops import estimate_flops
 from ..notebook import LabNotebook
+from ..notebook.graph_artifacts import resolve_graph_json_value
 from ..refinement_scoring import oscillation_risk_score
 from ..json_utils import json_safe
 
@@ -612,9 +613,13 @@ class _SynthesisMixin:
                     "blimp_overall_accuracy": ablation_kwargs.get(
                         "blimp_overall_accuracy"
                     ),
-                    "induction_auc": ablation_kwargs.get("induction_auc"),
-                    "binding_auc": ablation_kwargs.get("binding_auc"),
-                    "ar_auc": ablation_kwargs.get("ar_auc"),
+                    "induction_screening_auc": ablation_kwargs.get(
+                        "induction_screening_auc"
+                    ),
+                    "binding_screening_auc": ablation_kwargs.get(
+                        "binding_screening_auc"
+                    ),
+                    "ar_legacy_auc": ablation_kwargs.get("ar_legacy_auc"),
                     "wikitext_perplexity": ablation_kwargs.get("wikitext_perplexity"),
                 },
             )
@@ -904,7 +909,12 @@ class _SynthesisMixin:
                    ORDER BY loss_ratio ASC NULLS LAST LIMIT 1""").fetchone()
             if row and row["graph_json"]:
                 try:
-                    base_graph = graph_from_json(row["graph_json"])
+                    graph_json = resolve_graph_json_value(
+                        nb.conn,
+                        nb.db_path,
+                        row["graph_json"],
+                    )
+                    base_graph = graph_from_json(graph_json)
                     base_loss_ratio = (
                         float(row["loss_ratio"])
                         if row["loss_ratio"] is not None

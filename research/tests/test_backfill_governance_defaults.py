@@ -204,7 +204,7 @@ def test_binding_backfill_queries_missing_binding_not_missing_induction(tmp_path
         nb.conn.execute(
             """
             INSERT INTO program_results(
-                result_id, timestamp, graph_json, graph_fingerprint, induction_auc, binding_auc, stage1_passed
+                result_id, timestamp, graph_json, graph_fingerprint, induction_screening_auc, binding_screening_auc, stage1_passed
             ) VALUES (?, datetime('now'), ?, ?, ?, ?, ?)
             """,
             ("r_missing_bind", "{}", "fp_missing_bind", 0.123, None, 1),
@@ -212,7 +212,7 @@ def test_binding_backfill_queries_missing_binding_not_missing_induction(tmp_path
         nb.conn.execute(
             """
             INSERT INTO program_results(
-                result_id, timestamp, graph_json, graph_fingerprint, induction_auc, binding_auc, stage1_passed
+                result_id, timestamp, graph_json, graph_fingerprint, induction_screening_auc, binding_screening_auc, stage1_passed
             ) VALUES (?, datetime('now'), ?, ?, ?, ?, ?)
             """,
             ("r_has_bind", "{}", "fp_has_bind", None, 0.456, 1),
@@ -220,7 +220,7 @@ def test_binding_backfill_queries_missing_binding_not_missing_induction(tmp_path
         nb.conn.execute(
             """
             INSERT INTO program_results(
-                result_id, timestamp, graph_json, graph_fingerprint, induction_auc, binding_auc, stage1_passed
+                result_id, timestamp, graph_json, graph_fingerprint, induction_screening_auc, binding_screening_auc, stage1_passed
             ) VALUES (?, datetime('now'), ?, ?, ?, ?, ?)
             """,
             ("r_no_s1", "{}", "fp_no_s1", 0.789, None, 0),
@@ -263,11 +263,11 @@ def test_binding_backfill_queries_missing_binding_not_missing_induction(tmp_path
 
 
 def test_post_train_target_binding_is_binding_only():
-    assert _target_post_fields("binding") == ("binding_auc",)
-    assert _target_post_fields("induction") == ("induction_auc",)
+    assert _target_post_fields("binding") == ("binding_screening_auc",)
+    assert _target_post_fields("induction") == ("induction_screening_auc",)
     assert _target_post_fields("hellaswag") == ("hellaswag_acc",)
 
 
-def test_s1_backpopulate_binding_clause_only_checks_binding_auc():
-    assert target_missing_clause("binding") == "pr.binding_auc IS NULL"
-    assert target_missing_clause("induction") == "pr.induction_auc IS NULL"
+def test_s1_backpopulate_binding_clause_only_checks_binding_screening_auc():
+    assert target_missing_clause("binding") == "pr.binding_screening_auc IS NULL"
+    assert target_missing_clause("induction") == "pr.induction_screening_auc IS NULL"

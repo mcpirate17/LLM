@@ -130,21 +130,21 @@ def understanding_gate_metrics(
     promote a model that lacked all other capabilities.
     """
     diagnostic = float(understanding.get("diagnostic_score", 0.0) or 0.0)
-    binding_composite = (
-        0.4 * float(understanding.get("ar_auc", 0.0) or 0.0)
-        + 0.3 * float(understanding.get("induction_auc", 0.0) or 0.0)
-        + 0.3 * float(understanding.get("binding_auc", 0.0) or 0.0)
+    binding_screening_composite = (
+        0.4 * float(understanding.get("ar_legacy_auc", 0.0) or 0.0)
+        + 0.3 * float(understanding.get("induction_screening_auc", 0.0) or 0.0)
+        + 0.3 * float(understanding.get("binding_screening_auc", 0.0) or 0.0)
     )
     hellaswag = float(understanding.get("hellaswag_acc", 0.0) or 0.0)
     signals_passed = sum(
         (
             diagnostic >= UNDERSTANDING_MIN_DIAGNOSTIC,
-            binding_composite >= UNDERSTANDING_MIN_BINDING,
+            binding_screening_composite >= UNDERSTANDING_MIN_BINDING,
             hellaswag >= UNDERSTANDING_MIN_HELLASWAG,
         )
     )
     passes = signals_passed >= UNDERSTANDING_MIN_SIGNALS
-    return passes, diagnostic, binding_composite, hellaswag
+    return passes, diagnostic, binding_screening_composite, hellaswag
 
 
 def screening_understanding_filter(
@@ -165,9 +165,9 @@ def screening_understanding_filter(
       - all three measurements are present AND below their soft floors
     """
     diag_raw = understanding.get("diagnostic_score")
-    ar_raw = understanding.get("ar_auc")
-    ind_raw = understanding.get("induction_auc")
-    bind_raw = understanding.get("binding_auc")
+    ar_raw = understanding.get("ar_legacy_auc")
+    ind_raw = understanding.get("induction_screening_auc")
+    bind_raw = understanding.get("binding_screening_auc")
     hella_raw = understanding.get("hellaswag_acc")
 
     if (
@@ -178,7 +178,7 @@ def screening_understanding_filter(
         return True, "no_probe_data"
 
     diagnostic = float(diag_raw or 0.0)
-    binding_composite = (
+    binding_screening_composite = (
         0.4 * float(ar_raw or 0.0)
         + 0.3 * float(ind_raw or 0.0)
         + 0.3 * float(bind_raw or 0.0)
@@ -187,12 +187,12 @@ def screening_understanding_filter(
 
     if (
         diagnostic < UNDERSTANDING_SOFT_DIAGNOSTIC
-        and binding_composite < UNDERSTANDING_SOFT_BINDING
+        and binding_screening_composite < UNDERSTANDING_SOFT_BINDING
         and hellaswag <= HELLASWAG_RANDOM_CHANCE_GATE
     ):
         return False, (
             f"all_signals_near_zero(diag={diagnostic:.3f},"
-            f"bind={binding_composite:.3f},hella={hellaswag:.3f})"
+            f"bind={binding_screening_composite:.3f},hella={hellaswag:.3f})"
         )
     return True, "above_soft_floor"
 
@@ -273,7 +273,7 @@ def strong_investigation_candidates(
             candidate_score,
             min_score,
         )
-        passes_understanding, diagnostic, binding_composite, hellaswag = (
+        passes_understanding, diagnostic, binding_screening_composite, hellaswag = (
             understanding_gate_metrics(understanding_data.get(result_id, {}))
         )
         if not passes_understanding:
@@ -281,7 +281,7 @@ def strong_investigation_candidates(
                 "escalation_blocked_no_understanding: result_id=%s diag=%.3f bind_comp=%.3f hella=%.3f",
                 result_id[:12],
                 diagnostic,
-                binding_composite,
+                binding_screening_composite,
                 hellaswag,
             )
             continue

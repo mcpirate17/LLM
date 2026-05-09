@@ -17,11 +17,13 @@ from research.scientist.intelligence.metrics_utils import (
     safe_binary_roc_auc,
 )
 from research.scientist.intelligence.ml_corpus import (
+    BPE_EVAL_METRIC_VERSION,
     _graph_fingerprint,
     _non_byte_training_data_clauses,
     _table_columns,
     build_dense_feature_matrix,
 )
+from research.scientist.notebook.graph_artifacts import resolve_graph_json_value
 from research.synthesis.context_rules import find_byte_safety_violations
 from research.synthesis.graph_features import (
     _build_adjacency,
@@ -51,8 +53,8 @@ class SegmentCorpusRow:
     stage1_pass_rate: float
     loss_ratio_best: float | None
     wikitext_perplexity_best: float | None
-    binding_auc: float | None
-    induction_auc: float | None
+    binding_screening_auc: float | None
+    induction_screening_auc: float | None
     hellaswag_acc: float | None
     binding_positive: bool
     induction_positive: bool
@@ -229,7 +231,7 @@ def load_stage05_native_segment_corpus(
     metric_version_select = (
         "COALESCE(screening_wikitext_metric_version, '') AS _metric_version"
         if "screening_wikitext_metric_version" in pr_cols
-        else "'' AS _metric_version"
+        else f"'{BPE_EVAL_METRIC_VERSION}' AS _metric_version"
     )
     where = [
         "TRIM(COALESCE(graph_json, '')) <> ''",
@@ -241,7 +243,7 @@ def load_stage05_native_segment_corpus(
     rows = conn.execute(
         f"""
         SELECT graph_json, graph_fingerprint, stage0_passed, stage05_passed, stage1_passed,
-               loss_ratio, wikitext_perplexity, binding_auc, induction_auc, hellaswag_acc,
+               loss_ratio, wikitext_perplexity, binding_screening_auc, induction_screening_auc, hellaswag_acc,
                timestamp,
                {metric_version_select}
         FROM program_results
@@ -251,7 +253,13 @@ def load_stage05_native_segment_corpus(
 
     grouped: Dict[str, Dict[str, Any]] = {}
     for row in rows:
-        graph_json = str(row["graph_json"])
+        try:
+            graph_json = resolve_graph_json_value(conn, db_path, row["graph_json"])
+        except Exception as exc:
+            logger.debug(
+                "Skipping unresolved graph artifact in segment corpus: %s", exc
+            )
+            continue
         if not _is_native_safe_graph(graph_json):
             continue
         canonical = _graph_fingerprint(graph_json)
@@ -266,8 +274,8 @@ def load_stage05_native_segment_corpus(
                 "_n_stage1_passed": 0,
                 "loss_ratio_best": None,
                 "wikitext_perplexity_best": None,
-                "binding_auc": None,
-                "induction_auc": None,
+                "binding_screening_auc": None,
+                "induction_screening_auc": None,
                 "hellaswag_acc": None,
                 "_best_rank": None,
             },
@@ -282,12 +290,16 @@ def load_stage05_native_segment_corpus(
         # Only fold this row's PPL into the per-fingerprint min when
         # the row was BPE-evaluated.  Byte-era rows have PPL in the
         # wrong units and would dominate min() with values like 23.
-        if str(row["_metric_version"] or "").strip() == "bpe_eval_v1":
+        if str(row["_metric_version"] or "").strip() == BPE_EVAL_METRIC_VERSION:
             group["wikitext_perplexity_best"] = _min_opt(
                 group["wikitext_perplexity_best"], row["wikitext_perplexity"]
             )
-        group["binding_auc"] = _max_opt(group["binding_auc"], row["binding_auc"])
-        group["induction_auc"] = _max_opt(group["induction_auc"], row["induction_auc"])
+        group["binding_screening_auc"] = _max_opt(
+            group["binding_screening_auc"], row["binding_screening_auc"]
+        )
+        group["induction_screening_auc"] = _max_opt(
+            group["induction_screening_auc"], row["induction_screening_auc"]
+        )
         group["hellaswag_acc"] = _max_opt(group["hellaswag_acc"], row["hellaswag_acc"])
 
         rank = (
@@ -303,11 +315,15 @@ def load_stage05_native_segment_corpus(
     out: List[SegmentCorpusRow] = []
     for group in grouped.values():
         n_rows = int(group["n_rows"])
-        binding_auc = group["binding_auc"]
-        induction_auc = group["induction_auc"]
+        binding_screening_auc = group["binding_screening_auc"]
+        induction_screening_auc = group["induction_screening_auc"]
         hellaswag_acc = group["hellaswag_acc"]
-        binding_positive = bool(binding_auc is not None and binding_auc > 0.0)
-        induction_positive = bool(induction_auc is not None and induction_auc > 0.0)
+        binding_positive = bool(
+            binding_screening_auc is not None and binding_screening_auc > 0.0
+        )
+        induction_positive = bool(
+            induction_screening_auc is not None and induction_screening_auc > 0.0
+        )
         hellaswag_positive = bool(hellaswag_acc is not None and hellaswag_acc > 0.0)
         out.append(
             SegmentCorpusRow(
@@ -319,8 +335,8 @@ def load_stage05_native_segment_corpus(
                 stage1_pass_rate=float(group["_n_stage1_passed"]) / max(n_rows, 1),
                 loss_ratio_best=group["loss_ratio_best"],
                 wikitext_perplexity_best=group["wikitext_perplexity_best"],
-                binding_auc=binding_auc,
-                induction_auc=induction_auc,
+                binding_screening_auc=binding_screening_auc,
+                induction_screening_auc=induction_screening_auc,
                 hellaswag_acc=hellaswag_acc,
                 binding_positive=binding_positive,
                 induction_positive=induction_positive,
@@ -602,16 +618,20 @@ def evaluate_feature_families(
             ],
             dtype=np.float64,
         ),
-        "binding_auc": np.array(
+        "binding_screening_auc": np.array(
             [
-                float(row.binding_auc) if row.binding_auc is not None else np.nan
+                float(row.binding_screening_auc)
+                if row.binding_screening_auc is not None
+                else np.nan
                 for row in rows
             ],
             dtype=np.float64,
         ),
-        "induction_auc": np.array(
+        "induction_screening_auc": np.array(
             [
-                float(row.induction_auc) if row.induction_auc is not None else np.nan
+                float(row.induction_screening_auc)
+                if row.induction_screening_auc is not None
+                else np.nan
                 for row in rows
             ],
             dtype=np.float64,

@@ -1,0 +1,488 @@
+{
+  "run_id": "n800",
+  "n_rows": 798,
+  "targets": [
+    {
+      "target": "ar_curriculum_auc_pair_final",
+      "n_total": 798,
+      "n_folds": 5,
+      "y_mean": 0.286,
+      "y_std": 0.144,
+      "models": [
+        {
+          "model": "gbm",
+          "spearman_train_mean": 0.838,
+          "spearman_train_std": 0.009,
+          "spearman_test_mean": 0.511,
+          "spearman_test_std": 0.051,
+          "mae_test_mean": 0.0926,
+          "fold_test_spearmans": [
+            0.577,
+            0.471,
+            0.563,
+            0.493,
+            0.449
+          ],
+          "feature_importances": [
+            {
+              "feature": "fp_jacobian_erf_decay_slope",
+              "importance": 0.372
+            },
+            {
+              "feature": "fp_jacobian_erf_density",
+              "importance": 0.1836
+            },
+            {
+              "feature": "wikitext_perplexity",
+              "importance": 0.1162
+            },
+            {
+              "feature": "validation_loss_ratio",
+              "importance": 0.0918
+            },
+            {
+              "feature": "blimp_overall_accuracy",
+              "importance": 0.0637
+            },
+            {
+              "feature": "induction_screening_auc",
+              "importance": 0.0563
+            },
+            {
+              "feature": "binding_screening_auc",
+              "importance": 0.0449
+            },
+            {
+              "feature": "ar_legacy_auc",
+              "importance": 0.0392
+            },
+            {
+              "feature": "hellaswag_acc",
+              "importance": 0.0188
+            },
+            {
+              "feature": "ar_validation_held_pair_acc",
+              "importance": 0.0134
+            }
+          ]
+        },
+        {
+          "model": "gbm_deep",
+          "spearman_train_mean": 0.957,
+          "spearman_train_std": 0.002,
+          "spearman_test_mean": 0.519,
+          "spearman_test_std": 0.06,
+          "mae_test_mean": 0.0937,
+          "fold_test_spearmans": [
+            0.622,
+            0.471,
+            0.556,
+            0.477,
+            0.472
+          ],
+          "feature_importances": [
+            {
+              "feature": "fp_jacobian_erf_decay_slope",
+              "importance": 0.3089
+            },
+            {
+              "feature": "wikitext_perplexity",
+              "importance": 0.146
+            },
+            {
+              "feature": "fp_jacobian_erf_density",
+              "importance": 0.1227
+            },
+            {
+              "feature": "validation_loss_ratio",
+              "importance": 0.1176
+            },
+            {
+              "feature": "blimp_overall_accuracy",
+              "importance": 0.0871
+            },
+            {
+              "feature": "induction_screening_auc",
+              "importance": 0.0618
+            },
+            {
+              "feature": "ar_legacy_auc",
+              "importance": 0.0542
+            },
+            {
+              "feature": "binding_screening_auc",
+              "importance": 0.0468
+            },
+            {
+              "feature": "hellaswag_acc",
+              "importance": 0.0406
+            },
+            {
+              "feature": "ar_validation_held_pair_acc",
+              "importance": 0.0142
+            }
+          ]
+        },
+        {
+          "model": "rf",
+          "spearman_train_mean": 0.831,
+          "spearman_train_std": 0.008,
+          "spearman_test_mean": 0.52,
+          "spearman_test_std": 0.039,
+          "mae_test_mean": 0.0925,
+          "fold_test_spearmans": [
+            0.564,
+            0.468,
+            0.567,
+            0.504,
+            0.497
+          ],
+          "feature_importances": [
+            {
+              "feature": "fp_jacobian_erf_decay_slope",
+              "importance": 0.2906
+            },
+            {
+              "feature": "fp_jacobian_erf_density",
+              "importance": 0.2171
+            },
+            {
+              "feature": "wikitext_perplexity",
+              "importance": 0.1196
+            },
+            {
+              "feature": "validation_loss_ratio",
+              "importance": 0.081
+            },
+            {
+              "feature": "blimp_overall_accuracy",
+              "importance": 0.0667
+            },
+            {
+              "feature": "ar_validation_held_pair_acc",
+              "importance": 0.0576
+            },
+            {
+              "feature": "induction_screening_auc",
+              "importance": 0.052
+            },
+            {
+              "feature": "binding_screening_auc",
+              "importance": 0.0412
+            },
+            {
+              "feature": "ar_legacy_auc",
+              "importance": 0.039
+            },
+            {
+              "feature": "hellaswag_acc",
+              "importance": 0.0351
+            }
+          ]
+        },
+        {
+          "model": "tree",
+          "spearman_train_mean": 0.575,
+          "spearman_train_std": 0.024,
+          "spearman_test_mean": 0.486,
+          "spearman_test_std": 0.042,
+          "mae_test_mean": 0.0922,
+          "fold_test_spearmans": [
+            0.539,
+            0.454,
+            0.476,
+            0.529,
+            0.432
+          ],
+          "feature_importances": [
+            {
+              "feature": "fp_jacobian_erf_decay_slope",
+              "importance": 0.602
+            },
+            {
+              "feature": "fp_jacobian_erf_density",
+              "importance": 0.2918
+            },
+            {
+              "feature": "validation_loss_ratio",
+              "importance": 0.0446
+            },
+            {
+              "feature": "wikitext_perplexity",
+              "importance": 0.0195
+            },
+            {
+              "feature": "induction_screening_auc",
+              "importance": 0.0147
+            },
+            {
+              "feature": "binding_screening_auc",
+              "importance": 0.0143
+            },
+            {
+              "feature": "blimp_overall_accuracy",
+              "importance": 0.0066
+            },
+            {
+              "feature": "ar_validation_held_pair_acc",
+              "importance": 0.0032
+            },
+            {
+              "feature": "ar_legacy_auc",
+              "importance": 0.0018
+            },
+            {
+              "feature": "hellaswag_acc",
+              "importance": 0.0016
+            }
+          ]
+        }
+      ],
+      "best_model": "rf",
+      "best_spearman_test_mean": 0.52,
+      "best_spearman_test_std": 0.039,
+      "status": "ok"
+    },
+    {
+      "target": "ar_curriculum_s0_retention",
+      "n_total": 798,
+      "n_folds": 5,
+      "y_mean": 0.427,
+      "y_std": 0.27,
+      "models": [
+        {
+          "model": "gbm",
+          "spearman_train_mean": 0.699,
+          "spearman_train_std": 0.014,
+          "spearman_test_mean": 0.309,
+          "spearman_test_std": 0.092,
+          "mae_test_mean": 0.1842,
+          "fold_test_spearmans": [
+            0.434,
+            0.355,
+            0.337,
+            0.256,
+            0.163
+          ],
+          "feature_importances": [
+            {
+              "feature": "fp_jacobian_erf_decay_slope",
+              "importance": 0.3678
+            },
+            {
+              "feature": "wikitext_perplexity",
+              "importance": 0.1275
+            },
+            {
+              "feature": "validation_loss_ratio",
+              "importance": 0.11
+            },
+            {
+              "feature": "fp_jacobian_erf_density",
+              "importance": 0.0907
+            },
+            {
+              "feature": "blimp_overall_accuracy",
+              "importance": 0.0803
+            },
+            {
+              "feature": "ar_validation_held_pair_acc",
+              "importance": 0.0744
+            },
+            {
+              "feature": "binding_screening_auc",
+              "importance": 0.0466
+            },
+            {
+              "feature": "induction_screening_auc",
+              "importance": 0.0395
+            },
+            {
+              "feature": "ar_legacy_auc",
+              "importance": 0.0323
+            },
+            {
+              "feature": "hellaswag_acc",
+              "importance": 0.031
+            }
+          ]
+        },
+        {
+          "model": "gbm_deep",
+          "spearman_train_mean": 0.845,
+          "spearman_train_std": 0.006,
+          "spearman_test_mean": 0.299,
+          "spearman_test_std": 0.083,
+          "mae_test_mean": 0.1865,
+          "fold_test_spearmans": [
+            0.42,
+            0.302,
+            0.354,
+            0.231,
+            0.188
+          ],
+          "feature_importances": [
+            {
+              "feature": "fp_jacobian_erf_decay_slope",
+              "importance": 0.2964
+            },
+            {
+              "feature": "wikitext_perplexity",
+              "importance": 0.1515
+            },
+            {
+              "feature": "validation_loss_ratio",
+              "importance": 0.1351
+            },
+            {
+              "feature": "blimp_overall_accuracy",
+              "importance": 0.1036
+            },
+            {
+              "feature": "fp_jacobian_erf_density",
+              "importance": 0.0615
+            },
+            {
+              "feature": "induction_screening_auc",
+              "importance": 0.0553
+            },
+            {
+              "feature": "ar_validation_held_pair_acc",
+              "importance": 0.0533
+            },
+            {
+              "feature": "hellaswag_acc",
+              "importance": 0.0491
+            },
+            {
+              "feature": "binding_screening_auc",
+              "importance": 0.0475
+            },
+            {
+              "feature": "ar_legacy_auc",
+              "importance": 0.0467
+            }
+          ]
+        },
+        {
+          "model": "rf",
+          "spearman_train_mean": 0.7,
+          "spearman_train_std": 0.009,
+          "spearman_test_mean": 0.337,
+          "spearman_test_std": 0.048,
+          "mae_test_mean": 0.1853,
+          "fold_test_spearmans": [
+            0.387,
+            0.366,
+            0.374,
+            0.282,
+            0.278
+          ],
+          "feature_importances": [
+            {
+              "feature": "fp_jacobian_erf_decay_slope",
+              "importance": 0.2941
+            },
+            {
+              "feature": "wikitext_perplexity",
+              "importance": 0.1223
+            },
+            {
+              "feature": "fp_jacobian_erf_density",
+              "importance": 0.1189
+            },
+            {
+              "feature": "ar_validation_held_pair_acc",
+              "importance": 0.116
+            },
+            {
+              "feature": "validation_loss_ratio",
+              "importance": 0.0857
+            },
+            {
+              "feature": "blimp_overall_accuracy",
+              "importance": 0.0815
+            },
+            {
+              "feature": "induction_screening_auc",
+              "importance": 0.05
+            },
+            {
+              "feature": "ar_legacy_auc",
+              "importance": 0.0473
+            },
+            {
+              "feature": "hellaswag_acc",
+              "importance": 0.0443
+            },
+            {
+              "feature": "binding_screening_auc",
+              "importance": 0.0399
+            }
+          ]
+        },
+        {
+          "model": "tree",
+          "spearman_train_mean": 0.417,
+          "spearman_train_std": 0.02,
+          "spearman_test_mean": 0.283,
+          "spearman_test_std": 0.049,
+          "mae_test_mean": 0.186,
+          "fold_test_spearmans": [
+            0.356,
+            0.249,
+            0.326,
+            0.236,
+            0.248
+          ],
+          "feature_importances": [
+            {
+              "feature": "fp_jacobian_erf_decay_slope",
+              "importance": 0.6378
+            },
+            {
+              "feature": "ar_validation_held_pair_acc",
+              "importance": 0.1728
+            },
+            {
+              "feature": "fp_jacobian_erf_density",
+              "importance": 0.0744
+            },
+            {
+              "feature": "wikitext_perplexity",
+              "importance": 0.0465
+            },
+            {
+              "feature": "blimp_overall_accuracy",
+              "importance": 0.0312
+            },
+            {
+              "feature": "validation_loss_ratio",
+              "importance": 0.0172
+            },
+            {
+              "feature": "induction_screening_auc",
+              "importance": 0.0101
+            },
+            {
+              "feature": "hellaswag_acc",
+              "importance": 0.004
+            },
+            {
+              "feature": "ar_legacy_auc",
+              "importance": 0.0032
+            },
+            {
+              "feature": "binding_screening_auc",
+              "importance": 0.0028
+            }
+          ]
+        }
+      ],
+      "best_model": "rf",
+      "best_spearman_test_mean": 0.337,
+      "best_spearman_test_std": 0.048,
+      "status": "ok"
+    }
+  ]
+}

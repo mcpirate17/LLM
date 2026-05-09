@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from research.defaults import RUNS_DB
 from research.scientist.notebook import LabNotebook
 from research.scientist.runner import RunConfig
 from research.tools.build_investigation_queue import build_queue, write_reports
@@ -165,7 +166,7 @@ def queue_followups(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--db", default="research/lab_notebook.db")
+    parser.add_argument("--db", default=RUNS_DB)
     parser.add_argument("--limit", type=int, default=6)
     parser.add_argument("--batch-size", type=int, default=3)
     parser.add_argument("--include-investigated", action="store_true")

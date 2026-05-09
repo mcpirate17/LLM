@@ -92,8 +92,8 @@ def test_load_stage05_native_segment_corpus_aggregates_metrics(
     create_test_db(db_path)
 
     conn = sqlite3.connect(db_path)
-    conn.execute("ALTER TABLE program_results ADD COLUMN binding_auc REAL")
-    conn.execute("ALTER TABLE program_results ADD COLUMN induction_auc REAL")
+    conn.execute("ALTER TABLE program_results ADD COLUMN binding_screening_auc REAL")
+    conn.execute("ALTER TABLE program_results ADD COLUMN induction_screening_auc REAL")
     conn.execute("ALTER TABLE program_results ADD COLUMN hellaswag_acc REAL")
     shared_graph = _linear_graph("layernorm", "gelu", "linear_proj", "add")
     conn.execute(
@@ -102,7 +102,7 @@ def test_load_stage05_native_segment_corpus_aggregates_metrics(
             result_id, graph_json, graph_fingerprint, fingerprint_json,
             novelty_score, structural_novelty, loss_ratio, wikitext_perplexity,
             stage0_passed, stage05_passed, stage1_passed, timestamp,
-            trust_label, comparability_label, binding_auc, induction_auc, hellaswag_acc
+            trust_label, comparability_label, binding_screening_auc, induction_screening_auc, hellaswag_acc
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
@@ -131,7 +131,7 @@ def test_load_stage05_native_segment_corpus_aggregates_metrics(
             result_id, graph_json, graph_fingerprint, fingerprint_json,
             novelty_score, structural_novelty, loss_ratio, wikitext_perplexity,
             stage0_passed, stage05_passed, stage1_passed, timestamp,
-            trust_label, comparability_label, binding_auc, induction_auc, hellaswag_acc
+            trust_label, comparability_label, binding_screening_auc, induction_screening_auc, hellaswag_acc
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
@@ -169,8 +169,8 @@ def test_load_stage05_native_segment_corpus_aggregates_metrics(
     assert row.stage1_pass_rate == 0.5
     assert row.loss_ratio_best == 0.4
     assert row.wikitext_perplexity_best == 7.0
-    assert row.binding_auc == 0.11
-    assert row.induction_auc == 0.02
+    assert row.binding_screening_auc == 0.11
+    assert row.induction_screening_auc == 0.02
     assert row.hellaswag_acc == 0.3
     assert row.all_three_positive is True
 
@@ -196,8 +196,8 @@ def test_evaluate_feature_families_smoke() -> None:
             stage1_pass_rate=1.0 if i % 2 == 0 else 0.0,
             loss_ratio_best=0.2 + (0.05 * i),
             wikitext_perplexity_best=5.0 + i,
-            binding_auc=0.1 if i % 2 == 0 else 0.0,
-            induction_auc=0.05 if i % 3 == 0 else 0.0,
+            binding_screening_auc=0.1 if i % 2 == 0 else 0.0,
+            induction_screening_auc=0.05 if i % 3 == 0 else 0.0,
             hellaswag_acc=0.3 if i % 2 == 0 else 0.0,
             binding_positive=bool(i % 2 == 0),
             induction_positive=bool(i % 3 == 0),

@@ -238,7 +238,9 @@ class RunConfig:
     scale_up_steps: int = SCALE_UP_STEPS
     scale_up_batch_size: int = SCALE_UP_BATCH_SIZE
     scale_up_seq_len: int = SCALE_UP_SEQ_LEN
-    champion_induction_v3_extended_budget: bool = False
+    champion_induction_validation_extended_budget: bool = False
+    run_ar_intermediate: bool = False
+    run_binding_multislot: bool = False
     champion_floor_checkpoint_interval_steps: int = 1000
     # One-shot pruning baseline
     one_shot_pruning_baseline: bool = False
@@ -295,6 +297,15 @@ class RunConfig:
     investigation_steps: int = INVESTIGATION_STEPS
     investigation_batch_size: int = INVESTIGATION_BATCH_SIZE
     investigation_max_loss_ratio_multiplier: float = 8.0
+    investigation_run_capability_rankers: bool = False
+    # Capability-ranking phase: selective expensive rankers between investigation
+    # and validation.  These should be run for top/frontier candidates, not every
+    # graph that reaches investigation.
+    capability_ranking_run_intermediate: bool = True
+    capability_ranking_run_ar_intermediate: bool = True
+    capability_ranking_run_binding_multislot: bool = True
+    capability_ranking_run_induction_validation: bool = False
+    capability_ranking_run_ar_validation: bool = False
     # Validation phase
     validation_steps: int = VALIDATION_STEPS
     validation_batch_size: int = VALIDATION_BATCH_SIZE
@@ -416,7 +427,7 @@ class RunConfig:
     use_screening_signal_weights: bool = False
     use_meta_analysis_priors: bool = False
     meta_analysis_prior_target: str = (
-        "balanced"  # induction | induction_v2 | composite | balanced
+        "balanced"  # induction | induction_intermediate | composite | balanced
     )
     meta_analysis_prior_path: str = "research/artifacts/meta_analysis_priors"
     allow_unproven_ml_influence: bool = False
@@ -586,12 +597,12 @@ class ExternalEvalResult:
     long_ctx_scaling_score: Optional[float] = None
     long_ctx_combined_score: Optional[float] = None
     # v2 investigation-tier probes (2026-04-18)
-    induction_v2_investigation_auc: Optional[float] = None
-    induction_v2_investigation_max_gap_acc: Optional[float] = None
-    induction_v2_investigation_protocol_version: Optional[str] = None
-    binding_v2_investigation_auc: Optional[float] = None
-    binding_v2_investigation_max_distance_acc: Optional[float] = None
-    binding_v2_investigation_protocol_version: Optional[str] = None
+    induction_intermediate_auc: Optional[float] = None
+    induction_intermediate_max_gap_acc: Optional[float] = None
+    induction_intermediate_protocol_version: Optional[str] = None
+    binding_intermediate_auc: Optional[float] = None
+    binding_intermediate_max_distance_acc: Optional[float] = None
+    binding_intermediate_protocol_version: Optional[str] = None
     # Symbolic relation-composition probe
     permutation_composition_score: Optional[float] = None
     permutation_composition_train_chain_acc: Optional[float] = None

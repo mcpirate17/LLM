@@ -5,7 +5,7 @@ Profiles every active template from live notebook evidence and can optionally
 run targeted batches to backfill missing evidence before scoring governance.
 
 Usage:
-    python -m research.tools.profile_templates --db research/lab_notebook.db
+    python -m research.tools.profile_templates --db research/runs.db
     python -m research.tools.profile_templates --run --target-eval 10 --batch-size 6
     python -m research.tools.profile_templates --templates mamba_reference topk_retrieval
 """
@@ -24,6 +24,7 @@ from research.tools.backfill_templates import (
     get_template_stats,
     run_template_batch,
 )
+from research.scientist.notebook.graph_artifacts import resolve_graph_json_value
 from research.tools._db_maintenance import connect_readonly
 
 MIN_TEMPLATE_EVIDENCE_RUNS = 10
@@ -32,7 +33,7 @@ MIN_TEMPLATE_EVIDENCE_RUNS = 10
 def _load_program_rows(db_path: Path) -> list[Any]:
     conn = connect_readonly(db_path)
     try:
-        return conn.execute(
+        rows = conn.execute(
             """
             SELECT
                 result_id,
@@ -51,6 +52,14 @@ def _load_program_rows(db_path: Path) -> list[Any]:
             WHERE graph_json IS NOT NULL
             """
         ).fetchall()
+        payloads = []
+        for row in rows:
+            payload = dict(row)
+            payload["graph_json"] = resolve_graph_json_value(
+                conn, db_path, payload["graph_json"]
+            )
+            payloads.append(payload)
+        return payloads
     finally:
         conn.close()
 

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Backfill controlled_lang s10 (sa + nano-bind) over the 'screening' tier,
+# Backfill language_control s10 (sa + nano-bind) over the 'screening' tier,
 # restricted to rows that already passed s05 nano-bind. Chunked to keep each
 # run resumable and to release the GPU between chunks.
 #
@@ -14,7 +14,7 @@ cd /home/tim/Projects/LLM || exit
 START_CHUNK="${START_CHUNK:-01}"
 END_CHUNK="${END_CHUNK:-10}"
 TOP_N="${TOP_N:-200}"
-PREFIX="${PREFIX:-controlled_lang_s10_screening_chunk}"
+PREFIX="${PREFIX:-language_control_s10_screening_chunk}"
 WAIT_PID="${WAIT_PID:-}"
 
 LOG=research/reports/chunk_runner_screening_s10.log
@@ -33,7 +33,7 @@ for n in $(seq -w "${START_CHUNK}" "${END_CHUNK}"); do
     OUT="research/reports/${PREFIX}${n}.jsonl"
     CLOG="research/reports/${PREFIX}${n}.log"
     echo "[$(date '+%F %T')] starting chunk${n} -> ${OUT}" >> "$LOG"
-    python -m research.tools.controlled_lang_backfill \
+    python -m research.tools.language_control_backfill \
         --top-n "${TOP_N}" \
         --tiers s10 \
         --target-cohorts screening \

@@ -31,6 +31,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 
 from ..native.core import _try_import_rust_scheduler
+from research.defaults import RUNS_DB
 from research.synthesis.primitives import PRIMITIVE_REGISTRY
 from .metrics_utils import (
     binary_classification_metrics,
@@ -52,7 +53,7 @@ from .profiling_db import (
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_NOTEBOOK_DB = Path(__file__).parents[2] / "lab_notebook.db"
+_DEFAULT_NOTEBOOK_DB = Path(__file__).parents[3] / RUNS_DB
 _DEFAULT_PROFILING_DB = (
     Path(__file__).parents[2] / "profiling" / "component_profiles.db"
 )
@@ -1038,7 +1039,7 @@ def _extract_predictor_training_features(
         s1 = bool(row["stage1_any_passed"])
         ppl = row.get("wikitext_perplexity_best")
         lr = row.get("loss_ratio_best")
-        induction_auc = row.get("induction_auc_500")
+        induction_screening_auc = row.get("induction_screening_auc_500")
         s0 = bool(row.get("stage0_any_passed"))
         s05 = bool(row.get("stage05_any_passed"))
         rerun_weight = rerun_confidence_weight(int(row.get("n_rows", 1)))
@@ -1066,8 +1067,9 @@ def _extract_predictor_training_features(
             else float("nan")
         )
         induction_labels.append(
-            float(induction_auc)
-            if induction_auc is not None and math.isfinite(float(induction_auc))
+            float(induction_screening_auc)
+            if induction_screening_auc is not None
+            and math.isfinite(float(induction_screening_auc))
             else float("nan")
         )
     return {
@@ -1432,7 +1434,7 @@ class GraphPredictor:
             return 0.7
         return float(np.clip(x @ self.w_loss + self.b_loss, 0.0, 2.0))
 
-    def predict_induction_auc(self, graph_json: Any) -> float:
+    def predict_induction_screening_auc(self, graph_json: Any) -> float:
         """Predict canonical induction AUC. Returns 0.0 if not fitted."""
         if not self.is_fitted() or len(self.w_induction) == 0:
             return 0.0

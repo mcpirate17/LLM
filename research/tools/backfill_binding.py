@@ -46,11 +46,11 @@ def _query_candidates(
     if not force:
         missing_fields = []
         if "binding" in metrics:
-            missing_fields.append("pr.binding_auc IS NULL")
+            missing_fields.append("pr.binding_screening_auc IS NULL")
         if "induction" in metrics:
-            missing_fields.append("pr.induction_auc IS NULL")
+            missing_fields.append("pr.induction_screening_auc IS NULL")
         if "ar" in metrics:
-            missing_fields.append("pr.ar_auc IS NULL")
+            missing_fields.append("pr.ar_legacy_auc IS NULL")
         if missing_fields:
             missing = " AND (" + " OR ".join(missing_fields) + ")"
     rows = [

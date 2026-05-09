@@ -15,9 +15,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable
 
+from research.defaults import RUNS_DB
 from research.scientist.intelligence.ml_corpus import (
     load_screening_predictor_corpus_rows,
 )
+from research.scientist.notebook.graph_artifacts import resolve_graph_json_value
 from research.scientist.intelligence.predictor_artifacts import STATE_DIR
 from research.scientist.intelligence.predictor_gbm import GBMPredictor
 from research.synthesis.graph_features import (
@@ -85,10 +87,10 @@ def _quality_from_predicted_composite(composite: Any) -> float:
 
 def _missing_signals(row: Dict[str, Any]) -> list[str]:
     missing: list[str] = []
-    if row.get("induction_v2_investigation_auc_best") is None:
-        missing.append("induction_v2_investigation_auc")
-    if row.get("binding_v2_investigation_auc_best") is None:
-        missing.append("binding_v2_investigation_auc")
+    if row.get("induction_intermediate_auc_best") is None:
+        missing.append("induction_intermediate_auc")
+    if row.get("binding_intermediate_auc_best") is None:
+        missing.append("binding_intermediate_auc")
     if row.get("validation_loss_ratio_best") is None:
         missing.append("validation_loss_ratio")
     if row.get("wikitext_perplexity_best") is None:
@@ -144,12 +146,12 @@ def _build_feature_dict(
     enrich_with_op_stats(feats, ops, preloaded=op_stats_cache)
     for post_key in (
         "hellaswag_acc_best",
-        "induction_auc_best",
-        "ar_auc_best",
+        "induction_screening_auc_best",
+        "ar_legacy_auc_best",
         "blimp_overall_accuracy_best",
-        "binding_composite_best",
-        "induction_v2_investigation_auc_best",
-        "binding_v2_investigation_auc_best",
+        "binding_screening_composite_best",
+        "induction_intermediate_auc_best",
+        "binding_intermediate_auc_best",
         "validation_loss_ratio_best",
         "rapid_screening_passed_best",
         "initial_loss_best",
@@ -177,11 +179,10 @@ def _load_best_result_metadata(db_path: str) -> Dict[str, Dict[str, Any]]:
           AND graph_json <> '{}'
         """
     ).fetchall()
-    conn.close()
 
     out: Dict[str, Dict[str, Any]] = {}
     for row in rows:
-        graph_json = str(row["graph_json"] or "")
+        graph_json = resolve_graph_json_value(conn, db_path, row["graph_json"])
         canonical = _graph_fingerprint(graph_json)
         loss = _float_or_none(row["loss_ratio"])
         rank = (
@@ -203,6 +204,7 @@ def _load_best_result_metadata(db_path: str) -> Dict[str, Dict[str, Any]]:
                 "novelty_score": _float_or_none(row["novelty_score"]),
                 "validation_loss_ratio": _float_or_none(row["validation_loss_ratio"]),
             }
+    conn.close()
     for value in out.values():
         value.pop("_rank", None)
     return out
@@ -233,8 +235,8 @@ def build_queue(
             continue
         if (
             not include_investigated
-            and row.get("induction_v2_investigation_auc_best") is not None
-            and row.get("binding_v2_investigation_auc_best") is not None
+            and row.get("induction_intermediate_auc_best") is not None
+            and row.get("binding_intermediate_auc_best") is not None
         ):
             skipped["already_investigated"] += 1
             continue
@@ -260,14 +262,14 @@ def build_queue(
 
         capability = _bounded(
             _capability_score(
-                row.get("induction_auc_best"),
-                row.get("binding_auc_best"),
-                row.get("binding_composite_best"),
-                row.get("ar_auc_best"),
+                row.get("induction_screening_auc_best"),
+                row.get("binding_screening_auc_best"),
+                row.get("binding_screening_composite_best"),
+                row.get("ar_legacy_auc_best"),
                 row.get("hellaswag_acc_best"),
                 row.get("blimp_overall_accuracy_best"),
-                row.get("induction_v2_investigation_auc_best"),
-                row.get("binding_v2_investigation_auc_best"),
+                row.get("induction_intermediate_auc_best"),
+                row.get("binding_intermediate_auc_best"),
                 0.0,
             )
             / 1.5,
@@ -296,8 +298,8 @@ def build_queue(
             or 0.0
         )
         missing_signals = _missing_signals(row)
-        missing_v2 = int(row.get("induction_v2_investigation_auc_best") is None) + int(
-            row.get("binding_v2_investigation_auc_best") is None
+        missing_v2 = int(row.get("induction_intermediate_auc_best") is None) + int(
+            row.get("binding_intermediate_auc_best") is None
         )
         missing_validation = int(row.get("validation_loss_ratio_best") is None)
         info_gap = _bounded((0.40 * missing_v2) + (0.20 * missing_validation), 0.0, 1.0)
@@ -334,15 +336,17 @@ def build_queue(
                     row.get("wikitext_perplexity_best")
                 ),
                 "composite_score_best": _float_or_none(row.get("composite_score_best")),
-                "induction_auc_best": _float_or_none(row.get("induction_auc_best")),
-                "binding_composite_best": _float_or_none(
-                    row.get("binding_composite_best")
+                "induction_screening_auc_best": _float_or_none(
+                    row.get("induction_screening_auc_best")
                 ),
-                "induction_v2_investigation_auc_best": _float_or_none(
-                    row.get("induction_v2_investigation_auc_best")
+                "binding_screening_composite_best": _float_or_none(
+                    row.get("binding_screening_composite_best")
                 ),
-                "binding_v2_investigation_auc_best": _float_or_none(
-                    row.get("binding_v2_investigation_auc_best")
+                "induction_intermediate_auc_best": _float_or_none(
+                    row.get("induction_intermediate_auc_best")
+                ),
+                "binding_intermediate_auc_best": _float_or_none(
+                    row.get("binding_intermediate_auc_best")
                 ),
                 "predicted_ppl": _float_or_none(predicted_ppl),
                 "predicted_composite": _float_or_none(predicted_composite),
@@ -400,7 +404,7 @@ def write_reports(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--db", default="research/lab_notebook.db")
+    parser.add_argument("--db", default=RUNS_DB)
     parser.add_argument("--limit", type=int, default=100)
     parser.add_argument("--include-investigated", action="store_true")
     parser.add_argument(

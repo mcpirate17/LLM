@@ -40,6 +40,7 @@ from research.scientist.construction_priors import (  # noqa: E402
     get_active_construction_prior,
 )
 from research.scientist.notebook import LabNotebook  # noqa: E402
+from research.scientist.notebook.graph_artifacts import resolve_graph_json_value  # noqa: E402
 from research.scientist.runner import ExperimentRunner  # noqa: E402
 from research.scientist.runner._types import RunConfig  # noqa: E402
 from research.synthesis.graph import ComputationGraph  # noqa: E402
@@ -49,7 +50,7 @@ from research.tools.champion_exhaustive_ablation import (  # noqa: E402
 )
 
 
-DB_PATH = PROJECT_ROOT / "research/lab_notebook.db"
+DB_PATH = PROJECT_ROOT / "research/runs.db"
 RUNTIME_DIR = PROJECT_ROOT / "research/runtime"
 GOOGLE_BACKUP_ROOT = Path("/home/tim/GoogleDrive/Backups/LLM_Research")
 LOGGER = logging.getLogger("focused_op_deletion_ablation")
@@ -148,10 +149,10 @@ def select_top_parents(
           AND pr.wikitext_perplexity IS NOT NULL
           AND pr.hellaswag_acc IS NOT NULL
           AND pr.blimp_overall_accuracy IS NOT NULL
-          AND pr.induction_auc IS NOT NULL
-          AND pr.binding_auc IS NOT NULL
-          AND pr.binding_composite IS NOT NULL
-          AND pr.ar_auc IS NOT NULL
+          AND pr.induction_screening_auc IS NOT NULL
+          AND pr.binding_screening_auc IS NOT NULL
+          AND pr.binding_screening_composite IS NOT NULL
+          AND pr.ar_legacy_auc IS NOT NULL
           {reference_clause}
           {parent_filter}
         ORDER BY l.composite_score DESC, pr.loss_ratio ASC
@@ -166,7 +167,8 @@ def select_top_parents(
         config = RunConfig.from_dict(
             config_payload if isinstance(config_payload, dict) else {}
         )
-        graph = graph_from_json(str(row["graph_json"]))
+        graph_json = resolve_graph_json_value(nb.conn, nb.db_path, row["graph_json"])
+        graph = graph_from_json(graph_json)
         parents.append(
             ParentCandidate(
                 result_id=str(row["result_id"]),

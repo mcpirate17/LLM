@@ -2,6 +2,7 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List, Optional
 import numpy as np
+from ..notebook.graph_artifacts import resolve_graph_json_value
 
 
 class _RoutingMixin:
@@ -636,7 +637,11 @@ class _RoutingMixin:
 
         for row in rows:
             pid = row[0]
-            graph_json = row[1]
+            graph_json = resolve_graph_json_value(
+                self.nb.conn,
+                self.nb.db_path,
+                row[1],
+            )
             survived = row[2]
             best_loss = row[3]
             density_mean = row[4]

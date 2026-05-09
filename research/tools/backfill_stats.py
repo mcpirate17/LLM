@@ -1,7 +1,7 @@
 """Backfill template/op/motif/slot analytics from live notebook results.
 
 Usage:
-    python -m research.tools.backfill_stats [--db research/lab_notebook.db]
+    python -m research.tools.backfill_stats [--db research/runs.db]
 
 Reads canonicalized graph-analysis rows from the notebook so the steering
 tables stay aligned with current continuous runs rather than waiting for an
@@ -148,47 +148,47 @@ def _ensure_tables(conn) -> None:
 def _ensure_generation_stats_columns(conn) -> None:
     expected = {
         "template_stats": (
-            "avg_induction_auc",
-            "avg_binding_auc",
-            "avg_binding_composite",
-            "avg_ar_auc",
+            "avg_induction_screening_auc",
+            "avg_binding_screening_auc",
+            "avg_binding_screening_composite",
+            "avg_ar_legacy_auc",
             "avg_hellaswag_acc",
             "avg_blimp_overall_accuracy",
-            "avg_induction_v2_investigation_auc",
-            "avg_binding_v2_investigation_auc",
+            "avg_induction_intermediate_auc",
+            "avg_binding_intermediate_auc",
             "math_space_rate",
         ),
         "op_stats": (
-            "avg_induction_auc",
-            "avg_binding_auc",
-            "avg_binding_composite",
-            "avg_ar_auc",
+            "avg_induction_screening_auc",
+            "avg_binding_screening_auc",
+            "avg_binding_screening_composite",
+            "avg_ar_legacy_auc",
             "avg_hellaswag_acc",
             "avg_blimp_overall_accuracy",
-            "avg_induction_v2_investigation_auc",
-            "avg_binding_v2_investigation_auc",
+            "avg_induction_intermediate_auc",
+            "avg_binding_intermediate_auc",
             "math_space_rate",
         ),
         "motif_stats": (
-            "avg_induction_auc",
-            "avg_binding_auc",
-            "avg_binding_composite",
-            "avg_ar_auc",
+            "avg_induction_screening_auc",
+            "avg_binding_screening_auc",
+            "avg_binding_screening_composite",
+            "avg_ar_legacy_auc",
             "avg_hellaswag_acc",
             "avg_blimp_overall_accuracy",
-            "avg_induction_v2_investigation_auc",
-            "avg_binding_v2_investigation_auc",
+            "avg_induction_intermediate_auc",
+            "avg_binding_intermediate_auc",
             "math_space_rate",
         ),
         "slot_stats": (
-            "avg_induction_auc",
-            "avg_binding_auc",
-            "avg_binding_composite",
-            "avg_ar_auc",
+            "avg_induction_screening_auc",
+            "avg_binding_screening_auc",
+            "avg_binding_screening_composite",
+            "avg_ar_legacy_auc",
             "avg_hellaswag_acc",
             "avg_blimp_overall_accuracy",
-            "avg_induction_v2_investigation_auc",
-            "avg_binding_v2_investigation_auc",
+            "avg_induction_intermediate_auc",
+            "avg_binding_intermediate_auc",
             "math_space_rate",
         ),
     }
@@ -213,20 +213,20 @@ def _new_slot_outcome_bucket() -> dict:
         "n": 0,
         "s1": 0,
         "losses": [],
-        "induction_aucs": [],
-        "binding_aucs": [],
-        "binding_composites": [],
-        "ar_aucs": [],
+        "induction_screening_aucs": [],
+        "binding_screening_aucs": [],
+        "binding_screening_composites": [],
+        "ar_legacy_aucs": [],
         "hellaswag_accs": [],
         "blimp_accuracies": [],
-        "induction_v2_aucs": [],
-        "binding_v2_aucs": [],
+        "induction_intermediate_aucs": [],
+        "binding_intermediate_aucs": [],
         "math_hits": [],
     }
 
 
 def backfill(
-    db_path: str = "research/lab_notebook.db",
+    db_path: str = "research/runs.db",
     *,
     conn=None,
 ) -> Dict[str, int]:
@@ -242,9 +242,9 @@ def backfill(
 
     # Metric lists store (value, recency_weight) samples. Counts remain raw so
     # support thresholds still reflect actual observations.
-    # [eval, s0, s1, losses, novelties, induction_aucs, binding_aucs,
-    #  binding_composites, ar_aucs, hellaswag_accs, blimp_accuracies,
-    #  induction_v2_aucs, binding_v2_aucs, math_space_samples]
+    # [eval, s0, s1, losses, novelties, induction_screening_aucs, binding_screening_aucs,
+    #  binding_screening_composites, ar_legacy_aucs, hellaswag_accs, blimp_accuracies,
+    #  induction_intermediate_aucs, binding_intermediate_aucs, math_space_samples]
     tpl_data: Dict[str, list] = {}
     # same + co_occurrence counter at the end
     op_data: Dict[str, list] = {}
@@ -263,14 +263,20 @@ def backfill(
         s1_pass = 1 if row.get("stage1_any_passed") else 0
         loss_ratio = _normalize_metric(row.get("loss_ratio"))
         novelty = _normalize_metric(row.get("novelty_score"))
-        induction_auc = _normalize_metric(row.get("induction_auc"))
-        binding_auc = _normalize_metric(row.get("binding_auc"))
-        binding_composite = _normalize_metric(row.get("binding_composite"))
-        ar_auc = _normalize_metric(row.get("ar_auc"))
+        induction_screening_auc = _normalize_metric(row.get("induction_screening_auc"))
+        binding_screening_auc = _normalize_metric(row.get("binding_screening_auc"))
+        binding_screening_composite = _normalize_metric(
+            row.get("binding_screening_composite")
+        )
+        ar_legacy_auc = _normalize_metric(row.get("ar_legacy_auc"))
         hellaswag_acc = _normalize_metric(row.get("hellaswag_acc"))
         blimp_accuracy = _normalize_metric(row.get("blimp_overall_accuracy"))
-        induction_v2_auc = _normalize_metric(row.get("induction_v2_investigation_auc"))
-        binding_v2_auc = _normalize_metric(row.get("binding_v2_investigation_auc"))
+        induction_intermediate_auc = _normalize_metric(
+            row.get("induction_intermediate_auc")
+        )
+        binding_intermediate_auc = _normalize_metric(
+            row.get("binding_intermediate_auc")
+        )
         math_space = 1 if row.get("graph_uses_math_spaces") else 0
         recency_weight = _recency_weight(
             row.get("latest_timestamp") or row.get("timestamp"),
@@ -286,14 +292,14 @@ def backfill(
             d[2] += s1_pass
             _append_weighted(d[3], loss_ratio, recency_weight)
             _append_weighted(d[4], novelty, recency_weight)
-            _append_weighted(d[5], induction_auc, recency_weight)
-            _append_weighted(d[6], binding_auc, recency_weight)
-            _append_weighted(d[7], binding_composite, recency_weight)
-            _append_weighted(d[8], ar_auc, recency_weight)
+            _append_weighted(d[5], induction_screening_auc, recency_weight)
+            _append_weighted(d[6], binding_screening_auc, recency_weight)
+            _append_weighted(d[7], binding_screening_composite, recency_weight)
+            _append_weighted(d[8], ar_legacy_auc, recency_weight)
             _append_weighted(d[9], hellaswag_acc, recency_weight)
             _append_weighted(d[10], blimp_accuracy, recency_weight)
-            _append_weighted(d[11], induction_v2_auc, recency_weight)
-            _append_weighted(d[12], binding_v2_auc, recency_weight)
+            _append_weighted(d[11], induction_intermediate_auc, recency_weight)
+            _append_weighted(d[12], binding_intermediate_auc, recency_weight)
             _append_weighted(d[13], math_space, recency_weight)
 
         op_set = set(ops)
@@ -322,14 +328,14 @@ def backfill(
             d[2] += s1_pass
             _append_weighted(d[3], loss_ratio, recency_weight)
             _append_weighted(d[4], novelty, recency_weight)
-            _append_weighted(d[5], induction_auc, recency_weight)
-            _append_weighted(d[6], binding_auc, recency_weight)
-            _append_weighted(d[7], binding_composite, recency_weight)
-            _append_weighted(d[8], ar_auc, recency_weight)
+            _append_weighted(d[5], induction_screening_auc, recency_weight)
+            _append_weighted(d[6], binding_screening_auc, recency_weight)
+            _append_weighted(d[7], binding_screening_composite, recency_weight)
+            _append_weighted(d[8], ar_legacy_auc, recency_weight)
             _append_weighted(d[9], hellaswag_acc, recency_weight)
             _append_weighted(d[10], blimp_accuracy, recency_weight)
-            _append_weighted(d[11], induction_v2_auc, recency_weight)
-            _append_weighted(d[12], binding_v2_auc, recency_weight)
+            _append_weighted(d[11], induction_intermediate_auc, recency_weight)
+            _append_weighted(d[12], binding_intermediate_auc, recency_weight)
             _append_weighted(d[13], math_space, recency_weight)
 
         for a, b in itertools.combinations(op_set, 2):
@@ -366,14 +372,14 @@ def backfill(
                     d[15] = loss_ratio
                     d[14] = templates[0] if templates else None
             _append_weighted(d[4], novelty, recency_weight)
-            _append_weighted(d[5], induction_auc, recency_weight)
-            _append_weighted(d[6], binding_auc, recency_weight)
-            _append_weighted(d[7], binding_composite, recency_weight)
-            _append_weighted(d[8], ar_auc, recency_weight)
+            _append_weighted(d[5], induction_screening_auc, recency_weight)
+            _append_weighted(d[6], binding_screening_auc, recency_weight)
+            _append_weighted(d[7], binding_screening_composite, recency_weight)
+            _append_weighted(d[8], ar_legacy_auc, recency_weight)
             _append_weighted(d[9], hellaswag_acc, recency_weight)
             _append_weighted(d[10], blimp_accuracy, recency_weight)
-            _append_weighted(d[11], induction_v2_auc, recency_weight)
-            _append_weighted(d[12], binding_v2_auc, recency_weight)
+            _append_weighted(d[11], induction_intermediate_auc, recency_weight)
+            _append_weighted(d[12], binding_intermediate_auc, recency_weight)
             _append_weighted(d[13], math_space, recency_weight)
 
         for slot in slot_usage:
@@ -390,14 +396,14 @@ def backfill(
                     "eval": 0,
                     "s1": 0,
                     "losses": [],
-                    "induction_aucs": [],
-                    "binding_aucs": [],
-                    "binding_composites": [],
-                    "ar_aucs": [],
+                    "induction_screening_aucs": [],
+                    "binding_screening_aucs": [],
+                    "binding_screening_composites": [],
+                    "ar_legacy_aucs": [],
                     "hellaswag_accs": [],
                     "blimp_accuracies": [],
-                    "induction_v2_aucs": [],
-                    "binding_v2_aucs": [],
+                    "induction_intermediate_aucs": [],
+                    "binding_intermediate_aucs": [],
                     "math_hits": [],
                     "class_outcomes": {},
                     "wc_count": 0,
@@ -411,18 +417,30 @@ def backfill(
             sd["eval"] += 1
             sd["s1"] += s1_pass
             _append_weighted(sd["losses"], loss_ratio, recency_weight)
-            _append_weighted(sd["induction_aucs"], induction_auc, recency_weight)
-            _append_weighted(sd["binding_aucs"], binding_auc, recency_weight)
             _append_weighted(
-                sd["binding_composites"],
-                binding_composite,
+                sd["induction_screening_aucs"], induction_screening_auc, recency_weight
+            )
+            _append_weighted(
+                sd["binding_screening_aucs"], binding_screening_auc, recency_weight
+            )
+            _append_weighted(
+                sd["binding_screening_composites"],
+                binding_screening_composite,
                 recency_weight,
             )
-            _append_weighted(sd["ar_aucs"], ar_auc, recency_weight)
+            _append_weighted(sd["ar_legacy_aucs"], ar_legacy_auc, recency_weight)
             _append_weighted(sd["hellaswag_accs"], hellaswag_acc, recency_weight)
             _append_weighted(sd["blimp_accuracies"], blimp_accuracy, recency_weight)
-            _append_weighted(sd["induction_v2_aucs"], induction_v2_auc, recency_weight)
-            _append_weighted(sd["binding_v2_aucs"], binding_v2_auc, recency_weight)
+            _append_weighted(
+                sd["induction_intermediate_aucs"],
+                induction_intermediate_auc,
+                recency_weight,
+            )
+            _append_weighted(
+                sd["binding_intermediate_aucs"],
+                binding_intermediate_auc,
+                recency_weight,
+            )
             _append_weighted(sd["math_hits"], math_space, recency_weight)
 
             if motif_cls:
@@ -432,15 +450,23 @@ def backfill(
                 bucket["s1"] += s1_pass
                 _append_weighted(bucket["losses"], loss_ratio, recency_weight)
                 _append_weighted(
-                    bucket["induction_aucs"], induction_auc, recency_weight
-                )
-                _append_weighted(bucket["binding_aucs"], binding_auc, recency_weight)
-                _append_weighted(
-                    bucket["binding_composites"],
-                    binding_composite,
+                    bucket["induction_screening_aucs"],
+                    induction_screening_auc,
                     recency_weight,
                 )
-                _append_weighted(bucket["ar_aucs"], ar_auc, recency_weight)
+                _append_weighted(
+                    bucket["binding_screening_aucs"],
+                    binding_screening_auc,
+                    recency_weight,
+                )
+                _append_weighted(
+                    bucket["binding_screening_composites"],
+                    binding_screening_composite,
+                    recency_weight,
+                )
+                _append_weighted(
+                    bucket["ar_legacy_aucs"], ar_legacy_auc, recency_weight
+                )
                 _append_weighted(
                     bucket["hellaswag_accs"],
                     hellaswag_acc,
@@ -452,13 +478,13 @@ def backfill(
                     recency_weight,
                 )
                 _append_weighted(
-                    bucket["induction_v2_aucs"],
-                    induction_v2_auc,
+                    bucket["induction_intermediate_aucs"],
+                    induction_intermediate_auc,
                     recency_weight,
                 )
                 _append_weighted(
-                    bucket["binding_v2_aucs"],
-                    binding_v2_auc,
+                    bucket["binding_intermediate_aucs"],
+                    binding_intermediate_auc,
                     recency_weight,
                 )
                 _append_weighted(bucket["math_hits"], math_space, recency_weight)
@@ -488,9 +514,9 @@ def backfill(
             """INSERT INTO template_stats
                (template_name, eval_count, s0_pass_count, s1_pass_count,
                 mean_loss, min_loss, std_loss, mean_novelty,
-                avg_induction_auc, avg_binding_auc, avg_binding_composite,
-                avg_ar_auc, avg_hellaswag_acc, avg_blimp_overall_accuracy,
-                avg_induction_v2_investigation_auc, avg_binding_v2_investigation_auc,
+                avg_induction_screening_auc, avg_binding_screening_auc, avg_binding_screening_composite,
+                avg_ar_legacy_auc, avg_hellaswag_acc, avg_blimp_overall_accuracy,
+                avg_induction_intermediate_auc, avg_binding_intermediate_auc,
                 math_space_rate, last_updated)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
@@ -538,9 +564,9 @@ def backfill(
             """INSERT INTO op_stats
                (op_name, eval_count, s0_pass_count, s1_pass_count,
                 mean_loss, min_loss, std_loss, mean_novelty,
-                avg_induction_auc, avg_binding_auc, avg_binding_composite,
-                avg_ar_auc, avg_hellaswag_acc, avg_blimp_overall_accuracy,
-                avg_induction_v2_investigation_auc, avg_binding_v2_investigation_auc,
+                avg_induction_screening_auc, avg_binding_screening_auc, avg_binding_screening_composite,
+                avg_ar_legacy_auc, avg_hellaswag_acc, avg_blimp_overall_accuracy,
+                avg_induction_intermediate_auc, avg_binding_intermediate_auc,
                 math_space_rate, co_occurrence_json, last_updated)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
@@ -589,9 +615,9 @@ def backfill(
             """INSERT INTO motif_stats
                (motif_name, eval_count, s0_pass_count, s1_pass_count,
                 mean_loss, min_loss, std_loss, mean_novelty,
-                avg_induction_auc, avg_binding_auc, avg_binding_composite,
-                avg_ar_auc, avg_hellaswag_acc, avg_blimp_overall_accuracy,
-                avg_induction_v2_investigation_auc, avg_binding_v2_investigation_auc,
+                avg_induction_screening_auc, avg_binding_screening_auc, avg_binding_screening_composite,
+                avg_ar_legacy_auc, avg_hellaswag_acc, avg_blimp_overall_accuracy,
+                avg_induction_intermediate_auc, avg_binding_intermediate_auc,
                 math_space_rate, best_template, last_updated)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
@@ -627,19 +653,25 @@ def backfill(
                     "n": vals["n"],
                     "s1": vals["s1"],
                     "mean_loss": _mean_or_none(vals["losses"]),
-                    "mean_induction_auc": _mean_or_none(vals["induction_aucs"]),
-                    "mean_binding_auc": _mean_or_none(vals["binding_aucs"]),
-                    "mean_binding_composite": _mean_or_none(vals["binding_composites"]),
-                    "mean_ar_auc": _mean_or_none(vals["ar_aucs"]),
+                    "mean_induction_screening_auc": _mean_or_none(
+                        vals["induction_screening_aucs"]
+                    ),
+                    "mean_binding_screening_auc": _mean_or_none(
+                        vals["binding_screening_aucs"]
+                    ),
+                    "mean_binding_screening_composite": _mean_or_none(
+                        vals["binding_screening_composites"]
+                    ),
+                    "mean_ar_legacy_auc": _mean_or_none(vals["ar_legacy_aucs"]),
                     "mean_hellaswag_acc": _mean_or_none(vals["hellaswag_accs"]),
                     "mean_blimp_overall_accuracy": _mean_or_none(
                         vals["blimp_accuracies"]
                     ),
-                    "mean_induction_v2_investigation_auc": _mean_or_none(
-                        vals["induction_v2_aucs"]
+                    "mean_induction_intermediate_auc": _mean_or_none(
+                        vals["induction_intermediate_aucs"]
                     ),
-                    "mean_binding_v2_investigation_auc": _mean_or_none(
-                        vals["binding_v2_aucs"]
+                    "mean_binding_intermediate_auc": _mean_or_none(
+                        vals["binding_intermediate_aucs"]
                     ),
                     "math_space_rate": _mean_or_none(vals["math_hits"]),
                 }
@@ -650,9 +682,9 @@ def backfill(
             """INSERT INTO slot_stats
                (slot_key, template_name, slot_index, slot_classes,
                 eval_count, s1_pass_count, mean_loss, min_loss,
-                avg_induction_auc, avg_binding_auc, avg_binding_composite,
-                avg_ar_auc, avg_hellaswag_acc, avg_blimp_overall_accuracy,
-                avg_induction_v2_investigation_auc, avg_binding_v2_investigation_auc,
+                avg_induction_screening_auc, avg_binding_screening_auc, avg_binding_screening_composite,
+                avg_ar_legacy_auc, avg_hellaswag_acc, avg_blimp_overall_accuracy,
+                avg_induction_intermediate_auc, avg_binding_intermediate_auc,
                 math_space_rate, class_outcomes, wildcard_count,
                 wildcard_s1_count, wildcard_class_outcomes, last_updated)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
@@ -665,14 +697,14 @@ def backfill(
                 sd["s1"],
                 _mean_or_none(losses),
                 _min_or_none(losses),
-                _mean_or_none(sd["induction_aucs"]),
-                _mean_or_none(sd["binding_aucs"]),
-                _mean_or_none(sd["binding_composites"]),
-                _mean_or_none(sd["ar_aucs"]),
+                _mean_or_none(sd["induction_screening_aucs"]),
+                _mean_or_none(sd["binding_screening_aucs"]),
+                _mean_or_none(sd["binding_screening_composites"]),
+                _mean_or_none(sd["ar_legacy_aucs"]),
                 _mean_or_none(sd["hellaswag_accs"]),
                 _mean_or_none(sd["blimp_accuracies"]),
-                _mean_or_none(sd["induction_v2_aucs"]),
-                _mean_or_none(sd["binding_v2_aucs"]),
+                _mean_or_none(sd["induction_intermediate_aucs"]),
+                _mean_or_none(sd["binding_intermediate_aucs"]),
                 _mean_or_none(sd["math_hits"]),
                 json.dumps(_summarize_outcomes(sd["class_outcomes"])),
                 sd["wc_count"],
@@ -698,7 +730,7 @@ def backfill(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Backfill analytics stats tables")
-    parser.add_argument("--db", default="research/lab_notebook.db")
+    parser.add_argument("--db", default="research/runs.db")
     parser.add_argument(
         "--refresh-models",
         action="store_true",

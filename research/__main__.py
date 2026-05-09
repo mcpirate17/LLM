@@ -32,7 +32,7 @@ from research.defaults import (
     MODEL_DIM,
     N_LAYERS,
     DASHBOARD_PORT,
-    LAB_NOTEBOOK_DB,
+    RUNS_DB,
 )
 
 
@@ -62,7 +62,7 @@ def main():
     parser.add_argument(
         "--port", type=int, default=DASHBOARD_PORT, help="Dashboard port"
     )
-    parser.add_argument("--db", type=str, default=LAB_NOTEBOOK_DB)
+    parser.add_argument("--db", type=str, default=RUNS_DB)
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument(
         "--math-spaces",

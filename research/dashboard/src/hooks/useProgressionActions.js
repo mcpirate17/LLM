@@ -103,6 +103,7 @@ export default function useProgressionActions({
   }, [emitAutoRepairStarted, fetchDashboard, filterEligibleResultIds, overrideIneligibleAlways, setActionError]);
 
   const handleInvestigate = useCallback((resultIds) => startProgression('investigation', resultIds), [startProgression]);
+  const handleCapabilityRank = useCallback((resultIds) => startProgression('capability_ranking', resultIds), [startProgression]);
   const handleValidate = useCallback((resultIds) => startProgression('validation', resultIds), [startProgression]);
   const handleConfirm = useCallback((resultIds) => startProgression('confirmation', resultIds), [startProgression]);
 
@@ -161,7 +162,7 @@ export default function useProgressionActions({
     const templateMode = payload?.mode;
     let nextPayload = payload;
     let eligibilityMessage = null;
-    if (templateMode === 'investigation' || templateMode === 'validation' || templateMode === 'confirmation') {
+    if (templateMode === 'investigation' || templateMode === 'capability_ranking' || templateMode === 'validation' || templateMode === 'confirmation') {
       const rawResultIds = Array.isArray(payload.result_ids)
         ? payload.result_ids
         : payload.result_id
@@ -223,6 +224,19 @@ export default function useProgressionActions({
     handleValidate(overrideIneligibleAlways ? queuedIds : eligibleIds);
   }, [eligibilityByResultId, handleValidate, investigationQueue, overrideIneligibleAlways, setActionError]);
 
+  const handleQueueCapabilityRank = useCallback(() => {
+    if (!investigationQueue.length) return;
+    const queuedIds = investigationQueue
+      .filter((item) => item.intent === 'capability_ranking')
+      .map((item) => item.resultId);
+    const eligibleIds = queuedIds.filter((resultId) => eligibilityByResultId[resultId]?.capabilityRankingEligible);
+    if (!eligibleIds.length && !overrideIneligibleAlways) {
+      setActionError('No queued capability-ranking candidates are currently eligible.');
+      return;
+    }
+    handleCapabilityRank(overrideIneligibleAlways ? queuedIds : eligibleIds);
+  }, [eligibilityByResultId, handleCapabilityRank, investigationQueue, overrideIneligibleAlways, setActionError]);
+
   const handleQueueConfirm = useCallback(() => {
     if (!investigationQueue.length) return;
     const queuedIds = investigationQueue
@@ -247,10 +261,12 @@ export default function useProgressionActions({
 
   return {
     handleActionComplete,
+    handleCapabilityRank,
     handleConfirm,
     handleInvestigate,
     handlePromoteScreening,
     handleQueueConfirm,
+    handleQueueCapabilityRank,
     handleQueueInvestigate,
     handleQueueValidate,
     handleRescreen,

@@ -6,13 +6,13 @@ Replaces:
   - heuristic motif_class membership for "is mixer slot"
     with slot_property_catalog.slot_accepts_{attention,ssm,compression}.
 
-Adds high-capability slot report keyed off induction_v2_investigation_auc
+Adds high-capability slot report keyed off induction_intermediate_auc
 (coverage ~6% but per-position n up to 65 on the heaviest slots).
 
 Inputs:
   research/meta_analysis.db (slot_observations, op_observations,
                              slot_property_catalog, op_property_catalog)
-  research/lab_notebook.db (program_results — sa_score + failure_op + is_ref)
+  research/runs.db (program_results — sa_score + failure_op + is_ref)
 
 Outputs:
   research/reports/slot_mixer_credit_v2.csv
@@ -31,7 +31,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 META = REPO / "research/meta_analysis.db"
-LAB = REPO / "research/lab_notebook.db"
+LAB = REPO / "research/runs.db"
 REPORTS = REPO / "research/reports"
 
 PASS_SA = 0.95
@@ -122,11 +122,11 @@ def load_per_graph_ops(
 
     cur = conn.execute(
         """
-        SELECT pr.result_id, pr.controlled_lang_s05_sa_score, pr.failure_op,
+        SELECT pr.result_id, pr.language_control_s05_sentence_assoc_score, pr.failure_op,
                pr.graph_json
         FROM lab.program_results pr
         LEFT JOIN lab.leaderboard l ON l.result_id = pr.result_id
-        WHERE pr.controlled_lang_s05_sa_score IS NOT NULL
+        WHERE pr.language_control_s05_sentence_assoc_score IS NOT NULL
           AND COALESCE(l.is_reference, 0) = 0
           AND pr.graph_json IS NOT NULL
         """
@@ -384,7 +384,7 @@ def write_op_cert_v2(
     return n_rows
 
 
-# --- High-capability slot fills (induction_v2_investigation_auc) ---
+# --- High-capability slot fills (induction_intermediate_auc) ---
 
 
 def write_high_capability(conn: sqlite3.Connection, path: Path) -> tuple[int, int]:
@@ -395,20 +395,20 @@ def write_high_capability(conn: sqlite3.Connection, path: Path) -> tuple[int, in
         "motif_class",
         "n_v2",
         "n_v2_pass",
-        "mean_induction_v2_auc",
-        "max_induction_v2_auc",
-        "mean_binding_v2_auc",
+        "mean_induction_intermediate_auc",
+        "max_induction_intermediate_auc",
+        "mean_binding_intermediate_auc",
     ]
     cur = conn.execute(
         """
         SELECT template_name, slot_index, selected_motif, selected_motif_class,
                COUNT(*) AS n_v2,
-               SUM(CASE WHEN induction_v2_investigation_auc >= 0.55 THEN 1 ELSE 0 END) AS n_pass,
-               AVG(induction_v2_investigation_auc) AS mean_auc,
-               MAX(induction_v2_investigation_auc) AS max_auc,
-               AVG(binding_v2_investigation_auc) AS mean_bind_auc
+               SUM(CASE WHEN induction_intermediate_auc >= 0.55 THEN 1 ELSE 0 END) AS n_pass,
+               AVG(induction_intermediate_auc) AS mean_auc,
+               MAX(induction_intermediate_auc) AS max_auc,
+               AVG(binding_intermediate_auc) AS mean_bind_auc
         FROM slot_observations
-        WHERE induction_v2_investigation_auc IS NOT NULL
+        WHERE induction_intermediate_auc IS NOT NULL
           AND selected_motif IS NOT NULL
         GROUP BY template_name, slot_index, selected_motif, selected_motif_class
         ORDER BY mean_auc DESC, n_v2 DESC
@@ -441,9 +441,9 @@ def write_high_capability(conn: sqlite3.Connection, path: Path) -> tuple[int, in
                     "motif_class": mc,
                     "n_v2": n_v2,
                     "n_v2_pass": n_pass,
-                    "mean_induction_v2_auc": mean_auc,
-                    "max_induction_v2_auc": max_auc,
-                    "mean_binding_v2_auc": mean_bind,
+                    "mean_induction_intermediate_auc": mean_auc,
+                    "max_induction_intermediate_auc": max_auc,
+                    "mean_binding_intermediate_auc": mean_bind,
                 }
             )
             n_published += 1

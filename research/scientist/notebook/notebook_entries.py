@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import time
 from typing import Any, Dict, List, Optional
 
@@ -33,25 +34,49 @@ class _EntriesMixin:
         ).fetchone()
         if row is None or row[0] != 1:
             return
-        self.conn.executemany(
-            """INSERT OR REPLACE INTO training_curves
-               (result_id, step, loss, grad_norm, step_time_ms)
-               VALUES (?, ?, ?, ?, ?)""",
-            [
-                (
-                    result_id,
-                    d.get("step", i),
-                    d.get("loss"),
-                    d.get("grad_norm"),
-                    d.get("step_time_ms"),
-                )
-                for i, d in enumerate(curve)
-            ],
+        normalized = [
+            {
+                "step": d.get("step", i),
+                "loss": d.get("loss"),
+                "grad_norm": d.get("grad_norm"),
+                "step_time_ms": d.get("step_time_ms"),
+            }
+            for i, d in enumerate(curve)
+        ]
+        self._store_artifact_payload(
+            table_name="training_curves",
+            row_pk=result_id,
+            column_name="curve_json",
+            payload=normalized,
+            content_type="application/json",
+        )
+        self.conn.execute(
+            "DELETE FROM training_curves WHERE result_id = ?", (result_id,)
         )
         self._maybe_commit()
 
     def get_training_curve(self, result_id: str) -> List[Dict]:
         """Get per-step training data for a program."""
+        try:
+            artifact_cursor = self.conn.execute(
+                """SELECT * FROM notebook_artifacts
+                   WHERE table_name = 'training_curves'
+                     AND row_pk = ?
+                     AND column_name = 'curve_json'
+                   ORDER BY created_at DESC
+                   LIMIT 1""",
+                (result_id,),
+            )
+            artifact = (
+                artifact_cursor.fetchone()
+                if hasattr(artifact_cursor, "fetchone")
+                else None
+            )
+        except (sqlite3.OperationalError, AttributeError):
+            artifact = None
+        if artifact is not None:
+            loaded = self._artifact_store.read_json(dict(artifact))
+            return loaded if isinstance(loaded, list) else []
         cursor = self.conn.execute(
             """SELECT step, loss, grad_norm, step_time_ms
                FROM training_curves WHERE result_id = ?
@@ -143,7 +168,17 @@ class _EntriesMixin:
         query += " ORDER BY timestamp DESC LIMIT ?"
         params.append(limit)
         cursor = self.conn.execute(query, params)
-        return [dict(row) for row in cursor]
+        entries = []
+        for row in cursor:
+            item = dict(row)
+            raw_metadata = item.get("metadata_json")
+            if raw_metadata and self._artifact_metadata_from_pointer(raw_metadata):
+                try:
+                    item["metadata_json"] = self._resolve_artifact_text(raw_metadata)
+                except (ValueError, FileNotFoundError, KeyError, TypeError):
+                    pass
+            entries.append(item)
+        return entries
 
     def set_external_benchmarks(self, result_id: str, payload: Any) -> bool:
         """Store external benchmark payload for a program result."""

@@ -368,7 +368,7 @@ def run_profile(args: argparse.Namespace) -> dict[str, Any]:
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--db", default="research/lab_notebook.db")
+    parser.add_argument("--db", default="research/runs.db")
     parser.add_argument("--json-out", default="")
     parser.add_argument("--family", default="gpt2_attn")
     parser.add_argument("--op", default="softmax_attention")

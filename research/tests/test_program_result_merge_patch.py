@@ -64,12 +64,12 @@ def _validation_ev_res(**overrides):
         long_ctx_multi_hop_score=None,
         long_ctx_retrieval_aggregate=None,
         long_ctx_combined_score=None,
-        induction_v2_investigation_auc=None,
-        induction_v2_investigation_max_gap_acc=None,
-        induction_v2_investigation_protocol_version=None,
-        binding_v2_investigation_auc=None,
-        binding_v2_investigation_max_distance_acc=None,
-        binding_v2_investigation_protocol_version=None,
+        induction_intermediate_auc=None,
+        induction_intermediate_max_gap_acc=None,
+        induction_intermediate_protocol_version=None,
+        binding_intermediate_auc=None,
+        binding_intermediate_max_distance_acc=None,
+        binding_intermediate_protocol_version=None,
         permutation_composition_score=None,
         permutation_composition_train_chain_acc=None,
         permutation_composition_extrapolation_acc=None,
@@ -125,10 +125,10 @@ def _stage1_kwargs(
             "hellaswag_status": "ran",
             "blimp_overall_accuracy": 0.55,
             "blimp_status": "ran",
-            "induction_auc": 0.21,
-            "binding_auc": 0.18,
-            "binding_composite": 0.12,
-            "ar_auc": 0.06,
+            "induction_screening_auc": 0.21,
+            "binding_screening_auc": 0.18,
+            "binding_screening_composite": 0.12,
+            "ar_legacy_auc": 0.06,
         },
         model_source=model_source,
         extra={
@@ -1009,12 +1009,12 @@ def test_record_investigation_result_persists_best_training_curve():
                 "blimp_overall_accuracy": 0.56,
                 "blimp_status": "ok",
                 "blimp_n_subtasks": 1,
-                "induction_auc": 0.44,
-                "binding_auc": 0.12,
-                "binding_composite": 0.25,
-                "ar_auc": 0.01,
-                "nano_ar_inv_score": 1.0,
-                "nano_ar_inv_status": "ok",
+                "induction_screening_auc": 0.44,
+                "binding_screening_auc": 0.12,
+                "binding_screening_composite": 0.25,
+                "ar_legacy_auc": 0.01,
+                "ar_gate_score": 1.0,
+                "ar_gate_status": "ok",
             },
             best_training_curve=curve,
         )
@@ -1105,14 +1105,14 @@ def test_record_investigation_result_passes_near_loss_with_capability_evidence()
                 "blimp_overall_accuracy": 0.531,
                 "blimp_status": "ok",
                 "blimp_n_subtasks": 67,
-                "induction_auc": 0.33,
-                "binding_auc": 0.004,
-                "binding_composite": 0.101,
-                "ar_auc": 0.002,
-                "induction_v2_investigation_auc": 0.416,
-                "binding_v2_investigation_auc": 0.0928,
-                "nano_ar_inv_score": 1.0,
-                "nano_ar_inv_status": "ok",
+                "induction_screening_auc": 0.33,
+                "binding_screening_auc": 0.004,
+                "binding_screening_composite": 0.101,
+                "ar_legacy_auc": 0.002,
+                "induction_intermediate_auc": 0.416,
+                "binding_intermediate_auc": 0.0928,
+                "ar_gate_score": 1.0,
+                "ar_gate_status": "ok",
             },
         )
         nb.flush_writes()
@@ -1138,10 +1138,10 @@ def test_leaderboard_update_replaces_stale_fingerprint_cv_fields():
                 loss_ratio=0.50,
                 novelty_score=0.60,
                 intentional_rerun_reason="",
-                ar_auc=0.10,
-                induction_auc=0.40,
-                binding_auc=0.10,
-                nano_ar_inv_score=1.0,
+                ar_legacy_auc=0.10,
+                induction_screening_auc=0.40,
+                binding_screening_auc=0.10,
+                ar_gate_score=1.0,
                 trust_label="candidate_grade",
                 comparability_label="candidate_comparable",
                 result_cohort="search",
@@ -1155,10 +1155,10 @@ def test_leaderboard_update_replaces_stale_fingerprint_cv_fields():
                 loss_ratio=0.51,
                 novelty_score=0.60,
                 intentional_rerun_reason="exact_graph_replay_independent_sample",
-                ar_auc=0.11,
-                induction_auc=0.42,
-                binding_auc=0.11,
-                nano_ar_inv_score=1.0,
+                ar_legacy_auc=0.11,
+                induction_screening_auc=0.42,
+                binding_screening_auc=0.11,
+                ar_gate_score=1.0,
                 trust_label="candidate_grade",
                 comparability_label="candidate_comparable",
                 result_cohort="search",
@@ -1195,6 +1195,51 @@ def test_leaderboard_update_replaces_stale_fingerprint_cv_fields():
         nb.close()
 
 
+def test_plain_exact_graph_replay_child_counts_in_fingerprint_aggregates():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        nb = LabNotebook(f"{tmpdir}/exact_replay_aggregate.db")
+        exp = nb.start_experiment("backfill", {}, "backfill source")
+        nb.record_program_result(
+            experiment_id=exp,
+            graph_fingerprint="fp_exact_child_aggregate",
+            graph_json="{}",
+            stage0_passed=True,
+            stage05_passed=True,
+            **_stage1_kwargs(
+                loss_ratio=0.60,
+                novelty_score=0.30,
+                hellaswag_acc=0.20,
+            ),
+        )
+        inv_exp = nb.start_experiment("investigation", {}, "investigation child")
+        nb.record_program_result(
+            experiment_id=inv_exp,
+            graph_fingerprint="fp_exact_child_aggregate",
+            graph_json="{}",
+            stage0_passed=True,
+            stage05_passed=True,
+            **_stage1_kwargs(
+                loss_ratio=0.50,
+                novelty_score=0.40,
+                hellaswag_acc=0.40,
+                model_source="exact_graph_replay",
+                intentional_rerun_reason="exact_graph_replay",
+            ),
+        )
+        nb.flush_writes()
+
+        agg = nb.get_fingerprint_aggregates("fp_exact_child_aggregate")
+        metric_agg = nb.get_fingerprint_metric_aggregates("fp_exact_child_aggregate")
+        batch = nb.get_fingerprint_aggregates_batch(["fp_exact_child_aggregate"])
+
+        assert agg["n_runs"] == 2
+        assert agg["loss_mean"] == pytest.approx(0.55)
+        assert metric_agg["_n_runs_max"] == 2
+        assert metric_agg["hellaswag_acc"]["mean"] == pytest.approx(0.30)
+        assert batch["fp_exact_child_aggregate"]["n_runs"] == 2
+        nb.close()
+
+
 def test_candidate_confirmation_rebind_preserves_fingerprint_evidence():
     with tempfile.TemporaryDirectory() as tmpdir:
         nb = LabNotebook(f"{tmpdir}/candidate_confirmation_rebind.db")
@@ -1217,10 +1262,10 @@ def test_candidate_confirmation_rebind_preserves_fingerprint_evidence():
                 fp_jacobian_erf_density=0.359,
                 fp_cka_vs_transformer=0.294,
                 cka_source="artifact",
-                nano_ar_inv_score=1.0,
-                nano_ar_inv_status="ok",
-                controlled_lang_s05_nb_score=1.0,
-                controlled_lang_s10_nb_score=1.0,
+                ar_gate_score=1.0,
+                ar_gate_status="ok",
+                language_control_s05_binding_score=1.0,
+                language_control_s10_binding_score=1.0,
                 tinystories_score=0.568,
             ),
         )
@@ -1310,8 +1355,8 @@ def test_candidate_confirmation_rebind_preserves_fingerprint_evidence():
         confirmed = nb.conn.execute(
             """
             SELECT fp_jacobian_erf_density, fp_cka_vs_transformer, cka_source,
-                   nano_ar_inv_score, nano_ar_inv_status,
-                   controlled_lang_s05_nb_score, controlled_lang_s10_nb_score,
+                   ar_gate_score, ar_gate_status,
+                   language_control_s05_binding_score, language_control_s10_binding_score,
                    tinystories_score
             FROM program_results
             WHERE result_id = ?
@@ -1322,10 +1367,10 @@ def test_candidate_confirmation_rebind_preserves_fingerprint_evidence():
         assert confirmed["fp_jacobian_erf_density"] == pytest.approx(0.359)
         assert confirmed["fp_cka_vs_transformer"] == pytest.approx(0.294)
         assert confirmed["cka_source"] == "artifact"
-        assert confirmed["nano_ar_inv_score"] == pytest.approx(1.0)
-        assert confirmed["nano_ar_inv_status"] == "ok"
-        assert confirmed["controlled_lang_s05_nb_score"] == pytest.approx(1.0)
-        assert confirmed["controlled_lang_s10_nb_score"] == pytest.approx(1.0)
+        assert confirmed["ar_gate_score"] == pytest.approx(1.0)
+        assert confirmed["ar_gate_status"] == "ok"
+        assert confirmed["language_control_s05_binding_score"] == pytest.approx(1.0)
+        assert confirmed["language_control_s10_binding_score"] == pytest.approx(1.0)
         assert confirmed["tinystories_score"] == pytest.approx(0.568)
 
         nb._sync_fingerprint_leaderboard(confirmed_rid)

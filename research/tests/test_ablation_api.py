@@ -96,10 +96,10 @@ class TestAblationDiagnosticsAPI(unittest.TestCase):
                 "wikitext_score": 0.6,
                 "hellaswag_acc": 0.34,
                 "blimp_overall_accuracy": 0.58,
-                "induction_auc": 0.45,
-                "binding_auc": 0.35,
-                "binding_composite": 0.35,
-                "ar_auc": 0.20,
+                "induction_screening_auc": 0.45,
+                "binding_screening_auc": 0.35,
+                "binding_screening_composite": 0.35,
+                "ar_legacy_auc": 0.20,
                 "fp_jacobian_erf_density": 0.50,
                 "fp_icld_delta_loss": -0.30,
                 "fp_logit_margin_delta": 0.20,
@@ -111,10 +111,10 @@ class TestAblationDiagnosticsAPI(unittest.TestCase):
                 "wikitext_perplexity": 210.0,
                 "hellaswag_acc": 0.29,
                 "blimp_overall_accuracy": 0.51,
-                "induction_auc": 0.12,
-                "binding_auc": 0.16,
-                "binding_composite": 0.16,
-                "ar_auc": 0.09,
+                "induction_screening_auc": 0.12,
+                "binding_screening_auc": 0.16,
+                "binding_screening_composite": 0.16,
+                "ar_legacy_auc": 0.09,
             }
 
             parent_kwargs = program_result_kwargs_from_s1(
@@ -131,10 +131,10 @@ class TestAblationDiagnosticsAPI(unittest.TestCase):
                 stage0_passed=True,
                 stage05_passed=True,
                 stage1_passed=True,
-                induction_v2_investigation_auc=0.91,
-                induction_v2_investigation_status="ok",
-                binding_v2_investigation_auc=0.73,
-                binding_v2_investigation_status="ok",
+                induction_intermediate_auc=0.91,
+                induction_intermediate_status="ok",
+                binding_intermediate_auc=0.73,
+                binding_intermediate_status="ok",
                 **parent_kwargs,
             )
             child_rid = nb.record_program_result(
@@ -146,10 +146,10 @@ class TestAblationDiagnosticsAPI(unittest.TestCase):
                 stage05_passed=True,
                 stage1_passed=True,
                 intentional_rerun_reason="ablation_counterfactual",
-                induction_v2_investigation_auc=0.11,
-                induction_v2_investigation_status="ok",
-                binding_v2_investigation_auc=0.20,
-                binding_v2_investigation_status="ok",
+                induction_intermediate_auc=0.11,
+                induction_intermediate_status="ok",
+                binding_intermediate_auc=0.20,
+                binding_intermediate_status="ok",
                 **child_kwargs,
             )
             evidence_json = {
@@ -161,24 +161,24 @@ class TestAblationDiagnosticsAPI(unittest.TestCase):
                     "wikitext_perplexity": 120.0,
                     "hellaswag_acc": 0.34,
                     "blimp_overall_accuracy": 0.58,
-                    "induction_auc": 0.45,
-                    "binding_composite": 0.35,
-                    "ar_auc": 0.20,
-                    "induction_v2_investigation_auc": 0.91,
-                    "binding_v2_investigation_auc": 0.73,
+                    "induction_screening_auc": 0.45,
+                    "binding_screening_composite": 0.35,
+                    "ar_legacy_auc": 0.20,
+                    "induction_intermediate_auc": 0.91,
+                    "binding_intermediate_auc": 0.73,
                 },
                 "child_metrics": {
                     "loss_ratio": 0.65,
                     "wikitext_perplexity": 210.0,
                     "hellaswag_acc": 0.29,
                     "blimp_overall_accuracy": 0.51,
-                    "induction_auc": 0.12,
-                    "binding_composite": 0.16,
-                    "ar_auc": 0.09,
-                    "induction_v2_investigation_auc": 0.11,
-                    "induction_v2_investigation_status": "ok",
-                    "binding_v2_investigation_auc": 0.20,
-                    "binding_v2_investigation_status": "ok",
+                    "induction_screening_auc": 0.12,
+                    "binding_screening_composite": 0.16,
+                    "ar_legacy_auc": 0.09,
+                    "induction_intermediate_auc": 0.11,
+                    "induction_intermediate_status": "ok",
+                    "binding_intermediate_auc": 0.20,
+                    "binding_intermediate_status": "ok",
                 },
             }
             nb.record_causal_rule_evidence(
@@ -211,8 +211,8 @@ class TestAblationDiagnosticsAPI(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         rows = resp.get_json()["components"]
         self.assertEqual(rows[0]["rule_key"], "13:softmax_attention")
-        self.assertEqual(rows[0]["n_induction_v2"], 1)
-        self.assertAlmostEqual(rows[0]["avg_d_induction_v2"], 0.80)
+        self.assertEqual(rows[0]["n_induction_intermediate"], 1)
+        self.assertAlmostEqual(rows[0]["avg_d_induction_intermediate"], 0.80)
 
         resp = self.client.get(
             "/api/ablations/children-for-rule"
@@ -222,8 +222,8 @@ class TestAblationDiagnosticsAPI(unittest.TestCase):
         children = resp.get_json()["children"]
         self.assertEqual(children[0]["source"], "knockout_investigation")
         self.assertEqual(children[0]["child_result_id"], child_rid)
-        self.assertAlmostEqual(children[0]["parent_induction_v2"], 0.91)
-        self.assertAlmostEqual(children[0]["child_induction_v2"], 0.11)
+        self.assertAlmostEqual(children[0]["parent_induction_intermediate"], 0.91)
+        self.assertAlmostEqual(children[0]["child_induction_intermediate"], 0.11)
 
     def test_construction_prior_active_returns_none_initially(self):
         resp = self.client.get("/api/ablations/construction-prior")

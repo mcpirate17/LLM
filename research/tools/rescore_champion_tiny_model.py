@@ -24,7 +24,7 @@ from research.tools.db_health import backup_sqlite_db
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_DB = PROJECT_ROOT / "research/lab_notebook.db"
+DEFAULT_DB = PROJECT_ROOT / "research/runs.db"
 DEFAULT_CHECKPOINT_ROOT = PROJECT_ROOT / "checkpoints/_investigation_artifacts"
 GPT2_EXPERIMENT_ID = "ba70eb86-3f8"
 GPT2_TARGETS = {
@@ -211,23 +211,23 @@ def _select_existing_columns(conn: sqlite3.Connection) -> list[str]:
         "avg_step_time_ms",
         "total_train_time_ms",
         "n_train_steps",
-        "induction_v3_auc",
-        "induction_v3_gap_accuracy_cv",
-        "induction_v3_protocol_version",
-        "induction_v2_investigation_auc",
-        "induction_v2_investigation_gap_accuracies_json",
-        "induction_v2_investigation_protocol_version",
-        "binding_v2_investigation_auc",
+        "induction_validation_auc",
+        "induction_validation_gap_accuracy_cv",
+        "induction_validation_protocol_version",
+        "induction_intermediate_auc",
+        "induction_intermediate_gap_accuracies_json",
+        "induction_intermediate_protocol_version",
+        "binding_intermediate_auc",
         "robustness_long_ctx_combined_score",
-        "small_ar_champion_held_pair_match_acc",
-        "small_ar_champion_held_class_acc",
-        "small_ar_champion_steps_to_floor",
-        "small_ar_champion_status",
-        "small_ar_champion_metric_version",
-        "nano_ar_inv_held_pair_match_acc",
-        "nano_ar_inv_held_class_acc",
-        "nano_ar_inv_score",
-        "nano_ar_inv_status",
+        "ar_validation_held_pair_acc",
+        "ar_validation_held_class_acc",
+        "ar_validation_steps_to_floor",
+        "ar_validation_status",
+        "ar_validation_metric_version",
+        "ar_gate_held_pair_acc",
+        "ar_gate_held_class_acc",
+        "ar_gate_score",
+        "ar_gate_status",
     ]
     return [col for col in wanted if col in available]
 
@@ -339,17 +339,17 @@ def _baseline(
 
 
 def _induction_score(metrics: dict[str, Any]) -> tuple[float, str]:
-    auc = _finite_float(metrics.get("induction_v3_auc"))
-    cv = _finite_float(metrics.get("induction_v3_gap_accuracy_cv"))
-    source = str(metrics.get("induction_v3_protocol_version") or "induction_v3")
+    auc = _finite_float(metrics.get("induction_validation_auc"))
+    cv = _finite_float(metrics.get("induction_validation_gap_accuracy_cv"))
+    source = str(
+        metrics.get("induction_validation_protocol_version") or "induction_validation"
+    )
     if auc is None:
-        auc = _finite_float(metrics.get("induction_v2_investigation_auc"))
-        cv = _cv_from_json(
-            metrics.get("induction_v2_investigation_gap_accuracies_json")
-        )
+        auc = _finite_float(metrics.get("induction_intermediate_auc"))
+        cv = _cv_from_json(metrics.get("induction_intermediate_gap_accuracies_json"))
         source = str(
-            metrics.get("induction_v2_investigation_protocol_version")
-            or "fallback_induction_v2"
+            metrics.get("induction_intermediate_protocol_version")
+            or "fallback_induction_intermediate"
         )
     if auc is None:
         return 0.0, "missing"
@@ -357,17 +357,17 @@ def _induction_score(metrics: dict[str, Any]) -> tuple[float, str]:
     return _clamp((auc - 0.20) / 0.75) * 8.0 + cv_term * 2.0, source
 
 
-def _small_ar_score(
+def _ar_validation_rank_score(
     metrics: dict[str, Any], baseline_steps: float | None
 ) -> tuple[float, str]:
-    pair = _finite_float(metrics.get("small_ar_champion_held_pair_match_acc"))
-    held_class = _finite_float(metrics.get("small_ar_champion_held_class_acc"))
-    steps = _finite_float(metrics.get("small_ar_champion_steps_to_floor"))
-    source = str(metrics.get("small_ar_champion_metric_version") or "small_ar_champion")
+    pair = _finite_float(metrics.get("ar_validation_held_pair_acc"))
+    held_class = _finite_float(metrics.get("ar_validation_held_class_acc"))
+    steps = _finite_float(metrics.get("ar_validation_steps_to_floor"))
+    source = str(metrics.get("ar_validation_metric_version") or "ar_validation")
     if pair is None and held_class is None:
-        pair = _finite_float(metrics.get("nano_ar_inv_held_pair_match_acc"))
-        held_class = _finite_float(metrics.get("nano_ar_inv_held_class_acc"))
-        source = "fallback_nano_ar_inv"
+        pair = _finite_float(metrics.get("ar_gate_held_pair_acc"))
+        held_class = _finite_float(metrics.get("ar_gate_held_class_acc"))
+        source = "fallback_ar_gate"
     if pair is None and held_class is None:
         return 0.0, "missing"
     speed = 0.0
@@ -423,16 +423,18 @@ def compute_score_rows(
             else 0.0
         )
         induction_score, induction_source = _induction_score(target.metrics)
-        small_ar_score, small_ar_source = _small_ar_score(target.metrics, base_steps)
-        binding_auc = (
-            _finite_float(target.metrics.get("binding_v2_investigation_auc")) or 0.0
+        ar_validation_rank_score, ar_validation_source = _ar_validation_rank_score(
+            target.metrics, base_steps
+        )
+        binding_screening_auc = (
+            _finite_float(target.metrics.get("binding_intermediate_auc")) or 0.0
         )
         long_ctx = (
             _finite_float(target.metrics.get("robustness_long_ctx_combined_score"))
             or 0.0
         )
         base_long_ctx = base.get("long_ctx") or 0.0
-        binding_long_score = 3.0 * _clamp(binding_auc)
+        binding_long_score = 3.0 * _clamp(binding_screening_auc)
         if base_long_ctx > 0:
             binding_long_score += 2.0 * _clamp(long_ctx / base_long_ctx)
 
@@ -440,9 +442,9 @@ def compute_score_rows(
             "speed": speed_score,
             "floor_quality": floor_quality_score,
             "stability": stability_score,
-            "induction_v3": induction_score,
+            "induction_validation": induction_score,
             "binding_long_context": binding_long_score,
-            "small_ar": small_ar_score,
+            "ar_validation": ar_validation_rank_score,
         }
         score_rows.append(
             ScoreRow(
@@ -451,8 +453,8 @@ def compute_score_rows(
                 scores=scores,
                 total_score=sum(scores.values()),
                 metric_sources={
-                    "induction_v3": induction_source,
-                    "small_ar": small_ar_source,
+                    "induction_validation": induction_source,
+                    "ar_validation": ar_validation_source,
                 },
                 hard_failure_reason=hard_failure_reason,
             )
@@ -474,9 +476,9 @@ CHAMPION_COLUMNS = {
     "champion_steps_to_floor_score": "REAL",
     "champion_floor_quality_score": "REAL",
     "champion_floor_stability_score": "REAL",
-    "champion_induction_v3_score": "REAL",
+    "champion_induction_validation_score": "REAL",
     "champion_binding_long_context_score": "REAL",
-    "champion_small_ar_score": "REAL",
+    "champion_ar_validation_score": "REAL",
     "champion_tiny_model_score": "REAL",
     "champion_tiny_model_protocol_version": "TEXT",
     "champion_hard_failure_reason": "TEXT",
@@ -509,9 +511,9 @@ def write_score_rows(conn: sqlite3.Connection, rows: list[ScoreRow]) -> None:
                 champion_steps_to_floor_score = ?,
                 champion_floor_quality_score = ?,
                 champion_floor_stability_score = ?,
-                champion_induction_v3_score = ?,
+                champion_induction_validation_score = ?,
                 champion_binding_long_context_score = ?,
-                champion_small_ar_score = ?,
+                champion_ar_validation_score = ?,
                 champion_tiny_model_score = ?,
                 champion_tiny_model_protocol_version = ?,
                 champion_hard_failure_reason = ?
@@ -531,9 +533,9 @@ def write_score_rows(conn: sqlite3.Connection, rows: list[ScoreRow]) -> None:
                 row.scores["speed"],
                 row.scores["floor_quality"],
                 row.scores["stability"],
-                row.scores["induction_v3"],
+                row.scores["induction_validation"],
                 row.scores["binding_long_context"],
-                row.scores["small_ar"],
+                row.scores["ar_validation"],
                 row.total_score,
                 SCORE_PROTOCOL_VERSION,
                 row.hard_failure_reason,
@@ -553,7 +555,7 @@ def _fmt(value: Any, digits: int = 2) -> str:
 def print_comparison(rows: list[ScoreRow], out: TextIO) -> None:
     print("Champion tiny-model dry-run comparison", file=out)
     print(
-        "target              result_id     steps floor_loss speed floor_q stable induction_v3 small_ar total artifacts",
+        "target              result_id     steps floor_loss speed floor_q stable induction_validation ar_validation total artifacts",
         file=out,
     )
     for row in rows:
@@ -565,20 +567,20 @@ def print_comparison(rows: list[ScoreRow], out: TextIO) -> None:
             f"{_fmt(row.scores['speed']):>5} "
             f"{_fmt(row.scores['floor_quality']):>7} "
             f"{_fmt(row.scores['stability']):>6} "
-            f"{_fmt(row.scores['induction_v3']):>12} "
-            f"{_fmt(row.scores['small_ar']):>8} "
+            f"{_fmt(row.scores['induction_validation']):>12} "
+            f"{_fmt(row.scores['ar_validation']):>8} "
             f"{_fmt(row.total_score):>5} "
             f"{len(row.target.artifact_paths):>9}",
             file=out,
         )
     fallback_notes = sorted(
         {
-            f"{row.target.result_id}: induction={row.metric_sources['induction_v3']}, small_ar={row.metric_sources['small_ar']}"
+            f"{row.target.result_id}: induction={row.metric_sources['induction_validation']}, ar_validation={row.metric_sources['ar_validation']}"
             for row in rows
-            if "fallback" in row.metric_sources["induction_v3"]
-            or "fallback" in row.metric_sources["small_ar"]
-            or row.metric_sources["induction_v3"] == "missing"
-            or row.metric_sources["small_ar"] == "missing"
+            if "fallback" in row.metric_sources["induction_validation"]
+            or "fallback" in row.metric_sources["ar_validation"]
+            or row.metric_sources["induction_validation"] == "missing"
+            or row.metric_sources["ar_validation"] == "missing"
         }
     )
     if fallback_notes:

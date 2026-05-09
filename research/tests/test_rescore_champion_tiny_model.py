@@ -16,12 +16,12 @@ def _make_db(path: Path) -> None:
             result_id TEXT PRIMARY KEY,
             experiment_id TEXT,
             final_loss REAL,
-            induction_v2_investigation_auc REAL,
-            induction_v2_investigation_gap_accuracies_json TEXT,
-            binding_v2_investigation_auc REAL,
+            induction_intermediate_auc REAL,
+            induction_intermediate_gap_accuracies_json TEXT,
+            binding_intermediate_auc REAL,
             robustness_long_ctx_combined_score REAL,
-            nano_ar_inv_held_pair_match_acc REAL,
-            nano_ar_inv_held_class_acc REAL
+            ar_gate_held_pair_acc REAL,
+            ar_gate_held_class_acc REAL
         )
         """
     )
@@ -76,12 +76,12 @@ def _make_db(path: Path) -> None:
         """
         INSERT INTO program_results (
             result_id, experiment_id, final_loss,
-            induction_v2_investigation_auc,
-            induction_v2_investigation_gap_accuracies_json,
-            binding_v2_investigation_auc,
+            induction_intermediate_auc,
+            induction_intermediate_gap_accuracies_json,
+            binding_intermediate_auc,
             robustness_long_ctx_combined_score,
-            nano_ar_inv_held_pair_match_acc,
-            nano_ar_inv_held_class_acc
+            ar_gate_held_pair_acc,
+            ar_gate_held_class_acc
         )
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,

@@ -9,6 +9,8 @@ SCALENE_CMD ?=
 BENCH ?=
 JOURNAL_NOTE ?=
 JOURNAL_TEST ?=
+JOURNAL_PATHS ?=
+JOURNAL_MAX_STATUS ?= 80
 NOTEBOOKLM_OUT ?= tasks/notebooklm/codex_context_bundle.md
 
 .PHONY: all aria_core test test-aria_core test-designer test-research test-integration test-changed watch-test-changed profile-scalene bench codex-journal notebooklm-bundle clean clean-junk clean-docs clean-all help guardrails-dry guardrails-dry-report perf-summary governance-check governance-audit profile-hotpaths profile-screening-hotpaths profile-screening-hotpaths-quick
@@ -63,7 +65,7 @@ bench:  ## Benchmark BENCH='cmd one' or BENCH='cmd one ::: cmd two' with hyperfi
 	hyperfine $(BENCH)
 
 codex-journal:  ## Append an Obsidian-compatible Codex journal entry
-	$(UV) run python conductor/codex_journal.py --note "$(JOURNAL_NOTE)" $(if $(JOURNAL_TEST),--test "$(JOURNAL_TEST)",)
+	$(UV) run python conductor/codex_journal.py --note "$(JOURNAL_NOTE)" $(if $(JOURNAL_TEST),--test "$(JOURNAL_TEST)",) $(foreach path,$(JOURNAL_PATHS),--path "$(path)") --max-status "$(JOURNAL_MAX_STATUS)"
 
 notebooklm-bundle:  ## Build a curated Markdown bundle for manual NotebookLM upload
 	$(UV) run python conductor/notebooklm_bundle.py --out "$(NOTEBOOKLM_OUT)"

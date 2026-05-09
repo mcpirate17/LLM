@@ -335,6 +335,7 @@ function ExpandedDetailBody({
   onRescreen,
   onPromoteScreening,
   onInvestigate,
+  onCapabilityRank,
   onValidate,
   onConfirm,
   onQueueAdd,
@@ -410,17 +411,17 @@ function ExpandedDetailBody({
           )}
           <div style={{ padding: 10, borderRadius: 8, border: '1px solid var(--border)', background: 'rgba(255,255,255,0.02)' }}>
             <div style={{ fontWeight: 600, marginBottom: 6, textTransform: 'uppercase', fontSize: 10, color: 'var(--text-muted)' }}>Full Metrics</div>
-            <MetricRow label="Screening Loss" value={fmt(entry.screening_loss_ratio)} color={lossColor(entry.screening_loss_ratio)} />
-            <MetricRow label="Screening Novelty" value={fmt(entry.screening_novelty, 3)} color={noveltyColor(entry.screening_novelty)} />
-            <MetricRow label="Investigation Loss" value={fmt(entry.investigation_loss_ratio)} />
+            <MetricRow label="SCRN Loss" value={fmt(entry.screening_loss_ratio)} color={lossColor(entry.screening_loss_ratio)} />
+            <MetricRow label="SCRN Novelty" value={fmt(entry.screening_novelty, 3)} color={noveltyColor(entry.screening_novelty)} />
+            <MetricRow label="INTER Loss" value={fmt(entry.investigation_loss_ratio)} />
             <MetricRow
               label="Robustness"
               value={fmt(entry.investigation_robustness, 2)}
               color={entry.investigation_robustness != null ? (entry.investigation_robustness >= 0.5 ? 'var(--accent-green)' : 'var(--accent-red)') : undefined}
             />
-            <MetricRow label="Validation Loss" value={fmt(entry.validation_loss_ratio)} />
+            <MetricRow label="VAL Loss" value={fmt(entry.validation_loss_ratio)} />
             <MetricRow
-              label="Validation Baseline"
+              label="VAL Baseline"
               value={fmt(entry.validation_baseline_ratio)}
               color={entry.validation_baseline_ratio != null ? (entry.validation_baseline_ratio < 1 ? 'var(--accent-green)' : 'var(--accent-red)') : undefined}
             />
@@ -570,6 +571,20 @@ function ExpandedDetailBody({
                   {eligibility?.validationEligible ? 'Validate' : 'Force Validate'}
                 </button>
               )}
+              {eligibility?.capabilityRankingEligible && (
+                <button
+                  onClick={() => onCapabilityRank?.([entry.result_id])}
+                  style={{
+                    ...actionBtnStyle,
+                    background: 'rgba(88, 166, 255, 0.12)',
+                    border: '1px solid rgba(88, 166, 255, 0.4)',
+                    color: 'var(--accent-blue)',
+                  }}
+                  title="Run selective induction/binding capability rankers"
+                >
+                  Rank Capability
+                </button>
+              )}
               {eligibility?.confirmationEligible && (
                 <button
                   onClick={() => onConfirm?.([entry.result_id])}
@@ -597,11 +612,14 @@ function ExpandedDetailBody({
                         architectureFamily: entry.architecture_family,
                         intent: eligibility?.confirmationEligible
                           ? 'confirmation'
-                          : eligibility?.validationEligible
-                            ? 'validation'
-                            : 'investigation',
+                          : eligibility?.capabilityRankingEligible
+                            ? 'capability_ranking'
+                            : eligibility?.validationEligible
+                              ? 'validation'
+                              : 'investigation',
                         queueEligible: true,
                         investigationEligible: eligibility?.investigationEligible,
+                        capabilityRankingEligible: eligibility?.capabilityRankingEligible,
                         validationEligible: eligibility?.validationEligible,
                         confirmationEligible: eligibility?.confirmationEligible,
                       });

@@ -6,9 +6,9 @@ Combines Phase 1 outputs into a single per-template decision:
   research/reports/slot_realization.csv          (per slot×motif pass rates)
   research/reports/slot_mixer_credit_v2.csv      (dominant-mixing slots)
   research/reports/op_mixer_certification_v2.csv (mixer/non-mixer/exotic op cert)
-  research/reports/high_capability_slot_fills.csv(induction_v2 max_auc per slot)
+  research/reports/high_capability_slot_fills.csv(induction_intermediate max_auc per slot)
   research/reports/slot_opaque.txt               (typed-slot-absent templates)
-  + per-template op presence derived from lab_notebook.db
+  + per-template op presence derived from runs.db
 
 Bucket criteria (deep-dive doc §Phase 2):
   A KEEP    : mean_sa>=0.80 AND n>=20 AND template has dominant-mixing slot
@@ -35,7 +35,7 @@ from pathlib import Path
 from typing import Any
 
 REPO = Path(__file__).resolve().parents[2]
-LAB = REPO / "research/lab_notebook.db"
+LAB = REPO / "research/runs.db"
 REPORTS = REPO / "research/reports"
 
 PASS_SA = 0.95
@@ -73,12 +73,12 @@ def load_per_template_signals() -> dict[str, dict[str, Any]]:
     conn = sqlite3.connect(f"file:{LAB}?mode=ro&immutable=0", uri=True)
     cur = conn.execute(
         """
-        SELECT pgf.template_name, pr.controlled_lang_s05_sa_score, pr.failure_op,
+        SELECT pgf.template_name, pr.language_control_s05_sentence_assoc_score, pr.failure_op,
                pr.graph_json
         FROM program_results pr
         LEFT JOIN leaderboard l ON l.result_id = pr.result_id
         LEFT JOIN program_graph_features pgf ON pgf.result_id = pr.result_id
-        WHERE pr.controlled_lang_s05_sa_score IS NOT NULL
+        WHERE pr.language_control_s05_sentence_assoc_score IS NOT NULL
           AND COALESCE(l.is_reference, 0) = 0
           AND pr.graph_json IS NOT NULL
           AND pgf.template_name IS NOT NULL
@@ -157,7 +157,7 @@ class Phase1Index:
         for r in load_csv(REPORTS / "high_capability_slot_fills.csv"):
             tpl = r["template_name"]
             try:
-                v = float(r["max_induction_v2_auc"])
+                v = float(r["max_induction_intermediate_auc"])
             except (TypeError, ValueError):
                 continue
             self.high_cap_max_auc[tpl] = max(self.high_cap_max_auc.get(tpl, 0.0), v)

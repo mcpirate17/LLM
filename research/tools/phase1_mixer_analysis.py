@@ -36,8 +36,11 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
+from research.scientist.notebook.graph_artifacts import resolve_graph_json_value
+
 REPO = Path(__file__).resolve().parents[2]
-DB = f"file:{REPO / 'research/lab_notebook.db'}?mode=ro&immutable=0"
+DB_PATH = REPO / "research/runs.db"
+DB = f"file:{DB_PATH}?mode=ro&immutable=0"
 REPORTS = REPO / "research/reports"
 
 PASS_SA = 0.95
@@ -104,7 +107,7 @@ def fetch_cohort_rows() -> list[dict]:
     cur.execute(
         """
         SELECT pr.result_id,
-               pr.controlled_lang_s05_sa_score AS sa,
+               pr.language_control_s05_sentence_assoc_score AS sa,
                pr.failure_op AS failure_op,
                pr.graph_json AS graph_json,
                pgf.slot_usage_json AS slot_usage_json,
@@ -112,13 +115,17 @@ def fetch_cohort_rows() -> list[dict]:
         FROM program_results pr
         LEFT JOIN leaderboard l ON l.result_id = pr.result_id
         LEFT JOIN program_graph_features pgf ON pgf.result_id = pr.result_id
-        WHERE pr.controlled_lang_s05_sa_score IS NOT NULL
+        WHERE pr.language_control_s05_sentence_assoc_score IS NOT NULL
           AND COALESCE(l.is_reference, 0) = 0
           AND pr.graph_json IS NOT NULL
         """
     )
     cols = [c[0] for c in cur.description]
-    rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+    rows = []
+    for raw in cur.fetchall():
+        row = dict(zip(cols, raw))
+        row["graph_json"] = resolve_graph_json_value(conn, DB_PATH, row["graph_json"])
+        rows.append(row)
     conn.close()
     return rows
 

@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sqlite3
 import sys
 import time
 from datetime import datetime, timezone
@@ -30,9 +31,10 @@ from pathlib import Path
 import aria_db
 
 from research.eval.nano_bind import NANO_BIND_METRIC_VERSION, nano_bind
+from research.scientist.notebook.graph_artifacts import resolve_graph_json_value
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DB_PATH = REPO_ROOT / "research" / "lab_notebook.db"
+DB_PATH = REPO_ROOT / "research" / "runs.db"
 SIDECAR_DIR = REPO_ROOT / "research" / "reports" / "nano_bind_backfill"
 SUMMARY_PATH = SIDECAR_DIR / "SUMMARY.md"
 
@@ -66,6 +68,17 @@ def fetch_candidates(
     if limit:
         sql += f" LIMIT {int(limit)}"
     rows = mgr.fetchall(sql, list(result_ids) if result_ids else [])
+    conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        for row in rows:
+            row["graph_json"] = resolve_graph_json_value(
+                conn,
+                DB_PATH,
+                row.get("graph_json"),
+            )
+    finally:
+        conn.close()
     return rows
 
 

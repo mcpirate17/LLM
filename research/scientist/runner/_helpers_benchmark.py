@@ -9,6 +9,12 @@ import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any, Dict, List, Optional
 
+from ..capability_ranker_metrics import (
+    AR_INTERMEDIATE_SCORE_FIELDS as _AR_INTERMEDIATE_SCORE_FIELDS,
+    BINDING_MULTISLOT_SCORE_FIELDS as _BINDING_MULTISLOT_SCORE_FIELDS,
+    capability_ranker_fields,
+    has_capability_ranker_evidence,
+)
 from ..thresholds import TIER_RANK
 from ._helpers_metrics import (
     _trajectory_probe_capability_tier,
@@ -109,7 +115,15 @@ def _evaluate_investigation_benchmarks(
             model,
             dev,
             graph_json_str=graph_json_str,
-            run_nano_ar=True,
+            run_induction_intermediate=bool(
+                getattr(config, "investigation_run_capability_rankers", False)
+            ),
+            run_binding_intermediate=bool(
+                getattr(config, "investigation_run_capability_rankers", False)
+            ),
+            run_ar_gate=True,
+            run_ar_intermediate=bool(getattr(config, "run_ar_intermediate", False)),
+            run_binding_multislot=bool(getattr(config, "run_binding_multislot", False)),
         )
     )
 
@@ -261,27 +275,31 @@ def _evaluate_investigation_benchmarks(
     # Binding probes: AR + induction + binding range (full suite at investigation)
     try:
         from ...eval.binding_pipeline import (
-            compute_binding_composite,
+            compute_binding_screening_composite,
             compute_local_only,
             run_full_binding_probes,
         )
 
         probe = run_full_binding_probes(model, device=dev)
         result.update(probe.to_result_dict())
-        bc = compute_binding_composite(
-            probe.ar_auc, probe.induction_auc, probe.binding_auc
+        bc = compute_binding_screening_composite(
+            probe.ar_legacy_auc,
+            probe.induction_screening_auc,
+            probe.binding_screening_auc,
         )
-        result["binding_composite"] = bc
+        result["binding_screening_composite"] = bc
         result["local_only"] = compute_local_only(
-            probe.ar_auc, probe.induction_auc, probe.binding_auc
+            probe.ar_legacy_auc,
+            probe.induction_screening_auc,
+            probe.binding_screening_auc,
         )
 
         logger.info(
             "Investigation binding probes: ar=%.3f ind=%.3f bind=%.3f bc=%.3f local_only=%s "
             "(%.0f+%.0f+%.0fms)",
-            probe.ar_auc,
-            probe.induction_auc,
-            probe.binding_auc,
+            probe.ar_legacy_auc,
+            probe.induction_screening_auc,
+            probe.binding_screening_auc,
             bc,
             bool(result["local_only"]),
             probe.ar_elapsed_ms,
@@ -299,11 +317,11 @@ def _evaluate_investigation_benchmarks(
         }
         _graph_str = graph_json_str or ""
         _has_attn = any(op in _graph_str for op in _attn_ops)
-        if probe.ar_auc > 0.15 and not _has_attn:
+        if probe.ar_legacy_auc > 0.15 and not _has_attn:
             logger.warning(
                 "DISCOVERY: High AR score without full attention — "
-                "ar_auc=%.3f, model_source=%s, graph=%s",
-                probe.ar_auc,
+                "ar_legacy_auc=%.3f, model_source=%s, graph=%s",
+                probe.ar_legacy_auc,
                 model_source,
                 _graph_str[:200],
             )
@@ -341,53 +359,49 @@ def _evaluate_investigation_benchmarks(
     return result
 
 
-def _nano_ar_inv_result_fields(nano_ar_inv_result: Any) -> Dict[str, Any]:
-    nano_ok = str(nano_ar_inv_result.status or "") == "ok"
+def _ar_gate_result_fields(ar_gate_result: Any) -> Dict[str, Any]:
+    nano_ok = str(ar_gate_result.status or "") == "ok"
     score = None
     if nano_ok:
         score = round(
-            0.6 * float(nano_ar_inv_result.in_dist_pair_match_acc or 0.0)
-            + 0.4 * float(nano_ar_inv_result.held_class_acc or 0.0),
+            0.6 * float(ar_gate_result.in_dist_pair_acc or 0.0)
+            + 0.4 * float(ar_gate_result.held_class_acc or 0.0),
             4,
         )
     return {
-        "nano_ar_inv_metric_version": nano_ar_inv_result.metric_version,
-        "nano_ar_inv_in_dist_pair_match_acc": (
-            nano_ar_inv_result.in_dist_pair_match_acc if nano_ok else None
+        "ar_gate_metric_version": ar_gate_result.metric_version,
+        "ar_gate_in_dist_pair_acc": (
+            ar_gate_result.in_dist_pair_acc if nano_ok else None
         ),
-        "nano_ar_inv_in_dist_class_acc": (
-            nano_ar_inv_result.in_dist_class_acc if nano_ok else None
+        "ar_gate_in_dist_class_acc": (
+            ar_gate_result.in_dist_class_acc if nano_ok else None
         ),
-        "nano_ar_inv_held_pair_match_acc": (
-            nano_ar_inv_result.held_pair_match_acc if nano_ok else None
-        ),
-        "nano_ar_inv_held_class_acc": (
-            nano_ar_inv_result.held_class_acc if nano_ok else None
-        ),
-        "nano_ar_inv_score": score,
-        "nano_ar_inv_status": nano_ar_inv_result.status,
-        "nano_ar_inv_elapsed_ms": nano_ar_inv_result.elapsed_ms,
-        "nano_ar_inv_train_steps_done": nano_ar_inv_result.finetune_steps_done,
+        "ar_gate_held_pair_acc": (ar_gate_result.held_pair_acc if nano_ok else None),
+        "ar_gate_held_class_acc": (ar_gate_result.held_class_acc if nano_ok else None),
+        "ar_gate_score": score,
+        "ar_gate_status": ar_gate_result.status,
+        "ar_gate_elapsed_ms": ar_gate_result.elapsed_ms,
+        "ar_gate_train_steps_done": ar_gate_result.finetune_steps_done,
     }
 
 
-def _run_investigation_nano_ar_probe(
+def _run_investigation_ar_gate_probe(
     model: Any,
     dev: Any,
     *,
     graph_json_str: str | None = None,
 ) -> Dict[str, Any]:
-    """Run the investigation-tier Nano-AR probe.
+    """Run the investigation-tier AR Gate probe.
 
     Live investigation reruns usually only have a graph spec available in the
     background benchmark worker, so use the locked standalone/wikitext-warmup
-    config from the offline Nano-AR backfill path when graph JSON is present.
+    config from the offline AR Gate backfill path when graph JSON is present.
     If a caller only has a live model, fall back to the production from-S1 mode.
     """
-    from ...eval.nano_ar_inv import NanoARInvConfig, nano_ar_inv
+    from ...eval.ar_gate import ARGateConfig, ar_gate
 
     if graph_json_str:
-        cfg = NanoARInvConfig(
+        cfg = ARGateConfig(
             seed=0,
             wikitext_warmup_steps=2500,
             finetune_steps=400,
@@ -399,9 +413,9 @@ def _run_investigation_nano_ar_probe(
             timeout_s=600.0,
             from_s1=False,
         )
-        nano = nano_ar_inv(graph_json=graph_json_str, device=str(dev), cfg=cfg)
+        nano = ar_gate(graph_json=graph_json_str, device=str(dev), cfg=cfg)
     else:
-        cfg = NanoARInvConfig(
+        cfg = ARGateConfig(
             seed=0,
             finetune_steps=400,
             n_pairs_per_noun=1,
@@ -412,58 +426,139 @@ def _run_investigation_nano_ar_probe(
             timeout_s=600.0,
             from_s1=True,
         )
-        nano = nano_ar_inv(model=model, device=str(dev), cfg=cfg)
+        nano = ar_gate(model=model, device=str(dev), cfg=cfg)
 
-    fields = _nano_ar_inv_result_fields(nano)
+    fields = _ar_gate_result_fields(nano)
     logger.info(
-        "Investigation Nano-AR probe: score=%s in_pair=%.4f held_class=%.4f status=%s",
+        "Investigation AR Gate probe: score=%s in_pair=%.4f held_class=%.4f status=%s",
         (
-            f"{fields['nano_ar_inv_score']:.4f}"
-            if fields["nano_ar_inv_score"] is not None
+            f"{fields['ar_gate_score']:.4f}"
+            if fields["ar_gate_score"] is not None
             else "None"
         ),
-        nano.in_dist_pair_match_acc,
+        nano.in_dist_pair_acc,
         nano.held_class_acc,
         nano.status,
     )
     return fields
 
 
-def _small_ar_champion_result_fields(result: Any) -> Dict[str, Any]:
+def _ar_validation_result_fields(result: Any) -> Dict[str, Any]:
     ok = str(result.status or "") == "ok"
     return {
-        "small_ar_champion_metric_version": result.metric_version,
-        "small_ar_champion_final_acc": result.final_acc if ok else None,
-        "small_ar_champion_held_pair_match_acc": (
-            result.held_pair_match_acc if ok else None
-        ),
-        "small_ar_champion_held_class_acc": result.held_class_acc if ok else None,
-        "small_ar_champion_learning_curve_json": json.dumps(
+        "ar_validation_metric_version": result.metric_version,
+        "ar_validation_final_acc": result.final_acc if ok else None,
+        "ar_validation_held_pair_acc": (result.held_pair_acc if ok else None),
+        "ar_validation_held_class_acc": result.held_class_acc if ok else None,
+        "ar_validation_learning_curve_json": json.dumps(
             result.learning_curve or [],
             sort_keys=True,
         ),
-        "small_ar_champion_steps_to_floor": result.steps_to_floor,
-        "small_ar_champion_score": result.score if ok else None,
-        "small_ar_champion_status": result.status,
-        "small_ar_champion_elapsed_ms": result.elapsed_ms,
+        "ar_validation_steps_to_floor": result.steps_to_floor,
+        "ar_validation_rank_score": result.score if ok else None,
+        "ar_validation_status": result.status,
+        "ar_validation_elapsed_ms": result.elapsed_ms,
     }
 
 
-def _run_small_ar_champion_probe(model: Any, dev: Any) -> Dict[str, Any]:
-    from ...eval.small_ar_champion import run_small_ar_champion
+def _run_ar_validation_probe(model: Any, dev: Any) -> Dict[str, Any]:
+    from ...eval.ar_validation import run_ar_validation
 
-    result = run_small_ar_champion(model, device=str(dev))
-    fields = _small_ar_champion_result_fields(result)
+    result = run_ar_validation(model, device=str(dev))
+    fields = _ar_validation_result_fields(result)
     logger.info(
-        "Champion Small-AR probe: score=%s held_pair=%.4f held_class=%.4f status=%s",
+        "Champion AR Validation probe: score=%s held_pair=%.4f held_class=%.4f status=%s",
         (
-            f"{fields['small_ar_champion_score']:.4f}"
-            if fields["small_ar_champion_score"] is not None
+            f"{fields['ar_validation_rank_score']:.4f}"
+            if fields["ar_validation_rank_score"] is not None
             else "None"
         ),
-        result.held_pair_match_acc,
+        result.held_pair_acc,
         result.held_class_acc,
         result.status,
+    )
+    return fields
+
+
+def _probe_dict_result_fields(
+    result: Any,
+    *,
+    metric_version_key: str,
+    status_key: str,
+    elapsed_ms_key: str,
+    error_key: str,
+    metric_keys: tuple[str, ...],
+) -> Dict[str, Any]:
+    fields = result.to_dict() if hasattr(result, "to_dict") else dict(result)
+    ok = str(fields.get(status_key) or "") == "ok"
+    if not ok:
+        for key in metric_keys:
+            fields[key] = None
+    return {
+        metric_version_key: fields.get(metric_version_key),
+        **{key: fields.get(key) for key in metric_keys},
+        status_key: fields.get(status_key),
+        elapsed_ms_key: fields.get(elapsed_ms_key),
+        error_key: fields.get(error_key),
+    }
+
+
+def _ar_intermediate_result_fields(result: Any) -> Dict[str, Any]:
+    fields = _probe_dict_result_fields(
+        result,
+        metric_version_key="ar_intermediate_metric_version",
+        status_key="ar_intermediate_status",
+        elapsed_ms_key="ar_intermediate_elapsed_ms",
+        error_key="ar_intermediate_error",
+        metric_keys=(
+            *_AR_INTERMEDIATE_SCORE_FIELDS,
+            "ar_intermediate_learning_curve_json",
+        ),
+    )
+    return fields
+
+
+def _binding_multislot_result_fields(result: Any) -> Dict[str, Any]:
+    fields = _probe_dict_result_fields(
+        result,
+        metric_version_key="binding_multislot_metric_version",
+        status_key="binding_multislot_status",
+        elapsed_ms_key="binding_multislot_elapsed_ms",
+        error_key="binding_multislot_error",
+        metric_keys=(
+            *_BINDING_MULTISLOT_SCORE_FIELDS,
+            "binding_multislot_learning_curve_json",
+        ),
+    )
+    return fields
+
+
+def _run_ar_intermediate_probe(model: Any, dev: Any) -> Dict[str, Any]:
+    from ...eval.ar_intermediate_probe import ar_intermediate_probe
+
+    result = ar_intermediate_probe(model, device=str(dev))
+    fields = _ar_intermediate_result_fields(result)
+    logger.info(
+        "AR intermediate probe: score=%s held_pair=%s auc_lift=%s status=%s",
+        fields.get("ar_intermediate_diagnostic_score"),
+        fields.get("ar_intermediate_held_pair_acc"),
+        fields.get("ar_intermediate_auc_lift"),
+        fields.get("ar_intermediate_status"),
+    )
+    return fields
+
+
+def _run_binding_multislot_probe(model: Any, dev: Any) -> Dict[str, Any]:
+    from ...eval.binding_multislot_probe import binding_multislot_probe
+
+    result = binding_multislot_probe(model, device=str(dev))
+    fields = _binding_multislot_result_fields(result)
+    logger.info(
+        "Binding multislot probe: score=%s held_slot=%s two_plus=%s status=%s",
+        fields.get("binding_multislot_diagnostic_score"),
+        fields.get("binding_multislot_held_entity_slot_acc"),
+        fields.get("binding_multislot_two_plus_slots_acc"),
+        fields.get("binding_multislot_status"),
     )
     return fields
 
@@ -473,146 +568,357 @@ def _run_investigation_v2_probes(
     dev: Any,
     *,
     graph_json_str: str | None = None,
-    run_nano_ar: bool = False,
-    run_induction_v3: bool = False,
-    induction_v3_extended_budget: bool = False,
-    run_small_ar_champion_probe: bool = False,
+    run_induction_intermediate: bool = True,
+    run_binding_intermediate: bool = True,
+    run_ar_gate: bool = False,
+    run_induction_validation: bool = False,
+    induction_validation_extended_budget: bool = False,
+    run_ar_validation_probe: bool = False,
+    run_ar_intermediate: bool = False,
+    run_binding_multislot: bool = False,
 ) -> Dict[str, Any]:
     """Run investigation-tier capability probes on the benchmark model."""
     result: Dict[str, Any] = {}
 
-    try:
-        from ...eval.induction_probe_v2_investigation import (
-            run_induction_v2_investigation,
-        )
-
-        induction_v2 = run_induction_v2_investigation(model, device=dev)
-        induction_v2_ok = str(induction_v2.status or "") == "ok"
-        result.update(
-            {
-                "induction_v2_investigation_auc": (
-                    induction_v2.auc if induction_v2_ok else None
-                ),
-                "induction_v2_investigation_max_gap_acc": (
-                    induction_v2.max_gap_acc if induction_v2_ok else None
-                ),
-                "induction_v2_investigation_gap_accuracies_json": json.dumps(
-                    induction_v2.gap_accuracies or {},
-                    sort_keys=True,
-                ),
-                "induction_v2_investigation_steps_trained": induction_v2.steps_trained,
-                "induction_v2_investigation_status": induction_v2.status,
-                "induction_v2_investigation_elapsed_ms": induction_v2.elapsed_ms,
-                "induction_v2_investigation_protocol_version": (
-                    induction_v2.protocol_version
-                ),
-            }
-        )
-        logger.info(
-            "Investigation induction-v2 probe: auc=%.4f max_gap=%.4f status=%s",
-            induction_v2.auc,
-            induction_v2.max_gap_acc,
-            induction_v2.status,
-        )
-    except (ImportError, RuntimeError, ValueError, TypeError) as exc:
-        logger.warning("Investigation induction-v2 probe skipped: %s", exc)
-
-    if run_induction_v3:
+    if run_induction_intermediate:
         try:
-            from ...eval.induction_probe_v3_champion import (
-                run_induction_v3_champion,
+            from ...eval.induction_intermediate_probe import (
+                run_induction_intermediate as _run_induction_intermediate,
             )
 
-            induction_v3 = run_induction_v3_champion(
-                model,
-                device=dev,
-                extended_budget=induction_v3_extended_budget,
-            )
-            induction_v3_ok = str(induction_v3.status or "") == "ok"
+            induction_intermediate = _run_induction_intermediate(model, device=dev)
+            induction_intermediate_ok = str(induction_intermediate.status or "") == "ok"
             result.update(
                 {
-                    "induction_v3_auc": (induction_v3.auc if induction_v3_ok else None),
-                    "induction_v3_max_gap_acc": (
-                        induction_v3.max_gap_acc if induction_v3_ok else None
+                    "induction_intermediate_auc": (
+                        induction_intermediate.auc
+                        if induction_intermediate_ok
+                        else None
                     ),
-                    "induction_v3_gap_accuracy_cv": (
-                        induction_v3.gap_accuracy_cv if induction_v3_ok else None
+                    "induction_intermediate_max_gap_acc": (
+                        induction_intermediate.max_gap_acc
+                        if induction_intermediate_ok
+                        else None
                     ),
-                    "induction_v3_gap_accuracies_json": json.dumps(
-                        induction_v3.gap_accuracies or {},
+                    "induction_intermediate_gap_accuracies_json": json.dumps(
+                        induction_intermediate.gap_accuracies or {},
                         sort_keys=True,
                     ),
-                    "induction_v3_steps_trained": induction_v3.steps_trained,
-                    "induction_v3_status": induction_v3.status,
-                    "induction_v3_elapsed_ms": induction_v3.elapsed_ms,
-                    "induction_v3_protocol_version": induction_v3.protocol_version,
+                    "induction_intermediate_steps_trained": induction_intermediate.steps_trained,
+                    "induction_intermediate_status": induction_intermediate.status,
+                    "induction_intermediate_elapsed_ms": induction_intermediate.elapsed_ms,
+                    "induction_intermediate_protocol_version": (
+                        induction_intermediate.protocol_version
+                    ),
                 }
             )
             logger.info(
-                "Champion induction-v3 probe: auc=%.4f max_gap=%.4f cv=%.4f status=%s",
-                induction_v3.auc,
-                induction_v3.max_gap_acc,
-                induction_v3.gap_accuracy_cv,
-                induction_v3.status,
+                "Capability induction-intermediate probe: auc=%.4f max_gap=%.4f status=%s",
+                induction_intermediate.auc,
+                induction_intermediate.max_gap_acc,
+                induction_intermediate.status,
             )
         except (ImportError, RuntimeError, ValueError, TypeError) as exc:
-            logger.warning("Champion induction-v3 probe skipped: %s", exc)
+            logger.warning("Capability induction-intermediate probe skipped: %s", exc)
 
-    try:
-        from ...eval.binding_probe_v2_investigation import (
-            run_binding_v2_investigation,
-        )
+    if run_induction_validation:
+        try:
+            from ...eval.induction_validation_probe import (
+                run_induction_validation_champion,
+            )
 
-        binding_v2 = run_binding_v2_investigation(model, device=dev)
-        binding_v2_ok = str(binding_v2.status or "") == "ok"
-        result.update(
-            {
-                "binding_v2_investigation_auc": (
-                    binding_v2.auc if binding_v2_ok else None
-                ),
-                "binding_v2_investigation_max_distance_acc": (
-                    binding_v2.max_distance_acc if binding_v2_ok else None
-                ),
-                "binding_v2_investigation_distance_accuracies_json": json.dumps(
-                    binding_v2.distance_accuracies or {},
-                    sort_keys=True,
-                ),
-                "binding_v2_investigation_train_steps": binding_v2.train_steps,
-                "binding_v2_investigation_status": binding_v2.status,
-                "binding_v2_investigation_elapsed_ms": binding_v2.elapsed_ms,
-                "binding_v2_investigation_protocol_version": (
-                    binding_v2.protocol_version
-                ),
-            }
-        )
-        logger.info(
-            "Investigation binding-v2 probe: auc=%.4f max_distance=%.4f status=%s",
-            binding_v2.auc,
-            binding_v2.max_distance_acc,
-            binding_v2.status,
-        )
-    except (ImportError, RuntimeError, ValueError, TypeError) as exc:
-        logger.warning("Investigation binding-v2 probe skipped: %s", exc)
+            induction_validation = run_induction_validation_champion(
+                model,
+                device=dev,
+                extended_budget=induction_validation_extended_budget,
+            )
+            induction_validation_ok = str(induction_validation.status or "") == "ok"
+            result.update(
+                {
+                    "induction_validation_auc": (
+                        induction_validation.auc if induction_validation_ok else None
+                    ),
+                    "induction_validation_max_gap_acc": (
+                        induction_validation.max_gap_acc
+                        if induction_validation_ok
+                        else None
+                    ),
+                    "induction_validation_gap_accuracy_cv": (
+                        induction_validation.gap_accuracy_cv
+                        if induction_validation_ok
+                        else None
+                    ),
+                    "induction_validation_gap_accuracies_json": json.dumps(
+                        induction_validation.gap_accuracies or {},
+                        sort_keys=True,
+                    ),
+                    "induction_validation_steps_trained": induction_validation.steps_trained,
+                    "induction_validation_status": induction_validation.status,
+                    "induction_validation_elapsed_ms": induction_validation.elapsed_ms,
+                    "induction_validation_protocol_version": induction_validation.protocol_version,
+                }
+            )
+            logger.info(
+                "Champion induction-validation probe: auc=%.4f max_gap=%.4f cv=%.4f status=%s",
+                induction_validation.auc,
+                induction_validation.max_gap_acc,
+                induction_validation.gap_accuracy_cv,
+                induction_validation.status,
+            )
+        except (ImportError, RuntimeError, ValueError, TypeError) as exc:
+            logger.warning("Champion induction-validation probe skipped: %s", exc)
 
-    if run_nano_ar:
+    if run_binding_intermediate:
+        try:
+            from ...eval.binding_intermediate_probe import (
+                run_binding_intermediate as _run_binding_intermediate,
+            )
+
+            binding_intermediate = _run_binding_intermediate(model, device=dev)
+            binding_intermediate_ok = str(binding_intermediate.status or "") == "ok"
+            result.update(
+                {
+                    "binding_intermediate_auc": (
+                        binding_intermediate.auc if binding_intermediate_ok else None
+                    ),
+                    "binding_intermediate_max_distance_acc": (
+                        binding_intermediate.max_distance_acc
+                        if binding_intermediate_ok
+                        else None
+                    ),
+                    "binding_intermediate_distance_accuracies_json": json.dumps(
+                        binding_intermediate.distance_accuracies or {},
+                        sort_keys=True,
+                    ),
+                    "binding_intermediate_train_steps": binding_intermediate.train_steps,
+                    "binding_intermediate_status": binding_intermediate.status,
+                    "binding_intermediate_elapsed_ms": binding_intermediate.elapsed_ms,
+                    "binding_intermediate_protocol_version": (
+                        binding_intermediate.protocol_version
+                    ),
+                }
+            )
+            logger.info(
+                "Capability binding-intermediate probe: auc=%.4f max_distance=%.4f status=%s",
+                binding_intermediate.auc,
+                binding_intermediate.max_distance_acc,
+                binding_intermediate.status,
+            )
+        except (ImportError, RuntimeError, ValueError, TypeError) as exc:
+            logger.warning("Capability binding-intermediate probe skipped: %s", exc)
+
+    if run_ar_gate:
         try:
             result.update(
-                _run_investigation_nano_ar_probe(
+                _run_investigation_ar_gate_probe(
                     model,
                     dev,
                     graph_json_str=graph_json_str,
                 )
             )
         except (ImportError, RuntimeError, ValueError, TypeError) as exc:
-            logger.warning("Investigation Nano-AR probe skipped: %s", exc)
+            logger.warning("Investigation AR Gate probe skipped: %s", exc)
 
-    if run_small_ar_champion_probe:
+    if run_ar_validation_probe:
         try:
-            result.update(_run_small_ar_champion_probe(model, dev))
+            result.update(_run_ar_validation_probe(model, dev))
         except (ImportError, RuntimeError, ValueError, TypeError) as exc:
-            logger.warning("Champion Small-AR probe skipped: %s", exc)
+            logger.warning("Champion AR Validation probe skipped: %s", exc)
+
+    if run_ar_intermediate:
+        try:
+            result.update(_run_ar_intermediate_probe(model, dev))
+        except (ImportError, RuntimeError, ValueError, TypeError) as exc:
+            logger.warning("AR intermediate probe skipped: %s", exc)
+
+    if run_binding_multislot:
+        try:
+            result.update(_run_binding_multislot_probe(model, dev))
+        except (ImportError, RuntimeError, ValueError, TypeError) as exc:
+            logger.warning("Binding multislot probe skipped: %s", exc)
 
     return result
+
+
+def _evaluate_capability_rankers(
+    *,
+    config,
+    dev,
+    model_source: str,
+    arch_spec_json_str: str | None,
+    graph_json_str: str | None,
+    cached_json_load,
+    stop_event=None,
+) -> Dict[str, Any]:
+    """Run selective capability rankers without validation semantics."""
+    if stop_event is not None and stop_event.is_set():
+        return {}
+    try:
+        model = _build_benchmark_model(
+            config=config,
+            dev=dev,
+            model_source=model_source,
+            arch_spec_json_str=arch_spec_json_str,
+            graph_json_str=graph_json_str,
+            cached_json_load=cached_json_load,
+        )
+    except (ImportError, RuntimeError, ValueError, TypeError) as exc:
+        logger.debug("Capability-ranking model build failed: %s", exc)
+        return {"capability_ranking_status": "model_build_failed", "error": str(exc)}
+    if model is None:
+        return {"capability_ranking_status": "no_model"}
+    try:
+        if stop_event is not None and stop_event.is_set():
+            return {}
+        result = _run_investigation_v2_probes(
+            model,
+            dev,
+            graph_json_str=graph_json_str,
+            run_induction_intermediate=bool(
+                getattr(config, "capability_ranking_run_intermediate", True)
+            ),
+            run_binding_intermediate=bool(
+                getattr(config, "capability_ranking_run_intermediate", True)
+            ),
+            run_ar_gate=False,
+            run_induction_validation=bool(
+                getattr(config, "capability_ranking_run_induction_validation", False)
+            ),
+            induction_validation_extended_budget=bool(
+                getattr(config, "champion_induction_validation_extended_budget", False)
+            ),
+            run_ar_validation_probe=bool(
+                getattr(config, "capability_ranking_run_ar_validation", False)
+            ),
+            run_ar_intermediate=bool(
+                getattr(config, "capability_ranking_run_ar_intermediate", True)
+            ),
+            run_binding_multislot=bool(
+                getattr(config, "capability_ranking_run_binding_multislot", True)
+            ),
+        )
+        result["capability_ranking_status"] = (
+            "ok" if has_capability_ranker_evidence(result) else "no_metrics"
+        )
+        return result
+    finally:
+        del model
+
+
+def _record_capability_ranking_result(
+    *,
+    nb,
+    exp_id: str,
+    source_result_id: str,
+    source: Dict[str, Any],
+    model_source: str,
+    benchmark_result: Dict[str, Any],
+) -> None:
+    """Persist capability-ranking metrics without claiming validation evidence."""
+    graph_fingerprint = str(source.get("graph_fingerprint") or "").strip()
+    leaderboard_result_id = source_result_id
+    existing_entry: Dict[str, Any] | None = None
+    if graph_fingerprint:
+        try:
+            existing_fp_entry = nb.get_leaderboard_entry_by_fingerprint(
+                graph_fingerprint
+            )
+            if existing_fp_entry and existing_fp_entry.get("result_id"):
+                leaderboard_result_id = str(existing_fp_entry["result_id"])
+                existing_entry = dict(existing_fp_entry)
+        except Exception as exc:
+            logger.debug(
+                "Capability-ranking fp anchor lookup failed for %s: %s",
+                graph_fingerprint[:16],
+                exc,
+            )
+    if existing_entry is None:
+        try:
+            row = nb.get_leaderboard_entry(leaderboard_result_id)
+            existing_entry = dict(row) if row else None
+        except Exception as exc:
+            logger.debug(
+                "Capability-ranking leaderboard source lookup failed for %s: %s",
+                leaderboard_result_id,
+                exc,
+            )
+
+    def _source_or_existing(key: str) -> Any:
+        value = source.get(key)
+        if value not in (None, ""):
+            return value
+        if existing_entry:
+            return existing_entry.get(key)
+        return None
+
+    ranker_fields = {
+        key: value
+        for key, value in capability_ranker_fields(benchmark_result).items()
+        if value is not None
+    }
+    if not ranker_fields:
+        return
+
+    common = {
+        "model_source": model_source,
+        "architecture_desc": graph_fingerprint[:40],
+        "graph_fingerprint": graph_fingerprint
+        or _source_or_existing("graph_fingerprint"),
+        "tier": _safe_tier(nb, leaderboard_result_id, "capability_ranking"),
+        "screening_loss_ratio": (
+            source.get("loss_ratio")
+            if source.get("loss_ratio") is not None
+            else _source_or_existing("screening_loss_ratio")
+        ),
+        "screening_novelty": (
+            source.get("novelty_score")
+            if source.get("novelty_score") is not None
+            else _source_or_existing("screening_novelty")
+        ),
+        "screening_passed": True,
+        "investigation_loss_ratio": _source_or_existing("investigation_loss_ratio"),
+        "investigation_robustness": _source_or_existing("investigation_robustness"),
+        "investigation_passed": _source_or_existing("investigation_passed"),
+        "novelty_confidence": _source_or_existing("novelty_confidence"),
+        "fp_jacobian_spectral_norm": _source_or_existing("fp_jacobian_spectral_norm"),
+        "routing_savings_ratio": _source_or_existing("routing_savings_ratio"),
+        "activation_sparsity_score": _source_or_existing("activation_sparsity_score"),
+        "depth_savings_ratio": _source_or_existing("depth_savings_ratio"),
+        "compression_ratio": _source_or_existing("compression_ratio"),
+        "result_cohort": _source_or_existing("result_cohort"),
+        "trust_label": _source_or_existing("trust_label"),
+        "comparability_label": _source_or_existing("comparability_label"),
+        "evaluation_protocol_version": (
+            _source_or_existing("evaluation_protocol_version")
+            or "capability_ranking_v1"
+        ),
+    }
+    nb.upsert_leaderboard(
+        result_id=leaderboard_result_id,
+        **common,
+        **ranker_fields,
+    )
+
+    set_parts = []
+    set_params: List[Any] = []
+    source_updates = {
+        **ranker_fields,
+        "evaluation_protocol_version": (
+            source.get("evaluation_protocol_version") or "capability_ranking_v1"
+        ),
+    }
+    for col, value in source_updates.items():
+        if value is None:
+            continue
+        set_parts.append(f"{col} = ?")
+        set_params.append(value)
+    if set_parts:
+        set_params.append(source_result_id)
+        nb.conn.execute(
+            f"UPDATE program_results SET {', '.join(set_parts)} WHERE result_id = ?",
+            set_params,
+        )
+        nb._maybe_commit()
 
 
 # Single-threaded pool for background benchmark evals — avoids blocking the
@@ -752,7 +1058,13 @@ def _submit_v2_probe_eval(
                             model,
                             dev,
                             graph_json_str=graph_json_str,
-                            run_nano_ar=True,
+                            run_ar_gate=True,
+                            run_ar_intermediate=bool(
+                                getattr(config, "run_ar_intermediate", False)
+                            ),
+                            run_binding_multislot=bool(
+                                getattr(config, "run_binding_multislot", False)
+                            ),
                         )
                     )
                 finally:
@@ -840,16 +1152,16 @@ def _capability_override_investigation_passed(
         return False, []
 
     reasons: list[str] = []
-    nano_ar = _to_float_or_none(benchmark_result.get("nano_ar_inv_score"))
-    ind_v2 = _to_float_or_none(benchmark_result.get("induction_v2_investigation_auc"))
-    bind_v2 = _to_float_or_none(benchmark_result.get("binding_v2_investigation_auc"))
+    ar_gate = _to_float_or_none(benchmark_result.get("ar_gate_score"))
+    ind_v2 = _to_float_or_none(benchmark_result.get("induction_intermediate_auc"))
+    bind_v2 = _to_float_or_none(benchmark_result.get("binding_intermediate_auc"))
 
-    if nano_ar is not None and nano_ar >= 0.8:
-        reasons.append(f"nano_ar={nano_ar:.3f}")
+    if ar_gate is not None and ar_gate >= 0.8:
+        reasons.append(f"ar_gate={ar_gate:.3f}")
     if bind_v2 is not None and bind_v2 >= 0.08:
-        reasons.append(f"binding_v2={bind_v2:.3f}")
+        reasons.append(f"binding_intermediate={bind_v2:.3f}")
     if ind_v2 is not None and ind_v2 >= 0.30:
-        reasons.append(f"induction_v2={ind_v2:.3f}")
+        reasons.append(f"induction_intermediate={ind_v2:.3f}")
 
     if len(reasons) < 2:
         return False, []
@@ -997,7 +1309,7 @@ def _record_investigation_result(
     # Binding probe: informational logging only. No hard gate — probes are
     # too noisy at nano scale (Mamba fluctuates 0.01-0.13 across runs).
     # The soft penalty in compute_composite handles score reduction.
-    _bp_ind = benchmark_result.get("induction_auc")
+    _bp_ind = benchmark_result.get("induction_screening_auc")
     if _bp_ind is not None and _bp_ind < 0.03:
         logger.info(
             "Binding probe: %s ind=%.3f (local-only signal, soft penalty applied in scoring)",
@@ -1043,131 +1355,105 @@ def _record_investigation_result(
         hellaswag_metric_version=benchmark_result.get("hellaswag_metric_version"),
         hellaswag_tokenizer_mode=benchmark_result.get("hellaswag_tokenizer_mode"),
         hellaswag_tiktoken_encoding=benchmark_result.get("hellaswag_tiktoken_encoding"),
-        ar_auc=benchmark_result.get("ar_auc"),
-        induction_auc=benchmark_result.get("induction_auc"),
-        binding_auc=benchmark_result.get("binding_auc"),
-        binding_composite=benchmark_result.get("binding_composite"),
+        ar_legacy_auc=benchmark_result.get("ar_legacy_auc"),
+        induction_screening_auc=benchmark_result.get("induction_screening_auc"),
+        binding_screening_auc=benchmark_result.get("binding_screening_auc"),
+        binding_screening_composite=benchmark_result.get("binding_screening_composite"),
         local_only=benchmark_result.get("local_only"),
         **trajectory_fields,
     )
 
     v2_fields = {
-        "induction_v2_investigation_auc": benchmark_result.get(
-            "induction_v2_investigation_auc"
-        ),
-        "induction_v2_investigation_max_gap_acc": benchmark_result.get(
-            "induction_v2_investigation_max_gap_acc"
-        ),
-        "induction_v2_investigation_gap_accuracies_json": benchmark_result.get(
-            "induction_v2_investigation_gap_accuracies_json"
-        ),
-        "induction_v2_investigation_steps_trained": benchmark_result.get(
-            "induction_v2_investigation_steps_trained"
-        ),
-        "induction_v2_investigation_status": benchmark_result.get(
-            "induction_v2_investigation_status"
-        ),
-        "induction_v2_investigation_elapsed_ms": benchmark_result.get(
-            "induction_v2_investigation_elapsed_ms"
-        ),
-        "induction_v2_investigation_protocol_version": benchmark_result.get(
-            "induction_v2_investigation_protocol_version"
-        ),
-        "binding_v2_investigation_auc": benchmark_result.get(
-            "binding_v2_investigation_auc"
-        ),
-        "binding_v2_investigation_max_distance_acc": benchmark_result.get(
-            "binding_v2_investigation_max_distance_acc"
-        ),
-        "binding_v2_investigation_distance_accuracies_json": benchmark_result.get(
-            "binding_v2_investigation_distance_accuracies_json"
-        ),
-        "binding_v2_investigation_train_steps": benchmark_result.get(
-            "binding_v2_investigation_train_steps"
-        ),
-        "binding_v2_investigation_status": benchmark_result.get(
-            "binding_v2_investigation_status"
-        ),
-        "binding_v2_investigation_elapsed_ms": benchmark_result.get(
-            "binding_v2_investigation_elapsed_ms"
-        ),
-        "binding_v2_investigation_protocol_version": benchmark_result.get(
-            "binding_v2_investigation_protocol_version"
-        ),
+        key: benchmark_result.get(key)
+        for key in (
+            "induction_intermediate_auc",
+            "induction_intermediate_max_gap_acc",
+            "induction_intermediate_gap_accuracies_json",
+            "induction_intermediate_steps_trained",
+            "induction_intermediate_status",
+            "induction_intermediate_elapsed_ms",
+            "induction_intermediate_protocol_version",
+            "binding_intermediate_auc",
+            "binding_intermediate_max_distance_acc",
+            "binding_intermediate_distance_accuracies_json",
+            "binding_intermediate_train_steps",
+            "binding_intermediate_status",
+            "binding_intermediate_elapsed_ms",
+            "binding_intermediate_protocol_version",
+        )
     }
     v3_fields = {
-        "induction_v3_auc": benchmark_result.get("induction_v3_auc"),
-        "induction_v3_max_gap_acc": benchmark_result.get("induction_v3_max_gap_acc"),
-        "induction_v3_gap_accuracy_cv": benchmark_result.get(
-            "induction_v3_gap_accuracy_cv"
-        ),
-        "induction_v3_gap_accuracies_json": benchmark_result.get(
-            "induction_v3_gap_accuracies_json"
-        ),
-        "induction_v3_steps_trained": benchmark_result.get(
-            "induction_v3_steps_trained"
-        ),
-        "induction_v3_status": benchmark_result.get("induction_v3_status"),
-        "induction_v3_elapsed_ms": benchmark_result.get("induction_v3_elapsed_ms"),
-        "induction_v3_protocol_version": benchmark_result.get(
-            "induction_v3_protocol_version"
-        ),
+        key: benchmark_result.get(key)
+        for key in (
+            "induction_validation_auc",
+            "induction_validation_max_gap_acc",
+            "induction_validation_gap_accuracy_cv",
+            "induction_validation_gap_accuracies_json",
+            "induction_validation_steps_trained",
+            "induction_validation_status",
+            "induction_validation_elapsed_ms",
+            "induction_validation_protocol_version",
+        )
     }
-    nano_ar_inv_fields = {
-        "nano_ar_inv_metric_version": benchmark_result.get(
-            "nano_ar_inv_metric_version"
-        ),
-        "nano_ar_inv_in_dist_pair_match_acc": benchmark_result.get(
-            "nano_ar_inv_in_dist_pair_match_acc"
-        ),
-        "nano_ar_inv_in_dist_class_acc": benchmark_result.get(
-            "nano_ar_inv_in_dist_class_acc"
-        ),
-        "nano_ar_inv_held_pair_match_acc": benchmark_result.get(
-            "nano_ar_inv_held_pair_match_acc"
-        ),
-        "nano_ar_inv_held_class_acc": benchmark_result.get(
-            "nano_ar_inv_held_class_acc"
-        ),
-        "nano_ar_inv_score": benchmark_result.get("nano_ar_inv_score"),
-        "nano_ar_inv_status": benchmark_result.get("nano_ar_inv_status"),
-        "nano_ar_inv_elapsed_ms": benchmark_result.get("nano_ar_inv_elapsed_ms"),
-        "nano_ar_inv_train_steps_done": benchmark_result.get(
-            "nano_ar_inv_train_steps_done"
-        ),
+    ar_gate_fields = {
+        key: benchmark_result.get(key)
+        for key in (
+            "ar_gate_metric_version",
+            "ar_gate_in_dist_pair_acc",
+            "ar_gate_in_dist_class_acc",
+            "ar_gate_held_pair_acc",
+            "ar_gate_held_class_acc",
+            "ar_gate_score",
+            "ar_gate_status",
+            "ar_gate_elapsed_ms",
+            "ar_gate_train_steps_done",
+        )
     }
-    small_ar_champion_fields = {
-        "small_ar_champion_metric_version": benchmark_result.get(
-            "small_ar_champion_metric_version"
-        ),
-        "small_ar_champion_final_acc": benchmark_result.get(
-            "small_ar_champion_final_acc"
-        ),
-        "small_ar_champion_held_pair_match_acc": benchmark_result.get(
-            "small_ar_champion_held_pair_match_acc"
-        ),
-        "small_ar_champion_held_class_acc": benchmark_result.get(
-            "small_ar_champion_held_class_acc"
-        ),
-        "small_ar_champion_learning_curve_json": benchmark_result.get(
-            "small_ar_champion_learning_curve_json"
-        ),
-        "small_ar_champion_steps_to_floor": benchmark_result.get(
-            "small_ar_champion_steps_to_floor"
-        ),
-        "small_ar_champion_score": benchmark_result.get("small_ar_champion_score"),
-        "small_ar_champion_status": benchmark_result.get("small_ar_champion_status"),
-        "small_ar_champion_elapsed_ms": benchmark_result.get(
-            "small_ar_champion_elapsed_ms"
-        ),
+    ar_validation_fields = {
+        key: benchmark_result.get(key)
+        for key in (
+            "ar_validation_metric_version",
+            "ar_validation_final_acc",
+            "ar_validation_held_pair_acc",
+            "ar_validation_held_class_acc",
+            "ar_validation_learning_curve_json",
+            "ar_validation_steps_to_floor",
+            "ar_validation_rank_score",
+            "ar_validation_status",
+            "ar_validation_elapsed_ms",
+        )
+    }
+    ar_intermediate_fields = {
+        key: benchmark_result.get(key)
+        for key in (
+            "ar_intermediate_metric_version",
+            *_AR_INTERMEDIATE_SCORE_FIELDS,
+            "ar_intermediate_learning_curve_json",
+            "ar_intermediate_status",
+            "ar_intermediate_elapsed_ms",
+            "ar_intermediate_error",
+        )
+    }
+    binding_multislot_fields = {
+        key: benchmark_result.get(key)
+        for key in (
+            "binding_multislot_metric_version",
+            *_BINDING_MULTISLOT_SCORE_FIELDS,
+            "binding_multislot_learning_curve_json",
+            "binding_multislot_status",
+            "binding_multislot_elapsed_ms",
+            "binding_multislot_error",
+        )
     }
     if any(
         value is not None
         for value in (
             *v2_fields.values(),
             *v3_fields.values(),
-            *nano_ar_inv_fields.values(),
-            *small_ar_champion_fields.values(),
+            *ar_gate_fields.values(),
+            *ar_validation_fields.values(),
+            *ar_intermediate_fields.values(),
+            *binding_multislot_fields.values(),
         )
     ):
         nb.upsert_leaderboard(
@@ -1181,8 +1467,10 @@ def _record_investigation_result(
             evaluation_protocol_version=evaluation_protocol_version,
             **v2_fields,
             **v3_fields,
-            **nano_ar_inv_fields,
-            **small_ar_champion_fields,
+            **ar_gate_fields,
+            **ar_validation_fields,
+            **ar_intermediate_fields,
+            **binding_multislot_fields,
         )
     # Investigation S1 metric completeness gate.  The investigation pipeline
     # runs blimp + v1 probes (induction/binding/ar) AND the v2 capability
@@ -1201,10 +1489,12 @@ def _record_investigation_result(
         "wikitext_perplexity": _inv_wikitext_ppl,
         "hellaswag_acc": benchmark_result.get("hellaswag_acc"),
         "blimp_overall_accuracy": benchmark_result.get("blimp_overall_accuracy"),
-        "induction_auc": benchmark_result.get("induction_auc"),
-        "binding_auc": benchmark_result.get("binding_auc"),
-        "binding_composite": benchmark_result.get("binding_composite"),
-        "ar_auc": benchmark_result.get("ar_auc"),
+        "induction_screening_auc": benchmark_result.get("induction_screening_auc"),
+        "binding_screening_auc": benchmark_result.get("binding_screening_auc"),
+        "binding_screening_composite": benchmark_result.get(
+            "binding_screening_composite"
+        ),
+        "ar_legacy_auc": benchmark_result.get("ar_legacy_auc"),
     }
     _missing_s1_metrics = [k for k, v in _required_s1_metrics.items() if v is None]
     _training_survived = bool(n_passed > 0)
@@ -1265,19 +1555,21 @@ def _record_investigation_result(
         ),
         blimp_n_subtasks=benchmark_result.get("blimp_n_subtasks"),
         blimp_status=benchmark_result.get("blimp_status"),
-        induction_auc=benchmark_result.get("induction_auc"),
-        binding_auc=benchmark_result.get("binding_auc"),
-        binding_auc_curriculum=benchmark_result.get("binding_auc_curriculum"),
-        binding_composite=benchmark_result.get("binding_composite"),
-        ar_auc=benchmark_result.get("ar_auc"),
-        ar_final_acc=benchmark_result.get("ar_final_acc"),
-        ar_timed_out=benchmark_result.get("ar_timed_out"),
-        ar_above_chance=benchmark_result.get("ar_above_chance"),
+        induction_screening_auc=benchmark_result.get("induction_screening_auc"),
+        binding_screening_auc=benchmark_result.get("binding_screening_auc"),
+        binding_curriculum_auc=benchmark_result.get("binding_curriculum_auc"),
+        binding_screening_composite=benchmark_result.get("binding_screening_composite"),
+        ar_legacy_auc=benchmark_result.get("ar_legacy_auc"),
+        ar_legacy_final_acc=benchmark_result.get("ar_legacy_final_acc"),
+        ar_legacy_timed_out=benchmark_result.get("ar_legacy_timed_out"),
+        ar_legacy_above_chance=benchmark_result.get("ar_legacy_above_chance"),
         local_only=benchmark_result.get("local_only"),
         **v2_fields,
         **v3_fields,
-        **nano_ar_inv_fields,
-        **small_ar_champion_fields,
+        **ar_gate_fields,
+        **ar_validation_fields,
+        **ar_intermediate_fields,
+        **binding_multislot_fields,
         **v9_trajectory_fields(benchmark_result),
     )
     if result_id and best_training_curve:
@@ -1306,13 +1598,15 @@ def _record_investigation_result(
         "hellaswag_tiktoken_encoding": benchmark_result.get(
             "hellaswag_tiktoken_encoding"
         ),
-        "ar_auc": benchmark_result.get("ar_auc"),
-        "ar_final_acc": benchmark_result.get("ar_final_acc"),
-        "ar_timed_out": benchmark_result.get("ar_timed_out"),
-        "ar_above_chance": benchmark_result.get("ar_above_chance"),
-        "induction_auc": benchmark_result.get("induction_auc"),
-        "binding_auc": benchmark_result.get("binding_auc"),
-        "binding_composite": benchmark_result.get("binding_composite"),
+        "ar_legacy_auc": benchmark_result.get("ar_legacy_auc"),
+        "ar_legacy_final_acc": benchmark_result.get("ar_legacy_final_acc"),
+        "ar_legacy_timed_out": benchmark_result.get("ar_legacy_timed_out"),
+        "ar_legacy_above_chance": benchmark_result.get("ar_legacy_above_chance"),
+        "induction_screening_auc": benchmark_result.get("induction_screening_auc"),
+        "binding_screening_auc": benchmark_result.get("binding_screening_auc"),
+        "binding_screening_composite": benchmark_result.get(
+            "binding_screening_composite"
+        ),
         "local_only": benchmark_result.get("local_only"),
         "result_cohort": result_cohort,
         "trust_label": trust_label,
@@ -1320,8 +1614,10 @@ def _record_investigation_result(
         "evaluation_protocol_version": evaluation_protocol_version,
         **v2_fields,
         **v3_fields,
-        **nano_ar_inv_fields,
-        **small_ar_champion_fields,
+        **ar_gate_fields,
+        **ar_validation_fields,
+        **ar_intermediate_fields,
+        **binding_multislot_fields,
         # v9 trajectory metrics — overwrite earlier-phase init/screening
         # values with investigation_full measurements. Phase tag flips so
         # ML training distinguishes the two.
@@ -1660,12 +1956,12 @@ def promote_validation_candidate(
         robustness_long_ctx_multi_hop_score=ev_res.long_ctx_multi_hop_score,
         robustness_long_ctx_retrieval_aggregate=ev_res.long_ctx_retrieval_aggregate,
         robustness_long_ctx_combined_score=ev_res.long_ctx_combined_score,
-        induction_v2_investigation_auc=ev_res.induction_v2_investigation_auc,
-        induction_v2_investigation_max_gap_acc=ev_res.induction_v2_investigation_max_gap_acc,
-        induction_v2_investigation_protocol_version=ev_res.induction_v2_investigation_protocol_version,
-        binding_v2_investigation_auc=ev_res.binding_v2_investigation_auc,
-        binding_v2_investigation_max_distance_acc=ev_res.binding_v2_investigation_max_distance_acc,
-        binding_v2_investigation_protocol_version=ev_res.binding_v2_investigation_protocol_version,
+        induction_intermediate_auc=ev_res.induction_intermediate_auc,
+        induction_intermediate_max_gap_acc=ev_res.induction_intermediate_max_gap_acc,
+        induction_intermediate_protocol_version=ev_res.induction_intermediate_protocol_version,
+        binding_intermediate_auc=ev_res.binding_intermediate_auc,
+        binding_intermediate_max_distance_acc=ev_res.binding_intermediate_max_distance_acc,
+        binding_intermediate_protocol_version=ev_res.binding_intermediate_protocol_version,
         permutation_composition_score=ev_res.permutation_composition_score,
         permutation_composition_train_chain_acc=ev_res.permutation_composition_train_chain_acc,
         permutation_composition_extrapolation_acc=ev_res.permutation_composition_extrapolation_acc,
@@ -1736,12 +2032,12 @@ def promote_validation_candidate(
         robustness_long_ctx_multi_hop_score=ev_res.long_ctx_multi_hop_score,
         robustness_long_ctx_retrieval_aggregate=ev_res.long_ctx_retrieval_aggregate,
         robustness_long_ctx_combined_score=ev_res.long_ctx_combined_score,
-        induction_v2_investigation_auc=ev_res.induction_v2_investigation_auc,
-        induction_v2_investigation_max_gap_acc=ev_res.induction_v2_investigation_max_gap_acc,
-        induction_v2_investigation_protocol_version=ev_res.induction_v2_investigation_protocol_version,
-        binding_v2_investigation_auc=ev_res.binding_v2_investigation_auc,
-        binding_v2_investigation_max_distance_acc=ev_res.binding_v2_investigation_max_distance_acc,
-        binding_v2_investigation_protocol_version=ev_res.binding_v2_investigation_protocol_version,
+        induction_intermediate_auc=ev_res.induction_intermediate_auc,
+        induction_intermediate_max_gap_acc=ev_res.induction_intermediate_max_gap_acc,
+        induction_intermediate_protocol_version=ev_res.induction_intermediate_protocol_version,
+        binding_intermediate_auc=ev_res.binding_intermediate_auc,
+        binding_intermediate_max_distance_acc=ev_res.binding_intermediate_max_distance_acc,
+        binding_intermediate_protocol_version=ev_res.binding_intermediate_protocol_version,
         robustness_noise_score=ev_res.noise_score,
         init_sensitivity_std=metrics.init_sensitivity_std,
         fp_jacobian_spectral_norm=source_row.get("fp_jacobian_spectral_norm"),

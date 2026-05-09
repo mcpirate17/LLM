@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Rank fingerprints for the next induction_v2/binding_v2 backfill wave.
+"""Rank fingerprints for the next induction_intermediate/binding_intermediate backfill wave.
 
 Read-only — safe to run while the current backfill holds the writer lock.
 
@@ -34,7 +34,7 @@ from research.tools._db_maintenance import connect_readonly
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_DB = Path(__file__).resolve().parents[1] / "lab_notebook.db"
+_DEFAULT_DB = Path(__file__).resolve().parents[1] / "runs.db"
 
 # v1→v2 buckets measured 2026-04-19 on 680 backfilled rows.
 # P(iv2>0.3 | iv1_bucket): null=0.15%, weak=0%, medium=0%, high=0%, top=100%.
@@ -81,10 +81,10 @@ def _template_capability_prior(
         SELECT pgf.templates_json AS tpl,
                COUNT(*) AS s1_n,
                SUM(CASE WHEN l.entry_id IS NULL THEN 1 ELSE 0 END) AS backlog,
-               SUM(CASE WHEN l.induction_v2_investigation_auc > 0.3
-                          OR l.binding_v2_investigation_auc > 0.3
+               SUM(CASE WHEN l.induction_intermediate_auc > 0.3
+                          OR l.binding_intermediate_auc > 0.3
                         THEN 1 ELSE 0 END) AS v2_strong,
-               SUM(CASE WHEN l.induction_v2_investigation_auc IS NOT NULL
+               SUM(CASE WHEN l.induction_intermediate_auc IS NOT NULL
                         THEN 1 ELSE 0 END) AS v2_observed,
                SUM(CASE WHEN imv2.auc >= ? THEN 1 ELSE 0 END) AS v1_strong
         FROM program_results pr
@@ -128,8 +128,8 @@ def _load_candidates(
         "pr.graph_fingerprint <> ''",
         "pr.graph_fingerprint IS NOT NULL",
         "pr.stage1_passed = 1",
-        "(l.induction_v2_investigation_auc IS NULL "
-        "OR l.binding_v2_investigation_auc IS NULL "
+        "(l.induction_intermediate_auc IS NULL "
+        "OR l.binding_intermediate_auc IS NULL "
         "OR l.entry_id IS NULL)",
     ]
     params: Tuple[Any, ...] = ()
@@ -147,8 +147,8 @@ def _load_candidates(
                         l.entry_id AS entry_id,
                         pgf.templates_json AS tpl,
                         l.composite_score AS score,
-                        l.induction_v2_investigation_auc AS iv2,
-                        l.binding_v2_investigation_auc AS bv2
+                        l.induction_intermediate_auc AS iv2,
+                        l.binding_intermediate_auc AS bv2
         FROM program_results pr
         LEFT JOIN leaderboard l ON l.result_id = pr.result_id
         LEFT JOIN program_graph_features pgf ON pgf.result_id = pr.result_id
@@ -164,7 +164,7 @@ def _tier_coverage(conn) -> Dict[str, float]:
         """
         SELECT tier,
                COUNT(*) AS n,
-               SUM(CASE WHEN induction_v2_investigation_auc IS NULL
+               SUM(CASE WHEN induction_intermediate_auc IS NULL
                         THEN 1 ELSE 0 END) AS missing
         FROM leaderboard
         GROUP BY tier

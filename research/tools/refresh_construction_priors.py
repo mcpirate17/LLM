@@ -16,12 +16,13 @@ from research.scientist.construction_priors import (  # noqa: E402
     compute_construction_prior,
     record_construction_prior_snapshot,
 )
+from research.defaults import RUNS_DB  # noqa: E402
 from research.scientist.notebook import LabNotebook  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--db", default=str(PROJECT_ROOT / "research/lab_notebook.db"))
+    parser.add_argument("--db", default=str(PROJECT_ROOT / RUNS_DB))
     parser.add_argument("--min-n", type=int, default=4)
     parser.add_argument("--min-metric-complete", type=int, default=3)
     parser.add_argument("--local-min-n", type=int, default=4)

@@ -33,7 +33,7 @@ from research.tools._db_maintenance import (
     table_row_count,
 )
 
-DEFAULT_DB = Path("research/lab_notebook.db")
+DEFAULT_DB = Path("research/runs.db")
 BACKUP_TABLE = "program_results_dedup_backup"
 IDENTITY_COLUMNS = {"result_id", "experiment_id", "graph_fingerprint", "timestamp"}
 
@@ -220,7 +220,7 @@ def main(argv: List[str] | None = None) -> int:
         "--db",
         type=Path,
         default=DEFAULT_DB,
-        help=f"Path to lab_notebook.db (default: {DEFAULT_DB})",
+        help=f"Path to runs.db (default: {DEFAULT_DB})",
     )
     parser.add_argument(
         "--apply",

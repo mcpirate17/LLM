@@ -62,7 +62,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--db",
-        default="research/lab_notebook.db",
+        default="research/runs.db",
         help="Path to lab notebook DB.",
     )
     parser.add_argument(
@@ -70,8 +70,12 @@ def main() -> None:
         default=BPE_VERSION,
         help=f"Program result metric version to copy. Default: {BPE_VERSION}.",
     )
-    parser.add_argument("--dry-run", action="store_true", help="Report changes without writing.")
-    parser.add_argument("--backup", action="store_true", help="Create a SQLite backup before writing.")
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Report changes without writing."
+    )
+    parser.add_argument(
+        "--backup", action="store_true", help="Create a SQLite backup before writing."
+    )
     parser.add_argument(
         "--skip-health-check",
         action="store_true",
@@ -112,12 +116,15 @@ def main() -> None:
             changed = {
                 col: row[f"pr_{col}"]
                 for col in copy_cols
-                if row[f"pr_{col}"] is not None and _changed(row[f"lb_{col}"], row[f"pr_{col}"])
+                if row[f"pr_{col}"] is not None
+                and _changed(row[f"lb_{col}"], row[f"pr_{col}"])
             }
             if changed:
                 updates.append((str(row["entry_id"]), changed))
 
-        print(f"scanned={len(rows)} rows_with_changes={len(updates)} columns={','.join(copy_cols)}")
+        print(
+            f"scanned={len(rows)} rows_with_changes={len(updates)} columns={','.join(copy_cols)}"
+        )
         if args.dry_run:
             for entry_id, changed in updates[:20]:
                 print(f"dry_run entry_id={entry_id} changed={','.join(changed)}")

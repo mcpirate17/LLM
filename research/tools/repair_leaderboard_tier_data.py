@@ -2,7 +2,7 @@
 """Repair missing tier-specific leaderboard fields from canonical program results.
 
 Usage:
-    python -m research.tools.repair_leaderboard_tier_data --db research/lab_notebook.db
+    python -m research.tools.repair_leaderboard_tier_data --db research/runs.db
 """
 
 from __future__ import annotations
@@ -197,7 +197,7 @@ def repair_leaderboard_tier_data(db_path: str, dry_run: bool = False) -> Dict[st
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--db", default="research/lab_notebook.db", help="Path to notebook SQLite DB"
+        "--db", default="research/runs.db", help="Path to notebook SQLite DB"
     )
     parser.add_argument(
         "--dry-run", action="store_true", help="Report affected rows without mutating"

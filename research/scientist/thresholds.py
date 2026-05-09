@@ -177,13 +177,13 @@ HELLASWAG_VALIDATION_GATE: float = 0.29
 # still have real non-local perplexity capability. Do NOT penalize them.
 #
 # Expected scores at nano scale (d_model=256, 1000 training steps):
-#   Causal transformer (attention): induction=0.5-0.6, binding_auc>0.3, ar>0.01
-#   Mamba/SSM/recurrent:            induction≈0.0-0.05, binding_auc>0.1, ar≈0.0-0.05
-#   RWKV:                           induction≈0.0-0.05, binding_auc>0.1, ar≈0.0-0.05
-#   Champion c9c7075e (conv-3):     induction≈0.003, binding_auc<0.01, ar<0.01
+#   Causal transformer (attention): induction=0.5-0.6, binding_screening_auc>0.3, ar>0.01
+#   Mamba/SSM/recurrent:            induction≈0.0-0.05, binding_screening_auc>0.1, ar≈0.0-0.05
+#   RWKV:                           induction≈0.0-0.05, binding_screening_auc>0.1, ar≈0.0-0.05
+#   Champion c9c7075e (conv-3):     induction≈0.003, binding_screening_auc<0.01, ar<0.01
 #
 # The penalty fires for conv-3 (all three below) but NOT for Mamba/RWKV
-# (binding_auc above threshold).
+# (binding_screening_auc above threshold).
 BINDING_AR_SOFT_GATE: float = 0.05
 BINDING_INDUCTION_SOFT_GATE: float = 0.05
 BINDING_BINDING_AUC_SOFT_GATE: float = 0.10
@@ -192,7 +192,7 @@ BINDING_LOCAL_ONLY_PENALTY: float = 0.80  # multiply composite by this
 # ---------------------------------------------------------------------------
 # Understanding gate (investigation → validation)
 # Calibrated 2026-04-17 (capability-first): require ≥ UNDERSTANDING_MIN_SIGNALS
-# of {diagnostic, binding_composite, hellaswag} above the corresponding strict
+# of {diagnostic, binding_screening_composite, hellaswag} above the corresponding strict
 # threshold. The legacy soft thresholds (diagnostic=0.15 etc.) are retained
 # below for diagnostic logging only — they are NOT the promotion criterion.
 # ---------------------------------------------------------------------------
@@ -225,6 +225,7 @@ TIER_RANK = {
     "investigation_failed": 1,
     "investigation_fingerprint_incomplete": 1,
     "investigation": 2,
+    "capability_ranking": 2.5,
     "validation": 3,
     "breakthrough": 4,
 }

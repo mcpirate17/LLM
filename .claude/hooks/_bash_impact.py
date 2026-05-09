@@ -80,6 +80,22 @@ def _human_size(n: int) -> str:
     return f"{n}T"
 
 
+_SIZE_UNITS = {"B": 1, "K": 1024, "M": 1024**2, "G": 1024**3, "T": 1024**4}
+
+
+def _to_bytes(human: str) -> int:
+    """Inverse of _du_summary's human size. Best-effort, returns 0 on parse fail."""
+    if not human:
+        return 0
+    m = re.match(r"^([\d.]+)\s*([BKMGT])", human.strip(), re.IGNORECASE)
+    if not m:
+        return 0
+    try:
+        return int(float(m.group(1)) * _SIZE_UNITS[m.group(2).upper()])
+    except (KeyError, ValueError):
+        return 0
+
+
 def _sql_row_count(db_path: str, table: str, where: Optional[str]) -> Optional[int]:
     if not Path(db_path).exists():
         return None
@@ -99,7 +115,7 @@ def _sql_row_count(db_path: str, table: str, where: Optional[str]) -> Optional[i
 
 # ── Pattern bank ────────────────────────────────────────────────────────────
 
-_RM_RF_PATH = re.compile(r"\brm\s+-[rR]\w*f?\w*\s+([^\s;|&]+)")
+_RM_RF_ARGS = re.compile(r"\brm\s+-[rRf]+\w*\s+([^;|&\n]+)")
 _FIND_DELETE = re.compile(r"\bfind\s+(\S+).*-delete\b")
 _GIT_CLEAN = re.compile(r"\bgit\s+clean\s+-[fdxX]+\s*([^\s;|&]*)")
 _SQLITE_MUTATE = re.compile(
@@ -115,12 +131,29 @@ def _classify(cmd: str) -> Tuple[str, str]:
     """Return (tier, impact_text). tier in {soft_warn, allow}."""
     impacts: List[str] = []
 
-    for m in _RM_RF_PATH.finditer(cmd):
-        target = m.group(1).strip("\"'")
-        files, size = _du_summary(target)
-        if files <= 0:
-            continue
-        impacts.append(f"rm -rf {target}: {files} files, {size}")
+    rm_total_files = 0
+    rm_total_bytes = 0
+    rm_lines: List[str] = []
+    for m in _RM_RF_ARGS.finditer(cmd):
+        args_blob = m.group(1)
+        # Strip trailing redirect/and/or operators that may have leaked in
+        args_blob = re.split(r"\s(?:&&|\|\||>>?|<<?)\s", args_blob, maxsplit=1)[0]
+        for token in args_blob.split():
+            target = token.strip("\"'")
+            if not target or target.startswith("-"):
+                continue
+            files, size = _du_summary(target)
+            if files <= 0:
+                continue
+            rm_total_files += files
+            rm_total_bytes += _to_bytes(size)
+            rm_lines.append(f"rm -rf {target}: {files} files, {size}")
+    if rm_lines:
+        if len(rm_lines) > 1:
+            rm_lines.append(
+                f"TOTAL: {rm_total_files} files, {_human_size(rm_total_bytes)}"
+            )
+        impacts.extend(rm_lines)
 
     for m in _FIND_DELETE.finditer(cmd):
         target = m.group(1).strip("\"'")

@@ -26,7 +26,7 @@ def test_graph_predictor_train_skips_single_class_corpus(monkeypatch, tmp_path):
             "stage05_any_passed": 1,
             "wikitext_perplexity_best": 10.0,
             "loss_ratio_best": 0.5,
-            "induction_auc_500": 0.01,
+            "induction_screening_auc_500": 0.01,
             "n_rows": 1,
             "canonical_fingerprint": f"fp{i}",
         }
@@ -383,7 +383,7 @@ def test_planning_score_promotes_quality_when_pass_is_equal():
     ensemble = EnsemblePredictor()
 
     ensemble.predict_gate = lambda **_kwargs: 0.4
-    ensemble.predict_induction_auc = lambda **_kwargs: 0.01
+    ensemble.predict_induction_screening_auc = lambda **_kwargs: 0.01
     ensemble.predict_induction_learner_prob = lambda **_kwargs: 0.5
     ensemble.gbm = SimpleNamespace(
         is_fitted=lambda: True,
@@ -467,13 +467,13 @@ def test_gbm_prescreener_gates_on_p_pass_not_planning_score(monkeypatch):
                     "planning_score": 0.05,
                     "p_pass": 0.30,
                     "p_induction_learner": 0.0,
-                    "predicted_induction_auc": 0.0,
+                    "predicted_induction_screening_auc": 0.0,
                 }
             return {
                 "planning_score": 0.60,
                 "p_pass": 0.05,
                 "p_induction_learner": 1.0,
-                "predicted_induction_auc": 0.03,
+                "predicted_induction_screening_auc": 0.03,
             }
 
     monkeypatch.setattr(
@@ -540,7 +540,7 @@ def test_gbm_prescreener_uses_temporal_f1_floor_by_default(monkeypatch):
                 "planning_score": 0.9,
                 "p_pass": 0.26 if graph_json["graph_id"] == "skip_me" else 0.28,
                 "p_induction_learner": 0.0,
-                "predicted_induction_auc": 0.0,
+                "predicted_induction_screening_auc": 0.0,
             }
 
     monkeypatch.setattr(
@@ -626,7 +626,7 @@ def test_gbm_prescreener_prefers_explicit_screening_floor_over_deprecated_alias(
                 "planning_score": 0.9,
                 "p_pass": 0.35 if graph_json["graph_id"] == "skip_me" else 0.45,
                 "p_induction_learner": 0.0,
-                "predicted_induction_auc": 0.0,
+                "predicted_induction_screening_auc": 0.0,
             }
 
     monkeypatch.setattr(
@@ -677,7 +677,7 @@ def test_evaluate_gbm_induction_uses_single_corpus_source(monkeypatch):
             {
                 "canonical_fingerprint": f"fp-{i}",
                 "graph_json": {"nodes": {"0": {"op_name": "linear_proj"}}},
-                "induction_auc_500": 0.03 if i % 2 == 0 else 0.0,
+                "induction_screening_auc_500": 0.03 if i % 2 == 0 else 0.0,
                 "n_rows": 1,
             }
         )

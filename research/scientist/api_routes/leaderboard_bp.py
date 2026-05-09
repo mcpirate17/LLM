@@ -47,29 +47,54 @@ CHAMPION_DASHBOARD_FIELDS = (
     "champion_steps_to_floor_score",
     "champion_floor_quality_score",
     "champion_floor_stability_score",
-    "champion_induction_v3_score",
+    "champion_induction_validation_score",
     "champion_binding_long_context_score",
-    "champion_small_ar_score",
+    "champion_ar_validation_score",
     "champion_tiny_model_score",
     "champion_tiny_model_protocol_version",
     "champion_hard_failure_reason",
-    "induction_v3_auc",
-    "induction_v3_max_gap_acc",
-    "induction_v3_gap_accuracy_cv",
-    "induction_v3_gap_accuracies_json",
-    "induction_v3_steps_trained",
-    "induction_v3_status",
-    "induction_v3_elapsed_ms",
-    "induction_v3_protocol_version",
-    "small_ar_champion_metric_version",
-    "small_ar_champion_final_acc",
-    "small_ar_champion_held_pair_match_acc",
-    "small_ar_champion_held_class_acc",
-    "small_ar_champion_learning_curve_json",
-    "small_ar_champion_steps_to_floor",
-    "small_ar_champion_score",
-    "small_ar_champion_status",
-    "small_ar_champion_elapsed_ms",
+    "induction_validation_auc",
+    "induction_validation_max_gap_acc",
+    "induction_validation_gap_accuracy_cv",
+    "induction_validation_gap_accuracies_json",
+    "induction_validation_steps_trained",
+    "induction_validation_status",
+    "induction_validation_elapsed_ms",
+    "induction_validation_protocol_version",
+    "ar_validation_metric_version",
+    "ar_validation_final_acc",
+    "ar_validation_held_pair_acc",
+    "ar_validation_held_class_acc",
+    "ar_validation_learning_curve_json",
+    "ar_validation_steps_to_floor",
+    "ar_validation_rank_score",
+    "ar_validation_status",
+    "ar_validation_elapsed_ms",
+)
+
+INTERMEDIATE_SCREEN_DASHBOARD_FIELDS = (
+    "ar_intermediate_metric_version",
+    "ar_intermediate_diagnostic_score",
+    "ar_intermediate_held_pair_acc",
+    "ar_intermediate_held_pair_lift",
+    "ar_intermediate_held_class_acc",
+    "ar_intermediate_auc_lift",
+    "ar_intermediate_best_held_pair_acc",
+    "ar_intermediate_improvement",
+    "ar_intermediate_status",
+    "ar_intermediate_elapsed_ms",
+    "binding_multislot_metric_version",
+    "binding_multislot_diagnostic_score",
+    "binding_multislot_held_entity_slot_acc",
+    "binding_multislot_held_slot_lift",
+    "binding_multislot_two_plus_slots_acc",
+    "binding_multislot_two_plus_slots_lift",
+    "binding_multislot_mixed_two_plus_slots_acc",
+    "binding_multislot_mixed_two_plus_slots_lift",
+    "binding_multislot_all_slots_acc",
+    "binding_multislot_auc_lift",
+    "binding_multislot_status",
+    "binding_multislot_elapsed_ms",
 )
 
 
@@ -222,12 +247,12 @@ def _search_discoveries(
             l.validation_loss_ratio AS lb_validation_loss_ratio,
             l.validation_baseline_ratio AS lb_validation_baseline_ratio,
             l.validation_passed,
-            l.induction_v2_investigation_auc AS lb_induction_v2_investigation_auc,
-            l.induction_v2_investigation_max_gap_acc AS lb_induction_v2_investigation_max_gap_acc,
-            l.induction_v2_investigation_protocol_version AS lb_induction_v2_investigation_protocol_version,
-            l.binding_v2_investigation_auc AS lb_binding_v2_investigation_auc,
-            l.binding_v2_investigation_max_distance_acc AS lb_binding_v2_investigation_max_distance_acc,
-            l.binding_v2_investigation_protocol_version AS lb_binding_v2_investigation_protocol_version,
+            l.induction_intermediate_auc AS lb_induction_intermediate_auc,
+            l.induction_intermediate_max_gap_acc AS lb_induction_intermediate_max_gap_acc,
+            l.induction_intermediate_protocol_version AS lb_induction_intermediate_protocol_version,
+            l.binding_intermediate_auc AS lb_binding_intermediate_auc,
+            l.binding_intermediate_max_distance_acc AS lb_binding_intermediate_max_distance_acc,
+            l.binding_intermediate_protocol_version AS lb_binding_intermediate_protocol_version,
             l.discovery_loss_ratio AS leaderboard_discovery_loss_ratio,
             l.is_reference,
             l.reference_name,
@@ -301,12 +326,12 @@ def _search_discoveries(
                 "lb_validation_baseline_ratio"
             )
         for metric_key in (
-            "induction_v2_investigation_auc",
-            "induction_v2_investigation_max_gap_acc",
-            "induction_v2_investigation_protocol_version",
-            "binding_v2_investigation_auc",
-            "binding_v2_investigation_max_distance_acc",
-            "binding_v2_investigation_protocol_version",
+            "induction_intermediate_auc",
+            "induction_intermediate_max_gap_acc",
+            "induction_intermediate_protocol_version",
+            "binding_intermediate_auc",
+            "binding_intermediate_max_distance_acc",
+            "binding_intermediate_protocol_version",
         ):
             lb_key = f"lb_{metric_key}"
             if entry.get(metric_key) is None and entry.get(lb_key) is not None:
@@ -519,63 +544,74 @@ def _compact_leaderboard_entry(entry: dict) -> dict:
         "hellaswag_tokenizer_mode": entry.get("hellaswag_tokenizer_mode"),
         "hellaswag_tiktoken_encoding": entry.get("hellaswag_tiktoken_encoding"),
         # Binding probes
-        "ar_auc": entry.get("ar_auc"),
-        "ar_final_acc": entry.get("ar_final_acc"),
-        "ar_timed_out": bool(entry.get("ar_timed_out"))
-        if entry.get("ar_timed_out") is not None
+        "ar_legacy_auc": entry.get("ar_legacy_auc"),
+        "ar_legacy_final_acc": entry.get("ar_legacy_final_acc"),
+        "ar_legacy_timed_out": bool(entry.get("ar_legacy_timed_out"))
+        if entry.get("ar_legacy_timed_out") is not None
         else None,
-        "ar_above_chance": bool(entry.get("ar_above_chance"))
-        if entry.get("ar_above_chance") is not None
+        "ar_legacy_above_chance": bool(entry.get("ar_legacy_above_chance"))
+        if entry.get("ar_legacy_above_chance") is not None
         else None,
-        "induction_auc": entry.get("induction_auc"),
-        "binding_auc": entry.get("binding_auc"),
-        "binding_composite": entry.get("binding_composite"),
+        "induction_screening_auc": entry.get("induction_screening_auc"),
+        "binding_screening_auc": entry.get("binding_screening_auc"),
+        "binding_screening_composite": entry.get("binding_screening_composite"),
         "local_only": entry.get("local_only"),
         **{field: entry.get(field) for field in CHAMPION_DASHBOARD_FIELDS},
-        # Nano-AR investigation probe
-        "nano_ar_inv_metric_version": entry.get("nano_ar_inv_metric_version"),
-        "nano_ar_inv_in_dist_pair_match_acc": entry.get(
-            "nano_ar_inv_in_dist_pair_match_acc"
-        ),
-        "nano_ar_inv_in_dist_class_acc": entry.get("nano_ar_inv_in_dist_class_acc"),
-        "nano_ar_inv_held_pair_match_acc": entry.get("nano_ar_inv_held_pair_match_acc"),
-        "nano_ar_inv_held_class_acc": entry.get("nano_ar_inv_held_class_acc"),
-        "nano_ar_inv_score": entry.get("nano_ar_inv_score"),
-        "nano_ar_inv_status": entry.get("nano_ar_inv_status"),
-        "nano_ar_inv_elapsed_ms": entry.get("nano_ar_inv_elapsed_ms"),
-        "nano_ar_inv_train_steps_done": entry.get("nano_ar_inv_train_steps_done"),
+        # AR Gate investigation probe
+        "ar_gate_metric_version": entry.get("ar_gate_metric_version"),
+        "ar_gate_in_dist_pair_acc": entry.get("ar_gate_in_dist_pair_acc"),
+        "ar_gate_in_dist_class_acc": entry.get("ar_gate_in_dist_class_acc"),
+        "ar_gate_held_pair_acc": entry.get("ar_gate_held_pair_acc"),
+        "ar_gate_held_class_acc": entry.get("ar_gate_held_class_acc"),
+        "ar_gate_score": entry.get("ar_gate_score"),
+        "ar_gate_status": entry.get("ar_gate_status"),
+        "ar_gate_elapsed_ms": entry.get("ar_gate_elapsed_ms"),
+        "ar_gate_train_steps_done": entry.get("ar_gate_train_steps_done"),
         # v2 investigation-tier probes
-        "induction_v2_investigation_auc": entry.get("induction_v2_investigation_auc"),
-        "induction_v2_investigation_max_gap_acc": entry.get(
-            "induction_v2_investigation_max_gap_acc"
+        "induction_intermediate_auc": entry.get("induction_intermediate_auc"),
+        "induction_intermediate_max_gap_acc": entry.get(
+            "induction_intermediate_max_gap_acc"
         ),
-        "induction_v2_investigation_protocol_version": entry.get(
-            "induction_v2_investigation_protocol_version"
+        "induction_intermediate_protocol_version": entry.get(
+            "induction_intermediate_protocol_version"
         ),
-        "binding_v2_investigation_auc": entry.get("binding_v2_investigation_auc"),
-        "binding_v2_investigation_max_distance_acc": entry.get(
-            "binding_v2_investigation_max_distance_acc"
+        "binding_intermediate_auc": entry.get("binding_intermediate_auc"),
+        "binding_intermediate_max_distance_acc": entry.get(
+            "binding_intermediate_max_distance_acc"
         ),
-        "binding_v2_investigation_protocol_version": entry.get(
-            "binding_v2_investigation_protocol_version"
+        "binding_intermediate_protocol_version": entry.get(
+            "binding_intermediate_protocol_version"
         ),
-        # Controlled-language probe ladder (v14)
-        "controlled_lang_metric_version": entry.get("controlled_lang_metric_version"),
-        "controlled_lang_s05_sa_score": entry.get("controlled_lang_s05_sa_score"),
-        "controlled_lang_s05_nb_order_acc": entry.get(
-            "controlled_lang_s05_nb_order_acc"
+        **{field: entry.get(field) for field in INTERMEDIATE_SCREEN_DASHBOARD_FIELDS},
+        # Language-control probe ladder (v14)
+        "language_control_metric_version": entry.get("language_control_metric_version"),
+        "language_control_s05_sentence_assoc_score": entry.get(
+            "language_control_s05_sentence_assoc_score"
         ),
-        "controlled_lang_s05_nb_score": entry.get("controlled_lang_s05_nb_score"),
-        "controlled_lang_s10_sa_score": entry.get("controlled_lang_s10_sa_score"),
-        "controlled_lang_s10_nb_order_acc": entry.get(
-            "controlled_lang_s10_nb_order_acc"
+        "language_control_s05_binding_order_acc": entry.get(
+            "language_control_s05_binding_order_acc"
         ),
-        "controlled_lang_s10_nb_score": entry.get("controlled_lang_s10_nb_score"),
-        "controlled_lang_inv_sa_score": entry.get("controlled_lang_inv_sa_score"),
-        "controlled_lang_inv_nb_order_acc": entry.get(
-            "controlled_lang_inv_nb_order_acc"
+        "language_control_s05_binding_score": entry.get(
+            "language_control_s05_binding_score"
         ),
-        "controlled_lang_inv_nb_score": entry.get("controlled_lang_inv_nb_score"),
+        "language_control_s10_sentence_assoc_score": entry.get(
+            "language_control_s10_sentence_assoc_score"
+        ),
+        "language_control_s10_binding_order_acc": entry.get(
+            "language_control_s10_binding_order_acc"
+        ),
+        "language_control_s10_binding_score": entry.get(
+            "language_control_s10_binding_score"
+        ),
+        "language_control_investigation_sentence_assoc_score": entry.get(
+            "language_control_investigation_sentence_assoc_score"
+        ),
+        "language_control_investigation_binding_order_acc": entry.get(
+            "language_control_investigation_binding_order_acc"
+        ),
+        "language_control_investigation_binding_score": entry.get(
+            "language_control_investigation_binding_score"
+        ),
         # BLiMP linguistic minimal pairs
         "blimp_overall_accuracy": entry.get("blimp_overall_accuracy"),
         "blimp_n_subtasks": entry.get("blimp_n_subtasks"),
@@ -845,8 +881,8 @@ def _attach_metric_completeness(programs: List[Dict[str, Any]]) -> None:
         "rapid_screening_passed",
         "wikitext_perplexity",
         "hellaswag_acc",
-        "induction_v2_investigation_auc",
-        "binding_v2_investigation_auc",
+        "induction_intermediate_auc",
+        "binding_intermediate_auc",
         "discovery_loss_ratio",
         "validation_loss_ratio",
     )

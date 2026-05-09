@@ -77,12 +77,13 @@ export const CANONICAL_SCORE_COMPONENT_META = {
   _other_base_total: { label: 'Other Base', color: 'var(--text-muted)' },
   _v10_capability_total: { label: 'Capability Total', color: '#79c0ff' },
   _v10_aux_trajectory_total: { label: 'Aux Trajectory Total', color: 'var(--accent-yellow)' },
-  _v14_controlled_lang_total: { label: 'Controlled Lang', color: '#f0883e' },
-  perf_short: { label: 'Screening Loss', color: 'var(--accent-blue)' },
-  perf_medium: { label: 'Investigation Loss', color: '#1f6feb' },
-  perf_long: { label: 'Validation Loss', color: 'var(--accent-green)' },
-  sLoss: { label: 'Screening Loss', color: 'var(--accent-blue)' },
-  iLoss: { label: 'Investigation Loss', color: '#1f6feb' },
+  _v14_language_control_total: { label: 'Language Control', color: '#f0883e' },
+  cap_ar_validation_validation: { label: 'AR VAL', color: '#d2a8ff' },
+  perf_short: { label: 'SCRN Loss', color: 'var(--accent-blue)' },
+  perf_medium: { label: 'INTER Loss', color: '#1f6feb' },
+  perf_long: { label: 'VAL Loss', color: 'var(--accent-green)' },
+  sLoss: { label: 'SCRN Loss', color: 'var(--accent-blue)' },
+  iLoss: { label: 'INTER Loss', color: '#1f6feb' },
   vBase: { label: 'Baseline', color: 'var(--accent-green)' },
   baseline: { label: 'Baseline', color: 'var(--accent-green)' },
   novelty: { label: 'Novelty', color: 'var(--accent-purple)' },
@@ -112,7 +113,7 @@ export const CANONICAL_SCORE_COMPONENT_META = {
   tinystories: { label: 'TinyStories', color: '#56d364' },
   tierBonus: { label: 'Tier Bonus', color: 'var(--accent-orange)' },
   referenceDeltaBonus: { label: 'Baseline Delta', color: 'var(--accent-orange)' },
-  cap_ar: { label: 'AR Probe', color: '#a371f7' },
+  cap_ar: { label: 'AR Gate Gate', color: '#a371f7' },
   cap_induction: { label: 'Induction Probe', color: '#79c0ff' },
   cap_binding: { label: 'Binding Probe', color: '#a371f7' },
   cap_erf_density: { label: 'ERF Density', color: '#56d364' },
@@ -125,8 +126,9 @@ export const CANONICAL_SCORE_COMPONENT_META = {
 
 const V10_ADDITIVE_TOTAL_KEYS = [
   '_v10_capability_total',
+  'cap_ar_validation_validation',
   '_v10_aux_trajectory_total',
-  '_v14_controlled_lang_total',
+  '_v14_language_control_total',
 ];
 
 const LOSS_TIER_KEYS = [

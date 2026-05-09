@@ -34,7 +34,7 @@ from research.scientist.notebook import LabNotebook  # noqa: E402
 from research.scientist.analytics import ExperimentAnalytics  # noqa: E402
 
 REPORTS = REPO / "research/reports"
-DB_PATH = REPO / "research/lab_notebook.db"
+DB_PATH = REPO / "research/runs.db"
 
 DEFAULT_MIN_N_TRIAL = 30
 DEFAULT_MIN_N_PROD_FOR_RELATIVE = 30

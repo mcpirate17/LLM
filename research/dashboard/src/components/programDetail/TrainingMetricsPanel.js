@@ -93,33 +93,33 @@ function MetricValue({ value, digits = 3, suffix = '', tone, note, title }) {
   );
 }
 
-const CONTROLLED_LANG_TIERS = [
+const LANGUAGE_CONTROL_TIERS = [
   {
-    label: 'CL S05',
-    title: 'Controlled-language S0.5 tier: synthetic association plus nano-BLiMP order probe.',
-    saKey: 'controlled_lang_s05_sa_score',
-    orderKey: 'controlled_lang_s05_nb_order_acc',
-    nbKey: 'controlled_lang_s05_nb_score',
+    label: 'LC S05',
+    title: 'Language-control S0.5 tier: synthetic association plus nano-BLiMP order probe.',
+    saKey: 'language_control_s05_sentence_assoc_score',
+    orderKey: 'language_control_s05_binding_order_acc',
+    nbKey: 'language_control_s05_binding_score',
   },
   {
-    label: 'CL S10',
-    title: 'Controlled-language S1.0 tier: harder synthetic association plus nano-BLiMP order probe.',
-    saKey: 'controlled_lang_s10_sa_score',
-    orderKey: 'controlled_lang_s10_nb_order_acc',
-    nbKey: 'controlled_lang_s10_nb_score',
+    label: 'LC S10',
+    title: 'Language-control S1.0 tier: harder synthetic association plus nano-BLiMP order probe.',
+    saKey: 'language_control_s10_sentence_assoc_score',
+    orderKey: 'language_control_s10_binding_order_acc',
+    nbKey: 'language_control_s10_binding_score',
   },
   {
-    label: 'CL Inv',
-    title: 'Controlled-language investigation tier. Yellow flag when SA is below 0.85.',
-    saKey: 'controlled_lang_inv_sa_score',
-    orderKey: 'controlled_lang_inv_nb_order_acc',
-    nbKey: 'controlled_lang_inv_nb_score',
+    label: 'LC INTER',
+    title: 'Language-control investigation tier. Yellow flag when SA is below 0.85.',
+    saKey: 'language_control_investigation_sentence_assoc_score',
+    orderKey: 'language_control_investigation_binding_order_acc',
+    nbKey: 'language_control_investigation_binding_score',
   },
 ];
 
-function ControlledLangMetricRows({ program, leaderboardEntry, fmt }) {
-  const version = rawValueFor(program, leaderboardEntry, 'controlled_lang_metric_version');
-  const rows = CONTROLLED_LANG_TIERS.map((tier) => {
+function LanguageControlMetricRows({ program, leaderboardEntry, fmt }) {
+  const version = rawValueFor(program, leaderboardEntry, 'language_control_metric_version');
+  const rows = LANGUAGE_CONTROL_TIERS.map((tier) => {
     const sa = valueFor(program, leaderboardEntry, tier.saKey);
     const order = valueFor(program, leaderboardEntry, tier.orderKey);
     const nb = valueFor(program, leaderboardEntry, tier.nbKey);
@@ -132,14 +132,14 @@ function ControlledLangMetricRows({ program, leaderboardEntry, fmt }) {
     <>
       {version && (
         <MetricRow
-          label="CL Version"
+          label="LC Ver"
           value={<span style={{ color: 'var(--text-muted)' }}>{version}</span>}
-          title="Controlled-language probe metric version."
+          title="Language-control probe metric version."
         />
       )}
       {rows.map((row) => {
         if (row.sa == null && row.order == null && row.nb == null) return null;
-        const isInvFlag = row.label === 'CL Inv' && row.sa != null && row.sa < 0.85;
+        const isInvFlag = row.label === 'LC INTER' && row.sa != null && row.sa < 0.85;
         const tone = isInvFlag
           ? 'neutral'
           : row.sa != null && row.sa >= 0.85
@@ -240,47 +240,85 @@ export function BenchmarkTestMatrix({ program, leaderboardEntry }) {
       group: 'Capability Probes',
       rows: [
         {
-          key: 'induction_v2_investigation_auc',
-          label: 'Induction v2',
-          value: leaderboardValueFor(program, leaderboardEntry, 'induction_v2_investigation_auc'),
+          key: 'induction_intermediate_auc',
+          label: 'Ind INTER',
+          value: leaderboardValueFor(program, leaderboardEntry, 'induction_intermediate_auc'),
           digits: 3,
           tone: value => toneHigher(value, 0.45, 0.20),
           color: probeAucColor,
           note: 'higher is better',
         },
         {
-          key: 'induction_auc',
-          label: 'Induction v1',
-          value: valueFor(program, leaderboardEntry, 'induction_auc'),
+          key: 'induction_screening_auc',
+          label: 'Ind SCRN',
+          value: valueFor(program, leaderboardEntry, 'induction_screening_auc'),
           digits: 3,
           tone: value => toneHigher(value, 0.45, 0.20),
           color: probeAucColor,
           note: 'higher is better',
         },
         {
-          key: 'binding_v2_investigation_auc',
-          label: 'Binding v2',
-          value: leaderboardValueFor(program, leaderboardEntry, 'binding_v2_investigation_auc'),
+          key: 'binding_intermediate_auc',
+          label: 'Bind INTER',
+          value: leaderboardValueFor(program, leaderboardEntry, 'binding_intermediate_auc'),
           digits: 3,
           tone: value => toneHigher(value, 0.45, 0.20),
           color: probeAucColor,
           note: 'higher is better',
         },
         {
-          key: 'binding_auc',
-          label: 'Binding v1',
-          value: valueFor(program, leaderboardEntry, 'binding_auc'),
+          key: 'binding_screening_auc',
+          label: 'Bind SCRN',
+          value: valueFor(program, leaderboardEntry, 'binding_screening_auc'),
           digits: 3,
           tone: value => toneHigher(value, 0.45, 0.20),
           color: probeAucColor,
           note: 'higher is better',
         },
         {
-          key: 'ar_auc',
+          key: 'ar_legacy_auc',
           label: 'Associative recall',
-          value: valueFor(program, leaderboardEntry, 'ar_auc'),
+          value: valueFor(program, leaderboardEntry, 'ar_legacy_auc'),
           digits: 3,
           tone: value => toneHigher(value, 0.45, 0.10),
+          color: probeAucColor,
+          note: 'higher is better',
+        },
+        {
+          key: 'ar_gate_score',
+          label: 'AR Gate gate',
+          value: valueFor(program, leaderboardEntry, 'ar_gate_score'),
+          digits: 3,
+          tone: value => toneHigher(value, 0.50, 0.30),
+          color: probeAucColor,
+          note: 'screening gate',
+          title: 'AR Gate investigation score. Used as an early learner gate; rank-order credit saturates after the gate is cleared.',
+        },
+        {
+          key: 'ar_validation_rank_score',
+          label: 'AR VAL easy25',
+          value: valueFor(program, leaderboardEntry, 'ar_validation_rank_score'),
+          digits: 3,
+          tone: value => toneHigher(value, 5.5, 2.5),
+          color: probeAucColor,
+          note: 'validation ranker',
+          title: 'AR Validation/easy25 validation-tier associative-recall score. This is the rank-order AR signal after AR Gate saturation.',
+        },
+        {
+          key: 'ar_validation_held_pair_acc',
+          label: 'AR VAL held pair',
+          value: valueFor(program, leaderboardEntry, 'ar_validation_held_pair_acc'),
+          digits: 3,
+          tone: value => toneHigher(value, 0.65, 0.35),
+          color: probeAucColor,
+          note: 'higher is better',
+        },
+        {
+          key: 'ar_validation_held_class_acc',
+          label: 'AR VAL held class',
+          value: valueFor(program, leaderboardEntry, 'ar_validation_held_class_acc'),
+          digits: 3,
+          tone: value => toneHigher(value, 0.65, 0.35),
           color: probeAucColor,
           note: 'higher is better',
         },
@@ -307,7 +345,7 @@ export function BenchmarkTestMatrix({ program, leaderboardEntry }) {
         },
         {
           key: 'validation_loss_ratio',
-          label: 'Validation LR',
+          label: 'VAL LR',
           value: valueFor(program, leaderboardEntry, 'validation_loss_ratio'),
           digits: 4,
           tone: value => toneLower(value, 0.70, 1.00),
@@ -328,7 +366,7 @@ export function BenchmarkTestMatrix({ program, leaderboardEntry }) {
       rows: [
         {
           key: 'investigation_robustness',
-          label: 'Investigation robustness',
+          label: 'INTER robustness',
           value: valueFor(program, leaderboardEntry, 'investigation_robustness'),
           digits: 3,
           tone: value => toneHigher(value, 0.80, 0.50),
@@ -574,10 +612,10 @@ export function BenchmarkTestMatrix({ program, leaderboardEntry }) {
  * Left column of the two-column grid: core metrics, benchmarks, timing.
  */
 export function CoreMetricsColumn({ program, leaderboardEntry, fmt, fmtMs, fmtMem, fmtInt }) {
-  const inductionV2 = leaderboardValueFor(program, leaderboardEntry, 'induction_v2_investigation_auc');
-  const inductionV1 = leaderboardValueFor(program, leaderboardEntry, 'induction_auc');
-  const bindingV2 = leaderboardValueFor(program, leaderboardEntry, 'binding_v2_investigation_auc');
-  const bindingV1 = leaderboardValueFor(program, leaderboardEntry, 'binding_auc');
+  const inductionV2 = leaderboardValueFor(program, leaderboardEntry, 'induction_intermediate_auc');
+  const inductionV1 = leaderboardValueFor(program, leaderboardEntry, 'induction_screening_auc');
+  const bindingV2 = leaderboardValueFor(program, leaderboardEntry, 'binding_intermediate_auc');
+  const bindingV1 = leaderboardValueFor(program, leaderboardEntry, 'binding_screening_auc');
   return (
     <div>
       <div style={{ fontSize: 12, color: 'var(--text-secondary)', fontWeight: 600, textTransform: 'uppercase', marginBottom: 8 }}>
@@ -595,8 +633,8 @@ export function CoreMetricsColumn({ program, leaderboardEntry, fmt, fmtMs, fmtMe
         <MetricRow label="Final Loss" value={fmt(program.final_loss)} />
         <MetricRow label="Discovery Loss" value={program.discovery_loss != null ? fmt(program.discovery_loss) : null} />
         <MetricRow label="Discovery LR" value={program.discovery_loss_ratio != null ? fmt(program.discovery_loss_ratio) : null} />
-        <MetricRow label="Validation Loss" value={program.validation_loss != null ? fmt(program.validation_loss) : null} />
-        <MetricRow label="Validation LR" value={program.validation_loss_ratio != null ? fmt(program.validation_loss_ratio) : null} />
+        <MetricRow label="VAL Loss" value={program.validation_loss != null ? fmt(program.validation_loss) : null} />
+        <MetricRow label="VAL LR" value={program.validation_loss_ratio != null ? fmt(program.validation_loss_ratio) : null} />
         <MetricRow label="Gen Gap" value={program.generalization_gap != null ? fmt(program.generalization_gap) : null} />
         <MetricRow label="Baseline Ratio" value={program.baseline_loss_ratio != null ?
           <span style={{
@@ -606,8 +644,8 @@ export function CoreMetricsColumn({ program, leaderboardEntry, fmt, fmtMs, fmtMe
             {fmt(program.baseline_loss_ratio)} {program.baseline_loss_ratio < 1 ? '(beats transformer)' : ''}
           </span> : null} />
         <MetricRow label="HellaSwag" value={program.hellaswag_acc != null ? fmt(program.hellaswag_acc, 3) : null} />
-        <MetricRow label="Induction AUC" value={inductionV1 != null ? fmt(inductionV1, 3) : null} />
-        <MetricRow label="Induction v2" value={inductionV2 != null ?
+        <MetricRow label="Ind SCRN" value={inductionV1 != null ? fmt(inductionV1, 3) : null} />
+        <MetricRow label="Ind INTER" value={inductionV2 != null ?
           <span title="Investigation-tier mixed-gap probe (500 steps, median-of-3 seeds). Overrides v1 in the binding composite when present.">
             {fmt(inductionV2, 3)}
             {inductionV1 != null && (
@@ -616,9 +654,9 @@ export function CoreMetricsColumn({ program, leaderboardEntry, fmt, fmtMs, fmtMe
               </span>
             )}
           </span> : null} />
-        <MetricRow label="AR AUC" value={program.ar_auc != null ? fmt(program.ar_auc, 3) : null} />
-        <MetricRow label="Binding AUC" value={bindingV1 != null ? fmt(bindingV1, 3) : null} />
-        <MetricRow label="Binding v2" value={bindingV2 != null ?
+        <MetricRow label="AR AUC" value={program.ar_legacy_auc != null ? fmt(program.ar_legacy_auc, 3) : null} />
+        <MetricRow label="Bind SCRN" value={bindingV1 != null ? fmt(bindingV1, 3) : null} />
+        <MetricRow label="Bind INTER" value={bindingV2 != null ?
           <span title="Investigation-tier extended-budget probe (2400 steps, 5 distances incl. 64, median-of-3 seeds). Overrides v1 in the binding composite when present.">
             {fmt(bindingV2, 3)}
             {bindingV1 != null && (
@@ -628,7 +666,7 @@ export function CoreMetricsColumn({ program, leaderboardEntry, fmt, fmtMs, fmtMe
             )}
           </span> : null} />
         <MetricRow label="BLiMP" value={program.blimp_overall_accuracy != null ? fmt(program.blimp_overall_accuracy, 3) : null} />
-        <ControlledLangMetricRows program={program} leaderboardEntry={leaderboardEntry} fmt={fmt} />
+        <LanguageControlMetricRows program={program} leaderboardEntry={leaderboardEntry} fmt={fmt} />
         <MetricRow label="WikiText PPL" value={program.wikitext_perplexity != null ? fmt(program.wikitext_perplexity, 1) : null} />
         <MetricRow label="Composite" value={(program.composite_score ?? leaderboardEntry?.composite_score) != null ?
           fmt(program.composite_score ?? leaderboardEntry?.composite_score, 1) : null} />

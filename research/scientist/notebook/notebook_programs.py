@@ -467,11 +467,11 @@ class _ProgramsMixin(
         source_cohort: str = "runtime",
     ) -> None:
         """Persist canonical induction metrics keyed by graph fingerprint."""
-        auc = row.get("induction_auc")
+        auc = row.get("induction_screening_auc")
         if auc is None:
             return
-        speed_mode = row.get("induction_probe_speed_mode")
-        metric_version = row.get("induction_probe_metric_version")
+        speed_mode = row.get("induction_screening_speed_mode")
+        metric_version = row.get("induction_screening_metric_version")
         if not speed_mode or not metric_version:
             return
         gaps = row.get("induction_probe_gaps") or [4, 8, 16, 32, 64]
@@ -483,10 +483,10 @@ class _ProgramsMixin(
                 source_cohort,
                 metric_version,
                 speed_mode,
-                int(row.get("induction_probe_train_steps") or 0),
-                int(row.get("induction_probe_eval_examples") or 0),
-                int(row.get("induction_probe_batch_size") or 0),
-                int(row.get("induction_probe_pool_size") or 0),
+                int(row.get("induction_screening_train_steps") or 0),
+                int(row.get("induction_screening_eval_examples") or 0),
+                int(row.get("induction_screening_batch_size") or 0),
+                int(row.get("induction_screening_pool_size") or 0),
                 json.dumps(list(gaps)),
                 float(auc),
                 float(gap_acc.get(4, 0.0)),
@@ -494,7 +494,7 @@ class _ProgramsMixin(
                 float(gap_acc.get(16, 0.0)),
                 float(gap_acc.get(32, 0.0)),
                 float(gap_acc.get(64, 0.0)),
-                float(row.get("induction_probe_elapsed_ms") or 0.0),
+                float(row.get("induction_screening_elapsed_ms") or 0.0),
                 time.time(),
             )
         except (TypeError, ValueError):
@@ -601,6 +601,13 @@ class _ProgramsMixin(
     def add_entry(self, entry: ExperimentEntry) -> str:
         """Add a notebook entry."""
         entry_id = str(uuid.uuid4())[:12]
+        metadata_json = json.dumps(entry.metadata)
+        metadata_json = self._maybe_store_json_artifact(
+            table_name="entries",
+            row_pk=entry_id,
+            column_name="metadata_json",
+            payload_json=metadata_json,
+        )
         insert_params = (
             entry_id,
             entry.experiment_id,
@@ -608,7 +615,7 @@ class _ProgramsMixin(
             entry.entry_type,
             entry.title,
             entry.content,
-            json.dumps(entry.metadata),
+            metadata_json,
             ",".join(entry.tags),
         )
         try:
@@ -663,7 +670,7 @@ class _ProgramsMixin(
         if not graph_fingerprint:
             return {}
         row = self.conn.execute(
-            """SELECT
+            f"""SELECT
                 COUNT(*) AS n_runs_total,
                 SUM(CASE WHEN stage1_passed = 1 THEN 1 ELSE 0 END) AS n_s1_passed,
                 SUM(CASE WHEN stage0_passed = 1 THEN 1 ELSE 0 END) AS n_s0_passed,
@@ -688,9 +695,7 @@ class _ProgramsMixin(
                 ELSE NULL END AS novelty_std
             FROM program_results
             WHERE graph_fingerprint = ?
-              AND COALESCE(intentional_rerun_reason, '') IN (
-                    '', 'exact_graph_replay_independent_sample'
-              )""",
+              AND {self._FINGERPRINT_AGGREGATE_REASON_FILTER}""",
             (graph_fingerprint,),
         ).fetchone()
         if not row or row["n_runs_total"] == 0:
@@ -728,12 +733,18 @@ class _ProgramsMixin(
         ("cross_task_score", "und"),
         ("diagnostic_score", "und"),
         ("fp_hierarchy_fitness", "und"),
-        ("ar_auc", "cap"),
-        ("nano_ar_inv_score", "cap"),
-        ("induction_auc", "cap"),
-        ("binding_auc", "cap"),
-        ("induction_v2_investigation_auc", "cap"),
-        ("binding_v2_investigation_auc", "cap"),
+        ("ar_legacy_auc", "cap"),
+        ("ar_gate_score", "cap"),
+        ("ar_validation_rank_score", "cap"),
+        ("induction_screening_auc", "cap"),
+        ("binding_screening_auc", "cap"),
+        ("induction_intermediate_auc", "cap"),
+        ("binding_intermediate_auc", "cap"),
+    )
+
+    _FINGERPRINT_AGGREGATE_REASON_FILTER = (
+        "COALESCE(intentional_rerun_reason, '') IN "
+        "('', 'exact_graph_replay', 'exact_graph_replay_independent_sample')"
     )
 
     # Metrics that need a per-row provenance filter to be safe to
@@ -802,8 +813,7 @@ class _ProgramsMixin(
         sql = (
             f"SELECT {', '.join(select_parts)} FROM program_results "
             f"WHERE graph_fingerprint = ? "
-            "AND COALESCE(intentional_rerun_reason, '') IN "
-            "('', 'exact_graph_replay_independent_sample')"
+            f"AND {self._FINGERPRINT_AGGREGATE_REASON_FILTER}"
         )
         row = self.conn.execute(sql, (graph_fingerprint,)).fetchone()
         if not row or row["_n_total"] == 0:
@@ -876,9 +886,7 @@ class _ProgramsMixin(
                     ELSE NULL END AS novelty_std
                 FROM program_results
                 WHERE graph_fingerprint IN ({placeholders})
-                  AND COALESCE(intentional_rerun_reason, '') IN (
-                        '', 'exact_graph_replay_independent_sample'
-                  )
+                  AND {self._FINGERPRINT_AGGREGATE_REASON_FILTER}
                 GROUP BY graph_fingerprint""",
                 chunk,
             ).fetchall()
@@ -1197,8 +1205,7 @@ class _ProgramsMixin(
             annotated.append(row)
         return annotated
 
-    @staticmethod
-    def _parse_program_json_fields(d: Dict[str, Any]) -> Dict[str, Any]:
+    def _parse_program_json_fields(self, d: Dict[str, Any]) -> Dict[str, Any]:
         """Parse known JSON fields for program results in-place."""
         json_fields = (
             "graph_json",
@@ -1210,10 +1217,19 @@ class _ProgramsMixin(
             "kernel_timings_json",
             "starvation_report_json",
             "diagnostic_tasks_json",
+            "rapid_screening_metrics_json",
+            "data_provenance_json",
+            "blimp_subtask_accuracies_json",
             "sparsity_report_json",
         )
         for json_field in json_fields:
             val = d.get(json_field)
+            if isinstance(val, str) and val.startswith('{"_notebook_artifact"'):
+                try:
+                    val = self._resolve_artifact_text(val)
+                    d[json_field] = val
+                except (ValueError, FileNotFoundError, KeyError, TypeError):
+                    pass
             if val and isinstance(val, str):
                 try:
                     d[json_field + "_parsed"] = json.loads(val)

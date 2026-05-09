@@ -131,26 +131,26 @@ def screening_probe_fields(row: Dict[str, Any]) -> Dict[str, Any]:
         "rapid_screening_kill_step",
         "rapid_screening_kill_metric",
         "rapid_screening_gpu_minutes_saved",
-        "ar_auc",
-        "ar_final_acc",
-        "ar_timed_out",
-        "ar_above_chance",
-        "induction_auc",
-        "induction_probe_train_steps",
-        "induction_probe_eval_examples",
-        "induction_probe_batch_size",
-        "induction_probe_elapsed_ms",
-        "induction_probe_metric_version",
-        "induction_probe_speed_mode",
-        "induction_probe_pool_size",
-        "binding_auc",
-        "binding_auc_curriculum",
-        "binding_probe_eval_examples",
-        "binding_probe_elapsed_ms",
-        "binding_probe_curriculum_steps",
-        "binding_probe_curriculum_elapsed_ms",
-        "binding_probe_curriculum_protocol_version",
-        "binding_composite",
+        "ar_legacy_auc",
+        "ar_legacy_final_acc",
+        "ar_legacy_timed_out",
+        "ar_legacy_above_chance",
+        "induction_screening_auc",
+        "induction_screening_train_steps",
+        "induction_screening_eval_examples",
+        "induction_screening_batch_size",
+        "induction_screening_elapsed_ms",
+        "induction_screening_metric_version",
+        "induction_screening_speed_mode",
+        "induction_screening_pool_size",
+        "binding_screening_auc",
+        "binding_curriculum_auc",
+        "binding_screening_eval_examples",
+        "binding_screening_elapsed_ms",
+        "binding_curriculum_steps",
+        "binding_curriculum_elapsed_ms",
+        "binding_curriculum_protocol_version",
+        "binding_screening_composite",
         "local_only",
         "hellaswag_acc",
         "hellaswag_status",
@@ -205,7 +205,7 @@ def screening_probe_fields(row: Dict[str, Any]) -> Dict[str, Any]:
 
     induction_gap_accuracies = row.get("induction_gap_accuracies")
     if induction_gap_accuracies:
-        fields["induction_gap_accuracies_json"] = json.dumps(
+        fields["induction_screening_gap_accuracies_json"] = json.dumps(
             json_safe(induction_gap_accuracies),
             sort_keys=True,
             separators=(",", ":"),
@@ -213,7 +213,7 @@ def screening_probe_fields(row: Dict[str, Any]) -> Dict[str, Any]:
 
     induction_gaps = row.get("induction_probe_gaps")
     if induction_gaps:
-        fields["induction_probe_gaps_json"] = json.dumps(
+        fields["induction_screening_gaps_json"] = json.dumps(
             json_safe(induction_gaps),
             sort_keys=True,
             separators=(",", ":"),
@@ -221,7 +221,7 @@ def screening_probe_fields(row: Dict[str, Any]) -> Dict[str, Any]:
 
     binding_distance_accuracies = row.get("binding_distance_accuracies")
     if binding_distance_accuracies:
-        fields["binding_distance_accuracies_json"] = json.dumps(
+        fields["binding_screening_distance_accuracies_json"] = json.dumps(
             json_safe(binding_distance_accuracies),
             sort_keys=True,
             separators=(",", ":"),
@@ -231,7 +231,7 @@ def screening_probe_fields(row: Dict[str, Any]) -> Dict[str, Any]:
         "binding_distance_accuracies_curriculum"
     )
     if binding_distance_accuracies_curriculum:
-        fields["binding_distance_accuracies_curriculum_json"] = json.dumps(
+        fields["binding_curriculum_distance_accuracies_json"] = json.dumps(
             json_safe(binding_distance_accuracies_curriculum),
             sort_keys=True,
             separators=(",", ":"),
@@ -239,7 +239,7 @@ def screening_probe_fields(row: Dict[str, Any]) -> Dict[str, Any]:
 
     binding_distances = row.get("binding_probe_distances")
     if binding_distances:
-        fields["binding_probe_distances_json"] = json.dumps(
+        fields["binding_screening_distances_json"] = json.dumps(
             json_safe(binding_distances),
             sort_keys=True,
             separators=(",", ":"),
@@ -467,10 +467,10 @@ S1_REQUIRED_POST_METRIC_COLUMNS: Tuple[str, ...] = (
     "wikitext_score",
     "hellaswag_acc",
     "blimp_overall_accuracy",
-    "induction_auc",
-    "binding_auc",
-    "binding_composite",
-    "ar_auc",
+    "induction_screening_auc",
+    "binding_screening_auc",
+    "binding_screening_composite",
+    "ar_legacy_auc",
     "fp_jacobian_erf_density",
     "fp_icld_delta_loss",
     "fp_logit_margin_delta",

@@ -37,7 +37,7 @@ class Example:
     outcome: str
     wikitext_perplexity: float | None
     tinystories_score: float | None
-    controlled_lang_s05_sa_score: float | None
+    language_control_s05_sentence_assoc_score: float | None
     non_norm_motif_count: int
     norm_dominance: float
     has_effective_positional_mixer: int
@@ -64,8 +64,8 @@ def escape_hatches(row: GraphRow, salvageable_templates: set[str]) -> list[str]:
     ):
         hatches.append("strong_tinystories")
     if (
-        row.controlled_lang_s05_sa_score is not None
-        and row.controlled_lang_s05_sa_score >= GOOD_CONTROLLED_SA
+        row.language_control_s05_sentence_assoc_score is not None
+        and row.language_control_s05_sentence_assoc_score >= GOOD_CONTROLLED_SA
     ):
         hatches.append("strong_controlled_sa")
     if row.has_effective_positional_mixer:
@@ -86,7 +86,9 @@ def _example(row: GraphRow, outcome: str, salvageable_templates: set[str]) -> Ex
         outcome=outcome,
         wikitext_perplexity=_round_or_none(row.wikitext_perplexity),
         tinystories_score=_round_or_none(row.tinystories_score),
-        controlled_lang_s05_sa_score=_round_or_none(row.controlled_lang_s05_sa_score),
+        language_control_s05_sentence_assoc_score=_round_or_none(
+            row.language_control_s05_sentence_assoc_score
+        ),
         non_norm_motif_count=row.non_norm_motif_count,
         norm_dominance=round(row.norm_dominance, 4),
         has_effective_positional_mixer=row.has_effective_positional_mixer,
@@ -101,8 +103,8 @@ def _false_positive_sort_key(row: GraphRow) -> tuple[float, float, float]:
     ppl = row.wikitext_perplexity if row.wikitext_perplexity is not None else 1e9
     tinystories = row.tinystories_score if row.tinystories_score is not None else -1.0
     sa = (
-        row.controlled_lang_s05_sa_score
-        if row.controlled_lang_s05_sa_score is not None
+        row.language_control_s05_sentence_assoc_score
+        if row.language_control_s05_sentence_assoc_score is not None
         else -1.0
     )
     return (ppl, -tinystories, -sa)
@@ -314,7 +316,7 @@ def write_markdown(path: Path, payload: dict[str, Any]) -> None:
                         "template_name",
                         "wikitext_perplexity",
                         "tinystories_score",
-                        "controlled_lang_s05_sa_score",
+                        "language_control_s05_sentence_assoc_score",
                         "escape_hatches",
                     ],
                     limit=8,

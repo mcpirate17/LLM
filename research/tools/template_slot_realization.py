@@ -3,9 +3,9 @@
 Per (template_name, slot_index, motif): n, pass_rate, fail_rate, mean_sa,
 mean_order_acc, Wilson 95% CI on pass_rate.
 
-Pass cohort: controlled_lang_s05_sa_score >= 0.95
+Pass cohort: language_control_s05_sentence_assoc_score >= 0.95
              AND COALESCE(failure_op,'') != 'nano_bind'
-Fail cohort: controlled_lang_s05_sa_score <  0.30
+Fail cohort: language_control_s05_sentence_assoc_score <  0.30
              OR  failure_op = 'nano_bind'
 
 Outputs:
@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Iterable
 
 REPO = Path(__file__).resolve().parents[2]
-DB = f"file:{REPO / 'research/lab_notebook.db'}?mode=ro&immutable=0"
+DB = f"file:{REPO / 'research/runs.db'}?mode=ro&immutable=0"
 REPORTS = REPO / "research/reports"
 INVENTORY = REPORTS / "slot_inventory.json"
 
@@ -67,15 +67,15 @@ def fetch_cohort() -> list[dict]:
     cur.execute(
         """
         SELECT pr.result_id,
-               pr.controlled_lang_s05_sa_score AS sa,
-               pr.controlled_lang_s05_nb_order_acc AS order_acc,
+               pr.language_control_s05_sentence_assoc_score AS sa,
+               pr.language_control_s05_binding_order_acc AS order_acc,
                pr.failure_op AS failure_op,
                pgf.template_name AS row_template,
                pgf.slot_usage_json AS slot_usage_json
         FROM program_results pr
         LEFT JOIN leaderboard l ON l.result_id = pr.result_id
         LEFT JOIN program_graph_features pgf ON pgf.result_id = pr.result_id
-        WHERE pr.controlled_lang_s05_sa_score IS NOT NULL
+        WHERE pr.language_control_s05_sentence_assoc_score IS NOT NULL
           AND COALESCE(l.is_reference, 0) = 0
         """
     )

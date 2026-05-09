@@ -37,6 +37,7 @@ from research.scientist.leaderboard_rescore import (
     rescore_leaderboard,
 )
 from research.scientist.notebook import LabNotebook
+from research.scientist.notebook.graph_artifacts import resolve_graph_json_value
 from research.synthesis.compiler import compile_model
 from research.synthesis.serializer import graph_from_json
 from research.training.data_pipeline import CorpusConfig, CorpusTokenBatcher
@@ -48,7 +49,7 @@ from research.tools._script_audit import (
     start_script_experiment,
 )
 
-DB_PATH = "research/lab_notebook.db"
+DB_PATH = "research/runs.db"
 logger = logging.getLogger(__name__)
 _BACKFILL_CORPUS_PATH = os.path.join(
     os.path.dirname(os.path.dirname(__file__)),
@@ -57,6 +58,11 @@ _BACKFILL_CORPUS_PATH = os.path.join(
 )
 _BACKFILL_BATCHERS: dict[int, CorpusTokenBatcher | None] = {}
 _BACKFILL_CORPUS_WARNED = False
+
+
+def _resolve_candidate_graph_json(nb: LabNotebook, value: Any) -> str:
+    return resolve_graph_json_value(nb.conn, nb.db_path, value)
+
 
 # ── Probe registry ──────────────────────────────────────────────────────
 
@@ -68,8 +74,8 @@ _PROBE_NEEDS_MODEL = frozenset(
         "blimp",
         "triage",
         "fingerprint",
-        "induction_v2",
-        "binding_v2",
+        "induction_intermediate",
+        "binding_intermediate",
     }
 )
 _ALL_PROBES = (
@@ -78,8 +84,8 @@ _ALL_PROBES = (
     "blimp",
     "triage",
     "fingerprint",
-    "induction_v2",
-    "binding_v2",
+    "induction_intermediate",
+    "binding_intermediate",
 )
 
 
@@ -198,9 +204,9 @@ class Candidate:
 
 
 _SIGNAL_WHERE_CLAUSE = (
-    "(COALESCE(pr.induction_auc, 0) > 0.05 "
-    "OR COALESCE(pr.binding_auc, 0) > 0.05 "
-    "OR COALESCE(pr.ar_auc, 0) > 0.05 "
+    "(COALESCE(pr.induction_screening_auc, 0) > 0.05 "
+    "OR COALESCE(pr.binding_screening_auc, 0) > 0.05 "
+    "OR COALESCE(pr.ar_legacy_auc, 0) > 0.05 "
     "OR COALESCE(pr.hellaswag_acc, 0) > 0.30 "
     "OR COALESCE(pr.blimp_overall_accuracy, 0) > 0.55)"
 )
@@ -297,7 +303,7 @@ def query_fingerprint_file_candidates(
                 composite_score=float(meta.get("composite_score") or 0),
                 is_reference=bool(meta.get("is_reference") or 0),
                 model_source=meta.get("model_source") or "",
-                graph_json=gj,
+                graph_json=_resolve_candidate_graph_json(nb, gj),
                 graph_fingerprint=fp,
             )
         )
@@ -316,7 +322,7 @@ def query_signal_candidates(
 
     Returns one Candidate per unique graph_fingerprint that passes the
     capability-signal filter, ordered by composite signal strength
-    (hellaswag_acc DESC, then induction_auc DESC). For off-leaderboard rows,
+    (hellaswag_acc DESC, then induction_screening_auc DESC). For off-leaderboard rows,
     the Candidate has entry_id='' and composite_score=0.
     """
     where = _SIGNAL_WHERE_CLAUSE
@@ -338,9 +344,9 @@ def query_signal_candidates(
                 l.is_reference,
                 l.model_source,
                 (
-                    COALESCE(pr.induction_auc, 0) * 3.0
-                    + COALESCE(pr.binding_auc, 0) * 3.0
-                    + COALESCE(pr.ar_auc, 0) * 2.0
+                    COALESCE(pr.induction_screening_auc, 0) * 3.0
+                    + COALESCE(pr.binding_screening_auc, 0) * 3.0
+                    + COALESCE(pr.ar_legacy_auc, 0) * 2.0
                     + MAX(COALESCE(pr.hellaswag_acc, 0) - 0.25, 0) * 2.0
                     + MAX(COALESCE(pr.blimp_overall_accuracy, 0) - 0.50, 0) * 1.5
                 ) AS signal_strength
@@ -402,7 +408,7 @@ def query_signal_candidates(
             composite_score=float(r["composite_score"] or 0),
             is_reference=bool(r["is_reference"] or 0),
             model_source=r["model_source"] or "",
-            graph_json=r["graph_json"],
+            graph_json=_resolve_candidate_graph_json(nb, r["graph_json"]),
             graph_fingerprint=r["graph_fingerprint"],
         )
         for r in rows
@@ -485,7 +491,7 @@ def query_candidates(
             composite_score=float(r["composite_score"] or 0),
             is_reference=bool(r["is_reference"]),
             model_source=r["model_source"] or "",
-            graph_json=r["graph_json"],
+            graph_json=_resolve_candidate_graph_json(nb, r["graph_json"]),
             graph_fingerprint=(r["graph_fingerprint"] or ""),
         )
         for r in rows
@@ -536,16 +542,20 @@ def run_binding_probe(
     device: str,
 ) -> Dict[str, Any]:
     from research.eval.binding_pipeline import (
-        compute_binding_composite,
+        compute_binding_screening_composite,
         compute_local_only,
         run_full_binding_probes,
     )
 
     probe = run_full_binding_probes(model, device=device)
-    bc = compute_binding_composite(probe.ar_auc, probe.induction_auc, probe.binding_auc)
-    is_local = compute_local_only(probe.ar_auc, probe.induction_auc, probe.binding_auc)
+    bc = compute_binding_screening_composite(
+        probe.ar_legacy_auc, probe.induction_screening_auc, probe.binding_screening_auc
+    )
+    is_local = compute_local_only(
+        probe.ar_legacy_auc, probe.induction_screening_auc, probe.binding_screening_auc
+    )
     result = probe.to_result_dict()
-    result["binding_composite"] = bc
+    result["binding_screening_composite"] = bc
     result["local_only"] = is_local
     return result
 
@@ -595,41 +605,39 @@ def run_blimp_probe(
     }
 
 
-def run_induction_v2_probe(model: nn.Module, device: str) -> Dict[str, Any]:
+def run_induction_intermediate_probe(model: nn.Module, device: str) -> Dict[str, Any]:
     """Investigation-tier v2 induction probe (median-of-3-seeds)."""
-    from research.eval.induction_probe_v2_investigation import (
-        run_induction_v2_investigation,
+    from research.eval.induction_intermediate_probe import (
+        run_induction_intermediate,
     )
 
-    r = run_induction_v2_investigation(model, device=device)
+    r = run_induction_intermediate(model, device=device)
     ok = str(r.status or "") == "ok"
     return {
-        "induction_v2_investigation_auc": r.auc if ok else None,
-        "induction_v2_investigation_max_gap_acc": r.max_gap_acc if ok else None,
-        "induction_v2_investigation_steps_trained": r.steps_trained,
-        "induction_v2_investigation_status": r.status,
-        "induction_v2_investigation_elapsed_ms": r.elapsed_ms,
-        "induction_v2_investigation_protocol_version": r.protocol_version,
+        "induction_intermediate_auc": r.auc if ok else None,
+        "induction_intermediate_max_gap_acc": r.max_gap_acc if ok else None,
+        "induction_intermediate_steps_trained": r.steps_trained,
+        "induction_intermediate_status": r.status,
+        "induction_intermediate_elapsed_ms": r.elapsed_ms,
+        "induction_intermediate_protocol_version": r.protocol_version,
     }
 
 
-def run_binding_v2_probe(model: nn.Module, device: str) -> Dict[str, Any]:
+def run_binding_intermediate_probe(model: nn.Module, device: str) -> Dict[str, Any]:
     """Investigation-tier v2 binding probe (median-of-3-seeds, 2400 steps)."""
-    from research.eval.binding_probe_v2_investigation import (
-        run_binding_v2_investigation,
+    from research.eval.binding_intermediate_probe import (
+        run_binding_intermediate,
     )
 
-    r = run_binding_v2_investigation(model, device=device)
+    r = run_binding_intermediate(model, device=device)
     ok = str(r.status or "") == "ok"
     return {
-        "binding_v2_investigation_auc": r.auc if ok else None,
-        "binding_v2_investigation_max_distance_acc": (
-            r.max_distance_acc if ok else None
-        ),
-        "binding_v2_investigation_train_steps": r.train_steps,
-        "binding_v2_investigation_status": r.status,
-        "binding_v2_investigation_elapsed_ms": r.elapsed_ms,
-        "binding_v2_investigation_protocol_version": r.protocol_version,
+        "binding_intermediate_auc": r.auc if ok else None,
+        "binding_intermediate_max_distance_acc": (r.max_distance_acc if ok else None),
+        "binding_intermediate_train_steps": r.train_steps,
+        "binding_intermediate_status": r.status,
+        "binding_intermediate_elapsed_ms": r.elapsed_ms,
+        "binding_intermediate_protocol_version": r.protocol_version,
     }
 
 
@@ -827,33 +835,33 @@ def _get_table_columns(nb: LabNotebook, table: str) -> frozenset:
 # ── NULL column for each probe (used for candidate filtering) ───────────
 
 _PROBE_NULL_COLUMN: Dict[str, str] = {
-    "binding": "induction_auc",
+    "binding": "induction_screening_auc",
     "hellaswag": "hellaswag_acc",
     "blimp": "blimp_overall_accuracy",
     "triage": "activation_sparsity_score",
     "fingerprint": "fp_cka_vs_transformer",
-    "induction_v2": "induction_v2_investigation_auc",
-    "binding_v2": "binding_v2_investigation_auc",
+    "induction_intermediate": "induction_intermediate_auc",
+    "binding_intermediate": "binding_intermediate_auc",
 }
 
 # Graph-deterministic probes: the result depends only on the graph, so rows
 # sharing a graph_fingerprint can reuse a single computed result.
 _FP_REUSABLE_PROBE_COLS: Dict[str, List[str]] = {
-    "induction_v2": [
-        "induction_v2_investigation_auc",
-        "induction_v2_investigation_max_gap_acc",
-        "induction_v2_investigation_steps_trained",
-        "induction_v2_investigation_status",
-        "induction_v2_investigation_elapsed_ms",
-        "induction_v2_investigation_protocol_version",
+    "induction_intermediate": [
+        "induction_intermediate_auc",
+        "induction_intermediate_max_gap_acc",
+        "induction_intermediate_steps_trained",
+        "induction_intermediate_status",
+        "induction_intermediate_elapsed_ms",
+        "induction_intermediate_protocol_version",
     ],
-    "binding_v2": [
-        "binding_v2_investigation_auc",
-        "binding_v2_investigation_max_distance_acc",
-        "binding_v2_investigation_train_steps",
-        "binding_v2_investigation_status",
-        "binding_v2_investigation_elapsed_ms",
-        "binding_v2_investigation_protocol_version",
+    "binding_intermediate": [
+        "binding_intermediate_auc",
+        "binding_intermediate_max_distance_acc",
+        "binding_intermediate_train_steps",
+        "binding_intermediate_status",
+        "binding_intermediate_elapsed_ms",
+        "binding_intermediate_protocol_version",
     ],
 }
 
@@ -1209,8 +1217,8 @@ def run_backfill(
                 reused_str = " [cache]" if reused_any else ""
                 if cand.entry_id.startswith("signal:"):
                     # Off-leaderboard: just report probe values, no score.
-                    iv2 = all_updates.get("induction_v2_investigation_auc", 0.0) or 0
-                    bv2 = all_updates.get("binding_v2_investigation_auc", 0.0) or 0
+                    iv2 = all_updates.get("induction_intermediate_auc", 0.0) or 0
+                    bv2 = all_updates.get("binding_intermediate_auc", 0.0) or 0
                     print(f"  [{fp}] off-lb iv2={iv2:.3f} bv2={bv2:.3f}{reused_str}")
                 else:
                     print(
@@ -1298,10 +1306,10 @@ def _run_single_probe(
         return run_blimp_probe(model, device, cand.tier)
     if name == "triage":
         return run_triage_probe(model, graph, device)
-    if name == "induction_v2":
-        return run_induction_v2_probe(model, device)
-    if name == "binding_v2":
-        return run_binding_v2_probe(model, device)
+    if name == "induction_intermediate":
+        return run_induction_intermediate_probe(model, device)
+    if name == "binding_intermediate":
+        return run_binding_intermediate_probe(model, device)
     if name == "fingerprint":
         return run_fingerprint_probe(
             cand.result_id,

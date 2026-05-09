@@ -24,7 +24,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-DB_PATH = Path(__file__).resolve().parents[1] / "lab_notebook.db"
+DB_PATH = Path(__file__).resolve().parents[1] / "runs.db"
 
 # Known winning template combos (from data analysis, sorted by best loss)
 WINNING_COMBOS = {

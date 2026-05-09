@@ -55,6 +55,7 @@ class StartExperimentRequest:
     compact_changes: Dict[str, Any]
     live_screening_changes: Dict[str, Any]
     sparse_morph_changes: Dict[str, Any]
+    intermediate_probe_changes: Dict[str, Any]
 
 
 @dataclass(frozen=True)
@@ -125,11 +126,11 @@ def parse_start_request(body: Dict[str, Any]) -> StartExperimentRequest:
     hypothesis = body.pop("hypothesis", None)
     preregistration = body.pop("preregistration", None)
     exploratory = bool(body.pop("exploratory", False))
+    enable_intermediate_probes = bool(body.pop("enable_intermediate_probes", False))
     refine_analysis_json = body.pop("refine_analysis_json", "")
     mode = normalize_start_mode(body.pop("mode", "single"))
     if mode == "confirmation":
         body["mode"] = "confirmation"
-        body["n_layers"] = 4
         body.setdefault("scale_up_steps", VALIDATION_STEPS * 4)
         body.setdefault("scale_up_batch_size", VALIDATION_BATCH_SIZE)
         body.setdefault("scale_up_seq_len", VALIDATION_SEQ_LEN)
@@ -151,6 +152,7 @@ def parse_start_request(body: Dict[str, Any]) -> StartExperimentRequest:
     compact_changes: Dict[str, Any] = {}
     live_screening_changes: Dict[str, Any] = {}
     sparse_morph_changes: Dict[str, Any] = {}
+    intermediate_probe_changes: Dict[str, Any] = {}
     if mode == "live_screening":
         live_screening_changes = apply_live_screening_bias(config)
         mode = "single"
@@ -160,6 +162,13 @@ def parse_start_request(body: Dict[str, Any]) -> StartExperimentRequest:
     if mode == "sparse_morph":
         sparse_morph_changes = apply_sparse_morph_bias(config)
         mode = "single"
+    if enable_intermediate_probes:
+        if not getattr(config, "run_ar_intermediate", False):
+            config.run_ar_intermediate = True
+            intermediate_probe_changes["run_ar_intermediate"] = True
+        if not getattr(config, "run_binding_multislot", False):
+            config.run_binding_multislot = True
+            intermediate_probe_changes["run_binding_multislot"] = True
     return StartExperimentRequest(
         body=body,
         mode=mode,
@@ -174,6 +183,7 @@ def parse_start_request(body: Dict[str, Any]) -> StartExperimentRequest:
         compact_changes=compact_changes,
         live_screening_changes=live_screening_changes,
         sparse_morph_changes=sparse_morph_changes,
+        intermediate_probe_changes=intermediate_probe_changes,
     )
 
 
@@ -263,6 +273,29 @@ def _launch_result_id_mode(start: StartExperimentRequest, *, nb, runner):
         if error:
             return None, eligibility, error
         exp_id = runner.start_investigation(
+            result_ids,
+            config,
+            hypothesis=start.hypothesis,
+            preregistration=start.preregistration,
+            exploratory=start.exploratory,
+            force=force,
+        )
+        return exp_id, eligibility, None
+    if mode == "capability_ranking":
+        result_ids, error = _require_result_ids(start, mode)
+        if error:
+            return None, None, error
+        force = bool(
+            start.body.get("force")
+            or start.body.get("force_capability_ranking")
+            or start.body.get("force_override")
+            or start.body.get("allow_ineligible")
+            or start.body.get("override_ineligible")
+        )
+        eligibility, error = _maybe_block_ineligible(nb, mode, result_ids, force)
+        if error:
+            return None, eligibility, error
+        exp_id = runner.start_capability_ranking(
             result_ids,
             config,
             hypothesis=start.hypothesis,
@@ -402,7 +435,12 @@ def launch_experiment_mode(start: StartExperimentRequest, *, nb, runner):
     if simple_exp_id is not None:
         return simple_exp_id, None, None, None, None
 
-    if start.mode in {"investigation", "validation", "confirmation"}:
+    if start.mode in {
+        "investigation",
+        "capability_ranking",
+        "validation",
+        "confirmation",
+    }:
         exp_id, eligibility, error = _launch_result_id_mode(start, nb=nb, runner=runner)
         return exp_id, eligibility, None, None, error
 
@@ -457,6 +495,7 @@ def build_start_success_response(
             "compact_synthesis_bias": start.compact_changes,
             "live_screening_bias": start.live_screening_changes,
             "sparse_morph_bias": start.sparse_morph_changes,
+            "intermediate_probe_bias": start.intermediate_probe_changes,
             "scale_up_resolution": scale_up_resolution,
             "refine_resolution": refine_resolution,
             "aria_message": runner.progress.aria_message,

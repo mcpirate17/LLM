@@ -8,6 +8,8 @@ from typing import Any, Dict, List
 import torch
 import torch.nn as nn
 
+from research.defaults import RUNS_DB
+
 from ..json_utils import json_safe
 from ._helpers import (
     _corpus_type_from_config,
@@ -161,7 +163,7 @@ class _ExecutionTrainingPostMixin:
             tokenizer = str(config.tokenizer_mode or "tiktoken")
             try:
                 ref_losses = get_reference_losses(
-                    str(getattr(self, "notebook_path", "research/lab_notebook.db"))
+                    str(getattr(self, "notebook_path", RUNS_DB))
                 )
             except (OSError, ValueError, KeyError) as e:
                 logger.debug("Reference loss lookup failed: %s", e)
@@ -532,22 +534,22 @@ class _ExecutionTrainingPostMixin:
                             getattr(config, "binding_probe_offload_source_model", False)
                         ),
                     )
-                    result["binding_auc"] = zero.auc
+                    result["binding_screening_auc"] = zero.auc
                     result["binding_distance_accuracies"] = zero.distance_accuracies
-                    result["binding_probe_eval_examples"] = (
+                    result["binding_screening_eval_examples"] = (
                         CURRICULUM_BINDING_EVAL_SCREENING
                     )
                     result["binding_probe_distances"] = list(
                         CURRICULUM_BINDING_DISTANCES
                     )
-                    result["binding_probe_elapsed_ms"] = zero.elapsed_ms
-                    result["binding_auc_curriculum"] = br.auc
+                    result["binding_screening_elapsed_ms"] = zero.elapsed_ms
+                    result["binding_curriculum_auc"] = br.auc
                     result["binding_distance_accuracies_curriculum"] = (
                         br.distance_accuracies
                     )
-                    result["binding_probe_curriculum_steps"] = br.train_steps
-                    result["binding_probe_curriculum_elapsed_ms"] = br.elapsed_ms
-                    result["binding_probe_curriculum_protocol_version"] = (
+                    result["binding_curriculum_steps"] = br.train_steps
+                    result["binding_curriculum_elapsed_ms"] = br.elapsed_ms
+                    result["binding_curriculum_protocol_version"] = (
                         CURRICULUM_BINDING_PROTOCOL_VERSION
                     )
 
@@ -565,59 +567,55 @@ class _ExecutionTrainingPostMixin:
                             batch_size=16,
                             device=str(dev),
                         )
-                        result["ar_auc"] = ar.auc
-                        result["ar_final_acc"] = ar.final_acc
-                        result["ar_timed_out"] = int(ar.timed_out)
-                        result["ar_above_chance"] = int(ar.above_chance)
+                        result["ar_legacy_auc"] = ar.auc
+                        result["ar_legacy_final_acc"] = ar.final_acc
+                        result["ar_legacy_timed_out"] = int(ar.timed_out)
+                        result["ar_legacy_above_chance"] = int(ar.above_chance)
                     except (RuntimeError, ValueError, TypeError, ImportError) as e_ar:
                         logger.debug("AR probe skipped: %s", e_ar)
 
-                if result.get("ar_auc") is None:
-                    result["ar_auc"] = None
+                if result.get("ar_legacy_auc") is None:
+                    result["ar_legacy_auc"] = None
 
-                # nano-AR-INV (investigation-tier associative-recall probe).
+                # AR gate-INV (investigation-tier associative-recall probe).
                 # Runs on a deepcopy of the live S1 model — uses the wikitext
                 # priors the backbone already learned. ~20s on cuda.
-                # Replaces the dead ar_auc slot in binding_composite.
+                # Replaces the dead ar_legacy_auc slot in binding_screening_composite.
                 nai = None
-                if not getattr(config, "skip_nano_ar_inv", False):
+                if not getattr(config, "skip_ar_gate", False):
                     try:
-                        from ...eval.nano_ar_inv import (
-                            NanoARInvConfig,
-                            nano_ar_inv,
+                        from ...eval.ar_gate import (
+                            ARGateConfig,
+                            ar_gate,
                         )
 
-                        nai = nano_ar_inv(
+                        nai = ar_gate(
                             model=model,
                             device=str(dev),
-                            cfg=NanoARInvConfig(from_s1=True),
+                            cfg=ARGateConfig(from_s1=True),
                         )
-                        result["nano_ar_inv_metric_version"] = nai.metric_version
-                        result["nano_ar_inv_in_dist_pair_match_acc"] = (
-                            nai.in_dist_pair_match_acc
-                        )
-                        result["nano_ar_inv_in_dist_class_acc"] = nai.in_dist_class_acc
-                        result["nano_ar_inv_held_pair_match_acc"] = (
-                            nai.held_pair_match_acc
-                        )
-                        result["nano_ar_inv_held_class_acc"] = nai.held_class_acc
-                        result["nano_ar_inv_score"] = round(
-                            0.6 * nai.in_dist_pair_match_acc + 0.4 * nai.held_class_acc,
+                        result["ar_gate_metric_version"] = nai.metric_version
+                        result["ar_gate_in_dist_pair_acc"] = nai.in_dist_pair_acc
+                        result["ar_gate_in_dist_class_acc"] = nai.in_dist_class_acc
+                        result["ar_gate_held_pair_acc"] = nai.held_pair_acc
+                        result["ar_gate_held_class_acc"] = nai.held_class_acc
+                        result["ar_gate_score"] = round(
+                            0.6 * nai.in_dist_pair_acc + 0.4 * nai.held_class_acc,
                             4,
                         )
-                        result["nano_ar_inv_status"] = nai.status
-                        result["nano_ar_inv_elapsed_ms"] = nai.elapsed_ms
-                        result["nano_ar_inv_train_steps_done"] = nai.finetune_steps_done
+                        result["ar_gate_status"] = nai.status
+                        result["ar_gate_elapsed_ms"] = nai.elapsed_ms
+                        result["ar_gate_train_steps_done"] = nai.finetune_steps_done
                         # Hard no-go gate (mirrors nano_bind's persistent-zero rule):
                         # both pair-match and held-class < 0.10 ⇒ frequency-collapse
                         # degenerate. The gate only flags status='ok' runs to avoid
                         # punishing transient failures (timeout / non-finite loss).
                         is_no_go = (
                             nai.status == "ok"
-                            and nai.in_dist_pair_match_acc < 0.10
+                            and nai.in_dist_pair_acc < 0.10
                             and nai.held_class_acc < 0.10
                         )
-                        result["nano_ar_inv_no_go"] = int(bool(is_no_go))
+                        result["ar_gate_no_go"] = int(bool(is_no_go))
                         if is_no_go:
                             # Diagnostic flag only — do NOT set failure_op or
                             # demote tier. Demotion would hide the row from the
@@ -626,28 +624,27 @@ class _ExecutionTrainingPostMixin:
                             # metric data from view. The composite_score already
                             # penalizes the row via cap_ar=0 from nai=0.
                             logger.info(
-                                "    nano-AR-INV NO-GO flagged: pair=%.2f "
+                                "    AR gate-INV NO-GO flagged: pair=%.2f "
                                 "held_class=%.2f (frequency-collapse; row stays "
                                 "in tier — composite_score handles ranking)",
-                                nai.in_dist_pair_match_acc,
+                                nai.in_dist_pair_acc,
                                 nai.held_class_acc,
                             )
                     except (RuntimeError, ValueError, TypeError, ImportError) as e_nai:
-                        logger.debug("nano-AR-INV probe skipped: %s", e_nai)
+                        logger.debug("AR gate-INV probe skipped: %s", e_nai)
 
-                # Binding composite v2: 0.4 * nano_ar_inv_score + 0.3*induction + 0.3*binding
-                # ar_auc is zeroed out — V4 evidence (8062 rows, max=0.015) showed it
-                # contributed pure noise. nano_ar_inv_score replaces its weight.
-                nai_score = result.get("nano_ar_inv_score")
+                # Binding composite: 0.4 * ar_gate_score + 0.3*induction + 0.3*binding.
+                # ar_legacy_auc is read-only legacy; it does not contribute weight here.
+                nai_score = result.get("ar_gate_score")
                 ind_val = ind.auc if ind is not None else None
-                bind_val = result.get("binding_auc")
+                bind_val = result.get("binding_screening_auc")
                 if ind_val is not None and bind_val is not None:
                     if nai_score is not None:
-                        result["binding_composite"] = round(
+                        result["binding_screening_composite"] = round(
                             0.4 * nai_score + 0.3 * ind_val + 0.3 * bind_val, 4
                         )
                     else:
-                        result["binding_composite"] = round(
+                        result["binding_screening_composite"] = round(
                             0.3 * ind_val + 0.3 * bind_val, 4
                         )
 
@@ -669,13 +666,13 @@ class _ExecutionTrainingPostMixin:
                         else "skip"
                     ),
                     (
-                        f"{result.get('binding_composite'):.3f}"
-                        if result.get("binding_composite") is not None
+                        f"{result.get('binding_screening_composite'):.3f}"
+                        if result.get("binding_screening_composite") is not None
                         else "skip"
                     ),
                 )
 
-                # HIGH PRIORITY DISCOVERY: induction_auc > 0.20 without
+                # HIGH PRIORITY DISCOVERY: induction_screening_auc > 0.20 without
                 # standard causal attention. This would be a novel mechanism
                 # for exact token retrieval across gaps.
                 if ind is not None and ind.auc > 0.20 and graph_data:
@@ -702,7 +699,7 @@ class _ExecutionTrainingPostMixin:
                     )
                     if not _has_attention:
                         logger.warning(
-                            "*** HIGH PRIORITY DISCOVERY: %s induction_auc=%.3f "
+                            "*** HIGH PRIORITY DISCOVERY: %s induction_screening_auc=%.3f "
                             "WITHOUT standard attention ops! Investigate immediately. "
                             "Graph ops: %s",
                             result.get("graph_fingerprint", "?")[:10],

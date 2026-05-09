@@ -73,4 +73,4 @@ def test_micro_train_skips_screening_probes_after_failed_gate(monkeypatch):
     assert result["gate_reason"] == "forced_failure"
     assert "wikitext_perplexity" not in result
     assert "hellaswag_acc" not in result
-    assert "binding_auc" not in result
+    assert "binding_screening_auc" not in result

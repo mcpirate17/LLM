@@ -83,7 +83,7 @@ def migrate(db_path: Path, cache_path: Path | None = None) -> Dict[str, Any]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--db", type=Path, default=Path("research/lab_notebook.db"))
+    parser.add_argument("--db", type=Path, default=Path("research/runs.db"))
     parser.add_argument("--cache", type=Path, default=None)
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")

@@ -18,7 +18,6 @@ Documentation and cleanup were reviewed on 2026-04-26.
 - `HYDRA/`, `LA3/`, and `personaplex/` are present as separate or older side projects. Treat them as independent unless a task explicitly targets them.
 - Generated dependency/build directories may be absent after cleanup. Recreate them with `make setup`, `npm install`, `python setup.py build_ext --inplace`, or the project-specific commands below.
 - SQLite notebooks, snapshots, WAL/SHM files, corruption captures, and recovery files under `research/` are intentionally left alone. The database cleanup/corruption issue is a separate project, not routine junk cleanup.
-- Cleanup notes live in [`CLEANUP_AUDIT_20260426.md`](/home/tim/Projects/LLM/CLEANUP_AUDIT_20260426.md) and [`DIRECTORY_USAGE_AUDIT_20260426.md`](/home/tim/Projects/LLM/DIRECTORY_USAGE_AUDIT_20260426.md).
 
 ## Quickstart
 

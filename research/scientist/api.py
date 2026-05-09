@@ -23,7 +23,7 @@ from typing import Optional
 from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 
-from research.defaults import LAB_NOTEBOOK_DB
+from research.defaults import RUNS_DB
 from .notebook import LabNotebook
 from .api_routes import _designer as _designer_mod
 from .api_routes._api_health import API_HEALTH_COUNTERS, API_HEALTH_LOCK
@@ -41,7 +41,7 @@ _DESIGNER_PROXY_BASE = _designer_mod._DESIGNER_PROXY_BASE
 
 
 def create_app(
-    notebook_path: str = LAB_NOTEBOOK_DB,
+    notebook_path: str = RUNS_DB,
     static_folder: Optional[str] = None,
 ) -> Flask:
     """Create the Flask API app."""
@@ -438,18 +438,59 @@ def _recover_orphaned_running_experiments(notebook_path: str) -> int:
 
     The dashboard executes experiments in-process. If the API process is starting,
     any pre-existing DB rows still marked 'running' are orphaned from a dead process.
+
+    Peeks via the read-only manager first so a healthy second writer never causes
+    a noisy lock-conflict traceback. If a peer aria-db writer is already alive on
+    this database, the 'running' rows belong to that writer (not orphaned), so we
+    skip recovery silently.
     """
-    nb = None
+    # Peek with read-only manager — no writer flock, no conflict possible.
+    running_ids: list[str] = []
+    nb_ro = None
     try:
-        nb = LabNotebook(notebook_path, use_native=False)
-        running_rows = nb.conn.execute(
+        nb_ro = LabNotebook(notebook_path, read_only=True)
+        running_rows = nb_ro.conn.execute(
             "SELECT experiment_id FROM experiments WHERE status = 'running'"
         ).fetchall()
         running_ids = [
             str(row["experiment_id"]) for row in running_rows if row["experiment_id"]
         ]
-        if not running_ids:
+    except Exception as exc:
+        logger.warning(
+            "Startup orphan-recovery readonly probe failed: %s", exc, exc_info=True
+        )
+        return 0
+    finally:
+        if nb_ro is not None:
+            try:
+                nb_ro.close()
+            except Exception:
+                pass
+
+    if not running_ids:
+        return 0
+
+    # Need writer to mark them failed. If another writer holds the lock, those
+    # rows belong to that live process — not orphaned.
+    nb = None
+    try:
+        nb = LabNotebook(notebook_path)
+    except Exception as exc:
+        if "another process already holds the writer lock" in str(exc):
+            logger.info(
+                "Skipping startup orphan recovery: a peer aria-db writer is "
+                "active on %s; %d 'running' row(s) belong to that writer.",
+                notebook_path,
+                len(running_ids),
+            )
             return 0
+        logger.warning(
+            "Startup orphan recovery could not acquire writer: %s",
+            exc,
+            exc_info=True,
+        )
+        return 0
+    try:
         cleaned = nb.cleanup_stale_experiments(
             timeout_minutes=0, startup_failure_minutes=0
         )
@@ -463,15 +504,14 @@ def _recover_orphaned_running_experiments(notebook_path: str) -> int:
         logger.warning("Startup orphaned-run recovery failed: %s", exc, exc_info=True)
         return 0
     finally:
-        if nb is not None:
-            try:
-                nb.close()
-            except Exception:
-                pass
+        try:
+            nb.close()
+        except Exception:
+            pass
 
 
 def run_server(
-    notebook_path: str = "research/lab_notebook.db",
+    notebook_path: str = RUNS_DB,
     host: str = "0.0.0.0",
     port: int = 5000,
     debug: bool = False,
