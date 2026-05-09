@@ -664,57 +664,6 @@ def _train_step(
     raise ValueError(f"unknown loss_mode: {loss_mode}")
 
 
-def _candidate_score_for_prefix(
-    model: nn.Module,
-    prefix_ids: tuple[int, ...],
-    candidate: str,
-    enc: Any,
-    *,
-    device: torch.device,
-) -> float:
-    answer_ids = _answer_suffix(enc, candidate)
-    ids = torch.tensor([prefix_ids + answer_ids], dtype=torch.long, device=device)
-    logits = model(ids)
-    start = len(prefix_ids)
-    total = 0.0
-    for offset, token_id in enumerate(answer_ids):
-        pos = start + offset - 1
-        log_probs = F.log_softmax(logits[0, pos].float(), dim=-1)
-        total += float(log_probs[int(token_id)].item())
-    return total / max(1, len(answer_ids))
-
-
-def _candidate_score(
-    model: nn.Module,
-    item: EncodedStoryItem,
-    candidate: str,
-    enc: Any,
-    *,
-    device: torch.device,
-    score_mode: str,
-) -> float:
-    context_score = _candidate_score_for_prefix(
-        model,
-        item.prefix_ids,
-        candidate,
-        enc,
-        device=device,
-    )
-    if score_mode == "conditional":
-        return context_score
-    if score_mode == "pmi":
-        prior_prefix = _encode_text(enc, f"{item.prompt}\nAnswer:")
-        prior_score = _candidate_score_for_prefix(
-            model,
-            prior_prefix,
-            candidate,
-            enc,
-            device=device,
-        )
-        return context_score - prior_score
-    raise ValueError(f"unknown score_mode: {score_mode}")
-
-
 def _choice_scores_for_items(
     model: nn.Module,
     selected: list[EncodedStoryItem],
