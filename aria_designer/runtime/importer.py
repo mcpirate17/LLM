@@ -56,7 +56,9 @@ def _get_notebook():
     """Get a LabNotebook connection to the research database."""
     from research.scientist.notebook import LabNotebook
 
-    db_path = os.path.join(_RESEARCH_ROOT, "lab_notebook.db")
+    db_path = os.path.join(_RESEARCH_ROOT, "runs.db")
+    if not os.path.exists(db_path):
+        db_path = os.path.join(_RESEARCH_ROOT, "lab_notebook.db")
     if not os.path.exists(db_path):
         raise FileNotFoundError(f"Lab notebook not found at {db_path}")
     # The designer importer only reads graph payloads. Keep it out of the
