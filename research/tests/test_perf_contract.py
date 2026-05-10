@@ -8,6 +8,8 @@ from research.perf_contract import (
     list_recent_perf_artifacts,
     summarize_perf_artifacts,
 )
+from research.scientist import perf as perf_module
+from research.scientist.perf import OpKernelProfiler
 
 
 def test_perf_contract_artifact_roundtrip(tmp_path):
@@ -103,3 +105,29 @@ def test_build_perf_contract_with_gate_research_nested_payload():
     assert "missing_metric" not in reasons
     assert verdict["passed"] is True
     assert contract["metrics"]["compile_time_ms"] == 30.0
+
+
+def test_op_kernel_profiler_does_not_rerun_completed_callable(monkeypatch):
+    calls = {"count": 0}
+
+    class _BrokenProfiler:
+        def __enter__(self):
+            return object()
+
+        def __exit__(self, _exc_type, _exc, _tb):
+            raise RuntimeError("profiler teardown failed")
+
+    monkeypatch.setattr(
+        perf_module.torch.profiler,
+        "profile",
+        lambda **_kwargs: _BrokenProfiler(),
+    )
+
+    summary = OpKernelProfiler().profile_callable(
+        lambda: calls.__setitem__("count", calls["count"] + 1)
+    )
+
+    assert calls["count"] == 1
+    assert summary is not None
+    assert summary["n_profiled_ops"] == 0
+    assert "profiler teardown failed" in summary["profile_error"]

@@ -154,10 +154,7 @@ def test_id_collapse_late_snapshot_captured_on_early_loop_exit():
         assert runner._id_collapse_early_snap is not None
         assert runner._id_collapse_late_snap is not None
         assert runner._id_collapse_late_snap.step < 59  # well short of planned late_at
-        assert (
-            runner._id_collapse_late_snap.step
-            > runner._id_collapse_early_snap.step
-        )
+        assert runner._id_collapse_late_snap.step > runner._id_collapse_early_snap.step
     finally:
         runner.close()
 

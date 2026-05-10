@@ -33,19 +33,13 @@ class _TrueRoutingBenchModule(nn.Module):
             self.attn_out = nn.Parameter(torch.randn(dim, dim, device="cuda") * 0.02)
             self.conv_proj = nn.Parameter(torch.randn(dim, dim, device="cuda") * 0.02)
         if op_name in {"hetero_moe", "arch_router"}:
-            self.ssm_B_proj = nn.Parameter(
-                torch.randn(dim, dim, device="cuda") * 0.02
-            )
-            self.ssm_C_proj = nn.Parameter(
-                torch.randn(dim, dim, device="cuda") * 0.02
-            )
+            self.ssm_B_proj = nn.Parameter(torch.randn(dim, dim, device="cuda") * 0.02)
+            self.ssm_C_proj = nn.Parameter(torch.randn(dim, dim, device="cuda") * 0.02)
             self.ssm_D = nn.Parameter(torch.randn(dim, device="cuda") * 0.02)
         if op_name == "arch_router":
             self.arch_ffn = nn.Parameter(torch.randn(dim, dim, device="cuda") * 0.02)
             self.arch_proj = nn.Parameter(torch.randn(dim, dim, device="cuda") * 0.02)
-            self.mlp_up = nn.Parameter(
-                torch.randn(4 * dim, dim, device="cuda") * 0.02
-            )
+            self.mlp_up = nn.Parameter(torch.randn(4 * dim, dim, device="cuda") * 0.02)
             self.mlp_down = nn.Parameter(
                 torch.randn(dim, 4 * dim, device="cuda") * 0.02
             )

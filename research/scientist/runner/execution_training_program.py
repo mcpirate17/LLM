@@ -484,9 +484,8 @@ class _ExecutionTrainingProgramMixin:
                 # ID Collapse hidden-state snapshots. Cheap (~50 ms each:
                 # one fwd-pass + one 256x256 eigvalsh) compared to the
                 # training step itself, so unconditional capture is fine.
-                if (
-                    self._id_collapse_probe_ids is not None
-                    and (step == _id_collapse_early_at or step == _id_collapse_late_at)
+                if self._id_collapse_probe_ids is not None and (
+                    step == _id_collapse_early_at or step == _id_collapse_late_at
                 ):
                     try:
                         from research.eval.intrinsic_dim_collapse import (

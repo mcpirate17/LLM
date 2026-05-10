@@ -145,6 +145,7 @@ class OpKernelProfiler:
         if not activities:
             return None
 
+        callable_ran = False
         try:
             with torch.profiler.profile(
                 activities=activities,
@@ -153,10 +154,27 @@ class OpKernelProfiler:
                 with_stack=False,
             ) as prof:
                 fn()
-            return self.summarize(prof, top_k=self.top_k)
+                callable_ran = True
         except Exception as exc:
             logger.debug("Returning default due to error: %s", exc)
+            if callable_ran:
+                return self._profile_error_summary(exc)
             return None
+        try:
+            return self.summarize(prof, top_k=self.top_k)
+        except Exception as exc:
+            logger.debug("Returning profile error summary due to error: %s", exc)
+            return self._profile_error_summary(exc)
+
+    @staticmethod
+    def _profile_error_summary(exc: Exception) -> Dict[str, Any]:
+        return {
+            "top_ops": [],
+            "n_profiled_ops": 0,
+            "total_self_cpu_ms": 0.0,
+            "total_self_cuda_ms": 0.0,
+            "profile_error": f"{type(exc).__name__}: {exc}",
+        }
 
     @staticmethod
     def summarize(prof: Any, top_k: int = 20) -> Dict[str, Any]:
