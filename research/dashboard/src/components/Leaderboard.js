@@ -11,6 +11,8 @@ import LeaderboardRow from './leaderboard/LeaderboardRow';
 import RerunAutoModal from './leaderboard/RerunAutoModal';
 import SortIndicator from './shared/SortIndicator';
 import useResizableColumns from './shared/useResizableColumns';
+import { ColumnPickerButton, ColumnPickerPanel } from './shared/DataTableControls';
+import { normalizeColumnKeys } from './shared/columnUtils';
 
 function finiteNumber(value) {
   if (value == null) return null;
@@ -37,6 +39,18 @@ const thStyle = {
   textTransform: 'uppercase',
   whiteSpace: 'nowrap',
 };
+
+const LEADERBOARD_CORE_COLUMNS = ['_score', 'tier', '_verified', '_rate', '_gap', 'architecture_family', '_composition', 'composite_score', 'screening_loss_ratio', 'validation_loss_ratio', 'induction_intermediate_auc', 'binding_intermediate_auc', '_language_control_ladder', 'ar_curriculum_auc_pair_final', 'ar_curriculum_s0_retention', 'fp_jacobian_erf_density', 'tier', '_actions'];
+const LEADERBOARD_RESEARCH_COLUMNS = ['_score', '_capability_quality', 'tier', '_verified', '_stability', 'model_source', 'architecture_family', 'architecture_desc', '_composition', '_vs_reference', 'composite_score', 'discovery_loss_ratio', 'screening_loss_ratio', 'investigation_loss_ratio', 'validation_loss_ratio', 'investigation_robustness', 'pre_inv_score', '_metric_quality', '_actions'];
+const LEADERBOARD_PROBE_COLUMNS = ['_score', 'tier', 'architecture_family', 'induction_screening_auc', 'induction_intermediate_auc', 'induction_validation_auc', 'binding_screening_auc', 'binding_intermediate_auc', '_language_control_ladder', 'ar_legacy_auc', 'ar_curriculum_auc_pair_final', 'ar_curriculum_s0_retention', 'ar_curriculum_max_passing_stage', 'ar_validation_rank_score', 'hellaswag_acc', 'blimp_overall_accuracy', 'wikitext_ppl', '_actions'];
+const LEADERBOARD_ROBUSTNESS_COLUMNS = ['_score', 'tier', 'architecture_family', 'robustness_grade', 'investigation_robustness', 'robustness_noise_score', 'quant_int8_retention', 'robustness_long_ctx_score', 'robustness_long_ctx_scaling_score', 'robustness_long_ctx_retrieval_aggregate', 'max_viable_seq_len', 'jacobian_spectral_norm', 'init_sensitivity_std', '_actions'];
+const LEADERBOARD_COLUMN_PRESETS = [
+  { key: 'core', label: 'Core', columns: LEADERBOARD_CORE_COLUMNS },
+  { key: 'research', label: 'Research', columns: LEADERBOARD_RESEARCH_COLUMNS },
+  { key: 'probes', label: 'Probes', columns: LEADERBOARD_PROBE_COLUMNS },
+  { key: 'robustness', label: 'Robustness', columns: LEADERBOARD_ROBUSTNESS_COLUMNS },
+  { key: 'all', label: 'All', columns: COLUMNS.map((col) => col.key) },
+];
 
 /**
  * Leaderboard — Technical ranking of all candidate architectures.
@@ -96,8 +110,9 @@ function Leaderboard({
     return typeof leaderboardPrefs?.onlyRobust === 'boolean' ? leaderboardPrefs.onlyRobust : false;
   });
   const [visibleColumns, setVisibleColumns] = useState(() => {
-    const baseline = ['_score', 'tier', '_verified', '_rate', '_gap', 'architecture_family', '_composition', 'composite_score', 'screening_loss_ratio', 'validation_loss_ratio', 'induction_intermediate_auc', 'binding_intermediate_auc', '_language_control_ladder', 'hellaswag_acc', 'blimp_overall_accuracy', 'ar_legacy_auc', 'fp_jacobian_erf_density', 'fp_id_collapse_rate', 'fp_jacobian_erf_decay_slope', '_actions'];
-    const saved = Array.isArray(leaderboardPrefs?.visibleColumns) ? [...leaderboardPrefs.visibleColumns] : baseline;
+    const saved = Array.isArray(leaderboardPrefs?.visibleColumns)
+      ? normalizeColumnKeys(COLUMNS, leaderboardPrefs.visibleColumns)
+      : normalizeColumnKeys(COLUMNS, LEADERBOARD_CORE_COLUMNS);
     const ensureColumnAfter = (key, afterKey) => {
       if (saved.includes(key)) return;
       const afterIndex = saved.indexOf(afterKey);
@@ -303,14 +318,9 @@ function Leaderboard({
             {tierCounts[t] ? <span style={{ marginLeft: 4, opacity: 0.75 }}>({tierCounts[t]})</span> : null}
           </button>
         ))}
-        <button
-          onClick={() => setShowColumnPicker(!showColumnPicker)}
-          className="refresh-btn"
-          style={{ fontSize: 11, marginLeft: 'auto' }}
-          aria-expanded={showColumnPicker}
-        >
-          Columns
-        </button>
+        <div style={{ marginLeft: 'auto' }}>
+          <ColumnPickerButton open={showColumnPicker} onClick={() => setShowColumnPicker(!showColumnPicker)} />
+        </div>
         <button onClick={fetchLeaderboard} className="refresh-btn" style={{ fontSize: 11 }}>
           Refresh
         </button>
@@ -361,6 +371,17 @@ function Leaderboard({
       {/* Action error */}
       {actionError && (
         <div className="error-banner" style={{ marginBottom: 12 }}>{actionError}</div>
+      )}
+
+      {showColumnPicker && (
+        <ColumnPickerPanel
+          columns={COLUMNS}
+          selectedKeys={visibleColumns}
+          onChange={(keys) => setVisibleColumns(normalizeColumnKeys(COLUMNS, keys))}
+          onReset={() => setVisibleColumns(normalizeColumnKeys(COLUMNS, LEADERBOARD_CORE_COLUMNS))}
+          presets={LEADERBOARD_COLUMN_PRESETS}
+          onPreset={(preset) => setVisibleColumns(normalizeColumnKeys(COLUMNS, preset.columns))}
+        />
       )}
 
       {/* Loading state */}

@@ -136,6 +136,26 @@ _INTERMEDIATE_SCREEN_DASHBOARD_FIELDS = (
     "binding_multislot_auc_lift",
     "binding_multislot_status",
     "binding_multislot_elapsed_ms",
+    # AR curriculum probe — replaces ar_intermediate as the differentiation
+    # signal. Headline = ar_curriculum_auc_pair_final and ar_curriculum_s0_retention.
+    "ar_curriculum_metric_version",
+    "ar_curriculum_auc_pair_final",
+    "ar_curriculum_auc_class_final",
+    "ar_curriculum_s0_held_pair_acc",
+    "ar_curriculum_s0_retention",
+    "ar_curriculum_max_passing_stage",
+    "ar_curriculum_per_stage_held_pair_acc",
+    "ar_curriculum_per_stage_held_class_acc",
+    "ar_curriculum_per_stage_lift_pair",
+    "ar_curriculum_per_stage_z_score_pair",
+    "ar_curriculum_per_stage_chance_pair",
+    "ar_curriculum_learning_curve_json",
+    "ar_curriculum_steps_trained",
+    "ar_curriculum_n_eval_examples",
+    "ar_curriculum_mode",
+    "ar_curriculum_elapsed_ms",
+    "ar_curriculum_status",
+    "ar_curriculum_error",
 )
 
 
@@ -244,8 +264,7 @@ class _LeaderboardMixin:
             update_items.append((col, int(val) if isinstance(val, bool) else val))
         return update_items
 
-    @staticmethod
-    def _provenance_complete(pr_row: Any) -> bool:
+    def _provenance_complete(self, pr_row: Any) -> bool:
         if not pr_row:
             return False
         raw = (
@@ -255,9 +274,22 @@ class _LeaderboardMixin:
         )
         if not raw or not isinstance(raw, str):
             return False
+        # data_provenance_json is externalized into a zstd artifact for
+        # large payloads, leaving an artifact-pointer stub on the row.
+        # _json_loads_maybe_artifact resolves the pointer transparently;
+        # without it, payload.get("provenance_complete") always returns
+        # False on externalized rows and blocks legitimate promotions.
         try:
-            payload = json.loads(raw)
-        except (json.JSONDecodeError, TypeError, ValueError):
+            payload = self._json_loads_maybe_artifact(raw)
+        except (
+            json.JSONDecodeError,
+            TypeError,
+            ValueError,
+            OSError,
+            FileNotFoundError,
+        ):
+            return False
+        if not isinstance(payload, dict):
             return False
         return bool(payload.get("provenance_complete"))
 

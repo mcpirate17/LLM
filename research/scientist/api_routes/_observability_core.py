@@ -14,6 +14,9 @@ from ..json_utils import fast_dumps, fast_loads
 from ..native.core import _try_import_rust_scheduler
 from ..shared_utils import coerce_finite_float as _finite_float_or_none
 from ..notebook.graph_artifacts import resolve_graph_json_value
+from ._component_metric_overlays import (
+    load_component_metric_overlays as _load_component_metric_overlays,
+)
 from .deps import get_notebook
 
 logger = logging.getLogger(__name__)
@@ -497,12 +500,26 @@ def _attach_component_observability_metrics(
     component["avg_binding_screening_auc"] = _rounded_metric(
         overlay.get("avg_binding_screening_auc")
     )
+    component["avg_binding_screening_composite"] = _rounded_metric(
+        overlay.get("avg_binding_screening_composite")
+    )
+    component["avg_ar_legacy_auc"] = _rounded_metric(overlay.get("avg_ar_legacy_auc"))
     component["avg_induction_intermediate_auc"] = _rounded_metric(
         overlay.get("avg_induction_intermediate_auc")
     )
     component["avg_binding_intermediate_auc"] = _rounded_metric(
         overlay.get("avg_binding_intermediate_auc")
     )
+    component["avg_ar_curriculum_auc_pair_final"] = _rounded_metric(
+        overlay.get("avg_ar_curriculum_auc_pair_final")
+    )
+    component["avg_ar_curriculum_s0_retention"] = _rounded_metric(
+        overlay.get("avg_ar_curriculum_s0_retention")
+    )
+    component["avg_ar_curriculum_max_passing_stage"] = _rounded_metric(
+        overlay.get("avg_ar_curriculum_max_passing_stage")
+    )
+    component["n_ar_curriculum"] = int(overlay.get("n_ar_curriculum") or 0)
     component["avg_hellaswag_acc"] = _rounded_metric(overlay.get("avg_hellaswag_acc"))
     component["avg_blimp_overall_accuracy"] = _rounded_metric(
         overlay.get("avg_blimp_overall_accuracy")
@@ -717,8 +734,14 @@ def _build_profile_only_component(op_name: str, prof: dict[str, Any]) -> dict[st
         "avg_validation_loss_ratio": None,
         "avg_induction_screening_auc": None,
         "avg_binding_screening_auc": None,
+        "avg_binding_screening_composite": None,
+        "avg_ar_legacy_auc": None,
         "avg_induction_intermediate_auc": None,
         "avg_binding_intermediate_auc": None,
+        "avg_ar_curriculum_auc_pair_final": None,
+        "avg_ar_curriculum_s0_retention": None,
+        "avg_ar_curriculum_max_passing_stage": None,
+        "n_ar_curriculum": 0,
         "avg_hellaswag_acc": None,
         "avg_blimp_overall_accuracy": None,
         **{key: None for key in _LANGUAGE_CONTROL_AVG_FIELDS},
@@ -748,214 +771,6 @@ def _build_profile_only_component(op_name: str, prof: dict[str, Any]) -> dict[st
         "bwd_us": prof.get("bwd_us"),
         "data_source": "profiling_only",
     }
-
-
-def _component_metric_where(window: str) -> tuple[str, tuple[Any, ...]]:
-    where = "gpo.op_name IS NOT NULL AND gpo.op_name <> '' AND gpo.op_name <> 'input'"
-    params: tuple[Any, ...] = ()
-    window_seconds = _WINDOW_SECONDS.get(window)
-    if window_seconds is not None:
-        where += " AND pr.timestamp > ?"
-        params = (time.time() - window_seconds,)
-    return where, params
-
-
-def _load_component_metric_overlays(nb, window: str) -> Dict[str, Dict[str, Any]]:
-    where, params = _component_metric_where(window)
-    overlays: Dict[str, Dict[str, Any]] = {}
-    try:
-        rows = nb.conn.execute(
-            f"""
-            WITH op_rows AS (
-                SELECT DISTINCT
-                    pr.result_id AS result_id,
-                    gpo.op_name AS op_name,
-                    pr.loss_ratio AS loss_ratio,
-                    pr.validation_loss_ratio AS validation_loss_ratio,
-                    pr.induction_screening_auc AS induction_screening_auc,
-                    pr.induction_intermediate_auc AS induction_intermediate_auc,
-                    COALESCE(pr.binding_curriculum_auc, pr.binding_screening_auc) AS binding_screening_auc,
-                    pr.binding_intermediate_auc AS binding_intermediate_auc,
-                    COALESCE(
-                        pr.hellaswag_acc,
-                        CASE
-                            WHEN pr.screening_hellaswag_total > 0
-                            THEN CAST(pr.screening_hellaswag_correct AS REAL)
-                                 / pr.screening_hellaswag_total
-                            ELSE NULL
-                        END
-                    ) AS hellaswag_acc,
-                    pr.blimp_overall_accuracy AS blimp_overall_accuracy,
-                    pr.language_control_s05_sentence_assoc_score AS language_control_s05_sentence_assoc_score,
-                    pr.language_control_s05_binding_order_acc AS language_control_s05_binding_order_acc,
-                    pr.language_control_s05_binding_score AS language_control_s05_binding_score,
-                    pr.language_control_s10_sentence_assoc_score AS language_control_s10_sentence_assoc_score,
-                    pr.language_control_s10_binding_order_acc AS language_control_s10_binding_order_acc,
-                    pr.language_control_s10_binding_score AS language_control_s10_binding_score,
-                    pr.language_control_investigation_sentence_assoc_score AS language_control_investigation_sentence_assoc_score,
-                    pr.language_control_investigation_binding_order_acc AS language_control_investigation_binding_order_acc,
-                    pr.language_control_investigation_binding_score AS language_control_investigation_binding_score,
-                    l.composite_score AS composite_score,
-                    pr.fp_jacobian_effective_rank AS jacobian_effective_rank,
-                    pr.fp_sensitivity_uniformity AS sensitivity_uniformity,
-                    pr.fp_jacobian_erf_density AS erf_density,
-                    pr.fp_id_collapse_rate AS id_collapse_rate,
-                    pr.fp_id_collapse_rate_normalized AS id_collapse_rate_normalized,
-                    pr.fp_jacobian_erf_decay_slope AS erf_decay_slope,
-                    pr.fp_jacobian_erf_first_norm AS erf_first_norm,
-                    pr.fp_jacobian_erf_last_norm AS erf_last_norm,
-                    pr.fp_logit_margin_velocity AS logit_margin_velocity,
-                    pr.fp_logit_margin_delta AS logit_margin_delta,
-                    CASE WHEN pr.fp_jacobian_erf_variance IS NOT NULL
-                         THEN log(abs(pr.fp_jacobian_erf_variance) + 0.000000001)
-                         ELSE NULL
-                    END AS erf_variance_log,
-                    CASE WHEN pr.fp_jacobian_spectral_norm IS NOT NULL
-                         THEN log(abs(pr.fp_jacobian_spectral_norm) + 0.000000001)
-                         ELSE NULL
-                    END AS spec_norm_log,
-                    pr.fp_icld_velocity AS icld_velocity,
-                    pr.fp_icld_delta_loss AS icld_delta_loss
-                FROM program_results pr
-                JOIN program_graph_ops gpo ON gpo.result_id = pr.result_id
-                LEFT JOIN leaderboard l ON l.result_id = pr.result_id
-                WHERE {where}
-            )
-            SELECT
-                op_name,
-                AVG(loss_ratio) AS avg_loss_ratio,
-                AVG(validation_loss_ratio) AS avg_validation_loss_ratio,
-                AVG(induction_screening_auc) AS avg_induction_screening_auc,
-                AVG(binding_screening_auc) AS avg_binding_screening_auc,
-                AVG(induction_intermediate_auc) AS avg_induction_intermediate_auc,
-                AVG(binding_intermediate_auc) AS avg_binding_intermediate_auc,
-                AVG(hellaswag_acc) AS avg_hellaswag_acc,
-                AVG(blimp_overall_accuracy) AS avg_blimp_overall_accuracy,
-                AVG(language_control_s05_sentence_assoc_score) AS avg_language_control_s05_sentence_assoc_score,
-                AVG(language_control_s05_binding_order_acc) AS avg_language_control_s05_binding_order_acc,
-                AVG(language_control_s05_binding_score) AS avg_language_control_s05_binding_score,
-                AVG(language_control_s10_sentence_assoc_score) AS avg_language_control_s10_sentence_assoc_score,
-                AVG(language_control_s10_binding_order_acc) AS avg_language_control_s10_binding_order_acc,
-                AVG(language_control_s10_binding_score) AS avg_language_control_s10_binding_score,
-                AVG(language_control_investigation_sentence_assoc_score) AS avg_language_control_investigation_sentence_assoc_score,
-                AVG(language_control_investigation_binding_order_acc) AS avg_language_control_investigation_binding_order_acc,
-                AVG(language_control_investigation_binding_score) AS avg_language_control_investigation_binding_score,
-                AVG(composite_score) AS avg_composite_score,
-                AVG(erf_density) AS avg_erf_density,
-                AVG(id_collapse_rate) AS avg_id_collapse_rate,
-                AVG(id_collapse_rate_normalized) AS avg_id_collapse_rate_normalized,
-                AVG(erf_decay_slope) AS avg_erf_decay_slope,
-                AVG(erf_first_norm) AS avg_erf_first_norm,
-                AVG(erf_last_norm) AS avg_erf_last_norm,
-                AVG(logit_margin_velocity) AS avg_logit_margin_velocity,
-                AVG(logit_margin_delta) AS avg_logit_margin_delta,
-                AVG(erf_variance_log) AS avg_erf_variance_log,
-                AVG(spec_norm_log) AS avg_spec_norm_log,
-                AVG(icld_velocity) AS avg_icld_velocity,
-                AVG(icld_delta_loss) AS avg_icld_delta_loss,
-                AVG(jacobian_effective_rank) AS avg_jacobian_effective_rank,
-                AVG(sensitivity_uniformity) AS avg_sensitivity_uniformity
-            FROM op_rows
-            GROUP BY op_name
-            """,
-            params,
-        ).fetchall()
-        for row in rows:
-            overlays[row["op_name"]] = {
-                "avg_loss_ratio": row["avg_loss_ratio"],
-                "avg_validation_loss_ratio": row["avg_validation_loss_ratio"],
-                "avg_induction_screening_auc": row["avg_induction_screening_auc"],
-                "avg_binding_screening_auc": row["avg_binding_screening_auc"],
-                "avg_induction_intermediate_auc": row["avg_induction_intermediate_auc"],
-                "avg_binding_intermediate_auc": row["avg_binding_intermediate_auc"],
-                "avg_hellaswag_acc": row["avg_hellaswag_acc"],
-                "avg_blimp_overall_accuracy": row["avg_blimp_overall_accuracy"],
-                "avg_language_control_s05_sentence_assoc_score": row[
-                    "avg_language_control_s05_sentence_assoc_score"
-                ],
-                "avg_language_control_s05_binding_order_acc": row[
-                    "avg_language_control_s05_binding_order_acc"
-                ],
-                "avg_language_control_s05_binding_score": row[
-                    "avg_language_control_s05_binding_score"
-                ],
-                "avg_language_control_s10_sentence_assoc_score": row[
-                    "avg_language_control_s10_sentence_assoc_score"
-                ],
-                "avg_language_control_s10_binding_order_acc": row[
-                    "avg_language_control_s10_binding_order_acc"
-                ],
-                "avg_language_control_s10_binding_score": row[
-                    "avg_language_control_s10_binding_score"
-                ],
-                "avg_language_control_investigation_sentence_assoc_score": row[
-                    "avg_language_control_investigation_sentence_assoc_score"
-                ],
-                "avg_language_control_investigation_binding_order_acc": row[
-                    "avg_language_control_investigation_binding_order_acc"
-                ],
-                "avg_language_control_investigation_binding_score": row[
-                    "avg_language_control_investigation_binding_score"
-                ],
-                "avg_composite_score": row["avg_composite_score"],
-                "avg_erf_density": row["avg_erf_density"],
-                "avg_id_collapse_rate": row["avg_id_collapse_rate"],
-                "avg_id_collapse_rate_normalized": row[
-                    "avg_id_collapse_rate_normalized"
-                ],
-                "avg_erf_decay_slope": row["avg_erf_decay_slope"],
-                "avg_erf_first_norm": row["avg_erf_first_norm"],
-                "avg_erf_last_norm": row["avg_erf_last_norm"],
-                "avg_logit_margin_velocity": row["avg_logit_margin_velocity"],
-                "avg_logit_margin_delta": row["avg_logit_margin_delta"],
-                "avg_erf_variance_log": row["avg_erf_variance_log"],
-                "avg_spec_norm_log": row["avg_spec_norm_log"],
-                "avg_icld_velocity": row["avg_icld_velocity"],
-                "avg_icld_delta_loss": row["avg_icld_delta_loss"],
-                "avg_jacobian_effective_rank": row["avg_jacobian_effective_rank"],
-                "avg_sensitivity_uniformity": row["avg_sensitivity_uniformity"],
-            }
-
-        reason_rows = nb.conn.execute(
-            f"""
-            WITH reason_rows AS (
-                SELECT DISTINCT
-                    pr.result_id AS result_id,
-                    gpo.op_name AS op_name,
-                    COALESCE(NULLIF(pr.error_type, ''), NULLIF(pr.stage_at_death, '')) AS reason
-                FROM program_results pr
-                JOIN program_graph_ops gpo ON gpo.result_id = pr.result_id
-                WHERE {where} AND pr.stage1_passed = 0
-            ),
-            reason_counts AS (
-                SELECT op_name, reason, COUNT(*) AS n
-                FROM reason_rows
-                WHERE reason IS NOT NULL AND reason <> ''
-                GROUP BY op_name, reason
-            ),
-            ranked AS (
-                SELECT
-                    op_name,
-                    reason,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY op_name
-                        ORDER BY n DESC, reason ASC
-                    ) AS rn
-                FROM reason_counts
-            )
-            SELECT op_name, reason
-            FROM ranked
-            WHERE rn = 1
-            """,
-            params,
-        ).fetchall()
-        for row in reason_rows:
-            overlays.setdefault(row["op_name"], {})["top_failure_reason"] = row[
-                "reason"
-            ]
-    except sqlite3.OperationalError as exc:
-        logger.debug("component metric overlay query failed: %s", exc)
-    return overlays
 
 
 def get_component_health(notebook_path: str, window: str = "all") -> Dict[str, Any]:

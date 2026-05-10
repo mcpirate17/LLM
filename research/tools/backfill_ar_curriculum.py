@@ -133,15 +133,20 @@ def _load_priority_candidates(nb, jsonl_path: Path, *, force: bool):
         return []
     placeholders = ",".join("?" for _ in result_ids)
     null_filter = "" if force else "AND pr.ar_curriculum_auc_pair_final IS NULL"
+    # LEFT JOIN so we can backfill program_results rows that have no leaderboard
+    # entry (e.g., investigation experiments whose row never got promoted).
     rows = nb.conn.execute(
         f"""
         SELECT
-            l.entry_id, l.result_id, l.tier, l.composite_score,
+            COALESCE(l.entry_id, '') AS entry_id,
+            pr.result_id,
+            COALESCE(l.tier, '') AS tier,
+            COALESCE(l.composite_score, 0.0) AS composite_score,
             COALESCE(l.is_reference, 0) AS is_reference,
             COALESCE(l.model_source, '') AS model_source,
             pr.graph_json, pr.graph_fingerprint
         FROM program_results pr
-        JOIN leaderboard l ON l.result_id = pr.result_id
+        LEFT JOIN leaderboard l ON l.result_id = pr.result_id
         WHERE pr.result_id IN ({placeholders})
           AND pr.graph_json IS NOT NULL
           {null_filter}
@@ -222,28 +227,9 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def main() -> int:
-    args = parse_args()
+def _select_candidates(args: argparse.Namespace, nb: LabNotebook, null_col: str | None):
     tiers = tuple(t.strip() for t in str(args.tiers).split(",") if t.strip())
     shard = _parse_shard(args.shard)
-    null_col = None if args.force else "ar_curriculum_auc_pair_final"
-    vocab_size = max(required_vocab_size(), 2048)
-    run_id = datetime.now(timezone.utc).strftime("ar_curriculum_backfill_%Y%m%d_%H%M%S")
-
-    logger.info(
-        "%s tiers=%s top_per_tier=%d shard=%s device=%s force=%s dry_run=%s",
-        run_id,
-        tiers,
-        args.top_per_tier,
-        shard,
-        args.device,
-        args.force,
-        args.dry_run,
-    )
-
-    if not args.dry_run:
-        ensure_ar_curriculum_columns(args.db)
-    nb = LabNotebook(str(args.db), read_only=bool(args.dry_run))
     pr_cols = set(table_columns(nb.conn, "program_results"))
     if null_col and null_col not in pr_cols:
         logger.info(
@@ -266,21 +252,29 @@ def main() -> int:
         )
     if args.limit:
         candidates = candidates[: int(args.limit)]
-    logger.info("Selected %d candidates", len(candidates))
-    if args.dry_run:
-        for c in candidates[:20]:
-            logger.info(
-                "  %s tier=%s composite=%s",
-                c.graph_fingerprint[:12],
-                c.tier,
-                c.composite_score,
-            )
-        if len(candidates) > 20:
-            logger.info("  ... %d more", len(candidates) - 20)
-        return 0
-    if not candidates:
-        return 0
+    return candidates, tiers, shard
 
+
+def _log_dry_run_candidates(candidates) -> None:
+    for candidate in candidates[:20]:
+        logger.info(
+            "  %s tier=%s composite=%s",
+            candidate.graph_fingerprint[:12],
+            candidate.tier,
+            candidate.composite_score,
+        )
+    if len(candidates) > 20:
+        logger.info("  ... %d more", len(candidates) - 20)
+
+
+def _run_backfill_candidates(
+    *,
+    args: argparse.Namespace,
+    nb: LabNotebook,
+    candidates,
+    vocab_size: int,
+    run_id: str,
+) -> tuple[int, int, int, float]:
     cfg = ARCurriculumConfig(
         seed=int(args.seed),
         steps_per_stage=int(args.steps_per_stage),
@@ -293,8 +287,6 @@ def main() -> int:
     failed = 0
     skipped = 0
     t_start = time.perf_counter()
-    # LabNotebook(read_only=False) already holds aria-db's writer manager.
-    # Adding a second flock from the same process deadlocks; rely on aria-db.
     for i, cand in enumerate(candidates, 1):
         t0 = time.perf_counter()
         try:
@@ -357,10 +349,47 @@ def main() -> int:
         )
         if i % 10 == 0:
             nb.conn.commit()
+    return wrote, failed, skipped, time.perf_counter() - t_start
+
+
+def main() -> int:
+    args = parse_args()
+    null_col = None if args.force else "ar_curriculum_auc_pair_final"
+    vocab_size = max(required_vocab_size(), 2048)
+    run_id = datetime.now(timezone.utc).strftime("ar_curriculum_backfill_%Y%m%d_%H%M%S")
+
+    if not args.dry_run:
+        ensure_ar_curriculum_columns(args.db)
+    nb = LabNotebook(str(args.db), read_only=bool(args.dry_run))
+    candidates, tiers, shard = _select_candidates(args, nb, null_col)
+    logger.info(
+        "%s tiers=%s top_per_tier=%d selected=%d shard=%s device=%s force=%s dry_run=%s",
+        run_id,
+        tiers,
+        args.top_per_tier,
+        len(candidates),
+        shard,
+        args.device,
+        args.force,
+        args.dry_run,
+    )
+    if args.dry_run:
+        _log_dry_run_candidates(candidates)
+        nb.close()
+        return 0
+    if not candidates:
+        nb.close()
+        return 0
+
+    wrote, failed, skipped, total = _run_backfill_candidates(
+        args=args,
+        nb=nb,
+        candidates=candidates,
+        vocab_size=vocab_size,
+        run_id=run_id,
+    )
     nb.conn.commit()
     nb.close()
-
-    total = time.perf_counter() - t_start
     logger.info(
         "Done. wrote=%d failed=%d skipped=%d total_wall=%.1fs avg=%.1fs/candidate",
         wrote,

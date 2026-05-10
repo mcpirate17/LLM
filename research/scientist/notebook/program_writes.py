@@ -38,6 +38,17 @@ _S1_REQUIRED_POST_METRIC_COLUMNS_FOR_GUARDRAIL = (
     "ar_legacy_auc",
 )
 
+# Additional post-S1 metrics required for investigation-tier writes (rows that
+# claim a deeper probe pass). At least one of these must be populated; if all
+# are NULL the investigation didn't actually run its deep probes and the row
+# is effectively a duplicate screening result that should not mask the cohort.
+# Detected by experiment_type='investigation' OR explicit cohort marker.
+_INVESTIGATION_REQUIRED_ANY_OF = (
+    "induction_intermediate_auc",
+    "binding_intermediate_auc",
+    "ar_curriculum_auc_pair_final",
+)
+
 
 _TRUST_LABEL_REPLAY_BYPASS_PREFIXES = (
     "ablation_metric_backfill",
@@ -92,18 +103,43 @@ def _enforce_s1_metric_completeness(
         for c in _S1_REQUIRED_POST_METRIC_COLUMNS_FOR_GUARDRAIL
         if kwargs.get(c) is None
     ]
-    if not missing:
-        return
     model_source = str(kwargs.get("model_source") or "unknown")
-    msg = (
-        f"BLOCKED S1 write missing post-S1 metrics: "
-        f"fp={graph_fingerprint[:16]} model_source={model_source} missing={missing} "
-        "(assemble via program_result_kwargs_from_s1; if a path legitimately "
-        "cannot produce all probes, set stage1_passed=False or tag the write "
-        f"with trust_label in {_TRUST_LABEL_REPLAY_BYPASS_PREFIXES})."
+    if missing:
+        msg = (
+            f"BLOCKED S1 write missing post-S1 metrics: "
+            f"fp={graph_fingerprint[:16]} model_source={model_source} missing={missing} "
+            "(assemble via program_result_kwargs_from_s1; if a path legitimately "
+            "cannot produce all probes, set stage1_passed=False or tag the write "
+            f"with trust_label in {_TRUST_LABEL_REPLAY_BYPASS_PREFIXES})."
+        )
+        logger.error(msg)
+        raise ValueError(msg)
+    # Investigation-tier completeness: an investigation write must produce at
+    # least one investigation-tier probe metric. Without this, an investigation
+    # experiment can complete by re-running the screening probes only, leaving
+    # induction_intermediate / binding_intermediate / ar_curriculum NULL — that
+    # silently degrades the leaderboard for that fingerprint when the row gets
+    # rebound by program_leaderboard_repair (2026-05-09 incident: fp 7fb0412ec57a
+    # composite dropped from 330→209 because the new investigation row had no
+    # post-S1 deep-probe metrics, then became canonical).
+    experiment_type = str(kwargs.get("_experiment_type") or "").lower()
+    is_investigation = (
+        experiment_type == "investigation"
+        or str(kwargs.get("result_cohort") or "") == "investigation"
     )
-    logger.error(msg)
-    raise ValueError(msg)
+    if is_investigation and not any(
+        kwargs.get(c) is not None for c in _INVESTIGATION_REQUIRED_ANY_OF
+    ):
+        msg = (
+            f"BLOCKED investigation S1 write with no investigation-tier probe metrics: "
+            f"fp={graph_fingerprint[:16]} model_source={model_source} "
+            f"need any of {list(_INVESTIGATION_REQUIRED_ANY_OF)} populated. "
+            "An investigation experiment that only re-runs screening probes is a "
+            "duplicate, not an investigation. Either run intermediate/curriculum "
+            "probes, set stage1_passed=False, or tag the write as backfill."
+        )
+        logger.error(msg)
+        raise ValueError(msg)
 
 
 def should_record_program_result(

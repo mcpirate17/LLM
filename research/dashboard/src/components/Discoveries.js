@@ -13,6 +13,8 @@ import {
   SummaryBar,
 } from './discoveries/DiscoveryUiBits';
 import SortIndicator from './shared/SortIndicator';
+import { ColumnPickerButton, ColumnPickerPanel } from './shared/DataTableControls';
+import { hasExactColumnKeys, normalizeColumnKeys } from './shared/columnUtils';
 
 const DISCOVERIES_PREFS_KEY = 'aria_discoveries_prefs_v1';
 const QUALITY_FLOOR_THRESHOLD = 0.8;
@@ -222,6 +224,8 @@ function scoreCellTone(key, value) {
     || key === 'binding_intermediate_auc'
     || key === 'binding_screening_composite'
     || key === 'ar_legacy_auc'
+    || key === 'ar_curriculum_auc_pair_final'
+    || key === 'ar_curriculum_s0_retention'
     || key === 'ar_gate_score'
     || key === 'ar_gate_in_dist_pair_acc'
     || key === 'ar_gate_in_dist_class_acc'
@@ -287,6 +291,13 @@ const COLUMNS = [
   { key: 'binding_intermediate_auc', label: 'Bind INTER', width: 78, title: 'Variable-binding probe AUC (v2 investigation protocol).' },
   { key: 'binding_screening_composite', label: 'Bind Cmp', width: 84, title: 'Composite binding score (3-signal AND).' },
   { key: 'ar_legacy_auc', label: 'AR AUC', width: 78, title: 'Associative recall probe AUC.' },
+  { key: 'ar_curriculum_auc_pair_final', label: 'AR CUR AUC', width: 92, title: 'AR Curriculum probe AUC across cumulative stages S0-S5.' },
+  { key: 'ar_curriculum_s0_retention', label: 'AR CUR Retain', width: 108, title: 'AR Curriculum S0 retention after cumulative training. Low values indicate forgetting.' },
+  { key: 'ar_curriculum_max_passing_stage', label: 'AR CUR Pass', width: 96, title: 'Highest AR Curriculum stage cleared.' },
+  { key: 'ar_curriculum_status', label: 'AR CUR Status', width: 104, title: 'Execution status for the AR Curriculum probe.' },
+  { key: 'ar_curriculum_steps_trained', label: 'AR CUR Steps', width: 100, title: 'Training steps used by the AR Curriculum probe.' },
+  { key: 'ar_curriculum_elapsed_ms', label: 'AR CUR ms', width: 90, title: 'Elapsed runtime in milliseconds for the AR Curriculum probe.' },
+  { key: 'ar_curriculum_metric_version', label: 'AR CUR Ver', width: 124, title: 'Metric version for the AR Curriculum probe.' },
   { key: 'ar_gate_score', label: 'AR Gate', width: 78, title: 'AR Gate investigation score: associative-recall pair/class aggregate used by the current binding composite.' },
   { key: 'ar_gate_in_dist_pair_acc', label: 'Gate ID Pair', width: 92, title: 'AR Gate investigation in-distribution pair-match accuracy.' },
   { key: 'ar_gate_in_dist_class_acc', label: 'Gate ID Class', width: 94, title: 'AR Gate investigation in-distribution class accuracy.' },
@@ -328,6 +339,8 @@ const CORE_VISIBLE_COLUMNS = [
   '_best_loss',
   'induction_intermediate_auc',
   'binding_intermediate_auc',
+  'ar_curriculum_auc_pair_final',
+  'ar_curriculum_s0_retention',
   'language_control_s05_binding_score',
   'language_control_s10_binding_score',
   'ar_gate_score',
@@ -373,6 +386,13 @@ const PROBES_VISIBLE_COLUMNS = [
   'binding_intermediate_auc',
   'binding_screening_composite',
   'ar_legacy_auc',
+  'ar_curriculum_auc_pair_final',
+  'ar_curriculum_s0_retention',
+  'ar_curriculum_max_passing_stage',
+  'ar_curriculum_status',
+  'ar_curriculum_steps_trained',
+  'ar_curriculum_elapsed_ms',
+  'ar_curriculum_metric_version',
   'language_control_s05_binding_score',
   'language_control_s10_binding_score',
   'language_control_investigation_binding_score',
@@ -421,6 +441,14 @@ const ARCHITECTURE_VISIBLE_COLUMNS = [
   'tier',
   '_details',
   '_designer',
+];
+
+const DISCOVERY_COLUMN_PRESETS = [
+  { key: 'core', label: 'Core', columns: CORE_VISIBLE_COLUMNS, title: 'Show the core discovery columns' },
+  { key: 'research', label: 'Research', columns: RESEARCH_VISIBLE_COLUMNS, title: 'Show an expanded research-oriented column set' },
+  { key: 'probes', label: 'Probes', columns: PROBES_VISIBLE_COLUMNS, title: 'Show probe metrics: induction, binding, language-control, associative recall, BLiMP, PPL, and completeness' },
+  { key: 'architecture', label: 'Architecture', columns: ARCHITECTURE_VISIBLE_COLUMNS, title: 'Show fingerprint architecture metrics' },
+  { key: 'all', label: 'All', columns: COLUMNS.map((col) => col.key), title: 'Show all available columns' },
 ];
 
 function Discoveries({
@@ -566,8 +594,7 @@ function Discoveries({
     return { byFamily, gpt2Loss };
   }, [data?.references]);
   const applyColumnPreset = useCallback((keys) => {
-    const valid = new Set(COLUMNS.map((col) => col.key));
-    setVisibleColumns(keys.filter((key) => valid.has(key)));
+    setVisibleColumns(normalizeColumnKeys(COLUMNS, keys));
   }, []);
 
   // Persist preferences
@@ -945,11 +972,7 @@ function Discoveries({
     background: isActive ? 'rgba(88, 166, 255, 0.12)' : 'transparent',
     color: isActive ? 'var(--accent-blue)' : 'var(--text-secondary)',
   }), []);
-  const hasExactVisibleColumns = useCallback((keys) => {
-    if (visibleColumns.length !== keys.length) return false;
-    const keySet = new Set(keys);
-    return visibleColumns.every((key) => keySet.has(key));
-  }, [visibleColumns]);
+  const hasExactVisibleColumns = useCallback((keys) => hasExactColumnKeys(visibleColumns, normalizeColumnKeys(COLUMNS, keys)), [visibleColumns]);
 
   return (
     <div className="card" style={{ padding: 16 }}>
@@ -1142,53 +1165,17 @@ function Discoveries({
 
         <div style={FILTER_PANEL_STYLE}>
           <span style={FILTER_PANEL_TITLE_STYLE}>Columns</span>
-          <button
-            onClick={() => setShowColumnPicker(!showColumnPicker)}
-            style={{
-              fontSize: 11, padding: '5px 12px', cursor: 'pointer',
-              border: `1px solid ${showColumnPicker ? 'var(--accent-blue)' : 'var(--border)'}`,
-              borderRadius: 4,
-              background: showColumnPicker ? 'rgba(88, 166, 255, 0.12)' : 'transparent',
-              color: showColumnPicker ? 'var(--accent-blue)' : 'var(--text-secondary)',
-            }}
-          >
-            {showColumnPicker ? 'Picker open' : 'Picker closed'}
-          </button>
-          <button
-            onClick={() => applyColumnPreset(CORE_VISIBLE_COLUMNS)}
-            style={presetButtonStyle(hasExactVisibleColumns(CORE_VISIBLE_COLUMNS))}
-            title="Show the core discovery columns"
-          >
-            Core
-          </button>
-          <button
-            onClick={() => applyColumnPreset(RESEARCH_VISIBLE_COLUMNS)}
-            style={presetButtonStyle(hasExactVisibleColumns(RESEARCH_VISIBLE_COLUMNS))}
-            title="Show an expanded research-oriented column set"
-          >
-            Research
-          </button>
-          <button
-            onClick={() => applyColumnPreset(PROBES_VISIBLE_COLUMNS)}
-            style={presetButtonStyle(hasExactVisibleColumns(PROBES_VISIBLE_COLUMNS))}
-            title="Show probe metrics: induction, binding, hellaswag, ar, blimp, ppl, completeness"
-          >
-            Probes
-          </button>
-          <button
-            onClick={() => applyColumnPreset(ARCHITECTURE_VISIBLE_COLUMNS)}
-            style={presetButtonStyle(hasExactVisibleColumns(ARCHITECTURE_VISIBLE_COLUMNS))}
-            title="Show fingerprint architecture metrics from the recent backfill"
-          >
-            Architecture
-          </button>
-          <button
-            onClick={() => applyColumnPreset(COLUMNS.map((col) => col.key))}
-            style={presetButtonStyle(hasExactVisibleColumns(COLUMNS.map((col) => col.key)))}
-            title="Show all available columns"
-          >
-            All
-          </button>
+          <ColumnPickerButton open={showColumnPicker} onClick={() => setShowColumnPicker(!showColumnPicker)} />
+          {DISCOVERY_COLUMN_PRESETS.map((preset) => (
+            <button
+              key={preset.key}
+              onClick={() => applyColumnPreset(preset.columns)}
+              style={presetButtonStyle(hasExactVisibleColumns(preset.columns))}
+              title={preset.title}
+            >
+              {preset.label}
+            </button>
+          ))}
         </div>
 
         <div style={{ ...FILTER_PANEL_STYLE, justifyContent: 'space-between' }}>
@@ -1256,28 +1243,14 @@ function Discoveries({
       </div>
 
       {showColumnPicker && (
-        <div style={{
-          marginBottom: 12, padding: 12, background: 'var(--bg-secondary)', 
-          border: '1px solid var(--border)', borderRadius: 6,
-          display: 'flex', gap: 12, flexWrap: 'wrap'
-        }}>
-          {COLUMNS.map(col => (
-            <label key={col.key} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--text-primary)', cursor: 'pointer' }}>
-              <input 
-                type="checkbox" 
-                checked={visibleColumns.includes(col.key)}
-                onChange={(e) => {
-                  if (e.target.checked) {
-                    setVisibleColumns([...visibleColumns, col.key]);
-                  } else {
-                    setVisibleColumns(visibleColumns.filter(k => k !== col.key));
-                  }
-                }}
-              />
-              {col.label}
-            </label>
-          ))}
-        </div>
+        <ColumnPickerPanel
+          columns={COLUMNS}
+          selectedKeys={visibleColumns}
+          onChange={setVisibleColumns}
+          onReset={() => applyColumnPreset(CORE_VISIBLE_COLUMNS)}
+          presets={DISCOVERY_COLUMN_PRESETS}
+          onPreset={(preset) => applyColumnPreset(preset.columns)}
+        />
       )}
 
       {/* Search */}
@@ -1790,6 +1763,8 @@ const DiscoveryRow = React.memo(function DiscoveryRow({
             case 'binding_intermediate_auc':
             case 'binding_screening_composite':
             case 'ar_legacy_auc':
+            case 'ar_curriculum_auc_pair_final':
+            case 'ar_curriculum_s0_retention':
             case 'ar_gate_score':
             case 'ar_gate_in_dist_pair_acc':
             case 'ar_gate_in_dist_class_acc':
@@ -1830,6 +1805,25 @@ const DiscoveryRow = React.memo(function DiscoveryRow({
               );
             case 'ar_validation_metric_version':
               return <td key={col.key} style={{ ...tdStyle, fontFamily: 'monospace', color: entry.ar_validation_metric_version ? 'var(--text-secondary)' : 'var(--text-muted)' }}>{entry.ar_validation_metric_version || '--'}</td>;
+            case 'ar_curriculum_max_passing_stage': {
+              const v = entry.ar_curriculum_max_passing_stage;
+              if (v == null) return <td key={col.key} style={{ ...tdStyle, textAlign: 'right', fontFamily: 'monospace', color: 'var(--text-muted)' }}>--</td>;
+              const n = Number(v);
+              const color = n < 1 ? 'var(--accent-red)' : n < 3 ? 'var(--accent-yellow)' : 'var(--accent-green)';
+              return <td key={col.key} style={{ ...tdStyle, textAlign: 'right', fontFamily: 'monospace', color, fontWeight: 600 }}>{n.toFixed(1)}</td>;
+            }
+            case 'ar_curriculum_status':
+              return (
+                <td key={col.key} style={{ ...tdStyle, fontFamily: 'monospace', color: entry.ar_curriculum_status === 'ok' ? 'var(--accent-green)' : (entry.ar_curriculum_status ? 'var(--accent-yellow)' : 'var(--text-muted)') }}>
+                  {entry.ar_curriculum_status || '--'}
+                </td>
+              );
+            case 'ar_curriculum_steps_trained':
+              return <td key={col.key} style={{ ...tdStyle, textAlign: 'right', fontFamily: 'monospace' }}>{entry.ar_curriculum_steps_trained != null ? Number(entry.ar_curriculum_steps_trained).toFixed(0) : '--'}</td>;
+            case 'ar_curriculum_elapsed_ms':
+              return <td key={col.key} style={{ ...tdStyle, textAlign: 'right', fontFamily: 'monospace' }}>{entry.ar_curriculum_elapsed_ms != null ? Number(entry.ar_curriculum_elapsed_ms).toFixed(0) : '--'}</td>;
+            case 'ar_curriculum_metric_version':
+              return <td key={col.key} style={{ ...tdStyle, fontFamily: 'monospace', color: entry.ar_curriculum_metric_version ? 'var(--text-secondary)' : 'var(--text-muted)' }}>{entry.ar_curriculum_metric_version || '--'}</td>;
             case 'ncd_score':
               return <td key={col.key} style={{ ...tdStyle, textAlign: 'right', fontFamily: 'monospace' }}>{entry.ncd_score != null ? Number(entry.ncd_score).toFixed(3) : '--'}</td>;
             case 'rapid_screening_passed':

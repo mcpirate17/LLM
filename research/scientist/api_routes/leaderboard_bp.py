@@ -95,6 +95,25 @@ INTERMEDIATE_SCREEN_DASHBOARD_FIELDS = (
     "binding_multislot_auc_lift",
     "binding_multislot_status",
     "binding_multislot_elapsed_ms",
+    # AR curriculum probe (replaces ar_intermediate as differentiation probe).
+    "ar_curriculum_metric_version",
+    "ar_curriculum_auc_pair_final",
+    "ar_curriculum_auc_class_final",
+    "ar_curriculum_s0_held_pair_acc",
+    "ar_curriculum_s0_retention",
+    "ar_curriculum_max_passing_stage",
+    "ar_curriculum_per_stage_held_pair_acc",
+    "ar_curriculum_per_stage_held_class_acc",
+    "ar_curriculum_per_stage_lift_pair",
+    "ar_curriculum_per_stage_z_score_pair",
+    "ar_curriculum_per_stage_chance_pair",
+    "ar_curriculum_learning_curve_json",
+    "ar_curriculum_steps_trained",
+    "ar_curriculum_n_eval_examples",
+    "ar_curriculum_mode",
+    "ar_curriculum_elapsed_ms",
+    "ar_curriculum_status",
+    "ar_curriculum_error",
 )
 
 

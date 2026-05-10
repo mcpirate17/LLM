@@ -52,6 +52,31 @@ INDUCTION_V2_SEEDS: Tuple[int, ...] = (11, 23, 47)
 _RESTRICTED_VOCAB = 256
 
 
+def _materialize_non_inference_(module: nn.Module) -> None:
+    """In-place: replace inference-mode params/buffers with autograd-safe storage.
+
+    The probe deepcopies the trained investigation model, then trains the
+    copy. Upstream evaluation paths run forward under ``torch.inference_mode()``
+    which marks any cached buffers (RoPE rotations, attention biases, KV
+    caches) as inference tensors. Inference tensors propagate through
+    ``deepcopy``, and trying to use them in autograd-tracked computation
+    raises ``RuntimeError: Inference tensors cannot be saved for backward``.
+    Cloning the storage outside ``inference_mode`` mints a normal tensor;
+    swapping ``.data`` rebinds the wrapping Parameter/buffer to it.
+    """
+    with torch.no_grad():
+        for p in module.parameters(recurse=True):
+            if p.is_inference():
+                fresh = torch.empty_like(p.data)
+                fresh.copy_(p.data)
+                p.data = fresh
+        for b in module.buffers(recurse=True):
+            if b.is_inference():
+                fresh = torch.empty_like(b.data)
+                fresh.copy_(b.data)
+                b.data = fresh
+
+
 def _snapshot_module_tensors(
     module: nn.Module,
 ) -> tuple[List[torch.Tensor], List[torch.Tensor]]:
@@ -185,6 +210,65 @@ def _maybe_compile(model: nn.Module) -> nn.Module:
         return model
 
 
+def _steps_per_gap(gaps: Tuple[int, ...], n_train_steps: int) -> Dict[int, int]:
+    n_gaps = len(gaps)
+    steps = {gap: 0 for gap in gaps}
+    for step in range(n_train_steps):
+        steps[gaps[step % n_gaps]] += 1
+    return steps
+
+
+def _pregenerate_training_batches(
+    gaps: Tuple[int, ...],
+    steps_per_gap: Dict[int, int],
+    batch_size: int,
+    device: str,
+    generator: torch.Generator | None,
+) -> tuple[Dict[int, torch.Tensor], Dict[int, torch.Tensor]]:
+    inputs: Dict[int, torch.Tensor] = {}
+    targets: Dict[int, torch.Tensor] = {}
+    for gap in gaps:
+        count = steps_per_gap[gap]
+        if count <= 0:
+            continue
+        inp, tgt = _generate_induction_batch_bulk(
+            count, batch_size, gap, device, generator
+        )
+        inputs[gap] = inp
+        targets[gap] = tgt
+    return inputs, targets
+
+
+def _evaluate_gap_accuracy(
+    compiled: Any,
+    *,
+    gap: int,
+    n_eval: int,
+    batch_size: int,
+    device: str,
+    generator: torch.Generator | None,
+) -> float:
+    n_batches = (n_eval + batch_size - 1) // batch_size
+    eval_inp, eval_tgt = _generate_induction_batch_bulk(
+        n_batches, batch_size, gap, device, generator
+    )
+    correct = torch.zeros((), dtype=torch.long, device=device)
+    total = 0
+    seen = 0
+    for batch_idx in range(n_batches):
+        if seen >= n_eval:
+            break
+        take = min(batch_size, n_eval - seen)
+        inp = eval_inp[batch_idx, :take]
+        tgt = eval_tgt[batch_idx, :take]
+        out = compiled(inp)
+        preds = out[:, inp.shape[1] - 1, :_RESTRICTED_VOCAB].argmax(-1)
+        correct += (preds == tgt).sum()
+        total += tgt.numel()
+        seen += take
+    return round(int(correct.item()) / max(total, 1), 4)
+
+
 def _run_induction_intermediate_on(
     probe_model: nn.Module,
     *,
@@ -215,25 +299,14 @@ def _run_induction_intermediate_on(
     )
     compiled = _maybe_compile(probe_model)
 
-    # Pre-generate ALL training batches per gap, up-front. Shape:
-    # per_gap_inputs[gap] = (steps_for_gap, batch_size, seq_len_for_gap)
-    # per_gap_targets[gap] = (steps_for_gap, batch_size)
     n_gaps = len(gaps)
-    # How many steps each gap sees (round-robin through gaps)
-    steps_per_gap: Dict[int, int] = {g: 0 for g in gaps}
-    for s in range(n_train_steps):
-        steps_per_gap[gaps[s % n_gaps]] += 1
-
-    pre_inputs: Dict[int, torch.Tensor] = {}
-    pre_targets: Dict[int, torch.Tensor] = {}
-    for g in gaps:
-        cnt = steps_per_gap[g]
-        if cnt > 0:
-            inp, tgt = _generate_induction_batch_bulk(
-                cnt, batch_size, g, device, generator
-            )
-            pre_inputs[g] = inp
-            pre_targets[g] = tgt
+    pre_inputs, pre_targets = _pregenerate_training_batches(
+        gaps,
+        _steps_per_gap(gaps, n_train_steps),
+        batch_size,
+        device,
+        generator,
+    )
 
     # Per-gap cursor to index into pre-generated buffers
     cursor = {g: 0 for g in gaps}
@@ -270,26 +343,13 @@ def _run_induction_intermediate_on(
                     if time.perf_counter() - t0 > timeout_s:
                         result.gap_accuracies[gap] = 0.0
                         continue
-                    n_batches = (n_eval + batch_size - 1) // batch_size
-                    eval_inp, eval_tgt = _generate_induction_batch_bulk(
-                        n_batches, batch_size, gap, device, generator
-                    )
-                    correct = torch.zeros((), dtype=torch.long, device=device)
-                    total = 0
-                    seen = 0
-                    for b in range(n_batches):
-                        if seen >= n_eval:
-                            break
-                        take = min(batch_size, n_eval - seen)
-                        inp = eval_inp[b, :take]
-                        tgt = eval_tgt[b, :take]
-                        out = compiled(inp)
-                        preds = out[:, inp.shape[1] - 1, :_RESTRICTED_VOCAB].argmax(-1)
-                        correct += (preds == tgt).sum()
-                        total += tgt.numel()
-                        seen += take
-                    result.gap_accuracies[gap] = round(
-                        int(correct.item()) / max(total, 1), 4
+                    result.gap_accuracies[gap] = _evaluate_gap_accuracy(
+                        compiled,
+                        gap=gap,
+                        n_eval=n_eval,
+                        batch_size=batch_size,
+                        device=device,
+                        generator=generator,
                     )
     except Exception as exc:
         result.status = f"train_failed: {exc}"
@@ -329,6 +389,7 @@ def _run_induction_intermediate_single_seed(
         generator.manual_seed(int(seed))
     try:
         probe_model = copy.deepcopy(model).to(device)
+        _materialize_non_inference_(probe_model)
     except Exception as exc:
         return InductionV2Result(
             status=f"copy_failed: {exc}",
@@ -375,6 +436,7 @@ def run_induction_intermediate(
     t0 = time.perf_counter()
     try:
         probe_model = copy.deepcopy(model).to(device)
+        _materialize_non_inference_(probe_model)
     except Exception as exc:
         return InductionV2Result(
             status=f"copy_failed: {exc}",

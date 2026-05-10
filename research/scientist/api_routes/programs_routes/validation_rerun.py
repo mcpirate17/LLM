@@ -186,8 +186,25 @@ def _api_program_queue_validation_rerun(result_id, nb=None):
         config.allow_unproven_ml_influence = False
         if queue_stage == "investigation":
             config.investigation_steps = n_steps
+            # An investigation must run deep probes (induction_intermediate,
+            # binding_intermediate, ar_intermediate, binding_multislot) — those
+            # are what differentiate an "investigation" from a re-screen.
+            # Master gate `investigation_run_capability_rankers` enables
+            # induction_intermediate + binding_intermediate;
+            # `run_ar_intermediate` / `run_binding_multislot` enable the
+            # other two. Without these the row lands as a duplicate screen
+            # and the new guardrail in program_writes will reject it
+            # (2026-05-09 incident: investigation 06ec3997 wrote
+            # stage1_passed=1 with NULL post-S1 deep-probe metrics).
+            config.investigation_run_capability_rankers = True
+            config.run_ar_intermediate = True
+            config.run_binding_multislot = True
+            enable_capability_rankers(config)
         elif queue_stage == "capability_ranking":
             config.investigation_steps = n_steps
+            config.investigation_run_capability_rankers = True
+            config.run_ar_intermediate = True
+            config.run_binding_multislot = True
             enable_capability_rankers(config)
         else:  # validation
             config.validation_n_seeds = n_seeds

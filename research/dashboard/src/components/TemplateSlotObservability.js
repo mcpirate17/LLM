@@ -4,6 +4,14 @@ import { fmtLoss, fmtNumber, fmtPct, scoreColor } from '../utils/format';
 import { blimpColor, hellaswagColor, probeAucColor } from '../utils/colors';
 import useInteractiveTable from './shared/useInteractiveTable';
 import SortIndicator from './shared/SortIndicator';
+import TemplateSlotActionsTab from './TemplateSlotActionsTab';
+import { ColumnPickerButton, ColumnPickerPanel } from './shared/DataTableControls';
+import {
+  groupedSpans,
+  selectedColumnKeys,
+  tableMinWidth,
+  visibleColumns,
+} from './shared/columnUtils';
 
 function toneForEvidence(level) {
   if (level === 'established') return 'var(--accent-green)';
@@ -114,7 +122,7 @@ function Badge({ label, tone }) {
   );
 }
 
-function TemplateRow({ row }) {
+function TemplateRow({ row, showActions = false }) {
   const coverage = row.screening_metric_coverage || {};
   return (
     <div style={{ padding: '10px 0', borderBottom: '1px solid var(--border)' }}>
@@ -154,7 +162,7 @@ function TemplateRow({ row }) {
           Why: {row.diagnosis.join(' ')}
         </div>
       )}
-      {Array.isArray(row.actions) && row.actions.length > 0 && (
+      {showActions && Array.isArray(row.actions) && row.actions.length > 0 && (
         <div style={{ fontSize: 11, color: 'var(--accent-blue)', lineHeight: 1.5 }}>
           Change: {row.actions.join(' ')}
         </div>
@@ -187,9 +195,15 @@ const TEMPLATE_COLUMNS = [
   { key: 'avg_induction_screening_auc', label: 'Ind', tooltip: 'Average induction-task AUC.', group: 'benchmarks' },
   { key: 'avg_induction_intermediate_auc', label: 'Ind INTER', tooltip: 'Average induction v2 investigation AUC for runs using this template.', group: 'benchmarks' },
   { key: 'avg_binding_screening_auc', label: 'Bind', tooltip: 'Average binding/copy-task AUC.', group: 'benchmarks' },
+  { key: 'avg_binding_screening_composite', label: 'Bind Cmp', tooltip: 'Average composite binding score for runs using this template.', group: 'benchmarks' },
   { key: 'avg_binding_intermediate_auc', label: 'Bind INTER', tooltip: 'Average binding v2 investigation AUC for runs using this template.', group: 'benchmarks' },
-  { key: 'avg_language_control_s05_score', label: 'CL S05', tooltip: 'Average language-control S0.5 tier score: SA plus nano-BLiMP score/order.', group: 'benchmarks' },
-  { key: 'avg_language_control_s10_score', label: 'CL S10', tooltip: 'Average language-control S1.0 tier score: SA plus nano-BLiMP score/order.', group: 'benchmarks' },
+  { key: 'avg_ar_legacy_auc', label: 'AR AUC', tooltip: 'Average associative-recall probe AUC for runs using this template.', group: 'benchmarks' },
+  { key: 'avg_ar_curriculum_auc_pair_final', label: 'AR CUR AUC', tooltip: 'Average AR Curriculum probe AUC across stages S0–S5 (mixing/binding capability under cumulative training).', group: 'benchmarks' },
+  { key: 'avg_ar_curriculum_s0_retention', label: 'AR CUR Retain', tooltip: 'Average AR Curriculum S0 retention. Low value (<0.30) = catastrophic forgetting; high (>0.70) = retention preserved (Mamba-class).', group: 'benchmarks' },
+  { key: 'avg_ar_curriculum_max_passing_stage', label: 'AR CUR Pass', tooltip: 'Average highest curriculum stage cleared (above 4× chance). −0 = no stage cleared; 5 = all stages.', group: 'benchmarks' },
+  { key: 'n_ar_curriculum', label: 'AR CUR N', tooltip: 'Number of template runs with AR Curriculum metrics.', group: 'benchmarks' },
+  { key: 'avg_language_control_s05_score', label: 'LC S05', tooltip: 'Average language-control S0.5 tier score: SA plus nano-BLiMP score/order.', group: 'benchmarks' },
+  { key: 'avg_language_control_s10_score', label: 'LC S10', tooltip: 'Average language-control S1.0 tier score: SA plus nano-BLiMP score/order.', group: 'benchmarks' },
   { key: 'avg_language_control_investigation_score', label: 'LC INTER', tooltip: 'Average language-control investigation tier score. Shows a yellow flag when investigation SA is below 0.850.', group: 'benchmarks' },
   { key: 'avg_hellaswag_acc', label: 'Hella', tooltip: 'Average HellaSwag accuracy signal.', group: 'benchmarks' },
   { key: 'avg_blimp_overall_accuracy', label: 'BLiMP', tooltip: 'Average BLiMP grammatical reasoning accuracy.', group: 'benchmarks' },
@@ -218,9 +232,19 @@ const SLOT_COLUMNS = [
   { key: 's1_rate', label: 'S1', tooltip: 'Share of slot uses that reached Stage 1.', group: 'health' },
   { key: 'avg_composite_score', label: 'Score', tooltip: 'Average leaderboard composite score for this slot.', group: 'health' },
   { key: 'avg_loss_ratio', label: 'Train LR', tooltip: 'Average training loss ratio for this slot.', group: 'health' },
-  { key: 'avg_language_control_s05_score', label: 'CL S05', tooltip: 'Average language-control S0.5 tier score for this slot.', group: 'benchmarks' },
-  { key: 'avg_language_control_s10_score', label: 'CL S10', tooltip: 'Average language-control S1.0 tier score for this slot.', group: 'benchmarks' },
+  { key: 'avg_induction_screening_auc', label: 'Ind', tooltip: 'Average induction-task AUC for this slot.', group: 'benchmarks' },
+  { key: 'avg_induction_intermediate_auc', label: 'Ind INTER', tooltip: 'Average induction v2 investigation AUC for this slot.', group: 'benchmarks' },
+  { key: 'avg_binding_screening_auc', label: 'Bind', tooltip: 'Average binding/copy-task AUC for this slot.', group: 'benchmarks' },
+  { key: 'avg_binding_screening_composite', label: 'Bind Cmp', tooltip: 'Average composite binding score for this slot.', group: 'benchmarks' },
+  { key: 'avg_binding_intermediate_auc', label: 'Bind INTER', tooltip: 'Average binding v2 investigation AUC for this slot.', group: 'benchmarks' },
+  { key: 'avg_ar_legacy_auc', label: 'AR AUC', tooltip: 'Average associative-recall probe AUC for this slot.', group: 'benchmarks' },
+  { key: 'avg_language_control_s05_score', label: 'LC S05', tooltip: 'Average language-control S0.5 tier score for this slot.', group: 'benchmarks' },
+  { key: 'avg_language_control_s10_score', label: 'LC S10', tooltip: 'Average language-control S1.0 tier score for this slot.', group: 'benchmarks' },
   { key: 'avg_language_control_investigation_score', label: 'LC INTER', tooltip: 'Average language-control investigation tier score for this slot. Shows a yellow flag when investigation SA is below 0.850.', group: 'benchmarks' },
+  { key: 'avg_ar_curriculum_auc_pair_final', label: 'AR CUR AUC', tooltip: 'Average AR Curriculum AUC for archs that include this slot.', group: 'benchmarks' },
+  { key: 'avg_ar_curriculum_s0_retention', label: 'AR CUR Retain', tooltip: 'Average AR Curriculum S0 retention for archs that include this slot. Low = catastrophic forgetting.', group: 'benchmarks' },
+  { key: 'avg_ar_curriculum_max_passing_stage', label: 'AR CUR Pass', tooltip: 'Average highest curriculum stage cleared for archs that include this slot.', group: 'benchmarks' },
+  { key: 'n_ar_curriculum', label: 'AR CUR N', tooltip: 'Number of slot uses with AR Curriculum metrics.', group: 'benchmarks' },
   { key: 'top_selected_motif', label: 'Selected', tooltip: 'Most frequently selected motif.', group: 'diagnosis' },
   { key: 'top_failure_reason', label: 'Issue', tooltip: 'Most common failure reason.', group: 'diagnosis' },
 ];
@@ -261,14 +285,17 @@ const TEMPLATE_SORT_PRESETS = [
   { key: 'best_binding_intermediate', label: 'Best Bind INTER', sortKey: 'avg_binding_intermediate_auc', desc: true },
   { key: 'best_cl_investigation', label: 'Best LC INTER', sortKey: 'avg_language_control_investigation_score', desc: true },
   { key: 'best_erf', label: 'Best ERF Density', sortKey: 'avg_erf_density', desc: true },
+  { key: 'best_ar_curriculum', label: 'Best AR Curriculum', sortKey: 'avg_ar_curriculum_auc_pair_final', desc: true },
+  { key: 'best_ar_curriculum_retention', label: 'Best AR Retention', sortKey: 'avg_ar_curriculum_s0_retention', desc: true },
   { key: 'best_hella', label: 'Best Hella', sortKey: 'avg_hellaswag_acc', desc: true },
 ];
 
 const TEMPLATE_VIEW_PRESETS = [
-  { key: 'triage', label: 'Triage', columns: ['structural_category', 'evidence_level', 'avg_composite_score', 'n_used', 's1_rate', 'avg_loss_ratio', 'avg_validation_loss_ratio', 'avg_induction_intermediate_auc', 'avg_binding_intermediate_auc', 'avg_language_control_s05_score', 'avg_language_control_s10_score', 'avg_language_control_investigation_score', 'avg_hellaswag_acc', 'avg_blimp_overall_accuracy', 'avg_erf_density', 'avg_id_collapse_rate', 'top_failure_reason'] },
-  { key: 'learning', label: 'Learning', columns: ['structural_category', 'evidence_level', 'avg_composite_score', 'n_used', 's0_rate', 's05_rate', 's1_rate', 'avg_loss_ratio', 'avg_validation_loss_ratio', 'avg_induction_intermediate_auc', 'avg_binding_intermediate_auc', 'avg_language_control_s05_score', 'avg_language_control_investigation_score', 'top_failure_reason'] },
-  { key: 'benchmarks', label: 'Benchmarks', columns: ['structural_category', 'evidence_level', 'avg_composite_score', 'n_used', 'avg_induction_screening_auc', 'avg_induction_intermediate_auc', 'avg_binding_screening_auc', 'avg_binding_intermediate_auc', 'avg_language_control_s05_score', 'avg_language_control_s10_score', 'avg_language_control_investigation_score', 'avg_hellaswag_acc', 'avg_blimp_overall_accuracy'] },
-  { key: 'architecture', label: 'Architecture', columns: ['structural_category', 'evidence_level', 'n_used', 'avg_erf_density', 'avg_id_collapse_rate', 'avg_id_collapse_rate_normalized', 'avg_erf_decay_slope', 'avg_logit_margin_velocity', 'avg_jacobian_effective_rank', 'avg_binding_intermediate_auc'] },
+  { key: 'core', label: 'Core', columns: ['structural_category', 'evidence_level', 'avg_composite_score', 'n_used', 's1_rate', 'avg_loss_ratio', 'avg_validation_loss_ratio', 'avg_induction_intermediate_auc', 'avg_binding_intermediate_auc', 'avg_ar_curriculum_auc_pair_final', 'avg_ar_curriculum_s0_retention', 'avg_language_control_s05_score', 'avg_language_control_s10_score', 'avg_language_control_investigation_score', 'top_failure_reason'] },
+  { key: 'triage', label: 'Triage', columns: ['structural_category', 'evidence_level', 'avg_composite_score', 'n_used', 's1_rate', 'avg_loss_ratio', 'avg_validation_loss_ratio', 'avg_induction_intermediate_auc', 'avg_binding_intermediate_auc', 'avg_ar_curriculum_auc_pair_final', 'avg_ar_curriculum_s0_retention', 'avg_language_control_s05_score', 'avg_language_control_s10_score', 'avg_language_control_investigation_score', 'avg_hellaswag_acc', 'avg_blimp_overall_accuracy', 'avg_erf_density', 'avg_id_collapse_rate', 'top_failure_reason'] },
+  { key: 'learning', label: 'Learning', columns: ['structural_category', 'evidence_level', 'avg_composite_score', 'n_used', 's0_rate', 's05_rate', 's1_rate', 'avg_loss_ratio', 'avg_validation_loss_ratio', 'avg_induction_intermediate_auc', 'avg_binding_intermediate_auc', 'avg_ar_curriculum_auc_pair_final', 'avg_language_control_s05_score', 'avg_language_control_investigation_score', 'top_failure_reason'] },
+  { key: 'benchmarks', label: 'Benchmarks', columns: ['structural_category', 'evidence_level', 'avg_composite_score', 'n_used', 'avg_induction_screening_auc', 'avg_induction_intermediate_auc', 'avg_binding_screening_auc', 'avg_binding_screening_composite', 'avg_binding_intermediate_auc', 'avg_ar_legacy_auc', 'avg_ar_curriculum_auc_pair_final', 'avg_ar_curriculum_s0_retention', 'avg_ar_curriculum_max_passing_stage', 'n_ar_curriculum', 'avg_language_control_s05_score', 'avg_language_control_s10_score', 'avg_language_control_investigation_score', 'avg_hellaswag_acc', 'avg_blimp_overall_accuracy'] },
+  { key: 'architecture', label: 'Architecture', columns: ['structural_category', 'evidence_level', 'n_used', 'avg_erf_density', 'avg_id_collapse_rate', 'avg_id_collapse_rate_normalized', 'avg_erf_decay_slope', 'avg_logit_margin_velocity', 'avg_jacobian_effective_rank', 'avg_binding_intermediate_auc', 'avg_ar_curriculum_auc_pair_final', 'avg_ar_curriculum_s0_retention'] },
   { key: 'all', label: 'All Columns', columns: TEMPLATE_COLUMNS.map((col) => col.key) },
 ];
 
@@ -286,11 +313,15 @@ const SLOT_SORT_PRESETS = [
   { key: 'worst_s1', label: 'Worst S1', sortKey: 's1_rate', desc: false },
   { key: 'worst_loss', label: 'Worst Loss', sortKey: 'avg_loss_ratio', desc: true },
   { key: 'best_cl_investigation', label: 'Best LC INTER', sortKey: 'avg_language_control_investigation_score', desc: true },
+  { key: 'best_ar_curriculum', label: 'Best AR Curriculum', sortKey: 'avg_ar_curriculum_auc_pair_final', desc: true },
+  { key: 'best_ar_curriculum_retention', label: 'Best AR Retention', sortKey: 'avg_ar_curriculum_s0_retention', desc: true },
 ];
 
 const SLOT_VIEW_PRESETS = [
-  { key: 'triage', label: 'Triage', columns: ['template_name', 'slot_index', 'avg_composite_score', 'n_used', 's1_rate', 'avg_loss_ratio', 'avg_language_control_s05_score', 'avg_language_control_s10_score', 'avg_language_control_investigation_score', 'top_selected_motif', 'top_failure_reason'] },
-  { key: 'learning', label: 'Learning', columns: ['template_name', 'slot_index', 'avg_composite_score', 'n_used', 's1_rate', 'avg_loss_ratio', 'avg_language_control_s05_score', 'avg_language_control_s10_score', 'avg_language_control_investigation_score', 'top_selected_motif', 'top_failure_reason'] },
+  { key: 'core', label: 'Core', columns: ['template_name', 'slot_index', 'avg_composite_score', 'n_used', 's1_rate', 'avg_loss_ratio', 'avg_induction_intermediate_auc', 'avg_binding_intermediate_auc', 'avg_ar_curriculum_auc_pair_final', 'avg_ar_curriculum_s0_retention', 'avg_language_control_investigation_score', 'top_selected_motif', 'top_failure_reason'] },
+  { key: 'triage', label: 'Triage', columns: ['template_name', 'slot_index', 'avg_composite_score', 'n_used', 's1_rate', 'avg_loss_ratio', 'avg_induction_intermediate_auc', 'avg_binding_intermediate_auc', 'avg_ar_curriculum_auc_pair_final', 'avg_ar_curriculum_s0_retention', 'avg_language_control_s05_score', 'avg_language_control_s10_score', 'avg_language_control_investigation_score', 'top_selected_motif', 'top_failure_reason'] },
+  { key: 'learning', label: 'Learning', columns: ['template_name', 'slot_index', 'avg_composite_score', 'n_used', 's1_rate', 'avg_loss_ratio', 'avg_induction_intermediate_auc', 'avg_binding_intermediate_auc', 'avg_ar_curriculum_auc_pair_final', 'avg_language_control_s05_score', 'avg_language_control_s10_score', 'avg_language_control_investigation_score', 'top_selected_motif', 'top_failure_reason'] },
+  { key: 'benchmarks', label: 'Benchmarks', columns: ['template_name', 'slot_index', 'avg_composite_score', 'n_used', 'avg_induction_screening_auc', 'avg_induction_intermediate_auc', 'avg_binding_screening_auc', 'avg_binding_screening_composite', 'avg_binding_intermediate_auc', 'avg_ar_legacy_auc', 'avg_ar_curriculum_auc_pair_final', 'avg_ar_curriculum_s0_retention', 'avg_ar_curriculum_max_passing_stage', 'n_ar_curriculum', 'avg_language_control_s05_score', 'avg_language_control_s10_score', 'avg_language_control_investigation_score'] },
   { key: 'all', label: 'All Columns', columns: SLOT_COLUMNS.map((col) => col.key) },
 ];
 
@@ -380,19 +411,6 @@ function filterButtonStyle(active) {
   };
 }
 
-function presetColumns(columns, presets, view) {
-  const preset = presets.find((item) => item.key === view) || presets[0];
-  const allowed = new Set([columns[0].key, ...preset.columns]);
-  return columns.filter((col) => col.always || allowed.has(col.key));
-}
-
-function normalizeColumnKeys(columns, keys) {
-  const valid = new Set(columns.map((col) => col.key));
-  const normalized = Array.isArray(keys) ? keys.filter((key) => valid.has(key)) : [];
-  const always = columns.filter((col) => col.always).map((col) => col.key);
-  return Array.from(new Set([...always, ...normalized]));
-}
-
 function requiredObservabilityColumns(columns) {
   const valid = new Set(columns.map((col) => col.key));
   return [
@@ -400,60 +418,6 @@ function requiredObservabilityColumns(columns) {
     'avg_language_control_s10_score',
     'avg_language_control_investigation_score',
   ].filter((key) => valid.has(key));
-}
-
-function visibleColumns(columns, presets, view, customKeys) {
-  if (Array.isArray(customKeys) && customKeys.length > 0) {
-    const allowed = new Set(normalizeColumnKeys(columns, [...customKeys, ...requiredObservabilityColumns(columns)]));
-    return columns.filter((col) => allowed.has(col.key));
-  }
-  return presetColumns(columns, presets, view);
-}
-
-function ColumnPickerPanel({ columns, selectedKeys, onChange, onReset }) {
-  const selected = new Set(normalizeColumnKeys(columns, selectedKeys));
-  return (
-    <div style={{
-      display: 'flex',
-      gap: 10,
-      flexWrap: 'wrap',
-      padding: 10,
-      marginBottom: 10,
-      border: '1px solid var(--border)',
-      borderRadius: 6,
-      background: 'var(--bg-secondary)',
-    }}>
-      {columns.filter((col) => !col.always).map((col) => (
-        <label key={col.key} title={col.tooltip} style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11, color: 'var(--text-primary)', cursor: 'pointer' }}>
-          <input
-            type="checkbox"
-            checked={selected.has(col.key)}
-            onChange={(event) => {
-              const next = new Set(selected);
-              if (event.target.checked) next.add(col.key);
-              else next.delete(col.key);
-              onChange(normalizeColumnKeys(columns, Array.from(next)));
-            }}
-          />
-          {col.label}
-        </label>
-      ))}
-      <button onClick={onReset} style={{ padding: '2px 8px', fontSize: 11, borderRadius: 10, border: '1px solid var(--border)', background: 'var(--bg-tertiary)', color: 'var(--text-muted)', cursor: 'pointer' }}>
-        Preset
-      </button>
-    </div>
-  );
-}
-
-function groupedSpans(columns, groups) {
-  return groups.map((group) => ({
-    ...group,
-    span: columns.filter((col) => col.group === group.key && !col.sticky).length,
-  })).filter((group) => group.span > 0);
-}
-
-function tableMinWidth(columns) {
-  return columns.reduce((total, col) => total + (col.width || 92), 0);
 }
 
 function renderTemplateCell(row, col) {
@@ -481,7 +445,25 @@ function renderTemplateCell(row, col) {
   if (col.key === 'avg_induction_screening_auc') return <td style={{ textAlign: 'right', color: probeAucColor(row.avg_induction_screening_auc), fontWeight: 600 }}>{metricText(row.avg_induction_screening_auc)}</td>;
   if (col.key === 'avg_induction_intermediate_auc') return <td style={{ textAlign: 'right', color: probeAucColor(row.avg_induction_intermediate_auc), fontWeight: 600 }}>{metricText(row.avg_induction_intermediate_auc)}</td>;
   if (col.key === 'avg_binding_screening_auc') return <td style={{ textAlign: 'right', color: probeAucColor(row.avg_binding_screening_auc), fontWeight: 600 }}>{metricText(row.avg_binding_screening_auc)}</td>;
+  if (col.key === 'avg_binding_screening_composite') return <td style={{ textAlign: 'right', color: probeAucColor(row.avg_binding_screening_composite), fontWeight: 600 }}>{metricText(row.avg_binding_screening_composite)}</td>;
   if (col.key === 'avg_binding_intermediate_auc') return <td style={{ textAlign: 'right', color: probeAucColor(row.avg_binding_intermediate_auc), fontWeight: 600 }}>{metricText(row.avg_binding_intermediate_auc)}</td>;
+  if (col.key === 'avg_ar_legacy_auc') return <td style={{ textAlign: 'right', color: probeAucColor(row.avg_ar_legacy_auc), fontWeight: 600 }}>{metricText(row.avg_ar_legacy_auc)}</td>;
+  if (col.key === 'avg_ar_curriculum_auc_pair_final') return <td style={{ textAlign: 'right', color: probeAucColor(row.avg_ar_curriculum_auc_pair_final), fontWeight: 600 }}>{metricText(row.avg_ar_curriculum_auc_pair_final)}</td>;
+  if (col.key === 'avg_ar_curriculum_s0_retention') {
+    const v = row.avg_ar_curriculum_s0_retention;
+    if (v == null) return <td style={{ textAlign: 'right' }}>--</td>;
+    const n = Number(v);
+    const color = n < 0.30 ? 'var(--accent-red)' : n < 0.70 ? 'var(--accent-yellow)' : 'var(--accent-green)';
+    return <td style={{ textAlign: 'right', color, fontWeight: 600 }} title={n < 0.30 ? 'avg catastrophic forgetting' : n < 0.70 ? 'avg partial retention' : 'avg retention preserved'}>{n.toFixed(2)}</td>;
+  }
+  if (col.key === 'avg_ar_curriculum_max_passing_stage') {
+    const v = row.avg_ar_curriculum_max_passing_stage;
+    if (v == null) return <td style={{ textAlign: 'right' }}>--</td>;
+    const n = Number(v);
+    const color = n < 1 ? 'var(--accent-red)' : n < 3 ? 'var(--accent-yellow)' : 'var(--accent-green)';
+    return <td style={{ textAlign: 'right', color, fontWeight: 600 }}>{n.toFixed(1)}</td>;
+  }
+  if (col.key === 'n_ar_curriculum') return <td style={{ textAlign: 'right' }}>{fmtNumber(row.n_ar_curriculum)}</td>;
   if (col.key === 'avg_language_control_s05_score') return languageControlCell(row, col.key);
   if (col.key === 'avg_language_control_s10_score') return languageControlCell(row, col.key);
   if (col.key === 'avg_language_control_investigation_score') return languageControlCell(row, col.key);
@@ -515,9 +497,31 @@ function renderSlotCell(row, col) {
   if (col.key === 's1_rate') return <td style={{ textAlign: 'right', color: rateTone(row.s1_rate), fontWeight: 600 }}>{fmtPct(row.s1_rate, 1)}</td>;
   if (col.key === 'avg_composite_score') return <td style={{ textAlign: 'right', color: scoreColor(row.avg_composite_score), fontWeight: 700 }}>{metricText(row.avg_composite_score)}</td>;
   if (col.key === 'avg_loss_ratio') return <td style={{ textAlign: 'right' }}>{fmtLoss(row.avg_loss_ratio)}</td>;
+  if (col.key === 'avg_induction_screening_auc') return <td style={{ textAlign: 'right', color: probeAucColor(row.avg_induction_screening_auc), fontWeight: 600 }}>{metricText(row.avg_induction_screening_auc)}</td>;
+  if (col.key === 'avg_induction_intermediate_auc') return <td style={{ textAlign: 'right', color: probeAucColor(row.avg_induction_intermediate_auc), fontWeight: 600 }}>{metricText(row.avg_induction_intermediate_auc)}</td>;
+  if (col.key === 'avg_binding_screening_auc') return <td style={{ textAlign: 'right', color: probeAucColor(row.avg_binding_screening_auc), fontWeight: 600 }}>{metricText(row.avg_binding_screening_auc)}</td>;
+  if (col.key === 'avg_binding_screening_composite') return <td style={{ textAlign: 'right', color: probeAucColor(row.avg_binding_screening_composite), fontWeight: 600 }}>{metricText(row.avg_binding_screening_composite)}</td>;
+  if (col.key === 'avg_binding_intermediate_auc') return <td style={{ textAlign: 'right', color: probeAucColor(row.avg_binding_intermediate_auc), fontWeight: 600 }}>{metricText(row.avg_binding_intermediate_auc)}</td>;
+  if (col.key === 'avg_ar_legacy_auc') return <td style={{ textAlign: 'right', color: probeAucColor(row.avg_ar_legacy_auc), fontWeight: 600 }}>{metricText(row.avg_ar_legacy_auc)}</td>;
   if (col.key === 'avg_language_control_s05_score') return languageControlCell(row, col.key);
   if (col.key === 'avg_language_control_s10_score') return languageControlCell(row, col.key);
   if (col.key === 'avg_language_control_investigation_score') return languageControlCell(row, col.key);
+  if (col.key === 'avg_ar_curriculum_auc_pair_final') return <td style={{ textAlign: 'right', color: probeAucColor(row.avg_ar_curriculum_auc_pair_final), fontWeight: 600 }}>{metricText(row.avg_ar_curriculum_auc_pair_final)}</td>;
+  if (col.key === 'avg_ar_curriculum_s0_retention') {
+    const v = row.avg_ar_curriculum_s0_retention;
+    if (v == null) return <td style={{ textAlign: 'right' }}>--</td>;
+    const n = Number(v);
+    const color = n < 0.30 ? 'var(--accent-red)' : n < 0.70 ? 'var(--accent-yellow)' : 'var(--accent-green)';
+    return <td style={{ textAlign: 'right', color, fontWeight: 600 }}>{n.toFixed(2)}</td>;
+  }
+  if (col.key === 'avg_ar_curriculum_max_passing_stage') {
+    const v = row.avg_ar_curriculum_max_passing_stage;
+    if (v == null) return <td style={{ textAlign: 'right' }}>--</td>;
+    const n = Number(v);
+    const color = n < 1 ? 'var(--accent-red)' : n < 3 ? 'var(--accent-yellow)' : 'var(--accent-green)';
+    return <td style={{ textAlign: 'right', color, fontWeight: 600 }}>{n.toFixed(1)}</td>;
+  }
+  if (col.key === 'n_ar_curriculum') return <td style={{ textAlign: 'right' }}>{fmtNumber(row.n_ar_curriculum)}</td>;
   if (col.key === 'top_selected_motif') return <td style={{ fontSize: 11, color: 'var(--text-muted)' }}>{row.top_selected_motif || ''}</td>;
   if (col.key === 'top_failure_reason') return <td style={{ fontSize: 11, color: 'var(--text-muted)' }}>{row.top_failure_reason || ''}</td>;
   return <td>{row[col.key]}</td>;
@@ -527,11 +531,12 @@ function TemplateTable({ rows }) {
   const [search, setSearch] = usePersistentState('aria.templateTable.search', '');
   const [filter, setFilter] = usePersistentState('aria.templateTable.filter', 'all');
   const [sortPreset, setSortPreset] = usePersistentState('aria.templateTable.sortPreset', 'most_runs');
-  const [columnView, setColumnView] = usePersistentState('aria.templateTable.columnView', 'triage');
+  const [columnView, setColumnView] = usePersistentState('aria.templateTable.columnView', 'core');
   const [customColumnKeys, setCustomColumnKeys] = usePersistentState('aria.templateTable.customColumns', null);
   const [showColumnPicker, setShowColumnPicker] = useState(false);
   const scrollRef = useRef(null);
-  const tableColumns = useMemo(() => visibleColumns(TEMPLATE_COLUMNS, TEMPLATE_VIEW_PRESETS, columnView, customColumnKeys), [columnView, customColumnKeys]);
+  const requiredColumns = useMemo(() => requiredObservabilityColumns(TEMPLATE_COLUMNS), []);
+  const tableColumns = useMemo(() => visibleColumns(TEMPLATE_COLUMNS, TEMPLATE_VIEW_PRESETS, columnView, customColumnKeys, requiredColumns), [columnView, customColumnKeys, requiredColumns]);
   const tableGroups = useMemo(() => groupedSpans(tableColumns, TEMPLATE_GROUPS), [tableColumns]);
   const minWidth = Math.max(720, tableMinWidth(tableColumns));
   const filtered = useMemo(() => {
@@ -567,7 +572,7 @@ function TemplateTable({ rows }) {
     setSortDesc(preset.desc);
   }, [setSortDesc, setSortKey, sortPreset]);
 
-  const hasFilters = filter !== 'all' || sortPreset !== 'most_runs' || columnView !== 'triage' || Boolean(customColumnKeys) || search.trim() !== '';
+  const hasFilters = filter !== 'all' || sortPreset !== 'most_runs' || columnView !== 'core' || Boolean(customColumnKeys) || search.trim() !== '';
 
   useEffect(() => {
     if (!scrollRef.current || typeof window === 'undefined') return;
@@ -594,12 +599,13 @@ function TemplateTable({ rows }) {
             <option key={preset.key} value={preset.key}>{preset.label}</option>
           ))}
         </select>
-        <button onClick={() => {
-          if (!customColumnKeys) setCustomColumnKeys(presetColumns(TEMPLATE_COLUMNS, TEMPLATE_VIEW_PRESETS, columnView).map((col) => col.key));
-          setShowColumnPicker((value) => !value);
-        }} style={{ ...filterButtonStyle(showColumnPicker), alignSelf: 'center' }}>
-          Columns
-        </button>
+        <ColumnPickerButton
+          open={showColumnPicker}
+          onClick={() => {
+            if (!customColumnKeys) setCustomColumnKeys(selectedColumnKeys(TEMPLATE_COLUMNS, TEMPLATE_VIEW_PRESETS, columnView, customColumnKeys, requiredColumns));
+            setShowColumnPicker((value) => !value);
+          }}
+        />
         <div style={{ fontSize: 11, color: 'var(--text-muted)', alignSelf: 'center' }}>
           {fmtNumber(sortedRows.length)} of {fmtNumber((rows || []).length)} rows
         </div>
@@ -616,7 +622,7 @@ function TemplateTable({ rows }) {
             setSearch('');
             setFilter('all');
             setSortPreset('most_runs');
-            setColumnView('triage');
+            setColumnView('core');
             setCustomColumnKeys(null);
           }}
           style={{
@@ -632,9 +638,15 @@ function TemplateTable({ rows }) {
       {showColumnPicker && (
         <ColumnPickerPanel
           columns={TEMPLATE_COLUMNS}
-          selectedKeys={customColumnKeys || presetColumns(TEMPLATE_COLUMNS, TEMPLATE_VIEW_PRESETS, columnView).map((col) => col.key)}
+          selectedKeys={selectedColumnKeys(TEMPLATE_COLUMNS, TEMPLATE_VIEW_PRESETS, columnView, customColumnKeys, requiredColumns)}
           onChange={setCustomColumnKeys}
           onReset={() => setCustomColumnKeys(null)}
+          presets={TEMPLATE_VIEW_PRESETS}
+          onPreset={(preset) => {
+            setColumnView(preset.key);
+            setCustomColumnKeys(null);
+          }}
+          requiredKeys={requiredColumns}
         />
       )}
       <div
@@ -719,11 +731,12 @@ function SlotTable({ rows }) {
   const [search, setSearch] = usePersistentState('aria.slotTable.search', '');
   const [filter, setFilter] = usePersistentState('aria.slotTable.filter', 'all');
   const [sortPreset, setSortPreset] = usePersistentState('aria.slotTable.sortPreset', 'template');
-  const [columnView, setColumnView] = usePersistentState('aria.slotTable.columnView', 'triage');
+  const [columnView, setColumnView] = usePersistentState('aria.slotTable.columnView', 'core');
   const [customColumnKeys, setCustomColumnKeys] = usePersistentState('aria.slotTable.customColumns', null);
   const [showColumnPicker, setShowColumnPicker] = useState(false);
   const scrollRef = useRef(null);
-  const tableColumns = useMemo(() => visibleColumns(SLOT_COLUMNS, SLOT_VIEW_PRESETS, columnView, customColumnKeys), [columnView, customColumnKeys]);
+  const requiredColumns = useMemo(() => requiredObservabilityColumns(SLOT_COLUMNS), []);
+  const tableColumns = useMemo(() => visibleColumns(SLOT_COLUMNS, SLOT_VIEW_PRESETS, columnView, customColumnKeys, requiredColumns), [columnView, customColumnKeys, requiredColumns]);
   const tableGroups = useMemo(() => groupedSpans(tableColumns, SLOT_GROUPS), [tableColumns]);
   const minWidth = Math.max(640, tableMinWidth(tableColumns));
   const filtered = useMemo(() => {
@@ -756,7 +769,7 @@ function SlotTable({ rows }) {
     setSortDesc(preset.desc);
   }, [setSortDesc, setSortKey, sortPreset]);
 
-  const hasFilters = filter !== 'all' || sortPreset !== 'template' || columnView !== 'triage' || Boolean(customColumnKeys) || search.trim() !== '';
+  const hasFilters = filter !== 'all' || sortPreset !== 'template' || columnView !== 'core' || Boolean(customColumnKeys) || search.trim() !== '';
 
   useEffect(() => {
     if (!scrollRef.current || typeof window === 'undefined') return;
@@ -783,12 +796,13 @@ function SlotTable({ rows }) {
             <option key={preset.key} value={preset.key}>{preset.label}</option>
           ))}
         </select>
-        <button onClick={() => {
-          if (!customColumnKeys) setCustomColumnKeys(presetColumns(SLOT_COLUMNS, SLOT_VIEW_PRESETS, columnView).map((col) => col.key));
-          setShowColumnPicker((value) => !value);
-        }} style={{ ...filterButtonStyle(showColumnPicker), alignSelf: 'center' }}>
-          Columns
-        </button>
+        <ColumnPickerButton
+          open={showColumnPicker}
+          onClick={() => {
+            if (!customColumnKeys) setCustomColumnKeys(selectedColumnKeys(SLOT_COLUMNS, SLOT_VIEW_PRESETS, columnView, customColumnKeys, requiredColumns));
+            setShowColumnPicker((value) => !value);
+          }}
+        />
         <div style={{ fontSize: 11, color: 'var(--text-muted)', alignSelf: 'center' }}>
           {fmtNumber(sortedRows.length)} of {fmtNumber((rows || []).length)} rows
         </div>
@@ -805,7 +819,7 @@ function SlotTable({ rows }) {
             setSearch('');
             setFilter('all');
             setSortPreset('template');
-            setColumnView('triage');
+            setColumnView('core');
             setCustomColumnKeys(null);
           }}
           style={{
@@ -821,9 +835,15 @@ function SlotTable({ rows }) {
       {showColumnPicker && (
         <ColumnPickerPanel
           columns={SLOT_COLUMNS}
-          selectedKeys={customColumnKeys || presetColumns(SLOT_COLUMNS, SLOT_VIEW_PRESETS, columnView).map((col) => col.key)}
+          selectedKeys={selectedColumnKeys(SLOT_COLUMNS, SLOT_VIEW_PRESETS, columnView, customColumnKeys, requiredColumns)}
           onChange={setCustomColumnKeys}
           onReset={() => setCustomColumnKeys(null)}
+          presets={SLOT_VIEW_PRESETS}
+          onPreset={(preset) => {
+            setColumnView(preset.key);
+            setCustomColumnKeys(null);
+          }}
+          requiredKeys={requiredColumns}
         />
       )}
       <div
@@ -906,6 +926,7 @@ function SlotTable({ rows }) {
 
 export default function TemplateSlotObservability() {
   const { summary } = useAriaData() || {};
+  const [observabilityTab, setObservabilityTab] = usePersistentState('aria.templateObservability.tab', 'overview');
   const data = summary?.template_observability;
   if (!data) return null;
 
@@ -959,90 +980,108 @@ export default function TemplateSlotObservability() {
         </div>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 18 }}>
-        <div>
-          <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 8, fontWeight: 600, textTransform: 'uppercase' }}>
-            Highest Success Templates
-          </div>
-          {topTemplates.length > 0 ? topTemplates.map((row) => (
-            <TemplateRow key={row.name} row={row} />
-          )) : <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>No template data yet.</div>}
-        </div>
-
-        <div>
-          <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 8, fontWeight: 600, textTransform: 'uppercase' }}>
-            Templates To Fix
-          </div>
-          {strugglingTemplates.length > 0 ? strugglingTemplates.map((row) => (
-            <TemplateRow key={row.name} row={row} />
-          )) : <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>No struggling templates identified.</div>}
-        </div>
+      <div className="subtab-bar" role="tablist" aria-label="Template observability sections">
+        {[
+          { key: 'overview', label: 'Overview' },
+          { key: 'actions', label: 'Actions' },
+          { key: 'tables', label: 'Tables' },
+        ].map((tab) => (
+          <button
+            key={tab.key}
+            type="button"
+            role="tab"
+            aria-selected={observabilityTab === tab.key}
+            className={`subtab-btn ${observabilityTab === tab.key ? 'active' : ''}`}
+            onClick={() => setObservabilityTab(tab.key)}
+          >
+            {tab.label}
+          </button>
+        ))}
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1.1fr 0.9fr', gap: 18, marginTop: 18 }}>
-        <div>
-          <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 8, fontWeight: 600, textTransform: 'uppercase' }}>
-            Weakest Slots
-          </div>
-          {slots.length > 0 ? slots.map((row) => (
-            <div key={row.slot_key} style={{ padding: '8px 0', borderBottom: '1px solid var(--border)', fontSize: 12 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 4 }}>
-                <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{row.slot_key}</span>
-                <span style={{ color: rateTone(row.s1_rate), fontWeight: 600 }}>{fmtPct(row.s1_rate)}</span>
+      {observabilityTab === 'overview' && (
+        <>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 18 }}>
+            <div>
+              <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 8, fontWeight: 600, textTransform: 'uppercase' }}>
+                Highest Success Templates
               </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, color: 'var(--text-muted)', fontSize: 11 }}>
-                <span>{row.n_used} uses · motif {row.top_selected_motif || 'none'}</span>
-                <span>LR {fmtLoss(row.avg_loss_ratio)}</span>
-              </div>
-              <div style={{ marginTop: 2, color: 'var(--text-muted)', fontSize: 10 }}>
-                {row.template_name} · classes {(row.slot_classes || []).join(', ') || 'unknown'}
-                {row.top_failure_reason ? ` · fail ${row.top_failure_reason}` : ''}
-              </div>
+              {topTemplates.length > 0 ? topTemplates.map((row) => (
+                <TemplateRow key={row.name} row={row} />
+              )) : <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>No template data yet.</div>}
             </div>
-          )) : <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>No explicit slot telemetry yet.</div>}
-          {motifs.length > 0 && (
-            <div style={{ marginTop: 12 }}>
-              <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginBottom: 6, fontWeight: 600, textTransform: 'uppercase' }}>
-                Supporting Motif Aggregates
+
+            <div>
+              <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 8, fontWeight: 600, textTransform: 'uppercase' }}>
+                Templates To Fix
               </div>
-              {motifs.map((row) => (
-                <div key={row.name} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, padding: '4px 0', borderBottom: '1px solid var(--border)', fontSize: 11 }}>
-                  <span style={{ color: 'var(--text-primary)' }}>{row.name}</span>
-                  <span style={{ color: 'var(--text-muted)' }}>{row.n_used} uses</span>
-                  <span style={{ color: 'var(--accent-blue)' }}>{fmtPct(row.s1_rate)}</span>
+              {strugglingTemplates.length > 0 ? strugglingTemplates.map((row) => (
+                <TemplateRow key={row.name} row={row} />
+              )) : <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>No struggling templates identified.</div>}
+            </div>
+          </div>
+
+          <div style={{ marginTop: 18 }}>
+            <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 8, fontWeight: 600, textTransform: 'uppercase' }}>
+              Weakest Slots
+            </div>
+            {slots.length > 0 ? slots.map((row) => (
+              <div key={row.slot_key} style={{ padding: '8px 0', borderBottom: '1px solid var(--border)', fontSize: 12 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 4, flexWrap: 'wrap' }}>
+                  <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{row.slot_key}</span>
+                  <span style={{ color: rateTone(row.s1_rate), fontWeight: 600 }}>{fmtPct(row.s1_rate)}</span>
                 </div>
-              ))}
-            </div>
-          )}
-        </div>
-
-        <div>
-          <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 8, fontWeight: 600, textTransform: 'uppercase' }}>
-            What Needs Improvement
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, color: 'var(--text-muted)', fontSize: 11, flexWrap: 'wrap' }}>
+                  <span>{row.n_used} uses · motif {row.top_selected_motif || 'none'}</span>
+                  <span>LR {fmtLoss(row.avg_loss_ratio)}</span>
+                </div>
+                <div style={{ marginTop: 2, color: 'var(--text-muted)', fontSize: 10 }}>
+                  {row.template_name} · classes {(row.slot_classes || []).join(', ') || 'unknown'}
+                  {row.top_failure_reason ? ` · fail ${row.top_failure_reason}` : ''}
+                </div>
+              </div>
+            )) : <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>No explicit slot telemetry yet.</div>}
+            {motifs.length > 0 && (
+              <div style={{ marginTop: 12 }}>
+                <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginBottom: 6, fontWeight: 600, textTransform: 'uppercase' }}>
+                  Supporting Motif Aggregates
+                </div>
+                {motifs.map((row) => (
+                  <div key={row.name} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, padding: '4px 0', borderBottom: '1px solid var(--border)', fontSize: 11, flexWrap: 'wrap' }}>
+                    <span style={{ color: 'var(--text-primary)' }}>{row.name}</span>
+                    <span style={{ color: 'var(--text-muted)' }}>{row.n_used} uses</span>
+                    <span style={{ color: 'var(--accent-blue)' }}>{fmtPct(row.s1_rate)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
-          {recommendations.length > 0 ? recommendations.map((item, idx) => (
-            <div key={idx} style={{ padding: '9px 10px', marginBottom: 8, background: 'var(--bg-tertiary)', border: '1px solid var(--border)', borderRadius: 6, fontSize: 12, color: 'var(--text-primary)', lineHeight: 1.5 }}>
-              {item}
+        </>
+      )}
+
+      {observabilityTab === 'actions' && (
+        <TemplateSlotActionsTab recommendations={recommendations} templates={allTemplates} />
+      )}
+
+      {observabilityTab === 'tables' && (
+        <div style={{ display: 'grid', gap: 18 }}>
+          <div>
+            <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 8, fontWeight: 600, textTransform: 'uppercase' }}>
+              Active Templates
             </div>
-          )) : <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>No recommendations yet.</div>}
-        </div>
-      </div>
+            {allTemplates.length > 0 ? <TemplateTable rows={allTemplates} /> : <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>No templates observed yet.</div>}
+          </div>
 
-      <div style={{ marginTop: 18 }}>
-        <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 8, fontWeight: 600, textTransform: 'uppercase' }}>
-            Active Templates
-        </div>
-        {allTemplates.length > 0 ? <TemplateTable rows={allTemplates} /> : <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>No templates observed yet.</div>}
-      </div>
+          <RoleSlotRollup rows={allSlots} />
 
-      <RoleSlotRollup rows={allSlots} />
-
-      <div style={{ marginTop: 18 }}>
-        <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 8, fontWeight: 600, textTransform: 'uppercase' }}>
-            All Slots
+          <div>
+            <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 8, fontWeight: 600, textTransform: 'uppercase' }}>
+              All Slots
+            </div>
+            {allSlots.length > 0 ? <SlotTable rows={allSlots} /> : <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>No explicit slot telemetry yet.</div>}
+          </div>
         </div>
-        {allSlots.length > 0 ? <SlotTable rows={allSlots} /> : <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>No explicit slot telemetry yet.</div>}
-      </div>
+      )}
     </div>
   );
 }
@@ -1055,7 +1094,35 @@ export default function TemplateSlotObservability() {
  * gives a clearer "which slot is the bottleneck" signal than reading the
  * All Slots table one-by-one.
  */
+const ROLE_SLOT_COLUMNS = [
+  { key: 'role', label: 'Role', tooltip: 'Capability role aggregated from role:* slot classes.', width: 190, always: true },
+  { key: 'n_used', label: 'Uses', tooltip: 'Total slot uses across matching templates.', width: 80 },
+  { key: 's1_rate', label: 'S1 Rate', tooltip: 'Stage 1 pass rate across this role.', width: 90 },
+  { key: 'avg_loss', label: 'Avg Loss', tooltip: 'Average training loss ratio for this role.', width: 90 },
+  { key: 'top_motif', label: 'Top Motif', tooltip: 'Most common selected motif for this role.', width: 220 },
+  { key: 'n_templates', label: 'Templates', tooltip: 'Number of templates contributing to this role.', width: 90 },
+];
+
+const ROLE_SLOT_PRESETS = [
+  { key: 'core', label: 'Core', columns: ROLE_SLOT_COLUMNS.map((col) => col.key) },
+  { key: 'all', label: 'All', columns: ROLE_SLOT_COLUMNS.map((col) => col.key) },
+];
+
+function renderRoleSlotCell(row, col) {
+  if (col.key === 'role') return <td style={{ padding: '4px 8px', fontFamily: 'monospace', fontWeight: 600, color: 'var(--accent-green, var(--text-primary))' }}>{row.role}</td>;
+  if (col.key === 'n_used') return <td style={{ padding: '4px 8px', textAlign: 'right' }}>{row.n_used}</td>;
+  if (col.key === 's1_rate') return <td style={{ padding: '4px 8px', textAlign: 'right', color: rateTone(row.s1_rate), fontWeight: 600 }}>{fmtPct(row.s1_rate, 1)}</td>;
+  if (col.key === 'avg_loss') return <td style={{ padding: '4px 8px', textAlign: 'right' }}>{fmtLoss(row.avg_loss)}</td>;
+  if (col.key === 'top_motif') return <td style={{ padding: '4px 8px', fontFamily: 'monospace', fontSize: 11, color: 'var(--text-muted)' }}>{row.top_motif}</td>;
+  if (col.key === 'n_templates') return <td style={{ padding: '4px 8px', textAlign: 'right', color: 'var(--text-muted)' }}>{row.n_templates}</td>;
+  return <td>{row[col.key]}</td>;
+}
+
 function RoleSlotRollup({ rows }) {
+  const [customColumnKeys, setCustomColumnKeys] = usePersistentState('aria.roleSlotTable.customColumns', null);
+  const [showColumnPicker, setShowColumnPicker] = useState(false);
+  const tableColumns = useMemo(() => visibleColumns(ROLE_SLOT_COLUMNS, ROLE_SLOT_PRESETS, 'core', customColumnKeys), [customColumnKeys]);
+  const minWidth = Math.max(720, tableMinWidth(tableColumns, 90));
   const roleAgg = useMemo(() => {
     if (!rows || rows.length === 0) return [];
     const byRole = new Map();
@@ -1112,27 +1179,41 @@ function RoleSlotRollup({ rows }) {
       <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 8, lineHeight: 1.5 }}>
         Aggregates <code>role:*</code> slot telemetry emitted by role-slot templates (<code>typed_slot_memory_block</code>, <code>*_retrieval_v2</code>, etc.). Each row sums across every template instance of the role. Use this to spot whether a specific capability slot (e.g. <code>global_retrieval</code>) is dragging the search down.
       </div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
+        <ColumnPickerButton
+          open={showColumnPicker}
+          onClick={() => {
+            if (!customColumnKeys) setCustomColumnKeys(selectedColumnKeys(ROLE_SLOT_COLUMNS, ROLE_SLOT_PRESETS, 'core', customColumnKeys));
+            setShowColumnPicker((value) => !value);
+          }}
+        />
+        <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{roleAgg.length} rows</span>
+      </div>
+      {showColumnPicker && (
+        <ColumnPickerPanel
+          columns={ROLE_SLOT_COLUMNS}
+          selectedKeys={selectedColumnKeys(ROLE_SLOT_COLUMNS, ROLE_SLOT_PRESETS, 'core', customColumnKeys)}
+          onChange={setCustomColumnKeys}
+          onReset={() => setCustomColumnKeys(null)}
+          presets={ROLE_SLOT_PRESETS}
+          onPreset={() => setCustomColumnKeys(null)}
+        />
+      )}
       <div style={{ overflowX: 'auto' }}>
-        <table className="data-table table-compact" style={{ width: '100%', fontSize: 12 }}>
+        <table className="data-table table-compact" style={{ width: '100%', fontSize: 12, minWidth }}>
           <thead>
             <tr style={{ color: 'var(--text-secondary)', textTransform: 'uppercase', fontSize: 10 }}>
-              <th style={{ textAlign: 'left', padding: '4px 8px' }}>Role</th>
-              <th style={{ textAlign: 'right', padding: '4px 8px' }}>Uses</th>
-              <th style={{ textAlign: 'right', padding: '4px 8px' }}>S1 Rate</th>
-              <th style={{ textAlign: 'right', padding: '4px 8px' }}>Avg Loss</th>
-              <th style={{ textAlign: 'left', padding: '4px 8px' }}>Top Motif</th>
-              <th style={{ textAlign: 'right', padding: '4px 8px' }}>Templates</th>
+              {tableColumns.map((col) => (
+                <th key={col.key} title={col.tooltip} style={{ textAlign: col.key === 'role' || col.key === 'top_motif' ? 'left' : 'right', padding: '4px 8px' }}>
+                  {col.label}
+                </th>
+              ))}
             </tr>
           </thead>
           <tbody>
             {roleAgg.map((row) => (
               <tr key={row.role} style={{ borderTop: '1px solid var(--border)' }}>
-                <td style={{ padding: '4px 8px', fontFamily: 'monospace', fontWeight: 600, color: 'var(--accent-green, var(--text-primary))' }}>{row.role}</td>
-                <td style={{ padding: '4px 8px', textAlign: 'right' }}>{row.n_used}</td>
-                <td style={{ padding: '4px 8px', textAlign: 'right', color: rateTone(row.s1_rate), fontWeight: 600 }}>{fmtPct(row.s1_rate, 1)}</td>
-                <td style={{ padding: '4px 8px', textAlign: 'right' }}>{fmtLoss(row.avg_loss)}</td>
-                <td style={{ padding: '4px 8px', fontFamily: 'monospace', fontSize: 11, color: 'var(--text-muted)' }}>{row.top_motif}</td>
-                <td style={{ padding: '4px 8px', textAlign: 'right', color: 'var(--text-muted)' }}>{row.n_templates}</td>
+                {tableColumns.map((col) => <React.Fragment key={col.key}>{renderRoleSlotCell(row, col)}</React.Fragment>)}
               </tr>
             ))}
           </tbody>

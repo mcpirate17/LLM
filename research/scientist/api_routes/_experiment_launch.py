@@ -17,6 +17,7 @@ from research.defaults import (
     VALIDATION_STEPS,
 )
 
+from ..capability_ranker_metrics import enable_capability_rankers
 from ..runner._types import RunConfig
 from ..runtime_events import publish_lifecycle_event
 from ._helpers import (
@@ -261,6 +262,14 @@ def _launch_simple_mode(start: StartExperimentRequest, *, runner):
     return None
 
 
+def _enable_investigation_deep_probes(config: RunConfig) -> None:
+    """Ensure investigation rows carry real post-S1 probe evidence."""
+    config.investigation_run_capability_rankers = True
+    config.run_ar_intermediate = True
+    config.run_binding_multislot = True
+    enable_capability_rankers(config)
+
+
 def _launch_result_id_mode(start: StartExperimentRequest, *, nb, runner):
     mode = start.mode
     config = start.config
@@ -272,6 +281,7 @@ def _launch_result_id_mode(start: StartExperimentRequest, *, nb, runner):
         eligibility, error = _maybe_block_ineligible(nb, mode, result_ids, force)
         if error:
             return None, eligibility, error
+        _enable_investigation_deep_probes(config)
         exp_id = runner.start_investigation(
             result_ids,
             config,

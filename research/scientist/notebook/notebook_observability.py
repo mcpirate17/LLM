@@ -347,10 +347,14 @@ class _ObservabilityMixin:
                 pr.novelty_score, pr.novelty_confidence,
                 pr.error_type, pr.stage_at_death, pr.failure_details_json,
                 pr.induction_screening_auc, pr.binding_screening_auc, pr.binding_curriculum_auc,
+                pr.binding_screening_composite,
                 pr.ar_legacy_auc, pr.hellaswag_acc, pr.blimp_overall_accuracy,
                 l.composite_score,
                 pr.induction_intermediate_auc,
                 pr.binding_intermediate_auc,
+                pr.ar_curriculum_auc_pair_final,
+                pr.ar_curriculum_s0_retention,
+                pr.ar_curriculum_max_passing_stage,
                 pr.language_control_s05_sentence_assoc_score,
                 pr.language_control_s05_binding_order_acc,
                 pr.language_control_s05_binding_score,
@@ -531,12 +535,16 @@ class _ObservabilityMixin:
                 if row["binding_curriculum_auc"] is not None
                 else row["binding_screening_auc"]
             )
+            binding_screening_composite = row["binding_screening_composite"]
             ar_legacy_auc = row["ar_legacy_auc"]
             hellaswag_acc = row["hellaswag_acc"]
             blimp_overall_accuracy = row["blimp_overall_accuracy"]
             composite_score = row["composite_score"]
             induction_intermediate_auc = row["induction_intermediate_auc"]
             binding_intermediate_auc = row["binding_intermediate_auc"]
+            ar_curriculum_auc = row["ar_curriculum_auc_pair_final"]
+            ar_curriculum_retention = row["ar_curriculum_s0_retention"]
+            ar_curriculum_max_pass = row["ar_curriculum_max_passing_stage"]
             language_control_values = {
                 "language_control_s05_sentence_assoc_score": row[
                     "language_control_s05_sentence_assoc_score"
@@ -650,6 +658,12 @@ class _ObservabilityMixin:
                     binding_screening_auc
                 ):
                     stat["binding_screening_aucs"].append(float(binding_screening_auc))
+                if binding_screening_composite is not None and math.isfinite(
+                    binding_screening_composite
+                ):
+                    stat["binding_screening_composites"].append(
+                        float(binding_screening_composite)
+                    )
                 if ar_legacy_auc is not None and math.isfinite(ar_legacy_auc):
                     stat["ar_legacy_aucs"].append(float(ar_legacy_auc))
                 if hellaswag_acc is not None and math.isfinite(hellaswag_acc):
@@ -674,6 +688,16 @@ class _ObservabilityMixin:
                     stat["binding_intermediate_aucs"].append(
                         float(binding_intermediate_auc)
                     )
+                if ar_curriculum_auc is not None and math.isfinite(ar_curriculum_auc):
+                    stat["ar_curriculum_aucs"].append(float(ar_curriculum_auc))
+                if ar_curriculum_retention is not None and math.isfinite(
+                    ar_curriculum_retention
+                ):
+                    stat["ar_curriculum_retentions"].append(
+                        float(ar_curriculum_retention)
+                    )
+                if ar_curriculum_max_pass is not None:
+                    stat["ar_curriculum_max_passes"].append(int(ar_curriculum_max_pass))
                 _append_language_control_metrics(stat, language_control_values)
                 if erf_density is not None and math.isfinite(erf_density):
                     stat["erf_densities"].append(float(erf_density))
@@ -805,7 +829,16 @@ class _ObservabilityMixin:
                         "n_stage1": 0,
                         "losses": [],
                         "composite_scores": [],
+                        "induction_screening_aucs": [],
+                        "induction_intermediate_aucs": [],
+                        "binding_screening_aucs": [],
+                        "binding_screening_composites": [],
+                        "binding_intermediate_aucs": [],
+                        "ar_legacy_aucs": [],
                         "language_control_metrics": _empty_language_control_metrics(),
+                        "ar_curriculum_aucs": [],
+                        "ar_curriculum_retentions": [],
+                        "ar_curriculum_max_passes": [],
                         "failure_reasons": {},
                         "selected_motifs": {},
                     },
@@ -816,6 +849,48 @@ class _ObservabilityMixin:
                     sstat["losses"].append(float(loss_ratio))
                 if composite_score is not None and math.isfinite(composite_score):
                     sstat["composite_scores"].append(float(composite_score))
+                if induction_screening_auc is not None and math.isfinite(
+                    induction_screening_auc
+                ):
+                    sstat["induction_screening_aucs"].append(
+                        float(induction_screening_auc)
+                    )
+                if induction_intermediate_auc is not None and math.isfinite(
+                    induction_intermediate_auc
+                ):
+                    sstat["induction_intermediate_aucs"].append(
+                        float(induction_intermediate_auc)
+                    )
+                if binding_screening_auc is not None and math.isfinite(
+                    binding_screening_auc
+                ):
+                    sstat["binding_screening_aucs"].append(float(binding_screening_auc))
+                if binding_screening_composite is not None and math.isfinite(
+                    binding_screening_composite
+                ):
+                    sstat["binding_screening_composites"].append(
+                        float(binding_screening_composite)
+                    )
+                if binding_intermediate_auc is not None and math.isfinite(
+                    binding_intermediate_auc
+                ):
+                    sstat["binding_intermediate_aucs"].append(
+                        float(binding_intermediate_auc)
+                    )
+                if ar_legacy_auc is not None and math.isfinite(ar_legacy_auc):
+                    sstat["ar_legacy_aucs"].append(float(ar_legacy_auc))
+                if ar_curriculum_auc is not None and math.isfinite(ar_curriculum_auc):
+                    sstat["ar_curriculum_aucs"].append(float(ar_curriculum_auc))
+                if ar_curriculum_retention is not None and math.isfinite(
+                    ar_curriculum_retention
+                ):
+                    sstat["ar_curriculum_retentions"].append(
+                        float(ar_curriculum_retention)
+                    )
+                if ar_curriculum_max_pass is not None:
+                    sstat["ar_curriculum_max_passes"].append(
+                        int(ar_curriculum_max_pass)
+                    )
                 _append_language_control_metrics(sstat, language_control_values)
                 motif_name = slot.get("selected_motif")
                 if motif_name:
@@ -988,6 +1063,60 @@ class _ObservabilityMixin:
                         if stat["losses"]
                         else None
                     ),
+                    "avg_induction_screening_auc": (
+                        sum(stat["induction_screening_aucs"])
+                        / len(stat["induction_screening_aucs"])
+                        if stat.get("induction_screening_aucs")
+                        else None
+                    ),
+                    "avg_induction_intermediate_auc": (
+                        sum(stat["induction_intermediate_aucs"])
+                        / len(stat["induction_intermediate_aucs"])
+                        if stat.get("induction_intermediate_aucs")
+                        else None
+                    ),
+                    "avg_binding_screening_auc": (
+                        sum(stat["binding_screening_aucs"])
+                        / len(stat["binding_screening_aucs"])
+                        if stat.get("binding_screening_aucs")
+                        else None
+                    ),
+                    "avg_binding_screening_composite": (
+                        sum(stat["binding_screening_composites"])
+                        / len(stat["binding_screening_composites"])
+                        if stat.get("binding_screening_composites")
+                        else None
+                    ),
+                    "avg_binding_intermediate_auc": (
+                        sum(stat["binding_intermediate_aucs"])
+                        / len(stat["binding_intermediate_aucs"])
+                        if stat.get("binding_intermediate_aucs")
+                        else None
+                    ),
+                    "avg_ar_legacy_auc": (
+                        sum(stat["ar_legacy_aucs"]) / len(stat["ar_legacy_aucs"])
+                        if stat.get("ar_legacy_aucs")
+                        else None
+                    ),
+                    "avg_ar_curriculum_auc_pair_final": (
+                        sum(stat["ar_curriculum_aucs"])
+                        / len(stat["ar_curriculum_aucs"])
+                        if stat.get("ar_curriculum_aucs")
+                        else None
+                    ),
+                    "avg_ar_curriculum_s0_retention": (
+                        sum(stat["ar_curriculum_retentions"])
+                        / len(stat["ar_curriculum_retentions"])
+                        if stat.get("ar_curriculum_retentions")
+                        else None
+                    ),
+                    "avg_ar_curriculum_max_passing_stage": (
+                        sum(stat["ar_curriculum_max_passes"])
+                        / len(stat["ar_curriculum_max_passes"])
+                        if stat.get("ar_curriculum_max_passes")
+                        else None
+                    ),
+                    "n_ar_curriculum": len(stat.get("ar_curriculum_aucs") or []),
                     **_summarize_language_control_metrics(stat),
                     "top_failure_reason": top_reason,
                     "top_selected_motif": top_motif,

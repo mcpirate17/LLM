@@ -2,10 +2,18 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { apiCall } from '../services/apiService';
 import MiniChart from './charts/MiniChart';
 import { fmtPct as _fmtPct, fmtLoss } from '../utils/format';
+import { probeAucColor } from '../utils/colors';
 import { TIER_COLORS } from '../utils/scoringEngine';
 import { useAriaData } from '../hooks/useAriaData';
 import useInteractiveTable from './shared/useInteractiveTable';
 import SortIndicator from './shared/SortIndicator';
+import { ColumnPickerButton, ColumnPickerPanel } from './shared/DataTableControls';
+import {
+  groupedSpans,
+  selectedColumnKeys,
+  tableMinWidth,
+  visibleColumns,
+} from './shared/columnUtils';
 
 const fmtPct = (v) => _fmtPct(v, 1);
 
@@ -69,7 +77,13 @@ const SORT_COLUMNS = [
   { key: 'avg_induction_screening_auc', label: 'Ind', tooltip: 'Average induction-task AUC for programs containing this op.', group: 'benchmarks' },
   { key: 'avg_induction_intermediate_auc', label: 'Ind INTER', tooltip: 'Average induction v2 investigation AUC for programs containing this op.', group: 'benchmarks' },
   { key: 'avg_binding_screening_auc', label: 'Bind', tooltip: 'Average binding/copy-task AUC for programs containing this op.', group: 'benchmarks' },
+  { key: 'avg_binding_screening_composite', label: 'Bind Cmp', tooltip: 'Average composite binding score for programs containing this op.', group: 'benchmarks' },
   { key: 'avg_binding_intermediate_auc', label: 'Bind INTER', tooltip: 'Average binding v2 investigation AUC for programs containing this op.', group: 'benchmarks' },
+  { key: 'avg_ar_legacy_auc', label: 'AR AUC', tooltip: 'Average associative-recall probe AUC for programs containing this op.', group: 'benchmarks' },
+  { key: 'avg_ar_curriculum_auc_pair_final', label: 'AR CUR AUC', tooltip: 'Average AR Curriculum probe AUC across stages S0-S5 for programs containing this op.', group: 'benchmarks' },
+  { key: 'avg_ar_curriculum_s0_retention', label: 'AR CUR Retain', tooltip: 'Average AR Curriculum S0 retention for programs containing this op.', group: 'benchmarks' },
+  { key: 'avg_ar_curriculum_max_passing_stage', label: 'AR CUR Pass', tooltip: 'Average highest AR Curriculum stage cleared for programs containing this op.', group: 'benchmarks' },
+  { key: 'n_ar_curriculum', label: 'AR CUR N', tooltip: 'Number of programs containing this op with AR Curriculum metrics.', group: 'benchmarks' },
   { key: 'avg_language_control_s05_score', label: 'LC S05', tooltip: 'Average language-control S0.5 tier score: SA plus nano-BLiMP score/order.', group: 'benchmarks' },
   { key: 'avg_language_control_s10_score', label: 'LC S10', tooltip: 'Average language-control S1.0 tier score: SA plus nano-BLiMP score/order.', group: 'benchmarks' },
   { key: 'avg_language_control_investigation_score', label: 'LC INTER', tooltip: 'Average language-control investigation tier score. Shows a yellow flag when investigation SA is below 0.850.', group: 'benchmarks' },
@@ -104,10 +118,11 @@ const COLUMN_GROUPS = [
 ];
 
 const COMPONENT_VIEW_PRESETS = [
-  { key: 'triage', label: 'Triage', columns: ['avg_composite_score', 'n_used', 's1_rate', 'avg_loss_ratio', 'avg_validation_loss_ratio', 'avg_induction_intermediate_auc', 'avg_binding_intermediate_auc', 'avg_language_control_s05_score', 'avg_language_control_s10_score', 'avg_language_control_investigation_score', 'avg_hellaswag_acc', 'avg_blimp_overall_accuracy', 'avg_erf_density', 'avg_id_collapse_rate', 'reasons'] },
-  { key: 'learning', label: 'Learning', columns: ['avg_composite_score', 'n_used', 's0_rate', 's05_rate', 's1_rate', 'avg_loss_ratio', 'avg_validation_loss_ratio', 'avg_induction_intermediate_auc', 'avg_binding_intermediate_auc', 'avg_language_control_s05_score', 'avg_language_control_investigation_score', 'reasons'] },
-  { key: 'benchmarks', label: 'Benchmarks', columns: ['avg_composite_score', 'n_used', 'avg_induction_screening_auc', 'avg_induction_intermediate_auc', 'avg_binding_screening_auc', 'avg_binding_intermediate_auc', 'avg_language_control_s05_score', 'avg_language_control_s10_score', 'avg_language_control_investigation_score', 'avg_hellaswag_acc', 'avg_blimp_overall_accuracy', 'reasons'] },
-  { key: 'architecture', label: 'Architecture', columns: ['n_used', 'avg_binding_intermediate_auc', 'avg_erf_density', 'avg_id_collapse_rate', 'avg_id_collapse_rate_normalized', 'avg_erf_decay_slope', 'avg_logit_margin_velocity', 'avg_jacobian_effective_rank', 'reasons'] },
+  { key: 'core', label: 'Core', columns: ['avg_composite_score', 'n_used', 's1_rate', 'avg_loss_ratio', 'avg_validation_loss_ratio', 'avg_induction_intermediate_auc', 'avg_binding_intermediate_auc', 'avg_ar_curriculum_auc_pair_final', 'avg_ar_curriculum_s0_retention', 'avg_language_control_investigation_score', 'avg_erf_density', 'avg_id_collapse_rate', 'reasons'] },
+  { key: 'triage', label: 'Triage', columns: ['avg_composite_score', 'n_used', 's1_rate', 'avg_loss_ratio', 'avg_validation_loss_ratio', 'avg_induction_intermediate_auc', 'avg_binding_intermediate_auc', 'avg_ar_curriculum_auc_pair_final', 'avg_ar_curriculum_s0_retention', 'avg_language_control_s05_score', 'avg_language_control_s10_score', 'avg_language_control_investigation_score', 'avg_hellaswag_acc', 'avg_blimp_overall_accuracy', 'avg_erf_density', 'avg_id_collapse_rate', 'reasons'] },
+  { key: 'learning', label: 'Learning', columns: ['avg_composite_score', 'n_used', 's0_rate', 's05_rate', 's1_rate', 'avg_loss_ratio', 'avg_validation_loss_ratio', 'avg_induction_intermediate_auc', 'avg_binding_intermediate_auc', 'avg_ar_curriculum_auc_pair_final', 'avg_language_control_s05_score', 'avg_language_control_investigation_score', 'reasons'] },
+  { key: 'benchmarks', label: 'Benchmarks', columns: ['avg_composite_score', 'n_used', 'avg_induction_screening_auc', 'avg_induction_intermediate_auc', 'avg_binding_screening_auc', 'avg_binding_screening_composite', 'avg_binding_intermediate_auc', 'avg_ar_legacy_auc', 'avg_ar_curriculum_auc_pair_final', 'avg_ar_curriculum_s0_retention', 'avg_ar_curriculum_max_passing_stage', 'n_ar_curriculum', 'avg_language_control_s05_score', 'avg_language_control_s10_score', 'avg_language_control_investigation_score', 'avg_hellaswag_acc', 'avg_blimp_overall_accuracy', 'reasons'] },
+  { key: 'architecture', label: 'Architecture', columns: ['n_used', 'avg_binding_intermediate_auc', 'avg_ar_curriculum_auc_pair_final', 'avg_ar_curriculum_s0_retention', 'avg_erf_density', 'avg_id_collapse_rate', 'avg_id_collapse_rate_normalized', 'avg_erf_decay_slope', 'avg_logit_margin_velocity', 'avg_jacobian_effective_rank', 'reasons'] },
   { key: 'runtime', label: 'Runtime', columns: ['n_used', 'grad_norm', 'fwd_us', 'reasons'] },
   { key: 'all', label: 'All Columns', columns: SORT_COLUMNS.map(col => col.key) },
 ];
@@ -129,6 +144,8 @@ const SORT_PRESETS = [
   { key: 'best_val', label: 'Best Val', sortKey: 'avg_validation_loss_ratio', desc: false },
   { key: 'worst_gap', label: 'Worst Val Gap', sortKey: 'val_gap', desc: true },
   { key: 'best_ind', label: 'Best Ind', sortKey: 'avg_induction_screening_auc', desc: true },
+  { key: 'best_ar_curriculum', label: 'Best AR Curriculum', sortKey: 'avg_ar_curriculum_auc_pair_final', desc: true },
+  { key: 'best_ar_retention', label: 'Best AR Retention', sortKey: 'avg_ar_curriculum_s0_retention', desc: true },
   { key: 'best_cl_investigation', label: 'Best LC INTER', sortKey: 'avg_language_control_investigation_score', desc: true },
   { key: 'slowest', label: 'Slowest Runtime', sortKey: 'fwd_us', desc: true },
 ];
@@ -249,72 +266,12 @@ function stickyCellStyle(col, extra = {}) {
   };
 }
 
-function presetComponentColumns(columnView) {
-  const preset = COMPONENT_VIEW_PRESETS.find(item => item.key === columnView) || COMPONENT_VIEW_PRESETS[0];
-  const allowed = new Set(['status', 'op', ...preset.columns]);
-  return SORT_COLUMNS.filter(col => col.always || allowed.has(col.key));
-}
-
-function normalizeColumnKeys(columns, keys) {
-  const valid = new Set(columns.map(col => col.key));
-  const normalized = Array.isArray(keys) ? keys.filter(key => valid.has(key)) : [];
-  const always = columns.filter(col => col.always).map(col => col.key);
-  return Array.from(new Set([...always, ...normalized]));
-}
-
 function requiredComponentColumns() {
   return [
     'avg_language_control_s05_score',
     'avg_language_control_s10_score',
     'avg_language_control_investigation_score',
   ];
-}
-
-function visibleComponentColumns(columnView, customColumnKeys) {
-  if (Array.isArray(customColumnKeys) && customColumnKeys.length > 0) {
-    const allowed = new Set(normalizeColumnKeys(SORT_COLUMNS, [...customColumnKeys, ...requiredComponentColumns()]));
-    return SORT_COLUMNS.filter(col => allowed.has(col.key));
-  }
-  return presetComponentColumns(columnView);
-}
-
-function componentTableMinWidth(columns) {
-  return columns.reduce((total, col) => total + (col.width || 88), 0);
-}
-
-function ColumnPickerPanel({ columns, selectedKeys, onChange, onReset }) {
-  const selected = new Set(normalizeColumnKeys(columns, selectedKeys));
-  return (
-    <div style={{
-      display: 'flex',
-      gap: 10,
-      flexWrap: 'wrap',
-      padding: 10,
-      marginBottom: 10,
-      border: '1px solid var(--border-color)',
-      borderRadius: 6,
-      background: 'var(--bg-secondary)',
-    }}>
-      {columns.filter(col => !col.always).map(col => (
-        <label key={col.key} title={col.tooltip} style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11, color: 'var(--text-primary)', cursor: 'pointer' }}>
-          <input
-            type="checkbox"
-            checked={selected.has(col.key)}
-            onChange={(event) => {
-              const next = new Set(selected);
-              if (event.target.checked) next.add(col.key);
-              else next.delete(col.key);
-              onChange(normalizeColumnKeys(columns, Array.from(next)));
-            }}
-          />
-          {col.label}
-        </label>
-      ))}
-      <button onClick={onReset} style={{ padding: '2px 8px', fontSize: 11, borderRadius: 10, border: '1px solid var(--border-color)', background: 'var(--bg-tertiary)', color: 'var(--text-muted)', cursor: 'pointer' }}>
-        Preset
-      </button>
-    </div>
-  );
 }
 
 function renderComponentCell(c, col) {
@@ -376,10 +333,20 @@ function renderComponentCell(c, col) {
       </td>
     );
   }
-  if (col.key === 'avg_induction_screening_auc') return <td style={{ textAlign: 'right' }}>{metricText(c.avg_induction_screening_auc)}</td>;
-  if (col.key === 'avg_induction_intermediate_auc') return <td style={{ textAlign: 'right' }}>{metricText(c.avg_induction_intermediate_auc)}</td>;
-  if (col.key === 'avg_binding_screening_auc') return <td style={{ textAlign: 'right' }}>{metricText(c.avg_binding_screening_auc)}</td>;
-  if (col.key === 'avg_binding_intermediate_auc') return <td style={{ textAlign: 'right', color: c.avg_binding_intermediate_auc != null && c.avg_binding_intermediate_auc >= 0.30 ? 'var(--accent-green)' : 'var(--text-primary)' }}>{metricText(c.avg_binding_intermediate_auc)}</td>;
+  if (col.key === 'avg_induction_screening_auc') return <td style={{ textAlign: 'right', color: probeAucColor(c.avg_induction_screening_auc), fontWeight: 600 }}>{metricText(c.avg_induction_screening_auc)}</td>;
+  if (col.key === 'avg_induction_intermediate_auc') return <td style={{ textAlign: 'right', color: probeAucColor(c.avg_induction_intermediate_auc), fontWeight: 600 }}>{metricText(c.avg_induction_intermediate_auc)}</td>;
+  if (col.key === 'avg_binding_screening_auc') return <td style={{ textAlign: 'right', color: probeAucColor(c.avg_binding_screening_auc), fontWeight: 600 }}>{metricText(c.avg_binding_screening_auc)}</td>;
+  if (col.key === 'avg_binding_screening_composite') return <td style={{ textAlign: 'right', color: probeAucColor(c.avg_binding_screening_composite), fontWeight: 600 }}>{metricText(c.avg_binding_screening_composite)}</td>;
+  if (col.key === 'avg_binding_intermediate_auc') return <td style={{ textAlign: 'right', color: probeAucColor(c.avg_binding_intermediate_auc), fontWeight: 600 }}>{metricText(c.avg_binding_intermediate_auc)}</td>;
+  if (col.key === 'avg_ar_legacy_auc') return <td style={{ textAlign: 'right', color: probeAucColor(c.avg_ar_legacy_auc), fontWeight: 600 }}>{metricText(c.avg_ar_legacy_auc)}</td>;
+  if (col.key === 'avg_ar_curriculum_auc_pair_final') return <td style={{ textAlign: 'right', color: probeAucColor(c.avg_ar_curriculum_auc_pair_final), fontWeight: 600 }}>{metricText(c.avg_ar_curriculum_auc_pair_final)}</td>;
+  if (col.key === 'avg_ar_curriculum_s0_retention') {
+    const v = Number(c.avg_ar_curriculum_s0_retention);
+    const color = !Number.isFinite(v) ? 'var(--text-muted)' : v >= 0.70 ? 'var(--accent-green)' : v >= 0.30 ? STATUS_COLORS.degraded : STATUS_COLORS.broken;
+    return <td style={{ textAlign: 'right', color, fontWeight: 600 }}>{metricText(c.avg_ar_curriculum_s0_retention)}</td>;
+  }
+  if (col.key === 'avg_ar_curriculum_max_passing_stage') return <td style={{ textAlign: 'right' }}>{metricText(c.avg_ar_curriculum_max_passing_stage, 1)}</td>;
+  if (col.key === 'n_ar_curriculum') return <td style={{ textAlign: 'right' }}>{c.n_ar_curriculum || 0}</td>;
   if (col.key === 'avg_language_control_s05_score') return languageControlCell(c, col.key);
   if (col.key === 'avg_language_control_s10_score') return languageControlCell(c, col.key);
   if (col.key === 'avg_language_control_investigation_score') return languageControlCell(c, col.key);
@@ -416,12 +383,13 @@ function renderComponentCell(c, col) {
 // ─── Component Health Grid ───
 function ComponentGrid({ components, filter, searchTerm, sourceFilter, reasonFilter, sortPreset, columnView, customColumnKeys }) {
   const tableScrollRef = useRef(null);
-  const visibleColumns = useMemo(() => visibleComponentColumns(columnView, customColumnKeys), [columnView, customColumnKeys]);
-  const groupSpans = useMemo(() => COLUMN_GROUPS.map(group => ({
-    ...group,
-    span: visibleColumns.filter(col => col.group === group.key).length,
-  })).filter(group => group.span > 0), [visibleColumns]);
-  const minWidth = Math.max(720, componentTableMinWidth(visibleColumns));
+  const requiredColumns = useMemo(() => requiredComponentColumns(), []);
+  const visibleComponentColumns = useMemo(
+    () => visibleColumns(SORT_COLUMNS, COMPONENT_VIEW_PRESETS, columnView, customColumnKeys, requiredColumns),
+    [columnView, customColumnKeys, requiredColumns]
+  );
+  const groupSpans = useMemo(() => groupedSpans(visibleComponentColumns, COLUMN_GROUPS), [visibleComponentColumns]);
+  const minWidth = Math.max(720, tableMinWidth(visibleComponentColumns, 88));
 
   // Pre-filter rows before passing to the hook (custom filtering not suited to filterRowsByQuery)
   const preFiltered = useMemo(() => {
@@ -534,7 +502,7 @@ function ComponentGrid({ components, filter, searchTerm, sourceFilter, reasonFil
             ))}
           </tr>
           <tr>
-            {visibleColumns.map(col => (
+            {visibleComponentColumns.map(col => (
               <th
                 key={col.key}
                 title={col.tooltip}
@@ -559,7 +527,7 @@ function ComponentGrid({ components, filter, searchTerm, sourceFilter, reasonFil
             <tr key={c.op} style={{
               background: c.status === 'broken' ? '#ef444408' : c.status === 'degraded' ? '#eab30808' : undefined,
             }}>
-              {visibleColumns.map(col => <React.Fragment key={col.key}>{renderComponentCell(c, col)}</React.Fragment>)}
+              {visibleComponentColumns.map(col => <React.Fragment key={col.key}>{renderComponentCell(c, col)}</React.Fragment>)}
             </tr>
           ))}
         </tbody>
@@ -1097,14 +1065,15 @@ export default function ComponentAnalyticsDashboard() {
   const [sourceFilter, setSourceFilter] = usePersistentState('aria.componentTable.sourceFilter', 'all');
   const [timeWindow, setTimeWindow] = usePersistentState('aria.componentTable.timeWindow', 'all');
   const [sortPreset, setSortPreset] = usePersistentState('aria.componentTable.sortPreset', 'most_used');
-  const [columnView, setColumnView] = usePersistentState('aria.componentTable.columnView', 'triage');
+  const [columnView, setColumnView] = usePersistentState('aria.componentTable.columnView', 'core');
   const [customColumnKeys, setCustomColumnKeys] = usePersistentState('aria.componentTable.customColumns', null);
   const [showColumnPicker, setShowColumnPicker] = useState(false);
   const [searchTerm, setSearchTerm] = usePersistentState('aria.componentTable.searchTerm', '');
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const { slowPollTick } = useAriaData();
-  const hasComponentFilters = filter !== 'all' || reasonFilter !== 'all' || sourceFilter !== 'all' || timeWindow !== 'all' || sortPreset !== 'most_used' || columnView !== 'triage' || Boolean(customColumnKeys) || searchTerm.trim() !== '';
+  const requiredColumns = useMemo(() => requiredComponentColumns(), []);
+  const hasComponentFilters = filter !== 'all' || reasonFilter !== 'all' || sourceFilter !== 'all' || timeWindow !== 'all' || sortPreset !== 'most_used' || columnView !== 'core' || Boolean(customColumnKeys) || searchTerm.trim() !== '';
 
   const fetchHealthOnly = useCallback(async () => {
     const windowParam = timeWindow !== 'all' ? `?window=${timeWindow}` : '';
@@ -1213,18 +1182,13 @@ export default function ComponentAnalyticsDashboard() {
               <option key={preset.key} value={preset.key}>{preset.label}</option>
             ))}
           </select>
-          <button onClick={() => {
-            if (!customColumnKeys) setCustomColumnKeys(presetComponentColumns(columnView).map(col => col.key));
-            setShowColumnPicker(value => !value);
-          }} style={{
-            padding: '4px 10px', fontSize: 11, borderRadius: 6,
-            background: showColumnPicker ? 'var(--accent-blue)22' : 'var(--bg-secondary)',
-            color: showColumnPicker ? 'var(--accent-blue)' : 'var(--text-primary)',
-            border: `1px solid ${showColumnPicker ? 'var(--accent-blue)' : 'var(--border-color)'}`,
-            cursor: 'pointer',
-          }}>
-            Columns
-          </button>
+          <ColumnPickerButton
+            open={showColumnPicker}
+            onClick={() => {
+              if (!customColumnKeys) setCustomColumnKeys(selectedColumnKeys(SORT_COLUMNS, COMPONENT_VIEW_PRESETS, columnView, customColumnKeys, requiredColumns));
+              setShowColumnPicker(value => !value);
+            }}
+          />
           <button onClick={handleRefresh} disabled={refreshing} style={{
             padding: '4px 12px', fontSize: 12, borderRadius: 6,
             background: 'var(--bg-secondary)', color: 'var(--text-primary)',
@@ -1283,7 +1247,7 @@ export default function ComponentAnalyticsDashboard() {
               setSourceFilter('all');
               setTimeWindow('all');
               setSortPreset('most_used');
-              setColumnView('triage');
+              setColumnView('core');
               setCustomColumnKeys(null);
               setSearchTerm('');
             }}
@@ -1300,9 +1264,15 @@ export default function ComponentAnalyticsDashboard() {
         {showColumnPicker && (
           <ColumnPickerPanel
             columns={SORT_COLUMNS}
-            selectedKeys={customColumnKeys || presetComponentColumns(columnView).map(col => col.key)}
+            selectedKeys={selectedColumnKeys(SORT_COLUMNS, COMPONENT_VIEW_PRESETS, columnView, customColumnKeys, requiredColumns)}
             onChange={setCustomColumnKeys}
             onReset={() => setCustomColumnKeys(null)}
+            presets={COMPONENT_VIEW_PRESETS}
+            onPreset={(preset) => {
+              setColumnView(preset.key);
+              setCustomColumnKeys(null);
+            }}
+            requiredKeys={requiredColumns}
           />
         )}
         <ComponentGrid

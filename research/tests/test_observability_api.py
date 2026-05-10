@@ -98,6 +98,11 @@ class TestObservabilityAPI(unittest.TestCase):
                 binding_screening_auc=0.05 + i * 0.005,
                 binding_screening_composite=0.06 + i * 0.005,
                 ar_legacy_auc=0.03 + i * 0.005,
+                induction_intermediate_auc=0.20 + i * 0.01,
+                binding_intermediate_auc=0.29 + i * 0.01,
+                ar_curriculum_auc_pair_final=0.40 + i * 0.02,
+                ar_curriculum_s0_retention=0.60 + i * 0.01,
+                ar_curriculum_max_passing_stage=4,
                 language_control_s05_sentence_assoc_score=0.80,
                 language_control_s05_binding_order_acc=0.70,
                 language_control_s05_binding_score=0.74,
@@ -542,6 +547,14 @@ class TestObservabilityAPI(unittest.TestCase):
             "avg_validation_loss_ratio",
             "avg_induction_screening_auc",
             "avg_binding_screening_auc",
+            "avg_binding_screening_composite",
+            "avg_ar_legacy_auc",
+            "avg_induction_intermediate_auc",
+            "avg_binding_intermediate_auc",
+            "avg_ar_curriculum_auc_pair_final",
+            "avg_ar_curriculum_s0_retention",
+            "avg_ar_curriculum_max_passing_stage",
+            "n_ar_curriculum",
             "avg_language_control_s05_score",
             "avg_language_control_s10_score",
             "avg_language_control_investigation_score",
@@ -575,6 +588,16 @@ class TestObservabilityAPI(unittest.TestCase):
         self.assertAlmostEqual(
             metric_payload["avg_language_control_investigation_score"], 0.78
         )
+        self.assertAlmostEqual(metric_overlay["avg_binding_screening_composite"], 0.07)
+        self.assertAlmostEqual(metric_overlay["avg_ar_legacy_auc"], 0.04)
+        self.assertAlmostEqual(metric_overlay["avg_induction_intermediate_auc"], 0.22)
+        self.assertAlmostEqual(metric_overlay["avg_binding_intermediate_auc"], 0.31)
+        self.assertAlmostEqual(metric_overlay["avg_ar_curriculum_auc_pair_final"], 0.44)
+        self.assertAlmostEqual(metric_overlay["avg_ar_curriculum_s0_retention"], 0.62)
+        self.assertAlmostEqual(
+            metric_overlay["avg_ar_curriculum_max_passing_stage"], 4.0
+        )
+        self.assertEqual(metric_overlay["n_ar_curriculum"], 5)
 
 
 if __name__ == "__main__":

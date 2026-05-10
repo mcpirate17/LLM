@@ -384,6 +384,103 @@ body::-webkit-scrollbar-thumb,
   backdrop-filter: blur(12px);
 }
 
+.column-picker-trigger,
+.column-preset-btn,
+.column-picker-reset {
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.column-picker-trigger:hover,
+.column-preset-btn:hover,
+.column-picker-reset:hover {
+  border-color: var(--accent-blue);
+  color: var(--text-primary);
+}
+.column-picker-trigger.active,
+.column-preset-btn.active {
+  border-color: var(--accent-blue);
+  background: rgba(88, 166, 255, 0.12);
+  color: var(--accent-blue);
+  font-weight: 600;
+}
+.column-picker-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  margin-bottom: 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-secondary);
+}
+.column-picker-presets,
+.column-picker-options {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.column-picker-options {
+  max-height: 190px;
+  overflow: auto;
+  padding: 2px;
+}
+.column-picker-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 118px;
+  max-width: 220px;
+  color: var(--text-primary);
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1.3;
+}
+.column-picker-option span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.column-picker-option input:disabled + span {
+  color: var(--text-muted);
+}
+.column-picker-reset {
+  align-self: flex-start;
+  border-radius: 999px;
+  background: var(--bg-tertiary);
+  color: var(--text-muted);
+}
+.subtab-bar {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+.subtab-btn {
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+}
+.subtab-btn.active {
+  border-color: var(--accent-blue);
+  background: rgba(88, 166, 255, 0.12);
+  color: var(--accent-blue);
+  font-weight: 700;
+}
+
 .card-title {
   font-size: 16px;
   font-weight: 700;

@@ -816,7 +816,13 @@ class TestNotebook(unittest.TestCase):
             novelty_confidence=0.4,
             induction_screening_auc=0.0,
             binding_screening_auc=0.0,
+            binding_screening_composite=0.0,
             ar_legacy_auc=0.0,
+            induction_intermediate_auc=0.01,
+            binding_intermediate_auc=0.02,
+            ar_curriculum_auc_pair_final=0.11,
+            ar_curriculum_s0_retention=0.20,
+            ar_curriculum_max_passing_stage=1,
             hellaswag_acc=0.25,
             language_control_s05_sentence_assoc_score=0.70,
             language_control_s05_binding_order_acc=0.55,
@@ -844,7 +850,13 @@ class TestNotebook(unittest.TestCase):
             novelty_confidence=0.8,
             induction_screening_auc=0.08,
             binding_screening_auc=0.09,
+            binding_screening_composite=0.10,
             ar_legacy_auc=0.07,
+            induction_intermediate_auc=0.18,
+            binding_intermediate_auc=0.19,
+            ar_curriculum_auc_pair_final=0.41,
+            ar_curriculum_s0_retention=0.61,
+            ar_curriculum_max_passing_stage=4,
             hellaswag_acc=0.31,
             language_control_s05_sentence_assoc_score=0.90,
             language_control_s05_binding_order_acc=0.82,
@@ -886,6 +898,14 @@ class TestNotebook(unittest.TestCase):
         self.assertAlmostEqual(weak["avg_language_control_investigation_score"], 0.51)
         self.assertAlmostEqual(strong["avg_induction_screening_auc"], 0.08)
         self.assertAlmostEqual(strong["avg_binding_screening_auc"], 0.09)
+        self.assertAlmostEqual(strong["avg_binding_screening_composite"], 0.10)
+        self.assertAlmostEqual(strong["avg_ar_legacy_auc"], 0.07)
+        self.assertAlmostEqual(strong["avg_induction_intermediate_auc"], 0.18)
+        self.assertAlmostEqual(strong["avg_binding_intermediate_auc"], 0.19)
+        self.assertAlmostEqual(strong["avg_ar_curriculum_auc_pair_final"], 0.41)
+        self.assertAlmostEqual(strong["avg_ar_curriculum_s0_retention"], 0.61)
+        self.assertAlmostEqual(strong["avg_ar_curriculum_max_passing_stage"], 4.0)
+        self.assertEqual(strong["n_ar_curriculum"], 1)
         self.assertAlmostEqual(strong["avg_language_control_s05_score"], 0.85)
         self.assertAlmostEqual(strong["avg_language_control_s10_score"], 0.87)
         self.assertAlmostEqual(strong["avg_language_control_investigation_score"], 0.89)
@@ -893,6 +913,32 @@ class TestNotebook(unittest.TestCase):
         self.assertEqual(summary["summary"]["templates_tracked"], 2)
         self.assertIn("all_slots", summary)
         self.assertEqual(summary["all_slots"][0]["slot_key"], "attn_sparse_test.slot0")
+        self.assertAlmostEqual(
+            summary["all_slots"][0]["avg_induction_screening_auc"], 0.0
+        )
+        self.assertAlmostEqual(
+            summary["all_slots"][0]["avg_induction_intermediate_auc"], 0.01
+        )
+        self.assertAlmostEqual(
+            summary["all_slots"][0]["avg_binding_screening_auc"], 0.0
+        )
+        self.assertAlmostEqual(
+            summary["all_slots"][0]["avg_binding_screening_composite"], 0.0
+        )
+        self.assertAlmostEqual(
+            summary["all_slots"][0]["avg_binding_intermediate_auc"], 0.02
+        )
+        self.assertAlmostEqual(summary["all_slots"][0]["avg_ar_legacy_auc"], 0.0)
+        self.assertAlmostEqual(
+            summary["all_slots"][0]["avg_ar_curriculum_auc_pair_final"], 0.11
+        )
+        self.assertAlmostEqual(
+            summary["all_slots"][0]["avg_ar_curriculum_s0_retention"], 0.20
+        )
+        self.assertAlmostEqual(
+            summary["all_slots"][0]["avg_ar_curriculum_max_passing_stage"], 1.0
+        )
+        self.assertEqual(summary["all_slots"][0]["n_ar_curriculum"], 1)
         self.assertAlmostEqual(
             summary["all_slots"][0]["avg_language_control_s05_score"], 0.60
         )

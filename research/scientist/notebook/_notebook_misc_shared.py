@@ -532,12 +532,16 @@ def _summarize_template_stat(stat: Dict[str, Any]) -> Dict[str, Any]:
     novelty_confidences = stat["novelty_confidences"]
     induction_screening_aucs = stat["induction_screening_aucs"]
     binding_screening_aucs = stat["binding_screening_aucs"]
+    binding_screening_composites = stat.get("binding_screening_composites") or []
     ar_legacy_aucs = stat["ar_legacy_aucs"]
     hellaswag_accs = stat["hellaswag_accs"]
     blimp_overall_accuracies = stat.get("blimp_overall_accuracies") or []
     composite_scores = stat.get("composite_scores") or []
     induction_intermediate_aucs = stat.get("induction_intermediate_aucs") or []
     binding_intermediate_aucs = stat.get("binding_intermediate_aucs") or []
+    ar_curriculum_aucs = stat.get("ar_curriculum_aucs") or []
+    ar_curriculum_retentions = stat.get("ar_curriculum_retentions") or []
+    ar_curriculum_max_passes = stat.get("ar_curriculum_max_passes") or []
     erf_densities = stat.get("erf_densities") or []
     id_collapse_rates = stat.get("id_collapse_rates") or []
     id_collapse_rate_normalizeds = stat.get("id_collapse_rate_normalizeds") or []
@@ -590,6 +594,11 @@ def _summarize_template_stat(stat: Dict[str, Any]) -> Dict[str, Any]:
             if binding_screening_aucs
             else None
         ),
+        "avg_binding_screening_composite": (
+            sum(binding_screening_composites) / len(binding_screening_composites)
+            if binding_screening_composites
+            else None
+        ),
         "avg_ar_legacy_auc": sum(ar_legacy_aucs) / len(ar_legacy_aucs)
         if ar_legacy_aucs
         else None,
@@ -615,6 +624,22 @@ def _summarize_template_stat(stat: Dict[str, Any]) -> Dict[str, Any]:
             if binding_intermediate_aucs
             else None
         ),
+        "avg_ar_curriculum_auc_pair_final": (
+            sum(ar_curriculum_aucs) / len(ar_curriculum_aucs)
+            if ar_curriculum_aucs
+            else None
+        ),
+        "avg_ar_curriculum_s0_retention": (
+            sum(ar_curriculum_retentions) / len(ar_curriculum_retentions)
+            if ar_curriculum_retentions
+            else None
+        ),
+        "avg_ar_curriculum_max_passing_stage": (
+            sum(ar_curriculum_max_passes) / len(ar_curriculum_max_passes)
+            if ar_curriculum_max_passes
+            else None
+        ),
+        "n_ar_curriculum": len(ar_curriculum_aucs),
         "avg_erf_density": (
             sum(erf_densities) / len(erf_densities) if erf_densities else None
         ),
@@ -687,6 +712,7 @@ def _summarize_template_stat(stat: Dict[str, Any]) -> Dict[str, Any]:
         "screening_metric_coverage": {
             "induction": len(induction_screening_aucs),
             "binding": len(binding_screening_aucs),
+            "binding_composite": len(binding_screening_composites),
             "associative_recall": len(ar_legacy_aucs),
             "hellaswag": len(hellaswag_accs) + len(screening_hellaswag_accs),
             "blimp": len(blimp_overall_accuracies),
@@ -851,12 +877,16 @@ def _empty_template_stat(name: str, slot_count: int) -> Dict[str, Any]:
         "novelty_confidences": [],
         "induction_screening_aucs": [],
         "binding_screening_aucs": [],
+        "binding_screening_composites": [],
         "ar_legacy_aucs": [],
         "hellaswag_accs": [],
         "blimp_overall_accuracies": [],
         "composite_scores": [],
         "induction_intermediate_aucs": [],
         "binding_intermediate_aucs": [],
+        "ar_curriculum_aucs": [],
+        "ar_curriculum_retentions": [],
+        "ar_curriculum_max_passes": [],
         "language_control_metrics": _empty_language_control_metrics(),
         "erf_densities": [],
         "id_collapse_rates": [],

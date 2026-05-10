@@ -252,6 +252,17 @@ class _ProgramResultRecordingMixin:
         **kwargs,
     ) -> str:
         """Record results for a single synthesized program."""
+        # Tag kwargs with the parent experiment's type so the post-S1 guardrail
+        # can require investigation-tier metrics on investigation writes. The
+        # tag itself is consumed by the guard and stripped before the row is
+        # filtered for the SQL columns (see _known_program_result_kwargs).
+        if "_experiment_type" not in kwargs:
+            try:
+                exp_type = self._experiment_type_for_id(experiment_id)
+            except Exception:  # noqa: BLE001
+                exp_type = None
+            if exp_type:
+                kwargs["_experiment_type"] = exp_type
         if not should_record_program_result(
             graph_fingerprint=graph_fingerprint,
             kwargs=kwargs,
