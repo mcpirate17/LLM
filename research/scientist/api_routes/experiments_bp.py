@@ -114,7 +114,7 @@ def _experiment_delete_impact(nb, experiment_id: str) -> Dict[str, int]:
                   OR COALESCE(hellaswag_acc, 0) > 0
                   OR COALESCE(blimp_overall_accuracy, 0) > 0
                 THEN 1 ELSE 0 END), 0) AS diagnostic_results
-        FROM program_results
+        FROM program_results_compat
         WHERE experiment_id = ?
         """,
         (experiment_id,),
@@ -128,7 +128,7 @@ def _experiment_delete_impact(nb, experiment_id: str) -> Dict[str, int]:
         """
         SELECT COUNT(*) AS n
         FROM leaderboard l
-        JOIN program_results pr ON pr.result_id = l.result_id
+        JOIN program_results_compat pr ON pr.result_id = l.result_id
         WHERE pr.experiment_id = ?
         """,
         (experiment_id,),
@@ -138,7 +138,7 @@ def _experiment_delete_impact(nb, experiment_id: str) -> Dict[str, int]:
         """
         SELECT COUNT(*) AS n
         FROM training_curves tc
-        JOIN program_results pr ON pr.result_id = tc.result_id
+        JOIN program_results_compat pr ON pr.result_id = tc.result_id
         WHERE pr.experiment_id = ?
         """,
         (experiment_id,),

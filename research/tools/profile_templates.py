@@ -48,7 +48,7 @@ def _load_program_rows(db_path: Path) -> list[Any]:
                 error_type,
                 stage_at_death,
                 failure_details_json
-            FROM program_results
+            FROM program_results_compat
             WHERE graph_json IS NOT NULL
             """
         ).fetchall()

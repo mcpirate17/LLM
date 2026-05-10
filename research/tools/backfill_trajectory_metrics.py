@@ -159,7 +159,7 @@ def _candidate_fingerprints(conn: sqlite3.Connection, limit: int | None) -> list
     here at the proper screening_750 phase, which is correct behavior.
     """
     sql = (
-        "SELECT graph_fingerprint, MAX(timestamp) AS ts FROM program_results "
+        "SELECT graph_fingerprint, MAX(timestamp) AS ts FROM program_results_compat "
         "WHERE graph_json IS NOT NULL AND length(graph_json) > 0 "
         "  AND graph_fingerprint IS NOT NULL "
         "  AND (fp_id_collapse_rate IS NULL "
@@ -176,7 +176,7 @@ def _representative_graph_json(
     conn: sqlite3.Connection, fingerprint: str
 ) -> str | None:
     row = conn.execute(
-        "SELECT graph_json FROM program_results "
+        "SELECT graph_json FROM program_results_compat "
         "WHERE graph_fingerprint = ? AND graph_json IS NOT NULL "
         "  AND length(graph_json) > 0 "
         "ORDER BY timestamp DESC LIMIT 1",

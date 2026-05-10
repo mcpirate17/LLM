@@ -122,7 +122,7 @@ def _register_decision_routes(app, notebook_path: str, wnb) -> None:
     def api_workflow_export(result_id: str, nb=None):
         """Export a program result as an aria_designer workflow JSON."""
         row = nb.conn.execute(
-            "SELECT graph_json, model_dim FROM program_results WHERE result_id = ?",
+            "SELECT graph_json, model_dim FROM program_results_compat WHERE result_id = ?",
             (result_id,),
         ).fetchone()
         if not row or not row["graph_json"]:
@@ -201,7 +201,7 @@ def _register_fingerprint_routes(app, notebook_path: str, wnb) -> None:
         if not value:
             return jsonify({"error": "value query param required"}), 400
         direct = nb.conn.execute(
-            "SELECT result_id, graph_fingerprint FROM program_results WHERE result_id = ?",
+            "SELECT result_id, graph_fingerprint FROM program_results_compat WHERE result_id = ?",
             (value,),
         ).fetchone()
         if direct:
@@ -227,7 +227,7 @@ def _register_fingerprint_routes(app, notebook_path: str, wnb) -> None:
                 lb.screening_loss_ratio,
                 lb.investigation_loss_ratio,
                 lb.validation_loss_ratio
-            FROM program_results pr
+            FROM program_results_compat pr
             LEFT JOIN leaderboard lb ON lb.result_id = pr.result_id
             WHERE pr.graph_fingerprint LIKE ?
             ORDER BY
@@ -280,7 +280,7 @@ def _register_fingerprint_routes(app, notebook_path: str, wnb) -> None:
         if not value:
             return jsonify({"error": "value query param required"}), 400
         direct = nb.conn.execute(
-            "SELECT graph_fingerprint FROM program_results WHERE result_id = ? LIMIT 1",
+            "SELECT graph_fingerprint FROM program_results_compat WHERE result_id = ? LIMIT 1",
             (value,),
         ).fetchone()
         fingerprint_like = (direct["graph_fingerprint"] if direct else value) + "%"
@@ -304,7 +304,7 @@ def _register_fingerprint_routes(app, notebook_path: str, wnb) -> None:
                 lb.validation_loss_ratio AS lb_validation_loss_ratio,
                 lb.investigation_passed,
                 lb.validation_passed
-            FROM program_results pr
+            FROM program_results_compat pr
             LEFT JOIN leaderboard lb ON lb.result_id = pr.result_id
             WHERE pr.graph_fingerprint LIKE ?
             ORDER BY pr.timestamp DESC
@@ -324,7 +324,7 @@ def _register_fingerprint_routes(app, notebook_path: str, wnb) -> None:
                 lb.tier,
                 lb.composite_score,
                 lb.validation_loss_ratio
-            FROM program_results pr
+            FROM program_results_compat pr
             JOIN leaderboard lb ON lb.result_id = pr.result_id
             WHERE pr.graph_fingerprint LIKE ?
               AND lb.composite_score IS NOT NULL

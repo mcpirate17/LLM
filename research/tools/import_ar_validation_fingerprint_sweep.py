@@ -185,7 +185,7 @@ def _load_db_indexes(
     conn.row_factory = sqlite3.Row
     select_cols = ["result_id", "graph_fingerprint", *AR_VALIDATION_COLUMNS.keys()]
     rows = conn.execute(
-        f"SELECT {', '.join(select_cols)} FROM program_results",
+        f"SELECT {', '.join(select_cols)} FROM program_results_compat",
     ).fetchall()
     by_result_id: dict[str, sqlite3.Row] = {}
     by_fingerprint: dict[str, list[sqlite3.Row]] = {}
@@ -352,7 +352,7 @@ def apply_import_decisions(
         }
         if "data_provenance_json" in columns:
             row = conn.execute(
-                "SELECT data_provenance_json FROM program_results WHERE result_id = ?",
+                "SELECT data_provenance_json FROM program_results_compat WHERE result_id = ?",
                 (decision.result_id,),
             ).fetchone()
             raw = row["data_provenance_json"] if row else None

@@ -128,7 +128,7 @@ def _load_recent_experiments_with_funnel(nb, limit: int) -> List[Dict[str, Any]]
             MIN(loss_ratio) AS best_loss_ratio,
             MAX(novelty_score) AS best_novelty_score,
             COUNT(*) AS n_program_results
-        FROM program_results
+        FROM program_results_compat
         WHERE experiment_id IN ({placeholders})
         GROUP BY experiment_id
         """,

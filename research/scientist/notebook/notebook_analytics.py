@@ -130,7 +130,7 @@ class _AnalyticsMixin:
                     pr.loss_ratio AS loss_ratio,
                     pr.novelty_score AS novelty_score,
                     pr.novelty_confidence AS novelty_confidence
-                FROM program_results pr
+                FROM program_results_compat pr
                 JOIN program_graph_ops gpo ON gpo.result_id = pr.result_id
                 WHERE {where_sql}
             )
@@ -178,7 +178,7 @@ class _AnalyticsMixin:
                     pr.loss_ratio AS loss_ratio,
                     pr.novelty_score AS novelty_score,
                     pr.error_type AS error_type
-                FROM program_results pr
+                FROM program_results_compat pr
                 JOIN program_graph_pairs gpp ON gpp.result_id = pr.result_id
                 WHERE {where_sql}
             )
@@ -231,7 +231,7 @@ class _AnalyticsMixin:
                     )),
                     ''
                 ) AS pairs_blob
-            FROM program_results pr
+            FROM program_results_compat pr
             JOIN program_graph_features gf ON gf.result_id = pr.result_id
             """
         )
@@ -254,7 +254,7 @@ class _AnalyticsMixin:
                     pr.timestamp,
                     l.tier,
                     l.composite_score
-                FROM program_results pr
+                FROM program_results_compat pr
                 LEFT JOIN leaderboard l ON l.result_id = pr.result_id
                 WHERE pr.graph_fingerprint IS NOT NULL
                   AND EXISTS (
@@ -344,7 +344,7 @@ class _AnalyticsMixin:
             rows = self.conn.execute(
                 """SELECT graph_json, stage0_passed, stage05_passed, stage1_passed,
                           loss_ratio, novelty_score, novelty_confidence
-                   FROM program_results
+                   FROM program_results_compat
                    WHERE experiment_id = ? AND graph_json IS NOT NULL""",
                 (experiment_id,),
             ).fetchall()
@@ -494,7 +494,7 @@ class _AnalyticsMixin:
         rows = self.conn.execute(
             """SELECT graph_json, stage0_passed, stage05_passed, stage1_passed,
                       loss_ratio, novelty_score, novelty_confidence
-               FROM program_results
+               FROM program_results_compat
                WHERE timestamp > ? AND graph_json IS NOT NULL""",
             (since_ts,),
         ).fetchall()
@@ -580,7 +580,7 @@ class _AnalyticsMixin:
                 AVG(pr.loss_ratio) AS avg_loss_ratio,
                 AVG(pr.novelty_score) AS avg_novelty
             FROM program_graph_pairs gp
-            JOIN program_results pr ON pr.result_id = gp.result_id
+            JOIN program_results_compat pr ON pr.result_id = gp.result_id
             GROUP BY gp.signature
             HAVING COUNT(*) >= ?
             """,

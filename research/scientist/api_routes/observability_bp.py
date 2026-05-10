@@ -295,7 +295,7 @@ def _register_health_routes(app, notebook_path: str, wnb) -> None:
                     COUNT(*) AS persisted_program_rows,
                     SUM(CASE WHEN stage0_passed = 1 THEN 1 ELSE 0 END) AS persisted_stage0_passed,
                     SUM(CASE WHEN stage1_passed = 1 THEN 1 ELSE 0 END) AS persisted_stage1_passed
-                FROM program_results
+                FROM program_results_compat
                 WHERE experiment_id IN ({placeholders})
                 GROUP BY experiment_id
                 """,
@@ -669,7 +669,7 @@ def _load_within_experiment_duplicate_fingerprints(nb, limit: int):
             MAX(pr.model_source) AS model_source,
             MAX(pr.result_cohort) AS result_cohort,
             SUM(CASE WHEN pr.stage1_passed = 1 THEN 1 ELSE 0 END) AS n_passed
-        FROM program_results pr
+        FROM program_results_compat pr
         JOIN experiments e ON e.experiment_id = pr.experiment_id
         WHERE TRIM(COALESCE(pr.graph_fingerprint, '')) <> ''
         GROUP BY pr.graph_fingerprint, pr.experiment_id
@@ -692,7 +692,7 @@ def _load_cross_experiment_duplicate_fingerprints(nb, limit: int):
             MIN(pr.timestamp) AS first_ts,
             MAX(pr.timestamp) AS last_ts,
             GROUP_CONCAT(DISTINCT e.experiment_type) AS experiment_types
-        FROM program_results pr
+        FROM program_results_compat pr
         JOIN experiments e ON e.experiment_id = pr.experiment_id
         WHERE TRIM(COALESCE(pr.graph_fingerprint, '')) <> ''
           AND e.experiment_type NOT IN ({placeholders})
@@ -711,7 +711,7 @@ def _within_duplicate_summary(nb):
         SELECT COUNT(*) AS dup_groups, SUM(n_runs - 1) AS excess_rows
         FROM (
           SELECT COUNT(*) AS n_runs
-          FROM program_results
+          FROM program_results_compat
           WHERE TRIM(COALESCE(graph_fingerprint, '')) <> ''
           GROUP BY graph_fingerprint, experiment_id
           HAVING n_runs > 1
@@ -727,7 +727,7 @@ def _cross_duplicate_summary(nb):
         SELECT COUNT(*) AS fingerprints, SUM(n - 1) AS excess_experiments
         FROM (
           SELECT pr.graph_fingerprint, COUNT(DISTINCT pr.experiment_id) AS n
-          FROM program_results pr
+          FROM program_results_compat pr
           JOIN experiments e ON e.experiment_id = pr.experiment_id
           WHERE TRIM(COALESCE(pr.graph_fingerprint, '')) <> ''
             AND e.experiment_type NOT IN ({placeholders})

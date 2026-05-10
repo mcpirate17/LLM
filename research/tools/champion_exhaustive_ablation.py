@@ -81,7 +81,7 @@ def ensure_ablation_metric_completeness(
     """
     row = nb.conn.execute(
         f"""SELECT stage1_passed, {", ".join(_REQUIRED_PARENT_METRICS)}
-            FROM program_results
+            FROM program_results_compat
             WHERE result_id = ?""",
         (parent_result_id,),
     ).fetchone()
@@ -133,7 +133,7 @@ def load_parent(nb: LabNotebook, result_id: str) -> ParentProgram:
     row = nb.conn.execute(
         """SELECT pr.result_id, pr.experiment_id, pr.graph_fingerprint,
                   pr.graph_json, pr.loss_ratio, e.config_json
-           FROM program_results pr
+           FROM program_results_compat pr
            LEFT JOIN experiments e ON e.experiment_id = pr.experiment_id
            WHERE pr.result_id = ?""",
         (result_id,),

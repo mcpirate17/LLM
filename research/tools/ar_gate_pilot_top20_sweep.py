@@ -58,7 +58,7 @@ def fetch_cohort() -> list[dict]:
                json_extract(pr.graph_json, '$.metadata.templates_used') AS tpl,
                CASE WHEN pr.failure_op = 'nano_bind' THEN 1 ELSE 0 END AS nb_fail,
                pr.graph_json
-        FROM program_results pr
+        FROM program_results_compat pr
         LEFT JOIN leaderboard lb ON lb.result_id = pr.result_id
         WHERE pr.graph_json IS NOT NULL
           AND lb.composite_score IS NOT NULL

@@ -108,7 +108,7 @@ def select_rows(
         where = CORE_MISSING_WHERE
     sql = f"""
         SELECT pr.*, e.config_json AS experiment_config_json
-        FROM program_results pr
+        FROM program_results_compat pr
         JOIN experiments e ON e.experiment_id = pr.experiment_id
         WHERE {where}
         ORDER BY pr.timestamp ASC, pr.result_id ASC
@@ -132,7 +132,7 @@ def count_missing(nb: LabNotebook) -> dict[str, int]:
         SELECT COUNT(*) AS rows,
                SUM(CASE WHEN COALESCE(pr.stage1_passed, 0) = 1 THEN 1 ELSE 0 END)
                    AS s1_rows
-        FROM program_results pr
+        FROM program_results_compat pr
         JOIN experiments e ON e.experiment_id = pr.experiment_id
         WHERE {CORE_MISSING_WHERE}
         """

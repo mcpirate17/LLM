@@ -37,10 +37,10 @@ def snapshot(fp: str) -> dict[str, Any]:
     conn = sqlite3.connect(f"file:{DB}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     n_total = conn.execute(
-        "SELECT COUNT(*) FROM program_results WHERE graph_fingerprint=?", (fp,)
+        "SELECT COUNT(*) FROM program_results_compat WHERE graph_fingerprint=?", (fp,)
     ).fetchone()[0]
     n_bpe = conn.execute(
-        """SELECT COUNT(*) FROM program_results WHERE graph_fingerprint=?
+        """SELECT COUNT(*) FROM program_results_compat WHERE graph_fingerprint=?
            AND screening_wikitext_metric_version IN
                ('bpe_eval_v1','screening_wikitext_v2_bpe')""",
         (fp,),
@@ -55,7 +55,7 @@ def snapshot(fp: str) -> dict[str, Any]:
     pr_ids = [
         r["result_id"]
         for r in conn.execute(
-            "SELECT result_id FROM program_results WHERE graph_fingerprint=? ORDER BY timestamp",
+            "SELECT result_id FROM program_results_compat WHERE graph_fingerprint=? ORDER BY timestamp",
             (fp,),
         ).fetchall()
     ]
@@ -64,7 +64,7 @@ def snapshot(fp: str) -> dict[str, Any]:
         dict(r)
         for r in conn.execute(
             """SELECT result_id, intentional_rerun_reason, screening_wikitext_metric_version AS mv
-               FROM program_results WHERE graph_fingerprint=?
+               FROM program_results_compat WHERE graph_fingerprint=?
                AND (intentional_rerun_reason IS NOT NULL
                     OR model_source='exact_graph_replay')""",
             (fp,),
@@ -89,7 +89,7 @@ def fetch_new_row(rid: str) -> dict[str, Any] | None:
                ROUND(wikitext_perplexity,2) AS ppl,
                ROUND(loss_ratio,3) AS lr,
                n_train_steps, intentional_rerun_reason, stage1_passed
-           FROM program_results WHERE result_id=?""",
+           FROM program_results_compat WHERE result_id=?""",
         (rid,),
     ).fetchone()
     conn.close()

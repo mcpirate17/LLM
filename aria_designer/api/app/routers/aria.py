@@ -119,7 +119,7 @@ def _fetch_parent_scores_for_workflow(workflow_id: str) -> Optional[Dict[str, An
         nb = LabNotebook(str(notebook_path))
         try:
             res = nb.conn.execute(
-                "SELECT result_id FROM program_results WHERE graph_fingerprint = ? ORDER BY timestamp DESC LIMIT 1",
+                "SELECT result_id FROM program_results_compat WHERE graph_fingerprint = ? ORDER BY timestamp DESC LIMIT 1",
                 (fingerprint,),
             ).fetchone()
             if not res:

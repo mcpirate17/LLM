@@ -52,7 +52,7 @@ def main() -> None:
                pr.induction_intermediate_auc,
                pr.binding_intermediate_auc
         FROM leaderboard l
-        LEFT JOIN program_results pr ON l.result_id = pr.result_id
+        LEFT JOIN program_results_compat pr ON l.result_id = pr.result_id
         WHERE l.tier IN ({ph})
         """,
         tiers,

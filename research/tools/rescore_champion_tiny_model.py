@@ -240,7 +240,7 @@ def _fetch_metric_rows(
     columns = _select_existing_columns(conn)
     placeholders = ",".join("?" for _ in result_ids)
     rows = conn.execute(
-        f"SELECT {', '.join(columns)} FROM program_results WHERE result_id IN ({placeholders})",
+        f"SELECT {', '.join(columns)} FROM program_results_compat WHERE result_id IN ({placeholders})",
         result_ids,
     ).fetchall()
     return {str(row["result_id"]): dict(row) for row in rows}

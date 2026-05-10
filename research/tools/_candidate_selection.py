@@ -34,7 +34,7 @@ def fetch_latest_unique_fingerprint_rows(
     query = f"""
         SELECT
             {select_sql}
-        FROM program_results pr
+        FROM program_results_compat pr
         JOIN experiments e ON e.experiment_id = pr.experiment_id
         {leaderboard_join}
         WHERE TRIM(COALESCE(pr.graph_json, '')) <> ''

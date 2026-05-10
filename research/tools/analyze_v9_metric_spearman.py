@@ -99,7 +99,7 @@ def main() -> None:
         "SELECT pr.graph_fingerprint, "
         f"       {metric_cols}, "
         f"       {label_cols} "
-        "FROM program_results pr "
+        "FROM program_results_compat pr "
         "LEFT JOIN leaderboard l ON l.result_id = pr.result_id "
         "WHERE pr.fp_jacobian_erf_density IS NOT NULL "
         "  AND pr.graph_json IS NOT NULL "

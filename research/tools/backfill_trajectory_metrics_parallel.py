@@ -380,7 +380,7 @@ def _candidate_tasks(
         )
     if require_missing_id_collapse:
         extra_clauses.append(
-            "NOT EXISTS (SELECT 1 FROM program_results pr_id "
+            "NOT EXISTS (SELECT 1 FROM program_results_compat pr_id "
             "WHERE pr_id.graph_fingerprint = pr.graph_fingerprint "
             "  AND pr_id.fp_id_collapse_rate IS NOT NULL)"
         )
@@ -396,13 +396,13 @@ def _candidate_tasks(
         "       MAX(timestamp) AS ts, "
         "       MAX(COALESCE(graph_n_ops, 0)) AS n_ops, "
         "       MAX(COALESCE(graph_depth, 0)) AS depth, "
-        "       (SELECT graph_json FROM program_results pr2 "
+        "       (SELECT graph_json FROM program_results_compat pr2 "
         "         WHERE pr2.graph_fingerprint = pr.graph_fingerprint "
         "           AND pr2.graph_json IS NOT NULL "
         "           AND length(pr2.graph_json) > 10 "
         "         ORDER BY length(pr2.graph_json) DESC, "
         "                  pr2.timestamp DESC LIMIT 1) AS graph_json "
-        "FROM program_results pr "
+        "FROM program_results_compat pr "
         "WHERE graph_json IS NOT NULL AND length(graph_json) > 10 "
         "  AND graph_fingerprint IS NOT NULL "
         f"  AND ({filter_clause}) "

@@ -382,7 +382,7 @@ def run_smoke(
     print()
     for result_id, label, run_inv, run_val in targets:
         record = conn.execute(
-            "SELECT graph_json FROM program_results WHERE result_id = ? "
+            "SELECT graph_json FROM program_results_compat WHERE result_id = ? "
             "AND graph_json IS NOT NULL AND length(graph_json) > 0",
             (result_id,),
         ).fetchone()

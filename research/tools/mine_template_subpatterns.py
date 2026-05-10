@@ -76,7 +76,7 @@ def fetch_cohort() -> list[dict]:
                pr.language_control_s05_sentence_assoc_score AS sa,
                pr.failure_op,
                pr.graph_json
-        FROM program_results pr
+        FROM program_results_compat pr
         LEFT JOIN leaderboard l ON l.result_id = pr.result_id
         WHERE pr.language_control_s05_sentence_assoc_score IS NOT NULL
           AND COALESCE(l.is_reference, 0) = 0

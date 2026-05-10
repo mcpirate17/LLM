@@ -305,8 +305,8 @@ def _fetch_rows(
                cp.ar_legacy_auc AS child_ar
         FROM causal_rule_evidence ev
         JOIN causal_ablation_child_observations obs ON obs.evidence_id = ev.evidence_id
-        JOIN program_results pp ON pp.result_id = obs.parent_result_id
-        JOIN program_results cp ON cp.result_id = obs.child_result_id
+        JOIN program_results_compat pp ON pp.result_id = obs.parent_result_id
+        JOIN program_results_compat cp ON cp.result_id = obs.child_result_id
         WHERE ev.parent_result_id IN ({placeholders})
           AND ev.timestamp > strftime('%s', 'now') - ?
         ORDER BY ev.timestamp ASC, ev.evidence_id ASC
@@ -320,7 +320,7 @@ def _default_parent_ids(conn: sqlite3.Connection, lookback_hours: int) -> list[s
         """
         SELECT DISTINCT ev.parent_result_id, pp.induction_screening_auc
         FROM causal_rule_evidence ev
-        JOIN program_results pp ON pp.result_id = ev.parent_result_id
+        JOIN program_results_compat pp ON pp.result_id = ev.parent_result_id
         WHERE ev.timestamp > strftime('%s', 'now') - ?
           AND pp.induction_screening_auc IS NOT NULL
         ORDER BY pp.induction_screening_auc DESC

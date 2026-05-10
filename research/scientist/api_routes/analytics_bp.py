@@ -355,7 +355,7 @@ def _api_regression_vs_baseline(nb=None):
         """
         SELECT result_id, experiment_id, timestamp, loss_ratio,
                baseline_loss_ratio, throughput_tok_s, flops_per_token, novelty_score
-        FROM program_results
+        FROM program_results_compat
         WHERE stage1_passed = 1
           AND baseline_loss_ratio IS NOT NULL
           AND throughput_tok_s IS NOT NULL

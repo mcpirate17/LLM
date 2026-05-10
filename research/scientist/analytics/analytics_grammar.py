@@ -163,7 +163,7 @@ class _GrammarMixin:
         cursor = self.nb.conn.execute(
             """SELECT result_id, graph_fingerprint, graph_json, stage1_passed,
                       novelty_score, novelty_confidence
-               FROM program_results
+               FROM program_results_compat
                WHERE graph_json IS NOT NULL"""
         )
 
@@ -358,7 +358,7 @@ class _GrammarMixin:
         rows = self.nb.conn.execute("""
             SELECT result_id, loss_ratio, validation_loss_ratio,
                    graph_n_params_estimate, param_count
-            FROM program_results
+            FROM program_results_compat
             WHERE stage1_passed = 1
         """).fetchall()
 
@@ -727,7 +727,7 @@ class _GrammarMixin:
         """
         try:
             rows = self.nb.conn.execute(
-                """SELECT fp_hierarchy_fitness FROM program_results
+                """SELECT fp_hierarchy_fitness FROM program_results_compat
                    WHERE fp_hierarchy_fitness IS NOT NULL
                    ORDER BY timestamp DESC LIMIT ?""",
                 (lookback,),
@@ -759,7 +759,7 @@ class _GrammarMixin:
         return {
             "query": (
                 "SELECT result_id, graph_fingerprint, graph_json, stage1_passed, "
-                "novelty_score, novelty_confidence FROM program_results "
+                "novelty_score, novelty_confidence FROM program_results_compat "
                 "WHERE graph_json IS NOT NULL"
             ),
             "params": [],
@@ -795,7 +795,7 @@ class _GrammarMixin:
             f"""
             SELECT COUNT(*) as total,
                    SUM(CASE WHEN stage1_passed = 1 THEN 1 ELSE 0 END) as s1_passed
-            FROM program_results
+            FROM program_results_compat
             WHERE experiment_id IN ({placeholders})
         """,
             tuple(holdout_ids),
@@ -818,7 +818,7 @@ class _GrammarMixin:
         """
         try:
             count_row = self.nb.conn.execute(
-                "SELECT COUNT(*) FROM program_results "
+                "SELECT COUNT(*) FROM program_results_compat "
                 "WHERE fp_jacobian_spectral_norm IS NOT NULL"
             ).fetchone()
             if int(count_row[0] or 0) < 10:
@@ -828,7 +828,7 @@ class _GrammarMixin:
 
         cursor = self.nb.conn.execute("""
             SELECT graph_json, fp_jacobian_spectral_norm
-            FROM program_results
+            FROM program_results_compat
             WHERE fp_jacobian_spectral_norm IS NOT NULL
         """)
 
@@ -894,7 +894,7 @@ class _GrammarMixin:
         try:
             rows = self.nb.conn.execute(
                 """SELECT pr.graph_fingerprint, pr.graph_json
-                   FROM program_results pr
+                   FROM program_results_compat pr
                    WHERE pr.graph_json IS NOT NULL
                      AND pr.graph_fingerprint IS NOT NULL
                    ORDER BY pr.timestamp DESC LIMIT 500"""

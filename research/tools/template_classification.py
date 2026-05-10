@@ -75,7 +75,7 @@ def load_per_template_signals() -> dict[str, dict[str, Any]]:
         """
         SELECT pgf.template_name, pr.language_control_s05_sentence_assoc_score, pr.failure_op,
                pr.graph_json
-        FROM program_results pr
+        FROM program_results_compat pr
         LEFT JOIN leaderboard l ON l.result_id = pr.result_id
         LEFT JOIN program_graph_features pgf ON pgf.result_id = pr.result_id
         WHERE pr.language_control_s05_sentence_assoc_score IS NOT NULL

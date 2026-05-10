@@ -256,7 +256,7 @@ def query_fingerprint_file_candidates(
                    l.entry_id, l.tier, l.composite_score, l.is_reference,
                    l.model_source,
                    pr.{null_column} AS probe_val
-            FROM program_results pr
+            FROM program_results_compat pr
             LEFT JOIN leaderboard l ON pr.result_id = l.result_id
             WHERE pr.result_id IN ({placeholders})
             """
@@ -266,7 +266,7 @@ def query_fingerprint_file_candidates(
                    l.entry_id, l.tier, l.composite_score, l.is_reference,
                    l.model_source,
                    NULL AS probe_val
-            FROM program_results pr
+            FROM program_results_compat pr
             LEFT JOIN leaderboard l ON pr.result_id = l.result_id
             WHERE pr.result_id IN ({placeholders})
             """,
@@ -350,7 +350,7 @@ def query_signal_candidates(
                     + MAX(COALESCE(pr.hellaswag_acc, 0) - 0.25, 0) * 2.0
                     + MAX(COALESCE(pr.blimp_overall_accuracy, 0) - 0.50, 0) * 1.5
                 ) AS signal_strength
-            FROM program_results pr
+            FROM program_results_compat pr
             LEFT JOIN leaderboard l ON pr.result_id = l.result_id
             WHERE {where}
               AND pr.graph_fingerprint IS NOT NULL
@@ -453,7 +453,7 @@ def query_candidates(
                     ORDER BY l.composite_score DESC, l.result_id
                 ) - 1 AS tier_idx
             FROM leaderboard l
-            LEFT JOIN program_results pr ON l.result_id = pr.result_id
+            LEFT JOIN program_results_compat pr ON l.result_id = pr.result_id
             WHERE {where}
         ),
         sharded AS (
@@ -778,7 +778,7 @@ def store_probe_results(
         )
         if provenance_context and "data_provenance_json" in pr_cols:
             row = nb.conn.execute(
-                "SELECT data_provenance_json FROM program_results WHERE result_id = ?",
+                "SELECT data_provenance_json FROM program_results_compat WHERE result_id = ?",
                 (result_id,),
             ).fetchone()
             raw_payload = row["data_provenance_json"] if row else None
@@ -800,7 +800,7 @@ def store_probe_results(
                 (json.dumps(payload, sort_keys=True, separators=(",", ":")), result_id),
             )
         fp_row = nb.conn.execute(
-            "SELECT graph_fingerprint FROM program_results WHERE result_id = ?",
+            "SELECT graph_fingerprint FROM program_results_compat WHERE result_id = ?",
             (result_id,),
         ).fetchone()
         nb.upsert_induction_metric_v2(
@@ -887,7 +887,7 @@ def _seed_fingerprint_cache(
     sql = (
         f"SELECT pr.graph_fingerprint, "
         f"{', '.join('pr.' + c for c in present_cols)} "
-        f"FROM program_results pr "
+        f"FROM program_results_compat pr "
         f"WHERE pr.graph_fingerprint IS NOT NULL "
         f"AND pr.graph_fingerprint != '' AND ({or_clause})"
     )
@@ -927,7 +927,7 @@ def _prefetch_probe_state(
     placeholders = ",".join("?" for _ in result_ids)
     select_cols = ", ".join(sorted(columns))
     rows = nb.conn.execute(
-        f"SELECT result_id, {select_cols} FROM program_results "
+        f"SELECT result_id, {select_cols} FROM program_results_compat "
         f"WHERE result_id IN ({placeholders})",
         tuple(result_ids),
     ).fetchall()

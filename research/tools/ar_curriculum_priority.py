@@ -60,7 +60,7 @@ def _load_template_means(trends_json: Path) -> dict[str, float]:
 
 def _load_done_fingerprints(conn: sqlite3.Connection) -> set[str]:
     rows = conn.execute(
-        "SELECT graph_fingerprint FROM program_results "
+        "SELECT graph_fingerprint FROM program_results_compat "
         "WHERE ar_curriculum_auc_pair_final IS NOT NULL"
     ).fetchall()
     return {str(r[0]) for r in rows if r[0]}
@@ -80,7 +80,7 @@ def _fetch_remaining(
             l.composite_score,
             json_extract(pr.graph_json, '$.metadata.templates_used') AS templates_used,
             {feature_cols}
-        FROM program_results pr
+        FROM program_results_compat pr
         JOIN leaderboard l ON l.result_id = pr.result_id
         WHERE pr.ar_curriculum_auc_pair_final IS NULL
           AND l.tier IN ({placeholders})

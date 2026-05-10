@@ -43,7 +43,7 @@ def _fetch_rows(
                pr.language_control_s10_binding_score AS old_s10_nb,
                pr.language_control_s10_binding_order_acc AS old_s10_order
         FROM leaderboard l
-        JOIN program_results pr ON pr.result_id = l.result_id
+        JOIN program_results_compat pr ON pr.result_id = l.result_id
         WHERE pr.language_control_s10_binding_score IS NOT NULL
           AND COALESCE(l.is_reference, 0) = 0
           {tier_clause}

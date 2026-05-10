@@ -133,7 +133,7 @@ def _load_rows(db: Path) -> list[dict[str, Any]]:
                    pr.language_control_investigation_sentence_assoc_score,
                    pgf.template_name
             FROM leaderboard l
-            JOIN program_results pr ON pr.result_id = l.result_id
+            JOIN program_results_compat pr ON pr.result_id = l.result_id
             LEFT JOIN program_graph_features pgf ON pgf.result_id = l.result_id
             WHERE pr.wikitext_perplexity IS NOT NULL
                OR pr.wikitext_score IS NOT NULL

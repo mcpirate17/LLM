@@ -113,7 +113,7 @@ def count_discovery_tiers(nb: LabNotebook) -> dict:
             counts["failed"] += 1
 
     total_s1 = nb.conn.execute(
-        "SELECT COUNT(*) AS cnt FROM program_results WHERE stage1_passed = 1"
+        "SELECT COUNT(*) AS cnt FROM program_results_compat WHERE stage1_passed = 1"
     ).fetchone()
     counts["total_survivors"] = total_s1["cnt"] if total_s1 else 0
     _tier_cache[cache_key] = counts
@@ -188,7 +188,7 @@ def compute_cross_run_stability(nb: LabNotebook, top_programs: Any) -> dict:
                     PARTITION BY experiment_id, graph_fingerprint
                     ORDER BY loss_ratio ASC, timestamp DESC
                 ) AS fingerprint_rank
-            FROM program_results
+            FROM program_results_compat
             WHERE stage1_passed = 1
               AND loss_ratio IS NOT NULL
               AND experiment_id IN ({placeholders})
@@ -1133,7 +1133,7 @@ def program_lineage_chain(nb: LabNotebook, result_id: str) -> List[Dict[str, Any
         row = nb.conn.execute(
             """SELECT result_id, experiment_id, graph_fingerprint,
                       graph_json, loss_ratio, stage1_passed, timestamp
-               FROM program_results WHERE result_id = ?""",
+               FROM program_results_compat WHERE result_id = ?""",
             (current_id,),
         ).fetchone()
         if not row:
@@ -1232,7 +1232,7 @@ def compute_sparse_evidence(nb: LabNotebook) -> Dict[str, Any]:
                           THEN sparsity_density_mean END) as avg_density,
                       AVG(CASE WHEN sparsity_nm_compliance IS NOT NULL
                           THEN sparsity_nm_compliance END) as avg_nm
-               FROM program_results
+               FROM program_results_compat
                WHERE sparsity_density_mean IS NOT NULL"""
         ).fetchone()
         if rows and rows["n"] > 0:

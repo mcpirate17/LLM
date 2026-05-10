@@ -15,7 +15,7 @@ def trusted_screening_candidates(
 ) -> List[Dict[str, Any]]:
     if experiment_id:
         rows = nb.conn.execute(
-            f"""SELECT * FROM program_results
+            f"""SELECT * FROM program_results_compat
                 WHERE experiment_id = ?
                   AND stage1_passed = 1
                   AND {sql_trusted_clause()}
@@ -30,7 +30,7 @@ def trusted_screening_candidates(
 def trusted_global_screening_candidates(nb, *, limit: int) -> List[Dict[str, Any]]:
     rows = nb.conn.execute(
         f"""SELECT pr.* FROM leaderboard l
-            JOIN program_results pr ON l.result_id = pr.result_id
+            JOIN program_results_compat pr ON l.result_id = pr.result_id
             WHERE l.tier = 'screening'
               AND l.screening_passed = 1
               AND COALESCE(l.is_reference, 0) = 0
@@ -64,7 +64,7 @@ def novelty_metadata(nb, result_ids: Iterable[str]) -> Dict[str, Dict[str, Any]]
     rows = nb.conn.execute(
         f"""SELECT result_id, novelty_valid_for_promotion, novelty_validity_reason,
                    cka_source, fingerprint_json
-            FROM program_results
+            FROM program_results_compat
             WHERE result_id IN ({placeholders})""",
         tuple(ids),
     ).fetchall()
@@ -125,7 +125,7 @@ def investigation_support_data(
     }
     understanding_rows = nb.conn.execute(
         f"""SELECT result_id, ar_legacy_auc, induction_screening_auc, binding_screening_auc, diagnostic_score, hellaswag_acc
-            FROM program_results WHERE result_id IN ({placeholders})""",
+            FROM program_results_compat WHERE result_id IN ({placeholders})""",
         tuple(ids),
     ).fetchall()
     understanding = {
@@ -147,7 +147,7 @@ def graph_meta_by_result_id(nb, result_ids: Iterable[str]) -> Dict[str, Dict[str
         return {}
     placeholders = ",".join("?" for _ in ids)
     rows = nb.conn.execute(
-        f"SELECT result_id, graph_json, routing_mode FROM program_results WHERE result_id IN ({placeholders})",
+        f"SELECT result_id, graph_json, routing_mode FROM program_results_compat WHERE result_id IN ({placeholders})",
         tuple(ids),
     ).fetchall()
     out = {}

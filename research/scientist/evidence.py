@@ -253,7 +253,7 @@ def build_evidence_pack(
         row = nb.conn.execute(
             f"""SELECT COUNT(*) as total,
                        SUM(CASE WHEN stage1_passed = 1 THEN 1 ELSE 0 END) as s1
-                FROM program_results WHERE experiment_id IN ({ph})""",
+                FROM program_results_compat WHERE experiment_id IN ({ph})""",
             tuple(ids),
         ).fetchone()
         total = float(row["total"] or 0)
@@ -265,7 +265,7 @@ def build_evidence_pack(
         nb,
         """SELECT SUM(CASE WHEN stage1_passed = 1 THEN 1 ELSE 0 END) * 1.0
                   / MAX(COUNT(*), 1)
-           FROM program_results""",
+           FROM program_results_compat""",
     )
 
     recent_best_loss = _safe_float(latest.get("best_loss_ratio"))
@@ -292,7 +292,7 @@ def build_evidence_pack(
     if latest_id:
         row = nb.conn.execute(
             """SELECT cka_source, cka_artifact_version, fingerprint_json
-               FROM program_results
+               FROM program_results_compat
                WHERE experiment_id = ? AND novelty_score IS NOT NULL
                ORDER BY novelty_score DESC LIMIT 1""",
             (latest_id,),
@@ -352,9 +352,9 @@ def build_evidence_pack(
         "sample_size_experiments": len(exp_ids),
         "sample_size_programs": _query_scalar(
             nb,
-            f"SELECT COUNT(*) FROM program_results WHERE experiment_id IN ({placeholders})"
+            f"SELECT COUNT(*) FROM program_results_compat WHERE experiment_id IN ({placeholders})"
             if placeholders
-            else "SELECT COUNT(*) FROM program_results",
+            else "SELECT COUNT(*) FROM program_results_compat",
             tuple(exp_ids) if exp_ids else None,
         )
         or 0,
@@ -402,7 +402,7 @@ def build_evidence_pack(
         novelty_reference=novelty_reference,
         audit_queries=[
             {
-                "query": "SELECT * FROM program_results WHERE experiment_id = ?",
+                "query": "SELECT * FROM program_results_compat WHERE experiment_id = ?",
                 "params": [latest_id] if latest_id else [],
             },
         ],

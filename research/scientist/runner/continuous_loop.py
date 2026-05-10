@@ -457,7 +457,7 @@ class _ContinuousLoopMixin:
             if conn is not None:
                 try:
                     row = conn.execute(
-                        "SELECT AVG(novelty_score) as avg_nov FROM program_results "
+                        "SELECT AVG(novelty_score) as avg_nov FROM program_results_compat "
                         "WHERE novelty_score IS NOT NULL AND stage1_passed = 1"
                     ).fetchone()
                     if row and row["avg_nov"] is not None:
@@ -478,7 +478,7 @@ class _ContinuousLoopMixin:
         try:
             rows = conn.execute(
                 "SELECT DISTINCT pr.graph_fingerprint "
-                "FROM program_results pr "
+                "FROM program_results_compat pr "
                 "JOIN experiments e ON e.experiment_id = pr.experiment_id "
                 "WHERE e.experiment_type = 'investigation'"
             ).fetchall()
@@ -519,7 +519,7 @@ class _ContinuousLoopMixin:
         for row in ready_rows:
             try:
                 fp_row = conn.execute(
-                    "SELECT graph_fingerprint FROM program_results WHERE result_id = ?",
+                    "SELECT graph_fingerprint FROM program_results_compat WHERE result_id = ?",
                     (row["result_id"],),
                 ).fetchone()
             except (sqlite3.OperationalError, RuntimeError) as e:
@@ -584,7 +584,7 @@ class _ContinuousLoopMixin:
         try:
             rows = conn.execute(
                 "SELECT optimizer_name, COUNT(*) as cnt "
-                "FROM program_results WHERE optimizer_name IS NOT NULL "
+                "FROM program_results_compat WHERE optimizer_name IS NOT NULL "
                 "GROUP BY optimizer_name"
             ).fetchall()
             for row in rows:

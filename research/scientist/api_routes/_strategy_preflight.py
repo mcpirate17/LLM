@@ -56,7 +56,7 @@ def resolve_scale_up_result_ids(
             """
             SELECT result_id, graph_fingerprint, experiment_id, stage1_passed,
                    loss_ratio, timestamp
-            FROM program_results
+            FROM program_results_compat
             WHERE graph_fingerprint LIKE ?
             ORDER BY stage1_passed DESC,
                      (loss_ratio IS NULL) ASC,
@@ -178,7 +178,7 @@ def resolve_confirmed_candidate_result_id(
     ).strip()
     if not graph_fingerprint:
         row = nb.conn.execute(
-            "SELECT graph_fingerprint FROM program_results WHERE result_id = ?",
+            "SELECT graph_fingerprint FROM program_results_compat WHERE result_id = ?",
             (result_id,),
         ).fetchone()
         graph_fingerprint = str((row or {}).get("graph_fingerprint") or "").strip()
@@ -188,7 +188,7 @@ def resolve_confirmed_candidate_result_id(
     row = nb.conn.execute(
         """
         SELECT pr.result_id
-        FROM program_results pr
+        FROM program_results_compat pr
         LEFT JOIN leaderboard lb ON lb.result_id = pr.result_id
         WHERE pr.graph_fingerprint = ?
           AND pr.result_id != ?
@@ -384,7 +384,7 @@ def _fetch_start_mode_rows(nb: LabNotebook, result_ids: List[str]):
                depth_savings_ratio, compression_ratio, wikitext_perplexity,
                wikitext_score, result_cohort, trust_label, comparability_label,
                data_provenance_json
-        FROM program_results
+        FROM program_results_compat
         WHERE result_id IN ({placeholders})
         """,
         tuple(result_ids),

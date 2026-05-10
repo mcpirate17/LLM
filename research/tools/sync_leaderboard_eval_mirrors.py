@@ -101,7 +101,7 @@ def main() -> None:
             "SELECT lb.entry_id, lb.result_id, "
             + ", ".join(f"lb.{c} AS lb_{c}, pr.{c} AS pr_{c}" for c in copy_cols)
             + " FROM leaderboard lb "
-            + "JOIN program_results pr ON pr.result_id = lb.result_id "
+            + "JOIN program_results_compat pr ON pr.result_id = lb.result_id "
             + "WHERE pr.screening_wikitext_metric_version = ? "
             + "ORDER BY lb.composite_score DESC"
         )

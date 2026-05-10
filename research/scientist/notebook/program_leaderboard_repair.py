@@ -88,8 +88,8 @@ class _ProgramLeaderboardRepairMixin:
                    l.architecture_desc AS graph_fingerprint,
                    pr.result_id AS canonical_result_id
             FROM leaderboard l
-            LEFT JOIN program_results pr0 ON pr0.result_id = l.result_id
-            JOIN program_results pr ON pr.graph_fingerprint = l.architecture_desc
+            LEFT JOIN program_results_compat pr0 ON pr0.result_id = l.result_id
+            JOIN program_results_compat pr ON pr.graph_fingerprint = l.architecture_desc
             WHERE pr0.result_id IS NULL
               AND l.architecture_desc IS NOT NULL
               AND TRIM(l.architecture_desc) != ''

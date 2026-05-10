@@ -55,7 +55,7 @@ def fetch_candidates(
                l.graph_fingerprint AS graph_fingerprint,
                p.graph_json   AS graph_json
           FROM leaderboard l
-          JOIN program_results p ON p.result_id = l.result_id
+          JOIN program_results_compat p ON p.result_id = l.result_id
          WHERE p.graph_json IS NOT NULL
            AND p.graph_json != ''
            AND p.graph_json != '{}'

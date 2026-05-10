@@ -124,7 +124,7 @@ def fetch_candidates(
         sql = (
             select_prefix
             + """
-            FROM program_results pr
+            FROM program_results_compat pr
             JOIN experiments e ON e.experiment_id = pr.experiment_id
             WHERE pr.stage0_passed = 1
               AND pr.stage05_passed = 1

@@ -67,7 +67,7 @@ def _candidate_rows(conn) -> List[Any]:
     return conn.execute(
         """
         SELECT pr.*
-        FROM program_results pr
+        FROM program_results_compat pr
         LEFT JOIN leaderboard l ON pr.result_id = l.result_id
         WHERE l.entry_id IS NULL
           AND pr.stage1_passed = 1

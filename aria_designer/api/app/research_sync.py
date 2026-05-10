@@ -120,7 +120,7 @@ def _insert_into_notebook(
     param_count: Optional[int],
 ) -> Optional[Dict[str, Any]]:
     existing = nb.conn.execute(
-        "SELECT result_id FROM program_results WHERE graph_fingerprint = ? "
+        "SELECT result_id FROM program_results_compat WHERE graph_fingerprint = ? "
         "ORDER BY timestamp DESC LIMIT 1",
         (fingerprint,),
     ).fetchone()

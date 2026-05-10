@@ -80,7 +80,7 @@ def resolve_reference_parent_fingerprint(
         """
         SELECT COALESCE(NULLIF(l.graph_fingerprint, ''), pr.graph_fingerprint) AS fp
         FROM leaderboard l
-        LEFT JOIN program_results pr ON pr.result_id = l.result_id
+        LEFT JOIN program_results_compat pr ON pr.result_id = l.result_id
         WHERE COALESCE(l.is_reference, 0) = 1
           AND COALESCE(l.model_source, '') != 'reference_calibration'
           AND (

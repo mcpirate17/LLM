@@ -383,7 +383,7 @@ def _fetch_rows(
             pr.data_provenance_json,
             e.config_json,
             e.timestamp
-        FROM program_results pr
+        FROM program_results_compat pr
         JOIN experiments e ON e.experiment_id = pr.experiment_id
         WHERE TRIM(COALESCE(pr.graph_json, '')) <> ''
           AND pr.graph_json <> '{}'

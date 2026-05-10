@@ -302,7 +302,7 @@ class RefinementAnalyzer:
         # Fetch S1 survivor stats from recent experiments
         try:
             rows = self.nb.conn.execute(
-                """SELECT {} FROM program_results
+                """SELECT {} FROM program_results_compat
                    WHERE stage1_passed = 1""".format(", ".join(self._FP_METRICS))
             ).fetchall()
         except (sqlite3.OperationalError, KeyError, TypeError):

@@ -53,7 +53,7 @@ def _select_targets(
                    pr.diagnostic_score,
                    pgf.template_name
             FROM leaderboard l
-            JOIN program_results pr ON pr.result_id = l.result_id
+            JOIN program_results_compat pr ON pr.result_id = l.result_id
             LEFT JOIN program_graph_features pgf ON pgf.result_id = l.result_id
             WHERE l.composite_score IS NOT NULL
               AND TRIM(COALESCE(pr.graph_json, '')) <> ''

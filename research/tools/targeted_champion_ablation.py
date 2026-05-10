@@ -49,7 +49,7 @@ def top_champions(limit: int) -> list[dict]:
                    l.tier,
                    pr.loss_ratio
             FROM leaderboard l
-            JOIN program_results pr ON pr.result_id = l.result_id
+            JOIN program_results_compat pr ON pr.result_id = l.result_id
             WHERE COALESCE(l.is_reference, 0) = 0
               AND l.result_id NOT LIKE 'ref_%'
               AND pr.graph_json IS NOT NULL

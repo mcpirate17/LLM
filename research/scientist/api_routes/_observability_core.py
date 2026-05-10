@@ -135,7 +135,7 @@ def _load_program_rows(
     query = (
         "SELECT graph_json, stage0_passed, stage1_passed, loss_ratio, "
         "error_type, failure_op, failure_details_json "
-        "FROM program_results "
+        "FROM program_results_compat "
         "WHERE graph_json IS NOT NULL AND length(graph_json) > 0"
     )
     params: tuple[Any, ...] = ()
@@ -215,7 +215,7 @@ def get_throughput(notebook_path: str) -> Dict[str, Any]:
                 "SELECT COUNT(*) as total, "
                 "SUM(CASE WHEN stage0_passed = 1 THEN 1 ELSE 0 END) as s0, "
                 "SUM(CASE WHEN stage1_passed = 1 THEN 1 ELSE 0 END) as s1 "
-                "FROM program_results WHERE timestamp > ?",
+                "FROM program_results_compat WHERE timestamp > ?",
                 (cutoff,),
             ).fetchone()
             result[label] = {
@@ -884,7 +884,7 @@ def _append_routing_collapse_alert(
     try:
         row = nb.conn.execute(
             "SELECT AVG(CAST(json_extract(starvation_report_json, '$.collapse_score') AS REAL)) as avg_collapse "
-            "FROM program_results "
+            "FROM program_results_compat "
             "WHERE starvation_report_json IS NOT NULL AND timestamp > ?",
             (now - 7200,),
         ).fetchone()
@@ -946,7 +946,7 @@ def _append_stale_pipeline_alert(
     nb = get_notebook(notebook_path, read_only=True)
     try:
         row = nb.conn.execute(
-            "SELECT MAX(timestamp) as last_ts FROM program_results"
+            "SELECT MAX(timestamp) as last_ts FROM program_results_compat"
         ).fetchone()
     except sqlite3.OperationalError:
         logger.debug("Stale pipeline alert evaluation failed", exc_info=True)
@@ -983,7 +983,7 @@ def evaluate_alerts(
         query=(
             "SELECT COUNT(*) as total, "
             "SUM(CASE WHEN stage0_passed = 1 THEN 1 ELSE 0 END) as passed "
-            "FROM program_results WHERE timestamp > ?"
+            "FROM program_results_compat WHERE timestamp > ?"
         ),
         params=(now - 3600,),
         min_total=10,
@@ -1000,7 +1000,7 @@ def evaluate_alerts(
         query=(
             "SELECT COUNT(*) as total, "
             "SUM(CASE WHEN stage1_passed = 1 THEN 1 ELSE 0 END) as passed "
-            "FROM program_results WHERE stage0_passed = 1 AND timestamp > ?"
+            "FROM program_results_compat WHERE stage0_passed = 1 AND timestamp > ?"
         ),
         params=(now - 7200,),
         min_total=20,

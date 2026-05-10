@@ -574,7 +574,7 @@ def _append_diversity_sentences(
             sentences.append(f"Top-performing operators: {', '.join(top_ops)}.")
 
         failure_rows = nb.conn.execute(
-            "SELECT stage_at_death, COUNT(*) as cnt FROM program_results "
+            "SELECT stage_at_death, COUNT(*) as cnt FROM program_results_compat "
             "WHERE stage1_passed = 0 AND stage_at_death IS NOT NULL "
             "GROUP BY stage_at_death ORDER BY cnt DESC LIMIT 2"
         ).fetchall()

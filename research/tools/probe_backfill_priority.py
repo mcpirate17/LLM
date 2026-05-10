@@ -87,7 +87,7 @@ def _template_capability_prior(
                SUM(CASE WHEN l.induction_intermediate_auc IS NOT NULL
                         THEN 1 ELSE 0 END) AS v2_observed,
                SUM(CASE WHEN imv2.auc >= ? THEN 1 ELSE 0 END) AS v1_strong
-        FROM program_results pr
+        FROM program_results_compat pr
         LEFT JOIN leaderboard l ON l.result_id = pr.result_id
         LEFT JOIN program_graph_features pgf ON pgf.result_id = pr.result_id
         LEFT JOIN induction_metrics_v2 imv2 ON imv2.graph_fingerprint = pr.graph_fingerprint
@@ -149,7 +149,7 @@ def _load_candidates(
                         l.composite_score AS score,
                         l.induction_intermediate_auc AS iv2,
                         l.binding_intermediate_auc AS bv2
-        FROM program_results pr
+        FROM program_results_compat pr
         LEFT JOIN leaderboard l ON l.result_id = pr.result_id
         LEFT JOIN program_graph_features pgf ON pgf.result_id = pr.result_id
         WHERE {" AND ".join(clauses)}

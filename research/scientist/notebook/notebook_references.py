@@ -62,7 +62,7 @@ class _ReferencesMixin:
             raw_graph_json = graph_json
             if raw_graph_json is None:
                 row = self.conn.execute(
-                    "SELECT graph_json FROM program_results WHERE result_id = ?",
+                    "SELECT graph_json FROM program_results_compat WHERE result_id = ?",
                     (result_id,),
                 ).fetchone()
                 raw_graph_json = row[0] if row else None
@@ -264,7 +264,7 @@ class _ReferencesMixin:
             """SELECT pr.*, l.entry_id, l.tier, l.composite_score,
                       l.screening_loss_ratio, l.screening_novelty,
                       l.pre_inv_score, l.is_reference, l.reference_name
-               FROM program_results pr
+               FROM program_results_compat pr
                JOIN leaderboard l ON l.result_id = pr.result_id
                WHERE l.tier = 'screening'
                  AND COALESCE(l.is_reference, 0) = 0
@@ -320,7 +320,7 @@ class _ReferencesMixin:
                       pr.routing_mode AS _routing_mode,
                       pr.graph_fingerprint AS _graph_fingerprint
                FROM leaderboard l
-               LEFT JOIN program_results pr ON pr.result_id = l.result_id
+               LEFT JOIN program_results_compat pr ON pr.result_id = l.result_id
                WHERE COALESCE(l.is_reference, 0) = 1
                ORDER BY l.composite_score DESC NULLS LAST, l.reference_name ASC, l.timestamp DESC"""
         ).fetchall()

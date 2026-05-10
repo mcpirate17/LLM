@@ -266,8 +266,8 @@ class _ObservabilityMixin:
         signature_row = self.conn.execute(
             """
             SELECT
-                (SELECT COUNT(*) FROM program_results) AS pr_count,
-                (SELECT MAX(timestamp) FROM program_results) AS pr_max_ts,
+                (SELECT COUNT(*) FROM program_results_compat) AS pr_count,
+                (SELECT MAX(timestamp) FROM program_results_compat) AS pr_max_ts,
                 (SELECT COUNT(*) FROM program_graph_features) AS gf_count,
                 (SELECT MAX(rowid) FROM program_graph_features) AS gf_max_rowid
             """
@@ -392,7 +392,7 @@ class _ObservabilityMixin:
                 pr.routing_fast_lane_ppl_improvement,
                 pr.routing_fast_lane_slope,
                 pr.routing_fast_lane_slope_consistent
-            FROM program_results pr
+            FROM program_results_compat pr
             JOIN program_graph_features gf ON gf.result_id = pr.result_id
             LEFT JOIN leaderboard l ON l.result_id = pr.result_id
             """

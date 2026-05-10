@@ -66,7 +66,7 @@ def _fetch_source_rows(
     rows = conn.execute(
         f"""SELECT result_id, graph_json, graph_fingerprint, loss_ratio, stage1_passed,
                    stage05_passed, timestamp
-            FROM program_results
+            FROM program_results_compat
             WHERE result_id IN ({placeholders})
               AND TRIM(COALESCE(graph_json, '')) <> ''
               AND graph_json <> '{{}}'""",

@@ -338,7 +338,7 @@ def _fingerprint_leaderboard_rows(nb, graph_fingerprint: str) -> List[Dict[str, 
         """
         SELECT l.*
         FROM leaderboard l
-        JOIN program_results pr ON pr.result_id = l.result_id
+        JOIN program_results_compat pr ON pr.result_id = l.result_id
         WHERE pr.graph_fingerprint = ?
         """,
         (graph_fingerprint,),
@@ -357,7 +357,7 @@ def _fingerprint_program_rows(nb, graph_fingerprint: str) -> List[Dict[str, Any]
         f"""
         SELECT {", ".join(f"pr.{column}" for column in select_columns)},
                COALESCE(exp.experiment_type, '') AS experiment_type
-        FROM program_results pr
+        FROM program_results_compat pr
         LEFT JOIN experiments exp ON exp.experiment_id = pr.experiment_id
         WHERE pr.graph_fingerprint = ?
         """,
@@ -368,7 +368,7 @@ def _fingerprint_program_rows(nb, graph_fingerprint: str) -> List[Dict[str, Any]
 
 def sync_fingerprint_leaderboard(nb, result_id: str) -> None:
     fingerprint_row = nb.conn.execute(
-        "SELECT graph_fingerprint FROM program_results WHERE result_id = ?",
+        "SELECT graph_fingerprint FROM program_results_compat WHERE result_id = ?",
         (result_id,),
     ).fetchone()
     if not fingerprint_row or not fingerprint_row["graph_fingerprint"]:
@@ -515,10 +515,10 @@ def leaderboard_consistency_report(nb) -> Dict[str, Any]:
             EXISTS(
                 SELECT 1
                 FROM leaderboard l
-                JOIN program_results pr2 ON pr2.result_id = l.result_id
+                JOIN program_results_compat pr2 ON pr2.result_id = l.result_id
                 WHERE pr2.graph_fingerprint = p.graph_fingerprint
             ) AS has_fingerprint_leaderboard
-        FROM program_results p
+        FROM program_results_compat p
         LEFT JOIN experiments e ON e.experiment_id = p.experiment_id
         WHERE p.stage1_passed = 1
         """
@@ -568,7 +568,7 @@ def leaderboard_consistency_report(nb) -> Dict[str, Any]:
     missing_screening_rows = count_rows(
         f"""
         SELECT COUNT(*)
-        FROM program_results p
+        FROM program_results_compat p
         JOIN experiments e ON e.experiment_id = p.experiment_id
         WHERE p.stage1_passed = 1
           AND e.experiment_type IN ({screening_placeholders})
@@ -576,7 +576,7 @@ def leaderboard_consistency_report(nb) -> Dict[str, Any]:
           AND NOT EXISTS (
                 SELECT 1
                 FROM leaderboard l
-                JOIN program_results pr2 ON pr2.result_id = l.result_id
+                JOIN program_results_compat pr2 ON pr2.result_id = l.result_id
                 WHERE pr2.graph_fingerprint = p.graph_fingerprint
           )
         """,
@@ -588,7 +588,7 @@ def leaderboard_consistency_report(nb) -> Dict[str, Any]:
             """
             SELECT l.result_id
             FROM leaderboard l
-            LEFT JOIN program_results pr ON pr.result_id = l.result_id
+            LEFT JOIN program_results_compat pr ON pr.result_id = l.result_id
             WHERE pr.result_id IS NULL
             ORDER BY l.timestamp DESC
             LIMIT 20
@@ -598,7 +598,7 @@ def leaderboard_consistency_report(nb) -> Dict[str, Any]:
 
     return {
         "stage1_program_rows": count_rows(
-            "SELECT COUNT(*) FROM program_results WHERE stage1_passed = 1"
+            "SELECT COUNT(*) FROM program_results_compat WHERE stage1_passed = 1"
         ),
         "leaderboard_rows": count_rows("SELECT COUNT(*) FROM leaderboard"),
         "direct_stage1_leaderboard_rows": direct_covered,
@@ -610,7 +610,7 @@ def leaderboard_consistency_report(nb) -> Dict[str, Any]:
             """
             SELECT COUNT(*)
             FROM leaderboard l
-            LEFT JOIN program_results pr ON pr.result_id = l.result_id
+            LEFT JOIN program_results_compat pr ON pr.result_id = l.result_id
             WHERE pr.result_id IS NULL
             """
         ),
@@ -618,7 +618,7 @@ def leaderboard_consistency_report(nb) -> Dict[str, Any]:
             """
             SELECT COUNT(*)
             FROM leaderboard l
-            JOIN program_results pr ON pr.result_id = l.result_id
+            JOIN program_results_compat pr ON pr.result_id = l.result_id
             WHERE COALESCE(pr.stage1_passed, 0) != 1
             """
         ),

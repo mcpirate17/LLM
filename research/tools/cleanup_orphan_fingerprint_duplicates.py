@@ -297,7 +297,7 @@ def _fetch_eligible_groups(
         SELECT pr.*, e.experiment_type,
                CASE WHEN l.result_id IS NOT NULL THEN 1 ELSE 0 END AS has_leaderboard,
                l.tier AS leaderboard_tier
-        FROM program_results pr
+        FROM program_results_compat pr
         LEFT JOIN experiments e ON e.experiment_id = pr.experiment_id
         LEFT JOIN leaderboard l ON l.result_id = pr.result_id
         WHERE TRIM(COALESCE(pr.graph_fingerprint, '')) <> ''
@@ -308,7 +308,7 @@ def _fetch_eligible_groups(
           {where_fp}
           AND pr.graph_fingerprint IN (
             SELECT pr2.graph_fingerprint
-            FROM program_results pr2
+            FROM program_results_compat pr2
             LEFT JOIN experiments e2 ON e2.experiment_id = pr2.experiment_id
             LEFT JOIN leaderboard l2 ON l2.result_id = pr2.result_id
             WHERE TRIM(COALESCE(pr2.graph_fingerprint, '')) <> ''
@@ -338,7 +338,7 @@ def _orphan_backfill_relabel_candidates(
     return conn.execute(
         f"""
         SELECT pr.*
-        FROM program_results pr
+        FROM program_results_compat pr
         LEFT JOIN leaderboard l ON l.result_id = pr.result_id
         WHERE l.result_id IS NULL
           {where_fp}
@@ -579,7 +579,7 @@ def run(
                 if not dup_ids:
                     continue
                 keeper_row = write_conn.execute(
-                    "SELECT * FROM program_results WHERE result_id = ?",
+                    "SELECT * FROM program_results_compat WHERE result_id = ?",
                     (keeper_id,),
                 ).fetchone()
                 if keeper_row is None:
@@ -595,7 +595,7 @@ def run(
                 )
                 placeholders = ",".join("?" for _ in dup_ids)
                 dup_rows = write_conn.execute(
-                    f"SELECT * FROM program_results WHERE result_id IN ({placeholders})",
+                    f"SELECT * FROM program_results_compat WHERE result_id IN ({placeholders})",
                     tuple(dup_ids),
                 ).fetchall()
                 for dup_row in dup_rows:

@@ -64,7 +64,7 @@ def fetch_top_programs(
     sort_key = normalize_program_sort(sort_by, default="novelty_score")
     order = program_sort_order(sort_key)
     rows = nb.conn.execute(
-        f"""SELECT * FROM program_results
+        f"""SELECT * FROM program_results_compat
             WHERE stage1_passed = 1{trusted_program_filter(trusted_only)}
             ORDER BY {sort_key} {order} NULLS LAST
             LIMIT ?""",
@@ -85,7 +85,7 @@ def fetch_report_top_programs_grouped_by_fingerprint(
     trust_filter = trusted_program_filter(trusted_only)
     candidate_rows = nb.conn.execute(
         f"""
-        SELECT * FROM program_results
+        SELECT * FROM program_results_compat
         WHERE stage1_passed = 1
           AND graph_fingerprint IS NOT NULL
           AND TRIM(graph_fingerprint) != ''
@@ -129,7 +129,7 @@ def fetch_report_top_programs_grouped_by_fingerprint(
                 AVG(loss_ratio) AS repeat_loss_mean,
                 MIN(novelty_score) AS repeat_novelty_min,
                 MAX(novelty_score) AS repeat_novelty_max
-            FROM program_results
+            FROM program_results_compat
             WHERE stage1_passed = 1
               AND graph_fingerprint IN ({placeholders})
               {trust_filter}

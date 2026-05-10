@@ -49,7 +49,7 @@ def _load_rows(db: Path) -> list[dict[str, Any]]:
             SELECT pr.result_id, pr.wikitext_perplexity, pr.tinystories_score,
                    l.composite_score, l.tier, l.induction_intermediate_auc,
                    pgf.template_name, pgf.motifs_json, pgf.op_count
-            FROM program_results pr
+            FROM program_results_compat pr
             LEFT JOIN leaderboard l ON l.result_id = pr.result_id
             LEFT JOIN program_graph_features pgf ON pgf.result_id = pr.result_id
             WHERE pr.wikitext_perplexity IS NOT NULL

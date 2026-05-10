@@ -104,7 +104,7 @@ def fetch_cohort(args: argparse.Namespace) -> list[dict]:
         "SELECT pr.result_id, lb.tier, COALESCE(lb.composite_score, 0), "
         "       COALESCE(pr.wikitext_perplexity, 0), pr.graph_json, "
         "       pr.ar_gate_score "
-        "FROM program_results pr JOIN leaderboard lb ON lb.result_id = pr.result_id "
+        "FROM program_results_compat pr JOIN leaderboard lb ON lb.result_id = pr.result_id "
         "WHERE pr.graph_json IS NOT NULL"
     )
 

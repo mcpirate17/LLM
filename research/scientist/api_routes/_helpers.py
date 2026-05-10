@@ -149,7 +149,7 @@ def get_external_running_experiment_snapshot(
             e.n_stage1_passed,
             COALESCE((
                 SELECT MAX(pr.timestamp)
-                FROM program_results pr
+                FROM program_results_compat pr
                 WHERE pr.experiment_id = e.experiment_id
             ), 0) AS last_program_ts,
             COALESCE((
@@ -165,7 +165,7 @@ def get_external_running_experiment_snapshot(
             ), 0) AS last_entry_ts,
             COALESCE((
                 SELECT COUNT(*)
-                FROM program_results pr
+                FROM program_results_compat pr
                 WHERE pr.experiment_id = e.experiment_id
             ), 0) AS program_results_count
         FROM experiments e
@@ -408,7 +408,7 @@ def get_registry_running_experiment_snapshot(
             return None
         if producer.startswith("notebook."):
             result_count = nb.conn.execute(
-                "SELECT COUNT(*) FROM program_results WHERE experiment_id = ?",
+                "SELECT COUNT(*) FROM program_results_compat WHERE experiment_id = ?",
                 (run_id,),
             ).fetchone()[0]
             if int(result_count or 0) > 0:
@@ -538,7 +538,7 @@ def _fetch_projected_result_counts(nb: LabNotebook, experiment_id: str):
             COALESCE(SUM(CASE WHEN stage0_passed THEN 1 ELSE 0 END), 0) AS stage0_passed,
             COALESCE(SUM(CASE WHEN stage05_passed THEN 1 ELSE 0 END), 0) AS stage05_passed,
             COALESCE(SUM(CASE WHEN stage1_passed THEN 1 ELSE 0 END), 0) AS stage1_passed
-        FROM program_results
+        FROM program_results_compat
         WHERE experiment_id = ?
         """,
         (experiment_id,),

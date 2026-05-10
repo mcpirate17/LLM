@@ -556,7 +556,7 @@ class _DashboardOrchestratorMixin:
         available = nb._get_program_results_columns()
         assignments = [
             f"{column} = COALESCE({column}, "
-            f"(SELECT {column} FROM program_results WHERE result_id = ?))"
+            f"(SELECT {column} FROM program_results_compat WHERE result_id = ?))"
             for column in CANDIDATE_CONFIRMATION_EVIDENCE_COLUMNS
             if column in available
         ]
@@ -565,7 +565,7 @@ class _DashboardOrchestratorMixin:
             assignments.append(
                 "cka_source = CASE "
                 "WHEN cka_source IS NULL OR cka_source = 'deferred' "
-                "THEN (SELECT cka_source FROM program_results WHERE result_id = ?) "
+                "THEN (SELECT cka_source FROM program_results_compat WHERE result_id = ?) "
                 "ELSE cka_source END"
             )
             params.append(source_result_id)

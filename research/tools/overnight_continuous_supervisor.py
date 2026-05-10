@@ -341,7 +341,7 @@ class Supervisor:
                 row = conn.execute(
                     """
                     SELECT MAX(timestamp) AS latest_program_ts
-                    FROM program_results
+                    FROM program_results_compat
                     WHERE experiment_id = ?
                     """,
                     (exp_id,),
@@ -409,12 +409,12 @@ class Supervisor:
                     (
                         SELECT COUNT(*)
                         FROM leaderboard l
-                        LEFT JOIN program_results pr ON pr.result_id = l.result_id
+                        LEFT JOIN program_results_compat pr ON pr.result_id = l.result_id
                         WHERE pr.result_id IS NULL
                     ) AS orphan_leaderboard_rows,
                     (
                         SELECT COUNT(*)
-                        FROM program_results p
+                        FROM program_results_compat p
                         JOIN experiments e ON e.experiment_id = p.experiment_id
                         WHERE p.stage1_passed = 1
                           AND e.experiment_type IN ({promotable_sql})
@@ -422,11 +422,11 @@ class Supervisor:
                           AND NOT EXISTS (
                                 SELECT 1
                                 FROM leaderboard l
-                                JOIN program_results pr2 ON pr2.result_id = l.result_id
+                                JOIN program_results_compat pr2 ON pr2.result_id = l.result_id
                                 WHERE pr2.graph_fingerprint = p.graph_fingerprint
                           )
                     ) AS missing_screening_leaderboard_rows
-                FROM program_results pr
+                FROM program_results_compat pr
                 """
             ).fetchone()
             return {key: int(row[key] or 0) for key in row.keys()}
@@ -441,7 +441,7 @@ class Supervisor:
             rows = nb.conn.execute(
                 """
                 SELECT result_id, graph_fingerprint, fingerprint_json
-                FROM program_results
+                FROM program_results_compat
                 WHERE fingerprint_json IS NOT NULL
                   AND json_valid(fingerprint_json) = 1
                   AND (

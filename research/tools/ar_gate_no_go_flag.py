@@ -101,7 +101,7 @@ def fetch_candidates(args: argparse.Namespace) -> list[dict]:
                pr.ar_gate_score, pr.ar_gate_in_dist_pair_acc,
                pr.ar_gate_held_class_acc, pr.ar_gate_status,
                pr.failure_op
-        FROM program_results pr
+        FROM program_results_compat pr
         JOIN leaderboard lb ON lb.result_id = pr.result_id
         WHERE {where}
         ORDER BY pr.ar_gate_score ASC

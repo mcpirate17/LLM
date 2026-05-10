@@ -98,7 +98,7 @@ class _DashboardNBMixin:
                          THEN CAST(routing_tokens_processed AS REAL) / routing_tokens_total END) AS avg_routing_token_retention,
                 AVG(sparsity_ratio) AS avg_sparsity_ratio,
                 COUNT(DISTINCT graph_fingerprint) AS unique_fingerprints
-            FROM program_results
+            FROM program_results_compat
             """
         ).fetchone()
         insight_row = self.conn.execute(
@@ -279,8 +279,8 @@ class _DashboardNBMixin:
             signature_row = self.conn.execute(
                 """
                 SELECT
-                    (SELECT COUNT(*) FROM program_results) AS pr_count,
-                    (SELECT MAX(timestamp) FROM program_results) AS pr_max_ts,
+                    (SELECT COUNT(*) FROM program_results_compat) AS pr_count,
+                    (SELECT MAX(timestamp) FROM program_results_compat) AS pr_max_ts,
                     (SELECT COUNT(*) FROM training_curves) AS tc_count,
                     (SELECT MAX(rowid) FROM training_curves) AS tc_max_rowid,
                     (SELECT COUNT(*) FROM leaderboard) AS lb_count,
@@ -404,7 +404,7 @@ class _DashboardNBMixin:
                         AND COALESCE(comparability_label, '') IN ('screening_only', 'candidate_comparable', 'reference_comparable'))
                      )
                     THEN graph_fingerprint END) AS screening_model_eligible_graphs
-            FROM program_results
+            FROM program_results_compat
             """
         ).fetchone()
 
@@ -423,7 +423,7 @@ class _DashboardNBMixin:
                     MAX(COALESCE(stage0_passed, 0)) AS max_s0,
                     MAX(COALESCE(stage05_passed, 0)) AS max_s05,
                     MAX(COALESCE(stage1_passed, 0)) AS max_s1
-                FROM program_results
+                FROM program_results_compat
                 WHERE TRIM(COALESCE(graph_fingerprint, '')) <> ''
                 GROUP BY graph_fingerprint
             )

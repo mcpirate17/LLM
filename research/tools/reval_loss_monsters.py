@@ -46,7 +46,7 @@ def _fetch_row(
 ) -> Optional[Dict[str, Any]]:
     conn.row_factory = sqlite3.Row
     row = conn.execute(
-        "SELECT * FROM program_results WHERE result_id = ?", (result_id,)
+        "SELECT * FROM program_results_compat WHERE result_id = ?", (result_id,)
     ).fetchone()
     if not row:
         return None

@@ -208,7 +208,7 @@ class _ExperimentsMixin:
             WHERE e.status = 'running'
               AND e.started_at < ?
               AND NOT EXISTS (
-                SELECT 1 FROM program_results pr WHERE pr.experiment_id = e.experiment_id
+                SELECT 1 FROM program_results_compat pr WHERE pr.experiment_id = e.experiment_id
               )
               AND NOT EXISTS (
                 SELECT 1 FROM metrics_log ml WHERE ml.experiment_id = e.experiment_id
@@ -854,7 +854,7 @@ class _ExperimentsMixin:
                 (experiment_id,),
             ).fetchone()
             has_results = self.conn.execute(
-                "SELECT 1 FROM program_results WHERE experiment_id = ? LIMIT 1",
+                "SELECT 1 FROM program_results_compat WHERE experiment_id = ? LIMIT 1",
                 (experiment_id,),
             ).fetchone()
         except sqlite3.OperationalError as exc:
@@ -949,7 +949,7 @@ class _ExperimentsMixin:
 
         # Delete result-linked children before removing program_results.
         result_rows = self.conn.execute(
-            "SELECT result_id FROM program_results WHERE experiment_id = ?",
+            "SELECT result_id FROM program_results_compat WHERE experiment_id = ?",
             (experiment_id,),
         ).fetchall()
         result_ids = [str(r[0]) for r in result_rows if r[0]]
@@ -1009,7 +1009,7 @@ class _ExperimentsMixin:
             SELECT experiment_id FROM experiments
             WHERE status = 'failed'
             AND NOT EXISTS (
-                SELECT 1 FROM program_results p
+                SELECT 1 FROM program_results_compat p
                 WHERE p.experiment_id = experiments.experiment_id
             )
         """).fetchall()
@@ -1104,7 +1104,7 @@ class _ExperimentsMixin:
                     MAX(novelty_score) AS max_novelty_score,
                     AVG(throughput_tok_s) AS avg_throughput_tok_s,
                     COUNT(*) AS n_results
-               FROM program_results
+               FROM program_results_compat
                WHERE experiment_id = ?""",
             (experiment_id,),
         ).fetchone()
@@ -1282,7 +1282,7 @@ class _ExperimentsMixin:
                 placeholders = ",".join("?" for _ in exp_ids)
                 query = (
                     f"SELECT {', '.join(select_parts)} "
-                    f"FROM program_results WHERE experiment_id IN ({placeholders}) "
+                    f"FROM program_results_compat WHERE experiment_id IN ({placeholders}) "
                     f"GROUP BY experiment_id"
                 )
                 agg_rows = self.conn.execute(query, exp_ids).fetchall()

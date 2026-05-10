@@ -29,7 +29,7 @@ class _EntriesMixin:
         # Only store curves for results that passed S1 (survivors).
         # S1 failure learning signal is captured in loss_ratio, not per-step curves.
         row = self.conn.execute(
-            "SELECT stage1_passed FROM program_results WHERE result_id = ?",
+            "SELECT stage1_passed FROM program_results_compat WHERE result_id = ?",
             (result_id,),
         ).fetchone()
         if row is None or row[0] != 1:
@@ -192,7 +192,7 @@ class _EntriesMixin:
                 # Merge partial benchmark updates (for example, scaling-only writes)
                 # with any previously stored benchmark families (for example, long_context).
                 existing = self.conn.execute(
-                    "SELECT external_benchmarks_json FROM program_results WHERE result_id = ?",
+                    "SELECT external_benchmarks_json FROM program_results_compat WHERE result_id = ?",
                     (result_id,),
                 ).fetchone()
                 merged: Dict[str, Any] = {}

@@ -145,7 +145,7 @@ def _load_priority_candidates(nb, jsonl_path: Path, *, force: bool):
             COALESCE(l.is_reference, 0) AS is_reference,
             COALESCE(l.model_source, '') AS model_source,
             pr.graph_json, pr.graph_fingerprint
-        FROM program_results pr
+        FROM program_results_compat pr
         LEFT JOIN leaderboard l ON l.result_id = pr.result_id
         WHERE pr.result_id IN ({placeholders})
           AND pr.graph_json IS NOT NULL

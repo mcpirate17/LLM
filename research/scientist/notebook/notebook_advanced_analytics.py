@@ -384,7 +384,7 @@ class _AdvancedAnalyticsMixin:
     def _leaderboard_by_fingerprint(self) -> Dict[str, Dict[str, Any]]:
         rows = self.conn.execute(
             """SELECT pr.graph_fingerprint, pr.stage1_passed, l.composite_score
-               FROM program_results pr
+               FROM program_results_compat pr
                LEFT JOIN leaderboard l ON l.result_id = pr.result_id
                WHERE pr.graph_fingerprint IS NOT NULL"""
         ).fetchall()
@@ -408,22 +408,22 @@ class _AdvancedAnalyticsMixin:
         self.flush_writes()
         self._ensure_graph_features()
         survivor_row = self.conn.execute("""SELECT COUNT(*) AS n
-               FROM program_results
+               FROM program_results_compat
                WHERE stage1_passed = 1 AND loss_ratio IS NOT NULL""").fetchone()
         survivor_count = int(survivor_row["n"] or 0) if survivor_row else 0
         threshold = None
         if survivor_count >= 20:
-            threshold_row = self.conn.execute("""SELECT loss_ratio FROM program_results
+            threshold_row = self.conn.execute("""SELECT loss_ratio FROM program_results_compat
                    WHERE stage1_passed = 1 AND loss_ratio IS NOT NULL
                    ORDER BY loss_ratio ASC
                    LIMIT 1 OFFSET (
-                       SELECT MAX(0, COUNT(*) / 4 - 1) FROM program_results
+                       SELECT MAX(0, COUNT(*) / 4 - 1) FROM program_results_compat
                        WHERE stage1_passed = 1 AND loss_ratio IS NOT NULL
                    )""").fetchone()
             threshold = float(threshold_row["loss_ratio"]) if threshold_row else None
         rows = self.conn.execute("""SELECT gp.signature, pr.loss_ratio, l.tier
                FROM program_graph_pairs gp
-               JOIN program_results pr ON pr.result_id = gp.result_id
+               JOIN program_results_compat pr ON pr.result_id = gp.result_id
                LEFT JOIN leaderboard l ON l.result_id = pr.result_id
                WHERE pr.stage1_passed = 1""").fetchall()
         support: Dict[str, int] = defaultdict(int)
@@ -498,7 +498,7 @@ class _AdvancedAnalyticsMixin:
                 COUNT(DISTINCT pr.result_id) AS total,
                 COUNT(DISTINCT CASE WHEN pr.stage1_passed = 1 THEN pr.result_id END) AS successes
             FROM program_graph_ops go
-            JOIN program_results pr ON pr.result_id = go.result_id
+            JOIN program_results_compat pr ON pr.result_id = go.result_id
             WHERE go.op_name IN ({placeholders})
               AND (
                   pr.stage1_passed = 1
@@ -534,7 +534,7 @@ class _AdvancedAnalyticsMixin:
                 COALESCE(NULLIF(gf.template_name, ''), '') AS template_name,
                 COUNT(*) AS support
             FROM program_graph_pairs gp
-            JOIN program_results pr ON pr.result_id = gp.result_id
+            JOIN program_results_compat pr ON pr.result_id = gp.result_id
             LEFT JOIN program_graph_features gf ON gf.result_id = gp.result_id
             WHERE gp.signature IN ({placeholders})
               AND (
@@ -797,7 +797,7 @@ class _AdvancedAnalyticsMixin:
                     THEN pr.error_type
                 END), 1, 255) AS error_types
             FROM program_graph_pairs gp
-            JOIN program_results pr ON pr.result_id = gp.result_id
+            JOIN program_results_compat pr ON pr.result_id = gp.result_id
             WHERE pr.experiment_id = ?
               AND pr.stage0_passed = 1
               AND pr.stage05_passed = 1
@@ -855,7 +855,7 @@ class _AdvancedAnalyticsMixin:
                     THEN pr.error_type
                 END), 1, 255) AS error_types
             FROM program_graph_pairs gp
-            JOIN program_results pr ON pr.result_id = gp.result_id
+            JOIN program_results_compat pr ON pr.result_id = gp.result_id
             WHERE pr.stage0_passed = 1
               AND pr.stage05_passed = 1
             GROUP BY gp.signature
@@ -897,7 +897,7 @@ class _AdvancedAnalyticsMixin:
                     THEN pr.error_type
                 END), 1, 255) AS error_types
             FROM program_graph_pairs gp
-            JOIN program_results pr ON pr.result_id = gp.result_id
+            JOIN program_results_compat pr ON pr.result_id = gp.result_id
             WHERE pr.stage0_passed = 1
               AND pr.stage05_passed = 1
             GROUP BY gp.signature
@@ -1824,9 +1824,9 @@ class _AdvancedAnalyticsMixin:
                               THEN pp.wikitext_score - cp.wikitext_score
                           END AS wikitext_support_effect
                    FROM causal_ablation_child_observations obs
-                   LEFT JOIN program_results cp
+                   LEFT JOIN program_results_compat cp
                      ON cp.result_id = obs.child_result_id
-                   LEFT JOIN program_results pp
+                   LEFT JOIN program_results_compat pp
                      ON pp.result_id = obs.parent_result_id
                ),
                metric_scored AS (

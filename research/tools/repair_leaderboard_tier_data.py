@@ -133,7 +133,7 @@ def repair_leaderboard_tier_data(db_path: str, dry_run: bool = False) -> Dict[st
                    pr.baseline_loss_ratio, pr.novelty_score, {novelty_legacy_select},
                    {init_std_select}
             FROM leaderboard l
-            JOIN program_results pr ON pr.result_id = l.result_id
+            JOIN program_results_compat pr ON pr.result_id = l.result_id
             WHERE
                 (l.tier = 'screening' AND (
                     l.screening_loss_ratio IS NULL OR

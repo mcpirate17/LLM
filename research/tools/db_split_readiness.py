@@ -116,7 +116,7 @@ def graph_json_stats(db_path: Path) -> dict[str, Any]:
             SELECT COUNT(*) AS rows,
                    COALESCE(SUM(LENGTH(graph_json)), 0) AS total_bytes,
                    COALESCE(MAX(LENGTH(graph_json)), 0) AS max_bytes
-            FROM program_results
+            FROM program_results_compat
             WHERE graph_json IS NOT NULL
               AND TRIM(CAST(graph_json AS TEXT)) <> ''
             """

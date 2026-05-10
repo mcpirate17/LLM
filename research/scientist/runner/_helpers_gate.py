@@ -87,7 +87,7 @@ def get_reference_losses(db_path: str) -> Dict[str, float]:
         conn = get_notebook_conn(str(db_path))
         row = conn.execute("""
             SELECT AVG(p.final_loss) as avg_loss
-            FROM program_results p
+            FROM program_results_compat p
             JOIN leaderboard l ON p.result_id = l.result_id
             WHERE l.reference_name = 'GPT-2'
             AND p.final_loss IS NOT NULL

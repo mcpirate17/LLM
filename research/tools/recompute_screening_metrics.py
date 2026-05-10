@@ -43,7 +43,7 @@ def _select_result_ids(args: argparse.Namespace) -> List[str]:
                 row = con.execute(
                     """
                     SELECT result_id
-                    FROM program_results
+                    FROM program_results_compat
                     WHERE graph_fingerprint = ?
                     ORDER BY rowid DESC
                     LIMIT 1
@@ -77,7 +77,7 @@ def _select_result_ids(args: argparse.Namespace) -> List[str]:
         rows = con.execute(
             f"""
             SELECT result_id
-            FROM program_results
+            FROM program_results_compat
             WHERE {" AND ".join(clauses)}
             ORDER BY rowid DESC
             {limit_clause}

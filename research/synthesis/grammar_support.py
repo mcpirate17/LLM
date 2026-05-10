@@ -531,7 +531,7 @@ def _fetch_template_weight_rows(conn):
                                  AND COALESCE(pr.failure_op,'') != 'nano_bind'
                                 THEN 1 ELSE 0 END) AS sa_pass,
                        COUNT(*) AS sa_n
-                  FROM program_results pr
+                  FROM program_results_compat pr
                   JOIN program_graph_features pgf
                     ON pgf.result_id = pr.result_id
                  WHERE pr.language_control_s05_sentence_assoc_score IS NOT NULL

@@ -363,7 +363,7 @@ def build_score_kwargs(
     ``conn`` is a sqlite3 connection, ``notebook`` provides helper methods.
     """
     pr = conn.execute(
-        f"SELECT {_PR_SELECT_COLS} FROM program_results WHERE result_id = ?",
+        f"SELECT {_PR_SELECT_COLS} FROM program_results_compat WHERE result_id = ?",
         (result_id,),
     ).fetchone()
     pr_dict = dict(pr) if pr else {}
@@ -395,7 +395,7 @@ def prefetch_program_results(
         chunk = ids[start : start + chunk_size]
         placeholders = ",".join("?" * len(chunk))
         rows = conn.execute(
-            f"SELECT {_PR_SELECT_COLS} FROM program_results "
+            f"SELECT {_PR_SELECT_COLS} FROM program_results_compat "
             f"WHERE result_id IN ({placeholders})",
             chunk,
         ).fetchall()

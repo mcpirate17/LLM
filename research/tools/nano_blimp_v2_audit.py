@@ -53,7 +53,7 @@ def _load_arch(db_path: Path, result_id: str) -> dict[str, Any] | None:
                    l.entry_id, l.composite_score, l.tier,
                    l.induction_screening_auc, l.binding_screening_auc, l.wikitext_perplexity,
                    l.hellaswag_acc, l.blimp_overall_accuracy
-            FROM program_results pr
+            FROM program_results_compat pr
             LEFT JOIN program_graph_features pgf ON pgf.result_id=pr.result_id
             LEFT JOIN leaderboard l ON l.result_id=pr.result_id
             WHERE pr.result_id=?

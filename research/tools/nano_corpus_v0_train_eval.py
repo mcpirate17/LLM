@@ -48,7 +48,7 @@ def _load_graph_json(db: Path, result_id: str) -> str:
     conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
     try:
         row = conn.execute(
-            "SELECT graph_json FROM program_results WHERE result_id = ? LIMIT 1",
+            "SELECT graph_json FROM program_results_compat WHERE result_id = ? LIMIT 1",
             (result_id,),
         ).fetchone()
         if not row or not row[0]:

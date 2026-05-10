@@ -49,7 +49,7 @@ SCREENING_LOSS_KEYS = (
 
 def load_program_row(nb: LabNotebook, result_id: str) -> Dict[str, Any] | None:
     row = nb.conn.execute(
-        "SELECT * FROM program_results WHERE result_id = ?",
+        "SELECT * FROM program_results_compat WHERE result_id = ?",
         (str(result_id),),
     ).fetchone()
     if not row:
@@ -318,7 +318,7 @@ def recompute_screening_metrics(
         )
         sync_fingerprint_leaderboard(nb, str(result_id))
         fingerprint_row = nb.conn.execute(
-            "SELECT graph_fingerprint FROM program_results WHERE result_id = ?",
+            "SELECT graph_fingerprint FROM program_results_compat WHERE result_id = ?",
             (str(result_id),),
         ).fetchone()
         graph_fingerprint = (
@@ -332,7 +332,7 @@ def recompute_screening_metrics(
                 """
                 SELECT l.entry_id, l.result_id, l.is_reference
                 FROM leaderboard l
-                JOIN program_results pr ON pr.result_id = l.result_id
+                JOIN program_results_compat pr ON pr.result_id = l.result_id
                 WHERE pr.graph_fingerprint = ?
                 """,
                 (graph_fingerprint,),

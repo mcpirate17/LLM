@@ -157,7 +157,7 @@ class _ProgramsMixin(
             return rid
 
         row = self.conn.execute(
-            "SELECT graph_fingerprint FROM program_results WHERE result_id = ?",
+            "SELECT graph_fingerprint FROM program_results_compat WHERE result_id = ?",
             (rid,),
         ).fetchone()
         if not row or not row["graph_fingerprint"]:
@@ -175,7 +175,7 @@ class _ProgramsMixin(
                 pr.timestamp,
                 COALESCE(exp.experiment_type, '') AS experiment_type,
                 COALESCE(lb.tier, '') AS tier
-            FROM program_results pr
+            FROM program_results_compat pr
             LEFT JOIN experiments exp ON exp.experiment_id = pr.experiment_id
             LEFT JOIN leaderboard lb ON lb.result_id = pr.result_id
             WHERE pr.graph_fingerprint = ?
@@ -538,7 +538,7 @@ class _ProgramsMixin(
         """
         self.flush_writes()
         junk_query = """
-            SELECT result_id, experiment_id FROM program_results
+            SELECT result_id, experiment_id FROM program_results_compat
             WHERE (stage0_passed = 0 OR stage0_passed IS NULL)
               AND (stage1_passed != 1 OR stage1_passed IS NULL)
         """
@@ -644,7 +644,7 @@ class _ProgramsMixin(
             return False
         try:
             row = self.conn.execute(
-                "SELECT 1 FROM program_results WHERE graph_fingerprint = ? LIMIT 1",
+                "SELECT 1 FROM program_results_compat WHERE graph_fingerprint = ? LIMIT 1",
                 (graph_fingerprint,),
             ).fetchone()
             return row is not None
@@ -693,7 +693,7 @@ class _ProgramsMixin(
                           * AVG(CASE WHEN novelty_score IS NOT NULL THEN novelty_score END)
                     ))
                 ELSE NULL END AS novelty_std
-            FROM program_results
+            FROM program_results_compat
             WHERE graph_fingerprint = ?
               AND {self._FINGERPRINT_AGGREGATE_REASON_FILTER}""",
             (graph_fingerprint,),
@@ -811,7 +811,7 @@ class _ProgramsMixin(
                 f")) ELSE NULL END AS std_{c}"
             )
         sql = (
-            f"SELECT {', '.join(select_parts)} FROM program_results "
+            f"SELECT {', '.join(select_parts)} FROM program_results_compat "
             f"WHERE graph_fingerprint = ? "
             f"AND {self._FINGERPRINT_AGGREGATE_REASON_FILTER}"
         )
@@ -884,7 +884,7 @@ class _ProgramsMixin(
                               * AVG(CASE WHEN novelty_score IS NOT NULL THEN novelty_score END)
                         ))
                     ELSE NULL END AS novelty_std
-                FROM program_results
+                FROM program_results_compat
                 WHERE graph_fingerprint IN ({placeholders})
                   AND {self._FINGERPRINT_AGGREGATE_REASON_FILTER}
                 GROUP BY graph_fingerprint""",
@@ -977,7 +977,7 @@ class _ProgramsMixin(
     def get_program_results(self, experiment_id: str, limit: int = 500) -> List[Dict]:
         """Get ALL program results for an experiment (not just survivors)."""
         rows = self.conn.execute(
-            """SELECT * FROM program_results
+            """SELECT * FROM program_results_compat
                WHERE experiment_id = ?
                ORDER BY novelty_score DESC NULLS LAST
                LIMIT ?""",
@@ -992,7 +992,7 @@ class _ProgramsMixin(
     def get_program_detail(self, result_id: str) -> Optional[Dict]:
         """Get full detail for a single program result."""
         row = self.conn.execute(
-            "SELECT * FROM program_results WHERE result_id = ?",
+            "SELECT * FROM program_results_compat WHERE result_id = ?",
             (result_id,),
         ).fetchone()
         if row is None:
@@ -1009,7 +1009,7 @@ class _ProgramsMixin(
             return []
         placeholders = ",".join(["?"] * len(ids))
         rows = self.conn.execute(
-            f"SELECT * FROM program_results WHERE result_id IN ({placeholders})",
+            f"SELECT * FROM program_results_compat WHERE result_id IN ({placeholders})",
             ids,
         ).fetchall()
         by_id = {}
@@ -1246,7 +1246,7 @@ class _ProgramsMixin(
             """
             SELECT DISTINCT l.result_id
             FROM leaderboard l
-            JOIN program_results pr ON pr.result_id = l.result_id
+            JOIN program_results_compat pr ON pr.result_id = l.result_id
             WHERE pr.graph_fingerprint IS NOT NULL
             """
         ).fetchall()
@@ -1255,7 +1255,7 @@ class _ProgramsMixin(
         for row in rows:
             rid = row["result_id"]
             fp_row = self.conn.execute(
-                "SELECT graph_fingerprint FROM program_results WHERE result_id = ?",
+                "SELECT graph_fingerprint FROM program_results_compat WHERE result_id = ?",
                 (rid,),
             ).fetchone()
             fp = (
@@ -1294,7 +1294,7 @@ class _ProgramsMixin(
             return None
         row = self.conn.execute(
             "SELECT l.* FROM leaderboard l "
-            "JOIN program_results pr ON l.result_id = pr.result_id "
+            "JOIN program_results_compat pr ON l.result_id = pr.result_id "
             "WHERE pr.graph_fingerprint = ? "
             "ORDER BY l.timestamp DESC LIMIT 1",
             (str(graph_fingerprint).strip(),),
@@ -1351,7 +1351,7 @@ class _ProgramsMixin(
         params: List[Any] = list(experiment_types)
         query = f"""
             SELECT p.*
-            FROM program_results p
+            FROM program_results_compat p
             JOIN experiments e ON e.experiment_id = p.experiment_id
             WHERE p.stage1_passed = 1
               AND e.experiment_type IN ({placeholders})
@@ -1361,7 +1361,7 @@ class _ProgramsMixin(
               AND NOT EXISTS (
                     SELECT 1
                     FROM leaderboard l
-                    JOIN program_results pr2 ON pr2.result_id = l.result_id
+                    JOIN program_results_compat pr2 ON pr2.result_id = l.result_id
                     WHERE pr2.graph_fingerprint = p.graph_fingerprint
               )
             ORDER BY p.timestamp ASC
@@ -1415,7 +1415,7 @@ class _ProgramsMixin(
         rows = self.conn.execute(
             "SELECT DISTINCT pr.graph_fingerprint "
             "FROM leaderboard l "
-            "JOIN program_results pr ON pr.result_id = l.result_id "
+            "JOIN program_results_compat pr ON pr.result_id = l.result_id "
             "WHERE l.tier IN ("
             "'investigation', "
             "'investigation_fingerprint_incomplete', "
@@ -1428,7 +1428,7 @@ class _ProgramsMixin(
         # (catches failed/interrupted investigations that never reached leaderboard)
         rows = self.conn.execute(
             "SELECT DISTINCT pr.graph_fingerprint "
-            "FROM program_results pr "
+            "FROM program_results_compat pr "
             "JOIN experiments e ON e.experiment_id = pr.experiment_id "
             "WHERE e.experiment_type IN ('investigation', 'ablation')"
         ).fetchall()

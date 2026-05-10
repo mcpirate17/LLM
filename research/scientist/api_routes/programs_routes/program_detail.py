@@ -120,7 +120,7 @@ def _attach_fingerprint_observation_rollup(nb, program):
                pr.intentional_rerun_reason, pr.result_cohort, pr.trust_label,
                pr.comparability_label, e.experiment_type, e.status AS experiment_status,
                e.completed_at
-        FROM program_results pr
+        FROM program_results_compat pr
         LEFT JOIN experiments e ON e.experiment_id = pr.experiment_id
         WHERE pr.graph_fingerprint = ?
         ORDER BY pr.timestamp DESC
@@ -146,7 +146,7 @@ def _attach_fingerprint_observation_rollup(nb, program):
     evidence = nb.conn.execute(
         f"""
         SELECT result_id, experiment_id, timestamp, {select_cols}
-        FROM program_results
+        FROM program_results_compat
         WHERE graph_fingerprint = ?
           AND (
             induction_intermediate_auc IS NOT NULL

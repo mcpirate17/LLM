@@ -141,7 +141,7 @@ def select_top_parents(
         SELECT pr.result_id, pr.experiment_id, pr.graph_fingerprint, pr.graph_json,
                pr.loss_ratio, e.config_json, l.composite_score
         FROM leaderboard l
-        JOIN program_results pr ON pr.result_id = l.result_id
+        JOIN program_results_compat pr ON pr.result_id = l.result_id
         LEFT JOIN experiments e ON e.experiment_id = pr.experiment_id
         WHERE COALESCE(pr.stage1_passed, 0) = 1
           AND TRIM(COALESCE(pr.graph_json, '')) <> ''

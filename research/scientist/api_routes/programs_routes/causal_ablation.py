@@ -50,8 +50,8 @@ WITH ablation_observation_metrics AS (
            pp.induction_intermediate_auc AS parent_induction_intermediate,
            pp.binding_intermediate_auc AS parent_binding_intermediate
     FROM causal_ablation_child_observations obs
-    LEFT JOIN program_results cp ON cp.result_id = obs.child_result_id
-    LEFT JOIN program_results pp ON pp.result_id = obs.parent_result_id
+    LEFT JOIN program_results_compat cp ON cp.result_id = obs.child_result_id
+    LEFT JOIN program_results_compat pp ON pp.result_id = obs.parent_result_id
 
     UNION ALL
 
@@ -184,9 +184,9 @@ WITH ablation_observation_metrics AS (
                )
            ) AS parent_binding_intermediate
     FROM causal_rule_evidence ev
-    LEFT JOIN program_results cp
+    LEFT JOIN program_results_compat cp
       ON cp.result_id = json_extract(ev.evidence_json, '$.child_result_id')
-    LEFT JOIN program_results pp ON pp.result_id = ev.parent_result_id
+    LEFT JOIN program_results_compat pp ON pp.result_id = ev.parent_result_id
     WHERE ev.rule_type IN ('node_delete_s1', 'node_delete_investigation')
       AND json_extract(ev.evidence_json, '$.child.fingerprint') IS NOT NULL
 )
@@ -525,7 +525,7 @@ def _api_causal_ablation_summary(nb=None):
                             OR pr.wikitext_perplexity IS NULL
                          )
                         THEN 1 ELSE 0 END) AS s1_missing_core_metrics
-        FROM program_results pr
+        FROM program_results_compat pr
         WHERE pr.model_source = 'ablation'
         """
     ).fetchone()
@@ -670,7 +670,7 @@ def _api_causal_ablation_champions(nb=None):
                pp.binding_intermediate_auc AS parent_binding_intermediate
         FROM children
         LEFT JOIN rules ON rules.parent_result_id = children.parent_result_id
-        LEFT JOIN program_results pp ON pp.result_id = children.parent_result_id
+        LEFT JOIN program_results_compat pp ON pp.result_id = children.parent_result_id
         LEFT JOIN leaderboard l ON l.result_id = children.parent_result_id
         ORDER BY children.evidence_count DESC, children.child_fingerprint_count DESC
         LIMIT ?

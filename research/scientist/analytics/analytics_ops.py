@@ -90,7 +90,7 @@ class _OpsMixin:
         rows = self.nb.conn.execute("""
             SELECT result_id, graph_fingerprint, param_count, graph_n_params_estimate,
                    loss_ratio, validation_loss_ratio
-            FROM program_results
+            FROM program_results_compat
             WHERE (loss_ratio IS NOT NULL OR validation_loss_ratio IS NOT NULL)
               AND (param_count IS NOT NULL OR graph_n_params_estimate IS NOT NULL)
         """).fetchall()
@@ -296,7 +296,7 @@ class _OpsMixin:
                 AVG(COALESCE(pr.param_count, pr.graph_n_params_estimate))
                     AS avg_param_count
             FROM op_rows op
-            JOIN program_results pr ON pr.result_id = op.result_id
+            JOIN program_results_compat pr ON pr.result_id = op.result_id
             GROUP BY op.op_name
             ORDER BY n_tested DESC
             """,
@@ -343,7 +343,7 @@ class _OpsMixin:
         rows = self.nb.conn.execute("""
             SELECT stage1_passed, arch_spec_json, loss_ratio, baseline_loss_ratio,
                    param_count, graph_n_params_estimate, graph_json
-            FROM program_results
+            FROM program_results_compat
             WHERE arch_spec_json IS NOT NULL OR loss_ratio IS NOT NULL
         """).fetchall()
 
@@ -489,7 +489,7 @@ class _OpsMixin:
                        THEN 1 ELSE 0 END) AS n_pruning,
                    SUM(CASE WHEN stage1_passed = 1
                        THEN 1 ELSE 0 END) AS n_total_survived
-            FROM program_results
+            FROM program_results_compat
             WHERE loss_ratio IS NOT NULL OR stage0_passed IS NOT NULL
         """).fetchone()
 
@@ -505,7 +505,7 @@ class _OpsMixin:
 
         # Count RigL runs (optimizer recipe stored in training_program_json)
         rigl_row = self.nb.conn.execute("""
-            SELECT COUNT(*) FROM program_results
+            SELECT COUNT(*) FROM program_results_compat
             WHERE training_program_json LIKE '%rigl%'
         """).fetchone()
         n_rigl = int(rigl_row[0]) if rigl_row else 0
@@ -534,7 +534,7 @@ class _OpsMixin:
             SELECT result_id, graph_fingerprint, final_loss,
                    flops_forward, param_count, novelty_score,
                    loss_ratio, baseline_loss_ratio, graph_json
-            FROM program_results
+            FROM program_results_compat
             WHERE stage1_passed = 1
               AND final_loss IS NOT NULL
               AND flops_forward IS NOT NULL
@@ -583,7 +583,7 @@ class _OpsMixin:
                    flops_forward, param_count, novelty_score,
                    loss_ratio, baseline_loss_ratio, graph_json,
                    routing_savings_ratio, compression_ratio
-            FROM program_results
+            FROM program_results_compat
             WHERE stage1_passed = 1
               AND final_loss IS NOT NULL
               AND flops_forward IS NOT NULL

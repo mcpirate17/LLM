@@ -114,7 +114,7 @@ WITH op_rows AS (
         END AS spec_norm_log,
         pr.fp_icld_velocity AS icld_velocity,
         pr.fp_icld_delta_loss AS icld_delta_loss
-    FROM program_results pr
+    FROM program_results_compat pr
     JOIN program_graph_ops gpo ON gpo.result_id = pr.result_id
     LEFT JOIN (
         SELECT result_id, AVG(composite_score) AS composite_score
@@ -173,7 +173,7 @@ WITH reason_rows AS (
         pr.result_id AS result_id,
         gpo.op_name AS op_name,
         COALESCE(NULLIF(pr.error_type, ''), NULLIF(pr.stage_at_death, '')) AS reason
-    FROM program_results pr
+    FROM program_results_compat pr
     JOIN program_graph_ops gpo ON gpo.result_id = pr.result_id
     WHERE {where} AND pr.stage1_passed = 0
 ),

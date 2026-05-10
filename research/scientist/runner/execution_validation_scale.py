@@ -351,7 +351,7 @@ class _ExecutionValidationScaleMixin:
                     pr.experiment_id,
                     pr.data_provenance_json,
                     e.config_json
-                FROM program_results pr
+                FROM program_results_compat pr
                 LEFT JOIN experiments e ON e.experiment_id = pr.experiment_id
                 WHERE pr.graph_fingerprint = ?
                   AND pr.result_id != ?

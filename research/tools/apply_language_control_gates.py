@@ -40,7 +40,7 @@ def _candidate_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
                pr.fp_jacobian_erf_decay_slope,
                pr.graph_category_histogram
         FROM leaderboard l
-        JOIN program_results pr ON pr.result_id = l.result_id
+        JOIN program_results_compat pr ON pr.result_id = l.result_id
         WHERE (
               pr.language_control_s05_binding_score < ?
            OR pr.language_control_s10_binding_score < ?

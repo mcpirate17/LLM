@@ -62,7 +62,7 @@ def fetch_template_grouped() -> dict[str, list[str]]:
         f"""
         SELECT pgf.template_name, pr.graph_json
         FROM program_graph_features pgf
-        JOIN program_results pr ON pr.result_id = pgf.result_id
+        JOIN program_results_compat pr ON pr.result_id = pgf.result_id
         LEFT JOIN leaderboard l ON l.result_id = pr.result_id
         WHERE pr.language_control_s05_sentence_assoc_score >= {PASS_SA}
           AND COALESCE(pr.failure_op, '') != '{NANO_BIND}'

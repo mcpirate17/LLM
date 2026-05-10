@@ -231,7 +231,7 @@ def _validation_error_key(error: Any) -> str:
 
 def _existing_fingerprints(nb: LabNotebook) -> set[str]:
     rows = nb.conn.execute(
-        """SELECT graph_fingerprint FROM program_results
+        """SELECT graph_fingerprint FROM program_results_compat
            WHERE TRIM(COALESCE(graph_fingerprint, '')) <> ''
            UNION
            SELECT child_fingerprint FROM causal_ablation_child_observations

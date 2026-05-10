@@ -70,7 +70,7 @@ def export_inventory(
             GROUP_CONCAT(DISTINCT COALESCE(lb.tier, 'off_leaderboard')) AS tiers,
             GROUP_CONCAT(DISTINCT COALESCE(pr.trust_label, '')) AS trust_labels,
             GROUP_CONCAT(DISTINCT COALESCE(pr.comparability_label, '')) AS comparability_labels
-        FROM program_results pr
+        FROM program_results_compat pr
         LEFT JOIN leaderboard lb ON lb.result_id = pr.result_id
         WHERE pr.graph_fingerprint IS NOT NULL
           AND {_candidate_where(scope)}

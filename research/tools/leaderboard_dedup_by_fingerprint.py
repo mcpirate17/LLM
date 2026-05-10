@@ -214,10 +214,10 @@ def _fetch_dup_groups(
         """
         SELECT l.*, pr.graph_fingerprint AS _graph_fingerprint
         FROM leaderboard l
-        JOIN program_results pr ON l.result_id = pr.result_id
+        JOIN program_results_compat pr ON l.result_id = pr.result_id
         WHERE pr.graph_fingerprint IN (
             SELECT pr2.graph_fingerprint FROM leaderboard l2
-            JOIN program_results pr2 ON l2.result_id = pr2.result_id
+            JOIN program_results_compat pr2 ON l2.result_id = pr2.result_id
             WHERE TRIM(COALESCE(pr2.graph_fingerprint, '')) <> ''
             GROUP BY pr2.graph_fingerprint HAVING COUNT(*) > 1
         )

@@ -57,7 +57,7 @@ def analyze_training_curves(nb, limit: int = 500) -> List[ConvergenceProfile]:
             SELECT tc.result_id, tc.step, tc.loss,
                    pr.stage1_passed, pr.loss_ratio
             FROM training_curves tc
-            JOIN program_results pr ON pr.result_id = tc.result_id
+            JOIN program_results_compat pr ON pr.result_id = tc.result_id
             WHERE tc.loss IS NOT NULL
             ORDER BY tc.result_id, tc.step
             LIMIT ?
@@ -680,7 +680,7 @@ def detect_family_regression(
         rows = nb.conn.execute(
             """
             SELECT pr.graph_fingerprint, l.composite_score, pr.timestamp
-            FROM program_results pr
+            FROM program_results_compat pr
             JOIN leaderboard l ON l.result_id = pr.result_id
             WHERE l.composite_score IS NOT NULL
               AND pr.graph_fingerprint IS NOT NULL

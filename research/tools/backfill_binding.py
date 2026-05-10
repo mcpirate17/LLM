@@ -67,7 +67,7 @@ def _query_candidates(
                 pr.graph_json,
                 pr.graph_fingerprint
             FROM leaderboard l
-            JOIN program_results pr ON pr.result_id = l.result_id
+            JOIN program_results_compat pr ON pr.result_id = l.result_id
             WHERE l.tier IN ({tier_placeholders})
               AND pr.stage1_passed = 1
               {missing}

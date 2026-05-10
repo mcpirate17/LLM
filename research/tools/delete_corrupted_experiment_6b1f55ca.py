@@ -119,7 +119,7 @@ def main() -> int:
         # this experiment.  The whole premise of "this is corrupted trash"
         # depends on no architecture data being attached.
         n_pr = nb.conn.execute(
-            "SELECT COUNT(*) FROM program_results WHERE experiment_id = ?",
+            "SELECT COUNT(*) FROM program_results_compat WHERE experiment_id = ?",
             (CORRUPTED_EXPERIMENT_ID,),
         ).fetchone()[0]
         if n_pr:

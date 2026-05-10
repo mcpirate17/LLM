@@ -278,7 +278,7 @@ def get_template_stats(db_path: Path) -> dict[str, dict[str, int]]:
     try:
         rows = db.execute(
             "SELECT graph_json, stage0_passed, stage1_passed "
-            "FROM program_results "
+            "FROM program_results_compat "
             "WHERE graph_json IS NOT NULL"
         ).fetchall()
         for gj, s0, s1 in rows:
@@ -460,7 +460,7 @@ def summarize_experiment_batch(db_path: str, experiment_id: str) -> dict[str, An
                 COALESCE(SUM(CASE WHEN stage0_passed THEN 1 ELSE 0 END), 0),
                 COALESCE(SUM(CASE WHEN stage1_passed THEN 1 ELSE 0 END), 0),
                 COALESCE(SUM(CASE WHEN rapid_screening_passed THEN 1 ELSE 0 END), 0)
-            FROM program_results
+            FROM program_results_compat
             WHERE experiment_id = ?
             """,
             (experiment_id,),
@@ -471,7 +471,7 @@ def summarize_experiment_batch(db_path: str, experiment_id: str) -> dict[str, An
             for name, count in db.execute(
                 """
                 SELECT COALESCE(error_type, 'none'), COUNT(*)
-                FROM program_results
+                FROM program_results_compat
                 WHERE experiment_id = ?
                 GROUP BY COALESCE(error_type, 'none')
                 """,

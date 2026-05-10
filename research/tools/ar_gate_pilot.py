@@ -79,7 +79,7 @@ def fetch_top_archs(
         sql = """
             SELECT pr.result_id, pr.graph_json, lb.composite_score, lb.tier,
                    pr.wikitext_perplexity, pr.ar_legacy_auc, pr.induction_screening_auc, pr.binding_screening_auc
-              FROM program_results pr
+              FROM program_results_compat pr
               JOIN leaderboard lb ON lb.result_id = pr.result_id
              WHERE pr.graph_json IS NOT NULL
                AND lb.composite_score IS NOT NULL

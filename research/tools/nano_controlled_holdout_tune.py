@@ -74,7 +74,7 @@ def _load_target(db: Path, target: str) -> dict[str, Any]:
                    pr.language_control_investigation_sentence_assoc_score,
                    pgf.template_name
             FROM leaderboard l
-            JOIN program_results pr ON pr.result_id = l.result_id
+            JOIN program_results_compat pr ON pr.result_id = l.result_id
             LEFT JOIN program_graph_features pgf ON pgf.result_id = l.result_id
             WHERE l.entry_id = ? OR l.result_id = ? OR pr.result_id = ?
             ORDER BY l.composite_score DESC

@@ -155,7 +155,7 @@ class _RoutingMixin:
                 AVG(routing_capacity_overflow_count) as avg_capacity_overflow_count,
                 AVG(routing_confidence_mean) as avg_confidence_mean,
                 AVG(routing_confidence_std) as avg_confidence_std
-            FROM program_results
+            FROM program_results_compat
             GROUP BY COALESCE(NULLIF(routing_mode, ''), 'uniform')
             ORDER BY n_programs DESC
         """).fetchall()
@@ -302,7 +302,7 @@ class _RoutingMixin:
                 routing_drop_rate,
                 routing_utilization_entropy,
                 routing_capacity_overflow_count
-            FROM program_results
+            FROM program_results_compat
             WHERE routing_mode IS NOT NULL
                OR routing_drop_rate IS NOT NULL
                OR routing_utilization_entropy IS NOT NULL
@@ -465,7 +465,7 @@ class _RoutingMixin:
                    routing_confidence_mean, routing_confidence_std,
                    routing_expert_utilization_json,
                    loss_ratio, stage1_passed, graph_json
-            FROM program_results
+            FROM program_results_compat
             WHERE routing_mode IS NOT NULL
         """).fetchall()
 
@@ -622,7 +622,7 @@ class _RoutingMixin:
             "pruning_method, pruning_target_sparsity, pruning_actual_sparsity, "
             "pruning_quality_retention, pruning_dense_eval_loss, "
             "pruning_pruned_eval_loss, pruning_n_params_total "
-            "FROM program_results "
+            "FROM program_results_compat "
             "WHERE (sparse_density_mean IS NOT NULL OR pruning_method IS NOT NULL)"
         ).fetchall()
         if not rows:

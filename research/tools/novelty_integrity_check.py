@@ -29,7 +29,7 @@ def run_integrity_check(
         """SELECT result_id, novelty_score, novelty_confidence, cka_source,
                   novelty_reference_version, novelty_valid_for_promotion,
                   novelty_validity_reason, novelty_requires_justification
-           FROM program_results
+           FROM program_results_compat
            WHERE novelty_score IS NOT NULL"""
     ).fetchall()
 
@@ -82,7 +82,7 @@ def run_integrity_check(
     promoted = nb.conn.execute(
         """SELECT l.result_id, l.tier, pr.novelty_valid_for_promotion, pr.cka_source
            FROM leaderboard l
-           JOIN program_results pr ON pr.result_id = l.result_id
+           JOIN program_results_compat pr ON pr.result_id = l.result_id
            WHERE l.tier IN ('validation', 'breakthrough')"""
     ).fetchall()
     for row in promoted:

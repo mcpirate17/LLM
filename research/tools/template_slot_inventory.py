@@ -66,7 +66,7 @@ def load_slot_rows() -> list[tuple[str, str]]:
         """
         SELECT pgf.template_name, pgf.slot_usage_json
         FROM program_graph_features pgf
-        JOIN program_results pr ON pr.result_id = pgf.result_id
+        JOIN program_results_compat pr ON pr.result_id = pgf.result_id
         LEFT JOIN leaderboard l ON l.result_id = pr.result_id
         WHERE pr.language_control_s05_sentence_assoc_score IS NOT NULL
           AND COALESCE(l.is_reference, 0) = 0

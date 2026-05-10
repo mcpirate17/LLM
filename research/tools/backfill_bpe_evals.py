@@ -475,13 +475,13 @@ def _candidate_tasks(
         "       MAX(COALESCE(lb.composite_score, 1.0 / NULLIF(pr.loss_ratio, 0), 0.0)) AS comp, "
         "       MAX(COALESCE(pr.graph_n_ops, 0)) AS n_ops, "
         "       MAX(COALESCE(pr.graph_depth, 0)) AS depth, "
-        "       (SELECT graph_json FROM program_results pr2 "
+        "       (SELECT graph_json FROM program_results_compat pr2 "
         "         WHERE pr2.graph_fingerprint = pr.graph_fingerprint "
         "           AND pr2.graph_json IS NOT NULL "
         "           AND length(pr2.graph_json) > 10 "
         "         ORDER BY length(pr2.graph_json) DESC, pr2.timestamp DESC LIMIT 1"
         "       ) AS graph_json "
-        "FROM program_results pr "
+        "FROM program_results_compat pr "
         f"{join} "
     )
     if not include_current_bpe:

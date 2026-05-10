@@ -263,7 +263,7 @@ def _run_screening_batch(
                    loss_ratio, wikitext_perplexity, hellaswag_acc,
                    blimp_overall_accuracy, induction_screening_auc, binding_screening_auc,
                    binding_screening_composite, ar_legacy_auc, error_type, stage_at_death
-            FROM program_results
+            FROM program_results_compat
             WHERE experiment_id = ?
             ORDER BY timestamp DESC
             """,

@@ -65,7 +65,7 @@ def _f(value: Any) -> float | None:
 
 def _row(conn: sqlite3.Connection, result_id: str) -> dict[str, Any] | None:
     row = conn.execute(
-        "SELECT * FROM program_results WHERE result_id = ?",
+        "SELECT * FROM program_results_compat WHERE result_id = ?",
         (result_id,),
     ).fetchone()
     return dict(row) if row else None

@@ -163,8 +163,8 @@ WITH metric_rows AS (
            pp.binding_intermediate_auc AS parent_binding_intermediate,
            cp.binding_intermediate_status AS child_binding_intermediate_status
     FROM causal_ablation_child_observations obs
-    LEFT JOIN program_results cp ON cp.result_id = obs.child_result_id
-    LEFT JOIN program_results pp ON pp.result_id = obs.parent_result_id
+    LEFT JOIN program_results_compat cp ON cp.result_id = obs.child_result_id
+    LEFT JOIN program_results_compat pp ON pp.result_id = obs.parent_result_id
 
     UNION ALL
 
@@ -277,9 +277,9 @@ WITH metric_rows AS (
                )
            ) AS child_binding_intermediate_status
     FROM causal_rule_evidence ev
-    LEFT JOIN program_results cp
+    LEFT JOIN program_results_compat cp
       ON cp.result_id = json_extract(ev.evidence_json, '$.child_result_id')
-    LEFT JOIN program_results pp ON pp.result_id = ev.parent_result_id
+    LEFT JOIN program_results_compat pp ON pp.result_id = ev.parent_result_id
     WHERE ev.rule_type IN ('node_delete_s1', 'node_delete_investigation')
       AND json_extract(ev.evidence_json, '$.child.fingerprint') IS NOT NULL
 ),

@@ -112,7 +112,7 @@ def fetch_cohort_rows() -> list[dict]:
                pr.graph_json AS graph_json,
                pgf.slot_usage_json AS slot_usage_json,
                pgf.template_name AS row_template
-        FROM program_results pr
+        FROM program_results_compat pr
         LEFT JOIN leaderboard l ON l.result_id = pr.result_id
         LEFT JOIN program_graph_features pgf ON pgf.result_id = pr.result_id
         WHERE pr.language_control_s05_sentence_assoc_score IS NOT NULL

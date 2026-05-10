@@ -62,7 +62,7 @@ class _ResultsAnalysisMixin:
             seen = {
                 row[0]
                 for row in nb.conn.execute(
-                    "SELECT graph_fingerprint FROM program_results "
+                    "SELECT graph_fingerprint FROM program_results_compat "
                     "WHERE experiment_id = ?",
                     (exp_id,),
                 ).fetchall()

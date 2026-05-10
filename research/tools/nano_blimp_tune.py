@@ -69,7 +69,7 @@ def _load_arch(db: Path, entry_id: str) -> dict:
             """
             SELECT l.entry_id, l.composite_score, l.tier, pr.result_id,
                    pr.graph_json, pr.graph_fingerprint, pgf.template_name
-            FROM leaderboard l JOIN program_results pr ON pr.result_id=l.result_id
+            FROM leaderboard l JOIN program_results_compat pr ON pr.result_id=l.result_id
             LEFT JOIN program_graph_features pgf ON pgf.result_id=l.result_id
             WHERE l.entry_id=?
             """,
@@ -157,7 +157,7 @@ def main() -> int:
                 """
                 SELECT l.entry_id, pgf.template_name, l.composite_score
                 FROM leaderboard l
-                JOIN program_results pr ON pr.result_id=l.result_id
+                JOIN program_results_compat pr ON pr.result_id=l.result_id
                 LEFT JOIN program_graph_features pgf ON pgf.result_id=l.result_id
                 WHERE l.composite_score IS NOT NULL
                   AND pr.graph_json IS NOT NULL AND pr.graph_json != '{}'

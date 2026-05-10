@@ -58,7 +58,7 @@ def _select_entries(db: Path, n: int, entry_ids: list[str] | None) -> list[dict]
                        pr.binding_intermediate_auc AS bv2,
                        pgf.template_name
                 FROM leaderboard l
-                JOIN program_results pr ON pr.result_id = l.result_id
+                JOIN program_results_compat pr ON pr.result_id = l.result_id
                 LEFT JOIN program_graph_features pgf ON pgf.result_id = l.result_id
                 WHERE l.entry_id IN ({placeholders})
                   AND pr.graph_json IS NOT NULL AND pr.graph_json != '{{}}'
@@ -76,7 +76,7 @@ def _select_entries(db: Path, n: int, entry_ids: list[str] | None) -> list[dict]
                    pr.binding_intermediate_auc AS bv2,
                    pgf.template_name
             FROM leaderboard l
-            JOIN program_results pr ON pr.result_id = l.result_id
+            JOIN program_results_compat pr ON pr.result_id = l.result_id
             LEFT JOIN program_graph_features pgf ON pgf.result_id = l.result_id
             WHERE l.composite_score IS NOT NULL
               AND pr.graph_json IS NOT NULL AND pr.graph_json != '{}'

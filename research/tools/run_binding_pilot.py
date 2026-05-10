@@ -96,7 +96,7 @@ def _choose_manifest(limit: int, order: str) -> list[dict[str, Any]]:
                               = 'bpe_eval_v1'
                         THEN pr.wikitext_perplexity END AS bpe_ppl
             FROM leaderboard l
-            JOIN program_results pr ON pr.result_id = l.result_id
+            JOIN program_results_compat pr ON pr.result_id = l.result_id
             JOIN experiments e ON e.experiment_id = pr.experiment_id
             WHERE COALESCE(pr.stage1_passed, 0) = 1
               AND COALESCE(pr.stage0_passed, 0) = 1
@@ -264,7 +264,7 @@ def _load_completed_binding_result_ids(result_ids: set[str]) -> set[str]:
         rows = nb.conn.execute(
             f"""
             SELECT result_id
-            FROM program_results
+            FROM program_results_compat
             WHERE result_id IN ({placeholders})
               AND binding_screening_auc IS NOT NULL
             """,

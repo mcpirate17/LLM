@@ -659,7 +659,7 @@ class _ContinuousInvestigationMixin:
                 """SELECT pr.*, l.entry_id, l.tier, l.composite_score,
                           l.screening_loss_ratio, l.screening_novelty,
                           l.pre_inv_score, l.is_reference, l.reference_name
-                   FROM program_results pr
+                   FROM program_results_compat pr
                    JOIN leaderboard l ON l.result_id = pr.result_id
                    WHERE l.tier = 'screening'
                      AND COALESCE(l.is_reference, 0) = 0
