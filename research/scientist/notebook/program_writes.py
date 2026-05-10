@@ -312,3 +312,86 @@ def build_program_result_insert_payload(
         columns.append(column)
         values.append(value)
     return columns, values
+
+
+# Per-architecture columns that live on `graphs` (mirrors the migration script's
+# GRAPH_COLUMNS_FROM_PROGRAM_RESULTS). Anything else is per-run.
+GRAPH_TABLE_ARCH_COLUMNS = ("graph_json", "arch_spec_json")
+
+
+def build_dual_write_statements(
+    *,
+    result_id: str,
+    experiment_id: str,
+    timestamp: float,
+    graph_fingerprint: str,
+    graph_json: str,
+    filtered_kwargs: Dict[str, Any],
+) -> List[tuple[str, tuple]]:
+    """Build the 3-statement atomic write set: graphs + graph_runs + program_results.
+
+    During the dual-write window of the graph-fingerprint normalization. The
+    program_results write is retained because many callers and tests assert
+    against program_results directly (notebook_artifacts externalization,
+    merge-patch UPDATEs, etc.). Dropping it would require a larger refactor
+    of those call sites — out of scope for this migration.
+
+    Returns the list ready for `_submit_grouped_write`.
+    """
+    arch_spec_json = filtered_kwargs.get("arch_spec_json")
+    graphs_sql = (
+        "INSERT INTO graphs "
+        "(graph_fingerprint, graph_json, arch_spec_json, first_seen_ts, last_seen_ts, "
+        "graph_json_is_placeholder) "
+        "VALUES (?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(graph_fingerprint) DO UPDATE SET "
+        "  last_seen_ts = excluded.last_seen_ts, "
+        "  arch_spec_json = COALESCE(excluded.arch_spec_json, arch_spec_json), "
+        # Upgrade placeholder graph_json the moment a real one arrives.
+        "  graph_json = CASE WHEN graph_json_is_placeholder = 1 "
+        "                     AND excluded.graph_json_is_placeholder = 0 "
+        "                THEN excluded.graph_json ELSE graph_json END, "
+        "  graph_json_is_placeholder = MIN(graph_json_is_placeholder, "
+        "                                  excluded.graph_json_is_placeholder)"
+    )
+    has_real_graph = bool(graph_json) and graph_json not in ("", "{}")
+    graphs_args = (
+        graph_fingerprint,
+        graph_json or "{}",
+        arch_spec_json,
+        timestamp,
+        timestamp,
+        0 if has_real_graph else 1,
+    )
+
+    legacy_cols, legacy_vals = build_program_result_insert_payload(
+        result_id=result_id,
+        experiment_id=experiment_id,
+        timestamp=timestamp,
+        graph_fingerprint=graph_fingerprint,
+        graph_json=graph_json,
+        filtered_kwargs=filtered_kwargs,
+    )
+    legacy_sql = (
+        f"INSERT INTO program_results ({', '.join(legacy_cols)}) "
+        f"VALUES ({', '.join(['?'] * len(legacy_cols))})"
+    )
+
+    arch_set = set(GRAPH_TABLE_ARCH_COLUMNS)
+    runs_cols: List[str] = []
+    runs_vals: List[Any] = []
+    for c, v in zip(legacy_cols, legacy_vals):
+        if c in arch_set:
+            continue
+        runs_cols.append(c)
+        runs_vals.append(v)
+    runs_sql = (
+        f"INSERT INTO graph_runs ({', '.join(runs_cols)}) "
+        f"VALUES ({', '.join(['?'] * len(runs_cols))})"
+    )
+
+    return [
+        (graphs_sql, graphs_args),
+        (runs_sql, tuple(runs_vals)),
+        (legacy_sql, tuple(legacy_vals)),
+    ]

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import re
 import sqlite3
 from sqlite3 import connect as _original_sqlite3_connect
 import subprocess
@@ -35,6 +36,44 @@ from ._shared import (
     infer_insight_identity,
 )
 from .knowledge_digest_store import KnowledgeDigestStore, default_cache_path
+
+
+# --- Graph-fingerprint normalization: keep graph_runs in sync with legacy
+# program_results UPDATEs during the dual-write window. Mirror UPDATE
+# program_results SET ... WHERE ... → UPDATE graph_runs SET ... WHERE ...
+# at the writer layer so the 30+ UPDATE call sites don't each need plumbing.
+# Skip when the SET clause references the per-architecture columns (those go
+# to `graphs` via UPSERT, handled by `build_dual_write_statements`).
+_UPDATE_PROGRAM_RESULTS_RE = re.compile(
+    r"^\s*UPDATE\s+program_results\s+SET\s+", re.IGNORECASE
+)
+_DELETE_PROGRAM_RESULTS_RE = re.compile(
+    r"^\s*DELETE\s+FROM\s+program_results\b", re.IGNORECASE
+)
+_GRAPH_RUNS_INELIGIBLE_COLS_RE = re.compile(
+    r"\b(graph_json|arch_spec_json)\s*=", re.IGNORECASE
+)
+
+
+def _mirror_program_results_update_to_graph_runs(sql: str) -> Optional[str]:
+    """Return graph_runs-targeting SQL mirroring a program_results UPDATE.
+
+    Returns None if the SQL is not an `UPDATE program_results` or if the SET
+    clause touches per-architecture columns (those need an `UPSERT INTO graphs`
+    branch which the caller must build explicitly).
+    """
+    if not _UPDATE_PROGRAM_RESULTS_RE.match(sql):
+        return None
+    if _GRAPH_RUNS_INELIGIBLE_COLS_RE.search(sql):
+        return None
+    return _UPDATE_PROGRAM_RESULTS_RE.sub("UPDATE graph_runs SET ", sql, count=1)
+
+
+def _mirror_program_results_delete_to_graph_runs(sql: str) -> Optional[str]:
+    """Return graph_runs-targeting SQL mirroring a program_results DELETE."""
+    if not _DELETE_PROGRAM_RESULTS_RE.match(sql):
+        return None
+    return _DELETE_PROGRAM_RESULTS_RE.sub("DELETE FROM graph_runs", sql, count=1)
 
 
 class _SqliteConnectionAdapter:
@@ -587,6 +626,10 @@ class _NotebookCore:
             return False
 
     def _ensure_schema_bootstrap(self, *, db_key: str) -> None:
+        # graphs/graph_runs creation is deferred to _migrate() so it runs
+        # *after* all the dynamic ADD COLUMN migrations on program_results;
+        # graph_runs mirrors program_results' final column set, not the
+        # static NOTEBOOK_SCHEMA prefix.
         cls = type(self)
         if self._is_memory:
             self.conn.executescript(NOTEBOOK_SCHEMA)
@@ -612,6 +655,164 @@ class _NotebookCore:
                 cls._schema_bootstrapped_paths.add(db_key)
                 return
             raise
+
+    def _ensure_graph_normalization_schema(self) -> None:
+        """Idempotent setup for graphs / graph_runs / program_results_compat.
+
+        Mirrors `research/tools/migrate_graph_normalization.py` schema-creation
+        so test tmp_paths and the live DB stay in sync. graph_runs is derived
+        dynamically from program_results' current column set (legacy minus
+        the per-architecture pair).
+        """
+        try:
+            pr_info = list(self.conn.execute("PRAGMA table_info(program_results)"))
+        except sqlite3.OperationalError:
+            return
+        if not pr_info:
+            return
+        pr_cols = [
+            row[1] if not isinstance(row, dict) else row["name"] for row in pr_info
+        ]
+        pr_types = [
+            row[2] if not isinstance(row, dict) else row["type"] for row in pr_info
+        ]
+        self._gn_create_graphs()
+        self._gn_create_graph_runs(pr_cols, pr_types)
+        self._gn_create_compat_view(pr_cols)
+        self._gn_create_propagation_trigger(pr_cols)
+        self._gn_create_dup_protection(pr_cols)
+        self._maybe_commit()
+
+    def _gn_create_graphs(self) -> None:
+        self.conn.execute(
+            """CREATE TABLE IF NOT EXISTS graphs (
+                graph_fingerprint TEXT PRIMARY KEY,
+                graph_json        TEXT NOT NULL,
+                arch_spec_json    TEXT,
+                first_seen_ts     REAL NOT NULL,
+                last_seen_ts      REAL NOT NULL,
+                graph_json_is_placeholder INTEGER NOT NULL DEFAULT 0
+            )"""
+        )
+
+    def _gn_create_graph_runs(self, pr_cols: list[str], pr_types: list[str]) -> None:
+        if self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE name='graph_runs'"
+        ).fetchone():
+            return
+        arch_set = {"graph_json", "arch_spec_json"}
+        col_defs = []
+        for name, ctype in zip(pr_cols, pr_types):
+            if name in arch_set:
+                continue
+            if name == "result_id":
+                col_defs.append(f'"{name}" {ctype} PRIMARY KEY')
+            elif name == "graph_fingerprint":
+                col_defs.append(
+                    f'"{name}" {ctype} NOT NULL '
+                    "REFERENCES graphs(graph_fingerprint) ON DELETE CASCADE"
+                )
+            elif name == "timestamp":
+                col_defs.append(f'"{name}" {ctype} NOT NULL')
+            else:
+                col_defs.append(f'"{name}" {ctype}')
+        self.conn.execute(f"CREATE TABLE graph_runs ({', '.join(col_defs)})")
+        for stmt in (
+            "CREATE INDEX IF NOT EXISTS idx_graph_runs_fp ON graph_runs(graph_fingerprint)",
+            "CREATE INDEX IF NOT EXISTS idx_graph_runs_trust ON graph_runs(trust_label)",
+            "CREATE INDEX IF NOT EXISTS idx_graph_runs_exp ON graph_runs(experiment_id)",
+            "CREATE INDEX IF NOT EXISTS idx_graph_runs_ts ON graph_runs(timestamp)",
+        ):
+            try:
+                self.conn.execute(stmt)
+            except sqlite3.OperationalError:
+                # `trust_label` etc. may not exist on minimal test schemas.
+                pass
+
+    def _gn_create_compat_view(self, pr_cols: list[str]) -> None:
+        if self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE name='program_results_compat'"
+        ).fetchone():
+            return
+        arch_set = {"graph_json", "arch_spec_json"}
+        select_parts = [f'{("g" if c in arch_set else "r")}."{c}"' for c in pr_cols]
+        self.conn.execute(
+            "CREATE VIEW program_results_compat AS "
+            f"SELECT {', '.join(select_parts)} "
+            "FROM graph_runs r LEFT JOIN graphs g USING (graph_fingerprint)"
+        )
+
+    def _gn_create_propagation_trigger(self, pr_cols: list[str]) -> None:
+        """Trigger: raw INSERT INTO program_results auto-propagates to graphs
+        + graph_runs. INSERT OR IGNORE makes it a no-op for rows already
+        inserted by the canonical `build_dual_write_statements` write path.
+        """
+        if self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE name='_gn_sync_pr_to_runs'"
+        ).fetchone():
+            return
+        arch_set = {"graph_json", "arch_spec_json"}
+        run_cols = [f'"{c}"' for c in pr_cols if c not in arch_set]
+        run_refs = [f"NEW.{c}" for c in run_cols]
+        self.conn.execute(
+            "CREATE TRIGGER _gn_sync_pr_to_runs "
+            "AFTER INSERT ON program_results "
+            "WHEN NEW.graph_fingerprint IS NOT NULL "
+            "  AND TRIM(NEW.graph_fingerprint) <> '' "
+            "BEGIN "
+            "  INSERT OR IGNORE INTO graphs "
+            "    (graph_fingerprint, graph_json, arch_spec_json, "
+            "     first_seen_ts, last_seen_ts, graph_json_is_placeholder) "
+            "  VALUES (NEW.graph_fingerprint, "
+            "          COALESCE(NEW.graph_json, '{}'), "
+            "          NEW.arch_spec_json, "
+            "          NEW.timestamp, NEW.timestamp, "
+            "          CASE WHEN NEW.graph_json IS NULL "
+            "                 OR NEW.graph_json IN ('', '{}') "
+            "          THEN 1 ELSE 0 END); "
+            f" INSERT OR IGNORE INTO graph_runs ({', '.join(run_cols)}) "
+            f" VALUES ({', '.join(run_refs)}); "
+            "END"
+        )
+
+    def _gn_create_dup_protection(self, pr_cols: list[str]) -> None:
+        """Mirror program_results' UNIQUE-per-experiment + reject-dup-on-insert
+        protections onto graph_runs so post-Phase-5b writes (which target only
+        graph_runs) preserve the same dup-detection semantics.
+        """
+        has_intentional_rerun = "intentional_rerun_reason" in pr_cols
+        has_experiment_id = "experiment_id" in pr_cols
+        if has_experiment_id:
+            try:
+                self.conn.execute(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS idx_graph_runs_fp_per_experiment "
+                    "ON graph_runs(graph_fingerprint, experiment_id) "
+                    "WHERE graph_fingerprint IS NOT NULL "
+                    "  AND graph_fingerprint <> ''"
+                )
+            except sqlite3.OperationalError:
+                pass
+        if not has_intentional_rerun:
+            return
+        if self.conn.execute(
+            "SELECT 1 FROM sqlite_master "
+            "WHERE name='reject_dup_fingerprint_no_reason_graph_runs'"
+        ).fetchone():
+            return
+        self.conn.execute(
+            "CREATE TRIGGER reject_dup_fingerprint_no_reason_graph_runs "
+            "BEFORE INSERT ON graph_runs "
+            "WHEN NEW.graph_fingerprint IS NOT NULL "
+            "  AND TRIM(NEW.graph_fingerprint) <> '' "
+            "  AND NEW.intentional_rerun_reason IS NULL "
+            "  AND EXISTS (SELECT 1 FROM graph_runs "
+            "              WHERE graph_fingerprint = NEW.graph_fingerprint "
+            "                AND result_id <> NEW.result_id) "
+            "BEGIN "
+            "  SELECT RAISE(ABORT, "
+            "    'duplicate graph_fingerprint without intentional_rerun_reason'); "
+            "END"
+        )
 
     @classmethod
     def _open_sqlite_connection(
@@ -668,6 +869,12 @@ class _NotebookCore:
                         writer_conn.commit()
                         batch = []
                     params.set()  # params is a threading.Event
+                    continue
+                if sql == "__grouped__":
+                    if batch:
+                        writer_conn.commit()
+                        batch = []
+                    self._writer_apply_grouped(writer_conn, params)
                     continue
                 if (
                     isinstance(params, list)
@@ -733,6 +940,23 @@ class _NotebookCore:
             writer_conn.commit()
         writer_conn.close()
 
+    @staticmethod
+    def _writer_apply_grouped(writer_conn, statements) -> None:
+        """Execute a list of (sql, args) inside one BEGIN/COMMIT.
+
+        Helper for the writer-loop's `__grouped__` arm; either every statement
+        commits or all roll back. Extracted so `_writer_loop` stays under the
+        100-line god-function bar.
+        """
+        try:
+            writer_conn.execute("BEGIN")
+            for stmt_sql, stmt_args in statements:
+                writer_conn.execute(stmt_sql, stmt_args)
+            writer_conn.commit()
+        except Exception:
+            writer_conn.execute("ROLLBACK")
+            raise
+
     def _ensure_writer_thread(self) -> None:
         if self._writer_thread_started:
             return
@@ -744,6 +968,16 @@ class _NotebookCore:
         """Submit a write task to the background queue."""
         self._invalidate_dashboard_summary_cache()
         self._record_write_for_health_check(params)
+        # Mirror UPDATE/DELETE program_results → graph_runs to keep the
+        # dual-write window consistent. Skip UPDATE when SET touches arch-only
+        # cols (those need an UPSERT into `graphs` which the caller handles
+        # explicitly via build_dual_write_statements).
+        mirrored = _mirror_program_results_update_to_graph_runs(
+            sql
+        ) or _mirror_program_results_delete_to_graph_runs(sql)
+        if mirrored is not None:
+            self._submit_grouped_write([(sql, params), (mirrored, params)])
+            return
         if getattr(self, "_use_native", False):
             # Delegate to the Rust writer thread.
             mgr = self.conn._mgr
@@ -758,6 +992,29 @@ class _NotebookCore:
             return
         self._ensure_writer_thread()
         self._write_queue.put((sql, params))
+
+    def _submit_grouped_write(self, statements: list[tuple[str, Any]]) -> None:
+        """Submit multiple statements that must commit atomically.
+
+        All `statements` execute inside one transaction in the writer thread —
+        either every statement commits, or all roll back. Used by callers that
+        write to multiple tables that must stay in lock-step (e.g. the
+        graph-fingerprint normalization's graphs+graph_runs+program_results
+        triple-write).
+        """
+        if not statements:
+            return
+        self._invalidate_dashboard_summary_cache()
+        for _, params in statements:
+            self._record_write_for_health_check(params)
+        normalized = [
+            (sql, tuple(params) if params else ()) for sql, params in statements
+        ]
+        if getattr(self, "_use_native", False):
+            self.conn._mgr.submit_grouped_write(normalized)
+            return
+        self._ensure_writer_thread()
+        self._write_queue.put(("__grouped__", normalized))
 
     def _record_write_for_health_check(self, params: Any = None) -> None:
         if getattr(self, "_read_only", False) or getattr(self, "_is_memory", False):
@@ -1576,6 +1833,9 @@ class _NotebookCore:
         self._migrate_program_results_intentional_rerun_column()
         self._migrate_program_results_dedup_trigger()
         self._migrate_leaderboard_fp_dedup()
+        # graphs/graph_runs/compat — must run after every program_results
+        # ALTER TABLE so graph_runs mirrors the final column set.
+        self._ensure_graph_normalization_schema()
         self._program_results_columns = None
         self._leaderboard_columns = None
         self._maybe_commit()

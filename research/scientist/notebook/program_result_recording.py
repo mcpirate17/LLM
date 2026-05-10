@@ -11,7 +11,7 @@ from ._shared import LOGGER
 from .notebook_leaderboard import DuplicateLeaderboardFingerprintError
 from .program_provenance import merge_experiment_provenance_kwargs
 from .program_writes import (
-    build_program_result_insert_payload,
+    build_dual_write_statements,
     enrich_program_result_kwargs,
     filter_known_program_result_columns,
     normalize_program_result_kwargs,
@@ -186,7 +186,12 @@ class _ProgramResultRecordingMixin:
         graph_json: str,
         filtered_kwargs: Dict[str, Any],
     ) -> None:
-        all_cols, all_vals = build_program_result_insert_payload(
+        # Atomic dual-write: graphs (UPSERT on fingerprint) + graph_runs +
+        # legacy program_results all commit together. The tables stay in
+        # lock-step throughout the migration's dual-write window. When Phase 5
+        # retires the legacy table, drop the program_results stmt from the
+        # group and switch readers off the compat view.
+        statements = build_dual_write_statements(
             result_id=result_id,
             experiment_id=experiment_id,
             timestamp=time.time(),
@@ -194,12 +199,7 @@ class _ProgramResultRecordingMixin:
             graph_json=graph_json,
             filtered_kwargs=filtered_kwargs,
         )
-        placeholders = ", ".join(["?"] * len(all_cols))
-        col_str = ", ".join(all_cols)
-        self._submit_write(
-            f"INSERT INTO program_results ({col_str}) VALUES ({placeholders})",
-            all_vals,
-        )
+        self._submit_grouped_write(statements)
 
     def _sync_program_result_side_effects(
         self,

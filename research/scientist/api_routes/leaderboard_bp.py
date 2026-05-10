@@ -194,30 +194,6 @@ def _semantic_warning_for_entry(entry: Dict[str, Any]) -> Dict[str, Any] | None:
     }
 
 
-def _dedupe_discovery_rows(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Collapse repeated fingerprints to the strongest representative row."""
-    deduped: List[Dict[str, Any]] = []
-    index_by_key: Dict[str, int] = {}
-    for entry in entries:
-        fingerprint = str(entry.get("graph_fingerprint") or "").strip()
-        result_id = str(entry.get("result_id") or "").strip()
-        key = fingerprint or result_id
-        if not key:
-            deduped.append(entry)
-            continue
-        existing_index = index_by_key.get(key)
-        if existing_index is None:
-            index_by_key[key] = len(deduped)
-            deduped.append(entry)
-            continue
-        existing = deduped[existing_index]
-        existing_score = float(existing.get("composite_score") or 0.0)
-        new_score = float(entry.get("composite_score") or 0.0)
-        if new_score > existing_score:
-            deduped[existing_index] = entry
-    return deduped
-
-
 def _current_discovery_tier(entry: Dict[str, Any]) -> str:
     tier = str(entry.get("tier") or "screening").strip().lower()
     if tier == "validation" and not bool(entry.get("validation_passed")):
@@ -278,7 +254,7 @@ def _search_discoveries(
             l.model_source AS leaderboard_model_source,
             l.architecture_desc AS leaderboard_architecture_desc,
             l.timestamp AS leaderboard_timestamp
-        FROM program_results pr
+        FROM program_results_compat pr
         LEFT JOIN leaderboard l ON l.result_id = pr.result_id
         WHERE COALESCE(pr.stage1_passed, 0) = 1
           AND (
@@ -383,9 +359,10 @@ def _search_discoveries(
             continue
         entries.append(entry)
 
-    deduped = _dedupe_discovery_rows(entries)
-    deduped = nb._attach_canonical_program_scores(deduped)
-    return deduped[:limit]
+    # No dedup needed: leaderboard.graph_fingerprint UNIQUE INDEX guarantees
+    # one row per fingerprint post graph-normalization migration.
+    annotated = nb._attach_canonical_program_scores(entries)
+    return annotated[:limit]
 
 
 def _matches_discovery_query(entry: Dict[str, Any], query: str) -> bool:
@@ -878,7 +855,7 @@ def _program_graph_rows(
         params.extend([wildcard, wildcard, wildcard])
     sql = f"""
         SELECT pr.*, l.entry_id AS leaderboard_entry_id
-        FROM program_results pr
+        FROM program_results_compat pr
         LEFT JOIN leaderboard l ON l.result_id = pr.result_id
         WHERE {" AND ".join(where)}
         ORDER BY pr.timestamp DESC

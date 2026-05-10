@@ -345,7 +345,7 @@ class _LeaderboardMixin:
             "throughput_tok_s, peak_memory_mb, forward_time_ms, graph_json, graph_fingerprint, "
             "result_cohort, trust_label, comparability_label, evaluation_protocol_version, "
             "data_provenance_json "
-            "FROM program_results WHERE result_id = ? "
+            "FROM program_results_compat WHERE result_id = ? "
             "OR graph_fingerprint = ? "
             "ORDER BY CASE WHEN result_id = ? THEN 0 ELSE 1 END, timestamp DESC "
             "LIMIT 1",
@@ -365,17 +365,35 @@ class _LeaderboardMixin:
                 "throughput_tok_s, peak_memory_mb, forward_time_ms, graph_json, graph_fingerprint, "
                 "result_cohort, trust_label, comparability_label, evaluation_protocol_version, "
                 "data_provenance_json "
-                "FROM program_results WHERE graph_fingerprint = ? "
+                "FROM program_results_compat WHERE graph_fingerprint = ? "
                 "ORDER BY timestamp DESC LIMIT 1",
                 (str(architecture_desc).strip(),),
             ).fetchone()
         if pr_row:
             resolved_result_id = pr_row["result_id"]
-        # Check if entry exists for this result_id
-        existing = self.conn.execute(
-            "SELECT * FROM leaderboard WHERE result_id = ?",
-            (resolved_result_id,),
-        ).fetchone()
+        # Lookup the existing leaderboard entry. Prefer the per-fingerprint
+        # row (the UNIQUE constraint on leaderboard.graph_fingerprint makes
+        # this the canonical identity); fall back to result_id only if no
+        # fingerprint match exists. This closes the 2026-05-09 rebind
+        # tier-downgrade bug where a fresh rerun's result_id did not match
+        # leaderboard.result_id and the upsert created a fresh row at the
+        # rerun's lower tier instead of preserving the high-water tier.
+        fp_for_lookup = (
+            str(pr_row["graph_fingerprint"]).strip()
+            if pr_row and pr_row["graph_fingerprint"]
+            else ""
+        )
+        existing = None
+        if fp_for_lookup:
+            existing = self.conn.execute(
+                "SELECT * FROM leaderboard WHERE graph_fingerprint = ?",
+                (fp_for_lookup,),
+            ).fetchone()
+        if existing is None:
+            existing = self.conn.execute(
+                "SELECT * FROM leaderboard WHERE result_id = ?",
+                (resolved_result_id,),
+            ).fetchone()
         existing_matched_by_reference_fp = False
         if existing is None and is_reference and pr_row and pr_row["graph_fingerprint"]:
             fp = str(pr_row["graph_fingerprint"]).strip()
@@ -409,7 +427,7 @@ class _LeaderboardMixin:
             if fp:
                 fp_dup = self.conn.execute(
                     "SELECT l.entry_id, l.result_id FROM leaderboard l "
-                    "JOIN program_results pr ON l.result_id = pr.result_id "
+                    "JOIN program_results_compat pr ON l.result_id = pr.result_id "
                     "WHERE pr.graph_fingerprint = ? AND l.result_id != ? "
                     "LIMIT 1",
                     (fp, resolved_result_id),
@@ -940,7 +958,7 @@ class _LeaderboardMixin:
             "pr.external_benchmarks_json AS _external_benchmarks_json, "
             "pr.efficiency_multiple AS _pr_efficiency_multiple "
             "FROM leaderboard l "
-            "LEFT JOIN program_results pr ON pr.result_id = l.result_id "
+            "LEFT JOIN program_results_compat pr ON pr.result_id = l.result_id "
             "WHERE 1=1"
         )
         params: List[Any] = []
@@ -1276,7 +1294,7 @@ class _LeaderboardMixin:
         if row["result_id"]:
             pr = self.conn.execute(
                 f"SELECT {_PR_SELECT_COLS}, data_provenance_json, trust_label, comparability_label "
-                "FROM program_results WHERE result_id = ?",
+                "FROM program_results_compat WHERE result_id = ?",
                 (row["result_id"],),
             ).fetchone()
 
@@ -1358,7 +1376,7 @@ class _LeaderboardMixin:
                       l.screening_loss_ratio, l.screening_novelty, l.composite_score,
                       pr.graph_fingerprint
                FROM leaderboard l
-               JOIN program_results pr ON l.result_id = pr.result_id
+               JOIN program_results_compat pr ON l.result_id = pr.result_id
                WHERE l.scaling_param_efficiency IS NOT NULL
                ORDER BY l.scaling_param_efficiency DESC"""
         ).fetchall()
@@ -1415,7 +1433,7 @@ class _LeaderboardMixin:
         rows = self.conn.execute(
             """SELECT l.entry_id, l.replication_n, pr.graph_fingerprint
                FROM leaderboard l
-               JOIN program_results pr ON pr.result_id = l.result_id
+               JOIN program_results_compat pr ON pr.result_id = l.result_id
                WHERE pr.graph_fingerprint IS NOT NULL"""
         ).fetchall()
 

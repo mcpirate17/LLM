@@ -107,15 +107,16 @@ fn py_params(params: &Bound<'_, pyo3::PyAny>) -> Result<Vec<Value>, PyErr> {
 /// Message types for the async writer thread.
 enum WriteMsg {
     /// Execute a single statement with params.
-    Execute {
-        sql: String,
-        params: Vec<Value>,
-    },
+    Execute { sql: String, params: Vec<Value> },
     /// Execute a statement with multiple parameter sets (executemany).
     ExecuteMany {
         sql: String,
         params_list: Vec<Vec<Value>>,
     },
+    /// Execute multiple distinct statements atomically inside one transaction.
+    /// All-or-nothing: either every stmt commits or all roll back. Used by the
+    /// graph-fingerprint normalization (`graphs` + `graph_runs` writes pair).
+    ExecuteGrouped { stmts: Vec<(String, Vec<Value>)> },
     /// Flush: commit and signal the caller.
     Flush {
         done: Arc<(parking_lot::Mutex<bool>, parking_lot::Condvar)>,
@@ -363,17 +364,15 @@ fn open_connection_readonly(db_path: &str) -> Result<Connection, PyErr> {
     let flags = OpenFlags::SQLITE_OPEN_READ_ONLY
         | OpenFlags::SQLITE_OPEN_NO_MUTEX
         | OpenFlags::SQLITE_OPEN_URI;
-    let conn = Connection::open_with_flags(&uri, flags).map_err(|e| {
-        PyRuntimeError::new_err(format!("Failed to open database read-only: {e}"))
-    })?;
+    let conn = Connection::open_with_flags(&uri, flags)
+        .map_err(|e| PyRuntimeError::new_err(format!("Failed to open database read-only: {e}")))?;
     conn.execute_batch(
         "PRAGMA query_only=ON;
          PRAGMA busy_timeout=15000;",
     )
     .map_err(|e| PyRuntimeError::new_err(format!("Failed to set pragmas: {e}")))?;
-    register_math_functions(&conn).map_err(|e| {
-        PyRuntimeError::new_err(format!("Failed to register math functions: {e}"))
-    })?;
+    register_math_functions(&conn)
+        .map_err(|e| PyRuntimeError::new_err(format!("Failed to register math functions: {e}")))?;
     Ok(conn)
 }
 
@@ -449,16 +448,10 @@ impl ConnectionManager {
     }
 
     /// Execute a SQL statement with multiple parameter sets.
-    fn executemany(
-        &self,
-        sql: &str,
-        params_list: &Bound<'_, pyo3::PyAny>,
-    ) -> PyResult<usize> {
+    fn executemany(&self, sql: &str, params_list: &Bound<'_, pyo3::PyAny>) -> PyResult<usize> {
         let outer: Vec<Bound<'_, pyo3::PyAny>> = params_list.extract()?;
-        let param_sets: Vec<Vec<Value>> = outer
-            .iter()
-            .map(py_params)
-            .collect::<Result<Vec<_>, _>>()?;
+        let param_sets: Vec<Vec<Value>> =
+            outer.iter().map(py_params).collect::<Result<Vec<_>, _>>()?;
         let inner = self.inner.lock();
         let mut total = 0usize;
         for values in &param_sets {
@@ -505,8 +498,8 @@ impl ConnectionManager {
 
         let result = PyList::empty_bound(py);
         for row_result in rows {
-            let cols = row_result
-                .map_err(|e| PyRuntimeError::new_err(format!("row error: {e}")))?;
+            let cols =
+                row_result.map_err(|e| PyRuntimeError::new_err(format!("row error: {e}")))?;
             let dict = PyDict::new_bound(py);
             for (name, val) in col_names.iter().zip(cols.iter()) {
                 dict.set_item(name, val.to_python(py))?;
@@ -580,8 +573,8 @@ impl ConnectionManager {
 
         let result = PyList::empty_bound(py);
         for row_result in rows {
-            let cols = row_result
-                .map_err(|e| PyRuntimeError::new_err(format!("row error: {e}")))?;
+            let cols =
+                row_result.map_err(|e| PyRuntimeError::new_err(format!("row error: {e}")))?;
             let py_vals: Vec<PyObject> = cols.iter().map(|v| v.to_python(py)).collect();
             result.append(PyTuple::new_bound(py, py_vals))?;
         }
@@ -660,19 +653,14 @@ impl ConnectionManager {
 
         let guard = self.writer_tx.lock();
         if let Some(tx) = guard.as_ref() {
-            tx.send(msg).map_err(|e| {
-                PyRuntimeError::new_err(format!("Writer channel closed: {e}"))
-            })?;
+            tx.send(msg)
+                .map_err(|e| PyRuntimeError::new_err(format!("Writer channel closed: {e}")))?;
         }
         Ok(())
     }
 
     /// Submit an executemany to the async writer thread (non-blocking).
-    fn submit_write_many(
-        &self,
-        sql: &str,
-        params_list: &Bound<'_, pyo3::PyAny>,
-    ) -> PyResult<()> {
+    fn submit_write_many(&self, sql: &str, params_list: &Bound<'_, pyo3::PyAny>) -> PyResult<()> {
         if self.read_only {
             return Err(PyRuntimeError::new_err(
                 "aria-db: submit_write_many called on a read-only manager.",
@@ -680,10 +668,8 @@ impl ConnectionManager {
         }
         self.ensure_writer()?;
         let outer: Vec<Bound<'_, pyo3::PyAny>> = params_list.extract()?;
-        let param_sets: Vec<Vec<Value>> = outer
-            .iter()
-            .map(py_params)
-            .collect::<Result<Vec<_>, _>>()?;
+        let param_sets: Vec<Vec<Value>> =
+            outer.iter().map(py_params).collect::<Result<Vec<_>, _>>()?;
 
         let guard = self.writer_tx.lock();
         if let Some(tx) = guard.as_ref() {
@@ -691,9 +677,47 @@ impl ConnectionManager {
                 sql: sql.to_string(),
                 params_list: param_sets,
             })
-            .map_err(|e| {
-                PyRuntimeError::new_err(format!("Writer channel closed: {e}"))
-            })?;
+            .map_err(|e| PyRuntimeError::new_err(format!("Writer channel closed: {e}")))?;
+        }
+        Ok(())
+    }
+
+    /// Submit a grouped multi-statement write that commits atomically.
+    ///
+    /// All `stmts` execute inside a single transaction in the writer thread —
+    /// either every statement commits, or all roll back. Used by the
+    /// graph-fingerprint normalization to keep `graphs`, `graph_runs`, and
+    /// (during dual-write) `program_results` consistent on each insert.
+    ///
+    /// `stmts` is a Python iterable of `(sql, params)` tuples.
+    fn submit_grouped_write(&self, stmts: &Bound<'_, pyo3::PyAny>) -> PyResult<()> {
+        if self.read_only {
+            return Err(PyRuntimeError::new_err(
+                "aria-db: submit_grouped_write called on a read-only manager.",
+            ));
+        }
+        self.ensure_writer()?;
+        let outer: Vec<Bound<'_, pyo3::PyAny>> = stmts.extract()?;
+        let mut converted: Vec<(String, Vec<Value>)> = Vec::with_capacity(outer.len());
+        for entry in outer.iter() {
+            let pair: Vec<Bound<'_, pyo3::PyAny>> = entry.extract()?;
+            if pair.len() != 2 {
+                return Err(PyRuntimeError::new_err(
+                    "submit_grouped_write: each entry must be (sql, params)",
+                ));
+            }
+            let sql: String = pair[0].extract()?;
+            let params = py_params(&pair[1])?;
+            converted.push((sql, params));
+        }
+        if converted.is_empty() {
+            return Ok(());
+        }
+
+        let guard = self.writer_tx.lock();
+        if let Some(tx) = guard.as_ref() {
+            tx.send(WriteMsg::ExecuteGrouped { stmts: converted })
+                .map_err(|e| PyRuntimeError::new_err(format!("Writer channel closed: {e}")))?;
         }
         Ok(())
     }
@@ -704,16 +728,14 @@ impl ConnectionManager {
     fn flush_writes(&self, timeout_secs: Option<f64>) -> PyResult<()> {
         let timeout = Duration::from_secs_f64(timeout_secs.unwrap_or(5.0));
         if !self.writer_started.load(Ordering::Relaxed) {
-            return Ok(());  // No writer thread, nothing to flush
+            return Ok(()); // No writer thread, nothing to flush
         }
         let done = Arc::new((parking_lot::Mutex::new(false), parking_lot::Condvar::new()));
         {
             let guard = self.writer_tx.lock();
             if let Some(tx) = guard.as_ref() {
                 tx.send(WriteMsg::Flush { done: done.clone() })
-                    .map_err(|e| {
-                        PyRuntimeError::new_err(format!("Writer channel closed: {e}"))
-                    })?;
+                    .map_err(|e| PyRuntimeError::new_err(format!("Writer channel closed: {e}")))?;
             } else {
                 return Ok(());
             }
@@ -746,11 +768,7 @@ impl ConnectionManager {
     }
 
     /// Run PRAGMA table_info for a table. Returns list of (cid, name, type, notnull, dflt, pk).
-    fn table_info(
-        &self,
-        py: Python<'_>,
-        table: &str,
-    ) -> PyResult<PyObject> {
+    fn table_info(&self, py: Python<'_>, table: &str) -> PyResult<PyObject> {
         // Validate table name to prevent injection (only alnum and underscore)
         if !table.chars().all(|c| c.is_alphanumeric() || c == '_') {
             return Err(PyValueError::new_err("Invalid table name"));
@@ -837,6 +855,44 @@ impl ConnectionManager {
                                 }
                             }
                         }
+                        WriteMsg::ExecuteGrouped { stmts } => {
+                            let mut guard = inner.lock();
+                            // Single transaction across all stmts; rollback on
+                            // any error so partial state never lands on disk.
+                            let txn = match guard.conn.transaction() {
+                                Ok(t) => t,
+                                Err(e) => {
+                                    eprintln!(
+                                        "[aria-db writer] ERROR begin txn failed: {e}"
+                                    );
+                                    continue;
+                                }
+                            };
+                            let mut ok = true;
+                            for (sql, params) in &stmts {
+                                if let Err(e) =
+                                    txn.execute(sql, params_from_iter(params.iter()))
+                                {
+                                    eprintln!(
+                                        "[aria-db writer] ERROR grouped stmt failed: {e} — sql[0..{}]: {}",
+                                        sql.len().min(200),
+                                        &sql[..sql.len().min(200)],
+                                    );
+                                    ok = false;
+                                    break;
+                                }
+                            }
+                            if ok {
+                                if let Err(e) = txn.commit() {
+                                    eprintln!(
+                                        "[aria-db writer] ERROR grouped commit failed: {e}"
+                                    );
+                                }
+                            } else {
+                                // Drop without commit -> rusqlite rolls back.
+                                drop(txn);
+                            }
+                        }
                         WriteMsg::Flush { done } => {
                             // Acquire and release the lock to ensure all
                             // prior writes are visible, then signal caller.
@@ -880,17 +936,16 @@ static MANAGERS: std::sync::LazyLock<Mutex<HashMap<String, Py<ConnectionManager>
 /// Read-only managers are keyed separately so one process can hold both a
 /// read-write manager on its own path AND a read-only manager on another
 /// (or the same) path. In practice the dashboard only uses read-write.
-static READONLY_MANAGERS: std::sync::LazyLock<
-    Mutex<HashMap<String, Py<ConnectionManager>>>,
-> = std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+static READONLY_MANAGERS: std::sync::LazyLock<Mutex<HashMap<String, Py<ConnectionManager>>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Get or create the singleton **read-write** ConnectionManager for a
 /// database path. Takes the writer flock; fails fast if another process
 /// already holds it.
 #[pyfunction]
 fn get_manager(py: Python<'_>, db_path: &str) -> PyResult<Py<ConnectionManager>> {
-    let canonical = std::fs::canonicalize(db_path)
-        .unwrap_or_else(|_| std::path::PathBuf::from(db_path));
+    let canonical =
+        std::fs::canonicalize(db_path).unwrap_or_else(|_| std::path::PathBuf::from(db_path));
     let key = canonical.to_string_lossy().to_string();
 
     let mut managers = MANAGERS.lock();
@@ -908,12 +963,9 @@ fn get_manager(py: Python<'_>, db_path: &str) -> PyResult<Py<ConnectionManager>>
 /// close-time WAL teardown that previously stranded writer data, and
 /// write attempts raise instead of silently failing.
 #[pyfunction]
-fn get_manager_readonly(
-    py: Python<'_>,
-    db_path: &str,
-) -> PyResult<Py<ConnectionManager>> {
-    let canonical = std::fs::canonicalize(db_path)
-        .unwrap_or_else(|_| std::path::PathBuf::from(db_path));
+fn get_manager_readonly(py: Python<'_>, db_path: &str) -> PyResult<Py<ConnectionManager>> {
+    let canonical =
+        std::fs::canonicalize(db_path).unwrap_or_else(|_| std::path::PathBuf::from(db_path));
     let key = canonical.to_string_lossy().to_string();
 
     let mut managers = READONLY_MANAGERS.lock();
