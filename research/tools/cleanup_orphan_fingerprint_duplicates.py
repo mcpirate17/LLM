@@ -484,6 +484,33 @@ def _move_aux_rows(
         conn.execute(f"DELETE FROM {table_name} WHERE result_id = ?", (old_result_id,))
 
 
+def _program_result_write_tables(conn: sqlite3.Connection) -> list[str]:
+    tables = ["program_results"]
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'graph_runs'"
+    ).fetchone()
+    if row:
+        tables.append("graph_runs")
+    return tables
+
+
+def _update_program_result_tables(
+    conn: sqlite3.Connection, set_parts: str, values: list[Any]
+) -> None:
+    for table_name in _program_result_write_tables(conn):
+        conn.execute(f"UPDATE {table_name} SET {set_parts} WHERE result_id = ?", values)
+
+
+def _delete_program_result_ids(
+    conn: sqlite3.Connection, placeholders: str, result_ids: tuple[str, ...]
+) -> None:
+    for table_name in _program_result_write_tables(conn):
+        conn.execute(
+            f"DELETE FROM {table_name} WHERE result_id IN ({placeholders})",
+            result_ids,
+        )
+
+
 def run(
     db_path: Path,
     *,
@@ -613,16 +640,10 @@ def run(
                         f'"{col}" = ?' for col in plan["metric_updates"].keys()
                     )
                     values = list(plan["metric_updates"].values()) + [keeper_id]
-                    write_conn.execute(
-                        f"UPDATE program_results SET {set_parts} WHERE result_id = ?",
-                        values,
-                    )
+                    _update_program_result_tables(write_conn, set_parts, values)
                 for dup_id in dup_ids:
                     _move_aux_rows(write_conn, dup_id, keeper_id)
-                write_conn.execute(
-                    f"DELETE FROM program_results WHERE result_id IN ({placeholders})",
-                    tuple(dup_ids),
-                )
+                _delete_program_result_ids(write_conn, placeholders, tuple(dup_ids))
             if mode == "orphan":
                 orphan_rows = _orphan_backfill_relabel_candidates(
                     write_conn, fingerprint
@@ -639,9 +660,10 @@ def run(
                         cleanup_columns=sorted(RELABEL_COLUMNS.keys()),
                     )
                     set_parts = ",".join(f'"{col}" = ?' for col in RELABEL_COLUMNS)
-                    write_conn.execute(
-                        f"UPDATE program_results SET {set_parts} WHERE result_id = ?",
-                        (*RELABEL_COLUMNS.values(), result_id),
+                    _update_program_result_tables(
+                        write_conn,
+                        set_parts,
+                        [*RELABEL_COLUMNS.values(), result_id],
                     )
         backup_count = table_row_count(write_conn, BACKUP_TABLE)
         print(

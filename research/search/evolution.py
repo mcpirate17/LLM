@@ -37,6 +37,7 @@ from ._mutation import (
 from ._nsga import (
     PARETO_FRONT_RANK as _PARETO_FRONT_RANK,
     nsga2_rank,
+    resolve_objectives,
 )
 
 logger = logging.getLogger(__name__)
@@ -82,6 +83,13 @@ class EvolutionConfig:
     local_mutation_prob: float = 0.3
     exploit_prob: float = 0.2
     exploit_top_k: int = 5
+    # NSGA-II objective profile (default falls back to fitness+novelty).
+    # Set to "capability", "balanced", or "efficient" to fold capability
+    # metrics (ar_gate_score, binding_intermediate_auc, param_efficiency)
+    # into Pareto ranking. Missing attributes on individuals resolve to 0.0
+    # via _safe_objective_value in _nsga.py, so populations without the new
+    # fields don't crash.
+    objective_profile: Optional[str] = None
 
 
 def _generate_context_valid_graph(
@@ -192,7 +200,7 @@ def evolutionary_search(
 
     # Evaluate initial population
     _evaluate_population(population, fitness_fn, novelty_fn)
-    nsga2_rank(population)
+    nsga2_rank(population, objectives=resolve_objectives(config.objective_profile))
     population = _enforce_population_diversity(
         population=population,
         fitness_fn=fitness_fn,
@@ -336,7 +344,7 @@ def evolutionary_search(
 
         # Evaluate and rank with NSGA-II
         _evaluate_population(population, fitness_fn, novelty_fn)
-        nsga2_rank(population)
+        nsga2_rank(population, objectives=resolve_objectives(config.objective_profile))
         population = _enforce_population_diversity(
             population=population,
             fitness_fn=fitness_fn,

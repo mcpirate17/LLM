@@ -84,7 +84,7 @@ class TestResultsAnalysisAccounting(unittest.TestCase):
 
             row = nb.conn.execute(
                 "SELECT stage0_passed, stage1_passed, stage_at_death "
-                "FROM program_results WHERE experiment_id = ?",
+                "FROM program_results_compat WHERE experiment_id = ?",
                 (exp_id,),
             ).fetchone()
 
@@ -135,12 +135,12 @@ class TestResultsAnalysisAccounting(unittest.TestCase):
             nb.flush_writes()
 
             rows = nb.conn.execute(
-                "SELECT COUNT(*) AS n FROM program_results WHERE graph_fingerprint = ?",
+                "SELECT COUNT(*) AS n FROM program_results_compat WHERE graph_fingerprint = ?",
                 ("fp_existing_evolution",),
             ).fetchone()
             self.assertEqual(int(rows["n"]), 1)
             evo_rows = nb.conn.execute(
-                "SELECT COUNT(*) AS n FROM program_results WHERE experiment_id = ?",
+                "SELECT COUNT(*) AS n FROM program_results_compat WHERE experiment_id = ?",
                 (exp_id,),
             ).fetchone()
             self.assertEqual(int(evo_rows["n"]), 0)
@@ -172,7 +172,7 @@ class TestResultsAnalysisAccounting(unittest.TestCase):
             nb.flush_writes()
 
             row = nb.conn.execute(
-                "SELECT result_id FROM program_results WHERE graph_fingerprint = ?",
+                "SELECT result_id FROM program_results_compat WHERE graph_fingerprint = ?",
                 ("fp_evolution_screening",),
             ).fetchone()
             self.assertIsNotNone(row)

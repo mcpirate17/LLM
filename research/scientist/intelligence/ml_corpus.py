@@ -556,6 +556,13 @@ def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
     }
 
 
+def _program_results_read_table(conn: sqlite3.Connection) -> str:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE name = 'program_results_compat' LIMIT 1"
+    ).fetchone()
+    return "program_results_compat" if row else "program_results"
+
+
 def _has_trust_columns(conn: sqlite3.Connection, table: str) -> bool:
     return {"trust_label", "comparability_label"}.issubset(_table_columns(conn, table))
 
@@ -687,6 +694,7 @@ def _fallback_graph_training_rows(db_path: str) -> List[Dict[str, Any]]:
 
     conn = get_notebook_conn(db_path)
     pr_cols = _table_columns(conn, "program_results")
+    pr_table = _program_results_read_table(conn)
     where = [
         "TRIM(COALESCE(graph_json, '')) <> ''",
         "graph_json <> '{}'",
@@ -712,7 +720,7 @@ def _fallback_graph_training_rows(db_path: str) -> List[Dict[str, Any]]:
         f"""
         SELECT graph_json, stage1_passed, wikitext_perplexity, loss_ratio,
                stage0_passed, stage05_passed, timestamp{metric_version_select}
-        FROM program_results
+        FROM {pr_table}
         WHERE {" AND ".join(where)}
         """
     ).fetchall()
@@ -794,6 +802,7 @@ def _fallback_predictor_training_rows(db_path: str) -> List[Dict[str, Any]]:
 
     conn = get_notebook_conn(db_path)
     pr_cols = _table_columns(conn, "program_results")
+    pr_table = _program_results_read_table(conn)
     where = [
         "TRIM(COALESCE(pr.graph_json, '')) <> ''",
         "pr.graph_json <> '{}'",
@@ -817,7 +826,7 @@ def _fallback_predictor_training_rows(db_path: str) -> List[Dict[str, Any]]:
                COALESCE(l.investigation_loss_ratio, pr.loss_ratio) AS target_loss_ratio,
                COALESCE(l.tier, 'screening') AS tier,
                pr.timestamp
-        FROM program_results pr
+        FROM {pr_table} pr
         LEFT JOIN leaderboard l ON l.result_id = pr.result_id
         WHERE {" AND ".join(where)}
         """
@@ -867,6 +876,7 @@ def _fallback_screening_predictor_rows(db_path: str) -> List[Dict[str, Any]]:
 
     conn = get_notebook_conn(db_path)
     pr_cols = _table_columns(conn, "program_results")
+    pr_table = _program_results_read_table(conn)
     use_explicit_flags = "data_provenance_json" in pr_cols
     where = [
         "TRIM(COALESCE(pr.graph_json, '')) <> ''",
@@ -940,7 +950,7 @@ def _fallback_screening_predictor_rows(db_path: str) -> List[Dict[str, Any]]:
                pr.fp_id_collapse_rate, pr.fp_jacobian_spectral_norm,
                pr.diagnostic_score, pr.cross_task_score,
                l.composite_score{metric_version_select}
-        FROM program_results pr
+        FROM {pr_table} pr
         LEFT JOIN leaderboard l ON l.result_id = pr.result_id
         WHERE {" AND ".join(where)}
         """
@@ -1261,6 +1271,7 @@ def _fallback_graph_analysis_rows(db_path: str) -> List[Dict[str, Any]]:
 
     conn = get_notebook_conn(db_path)
     pr_cols = _table_columns(conn, "program_results")
+    pr_table = _program_results_read_table(conn)
     select_cols = _graph_analysis_select_cols(pr_cols)
     where = [
         "TRIM(COALESCE(graph_json, '')) <> ''",
@@ -1270,7 +1281,7 @@ def _fallback_graph_analysis_rows(db_path: str) -> List[Dict[str, Any]]:
     rows = conn.execute(
         f"""
         SELECT {", ".join(select_cols)}
-        FROM program_results
+        FROM {pr_table}
         WHERE {" AND ".join(where)}
         """
     ).fetchall()

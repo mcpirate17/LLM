@@ -184,8 +184,9 @@ def _load_db_indexes(
 ) -> tuple[dict[str, sqlite3.Row], dict[str, list[sqlite3.Row]]]:
     conn.row_factory = sqlite3.Row
     select_cols = ["result_id", "graph_fingerprint", *AR_VALIDATION_COLUMNS.keys()]
+    table = _program_results_read_table(conn)
     rows = conn.execute(
-        f"SELECT {', '.join(select_cols)} FROM program_results_compat",
+        f"SELECT {', '.join(select_cols)} FROM {table}",
     ).fetchall()
     by_result_id: dict[str, sqlite3.Row] = {}
     by_fingerprint: dict[str, list[sqlite3.Row]] = {}
@@ -197,6 +198,13 @@ def _load_db_indexes(
         if fp:
             by_fingerprint.setdefault(fp, []).append(row)
     return by_result_id, by_fingerprint
+
+
+def _program_results_read_table(conn: sqlite3.Connection) -> str:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE name = 'program_results_compat' LIMIT 1"
+    ).fetchone()
+    return "program_results_compat" if row else "program_results"
 
 
 def match_csv_row(
@@ -351,8 +359,9 @@ def apply_import_decisions(
             "imported_at_unix": round(now, 3),
         }
         if "data_provenance_json" in columns:
+            table = _program_results_read_table(conn)
             row = conn.execute(
-                "SELECT data_provenance_json FROM program_results_compat WHERE result_id = ?",
+                f"SELECT data_provenance_json FROM {table} WHERE result_id = ?",
                 (decision.result_id,),
             ).fetchone()
             raw = row["data_provenance_json"] if row else None

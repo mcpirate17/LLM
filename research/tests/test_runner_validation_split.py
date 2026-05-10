@@ -107,7 +107,7 @@ class TestChampionConfirmationPolicy(unittest.TestCase):
                 self._rows = []
 
             def execute(self, sql, params=None):
-                if "FROM program_results pr" in sql:
+                if "program_results" in sql:
                     self._rows = [
                         {
                             "result_id": "replay-rid",

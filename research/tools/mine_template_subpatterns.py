@@ -32,6 +32,9 @@ import sys
 from collections import Counter
 from pathlib import Path
 
+from research.meta_analysis.routing_decision_analytics import (
+    _program_results_read_table,
+)
 from research.scientist.notebook.graph_artifacts import resolve_graph_json_value
 
 REPO = Path(__file__).resolve().parents[2]
@@ -70,13 +73,15 @@ DEFAULT_CHAIN_LENGTHS = (3, 4)
 
 def fetch_cohort() -> list[dict]:
     conn = sqlite3.connect(f"file:{LAB}?mode=ro&immutable=0", uri=True)
+    conn.row_factory = sqlite3.Row
+    pr_table = _program_results_read_table(conn)
     cur = conn.execute(
-        """
+        f"""
         SELECT pr.result_id,
                pr.language_control_s05_sentence_assoc_score AS sa,
                pr.failure_op,
                pr.graph_json
-        FROM program_results_compat pr
+        FROM {pr_table} pr
         LEFT JOIN leaderboard l ON l.result_id = pr.result_id
         WHERE pr.language_control_s05_sentence_assoc_score IS NOT NULL
           AND COALESCE(l.is_reference, 0) = 0

@@ -594,6 +594,110 @@ def record_template_slot_binding(
     graph.metadata.setdefault("template_slot_usage", []).append(entry)
 
 
+def _json_safe_value(value: Any) -> Any:
+    if isinstance(value, (bool, int, float, str)) or value is None:
+        return value
+    return str(value)
+
+
+def sample_routing_choice(
+    rng: random.Random,
+    choices: Sequence[Any],
+    *,
+    graph: ComputationGraph,
+    template_name: str,
+    decision_key: str,
+    context: str | None = None,
+    source: str = "rng_choice",
+) -> Any:
+    """Sample from a discrete set and persist the decision in one call.
+
+    Replaces the ``value = rng.choice(choices); record_routing_decision(...)``
+    pattern in routing templates. Returns the sampled value so callers can
+    use it directly in op configs.
+    """
+    value = rng.choice(list(choices))
+    record_routing_decision(
+        graph,
+        template_name=template_name,
+        decision_key=decision_key,
+        value=value,
+        choices=choices,
+        source=source,
+        context=context,
+    )
+    return value
+
+
+def record_routing_decision(
+    graph: ComputationGraph,
+    *,
+    template_name: str,
+    decision_key: str,
+    value: Any,
+    choices: Sequence[Any] | None = None,
+    range_low: float | None = None,
+    range_high: float | None = None,
+    source: str = "rng_choice",
+    context: str | None = None,
+) -> None:
+    """Persist a routing-knob decision so future policies can learn from it.
+
+    Captures the value sampled, the space it was sampled from, the policy
+    source, and template/instance context on graph.metadata["routing_decisions"].
+    When a learned sampler eventually replaces rng.choice, callers flip the
+    source string (e.g. "thompson", "ucb", "surrogate") and the same record
+    layout carries the new policy's metadata.
+    """
+    template_instance = int(graph.metadata.get("_active_template_instance", 0) or 0)
+    entry: Dict[str, Any] = {
+        "template_name": str(template_name),
+        "template_instance": template_instance,
+        "decision_key": str(decision_key),
+        "decision_canonical": f"{template_name}.{decision_key}",
+        "value": _json_safe_value(value),
+        "source": str(source),
+    }
+    if choices is not None:
+        entry["choices"] = [_json_safe_value(c) for c in choices]
+    if range_low is not None:
+        entry["range_low"] = float(range_low)
+    if range_high is not None:
+        entry["range_high"] = float(range_high)
+    if context:
+        entry["context"] = str(context)
+    graph.metadata.setdefault("routing_decisions", []).append(entry)
+    _record_routing_decision_overlay_if_enabled(graph, entry)
+
+
+def _record_routing_decision_overlay_if_enabled(
+    graph: ComputationGraph, entry: Dict[str, Any]
+) -> None:
+    """Attach advisory AR/binding overlay for opt-in routing analysis."""
+    if not graph.metadata.get("ar_binding_overlay_enabled"):
+        return
+    try:
+        from research.meta_analysis.ar_binding_overlay import (
+            overlay_for_routing_decision,
+        )
+    except Exception:
+        return
+    overlay = overlay_for_routing_decision(
+        str(entry.get("template_name") or ""),
+        str(entry.get("decision_key") or ""),
+        entry.get("value"),
+    )
+    graph.metadata.setdefault("routing_decision_overlay", []).append(
+        {
+            "decision_canonical": entry.get("decision_canonical"),
+            "template_name": entry.get("template_name"),
+            "decision_key": entry.get("decision_key"),
+            "value": entry.get("value"),
+            "overlay": overlay,
+        }
+    )
+
+
 def _fix_dim(graph: ComputationGraph, node_id: int) -> int:
     """Add projection to fix dimension back to model_dim if needed.
 

@@ -75,7 +75,7 @@ class TestCrossExperimentDedupGate(unittest.TestCase):
         self.nb.flush_writes()
         self.assertTrue(rid)
         row = self.nb.conn.execute(
-            "SELECT intentional_rerun_reason FROM program_results WHERE result_id = ?",
+            "SELECT intentional_rerun_reason FROM program_results_compat WHERE result_id = ?",
             (rid,),
         ).fetchone()
         self.assertEqual(row["intentional_rerun_reason"], "validation_promotion")

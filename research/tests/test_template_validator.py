@@ -54,3 +54,32 @@ def test_filter_validate_only_keeps_compile_failures():
     # When require_compile=False, we keep candidates that validate even if
     # compile would fail. This case validates+compiles, so it stays in.
     assert filter_to_passing([cand], require_compile=False) == [cand]
+
+
+def test_phase2_forward_backward_smoke_passes_on_simple_chain():
+    """Healthy chain should pass forward + backward smoke test."""
+    result = validate_chain(["linear_proj", "rmsnorm"], model_dim=64)
+    assert result["forward_passed"]
+    assert result["backward_passed"]
+    assert not result["output_has_nan"]
+    assert not result["output_has_inf"]
+    assert result["param_grad_finite"]
+
+
+def test_phase2_run_smoke_false_skips_runtime_check():
+    """When run_smoke=False, only Phase 1 (build+validate+compile) runs."""
+    result = validate_chain(["linear_proj", "rmsnorm"], model_dim=64, run_smoke=False)
+    assert result["compile_passed"]
+    assert not result["forward_passed"]  # never attempted
+    assert not result["backward_passed"]
+
+
+def test_filter_to_passing_with_backward_gate():
+    """require_backward filters out compile-passing but smoke-failing chains."""
+    cand_good = {"chain": ["linear_proj", "rmsnorm"]}
+    annotate_candidates_with_validation([cand_good], model_dim=64)
+    # The good chain passes backward, so it should survive the strictest gate.
+    passing = filter_to_passing(
+        [cand_good], require_forward=True, require_backward=True
+    )
+    assert passing == [cand_good]

@@ -80,7 +80,7 @@ def _load_synthesis_downstream_rates(
                     pr.experiment_id,
                     AVG(COALESCE(l.investigation_passed, 0)) AS investigate_rate,
                     AVG(COALESCE(l.validation_passed, 0)) AS validation_rate
-                FROM program_results pr
+                FROM program_results_compat pr
                 LEFT JOIN leaderboard l ON l.result_id = pr.result_id
                 WHERE pr.experiment_id IN ({placeholders})
                   AND COALESCE(pr.stage1_passed, 0) = 1
@@ -755,7 +755,7 @@ class _SynthesisMixin:
                 )
             row = nb.conn.execute(
                 """SELECT experiment_id
-                   FROM program_results
+                   FROM program_results_compat
                    WHERE result_id = ?""",
                 (result_id,),
             ).fetchone()
@@ -904,7 +904,7 @@ class _SynthesisMixin:
                 logger.debug("Ablation dedup check failed: %s", e)
 
         if strong_corr and top_signal_interpretable:
-            row = nb.conn.execute("""SELECT graph_json, loss_ratio FROM program_results
+            row = nb.conn.execute("""SELECT graph_json, loss_ratio FROM program_results_compat
                    WHERE stage1_passed = 1 AND graph_json IS NOT NULL
                    ORDER BY loss_ratio ASC NULLS LAST LIMIT 1""").fetchone()
             if row and row["graph_json"]:
@@ -1734,7 +1734,7 @@ class _SynthesisMixin:
                        stage1_passed, graph_n_ops, timestamp,
                        fp_interaction_hierarchy, fp_cka_vs_transformer,
                        fp_cka_vs_ssm, fingerprint_json
-                FROM program_results
+                FROM program_results_compat
                 WHERE stage1_passed = 1
                   AND experiment_id IN ({placeholders})
                 ORDER BY loss_ratio ASC NULLS LAST, novelty_score DESC NULLS LAST, timestamp DESC, result_id ASC

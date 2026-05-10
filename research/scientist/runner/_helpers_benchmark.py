@@ -914,10 +914,14 @@ def _record_capability_ranking_result(
         set_params.append(value)
     if set_parts:
         set_params.append(source_result_id)
-        nb.conn.execute(
-            f"UPDATE program_results SET {', '.join(set_parts)} WHERE result_id = ?",
-            set_params,
+        update_sql = (
+            f"UPDATE program_results SET {', '.join(set_parts)} WHERE result_id = ?"
         )
+        if hasattr(nb, "_submit_write"):
+            nb._submit_write(update_sql, set_params)
+            nb.flush_writes()
+        else:
+            nb.conn.execute(update_sql, set_params)
         nb._maybe_commit()
 
 
@@ -1632,10 +1636,14 @@ def _record_investigation_result(
         set_params.append(value)
     if set_parts:
         set_params.append(source_result_id)
-        nb.conn.execute(
-            f"UPDATE program_results SET {', '.join(set_parts)} WHERE result_id = ?",
-            set_params,
+        update_sql = (
+            f"UPDATE program_results SET {', '.join(set_parts)} WHERE result_id = ?"
         )
+        if hasattr(nb, "_submit_write"):
+            nb._submit_write(update_sql, set_params)
+            nb.flush_writes()
+        else:
+            nb.conn.execute(update_sql, set_params)
         nb.upsert_induction_metric_v2(
             graph_fingerprint=str(
                 benchmark_result.get("graph_fingerprint")

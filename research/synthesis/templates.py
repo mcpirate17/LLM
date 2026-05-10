@@ -400,6 +400,15 @@ DEFAULT_TEMPLATE_WEIGHTS: Dict[str, float] = {
     **ATTENTION_TEMPLATE_DEFAULT_WEIGHTS,
 }
 
+# Auto-register validated mined templates from the chain-mining pipeline.
+# No-op unless ARIA_ENABLE_MINED_TEMPLATES is set, which keeps the default
+# template registry deterministic for tests and CI. Mined templates are
+# registered with a weight of 0.5 (below the default 1.0) to avoid crowding
+# out human-designed templates until they prove out in live screening.
+from ._templates_mined import register_mined_templates as _register_mined_templates  # noqa: E402
+
+_register_mined_templates(TEMPLATES, DEFAULT_TEMPLATE_WEIGHTS)
+
 _TEMPLATE_NAME_ORDER: Tuple[str, ...] = tuple(TEMPLATES.keys())
 _TEMPLATE_DEFAULT_WEIGHT_VECTOR: Tuple[float, ...] = tuple(
     float(DEFAULT_TEMPLATE_WEIGHTS.get(name, 1.0)) for name in _TEMPLATE_NAME_ORDER

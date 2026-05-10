@@ -39,6 +39,20 @@ def make_identity_handler(component_type: str):
     return ComponentHandler
 
 
+def make_torch_unary_handler(op_fn, *, native_op_name: str | None = None):
+    """Create a shared simple unary torch fallback handler."""
+    from aria_designer.components.base import make_unary_handler
+
+    return make_unary_handler(op_fn, native_op_name=native_op_name)
+
+
+def make_torch_binary_handler(op_fn, *, native_op_name: str | None = None):
+    """Create a shared simple binary torch fallback handler."""
+    from aria_designer.components.base import make_binary_handler
+
+    return make_binary_handler(op_fn, native_op_name=native_op_name)
+
+
 class _StubModule(nn.Module):
     """Bare module stub for mathspace execute functions.
 

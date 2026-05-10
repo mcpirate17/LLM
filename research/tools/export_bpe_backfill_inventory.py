@@ -54,6 +54,9 @@ def export_inventory(
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
 
+    with sqlite3.connect(str(db_path)) as conn:
+        table = _program_results_read_table(conn)
+
     sql = f"""
         SELECT
             pr.graph_fingerprint,
@@ -70,7 +73,7 @@ def export_inventory(
             GROUP_CONCAT(DISTINCT COALESCE(lb.tier, 'off_leaderboard')) AS tiers,
             GROUP_CONCAT(DISTINCT COALESCE(pr.trust_label, '')) AS trust_labels,
             GROUP_CONCAT(DISTINCT COALESCE(pr.comparability_label, '')) AS comparability_labels
-        FROM program_results_compat pr
+        FROM {table} pr
         LEFT JOIN leaderboard lb ON lb.result_id = pr.result_id
         WHERE pr.graph_fingerprint IS NOT NULL
           AND {_candidate_where(scope)}
@@ -100,6 +103,13 @@ def export_inventory(
         json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
     return {"output_path": str(output), "fingerprint_count": len(rows)}
+
+
+def _program_results_read_table(conn: sqlite3.Connection) -> str:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE name = 'program_results_compat' LIMIT 1"
+    ).fetchone()
+    return "program_results_compat" if row else "program_results"
 
 
 def main() -> None:

@@ -28,6 +28,14 @@ for _m in _MOTIF_LIST:
 
 ALL_MOTIFS: Tuple[Motif, ...] = tuple(_MOTIF_LIST)
 
+# Auto-register untapped-pair motifs from the pair_proposer pipeline.
+# No-op unless ARIA_ENABLE_MINED_MOTIFS is set; mined motifs land in a
+# dedicated 'mined_pair' class disjoint from the validated catalog so they
+# only appear when a template explicitly requests that slot class.
+from ._motifs_mined import register_mined_motifs as _register_mined_motifs  # noqa: E402
+
+_register_mined_motifs(VALIDATED_MOTIFS, MOTIFS_BY_CLASS)
+
 # Alias for backward compatibility (used by execution_candidates.py)
 MOTIF_LIBRARY: Dict[str, Motif] = VALIDATED_MOTIFS
 

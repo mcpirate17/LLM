@@ -354,7 +354,7 @@ class _ClusteringMixin:
                    SUM(CASE WHEN COALESCE(stage0_passed, 0) = 0 THEN 1 ELSE 0 END) as n_compile_fail,
                    SUM(CASE WHEN COALESCE(stage0_passed, 0) = 1 AND COALESCE(stage05_passed, 0) = 0 THEN 1 ELSE 0 END) as n_train_fail,
                    SUM(CASE WHEN COALESCE(stage05_passed, 0) = 1 AND COALESCE(stage1_passed, 0) = 0 THEN 1 ELSE 0 END) as n_stage1_fail
-            FROM program_results WHERE experiment_id IN ({placeholders}) GROUP BY experiment_id
+            FROM program_results_compat WHERE experiment_id IN ({placeholders}) GROUP BY experiment_id
         """,
             tuple(exp_ids),
         ).fetchall()
@@ -364,7 +364,7 @@ class _ClusteringMixin:
         error_rows = self.nb.conn.execute(
             f"""
             SELECT experiment_id, error_type, COUNT(*) as n
-            FROM program_results WHERE experiment_id IN ({placeholders})
+            FROM program_results_compat WHERE experiment_id IN ({placeholders})
             AND error_type IS NOT NULL AND TRIM(error_type) != '' GROUP BY experiment_id, error_type
         """,
             tuple(exp_ids),
@@ -409,7 +409,7 @@ class _ClusteringMixin:
         seq_rows = self.nb.conn.execute(
             f"""
             SELECT experiment_id, stage1_passed, loss_ratio, novelty_score
-            FROM program_results WHERE experiment_id IN ({placeholders})
+            FROM program_results_compat WHERE experiment_id IN ({placeholders})
             ORDER BY experiment_id ASC, timestamp ASC
         """,
             tuple(exp_ids),

@@ -48,7 +48,7 @@ def _leaderboard_backed_program_detail(nb, result_id: str) -> Optional[Dict[str,
 
     merged: Dict[str, Any] = dict(lb)
     pr = nb.conn.execute(
-        "SELECT * FROM program_results WHERE result_id = ?",
+        "SELECT * FROM program_results_compat WHERE result_id = ?",
         (result_id,),
     ).fetchone()
     if pr:
@@ -175,7 +175,7 @@ def attach_candidate_confirmation_status(nb, program: Dict[str, Any]) -> None:
                 replay_result = nb.conn.execute(
                     """
                     SELECT result_id
-                    FROM program_results
+                    FROM program_results_compat
                     WHERE experiment_id = ?
                       AND COALESCE(model_source, '') = 'exact_graph_replay'
                     ORDER BY timestamp DESC
@@ -221,13 +221,25 @@ def attach_candidate_confirmation_status(nb, program: Dict[str, Any]) -> None:
 
 def _get_cached_program_explanation(nb, result_id: str) -> Optional[str]:
     row = nb.conn.execute(
-        "SELECT llm_explanation FROM program_results WHERE result_id = ?",
+        "SELECT llm_explanation FROM program_results_compat WHERE result_id = ?",
         (result_id,),
     ).fetchone()
     if not row:
         return None
     explanation = row[0] if isinstance(row, (tuple, list)) else row["llm_explanation"]
     return explanation or None
+
+
+def _cache_program_explanation(nb, result_id: str, explanation: str) -> None:
+    for table in ("graph_runs", "program_results"):
+        try:
+            nb.conn.execute(
+                f"UPDATE {table} SET llm_explanation = ? WHERE result_id = ?",
+                (explanation, result_id),
+            )
+        except Exception:
+            continue
+    nb.conn.commit()
 
 
 def _generate_program_explanation(
@@ -240,9 +252,5 @@ def _generate_program_explanation(
     explanation = aria.explain_fingerprint(build_program_context(program))
     if not explanation:
         return None
-    nb.conn.execute(
-        "UPDATE program_results SET llm_explanation = ? WHERE result_id = ?",
-        (explanation, result_id),
-    )
-    nb.conn.commit()
+    _cache_program_explanation(nb, result_id, explanation)
     return explanation

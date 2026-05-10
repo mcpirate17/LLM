@@ -51,7 +51,7 @@ def _load_done(nb: LabNotebook) -> list[dict[str, Any]]:
     sql = f"""
         SELECT pr.graph_fingerprint, pr.result_id, l.tier, l.composite_score,
                {feature_cols}, pr.{TARGET}
-        FROM program_results pr
+        FROM program_results_compat pr
         JOIN leaderboard l ON l.result_id = pr.result_id
         WHERE pr.{TARGET} IS NOT NULL
     """
@@ -68,7 +68,7 @@ def _load_remaining(nb: LabNotebook, tiers: tuple[str, ...]) -> list[dict[str, A
     sql = f"""
         SELECT pr.graph_fingerprint, pr.result_id, l.tier, l.composite_score,
                {feature_cols}
-        FROM program_results pr
+        FROM program_results_compat pr
         JOIN leaderboard l ON l.result_id = pr.result_id
         WHERE pr.{TARGET} IS NULL
           AND l.tier IN ({placeholders})

@@ -727,6 +727,7 @@ def test_promote_validation_candidate_uses_fingerprint_canonical_row():
                 novelty_score=0.63,
                 novelty_confidence=0.72,
                 fp_jacobian_spectral_norm=1.4,
+                induction_intermediate_auc=0.12,
             ),
         )
         _mark_promotable(nb, canonical_rid)
@@ -751,6 +752,7 @@ def test_promote_validation_candidate_uses_fingerprint_canonical_row():
                 novelty_score=0.63,
                 novelty_confidence=0.72,
                 fp_jacobian_spectral_norm=1.4,
+                induction_intermediate_auc=0.12,
             ),
         )
         _mark_promotable(nb, child_rid)
@@ -802,7 +804,7 @@ def test_promote_validation_candidate_uses_fingerprint_canonical_row():
             """
             SELECT COUNT(*) AS n
             FROM leaderboard l
-            JOIN program_results pr ON pr.result_id = l.result_id
+            JOIN program_results_compat pr ON pr.result_id = l.result_id
             WHERE pr.graph_fingerprint = ?
             """,
             ("fp_validation_fingerprint",),
@@ -940,7 +942,11 @@ def test_sync_fingerprint_leaderboard_keeps_partial_investigation_visible():
             graph_fingerprint="fp_sync_partial_investigation",
             graph_json="{}",
             intentional_rerun_reason="exact_graph_replay",
-            **_stage1_kwargs(loss_ratio=0.54, novelty_score=0.61),
+            **_stage1_kwargs(
+                loss_ratio=0.54,
+                novelty_score=0.61,
+                induction_intermediate_auc=0.12,
+            ),
         )
         nb.flush_writes()
 
@@ -1010,6 +1016,7 @@ def test_record_investigation_result_persists_best_training_curve():
                 "blimp_status": "ok",
                 "blimp_n_subtasks": 1,
                 "induction_screening_auc": 0.44,
+                "induction_intermediate_auc": 0.12,
                 "binding_screening_auc": 0.12,
                 "binding_screening_composite": 0.25,
                 "ar_legacy_auc": 0.01,
@@ -1222,6 +1229,7 @@ def test_plain_exact_graph_replay_child_counts_in_fingerprint_aggregates():
                 loss_ratio=0.50,
                 novelty_score=0.40,
                 hellaswag_acc=0.40,
+                induction_intermediate_auc=0.12,
                 model_source="exact_graph_replay",
                 intentional_rerun_reason="exact_graph_replay",
             ),

@@ -24,7 +24,7 @@ class _GateStructureMixin:
         rows = self.nb.conn.execute("""
             SELECT result_id, stage05_passed, stage1_passed, discovery_loss_ratio,
                    validation_loss_ratio, error_type
-            FROM program_results
+            FROM program_results_compat
             WHERE stage0_passed = 1
         """).fetchall()
 
@@ -80,7 +80,7 @@ class _GateStructureMixin:
             SELECT result_id, stage05_passed, stage1_passed,
                    discovery_loss_ratio, validation_loss_ratio,
                    error_type, timestamp
-            FROM program_results
+            FROM program_results_compat
             WHERE stage0_passed = 1 AND timestamp > ?
             ORDER BY timestamp
         """,
@@ -148,7 +148,7 @@ class _GateStructureMixin:
                    graph_n_params_estimate, graph_n_unique_ops,
                    graph_uses_math_spaces, graph_uses_frequency_domain,
                    graph_has_gradient_path
-            FROM program_results
+            FROM program_results_compat
             WHERE graph_n_ops IS NOT NULL
         """).fetchall()
 

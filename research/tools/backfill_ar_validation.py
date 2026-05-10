@@ -26,6 +26,7 @@ from research.tools.check_backup_freshness import main as check_backup_freshness
 from research.tools.import_ar_validation_fingerprint_sweep import (
     AR_VALIDATION_COLUMNS,
     _merge_provenance,
+    _program_results_read_table,
     _table_columns,
     ensure_ar_validation_columns,
 )
@@ -57,8 +58,9 @@ def has_existing_ar_validation_result(
     ar_validation_columns = [name for name in AR_VALIDATION_COLUMNS if name in columns]
     if not ar_validation_columns:
         return False
+    table = _program_results_read_table(conn)
     row = conn.execute(
-        f"SELECT {', '.join(ar_validation_columns)} FROM program_results WHERE result_id = ?",
+        f"SELECT {', '.join(ar_validation_columns)} FROM {table} WHERE result_id = ?",
         (result_id,),
     ).fetchone()
     if row is None:
@@ -106,6 +108,7 @@ def select_backfill_rows(
             params.extend(fingerprints)
     if not overwrite:
         where.append(_missing_ar_validation_clause())
+    table = _program_results_read_table(conn)
     query = f"""
         SELECT
             pr.result_id,
@@ -119,7 +122,7 @@ def select_backfill_rows(
             l.composite_score,
             l.validation_loss_ratio,
             pr.loss_ratio
-        FROM program_results pr
+        FROM {table} pr
         LEFT JOIN leaderboard l ON l.result_id = pr.result_id
         WHERE {" AND ".join(where)}
         ORDER BY {order_clause}
@@ -152,8 +155,9 @@ def persist_ar_validation_result(
     if not items:
         return False
     if "data_provenance_json" in columns:
+        table = _program_results_read_table(conn)
         row = conn.execute(
-            "SELECT data_provenance_json FROM program_results WHERE result_id = ?",
+            f"SELECT data_provenance_json FROM {table} WHERE result_id = ?",
             (result_id,),
         ).fetchone()
         raw = row["data_provenance_json"] if row else None

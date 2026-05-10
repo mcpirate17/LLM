@@ -19,6 +19,7 @@ from ._template_helpers import (
     _pick_compatible_motif,
     _pick_compatible_motif_from_classes,
     record_template_slot_binding,
+    sample_routing_choice,
     template_add_op as _add,
     template_add_residual as _residual,
 )
@@ -92,15 +93,21 @@ def tpl_intelligent_multilane_router(
         context="intelligent_multilane_router.token_gate_skip",
     )
 
-    easy_op = rng.choice(
-        (
-            "cheap_verify_blend",
-            "conv_only",
-            "conv1d_seq",
-            "linear_proj",
-            "nm_sparse_linear",
-            "default_path",
-        )
+    _easy_choices = (
+        "cheap_verify_blend",
+        "conv_only",
+        "conv1d_seq",
+        "linear_proj",
+        "nm_sparse_linear",
+        "default_path",
+    )
+    easy_op = sample_routing_choice(
+        rng,
+        _easy_choices,
+        graph=graph,
+        template_name=template_name,
+        decision_key="easy_op",
+        context="intelligent_multilane_router.easy_lane",
     )
     easy_input = stem
     if easy_op == "conv1d_seq":
@@ -114,7 +121,14 @@ def tpl_intelligent_multilane_router(
         graph,
         easy_op,
         [easy_input],
-        _single_input_op_config(easy_op, graph.model_dim, rng),
+        _single_input_op_config(
+            easy_op,
+            graph.model_dim,
+            rng,
+            graph=graph,
+            template_name=template_name,
+            context="intelligent_multilane_router.easy_lane_config",
+        ),
         context="intelligent_multilane_router.easy_mandatory",
     )
     if easy_op == "conv_only":
@@ -202,15 +216,21 @@ def tpl_intelligent_multilane_router(
         context="intelligent_multilane_router.merge_pair_triplet",
     )
 
-    medium_op = rng.choice(
-        (
-            "route_lanes",
-            "adaptive_lane_mixer",
-            "semi_structured_2_4_linear",
-            "block_sparse_linear",
-            "linear_proj",
-            "nm_sparse_linear",
-        )
+    _medium_choices = (
+        "route_lanes",
+        "adaptive_lane_mixer",
+        "semi_structured_2_4_linear",
+        "block_sparse_linear",
+        "linear_proj",
+        "nm_sparse_linear",
+    )
+    medium_op = sample_routing_choice(
+        rng,
+        _medium_choices,
+        graph=graph,
+        template_name=template_name,
+        decision_key="medium_op",
+        context="intelligent_multilane_router.medium_lane",
     )
     medium_inputs = (
         [routed_spans, routed_spans]
@@ -221,7 +241,14 @@ def tpl_intelligent_multilane_router(
         graph,
         medium_op,
         medium_inputs,
-        _single_input_op_config(medium_op, graph.model_dim, rng),
+        _single_input_op_config(
+            medium_op,
+            graph.model_dim,
+            rng,
+            graph=graph,
+            template_name=template_name,
+            context="intelligent_multilane_router.medium_lane_config",
+        ),
         context="intelligent_multilane_router.medium_mandatory",
     )
     medium_count = 0
@@ -270,15 +297,21 @@ def tpl_intelligent_multilane_router(
         [gated, hard_signal],
         context="intelligent_multilane_router.hard_seed",
     )
-    hard_op = rng.choice(
-        (
-            "adaptive_recursion",
-            "route_recursion",
-            "moe_topk",
-            "moe_2expert",
-            "state_space",
-            "linear_proj",
-        )
+    _hard_choices = (
+        "adaptive_recursion",
+        "route_recursion",
+        "moe_topk",
+        "moe_2expert",
+        "state_space",
+        "linear_proj",
+    )
+    hard_op = sample_routing_choice(
+        rng,
+        _hard_choices,
+        graph=graph,
+        template_name=template_name,
+        decision_key="hard_op",
+        context="intelligent_multilane_router.hard_lane",
     )
     hard_bridge = _add(
         graph,
@@ -301,7 +334,14 @@ def tpl_intelligent_multilane_router(
         ]
         if hard_op == "state_space"
         else hard_inputs,
-        _single_input_op_config(hard_op, graph.model_dim, rng),
+        _single_input_op_config(
+            hard_op,
+            graph.model_dim,
+            rng,
+            graph=graph,
+            template_name=template_name,
+            context="intelligent_multilane_router.hard_lane_config",
+        ),
         context="intelligent_multilane_router.hard_mandatory",
     )
     hard_count = 0
@@ -414,7 +454,16 @@ def tpl_recursive_depth_router(
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
     # Depth-adaptive routing
-    max_depth = rng.choice([2, 3, 4])
+    template_name = "recursive_depth_router"
+    _depth_choices = [2, 3, 4]
+    max_depth = sample_routing_choice(
+        rng,
+        _depth_choices,
+        graph=graph,
+        template_name=template_name,
+        decision_key="max_depth",
+        context="recursive_depth_router.depth_routing",
+    )
     depth_routed = _add(
         graph,
         "depth_weighted_proj",
@@ -481,11 +530,20 @@ def tpl_depth_token_mask_block(
         [routed],
         context="depth_token_mask_block.mask_pre_norm",
     )
+    _capacity_choices = [0.875, 0.9]
+    capacity_factor = sample_routing_choice(
+        rng,
+        _capacity_choices,
+        graph=graph,
+        template_name="depth_token_mask_block",
+        decision_key="capacity_factor",
+        context="depth_token_mask_block.mask",
+    )
     masked = _add(
         graph,
         "depth_token_mask",
         [mask_input],
-        {"capacity_factor": rng.choice([0.875, 0.9])},
+        {"capacity_factor": capacity_factor},
         context="depth_token_mask_block.mask",
     )
     mask_bypass = _residual(
@@ -524,11 +582,20 @@ def tpl_depth_token_mask_block(
     if post:
         current = _instantiate_motif(graph, current, post, rng)
     else:
+        _mlp_choices = [2.0, 3.0, 4.0]
+        mlp_ratio = sample_routing_choice(
+            rng,
+            _mlp_choices,
+            graph=graph,
+            template_name="depth_token_mask_block",
+            decision_key="mlp_ratio",
+            context="depth_token_mask_block.ffn",
+        )
         current = _add(
             graph,
             "swiglu_mlp",
             [current],
-            {"mlp_ratio": rng.choice([2.0, 3.0, 4.0])},
+            {"mlp_ratio": mlp_ratio},
             context="depth_token_mask_block.ffn",
         )
 

@@ -108,7 +108,7 @@ def _select_rows(
     ids = list(REFERENCE_TARGETS)
     placeholders = ",".join("?" for _ in ids)
     rows = conn.execute(
-        f"SELECT {', '.join(selected)} FROM program_results "
+        f"SELECT {', '.join(selected)} FROM program_results_compat "
         f"WHERE result_id IN ({placeholders})",
         ids,
     ).fetchall()

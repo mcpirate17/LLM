@@ -56,7 +56,7 @@ def test_backpopulate_payload_resolves_artifact_backed_graph_json(tmp_path):
     conn.row_factory = sqlite3.Row
     try:
         row = conn.execute(
-            "SELECT * FROM program_results WHERE result_id = 'rid-tool-artifact'"
+            "SELECT * FROM program_results_compat WHERE result_id = 'rid-tool-artifact'"
         ).fetchone()
         assert parse_artifact_pointer(row["graph_json"]) is not None
         payload = _row_to_payload(row, conn=conn, db_path=db_path)

@@ -156,7 +156,7 @@ def _latest_row_by_experiment_and_fingerprint(
     nb: LabNotebook, *, experiment_id: str, fingerprint: str
 ) -> dict[str, Any] | None:
     row = nb.conn.execute(
-        """SELECT * FROM program_results
+        """SELECT * FROM program_results_compat
            WHERE experiment_id = ? AND graph_fingerprint = ?
            ORDER BY timestamp DESC LIMIT 1""",
         (experiment_id, fingerprint),
@@ -166,7 +166,7 @@ def _latest_row_by_experiment_and_fingerprint(
 
 def _row_by_result_id(nb: LabNotebook, result_id: str) -> dict[str, Any] | None:
     row = nb.conn.execute(
-        "SELECT * FROM program_results WHERE result_id = ?",
+        "SELECT * FROM program_results_compat WHERE result_id = ?",
         (result_id,),
     ).fetchone()
     return dict(row) if row else None
@@ -177,7 +177,7 @@ def _existing_fingerprints(nb: LabNotebook, fingerprints: list[str]) -> set[str]
         return set()
     placeholders = ",".join("?" for _ in fingerprints)
     rows = nb.conn.execute(
-        f"SELECT DISTINCT graph_fingerprint FROM program_results "
+        f"SELECT DISTINCT graph_fingerprint FROM program_results_compat "
         f"WHERE graph_fingerprint IN ({placeholders})",
         tuple(fingerprints),
     ).fetchall()
@@ -195,7 +195,7 @@ def _existing_knockout_s1_fingerprints(
     placeholders = ",".join("?" for _ in fingerprints)
     passed_clause = " AND stage1_passed = 1" if stage1_passed_only else ""
     rows = nb.conn.execute(
-        f"""SELECT DISTINCT graph_fingerprint FROM program_results
+        f"""SELECT DISTINCT graph_fingerprint FROM program_results_compat
             WHERE graph_fingerprint IN ({placeholders})
               AND intentional_rerun_reason = 'proper_component_knockout_s1'
               {passed_clause}""",
@@ -368,7 +368,7 @@ def select_induction_intermediate_parents(
                pr.induction_intermediate_auc,
                pr.binding_intermediate_auc
         FROM leaderboard l
-        JOIN program_results pr ON pr.result_id = l.result_id
+        JOIN program_results_compat pr ON pr.result_id = l.result_id
         LEFT JOIN experiments e ON e.experiment_id = pr.experiment_id
         WHERE COALESCE(pr.stage1_passed, 0) = 1
           AND TRIM(COALESCE(pr.graph_json, '')) <> ''
@@ -1265,7 +1265,7 @@ def main() -> int:
             else:
                 for child in plan.children:
                     row = nb.conn.execute(
-                        """SELECT * FROM program_results
+                        """SELECT * FROM program_results_compat
                            WHERE graph_fingerprint = ?
                              AND intentional_rerun_reason = 'proper_component_knockout_s1'
                              AND stage1_passed = 1

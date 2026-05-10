@@ -89,7 +89,7 @@ class TestAblationCompleteness(unittest.TestCase):
         row = self.nb.conn.execute(
             "SELECT "
             + ",".join(S1_REQUIRED_POST_METRIC_COLUMNS)
-            + " FROM program_results WHERE result_id = ?",
+            + " FROM program_results_compat WHERE result_id = ?",
             (rid,),
         ).fetchone()
         for col in S1_REQUIRED_POST_METRIC_COLUMNS:

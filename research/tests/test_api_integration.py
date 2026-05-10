@@ -1111,6 +1111,9 @@ class TestAPI(unittest.TestCase):
         from research.scientist.api_routes.programs_routes import (
             program_detail as program_detail_mod,
         )
+        from research.scientist.api_routes.programs_routes import (
+            _shared as program_shared,
+        )
 
         calls = {"n": 0}
         original = program_detail_mod._generate_program_explanation
@@ -1118,11 +1121,7 @@ class TestAPI(unittest.TestCase):
 
             def fake_generate(nb, rid, program):
                 calls["n"] += 1
-                nb.conn.execute(
-                    "UPDATE program_results SET llm_explanation = ? WHERE result_id = ?",
-                    ("cached explanation", rid),
-                )
-                nb.conn.commit()
+                program_shared._cache_program_explanation(nb, rid, "cached explanation")
                 return "cached explanation"
 
             program_detail_mod._generate_program_explanation = fake_generate
@@ -1174,6 +1173,7 @@ class TestAPI(unittest.TestCase):
                 stage1_passed=True,
                 loss_ratio=0.21,
                 novelty_score=0.43,
+                induction_intermediate_auc=0.22,
                 **_S1_CORE_METRICS,
             )
 
@@ -3231,7 +3231,7 @@ class TestAPI(unittest.TestCase):
             """
             SELECT COUNT(*)
             FROM leaderboard l
-            JOIN program_results pr ON pr.result_id = l.result_id
+            JOIN program_results_compat pr ON pr.result_id = l.result_id
             WHERE pr.graph_fingerprint = ?
             """,
             ("fp_shared_screening_row",),

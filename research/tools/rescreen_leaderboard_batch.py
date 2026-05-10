@@ -42,6 +42,13 @@ DEFAULT_PROGRESS = Path(
 )
 
 
+def _program_results_read_table(conn: sqlite3.Connection) -> str:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE name = 'program_results_compat' LIMIT 1"
+    ).fetchone()
+    return "program_results_compat" if row else "program_results"
+
+
 def _rss_gb() -> float:
     return psutil.Process(os.getpid()).memory_info().rss / (1024**3)
 
@@ -246,6 +253,7 @@ def _select_candidates(
     """
     con = connect_readonly(db)
     try:
+        program_results_table = _program_results_read_table(con)
         clauses = [
             "TRIM(COALESCE(pr.graph_json, '')) <> ''",
             "pr.graph_json <> '{}'",
@@ -311,7 +319,7 @@ def _select_candidates(
                 l.init_sensitivity_std,
                 l.quant_int8_retention
             FROM leaderboard l
-            JOIN program_results pr ON pr.result_id = l.result_id
+            JOIN {program_results_table} pr ON pr.result_id = l.result_id
             WHERE {" AND ".join(clauses)}
             {order_clause}
             {limit_clause}
@@ -394,11 +402,12 @@ def _rescreen_one(
     before = _query_composite(nb.conn, entry_id)
     sibling_entries_before: List[Dict[str, Any]] = []
     if fp:
+        program_results_table = _program_results_read_table(nb.conn)
         rows = nb.conn.execute(
-            """
+            f"""
             SELECT l.entry_id, l.composite_score
             FROM leaderboard l
-            JOIN program_results pr ON pr.result_id = l.result_id
+            JOIN {program_results_table} pr ON pr.result_id = l.result_id
             WHERE pr.graph_fingerprint = ? AND l.entry_id != ?
             """,
             (fp, entry_id),

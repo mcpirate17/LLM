@@ -1,6 +1,6 @@
 """Python fallback kernel for tanh."""
 
 import torch
-from aria_designer.components.base import make_unary_handler
+from aria_designer.runtime.fallback_templates import make_torch_unary_handler
 
-ComponentHandler = make_unary_handler(lambda x: torch.tanh(x), native_op_name="tanh")
+ComponentHandler = make_torch_unary_handler(torch.tanh, native_op_name="tanh")

@@ -111,12 +111,13 @@ def graph_json_stats(db_path: Path) -> dict[str, Any]:
     with connect_readonly(db_path) as conn:
         if not _column_exists(conn, "program_results", "graph_json"):
             return {"available": False, "reason": "missing_program_results_graph_json"}
+        table = _program_results_read_table(conn)
         row = conn.execute(
-            """
+            f"""
             SELECT COUNT(*) AS rows,
                    COALESCE(SUM(LENGTH(graph_json)), 0) AS total_bytes,
                    COALESCE(MAX(LENGTH(graph_json)), 0) AS max_bytes
-            FROM program_results_compat
+            FROM {table}
             WHERE graph_json IS NOT NULL
               AND TRIM(CAST(graph_json AS TEXT)) <> ''
             """
@@ -127,6 +128,13 @@ def graph_json_stats(db_path: Path) -> dict[str, Any]:
         "total_bytes": int(row["total_bytes"] or 0),
         "max_bytes": int(row["max_bytes"] or 0),
     }
+
+
+def _program_results_read_table(conn: sqlite3.Connection) -> str:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE name = 'program_results_compat' LIMIT 1"
+    ).fetchone()
+    return "program_results_compat" if row else "program_results"
 
 
 def db_pointer_summary(db_path: Path) -> dict[str, Any]:

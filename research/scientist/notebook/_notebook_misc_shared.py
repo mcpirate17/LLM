@@ -712,7 +712,7 @@ def _summarize_template_stat(stat: Dict[str, Any]) -> Dict[str, Any]:
         "screening_metric_coverage": {
             "induction": len(induction_screening_aucs),
             "binding": len(binding_screening_aucs),
-            "binding_composite": len(binding_screening_composites),
+            "binding_screening_composite": len(binding_screening_composites),
             "associative_recall": len(ar_legacy_aucs),
             "hellaswag": len(hellaswag_accs) + len(screening_hellaswag_accs),
             "blimp": len(blimp_overall_accuracies),

@@ -234,7 +234,7 @@ def _load_template_op_context(
 ) -> dict[str, dict[str, Any]]:
     rows = conn.execute(
         """SELECT graph_json
-           FROM program_results
+           FROM program_results_compat
            WHERE TRIM(COALESCE(graph_json, '')) <> ''
              AND graph_json <> '{}'"""
     ).fetchall()

@@ -232,7 +232,7 @@ def latest_pr_row(fp: str, since_ts: float) -> Optional[dict]:
         """SELECT result_id, timestamp, stage0_passed, stage05_passed,
                   stage1_passed, wikitext_perplexity, n_train_steps,
                   screening_wikitext_metric_version
-           FROM program_results
+           FROM program_results_compat
            WHERE graph_fingerprint = ?
              AND timestamp > ?
            ORDER BY timestamp DESC LIMIT 1""",

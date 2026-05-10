@@ -244,37 +244,81 @@ def _externalize_column(
     }
 
 
-def _cold_graph_where() -> tuple[str, tuple[Any, ...]]:
+def _cold_graph_where(table: str) -> tuple[str, tuple[Any, ...]]:
     active_tiers = tuple(sorted(ACTIVE_LEADERBOARD_TIERS))
     promotable_trust = tuple(sorted(PROMOTABLE_TRUST))
     promotable_comparability = tuple(sorted(PROMOTABLE_COMPARABILITY))
+    if table != "graphs":
+        return (
+            f"""
+                  AND NOT EXISTS (
+                    SELECT 1 FROM leaderboard l
+                    WHERE l.result_id = graph_runs.result_id
+                      AND COALESCE(l.tier, '') IN ({",".join("?" for _ in active_tiers)})
+                  )
+                  AND NOT (
+                    COALESCE(graph_runs.trust_label, '') IN ({",".join("?" for _ in promotable_trust)})
+                    AND COALESCE(graph_runs.comparability_label, '') IN ({",".join("?" for _ in promotable_comparability)})
+                  )
+                  AND NOT (
+                    graph_runs.induction_intermediate_auc IS NOT NULL
+                    OR graph_runs.binding_intermediate_auc IS NOT NULL
+                    OR graph_runs.ar_intermediate_auc IS NOT NULL
+                    OR graph_runs.induction_validation_auc IS NOT NULL
+                    OR graph_runs.ar_validation_rank_score IS NOT NULL
+                    OR graph_runs.binding_multislot_auc IS NOT NULL
+                  )
+                  AND NOT EXISTS (
+                    SELECT 1 FROM causal_rule_evidence ev
+                    WHERE ev.parent_result_id = graph_runs.result_id
+                  )
+                  AND NOT EXISTS (
+                    SELECT 1 FROM causal_ablation_child_observations obs
+                    WHERE obs.parent_result_id = graph_runs.result_id
+                       OR obs.child_result_id = graph_runs.result_id
+                  )
+            """,
+            active_tiers + promotable_trust + promotable_comparability,
+        )
+
+    graph_run_match = "graph_runs.graph_fingerprint = graphs.graph_fingerprint"
     return (
         f"""
               AND NOT EXISTS (
-                SELECT 1 FROM leaderboard l
-                WHERE l.result_id = program_results.result_id
+                SELECT 1 FROM graph_runs
+                JOIN leaderboard l ON l.result_id = graph_runs.result_id
+                WHERE {graph_run_match}
                   AND COALESCE(l.tier, '') IN ({",".join("?" for _ in active_tiers)})
               )
-              AND NOT (
-                COALESCE(program_results.trust_label, '') IN ({",".join("?" for _ in promotable_trust)})
-                AND COALESCE(program_results.comparability_label, '') IN ({",".join("?" for _ in promotable_comparability)})
-              )
-              AND NOT (
-                program_results.induction_intermediate_auc IS NOT NULL
-                OR program_results.binding_intermediate_auc IS NOT NULL
-                OR program_results.ar_intermediate_auc IS NOT NULL
-                OR program_results.induction_validation_auc IS NOT NULL
-                OR program_results.ar_validation_rank_score IS NOT NULL
-                OR program_results.binding_multislot_auc IS NOT NULL
+              AND NOT EXISTS (
+                SELECT 1 FROM graph_runs
+                WHERE {graph_run_match}
+                  AND COALESCE(graph_runs.trust_label, '') IN ({",".join("?" for _ in promotable_trust)})
+                  AND COALESCE(graph_runs.comparability_label, '') IN ({",".join("?" for _ in promotable_comparability)})
               )
               AND NOT EXISTS (
-                SELECT 1 FROM causal_rule_evidence ev
-                WHERE ev.parent_result_id = program_results.result_id
+                SELECT 1 FROM graph_runs
+                WHERE {graph_run_match}
+                  AND (
+                    graph_runs.induction_intermediate_auc IS NOT NULL
+                    OR graph_runs.binding_intermediate_auc IS NOT NULL
+                    OR graph_runs.ar_intermediate_auc IS NOT NULL
+                    OR graph_runs.induction_validation_auc IS NOT NULL
+                    OR graph_runs.ar_validation_rank_score IS NOT NULL
+                    OR graph_runs.binding_multislot_auc IS NOT NULL
+                  )
               )
               AND NOT EXISTS (
-                SELECT 1 FROM causal_ablation_child_observations obs
-                WHERE obs.parent_result_id = program_results.result_id
-                   OR obs.child_result_id = program_results.result_id
+                SELECT 1 FROM graph_runs
+                JOIN causal_rule_evidence ev ON ev.parent_result_id = graph_runs.result_id
+                WHERE {graph_run_match}
+              )
+              AND NOT EXISTS (
+                SELECT 1 FROM graph_runs
+                JOIN causal_ablation_child_observations obs
+                  ON obs.parent_result_id = graph_runs.result_id
+                  OR obs.child_result_id = graph_runs.result_id
+                WHERE {graph_run_match}
               )
         """,
         active_tiers + promotable_trust + promotable_comparability,
@@ -373,22 +417,24 @@ def run(
         stats.extend(
             _candidate_stats(
                 conn,
-                table="program_results",
+                table="graph_runs",
                 pk="result_id",
                 columns=DEFAULT_PROGRAM_COLUMNS,
                 min_bytes=min_bytes,
             )
         )
         if include_graph_json:
+            graph_table = "graphs" if _table_exists(conn, "graphs") else "graph_runs"
+            graph_pk = "graph_fingerprint" if graph_table == "graphs" else "result_id"
             graph_extra_where = ""
             graph_extra_params: tuple[Any, ...] = ()
             if graph_json_cold_only:
-                graph_extra_where, graph_extra_params = _cold_graph_where()
+                graph_extra_where, graph_extra_params = _cold_graph_where(graph_table)
             stats.extend(
                 _candidate_stats(
                     conn,
-                    table="program_results",
-                    pk="result_id",
+                    table=graph_table,
+                    pk=graph_pk,
                     columns=GRAPH_JSON_COLUMNS,
                     min_bytes=min_bytes,
                     extra_where=graph_extra_where,

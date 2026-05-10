@@ -106,7 +106,13 @@ class CompiledOp(CompiledOpParamInitMixin, CompiledOpRuntimeMixin, nn.Module):
         self._cached_dispatch_fn = OP_DISPATCH.get(op_name)
         self._uses_module_native_dispatch = op_name in _MODULE_NATIVE_DISPATCH_OPS
         self._collect_telemetry = False
-        op = get_primitive(op_name)
+        try:
+            op = get_primitive(op_name)
+        except KeyError:
+            from ..mathspaces.registry import register_all_mathspaces
+
+            register_all_mathspaces()
+            op = get_primitive(op_name)
         self._is_math_op = op_name in MATHSPACE_OPS or op.category.value == "math_space"
         if op.has_params:
             self._init_params(op, config, input_shape)

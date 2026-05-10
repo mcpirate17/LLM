@@ -79,6 +79,13 @@ _CHECKPOINT_COLUMNS = {
 }
 
 
+def _program_results_read_table(conn: sqlite3.Connection) -> str:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE name = 'program_results_compat' LIMIT 1"
+    ).fetchone()
+    return "program_results_compat" if row else "program_results"
+
+
 def _select_targets(
     db: Path,
     top_n: int,
@@ -93,6 +100,7 @@ def _select_targets(
     tier sa_scores populated (idempotent resume)."""
     conn = connect_readonly(db)
     try:
+        program_results_table = _program_results_read_table(conn)
         where_extra = ""
         params: list[object] = []
         if require_s05_nb_pass:
@@ -197,7 +205,7 @@ def _select_targets(
                        pr.graph_category_histogram AS graph_category_histogram,
                        pgf.template_name
                 FROM leaderboard l
-                JOIN program_results pr ON pr.result_id=l.result_id
+                JOIN {program_results_table} pr ON pr.result_id=l.result_id
                 LEFT JOIN program_graph_features pgf ON pgf.result_id=l.result_id
                 WHERE l.composite_score IS NOT NULL
                   AND COALESCE(l.tier, '') NOT IN ('screened_out', 'retired')

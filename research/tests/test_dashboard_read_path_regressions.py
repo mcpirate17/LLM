@@ -430,22 +430,14 @@ def test_capability_ranking_record_persists_ranker_metrics(tmp_path):
         stage1_passed=True,
         loss_ratio=0.34,
         novelty_score=0.62,
+        result_cohort="search",
+        trust_label="candidate_grade",
+        comparability_label="candidate_comparable",
+        evaluation_protocol_version="candidate_grade_v1",
+        data_provenance_json=json.dumps({"provenance_complete": True}),
         **_S1_METRICS,
     )
     nb.flush_writes()
-    nb.conn.execute(
-        """
-        UPDATE program_results
-        SET result_cohort = 'search',
-            trust_label = 'candidate_grade',
-            comparability_label = 'candidate_comparable',
-            evaluation_protocol_version = 'candidate_grade_v1',
-            data_provenance_json = ?
-        WHERE result_id = ?
-        """,
-        (json.dumps({"provenance_complete": True}), result_id),
-    )
-    nb.conn.commit()
     nb.upsert_leaderboard(
         result_id=result_id,
         model_source="graph_synthesis",

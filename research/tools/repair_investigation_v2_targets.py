@@ -62,7 +62,7 @@ def find_repair_targets(
                    pr.binding_intermediate_status,
                    e.experiment_type, e.status AS experiment_status,
                    l.tier
-            FROM program_results pr
+            FROM program_results_compat pr
             LEFT JOIN experiments e ON e.experiment_id = pr.experiment_id
             LEFT JOIN leaderboard l ON l.result_id = pr.result_id
             WHERE TRIM(COALESCE(pr.graph_json, '')) <> ''

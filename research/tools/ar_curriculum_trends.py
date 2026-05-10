@@ -118,6 +118,19 @@ def _detect_motifs(graph_json_str: str | None) -> list[str]:
             name = str(op.get("op_name") or op.get("name") or "")
             if name:
                 op_names.append(name.lower())
+    raw_nodes = graph.get("nodes", {})
+    if isinstance(raw_nodes, dict):
+        node_iter = raw_nodes.values()
+    elif isinstance(raw_nodes, list):
+        node_iter = raw_nodes
+    else:
+        node_iter = []
+    for node in node_iter:
+        if not isinstance(node, dict):
+            continue
+        name = str(node.get("op_name") or node.get("component_type") or "")
+        if name:
+            op_names.append(name.lower())
     motifs: list[str] = []
     for tag, patterns in MOTIF_PATTERNS:
         if any(p in name for p in patterns for name in op_names):
@@ -126,10 +139,14 @@ def _detect_motifs(graph_json_str: str | None) -> list[str]:
 
 
 def _quadrant(
-    auc: float, retention: float, *, auc_thr: float = 0.3, ret_thr: float = 0.5
+    auc: float | None,
+    retention: float | None,
+    *,
+    auc_thr: float = 0.3,
+    ret_thr: float = 0.5,
 ) -> str:
-    high_auc = auc >= auc_thr
-    high_ret = retention >= ret_thr
+    high_auc = float(auc) >= auc_thr if auc is not None else False
+    high_ret = float(retention) >= ret_thr if retention is not None else False
     if high_auc and high_ret:
         return "Q1_learns_retains"
     if high_auc and not high_ret:
@@ -139,7 +156,24 @@ def _quadrant(
     return "Q4_no_learn_no_retain"
 
 
+def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = ?",
+        (table_name,),
+    ).fetchone()
+    return row is not None
+
+
+def _program_results_read_table(conn: sqlite3.Connection) -> str:
+    return (
+        "program_results_compat"
+        if _table_exists(conn, "program_results_compat")
+        else "program_results"
+    )
+
+
 def _fetch_rows(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    pr_table = _program_results_read_table(conn)
     feature_cols = ", ".join(f"pr.{f}" for f in UPSTREAM_FEATURES)
     sql = f"""
         SELECT
@@ -156,7 +190,7 @@ def _fetch_rows(conn: sqlite3.Connection) -> list[dict[str, Any]]:
             pr.ar_curriculum_max_passing_stage,
             pr.ar_curriculum_per_stage_held_pair_acc,
             {feature_cols}
-        FROM program_results pr
+        FROM {pr_table} pr
         JOIN leaderboard l ON l.result_id = pr.result_id
         WHERE pr.ar_curriculum_auc_pair_final IS NOT NULL
         ORDER BY pr.ar_curriculum_auc_pair_final DESC
@@ -189,11 +223,32 @@ def _fetch_rows(conn: sqlite3.Connection) -> list[dict[str, Any]]:
 def analyze(rows: list[dict[str, Any]]) -> dict[str, Any]:
     if not rows:
         return {"n": 0}
-    aucs = [r["ar_curriculum_auc_pair_final"] for r in rows]
-    retentions = [r["ar_curriculum_s0_retention"] for r in rows]
-    max_passes = [r["ar_curriculum_max_passing_stage"] for r in rows]
+    aucs = [
+        float(r["ar_curriculum_auc_pair_final"])
+        for r in rows
+        if r.get("ar_curriculum_auc_pair_final") is not None
+    ]
+    retentions = [
+        float(r["ar_curriculum_s0_retention"])
+        for r in rows
+        if r.get("ar_curriculum_s0_retention") is not None
+    ]
+    max_passes = [
+        float(r["ar_curriculum_max_passing_stage"])
+        for r in rows
+        if r.get("ar_curriculum_max_passing_stage") is not None
+    ]
 
     def _summary(values: list[float]) -> dict[str, float]:
+        if not values:
+            return {
+                "n": 0,
+                "mean": 0.0,
+                "median": 0.0,
+                "std": 0.0,
+                "min": 0.0,
+                "max": 0.0,
+            }
         return {
             "n": len(values),
             "mean": round(st.mean(values), 4),
@@ -214,7 +269,8 @@ def analyze(rows: list[dict[str, Any]]) -> dict[str, Any]:
     template_aucs: dict[str, list[float]] = defaultdict(list)
     for r in rows:
         for t in r["templates_list"]:
-            template_aucs[str(t)].append(r["ar_curriculum_auc_pair_final"])
+            if r.get("ar_curriculum_auc_pair_final") is not None:
+                template_aucs[str(t)].append(float(r["ar_curriculum_auc_pair_final"]))
     template_summary = []
     for tpl, vals in template_aucs.items():
         if len(vals) >= 3:
@@ -233,8 +289,10 @@ def analyze(rows: list[dict[str, Any]]) -> dict[str, Any]:
     motif_retentions: dict[str, list[float]] = defaultdict(list)
     for r in rows:
         for m in r["motifs"]:
-            motif_aucs[m].append(r["ar_curriculum_auc_pair_final"])
-            motif_retentions[m].append(r["ar_curriculum_s0_retention"])
+            if r.get("ar_curriculum_auc_pair_final") is not None:
+                motif_aucs[m].append(float(r["ar_curriculum_auc_pair_final"]))
+            if r.get("ar_curriculum_s0_retention") is not None:
+                motif_retentions[m].append(float(r["ar_curriculum_s0_retention"]))
     motif_summary = []
     for m, vals in motif_aucs.items():
         if len(vals) >= 3:
@@ -243,15 +301,18 @@ def analyze(rows: list[dict[str, Any]]) -> dict[str, Any]:
                     "motif": m,
                     "n": len(vals),
                     "mean_auc": round(st.mean(vals), 3),
-                    "mean_retention": round(st.mean(motif_retentions[m]), 3),
+                    "mean_retention": round(st.mean(motif_retentions[m]), 3)
+                    if motif_retentions[m]
+                    else None,
                 }
             )
     motif_summary.sort(key=lambda d: d["mean_auc"], reverse=True)
 
     correlations: list[dict[str, Any]] = []
     for feat in UPSTREAM_FEATURES:
-        xs: list[float] = []
+        xs_auc: list[float] = []
         ys_auc: list[float] = []
+        xs_ret: list[float] = []
         ys_ret: list[float] = []
         for r in rows:
             v = r.get(feat)
@@ -261,18 +322,23 @@ def analyze(rows: list[dict[str, Any]]) -> dict[str, Any]:
                 fv = float(v)
             except (TypeError, ValueError):
                 continue
-            xs.append(fv)
-            ys_auc.append(r["ar_curriculum_auc_pair_final"])
-            ys_ret.append(r["ar_curriculum_s0_retention"])
-        if len(xs) < 5:
+            xs_auc.append(fv)
+            ys_auc.append(float(r["ar_curriculum_auc_pair_final"]))
+            if r.get("ar_curriculum_s0_retention") is not None:
+                xs_ret.append(fv)
+                ys_ret.append(float(r["ar_curriculum_s0_retention"]))
+        if len(xs_auc) < 5:
             continue
+        retention_spearman = None
+        if len(xs_ret) >= 5:
+            retention_spearman = round(_spearman(xs_ret, ys_ret), 3)
         correlations.append(
             {
                 "feature": feat,
-                "n": len(xs),
-                "spearman_vs_auc": round(_spearman(xs, ys_auc), 3),
-                "pearson_vs_auc": round(_pearson(xs, ys_auc), 3),
-                "spearman_vs_retention": round(_spearman(xs, ys_ret), 3),
+                "n": len(xs_auc),
+                "spearman_vs_auc": round(_spearman(xs_auc, ys_auc), 3),
+                "pearson_vs_auc": round(_pearson(xs_auc, ys_auc), 3),
+                "spearman_vs_retention": retention_spearman,
             }
         )
     correlations.sort(key=lambda d: abs(d["spearman_vs_auc"]), reverse=True)
@@ -282,8 +348,12 @@ def analyze(rows: list[dict[str, Any]]) -> dict[str, Any]:
             "fingerprint": r["graph_fingerprint"][:12],
             "tier": r["tier"],
             "composite": round(float(r["composite_score"] or 0), 1),
-            "auc": round(r["ar_curriculum_auc_pair_final"], 3),
-            "retention": round(r["ar_curriculum_s0_retention"], 3),
+            "auc": round(float(r["ar_curriculum_auc_pair_final"]), 3)
+            if r.get("ar_curriculum_auc_pair_final") is not None
+            else None,
+            "retention": round(float(r["ar_curriculum_s0_retention"]), 3)
+            if r.get("ar_curriculum_s0_retention") is not None
+            else None,
             "max_pass": r["ar_curriculum_max_passing_stage"],
             "templates": r["templates_list"][:2],
             "motifs": r["motifs"],
@@ -299,7 +369,7 @@ def analyze(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "summary": {
             "auc_pair_final": _summary(aucs),
             "s0_retention": _summary(retentions),
-            "max_passing_stage": _summary([float(m) for m in max_passes]),
+            "max_passing_stage": _summary(max_passes),
         },
         "quadrants": dict(quadrants),
         "templates": template_summary,
@@ -321,6 +391,14 @@ def write_report(
     if n == 0:
         md_path.write_text("# AR curriculum trends — no data\n", encoding="utf-8")
         return json_path, md_path
+
+    def _fmt(value: Any, digits: int = 3) -> str:
+        if value is None:
+            return ""
+        try:
+            return f"{float(value):.{digits}f}"
+        except (TypeError, ValueError):
+            return str(value)
 
     summ = analysis["summary"]
     lines: list[str] = [
@@ -373,7 +451,7 @@ def write_report(
         motifs = ",".join(r["motifs"]) if r["motifs"] else "—"
         lines.append(
             f"| {i} | {r['fingerprint']} | {r['tier']} | {r['composite']} | "
-            f"{r['auc']:.3f} | {r['retention']:.3f} | {r['max_pass']} | "
+            f"{_fmt(r['auc'])} | {_fmt(r['retention'])} | {r['max_pass']} | "
             f"{r['quadrant'].replace('_', ' ')} | {motifs} | {tpl} |"
         )
 
@@ -402,7 +480,7 @@ def write_report(
         for m in analysis["motifs"]:
             lines.append(
                 f"| {m['motif']} | {m['n']} | {m['mean_auc']:.3f} | "
-                f"{m['mean_retention']:.3f} |"
+                f"{_fmt(m['mean_retention'])} |"
             )
 
     if analysis.get("correlations"):
@@ -419,7 +497,7 @@ def write_report(
         for c in analysis["correlations"]:
             lines.append(
                 f"| {c['feature']} | {c['n']} | {c['spearman_vs_auc']:+.3f} | "
-                f"{c['pearson_vs_auc']:+.3f} | {c['spearman_vs_retention']:+.3f} |"
+                f"{c['pearson_vs_auc']:+.3f} | {_fmt(c['spearman_vs_retention'])} |"
             )
 
     md_path.write_text("\n".join(lines) + "\n", encoding="utf-8")

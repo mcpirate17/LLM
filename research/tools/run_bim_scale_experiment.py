@@ -280,7 +280,7 @@ def fetch_candidate_record(
     row = conn.execute(
         """
         SELECT *
-        FROM program_results
+        FROM program_results_compat
         WHERE graph_fingerprint = ?
         ORDER BY
             CASE WHEN result_id = ? THEN 0 ELSE 1 END,

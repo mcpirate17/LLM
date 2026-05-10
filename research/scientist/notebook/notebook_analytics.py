@@ -43,6 +43,22 @@ def _cursor_dict_rows(cursor) -> List[Dict[str, Any]]:
     return [dict(row) for row in cursor]
 
 
+def _program_results_read_table(conn: Any) -> str:
+    cursor = conn.execute(
+        """
+        SELECT 1
+        FROM sqlite_master
+        WHERE type IN ('table', 'view') AND name = 'program_results_compat'
+        LIMIT 1
+        """
+    )
+    fetchone = getattr(cursor, "fetchone", None)
+    if fetchone is None:
+        return "program_results_compat"
+    row = fetchone()
+    return "program_results_compat" if row else "program_results"
+
+
 def _get_op_category(op_name: str) -> str:
     """Map an op name to its OpCategory string. Cached for speed."""
     if op_name in _OP_CATEGORY_CACHE:
@@ -118,6 +134,7 @@ class _AnalyticsMixin:
     ) -> Optional[List[Dict[str, Any]]]:
         self.flush_writes()
         self._ensure_graph_features()
+        program_results_table = _program_results_read_table(self.conn)
         cursor = self.conn.execute(
             f"""
             WITH op_rows AS (
@@ -130,7 +147,7 @@ class _AnalyticsMixin:
                     pr.loss_ratio AS loss_ratio,
                     pr.novelty_score AS novelty_score,
                     pr.novelty_confidence AS novelty_confidence
-                FROM program_results_compat pr
+                FROM {program_results_table} pr
                 JOIN program_graph_ops gpo ON gpo.result_id = pr.result_id
                 WHERE {where_sql}
             )
@@ -168,6 +185,7 @@ class _AnalyticsMixin:
         )
         self.flush_writes()
         self._ensure_graph_features()
+        program_results_table = _program_results_read_table(self.conn)
         cursor = self.conn.execute(
             f"""
             signatures AS (
@@ -178,7 +196,7 @@ class _AnalyticsMixin:
                     pr.loss_ratio AS loss_ratio,
                     pr.novelty_score AS novelty_score,
                     pr.error_type AS error_type
-                FROM program_results_compat pr
+                FROM {program_results_table} pr
                 JOIN program_graph_pairs gpp ON gpp.result_id = pr.result_id
                 WHERE {where_sql}
             )
@@ -201,8 +219,9 @@ class _AnalyticsMixin:
     def _query_graph_feature_rows_sql(self) -> Optional[List[Dict[str, Any]]]:
         self.flush_writes()
         self._ensure_graph_features()
+        program_results_table = _program_results_read_table(self.conn)
         cursor = self.conn.execute(
-            """
+            f"""
             SELECT
                 pr.result_id,
                 pr.stage1_passed,
@@ -231,7 +250,7 @@ class _AnalyticsMixin:
                     )),
                     ''
                 ) AS pairs_blob
-            FROM program_results_compat pr
+            FROM {program_results_table} pr
             JOIN program_graph_features gf ON gf.result_id = pr.result_id
             """
         )
@@ -242,8 +261,9 @@ class _AnalyticsMixin:
     ) -> Optional[List[Dict[str, Any]]]:
         self.flush_writes()
         self._ensure_graph_features()
+        program_results_table = _program_results_read_table(self.conn)
         cursor = self.conn.execute(
-            """
+            f"""
             WITH fingerprint_rows AS (
                 SELECT
                     pr.result_id,
@@ -254,7 +274,7 @@ class _AnalyticsMixin:
                     pr.timestamp,
                     l.tier,
                     l.composite_score
-                FROM program_results_compat pr
+                FROM {program_results_table} pr
                 LEFT JOIN leaderboard l ON l.result_id = pr.result_id
                 WHERE pr.graph_fingerprint IS NOT NULL
                   AND EXISTS (
@@ -341,10 +361,11 @@ class _AnalyticsMixin:
             (experiment_id,),
         )
         if sql_rows is None:
+            program_results_table = _program_results_read_table(self.conn)
             rows = self.conn.execute(
-                """SELECT graph_json, stage0_passed, stage05_passed, stage1_passed,
+                f"""SELECT graph_json, stage0_passed, stage05_passed, stage1_passed,
                           loss_ratio, novelty_score, novelty_confidence
-                   FROM program_results_compat
+                   FROM {program_results_table}
                    WHERE experiment_id = ? AND graph_json IS NOT NULL""",
                 (experiment_id,),
             ).fetchall()
@@ -491,10 +512,11 @@ class _AnalyticsMixin:
         if sql_rows is not None:
             return sql_rows
 
+        program_results_table = _program_results_read_table(self.conn)
         rows = self.conn.execute(
-            """SELECT graph_json, stage0_passed, stage05_passed, stage1_passed,
+            f"""SELECT graph_json, stage0_passed, stage05_passed, stage1_passed,
                       loss_ratio, novelty_score, novelty_confidence
-               FROM program_results_compat
+               FROM {program_results_table}
                WHERE timestamp > ? AND graph_json IS NOT NULL""",
             (since_ts,),
         ).fetchall()
@@ -571,8 +593,9 @@ class _AnalyticsMixin:
         """Aggregate op bigram priors from program results."""
         self.flush_writes()
         self._ensure_graph_features()
+        program_results_table = _program_results_read_table(self.conn)
         cursor = self.conn.execute(
-            """
+            f"""
             SELECT
                 gp.signature,
                 COUNT(*) AS support,
@@ -580,7 +603,7 @@ class _AnalyticsMixin:
                 AVG(pr.loss_ratio) AS avg_loss_ratio,
                 AVG(pr.novelty_score) AS avg_novelty
             FROM program_graph_pairs gp
-            JOIN program_results_compat pr ON pr.result_id = gp.result_id
+            JOIN {program_results_table} pr ON pr.result_id = gp.result_id
             GROUP BY gp.signature
             HAVING COUNT(*) >= ?
             """,

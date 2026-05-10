@@ -23,10 +23,18 @@ from research.scientist.language_control_gates import (
 from research.tools.db_health import backup_sqlite_db
 
 
+def _program_results_read_table(conn: sqlite3.Connection) -> str:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE name = 'program_results_compat' LIMIT 1"
+    ).fetchone()
+    return "program_results_compat" if row else "program_results"
+
+
 def _candidate_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     conn.row_factory = sqlite3.Row
+    program_results_table = _program_results_read_table(conn)
     return conn.execute(
-        """
+        f"""
         SELECT l.entry_id,
                l.result_id,
                l.tier,
@@ -40,7 +48,7 @@ def _candidate_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
                pr.fp_jacobian_erf_decay_slope,
                pr.graph_category_histogram
         FROM leaderboard l
-        JOIN program_results_compat pr ON pr.result_id = l.result_id
+        JOIN {program_results_table} pr ON pr.result_id = l.result_id
         WHERE (
               pr.language_control_s05_binding_score < ?
            OR pr.language_control_s10_binding_score < ?

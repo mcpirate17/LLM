@@ -70,7 +70,9 @@ MERGE_COLUMNS_BY_FAMILY: Dict[str, Tuple[str, ...]] = {
         "binding_intermediate_auc",
         "binding_intermediate_max_distance_acc",
         "binding_intermediate_distance_accuracies_json",
+        "binding_intermediate_gap_accuracies_json",
         "binding_intermediate_train_steps",
+        "binding_intermediate_steps_trained",
         "binding_intermediate_status",
         "binding_intermediate_elapsed_ms",
         "binding_intermediate_protocol_version",
@@ -174,6 +176,128 @@ MERGE_COLUMNS_BY_FAMILY: Dict[str, Tuple[str, ...]] = {
         "routing_fast_lane_slope_consistent",
         "routing_fast_lane_routing_ops_json",
     ),
+    "modern_ar_binding": (
+        "ar_gate_metric_version",
+        "ar_gate_in_dist_pair_acc",
+        "ar_gate_in_dist_class_acc",
+        "ar_gate_held_pair_acc",
+        "ar_gate_held_class_acc",
+        "ar_gate_score",
+        "ar_gate_status",
+        "ar_gate_elapsed_ms",
+        "ar_gate_train_steps_done",
+        "ar_gate_no_go",
+        "ar_intermediate_metric_version",
+        "ar_intermediate_train_pair_acc",
+        "ar_intermediate_held_pair_acc",
+        "ar_intermediate_held_class_acc",
+        "ar_intermediate_pair_chance_acc",
+        "ar_intermediate_class_chance_acc",
+        "ar_intermediate_held_pair_lift",
+        "ar_intermediate_held_class_lift",
+        "ar_intermediate_early_held_pair_acc",
+        "ar_intermediate_final_held_pair_acc",
+        "ar_intermediate_best_held_pair_acc",
+        "ar_intermediate_improvement",
+        "ar_intermediate_slope_per_100_steps",
+        "ar_intermediate_auc",
+        "ar_intermediate_auc_lift",
+        "ar_intermediate_learning_curve_json",
+        "ar_intermediate_steps_to_threshold",
+        "ar_intermediate_diagnostic_score",
+        "ar_intermediate_steps_trained",
+        "ar_intermediate_status",
+        "ar_intermediate_elapsed_ms",
+        "ar_intermediate_error",
+        "ar_curriculum_metric_version",
+        "ar_curriculum_auc_pair_final",
+        "ar_curriculum_auc_class_final",
+        "ar_curriculum_s0_held_pair_acc",
+        "ar_curriculum_s0_retention",
+        "ar_curriculum_max_passing_stage",
+        "ar_curriculum_per_stage_held_pair_acc",
+        "ar_curriculum_per_stage_held_class_acc",
+        "ar_curriculum_per_stage_lift_pair",
+        "ar_curriculum_per_stage_z_score_pair",
+        "ar_curriculum_per_stage_chance_pair",
+        "ar_curriculum_learning_curve_json",
+        "ar_curriculum_steps_trained",
+        "ar_curriculum_n_eval_examples",
+        "ar_curriculum_mode",
+        "ar_curriculum_elapsed_ms",
+        "ar_curriculum_status",
+        "ar_curriculum_error",
+        "binding_multislot_metric_version",
+        "binding_multislot_train_slot_acc",
+        "binding_multislot_held_entity_slot_acc",
+        "binding_multislot_held_entity_class_acc",
+        "binding_multislot_two_plus_slots_acc",
+        "binding_multislot_all_slots_acc",
+        "binding_multislot_mixed_query_acc",
+        "binding_multislot_mixed_two_plus_slots_acc",
+        "binding_multislot_mixed_all_slots_acc",
+        "binding_multislot_slot_chance_acc",
+        "binding_multislot_class_chance_acc",
+        "binding_multislot_two_plus_slots_chance_acc",
+        "binding_multislot_all_slots_chance_acc",
+        "binding_multislot_held_slot_lift",
+        "binding_multislot_held_class_lift",
+        "binding_multislot_two_plus_slots_lift",
+        "binding_multislot_all_slots_lift",
+        "binding_multislot_mixed_query_lift",
+        "binding_multislot_mixed_two_plus_slots_lift",
+        "binding_multislot_mixed_all_slots_lift",
+        "binding_multislot_early_slot_acc",
+        "binding_multislot_final_slot_acc",
+        "binding_multislot_best_slot_acc",
+        "binding_multislot_improvement",
+        "binding_multislot_slope_per_100_steps",
+        "binding_multislot_auc",
+        "binding_multislot_auc_lift",
+        "binding_multislot_learning_curve_json",
+        "binding_multislot_steps_to_threshold",
+        "binding_multislot_diagnostic_score",
+        "binding_multislot_steps_trained",
+        "binding_multislot_status",
+        "binding_multislot_elapsed_ms",
+        "binding_multislot_error",
+        "induction_validation_auc",
+        "induction_validation_max_gap_acc",
+        "induction_validation_gap_accuracy_cv",
+        "induction_validation_gap_accuracies_json",
+        "induction_validation_steps_trained",
+        "induction_validation_status",
+        "induction_validation_elapsed_ms",
+        "induction_validation_protocol_version",
+        "ar_validation_metric_version",
+        "ar_validation_final_acc",
+        "ar_validation_held_pair_acc",
+        "ar_validation_held_class_acc",
+        "ar_validation_learning_curve_json",
+        "ar_validation_steps_to_floor",
+        "ar_validation_rank_score",
+        "ar_validation_status",
+        "ar_validation_elapsed_ms",
+        "champion_floor_protocol_version",
+        "champion_steps_to_floor",
+        "champion_floor_loss",
+        "champion_floor_ppl",
+        "champion_floor_loss_std",
+        "champion_plateau_detected_step",
+        "champion_plateau_window",
+        "champion_baseline_result_id",
+        "champion_baseline_layers",
+        "champion_baseline_protocol_version",
+        "champion_steps_to_floor_score",
+        "champion_floor_quality_score",
+        "champion_floor_stability_score",
+        "champion_induction_validation_score",
+        "champion_binding_long_context_score",
+        "champion_ar_validation_score",
+        "champion_tiny_model_score",
+        "champion_tiny_model_protocol_version",
+        "champion_hard_failure_reason",
+    ),
     "diagnostics": (
         "diagnostic_tasks_json",
         "diagnostic_score",
@@ -188,6 +312,29 @@ MERGE_COLUMNS_BY_FAMILY: Dict[str, Tuple[str, ...]] = {
 }
 
 ALL_FAMILY_NAMES = tuple(MERGE_COLUMNS_BY_FAMILY.keys())
+
+
+def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = ?",
+        (table_name,),
+    ).fetchone()
+    return row is not None
+
+
+def _program_results_read_table(conn: sqlite3.Connection) -> str:
+    return (
+        "program_results_compat"
+        if _table_exists(conn, "program_results_compat")
+        else "program_results"
+    )
+
+
+def _program_result_write_tables(conn: sqlite3.Connection) -> list[str]:
+    tables = ["program_results"]
+    if _table_exists(conn, "graph_runs"):
+        tables.append("graph_runs")
+    return tables
 
 
 def _resolve_columns(family_filter: Optional[Iterable[str]]) -> List[str]:
@@ -252,6 +399,7 @@ def _best_rank(row: sqlite3.Row) -> Tuple[Any, ...]:
 def _fetch_unintended_groups(
     conn: sqlite3.Connection, fingerprint: Optional[str]
 ) -> Dict[str, List[sqlite3.Row]]:
+    pr_table = _program_results_read_table(conn)
     placeholders = ",".join("?" for _ in INTENTIONAL_EXPERIMENT_TYPES)
     where_fp = "AND pr.graph_fingerprint = ?" if fingerprint else ""
     params: List[Any] = list(INTENTIONAL_EXPERIMENT_TYPES)
@@ -260,14 +408,14 @@ def _fetch_unintended_groups(
     rows = conn.execute(
         f"""
         SELECT pr.*
-        FROM program_results pr
+        FROM {pr_table} pr
         JOIN experiments e ON pr.experiment_id = e.experiment_id
         WHERE TRIM(COALESCE(pr.graph_fingerprint, '')) <> ''
           AND e.experiment_type NOT IN ({placeholders})
           {where_fp}
           AND pr.graph_fingerprint IN (
             SELECT pr2.graph_fingerprint
-            FROM program_results pr2
+            FROM {pr_table} pr2
             JOIN experiments e2 ON pr2.experiment_id = e2.experiment_id
             WHERE TRIM(COALESCE(pr2.graph_fingerprint, '')) <> ''
               AND e2.experiment_type NOT IN ({placeholders})
@@ -344,6 +492,7 @@ def _apply_plans(
     col_set = set(merge_columns)
     now = time.time()
     _ensure_backup_table(conn)
+    pr_table = _program_results_read_table(conn)
     pr_cols = table_columns(conn, "program_results")
     backup_cols = pr_cols + ["merged_at", "merged_from_result_ids", "merged_columns"]
     with conn:
@@ -353,7 +502,7 @@ def _apply_plans(
             if not updates or not any(k in col_set for k in updates):
                 continue
             current_row = conn.execute(
-                "SELECT * FROM program_results WHERE result_id = ?", (canonical_id,)
+                f"SELECT * FROM {pr_table} WHERE result_id = ?", (canonical_id,)
             ).fetchone()
             if current_row is None:
                 continue
@@ -370,9 +519,10 @@ def _apply_plans(
             )
             set_parts = ",".join(f'"{c}" = ?' for c in updates)
             vals = list(updates.values()) + [canonical_id]
-            conn.execute(
-                f"UPDATE program_results SET {set_parts} WHERE result_id = ?", vals
-            )
+            for table_name in _program_result_write_tables(conn):
+                conn.execute(
+                    f"UPDATE {table_name} SET {set_parts} WHERE result_id = ?", vals
+                )
 
 
 def run(

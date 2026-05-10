@@ -7,6 +7,7 @@ import os
 import sqlite3
 
 import pytest
+import torch
 
 from research.tools.explore_under_observed import (
     OpCoverage,
@@ -393,8 +394,12 @@ class TestEndToEndDryRun:
 
 
 class TestEvaluateGraph:
+    @staticmethod
+    def _eval_device() -> str:
+        return "cuda" if torch.cuda.is_available() else "cpu"
+
     def test_compile_and_forward_cpu(self):
-        """Verify a simple graph compiles and passes forward on CPU.
+        """Verify a simple graph compiles and passes S0 forward.
 
         Iterates seeds because grammar weight changes can shift which template
         a fixed seed picks; some templates have op counts that exceed max_ops.
@@ -410,7 +415,12 @@ class TestEvaluateGraph:
                 )
             except ValueError:
                 continue
-            result = evaluate_graph(graph, device="cpu", run_s1=False)
+            result = evaluate_graph(
+                graph,
+                device=self._eval_device(),
+                run_s1=False,
+                rapid_steps=0,
+            )
             assert result.compile_ok, f"compile failed: {result.compile_error}"
             assert result.param_count > 0
             assert len(result.ops_present) > 0
@@ -428,7 +438,12 @@ class TestEvaluateGraph:
                     GrammarConfig(composition_depth=1, max_ops=12),
                     seed=seed,
                 )
-                result = evaluate_graph(graph, device="cpu", run_s1=False)
+                result = evaluate_graph(
+                    graph,
+                    device=self._eval_device(),
+                    run_s1=False,
+                    rapid_steps=0,
+                )
                 attempts += 1
                 if result.forward_ok:
                     passed += 1

@@ -202,7 +202,7 @@ def select_causal_ablation_candidates(
 
     rows = nb.conn.execute(
         """SELECT result_id, graph_fingerprint, graph_json, loss_ratio
-           FROM program_results
+           FROM program_results_compat
            WHERE experiment_id = ?
              AND COALESCE(stage1_passed, 0) = 1
              AND graph_json IS NOT NULL
@@ -344,7 +344,7 @@ def find_historical_ablation_observations(
                   stage0_passed, stage05_passed, stage1_passed,
                   loss_ratio, final_loss, model_source, trust_label,
                   comparability_label
-           FROM program_results
+           FROM program_results_compat
            WHERE graph_fingerprint IN ({placeholders})
              AND result_id <> ?
            ORDER BY graph_fingerprint ASC, timestamp DESC""",
@@ -379,7 +379,7 @@ def find_executed_ablation_observations(
                   stage0_passed, stage05_passed, stage1_passed,
                   loss_ratio, final_loss, model_source, trust_label,
                   comparability_label
-           FROM program_results
+           FROM program_results_compat
            WHERE experiment_id IN ({placeholders})
            ORDER BY timestamp DESC""",
         exp_ids,
@@ -634,7 +634,7 @@ def _ablation_result_stats(nb: Any, experiment_ids: list[str]) -> dict[str, Any]
                   SUM(CASE WHEN COALESCE(stage1_passed, 0) THEN 1 ELSE 0 END)
                       AS stage1_pass_count,
                   MIN(loss_ratio) AS best_loss_ratio
-           FROM program_results
+           FROM program_results_compat
            WHERE experiment_id IN ({placeholders})""",
         tuple(experiment_ids),
     ).fetchone()

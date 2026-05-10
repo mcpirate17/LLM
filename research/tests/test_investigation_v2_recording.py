@@ -434,7 +434,7 @@ def test_record_investigation_result_persists_v2_to_source_and_rerun_row(tmp_pat
                   binding_multislot_two_plus_slots_acc,
                   binding_multislot_auc_lift,
                   binding_multislot_status
-           FROM program_results WHERE result_id = ?""",
+           FROM program_results_compat WHERE result_id = ?""",
         (source_result_id,),
     ).fetchone()
     rerun_row = conn.execute(
@@ -452,7 +452,7 @@ def test_record_investigation_result_persists_v2_to_source_and_rerun_row(tmp_pat
                   binding_multislot_two_plus_slots_acc,
                   binding_multislot_auc_lift,
                   binding_multislot_status
-           FROM program_results
+           FROM program_results_compat
            WHERE experiment_id = ? AND result_id != ?
            ORDER BY timestamp DESC LIMIT 1""",
         (inv_exp, source_result_id),
@@ -562,7 +562,7 @@ def test_record_investigation_result_persists_v9_trajectory_to_source_row(tmp_pa
     source_row = conn.execute(
         """SELECT fp_metric_phase, fp_jacobian_erf_density, fp_jacobian_erf_variance,
                   fp_jacobian_spectral_norm, fp_icld_velocity, fp_logit_margin_velocity
-           FROM program_results WHERE result_id = ?""",
+           FROM program_results_compat WHERE result_id = ?""",
         (source_result_id,),
     ).fetchone()
     conn.close()

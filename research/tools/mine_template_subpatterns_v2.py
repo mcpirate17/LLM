@@ -37,6 +37,9 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO))
 
+from research.meta_analysis.routing_decision_analytics import (
+    _program_results_read_table,
+)  # noqa: E402
 from research.scientist.notebook.graph_artifacts import resolve_graph_json_value  # noqa: E402
 from research.tools.mine_template_subpatterns import (  # noqa: E402
     DEFAULT_CHAIN_LENGTHS,
@@ -58,11 +61,13 @@ MAX_GRAPHS_PER_TEMPLATE = 100
 def fetch_template_grouped() -> dict[str, list[str]]:
     """Return {template_name: [graph_json, ...]} for passing-cohort graphs."""
     conn = sqlite3.connect(f"file:{LAB}?mode=ro&immutable=0", uri=True)
+    conn.row_factory = sqlite3.Row
+    pr_table = _program_results_read_table(conn)
     cur = conn.execute(
         f"""
         SELECT pgf.template_name, pr.graph_json
         FROM program_graph_features pgf
-        JOIN program_results_compat pr ON pr.result_id = pgf.result_id
+        JOIN {pr_table} pr ON pr.result_id = pgf.result_id
         LEFT JOIN leaderboard l ON l.result_id = pr.result_id
         WHERE pr.language_control_s05_sentence_assoc_score >= {PASS_SA}
           AND COALESCE(pr.failure_op, '') != '{NANO_BIND}'

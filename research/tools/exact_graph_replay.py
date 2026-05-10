@@ -62,11 +62,12 @@ def _fetch_source_rows(
     if not ids:
         return []
     conn = connect_readonly(db_path)
+    table = _program_results_read_table(conn)
     placeholders = ",".join("?" for _ in ids)
     rows = conn.execute(
         f"""SELECT result_id, graph_json, graph_fingerprint, loss_ratio, stage1_passed,
                    stage05_passed, timestamp
-            FROM program_results_compat
+            FROM {table}
             WHERE result_id IN ({placeholders})
               AND TRIM(COALESCE(graph_json, '')) <> ''
               AND graph_json <> '{{}}'""",
@@ -102,6 +103,13 @@ def _fetch_source_rows(
         seen_fingerprints.add(dedup_key)
         deduped.append(row)
     return deduped
+
+
+def _program_results_read_table(conn) -> str:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE name = 'program_results_compat' LIMIT 1"
+    ).fetchone()
+    return "program_results_compat" if row else "program_results"
 
 
 def _expand_replays(

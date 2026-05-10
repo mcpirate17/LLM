@@ -79,3 +79,17 @@ def test_default_profile_pareto_unchanged_for_2d_case():
     assert a.pareto_rank == 1
     assert b.pareto_rank == 1
     assert c.pareto_rank > 1
+
+
+def test_evolution_config_propagates_objective_profile():
+    """EvolutionConfig.objective_profile flows into nsga2_rank via resolve_objectives."""
+    from research.search.evolution import EvolutionConfig
+
+    cfg = EvolutionConfig()
+    assert cfg.objective_profile is None  # default preserves prior behavior
+    cfg_cap = EvolutionConfig(objective_profile="capability")
+    assert cfg_cap.objective_profile == "capability"
+    resolved = resolve_objectives(cfg_cap.objective_profile)
+    keys = [name for name, _ in resolved]
+    assert "ar_gate_score" in keys
+    assert "binding_intermediate_auc" in keys

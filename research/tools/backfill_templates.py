@@ -276,9 +276,10 @@ def get_template_stats(db_path: Path) -> dict[str, dict[str, int]]:
     stats: dict[str, dict[str, int]] = {}
 
     try:
+        program_results_table = _program_results_read_table(db)
         rows = db.execute(
             "SELECT graph_json, stage0_passed, stage1_passed "
-            "FROM program_results_compat "
+            f"FROM {program_results_table} "
             "WHERE graph_json IS NOT NULL"
         ).fetchall()
         for gj, s0, s1 in rows:
@@ -311,6 +312,13 @@ def get_template_stats(db_path: Path) -> dict[str, dict[str, int]]:
         db.close()
 
     return stats
+
+
+def _program_results_read_table(db) -> str:
+    row = db.execute(
+        "SELECT 1 FROM sqlite_master WHERE name = 'program_results_compat' LIMIT 1"
+    ).fetchone()
+    return "program_results_compat" if row else "program_results"
 
 
 def get_template_counts(db_path: Path, metric: str = "eval") -> Counter:
@@ -453,14 +461,15 @@ def summarize_experiment_batch(db_path: str, experiment_id: str) -> dict[str, An
     """Return compact persisted-row outcomes for a completed or partial batch."""
     db = connect_readonly(Path(db_path))
     try:
+        program_results_table = _program_results_read_table(db)
         row = db.execute(
-            """
+            f"""
             SELECT
                 COUNT(*),
                 COALESCE(SUM(CASE WHEN stage0_passed THEN 1 ELSE 0 END), 0),
                 COALESCE(SUM(CASE WHEN stage1_passed THEN 1 ELSE 0 END), 0),
                 COALESCE(SUM(CASE WHEN rapid_screening_passed THEN 1 ELSE 0 END), 0)
-            FROM program_results_compat
+            FROM {program_results_table}
             WHERE experiment_id = ?
             """,
             (experiment_id,),
@@ -469,9 +478,9 @@ def summarize_experiment_batch(db_path: str, experiment_id: str) -> dict[str, An
         error_counts = {
             str(name): int(count)
             for name, count in db.execute(
-                """
+                f"""
                 SELECT COALESCE(error_type, 'none'), COUNT(*)
-                FROM program_results_compat
+                FROM {program_results_table}
                 WHERE experiment_id = ?
                 GROUP BY COALESCE(error_type, 'none')
                 """,

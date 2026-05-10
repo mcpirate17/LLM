@@ -191,12 +191,12 @@ def _candidate_tasks(
     sql = f"""
         SELECT pr.graph_fingerprint,
                MAX(lb.composite_score) AS comp,
-               (SELECT graph_json FROM program_results pr2
+               (SELECT graph_json FROM program_results_compat pr2
                  WHERE pr2.graph_fingerprint = pr.graph_fingerprint
                    AND pr2.graph_json IS NOT NULL
                    AND length(pr2.graph_json) > 10
                  ORDER BY length(pr2.graph_json) DESC, pr2.timestamp DESC LIMIT 1) AS graph_json
-        FROM program_results pr
+        FROM program_results_compat pr
         JOIN leaderboard lb ON lb.result_id = pr.result_id
         WHERE pr.graph_fingerprint IS NOT NULL
           AND ({missing_clauses})

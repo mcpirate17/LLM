@@ -20,6 +20,7 @@ from research.scientist.intelligence.ml_corpus import (
     BPE_EVAL_METRIC_VERSION,
     _graph_fingerprint,
     _non_byte_training_data_clauses,
+    _program_results_read_table,
     _table_columns,
     build_dense_feature_matrix,
 )
@@ -227,7 +228,8 @@ def load_stage05_native_segment_corpus(
     from ..notebook.shared_conn import get_notebook_conn
 
     conn = get_notebook_conn(db_path)
-    pr_cols = _table_columns(conn, "program_results")
+    program_results_table = _program_results_read_table(conn)
+    pr_cols = _table_columns(conn, program_results_table)
     metric_version_select = (
         "COALESCE(screening_wikitext_metric_version, '') AS _metric_version"
         if "screening_wikitext_metric_version" in pr_cols
@@ -246,7 +248,7 @@ def load_stage05_native_segment_corpus(
                loss_ratio, wikitext_perplexity, binding_screening_auc, induction_screening_auc, hellaswag_acc,
                timestamp,
                {metric_version_select}
-        FROM program_results
+        FROM {program_results_table}
         WHERE {" AND ".join(where)}
         """
     ).fetchall()

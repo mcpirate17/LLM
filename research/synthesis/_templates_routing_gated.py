@@ -22,6 +22,7 @@ from ._template_helpers import (
     _pick_compatible_motif,
     _pick_compatible_motif_from_classes,
     record_template_slot_binding,
+    sample_routing_choice,
     template_add_op as _add,
     template_add_residual as _residual,
 )
@@ -76,7 +77,14 @@ def tpl_latent_compress_block(
     )
 
     # Sparse linear (nm_sparse or semi_structured)
-    sparse_op = rng.choice(["nm_sparse_linear", "semi_structured_2_4_linear"])
+    sparse_op = sample_routing_choice(
+        rng,
+        ["nm_sparse_linear", "semi_structured_2_4_linear"],
+        graph=graph,
+        template_name="latent_compress_block",
+        decision_key="sparse_op",
+        context="latent_compress_block.sparse",
+    )
     sparse_config: dict = {"out_dim": D}
     if sparse_op == "nm_sparse_linear":
         sparse_config.update({"n": 2, "m": 4})
@@ -89,7 +97,14 @@ def tpl_latent_compress_block(
     )
 
     # Activation
-    act_op = rng.choice(["silu", "gelu", "relu"])
+    act_op = sample_routing_choice(
+        rng,
+        ["silu", "gelu", "relu"],
+        graph=graph,
+        template_name="latent_compress_block",
+        decision_key="act_op",
+        context="latent_compress_block.activation",
+    )
     activated = _add(
         graph,
         act_op,
@@ -144,8 +159,13 @@ def tpl_latent_compress_rwkv(
         context="latent_compress_rwkv.inner_residual",
     )
 
-    sparse_op = rng.choice(
-        ["nm_sparse_linear", "semi_structured_2_4_linear", "block_sparse_linear"]
+    sparse_op = sample_routing_choice(
+        rng,
+        ["nm_sparse_linear", "semi_structured_2_4_linear", "block_sparse_linear"],
+        graph=graph,
+        template_name="latent_compress_rwkv",
+        decision_key="sparse_op",
+        context="latent_compress_rwkv.sparse",
     )
     sparse_cfg: dict = {"out_dim": D}
     if sparse_op == "nm_sparse_linear":
@@ -153,7 +173,14 @@ def tpl_latent_compress_rwkv(
     elif sparse_op == "block_sparse_linear":
         sparse_cfg.update(
             {
-                "block_size": rng.choice([8, 16, 32]),
+                "block_size": sample_routing_choice(
+                    rng,
+                    [8, 16, 32],
+                    graph=graph,
+                    template_name="latent_compress_rwkv",
+                    decision_key="block_size",
+                    context="latent_compress_rwkv.block_sparse",
+                ),
                 "block_density": rng.uniform(0.1, 0.4),
             }
         )
@@ -184,11 +211,19 @@ def tpl_latent_compress_rwkv(
     norm2 = _pick_compatible_motif(graph, gated, rng, MOTIF_CLASS_NORM, weights)
     post_normed = _instantiate_motif(graph, gated, norm2, rng) if norm2 else gated
 
+    mlp_ratio = sample_routing_choice(
+        rng,
+        [2.0, 3.0, 4.0],
+        graph=graph,
+        template_name="latent_compress_rwkv",
+        decision_key="mlp_ratio",
+        context="latent_compress_rwkv.mixed",
+    )
     mixed = _add(
         graph,
         "rwkv_channel",
         [post_normed],
-        {"mlp_ratio": rng.choice([2.0, 3.0, 4.0])},
+        {"mlp_ratio": mlp_ratio},
         context="latent_compress_rwkv.mixed",
     )
 
@@ -223,11 +258,19 @@ def tpl_signal_routed_compression(
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
     # Produce routing signal
+    n_classes = sample_routing_choice(
+        rng,
+        [2, 3, 4],
+        graph=graph,
+        template_name="signal_routed_compression",
+        decision_key="n_classes",
+        context="signal_routed_compression.signal",
+    )
     signal = _add(
         graph,
         "token_class_proj",
         [normed],
-        {"n_classes": rng.choice([2, 3, 4])},
+        {"n_classes": n_classes},
         context="signal_routed_compression.signal",
     )
 
@@ -243,7 +286,14 @@ def tpl_signal_routed_compression(
             normed = _fix_dim(graph, attended)
 
     # Route through compression op (2-input: data + signal)
-    comp_op = rng.choice(["dual_compression_blend", "signal_conditioned_compression"])
+    comp_op = sample_routing_choice(
+        rng,
+        ["dual_compression_blend", "signal_conditioned_compression"],
+        graph=graph,
+        template_name="signal_routed_compression",
+        decision_key="comp_op",
+        context="signal_routed_compression.compress",
+    )
     compressed = _add(
         graph,
         comp_op,
@@ -256,14 +306,27 @@ def tpl_signal_routed_compression(
     # Optional moe_topk after compression (60% chance) — data mining shows
     # dual_compression_blend + moe_topk is the top underexplored high-signal combo
     if rng.random() < 0.6:
+        num_experts = sample_routing_choice(
+            rng,
+            [2, 4],
+            graph=graph,
+            template_name="signal_routed_compression",
+            decision_key="num_experts",
+            context="signal_routed_compression.moe",
+        )
+        top_k = sample_routing_choice(
+            rng,
+            [1, 2],
+            graph=graph,
+            template_name="signal_routed_compression",
+            decision_key="top_k",
+            context="signal_routed_compression.moe",
+        )
         compressed = _add(
             graph,
             "moe_topk",
             [compressed],
-            {
-                "num_experts": rng.choice([2, 4]),
-                "top_k": rng.choice([1, 2]),
-            },
+            {"num_experts": num_experts, "top_k": top_k},
             context="signal_routed_compression.moe",
         )
         compressed = _fix_dim(graph, compressed)
@@ -302,11 +365,19 @@ def tpl_dual_routing_stack(
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
     # Routing signal from classifier
+    n_classes = sample_routing_choice(
+        rng,
+        [2, 3, 4],
+        graph=graph,
+        template_name="dual_routing_stack",
+        decision_key="n_classes",
+        context="dual_routing_stack.signal",
+    )
     signal = _add(
         graph,
         "token_class_proj",
         [normed],
-        {"n_classes": rng.choice([2, 3, 4])},
+        {"n_classes": n_classes},
         context="dual_routing_stack.signal",
     )
 
@@ -319,14 +390,27 @@ def tpl_dual_routing_stack(
     )
 
     # Expert routing
+    num_experts = sample_routing_choice(
+        rng,
+        [2, 4],
+        graph=graph,
+        template_name="dual_routing_stack",
+        decision_key="num_experts",
+        context="dual_routing_stack.moe",
+    )
+    top_k = sample_routing_choice(
+        rng,
+        [1, 2],
+        graph=graph,
+        template_name="dual_routing_stack",
+        decision_key="top_k",
+        context="dual_routing_stack.moe",
+    )
     routed = _add(
         graph,
         "moe_topk",
         [compressed],
-        {
-            "num_experts": rng.choice([2, 4]),
-            "top_k": rng.choice([1, 2]),
-        },
+        {"num_experts": num_experts, "top_k": top_k},
         context="dual_routing_stack.moe",
     )
 
@@ -407,11 +491,19 @@ def tpl_dual_routing_deep(
 
     # Optional FFN motif
     if rng.random() < 0.5:
+        mlp_ratio = sample_routing_choice(
+            rng,
+            [2.0, 3.0, 4.0],
+            graph=graph,
+            template_name="dual_routing_deep",
+            decision_key="mlp_ratio",
+            context="dual_routing_deep.ffn",
+        )
         routed = _add(
             graph,
             "swiglu_mlp",
             [routed],
-            {"mlp_ratio": rng.choice([2.0, 3.0, 4.0])},
+            {"mlp_ratio": mlp_ratio},
             context="dual_routing_deep.ffn",
         )
 
@@ -439,11 +531,19 @@ def tpl_routing_conditioned_moe(
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
+    n_classes = sample_routing_choice(
+        rng,
+        [2, 3, 4],
+        graph=graph,
+        template_name="routing_conditioned_moe",
+        decision_key="n_classes",
+        context="routing_conditioned_moe.signal",
+    )
     signal = _add(
         graph,
         "token_class_proj",
         [normed],
-        {"n_classes": rng.choice([2, 3, 4])},
+        {"n_classes": n_classes},
         context="routing_conditioned_moe.signal",
     )
     compressed = _add(
@@ -452,11 +552,19 @@ def tpl_routing_conditioned_moe(
         [normed, signal],
         context="routing_conditioned_moe.compress",
     )
+    num_experts = sample_routing_choice(
+        rng,
+        [2, 4],
+        graph=graph,
+        template_name="routing_conditioned_moe",
+        decision_key="num_experts",
+        context="routing_conditioned_moe.moe",
+    )
     routed = _add(
         graph,
         "moe_topk",
         [compressed],
-        {"num_experts": rng.choice([2, 4]), "top_k": 1},
+        {"num_experts": num_experts, "top_k": 1},
         context="routing_conditioned_moe.moe",
     )
 
@@ -485,18 +593,34 @@ def tpl_mixed_recursion(
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
     # Depth scores from classifier
+    n_classes = sample_routing_choice(
+        rng,
+        [3, 4, 5],
+        graph=graph,
+        template_name="mixed_recursion",
+        decision_key="n_classes",
+        context="mixed_recursion.scores",
+    )
     scores = _add(
         graph,
         "token_class_proj",
         [normed],
-        {"n_classes": rng.choice([3, 4, 5])},
+        {"n_classes": n_classes},
         context="mixed_recursion.scores",
+    )
+    max_depth = sample_routing_choice(
+        rng,
+        [2, 3, 4],
+        graph=graph,
+        template_name="mixed_recursion",
+        decision_key="max_depth",
+        context="mixed_recursion.gated",
     )
     gated = _add(
         graph,
         "score_depth_blend",
         [normed, scores],
-        {"max_depth": rng.choice([2, 3, 4])},
+        {"max_depth": max_depth},
         context="mixed_recursion.gated",
     )
 
@@ -771,7 +895,14 @@ def tpl_gated_lane_blend_block(
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
-    n_lanes = rng.choice([2, 3, 4])
+    n_lanes = sample_routing_choice(
+        rng,
+        [2, 3, 4],
+        graph=graph,
+        template_name="gated_lane_blend_block",
+        decision_key="n_lanes",
+        context="gated_lane_blend_block.routed",
+    )
     routed = _add(
         graph,
         "gated_lane_blend",
@@ -807,7 +938,14 @@ def tpl_feature_sparse_block(
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
-    k = rng.choice([32, 64, 128])
+    k = sample_routing_choice(
+        rng,
+        [32, 64, 128],
+        graph=graph,
+        template_name="feature_sparse_block",
+        decision_key="k",
+        context="feature_sparse_block.sparse",
+    )
     sparse = _add(
         graph,
         "feature_sparsity",
@@ -866,20 +1004,36 @@ def tpl_topk_retrieval(
         {"out_dim": D},
         context="topk_retrieval.score_proj",
     )
+    k = sample_routing_choice(
+        rng,
+        [4, 8, 16],
+        graph=graph,
+        template_name="topk_retrieval",
+        decision_key="k",
+        context="topk_retrieval.gathered",
+    )
     gathered = _add(
         graph,
         "gather_topk",
         [normed, score_proj],
-        {"k": rng.choice([4, 8, 16])},
+        {"k": k},
         context="topk_retrieval.gathered",
     )
 
     # Process gathered subset
+    mlp_ratio = sample_routing_choice(
+        rng,
+        [2.0, 4.0],
+        graph=graph,
+        template_name="topk_retrieval",
+        decision_key="mlp_ratio",
+        context="topk_retrieval.ffn",
+    )
     processed = _add(
         graph,
         "swiglu_mlp",
         [gathered],
-        {"mlp_ratio": rng.choice([2.0, 4.0])},
+        {"mlp_ratio": mlp_ratio},
         context="topk_retrieval.ffn",
     )
     processed = _fix_dim(graph, processed)
@@ -924,9 +1078,17 @@ def tpl_adaptive_sparse(
         [normed],
         context="adaptive_sparse.recursed",
     )
+    sparse_op = sample_routing_choice(
+        rng,
+        list(sparse_ops),
+        graph=graph,
+        template_name="adaptive_sparse",
+        decision_key="sparse_op",
+        context="adaptive_sparse.sparse",
+    )
     sparse = _add(
         graph,
-        rng.choice(sparse_ops),
+        sparse_op,
         [recursed],
         context="adaptive_sparse.sparse",
     )

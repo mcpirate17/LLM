@@ -1219,7 +1219,7 @@ def test_report_query_handles_duplicate_fingerprint_without_conflicting_insert(
         """
         SELECT COUNT(*)
         FROM leaderboard l
-        JOIN program_results pr ON pr.result_id = l.result_id
+        JOIN program_results_compat pr ON pr.result_id = l.result_id
         WHERE pr.graph_fingerprint = ?
         """,
         ("fp-report-dup",),
@@ -1243,7 +1243,7 @@ def test_report_query_handles_duplicate_fingerprint_without_conflicting_insert(
         """
         SELECT COUNT(*)
         FROM leaderboard l
-        JOIN program_results pr ON pr.result_id = l.result_id
+        JOIN program_results_compat pr ON pr.result_id = l.result_id
         WHERE pr.graph_fingerprint = ?
         """,
         ("fp-report-dup",),

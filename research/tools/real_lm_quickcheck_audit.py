@@ -116,8 +116,15 @@ def _load_rows(db: Path) -> list[dict[str, Any]]:
     conn = sqlite3.connect(str(db))
     conn.row_factory = sqlite3.Row
     try:
+        program_results_table = (
+            "program_results_compat"
+            if conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE name = 'program_results_compat' LIMIT 1"
+            ).fetchone()
+            else "program_results"
+        )
         rows = conn.execute(
-            """
+            f"""
             SELECT l.result_id,
                    l.entry_id,
                    l.tier,
@@ -133,7 +140,7 @@ def _load_rows(db: Path) -> list[dict[str, Any]]:
                    pr.language_control_investigation_sentence_assoc_score,
                    pgf.template_name
             FROM leaderboard l
-            JOIN program_results_compat pr ON pr.result_id = l.result_id
+            JOIN {program_results_table} pr ON pr.result_id = l.result_id
             LEFT JOIN program_graph_features pgf ON pgf.result_id = l.result_id
             WHERE pr.wikitext_perplexity IS NOT NULL
                OR pr.wikitext_score IS NOT NULL

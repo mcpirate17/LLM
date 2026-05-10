@@ -306,7 +306,7 @@ def analyze_graph_label_quality(db_path: str) -> Dict[str, Any]:
         conn = get_notebook_conn(db_path)
         rows = conn.execute(
             """SELECT graph_json, stage1_passed, stage0_passed, stage05_passed
-               FROM program_results
+               FROM program_results_compat
                WHERE graph_json IS NOT NULL"""
         ).fetchall()
     except Exception as e:

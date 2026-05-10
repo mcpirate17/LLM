@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import random
 
-from typing import TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .graph import ComputationGraph
 from ._template_helpers import (
+    sample_routing_choice,
     template_add_op as _add,
 )
 
@@ -161,9 +162,29 @@ def _next_multiscale_medium_config(op_name: str, rng: random.Random) -> dict:
     return {}
 
 
-def _next_multiscale_hard_config(op_name: str, rng: random.Random) -> dict:
+def _next_multiscale_hard_config(
+    op_name: str,
+    rng: random.Random,
+    *,
+    graph: Any = None,
+    template_name: str | None = None,
+) -> dict:
+    """Sample hard-lane config. When graph+template_name are passed, persists
+    the random choices via record_routing_decision so a future learned policy
+    can replace these rng.choice calls without losing audit history."""
     if op_name in {"route_recursion", "adaptive_recursion", "mixed_recursion_gate"}:
-        max_depth = rng.choice([2, 3, 4])
+        depth_choices = [2, 3, 4]
+        if graph is not None and template_name is not None:
+            max_depth = sample_routing_choice(
+                rng,
+                depth_choices,
+                graph=graph,
+                template_name=template_name,
+                decision_key="hard_max_depth",
+                context=f"{op_name}.max_depth",
+            )
+        else:
+            max_depth = rng.choice(depth_choices)
         return {
             "max_depth": max_depth,
             "curriculum_enabled": True,
@@ -174,7 +195,19 @@ def _next_multiscale_hard_config(op_name: str, rng: random.Random) -> dict:
             "active_depth_end": max_depth,
         }
     if op_name == "moe_topk":
-        return {"num_experts": rng.choice([2, 4]), "top_k": 1}
+        expert_choices = [2, 4]
+        if graph is not None and template_name is not None:
+            num_experts = sample_routing_choice(
+                rng,
+                expert_choices,
+                graph=graph,
+                template_name=template_name,
+                decision_key="hard_num_experts",
+                context="moe_topk.num_experts",
+            )
+        else:
+            num_experts = rng.choice(expert_choices)
+        return {"num_experts": num_experts, "top_k": 1}
     if op_name == "moe_2expert":
         return {}
     if op_name == "state_space":
@@ -265,15 +298,49 @@ def _multiscale_merge_config(
     }
 
 
-def _single_input_op_config(op_name: str, model_dim: int, rng: random.Random) -> dict:
+def _single_input_op_config(
+    op_name: str,
+    model_dim: int,
+    rng: random.Random,
+    *,
+    graph: ComputationGraph | None = None,
+    template_name: str | None = None,
+    context: str | None = None,
+) -> dict:
     if op_name == "linear_proj":
         return {"out_dim": model_dim}
     if op_name in {"route_lanes", "adaptive_lane_mixer"}:
         return {"n_lanes": 3}
     if op_name in {"route_recursion", "adaptive_recursion", "mixed_recursion_gate"}:
-        return {"max_depth": rng.choice([2, 3, 4])}
+        choices = [2, 3, 4]
+        value = (
+            sample_routing_choice(
+                rng,
+                choices,
+                graph=graph,
+                template_name=template_name or "single_input_op",
+                decision_key="max_depth",
+                context=context,
+            )
+            if graph is not None
+            else rng.choice(choices)
+        )
+        return {"max_depth": value}
     if op_name == "moe_topk":
-        return {"num_experts": rng.choice([2, 4]), "top_k": 1}
+        choices = [2, 4]
+        value = (
+            sample_routing_choice(
+                rng,
+                choices,
+                graph=graph,
+                template_name=template_name or "single_input_op",
+                decision_key="num_experts",
+                context=context,
+            )
+            if graph is not None
+            else rng.choice(choices)
+        )
+        return {"num_experts": value, "top_k": 1}
     return {}
 
 
@@ -293,7 +360,14 @@ def _apply_optional_single_input_ops(
             graph,
             op_name,
             [node_id],
-            _single_input_op_config(op_name, graph.model_dim, rng),
+            _single_input_op_config(
+                op_name,
+                graph.model_dim,
+                rng,
+                graph=graph,
+                template_name=context_prefix.split(".", 1)[0],
+                context=f"{context_prefix}.optional_{idx}",
+            ),
             context=f"{context_prefix}.optional_{idx}",
         )
         selected.append(op_name)

@@ -174,7 +174,7 @@ def _load_best_result_metadata(db_path: str) -> Dict[str, Dict[str, Any]]:
         SELECT result_id, experiment_id, graph_json, graph_fingerprint,
                model_source, result_cohort, timestamp, stage1_passed, loss_ratio,
                validation_loss_ratio, novelty_score
-        FROM program_results
+        FROM program_results_compat
         WHERE TRIM(COALESCE(graph_json, '')) <> ''
           AND graph_json <> '{}'
         """

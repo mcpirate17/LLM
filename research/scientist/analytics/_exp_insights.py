@@ -49,7 +49,7 @@ class _InsightsMixin:
         # 1. Graph-size bucket analysis (structural)
         size_rows = self.nb.conn.execute("""
             SELECT graph_n_ops, stage1_passed
-            FROM program_results
+            FROM program_results_compat
             WHERE graph_n_ops IS NOT NULL
         """).fetchall()
         if len(size_rows) >= 50:

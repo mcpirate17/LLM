@@ -1,6 +1,6 @@
 """Python fallback kernel for neg."""
 
 import torch
-from aria_designer.components.base import make_unary_handler
+from aria_designer.runtime.fallback_templates import make_torch_unary_handler
 
-ComponentHandler = make_unary_handler(lambda x: torch.neg(x), native_op_name="neg")
+ComponentHandler = make_torch_unary_handler(torch.neg, native_op_name="neg")

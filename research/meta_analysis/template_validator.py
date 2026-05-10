@@ -1,13 +1,14 @@
-"""Compile-validate mined chain candidates emitted by the template promoter.
+"""Compile + forward/backward validate mined chain candidates.
 
-Phase 1 of the auto-promotion pipeline: take a candidate chain
-``(op_a, op_b, ..., op_k)`` and check that it can actually be assembled
-into a valid ComputationGraph that compiles into a CompiledLayer.
+Phase 1 (build + validate_graph + CompiledLayer construct): structural gate.
+Phase 2 (forward + backward smoke test): runs a random tensor through the
+compiled layer, checks output is finite, and verifies backprop produces
+finite parameter gradients. Filters out chains that compile but die at
+runtime — the gate auto-registration relies on.
 
-This is a structural gate, not a quality gate. A chain that fails to
-compile cannot become a useful template even if its mining stats are
-strong; conversely, a chain that compiles is not yet proven useful (forward
-correctness, gradient health, training holdout — all Phase 2+).
+Phase 3+ (holdout training) is still deferred; chains that pass Phase 2
+are *eligible* to be registered as live templates but should still go
+through the standard screening pipeline before promotion to validation.
 
 The validator is read-only on the project state: builds graphs in memory,
 records pass/fail, returns annotated candidate dicts.
@@ -25,6 +26,8 @@ from ..synthesis.validator import validate_graph
 _DEFAULT_MODEL_DIM = 64
 _DEFAULT_MAX_OPS = 20
 _DEFAULT_MAX_DEPTH = 15
+_DEFAULT_SMOKE_BATCH = 2
+_DEFAULT_SMOKE_SEQ = 8
 
 
 def _add_chain_op(graph: ComputationGraph, op_name: str, current: int) -> int:
@@ -60,26 +63,75 @@ def _build_chain_graph(
     return graph
 
 
+def _run_smoke_test(
+    compiled_layer: Any,
+    *,
+    model_dim: int,
+    batch: int = _DEFAULT_SMOKE_BATCH,
+    seq: int = _DEFAULT_SMOKE_SEQ,
+) -> Dict[str, Any]:
+    """Run forward + backward on the compiled layer. Returns finite/NaN flags."""
+    import torch
+
+    out: Dict[str, Any] = {
+        "forward_passed": False,
+        "backward_passed": False,
+        "output_has_nan": False,
+        "output_has_inf": False,
+        "param_grad_finite": True,
+        "smoke_error": None,
+    }
+    x = torch.randn(batch, seq, model_dim, requires_grad=True)
+    try:
+        y = compiled_layer(x)
+    except Exception as exc:
+        out["smoke_error"] = f"forward: {type(exc).__name__}: {exc}"
+        return out
+    out["forward_passed"] = True
+    out["output_has_nan"] = bool(torch.isnan(y).any())
+    out["output_has_inf"] = bool(torch.isinf(y).any())
+    if out["output_has_nan"] or out["output_has_inf"]:
+        out["smoke_error"] = "output non-finite"
+        return out
+    try:
+        y.sum().backward()
+    except Exception as exc:
+        out["smoke_error"] = f"backward: {type(exc).__name__}: {exc}"
+        return out
+    # Verify parameter gradients are finite when present.
+    for p in compiled_layer.parameters():
+        if p.grad is None:
+            continue
+        if not torch.isfinite(p.grad).all():
+            out["param_grad_finite"] = False
+            out["smoke_error"] = "param grad non-finite"
+            return out
+    out["backward_passed"] = True
+    return out
+
+
 def validate_chain(
     chain: Iterable[str],
     *,
     model_dim: int = _DEFAULT_MODEL_DIM,
     max_ops: int = _DEFAULT_MAX_OPS,
     max_depth: int = _DEFAULT_MAX_DEPTH,
+    run_smoke: bool = True,
 ) -> Dict[str, Any]:
-    """Try to build + validate a graph from the chain.
+    """Try to build + validate + compile + smoke-test a chain.
 
-    Returns a dict:
-        compile_passed: bool
-        validate_passed: bool
-        n_ops: int — final op count of the wrapper graph
-        failure_mode: str | None — first error category
-        error: str | None — first error message
+    Phase 1 fields:
+        compile_passed, validate_passed, n_ops, failure_mode, error
+    Phase 2 fields (when ``run_smoke=True`` and compile passed):
+        forward_passed, backward_passed, output_has_nan, output_has_inf,
+        param_grad_finite, smoke_error
     """
     chain_list = [str(op) for op in chain]
     result: Dict[str, Any] = {
         "compile_passed": False,
         "validate_passed": False,
+        "forward_passed": False,
+        "backward_passed": False,
         "n_ops": 0,
         "failure_mode": None,
         "error": None,
@@ -108,21 +160,31 @@ def validate_chain(
         return result
     result["validate_passed"] = True
 
-    # Lazy compile check: importing CompiledLayer pulls torch + heavy deps.
-    # The promoter pipeline calls this many times, so guard the import.
+    # Lazy compile via the layer-level helper (wires dispatch handlers).
+    # CompiledLayer alone leaves ops without execute_fn handlers, so we use
+    # the same path the runner uses to assemble a single trainable layer.
     try:
-        from ..synthesis.compiled_model import CompiledLayer
+        from ..synthesis.compiler import _compile_layer_module
     except ImportError as exc:
         result["failure_mode"] = "compile_import"
         result["error"] = str(exc)
         return result
     try:
-        CompiledLayer(graph)
+        compiled = _compile_layer_module(graph, prefer_fast_path=True)
     except Exception as exc:
         result["failure_mode"] = "compile"
         result["error"] = f"{type(exc).__name__}: {exc}"
         return result
     result["compile_passed"] = True
+
+    if not run_smoke:
+        return result
+
+    smoke = _run_smoke_test(compiled, model_dim=model_dim)
+    result.update(smoke)
+    if not smoke["backward_passed"] and result["failure_mode"] is None:
+        result["failure_mode"] = "smoke"
+        result["error"] = smoke.get("smoke_error")
     return result
 
 
@@ -147,6 +209,8 @@ def filter_to_passing(
     *,
     require_validate: bool = True,
     require_compile: bool = True,
+    require_forward: bool = False,
+    require_backward: bool = False,
 ) -> List[Dict[str, Any]]:
     """Return only candidates whose validation passed the requested gates."""
     out: List[Dict[str, Any]] = []
@@ -155,6 +219,10 @@ def filter_to_passing(
         if require_validate and not v.get("validate_passed"):
             continue
         if require_compile and not v.get("compile_passed"):
+            continue
+        if require_forward and not v.get("forward_passed"):
+            continue
+        if require_backward and not v.get("backward_passed"):
             continue
         out.append(candidate)
     return out

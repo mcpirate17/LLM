@@ -72,7 +72,7 @@ def main() -> None:
                pr.hellaswag_acc, pr.tinystories_perplexity,
                lb.scoring_version
         FROM leaderboard lb
-        LEFT JOIN program_results pr ON pr.result_id = lb.result_id
+        LEFT JOIN program_results_compat pr ON pr.result_id = lb.result_id
         """
     ).fetchall()
 

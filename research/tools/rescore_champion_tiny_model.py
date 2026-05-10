@@ -94,6 +94,13 @@ def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
     return {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})")}
 
 
+def _program_results_read_table(conn: sqlite3.Connection) -> str:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE name = 'program_results_compat' LIMIT 1"
+    ).fetchone()
+    return "program_results_compat" if row else "program_results"
+
+
 def load_training_curve(
     conn: sqlite3.Connection, result_id: str
 ) -> list[tuple[int, float]]:
@@ -200,8 +207,8 @@ def _cv_from_json(value: Any) -> float | None:
     return statistics.pstdev(nums) / mean
 
 
-def _select_existing_columns(conn: sqlite3.Connection) -> list[str]:
-    available = _table_columns(conn, "program_results")
+def _select_existing_columns(conn: sqlite3.Connection, table: str) -> list[str]:
+    available = _table_columns(conn, table)
     wanted = [
         "result_id",
         "experiment_id",
@@ -237,10 +244,11 @@ def _fetch_metric_rows(
 ) -> dict[str, dict[str, Any]]:
     if not result_ids:
         return {}
-    columns = _select_existing_columns(conn)
+    program_results_table = _program_results_read_table(conn)
+    columns = _select_existing_columns(conn, program_results_table)
     placeholders = ",".join("?" for _ in result_ids)
     rows = conn.execute(
-        f"SELECT {', '.join(columns)} FROM program_results_compat WHERE result_id IN ({placeholders})",
+        f"SELECT {', '.join(columns)} FROM {program_results_table} WHERE result_id IN ({placeholders})",
         result_ids,
     ).fetchall()
     return {str(row["result_id"]): dict(row) for row in rows}

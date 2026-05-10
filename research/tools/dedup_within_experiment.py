@@ -48,7 +48,7 @@ def _list_duplicate_groups(
     rows = conn.execute(
         """
         SELECT graph_fingerprint, experiment_id, COUNT(*) AS n
-        FROM program_results
+        FROM program_results_compat
         WHERE TRIM(COALESCE(graph_fingerprint, '')) <> ''
         GROUP BY graph_fingerprint, experiment_id
         HAVING n > 1
@@ -64,7 +64,7 @@ def _fetch_group(
     return list(
         conn.execute(
             """
-            SELECT * FROM program_results
+            SELECT * FROM program_results_compat
             WHERE graph_fingerprint = ? AND experiment_id = ?
             ORDER BY timestamp DESC
             """,
@@ -186,7 +186,7 @@ def run(db_path: Path, *, apply: bool, limit_groups: int | None) -> int:
                 # Backup first
                 write_conn.execute(
                     f"INSERT INTO {BACKUP_TABLE} "
-                    f"SELECT * FROM program_results "
+                    f"SELECT * FROM program_results_compat "
                     f"WHERE result_id IN ({placeholders})",
                     tuple(deleted_ids),
                 )

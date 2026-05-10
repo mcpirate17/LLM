@@ -149,7 +149,7 @@ def test_externalize_tool_can_move_graph_json_when_explicitly_enabled(tmp_path):
     applied = {
         (item["table"], item["column"]): item["rows"] for item in report["applied"]
     }
-    assert applied[("program_results", "graph_json")] == 1
+    assert applied[("graphs", "graph_json")] == 1
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     row = conn.execute(
@@ -272,13 +272,13 @@ def test_restore_inline_tool_rehydrates_raw_sql_sensitive_columns(tmp_path):
     )
     nb.flush_writes()
     pointer = nb._store_artifact_payload(
-        table_name="program_results",
+        table_name="graph_runs",
         row_pk=rid,
         column_name="data_provenance_json",
         payload=json.dumps({"values": list(range(30))}),
     )
     nb.conn.execute(
-        "UPDATE program_results SET data_provenance_json = ? WHERE result_id = ?",
+        "UPDATE graph_runs SET data_provenance_json = ? WHERE result_id = ?",
         (pointer, rid),
     )
     nb.conn.commit()
@@ -286,7 +286,7 @@ def test_restore_inline_tool_rehydrates_raw_sql_sensitive_columns(tmp_path):
 
     report = restore_inline_artifacts(
         db_path=db_path,
-        targets=(("program_results", "result_id", "data_provenance_json"),),
+        targets=(("graph_runs", "result_id", "data_provenance_json"),),
         apply=True,
         limit=None,
         vacuum=False,

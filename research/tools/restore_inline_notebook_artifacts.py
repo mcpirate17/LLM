@@ -21,7 +21,7 @@ DEFAULT_DB = Path(RUNS_DB)
 DEFAULT_TARGETS = (
     ("experiments", "experiment_id", "config_json"),
     ("experiments", "experiment_id", "results_json"),
-    ("program_results", "result_id", "data_provenance_json"),
+    ("graph_runs", "result_id", "data_provenance_json"),
 )
 
 

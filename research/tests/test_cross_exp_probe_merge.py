@@ -104,7 +104,7 @@ def test_dry_run_identifies_merge_plan(tmp_path):
     conn.row_factory = sqlite3.Row
     row = conn.execute(
         "SELECT induction_screening_auc, binding_screening_auc, blimp_overall_accuracy "
-        "FROM program_results WHERE result_id = 'canon-rid'"
+        "FROM program_results_compat WHERE result_id = 'canon-rid'"
     ).fetchone()
     assert row["induction_screening_auc"] is None
     assert row["binding_screening_auc"] is None
@@ -129,7 +129,7 @@ def test_apply_merges_probes_onto_canonical(tmp_path):
     conn.row_factory = sqlite3.Row
     canon = conn.execute(
         "SELECT induction_screening_auc, binding_screening_auc, blimp_overall_accuracy, loss_ratio "
-        "FROM program_results WHERE result_id = 'canon-rid'"
+        "FROM program_results_compat WHERE result_id = 'canon-rid'"
     ).fetchone()
     assert canon["induction_screening_auc"] == 0.04
     assert canon["binding_screening_auc"] == 0.08
@@ -138,11 +138,11 @@ def test_apply_merges_probes_onto_canonical(tmp_path):
     assert canon["loss_ratio"] == 0.50
     # Sibling rows remain intact (no deletion)
     probe = conn.execute(
-        "SELECT induction_screening_auc FROM program_results WHERE result_id = 'probe-rid'"
+        "SELECT induction_screening_auc FROM program_results_compat WHERE result_id = 'probe-rid'"
     ).fetchone()
     assert probe["induction_screening_auc"] == 0.04
     mid = conn.execute(
-        "SELECT result_id FROM program_results WHERE result_id = 'mid-rid'"
+        "SELECT result_id FROM program_results_compat WHERE result_id = 'mid-rid'"
     ).fetchone()
     assert mid is not None
     # Backup row records the pre-merge canonical state
@@ -194,7 +194,7 @@ def test_intentional_experiments_are_excluded(tmp_path):
     conn.row_factory = sqlite3.Row
     # Neither row mutated — intentional cross-exp is left alone
     row = conn.execute(
-        "SELECT induction_screening_auc FROM program_results WHERE result_id = 'replay-1'"
+        "SELECT induction_screening_auc FROM program_results_compat WHERE result_id = 'replay-1'"
     ).fetchone()
     assert row["induction_screening_auc"] is None
     conn.close()
@@ -217,7 +217,7 @@ def test_column_family_filter_restricts_merge(tmp_path):
     conn.row_factory = sqlite3.Row
     canon = conn.execute(
         "SELECT induction_screening_auc, binding_screening_auc, blimp_overall_accuracy "
-        "FROM program_results WHERE result_id = 'canon-rid'"
+        "FROM program_results_compat WHERE result_id = 'canon-rid'"
     ).fetchone()
     # language family only → blimp merged, v1 probes skipped
     assert canon["blimp_overall_accuracy"] == 0.55

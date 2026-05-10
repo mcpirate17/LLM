@@ -16,7 +16,9 @@ from ._template_helpers import (
     _instantiate_motif,
     _pick_compatible_motif,
     _pick_compatible_motif_from_classes,
+    record_routing_decision,
     record_template_slot_binding,
+    sample_routing_choice,
     template_add_op as _add,
     template_add_residual as _residual,
 )
@@ -244,9 +246,34 @@ def tpl_hybrid_sparse_triplet_router(
     """default path + token gate + sparse triplet router + lane-conditioned block."""
     template_name = "hybrid_sparse_triplet_router"
     template_instance = int(graph.metadata.get("_active_template_instance", 0) or 0)
-    gate_threshold = rng.choice((0.4, 0.5, 0.6))
-    confidence_threshold = rng.choice((0.4, 0.45, 0.5, 0.55))
+    _gate_choices = (0.4, 0.5, 0.6)
+    gate_threshold = sample_routing_choice(
+        rng,
+        _gate_choices,
+        graph=graph,
+        template_name=template_name,
+        decision_key="gate_threshold",
+        context="hybrid_sparse_triplet_router.token_gate",
+    )
+    _conf_choices = (0.4, 0.45, 0.5, 0.55)
+    confidence_threshold = sample_routing_choice(
+        rng,
+        _conf_choices,
+        graph=graph,
+        template_name=template_name,
+        decision_key="confidence_threshold",
+        context="hybrid_sparse_triplet_router.lane_router",
+    )
     lane_id = rng.randrange(3)
+    record_routing_decision(
+        graph,
+        template_name=template_name,
+        decision_key="lane_id",
+        value=lane_id,
+        choices=(0, 1, 2),
+        source="rng_randrange",
+        context="hybrid_sparse_triplet_router.lane_block",
+    )
     norm = _pick_compatible_motif(
         graph,
         input_id,
@@ -363,7 +390,15 @@ def tpl_multiscale_difficulty_router(
     graph.metadata["_skip_global_decorators"] = True
     template_name = "multiscale_difficulty_router"
     template_instance = int(graph.metadata.get("_active_template_instance", 0) or 0)
-    hard_classes = rng.choice((3, 4, 5))
+    _hard_class_choices = (3, 4, 5)
+    hard_classes = sample_routing_choice(
+        rng,
+        _hard_class_choices,
+        graph=graph,
+        template_name=template_name,
+        decision_key="hard_classes",
+        context="multiscale_difficulty_router.hard_router",
+    )
     norm = _pick_compatible_motif(
         graph, input_id, rng, MOTIF_CLASS_NORM, weights, wildcard_prob=0.0
     )
@@ -552,7 +587,9 @@ def tpl_multiscale_difficulty_router(
         graph,
         hard_op,
         hard_inputs,
-        _next_multiscale_hard_config(hard_op, rng),
+        _next_multiscale_hard_config(
+            hard_op, rng, graph=graph, template_name=template_name
+        ),
         context="multiscale_difficulty_router.hard_core",
     )
     record_template_slot_binding(
@@ -625,7 +662,15 @@ def tpl_multiscale_difficulty_router_adaptive_attn_ssm(
     graph.metadata["_skip_global_decorators"] = True
     template_name = "multiscale_difficulty_router_adaptive_attn_ssm"
     template_instance = int(graph.metadata.get("_active_template_instance", 0) or 0)
-    hard_classes = rng.choice((3, 4, 5))
+    _hard_class_choices = (3, 4, 5)
+    hard_classes = sample_routing_choice(
+        rng,
+        _hard_class_choices,
+        graph=graph,
+        template_name=template_name,
+        decision_key="hard_classes",
+        context="multiscale_difficulty_router_adaptive_attn_ssm.hard_router",
+    )
     norm = _pick_compatible_motif(
         graph,
         input_id,
@@ -759,7 +804,9 @@ def tpl_multiscale_difficulty_router_adaptive_attn_ssm(
         graph,
         "route_recursion",
         [hard_seed],
-        _next_multiscale_hard_config("route_recursion", rng),
+        _next_multiscale_hard_config(
+            "route_recursion", rng, graph=graph, template_name=template_name
+        ),
         context="multiscale_difficulty_router_adaptive_attn_ssm.hard_core",
     )
     hard_attn_input = _add(
@@ -987,7 +1034,9 @@ def tpl_multiscale_rich_lane_router(
         graph,
         hard_op,
         hard_inputs,
-        _next_multiscale_hard_config(hard_op, rng),
+        _next_multiscale_hard_config(
+            hard_op, rng, graph=graph, template_name=template_name
+        ),
         context="multiscale_rich_lane_router.hard_core",
     )
     record_template_slot_binding(

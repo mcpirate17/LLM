@@ -531,6 +531,7 @@ class TestNotebook(unittest.TestCase):
             stage1_passed=True,
             loss_ratio=0.4,
             wikitext_perplexity=7.5,
+            induction_intermediate_auc=0.12,
             provenance_complete=False,
         )
         self.nb.flush_writes()
@@ -3043,6 +3044,7 @@ class TestLeaderboardDedup(unittest.TestCase):
             intentional_rerun_reason="validation_promotion",
             stage1_passed=True,
             loss_ratio=0.1,
+            induction_intermediate_auc=0.11,
         )
         missing_screening_rid = self.nb.record_program_result(
             experiment_id=exp_screen,
@@ -3092,6 +3094,7 @@ class TestLeaderboardDedup(unittest.TestCase):
             stage1_passed=True,
             loss_ratio=0.15,
             novelty_score=0.7,
+            induction_intermediate_auc=0.12,
         )
         missing_rid = self.nb.record_program_result(
             experiment_id=exp_screen,

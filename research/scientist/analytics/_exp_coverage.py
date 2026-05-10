@@ -172,7 +172,7 @@ class _CoverageMixin:
         """Summarize evaluated/surviving coverage by mathematical family."""
         rows = self.nb.conn.execute("""
             SELECT stage1_passed, graph_json, arch_spec_json
-            FROM program_results
+            FROM program_results_compat
             WHERE graph_json IS NOT NULL OR arch_spec_json IS NOT NULL
             ORDER BY timestamp DESC LIMIT 5000
         """).fetchall()
@@ -321,7 +321,7 @@ class _CoverageMixin:
 
         rows = self.nb.conn.execute(f"""
             SELECT graph_json, stage1_passed, {validation_col}, novelty_score, {baseline_col}
-            FROM program_results
+            FROM program_results_compat
             WHERE graph_json IS NOT NULL
         """).fetchall()
 

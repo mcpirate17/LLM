@@ -28,6 +28,9 @@ from research.eval.ar_validation import ARValidationConfig, run_ar_validation
 from research.scientist.notebook.graph_artifacts import resolve_graph_json_value
 from research.scientist.native_runner import compile_model_native_first as compile_model
 from research.synthesis.serializer import graph_from_json
+from research.tools.import_ar_validation_fingerprint_sweep import (
+    _program_results_read_table,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -91,6 +94,7 @@ def _query_top_fingerprints(
     include_references: bool,
 ) -> list[dict[str, Any]]:
     ref_clause = "" if include_references else "AND COALESCE(l.is_reference, 0) = 0"
+    program_results_table = _program_results_read_table(conn)
     query = f"""
         WITH ranked AS (
             SELECT
@@ -110,7 +114,7 @@ def _query_top_fingerprints(
                     ORDER BY l.composite_score DESC NULLS LAST, l.timestamp DESC
                 ) AS fp_rank
             FROM leaderboard l
-            JOIN program_results pr ON pr.result_id = l.result_id
+            JOIN {program_results_table} pr ON pr.result_id = l.result_id
             WHERE COALESCE(l.graph_fingerprint, pr.graph_fingerprint, '') <> ''
               AND COALESCE(pr.graph_json, '') NOT IN ('', '{{}}')
               AND l.composite_score IS NOT NULL

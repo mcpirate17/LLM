@@ -49,6 +49,22 @@ DEFAULT_DB = REPO_ROOT / "research/runs.db"
 TARGETS = ("ar_curriculum_auc_pair_final", "ar_curriculum_s0_retention")
 
 
+def _table_exists(conn: Any, table_name: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = ?",
+        (table_name,),
+    ).fetchone()
+    return row is not None
+
+
+def _program_results_read_table(conn: Any) -> str:
+    return (
+        "program_results_compat"
+        if _table_exists(conn, "program_results_compat")
+        else "program_results"
+    )
+
+
 def _spearman(xs: np.ndarray, ys: np.ndarray) -> float:
     if len(xs) < 2:
         return 0.0
@@ -74,12 +90,13 @@ def _ranks(xs: list[float]) -> list[float]:
 
 def load_rows(db: Path) -> list[dict[str, Any]]:
     nb = LabNotebook(str(db), read_only=True)
+    pr_table = _program_results_read_table(nb.conn)
     feature_cols = ", ".join(f"pr.{f}" for f in UPSTREAM_FEATURES)
     target_cols = ", ".join(f"pr.{t}" for t in TARGETS)
     sql = f"""
         SELECT pr.graph_fingerprint, l.tier, l.composite_score,
                {feature_cols}, {target_cols}
-        FROM program_results pr
+        FROM {pr_table} pr
         JOIN leaderboard l ON l.result_id = pr.result_id
         WHERE pr.ar_curriculum_auc_pair_final IS NOT NULL
     """

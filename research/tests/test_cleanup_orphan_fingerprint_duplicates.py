@@ -67,7 +67,7 @@ def test_cleanup_merges_orphan_duplicates_and_relabels_backfill(tmp_path):
         SELECT result_id, induction_screening_auc, binding_screening_auc, hellaswag_acc,
                result_cohort, trust_label, comparability_label,
                evaluation_protocol_version, init_regime
-        FROM program_results
+        FROM program_results_compat
         WHERE graph_fingerprint = 'dup-fp-001'
         """).fetchall()
     assert len(kept) == 1
@@ -89,7 +89,7 @@ def test_cleanup_merges_orphan_duplicates_and_relabels_backfill(tmp_path):
     assert training_curve is not None
     deleted_id = older_id if survivor_id != older_id else keeper_id
     deleted = conn.execute(
-        "SELECT result_id FROM program_results WHERE result_id = ?",
+        "SELECT result_id FROM program_results_compat WHERE result_id = ?",
         (deleted_id,),
     ).fetchone()
     assert deleted is None
@@ -157,7 +157,7 @@ def test_cleanup_skips_groups_with_leaderboard_rows(tmp_path):
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     count = conn.execute(
-        "SELECT COUNT(*) AS n FROM program_results WHERE graph_fingerprint = 'dup-fp-lb'"
+        "SELECT COUNT(*) AS n FROM program_results_compat WHERE graph_fingerprint = 'dup-fp-lb'"
     ).fetchone()
     assert count["n"] == 2
     conn.close()
@@ -225,7 +225,7 @@ def test_single_lb_cleanup_merges_into_leaderboard_row(tmp_path):
     conn.row_factory = sqlite3.Row
     rows = conn.execute("""
         SELECT result_id, loss_ratio, validation_loss_ratio, induction_screening_auc
-        FROM program_results
+        FROM program_results_compat
         WHERE graph_fingerprint = 'dup-fp-single-lb'
         """).fetchall()
     assert len(rows) == 1
@@ -240,7 +240,7 @@ def test_single_lb_cleanup_merges_into_leaderboard_row(tmp_path):
     ).fetchone()
     assert curve["n"] == 1
     deleted = conn.execute(
-        "SELECT result_id FROM program_results WHERE result_id = ?",
+        "SELECT result_id FROM program_results_compat WHERE result_id = ?",
         (dup_id,),
     ).fetchone()
     assert deleted is None
@@ -304,14 +304,14 @@ def test_single_lb_cleanup_handles_missing_experiment_row(tmp_path):
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     rows = conn.execute(
-        "SELECT result_id, loss_ratio, induction_screening_auc FROM program_results WHERE graph_fingerprint = 'dup-fp-missing-exp'"
+        "SELECT result_id, loss_ratio, induction_screening_auc FROM program_results_compat WHERE graph_fingerprint = 'dup-fp-missing-exp'"
     ).fetchall()
     assert len(rows) == 1
     assert rows[0]["result_id"] == keeper_id
     assert rows[0]["loss_ratio"] == 0.4
     assert rows[0]["induction_screening_auc"] == 0.07
     deleted = conn.execute(
-        "SELECT result_id FROM program_results WHERE result_id = ?",
+        "SELECT result_id FROM program_results_compat WHERE result_id = ?",
         (missing_id,),
     ).fetchone()
     assert deleted is None
@@ -351,7 +351,7 @@ def test_cleanup_relabels_standalone_orphan_backfill_rows(tmp_path):
     row = conn.execute(
         """
         SELECT result_cohort, trust_label, comparability_label
-        FROM program_results
+        FROM program_results_compat
         WHERE result_id = ?
         """,
         (rid,),

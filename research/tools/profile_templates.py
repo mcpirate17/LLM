@@ -30,11 +30,19 @@ from research.tools._db_maintenance import connect_readonly
 MIN_TEMPLATE_EVIDENCE_RUNS = 10
 
 
+def _program_results_read_table(conn) -> str:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE name = 'program_results_compat' LIMIT 1"
+    ).fetchone()
+    return "program_results_compat" if row else "program_results"
+
+
 def _load_program_rows(db_path: Path) -> list[Any]:
     conn = connect_readonly(db_path)
     try:
+        program_results_table = _program_results_read_table(conn)
         rows = conn.execute(
-            """
+            f"""
             SELECT
                 result_id,
                 timestamp,
@@ -48,7 +56,7 @@ def _load_program_rows(db_path: Path) -> list[Any]:
                 error_type,
                 stage_at_death,
                 failure_details_json
-            FROM program_results_compat
+            FROM {program_results_table}
             WHERE graph_json IS NOT NULL
             """
         ).fetchall()

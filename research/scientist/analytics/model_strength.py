@@ -83,7 +83,7 @@ SELECT
     exp.timestamp AS experiment_timestamp,
     exp.experiment_type,
     exp.config_json
-FROM program_results pr
+FROM program_results_compat pr
 LEFT JOIN experiments exp ON exp.experiment_id = pr.experiment_id
 WHERE COALESCE(pr.graph_json, '') NOT IN ('', '{}')
 """

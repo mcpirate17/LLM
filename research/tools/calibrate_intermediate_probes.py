@@ -254,10 +254,11 @@ def lookup_graph_json(
         raise ValueError(
             f"target {target.name} needs graph_json, result_id, or fingerprint"
         )
+    table = _program_results_read_table(conn)
     row = conn.execute(
         f"""
         SELECT graph_json
-        FROM program_results
+        FROM {table}
         WHERE ({" OR ".join(clauses)})
           AND TRIM(COALESCE(graph_json, '')) <> ''
           AND graph_json <> '{{}}'
@@ -269,6 +270,13 @@ def lookup_graph_json(
     if row is None:
         raise ValueError(f"no graph_json found for target {target.name}")
     return resolve_graph_json_value(conn, db_path, row["graph_json"])
+
+
+def _program_results_read_table(conn) -> str:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE name = 'program_results_compat' LIMIT 1"
+    ).fetchone()
+    return "program_results_compat" if row else "program_results"
 
 
 def _state_dict_from_payload(payload: Any) -> dict[str, Any]:

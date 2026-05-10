@@ -162,7 +162,7 @@ class _ComparisonsMixin:
             SELECT experiment_id,
                    COUNT(*) as total,
                    SUM(CASE WHEN stage1_passed = 1 THEN 1 ELSE 0 END) as s1
-            FROM program_results
+            FROM program_results_compat
             WHERE experiment_id IN ({placeholders})
             GROUP BY experiment_id
         """,
@@ -189,7 +189,7 @@ class _ComparisonsMixin:
         """Analyze common failure modes by error type and stage."""
         rows = self.nb.conn.execute("""
             SELECT error_type, stage_at_death, COUNT(*) as count
-            FROM program_results
+            FROM program_results_compat
             WHERE error_type IS NOT NULL
             GROUP BY error_type, stage_at_death
             ORDER BY count DESC

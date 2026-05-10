@@ -211,6 +211,14 @@ def load_analysis_frame(meta_db: str | Path) -> AnalysisFrame:
             "ranked.language_control_s05_sentence_assoc_score",
             "ranked.routing_fast_lane_ppl_improvement",
             "ranked.composite_score",
+            "ranked.ar_gate_score",
+            "ranked.ar_intermediate_auc",
+            "ranked.ar_validation_rank_score",
+            "ranked.ar_curriculum_auc_pair_final",
+            "ranked.ar_curriculum_s0_retention",
+            "ranked.binding_multislot_auc",
+            "ranked.binding_multislot_all_slots_acc",
+            "ranked.champion_tiny_model_score",
             *(f"ranked.{name} AS {name}" for name in _BASE_FEATURE_COLUMNS),
             *gp_exprs,
         ]
@@ -264,6 +272,35 @@ def load_analysis_frame(meta_db: str | Path) -> AnalysisFrame:
         improvement = _safe_float(record.get("routing_fast_lane_ppl_improvement"))
         record["target_routing_improved"] = int(
             improvement is not None and improvement > 0.0
+        )
+        ar_curriculum_auc = _safe_float(record.get("ar_curriculum_auc_pair_final"))
+        ar_curriculum_retention = _safe_float(record.get("ar_curriculum_s0_retention"))
+        record["target_ar_curriculum_learns"] = int(
+            ar_curriculum_auc is not None and ar_curriculum_auc >= 0.30
+        )
+        record["target_ar_curriculum_learns_retains"] = int(
+            ar_curriculum_auc is not None
+            and ar_curriculum_auc >= 0.30
+            and ar_curriculum_retention is not None
+            and ar_curriculum_retention >= 0.50
+        )
+        binding_auc = _safe_float(record.get("binding_multislot_auc"))
+        all_slots_acc = _safe_float(record.get("binding_multislot_all_slots_acc"))
+        record["target_binding_multislot_good"] = int(
+            (binding_auc is not None and binding_auc >= 0.12)
+            or (all_slots_acc is not None and all_slots_acc >= 0.20)
+        )
+        ar_validation_rank = _safe_float(record.get("ar_validation_rank_score"))
+        ar_intermediate_auc = _safe_float(record.get("ar_intermediate_auc"))
+        ar_gate_score = _safe_float(record.get("ar_gate_score"))
+        record["target_modern_ar_good"] = int(
+            (ar_validation_rank is not None and ar_validation_rank >= 0.35)
+            or (ar_intermediate_auc is not None and ar_intermediate_auc >= 0.30)
+            or (ar_gate_score is not None and ar_gate_score >= 0.30)
+        )
+        champion_score = _safe_float(record.get("champion_tiny_model_score"))
+        record["target_champion_tiny_good"] = int(
+            champion_score is not None and champion_score > 0.0
         )
         for feature in feature_names:
             record[feature] = _num(record.get(feature), 0.0)
@@ -453,6 +490,11 @@ def build_payload(
         "target_good_wikitext",
         "target_good_tinystories",
         "target_routing_improved",
+        "target_ar_curriculum_learns",
+        "target_ar_curriculum_learns_retains",
+        "target_binding_multislot_good",
+        "target_modern_ar_good",
+        "target_champion_tiny_good",
     ]
     model_payloads = {
         target: _sklearn_importances(

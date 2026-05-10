@@ -384,17 +384,34 @@ class _LeaderboardMixin:
             else ""
         )
         existing = None
-        if fp_for_lookup:
+        existing_matched_by_reference_fp = False
+        if fp_for_lookup and (is_reference or not allow_fingerprint_duplicate):
             existing = self.conn.execute(
                 "SELECT * FROM leaderboard WHERE graph_fingerprint = ?",
                 (fp_for_lookup,),
             ).fetchone()
+            if (
+                existing is not None
+                and not is_reference
+                and str(existing["result_id"]) != str(resolved_result_id)
+            ):
+                raise DuplicateLeaderboardFingerprintError(
+                    graph_fingerprint=fp_for_lookup,
+                    existing_entry_id=str(existing["entry_id"]),
+                    existing_result_id=str(existing["result_id"]),
+                    attempted_result_id=str(resolved_result_id),
+                )
+            if (
+                existing is not None
+                and is_reference
+                and str(existing["result_id"] or "") != str(resolved_result_id)
+            ):
+                existing_matched_by_reference_fp = True
         if existing is None:
             existing = self.conn.execute(
                 "SELECT * FROM leaderboard WHERE result_id = ?",
                 (resolved_result_id,),
             ).fetchone()
-        existing_matched_by_reference_fp = False
         if existing is None and is_reference and pr_row and pr_row["graph_fingerprint"]:
             fp = str(pr_row["graph_fingerprint"]).strip()
             if fp:

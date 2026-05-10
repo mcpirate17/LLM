@@ -47,7 +47,7 @@ def build_report(db_path: Path = Path(RUNS_DB)) -> dict[str, Any]:
         placeholders = ",".join("?" for _ in active_tiers)
         hot_active_sql = f"""
             SELECT COUNT(DISTINCT pr.result_id)
-            FROM program_results pr
+            FROM program_results_compat pr
             JOIN leaderboard l ON l.result_id = pr.result_id
             WHERE {_graph_where("pr")}
               AND COALESCE(l.tier, '') IN ({placeholders})
@@ -58,7 +58,7 @@ def build_report(db_path: Path = Path(RUNS_DB)) -> dict[str, Any]:
             conn,
             f"""
             SELECT COUNT(DISTINCT pr.result_id)
-            FROM program_results pr
+            FROM program_results_compat pr
             JOIN followup_tasks ft
               ON EXISTS (
                   SELECT 1 FROM json_each(ft.result_ids_json) refs
@@ -72,7 +72,7 @@ def build_report(db_path: Path = Path(RUNS_DB)) -> dict[str, Any]:
             conn,
             f"""
             SELECT COUNT(DISTINCT pr.result_id)
-            FROM program_results pr
+            FROM program_results_compat pr
             WHERE {_graph_where("pr")}
               AND (
                 json_extract(COALESCE(pr.data_provenance_json, '{{}}'),
@@ -90,7 +90,7 @@ def build_report(db_path: Path = Path(RUNS_DB)) -> dict[str, Any]:
             conn,
             f"""
             SELECT COUNT(DISTINCT pr.result_id)
-            FROM program_results pr
+            FROM program_results_compat pr
             WHERE {_graph_where("pr")}
               AND COALESCE(pr.trust_label, '') IN ({",".join("?" for _ in PROMOTABLE_TRUST)})
               AND COALESCE(pr.comparability_label, '') IN ({",".join("?" for _ in PROMOTABLE_COMPARABILITY)})
@@ -99,13 +99,13 @@ def build_report(db_path: Path = Path(RUNS_DB)) -> dict[str, Any]:
         )
         meta_analysis = _scalar(
             conn,
-            f"SELECT COUNT(*) FROM program_results pr WHERE {_graph_where('pr')}",
+            f"SELECT COUNT(*) FROM program_results_compat pr WHERE {_graph_where('pr')}",
         )
         intermediate_validation = _scalar(
             conn,
             f"""
             SELECT COUNT(DISTINCT pr.result_id)
-            FROM program_results pr
+            FROM program_results_compat pr
             WHERE {_graph_where("pr")}
               AND (
                 pr.induction_intermediate_auc IS NOT NULL
@@ -121,7 +121,7 @@ def build_report(db_path: Path = Path(RUNS_DB)) -> dict[str, Any]:
             conn,
             f"""
             SELECT COUNT(DISTINCT pr.result_id)
-            FROM program_results pr
+            FROM program_results_compat pr
             WHERE {_graph_where("pr")}
               AND (
                 EXISTS (
@@ -138,13 +138,13 @@ def build_report(db_path: Path = Path(RUNS_DB)) -> dict[str, Any]:
         )
         total_graph_rows = _scalar(
             conn,
-            f"SELECT COUNT(*) FROM program_results pr WHERE {_graph_where('pr')}",
+            f"SELECT COUNT(*) FROM program_results_compat pr WHERE {_graph_where('pr')}",
         )
         inline_graph_bytes = _scalar(
             conn,
             f"""
             SELECT COALESCE(SUM(LENGTH(pr.graph_json)), 0)
-            FROM program_results pr
+            FROM program_results_compat pr
             WHERE {_graph_where("pr")}
               AND pr.graph_json NOT LIKE '%"_notebook_artifact"%'
             """,
@@ -162,7 +162,7 @@ def build_report(db_path: Path = Path(RUNS_DB)) -> dict[str, Any]:
             conn,
             f"""
             SELECT COUNT(DISTINCT pr.result_id)
-            FROM program_results pr
+            FROM program_results_compat pr
             WHERE {_graph_where("pr")}
               AND NOT EXISTS (
                 SELECT 1 FROM leaderboard l

@@ -86,7 +86,7 @@ def test_allow_flag_bypasses_python_gate_but_schema_still_blocks(tmp_path):
             allow_fingerprint_duplicate=True,
         )
     rows = nb.conn.execute(
-        "SELECT COUNT(*) c FROM leaderboard l JOIN program_results pr "
+        "SELECT COUNT(*) c FROM leaderboard l JOIN program_results_compat pr "
         "ON l.result_id = pr.result_id WHERE pr.graph_fingerprint = ?",
         ("sharedfp0002bbbb",),
     ).fetchone()

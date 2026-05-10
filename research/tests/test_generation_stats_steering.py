@@ -222,15 +222,15 @@ def test_backfill_recency_weights_metric_averages():
         )
         nb.flush_writes()
         now = time.time()
-        nb.conn.execute(
+        nb._submit_write(
             "UPDATE program_results SET timestamp = ? WHERE result_id = ?",
             (now - (60 * 24 * 3600), old_id),
         )
-        nb.conn.execute(
+        nb._submit_write(
             "UPDATE program_results SET timestamp = ? WHERE result_id = ?",
             (now, recent_id),
         )
-        nb.conn.commit()
+        nb.flush_writes()
         nb.close()
 
         backfill(db_path)
