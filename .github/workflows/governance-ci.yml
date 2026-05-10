@@ -10,6 +10,7 @@ on:
       - "aria_core/**"
       - "aria_designer/**"
       - ".pre-commit-config.yaml"
+      - "pyproject.toml"
       - ".github/workflows/governance-ci.yml"
   pull_request:
     paths:
@@ -19,6 +20,7 @@ on:
       - "aria_core/**"
       - "aria_designer/**"
       - ".pre-commit-config.yaml"
+      - "pyproject.toml"
       - ".github/workflows/governance-ci.yml"
   workflow_dispatch:
 

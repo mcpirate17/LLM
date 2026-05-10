@@ -8,6 +8,7 @@ on:
       - "aria_designer/**"
       - "aria_core/**"
       - "Makefile"
+      - "pyproject.toml"
       - ".github/workflows/pipeline-ci.yml"
   pull_request:
     paths:
@@ -15,6 +16,7 @@ on:
       - "aria_designer/**"
       - "aria_core/**"
       - "Makefile"
+      - "pyproject.toml"
       - ".github/workflows/pipeline-ci.yml"
   workflow_dispatch:
 

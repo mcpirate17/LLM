@@ -6,10 +6,12 @@ on:
     paths:
       - 'research/**'
       - '.github/workflows/research-native-ci.yml'
+      - 'pyproject.toml'
   pull_request:
     paths:
       - 'research/**'
       - '.github/workflows/research-native-ci.yml'
+      - 'pyproject.toml'
   workflow_dispatch:
 
 permissions:
