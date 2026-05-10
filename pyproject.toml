@@ -9,6 +9,7 @@ requires-python = ">=3.12"
 dependencies = [
   "flask-cors>=6.0.0",
   "lightgbm>=4.6.0",
+  "ninja>=1.11.1",
   "pyyaml>=6.0",
   "xxhash>=3.0.0",
   "zstandard>=0.23.0",
