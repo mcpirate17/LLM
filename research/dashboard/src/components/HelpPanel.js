@@ -100,14 +100,14 @@ A program labeled **QKV-free** uses none of the standard attention primitives â€
 **Anthropic (Claude):**
 \`\`\`
 export ARIA_LLM_BACKEND=anthropic
-export ANTHROPIC_API_KEY=sk-ant-...
+export ANTHROPIC_API_KEY
 export ANTHROPIC_MODEL=claude-sonnet-4-5-20250929  # optional
 \`\`\`
 
 **OpenAI:**
 \`\`\`
 export ARIA_LLM_BACKEND=openai
-export OPENAI_API_KEY=sk-...
+export OPENAI_API_KEY
 \`\`\`
 
 **Ollama (local):**

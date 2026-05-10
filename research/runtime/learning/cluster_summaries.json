@@ -1,7 +1,0 @@
-{
-  "ok": true,
-  "source": "ollama-gemma2:2b",
-  "model": "gemma2:2b",
-  "tokens_used": 220,
-  "summary": "```json\n{\n  \"generated_at\": 1772246743,\n  \"n_rows\": 240,\n  \"n_components\": 8,\n  \"n_clusters\": 6,\n  \"op_names\": [\n    \"add\",\n    \"split2\",\n    \"concat\",\n    \"square\",\n    \"mul\",\n    \"matmul\",\n    \"gelu\",\n    \"silu\",\n    \"sigmoid\",\n    \"relu\",\n    \"outer_product\",\n    \"tanh\",\n    \"sub\",\n    \"neg\",\n    \"sin\",\n    \"cos\",\n    \"maximum\",\n    \"minimum\",\n    \"abs\",\n    \"linear_proj\",\n    \"conv1d_seq\",\n    \"nm_sparse_linear\",\n    \"sign_ste\",\n    \"causal_mask\",\n    \"local_window_attn\",\n    \"selective_scan\","
-}

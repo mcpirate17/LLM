@@ -34,6 +34,8 @@ research/dashboard/build/
 *.sql
 *.db.bak.*
 *.db.bak_*
+research/db_backups/
+**/db_backups/
 
 # SQLite databases & WAL files
 *.db
@@ -96,6 +98,14 @@ new *.txt
 /*.md
 !/README.md
 
+# Markdown notes/reports are local-only unless they are README files.
+*.md
+!README.md
+!**/README.md
+
+# Local-only scratch scripts
+/happy_times.py
+
 # One-off audit outputs
 audit_results/
 audit_report.*
@@ -105,11 +115,13 @@ research/artifacts/
 
 # Runtime learning state
 research/runtime/learning/
+research/runtime/**/*.json
 research/runtime/**/*.jsonl
 research/runtime/**/*.log
 research/runtime/**/summary_*.json
 research/runtime/**/*.csv
 research/runtime/**/*.gguf
+!research/runtime/native/**/*.json
 
 # Runtime experiment scratch (regenerable; never commit checkpoints/sweeps)
 research/runtime/bim_scale_experiment/
@@ -129,6 +141,7 @@ research/runtime/native/rust/aria-db/target/
 
 # Performance artifacts
 research/perf_artifacts/
+research/scientist/perf_audit_artifacts/
 research/profiling/
 profiles/
 
