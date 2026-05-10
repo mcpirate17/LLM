@@ -1650,7 +1650,7 @@ class TestNotebook(unittest.TestCase):
             "screening_wikitext_status, screening_wikitext_metric_version, "
             "screening_wikitext_variant, screening_wikitext_elapsed_ms, "
             "screening_wikitext_budget_json "
-            "FROM program_results WHERE result_id = ?",
+            "FROM program_results_compat WHERE result_id = ?",
             (rid,),
         ).fetchone()
         lb = self.nb.get_leaderboard(limit=5)[0]
@@ -1689,7 +1689,7 @@ class TestNotebook(unittest.TestCase):
         self.assertTrue(self.nb.set_external_benchmarks(rid, payload))
 
         row = self.nb.conn.execute(
-            "SELECT external_benchmarks_json FROM program_results WHERE result_id = ?",
+            "SELECT external_benchmarks_json FROM program_results_compat WHERE result_id = ?",
             (rid,),
         ).fetchone()
         parsed = json.loads(row["external_benchmarks_json"])
@@ -1747,7 +1747,7 @@ class TestNotebook(unittest.TestCase):
             "binding_screening_composite, train_budget_steps, "
             "screening_hellaswag_correct, screening_hellaswag_total, "
             "screening_hellaswag_elapsed_ms "
-            "FROM program_results WHERE result_id = ?",
+            "FROM program_results_compat WHERE result_id = ?",
             (rid,),
         ).fetchone()
 

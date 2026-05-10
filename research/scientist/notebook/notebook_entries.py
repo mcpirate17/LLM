@@ -210,6 +210,12 @@ class _EntriesMixin:
         except (TypeError, ValueError):
             return False
         cur = self.conn.execute(
+            "UPDATE graph_runs SET external_benchmarks_json = ? WHERE result_id = ?",
+            (serialized, result_id),
+        )
+        # Keep the legacy table in sync until Phase 5b retirement is fully gone
+        # so old read paths continue to see the same data.
+        self.conn.execute(
             "UPDATE program_results SET external_benchmarks_json = ? WHERE result_id = ?",
             (serialized, result_id),
         )

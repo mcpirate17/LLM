@@ -86,7 +86,7 @@ class _ProgramResultRecordingMixin:
             return
 
         existing = self.conn.execute(
-            "SELECT result_id, experiment_id FROM program_results "
+            "SELECT result_id, experiment_id FROM program_results_compat "
             "WHERE graph_fingerprint = ? LIMIT 1",
             (graph_fingerprint,),
         ).fetchone()

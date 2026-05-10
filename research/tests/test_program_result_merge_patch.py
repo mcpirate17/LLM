@@ -455,7 +455,7 @@ def test_record_screening_failure_merges_into_source_row_without_duplicate():
         nb.flush_writes()
 
         count = nb.conn.execute(
-            "SELECT COUNT(*) AS n FROM program_results WHERE graph_fingerprint = ?",
+            "SELECT COUNT(*) AS n FROM program_results_compat WHERE graph_fingerprint = ?",
             ("fp_replay_merge",),
         ).fetchone()
         row = nb.get_program_detail(rid)
@@ -523,13 +523,13 @@ def test_promote_validation_candidate_updates_source_row_without_duplicate():
         nb.flush_writes()
 
         count = nb.conn.execute(
-            "SELECT COUNT(*) AS n FROM program_results WHERE graph_fingerprint = ?",
+            "SELECT COUNT(*) AS n FROM program_results_compat WHERE graph_fingerprint = ?",
             ("fp_validation_source",),
         ).fetchone()
         row = nb.conn.execute(
             """
             SELECT validation_loss_ratio, wikitext_perplexity
-            FROM program_results
+            FROM program_results_compat
             WHERE result_id = ?
             """,
             (rid,),
@@ -784,7 +784,7 @@ def test_promote_validation_candidate_uses_fingerprint_canonical_row():
             """
             SELECT validation_loss_ratio, baseline_loss_ratio,
                    wikitext_perplexity, external_benchmarks_json
-            FROM program_results
+            FROM program_results_compat
             WHERE result_id = ?
             """,
             (child_rid,),
@@ -793,7 +793,7 @@ def test_promote_validation_candidate_uses_fingerprint_canonical_row():
         canonical_row = nb.conn.execute(
             """
             SELECT external_benchmarks_json
-            FROM program_results
+            FROM program_results_compat
             WHERE result_id = ?
             """,
             (canonical_rid,),
@@ -1023,7 +1023,7 @@ def test_record_investigation_result_persists_best_training_curve():
         child = nb.conn.execute(
             """
             SELECT result_id
-            FROM program_results
+            FROM program_results_compat
             WHERE graph_fingerprint = ?
               AND experiment_id = ?
             """,
@@ -1358,7 +1358,7 @@ def test_candidate_confirmation_rebind_preserves_fingerprint_evidence():
                    ar_gate_score, ar_gate_status,
                    language_control_s05_binding_score, language_control_s10_binding_score,
                    tinystories_score
-            FROM program_results
+            FROM program_results_compat
             WHERE result_id = ?
             """,
             (confirmed_rid,),

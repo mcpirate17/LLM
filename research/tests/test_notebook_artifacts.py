@@ -31,7 +31,7 @@ def test_record_program_result_externalizes_large_json_field(tmp_path, monkeypat
     nb.flush_writes()
 
     row = nb.conn.execute(
-        "SELECT rapid_screening_metrics_json FROM program_results WHERE result_id = ?",
+        "SELECT rapid_screening_metrics_json FROM program_results_compat WHERE result_id = ?",
         (rid,),
     ).fetchone()
     pointer = parse_artifact_pointer(row["rapid_screening_metrics_json"])
@@ -104,7 +104,7 @@ def test_externalize_tool_moves_existing_payloads_and_curves(tmp_path):
     assert report["training_curves_applied"]["rows"] == 1
     nb = LabNotebook(db_path, use_native=False)
     row = nb.conn.execute(
-        "SELECT rapid_screening_metrics_json FROM program_results WHERE result_id = 'rid'"
+        "SELECT rapid_screening_metrics_json FROM program_results_compat WHERE result_id = 'rid'"
     ).fetchone()
     assert parse_artifact_pointer(row[0]) is not None
     assert nb.get_training_curve("rid")[0]["loss"] == 1.0
@@ -153,7 +153,7 @@ def test_externalize_tool_can_move_graph_json_when_explicitly_enabled(tmp_path):
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     row = conn.execute(
-        "SELECT graph_json FROM program_results WHERE result_id = ?",
+        "SELECT graph_json FROM program_results_compat WHERE result_id = ?",
         (rid,),
     ).fetchone()
     assert parse_artifact_pointer(row["graph_json"]) is not None
@@ -295,7 +295,7 @@ def test_restore_inline_tool_rehydrates_raw_sql_sensitive_columns(tmp_path):
     assert report["restored"][0]["rows"] == 1
     conn = sqlite3.connect(db_path)
     raw = conn.execute(
-        "SELECT data_provenance_json FROM program_results WHERE result_id = ?",
+        "SELECT data_provenance_json FROM program_results_compat WHERE result_id = ?",
         (rid,),
     ).fetchone()[0]
     conn.close()

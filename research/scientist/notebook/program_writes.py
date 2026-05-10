@@ -328,15 +328,13 @@ def build_dual_write_statements(
     graph_json: str,
     filtered_kwargs: Dict[str, Any],
 ) -> List[tuple[str, tuple]]:
-    """Build the 3-statement atomic write set: graphs + graph_runs + program_results.
+    """Build the atomic write set: graphs UPSERT + graph_runs INSERT.
 
-    During the dual-write window of the graph-fingerprint normalization. The
-    program_results write is retained because many callers and tests assert
-    against program_results directly (notebook_artifacts externalization,
-    merge-patch UPDATEs, etc.). Dropping it would require a larger refactor
-    of those call sites — out of scope for this migration.
-
-    Returns the list ready for `_submit_grouped_write`.
+    Post-Phase-5b: writes target the new tables only. Reads continue to flow
+    through `program_results_compat` (= graph_runs LEFT JOIN graphs), which
+    preserves the legacy column shape for callers and tests. The AFTER INSERT
+    trigger `_gn_sync_pr_to_runs` still propagates raw `INSERT INTO
+    program_results` (e.g. test fixtures, ad-hoc tools) to graphs+graph_runs.
     """
     arch_spec_json = filtered_kwargs.get("arch_spec_json")
     graphs_sql = (
@@ -372,10 +370,6 @@ def build_dual_write_statements(
         graph_json=graph_json,
         filtered_kwargs=filtered_kwargs,
     )
-    legacy_sql = (
-        f"INSERT INTO program_results ({', '.join(legacy_cols)}) "
-        f"VALUES ({', '.join(['?'] * len(legacy_cols))})"
-    )
 
     arch_set = set(GRAPH_TABLE_ARCH_COLUMNS)
     runs_cols: List[str] = []
@@ -393,5 +387,4 @@ def build_dual_write_statements(
     return [
         (graphs_sql, graphs_args),
         (runs_sql, tuple(runs_vals)),
-        (legacy_sql, tuple(legacy_vals)),
     ]

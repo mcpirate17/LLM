@@ -313,7 +313,7 @@ class _ProgramResultMergeMixin:
             return False
         self.flush_writes()
         existing_row = self.conn.execute(
-            "SELECT * FROM program_results WHERE result_id = ?",
+            "SELECT * FROM program_results_compat WHERE result_id = ?",
             (rid,),
         ).fetchone()
         if existing_row is None:
