@@ -140,3 +140,36 @@ def reset_cache() -> None:
     global _cache
     with _cache_lock:
         _cache = None
+
+
+# A/B strategies for the use_derived_slot_classes flag.
+# - "static":   always False; preserves the pre-2026-05-04 baseline.
+# - "derived":  always True; opt-in fully data-driven slot allowlists.
+# - "ab_50_50": 50/50 split keyed on a stable hash of the experiment id so
+#               the assignment is reproducible per run, comparable per cohort.
+SLOT_CLASS_STRATEGIES = ("static", "derived", "ab_50_50")
+
+
+def resolve_slot_class_strategy(
+    *,
+    explicit_use_derived: bool,
+    strategy: str,
+    experiment_id: str | None,
+) -> tuple[bool, str]:
+    """Decide whether to use derived slot classes for this experiment.
+
+    Returns (use_derived, assignment_reason). The reason string is persisted
+    in graph.metadata so post-hoc analysis can compare derived vs static
+    cohorts cleanly. ``explicit_use_derived=True`` always wins; otherwise the
+    strategy decides.
+    """
+    if explicit_use_derived:
+        return True, "explicit_config"
+    if strategy == "derived":
+        return True, "strategy_derived"
+    if strategy == "ab_50_50" and experiment_id:
+        # Stable per-experiment 50/50 split — same exp_id always lands on the
+        # same arm, enabling reproducible cohort-level comparison.
+        bit = sum(ord(ch) for ch in str(experiment_id)) & 1
+        return (bool(bit), "strategy_ab_50_50")
+    return False, "strategy_static"

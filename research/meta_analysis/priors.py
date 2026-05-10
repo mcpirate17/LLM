@@ -21,8 +21,41 @@ from .metadata_db import DEFAULT_META_ANALYSIS_DB
 DEFAULT_PRIOR_DIR = Path("research/artifacts/meta_analysis_priors")
 PRIOR_SCHEMA_VERSION = "meta_analysis_prior_v1"
 VALID_TARGETS = frozenset(
-    {"induction", "induction_intermediate", "composite", "balanced"}
+    {
+        "induction",
+        "induction_intermediate",
+        "composite",
+        "balanced",
+        # Capability targets (2026-05-10): each scores by the named
+        # capability metric on op_observations. AR AUC and AR retention are
+        # explicitly separate axes — do not blend into a single capability
+        # scalar. The grammar prior writer picks one target per artifact.
+        "ar_gate",
+        "ar_curriculum",
+        "ar_retention",
+        "binding_intermediate",
+    }
 )
+
+# Map capability targets to the meta-analysis column that scores them.
+# Used by _global_stats and _aggregate_table to fetch the right metric mean.
+# Kept disjoint from the legacy targets so existing artifacts are untouched.
+_CAPABILITY_METRIC_COLUMN: dict[str, str] = {
+    "ar_gate": "ar_gate_score",
+    "ar_curriculum": "ar_curriculum_auc_pair_final",
+    "ar_retention": "ar_curriculum_s0_retention",
+    "binding_intermediate": "binding_intermediate_auc",
+}
+
+# Lift floor per capability target — minimum baseline magnitude before a lift
+# is meaningful. Tighter than the loss/composite floors because AR/binding
+# AUCs sit in [0, 1] with most signal near 0.5.
+_CAPABILITY_LIFT_FLOOR: dict[str, float] = {
+    "ar_gate": 0.05,
+    "ar_curriculum": 0.05,
+    "ar_retention": 0.05,
+    "binding_intermediate": 0.05,
+}
 
 _TEXT_COLUMNS = {
     "op_name",
@@ -158,6 +191,17 @@ def _score_row(
         row.get("mean_composite"), global_stats["mean_composite"], 1.0
     )
     s1_lift = _relative_lift(row.get("s1_rate"), global_stats["s1_rate"], 0.05)
+    if target in _CAPABILITY_METRIC_COLUMN:
+        cap_lift = _relative_lift(
+            row.get("mean_capability"),
+            global_stats.get("mean_capability"),
+            _CAPABILITY_LIFT_FLOOR.get(target, 0.05),
+        )
+        # Retention is the secondary axis per the AR framing rule; weight s1
+        # less than for the AUC-style targets to avoid rewarding brittle but
+        # high-AUC candidates that fail to retain.
+        s1_weight = 0.10 if target == "ar_retention" else 0.20
+        return cap_lift + s1_weight * s1_lift
     if target == "induction":
         return ind_lift + 0.25 * s1_lift
     if target == "composite":
@@ -177,14 +221,24 @@ def _multiplier_from_score(
 def _global_stats(conn: sqlite3.Connection, target: str) -> dict[str, float | None]:
     cols = _table_columns(conn, "op_observations")
     if not cols:
-        return {"mean_induction": None, "mean_composite": None, "s1_rate": None}
+        return {
+            "mean_induction": None,
+            "mean_composite": None,
+            "s1_rate": None,
+            "mean_capability": None,
+        }
     induction_expr = _induction_metric_expr(cols, target)
+    capability_col = _CAPABILITY_METRIC_COLUMN.get(target)
+    capability_expr = (
+        _metric_expr(cols, capability_col) if capability_col else "CAST(NULL AS REAL)"
+    )
     row = conn.execute(
         f"""
         SELECT
             AVG({induction_expr}) AS mean_induction,
             AVG({_metric_expr(cols, "composite_score")}) AS mean_composite,
-            AVG({_metric_expr(cols, "stage1_passed")}) AS s1_rate
+            AVG({_metric_expr(cols, "stage1_passed")}) AS s1_rate,
+            AVG({capability_expr}) AS mean_capability
         FROM op_observations
         """
     ).fetchone()
@@ -192,6 +246,7 @@ def _global_stats(conn: sqlite3.Connection, target: str) -> dict[str, float | No
         "mean_induction": _safe_float(row["mean_induction"] if row else None),
         "mean_composite": _safe_float(row["mean_composite"] if row else None),
         "s1_rate": _safe_float(row["s1_rate"] if row else None),
+        "mean_capability": _safe_float(row["mean_capability"] if row else None),
     }
 
 
@@ -207,13 +262,19 @@ def _aggregate_table(
     if key_column not in cols:
         return []
     induction_expr = _induction_metric_expr(cols, target)
+    capability_col = _CAPABILITY_METRIC_COLUMN.get(target)
+    capability_expr = (
+        _metric_expr(cols, capability_col) if capability_col else "CAST(NULL AS REAL)"
+    )
     select_parts = [
         f'"{key_column}" AS key',
         f"COUNT({induction_expr}) AS induction_support",
+        f"COUNT({capability_expr}) AS capability_support",
         "COUNT(*) AS total_support",
         f"AVG({induction_expr}) AS mean_induction",
         f"AVG({_metric_expr(cols, 'composite_score')}) AS mean_composite",
         f"AVG({_metric_expr(cols, 'stage1_passed')}) AS s1_rate",
+        f"AVG({capability_expr}) AS mean_capability",
     ]
     for col in extra_columns:
         if col in cols:
@@ -233,10 +294,19 @@ def _aggregate_table(
         payload = dict(row)
         induction_support = int(payload.get("induction_support") or 0)
         total_support = int(payload.get("total_support") or 0)
-        payload["support"] = (
-            induction_support if target == "induction_intermediate" else total_support
-        )
-        for metric in ("mean_induction", "mean_composite", "s1_rate"):
+        capability_support = int(payload.get("capability_support") or 0)
+        if target in _CAPABILITY_METRIC_COLUMN:
+            payload["support"] = capability_support
+        elif target == "induction_intermediate":
+            payload["support"] = induction_support
+        else:
+            payload["support"] = total_support
+        for metric in (
+            "mean_induction",
+            "mean_composite",
+            "s1_rate",
+            "mean_capability",
+        ):
             payload[metric] = _safe_float(payload.get(metric))
         out.append(payload)
     return out

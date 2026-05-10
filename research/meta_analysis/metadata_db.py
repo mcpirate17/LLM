@@ -150,14 +150,141 @@ _OUTCOME_COLUMNS = (
     "induction_intermediate_protocol_version",
     "binding_screening_auc",
     "binding_curriculum_auc",
+    "binding_curriculum_distance_accuracies_json",
+    "binding_curriculum_steps",
+    "binding_curriculum_elapsed_ms",
+    "binding_curriculum_protocol_version",
     "binding_intermediate_auc",
     "binding_intermediate_max_distance_acc",
-    "binding_intermediate_gap_accuracies_json",
-    "binding_intermediate_steps_trained",
+    "binding_intermediate_distance_accuracies_json",
+    "binding_intermediate_train_steps",
     "binding_intermediate_status",
     "binding_intermediate_elapsed_ms",
     "binding_intermediate_protocol_version",
     "ar_legacy_auc",
+    "ar_legacy_final_acc",
+    "ar_legacy_above_chance",
+    "ar_legacy_timed_out",
+    "ar_gate_metric_version",
+    "ar_gate_in_dist_pair_acc",
+    "ar_gate_in_dist_class_acc",
+    "ar_gate_held_pair_acc",
+    "ar_gate_held_class_acc",
+    "ar_gate_score",
+    "ar_gate_status",
+    "ar_gate_elapsed_ms",
+    "ar_gate_train_steps_done",
+    "ar_gate_no_go",
+    "ar_intermediate_metric_version",
+    "ar_intermediate_train_pair_acc",
+    "ar_intermediate_held_pair_acc",
+    "ar_intermediate_held_class_acc",
+    "ar_intermediate_pair_chance_acc",
+    "ar_intermediate_class_chance_acc",
+    "ar_intermediate_held_pair_lift",
+    "ar_intermediate_held_class_lift",
+    "ar_intermediate_early_held_pair_acc",
+    "ar_intermediate_final_held_pair_acc",
+    "ar_intermediate_best_held_pair_acc",
+    "ar_intermediate_improvement",
+    "ar_intermediate_slope_per_100_steps",
+    "ar_intermediate_auc",
+    "ar_intermediate_auc_lift",
+    "ar_intermediate_learning_curve_json",
+    "ar_intermediate_steps_to_threshold",
+    "ar_intermediate_diagnostic_score",
+    "ar_intermediate_steps_trained",
+    "ar_intermediate_status",
+    "ar_intermediate_elapsed_ms",
+    "ar_intermediate_error",
+    "ar_curriculum_metric_version",
+    "ar_curriculum_auc_pair_final",
+    "ar_curriculum_auc_class_final",
+    "ar_curriculum_s0_held_pair_acc",
+    "ar_curriculum_s0_retention",
+    "ar_curriculum_max_passing_stage",
+    "ar_curriculum_per_stage_held_pair_acc",
+    "ar_curriculum_per_stage_held_class_acc",
+    "ar_curriculum_per_stage_lift_pair",
+    "ar_curriculum_per_stage_z_score_pair",
+    "ar_curriculum_per_stage_chance_pair",
+    "ar_curriculum_learning_curve_json",
+    "ar_curriculum_steps_trained",
+    "ar_curriculum_n_eval_examples",
+    "ar_curriculum_mode",
+    "ar_curriculum_elapsed_ms",
+    "ar_curriculum_status",
+    "ar_curriculum_error",
+    "binding_multislot_metric_version",
+    "binding_multislot_train_slot_acc",
+    "binding_multislot_held_entity_slot_acc",
+    "binding_multislot_held_entity_class_acc",
+    "binding_multislot_two_plus_slots_acc",
+    "binding_multislot_all_slots_acc",
+    "binding_multislot_mixed_query_acc",
+    "binding_multislot_mixed_two_plus_slots_acc",
+    "binding_multislot_mixed_all_slots_acc",
+    "binding_multislot_slot_chance_acc",
+    "binding_multislot_class_chance_acc",
+    "binding_multislot_two_plus_slots_chance_acc",
+    "binding_multislot_all_slots_chance_acc",
+    "binding_multislot_held_slot_lift",
+    "binding_multislot_held_class_lift",
+    "binding_multislot_two_plus_slots_lift",
+    "binding_multislot_all_slots_lift",
+    "binding_multislot_mixed_query_lift",
+    "binding_multislot_mixed_two_plus_slots_lift",
+    "binding_multislot_mixed_all_slots_lift",
+    "binding_multislot_early_slot_acc",
+    "binding_multislot_final_slot_acc",
+    "binding_multislot_best_slot_acc",
+    "binding_multislot_improvement",
+    "binding_multislot_slope_per_100_steps",
+    "binding_multislot_auc",
+    "binding_multislot_auc_lift",
+    "binding_multislot_learning_curve_json",
+    "binding_multislot_steps_to_threshold",
+    "binding_multislot_diagnostic_score",
+    "binding_multislot_steps_trained",
+    "binding_multislot_status",
+    "binding_multislot_elapsed_ms",
+    "binding_multislot_error",
+    "induction_validation_auc",
+    "induction_validation_max_gap_acc",
+    "induction_validation_gap_accuracy_cv",
+    "induction_validation_gap_accuracies_json",
+    "induction_validation_steps_trained",
+    "induction_validation_status",
+    "induction_validation_elapsed_ms",
+    "induction_validation_protocol_version",
+    "ar_validation_metric_version",
+    "ar_validation_final_acc",
+    "ar_validation_held_pair_acc",
+    "ar_validation_held_class_acc",
+    "ar_validation_learning_curve_json",
+    "ar_validation_steps_to_floor",
+    "ar_validation_rank_score",
+    "ar_validation_status",
+    "ar_validation_elapsed_ms",
+    "champion_floor_protocol_version",
+    "champion_steps_to_floor",
+    "champion_floor_loss",
+    "champion_floor_ppl",
+    "champion_floor_loss_std",
+    "champion_plateau_detected_step",
+    "champion_plateau_window",
+    "champion_baseline_result_id",
+    "champion_baseline_layers",
+    "champion_baseline_protocol_version",
+    "champion_steps_to_floor_score",
+    "champion_floor_quality_score",
+    "champion_floor_stability_score",
+    "champion_induction_validation_score",
+    "champion_binding_long_context_score",
+    "champion_ar_validation_score",
+    "champion_tiny_model_score",
+    "champion_tiny_model_protocol_version",
+    "champion_hard_failure_reason",
     "hellaswag_acc",
     "blimp_overall_accuracy",
     "wikitext_perplexity",
@@ -240,6 +367,40 @@ _TEXT_OUTCOME_COLUMNS = frozenset(
         "binding_intermediate_gap_accuracies_json",
         "binding_intermediate_status",
         "binding_intermediate_protocol_version",
+        "binding_intermediate_distance_accuracies_json",
+        "binding_curriculum_distance_accuracies_json",
+        "binding_curriculum_protocol_version",
+        "ar_gate_metric_version",
+        "ar_gate_status",
+        "ar_intermediate_metric_version",
+        "ar_intermediate_learning_curve_json",
+        "ar_intermediate_status",
+        "ar_intermediate_error",
+        "ar_curriculum_metric_version",
+        "ar_curriculum_per_stage_held_pair_acc",
+        "ar_curriculum_per_stage_held_class_acc",
+        "ar_curriculum_per_stage_lift_pair",
+        "ar_curriculum_per_stage_z_score_pair",
+        "ar_curriculum_per_stage_chance_pair",
+        "ar_curriculum_learning_curve_json",
+        "ar_curriculum_mode",
+        "ar_curriculum_status",
+        "ar_curriculum_error",
+        "binding_multislot_metric_version",
+        "binding_multislot_learning_curve_json",
+        "binding_multislot_status",
+        "binding_multislot_error",
+        "induction_validation_gap_accuracies_json",
+        "induction_validation_status",
+        "induction_validation_protocol_version",
+        "ar_validation_metric_version",
+        "ar_validation_learning_curve_json",
+        "ar_validation_status",
+        "champion_floor_protocol_version",
+        "champion_baseline_result_id",
+        "champion_baseline_protocol_version",
+        "champion_tiny_model_protocol_version",
+        "champion_hard_failure_reason",
     }
 )
 _DERIVED_GRAPH_COLUMNS = (
@@ -589,6 +750,92 @@ _EVAL_METRIC_ROWS: tuple[dict[str, Any], ...] = (
         "active_for_priors": 1,
     },
     {
+        "metric_name": "ar_curriculum",
+        "metric_family": "mechanistic_probe",
+        "metric_scale": "curriculum_auc_retention",
+        "data_type": "mixed",
+        "metric_direction": "higher_auc_higher_retention",
+        "known_bias": "Curriculum probe overweights synthetic key/value learning; pair AUC and S0 retention should be read together.",
+        "compute_cost_class": "medium",
+        "reliability_status": "primary_ar_curriculum_signal",
+        "primary_use": "next_generation_architecture_trend_mining",
+        "source_columns_json": [
+            "ar_curriculum_metric_version",
+            "ar_curriculum_auc_pair_final",
+            "ar_curriculum_auc_class_final",
+            "ar_curriculum_s0_held_pair_acc",
+            "ar_curriculum_s0_retention",
+            "ar_curriculum_max_passing_stage",
+            "ar_curriculum_per_stage_held_pair_acc",
+            "ar_curriculum_learning_curve_json",
+            "ar_curriculum_status",
+        ],
+        "active_for_priors": 1,
+    },
+    {
+        "metric_name": "ar_modern_validation",
+        "metric_family": "mechanistic_probe",
+        "metric_scale": "gate_intermediate_validation_rank",
+        "data_type": "mixed",
+        "metric_direction": "higher_is_better",
+        "known_bias": "AR gate, intermediate, and validation protocols have different budgets and should not be collapsed without protocol labels.",
+        "compute_cost_class": "medium_to_high",
+        "reliability_status": "modern_ar_signal_stack",
+        "primary_use": "ar_capability_ranking",
+        "source_columns_json": [
+            "ar_gate_score",
+            "ar_gate_held_pair_acc",
+            "ar_intermediate_auc",
+            "ar_intermediate_held_pair_lift",
+            "ar_validation_rank_score",
+            "ar_validation_held_pair_acc",
+            "ar_validation_status",
+        ],
+        "active_for_priors": 1,
+    },
+    {
+        "metric_name": "binding_modern_multislot",
+        "metric_family": "mechanistic_probe",
+        "metric_scale": "multi_slot_accuracy_auc_lift",
+        "data_type": "mixed",
+        "metric_direction": "higher_is_better",
+        "known_bias": "Multi-slot binding is stricter than legacy copy/binding screening and needs enough held-entity support.",
+        "compute_cost_class": "medium",
+        "reliability_status": "modern_binding_signal",
+        "primary_use": "binding_memory_architecture_ranking",
+        "source_columns_json": [
+            "binding_multislot_auc",
+            "binding_multislot_held_entity_slot_acc",
+            "binding_multislot_two_plus_slots_acc",
+            "binding_multislot_all_slots_acc",
+            "binding_multislot_mixed_query_acc",
+            "binding_multislot_auc_lift",
+            "binding_multislot_status",
+        ],
+        "active_for_priors": 1,
+    },
+    {
+        "metric_name": "champion_tiny_model",
+        "metric_family": "champion_confirmation",
+        "metric_scale": "score_and_floor",
+        "data_type": "mixed",
+        "metric_direction": "higher_score_lower_steps_to_floor",
+        "known_bias": "Sparse high-cost confirmation tier; useful as an anchor rather than broad screening supervision.",
+        "compute_cost_class": "high",
+        "reliability_status": "champion_confirmation_signal",
+        "primary_use": "promotion_anchor",
+        "source_columns_json": [
+            "champion_tiny_model_score",
+            "champion_steps_to_floor_score",
+            "champion_floor_quality_score",
+            "champion_floor_stability_score",
+            "champion_induction_validation_score",
+            "champion_binding_long_context_score",
+            "champion_ar_validation_score",
+        ],
+        "active_for_priors": 1,
+    },
+    {
         "metric_name": "language_controluage_nanobind",
         "metric_family": "language_controluage",
         "metric_scale": "score_accuracy_failure",
@@ -842,9 +1089,18 @@ def _select_expr(conn: sqlite3.Connection, table: str, column: str) -> str:
     )
 
 
+def _program_results_read_table(conn: sqlite3.Connection) -> str:
+    return (
+        "program_results_compat"
+        if _table_exists(conn, "program_results_compat")
+        else "program_results"
+    )
+
+
 def _fetch_program_rows(
     src: sqlite3.Connection, source_path: Path
 ) -> list[dict[str, Any]]:
+    pr_table = _program_results_read_table(src)
     gf_join = (
         "LEFT JOIN program_graph_features gf ON gf.result_id = pr.result_id"
         if _table_exists(src, "program_graph_features")
@@ -869,7 +1125,7 @@ def _fetch_program_rows(
         else "NULL AS composite_score"
     )
     outcome_exprs = [
-        _select_expr(src, "program_results", col)
+        _select_expr(src, pr_table, col)
         for col in _OUTCOME_COLUMNS
         if col != "composite_score"
     ]
@@ -879,7 +1135,7 @@ def _fetch_program_rows(
             {composite_expr},
             pr.graph_json AS graph_json,
             {graph_feature_exprs}
-        FROM program_results pr
+        FROM {_quote(pr_table)} pr
         {gf_join}
         {lb_join}
         WHERE COALESCE(pr.graph_json, '') NOT IN ('', '{{}}')
@@ -897,6 +1153,7 @@ def _fetch_program_rows(
 def _fetch_program_op_rows(src: sqlite3.Connection) -> list[sqlite3.Row]:
     if not _table_exists(src, "program_graph_ops"):
         return []
+    pr_table = _program_results_read_table(src)
     gf_join = (
         "LEFT JOIN program_graph_features gf ON gf.result_id = pr.result_id"
         if _table_exists(src, "program_graph_features")
@@ -916,7 +1173,7 @@ def _fetch_program_op_rows(src: sqlite3.Connection) -> list[sqlite3.Row]:
         else "NULL AS composite_score"
     )
     outcome_exprs = [
-        _select_expr(src, "program_results", col)
+        _select_expr(src, pr_table, col)
         for col in _OUTCOME_COLUMNS
         if col != "composite_score"
     ]
@@ -927,7 +1184,7 @@ def _fetch_program_op_rows(src: sqlite3.Connection) -> list[sqlite3.Row]:
             {composite_expr},
             {graph_feature_exprs}
         FROM program_graph_ops go
-        JOIN program_results pr ON pr.result_id = go.result_id
+        JOIN {_quote(pr_table)} pr ON pr.result_id = go.result_id
         {gf_join}
         {lb_join}
     """

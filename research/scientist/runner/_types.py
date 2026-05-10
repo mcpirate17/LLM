@@ -430,6 +430,10 @@ class RunConfig:
         "balanced"  # induction | induction_intermediate | composite | balanced
     )
     meta_analysis_prior_path: str = "research/artifacts/meta_analysis_priors"
+    # Advisory AR/binding overlay. When enabled, generated graphs are tagged so
+    # routing decisions can append separate overlay metadata, and GBM-screening
+    # survivors get a sibling AR/binding rerank after rank_composite ordering.
+    ar_binding_overlay_enabled: bool = False
     allow_unproven_ml_influence: bool = False
     routing_mandatory: bool = True  # require routing/MoE ops in every graph
     # Phase B (2026-05-04) — when True, _pick_compatible_motif consults
@@ -439,6 +443,12 @@ class RunConfig:
     # when meta DB is absent or no class qualifies. Off by default; flip
     # per-iteration to A/B against the static-allow-list baseline.
     use_derived_slot_classes: bool = False
+    # 2026-05-10 — when explicit use_derived_slot_classes=False, this strategy
+    # decides whether to enable derived classes anyway. "ab_50_50" splits
+    # experiments 50/50 by a stable hash of exp_id so derived-vs-static
+    # cohorts are directly comparable. Strategies: "static" | "derived" |
+    # "ab_50_50". See research.synthesis._slot_constraints_loader.
+    slot_classes_ab_strategy: str = "static"
     persist_screening_failures: bool = (
         True  # keep early failed graphs for data collection — produces
         # hard negatives (good ops, bad structure) that teach the gate

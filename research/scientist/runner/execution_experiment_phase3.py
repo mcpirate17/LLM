@@ -22,6 +22,193 @@ from ._types import RunConfig
 logger = logging.getLogger(__name__)
 
 _SQLITE_IN_CLAUSE_CHUNK = 900
+_RANK_COMPOSITE_UNUSABLE = 1e6
+_RANK_COMPOSITE_USABLE_CUTOFF = 1e5
+
+
+def _resolve_p_pass_floor(
+    ensemble: Any, config: RunConfig, report: Dict[str, Any]
+) -> Tuple[float, str]:
+    """Pick the p_pass floor and record its provenance for telemetry."""
+    temporal_f1_threshold = (
+        (
+            (
+                (report.get("ensemble_calibrated") or {}).get(
+                    "temporal_holdout_evaluation"
+                )
+                or {}
+            ).get("operating_points")
+            or {}
+        )
+        .get("f1", {})
+        .get("threshold")
+    )
+    explicit_floor = float(
+        getattr(config, "screening_ensemble_p_pass_floor", 0.0) or 0.0
+    )
+    deprecated_floor = float(getattr(config, "gbm_gate_threshold", 0.0) or 0.0)
+    if explicit_floor > 0.0:
+        return explicit_floor, "config.screening_ensemble_p_pass_floor"
+    if deprecated_floor > 0.0:
+        return deprecated_floor, "config.gbm_gate_threshold"
+    if temporal_f1_threshold is not None:
+        return (
+            float(temporal_f1_threshold),
+            "ensemble.temporal_holdout_evaluation.operating_points.f1.threshold",
+        )
+    return float(getattr(ensemble, "gate_threshold", 0.5)), "ensemble.gate_threshold"
+
+
+def _predict_rank_composite_safe(gbm: Any, features: Dict[str, float]) -> float:
+    """Wrap predict_rank_composite. Returns sentinel when unusable/missing."""
+    if (
+        gbm is None
+        or not hasattr(gbm, "is_fitted")
+        or not gbm.is_fitted()
+        or not features
+        or not hasattr(gbm, "predict_rank_composite")
+    ):
+        return _RANK_COMPOSITE_UNUSABLE
+    try:
+        value = float(gbm.predict_rank_composite(features))
+    except (TypeError, ValueError) as exc:
+        logger.debug("predict_rank_composite failed: %s", exc)
+        return _RANK_COMPOSITE_UNUSABLE
+    return value if math.isfinite(value) else _RANK_COMPOSITE_UNUSABLE
+
+
+def _score_graphs_for_prescreener(
+    ensemble: Any,
+    gbm: Any,
+    graphs: List[Any],
+    op_stats_cache: Dict[str, Any],
+) -> List[tuple[float, float, float, float, float, Any, Dict[str, Any]]]:
+    """Score every graph with planning + production composite rank head."""
+    from ...synthesis.graph_features import (
+        extract_graph_features_bundle,
+        enrich_with_op_stats,
+    )
+
+    scored: List[tuple[float, float, float, float, float, Any, Dict[str, Any]]] = []
+    for graph in graphs:
+        graph_dict = graph.to_dict()
+        features, ops = extract_graph_features_bundle(graph_dict)
+        if features:
+            for op in ops:
+                if op:
+                    features[f"op_{op}"] = features.get(f"op_{op}", 0.0) + 1.0
+            enrich_with_op_stats(features, ops, preloaded=op_stats_cache)
+        planning = ensemble.predict_planning_score(
+            graph_json=graph_dict,
+            graph_features=features if features else None,
+        )
+        rank_composite = _predict_rank_composite_safe(gbm, features or {})
+        scored.append(
+            (
+                float(planning.get("planning_score", 0.0)),
+                float(planning.get("p_pass", 0.0)),
+                float(planning.get("p_induction_learner", 0.0)),
+                float(planning.get("predicted_induction_screening_auc", 0.0)),
+                rank_composite,
+                graph,
+                graph_dict,
+            )
+        )
+    return scored
+
+
+def _partition_prescreener_candidates(
+    nb: LabNotebook,
+    scored: List[tuple[float, float, float, float, float, Any, Dict[str, Any]]],
+    *,
+    exp_id: str,
+    p_pass_floor: float,
+    floor_source: str,
+) -> Tuple[List[tuple[Any, float]], int]:
+    """Split scored candidates into kept_with_rank and persist skips."""
+    kept_with_rank: List[tuple[Any, float]] = []
+    skipped = 0
+    for (
+        planning_score,
+        p_pass,
+        p_ind,
+        pred_auc,
+        rank_composite,
+        graph,
+        graph_dict,
+    ) in scored:
+        if p_pass < p_pass_floor:
+            skipped += 1
+            try:
+                skip_metrics = {
+                    "predicted_p_s1": p_pass,
+                    "predicted_induction_screening_auc": pred_auc,
+                    "predicted_p_induction_learner": p_ind,
+                    "predictor_planning_score": planning_score,
+                    "screening_ensemble_p_pass_floor": p_pass_floor,
+                    "screening_ensemble_p_pass_floor_source": floor_source,
+                }
+                if rank_composite < _RANK_COMPOSITE_USABLE_CUTOFF:
+                    skip_metrics["predicted_rank_composite"] = rank_composite
+                nb.record_program_result(
+                    experiment_id=exp_id,
+                    graph=graph,
+                    graph_json=json.dumps(graph_dict, separators=(",", ":")),
+                    status="predictor_skip",
+                    metrics=skip_metrics,
+                )
+            except (TypeError, ValueError) as exc:
+                logger.debug("Failed recording predictor_skip result: %s", exc)
+            continue
+        kept_with_rank.append((graph, rank_composite))
+    return kept_with_rank, skipped
+
+
+def _reorder_kept_by_rank_composite(
+    kept_with_rank: List[tuple[Any, float]],
+) -> Tuple[List[Any], bool, List[float]]:
+    """Re-rank survivors by the production composite head when usable.
+
+    Higher composite = better predicted quality. Sentinel sinks to the bottom;
+    if every survivor is unusable the sort is a no-op and the original
+    planning_score order is preserved.
+    """
+    usable_ranks = [r for _, r in kept_with_rank if r < _RANK_COMPOSITE_USABLE_CUTOFF]
+    used = bool(usable_ranks)
+    if used:
+        kept_with_rank.sort(
+            key=lambda pair: (
+                -pair[1] if pair[1] < _RANK_COMPOSITE_USABLE_CUTOFF else float("inf")
+            )
+        )
+    return [graph for graph, _ in kept_with_rank], used, usable_ranks
+
+
+def _maybe_rerank_kept_by_ar_binding_overlay(
+    kept: List[Any],
+    config: RunConfig,
+    results: Dict[str, Any],
+) -> List[Any]:
+    """Apply the sibling AR/binding reranker after composite rank ordering."""
+    if not getattr(config, "ar_binding_overlay_enabled", False) or not kept:
+        return kept
+    try:
+        from ..intelligence.ar_binding_reranker import rerank_graphs_by_ar_binding
+
+        kept, stats = rerank_graphs_by_ar_binding(kept)
+    except Exception as exc:
+        logger.debug("AR/binding overlay reranker unavailable: %s", exc)
+        results["screening_ar_binding_overlay_used"] = False
+        return kept
+
+    results["screening_ar_binding_overlay_used"] = bool(stats.get("used"))
+    results["screening_ar_binding_overlay_scored"] = int(stats.get("scored", 0) or 0)
+    results["screening_ar_binding_overlay_holdout_required"] = int(
+        stats.get("holdout_required", 0) or 0
+    )
+    results["screening_ar_binding_overlay_score_min"] = stats.get("score_min")
+    results["screening_ar_binding_overlay_score_max"] = stats.get("score_max")
+    return kept
 
 
 class _ExecutionExperimentPhase3Mixin:
@@ -42,7 +229,7 @@ class _ExecutionExperimentPhase3Mixin:
             placeholders = ",".join("?" for _ in chunk)
             try:
                 rows = nb.conn.execute(
-                    "SELECT graph_fingerprint FROM program_results "
+                    "SELECT graph_fingerprint FROM program_results_compat "
                     f"WHERE graph_fingerprint IN ({placeholders})",
                     chunk,
                 ).fetchall()
@@ -260,11 +447,7 @@ class _ExecutionExperimentPhase3Mixin:
 
         try:
             from ..intelligence.predictor import load_runtime_ensemble
-            from ...synthesis.graph_features import (
-                extract_graph_features_bundle,
-                enrich_with_op_stats,
-                load_op_stats,
-            )
+            from ...synthesis.graph_features import load_op_stats
 
             db_path = str(nb.db_path) if hasattr(nb, "db_path") else RUNS_DB
             profiling_db = "research/profiling/component_profiles.db"
@@ -276,103 +459,46 @@ class _ExecutionExperimentPhase3Mixin:
                 return graphs
 
             report = load_predictor_metrics_report()
-            temporal_f1_threshold = (
-                (
-                    (
-                        (report.get("ensemble_calibrated") or {}).get(
-                            "temporal_holdout_evaluation"
-                        )
-                        or {}
-                    ).get("operating_points")
-                    or {}
-                )
-                .get("f1", {})
-                .get("threshold")
-            )
-            explicit_floor = float(
-                getattr(config, "screening_ensemble_p_pass_floor", 0.0) or 0.0
-            )
-            deprecated_floor = float(getattr(config, "gbm_gate_threshold", 0.0) or 0.0)
-            if explicit_floor > 0.0:
-                p_pass_floor = explicit_floor
-                floor_source = "config.screening_ensemble_p_pass_floor"
-            elif deprecated_floor > 0.0:
-                p_pass_floor = deprecated_floor
-                floor_source = "config.gbm_gate_threshold"
-            elif temporal_f1_threshold is not None:
-                p_pass_floor = float(temporal_f1_threshold)
-                floor_source = (
-                    "ensemble.temporal_holdout_evaluation.operating_points.f1.threshold"
-                )
-            else:
-                p_pass_floor = float(getattr(ensemble, "gate_threshold", 0.5))
-                floor_source = "ensemble.gate_threshold"
+            p_pass_floor, floor_source = _resolve_p_pass_floor(ensemble, config, report)
 
             op_stats_cache = load_op_stats(db_path)
-            scored: List[tuple[float, float, float, float, Any, Dict[str, Any]]] = []
-            for graph in graphs:
-                graph_dict = graph.to_dict()
-                features, ops = extract_graph_features_bundle(graph_dict)
-                if features:
-                    for op in ops:
-                        if op:
-                            features[f"op_{op}"] = features.get(f"op_{op}", 0.0) + 1.0
-                    enrich_with_op_stats(features, ops, preloaded=op_stats_cache)
-                planning = ensemble.predict_planning_score(
-                    graph_json=graph_dict,
-                    graph_features=features if features else None,
-                )
-                scored.append(
-                    (
-                        float(planning.get("planning_score", 0.0)),
-                        float(planning.get("p_pass", 0.0)),
-                        float(planning.get("p_induction_learner", 0.0)),
-                        float(planning.get("predicted_induction_screening_auc", 0.0)),
-                        graph,
-                        graph_dict,
-                    )
-                )
-
+            scored = _score_graphs_for_prescreener(
+                ensemble, getattr(ensemble, "gbm", None), graphs, op_stats_cache
+            )
             scored.sort(key=lambda row: -row[0])
-            kept: List[Any] = []
-            skipped = 0
-            for planning_score, p_pass, p_ind, pred_auc, graph, graph_dict in scored:
-                if p_pass < p_pass_floor:
-                    skipped += 1
-                    try:
-                        nb.record_program_result(
-                            experiment_id=exp_id,
-                            graph=graph,
-                            graph_json=json.dumps(graph_dict, separators=(",", ":")),
-                            status="predictor_skip",
-                            metrics={
-                                "predicted_p_s1": p_pass,
-                                "predicted_induction_screening_auc": pred_auc,
-                                "predicted_p_induction_learner": p_ind,
-                                "predictor_planning_score": planning_score,
-                                "screening_ensemble_p_pass_floor": p_pass_floor,
-                                "screening_ensemble_p_pass_floor_source": floor_source,
-                            },
-                        )
-                    except (TypeError, ValueError) as exc:
-                        logger.debug("Failed recording predictor_skip result: %s", exc)
-                    continue
-                kept.append(graph)
+            kept_with_rank, skipped = _partition_prescreener_candidates(
+                nb,
+                scored,
+                exp_id=exp_id,
+                p_pass_floor=p_pass_floor,
+                floor_source=floor_source,
+            )
+            kept, rank_composite_used, usable_ranks = _reorder_kept_by_rank_composite(
+                kept_with_rank
+            )
+            kept = _maybe_rerank_kept_by_ar_binding_overlay(kept, config, results)
 
             results["funnel_counts"]["gbm_prescreener_skipped"] = skipped
             results["funnel_counts"]["post_gbm_prescreener"] = len(kept)
             results["screening_ensemble_p_pass_floor"] = p_pass_floor
             results["screening_ensemble_p_pass_floor_source"] = floor_source
+            results["screening_rank_composite_used"] = rank_composite_used
+
             diagnostics = (
                 ensemble.diagnostics() if hasattr(ensemble, "diagnostics") else {}
             )
             planning_scores = [row[0] for row in scored]
             pass_scores = [row[1] for row in scored]
             induction_scores = [row[2] for row in scored]
+            rank_range = (
+                "[%.2f-%.2f]" % (min(usable_ranks), max(usable_ranks))
+                if usable_ranks
+                else "unusable"
+            )
             logger.info(
                 "Ensemble ranker: %d graphs scored plan=[%.3f-%.3f] "
-                "pass=[%.3f-%.3f] induction=[%.3f-%.3f], "
-                "%d below P(pass_s1) floor (%.2f), %d kept, components=%d",
+                "pass=[%.3f-%.3f] induction=[%.3f-%.3f] composite=%s, "
+                "%d below P(pass_s1) floor (%.2f), %d kept (composite_reorder=%s), components=%d",
                 len(scored),
                 min(planning_scores) if planning_scores else 0.0,
                 max(planning_scores) if planning_scores else 0.0,
@@ -380,9 +506,11 @@ class _ExecutionExperimentPhase3Mixin:
                 max(pass_scores) if pass_scores else 0.0,
                 min(induction_scores) if induction_scores else 0.0,
                 max(induction_scores) if induction_scores else 0.0,
+                rank_range,
                 skipped,
                 p_pass_floor,
                 len(kept),
+                rank_composite_used,
                 diagnostics.get("n_components", 1),
             )
             return kept

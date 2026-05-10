@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import numpy as np
+import pytest
 from types import SimpleNamespace
 
 from research.scientist.intelligence import gnn_predictor as gp
@@ -668,6 +669,192 @@ def test_gbm_prescreener_prefers_explicit_screening_floor_over_deprecated_alias(
         results["screening_ensemble_p_pass_floor_source"]
         == "config.screening_ensemble_p_pass_floor"
     )
+
+
+@pytest.mark.parametrize(
+    "case_id, composite_table, expected_order, expected_used",
+    [
+        # Production composite head says C > A > B even though planning says A > B > C.
+        # The rank head (Spearman 0.82) wins.
+        ("usable", {"A": 50.0, "B": 10.0, "C": 90.0}, ["C", "A", "B"], True),
+        # All three return the unusable sentinel: ordering reverts to planning_score.
+        ("unusable", {"A": 1e6, "B": 1e6, "C": 1e6}, ["A", "B", "C"], False),
+    ],
+)
+def test_gbm_prescreener_reorders_by_rank_composite(
+    monkeypatch, case_id, composite_table, expected_order, expected_used
+):
+    runner = _DummyPhase3Runner()
+    config = RunConfig(gbm_prescreener_enabled=True, gbm_gate_threshold=0.1)
+    results = {"funnel_counts": {}}
+    planning_table = {"A": 0.9, "B": 0.8, "C": 0.7}
+
+    class _Graph:
+        def __init__(self, graph_id: str):
+            self.graph_id = graph_id
+
+        def to_dict(self):
+            return {"graph_id": self.graph_id, "nodes": {}}
+
+    class _GBM:
+        def is_fitted(self):
+            return True
+
+        def predict_rank_composite(self, features):
+            return composite_table[features["graph_id"]]
+
+    class _Ensemble:
+        gbm = _GBM()
+
+        def is_fitted(self):
+            return True
+
+        def diagnostics(self):
+            return {"n_components": 2}
+
+        def predict_planning_score(self, *, graph_json=None, graph_features=None):
+            return {
+                "planning_score": planning_table[graph_json["graph_id"]],
+                "p_pass": 0.5,
+                "p_induction_learner": 0.0,
+                "predicted_induction_screening_auc": 0.0,
+            }
+
+    monkeypatch.setattr(
+        "research.scientist.intelligence.predictor.load_runtime_ensemble",
+        lambda **_kwargs: _Ensemble(),
+    )
+    monkeypatch.setattr(
+        "research.scientist.ml_influence_policy.component_is_allowed",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        "research.synthesis.graph_features.load_op_stats",
+        lambda _db_path: {},
+    )
+    monkeypatch.setattr(
+        "research.synthesis.graph_features.extract_graph_features_bundle",
+        lambda graph_dict: ({"graph_id": graph_dict["graph_id"]}, []),
+    )
+    monkeypatch.setattr(
+        "research.synthesis.graph_features.enrich_with_op_stats",
+        lambda *_args, **_kwargs: None,
+    )
+
+    notebook = SimpleNamespace(
+        db_path="unused.sqlite", record_program_result=lambda **kwargs: None
+    )
+    kept = runner._run_gbm_prescreener(
+        nb=notebook,
+        graphs=[_Graph("A"), _Graph("B"), _Graph("C")],
+        config=config,
+        exp_id=f"exp-rank-{case_id}",
+        results=results,
+    )
+
+    assert [g.graph_id for g in kept] == expected_order
+    assert results["screening_rank_composite_used"] is expected_used
+    assert results["funnel_counts"]["gbm_prescreener_skipped"] == 0
+
+
+def test_gbm_prescreener_applies_ar_binding_reranker_after_rank_composite(
+    monkeypatch,
+):
+    runner = _DummyPhase3Runner()
+    config = RunConfig(
+        gbm_prescreener_enabled=True,
+        gbm_gate_threshold=0.1,
+        ar_binding_overlay_enabled=True,
+    )
+    results = {"funnel_counts": {}}
+    planning_table = {"A": 0.9, "B": 0.8, "C": 0.7}
+    composite_table = {"A": 50.0, "B": 10.0, "C": 90.0}
+    reranker_input = []
+
+    class _Graph:
+        def __init__(self, graph_id: str):
+            self.graph_id = graph_id
+            self.metadata = {}
+
+        def to_dict(self):
+            return {"graph_id": self.graph_id, "nodes": {}}
+
+    class _GBM:
+        def is_fitted(self):
+            return True
+
+        def predict_rank_composite(self, features):
+            return composite_table[features["graph_id"]]
+
+    class _Ensemble:
+        gbm = _GBM()
+
+        def is_fitted(self):
+            return True
+
+        def diagnostics(self):
+            return {"n_components": 2}
+
+        def predict_planning_score(self, *, graph_json=None, graph_features=None):
+            return {
+                "planning_score": planning_table[graph_json["graph_id"]],
+                "p_pass": 0.5,
+                "p_induction_learner": 0.0,
+                "predicted_induction_screening_auc": 0.0,
+            }
+
+    def fake_ar_binding_rerank(graphs):
+        reranker_input.extend(g.graph_id for g in graphs)
+        return [graphs[2], graphs[1], graphs[0]], {
+            "used": True,
+            "scored": 3,
+            "holdout_required": 0,
+            "score_min": -0.1,
+            "score_max": 0.6,
+        }
+
+    monkeypatch.setattr(
+        "research.scientist.intelligence.predictor.load_runtime_ensemble",
+        lambda **_kwargs: _Ensemble(),
+    )
+    monkeypatch.setattr(
+        "research.scientist.ml_influence_policy.component_is_allowed",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        "research.synthesis.graph_features.load_op_stats",
+        lambda _db_path: {},
+    )
+    monkeypatch.setattr(
+        "research.synthesis.graph_features.extract_graph_features_bundle",
+        lambda graph_dict: ({"graph_id": graph_dict["graph_id"]}, []),
+    )
+    monkeypatch.setattr(
+        "research.synthesis.graph_features.enrich_with_op_stats",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "research.scientist.intelligence.ar_binding_reranker.rerank_graphs_by_ar_binding",
+        fake_ar_binding_rerank,
+    )
+
+    notebook = SimpleNamespace(
+        db_path="unused.sqlite", record_program_result=lambda **kwargs: None
+    )
+    kept = runner._run_gbm_prescreener(
+        nb=notebook,
+        graphs=[_Graph("A"), _Graph("B"), _Graph("C")],
+        config=config,
+        exp_id="exp-ar-overlay-rank",
+        results=results,
+    )
+
+    assert reranker_input == ["C", "A", "B"]
+    assert [g.graph_id for g in kept] == ["B", "A", "C"]
+    assert results["screening_rank_composite_used"] is True
+    assert results["screening_ar_binding_overlay_used"] is True
+    assert results["screening_ar_binding_overlay_scored"] == 3
+    assert results["screening_ar_binding_overlay_score_max"] == 0.6
 
 
 def test_evaluate_gbm_induction_uses_single_corpus_source(monkeypatch):

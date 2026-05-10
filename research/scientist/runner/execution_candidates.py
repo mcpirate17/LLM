@@ -626,9 +626,26 @@ class _ExecutionCandidatesMixin:
         config: RunConfig,
         op_weights: Optional[Dict[str, float]] = None,
         category_weights: Optional[Dict[str, float]] = None,
+        experiment_id: Optional[str] = None,
     ) -> GrammarConfig:
-        """Create a GrammarConfig from a RunConfig with standardized defaults."""
+        """Create a GrammarConfig from a RunConfig with standardized defaults.
+
+        ``experiment_id`` (when provided) feeds the slot-class A/B resolver so
+        the same experiment lands on the same arm across retries. Without it,
+        ``slot_classes_ab_strategy="ab_50_50"`` falls back to the static arm.
+        """
         from ...synthesis.grammar import GrammarConfig
+        from ...synthesis._slot_constraints_loader import (
+            resolve_slot_class_strategy,
+        )
+
+        use_derived, slot_strategy_reason = resolve_slot_class_strategy(
+            explicit_use_derived=bool(
+                getattr(config, "use_derived_slot_classes", False)
+            ),
+            strategy=str(getattr(config, "slot_classes_ab_strategy", "static")),
+            experiment_id=experiment_id,
+        )
 
         _forced = getattr(config, "forced_template", None)
 
@@ -743,7 +760,11 @@ class _ExecutionCandidatesMixin:
             is None,  # skip DB weights when explicit
             routing_mandatory=config.routing_mandatory,
             forced_template=getattr(config, "forced_template", None),
-            use_derived_slot_classes=getattr(config, "use_derived_slot_classes", False),
+            use_derived_slot_classes=use_derived,
+            slot_strategy_reason=slot_strategy_reason,
+            ar_binding_overlay_enabled=getattr(
+                config, "ar_binding_overlay_enabled", False
+            ),
         )
         if config.category_weights:
             grammar_kwargs["category_weights"] = dict(config.category_weights)

@@ -144,6 +144,15 @@ class GrammarConfig:
     # data exists. Off by default; enable per-config to A/B against the
     # static-allow-list baseline.
     use_derived_slot_classes: bool = False
+    # Propagate advisory AR/binding overlay opt-in to generated graph metadata.
+    # The overlay itself remains outside core template/routing audit fields.
+    ar_binding_overlay_enabled: bool = False
+    # Provenance string for the use_derived_slot_classes assignment, set by
+    # the A/B resolver in _slot_constraints_loader.resolve_slot_class_strategy.
+    # Persisted to graph.metadata so post-hoc analysis can compare cohorts.
+    # Values include "explicit_config", "strategy_derived", "strategy_static",
+    # "strategy_ab_50_50". Empty string means the field was never set.
+    slot_strategy_reason: str = ""
 
     # ── Phase C (2026-05-04) — trial template A/B harness ────────────
     # When non-empty, the exploration draw forces a uniform pick from this
@@ -622,6 +631,8 @@ def generate_layer_graph(
         n_templates = rng.choices([1, 2, 3], weights=[3, 5, 2], k=1)[0]
 
     graph.metadata["context_rules_version"] = "low_s1_v1"
+    if config.ar_binding_overlay_enabled:
+        graph.metadata["ar_binding_overlay_enabled"] = True
     if config.wildcard_slot_prob > 0:
         graph.metadata["_wildcard_slot_prob"] = config.wildcard_slot_prob
     if runtime.slot_motif_weight_multipliers:
@@ -687,6 +698,10 @@ def generate_layer_graph(
             graph.metadata["_use_derived_slot_classes"] = bool(
                 config.use_derived_slot_classes
             )
+            if getattr(config, "slot_strategy_reason", ""):
+                graph.metadata["slot_strategy_reason"] = str(
+                    config.slot_strategy_reason
+                )
 
             trial_current = apply_template(
                 graph,
