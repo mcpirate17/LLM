@@ -29,7 +29,7 @@ from pathlib import Path
 
 import torch
 
-from research.synthesis.compiler import compile_model
+from research.scientist.native_runner import compile_model_native_first as compile_model
 from research.synthesis.serializer import graph_from_json
 from research.eval.utils import micro_train_loop
 from research.defaults import RUNS_DB

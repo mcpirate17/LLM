@@ -32,7 +32,7 @@ from research.scientist.runner import ExperimentRunner, RunConfig  # noqa: E402
 from research.scientist.runner.execution_screening import (  # noqa: E402
     _make_experiment_results,
 )
-from research.synthesis.compiler import compile_model  # noqa: E402
+from research.scientist.native_runner import compile_model_native_first as compile_model  # noqa: E402
 from research.synthesis.grammar import batch_generate  # noqa: E402
 from research.synthesis.validator import validate_graph  # noqa: E402
 from research.defaults import RUNS_DB  # noqa: E402

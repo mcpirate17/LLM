@@ -66,7 +66,9 @@ def _reference_factory(
     vocab_size: int = 128,
 ) -> Callable[[], torch.nn.Module]:
     def _build() -> torch.nn.Module:
-        from research.synthesis.compiler import compile_model
+        from research.scientist.native_runner import (
+            compile_model_native_first as compile_model,
+        )
         from research.synthesis.reference_architectures import build_reference
 
         graph = build_reference(arch_key, d_model=d_model)

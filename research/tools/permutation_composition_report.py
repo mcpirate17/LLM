@@ -24,7 +24,7 @@ from research.eval.permutation_composition_probe import (
     permutation_composition_score,
 )
 from research.scientist.notebook.graph_artifacts import resolve_graph_json_value
-from research.synthesis.compiler import compile_model
+from research.scientist.native_runner import compile_model_native_first as compile_model
 from research.synthesis.serializer import graph_from_json
 from research.tools._db_maintenance import connect_readonly
 

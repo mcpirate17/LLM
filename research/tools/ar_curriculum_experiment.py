@@ -33,7 +33,7 @@ import torch.nn.functional as F
 
 from research.eval.associative_recall import _get_special_tokens
 from research.eval.utils import clip_grad_norm, make_adamw
-from research.synthesis.compiler import compile_model
+from research.scientist.native_runner import compile_model_native_first as compile_model
 from research.synthesis.reference_architectures import (
     REFERENCE_ARCHITECTURES,
     build_reference,

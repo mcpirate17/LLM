@@ -41,7 +41,7 @@ from research.scientist.runner.execution_screening import (  # noqa: E402
 )
 from research.scientist.runner._helpers import clear_gpu_memory  # noqa: E402
 from research.scientist.shared_utils import resolve_device  # noqa: E402
-from research.synthesis.compiler import compile_model  # noqa: E402
+from research.scientist.native_runner import compile_model_native_first as compile_model  # noqa: E402
 from research.synthesis.serializer import graph_from_json, graph_to_json  # noqa: E402
 from research.tools.champion_exhaustive_ablation import (  # noqa: E402
     ensure_ablation_metric_completeness,

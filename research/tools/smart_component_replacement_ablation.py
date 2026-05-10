@@ -38,7 +38,7 @@ from research.scientist.runner._helpers_metrics import (  # noqa: E402
     _rebuild_graph_with_overrides,
 )
 from research.scientist.runner._types import RunConfig  # noqa: E402
-from research.synthesis.compiler import compile_model  # noqa: E402
+from research.scientist.native_runner import compile_model_native_first as compile_model  # noqa: E402
 from research.synthesis.graph import ComputationGraph  # noqa: E402
 from research.synthesis.primitives import (  # noqa: E402
     PrimitiveOp,

@@ -38,7 +38,7 @@ from typing import Any
 
 import torch
 
-from research.synthesis.compiler import compile_model
+from research.scientist.native_runner import compile_model_native_first as compile_model
 from research.synthesis.serializer import graph_from_json
 from research.tools.nano_corpus_v0 import (
     ADJECTIVES,

@@ -19,7 +19,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Iterable, Optional
 
-from research.synthesis.compiler import compile_model
+from research.scientist.native_runner import compile_model_native_first as compile_model
 from research.synthesis.graph import ComputationGraph
 from research.synthesis.validator import validate_graph
 

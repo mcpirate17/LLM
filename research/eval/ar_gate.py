@@ -379,7 +379,9 @@ def _acquire_probe_model(
     """Deepcopy the live model or compile fresh from graph_json."""
     if model is not None:
         return copy.deepcopy(model).to(dev)
-    from research.synthesis.compiler import compile_model
+    from research.scientist.native_runner import (
+        compile_model_native_first as compile_model,
+    )
     from research.synthesis.serializer import graph_from_json
 
     graph = graph_from_json(graph_json)

@@ -35,7 +35,7 @@ from research.eval.ar_intermediate_probe import (
     ar_intermediate_probe,
 )
 from research.eval.ar_validation import ARValidationConfig, run_ar_validation
-from research.synthesis.compiler import compile_model
+from research.scientist.native_runner import compile_model_native_first as compile_model
 from research.synthesis.reference_architectures import (
     REFERENCE_ARCHITECTURES,
     build_reference,
