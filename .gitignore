@@ -91,6 +91,11 @@ tasks/notebooklm/*.md
 new *.txt
 <MagicMock *
 
+# Local/private root notes and prompts. Keep root README.md tracked.
+/*.txt
+/*.md
+!/README.md
+
 # One-off audit outputs
 audit_results/
 audit_report.*
