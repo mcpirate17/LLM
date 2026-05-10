@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": ".claude/hooks/pre-bash.sh",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/pre-bash.sh",
             "timeout": 5
           }
         ]
@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": ".claude/hooks/pre-edit.sh",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/pre-edit.sh",
             "timeout": 5
           }
         ]
@@ -38,7 +38,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": ".claude/hooks/post-edit.sh",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/post-edit.sh",
             "timeout": 15
           }
         ]
@@ -50,7 +50,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": ".claude/hooks/session-start.sh",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/session-start.sh",
             "timeout": 10
           }
         ]
