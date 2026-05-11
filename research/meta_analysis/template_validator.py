@@ -16,7 +16,7 @@ records pass/fail, returns annotated candidate dicts.
 
 from __future__ import annotations
 
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict, Iterable, List, Tuple
 
 from ..synthesis.graph import ComputationGraph
 from ..synthesis.primitives import PRIMITIVE_REGISTRY
@@ -30,31 +30,49 @@ _DEFAULT_SMOKE_BATCH = 2
 _DEFAULT_SMOKE_SEQ = 8
 
 
-def _add_chain_op(graph: ComputationGraph, op_name: str, current: int) -> int:
-    """Append an op from the chain. Skip ops with non-1 input arity since the
-    mined chains are linear sequences and we have no second-input source."""
+def _add_chain_op(
+    graph: ComputationGraph,
+    op_name: str,
+    current: int,
+    prev_snapshot: int,
+) -> Tuple[int, int]:
+    """Append an op from the chain. Returns ``(new_current, new_prev_snapshot)``.
+
+    Arity-1 ops consume ``current`` and bump the snapshot forward.
+    Arity-2 ops wire ``(current, prev_snapshot)`` as a skip — ``add`` becomes a
+    residual, ``mul`` a gate, etc. ``prev_snapshot`` is the value that fed the
+    previously applied op (or the pre-rmsnorm input on the first iteration), so
+    the binary op skip-connects across one transform.
+    """
     prim = PRIMITIVE_REGISTRY.get(op_name)
     if prim is None:
         raise ValueError(f"unknown op: {op_name}")
-    if prim.n_inputs != 1:
-        # Mined chains are flat sequences; multi-input ops need a router or
-        # signal source we don't synthesize here. Mark these for Phase 2.
-        raise ValueError(
-            f"op {op_name} requires {prim.n_inputs} inputs; chain validator handles arity-1 only"
-        )
-    return graph.add_op(op_name, [current])
+    if prim.n_inputs == 1:
+        return graph.add_op(op_name, [current]), current
+    if prim.n_inputs == 2:
+        new_current = graph.add_op(op_name, [current, prev_snapshot])
+        return new_current, current
+    raise ValueError(
+        f"op {op_name} requires {prim.n_inputs} inputs; chain validator handles arity-1 and arity-2 only"
+    )
 
 
 def _build_chain_graph(
     chain: Iterable[str],
     model_dim: int = _DEFAULT_MODEL_DIM,
 ) -> ComputationGraph:
-    """Build a graph: input → rmsnorm → [chain ops] → fix_dim → output."""
+    """Build a graph: input → rmsnorm → [chain ops] → fix_dim → output.
+
+    Arity-2 ops in the chain are wired as residual/gate skips against the
+    "prior linear-path snapshot" — the value that fed the previous op (the
+    pre-rmsnorm input for the very first chain op).
+    """
     graph = ComputationGraph(model_dim=model_dim)
-    current = graph.add_input()
-    current = graph.add_op("rmsnorm", [current])
+    input_node = graph.add_input()
+    current = graph.add_op("rmsnorm", [input_node])
+    prev_snapshot = input_node
     for op_name in chain:
-        current = _add_chain_op(graph, op_name, current)
+        current, prev_snapshot = _add_chain_op(graph, op_name, current, prev_snapshot)
     cur_dim = graph.nodes[current].output_shape.dim
     if cur_dim != model_dim:
         op = "linear_proj_down" if cur_dim > model_dim else "linear_proj_up"

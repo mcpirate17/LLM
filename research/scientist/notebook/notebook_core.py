@@ -680,6 +680,8 @@ class _NotebookCore:
         self._gn_create_graph_runs(pr_cols, pr_types)
         self._gn_create_compat_view(pr_cols)
         self._gn_create_propagation_trigger(pr_cols)
+        self._gn_create_propagation_trigger_update(pr_cols)
+        self._gn_create_propagation_trigger_delete()
         self._gn_create_dup_protection(pr_cols)
         self._maybe_commit()
 
@@ -772,6 +774,74 @@ class _NotebookCore:
             "          THEN 1 ELSE 0 END); "
             f" INSERT OR IGNORE INTO graph_runs ({', '.join(run_cols)}) "
             f" VALUES ({', '.join(run_refs)}); "
+            "END"
+        )
+
+    def _gn_create_propagation_trigger_update(self, pr_cols: list[str]) -> None:
+        """Trigger: raw UPDATE program_results auto-propagates to graphs +
+        graph_runs. Closes the writer-mirror gap that ``_submit_write``'s
+        SQL-level mirror only covered for callers going through the notebook
+        write queue. Raw ``conn.execute("UPDATE program_results …")`` now
+        stays in lock-step with the canonical graph_runs storage.
+
+        Uses plain UPDATE (not INSERT…ON CONFLICT) on graph_runs because the
+        latter fires the BEFORE-INSERT `reject_dup_fingerprint_no_reason_graph_runs`
+        guard, which aborts whenever NEW.intentional_rerun_reason is NULL and
+        another row shares the fingerprint (legitimate dup detection for new
+        inserts, but a false positive for propagation of an existing row's
+        UPDATE). The row in graph_runs must already exist — either from the
+        AFTER-INSERT propagation trigger or from the Phase 5b backfill.
+        """
+        if self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE name='_gn_sync_pr_update_to_runs'"
+        ).fetchone():
+            return
+        arch_set = {"graph_json", "arch_spec_json"}
+        # Set every non-arch column except result_id (PK, immutable in UPDATE).
+        run_set_cols = [c for c in pr_cols if c not in arch_set and c != "result_id"]
+        set_clause = ", ".join(f'"{c}" = NEW."{c}"' for c in run_set_cols)
+        self.conn.execute(
+            "CREATE TRIGGER _gn_sync_pr_update_to_runs "
+            "AFTER UPDATE ON program_results "
+            "WHEN NEW.graph_fingerprint IS NOT NULL "
+            "  AND TRIM(NEW.graph_fingerprint) <> '' "
+            "BEGIN "
+            "  INSERT INTO graphs "
+            "    (graph_fingerprint, graph_json, arch_spec_json, "
+            "     first_seen_ts, last_seen_ts, graph_json_is_placeholder) "
+            "  VALUES (NEW.graph_fingerprint, "
+            "          COALESCE(NEW.graph_json, '{}'), "
+            "          NEW.arch_spec_json, "
+            "          NEW.timestamp, NEW.timestamp, "
+            "          CASE WHEN NEW.graph_json IS NULL "
+            "                 OR NEW.graph_json IN ('', '{}') "
+            "          THEN 1 ELSE 0 END) "
+            "  ON CONFLICT(graph_fingerprint) DO UPDATE SET "
+            "    graph_json = excluded.graph_json, "
+            "    arch_spec_json = COALESCE(excluded.arch_spec_json, "
+            "                              graphs.arch_spec_json), "
+            "    last_seen_ts = MAX(graphs.last_seen_ts, excluded.last_seen_ts), "
+            "    graph_json_is_placeholder = excluded.graph_json_is_placeholder; "
+            f"  UPDATE graph_runs SET {set_clause} WHERE result_id = NEW.result_id; "
+            "END"
+        )
+
+    def _gn_create_propagation_trigger_delete(self) -> None:
+        """Trigger: raw DELETE FROM program_results auto-removes the matching
+        graph_runs row. Counterpart to the UPDATE/INSERT propagation triggers;
+        keeps the canonical storage consistent without retargeting callers.
+        """
+        if self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE name='_gn_sync_pr_delete_to_runs'"
+        ).fetchone():
+            return
+        self.conn.execute(
+            "CREATE TRIGGER _gn_sync_pr_delete_to_runs "
+            "AFTER DELETE ON program_results "
+            "WHEN OLD.graph_fingerprint IS NOT NULL "
+            "  AND TRIM(OLD.graph_fingerprint) <> '' "
+            "BEGIN "
+            "  DELETE FROM graph_runs WHERE result_id = OLD.result_id; "
             "END"
         )
 

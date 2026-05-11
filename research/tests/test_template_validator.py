@@ -23,12 +23,37 @@ def test_unknown_op_fails_at_build():
     assert result["failure_mode"] == "build"
 
 
-def test_multi_input_op_fails_at_build():
-    """Mined chains are flat sequences; binary ops must be flagged."""
+def test_arity_two_op_compiles_as_residual_skip():
+    """Arity-2 ops wire against the prior linear-path snapshot — ``add``
+    becomes a residual against the pre-rmsnorm input on the first step."""
     result = validate_chain(["add"], model_dim=64)
-    assert not result["validate_passed"]
-    assert result["failure_mode"] == "build"
-    assert "inputs" in (result["error"] or "")
+    assert result["validate_passed"]
+    assert result["compile_passed"]
+    assert result["forward_passed"]
+    assert result["backward_passed"]
+    assert result["error"] is None
+
+
+def test_residual_chain_linear_proj_add_rmsnorm_smoke_passes():
+    """The canonical [transform, residual, norm] mined chain pattern should
+    validate, compile, and smoke-pass end-to-end with residual wiring."""
+    result = validate_chain(["linear_proj", "add", "rmsnorm"], model_dim=64)
+    assert result["validate_passed"]
+    assert result["compile_passed"]
+    assert result["forward_passed"]
+    assert result["backward_passed"]
+    assert not result["output_has_nan"]
+    assert not result["output_has_inf"]
+    assert result["param_grad_finite"]
+
+
+def test_gated_chain_linear_proj_mul_rmsnorm_smoke_passes():
+    """``mul`` as the binary op wires a gate against the prior snapshot."""
+    result = validate_chain(["linear_proj", "mul", "rmsnorm"], model_dim=64)
+    assert result["validate_passed"]
+    assert result["compile_passed"]
+    assert result["forward_passed"]
+    assert result["backward_passed"]
 
 
 def test_annotate_candidates_attaches_validation_block():
