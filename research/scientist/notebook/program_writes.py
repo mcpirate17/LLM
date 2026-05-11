@@ -31,7 +31,14 @@ BOOL_PROGRAM_RESULT_FIELDS = {
 _S1_REQUIRED_POST_METRIC_COLUMNS_FOR_GUARDRAIL = (
     "wikitext_perplexity",
     "hellaswag_acc",
-    "blimp_overall_accuracy",
+    # blimp_overall_accuracy deliberately omitted (2026-05-10): BLiMP is the
+    # ~50%-of-screening-time cost reported by codex, while at the ~10M-param
+    # screening-tier model size it sits near random (BLiMP needs >100M params
+    # for above-baseline signal per standard scaling curves). The column is
+    # still produced at capability/validation tier by
+    # _helpers_benchmark.py::evaluate_blimp, so the leaderboard's
+    # blimp_overall_accuracy is populated where it carries information and
+    # left NULL at screening where it doesn't.
     "induction_screening_auc",
     "binding_screening_auc",
     "binding_screening_composite",
