@@ -7,7 +7,7 @@ import logging
 import math
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, Iterable, List, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +23,110 @@ def _load_deduped_graph_training_rows(db_path):
 def _scaffold_blend_alpha(support: int) -> float:
     """Conservative influence for scaffold evidence."""
     return max(0.0, min(0.45, (float(support) / 16.0) * 0.45))
+
+
+# Beta(α, β) prior pseudocount controlling shrinkage strength toward
+# `prior_mean`. With strength=6, an item with n=6 attempts is a 50/50
+# blend of prior and observed; with n>=30 the posterior is dominated by
+# observed evidence. Strength=6 balances "new substrate inherits the
+# cohort's median S1 rate" against "established templates aren't held
+# back by a stale prior."
+_BAYES_PRIOR_STRENGTH = 6.0
+
+
+def _bayesian_posterior_rate(
+    s1_count: int,
+    n_used: int,
+    prior_mean: float,
+    prior_strength: float = _BAYES_PRIOR_STRENGTH,
+) -> float:
+    """Posterior mean of S1 success rate under a Beta(α, β) prior.
+
+    α = prior_mean * prior_strength, β = (1 - prior_mean) * prior_strength.
+    Posterior mean = (α + s1_count) / (α + β + n_used).
+
+    For n_used = 0, returns prior_mean exactly. For n_used >> prior_strength,
+    converges to the observed rate. This replaces the hard ``n >= min_used``
+    exclusion that left new substrate absent from the weights dict and
+    therefore at the mercy of the multiplier chain on incumbents.
+    """
+    if prior_strength <= 0.0:
+        return s1_count / max(n_used, 1)
+    prior_mean = max(0.0, min(1.0, prior_mean))
+    alpha = prior_mean * prior_strength
+    beta = (1.0 - prior_mean) * prior_strength
+    denom = alpha + beta + max(n_used, 0)
+    if denom <= 0.0:
+        return prior_mean
+    return (alpha + max(s1_count, 0)) / denom
+
+
+def _fit_prior_mean(rates: Iterable[float]) -> float:
+    """Median observed S1 rate, used as the Beta prior centre.
+
+    Median is robust to a single high-success template skewing the prior.
+    Returns 0.0 when the input is empty so callers can short-circuit.
+    """
+    values = sorted(float(r) for r in rates)
+    if not values:
+        return 0.0
+    mid = len(values) // 2
+    if len(values) % 2 == 1:
+        return values[mid]
+    return (values[mid - 1] + values[mid]) / 2.0
+
+
+def _amplified_weights_from_counts(
+    *,
+    counts: Dict[str, int],
+    s1_counts: Dict[str, int],
+    min_used: int,
+    amp_exponent: float = 1.5,
+    weight_lo: float = 0.3,
+    weight_hi: float = 5.0,
+    confidence_scale: float = 30.0,
+) -> Dict[str, float]:
+    """Beta-Binomial-shrunk, contrast-amplified, confidence-blended weights.
+
+    Steps:
+      1. Empirical-Bayes prior_mean = median S1 rate of items with n >= min_used.
+      2. Per-item posterior_rate via Beta-Binomial shrinkage toward prior_mean.
+      3. Contrast amplification: (posterior_rate / mean_posterior) ** amp_exponent.
+      4. Confidence blend toward 1.0 by min(1, n / confidence_scale).
+      5. Clamp to [weight_lo, weight_hi].
+
+    Items with n >= 1 appear in the output. Returns {} when there is no
+    confident evidence to fit a non-trivial prior (preserves legacy
+    short-circuit behaviour).
+    """
+    confident_rates = [
+        s1_counts.get(name, 0) / n
+        for name, n in counts.items()
+        if n >= max(min_used, 1)
+    ]
+    prior_mean = _fit_prior_mean(confident_rates)
+    if prior_mean < 1e-6:
+        return {}
+    posterior_rates: Dict[str, float] = {}
+    for name, n in counts.items():
+        if n < 1:
+            continue
+        posterior_rates[name] = _bayesian_posterior_rate(
+            s1_counts.get(name, 0), n, prior_mean
+        )
+    if not posterior_rates:
+        return {}
+    mean_post = sum(posterior_rates.values()) / len(posterior_rates)
+    if mean_post < 1e-6:
+        return {}
+    weights: Dict[str, float] = {}
+    for name, post_rate in posterior_rates.items():
+        relative = post_rate / mean_post
+        amplified = relative**amp_exponent
+        confidence = min(1.0, counts[name] / confidence_scale)
+        blended = confidence * amplified + (1.0 - confidence) * 1.0
+        weights[name] = round(max(weight_lo, min(weight_hi, blended)), 3)
+    return weights
 
 
 class _WeightsMixin:
@@ -102,7 +206,14 @@ class _WeightsMixin:
     def compute_op_weights(
         self, since_ts: float = 0.0, min_used: int = 5
     ) -> Dict[str, float]:
-        """Per-op weights via contrast amplification: (s1_rate/mean)^2, clamped [0.1, 8.0].
+        """Per-op weights via Bayesian-shrunk contrast amplification.
+
+        Posterior rate uses a Beta(α, β) prior centred on the median S1 rate
+        of ops with ``n >= min_used``; the contrast formula
+        ``(posterior_rate / mean_posterior)^2`` is then clamped to
+        [0.1, 8.0]. Ops with n >= 1 (and scaffold support >= min_used)
+        appear in the output so newly-introduced primitives are not
+        excluded from the analytics layer's downstream multiplier chain.
 
         Structural ops (no learnable params) are excluded from the mean
         calculation and get weight 1.0 — they should not be penalized or
@@ -127,11 +238,6 @@ class _WeightsMixin:
                     s1_counts[op] += 1
         if not counts:
             return {}
-        eligible = {
-            op: {"n_used": n_used, "s1_rate": s1_counts.get(op, 0) / n_used}
-            for op, n_used in counts.items()
-            if n_used >= min_used
-        }
         try:
             scaffold_stats = self.nb.get_scaffold_component_stats(
                 since_ts=since_ts,
@@ -139,29 +245,34 @@ class _WeightsMixin:
             )
         except (AttributeError, RuntimeError, TypeError, ValueError):
             scaffold_stats = {}
+        # Blend scaffold prior into observed counts BEFORE shrinkage so the
+        # downstream Bayesian update sees a single coherent (s1, n) per op.
+        blended_counts: Dict[str, int] = dict(counts)
+        blended_s1: Dict[str, int] = dict(s1_counts)
         for op_name, stat in scaffold_stats.items():
             if op_name in S1_EXEMPT_OPS:
                 continue
             prior_rate = float(stat.get("prior_rate") or 0.0)
             support = int(stat.get("support") or 0)
-            if op_name in eligible:
+            if op_name in blended_counts:
                 alpha = _scaffold_blend_alpha(support)
-                eligible[op_name]["s1_rate"] = (
-                    (1.0 - alpha) * eligible[op_name]["s1_rate"]
-                ) + (alpha * prior_rate)
+                if alpha <= 0.0:
+                    continue
+                n = blended_counts[op_name]
+                observed_rate = blended_s1.get(op_name, 0) / max(n, 1)
+                blended_rate = (1.0 - alpha) * observed_rate + alpha * prior_rate
+                blended_s1[op_name] = int(round(blended_rate * n))
             elif support >= min_used:
-                eligible[op_name] = {"n_used": support, "s1_rate": prior_rate}
-        if not eligible:
-            return {}
-        mean_s1 = sum(info["s1_rate"] for info in eligible.values()) / len(eligible)
-        if mean_s1 < 1e-6:
-            return {}
-        weights: Dict[str, float] = {}
-        for op, info in eligible.items():
-            relative = info["s1_rate"] / mean_s1
-            amplified = relative**2
-            weights[op] = round(max(0.1, min(8.0, amplified)), 3)
-        return weights
+                blended_counts[op_name] = support
+                blended_s1[op_name] = int(round(prior_rate * support))
+        return _amplified_weights_from_counts(
+            counts=blended_counts,
+            s1_counts=blended_s1,
+            min_used=min_used,
+            amp_exponent=2.0,
+            weight_lo=0.1,
+            weight_hi=8.0,
+        )
 
     def under_observed_ops(self, threshold: int = 20) -> Dict[str, int]:
         """Return ops with fewer than threshold observations.
@@ -194,8 +305,11 @@ class _WeightsMixin:
         """Compute contrast-amplified weights from graph metadata lists.
 
         Extracts ``metadata_key`` (e.g. ``templates_used``, ``motifs_used``)
-        from ``graph_json.metadata`` and computes per-item S1 success rates.
-        Returns ``{item_name: weight}`` clamped to ``[0.1, 8.0]``.
+        from ``graph_json.metadata`` and computes per-item posterior S1
+        success rates via Beta-Binomial shrinkage. Items with ``n >= 1``
+        appear in the output; ``min_used`` is the threshold for inclusion
+        in the empirical-Bayes prior fit (median S1 rate of confident items).
+        Returns ``{item_name: weight}`` clamped to ``[0.3, 5.0]``.
         """
         rows = [
             row
@@ -219,34 +333,22 @@ class _WeightsMixin:
                 counts[item] += 1
                 if passed:
                     s1_counts[item] += 1
-        stats = {
-            name: {"n_used": n, "s1_rate": s1_counts.get(name, 0) / n}
-            for name, n in counts.items()
-            if n >= min_used
-        }
-        if not stats:
+        if not counts:
             return {}
-        mean_s1 = sum(s["s1_rate"] for s in stats.values()) / len(stats)
-        if mean_s1 < 1e-6:
-            return {}
-        weights: Dict[str, float] = {}
-        for name, s in stats.items():
-            relative = s["s1_rate"] / mean_s1
-            # Moderate contrast: relative^1.5 (not ^2) to avoid collapsing
-            # low-performers too aggressively — they still need search coverage.
-            amplified = relative**1.5
-            # Confidence discount: shrink toward 1.0 for small sample sizes.
-            # At n=min_used the weight is 50% amplified + 50% neutral (1.0).
-            # At n=30+ the weight is fully amplified.
-            confidence = min(1.0, s["n_used"] / 30.0)
-            blended = confidence * amplified + (1.0 - confidence) * 1.0
-            weights[name] = round(max(0.3, min(5.0, blended)), 3)
-        return weights
+        return _amplified_weights_from_counts(
+            counts=counts, s1_counts=s1_counts, min_used=min_used
+        )
 
     def compute_template_weights(
         self, since_ts: float = 0.0, min_used: int = 3
     ) -> Dict[str, float]:
-        """Per-template weights from S1 success rates via contrast amplification."""
+        """Per-template weights via Bayesian-shrunk contrast amplification.
+
+        ``min_used`` controls the empirical-Bayes prior fit; templates with
+        ``n >= 1`` always appear in the output (with heavy shrinkage toward
+        the prior for low N). This replaces the legacy hard-exclusion that
+        left freshly-added templates absent from the analytics weight dict.
+        """
         return self._compute_metadata_weights("templates_used", since_ts, min_used)
 
     def compute_trial_template_stats(
@@ -350,32 +452,17 @@ class _WeightsMixin:
                     if passed:
                         all_s1[mk][item] += 1
 
-        results: Dict[str, Dict[str, float]] = {}
-        for mk in ("templates_used", "motifs_used"):
-            counts = all_counts[mk]
-            s1_counts = all_s1[mk]
-            stats = {
-                name: {"n_used": n, "s1_rate": s1_counts.get(name, 0) / n}
-                for name, n in counts.items()
-                if n >= min_used
-            }
-            if not stats:
-                results[mk] = {}
-                continue
-            mean_s1 = sum(s["s1_rate"] for s in stats.values()) / len(stats)
-            if mean_s1 < 1e-6:
-                results[mk] = {}
-                continue
-            weights: Dict[str, float] = {}
-            for name, s in stats.items():
-                relative = s["s1_rate"] / mean_s1
-                amplified = relative**1.5
-                confidence = min(1.0, s["n_used"] / 30.0)
-                blended = confidence * amplified + (1.0 - confidence) * 1.0
-                weights[name] = round(max(0.3, min(5.0, blended)), 3)
-            results[mk] = weights
-
-        return results.get("templates_used", {}), results.get("motifs_used", {})
+        templates = _amplified_weights_from_counts(
+            counts=all_counts["templates_used"],
+            s1_counts=all_s1["templates_used"],
+            min_used=min_used,
+        )
+        motifs = _amplified_weights_from_counts(
+            counts=all_counts["motifs_used"],
+            s1_counts=all_s1["motifs_used"],
+            min_used=min_used,
+        )
+        return templates, motifs
 
     def _deduped_graph_rows(self, since_ts: float = 0.0) -> List[Dict]:
         db_path = str(getattr(self.nb, "db_path", Path("research/lab_notebook.db")))
