@@ -427,7 +427,7 @@ def _api_program_backfill_loss(notebook_path: str, result_id, nb=None):
             set_parts = [f"{k} = ?" for k in db_updates]
             vals = list(db_updates.values()) + [result_id]
             nb.conn.execute(
-                f"UPDATE program_results SET {', '.join(set_parts)} WHERE result_id = ?",
+                f"UPDATE graph_runs SET {', '.join(set_parts)} WHERE result_id = ?",
                 vals,
             )
             lb_cols = {
@@ -647,7 +647,7 @@ def _api_program_promote_screening(result_id, nb=None):
 
     nb.conn.execute(
         """
-        UPDATE program_results
+        UPDATE graph_runs
         SET trust_label = ?, comparability_label = ?, timestamp = ?
         WHERE result_id = ?
         """,

@@ -39,7 +39,7 @@ def _conn() -> sqlite3.Connection:
     )
     conn.execute(
         """
-        CREATE TABLE program_results (
+        CREATE TABLE graph_runs (
             result_id TEXT PRIMARY KEY,
             failure_op TEXT,
             failure_details_json TEXT
@@ -128,7 +128,7 @@ def test_apply_s05_nb_failure_screens_out_candidate() -> None:
         "INSERT INTO leaderboard(result_id, tier, validation_passed) VALUES (?, ?, ?)",
         ("r1", "validation", 1),
     )
-    conn.execute("INSERT INTO program_results(result_id) VALUES (?)", ("r1",))
+    conn.execute("INSERT INTO graph_runs(result_id) VALUES (?)", ("r1",))
 
     applied = apply_s05_nb_screening_failure(
         conn, result_id="r1", score=0.61, source="test"
@@ -144,7 +144,7 @@ def test_apply_s05_nb_failure_screens_out_candidate() -> None:
         "language_control_s05_nb: score 0.6100 below screening threshold 0.65",
     )
     pr = conn.execute(
-        "SELECT failure_op, failure_details_json FROM program_results"
+        "SELECT failure_op, failure_details_json FROM graph_runs"
     ).fetchone()
     assert pr[0] == S05_NB_FAILURE_OP
     details = json.loads(pr[1])
@@ -161,7 +161,7 @@ def test_apply_s05_nb_failure_preserves_references() -> None:
         """,
         ("ref", "validation", 1, 1),
     )
-    conn.execute("INSERT INTO program_results(result_id) VALUES (?)", ("ref",))
+    conn.execute("INSERT INTO graph_runs(result_id) VALUES (?)", ("ref",))
 
     applied = apply_s05_nb_screening_failure(
         conn, result_id="ref", score=0.50, source="test"
@@ -169,7 +169,7 @@ def test_apply_s05_nb_failure_preserves_references() -> None:
 
     assert not applied
     assert conn.execute("SELECT tier FROM leaderboard").fetchone()[0] == "validation"
-    assert conn.execute("SELECT failure_op FROM program_results").fetchone()[0] is None
+    assert conn.execute("SELECT failure_op FROM graph_runs").fetchone()[0] is None
 
 
 def test_apply_s05_sa_failure_screens_out_candidate_without_escape() -> None:
@@ -178,7 +178,7 @@ def test_apply_s05_sa_failure_screens_out_candidate_without_escape() -> None:
         "INSERT INTO leaderboard(result_id, tier, validation_passed) VALUES (?, ?, ?)",
         ("r-sa", "validation", 1),
     )
-    conn.execute("INSERT INTO program_results(result_id) VALUES (?)", ("r-sa",))
+    conn.execute("INSERT INTO graph_runs(result_id) VALUES (?)", ("r-sa",))
 
     applied = apply_s05_sa_screening_failure(
         conn,
@@ -201,7 +201,7 @@ def test_apply_s05_sa_failure_screens_out_candidate_without_escape() -> None:
         "without ERF/mixing escape",
     )
     pr = conn.execute(
-        "SELECT failure_op, failure_details_json FROM program_results"
+        "SELECT failure_op, failure_details_json FROM graph_runs"
     ).fetchone()
     assert pr[0] == S05_SA_FAILURE_OP
     details = json.loads(pr[1])
@@ -217,7 +217,7 @@ def test_manual_override_preserves_known_s05_sa_candidate() -> None:
         ("1b70ab74-c98", "validation", 1),
     )
     conn.execute(
-        "INSERT INTO program_results(result_id) VALUES (?)",
+        "INSERT INTO graph_runs(result_id) VALUES (?)",
         ("1b70ab74-c98",),
     )
 
@@ -235,7 +235,7 @@ def test_manual_override_preserves_known_s05_sa_candidate() -> None:
     assert conn.execute(
         "SELECT tier, validation_passed, notes FROM leaderboard"
     ).fetchone() == ("validation", 1, None)
-    assert conn.execute("SELECT failure_op FROM program_results").fetchone()[0] is None
+    assert conn.execute("SELECT failure_op FROM graph_runs").fetchone()[0] is None
     override = language_control_gate_manual_override(
         entry_id="c03cdadf-af7",
         result_id="1b70ab74-c98",
@@ -252,7 +252,7 @@ def test_manual_override_does_not_apply_to_other_gate_ops() -> None:
         ("1b70ab74-c98", "validation", 1),
     )
     conn.execute(
-        "INSERT INTO program_results(result_id) VALUES (?)",
+        "INSERT INTO graph_runs(result_id) VALUES (?)",
         ("1b70ab74-c98",),
     )
 
@@ -266,7 +266,7 @@ def test_manual_override_does_not_apply_to_other_gate_ops() -> None:
 
     assert applied
     assert conn.execute("SELECT tier FROM leaderboard").fetchone()[0] == "screened_out"
-    assert conn.execute("SELECT failure_op FROM program_results").fetchone()[0] == (
+    assert conn.execute("SELECT failure_op FROM graph_runs").fetchone()[0] == (
         "language_control_investigation_binding"
     )
 
@@ -277,7 +277,7 @@ def test_apply_s10_nb_failure_screens_out_candidate() -> None:
         "INSERT INTO leaderboard(result_id, tier, validation_passed) VALUES (?, ?, ?)",
         ("r-s10", "validation", 0),
     )
-    conn.execute("INSERT INTO program_results(result_id) VALUES (?)", ("r-s10",))
+    conn.execute("INSERT INTO graph_runs(result_id) VALUES (?)", ("r-s10",))
 
     applied = apply_language_control_nb_screening_failure(
         conn,
@@ -297,7 +297,7 @@ def test_apply_s10_nb_failure_screens_out_candidate() -> None:
         "language_control_s10_nb: score 0.6200 below screening threshold 0.65",
     )
     pr = conn.execute(
-        "SELECT failure_op, failure_details_json FROM program_results"
+        "SELECT failure_op, failure_details_json FROM graph_runs"
     ).fetchone()
     assert pr[0] == "language_control_s10_nb"
     details = json.loads(pr[1])
@@ -312,7 +312,7 @@ def test_apply_inv_nb_failure_screens_out_candidate() -> None:
         "INSERT INTO leaderboard(result_id, tier, validation_passed) VALUES (?, ?, ?)",
         ("r-inv", "validation", 1),
     )
-    conn.execute("INSERT INTO program_results(result_id) VALUES (?)", ("r-inv",))
+    conn.execute("INSERT INTO graph_runs(result_id) VALUES (?)", ("r-inv",))
 
     applied = apply_language_control_nb_screening_failure(
         conn,
@@ -332,7 +332,7 @@ def test_apply_inv_nb_failure_screens_out_candidate() -> None:
         "language_control_investigation_binding: score 0.6400 below screening threshold 0.65",
     )
     pr = conn.execute(
-        "SELECT failure_op, failure_details_json FROM program_results"
+        "SELECT failure_op, failure_details_json FROM graph_runs"
     ).fetchone()
     assert pr[0] == "language_control_investigation_binding"
     details = json.loads(pr[1])
@@ -348,7 +348,7 @@ def test_apply_inv_nb_pass_does_not_screen_out_candidate() -> None:
         ("r-inv-pass", "validation", 1),
     )
     conn.execute(
-        "INSERT INTO program_results(result_id) VALUES (?)",
+        "INSERT INTO graph_runs(result_id) VALUES (?)",
         ("r-inv-pass",),
     )
 
@@ -364,7 +364,7 @@ def test_apply_inv_nb_pass_does_not_screen_out_candidate() -> None:
     assert conn.execute(
         "SELECT tier, validation_passed, notes FROM leaderboard"
     ).fetchone() == ("validation", 1, None)
-    assert conn.execute("SELECT failure_op FROM program_results").fetchone()[0] is None
+    assert conn.execute("SELECT failure_op FROM graph_runs").fetchone()[0] is None
 
 
 def test_apply_s10_nb_sa_failure_screens_out_candidate() -> None:
@@ -373,7 +373,7 @@ def test_apply_s10_nb_sa_failure_screens_out_candidate() -> None:
         "INSERT INTO leaderboard(result_id, tier, validation_passed) VALUES (?, ?, ?)",
         ("r-s10-combo", "validation", 0),
     )
-    conn.execute("INSERT INTO program_results(result_id) VALUES (?)", ("r-s10-combo",))
+    conn.execute("INSERT INTO graph_runs(result_id) VALUES (?)", ("r-s10-combo",))
 
     applied = apply_s10_nb_sa_screening_failure(
         conn,
@@ -393,7 +393,7 @@ def test_apply_s10_nb_sa_failure_screens_out_candidate() -> None:
         "language_control_s10_nb_sa: nb 0.7500 below 0.80 and sa 0.2500 below 0.65",
     )
     pr = conn.execute(
-        "SELECT failure_op, failure_details_json FROM program_results"
+        "SELECT failure_op, failure_details_json FROM graph_runs"
     ).fetchone()
     assert pr[0] == S10_NB_SA_FAILURE_OP
     details = json.loads(pr[1])
@@ -419,7 +419,7 @@ def test_apply_tool_classifies_known_candidate_as_manual_override() -> None:
     )
     conn.execute(
         """
-        CREATE TABLE program_results (
+        CREATE TABLE graph_runs (
             result_id TEXT PRIMARY KEY,
             graph_fingerprint TEXT,
             language_control_s05_sentence_assoc_score REAL,
@@ -443,7 +443,7 @@ def test_apply_tool_classifies_known_candidate_as_manual_override() -> None:
     )
     conn.execute(
         """
-        INSERT INTO program_results(
+        INSERT INTO graph_runs(
             result_id,
             language_control_s05_sentence_assoc_score,
             language_control_s05_binding_score,

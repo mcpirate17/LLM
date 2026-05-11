@@ -441,7 +441,7 @@ def _propagate(
     set_clause = ", ".join(f"{c} = ?" for c in columns)
     values = [payload.get(c) for c in columns]
     cursor = conn.execute(
-        f"UPDATE program_results SET {set_clause} WHERE graph_fingerprint = ?",
+        f"UPDATE graph_runs SET {set_clause} WHERE graph_fingerprint = ?",
         (*values, fingerprint),
     )
     return cursor.rowcount

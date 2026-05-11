@@ -95,10 +95,14 @@ def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
 
 
 def _program_results_read_table(conn: sqlite3.Connection) -> str:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE name = 'program_results_compat' LIMIT 1"
-    ).fetchone()
-    return "program_results_compat" if row else "program_results"
+    """Canonical read source. Prefers graph_runs (post-Phase-5b)."""
+    for candidate in ("graph_runs", "program_results_compat", "program_results"):
+        row = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE name = ? LIMIT 1", (candidate,)
+        ).fetchone()
+        if row:
+            return candidate
+    raise RuntimeError("no program_results-compatible table found")
 
 
 def load_training_curve(
@@ -494,10 +498,10 @@ CHAMPION_COLUMNS = {
 
 
 def _ensure_champion_columns(conn: sqlite3.Connection) -> None:
-    existing = _table_columns(conn, "program_results")
+    existing = _table_columns(conn, "graph_runs")
     for column, col_type in CHAMPION_COLUMNS.items():
         if column not in existing:
-            conn.execute(f"ALTER TABLE program_results ADD COLUMN {column} {col_type}")
+            conn.execute(f"ALTER TABLE graph_runs ADD COLUMN {column} {col_type}")
 
 
 def write_score_rows(conn: sqlite3.Connection, rows: list[ScoreRow]) -> None:
@@ -505,7 +509,7 @@ def write_score_rows(conn: sqlite3.Connection, rows: list[ScoreRow]) -> None:
     for row in rows:
         conn.execute(
             """
-            UPDATE program_results
+            UPDATE graph_runs
             SET champion_floor_protocol_version = ?,
                 champion_steps_to_floor = ?,
                 champion_floor_loss = ?,

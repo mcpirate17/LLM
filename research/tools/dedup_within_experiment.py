@@ -195,12 +195,12 @@ def run(db_path: Path, *, apply: bool, limit_groups: int | None) -> int:
                     set_parts = ", ".join(f"{c} = ?" for c in plan["merge_updates"])
                     values = list(plan["merge_updates"].values()) + [kept_id]
                     write_conn.execute(
-                        f"UPDATE program_results SET {set_parts} WHERE result_id = ?",
+                        f"UPDATE graph_runs SET {set_parts} WHERE result_id = ?",
                         values,
                     )
                 # Delete siblings
                 write_conn.execute(
-                    f"DELETE FROM program_results WHERE result_id IN ({placeholders})",
+                    f"DELETE FROM graph_runs WHERE result_id IN ({placeholders})",
                     tuple(deleted_ids),
                 )
         backup_count = table_row_count(write_conn, BACKUP_TABLE)

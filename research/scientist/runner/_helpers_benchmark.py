@@ -914,9 +914,7 @@ def _record_capability_ranking_result(
         set_params.append(value)
     if set_parts:
         set_params.append(source_result_id)
-        update_sql = (
-            f"UPDATE program_results SET {', '.join(set_parts)} WHERE result_id = ?"
-        )
+        update_sql = f"UPDATE graph_runs SET {', '.join(set_parts)} WHERE result_id = ?"
         if hasattr(nb, "_submit_write"):
             nb._submit_write(update_sql, set_params)
             nb.flush_writes()
@@ -1636,9 +1634,7 @@ def _record_investigation_result(
         set_params.append(value)
     if set_parts:
         set_params.append(source_result_id)
-        update_sql = (
-            f"UPDATE program_results SET {', '.join(set_parts)} WHERE result_id = ?"
-        )
+        update_sql = f"UPDATE graph_runs SET {', '.join(set_parts)} WHERE result_id = ?"
         if hasattr(nb, "_submit_write"):
             nb._submit_write(update_sql, set_params)
             nb.flush_writes()
@@ -1932,7 +1928,7 @@ def promote_validation_candidate(
                     _set = ", ".join(f"{c} = ?" for c, _ in cap_updates)
                     _vals = [v for _, v in cap_updates] + [source_result_id]
                     nb._submit_write(
-                        f"UPDATE program_results SET {_set} WHERE result_id = ?",
+                        f"UPDATE graph_runs SET {_set} WHERE result_id = ?",
                         _vals,
                     )
             nb.flush_writes()

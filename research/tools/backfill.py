@@ -765,15 +765,17 @@ def store_probe_results(
     if not updates:
         return
 
-    # Filter to columns that exist in program_results
-    pr_cols = _get_table_columns(nb, "program_results")
+    # Filter to columns that exist in graph_runs (canonical write target
+    # post-Phase-5b). graph_runs is program_results minus graph_json /
+    # arch_spec_json, which probe backfills never touch.
+    pr_cols = _get_table_columns(nb, "graph_runs")
     pr_updates = {k: v for k, v in updates.items() if k in pr_cols}
     if pr_updates:
         cols = list(pr_updates.keys())
         vals = [pr_updates[c] for c in cols]
         set_clause = ", ".join(f"{c} = ?" for c in cols)
         nb.conn.execute(
-            f"UPDATE program_results SET {set_clause} WHERE result_id = ?",
+            f"UPDATE graph_runs SET {set_clause} WHERE result_id = ?",
             (*vals, result_id),
         )
         if provenance_context and "data_provenance_json" in pr_cols:
@@ -796,7 +798,7 @@ def store_probe_results(
             payload["metric_backfills"] = history[-5:]
             payload["last_metric_backfill"] = dict(provenance_context)
             nb.conn.execute(
-                "UPDATE program_results SET data_provenance_json = ? WHERE result_id = ?",
+                "UPDATE graph_runs SET data_provenance_json = ? WHERE result_id = ?",
                 (json.dumps(payload, sort_keys=True, separators=(",", ":")), result_id),
             )
         fp_row = nb.conn.execute(

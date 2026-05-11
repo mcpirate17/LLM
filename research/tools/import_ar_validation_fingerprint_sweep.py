@@ -84,11 +84,11 @@ def _table_columns(conn: sqlite3.Connection, table: str) -> dict[str, str]:
 
 def ensure_ar_validation_columns(conn: sqlite3.Connection) -> list[str]:
     """Idempotently add missing AR Validation columns and return added names."""
-    existing = _table_columns(conn, "program_results")
+    existing = _table_columns(conn, "graph_runs")
     added: list[str] = []
     for name, col_type in AR_VALIDATION_COLUMNS.items():
         if name not in existing:
-            conn.execute(f"ALTER TABLE program_results ADD COLUMN {name} {col_type}")
+            conn.execute(f"ALTER TABLE graph_runs ADD COLUMN {name} {col_type}")
             added.append(name)
     return added
 
@@ -201,10 +201,14 @@ def _load_db_indexes(
 
 
 def _program_results_read_table(conn: sqlite3.Connection) -> str:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE name = 'program_results_compat' LIMIT 1"
-    ).fetchone()
-    return "program_results_compat" if row else "program_results"
+    """Canonical read source. Prefers graph_runs (post-Phase-5b)."""
+    for candidate in ("graph_runs", "program_results_compat", "program_results"):
+        row = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE name = ? LIMIT 1", (candidate,)
+        ).fetchone()
+        if row:
+            return candidate
+    raise RuntimeError("no program_results-compatible table found")
 
 
 def match_csv_row(
@@ -338,7 +342,7 @@ def _merge_provenance(raw_payload: Any, entry: dict[str, Any]) -> str:
 def apply_import_decisions(
     conn: sqlite3.Connection, decisions: Iterable[ImportDecision], *, overwrite: bool
 ) -> int:
-    columns = _table_columns(conn, "program_results")
+    columns = _table_columns(conn, "graph_runs")
     now = time.time()
     updated = 0
     for decision in decisions:
@@ -371,9 +375,7 @@ def apply_import_decisions(
         set_clause = ", ".join(f"{key} = ?" for key, _value in items)
         params = [value for _key, value in items]
         params.append(decision.result_id)
-        conn.execute(
-            f"UPDATE program_results SET {set_clause} WHERE result_id = ?", params
-        )
+        conn.execute(f"UPDATE graph_runs SET {set_clause} WHERE result_id = ?", params)
         updated += 1
     conn.commit()
     return updated
@@ -458,7 +460,7 @@ def run(args: argparse.Namespace, out: TextIO = sys.stdout) -> int:
             missing = [
                 name
                 for name in AR_VALIDATION_COLUMNS
-                if name not in _table_columns(conn, "program_results")
+                if name not in _table_columns(conn, "graph_runs")
             ]
             if missing:
                 print(f"missing_ar_validation_columns={','.join(missing)}", file=out)

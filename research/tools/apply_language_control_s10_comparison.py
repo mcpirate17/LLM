@@ -61,7 +61,7 @@ def main() -> int:
     for row in rows:
         conn.execute(
             """
-            UPDATE program_results
+            UPDATE graph_runs
             SET language_control_metric_version = ?,
                 language_control_s10_binding_score = ?,
                 language_control_s10_binding_order_acc = ?,

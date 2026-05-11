@@ -294,7 +294,7 @@ def apply_language_control_nb_screening_failure(
 
     conn.execute(
         """
-        UPDATE program_results
+        UPDATE graph_runs
         SET failure_op = ?,
             failure_details_json = ?
         WHERE result_id = ?
@@ -360,7 +360,7 @@ def apply_s10_nb_sa_screening_failure(
 
     conn.execute(
         """
-        UPDATE program_results
+        UPDATE graph_runs
         SET failure_op = ?,
             failure_details_json = ?
         WHERE result_id = ?
@@ -426,7 +426,7 @@ def apply_s05_sa_screening_failure(
 
     conn.execute(
         """
-        UPDATE program_results
+        UPDATE graph_runs
         SET failure_op = ?,
             failure_details_json = ?
         WHERE result_id = ?

@@ -7,7 +7,7 @@ Sidecar JSON per arch at `research/reports/nano_bind_backfill/{result_id}.json`
 is the resume marker. For `is_no_go=True && status=='ok'`:
 
     UPDATE leaderboard SET tier='screened_out' WHERE result_id=?
-    UPDATE program_results SET failure_op='nano_bind',
+    UPDATE graph_runs SET failure_op='nano_bind',
            failure_details_json=? WHERE result_id=?
 
 Pass rows and error/timeout rows are NEVER written.
@@ -130,7 +130,7 @@ def apply_no_go(mgr: aria_db.ConnectionManager, result_id: str, result) -> None:
         [result_id],
     )
     mgr.execute(
-        "UPDATE program_results SET failure_op='nano_bind', "
+        "UPDATE graph_runs SET failure_op='nano_bind', "
         "failure_details_json=? WHERE result_id=?",
         [failure_details, result_id],
     )

@@ -165,7 +165,7 @@ def apply_updates(args: argparse.Namespace, rows: list[dict]) -> dict:
 
     if write_conn is not None:
         write_conn.executemany(
-            "UPDATE program_results SET ar_gate_no_go = ? WHERE result_id = ?",
+            "UPDATE graph_runs SET ar_gate_no_go = ? WHERE result_id = ?",
             updates,
         )
         write_conn.commit()

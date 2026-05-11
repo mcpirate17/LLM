@@ -581,7 +581,7 @@ class _ProgramsMixin(
                 f"DELETE FROM leaderboard WHERE result_id IN ({placeholders})", batch
             )
             self.conn.execute(
-                f"DELETE FROM program_results WHERE result_id IN ({placeholders})",
+                f"DELETE FROM graph_runs WHERE result_id IN ({placeholders})",
                 batch,
             )
 

@@ -244,7 +244,7 @@ def _propagate(conn: sqlite3.Connection, fingerprint: str, payload: dict) -> int
     set_clause = ", ".join(f"{c} = ?" for c in _TRAJECTORY_COLUMNS)
     values = [payload.get(c) for c in _TRAJECTORY_COLUMNS]
     cursor = conn.execute(
-        f"UPDATE program_results SET {set_clause} WHERE graph_fingerprint = ?",
+        f"UPDATE graph_runs SET {set_clause} WHERE graph_fingerprint = ?",
         (*values, fingerprint),
     )
     return cursor.rowcount

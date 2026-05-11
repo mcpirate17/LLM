@@ -138,7 +138,7 @@ def fill_sticky_for_bound_row(
         params: List[object] = list(updates.values())
         params.append(bound_result_id)
         conn.execute(
-            f"UPDATE program_results SET {set_clause} WHERE result_id = ?",
+            f"UPDATE graph_runs SET {set_clause} WHERE result_id = ?",
             params,
         )
     return updates

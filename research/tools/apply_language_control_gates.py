@@ -24,10 +24,15 @@ from research.tools.db_health import backup_sqlite_db
 
 
 def _program_results_read_table(conn: sqlite3.Connection) -> str:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE name = 'program_results_compat' LIMIT 1"
-    ).fetchone()
-    return "program_results_compat" if row else "program_results"
+    """Canonical read source. Prefers graph_runs (post-Phase-5b) and falls
+    through to the compat view / legacy table for pre-migration callers."""
+    for candidate in ("graph_runs", "program_results_compat", "program_results"):
+        row = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE name = ? LIMIT 1", (candidate,)
+        ).fetchone()
+        if row:
+            return candidate
+    raise RuntimeError("no program_results-compatible table found")
 
 
 def _candidate_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:

@@ -54,7 +54,7 @@ def has_existing_ar_validation_result(
     *,
     columns: dict[str, str] | None = None,
 ) -> bool:
-    columns = columns or _table_columns(conn, "program_results")
+    columns = columns or _table_columns(conn, "graph_runs")
     ar_validation_columns = [name for name in AR_VALIDATION_COLUMNS if name in columns]
     if not ar_validation_columns:
         return False
@@ -150,7 +150,7 @@ def persist_ar_validation_result(
     overwrite: bool,
     columns: dict[str, str] | None = None,
 ) -> bool:
-    columns = columns or _table_columns(conn, "program_results")
+    columns = columns or _table_columns(conn, "graph_runs")
     items = [(key, value) for key, value in values.items() if key in columns]
     if not items:
         return False
@@ -172,9 +172,7 @@ def persist_ar_validation_result(
         )
         if missing_clause:
             where = f"{where} AND {missing_clause}"
-    cursor = conn.execute(
-        f"UPDATE program_results SET {set_clause} WHERE {where}", params
-    )
+    cursor = conn.execute(f"UPDATE graph_runs SET {set_clause} WHERE {where}", params)
     conn.commit()
     return cursor.rowcount > 0
 
@@ -207,9 +205,9 @@ def run(args: argparse.Namespace, out: TextIO = sys.stdout) -> int:
     try:
         if args.write:
             ensure_ar_validation_columns(conn)
-            program_columns = _table_columns(conn, "program_results")
+            program_columns = _table_columns(conn, "graph_runs")
         else:
-            program_columns = _table_columns(conn, "program_results")
+            program_columns = _table_columns(conn, "graph_runs")
             missing = [
                 name for name in AR_VALIDATION_COLUMNS if name not in program_columns
             ]

@@ -59,32 +59,42 @@ _EXCLUDED_FILES = frozenset(
 # Decrement when a file's writes are retargeted; bump only with reviewer
 # approval (and prefer to retarget instead).
 _LEGACY_WRITE_COUNTS: dict[str, int] = {
-    "research/scientist/api_routes/programs_routes/program_actions.py": 2,
-    "research/scientist/language_control_gates.py": 3,
-    "research/scientist/notebook/notebook_entries.py": 2,
-    "research/scientist/notebook/notebook_programs.py": 2,
+    "research/scientist/api_routes/programs_routes/program_actions.py": 0,
+    "research/scientist/language_control_gates.py": 0,
+    # Remaining write: strip_graph_json_for_failures (line ~96). Writes only
+    # graph_json='' — column lives in `graphs` now, propagated by the AFTER
+    # UPDATE trigger. Retargeting requires splitting the operation to
+    # UPDATE graphs … WHERE graph_fingerprint IN (SELECT … FROM graph_runs
+    # WHERE …), with care for shared-fingerprint runs. Leave on PR for now.
+    "research/scientist/notebook/notebook_entries.py": 1,
+    # Remaining write: merge_program_result_patch (line ~402). Patch dict
+    # may contain graph_json (graphs-table column) alongside graph_runs
+    # columns. Retarget requires splitting the patch between tables.
+    "research/scientist/notebook/notebook_programs.py": 1,
+    # Remaining write: merge_program_result_patch (line ~373). Same
+    # patch-dict issue as notebook_programs — patch may include graph_json.
     "research/scientist/notebook/program_result_merge.py": 1,
-    "research/scientist/runner/_helpers_benchmark.py": 3,
-    "research/scientist/runner/_helpers_metrics.py": 1,
-    "research/scientist/runner/dashboard_orchestrator.py": 1,
-    "research/tools/apply_language_control_s10_comparison.py": 1,
-    "research/tools/ar_gate_no_go_flag.py": 1,
-    "research/tools/backfill.py": 2,
-    "research/tools/backfill_ar_gate.py": 1,
-    "research/tools/backfill_ar_validation.py": 1,
-    "research/tools/backfill_bpe_evals.py": 1,
-    "research/tools/backfill_champion_reference_tests.py": 1,
-    "research/tools/backfill_spec_norm.py": 1,
-    "research/tools/backfill_sticky_probe_columns.py": 1,
-    "research/tools/backfill_trajectory_metrics.py": 1,
-    "research/tools/backfill_trajectory_metrics_parallel.py": 1,
-    "research/tools/backfill_understanding_metrics.py": 1,
-    "research/tools/dedup_within_experiment.py": 2,
-    "research/tools/import_ar_validation_fingerprint_sweep.py": 1,
-    "research/tools/language_control_backfill.py": 1,
-    "research/tools/nano_bind_backfill.py": 2,
-    "research/tools/promote_backlog_batch.py": 1,
-    "research/tools/rescore_champion_tiny_model.py": 1,
+    "research/scientist/runner/_helpers_benchmark.py": 0,
+    "research/scientist/runner/_helpers_metrics.py": 0,
+    "research/scientist/runner/dashboard_orchestrator.py": 0,
+    "research/tools/apply_language_control_s10_comparison.py": 0,
+    "research/tools/ar_gate_no_go_flag.py": 0,
+    "research/tools/backfill.py": 0,
+    "research/tools/backfill_ar_gate.py": 0,
+    "research/tools/backfill_ar_validation.py": 0,
+    "research/tools/backfill_bpe_evals.py": 0,
+    "research/tools/backfill_champion_reference_tests.py": 0,
+    "research/tools/backfill_spec_norm.py": 0,
+    "research/tools/backfill_sticky_probe_columns.py": 0,
+    "research/tools/backfill_trajectory_metrics.py": 0,
+    "research/tools/backfill_trajectory_metrics_parallel.py": 0,
+    "research/tools/backfill_understanding_metrics.py": 0,
+    "research/tools/dedup_within_experiment.py": 0,
+    "research/tools/import_ar_validation_fingerprint_sweep.py": 0,
+    "research/tools/language_control_backfill.py": 0,
+    "research/tools/nano_bind_backfill.py": 0,
+    "research/tools/promote_backlog_batch.py": 0,
+    "research/tools/rescore_champion_tiny_model.py": 0,
 }
 
 _WRITE_RE = re.compile(

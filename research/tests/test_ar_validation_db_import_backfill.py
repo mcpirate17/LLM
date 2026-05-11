@@ -13,7 +13,7 @@ def _make_import_db() -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute(
         """
-        CREATE TABLE program_results (
+        CREATE TABLE graph_runs (
             result_id TEXT PRIMARY KEY,
             graph_fingerprint TEXT,
             data_provenance_json TEXT
@@ -70,7 +70,7 @@ def test_csv_row_parsing_normalizes_meaningful_ar_validation_fields(tmp_path):
 def test_import_updates_once_and_then_becomes_idempotent(tmp_path):
     conn = _make_import_db()
     conn.execute(
-        "INSERT INTO program_results (result_id, graph_fingerprint, data_provenance_json) VALUES (?, ?, ?)",
+        "INSERT INTO graph_runs (result_id, graph_fingerprint, data_provenance_json) VALUES (?, ?, ?)",
         ("rid-1", "fp-1", "{}"),
     )
     csv_row = import_tool.parse_csv_metric_row(
@@ -92,7 +92,7 @@ def test_import_updates_once_and_then_becomes_idempotent(tmp_path):
     assert import_tool.apply_import_decisions(conn, first_plan, overwrite=False) == 1
 
     row = conn.execute(
-        "SELECT ar_validation_rank_score, data_provenance_json FROM program_results WHERE result_id = ?",
+        "SELECT ar_validation_rank_score, data_provenance_json FROM graph_runs WHERE result_id = ?",
         ("rid-1",),
     ).fetchone()
     assert row["ar_validation_rank_score"] == 1.7344
@@ -118,7 +118,7 @@ def test_import_does_not_overwrite_without_flag_and_overwrites_with_flag(tmp_pat
     conn = _make_import_db()
     conn.execute(
         """
-        INSERT INTO program_results (
+        INSERT INTO graph_runs (
             result_id, graph_fingerprint, ar_validation_rank_score
         ) VALUES (?, ?, ?)
         """,
@@ -150,7 +150,7 @@ def test_import_does_not_overwrite_without_flag_and_overwrites_with_flag(tmp_pat
     assert overwrite[0].values["ar_validation_rank_score"] == 1.7344
     import_tool.apply_import_decisions(conn, overwrite, overwrite=True)
     score = conn.execute(
-        "SELECT ar_validation_rank_score FROM program_results WHERE result_id = ?",
+        "SELECT ar_validation_rank_score FROM graph_runs WHERE result_id = ?",
         ("rid-1",),
     ).fetchone()[0]
     assert score == 1.7344
@@ -159,11 +159,11 @@ def test_import_does_not_overwrite_without_flag_and_overwrites_with_flag(tmp_pat
 def test_ambiguous_fingerprint_fallback_is_skipped_and_reported(tmp_path):
     conn = _make_import_db()
     conn.execute(
-        "INSERT INTO program_results (result_id, graph_fingerprint) VALUES (?, ?)",
+        "INSERT INTO graph_runs (result_id, graph_fingerprint) VALUES (?, ?)",
         ("rid-a", "fp-shared"),
     )
     conn.execute(
-        "INSERT INTO program_results (result_id, graph_fingerprint) VALUES (?, ?)",
+        "INSERT INTO graph_runs (result_id, graph_fingerprint) VALUES (?, ?)",
         ("rid-b", "fp-shared"),
     )
     csv_row = import_tool.parse_csv_metric_row(
@@ -201,7 +201,7 @@ def test_load_csv_metric_rows_reads_csv_file(tmp_path):
 def test_backfill_update_payload_and_sql_use_ar_validation_fields():
     conn = _make_import_db()
     conn.execute(
-        "INSERT INTO program_results (result_id, graph_fingerprint, data_provenance_json) VALUES (?, ?, ?)",
+        "INSERT INTO graph_runs (result_id, graph_fingerprint, data_provenance_json) VALUES (?, ?, ?)",
         ("rid-1", "fp-1", "{}"),
     )
     result_row = {
@@ -233,7 +233,7 @@ def test_backfill_update_payload_and_sql_use_ar_validation_fields():
                ar_validation_rank_score,
                ar_validation_status,
                data_provenance_json
-        FROM program_results
+        FROM graph_runs
         WHERE result_id = ?
         """,
         ("rid-1",),
@@ -254,7 +254,7 @@ def test_backfill_persist_does_not_overwrite_existing_without_flag_and_overwrite
     conn = _make_import_db()
     conn.execute(
         """
-        INSERT INTO program_results (
+        INSERT INTO graph_runs (
             result_id, graph_fingerprint, ar_validation_rank_score
         ) VALUES (?, ?, ?)
         """,
@@ -274,7 +274,7 @@ def test_backfill_persist_does_not_overwrite_existing_without_flag_and_overwrite
         overwrite=False,
     )
     score = conn.execute(
-        "SELECT ar_validation_rank_score FROM program_results WHERE result_id = ?",
+        "SELECT ar_validation_rank_score FROM graph_runs WHERE result_id = ?",
         ("rid-1",),
     ).fetchone()[0]
     assert score == 9.9
@@ -287,7 +287,7 @@ def test_backfill_persist_does_not_overwrite_existing_without_flag_and_overwrite
         overwrite=True,
     )
     score = conn.execute(
-        "SELECT ar_validation_rank_score FROM program_results WHERE result_id = ?",
+        "SELECT ar_validation_rank_score FROM graph_runs WHERE result_id = ?",
         ("rid-1",),
     ).fetchone()[0]
     assert score == 1.7344
@@ -298,7 +298,7 @@ def test_backfill_selection_skips_rows_with_existing_ar_validation_unless_overwr
     conn.row_factory = sqlite3.Row
     conn.executescript(
         """
-        CREATE TABLE program_results (
+        CREATE TABLE graph_runs (
             result_id TEXT PRIMARY KEY,
             experiment_id TEXT,
             timestamp REAL,
@@ -327,7 +327,7 @@ def test_backfill_selection_skips_rows_with_existing_ar_validation_unless_overwr
     ):
         conn.execute(
             """
-            INSERT INTO program_results (
+            INSERT INTO graph_runs (
                 result_id, experiment_id, timestamp, graph_fingerprint, graph_json,
                 model_source, loss_ratio, ar_validation_rank_score, ar_validation_status
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -383,7 +383,7 @@ def test_backfill_selection_preserves_explicit_result_id_order():
     conn.row_factory = sqlite3.Row
     conn.executescript(
         """
-        CREATE TABLE program_results (
+        CREATE TABLE graph_runs (
             result_id TEXT PRIMARY KEY,
             experiment_id TEXT,
             timestamp REAL,
@@ -412,7 +412,7 @@ def test_backfill_selection_preserves_explicit_result_id_order():
     ):
         conn.execute(
             """
-            INSERT INTO program_results (
+            INSERT INTO graph_runs (
                 result_id, experiment_id, timestamp, graph_fingerprint, graph_json,
                 model_source, loss_ratio
             ) VALUES (?, ?, ?, ?, ?, ?, ?)

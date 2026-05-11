@@ -98,7 +98,7 @@ def _measure(
 
 def _propagate(conn: sqlite3.Connection, fingerprint: str, payload: dict) -> int:
     cursor = conn.execute(
-        "UPDATE program_results SET "
+        "UPDATE graph_runs SET "
         "fp_jacobian_spectral_norm = ?, "
         "fp_jacobian_effective_rank = ?, "
         "fp_sensitivity_uniformity = ? "

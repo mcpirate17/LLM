@@ -386,7 +386,7 @@ def _update_row(
     params = [value for _key, value in items]
     params.append(result_id)
     conn.execute(
-        f"UPDATE program_results SET {set_clause} WHERE result_id = ?",
+        f"UPDATE graph_runs SET {set_clause} WHERE result_id = ?",
         params,
     )
 

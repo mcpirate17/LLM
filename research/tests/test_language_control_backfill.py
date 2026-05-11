@@ -25,7 +25,7 @@ def _seed_backfill_db(path) -> None:
     )
     conn.execute(
         """
-        CREATE TABLE program_results (
+        CREATE TABLE graph_runs (
             result_id TEXT PRIMARY KEY,
             graph_fingerprint TEXT,
             graph_json TEXT,
@@ -65,7 +65,7 @@ def _seed_backfill_db(path) -> None:
     )
     conn.execute(
         """
-        INSERT INTO program_results(
+        INSERT INTO graph_runs(
             result_id,
             graph_fingerprint,
             graph_json,
@@ -137,7 +137,7 @@ def test_select_targets_returns_gate_only_for_existing_s05_sa_no_escape(
     conn = sqlite3.connect(db_path)
     conn.execute(
         """
-        UPDATE program_results
+        UPDATE graph_runs
         SET language_control_s05_binding_score = 0.80,
             language_control_s05_sentence_assoc_score = 0.40,
             fp_jacobian_erf_density = 0.015625,
@@ -168,7 +168,7 @@ def test_select_targets_allows_existing_s05_sa_mixing_escape(tmp_path) -> None:
     conn = sqlite3.connect(db_path)
     conn.execute(
         """
-        UPDATE program_results
+        UPDATE graph_runs
         SET language_control_s05_binding_score = 0.80,
             language_control_s05_sentence_assoc_score = 0.40,
             graph_category_histogram = '{"mixing": 1}'
@@ -194,7 +194,7 @@ def test_select_targets_returns_gate_only_for_existing_s10_no_go(tmp_path) -> No
     conn = sqlite3.connect(db_path)
     conn.execute(
         """
-        UPDATE program_results
+        UPDATE graph_runs
         SET language_control_s05_binding_score = 0.80,
             language_control_s10_binding_score = 0.62
         WHERE result_id = 'r1'
@@ -226,7 +226,7 @@ def test_select_targets_returns_gate_only_for_existing_s10_nb_sa_no_go(
     conn = sqlite3.connect(db_path)
     conn.execute(
         """
-        UPDATE program_results
+        UPDATE graph_runs
         SET language_control_s05_binding_score = 0.80,
             language_control_s10_sentence_assoc_score = 0.25,
             language_control_s10_binding_score = 0.75
@@ -258,7 +258,7 @@ def test_backfill_gate_application_screens_out_existing_s10_no_go(tmp_path) -> N
     conn.execute("ALTER TABLE leaderboard ADD COLUMN notes TEXT")
     conn.execute(
         """
-        UPDATE program_results
+        UPDATE graph_runs
         SET language_control_s05_binding_score = 0.80,
             language_control_s10_binding_score = 0.62
         WHERE result_id = 'r1'
@@ -278,7 +278,7 @@ def test_backfill_gate_application_screens_out_existing_s10_no_go(tmp_path) -> N
 
     assert failure_op == "language_control_s10_nb"
     assert conn.execute("SELECT tier FROM leaderboard").fetchone()[0] == "screened_out"
-    pr = conn.execute("SELECT failure_op FROM program_results").fetchone()
+    pr = conn.execute("SELECT failure_op FROM graph_runs").fetchone()
     assert pr[0] == "language_control_s10_nb"
     conn.close()
 
@@ -305,7 +305,7 @@ def test_backfill_gate_application_screens_out_existing_s10_nb_sa_no_go(
 
     assert failure_op == "language_control_s10_nb_sa"
     assert conn.execute("SELECT tier FROM leaderboard").fetchone()[0] == "screened_out"
-    pr = conn.execute("SELECT failure_op FROM program_results").fetchone()
+    pr = conn.execute("SELECT failure_op FROM graph_runs").fetchone()
     assert pr[0] == "language_control_s10_nb_sa"
     conn.close()
 
@@ -329,7 +329,7 @@ def test_backfill_gate_application_screens_out_existing_inv_no_go(tmp_path) -> N
 
     assert failure_op == "language_control_investigation_binding"
     assert conn.execute("SELECT tier FROM leaderboard").fetchone()[0] == "screened_out"
-    pr = conn.execute("SELECT failure_op FROM program_results").fetchone()
+    pr = conn.execute("SELECT failure_op FROM graph_runs").fetchone()
     assert pr[0] == "language_control_investigation_binding"
     conn.close()
 
@@ -353,6 +353,6 @@ def test_backfill_gate_application_allows_existing_inv_pass(tmp_path) -> None:
 
     assert failure_op is None
     assert conn.execute("SELECT tier FROM leaderboard").fetchone()[0] == "validation"
-    pr = conn.execute("SELECT failure_op FROM program_results").fetchone()
+    pr = conn.execute("SELECT failure_op FROM graph_runs").fetchone()
     assert pr[0] is None
     conn.close()

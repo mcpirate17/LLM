@@ -80,10 +80,14 @@ _CHECKPOINT_COLUMNS = {
 
 
 def _program_results_read_table(conn: sqlite3.Connection) -> str:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE name = 'program_results_compat' LIMIT 1"
-    ).fetchone()
-    return "program_results_compat" if row else "program_results"
+    """Canonical read source. Prefers graph_runs (post-Phase-5b)."""
+    for candidate in ("graph_runs", "program_results_compat", "program_results"):
+        row = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE name = ? LIMIT 1", (candidate,)
+        ).fetchone()
+        if row:
+            return candidate
+    raise RuntimeError("no program_results-compatible table found")
 
 
 def _select_targets(
@@ -488,11 +492,11 @@ def _first_failed_gate_in_updates(
 
 def _ensure_backfill_columns(con: sqlite3.Connection) -> None:
     existing = {
-        row[1] for row in con.execute("PRAGMA table_info(program_results)").fetchall()
+        row[1] for row in con.execute("PRAGMA table_info(graph_runs)").fetchall()
     }
     for col_name, col_type in _CHECKPOINT_COLUMNS.items():
         if col_name not in existing:
-            con.execute(f"ALTER TABLE program_results ADD COLUMN {col_name} {col_type}")
+            con.execute(f"ALTER TABLE graph_runs ADD COLUMN {col_name} {col_type}")
 
 
 def _write_row(con: sqlite3.Connection, result_id: str, updates: dict) -> int:
@@ -505,7 +509,7 @@ def _write_row(con: sqlite3.Connection, result_id: str, updates: dict) -> int:
         return 0
     vals.append(result_id)
     con.execute(
-        f"UPDATE program_results SET {', '.join(set_clauses)} WHERE result_id=?",
+        f"UPDATE graph_runs SET {', '.join(set_clauses)} WHERE result_id=?",
         vals,
     )
     return 1

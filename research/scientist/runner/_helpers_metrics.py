@@ -402,10 +402,10 @@ def v9_trajectory_fields(row: Dict[str, Any]) -> Dict[str, Any]:
     """Extract v9 trajectory-metric columns from a benchmark result dict.
 
     Pairs with ``compute_trajectory_metrics(...).to_column_dict()``: every
-    column landing in that dict has a matching ``program_results`` schema
+    column landing in that dict has a matching ``graph_runs`` schema
     entry. The investigation path uses this to thread its
     ``metric_phase="investigation_full"`` measurements through the
-    ``UPDATE program_results SET …`` write, since investigation reuses the
+    ``UPDATE graph_runs SET …`` write, since investigation reuses the
     screening row instead of inserting a fresh one. Returns only keys
     whose value is not None to preserve any earlier-phase data when
     investigation didn't measure that particular metric.

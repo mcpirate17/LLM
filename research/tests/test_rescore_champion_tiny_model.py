@@ -12,7 +12,7 @@ def _make_db(path: Path) -> None:
     conn = sqlite3.connect(path)
     conn.execute(
         """
-        CREATE TABLE program_results (
+        CREATE TABLE graph_runs (
             result_id TEXT PRIMARY KEY,
             experiment_id TEXT,
             final_loss REAL,
@@ -74,7 +74,7 @@ def _make_db(path: Path) -> None:
     ]
     conn.executemany(
         """
-        INSERT INTO program_results (
+        INSERT INTO graph_runs (
             result_id, experiment_id, final_loss,
             induction_intermediate_auc,
             induction_intermediate_gap_accuracies_json,
@@ -118,7 +118,7 @@ def _args(db_path: Path, checkpoint_root: Path, *, write: bool) -> argparse.Name
 def _columns(path: Path) -> set[str]:
     conn = sqlite3.connect(path)
     try:
-        return {row[1] for row in conn.execute("PRAGMA table_info(program_results)")}
+        return {row[1] for row in conn.execute("PRAGMA table_info(graph_runs)")}
     finally:
         conn.close()
 
@@ -164,7 +164,7 @@ def test_write_requires_fresh_backup_before_schema_mutation(tmp_path, monkeypatc
     conn = sqlite3.connect(db_path)
     try:
         rows = conn.execute(
-            "SELECT result_id FROM program_results WHERE result_id = 'mamba-test'"
+            "SELECT result_id FROM graph_runs WHERE result_id = 'mamba-test'"
         ).fetchall()
     finally:
         conn.close()
@@ -198,7 +198,7 @@ def test_write_after_fresh_backup_check_persists_champion_fields(tmp_path, monke
             SELECT champion_tiny_model_score,
                    champion_steps_to_floor,
                    champion_tiny_model_protocol_version
-            FROM program_results
+            FROM graph_runs
             WHERE result_id = 'mamba-test'
             """
         ).fetchone()

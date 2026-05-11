@@ -112,7 +112,7 @@ def _promote_one(nb, cand: Dict[str, Any]) -> Dict[str, Any]:
 
     nb.conn.execute(
         """
-        UPDATE program_results
+        UPDATE graph_runs
         SET trust_label = ?, comparability_label = ?, timestamp = ?
         WHERE result_id = ?
         """,

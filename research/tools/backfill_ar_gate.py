@@ -152,7 +152,7 @@ def fetch_cohort(args: argparse.Namespace) -> list[dict]:
 
 
 _UPDATE_SQL = """
-UPDATE program_results SET
+UPDATE graph_runs SET
     ar_gate_metric_version = ?,
     ar_gate_in_dist_pair_acc = ?,
     ar_gate_in_dist_class_acc = ?,

@@ -572,15 +572,7 @@ class _DashboardOrchestratorMixin:
         if not assignments:
             return
         params.append(target_result_id)
-        # Update both legacy program_results and the new graph_runs table so
-        # post-Phase-5b reads (via program_results_compat → graph_runs) see
-        # the hydrated evidence. This is a direct conn.execute (not async
-        # _submit_write) so we replicate explicitly.
         set_clause = ", ".join(assignments)
-        nb.conn.execute(
-            f"UPDATE program_results SET {set_clause} WHERE result_id = ?",
-            params,
-        )
         nb.conn.execute(
             f"UPDATE graph_runs SET {set_clause} WHERE result_id = ?",
             params,
