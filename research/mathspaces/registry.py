@@ -15,6 +15,7 @@ from ..synthesis.primitives import (
 from . import hyperbolic, tropical, padic, clifford, compression, spiking
 from . import tropical_routing
 from . import tree_mix as _tree_mix_mod  # noqa: F401 — used in register_all_mathspaces
+from . import mla as _mla_mod  # noqa: F401 — used in register_all_mathspaces
 
 
 def register_all_mathspaces():
@@ -172,6 +173,23 @@ def register_all_mathspaces():
         description="Atomic binary mixer node: z = sigmoid(W) * x + (1 - sigmoid(W)) * y. Templates compose 2^K - 1 nodes to build a balanced binary tree of depth K (research §2.1 leafed layers).",
     )
     op = _with_execute(op, _tree_mix_mod.execute_tree_mix)
+    register_external_primitive(op)
+
+    # Phase 5c (2026-05-11) — Multi-Head Latent Attention per research §1.1.
+    # DeepSeek V2/V3's asymmetric KV compression: K and V share a low-rank
+    # latent down-projection but use distinct up-projections to reconstruct
+    # K and V at attention time. Cuts KV cache by ~93% at d_latent = D/8
+    # while retaining standard attention semantics.
+    op = PrimitiveOp(
+        name="mla_attention",
+        category=OpCategory.MATH_SPACE,
+        n_inputs=2,
+        shape_rule="identity",
+        has_params=True,
+        param_formula="D*D*3/8",  # 3 * D * (D/8) — down + 2 up-projs
+        description="Multi-head latent attention: K and V share a low-rank latent path (d_latent=D/8 by default), reconstructed via distinct up-projections, then standard softmax attention on Q. KV-cache compression.",
+    )
+    op = _with_execute(op, _mla_mod.execute_mla_attention)
     register_external_primitive(op)
 
     # ── p-adic ──

@@ -573,6 +573,20 @@ def graph_tropical_moe() -> Tuple[ComputationGraph, str, List[str]]:
     return g, "tropical_moe_router", ["tropical_moe", "tropical_router"]
 
 
+def graph_mla() -> Tuple[ComputationGraph, str, List[str]]:
+    """Multi-Head Latent Attention block — research §1.1 MLA."""
+    g = ComputationGraph(D)
+    inp = g.add_input()
+    ln = g.add_op("rmsnorm", [inp])
+    q = g.add_op("linear_proj", [ln], config={"out_dim": D})
+    kv = g.add_op("linear_proj", [ln], config={"out_dim": D})
+    attn = g.add_op("mla_attention", [q, kv])
+    out = g.add_op("linear_proj", [attn], config={"out_dim": D})
+    res = g.add_op("add", [inp, out])
+    g.set_output(res)
+    return g, "mla_block", ["mla_attention"]
+
+
 def graph_tree_mix() -> Tuple[ComputationGraph, str, List[str]]:
     """Depth-2 binary tree of tree_mix nodes — research §2.1 leafed layers.
 
@@ -1407,6 +1421,7 @@ ALL_GRAPH_BUILDERS = [
     graph_tropical_extended,
     graph_tropical_moe,
     graph_tree_mix,
+    graph_mla,
     graph_hyperbolic,
     graph_hyperbolic_extended,
     graph_clifford,
@@ -1932,6 +1947,7 @@ def test_template_graph_mapping():
         ],
         "graph_tropical_moe": ["residual_block"],
         "graph_tree_mix": ["tree_mix_block"],
+        "graph_mla": ["mla_block"],
         "graph_hyperbolic": ["residual_block"],
         "graph_hyperbolic_extended": ["hyp_distance_scoring"],
         "graph_clifford": ["residual_block"],

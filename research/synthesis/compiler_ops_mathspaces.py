@@ -247,6 +247,14 @@ def _op_tree_mix(module, inputs, config):
     )
 
 
+def _op_mla_attention(module, inputs, config):
+    from ..mathspaces.mla import execute_mla_attention
+
+    return execute_mla_attention(
+        module, inputs[0], inputs[1] if len(inputs) > 1 else inputs[0]
+    )
+
+
 # ── p-adic ops ──
 
 
@@ -438,4 +446,5 @@ OP_IMPLS: Dict[str, Callable] = {
     "tropical_router": _op_tropical_router,
     "tropical_moe": _op_tropical_moe,
     "tree_mix": _op_tree_mix,
+    "mla_attention": _op_mla_attention,
 }

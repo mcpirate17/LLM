@@ -268,6 +268,7 @@ from ._templates_exotic import (  # noqa: F401
     tpl_tropical_matmul_block,
     tpl_tropical_softmax_block,
     tpl_tree_mix_block,
+    tpl_mla_block,
     tpl_gated_minimum,
     tpl_spiking_residual_block,
     tpl_spiking_moe_block,
@@ -319,6 +320,7 @@ TEMPLATES: Dict[str, TemplateFn] = {
     "tropical_matmul_block": tpl_tropical_matmul_block,
     "tropical_softmax_block": tpl_tropical_softmax_block,
     "tree_mix_block": tpl_tree_mix_block,
+    "mla_block": tpl_mla_block,
     "geometric_product_block": tpl_geometric_product_block,
     "geometric_product_versor_block": tpl_geometric_product_versor_block,
     "gated_maximum": tpl_gated_maximum,
@@ -373,8 +375,14 @@ DEFAULT_TEMPLATE_WEIGHTS: Dict[str, float] = {
     "hyp_distance_scoring": 1.5,
     "tropical_residual": 2.5,
     "tropical_matmul_block": 2.5,
-    "tropical_softmax_block": 2.5,
-    "tree_mix_block": 3.0,
+    # New-substrate exploration tax: until these templates accumulate
+    # S1 history (min_used=3 in compute_template_weights), their analytics
+    # weight defaults to baseline. Bumping the static defaults so they get
+    # sampled at ~2-4% per cycle (vs ~0.5% prior). Once S1 stats land,
+    # analytics takes over.
+    "tropical_softmax_block": 15.0,
+    "tree_mix_block": 25.0,
+    "mla_block": 25.0,
     "geometric_product_block": 1.5,
     "geometric_product_versor_block": 3.0,
     "gated_maximum": 1.5,

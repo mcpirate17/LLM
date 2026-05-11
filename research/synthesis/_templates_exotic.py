@@ -508,6 +508,41 @@ def tpl_tropical_softmax_block(
         return processed
 
 
+def tpl_mla_block(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """norm → query_proj + kv_proj → mla_attention → out_proj → [FFN] → residual.
+
+    Multi-head latent attention (research §1.1). The query path stays
+    full-dim; the kv path is the shared-latent compression target. This
+    template is the canonical MLA-as-block synthesis pattern.
+    """
+    D = graph.model_dim
+    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
+    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
+
+    try:
+        q = graph.add_op("linear_proj", [normed], config={"out_dim": D})
+        kv = graph.add_op("linear_proj", [normed], config={"out_dim": D})
+        attn = graph.add_op("mla_attention", [q, kv])
+        out = graph.add_op("linear_proj", [attn], config={"out_dim": D})
+    except (ValueError, KeyError):
+        return tpl_residual_block(graph, input_id, rng, weights)
+
+    ffn = _pick_compatible_motif_from_classes(
+        graph, out, rng, list(_FFN_CLASSES), weights
+    )
+    processed = _instantiate_motif(graph, out, ffn, rng) if ffn else out
+    processed = _fix_dim(graph, processed)
+    try:
+        return graph.add_op("add", [input_id, processed])
+    except ValueError:
+        return processed
+
+
 def tpl_tree_mix_block(
     graph: ComputationGraph,
     input_id: int,

@@ -1,0 +1,71 @@
+id: mla_attention
+version: 1.0.0
+name: Multi-Head Latent Attention (DeepSeek V2/V3)
+category: math_space
+tags:
+- math_space
+- learnable
+- attention
+- compression
+status: approved
+description: Asymmetric K-V latent compression. K and V share a low-rank down-projection but use distinct up-projections, then standard softmax attention on the full-dim query. ~93% KV cache reduction at d_latent=D/8.
+inputs:
+- name: query
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+- name: kv_input
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params:
+  d_latent:
+    type: int
+    default: 0
+    description: Latent dim. 0 means D//8 (default DeepSeek V2 ratio).
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: null
+performance:
+  has_params: true
+  param_formula: D*D*3/8
+  preserves_gradient: true
+  numerically_risky: false
+limits:
+  deterministic: true
+help_md: '### Technical
+
+  Multi-Head Latent Attention. K and V share a learned (D, d_latent)
+  down-projection, then each gets its own (d_latent, D) up-projection
+  back to full D. Standard scaled-dot-product attention runs on the
+  full-dim Q, K, V.
+
+
+  Inputs: query:tensor[B, S, D], kv_input:tensor[B, S, D].
+
+  Outputs: y:tensor[B, S, D].
+
+  Params: D*d_latent (down) + 2*d_latent*D (up_K + up_V). At d_latent=D/8
+  that is 3*D**2/8 — about 62% fewer attention params than standard MHA.
+
+
+  ### Plain Language
+
+  Compresses the key and value matrices through a tiny shared latent
+  before computing attention. Saves a lot of memory in the KV cache at
+  inference, with quality within noise of vanilla attention.
+
+  '

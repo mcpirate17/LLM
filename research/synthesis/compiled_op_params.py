@@ -170,6 +170,7 @@ class CompiledOpParamInitMixin:
             "shared_basis_proj": lambda: self._init_shared_basis_proj(d_in),
             "tied_proj": lambda: self._init_tied_proj(d_in),
             "tree_mix": lambda: self._init_tree_mix(config, d_in),
+            "mla_attention": lambda: self._init_mla_attention(config, d_in),
             "swiglu_mlp": lambda: self._init_swiglu_mlp(config, d_in),
             "rwkv_channel": lambda: self._init_rwkv_channel(config, d_in),
             "softmax_attention": lambda: self._init_attention_stack(
@@ -365,6 +366,24 @@ class CompiledOpParamInitMixin:
         learns asymmetry from gradient.
         """
         self.gate = nn.Parameter(torch.zeros(d_in))
+
+    def _init_mla_attention(self, config: Dict, d_in: int) -> None:
+        """Multi-Head Latent Attention params (research §1.1).
+
+        Three projections: shared down (d_in -> d_latent) and two distinct
+        ups (d_latent -> d_in, one each for K and V). d_latent defaults to
+        d_in // 8 (DeepSeek V2 setting, ~93% KV cache compression).
+        """
+        from ..mathspaces.mla import _DEFAULT_LATENT_DIV
+
+        if config:
+            d_latent = int(config.get("d_latent", max(d_in // _DEFAULT_LATENT_DIV, 1)))
+        else:
+            d_latent = max(d_in // _DEFAULT_LATENT_DIV, 1)
+        # Standard 0.02-std init matches surrounding attention projections.
+        self.W_down = nn.Parameter(torch.randn(d_in, d_latent) * 0.02)
+        self.W_up_K = nn.Parameter(torch.randn(d_latent, d_in) * 0.02)
+        self.W_up_V = nn.Parameter(torch.randn(d_latent, d_in) * 0.02)
 
     def _init_swiglu_mlp(self, config: Dict, d_in: int) -> None:
         hidden = int(d_in * float(config.get("mlp_ratio", 3.0)))
