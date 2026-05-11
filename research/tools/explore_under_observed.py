@@ -25,7 +25,7 @@ import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import torch
 import torch.nn as nn
@@ -144,6 +144,12 @@ class ExplorationResult:
     s1_initial_loss: Optional[float] = None
     s1_final_loss: Optional[float] = None
     s1_error: Optional[str] = None
+    # Post-S1 probe metrics — set when run_s1=True AND the S1 micro-train
+    # passed. Caller fills in wikitext_perplexity / hellaswag_acc /
+    # induction_screening_auc / binding_screening_auc /
+    # binding_screening_composite / ar_legacy_auc so the recorder can
+    # satisfy `_enforce_s1_metric_completeness`.
+    s1_metrics: Optional[Dict] = None
     param_count: int = 0
     n_ops: int = 0
     elapsed_s: float = 0.0
@@ -646,6 +652,42 @@ def evaluate_graph(
     result.s1_final_loss = s1.final_loss
     result.s1_error = s1.error
 
+    # Post-S1 probe set — only on passing candidates (matches the runner's
+    # gating in `_run_post_s1_screening_probes`). Required by the S1
+    # metric-completeness guardrail added 2026-04-30; without these,
+    # `stage1_passed=True` writes are rejected.
+    if s1.passed:
+        try:
+            from research.eval.post_s1_probes import (
+                missing_required_metrics,
+                run_post_s1_probes,
+            )
+
+            probe_metrics = run_post_s1_probes(
+                model,
+                vocab_size=vocab_size,
+                max_seq_len=MAX_SEQ_LEN,
+                device=device,
+            )
+            result.s1_metrics = probe_metrics
+            absent = missing_required_metrics(probe_metrics)
+            if absent:
+                # Be honest: we cannot claim stage1_passed without the
+                # full probe set. The recorder respects this and writes
+                # stage0/s1-loss data only.
+                result.s1_ok = False
+                result.s1_error = (
+                    (result.s1_error or "")
+                    + (" | " if result.s1_error else "")
+                    + f"post-S1 probes incomplete: missing={absent}"
+                )
+        except (RuntimeError, ValueError, TypeError, ImportError) as exc:
+            logger.warning("Post-S1 probe set failed: %s", exc)
+            result.s1_ok = False
+            result.s1_error = (
+                result.s1_error or ""
+            ) + f" | post-S1 probes errored: {exc}"
+
     _cleanup_model(model, device)
     result.elapsed_s = time.perf_counter() - t0
     return result
@@ -963,26 +1005,35 @@ class _DBRecorder:
             error_type = "s1_error"
             error_msg = r.s1_error
 
-        result_id = self.nb.record_program_result(
-            experiment_id=self.exp_id,
-            graph_fingerprint=r.graph_fingerprint,
-            graph_json=r.graph_json,
-            bypass_quality_gate=True,
-            stage0_passed=r.forward_ok,
-            stage05_passed=r.stability_score > 0.5 if r.stability_score else False,
-            stage1_passed=r.s1_ok,
-            loss_ratio=r.s1_loss_ratio,
-            initial_loss=r.s1_initial_loss,
-            final_loss=r.s1_final_loss,
-            train_budget_steps=self.s1_steps if r.s1_initial_loss is not None else 0,
-            param_count=r.param_count,
-            graph_n_ops=r.n_ops,
-            graph_n_unique_ops=len(set(r.ops_present)),
-            stability_score=r.stability_score,
-            error_type=error_type,
-            error_message=error_msg,
-            model_source="forced_exploration",
-        )
+        record_kwargs: Dict[str, Any] = {
+            "experiment_id": self.exp_id,
+            "graph_fingerprint": r.graph_fingerprint,
+            "graph_json": r.graph_json,
+            "bypass_quality_gate": True,
+            "stage0_passed": r.forward_ok,
+            "stage05_passed": r.stability_score > 0.5 if r.stability_score else False,
+            "stage1_passed": r.s1_ok,
+            "loss_ratio": r.s1_loss_ratio,
+            "initial_loss": r.s1_initial_loss,
+            "final_loss": r.s1_final_loss,
+            "train_budget_steps": self.s1_steps if r.s1_initial_loss is not None else 0,
+            "param_count": r.param_count,
+            "graph_n_ops": r.n_ops,
+            "graph_n_unique_ops": len(set(r.ops_present)),
+            "stability_score": r.stability_score,
+            "error_type": error_type,
+            "error_message": error_msg,
+            "model_source": "forced_exploration",
+        }
+        # Splat post-S1 probe metrics so `_enforce_s1_metric_completeness`
+        # can pass when stage1_passed=True. evaluate_graph() already
+        # downgrades stage1_passed to False if any required metric is
+        # absent, so a partial probe set never reaches the guardrail.
+        if r.s1_metrics:
+            record_kwargs.update(
+                {k: v for k, v in r.s1_metrics.items() if k not in record_kwargs}
+            )
+        result_id = self.nb.record_program_result(**record_kwargs)
         if result_id:
             self.n_recorded += 1
         if r.forward_ok:
