@@ -592,6 +592,7 @@ class _NotebookCore:
 
         self._batch_depth = 0
         self._program_results_columns: Optional[set[str]] = None
+        self._graph_runs_columns: Optional[set[str]] = None
         self._leaderboard_columns: Optional[set[str]] = None
         self._dashboard_summary_cache: Dict[tuple[bool, bool], Dict[str, Any]] = {}
         self._dashboard_summary_cache_expires_at: float = 0.0
@@ -1907,6 +1908,7 @@ class _NotebookCore:
         # ALTER TABLE so graph_runs mirrors the final column set.
         self._ensure_graph_normalization_schema()
         self._program_results_columns = None
+        self._graph_runs_columns = None
         self._leaderboard_columns = None
         self._maybe_commit()
 
@@ -2116,6 +2118,19 @@ class _NotebookCore:
             rows = self.conn.execute("PRAGMA table_info(program_results)").fetchall()
             self._program_results_columns = {str(row[1]) for row in rows}
         return self._program_results_columns
+
+    def _get_graph_runs_columns(self) -> set[str]:
+        """Return current graph_runs columns for defensive updates.
+
+        Post-Phase-5b canonical write target. graph_runs is
+        program_results minus graph_json / arch_spec_json (those moved
+        to the ``graphs`` table). Callers writing arch columns must
+        update ``graphs`` separately.
+        """
+        if self._graph_runs_columns is None:
+            rows = self.conn.execute("PRAGMA table_info(graph_runs)").fetchall()
+            self._graph_runs_columns = {str(row[1]) for row in rows}
+        return self._graph_runs_columns
 
     def _get_leaderboard_columns(self) -> set[str]:
         """Return current leaderboard columns for defensive updates."""

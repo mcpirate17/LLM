@@ -391,7 +391,9 @@ class _ProgramsMixin(
         )
         if not patch:
             return False
-        valid_columns = set(self._get_program_results_columns())
+        # Behavioral-fingerprint patch only contains fp_* / novelty / cka
+        # metrics — all of which live in graph_runs post-Phase-5b.
+        valid_columns = set(self._get_graph_runs_columns())
         patch = {
             column: value for column, value in patch.items() if column in valid_columns
         }
@@ -399,7 +401,7 @@ class _ProgramsMixin(
             return False
         set_clause = ", ".join(f"{column} = ?" for column in patch)
         self._submit_write(
-            f"UPDATE program_results SET {set_clause} WHERE result_id = ?",
+            f"UPDATE graph_runs SET {set_clause} WHERE result_id = ?",
             [*patch.values(), rid],
         )
         if sync_leaderboard:

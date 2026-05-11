@@ -193,7 +193,59 @@ def _merge_program_value(column: str, current: Any, candidate: Any) -> Any:
     return current
 
 
+_ARCH_COLS = ("graph_json", "arch_spec_json")
+
+
+def _build_graphs_set_clause(
+    graphs_updates: Dict[str, Any],
+) -> tuple[list[str], list[Any]]:
+    """Build the SET parts + params for an UPDATE graphs ... statement."""
+    set_parts: list[str] = []
+    set_vals: list[Any] = []
+    if "graph_json" in graphs_updates:
+        gj = graphs_updates["graph_json"]
+        set_parts.append("graph_json = ?")
+        set_parts.append(
+            "graph_json_is_placeholder = "
+            "CASE WHEN ? IS NULL OR ? IN ('', '{}') THEN 1 ELSE 0 END"
+        )
+        set_vals.extend([gj, gj, gj])
+    if "arch_spec_json" in graphs_updates:
+        set_parts.append("arch_spec_json = COALESCE(?, arch_spec_json)")
+        set_vals.append(graphs_updates["arch_spec_json"])
+    return set_parts, set_vals
+
+
 class _ProgramResultMergeMixin:
+    def _submit_split_program_patch(
+        self, result_id: str, updates: Dict[str, Any]
+    ) -> None:
+        """Route a patch to graph_runs (per-run cols) and graphs (arch cols).
+
+        Shared-fingerprint runs: a graphs-col update affects every run that
+        shares the fingerprint — the same cross-run behavior the AFTER-UPDATE
+        propagation trigger produced when the legacy write hit program_results.
+        """
+        runs_updates = {k: v for k, v in updates.items() if k not in _ARCH_COLS}
+        graphs_updates = {k: v for k, v in updates.items() if k in _ARCH_COLS}
+
+        if runs_updates:
+            set_clause = ", ".join(f"{column} = ?" for column in runs_updates)
+            self._submit_write(
+                f"UPDATE graph_runs SET {set_clause} WHERE result_id = ?",
+                list(runs_updates.values()) + [result_id],
+            )
+
+        if not graphs_updates:
+            return
+        set_parts, set_vals = _build_graphs_set_clause(graphs_updates)
+        set_vals.append(result_id)
+        self._submit_write(
+            "UPDATE graphs SET " + ", ".join(set_parts) + " WHERE graph_fingerprint = ("
+            "SELECT graph_fingerprint FROM graph_runs WHERE result_id = ?)",
+            set_vals,
+        )
+
     def _merge_patch_base_updates(
         self,
         *,
@@ -368,11 +420,7 @@ class _ProgramResultMergeMixin:
         if not updates:
             return False
 
-        set_clause = ", ".join(f"{column} = ?" for column in updates)
-        self._submit_write(
-            f"UPDATE program_results SET {set_clause} WHERE result_id = ?",
-            list(updates.values()) + [rid],
-        )
+        self._submit_split_program_patch(rid, updates)
         final_fp = str(
             current.get("graph_fingerprint") or graph_fingerprint or ""
         ).strip()

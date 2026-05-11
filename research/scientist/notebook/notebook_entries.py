@@ -89,14 +89,24 @@ class _EntriesMixin:
         """Clear graph_json for S1 failures with no loss data.
 
         Called after update_op_success_rates() has already consumed the graphs.
-        Sets to empty string (NOT NULL constraint on column).
-        Returns the number of rows stripped.
+        Targets the canonical ``graphs`` table (post-Phase-5b graph_json
+        lives there, keyed by graph_fingerprint). Fingerprints are looked up
+        through ``graph_runs`` for the given experiment. graph_json is
+        shared across all runs of a fingerprint, so this strip clears the
+        json for every run sharing the fingerprint of a failing run — same
+        cross-run behavior the AFTER UPDATE propagation trigger produced
+        when this write was on ``program_results``.
+        Returns the number of graphs rows stripped.
         """
         cur = self.conn.execute(
-            """UPDATE program_results SET graph_json = ''
-               WHERE experiment_id = ?
-                 AND stage0_passed = 1 AND stage1_passed = 0
-                 AND loss_ratio IS NULL AND length(graph_json) > 0""",
+            """UPDATE graphs SET graph_json = '', graph_json_is_placeholder = 1
+               WHERE length(graph_json) > 0
+                 AND graph_fingerprint IN (
+                       SELECT graph_fingerprint FROM graph_runs
+                       WHERE experiment_id = ?
+                         AND stage0_passed = 1 AND stage1_passed = 0
+                         AND loss_ratio IS NULL
+                   )""",
             (experiment_id,),
         )
         n = cur.rowcount
