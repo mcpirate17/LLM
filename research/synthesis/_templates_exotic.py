@@ -508,6 +508,53 @@ def tpl_tropical_softmax_block(
         return processed
 
 
+def tpl_tree_mix_block(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """norm → 4 leaf projections → depth-2 binary tree of tree_mix nodes → proj → [FFN] → residual.
+
+    Balanced binary-tree feature mixer (research §2.1, "leafed layers").
+    Builds a depth-2 tree: 4 sibling linear projections of the normalized
+    input act as leaves, then 3 tree_mix nodes blend them pairwise up to
+    the root. Each tree_mix has its own learned sigmoid gate, so the
+    grammar gets per-level asymmetric mixing along a structural axis it
+    previously couldn't express.
+
+        leaves: a, b, c, d  (4 × linear_proj of the same norm)
+        level 1: ab = tree_mix(a, b)        cd = tree_mix(c, d)
+        level 2: root = tree_mix(ab, cd)
+    """
+    D = graph.model_dim
+    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
+    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
+
+    try:
+        # Four distinct leaf projections (each has its own params).
+        a = graph.add_op("linear_proj", [normed], config={"out_dim": D})
+        b = graph.add_op("linear_proj", [normed], config={"out_dim": D})
+        c = graph.add_op("linear_proj", [normed], config={"out_dim": D})
+        d = graph.add_op("linear_proj", [normed], config={"out_dim": D})
+        ab = graph.add_op("tree_mix", [a, b])
+        cd = graph.add_op("tree_mix", [c, d])
+        root = graph.add_op("tree_mix", [ab, cd])
+        projected = graph.add_op("linear_proj", [root], config={"out_dim": D})
+    except (ValueError, KeyError):
+        return tpl_residual_block(graph, input_id, rng, weights)
+
+    ffn = _pick_compatible_motif_from_classes(
+        graph, projected, rng, list(_FFN_CLASSES), weights
+    )
+    processed = _instantiate_motif(graph, projected, ffn, rng) if ffn else projected
+    processed = _fix_dim(graph, processed)
+    try:
+        return graph.add_op("add", [input_id, processed])
+    except ValueError:
+        return processed
+
+
 def tpl_gated_minimum(
     graph: ComputationGraph,
     input_id: int,

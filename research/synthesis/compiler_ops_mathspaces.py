@@ -239,6 +239,14 @@ def _op_tropical_softmax(module, inputs, config):
     return execute_tropical_softmax(module, inputs[0])
 
 
+def _op_tree_mix(module, inputs, config):
+    from ..mathspaces.tree_mix import execute_tree_mix
+
+    return execute_tree_mix(
+        module, inputs[0], inputs[1] if len(inputs) > 1 else inputs[0]
+    )
+
+
 # ── p-adic ops ──
 
 
@@ -429,4 +437,5 @@ OP_IMPLS: Dict[str, Callable] = {
     "tied_proj": _op_tied_proj,
     "tropical_router": _op_tropical_router,
     "tropical_moe": _op_tropical_moe,
+    "tree_mix": _op_tree_mix,
 }

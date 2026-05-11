@@ -14,6 +14,7 @@ from ..synthesis.primitives import (
 )
 from . import hyperbolic, tropical, padic, clifford, compression, spiking
 from . import tropical_routing
+from . import tree_mix as _tree_mix_mod  # noqa: F401 — used in register_all_mathspaces
 
 
 def register_all_mathspaces():
@@ -155,6 +156,22 @@ def register_all_mathspaces():
         algebraic_space="tropical",
     )
     op = _with_execute(op, tropical.execute_tropical_softmax)
+    register_external_primitive(op)
+
+    # Phase 5c (2026-05-11) — binary-tree feature mixer per
+    # external_research_2026-05-10.md §2.1 ("leafed layers"). Reshapes
+    # the feature dim into 2^depth leaves and gate-blends pairs at each
+    # level. Adds a structural axis the grammar previously couldn't express.
+    op = PrimitiveOp(
+        name="tree_mix",
+        category=OpCategory.MATH_SPACE,
+        n_inputs=2,
+        shape_rule="identity",
+        has_params=True,
+        param_formula="D",  # one learned gate vector of size D
+        description="Atomic binary mixer node: z = sigmoid(W) * x + (1 - sigmoid(W)) * y. Templates compose 2^K - 1 nodes to build a balanced binary tree of depth K (research §2.1 leafed layers).",
+    )
+    op = _with_execute(op, _tree_mix_mod.execute_tree_mix)
     register_external_primitive(op)
 
     # ── p-adic ──

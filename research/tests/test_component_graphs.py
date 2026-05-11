@@ -573,6 +573,27 @@ def graph_tropical_moe() -> Tuple[ComputationGraph, str, List[str]]:
     return g, "tropical_moe_router", ["tropical_moe", "tropical_router"]
 
 
+def graph_tree_mix() -> Tuple[ComputationGraph, str, List[str]]:
+    """Depth-2 binary tree of tree_mix nodes — research §2.1 leafed layers.
+
+    Four sibling linear projections form the leaves; three tree_mix nodes
+    blend pairwise up to the root.
+    """
+    g = ComputationGraph(D)
+    inp = g.add_input()
+    ln = g.add_op("rmsnorm", [inp])
+    a = g.add_op("linear_proj", [ln], config={"out_dim": D})
+    b = g.add_op("linear_proj", [ln], config={"out_dim": D})
+    c = g.add_op("linear_proj", [ln], config={"out_dim": D})
+    d = g.add_op("linear_proj", [ln], config={"out_dim": D})
+    ab = g.add_op("tree_mix", [a, b])
+    cd = g.add_op("tree_mix", [c, d])
+    root = g.add_op("tree_mix", [ab, cd])
+    res = g.add_op("add", [inp, root])
+    g.set_output(res)
+    return g, "tree_mix_depth2", ["tree_mix"]
+
+
 def graph_hyperbolic() -> Tuple[ComputationGraph, str, List[str]]:
     """Poincare ball: exp_map -> hyp_linear -> hyp_tangent -> log_map."""
     g = ComputationGraph(D)
@@ -1385,6 +1406,7 @@ ALL_GRAPH_BUILDERS = [
     graph_tropical,
     graph_tropical_extended,
     graph_tropical_moe,
+    graph_tree_mix,
     graph_hyperbolic,
     graph_hyperbolic_extended,
     graph_clifford,
@@ -1909,6 +1931,7 @@ def test_template_graph_mapping():
             "tropical_softmax_block",
         ],
         "graph_tropical_moe": ["residual_block"],
+        "graph_tree_mix": ["tree_mix_block"],
         "graph_hyperbolic": ["residual_block"],
         "graph_hyperbolic_extended": ["hyp_distance_scoring"],
         "graph_clifford": ["residual_block"],

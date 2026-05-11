@@ -1,0 +1,64 @@
+id: tree_mix
+version: 1.0.0
+name: Balanced binary-tree feature mixer
+category: math_space
+tags:
+- math_space
+- learnable
+- structural
+status: approved
+description: Reshape feature dim into 2^depth leaves, gate-blend adjacent pairs at each level. Adds a multi-scale hierarchy axis ("leafed layers") the grammar previously could not express.
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params:
+  depth:
+    type: int
+    default: 3
+    description: Number of tree levels. 2^depth leaves, D must be divisible by 2^depth.
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: null
+performance:
+  has_params: true
+  param_formula: D*3
+  preserves_gradient: true
+  numerically_risky: false
+limits:
+  deterministic: true
+help_md: '### Technical
+
+  Binary-tree feature mixer. At depth K the last dim D is reshaped into
+  2^K leaves of size D/2^K per token. At each of K levels, adjacent
+  pairs are gate-blended via a learned sigmoid gate vector. After K
+  levels exactly one node of size D remains.
+
+
+  Inputs: x:tensor[B, S, D].
+
+  Outputs: y:tensor[B, S, D].
+
+  Params: K gate vectors totalling D × K scalars (much smaller than a
+  D x D linear layer).
+
+
+  ### Plain Language
+
+  Splits each token vector into chunks, then walks up a balanced binary
+  tree blending chunks pairwise. Useful when features have natural
+  multi-scale structure.
+
+  '

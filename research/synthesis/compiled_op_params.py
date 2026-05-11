@@ -169,6 +169,7 @@ class CompiledOpParamInitMixin:
             "bottleneck_proj": lambda: self._init_bottleneck_proj(d_in),
             "shared_basis_proj": lambda: self._init_shared_basis_proj(d_in),
             "tied_proj": lambda: self._init_tied_proj(d_in),
+            "tree_mix": lambda: self._init_tree_mix(config, d_in),
             "swiglu_mlp": lambda: self._init_swiglu_mlp(config, d_in),
             "rwkv_channel": lambda: self._init_rwkv_channel(config, d_in),
             "softmax_attention": lambda: self._init_attention_stack(
@@ -355,6 +356,15 @@ class CompiledOpParamInitMixin:
     def _init_tied_proj(self, d_in: int) -> None:
         rank = max(d_in // 4, 1)
         self.tied_weight = nn.Parameter(torch.randn(rank, d_in) * 0.02)
+
+    def _init_tree_mix(self, config: Dict, d_in: int) -> None:
+        """Atomic binary mixer node (research §2.1).
+
+        Single learned (d_in,) gate. Initialized to zeros so sigmoid(0)=0.5
+        means each tree_mix node starts as a symmetric average; the gate
+        learns asymmetry from gradient.
+        """
+        self.gate = nn.Parameter(torch.zeros(d_in))
 
     def _init_swiglu_mlp(self, config: Dict, d_in: int) -> None:
         hidden = int(d_in * float(config.get("mlp_ratio", 3.0)))
