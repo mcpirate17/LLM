@@ -543,7 +543,7 @@ def graph_tropical() -> Tuple[ComputationGraph, str, List[str]]:
 
 
 def graph_tropical_extended() -> Tuple[ComputationGraph, str, List[str]]:
-    """Tropical: add, matmul, moe, router."""
+    """Tropical: add, matmul, softmax (gradient-friendly softmin)."""
     g = ComputationGraph(D)
     inp = g.add_input()
     ln = g.add_op("rmsnorm", [inp])
@@ -551,9 +551,16 @@ def graph_tropical_extended() -> Tuple[ComputationGraph, str, List[str]]:
     tm = g.add_op("tropical_matmul", [ln, ln])
     # Tropical add combines
     ta = g.add_op("tropical_add", [ln, tm])
-    res = g.add_op("add", [inp, ta])
+    # Tropical softmax: softmin gate of the result back into a residual
+    gate = g.add_op("tropical_softmax", [ta])
+    blended = g.add_op("mul", [ta, gate])
+    res = g.add_op("add", [inp, blended])
     g.set_output(res)
-    return g, "tropical_extended", ["tropical_matmul", "tropical_add"]
+    return (
+        g,
+        "tropical_extended",
+        ["tropical_matmul", "tropical_add", "tropical_softmax"],
+    )
 
 
 def graph_tropical_moe() -> Tuple[ComputationGraph, str, List[str]]:
@@ -1896,7 +1903,11 @@ def test_template_graph_mapping():
         "graph_latent_attention": ["latent_compress_block"],
         "graph_relu_gate_routing": ["residual_block"],
         "graph_tropical": ["residual_block"],
-        "graph_tropical_extended": ["tropical_residual", "tropical_matmul_block"],
+        "graph_tropical_extended": [
+            "tropical_residual",
+            "tropical_matmul_block",
+            "tropical_softmax_block",
+        ],
         "graph_tropical_moe": ["residual_block"],
         "graph_hyperbolic": ["residual_block"],
         "graph_hyperbolic_extended": ["hyp_distance_scoring"],

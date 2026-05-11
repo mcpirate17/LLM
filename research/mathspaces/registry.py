@@ -142,6 +142,21 @@ def register_all_mathspaces():
     op = _with_execute(op, tropical.execute_tropical_center)
     register_external_primitive(op)
 
+    # Phase 5b-bis (2026-05-10) — softmin primitive per
+    # external_research_2026-05-10.md §3.5: temperature-scaled softmin
+    # (LogSumExp over -x/tau) is the gradient-friendly replacement for
+    # hard tropical max and lets the grammar swap it in as a softmax variant.
+    op = PrimitiveOp(
+        name="tropical_softmax",
+        category=OpCategory.MATH_SPACE,
+        n_inputs=1,
+        shape_rule="identity",
+        description="Gradient-friendly softmin (softmax over -x/tau) — drop-in for vanilla softmax in tropical/shortest-path contexts",
+        algebraic_space="tropical",
+    )
+    op = _with_execute(op, tropical.execute_tropical_softmax)
+    register_external_primitive(op)
+
     # ── p-adic ──
     op = PrimitiveOp(
         name="padic_expand",

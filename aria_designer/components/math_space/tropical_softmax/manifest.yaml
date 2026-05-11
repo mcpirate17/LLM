@@ -1,0 +1,56 @@
+id: tropical_softmax
+version: 1.0.0
+name: Tropical softmin (gradient-friendly softmax over -x)
+category: math_space
+tags:
+- math_space
+- learnable
+status: approved
+description: Gradient-friendly softmin (softmax of -x/tau). Drop-in for vanilla softmax in tropical contexts where the semantics call for "attend to smallest score" (shortest-path).
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params: {}
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: null
+performance:
+  has_params: false
+  param_formula: '0'
+  preserves_gradient: true
+  numerically_risky: false
+limits:
+  deterministic: true
+help_md: '### Technical
+
+  Tropical softmin: y = softmax(-x / tau, dim=-1).
+
+
+  Inputs: x:tensor[B, S, D].
+
+  Outputs: y:tensor[B, S, D].
+
+  Params: none.
+
+
+  ### Plain Language
+
+  Like softmax, but it picks the SMALLEST values instead of the largest.
+
+  Useful in tropical (shortest-path) architectures and any place where the
+  scoring semantics treat low values as "most relevant".
+
+  '

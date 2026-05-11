@@ -233,6 +233,12 @@ def _op_tropical_gate(module, inputs, config):
     return execute_tropical_gate(module, inputs[0])
 
 
+def _op_tropical_softmax(module, inputs, config):
+    from ..mathspaces.tropical import execute_tropical_softmax
+
+    return execute_tropical_softmax(module, inputs[0])
+
+
 # ── p-adic ops ──
 
 
@@ -393,6 +399,7 @@ OP_IMPLS: Dict[str, Callable] = {
     "tropical_matmul": _op_tropical_matmul,
     "tropical_attention": _op_tropical_attention,
     "tropical_gate": _op_tropical_gate,
+    "tropical_softmax": _op_tropical_softmax,
     "tropical_center": _op_tropical_center,
     "clifford_attention": _op_clifford_attention,
     "geometric_product": _op_geometric_product,

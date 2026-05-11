@@ -189,33 +189,54 @@ def tropical_matmul(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
 
             logging.getLogger(__name__).debug("triton_tropical_matmul fallback: %s", e)
 
-    # CPU fast path: native C kernel (inference only — no autograd support)
+    # CPU fast path: native C kernel (inference only — no autograd support).
+    # 2026-05-10 SEGV: aria_core.tropical_matmul_batched_f32 crashed when the
+    # wrapper let through inputs the kernel's stride assumptions didn't cover.
+    # Be defensive — only dispatch with verified shapes + freshly contiguous tensors.
     if (
         _HAS_ARIA_CORE
         and not a.requires_grad
-        and a.is_contiguous()
-        and b.ndim == 3
+        and not b.requires_grad
         and a.ndim == 3
+        and b.ndim == 3
         and a.device.type == "cpu"
+        and b.device.type == "cpu"
+        and a.dtype == torch.float32
+        and b.dtype == torch.float32
+        and a.shape[0] == b.shape[0]  # batch must match
     ):
         B, S, D = a.shape
         native_b = None
-        if b.is_contiguous() and b.shape[1] == D and b.shape[2] != D:
-            # b is (B, D, S) layout — use directly
+        if b.shape[1] == D and b.shape[2] != D:
+            # b is (B, D, S2) layout — kernel-native.
             native_b = b
         elif b.shape[2] == D and b.shape[1] != D:
-            # b is (B, S2, D) — transpose to (B, D, S2) for C kernel
-            native_b = b.transpose(1, 2).contiguous()
-        elif b.is_contiguous() and b.shape == a.shape:
-            # Same shape as a: (B, S, D) — transpose to (B, D, S)
-            native_b = b.transpose(1, 2).contiguous()
+            # b is (B, S2, D) — transpose to (B, D, S2) for the kernel.
+            native_b = b.transpose(1, 2)
+        elif b.shape == a.shape:
+            # Square ambiguous case: assume (B, S, D), transpose to (B, D, S).
+            native_b = b.transpose(1, 2)
         if native_b is not None:
-            result = aria_core.tropical_matmul_batched_f32(a, native_b)
-            # Validate shape: expect (B, S, S2) where S2 = native_b cols
-            S2 = native_b.shape[2] if native_b.shape[1] == D else native_b.shape[1]
-            if result.shape == (B, S, S2):
-                return result
-            # C kernel returned wrong shape; fall through to Python path
+            # Force a fresh contiguous copy on BOTH inputs. is_contiguous() is
+            # not sufficient — the kernel assumes a specific stride layout that
+            # transposed-then-contiguous views may not satisfy.
+            a_c = a.contiguous()
+            b_c = native_b.contiguous()
+            S2 = b_c.shape[2]
+            # Final invariants: catch anything weird in Python before native call.
+            if (
+                a_c.shape == (B, S, D)
+                and b_c.shape == (B, D, S2)
+                and a_c.is_contiguous()
+                and b_c.is_contiguous()
+                and S > 0
+                and S2 > 0
+                and D > 0
+            ):
+                result = aria_core.tropical_matmul_batched_f32(a_c, b_c)
+                if result.shape == (B, S, S2):
+                    return result
+                # C kernel returned wrong shape; fall through to Python path.
 
     # Normalize b to (B, S2, D) layout.
     # Only transpose when b is explicitly (B, D, S) — i.e. shape[1] matches
@@ -243,6 +264,20 @@ def tropical_softmax(
     reduce_size = x.shape[reduce_dim] if x.ndim and 0 <= reduce_dim < x.ndim else 1
     adaptive_t = _adaptive_temperature(temperature, reduce_size)
     return torch.softmax(-x / adaptive_t, dim=dim)
+
+
+def execute_tropical_softmax(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
+    """Primitive form: gradient-friendly softmin over the last dim.
+
+    Composable substitute for vanilla softmax in templates where the
+    semantics call for "attend to smallest score" (tropical / shortest-path
+    semantics). Preserves input shape.
+
+    Per external_research_2026-05-10.md §3.5 (Tropical geometry stability):
+    hard max is non-differentiable at ties; LogSumExp/softmin with temperature
+    converges to tropical max as t→0 while keeping gradients alive everywhere.
+    """
+    return tropical_softmax(x, dim=-1, temperature=_SMOOTH_TAU)
 
 
 def tropical_attention(

@@ -1606,6 +1606,7 @@ _ALGEBRAIC_SPACE_TAGS: Dict[str, str] = {
     "tropical_attention": "tropical",
     "tropical_gate": "tropical",
     "tropical_center": "tropical",
+    "tropical_softmax": "tropical",
     # Clifford
     "clifford_attention": "clifford",
     "geometric_product": "clifford",
@@ -1644,6 +1645,7 @@ _ALGEBRAIC_TYPE_TAGS: Dict[str, AlgebraicType] = {
     "tropical_center": AlgebraicType("tropical", "real", "real"),
     "tropical_router": AlgebraicType("tropical", "real", "real"),
     "tropical_moe": AlgebraicType("tropical", "real", "real"),
+    "tropical_softmax": AlgebraicType("tropical", "real", "real"),
     "padic_expand": AlgebraicType("padic", "real", "real"),
     "padic_gate": AlgebraicType("padic", "real", "real"),
     "padic_residual": AlgebraicType("padic", "real", "real"),

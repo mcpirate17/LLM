@@ -470,6 +470,44 @@ def tpl_tropical_matmul_block(
         return processed
 
 
+def tpl_tropical_softmax_block(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """norm → score_proj → tropical_softmax → mul(input) → proj → [FFN] → residual.
+
+    Uses the gradient-friendly softmin (tropical_softmax) as a per-token,
+    per-feature gating distribution: low scores get high mass. Drop-in for
+    sigmoid/softmax gating in tropical-flavored contexts.
+
+    Per external_research_2026-05-10.md §3.5 — tropical_softmax replaces
+    hard max with LogSumExp-temperature, preserving gradient flow.
+    """
+    D = graph.model_dim
+    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
+    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
+
+    try:
+        scores = graph.add_op("linear_proj", [normed], config={"out_dim": D})
+        gate = graph.add_op("tropical_softmax", [scores])
+        gated = graph.add_op("mul", [normed, gate])
+        projected = graph.add_op("linear_proj", [gated], config={"out_dim": D})
+    except (ValueError, KeyError):
+        return tpl_residual_block(graph, input_id, rng, weights)
+
+    ffn = _pick_compatible_motif_from_classes(
+        graph, projected, rng, list(_FFN_CLASSES), weights
+    )
+    processed = _instantiate_motif(graph, projected, ffn, rng) if ffn else projected
+    processed = _fix_dim(graph, processed)
+    try:
+        return graph.add_op("add", [input_id, processed])
+    except ValueError:
+        return processed
+
+
 def tpl_gated_minimum(
     graph: ComputationGraph,
     input_id: int,
