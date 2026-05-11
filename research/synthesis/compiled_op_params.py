@@ -171,6 +171,7 @@ class CompiledOpParamInitMixin:
             "tied_proj": lambda: self._init_tied_proj(d_in),
             "tree_mix": lambda: self._init_tree_mix(config, d_in),
             "mla_attention": lambda: self._init_mla_attention(config, d_in),
+            "pq_embedding": lambda: self._init_pq_embedding(config, d_in),
             "swiglu_mlp": lambda: self._init_swiglu_mlp(config, d_in),
             "rwkv_channel": lambda: self._init_rwkv_channel(config, d_in),
             "softmax_attention": lambda: self._init_attention_stack(
@@ -384,6 +385,30 @@ class CompiledOpParamInitMixin:
         self.W_down = nn.Parameter(torch.randn(d_in, d_latent) * 0.02)
         self.W_up_K = nn.Parameter(torch.randn(d_latent, d_in) * 0.02)
         self.W_up_V = nn.Parameter(torch.randn(d_latent, d_in) * 0.02)
+
+    def _init_pq_embedding(self, config: Dict, d_in: int) -> None:
+        """Product-Quantized Embedding params (research §2.3).
+
+        Splits d_in into M subspaces of size sub_dim = d_in // M; each
+        subspace has K learnable codebook centroids. Falls back the largest
+        valid M if d_in isn't divisible by the requested M.
+        """
+        from ..mathspaces.pq_embedding import _DEFAULT_M, _DEFAULT_K
+
+        if config:
+            m = int(config.get("M", _DEFAULT_M))
+            k = int(config.get("K", _DEFAULT_K))
+        else:
+            m = _DEFAULT_M
+            k = _DEFAULT_K
+        # Fail-soft: shrink M until it divides d_in evenly.
+        while m > 1 and d_in % m != 0:
+            m -= 1
+        sub_dim = max(d_in // m, 1)
+        # Std-0.02 init like surrounding compression ops.
+        self.codebooks = nn.Parameter(torch.randn(m, k, sub_dim) * 0.02)
+        # Temperature knob (also adjustable from config).
+        self.pq_tau = float(config.get("tau", 1.0)) if config else 1.0
 
     def _init_swiglu_mlp(self, config: Dict, d_in: int) -> None:
         hidden = int(d_in * float(config.get("mlp_ratio", 3.0)))

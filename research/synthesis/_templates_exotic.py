@@ -508,6 +508,40 @@ def tpl_tropical_softmax_block(
         return processed
 
 
+def tpl_pq_embedding_block(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """norm → linear_proj → pq_embedding → linear_proj → [FFN] → residual.
+
+    Product-quantized embedding block (research §2.3). The linear_proj on
+    the input gives the codebook something flexible to quantize; the
+    post-pq linear_proj projects back out of the quantization basin.
+    """
+    D = graph.model_dim
+    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
+    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
+
+    try:
+        proj_in = graph.add_op("linear_proj", [normed], config={"out_dim": D})
+        pq = graph.add_op("pq_embedding", [proj_in])
+        proj_out = graph.add_op("linear_proj", [pq], config={"out_dim": D})
+    except (ValueError, KeyError):
+        return tpl_residual_block(graph, input_id, rng, weights)
+
+    ffn = _pick_compatible_motif_from_classes(
+        graph, proj_out, rng, list(_FFN_CLASSES), weights
+    )
+    processed = _instantiate_motif(graph, proj_out, ffn, rng) if ffn else proj_out
+    processed = _fix_dim(graph, processed)
+    try:
+        return graph.add_op("add", [input_id, processed])
+    except ValueError:
+        return processed
+
+
 def tpl_mla_block(
     graph: ComputationGraph,
     input_id: int,

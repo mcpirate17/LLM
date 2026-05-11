@@ -255,6 +255,12 @@ def _op_mla_attention(module, inputs, config):
     )
 
 
+def _op_pq_embedding(module, inputs, config):
+    from ..mathspaces.pq_embedding import execute_pq_embedding
+
+    return execute_pq_embedding(module, inputs[0])
+
+
 # ── p-adic ops ──
 
 
@@ -447,4 +453,5 @@ OP_IMPLS: Dict[str, Callable] = {
     "tropical_moe": _op_tropical_moe,
     "tree_mix": _op_tree_mix,
     "mla_attention": _op_mla_attention,
+    "pq_embedding": _op_pq_embedding,
 }

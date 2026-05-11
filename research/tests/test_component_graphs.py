@@ -573,6 +573,19 @@ def graph_tropical_moe() -> Tuple[ComputationGraph, str, List[str]]:
     return g, "tropical_moe_router", ["tropical_moe", "tropical_router"]
 
 
+def graph_pq_embedding() -> Tuple[ComputationGraph, str, List[str]]:
+    """Product-quantized embedding block — research §2.3."""
+    g = ComputationGraph(D)
+    inp = g.add_input()
+    ln = g.add_op("rmsnorm", [inp])
+    proj_in = g.add_op("linear_proj", [ln], config={"out_dim": D})
+    pq = g.add_op("pq_embedding", [proj_in])
+    proj_out = g.add_op("linear_proj", [pq], config={"out_dim": D})
+    res = g.add_op("add", [inp, proj_out])
+    g.set_output(res)
+    return g, "pq_embedding_block", ["pq_embedding"]
+
+
 def graph_mla() -> Tuple[ComputationGraph, str, List[str]]:
     """Multi-Head Latent Attention block — research §1.1 MLA."""
     g = ComputationGraph(D)
@@ -1422,6 +1435,7 @@ ALL_GRAPH_BUILDERS = [
     graph_tropical_moe,
     graph_tree_mix,
     graph_mla,
+    graph_pq_embedding,
     graph_hyperbolic,
     graph_hyperbolic_extended,
     graph_clifford,
@@ -1948,6 +1962,7 @@ def test_template_graph_mapping():
         "graph_tropical_moe": ["residual_block"],
         "graph_tree_mix": ["tree_mix_block"],
         "graph_mla": ["mla_block"],
+        "graph_pq_embedding": ["pq_embedding_block"],
         "graph_hyperbolic": ["residual_block"],
         "graph_hyperbolic_extended": ["hyp_distance_scoring"],
         "graph_clifford": ["residual_block"],

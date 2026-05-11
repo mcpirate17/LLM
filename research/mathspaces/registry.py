@@ -16,6 +16,7 @@ from . import hyperbolic, tropical, padic, clifford, compression, spiking
 from . import tropical_routing
 from . import tree_mix as _tree_mix_mod  # noqa: F401 — used in register_all_mathspaces
 from . import mla as _mla_mod  # noqa: F401 — used in register_all_mathspaces
+from . import pq_embedding as _pq_emb_mod  # noqa: F401 — used in register_all_mathspaces
 
 
 def register_all_mathspaces():
@@ -190,6 +191,24 @@ def register_all_mathspaces():
         description="Multi-head latent attention: K and V share a low-rank latent path (d_latent=D/8 by default), reconstructed via distinct up-projections, then standard softmax attention on Q. KV-cache compression.",
     )
     op = _with_execute(op, _mla_mod.execute_mla_attention)
+    register_external_primitive(op)
+
+    # Phase 5d (2026-05-11) — Product-Quantized Embedding per research §2.3.
+    # Splits feature dim D into M subspaces, each with K learnable codebook
+    # centroids. Token slices are replaced by softmax-weighted combinations
+    # of codebook entries. Maps to the compression-dominant convergence
+    # observed in the 2026-05-11 MLA-run leaderboard (latent_attn_* +
+    # sparse_ffn templates ran at 100% S1).
+    op = PrimitiveOp(
+        name="pq_embedding",
+        category=OpCategory.MATH_SPACE,
+        n_inputs=1,
+        shape_rule="identity",
+        has_params=True,
+        param_formula="M*K*D/M",  # M codebooks × K centroids × D/M sub_dim = K*D
+        description="Product-quantized embedding: split D into M subspaces of D/M, each with K learnable codebook centroids; per-subspace softmax assignment then weighted reconstruction. Compression-style learned quantization.",
+    )
+    op = _with_execute(op, _pq_emb_mod.execute_pq_embedding)
     register_external_primitive(op)
 
     # ── p-adic ──

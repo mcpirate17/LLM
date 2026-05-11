@@ -1,0 +1,74 @@
+id: pq_embedding
+version: 1.0.0
+name: Product-Quantized Embedding
+category: math_space
+tags:
+- math_space
+- learnable
+- compression
+- quantization
+status: approved
+description: Split feature dim into M subspaces of D/M; each subspace has K learnable codebook centroids. Per-subspace softmax assignment then weighted reconstruction. Compression-style learned quantization layer.
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params:
+  M:
+    type: int
+    default: 4
+    description: Number of subspaces. d_in must be divisible by M.
+  K:
+    type: int
+    default: 16
+    description: Codebook centroids per subspace.
+  tau:
+    type: float
+    default: 1.0
+    description: Softmax temperature for soft codebook assignment.
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: null
+performance:
+  has_params: true
+  param_formula: M*K*D/M
+  preserves_gradient: true
+  numerically_risky: false
+limits:
+  deterministic: true
+help_md: '### Technical
+
+  Product-quantized embedding. The last dim D is split into M equal
+  subspaces of size D/M. Each subspace has its own learned codebook
+  of K centroids of size (K, D/M). Per token, per subspace, compute
+  the squared distance to each codebook entry, softmax over -distance/tau
+  to get assignment weights, then return the weighted sum of centroids.
+
+  Total params = M·K·(D/M) = K·D. With K=16 and D=128, that is 2048
+  scalars — about 6% of a D×D linear layer.
+
+
+  Inputs: x:tensor[B, S, D].
+
+  Outputs: y:tensor[B, S, D].
+
+
+  ### Plain Language
+
+  Replaces each chunk of a token vector with the closest learned
+  prototype (or a blend of nearby prototypes). Compresses the
+  representation through a learned vocabulary.
+
+  '
