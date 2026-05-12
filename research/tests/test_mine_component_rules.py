@@ -61,7 +61,9 @@ def test_mine_component_rules_reads_compat_view_shape(tmp_path: Path) -> None:
                 ops,
                 {
                     "templates_used": ["unit_component"],
-                    "dynamic_template_attempts": [{"status": "ok"}],
+                    "dynamic_components_used": [
+                        {"component_id": "component_chain_test"}
+                    ],
                 },
             ),
             1,

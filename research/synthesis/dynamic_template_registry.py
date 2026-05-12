@@ -150,18 +150,11 @@ def apply_dynamic_template_candidate(
 
     graph.metadata.setdefault("templates_used", []).append(name)
     template_instance = len(graph.metadata.get("templates_used", [])) - 1
+    usage = _dynamic_usage_record(candidate)
     graph.metadata.setdefault("dynamic_templates_used", []).append(
-        {
-            "template_id": name,
-            "display_name": candidate.display_name,
-            "chain": list(candidate.chain),
-            "weight": float(candidate.weight),
-            "lowered_op_count": int(candidate.lowered_op_count),
-            "source": candidate.source,
-            "source_path": candidate.source_path,
-            "component_descriptor": dict(candidate.component_descriptor),
-        }
+        _dynamic_template_usage_record(usage)
     )
+    graph.metadata.setdefault("dynamic_components_used", []).append(usage)
     lowering = _candidate_lowering(candidate)
     prev_template = graph.metadata.get("_active_template")
     prev_slot_counter = graph.metadata.get("_active_template_slot_counter")
@@ -206,6 +199,36 @@ def apply_dynamic_template_candidate(
             graph.metadata.pop("_active_template_instance", None)
         else:
             graph.metadata["_active_template_instance"] = prev_template_instance
+
+
+def _dynamic_usage_record(candidate: DynamicTemplateCandidate) -> dict[str, Any]:
+    descriptor = dict(candidate.component_descriptor)
+    return {
+        "template_id": candidate.template_id,
+        "component_id": str(descriptor.get("component_id") or candidate.template_id),
+        "display_name": candidate.display_name,
+        "chain": list(candidate.chain),
+        "weight": float(candidate.weight),
+        "lowered_op_count": int(candidate.lowered_op_count),
+        "source": candidate.source,
+        "source_path": candidate.source_path,
+        "lowering": str(descriptor.get("lowering") or "rmsnorm_chain_with_binary_skip"),
+        "component_descriptor": descriptor,
+    }
+
+
+def _dynamic_template_usage_record(usage: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "template_id": str(usage.get("template_id") or ""),
+        "display_name": str(usage.get("display_name") or ""),
+        "chain": list(usage.get("chain") or ()),
+        "weight": float(usage.get("weight") or 0.0),
+        "lowered_op_count": int(usage.get("lowered_op_count") or 0),
+        "source": str(usage.get("source") or ""),
+        "source_path": str(usage.get("source_path") or ""),
+        "component_id": str(usage.get("component_id") or ""),
+        "lowering": str(usage.get("lowering") or ""),
+    }
 
 
 def _apply_linear_dynamic_candidate(

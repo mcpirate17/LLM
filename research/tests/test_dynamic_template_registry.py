@@ -144,8 +144,15 @@ def test_dynamic_template_lowering_records_metadata(tmp_path: Path) -> None:
         "add",
         "layernorm",
     ]
+    assert "component_descriptor" not in graph.metadata["dynamic_templates_used"][0]
+    assert graph.metadata["dynamic_components_used"][0]["chain"] == [
+        "linear_proj",
+        "relu",
+        "add",
+        "layernorm",
+    ]
     assert (
-        graph.metadata["dynamic_templates_used"][0]["component_descriptor"][
+        graph.metadata["dynamic_components_used"][0]["component_descriptor"][
             "has_multi_mixer"
         ]
         is False
@@ -228,6 +235,12 @@ def test_dynamic_template_can_lower_trunk_sidecar_component(tmp_path: Path) -> N
     assert {slot["slot_index"] for slot in slots} == {0, 1, 2, 3, 4, 5}
     assert any(".trunk.step0" in slot["slot_key"] for slot in slots)
     assert any(".sidecar.step2" in slot["slot_key"] for slot in slots)
+    used_component = graph.metadata["dynamic_components_used"][0]
+    assert used_component["lowering"] == "trunk_sidecar_merge_v1"
+    assert used_component["component_descriptor"]["branch_plan"]["trunk_indices"] == [
+        0,
+        1,
+    ]
 
 
 def test_generate_layer_graph_can_use_dynamic_candidates(tmp_path: Path) -> None:
@@ -254,6 +267,9 @@ def test_generate_layer_graph_can_use_dynamic_candidates(tmp_path: Path) -> None
     used = graph.metadata["dynamic_templates_used"]
     assert used[0]["display_name"] == "chain_block"
     assert graph.metadata["templates_used"][0] == used[0]["template_id"]
+    components_used = graph.metadata["dynamic_components_used"]
+    assert components_used[0]["template_id"] == used[0]["template_id"]
+    assert "component_descriptor" in components_used[0]
     assert graph.metadata["dynamic_template_candidates"]["count"] == 1
     assert graph.metadata["dynamic_template_candidates"]["min_lowered_ops"] == 1
 

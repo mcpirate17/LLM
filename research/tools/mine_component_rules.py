@@ -76,8 +76,10 @@ def mine_component_rules(
         metadata = graph.get("metadata") if isinstance(graph, dict) else {}
         if isinstance(metadata, dict):
             template_counts.update(str(t) for t in metadata.get("templates_used") or ())
-            if metadata.get("dynamic_templates_used") or metadata.get(
-                "dynamic_template_attempts"
+            if (
+                metadata.get("dynamic_components_used")
+                or metadata.get("dynamic_templates_used")
+                or metadata.get("dynamic_template_attempts")
             ):
                 dynamic_template_rows += 1
 
