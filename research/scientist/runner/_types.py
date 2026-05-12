@@ -442,11 +442,12 @@ class RunConfig:
     # ablation runs.
     use_dynamic_template_candidates: bool = True
     dynamic_template_candidate_path: str = (
-        "research/notes/validated_template_candidates.json"
+        "research/notes/dynamic_component_candidates.json"
     )
     dynamic_template_candidate_prob: float = 0.10
     dynamic_template_candidate_strength: float = 1.0
     dynamic_template_max_candidates: int = 32
+    dynamic_template_min_lowered_ops: int = 8
     # Advisory AR/binding overlay. When enabled, generated graphs are tagged so
     # routing decisions can append separate overlay metadata, and GBM-screening
     # survivors get a sibling AR/binding rerank after rank_composite ordering.

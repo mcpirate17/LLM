@@ -1,0 +1,43 @@
+{
+  "schema_version": "component_rules_v1",
+  "description": "Structural admission rules shared by dynamic templates, slots, and component candidate builders.",
+  "defaults": {
+    "min_lowered_ops": 8,
+    "min_distinct_roles": 2,
+    "allow_terminal_restricted_consumer": false,
+    "max_consecutive_mixers": 2
+  },
+  "blocked_op_pairs": [
+    {
+      "pair": ["clifford_attention", "linear_proj"],
+      "reason": "negative DB evidence from component-rule mining"
+    },
+    {
+      "pair": ["rmsnorm", "clifford_attention"],
+      "reason": "negative DB evidence from component-rule mining"
+    }
+  ],
+  "preferred_op_pairs": [
+    {
+      "pair": ["rope_rotate", "softmax_attention"],
+      "reason": "canonical RoFormer/Llama attention motif"
+    },
+    {
+      "pair": ["linear_proj", "latent_attention_compressor"],
+      "reason": "standard projection into latent-attention compression motifs"
+    }
+  ],
+  "terminal_blocked_roles": ["reduce"],
+  "terminal_blocked_ops": [
+    "confidence_token_gate",
+    "token_class_proj",
+    "token_entropy",
+    "sum_last",
+    "mean_last",
+    "max_last",
+    "norm_last",
+    "hyp_distance",
+    "cosine_similarity"
+  ],
+  "required_roles": ["project"]
+}

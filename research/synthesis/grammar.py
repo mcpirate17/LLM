@@ -17,6 +17,7 @@ gradient flows, bounded depth/params) but not necessarily USEFUL.
 
 from __future__ import annotations
 
+import copy
 import logging
 import random
 from dataclasses import dataclass, field, replace
@@ -164,11 +165,12 @@ class GrammarConfig:
     # ``use_dynamic_template_candidates=False`` for ablation runs.
     use_dynamic_template_candidates: bool = True
     dynamic_template_candidate_path: str = (
-        "research/notes/validated_template_candidates.json"
+        "research/notes/dynamic_component_candidates.json"
     )
     dynamic_template_candidate_prob: float = 0.10
     dynamic_template_candidate_strength: float = 1.0
     dynamic_template_max_candidates: int = 32
+    dynamic_template_min_lowered_ops: int = 8
     # Provenance string for the use_derived_slot_classes assignment, set by
     # the A/B resolver in _slot_constraints_loader.resolve_slot_class_strategy.
     # Persisted to graph.metadata so post-hoc analysis can compare cohorts.
@@ -546,6 +548,7 @@ def _probe_routing_capable_templates() -> FrozenSet[str]:
     templates that emit routing only stochastically via motif lottery would
     defeat the rescue since the actual composition picks its own seed.
     """
+    # guardrail: allow-complexity - offline template audit helper, not generation.
     # Import here to avoid circular imports at module load.
     from .templates import TEMPLATES
 
@@ -685,6 +688,7 @@ def generate_layer_graph(
             "enabled": True,
             "path": str(config.dynamic_template_candidate_path),
             "count": len(runtime.dynamic_template_candidates),
+            "min_lowered_ops": int(config.dynamic_template_min_lowered_ops),
             "prob": max(
                 0.0,
                 min(1.0, float(config.dynamic_template_candidate_prob)),
@@ -735,7 +739,7 @@ def generate_layer_graph(
             # Only need to track node IDs added and metadata changes.
             prev_next_id = graph._next_id
             prev_output_id = graph._output_node_id
-            prev_metadata = dict(graph.metadata)
+            prev_metadata = copy.deepcopy(graph.metadata)
             graph._cache.clear()
 
             # Phase B.2 — propagate the dynamic-slot flag through metadata so the
@@ -1145,6 +1149,7 @@ def _depth_adjusted_template_weights(
     n_templates: int,
 ) -> TemplateWeightOverrides:
     """Return cached depth-adjusted template weights for native selection."""
+    # guardrail: allow-complexity - cached metadata transform over template weights.
     cache_key = (id(weights), int(t_idx), int(n_templates))
     cached = _DEPTH_WEIGHT_CACHE.get(cache_key)
     if cached is not None and cached[0] is weights:

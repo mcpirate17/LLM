@@ -20,8 +20,9 @@ def _candidate(
     *,
     promotion_score: float = 4.0,
     validated: bool = True,
+    component_descriptor: dict | None = None,
 ) -> dict:
-    return {
+    out = {
         "proposed_template_name": name,
         "chain": chain,
         "n_total": 16,
@@ -34,6 +35,9 @@ def _candidate(
             "backward_passed": validated,
         },
     }
+    if component_descriptor is not None:
+        out["component_descriptor"] = component_descriptor
+    return out
 
 
 def _write_candidates(path: Path, candidates: list[dict]) -> Path:
@@ -48,33 +52,83 @@ def test_dynamic_template_loader_filters_and_unique_ids(tmp_path: Path) -> None:
     artifact = _write_candidates(
         tmp_path / "validated.json",
         [
-            _candidate("mined_relu_variant_block", ["relu", "add"], promotion_score=9),
-            _candidate("mined_relu_variant_block", ["relu", "mul"], promotion_score=5),
+            _candidate(
+                "mined_relu_variant_block",
+                ["linear_proj", "relu", "add"],
+                promotion_score=9,
+            ),
+            _candidate(
+                "mined_relu_variant_block",
+                ["linear_proj", "relu", "mul"],
+                promotion_score=5,
+                component_descriptor={"has_multi_mixer": False},
+            ),
             _candidate(
                 "bad_terminal_signal",
-                ["relu", "token_class_proj"],
+                ["linear_proj", "relu", "token_class_proj"],
                 promotion_score=50,
             ),
             _candidate("bad_unknown", ["missing_op"], promotion_score=99),
-            _candidate("bad_unvalidated", ["relu"], validated=False),
+            _candidate("bad_unvalidated", ["linear_proj", "relu"], validated=False),
         ],
     )
 
-    candidates = load_dynamic_template_candidates(artifact, max_candidates=8)
+    candidates = load_dynamic_template_candidates(
+        artifact, max_candidates=8, min_lowered_ops=1
+    )
 
     assert len(candidates) == 2
     assert candidates[0].weight == 9
     assert candidates[0].template_id.startswith("dynamic_mined_relu_variant_block_")
     assert candidates[0].template_id != candidates[1].template_id
-    assert candidates[0].chain == ("relu", "add")
+    assert candidates[0].chain == ("linear_proj", "relu", "add")
+    assert candidates[0].lowered_op_count == 4
+    assert candidates[1].component_descriptor == {"has_multi_mixer": False}
+
+
+def test_dynamic_template_loader_rejects_micro_chains_by_default(
+    tmp_path: Path,
+) -> None:
+    artifact = _write_candidates(
+        tmp_path / "validated.json",
+        [_candidate("micro_chain", ["linear_proj", "relu", "add"])],
+    )
+
+    assert load_dynamic_template_candidates(artifact) == ()
 
 
 def test_dynamic_template_lowering_records_metadata(tmp_path: Path) -> None:
     artifact = _write_candidates(
         tmp_path / "validated.json",
-        [_candidate("chain_block", ["relu", "add", "layernorm"])],
+        [
+            _candidate(
+                "chain_block",
+                ["linear_proj", "relu", "add", "layernorm"],
+                component_descriptor={
+                    "has_multi_mixer": False,
+                    "slot_plan": [
+                        {
+                            "slot_index": 0,
+                            "slot_classes": ["dynamic_role:project", "dynamic_step"],
+                        },
+                        {
+                            "slot_index": 1,
+                            "slot_classes": ["dynamic_role:activate", "dynamic_step"],
+                        },
+                        {
+                            "slot_index": 2,
+                            "slot_classes": ["dynamic_role:residual", "dynamic_step"],
+                        },
+                        {
+                            "slot_index": 3,
+                            "slot_classes": ["dynamic_role:normalize", "dynamic_step"],
+                        },
+                    ],
+                },
+            )
+        ],
     )
-    candidate = load_dynamic_template_candidates(artifact)[0]
+    candidate = load_dynamic_template_candidates(artifact, min_lowered_ops=1)[0]
     graph = ComputationGraph(model_dim=64)
     input_id = graph.add_input()
 
@@ -85,19 +139,32 @@ def test_dynamic_template_lowering_records_metadata(tmp_path: Path) -> None:
     assert tail in graph.nodes
     assert graph.metadata["templates_used"] == [candidate.template_id]
     assert graph.metadata["dynamic_templates_used"][0]["chain"] == [
+        "linear_proj",
         "relu",
         "add",
         "layernorm",
     ]
+    assert (
+        graph.metadata["dynamic_templates_used"][0]["component_descriptor"][
+            "has_multi_mixer"
+        ]
+        is False
+    )
     slots = graph.metadata["template_slot_usage"]
-    assert [slot["selected_motif"] for slot in slots] == ["relu", "add", "layernorm"]
-    assert slots[1]["selected_motif_class"] == "dynamic_op_arity2"
+    assert [slot["selected_motif"] for slot in slots] == [
+        "linear_proj",
+        "relu",
+        "add",
+        "layernorm",
+    ]
+    assert slots[0]["slot_classes"] == ["dynamic_role:project", "dynamic_step"]
+    assert slots[2]["selected_motif_class"] == "dynamic_op_arity2"
 
 
 def test_generate_layer_graph_can_use_dynamic_candidates(tmp_path: Path) -> None:
     artifact = _write_candidates(
         tmp_path / "validated.json",
-        [_candidate("chain_block", ["relu", "add", "layernorm"])],
+        [_candidate("chain_block", ["linear_proj", "relu", "add", "layernorm"])],
     )
     config = GrammarConfig(
         model_dim=64,
@@ -108,6 +175,7 @@ def test_generate_layer_graph_can_use_dynamic_candidates(tmp_path: Path) -> None
         use_dynamic_template_candidates=True,
         dynamic_template_candidate_path=str(artifact),
         dynamic_template_candidate_prob=1.0,
+        dynamic_template_min_lowered_ops=1,
         residual_prob=0.0,
         freq_domain_prob=0.0,
     )
@@ -118,6 +186,7 @@ def test_generate_layer_graph_can_use_dynamic_candidates(tmp_path: Path) -> None
     assert used[0]["display_name"] == "chain_block"
     assert graph.metadata["templates_used"][0] == used[0]["template_id"]
     assert graph.metadata["dynamic_template_candidates"]["count"] == 1
+    assert graph.metadata["dynamic_template_candidates"]["min_lowered_ops"] == 1
 
 
 def test_dynamic_template_config_fields_round_trip() -> None:
@@ -127,6 +196,7 @@ def test_dynamic_template_config_fields_round_trip() -> None:
         dynamic_template_candidate_prob=0.35,
         dynamic_template_candidate_strength=0.75,
         dynamic_template_max_candidates=7,
+        dynamic_template_min_lowered_ops=9,
     )
 
     reconstructed = RunConfig.from_dict(config.to_dict())
@@ -136,6 +206,7 @@ def test_dynamic_template_config_fields_round_trip() -> None:
     assert reconstructed.dynamic_template_candidate_prob == 0.35
     assert reconstructed.dynamic_template_candidate_strength == 0.75
     assert reconstructed.dynamic_template_max_candidates == 7
+    assert reconstructed.dynamic_template_min_lowered_ops == 9
 
 
 def test_runtime_context_reloads_dynamic_candidates_when_artifact_changes(
@@ -147,18 +218,19 @@ def test_runtime_context_reloads_dynamic_candidates_when_artifact_changes(
         _write_candidates(artifact, [_candidate(name, chain, promotion_score=1)])
         os.utime(artifact, ns=(mtime_ns, mtime_ns))
 
-    write_candidates("chain_a", ["relu"], 1_000_000_000)
+    write_candidates("chain_a", ["linear_proj", "relu"], 1_000_000_000)
     config = GrammarConfig(
         use_db_weights=False,
         use_dynamic_template_candidates=True,
         dynamic_template_candidate_path=str(artifact),
         dynamic_template_candidate_prob=1.0,
+        dynamic_template_min_lowered_ops=1,
     )
 
     first = runtime_context_for_config(config)
     assert first.dynamic_template_candidates[0].display_name == "chain_a"
 
-    write_candidates("chain_b", ["gelu"], 2_000_000_000)
+    write_candidates("chain_b", ["linear_proj", "gelu"], 2_000_000_000)
     second = runtime_context_for_config(config)
     assert second.dynamic_template_candidates[0].display_name == "chain_b"
 
@@ -168,10 +240,11 @@ def test_dynamic_candidate_choice_can_be_uniform(tmp_path: Path) -> None:
         _write_candidates(
             tmp_path / "validated.json",
             [
-                _candidate("high", ["relu"], promotion_score=100),
-                _candidate("low", ["gelu"], promotion_score=1),
+                _candidate("high", ["linear_proj", "relu"], promotion_score=100),
+                _candidate("low", ["linear_proj", "gelu"], promotion_score=1),
             ],
-        )
+        ),
+        min_lowered_ops=1,
     )
 
     draws = {

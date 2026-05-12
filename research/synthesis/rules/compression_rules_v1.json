@@ -1,0 +1,29 @@
+{
+  "schema_version": "compression_rules_v1",
+  "description": "Compression and restore rules for dynamic nanoscale components.",
+  "compression_ops": [
+    "latent_attention_compressor",
+    "signal_conditioned_compression",
+    "dual_compression_blend",
+    "adjacent_token_merge",
+    "sparse_bottleneck_moe",
+    "bottleneck_proj",
+    "linear_proj_down",
+    "low_rank_proj",
+    "adaptive_rank_gate"
+  ],
+  "restore_ops": [
+    "linear_proj",
+    "linear_proj_up",
+    "bottleneck_proj_up",
+    "gated_proj_up",
+    "grouped_linear",
+    "shared_basis_proj",
+    "swiglu_mlp",
+    "tied_proj",
+    "add",
+    "concat"
+  ],
+  "must_restore_before_terminal": true,
+  "max_unrestored_tail_distance": 4
+}

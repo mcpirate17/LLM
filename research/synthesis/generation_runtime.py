@@ -21,7 +21,7 @@ from .dynamic_template_registry import load_dynamic_template_candidates
 from .routing_decision_priors import load_routing_decision_priors
 
 _DEFAULT_DYNAMIC_TEMPLATE_CANDIDATE_PATH = (
-    "research/notes/validated_template_candidates.json"
+    "research/notes/dynamic_component_candidates.json"
 )
 
 
@@ -223,6 +223,7 @@ def _runtime_context_cache_key(config: Any) -> tuple[Any, ...]:
         float(getattr(config, "dynamic_template_candidate_prob", 0.0) or 0.0),
         float(getattr(config, "dynamic_template_candidate_strength", 1.0) or 0.0),
         int(getattr(config, "dynamic_template_max_candidates", 32) or 0),
+        int(getattr(config, "dynamic_template_min_lowered_ops", 8) or 0),
     )
 
 
@@ -261,6 +262,7 @@ def build_generation_runtime_context(config: Any) -> GenerationRuntimeContext:
                 _DEFAULT_DYNAMIC_TEMPLATE_CANDIDATE_PATH,
             ),
             max_candidates=getattr(config, "dynamic_template_max_candidates", 32),
+            min_lowered_ops=getattr(config, "dynamic_template_min_lowered_ops", 8),
         )
     return GenerationRuntimeContext(
         tpl_weights=tpl_weights,

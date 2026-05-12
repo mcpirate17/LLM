@@ -782,7 +782,7 @@ class _ExecutionCandidatesMixin:
             dynamic_template_candidate_path=getattr(
                 config,
                 "dynamic_template_candidate_path",
-                "research/notes/validated_template_candidates.json",
+                "research/notes/dynamic_component_candidates.json",
             ),
             dynamic_template_candidate_prob=getattr(
                 config, "dynamic_template_candidate_prob", 0.10
@@ -792,6 +792,9 @@ class _ExecutionCandidatesMixin:
             ),
             dynamic_template_max_candidates=getattr(
                 config, "dynamic_template_max_candidates", 32
+            ),
+            dynamic_template_min_lowered_ops=getattr(
+                config, "dynamic_template_min_lowered_ops", 8
             ),
         )
         if config.category_weights:

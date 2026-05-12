@@ -1,0 +1,15 @@
+{
+  "schema_version": "recursion_rules_v1",
+  "description": "Recursion placement rules for dynamic component chains.",
+  "recursion_ops": [
+    "fixed_point_iter",
+    "mixture_of_recursions",
+    "depth_gated_transform",
+    "score_depth_blend",
+    "depth_weighted_proj"
+  ],
+  "required_predecessor_roles": ["normalize", "route", "project", "mix"],
+  "required_successor_roles": ["normalize", "project", "mix", "activate"],
+  "max_recursion_ops_per_component": 1,
+  "allow_terminal_recursion": false
+}

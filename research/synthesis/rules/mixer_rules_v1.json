@@ -1,0 +1,26 @@
+{
+  "schema_version": "mixer_rules_v1",
+  "description": "Mixer composition rules for mined dynamic components.",
+  "max_consecutive_mixers": 2,
+  "preferred_multi_mixer_pairs": [
+    ["difficulty_routed_attention", "state_space"],
+    ["local_window_attn", "selective_scan"],
+    ["long_conv_hyena", "gated_linear_attention"],
+    ["latent_attention_compressor", "softmax_attention"],
+    ["softmax_attention", "state_space"],
+    ["softmax_attention", "selective_scan"],
+    ["latent_attention_compressor", "local_window_attn"],
+    ["latent_attention_compressor", "selective_scan"],
+    ["latent_attention_compressor", "spectral_filter"]
+  ],
+  "blocked_multi_mixer_pairs": [
+    ["selective_scan", "selective_scan"],
+    ["state_space", "state_space"],
+    ["softmax_attention", "softmax_attention"]
+  ],
+  "mixer_context_notes": {
+    "latent_attention_compressor": "Works best when followed by projection/conv/norm before another mixer.",
+    "selective_scan": "Good second mixer after local/compression structure; avoid immediate self-chaining.",
+    "spectral_filter": "Prefer residual/norm wrapping in generated descriptors."
+  }
+}

@@ -25,13 +25,20 @@ from ._template_helpers import (
     record_template_slot_binding,
     template_add_op,
 )
+from .component_rules import (
+    ComponentRuleConfig,
+    DEFAULT_MIN_LOWERED_OPS,
+    estimated_chain_lowered_op_count,
+    validate_component_op_chain,
+)
 from .graph import ComputationGraph
-from .primitives import PRIMITIVE_REGISTRY, get_wiring_rule
+from .primitives import PRIMITIVE_REGISTRY
 
 
 DEFAULT_DYNAMIC_TEMPLATE_CANDIDATE_PATH = Path(
-    "research/notes/validated_template_candidates.json"
+    "research/notes/dynamic_component_candidates.json"
 )
+DEFAULT_DYNAMIC_TEMPLATE_MIN_LOWERED_OPS = DEFAULT_MIN_LOWERED_OPS
 _MAX_SCORE_WEIGHT = 100.0
 _MIN_SCORE_WEIGHT = 0.05
 _MAX_EFFECTIVE_WEIGHT = 8.0
@@ -45,16 +52,19 @@ class DynamicTemplateCandidate:
     display_name: str
     chain: tuple[str, ...]
     weight: float
+    lowered_op_count: int
     source_path: str
     source: str = "validated_template_candidates"
     evidence: Mapping[str, Any] = field(default_factory=dict)
     validation: Mapping[str, Any] = field(default_factory=dict)
+    component_descriptor: Mapping[str, Any] = field(default_factory=dict)
 
 
 def load_dynamic_template_candidates(
     path: str | Path = DEFAULT_DYNAMIC_TEMPLATE_CANDIDATE_PATH,
     *,
     max_candidates: int = 32,
+    min_lowered_ops: int = DEFAULT_DYNAMIC_TEMPLATE_MIN_LOWERED_OPS,
     require_validated: bool = True,
 ) -> tuple[DynamicTemplateCandidate, ...]:
     """Load validated dynamic template candidates from a JSON artifact.
@@ -77,6 +87,7 @@ def load_dynamic_template_candidates(
             raw,
             index=index,
             source_path=str(artifact),
+            min_lowered_ops=min_lowered_ops,
             require_validated=require_validated,
         )
         if candidate is None:
@@ -89,10 +100,12 @@ def load_dynamic_template_candidates(
                 display_name=candidate.display_name,
                 chain=candidate.chain,
                 weight=candidate.weight,
+                lowered_op_count=candidate.lowered_op_count,
                 source_path=candidate.source_path,
                 source=candidate.source,
                 evidence=candidate.evidence,
                 validation=candidate.validation,
+                component_descriptor=candidate.component_descriptor,
             )
         seen_ids.add(template_id)
         candidates.append(candidate)
@@ -142,8 +155,10 @@ def apply_dynamic_template_candidate(
             "display_name": candidate.display_name,
             "chain": list(candidate.chain),
             "weight": float(candidate.weight),
+            "lowered_op_count": int(candidate.lowered_op_count),
             "source": candidate.source,
             "source_path": candidate.source_path,
+            "component_descriptor": dict(candidate.component_descriptor),
         }
     )
     prev_template = graph.metadata.get("_active_template")
@@ -169,13 +184,14 @@ def apply_dynamic_template_candidate(
                 prev_snapshot,
                 context=f"{name}.step{index}.{op_name}",
             )
+            slot_classes = _candidate_slot_classes(candidate, index)
             record_template_slot_binding(
                 graph,
                 template_name=name,
                 template_instance=template_instance,
                 slot_index=index,
                 slot_key=f"{name}[{template_instance}].step{index}",
-                slot_classes=("dynamic_step",),
+                slot_classes=slot_classes,
                 selected_name=op_name,
                 selected_class=(
                     f"dynamic_op_arity{PRIMITIVE_REGISTRY[op_name].n_inputs}"
@@ -236,6 +252,7 @@ def _coerce_candidate(
     *,
     index: int,
     source_path: str,
+    min_lowered_ops: int,
     require_validated: bool,
 ) -> DynamicTemplateCandidate | None:
     raw_validation = raw.get("validation")
@@ -243,9 +260,10 @@ def _coerce_candidate(
     if require_validated and not _candidate_is_validated(validation):
         return None
 
-    chain = _coerce_supported_chain(raw.get("chain"))
+    chain = _coerce_supported_chain(raw.get("chain"), min_lowered_ops=min_lowered_ops)
     if not chain:
         return None
+    lowered_op_count = estimated_chain_lowered_op_count(chain)
 
     display_name = str(raw.get("proposed_template_name") or "dynamic_template").strip()
     if not display_name:
@@ -257,9 +275,12 @@ def _coerce_candidate(
         display_name=display_name,
         chain=chain,
         weight=_candidate_weight(raw),
+        lowered_op_count=lowered_op_count,
         source_path=source_path,
+        source=str(raw.get("source") or "dynamic_component_candidates"),
         evidence=evidence,
         validation=dict(validation),
+        component_descriptor=_candidate_component_descriptor(raw),
     )
 
 
@@ -271,25 +292,20 @@ def _candidate_is_validated(validation: Mapping[str, Any]) -> bool:
     )
 
 
-def _coerce_supported_chain(value: Any) -> tuple[str, ...]:
+def _coerce_supported_chain(value: Any, *, min_lowered_ops: int) -> tuple[str, ...]:
     if not isinstance(value, Iterable) or isinstance(value, (str, bytes)):
         return ()
-    chain: list[str] = []
-    for raw_op in value:
-        op_name = str(raw_op)
-        prim = PRIMITIVE_REGISTRY.get(op_name)
-        if prim is None or prim.n_inputs not in (1, 2):
-            return ()
-        chain.append(op_name)
-    if chain and _op_requires_restricted_consumer(chain[-1]):
+    chain = tuple(str(raw_op) for raw_op in value)
+    violations = validate_component_op_chain(
+        chain,
+        config=ComponentRuleConfig(
+            min_lowered_ops=int(min_lowered_ops),
+            min_distinct_roles=1,
+        ),
+    )
+    if violations:
         return ()
-    return tuple(chain)
-
-
-def _op_requires_restricted_consumer(op_name: str) -> bool:
-    """Return True when an op cannot safely be a reusable template tail."""
-    rule = get_wiring_rule(op_name)
-    return bool(rule and rule.get("valid_consumers"))
+    return chain
 
 
 def _unique_template_id(display_name: str, chain: tuple[str, ...], index: int) -> str:
@@ -310,8 +326,39 @@ def _candidate_evidence(raw: Mapping[str, Any]) -> dict[str, Any]:
         "promotion_score",
         "cohort_pass_rate",
         "chain_length",
+        "lowered_op_count",
+        "mean_loss_ratio",
     )
     return {key: raw[key] for key in keys if key in raw}
+
+
+def _candidate_component_descriptor(raw: Mapping[str, Any]) -> dict[str, Any]:
+    descriptor = raw.get("component_descriptor")
+    return dict(descriptor) if isinstance(descriptor, Mapping) else {}
+
+
+def _candidate_slot_classes(
+    candidate: DynamicTemplateCandidate,
+    index: int,
+) -> tuple[str, ...]:
+    descriptor = candidate.component_descriptor
+    slot_plan = descriptor.get("slot_plan") if isinstance(descriptor, Mapping) else None
+    if isinstance(slot_plan, Sequence) and not isinstance(slot_plan, (str, bytes)):
+        for item in slot_plan:
+            if not isinstance(item, Mapping):
+                continue
+            try:
+                slot_index = int(item.get("slot_index"))
+            except (TypeError, ValueError):
+                continue
+            if slot_index != index:
+                continue
+            classes = item.get("slot_classes")
+            if isinstance(classes, Sequence) and not isinstance(classes, (str, bytes)):
+                out = tuple(str(cls) for cls in classes if str(cls))
+                if out:
+                    return out
+    return ("dynamic_step",)
 
 
 def _candidate_weight(raw: Mapping[str, Any]) -> float:
@@ -341,6 +388,7 @@ def _candidate_selection_weights(
     *,
     strength: float,
 ) -> list[float]:
+    # guardrail: allow-complexity - bounded candidate pool (default max 32).
     clamped_strength = max(0.0, float(strength))
     raw_scores = [
         max(_MIN_SCORE_WEIGHT, min(_MAX_SCORE_WEIGHT, float(candidate.weight)))

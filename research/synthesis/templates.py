@@ -12,6 +12,7 @@ Template implementations live in submodules:
 
 from __future__ import annotations
 
+import copy
 import random
 from typing import TYPE_CHECKING, Dict, Iterable, Optional, Tuple
 
@@ -550,7 +551,7 @@ def apply_template(
     prev_next_id = graph._next_id
     prev_output_id = graph._output_node_id
     prev_ir_version = graph._ir_version
-    prev_metadata = dict(graph.metadata)
+    prev_metadata = copy.deepcopy(graph.metadata)
 
     was_exploration = False
     if template_name and template_name in TEMPLATES:
