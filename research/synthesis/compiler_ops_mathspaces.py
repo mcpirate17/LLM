@@ -261,6 +261,12 @@ def _op_pq_embedding(module, inputs, config):
     return execute_pq_embedding(module, inputs[0])
 
 
+def _op_mlstm_cell(module, inputs, config):
+    from ..mathspaces.mlstm import execute_mlstm_cell
+
+    return execute_mlstm_cell(module, inputs[0])
+
+
 # ── p-adic ops ──
 
 
@@ -454,4 +460,5 @@ OP_IMPLS: Dict[str, Callable] = {
     "tree_mix": _op_tree_mix,
     "mla_attention": _op_mla_attention,
     "pq_embedding": _op_pq_embedding,
+    "mlstm_cell": _op_mlstm_cell,
 }

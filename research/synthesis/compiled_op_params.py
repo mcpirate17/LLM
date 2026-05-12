@@ -172,6 +172,7 @@ class CompiledOpParamInitMixin:
             "tree_mix": lambda: self._init_tree_mix(config, d_in),
             "mla_attention": lambda: self._init_mla_attention(config, d_in),
             "pq_embedding": lambda: self._init_pq_embedding(config, d_in),
+            "mlstm_cell": lambda: self._init_mlstm_cell(config, d_in),
             "swiglu_mlp": lambda: self._init_swiglu_mlp(config, d_in),
             "rwkv_channel": lambda: self._init_rwkv_channel(config, d_in),
             "softmax_attention": lambda: self._init_attention_stack(
@@ -409,6 +410,29 @@ class CompiledOpParamInitMixin:
         self.codebooks = nn.Parameter(torch.randn(m, k, sub_dim) * 0.02)
         # Temperature knob (also adjustable from config).
         self.pq_tau = float(config.get("tau", 1.0)) if config else 1.0
+
+    def _init_mlstm_cell(self, config: Dict, d_in: int) -> None:
+        """mLSTM (matrix-memory LSTM) parameters (research §1.5).
+
+        Three projections (W_q, W_k, W_v) feed the per-token query/key/value;
+        W_o is the per-feature output gate; w_i, w_f are scalar input/forget
+        gate projections. All projections use 0.02-std init matching the
+        surrounding attention/SSM ops; gate biases are initialised so
+        forget≈1 and input≈0 — this makes the first few training steps look
+        like a pure-passthrough state (zero state, slow leak), which is the
+        stable starting point used in the xLSTM paper.
+        """
+        _ = config  # mLSTM cell has no tuned hyperparams at this granularity.
+        self.W_q = nn.Parameter(torch.randn(d_in, d_in) * 0.02)
+        self.W_k = nn.Parameter(torch.randn(d_in, d_in) * 0.02)
+        self.W_v = nn.Parameter(torch.randn(d_in, d_in) * 0.02)
+        self.W_o = nn.Parameter(torch.randn(d_in, d_in) * 0.02)
+        self.w_i = nn.Parameter(torch.randn(d_in) * 0.02)
+        self.w_f = nn.Parameter(torch.randn(d_in) * 0.02)
+        # Bias init: forget≈sigmoid(2)≈0.88, input≈sigmoid(-2)≈0.12, output≈sigmoid(0)=0.5.
+        self.b_i = nn.Parameter(torch.full((), -2.0))
+        self.b_f = nn.Parameter(torch.full((), 2.0))
+        self.b_o = nn.Parameter(torch.zeros(d_in))
 
     def _init_swiglu_mlp(self, config: Dict, d_in: int) -> None:
         hidden = int(d_in * float(config.get("mlp_ratio", 3.0)))

@@ -33,6 +33,8 @@ from ._templates_core import tpl_residual_block
 from ._templates_new_substrate import (  # noqa: F401
     tpl_mla_block,
     tpl_mla_sparse_ffn_block,
+    tpl_mlstm_block,
+    tpl_mlstm_sparse_ffn_block,
     tpl_pq_embedding_block,
     tpl_pq_embedding_moe_block,
     tpl_tree_mix_attention_block,

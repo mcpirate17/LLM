@@ -271,6 +271,74 @@ def tpl_pq_embedding_moe_block(
         return processed
 
 
+def tpl_mlstm_block(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """norm → mlstm_cell → linear_proj → [FFN] → residual.
+
+    Bare-cell template for the xLSTM matrix-memory recurrence (research §1.5).
+    The cell maintains a (D, D) outer-product state addressed by per-token
+    queries; the post-cell linear_proj reshapes the retrieved vector before
+    the standard FFN tail and residual.
+    """
+    D = graph.model_dim
+    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
+    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
+
+    try:
+        cell = graph.add_op("mlstm_cell", [normed])
+        out = graph.add_op("linear_proj", [cell], config={"out_dim": D})
+    except (ValueError, KeyError):
+        return tpl_residual_block(graph, input_id, rng, weights)
+
+    ffn = _pick_compatible_motif_from_classes(
+        graph, out, rng, list(_FFN_CLASSES), weights
+    )
+    processed = _instantiate_motif(graph, out, ffn, rng) if ffn else out
+    processed = _fix_dim(graph, processed)
+    try:
+        return graph.add_op("add", [input_id, processed])
+    except ValueError:
+        return processed
+
+
+def tpl_mlstm_sparse_ffn_block(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """norm → mlstm_cell → linear_proj → CONV/FFN motif → residual.
+
+    Fuses the mLSTM matrix-memory cell with the latent_attn_sparse_ffn
+    winner motif's tightened FFN slot (CONV + FFN). Pairs the novel
+    state form with the empirically-best post-mixer FFN cohort, matching
+    the substrate-fusion hypothesis from handoff_2026-05-11.
+    """
+    D = graph.model_dim
+    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
+    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
+
+    try:
+        cell = graph.add_op("mlstm_cell", [normed])
+        out = graph.add_op("linear_proj", [cell], config={"out_dim": D})
+    except (ValueError, KeyError):
+        return tpl_residual_block(graph, input_id, rng, weights)
+
+    ffn = _pick_compatible_motif_from_classes(
+        graph, out, rng, list(_SPARSE_FFN_CLASSES), weights
+    )
+    processed = _instantiate_motif(graph, out, ffn, rng) if ffn else out
+    processed = _fix_dim(graph, processed)
+    try:
+        return graph.add_op("add", [input_id, processed])
+    except ValueError:
+        return processed
+
+
 def tpl_tree_mix_attention_block(
     graph: ComputationGraph,
     input_id: int,

@@ -17,6 +17,7 @@ from . import tropical_routing
 from . import tree_mix as _tree_mix_mod  # noqa: F401 — used in register_all_mathspaces
 from . import mla as _mla_mod  # noqa: F401 — used in register_all_mathspaces
 from . import pq_embedding as _pq_emb_mod  # noqa: F401 — used in register_all_mathspaces
+from . import mlstm as _mlstm_mod  # noqa: F401 — used in register_all_mathspaces
 
 
 def register_all_mathspaces():
@@ -209,6 +210,22 @@ def register_all_mathspaces():
         description="Product-quantized embedding: split D into M subspaces of D/M, each with K learnable codebook centroids; per-subspace softmax assignment then weighted reconstruction. Compression-style learned quantization.",
     )
     op = _with_execute(op, _pq_emb_mod.execute_pq_embedding)
+    register_external_primitive(op)
+
+    # Phase 5e (2026-05-11) — Matrix-memory LSTM cell (xLSTM/mLSTM, research §1.5).
+    # Recurrent state is a (D, D) matrix updated by a key-value outer product.
+    # Novel state form: complements diagonal SSMs (Mamba/S5) and cross-token
+    # attention. Used by tpl_mlstm_block / tpl_mlstm_sparse_ffn_block.
+    op = PrimitiveOp(
+        name="mlstm_cell",
+        category=OpCategory.MATH_SPACE,
+        n_inputs=1,
+        shape_rule="identity",
+        has_params=True,
+        param_formula="4*D*D + 2*D",  # W_q, W_k, W_v, W_o + scalar gate vectors
+        description="Matrix-memory LSTM cell: recurrent state is a (D, D) outer-product accumulator addressed by per-token queries. Per-token compute is (4*D + 2)·D multiply-add; backward via autograd.",
+    )
+    op = _with_execute(op, _mlstm_mod.execute_mlstm_cell)
     register_external_primitive(op)
 
     # ── p-adic ──

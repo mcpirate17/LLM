@@ -57,6 +57,7 @@ FUSED_SUBSTRATE_TEMPLATES = (
     "mla_sparse_ffn_block",
     "pq_embedding_moe_block",
     "tree_mix_attention_block",
+    "mlstm_sparse_ffn_block",
 )
 
 # Each template's required primitive — verifies the builder didn't
@@ -65,6 +66,7 @@ TEMPLATE_REQUIRED_OPS = {
     "mla_sparse_ffn_block": "mla_attention",
     "pq_embedding_moe_block": "pq_embedding",
     "tree_mix_attention_block": "tree_mix",
+    "mlstm_sparse_ffn_block": "mlstm_cell",
 }
 
 

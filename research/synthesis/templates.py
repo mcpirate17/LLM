@@ -75,9 +75,11 @@ COMPONENT_GRAPH_EXEMPT_TEMPLATE_PREFIXES = (
     "attn_",
     "diff_attn_",
     "graph_attn_",
+    "graph_attention_",
     "latent_attn_",
     "linear_attn_",
     "local_attn_",
+    "local_attention_",
 )
 
 COMPONENT_GRAPH_EXEMPT_TEMPLATES = frozenset(
@@ -167,6 +169,10 @@ COMPONENT_GRAPH_EXEMPT_TEMPLATES = frozenset(
         "sparse_24_linear_block",
         # Phase 5 V2 (2026-05-04) — Clifford companion ops template
         "geometric_product_versor_block",
+        # Nanoscale substrate routing template covered by template smoke and
+        # routing-capable manifest tests rather than a dedicated component
+        # graph entry.
+        "pq_embedding_moe_block",
     }
 )
 
@@ -271,6 +277,8 @@ from ._templates_exotic import (  # noqa: F401
     tpl_mla_block,
     tpl_pq_embedding_block,
     tpl_mla_sparse_ffn_block,
+    tpl_mlstm_block,
+    tpl_mlstm_sparse_ffn_block,
     tpl_pq_embedding_moe_block,
     tpl_tree_mix_attention_block,
     tpl_gated_minimum,
@@ -332,6 +340,9 @@ TEMPLATES: Dict[str, TemplateFn] = {
     "mla_sparse_ffn_block": tpl_mla_sparse_ffn_block,
     "pq_embedding_moe_block": tpl_pq_embedding_moe_block,
     "tree_mix_attention_block": tpl_tree_mix_attention_block,
+    # mLSTM (handoff item E) — matrix-memory recurrence. Bare + fused variants.
+    "mlstm_block": tpl_mlstm_block,
+    "mlstm_sparse_ffn_block": tpl_mlstm_sparse_ffn_block,
     "geometric_product_block": tpl_geometric_product_block,
     "geometric_product_versor_block": tpl_geometric_product_versor_block,
     "gated_maximum": tpl_gated_maximum,
@@ -405,6 +416,10 @@ DEFAULT_TEMPLATE_WEIGHTS: Dict[str, float] = {
     "mla_sparse_ffn_block": 4.0,
     "pq_embedding_moe_block": 4.0,
     "tree_mix_attention_block": 3.5,
+    # mLSTM templates start at peer-weight (4.0 fused, 3.0 bare).
+    # Bayesian shrinkage handles the empirical bootstrap from n=0.
+    "mlstm_block": 3.0,
+    "mlstm_sparse_ffn_block": 4.0,
     "geometric_product_block": 1.5,
     "geometric_product_versor_block": 3.0,
     "gated_maximum": 1.5,
