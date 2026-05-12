@@ -270,6 +270,9 @@ from ._templates_exotic import (  # noqa: F401
     tpl_tree_mix_block,
     tpl_mla_block,
     tpl_pq_embedding_block,
+    tpl_mla_sparse_ffn_block,
+    tpl_pq_embedding_moe_block,
+    tpl_tree_mix_attention_block,
     tpl_gated_minimum,
     tpl_spiking_residual_block,
     tpl_spiking_moe_block,
@@ -323,6 +326,12 @@ TEMPLATES: Dict[str, TemplateFn] = {
     "tree_mix_block": tpl_tree_mix_block,
     "mla_block": tpl_mla_block,
     "pq_embedding_block": tpl_pq_embedding_block,
+    # Fused-substrate templates (2026-05-11) — new primitives paired with
+    # the empirical winner motif slot constraints. Substrate-fusion
+    # hypothesis from handoff_2026-05-11.
+    "mla_sparse_ffn_block": tpl_mla_sparse_ffn_block,
+    "pq_embedding_moe_block": tpl_pq_embedding_moe_block,
+    "tree_mix_attention_block": tpl_tree_mix_attention_block,
     "geometric_product_block": tpl_geometric_product_block,
     "geometric_product_versor_block": tpl_geometric_product_versor_block,
     "gated_maximum": tpl_gated_maximum,
@@ -388,6 +397,14 @@ DEFAULT_TEMPLATE_WEIGHTS: Dict[str, float] = {
     "tree_mix_block": 80.0,
     "mla_block": 80.0,
     "pq_embedding_block": 60.0,
+    # Fused-substrate templates (2026-05-11) — pair new primitives with
+    # winner-motif slot constraints. NOT inflated like the bare-primitive
+    # bumps above: the Bayesian shrinkage commit d8ecf88 removes the
+    # static-default-cliff workaround those bumps were compensating for.
+    # Default weight ~ peer winner templates (latent_attn_sparse_ffn=4.0).
+    "mla_sparse_ffn_block": 4.0,
+    "pq_embedding_moe_block": 4.0,
+    "tree_mix_attention_block": 3.5,
     "geometric_product_block": 1.5,
     "geometric_product_versor_block": 3.0,
     "gated_maximum": 1.5,

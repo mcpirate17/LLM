@@ -26,6 +26,20 @@ from ._template_helpers import (
 )
 from ._templates_core import tpl_residual_block
 
+# New-substrate templates (2026-05-10 / 2026-05-11) live in their own
+# module to keep this file under the 1250-line guardrail. Re-exported
+# here so existing `from ._templates_exotic import tpl_mla_block` etc.
+# call sites keep working.
+from ._templates_new_substrate import (  # noqa: F401
+    tpl_mla_block,
+    tpl_mla_sparse_ffn_block,
+    tpl_pq_embedding_block,
+    tpl_pq_embedding_moe_block,
+    tpl_tree_mix_attention_block,
+    tpl_tree_mix_block,
+    tpl_tropical_softmax_block,
+)
+
 
 # ── Binary-Op Safety Templates ───────────────────────────────────
 #
@@ -456,160 +470,6 @@ def tpl_tropical_matmul_block(
         proj_b = graph.add_op("linear_proj", [normed], config={"out_dim": D})
         result = graph.add_op("tropical_matmul", [proj_a, proj_b])
         projected = graph.add_op("linear_proj", [result], config={"out_dim": D})
-    except (ValueError, KeyError):
-        return tpl_residual_block(graph, input_id, rng, weights)
-
-    ffn = _pick_compatible_motif_from_classes(
-        graph, projected, rng, list(_FFN_CLASSES), weights
-    )
-    processed = _instantiate_motif(graph, projected, ffn, rng) if ffn else projected
-    processed = _fix_dim(graph, processed)
-    try:
-        return graph.add_op("add", [input_id, processed])
-    except ValueError:
-        return processed
-
-
-def tpl_tropical_softmax_block(
-    graph: ComputationGraph,
-    input_id: int,
-    rng: random.Random,
-    weights: MotifWeights = None,
-) -> int:
-    """norm → score_proj → tropical_softmax → mul(input) → proj → [FFN] → residual.
-
-    Uses the gradient-friendly softmin (tropical_softmax) as a per-token,
-    per-feature gating distribution: low scores get high mass. Drop-in for
-    sigmoid/softmax gating in tropical-flavored contexts.
-
-    Per external_research_2026-05-10.md §3.5 — tropical_softmax replaces
-    hard max with LogSumExp-temperature, preserving gradient flow.
-    """
-    D = graph.model_dim
-    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
-    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
-
-    try:
-        scores = graph.add_op("linear_proj", [normed], config={"out_dim": D})
-        gate = graph.add_op("tropical_softmax", [scores])
-        gated = graph.add_op("mul", [normed, gate])
-        projected = graph.add_op("linear_proj", [gated], config={"out_dim": D})
-    except (ValueError, KeyError):
-        return tpl_residual_block(graph, input_id, rng, weights)
-
-    ffn = _pick_compatible_motif_from_classes(
-        graph, projected, rng, list(_FFN_CLASSES), weights
-    )
-    processed = _instantiate_motif(graph, projected, ffn, rng) if ffn else projected
-    processed = _fix_dim(graph, processed)
-    try:
-        return graph.add_op("add", [input_id, processed])
-    except ValueError:
-        return processed
-
-
-def tpl_pq_embedding_block(
-    graph: ComputationGraph,
-    input_id: int,
-    rng: random.Random,
-    weights: MotifWeights = None,
-) -> int:
-    """norm → linear_proj → pq_embedding → linear_proj → [FFN] → residual.
-
-    Product-quantized embedding block (research §2.3). The linear_proj on
-    the input gives the codebook something flexible to quantize; the
-    post-pq linear_proj projects back out of the quantization basin.
-    """
-    D = graph.model_dim
-    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
-    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
-
-    try:
-        proj_in = graph.add_op("linear_proj", [normed], config={"out_dim": D})
-        pq = graph.add_op("pq_embedding", [proj_in])
-        proj_out = graph.add_op("linear_proj", [pq], config={"out_dim": D})
-    except (ValueError, KeyError):
-        return tpl_residual_block(graph, input_id, rng, weights)
-
-    ffn = _pick_compatible_motif_from_classes(
-        graph, proj_out, rng, list(_FFN_CLASSES), weights
-    )
-    processed = _instantiate_motif(graph, proj_out, ffn, rng) if ffn else proj_out
-    processed = _fix_dim(graph, processed)
-    try:
-        return graph.add_op("add", [input_id, processed])
-    except ValueError:
-        return processed
-
-
-def tpl_mla_block(
-    graph: ComputationGraph,
-    input_id: int,
-    rng: random.Random,
-    weights: MotifWeights = None,
-) -> int:
-    """norm → query_proj + kv_proj → mla_attention → out_proj → [FFN] → residual.
-
-    Multi-head latent attention (research §1.1). The query path stays
-    full-dim; the kv path is the shared-latent compression target. This
-    template is the canonical MLA-as-block synthesis pattern.
-    """
-    D = graph.model_dim
-    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
-    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
-
-    try:
-        q = graph.add_op("linear_proj", [normed], config={"out_dim": D})
-        kv = graph.add_op("linear_proj", [normed], config={"out_dim": D})
-        attn = graph.add_op("mla_attention", [q, kv])
-        out = graph.add_op("linear_proj", [attn], config={"out_dim": D})
-    except (ValueError, KeyError):
-        return tpl_residual_block(graph, input_id, rng, weights)
-
-    ffn = _pick_compatible_motif_from_classes(
-        graph, out, rng, list(_FFN_CLASSES), weights
-    )
-    processed = _instantiate_motif(graph, out, ffn, rng) if ffn else out
-    processed = _fix_dim(graph, processed)
-    try:
-        return graph.add_op("add", [input_id, processed])
-    except ValueError:
-        return processed
-
-
-def tpl_tree_mix_block(
-    graph: ComputationGraph,
-    input_id: int,
-    rng: random.Random,
-    weights: MotifWeights = None,
-) -> int:
-    """norm → 4 leaf projections → depth-2 binary tree of tree_mix nodes → proj → [FFN] → residual.
-
-    Balanced binary-tree feature mixer (research §2.1, "leafed layers").
-    Builds a depth-2 tree: 4 sibling linear projections of the normalized
-    input act as leaves, then 3 tree_mix nodes blend them pairwise up to
-    the root. Each tree_mix has its own learned sigmoid gate, so the
-    grammar gets per-level asymmetric mixing along a structural axis it
-    previously couldn't express.
-
-        leaves: a, b, c, d  (4 × linear_proj of the same norm)
-        level 1: ab = tree_mix(a, b)        cd = tree_mix(c, d)
-        level 2: root = tree_mix(ab, cd)
-    """
-    D = graph.model_dim
-    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
-    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
-
-    try:
-        # Four distinct leaf projections (each has its own params).
-        a = graph.add_op("linear_proj", [normed], config={"out_dim": D})
-        b = graph.add_op("linear_proj", [normed], config={"out_dim": D})
-        c = graph.add_op("linear_proj", [normed], config={"out_dim": D})
-        d = graph.add_op("linear_proj", [normed], config={"out_dim": D})
-        ab = graph.add_op("tree_mix", [a, b])
-        cd = graph.add_op("tree_mix", [c, d])
-        root = graph.add_op("tree_mix", [ab, cd])
-        projected = graph.add_op("linear_proj", [root], config={"out_dim": D})
     except (ValueError, KeyError):
         return tpl_residual_block(graph, input_id, rng, weights)
 
