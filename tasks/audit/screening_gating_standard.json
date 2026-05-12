@@ -1,0 +1,396 @@
+{
+  "variants": [
+    {
+      "variant": "train_only_no_post_eval",
+      "elapsed_ms": 8.582631002354901,
+      "compile_ms": 2.394066999841016,
+      "model_seed": 1702,
+      "train_seed": 901,
+      "passed": true,
+      "flags": {
+        "profile_disable_post_eval": true,
+        "skip_screening_wikitext": false,
+        "skip_screening_hellaswag": false,
+        "skip_screening_blimp": false,
+        "skip_binding_probes": false,
+        "skip_induction_probe": false,
+        "skip_binding_probe": false,
+        "skip_ar_probe": false,
+        "skip_ar_gate": false
+      },
+      "probe_timings_ms": {},
+      "top_timing_sources": [
+        {
+          "source": "perf_summary.backward_optimizer_step",
+          "elapsed_ms": 5.9808
+        },
+        {
+          "source": "perf_summary.forward_pass",
+          "elapsed_ms": 2.0354
+        },
+        {
+          "source": "perf_summary.model_setup",
+          "elapsed_ms": 0.1817
+        },
+        {
+          "source": "perf_summary.data_sampling",
+          "elapsed_ms": 0.0483
+        },
+        {
+          "source": "perf_summary.backward_pass",
+          "elapsed_ms": 0.0
+        },
+        {
+          "source": "perf_summary.optimizer_step",
+          "elapsed_ms": 0.0
+        }
+      ],
+      "post_eval_overhead_ms": 0.0,
+      "vs_current_saved_ms": 11881.61397199292
+    },
+    {
+      "variant": "language_no_blimp",
+      "elapsed_ms": 1698.8665259996196,
+      "compile_ms": 2.3913980039651506,
+      "model_seed": 1702,
+      "train_seed": 901,
+      "passed": true,
+      "flags": {
+        "profile_disable_post_eval": false,
+        "skip_screening_wikitext": false,
+        "skip_screening_hellaswag": false,
+        "skip_screening_blimp": true,
+        "skip_binding_probes": true,
+        "skip_induction_probe": false,
+        "skip_binding_probe": false,
+        "skip_ar_probe": true,
+        "skip_ar_gate": true
+      },
+      "probe_timings_ms": {
+        "screening_wikitext_elapsed_ms": 1074.3,
+        "screening_hellaswag_elapsed_ms": 615.1
+      },
+      "top_timing_sources": [
+        {
+          "source": "probe.screening_wikitext_elapsed_ms",
+          "elapsed_ms": 1074.3
+        },
+        {
+          "source": "probe.screening_hellaswag_elapsed_ms",
+          "elapsed_ms": 615.1
+        },
+        {
+          "source": "perf_summary.backward_optimizer_step",
+          "elapsed_ms": 5.9582
+        },
+        {
+          "source": "perf_summary.forward_pass",
+          "elapsed_ms": 2.0327
+        },
+        {
+          "source": "perf_summary.model_setup",
+          "elapsed_ms": 0.1785
+        },
+        {
+          "source": "perf_summary.data_sampling",
+          "elapsed_ms": 0.0468
+        },
+        {
+          "source": "perf_summary.backward_pass",
+          "elapsed_ms": 0.0
+        },
+        {
+          "source": "perf_summary.optimizer_step",
+          "elapsed_ms": 0.0
+        }
+      ],
+      "post_eval_overhead_ms": 1690.2838949972647,
+      "vs_current_saved_ms": 10191.330076995655
+    },
+    {
+      "variant": "language_only",
+      "elapsed_ms": 6160.885069002688,
+      "compile_ms": 2.4279670033138245,
+      "model_seed": 1702,
+      "train_seed": 901,
+      "passed": true,
+      "flags": {
+        "profile_disable_post_eval": false,
+        "skip_screening_wikitext": false,
+        "skip_screening_hellaswag": false,
+        "skip_screening_blimp": false,
+        "skip_binding_probes": true,
+        "skip_induction_probe": false,
+        "skip_binding_probe": false,
+        "skip_ar_probe": true,
+        "skip_ar_gate": true
+      },
+      "probe_timings_ms": {
+        "screening_wikitext_elapsed_ms": 70.6,
+        "screening_hellaswag_elapsed_ms": 15.8,
+        "blimp_elapsed_ms": 6065.7
+      },
+      "top_timing_sources": [
+        {
+          "source": "probe.blimp_elapsed_ms",
+          "elapsed_ms": 6065.7
+        },
+        {
+          "source": "probe.screening_wikitext_elapsed_ms",
+          "elapsed_ms": 70.6
+        },
+        {
+          "source": "probe.screening_hellaswag_elapsed_ms",
+          "elapsed_ms": 15.8
+        },
+        {
+          "source": "perf_summary.backward_optimizer_step",
+          "elapsed_ms": 5.0582
+        },
+        {
+          "source": "perf_summary.forward_pass",
+          "elapsed_ms": 2.0486
+        },
+        {
+          "source": "perf_summary.model_setup",
+          "elapsed_ms": 0.2018
+        },
+        {
+          "source": "perf_summary.data_sampling",
+          "elapsed_ms": 0.0584
+        },
+        {
+          "source": "perf_summary.backward_pass",
+          "elapsed_ms": 0.0
+        },
+        {
+          "source": "perf_summary.optimizer_step",
+          "elapsed_ms": 0.0
+        }
+      ],
+      "post_eval_overhead_ms": 6152.3024380003335,
+      "vs_current_saved_ms": 5729.311533992586
+    },
+    {
+      "variant": "binding_only_no_ar",
+      "elapsed_ms": 5789.162817003671,
+      "compile_ms": 3.0522360029863194,
+      "model_seed": 1702,
+      "train_seed": 901,
+      "passed": true,
+      "flags": {
+        "profile_disable_post_eval": false,
+        "skip_screening_wikitext": true,
+        "skip_screening_hellaswag": true,
+        "skip_screening_blimp": true,
+        "skip_binding_probes": false,
+        "skip_induction_probe": false,
+        "skip_binding_probe": false,
+        "skip_ar_probe": true,
+        "skip_ar_gate": true
+      },
+      "probe_timings_ms": {
+        "induction_screening_elapsed_ms": 1029.3,
+        "binding_screening_elapsed_ms": 51.8,
+        "binding_curriculum_elapsed_ms": 4697.1
+      },
+      "top_timing_sources": [
+        {
+          "source": "probe.binding_curriculum_elapsed_ms",
+          "elapsed_ms": 4697.1
+        },
+        {
+          "source": "probe.induction_screening_elapsed_ms",
+          "elapsed_ms": 1029.3
+        },
+        {
+          "source": "probe.binding_screening_elapsed_ms",
+          "elapsed_ms": 51.8
+        },
+        {
+          "source": "perf_summary.backward_optimizer_step",
+          "elapsed_ms": 5.5188
+        },
+        {
+          "source": "perf_summary.forward_pass",
+          "elapsed_ms": 2.6795
+        },
+        {
+          "source": "perf_summary.model_setup",
+          "elapsed_ms": 0.2437
+        },
+        {
+          "source": "perf_summary.data_sampling",
+          "elapsed_ms": 0.0725
+        },
+        {
+          "source": "perf_summary.backward_pass",
+          "elapsed_ms": 0.0
+        },
+        {
+          "source": "perf_summary.optimizer_step",
+          "elapsed_ms": 0.0
+        }
+      ],
+      "post_eval_overhead_ms": 5780.580186001316,
+      "vs_current_saved_ms": 6101.0337859916035
+    },
+    {
+      "variant": "binding_plus_ar_gate",
+      "elapsed_ms": 4874.741274994449,
+      "compile_ms": 2.807677003147546,
+      "model_seed": 1702,
+      "train_seed": 901,
+      "passed": true,
+      "flags": {
+        "profile_disable_post_eval": false,
+        "skip_screening_wikitext": true,
+        "skip_screening_hellaswag": true,
+        "skip_screening_blimp": true,
+        "skip_binding_probes": false,
+        "skip_induction_probe": false,
+        "skip_binding_probe": false,
+        "skip_ar_probe": true,
+        "skip_ar_gate": false
+      },
+      "probe_timings_ms": {
+        "induction_screening_elapsed_ms": 636.0,
+        "binding_screening_elapsed_ms": 50.4,
+        "binding_curriculum_elapsed_ms": 4114.1,
+        "ar_gate_elapsed_ms": 8.8
+      },
+      "top_timing_sources": [
+        {
+          "source": "probe.binding_curriculum_elapsed_ms",
+          "elapsed_ms": 4114.1
+        },
+        {
+          "source": "probe.induction_screening_elapsed_ms",
+          "elapsed_ms": 636.0
+        },
+        {
+          "source": "probe.binding_screening_elapsed_ms",
+          "elapsed_ms": 50.4
+        },
+        {
+          "source": "perf_summary.backward_optimizer_step",
+          "elapsed_ms": 41.6067
+        },
+        {
+          "source": "perf_summary.forward_pass",
+          "elapsed_ms": 20.1992
+        },
+        {
+          "source": "probe.ar_gate_elapsed_ms",
+          "elapsed_ms": 8.8
+        },
+        {
+          "source": "perf_summary.model_setup",
+          "elapsed_ms": 0.1936
+        },
+        {
+          "source": "perf_summary.data_sampling",
+          "elapsed_ms": 0.0545
+        },
+        {
+          "source": "perf_summary.backward_pass",
+          "elapsed_ms": 0.0
+        },
+        {
+          "source": "perf_summary.optimizer_step",
+          "elapsed_ms": 0.0
+        }
+      ],
+      "post_eval_overhead_ms": 4866.158643992094,
+      "vs_current_saved_ms": 7015.455328000826
+    },
+    {
+      "variant": "current",
+      "elapsed_ms": 11890.196602995275,
+      "compile_ms": 2.746566999121569,
+      "model_seed": 1702,
+      "train_seed": 901,
+      "passed": true,
+      "flags": {
+        "profile_disable_post_eval": false,
+        "skip_screening_wikitext": false,
+        "skip_screening_hellaswag": false,
+        "skip_screening_blimp": false,
+        "skip_binding_probes": false,
+        "skip_induction_probe": false,
+        "skip_binding_probe": false,
+        "skip_ar_probe": false,
+        "skip_ar_gate": false
+      },
+      "probe_timings_ms": {
+        "screening_wikitext_elapsed_ms": 64.1,
+        "screening_hellaswag_elapsed_ms": 14.8,
+        "blimp_elapsed_ms": 6069.4,
+        "induction_screening_elapsed_ms": 670.9,
+        "binding_screening_elapsed_ms": 50.4,
+        "binding_curriculum_elapsed_ms": 4955.5,
+        "ar_gate_elapsed_ms": 4.7
+      },
+      "top_timing_sources": [
+        {
+          "source": "probe.blimp_elapsed_ms",
+          "elapsed_ms": 6069.4
+        },
+        {
+          "source": "probe.binding_curriculum_elapsed_ms",
+          "elapsed_ms": 4955.5
+        },
+        {
+          "source": "probe.induction_screening_elapsed_ms",
+          "elapsed_ms": 670.9
+        },
+        {
+          "source": "probe.screening_wikitext_elapsed_ms",
+          "elapsed_ms": 64.1
+        },
+        {
+          "source": "probe.binding_screening_elapsed_ms",
+          "elapsed_ms": 50.4
+        },
+        {
+          "source": "perf_summary.forward_pass",
+          "elapsed_ms": 25.7808
+        },
+        {
+          "source": "perf_summary.backward_optimizer_step",
+          "elapsed_ms": 23.7637
+        },
+        {
+          "source": "probe.screening_hellaswag_elapsed_ms",
+          "elapsed_ms": 14.8
+        },
+        {
+          "source": "probe.ar_gate_elapsed_ms",
+          "elapsed_ms": 4.7
+        },
+        {
+          "source": "perf_summary.model_setup",
+          "elapsed_ms": 0.2031
+        },
+        {
+          "source": "perf_summary.data_sampling",
+          "elapsed_ms": 0.0536
+        },
+        {
+          "source": "perf_summary.backward_pass",
+          "elapsed_ms": 0.0
+        }
+      ],
+      "post_eval_overhead_ms": 11881.61397199292,
+      "vs_current_saved_ms": 0.0
+    }
+  ],
+  "baseline_variant": "train_only_no_post_eval",
+  "baseline_probe_passed": true,
+  "current_variant": "current",
+  "notes": {
+    "language_only": "WikiText + HellaSwag + BLiMP; binding/induction/AR disabled.",
+    "binding_only_no_ar": "Induction + zero-shot binding + curriculum binding; language and AR disabled.",
+    "binding_plus_ar_gate": "Binding-only schedule with AR gate enabled and legacy AR disabled."
+  }
+}

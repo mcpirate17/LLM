@@ -18,6 +18,7 @@ from ._template_helpers import (
     _instantiate_motif,
     _pick_compatible_motif,
     _pick_compatible_motif_from_classes,
+    record_routing_decision,
     record_template_slot_binding,
     sample_routing_choice,
     template_add_op as _add,
@@ -79,6 +80,15 @@ def tpl_intelligent_multilane_router(
         input_node_id=input_id,
     )
 
+    record_routing_decision(
+        graph,
+        template_name=template_name,
+        decision_key="gate_threshold",
+        value=0.5,
+        choices=(0.5,),
+        source="static_config",
+        context="intelligent_multilane_router.token_gate",
+    )
     gated = _add(
         graph,
         "hybrid_token_gate",
@@ -194,6 +204,38 @@ def tpl_intelligent_multilane_router(
         selected_class="component",
         input_node_id=gated,
     )
+
+    for span_width, context in (
+        (2, "intelligent_multilane_router.pair_router"),
+        (3, "intelligent_multilane_router.triplet_router"),
+    ):
+        record_routing_decision(
+            graph,
+            template_name=template_name,
+            decision_key=f"span{span_width}_span_width",
+            value=span_width,
+            choices=(span_width,),
+            source="static_config",
+            context=context,
+        )
+        record_routing_decision(
+            graph,
+            template_name=template_name,
+            decision_key=f"span{span_width}_lane_count",
+            value=span_width,
+            choices=(span_width,),
+            source="static_config",
+            context=context,
+        )
+        record_routing_decision(
+            graph,
+            template_name=template_name,
+            decision_key=f"span{span_width}_confidence_threshold",
+            value=0.55,
+            choices=(0.55,),
+            source="static_config",
+            context=context,
+        )
 
     pair_routed = _add(
         graph,

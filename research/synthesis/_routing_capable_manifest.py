@@ -50,6 +50,7 @@ ROUTING_CAPABLE_TEMPLATE_NAMES: FrozenSet[str] = frozenset(
         "multiscale_difficulty_router_adaptive_attn_ssm",
         "multiscale_rich_lane_router",
         "n_way_moe_block",
+        "pq_embedding_moe_block",
         "recursive_attn_ssm_depth",
         "recursive_attn_ssm_hybrid",
         "recursive_depth_router",

@@ -331,6 +331,24 @@ def tpl_hybrid_sparse_triplet_router(
         selected_class="component",
         input_node_id=gated,
     )
+    record_routing_decision(
+        graph,
+        template_name=template_name,
+        decision_key="span_width",
+        value=3,
+        choices=(3,),
+        source="static_config",
+        context="hybrid_sparse_triplet_router.sparse_span_builder",
+    )
+    record_routing_decision(
+        graph,
+        template_name=template_name,
+        decision_key="lane_count",
+        value=3,
+        choices=(3,),
+        source="static_config",
+        context="hybrid_sparse_triplet_router.lane_router",
+    )
     routed = _add(
         graph,
         "hybrid_sparse_router",
@@ -426,7 +444,11 @@ def tpl_multiscale_difficulty_router(
         graph,
         "hybrid_token_gate",
         [normed],
-        _multiscale_gate_config(),
+        _multiscale_gate_config(
+            graph=graph,
+            template_name=template_name,
+            context="multiscale_difficulty_router.token_gate",
+        ),
         context="multiscale_difficulty_router.token_gate",
     )
     gated_with_skip = _residual(
@@ -476,7 +498,12 @@ def tpl_multiscale_difficulty_router(
         graph,
         "hybrid_sparse_router",
         [gated],
-        _multiscale_sparse_router_config(2),
+        _multiscale_sparse_router_config(
+            2,
+            graph=graph,
+            template_name=template_name,
+            context="multiscale_difficulty_router.pair_router",
+        ),
         context="multiscale_difficulty_router.pair_router",
     )
     record_template_slot_binding(
@@ -494,7 +521,12 @@ def tpl_multiscale_difficulty_router(
         graph,
         "hybrid_sparse_router",
         [gated],
-        _multiscale_sparse_router_config(3),
+        _multiscale_sparse_router_config(
+            3,
+            graph=graph,
+            template_name=template_name,
+            context="multiscale_difficulty_router.triplet_router",
+        ),
         context="multiscale_difficulty_router.triplet_router",
     )
     record_template_slot_binding(
@@ -512,7 +544,12 @@ def tpl_multiscale_difficulty_router(
         graph,
         "hybrid_sparse_router",
         [gated],
-        _multiscale_sparse_router_config(4),
+        _multiscale_sparse_router_config(
+            4,
+            graph=graph,
+            template_name=template_name,
+            context="multiscale_difficulty_router.quartet_router",
+        ),
         context="multiscale_difficulty_router.quartet_router",
     )
     record_template_slot_binding(
@@ -545,7 +582,13 @@ def tpl_multiscale_difficulty_router(
         graph,
         medium_op,
         medium_inputs,
-        _next_multiscale_medium_config(medium_op, rng),
+        _next_multiscale_medium_config(
+            medium_op,
+            rng,
+            graph=graph,
+            template_name=template_name,
+            context="multiscale_difficulty_router.medium_core",
+        ),
         context="multiscale_difficulty_router.medium_core",
     )
     record_template_slot_binding(
@@ -616,6 +659,9 @@ def tpl_multiscale_difficulty_router(
             min_secondary_start=0.24,
             min_secondary_mid=0.2,
             min_secondary_end=0.16,
+            graph=graph,
+            template_name=template_name,
+            context="multiscale_difficulty_router.merge_medium",
         ),
         context="multiscale_difficulty_router.merge_medium",
     )
@@ -634,6 +680,9 @@ def tpl_multiscale_difficulty_router(
             max_secondary_start=0.1,
             max_secondary_mid=0.16,
             max_secondary_end=0.22,
+            graph=graph,
+            template_name=template_name,
+            context="multiscale_difficulty_router.merge_hard",
         ),
         context="multiscale_difficulty_router.merge_hard",
     )
@@ -709,7 +758,11 @@ def tpl_multiscale_difficulty_router_adaptive_attn_ssm(
         graph,
         "hybrid_token_gate",
         [normed],
-        _multiscale_gate_config(),
+        _multiscale_gate_config(
+            graph=graph,
+            template_name=template_name,
+            context="multiscale_difficulty_router_adaptive_attn_ssm.token_gate",
+        ),
         context="multiscale_difficulty_router_adaptive_attn_ssm.token_gate",
     )
     gate_bypass = _residual(
@@ -722,7 +775,12 @@ def tpl_multiscale_difficulty_router_adaptive_attn_ssm(
         graph,
         "hybrid_sparse_router",
         [gated],
-        _multiscale_sparse_router_config(2),
+        _multiscale_sparse_router_config(
+            2,
+            graph=graph,
+            template_name=template_name,
+            context="multiscale_difficulty_router_adaptive_attn_ssm.pair_router",
+        ),
         context="multiscale_difficulty_router_adaptive_attn_ssm.pair_router",
     )
     record_template_slot_binding(
@@ -740,7 +798,12 @@ def tpl_multiscale_difficulty_router_adaptive_attn_ssm(
         graph,
         "hybrid_sparse_router",
         [gated],
-        _multiscale_sparse_router_config(3),
+        _multiscale_sparse_router_config(
+            3,
+            graph=graph,
+            template_name=template_name,
+            context="multiscale_difficulty_router_adaptive_attn_ssm.triplet_router",
+        ),
         context="multiscale_difficulty_router_adaptive_attn_ssm.triplet_router",
     )
     record_template_slot_binding(
@@ -765,7 +828,13 @@ def tpl_multiscale_difficulty_router_adaptive_attn_ssm(
         graph,
         "adaptive_lane_mixer",
         [medium_pre, medium_pre],
-        _next_multiscale_medium_config("adaptive_lane_mixer", rng),
+        _next_multiscale_medium_config(
+            "adaptive_lane_mixer",
+            rng,
+            graph=graph,
+            template_name=template_name,
+            context="multiscale_difficulty_router_adaptive_attn_ssm.medium_core",
+        ),
         context="multiscale_difficulty_router_adaptive_attn_ssm.medium_core",
     )
     record_template_slot_binding(
@@ -845,6 +914,9 @@ def tpl_multiscale_difficulty_router_adaptive_attn_ssm(
             min_secondary_start=0.24,
             min_secondary_mid=0.2,
             min_secondary_end=0.16,
+            graph=graph,
+            template_name=template_name,
+            context="multiscale_difficulty_router_adaptive_attn_ssm.merge_medium",
         ),
         context="multiscale_difficulty_router_adaptive_attn_ssm.merge_medium",
     )
@@ -863,6 +935,9 @@ def tpl_multiscale_difficulty_router_adaptive_attn_ssm(
             max_secondary_start=0.1,
             max_secondary_mid=0.16,
             max_secondary_end=0.22,
+            graph=graph,
+            template_name=template_name,
+            context="multiscale_difficulty_router_adaptive_attn_ssm.merge_hard",
         ),
         context="multiscale_difficulty_router_adaptive_attn_ssm.merge_hard",
     )
@@ -923,7 +998,11 @@ def tpl_multiscale_rich_lane_router(
         graph,
         "hybrid_token_gate",
         [normed],
-        _multiscale_gate_config(),
+        _multiscale_gate_config(
+            graph=graph,
+            template_name=template_name,
+            context="multiscale_rich_lane_router.token_gate",
+        ),
         context="multiscale_rich_lane_router.token_gate",
     )
     gate_bypass = _residual(
@@ -970,14 +1049,24 @@ def tpl_multiscale_rich_lane_router(
         graph,
         "hybrid_sparse_router",
         [gated],
-        _multiscale_sparse_router_config(2),
+        _multiscale_sparse_router_config(
+            2,
+            graph=graph,
+            template_name=template_name,
+            context="multiscale_rich_lane_router.pair_router",
+        ),
         context="multiscale_rich_lane_router.pair_router",
     )
     triplet_routed = _add(
         graph,
         "hybrid_sparse_router",
         [gated],
-        _multiscale_sparse_router_config(3),
+        _multiscale_sparse_router_config(
+            3,
+            graph=graph,
+            template_name=template_name,
+            context="multiscale_rich_lane_router.triplet_router",
+        ),
         context="multiscale_rich_lane_router.triplet_router",
     )
     medium_pre = _residual(
@@ -992,7 +1081,13 @@ def tpl_multiscale_rich_lane_router(
         graph,
         medium_op,
         medium_inputs,
-        _next_multiscale_medium_config(medium_op, rng),
+        _next_multiscale_medium_config(
+            medium_op,
+            rng,
+            graph=graph,
+            template_name=template_name,
+            context="multiscale_rich_lane_router.medium_core",
+        ),
         context="multiscale_rich_lane_router.medium_core",
     )
     record_template_slot_binding(
@@ -1063,6 +1158,9 @@ def tpl_multiscale_rich_lane_router(
             min_secondary_start=0.26,
             min_secondary_mid=0.22,
             min_secondary_end=0.18,
+            graph=graph,
+            template_name=template_name,
+            context="multiscale_rich_lane_router.merge_medium",
         ),
         context="multiscale_rich_lane_router.merge_medium",
     )
@@ -1081,6 +1179,9 @@ def tpl_multiscale_rich_lane_router(
             max_secondary_start=0.1,
             max_secondary_mid=0.16,
             max_secondary_end=0.22,
+            graph=graph,
+            template_name=template_name,
+            context="multiscale_rich_lane_router.merge_hard",
         ),
         context="multiscale_rich_lane_router.merge_hard",
     )

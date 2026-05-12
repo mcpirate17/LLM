@@ -1,9 +1,11 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::fs;
 use std::path::Path;
 
 use rusqlite::{Connection, OptionalExtension};
 use serde::Serialize;
+use serde_json::Value;
 
 use crate::error::AriaError;
 use crate::notebook_graph::NotebookGraph;
@@ -211,24 +213,29 @@ pub fn build_graph_training_corpus_json(db_path: &Path) -> Result<String, AriaEr
         .prepare(&query)
         .map_err(|e| AriaError::ExecutionFailed(e.to_string()))?;
 
-    let rows = stmt
-        .query_map([], |row| {
-            Ok(GraphTrainingInput {
-                graph_json: row.get(0)?,
-                stage1_passed: row.get::<_, Option<i64>>(1)?.unwrap_or(0) != 0,
-                wikitext_perplexity: row.get(2)?,
-                loss_ratio: row.get(3)?,
-                stage0_passed: row.get::<_, Option<i64>>(4)?.unwrap_or(0) != 0,
-                stage05_passed: row.get::<_, Option<i64>>(5)?.unwrap_or(0) != 0,
-                timestamp: row.get::<_, Option<f64>>(6)?.unwrap_or(0.0),
-                wikitext_metric_version: row.get::<_, Option<String>>(7)?.unwrap_or_default(),
+    let rows = {
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(GraphTrainingInput {
+                    graph_json: row.get(0)?,
+                    stage1_passed: row.get::<_, Option<i64>>(1)?.unwrap_or(0) != 0,
+                    wikitext_perplexity: row.get(2)?,
+                    loss_ratio: row.get(3)?,
+                    stage0_passed: row.get::<_, Option<i64>>(4)?.unwrap_or(0) != 0,
+                    stage05_passed: row.get::<_, Option<i64>>(5)?.unwrap_or(0) != 0,
+                    timestamp: row.get::<_, Option<f64>>(6)?.unwrap_or(0.0),
+                    wikitext_metric_version: row.get::<_, Option<String>>(7)?.unwrap_or_default(),
+                })
             })
-        })
-        .map_err(|e| AriaError::ExecutionFailed(e.to_string()))?;
+            .map_err(|e| AriaError::ExecutionFailed(e.to_string()))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| AriaError::ExecutionFailed(e.to_string()))?
+    };
+    drop(stmt);
 
     let mut groups: HashMap<String, GraphAccumulator> = HashMap::new();
-    for row in rows {
-        let row = row.map_err(|e| AriaError::ExecutionFailed(e.to_string()))?;
+    for mut row in rows {
+        row.graph_json = resolve_graph_json_value(&conn, db_path, &row.graph_json)?;
         let canonical_fingerprint = fingerprint_notebook_graph_json(&row.graph_json)?;
         groups
             .entry(canonical_fingerprint.clone())
@@ -277,25 +284,30 @@ pub fn build_predictor_training_corpus_json(db_path: &Path) -> Result<String, Ar
         .prepare(&query)
         .map_err(|e| AriaError::ExecutionFailed(e.to_string()))?;
 
-    let rows = stmt
-        .query_map([], |row| {
-            Ok(PredictorTrainingInput {
-                graph_json: row.get(0)?,
-                fingerprint_json: row.get(1)?,
-                novelty_score: row.get(2)?,
-                structural_novelty: row.get(3)?,
-                target_loss_ratio: row.get(4)?,
-                tier: row
-                    .get::<_, Option<String>>(5)?
-                    .unwrap_or_else(|| "screening".into()),
-                timestamp: row.get::<_, Option<f64>>(6)?.unwrap_or(0.0),
+    let rows = {
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(PredictorTrainingInput {
+                    graph_json: row.get(0)?,
+                    fingerprint_json: row.get(1)?,
+                    novelty_score: row.get(2)?,
+                    structural_novelty: row.get(3)?,
+                    target_loss_ratio: row.get(4)?,
+                    tier: row
+                        .get::<_, Option<String>>(5)?
+                        .unwrap_or_else(|| "screening".into()),
+                    timestamp: row.get::<_, Option<f64>>(6)?.unwrap_or(0.0),
+                })
             })
-        })
-        .map_err(|e| AriaError::ExecutionFailed(e.to_string()))?;
+            .map_err(|e| AriaError::ExecutionFailed(e.to_string()))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| AriaError::ExecutionFailed(e.to_string()))?
+    };
+    drop(stmt);
 
     let mut groups: HashMap<String, PredictorAccumulator> = HashMap::new();
-    for row in rows {
-        let row = row.map_err(|e| AriaError::ExecutionFailed(e.to_string()))?;
+    for mut row in rows {
+        row.graph_json = resolve_graph_json_value(&conn, db_path, &row.graph_json)?;
         let canonical_fingerprint = fingerprint_notebook_graph_json(&row.graph_json)?;
         groups
             .entry(canonical_fingerprint.clone())
@@ -324,6 +336,127 @@ fn open_notebook_db(db_path: &Path) -> Result<Connection, AriaError> {
         .optional()
         .map_err(|e| AriaError::ExecutionFailed(e.to_string()))?;
     Ok(conn)
+}
+
+#[derive(Clone)]
+struct NotebookArtifactMetadata {
+    path: String,
+    compression: String,
+}
+
+fn resolve_graph_json_value(
+    conn: &Connection,
+    db_path: &Path,
+    raw: &str,
+) -> Result<String, AriaError> {
+    let Some((artifact_id, pointer_path, pointer_compression)) = parse_artifact_pointer(raw) else {
+        return Ok(raw.to_string());
+    };
+
+    let metadata = artifact_metadata(conn, &artifact_id)?
+        .or_else(|| {
+            pointer_path.map(|path| NotebookArtifactMetadata {
+                path,
+                compression: pointer_compression.unwrap_or_else(|| "zstd".to_string()),
+            })
+        })
+        .ok_or_else(|| {
+            AriaError::InvalidIR(format!(
+                "graph artifact metadata not found: {}",
+                artifact_id
+            ))
+        })?;
+
+    let artifact_path = notebook_artifact_root(db_path).join(&metadata.path);
+    let bytes = fs::read(&artifact_path).map_err(|e| {
+        AriaError::ExecutionFailed(format!(
+            "failed to read graph artifact {}: {}",
+            artifact_path.display(),
+            e
+        ))
+    })?;
+    let raw_bytes = match metadata.compression.as_str() {
+        "zstd" | "" => zstd::stream::decode_all(&bytes[..]).map_err(|e| {
+            AriaError::ExecutionFailed(format!(
+                "failed to decompress graph artifact {}: {}",
+                artifact_path.display(),
+                e
+            ))
+        })?,
+        other => {
+            return Err(AriaError::InvalidIR(format!(
+                "unsupported graph artifact compression: {}",
+                other
+            )))
+        }
+    };
+    String::from_utf8(raw_bytes)
+        .map_err(|e| AriaError::InvalidIR(format!("graph artifact is not utf-8: {}", e)))
+}
+
+fn parse_artifact_pointer(raw: &str) -> Option<(String, Option<String>, Option<String>)> {
+    let value: Value = serde_json::from_str(raw).ok()?;
+    let object = value.as_object()?;
+    let artifact_value = object.get("_notebook_artifact")?;
+    let artifact_id = json_value_to_string(artifact_value);
+    if artifact_id.trim().is_empty() {
+        return None;
+    }
+    let path = object
+        .get("path")
+        .map(json_value_to_string)
+        .filter(|path| !path.trim().is_empty());
+    let compression = object
+        .get("compression")
+        .map(json_value_to_string)
+        .filter(|compression| !compression.trim().is_empty());
+    Some((artifact_id, path, compression))
+}
+
+fn artifact_metadata(
+    conn: &Connection,
+    artifact_id: &str,
+) -> Result<Option<NotebookArtifactMetadata>, AriaError> {
+    if artifact_id.is_empty() {
+        return Ok(None);
+    }
+    match conn
+        .query_row(
+            "SELECT path, compression FROM notebook_artifacts WHERE artifact_id = ?",
+            [artifact_id],
+            |row| {
+                Ok(NotebookArtifactMetadata {
+                    path: row.get(0)?,
+                    compression: row
+                        .get::<_, Option<String>>(1)?
+                        .unwrap_or_else(|| "zstd".into()),
+                })
+            },
+        )
+        .optional()
+    {
+        Ok(metadata) => Ok(metadata),
+        Err(rusqlite::Error::SqliteFailure(_, _)) => Ok(None),
+        Err(e) => Err(AriaError::ExecutionFailed(e.to_string())),
+    }
+}
+
+fn notebook_artifact_root(db_path: &Path) -> std::path::PathBuf {
+    db_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("artifacts")
+        .join("notebook")
+}
+
+fn json_value_to_string(value: &Value) -> String {
+    match value {
+        Value::String(raw) => raw.clone(),
+        Value::Number(raw) => raw.to_string(),
+        Value::Bool(raw) => raw.to_string(),
+        Value::Null => String::new(),
+        _ => value.to_string(),
+    }
 }
 
 fn table_columns(conn: &Connection, table: &str) -> Result<HashSet<String>, AriaError> {
@@ -481,6 +614,52 @@ mod tests {
         )
     }
 
+    fn write_graph_artifact(
+        conn: &Connection,
+        db_path: &std::path::Path,
+        artifact_id: &str,
+        rel_path: &str,
+        payload: &str,
+    ) -> String {
+        let artifact_path = db_path
+            .parent()
+            .unwrap()
+            .join("artifacts")
+            .join("notebook")
+            .join(rel_path);
+        fs::create_dir_all(artifact_path.parent().unwrap()).unwrap();
+        let compressed = zstd::stream::encode_all(payload.as_bytes(), 10).unwrap();
+        fs::write(&artifact_path, compressed).unwrap();
+        conn.execute_batch(
+            "
+                CREATE TABLE IF NOT EXISTS notebook_artifacts (
+                    artifact_id TEXT PRIMARY KEY,
+                    table_name TEXT NOT NULL,
+                    row_pk TEXT NOT NULL,
+                    column_name TEXT NOT NULL,
+                    path TEXT NOT NULL,
+                    compression TEXT NOT NULL,
+                    content_type TEXT NOT NULL,
+                    sha256_uncompressed TEXT NOT NULL,
+                    sha256_compressed TEXT NOT NULL,
+                    uncompressed_bytes INTEGER NOT NULL,
+                    compressed_bytes INTEGER NOT NULL,
+                    created_at REAL NOT NULL
+                );
+                ",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO notebook_artifacts VALUES (?1, 'program_results', 'r1', 'graph_json', ?2, 'zstd', 'application/json', '', '', 0, 0, 1.0)",
+            params![artifact_id, rel_path],
+        )
+        .unwrap();
+        format!(
+            r#"{{"_notebook_artifact":"{}","compression":"zstd","path":"{}"}}"#,
+            artifact_id, rel_path
+        )
+    }
+
     fn run_with_large_stack<F>(name: &str, f: F)
     where
         F: FnOnce() + Send + 'static,
@@ -540,6 +719,63 @@ mod tests {
     }
 
     #[test]
+    fn graph_training_corpus_resolves_artifact_backed_graph_json() {
+        run_with_large_stack(
+            "graph_training_corpus_resolves_artifact_backed_graph_json",
+            || {
+                let path = temp_db_path("graph_corpus_artifact");
+                let conn = Connection::open(&path).unwrap();
+                conn.execute_batch(
+                    "
+                CREATE TABLE program_results (
+                    graph_json TEXT,
+                    stage1_passed INTEGER,
+                    wikitext_perplexity REAL,
+                    loss_ratio REAL,
+                    stage0_passed INTEGER,
+                    stage05_passed INTEGER,
+                    timestamp REAL
+                );
+                ",
+                )
+                .unwrap();
+                let graph_json = sample_graph_json(r#"{"templates_used":["artifact"]}"#);
+                let pointer = write_graph_artifact(
+                    &conn,
+                    &path,
+                    "artifact_graph",
+                    "program_results/artifact_graph/graph_json.json.zst",
+                    &graph_json,
+                );
+                conn.execute(
+                    "INSERT INTO program_results VALUES (?1, 1, 8.0, 0.7, 1, 1, 2.0)",
+                    [pointer],
+                )
+                .unwrap();
+
+                let payload = build_graph_training_corpus_json(&path).unwrap();
+                let rows: serde_json::Value = serde_json::from_str(&payload).unwrap();
+                let rows = rows.as_array().unwrap();
+                assert_eq!(rows.len(), 1);
+                assert!(rows[0]["graph_json"]
+                    .as_str()
+                    .unwrap()
+                    .contains(r#""nodes""#));
+                assert!(!rows[0]["graph_json"]
+                    .as_str()
+                    .unwrap()
+                    .contains("_notebook_artifact"));
+
+                let _ =
+                    fs::remove_file(path.parent().unwrap().join(
+                        "artifacts/notebook/program_results/artifact_graph/graph_json.json.zst",
+                    ));
+                let _ = fs::remove_file(path);
+            },
+        );
+    }
+
+    #[test]
     fn predictor_corpus_keeps_best_tier_representative() {
         run_with_large_stack("predictor_corpus_keeps_best_tier_representative", || {
             let path = temp_db_path("predictor_corpus");
@@ -591,6 +827,67 @@ mod tests {
 
             let _ = fs::remove_file(path);
         });
+    }
+
+    #[test]
+    fn predictor_corpus_resolves_artifact_backed_graph_json() {
+        run_with_large_stack(
+            "predictor_corpus_resolves_artifact_backed_graph_json",
+            || {
+                let path = temp_db_path("predictor_corpus_artifact");
+                let conn = Connection::open(&path).unwrap();
+                conn.execute_batch(
+                    "
+                CREATE TABLE program_results (
+                    result_id TEXT,
+                    graph_json TEXT,
+                    fingerprint_json TEXT,
+                    novelty_score REAL,
+                    structural_novelty REAL,
+                    loss_ratio REAL,
+                    timestamp REAL
+                );
+                CREATE TABLE leaderboard (
+                    result_id TEXT,
+                    investigation_loss_ratio REAL,
+                    tier TEXT
+                );
+                ",
+                )
+                .unwrap();
+                let graph_json = sample_graph_json(r#"{"templates_used":["artifact_predictor"]}"#);
+                let pointer = write_graph_artifact(
+                    &conn,
+                    &path,
+                    "predictor_artifact_graph",
+                    "program_results/predictor_artifact_graph/graph_json.json.zst",
+                    &graph_json,
+                );
+                conn.execute(
+                    "INSERT INTO program_results VALUES ('r1', ?1, '{\"k\":1}', 1.0, 2.0, 0.8, 1.0)",
+                    [pointer],
+                )
+                .unwrap();
+                conn.execute(
+                    "INSERT INTO leaderboard VALUES ('r1', 0.4, 'validation')",
+                    [],
+                )
+                .unwrap();
+
+                let payload = build_predictor_training_corpus_json(&path).unwrap();
+                let rows: serde_json::Value = serde_json::from_str(&payload).unwrap();
+                let rows = rows.as_array().unwrap();
+                assert_eq!(rows.len(), 1);
+                assert_eq!(rows[0]["target_loss_ratio"], 0.4);
+
+                let _ = fs::remove_file(
+                    path.parent()
+                        .unwrap()
+                        .join("artifacts/notebook/program_results/predictor_artifact_graph/graph_json.json.zst"),
+                );
+                let _ = fs::remove_file(path);
+            },
+        );
     }
 
     #[test]

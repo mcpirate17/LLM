@@ -765,6 +765,34 @@ class _ExecutionCandidatesMixin:
             ar_binding_overlay_enabled=getattr(
                 config, "ar_binding_overlay_enabled", False
             ),
+            use_routing_decision_priors=getattr(
+                config, "use_routing_decision_priors", False
+            ),
+            routing_decision_prior_path=getattr(
+                config,
+                "routing_decision_prior_path",
+                "research/artifacts/routing_decision_priors/latest.json",
+            ),
+            routing_decision_prior_strength=getattr(
+                config, "routing_decision_prior_strength", 1.0
+            ),
+            use_dynamic_template_candidates=getattr(
+                config, "use_dynamic_template_candidates", False
+            ),
+            dynamic_template_candidate_path=getattr(
+                config,
+                "dynamic_template_candidate_path",
+                "research/notes/validated_template_candidates.json",
+            ),
+            dynamic_template_candidate_prob=getattr(
+                config, "dynamic_template_candidate_prob", 0.10
+            ),
+            dynamic_template_candidate_strength=getattr(
+                config, "dynamic_template_candidate_strength", 1.0
+            ),
+            dynamic_template_max_candidates=getattr(
+                config, "dynamic_template_max_candidates", 32
+            ),
         )
         if config.category_weights:
             grammar_kwargs["category_weights"] = dict(config.category_weights)

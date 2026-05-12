@@ -380,6 +380,7 @@ class _ExecutionTrainingPostMixin:
                     result["wikitext_ppl_improvement"] = wt.get(
                         "wikitext_ppl_improvement"
                     )
+                result["screening_wikitext_elapsed_ms"] = wt.get("elapsed_ms")
                 # Slope trajectory fields (for slope reprieve)
                 for _slope_key in (
                     "screening_loss_10",
@@ -447,6 +448,7 @@ class _ExecutionTrainingPostMixin:
                 result["blimp_subtask_accuracies_json"] = blimp.subtask_accuracies
                 result["blimp_n_subtasks"] = blimp.n_subtasks
                 result["blimp_status"] = blimp.status
+                result["blimp_elapsed_ms"] = blimp.elapsed_ms
                 if blimp.overall_accuracy is not None:
                     logger.info(
                         "    Screening BLiMP acc=%.1f%% (%d subtasks, %s)",

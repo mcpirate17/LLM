@@ -9,6 +9,7 @@ from typing import Any, TYPE_CHECKING
 if TYPE_CHECKING:
     from .graph import ComputationGraph
 from ._template_helpers import (
+    record_routing_decision,
     sample_routing_choice,
     template_add_op as _add,
 )
@@ -154,11 +155,61 @@ INTELLIGENT_POST_MERGE_OPTIONAL_OPS: tuple[str, ...] = (
 )
 
 
-def _next_multiscale_medium_config(op_name: str, rng: random.Random) -> dict:
+def _record_static_config_decisions(
+    graph: Any,
+    template_name: str | None,
+    config: dict,
+    *,
+    context: str | None,
+    keys: tuple[str, ...],
+    prefix: str = "",
+) -> None:
+    if graph is None or template_name is None:
+        return
+    for key in keys:
+        if key not in config:
+            continue
+        record_routing_decision(
+            graph,
+            template_name=template_name,
+            decision_key=f"{prefix}{key}",
+            value=config[key],
+            choices=(config[key],),
+            source="static_config",
+            context=context,
+        )
+
+
+def _next_multiscale_medium_config(
+    op_name: str,
+    rng: random.Random,
+    *,
+    graph: Any = None,
+    template_name: str | None = None,
+    context: str | None = None,
+) -> dict:
     if op_name == "route_lanes":
-        return {"n_lanes": 3}
+        config = {"n_lanes": 3}
+        _record_static_config_decisions(
+            graph,
+            template_name,
+            config,
+            context=context or "route_lanes",
+            keys=("n_lanes",),
+            prefix="medium_",
+        )
+        return config
     if op_name == "adaptive_lane_mixer":
-        return {"n_lanes": 3}
+        config = {"n_lanes": 3}
+        _record_static_config_decisions(
+            graph,
+            template_name,
+            config,
+            context=context or "adaptive_lane_mixer",
+            keys=("n_lanes",),
+            prefix="medium_",
+        )
+        return config
     return {}
 
 
@@ -215,8 +266,13 @@ def _next_multiscale_hard_config(
     return {}
 
 
-def _multiscale_gate_config() -> dict:
-    return {
+def _multiscale_gate_config(
+    *,
+    graph: Any = None,
+    template_name: str | None = None,
+    context: str | None = None,
+) -> dict:
+    config = {
         "threshold": 0.5,
         "gate_temperature": 1.0,
         "curriculum_enabled": True,
@@ -229,10 +285,28 @@ def _multiscale_gate_config() -> dict:
         "gate_temperature_mid": 1.1,
         "gate_temperature_end": 1.0,
     }
+    _record_static_config_decisions(
+        graph,
+        template_name,
+        config,
+        context=context or "multiscale_gate",
+        keys=(
+            "threshold",
+            "gate_temperature",
+        ),
+        prefix="gate_",
+    )
+    return config
 
 
-def _multiscale_sparse_router_config(span_width: int) -> dict:
-    return {
+def _multiscale_sparse_router_config(
+    span_width: int,
+    *,
+    graph: Any = None,
+    template_name: str | None = None,
+    context: str | None = None,
+) -> dict:
+    config = {
         "span_width": span_width,
         "lane_count": span_width,
         "confidence_threshold": 0.55,
@@ -251,6 +325,21 @@ def _multiscale_sparse_router_config(span_width: int) -> dict:
         "route_temperature_mid": 1.05,
         "route_temperature_end": 0.9,
     }
+    _record_static_config_decisions(
+        graph,
+        template_name,
+        config,
+        context=context or f"multiscale_sparse_router.{span_width}",
+        keys=(
+            "span_width",
+            "lane_count",
+            "confidence_threshold",
+            "min_keep_fraction",
+            "route_temperature",
+        ),
+        prefix=f"span{span_width}_",
+    )
+    return config
 
 
 def _multiscale_merge_config(
@@ -265,8 +354,11 @@ def _multiscale_merge_config(
     max_secondary_start: float | None = None,
     max_secondary_mid: float | None = None,
     max_secondary_end: float | None = None,
+    graph: Any = None,
+    template_name: str | None = None,
+    context: str | None = None,
 ) -> dict:
-    return {
+    config = {
         "n_branches": 2,
         "primary_role": primary_role,
         "secondary_role": secondary_role,
@@ -296,6 +388,19 @@ def _multiscale_merge_config(
         if max_secondary_end is None
         else max_secondary_end,
     }
+    _record_static_config_decisions(
+        graph,
+        template_name,
+        config,
+        context=context or f"merge.{primary_role}.{secondary_role}",
+        keys=(
+            "merge_temperature",
+            "min_secondary_share",
+            "max_secondary_share",
+        ),
+        prefix=f"merge_{secondary_role}_",
+    )
+    return config
 
 
 def _single_input_op_config(
@@ -310,7 +415,16 @@ def _single_input_op_config(
     if op_name == "linear_proj":
         return {"out_dim": model_dim}
     if op_name in {"route_lanes", "adaptive_lane_mixer"}:
-        return {"n_lanes": 3}
+        config = {"n_lanes": 3}
+        _record_static_config_decisions(
+            graph,
+            template_name or "single_input_op",
+            config,
+            context=context,
+            keys=("n_lanes",),
+            prefix=f"{op_name}_",
+        )
+        return config
     if op_name in {"route_recursion", "adaptive_recursion", "mixed_recursion_gate"}:
         choices = [2, 3, 4]
         value = (

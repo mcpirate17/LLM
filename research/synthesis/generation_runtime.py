@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from collections import OrderedDict
 from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import Any, Mapping
 
 from .grammar_support import (
@@ -15,6 +16,12 @@ from .grammar_support import (
     SlotAdaptationCache,
     blend_template_weights_with_db,
     compute_motif_weights_from_op_weights,
+)
+from .dynamic_template_registry import load_dynamic_template_candidates
+from .routing_decision_priors import load_routing_decision_priors
+
+_DEFAULT_DYNAMIC_TEMPLATE_CANDIDATE_PATH = (
+    "research/notes/validated_template_candidates.json"
 )
 
 
@@ -28,6 +35,8 @@ class GenerationRuntimeContext:
     slot_motif_weight_multipliers: Mapping[str, Mapping[str, float]] | None
     slot_motif_denylist: Mapping[str, tuple[str, ...]] | None
     slot_adaptations: Mapping[str, list] | None
+    routing_decision_priors: Mapping[str, Any] | None
+    dynamic_template_candidates: tuple[Any, ...] | None
 
 
 _db_weight_cache = DBTemplateWeightCache(ttl=60.0)
@@ -177,6 +186,22 @@ def _runtime_context_cache_key(config: Any) -> tuple[Any, ...]:
         if config.use_db_weights
         else None
     )
+    routing_prior_token = (
+        _path_mtime_cache_token(getattr(config, "routing_decision_prior_path", ""))
+        if getattr(config, "use_routing_decision_priors", False)
+        else None
+    )
+    dynamic_template_token = (
+        _path_mtime_cache_token(
+            getattr(
+                config,
+                "dynamic_template_candidate_path",
+                _DEFAULT_DYNAMIC_TEMPLATE_CANDIDATE_PATH,
+            )
+        )
+        if getattr(config, "use_dynamic_template_candidates", False)
+        else None
+    )
     return (
         db_bucket,
         config.forced_template,
@@ -190,7 +215,24 @@ def _runtime_context_cache_key(config: Any) -> tuple[Any, ...]:
         _freeze_config_value(config.exploration_targets),
         _freeze_config_value(config.slot_motif_weight_multipliers),
         _freeze_config_value(config.slot_motif_denylist),
+        bool(getattr(config, "use_routing_decision_priors", False)),
+        routing_prior_token,
+        float(getattr(config, "routing_decision_prior_strength", 1.0) or 0.0),
+        bool(getattr(config, "use_dynamic_template_candidates", False)),
+        dynamic_template_token,
+        float(getattr(config, "dynamic_template_candidate_prob", 0.0) or 0.0),
+        float(getattr(config, "dynamic_template_candidate_strength", 1.0) or 0.0),
+        int(getattr(config, "dynamic_template_max_candidates", 32) or 0),
     )
+
+
+def _path_mtime_cache_token(path_or_dir: str) -> tuple[str, int | None]:
+    path = Path(path_or_dir)
+    artifact = path / "latest.json" if path.is_dir() else path
+    try:
+        return str(artifact), artifact.stat().st_mtime_ns
+    except OSError:
+        return str(artifact), None
 
 
 def build_generation_runtime_context(config: Any) -> GenerationRuntimeContext:
@@ -205,6 +247,21 @@ def build_generation_runtime_context(config: Any) -> GenerationRuntimeContext:
     slot_adaptations = (
         _slot_adaptation_cache.get() or None if config.use_db_weights else None
     )
+    routing_decision_priors = None
+    if getattr(config, "use_routing_decision_priors", False):
+        routing_decision_priors = load_routing_decision_priors(
+            getattr(config, "routing_decision_prior_path", "")
+        )
+    dynamic_template_candidates = None
+    if getattr(config, "use_dynamic_template_candidates", False):
+        dynamic_template_candidates = load_dynamic_template_candidates(
+            getattr(
+                config,
+                "dynamic_template_candidate_path",
+                _DEFAULT_DYNAMIC_TEMPLATE_CANDIDATE_PATH,
+            ),
+            max_candidates=getattr(config, "dynamic_template_max_candidates", 32),
+        )
     return GenerationRuntimeContext(
         tpl_weights=tpl_weights,
         motif_weights=motif_weights or None,
@@ -214,6 +271,8 @@ def build_generation_runtime_context(config: Any) -> GenerationRuntimeContext:
         slot_motif_weight_multipliers=_slot_motif_weight_multipliers(config),
         slot_motif_denylist=_slot_motif_denylist(config),
         slot_adaptations=slot_adaptations,
+        routing_decision_priors=routing_decision_priors,
+        dynamic_template_candidates=dynamic_template_candidates or None,
     )
 
 
