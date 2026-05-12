@@ -45,6 +45,12 @@ from .context_rules import motif_allowed_in_template as _motif_allowed_in_templa
 from ._slot_constraints_loader import (
     derive_slot_classes,
 )  # Phase B.1 — used by _pick_compatible_motif
+from ._slot_catalog_loader import (
+    slot_classes_for,
+)  # 2026-05-11 — declared catalog narrowing in _pick_compatible_motif
+from ._routing_decision_sample import (
+    sample_routing_choice_with_prior as _sample_routing_choice_with_prior,
+)
 
 # Type alias for motif weight dicts passed from judgment engine
 MotifWeights = Optional[Dict[str, float]]
@@ -492,6 +498,22 @@ def _pick_compatible_motif(
         if template and slot_idx is not None:
             classes = derive_slot_classes(str(template), int(slot_idx), classes)
 
+    # 2026-05-11 — declared slot allowlist from slot_property_catalog.
+    # Complements the empirical Phase B.1 pass: covers (template, slot) pairs
+    # that have a declared allowlist but no empirical observations yet
+    # (newly-added templates such as mla_sparse_ffn_block, mlstm_block, …).
+    # Conservative intersection: keeps current classes when the declared list
+    # is empty or when intersecting would empty the candidate pool.
+    if len(classes) > 1:
+        template = graph.metadata.get("_active_template")
+        slot_idx = graph.metadata.get("_active_template_slot_counter")
+        if template and slot_idx is not None:
+            declared = slot_classes_for(str(template), int(slot_idx), fallback=())
+            if declared:
+                narrowed = tuple(c for c in classes if c in declared)
+                if narrowed:
+                    classes = narrowed
+
     if is_wildcard:
         candidates = _compatible_from_classes(graph, node_id, _ALL_CLASSES)
     else:
@@ -563,6 +585,7 @@ def _record_slot_usage(
         "wildcard": wildcard,
     }
     graph.metadata.setdefault("template_slot_usage", []).append(entry)
+    _invalidate_graph_json_cache(graph)
 
 
 def record_template_slot_binding(
@@ -592,12 +615,21 @@ def record_template_slot_binding(
         "wildcard": False,
     }
     graph.metadata.setdefault("template_slot_usage", []).append(entry)
+    _invalidate_graph_json_cache(graph)
 
 
 def _json_safe_value(value: Any) -> Any:
     if isinstance(value, (bool, int, float, str)) or value is None:
         return value
     return str(value)
+
+
+def _invalidate_graph_json_cache(graph: ComputationGraph) -> None:
+    """Metadata changes must be visible to graph_to_json's cached payload."""
+    try:
+        graph._cache.pop("graph_json", None)
+    except AttributeError:
+        return
 
 
 def sample_routing_choice(
@@ -616,15 +648,23 @@ def sample_routing_choice(
     pattern in routing templates. Returns the sampled value so callers can
     use it directly in op configs.
     """
-    value = rng.choice(list(choices))
+    choice_list = list(choices)
+    value, prior_attribution = _sample_routing_choice_with_prior(
+        rng,
+        choice_list,
+        graph=graph,
+        template_name=template_name,
+        decision_key=decision_key,
+    )
     record_routing_decision(
         graph,
         template_name=template_name,
         decision_key=decision_key,
         value=value,
         choices=choices,
-        source=source,
+        source="routing_prior_weighted" if prior_attribution else source,
         context=context,
+        prior_attribution=prior_attribution,
     )
     return value
 
@@ -640,6 +680,7 @@ def record_routing_decision(
     range_high: float | None = None,
     source: str = "rng_choice",
     context: str | None = None,
+    prior_attribution: Dict[str, Any] | None = None,
 ) -> None:
     """Persist a routing-knob decision so future policies can learn from it.
 
@@ -666,8 +707,11 @@ def record_routing_decision(
         entry["range_high"] = float(range_high)
     if context:
         entry["context"] = str(context)
+    if prior_attribution:
+        entry["prior"] = prior_attribution
     graph.metadata.setdefault("routing_decisions", []).append(entry)
     _record_routing_decision_overlay_if_enabled(graph, entry)
+    _invalidate_graph_json_cache(graph)
 
 
 def _record_routing_decision_overlay_if_enabled(
