@@ -61,6 +61,10 @@ def geometric_product(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         _HAS_ARIA_CORE
         and a.is_contiguous()
         and b.is_contiguous()
+        and a.shape
+        == b.shape  # SEGV guard: C kernel iterates a.numel()/8 over both buffers
+        and a.dtype is torch.float32
+        and b.dtype is torch.float32
         and a.device.type == "cpu"
         and not a.requires_grad
         and not b.requires_grad
@@ -208,8 +212,11 @@ def rotor_transform(x: torch.Tensor, rotor: torch.Tensor) -> torch.Tensor:
         _HAS_ARIA_CORE
         and x.is_contiguous()
         and rotor.is_contiguous()
+        and x.shape
+        == rotor.shape  # SEGV guard: C kernel iterates x.numel()/8 over both buffers
         and x.device.type == "cpu"
         and x.dtype == torch.float32
+        and rotor.dtype == torch.float32
         and not x.requires_grad
         and not rotor.requires_grad
     ):

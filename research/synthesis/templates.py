@@ -173,6 +173,16 @@ COMPONENT_GRAPH_EXEMPT_TEMPLATES = frozenset(
         # routing-capable manifest tests rather than a dedicated component
         # graph entry.
         "pq_embedding_moe_block",
+        # Fused-substrate templates (2026-05-11) — covered by
+        # test_fused_substrate_templates.py (build/validate/target-op tests).
+        "mla_sparse_ffn_block",
+        "tree_mix_attention_block",
+        "mlstm_block",
+        "mlstm_sparse_ffn_block",
+        # Codex dynamic-template additions (2026-05-11) — same rationale.
+        "cascaded_attn_ffn",
+        "gated_lane_blend_block",
+        "hybrid_sparse_triplet_router",
     }
 )
 

@@ -139,6 +139,7 @@ class RunConfig:
     skip_screening_hellaswag: bool = False
     skip_screening_blimp: bool = False
     skip_ar_probe: bool = False
+    skip_ar_gate: bool = False
     skip_binding_probes: bool = False
     skip_induction_probe: bool = False
     skip_binding_probe: bool = False
@@ -430,6 +431,22 @@ class RunConfig:
         "balanced"  # induction | induction_intermediate | composite | balanced
     )
     meta_analysis_prior_path: str = "research/artifacts/meta_analysis_priors"
+    use_routing_decision_priors: bool = False
+    routing_decision_prior_path: str = (
+        "research/artifacts/routing_decision_priors/latest.json"
+    )
+    routing_decision_prior_strength: float = 1.0
+    # 2026-05-11: descriptor-backed dynamic templates default ON. The
+    # registry only consumes pre-validated mined chains (validate + compile +
+    # backward passed). 10% per-block sampling rate. Set to False for
+    # ablation runs.
+    use_dynamic_template_candidates: bool = True
+    dynamic_template_candidate_path: str = (
+        "research/notes/validated_template_candidates.json"
+    )
+    dynamic_template_candidate_prob: float = 0.10
+    dynamic_template_candidate_strength: float = 1.0
+    dynamic_template_max_candidates: int = 32
     # Advisory AR/binding overlay. When enabled, generated graphs are tagged so
     # routing decisions can append separate overlay metadata, and GBM-screening
     # survivors get a sibling AR/binding rerank after rank_composite ordering.

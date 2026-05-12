@@ -43,6 +43,7 @@ from .primitives import (
 from .templates import (
     apply_template,
 )
+from ._dynamic_template_branch import maybe_apply_dynamic_template
 from .template_rules import validate_template_graph
 from .validator import validate_graph
 from .native_template_selection import (
@@ -147,6 +148,27 @@ class GrammarConfig:
     # Propagate advisory AR/binding overlay opt-in to generated graph metadata.
     # The overlay itself remains outside core template/routing audit fields.
     ar_binding_overlay_enabled: bool = False
+    # Optional advisory routing-decision prior. Disabled by default; when
+    # enabled, generation loads a compact offline artifact and biases only
+    # sample_routing_choice calls with matching (template, decision, value)
+    # evidence. Missing or invalid artifacts fail closed to neutral choices.
+    use_routing_decision_priors: bool = False
+    routing_decision_prior_path: str = (
+        "research/artifacts/routing_decision_priors/latest.json"
+    )
+    routing_decision_prior_strength: float = 1.0
+    # Descriptor-backed dynamic templates. Enabled by default (2026-05-11):
+    # the registry only consumes pre-validated mined chains, lowers them with
+    # the same context-rule guards the static templates obey, and falls back
+    # to the static pool on any per-attempt failure. Disable by setting
+    # ``use_dynamic_template_candidates=False`` for ablation runs.
+    use_dynamic_template_candidates: bool = True
+    dynamic_template_candidate_path: str = (
+        "research/notes/validated_template_candidates.json"
+    )
+    dynamic_template_candidate_prob: float = 0.10
+    dynamic_template_candidate_strength: float = 1.0
+    dynamic_template_max_candidates: int = 32
     # Provenance string for the use_derived_slot_classes assignment, set by
     # the A/B resolver in _slot_constraints_loader.resolve_slot_class_strategy.
     # Persisted to graph.metadata so post-hoc analysis can compare cohorts.
@@ -645,6 +667,30 @@ def generate_layer_graph(
         graph.metadata["_slot_adaptations"] = runtime.slot_adaptations
     if runtime.effective_op_weights:
         graph.metadata["_op_weights"] = runtime.effective_op_weights
+    if runtime.routing_decision_priors and runtime.routing_decision_priors.get(
+        "loaded"
+    ):
+        graph._routing_decision_prior_state = {
+            "prior": runtime.routing_decision_priors,
+            "strength": max(0.0, float(config.routing_decision_prior_strength)),
+        }
+        graph.metadata["routing_decision_prior"] = {
+            "enabled": True,
+            "version": runtime.routing_decision_priors.get("version"),
+            "path": str(config.routing_decision_prior_path),
+            "strength": max(0.0, float(config.routing_decision_prior_strength)),
+        }
+    if runtime.dynamic_template_candidates:
+        graph.metadata["dynamic_template_candidates"] = {
+            "enabled": True,
+            "path": str(config.dynamic_template_candidate_path),
+            "count": len(runtime.dynamic_template_candidates),
+            "prob": max(
+                0.0,
+                min(1.0, float(config.dynamic_template_candidate_prob)),
+            ),
+            "strength": max(0.0, float(config.dynamic_template_candidate_strength)),
+        }
 
     current = input_id
     for t_idx in range(n_templates):
@@ -703,18 +749,32 @@ def generate_layer_graph(
                     config.slot_strategy_reason
                 )
 
-            trial_current = apply_template(
-                graph,
-                current,
-                rng,
-                template_name=config.forced_template,
-                template_weights=_iter_weights,
-                motif_weights=runtime.motif_weights,
-                op_weights=runtime.effective_op_weights,
-                exploration_budget=config.template_exploration_budget,
-                allowed_template_names=_iter_allowed_names,
-                trial_template_names=config.trial_template_names,
+            dynamic_trial, dynamic_used = maybe_apply_dynamic_template(
+                graph=graph,
+                current=current,
+                rng=rng,
+                runtime=runtime,
+                config=config,
+                t_idx=t_idx,
+                prev_next_id=prev_next_id,
+                prev_output_id=prev_output_id,
+                prev_metadata=prev_metadata,
             )
+            if dynamic_used:
+                trial_current = dynamic_trial
+            else:
+                trial_current = apply_template(
+                    graph,
+                    current,
+                    rng,
+                    template_name=config.forced_template,
+                    template_weights=_iter_weights,
+                    motif_weights=runtime.motif_weights,
+                    op_weights=runtime.effective_op_weights,
+                    exploration_budget=config.template_exploration_budget,
+                    allowed_template_names=_iter_allowed_names,
+                    trial_template_names=config.trial_template_names,
+                )
 
             # depth() returns 0 without a set output — point it at the trial tail
             # so the budget check sees the actual longest input-to-trail path.
