@@ -372,6 +372,7 @@ def _candidate_from_window(
 ) -> dict[str, Any]:
     lowered_op_count = estimated_chain_lowered_op_count(chain)
     role_counts = component_role_counts(chain)
+    descriptor = _component_descriptor(chain, index, role_counts)
     candidate = {
         "proposed_template_name": _candidate_name(chain),
         "chain": list(chain),
@@ -385,28 +386,76 @@ def _candidate_from_window(
         "promotion_score": _promotion_score(row),
         "source": "component_rule_mining",
         "source_path": source_path,
-        "component_descriptor": {
-            "descriptor_version": "component_chain_v1",
-            "component_id": _component_id(chain, index),
-            "roles": [get_role(op).value for op in chain],
-            "role_counts": role_counts,
-            "slot_plan": [
-                {
-                    "slot_index": int(slot["slot_index"]),
-                    "op_name": str(slot["op_name"]),
-                    "role": str(slot["role"]),
-                    "slot_classes": list(slot["slot_classes"]),
-                }
-                for slot in component_slot_plan(chain)
-            ],
-            "mixer_count": int(role_counts.get(OpRole.MIX.value, 0)),
-            "route_count": int(role_counts.get(OpRole.ROUTE.value, 0)),
-            "has_recursion_signal": any(_is_recursion_op(op) for op in chain),
-            "has_multi_mixer": int(role_counts.get(OpRole.MIX.value, 0)) >= 2,
-            "lowering": "rmsnorm_chain_with_binary_skip",
-        },
+        "component_descriptor": descriptor,
     }
     return candidate
+
+
+def _component_descriptor(
+    chain: tuple[str, ...],
+    index: int,
+    role_counts: Mapping[str, int],
+) -> dict[str, Any]:
+    branch_plan = _trunk_sidecar_branch_plan(chain)
+    descriptor = {
+        "descriptor_version": "component_chain_v1",
+        "component_id": _component_id(chain, index),
+        "roles": [get_role(op).value for op in chain],
+        "role_counts": dict(role_counts),
+        "slot_plan": [
+            {
+                "slot_index": int(slot["slot_index"]),
+                "op_name": str(slot["op_name"]),
+                "role": str(slot["role"]),
+                "slot_classes": list(slot["slot_classes"]),
+            }
+            for slot in component_slot_plan(chain)
+        ],
+        "mixer_count": int(role_counts.get(OpRole.MIX.value, 0)),
+        "route_count": int(role_counts.get(OpRole.ROUTE.value, 0)),
+        "has_recursion_signal": any(_is_recursion_op(op) for op in chain),
+        "has_multi_mixer": int(role_counts.get(OpRole.MIX.value, 0)) >= 2,
+        "lowering": "rmsnorm_chain_with_binary_skip",
+    }
+    if branch_plan is not None:
+        descriptor["lowering"] = "trunk_sidecar_merge_v1"
+        descriptor["branch_plan"] = branch_plan
+    return descriptor
+
+
+def _trunk_sidecar_branch_plan(chain: tuple[str, ...]) -> dict[str, Any] | None:
+    roles = tuple(get_role(op) for op in chain)
+    mixer_indices = [idx for idx, role in enumerate(roles) if role is OpRole.MIX]
+    if len(mixer_indices) < 2:
+        return None
+
+    first_mixer, second_mixer = mixer_indices[:2]
+    trunk_start = 0
+    while trunk_start < first_mixer and roles[trunk_start] is OpRole.NORMALIZE:
+        trunk_start += 1
+    trunk_end = first_mixer + 1
+    if trunk_end < len(chain) and roles[trunk_end] is OpRole.PROJECT:
+        trunk_end += 1
+
+    trunk_indices = tuple(
+        idx
+        for idx in range(trunk_start, trunk_end)
+        if roles[idx] is not OpRole.RESIDUAL
+    )
+    sidecar_indices = tuple(
+        idx
+        for idx in range(trunk_end, second_mixer + 1)
+        if roles[idx] is not OpRole.RESIDUAL
+    )
+    if not trunk_indices or not sidecar_indices:
+        return None
+    return {
+        "trunk_indices": list(trunk_indices),
+        "sidecar_indices": list(sidecar_indices),
+        "merge_op": "add",
+        "post_merge_norm": True,
+        "residual_output": True,
+    }
 
 
 def _candidate_name(chain: tuple[str, ...]) -> str:

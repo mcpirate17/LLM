@@ -161,6 +161,75 @@ def test_dynamic_template_lowering_records_metadata(tmp_path: Path) -> None:
     assert slots[2]["selected_motif_class"] == "dynamic_op_arity2"
 
 
+def test_dynamic_template_can_lower_trunk_sidecar_component(tmp_path: Path) -> None:
+    chain = [
+        "latent_attention_compressor",
+        "linear_proj",
+        "conv1d_seq",
+        "silu",
+        "rmsnorm",
+        "selective_scan",
+        "add",
+        "add",
+    ]
+    artifact = _write_candidates(
+        tmp_path / "validated.json",
+        [
+            _candidate(
+                "branch_block",
+                chain,
+                component_descriptor={
+                    "has_multi_mixer": True,
+                    "lowering": "trunk_sidecar_merge_v1",
+                    "branch_plan": {
+                        "trunk_indices": [0, 1],
+                        "sidecar_indices": [2, 3, 4, 5],
+                        "merge_op": "add",
+                        "post_merge_norm": True,
+                        "residual_output": True,
+                    },
+                    "slot_plan": [
+                        {
+                            "slot_index": idx,
+                            "slot_classes": ["dynamic_role:mix", "dynamic_step"],
+                        }
+                        for idx in range(len(chain))
+                    ],
+                },
+            )
+        ],
+    )
+    candidate = load_dynamic_template_candidates(artifact, min_lowered_ops=1)[0]
+    graph = ComputationGraph(model_dim=64)
+    input_id = graph.add_input()
+
+    tail = apply_dynamic_template_candidate(
+        graph, input_id, random.Random(1), candidate
+    )
+
+    assert graph.nodes[tail].op_name == "add"
+    norm_id = next(
+        node.id
+        for node in graph.nodes.values()
+        if node.op_name == "rmsnorm" and node.input_ids == [input_id]
+    )
+    branch_children = [
+        node.op_name for node in graph.nodes.values() if node.input_ids == [norm_id]
+    ]
+    assert "latent_attention_compressor" in branch_children
+    assert "conv1d_seq" in branch_children
+    branch_merge = [
+        node
+        for node in graph.nodes.values()
+        if node.op_name == "add" and set(node.input_ids) != {input_id}
+    ]
+    assert any(len(node.input_ids) == 2 for node in branch_merge)
+    slots = graph.metadata["template_slot_usage"]
+    assert {slot["slot_index"] for slot in slots} == {0, 1, 2, 3, 4, 5}
+    assert any(".trunk.step0" in slot["slot_key"] for slot in slots)
+    assert any(".sidecar.step2" in slot["slot_key"] for slot in slots)
+
+
 def test_generate_layer_graph_can_use_dynamic_candidates(tmp_path: Path) -> None:
     artifact = _write_candidates(
         tmp_path / "validated.json",

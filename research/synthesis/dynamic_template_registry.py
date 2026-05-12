@@ -24,6 +24,7 @@ from ._template_helpers import (
     TemplateBuildError,
     record_template_slot_binding,
     template_add_op,
+    template_add_residual,
 )
 from .component_rules import (
     ComponentRuleConfig,
@@ -161,6 +162,7 @@ def apply_dynamic_template_candidate(
             "component_descriptor": dict(candidate.component_descriptor),
         }
     )
+    lowering = _candidate_lowering(candidate)
     prev_template = graph.metadata.get("_active_template")
     prev_slot_counter = graph.metadata.get("_active_template_slot_counter")
     prev_template_instance = graph.metadata.get("_active_template_instance")
@@ -169,48 +171,19 @@ def apply_dynamic_template_candidate(
     graph.metadata["_active_template_instance"] = template_instance
 
     try:
-        current = template_add_op(
-            graph,
-            "rmsnorm",
-            [input_id],
-            context=f"{name}.input_norm",
-        )
-        prev_snapshot = input_id
-        for index, op_name in enumerate(candidate.chain):
-            current, prev_snapshot = _add_dynamic_chain_op(
+        if lowering == "trunk_sidecar_merge_v1":
+            return _apply_trunk_sidecar_dynamic_candidate(
                 graph,
-                op_name,
-                current,
-                prev_snapshot,
-                context=f"{name}.step{index}.{op_name}",
-            )
-            slot_classes = _candidate_slot_classes(candidate, index)
-            record_template_slot_binding(
-                graph,
-                template_name=name,
+                input_id,
+                candidate,
                 template_instance=template_instance,
-                slot_index=index,
-                slot_key=f"{name}[{template_instance}].step{index}",
-                slot_classes=slot_classes,
-                selected_name=op_name,
-                selected_class=(
-                    f"dynamic_op_arity{PRIMITIVE_REGISTRY[op_name].n_inputs}"
-                ),
-                input_node_id=current,
             )
-        cur_dim = graph.nodes[current].output_shape.dim
-        if cur_dim != graph.model_dim:
-            fix_op = (
-                "linear_proj_down" if cur_dim > graph.model_dim else "linear_proj_up"
-            )
-            current = template_add_op(
-                graph,
-                fix_op,
-                [current],
-                {"out_dim": graph.model_dim},
-                context=f"{name}.fix_dim",
-            )
-        return current
+        return _apply_linear_dynamic_candidate(
+            graph,
+            input_id,
+            candidate,
+            template_instance=template_instance,
+        )
     except Exception:
         for nid in range(prev_next_id, graph._next_id):
             graph.nodes.pop(nid, None)
@@ -233,6 +206,209 @@ def apply_dynamic_template_candidate(
             graph.metadata.pop("_active_template_instance", None)
         else:
             graph.metadata["_active_template_instance"] = prev_template_instance
+
+
+def _apply_linear_dynamic_candidate(
+    graph: ComputationGraph,
+    input_id: int,
+    candidate: DynamicTemplateCandidate,
+    *,
+    template_instance: int,
+) -> int:
+    name = candidate.template_id
+    current = template_add_op(
+        graph,
+        "rmsnorm",
+        [input_id],
+        context=f"{name}.input_norm",
+    )
+    prev_snapshot = input_id
+    for index, op_name in enumerate(candidate.chain):
+        current, prev_snapshot = _add_dynamic_chain_op(
+            graph,
+            op_name,
+            current,
+            prev_snapshot,
+            context=f"{name}.step{index}.{op_name}",
+        )
+        _record_dynamic_slot(
+            graph,
+            candidate,
+            template_instance=template_instance,
+            slot_index=index,
+            input_node_id=current,
+        )
+    return _fix_dynamic_dim(graph, current, context=f"{name}.fix_dim")
+
+
+def _apply_trunk_sidecar_dynamic_candidate(
+    graph: ComputationGraph,
+    input_id: int,
+    candidate: DynamicTemplateCandidate,
+    *,
+    template_instance: int,
+) -> int:
+    name = candidate.template_id
+    plan = _candidate_branch_plan(candidate)
+    trunk_indices = _branch_indices(plan, "trunk_indices", candidate)
+    sidecar_indices = _branch_indices(plan, "sidecar_indices", candidate)
+
+    branch_input = template_add_op(
+        graph,
+        "rmsnorm",
+        [input_id],
+        context=f"{name}.input_norm",
+    )
+    trunk = _apply_dynamic_branch(
+        graph,
+        candidate,
+        indices=trunk_indices,
+        branch_input=branch_input,
+        template_instance=template_instance,
+        branch_name="trunk",
+    )
+    sidecar = _apply_dynamic_branch(
+        graph,
+        candidate,
+        indices=sidecar_indices,
+        branch_input=branch_input,
+        template_instance=template_instance,
+        branch_name="sidecar",
+    )
+    trunk = _fix_dynamic_dim(graph, trunk, context=f"{name}.trunk_fix_dim")
+    sidecar = _fix_dynamic_dim(graph, sidecar, context=f"{name}.sidecar_fix_dim")
+    merge_op = str(plan.get("merge_op") or "add")
+    if merge_op != "add":
+        raise TemplateBuildError(f"{name}: unsupported dynamic branch merge {merge_op}")
+    merged = template_add_op(
+        graph,
+        "add",
+        [trunk, sidecar],
+        context=f"{name}.branch_merge",
+    )
+    if bool(plan.get("post_merge_norm", True)):
+        merged = template_add_op(
+            graph,
+            "rmsnorm",
+            [merged],
+            context=f"{name}.branch_merge_norm",
+        )
+    if bool(plan.get("residual_output", True)):
+        return template_add_residual(
+            graph,
+            input_id,
+            merged,
+            context=f"{name}.output_residual",
+        )
+    return _fix_dynamic_dim(graph, merged, context=f"{name}.output_fix_dim")
+
+
+def _apply_dynamic_branch(
+    graph: ComputationGraph,
+    candidate: DynamicTemplateCandidate,
+    *,
+    indices: tuple[int, ...],
+    branch_input: int,
+    template_instance: int,
+    branch_name: str,
+) -> int:
+    current = branch_input
+    prev_snapshot = branch_input
+    for index in indices:
+        op_name = candidate.chain[index]
+        current, prev_snapshot = _add_dynamic_chain_op(
+            graph,
+            op_name,
+            current,
+            prev_snapshot,
+            context=f"{candidate.template_id}.{branch_name}.step{index}.{op_name}",
+        )
+        _record_dynamic_slot(
+            graph,
+            candidate,
+            template_instance=template_instance,
+            slot_index=index,
+            input_node_id=current,
+            branch_name=branch_name,
+        )
+    return current
+
+
+def _record_dynamic_slot(
+    graph: ComputationGraph,
+    candidate: DynamicTemplateCandidate,
+    *,
+    template_instance: int,
+    slot_index: int,
+    input_node_id: int,
+    branch_name: str | None = None,
+) -> None:
+    op_name = candidate.chain[slot_index]
+    slot_suffix = (
+        f"{branch_name}.step{slot_index}" if branch_name else f"step{slot_index}"
+    )
+    record_template_slot_binding(
+        graph,
+        template_name=candidate.template_id,
+        template_instance=template_instance,
+        slot_index=slot_index,
+        slot_key=f"{candidate.template_id}[{template_instance}].{slot_suffix}",
+        slot_classes=_candidate_slot_classes(candidate, slot_index),
+        selected_name=op_name,
+        selected_class=f"dynamic_op_arity{PRIMITIVE_REGISTRY[op_name].n_inputs}",
+        input_node_id=input_node_id,
+    )
+
+
+def _fix_dynamic_dim(graph: ComputationGraph, current: int, *, context: str) -> int:
+    cur_dim = graph.nodes[current].output_shape.dim
+    if cur_dim == graph.model_dim:
+        return current
+    fix_op = "linear_proj_down" if cur_dim > graph.model_dim else "linear_proj_up"
+    return template_add_op(
+        graph,
+        fix_op,
+        [current],
+        {"out_dim": graph.model_dim},
+        context=context,
+    )
+
+
+def _candidate_lowering(candidate: DynamicTemplateCandidate) -> str:
+    descriptor = candidate.component_descriptor
+    if not isinstance(descriptor, Mapping):
+        return "rmsnorm_chain_with_binary_skip"
+    return str(descriptor.get("lowering") or "rmsnorm_chain_with_binary_skip")
+
+
+def _candidate_branch_plan(candidate: DynamicTemplateCandidate) -> Mapping[str, Any]:
+    descriptor = candidate.component_descriptor
+    plan = descriptor.get("branch_plan") if isinstance(descriptor, Mapping) else None
+    if not isinstance(plan, Mapping):
+        raise TemplateBuildError(f"{candidate.template_id}: missing branch_plan")
+    return plan
+
+
+def _branch_indices(
+    plan: Mapping[str, Any],
+    key: str,
+    candidate: DynamicTemplateCandidate,
+) -> tuple[int, ...]:
+    raw = plan.get(key)
+    if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes)):
+        raise TemplateBuildError(f"{candidate.template_id}: invalid {key}")
+    out: list[int] = []
+    for value in raw:
+        try:
+            index = int(value)
+        except (TypeError, ValueError) as exc:
+            raise TemplateBuildError(f"{candidate.template_id}: invalid {key}") from exc
+        if index < 0 or index >= len(candidate.chain):
+            raise TemplateBuildError(f"{candidate.template_id}: {key} out of range")
+        out.append(index)
+    if not out:
+        raise TemplateBuildError(f"{candidate.template_id}: empty {key}")
+    return tuple(out)
 
 
 def _candidate_records(payload: Any) -> list[Mapping[str, Any]]:
