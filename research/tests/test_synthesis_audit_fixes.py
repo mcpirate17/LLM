@@ -58,6 +58,64 @@ def test_graph_feature_bundle_returns_canonical_ops():
     assert ops == ["gated_lane_blend", "layernorm"]
 
 
+def test_graph_features_surface_dynamic_component_metadata():
+    graph_json = {
+        "model_dim": 64,
+        "nodes": {
+            "0": {"id": 0, "op_name": "input", "input_ids": []},
+            "1": {"id": 1, "op_name": "rmsnorm", "input_ids": [0]},
+            "2": {"id": 2, "op_name": "add", "input_ids": [0, 1]},
+        },
+        "metadata": {
+            "templates_used": ["dynamic_branch"],
+            "dynamic_templates_used": [{"template_id": "dynamic_branch"}],
+            "dynamic_components_used": [
+                {
+                    "component_id": "component_branch",
+                    "lowering": "trunk_sidecar_merge_v1",
+                    "component_descriptor": {
+                        "lowering": "trunk_sidecar_merge_v1",
+                    },
+                }
+            ],
+        },
+    }
+
+    features = extract_graph_features(graph_json)
+
+    assert features["n_dynamic_templates_used"] == 1.0
+    assert features["n_dynamic_components_used"] == 1.0
+    assert features["n_dynamic_trunk_sidecar_components"] == 1.0
+    assert features["has_dynamic_components"] == 1.0
+    assert features["has_dynamic_branch_components"] == 1.0
+
+
+def test_graph_features_read_legacy_dynamic_template_component_payload():
+    graph_json = {
+        "model_dim": 64,
+        "nodes": {
+            "0": {"id": 0, "op_name": "input", "input_ids": []},
+            "1": {"id": 1, "op_name": "rmsnorm", "input_ids": [0]},
+        },
+        "metadata": {
+            "dynamic_templates_used": [
+                {
+                    "template_id": "legacy_dynamic",
+                    "component_descriptor": {
+                        "lowering": "rmsnorm_chain_with_binary_skip",
+                    },
+                }
+            ],
+        },
+    }
+
+    features = extract_graph_features(graph_json)
+
+    assert features["n_dynamic_templates_used"] == 1.0
+    assert features["n_dynamic_components_used"] == 1.0
+    assert features["n_dynamic_linear_components"] == 1.0
+
+
 def test_validate_graph_rejects_too_shallow_ops_without_mutation():
     graph = ComputationGraph(64)
     inp = graph.add_input()

@@ -15,7 +15,7 @@ import math
 import sqlite3
 from collections import Counter, deque
 from functools import lru_cache
-from typing import Any, Dict, FrozenSet, List, Optional, Tuple
+from typing import Any, Dict, FrozenSet, List, Mapping, Optional, Tuple
 
 from research.defaults import RUNS_DB
 
@@ -273,6 +273,67 @@ def _extract_graph_structure_native(
     return features, op_names
 
 
+def _coerce_graph_dict(graph_json: Any) -> dict[str, Any] | None:
+    if isinstance(graph_json, str):
+        try:
+            graph_json = loads_json(graph_json)
+        except (TypeError, ValueError):
+            return None
+    return graph_json if isinstance(graph_json, dict) else None
+
+
+def _metadata_list(metadata: Mapping[str, Any], key: str) -> list[Any]:
+    value = metadata.get(key)
+    return value if isinstance(value, list) else []
+
+
+def _dynamic_component_records(metadata: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    current = [
+        item
+        for item in _metadata_list(metadata, "dynamic_components_used")
+        if isinstance(item, Mapping)
+    ]
+    if current:
+        return current
+    return [
+        item
+        for item in _metadata_list(metadata, "dynamic_templates_used")
+        if isinstance(item, Mapping)
+        and isinstance(item.get("component_descriptor"), Mapping)
+    ]
+
+
+def _dynamic_component_lowering(record: Mapping[str, Any]) -> str:
+    descriptor = record.get("component_descriptor")
+    if not isinstance(descriptor, Mapping):
+        descriptor = {}
+    return str(record.get("lowering") or descriptor.get("lowering") or "")
+
+
+def _populate_dynamic_metadata_features(
+    features: Dict[str, float],
+    metadata: Mapping[str, Any],
+) -> None:
+    dynamic_templates = _metadata_list(metadata, "dynamic_templates_used")
+    dynamic_components = _dynamic_component_records(metadata)
+    lowerings = Counter(
+        _dynamic_component_lowering(item) for item in dynamic_components
+    )
+    branch_components = sum(
+        count for lowering, count in lowerings.items() if lowering.endswith("_merge_v1")
+    )
+    features["n_dynamic_templates_used"] = float(len(dynamic_templates))
+    features["n_dynamic_components_used"] = float(len(dynamic_components))
+    features["n_dynamic_trunk_sidecar_components"] = float(
+        lowerings.get("trunk_sidecar_merge_v1", 0)
+    )
+    features["n_dynamic_linear_components"] = float(
+        lowerings.get("rmsnorm_chain_with_binary_skip", 0)
+    )
+    features["has_dynamic_components"] = float(bool(dynamic_components))
+    features["has_dynamic_branch_components"] = float(branch_components > 0)
+
+
 def _extract_graph_features_python(
     graph_json: Dict[str, Any],
 ) -> tuple[Dict[str, float], List[str]]:
@@ -303,6 +364,8 @@ def _extract_graph_features_python(
 
     templates_used = metadata.get("templates_used") or []
     features["n_templates_used"] = float(len(templates_used))
+    if isinstance(metadata, Mapping):
+        _populate_dynamic_metadata_features(features, metadata)
 
     model_dim = graph_json.get("model_dim", 0)
     features["model_dim"] = float(model_dim) if model_dim else 0.0
@@ -313,23 +376,24 @@ def _extract_graph_features_python(
 def extract_graph_features_bundle(
     graph_json: Any,
 ) -> tuple[Dict[str, float], List[str]]:
-    native = _extract_graph_structure_native(graph_json)
+    graph_dict = _coerce_graph_dict(graph_json)
+    native = _extract_graph_structure_native(
+        graph_dict if graph_dict is not None else graph_json
+    )
     if native is not None:
         base_features, op_names = native
         features = dict(base_features)
         _populate_op_feature_columns(features, op_names)
+        if graph_dict is not None:
+            metadata = graph_dict.get("metadata") or {}
+            if isinstance(metadata, Mapping):
+                _populate_dynamic_metadata_features(features, metadata)
         return features, op_names
 
-    if isinstance(graph_json, str):
-        try:
-            graph_json = loads_json(graph_json)
-        except (TypeError, ValueError):
-            return {}, []
-
-    if not isinstance(graph_json, dict):
+    if graph_dict is None:
         return {}, []
 
-    return _extract_graph_features_python(graph_json)
+    return _extract_graph_features_python(graph_dict)
 
 
 def extract_graph_features(graph_json: Any) -> Dict[str, float]:

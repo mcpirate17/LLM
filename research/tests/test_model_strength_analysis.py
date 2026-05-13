@@ -228,6 +228,12 @@ def test_graph_features_supports_list_nodes_and_preserves_raw_ops():
                 "primary_template": "router_block",
                 "templates_used": ["router_block"],
                 "motifs_used": ["router_chain"],
+                "dynamic_components_used": [
+                    {
+                        "component_id": "component_branch",
+                        "lowering": "trunk_sidecar_merge_v1",
+                    }
+                ],
                 "template_slot_usage": [
                     {
                         "template_name": "router_block",
@@ -246,8 +252,14 @@ def test_graph_features_supports_list_nodes_and_preserves_raw_ops():
     assert features["op_pairs"] == ["route_topk+state_space"]
     assert features["depth_ops"] == ["late:route_topk", "middle:state_space"]
     assert features["slot_components"] == ["router_block.slot0:router_chain"]
+    assert features["dynamic_components"] == [
+        "component_branch",
+        "lowering:trunk_sidecar_merge_v1",
+    ]
     assert features["pattern_has_routing"] == 1
     assert features["pattern_has_ssm"] == 1
+    assert features["pattern_dynamic_component"] == 1
+    assert features["pattern_dynamic_branch_component"] == 1
 
 
 def test_counter_feature_map_dedupes_within_row_and_preserves_index():

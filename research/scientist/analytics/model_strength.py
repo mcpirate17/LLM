@@ -18,6 +18,7 @@ from ..trust_policy import (
     TRUSTED_COMPARABILITY_LABELS,
     TRUSTED_TRUST_LABELS,
 )
+from .dynamic_component_features import dynamic_component_feature_summary
 from .model_strength_schema import EMPTY_STRENGTH_COLUMNS
 
 BASE_ANALYSIS_QUERY = """
@@ -262,6 +263,9 @@ def _graph_features(graph_json: Any) -> dict[str, Any]:
 
     templates = metadata.get("templates_used") or []
     motifs = metadata.get("motifs_used") or []
+    dynamic_component_tokens, dynamic_feature_flags = dynamic_component_feature_summary(
+        metadata
+    )
     primary_template = str(
         metadata.get("primary_template")
         or (templates[0] if isinstance(templates, list) and templates else "")
@@ -319,12 +323,14 @@ def _graph_features(graph_json: Any) -> dict[str, Any]:
             isinstance(templates, list) and len(templates) > 1
         ),
         "pattern_slot_telemetry": int(bool(slot_keys)),
+        **dynamic_feature_flags,
     }
 
     return {
         "primary_template": primary_template,
         "templates_used": [str(item) for item in templates if isinstance(item, str)],
         "motifs_used": [str(item) for item in motifs if isinstance(item, str)],
+        "dynamic_components": dynamic_component_tokens,
         "ops": unique_ops,
         "op_pairs": sorted(pairs),
         "slot_keys": slot_keys,
