@@ -13,12 +13,13 @@ import argparse
 import hashlib
 import json
 import math
+import random
 import re
 import time
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from research.meta_analysis.template_validator import validate_chain
+from research.meta_analysis.template_validator import _run_smoke_test, validate_chain
 from research.synthesis.component_rules import (
     ComponentRuleConfig,
     component_role_counts,
@@ -29,7 +30,14 @@ from research.synthesis.component_rule_engine import (
     component_slot_plan,
     load_component_rule_set,
 )
+from research.synthesis.compiler import _compile_layer_module
+from research.synthesis.dynamic_template_registry import (
+    DynamicTemplateCandidate,
+    apply_dynamic_template_candidate,
+)
+from research.synthesis.graph import ComputationGraph
 from research.synthesis.op_roles import OpRole, get_role
+from research.synthesis.validator import validate_graph
 
 
 DEFAULT_INPUT = Path("research/reports/component_rule_mining_20260511_222730.json")
@@ -192,7 +200,7 @@ def _candidate_from_report_row(
         source_path=str(report_path),
     )
     candidate["validation"] = _candidate_validation(
-        chain,
+        candidate,
         model_dim=model_dim,
         run_smoke=run_smoke,
         validate_candidates=validate_candidates,
@@ -201,17 +209,23 @@ def _candidate_from_report_row(
 
 
 def _candidate_validation(
-    chain: tuple[str, ...],
+    candidate: Mapping[str, Any],
     *,
     model_dim: int,
     run_smoke: bool,
     validate_candidates: bool,
 ) -> dict[str, Any]:
+    chain = _coerce_chain(candidate.get("chain"))
     if validate_candidates:
+        descriptor = candidate.get("component_descriptor")
+        if _candidate_lowering(descriptor) == "trunk_sidecar_merge_v1":
+            return _validate_lowered_dynamic_candidate(
+                candidate,
+                model_dim=model_dim,
+                run_smoke=run_smoke,
+            )
         return _validate_candidate_chain(
-            chain,
-            model_dim=model_dim,
-            run_smoke=run_smoke,
+            chain, model_dim=model_dim, run_smoke=run_smoke
         )
     return {
         "compile_passed": False,
@@ -220,6 +234,12 @@ def _candidate_validation(
         "backward_passed": False,
         "failure_mode": "not_run",
     }
+
+
+def _candidate_lowering(descriptor: Any) -> str:
+    if not isinstance(descriptor, Mapping):
+        return "rmsnorm_chain_with_binary_skip"
+    return str(descriptor.get("lowering") or "rmsnorm_chain_with_binary_skip")
 
 
 def _load_candidate_rows(
@@ -505,6 +525,97 @@ def _validate_candidate_chain(
         max_depth=max(32, lowered_ops + 8),
         run_smoke=run_smoke,
     )
+
+
+def _validate_lowered_dynamic_candidate(
+    candidate: Mapping[str, Any],
+    *,
+    model_dim: int,
+    run_smoke: bool,
+) -> dict[str, Any]:
+    chain = _coerce_chain(candidate.get("chain"))
+    lowered_ops = estimated_chain_lowered_op_count(chain)
+    result: dict[str, Any] = {
+        "compile_passed": False,
+        "validate_passed": False,
+        "forward_passed": False,
+        "backward_passed": False,
+        "n_ops": 0,
+        "failure_mode": None,
+        "error": None,
+        "lowering_validated": "trunk_sidecar_merge_v1",
+    }
+    try:
+        graph = _build_lowered_dynamic_candidate_graph(candidate, model_dim=model_dim)
+    except Exception as exc:
+        result["failure_mode"] = "build"
+        result["error"] = f"{type(exc).__name__}: {exc}"
+        return result
+
+    result["n_ops"] = len(graph.nodes) - 1
+    validation = validate_graph(
+        graph,
+        max_ops=max(32, lowered_ops + 12),
+        max_depth=max(32, lowered_ops + 12),
+    )
+    if validation.errors:
+        result["failure_mode"] = "validate"
+        result["error"] = "; ".join(validation.errors[:3])
+        return result
+    result["validate_passed"] = True
+
+    try:
+        compiled = _compile_layer_module(graph, prefer_fast_path=True)
+    except Exception as exc:
+        result["failure_mode"] = "compile"
+        result["error"] = f"{type(exc).__name__}: {exc}"
+        return result
+    result["compile_passed"] = True
+
+    if not run_smoke:
+        return result
+
+    smoke = _run_smoke_test(compiled, model_dim=model_dim)
+    result.update(smoke)
+    if not smoke["backward_passed"] and result["failure_mode"] is None:
+        result["failure_mode"] = "smoke"
+        result["error"] = smoke.get("smoke_error")
+    return result
+
+
+def _build_lowered_dynamic_candidate_graph(
+    candidate: Mapping[str, Any],
+    *,
+    model_dim: int,
+) -> ComputationGraph:
+    graph = ComputationGraph(model_dim=model_dim)
+    input_node = graph.add_input()
+    dynamic_candidate = DynamicTemplateCandidate(
+        template_id=str(candidate.get("proposed_template_name") or "dynamic_component"),
+        display_name=str(
+            candidate.get("proposed_template_name") or "dynamic_component"
+        ),
+        chain=_coerce_chain(candidate.get("chain")),
+        weight=float(candidate.get("promotion_score") or 1.0),
+        lowered_op_count=int(candidate.get("lowered_op_count") or 0),
+        source_path=str(candidate.get("source_path") or ""),
+        source=str(candidate.get("source") or "component_rule_mining"),
+        evidence={},
+        validation={},
+        component_descriptor=(
+            dict(candidate["component_descriptor"])
+            if isinstance(candidate.get("component_descriptor"), Mapping)
+            else {}
+        ),
+    )
+    output = apply_dynamic_template_candidate(
+        graph,
+        input_node,
+        random.Random(0),
+        dynamic_candidate,
+    )
+    graph.set_output(output)
+    return graph
 
 
 def _is_ready(validation: Mapping[str, Any]) -> bool:

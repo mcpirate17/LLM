@@ -194,6 +194,44 @@ def test_build_dynamic_component_candidates_marks_multi_mixer_branch_lowering(
     }
 
 
+def test_branch_candidates_validate_lowered_topology(tmp_path: Path) -> None:
+    report = _write_report(tmp_path / "mining.json")
+    payload = json.loads(report.read_text(encoding="utf-8"))
+    payload["candidate_windows"] = [
+        {
+            "pattern": [
+                "latent_attention_compressor",
+                "linear_proj",
+                "conv1d_seq",
+                "silu",
+                "rmsnorm",
+                "selective_scan",
+                "add",
+                "add",
+            ],
+            "n": 12,
+            "stage1_passed": 11,
+            "pass_rate": 0.9167,
+            "pass_rate_lift": 0.25,
+            "mean_loss_ratio": 0.6,
+        }
+    ]
+    report.write_text(json.dumps(payload), encoding="utf-8")
+
+    built = build_dynamic_component_candidates(
+        mining_report_path=report,
+        output_path=None,
+        validate_candidates=True,
+    )
+
+    validation = built["candidates"][0]["validation"]
+    assert validation["lowering_validated"] == "trunk_sidecar_merge_v1"
+    assert validation["validate_passed"] is True
+    assert validation["compile_passed"] is True
+    assert validation["forward_passed"] is True
+    assert validation["backward_passed"] is True
+
+
 def test_build_dynamic_component_candidates_ready_requires_backward_validation(
     tmp_path: Path,
     monkeypatch,
