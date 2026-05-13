@@ -235,6 +235,52 @@ def test_build_dynamic_component_candidates_marks_single_mixer_restore_sidecar(
     }
 
 
+def test_build_dynamic_component_candidates_marks_router_lane_blend(
+    tmp_path: Path,
+) -> None:
+    report = _write_report(tmp_path / "mining.json")
+    payload = json.loads(report.read_text(encoding="utf-8"))
+    payload["candidate_windows"] = [
+        {
+            "pattern": [
+                "add",
+                "rmsnorm",
+                "linear_proj",
+                "matmul",
+                "linear_proj",
+                "gather_topk",
+                "swiglu_mlp",
+                "add",
+            ],
+            "n": 12,
+            "stage1_passed": 11,
+            "pass_rate": 0.9167,
+            "pass_rate_lift": 0.25,
+            "mean_loss_ratio": 0.6,
+        }
+    ]
+    report.write_text(json.dumps(payload), encoding="utf-8")
+
+    built = build_dynamic_component_candidates(
+        mining_report_path=report,
+        output_path=None,
+        validate_candidates=False,
+    )
+
+    descriptor = built["candidates"][0]["component_descriptor"]
+    assert descriptor["lowering"] == "router_lane_blend_v1"
+    assert descriptor["branch_plan"] == {
+        "value_project_index": 2,
+        "matmul_index": 3,
+        "score_project_index": 4,
+        "route_index": 5,
+        "gate_index": 6,
+        "blend_op": "gated_lane_blend",
+        "post_merge_norm": True,
+        "residual_output": True,
+    }
+
+
 def test_branch_candidates_validate_lowered_topology(tmp_path: Path) -> None:
     report = _write_report(tmp_path / "mining.json")
     payload = json.loads(report.read_text(encoding="utf-8"))
@@ -267,6 +313,46 @@ def test_branch_candidates_validate_lowered_topology(tmp_path: Path) -> None:
 
     validation = built["candidates"][0]["validation"]
     assert validation["lowering_validated"] == "trunk_sidecar_merge_v1"
+    assert validation["validate_passed"] is True
+    assert validation["compile_passed"] is True
+    assert validation["forward_passed"] is True
+    assert validation["backward_passed"] is True
+
+
+def test_router_lane_blend_candidates_validate_lowered_topology(
+    tmp_path: Path,
+) -> None:
+    report = _write_report(tmp_path / "mining.json")
+    payload = json.loads(report.read_text(encoding="utf-8"))
+    payload["candidate_windows"] = [
+        {
+            "pattern": [
+                "add",
+                "rmsnorm",
+                "linear_proj",
+                "matmul",
+                "linear_proj",
+                "gather_topk",
+                "swiglu_mlp",
+                "add",
+            ],
+            "n": 12,
+            "stage1_passed": 11,
+            "pass_rate": 0.9167,
+            "pass_rate_lift": 0.25,
+            "mean_loss_ratio": 0.6,
+        }
+    ]
+    report.write_text(json.dumps(payload), encoding="utf-8")
+
+    built = build_dynamic_component_candidates(
+        mining_report_path=report,
+        output_path=None,
+        validate_candidates=True,
+    )
+
+    validation = built["candidates"][0]["validation"]
+    assert validation["lowering_validated"] == "router_lane_blend_v1"
     assert validation["validate_passed"] is True
     assert validation["compile_passed"] is True
     assert validation["forward_passed"] is True

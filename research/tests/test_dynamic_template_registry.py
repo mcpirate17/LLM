@@ -300,6 +300,69 @@ def test_dynamic_template_can_lower_mixer_restore_sidecar_component(
     assert used_component["lowering"] == "mixer_sidecar_restore_v1"
 
 
+def test_dynamic_template_can_lower_router_lane_blend_component(
+    tmp_path: Path,
+) -> None:
+    chain = [
+        "add",
+        "rmsnorm",
+        "linear_proj",
+        "matmul",
+        "linear_proj",
+        "gather_topk",
+        "swiglu_mlp",
+        "add",
+    ]
+    artifact = _write_candidates(
+        tmp_path / "validated.json",
+        [
+            _candidate(
+                "router_lane_block",
+                chain,
+                component_descriptor={
+                    "has_multi_mixer": False,
+                    "lowering": "router_lane_blend_v1",
+                    "branch_plan": {
+                        "value_project_index": 2,
+                        "matmul_index": 3,
+                        "score_project_index": 4,
+                        "route_index": 5,
+                        "gate_index": 6,
+                        "blend_op": "gated_lane_blend",
+                        "post_merge_norm": True,
+                        "residual_output": True,
+                    },
+                    "slot_plan": [
+                        {
+                            "slot_index": idx,
+                            "slot_classes": ["dynamic_role:route", "dynamic_step"],
+                        }
+                        for idx in range(len(chain))
+                    ],
+                },
+            )
+        ],
+    )
+    candidate = load_dynamic_template_candidates(artifact, min_lowered_ops=1)[0]
+    graph = ComputationGraph(model_dim=64)
+    input_id = graph.add_input()
+
+    tail = apply_dynamic_template_candidate(
+        graph, input_id, random.Random(1), candidate
+    )
+
+    assert graph.nodes[tail].op_name == "add"
+    op_names = [node.op_name for node in graph.nodes.values()]
+    assert "matmul" in op_names
+    assert "gather_topk" in op_names
+    assert "gated_lane_blend" in op_names
+    slots = graph.metadata["template_slot_usage"]
+    assert {slot["slot_index"] for slot in slots} == {2, 3, 4, 5, 6}
+    assert all(".router." in slot["slot_key"] for slot in slots)
+    used_component = graph.metadata["dynamic_components_used"][0]
+    assert used_component["lowering"] == "router_lane_blend_v1"
+
+
 def test_generate_layer_graph_can_use_dynamic_candidates(tmp_path: Path) -> None:
     artifact = _write_candidates(
         tmp_path / "validated.json",

@@ -113,6 +113,7 @@ def _longest_path(nodes: Dict[str, dict], fwd: Dict[str, List[str]]) -> int:
     Uses Kahn's algorithm to process nodes in topological order,
     avoiding stack overflow on deep graphs.
     """
+    # guardrail: allow-complexity - bounded graph metadata fallback; native extraction is preferred.
     # Compute in-degrees
     in_degree: Dict[str, int] = {nid: 0 for nid in nodes}
     for nid, children in fwd.items():
@@ -141,6 +142,7 @@ def _compute_depth_map(
     nodes: Dict[str, dict], fwd: Dict[str, List[str]]
 ) -> Dict[str, int]:
     """BFS depth assignment from root nodes. Shared by width/skip-connection features."""
+    # guardrail: allow-complexity - bounded graph metadata fallback; native extraction is preferred.
     roots = [nid for nid, node in nodes.items() if not (node.get("input_ids") or [])]
     depth_map: Dict[str, int] = {}
     queue = list(roots)
@@ -314,6 +316,7 @@ def _is_dynamic_branch_lowering(lowering: str) -> bool:
     return lowering in {
         "trunk_sidecar_merge_v1",
         "mixer_sidecar_restore_v1",
+        "router_lane_blend_v1",
     }
 
 
@@ -338,6 +341,9 @@ def _populate_dynamic_metadata_features(
     )
     features["n_dynamic_mixer_sidecar_components"] = float(
         lowerings.get("mixer_sidecar_restore_v1", 0)
+    )
+    features["n_dynamic_router_lane_components"] = float(
+        lowerings.get("router_lane_blend_v1", 0)
     )
     features["n_dynamic_linear_components"] = float(
         lowerings.get("rmsnorm_chain_with_binary_skip", 0)

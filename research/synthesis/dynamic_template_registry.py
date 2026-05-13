@@ -164,6 +164,13 @@ def apply_dynamic_template_candidate(
     graph.metadata["_active_template_instance"] = template_instance
 
     try:
+        if lowering == "router_lane_blend_v1":
+            return _apply_router_lane_blend_dynamic_candidate(
+                graph,
+                input_id,
+                candidate,
+                template_instance=template_instance,
+            )
         if lowering in {"trunk_sidecar_merge_v1", "mixer_sidecar_restore_v1"}:
             return _apply_trunk_sidecar_dynamic_candidate(
                 graph,
@@ -326,6 +333,152 @@ def _apply_trunk_sidecar_dynamic_candidate(
     return _fix_dynamic_dim(graph, merged, context=f"{name}.output_fix_dim")
 
 
+def _apply_router_lane_blend_dynamic_candidate(
+    graph: ComputationGraph,
+    input_id: int,
+    candidate: DynamicTemplateCandidate,
+    *,
+    template_instance: int,
+) -> int:
+    name = candidate.template_id
+    plan = _candidate_branch_plan(candidate)
+    branch_input = template_add_op(
+        graph,
+        "rmsnorm",
+        [input_id],
+        context=f"{name}.input_norm",
+    )
+    value_index, matmul_index, score_index, route_index, gate_index = (
+        _router_lane_indices(plan, candidate)
+    )
+    value = _add_router_lane_op(
+        graph,
+        candidate,
+        template_instance=template_instance,
+        slot_index=value_index,
+        inputs=[branch_input],
+        context=f"{name}.router.value_project",
+    )
+    scores = _add_router_lane_op(
+        graph,
+        candidate,
+        template_instance=template_instance,
+        slot_index=matmul_index,
+        inputs=[value, value],
+        context=f"{name}.router.score_matmul",
+    )
+    score_projected = _add_router_lane_op(
+        graph,
+        candidate,
+        template_instance=template_instance,
+        slot_index=score_index,
+        inputs=[scores],
+        context=f"{name}.router.score_project",
+    )
+    routed = _add_router_lane_op(
+        graph,
+        candidate,
+        template_instance=template_instance,
+        slot_index=route_index,
+        inputs=[value, score_projected],
+        context=f"{name}.router.route",
+    )
+    gated = _add_router_lane_op(
+        graph,
+        candidate,
+        template_instance=template_instance,
+        slot_index=gate_index,
+        inputs=[routed],
+        context=f"{name}.router.gate",
+    )
+    return _finish_router_lane_blend(
+        graph,
+        input_id=input_id,
+        value=value,
+        gated=gated,
+        plan=plan,
+        name=name,
+    )
+
+
+def _router_lane_indices(
+    plan: Mapping[str, Any],
+    candidate: DynamicTemplateCandidate,
+) -> tuple[int, int, int, int, int]:
+    return (
+        _branch_index(plan, "value_project_index", candidate),
+        _branch_index(plan, "matmul_index", candidate),
+        _branch_index(plan, "score_project_index", candidate),
+        _branch_index(plan, "route_index", candidate),
+        _branch_index(plan, "gate_index", candidate),
+    )
+
+
+def _add_router_lane_op(
+    graph: ComputationGraph,
+    candidate: DynamicTemplateCandidate,
+    *,
+    template_instance: int,
+    slot_index: int,
+    inputs: list[int],
+    context: str,
+) -> int:
+    node_id = template_add_op(
+        graph, candidate.chain[slot_index], inputs, context=context
+    )
+    _record_dynamic_slot(
+        graph,
+        candidate,
+        template_instance=template_instance,
+        slot_index=slot_index,
+        input_node_id=node_id,
+        branch_name="router",
+    )
+    return node_id
+
+
+def _finish_router_lane_blend(
+    graph: ComputationGraph,
+    *,
+    input_id: int,
+    value: int,
+    gated: int,
+    plan: Mapping[str, Any],
+    name: str,
+) -> int:
+    blend_op = str(plan.get("blend_op") or "gated_lane_blend")
+    blended = template_add_op(
+        graph,
+        blend_op,
+        [gated],
+        {"n_lanes": 2},
+        context=f"{name}.router.blend",
+    )
+    value = _fix_dynamic_dim(graph, value, context=f"{name}.router.value_fix_dim")
+    blended = _fix_dynamic_dim(graph, blended, context=f"{name}.router.blend_fix_dim")
+    merged = template_add_op(
+        graph,
+        "add",
+        [value, blended],
+        context=f"{name}.router.merge",
+    )
+    if bool(plan.get("post_merge_norm", True)):
+        merged = template_add_op(
+            graph,
+            "rmsnorm",
+            [merged],
+            context=f"{name}.router.merge_norm",
+        )
+    if bool(plan.get("residual_output", True)):
+        return template_add_residual(
+            graph,
+            input_id,
+            merged,
+            context=f"{name}.output_residual",
+        )
+    return _fix_dynamic_dim(graph, merged, context=f"{name}.output_fix_dim")
+
+
 def _apply_dynamic_branch(
     graph: ComputationGraph,
     candidate: DynamicTemplateCandidate,
@@ -432,6 +585,20 @@ def _branch_indices(
     if not out:
         raise TemplateBuildError(f"{candidate.template_id}: empty {key}")
     return tuple(out)
+
+
+def _branch_index(
+    plan: Mapping[str, Any],
+    key: str,
+    candidate: DynamicTemplateCandidate,
+) -> int:
+    try:
+        index = int(plan.get(key))
+    except (TypeError, ValueError) as exc:
+        raise TemplateBuildError(f"{candidate.template_id}: invalid {key}") from exc
+    if index < 0 or index >= len(candidate.chain):
+        raise TemplateBuildError(f"{candidate.template_id}: {key} out of range")
+    return index
 
 
 def _candidate_records(payload: Any) -> list[Mapping[str, Any]]:

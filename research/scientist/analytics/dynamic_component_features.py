@@ -7,6 +7,7 @@ _BRANCH_LOWERINGS = frozenset(
     {
         "trunk_sidecar_merge_v1",
         "mixer_sidecar_restore_v1",
+        "router_lane_blend_v1",
     }
 )
 

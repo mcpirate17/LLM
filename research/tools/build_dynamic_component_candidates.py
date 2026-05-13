@@ -48,6 +48,7 @@ _BRANCH_LOWERINGS = frozenset(
     {
         "trunk_sidecar_merge_v1",
         "mixer_sidecar_restore_v1",
+        "router_lane_blend_v1",
     }
 )
 
@@ -455,6 +456,9 @@ def _candidate_branch_lowering(
     trunk_sidecar = _trunk_sidecar_branch_plan(chain)
     if trunk_sidecar is not None:
         return "trunk_sidecar_merge_v1", trunk_sidecar
+    router_lane = _router_lane_blend_plan(chain)
+    if router_lane is not None:
+        return "router_lane_blend_v1", router_lane
     mixer_restore = _mixer_sidecar_restore_branch_plan(chain)
     if mixer_restore is not None:
         return "mixer_sidecar_restore_v1", mixer_restore
@@ -514,6 +518,61 @@ def _mixer_sidecar_restore_branch_plan(chain: tuple[str, ...]) -> dict[str, Any]
         "post_merge_norm": True,
         "residual_output": True,
     }
+
+
+def _router_lane_blend_plan(chain: tuple[str, ...]) -> dict[str, Any] | None:
+    roles = tuple(get_role(op) for op in chain)
+    route_indices = [idx for idx, role in enumerate(roles) if role is OpRole.ROUTE]
+    gate_indices = [idx for idx, role in enumerate(roles) if role is OpRole.GATE]
+    matmul_indices = [idx for idx, op in enumerate(chain) if op == "matmul"]
+    if not route_indices or not gate_indices or not matmul_indices:
+        return None
+
+    route_index = route_indices[0]
+    gate_index = next((idx for idx in gate_indices if idx > route_index), None)
+    matmul_index = next((idx for idx in matmul_indices if idx < route_index), None)
+    if gate_index is None or matmul_index is None:
+        return None
+
+    value_project_index = _nearest_role_before(roles, OpRole.PROJECT, matmul_index)
+    score_project_index = _nearest_role_between(
+        roles, OpRole.PROJECT, matmul_index + 1, route_index
+    )
+    if value_project_index is None or score_project_index is None:
+        return None
+    return {
+        "value_project_index": int(value_project_index),
+        "matmul_index": int(matmul_index),
+        "score_project_index": int(score_project_index),
+        "route_index": int(route_index),
+        "gate_index": int(gate_index),
+        "blend_op": "gated_lane_blend",
+        "post_merge_norm": True,
+        "residual_output": True,
+    }
+
+
+def _nearest_role_before(
+    roles: tuple[OpRole, ...],
+    role: OpRole,
+    end: int,
+) -> int | None:
+    for index in range(end - 1, -1, -1):
+        if roles[index] is role:
+            return index
+    return None
+
+
+def _nearest_role_between(
+    roles: tuple[OpRole, ...],
+    role: OpRole,
+    start: int,
+    end: int,
+) -> int | None:
+    for index in range(start, end):
+        if roles[index] is role:
+            return index
+    return None
 
 
 def _single_mixer_trunk_indices(
