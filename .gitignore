@@ -150,6 +150,7 @@ research/**/reports/
 research/**/profiling/
 research/**/perf_artifacts/
 research/**/runtime_events/
+research/runtime_events/
 research/**/logs/
 research/**/tmp/
 research/**/temp/
