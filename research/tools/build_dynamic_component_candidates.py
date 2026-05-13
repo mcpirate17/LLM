@@ -44,6 +44,12 @@ DEFAULT_INPUT = Path("research/reports/component_rule_mining_20260511_222730.jso
 DEFAULT_OUTPUT = Path("research/notes/dynamic_component_candidates.json")
 PREFERRED_PAIR_MIN_PASS_RATE = 0.60
 PREFERRED_PAIR_MIN_PASS_RATE_LIFT = -0.25
+_BRANCH_LOWERINGS = frozenset(
+    {
+        "trunk_sidecar_merge_v1",
+        "mixer_sidecar_restore_v1",
+    }
+)
 
 
 def build_dynamic_component_candidates(
@@ -218,7 +224,7 @@ def _candidate_validation(
     chain = _coerce_chain(candidate.get("chain"))
     if validate_candidates:
         descriptor = candidate.get("component_descriptor")
-        if _candidate_lowering(descriptor) == "trunk_sidecar_merge_v1":
+        if _candidate_lowering(descriptor) in _BRANCH_LOWERINGS:
             return _validate_lowered_dynamic_candidate(
                 candidate,
                 model_dim=model_dim,
@@ -416,7 +422,7 @@ def _component_descriptor(
     index: int,
     role_counts: Mapping[str, int],
 ) -> dict[str, Any]:
-    branch_plan = _trunk_sidecar_branch_plan(chain)
+    lowering, branch_plan = _candidate_branch_lowering(chain)
     descriptor = {
         "descriptor_version": "component_chain_v1",
         "component_id": _component_id(chain, index),
@@ -438,9 +444,21 @@ def _component_descriptor(
         "lowering": "rmsnorm_chain_with_binary_skip",
     }
     if branch_plan is not None:
-        descriptor["lowering"] = "trunk_sidecar_merge_v1"
+        descriptor["lowering"] = lowering
         descriptor["branch_plan"] = branch_plan
     return descriptor
+
+
+def _candidate_branch_lowering(
+    chain: tuple[str, ...],
+) -> tuple[str, dict[str, Any] | None]:
+    trunk_sidecar = _trunk_sidecar_branch_plan(chain)
+    if trunk_sidecar is not None:
+        return "trunk_sidecar_merge_v1", trunk_sidecar
+    mixer_restore = _mixer_sidecar_restore_branch_plan(chain)
+    if mixer_restore is not None:
+        return "mixer_sidecar_restore_v1", mixer_restore
+    return "rmsnorm_chain_with_binary_skip", None
 
 
 def _trunk_sidecar_branch_plan(chain: tuple[str, ...]) -> dict[str, Any] | None:
@@ -476,6 +494,84 @@ def _trunk_sidecar_branch_plan(chain: tuple[str, ...]) -> dict[str, Any] | None:
         "post_merge_norm": True,
         "residual_output": True,
     }
+
+
+def _mixer_sidecar_restore_branch_plan(chain: tuple[str, ...]) -> dict[str, Any] | None:
+    roles = tuple(get_role(op) for op in chain)
+    mixer_indices = [idx for idx, role in enumerate(roles) if role is OpRole.MIX]
+    if len(mixer_indices) != 1:
+        return None
+
+    mixer_index = mixer_indices[0]
+    trunk_indices = _single_mixer_trunk_indices(roles, mixer_index)
+    sidecar_indices = _single_mixer_sidecar_indices(roles, mixer_index, trunk_indices)
+    if not trunk_indices or not sidecar_indices:
+        return None
+    return {
+        "trunk_indices": list(trunk_indices),
+        "sidecar_indices": list(sidecar_indices),
+        "merge_op": "add",
+        "post_merge_norm": True,
+        "residual_output": True,
+    }
+
+
+def _single_mixer_trunk_indices(
+    roles: tuple[OpRole, ...],
+    mixer_index: int,
+) -> tuple[int, ...]:
+    trunk = [mixer_index]
+    if mixer_index + 1 < len(roles) and roles[mixer_index + 1] is OpRole.PROJECT:
+        trunk.append(mixer_index + 1)
+    elif mixer_index > 0 and roles[mixer_index - 1] is OpRole.PROJECT:
+        trunk.insert(0, mixer_index - 1)
+    return tuple(trunk)
+
+
+def _single_mixer_sidecar_indices(
+    roles: tuple[OpRole, ...],
+    mixer_index: int,
+    trunk_indices: tuple[int, ...],
+) -> tuple[int, ...]:
+    trunk_set = set(trunk_indices)
+    start = max(trunk_indices) + 1
+    while start < len(roles) and roles[start] is OpRole.RESIDUAL:
+        start += 1
+    sidecar = _restore_sidecar_segment(roles, range(start, len(roles)), trunk_set)
+    if sidecar:
+        return sidecar
+
+    for start in range(0, mixer_index):
+        if roles[start] is not OpRole.NORMALIZE:
+            continue
+        sidecar = _restore_sidecar_segment(roles, range(start, mixer_index), trunk_set)
+        if sidecar:
+            return sidecar
+    return _restore_sidecar_segment(roles, range(0, mixer_index), trunk_set)
+
+
+def _restore_sidecar_segment(
+    roles: tuple[OpRole, ...],
+    indices: range,
+    excluded_indices: set[int],
+) -> tuple[int, ...]:
+    out = [
+        idx
+        for idx in indices
+        if idx not in excluded_indices and roles[idx] is not OpRole.RESIDUAL
+    ]
+    while out and roles[out[-1]] is OpRole.NORMALIZE:
+        out.pop()
+    if len(out) < 2:
+        return ()
+    sidecar_roles = {roles[idx] for idx in out}
+    if OpRole.PROJECT not in sidecar_roles:
+        return ()
+    if not sidecar_roles.intersection(
+        {OpRole.ACTIVATE, OpRole.GATE, OpRole.ROUTE, OpRole.POSITION}
+    ):
+        return ()
+    return tuple(out)
 
 
 def _candidate_name(chain: tuple[str, ...]) -> str:
@@ -543,7 +639,9 @@ def _validate_lowered_dynamic_candidate(
         "n_ops": 0,
         "failure_mode": None,
         "error": None,
-        "lowering_validated": "trunk_sidecar_merge_v1",
+        "lowering_validated": _candidate_lowering(
+            candidate.get("component_descriptor")
+        ),
     }
     try:
         graph = _build_lowered_dynamic_candidate_graph(candidate, model_dim=model_dim)

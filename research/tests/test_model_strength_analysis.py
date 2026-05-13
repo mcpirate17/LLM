@@ -231,7 +231,7 @@ def test_graph_features_supports_list_nodes_and_preserves_raw_ops():
                 "dynamic_components_used": [
                     {
                         "component_id": "component_branch",
-                        "lowering": "trunk_sidecar_merge_v1",
+                        "lowering": "mixer_sidecar_restore_v1",
                     }
                 ],
                 "template_slot_usage": [
@@ -254,7 +254,7 @@ def test_graph_features_supports_list_nodes_and_preserves_raw_ops():
     assert features["slot_components"] == ["router_block.slot0:router_chain"]
     assert features["dynamic_components"] == [
         "component_branch",
-        "lowering:trunk_sidecar_merge_v1",
+        "lowering:mixer_sidecar_restore_v1",
     ]
     assert features["pattern_has_routing"] == 1
     assert features["pattern_has_ssm"] == 1

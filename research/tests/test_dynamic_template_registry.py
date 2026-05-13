@@ -243,6 +243,63 @@ def test_dynamic_template_can_lower_trunk_sidecar_component(tmp_path: Path) -> N
     ]
 
 
+def test_dynamic_template_can_lower_mixer_restore_sidecar_component(
+    tmp_path: Path,
+) -> None:
+    chain = [
+        "rmsnorm",
+        "latent_attention_compressor",
+        "linear_proj",
+        "add",
+        "layernorm",
+        "conv1d_seq",
+        "swiglu_mlp",
+        "add",
+    ]
+    artifact = _write_candidates(
+        tmp_path / "validated.json",
+        [
+            _candidate(
+                "restore_branch_block",
+                chain,
+                component_descriptor={
+                    "has_multi_mixer": False,
+                    "lowering": "mixer_sidecar_restore_v1",
+                    "branch_plan": {
+                        "trunk_indices": [1, 2],
+                        "sidecar_indices": [4, 5, 6],
+                        "merge_op": "add",
+                        "post_merge_norm": True,
+                        "residual_output": True,
+                    },
+                    "slot_plan": [
+                        {
+                            "slot_index": idx,
+                            "slot_classes": ["dynamic_role:mix", "dynamic_step"],
+                        }
+                        for idx in range(len(chain))
+                    ],
+                },
+            )
+        ],
+    )
+    candidate = load_dynamic_template_candidates(artifact, min_lowered_ops=1)[0]
+    graph = ComputationGraph(model_dim=64)
+    input_id = graph.add_input()
+
+    tail = apply_dynamic_template_candidate(
+        graph, input_id, random.Random(1), candidate
+    )
+
+    assert graph.nodes[tail].op_name == "add"
+    slots = graph.metadata["template_slot_usage"]
+    assert {slot["slot_index"] for slot in slots} == {1, 2, 4, 5, 6}
+    assert any(".trunk.step1" in slot["slot_key"] for slot in slots)
+    assert any(".sidecar.step4" in slot["slot_key"] for slot in slots)
+    used_component = graph.metadata["dynamic_components_used"][0]
+    assert used_component["lowering"] == "mixer_sidecar_restore_v1"
+
+
 def test_generate_layer_graph_can_use_dynamic_candidates(tmp_path: Path) -> None:
     artifact = _write_candidates(
         tmp_path / "validated.json",

@@ -164,7 +164,7 @@ def apply_dynamic_template_candidate(
     graph.metadata["_active_template_instance"] = template_instance
 
     try:
-        if lowering == "trunk_sidecar_merge_v1":
+        if lowering in {"trunk_sidecar_merge_v1", "mixer_sidecar_restore_v1"}:
             return _apply_trunk_sidecar_dynamic_candidate(
                 graph,
                 input_id,

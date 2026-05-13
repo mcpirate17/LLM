@@ -310,6 +310,13 @@ def _dynamic_component_lowering(record: Mapping[str, Any]) -> str:
     return str(record.get("lowering") or descriptor.get("lowering") or "")
 
 
+def _is_dynamic_branch_lowering(lowering: str) -> bool:
+    return lowering in {
+        "trunk_sidecar_merge_v1",
+        "mixer_sidecar_restore_v1",
+    }
+
+
 def _populate_dynamic_metadata_features(
     features: Dict[str, float],
     metadata: Mapping[str, Any],
@@ -320,12 +327,17 @@ def _populate_dynamic_metadata_features(
         _dynamic_component_lowering(item) for item in dynamic_components
     )
     branch_components = sum(
-        count for lowering, count in lowerings.items() if lowering.endswith("_merge_v1")
+        count
+        for lowering, count in lowerings.items()
+        if _is_dynamic_branch_lowering(lowering)
     )
     features["n_dynamic_templates_used"] = float(len(dynamic_templates))
     features["n_dynamic_components_used"] = float(len(dynamic_components))
     features["n_dynamic_trunk_sidecar_components"] = float(
         lowerings.get("trunk_sidecar_merge_v1", 0)
+    )
+    features["n_dynamic_mixer_sidecar_components"] = float(
+        lowerings.get("mixer_sidecar_restore_v1", 0)
     )
     features["n_dynamic_linear_components"] = float(
         lowerings.get("rmsnorm_chain_with_binary_skip", 0)

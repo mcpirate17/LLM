@@ -67,10 +67,7 @@ def test_build_dynamic_component_candidates_keeps_only_structural_windows(
     candidate = payload["candidates"][0]
     assert candidate["lowered_op_count"] == 9
     assert candidate["component_descriptor"]["has_multi_mixer"] is False
-    assert (
-        candidate["component_descriptor"]["lowering"]
-        == "rmsnorm_chain_with_binary_skip"
-    )
+    assert candidate["component_descriptor"]["lowering"] == "mixer_sidecar_restore_v1"
     assert candidate["component_descriptor"]["slot_plan"][3]["slot_classes"] == [
         "dynamic_role:mix",
         "dynamic_step",
@@ -194,6 +191,50 @@ def test_build_dynamic_component_candidates_marks_multi_mixer_branch_lowering(
     }
 
 
+def test_build_dynamic_component_candidates_marks_single_mixer_restore_sidecar(
+    tmp_path: Path,
+) -> None:
+    report = _write_report(tmp_path / "mining.json")
+    payload = json.loads(report.read_text(encoding="utf-8"))
+    payload["candidate_windows"] = [
+        {
+            "pattern": [
+                "rmsnorm",
+                "latent_attention_compressor",
+                "linear_proj",
+                "add",
+                "layernorm",
+                "conv1d_seq",
+                "swiglu_mlp",
+                "add",
+            ],
+            "n": 12,
+            "stage1_passed": 11,
+            "pass_rate": 0.9167,
+            "pass_rate_lift": 0.25,
+            "mean_loss_ratio": 0.6,
+        }
+    ]
+    report.write_text(json.dumps(payload), encoding="utf-8")
+
+    built = build_dynamic_component_candidates(
+        mining_report_path=report,
+        output_path=None,
+        validate_candidates=False,
+    )
+
+    descriptor = built["candidates"][0]["component_descriptor"]
+    assert descriptor["has_multi_mixer"] is False
+    assert descriptor["lowering"] == "mixer_sidecar_restore_v1"
+    assert descriptor["branch_plan"] == {
+        "trunk_indices": [1, 2],
+        "sidecar_indices": [4, 5, 6],
+        "merge_op": "add",
+        "post_merge_norm": True,
+        "residual_output": True,
+    }
+
+
 def test_branch_candidates_validate_lowered_topology(tmp_path: Path) -> None:
     report = _write_report(tmp_path / "mining.json")
     payload = json.loads(report.read_text(encoding="utf-8"))
@@ -226,6 +267,44 @@ def test_branch_candidates_validate_lowered_topology(tmp_path: Path) -> None:
 
     validation = built["candidates"][0]["validation"]
     assert validation["lowering_validated"] == "trunk_sidecar_merge_v1"
+    assert validation["validate_passed"] is True
+    assert validation["compile_passed"] is True
+    assert validation["forward_passed"] is True
+    assert validation["backward_passed"] is True
+
+
+def test_restore_sidecar_candidates_validate_lowered_topology(tmp_path: Path) -> None:
+    report = _write_report(tmp_path / "mining.json")
+    payload = json.loads(report.read_text(encoding="utf-8"))
+    payload["candidate_windows"] = [
+        {
+            "pattern": [
+                "rmsnorm",
+                "latent_attention_compressor",
+                "linear_proj",
+                "add",
+                "layernorm",
+                "conv1d_seq",
+                "swiglu_mlp",
+                "add",
+            ],
+            "n": 12,
+            "stage1_passed": 11,
+            "pass_rate": 0.9167,
+            "pass_rate_lift": 0.25,
+            "mean_loss_ratio": 0.6,
+        }
+    ]
+    report.write_text(json.dumps(payload), encoding="utf-8")
+
+    built = build_dynamic_component_candidates(
+        mining_report_path=report,
+        output_path=None,
+        validate_candidates=True,
+    )
+
+    validation = built["candidates"][0]["validation"]
+    assert validation["lowering_validated"] == "mixer_sidecar_restore_v1"
     assert validation["validate_passed"] is True
     assert validation["compile_passed"] is True
     assert validation["forward_passed"] is True

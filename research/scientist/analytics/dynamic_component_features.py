@@ -3,7 +3,12 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-_BRANCH_LOWERING = "trunk_sidecar_merge_v1"
+_BRANCH_LOWERINGS = frozenset(
+    {
+        "trunk_sidecar_merge_v1",
+        "mixer_sidecar_restore_v1",
+    }
+)
 
 
 def _metadata_list(metadata: Mapping[str, Any], key: str) -> list[Any]:
@@ -54,7 +59,11 @@ def dynamic_component_feature_summary(
         "pattern_dynamic_template": int(bool(dynamic_templates)),
         "pattern_dynamic_component": int(bool(dynamic_components)),
         "pattern_dynamic_branch_component": int(
-            any(token == f"lowering:{_BRANCH_LOWERING}" for token in tokens)
+            any(
+                token.startswith("lowering:")
+                and token.removeprefix("lowering:") in _BRANCH_LOWERINGS
+                for token in tokens
+            )
         ),
     }
     return tokens, flags

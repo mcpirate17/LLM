@@ -76,7 +76,11 @@ def test_graph_features_surface_dynamic_component_metadata():
                     "component_descriptor": {
                         "lowering": "trunk_sidecar_merge_v1",
                     },
-                }
+                },
+                {
+                    "component_id": "component_restore_branch",
+                    "lowering": "mixer_sidecar_restore_v1",
+                },
             ],
         },
     }
@@ -84,8 +88,9 @@ def test_graph_features_surface_dynamic_component_metadata():
     features = extract_graph_features(graph_json)
 
     assert features["n_dynamic_templates_used"] == 1.0
-    assert features["n_dynamic_components_used"] == 1.0
+    assert features["n_dynamic_components_used"] == 2.0
     assert features["n_dynamic_trunk_sidecar_components"] == 1.0
+    assert features["n_dynamic_mixer_sidecar_components"] == 1.0
     assert features["has_dynamic_components"] == 1.0
     assert features["has_dynamic_branch_components"] == 1.0
 
