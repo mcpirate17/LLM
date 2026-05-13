@@ -5,6 +5,7 @@ from pathlib import Path
 
 from research.scientist.runner._types import RunConfig
 from research.synthesis.dynamic_template_registry import (
+    _candidate_selection_weights,
     apply_dynamic_template_candidate,
     choose_dynamic_template_candidate,
     load_dynamic_template_candidates,
@@ -95,6 +96,31 @@ def test_dynamic_template_loader_rejects_micro_chains_by_default(
     )
 
     assert load_dynamic_template_candidates(artifact) == ()
+
+
+def test_dynamic_template_selection_weights_include_lowering_multipliers(
+    tmp_path: Path,
+) -> None:
+    artifact = _write_candidates(
+        tmp_path / "validated.json",
+        [
+            _candidate(
+                "restore",
+                ["rmsnorm", "latent_attention_compressor", "linear_proj", "add"],
+                component_descriptor={"lowering": "mixer_sidecar_restore_v1"},
+            ),
+            _candidate(
+                "router",
+                ["linear_proj", "matmul", "linear_proj", "gather_topk"],
+                component_descriptor={"lowering": "router_lane_blend_v1"},
+            ),
+        ],
+    )
+    candidates = load_dynamic_template_candidates(artifact, min_lowered_ops=1)
+
+    weights = _candidate_selection_weights(candidates, strength=1.0)
+
+    assert weights[0] > weights[1]
 
 
 def test_dynamic_template_lowering_records_metadata(tmp_path: Path) -> None:

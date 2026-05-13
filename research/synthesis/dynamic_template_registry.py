@@ -43,6 +43,12 @@ DEFAULT_DYNAMIC_TEMPLATE_MIN_LOWERED_OPS = DEFAULT_MIN_LOWERED_OPS
 _MAX_SCORE_WEIGHT = 100.0
 _MIN_SCORE_WEIGHT = 0.05
 _MAX_EFFECTIVE_WEIGHT = 8.0
+_LOWERING_SELECTION_MULTIPLIERS = {
+    "trunk_sidecar_merge_v1": 1.10,
+    "mixer_sidecar_restore_v1": 1.10,
+    "router_lane_blend_v1": 0.75,
+    "rmsnorm_chain_with_binary_skip": 1.10,
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -757,7 +763,13 @@ def _candidate_selection_weights(
     # guardrail: allow-complexity - bounded candidate pool (default max 32).
     clamped_strength = max(0.0, float(strength))
     raw_scores = [
-        max(_MIN_SCORE_WEIGHT, min(_MAX_SCORE_WEIGHT, float(candidate.weight)))
+        max(
+            _MIN_SCORE_WEIGHT,
+            min(
+                _MAX_SCORE_WEIGHT,
+                float(candidate.weight) * _lowering_selection_multiplier(candidate),
+            ),
+        )
         for candidate in candidates
     ]
     if clamped_strength == 0.0:
@@ -770,6 +782,14 @@ def _candidate_selection_weights(
         effective = 1.0 + (normalized - 1.0) * clamped_strength
         weights.append(max(_MIN_SCORE_WEIGHT, min(_MAX_EFFECTIVE_WEIGHT, effective)))
     return weights
+
+
+def _lowering_selection_multiplier(candidate: DynamicTemplateCandidate) -> float:
+    descriptor = candidate.component_descriptor
+    lowering = (
+        str(descriptor.get("lowering") or "") if isinstance(descriptor, Mapping) else ""
+    )
+    return float(_LOWERING_SELECTION_MULTIPLIERS.get(lowering, 1.0))
 
 
 def _add_dynamic_chain_op(
