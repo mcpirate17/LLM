@@ -1,0 +1,44 @@
+{
+  "schema_version": "lane_rules_v1",
+  "category": "lane",
+  "description": "Contract for components classified as 'lane' — single-input, single-output, shape-preserving compute paths suitable as a parallel branch inside a multi-lane template.",
+  "interface": {
+    "n_inputs": 1,
+    "n_outputs": 1,
+    "input_shape_class": "BLD",
+    "output_shape_class": "BLD",
+    "must_preserve_seq_len": true,
+    "must_preserve_batch": true,
+    "may_change_feature_dim_internally": true,
+    "must_restore_feature_dim_at_output": true
+  },
+  "declared_properties_required": [
+    "op_geometric_receptive_field",
+    "op_dynamical_memory_length_class",
+    "op_dynamical_has_state",
+    "op_activation_sparsity_pattern",
+    "op_algebraic_space",
+    "op_composition_residual_safe"
+  ],
+  "valid_property_values": {
+    "op_geometric_receptive_field": ["local", "global", "hybrid_local_global", "recurrent_global"],
+    "op_dynamical_memory_length_class": ["O(1)", "O(L)", "O(L^2)"],
+    "op_activation_sparsity_pattern": ["dense", "structured", "learned_structured", "top_k", "piecewise_discrete"]
+  },
+  "intrinsic_requirements": {
+    "gradient_norm_ratio_at_init_min": 0.5,
+    "gradient_norm_ratio_at_init_max": 2.0,
+    "fp16_stability_min": 0.5,
+    "composition_residual_safe": true,
+    "mix_half_life_max_layers": 8
+  },
+  "telemetry_keys_required": [],
+  "promotion_scorecard_axes": [
+    "mix_half_life",
+    "effective_rank_ratio",
+    "gradient_norm_ratio",
+    "jacobian_condition",
+    "flops_per_token",
+    "wall_ms_per_token"
+  ]
+}

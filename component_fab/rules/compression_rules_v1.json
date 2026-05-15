@@ -1,0 +1,37 @@
+{
+  "schema_version": "compression_rules_v1",
+  "category": "compression",
+  "description": "Contract for components that reduce representational dimensionality then restore.",
+  "interface": {
+    "n_inputs": 1,
+    "n_outputs": 1,
+    "must_declare_paired_restore_op": true,
+    "compression_axis_allowed": ["feature_dim", "sequence_dim", "both"],
+    "must_preserve_batch": true
+  },
+  "declared_properties_required": [
+    "op_algebraic_linearity_class",
+    "op_geometric_jacobian_rank_prior",
+    "op_dynamical_has_state",
+    "op_activation_effective_rank_prior",
+    "op_composition_residual_safe"
+  ],
+  "valid_property_values": {
+    "op_algebraic_linearity_class": ["linear", "affine", "piecewise_linear", "nonlinear", "data_dependent_linear"]
+  },
+  "intrinsic_requirements": {
+    "reconstruction_mse_per_param_max": 0.01,
+    "effective_rank_ratio_declared_vs_measured_max_drift": 0.2,
+    "fp16_stability_min": 0.5,
+    "flops_per_token_reduction_min": 0.25
+  },
+  "telemetry_keys_required": ["measured_effective_rank", "reconstruction_mse"],
+  "promotion_scorecard_axes": [
+    "reconstruction_mse_per_param",
+    "effective_rank_ratio",
+    "flops_per_token_reduction",
+    "wall_ms_per_token_reduction",
+    "gradient_norm_ratio",
+    "fp16_stability"
+  ]
+}

@@ -16,7 +16,7 @@ dependencies = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["research", "aria_designer"]
+packages = ["research", "aria_designer", "component_fab"]
 
 [dependency-groups]
 dev = ["pytest-testmon>=2.2.0", "scalene>=2.2.1"]

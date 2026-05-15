@@ -181,6 +181,11 @@ research/runtime/backfill/*_state.json
 
 # Induction probe generated datasets/results
 tasks/induction_native_probe/*.csv
+
+# component_fab generated catalogs, ledgers, reports, and run logs
+component_fab/catalog/*
+!component_fab/catalog/.gitkeep
+
 # Added by code-review-graph
 .code-review-graph/
 

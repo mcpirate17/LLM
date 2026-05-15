@@ -1,0 +1,37 @@
+{
+  "schema_version": "routing_rules_v1",
+  "category": "routing",
+  "description": "Contract for components that select or weight among K candidate paths.",
+  "interface": {
+    "n_candidate_inputs_min": 2,
+    "n_outputs": 1,
+    "selection_kinds_allowed": ["dense", "top_k", "hard_argmax"],
+    "must_publish": ["routing_logits", "routing_entropy_per_token"],
+    "must_support_load_balance_loss": true
+  },
+  "declared_properties_required": [
+    "op_activation_sparsity_pattern",
+    "op_differentiability_needs_surrogate",
+    "op_composition_parallel_safe",
+    "op_dynamical_has_state"
+  ],
+  "valid_property_values": {
+    "op_activation_sparsity_pattern": ["dense", "top_k", "learned_structured", "structured"]
+  },
+  "intrinsic_requirements": {
+    "differentiable_or_surrogate": true,
+    "mode_collapse_propensity_max": 0.3,
+    "load_balance_cv_max": 0.5,
+    "routing_entropy_floor_min": 0.1,
+    "fp16_stability_min": 0.5
+  },
+  "telemetry_keys_required": ["routing_entropy", "load_balance_cv", "active_lane_fraction"],
+  "promotion_scorecard_axes": [
+    "routing_entropy_stability",
+    "load_balance_cv",
+    "mode_collapse_propensity",
+    "active_lane_fraction",
+    "flops_per_token",
+    "wall_ms_per_token"
+  ]
+}
