@@ -1,0 +1,1994 @@
+{
+  "python_files_scanned": 1793,
+  "parse_errors": [],
+  "duplicate_function_body_groups": 64,
+  "duplicate_production_function_body_groups": 43,
+  "duplicate_test_function_body_groups": 21,
+  "duplicate_test_name_groups": 123,
+  "groups": [
+    [
+      {
+        "path": "HYDRA/hydra/model/framework/blocks.py",
+        "name": "__init__",
+        "lineno": 39,
+        "end_lineno": 66,
+        "digest": "63d8081c318ba356dcf5696e43e51ed7279a45c7e045a0476e5387eb93b5724f",
+        "is_test": false
+      },
+      {
+        "path": "HYDRA/hydra/model/framework/core.py",
+        "name": "__init__",
+        "lineno": 108,
+        "end_lineno": 140,
+        "digest": "63d8081c318ba356dcf5696e43e51ed7279a45c7e045a0476e5387eb93b5724f",
+        "is_test": false
+      }
+    ],
+    [
+      {
+        "path": "HYDRA/hydra/model/framework/blocks.py",
+        "name": "__init__",
+        "lineno": 972,
+        "end_lineno": 996,
+        "digest": "6637aa84650d13255a5fa6f9658e5d8407c97731c5a1f7ac54882b58ce975c1a",
+        "is_test": false
+      },
+      {
+        "path": "HYDRA/hydra/model/framework/core.py",
+        "name": "__init__",
+        "lineno": 2088,
+        "end_lineno": 2125,
+        "digest": "6637aa84650d13255a5fa6f9658e5d8407c97731c5a1f7ac54882b58ce975c1a",
+        "is_test": false
+      }
+    ],
+    [
+      {
+        "path": "research/tools/nano_blimp_v2_audit.py",
+        "name": "_build_summary",
+        "lineno": 222,
+        "end_lineno": 246,
+        "digest": "bbcc8ef2ef9a28a21d065ee48f8fc55001baf052686ca4550ddb3d566d288379",
+        "is_test": false
+      },
+      {
+        "path": "research/tools/nano_blimp_v3_audit.py",
+        "name": "_build_summary",
+        "lineno": 186,
+        "end_lineno": 210,
+        "digest": "bbcc8ef2ef9a28a21d065ee48f8fc55001baf052686ca4550ddb3d566d288379",
+        "is_test": false
+      }
+    ],
+    [
+      {
+        "path": "research/tools/train_tropical_gate_120m_pretrain.py",
+        "name": "configure_torch_performance",
+        "lineno": 928,
+        "end_lineno": 950,
+        "digest": "7807496bc420e6658f3a27d4817c3926b891bd400bad43e0880550cda197483a",
+        "is_test": false
+      },
+      {
+        "path": "research/tools/mixer_fingerprint.py",
+        "name": "_configure_torch_performance",
+        "lineno": 67,
+        "end_lineno": 91,
+        "digest": "7807496bc420e6658f3a27d4817c3926b891bd400bad43e0880550cda197483a",
+        "is_test": false
+      }
+    ],
+    [
+      {
+        "path": "research/tests/test_reference_architectures.py",
+        "name": "test_fingerprint_reports_none_when_no_artifacts",
+        "lineno": 402,
+        "end_lineno": 422,
+        "digest": "1b0a56e0a5ed0e0b8437eb17bba6e397f5b61e224a2b3dff99243555cbc51e23",
+        "is_test": true
+      },
+      {
+        "path": "research/tests/test_novelty.py",
+        "name": "test_fingerprint_reports_none_when_no_artifacts",
+        "lineno": 1045,
+        "end_lineno": 1065,
+        "digest": "1b0a56e0a5ed0e0b8437eb17bba6e397f5b61e224a2b3dff99243555cbc51e23",
+        "is_test": true
+      }
+    ],
+    [
+      {
+        "path": "research/tests/test_reference_architectures.py",
+        "name": "test_export_produces_loadable_artifacts",
+        "lineno": 454,
+        "end_lineno": 474,
+        "digest": "17d24cdeeeb1b8cbd9d492c4df3aa046657be5be931ac64845312f15e427b067",
+        "is_test": true
+      },
+      {
+        "path": "research/tests/test_novelty.py",
+        "name": "test_export_produces_loadable_artifacts",
+        "lineno": 1097,
+        "end_lineno": 1117,
+        "digest": "17d24cdeeeb1b8cbd9d492c4df3aa046657be5be931ac64845312f15e427b067",
+        "is_test": true
+      }
+    ],
+    [
+      {
+        "path": "HYDRA/diagnostics/profile_copy_operations.py",
+        "name": "setup_model",
+        "lineno": 43,
+        "end_lineno": 62,
+        "digest": "c225795815c0d25e41b56a9df542e9d9b6ec296e2bc129373c3056dd867675a6",
+        "is_test": false
+      },
+      {
+        "path": "HYDRA/diagnostics/profile_100m_detailed.py",
+        "name": "setup_model",
+        "lineno": 54,
+        "end_lineno": 73,
+        "digest": "c225795815c0d25e41b56a9df542e9d9b6ec296e2bc129373c3056dd867675a6",
+        "is_test": false
+      }
+    ],
+    [
+      {
+        "path": "component_fab/tests/test_sprint8_pipeline.py",
+        "name": "_spec",
+        "lineno": 25,
+        "end_lineno": 44,
+        "digest": "ce81e7e1c325a1f6c38189cbf2407c119bbc9fe3c4a4d1692b0eafc63f16a36c",
+        "is_test": true
+      },
+      {
+        "path": "component_fab/tests/test_sprint4_pipeline.py",
+        "name": "_spec",
+        "lineno": 32,
+        "end_lineno": 51,
+        "digest": "ce81e7e1c325a1f6c38189cbf2407c119bbc9fe3c4a4d1692b0eafc63f16a36c",
+        "is_test": true
+      },
+      {
+        "path": "component_fab/tests/test_sprint5_pipeline.py",
+        "name": "_spec",
+        "lineno": 30,
+        "end_lineno": 49,
+        "digest": "ce81e7e1c325a1f6c38189cbf2407c119bbc9fe3c4a4d1692b0eafc63f16a36c",
+        "is_test": true
+      },
+      {
+        "path": "component_fab/tests/test_sprint7_pipeline.py",
+        "name": "_spec",
+        "lineno": 29,
+        "end_lineno": 48,
+        "digest": "ce81e7e1c325a1f6c38189cbf2407c119bbc9fe3c4a4d1692b0eafc63f16a36c",
+        "is_test": true
+      }
+    ],
+    [
+      {
+        "path": "research/tests/test_native_runner_abi_inference_probe.py",
+        "name": "nr_execute",
+        "lineno": 265,
+        "end_lineno": 283,
+        "digest": "4d178b31ebb867e76b83f65b4cdb9a506bf54b5a38c79a06be76e671a280351b",
+        "is_test": true
+      },
+      {
+        "path": "research/tests/test_native_runner_abi_inference_probe.py",
+        "name": "nr_execute",
+        "lineno": 311,
+        "end_lineno": 329,
+        "digest": "4d178b31ebb867e76b83f65b4cdb9a506bf54b5a38c79a06be76e671a280351b",
+        "is_test": true
+      }
+    ],
+    [
+      {
+        "path": "research/tests/test_reference_architectures.py",
+        "name": "_make_fingerprint",
+        "lineno": 424,
+        "end_lineno": 441,
+        "digest": "2eb14b466e1fa7ac5907f3fd77b2a06b1d6e0d92c81faf1f27d4c07c3edc4ab9",
+        "is_test": true
+      },
+      {
+        "path": "research/tests/test_novelty.py",
+        "name": "_make_fingerprint",
+        "lineno": 1067,
+        "end_lineno": 1084,
+        "digest": "2eb14b466e1fa7ac5907f3fd77b2a06b1d6e0d92c81faf1f27d4c07c3edc4ab9",
+        "is_test": true
+      }
+    ],
+    [
+      {
+        "path": "LA3/optim/lion.py",
+        "name": "__init__",
+        "lineno": 32,
+        "end_lineno": 47,
+        "digest": "770e653aa5713df1aabd02256e687c1add8f8b11a6d215437e9ec902086603f8",
+        "is_test": false
+      },
+      {
+        "path": "LA3/optim/lion.py",
+        "name": "__init__",
+        "lineno": 100,
+        "end_lineno": 115,
+        "digest": "770e653aa5713df1aabd02256e687c1add8f8b11a6d215437e9ec902086603f8",
+        "is_test": false
+      }
+    ],
+    [
+      {
+        "path": "aria_designer/components/routing/adaptive_rank_gate/kernel_fallback.py",
+        "name": "_ensure_weights",
+        "lineno": 21,
+        "end_lineno": 36,
+        "digest": "8ea56f1c4b7d0f49f7443f34cd33aceb0960f4c1778dc0dee4d663742aadd8d0",
+        "is_test": false
+      },
+      {
+        "path": "aria_designer/components/routing/signal_conditioned_compression/kernel_fallback.py",
+        "name": "_ensure_weights",
+        "lineno": 21,
+        "end_lineno": 36,
+        "digest": "8ea56f1c4b7d0f49f7443f34cd33aceb0960f4c1778dc0dee4d663742aadd8d0",
+        "is_test": false
+      }
+    ],
+    [
+      {
+        "path": "research/tests/test_reference_architectures.py",
+        "name": "test_export_deterministic",
+        "lineno": 476,
+        "end_lineno": 491,
+        "digest": "a20e26d1b63269e70515d1c6c01de5b0b1a6310b6b97b89242c9958ba04f51f3",
+        "is_test": true
+      },
+      {
+        "path": "research/tests/test_novelty.py",
+        "name": "test_export_deterministic",
+        "lineno": 1119,
+        "end_lineno": 1134,
+        "digest": "a20e26d1b63269e70515d1c6c01de5b0b1a6310b6b97b89242c9958ba04f51f3",
+        "is_test": true
+      }
+    ],
+    [
+      {
+        "path": "research/tests/test_nano_controlled_holdout_probe.py",
+        "name": "forward",
+        "lineno": 27,
+        "end_lineno": 41,
+        "digest": "4158d8c7f1ed27d4d5738f0eadbdb0ebadaf9beecbdf9f813a25bf22837d5dec",
+        "is_test": true
+      },
+      {
+        "path": "research/tests/test_controlled_sentence_probe.py",
+        "name": "forward",
+        "lineno": 36,
+        "end_lineno": 50,
+        "digest": "4158d8c7f1ed27d4d5738f0eadbdb0ebadaf9beecbdf9f813a25bf22837d5dec",
+        "is_test": true
+      }
+    ],
+    [
+      {
+        "path": "research/tools/meta_surrogate_analysis.py",
+        "name": "_md_table",
+        "lineno": 505,
+        "end_lineno": 519,
+        "digest": "954891621d220eace27a728bb8643840973904a1888d9e9b4bce8d5858e850be",
+        "is_test": false
+      },
+      {
+        "path": "research/tools/meta_experiment_queue.py",
+        "name": "_md_table",
+        "lineno": 300,
+        "end_lineno": 314,
+        "digest": "954891621d220eace27a728bb8643840973904a1888d9e9b4bce8d5858e850be",
+        "is_test": false
+      },
+      {
+        "path": "research/tools/meta_profile_ml_analysis.py",
+        "name": "_md_table",
+        "lineno": 550,
+        "end_lineno": 564,
+        "digest": "954891621d220eace27a728bb8643840973904a1888d9e9b4bce8d5858e850be",
+        "is_test": false
+      },
+      {
+        "path": "research/tools/meta_surrogate_screening_proposal.py",
+        "name": "_md_table",
+        "lineno": 190,
+        "end_lineno": 204,
+        "digest": "954891621d220eace27a728bb8643840973904a1888d9e9b4bce8d5858e850be",
+        "is_test": false
+      }
+    ],
+    [
+      {
+        "path": "HYDRA/diagnostics/convert_nemotron_jsonl_to_pt.py",
+        "name": "_parse_seq_lens",
+        "lineno": 184,
+        "end_lineno": 197,
+        "digest": "22738f9cb9e3ec93185b38fe0c953dcba7cbfef8e3845e1c9d0b3f7b57bc1a0d",
+        "is_test": false
+      },
+      {
+        "path": "HYDRA/diagnostics/collect_pt_by_seq.py",
+        "name": "_parse_seq_lens",
+        "lineno": 46,
+        "end_lineno": 59,
+        "digest": "22738f9cb9e3ec93185b38fe0c953dcba7cbfef8e3845e1c9d0b3f7b57bc1a0d",
+        "is_test": false
+      }
+    ],
+    [
+      {
+        "path": "aria_designer/tests/test_adaptive_routing_progress.py",
+        "name": "client",
+        "lineno": 29,
+        "end_lineno": 42,
+        "digest": "dd54575ba37b20a4e4066d0cd28023a07dd90764ad797481f300a26ee0998a7e",
+        "is_test": true
+      },
+      {
+        "path": "aria_designer/tests/test_api.py",
+        "name": "client",
+        "lineno": 13,
+        "end_lineno": 27,
+        "digest": "dd54575ba37b20a4e4066d0cd28023a07dd90764ad797481f300a26ee0998a7e",
+        "is_test": true
+      }
+    ],
+    [
+      {
+        "path": "research/scientist/runner/execution_search.py",
+        "name": "on_evaluate",
+        "lineno": 414,
+        "end_lineno": 427,
+        "digest": "4a144d660704a70c2bc77058b0336bd9747cadd166793491cfaf2e6349d50f52",
+        "is_test": false
+      },
+      {
+        "path": "research/scientist/runner/continuous_modes.py",
+        "name": "on_evaluate",
+        "lineno": 631,
+        "end_lineno": 644,
+        "digest": "4a144d660704a70c2bc77058b0336bd9747cadd166793491cfaf2e6349d50f52",
+        "is_test": false
+      }
+    ],
+    [
+      {
+        "path": "research/synthesis/_templates_attention_tail.py",
+        "name": "_pick_with_local_wildcard",
+        "lineno": 143,
+        "end_lineno": 156,
+        "digest": "5c816adf2979a5528760182d4ad91725cc5d249d77b5ed8660b1af0badfde28a",
+        "is_test": false
+      },
+      {
+        "path": "research/synthesis/_templates_attention.py",
+        "name": "_pick_with_local_wildcard",
+        "lineno": 42,
+        "end_lineno": 55,
+        "digest": "5c816adf2979a5528760182d4ad91725cc5d249d77b5ed8660b1af0badfde28a",
+        "is_test": false
+      },
+      {
+        "path": "research/synthesis/_templates_attention_hybrid.py",
+        "name": "_pick_with_local_wildcard",
+        "lineno": 31,
+        "end_lineno": 44,
+        "digest": "5c816adf2979a5528760182d4ad91725cc5d249d77b5ed8660b1af0badfde28a",
+        "is_test": false
+      }
+    ],
+    [
+      {
+        "path": "research/synthesis/graph_features.py",
+        "name": "_dynamic_component_records",
+        "lineno": 292,
+        "end_lineno": 305,
+        "digest": "465c148ff11237dbdb44a8ed4e87b2f30048fc0e5d3f855177ca742ff68fa993",
+        "is_test": false
+      },
+      {
+        "path": "research/scientist/analytics/dynamic_component_features.py",
+        "name": "_dynamic_component_records",
+        "lineno": 20,
+        "end_lineno": 33,
+        "digest": "465c148ff11237dbdb44a8ed4e87b2f30048fc0e5d3f855177ca742ff68fa993",
+        "is_test": false
+      }
+    ],
+    [
+      {
+        "path": "research/tests/test_fingerprint_promotion_gates.py",
+        "name": "patched_execute",
+        "lineno": 161,
+        "end_lineno": 174,
+        "digest": "1bff0439b5062e0f25e40e1e2a3d2c13bbb89bcf97a57ed9a432f79f0b16cd13",
+        "is_test": true
+      },
+      {
+        "path": "research/tests/test_fingerprint_promotion_gates.py",
+        "name": "patched_execute",
+        "lineno": 221,
+        "end_lineno": 234,
+        "digest": "1bff0439b5062e0f25e40e1e2a3d2c13bbb89bcf97a57ed9a432f79f0b16cd13",
+        "is_test": true
+      }
+    ],
+    [
+      {
+        "path": "research/eval/nano_controlled_holdout_probe.py",
+        "name": "_encode_text",
+        "lineno": 231,
+        "end_lineno": 243,
+        "digest": "813b14ead5eae92b3538dd10e62a9a217954b63c39507be8c3729a1b8d3c7099",
+        "is_test": false
+      },
+      {
+        "path": "research/eval/controlled_sentence_probe.py",
+        "name": "_encode_text",
+        "lineno": 434,
+        "end_lineno": 446,
+        "digest": "813b14ead5eae92b3538dd10e62a9a217954b63c39507be8c3729a1b8d3c7099",
+        "is_test": false
+      }
+    ],
+    [
+      {
+        "path": "research/tests/test_nano_blimp_eval.py",
+        "name": "forward",
+        "lineno": 61,
+        "end_lineno": 73,
+        "digest": "23dfd6a5529864c23a85065eb75732492d47702bea3106ff83883079ffd1e07c",
+        "is_test": true
+      },
+      {
+        "path": "research/tests/test_synthetic_association_eval.py",
+        "name": "forward",
+        "lineno": 56,
+        "end_lineno": 68,
+        "digest": "23dfd6a5529864c23a85065eb75732492d47702bea3106ff83883079ffd1e07c",
+        "is_test": true
+      }
+    ],
+    [
+      {
+        "path": "research/tools/ar_curriculum_trends.py",
+        "name": "_ranks",
+        "lineno": 75,
+        "end_lineno": 87,
+        "digest": "f4a8d9dd1122a012cd3ea6318ac4d11be306a65171698c118f5243dc13fc6cd3",
+        "is_test": false
+      },
+      {
+        "path": "research/tools/ar_curriculum_predictor.py",
+        "name": "_ranks",
+        "lineno": 76,
+        "end_lineno": 88,
+        "digest": "f4a8d9dd1122a012cd3ea6318ac4d11be306a65171698c118f5243dc13fc6cd3",
+        "is_test": false
+      }
+    ],
+    [
+      {
+        "path": "research/tools/nano_blimp_v2_audit.py",
+        "name": "_aggregate",
+        "lineno": 127,
+        "end_lineno": 139,
+        "digest": "65a5455923b580f9674a8baabb4d2b8e929ee7957d391f66f89baef29d27f8ec",
+        "is_test": false
+      },
+      {
+        "path": "research/tools/nano_blimp_v3_audit.py",
+        "name": "_aggregate",
+        "lineno": 92,
+        "end_lineno": 104,
+        "digest": "65a5455923b580f9674a8baabb4d2b8e929ee7957d391f66f89baef29d27f8ec",
+        "is_test": false
+      }
+    ],
+    [
+      {
+        "path": "HYDRA/hydra/model/framework/blocks.py",
+        "name": "_update_aggregate_mask",
+        "lineno": 352,
+        "end_lineno": 363,
+        "digest": "97b4e67b3f96f04d13eb4b6338b696b637291b0b2522e14550c5168e040c6b0c",
+        "is_test": false
+      },
+      {
+        "path": "HYDRA/hydra/model/framework/core.py",
+        "name": "_update_aggregate_mask",
+        "lineno": 476,
+        "end_lineno": 487,
+        "digest": "97b4e67b3f96f04d13eb4b6338b696b637291b0b2522e14550c5168e040c6b0c",
+        "is_test": false
+      }
+    ],
+    [
+      {
+        "path": "component_fab/tools/run_lm_probe.py",
+        "name": "_resolve_targets",
+        "lineno": 203,
+        "end_lineno": 214,
+        "digest": "d5cbef700c9e2279a9c26324d35c1caa1eba8b783c09650f93db02d77e1cfaaa",
+        "is_test": false
+      },
+      {
+        "path": "component_fab/tools/run_lm_eval.py",
+        "name": "_resolve_targets",
+        "lineno": 153,
+        "end_lineno": 164,
+        "digest": "d5cbef700c9e2279a9c26324d35c1caa1eba8b783c09650f93db02d77e1cfaaa",
+        "is_test": false
+      }
+    ],
+    [
+      {
+        "path": "research/tests/test_interpretability_evals.py",
+        "name": "_make_model",
+        "lineno": 444,
+        "end_lineno": 455,
+        "digest": "ae0dced9140ae65389773836d6ec89c7923be561ce3536619e4d8940dc65cb98",
+        "is_test": true
+      },
+      {
+        "path": "research/tests/test_interpretability_evals.py",
+        "name": "_make_model",
+        "lineno": 618,
+        "end_lineno": 629,
+        "digest": "ae0dced9140ae65389773836d6ec89c7923be561ce3536619e4d8940dc65cb98",
+        "is_test": true
+      }
+    ],
+    [
+      {
+        "path": "research/tests/test_pareto_and_routing_penalty.py",
+        "name": "make_row",
+        "lineno": 93,
+        "end_lineno": 104,
+        "digest": "4501ecfbe18b3b2b6626a9d0935fcbdce85f9d251216e679da73e5602287ca74",
+        "is_test": true
+      },
+      {
+        "path": "research/tests/test_pareto_and_routing_penalty.py",
+        "name": "make_row",
+        "lineno": 129,
+        "end_lineno": 140,
+        "digest": "4501ecfbe18b3b2b6626a9d0935fcbdce85f9d251216e679da73e5602287ca74",
+        "is_test": true
+      },
+      {
+        "path": "research/tests/test_pareto_and_routing_penalty.py",
+        "name": "make_row",
+        "lineno": 171,
+        "end_lineno": 182,
+        "digest": "4501ecfbe18b3b2b6626a9d0935fcbdce85f9d251216e679da73e5602287ca74",
+        "is_test": true
+      },
+      {
+        "path": "research/tests/test_pareto_and_routing_penalty.py",
+        "name": "make_row",
+        "lineno": 214,
+        "end_lineno": 225,
+        "digest": "4501ecfbe18b3b2b6626a9d0935fcbdce85f9d251216e679da73e5602287ca74",
+        "is_test": true
+      }
+    ],
+    [
+      {
+        "path": "research/tests/test_rust_backward.py",
+        "name": "_make_graph_json",
+        "lineno": 25,
+        "end_lineno": 36,
+        "digest": "5affc66e96e7fc8cc42d3bb1a0bd7507e1abbd8d432f267b4e459dfe5b48ec28",
+        "is_test": true
+      },
+      {
+        "path": "research/tests/test_rust_ref_ops.py",
+        "name": "_make_graph_json",
+        "lineno": 37,
+        "end_lineno": 48,
+        "digest": "5affc66e96e7fc8cc42d3bb1a0bd7507e1abbd8d432f267b4e459dfe5b48ec28",
+        "is_test": true
+      }
+    ],
+    [
+      {
+        "path": "research/tools/train_tropical_gate_120m_pretrain.py",
+        "name": "next_batch",
+        "lineno": 436,
+        "end_lineno": 447,
+        "digest": "9ac01c8d8acf849f3dc9ae66a5af950306a1ec1d685c44fee7a525d8f3081aa5",
+        "is_test": false
+      },
+      {
+        "path": "research/tools/train_tropical_gate_120m_pretrain.py",
+        "name": "next_batch",
+        "lineno": 613,
+        "end_lineno": 624,
+        "digest": "9ac01c8d8acf849f3dc9ae66a5af950306a1ec1d685c44fee7a525d8f3081aa5",
+        "is_test": false
+      }
+    ],
+    [
+      {
+        "path": "HYDRA/hydra/model/framework/blocks.py",
+        "name": "end_aggregate_tracking",
+        "lineno": 340,
+        "end_lineno": 350,
+        "digest": "da021ff11fee951399e7768516fe7ba8cd9595e7737dbc6f4d2320ee54ce0f9d",
+        "is_test": false
+      },
+      {
+        "path": "HYDRA/hydra/model/framework/core.py",
+        "name": "end_aggregate_tracking",
+        "lineno": 464,
+        "end_lineno": 474,
+        "digest": "da021ff11fee951399e7768516fe7ba8cd9595e7737dbc6f4d2320ee54ce0f9d",
+        "is_test": false
+      }
+    ],
+    [
+      {
+        "path": "aria_designer/components/base.py",
+        "name": "__init__",
+        "lineno": 68,
+        "end_lineno": 78,
+        "digest": "8796748ddbc902ad554057534228ce72142a544bada13b9b9ccfc5ab0fa9e645",
+        "is_test": false
+      },
+      {
+        "path": "aria_designer/components/base.py",
+        "name": "__init__",
+        "lineno": 103,
+        "end_lineno": 113,
+        "digest": "8796748ddbc902ad554057534228ce72142a544bada13b9b9ccfc5ab0fa9e645",
+        "is_test": false
+      }
+    ],
+    [
+      {
+        "path": "research/scientist/runner/continuous_validation.py",
+        "name": "_compare",
+        "lineno": 428,
+        "end_lineno": 438,
+        "digest": "f33ef7a3ed7926c0978ba5af62c3e6b98d2266691654694ab983dcf61dd1b6ef",
+        "is_test": false
+      },
+      {
+        "path": "research/scientist/runner/execution_validation_candidate.py",
+        "name": "_compare",
+        "lineno": 265,
+        "end_lineno": 275,
+        "digest": "f33ef7a3ed7926c0978ba5af62c3e6b98d2266691654694ab983dcf61dd1b6ef",
+        "is_test": false
+      }
+    ],
+    [
+      {
+        "path": "research/tests/test_blimp_eval.py",
+        "name": "forward",
+        "lineno": 20,
+        "end_lineno": 30,
+        "digest": "a43f9c2c587bf29f2ec2ef2b12e2472d26994ffc83a3cf177a898333719489f8",
+        "is_test": true
+      },
+      {
+        "path": "research/tests/test_hellaswag_eval.py",
+        "name": "forward",
+        "lineno": 20,
+        "end_lineno": 30,
+        "digest": "a43f9c2c587bf29f2ec2ef2b12e2472d26994ffc83a3cf177a898333719489f8",
+        "is_test": true
+      }
+    ],
+    [
+      {
+        "path": "component_fab/improver/math_knob_catalog.py",
+        "name": "_synthetic_lift",
+        "lineno": 110,
+        "end_lineno": 119,
+        "digest": "68a02b0bb2dbf50187323aa20f87058c7aeaceb5fb4a764b62eba53bd4f603b5",
+        "is_test": false
+      },
+      {
+        "path": "component_fab/improver/cross_anchor.py",
+        "name": "_synthetic_lift",
+        "lineno": 62,
+        "end_lineno": 71,
+        "digest": "68a02b0bb2dbf50187323aa20f87058c7aeaceb5fb4a764b62eba53bd4f603b5",
+        "is_test": false
+      },
+      {
+        "path": "component_fab/improver/axis_variants.py",
+        "name": "_synthetic_axis_lift",
+        "lineno": 431,
+        "end_lineno": 440,
+        "digest": "68a02b0bb2dbf50187323aa20f87058c7aeaceb5fb4a764b62eba53bd4f603b5",
+        "is_test": false
+      }
+    ],
+    [
+      {
+        "path": "research/tests/test_investigation_queue_tools.py",
+        "name": "_graph_json",
+        "lineno": 14,
+        "end_lineno": 23,
+        "digest": "fcb90217e5290d6f9f062880a8c7ac52ba8bd95d07b7e3d57b7e4fe31ac1e1ea",
+        "is_test": true
+      },
+      {
+        "path": "research/tests/test_investigation_v2_recording.py",
+        "name": "_graph_json",
+        "lineno": 15,
+        "end_lineno": 24,
+        "digest": "fcb90217e5290d6f9f062880a8c7ac52ba8bd95d07b7e3d57b7e4fe31ac1e1ea",
+        "is_test": true
+      }
+    ],
+    [
+      {
+        "path": "research/tests/test_math_space_rules.py",
+        "name": "test_stdp_attention_after_sparse_threshold_accepted",
+        "lineno": 71,
+        "end_lineno": 80,
+        "digest": "036cc680f9112c4d80719546ad3362911561e8ee0d8b5d8908cb971c559b5d4b",
+        "is_test": true
+      },
+      {
+        "path": "research/tests/test_math_space_rules.py",
+        "name": "test_lif_neuron_followed_by_sparse_threshold_accepted",
+        "lineno": 99,
+        "end_lineno": 108,
+        "digest": "036cc680f9112c4d80719546ad3362911561e8ee0d8b5d8908cb971c559b5d4b",
+        "is_test": true
+      }
+    ],
+    [
+      {
+        "path": "research/tests/test_reference_architectures.py",
+        "name": "test_fingerprint_cka_provenance_fields_exist",
+        "lineno": 443,
+        "end_lineno": 452,
+        "digest": "596c477d4e5c66f8a8ea6db00ef8a6f0ecb6c46c095c078c26e8b2c5730f78f6",
+        "is_test": true
+      },
+      {
+        "path": "research/tests/test_novelty.py",
+        "name": "test_fingerprint_cka_provenance_fields_exist",
+        "lineno": 1086,
+        "end_lineno": 1095,
+        "digest": "596c477d4e5c66f8a8ea6db00ef8a6f0ecb6c46c095c078c26e8b2c5730f78f6",
+        "is_test": true
+      }
+    ],
+    [
+      {
+        "path": "research/tests/test_template_smoke.py",
+        "name": "test_new_template_builds_across_seeds",
+        "lineno": 51,
+        "end_lineno": 60,
+        "digest": "e0aa3208ed20908f55774b8b554d422aa3966142b91e35cad7feb5c73cefdc5f",
+        "is_test": true
+      },
+      {
+        "path": "research/tests/test_fused_substrate_templates.py",
+        "name": "test_fused_template_builds_across_seeds",
+        "lineno": 82,
+        "end_lineno": 91,
+        "digest": "e0aa3208ed20908f55774b8b554d422aa3966142b91e35cad7feb5c73cefdc5f",
+        "is_test": true
+      }
+    ],
+    [
+      {
+        "path": "research/tools/ar_curriculum_trends.py",
+        "name": "_pearson",
+        "lineno": 90,
+        "end_lineno": 99,
+        "digest": "52523dbf2b5111a71ee9e0a3707f99c5dc1e5dcf168812330609fa414bfb5de5",
+        "is_test": false
+      },
+      {
+        "path": "research/tools/ar_probe_comparison.py",
+        "name": "_pearson",
+        "lineno": 194,
+        "end_lineno": 203,
+        "digest": "52523dbf2b5111a71ee9e0a3707f99c5dc1e5dcf168812330609fa414bfb5de5",
+        "is_test": false
+      }
+    ],
+    [
+      {
+        "path": "research/tools/benchmark_micro_train_native_optimizer.py",
+        "name": "_env_flag",
+        "lineno": 23,
+        "end_lineno": 32,
+        "digest": "7b6fbce9b82095d1f2ab40687e0510786871df423c5ef0a0135cad76b5317aef",
+        "is_test": false
+      },
+      {
+        "path": "research/tools/validate_micro_train_native_optimizer_cutover.py",
+        "name": "_env_flag",
+        "lineno": 57,
+        "end_lineno": 66,
+        "digest": "7b6fbce9b82095d1f2ab40687e0510786871df423c5ef0a0135cad76b5317aef",
+        "is_test": false
+      }
+    ],
+    [
+      {
+        "path": "research/tools/meta_surrogate_analysis.py",
+        "name": "_safe_float",
+        "lineno": 70,
+        "end_lineno": 79,
+        "digest": "8afdad95b3f1e0fb22bbfe97f4fa1d90232b62f4035b8fbd44a62944d4d2d6ec",
+        "is_test": false
+      },
+      {
+        "path": "research/tools/meta_profile_ml_analysis.py",
+        "name": "_safe_float",
+        "lineno": 125,
+        "end_lineno": 134,
+        "digest": "8afdad95b3f1e0fb22bbfe97f4fa1d90232b62f4035b8fbd44a62944d4d2d6ec",
+        "is_test": false
+      }
+    ],
+    [
+      {
+        "path": "research/eval/nano_controlled_holdout_probe.py",
+        "name": "_dedupe_lower",
+        "lineno": 185,
+        "end_lineno": 193,
+        "digest": "075d5f9d183418f63a762aaa35f9205bc50b0bfface21e9683ab4faf850f8bbb",
+        "is_test": false
+      },
+      {
+        "path": "research/eval/controlled_sentence_probe.py",
+        "name": "_dedupe",
+        "lineno": 144,
+        "end_lineno": 152,
+        "digest": "075d5f9d183418f63a762aaa35f9205bc50b0bfface21e9683ab4faf850f8bbb",
+        "is_test": false
+      }
+    ],
+    [
+      {
+        "path": "research/scientist/llm/openai_backend.py",
+        "name": "is_available",
+        "lineno": 30,
+        "end_lineno": 38,
+        "digest": "8e74b1f4104154eca338b9d532b3d2a6529338b125c869419500a5f436f86d7d",
+        "is_test": false
+      },
+      {
+        "path": "research/scientist/llm/anthropic.py",
+        "name": "is_available",
+        "lineno": 88,
+        "end_lineno": 96,
+        "digest": "8e74b1f4104154eca338b9d532b3d2a6529338b125c869419500a5f436f86d7d",
+        "is_test": false
+      }
+    ],
+    [
+      {
+        "path": "research/tests/test_template_smoke.py",
+        "name": "test_new_template_validates",
+        "lineno": 64,
+        "end_lineno": 72,
+        "digest": "16851606faf4f411691228a4a458dc2307c2a0d53c4c42e37e0984435a8461f4",
+        "is_test": true
+      },
+      {
+        "path": "research/tests/test_fused_substrate_templates.py",
+        "name": "test_fused_template_validates",
+        "lineno": 95,
+        "end_lineno": 103,
+        "digest": "16851606faf4f411691228a4a458dc2307c2a0d53c4c42e37e0984435a8461f4",
+        "is_test": true
+      }
+    ],
+    [
+      {
+        "path": "research/tools/controlled_sentence_tune.py",
+        "name": "_train_base",
+        "lineno": 188,
+        "end_lineno": 196,
+        "digest": "717e23b0efdb0311525edf7b37194bc200a10e6ad84ad5b29693b8e30c08ac8a",
+        "is_test": false
+      },
+      {
+        "path": "research/tools/nano_controlled_holdout_tune.py",
+        "name": "_train_base",
+        "lineno": 96,
+        "end_lineno": 107,
+        "digest": "717e23b0efdb0311525edf7b37194bc200a10e6ad84ad5b29693b8e30c08ac8a",
+        "is_test": false
+      }
+    ],
+    [
+      {
+        "path": "research/tools/nano_blimp_v2_audit.py",
+        "name": "_stats",
+        "lineno": 116,
+        "end_lineno": 124,
+        "digest": "a1dd3895504fefa53436c5e1d7d1e2eb866720dd569db8e9d9bc0677f1574e73",
+        "is_test": false
+      },
+      {
+        "path": "research/tools/nano_blimp_v3_audit.py",
+        "name": "_stats",
+        "lineno": 81,
+        "end_lineno": 89,
+        "digest": "a1dd3895504fefa53436c5e1d7d1e2eb866720dd569db8e9d9bc0677f1574e73",
+        "is_test": false
+      }
+    ],
+    [
+      {
+        "path": "research/tools/phase1_meta_analysis.py",
+        "name": "wilson",
+        "lineno": 52,
+        "end_lineno": 60,
+        "digest": "5de00e1e2a11d3e83dd04fd820bf46a1f0194a321e78d102b621024d9406fad0",
+        "is_test": false
+      },
+      {
+        "path": "research/tools/template_slot_realization.py",
+        "name": "wilson",
+        "lineno": 39,
+        "end_lineno": 48,
+        "digest": "5de00e1e2a11d3e83dd04fd820bf46a1f0194a321e78d102b621024d9406fad0",
+        "is_test": false
+      },
+      {
+        "path": "research/tools/phase1_mixer_analysis.py",
+        "name": "wilson",
+        "lineno": 88,
+        "end_lineno": 97,
+        "digest": "5de00e1e2a11d3e83dd04fd820bf46a1f0194a321e78d102b621024d9406fad0",
+        "is_test": false
+      }
+    ],
+    [
+      {
+        "path": "research/tools/rescore_champion_tiny_model.py",
+        "name": "_program_results_read_table",
+        "lineno": 97,
+        "end_lineno": 105,
+        "digest": "3758c3397bca4bb761942e2068c38fc2f0772518a6c73638abd53028e723c41d",
+        "is_test": false
+      },
+      {
+        "path": "research/tools/language_control_backfill.py",
+        "name": "_program_results_read_table",
+        "lineno": 82,
+        "end_lineno": 90,
+        "digest": "3758c3397bca4bb761942e2068c38fc2f0772518a6c73638abd53028e723c41d",
+        "is_test": false
+      },
+      {
+        "path": "research/tools/import_ar_validation_fingerprint_sweep.py",
+        "name": "_program_results_read_table",
+        "lineno": 203,
+        "end_lineno": 211,
+        "digest": "3758c3397bca4bb761942e2068c38fc2f0772518a6c73638abd53028e723c41d",
+        "is_test": false
+      }
+    ],
+    [
+      {
+        "path": "research/tools/run_binding_pilot.py",
+        "name": "_is_native_binding_eligible",
+        "lineno": 150,
+        "end_lineno": 158,
+        "digest": "ff30a17322adb5139d3266c196b27ff94794d9d2791ed8e5241ace4e48c2fa90",
+        "is_test": false
+      },
+      {
+        "path": "research/scientist/intelligence/graph_segments.py",
+        "name": "_is_native_safe_graph",
+        "lineno": 191,
+        "end_lineno": 199,
+        "digest": "ff30a17322adb5139d3266c196b27ff94794d9d2791ed8e5241ace4e48c2fa90",
+        "is_test": false
+      }
+    ],
+    [
+      {
+        "path": "research/tools/train_tropical_gate_120m_pretrain.py",
+        "name": "_compact_exception_message",
+        "lineno": 917,
+        "end_lineno": 925,
+        "digest": "91709de4ab1b5883d9523772d5218f09329e5df33d893527604b48e2fab3b259",
+        "is_test": false
+      },
+      {
+        "path": "research/tools/mixer_fingerprint.py",
+        "name": "_compact_exception_message",
+        "lineno": 114,
+        "end_lineno": 122,
+        "digest": "91709de4ab1b5883d9523772d5218f09329e5df33d893527604b48e2fab3b259",
+        "is_test": false
+      }
+    ],
+    [
+      {
+        "path": "HYDRA/hydra/data/universal_data_loader.py",
+        "name": "format_open_thoughts",
+        "lineno": 1221,
+        "end_lineno": 1228,
+        "digest": "32122687c0a3893b1f47f507d0fe3ba3ab698a20e77d43e96ee22dc68192a1c6",
+        "is_test": false
+      },
+      {
+        "path": "HYDRA/hydra/data/universal_data_loader.py",
+        "name": "format_bespoke_stratos",
+        "lineno": 1232,
+        "end_lineno": 1239,
+        "digest": "32122687c0a3893b1f47f507d0fe3ba3ab698a20e77d43e96ee22dc68192a1c6",
+        "is_test": false
+      }
+    ],
+    [
+      {
+        "path": "HYDRA/hydra/model/framework/blocks.py",
+        "name": "start_aggregate_tracking",
+        "lineno": 331,
+        "end_lineno": 338,
+        "digest": "c33b54e8c3aa23b29a2b2d17fb902ea60b44b0753d0d3cbc2a1fdcdc7e18b340",
+        "is_test": false
+      },
+      {
+        "path": "HYDRA/hydra/model/framework/core.py",
+        "name": "start_aggregate_tracking",
+        "lineno": 455,
+        "end_lineno": 462,
+        "digest": "c33b54e8c3aa23b29a2b2d17fb902ea60b44b0753d0d3cbc2a1fdcdc7e18b340",
+        "is_test": false
+      }
+    ],
+    [
+      {
+        "path": "aria_designer/runtime/fallback_templates.py",
+        "name": "_resolve",
+        "lineno": 90,
+        "end_lineno": 97,
+        "digest": "73d9309f309a445c0801025311bef9e86a1565349c7196485a5e531099f51804",
+        "is_test": false
+      },
+      {
+        "path": "aria_designer/runtime/fallback_templates.py",
+        "name": "_resolve",
+        "lineno": 127,
+        "end_lineno": 134,
+        "digest": "73d9309f309a445c0801025311bef9e86a1565349c7196485a5e531099f51804",
+        "is_test": false
+      }
+    ],
+    [
+      {
+        "path": "component_fab/generator/primitive_templates.py",
+        "name": "__init__",
+        "lineno": 58,
+        "end_lineno": 65,
+        "digest": "e6a100547171a7579bca7b92676e1f62e1c3f3fc39565372cac65fd79cd63773",
+        "is_test": false
+      },
+      {
+        "path": "component_fab/generator/primitive_templates.py",
+        "name": "__init__",
+        "lineno": 120,
+        "end_lineno": 127,
+        "digest": "e6a100547171a7579bca7b92676e1f62e1c3f3fc39565372cac65fd79cd63773",
+        "is_test": false
+      }
+    ],
+    [
+      {
+        "path": "personaplex/moshi/moshi/offline.py",
+        "name": "wrap_with_system_tags",
+        "lineno": 83,
+        "end_lineno": 90,
+        "digest": "e4172562f8959c4d5edf1633f3d39d96d736d36ae360b1a2ea06c681e8e67210",
+        "is_test": false
+      },
+      {
+        "path": "personaplex/moshi/moshi/server.py",
+        "name": "wrap_with_system_tags",
+        "lineno": 79,
+        "end_lineno": 86,
+        "digest": "e4172562f8959c4d5edf1633f3d39d96d736d36ae360b1a2ea06c681e8e67210",
+        "is_test": false
+      }
+    ],
+    [
+      {
+        "path": "research/mathspaces/tropical.py",
+        "name": "_disable_torch_compile",
+        "lineno": 49,
+        "end_lineno": 56,
+        "digest": "302e0b1a9c3757129c6091ba826942d45690656720b894ea23f027408d9cefb5",
+        "is_test": false
+      },
+      {
+        "path": "component_fab/harness/standard_block.py",
+        "name": "_disable_torch_compile",
+        "lineno": 24,
+        "end_lineno": 31,
+        "digest": "302e0b1a9c3757129c6091ba826942d45690656720b894ea23f027408d9cefb5",
+        "is_test": false
+      },
+      {
+        "path": "component_fab/generator/primitive_templates.py",
+        "name": "_disable_torch_compile",
+        "lineno": 27,
+        "end_lineno": 34,
+        "digest": "302e0b1a9c3757129c6091ba826942d45690656720b894ea23f027408d9cefb5",
+        "is_test": false
+      }
+    ],
+    [
+      {
+        "path": "research/meta_analysis/triplet_blocklist.py",
+        "name": "_optional_float",
+        "lineno": 105,
+        "end_lineno": 112,
+        "digest": "c0da30767d8bbcf8f4d6fbf0d99be3bade9ffb03dfde47fcaa27fba62d1ce8e3",
+        "is_test": false
+      },
+      {
+        "path": "research/meta_analysis/pair_proposer.py",
+        "name": "_optional_float",
+        "lineno": 144,
+        "end_lineno": 151,
+        "digest": "c0da30767d8bbcf8f4d6fbf0d99be3bade9ffb03dfde47fcaa27fba62d1ce8e3",
+        "is_test": false
+      }
+    ],
+    [
+      {
+        "path": "research/tests/test_native_gradient_parity.py",
+        "name": "_assert_close",
+        "lineno": 24,
+        "end_lineno": 31,
+        "digest": "9ecf89805fadebaa90f15e212e2a5b5aa7ed605bede84300ada87fea94ff93f2",
+        "is_test": true
+      },
+      {
+        "path": "research/tests/test_native_norm_gradient_parity.py",
+        "name": "_assert_close",
+        "lineno": 32,
+        "end_lineno": 39,
+        "digest": "9ecf89805fadebaa90f15e212e2a5b5aa7ed605bede84300ada87fea94ff93f2",
+        "is_test": true
+      }
+    ],
+    [
+      {
+        "path": "research/tests/test_reference_architectures.py",
+        "name": "test_fingerprint_records_cka_source",
+        "lineno": 393,
+        "end_lineno": 400,
+        "digest": "fa370a25e3f29d067e03361137b1850685cf09b78d17406b7b6aa90d7a68d33a",
+        "is_test": true
+      },
+      {
+        "path": "research/tests/test_novelty.py",
+        "name": "test_fingerprint_records_cka_source",
+        "lineno": 1036,
+        "end_lineno": 1043,
+        "digest": "fa370a25e3f29d067e03361137b1850685cf09b78d17406b7b6aa90d7a68d33a",
+        "is_test": true
+      }
+    ],
+    [
+      {
+        "path": "research/tools/meta_surrogate_analysis.py",
+        "name": "write_csv",
+        "lineno": 495,
+        "end_lineno": 502,
+        "digest": "381287ae0ee0bdd7bb4b6955263b8f505fc5e45ec797992cdfd757dc7fdf58f5",
+        "is_test": false
+      },
+      {
+        "path": "research/tools/meta_experiment_queue.py",
+        "name": "write_csv",
+        "lineno": 290,
+        "end_lineno": 297,
+        "digest": "381287ae0ee0bdd7bb4b6955263b8f505fc5e45ec797992cdfd757dc7fdf58f5",
+        "is_test": false
+      },
+      {
+        "path": "research/tools/meta_profile_ml_analysis.py",
+        "name": "write_csv",
+        "lineno": 540,
+        "end_lineno": 547,
+        "digest": "381287ae0ee0bdd7bb4b6955263b8f505fc5e45ec797992cdfd757dc7fdf58f5",
+        "is_test": false
+      },
+      {
+        "path": "research/tools/meta_surrogate_screening_proposal.py",
+        "name": "write_csv",
+        "lineno": 259,
+        "end_lineno": 266,
+        "digest": "381287ae0ee0bdd7bb4b6955263b8f505fc5e45ec797992cdfd757dc7fdf58f5",
+        "is_test": false
+      }
+    ],
+    [
+      {
+        "path": "research/tools/repair_investigation_v2_targets.py",
+        "name": "_float_or_none",
+        "lineno": 24,
+        "end_lineno": 31,
+        "digest": "20585ab3d942719860cdc453df746755264aef7b8c5a7a2d1cfd64b677d7a69b",
+        "is_test": false
+      },
+      {
+        "path": "research/tools/audit_generation_attribution.py",
+        "name": "_float_or_none",
+        "lineno": 40,
+        "end_lineno": 47,
+        "digest": "20585ab3d942719860cdc453df746755264aef7b8c5a7a2d1cfd64b677d7a69b",
+        "is_test": false
+      },
+      {
+        "path": "research/tools/build_investigation_queue.py",
+        "name": "_float_or_none",
+        "lineno": 39,
+        "end_lineno": 46,
+        "digest": "20585ab3d942719860cdc453df746755264aef7b8c5a7a2d1cfd64b677d7a69b",
+        "is_test": false
+      }
+    ],
+    [
+      {
+        "path": "research/tools/train_tropical_gate_120m_pretrain.py",
+        "name": "mark_cudagraph_step_begin",
+        "lineno": 953,
+        "end_lineno": 960,
+        "digest": "baa746eca1f7afd5220a247d9de91b16019adb2079f55bd63d509bad315bd5d2",
+        "is_test": false
+      },
+      {
+        "path": "research/tools/mixer_fingerprint.py",
+        "name": "_mark_cudagraph_step_begin",
+        "lineno": 94,
+        "end_lineno": 101,
+        "digest": "baa746eca1f7afd5220a247d9de91b16019adb2079f55bd63d509bad315bd5d2",
+        "is_test": false
+      }
+    ]
+  ],
+  "duplicate_test_names": {
+    "test_relu": [
+      ["aria_core/tests/test_equivalence.py", 29],
+      ["aria_core/tests/verify_install.py", 6],
+      ["research/tests/test_cython_bridge.py", 38],
+      ["research/tests/test_native_kernel_parity.py", 52]
+    ],
+    "test_gelu": [
+      ["aria_core/tests/test_equivalence.py", 34],
+      ["research/tests/test_cython_bridge.py", 43],
+      ["research/tests/test_native_kernel_parity.py", 82]
+    ],
+    "test_silu": [
+      ["aria_core/tests/test_equivalence.py", 45],
+      ["research/tests/test_cython_bridge.py", 52],
+      ["research/tests/test_native_kernel_parity.py", 77]
+    ],
+    "test_sigmoid": [
+      ["aria_core/tests/test_equivalence.py", 50],
+      ["research/tests/test_cython_bridge.py", 58],
+      ["research/tests/test_native_kernel_parity.py", 57],
+      ["research/tests/test_e2e_native_execution.py", 287]
+    ],
+    "test_tanh": [
+      ["aria_core/tests/test_equivalence.py", 55],
+      ["research/tests/test_cython_bridge.py", 64],
+      ["research/tests/test_native_kernel_parity.py", 62],
+      ["research/tests/test_e2e_native_execution.py", 298]
+    ],
+    "test_exp": [
+      ["aria_core/tests/test_equivalence.py", 60],
+      ["research/tests/test_cython_bridge.py", 69],
+      ["research/tests/test_native_kernel_parity.py", 67]
+    ],
+    "test_square": [
+      ["aria_core/tests/test_equivalence.py", 66],
+      ["research/tests/test_cython_bridge.py", 84]
+    ],
+    "test_abs": [
+      ["aria_core/tests/test_equivalence.py", 71],
+      ["research/tests/test_cython_bridge.py", 89]
+    ],
+    "test_neg": [
+      ["aria_core/tests/test_equivalence.py", 76],
+      ["research/tests/test_cython_bridge.py", 94]
+    ],
+    "test_sin": [
+      ["aria_core/tests/test_equivalence.py", 81],
+      ["research/tests/test_cython_bridge.py", 74],
+      ["research/tests/test_native_kernel_parity.py", 90]
+    ],
+    "test_cos": [
+      ["aria_core/tests/test_equivalence.py", 86],
+      ["research/tests/test_cython_bridge.py", 79],
+      ["research/tests/test_native_kernel_parity.py", 98]
+    ],
+    "test_log": [
+      ["aria_core/tests/test_equivalence.py", 91],
+      ["research/tests/test_cython_bridge.py", 112]
+    ],
+    "test_sqrt": [
+      ["aria_core/tests/test_equivalence.py", 97],
+      ["research/tests/test_cython_bridge.py", 117]
+    ],
+    "test_reciprocal": [
+      ["aria_core/tests/test_equivalence.py", 103],
+      ["research/tests/test_cython_bridge.py", 99],
+      ["research/tests/test_op_wiring.py", 294]
+    ],
+    "test_add": [
+      ["aria_core/tests/test_equivalence.py", 120],
+      ["research/tests/test_cython_bridge.py", 137],
+      ["research/tests/test_native_kernel_parity.py", 132]
+    ],
+    "test_mul": [
+      ["aria_core/tests/test_equivalence.py", 125],
+      ["research/tests/test_cython_bridge.py", 143],
+      ["research/tests/test_native_kernel_parity.py", 136]
+    ],
+    "test_sub": [
+      ["aria_core/tests/test_equivalence.py", 130],
+      ["research/tests/test_cython_bridge.py", 149],
+      ["research/tests/test_native_kernel_parity.py", 140]
+    ],
+    "test_div_safe": [
+      ["aria_core/tests/test_equivalence.py", 160],
+      ["research/tests/test_op_wiring.py", 291]
+    ],
+    "test_sum": [
+      ["aria_core/tests/test_equivalence.py", 173],
+      ["research/tests/test_cython_bridge.py", 272],
+      ["research/tests/test_native_kernel_parity.py", 156]
+    ],
+    "test_mean": [
+      ["aria_core/tests/test_equivalence.py", 177],
+      ["research/tests/test_cython_bridge.py", 277],
+      ["research/tests/test_native_kernel_parity.py", 166]
+    ],
+    "test_matmul": [
+      ["aria_core/tests/test_equivalence.py", 188],
+      ["research/tests/test_cython_bridge.py", 165],
+      ["research/tests/test_native_kernel_parity.py", 188]
+    ],
+    "test_linear_with_bias": [
+      ["aria_core/tests/test_equivalence.py", 195],
+      ["research/tests/test_cython_bridge.py", 184],
+      ["research/tests/test_native_kernel_parity.py", 217]
+    ],
+    "test_linear_no_bias": [
+      ["aria_core/tests/test_equivalence.py", 203],
+      ["research/tests/test_cython_bridge.py", 177],
+      ["research/tests/test_native_kernel_parity.py", 246]
+    ],
+    "test_rmsnorm": [
+      ["aria_core/tests/test_equivalence.py", 236],
+      ["aria_core/tests/verify_install.py", 15],
+      ["research/tests/test_cython_bridge.py", 197],
+      ["research/tests/test_native_kernel_parity.py", 277]
+    ],
+    "test_layernorm": [
+      ["aria_core/tests/test_equivalence.py", 244],
+      ["research/tests/test_native_kernel_parity.py", 345]
+    ],
+    "test_softmax": [
+      ["aria_core/tests/test_equivalence.py", 259],
+      ["research/tests/test_native_kernel_parity.py", 309]
+    ],
+    "test_relu_backward": [
+      ["aria_core/tests/test_equivalence.py", 311],
+      ["research/tests/test_native_gradient_parity.py", 47],
+      ["research/tests/test_cython_backward.py", 39]
+    ],
+    "test_add_backward": [
+      ["aria_core/tests/test_equivalence.py", 319],
+      ["research/tests/test_native_gradient_parity.py", 215],
+      ["research/tests/test_cython_backward.py", 131]
+    ],
+    "test_matmul_backward": [
+      ["aria_core/tests/test_equivalence.py", 325],
+      ["research/tests/test_native_gradient_parity.py", 309]
+    ],
+    "test_tropical_matmul": [
+      ["aria_core/tests/test_equivalence.py", 384],
+      ["research/tests/test_op_wiring.py", 300]
+    ],
+    "test_register_disabled_by_default": [
+      ["research/tests/test_mined_template_registration.py", 63],
+      ["research/tests/test_mined_motif_registration.py", 32]
+    ],
+    "test_register_handles_missing_file": [
+      ["research/tests/test_mined_template_registration.py", 141],
+      ["research/tests/test_mined_motif_registration.py", 117]
+    ],
+    "test_public_probe_reports_vocab_too_small": [
+      ["research/tests/test_permutation_composition_probe.py", 116],
+      ["research/tests/test_nano_blimp_eval.py", 219],
+      ["research/tests/test_nano_blimp_v3_eval.py", 234]
+    ],
+    "test_score_range": [
+      ["research/tests/test_interpretability_evals.py", 52],
+      ["research/tests/test_interpretability_evals.py", 194]
+    ],
+    "test_empty_batches": [
+      ["research/tests/test_interpretability_evals.py", 72],
+      ["research/tests/test_interpretability_evals.py", 215],
+      ["research/tests/test_screening_wikitext.py", 427]
+    ],
+    "test_full_eval": [
+      ["research/tests/test_interpretability_evals.py", 457],
+      ["research/tests/test_interpretability_evals.py", 554]
+    ],
+    "test_sigmoid_backward": [
+      ["research/tests/test_native_gradient_parity.py", 78],
+      ["research/tests/test_cython_backward.py", 54],
+      ["research/tests/test_rust_backward.py", 353]
+    ],
+    "test_tanh_backward": [
+      ["research/tests/test_native_gradient_parity.py", 109],
+      ["research/tests/test_cython_backward.py", 65]
+    ],
+    "test_gelu_backward": [
+      ["research/tests/test_native_gradient_parity.py", 138],
+      ["research/tests/test_cython_backward.py", 75]
+    ],
+    "test_silu_backward": [
+      ["research/tests/test_native_gradient_parity.py", 178],
+      ["research/tests/test_cython_backward.py", 99]
+    ],
+    "test_mul_backward": [
+      ["research/tests/test_native_gradient_parity.py", 246],
+      ["research/tests/test_cython_backward.py", 145]
+    ],
+    "test_sub_backward": [
+      ["research/tests/test_native_gradient_parity.py", 279],
+      ["research/tests/test_cython_backward.py", 138]
+    ],
+    "test_real_breakthrough_passes": [
+      ["research/tests/test_breakthrough_gates.py", 48],
+      ["research/tests/test_breakthrough_gates.py", 86]
+    ],
+    "test_gradient_flows": [
+      ["research/tests/test_local_window_attn.py", 85],
+      ["research/tests/test_routing_ops.py", 87],
+      ["research/tests/test_routing_ops.py", 139]
+    ],
+    "test_experiment_lifecycle": [
+      ["research/tests/test_observability_api.py", 188],
+      ["research/tests/test_notebook.py", 254]
+    ],
+    "test_health": [
+      ["research/tests/test_observability_api.py", 388],
+      ["aria_designer/tests/test_api.py", 30]
+    ],
+    "test_output_shape": [
+      ["research/tests/test_ar_probe_internals.py", 27],
+      ["research/tests/test_routing_ops.py", 116],
+      ["research/tests/test_routing_ops.py", 319],
+      ["HYDRA/tests/test_mixture_of_recursions.py", 303],
+      ["HYDRA/tests/test_mixture_of_experts.py", 279],
+      ["HYDRA/tests/test_mixture_of_experts.py", 317],
+      ["HYDRA/tests/test_mixture_of_experts.py", 361],
+      ["HYDRA/tests/test_mixture_of_depths.py", 226]
+    ],
+    "test_default_values": [
+      ["research/tests/test_ar_probe_internals.py", 186],
+      ["HYDRA/tests/test_mixture_of_recursions.py", 75],
+      ["HYDRA/tests/test_mixture_of_experts.py", 65],
+      ["HYDRA/tests/test_mixture_of_depths.py", 61]
+    ],
+    "test_weight_norm_model_runs_and_restores_state": [
+      ["research/tests/test_nano_blimp_eval.py", 317],
+      ["research/tests/test_synthetic_association_eval.py", 220]
+    ],
+    "test_fallback_when_meta_db_missing": [
+      ["research/tests/test_op_catalog_loader.py", 36],
+      ["research/tests/test_slot_catalog_loader.py", 38]
+    ],
+    "test_cache_is_used_across_calls": [
+      ["research/tests/test_op_catalog_loader.py", 96],
+      ["research/tests/test_slot_catalog_loader.py", 125]
+    ],
+    "test_unsupported_raises": [
+      ["research/tests/test_cython_bridge.py", 122],
+      ["research/tests/test_cython_bridge.py", 155],
+      ["research/tests/test_cython_backward.py", 109],
+      ["research/tests/test_cython_backward.py", 152]
+    ],
+    "test_softmax_sums_to_one": [
+      ["research/tests/test_cython_bridge.py", 240],
+      ["research/tests/test_native_kernel_parity.py", 323]
+    ],
+    "test_benchmark": [
+      ["research/tests/test_subgraph_benchmark.py", 209],
+      ["research/tests/test_subgraph_benchmark.py", 244],
+      ["research/tests/test_subgraph_benchmark.py", 277],
+      ["research/tests/test_subgraph_benchmark.py", 310]
+    ],
+    "test_stats_tracking": [
+      ["research/tests/test_subgraph_benchmark.py", 371],
+      ["research/tests/test_subgraph_dispatch.py", 265]
+    ],
+    "test_all_extracted_methods_exist": [
+      ["research/tests/test_runner_micro_train_split.py", 16],
+      ["research/tests/test_runner_validation_split.py", 55]
+    ],
+    "test_backward_pass": [
+      ["research/tests/test_reference_architectures.py", 80],
+      ["HYDRA/tests/test_mixture_of_recursions.py", 404]
+    ],
+    "test_load_manifest_valid": [
+      ["research/tests/test_reference_architectures.py", 158],
+      ["research/tests/test_novelty.py", 783]
+    ],
+    "test_load_manifest_missing_file": [
+      ["research/tests/test_reference_architectures.py", 170],
+      ["research/tests/test_novelty.py", 796]
+    ],
+    "test_load_manifest_malformed_json": [
+      ["research/tests/test_reference_architectures.py", 178],
+      ["research/tests/test_novelty.py", 805]
+    ],
+    "test_load_manifest_missing_fields": [
+      ["research/tests/test_reference_architectures.py", 189],
+      ["research/tests/test_novelty.py", 817]
+    ],
+    "test_load_manifest_unsupported_schema": [
+      ["research/tests/test_reference_architectures.py", 200],
+      ["research/tests/test_novelty.py", 830]
+    ],
+    "test_load_manifest_missing_family": [
+      ["research/tests/test_reference_architectures.py", 209],
+      ["research/tests/test_novelty.py", 840]
+    ],
+    "test_load_manifest_bad_activation_shape": [
+      ["research/tests/test_reference_architectures.py", 220],
+      ["research/tests/test_novelty.py", 852]
+    ],
+    "test_load_reference_activations_valid": [
+      ["research/tests/test_reference_architectures.py", 229],
+      ["research/tests/test_novelty.py", 862]
+    ],
+    "test_load_reference_activations_missing_file": [
+      ["research/tests/test_reference_architectures.py", 259],
+      ["research/tests/test_novelty.py", 878]
+    ],
+    "test_load_reference_activations_shape_mismatch": [
+      ["research/tests/test_reference_architectures.py", 273],
+      ["research/tests/test_novelty.py", 893]
+    ],
+    "test_store_no_artifacts_returns_none": [
+      ["research/tests/test_reference_architectures.py", 291],
+      ["research/tests/test_novelty.py", 913]
+    ],
+    "test_store_with_valid_artifacts": [
+      ["research/tests/test_reference_architectures.py", 302],
+      ["research/tests/test_novelty.py", 925]
+    ],
+    "test_store_reset_clears_cache": [
+      ["research/tests/test_reference_architectures.py", 317],
+      ["research/tests/test_novelty.py", 955]
+    ],
+    "test_store_metadata_provenance_fields": [
+      ["research/tests/test_reference_architectures.py", 330],
+      ["research/tests/test_novelty.py", 969]
+    ],
+    "test_compute_reference_cka_with_artifacts": [
+      ["research/tests/test_reference_architectures.py", 346],
+      ["research/tests/test_novelty.py", 986]
+    ],
+    "test_compute_reference_cka_without_artifacts_fails_closed": [
+      ["research/tests/test_reference_architectures.py", 366],
+      ["research/tests/test_novelty.py", 1007]
+    ],
+    "test_compute_reference_cka_seq_len_mismatch": [
+      ["research/tests/test_reference_architectures.py", 378],
+      ["research/tests/test_novelty.py", 1020]
+    ],
+    "test_fingerprint_records_cka_source": [
+      ["research/tests/test_reference_architectures.py", 393],
+      ["research/tests/test_novelty.py", 1036]
+    ],
+    "test_fingerprint_reports_none_when_no_artifacts": [
+      ["research/tests/test_reference_architectures.py", 402],
+      ["research/tests/test_novelty.py", 1045]
+    ],
+    "test_fingerprint_cka_provenance_fields_exist": [
+      ["research/tests/test_reference_architectures.py", 443],
+      ["research/tests/test_novelty.py", 1086]
+    ],
+    "test_export_produces_loadable_artifacts": [
+      ["research/tests/test_reference_architectures.py", 454],
+      ["research/tests/test_novelty.py", 1097]
+    ],
+    "test_export_deterministic": [
+      ["research/tests/test_reference_architectures.py", 476],
+      ["research/tests/test_novelty.py", 1119]
+    ],
+    "test_norm_ops_have_backward": [
+      ["research/tests/test_norm_autograd.py", 104],
+      ["research/tests/test_cython_backward.py", 246]
+    ],
+    "test_dispatch_relu": [
+      ["research/tests/test_native_autograd.py", 331],
+      ["aria_designer/runtime/tests/test_dispatch.py", 29]
+    ],
+    "test_no_method_exceeds_150_lines": [
+      ["research/tests/test_runner_continuous_investigation_split.py", 52],
+      ["research/tests/test_runner_validation_split.py", 69]
+    ],
+    "test_gradient_flow": [
+      ["research/tests/test_op_rehabilitation.py", 134],
+      ["HYDRA/tests/test_mixture_of_recursions.py", 219],
+      ["HYDRA/tests/test_mixture_of_recursions.py", 324],
+      ["HYDRA/tests/test_mixture_of_experts.py", 212],
+      ["HYDRA/tests/test_mixture_of_experts.py", 340],
+      ["HYDRA/tests/test_mixture_of_experts.py", 417],
+      ["HYDRA/tests/test_paper_compliance.py", 569],
+      ["HYDRA/tests/test_mixture_of_depths.py", 169],
+      ["HYDRA/tests/test_mixture_of_depths.py", 257],
+      ["HYDRA/tests/test_ccgqa_model.py", 190],
+      ["HYDRA/tests/test_optimizations.py", 100]
+    ],
+    "test_dispatch": [
+      ["research/tests/test_rust_ref_ops.py", 54],
+      ["research/tests/test_rust_ref_ops.py", 102],
+      ["research/tests/test_rust_ref_ops.py", 147],
+      ["research/tests/test_rust_ref_ops.py", 201],
+      ["research/tests/test_rust_ref_ops.py", 250],
+      ["research/tests/test_rust_ref_ops.py", 295]
+    ],
+    "test_output_shape_matches_input": [
+      ["research/tests/test_routing_ops.py", 51],
+      ["HYDRA/tests/test_manifold_connections.py", 150]
+    ],
+    "test_telemetry_recorded": [
+      ["research/tests/test_routing_ops.py", 79],
+      ["research/tests/test_routing_ops.py", 130],
+      ["research/tests/test_routing_ops.py", 333],
+      ["research/tests/test_routing_ops.py", 363],
+      ["research/tests/test_routing_ops.py", 423],
+      ["research/tests/test_routing_ops.py", 437],
+      ["research/tests/test_routing_ops.py", 451]
+    ],
+    "test_non_identity": [
+      ["research/tests/test_routing_ops.py", 123],
+      ["research/tests/test_routing_ops.py", 326]
+    ],
+    "test_output_shape_restored": [
+      ["research/tests/test_routing_ops.py", 348],
+      ["research/tests/test_routing_ops.py", 489]
+    ],
+    "test_output_shape_preserved": [
+      ["research/tests/test_routing_ops.py", 409],
+      ["research/tests/test_routing_ops.py", 431],
+      ["research/tests/test_routing_ops.py", 445],
+      ["research/tests/test_routing_ops.py", 459],
+      ["research/tests/test_routing_ops.py", 474]
+    ],
+    "test_parity": [
+      ["research/tests/test_fused_kernels.py", 112],
+      ["research/tests/test_fused_kernels.py", 188],
+      ["research/tests/test_fused_kernels.py", 265],
+      ["research/tests/test_fused_kernels.py", 431]
+    ],
+    "test_performance": [
+      ["research/tests/test_fused_kernels.py", 133],
+      ["research/tests/test_fused_kernels.py", 332],
+      ["research/tests/test_fused_kernels.py", 471]
+    ],
+    "test_parity_vs_sequential_c": [
+      ["research/tests/test_fused_kernels.py", 284],
+      ["research/tests/test_fused_kernels.py", 441]
+    ],
+    "test_shape_violation_raises": [
+      ["component_fab/tests/test_mix_speed.py", 65],
+      ["component_fab/tests/test_routing_health.py", 87],
+      ["component_fab/tests/test_compression_quality.py", 52]
+    ],
+    "test_attention_conversion": [
+      ["aria_designer/tests/test_bridge.py", 348],
+      ["aria_designer/tests/test_importer.py", 62]
+    ],
+    "test_manifest_valid": [
+      ["aria_designer/components/math_space/grade_mix/tests/test_grade_mix.py", 7],
+      [
+        "aria_designer/components/math_space/ultrametric_attention/tests/test_ultrametric_attention.py",
+        7
+      ],
+      ["aria_designer/components/math_space/poincare_add/tests/test_poincare_add.py", 7],
+      ["aria_designer/components/math_space/bottleneck_proj/tests/test_bottleneck_proj.py", 7],
+      ["aria_designer/components/math_space/padic_gate/tests/test_padic_gate.py", 7],
+      ["aria_designer/components/math_space/grade_select/tests/test_grade_select.py", 7],
+      [
+        "aria_designer/components/math_space/hyp_tangent_nonlinear/tests/test_hyp_tangent_nonlinear.py",
+        7
+      ],
+      [
+        "aria_designer/components/math_space/clifford_attention/tests/test_clifford_attention.py",
+        7
+      ],
+      ["aria_designer/components/math_space/stdp_attention/tests/test_stdp_attention.py", 7],
+      ["aria_designer/components/math_space/geometric_product/tests/test_geometric_product.py", 7],
+      ["aria_designer/components/math_space/low_rank_proj/tests/test_low_rank_proj.py", 7],
+      ["aria_designer/components/math_space/padic_expand/tests/test_padic_expand.py", 7],
+      ["aria_designer/components/math_space/spike_rate_code/tests/test_spike_rate_code.py", 7],
+      ["aria_designer/components/math_space/hyp_distance/tests/test_hyp_distance.py", 7],
+      ["aria_designer/components/math_space/rotor_transform/tests/test_rotor_transform.py", 7],
+      ["aria_designer/components/math_space/hyp_linear/tests/test_hyp_linear.py", 7],
+      ["aria_designer/components/math_space/grouped_linear/tests/test_grouped_linear.py", 7],
+      ["aria_designer/components/math_space/tropical_matmul/tests/test_tropical_matmul.py", 7],
+      ["aria_designer/components/math_space/shared_basis_proj/tests/test_shared_basis_proj.py", 7],
+      ["aria_designer/components/math_space/log_map/tests/test_log_map.py", 7],
+      ["aria_designer/components/math_space/hyperbolic_norm/tests/test_hyperbolic_norm.py", 7],
+      ["aria_designer/components/math_space/exp_map/tests/test_exp_map.py", 7],
+      ["aria_designer/components/math_space/tied_proj/tests/test_tied_proj.py", 7],
+      ["aria_designer/components/math_space/tropical_add/tests/test_tropical_add.py", 7],
+      ["aria_designer/components/math_space/sparse_threshold/tests/test_sparse_threshold.py", 7],
+      [
+        "aria_designer/components/math_space/tropical_attention/tests/test_tropical_attention.py",
+        7
+      ],
+      ["aria_designer/components/math_space/lif_neuron/tests/test_lif_neuron.py", 7],
+      ["aria_designer/components/math_space/tropical_center/tests/test_tropical_center.py", 7],
+      ["aria_designer/components/math_space/tropical_gate/tests/test_tropical_gate.py", 7],
+      ["aria_designer/components/math_space/padic_residual/tests/test_padic_residual.py", 7],
+      ["aria_designer/components/functional/route_lanes/tests/test_route_lanes.py", 7],
+      ["aria_designer/components/functional/fixed_point_iter/tests/test_fixed_point_iter.py", 7],
+      ["aria_designer/components/functional/token_merge/tests/test_token_merge.py", 7],
+      ["aria_designer/components/functional/integral_kernel/tests/test_integral_kernel.py", 7],
+      ["aria_designer/components/functional/route_recursion/tests/test_route_recursion.py", 7],
+      ["aria_designer/components/functional/basis_expansion/tests/test_basis_expansion.py", 7],
+      ["aria_designer/components/functional/route_topk/tests/test_route_topk.py", 7],
+      ["aria_designer/components/sequence/local_window_attn/tests/test_local_window_attn.py", 7],
+      [
+        "aria_designer/components/sequence/sliding_window_mask/tests/test_sliding_window_mask.py",
+        7
+      ],
+      ["aria_designer/components/sequence/causal_mask/tests/test_causal_mask.py", 7],
+      ["aria_designer/components/sequence/softmax_last/tests/test_softmax_last.py", 7],
+      ["aria_designer/components/routing/learned_token_gate/tests/test_cascade.py", 7],
+      ["aria_designer/components/routing/confidence_token_gate/tests/test_early_exit.py", 12],
+      ["aria_designer/components/routing/score_depth_blend/tests/test_mixed_recursion_gate.py", 7],
+      ["aria_designer/components/routing/depth_weighted_proj/tests/test_adaptive_recursion.py", 7],
+      ["aria_designer/components/routing/adjacent_token_merge/tests/test_token_merging.py", 7],
+      ["aria_designer/components/routing/cheap_verify_blend/tests/test_speculative.py", 7],
+      ["aria_designer/components/routing/token_entropy/tests/test_entropy_score.py", 7],
+      [
+        "aria_designer/components/routing/difficulty_blend_3way/tests/test_adaptive_lane_mixer.py",
+        7
+      ],
+      [
+        "aria_designer/components/routing/adaptive_rank_gate/tests/test_progressive_compression_gate.py",
+        7
+      ],
+      ["aria_designer/components/routing/token_class_proj/tests/test_token_type_classifier.py", 7],
+      [
+        "aria_designer/components/routing/signal_conditioned_compression/tests/test_routing_conditioned_compression.py",
+        7
+      ],
+      [
+        "aria_designer/components/routing/dual_compression_blend/tests/test_compression_mixture_experts.py",
+        7
+      ],
+      ["aria_designer/components/math/sqrt/tests/test_sqrt.py", 7],
+      ["aria_designer/components/math/mean_last/tests/test_mean_last.py", 7],
+      ["aria_designer/components/math/tanh/tests/test_tanh.py", 7],
+      ["aria_designer/components/math/sum_last/tests/test_sum_last.py", 7],
+      ["aria_designer/components/math/abs/tests/test_abs.py", 7],
+      ["aria_designer/components/math/neg/tests/test_neg.py", 7],
+      ["aria_designer/components/math/sign_ste/tests/test_sign_ste.py", 7],
+      ["aria_designer/components/math/sin/tests/test_sin.py", 7],
+      ["aria_designer/components/math/gelu/tests/test_gelu.py", 7],
+      ["aria_designer/components/math/minimum/tests/test_minimum.py", 7],
+      ["aria_designer/components/math/cumprod_safe/tests/test_cumprod_safe.py", 7],
+      ["aria_designer/components/math/mul/tests/test_mul.py", 7],
+      ["aria_designer/components/math/max_last/tests/test_max_last.py", 7],
+      ["aria_designer/components/math/exp/tests/test_exp.py", 7],
+      ["aria_designer/components/math/square/tests/test_square.py", 7],
+      ["aria_designer/components/math/silu/tests/test_silu.py", 7],
+      ["aria_designer/components/math/norm_last/tests/test_norm_last.py", 7],
+      ["aria_designer/components/math/maximum/tests/test_maximum.py", 7],
+      ["aria_designer/components/math/cumsum/tests/test_cumsum.py", 7],
+      ["aria_designer/components/math/log/tests/test_log.py", 7],
+      ["aria_designer/components/math/reciprocal/tests/test_reciprocal.py", 7],
+      ["aria_designer/components/math/cos/tests/test_cos.py", 7],
+      ["aria_designer/components/math/relu/tests/test_relu.py", 7],
+      ["aria_designer/components/math/add/tests/test_add.py", 7],
+      ["aria_designer/components/math/div_safe/tests/test_div_safe.py", 7],
+      ["aria_designer/components/math/sigmoid/tests/test_sigmoid.py", 7],
+      ["aria_designer/components/math/sub/tests/test_sub.py", 7],
+      ["aria_designer/components/structural/split2/tests/test_split2.py", 7],
+      ["aria_designer/components/structural/multi_head_mix/tests/test_multi_head_mix.py", 7],
+      ["aria_designer/components/structural/split3/tests/test_split3.py", 7],
+      ["aria_designer/components/structural/concat/tests/test_concat.py", 8],
+      ["aria_designer/components/io/output_head/tests/test_output_head.py", 7],
+      ["aria_designer/components/io/input/tests/test_input.py", 7],
+      ["aria_designer/components/channel_mixing/moe_topk/tests/test_moe_topk.py", 7],
+      ["aria_designer/components/channel_mixing/swiglu_mlp/tests/test_swiglu_mlp.py", 7],
+      ["aria_designer/components/channel_mixing/rwkv_channel/tests/test_rwkv_channel.py", 7],
+      ["aria_designer/components/normalization/layernorm/tests/test_layernorm_pre.py", 7],
+      ["aria_designer/components/linear_algebra/linear_proj_up/tests/test_linear_proj_up.py", 7],
+      ["aria_designer/components/linear_algebra/rmsnorm/tests/test_rmsnorm.py", 7],
+      [
+        "aria_designer/components/linear_algebra/block_sparse_linear/tests/test_block_sparse_linear.py",
+        7
+      ],
+      ["aria_designer/components/linear_algebra/selective_scan/tests/test_selective_scan.py", 7],
+      ["aria_designer/components/linear_algebra/learnable_scale/tests/test_learnable_scale.py", 7],
+      ["aria_designer/components/linear_algebra/conv1d_seq/tests/test_conv1d_seq.py", 7],
+      ["aria_designer/components/linear_algebra/transpose_sd/tests/test_transpose_sd.py", 7],
+      ["aria_designer/components/linear_algebra/matmul/tests/test_matmul.py", 7],
+      ["aria_designer/components/linear_algebra/topk_gate/tests/test_topk_gate.py", 7],
+      ["aria_designer/components/linear_algebra/outer_product/tests/test_outer_product.py", 7],
+      [
+        "aria_designer/components/linear_algebra/nm_sparse_linear/tests/test_nm_sparse_linear.py",
+        7
+      ],
+      [
+        "aria_designer/components/linear_algebra/fused_linear_gelu/tests/test_fused_linear_gelu.py",
+        7
+      ],
+      ["aria_designer/components/linear_algebra/linear_proj/tests/test_linear_proj.py", 7],
+      ["aria_designer/components/linear_algebra/learnable_bias/tests/test_learnable_bias.py", 7],
+      [
+        "aria_designer/components/linear_algebra/linear_proj_down/tests/test_linear_proj_down.py",
+        7
+      ],
+      [
+        "aria_designer/components/linear_algebra/semi_structured_2_4_linear/tests/test_semi_structured_2_4_linear.py",
+        7
+      ],
+      ["aria_designer/components/mixing/graph_attention/tests/test_graph_attention.py", 7],
+      ["aria_designer/components/mixing/linear_attention/tests/test_linear_attention.py", 7],
+      ["aria_designer/components/mixing/conv_only/tests/test_conv_only.py", 7],
+      ["aria_designer/components/mixing/softmax_attention/tests/test_softmax_attention.py", 7]
+    ],
+    "test_backward_gpu": [
+      ["HYDRA/tests/test_routing_integration.py", 288],
+      ["HYDRA/tests/test_mixture_of_depths.py", 438]
+    ],
+    "test_immutable": [
+      ["HYDRA/tests/test_mixture_of_recursions.py", 90],
+      ["HYDRA/tests/test_mixture_of_experts.py", 76],
+      ["HYDRA/tests/test_mixture_of_depths.py", 72]
+    ],
+    "test_invalid_dim": [
+      ["HYDRA/tests/test_mixture_of_recursions.py", 95],
+      ["HYDRA/tests/test_mixture_of_experts.py", 81],
+      ["HYDRA/tests/test_mixture_of_depths.py", 77]
+    ],
+    "test_slots": [
+      ["HYDRA/tests/test_mixture_of_recursions.py", 113],
+      ["HYDRA/tests/test_mixture_of_experts.py", 104],
+      ["HYDRA/tests/test_mixture_of_depths.py", 95]
+    ],
+    "test_output_shapes": [
+      ["HYDRA/tests/test_mixture_of_recursions.py", 193],
+      ["HYDRA/tests/test_mixture_of_experts.py", 186],
+      ["HYDRA/tests/test_mixture_of_depths.py", 108]
+    ],
+    "test_jitter_only_training": [
+      ["HYDRA/tests/test_mixture_of_recursions.py", 233],
+      ["HYDRA/tests/test_mixture_of_depths.py", 194]
+    ],
+    "test_no_nan_output": [
+      ["HYDRA/tests/test_mixture_of_recursions.py", 313],
+      ["HYDRA/tests/test_mixture_of_depths.py", 288]
+    ],
+    "test_deterministic_inference": [
+      ["HYDRA/tests/test_mixture_of_recursions.py", 428],
+      ["HYDRA/tests/test_mixture_of_depths.py", 207]
+    ],
+    "test_different_batch_sizes": [
+      ["HYDRA/tests/test_mixture_of_recursions.py", 446],
+      ["HYDRA/tests/test_mixture_of_depths.py", 309]
+    ],
+    "test_different_seq_lengths": [
+      ["HYDRA/tests/test_mixture_of_recursions.py", 458],
+      ["HYDRA/tests/test_mixture_of_depths.py", 322]
+    ],
+    "test_mixed_precision": [
+      ["HYDRA/tests/test_mixture_of_recursions.py", 521],
+      ["HYDRA/tests/test_mixture_of_depths.py", 455]
+    ],
+    "test_invalid_aux_loss_weight": [
+      ["HYDRA/tests/test_mixture_of_experts.py", 99],
+      ["HYDRA/tests/test_mixture_of_depths.py", 90]
+    ],
+    "test_routing_stats": [
+      ["HYDRA/tests/test_mixture_of_experts.py", 260],
+      ["HYDRA/tests/test_mixture_of_experts.py", 433]
+    ],
+    "test_compile_forward": [
+      ["HYDRA/tests/test_manifold_connections.py", 322],
+      ["HYDRA/tests/test_moe_integration.py", 447]
+    ],
+    "test_import": [
+      ["HYDRA/tests/test_fused_backward_kernels.py", 47],
+      ["HYDRA/tests/test_fused_backward_kernels.py", 238],
+      ["HYDRA/tests/test_fused_swiglu_backward.py", 42]
+    ],
+    "test_numerical_correctness_bf16": [
+      ["HYDRA/tests/test_fused_backward_kernels.py", 61],
+      ["HYDRA/tests/test_fused_backward_kernels.py", 252],
+      ["HYDRA/tests/test_fused_swiglu_backward.py", 56]
+    ],
+    "test_numerical_correctness_fp32": [
+      ["HYDRA/tests/test_fused_backward_kernels.py", 98],
+      ["HYDRA/tests/test_fused_backward_kernels.py", 287],
+      ["HYDRA/tests/test_fused_swiglu_backward.py", 83]
+    ],
+    "test_gradient_clamping": [
+      ["HYDRA/tests/test_fused_backward_kernels.py", 136],
+      ["HYDRA/tests/test_fused_backward_kernels.py", 327],
+      ["HYDRA/tests/test_fused_swiglu_backward.py", 114]
+    ],
+    "test_different_shapes": [
+      ["HYDRA/tests/test_fused_backward_kernels.py", 157],
+      ["HYDRA/tests/test_fused_backward_kernels.py", 349],
+      ["HYDRA/tests/test_fused_swiglu_backward.py", 133]
+    ],
+    "test_autograd_integration": [
+      ["HYDRA/tests/test_fused_backward_kernels.py", 194],
+      ["HYDRA/tests/test_fused_backward_kernels.py", 387],
+      ["HYDRA/tests/test_fused_swiglu_backward.py", 163]
+    ],
+    "test_forward_output_shape": [
+      ["HYDRA/tests/test_paper_compliance.py", 250],
+      ["HYDRA/tests/test_paper_compliance.py", 523]
+    ],
+    "test_router_architecture": [
+      ["HYDRA/tests/test_paper_compliance.py", 327],
+      ["HYDRA/tests/test_paper_compliance.py", 420]
+    ],
+    "test_routing_stats_available": [
+      ["HYDRA/tests/test_paper_compliance.py", 361],
+      ["HYDRA/tests/test_paper_compliance.py", 499]
+    ],
+    "test_forward_shape": [
+      ["HYDRA/tests/test_lightning_attn.py", 52],
+      ["HYDRA/tests/test_ccgqa_model.py", 79]
+    ],
+    "test_model_creates": [
+      ["HYDRA/tests/test_ccgqa_model.py", 73],
+      ["HYDRA/tests/test_ccgqa_model.py", 120]
+    ],
+    "test_factory_function": [
+      ["HYDRA/tests/test_ccgqa_model.py", 95],
+      ["HYDRA/tests/test_ccgqa_model.py", 291]
+    ],
+    "test_bf16_stability": [
+      ["HYDRA/tests/test_ccgqa_model.py", 221],
+      ["HYDRA/tests/test_optimizations.py", 66]
+    ],
+    "test_basic_forward": [
+      ["HYDRA/tests/test_optimizations.py", 37],
+      ["HYDRA/tests/test_optimizations.py", 86],
+      ["HYDRA/tests/test_optimizations.py", 120]
+    ]
+  }
+}

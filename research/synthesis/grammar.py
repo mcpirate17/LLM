@@ -35,18 +35,11 @@ from .grammar_support import (
     check_shape_compat,
 )
 from .grammar_defaults import default_category_weights
-from .primitives import (
-    PRIMITIVE_REGISTRY,
-    REQUIRES_RESIDUAL_BYPASS,
-    get_wiring_rule,
-    validate_wiring,
-)
+from .primitives import PRIMITIVE_REGISTRY
 from .templates import (
     apply_template,
 )
 from ._dynamic_template_branch import maybe_apply_dynamic_template
-from .template_rules import validate_template_graph
-from .validator import validate_graph
 from .native_template_selection import (
     TemplateWeightOverrides,
     make_template_weight_overrides,
@@ -59,6 +52,7 @@ from .generation_runtime import (
     normalize_generation_config as _normalize_generation_config,
     runtime_context_for_config as _runtime_context_for_config,
 )
+from .graph_validation_rules import validate_generated_graph
 
 # Alias for backward compatibility — some test files import Node from grammar
 Node = OpNode
@@ -898,230 +892,12 @@ def _validate_graph(
     packed_validation: object | None = None,
 ) -> None:
     """Validate a generated graph and raise ValueError if invalid."""
-    # Allow +2 depth headroom for multi-step motifs (e.g., 3-4 step math-space
-    # motifs that include norm+op+proj) which can push templates slightly over.
-    max_params = 12 * 4 * config.model_dim * config.model_dim
-    validation_kwargs = {
-        "max_ops": config.max_ops,
-        "max_depth": config.max_depth + 2,
-        "min_splits": config.min_splits,
-        "max_params": max_params,
-    }
-    if dim_flow_inputs is not None:
-        validation_kwargs["dim_flow_inputs"] = dim_flow_inputs
-    if packed_validation is not None:
-        validation_kwargs["packed_validation"] = packed_validation
-    result = validate_graph(graph, **validation_kwargs)
-    if not result.valid:
-        raise ValueError(
-            result.errors[0] if result.errors else "Graph validation failed"
-        )
-
-    # Algebraic space consistency check — reject graphs that mix
-    # incompatible mathematical spaces (e.g., tropical after poincaré).
-    space_err = check_graph_space_consistency(graph)
-    if space_err is not None:
-        raise ValueError(space_err)
-
-    # Routing-mandatory check: every graph must have routing, compression, or MoE.
-    # Skipped when forced_template is set or exploration budget selected the template.
-    _skip_routing_check = config.forced_template or graph.metadata.get(
-        "_template_exploration_used"
+    validate_generated_graph(
+        graph,
+        config,
+        dim_flow_inputs=dim_flow_inputs,
+        packed_validation=packed_validation,
     )
-    if config.routing_mandatory and not _skip_routing_check:
-        op_names = {n.op_name for n in graph.nodes.values() if not n.is_input}
-        if not op_names & _ROUTING_COMPRESSION_MOE_OPS:
-            raise ValueError(
-                "routing_mandatory=True but graph has no routing/compression/MoE ops"
-            )
-
-    # Depth constraint check: reject ops placed before their required layer depth.
-    # The requirement lives in wiring rules; mutating the graph here leaves stale
-    # cached IR/metrics behind and turns validation into silent graph rewriting.
-    for nid, node in graph.nodes.items():
-        if node.is_input:
-            continue
-        depth_rule = get_wiring_rule(node.op_name) or {}
-        min_layer_depth = int(depth_rule.get("min_layer_depth", 0))
-        if min_layer_depth > 0:
-            if node.depth < min_layer_depth:
-                raise ValueError(
-                    f"{node.op_name} (id={nid}) placed at depth {node.depth} "
-                    f"before min_layer_depth={min_layer_depth}"
-                )
-
-    # Residual bypass check: ops in REQUIRES_RESIDUAL_BYPASS must have a
-    # downstream add that also takes the op's input (residual connection).
-    successors: Dict[int, List[int]] = graph.children_map()
-    add_inputs_by_source: Dict[int, set[int]] = {}
-    for other_nid, other_node in graph.nodes.items():
-        if other_node.op_name == "add":
-            add_inputs = set(other_node.input_ids)
-            for source_id in add_inputs:
-                add_inputs_by_source.setdefault(source_id, set()).update(add_inputs)
-
-    for nid, node in graph.nodes.items():
-        if node.is_input or node.op_name not in REQUIRES_RESIDUAL_BYPASS:
-            continue
-        node_inputs = set(node.input_ids)
-        if not (add_inputs_by_source.get(nid, set()) & node_inputs):
-            raise ValueError(
-                f"{node.op_name} (id={nid}) requires residual bypass but none found"
-            )
-
-    # requires_residual_context: weaker than residual_bypass — the op's
-    # output must reach SOME downstream `add` node (not necessarily one that
-    # also takes the op's input), so the unbounded output rejoins a residual
-    # stream rather than feeding raw into another transform. Built from
-    # CONTEXT_RULES at module load. Audit fix 2026-04-17.
-    from ._context_registry import REQUIRES_RESIDUAL_CONTEXT_OPS
-
-    if REQUIRES_RESIDUAL_CONTEXT_OPS:
-        # Per-node: does any descendant of `nid` participate as input to an
-        # `add` op? Cheap BFS using the `successors` map already built above.
-        add_consumers: set[int] = {
-            other_nid
-            for other_nid, other_node in graph.nodes.items()
-            if other_node.op_name == "add"
-        }
-        for nid, node in graph.nodes.items():
-            if (
-                node.is_input
-                or node.op_name not in REQUIRES_RESIDUAL_CONTEXT_OPS
-                or node.op_name in REQUIRES_RESIDUAL_BYPASS
-            ):
-                continue
-            # BFS forward from nid; any reachable add is sufficient context.
-            seen: set[int] = {nid}
-            queue: List[int] = [nid]
-            reaches_add = False
-            while queue:
-                cur = queue.pop()
-                if cur in add_consumers:
-                    reaches_add = True
-                    break
-                for child in successors.get(cur, ()):
-                    if child not in seen:
-                        seen.add(child)
-                        queue.append(child)
-            if not reaches_add:
-                raise ValueError(
-                    f"{node.op_name} (id={nid}) requires residual context but "
-                    f"no downstream add is reachable from its output"
-                )
-
-    # Op wiring constraint check: validate signal producer/consumer chains
-    wiring_errors = validate_wiring(graph)
-    if wiring_errors:
-        raise ValueError(f"Wiring constraint violated: {wiring_errors[0]}")
-
-    # Activation constraint check: reject activation placements that
-    # empirically always diverge. Checks both directions:
-    #   "before" — which ops may consume this activation's output
-    #   "after"  — which ops must precede this activation (predecessor check)
-    from .motifs import ACTIVATION_RULES, MATH_SPACE_RULES
-    from .op_roles import get_role
-
-    for nid in sorted(graph.nodes):
-        node = graph.nodes[nid]
-        if node.is_input:
-            continue
-        rules = ACTIVATION_RULES.get(node.op_name)
-        if rules is None:
-            continue
-
-        # "before" check: reject invalid successors (e.g. sigmoid→add)
-        before = rules.get("before")
-        if before is not None:
-            for other_nid in successors.get(nid, ()):
-                other_node = graph.nodes[other_nid]
-                if other_node.is_input:
-                    continue
-                if other_node.op_name not in before:
-                    raise ValueError(
-                        f"Activation constraint: {node.op_name} (id={nid}) "
-                        f"→ {other_node.op_name} (id={other_nid}) is not allowed; "
-                        f"valid successors: {before}"
-                    )
-
-        # "after" check: reject invalid predecessors (e.g. exp after unbounded op)
-        after = rules.get("after")
-        if after is not None:
-            for parent_id in node.input_ids:
-                parent = graph.nodes.get(parent_id)
-                if parent is None or parent.is_input:
-                    continue
-                parent_role = get_role(parent.op_name)
-                if parent.op_name not in after and parent_role not in after:
-                    raise ValueError(
-                        f"Activation constraint: {parent.op_name} (id={parent_id}) "
-                        f"→ {node.op_name} (id={nid}) is not allowed; "
-                        f"valid predecessors: {after}"
-                    )
-
-    # Math-space composition check: reject math-space ops whose required
-    # predecessors (must_precede) are not satisfied. Templates auto-insert
-    # rmsnorm, but free-form generation can skip it.
-    for nid in sorted(graph.nodes):
-        node = graph.nodes[nid]
-        if node.is_input:
-            continue
-        ms_rules = MATH_SPACE_RULES.get(node.op_name)
-        if ms_rules is None:
-            continue
-
-        # must_precede: at least one parent must be from the required set
-        must_precede = ms_rules.get("must_precede")
-        if must_precede is not None:
-            has_valid_parent = False
-            for parent_id in node.input_ids:
-                parent = graph.nodes.get(parent_id)
-                if parent is not None and parent.op_name in must_precede:
-                    has_valid_parent = True
-                    break
-            if not has_valid_parent:
-                raise ValueError(
-                    f"Math-space constraint: {node.op_name} (id={nid}) "
-                    f"requires predecessor from {must_precede}"
-                )
-
-        # must_follow: this op must come after specific ops
-        must_follow = ms_rules.get("must_follow")
-        if must_follow is not None:
-            has_valid_parent = False
-            for parent_id in node.input_ids:
-                parent = graph.nodes.get(parent_id)
-                if parent is not None and parent.op_name in must_follow:
-                    has_valid_parent = True
-                    break
-            if not has_valid_parent:
-                raise ValueError(
-                    f"Math-space constraint: {node.op_name} (id={nid}) "
-                    f"must follow one of {must_follow}"
-                )
-
-        # must_follow_with: a successor from this set must consume this op
-        must_follow_with = ms_rules.get("must_follow_with")
-        if must_follow_with is not None:
-            if not any(
-                not graph.nodes[other_nid].is_input
-                and graph.nodes[other_nid].op_name in must_follow_with
-                for other_nid in successors.get(nid, ())
-            ):
-                raise ValueError(
-                    f"Math-space constraint: {node.op_name} (id={nid}) "
-                    f"must be followed by one of {must_follow_with}"
-                )
-
-    # Template-level structural invariants are part of legality, not metadata-only
-    # guidance. Preserve the warning payload for observability, but reject the
-    # graph so template-invalid programs never count as valid survivors.
-    tpl_errors = validate_template_graph(graph)
-    if tpl_errors:
-        for err in tpl_errors:
-            logger.debug("template_rule: %s", err)
-        graph.metadata["template_rule_warnings"] = tpl_errors
-        raise ValueError(f"Template rule violations: {tpl_errors}")
 
 
 _POST_BODY_OP_RESERVE = 3  # dim-coerce + outer residual + final rmsnorm

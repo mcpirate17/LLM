@@ -628,35 +628,69 @@ def _score_adjustment(
     is_stability_prompt = bool(ctx.get("is_stability_prompt"))
     missing_norm = bool(ctx.get("missing_norm"))
     missing_attn = bool(ctx.get("missing_attn"))
-    research = (
-        ctx.get("research_signals")
-        if isinstance(ctx.get("research_signals"), dict)
-        else {}
+
+    return (
+        min(len(evidence), 3) * 0.01
+        + _reuse_penalty(cid, used_ids)
+        + _normalization_score_delta(cid, category, is_stability_prompt)
+        + _missing_component_delta(category, missing_norm, missing_attn)
+        + _prompt_score_delta(cid, category, prompt_lower)
+        + _attention_reuse_delta(cid, all_types)
+        + _reason_score_delta(cid, reason)
+        + _research_score_delta(
+            component,
+            cid,
+            prompt_lower,
+            all_types,
+            _context_research_signals(ctx),
+        )
+        + _leaderboard_score_delta(component, ctx)
     )
 
+
+def _context_research_signals(ctx: Dict[str, Any]) -> Dict[str, Any]:
+    research = ctx.get("research_signals")
+    return research if isinstance(research, dict) else {}
+
+
+def _reuse_penalty(cid: str, used_ids: Set[str]) -> float:
+    return -0.04 if cid in used_ids else 0.0
+
+
+def _normalization_score_delta(
+    cid: str,
+    category: str,
+    is_stability_prompt: bool,
+) -> float:
+    if category != "normalization":
+        return 0.0
+    delta = 0.03 if is_stability_prompt else 0.0
+    if "rmsnorm" in cid:
+        return delta + 0.05
+    if "layernorm" in cid:
+        return delta + 0.04
+    if "group_norm" in cid or "dynamic_norm" in cid:
+        return delta + 0.03
+    if cid in {"no_norm", "none"} or "no_norm" in cid:
+        return delta - 0.25
+    return delta
+
+
+def _missing_component_delta(
+    category: str,
+    missing_norm: bool,
+    missing_attn: bool,
+) -> float:
     delta = 0.0
-    delta += min(len(evidence), 3) * 0.01
-
-    if cid in used_ids:
-        delta -= 0.04
-
-    if category == "normalization":
-        if "rmsnorm" in cid:
-            delta += 0.05
-        elif "layernorm" in cid:
-            delta += 0.04
-        elif "group_norm" in cid or "dynamic_norm" in cid:
-            delta += 0.03
-        elif cid in {"no_norm", "none"} or "no_norm" in cid:
-            delta -= 0.25
-    if is_stability_prompt and category == "normalization":
-        delta += 0.03
-
     if missing_norm and category == "normalization":
         delta += 0.02
     if missing_attn and category == "mixing":
         delta += 0.03
+    return delta
 
+
+def _prompt_score_delta(cid: str, category: str, prompt_lower: str) -> float:
+    delta = 0.0
     if any(tok in prompt_lower for tok in ("join", "filter", "schema", "column")):
         if cid in {"join", "dataset_filter", "select_columns"}:
             delta += 0.04
@@ -674,31 +708,33 @@ def _score_adjustment(
             "adaptive_rank_gate",
         }:
             delta += 0.04
+    return delta
 
-    if (
-        cid in {"softmax_attention", "linear_attention", "graph_attention"}
-        and all_types
-    ):
-        if cid in all_types:
-            delta -= 0.02
 
+def _attention_reuse_delta(cid: str, all_types: Set[str]) -> float:
+    if cid not in {"softmax_attention", "linear_attention", "graph_attention"}:
+        return 0.0
+    return -0.02 if all_types and cid in all_types else 0.0
+
+
+def _reason_score_delta(cid: str, reason: str) -> float:
     if "normalization" in reason.lower() and (
         cid in {"no_norm", "none"} or "no_norm" in cid
     ):
-        delta -= 0.3
+        return -0.3
+    return 0.0
 
-    delta += _research_score_delta(component, cid, prompt_lower, all_types, research)
 
+def _leaderboard_score_delta(component: Dict[str, Any], ctx: Dict[str, Any]) -> float:
     leaderboard_component_sets, leaderboard_total_entries = (
         _get_leaderboard_component_sets(ctx)
     )
-    if leaderboard_component_sets:
-        lb_delta, _ = _leaderboard_boost(
-            component, leaderboard_component_sets, leaderboard_total_entries
-        )
-        delta += lb_delta
-
-    return delta
+    if not leaderboard_component_sets:
+        return 0.0
+    lb_delta, _ = _leaderboard_boost(
+        component, leaderboard_component_sets, leaderboard_total_entries
+    )
+    return lb_delta
 
 
 def _research_score_delta(
@@ -926,53 +962,9 @@ def _make_suggestion(
     safe_score = max(0.0, min(1.0, adjusted_score))
     # Enrich evidence with research signal summaries
     ctx = context or {}
-    research = (
-        ctx.get("research_signals")
-        if isinstance(ctx.get("research_signals"), dict)
-        else {}
-    )
-    if isinstance(research, dict) and research:
-        cid = _canon_leaf(str((component or {}).get("id") or ""))
-        op_priors = research.get("op_priors")
-        if isinstance(op_priors, list):
-            for row in op_priors:
-                if _canon_leaf(str((row or {}).get("op_name") or "")) == cid:
-                    rate = row.get("s1_rate")
-                    n = row.get("n_used")
-                    if rate is not None and n is not None:
-                        evidence_list.append(
-                            f"Research: {rate:.0%} success rate over {n} trials"
-                        )
-                    break
-
-    leaderboard_component_sets, leaderboard_total_entries = (
-        _get_leaderboard_component_sets(ctx)
-    )
-    if leaderboard_component_sets:
-        _, lb_evidence = _leaderboard_boost(
-            component, leaderboard_component_sets, leaderboard_total_entries
-        )
-        if lb_evidence:
-            evidence_list.append(lb_evidence)
-
-    # Compute insertion hint
-    insertion_hint: Dict[str, str | None] | None = None
-    nodes = ctx.get("workflow_nodes")
-    edges = ctx.get("workflow_edges")
-    comp_type = (
-        str((component or {}).get("category", ""))
-        + "/"
-        + str((component or {}).get("id", ""))
-    )
-    if isinstance(nodes, list) and isinstance(edges, list):
-        hint_cache = ctx.get("insertion_hints_by_type")
-        if not isinstance(hint_cache, dict):
-            hint_cache = {}
-            ctx["insertion_hints_by_type"] = hint_cache
-        insertion_hint = hint_cache.get(comp_type)
-        if insertion_hint is None:
-            insertion_hint = compute_insertion_point(nodes, edges, comp_type)
-            hint_cache[comp_type] = insertion_hint
+    _append_research_evidence(evidence_list, component, ctx)
+    _append_leaderboard_evidence(evidence_list, component, ctx)
+    insertion_hint = _insertion_hint(component, ctx)
 
     result: Dict[str, Any] = {
         "component": component,
@@ -984,3 +976,64 @@ def _make_suggestion(
     if insertion_hint is not None:
         result["insertion_hint"] = insertion_hint
     return result
+
+
+def _append_research_evidence(
+    evidence_list: List[str],
+    component: Dict[str, Any],
+    ctx: Dict[str, Any],
+) -> None:
+    research = _context_research_signals(ctx)
+    if not research:
+        return
+    cid = _canon_leaf(str((component or {}).get("id") or ""))
+    op_priors = research.get("op_priors")
+    if not isinstance(op_priors, list):
+        return
+    for row in op_priors:
+        if _canon_leaf(str((row or {}).get("op_name") or "")) != cid:
+            continue
+        rate = row.get("s1_rate")
+        n = row.get("n_used")
+        if rate is not None and n is not None:
+            evidence_list.append(f"Research: {rate:.0%} success rate over {n} trials")
+        break
+
+
+def _append_leaderboard_evidence(
+    evidence_list: List[str],
+    component: Dict[str, Any],
+    ctx: Dict[str, Any],
+) -> None:
+    leaderboard_component_sets, leaderboard_total_entries = (
+        _get_leaderboard_component_sets(ctx)
+    )
+    if not leaderboard_component_sets:
+        return
+    _, lb_evidence = _leaderboard_boost(
+        component, leaderboard_component_sets, leaderboard_total_entries
+    )
+    if lb_evidence:
+        evidence_list.append(lb_evidence)
+
+
+def _insertion_hint(
+    component: Dict[str, Any],
+    ctx: Dict[str, Any],
+) -> Dict[str, str | None] | None:
+    nodes = ctx.get("workflow_nodes")
+    edges = ctx.get("workflow_edges")
+    if not isinstance(nodes, list) or not isinstance(edges, list):
+        return None
+    comp_type = (
+        str((component or {}).get("category", ""))
+        + "/"
+        + str((component or {}).get("id", ""))
+    )
+    hint_cache = ctx.get("insertion_hints_by_type")
+    if not isinstance(hint_cache, dict):
+        hint_cache = {}
+        ctx["insertion_hints_by_type"] = hint_cache
+    if comp_type not in hint_cache:
+        hint_cache[comp_type] = compute_insertion_point(nodes, edges, comp_type)
+    return hint_cache[comp_type]

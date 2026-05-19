@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 import torch
@@ -35,6 +36,308 @@ def _accumulate_expert_counts(
     merged[: running.numel()] += running
     merged[: incoming.numel()] += incoming.to(device=device, dtype=dtype)
     return merged
+
+
+@dataclass
+class _ArchitectureTelemetry:
+    telemetry_rows: List[Dict[str, Any]] = field(default_factory=list)
+    total_calls: int = 0
+    total_fallback_calls: int = 0
+    kernel_fallback_calls: int = 0
+    density_sum: float = 0.0
+    density_last_values: List[float] = field(default_factory=list)
+    nm_compliant: int = 0
+    nm_total: int = 0
+    sparse_active_params_estimate: float = 0.0
+    rt_tokens_total: int = 0
+    rt_tokens_processed: int = 0
+    rt_entropy_sum: float = 0.0
+    rt_confidence_sum: float = 0.0
+    rt_confidence_sq_sum: float = 0.0
+    rt_confidence_count: int = 0
+    rt_count: int = 0
+    rt_expert_counts: Optional[torch.Tensor] = None
+    rt_lane_histogram: Optional[torch.Tensor] = None
+    rt_keep_count: int = 0
+    rt_drop_count: int = 0
+    rt_default_path_count: int = 0
+    rt_sparse_span_count: int = 0
+    rt_sparse_span_width_sum: float = 0.0
+    rt_sparse_span_width_count: int = 0
+    rt_sparse_span_coverage_tokens: int = 0
+    at_savings_sum: float = 0.0
+    at_depth_sum: float = 0.0
+    at_count: int = 0
+    recursion_savings_sum: float = 0.0
+    recursion_depth_sum: float = 0.0
+    recursion_count: int = 0
+    recursion_max_depth_sum: float = 0.0
+
+
+def _architecture_layers(model: nn.Module) -> List[Any]:
+    try:
+        layers = list(getattr(model, "layers", []) or [])
+    except (TypeError, RuntimeError):
+        layers = []
+    if layers:
+        return layers
+    try:
+        topo = getattr(model, "topology", None)
+        blocks = getattr(topo, "blocks", None) if topo is not None else None
+        return list(blocks) if blocks is not None else []
+    except (TypeError, RuntimeError):
+        return []
+
+
+def _model_routing_mode(model: nn.Module) -> Optional[Any]:
+    spec = getattr(model, "spec", None)
+    choices = getattr(spec, "choices", None) if spec is not None else None
+    return choices.get("compute_routing") if isinstance(choices, dict) else None
+
+
+def _iter_layer_ops(layer: Any) -> List[Any]:
+    ops = getattr(layer, "ops", None)
+    if ops is None:
+        return []
+    if isinstance(ops, dict):
+        return list(ops.values())
+    try:
+        return list(ops)
+    except TypeError:
+        return []
+
+
+def _record_routing_telemetry(acc: _ArchitectureTelemetry, rt: Any) -> None:
+    if not isinstance(rt, dict):
+        return
+    acc.rt_tokens_total += rt.get("tokens_total", 0)
+    acc.rt_tokens_processed += rt.get("tokens_processed", 0)
+    acc.rt_entropy_sum += rt.get("entropy_sum", 0.0)
+    acc.rt_confidence_sum += rt.get("confidence_sum", 0.0)
+    acc.rt_confidence_sq_sum += rt.get("confidence_sq_sum", 0.0)
+    acc.rt_confidence_count += rt.get("confidence_count", 0)
+    acc.rt_count += rt.get("count", 0)
+    expert_counts = rt.get("expert_counts")
+    if isinstance(expert_counts, torch.Tensor):
+        acc.rt_expert_counts = _accumulate_expert_counts(
+            acc.rt_expert_counts, expert_counts
+        )
+    acc.rt_keep_count += int(rt.get("keep_count", 0) or 0)
+    acc.rt_drop_count += int(rt.get("drop_count", 0) or 0)
+    acc.rt_default_path_count += int(rt.get("default_path_count", 0) or 0)
+    acc.rt_sparse_span_count += int(rt.get("sparse_span_count", 0) or 0)
+    acc.rt_sparse_span_width_sum += float(rt.get("sparse_span_width_sum", 0.0) or 0.0)
+    acc.rt_sparse_span_width_count += int(rt.get("sparse_span_width_count", 0) or 0)
+    acc.rt_sparse_span_coverage_tokens += int(
+        rt.get("sparse_span_coverage_tokens", 0) or 0
+    )
+    lane_histogram = rt.get("lane_histogram")
+    if isinstance(lane_histogram, torch.Tensor):
+        acc.rt_lane_histogram = _accumulate_expert_counts(
+            acc.rt_lane_histogram, lane_histogram
+        )
+
+
+def _record_adaptive_telemetry(
+    acc: _ArchitectureTelemetry, telemetry: Any, routing: Optional[Any] = None
+) -> None:
+    if not isinstance(telemetry, dict):
+        return
+    count = telemetry.get("count", 0)
+    savings_sum = telemetry.get("savings_sum", 0.0)
+    depth_sum = telemetry.get("depth_sum", 0.0)
+    acc.at_savings_sum += savings_sum
+    acc.at_depth_sum += depth_sum
+    acc.at_count += count
+    if routing is not None and routing.__class__.__name__ == "AdaptiveRecursionRouting":
+        acc.recursion_savings_sum += savings_sum
+        acc.recursion_depth_sum += depth_sum
+        acc.recursion_count += count
+        acc.recursion_max_depth_sum += float(getattr(routing, "max_depth", 0)) * count
+
+
+def _record_sparse_telemetry(acc: _ArchitectureTelemetry, compiled_op: Any) -> None:
+    sparse_telemetry = getattr(compiled_op, "sparse_telemetry", None)
+    if not sparse_telemetry:
+        return
+    weight_params = (
+        float(compiled_op.weight.numel()) if hasattr(compiled_op, "weight") else 0.0
+    )
+    for op_name, stats in sparse_telemetry.items():
+        calls = int(stats.get("calls", 0) or 0)
+        last_density = float(stats.get("last_density", 1.0) or 1.0)
+        acc.total_calls += calls
+        acc.total_fallback_calls += int(stats.get("fallback_calls", 0) or 0)
+        acc.density_sum += float(stats.get("density_sum", 0.0) or 0.0)
+        acc.density_last_values.append(last_density)
+        if stats.get("last_fallback_reason") == "kernel_unavailable":
+            acc.kernel_fallback_calls += int(stats.get("fallback_calls", 0) or 0)
+        if op_name in ("nm_sparse_linear", "semi_structured_2_4_linear"):
+            acc.nm_total += 1
+            acc.nm_compliant += 1 if last_density <= 0.51 else 0
+        if weight_params > 0.0:
+            density_for_params = (
+                float(stats.get("density_sum", 0.0)) / calls
+                if calls > 0
+                else last_density
+            )
+            acc.sparse_active_params_estimate += weight_params * density_for_params
+        acc.telemetry_rows.append(
+            {"op_name": op_name, "calls": calls, "last_density": last_density}
+        )
+
+
+def _total_weight_params(layers: List[Any]) -> float:
+    total = 0.0
+    for layer in layers:
+        for op in _iter_layer_ops(layer):
+            if hasattr(op, "weight"):
+                total += float(getattr(op, "weight", torch.empty(0)).numel())
+    return total
+
+
+def _finalize_sparse_metrics(
+    metrics: Dict[str, Any], acc: _ArchitectureTelemetry, layers: List[Any]
+) -> None:
+    if acc.total_calls <= 0:
+        return
+    metrics["sparse_density_mean"] = acc.density_sum / max(acc.total_calls, 1)
+    metrics["sparse_density_last"] = sum(acc.density_last_values) / max(
+        len(acc.density_last_values), 1
+    )
+    metrics["sparse_fallback_calls"] = acc.total_fallback_calls
+    metrics["sparse_kernel_fallback_calls"] = acc.kernel_fallback_calls
+    metrics["sparse_active_params_estimate"] = int(
+        max(0.0, acc.sparse_active_params_estimate)
+    )
+    metrics["sparse_telemetry_json"] = json.dumps(json_safe(acc.telemetry_rows))
+    if acc.nm_total > 0:
+        metrics["sparse_nm_compliance"] = acc.nm_compliant / acc.nm_total
+    if acc.sparse_active_params_estimate > 0:
+        total_weight_params = _total_weight_params(layers)
+        if total_weight_params > 0:
+            metrics["compression_ratio"] = (
+                acc.sparse_active_params_estimate / total_weight_params
+            )
+
+
+_ROUTING_OP_NAMES = {
+    "moe_2expert",
+    "moe_topk",
+    "topk_gate",
+    "depth_token_mask",
+    "confidence_token_gate",
+    "depth_weighted_proj",
+    "token_merging",
+    "adjacent_token_merge",
+    "learned_token_gate",
+    "cheap_verify_blend",
+    "route_topk",
+    "route_lanes",
+    "route_recursion",
+}
+
+
+def _infer_compiled_routing_mode(layers: List[Any]) -> Optional[str]:
+    for layer in layers:
+        for compiled_op in _iter_layer_ops(layer):
+            op_obj = getattr(compiled_op, "op", None)
+            op_name = getattr(op_obj, "name", "") if op_obj else ""
+            if op_name in _ROUTING_OP_NAMES:
+                return op_name
+    return None
+
+
+def _finalize_routing_metrics(
+    metrics: Dict[str, Any], acc: _ArchitectureTelemetry, routing_mode: Optional[Any]
+) -> None:
+    if acc.rt_count <= 0:
+        return
+    metrics["routing_tokens_total"] = acc.rt_tokens_total
+    metrics["routing_tokens_processed"] = acc.rt_tokens_processed
+    metrics["routing_tokens_skipped"] = max(
+        0, acc.rt_tokens_total - acc.rt_tokens_processed
+    )
+    metrics["routing_utilization_entropy"] = acc.rt_entropy_sum / acc.rt_count
+    if acc.rt_tokens_total > 0:
+        skipped_ratio = max(0.0, 1.0 - (acc.rt_tokens_processed / acc.rt_tokens_total))
+        metrics["routing_drop_rate"] = skipped_ratio
+        metrics["routing_savings_ratio"] = skipped_ratio
+    if acc.rt_confidence_count > 0:
+        conf_mean = acc.rt_confidence_sum / acc.rt_confidence_count
+        conf_var = max(
+            0.0,
+            (acc.rt_confidence_sq_sum / acc.rt_confidence_count)
+            - conf_mean * conf_mean,
+        )
+        metrics["routing_confidence_mean"] = conf_mean
+        metrics["routing_confidence_std"] = conf_var**0.5
+    if acc.rt_expert_counts is not None:
+        metrics["routing_expert_count"] = int(len(acc.rt_expert_counts))
+        metrics["routing_expert_utilization_json"] = json.dumps(
+            acc.rt_expert_counts.cpu().tolist()
+        )
+    if acc.rt_keep_count or acc.rt_drop_count:
+        denom = max(1, acc.rt_keep_count + acc.rt_drop_count)
+        metrics["routing_keep_ratio"] = acc.rt_keep_count / denom
+        metrics["routing_drop_ratio"] = acc.rt_drop_count / denom
+    if acc.rt_default_path_count > 0 and acc.rt_tokens_total > 0:
+        metrics["routing_default_path_fraction"] = (
+            acc.rt_default_path_count / acc.rt_tokens_total
+        )
+    if acc.rt_sparse_span_count > 0:
+        metrics["routing_sparse_span_count"] = acc.rt_sparse_span_count
+    if acc.rt_sparse_span_width_count > 0:
+        metrics["routing_sparse_span_width_mean"] = (
+            acc.rt_sparse_span_width_sum / acc.rt_sparse_span_width_count
+        )
+    if acc.rt_sparse_span_coverage_tokens > 0 and acc.rt_tokens_total > 0:
+        metrics["routing_sparse_span_coverage"] = (
+            acc.rt_sparse_span_coverage_tokens / acc.rt_tokens_total
+        )
+    if acc.rt_lane_histogram is not None:
+        metrics["routing_lane_utilization_json"] = json.dumps(
+            acc.rt_lane_histogram.cpu().tolist()
+        )
+    if routing_mode:
+        metrics["routing_mode"] = routing_mode
+
+
+def _has_entropy_gate(layers: List[Any]) -> bool:
+    for layer in layers:
+        for compiled_op in _iter_layer_ops(layer):
+            op_obj = getattr(compiled_op, "op", None)
+            op_name = getattr(op_obj, "name", "") if op_obj else ""
+            if op_name == "token_entropy":
+                return True
+    return False
+
+
+def _finalize_adaptive_metrics(
+    metrics: Dict[str, Any], acc: _ArchitectureTelemetry, layers: List[Any]
+) -> None:
+    if acc.at_count > 0:
+        metrics["depth_savings_ratio"] = acc.at_savings_sum / acc.at_count
+        if acc.at_depth_sum > 0:
+            metrics["effective_depth_ratio"] = (
+                acc.at_depth_sum / (acc.at_count * len(layers))
+                if len(layers) > 0
+                else 1.0
+            )
+    if acc.recursion_count > 0:
+        metrics["recursion_savings_ratio"] = (
+            acc.recursion_savings_sum / acc.recursion_count
+        )
+        if acc.recursion_depth_sum > 0:
+            avg_max_depth = (
+                acc.recursion_max_depth_sum / acc.recursion_count
+                if acc.recursion_max_depth_sum > 0
+                else None
+            )
+            if avg_max_depth and avg_max_depth > 0:
+                metrics["recursion_depth_ratio"] = acc.recursion_depth_sum / (
+                    acc.recursion_count * avg_max_depth
+                )
 
 
 class _ResultsAnalysisMixin:
@@ -462,403 +765,48 @@ class _ResultsAnalysisMixin:
 
     def _extract_architecture_telemetry(self, model: Optional[nn.Module]) -> Dict:
         """Extract sparse, routing, and adaptive telemetry from compiled layer ops."""
+        return self._extract_architecture_telemetry_impl(model)
+
+    def _extract_architecture_telemetry_impl(self, model: Optional[nn.Module]) -> Dict:
+        """Extract sparse, routing, and adaptive telemetry from compiled layer ops."""
         if model is None:
             return {}
 
         metrics: Dict[str, Any] = {}
-        try:
-            layers = list(getattr(model, "layers", []) or [])
-        except (TypeError, RuntimeError):
-            layers = []
-        if not layers:
-            try:
-                topo = getattr(model, "topology", None)
-                blocks = getattr(topo, "blocks", None) if topo is not None else None
-                if blocks is not None:
-                    layers = list(blocks)
-            except (TypeError, RuntimeError):
-                pass
-        routing_mode = None
-        spec = getattr(model, "spec", None)
-        if spec is not None:
-            choices = getattr(spec, "choices", None)
-            if isinstance(choices, dict):
-                routing_mode = choices.get("compute_routing")
+        layers = _architecture_layers(model)
+        routing_mode = _model_routing_mode(model)
         if routing_mode:
             metrics["routing_mode"] = routing_mode
-
-        # 1. Sparse Telemetry
-        telemetry_rows: List[Dict[str, Any]] = []
-        total_calls = 0
-        total_fallback_calls = 0
-        kernel_fallback_calls = 0
-        density_sum = 0.0
-        density_last_values: List[float] = []
-        nm_compliant = 0
-        nm_total = 0
-        sparse_active_params_estimate = 0.0
-
-        # 2. Routing Telemetry (MoE)
-        rt_tokens_total = 0
-        rt_tokens_processed = 0
-        rt_entropy_sum = 0.0
-        rt_confidence_sum = 0.0
-        rt_confidence_sq_sum = 0.0
-        rt_confidence_count = 0
-        rt_count = 0
-        rt_expert_counts: Optional[torch.Tensor] = None
-        rt_lane_histogram: Optional[torch.Tensor] = None
-        rt_keep_count = 0
-        rt_drop_count = 0
-        rt_default_path_count = 0
-        rt_sparse_span_count = 0
-        rt_sparse_span_width_sum = 0.0
-        rt_sparse_span_width_count = 0
-        rt_sparse_span_coverage_tokens = 0
-
-        # 3. Adaptive Telemetry (MoD/MoR)
-        at_savings_sum = 0.0
-        at_depth_sum = 0.0
-        at_count = 0
-        recursion_savings_sum = 0.0
-        recursion_depth_sum = 0.0
-        recursion_count = 0
-        recursion_max_depth_sum = 0.0
-
+        acc = _ArchitectureTelemetry()
         for layer in layers:
-            # Check for routing/adaptive telemetry on the layer/routing itself (arch_builder style)
             routing = getattr(layer, "routing", None)
             if routing is not None:
-                # Routing (MoE)
-                rt = getattr(routing, "routing_telemetry", None)
-                if isinstance(rt, dict):
-                    rt_tokens_total += rt.get("tokens_total", 0)
-                    rt_tokens_processed += rt.get("tokens_processed", 0)
-                    rt_entropy_sum += rt.get("entropy_sum", 0.0)
-                    rt_confidence_sum += rt.get("confidence_sum", 0.0)
-                    rt_confidence_sq_sum += rt.get("confidence_sq_sum", 0.0)
-                    rt_confidence_count += rt.get("confidence_count", 0)
-                    rt_count += rt.get("count", 0)
-                    ec = rt.get("expert_counts")
-                    if isinstance(ec, torch.Tensor):
-                        rt_expert_counts = _accumulate_expert_counts(
-                            rt_expert_counts, ec
-                        )
-                    rt_keep_count += int(rt.get("keep_count", 0) or 0)
-                    rt_drop_count += int(rt.get("drop_count", 0) or 0)
-                    rt_default_path_count += int(rt.get("default_path_count", 0) or 0)
-                    rt_sparse_span_count += int(rt.get("sparse_span_count", 0) or 0)
-                    rt_sparse_span_width_sum += float(
-                        rt.get("sparse_span_width_sum", 0.0) or 0.0
-                    )
-                    rt_sparse_span_width_count += int(
-                        rt.get("sparse_span_width_count", 0) or 0
-                    )
-                    rt_sparse_span_coverage_tokens += int(
-                        rt.get("sparse_span_coverage_tokens", 0) or 0
-                    )
-                    lh = rt.get("lane_histogram")
-                    if isinstance(lh, torch.Tensor):
-                        rt_lane_histogram = _accumulate_expert_counts(
-                            rt_lane_histogram, lh
-                        )
+                _record_routing_telemetry(
+                    acc, getattr(routing, "routing_telemetry", None)
+                )
+                _record_adaptive_telemetry(
+                    acc, getattr(routing, "adaptive_telemetry", None), routing
+                )
+            for compiled_op in _iter_layer_ops(layer):
+                _record_sparse_telemetry(acc, compiled_op)
+                _record_routing_telemetry(
+                    acc, getattr(compiled_op, "routing_telemetry", None)
+                )
+                _record_adaptive_telemetry(
+                    acc, getattr(compiled_op, "adaptive_telemetry", None)
+                )
 
-                # Adaptive (MoD/MoR)
-                at = getattr(routing, "adaptive_telemetry", None)
-                if isinstance(at, dict):
-                    at_savings_sum += at.get("savings_sum", 0.0)
-                    at_depth_sum += at.get("depth_sum", 0.0)
-                    at_count += at.get("count", 0)
-                    if routing.__class__.__name__ == "AdaptiveRecursionRouting":
-                        recursion_savings_sum += at.get("savings_sum", 0.0)
-                        recursion_depth_sum += at.get("depth_sum", 0.0)
-                        recursion_count += at.get("count", 0)
-                        recursion_max_depth_sum += float(
-                            getattr(routing, "max_depth", 0)
-                        ) * at.get("count", 0)
-
-            # Check for op-level telemetry (compiler style)
-            ops = getattr(layer, "ops", None)
-            if ops is None:
-                continue
-            op_values = None
-            if isinstance(ops, dict):
-                op_values = list(ops.values())
-            else:
-                try:
-                    op_values = list(ops)
-                except TypeError:
-                    # Guard against non-iterable op containers
-                    continue
-            for compiled_op in op_values:
-                # Sparse
-                sparse_telemetry = getattr(compiled_op, "sparse_telemetry", None)
-                if sparse_telemetry:
-                    has_weight = hasattr(compiled_op, "weight")
-                    weight_params = (
-                        float(compiled_op.weight.numel()) if has_weight else 0.0
-                    )
-                    for op_name, stats in sparse_telemetry.items():
-                        calls = int(stats.get("calls", 0) or 0)
-                        total_calls += calls
-                        total_fallback_calls += int(stats.get("fallback_calls", 0) or 0)
-                        density_sum += float(stats.get("density_sum", 0.0) or 0.0)
-                        last_density = float(stats.get("last_density", 1.0) or 1.0)
-                        density_last_values.append(last_density)
-                        if stats.get("last_fallback_reason") == "kernel_unavailable":
-                            kernel_fallback_calls += int(
-                                stats.get("fallback_calls", 0) or 0
-                            )
-                        if op_name in (
-                            "nm_sparse_linear",
-                            "semi_structured_2_4_linear",
-                        ):
-                            nm_total += 1
-                            if last_density <= 0.51:
-                                nm_compliant += 1
-                        if weight_params > 0.0:
-                            density_for_params = (
-                                (float(stats.get("density_sum", 0.0)) / calls)
-                                if calls > 0
-                                else last_density
-                            )
-                            sparse_active_params_estimate += (
-                                weight_params * density_for_params
-                            )
-                        telemetry_rows.append(
-                            {
-                                "op_name": op_name,
-                                "calls": calls,
-                                "last_density": last_density,
-                            }
-                        )
-
-                # Routing (MoE)
-                rt = getattr(compiled_op, "routing_telemetry", None)
-                if isinstance(rt, dict):
-                    rt_tokens_total += rt.get("tokens_total", 0)
-                    rt_tokens_processed += rt.get("tokens_processed", 0)
-                    rt_entropy_sum += rt.get("entropy_sum", 0.0)
-                    rt_confidence_sum += rt.get("confidence_sum", 0.0)
-                    rt_confidence_sq_sum += rt.get("confidence_sq_sum", 0.0)
-                    rt_confidence_count += rt.get("confidence_count", 0)
-                    rt_count += rt.get("count", 0)
-                    ec = rt.get("expert_counts")
-                    if isinstance(ec, torch.Tensor):
-                        rt_expert_counts = _accumulate_expert_counts(
-                            rt_expert_counts, ec
-                        )
-                    rt_keep_count += int(rt.get("keep_count", 0) or 0)
-                    rt_drop_count += int(rt.get("drop_count", 0) or 0)
-                    rt_default_path_count += int(rt.get("default_path_count", 0) or 0)
-                    rt_sparse_span_count += int(rt.get("sparse_span_count", 0) or 0)
-                    rt_sparse_span_width_sum += float(
-                        rt.get("sparse_span_width_sum", 0.0) or 0.0
-                    )
-                    rt_sparse_span_width_count += int(
-                        rt.get("sparse_span_width_count", 0) or 0
-                    )
-                    rt_sparse_span_coverage_tokens += int(
-                        rt.get("sparse_span_coverage_tokens", 0) or 0
-                    )
-                    lh = rt.get("lane_histogram")
-                    if isinstance(lh, torch.Tensor):
-                        rt_lane_histogram = _accumulate_expert_counts(
-                            rt_lane_histogram, lh
-                        )
-
-                # Adaptive
-                at = getattr(compiled_op, "adaptive_telemetry", None)
-                if isinstance(at, dict):
-                    at_savings_sum += at.get("savings_sum", 0.0)
-                    at_depth_sum += at.get("depth_sum", 0.0)
-                    at_count += at.get("count", 0)
-
-        # Finalize Sparse
-        if total_calls > 0:
-            metrics["sparse_density_mean"] = density_sum / max(total_calls, 1)
-            metrics["sparse_density_last"] = sum(density_last_values) / max(
-                len(density_last_values), 1
-            )
-            metrics["sparse_fallback_calls"] = total_fallback_calls
-            metrics["sparse_kernel_fallback_calls"] = kernel_fallback_calls
-            metrics["sparse_active_params_estimate"] = int(
-                max(0.0, sparse_active_params_estimate)
-            )
-            metrics["sparse_telemetry_json"] = json.dumps(json_safe(telemetry_rows))
-            if nm_total > 0:
-                metrics["sparse_nm_compliance"] = nm_compliant / nm_total
-            # Compression ratio = effective params / dense params
-            if sparse_active_params_estimate > 0:
-                total_weight_params = 0.0
-                for layer in layers:
-                    ops = getattr(layer, "ops", None)
-                    if ops is None:
-                        continue
-                    if isinstance(ops, dict):
-                        op_values = ops.values()
-                    else:
-                        try:
-                            op_values = list(ops)
-                        except TypeError:
-                            continue
-                    for op in op_values:
-                        if hasattr(op, "weight"):
-                            total_weight_params += float(
-                                getattr(op, "weight", torch.empty(0)).numel()
-                            )
-                if total_weight_params > 0:
-                    metrics["compression_ratio"] = (
-                        sparse_active_params_estimate / total_weight_params
-                    )
-
-        # Infer routing_mode from compiled ops if not already set
-        if not routing_mode and rt_count > 0:
-            for layer in layers:
-                ops = getattr(layer, "ops", None)
-                if ops is None:
-                    continue
-                if isinstance(ops, dict):
-                    op_values = list(ops.values())
-                else:
-                    try:
-                        op_values = list(ops)
-                    except TypeError:
-                        continue
-                for compiled_op in op_values:
-                    op_obj = getattr(compiled_op, "op", None)
-                    op_name = getattr(op_obj, "name", "") if op_obj else ""
-                    if op_name == "moe_2expert":
-                        routing_mode = "moe_2expert"
-                        break
-                    elif op_name == "moe_topk":
-                        routing_mode = "moe_topk"
-                        break
-                    elif op_name == "topk_gate":
-                        routing_mode = "topk_gate"
-                        break
-                    elif op_name in {
-                        "depth_token_mask",
-                        "confidence_token_gate",
-                        "depth_weighted_proj",
-                        "token_merging",
-                        "adjacent_token_merge",
-                        "learned_token_gate",
-                        "cheap_verify_blend",
-                        "route_topk",
-                        "route_lanes",
-                        "route_recursion",
-                    }:
-                        routing_mode = op_name
-                        break
-                if routing_mode:
-                    break
-            if routing_mode:
-                metrics["routing_mode"] = routing_mode
-        if rt_count > 0 and not routing_mode:
+        _finalize_sparse_metrics(metrics, acc, layers)
+        if not routing_mode and acc.rt_count > 0:
+            routing_mode = _infer_compiled_routing_mode(layers)
+        if acc.rt_count > 0 and not routing_mode:
             routing_mode = "routed"
-            metrics["routing_mode"] = routing_mode
-
-        # Finalize Routing
-        if rt_count > 0:
-            metrics["routing_tokens_total"] = rt_tokens_total
-            metrics["routing_tokens_processed"] = rt_tokens_processed
-            metrics["routing_tokens_skipped"] = max(
-                0, rt_tokens_total - rt_tokens_processed
-            )
-            metrics["routing_utilization_entropy"] = rt_entropy_sum / rt_count
-            if rt_tokens_total > 0:
-                metrics["routing_drop_rate"] = max(
-                    0.0, 1.0 - (rt_tokens_processed / rt_tokens_total)
-                )
-                metrics["routing_savings_ratio"] = max(
-                    0.0, 1.0 - (rt_tokens_processed / rt_tokens_total)
-                )
-            if rt_confidence_count > 0:
-                conf_mean = rt_confidence_sum / rt_confidence_count
-                metrics["routing_confidence_mean"] = conf_mean
-                conf_var = max(
-                    0.0,
-                    (rt_confidence_sq_sum / rt_confidence_count)
-                    - conf_mean * conf_mean,
-                )
-                metrics["routing_confidence_std"] = conf_var**0.5
-            if rt_expert_counts is not None:
-                metrics["routing_expert_count"] = int(len(rt_expert_counts))
-                metrics["routing_expert_utilization_json"] = json.dumps(
-                    rt_expert_counts.cpu().tolist()
-                )
-            if rt_keep_count or rt_drop_count:
-                denom = max(1, rt_keep_count + rt_drop_count)
-                metrics["routing_keep_ratio"] = rt_keep_count / denom
-                metrics["routing_drop_ratio"] = rt_drop_count / denom
-            if rt_default_path_count > 0 and rt_tokens_total > 0:
-                metrics["routing_default_path_fraction"] = (
-                    rt_default_path_count / rt_tokens_total
-                )
-            if rt_sparse_span_count > 0:
-                metrics["routing_sparse_span_count"] = rt_sparse_span_count
-            if rt_sparse_span_width_count > 0:
-                metrics["routing_sparse_span_width_mean"] = (
-                    rt_sparse_span_width_sum / rt_sparse_span_width_count
-                )
-            if rt_sparse_span_coverage_tokens > 0 and rt_tokens_total > 0:
-                metrics["routing_sparse_span_coverage"] = (
-                    rt_sparse_span_coverage_tokens / rt_tokens_total
-                )
-            if rt_lane_histogram is not None:
-                metrics["routing_lane_utilization_json"] = json.dumps(
-                    rt_lane_histogram.cpu().tolist()
-                )
-
-        # Detect token_entropy ops and flag NULL routing_utilization_entropy
-        has_entropy_gate = False
-        for layer in layers:
-            ops = getattr(layer, "ops", None)
-            if ops is None:
-                continue
-            if isinstance(ops, dict):
-                op_values = list(ops.values())
-            else:
-                try:
-                    op_values = list(ops)
-                except TypeError:
-                    continue
-            for compiled_op in op_values:
-                op_obj = getattr(compiled_op, "op", None)
-                op_name = getattr(op_obj, "name", "") if op_obj else ""
-                if op_name == "token_entropy":
-                    has_entropy_gate = True
-                    break
-            if has_entropy_gate:
-                break
-        if has_entropy_gate:
+        _finalize_routing_metrics(metrics, acc, routing_mode)
+        if _has_entropy_gate(layers):
             metrics["has_entropy_gate"] = True
-            # If routing_utilization_entropy is still missing for entropy-gated
-            # architectures, flag it explicitly so dashboards show the gap.
             if "routing_utilization_entropy" not in metrics:
                 metrics["routing_utilization_entropy"] = None
-
-        # Finalize Adaptive
-        if at_count > 0:
-            metrics["depth_savings_ratio"] = at_savings_sum / at_count
-            if at_depth_sum > 0:
-                metrics["effective_depth_ratio"] = (
-                    at_depth_sum / (at_count * len(layers)) if len(layers) > 0 else 1.0
-                )
-        if recursion_count > 0:
-            metrics["recursion_savings_ratio"] = recursion_savings_sum / recursion_count
-            if recursion_depth_sum > 0:
-                avg_max_depth = (
-                    recursion_max_depth_sum / recursion_count
-                    if recursion_max_depth_sum > 0
-                    else None
-                )
-                if avg_max_depth and avg_max_depth > 0:
-                    metrics["recursion_depth_ratio"] = recursion_depth_sum / (
-                        recursion_count * avg_max_depth
-                    )
-
+        _finalize_adaptive_metrics(metrics, acc, layers)
         return metrics
 
     @staticmethod

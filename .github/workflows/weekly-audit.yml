@@ -20,14 +20,21 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
       - name: Install audit dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -e . vulture pylint numpy
           pip install torch --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple/
+          npm ci
       - name: Generate A-G audit report
         run: |
           python conductor/guardrail_audit.py --markdown-out tasks/audit/latest_guardrail_report.md --json-out tasks/audit/latest_guardrail_report.json
+      - name: Run duplicate-code audit
+        run: |
+          python conductor/run_duplicate_audit.py
       - name: Run lightweight profiling hooks
         run: |
           python conductor/profile_hotpaths.py --json-out tasks/audit/profile_hotpaths.json
@@ -39,4 +46,7 @@ jobs:
           path: |
             tasks/audit/latest_guardrail_report.md
             tasks/audit/latest_guardrail_report.json
+            tasks/audit/duplication-jscpd/jscpd-report.json
+            tasks/audit/duplication-pmd-python.txt
+            tasks/audit/duplication-python-files.txt
             tasks/audit/profile_hotpaths.json

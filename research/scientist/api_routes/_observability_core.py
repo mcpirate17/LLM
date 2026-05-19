@@ -7,6 +7,7 @@ import math as _math
 import sqlite3
 import threading
 import time
+from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -124,6 +125,171 @@ def _build_op_index_result(payload: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _new_rate_stats() -> dict[str, int]:
+    return {"n": 0, "s0": 0, "s1": 0}
+
+
+def _new_corrected_rate_stats() -> dict[str, int]:
+    return {"n": 0, "s0": 0, "s1": 0, "excluded": 0}
+
+
+def _new_failure_group_stats() -> dict[str, Any]:
+    return {"count": 0, "ops": defaultdict(int)}
+
+
+def _record_op_index_rates(
+    ops: list[str],
+    row: dict[str, Any],
+    stored_rates: dict[str, dict[str, int]],
+    corrected_rates: dict[str, dict[str, int]],
+) -> None:
+    stage0_passed = bool(row.get("stage0_passed"))
+    stage1_passed = bool(row.get("stage1_passed"))
+    error_type = str(row.get("error_type") or "")
+    is_non_op_failure = not stage0_passed and error_type in {
+        "RuntimeError",
+        "causality_violation",
+    }
+    for op in ops:
+        stored = stored_rates[op]
+        stored["n"] += 1
+        stored["s0"] += int(stage0_passed)
+        stored["s1"] += int(stage1_passed)
+
+        corrected = corrected_rates[op]
+        if is_non_op_failure:
+            corrected["excluded"] += 1
+        else:
+            corrected["n"] += 1
+            corrected["s0"] += int(stage0_passed)
+            corrected["s1"] += int(stage1_passed)
+
+
+def _record_op_index_pairs(
+    ops: list[str],
+    row: dict[str, Any],
+    pair_counts: dict[tuple[str, str], dict[str, int]],
+) -> None:
+    stage0_passed = bool(row.get("stage0_passed"))
+    stage1_passed = bool(row.get("stage1_passed"))
+    for left_index, left in enumerate(ops):
+        for right in ops[left_index + 1 :]:
+            pair = pair_counts[(left, right)]
+            pair["n"] += 1
+            pair["s0"] += int(stage0_passed)
+            pair["s1"] += int(stage1_passed)
+
+
+def _record_op_index_loss(
+    ops: list[str],
+    row: dict[str, Any],
+    loss_by_op: dict[str, list[float]],
+) -> None:
+    if not bool(row.get("stage0_passed")) or row.get("loss_ratio") is None:
+        return
+    try:
+        loss_value = float(row["loss_ratio"])
+    except (TypeError, ValueError):
+        return
+    for op in ops:
+        loss_by_op[op].append(loss_value)
+
+
+def _failure_details(row: dict[str, Any]) -> dict[str, Any]:
+    failure_details_json = row.get("failure_details_json")
+    if not isinstance(failure_details_json, str) or not failure_details_json:
+        return {}
+    try:
+        parsed_details = fast_loads(failure_details_json)
+    except (TypeError, ValueError):
+        return {}
+    return parsed_details if isinstance(parsed_details, dict) else {}
+
+
+def _record_op_index_failure(
+    ops: list[str],
+    row: dict[str, Any],
+    failure_groups: dict[str, dict[str, Any]],
+) -> None:
+    error_type = str(row.get("error_type") or "")
+    if not error_type:
+        return
+    stage0_passed = bool(row.get("stage0_passed"))
+    stage1_passed = bool(row.get("stage1_passed"))
+    details = _failure_details(row)
+    root_cause_code = str(details.get("root_cause_code") or error_type)
+    failure_op = str(details.get("failure_op") or row.get("failure_op") or "")
+
+    if not stage0_passed:
+        group = failure_groups[root_cause_code]
+    elif not stage1_passed:
+        group = failure_groups[f"s1_{root_cause_code}"]
+    else:
+        return
+    group["count"] += 1
+    if failure_op:
+        group["ops"][failure_op] += 1
+    else:
+        for op in ops:
+            group["ops"][op] += 1
+
+
+def _build_op_index_payload_python(rows: list[dict[str, Any]]) -> Dict[str, Any]:
+    from research.scientist.intelligence.graph_ops import extract_unique_graph_ops
+
+    stored_rates: dict[str, dict[str, int]] = defaultdict(_new_rate_stats)
+    corrected_rates: dict[str, dict[str, int]] = defaultdict(_new_corrected_rate_stats)
+    pair_counts: dict[tuple[str, str], dict[str, int]] = defaultdict(_new_rate_stats)
+    loss_by_op: dict[str, list[float]] = defaultdict(list)
+    failure_groups: dict[str, dict[str, Any]] = defaultdict(_new_failure_group_stats)
+    graph_ops_cache: dict[str, list[str]] = {}
+
+    for row in rows:
+        graph_json = row.get("graph_json")
+        if not isinstance(graph_json, str):
+            continue
+        ops = graph_ops_cache.setdefault(
+            graph_json, extract_unique_graph_ops(graph_json)
+        )
+        if not ops:
+            continue
+        _record_op_index_rates(ops, row, stored_rates, corrected_rates)
+        _record_op_index_pairs(ops, row, pair_counts)
+        _record_op_index_loss(ops, row, loss_by_op)
+        _record_op_index_failure(ops, row, failure_groups)
+
+    return {
+        "pair_counts": [
+            {"op_a": op_a, "op_b": op_b, **counts}
+            for (op_a, op_b), counts in sorted(pair_counts.items())
+        ],
+        "loss_by_op": [
+            {"op": op, "values": values} for op, values in sorted(loss_by_op.items())
+        ],
+        "failure_groups": [
+            {
+                "name": name,
+                "count": group["count"],
+                "ops": [
+                    {"op": op, "count": count}
+                    for op, count in sorted(
+                        group["ops"].items(), key=lambda item: (-item[1], item[0])
+                    )
+                ],
+            }
+            for name, group in sorted(
+                failure_groups.items(), key=lambda item: (-item[1]["count"], item[0])
+            )
+        ],
+        "stored_rates": [
+            {"op": op, **counts} for op, counts in sorted(stored_rates.items())
+        ],
+        "corrected_rates": [
+            {"op": op, **counts} for op, counts in sorted(corrected_rates.items())
+        ],
+    }
+
+
 def _load_program_rows(
     nb, window: str, db_path: str | Path | None = None
 ) -> list[dict[str, Any]]:
@@ -181,10 +347,6 @@ def build_op_index(notebook_path: str, window: str = "all") -> Dict[str, Any]:
         if cached and (now - cached[0]) < _OP_INDEX_TTL:
             return cached[1]
 
-        rust = _try_import_rust_scheduler()
-        if rust is None or not hasattr(rust, "build_op_index_from_rows"):
-            raise RuntimeError("aria_scheduler.build_op_index_from_rows is required")
-
         nb = get_notebook(notebook_path, read_only=True)
         if not getattr(nb, "db_path", None):
             try:
@@ -192,7 +354,13 @@ def build_op_index(notebook_path: str, window: str = "all") -> Dict[str, Any]:
             except (AttributeError, TypeError):
                 pass
         payload_rows = _load_program_rows(nb, window)
-        payload = fast_loads(rust.build_op_index_from_rows(fast_dumps(payload_rows)))
+        rust = _try_import_rust_scheduler()
+        if rust is not None and hasattr(rust, "build_op_index_from_rows"):
+            payload = fast_loads(
+                rust.build_op_index_from_rows(fast_dumps(payload_rows))
+            )
+        else:
+            payload = _build_op_index_payload_python(payload_rows)
         result = _build_op_index_result(payload)
         _op_index_caches[cache_key] = (now, result)
         return result

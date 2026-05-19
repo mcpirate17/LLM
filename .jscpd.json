@@ -1,0 +1,26 @@
+{
+  "threshold": 0.8,
+  "minLines": 10,
+  "minTokens": 80,
+  "reporters": ["console"],
+  "gitignore": true,
+  "noSymlinks": true,
+  "ignore": [
+    "**/node_modules/**",
+    "**/build/**",
+    "**/dist/**",
+    "**/__pycache__/**",
+    "research/dashboard/**",
+    "research/runtime/**",
+    "research/runtime_events/**",
+    "research/tests/**",
+    "research/reports/**",
+    "research/data/**",
+    "research/perf_artifacts/**",
+    "research/synthesis/_templates_*.py",
+    "research/tools/*_audit.py",
+    "research/tools/*_sweep.py",
+    "research/tools/*_backfill*.py",
+    "aria_designer/workflows/generated/**"
+  ]
+}

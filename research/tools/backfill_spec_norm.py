@@ -16,7 +16,6 @@ from __future__ import annotations
 import argparse
 import sqlite3
 import time
-from pathlib import Path
 
 import torch
 
@@ -28,12 +27,15 @@ from research.eval.fingerprint_sensitivity import analyze_sensitivity
 from research.tools._concurrency import (
     acquire_gpu_lock,
     acquire_writer_lock,
-    assert_gpu_quiet,
-    cap_gpu_memory,
+)
+from research.tools._metric_backfill_common import (
+    DB_PATH,
+    add_gpu_safety_args,
+    prepare_cuda_if_requested,
+    print_serial_commit_progress,
 )
 from research.scientist.notebook.graph_artifacts import resolve_graph_json_value
 
-DB_PATH = Path(__file__).resolve().parents[1] / "runs.db"
 TOOL_NAME = "backfill_spec_norm"
 
 
@@ -132,35 +134,16 @@ def main() -> None:
         default=25,
         help="Commit DB writes every N successful fingerprints",
     )
-    parser.add_argument(
-        "--max-other-gpu-mib",
-        type=int,
-        default=4096,
-        help=(
-            "Refuse to start if any other GPU process is using more than this "
-            "many MiB of VRAM. Set to a large value to override (e.g. 30000)."
-        ),
-    )
-    parser.add_argument(
-        "--gpu-memory-fraction",
-        type=float,
-        default=0.5,
-        help="Cap our process's CUDA memory at this fraction of the card.",
-    )
-    parser.add_argument(
-        "--wait-for-gpu",
-        action="store_true",
-        help="Sleep-poll until the GPU is quiet instead of exiting on busy.",
-    )
+    add_gpu_safety_args(parser)
     args = parser.parse_args()
 
-    if args.device.startswith("cuda"):
-        assert_gpu_quiet(
-            max_other_used_mib=args.max_other_gpu_mib,
-            tool_name=TOOL_NAME,
-            sleep_until_quiet=args.wait_for_gpu,
-        )
-        cap_gpu_memory(fraction=args.gpu_memory_fraction)
+    prepare_cuda_if_requested(
+        device=args.device,
+        max_other_gpu_mib=args.max_other_gpu_mib,
+        tool_name=TOOL_NAME,
+        wait_for_gpu=args.wait_for_gpu,
+        gpu_memory_fraction=args.gpu_memory_fraction,
+    )
 
     with (
         acquire_gpu_lock(tool_name=TOOL_NAME),
@@ -217,13 +200,16 @@ def _run_backfill(args: argparse.Namespace) -> None:
         propagated += rowcount
 
         if succeeded % args.commit_every == 0:
-            conn.commit()
-            elapsed = time.time() - t_start
-            rate = succeeded / max(elapsed, 1e-6)
-            eta_min = (total - idx) / max(rate, 1e-6) / 60.0
-            print(
-                f"  [{idx}/{total}] ok={succeeded} fail={failed} rows={propagated} "
-                f"rate={rate:.2f}/s eta={eta_min:.1f}m"
+            print_serial_commit_progress(
+                conn,
+                idx=idx,
+                total=total,
+                succeeded=succeeded,
+                failed=failed,
+                propagated=propagated,
+                t_start=t_start,
+                eta_decimals=1,
+                flush=False,
             )
 
     conn.commit()

@@ -22,14 +22,22 @@ from typing import Callable
 import torch
 from torch import nn
 
+from .rope import RotaryEmbedding, apply_rope
+
 
 @dataclass(frozen=True, slots=True)
 class TinyLMConfig:
     vocab_size: int
     dim: int = 64
     n_blocks: int = 2
-    use_position_embedding: bool = True
-    max_seq_len: int = 512
+    # RoPE is the new default for positional info — applied inside attention
+    # lanes to Q and K, extrapolates past the trained seq_len cleanly.
+    # ``use_position_embedding=True`` exists only for loading legacy
+    # checkpoints (pre-RoPE), which had a learned abs pos embed capped at
+    # ``max_seq_len``; setting both flags True is supported but redundant.
+    use_position_embedding: bool = False
+    use_rope: bool = True
+    max_seq_len: int = 1024
     # Pre-norm Transformer block (mixer + FFN). Disable for the legacy
     # mixer-only block used by the discrete-binding probes.
     use_ffn: bool = False
@@ -131,19 +139,32 @@ class TinyLM(nn.Module):
 
 
 class SoftmaxCausalAttention(nn.Module):
-    """Single-head causal softmax attention — the obvious baseline for binding."""
+    """Single-head causal softmax attention — the obvious baseline for binding.
 
-    def __init__(self, dim: int) -> None:
+    Pass ``use_rope=True`` to apply RoPE to Q and K (replaces absolute pos
+    embedding; lets the model accept seq_len up to ``max_seq_len``). Default
+    is False for backward compatibility with the abs-pos-embed-on-input
+    architecture.
+    """
+
+    def __init__(
+        self, dim: int, *, use_rope: bool = False, max_seq_len: int = 1024
+    ) -> None:
         super().__init__()
         self.dim = dim
         self.q = nn.Linear(dim, dim, bias=False)
         self.k = nn.Linear(dim, dim, bias=False)
         self.v = nn.Linear(dim, dim, bias=False)
         self.scale = float(dim) ** -0.5
+        self.rope = RotaryEmbedding(dim, max_seq_len=max_seq_len) if use_rope else None
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         b, l, _ = x.shape
         q, k, v = self.q(x), self.k(x), self.v(x)
+        if self.rope is not None:
+            cos, sin = self.rope(l, device=x.device, dtype=x.dtype)
+            q = apply_rope(q, cos, sin)
+            k = apply_rope(k, cos, sin)
         affinity = torch.einsum("bid,bjd->bij", q, k) * self.scale
         mask = torch.triu(
             torch.full((l, l), float("-inf"), device=x.device, dtype=x.dtype),

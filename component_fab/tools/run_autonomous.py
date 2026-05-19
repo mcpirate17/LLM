@@ -61,6 +61,7 @@ from component_fab.state.ledger import (
     Ledger,
     PROMOTION_PROMOTED,
     PROMOTION_REJECTED,
+    _prune_rotations,
 )
 from component_fab.validator.capability import (
     capability_scorecard_to_dict,
@@ -107,6 +108,11 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         default=2,
         type=float,
         help="rotate ledger.jsonl + proposals.jsonl when they exceed this size",
+    )
+    parser.add_argument(
+        "--emit-run-summary",
+        action="store_true",
+        help="write component_fab/catalog/autonomous_run_<timestamp>.json",
     )
     parser.add_argument("--quiet", action="store_true")
     return parser.parse_args(argv)
@@ -275,9 +281,7 @@ def _grade_active_specs(
                 eliminated_by_gate.get(eliminated_by, 0) + 1
             )
             continue
-        score, _ = composite_score(asdict(solo), probe)
-        if capability and capability.get("can_bind"):
-            score = min(1.0, score + 0.2)
+        score, _ = composite_score(asdict(solo), probe, capability)
         ledger.record_grade(
             proposal_id=spec.proposal_id,
             name=solo.name,
@@ -341,7 +345,7 @@ def _run_cycle(
 
     decisions = decide_promotions_for_ledger(ledger, DEFAULT_PROMOTION_RULES)
     counts = apply_decisions(ledger, decisions)
-    ranked = rank_proposals(cycle_scorecards, cycle_probes)
+    ranked = rank_proposals(cycle_scorecards, cycle_probes, cycle_capabilities)
     n_can_bind = sum(1 for c in cycle_capabilities.values() if c.get("can_bind"))
     return {
         "cycle": cycle,
@@ -401,8 +405,24 @@ def _rotate_proposals(proposals_path: Path, rotate_bytes: int, quiet: bool) -> N
         index += 1
     proposals_path.rename(rotated)
     proposals_path.touch()
+    deleted = _prune_rotations(proposals_path)
     if not quiet:
         print(f"[rotated proposals.jsonl → {rotated.name}]")
+        if deleted:
+            print(f"[pruned {deleted} old proposals.jsonl rotations]")
+
+
+def _prune_autonomous_run_summaries(catalog_dir: Path, keep: int = 3) -> int:
+    summaries = sorted(
+        catalog_dir.glob("autonomous_run_*.json"),
+        key=lambda path: (path.stat().st_mtime_ns, path.name),
+        reverse=True,
+    )
+    deleted = 0
+    for stale in summaries[keep:]:
+        stale.unlink(missing_ok=True)
+        deleted += 1
+    return deleted
 
 
 def _should_halt(
@@ -492,29 +512,36 @@ def main(argv: list[str] | None = None) -> int:
     proposals_path = _CATALOG_DIR / "proposals.jsonl"
     if args.reset_ledger and ledger_path.exists():
         ledger_path.unlink()
-    ledger = Ledger(ledger_path)
+    # Replay rotated audit trail so promoted-fab anchors carried forward
+    # from prior days remain visible to adaptive_axis_variants. Without this
+    # the anchor pool collapses to whatever the most-recent rotation kept.
+    ledger = Ledger(ledger_path, include_rotated=True)
 
     cycle_summaries = _drive_loop(args, ledger, proposals_path)
 
-    timestamp = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_path = _CATALOG_DIR / f"autonomous_run_{timestamp}.json"
-    out_path.write_text(
-        json.dumps(
-            {
-                "cycles_run": len(cycle_summaries),
-                "summaries": cycle_summaries,
-                "ledger_size": len(ledger.entries),
-                "promoted_components": [
-                    asdict(entry)
-                    for entry in ledger.all_entries()
-                    if entry.promotion_status == PROMOTION_PROMOTED
-                ],
-            },
-            indent=2,
-            default=str,
-        ),
-        encoding="utf-8",
-    )
+    out_path = None
+    pruned_run_summaries = 0
+    if args.emit_run_summary:
+        timestamp = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+        out_path = _CATALOG_DIR / f"autonomous_run_{timestamp}.json"
+        out_path.write_text(
+            json.dumps(
+                {
+                    "cycles_run": len(cycle_summaries),
+                    "summaries": cycle_summaries,
+                    "ledger_size": len(ledger.entries),
+                    "promoted_components": [
+                        asdict(entry)
+                        for entry in ledger.all_entries()
+                        if entry.promotion_status == PROMOTION_PROMOTED
+                    ],
+                },
+                indent=2,
+                default=str,
+            ),
+            encoding="utf-8",
+        )
+        pruned_run_summaries = _prune_autonomous_run_summaries(_CATALOG_DIR)
     if not args.quiet:
         promoted = sum(
             1
@@ -525,7 +552,10 @@ def main(argv: list[str] | None = None) -> int:
             f"\nautonomous run complete: {len(cycle_summaries)} cycles, "
             f"{len(ledger.entries)} total proposals tracked, {promoted} promoted"
         )
-        print(f"wrote: {out_path}")
+        if out_path is not None:
+            print(f"wrote: {out_path}")
+            if pruned_run_summaries:
+                print(f"pruned {pruned_run_summaries} old autonomous run summaries")
     return 0
 
 

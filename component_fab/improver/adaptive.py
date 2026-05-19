@@ -42,39 +42,135 @@ class AdaptiveAnchorPool:
         return self.corpus_anchors + self.fab_anchors
 
 
-def _promoted_fab_components_as_anchors(ledger: Ledger) -> list[AnchorAxes]:
-    """Each promoted ledger entry can act as an anchor — its axes come from the spec name parse-out.
+_PROPOSALS_AXES_CACHE: dict[str, dict] | None = None
 
-    We don't have the original math_axes on the LedgerEntry, so we synthesize
-    a minimal anchor by inferring the math axes from the synthesis_kind +
-    category labels. This is intentionally lossy; the cross-anchor function
-    needs only ``axes`` keys to merge.
+
+def _load_proposal_axes_index() -> dict[str, dict]:
+    """Build {proposal_id: math_axes} index across all proposals.jsonl* files.
+
+    Promoted ledger entries lose their math_axes (LedgerEntry doesn't store
+    them). We rebuild from the catalog jsonl + rotated copies so fab
+    anchors keep their actual axes (e.g. ``op_block_template=gated_parallel``)
+    instead of generic placeholders. Cached after first load.
     """
+    import json
+
+    global _PROPOSALS_AXES_CACHE
+    if _PROPOSALS_AXES_CACHE is not None:
+        return _PROPOSALS_AXES_CACHE
+    catalog = Path(__file__).resolve().parents[2] / "component_fab" / "catalog"
+    out: dict[str, dict] = {}
+    if not catalog.exists():
+        _PROPOSALS_AXES_CACHE = out
+        return out
+    files = [catalog / "proposals.jsonl"] + sorted(catalog.glob("proposals.jsonl.*"))
+    for p in files:
+        if not p.exists():
+            continue
+        try:
+            with p.open("r", encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        row = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    pid = row.get("proposal_id")
+                    axes = row.get("math_axes")
+                    if pid and isinstance(axes, dict):
+                        out[str(pid)] = dict(axes)
+        except OSError:
+            continue
+    _PROPOSALS_AXES_CACHE = out
+    return out
+
+
+_SAVED_WINNERS_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "component_fab"
+    / "catalog"
+    / "saved_winners.json"
+)
+
+
+def _load_saved_winners() -> list[AnchorAxes]:
+    """User-pinned winning specs that survive ledger rotation and reset.
+
+    Read from ``component_fab/catalog/saved_winners.json``. Each entry
+    carries the full ``math_axes`` of a notable architecture so hybrid
+    compositions can always use it as an anchor, even if the ledger
+    forgot the original promotion. Set per-spec via the saved_winners
+    JSON file; never auto-populated.
+    """
+    import json
+
+    if not _SAVED_WINNERS_PATH.exists():
+        return []
+    try:
+        data = json.loads(_SAVED_WINNERS_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    out: list[AnchorAxes] = []
+    for row in data.get("winners", []):
+        axes = row.get("math_axes")
+        if not isinstance(axes, dict):
+            continue
+        out.append(
+            AnchorAxes(
+                op_name=str(
+                    row.get("name") or row.get("proposal_id") or "saved_winner"
+                ),
+                axes=dict(axes),
+                eval_count=int(row.get("best_blimp_train_steps") or 1),
+                pass_rate=float(row.get("best_blimp_observed") or 0.5),
+            )
+        )
+    return out
+
+
+def _promoted_fab_components_as_anchors(ledger: Ledger) -> list[AnchorAxes]:
+    """Each promoted ledger entry becomes an anchor with its ACTUAL math_axes.
+
+    Lookup goes proposal_id → math_axes via the cached proposals.jsonl index
+    (including rotated files). Falls back to a generic placeholder if the
+    spec's axes aren't recoverable (rare; happens for legacy entries
+    from before the catalog was being persisted). Also includes any
+    saved_winners.json entries so user-pinned architectures survive
+    rotation/reset.
+    """
+    axes_index = _load_proposal_axes_index()
+    fallback = {
+        "op_algebraic_space": "fab_promoted",
+        "op_dynamical_has_state": 1,
+        "op_dynamical_memory_length_class": "O(L)",
+        "op_activation_sparsity_pattern": "learned_structured",
+        "op_geometric_receptive_field": "global",
+        "op_spectral_preferred_basis": "content",
+    }
     out: list[AnchorAxes] = []
     for entry in ledger.all_entries():
         if entry.promotion_status != PROMOTION_PROMOTED:
             continue
-        # Default axes — placeholders. Cross-anchor merges donor axes into host,
-        # so what matters is that the host (corpus anchor) keeps its algebra.
-        axes = {
-            "op_algebraic_space": "fab_promoted",
-            "op_dynamical_has_state": 1,
-            "op_dynamical_memory_length_class": "O(L)",
-            "op_activation_sparsity_pattern": "learned_structured",
-            "op_geometric_receptive_field": "global",
-            "op_spectral_preferred_basis": "content",
-        }
+        axes = axes_index.get(entry.proposal_id) or fallback
         pass_rate = sum(s for s in entry.composite_history[-2:]) / max(
             1, len(entry.composite_history[-2:])
         )
         out.append(
             AnchorAxes(
                 op_name=entry.name,
-                axes=axes,
+                axes=dict(axes),
                 eval_count=len(entry.composite_history),
                 pass_rate=pass_rate,
             )
         )
+    # Force-include user-pinned saved winners (dedup by op_name).
+    seen_names = {a.op_name for a in out}
+    for saved in _load_saved_winners():
+        if saved.op_name not in seen_names:
+            out.append(saved)
+            seen_names.add(saved.op_name)
     return out
 
 
@@ -117,15 +213,87 @@ def adaptive_axis_variants(
     ledger: Ledger,
     *,
     variants: Sequence[AxisVariant] = DEFAULT_AXIS_VARIANT_TEMPLATES,
+    max_fab_anchors: int = 3,
 ) -> list[ProposalSpec]:
-    """Axis variants of corpus anchors, deprioritizing repeatedly-failed deltas."""
+    """Axis variants of corpus anchors PLUS top-K promoted fab anchors.
+
+    Day-3 finding: corpus_anchors-only enumeration kept the search locked
+    on the original 5 underperforming anchors. Day-3 winners like
+    block_gated_parallel never had axis variants applied to them. This
+    function now expands to top-``max_fab_anchors`` promoted fab
+    components by pass_rate, allowing e.g. ``improve_block_gated_parallel
+    _route_top_k_moe`` compositions. Capped to keep combinatorics bounded.
+    """
     failed = _failed_axis_deltas(ledger)
     keep = [v for v in variants if v.delta_name not in failed]
     out: list[ProposalSpec] = []
     for anchor in anchor_pool.corpus_anchors:
         for variant in keep:
             out.append(spec_for_variant(anchor, variant))
+    top_fab = _diverse_fab_anchors(anchor_pool.fab_anchors, max_fab_anchors)
+    for anchor in top_fab:
+        for variant in keep:
+            out.append(spec_for_variant(anchor, variant))
     return out
+
+
+def _fab_anchor_category(anchor: AnchorAxes) -> str:
+    """Bucket a fab anchor by architectural pattern from its op_name.
+
+    Order matters: block_ and route_ override the more generic substrings.
+    Used by ``_diverse_fab_anchors`` to ensure architectural breadth in
+    the seed pool rather than concentrating on whichever pattern happens
+    to dominate composite_score.
+    """
+    name = anchor.op_name
+    if "block_" in name:
+        return "block"
+    if "route_" in name:
+        return "routing"
+    if any(k in name for k in ("knob_fisher", "knob_chebyshev", "knob_tucker")):
+        return "phase2_knob"
+    if "space_quaternion" in name or "space_hyperbolic" in name:
+        return "novel_algebra"
+    if name.startswith("compose_"):
+        return "compose_classic"
+    if name.startswith("cross_"):
+        return "cross_classic"
+    return "classic"
+
+
+def _diverse_fab_anchors(
+    anchors: tuple[AnchorAxes, ...], max_total: int
+) -> list[AnchorAxes]:
+    """Pick top-by-pass_rate from each architectural bucket, then fill any
+    remaining slots greedily by pass_rate. Ensures e.g. block_gated_parallel
+    and route_top_k_moe both make it into the variant-expansion pool
+    even when composite-classic anchors numerically dominate.
+    """
+    buckets: dict[str, list[AnchorAxes]] = {}
+    for a in anchors:
+        buckets.setdefault(_fab_anchor_category(a), []).append(a)
+    for bucket_list in buckets.values():
+        bucket_list.sort(key=lambda a: a.pass_rate, reverse=True)
+    picked: list[AnchorAxes] = []
+    seen: set[str] = set()
+    for bucket_list in buckets.values():
+        if bucket_list:
+            cand = bucket_list[0]
+            if cand.op_name not in seen:
+                picked.append(cand)
+                seen.add(cand.op_name)
+    # Fill the rest greedily by pass_rate from anywhere.
+    remaining = sorted(
+        (a for a in anchors if a.op_name not in seen),
+        key=lambda a: a.pass_rate,
+        reverse=True,
+    )
+    for a in remaining:
+        if len(picked) >= max_total:
+            break
+        picked.append(a)
+        seen.add(a.op_name)
+    return picked[:max_total]
 
 
 def adaptive_cross_anchor_variants(

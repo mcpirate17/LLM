@@ -13,6 +13,70 @@ import time
 from unittest.mock import ANY, MagicMock
 
 
+def _auto_validate_config(config_cls=MagicMock):
+    config = config_cls()
+    config.auto_validate = True
+    config.auto_validate_min_composite_score = 0.0
+    config.auto_validate_top_n = 5
+    config.auto_validate_min_robustness = 0.5
+    config.auto_validate_max_baseline_ratio = 0.80
+    config.investigation_max_loss_ratio_multiplier = 10.0
+    return config
+
+
+def _strong_candidate(result_id: str) -> dict:
+    return {
+        "result_id": result_id,
+        "robustness": 0.78,
+        "best_loss_ratio": 0.30,
+        "baseline_loss_ratio": 0.55,
+        "novelty_confidence": 0.9,
+    }
+
+
+def _patch_phase7_for_strong_candidate(monkeypatch, phase7, result_id: str, strong):
+    monkeypatch.setattr(phase7, "novelty_metadata", lambda nb_arg, ids: {})
+    monkeypatch.setattr(
+        phase7,
+        "investigation_support_data",
+        lambda nb_arg, ids: ({result_id: 210.0}, {}, {}),
+    )
+    monkeypatch.setattr(
+        phase7,
+        "strong_investigation_candidates",
+        lambda **kwargs: (strong, 0),
+    )
+    monkeypatch.setattr(phase7, "graph_meta_by_result_id", lambda nb_arg, ids: {})
+    monkeypatch.setattr(
+        phase7,
+        "prepare_validation_candidates",
+        lambda rows, graph_meta: list(rows),
+    )
+
+
+def _make_phase7_mixin(strong):
+    from research.scientist.runner.results_auto_escalate_phase7 import (
+        _ResultsAutoEscalatePhase7Mixin,
+    )
+
+    mixin = _ResultsAutoEscalatePhase7Mixin()
+    mixin._active_learning_validation_rank = MagicMock(return_value=strong)
+    mixin._score_candidate_pool = MagicMock(
+        return_value={
+            "scored": [{"result_id": row["result_id"]} for row in strong],
+            "selected": [{"result_id": row["result_id"]} for row in strong],
+            "summary": {},
+            "policy": {},
+            "reason": "",
+        }
+    )
+    mixin._record_auto_validate_selection = MagicMock(return_value="decision-auto")
+    mixin._followup_priority_summary = MagicMock(return_value=(42.0, {"rank": 1}))
+    mixin._safe_build_evidence_pack = MagicMock(return_value={})
+    mixin._emit_event = MagicMock()
+    return mixin
+
+
 # ---------------------------------------------------------------------------
 # B1: Block promotion on incomplete fingerprints
 # ---------------------------------------------------------------------------
@@ -128,11 +192,7 @@ class TestB1EscalationFingerprintGate:
         mixin = self._make_mixin()
         result_ids = ["rid_001", "rid_002"]
         nb = self._make_nb_with_fingerprint(result_ids, fp_complete=False)
-        config = MagicMock()
-        config.auto_validate = True
-        config.auto_validate_min_composite_score = 0.0
-        config.auto_validate_top_n = 5
-        config.auto_validate_min_robustness = 0.5
+        config = _auto_validate_config()
 
         results = {
             "investigation_results": [
@@ -175,13 +235,7 @@ class TestB1EscalationFingerprintGate:
 
         nb.conn.execute = patched_execute
 
-        config = MagicMock()
-        config.auto_validate = True
-        config.auto_validate_min_composite_score = 0.0
-        config.auto_validate_top_n = 5
-        config.auto_validate_min_robustness = 0.5
-        config.auto_validate_max_baseline_ratio = 0.80
-        config.investigation_max_loss_ratio_multiplier = 10.0
+        config = _auto_validate_config()
 
         results = {
             "investigation_results": [
@@ -235,13 +289,7 @@ class TestB1EscalationFingerprintGate:
 
         nb.conn.execute = patched_execute
 
-        config = MagicMock()
-        config.auto_validate = True
-        config.auto_validate_min_composite_score = 0.0
-        config.auto_validate_top_n = 5
-        config.auto_validate_min_robustness = 0.5
-        config.auto_validate_max_baseline_ratio = 0.80
-        config.investigation_max_loss_ratio_multiplier = 10.0
+        config = _auto_validate_config()
 
         results = {
             "investigation_results": [
@@ -272,9 +320,6 @@ class TestB1EscalationFingerprintGate:
         from research.scientist.notebook import LabNotebook
         from research.scientist.runner import RunConfig
         import research.scientist.runner.results_auto_escalate_phase7 as phase7
-        from research.scientist.runner.results_auto_escalate_phase7 import (
-            _ResultsAutoEscalatePhase7Mixin,
-        )
 
         db_path = tmp_path / "auto_capability_policy.db"
         nb = LabNotebook(str(db_path))
@@ -291,60 +336,10 @@ class TestB1EscalationFingerprintGate:
         )
         nb.conn.commit()
 
-        strong = [
-            {
-                "result_id": rid,
-                "robustness": 0.78,
-                "best_loss_ratio": 0.30,
-                "baseline_loss_ratio": 0.55,
-                "novelty_confidence": 0.9,
-            }
-        ]
-        monkeypatch.setattr(phase7, "novelty_metadata", lambda nb_arg, ids: {})
-        monkeypatch.setattr(
-            phase7,
-            "investigation_support_data",
-            lambda nb_arg, ids: ({rid: 210.0}, {}, {}),
-        )
-        monkeypatch.setattr(
-            phase7,
-            "strong_investigation_candidates",
-            lambda **kwargs: (strong, 0),
-        )
-        monkeypatch.setattr(
-            phase7,
-            "graph_meta_by_result_id",
-            lambda nb_arg, ids: {},
-        )
-        monkeypatch.setattr(
-            phase7,
-            "prepare_validation_candidates",
-            lambda rows, graph_meta: list(rows),
-        )
-
-        mixin = _ResultsAutoEscalatePhase7Mixin()
-        mixin._active_learning_validation_rank = MagicMock(return_value=strong)
-        mixin._score_candidate_pool = MagicMock(
-            return_value={
-                "scored": [{"result_id": rid}],
-                "selected": [{"result_id": rid}],
-                "summary": {},
-                "policy": {},
-                "reason": "",
-            }
-        )
-        mixin._record_auto_validate_selection = MagicMock(return_value="decision-auto")
-        mixin._followup_priority_summary = MagicMock(return_value=(42.0, {"rank": 1}))
-        mixin._safe_build_evidence_pack = MagicMock(return_value={})
-        mixin._emit_event = MagicMock()
-
-        config = RunConfig()
-        config.auto_validate = True
-        config.auto_validate_min_composite_score = 0.0
-        config.auto_validate_top_n = 5
-        config.auto_validate_min_robustness = 0.5
-        config.auto_validate_max_baseline_ratio = 0.80
-        config.investigation_max_loss_ratio_multiplier = 10.0
+        strong = [_strong_candidate(rid)]
+        _patch_phase7_for_strong_candidate(monkeypatch, phase7, rid, strong)
+        mixin = _make_phase7_mixin(strong)
+        config = _auto_validate_config(RunConfig)
 
         mixin._auto_escalate_investigation(
             {"investigation_results": strong, "experiment_id": "exp-auto"},
@@ -371,9 +366,6 @@ class TestB1EscalationFingerprintGate:
         from research.scientist.notebook import LabNotebook
         from research.scientist.runner import RunConfig
         import research.scientist.runner.results_auto_escalate_phase7 as phase7
-        from research.scientist.runner.results_auto_escalate_phase7 import (
-            _ResultsAutoEscalatePhase7Mixin,
-        )
 
         db_path = tmp_path / "auto_validation_after_capability.db"
         nb = LabNotebook(str(db_path))
@@ -396,56 +388,10 @@ class TestB1EscalationFingerprintGate:
         )
         nb.conn.commit()
 
-        strong = [
-            {
-                "result_id": rid,
-                "robustness": 0.78,
-                "best_loss_ratio": 0.30,
-                "baseline_loss_ratio": 0.55,
-                "novelty_confidence": 0.9,
-            }
-        ]
-        monkeypatch.setattr(phase7, "novelty_metadata", lambda nb_arg, ids: {})
-        monkeypatch.setattr(
-            phase7,
-            "investigation_support_data",
-            lambda nb_arg, ids: ({rid: 210.0}, {}, {}),
-        )
-        monkeypatch.setattr(
-            phase7,
-            "strong_investigation_candidates",
-            lambda **kwargs: (strong, 0),
-        )
-        monkeypatch.setattr(phase7, "graph_meta_by_result_id", lambda nb_arg, ids: {})
-        monkeypatch.setattr(
-            phase7,
-            "prepare_validation_candidates",
-            lambda rows, graph_meta: list(rows),
-        )
-
-        mixin = _ResultsAutoEscalatePhase7Mixin()
-        mixin._active_learning_validation_rank = MagicMock(return_value=strong)
-        mixin._score_candidate_pool = MagicMock(
-            return_value={
-                "scored": [{"result_id": rid}],
-                "selected": [{"result_id": rid}],
-                "summary": {},
-                "policy": {},
-                "reason": "",
-            }
-        )
-        mixin._record_auto_validate_selection = MagicMock(return_value="decision-auto")
-        mixin._followup_priority_summary = MagicMock(return_value=(42.0, {"rank": 1}))
-        mixin._safe_build_evidence_pack = MagicMock(return_value={})
-        mixin._emit_event = MagicMock()
-
-        config = RunConfig()
-        config.auto_validate = True
-        config.auto_validate_min_composite_score = 0.0
-        config.auto_validate_top_n = 5
-        config.auto_validate_min_robustness = 0.5
-        config.auto_validate_max_baseline_ratio = 0.80
-        config.investigation_max_loss_ratio_multiplier = 10.0
+        strong = [_strong_candidate(rid)]
+        _patch_phase7_for_strong_candidate(monkeypatch, phase7, rid, strong)
+        mixin = _make_phase7_mixin(strong)
+        config = _auto_validate_config(RunConfig)
 
         mixin._auto_escalate_investigation(
             {"investigation_results": strong, "experiment_id": "exp-auto"},

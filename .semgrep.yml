@@ -1,0 +1,40 @@
+rules:
+  - id: python-dangerous-eval-exec
+    message: Avoid eval/exec in generated or hand-written Python unless the call is explicitly sandboxed.
+    languages: [python]
+    severity: ERROR
+    pattern-either:
+      - pattern: eval(...)
+      - pattern: exec(...)
+
+  - id: python-subprocess-shell-true
+    message: Avoid subprocess calls with shell=True; pass argv lists and validate inputs instead.
+    languages: [python]
+    severity: ERROR
+    pattern-either:
+      - pattern: subprocess.$FUNC(..., shell=True, ...)
+      - pattern: subprocess.$FUNC(..., shell = True, ...)
+
+  - id: python-unsafe-yaml-load
+    message: Use yaml.safe_load instead of yaml.load for untrusted or model-produced YAML.
+    languages: [python]
+    severity: ERROR
+    pattern: yaml.load(...)
+
+  - id: python-sql-string-formatting
+    message: Avoid building SQL with string formatting; use parameterized queries.
+    languages: [python]
+    severity: ERROR
+    pattern-either:
+      - pattern: $CUR.execute($SQL % ...)
+      - pattern: $CUR.execute($SQL.format(...))
+      - pattern: $CUR.execute(f"...")
+
+  - id: javascript-dangerous-eval
+    message: Avoid eval-like JavaScript execution paths in generated code.
+    languages: [javascript, typescript]
+    severity: ERROR
+    pattern-either:
+      - pattern: eval(...)
+      - pattern: new Function(...)
+

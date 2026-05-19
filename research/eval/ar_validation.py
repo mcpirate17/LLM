@@ -35,18 +35,21 @@ import torch.nn as nn
 
 from ._kv_pair import (
     KVPairTable,
-    evaluate_kv_split,
+    KVProbeRuntime,
+    build_kv_pair_table,
+    evaluate_kv_probe_checkpoint,
     kv_table_to_device,
     make_kv_pair_batch,
+    run_kv_probe_training_loop,
     train_kv_one_batch,
 )
+from ._probe_utils import _materialize_non_inference_
 from .associative_recall import _get_special_tokens
 from .utils import make_adamw, model_vocab_size
 
 ARValidationPairTable: TypeAlias = KVPairTable
 make_ar_validation_batch = make_kv_pair_batch
 _table_to_device = kv_table_to_device
-_evaluate_split = evaluate_kv_split
 _train_one_batch = train_kv_one_batch
 
 AR_VALIDATION_METRIC_VERSION = "ar_validation_story_micro_v1"
@@ -126,41 +129,14 @@ class ARValidationResult:
 
 
 def build_ar_validation_pair_table(cfg: ARValidationConfig) -> ARValidationPairTable:
-    """Build deterministic disjoint train/held key/value pairs."""
-    total_pairs = int(cfg.n_train_pairs) + int(cfg.n_held_pairs)
-    if total_pairs <= 0:
-        raise ValueError("at least one train or held pair is required")
-    if int(cfg.n_key_tokens) < total_pairs * 2:
-        raise ValueError("n_key_tokens must provide two unique tokens per pair")
-    if int(cfg.n_value_tokens) <= 0:
-        raise ValueError("n_value_tokens must be positive")
-    if int(cfg.n_value_classes) <= 0 or int(cfg.n_value_classes) > int(
-        cfg.n_value_tokens
-    ):
-        raise ValueError("n_value_classes must be in [1, n_value_tokens]")
-
-    gen = torch.Generator(device="cpu")
-    gen.manual_seed(int(cfg.seed))
-    key_tokens = torch.randperm(int(cfg.n_key_tokens), generator=gen)[: total_pairs * 2]
-    key_tokens = key_tokens.reshape(total_pairs, 2) + int(cfg.vocab_lo)
-
-    value_lo = int(cfg.vocab_lo) + int(cfg.n_key_tokens)
-    value_offsets = torch.arange(total_pairs, dtype=torch.long) % int(
-        cfg.n_value_tokens
-    )
-    value_offsets = value_offsets[torch.randperm(total_pairs, generator=gen)]
-    values = value_lo + value_offsets
-
-    n_train = int(cfg.n_train_pairs)
-    return ARValidationPairTable(
-        train_keys=key_tokens[:n_train].contiguous(),
-        train_values=values[:n_train].contiguous(),
-        held_keys=key_tokens[n_train:].contiguous(),
-        held_values=values[n_train:].contiguous(),
+    return build_kv_pair_table(
+        seed=int(cfg.seed),
         vocab_lo=int(cfg.vocab_lo),
-        value_lo=value_lo,
-        value_hi=value_lo + int(cfg.n_value_tokens),
+        n_key_tokens=int(cfg.n_key_tokens),
+        n_value_tokens=int(cfg.n_value_tokens),
         n_value_classes=int(cfg.n_value_classes),
+        n_train_pairs=int(cfg.n_train_pairs),
+        n_held_pairs=int(cfg.n_held_pairs),
     )
 
 
@@ -260,6 +236,7 @@ def _run_integer_ar_validation(
     dev = torch.device(device)
     try:
         probe_model = copy.deepcopy(model).to(dev) if cfg.copy_model else model.to(dev)
+        _materialize_non_inference_(probe_model)
     except Exception as exc:  # noqa: BLE001
         return _err_result(t0, "copy_failed", str(exc))
 
@@ -279,103 +256,56 @@ def _run_integer_ar_validation(
         gen.manual_seed(int(cfg.seed))
         opt = make_adamw(probe_model.parameters(), lr=float(cfg.lr))
         ans_pos = 3 * int(cfg.pairs_per_example) + 3
+        runtime = KVProbeRuntime(
+            n_eval=int(cfg.n_eval),
+            batch_size=int(cfg.batch_size),
+            pairs_per_example=int(cfg.pairs_per_example),
+            sep_token=int(sep_token),
+            ans_token=int(ans_token),
+            device=dev,
+            episodic_values=bool(cfg.episodic_values),
+        )
         deadline = t0 + float(cfg.timeout_s)
         eval_every = max(1, int(cfg.eval_every))
         learning_curve: list[dict[str, float | int]] = []
-        steps_done = 0
-        status = "ok"
-        error = None
 
-        for step in range(1, int(cfg.train_steps) + 1):
-            if time.perf_counter() > deadline:
-                status = "timeout"
-                break
-            ids, targets, _classes = make_ar_validation_batch(
-                table,
-                split="train",
-                batch_size=int(cfg.batch_size),
-                pairs_per_example=int(cfg.pairs_per_example),
-                sep_token=sep_token,
-                ans_token=ans_token,
-                device=dev,
-                generator=gen,
-                episodic_values=bool(cfg.episodic_values),
+        def _record_eval(
+            step: int,
+            loss: torch.Tensor,
+            in_acc: float,
+            held_pair: float,
+            held_class: float,
+        ) -> None:
+            learning_curve.append(
+                {
+                    "step": step,
+                    "loss": round(float(loss.item()), 6),
+                    "final_acc": round(in_acc, 4),
+                    "held_pair_acc": round(held_pair, 4),
+                    "held_class_acc": round(held_class, 4),
+                }
             )
-            loss = _train_one_batch(
-                probe_model,
-                ids,
-                targets,
-                opt=opt,
-                table=table,
-                ans_pos=ans_pos,
-            )
-            if loss is None:
-                status = "error"
-                error = "non_finite_loss"
-                break
-            steps_done = step
-            if step % eval_every == 0 or step == int(cfg.train_steps):
-                in_acc, _in_class = _evaluate_split(
-                    probe_model,
-                    table,
-                    split="train",
-                    n_eval=int(cfg.n_eval),
-                    batch_size=int(cfg.batch_size),
-                    pairs_per_example=int(cfg.pairs_per_example),
-                    sep_token=sep_token,
-                    ans_token=ans_token,
-                    device=dev,
-                    seed=int(cfg.seed) + 10_000 + step,
-                    episodic_values=bool(cfg.episodic_values),
-                )
-                held_pair, held_class = _evaluate_split(
-                    probe_model,
-                    table,
-                    split="held",
-                    n_eval=int(cfg.n_eval),
-                    batch_size=int(cfg.batch_size),
-                    pairs_per_example=int(cfg.pairs_per_example),
-                    sep_token=sep_token,
-                    ans_token=ans_token,
-                    device=dev,
-                    seed=int(cfg.seed) + 20_000 + step,
-                    episodic_values=bool(cfg.episodic_values),
-                )
-                learning_curve.append(
-                    {
-                        "step": step,
-                        "loss": round(float(loss.item()), 6),
-                        "final_acc": round(in_acc, 4),
-                        "held_pair_acc": round(held_pair, 4),
-                        "held_class_acc": round(held_class, 4),
-                    }
-                )
 
-        final_acc, _ = _evaluate_split(
+        loop_result = run_kv_probe_training_loop(
             probe_model,
             table,
-            split="train",
-            n_eval=int(cfg.n_eval),
-            batch_size=int(cfg.batch_size),
-            pairs_per_example=int(cfg.pairs_per_example),
-            sep_token=sep_token,
-            ans_token=ans_token,
-            device=dev,
-            seed=int(cfg.seed) + 30_000,
-            episodic_values=bool(cfg.episodic_values),
+            runtime=runtime,
+            generator=gen,
+            opt=opt,
+            ans_pos=ans_pos,
+            train_steps=int(cfg.train_steps),
+            eval_every=eval_every,
+            deadline=deadline,
+            base_seed=int(cfg.seed),
+            monotonic_time=time.perf_counter,
+            on_eval=_record_eval,
         )
-        held_pair, held_class = _evaluate_split(
+
+        final_acc, held_pair, held_class = evaluate_kv_probe_checkpoint(
             probe_model,
             table,
-            split="held",
-            n_eval=int(cfg.n_eval),
-            batch_size=int(cfg.batch_size),
-            pairs_per_example=int(cfg.pairs_per_example),
-            sep_token=sep_token,
-            ans_token=ans_token,
-            device=dev,
-            seed=int(cfg.seed) + 40_000,
-            episodic_values=bool(cfg.episodic_values),
+            runtime=runtime,
+            base_seed=int(cfg.seed),
         )
         floor_step = _steps_to_learning_floor(
             learning_curve,
@@ -389,10 +319,10 @@ def _run_integer_ar_validation(
             learning_curve=learning_curve,
             steps_to_floor=floor_step,
             score=_score(held_pair, held_class, floor_step, int(cfg.train_steps)),
-            steps_trained=steps_done,
-            status=status,
+            steps_trained=loop_result.steps_done,
+            status=loop_result.status,
             elapsed_ms=round((time.perf_counter() - t0) * 1000, 1),
-            error=error,
+            error=loop_result.error,
         )
     except Exception as exc:  # noqa: BLE001
         return _err_result(t0, "error", str(exc))
@@ -416,6 +346,7 @@ def _run_story_micro_champion(
     dev = torch.device(device)
     try:
         probe_model = copy.deepcopy(model).to(dev) if cfg.copy_model else model.to(dev)
+        _materialize_non_inference_(probe_model)
     except Exception as exc:  # noqa: BLE001
         return _err_result(t0, "copy_failed", str(exc))
 

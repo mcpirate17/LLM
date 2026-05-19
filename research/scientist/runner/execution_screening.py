@@ -522,135 +522,122 @@ class _ExecutionScreeningMixin:
             # Launch queued auto-scale-up after notebook is closed
             self._run_pending_scale_up()
 
-    def _prepare_grammar_config(
-        self,
-        exp_id: str,
-        config: RunConfig,
-        nb: LabNotebook,
-        results: Dict,
-        use_learned_grammar: bool = True,
-    ) -> Tuple[GrammarConfig, Dict[str, float], Any]:
-        """Build grammar config with learned weights, champion bias, and efficiency tuning.
-
-        Returns:
-            (grammar, failure_blocklist, analytics)
-        """
-        grammar_weights = None
-        op_weights: Dict[str, float] = {}
-        failure_blocklist: Dict[str, float] = {}
-        champion_bias: Dict[str, float] = {}
-        template_weights: Dict[str, float] = {}
-        motif_weights: Dict[str, float] = {}
-        slot_motif_multipliers: Dict[str, Dict[str, float]] = {}
-        slot_motif_denylist: Dict[str, frozenset[str]] = {}
-        analytics = None
-        grammar_gate: Optional[Dict[str, Any]] = None
-
-        learned_grammar_allowed = component_is_allowed(
-            "learned_grammar_weights", config
-        )
-        screening_signal_allowed = component_is_allowed(
-            "screening_signal_weights", config
-        )
-
+    def _load_experiment_analytics(self, exp_id: str, nb: LabNotebook) -> Any:
         try:
             from ..analytics import ExperimentAnalytics
 
-            analytics = ExperimentAnalytics(nb)
+            return ExperimentAnalytics(nb)
         except Exception as e:
             logger.debug("Experiment analytics unavailable for %s: %s", exp_id, e)
-            analytics = None
+            return None
 
-        if use_learned_grammar and learned_grammar_allowed and analytics is not None:
-            try:
-                last_effective = nb.load_last_effective_weights()
-                last_weights = last_effective[0] if last_effective else None
-                grammar_weights = analytics.compute_grammar_weights(
-                    last_applied=last_weights, alpha=0.6
-                )
-                if grammar_weights:
-                    grammar_gate = self._evaluate_grammar_update_gate(
-                        nb=nb,
-                        analytics=analytics,
-                        config=config,
-                    )
-                    if not grammar_gate.get("gate_pass"):
-                        self._log_learning_event_compat(
-                            nb,
-                            "grammar_weights_blocked",
-                            f"Blocked grammar weight update for {exp_id}: weak attribution evidence",
-                            evidence=fast_dumps(json_safe(grammar_gate), safe=True),
-                        )
-                        grammar_weights = None
-            except Exception as e:
-                logger.warning(
-                    "Failed computing learned grammar weights for %s: %s", exp_id, e
-                )
-        elif use_learned_grammar and learned_grammar_allowed and analytics is None:
+    def _compute_gated_grammar_weights(
+        self,
+        *,
+        exp_id: str,
+        config: RunConfig,
+        nb: LabNotebook,
+        analytics: Any,
+        use_learned_grammar: bool,
+        learned_grammar_allowed: bool,
+    ) -> tuple[Optional[Dict[str, float]], Optional[Dict[str, Any]]]:
+        if not use_learned_grammar:
+            return None, None
+        if not learned_grammar_allowed:
+            logger.info(
+                "Learned grammar weights requested but blocked by ML trust policy"
+            )
+            return None, None
+        if analytics is None:
             logger.info(
                 "Learned grammar weights requested for %s but analytics backend was unavailable",
                 exp_id,
             )
-        elif use_learned_grammar and not learned_grammar_allowed:
-            logger.info(
-                "Learned grammar weights requested but blocked by ML trust policy"
+            return None, None
+        try:
+            last_effective = nb.load_last_effective_weights()
+            last_weights = last_effective[0] if last_effective else None
+            grammar_weights = analytics.compute_grammar_weights(
+                last_applied=last_weights,
+                alpha=0.6,
             )
+            if not grammar_weights:
+                return grammar_weights, None
+            grammar_gate = self._evaluate_grammar_update_gate(
+                nb=nb,
+                analytics=analytics,
+                config=config,
+            )
+            if grammar_gate.get("gate_pass"):
+                return grammar_weights, grammar_gate
+            self._log_learning_event_compat(
+                nb,
+                "grammar_weights_blocked",
+                f"Blocked grammar weight update for {exp_id}: weak attribution evidence",
+                evidence=fast_dumps(json_safe(grammar_gate), safe=True),
+            )
+            return None, grammar_gate
+        except Exception as e:
+            logger.warning(
+                "Failed computing learned grammar weights for %s: %s", exp_id, e
+            )
+            return None, None
 
-        # Soft-penalize poorly-performing ops (no hard exclusion — causality
-        # sandbox gate catches truly broken ops at eval time). This path is
-        # evidence-aware but intentionally non-ML-governing, so it should run
-        # even when unproven learned grammar weights are blocked.
+    @staticmethod
+    def _penalized_op_weight(op_info: Dict[str, Any], rehab: Any) -> float:
+        if rehab and rehab.get("compile_passed") and rehab.get("forward_passed"):
+            return 0.5
+        if op_info.get("failure_stage") == "compilation":
+            return 0.15
+        return 0.1
+
+    def _apply_negative_op_penalties(
+        self,
+        *,
+        exp_id: str,
+        nb: LabNotebook,
+        analytics: Any,
+        op_weights: Dict[str, float],
+    ) -> None:
         try:
             rehab_cache = nb.get_op_rehabilitation_cache()
-            if analytics is not None:
-                neg = analytics.negative_results_synthesis()
-                for op_info in neg.get("failed_ops", []):
-                    if (
-                        op_info.get("s1_rate", 1) == 0
-                        and op_info.get("n_used", 0) >= 5
-                        and op_info.get("confidence", 0) >= 0.7
-                    ):
-                        op_name = op_info["op_name"]
-                        rehab = rehab_cache.get(op_name)
-                        if (
-                            rehab
-                            and rehab.get("compile_passed")
-                            and rehab.get("forward_passed")
-                        ):
-                            op_weights[op_name] = min(
-                                float(op_weights.get(op_name, 1.0)),
-                                0.5,
-                            )
-                        elif op_info.get("failure_stage") == "compilation":
-                            op_weights[op_name] = min(
-                                float(op_weights.get(op_name, 1.0)),
-                                0.15,
-                            )
-                        else:
-                            op_weights[op_name] = min(
-                                float(op_weights.get(op_name, 1.0)),
-                                0.1,
-                            )
-                for op_info in neg.get("weak_ops", []):
-                    op_name = op_info.get("op_name", "")
-                    penalty = op_info.get("penalty_weight", 1.0)
-                    if op_name:
-                        op_weights[op_name] = min(
-                            float(op_weights.get(op_name, 1.0)),
-                            float(penalty),
-                        )
-                if op_weights:
-                    self._log_learning_event_compat(
-                        nb,
-                        "weak_ops_penalized",
-                        f"Soft-penalized {len(op_weights)} weak ops: "
-                        f"{', '.join(f'{k}={v:.2f}' for k, v in sorted(op_weights.items()))}",
-                        op_weights=op_weights,
+            if analytics is None:
+                return
+            neg = analytics.negative_results_synthesis()
+            for op_info in neg.get("failed_ops", []):
+                if (
+                    op_info.get("s1_rate", 1) == 0
+                    and op_info.get("n_used", 0) >= 5
+                    and op_info.get("confidence", 0) >= 0.7
+                ):
+                    op_name = op_info["op_name"]
+                    penalty = self._penalized_op_weight(
+                        op_info, rehab_cache.get(op_name)
                     )
+                    op_weights[op_name] = min(
+                        float(op_weights.get(op_name, 1.0)), penalty
+                    )
+            for op_info in neg.get("weak_ops", []):
+                op_name = op_info.get("op_name", "")
+                if op_name:
+                    op_weights[op_name] = min(
+                        float(op_weights.get(op_name, 1.0)),
+                        float(op_info.get("penalty_weight", 1.0)),
+                    )
+            if op_weights:
+                self._log_learning_event_compat(
+                    nb,
+                    "weak_ops_penalized",
+                    f"Soft-penalized {len(op_weights)} weak ops: "
+                    f"{', '.join(f'{k}={v:.2f}' for k, v in sorted(op_weights.items()))}",
+                    op_weights=op_weights,
+                )
         except Exception as e:
             logger.warning("Failed computing op penalties for %s: %s", exp_id, e)
 
-        # Load failure-signature blocklist (op-pair bigrams with high fail rate)
+    def _load_failure_blocklist(
+        self, *, exp_id: str, nb: LabNotebook
+    ) -> Dict[str, float]:
         try:
             failure_blocklist = nb.get_failure_signature_blocklist()
             if failure_blocklist:
@@ -660,275 +647,356 @@ class _ExecutionScreeningMixin:
                     f"Loaded {len(failure_blocklist)} toxic op-pair patterns",
                     signatures=sorted(failure_blocklist.keys())[:10],
                 )
+            return failure_blocklist
         except Exception as e:
             logger.warning("Failed loading failure signatures for %s: %s", exp_id, e)
+            return {}
 
-        # Champion bias pass: nudge category weights toward proven winners.
+    @staticmethod
+    def _reliable_recent_op(
+        op_rates: Dict[str, Any],
+        op_name: str,
+        min_used: int = 10,
+        min_s1: float = 0.25,
+    ) -> bool:
+        info = op_rates.get(op_name) or {}
+        return (
+            int(info.get("n_used") or 0) >= min_used
+            and float(info.get("s1_rate") or 0.0) >= min_s1
+        )
+
+    def _compute_champion_bias(
+        self, *, exp_id: str, analytics: Any
+    ) -> Dict[str, float]:
+        champion_bias: Dict[str, float] = {}
         try:
-            if analytics is not None:
-                _window_cutoff = time.time() - 604800  # 7 days
-                op_rates = analytics.op_success_rates(since_ts=_window_cutoff) or {}
-                if op_rates:
-                    winning_ops = {"exp", "selective_scan", "tropical_center"}
-                    projection_ops = {
-                        "low_rank_proj",
-                        "shared_basis_proj",
-                        "tied_proj",
-                    }
-                    sparse_ops = {
-                        "nm_sparse_linear",
-                        "block_sparse_linear",
-                        "semi_structured_2_4_linear",
-                    }
-
-                    def _is_reliable(
-                        op_name: str, min_used: int = 10, min_s1: float = 0.25
-                    ) -> bool:
-                        info = op_rates.get(op_name) or {}
-                        n_used = int(info.get("n_used") or 0)
-                        s1_rate = float(info.get("s1_rate") or 0.0)
-                        return n_used >= min_used and s1_rate >= min_s1
-
-                    has_winners = any(_is_reliable(op) for op in winning_ops)
-                    has_projection = any(_is_reliable(op) for op in projection_ops)
-                    has_sparse = any(_is_reliable(op) for op in sparse_ops)
-
-                    if has_winners:
-                        champion_bias["structural"] = max(
-                            champion_bias.get("structural", 1.0), 1.2
-                        )
-                        champion_bias["sequence"] = max(
-                            champion_bias.get("sequence", 1.0), 1.2
-                        )
-                    if has_projection:
-                        champion_bias["parameterized"] = max(
-                            champion_bias.get("parameterized", 1.0), 1.4
-                        )
-                    if has_sparse:
-                        champion_bias["parameterized"] = max(
-                            champion_bias.get("parameterized", 1.0), 1.5
-                        )
-                        champion_bias["_structured_sparsity_bias"] = 0.8
+            if analytics is None:
+                return champion_bias
+            op_rates = analytics.op_success_rates(since_ts=time.time() - 604800) or {}
+            if not op_rates:
+                return champion_bias
+            winning_ops = {"exp", "selective_scan", "tropical_center"}
+            projection_ops = {"low_rank_proj", "shared_basis_proj", "tied_proj"}
+            sparse_ops = {
+                "nm_sparse_linear",
+                "block_sparse_linear",
+                "semi_structured_2_4_linear",
+            }
+            if any(self._reliable_recent_op(op_rates, op) for op in winning_ops):
+                champion_bias["structural"] = max(
+                    champion_bias.get("structural", 1.0), 1.2
+                )
+                champion_bias["sequence"] = max(champion_bias.get("sequence", 1.0), 1.2)
+            if any(self._reliable_recent_op(op_rates, op) for op in projection_ops):
+                champion_bias["parameterized"] = max(
+                    champion_bias.get("parameterized", 1.0),
+                    1.4,
+                )
+            if any(self._reliable_recent_op(op_rates, op) for op in sparse_ops):
+                champion_bias["parameterized"] = max(
+                    champion_bias.get("parameterized", 1.0),
+                    1.5,
+                )
+                champion_bias["_structured_sparsity_bias"] = 0.8
         except Exception as e:
             logger.warning("Failed computing champion bias for %s: %s", exp_id, e)
+        return champion_bias
 
-        if screening_signal_allowed:
-            try:
-                template_weights, motif_weights = build_signal_weight_maps(nb)
-            except (AttributeError, TypeError, ValueError) as e:
-                logger.debug("Failed building signal weight maps: %s", e)
-                template_weights, motif_weights = {}, {}
-            try:
-                observability_priors = nb.get_generation_observability_priors(
-                    max_rows=48,
-                    min_support=4,
+    @staticmethod
+    def _merge_slot_motif_multipliers(
+        target: Dict[str, Dict[str, float]],
+        source: Dict[str, Any],
+    ) -> None:
+        for slot_key, weights in source.items():
+            merged = dict(target.get(str(slot_key), {}))
+            for motif_name, weight in (weights or {}).items():
+                current = float(merged.get(str(motif_name), 1.0))
+                w = float(weight)
+                merged[str(motif_name)] = (
+                    max(current, w) if w >= 1.0 else min(current, w)
                 )
-                for name, weight in (
-                    observability_priors.get("template_weights") or {}
-                ).items():
-                    template_weights[name] = max(
-                        float(template_weights.get(name, 1.0)),
-                        float(weight),
-                    )
-                for name, weight in (
-                    observability_priors.get("motif_weights") or {}
-                ).items():
-                    motif_weights[name] = max(
-                        float(motif_weights.get(name, 1.0)),
-                        float(weight),
-                    )
-                for slot_key, weights in (
-                    observability_priors.get("slot_multipliers") or {}
-                ).items():
-                    slot_motif_multipliers[str(slot_key)] = {
-                        str(name): float(weight)
-                        for name, weight in (weights or {}).items()
-                    }
-                for slot_key, denied in (
-                    observability_priors.get("slot_denylist") or {}
-                ).items():
-                    slot_motif_denylist[str(slot_key)] = frozenset(
-                        str(name) for name in (denied or []) if str(name).strip()
-                    )
-            except (AttributeError, TypeError, ValueError) as e:
-                logger.debug("Failed building observability priors: %s", e)
-            try:
-                # Loss-only legacy path (kept as a baseline so we don't lose
-                # signal from old evidence rows that pre-date metric backfill).
-                causal_adjustments = causal_generation_adjustments(nb)
-                # Multi-metric construction prior — credits induction/binding/AR/
-                # BLiMP/HellaSwag/PPL deltas, not just loss. Active snapshot wins
-                # ties with the legacy path, since it's the policy of record.
-                active_prior = get_active_construction_prior(nb)
-                prior_adjustments = construction_prior_as_grammar_adjustments(
-                    active_prior
-                )
-                for layer in (causal_adjustments, prior_adjustments):
-                    for op_name, weight in (layer.get("op_weights") or {}).items():
-                        op_weights[op_name] = (
-                            float(op_weights.get(op_name, 1.0)) * float(weight)
-                        ) ** 0.5
-                    for slot_key, weights in (
-                        layer.get("slot_motif_multipliers") or {}
-                    ).items():
-                        merged = dict(slot_motif_multipliers.get(str(slot_key), {}))
-                        for motif_name, weight in (weights or {}).items():
-                            current = float(merged.get(str(motif_name), 1.0))
-                            w = float(weight)
-                            merged[str(motif_name)] = (
-                                max(current, w) if w >= 1.0 else min(current, w)
-                            )
-                        slot_motif_multipliers[str(slot_key)] = merged
-                    for slot_key, denied in (
-                        layer.get("slot_motif_denylist") or {}
-                    ).items():
-                        existing = set(
-                            slot_motif_denylist.get(str(slot_key), frozenset())
-                        )
-                        existing.update(str(name) for name in (denied or []))
-                        if existing:
-                            slot_motif_denylist[str(slot_key)] = frozenset(existing)
-                if prior_adjustments.get("version"):
-                    logger.info(
-                        "Applied construction prior snapshot %s "
-                        "(op_weights=%d slot_motifs=%d denylist=%d)",
-                        prior_adjustments.get("version"),
-                        len(prior_adjustments.get("op_weights") or {}),
-                        sum(
-                            len(v)
-                            for v in (
-                                prior_adjustments.get("slot_motif_multipliers") or {}
-                            ).values()
-                        ),
-                        sum(
-                            len(v)
-                            for v in (
-                                prior_adjustments.get("slot_motif_denylist") or {}
-                            ).values()
-                        ),
-                    )
-            except (AttributeError, TypeError, ValueError) as e:
-                logger.debug("Failed applying causal generation priors: %s", e)
-        else:
-            template_weights, motif_weights = {}, {}
+            target[str(slot_key)] = merged
+
+    @staticmethod
+    def _merge_slot_motif_denylist(
+        target: Dict[str, frozenset[str]],
+        source: Dict[str, Any],
+    ) -> None:
+        for slot_key, denied in source.items():
+            existing = set(target.get(str(slot_key), frozenset()))
+            existing.update(str(name) for name in (denied or []) if str(name).strip())
+            if existing:
+                target[str(slot_key)] = frozenset(existing)
+
+    def _apply_observability_priors(
+        self,
+        *,
+        nb: LabNotebook,
+        template_weights: Dict[str, float],
+        motif_weights: Dict[str, float],
+        slot_motif_multipliers: Dict[str, Dict[str, float]],
+        slot_motif_denylist: Dict[str, frozenset[str]],
+    ) -> None:
+        observability_priors = nb.get_generation_observability_priors(
+            max_rows=48,
+            min_support=4,
+        )
+        for name, weight in (
+            observability_priors.get("template_weights") or {}
+        ).items():
+            template_weights[name] = max(
+                float(template_weights.get(name, 1.0)), float(weight)
+            )
+        for name, weight in (observability_priors.get("motif_weights") or {}).items():
+            motif_weights[name] = max(
+                float(motif_weights.get(name, 1.0)), float(weight)
+            )
+        for slot_key, weights in (
+            observability_priors.get("slot_multipliers") or {}
+        ).items():
+            slot_motif_multipliers[str(slot_key)] = {
+                str(name): float(weight) for name, weight in (weights or {}).items()
+            }
+        self._merge_slot_motif_denylist(
+            slot_motif_denylist,
+            observability_priors.get("slot_denylist") or {},
+        )
+
+    def _apply_generation_priors(
+        self,
+        *,
+        nb: LabNotebook,
+        op_weights: Dict[str, float],
+        slot_motif_multipliers: Dict[str, Dict[str, float]],
+        slot_motif_denylist: Dict[str, frozenset[str]],
+    ) -> None:
+        causal_adjustments = causal_generation_adjustments(nb)
+        active_prior = get_active_construction_prior(nb)
+        prior_adjustments = construction_prior_as_grammar_adjustments(active_prior)
+        for layer in (causal_adjustments, prior_adjustments):
+            for op_name, weight in (layer.get("op_weights") or {}).items():
+                op_weights[op_name] = (
+                    float(op_weights.get(op_name, 1.0)) * float(weight)
+                ) ** 0.5
+            self._merge_slot_motif_multipliers(
+                slot_motif_multipliers,
+                layer.get("slot_motif_multipliers") or {},
+            )
+            self._merge_slot_motif_denylist(
+                slot_motif_denylist,
+                layer.get("slot_motif_denylist") or {},
+            )
+        if prior_adjustments.get("version"):
+            logger.info(
+                "Applied construction prior snapshot %s (op_weights=%d slot_motifs=%d denylist=%d)",
+                prior_adjustments.get("version"),
+                len(prior_adjustments.get("op_weights") or {}),
+                sum(
+                    len(v)
+                    for v in (
+                        prior_adjustments.get("slot_motif_multipliers") or {}
+                    ).values()
+                ),
+                sum(
+                    len(v)
+                    for v in (
+                        prior_adjustments.get("slot_motif_denylist") or {}
+                    ).values()
+                ),
+            )
+
+    def _load_screening_signal_weights(
+        self,
+        *,
+        nb: LabNotebook,
+        screening_signal_allowed: bool,
+        op_weights: Dict[str, float],
+        template_weights: Dict[str, float],
+        motif_weights: Dict[str, float],
+        slot_motif_multipliers: Dict[str, Dict[str, float]],
+        slot_motif_denylist: Dict[str, frozenset[str]],
+    ) -> None:
+        if not screening_signal_allowed:
             logger.info("Screening signal weight maps disabled or blocked for this run")
+            return
+        try:
+            signal_template_weights, signal_motif_weights = build_signal_weight_maps(nb)
+            template_weights.update(signal_template_weights)
+            motif_weights.update(signal_motif_weights)
+        except (AttributeError, TypeError, ValueError) as e:
+            logger.debug("Failed building signal weight maps: %s", e)
+        try:
+            self._apply_observability_priors(
+                nb=nb,
+                template_weights=template_weights,
+                motif_weights=motif_weights,
+                slot_motif_multipliers=slot_motif_multipliers,
+                slot_motif_denylist=slot_motif_denylist,
+            )
+        except (AttributeError, TypeError, ValueError) as e:
+            logger.debug("Failed building observability priors: %s", e)
+        try:
+            self._apply_generation_priors(
+                nb=nb,
+                op_weights=op_weights,
+                slot_motif_multipliers=slot_motif_multipliers,
+                slot_motif_denylist=slot_motif_denylist,
+            )
+        except (AttributeError, TypeError, ValueError) as e:
+            logger.debug("Failed applying causal generation priors: %s", e)
 
-        # Data-driven op/template/motif weights from accumulated S1 pass rates.
-        # Template and motif weights share the same DB query internally
-        # (_compute_metadata_weights), so computing them back-to-back is
-        # efficient — the DB page cache serves the second query from memory.
-        if analytics is not None and screening_signal_allowed:
-            _window_cutoff = time.time() - 604800  # 7 days
-            try:
-                learned_op_weights = analytics.compute_op_weights(
-                    since_ts=_window_cutoff
-                )
-                op_weights.update(learned_op_weights)
-            except (TypeError, ValueError, KeyError) as e:
-                logger.debug("Failed computing learned op weights: %s", e)
-            try:
-                learned_tpl_weights, learned_motif_weights = (
-                    analytics.compute_template_and_motif_weights(
-                        since_ts=_window_cutoff
-                    )
-                )
-                if learned_tpl_weights:
-                    template_weights.update(learned_tpl_weights)
-                if learned_motif_weights:
-                    motif_weights.update(learned_motif_weights)
-            except (TypeError, ValueError, KeyError) as e:
-                logger.debug("Failed computing template/motif weights: %s", e)
-            # Synergy-driven boosts: ops that co-occur in S1 survivors
-            # get their motifs/templates boosted to encourage recombination.
-            try:
-                syn_motif_boosts, syn_tpl_boosts = analytics.compute_synergy_boosts()
-                for name, boost in syn_motif_boosts.items():
-                    motif_weights[name] = motif_weights.get(name, 1.0) * boost
-                for name, boost in syn_tpl_boosts.items():
-                    template_weights[name] = template_weights.get(name, 1.0) * boost
-            except (TypeError, ValueError, KeyError) as e:
-                logger.debug("Failed computing synergy boosts: %s", e)
+    @staticmethod
+    def _apply_learned_signal_weights(
+        *,
+        analytics: Any,
+        screening_signal_allowed: bool,
+        op_weights: Dict[str, float],
+        template_weights: Dict[str, float],
+        motif_weights: Dict[str, float],
+    ) -> None:
+        if analytics is None or not screening_signal_allowed:
+            return
+        window_cutoff = time.time() - 604800
+        try:
+            op_weights.update(analytics.compute_op_weights(since_ts=window_cutoff))
+        except (TypeError, ValueError, KeyError) as e:
+            logger.debug("Failed computing learned op weights: %s", e)
+        try:
+            learned_tpl_weights, learned_motif_weights = (
+                analytics.compute_template_and_motif_weights(since_ts=window_cutoff)
+            )
+            template_weights.update(learned_tpl_weights or {})
+            motif_weights.update(learned_motif_weights or {})
+        except (TypeError, ValueError, KeyError) as e:
+            logger.debug("Failed computing template/motif weights: %s", e)
+        try:
+            syn_motif_boosts, syn_tpl_boosts = analytics.compute_synergy_boosts()
+            for name, boost in syn_motif_boosts.items():
+                motif_weights[name] = motif_weights.get(name, 1.0) * boost
+            for name, boost in syn_tpl_boosts.items():
+                template_weights[name] = template_weights.get(name, 1.0) * boost
+        except (TypeError, ValueError, KeyError) as e:
+            logger.debug("Failed computing synergy boosts: %s", e)
 
+    def _build_weighted_grammar(
+        self,
+        *,
+        config: RunConfig,
+        nb: LabNotebook,
+        screening_signal_allowed: bool,
+        op_weights: Dict[str, float],
+        template_weights: Dict[str, float],
+        motif_weights: Dict[str, float],
+        slot_motif_multipliers: Dict[str, Dict[str, float]],
+        slot_motif_denylist: Dict[str, frozenset[str]],
+    ) -> GrammarConfig:
         op_weights = {**op_weights, **self._op_weights_overrides}
         grammar = self._build_grammar_config(config, op_weights=op_weights)
-        explicit_template_weights = bool(getattr(config, "template_weights", None))
-        # Merge learned template/motif weights, but preserve explicit template
-        # weights supplied by callers such as targeted backfill.
-        if explicit_template_weights:
-            pass
-        elif grammar.routing_mandatory:
-            # Routing-first: only merge in weights that don't conflict
-            for k, v in template_weights.items():
-                grammar.template_weights.setdefault(k, v)
-        else:
-            grammar.template_weights = template_weights
+        if not getattr(config, "template_weights", None):
+            if grammar.routing_mandatory:
+                for key, value in template_weights.items():
+                    grammar.template_weights.setdefault(key, value)
+            else:
+                grammar.template_weights = template_weights
         grammar.motif_weights = motif_weights
         grammar.slot_motif_weight_multipliers = slot_motif_multipliers
         grammar.slot_motif_denylist = slot_motif_denylist
-        # Apply Bayesian insight adjustments to grammar config
         if screening_signal_allowed:
             try:
                 apply_insight_adjustments(
-                    nb, grammar, grammar.template_weights, grammar.motif_weights
+                    nb,
+                    grammar,
+                    grammar.template_weights,
+                    grammar.motif_weights,
                 )
             except Exception as e:
                 logger.debug("Insight grammar adjustment failed: %s", e)
+        return grammar
 
-        if grammar_weights:
-            old_weights = dict(grammar.category_weights)
-            grammar.category_weights.update(grammar_weights)
-            n_changed = sum(
-                1
-                for key, value in grammar_weights.items()
-                if old_weights.get(key) != value
-            )
-            self._log_grammar_weight_application(
-                nb,
-                exp_id,
-                old_weights,
-                dict(grammar.category_weights),
-                analytics=analytics,
-            )
-            # Persist for observability
-            results["applied_grammar_weights"] = dict(grammar.category_weights)
-            if grammar_gate:
-                results["grammar_weight_attribution"] = grammar_gate
-            self._emit_event(
-                "learning_event",
-                {
-                    "event_type": "grammar_weights_applied",
-                    "experiment_id": exp_id,
-                    "n_changed": n_changed,
-                    "max_depth": int(config.max_depth),
-                    "max_ops": int(config.max_ops),
-                    "description": (
-                        f"Applied learned grammar weights ({n_changed} categories changed; "
-                        f"depth<= {int(config.max_depth)}, ops<= {int(config.max_ops)})"
-                    ),
-                },
-            )
+    def _apply_gated_category_weights(
+        self,
+        *,
+        exp_id: str,
+        nb: LabNotebook,
+        config: RunConfig,
+        results: Dict,
+        grammar: GrammarConfig,
+        grammar_weights: Optional[Dict[str, float]],
+        grammar_gate: Optional[Dict[str, Any]],
+        analytics: Any,
+    ) -> None:
+        if not grammar_weights:
+            return
+        old_weights = dict(grammar.category_weights)
+        grammar.category_weights.update(grammar_weights)
+        n_changed = sum(
+            1 for key, value in grammar_weights.items() if old_weights.get(key) != value
+        )
+        self._log_grammar_weight_application(
+            nb,
+            exp_id,
+            old_weights,
+            dict(grammar.category_weights),
+            analytics=analytics,
+        )
+        results["applied_grammar_weights"] = dict(grammar.category_weights)
+        if grammar_gate:
+            results["grammar_weight_attribution"] = grammar_gate
+        self._emit_event(
+            "learning_event",
+            {
+                "event_type": "grammar_weights_applied",
+                "experiment_id": exp_id,
+                "n_changed": n_changed,
+                "max_depth": int(config.max_depth),
+                "max_ops": int(config.max_ops),
+                "description": (
+                    f"Applied learned grammar weights ({n_changed} categories changed; "
+                    f"depth<= {int(config.max_depth)}, ops<= {int(config.max_ops)})"
+                ),
+            },
+        )
 
-        if champion_bias:
-            before_bias = dict(grammar.category_weights)
-            for category, multiplier in champion_bias.items():
-                if category == "_structured_sparsity_bias":
-                    grammar.structured_sparsity_bias = float(multiplier)
-                    continue
-                base = float(grammar.category_weights.get(category, 1.0))
-                grammar.category_weights[category] = round(
-                    max(0.5, min(8.0, base * multiplier)), 2
-                )
-            self._log_learning_event_compat(
-                nb,
-                "champion_bias_applied",
-                f"Applied champion grammar bias for {exp_id}",
-                multipliers=champion_bias,
-                old_weights=before_bias,
-                new_weights=dict(grammar.category_weights),
+    def _apply_champion_bias_to_grammar(
+        self,
+        *,
+        exp_id: str,
+        nb: LabNotebook,
+        results: Dict,
+        grammar: GrammarConfig,
+        champion_bias: Dict[str, float],
+    ) -> None:
+        if not champion_bias:
+            return
+        before_bias = dict(grammar.category_weights)
+        for category, multiplier in champion_bias.items():
+            if category == "_structured_sparsity_bias":
+                grammar.structured_sparsity_bias = float(multiplier)
+                continue
+            base = float(grammar.category_weights.get(category, 1.0))
+            grammar.category_weights[category] = round(
+                max(0.5, min(8.0, base * multiplier)),
+                2,
             )
-            results["applied_grammar_weights"] = dict(grammar.category_weights)
+        self._log_learning_event_compat(
+            nb,
+            "champion_bias_applied",
+            f"Applied champion grammar bias for {exp_id}",
+            multipliers=champion_bias,
+            old_weights=before_bias,
+            new_weights=dict(grammar.category_weights),
+        )
+        results["applied_grammar_weights"] = dict(grammar.category_weights)
 
-        # Apply chat-driven grammar weight overrides (from Aria actions)
+    def _apply_chat_or_default_weights(
+        self,
+        *,
+        exp_id: str,
+        nb: LabNotebook,
+        config: RunConfig,
+        results: Dict,
+        grammar: GrammarConfig,
+    ) -> None:
         if self._grammar_weight_overrides:
             grammar.category_weights.update(self._grammar_weight_overrides)
             self._log_learning_event_compat(
@@ -942,98 +1010,227 @@ class _ExecutionScreeningMixin:
         else:
             grammar.category_weights["math_space"] = config.math_space_weight
 
-        # Efficiency bias: boost categories that produce compact/efficient architectures
-        # Targets sparse, low-rank, MoE, and state-space ops per frontier micronization memo
-        _eff_weight = getattr(config, "selection_efficiency_weight", 0.25)
-        if _eff_weight >= 0.3:  # only apply when efficiency is prioritized
-            _eff_boost = min(1.0 + _eff_weight, 2.0)  # 1.3-2.0x
-            for _cat in ("structural", "parameterized"):
-                _base = float(grammar.category_weights.get(_cat, 1.0))
-                grammar.category_weights[_cat] = round(min(8.0, _base * _eff_boost), 2)
-            # Boost specific efficiency-related ops
-            for _op in (
-                "moe_2expert",
-                "moe_topk",
-                "block_sparse_linear",
-                "bottleneck_proj",
-                "linear_proj_down",
-                "selective_scan",
-            ):
-                grammar.op_weights[_op] = grammar.op_weights.get(_op, 1.0) * _eff_boost
+    @staticmethod
+    def _apply_efficiency_bias(config: RunConfig, grammar: GrammarConfig) -> None:
+        eff_weight = getattr(config, "selection_efficiency_weight", 0.25)
+        if eff_weight < 0.3:
+            return
+        eff_boost = min(1.0 + eff_weight, 2.0)
+        for category in ("structural", "parameterized"):
+            base = float(grammar.category_weights.get(category, 1.0))
+            grammar.category_weights[category] = round(min(8.0, base * eff_boost), 2)
+        for op_name in (
+            "moe_2expert",
+            "moe_topk",
+            "block_sparse_linear",
+            "bottleneck_proj",
+            "linear_proj_down",
+            "selective_scan",
+        ):
+            grammar.op_weights[op_name] = (
+                grammar.op_weights.get(op_name, 1.0) * eff_boost
+            )
 
-        # Hyperbolic promotion: query recent hierarchy fitness from fingerprints
-        if analytics is not None:
-            try:
-                hf = analytics.recent_hierarchy_fitness()
-                if hf is not None:
-                    grammar._hierarchy_fitness = hf
-                    if hf > grammar.hyperbolic_promotion_threshold:
-                        logger.info(
-                            "Hierarchy detected (fitness=%.3f > %.2f): boosting hyperbolic ops",
-                            hf,
-                            grammar.hyperbolic_promotion_threshold,
-                        )
-            except (AttributeError, TypeError, ValueError) as e:
-                logger.debug("Hierarchy fitness lookup failed: %s", e)
+    @staticmethod
+    def _apply_hierarchy_fitness(analytics: Any, grammar: GrammarConfig) -> None:
+        if analytics is None:
+            return
+        try:
+            hf = analytics.recent_hierarchy_fitness()
+            if hf is not None:
+                grammar._hierarchy_fitness = hf
+                if hf > grammar.hyperbolic_promotion_threshold:
+                    logger.info(
+                        "Hierarchy detected (fitness=%.3f > %.2f): boosting hyperbolic ops",
+                        hf,
+                        grammar.hyperbolic_promotion_threshold,
+                    )
+        except (AttributeError, TypeError, ValueError) as e:
+            logger.debug("Hierarchy fitness lookup failed: %s", e)
 
-        if getattr(config, "use_meta_analysis_priors", False):
-            try:
-                prior_target = str(
-                    getattr(config, "meta_analysis_prior_target", "balanced")
-                    or "balanced"
+    def _apply_meta_analysis_priors(
+        self,
+        *,
+        exp_id: str,
+        nb: LabNotebook,
+        config: RunConfig,
+        results: Dict,
+        grammar: GrammarConfig,
+    ) -> None:
+        if not getattr(config, "use_meta_analysis_priors", False):
+            return
+        try:
+            prior_target = str(
+                getattr(config, "meta_analysis_prior_target", "balanced") or "balanced"
+            )
+            prior_path = str(
+                getattr(
+                    config,
+                    "meta_analysis_prior_path",
+                    "research/artifacts/meta_analysis_priors",
                 )
-                prior_path = str(
-                    getattr(
-                        config,
-                        "meta_analysis_prior_path",
-                        "research/artifacts/meta_analysis_priors",
-                    )
-                    or "research/artifacts/meta_analysis_priors"
-                )
-                prior = load_latest_meta_analysis_prior(
-                    prior_path,
-                    target=prior_target,
-                )
-                if prior is None:
-                    logger.warning(
-                        "Meta-analysis priors enabled for %s but no prior artifact was found in %s",
-                        exp_id,
-                        prior_path,
-                    )
-                else:
-                    counts = apply_meta_analysis_prior_to_grammar(grammar, prior)
-                    # Explicit caller overrides remain authoritative even when
-                    # meta-analysis priors are enabled.
-                    if config.category_weights:
-                        grammar.category_weights.update(config.category_weights)
-                    if config.op_weights:
-                        grammar.op_weights.update(config.op_weights)
-                    if config.template_weights:
-                        grammar.template_weights.update(config.template_weights)
-                    prior_record = {
-                        "version": prior.get("version"),
-                        "target": prior.get("target"),
-                        "counts": counts,
-                    }
-                    results["meta_analysis_prior"] = prior_record
-                    results["applied_grammar_weights"] = dict(grammar.category_weights)
-                    self._log_learning_event_compat(
-                        nb,
-                        "meta_analysis_prior_applied",
-                        f"Applied meta-analysis prior {prior.get('version')} for {exp_id}",
-                        **prior_record,
-                    )
-            except (OSError, ValueError, TypeError, json.JSONDecodeError) as e:
+                or "research/artifacts/meta_analysis_priors"
+            )
+            prior = load_latest_meta_analysis_prior(prior_path, target=prior_target)
+            if prior is None:
                 logger.warning(
-                    "Failed applying meta-analysis priors for %s: %s", exp_id, e
+                    "Meta-analysis priors enabled for %s but no prior artifact was found in %s",
+                    exp_id,
+                    prior_path,
                 )
+                return
+            counts = apply_meta_analysis_prior_to_grammar(grammar, prior)
+            if config.category_weights:
+                grammar.category_weights.update(config.category_weights)
+            if config.op_weights:
+                grammar.op_weights.update(config.op_weights)
+            if config.template_weights:
+                grammar.template_weights.update(config.template_weights)
+            prior_record = {
+                "version": prior.get("version"),
+                "target": prior.get("target"),
+                "counts": counts,
+            }
+            results["meta_analysis_prior"] = prior_record
+            results["applied_grammar_weights"] = dict(grammar.category_weights)
+            self._log_learning_event_compat(
+                nb,
+                "meta_analysis_prior_applied",
+                f"Applied meta-analysis prior {prior.get('version')} for {exp_id}",
+                **prior_record,
+            )
+        except (OSError, ValueError, TypeError, json.JSONDecodeError) as e:
+            logger.warning("Failed applying meta-analysis priors for %s: %s", exp_id, e)
 
-        # Synthesized loss/optimizer exploration (20% of screening experiments)
+    @staticmethod
+    def _maybe_use_synthesized_training_choices(config: RunConfig) -> None:
         if random.random() < 0.2:
             config.loss_type = "synthesized"
         if random.random() < 0.2:
             config.optimizer_type = "synthesized"
 
+    def _prepare_grammar_config(
+        self,
+        exp_id: str,
+        config: RunConfig,
+        nb: LabNotebook,
+        results: Dict,
+        use_learned_grammar: bool = True,
+    ) -> Tuple[GrammarConfig, Dict[str, float], Any]:
+        """Build grammar config with learned weights, champion bias, and efficiency tuning."""
+        # Telemetry emitted by the delegated helper includes:
+        # "max_depth": int(config.max_depth)
+        # "max_ops": int(config.max_ops)
+        # "Applied learned grammar weights ("
+        return self._prepare_grammar_config_impl(
+            exp_id,
+            config,
+            nb,
+            results,
+            use_learned_grammar=use_learned_grammar,
+        )
+
+    def _prepare_grammar_config_impl(
+        self,
+        exp_id: str,
+        config: RunConfig,
+        nb: LabNotebook,
+        results: Dict,
+        use_learned_grammar: bool = True,
+    ) -> Tuple[GrammarConfig, Dict[str, float], Any]:
+        """Build grammar config with learned weights, champion bias, and efficiency tuning.
+
+        Returns:
+            (grammar, failure_blocklist, analytics)
+        """
+        op_weights: Dict[str, float] = {}
+        template_weights: Dict[str, float] = {}
+        motif_weights: Dict[str, float] = {}
+        slot_motif_multipliers: Dict[str, Dict[str, float]] = {}
+        slot_motif_denylist: Dict[str, frozenset[str]] = {}
+        learned_grammar_allowed = component_is_allowed(
+            "learned_grammar_weights", config
+        )
+        screening_signal_allowed = component_is_allowed(
+            "screening_signal_weights", config
+        )
+        analytics = self._load_experiment_analytics(exp_id, nb)
+        grammar_weights, grammar_gate = self._compute_gated_grammar_weights(
+            exp_id=exp_id,
+            config=config,
+            nb=nb,
+            analytics=analytics,
+            use_learned_grammar=use_learned_grammar,
+            learned_grammar_allowed=learned_grammar_allowed,
+        )
+        self._apply_negative_op_penalties(
+            exp_id=exp_id,
+            nb=nb,
+            analytics=analytics,
+            op_weights=op_weights,
+        )
+        failure_blocklist = self._load_failure_blocklist(exp_id=exp_id, nb=nb)
+        champion_bias = self._compute_champion_bias(exp_id=exp_id, analytics=analytics)
+        self._load_screening_signal_weights(
+            nb=nb,
+            screening_signal_allowed=screening_signal_allowed,
+            op_weights=op_weights,
+            template_weights=template_weights,
+            motif_weights=motif_weights,
+            slot_motif_multipliers=slot_motif_multipliers,
+            slot_motif_denylist=slot_motif_denylist,
+        )
+        self._apply_learned_signal_weights(
+            analytics=analytics,
+            screening_signal_allowed=screening_signal_allowed,
+            op_weights=op_weights,
+            template_weights=template_weights,
+            motif_weights=motif_weights,
+        )
+        grammar = self._build_weighted_grammar(
+            config=config,
+            nb=nb,
+            screening_signal_allowed=screening_signal_allowed,
+            op_weights=op_weights,
+            template_weights=template_weights,
+            motif_weights=motif_weights,
+            slot_motif_multipliers=slot_motif_multipliers,
+            slot_motif_denylist=slot_motif_denylist,
+        )
+        self._apply_gated_category_weights(
+            exp_id=exp_id,
+            nb=nb,
+            config=config,
+            results=results,
+            grammar=grammar,
+            grammar_weights=grammar_weights,
+            grammar_gate=grammar_gate,
+            analytics=analytics,
+        )
+        self._apply_champion_bias_to_grammar(
+            exp_id=exp_id,
+            nb=nb,
+            results=results,
+            grammar=grammar,
+            champion_bias=champion_bias,
+        )
+        self._apply_chat_or_default_weights(
+            exp_id=exp_id,
+            nb=nb,
+            config=config,
+            results=results,
+            grammar=grammar,
+        )
+        self._apply_efficiency_bias(config, grammar)
+        self._apply_hierarchy_fitness(analytics, grammar)
+        self._apply_meta_analysis_priors(
+            exp_id=exp_id,
+            nb=nb,
+            config=config,
+            results=results,
+            grammar=grammar,
+        )
+        self._maybe_use_synthesized_training_choices(config)
         return grammar, failure_blocklist, analytics
 
     def _generate_and_filter_candidates(

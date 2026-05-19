@@ -1036,102 +1036,43 @@ class TestCkaReferenceArtifacts(unittest.TestCase):
     def test_fingerprint_records_cka_source(self):
         """Fingerprint records cka_source provenance."""
         from research.eval.cka_references import reset_default_store
+        from research.tests._cka_fingerprint_helpers import make_tiny_fingerprint
 
         reset_default_store()  # ensure clean state
 
-        fp = self._make_fingerprint()
+        fp = make_tiny_fingerprint()
         self.assertIn(fp.cka_source, ("artifact", "none"))
 
     def test_fingerprint_reports_none_when_no_artifacts(self):
         """Fingerprint should report missing references, not heuristic stand-ins."""
-        from unittest.mock import patch
-        from research.eval import cka_references
-        from research.eval.cka_references import ReferenceCkaStore, reset_default_store
-
-        reset_default_store()
-        # Force a store pointing to nonexistent dir
-        fake_store = ReferenceCkaStore(artifact_dir="/nonexistent/path")
-        with patch.object(cka_references, "_default_store", fake_store):
-            with patch.object(
-                cka_references, "_default_lock", cka_references.threading.Lock()
-            ):
-                # Override get_default_store to return our fake store
-                with patch(
-                    "research.eval.cka_references.get_default_store",
-                    return_value=fake_store,
-                ):
-                    fp = self._make_fingerprint()
-        self.assertEqual(fp.cka_source, "none")
-        reset_default_store()
-
-    def _make_fingerprint(self):
-        """Helper: compute fingerprint on a tiny model."""
-        import torch.nn as nn
-        from research.eval.fingerprint import compute_fingerprint
-
-        class TinyModel(nn.Module):
-            def __init__(self):
-                super().__init__()
-                self.embed = nn.Embedding(100, 32)
-                self.linear = nn.Linear(32, 100)
-
-            def forward(self, x):
-                return self.linear(self.embed(x))
-
-        model = TinyModel()
-        return compute_fingerprint(
-            model, seq_len=8, model_dim=32, vocab_size=100, device="cpu", n_probes=4
+        from research.tests._cka_fingerprint_helpers import (
+            fingerprint_with_missing_references,
         )
+
+        fp = fingerprint_with_missing_references()
+        self.assertEqual(fp.cka_source, "none")
 
     def test_fingerprint_cka_provenance_fields_exist(self):
         """BehavioralFingerprint has cka_source and cka_artifact_version fields."""
-        from research.eval.fingerprint import BehavioralFingerprint
+        from research.tests._cka_fingerprint_helpers import (
+            assert_fingerprint_provenance_fields,
+        )
 
-        fp = BehavioralFingerprint()
-        self.assertEqual(fp.cka_source, "none")
-        self.assertIsNone(fp.cka_artifact_version)
-        d = fp.to_dict()
-        self.assertIn("cka_source", d)
-        self.assertIn("cka_artifact_version", d)
+        assert_fingerprint_provenance_fields(self)
 
     def test_export_produces_loadable_artifacts(self):
         """Export tool produces artifacts that ReferenceCkaStore can load."""
-        from research.tools.export_cka_references import export_artifacts
-        from research.eval.cka_references import ReferenceCkaStore
+        from research.tests._cka_fingerprint_helpers import (
+            assert_export_produces_loadable_artifacts,
+        )
 
-        with tempfile.TemporaryDirectory() as d:
-            art_dir = str(Path(d) / "refs" / "v1")
-            export_artifacts(
-                output_dir=art_dir,
-                seed=123,
-                n_steps=10,
-                device="cpu",
-            )
-            store = ReferenceCkaStore(artifact_dir=art_dir)
-            refs = store.get_references()
-            self.assertIsNotNone(refs)
-            self.assertEqual(set(refs.keys()), {"transformer", "ssm", "conv"})
-            self.assertTrue(store.is_artifact_backed)
-            meta = store.get_metadata()
-            self.assertEqual(meta["cka_source"], "artifact")
-            self.assertEqual(meta["cka_artifact_version"], "v1")
+        assert_export_produces_loadable_artifacts(self)
 
     def test_export_deterministic(self):
         """Same seed produces same probe_protocol_hash."""
-        from research.tools.export_cka_references import export_artifacts
+        from research.tests._cka_fingerprint_helpers import assert_export_deterministic
 
-        with tempfile.TemporaryDirectory() as d:
-            d1 = str(Path(d) / "run1")
-            d2 = str(Path(d) / "run2")
-            export_artifacts(output_dir=d1, seed=99, n_steps=5, device="cpu")
-            export_artifacts(output_dir=d2, seed=99, n_steps=5, device="cpu")
-
-            with open(Path(d1) / "manifest.json") as f:
-                m1 = json.load(f)
-            with open(Path(d2) / "manifest.json") as f:
-                m2 = json.load(f)
-            self.assertEqual(m1["probe_protocol_hash"], m2["probe_protocol_hash"])
-            self.assertEqual(m1["activation_shape"], m2["activation_shape"])
+        assert_export_deterministic(self)
 
 
 def test_populate_cka_without_artifacts_keeps_no_reference_reason(monkeypatch):

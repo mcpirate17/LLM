@@ -68,7 +68,7 @@ class HiveBroker:
 
         server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         server.bind(SOCKET_PATH)
-        os.chmod(SOCKET_PATH, 0o666)  # Ensure all users can connect
+        os.chmod(SOCKET_PATH, 0o660)
         server.listen(10)
 
         logger.info(f"Signal Bus listening on {SOCKET_PATH}")

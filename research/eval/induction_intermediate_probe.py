@@ -36,6 +36,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from ._probe_runtime import disable_native_probe_dispatch
+from ._probe_utils import _materialize_non_inference_
 from .utils import clip_grad_norm, make_adamw
 
 logger = logging.getLogger(__name__)
@@ -50,31 +51,6 @@ INDUCTION_V2_LR = 1e-3
 INDUCTION_V2_TIMEOUT_S = 120.0
 INDUCTION_V2_SEEDS: Tuple[int, ...] = (11, 23, 47)
 _RESTRICTED_VOCAB = 256
-
-
-def _materialize_non_inference_(module: nn.Module) -> None:
-    """In-place: replace inference-mode params/buffers with autograd-safe storage.
-
-    The probe deepcopies the trained investigation model, then trains the
-    copy. Upstream evaluation paths run forward under ``torch.inference_mode()``
-    which marks any cached buffers (RoPE rotations, attention biases, KV
-    caches) as inference tensors. Inference tensors propagate through
-    ``deepcopy``, and trying to use them in autograd-tracked computation
-    raises ``RuntimeError: Inference tensors cannot be saved for backward``.
-    Cloning the storage outside ``inference_mode`` mints a normal tensor;
-    swapping ``.data`` rebinds the wrapping Parameter/buffer to it.
-    """
-    with torch.no_grad():
-        for p in module.parameters(recurse=True):
-            if p.is_inference():
-                fresh = torch.empty_like(p.data)
-                fresh.copy_(p.data)
-                p.data = fresh
-        for b in module.buffers(recurse=True):
-            if b.is_inference():
-                fresh = torch.empty_like(b.data)
-                fresh.copy_(b.data)
-                b.data = fresh
 
 
 def _snapshot_module_tensors(

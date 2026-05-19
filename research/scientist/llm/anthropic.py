@@ -4,12 +4,66 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Mapping
 
 from .backend import LLMBackend, LLMResponse
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-5-20250929"
+
+
+def _response_attr(response, name: str):
+    if isinstance(response, Mapping):
+        return response.get(name)
+    return getattr(response, name, None)
+
+
+def _extract_response_text(response) -> tuple[str, list[str]]:
+    text_parts: list[str] = []
+    block_types: list[str] = []
+
+    content = _response_attr(response, "content")
+    if isinstance(content, str):
+        if content.strip():
+            text_parts.append(content)
+        return "".join(text_parts).strip(), ["string"]
+
+    if isinstance(content, Mapping):
+        blocks = [content]
+    else:
+        blocks = content or []
+
+    for block in blocks:
+        block_type = _response_attr(block, "type")
+        if block_type:
+            block_types.append(str(block_type))
+
+        # Native SDK objects: TextBlock, etc.
+        block_text = _response_attr(block, "text")
+        if isinstance(block_text, str) and block_text.strip():
+            text_parts.append(block_text)
+
+    if not text_parts:
+        # Some wrappers expose text at the top level rather than as content
+        # blocks. Keep this as a last resort so native content typing wins.
+        for attr_name in ("text", "output_text"):
+            top_level_text = _response_attr(response, attr_name)
+            if isinstance(top_level_text, str) and top_level_text.strip():
+                text_parts.append(top_level_text)
+                block_types.append(attr_name)
+                break
+
+    return "".join(text_parts).strip(), block_types
+
+
+def _usage_tokens(response) -> int:
+    usage = _response_attr(response, "usage")
+    if not usage:
+        return 0
+    input_tokens = _response_attr(usage, "input_tokens") or 0
+    output_tokens = _response_attr(usage, "output_tokens") or 0
+    return int(input_tokens) + int(output_tokens)
 
 
 class AnthropicBackend(LLMBackend):
@@ -60,41 +114,31 @@ class AnthropicBackend(LLMBackend):
             kwargs["system"] = system
 
         response = client.messages.create(**kwargs)
+        text, block_types = _extract_response_text(response)
 
-        text_parts = []
-        block_types = []
-        for block in getattr(response, "content", []) or []:
-            block_type = getattr(block, "type", None)
-            if block_type:
-                block_types.append(str(block_type))
+        if not text:
+            logger.debug(
+                "Anthropic response had no text blocks; retrying once "
+                "(content types: %s, stop_reason: %s)",
+                ",".join(block_types) if block_types else "none",
+                _response_attr(response, "stop_reason") or "unknown",
+            )
+            retry_kwargs = dict(kwargs)
+            retry_kwargs["max_tokens"] = max(max_tokens, 128)
+            response = client.messages.create(**retry_kwargs)
+            text, block_types = _extract_response_text(response)
 
-            # Native SDK objects: TextBlock, etc.
-            block_text = getattr(block, "text", None)
-            if isinstance(block_text, str) and block_text.strip():
-                text_parts.append(block_text)
-                continue
-
-            # Defensive fallback if blocks arrive as dict-like values
-            if isinstance(block, dict):
-                dict_text = block.get("text")
-                if isinstance(dict_text, str) and dict_text.strip():
-                    text_parts.append(dict_text)
-
-        text = "".join(text_parts).strip()
         if not text:
             logger.warning(
-                "Anthropic response had no text blocks (content types: %s)",
+                "Anthropic response had no text blocks "
+                "(content types: %s, stop_reason: %s, id: %s)",
                 ",".join(block_types) if block_types else "none",
+                _response_attr(response, "stop_reason") or "unknown",
+                _response_attr(response, "id") or "unknown",
             )
-
-        tokens = (
-            response.usage.input_tokens + response.usage.output_tokens
-            if response.usage
-            else 0
-        )
 
         return LLMResponse(
             text=text,
             model=self.model,
-            tokens_used=tokens,
+            tokens_used=_usage_tokens(response),
         )

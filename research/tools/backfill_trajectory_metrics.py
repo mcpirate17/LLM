@@ -28,11 +28,8 @@ from __future__ import annotations
 import argparse
 import sqlite3
 import time
-from pathlib import Path
 
-import numpy as np
 import torch
-import torch.nn.functional as F
 
 # Force-import compiler so OP_DISPATCH is populated before any CompiledOp.
 import research.synthesis.compiler  # noqa: F401
@@ -45,14 +42,21 @@ from research.eval.trajectory_metrics import (
 from research.tools._concurrency import (
     acquire_gpu_lock,
     acquire_writer_lock,
-    assert_gpu_quiet,
-    cap_gpu_memory,
+)
+from research.tools._metric_backfill_common import (
+    CORPUS_PATH,
+    DB_PATH,
+    TRAJECTORY_COLUMNS,
+    add_gpu_safety_args,
+    load_projected_corpus,
+    prepare_cuda_if_requested,
+    print_serial_commit_progress,
+    sample_token_batch,
+    train_next_token_step,
+    update_graph_runs_columns,
 )
 from research.scientist.notebook.graph_artifacts import resolve_graph_json_value
 
-ROOT = Path(__file__).resolve().parents[2]
-DB_PATH = ROOT / "research" / "runs.db"
-CORPUS_PATH = ROOT / "research" / "corpus" / "wikitext103_train.npy"
 TOOL_NAME = "backfill_trajectory_metrics"
 
 # Training schedule mirrors the live screening pipeline. Hidden-state
@@ -66,66 +70,19 @@ DEFAULT_BATCH_SIZE = 16
 DEFAULT_VOCAB = 32000
 LR = 3e-4
 
-_TRAJECTORY_COLUMNS = (
-    "fp_jacobian_spectral_norm",
-    "fp_jacobian_effective_rank",
-    "fp_sensitivity_uniformity",
-    "fp_spec_norm_status",
-    "fp_metric_phase",
-    "fp_jacobian_erf_density",
-    "fp_jacobian_erf_variance",
-    "fp_jacobian_erf_decay_slope",
-    "fp_jacobian_erf_last_norm",
-    "fp_jacobian_erf_first_norm",
-    "fp_jacobian_erf_status",
-    "fp_jacobian_erf_elapsed_ms",
-    "fp_icld_velocity",
-    "fp_icld_early_loss",
-    "fp_icld_late_loss",
-    "fp_icld_delta_loss",
-    "fp_icld_seq_len",
-    "fp_icld_status",
-    "fp_icld_elapsed_ms",
-    "fp_id_pr_early",
-    "fp_id_pr_late",
-    "fp_id_norm_early",
-    "fp_id_norm_late",
-    "fp_id_step_early",
-    "fp_id_step_late",
-    "fp_id_collapse_rate",
-    "fp_id_collapse_rate_normalized",
-    "fp_id_collapse_status",
-    "fp_id_collapse_elapsed_ms",
-    "fp_logit_margin_velocity",
-    "fp_logit_margin_initial",
-    "fp_logit_margin_final",
-    "fp_logit_margin_delta",
-    "fp_logit_margin_n_steps",
-    "fp_logit_margin_status",
-    "fp_logit_margin_elapsed_ms",
-)
-
 
 def _load_corpus(vocab_size: int, max_tokens: int = 4_000_000) -> torch.Tensor:
-    if not CORPUS_PATH.exists():
-        raise FileNotFoundError(f"corpus npy not found: {CORPUS_PATH}")
-    arr = np.load(CORPUS_PATH, mmap_mode="r")
-    if arr.size > max_tokens:
-        arr = arr[:max_tokens]
-    tokens = torch.as_tensor(np.asarray(arr), dtype=torch.long)
-    return tokens % vocab_size
+    return load_projected_corpus(
+        CORPUS_PATH,
+        vocab_size=vocab_size,
+        max_tokens=max_tokens,
+    )
 
 
 def _sample_batch(
     tokens: torch.Tensor, batch_size: int, seq_len: int, device: torch.device
 ) -> torch.Tensor:
-    n = tokens.numel() - seq_len - 1
-    if n <= 0:
-        raise ValueError("corpus too small")
-    starts = torch.randint(0, n, (batch_size,))
-    return torch.stack(
-        [tokens[s : s + seq_len + 1] for s in starts.tolist()], dim=0
-    ).to(device)
+    return sample_token_batch(tokens, batch_size, seq_len, device)
 
 
 def _train_step(
@@ -133,20 +90,7 @@ def _train_step(
     optimizer: torch.optim.Optimizer,
     batch: torch.Tensor,
 ) -> float:
-    inputs = batch[:, :-1]
-    targets = batch[:, 1:]
-    logits = model(inputs)
-    loss = F.cross_entropy(
-        logits.reshape(-1, logits.shape[-1]),
-        targets.reshape(-1),
-    )
-    if not torch.isfinite(loss):
-        return float("nan")
-    optimizer.zero_grad(set_to_none=True)
-    loss.backward()
-    torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-    optimizer.step()
-    return float(loss.item())
+    return train_next_token_step(model, optimizer, batch)
 
 
 def _candidate_fingerprints(conn: sqlite3.Connection, limit: int | None) -> list[str]:
@@ -237,17 +181,16 @@ def _measure_screening_750(
     payload = result.to_column_dict()
     if payload.get("fp_jacobian_erf_status") in (None, "init"):
         return None
-    return {k: payload.get(k) for k in _TRAJECTORY_COLUMNS}
+    return {k: payload.get(k) for k in TRAJECTORY_COLUMNS}
 
 
 def _propagate(conn: sqlite3.Connection, fingerprint: str, payload: dict) -> int:
-    set_clause = ", ".join(f"{c} = ?" for c in _TRAJECTORY_COLUMNS)
-    values = [payload.get(c) for c in _TRAJECTORY_COLUMNS]
-    cursor = conn.execute(
-        f"UPDATE graph_runs SET {set_clause} WHERE graph_fingerprint = ?",
-        (*values, fingerprint),
+    return update_graph_runs_columns(
+        conn,
+        fingerprint,
+        payload,
+        TRAJECTORY_COLUMNS,
     )
-    return cursor.rowcount
 
 
 def main() -> None:
@@ -260,18 +203,16 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE)
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--commit-every", type=int, default=10)
-    parser.add_argument("--max-other-gpu-mib", type=int, default=4096)
-    parser.add_argument("--gpu-memory-fraction", type=float, default=0.5)
-    parser.add_argument("--wait-for-gpu", action="store_true")
+    add_gpu_safety_args(parser)
     args = parser.parse_args()
 
-    if args.device.startswith("cuda"):
-        assert_gpu_quiet(
-            max_other_used_mib=args.max_other_gpu_mib,
-            tool_name=TOOL_NAME,
-            sleep_until_quiet=args.wait_for_gpu,
-        )
-        cap_gpu_memory(fraction=args.gpu_memory_fraction)
+    prepare_cuda_if_requested(
+        device=args.device,
+        max_other_gpu_mib=args.max_other_gpu_mib,
+        tool_name=TOOL_NAME,
+        wait_for_gpu=args.wait_for_gpu,
+        gpu_memory_fraction=args.gpu_memory_fraction,
+    )
 
     with (
         acquire_gpu_lock(tool_name=TOOL_NAME),
@@ -329,13 +270,15 @@ def _run_backfill(args: argparse.Namespace) -> None:
         propagated += rowcount
 
         if succeeded % args.commit_every == 0:
-            conn.commit()
-            elapsed = time.time() - t_start
-            rate = succeeded / max(elapsed, 1e-6)
-            eta_min = (total - idx) / max(rate, 1e-6) / 60.0
-            print(
-                f"  [{idx}/{total}] ok={succeeded} fail={failed} "
-                f"rows={propagated} rate={rate:.2f}/s eta={eta_min:.0f}m",
+            print_serial_commit_progress(
+                conn,
+                idx=idx,
+                total=total,
+                succeeded=succeeded,
+                failed=failed,
+                propagated=propagated,
+                t_start=t_start,
+                eta_decimals=0,
                 flush=True,
             )
 

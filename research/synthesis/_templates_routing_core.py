@@ -398,27 +398,26 @@ def tpl_hybrid_sparse_triplet_router(
     )
 
 
-def tpl_multiscale_difficulty_router(
+def _build_multiscale_gate_scaffold(
     graph: ComputationGraph,
     input_id: int,
     rng: random.Random,
-    weights: MotifWeights = None,
-) -> int:
-    """Easy tokens stay cheap, medium tokens route through multi-span lanes, hard tokens hit a heavy expert path."""
-    graph.metadata["_skip_global_decorators"] = True
-    template_name = "multiscale_difficulty_router"
-    template_instance = int(graph.metadata.get("_active_template_instance", 0) or 0)
-    _hard_class_choices = (3, 4, 5)
-    hard_classes = sample_routing_choice(
-        rng,
-        _hard_class_choices,
-        graph=graph,
-        template_name=template_name,
-        decision_key="hard_classes",
-        context="multiscale_difficulty_router.hard_router",
-    )
+    weights: MotifWeights,
+    *,
+    template_name: str,
+    template_instance: int,
+    gate_residual_context: str,
+    span_arities: tuple[int, ...] = (2, 3, 4),
+    router_arities: tuple[int, ...] = (2, 3),
+    router_slot_start: int | None = None,
+) -> tuple[int, int, int, int, dict[int, int]]:
     norm = _pick_compatible_motif(
-        graph, input_id, rng, MOTIF_CLASS_NORM, weights, wildcard_prob=0.0
+        graph,
+        input_id,
+        rng,
+        MOTIF_CLASS_NORM,
+        weights,
+        wildcard_prob=0.0,
     )
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
@@ -426,7 +425,7 @@ def tpl_multiscale_difficulty_router(
         graph,
         "default_path",
         [normed],
-        context="multiscale_difficulty_router.default_path",
+        context=f"{template_name}.default_path",
     )
     record_template_slot_binding(
         graph,
@@ -447,122 +446,99 @@ def tpl_multiscale_difficulty_router(
         _multiscale_gate_config(
             graph=graph,
             template_name=template_name,
-            context="multiscale_difficulty_router.token_gate",
+            context=f"{template_name}.token_gate",
         ),
-        context="multiscale_difficulty_router.token_gate",
+        context=f"{template_name}.token_gate",
     )
-    gated_with_skip = _residual(
+    gate_bypass = _residual(
         graph,
         normed,
         gated,
-        context="multiscale_difficulty_router.token_gate_skip",
+        context=f"{template_name}.{gate_residual_context}",
     )
 
-    record_template_slot_binding(
-        graph,
-        template_name=template_name,
-        template_instance=template_instance,
-        slot_index=2,
-        slot_key=f"{template_name}[{template_instance}].pair_spans",
-        slot_classes=["pair_path"],
-        selected_name="sparse_span_builder",
-        selected_class="component",
-        input_node_id=gated,
-    )
-
-    record_template_slot_binding(
-        graph,
-        template_name=template_name,
-        template_instance=template_instance,
-        slot_index=3,
-        slot_key=f"{template_name}[{template_instance}].triplet_spans",
-        slot_classes=["triplet_path"],
-        selected_name="sparse_span_builder",
-        selected_class="component",
-        input_node_id=gated,
-    )
-
-    record_template_slot_binding(
-        graph,
-        template_name=template_name,
-        template_instance=template_instance,
-        slot_index=4,
-        slot_key=f"{template_name}[{template_instance}].quartet_spans",
-        slot_classes=["quartet_path"],
-        selected_name="sparse_span_builder",
-        selected_class="component",
-        input_node_id=gated,
-    )
-
-    pair_routed = _add(
-        graph,
-        "hybrid_sparse_router",
-        [gated],
-        _multiscale_sparse_router_config(
-            2,
-            graph=graph,
+    span_names = {2: "pair", 3: "triplet", 4: "quartet"}
+    for slot_index, arity in enumerate(span_arities, start=2):
+        span_name = span_names[arity]
+        record_template_slot_binding(
+            graph,
             template_name=template_name,
-            context="multiscale_difficulty_router.pair_router",
-        ),
-        context="multiscale_difficulty_router.pair_router",
-    )
-    record_template_slot_binding(
-        graph,
+            template_instance=template_instance,
+            slot_index=slot_index,
+            slot_key=f"{template_name}[{template_instance}].{span_name}_spans",
+            slot_classes=[f"{span_name}_path"],
+            selected_name="sparse_span_builder",
+            selected_class="component",
+            input_node_id=gated,
+        )
+
+    routed: dict[int, int] = {}
+    for offset, arity in enumerate(router_arities):
+        router_name = span_names[arity]
+        context = f"{template_name}.{router_name}_router"
+        routed[arity] = _add(
+            graph,
+            "hybrid_sparse_router",
+            [gated],
+            _multiscale_sparse_router_config(
+                arity,
+                graph=graph,
+                template_name=template_name,
+                context=context,
+            ),
+            context=context,
+        )
+        if router_slot_start is not None:
+            record_template_slot_binding(
+                graph,
+                template_name=template_name,
+                template_instance=template_instance,
+                slot_index=router_slot_start + offset,
+                slot_key=f"{template_name}[{template_instance}].{router_name}_router",
+                slot_classes=[f"{router_name}_router"],
+                selected_name="hybrid_sparse_router",
+                selected_class="component",
+                input_node_id=gated,
+            )
+
+    return normed, default_path, gated, gate_bypass, routed
+
+
+def tpl_multiscale_difficulty_router(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """Easy tokens stay cheap, medium tokens route through multi-span lanes, hard tokens hit a heavy expert path."""
+    graph.metadata["_skip_global_decorators"] = True
+    template_name = "multiscale_difficulty_router"
+    template_instance = int(graph.metadata.get("_active_template_instance", 0) or 0)
+    _hard_class_choices = (3, 4, 5)
+    hard_classes = sample_routing_choice(
+        rng,
+        _hard_class_choices,
+        graph=graph,
         template_name=template_name,
-        template_instance=template_instance,
-        slot_index=5,
-        slot_key=f"{template_name}[{template_instance}].pair_router",
-        slot_classes=["pair_router"],
-        selected_name="hybrid_sparse_router",
-        selected_class="component",
-        input_node_id=gated,
+        decision_key="hard_classes",
+        context="multiscale_difficulty_router.hard_router",
     )
-    triplet_routed = _add(
-        graph,
-        "hybrid_sparse_router",
-        [gated],
-        _multiscale_sparse_router_config(
-            3,
-            graph=graph,
+    _normed, default_path, gated, gated_with_skip, routed_lanes = (
+        _build_multiscale_gate_scaffold(
+            graph,
+            input_id,
+            rng,
+            weights,
             template_name=template_name,
-            context="multiscale_difficulty_router.triplet_router",
-        ),
-        context="multiscale_difficulty_router.triplet_router",
+            template_instance=template_instance,
+            gate_residual_context="token_gate_skip",
+            router_arities=(2, 3, 4),
+            router_slot_start=5,
+        )
     )
-    record_template_slot_binding(
-        graph,
-        template_name=template_name,
-        template_instance=template_instance,
-        slot_index=6,
-        slot_key=f"{template_name}[{template_instance}].triplet_router",
-        slot_classes=["triplet_router"],
-        selected_name="hybrid_sparse_router",
-        selected_class="component",
-        input_node_id=gated,
-    )
-    quartet_routed = _add(
-        graph,
-        "hybrid_sparse_router",
-        [gated],
-        _multiscale_sparse_router_config(
-            4,
-            graph=graph,
-            template_name=template_name,
-            context="multiscale_difficulty_router.quartet_router",
-        ),
-        context="multiscale_difficulty_router.quartet_router",
-    )
-    record_template_slot_binding(
-        graph,
-        template_name=template_name,
-        template_instance=template_instance,
-        slot_index=7,
-        slot_key=f"{template_name}[{template_instance}].quartet_router",
-        slot_classes=["quartet_router"],
-        selected_name="hybrid_sparse_router",
-        selected_class="component",
-        input_node_id=gated,
-    )
+    pair_routed = routed_lanes[2]
+    triplet_routed = routed_lanes[3]
+    quartet_routed = routed_lanes[4]
 
     medium_pre = _residual(
         graph,
@@ -966,109 +942,20 @@ def tpl_multiscale_rich_lane_router(
     graph.metadata["_skip_global_decorators"] = True
     template_name = "multiscale_rich_lane_router"
     template_instance = int(graph.metadata.get("_active_template_instance", 0) or 0)
-    norm = _pick_compatible_motif(
-        graph,
-        input_id,
-        rng,
-        MOTIF_CLASS_NORM,
-        weights,
-        wildcard_prob=0.0,
-    )
-    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
-
-    default_path = _add(
-        graph,
-        "default_path",
-        [normed],
-        context="multiscale_rich_lane_router.default_path",
-    )
-    record_template_slot_binding(
-        graph,
-        template_name=template_name,
-        template_instance=template_instance,
-        slot_index=1,
-        slot_key=f"{template_name}[{template_instance}].default_path",
-        slot_classes=["fallback"],
-        selected_name="default_path",
-        selected_class="component",
-        input_node_id=normed,
-    )
-
-    gated = _add(
-        graph,
-        "hybrid_token_gate",
-        [normed],
-        _multiscale_gate_config(
-            graph=graph,
+    _normed, default_path, gated, gate_bypass, routed_lanes = (
+        _build_multiscale_gate_scaffold(
+            graph,
+            input_id,
+            rng,
+            weights,
             template_name=template_name,
-            context="multiscale_rich_lane_router.token_gate",
-        ),
-        context="multiscale_rich_lane_router.token_gate",
+            template_instance=template_instance,
+            gate_residual_context="gate_bypass",
+            router_arities=(2, 3),
+        )
     )
-    gate_bypass = _residual(
-        graph,
-        normed,
-        gated,
-        context="multiscale_rich_lane_router.gate_bypass",
-    )
-    record_template_slot_binding(
-        graph,
-        template_name=template_name,
-        template_instance=template_instance,
-        slot_index=2,
-        slot_key=f"{template_name}[{template_instance}].pair_spans",
-        slot_classes=["pair_path"],
-        selected_name="sparse_span_builder",
-        selected_class="component",
-        input_node_id=gated,
-    )
-    record_template_slot_binding(
-        graph,
-        template_name=template_name,
-        template_instance=template_instance,
-        slot_index=3,
-        slot_key=f"{template_name}[{template_instance}].triplet_spans",
-        slot_classes=["triplet_path"],
-        selected_name="sparse_span_builder",
-        selected_class="component",
-        input_node_id=gated,
-    )
-    record_template_slot_binding(
-        graph,
-        template_name=template_name,
-        template_instance=template_instance,
-        slot_index=4,
-        slot_key=f"{template_name}[{template_instance}].quartet_spans",
-        slot_classes=["quartet_path"],
-        selected_name="sparse_span_builder",
-        selected_class="component",
-        input_node_id=gated,
-    )
-
-    pair_routed = _add(
-        graph,
-        "hybrid_sparse_router",
-        [gated],
-        _multiscale_sparse_router_config(
-            2,
-            graph=graph,
-            template_name=template_name,
-            context="multiscale_rich_lane_router.pair_router",
-        ),
-        context="multiscale_rich_lane_router.pair_router",
-    )
-    triplet_routed = _add(
-        graph,
-        "hybrid_sparse_router",
-        [gated],
-        _multiscale_sparse_router_config(
-            3,
-            graph=graph,
-            template_name=template_name,
-            context="multiscale_rich_lane_router.triplet_router",
-        ),
-        context="multiscale_rich_lane_router.triplet_router",
-    )
+    pair_routed = routed_lanes[2]
+    triplet_routed = routed_lanes[3]
     medium_pre = _residual(
         graph,
         pair_routed,

@@ -1,0 +1,26 @@
+{
+  "name": "llm-quality-tools",
+  "private": true,
+  "scripts": {
+    "quality:biome": "biome check .",
+    "quality:dupes": "python conductor/run_duplicate_audit.py",
+    "quality:dupes:check": "python conductor/run_duplicate_audit.py --check",
+    "quality:dupes:jscpd": "python conductor/run_duplicate_audit.py --tool jscpd",
+    "quality:dupes:jscpd:check": "python conductor/run_duplicate_audit.py --tool jscpd --check",
+    "quality:dupes:nicad": "python conductor/run_duplicate_audit.py --tool nicad-python",
+    "quality:dupes:pmd": "python conductor/run_duplicate_audit.py --tool pmd-python",
+    "quality:dupes:pmd:check": "python conductor/run_duplicate_audit.py --tool pmd-python --check",
+    "quality:dupes:pylint": "python conductor/run_duplicate_audit.py --tool pylint",
+    "quality:sonar": "sonar-scanner"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.4.15",
+    "@sonar/scan": "^4.3.6",
+    "jscpd": "^4.2.1",
+    "pmd-bin": "^2.23.0"
+  },
+  "overrides": {
+    "axios": "^1.16.1",
+    "tar": "^7.5.15"
+  }
+}

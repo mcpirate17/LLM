@@ -31,9 +31,15 @@ from ..state.ledger import (
 class PromotionRules:
     promote_min_streak_cycles: int = 2
     promote_min_composite: float = 0.6
-    promote_require_learned_signal: bool = True
+    # Day-6: don't require learned signal — research/'s runs.db has BLiMP
+    # winners that failed loss-ratio metrics. User notes loss_ratio is
+    # not a reliable model-strength indicator.
+    promote_require_learned_signal: bool = False
     reject_after_n_cycles: int = 4
-    reject_max_composite: float = 0.35
+    # Day-6: lowered from 0.35 → 0.20 so smoke-passing specs whose
+    # learning subscore is weak (but binding/cross OK) aren't auto-killed
+    # before they can build a 2-cycle streak.
+    reject_max_composite: float = 0.20
 
 
 DEFAULT_PROMOTION_RULES = PromotionRules()

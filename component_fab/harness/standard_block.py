@@ -21,6 +21,22 @@ import torch
 from torch import nn
 
 
+def _disable_torch_compile(fn):
+    try:
+        return torch.compiler.disable(fn)
+    except Exception:
+        try:
+            return torch._dynamo.disable(fn)
+        except Exception:
+            return fn
+
+
+@_disable_torch_compile
+def _cumsum_dim1_eager(x: torch.Tensor) -> torch.Tensor:
+    """Keep sequence scans out of Inductor's unstable SplitScan lowering."""
+    return x.cumsum(dim=1)
+
+
 @dataclass(frozen=True, slots=True)
 class CanonicalLaneEnvironment:
     """Three reference lanes covering distinct mixing regimes.
@@ -74,7 +90,7 @@ class _CausalRunningMeanLane(nn.Module):
         weights = torch.arange(1, seq_len + 1, dtype=x.dtype, device=x.device).view(
             1, -1, 1
         )
-        return self.proj(x.cumsum(dim=1) / weights)
+        return self.proj(_cumsum_dim1_eager(x) / weights)
 
 
 def make_canonical_lanes(dim: int) -> CanonicalLaneEnvironment:

@@ -38,6 +38,7 @@ _CACHE_DIR = Path.home() / ".cache" / "aria" / "cross_task"
 _DEFAULT_MAX_CHARS = 200_000
 _CROSS_TASK_COMPETENCE_PPL_THRESHOLD = 200.0
 _CROSS_TASK_DIVERGED_PPL_THRESHOLD = 5000.0
+_CROSS_TASK_UNIFORM_FAILURE_MAX_LOG_GAP = math.log(2.0)
 
 
 def cross_task_score_from_domain_ppl(
@@ -52,7 +53,8 @@ def cross_task_score_from_domain_ppl(
     The cross-task metric is intended to reward robustness across code and
     natural language. A model with PPL=2000 on both domains is balanced, but
     it has not learned either task; returning a high balance score would
-    reward uniform failure.
+    reward uniform failure. Imbalanced high-PPL runs keep their small ratio
+    score so the eval can distinguish domain collapse from uniform failure.
     """
     if code_ppl is None or nl_ppl is None or code_ppl <= 0 or nl_ppl <= 0:
         return None, None, "invalid_ppl"
@@ -61,7 +63,10 @@ def cross_task_score_from_domain_ppl(
         return None, None, "diverged"
 
     ppl_gap = round(abs(math.log(code_ppl / nl_ppl)), 4)
-    if min(code_ppl, nl_ppl) > competence_ppl_threshold:
+    if (
+        min(code_ppl, nl_ppl) > competence_ppl_threshold
+        and ppl_gap <= _CROSS_TASK_UNIFORM_FAILURE_MAX_LOG_GAP
+    ):
         return 0.0, ppl_gap, "uniform_failure"
 
     return round(min(code_ppl, nl_ppl) / max(code_ppl, nl_ppl), 4), ppl_gap, None

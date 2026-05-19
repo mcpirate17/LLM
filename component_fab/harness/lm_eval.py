@@ -200,6 +200,7 @@ def evaluate_lm(
         vocab_size=vocab_size,
         max_seq_len=max_seq_len,
     )
+    model = model.to(device)
     wikitext = train_on_wikitext(
         model,
         n_steps=n_train_steps,

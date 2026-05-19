@@ -6,17 +6,23 @@ import sqlite3
 import time
 from typing import Any, Dict, List, Optional
 
-from ..native_runner import compile_model_native_first as compile_model
-from ...eval.metrics import novelty_score
-from ...eval.fingerprint import compute_fingerprint
 from ..notebook import LabNotebook, ExperimentEntry
 from ..llm.context_experiment import (
     build_mode_selection_context,
 )
 from ..llm.context_hypothesis import build_hypothesis_context
 from ..shared_utils import resolve_device
-from ._helpers import clear_gpu_memory
 from ._lifecycle import _LifecycleMixin
+from .search_common import (
+    analyze_search_results,
+    make_cached_fingerprint_fn,
+    make_combined_novelty_fitness_fn,
+    make_program_evaluation_callback,
+    publish_search_completion,
+    structural_population_novelty,
+    summarize_evolution_population,
+    summarize_novelty_result,
+)
 
 import logging
 
@@ -462,88 +468,45 @@ class _ContinuousModesMixin:
 
         fitness_cache: dict = {}
         eval_counters = {"total": 0, "s0": 0, "s1": 0}
-
-        def on_evaluate(graph, fitness, sandbox_result, s1_result):
-            self._on_program_evaluated(
-                graph,
-                fitness,
-                sandbox_result,
-                s1_result,
-                eval_counters,
-                nb,
-                exp_id,
-                model_source="evolution",
-            )
+        on_evaluate = make_program_evaluation_callback(
+            self,
+            eval_counters=eval_counters,
+            nb=nb,
+            exp_id=exp_id,
+            model_source="evolution",
+        )
 
         fitness_fn = self._make_fitness_fn(
             config, on_evaluate=on_evaluate, fitness_cache=fitness_cache
         )
 
-        def novelty_fn(graph, all_graphs):
-            nov = novelty_score(graph)
-            my_fp = graph.fingerprint()
-            dup_count = sum(1 for g in all_graphs if g.fingerprint() == my_fp) - 1
-            penalty = max(0, 1 - dup_count * 0.3)
-            return nov.structural_novelty * penalty
-
         population = evolutionary_search(
             fitness_fn=fitness_fn,
-            novelty_fn=novelty_fn,
+            novelty_fn=structural_population_novelty,
             config=evo_config,
             stop_check=self._stop_event.is_set,
         )
 
-        results = {
-            "total": eval_counters["total"],
-            "stage0_passed": eval_counters["s0"],
-            "stage05_passed": eval_counters["s0"],
-            "stage1_passed": eval_counters["s1"],
-            "novel_count": sum(1 for ind in population if ind.novelty > 0.5),
-            "best_loss_ratio": 1.0
-            - max((ind.fitness for ind in population), default=0),
-            "best_novelty_score": max((ind.novelty for ind in population), default=0),
-            "survivors": [],
-        }
+        results = summarize_evolution_population(population, eval_counters)
 
-        for ind in population[:20]:
-            if ind.fitness > 0.2:
-                results["survivors"].append(
-                    {
-                        "fingerprint": ind.fingerprint,
-                        "novelty": ind.novelty,
-                        "loss_ratio": 1.0 - ind.fitness,
-                    }
-                )
-
-        nb.update_op_success_rates(exp_id)
-        nb.update_failure_signatures(exp_id)
-        context = self._build_rich_context_for_experiment(
-            results, config, hypothesis, nb
-        )
-        summary = self.aria.experiment_summary(results, context=context)
-        llm_analysis = self.aria.analyze_results(results, context=context)
-        insights = self._analyze_results(results, exp_id, nb, context=context)
-        self._publish_terminal_event(
-            producer="runner.continuous_modes",
-            event_type="experiment_completed",
+        _context, summary, llm_analysis, insights = analyze_search_results(
+            self,
             exp_id=exp_id,
-            payload={
-                "completed_at": time.time(),
-                "results": results,
-                "aria_summary": summary,
-                "aria_mood": self.aria.state.mood,
-                "insights": insights,
-                "llm_analysis": llm_analysis,
-                "mode": "evolution",
-            },
-        )
-        self._complete_experiment_compat(
-            nb=nb,
-            experiment_id=exp_id,
             results=results,
-            aria_summary=summary,
+            config=config,
+            hypothesis=hypothesis,
+            nb=nb,
+        )
+        publish_search_completion(
+            self,
+            nb=nb,
+            exp_id=exp_id,
+            results=results,
+            summary=summary,
             insights=insights,
             llm_analysis=llm_analysis,
+            producer="runner.continuous_modes",
+            mode="evolution",
         )
 
         nb.flush_writes()
@@ -627,99 +590,27 @@ class _ContinuousModesMixin:
         eval_counters = {"total": 0, "s0": 0, "s1": 0}
 
         _debug = config.debug
-
-        def on_evaluate(graph, fitness, sandbox_result, s1_result):
-            bfp = fingerprint_cache.get(graph.fingerprint())
-            self._on_program_evaluated(
-                graph,
-                fitness,
-                sandbox_result,
-                s1_result,
-                eval_counters,
-                nb,
-                exp_id,
-                model_source="novelty",
-                behavioral_fingerprint=bfp,
-                debug=_debug,
-            )
-
-        def combined_fitness_fn(graph):
-            """Compile once, run sandbox + micro-train + fingerprint in one pass."""
-            gfp = graph.fingerprint()
-
-            if gfp in fitness_cache:
-                return fitness_cache[gfp]
-
-            sandbox_result = None
-            s1_result = None
-            try:
-                layer_graphs = [graph] * config.n_layers
-                model = compile_model(
-                    layer_graphs,
-                    vocab_size=config.vocab_size,
-                    max_seq_len=config.max_seq_len,
-                )
-                sandbox_result = self._safe_eval_for_stage(
-                    model,
-                    stage_tag="novelty_fitness",
-                    batch_size=2,
-                    seq_len=min(128, config.max_seq_len),
-                    vocab_size=config.vocab_size,
-                    device=dev_str,
-                )
-                if not sandbox_result.passed:
-                    del model
-                    fitness = 0.0
-                    fitness_cache[gfp] = fitness
-                    on_evaluate(graph, fitness, sandbox_result, s1_result)
-                    return fitness
-
-                # Compute fingerprint with behavioral probes for novelty archive;
-                # CKA deferred to post-investigation.
-                try:
-                    bfp = compute_fingerprint(
-                        model,
-                        seq_len=min(64, config.max_seq_len),
-                        model_dim=config.model_dim,
-                        vocab_size=config.vocab_size,
-                        device=dev_str,
-                        include_cka=False,
-                        include_behavioral_probes=True,
-                    )
-                    fingerprint_cache[gfp] = bfp
-                except (RuntimeError, ValueError, TypeError) as e:
-                    if _debug:
-                        logger.exception(
-                            "DEBUG: Fingerprint computation failed for %s", gfp[:16]
-                        )
-                    else:
-                        logger.debug("Fingerprint computation failed: %s", e)
-
-                s1_result = self._micro_train(
-                    model,
-                    config,
-                    dev,
-                    seed=self._stable_seed("fitness", gfp),
-                )
-                del model
-                clear_gpu_memory()
-
-                if s1_result.get("passed"):
-                    fitness, _components = self._compute_multi_objective_fitness(
-                        s1_result, sandbox_result, graph, config
-                    )
-                else:
-                    fitness = 0.1
-            except (RuntimeError, ValueError, TypeError) as e:
-                logger.debug("Fitness computation failed: %s", e)
-                fitness = 0.0
-
-            fitness_cache[gfp] = fitness
-            on_evaluate(graph, fitness, sandbox_result, s1_result)
-            return fitness
-
-        def fingerprint_fn(graph):
-            return fingerprint_cache.get(graph.fingerprint())
+        on_evaluate = make_program_evaluation_callback(
+            self,
+            eval_counters=eval_counters,
+            nb=nb,
+            exp_id=exp_id,
+            model_source="novelty",
+            fingerprint_cache=fingerprint_cache,
+            debug=_debug,
+        )
+        combined_fitness_fn = make_combined_novelty_fitness_fn(
+            self,
+            config=config,
+            device=dev,
+            device_str=dev_str,
+            fitness_cache=fitness_cache,
+            fingerprint_cache=fingerprint_cache,
+            on_evaluate=on_evaluate,
+            stage_tag="novelty_fitness",
+            debug=_debug,
+        )
+        fingerprint_fn = make_cached_fingerprint_fn(fingerprint_cache)
 
         ns_result = novelty_search(
             fitness_fn=combined_fitness_fn,
@@ -728,69 +619,30 @@ class _ContinuousModesMixin:
             stop_check=self._stop_event.is_set,
         )
 
-        results = {
-            "total": eval_counters["total"],
-            "stage0_passed": eval_counters["s0"],
-            "stage05_passed": eval_counters["s0"],
-            "stage1_passed": eval_counters["s1"],
-            "novel_count": sum(
-                1 for ind in ns_result.best_individuals if ind.novelty > 0.5
-            ),
-            "best_loss_ratio": None,
-            "best_novelty_score": None,
-            "survivors": [],
-            "archive_size": ns_result.archive_size,
-        }
-
-        for ind in ns_result.best_individuals[:20]:
-            lr = 1.0 - ind.fitness if ind.fitness > 0 else None
-            if lr is not None and (
-                results["best_loss_ratio"] is None or lr < results["best_loss_ratio"]
-            ):
-                results["best_loss_ratio"] = lr
-            if ind.novelty and (
-                results["best_novelty_score"] is None
-                or ind.novelty > results["best_novelty_score"]
-            ):
-                results["best_novelty_score"] = ind.novelty
-            if ind.fitness > 0.2:
-                results["survivors"].append(
-                    {
-                        "fingerprint": ind.fingerprint,
-                        "novelty": ind.novelty,
-                        "loss_ratio": 1.0 - ind.fitness,
-                    }
-                )
-
-        nb.update_op_success_rates(exp_id)
-        nb.update_failure_signatures(exp_id)
-        context = self._build_rich_context_for_experiment(
-            results, config, hypothesis, nb
+        results = summarize_novelty_result(
+            ns_result,
+            eval_counters,
+            best_from_all_individuals=True,
         )
-        summary = self.aria.experiment_summary(results, context=context)
-        llm_analysis = self.aria.analyze_results(results, context=context)
-        insights = self._analyze_results(results, exp_id, nb, context=context)
-        self._publish_terminal_event(
-            producer="runner.continuous_modes",
-            event_type="experiment_completed",
+
+        _context, summary, llm_analysis, insights = analyze_search_results(
+            self,
             exp_id=exp_id,
-            payload={
-                "completed_at": time.time(),
-                "results": results,
-                "aria_summary": summary,
-                "aria_mood": self.aria.state.mood,
-                "insights": insights,
-                "llm_analysis": llm_analysis,
-                "mode": "novelty",
-            },
-        )
-        self._complete_experiment_compat(
-            nb=nb,
-            experiment_id=exp_id,
             results=results,
-            aria_summary=summary,
+            config=config,
+            hypothesis=hypothesis,
+            nb=nb,
+        )
+        publish_search_completion(
+            self,
+            nb=nb,
+            exp_id=exp_id,
+            results=results,
+            summary=summary,
             insights=insights,
             llm_analysis=llm_analysis,
+            producer="runner.continuous_modes",
+            mode="novelty",
         )
 
         nb.flush_writes()

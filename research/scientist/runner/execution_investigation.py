@@ -27,6 +27,7 @@ from .execution_investigation_scoring import (
     InvestigationProgramSummary,
 )
 from ._lifecycle import _LifecycleMixin
+from .fingerprint_completion import complete_post_investigation_fingerprint
 
 import logging
 
@@ -1014,84 +1015,17 @@ class _ExecutionInvestigationMixin:
 
         Returns (fingerprint_completed, fingerprint_attempted, updated_source).
         """
-        _fingerprint_completed = False
-        _fingerprint_attempted = False
-        _fp_dict = source.get("_behavioral_fingerprint")
-
-        if best_inv_model is None or _fp_dict is None:
-            return _fingerprint_completed, _fingerprint_attempted, source
-
-        _fingerprint_attempted = True
-        from ...eval.fingerprint import BehavioralFingerprint
-        from ...eval.fingerprint_runtime import (
-            complete_fingerprint_post_investigation,
+        result = complete_post_investigation_fingerprint(
+            source=source,
+            source_result_id=source_result_id,
+            best_inv_model=best_inv_model,
+            config=config,
+            device=dev,
+            notebook=nb,
+            logger=logger,
+            catch_exceptions=(Exception,),
         )
-
-        _fp = BehavioralFingerprint(
-            **{
-                k: v
-                for k, v in _fp_dict.items()
-                if k
-                in {f.name for f in BehavioralFingerprint.__dataclass_fields__.values()}
-            }
-        )
-        if _fp.fingerprint_completed_post_investigation:
-            _fingerprint_completed = True
-        else:
-            # Attempt fingerprint completion with one retry
-            for _attempt in range(2):
-                try:
-                    _fp = complete_fingerprint_post_investigation(
-                        _fp,
-                        best_inv_model,
-                        seq_len=min(64, config.max_seq_len),
-                        model_dim=config.model_dim,
-                        vocab_size=config.vocab_size,
-                        device=str(dev),
-                    )
-                    if _fp.fingerprint_completed_post_investigation:
-                        _fingerprint_completed = True
-                        _fp_dict_updated = _fp.to_dict()
-                        source["_behavioral_fingerprint"] = _fp_dict_updated
-                        source["novelty_confidence"] = (
-                            0.9
-                            if _fp.quality == "full"
-                            else 0.4 + (_fp.analyses_succeeded * 0.1)
-                            if _fp.quality == "partial"
-                            else 0.3
-                        )
-                        source.update(
-                            nb._behavioral_fingerprint_program_fields(
-                                _fp_dict_updated,
-                                novelty_confidence=source["novelty_confidence"],
-                            )
-                        )
-                        nb.sync_behavioral_fingerprint_result(
-                            result_id=source_result_id,
-                            fp_payload=_fp_dict_updated,
-                            novelty_confidence=source["novelty_confidence"],
-                        )
-                        logger.info(
-                            "post_investigation_fingerprint_completed: "
-                            "result_id=%s novelty_score=%.4f "
-                            "novelty_valid=%s cka_source=%s attempt=%d",
-                            source_result_id[:12],
-                            _fp.novelty_score,
-                            _fp.novelty_valid_for_promotion,
-                            _fp.cka_source,
-                            _attempt + 1,
-                        )
-                        break
-                except Exception as e:
-                    logger.error(
-                        "post_investigation_fingerprint_failed: "
-                        "result_id=%s attempt=%d error=%s",
-                        source_result_id[:12],
-                        _attempt + 1,
-                        str(e),
-                    )
-
-        return _fingerprint_completed, _fingerprint_attempted, source
+        return result.completed, result.attempted, result.source
 
     # ------------------------------------------------------------------
     # Record investigation candidate results

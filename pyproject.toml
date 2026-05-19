@@ -19,4 +19,17 @@ dependencies = [
 packages = ["research", "aria_designer", "component_fab"]
 
 [dependency-groups]
-dev = ["pytest-testmon>=2.2.0", "scalene>=2.2.1"]
+dev = [
+  "bandit>=1.9.4",
+  "codespell>=2.4.2",
+  "detect-secrets>=1.5.0",
+  "pip-audit>=2.10.0",
+  "pre-commit>=4.6.0",
+  "pylint>=4.0.5",
+  "pyright>=1.1.409",
+  "pytest-testmon>=2.2.0",
+  "radon>=6.0.1",
+  "scalene>=2.2.1",
+  "semgrep>=1.163.0",
+  "xenon>=0.9.3",
+]

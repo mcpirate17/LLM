@@ -441,19 +441,6 @@ def write_component(
         with open(native_path, "w") as f:
             f.write(generate_kernel_stub(manifest["id"]))
 
-    test_path = test_dir / f"test_{manifest['id']}.py"
-    with open(test_path, "w") as f:
-        f.write(f'"""Contract tests for {manifest["id"]}."""\n')
-        f.write("import yaml\n")
-        f.write("from pathlib import Path\n\n\n")
-        f.write("def test_manifest_valid():\n")
-        f.write('    manifest_path = Path(__file__).parent.parent / "manifest.yaml"\n')
-        f.write("    with open(manifest_path) as f:\n")
-        f.write("        manifest = yaml.safe_load(f)\n")
-        f.write(f'    assert manifest["id"] == "{manifest["id"]}"\n')
-        f.write('    assert manifest["version"] == "1.0.0"\n')
-        f.write('    assert len(manifest["outputs"]) >= 1\n')
-
     return comp_dir
 
 

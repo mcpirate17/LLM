@@ -20,7 +20,10 @@ def _vectorized_kmeans(
     salt: int,
 ) -> tuple[np.ndarray, np.ndarray, float]:
     """Deterministic K-Means++ init followed by Lloyd iteration."""
-    seed_hex = hashlib.md5(f"{dataset_signature}:{salt}".encode()).hexdigest()
+    seed_hex = hashlib.md5(
+        f"{dataset_signature}:{salt}".encode(),
+        usedforsecurity=False,
+    ).hexdigest()
     first_idx = int(seed_hex[:8], 16) % len(X_norm)
     centroids = [X_norm[first_idx]]
 

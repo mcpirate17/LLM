@@ -75,4 +75,6 @@ if __name__ == "__main__":
             text = input("> ")
             client.send("chat", text)
     else:
-        print("Could not connect to bus. Start hive.sh first.")
+        print(
+            "Could not connect to bus. Start research/tools/hive/start_hive.sh first."
+        )

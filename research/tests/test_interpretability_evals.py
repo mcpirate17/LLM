@@ -515,6 +515,15 @@ class TestCrossTaskEval:
         assert gap is not None
         assert gate is None
 
+    def test_score_keeps_imbalanced_high_ppl_signal(self):
+        from research.eval.cross_task_eval import cross_task_score_from_domain_ppl
+
+        score, gap, gate = cross_task_score_from_domain_ppl(240.0, 3125.0)
+
+        assert score == pytest.approx(0.0768)
+        assert gap == pytest.approx(2.5666)
+        assert gate is None
+
     def test_code_download_failure_returns_error(self, monkeypatch):
         """Cross-task eval should fail closed when the code corpus is unavailable."""
         import tempfile

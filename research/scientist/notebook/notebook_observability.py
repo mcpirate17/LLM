@@ -152,6 +152,928 @@ def _slot_generation_priors(
     return slot_multipliers, slot_denylist
 
 
+def _finite_float(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _json_tuple(value: Any) -> tuple[str, ...]:
+    try:
+        return tuple(
+            str(item) for item in (_json_loads(value) or []) if item is not None
+        )
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return ()
+
+
+def _json_slot_tuple(value: Any) -> tuple[Dict[str, Any], ...]:
+    try:
+        loaded = _json_loads(value) or []
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return ()
+    return tuple(item for item in loaded if isinstance(item, dict))
+
+
+def _observability_metric_values(row: Any) -> Dict[str, Any]:
+    return {
+        "loss_ratio": row["loss_ratio"],
+        "validation_loss_ratio": row["validation_loss_ratio"],
+        "discovery_loss_ratio": row["discovery_loss_ratio"],
+        "novelty_score": row["novelty_score"],
+        "novelty_confidence": row["novelty_confidence"],
+        "induction_screening_auc": row["induction_screening_auc"],
+        "binding_screening_auc": (
+            row["binding_curriculum_auc"]
+            if row["binding_curriculum_auc"] is not None
+            else row["binding_screening_auc"]
+        ),
+        "binding_screening_composite": row["binding_screening_composite"],
+        "ar_legacy_auc": row["ar_legacy_auc"],
+        "hellaswag_acc": row["hellaswag_acc"],
+        "blimp_overall_accuracy": row["blimp_overall_accuracy"],
+        "composite_score": row["composite_score"],
+        "induction_intermediate_auc": row["induction_intermediate_auc"],
+        "binding_intermediate_auc": row["binding_intermediate_auc"],
+        "ar_curriculum_auc_pair_final": row["ar_curriculum_auc_pair_final"],
+        "ar_curriculum_s0_retention": row["ar_curriculum_s0_retention"],
+        "ar_curriculum_max_passing_stage": row["ar_curriculum_max_passing_stage"],
+        "fp_jacobian_effective_rank": row["fp_jacobian_effective_rank"],
+        "fp_sensitivity_uniformity": row["fp_sensitivity_uniformity"],
+        "fp_jacobian_erf_density": row["fp_jacobian_erf_density"],
+        "fp_id_collapse_rate": row["fp_id_collapse_rate"],
+        "fp_id_collapse_rate_normalized": row["fp_id_collapse_rate_normalized"],
+        "fp_jacobian_erf_decay_slope": row["fp_jacobian_erf_decay_slope"],
+        "fp_jacobian_erf_first_norm": row["fp_jacobian_erf_first_norm"],
+        "fp_jacobian_erf_last_norm": row["fp_jacobian_erf_last_norm"],
+        "fp_logit_margin_velocity": row["fp_logit_margin_velocity"],
+        "fp_logit_margin_delta": row["fp_logit_margin_delta"],
+        "fp_jacobian_erf_variance_log": row["fp_jacobian_erf_variance_log"],
+        "fp_jacobian_spectral_norm_log": row["fp_jacobian_spectral_norm_log"],
+        "fp_icld_velocity": row["fp_icld_velocity"],
+        "fp_icld_delta_loss": row["fp_icld_delta_loss"],
+        "screening_hellaswag_correct": row["screening_hellaswag_correct"],
+        "screening_hellaswag_total": row["screening_hellaswag_total"],
+        "screening_wikitext_status": row["screening_wikitext_status"],
+    }
+
+
+def _language_control_values(row: Any) -> Dict[str, Any]:
+    return {
+        "language_control_s05_sentence_assoc_score": row[
+            "language_control_s05_sentence_assoc_score"
+        ],
+        "language_control_s05_binding_order_acc": row[
+            "language_control_s05_binding_order_acc"
+        ],
+        "language_control_s05_binding_score": row["language_control_s05_binding_score"],
+        "language_control_s10_sentence_assoc_score": row[
+            "language_control_s10_sentence_assoc_score"
+        ],
+        "language_control_s10_binding_order_acc": row[
+            "language_control_s10_binding_order_acc"
+        ],
+        "language_control_s10_binding_score": row["language_control_s10_binding_score"],
+        "language_control_investigation_sentence_assoc_score": row[
+            "language_control_investigation_sentence_assoc_score"
+        ],
+        "language_control_investigation_binding_order_acc": row[
+            "language_control_investigation_binding_order_acc"
+        ],
+        "language_control_investigation_binding_score": row[
+            "language_control_investigation_binding_score"
+        ],
+    }
+
+
+def _failure_root_cause(row: Any) -> str:
+    failure_details = {}
+    raw_failure = row["failure_details_json"]
+    if raw_failure:
+        try:
+            failure_details = (
+                _json_loads(raw_failure)
+                if isinstance(raw_failure, str)
+                else raw_failure
+            )
+        except (json.JSONDecodeError, TypeError, ValueError):
+            failure_details = {}
+    return (
+        failure_details.get("root_cause_code")
+        or row["error_type"]
+        or row["stage_at_death"]
+        or "unknown"
+    )
+
+
+def _empty_observability_accumulator() -> _ObservabilityAccumulator:
+    return _ObservabilityAccumulator(
+        template_stats={},
+        motif_stats={},
+        slot_stats={},
+        experiment_buckets={},
+        loss_values=[],
+        validation_losses=[],
+        discovery_losses=[],
+        motifs_per_graph=[],
+        templates_per_graph=[],
+    )
+
+
+def _experiment_bucket(acc: _ObservabilityAccumulator, row: Any) -> Dict[str, Any]:
+    experiment_id = str(row["experiment_id"] or "")
+    bucket = acc.experiment_buckets.setdefault(
+        experiment_id or f"exp_{len(acc.experiment_buckets)}",
+        {
+            "experiment_id": experiment_id or None,
+            "timestamp": float(row["timestamp"] or 0.0),
+            "templates": {},
+            "slots": {},
+            "training_losses": [],
+            "validation_losses": [],
+            "discovery_losses": [],
+        },
+    )
+    bucket["timestamp"] = max(
+        float(bucket.get("timestamp") or 0.0),
+        float(row["timestamp"] or 0.0),
+    )
+    return bucket
+
+
+def _append_global_losses(
+    acc: _ObservabilityAccumulator, bucket: Dict[str, Any], metrics: Dict[str, Any]
+) -> None:
+    for metric_name, acc_values, bucket_key in (
+        ("loss_ratio", acc.loss_values, "training_losses"),
+        ("validation_loss_ratio", acc.validation_losses, "validation_losses"),
+        ("discovery_loss_ratio", acc.discovery_losses, "discovery_losses"),
+    ):
+        value = _finite_float(metrics.get(metric_name))
+        if value is not None:
+            acc_values.append(value)
+            bucket[bucket_key].append(value)
+
+
+_TEMPLATE_METRIC_APPENDS = (
+    ("validation_loss_ratio", "validation_losses"),
+    ("discovery_loss_ratio", "discovery_losses"),
+    ("novelty_score", "novelties"),
+    ("novelty_confidence", "novelty_confidences"),
+    ("induction_screening_auc", "induction_screening_aucs"),
+    ("binding_screening_auc", "binding_screening_aucs"),
+    ("binding_screening_composite", "binding_screening_composites"),
+    ("ar_legacy_auc", "ar_legacy_aucs"),
+    ("hellaswag_acc", "hellaswag_accs"),
+    ("blimp_overall_accuracy", "blimp_overall_accuracies"),
+    ("composite_score", "composite_scores"),
+    ("induction_intermediate_auc", "induction_intermediate_aucs"),
+    ("binding_intermediate_auc", "binding_intermediate_aucs"),
+    ("ar_curriculum_auc_pair_final", "ar_curriculum_aucs"),
+    ("ar_curriculum_s0_retention", "ar_curriculum_retentions"),
+    ("fp_jacobian_erf_density", "erf_densities"),
+    ("fp_id_collapse_rate", "id_collapse_rates"),
+    ("fp_id_collapse_rate_normalized", "id_collapse_rate_normalizeds"),
+    ("fp_jacobian_erf_decay_slope", "erf_decay_slopes"),
+    ("fp_jacobian_erf_first_norm", "erf_first_norms"),
+    ("fp_jacobian_erf_last_norm", "erf_last_norms"),
+    ("fp_logit_margin_velocity", "logit_margin_velocities"),
+    ("fp_logit_margin_delta", "logit_margin_deltas"),
+    ("fp_jacobian_erf_variance_log", "erf_variance_logs"),
+    ("fp_jacobian_spectral_norm_log", "spec_norm_logs"),
+    ("fp_icld_velocity", "icld_velocities"),
+    ("fp_icld_delta_loss", "icld_delta_losses"),
+    ("fp_jacobian_effective_rank", "jacobian_effective_ranks"),
+    ("fp_sensitivity_uniformity", "sensitivity_uniformities"),
+)
+
+
+_SLOT_METRIC_APPENDS = (
+    ("composite_score", "composite_scores"),
+    ("induction_screening_auc", "induction_screening_aucs"),
+    ("induction_intermediate_auc", "induction_intermediate_aucs"),
+    ("binding_screening_auc", "binding_screening_aucs"),
+    ("binding_screening_composite", "binding_screening_composites"),
+    ("binding_intermediate_auc", "binding_intermediate_aucs"),
+    ("ar_legacy_auc", "ar_legacy_aucs"),
+    ("ar_curriculum_auc_pair_final", "ar_curriculum_aucs"),
+    ("ar_curriculum_s0_retention", "ar_curriculum_retentions"),
+)
+
+
+def _append_finite_metrics(
+    stat: Dict[str, Any], metrics: Dict[str, Any], mappings: tuple[tuple[str, str], ...]
+) -> None:
+    for metric_name, stat_key in mappings:
+        value = _finite_float(metrics.get(metric_name))
+        if value is not None:
+            stat[stat_key].append(value)
+
+
+def _update_template_fast_lane(stat: Dict[str, Any], row: Any) -> None:
+    if not row["routing_fast_lane_applied"]:
+        return
+    stat["routing_fast_lane_runs"] += 1
+    if row["routing_fast_lane_status"] == "ok":
+        stat["routing_fast_lane_ok"] += 1
+    lane_score = _finite_float(row["routing_fast_lane_score"])
+    lane_improvement = _finite_float(row["routing_fast_lane_ppl_improvement"])
+    lane_slope = _finite_float(row["routing_fast_lane_slope"])
+    slope_consistent = bool(row["routing_fast_lane_slope_consistent"])
+    if lane_score is not None:
+        stat["routing_fast_lane_scores"].append(lane_score)
+    if lane_improvement is not None:
+        stat["routing_fast_lane_improvements"].append(lane_improvement)
+    if lane_slope is not None:
+        stat["routing_fast_lane_slopes"].append(lane_slope)
+    if (lane_improvement is not None and lane_improvement < 0.98) or (
+        lane_slope is not None and lane_slope > 0 and slope_consistent
+    ):
+        stat["routing_fast_lane_positive"] += 1
+
+
+def _update_template_stat(
+    stat: Dict[str, Any],
+    row: Any,
+    metrics: Dict[str, Any],
+    language_control_values: Dict[str, Any],
+    root_cause: str,
+) -> None:
+    stat["n_used"] += 1
+    stat["n_stage0"] += 1 if row["stage0_passed"] else 0
+    stat["n_stage05"] += 1 if row["stage05_passed"] else 0
+    stat["n_stage1"] += 1 if row["stage1_passed"] else 0
+    fingerprint = str(row["graph_fingerprint"] or "").strip()
+    if fingerprint:
+        stat["fingerprints"].add(fingerprint)
+        if row["stage1_passed"]:
+            stat["stage1_fingerprints"].add(fingerprint)
+    loss_ratio = _finite_float(metrics.get("loss_ratio"))
+    if loss_ratio is not None:
+        stat["losses"].append(loss_ratio)
+        if row["stage1_passed"]:
+            stat["stage1_losses"].append(loss_ratio)
+    _append_finite_metrics(stat, metrics, _TEMPLATE_METRIC_APPENDS)
+    if metrics.get("ar_curriculum_max_passing_stage") is not None:
+        stat["ar_curriculum_max_passes"].append(
+            int(metrics["ar_curriculum_max_passing_stage"])
+        )
+    _append_language_control_metrics(stat, language_control_values)
+    _update_template_screening_metrics(stat, metrics)
+    _update_template_fast_lane(stat, row)
+    if not row["stage1_passed"]:
+        stat["failure_reasons"][root_cause] = (
+            stat["failure_reasons"].get(root_cause, 0) + 1
+        )
+
+
+def _update_template_screening_metrics(
+    stat: Dict[str, Any], metrics: Dict[str, Any]
+) -> None:
+    hs_correct = metrics.get("screening_hellaswag_correct")
+    hs_total = metrics.get("screening_hellaswag_total")
+    if hs_correct is not None and hs_total is not None and hs_total:
+        stat["screening_hellaswag_accs"].append(
+            float(hs_correct) / max(float(hs_total), 1.0)
+        )
+    status = metrics.get("screening_wikitext_status")
+    if status is not None:
+        stat["screening_wikitext_runs"] += 1
+        if str(status) == "ok":
+            stat["screening_wikitext_ok"] += 1
+
+
+def _record_template_observations(
+    acc: _ObservabilityAccumulator,
+    bucket: Dict[str, Any],
+    templates: tuple[str, ...],
+    row: Any,
+    metrics: Dict[str, Any],
+    language_control_values: Dict[str, Any],
+    root_cause: str,
+    slot_counts: Dict[str, int],
+) -> None:
+    loss_ratio = _finite_float(metrics.get("loss_ratio"))
+    for template in templates:
+        name = str(template)
+        stat = acc.template_stats.setdefault(
+            name,
+            _empty_template_stat(name=name, slot_count=slot_counts.get(name, 0)),
+        )
+        _update_template_stat(stat, row, metrics, language_control_values, root_cause)
+        trend = bucket["templates"].setdefault(name, {"n": 0, "s1": 0, "losses": []})
+        _update_trend_item(trend, bool(row["stage1_passed"]), loss_ratio)
+
+
+def _update_motif_stat(
+    stat: Dict[str, Any], row: Any, loss_ratio: Optional[float], root_cause: str
+) -> None:
+    stat["n_used"] += 1
+    stat["n_stage1"] += 1 if row["stage1_passed"] else 0
+    if loss_ratio is not None:
+        stat["losses"].append(loss_ratio)
+    if not row["stage1_passed"]:
+        stat["failure_reasons"][root_cause] = (
+            stat["failure_reasons"].get(root_cause, 0) + 1
+        )
+
+
+def _record_motif_observations(
+    acc: _ObservabilityAccumulator,
+    motifs: tuple[str, ...],
+    row: Any,
+    loss_ratio: Optional[float],
+    root_cause: str,
+) -> None:
+    for motif in motifs:
+        name = str(motif)
+        stat = acc.motif_stats.setdefault(
+            name,
+            {
+                "name": name,
+                "n_used": 0,
+                "n_stage1": 0,
+                "losses": [],
+                "failure_reasons": {},
+            },
+        )
+        _update_motif_stat(stat, row, loss_ratio, root_cause)
+
+
+def _slot_key(slot: Dict[str, Any]) -> str:
+    return str(
+        slot.get("slot_key")
+        or f"{slot.get('template_name', 'unknown')}.slot{slot.get('slot_index', 0)}"
+    )
+
+
+def _empty_slot_stat(slot: Dict[str, Any], slot_key: str) -> Dict[str, Any]:
+    return {
+        "slot_key": slot_key,
+        "template_name": str(slot.get("template_name") or "unknown"),
+        "slot_index": int(slot.get("slot_index") or 0),
+        "slot_classes": list(slot.get("slot_classes") or []),
+        "n_used": 0,
+        "n_stage1": 0,
+        "losses": [],
+        "composite_scores": [],
+        "induction_screening_aucs": [],
+        "induction_intermediate_aucs": [],
+        "binding_screening_aucs": [],
+        "binding_screening_composites": [],
+        "binding_intermediate_aucs": [],
+        "ar_legacy_aucs": [],
+        "language_control_metrics": _empty_language_control_metrics(),
+        "ar_curriculum_aucs": [],
+        "ar_curriculum_retentions": [],
+        "ar_curriculum_max_passes": [],
+        "failure_reasons": {},
+        "selected_motifs": {},
+    }
+
+
+def _update_slot_stat(
+    stat: Dict[str, Any],
+    slot: Dict[str, Any],
+    row: Any,
+    metrics: Dict[str, Any],
+    language_control_values: Dict[str, Any],
+    root_cause: str,
+) -> None:
+    stat["n_used"] += 1
+    stat["n_stage1"] += 1 if row["stage1_passed"] else 0
+    loss_ratio = _finite_float(metrics.get("loss_ratio"))
+    if loss_ratio is not None:
+        stat["losses"].append(loss_ratio)
+    _append_finite_metrics(stat, metrics, _SLOT_METRIC_APPENDS)
+    if metrics.get("ar_curriculum_max_passing_stage") is not None:
+        stat["ar_curriculum_max_passes"].append(
+            int(metrics["ar_curriculum_max_passing_stage"])
+        )
+    _append_language_control_metrics(stat, language_control_values)
+    motif_name = slot.get("selected_motif")
+    if motif_name:
+        motif_key = str(motif_name)
+        stat["selected_motifs"][motif_key] = (
+            stat["selected_motifs"].get(motif_key, 0) + 1
+        )
+    if not row["stage1_passed"]:
+        stat["failure_reasons"][root_cause] = (
+            stat["failure_reasons"].get(root_cause, 0) + 1
+        )
+
+
+def _record_slot_observations(
+    acc: _ObservabilityAccumulator,
+    bucket: Dict[str, Any],
+    slot_usage: tuple[Dict[str, Any], ...],
+    row: Any,
+    metrics: Dict[str, Any],
+    language_control_values: Dict[str, Any],
+    root_cause: str,
+) -> None:
+    loss_ratio = _finite_float(metrics.get("loss_ratio"))
+    for slot in slot_usage:
+        slot_key = _slot_key(slot)
+        stat = acc.slot_stats.setdefault(slot_key, _empty_slot_stat(slot, slot_key))
+        _update_slot_stat(stat, slot, row, metrics, language_control_values, root_cause)
+        trend = bucket["slots"].setdefault(slot_key, {"n": 0, "s1": 0, "losses": []})
+        _update_trend_item(trend, bool(row["stage1_passed"]), loss_ratio)
+
+
+def _update_trend_item(
+    trend: Dict[str, Any], stage1_passed: bool, loss_ratio: Optional[float]
+) -> None:
+    trend["n"] += 1
+    trend["s1"] += 1 if stage1_passed else 0
+    if loss_ratio is not None:
+        trend["losses"].append(loss_ratio)
+
+
+def _mean_or_none(values: List[float]) -> Optional[float]:
+    return sum(values) / len(values) if values else None
+
+
+def _observability_loss_distribution(
+    owner: Any, acc: _ObservabilityAccumulator
+) -> Dict[str, Dict[str, Optional[float]]]:
+    return {
+        "training": {
+            "median": owner._percentile(acc.loss_values, 0.5),
+            "p25": owner._percentile(acc.loss_values, 0.25),
+            "p75": owner._percentile(acc.loss_values, 0.75),
+        },
+        "validation": {
+            "median": owner._percentile(acc.validation_losses, 0.5),
+            "p25": owner._percentile(acc.validation_losses, 0.25),
+            "p75": owner._percentile(acc.validation_losses, 0.75),
+        },
+        "discovery": {
+            "median": owner._percentile(acc.discovery_losses, 0.5),
+            "p25": owner._percentile(acc.discovery_losses, 0.25),
+            "p75": owner._percentile(acc.discovery_losses, 0.75),
+        },
+    }
+
+
+def _prepare_template_rows(
+    acc: _ObservabilityAccumulator, slot_counts: Dict[str, int]
+) -> tuple[
+    frozenset[str], list[Dict[str, Any]], list[Dict[str, Any]], list[Dict[str, Any]]
+]:
+    active_template_names = frozenset(_discover_template_names())
+    template_stats = dict(acc.template_stats)
+    for name in active_template_names:
+        template_stats.setdefault(
+            str(name),
+            _empty_template_stat(
+                name=str(name), slot_count=slot_counts.get(str(name), 0)
+            ),
+        )
+    template_rows = [_summarize_template_stat(stat) for stat in template_stats.values()]
+    reference_baselines = _reference_metric_baselines(template_rows)
+    for row in template_rows:
+        row["capability_signal_count"] = _capability_signal_count(row)
+        row["reference_beating_metrics"] = _reference_beating_metrics(
+            row, reference_baselines
+        )
+        row["structural_category"] = _template_label_from_evidence(
+            row, reference_baselines
+        )
+    active_rows = [row for row in template_rows if row["name"] in active_template_names]
+    inactive_rows = [
+        row
+        for row in template_rows
+        if row["name"] not in active_template_names and row["n_used"] > 0
+    ]
+    return active_template_names, template_rows, active_rows, inactive_rows
+
+
+def _template_sort_loss(row: Dict[str, Any]) -> float:
+    return (
+        row["avg_validation_loss_ratio"]
+        if row["avg_validation_loss_ratio"] is not None
+        else row["avg_loss_ratio"]
+        if row["avg_loss_ratio"] is not None
+        else 999.0
+    )
+
+
+def _rank_template_rows(
+    active_rows: list[Dict[str, Any]], inactive_rows: list[Dict[str, Any]], limit: int
+) -> Dict[str, list[Dict[str, Any]]]:
+    evidence_rank = {"insufficient": 0, "sparse": 1, "building": 2, "established": 3}
+    return {
+        "top_templates": sorted(
+            active_rows,
+            key=lambda row: (
+                -(row["s1_rate"] or 0.0),
+                _template_sort_loss(row),
+                -(row["n_used"] or 0),
+            ),
+        )[:limit],
+        "struggling_templates": sorted(
+            [row for row in active_rows if row["n_used"] >= 3],
+            key=lambda row: (
+                row["s1_rate"] or 0.0,
+                _template_sort_loss(row),
+                -(row["n_used"] or 0),
+            ),
+        )[:limit],
+        "all_templates": sorted(
+            active_rows,
+            key=lambda row: (
+                evidence_rank.get(str(row.get("evidence_level") or ""), 0),
+                row["s1_rate"] if row["s1_rate"] is not None else -1.0,
+                -(row["n_used"] or 0),
+                row["name"],
+            ),
+        ),
+        "inactive_templates": sorted(
+            inactive_rows, key=lambda row: (-(row["n_used"] or 0), row["name"])
+        ),
+        "low_loss_template_families": sorted(
+            [row for row in active_rows if row.get("repeated_low_loss_family")],
+            key=lambda row: (
+                -(row.get("repeated_low_loss_count") or 0),
+                row["best_loss_ratio"] if row["best_loss_ratio"] is not None else 999.0,
+                -(row["n_used"] or 0),
+            ),
+        )[:limit],
+    }
+
+
+def _summarize_motif_rows(
+    acc: _ObservabilityAccumulator, limit: int
+) -> list[Dict[str, Any]]:
+    rows = []
+    for stat in acc.motif_stats.values():
+        reasons = stat["failure_reasons"]
+        rows.append(
+            {
+                "name": stat["name"],
+                "n_used": stat["n_used"],
+                "s1_rate": stat["n_stage1"] / max(stat["n_used"], 1),
+                "avg_loss_ratio": _mean_or_none(stat["losses"]),
+                "top_failure_reason": (
+                    max(reasons.items(), key=lambda item: item[1])[0]
+                    if reasons
+                    else None
+                ),
+            }
+        )
+    return sorted(
+        [row for row in rows if row["n_used"] >= 2],
+        key=lambda row: (-(row["n_used"] or 0), row["avg_loss_ratio"] or 999.0),
+    )[:limit]
+
+
+_SLOT_AVG_FIELDS = (
+    ("avg_composite_score", "composite_scores"),
+    ("avg_loss_ratio", "losses"),
+    ("avg_induction_screening_auc", "induction_screening_aucs"),
+    ("avg_induction_intermediate_auc", "induction_intermediate_aucs"),
+    ("avg_binding_screening_auc", "binding_screening_aucs"),
+    ("avg_binding_screening_composite", "binding_screening_composites"),
+    ("avg_binding_intermediate_auc", "binding_intermediate_aucs"),
+    ("avg_ar_legacy_auc", "ar_legacy_aucs"),
+    ("avg_ar_curriculum_auc_pair_final", "ar_curriculum_aucs"),
+    ("avg_ar_curriculum_s0_retention", "ar_curriculum_retentions"),
+    ("avg_ar_curriculum_max_passing_stage", "ar_curriculum_max_passes"),
+)
+
+
+def _summarize_slot_stat(stat: Dict[str, Any]) -> Dict[str, Any]:
+    reasons = stat["failure_reasons"]
+    selected = stat["selected_motifs"]
+    row = {
+        "slot_key": stat["slot_key"],
+        "template_name": stat["template_name"],
+        "slot_index": stat["slot_index"],
+        "slot_classes": stat["slot_classes"],
+        "n_used": stat["n_used"],
+        "s1_rate": stat["n_stage1"] / max(stat["n_used"], 1),
+        "n_ar_curriculum": len(stat.get("ar_curriculum_aucs") or []),
+        **_summarize_language_control_metrics(stat),
+        "top_failure_reason": (
+            max(reasons.items(), key=lambda item: item[1])[0] if reasons else None
+        ),
+        "top_selected_motif": (
+            max(selected.items(), key=lambda item: item[1])[0] if selected else None
+        ),
+    }
+    row.update(
+        {
+            output_name: _mean_or_none(stat.get(stat_name) or [])
+            for output_name, stat_name in _SLOT_AVG_FIELDS
+        }
+    )
+    return row
+
+
+def _slot_row_is_active(
+    row: Dict[str, Any],
+    active_template_names: frozenset[str],
+    slot_counts: Dict[str, int],
+) -> bool:
+    expected = int(slot_counts.get(row["template_name"], 0) or 0)
+    return row["template_name"] in active_template_names and (
+        expected <= 0 or row["slot_index"] < expected
+    )
+
+
+def _summarize_slot_rows(
+    acc: _ObservabilityAccumulator,
+    active_template_names: frozenset[str],
+    slot_counts: Dict[str, int],
+    limit: int,
+) -> tuple[list[Dict[str, Any]], list[Dict[str, Any]]]:
+    all_rows = sorted(
+        [
+            row
+            for row in (_summarize_slot_stat(stat) for stat in acc.slot_stats.values())
+            if _slot_row_is_active(row, active_template_names, slot_counts)
+        ],
+        key=lambda row: (row["template_name"], row["slot_index"], row["slot_key"]),
+    )
+    visible_rows = sorted(
+        [row for row in all_rows if row["n_used"] >= 2],
+        key=lambda row: (
+            row["s1_rate"] if row["s1_rate"] is not None else 1.0,
+            row["avg_loss_ratio"] if row["avg_loss_ratio"] is not None else 999.0,
+            -(row["n_used"] or 0),
+        ),
+    )[:limit]
+    return all_rows, visible_rows
+
+
+def _build_observability_recommendations(
+    ranked: Dict[str, list[Dict[str, Any]]],
+    active_template_rows: list[Dict[str, Any]],
+    slot_rows: list[Dict[str, Any]],
+    loss_distribution: Dict[str, Dict[str, Optional[float]]],
+) -> List[str]:
+    recommendations: List[str] = []
+    _append_template_recommendations(recommendations, ranked, loss_distribution)
+    _append_slot_recommendations(recommendations, slot_rows)
+    _append_signal_recommendations(
+        recommendations,
+        ranked["struggling_templates"],
+        ranked["all_templates"],
+        active_template_rows,
+        ranked["low_loss_template_families"],
+    )
+    return recommendations[:6]
+
+
+def _append_template_recommendations(
+    recommendations: List[str],
+    ranked: Dict[str, list[Dict[str, Any]]],
+    loss_distribution: Dict[str, Dict[str, Optional[float]]],
+) -> None:
+    weak = next(
+        (row for row in ranked["struggling_templates"] if (row["s1_rate"] or 0) < 0.15),
+        None,
+    )
+    if weak:
+        recommendations.append(
+            f"{weak['name']} is over-sampled relative to quality: S1 {(weak['s1_rate'] * 100):.1f}% over {weak['n_used']} runs. Reduce weight or harden motifs for {weak['top_failure_reason'] or 'unknown failures'}."
+        )
+    slot_heavy = next(
+        (
+            row
+            for row in ranked["struggling_templates"]
+            if (row.get("slot_count") or 0) >= 3 and (row.get("s1_rate") or 0) < 0.25
+        ),
+        None,
+    )
+    if slot_heavy:
+        recommendations.append(
+            f"Slot-heavy template {slot_heavy['name']} underperforms with {slot_heavy['slot_count']} inferred motif slots. Tighten slot compatibility checks or narrow allowed motifs."
+        )
+    val_median = loss_distribution["validation"]["median"]
+    train_median = loss_distribution["training"]["median"]
+    if (
+        val_median is not None
+        and train_median is not None
+        and val_median > train_median * 1.15
+    ):
+        recommendations.append(
+            f"Validation loss ratio median ({val_median:.3f}) is materially worse than training median ({train_median:.3f}). Improve generalization gates or reduce brittle template/motif combinations."
+        )
+    best = ranked["top_templates"][0] if ranked["top_templates"] else None
+    if best:
+        best_loss = (
+            f"{best['avg_loss_ratio']:.3f}"
+            if best["avg_loss_ratio"] is not None
+            else "n/a"
+        )
+        recommendations.append(
+            f"Exploit {best['name']} more aggressively: S1 {(best['s1_rate'] * 100):.1f}% with avg loss {best_loss}."
+        )
+
+
+def _append_slot_recommendations(
+    recommendations: List[str], slot_rows: list[Dict[str, Any]]
+) -> None:
+    weak_slot = next((row for row in slot_rows if (row["s1_rate"] or 0) < 0.15), None)
+    if weak_slot:
+        recommendations.append(
+            f"Weak slot {weak_slot['slot_key']} is collapsing candidate quality: S1 {(weak_slot['s1_rate'] * 100):.1f}% with motif {weak_slot['top_selected_motif'] or 'none'} and failures dominated by {weak_slot['top_failure_reason'] or 'unknown'}."
+        )
+
+
+def _append_signal_recommendations(
+    recommendations: List[str],
+    struggling_templates: list[Dict[str, Any]],
+    all_templates: list[Dict[str, Any]],
+    active_template_rows: list[Dict[str, Any]],
+    low_loss_template_families: list[Dict[str, Any]],
+) -> None:
+    routing_reprieve = _find_routing_reprieve(struggling_templates)
+    sparse_attention = _find_sparse_attention_template(all_templates)
+    induction_gap = _find_induction_gap(active_template_rows)
+    repeated_low_loss = _find_repeated_low_loss_family(low_loss_template_families)
+    if routing_reprieve is not None:
+        recommendations.append(
+            f"{routing_reprieve['name']} looks under-credited by short S1: fast lane positive on {(routing_reprieve['routing_fast_lane_positive_rate'] * 100):.1f}% of routing probes across {routing_reprieve['routing_fast_lane_runs']} runs. Treat it as a slow starter, not a dead template."
+        )
+    if sparse_attention is not None:
+        recommendations.append(
+            f"{sparse_attention['name']} is still data-sparse. Continue randomized weighting/backfills before trusting its rank or slot guidance."
+        )
+    if induction_gap is not None:
+        recommendations.append(
+            f"{induction_gap['name']} survives screening but still shows weak induction signal. Keep it in data-building mode, not champion mode."
+        )
+    if repeated_low_loss is not None:
+        recommendations.append(
+            f"{repeated_low_loss['name']} is a repeated low-loss family: {repeated_low_loss['repeated_low_loss_count']} S1 survivors at loss_ratio <= 0.45. Track it separately from benchmark-champion templates."
+        )
+
+
+def _find_routing_reprieve(rows: list[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    return next(
+        (
+            row
+            for row in rows
+            if (row.get("routing_fast_lane_runs") or 0) >= 3
+            and (row.get("routing_fast_lane_positive_rate") or 0) >= 0.5
+        ),
+        None,
+    )
+
+
+def _find_sparse_attention_template(
+    rows: list[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    return next(
+        (
+            row
+            for row in rows
+            if row["name"].startswith("attn_")
+            and str(row.get("evidence_level")) in {"insufficient", "sparse"}
+        ),
+        None,
+    )
+
+
+def _find_induction_gap(rows: list[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    return next(
+        (
+            row
+            for row in rows
+            if (row.get("avg_induction_screening_auc") or 0.0) < 0.02
+            and (row.get("n_used") or 0) >= 5
+            and (row.get("s1_rate") or 0.0) >= 0.2
+        ),
+        None,
+    )
+
+
+def _find_repeated_low_loss_family(
+    rows: list[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    return next(
+        (row for row in rows if (row.get("repeated_low_loss_count") or 0) >= 3),
+        None,
+    )
+
+
+def _trend_points_for_key(
+    buckets: list[Dict[str, Any]], group_key: str, item_key: str
+) -> list[Dict[str, Any]]:
+    points = []
+    for bucket in buckets:
+        item = bucket[group_key].get(item_key)
+        if not item or not item["n"]:
+            continue
+        points.append(
+            {
+                "timestamp": bucket["timestamp"],
+                "experiment_id": bucket.get("experiment_id"),
+                "s1_rate": item["s1"] / max(item["n"], 1),
+                "avg_loss_ratio": _mean_or_none(item["losses"]),
+            }
+        )
+    return points
+
+
+def _build_observability_trends(
+    owner: Any,
+    acc: _ObservabilityAccumulator,
+    top_templates: list[Dict[str, Any]],
+    slot_rows: list[Dict[str, Any]],
+) -> tuple[list[Dict[str, Any]], list[Dict[str, Any]], list[Dict[str, Any]]]:
+    buckets = sorted(
+        acc.experiment_buckets.values(),
+        key=lambda item: float(item.get("timestamp") or 0.0),
+    )[-20:]
+    template_trends = [
+        {"name": name, "points": points}
+        for name in [row["name"] for row in top_templates[:3]]
+        if (points := _trend_points_for_key(buckets, "templates", name))
+    ]
+    slot_trends = [
+        {"slot_key": key, "points": points}
+        for key in [row["slot_key"] for row in slot_rows[:3]]
+        if (points := _trend_points_for_key(buckets, "slots", key))
+    ]
+    loss_trends = [
+        {
+            "timestamp": bucket["timestamp"],
+            "experiment_id": bucket.get("experiment_id"),
+            "training_median": owner._percentile(bucket["training_losses"], 0.5),
+            "validation_median": owner._percentile(bucket["validation_losses"], 0.5),
+            "discovery_median": owner._percentile(bucket["discovery_losses"], 0.5),
+        }
+        for bucket in buckets
+    ]
+    return template_trends, slot_trends, loss_trends
+
+
+def _observability_summary(
+    acc: _ObservabilityAccumulator,
+    active_template_rows: list[Dict[str, Any]],
+    template_rows: list[Dict[str, Any]],
+    inactive_template_rows: list[Dict[str, Any]],
+    motif_rows: list[Dict[str, Any]],
+    low_loss_template_families: list[Dict[str, Any]],
+    slot_counts: Dict[str, int],
+    active_template_names: frozenset[str],
+) -> Dict[str, Any]:
+    return {
+        "avg_templates_per_graph": _mean_or_zero(acc.templates_per_graph),
+        "avg_motifs_per_graph": _mean_or_zero(acc.motifs_per_graph),
+        "templates_tracked": len(active_template_rows),
+        "templates_observed_total": len(template_rows),
+        "motifs_tracked": len(motif_rows),
+        "zero_slot_templates": sorted(
+            [
+                name
+                for name, count in slot_counts.items()
+                if count == 0 and name in active_template_names
+            ]
+        )[:10],
+        "inactive_templates_tracked": len(inactive_template_rows),
+        "inactive_template_names": sorted(
+            row["name"] for row in inactive_template_rows
+        )[:10],
+        "insufficient_templates": _count_evidence(active_template_rows, "insufficient"),
+        "sparse_templates": _count_evidence(active_template_rows, "sparse"),
+        "established_templates": _count_evidence(active_template_rows, "established"),
+        "routing_fast_lane_templates": sum(
+            1
+            for row in active_template_rows
+            if (row.get("routing_fast_lane_runs") or 0) > 0
+        ),
+        "routing_fast_lane_runs": sum(
+            int(row.get("routing_fast_lane_runs") or 0) for row in active_template_rows
+        ),
+        "routing_fast_lane_positive_templates": sum(
+            1
+            for row in active_template_rows
+            if (row.get("routing_fast_lane_positive_rate") or 0) >= 0.5
+            and (row.get("routing_fast_lane_runs") or 0) >= 3
+        ),
+        "repeated_low_loss_templates": [
+            row["name"] for row in low_loss_template_families
+        ],
+    }
+
+
+def _mean_or_zero(values: List[float]) -> float:
+    return sum(values) / len(values) if values else 0.0
+
+
+def _count_evidence(rows: list[Dict[str, Any]], level: str) -> int:
+    return sum(1 for row in rows if str(row.get("evidence_level")) == level)
+
+
 class _ObservabilityMixin:
     """Template observability + slot statistics."""
 
@@ -459,41 +1381,18 @@ class _ObservabilityMixin:
         self, rows: list, slot_counts: Dict[str, int]
     ) -> _ObservabilityAccumulator:
         """Parse rows and accumulate per-template/motif/slot statistics."""
-        template_stats: Dict[str, Dict[str, Any]] = {}
-        motif_stats: Dict[str, Dict[str, Any]] = {}
-        slot_stats: Dict[str, Dict[str, Any]] = {}
-        experiment_buckets: Dict[str, Dict[str, Any]] = {}
-        loss_values: List[float] = []
-        validation_losses: List[float] = []
-        discovery_losses: List[float] = []
-        motifs_per_graph: List[float] = []
-        templates_per_graph: List[float] = []
+        return self._accumulate_observability_stats_impl(rows, slot_counts)
 
+    def _accumulate_observability_stats_impl(
+        self, rows: list, slot_counts: Dict[str, int]
+    ) -> _ObservabilityAccumulator:
+        """Parse rows and accumulate per-template/motif/slot statistics."""
+        acc = _empty_observability_accumulator()
         for row in rows:
             if row["templates_json"] is not None:
-                try:
-                    templates = tuple(
-                        str(item)
-                        for item in (_json_loads(row["templates_json"]) or [])
-                        if item is not None
-                    )
-                except (json.JSONDecodeError, TypeError, ValueError):
-                    templates = ()
-                try:
-                    motifs = tuple(
-                        str(item)
-                        for item in (_json_loads(row["motifs_json"]) or [])
-                        if item is not None
-                    )
-                except (json.JSONDecodeError, TypeError, ValueError):
-                    motifs = ()
-                try:
-                    loaded_slots = _json_loads(row["slot_usage_json"]) or []
-                    slot_usage = tuple(
-                        item for item in loaded_slots if isinstance(item, dict)
-                    )
-                except (json.JSONDecodeError, TypeError, ValueError):
-                    slot_usage = ()
+                templates = _json_tuple(row["templates_json"])
+                motifs = _json_tuple(row["motifs_json"])
+                slot_usage = _json_slot_tuple(row["slot_usage_json"])
             else:
                 graph_json = resolve_graph_json_value(
                     self.conn,
@@ -503,424 +1402,29 @@ class _ObservabilityMixin:
                 templates, motifs, slot_usage = _cached_extract_observability_metadata(
                     graph_json
                 )
-            experiment_id = str(row["experiment_id"] or "")
-            exp_bucket = experiment_buckets.setdefault(
-                experiment_id or f"exp_{len(experiment_buckets)}",
-                {
-                    "experiment_id": experiment_id or None,
-                    "timestamp": float(row["timestamp"] or 0.0),
-                    "templates": {},
-                    "slots": {},
-                    "training_losses": [],
-                    "validation_losses": [],
-                    "discovery_losses": [],
-                },
+            bucket = _experiment_bucket(acc, row)
+            metrics = _observability_metric_values(row)
+            language_values = _language_control_values(row)
+            root_cause = _failure_root_cause(row)
+            loss_ratio = _finite_float(metrics.get("loss_ratio"))
+            acc.motifs_per_graph.append(float(len(motifs)))
+            acc.templates_per_graph.append(float(len(templates)))
+            _append_global_losses(acc, bucket, metrics)
+            _record_template_observations(
+                acc,
+                bucket,
+                templates,
+                row,
+                metrics,
+                language_values,
+                root_cause,
+                slot_counts,
             )
-            exp_bucket["timestamp"] = max(
-                float(exp_bucket.get("timestamp") or 0.0),
-                float(row["timestamp"] or 0.0),
+            _record_motif_observations(acc, motifs, row, loss_ratio, root_cause)
+            _record_slot_observations(
+                acc, bucket, slot_usage, row, metrics, language_values, root_cause
             )
-
-            motifs_per_graph.append(float(len(motifs)))
-            templates_per_graph.append(float(len(templates)))
-
-            loss_ratio = row["loss_ratio"]
-            validation_lr = row["validation_loss_ratio"]
-            discovery_lr = row["discovery_loss_ratio"]
-            novelty = row["novelty_score"]
-            novelty_confidence = row["novelty_confidence"]
-            induction_screening_auc = row["induction_screening_auc"]
-            binding_screening_auc = (
-                row["binding_curriculum_auc"]
-                if row["binding_curriculum_auc"] is not None
-                else row["binding_screening_auc"]
-            )
-            binding_screening_composite = row["binding_screening_composite"]
-            ar_legacy_auc = row["ar_legacy_auc"]
-            hellaswag_acc = row["hellaswag_acc"]
-            blimp_overall_accuracy = row["blimp_overall_accuracy"]
-            composite_score = row["composite_score"]
-            induction_intermediate_auc = row["induction_intermediate_auc"]
-            binding_intermediate_auc = row["binding_intermediate_auc"]
-            ar_curriculum_auc = row["ar_curriculum_auc_pair_final"]
-            ar_curriculum_retention = row["ar_curriculum_s0_retention"]
-            ar_curriculum_max_pass = row["ar_curriculum_max_passing_stage"]
-            language_control_values = {
-                "language_control_s05_sentence_assoc_score": row[
-                    "language_control_s05_sentence_assoc_score"
-                ],
-                "language_control_s05_binding_order_acc": row[
-                    "language_control_s05_binding_order_acc"
-                ],
-                "language_control_s05_binding_score": row[
-                    "language_control_s05_binding_score"
-                ],
-                "language_control_s10_sentence_assoc_score": row[
-                    "language_control_s10_sentence_assoc_score"
-                ],
-                "language_control_s10_binding_order_acc": row[
-                    "language_control_s10_binding_order_acc"
-                ],
-                "language_control_s10_binding_score": row[
-                    "language_control_s10_binding_score"
-                ],
-                "language_control_investigation_sentence_assoc_score": row[
-                    "language_control_investigation_sentence_assoc_score"
-                ],
-                "language_control_investigation_binding_order_acc": row[
-                    "language_control_investigation_binding_order_acc"
-                ],
-                "language_control_investigation_binding_score": row[
-                    "language_control_investigation_binding_score"
-                ],
-            }
-            jacobian_effective_rank = row["fp_jacobian_effective_rank"]
-            sensitivity_uniformity = row["fp_sensitivity_uniformity"]
-            erf_density = row["fp_jacobian_erf_density"]
-            id_collapse_rate = row["fp_id_collapse_rate"]
-            id_collapse_rate_normalized = row["fp_id_collapse_rate_normalized"]
-            erf_decay_slope = row["fp_jacobian_erf_decay_slope"]
-            erf_first_norm = row["fp_jacobian_erf_first_norm"]
-            erf_last_norm = row["fp_jacobian_erf_last_norm"]
-            logit_margin_velocity = row["fp_logit_margin_velocity"]
-            logit_margin_delta = row["fp_logit_margin_delta"]
-            erf_variance_log = row["fp_jacobian_erf_variance_log"]
-            spec_norm_log = row["fp_jacobian_spectral_norm_log"]
-            icld_velocity = row["fp_icld_velocity"]
-            icld_delta_loss = row["fp_icld_delta_loss"]
-            screening_hs_correct = row["screening_hellaswag_correct"]
-            screening_hs_total = row["screening_hellaswag_total"]
-            screening_wikitext_status = row["screening_wikitext_status"]
-            if loss_ratio is not None and math.isfinite(loss_ratio):
-                loss_values.append(float(loss_ratio))
-                exp_bucket["training_losses"].append(float(loss_ratio))
-            if validation_lr is not None and math.isfinite(validation_lr):
-                validation_losses.append(float(validation_lr))
-                exp_bucket["validation_losses"].append(float(validation_lr))
-            if discovery_lr is not None and math.isfinite(discovery_lr):
-                discovery_losses.append(float(discovery_lr))
-                exp_bucket["discovery_losses"].append(float(discovery_lr))
-
-            failure_details = {}
-            raw_failure = row["failure_details_json"]
-            if raw_failure:
-                try:
-                    failure_details = (
-                        _json_loads(raw_failure)
-                        if isinstance(raw_failure, str)
-                        else raw_failure
-                    )
-                except (json.JSONDecodeError, TypeError, ValueError):
-                    failure_details = {}
-            root_cause = (
-                failure_details.get("root_cause_code")
-                or row["error_type"]
-                or row["stage_at_death"]
-                or "unknown"
-            )
-
-            for template in templates:
-                stat = template_stats.setdefault(
-                    str(template),
-                    _empty_template_stat(
-                        name=str(template),
-                        slot_count=slot_counts.get(str(template), 0),
-                    ),
-                )
-                stat["n_used"] += 1
-                stat["n_stage0"] += 1 if row["stage0_passed"] else 0
-                stat["n_stage05"] += 1 if row["stage05_passed"] else 0
-                stat["n_stage1"] += 1 if row["stage1_passed"] else 0
-                fingerprint = str(row["graph_fingerprint"] or "").strip()
-                if fingerprint:
-                    stat["fingerprints"].add(fingerprint)
-                    if row["stage1_passed"]:
-                        stat["stage1_fingerprints"].add(fingerprint)
-                if loss_ratio is not None and math.isfinite(loss_ratio):
-                    stat["losses"].append(float(loss_ratio))
-                    if row["stage1_passed"]:
-                        stat["stage1_losses"].append(float(loss_ratio))
-                if validation_lr is not None and math.isfinite(validation_lr):
-                    stat["validation_losses"].append(float(validation_lr))
-                if discovery_lr is not None and math.isfinite(discovery_lr):
-                    stat["discovery_losses"].append(float(discovery_lr))
-                if novelty is not None and math.isfinite(novelty):
-                    stat["novelties"].append(float(novelty))
-                if novelty_confidence is not None and math.isfinite(novelty_confidence):
-                    stat["novelty_confidences"].append(float(novelty_confidence))
-                if induction_screening_auc is not None and math.isfinite(
-                    induction_screening_auc
-                ):
-                    stat["induction_screening_aucs"].append(
-                        float(induction_screening_auc)
-                    )
-                if binding_screening_auc is not None and math.isfinite(
-                    binding_screening_auc
-                ):
-                    stat["binding_screening_aucs"].append(float(binding_screening_auc))
-                if binding_screening_composite is not None and math.isfinite(
-                    binding_screening_composite
-                ):
-                    stat["binding_screening_composites"].append(
-                        float(binding_screening_composite)
-                    )
-                if ar_legacy_auc is not None and math.isfinite(ar_legacy_auc):
-                    stat["ar_legacy_aucs"].append(float(ar_legacy_auc))
-                if hellaswag_acc is not None and math.isfinite(hellaswag_acc):
-                    stat["hellaswag_accs"].append(float(hellaswag_acc))
-                if blimp_overall_accuracy is not None and math.isfinite(
-                    blimp_overall_accuracy
-                ):
-                    stat["blimp_overall_accuracies"].append(
-                        float(blimp_overall_accuracy)
-                    )
-                if composite_score is not None and math.isfinite(composite_score):
-                    stat["composite_scores"].append(float(composite_score))
-                if induction_intermediate_auc is not None and math.isfinite(
-                    induction_intermediate_auc
-                ):
-                    stat["induction_intermediate_aucs"].append(
-                        float(induction_intermediate_auc)
-                    )
-                if binding_intermediate_auc is not None and math.isfinite(
-                    binding_intermediate_auc
-                ):
-                    stat["binding_intermediate_aucs"].append(
-                        float(binding_intermediate_auc)
-                    )
-                if ar_curriculum_auc is not None and math.isfinite(ar_curriculum_auc):
-                    stat["ar_curriculum_aucs"].append(float(ar_curriculum_auc))
-                if ar_curriculum_retention is not None and math.isfinite(
-                    ar_curriculum_retention
-                ):
-                    stat["ar_curriculum_retentions"].append(
-                        float(ar_curriculum_retention)
-                    )
-                if ar_curriculum_max_pass is not None:
-                    stat["ar_curriculum_max_passes"].append(int(ar_curriculum_max_pass))
-                _append_language_control_metrics(stat, language_control_values)
-                if erf_density is not None and math.isfinite(erf_density):
-                    stat["erf_densities"].append(float(erf_density))
-                if id_collapse_rate is not None and math.isfinite(id_collapse_rate):
-                    stat["id_collapse_rates"].append(float(id_collapse_rate))
-                if id_collapse_rate_normalized is not None and math.isfinite(
-                    id_collapse_rate_normalized
-                ):
-                    stat["id_collapse_rate_normalizeds"].append(
-                        float(id_collapse_rate_normalized)
-                    )
-                if erf_decay_slope is not None and math.isfinite(erf_decay_slope):
-                    stat["erf_decay_slopes"].append(float(erf_decay_slope))
-                if erf_first_norm is not None and math.isfinite(erf_first_norm):
-                    stat["erf_first_norms"].append(float(erf_first_norm))
-                if erf_last_norm is not None and math.isfinite(erf_last_norm):
-                    stat["erf_last_norms"].append(float(erf_last_norm))
-                if logit_margin_velocity is not None and math.isfinite(
-                    logit_margin_velocity
-                ):
-                    stat["logit_margin_velocities"].append(float(logit_margin_velocity))
-                if logit_margin_delta is not None and math.isfinite(logit_margin_delta):
-                    stat["logit_margin_deltas"].append(float(logit_margin_delta))
-                if erf_variance_log is not None and math.isfinite(erf_variance_log):
-                    stat["erf_variance_logs"].append(float(erf_variance_log))
-                if spec_norm_log is not None and math.isfinite(spec_norm_log):
-                    stat["spec_norm_logs"].append(float(spec_norm_log))
-                if icld_velocity is not None and math.isfinite(icld_velocity):
-                    stat["icld_velocities"].append(float(icld_velocity))
-                if icld_delta_loss is not None and math.isfinite(icld_delta_loss):
-                    stat["icld_delta_losses"].append(float(icld_delta_loss))
-                if jacobian_effective_rank is not None and math.isfinite(
-                    jacobian_effective_rank
-                ):
-                    stat["jacobian_effective_ranks"].append(
-                        float(jacobian_effective_rank)
-                    )
-                if sensitivity_uniformity is not None and math.isfinite(
-                    sensitivity_uniformity
-                ):
-                    stat["sensitivity_uniformities"].append(
-                        float(sensitivity_uniformity)
-                    )
-                if (
-                    screening_hs_correct is not None
-                    and screening_hs_total is not None
-                    and screening_hs_total
-                ):
-                    stat["screening_hellaswag_accs"].append(
-                        float(screening_hs_correct)
-                        / max(float(screening_hs_total), 1.0)
-                    )
-                if screening_wikitext_status is not None:
-                    stat["screening_wikitext_runs"] += 1
-                    if str(screening_wikitext_status) == "ok":
-                        stat["screening_wikitext_ok"] += 1
-                if row["routing_fast_lane_applied"]:
-                    stat["routing_fast_lane_runs"] += 1
-                    if row["routing_fast_lane_status"] == "ok":
-                        stat["routing_fast_lane_ok"] += 1
-                    lane_score = row["routing_fast_lane_score"]
-                    lane_improvement = row["routing_fast_lane_ppl_improvement"]
-                    lane_slope = row["routing_fast_lane_slope"]
-                    slope_consistent = bool(row["routing_fast_lane_slope_consistent"])
-                    if lane_score is not None and math.isfinite(lane_score):
-                        stat["routing_fast_lane_scores"].append(float(lane_score))
-                    if lane_improvement is not None and math.isfinite(lane_improvement):
-                        stat["routing_fast_lane_improvements"].append(
-                            float(lane_improvement)
-                        )
-                    if lane_slope is not None and math.isfinite(lane_slope):
-                        stat["routing_fast_lane_slopes"].append(float(lane_slope))
-                    if (
-                        lane_improvement is not None and float(lane_improvement) < 0.98
-                    ) or (
-                        lane_slope is not None
-                        and float(lane_slope) > 0
-                        and slope_consistent
-                    ):
-                        stat["routing_fast_lane_positive"] += 1
-                if not row["stage1_passed"]:
-                    stat["failure_reasons"][root_cause] = (
-                        stat["failure_reasons"].get(root_cause, 0) + 1
-                    )
-                exp_tpl = exp_bucket["templates"].setdefault(
-                    str(template),
-                    {"n": 0, "s1": 0, "losses": []},
-                )
-                exp_tpl["n"] += 1
-                exp_tpl["s1"] += 1 if row["stage1_passed"] else 0
-                if loss_ratio is not None and math.isfinite(loss_ratio):
-                    exp_tpl["losses"].append(float(loss_ratio))
-
-            for motif in motifs:
-                mstat = motif_stats.setdefault(
-                    str(motif),
-                    {
-                        "name": str(motif),
-                        "n_used": 0,
-                        "n_stage1": 0,
-                        "losses": [],
-                        "failure_reasons": {},
-                    },
-                )
-                mstat["n_used"] += 1
-                mstat["n_stage1"] += 1 if row["stage1_passed"] else 0
-                if loss_ratio is not None and math.isfinite(loss_ratio):
-                    mstat["losses"].append(float(loss_ratio))
-                if not row["stage1_passed"]:
-                    mstat["failure_reasons"][root_cause] = (
-                        mstat["failure_reasons"].get(root_cause, 0) + 1
-                    )
-
-            for slot in slot_usage:
-                if not isinstance(slot, dict):
-                    continue
-                slot_key = str(
-                    slot.get("slot_key")
-                    or f"{slot.get('template_name', 'unknown')}.slot{slot.get('slot_index', 0)}"
-                )
-                sstat = slot_stats.setdefault(
-                    slot_key,
-                    {
-                        "slot_key": slot_key,
-                        "template_name": str(slot.get("template_name") or "unknown"),
-                        "slot_index": int(slot.get("slot_index") or 0),
-                        "slot_classes": list(slot.get("slot_classes") or []),
-                        "n_used": 0,
-                        "n_stage1": 0,
-                        "losses": [],
-                        "composite_scores": [],
-                        "induction_screening_aucs": [],
-                        "induction_intermediate_aucs": [],
-                        "binding_screening_aucs": [],
-                        "binding_screening_composites": [],
-                        "binding_intermediate_aucs": [],
-                        "ar_legacy_aucs": [],
-                        "language_control_metrics": _empty_language_control_metrics(),
-                        "ar_curriculum_aucs": [],
-                        "ar_curriculum_retentions": [],
-                        "ar_curriculum_max_passes": [],
-                        "failure_reasons": {},
-                        "selected_motifs": {},
-                    },
-                )
-                sstat["n_used"] += 1
-                sstat["n_stage1"] += 1 if row["stage1_passed"] else 0
-                if loss_ratio is not None and math.isfinite(loss_ratio):
-                    sstat["losses"].append(float(loss_ratio))
-                if composite_score is not None and math.isfinite(composite_score):
-                    sstat["composite_scores"].append(float(composite_score))
-                if induction_screening_auc is not None and math.isfinite(
-                    induction_screening_auc
-                ):
-                    sstat["induction_screening_aucs"].append(
-                        float(induction_screening_auc)
-                    )
-                if induction_intermediate_auc is not None and math.isfinite(
-                    induction_intermediate_auc
-                ):
-                    sstat["induction_intermediate_aucs"].append(
-                        float(induction_intermediate_auc)
-                    )
-                if binding_screening_auc is not None and math.isfinite(
-                    binding_screening_auc
-                ):
-                    sstat["binding_screening_aucs"].append(float(binding_screening_auc))
-                if binding_screening_composite is not None and math.isfinite(
-                    binding_screening_composite
-                ):
-                    sstat["binding_screening_composites"].append(
-                        float(binding_screening_composite)
-                    )
-                if binding_intermediate_auc is not None and math.isfinite(
-                    binding_intermediate_auc
-                ):
-                    sstat["binding_intermediate_aucs"].append(
-                        float(binding_intermediate_auc)
-                    )
-                if ar_legacy_auc is not None and math.isfinite(ar_legacy_auc):
-                    sstat["ar_legacy_aucs"].append(float(ar_legacy_auc))
-                if ar_curriculum_auc is not None and math.isfinite(ar_curriculum_auc):
-                    sstat["ar_curriculum_aucs"].append(float(ar_curriculum_auc))
-                if ar_curriculum_retention is not None and math.isfinite(
-                    ar_curriculum_retention
-                ):
-                    sstat["ar_curriculum_retentions"].append(
-                        float(ar_curriculum_retention)
-                    )
-                if ar_curriculum_max_pass is not None:
-                    sstat["ar_curriculum_max_passes"].append(
-                        int(ar_curriculum_max_pass)
-                    )
-                _append_language_control_metrics(sstat, language_control_values)
-                motif_name = slot.get("selected_motif")
-                if motif_name:
-                    sstat["selected_motifs"][str(motif_name)] = (
-                        sstat["selected_motifs"].get(str(motif_name), 0) + 1
-                    )
-                if not row["stage1_passed"]:
-                    sstat["failure_reasons"][root_cause] = (
-                        sstat["failure_reasons"].get(root_cause, 0) + 1
-                    )
-                exp_slot = exp_bucket["slots"].setdefault(
-                    slot_key,
-                    {"n": 0, "s1": 0, "losses": []},
-                )
-                exp_slot["n"] += 1
-                exp_slot["s1"] += 1 if row["stage1_passed"] else 0
-                if loss_ratio is not None and math.isfinite(loss_ratio):
-                    exp_slot["losses"].append(float(loss_ratio))
-
-        return _ObservabilityAccumulator(
-            template_stats=template_stats,
-            motif_stats=motif_stats,
-            slot_stats=slot_stats,
-            experiment_buckets=experiment_buckets,
-            loss_values=loss_values,
-            validation_losses=validation_losses,
-            discovery_losses=discovery_losses,
-            motifs_per_graph=motifs_per_graph,
-            templates_per_graph=templates_per_graph,
-        )
+        return acc
 
     def _assemble_observability_result(
         self,
@@ -929,427 +1433,41 @@ class _ObservabilityMixin:
         limit: int,
     ) -> Dict[str, Any]:
         """Sort, rank, and assemble the final observability result dict."""
-        active_template_names = frozenset(_discover_template_names())
-        template_stats = dict(acc.template_stats)
-        for name in active_template_names:
-            template_stats.setdefault(
-                str(name),
-                _empty_template_stat(
-                    name=str(name),
-                    slot_count=slot_counts.get(str(name), 0),
-                ),
-            )
-        template_rows = [
-            _summarize_template_stat(stat) for stat in template_stats.values()
-        ]
-        reference_baselines = _reference_metric_baselines(template_rows)
-        for row in template_rows:
-            row["capability_signal_count"] = _capability_signal_count(row)
-            row["reference_beating_metrics"] = _reference_beating_metrics(
-                row, reference_baselines
-            )
-            row["structural_category"] = _template_label_from_evidence(
-                row, reference_baselines
-            )
-        active_template_rows = [
-            row for row in template_rows if row["name"] in active_template_names
-        ]
-        inactive_template_rows = [
-            row
-            for row in template_rows
-            if row["name"] not in active_template_names and row["n_used"] > 0
-        ]
-        top_templates = sorted(
+        return self._assemble_observability_result_impl(acc, slot_counts, limit)
+
+    def _assemble_observability_result_impl(
+        self,
+        acc: _ObservabilityAccumulator,
+        slot_counts: Dict[str, int],
+        limit: int,
+    ) -> Dict[str, Any]:
+        """Sort, rank, and assemble the final observability result dict."""
+        (
+            active_template_names,
+            template_rows,
             active_template_rows,
-            key=lambda row: (
-                -(row["s1_rate"] or 0.0),
-                row["avg_validation_loss_ratio"]
-                if row["avg_validation_loss_ratio"] is not None
-                else row["avg_loss_ratio"]
-                if row["avg_loss_ratio"] is not None
-                else 999.0,
-                -(row["n_used"] or 0),
-            ),
-        )[:limit]
-        struggling_templates = sorted(
-            [row for row in active_template_rows if row["n_used"] >= 3],
-            key=lambda row: (
-                row["s1_rate"] or 0.0,
-                row["avg_validation_loss_ratio"]
-                if row["avg_validation_loss_ratio"] is not None
-                else row["avg_loss_ratio"]
-                if row["avg_loss_ratio"] is not None
-                else 999.0,
-                -(row["n_used"] or 0),
-            ),
-        )[:limit]
-        all_templates = sorted(
-            active_template_rows,
-            key=lambda row: (
-                {
-                    "insufficient": 0,
-                    "sparse": 1,
-                    "building": 2,
-                    "established": 3,
-                }.get(str(row.get("evidence_level") or ""), 0),
-                row["s1_rate"] if row["s1_rate"] is not None else -1.0,
-                -(row["n_used"] or 0),
-                row["name"],
-            ),
-        )
-        inactive_templates = sorted(
             inactive_template_rows,
-            key=lambda row: (-(row["n_used"] or 0), row["name"]),
+        ) = _prepare_template_rows(acc, slot_counts)
+        ranked = _rank_template_rows(
+            active_template_rows, inactive_template_rows, limit
         )
-        low_loss_template_families = sorted(
-            [
-                row
-                for row in active_template_rows
-                if row.get("repeated_low_loss_family")
-            ],
-            key=lambda row: (
-                -(row.get("repeated_low_loss_count") or 0),
-                row["best_loss_ratio"] if row["best_loss_ratio"] is not None else 999.0,
-                -(row["n_used"] or 0),
-            ),
-        )[:limit]
-
-        motif_rows = []
-        for stat in acc.motif_stats.values():
-            losses = stat["losses"]
-            reasons = stat["failure_reasons"]
-            top_reason = (
-                max(reasons.items(), key=lambda item: item[1])[0] if reasons else None
-            )
-            motif_rows.append(
-                {
-                    "name": stat["name"],
-                    "n_used": stat["n_used"],
-                    "s1_rate": stat["n_stage1"] / max(stat["n_used"], 1),
-                    "avg_loss_ratio": sum(losses) / len(losses) if losses else None,
-                    "top_failure_reason": top_reason,
-                }
-            )
-        motif_rows = sorted(
-            [row for row in motif_rows if row["n_used"] >= 2],
-            key=lambda row: (-(row["n_used"] or 0), row["avg_loss_ratio"] or 999.0),
-        )[:limit]
-
-        slot_rows = []
-        for stat in acc.slot_stats.values():
-            reasons = stat["failure_reasons"]
-            selected = stat["selected_motifs"]
-            top_reason = (
-                max(reasons.items(), key=lambda item: item[1])[0] if reasons else None
-            )
-            top_motif = (
-                max(selected.items(), key=lambda item: item[1])[0] if selected else None
-            )
-            slot_rows.append(
-                {
-                    "slot_key": stat["slot_key"],
-                    "template_name": stat["template_name"],
-                    "slot_index": stat["slot_index"],
-                    "slot_classes": stat["slot_classes"],
-                    "n_used": stat["n_used"],
-                    "s1_rate": stat["n_stage1"] / max(stat["n_used"], 1),
-                    "avg_composite_score": (
-                        sum(stat["composite_scores"]) / len(stat["composite_scores"])
-                        if stat.get("composite_scores")
-                        else None
-                    ),
-                    "avg_loss_ratio": (
-                        sum(stat["losses"]) / len(stat["losses"])
-                        if stat["losses"]
-                        else None
-                    ),
-                    "avg_induction_screening_auc": (
-                        sum(stat["induction_screening_aucs"])
-                        / len(stat["induction_screening_aucs"])
-                        if stat.get("induction_screening_aucs")
-                        else None
-                    ),
-                    "avg_induction_intermediate_auc": (
-                        sum(stat["induction_intermediate_aucs"])
-                        / len(stat["induction_intermediate_aucs"])
-                        if stat.get("induction_intermediate_aucs")
-                        else None
-                    ),
-                    "avg_binding_screening_auc": (
-                        sum(stat["binding_screening_aucs"])
-                        / len(stat["binding_screening_aucs"])
-                        if stat.get("binding_screening_aucs")
-                        else None
-                    ),
-                    "avg_binding_screening_composite": (
-                        sum(stat["binding_screening_composites"])
-                        / len(stat["binding_screening_composites"])
-                        if stat.get("binding_screening_composites")
-                        else None
-                    ),
-                    "avg_binding_intermediate_auc": (
-                        sum(stat["binding_intermediate_aucs"])
-                        / len(stat["binding_intermediate_aucs"])
-                        if stat.get("binding_intermediate_aucs")
-                        else None
-                    ),
-                    "avg_ar_legacy_auc": (
-                        sum(stat["ar_legacy_aucs"]) / len(stat["ar_legacy_aucs"])
-                        if stat.get("ar_legacy_aucs")
-                        else None
-                    ),
-                    "avg_ar_curriculum_auc_pair_final": (
-                        sum(stat["ar_curriculum_aucs"])
-                        / len(stat["ar_curriculum_aucs"])
-                        if stat.get("ar_curriculum_aucs")
-                        else None
-                    ),
-                    "avg_ar_curriculum_s0_retention": (
-                        sum(stat["ar_curriculum_retentions"])
-                        / len(stat["ar_curriculum_retentions"])
-                        if stat.get("ar_curriculum_retentions")
-                        else None
-                    ),
-                    "avg_ar_curriculum_max_passing_stage": (
-                        sum(stat["ar_curriculum_max_passes"])
-                        / len(stat["ar_curriculum_max_passes"])
-                        if stat.get("ar_curriculum_max_passes")
-                        else None
-                    ),
-                    "n_ar_curriculum": len(stat.get("ar_curriculum_aucs") or []),
-                    **_summarize_language_control_metrics(stat),
-                    "top_failure_reason": top_reason,
-                    "top_selected_motif": top_motif,
-                }
-            )
-        all_slot_rows = sorted(
-            [
-                row
-                for row in slot_rows
-                if row["template_name"] in active_template_names
-                and (
-                    int(slot_counts.get(row["template_name"], 0) or 0) <= 0
-                    or row["slot_index"]
-                    < int(slot_counts.get(row["template_name"], 0) or 0)
-                )
-            ],
-            key=lambda row: (
-                row["template_name"],
-                row["slot_index"],
-                row["slot_key"],
-            ),
+        motif_rows = _summarize_motif_rows(acc, limit)
+        all_slot_rows, slot_rows = _summarize_slot_rows(
+            acc, active_template_names, slot_counts, limit
         )
-        slot_rows = sorted(
-            [row for row in all_slot_rows if row["n_used"] >= 2],
-            key=lambda row: (
-                row["s1_rate"] if row["s1_rate"] is not None else 1.0,
-                row["avg_loss_ratio"] if row["avg_loss_ratio"] is not None else 999.0,
-                -(row["n_used"] or 0),
-            ),
-        )[:limit]
-
-        loss_distribution = {
-            "training": {
-                "median": self._percentile(acc.loss_values, 0.5),
-                "p25": self._percentile(acc.loss_values, 0.25),
-                "p75": self._percentile(acc.loss_values, 0.75),
-            },
-            "validation": {
-                "median": self._percentile(acc.validation_losses, 0.5),
-                "p25": self._percentile(acc.validation_losses, 0.25),
-                "p75": self._percentile(acc.validation_losses, 0.75),
-            },
-            "discovery": {
-                "median": self._percentile(acc.discovery_losses, 0.5),
-                "p25": self._percentile(acc.discovery_losses, 0.25),
-                "p75": self._percentile(acc.discovery_losses, 0.75),
-            },
-        }
-
-        recommendations: List[str] = []
-        weak = next(
-            (row for row in struggling_templates if (row["s1_rate"] or 0) < 0.15), None
+        loss_distribution = _observability_loss_distribution(self, acc)
+        recommendations = _build_observability_recommendations(
+            ranked, active_template_rows, slot_rows, loss_distribution
         )
-        if weak:
-            recommendations.append(
-                f"{weak['name']} is over-sampled relative to quality: S1 {(weak['s1_rate'] * 100):.1f}% over {weak['n_used']} runs. Reduce weight or harden motifs for {weak['top_failure_reason'] or 'unknown failures'}."
-            )
-        slot_heavy = next(
-            (
-                row
-                for row in struggling_templates
-                if (row.get("slot_count") or 0) >= 3
-                and (row.get("s1_rate") or 0) < 0.25
-            ),
-            None,
+        template_trends, slot_trends, loss_trends = _build_observability_trends(
+            self, acc, ranked["top_templates"], slot_rows
         )
-        if slot_heavy:
-            recommendations.append(
-                f"Slot-heavy template {slot_heavy['name']} underperforms with {slot_heavy['slot_count']} inferred motif slots. Tighten slot compatibility checks or narrow allowed motifs."
-            )
-        val_median = loss_distribution["validation"]["median"]
-        train_median = loss_distribution["training"]["median"]
-        if (
-            val_median is not None
-            and train_median is not None
-            and val_median > train_median * 1.15
-        ):
-            recommendations.append(
-                f"Validation loss ratio median ({val_median:.3f}) is materially worse than training median ({train_median:.3f}). Improve generalization gates or reduce brittle template/motif combinations."
-            )
-        best = top_templates[0] if top_templates else None
-        if best:
-            best_loss = (
-                f"{best['avg_loss_ratio']:.3f}"
-                if best["avg_loss_ratio"] is not None
-                else "n/a"
-            )
-            recommendations.append(
-                f"Exploit {best['name']} more aggressively: S1 {(best['s1_rate'] * 100):.1f}% with avg loss {best_loss}."
-            )
-
-        weak_slot = next(
-            (row for row in slot_rows if (row["s1_rate"] or 0) < 0.15), None
-        )
-        if weak_slot:
-            recommendations.append(
-                f"Weak slot {weak_slot['slot_key']} is collapsing candidate quality: S1 {(weak_slot['s1_rate'] * 100):.1f}% with motif {weak_slot['top_selected_motif'] or 'none'} and failures dominated by {weak_slot['top_failure_reason'] or 'unknown'}."
-            )
-
-        routing_reprieve = next(
-            (
-                row
-                for row in struggling_templates
-                if (row.get("routing_fast_lane_runs") or 0) >= 3
-                and (row.get("routing_fast_lane_positive_rate") or 0) >= 0.5
-            ),
-            None,
-        )
-        if routing_reprieve:
-            recommendations.append(
-                f"{routing_reprieve['name']} looks under-credited by short S1: fast lane positive on {(routing_reprieve['routing_fast_lane_positive_rate'] * 100):.1f}% of routing probes across {routing_reprieve['routing_fast_lane_runs']} runs. Treat it as a slow starter, not a dead template."
-            )
-        sparse_attention = next(
-            (
-                row
-                for row in all_templates
-                if row["name"].startswith("attn_")
-                and str(row.get("evidence_level")) in {"insufficient", "sparse"}
-            ),
-            None,
-        )
-        if sparse_attention:
-            recommendations.append(
-                f"{sparse_attention['name']} is still data-sparse. Continue randomized weighting/backfills before trusting its rank or slot guidance."
-            )
-        induction_gap = next(
-            (
-                row
-                for row in active_template_rows
-                if (row.get("avg_induction_screening_auc") or 0.0) < 0.02
-                and (row.get("n_used") or 0) >= 5
-                and (row.get("s1_rate") or 0.0) >= 0.2
-            ),
-            None,
-        )
-        if induction_gap:
-            recommendations.append(
-                f"{induction_gap['name']} survives screening but still shows weak induction signal. Keep it in data-building mode, not champion mode."
-            )
-        repeated_low_loss = next(
-            (
-                row
-                for row in low_loss_template_families
-                if (row.get("repeated_low_loss_count") or 0) >= 3
-            ),
-            None,
-        )
-        if repeated_low_loss:
-            recommendations.append(
-                f"{repeated_low_loss['name']} is a repeated low-loss family: {repeated_low_loss['repeated_low_loss_count']} S1 survivors at loss_ratio <= 0.45. Track it separately from benchmark-champion templates."
-            )
-
-        zero_slot_templates = sorted(
-            [
-                name
-                for name, count in slot_counts.items()
-                if count == 0 and name in active_template_names
-            ]
-        )[:10]
-
-        sorted_buckets = sorted(
-            acc.experiment_buckets.values(),
-            key=lambda item: float(item.get("timestamp") or 0.0),
-        )[-20:]
-        top_template_names = [row["name"] for row in top_templates[:3]]
-        weak_slot_keys = [row["slot_key"] for row in slot_rows[:3]]
-
-        template_trends = []
-        for name in top_template_names:
-            points = []
-            for bucket in sorted_buckets:
-                item = bucket["templates"].get(name)
-                if not item or not item["n"]:
-                    continue
-                points.append(
-                    {
-                        "timestamp": bucket["timestamp"],
-                        "experiment_id": bucket.get("experiment_id"),
-                        "s1_rate": item["s1"] / max(item["n"], 1),
-                        "avg_loss_ratio": (
-                            sum(item["losses"]) / len(item["losses"])
-                            if item["losses"]
-                            else None
-                        ),
-                    }
-                )
-            if points:
-                template_trends.append({"name": name, "points": points})
-
-        slot_trends = []
-        for key in weak_slot_keys:
-            points = []
-            for bucket in sorted_buckets:
-                item = bucket["slots"].get(key)
-                if not item or not item["n"]:
-                    continue
-                points.append(
-                    {
-                        "timestamp": bucket["timestamp"],
-                        "experiment_id": bucket.get("experiment_id"),
-                        "s1_rate": item["s1"] / max(item["n"], 1),
-                        "avg_loss_ratio": (
-                            sum(item["losses"]) / len(item["losses"])
-                            if item["losses"]
-                            else None
-                        ),
-                    }
-                )
-            if points:
-                slot_trends.append({"slot_key": key, "points": points})
-
-        loss_trends = []
-        for bucket in sorted_buckets:
-            loss_trends.append(
-                {
-                    "timestamp": bucket["timestamp"],
-                    "experiment_id": bucket.get("experiment_id"),
-                    "training_median": self._percentile(bucket["training_losses"], 0.5),
-                    "validation_median": self._percentile(
-                        bucket["validation_losses"], 0.5
-                    ),
-                    "discovery_median": self._percentile(
-                        bucket["discovery_losses"], 0.5
-                    ),
-                }
-            )
-
         return {
-            "top_templates": top_templates,
-            "struggling_templates": struggling_templates,
-            "all_templates": all_templates,
-            "low_loss_template_families": low_loss_template_families,
-            "inactive_templates": inactive_templates,
+            "top_templates": ranked["top_templates"],
+            "struggling_templates": ranked["struggling_templates"],
+            "all_templates": ranked["all_templates"],
+            "low_loss_template_families": ranked["low_loss_template_families"],
+            "inactive_templates": ranked["inactive_templates"],
             "all_slots": all_slot_rows,
             "motif_slots": motif_rows,
             "slot_observability": slot_rows,
@@ -1357,60 +1475,17 @@ class _ObservabilityMixin:
             "template_trends": template_trends,
             "slot_trends": slot_trends,
             "loss_trends": loss_trends,
-            "recommendations": recommendations[:6],
-            "summary": {
-                "avg_templates_per_graph": (
-                    sum(acc.templates_per_graph) / len(acc.templates_per_graph)
-                    if acc.templates_per_graph
-                    else 0.0
-                ),
-                "avg_motifs_per_graph": (
-                    sum(acc.motifs_per_graph) / len(acc.motifs_per_graph)
-                    if acc.motifs_per_graph
-                    else 0.0
-                ),
-                "templates_tracked": len(active_template_rows),
-                "templates_observed_total": len(template_rows),
-                "motifs_tracked": len(motif_rows),
-                "zero_slot_templates": zero_slot_templates,
-                "inactive_templates_tracked": len(inactive_template_rows),
-                "inactive_template_names": sorted(
-                    row["name"] for row in inactive_template_rows
-                )[:10],
-                "insufficient_templates": sum(
-                    1
-                    for row in active_template_rows
-                    if str(row.get("evidence_level")) == "insufficient"
-                ),
-                "sparse_templates": sum(
-                    1
-                    for row in active_template_rows
-                    if str(row.get("evidence_level")) == "sparse"
-                ),
-                "established_templates": sum(
-                    1
-                    for row in active_template_rows
-                    if str(row.get("evidence_level")) == "established"
-                ),
-                "routing_fast_lane_templates": sum(
-                    1
-                    for row in active_template_rows
-                    if (row.get("routing_fast_lane_runs") or 0) > 0
-                ),
-                "routing_fast_lane_runs": sum(
-                    int(row.get("routing_fast_lane_runs") or 0)
-                    for row in active_template_rows
-                ),
-                "routing_fast_lane_positive_templates": sum(
-                    1
-                    for row in active_template_rows
-                    if (row.get("routing_fast_lane_positive_rate") or 0) >= 0.5
-                    and (row.get("routing_fast_lane_runs") or 0) >= 3
-                ),
-                "repeated_low_loss_templates": [
-                    row["name"] for row in low_loss_template_families
-                ],
-            },
+            "recommendations": recommendations,
+            "summary": _observability_summary(
+                acc,
+                active_template_rows,
+                template_rows,
+                inactive_template_rows,
+                motif_rows,
+                ranked["low_loss_template_families"],
+                slot_counts,
+                active_template_names,
+            ),
         }
 
     # ── Training Curves ──

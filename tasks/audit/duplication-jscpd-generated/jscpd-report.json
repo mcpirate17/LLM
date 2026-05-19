@@ -1,0 +1,1669 @@
+{
+  "statistics": {
+    "detectionDate": "2026-05-18T20:28:14.810Z",
+    "formats": {
+      "json": {
+        "sources": {
+          "aria_designer/workflows/generated/wf_predator_v1.json": {
+            "lines": 378,
+            "tokens": 2100,
+            "sources": 1,
+            "clones": 2,
+            "duplicatedLines": 374,
+            "duplicatedTokens": 2071,
+            "percentage": 98.94,
+            "percentageTokens": 98.62,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "aria_designer/workflows/generated/wf_predator_moe_v1.json": {
+            "lines": 381,
+            "tokens": 2115,
+            "sources": 1,
+            "clones": 2,
+            "duplicatedLines": 374,
+            "duplicatedTokens": 2071,
+            "percentage": 98.16,
+            "percentageTokens": 97.92,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "aria_designer/workflows/generated/wf_pred_d.json": {
+            "lines": 332,
+            "tokens": 1839,
+            "sources": 1,
+            "clones": 6,
+            "duplicatedLines": 304,
+            "duplicatedTokens": 1644,
+            "percentage": 91.57,
+            "percentageTokens": 89.4,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "aria_designer/workflows/generated/wf_pred_c.json": {
+            "lines": 275,
+            "tokens": 1534,
+            "sources": 1,
+            "clones": 6,
+            "duplicatedLines": 353,
+            "duplicatedTokens": 1931,
+            "percentage": 128.36,
+            "percentageTokens": 125.88,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "aria_designer/workflows/generated/wf_pred_b.json": {
+            "lines": 320,
+            "tokens": 1775,
+            "sources": 1,
+            "clones": 6,
+            "duplicatedLines": 278,
+            "duplicatedTokens": 1539,
+            "percentage": 86.88,
+            "percentageTokens": 86.7,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "aria_designer/workflows/generated/wf_pred_a.json": {
+            "lines": 317,
+            "tokens": 1760,
+            "sources": 1,
+            "clones": 4,
+            "duplicatedLines": 347,
+            "duplicatedTokens": 1918,
+            "percentage": 109.46,
+            "percentageTokens": 108.98,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "aria_designer/workflows/generated/wf_evo_champion.json": {
+            "lines": 344,
+            "tokens": 1918,
+            "sources": 1,
+            "clones": 15,
+            "duplicatedLines": 1356,
+            "duplicatedTokens": 10052,
+            "percentage": 394.19,
+            "percentageTokens": 524.09,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "aria_designer/workflows/generated/wf_evo_best_3.json": {
+            "lines": 308,
+            "tokens": 1716,
+            "sources": 1,
+            "clones": 4,
+            "duplicatedLines": 283,
+            "duplicatedTokens": 1551,
+            "percentage": 91.88,
+            "percentageTokens": 90.38,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "aria_designer/workflows/generated/wf_evo_best_2.json": {
+            "lines": 308,
+            "tokens": 1716,
+            "sources": 1,
+            "clones": 1,
+            "duplicatedLines": 298,
+            "duplicatedTokens": 1652,
+            "percentage": 96.75,
+            "percentageTokens": 96.27,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "aria_designer/workflows/generated/wf_evo_best_1.json": {
+            "lines": 326,
+            "tokens": 1817,
+            "sources": 1,
+            "clones": 2,
+            "duplicatedLines": 344,
+            "duplicatedTokens": 1923,
+            "percentage": 105.52,
+            "percentageTokens": 105.83,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "aria_designer/workflows/generated/wf_evo3_champion.json": {
+            "lines": 344,
+            "tokens": 1918,
+            "sources": 1,
+            "clones": 2,
+            "duplicatedLines": 342,
+            "duplicatedTokens": 1903,
+            "percentage": 99.42,
+            "percentageTokens": 99.22,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "aria_designer/workflows/generated/wf_adaptive_lane_v8_ultra_bottleneck.json": {
+            "lines": 49,
+            "tokens": 1457,
+            "sources": 1,
+            "clones": 1,
+            "duplicatedLines": 10,
+            "duplicatedTokens": 268,
+            "percentage": 20.41,
+            "percentageTokens": 18.39,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "aria_designer/workflows/generated/wf_adaptive_lane_v7_bottleneck.json": {
+            "lines": 47,
+            "tokens": 1380,
+            "sources": 1,
+            "clones": 2,
+            "duplicatedLines": 20,
+            "duplicatedTokens": 668,
+            "percentage": 42.55,
+            "percentageTokens": 48.41,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "aria_designer/workflows/generated/wf_adaptive_lane_v6_balanced_moe.json": {
+            "lines": 45,
+            "tokens": 1313,
+            "sources": 1,
+            "clones": 1,
+            "duplicatedLines": 36,
+            "duplicatedTokens": 1256,
+            "percentage": 80,
+            "percentageTokens": 95.66,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "aria_designer/workflows/generated/wf_adaptive_lane_v5_rwkv.json": {
+            "lines": 45,
+            "tokens": 1303,
+            "sources": 1,
+            "clones": 2,
+            "duplicatedLines": 23,
+            "duplicatedTokens": 831,
+            "percentage": 51.11,
+            "percentageTokens": 63.78,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "aria_designer/workflows/generated/wf_adaptive_lane_moe_v4.json": {
+            "lines": 269,
+            "tokens": 1507,
+            "sources": 1,
+            "clones": 7,
+            "duplicatedLines": 520,
+            "duplicatedTokens": 2868,
+            "percentage": 193.31,
+            "percentageTokens": 190.31,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "aria_designer/workflows/generated/wf_adaptive_lane_moe_v3.json": {
+            "lines": 251,
+            "tokens": 1406,
+            "sources": 1,
+            "clones": 4,
+            "duplicatedLines": 305,
+            "duplicatedTokens": 1691,
+            "percentage": 121.51,
+            "percentageTokens": 120.27,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "aria_designer/workflows/generated/wf_adaptive_lane_moe_v2.json": {
+            "lines": 251,
+            "tokens": 1406,
+            "sources": 1,
+            "clones": 4,
+            "duplicatedLines": 291,
+            "duplicatedTokens": 1619,
+            "percentage": 115.94,
+            "percentageTokens": 115.15,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "aria_designer/workflows/generated/wf_adaptive_lane_moe_v1.json": {
+            "lines": 233,
+            "tokens": 1305,
+            "sources": 1,
+            "clones": 3,
+            "duplicatedLines": 222,
+            "duplicatedTokens": 1230,
+            "percentage": 95.28,
+            "percentageTokens": 94.25,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "aria_designer/workflows/generated/v5_v8_training_results.json": {
+            "lines": 33,
+            "tokens": 193,
+            "sources": 1,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "aria_designer/workflows/generated/random_rescore_novelty_report.json": {
+            "lines": 181,
+            "tokens": 1155,
+            "sources": 1,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "aria_designer/workflows/generated/full_scoring_results.json": {
+            "lines": 148,
+            "tokens": 974,
+            "sources": 1,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "aria_designer/workflows/generated/bulk_rescore_novelty_smoke.json": {
+            "lines": 97,
+            "tokens": 618,
+            "sources": 1,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "aria_designer/workflows/generated/adaptive_lane_manifest.json": {
+            "lines": 25,
+            "tokens": 137,
+            "sources": 1,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "aria_designer/workflows/generated/adaptive_lane_benchmark_report.json": {
+            "lines": 264,
+            "tokens": 1685,
+            "sources": 1,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          }
+        },
+        "total": {
+          "lines": 5571,
+          "tokens": 36047,
+          "sources": 25,
+          "clones": 37,
+          "duplicatedLines": 3040,
+          "duplicatedTokens": 19343,
+          "percentage": 54.57,
+          "percentageTokens": 53.66,
+          "newDuplicatedLines": 0,
+          "newClones": 0
+        }
+      }
+    },
+    "total": {
+      "lines": 5571,
+      "tokens": 36047,
+      "sources": 25,
+      "clones": 37,
+      "duplicatedLines": 3040,
+      "duplicatedTokens": 19343,
+      "percentage": 54.57,
+      "percentageTokens": 53.66,
+      "newDuplicatedLines": 0,
+      "newClones": 0
+    }
+  },
+  "duplicates": [
+    {
+      "format": "json",
+      "lines": 134,
+      "fragment": ",\n  \"metadata\": {\n    \"family\": \"predator\",\n    \"variant\": \"sparse_routed_rwkv\"\n  },\n  \"nodes\": [\n    {\n      \"id\": \"in\",\n      \"component_type\": \"io/input\",\n      \"params\": {\n        \"dim\": 256,\n        \"vocab_size\": 32000\n      },\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 0\n        }\n      }\n    },\n    {\n      \"id\": \"norm0\",\n      \"component_type\": \"linear_algebra/rmsnorm\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 80\n        }\n      }\n    },\n    {\n      \"id\": \"diff\",\n      \"component_type\": \"routing/difficulty_scorer\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 160\n        }\n      }\n    },\n    {\n      \"id\": \"router\",\n      \"component_type\": \"routing/lane_router\",\n      \"params\": {\n        \"num_lanes\": 2\n      },\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 240\n        }\n      }\n    },\n    {\n      \"id\": \"d_fast\",\n      \"component_type\": \"structural/conditional_dispatch\",\n      \"params\": {\n        \"num_lanes\": 2,\n        \"lane\": 0\n      },\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 140,\n          \"y\": 340\n        }\n      }\n    },\n    {\n      \"id\": \"d_hard\",\n      \"component_type\": \"structural/conditional_dispatch\",\n      \"params\": {\n        \"num_lanes\": 2,\n        \"lane\": 1\n      },\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 740,\n          \"y\": 340\n        }\n      }\n    },\n    {\n      \"id\": \"f_up\",\n      \"component_type\": \"linear_algebra/linear_proj_up\",\n      \"params\": {\n        \"out_dim\": 512\n      },\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 140,\n          \"y\": 440\n        }\n      }\n    },\n    {\n      \"id\": \"f_sparse\",\n      \"component_type\": \"linear_algebra/nm_sparse_linear\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 140,\n          \"y\": 520\n        }\n      }\n    },\n    {\n      \"id\": \"f_act\",\n      \"component_type\": \"math/silu\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 140,\n          \"y\": 600\n        }\n      }\n    },\n    {\n      \"id\": \"f_down\",\n      \"component_type\": \"linear_algebra/linear_proj_down\",\n      \"params\": {\n        \"out_dim\": 256\n      },\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 140,\n          \"y\": 680\n        }\n      }\n    },\n    {\n      \"id\": \"h_rwkv\",\n      \"component_type\": \"channel_mixing/moe_topk\"",
+      "tokens": 0,
+      "firstFile": {
+        "name": "aria_designer/workflows/generated/wf_predator_moe_v1.json",
+        "start": 4,
+        "end": 137,
+        "startLoc": {
+          "line": 4,
+          "column": 74,
+          "position": 21
+        },
+        "endLoc": {
+          "line": 137,
+          "column": 50,
+          "position": 735
+        }
+      },
+      "secondFile": {
+        "name": "aria_designer/workflows/generated/wf_predator_v1.json",
+        "start": 4,
+        "end": 137,
+        "startLoc": {
+          "line": 4,
+          "column": 71,
+          "position": 21
+        },
+        "endLoc": {
+          "line": 137,
+          "column": 50,
+          "position": 735
+        }
+      }
+    },
+    {
+      "format": "json",
+      "lines": 242,
+      "fragment": "},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 740,\n          \"y\": 440\n        }\n      }\n    },\n    {\n      \"id\": \"h_norm\",\n      \"component_type\": \"linear_algebra/rmsnorm\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 740,\n          \"y\": 520\n        }\n      }\n    },\n    {\n      \"id\": \"h_sparse\",\n      \"component_type\": \"linear_algebra/nm_sparse_linear\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 740,\n          \"y\": 600\n        }\n      }\n    },\n    {\n      \"id\": \"h_act\",\n      \"component_type\": \"math/silu\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 740,\n          \"y\": 680\n        }\n      }\n    },\n    {\n      \"id\": \"merge\",\n      \"component_type\": \"math/add\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 780\n        }\n      }\n    },\n    {\n      \"id\": \"norm1\",\n      \"component_type\": \"linear_algebra/rmsnorm\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 860\n        }\n      }\n    },\n    {\n      \"id\": \"compress\",\n      \"component_type\": \"math_space/bottleneck_proj\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 940\n        }\n      }\n    },\n    {\n      \"id\": \"residual\",\n      \"component_type\": \"math/add\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 1020\n        }\n      }\n    },\n    {\n      \"id\": \"out\",\n      \"component_type\": \"io/output_head\",\n      \"params\": {\n        \"vocab_size\": 32000\n      },\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 1100\n        }\n      }\n    }\n  ],\n  \"edges\": [\n    {\n      \"id\": \"e0\",\n      \"source\": \"in\",\n      \"source_port\": \"y\",\n      \"target\": \"norm0\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e1\",\n      \"source\": \"norm0\",\n      \"source_port\": \"y\",\n      \"target\": \"diff\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e2\",\n      \"source\": \"diff\",\n      \"source_port\": \"y\",\n      \"target\": \"router\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e3\",\n      \"source\": \"router\",\n      \"source_port\": \"y\",\n      \"target\": \"d_fast\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e4\",\n      \"source\": \"router\",\n      \"source_port\": \"y\",\n      \"target\": \"d_hard\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e5\",\n      \"source\": \"d_fast\",\n      \"source_port\": \"y\",\n      \"target\": \"f_up\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e6\",\n      \"source\": \"f_up\",\n      \"source_port\": \"y\",\n      \"target\": \"f_sparse\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e7\",\n      \"source\": \"f_sparse\",\n      \"source_port\": \"y\",\n      \"target\": \"f_act\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e8\",\n      \"source\": \"f_act\",\n      \"source_port\": \"y\",\n      \"target\": \"f_down\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e9\",\n      \"source\": \"d_hard\",\n      \"source_port\": \"y\",\n      \"target\": \"h_rwkv\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e10\",\n      \"source\": \"h_rwkv\",\n      \"source_port\": \"y\",\n      \"target\": \"h_norm\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e11\",\n      \"source\": \"h_norm\",\n      \"source_port\": \"y\",\n      \"target\": \"h_sparse\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e12\",\n      \"source\": \"h_sparse\",\n      \"source_port\": \"y\",\n      \"target\": \"h_act\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e13\",\n      \"source\": \"f_down\",\n      \"source_port\": \"y\",\n      \"target\": \"merge\",\n      \"target_port\": \"a\"\n    },\n    {\n      \"id\": \"e14\",\n      \"source\": \"h_act\",\n      \"source_port\": \"y\",\n      \"target\": \"merge\",\n      \"target_port\": \"b\"\n    },\n    {\n      \"id\": \"e15\",\n      \"source\": \"merge\",\n      \"source_port\": \"y\",\n      \"target\": \"norm1\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e16\",\n      \"source\": \"norm1\",\n      \"source_port\": \"y\",\n      \"target\": \"compress\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e17\",\n      \"source\": \"compress\",\n      \"source_port\": \"y\",\n      \"target\": \"residual\",\n      \"target_port\": \"a\"\n    },\n    {\n      \"id\": \"e_skip\",\n      \"source\": \"in\",\n      \"source_port\": \"y\",\n      \"target\": \"residual\",\n      \"target_port\": \"b\"\n    },\n    {\n      \"id\": \"e18\",\n      \"source\": \"residual\",\n      \"source_port\": \"y\",\n      \"target\": \"out\",\n      \"target_port\": \"x\"\n    }\n  ]\n}",
+      "tokens": 0,
+      "firstFile": {
+        "name": "aria_designer/workflows/generated/wf_predator_moe_v1.json",
+        "start": 141,
+        "end": 382,
+        "startLoc": {
+          "line": 141,
+          "column": 7,
+          "position": 758
+        },
+        "endLoc": {
+          "line": 382,
+          "column": 2,
+          "position": 2115
+        }
+      },
+      "secondFile": {
+        "name": "aria_designer/workflows/generated/wf_predator_v1.json",
+        "start": 138,
+        "end": 379,
+        "startLoc": {
+          "line": 138,
+          "column": 18,
+          "position": 743
+        },
+        "endLoc": {
+          "line": 379,
+          "column": 2,
+          "position": 2100
+        }
+      }
+    },
+    {
+      "format": "json",
+      "lines": 32,
+      "fragment": ",\n  \"metadata\": {\n    \"family\": \"predator\"\n  },\n  \"nodes\": [\n    {\n      \"id\": \"in\",\n      \"component_type\": \"io/input\",\n      \"params\": {\n        \"dim\": 256,\n        \"vocab_size\": 32000\n      },\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 0\n        }\n      }\n    },\n    {\n      \"id\": \"norm0\",\n      \"component_type\": \"linear_algebra/rmsnorm\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 0\n        }\n      }\n    },\n    {\n      \"id\": \"split\"",
+      "tokens": 0,
+      "firstFile": {
+        "name": "aria_designer/workflows/generated/wf_pred_c.json",
+        "start": 4,
+        "end": 35,
+        "startLoc": {
+          "line": 4,
+          "column": 76,
+          "position": 21
+        },
+        "endLoc": {
+          "line": 35,
+          "column": 20,
+          "position": 187
+        }
+      },
+      "secondFile": {
+        "name": "aria_designer/workflows/generated/wf_pred_d.json",
+        "start": 4,
+        "end": 35,
+        "startLoc": {
+          "line": 4,
+          "column": 68,
+          "position": 21
+        },
+        "endLoc": {
+          "line": 35,
+          "column": 17,
+          "position": 187
+        }
+      }
+    },
+    {
+      "format": "json",
+      "lines": 55,
+      "fragment": ",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 0\n        }\n      }\n    },\n    {\n      \"id\": \"norm1\",\n      \"component_type\": \"linear_algebra/rmsnorm\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 0\n        }\n      }\n    },\n    {\n      \"id\": \"res\",\n      \"component_type\": \"math/add\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 0\n        }\n      }\n    },\n    {\n      \"id\": \"out\",\n      \"component_type\": \"io/output_head\",\n      \"params\": {\n        \"vocab_size\": 32000\n      },\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 0\n        }\n      }\n    }\n  ],\n  \"edges\": [\n    {\n      \"id\": \"e_in_norm0\",\n      \"source\": \"in\",\n      \"source_port\": \"y\",\n      \"target\": \"norm0\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e_norm0_split\"",
+      "tokens": 0,
+      "firstFile": {
+        "name": "aria_designer/workflows/generated/wf_pred_c.json",
+        "start": 124,
+        "end": 178,
+        "startLoc": {
+          "line": 124,
+          "column": 53,
+          "position": 675
+        },
+        "endLoc": {
+          "line": 178,
+          "column": 28,
+          "position": 965
+        }
+      },
+      "secondFile": {
+        "name": "aria_designer/workflows/generated/wf_pred_d.json",
+        "start": 174,
+        "end": 228,
+        "startLoc": {
+          "line": 174,
+          "column": 44,
+          "position": 939
+        },
+        "endLoc": {
+          "line": 228,
+          "column": 25,
+          "position": 1229
+        }
+      }
+    },
+    {
+      "format": "json",
+      "lines": 43,
+      "fragment": ",\n  \"metadata\": {\n    \"family\": \"predator\"\n  },\n  \"nodes\": [\n    {\n      \"id\": \"in\",\n      \"component_type\": \"io/input\",\n      \"params\": {\n        \"dim\": 256,\n        \"vocab_size\": 32000\n      },\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 0\n        }\n      }\n    },\n    {\n      \"id\": \"norm0\",\n      \"component_type\": \"linear_algebra/rmsnorm\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 0\n        }\n      }\n    },\n    {\n      \"id\": \"split\",\n      \"component_type\": \"structural/split2\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 0\n        }\n      }\n    },\n    {\n      \"id\": \"f_up\"",
+      "tokens": 0,
+      "firstFile": {
+        "name": "aria_designer/workflows/generated/wf_pred_b.json",
+        "start": 4,
+        "end": 46,
+        "startLoc": {
+          "line": 4,
+          "column": 66,
+          "position": 21
+        },
+        "endLoc": {
+          "line": 46,
+          "column": 19,
+          "position": 247
+        }
+      },
+      "secondFile": {
+        "name": "aria_designer/workflows/generated/wf_pred_d.json",
+        "start": 4,
+        "end": 46,
+        "startLoc": {
+          "line": 4,
+          "column": 68,
+          "position": 21
+        },
+        "endLoc": {
+          "line": 46,
+          "column": 20,
+          "position": 247
+        }
+      }
+    },
+    {
+      "format": "json",
+      "lines": 54,
+      "fragment": "},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 740,\n          \"y\": 0\n        }\n      }\n    },\n    {\n      \"id\": \"h_norm\",\n      \"component_type\": \"linear_algebra/rmsnorm\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 740,\n          \"y\": 0\n        }\n      }\n    },\n    {\n      \"id\": \"h_sp\",\n      \"component_type\": \"linear_algebra/nm_sparse_linear\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 740,\n          \"y\": 0\n        }\n      }\n    },\n    {\n      \"id\": \"h_act\",\n      \"component_type\": \"math/silu\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 740,\n          \"y\": 0\n        }\n      }\n    },\n    {\n      \"id\": \"cat\",\n      \"component_type\": \"structural/concat\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 0\n        }\n      }\n    },\n    {\n      \"id\": \"proj\"",
+      "tokens": 0,
+      "firstFile": {
+        "name": "aria_designer/workflows/generated/wf_pred_b.json",
+        "start": 99,
+        "end": 152,
+        "startLoc": {
+          "line": 99,
+          "column": 7,
+          "position": 533
+        },
+        "endLoc": {
+          "line": 152,
+          "column": 19,
+          "position": 818
+        }
+      },
+      "secondFile": {
+        "name": "aria_designer/workflows/generated/wf_pred_c.json",
+        "start": 70,
+        "end": 123,
+        "startLoc": {
+          "line": 70,
+          "column": 18,
+          "position": 382
+        },
+        "endLoc": {
+          "line": 123,
+          "column": 19,
+          "position": 667
+        }
+      }
+    },
+    {
+      "format": "json",
+      "lines": 61,
+      "fragment": "},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 0\n        }\n      }\n    },\n    {\n      \"id\": \"norm1\",\n      \"component_type\": \"linear_algebra/rmsnorm\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 0\n        }\n      }\n    },\n    {\n      \"id\": \"res\",\n      \"component_type\": \"math/add\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 0\n        }\n      }\n    },\n    {\n      \"id\": \"out\",\n      \"component_type\": \"io/output_head\",\n      \"params\": {\n        \"vocab_size\": 32000\n      },\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 0\n        }\n      }\n    }\n  ],\n  \"edges\": [\n    {\n      \"id\": \"e_in_norm0\",\n      \"source\": \"in\",\n      \"source_port\": \"y\",\n      \"target\": \"norm0\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e_norm0_split\",\n      \"source\": \"norm0\",\n      \"source_port\": \"y\",\n      \"target\": \"split\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e_split_f_up\"",
+      "tokens": 0,
+      "firstFile": {
+        "name": "aria_designer/workflows/generated/wf_pred_b.json",
+        "start": 156,
+        "end": 216,
+        "startLoc": {
+          "line": 156,
+          "column": 7,
+          "position": 841
+        },
+        "endLoc": {
+          "line": 216,
+          "column": 27,
+          "position": 1165
+        }
+      },
+      "secondFile": {
+        "name": "aria_designer/workflows/generated/wf_pred_d.json",
+        "start": 175,
+        "end": 185,
+        "startLoc": {
+          "line": 175,
+          "column": 18,
+          "position": 946
+        },
+        "endLoc": {
+          "line": 185,
+          "column": 28,
+          "position": 1006
+        }
+      }
+    },
+    {
+      "format": "json",
+      "lines": 28,
+      "fragment": ",\n      \"source_port\": \"y\",\n      \"target\": \"f_up\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e_f_up_f_sp\",\n      \"source\": \"f_up\",\n      \"source_port\": \"y\",\n      \"target\": \"f_sp\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e_f_sp_f_act\",\n      \"source\": \"f_sp\",\n      \"source_port\": \"y\",\n      \"target\": \"f_act\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e_f_act_f_dn\",\n      \"source\": \"f_act\",\n      \"source_port\": \"y\",\n      \"target\": \"f_dn\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e_split_h_moe\"",
+      "tokens": 0,
+      "firstFile": {
+        "name": "aria_designer/workflows/generated/wf_pred_b.json",
+        "start": 217,
+        "end": 244,
+        "startLoc": {
+          "line": 217,
+          "column": 24,
+          "position": 1173
+        },
+        "endLoc": {
+          "line": 244,
+          "column": 28,
+          "position": 1329
+        }
+      },
+      "secondFile": {
+        "name": "aria_designer/workflows/generated/wf_pred_d.json",
+        "start": 236,
+        "end": 263,
+        "startLoc": {
+          "line": 236,
+          "column": 21,
+          "position": 1278
+        },
+        "endLoc": {
+          "line": 263,
+          "column": 22,
+          "position": 1434
+        }
+      }
+    },
+    {
+      "format": "json",
+      "lines": 28,
+      "fragment": ",\n      \"source_port\": \"y\",\n      \"target\": \"norm1\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e_norm1_res\",\n      \"source\": \"norm1\",\n      \"source_port\": \"y\",\n      \"target\": \"res\",\n      \"target_port\": \"a\"\n    },\n    {\n      \"id\": \"e_in_res\",\n      \"source\": \"in\",\n      \"source_port\": \"y\",\n      \"target\": \"res\",\n      \"target_port\": \"b\"\n    },\n    {\n      \"id\": \"e_res_out\",\n      \"source\": \"res\",\n      \"source_port\": \"y\",\n      \"target\": \"out\",\n      \"target_port\": \"x\"\n    }\n  ]\n}",
+      "tokens": 0,
+      "firstFile": {
+        "name": "aria_designer/workflows/generated/wf_pred_b.json",
+        "start": 294,
+        "end": 321,
+        "startLoc": {
+          "line": 294,
+          "column": 23,
+          "position": 1624
+        },
+        "endLoc": {
+          "line": 321,
+          "column": 2,
+          "position": 1775
+        }
+      },
+      "secondFile": {
+        "name": "aria_designer/workflows/generated/wf_pred_c.json",
+        "start": 249,
+        "end": 276,
+        "startLoc": {
+          "line": 249,
+          "column": 23,
+          "position": 1383
+        },
+        "endLoc": {
+          "line": 276,
+          "column": 2,
+          "position": 1534
+        }
+      }
+    },
+    {
+      "format": "json",
+      "lines": 91,
+      "fragment": ",\n  \"metadata\": {\n    \"family\": \"predator\"\n  },\n  \"nodes\": [\n    {\n      \"id\": \"in\",\n      \"component_type\": \"io/input\",\n      \"params\": {\n        \"dim\": 256,\n        \"vocab_size\": 32000\n      },\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 0\n        }\n      }\n    },\n    {\n      \"id\": \"norm0\",\n      \"component_type\": \"linear_algebra/rmsnorm\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 0\n        }\n      }\n    },\n    {\n      \"id\": \"split\",\n      \"component_type\": \"structural/split2\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 0\n        }\n      }\n    },\n    {\n      \"id\": \"f_up\",\n      \"component_type\": \"linear_algebra/linear_proj_up\",\n      \"params\": {\n        \"out_dim\": 512\n      },\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 140,\n          \"y\": 0\n        }\n      }\n    },\n    {\n      \"id\": \"f_sp\",\n      \"component_type\": \"linear_algebra/nm_sparse_linear\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 140,\n          \"y\": 0\n        }\n      }\n    },\n    {\n      \"id\": \"f_act\",\n      \"component_type\": \"math/silu\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 140,\n          \"y\": 0\n        }\n      }\n    },\n    {\n      \"id\": \"f_dn\",\n      \"component_type\": \"linear_algebra/linear_proj_down\",\n      \"params\": {\n        \"out_dim\": 256\n      },\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 140,\n          \"y\": 0\n        }\n      }\n    },\n    {\n      \"id\": \"h_rwkv\"",
+      "tokens": 0,
+      "firstFile": {
+        "name": "aria_designer/workflows/generated/wf_pred_a.json",
+        "start": 4,
+        "end": 94,
+        "startLoc": {
+          "line": 4,
+          "column": 63,
+          "position": 21
+        },
+        "endLoc": {
+          "line": 94,
+          "column": 21,
+          "position": 503
+        }
+      },
+      "secondFile": {
+        "name": "aria_designer/workflows/generated/wf_pred_d.json",
+        "start": 4,
+        "end": 94,
+        "startLoc": {
+          "line": 4,
+          "column": 68,
+          "position": 21
+        },
+        "endLoc": {
+          "line": 94,
+          "column": 20,
+          "position": 503
+        }
+      }
+    },
+    {
+      "format": "json",
+      "lines": 157,
+      "fragment": "},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 140,\n          \"y\": 0\n        }\n      }\n    },\n    {\n      \"id\": \"h_rwkv\",\n      \"component_type\": \"mixing/rwkv_time_mixing\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 740,\n          \"y\": 0\n        }\n      }\n    },\n    {\n      \"id\": \"h_norm\",\n      \"component_type\": \"linear_algebra/rmsnorm\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 740,\n          \"y\": 0\n        }\n      }\n    },\n    {\n      \"id\": \"h_sp\",\n      \"component_type\": \"linear_algebra/nm_sparse_linear\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 740,\n          \"y\": 0\n        }\n      }\n    },\n    {\n      \"id\": \"h_act\",\n      \"component_type\": \"math/silu\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 740,\n          \"y\": 0\n        }\n      }\n    },\n    {\n      \"id\": \"cat\",\n      \"component_type\": \"structural/concat\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 0\n        }\n      }\n    },\n    {\n      \"id\": \"proj\",\n      \"component_type\": \"linear_algebra/linear_proj_down\",\n      \"params\": {\n        \"out_dim\": 256\n      },\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 0\n        }\n      }\n    },\n    {\n      \"id\": \"norm1\",\n      \"component_type\": \"linear_algebra/rmsnorm\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 0\n        }\n      }\n    },\n    {\n      \"id\": \"res\",\n      \"component_type\": \"math/add\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 0\n        }\n      }\n    },\n    {\n      \"id\": \"out\",\n      \"component_type\": \"io/output_head\",\n      \"params\": {\n        \"vocab_size\": 32000\n      },\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 0\n        }\n      }\n    }\n  ],\n  \"edges\": [\n    {\n      \"id\": \"e_in_norm0\",\n      \"source\": \"in\",\n      \"source_port\": \"y\",\n      \"target\": \"norm0\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e_norm0_split\",\n      \"source\": \"norm0\",\n      \"source_port\": \"y\",\n      \"target\": \"split\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e_split_f_up\",\n      \"source\": \"split\",\n      \"source_port\": \"y\",\n      \"target\": \"f_up\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e_f_up_f_sp\",\n      \"source\": \"f_up\",\n      \"source_port\": \"y\",\n      \"target\": \"f_sp\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e_f_sp_f_act\",\n      \"source\": \"f_sp\",\n      \"source_port\": \"y\",\n      \"target\": \"f_act\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e_f_act_f_dn\",\n      \"source\": \"f_act\",\n      \"source_port\": \"y\",\n      \"target\": \"f_dn\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e_split_h_rwkv\"",
+      "tokens": 0,
+      "firstFile": {
+        "name": "aria_designer/workflows/generated/wf_pred_a.json",
+        "start": 85,
+        "end": 241,
+        "startLoc": {
+          "line": 85,
+          "column": 7,
+          "position": 458
+        },
+        "endLoc": {
+          "line": 241,
+          "column": 29,
+          "position": 1314
+        }
+      },
+      "secondFile": {
+        "name": "aria_designer/workflows/generated/wf_pred_c.json",
+        "start": 59,
+        "end": 263,
+        "startLoc": {
+          "line": 59,
+          "column": 18,
+          "position": 322
+        },
+        "endLoc": {
+          "line": 263,
+          "column": 22,
+          "position": 1434
+        }
+      }
+    },
+    {
+      "format": "json",
+      "lines": 33,
+      "fragment": ",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e_split_h_rwkv\",\n      \"source\": \"split\",\n      \"source_port\": \"y\",\n      \"target\": \"h_rwkv\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e_h_rwkv_h_norm\",\n      \"source\": \"h_rwkv\",\n      \"source_port\": \"y\",\n      \"target\": \"h_norm\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e_h_norm_h_sp\",\n      \"source\": \"h_norm\",\n      \"source_port\": \"y\",\n      \"target\": \"h_sp\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e_h_sp_h_act\",\n      \"source\": \"h_sp\",\n      \"source_port\": \"y\",\n      \"target\": \"h_act\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e_f_dn_cat\"",
+      "tokens": 0,
+      "firstFile": {
+        "name": "aria_designer/workflows/generated/wf_pred_a.json",
+        "start": 237,
+        "end": 269,
+        "startLoc": {
+          "line": 237,
+          "column": 23,
+          "position": 1295
+        },
+        "endLoc": {
+          "line": 269,
+          "column": 25,
+          "position": 1478
+        }
+      },
+      "secondFile": {
+        "name": "aria_designer/workflows/generated/wf_pred_c.json",
+        "start": 195,
+        "end": 227,
+        "startLoc": {
+          "line": 195,
+          "column": 23,
+          "position": 1069
+        },
+        "endLoc": {
+          "line": 227,
+          "column": 25,
+          "position": 1252
+        }
+      }
+    },
+    {
+      "format": "json",
+      "lines": 70,
+      "fragment": ",\n      \"source_port\": \"y\",\n      \"target\": \"h_norm\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e_h_norm_h_sp\",\n      \"source\": \"h_norm\",\n      \"source_port\": \"y\",\n      \"target\": \"h_sp\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e_h_sp_h_act\",\n      \"source\": \"h_sp\",\n      \"source_port\": \"y\",\n      \"target\": \"h_act\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e_f_dn_cat\",\n      \"source\": \"f_dn\",\n      \"source_port\": \"y\",\n      \"target\": \"cat\",\n      \"target_port\": \"a\"\n    },\n    {\n      \"id\": \"e_h_act_cat\",\n      \"source\": \"h_act\",\n      \"source_port\": \"y\",\n      \"target\": \"cat\",\n      \"target_port\": \"b\"\n    },\n    {\n      \"id\": \"e_cat_proj\",\n      \"source\": \"cat\",\n      \"source_port\": \"y\",\n      \"target\": \"proj\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e_proj_norm1\",\n      \"source\": \"proj\",\n      \"source_port\": \"y\",\n      \"target\": \"norm1\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e_norm1_res\",\n      \"source\": \"norm1\",\n      \"source_port\": \"y\",\n      \"target\": \"res\",\n      \"target_port\": \"a\"\n    },\n    {\n      \"id\": \"e_in_res\",\n      \"source\": \"in\",\n      \"source_port\": \"y\",\n      \"target\": \"res\",\n      \"target_port\": \"b\"\n    },\n    {\n      \"id\": \"e_res_out\",\n      \"source\": \"res\",\n      \"source_port\": \"y\",\n      \"target\": \"out\",\n      \"target_port\": \"x\"\n    }\n  ]\n}",
+      "tokens": 0,
+      "firstFile": {
+        "name": "aria_designer/workflows/generated/wf_pred_a.json",
+        "start": 249,
+        "end": 318,
+        "startLoc": {
+          "line": 249,
+          "column": 25,
+          "position": 1363
+        },
+        "endLoc": {
+          "line": 318,
+          "column": 2,
+          "position": 1760
+        }
+      },
+      "secondFile": {
+        "name": "aria_designer/workflows/generated/wf_pred_b.json",
+        "start": 252,
+        "end": 276,
+        "startLoc": {
+          "line": 252,
+          "column": 24,
+          "position": 1378
+        },
+        "endLoc": {
+          "line": 276,
+          "column": 2,
+          "position": 1534
+        }
+      }
+    },
+    {
+      "format": "json",
+      "lines": 139,
+      "fragment": "},\n  \"nodes\": [\n    {\n      \"id\": \"input\",\n      \"component_type\": \"io/input\",\n      \"params\": {\n        \"dim\": 256,\n        \"vocab_size\": 32000\n      },\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 0\n        }\n      }\n    },\n    {\n      \"id\": \"norm_pre\",\n      \"component_type\": \"linear_algebra/rmsnorm\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 100\n        }\n      }\n    },\n    {\n      \"id\": \"difficulty\",\n      \"component_type\": \"routing/difficulty_scorer\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 200\n        }\n      }\n    },\n    {\n      \"id\": \"lane_router\",\n      \"component_type\": \"routing/lane_router\",\n      \"params\": {\n        \"num_lanes\": 2\n      },\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 300\n        }\n      }\n    },\n    {\n      \"id\": \"dispatch_fast\",\n      \"component_type\": \"structural/conditional_dispatch\",\n      \"params\": {\n        \"num_lanes\": 2,\n        \"lane\": 0\n      },\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 180,\n          \"y\": 420\n        }\n      }\n    },\n    {\n      \"id\": \"dispatch_hard\",\n      \"component_type\": \"structural/conditional_dispatch\",\n      \"params\": {\n        \"num_lanes\": 2,\n        \"lane\": 1\n      },\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 700,\n          \"y\": 420\n        }\n      }\n    },\n    {\n      \"id\": \"fast_proj\",\n      \"component_type\": \"linear_algebra/linear_proj\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 180,\n          \"y\": 540\n        }\n      }\n    },\n    {\n      \"id\": \"fast_act\",\n      \"component_type\": \"math/relu\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 180,\n          \"y\": 640\n        }\n      }\n    },\n    {\n      \"id\": \"hard_moe\",\n      \"component_type\": \"channel_mixing/moe_topk\",\n      \"params\": {\n        \"top_k\": 2,\n        \"num_experts\": 4\n      },\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 700,\n          \"y\": 540\n        }\n      }\n    },\n    {\n      \"id\": \"hard_norm\",\n      \"component_type\": \"linear_algebra/rmsnorm\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 700,\n          \"y\": 640\n        }\n      }\n    },\n    {\n      \"id\": \"hard_act\",\n      \"component_type\": \"math/silu\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 700,\n          \"y\": 740\n        }\n      }\n    },\n    {\n      \"id\": \"combine\"",
+      "tokens": 0,
+      "firstFile": {
+        "name": "aria_designer/workflows/generated/wf_evo_best_3.json",
+        "start": 11,
+        "end": 149,
+        "startLoc": {
+          "line": 11,
+          "column": 3,
+          "position": 64
+        },
+        "endLoc": {
+          "line": 149,
+          "column": 22,
+          "position": 808
+        }
+      },
+      "secondFile": {
+        "name": "aria_designer/workflows/generated/wf_evo_champion.json",
+        "start": 11,
+        "end": 149,
+        "startLoc": {
+          "line": 11,
+          "column": 3,
+          "position": 64
+        },
+        "endLoc": {
+          "line": 149,
+          "column": 28,
+          "position": 808
+        }
+      }
+    },
+    {
+      "format": "json",
+      "lines": 50,
+      "fragment": "}\n      }\n    },\n    {\n      \"id\": \"combine\",\n      \"component_type\": \"math/add\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 860\n        }\n      }\n    },\n    {\n      \"id\": \"residual\",\n      \"component_type\": \"math/add\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 960\n        }\n      }\n    },\n    {\n      \"id\": \"compress\",\n      \"component_type\": \"linear_algebra/linear_proj_down\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 1060\n        }\n      }\n    },\n    {\n      \"id\": \"output\",\n      \"component_type\": \"io/output_head\",\n      \"params\": {\n        \"vocab_size\": 32000\n      },\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 1160\n        }\n      }\n    }\n  ]",
+      "tokens": 0,
+      "firstFile": {
+        "name": "aria_designer/workflows/generated/wf_evo_best_3.json",
+        "start": 145,
+        "end": 194,
+        "startLoc": {
+          "line": 145,
+          "column": 9,
+          "position": 792
+        },
+        "endLoc": {
+          "line": 194,
+          "column": 4,
+          "position": 1049
+        }
+      },
+      "secondFile": {
+        "name": "aria_designer/workflows/generated/wf_evo_champion.json",
+        "start": 156,
+        "end": 204,
+        "startLoc": {
+          "line": 156,
+          "column": 9,
+          "position": 852
+        },
+        "endLoc": {
+          "line": 204,
+          "column": 7,
+          "position": 1107
+        }
+      }
+    },
+    {
+      "format": "json",
+      "lines": 57,
+      "fragment": "}\n      }\n    }\n  ],\n  \"edges\": [\n    {\n      \"id\": \"e0\",\n      \"source\": \"input\",\n      \"source_port\": \"y\",\n      \"target\": \"norm_pre\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e1\",\n      \"source\": \"norm_pre\",\n      \"source_port\": \"y\",\n      \"target\": \"difficulty\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e2\",\n      \"source\": \"difficulty\",\n      \"source_port\": \"y\",\n      \"target\": \"lane_router\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e3\",\n      \"source\": \"lane_router\",\n      \"source_port\": \"y\",\n      \"target\": \"dispatch_fast\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e4\",\n      \"source\": \"lane_router\",\n      \"source_port\": \"y\",\n      \"target\": \"dispatch_hard\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e5\",\n      \"source\": \"dispatch_fast\",\n      \"source_port\": \"y\",\n      \"target\": \"fast_proj\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e6\",\n      \"source\": \"fast_proj\",\n      \"source_port\": \"y\",\n      \"target\": \"fast_act\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e7\",\n      \"source\": \"dispatch_hard\"",
+      "tokens": 0,
+      "firstFile": {
+        "name": "aria_designer/workflows/generated/wf_evo_best_3.json",
+        "start": 191,
+        "end": 247,
+        "startLoc": {
+          "line": 191,
+          "column": 9,
+          "position": 1040
+        },
+        "endLoc": {
+          "line": 247,
+          "column": 32,
+          "position": 1359
+        }
+      },
+      "secondFile": {
+        "name": "aria_designer/workflows/generated/wf_evo_champion.json",
+        "start": 213,
+        "end": 269,
+        "startLoc": {
+          "line": 213,
+          "column": 9,
+          "position": 1160
+        },
+        "endLoc": {
+          "line": 269,
+          "column": 30,
+          "position": 1479
+        }
+      }
+    },
+    {
+      "format": "json",
+      "lines": 41,
+      "fragment": ",\n      \"source_port\": \"y\",\n      \"target\": \"combine\",\n      \"target_port\": \"a\"\n    },\n    {\n      \"id\": \"e11\",\n      \"source\": \"hard_act\",\n      \"source_port\": \"y\",\n      \"target\": \"combine\",\n      \"target_port\": \"b\"\n    },\n    {\n      \"id\": \"e12\",\n      \"source\": \"combine\",\n      \"source_port\": \"y\",\n      \"target\": \"residual\",\n      \"target_port\": \"a\"\n    },\n    {\n      \"id\": \"e_skip\",\n      \"source\": \"input\",\n      \"source_port\": \"y\",\n      \"target\": \"residual\",\n      \"target_port\": \"b\"\n    },\n    {\n      \"id\": \"e13\",\n      \"source\": \"residual\",\n      \"source_port\": \"y\",\n      \"target\": \"compress\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e14\",\n      \"source\": \"compress\",\n      \"source_port\": \"y\",\n      \"target\": \"output\",\n      \"target_port\": \"x\"\n    }\n  ]",
+      "tokens": 0,
+      "firstFile": {
+        "name": "aria_designer/workflows/generated/wf_evo_best_3.json",
+        "start": 268,
+        "end": 308,
+        "startLoc": {
+          "line": 268,
+          "column": 27,
+          "position": 1483
+        },
+        "endLoc": {
+          "line": 308,
+          "column": 4,
+          "position": 1714
+        }
+      },
+      "secondFile": {
+        "name": "aria_designer/workflows/generated/wf_evo_champion.json",
+        "start": 290,
+        "end": 329,
+        "startLoc": {
+          "line": 290,
+          "column": 32,
+          "position": 1603
+        },
+        "endLoc": {
+          "line": 329,
+          "column": 7,
+          "position": 1832
+        }
+      }
+    },
+    {
+      "format": "json",
+      "lines": 299,
+      "fragment": "},\n  \"nodes\": [\n    {\n      \"id\": \"input\",\n      \"component_type\": \"io/input\",\n      \"params\": {\n        \"dim\": 256,\n        \"vocab_size\": 32000\n      },\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 0\n        }\n      }\n    },\n    {\n      \"id\": \"norm_pre\",\n      \"component_type\": \"linear_algebra/rmsnorm\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 100\n        }\n      }\n    },\n    {\n      \"id\": \"difficulty\",\n      \"component_type\": \"routing/difficulty_scorer\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 200\n        }\n      }\n    },\n    {\n      \"id\": \"lane_router\",\n      \"component_type\": \"routing/lane_router\",\n      \"params\": {\n        \"num_lanes\": 2\n      },\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 300\n        }\n      }\n    },\n    {\n      \"id\": \"dispatch_fast\",\n      \"component_type\": \"structural/conditional_dispatch\",\n      \"params\": {\n        \"num_lanes\": 2,\n        \"lane\": 0\n      },\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 180,\n          \"y\": 420\n        }\n      }\n    },\n    {\n      \"id\": \"dispatch_hard\",\n      \"component_type\": \"structural/conditional_dispatch\",\n      \"params\": {\n        \"num_lanes\": 2,\n        \"lane\": 1\n      },\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 700,\n          \"y\": 420\n        }\n      }\n    },\n    {\n      \"id\": \"fast_proj\",\n      \"component_type\": \"linear_algebra/linear_proj\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 180,\n          \"y\": 540\n        }\n      }\n    },\n    {\n      \"id\": \"fast_act\",\n      \"component_type\": \"math/relu\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 180,\n          \"y\": 640\n        }\n      }\n    },\n    {\n      \"id\": \"hard_moe\",\n      \"component_type\": \"channel_mixing/moe_topk\",\n      \"params\": {\n        \"top_k\": 2,\n        \"num_experts\": 4\n      },\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 700,\n          \"y\": 540\n        }\n      }\n    },\n    {\n      \"id\": \"hard_norm\",\n      \"component_type\": \"linear_algebra/rmsnorm\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 700,\n          \"y\": 640\n        }\n      }\n    },\n    {\n      \"id\": \"hard_act\",\n      \"component_type\": \"math/silu\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 700,\n          \"y\": 740\n        }\n      }\n    },\n    {\n      \"id\": \"combine\",\n      \"component_type\": \"math/add\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 860\n        }\n      }\n    },\n    {\n      \"id\": \"residual\",\n      \"component_type\": \"math/add\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 960\n        }\n      }\n    },\n    {\n      \"id\": \"compress\",\n      \"component_type\": \"linear_algebra/linear_proj_down\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 1060\n        }\n      }\n    },\n    {\n      \"id\": \"output\",\n      \"component_type\": \"io/output_head\",\n      \"params\": {\n        \"vocab_size\": 32000\n      },\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 1160\n        }\n      }\n    }\n  ],\n  \"edges\": [\n    {\n      \"id\": \"e0\",\n      \"source\": \"input\",\n      \"source_port\": \"y\",\n      \"target\": \"norm_pre\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e1\",\n      \"source\": \"norm_pre\",\n      \"source_port\": \"y\",\n      \"target\": \"difficulty\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e2\",\n      \"source\": \"difficulty\",\n      \"source_port\": \"y\",\n      \"target\": \"lane_router\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e3\",\n      \"source\": \"lane_router\",\n      \"source_port\": \"y\",\n      \"target\": \"dispatch_fast\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e4\",\n      \"source\": \"lane_router\",\n      \"source_port\": \"y\",\n      \"target\": \"dispatch_hard\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e5\",\n      \"source\": \"dispatch_fast\",\n      \"source_port\": \"y\",\n      \"target\": \"fast_proj\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e6\",\n      \"source\": \"fast_proj\",\n      \"source_port\": \"y\",\n      \"target\": \"fast_act\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e7\",\n      \"source\": \"dispatch_hard\",\n      \"source_port\": \"y\",\n      \"target\": \"hard_moe\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e8\",\n      \"source\": \"hard_moe\",\n      \"source_port\": \"y\",\n      \"target\": \"hard_norm\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e9\",\n      \"source\": \"hard_norm\",\n      \"source_port\": \"y\",\n      \"target\": \"hard_act\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e10\",\n      \"source\": \"fast_act\",\n      \"source_port\": \"y\",\n      \"target\": \"combine\",\n      \"target_port\": \"a\"\n    },\n    {\n      \"id\": \"e11\",\n      \"source\": \"hard_act\",\n      \"source_port\": \"y\",\n      \"target\": \"combine\",\n      \"target_port\": \"b\"\n    },\n    {\n      \"id\": \"e12\",\n      \"source\": \"combine\",\n      \"source_port\": \"y\",\n      \"target\": \"residual\",\n      \"target_port\": \"a\"\n    },\n    {\n      \"id\": \"e_skip\",\n      \"source\": \"input\",\n      \"source_port\": \"y\",\n      \"target\": \"residual\",\n      \"target_port\": \"b\"\n    },\n    {\n      \"id\": \"e13\",\n      \"source\": \"residual\",\n      \"source_port\": \"y\",\n      \"target\": \"compress\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e14\",\n      \"source\": \"compress\",\n      \"source_port\": \"y\",\n      \"target\": \"output\",\n      \"target_port\": \"x\"\n    }\n  ]\n}",
+      "tokens": 0,
+      "firstFile": {
+        "name": "aria_designer/workflows/generated/wf_evo_best_2.json",
+        "start": 11,
+        "end": 309,
+        "startLoc": {
+          "line": 11,
+          "column": 3,
+          "position": 64
+        },
+        "endLoc": {
+          "line": 309,
+          "column": 2,
+          "position": 1716
+        }
+      },
+      "secondFile": {
+        "name": "aria_designer/workflows/generated/wf_evo_champion.json",
+        "start": 11,
+        "end": 309,
+        "startLoc": {
+          "line": 11,
+          "column": 3,
+          "position": 64
+        },
+        "endLoc": {
+          "line": 309,
+          "column": 2,
+          "position": 1716
+        }
+      }
+    },
+    {
+      "format": "json",
+      "lines": 277,
+      "fragment": ",\n  \"name\": \"Evolved (add_norm_before_combine) from Adaptive Lane V6 - Load-Balanced MoE + Residual\",\n  \"metadata\": {\n    \"family\": \"adaptive_lane_split\",\n    \"source_fingerprint\": \"23a9c75ef7ee1da6\",\n    \"variant\": \"balanced_moe_residual\",\n    \"adaptation_notes\": \"Based on top routing graph: token_type\\u2192lane_router\\u2192relu\\u2192load_balance\\u2192add\\u2192rmsnorm\\u2192rwkv\\u2192add. Added load_balance_loss to prevent expert collapse.\",\n    \"mutation\": \"add_norm_before_combine\"\n  },\n  \"nodes\": [\n    {\n      \"id\": \"input\",\n      \"component_type\": \"io/input\",\n      \"params\": {\n        \"dim\": 256,\n        \"vocab_size\": 32000\n      },\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 0\n        }\n      }\n    },\n    {\n      \"id\": \"norm_pre\",\n      \"component_type\": \"linear_algebra/rmsnorm\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 100\n        }\n      }\n    },\n    {\n      \"id\": \"difficulty\",\n      \"component_type\": \"routing/difficulty_scorer\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 200\n        }\n      }\n    },\n    {\n      \"id\": \"lane_router\",\n      \"component_type\": \"routing/lane_router\",\n      \"params\": {\n        \"num_lanes\": 2\n      },\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 300\n        }\n      }\n    },\n    {\n      \"id\": \"dispatch_fast\",\n      \"component_type\": \"structural/conditional_dispatch\",\n      \"params\": {\n        \"num_lanes\": 2,\n        \"lane\": 0\n      },\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 180,\n          \"y\": 420\n        }\n      }\n    },\n    {\n      \"id\": \"dispatch_hard\",\n      \"component_type\": \"structural/conditional_dispatch\",\n      \"params\": {\n        \"num_lanes\": 2,\n        \"lane\": 1\n      },\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 700,\n          \"y\": 420\n        }\n      }\n    },\n    {\n      \"id\": \"fast_proj\",\n      \"component_type\": \"linear_algebra/linear_proj\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 180,\n          \"y\": 540\n        }\n      }\n    },\n    {\n      \"id\": \"fast_act\",\n      \"component_type\": \"math/relu\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 180,\n          \"y\": 640\n        }\n      }\n    },\n    {\n      \"id\": \"hard_moe\",\n      \"component_type\": \"channel_mixing/moe_topk\",\n      \"params\": {\n        \"top_k\": 2,\n        \"num_experts\": 4\n      },\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 700,\n          \"y\": 540\n        }\n      }\n    },\n    {\n      \"id\": \"hard_norm\",\n      \"component_type\": \"linear_algebra/rmsnorm\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 700,\n          \"y\": 640\n        }\n      }\n    },\n    {\n      \"id\": \"hard_act\",\n      \"component_type\": \"math/silu\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 700,\n          \"y\": 740\n        }\n      }\n    },\n    {\n      \"id\": \"evo_norm_2535\",\n      \"component_type\": \"linear_algebra/rmsnorm\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 800\n        }\n      }\n    },\n    {\n      \"id\": \"combine\",\n      \"component_type\": \"math/add\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 860\n        }\n      }\n    },\n    {\n      \"id\": \"residual\",\n      \"component_type\": \"math/add\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 960\n        }\n      }\n    },\n    {\n      \"id\": \"compress\",\n      \"component_type\": \"linear_algebra/linear_proj_down\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 1060\n        }\n      }\n    },\n    {\n      \"id\": \"output\",\n      \"component_type\": \"io/output_head\",\n      \"params\": {\n        \"vocab_size\": 32000\n      },\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 1160\n        }\n      }\n    }\n  ],\n  \"edges\": [\n    {\n      \"id\": \"e0\",\n      \"source\": \"input\",\n      \"source_port\": \"y\",\n      \"target\": \"norm_pre\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e1\",\n      \"source\": \"norm_pre\",\n      \"source_port\": \"y\",\n      \"target\": \"difficulty\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e2\",\n      \"source\": \"difficulty\",\n      \"source_port\": \"y\",\n      \"target\": \"lane_router\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e3\",\n      \"source\": \"lane_router\",\n      \"source_port\": \"y\",\n      \"target\": \"dispatch_fast\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e4\",\n      \"source\": \"lane_router\",\n      \"source_port\": \"y\",\n      \"target\": \"dispatch_hard\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e5\",\n      \"source\": \"dispatch_fast\",\n      \"source_port\": \"y\",\n      \"target\": \"fast_proj\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e6\",\n      \"source\": \"fast_proj\",\n      \"source_port\": \"y\",\n      \"target\": \"fast_act\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e7\",\n      \"source\": \"dispatch_hard\",\n      \"source_port\": \"y\",\n      \"target\": \"hard_moe\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e8\",\n      \"source\": \"hard_moe\",\n      \"source_port\": \"y\",\n      \"target\": \"hard_norm\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e9\",\n      \"source\": \"hard_norm\",\n      \"source_port\": \"y\",\n      \"target\": \"hard_act\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e10\",\n      \"source\": \"evo_norm_2535\"",
+      "tokens": 0,
+      "firstFile": {
+        "name": "aria_designer/workflows/generated/wf_evo_best_1.json",
+        "start": 3,
+        "end": 279,
+        "startLoc": {
+          "line": 3,
+          "column": 52,
+          "position": 14
+        },
+        "endLoc": {
+          "line": 279,
+          "column": 32,
+          "position": 1542
+        }
+      },
+      "secondFile": {
+        "name": "aria_designer/workflows/generated/wf_evo_champion.json",
+        "start": 3,
+        "end": 268,
+        "startLoc": {
+          "line": 3,
+          "column": 49,
+          "position": 14
+        },
+        "endLoc": {
+          "line": 268,
+          "column": 27,
+          "position": 1482
+        }
+      }
+    },
+    {
+      "format": "json",
+      "lines": 69,
+      "fragment": ",\n      \"source_port\": \"y\",\n      \"target\": \"hard_moe\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e8\",\n      \"source\": \"hard_moe\",\n      \"source_port\": \"y\",\n      \"target\": \"hard_norm\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e9\",\n      \"source\": \"hard_norm\",\n      \"source_port\": \"y\",\n      \"target\": \"hard_act\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e10\",\n      \"source\": \"evo_norm_2535\",\n      \"source_port\": \"y\",\n      \"target\": \"combine\",\n      \"target_port\": \"a\"\n    },\n    {\n      \"id\": \"e11\",\n      \"source\": \"hard_act\",\n      \"source_port\": \"y\",\n      \"target\": \"combine\",\n      \"target_port\": \"b\"\n    },\n    {\n      \"id\": \"e12\",\n      \"source\": \"combine\",\n      \"source_port\": \"y\",\n      \"target\": \"residual\",\n      \"target_port\": \"a\"\n    },\n    {\n      \"id\": \"e_skip\",\n      \"source\": \"input\",\n      \"source_port\": \"y\",\n      \"target\": \"residual\",\n      \"target_port\": \"b\"\n    },\n    {\n      \"id\": \"e13\",\n      \"source\": \"residual\",\n      \"source_port\": \"y\",\n      \"target\": \"compress\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e14\",\n      \"source\": \"compress\",\n      \"source_port\": \"y\",\n      \"target\": \"output\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e_evo_evo_norm_2535\",\n      \"source\": \"fast_act\",\n      \"source_port\": \"y\",\n      \"target\": \"evo_norm_2535\",\n      \"target_port\": \"x\"\n    }\n  ]",
+      "tokens": 0,
+      "firstFile": {
+        "name": "aria_designer/workflows/generated/wf_evo_best_1.json",
+        "start": 258,
+        "end": 326,
+        "startLoc": {
+          "line": 258,
+          "column": 32,
+          "position": 1420
+        },
+        "endLoc": {
+          "line": 326,
+          "column": 4,
+          "position": 1815
+        }
+      },
+      "secondFile": {
+        "name": "aria_designer/workflows/generated/wf_evo_champion.json",
+        "start": 269,
+        "end": 336,
+        "startLoc": {
+          "line": 269,
+          "column": 30,
+          "position": 1480
+        },
+        "endLoc": {
+          "line": 336,
+          "column": 7,
+          "position": 1873
+        }
+      }
+    },
+    {
+      "format": "json",
+      "lines": 90,
+      "fragment": ",\n  \"name\": \"Evolved (add_norm_before_combine) from Adaptive Lane V6 - Load-Balanced MoE + Residual\",\n  \"metadata\": {\n    \"family\": \"adaptive_lane_split\",\n    \"source_fingerprint\": \"23a9c75ef7ee1da6\",\n    \"variant\": \"balanced_moe_residual\",\n    \"adaptation_notes\": \"Based on top routing graph: token_type\\u2192lane_router\\u2192relu\\u2192load_balance\\u2192add\\u2192rmsnorm\\u2192rwkv\\u2192add. Added load_balance_loss to prevent expert collapse.\",\n    \"mutation\": \"add_norm_before_combine\"\n  },\n  \"nodes\": [\n    {\n      \"id\": \"input\",\n      \"component_type\": \"io/input\",\n      \"params\": {\n        \"dim\": 256,\n        \"vocab_size\": 32000\n      },\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 0\n        }\n      }\n    },\n    {\n      \"id\": \"norm_pre\",\n      \"component_type\": \"linear_algebra/rmsnorm\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 100\n        }\n      }\n    },\n    {\n      \"id\": \"difficulty\",\n      \"component_type\": \"routing/difficulty_scorer\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 200\n        }\n      }\n    },\n    {\n      \"id\": \"lane_router\",\n      \"component_type\": \"routing/lane_router\",\n      \"params\": {\n        \"num_lanes\": 2\n      },\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 300\n        }\n      }\n    },\n    {\n      \"id\": \"dispatch_fast\",\n      \"component_type\": \"structural/conditional_dispatch\",\n      \"params\": {\n        \"num_lanes\": 2,\n        \"lane\": 0\n      },\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 180,\n          \"y\": 420\n        }\n      }\n    },\n    {\n      \"id\": \"dispatch_hard\",\n      \"component_type\": \"structural/conditional_dispatch\",\n      \"params\": {\n        \"num_lanes\": 2,\n        \"lane\": 1\n      },\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 700,\n          \"y\": 420\n        }\n      }\n    },\n    {\n      \"id\": \"fast_proj\",\n      \"component_type\": \"linear_algebra/nm_sparse_linear\"",
+      "tokens": 0,
+      "firstFile": {
+        "name": "aria_designer/workflows/generated/wf_evo3_champion.json",
+        "start": 3,
+        "end": 92,
+        "startLoc": {
+          "line": 3,
+          "column": 45,
+          "position": 14
+        },
+        "endLoc": {
+          "line": 92,
+          "column": 58,
+          "position": 500
+        }
+      },
+      "secondFile": {
+        "name": "aria_designer/workflows/generated/wf_evo_champion.json",
+        "start": 3,
+        "end": 92,
+        "startLoc": {
+          "line": 3,
+          "column": 49,
+          "position": 14
+        },
+        "endLoc": {
+          "line": 92,
+          "column": 53,
+          "position": 500
+        }
+      }
+    },
+    {
+      "format": "json",
+      "lines": 254,
+      "fragment": ",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 180,\n          \"y\": 540\n        }\n      }\n    },\n    {\n      \"id\": \"fast_act\",\n      \"component_type\": \"math/relu\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 180,\n          \"y\": 640\n        }\n      }\n    },\n    {\n      \"id\": \"hard_moe\",\n      \"component_type\": \"channel_mixing/moe_topk\",\n      \"params\": {\n        \"top_k\": 2,\n        \"num_experts\": 4\n      },\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 700,\n          \"y\": 540\n        }\n      }\n    },\n    {\n      \"id\": \"hard_norm\",\n      \"component_type\": \"linear_algebra/rmsnorm\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 700,\n          \"y\": 640\n        }\n      }\n    },\n    {\n      \"id\": \"hard_act\",\n      \"component_type\": \"math/silu\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 700,\n          \"y\": 740\n        }\n      }\n    },\n    {\n      \"id\": \"evo_norm_2535\",\n      \"component_type\": \"linear_algebra/rmsnorm\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 800\n        }\n      }\n    },\n    {\n      \"id\": \"combine\",\n      \"component_type\": \"math/add\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 860\n        }\n      }\n    },\n    {\n      \"id\": \"residual\",\n      \"component_type\": \"math/add\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 960\n        }\n      }\n    },\n    {\n      \"id\": \"compress\",\n      \"component_type\": \"linear_algebra/linear_proj_down\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 1060\n        }\n      }\n    },\n    {\n      \"id\": \"output\",\n      \"component_type\": \"io/output_head\",\n      \"params\": {\n        \"vocab_size\": 32000\n      },\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 1160\n        }\n      }\n    },\n    {\n      \"id\": \"proj_up_evo\",\n      \"component_type\": \"linear_algebra/linear_proj_up\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 700,\n          \"y\": 480\n        }\n      }\n    }\n  ],\n  \"edges\": [\n    {\n      \"id\": \"e0\",\n      \"source\": \"input\",\n      \"source_port\": \"y\",\n      \"target\": \"norm_pre\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e1\",\n      \"source\": \"norm_pre\",\n      \"source_port\": \"y\",\n      \"target\": \"difficulty\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e2\",\n      \"source\": \"difficulty\",\n      \"source_port\": \"y\",\n      \"target\": \"lane_router\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e3\",\n      \"source\": \"lane_router\",\n      \"source_port\": \"y\",\n      \"target\": \"dispatch_fast\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e4\",\n      \"source\": \"lane_router\",\n      \"source_port\": \"y\",\n      \"target\": \"dispatch_hard\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e5\",\n      \"source\": \"dispatch_fast\",\n      \"source_port\": \"y\",\n      \"target\": \"fast_proj\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e6\",\n      \"source\": \"fast_proj\",\n      \"source_port\": \"y\",\n      \"target\": \"fast_act\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e7\",\n      \"source\": \"proj_up_evo\",\n      \"source_port\": \"y\",\n      \"target\": \"hard_moe\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e8\",\n      \"source\": \"hard_moe\",\n      \"source_port\": \"y\",\n      \"target\": \"hard_norm\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e9\",\n      \"source\": \"hard_norm\",\n      \"source_port\": \"y\",\n      \"target\": \"hard_act\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e10\",\n      \"source\": \"evo_norm_2535\",\n      \"source_port\": \"y\",\n      \"target\": \"combine\",\n      \"target_port\": \"a\"\n    },\n    {\n      \"id\": \"e11\",\n      \"source\": \"hard_act\",\n      \"source_port\": \"y\",\n      \"target\": \"combine\",\n      \"target_port\": \"b\"\n    },\n    {\n      \"id\": \"e12\",\n      \"source\": \"combine\",\n      \"source_port\": \"y\",\n      \"target\": \"residual\",\n      \"target_port\": \"a\"\n    },\n    {\n      \"id\": \"e_skip\",\n      \"source\": \"input\",\n      \"source_port\": \"y\",\n      \"target\": \"residual\",\n      \"target_port\": \"b\"\n    },\n    {\n      \"id\": \"e13\",\n      \"source\": \"residual\",\n      \"source_port\": \"y\",\n      \"target\": \"compress\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e14\",\n      \"source\": \"compress\",\n      \"source_port\": \"y\",\n      \"target\": \"output\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e_evo_evo_norm_2535\",\n      \"source\": \"fast_act\",\n      \"source_port\": \"y\",\n      \"target\": \"evo_norm_2535\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e_proj_up_evo\",\n      \"source\": \"dispatch_hard\",\n      \"source_port\": \"y\",\n      \"target\": \"proj_up_evo\",\n      \"target_port\": \"x\"\n    }\n  ]\n}",
+      "tokens": 0,
+      "firstFile": {
+        "name": "aria_designer/workflows/generated/wf_evo3_champion.json",
+        "start": 92,
+        "end": 345,
+        "startLoc": {
+          "line": 92,
+          "column": 58,
+          "position": 501
+        },
+        "endLoc": {
+          "line": 345,
+          "column": 2,
+          "position": 1918
+        }
+      },
+      "secondFile": {
+        "name": "aria_designer/workflows/generated/wf_evo_champion.json",
+        "start": 92,
+        "end": 345,
+        "startLoc": {
+          "line": 92,
+          "column": 53,
+          "position": 501
+        },
+        "endLoc": {
+          "line": 345,
+          "column": 2,
+          "position": 1918
+        }
+      }
+    },
+    {
+      "format": "json",
+      "lines": 11,
+      "fragment": "}}}\n  ],\n  \"edges\": [\n    {\"id\": \"e0\", \"source\": \"input\", \"source_port\": \"y\", \"target\": \"norm_pre\", \"target_port\": \"x\"},\n    {\"id\": \"e1\", \"source\": \"norm_pre\", \"source_port\": \"y\", \"target\": \"difficulty\", \"target_port\": \"x\"},\n    {\"id\": \"e2\", \"source\": \"difficulty\", \"source_port\": \"y\", \"target\": \"lane_router\", \"target_port\": \"x\"},\n    {\"id\": \"e3\", \"source\": \"lane_router\", \"source_port\": \"y\", \"target\": \"dispatch_fast\", \"target_port\": \"x\"},\n    {\"id\": \"e4\", \"source\": \"lane_router\", \"source_port\": \"y\", \"target\": \"dispatch_hard\", \"target_port\": \"x\"},\n    {\"id\": \"e5\", \"source\": \"dispatch_fast\", \"source_port\": \"y\", \"target\": \"fast_proj\", \"target_port\": \"x\"},\n    {\"id\": \"e6\", \"source\": \"fast_proj\", \"source_port\": \"y\", \"target\": \"fast_act\", \"target_port\": \"x\"},\n    {\"id\": \"e7\", \"source\": \"dispatch_hard\", \"source_port\": \"y\", \"target\": \"hard_ultra\"",
+      "tokens": 0,
+      "firstFile": {
+        "name": "aria_designer/workflows/generated/wf_adaptive_lane_v8_ultra_bottleneck.json",
+        "start": 28,
+        "end": 38,
+        "startLoc": {
+          "line": 28,
+          "column": 135,
+          "position": 847
+        },
+        "endLoc": {
+          "line": 38,
+          "column": 87,
+          "position": 1115
+        }
+      },
+      "secondFile": {
+        "name": "aria_designer/workflows/generated/wf_evo_champion.json",
+        "start": 213,
+        "end": 249,
+        "startLoc": {
+          "line": 213,
+          "column": 9,
+          "position": 1160
+        },
+        "endLoc": {
+          "line": 249,
+          "column": 27,
+          "position": 1373
+        }
+      }
+    },
+    {
+      "format": "json",
+      "lines": 11,
+      "fragment": "},\n  \"nodes\": [\n    {\"id\": \"input\", \"component_type\": \"io/input\", \"params\": {\"dim\": 256, \"vocab_size\": 32000}, \"ui_meta\": {\"position\": {\"x\": 440, \"y\": 0}}},\n    {\"id\": \"norm_pre\", \"component_type\": \"linear_algebra/rmsnorm\", \"params\": {}, \"ui_meta\": {\"position\": {\"x\": 440, \"y\": 100}}},\n    {\"id\": \"difficulty\", \"component_type\": \"routing/difficulty_scorer\", \"params\": {}, \"ui_meta\": {\"position\": {\"x\": 440, \"y\": 200}}},\n    {\"id\": \"lane_router\", \"component_type\": \"routing/lane_router\", \"params\": {\"num_lanes\": 2}, \"ui_meta\": {\"position\": {\"x\": 440, \"y\": 300}}},\n    {\"id\": \"dispatch_fast\", \"component_type\": \"structural/conditional_dispatch\", \"params\": {\"num_lanes\": 2, \"lane\": 0}, \"ui_meta\": {\"position\": {\"x\": 180, \"y\": 420}}},\n    {\"id\": \"dispatch_hard\", \"component_type\": \"structural/conditional_dispatch\", \"params\": {\"num_lanes\": 2, \"lane\": 1}, \"ui_meta\": {\"position\": {\"x\": 700, \"y\": 420}}},\n    {\"id\": \"fast_proj\", \"component_type\": \"linear_algebra/linear_proj\", \"params\": {}, \"ui_meta\": {\"position\": {\"x\": 180, \"y\": 540}}},\n    {\"id\": \"fast_act\", \"component_type\": \"math/silu\", \"params\": {}, \"ui_meta\": {\"position\": {\"x\": 180, \"y\": 640}}},\n    {\"id\": \"hard_scan\"",
+      "tokens": 0,
+      "firstFile": {
+        "name": "aria_designer/workflows/generated/wf_adaptive_lane_v7_bottleneck.json",
+        "start": 10,
+        "end": 20,
+        "startLoc": {
+          "line": 10,
+          "column": 3,
+          "position": 57
+        },
+        "endLoc": {
+          "line": 20,
+          "column": 23,
+          "position": 457
+        }
+      },
+      "secondFile": {
+        "name": "aria_designer/workflows/generated/wf_evo_champion.json",
+        "start": 11,
+        "end": 20,
+        "startLoc": {
+          "line": 11,
+          "column": 3,
+          "position": 64
+        },
+        "endLoc": {
+          "line": 20,
+          "column": 24,
+          "position": 457
+        }
+      }
+    },
+    {
+      "format": "json",
+      "lines": 11,
+      "fragment": "}}}\n  ],\n  \"edges\": [\n    {\"id\": \"e0\", \"source\": \"input\", \"source_port\": \"y\", \"target\": \"norm_pre\", \"target_port\": \"x\"},\n    {\"id\": \"e1\", \"source\": \"norm_pre\", \"source_port\": \"y\", \"target\": \"difficulty\", \"target_port\": \"x\"},\n    {\"id\": \"e2\", \"source\": \"difficulty\", \"source_port\": \"y\", \"target\": \"lane_router\", \"target_port\": \"x\"},\n    {\"id\": \"e3\", \"source\": \"lane_router\", \"source_port\": \"y\", \"target\": \"dispatch_fast\", \"target_port\": \"x\"},\n    {\"id\": \"e4\", \"source\": \"lane_router\", \"source_port\": \"y\", \"target\": \"dispatch_hard\", \"target_port\": \"x\"},\n    {\"id\": \"e5\", \"source\": \"dispatch_fast\", \"source_port\": \"y\", \"target\": \"fast_proj\", \"target_port\": \"x\"},\n    {\"id\": \"e6\", \"source\": \"fast_proj\", \"source_port\": \"y\", \"target\": \"fast_act\", \"target_port\": \"x\"},\n    {\"id\": \"e7\", \"source\": \"dispatch_hard\", \"source_port\": \"y\", \"target\": \"hard_scan\"",
+      "tokens": 0,
+      "firstFile": {
+        "name": "aria_designer/workflows/generated/wf_adaptive_lane_v7_bottleneck.json",
+        "start": 27,
+        "end": 37,
+        "startLoc": {
+          "line": 27,
+          "column": 135,
+          "position": 803
+        },
+        "endLoc": {
+          "line": 37,
+          "column": 86,
+          "position": 1071
+        }
+      },
+      "secondFile": {
+        "name": "aria_designer/workflows/generated/wf_evo_champion.json",
+        "start": 213,
+        "end": 249,
+        "startLoc": {
+          "line": 213,
+          "column": 9,
+          "position": 1160
+        },
+        "endLoc": {
+          "line": 249,
+          "column": 27,
+          "position": 1373
+        }
+      }
+    },
+    {
+      "format": "json",
+      "lines": 37,
+      "fragment": "},\n  \"nodes\": [\n    {\"id\": \"input\", \"component_type\": \"io/input\", \"params\": {\"dim\": 256, \"vocab_size\": 32000}, \"ui_meta\": {\"position\": {\"x\": 440, \"y\": 0}}},\n    {\"id\": \"norm_pre\", \"component_type\": \"linear_algebra/rmsnorm\", \"params\": {}, \"ui_meta\": {\"position\": {\"x\": 440, \"y\": 100}}},\n    {\"id\": \"difficulty\", \"component_type\": \"routing/difficulty_scorer\", \"params\": {}, \"ui_meta\": {\"position\": {\"x\": 440, \"y\": 200}}},\n    {\"id\": \"lane_router\", \"component_type\": \"routing/lane_router\", \"params\": {\"num_lanes\": 2}, \"ui_meta\": {\"position\": {\"x\": 440, \"y\": 300}}},\n    {\"id\": \"dispatch_fast\", \"component_type\": \"structural/conditional_dispatch\", \"params\": {\"num_lanes\": 2, \"lane\": 0}, \"ui_meta\": {\"position\": {\"x\": 180, \"y\": 420}}},\n    {\"id\": \"dispatch_hard\", \"component_type\": \"structural/conditional_dispatch\", \"params\": {\"num_lanes\": 2, \"lane\": 1}, \"ui_meta\": {\"position\": {\"x\": 700, \"y\": 420}}},\n    {\"id\": \"fast_proj\", \"component_type\": \"linear_algebra/linear_proj\", \"params\": {}, \"ui_meta\": {\"position\": {\"x\": 180, \"y\": 540}}},\n    {\"id\": \"fast_act\", \"component_type\": \"math/relu\", \"params\": {}, \"ui_meta\": {\"position\": {\"x\": 180, \"y\": 640}}},\n    {\"id\": \"hard_moe\", \"component_type\": \"channel_mixing/moe_topk\", \"params\": {\"top_k\": 2, \"num_experts\": 4}, \"ui_meta\": {\"position\": {\"x\": 700, \"y\": 540}}},\n    {\"id\": \"hard_norm\", \"component_type\": \"linear_algebra/rmsnorm\", \"params\": {}, \"ui_meta\": {\"position\": {\"x\": 700, \"y\": 640}}},\n    {\"id\": \"hard_act\", \"component_type\": \"math/silu\", \"params\": {}, \"ui_meta\": {\"position\": {\"x\": 700, \"y\": 740}}},\n    {\"id\": \"combine\", \"component_type\": \"math/add\", \"params\": {}, \"ui_meta\": {\"position\": {\"x\": 440, \"y\": 860}}},\n    {\"id\": \"residual\", \"component_type\": \"math/add\", \"params\": {}, \"ui_meta\": {\"position\": {\"x\": 440, \"y\": 960}}},\n    {\"id\": \"compress\", \"component_type\": \"linear_algebra/linear_proj_down\", \"params\": {}, \"ui_meta\": {\"position\": {\"x\": 440, \"y\": 1060}}},\n    {\"id\": \"output\", \"component_type\": \"io/output_head\", \"params\": {\"vocab_size\": 32000}, \"ui_meta\": {\"position\": {\"x\": 440, \"y\": 1160}}}\n  ],\n  \"edges\": [\n    {\"id\": \"e0\", \"source\": \"input\", \"source_port\": \"y\", \"target\": \"norm_pre\", \"target_port\": \"x\"},\n    {\"id\": \"e1\", \"source\": \"norm_pre\", \"source_port\": \"y\", \"target\": \"difficulty\", \"target_port\": \"x\"},\n    {\"id\": \"e2\", \"source\": \"difficulty\", \"source_port\": \"y\", \"target\": \"lane_router\", \"target_port\": \"x\"},\n    {\"id\": \"e3\", \"source\": \"lane_router\", \"source_port\": \"y\", \"target\": \"dispatch_fast\", \"target_port\": \"x\"},\n    {\"id\": \"e4\", \"source\": \"lane_router\", \"source_port\": \"y\", \"target\": \"dispatch_hard\", \"target_port\": \"x\"},\n    {\"id\": \"e5\", \"source\": \"dispatch_fast\", \"source_port\": \"y\", \"target\": \"fast_proj\", \"target_port\": \"x\"},\n    {\"id\": \"e6\", \"source\": \"fast_proj\", \"source_port\": \"y\", \"target\": \"fast_act\", \"target_port\": \"x\"},\n    {\"id\": \"e7\", \"source\": \"dispatch_hard\", \"source_port\": \"y\", \"target\": \"hard_moe\", \"target_port\": \"x\"},\n    {\"id\": \"e8\", \"source\": \"hard_moe\", \"source_port\": \"y\", \"target\": \"hard_norm\", \"target_port\": \"x\"},\n    {\"id\": \"e9\", \"source\": \"hard_norm\", \"source_port\": \"y\", \"target\": \"hard_act\", \"target_port\": \"x\"},\n    {\"id\": \"e10\", \"source\": \"fast_act\", \"source_port\": \"y\", \"target\": \"combine\", \"target_port\": \"a\"},\n    {\"id\": \"e11\", \"source\": \"hard_act\", \"source_port\": \"y\", \"target\": \"combine\", \"target_port\": \"b\"},\n    {\"id\": \"e12\", \"source\": \"combine\", \"source_port\": \"y\", \"target\": \"residual\", \"target_port\": \"a\"},\n    {\"id\": \"e_skip\", \"source\": \"input\", \"source_port\": \"y\", \"target\": \"residual\", \"target_port\": \"b\"},\n    {\"id\": \"e13\", \"source\": \"residual\", \"source_port\": \"y\", \"target\": \"compress\", \"target_port\": \"x\"},\n    {\"id\": \"e14\", \"source\": \"compress\", \"source_port\": \"y\", \"target\": \"output\", \"target_port\": \"x\"}\n  ]\n}",
+      "tokens": 0,
+      "firstFile": {
+        "name": "aria_designer/workflows/generated/wf_adaptive_lane_v6_balanced_moe.json",
+        "start": 10,
+        "end": 46,
+        "startLoc": {
+          "line": 10,
+          "column": 3,
+          "position": 57
+        },
+        "endLoc": {
+          "line": 46,
+          "column": 2,
+          "position": 1313
+        }
+      },
+      "secondFile": {
+        "name": "aria_designer/workflows/generated/wf_evo_champion.json",
+        "start": 11,
+        "end": 309,
+        "startLoc": {
+          "line": 11,
+          "column": 3,
+          "position": 64
+        },
+        "endLoc": {
+          "line": 309,
+          "column": 2,
+          "position": 1716
+        }
+      }
+    },
+    {
+      "format": "json",
+      "lines": 11,
+      "fragment": "},\n  \"nodes\": [\n    {\"id\": \"input\", \"component_type\": \"io/input\", \"params\": {\"dim\": 256, \"vocab_size\": 32000}, \"ui_meta\": {\"position\": {\"x\": 440, \"y\": 0}}},\n    {\"id\": \"norm_pre\", \"component_type\": \"linear_algebra/rmsnorm\", \"params\": {}, \"ui_meta\": {\"position\": {\"x\": 440, \"y\": 100}}},\n    {\"id\": \"difficulty\", \"component_type\": \"routing/difficulty_scorer\", \"params\": {}, \"ui_meta\": {\"position\": {\"x\": 440, \"y\": 200}}},\n    {\"id\": \"lane_router\", \"component_type\": \"routing/lane_router\", \"params\": {\"num_lanes\": 2}, \"ui_meta\": {\"position\": {\"x\": 440, \"y\": 300}}},\n    {\"id\": \"dispatch_fast\", \"component_type\": \"structural/conditional_dispatch\", \"params\": {\"num_lanes\": 2, \"lane\": 0}, \"ui_meta\": {\"position\": {\"x\": 180, \"y\": 420}}},\n    {\"id\": \"dispatch_hard\", \"component_type\": \"structural/conditional_dispatch\", \"params\": {\"num_lanes\": 2, \"lane\": 1}, \"ui_meta\": {\"position\": {\"x\": 700, \"y\": 420}}},\n    {\"id\": \"fast_proj\", \"component_type\": \"linear_algebra/linear_proj\", \"params\": {}, \"ui_meta\": {\"position\": {\"x\": 180, \"y\": 540}}},\n    {\"id\": \"fast_act\", \"component_type\": \"math/silu\", \"params\": {}, \"ui_meta\": {\"position\": {\"x\": 180, \"y\": 640}}},\n    {\"id\": \"hard_rwkv\"",
+      "tokens": 0,
+      "firstFile": {
+        "name": "aria_designer/workflows/generated/wf_adaptive_lane_v5_rwkv.json",
+        "start": 10,
+        "end": 20,
+        "startLoc": {
+          "line": 10,
+          "column": 3,
+          "position": 57
+        },
+        "endLoc": {
+          "line": 20,
+          "column": 23,
+          "position": 457
+        }
+      },
+      "secondFile": {
+        "name": "aria_designer/workflows/generated/wf_evo_champion.json",
+        "start": 11,
+        "end": 20,
+        "startLoc": {
+          "line": 11,
+          "column": 3,
+          "position": 64
+        },
+        "endLoc": {
+          "line": 20,
+          "column": 24,
+          "position": 457
+        }
+      }
+    },
+    {
+      "format": "json",
+      "lines": 14,
+      "fragment": ", \"params\": {}, \"ui_meta\": {\"position\": {\"x\": 440, \"y\": 860}}},\n    {\"id\": \"residual\", \"component_type\": \"math/add\", \"params\": {}, \"ui_meta\": {\"position\": {\"x\": 440, \"y\": 960}}},\n    {\"id\": \"compress\", \"component_type\": \"linear_algebra/linear_proj_down\", \"params\": {}, \"ui_meta\": {\"position\": {\"x\": 440, \"y\": 1060}}},\n    {\"id\": \"output\", \"component_type\": \"io/output_head\", \"params\": {\"vocab_size\": 32000}, \"ui_meta\": {\"position\": {\"x\": 440, \"y\": 1160}}}\n  ],\n  \"edges\": [\n    {\"id\": \"e0\", \"source\": \"input\", \"source_port\": \"y\", \"target\": \"norm_pre\", \"target_port\": \"x\"},\n    {\"id\": \"e1\", \"source\": \"norm_pre\", \"source_port\": \"y\", \"target\": \"difficulty\", \"target_port\": \"x\"},\n    {\"id\": \"e2\", \"source\": \"difficulty\", \"source_port\": \"y\", \"target\": \"lane_router\", \"target_port\": \"x\"},\n    {\"id\": \"e3\", \"source\": \"lane_router\", \"source_port\": \"y\", \"target\": \"dispatch_fast\", \"target_port\": \"x\"},\n    {\"id\": \"e4\", \"source\": \"lane_router\", \"source_port\": \"y\", \"target\": \"dispatch_hard\", \"target_port\": \"x\"},\n    {\"id\": \"e5\", \"source\": \"dispatch_fast\", \"source_port\": \"y\", \"target\": \"fast_proj\", \"target_port\": \"x\"},\n    {\"id\": \"e6\", \"source\": \"fast_proj\", \"source_port\": \"y\", \"target\": \"fast_act\", \"target_port\": \"x\"},\n    {\"id\": \"e7\", \"source\": \"dispatch_hard\", \"source_port\": \"y\", \"target\": \"hard_rwkv\"",
+      "tokens": 0,
+      "firstFile": {
+        "name": "aria_designer/workflows/generated/wf_adaptive_lane_v5_rwkv.json",
+        "start": 23,
+        "end": 36,
+        "startLoc": {
+          "line": 23,
+          "column": 67,
+          "position": 596
+        },
+        "endLoc": {
+          "line": 36,
+          "column": 86,
+          "position": 1027
+        }
+      },
+      "secondFile": {
+        "name": "aria_designer/workflows/generated/wf_evo_champion.json",
+        "start": 161,
+        "end": 249,
+        "startLoc": {
+          "line": 161,
+          "column": 35,
+          "position": 876
+        },
+        "endLoc": {
+          "line": 249,
+          "column": 27,
+          "position": 1373
+        }
+      }
+    },
+    {
+      "format": "json",
+      "lines": 87,
+      "fragment": "},\n  \"nodes\": [\n    {\n      \"id\": \"input\",\n      \"component_type\": \"io/input\",\n      \"params\": {\n        \"source_type\": \"synthetic\",\n        \"synthetic_pattern\": \"gaussian\",\n        \"batch_size\": 2,\n        \"seq_len\": 64,\n        \"seed\": 42,\n        \"dim\": 256,\n        \"vocab_size\": 32000\n      },\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 0\n        }\n      }\n    },\n    {\n      \"id\": \"difficulty\",\n      \"component_type\": \"routing/difficulty_scorer\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 120\n        }\n      }\n    },\n    {\n      \"id\": \"lane_router\",\n      \"component_type\": \"routing/lane_router\",\n      \"params\": {\n        \"num_lanes\": 2,\n        \"routing_mode\": \"threshold\"\n      },\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 240\n        }\n      }\n    },\n    {\n      \"id\": \"dispatch_fast\",\n      \"component_type\": \"structural/conditional_dispatch\",\n      \"params\": {\n        \"num_lanes\": 2,\n        \"lane\": 0\n      },\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 220,\n          \"y\": 380\n        }\n      }\n    },\n    {\n      \"id\": \"dispatch_hard\",\n      \"component_type\": \"structural/conditional_dispatch\",\n      \"params\": {\n        \"num_lanes\": 2,\n        \"lane\": 1\n      },\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 660,\n          \"y\": 380\n        }\n      }\n    },\n    {\n      \"id\": \"fast_gelu\",\n      \"component_type\": \"math/gelu\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 220,\n          \"y\": 500\n        }\n      }\n    },\n    {\n      \"id\": \"hard_moe\"",
+      "tokens": 0,
+      "firstFile": {
+        "name": "aria_designer/workflows/generated/wf_adaptive_lane_moe_v3.json",
+        "start": 11,
+        "end": 97,
+        "startLoc": {
+          "line": 11,
+          "column": 3,
+          "position": 64
+        },
+        "endLoc": {
+          "line": 97,
+          "column": 23,
+          "position": 535
+        }
+      },
+      "secondFile": {
+        "name": "aria_designer/workflows/generated/wf_adaptive_lane_moe_v4.json",
+        "start": 11,
+        "end": 97,
+        "startLoc": {
+          "line": 11,
+          "column": 3,
+          "position": 64
+        },
+        "endLoc": {
+          "line": 97,
+          "column": 25,
+          "position": 535
+        }
+      }
+    },
+    {
+      "format": "json",
+      "lines": 78,
+      "fragment": "}\n      }\n    },\n    {\n      \"id\": \"combine\",\n      \"component_type\": \"math/add\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 860\n        }\n      }\n    },\n    {\n      \"id\": \"compress\",\n      \"component_type\": \"linear_algebra/linear_proj_down\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 980\n        }\n      }\n    },\n    {\n      \"id\": \"output\",\n      \"component_type\": \"io/output_head\",\n      \"params\": {\n        \"vocab_size\": 32000,\n        \"tie_weights\": true\n      },\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 1100\n        }\n      }\n    }\n  ],\n  \"edges\": [\n    {\n      \"id\": \"e_input_y_difficulty_x\",\n      \"source\": \"input\",\n      \"source_port\": \"y\",\n      \"target\": \"difficulty\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e_difficulty_y_lane_router_x\",\n      \"source\": \"difficulty\",\n      \"source_port\": \"y\",\n      \"target\": \"lane_router\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e_lane_router_y_dispatch_fast_x\",\n      \"source\": \"lane_router\",\n      \"source_port\": \"y\",\n      \"target\": \"dispatch_fast\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e_lane_router_y_dispatch_hard_x\",\n      \"source\": \"lane_router\",\n      \"source_port\": \"y\",\n      \"target\": \"dispatch_hard\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e_dispatch_fast_y_fast_gelu_x\",\n      \"source\": \"dispatch_fast\",\n      \"source_port\": \"y\",\n      \"target\": \"fast_gelu\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e_dispatch_hard_y_hard_moe_x\"",
+      "tokens": 0,
+      "firstFile": {
+        "name": "aria_designer/workflows/generated/wf_adaptive_lane_moe_v3.json",
+        "start": 126,
+        "end": 203,
+        "startLoc": {
+          "line": 126,
+          "column": 9,
+          "position": 699
+        },
+        "endLoc": {
+          "line": 203,
+          "column": 43,
+          "position": 1124
+        }
+      },
+      "secondFile": {
+        "name": "aria_designer/workflows/generated/wf_adaptive_lane_moe_v4.json",
+        "start": 137,
+        "end": 214,
+        "startLoc": {
+          "line": 137,
+          "column": 9,
+          "position": 759
+        },
+        "endLoc": {
+          "line": 214,
+          "column": 45,
+          "position": 1184
+        }
+      }
+    },
+    {
+      "format": "json",
+      "lines": 35,
+      "fragment": ",\n      \"source_port\": \"y\",\n      \"target\": \"hard_gelu\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e_fast_gelu_y_combine_a\",\n      \"source\": \"fast_gelu\",\n      \"source_port\": \"y\",\n      \"target\": \"combine\",\n      \"target_port\": \"a\"\n    },\n    {\n      \"id\": \"e_hard_gelu_y_combine_b\",\n      \"source\": \"hard_gelu\",\n      \"source_port\": \"y\",\n      \"target\": \"combine\",\n      \"target_port\": \"b\"\n    },\n    {\n      \"id\": \"e_combine_y_compress_x\",\n      \"source\": \"combine\",\n      \"source_port\": \"y\",\n      \"target\": \"compress\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e_compress_y_output_x\",\n      \"source\": \"compress\",\n      \"source_port\": \"y\",\n      \"target\": \"output\",\n      \"target_port\": \"x\"\n    }\n  ]\n}",
+      "tokens": 0,
+      "firstFile": {
+        "name": "aria_designer/workflows/generated/wf_adaptive_lane_moe_v3.json",
+        "start": 218,
+        "end": 252,
+        "startLoc": {
+          "line": 218,
+          "column": 28,
+          "position": 1214
+        },
+        "endLoc": {
+          "line": 252,
+          "column": 2,
+          "position": 1406
+        }
+      },
+      "secondFile": {
+        "name": "aria_designer/workflows/generated/wf_adaptive_lane_moe_v4.json",
+        "start": 236,
+        "end": 270,
+        "startLoc": {
+          "line": 236,
+          "column": 34,
+          "position": 1315
+        },
+        "endLoc": {
+          "line": 270,
+          "column": 2,
+          "position": 1507
+        }
+      }
+    },
+    {
+      "format": "json",
+      "lines": 109,
+      "fragment": "},\n  \"nodes\": [\n    {\n      \"id\": \"input\",\n      \"component_type\": \"io/input\",\n      \"params\": {\n        \"source_type\": \"synthetic\",\n        \"synthetic_pattern\": \"gaussian\",\n        \"batch_size\": 2,\n        \"seq_len\": 64,\n        \"seed\": 42,\n        \"dim\": 256,\n        \"vocab_size\": 32000\n      },\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 0\n        }\n      }\n    },\n    {\n      \"id\": \"difficulty\",\n      \"component_type\": \"routing/difficulty_scorer\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 120\n        }\n      }\n    },\n    {\n      \"id\": \"lane_router\",\n      \"component_type\": \"routing/lane_router\",\n      \"params\": {\n        \"num_lanes\": 2,\n        \"routing_mode\": \"threshold\"\n      },\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 240\n        }\n      }\n    },\n    {\n      \"id\": \"dispatch_fast\",\n      \"component_type\": \"structural/conditional_dispatch\",\n      \"params\": {\n        \"num_lanes\": 2,\n        \"lane\": 0\n      },\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 220,\n          \"y\": 380\n        }\n      }\n    },\n    {\n      \"id\": \"dispatch_hard\",\n      \"component_type\": \"structural/conditional_dispatch\",\n      \"params\": {\n        \"num_lanes\": 2,\n        \"lane\": 1\n      },\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 660,\n          \"y\": 380\n        }\n      }\n    },\n    {\n      \"id\": \"fast_gelu\",\n      \"component_type\": \"math/gelu\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 220,\n          \"y\": 500\n        }\n      }\n    },\n    {\n      \"id\": \"hard_ultra\",\n      \"component_type\": \"math_space/ultrametric_attention\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 660,\n          \"y\": 500\n        }\n      }\n    },\n    {\n      \"id\": \"hard_moe\",\n      \"component_type\": \"channel_mixing/moe_topk\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 660,\n          \"y\": 620\n        }\n      }\n    },\n    {\n      \"id\": \"hard_gelu\"",
+      "tokens": 0,
+      "firstFile": {
+        "name": "aria_designer/workflows/generated/wf_adaptive_lane_moe_v2.json",
+        "start": 11,
+        "end": 119,
+        "startLoc": {
+          "line": 11,
+          "column": 3,
+          "position": 64
+        },
+        "endLoc": {
+          "line": 119,
+          "column": 24,
+          "position": 655
+        }
+      },
+      "secondFile": {
+        "name": "aria_designer/workflows/generated/wf_adaptive_lane_moe_v4.json",
+        "start": 11,
+        "end": 119,
+        "startLoc": {
+          "line": 11,
+          "column": 3,
+          "position": 64
+        },
+        "endLoc": {
+          "line": 119,
+          "column": 30,
+          "position": 655
+        }
+      }
+    },
+    {
+      "format": "json",
+      "lines": 109,
+      "fragment": ",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 660,\n          \"y\": 620\n        }\n      }\n    },\n    {\n      \"id\": \"hard_gelu\",\n      \"component_type\": \"math/gelu\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 660,\n          \"y\": 740\n        }\n      }\n    },\n    {\n      \"id\": \"combine\",\n      \"component_type\": \"math/add\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 860\n        }\n      }\n    },\n    {\n      \"id\": \"compress\",\n      \"component_type\": \"linear_algebra/linear_proj_down\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 980\n        }\n      }\n    },\n    {\n      \"id\": \"output\",\n      \"component_type\": \"io/output_head\",\n      \"params\": {\n        \"vocab_size\": 32000,\n        \"tie_weights\": true\n      },\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 1100\n        }\n      }\n    }\n  ],\n  \"edges\": [\n    {\n      \"id\": \"e_input_y_difficulty_x\",\n      \"source\": \"input\",\n      \"source_port\": \"y\",\n      \"target\": \"difficulty\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e_difficulty_y_lane_router_x\",\n      \"source\": \"difficulty\",\n      \"source_port\": \"y\",\n      \"target\": \"lane_router\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e_lane_router_y_dispatch_fast_x\",\n      \"source\": \"lane_router\",\n      \"source_port\": \"y\",\n      \"target\": \"dispatch_fast\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e_lane_router_y_dispatch_hard_x\",\n      \"source\": \"lane_router\",\n      \"source_port\": \"y\",\n      \"target\": \"dispatch_hard\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e_dispatch_fast_y_fast_gelu_x\",\n      \"source\": \"dispatch_fast\",\n      \"source_port\": \"y\",\n      \"target\": \"fast_gelu\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e_dispatch_hard_y_hard_ultra_x\",\n      \"source\": \"dispatch_hard\",\n      \"source_port\": \"y\",\n      \"target\": \"hard_ultra\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e_hard_ultra_y_hard_moe_x\",\n      \"source\": \"hard_ultra\",\n      \"source_port\": \"y\",\n      \"target\": \"hard_moe\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e_hard_moe_y_hard_gelu_x\"",
+      "tokens": 0,
+      "firstFile": {
+        "name": "aria_designer/workflows/generated/wf_adaptive_lane_moe_v2.json",
+        "start": 109,
+        "end": 217,
+        "startLoc": {
+          "line": 109,
+          "column": 50,
+          "position": 603
+        },
+        "endLoc": {
+          "line": 217,
+          "column": 39,
+          "position": 1206
+        }
+      },
+      "secondFile": {
+        "name": "aria_designer/workflows/generated/wf_adaptive_lane_moe_v3.json",
+        "start": 109,
+        "end": 228,
+        "startLoc": {
+          "line": 109,
+          "column": 53,
+          "position": 603
+        },
+        "endLoc": {
+          "line": 228,
+          "column": 45,
+          "position": 1266
+        }
+      }
+    },
+    {
+      "format": "json",
+      "lines": 35,
+      "fragment": ",\n      \"source_port\": \"y\",\n      \"target\": \"hard_gelu\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e_fast_gelu_y_combine_a\",\n      \"source\": \"fast_gelu\",\n      \"source_port\": \"y\",\n      \"target\": \"combine\",\n      \"target_port\": \"a\"\n    },\n    {\n      \"id\": \"e_hard_gelu_y_combine_b\",\n      \"source\": \"hard_gelu\",\n      \"source_port\": \"y\",\n      \"target\": \"combine\",\n      \"target_port\": \"b\"\n    },\n    {\n      \"id\": \"e_combine_y_compress_x\",\n      \"source\": \"combine\",\n      \"source_port\": \"y\",\n      \"target\": \"compress\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e_compress_y_output_x\",\n      \"source\": \"compress\",\n      \"source_port\": \"y\",\n      \"target\": \"output\",\n      \"target_port\": \"x\"\n    }\n  ]\n}",
+      "tokens": 0,
+      "firstFile": {
+        "name": "aria_designer/workflows/generated/wf_adaptive_lane_moe_v2.json",
+        "start": 218,
+        "end": 252,
+        "startLoc": {
+          "line": 218,
+          "column": 27,
+          "position": 1214
+        },
+        "endLoc": {
+          "line": 252,
+          "column": 2,
+          "position": 1406
+        }
+      },
+      "secondFile": {
+        "name": "aria_designer/workflows/generated/wf_adaptive_lane_moe_v4.json",
+        "start": 236,
+        "end": 270,
+        "startLoc": {
+          "line": 236,
+          "column": 34,
+          "position": 1315
+        },
+        "endLoc": {
+          "line": 270,
+          "column": 2,
+          "position": 1507
+        }
+      }
+    },
+    {
+      "format": "json",
+      "lines": 98,
+      "fragment": "},\n  \"nodes\": [\n    {\n      \"id\": \"input\",\n      \"component_type\": \"io/input\",\n      \"params\": {\n        \"source_type\": \"synthetic\",\n        \"synthetic_pattern\": \"gaussian\",\n        \"batch_size\": 2,\n        \"seq_len\": 64,\n        \"seed\": 42,\n        \"dim\": 256,\n        \"vocab_size\": 32000\n      },\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 0\n        }\n      }\n    },\n    {\n      \"id\": \"difficulty\",\n      \"component_type\": \"routing/difficulty_scorer\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 120\n        }\n      }\n    },\n    {\n      \"id\": \"lane_router\",\n      \"component_type\": \"routing/lane_router\",\n      \"params\": {\n        \"num_lanes\": 2,\n        \"routing_mode\": \"threshold\"\n      },\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 240\n        }\n      }\n    },\n    {\n      \"id\": \"dispatch_fast\",\n      \"component_type\": \"structural/conditional_dispatch\",\n      \"params\": {\n        \"num_lanes\": 2,\n        \"lane\": 0\n      },\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 220,\n          \"y\": 380\n        }\n      }\n    },\n    {\n      \"id\": \"dispatch_hard\",\n      \"component_type\": \"structural/conditional_dispatch\",\n      \"params\": {\n        \"num_lanes\": 2,\n        \"lane\": 1\n      },\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 660,\n          \"y\": 380\n        }\n      }\n    },\n    {\n      \"id\": \"fast_gelu\",\n      \"component_type\": \"math/gelu\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 220,\n          \"y\": 500\n        }\n      }\n    },\n    {\n      \"id\": \"hard_moe\",\n      \"component_type\": \"channel_mixing/moe_topk\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 660,\n          \"y\": 500\n        }\n      }\n    },\n    {\n      \"id\": \"hard_gelu\"",
+      "tokens": 0,
+      "firstFile": {
+        "name": "aria_designer/workflows/generated/wf_adaptive_lane_moe_v1.json",
+        "start": 11,
+        "end": 108,
+        "startLoc": {
+          "line": 11,
+          "column": 3,
+          "position": 64
+        },
+        "endLoc": {
+          "line": 108,
+          "column": 24,
+          "position": 595
+        }
+      },
+      "secondFile": {
+        "name": "aria_designer/workflows/generated/wf_adaptive_lane_moe_v4.json",
+        "start": 11,
+        "end": 108,
+        "startLoc": {
+          "line": 11,
+          "column": 3,
+          "position": 64
+        },
+        "endLoc": {
+          "line": 108,
+          "column": 24,
+          "position": 595
+        }
+      }
+    },
+    {
+      "format": "json",
+      "lines": 85,
+      "fragment": "}\n      }\n    },\n    {\n      \"id\": \"combine\",\n      \"component_type\": \"math/add\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 860\n        }\n      }\n    },\n    {\n      \"id\": \"compress\",\n      \"component_type\": \"linear_algebra/linear_proj_down\",\n      \"params\": {},\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 980\n        }\n      }\n    },\n    {\n      \"id\": \"output\",\n      \"component_type\": \"io/output_head\",\n      \"params\": {\n        \"vocab_size\": 32000,\n        \"tie_weights\": true\n      },\n      \"ui_meta\": {\n        \"position\": {\n          \"x\": 440,\n          \"y\": 1100\n        }\n      }\n    }\n  ],\n  \"edges\": [\n    {\n      \"id\": \"e_input_y_difficulty_x\",\n      \"source\": \"input\",\n      \"source_port\": \"y\",\n      \"target\": \"difficulty\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e_difficulty_y_lane_router_x\",\n      \"source\": \"difficulty\",\n      \"source_port\": \"y\",\n      \"target\": \"lane_router\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e_lane_router_y_dispatch_fast_x\",\n      \"source\": \"lane_router\",\n      \"source_port\": \"y\",\n      \"target\": \"dispatch_fast\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e_lane_router_y_dispatch_hard_x\",\n      \"source\": \"lane_router\",\n      \"source_port\": \"y\",\n      \"target\": \"dispatch_hard\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e_dispatch_fast_y_fast_gelu_x\",\n      \"source\": \"dispatch_fast\",\n      \"source_port\": \"y\",\n      \"target\": \"fast_gelu\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e_dispatch_hard_y_hard_moe_x\",\n      \"source\": \"dispatch_hard\",\n      \"source_port\": \"y\",\n      \"target\": \"hard_moe\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e_hard_moe_y_hard_gelu_x\"",
+      "tokens": 0,
+      "firstFile": {
+        "name": "aria_designer/workflows/generated/wf_adaptive_lane_moe_v1.json",
+        "start": 115,
+        "end": 199,
+        "startLoc": {
+          "line": 115,
+          "column": 9,
+          "position": 639
+        },
+        "endLoc": {
+          "line": 199,
+          "column": 39,
+          "position": 1105
+        }
+      },
+      "secondFile": {
+        "name": "aria_designer/workflows/generated/wf_adaptive_lane_moe_v4.json",
+        "start": 137,
+        "end": 210,
+        "startLoc": {
+          "line": 137,
+          "column": 9,
+          "position": 759
+        },
+        "endLoc": {
+          "line": 210,
+          "column": 39,
+          "position": 1165
+        }
+      }
+    },
+    {
+      "format": "json",
+      "lines": 42,
+      "fragment": ",\n      \"source_port\": \"y\",\n      \"target\": \"hard_moe\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e_hard_moe_y_hard_gelu_x\",\n      \"source\": \"hard_moe\",\n      \"source_port\": \"y\",\n      \"target\": \"hard_gelu\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e_fast_gelu_y_combine_a\",\n      \"source\": \"fast_gelu\",\n      \"source_port\": \"y\",\n      \"target\": \"combine\",\n      \"target_port\": \"a\"\n    },\n    {\n      \"id\": \"e_hard_gelu_y_combine_b\",\n      \"source\": \"hard_gelu\",\n      \"source_port\": \"y\",\n      \"target\": \"combine\",\n      \"target_port\": \"b\"\n    },\n    {\n      \"id\": \"e_combine_y_compress_x\",\n      \"source\": \"combine\",\n      \"source_port\": \"y\",\n      \"target\": \"compress\",\n      \"target_port\": \"x\"\n    },\n    {\n      \"id\": \"e_compress_y_output_x\",\n      \"source\": \"compress\",\n      \"source_port\": \"y\",\n      \"target\": \"output\",\n      \"target_port\": \"x\"\n    }\n  ]\n}",
+      "tokens": 0,
+      "firstFile": {
+        "name": "aria_designer/workflows/generated/wf_adaptive_lane_moe_v1.json",
+        "start": 193,
+        "end": 234,
+        "startLoc": {
+          "line": 193,
+          "column": 32,
+          "position": 1072
+        },
+        "endLoc": {
+          "line": 234,
+          "column": 2,
+          "position": 1305
+        }
+      },
+      "secondFile": {
+        "name": "aria_designer/workflows/generated/wf_adaptive_lane_moe_v2.json",
+        "start": 211,
+        "end": 270,
+        "startLoc": {
+          "line": 211,
+          "column": 29,
+          "position": 1173
+        },
+        "endLoc": {
+          "line": 270,
+          "column": 2,
+          "position": 1507
+        }
+      }
+    }
+  ]
+}

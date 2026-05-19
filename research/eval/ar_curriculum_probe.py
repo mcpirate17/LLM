@@ -32,61 +32,26 @@ from typing import Any
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
+from ._ar_curriculum_common import (
+    STAGE_CONFIGS_PROBE,
+    VOCAB_LO,
+    StageSpec,
+    build_stage_specs,
+    evaluate_stage,
+    make_stage_batch,
+    required_vocab_size_for_stage_configs,
+    train_stage_one_batch,
+)
 from .associative_recall import _get_special_tokens
 from ._probe_runtime import disable_native_probe_dispatch
-from .utils import clip_grad_norm, make_adamw, model_vocab_size
+from .utils import make_adamw, model_vocab_size
 
 AR_CURRICULUM_METRIC_VERSION = "ar_curriculum_v1"
 
-# Stage curriculum (S0–S5). Token ranges are disjoint per stage; vocab requirement
+# Stage curriculum (S0-S5). Token ranges are disjoint per stage; vocab requirement
 # is sum(n_keys + n_values) + vocab_lo + 2 special tokens = 1576.
-STAGE_CONFIGS: tuple[dict[str, int], ...] = (
-    {
-        "n_keys": 8,
-        "n_values": 4,
-        "pairs_per_example": 1,
-        "n_train_pairs": 3,
-        "n_held_pairs": 1,
-    },
-    {
-        "n_keys": 16,
-        "n_values": 6,
-        "pairs_per_example": 2,
-        "n_train_pairs": 6,
-        "n_held_pairs": 2,
-    },
-    {
-        "n_keys": 32,
-        "n_values": 8,
-        "pairs_per_example": 2,
-        "n_train_pairs": 8,
-        "n_held_pairs": 4,
-    },
-    {
-        "n_keys": 64,
-        "n_values": 12,
-        "pairs_per_example": 2,
-        "n_train_pairs": 16,
-        "n_held_pairs": 8,
-    },
-    {
-        "n_keys": 128,
-        "n_values": 16,
-        "pairs_per_example": 3,
-        "n_train_pairs": 32,
-        "n_held_pairs": 16,
-    },
-    {
-        "n_keys": 256,
-        "n_values": 24,
-        "pairs_per_example": 4,
-        "n_train_pairs": 64,
-        "n_held_pairs": 24,
-    },
-)
-VOCAB_LO = 1000
+STAGE_CONFIGS = STAGE_CONFIGS_PROBE
 
 DEFAULT_STEPS_PER_STAGE = 1000
 DEFAULT_BATCH_SIZE = 16
@@ -108,22 +73,6 @@ class ARCurriculumConfig:
     copy_model: bool = True
     mode: str = "cumulative"  # "cumulative" or "frozen_s0" (matched-compute control)
     pass_threshold_x_chance: float = 4.0
-
-
-@dataclass(frozen=True, slots=True)
-class _StageSpec:
-    stage_idx: int
-    n_key_tokens: int
-    n_value_tokens: int
-    pairs_per_example: int
-    n_train_pairs: int
-    n_held_pairs: int
-    train_keys: torch.Tensor
-    train_values: torch.Tensor
-    held_keys: torch.Tensor
-    held_values: torch.Tensor
-    value_lo: int
-    value_hi: int
 
 
 @dataclass(slots=True)
@@ -180,165 +129,6 @@ class ARCurriculumResult:
         }
 
 
-def _build_stages(seed: int, device: torch.device) -> list[_StageSpec]:
-    gen = torch.Generator(device="cpu")
-    gen.manual_seed(int(seed))
-    cursor = VOCAB_LO
-    out: list[_StageSpec] = []
-    for i, cfg in enumerate(STAGE_CONFIGS):
-        key_lo = cursor
-        cursor += cfg["n_keys"]
-        value_lo = cursor
-        cursor += cfg["n_values"]
-        total = cfg["n_train_pairs"] + cfg["n_held_pairs"]
-        if cfg["n_keys"] < total * 2:
-            raise ValueError(
-                f"stage {i}: n_keys={cfg['n_keys']} too small for {total} pairs"
-            )
-        key_perm = torch.randperm(cfg["n_keys"], generator=gen)[: total * 2] + key_lo
-        key_pairs = key_perm.reshape(total, 2)
-        value_offsets = torch.arange(total, dtype=torch.long) % cfg["n_values"]
-        value_offsets = value_offsets[torch.randperm(total, generator=gen)]
-        values = value_lo + value_offsets
-        n_train = cfg["n_train_pairs"]
-        out.append(
-            _StageSpec(
-                stage_idx=i,
-                n_key_tokens=cfg["n_keys"],
-                n_value_tokens=cfg["n_values"],
-                pairs_per_example=cfg["pairs_per_example"],
-                n_train_pairs=cfg["n_train_pairs"],
-                n_held_pairs=cfg["n_held_pairs"],
-                train_keys=key_pairs[:n_train].contiguous().to(device),
-                train_values=values[:n_train].contiguous().to(device),
-                held_keys=key_pairs[n_train:].contiguous().to(device),
-                held_values=values[n_train:].contiguous().to(device),
-                value_lo=value_lo,
-                value_hi=value_lo + cfg["n_values"],
-            )
-        )
-    return out
-
-
-def _make_batch(
-    stage: _StageSpec,
-    *,
-    split: str,
-    batch_size: int,
-    sep_token: int,
-    ans_token: int,
-    device: torch.device,
-    generator: torch.Generator,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    keys = stage.train_keys if split == "train" else stage.held_keys
-    n_pairs = int(stage.pairs_per_example)
-    value_span = int(stage.value_hi - stage.value_lo)
-    if value_span < n_pairs:
-        raise ValueError(
-            f"stage {stage.stage_idx}: value span {value_span} < pairs {n_pairs}"
-        )
-    q_idx = torch.randint(
-        0, keys.shape[0], (batch_size,), device=device, generator=generator
-    )
-    d_idx = torch.randint(
-        0,
-        stage.train_keys.shape[0],
-        (batch_size, n_pairs - 1),
-        device=device,
-        generator=generator,
-    )
-    ex_keys = torch.empty((batch_size, n_pairs, 2), dtype=torch.long, device=device)
-    ex_values = torch.empty((batch_size, n_pairs), dtype=torch.long, device=device)
-    ex_keys[:, 0, :] = keys.index_select(0, q_idx)
-    flat_d = d_idx.reshape(-1)
-    ex_keys[:, 1:, :] = stage.train_keys.index_select(0, flat_d).reshape(
-        batch_size, n_pairs - 1, 2
-    )
-    scores = torch.rand((batch_size, value_span), device=device, generator=generator)
-    order = torch.argsort(scores, dim=1)[:, :n_pairs]
-    ex_values[:, :] = order + int(stage.value_lo)
-    shuffle = torch.argsort(
-        torch.rand((batch_size, n_pairs), device=device, generator=generator), dim=1
-    )
-    ex_keys = ex_keys.gather(1, shuffle.unsqueeze(-1).expand(-1, -1, 2))
-    ex_values = ex_values.gather(1, shuffle)
-    seq_len = 3 * n_pairs + 4
-    ids = torch.empty((batch_size, seq_len), dtype=torch.long, device=device)
-    pair_pos = torch.arange(n_pairs, device=device)
-    ids[:, pair_pos * 3] = ex_keys[:, :, 0]
-    ids[:, pair_pos * 3 + 1] = ex_keys[:, :, 1]
-    ids[:, pair_pos * 3 + 2] = ex_values
-    sep_pos = 3 * n_pairs
-    ids[:, sep_pos] = int(sep_token)
-    ids[:, sep_pos + 1] = keys[q_idx, 0]
-    ids[:, sep_pos + 2] = keys[q_idx, 1]
-    ids[:, sep_pos + 3] = int(ans_token)
-    query_pos = (shuffle == 0).to(torch.long).argmax(dim=1)
-    targets = ex_values.gather(1, query_pos.unsqueeze(1)).squeeze(1)
-    return ids, targets
-
-
-def _train_one_batch(
-    model: nn.Module,
-    ids: torch.Tensor,
-    targets: torch.Tensor,
-    *,
-    opt: torch.optim.Optimizer,
-    stage: _StageSpec,
-    ans_pos: int,
-) -> float | None:
-    opt.zero_grad(set_to_none=True)
-    logits = model(ids)
-    pred = logits[:, ans_pos, stage.value_lo : stage.value_hi].float()
-    loss = F.cross_entropy(pred, targets - int(stage.value_lo))
-    if not torch.isfinite(loss):
-        return None
-    loss.backward()
-    clip_grad_norm(model.parameters(), 1.0)
-    opt.step()
-    return float(loss.detach().item())
-
-
-@torch.no_grad()
-def _evaluate_stage(
-    model: nn.Module,
-    stage: _StageSpec,
-    *,
-    sep_token: int,
-    ans_token: int,
-    device: torch.device,
-    seed: int,
-    eval_batches: int,
-    batch_size: int,
-) -> tuple[float, float]:
-    model.eval()
-    gen = torch.Generator(device=device)
-    gen.manual_seed(int(seed))
-    n_pairs = int(stage.pairs_per_example)
-    ans_pos = 3 * n_pairs + 3
-    pair_correct = class_correct = total = 0
-    n_classes = 4
-    for _ in range(eval_batches):
-        ids, targets = _make_batch(
-            stage,
-            split="held",
-            batch_size=batch_size,
-            sep_token=sep_token,
-            ans_token=ans_token,
-            device=device,
-            generator=gen,
-        )
-        logits = model(ids)
-        pred = logits[:, ans_pos, stage.value_lo : stage.value_hi].argmax(dim=-1)
-        pred = pred + int(stage.value_lo)
-        pair_correct += int((pred == targets).sum().item())
-        pred_cls = (pred - int(stage.value_lo)).remainder(n_classes)
-        targ_cls = (targets - int(stage.value_lo)).remainder(n_classes)
-        class_correct += int((pred_cls == targ_cls).sum().item())
-        total += int(targets.shape[0])
-    return pair_correct / max(total, 1), class_correct / max(total, 1)
-
-
 def _err_result(t0: float, status: str, msg: str) -> ARCurriculumResult:
     return ARCurriculumResult(
         status=status,
@@ -349,8 +139,7 @@ def _err_result(t0: float, status: str, msg: str) -> ARCurriculumResult:
 
 def required_vocab_size() -> int:
     """Smallest model vocab that satisfies the curriculum's token span."""
-    span = sum(c["n_keys"] + c["n_values"] for c in STAGE_CONFIGS)
-    return VOCAB_LO + span + 2  # +2 for SEP/ANS special tokens
+    return required_vocab_size_for_stage_configs(STAGE_CONFIGS, vocab_lo=VOCAB_LO)
 
 
 def ar_curriculum_probe(
@@ -385,7 +174,7 @@ def ar_curriculum_probe(
             return _err_result(
                 t0, "error", f"model_vocab_too_small:{model_vocab}<required:{required}"
             )
-        stages = _build_stages(int(cfg.seed), dev)
+        stages = build_stage_specs(int(cfg.seed), STAGE_CONFIGS, device=dev)
     except Exception as exc:  # noqa: BLE001
         return _err_result(t0, "error", f"setup_failed:{exc}")
 
@@ -450,7 +239,7 @@ def ar_curriculum_probe(
             per_stage_pair: list[float] = []
             per_stage_class: list[float] = []
             for stage in stages:
-                pa, ca = _evaluate_stage(
+                pa, ca = evaluate_stage(
                     probe_model,
                     stage,
                     sep_token=sep_token,
@@ -509,7 +298,7 @@ def ar_curriculum_probe(
 
 def _train_stage(
     model: nn.Module,
-    stage: _StageSpec,
+    stage: StageSpec,
     *,
     n_steps: int,
     batch_size: int,
@@ -527,7 +316,7 @@ def _train_stage(
     for step in range(n_steps):
         if time.perf_counter() > deadline:
             return None
-        ids, targets = _make_batch(
+        ids, targets = make_stage_batch(
             stage,
             split="train",
             batch_size=batch_size,
@@ -536,7 +325,7 @@ def _train_stage(
             device=device,
             generator=generator,
         )
-        loss = _train_one_batch(
+        loss = train_stage_one_batch(
             model, ids, targets, opt=opt, stage=stage, ans_pos=ans_pos
         )
         if loss is None:

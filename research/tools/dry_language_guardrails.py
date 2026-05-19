@@ -168,7 +168,7 @@ def _duplicate_fallback_templates() -> Dict[str, List[str]]:
         norm = _normalize_fallback(text, slug)
         if not norm:
             continue
-        digest = hashlib.sha1(norm.encode("utf-8")).hexdigest()
+        digest = hashlib.sha1(norm.encode("utf-8"), usedforsecurity=False).hexdigest()
         buckets.setdefault(digest, []).append(str(path.relative_to(REPO_ROOT)))
 
     # Keep only multi-file duplicates.

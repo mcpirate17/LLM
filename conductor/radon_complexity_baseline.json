@@ -1,0 +1,2437 @@
+{
+  "excludes": ["*/rust/*", "*/tests/*", "research/notes/*"],
+  "findings": [
+    {
+      "complexity": 163,
+      "key": "research/scientist/notebook/notebook_observability.py::_ObservabilityMixin._accumulate_observability_stats",
+      "line": 458,
+      "name": "_accumulate_observability_stats",
+      "path": "research/scientist/notebook/notebook_observability.py",
+      "rank": "F",
+      "type": "M"
+    },
+    {
+      "complexity": 145,
+      "key": "research/scientist/notebook/notebook_observability.py::_ObservabilityMixin._assemble_observability_result",
+      "line": 925,
+      "name": "_assemble_observability_result",
+      "path": "research/scientist/notebook/notebook_observability.py",
+      "rank": "F",
+      "type": "M"
+    },
+    {
+      "complexity": 117,
+      "key": "research/scientist/notebook/notebook_leaderboard.py::_LeaderboardMixin.upsert_leaderboard",
+      "line": 323,
+      "name": "upsert_leaderboard",
+      "path": "research/scientist/notebook/notebook_leaderboard.py",
+      "rank": "F",
+      "type": "M"
+    },
+    {
+      "complexity": 115,
+      "key": "research/scientist/notebook/notebook_leaderboard.py::_LeaderboardMixin.get_leaderboard",
+      "line": 818,
+      "name": "get_leaderboard",
+      "path": "research/scientist/notebook/notebook_leaderboard.py",
+      "rank": "F",
+      "type": "M"
+    },
+    {
+      "complexity": 115,
+      "key": "research/scientist/runner/execution_screening.py::_ExecutionScreeningMixin._prepare_grammar_config",
+      "line": 525,
+      "name": "_prepare_grammar_config",
+      "path": "research/scientist/runner/execution_screening.py",
+      "rank": "F",
+      "type": "M"
+    },
+    {
+      "complexity": 110,
+      "key": "research/scientist/runner/results_analysis.py::_ResultsAnalysisMixin._extract_architecture_telemetry",
+      "line": 463,
+      "name": "_extract_architecture_telemetry",
+      "path": "research/scientist/runner/results_analysis.py",
+      "rank": "F",
+      "type": "M"
+    },
+    {
+      "complexity": 109,
+      "key": "research/scientist/notebook/_notebook_misc_shared.py::_summarize_template_stat",
+      "line": 525,
+      "name": "_summarize_template_stat",
+      "path": "research/scientist/notebook/_notebook_misc_shared.py",
+      "rank": "F",
+      "type": "F"
+    },
+    {
+      "complexity": 105,
+      "key": "research/scientist/intelligence/gnn_predictor.py::_extract_topology_features_python",
+      "line": 207,
+      "name": "_extract_topology_features_python",
+      "path": "research/scientist/intelligence/gnn_predictor.py",
+      "rank": "F",
+      "type": "F"
+    },
+    {
+      "complexity": 91,
+      "key": "research/scientist/runner/continuous_investigation.py::_ContinuousInvestigationMixin._pre_investigation_gate",
+      "line": 168,
+      "name": "_pre_investigation_gate",
+      "path": "research/scientist/runner/continuous_investigation.py",
+      "rank": "F",
+      "type": "M"
+    },
+    {
+      "complexity": 83,
+      "key": "research/meta_analysis/descriptive_properties.py::_math_axis_properties",
+      "line": 197,
+      "name": "_math_axis_properties",
+      "path": "research/meta_analysis/descriptive_properties.py",
+      "rank": "F",
+      "type": "F"
+    },
+    {
+      "complexity": 72,
+      "key": "research/scientist/runner/execution_training_post.py::_ExecutionTrainingPostMixin._run_post_s1_screening_probes",
+      "line": 334,
+      "name": "_run_post_s1_screening_probes",
+      "path": "research/scientist/runner/execution_training_post.py",
+      "rank": "F",
+      "type": "M"
+    },
+    {
+      "complexity": 70,
+      "key": "research/scientist/runner/execution_candidates.py::_ExecutionCandidatesMixin._build_grammar_config",
+      "line": 624,
+      "name": "_build_grammar_config",
+      "path": "research/scientist/runner/execution_candidates.py",
+      "rank": "F",
+      "type": "M"
+    },
+    {
+      "complexity": 67,
+      "key": "research/scientist/runner/_helpers_benchmark.py::_record_investigation_result",
+      "line": 1202,
+      "name": "_record_investigation_result",
+      "path": "research/scientist/runner/_helpers_benchmark.py",
+      "rank": "F",
+      "type": "F"
+    },
+    {
+      "complexity": 64,
+      "key": "research/scientist/runner/execution_training_post.py::_ExecutionTrainingPostMixin",
+      "line": 47,
+      "name": "_ExecutionTrainingPostMixin",
+      "path": "research/scientist/runner/execution_training_post.py",
+      "rank": "F",
+      "type": "C"
+    },
+    {
+      "complexity": 61,
+      "key": "research/scientist/analytics/model_strength.py::_graph_features",
+      "line": 202,
+      "name": "_graph_features",
+      "path": "research/scientist/analytics/model_strength.py",
+      "rank": "F",
+      "type": "F"
+    },
+    {
+      "complexity": 61,
+      "key": "research/scientist/notebook/notebook_dashboard.py::_DashboardNBMixin.get_dashboard_summary",
+      "line": 45,
+      "name": "get_dashboard_summary",
+      "path": "research/scientist/notebook/notebook_dashboard.py",
+      "rank": "F",
+      "type": "M"
+    },
+    {
+      "complexity": 61,
+      "key": "research/scientist/runner/_helpers_benchmark.py::_evaluate_investigation_benchmarks",
+      "line": 63,
+      "name": "_evaluate_investigation_benchmarks",
+      "path": "research/scientist/runner/_helpers_benchmark.py",
+      "rank": "F",
+      "type": "F"
+    },
+    {
+      "complexity": 60,
+      "key": "research/tools/rescreen_leaderboard_batch.py::main",
+      "line": 510,
+      "name": "main",
+      "path": "research/tools/rescreen_leaderboard_batch.py",
+      "rank": "F",
+      "type": "F"
+    },
+    {
+      "complexity": 58,
+      "key": "research/meta_analysis/metadata_db.py::build_meta_analysis_db",
+      "line": 1829,
+      "name": "build_meta_analysis_db",
+      "path": "research/meta_analysis/metadata_db.py",
+      "rank": "F",
+      "type": "F"
+    },
+    {
+      "complexity": 58,
+      "key": "research/synthesis/_context_validation.py::_check_op_structural_rules",
+      "line": 201,
+      "name": "_check_op_structural_rules",
+      "path": "research/synthesis/_context_validation.py",
+      "rank": "F",
+      "type": "F"
+    },
+    {
+      "complexity": 57,
+      "key": "research/scientist/runner/failure_provenance.py::_classify_from_error",
+      "line": 265,
+      "name": "_classify_from_error",
+      "path": "research/scientist/runner/failure_provenance.py",
+      "rank": "F",
+      "type": "F"
+    },
+    {
+      "complexity": 56,
+      "key": "research/tools/backfill.py::run_backfill",
+      "line": 978,
+      "name": "run_backfill",
+      "path": "research/tools/backfill.py",
+      "rank": "F",
+      "type": "F"
+    },
+    {
+      "complexity": 56,
+      "key": "research/tools/overnight_rerun_orchestrator.py::write_findings",
+      "line": 452,
+      "name": "write_findings",
+      "path": "research/tools/overnight_rerun_orchestrator.py",
+      "rank": "F",
+      "type": "F"
+    },
+    {
+      "complexity": 54,
+      "key": "research/scientist/native/dispatch.py::dispatch_op_native",
+      "line": 174,
+      "name": "dispatch_op_native",
+      "path": "research/scientist/native/dispatch.py",
+      "rank": "F",
+      "type": "F"
+    },
+    {
+      "complexity": 54,
+      "key": "research/scientist/runner/execution_training_post.py::_ExecutionTrainingPostMixin._collect_post_training_metrics",
+      "line": 52,
+      "name": "_collect_post_training_metrics",
+      "path": "research/scientist/runner/execution_training_post.py",
+      "rank": "F",
+      "type": "M"
+    },
+    {
+      "complexity": 53,
+      "key": "research/scientist/runner/screening_signal_weights.py::apply_insight_adjustments",
+      "line": 246,
+      "name": "apply_insight_adjustments",
+      "path": "research/scientist/runner/screening_signal_weights.py",
+      "rank": "F",
+      "type": "F"
+    },
+    {
+      "complexity": 51,
+      "key": "research/scientist/notebook/notebook_dashboard.py::_DashboardNBMixin.get_data_accounting_summary",
+      "line": 273,
+      "name": "get_data_accounting_summary",
+      "path": "research/scientist/notebook/notebook_dashboard.py",
+      "rank": "F",
+      "type": "M"
+    },
+    {
+      "complexity": 50,
+      "key": "research/scientist/evidence.py::build_evidence_pack",
+      "line": 196,
+      "name": "build_evidence_pack",
+      "path": "research/scientist/evidence.py",
+      "rank": "F",
+      "type": "F"
+    },
+    {
+      "complexity": 49,
+      "key": "research/scientist/runner/execution_screening.py::_ExecutionScreeningMixin",
+      "line": 287,
+      "name": "_ExecutionScreeningMixin",
+      "path": "research/scientist/runner/execution_screening.py",
+      "rank": "F",
+      "type": "C"
+    },
+    {
+      "complexity": 49,
+      "key": "research/synthesis/grammar.py::generate_layer_graph",
+      "line": 621,
+      "name": "generate_layer_graph",
+      "path": "research/synthesis/grammar.py",
+      "rank": "F",
+      "type": "F"
+    },
+    {
+      "complexity": 47,
+      "key": "research/scientist/runner/selection.py::_SelectionMixin._score_candidate_pool",
+      "line": 45,
+      "name": "_score_candidate_pool",
+      "path": "research/scientist/runner/selection.py",
+      "rank": "F",
+      "type": "M"
+    },
+    {
+      "complexity": 47,
+      "key": "research/synthesis/workflow_converter.py::workflow_to_computation_graph",
+      "line": 90,
+      "name": "workflow_to_computation_graph",
+      "path": "research/synthesis/workflow_converter.py",
+      "rank": "F",
+      "type": "F"
+    },
+    {
+      "complexity": 46,
+      "key": "research/scientist/native/autograd.py::NativeForwardWrapper._module_dispatch_args",
+      "line": 289,
+      "name": "_module_dispatch_args",
+      "path": "research/scientist/native/autograd.py",
+      "rank": "F",
+      "type": "M"
+    },
+    {
+      "complexity": 46,
+      "key": "research/scientist/runner/cycle.py::_CycleMixin.run_aria_cycle",
+      "line": 88,
+      "name": "run_aria_cycle",
+      "path": "research/scientist/runner/cycle.py",
+      "rank": "F",
+      "type": "M"
+    },
+    {
+      "complexity": 46,
+      "key": "research/scientist/runner/execution_training_program.py::_ExecutionTrainingProgramMixin._train_with_program",
+      "line": 329,
+      "name": "_train_with_program",
+      "path": "research/scientist/runner/execution_training_program.py",
+      "rank": "F",
+      "type": "M"
+    },
+    {
+      "complexity": 44,
+      "key": "research/scientist/runner/results_auto_escalate_phase7.py::_ResultsAutoEscalatePhase7Mixin._auto_escalate_screening",
+      "line": 689,
+      "name": "_auto_escalate_screening",
+      "path": "research/scientist/runner/results_auto_escalate_phase7.py",
+      "rank": "F",
+      "type": "M"
+    },
+    {
+      "complexity": 44,
+      "key": "research/tools/attention_template_backfill.py::main",
+      "line": 280,
+      "name": "main",
+      "path": "research/tools/attention_template_backfill.py",
+      "rank": "F",
+      "type": "F"
+    },
+    {
+      "complexity": 44,
+      "key": "research/tools/profile_templates.py::build_template_profiles",
+      "line": 96,
+      "name": "build_template_profiles",
+      "path": "research/tools/profile_templates.py",
+      "rank": "F",
+      "type": "F"
+    },
+    {
+      "complexity": 43,
+      "key": "research/scientist/leaderboard_scoring/champion_tiny.py::compute_champion_tiny_model_score_v1",
+      "line": 30,
+      "name": "compute_champion_tiny_model_score_v1",
+      "path": "research/scientist/leaderboard_scoring/champion_tiny.py",
+      "rank": "F",
+      "type": "F"
+    },
+    {
+      "complexity": 43,
+      "key": "research/scientist/notebook/leaderboard_maintenance.py::sync_fingerprint_leaderboard",
+      "line": 369,
+      "name": "sync_fingerprint_leaderboard",
+      "path": "research/scientist/notebook/leaderboard_maintenance.py",
+      "rank": "F",
+      "type": "F"
+    },
+    {
+      "complexity": 43,
+      "key": "research/scientist/runner/control_start.py::_ControlStartMixin._recommend_refinement_intent",
+      "line": 476,
+      "name": "_recommend_refinement_intent",
+      "path": "research/scientist/runner/control_start.py",
+      "rank": "F",
+      "type": "M"
+    },
+    {
+      "complexity": 42,
+      "key": "research/scientist/analytics/analytics_campaigns.py::_CampaignsMixin.campaign_success_criteria_tracker",
+      "line": 123,
+      "name": "campaign_success_criteria_tracker",
+      "path": "research/scientist/analytics/analytics_campaigns.py",
+      "rank": "F",
+      "type": "M"
+    },
+    {
+      "complexity": 42,
+      "key": "research/scientist/api_routes/programs_routes/program_actions.py::_api_program_backfill_loss",
+      "line": 298,
+      "name": "_api_program_backfill_loss",
+      "path": "research/scientist/api_routes/programs_routes/program_actions.py",
+      "rank": "F",
+      "type": "F"
+    },
+    {
+      "complexity": 42,
+      "key": "research/scientist/leaderboard_scoring/kwargs.py::_pr_dict_to_score_kwargs",
+      "line": 80,
+      "name": "_pr_dict_to_score_kwargs",
+      "path": "research/scientist/leaderboard_scoring/kwargs.py",
+      "rank": "F",
+      "type": "F"
+    },
+    {
+      "complexity": 42,
+      "key": "research/scientist/runner/screening.py::_ScreeningMixin.prescreen_run_config",
+      "line": 258,
+      "name": "prescreen_run_config",
+      "path": "research/scientist/runner/screening.py",
+      "rank": "F",
+      "type": "M"
+    },
+    {
+      "complexity": 41,
+      "key": "research/scientist/runner/execution_candidates.py::_ExecutionCandidatesMixin._load_learned_weights",
+      "line": 454,
+      "name": "_load_learned_weights",
+      "path": "research/scientist/runner/execution_candidates.py",
+      "rank": "F",
+      "type": "M"
+    },
+    {
+      "complexity": 41,
+      "key": "research/tools/backfill_templates.py::main",
+      "line": 767,
+      "name": "main",
+      "path": "research/tools/backfill_templates.py",
+      "rank": "F",
+      "type": "F"
+    },
+    {
+      "complexity": 41,
+      "key": "research/tools/exact_graph_replay.py::_evaluate_exact_replay",
+      "line": 151,
+      "name": "_evaluate_exact_replay",
+      "path": "research/tools/exact_graph_replay.py",
+      "rank": "F",
+      "type": "F"
+    },
+    {
+      "complexity": 40,
+      "key": "research/scientist/api_routes/programs_routes/program_actions.py::_api_program_morph",
+      "line": 27,
+      "name": "_api_program_morph",
+      "path": "research/scientist/api_routes/programs_routes/program_actions.py",
+      "rank": "E",
+      "type": "F"
+    },
+    {
+      "complexity": 40,
+      "key": "research/tools/proper_component_knockout_ablation.py::main",
+      "line": 1147,
+      "name": "main",
+      "path": "research/tools/proper_component_knockout_ablation.py",
+      "rank": "E",
+      "type": "F"
+    },
+    {
+      "complexity": 39,
+      "key": "research/eval/training_core.py::run_training_loop",
+      "line": 507,
+      "name": "run_training_loop",
+      "path": "research/eval/training_core.py",
+      "rank": "E",
+      "type": "F"
+    },
+    {
+      "complexity": 39,
+      "key": "research/tools/ar_probe_comparison.py::main",
+      "line": 236,
+      "name": "main",
+      "path": "research/tools/ar_probe_comparison.py",
+      "rank": "E",
+      "type": "F"
+    },
+    {
+      "complexity": 38,
+      "key": "research/scientist/intelligence/interaction_model.py::InteractionModel.train",
+      "line": 303,
+      "name": "train",
+      "path": "research/scientist/intelligence/interaction_model.py",
+      "rank": "E",
+      "type": "M"
+    },
+    {
+      "complexity": 38,
+      "key": "research/scientist/runner/selection.py::_SelectionMixin._selection_supporting_insights",
+      "line": 370,
+      "name": "_selection_supporting_insights",
+      "path": "research/scientist/runner/selection.py",
+      "rank": "E",
+      "type": "M"
+    },
+    {
+      "complexity": 37,
+      "key": "research/scientist/persona_rules.py::_PersonaRulesMixin._rule_based_report_narrative",
+      "line": 390,
+      "name": "_rule_based_report_narrative",
+      "path": "research/scientist/persona_rules.py",
+      "rank": "E",
+      "type": "M"
+    },
+    {
+      "complexity": 37,
+      "key": "research/synthesis/_template_helpers.py::_instantiate_motif",
+      "line": 810,
+      "name": "_instantiate_motif",
+      "path": "research/synthesis/_template_helpers.py",
+      "rank": "E",
+      "type": "F"
+    },
+    {
+      "complexity": 36,
+      "key": "research/scientist/notebook/notebook_programs.py::_ProgramsMixin._attach_canonical_program_scores",
+      "line": 1094,
+      "name": "_attach_canonical_program_scores",
+      "path": "research/scientist/notebook/notebook_programs.py",
+      "rank": "E",
+      "type": "M"
+    },
+    {
+      "complexity": 36,
+      "key": "research/scientist/runner/_helpers_benchmark.py::promote_validation_candidate",
+      "line": 1865,
+      "name": "promote_validation_candidate",
+      "path": "research/scientist/runner/_helpers_benchmark.py",
+      "rank": "E",
+      "type": "F"
+    },
+    {
+      "complexity": 36,
+      "key": "research/tools/register_references.py::register_reference",
+      "line": 28,
+      "name": "register_reference",
+      "path": "research/tools/register_references.py",
+      "rank": "E",
+      "type": "F"
+    },
+    {
+      "complexity": 35,
+      "key": "research/meta_analysis/descriptive_properties.py::template_descriptive_properties",
+      "line": 420,
+      "name": "template_descriptive_properties",
+      "path": "research/meta_analysis/descriptive_properties.py",
+      "rank": "E",
+      "type": "F"
+    },
+    {
+      "complexity": 35,
+      "key": "research/scientist/notebook/program_provenance.py::extract_graph_provenance",
+      "line": 259,
+      "name": "extract_graph_provenance",
+      "path": "research/scientist/notebook/program_provenance.py",
+      "rank": "E",
+      "type": "F"
+    },
+    {
+      "complexity": 35,
+      "key": "research/scientist/runner/synthesis.py::_SynthesisMixin._generate_refinement_graphs",
+      "line": 1234,
+      "name": "_generate_refinement_graphs",
+      "path": "research/scientist/runner/synthesis.py",
+      "rank": "E",
+      "type": "M"
+    },
+    {
+      "complexity": 35,
+      "key": "research/tools/ablation_intelligence_report.py::_classify",
+      "line": 169,
+      "name": "_classify",
+      "path": "research/tools/ablation_intelligence_report.py",
+      "rank": "E",
+      "type": "F"
+    },
+    {
+      "complexity": 35,
+      "key": "research/tools/train_predictors.py::_build_model_registry",
+      "line": 78,
+      "name": "_build_model_registry",
+      "path": "research/tools/train_predictors.py",
+      "rank": "E",
+      "type": "F"
+    },
+    {
+      "complexity": 34,
+      "key": "research/scientist/native/telemetry.py::native_runner_capability_report",
+      "line": 32,
+      "name": "native_runner_capability_report",
+      "path": "research/scientist/native/telemetry.py",
+      "rank": "E",
+      "type": "F"
+    },
+    {
+      "complexity": 34,
+      "key": "research/scientist/notebook/_notebook_misc_shared.py::_classify_template_structural",
+      "line": 280,
+      "name": "_classify_template_structural",
+      "path": "research/scientist/notebook/_notebook_misc_shared.py",
+      "rank": "E",
+      "type": "F"
+    },
+    {
+      "complexity": 34,
+      "key": "research/scientist/runner/results_knowledge.py::_ResultsKnowledgeMixin._maybe_extract_knowledge",
+      "line": 55,
+      "name": "_maybe_extract_knowledge",
+      "path": "research/scientist/runner/results_knowledge.py",
+      "rank": "E",
+      "type": "M"
+    },
+    {
+      "complexity": 34,
+      "key": "research/scientist/runner/synthesis.py::_SynthesisMixin._compute_multi_objective_fitness",
+      "line": 1073,
+      "name": "_compute_multi_objective_fitness",
+      "path": "research/scientist/runner/synthesis.py",
+      "rank": "E",
+      "type": "M"
+    },
+    {
+      "complexity": 34,
+      "key": "research/synthesis/validator.py::validate_graph",
+      "line": 236,
+      "name": "validate_graph",
+      "path": "research/synthesis/validator.py",
+      "rank": "E",
+      "type": "F"
+    },
+    {
+      "complexity": 34,
+      "key": "research/tools/backfill_stats.py::backfill",
+      "line": 228,
+      "name": "backfill",
+      "path": "research/tools/backfill_stats.py",
+      "rank": "E",
+      "type": "F"
+    },
+    {
+      "complexity": 34,
+      "key": "research/tools/language_control_backfill.py::_select_targets",
+      "line": 93,
+      "name": "_select_targets",
+      "path": "research/tools/language_control_backfill.py",
+      "rank": "E",
+      "type": "F"
+    },
+    {
+      "complexity": 34,
+      "key": "research/tools/profile_component_scaffolds.py::main",
+      "line": 770,
+      "name": "main",
+      "path": "research/tools/profile_component_scaffolds.py",
+      "rank": "E",
+      "type": "F"
+    },
+    {
+      "complexity": 34,
+      "key": "research/tools/run_binding_pilot.py::main",
+      "line": 409,
+      "name": "main",
+      "path": "research/tools/run_binding_pilot.py",
+      "rank": "E",
+      "type": "F"
+    },
+    {
+      "complexity": 33,
+      "key": "aria_designer/api/app/routers/aria_prompt_generation.py::_infer_component_from_prompt",
+      "line": 32,
+      "name": "_infer_component_from_prompt",
+      "path": "aria_designer/api/app/routers/aria_prompt_generation.py",
+      "rank": "E",
+      "type": "F"
+    },
+    {
+      "complexity": 33,
+      "key": "research/scientist/analytics/analytics_campaigns.py::_CampaignsMixin.negative_results_synthesis",
+      "line": 267,
+      "name": "negative_results_synthesis",
+      "path": "research/scientist/analytics/analytics_campaigns.py",
+      "rank": "E",
+      "type": "M"
+    },
+    {
+      "complexity": 33,
+      "key": "research/scientist/analytics/analytics_grammar.py::_GrammarMixin._matched_control_stats",
+      "line": 473,
+      "name": "_matched_control_stats",
+      "path": "research/scientist/analytics/analytics_grammar.py",
+      "rank": "E",
+      "type": "M"
+    },
+    {
+      "complexity": 33,
+      "key": "research/scientist/intelligence/ml_corpus.py::_fallback_screening_predictor_rows",
+      "line": 874,
+      "name": "_fallback_screening_predictor_rows",
+      "path": "research/scientist/intelligence/ml_corpus.py",
+      "rank": "E",
+      "type": "F"
+    },
+    {
+      "complexity": 33,
+      "key": "research/scientist/persona_hypothesis.py::_PersonaHypothesisMixin._derive_missing_hypothesis_fields",
+      "line": 399,
+      "name": "_derive_missing_hypothesis_fields",
+      "path": "research/scientist/persona_hypothesis.py",
+      "rank": "E",
+      "type": "M"
+    },
+    {
+      "complexity": 33,
+      "key": "research/scientist/persona_strategy.py::_PersonaStrategyMixin._apply_digest_overrides",
+      "line": 194,
+      "name": "_apply_digest_overrides",
+      "path": "research/scientist/persona_strategy.py",
+      "rank": "E",
+      "type": "M"
+    },
+    {
+      "complexity": 33,
+      "key": "research/scientist/runner/results_analysis.py::_ResultsAnalysisMixin._on_program_evaluated",
+      "line": 77,
+      "name": "_on_program_evaluated",
+      "path": "research/scientist/runner/results_analysis.py",
+      "rank": "E",
+      "type": "M"
+    },
+    {
+      "complexity": 33,
+      "key": "research/search/evolution.py::evolutionary_search",
+      "line": 117,
+      "name": "evolutionary_search",
+      "path": "research/search/evolution.py",
+      "rank": "E",
+      "type": "F"
+    },
+    {
+      "complexity": 33,
+      "key": "research/tools/ar_curriculum_trends.py::analyze",
+      "line": 223,
+      "name": "analyze",
+      "path": "research/tools/ar_curriculum_trends.py",
+      "rank": "E",
+      "type": "F"
+    },
+    {
+      "complexity": 33,
+      "key": "research/tools/diff_leaderboard_snapshot.py::main",
+      "line": 37,
+      "name": "main",
+      "path": "research/tools/diff_leaderboard_snapshot.py",
+      "rank": "E",
+      "type": "F"
+    },
+    {
+      "complexity": 33,
+      "key": "research/tools/repair_leaderboard_tier_data.py::_repair_row",
+      "line": 23,
+      "name": "_repair_row",
+      "path": "research/tools/repair_leaderboard_tier_data.py",
+      "rank": "E",
+      "type": "F"
+    },
+    {
+      "complexity": 33,
+      "key": "research/tools/reval_loss_monsters.py::main",
+      "line": 155,
+      "name": "main",
+      "path": "research/tools/reval_loss_monsters.py",
+      "rank": "E",
+      "type": "F"
+    },
+    {
+      "complexity": 32,
+      "key": "research/eval/routing_telemetry.py::_merge_module_telemetry",
+      "line": 82,
+      "name": "_merge_module_telemetry",
+      "path": "research/eval/routing_telemetry.py",
+      "rank": "E",
+      "type": "F"
+    },
+    {
+      "complexity": 32,
+      "key": "research/mathspaces/tropical.py::tropical_matmul",
+      "line": 174,
+      "name": "tropical_matmul",
+      "path": "research/mathspaces/tropical.py",
+      "rank": "E",
+      "type": "F"
+    },
+    {
+      "complexity": 32,
+      "key": "research/scientist/analytics/analytics_campaigns.py::_CampaignsMixin.decision_outcome_analysis",
+      "line": 461,
+      "name": "decision_outcome_analysis",
+      "path": "research/scientist/analytics/analytics_campaigns.py",
+      "rank": "E",
+      "type": "M"
+    },
+    {
+      "complexity": 32,
+      "key": "research/scientist/api_routes/_helpers.py::get_registry_running_experiment_snapshot",
+      "line": 382,
+      "name": "get_registry_running_experiment_snapshot",
+      "path": "research/scientist/api_routes/_helpers.py",
+      "rank": "E",
+      "type": "F"
+    },
+    {
+      "complexity": 32,
+      "key": "research/scientist/runner/execution_screening_pipeline.py::_ExecutionScreeningPipelineMixin._screen_candidate_pipeline",
+      "line": 438,
+      "name": "_screen_candidate_pipeline",
+      "path": "research/scientist/runner/execution_screening_pipeline.py",
+      "rank": "E",
+      "type": "M"
+    },
+    {
+      "complexity": 32,
+      "key": "research/scientist/runner/synthesis.py::_SynthesisMixin._evaluate_grammar_update_gate",
+      "line": 850,
+      "name": "_evaluate_grammar_update_gate",
+      "path": "research/scientist/runner/synthesis.py",
+      "rank": "E",
+      "type": "M"
+    },
+    {
+      "complexity": 32,
+      "key": "research/tools/ar_curriculum_experiment.py::run_arch",
+      "line": 454,
+      "name": "run_arch",
+      "path": "research/tools/ar_curriculum_experiment.py",
+      "rank": "E",
+      "type": "F"
+    },
+    {
+      "complexity": 32,
+      "key": "research/tools/backfill.py::query_fingerprint_file_candidates",
+      "line": 215,
+      "name": "query_fingerprint_file_candidates",
+      "path": "research/tools/backfill.py",
+      "rank": "E",
+      "type": "F"
+    },
+    {
+      "complexity": 31,
+      "key": "research/eval/wikitext_eval.py::_screening_telemetry_metrics",
+      "line": 334,
+      "name": "_screening_telemetry_metrics",
+      "path": "research/eval/wikitext_eval.py",
+      "rank": "E",
+      "type": "F"
+    },
+    {
+      "complexity": 31,
+      "key": "research/scientist/api_routes/_strategy_recommendations.py::compute_cross_run_stability",
+      "line": 134,
+      "name": "compute_cross_run_stability",
+      "path": "research/scientist/api_routes/_strategy_recommendations.py",
+      "rank": "E",
+      "type": "F"
+    },
+    {
+      "complexity": 31,
+      "key": "research/scientist/notebook/notebook_entries.py::_EntriesMixin.get_failure_analysis",
+      "line": 229,
+      "name": "get_failure_analysis",
+      "path": "research/scientist/notebook/notebook_entries.py",
+      "rank": "E",
+      "type": "M"
+    },
+    {
+      "complexity": 31,
+      "key": "research/scientist/persona_analysis.py::_PersonaAnalysisMixin._summarize_learning_bullets_rule_based",
+      "line": 487,
+      "name": "_summarize_learning_bullets_rule_based",
+      "path": "research/scientist/persona_analysis.py",
+      "rank": "E",
+      "type": "M"
+    },
+    {
+      "complexity": 31,
+      "key": "research/scientist/runner/continuous_modes.py::_ContinuousModesMixin._run_continuous_synthesis",
+      "line": 51,
+      "name": "_run_continuous_synthesis",
+      "path": "research/scientist/runner/continuous_modes.py",
+      "rank": "E",
+      "type": "M"
+    },
+    {
+      "complexity": 31,
+      "key": "research/scientist/runner/synthesis.py::_SynthesisMixin._score_refinement_candidate",
+      "line": 1502,
+      "name": "_score_refinement_candidate",
+      "path": "research/scientist/runner/synthesis.py",
+      "rank": "E",
+      "type": "M"
+    },
+    {
+      "complexity": 31,
+      "key": "research/synthesis/graph.py::ComputationGraph._compute_shape",
+      "line": 499,
+      "name": "_compute_shape",
+      "path": "research/synthesis/graph.py",
+      "rank": "E",
+      "type": "M"
+    },
+    {
+      "complexity": 31,
+      "key": "research/tools/audit_generation_attribution.py::build_attribution_audit",
+      "line": 299,
+      "name": "build_attribution_audit",
+      "path": "research/tools/audit_generation_attribution.py",
+      "rank": "E",
+      "type": "F"
+    },
+    {
+      "complexity": 30,
+      "key": "aria_designer/api/app/aria_patch_postprocess.py::_auto_layout_workflow",
+      "line": 285,
+      "name": "_auto_layout_workflow",
+      "path": "aria_designer/api/app/aria_patch_postprocess.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 30,
+      "key": "aria_designer/api/app/routers/components.py::_validate_params_against_schema",
+      "line": 205,
+      "name": "_validate_params_against_schema",
+      "path": "aria_designer/api/app/routers/components.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 30,
+      "key": "research/meta_analysis/metadata_db.py::_graph_profile_payload",
+      "line": 1360,
+      "name": "_graph_profile_payload",
+      "path": "research/meta_analysis/metadata_db.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 30,
+      "key": "research/scientist/analytics/analytics_routing.py::_RoutingMixin.moe_activation_telemetry",
+      "line": 452,
+      "name": "moe_activation_telemetry",
+      "path": "research/scientist/analytics/analytics_routing.py",
+      "rank": "D",
+      "type": "M"
+    },
+    {
+      "complexity": 30,
+      "key": "research/scientist/intelligence/ml_corpus.py::_attach_induction_metrics",
+      "line": 431,
+      "name": "_attach_induction_metrics",
+      "path": "research/scientist/intelligence/ml_corpus.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 30,
+      "key": "research/scientist/llm/context_experiment.py::inject_digest_context",
+      "line": 1149,
+      "name": "inject_digest_context",
+      "path": "research/scientist/llm/context_experiment.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 30,
+      "key": "research/scientist/notebook/_notebook_misc_shared.py::_template_label_from_evidence",
+      "line": 471,
+      "name": "_template_label_from_evidence",
+      "path": "research/scientist/notebook/_notebook_misc_shared.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 30,
+      "key": "research/scientist/notebook/notebook_dashboard.py::_DashboardNBMixin",
+      "line": 26,
+      "name": "_DashboardNBMixin",
+      "path": "research/scientist/notebook/notebook_dashboard.py",
+      "rank": "D",
+      "type": "C"
+    },
+    {
+      "complexity": 30,
+      "key": "research/scientist/notebook/notebook_observability.py::_ObservabilityMixin",
+      "line": 155,
+      "name": "_ObservabilityMixin",
+      "path": "research/scientist/notebook/notebook_observability.py",
+      "rank": "D",
+      "type": "C"
+    },
+    {
+      "complexity": 30,
+      "key": "research/scientist/notebook/notebook_references.py::_ReferencesMixin._classify_architecture_family",
+      "line": 352,
+      "name": "_classify_architecture_family",
+      "path": "research/scientist/notebook/notebook_references.py",
+      "rank": "D",
+      "type": "M"
+    },
+    {
+      "complexity": 30,
+      "key": "research/scientist/runner/_helpers_metrics.py::propose_ablation_suite",
+      "line": 784,
+      "name": "propose_ablation_suite",
+      "path": "research/scientist/runner/_helpers_metrics.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 30,
+      "key": "research/scientist/runner/continuous_modes.py::_ContinuousModesMixin._run_continuous_refinement",
+      "line": 811,
+      "name": "_run_continuous_refinement",
+      "path": "research/scientist/runner/continuous_modes.py",
+      "rank": "D",
+      "type": "M"
+    },
+    {
+      "complexity": 30,
+      "key": "research/tools/analyze_v9_metric_spearman.py::main",
+      "line": 70,
+      "name": "main",
+      "path": "research/tools/analyze_v9_metric_spearman.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 30,
+      "key": "research/tools/proper_component_knockout_ablation.py::run_s1_phase",
+      "line": 647,
+      "name": "run_s1_phase",
+      "path": "research/tools/proper_component_knockout_ablation.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 30,
+      "key": "research/tools/run_probe_backfill.py::main_with_args",
+      "line": 91,
+      "name": "main_with_args",
+      "path": "research/tools/run_probe_backfill.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 29,
+      "key": "research/scientist/analytics/analytics_refinement.py::RefinementAnalyzer._build_recipe",
+      "line": 366,
+      "name": "_build_recipe",
+      "path": "research/scientist/analytics/analytics_refinement.py",
+      "rank": "D",
+      "type": "M"
+    },
+    {
+      "complexity": 29,
+      "key": "research/scientist/api_routes/_experiment_launch.py::_launch_result_id_mode",
+      "line": 273,
+      "name": "_launch_result_id_mode",
+      "path": "research/scientist/api_routes/_experiment_launch.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 29,
+      "key": "research/scientist/api_routes/_helpers.py::get_external_running_experiment_snapshot",
+      "line": 125,
+      "name": "get_external_running_experiment_snapshot",
+      "path": "research/scientist/api_routes/_helpers.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 29,
+      "key": "research/scientist/api_routes/_helpers.py::resolve_runner_status",
+      "line": 235,
+      "name": "resolve_runner_status",
+      "path": "research/scientist/api_routes/_helpers.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 29,
+      "key": "research/scientist/intelligence/temporal_bayesian.py::TemporalBayesianTracker.from_db",
+      "line": 357,
+      "name": "from_db",
+      "path": "research/scientist/intelligence/temporal_bayesian.py",
+      "rank": "D",
+      "type": "M"
+    },
+    {
+      "complexity": 29,
+      "key": "research/scientist/llm/context_experiment.py::build_experiment_context",
+      "line": 133,
+      "name": "build_experiment_context",
+      "path": "research/scientist/llm/context_experiment.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 29,
+      "key": "research/synthesis/graph_validator.py::validate_dim_flow",
+      "line": 189,
+      "name": "validate_dim_flow",
+      "path": "research/synthesis/graph_validator.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 29,
+      "key": "research/tools/audit_generation_attribution.py::_load_slot_context",
+      "line": 100,
+      "name": "_load_slot_context",
+      "path": "research/tools/audit_generation_attribution.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 29,
+      "key": "research/tools/cleanup_orphan_fingerprint_duplicates.py::run",
+      "line": 514,
+      "name": "run",
+      "path": "research/tools/cleanup_orphan_fingerprint_duplicates.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 28,
+      "key": "research/eval/routing_heatmap.py::evaluate_routing_heatmap",
+      "line": 54,
+      "name": "evaluate_routing_heatmap",
+      "path": "research/eval/routing_heatmap.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 28,
+      "key": "research/scientist/causal_attribution.py::causal_generation_adjustments",
+      "line": 394,
+      "name": "causal_generation_adjustments",
+      "path": "research/scientist/causal_attribution.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 28,
+      "key": "research/scientist/construction_priors.py::audit_construction_prior_payload",
+      "line": 445,
+      "name": "audit_construction_prior_payload",
+      "path": "research/scientist/construction_priors.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 28,
+      "key": "research/scientist/intelligence/analyzer.py::cluster_architecture_families",
+      "line": 161,
+      "name": "cluster_architecture_families",
+      "path": "research/scientist/intelligence/analyzer.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 28,
+      "key": "research/scientist/intelligence/predictor_ensemble.py::_calibrate_ensemble",
+      "line": 496,
+      "name": "_calibrate_ensemble",
+      "path": "research/scientist/intelligence/predictor_ensemble.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 28,
+      "key": "research/scientist/notebook/notebook_leaderboard.py::_LeaderboardMixin",
+      "line": 162,
+      "name": "_LeaderboardMixin",
+      "path": "research/scientist/notebook/notebook_leaderboard.py",
+      "rank": "D",
+      "type": "C"
+    },
+    {
+      "complexity": 28,
+      "key": "research/scientist/runner/_helpers_benchmark.py::_run_investigation_v2_probes",
+      "line": 566,
+      "name": "_run_investigation_v2_probes",
+      "path": "research/scientist/runner/_helpers_benchmark.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 28,
+      "key": "research/scientist/runner/results_auto_escalate_phase7.py::_ResultsAutoEscalatePhase7Mixin._auto_escalate_investigation",
+      "line": 957,
+      "name": "_auto_escalate_investigation",
+      "path": "research/scientist/runner/results_auto_escalate_phase7.py",
+      "rank": "D",
+      "type": "M"
+    },
+    {
+      "complexity": 28,
+      "key": "research/synthesis/native_bound_segments.py::BoundNativeChainDispatcher._op_inputs_and_config",
+      "line": 83,
+      "name": "_op_inputs_and_config",
+      "path": "research/synthesis/native_bound_segments.py",
+      "rank": "D",
+      "type": "M"
+    },
+    {
+      "complexity": 28,
+      "key": "research/tools/analyze_high_induction_motifs.py::build_report",
+      "line": 536,
+      "name": "build_report",
+      "path": "research/tools/analyze_high_induction_motifs.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 27,
+      "key": "research/eval/binding_curriculum.py::curriculum_binding_range_profile",
+      "line": 111,
+      "name": "curriculum_binding_range_profile",
+      "path": "research/eval/binding_curriculum.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 27,
+      "key": "research/eval/controlled_sentence_probe.py::build_sentence_probe_corpus",
+      "line": 635,
+      "name": "build_sentence_probe_corpus",
+      "path": "research/eval/controlled_sentence_probe.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 27,
+      "key": "research/runtime/native/ir_validator.py::validate_ir",
+      "line": 29,
+      "name": "validate_ir",
+      "path": "research/runtime/native/ir_validator.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 27,
+      "key": "research/scientist/api_routes/_strategy_preflight.py::_evaluate_mode_eligibility",
+      "line": 270,
+      "name": "_evaluate_mode_eligibility",
+      "path": "research/scientist/api_routes/_strategy_preflight.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 27,
+      "key": "research/scientist/api_routes/_strategy_report.py::report_program_matches_theme",
+      "line": 38,
+      "name": "report_program_matches_theme",
+      "path": "research/scientist/api_routes/_strategy_report.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 27,
+      "key": "research/scientist/api_routes/leaderboard_bp.py::_search_discoveries",
+      "line": 214,
+      "name": "_search_discoveries",
+      "path": "research/scientist/api_routes/leaderboard_bp.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 27,
+      "key": "research/scientist/intelligence/analyzer.py::analyze_efficiency_profiles",
+      "line": 559,
+      "name": "analyze_efficiency_profiles",
+      "path": "research/scientist/intelligence/analyzer.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 27,
+      "key": "research/scientist/leaderboard_rescore.py::rescore_entry",
+      "line": 135,
+      "name": "rescore_entry",
+      "path": "research/scientist/leaderboard_rescore.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 27,
+      "key": "research/scientist/llm/backend.py::create_backend",
+      "line": 141,
+      "name": "create_backend",
+      "path": "research/scientist/llm/backend.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 27,
+      "key": "research/scientist/llm/context_experiment.py::build_op_reference",
+      "line": 15,
+      "name": "build_op_reference",
+      "path": "research/scientist/llm/context_experiment.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 27,
+      "key": "research/scientist/native/dispatch.py::_check_native_op_support",
+      "line": 64,
+      "name": "_check_native_op_support",
+      "path": "research/scientist/native/dispatch.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 27,
+      "key": "research/scientist/notebook/notebook_advanced_analytics.py::_AdvancedAnalyticsMixin._failure_signature_template_dominance",
+      "line": 523,
+      "name": "_failure_signature_template_dominance",
+      "path": "research/scientist/notebook/notebook_advanced_analytics.py",
+      "rank": "D",
+      "type": "M"
+    },
+    {
+      "complexity": 27,
+      "key": "research/scientist/runner/continuous_validation.py::_ContinuousValidationMixin._run_inline_validation",
+      "line": 487,
+      "name": "_run_inline_validation",
+      "path": "research/scientist/runner/continuous_validation.py",
+      "rank": "D",
+      "type": "M"
+    },
+    {
+      "complexity": 27,
+      "key": "research/scientist/runner/control_actions.py::_ControlActionsMixin.execute_chat_action",
+      "line": 212,
+      "name": "execute_chat_action",
+      "path": "research/scientist/runner/control_actions.py",
+      "rank": "D",
+      "type": "M"
+    },
+    {
+      "complexity": 27,
+      "key": "research/scientist/runner/execution_screening_graphs.py::analyze_graph_for_screening",
+      "line": 35,
+      "name": "analyze_graph_for_screening",
+      "path": "research/scientist/runner/execution_screening_graphs.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 27,
+      "key": "research/scientist/runner/results_analysis.py::_ResultsAnalysisMixin",
+      "line": 40,
+      "name": "_ResultsAnalysisMixin",
+      "path": "research/scientist/runner/results_analysis.py",
+      "rank": "D",
+      "type": "C"
+    },
+    {
+      "complexity": 27,
+      "key": "research/scientist/runner/results_automation.py::_ResultsAutomationMixin._apply_recommendation",
+      "line": 121,
+      "name": "_apply_recommendation",
+      "path": "research/scientist/runner/results_automation.py",
+      "rank": "D",
+      "type": "M"
+    },
+    {
+      "complexity": 27,
+      "key": "research/synthesis/graph.py::ComputationGraph._compute_shape_fast",
+      "line": 412,
+      "name": "_compute_shape_fast",
+      "path": "research/synthesis/graph.py",
+      "rank": "D",
+      "type": "M"
+    },
+    {
+      "complexity": 26,
+      "key": "aria_designer/api/app/patcher.py::_apply_rewire",
+      "line": 166,
+      "name": "_apply_rewire",
+      "path": "aria_designer/api/app/patcher.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 26,
+      "key": "research/eval/controlled_sentence_probe.py::_build_real_hellaswag_items",
+      "line": 471,
+      "name": "_build_real_hellaswag_items",
+      "path": "research/eval/controlled_sentence_probe.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 26,
+      "key": "research/scientist/api_routes/_strategy_recommendations.py::promotion_evidence_for_entry",
+      "line": 338,
+      "name": "promotion_evidence_for_entry",
+      "path": "research/scientist/api_routes/_strategy_recommendations.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 26,
+      "key": "research/scientist/api_routes/analytics_bp.py::_api_recommendation_signals",
+      "line": 164,
+      "name": "_api_recommendation_signals",
+      "path": "research/scientist/api_routes/analytics_bp.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 26,
+      "key": "research/scientist/leaderboard_scoring/pre_investigation.py::compute_pre_investigation_score",
+      "line": 9,
+      "name": "compute_pre_investigation_score",
+      "path": "research/scientist/leaderboard_scoring/pre_investigation.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 26,
+      "key": "research/scientist/notebook/notebook_experiments.py::_ExperimentsMixin.get_experiment_trends",
+      "line": 1199,
+      "name": "get_experiment_trends",
+      "path": "research/scientist/notebook/notebook_experiments.py",
+      "rank": "D",
+      "type": "M"
+    },
+    {
+      "complexity": 26,
+      "key": "research/scientist/notebook/notebook_leaderboard.py::_LeaderboardMixin._normalize_benchmark_fields",
+      "line": 175,
+      "name": "_normalize_benchmark_fields",
+      "path": "research/scientist/notebook/notebook_leaderboard.py",
+      "rank": "D",
+      "type": "M"
+    },
+    {
+      "complexity": 26,
+      "key": "research/scientist/runner/execution_candidates.py::_ExecutionCandidatesMixin._generate_candidates",
+      "line": 268,
+      "name": "_generate_candidates",
+      "path": "research/scientist/runner/execution_candidates.py",
+      "rank": "D",
+      "type": "M"
+    },
+    {
+      "complexity": 26,
+      "key": "research/scientist/runner/screening_signal_weights.py::_apply_profiling_composition_rule",
+      "line": 180,
+      "name": "_apply_profiling_composition_rule",
+      "path": "research/scientist/runner/screening_signal_weights.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 26,
+      "key": "research/scientist/runner/synthesis.py::_SynthesisMixin._run_ablation_experiment",
+      "line": 463,
+      "name": "_run_ablation_experiment",
+      "path": "research/scientist/runner/synthesis.py",
+      "rank": "D",
+      "type": "M"
+    },
+    {
+      "complexity": 26,
+      "key": "research/synthesis/grammar_support.py::check_shape_compat",
+      "line": 1064,
+      "name": "check_shape_compat",
+      "path": "research/synthesis/grammar_support.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 26,
+      "key": "research/synthesis/native_bound_segments.py::build_bound_native_chain_segments",
+      "line": 484,
+      "name": "build_bound_native_chain_segments",
+      "path": "research/synthesis/native_bound_segments.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 26,
+      "key": "research/tools/backfill_ar_validation.py::run",
+      "line": 180,
+      "name": "run",
+      "path": "research/tools/backfill_ar_validation.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 26,
+      "key": "research/tools/meta_profile_ml_analysis.py::load_analysis_frame",
+      "line": 192,
+      "name": "load_analysis_frame",
+      "path": "research/tools/meta_profile_ml_analysis.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 25,
+      "key": "aria_designer/components/data_transform/select_columns/kernel_fallback.py::ComponentHandler._choose_indices",
+      "line": 52,
+      "name": "_choose_indices",
+      "path": "aria_designer/components/data_transform/select_columns/kernel_fallback.py",
+      "rank": "D",
+      "type": "M"
+    },
+    {
+      "complexity": 25,
+      "key": "research/scientist/api_routes/_chat.py::query_file_index",
+      "line": 232,
+      "name": "query_file_index",
+      "path": "research/scientist/api_routes/_chat.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 25,
+      "key": "research/scientist/api_routes/analytics_bp.py::_api_insight_interactions",
+      "line": 564,
+      "name": "_api_insight_interactions",
+      "path": "research/scientist/api_routes/analytics_bp.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 25,
+      "key": "research/scientist/api_routes/programs_routes/validation_rerun.py::_api_program_queue_validation_rerun",
+      "line": 85,
+      "name": "_api_program_queue_validation_rerun",
+      "path": "research/scientist/api_routes/programs_routes/validation_rerun.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 25,
+      "key": "research/scientist/json_utils.py::json_safe",
+      "line": 29,
+      "name": "json_safe",
+      "path": "research/scientist/json_utils.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 25,
+      "key": "research/scientist/leaderboard_scoring/components.py::_score_understanding_v8",
+      "line": 290,
+      "name": "_score_understanding_v8",
+      "path": "research/scientist/leaderboard_scoring/components.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 25,
+      "key": "research/scientist/notebook/notebook_advanced_analytics.py::_AdvancedAnalyticsMixin._heuristic_failure_signature_suppressions",
+      "line": 597,
+      "name": "_heuristic_failure_signature_suppressions",
+      "path": "research/scientist/notebook/notebook_advanced_analytics.py",
+      "rank": "D",
+      "type": "M"
+    },
+    {
+      "complexity": 25,
+      "key": "research/scientist/notebook/program_provenance.py::derive_provenance_fields",
+      "line": 149,
+      "name": "derive_provenance_fields",
+      "path": "research/scientist/notebook/program_provenance.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 25,
+      "key": "research/synthesis/component_rule_engine.py::evaluate_component_chain_rules",
+      "line": 59,
+      "name": "evaluate_component_chain_rules",
+      "path": "research/synthesis/component_rule_engine.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 25,
+      "key": "research/tools/cleanup_orphan_fingerprint_duplicates.py::_plan_group",
+      "line": 359,
+      "name": "_plan_group",
+      "path": "research/tools/cleanup_orphan_fingerprint_duplicates.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 25,
+      "key": "research/tools/resume_bim_f86a_longrun.py::main",
+      "line": 156,
+      "name": "main",
+      "path": "research/tools/resume_bim_f86a_longrun.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 25,
+      "key": "research/tools/train_template_wikitext.py::train_template",
+      "line": 105,
+      "name": "train_template",
+      "path": "research/tools/train_template_wikitext.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 24,
+      "key": "research/eval/ar_curriculum_probe.py::ar_curriculum_probe",
+      "line": 356,
+      "name": "ar_curriculum_probe",
+      "path": "research/eval/ar_curriculum_probe.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 24,
+      "key": "research/scientist/analytics/analytics_refinement.py::RefinementAnalyzer.analyze_program_for_refinement",
+      "line": 76,
+      "name": "analyze_program_for_refinement",
+      "path": "research/scientist/analytics/analytics_refinement.py",
+      "rank": "D",
+      "type": "M"
+    },
+    {
+      "complexity": 24,
+      "key": "research/scientist/api_routes/_strategy_recommendations.py::capability_quality_for_entry",
+      "line": 464,
+      "name": "capability_quality_for_entry",
+      "path": "research/scientist/api_routes/_strategy_recommendations.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 24,
+      "key": "research/scientist/intelligence/analyzer.py::analyze_training_curves",
+      "line": 48,
+      "name": "analyze_training_curves",
+      "path": "research/scientist/intelligence/analyzer.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 24,
+      "key": "research/scientist/intelligence/predictor_gbm.py::evaluate_gbm_induction",
+      "line": 1096,
+      "name": "evaluate_gbm_induction",
+      "path": "research/scientist/intelligence/predictor_gbm.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 24,
+      "key": "research/scientist/llm/context_experiment.py::_build_session_delta",
+      "line": 684,
+      "name": "_build_session_delta",
+      "path": "research/scientist/llm/context_experiment.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 24,
+      "key": "research/scientist/notebook/notebook_advanced_analytics.py::_AdvancedAnalyticsMixin.get_scaffold_component_stats",
+      "line": 1265,
+      "name": "get_scaffold_component_stats",
+      "path": "research/scientist/notebook/notebook_advanced_analytics.py",
+      "rank": "D",
+      "type": "M"
+    },
+    {
+      "complexity": 24,
+      "key": "research/scientist/notebook/notebook_core.py::_NotebookCore._writer_loop",
+      "line": 918,
+      "name": "_writer_loop",
+      "path": "research/scientist/notebook/notebook_core.py",
+      "rank": "D",
+      "type": "M"
+    },
+    {
+      "complexity": 24,
+      "key": "research/scientist/notebook/notebook_core.py::_NotebookCore._migrate_insights_semantic",
+      "line": 1594,
+      "name": "_migrate_insights_semantic",
+      "path": "research/scientist/notebook/notebook_core.py",
+      "rank": "D",
+      "type": "M"
+    },
+    {
+      "complexity": 24,
+      "key": "research/scientist/notebook/notebook_experiments.py::_ExperimentsMixin.start_experiment",
+      "line": 488,
+      "name": "start_experiment",
+      "path": "research/scientist/notebook/notebook_experiments.py",
+      "rank": "D",
+      "type": "M"
+    },
+    {
+      "complexity": 24,
+      "key": "research/scientist/runner/control_actions.py::_ControlActionsMixin._execute_maintain_database_action",
+      "line": 422,
+      "name": "_execute_maintain_database_action",
+      "path": "research/scientist/runner/control_actions.py",
+      "rank": "D",
+      "type": "M"
+    },
+    {
+      "complexity": 24,
+      "key": "research/tools/apply_language_control_gates.py::main",
+      "line": 143,
+      "name": "main",
+      "path": "research/tools/apply_language_control_gates.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 24,
+      "key": "research/tools/probe_v2_rank_diff.py::main",
+      "line": 27,
+      "name": "main",
+      "path": "research/tools/probe_v2_rank_diff.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 24,
+      "key": "research/tools/rescreen_leaderboard_batch.py::_select_candidates",
+      "line": 232,
+      "name": "_select_candidates",
+      "path": "research/tools/rescreen_leaderboard_batch.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 24,
+      "key": "research/tools/small_ar_story_calibration.py::_query_context",
+      "line": 143,
+      "name": "_query_context",
+      "path": "research/tools/small_ar_story_calibration.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 23,
+      "key": "aria_designer/api/app/routers/aria_prompt_generation.py::_select_fallback_component_type",
+      "line": 661,
+      "name": "_select_fallback_component_type",
+      "path": "aria_designer/api/app/routers/aria_prompt_generation.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 23,
+      "key": "research/scientist/analytics/analytics_routing.py::_RoutingMixin.gating_behavior_diagnostics",
+      "line": 295,
+      "name": "gating_behavior_diagnostics",
+      "path": "research/scientist/analytics/analytics_routing.py",
+      "rank": "D",
+      "type": "M"
+    },
+    {
+      "complexity": 23,
+      "key": "research/scientist/api_routes/_observability_core.py::_classify_component_status",
+      "line": 346,
+      "name": "_classify_component_status",
+      "path": "research/scientist/api_routes/_observability_core.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 23,
+      "key": "research/scientist/intelligence/graph_ops.py::_extract_graph_ops_python",
+      "line": 55,
+      "name": "_extract_graph_ops_python",
+      "path": "research/scientist/intelligence/graph_ops.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 23,
+      "key": "research/scientist/intelligence/graph_segments.py::evaluate_feature_families",
+      "line": 567,
+      "name": "evaluate_feature_families",
+      "path": "research/scientist/intelligence/graph_segments.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 23,
+      "key": "research/scientist/leaderboard_scoring/v10.py::compute_composite_v10",
+      "line": 166,
+      "name": "compute_composite_v10",
+      "path": "research/scientist/leaderboard_scoring/v10.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 23,
+      "key": "research/scientist/notebook/notebook_programs.py::_ProgramsMixin._validation_result_views",
+      "line": 1023,
+      "name": "_validation_result_views",
+      "path": "research/scientist/notebook/notebook_programs.py",
+      "rank": "D",
+      "type": "M"
+    },
+    {
+      "complexity": 23,
+      "key": "research/scientist/runner/dashboard_hypothesis.py::_DashboardHypothesisMixin._load_meta_profile_strategy_brief",
+      "line": 161,
+      "name": "_load_meta_profile_strategy_brief",
+      "path": "research/scientist/runner/dashboard_hypothesis.py",
+      "rank": "D",
+      "type": "M"
+    },
+    {
+      "complexity": 23,
+      "key": "research/scientist/runner/execution_candidates.py::_ExecutionCandidatesMixin._run_pending_replay",
+      "line": 129,
+      "name": "_run_pending_replay",
+      "path": "research/scientist/runner/execution_candidates.py",
+      "rank": "D",
+      "type": "M"
+    },
+    {
+      "complexity": 23,
+      "key": "research/scientist/runner/screening_candidate_rank.py::judgment_rerank",
+      "line": 42,
+      "name": "judgment_rerank",
+      "path": "research/scientist/runner/screening_candidate_rank.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 23,
+      "key": "research/synthesis/compiled_model.py::CompiledLayer.__init__",
+      "line": 18,
+      "name": "__init__",
+      "path": "research/synthesis/compiled_model.py",
+      "rank": "D",
+      "type": "M"
+    },
+    {
+      "complexity": 23,
+      "key": "research/synthesis/compiler_op_utils.py::_record_routing_telemetry",
+      "line": 118,
+      "name": "_record_routing_telemetry",
+      "path": "research/synthesis/compiler_op_utils.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 23,
+      "key": "research/tools/analyze_high_induction_motifs.py::_aggregate",
+      "line": 407,
+      "name": "_aggregate",
+      "path": "research/tools/analyze_high_induction_motifs.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 23,
+      "key": "research/tools/backfill.py::store_probe_results",
+      "line": 757,
+      "name": "store_probe_results",
+      "path": "research/tools/backfill.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 23,
+      "key": "research/tools/profile_micro_train_step_boundary.py::_profile_steps",
+      "line": 142,
+      "name": "_profile_steps",
+      "path": "research/tools/profile_micro_train_step_boundary.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 23,
+      "key": "research/tools/template_classification.py::load_per_template_signals",
+      "line": 71,
+      "name": "load_per_template_signals",
+      "path": "research/tools/template_classification.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 22,
+      "key": "aria_designer/components/data_transform/split_train_val_test/kernel_fallback.py::ComponentHandler.forward",
+      "line": 106,
+      "name": "forward",
+      "path": "aria_designer/components/data_transform/split_train_val_test/kernel_fallback.py",
+      "rank": "D",
+      "type": "M"
+    },
+    {
+      "complexity": 22,
+      "key": "aria_designer/runtime/constraints.py::compute_palette_constraints",
+      "line": 201,
+      "name": "compute_palette_constraints",
+      "path": "aria_designer/runtime/constraints.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 22,
+      "key": "research/morphological_box.py::_check_structural_constraints",
+      "line": 520,
+      "name": "_check_structural_constraints",
+      "path": "research/morphological_box.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 22,
+      "key": "research/scientist/analytics/analytics_ops.py::_OpsMixin.canonical_compression_metrics",
+      "line": 186,
+      "name": "canonical_compression_metrics",
+      "path": "research/scientist/analytics/analytics_ops.py",
+      "rank": "D",
+      "type": "M"
+    },
+    {
+      "complexity": 22,
+      "key": "research/scientist/analytics/analytics_refinement.py::RefinementAnalyzer.strategy_backtest",
+      "line": 544,
+      "name": "strategy_backtest",
+      "path": "research/scientist/analytics/analytics_refinement.py",
+      "rank": "D",
+      "type": "M"
+    },
+    {
+      "complexity": 22,
+      "key": "research/scientist/api_routes/_strategy_briefing.py::determine_recommended_action",
+      "line": 603,
+      "name": "determine_recommended_action",
+      "path": "research/scientist/api_routes/_strategy_briefing.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 22,
+      "key": "research/scientist/api_routes/_strategy_recommendations.py::compute_breakthrough_production_readiness",
+      "line": 814,
+      "name": "compute_breakthrough_production_readiness",
+      "path": "research/scientist/api_routes/_strategy_recommendations.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 22,
+      "key": "research/scientist/api_routes/reporting_bp.py::_load_recent_experiments_with_funnel",
+      "line": 114,
+      "name": "_load_recent_experiments_with_funnel",
+      "path": "research/scientist/api_routes/reporting_bp.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 22,
+      "key": "research/scientist/intelligence/distiller.py::KnowledgeDistiller._build_stats_summary",
+      "line": 168,
+      "name": "_build_stats_summary",
+      "path": "research/scientist/intelligence/distiller.py",
+      "rank": "D",
+      "type": "M"
+    },
+    {
+      "complexity": 22,
+      "key": "research/scientist/intelligence/interaction_analysis.py::build_interaction_matrix",
+      "line": 215,
+      "name": "build_interaction_matrix",
+      "path": "research/scientist/intelligence/interaction_analysis.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 22,
+      "key": "research/scientist/leaderboard_scoring/components.py::_score_performance_curves",
+      "line": 16,
+      "name": "_score_performance_curves",
+      "path": "research/scientist/leaderboard_scoring/components.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 22,
+      "key": "research/scientist/leaderboard_scoring/penalties.py::_apply_scoring_penalties",
+      "line": 14,
+      "name": "_apply_scoring_penalties",
+      "path": "research/scientist/leaderboard_scoring/penalties.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 22,
+      "key": "research/scientist/llm/decision.py::NextExperimentDecisionPlanner._apply_meta_strategy_bias",
+      "line": 261,
+      "name": "_apply_meta_strategy_bias",
+      "path": "research/scientist/llm/decision.py",
+      "rank": "D",
+      "type": "M"
+    },
+    {
+      "complexity": 22,
+      "key": "research/scientist/llm/decision.py::NextExperimentDecisionPlanner._fallback_plan",
+      "line": 324,
+      "name": "_fallback_plan",
+      "path": "research/scientist/llm/decision.py",
+      "rank": "D",
+      "type": "M"
+    },
+    {
+      "complexity": 22,
+      "key": "research/scientist/ml_influence_policy.py::build_ml_influence_policy",
+      "line": 92,
+      "name": "build_ml_influence_policy",
+      "path": "research/scientist/ml_influence_policy.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 22,
+      "key": "research/scientist/native/abi.py::NativeRunnerAbiSession.execute_token_rows",
+      "line": 303,
+      "name": "execute_token_rows",
+      "path": "research/scientist/native/abi.py",
+      "rank": "D",
+      "type": "M"
+    },
+    {
+      "complexity": 22,
+      "key": "research/scientist/notebook/notebook_advanced_analytics.py::_AdvancedAnalyticsMixin._assign_fingerprint_bucket",
+      "line": 167,
+      "name": "_assign_fingerprint_bucket",
+      "path": "research/scientist/notebook/notebook_advanced_analytics.py",
+      "rank": "D",
+      "type": "M"
+    },
+    {
+      "complexity": 22,
+      "key": "research/scientist/persona_rules.py::_PersonaRulesMixin._rule_based_critique",
+      "line": 555,
+      "name": "_rule_based_critique",
+      "path": "research/scientist/persona_rules.py",
+      "rank": "D",
+      "type": "M"
+    },
+    {
+      "complexity": 22,
+      "key": "research/scientist/runner/_eval_registry.py::run_eval_suite",
+      "line": 774,
+      "name": "run_eval_suite",
+      "path": "research/scientist/runner/_eval_registry.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 22,
+      "key": "research/scientist/runner/_helpers_gate.py::check_inflight_health",
+      "line": 275,
+      "name": "check_inflight_health",
+      "path": "research/scientist/runner/_helpers_gate.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 22,
+      "key": "research/scientist/runner/execution_training_micro.py::_ExecutionTrainingMicroMixin._micro_train_standard_loop",
+      "line": 632,
+      "name": "_micro_train_standard_loop",
+      "path": "research/scientist/runner/execution_training_micro.py",
+      "rank": "D",
+      "type": "M"
+    },
+    {
+      "complexity": 22,
+      "key": "research/scientist/runner/synthesis.py::_SynthesisMixin._build_refinement_plan",
+      "line": 1713,
+      "name": "_build_refinement_plan",
+      "path": "research/scientist/runner/synthesis.py",
+      "rank": "D",
+      "type": "M"
+    },
+    {
+      "complexity": 22,
+      "key": "research/synthesis/_template_helpers.py::_pick_compatible_motif",
+      "line": 458,
+      "name": "_pick_compatible_motif",
+      "path": "research/synthesis/_template_helpers.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 22,
+      "key": "research/synthesis/native_structure_analysis.py::analyze_ir_in_python",
+      "line": 137,
+      "name": "analyze_ir_in_python",
+      "path": "research/synthesis/native_structure_analysis.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 22,
+      "key": "research/tools/ar_curriculum_controls.py::write_report",
+      "line": 94,
+      "name": "write_report",
+      "path": "research/tools/ar_curriculum_controls.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 22,
+      "key": "research/tools/backpopulate_screening_metrics.py::_evaluate_row_payload",
+      "line": 1168,
+      "name": "_evaluate_row_payload",
+      "path": "research/tools/backpopulate_screening_metrics.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 22,
+      "key": "research/tools/explore_under_observed.py::generate_forced_graph",
+      "line": 315,
+      "name": "generate_forced_graph",
+      "path": "research/tools/explore_under_observed.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 22,
+      "key": "research/tools/nano_blimp_tune.py::main",
+      "line": 125,
+      "name": "main",
+      "path": "research/tools/nano_blimp_tune.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 22,
+      "key": "research/tools/overnight_continuous_supervisor.py::Supervisor.check_once",
+      "line": 590,
+      "name": "check_once",
+      "path": "research/tools/overnight_continuous_supervisor.py",
+      "rank": "D",
+      "type": "M"
+    },
+    {
+      "complexity": 22,
+      "key": "research/tools/small_ar_story_calibration.py::_preset",
+      "line": 1070,
+      "name": "_preset",
+      "path": "research/tools/small_ar_story_calibration.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 21,
+      "key": "aria_designer/api/app/help_content.py::get_component_tips",
+      "line": 122,
+      "name": "get_component_tips",
+      "path": "aria_designer/api/app/help_content.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 21,
+      "key": "research/eval/pruning.py::run_dense_vs_structured_sparse_ablation",
+      "line": 106,
+      "name": "run_dense_vs_structured_sparse_ablation",
+      "path": "research/eval/pruning.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 21,
+      "key": "research/eval/screening_rapid.py::RapidScreeningCheck._check_step_thresholds",
+      "line": 198,
+      "name": "_check_step_thresholds",
+      "path": "research/eval/screening_rapid.py",
+      "rank": "D",
+      "type": "M"
+    },
+    {
+      "complexity": 21,
+      "key": "research/meta_analysis/ar_binding_overlay.py::_payload_from_rows",
+      "line": 216,
+      "name": "_payload_from_rows",
+      "path": "research/meta_analysis/ar_binding_overlay.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 21,
+      "key": "research/scientist/analytics/analytics_grammar.py::_GrammarMixin._collect_fingerprint_capped_op_rates",
+      "line": 158,
+      "name": "_collect_fingerprint_capped_op_rates",
+      "path": "research/scientist/analytics/analytics_grammar.py",
+      "rank": "D",
+      "type": "M"
+    },
+    {
+      "complexity": 21,
+      "key": "research/scientist/analytics/analytics_grammar.py::_GrammarMixin._apply_synergy_adjustments",
+      "line": 997,
+      "name": "_apply_synergy_adjustments",
+      "path": "research/scientist/analytics/analytics_grammar.py",
+      "rank": "D",
+      "type": "M"
+    },
+    {
+      "complexity": 21,
+      "key": "research/scientist/analytics/analytics_ops.py::_OpsMixin.compression_coverage",
+      "line": 341,
+      "name": "compression_coverage",
+      "path": "research/scientist/analytics/analytics_ops.py",
+      "rank": "D",
+      "type": "M"
+    },
+    {
+      "complexity": 21,
+      "key": "research/scientist/analytics/analytics_routing.py::_RoutingMixin.sparse_quant_codesign_summary",
+      "line": 610,
+      "name": "sparse_quant_codesign_summary",
+      "path": "research/scientist/analytics/analytics_routing.py",
+      "rank": "D",
+      "type": "M"
+    },
+    {
+      "complexity": 21,
+      "key": "research/scientist/api_routes/_strategy_recommendations.py::build_reproducibility_workflow",
+      "line": 610,
+      "name": "build_reproducibility_workflow",
+      "path": "research/scientist/api_routes/_strategy_recommendations.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 21,
+      "key": "research/scientist/api_routes/chat_bp.py::_api_aria_chat_compact",
+      "line": 850,
+      "name": "_api_aria_chat_compact",
+      "path": "research/scientist/api_routes/chat_bp.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 21,
+      "key": "research/scientist/intelligence/analyzer.py::analyze_op_synergies",
+      "line": 383,
+      "name": "analyze_op_synergies",
+      "path": "research/scientist/intelligence/analyzer.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 21,
+      "key": "research/scientist/leaderboard_scoring/v11.py::_v11_trust_ceiling",
+      "line": 52,
+      "name": "_v11_trust_ceiling",
+      "path": "research/scientist/leaderboard_scoring/v11.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 21,
+      "key": "research/scientist/naming.py::_distinguishing_suffix",
+      "line": 59,
+      "name": "_distinguishing_suffix",
+      "path": "research/scientist/naming.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 21,
+      "key": "research/scientist/native/compiler.py::_apply_selective_designer_layers",
+      "line": 228,
+      "name": "_apply_selective_designer_layers",
+      "path": "research/scientist/native/compiler.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 21,
+      "key": "research/scientist/notebook/notebook_knowledge.py::_KnowledgeMixin.resolve_selection_insight_trial",
+      "line": 402,
+      "name": "resolve_selection_insight_trial",
+      "path": "research/scientist/notebook/notebook_knowledge.py",
+      "rank": "D",
+      "type": "M"
+    },
+    {
+      "complexity": 21,
+      "key": "research/scientist/runner/_helpers_benchmark.py::_record_capability_ranking_result",
+      "line": 808,
+      "name": "_record_capability_ranking_result",
+      "path": "research/scientist/runner/_helpers_benchmark.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 21,
+      "key": "research/scientist/runner/execution_experiment_phase3.py::_ExecutionExperimentPhase3Mixin._run_morphological_screening",
+      "line": 242,
+      "name": "_run_morphological_screening",
+      "path": "research/scientist/runner/execution_experiment_phase3.py",
+      "rank": "D",
+      "type": "M"
+    },
+    {
+      "complexity": 21,
+      "key": "research/scientist/runner/execution_training.py::_smoke_test_graph_structure",
+      "line": 105,
+      "name": "_smoke_test_graph_structure",
+      "path": "research/scientist/runner/execution_training.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 21,
+      "key": "research/scientist/runner/selection.py::_SelectionMixin._sensitivity_check",
+      "line": 891,
+      "name": "_sensitivity_check",
+      "path": "research/scientist/runner/selection.py",
+      "rank": "D",
+      "type": "M"
+    },
+    {
+      "complexity": 21,
+      "key": "research/scientist/screening_recompute.py::_run_full_post_train",
+      "line": 101,
+      "name": "_run_full_post_train",
+      "path": "research/scientist/screening_recompute.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 21,
+      "key": "research/synthesis/_context_validation.py::_check_split_branch_restore_contracts",
+      "line": 132,
+      "name": "_check_split_branch_restore_contracts",
+      "path": "research/synthesis/_context_validation.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 21,
+      "key": "research/synthesis/primitives.py::validate_wiring",
+      "line": 1935,
+      "name": "validate_wiring",
+      "path": "research/synthesis/primitives.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 21,
+      "key": "research/synthesis/template_rules.py::_check_bottleneck_dimension",
+      "line": 101,
+      "name": "_check_bottleneck_dimension",
+      "path": "research/synthesis/template_rules.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 21,
+      "key": "research/tools/backfill.py::_seed_fingerprint_cache",
+      "line": 871,
+      "name": "_seed_fingerprint_cache",
+      "path": "research/tools/backfill.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 21,
+      "key": "research/tools/backpopulate_screening_metrics.py::_run_compile_only_post_eval",
+      "line": 828,
+      "name": "_run_compile_only_post_eval",
+      "path": "research/tools/backpopulate_screening_metrics.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 21,
+      "key": "research/tools/queue_investigation_followups.py::queue_followups",
+      "line": 46,
+      "name": "queue_followups",
+      "path": "research/tools/queue_investigation_followups.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 21,
+      "key": "research/tools/rescore_champion_tiny_model.py::compute_score_rows",
+      "line": 393,
+      "name": "compute_score_rows",
+      "path": "research/tools/rescore_champion_tiny_model.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 21,
+      "key": "research/tools/sync_leaderboard_eval_mirrors.py::main",
+      "line": 61,
+      "name": "main",
+      "path": "research/tools/sync_leaderboard_eval_mirrors.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 21,
+      "key": "research/tools/train_predictors.py::_gbm_metrics_report",
+      "line": 485,
+      "name": "_gbm_metrics_report",
+      "path": "research/tools/train_predictors.py",
+      "rank": "D",
+      "type": "F"
+    },
+    {
+      "complexity": 21,
+      "key": "research/tools/validate_micro_train_native_optimizer_cutover.py::run_validation",
+      "line": 332,
+      "name": "run_validation",
+      "path": "research/tools/validate_micro_train_native_optimizer_cutover.py",
+      "rank": "D",
+      "type": "F"
+    }
+  ],
+  "minimum_rank": "D",
+  "paths": ["research", "aria_core", "aria_designer"]
+}

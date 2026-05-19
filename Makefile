@@ -13,7 +13,7 @@ JOURNAL_PATHS ?=
 JOURNAL_MAX_STATUS ?= 80
 NOTEBOOKLM_OUT ?= tasks/notebooklm/codex_context_bundle.md
 
-.PHONY: all aria_core test test-aria_core test-designer test-research test-integration test-changed watch-test-changed profile-scalene bench codex-journal notebooklm-bundle clean clean-junk clean-docs clean-all help guardrails-dry guardrails-dry-report perf-summary governance-check governance-audit profile-hotpaths profile-screening-hotpaths profile-screening-hotpaths-quick
+.PHONY: all aria_core test test-aria_core test-designer test-research test-integration test-changed watch-test-changed profile-scalene bench codex-journal notebooklm-bundle clean clean-junk clean-docs clean-all help complexity-report complexity-check complexity-refresh-baseline guardrails-dry guardrails-dry-report perf-summary governance-check governance-audit profile-hotpaths profile-screening-hotpaths profile-screening-hotpaths-quick
 
 all: aria_core  ## Build everything
 
@@ -70,6 +70,15 @@ codex-journal:  ## Append an Obsidian-compatible Codex journal entry
 notebooklm-bundle:  ## Build a curated Markdown bundle for manual NotebookLM upload
 	$(UV) run python conductor/notebooklm_bundle.py --out "$(NOTEBOOKLM_OUT)"
 
+complexity-report:  ## Report production Python cyclomatic complexity
+	$(UV) run python conductor/radon_complexity.py report
+
+complexity-check:  ## Fail on new production Python D-F complexity blocks
+	$(UV) run python conductor/radon_complexity.py check
+
+complexity-refresh-baseline:  ## Refresh the legacy D-F complexity baseline
+	$(UV) run python conductor/radon_complexity.py refresh-baseline
+
 guardrails-dry:  ## Enforce DRY/language guardrails against baseline
 	$(PYTHON) -m research.tools.dry_language_guardrails --strict
 
@@ -104,10 +113,31 @@ dead: ## Standing dead-code detector
 
 dupes: ## Duplicate code detector
 	@mkdir -p tasks/audit
-	pylint research/ aria_core/ aria_designer/ \
-	  --disable=all \
-	  --enable=duplicate-code \
-	  --min-similarity-lines=10 2>&1 | tee tasks/audit/duplication.txt
+	$(PYTHON) conductor/run_duplicate_audit.py
+
+dupes-jscpd: ## JSCPD duplicate detector
+	$(PYTHON) conductor/run_duplicate_audit.py --tool jscpd
+
+dupes-jscpd-check: ## JSCPD duplicate detector as a failing gate
+	$(PYTHON) conductor/run_duplicate_audit.py --tool jscpd --check
+
+dupes-pmd: ## PMD CPD duplicate detector for Python
+	$(PYTHON) conductor/run_duplicate_audit.py --tool pmd-python
+
+dupes-pmd-check: ## PMD CPD duplicate detector as a failing gate
+	$(PYTHON) conductor/run_duplicate_audit.py --tool pmd-python --check
+
+dupes-pylint: ## Pylint duplicate-code detector
+	$(PYTHON) conductor/run_duplicate_audit.py --tool pylint
+
+dupes-nicad: ## NiCad near-miss clone detector for research Python
+	$(PYTHON) conductor/run_duplicate_audit.py --tool nicad-python
+
+dupes-deep: ## Run JSCPD and PMD CPD duplicate audits
+	$(PYTHON) conductor/run_duplicate_audit.py
+
+dupes-deep-check: ## Run duplicate detectors as a failing gate
+	$(PYTHON) conductor/run_duplicate_audit.py --check
 
 # ── Clean ────────────────────────────────────────────────────────────
 clean:  ## Clean all build artifacts

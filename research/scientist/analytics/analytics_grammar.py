@@ -783,7 +783,10 @@ class _GrammarMixin:
         holdout_ids = []
         for row in experiments:
             eid = row["experiment_id"]
-            h = int(hashlib.md5(eid.encode()).hexdigest()[:8], 16)
+            h = int(
+                hashlib.md5(eid.encode(), usedforsecurity=False).hexdigest()[:8],
+                16,
+            )
             if (h % 100) < int(holdout_fraction * 100):
                 holdout_ids.append(eid)
 

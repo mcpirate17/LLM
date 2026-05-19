@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shlex
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -72,10 +73,13 @@ class CodeHealer:
         env = os.environ.copy()
         env["PYTHONPATH"] = str(cwd)
 
+        argv = shlex.split(command)
+        if not argv:
+            raise HealerError("Command blocked by healer sandbox policy: empty command")
+
         proc = subprocess.run(
-            command,
+            argv,
             cwd=str(cwd),
-            shell=True,
             capture_output=True,
             text=True,
             timeout=max(1, int(timeout_seconds)),

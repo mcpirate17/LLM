@@ -1,0 +1,277 @@
+Python files scanned: 1793
+Parse errors: 0
+Duplicate function-body groups: 64
+Production-only groups: 43
+Groups involving tests: 21
+Duplicate test-name groups: 123
+
+[1] 2 copies, 28 lines
+  - HYDRA/hydra/model/framework/blocks.py:39 __init__
+  - HYDRA/hydra/model/framework/core.py:108 __init__
+
+[2] 2 copies, 25 lines
+  - HYDRA/hydra/model/framework/blocks.py:972 __init__
+  - HYDRA/hydra/model/framework/core.py:2088 __init__
+
+[3] 2 copies, 25 lines
+  - research/tools/nano_blimp_v2_audit.py:222 _build_summary
+  - research/tools/nano_blimp_v3_audit.py:186 _build_summary
+
+[4] 2 copies, 23 lines
+  - research/tools/train_tropical_gate_120m_pretrain.py:928 configure_torch_performance
+  - research/tools/mixer_fingerprint.py:67 _configure_torch_performance
+
+[5] 2 copies, 21 lines
+  - research/tests/test_reference_architectures.py:402 test_fingerprint_reports_none_when_no_artifacts
+  - research/tests/test_novelty.py:1045 test_fingerprint_reports_none_when_no_artifacts
+
+[6] 2 copies, 21 lines
+  - research/tests/test_reference_architectures.py:454 test_export_produces_loadable_artifacts
+  - research/tests/test_novelty.py:1097 test_export_produces_loadable_artifacts
+
+[7] 2 copies, 20 lines
+  - HYDRA/diagnostics/profile_copy_operations.py:43 setup_model
+  - HYDRA/diagnostics/profile_100m_detailed.py:54 setup_model
+
+[8] 4 copies, 20 lines
+  - component_fab/tests/test_sprint8_pipeline.py:25 _spec
+  - component_fab/tests/test_sprint4_pipeline.py:32 _spec
+  - component_fab/tests/test_sprint5_pipeline.py:30 _spec
+  - component_fab/tests/test_sprint7_pipeline.py:29 _spec
+
+[9] 2 copies, 19 lines
+  - research/tests/test_native_runner_abi_inference_probe.py:265 nr_execute
+  - research/tests/test_native_runner_abi_inference_probe.py:311 nr_execute
+
+[10] 2 copies, 18 lines
+  - research/tests/test_reference_architectures.py:424 _make_fingerprint
+  - research/tests/test_novelty.py:1067 _make_fingerprint
+
+[11] 2 copies, 16 lines
+  - LA3/optim/lion.py:32 __init__
+  - LA3/optim/lion.py:100 __init__
+
+[12] 2 copies, 16 lines
+  - aria_designer/components/routing/adaptive_rank_gate/kernel_fallback.py:21 _ensure_weights
+  - aria_designer/components/routing/signal_conditioned_compression/kernel_fallback.py:21 _ensure_weights
+
+[13] 2 copies, 16 lines
+  - research/tests/test_reference_architectures.py:476 test_export_deterministic
+  - research/tests/test_novelty.py:1119 test_export_deterministic
+
+[14] 2 copies, 15 lines
+  - research/tests/test_nano_controlled_holdout_probe.py:27 forward
+  - research/tests/test_controlled_sentence_probe.py:36 forward
+
+[15] 4 copies, 15 lines
+  - research/tools/meta_surrogate_analysis.py:505 _md_table
+  - research/tools/meta_experiment_queue.py:300 _md_table
+  - research/tools/meta_profile_ml_analysis.py:550 _md_table
+  - research/tools/meta_surrogate_screening_proposal.py:190 _md_table
+
+[16] 2 copies, 14 lines
+  - HYDRA/diagnostics/convert_nemotron_jsonl_to_pt.py:184 _parse_seq_lens
+  - HYDRA/diagnostics/collect_pt_by_seq.py:46 _parse_seq_lens
+
+[17] 2 copies, 14 lines
+  - aria_designer/tests/test_adaptive_routing_progress.py:29 client
+  - aria_designer/tests/test_api.py:13 client
+
+[18] 2 copies, 14 lines
+  - research/scientist/runner/execution_search.py:414 on_evaluate
+  - research/scientist/runner/continuous_modes.py:631 on_evaluate
+
+[19] 3 copies, 14 lines
+  - research/synthesis/_templates_attention_tail.py:143 _pick_with_local_wildcard
+  - research/synthesis/_templates_attention.py:42 _pick_with_local_wildcard
+  - research/synthesis/_templates_attention_hybrid.py:31 _pick_with_local_wildcard
+
+[20] 2 copies, 14 lines
+  - research/synthesis/graph_features.py:292 _dynamic_component_records
+  - research/scientist/analytics/dynamic_component_features.py:20 _dynamic_component_records
+
+[21] 2 copies, 14 lines
+  - research/tests/test_fingerprint_promotion_gates.py:161 patched_execute
+  - research/tests/test_fingerprint_promotion_gates.py:221 patched_execute
+
+[22] 2 copies, 13 lines
+  - research/eval/nano_controlled_holdout_probe.py:231 _encode_text
+  - research/eval/controlled_sentence_probe.py:434 _encode_text
+
+[23] 2 copies, 13 lines
+  - research/tests/test_nano_blimp_eval.py:61 forward
+  - research/tests/test_synthetic_association_eval.py:56 forward
+
+[24] 2 copies, 13 lines
+  - research/tools/ar_curriculum_trends.py:75 _ranks
+  - research/tools/ar_curriculum_predictor.py:76 _ranks
+
+[25] 2 copies, 13 lines
+  - research/tools/nano_blimp_v2_audit.py:127 _aggregate
+  - research/tools/nano_blimp_v3_audit.py:92 _aggregate
+
+[26] 2 copies, 12 lines
+  - HYDRA/hydra/model/framework/blocks.py:352 _update_aggregate_mask
+  - HYDRA/hydra/model/framework/core.py:476 _update_aggregate_mask
+
+[27] 2 copies, 12 lines
+  - component_fab/tools/run_lm_probe.py:203 _resolve_targets
+  - component_fab/tools/run_lm_eval.py:153 _resolve_targets
+
+[28] 2 copies, 12 lines
+  - research/tests/test_interpretability_evals.py:444 _make_model
+  - research/tests/test_interpretability_evals.py:618 _make_model
+
+[29] 4 copies, 12 lines
+  - research/tests/test_pareto_and_routing_penalty.py:93 make_row
+  - research/tests/test_pareto_and_routing_penalty.py:129 make_row
+  - research/tests/test_pareto_and_routing_penalty.py:171 make_row
+  - research/tests/test_pareto_and_routing_penalty.py:214 make_row
+
+[30] 2 copies, 12 lines
+  - research/tests/test_rust_backward.py:25 _make_graph_json
+  - research/tests/test_rust_ref_ops.py:37 _make_graph_json
+
+[31] 2 copies, 12 lines
+  - research/tools/train_tropical_gate_120m_pretrain.py:436 next_batch
+  - research/tools/train_tropical_gate_120m_pretrain.py:613 next_batch
+
+[32] 2 copies, 11 lines
+  - HYDRA/hydra/model/framework/blocks.py:340 end_aggregate_tracking
+  - HYDRA/hydra/model/framework/core.py:464 end_aggregate_tracking
+
+[33] 2 copies, 11 lines
+  - aria_designer/components/base.py:68 __init__
+  - aria_designer/components/base.py:103 __init__
+
+[34] 2 copies, 11 lines
+  - research/scientist/runner/continuous_validation.py:428 _compare
+  - research/scientist/runner/execution_validation_candidate.py:265 _compare
+
+[35] 2 copies, 11 lines
+  - research/tests/test_blimp_eval.py:20 forward
+  - research/tests/test_hellaswag_eval.py:20 forward
+
+[36] 3 copies, 10 lines
+  - component_fab/improver/math_knob_catalog.py:110 _synthetic_lift
+  - component_fab/improver/cross_anchor.py:62 _synthetic_lift
+  - component_fab/improver/axis_variants.py:431 _synthetic_axis_lift
+
+[37] 2 copies, 10 lines
+  - research/tests/test_investigation_queue_tools.py:14 _graph_json
+  - research/tests/test_investigation_v2_recording.py:15 _graph_json
+
+[38] 2 copies, 10 lines
+  - research/tests/test_math_space_rules.py:71 test_stdp_attention_after_sparse_threshold_accepted
+  - research/tests/test_math_space_rules.py:99 test_lif_neuron_followed_by_sparse_threshold_accepted
+
+[39] 2 copies, 10 lines
+  - research/tests/test_reference_architectures.py:443 test_fingerprint_cka_provenance_fields_exist
+  - research/tests/test_novelty.py:1086 test_fingerprint_cka_provenance_fields_exist
+
+[40] 2 copies, 10 lines
+  - research/tests/test_template_smoke.py:51 test_new_template_builds_across_seeds
+  - research/tests/test_fused_substrate_templates.py:82 test_fused_template_builds_across_seeds
+
+[41] 2 copies, 10 lines
+  - research/tools/ar_curriculum_trends.py:90 _pearson
+  - research/tools/ar_probe_comparison.py:194 _pearson
+
+[42] 2 copies, 10 lines
+  - research/tools/benchmark_micro_train_native_optimizer.py:23 _env_flag
+  - research/tools/validate_micro_train_native_optimizer_cutover.py:57 _env_flag
+
+[43] 2 copies, 10 lines
+  - research/tools/meta_surrogate_analysis.py:70 _safe_float
+  - research/tools/meta_profile_ml_analysis.py:125 _safe_float
+
+[44] 2 copies, 9 lines
+  - research/eval/nano_controlled_holdout_probe.py:185 _dedupe_lower
+  - research/eval/controlled_sentence_probe.py:144 _dedupe
+
+[45] 2 copies, 9 lines
+  - research/scientist/llm/openai_backend.py:30 is_available
+  - research/scientist/llm/anthropic.py:88 is_available
+
+[46] 2 copies, 9 lines
+  - research/tests/test_template_smoke.py:64 test_new_template_validates
+  - research/tests/test_fused_substrate_templates.py:95 test_fused_template_validates
+
+[47] 2 copies, 9 lines
+  - research/tools/controlled_sentence_tune.py:188 _train_base
+  - research/tools/nano_controlled_holdout_tune.py:96 _train_base
+
+[48] 2 copies, 9 lines
+  - research/tools/nano_blimp_v2_audit.py:116 _stats
+  - research/tools/nano_blimp_v3_audit.py:81 _stats
+
+[49] 3 copies, 9 lines
+  - research/tools/phase1_meta_analysis.py:52 wilson
+  - research/tools/template_slot_realization.py:39 wilson
+  - research/tools/phase1_mixer_analysis.py:88 wilson
+
+[50] 3 copies, 9 lines
+  - research/tools/rescore_champion_tiny_model.py:97 _program_results_read_table
+  - research/tools/language_control_backfill.py:82 _program_results_read_table
+  - research/tools/import_ar_validation_fingerprint_sweep.py:203 _program_results_read_table
+
+[51] 2 copies, 9 lines
+  - research/tools/run_binding_pilot.py:150 _is_native_binding_eligible
+  - research/scientist/intelligence/graph_segments.py:191 _is_native_safe_graph
+
+[52] 2 copies, 9 lines
+  - research/tools/train_tropical_gate_120m_pretrain.py:917 _compact_exception_message
+  - research/tools/mixer_fingerprint.py:114 _compact_exception_message
+
+[53] 2 copies, 8 lines
+  - HYDRA/hydra/data/universal_data_loader.py:1221 format_open_thoughts
+  - HYDRA/hydra/data/universal_data_loader.py:1232 format_bespoke_stratos
+
+[54] 2 copies, 8 lines
+  - HYDRA/hydra/model/framework/blocks.py:331 start_aggregate_tracking
+  - HYDRA/hydra/model/framework/core.py:455 start_aggregate_tracking
+
+[55] 2 copies, 8 lines
+  - aria_designer/runtime/fallback_templates.py:90 _resolve
+  - aria_designer/runtime/fallback_templates.py:127 _resolve
+
+[56] 2 copies, 8 lines
+  - component_fab/generator/primitive_templates.py:58 __init__
+  - component_fab/generator/primitive_templates.py:120 __init__
+
+[57] 2 copies, 8 lines
+  - personaplex/moshi/moshi/offline.py:83 wrap_with_system_tags
+  - personaplex/moshi/moshi/server.py:79 wrap_with_system_tags
+
+[58] 3 copies, 8 lines
+  - research/mathspaces/tropical.py:49 _disable_torch_compile
+  - component_fab/harness/standard_block.py:24 _disable_torch_compile
+  - component_fab/generator/primitive_templates.py:27 _disable_torch_compile
+
+[59] 2 copies, 8 lines
+  - research/meta_analysis/triplet_blocklist.py:105 _optional_float
+  - research/meta_analysis/pair_proposer.py:144 _optional_float
+
+[60] 2 copies, 8 lines
+  - research/tests/test_native_gradient_parity.py:24 _assert_close
+  - research/tests/test_native_norm_gradient_parity.py:32 _assert_close
+
+[61] 2 copies, 8 lines
+  - research/tests/test_reference_architectures.py:393 test_fingerprint_records_cka_source
+  - research/tests/test_novelty.py:1036 test_fingerprint_records_cka_source
+
+[62] 4 copies, 8 lines
+  - research/tools/meta_surrogate_analysis.py:495 write_csv
+  - research/tools/meta_experiment_queue.py:290 write_csv
+  - research/tools/meta_profile_ml_analysis.py:540 write_csv
+  - research/tools/meta_surrogate_screening_proposal.py:259 write_csv
+
+[63] 3 copies, 8 lines
+  - research/tools/repair_investigation_v2_targets.py:24 _float_or_none
+  - research/tools/audit_generation_attribution.py:40 _float_or_none
+  - research/tools/build_investigation_queue.py:39 _float_or_none
+
+[64] 2 copies, 8 lines
+  - research/tools/train_tropical_gate_120m_pretrain.py:953 mark_cudagraph_step_begin
+  - research/tools/mixer_fingerprint.py:94 _mark_cudagraph_step_begin
+

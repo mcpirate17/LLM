@@ -1,15 +1,21 @@
 """Composite scoring + leaderboard for proposed components.
 
 A scorecard from ``solo.validate_solo`` (and optionally
-``in_context.validate_in_context``) is reduced to a single composite
-score so promoted candidates can be ranked.
+``in_context.validate_in_context`` + ``capability.validate_capabilities``)
+is reduced to a single composite score so promoted candidates can be
+ranked.
 
-The composite weights:
-- 30% smoke (all checks pass = 1.0, else 0.0)
-- 30% cross-check pass ratio (fraction of declared properties matched)
-- 40% learning signal (log10 of probe loss-ratio, clamped to [0, 1])
+The composite weights (post-2026-05-15 rebalance toward binding +
+induction, the dominant signals for downstream BLiMP wins):
+- 20% smoke (all checks pass = 1.0, else 0.0)
+- 20% cross-check pass ratio (fraction of declared properties matched)
+- 30% learning signal (log10 of probe loss-ratio, clamped to [0, 1])
+- 30% binding signal (capability AR-probe binds + relative_recall mean)
 
-These weights are intentional starting points; tune as the catalog grows.
+The binding subscore replaces the ad-hoc ``+0.2 if can_bind`` bonus that
+``_grade_active_specs`` applied on top of the old 3-component composite.
+Passing ``capability_scorecard=None`` reproduces the legacy 0/0.3/0.3/0.4
+weighting so older callers still work.
 """
 
 from __future__ import annotations
@@ -60,36 +66,83 @@ def learning_subscore(probe_scorecard: dict[str, Any] | None) -> float:
     return min(1.0, math.log10(ratio) / 2.0)
 
 
+def binding_subscore(capability_scorecard: dict[str, Any] | None) -> float:
+    """Average of AR-probe binds + mean relative_recall, clipped to [0, 1].
+
+    Skips degenerate cards (eliminated by an earlier gate, or no probes).
+    Each AR probe contributes a 1.0 if it bound (``binds_per_probe[name]``
+    is True) and its ``relative_recall_per_probe[name]`` clipped to [0, 1].
+    Final score is the mean over (2 × n_probes) entries — gives equal
+    weight to a clean bind and to the recall margin.
+    """
+    if not capability_scorecard:
+        return 0.0
+    binds = capability_scorecard.get("binds_per_probe") or {}
+    recalls = capability_scorecard.get("relative_recall_per_probe") or {}
+    if not binds and not recalls:
+        return 0.0
+    bind_mean = sum(1.0 if v else 0.0 for v in binds.values()) / max(1, len(binds))
+    recall_mean = sum(max(0.0, min(1.0, float(v))) for v in recalls.values()) / max(
+        1, len(recalls)
+    )
+    return 0.5 * bind_mean + 0.5 * recall_mean
+
+
+_LEGACY_WEIGHTS = (0.3, 0.3, 0.4, 0.0)
+# Day-6 reweight (2026-05-15): user-flagged that loss_ratio (drives the
+# `learning` subscore via aggregate_loss_ratio) is NOT a good
+# model-strength indicator — confirmed against runs.db where 5 of the
+# top-25 BLiMP winners were screened_out with low composite scores. Move
+# weight from learning → binding (binding's AR-probe recall correlates
+# better with actual sequence-mixing capability). Smoke+cross still
+# clear the 0.6 promote threshold so plain-passing candidates graduate.
+_BINDING_WEIGHTS = (0.3, 0.3, 0.1, 0.3)
+
+
 def composite_score(
     solo_scorecard: dict[str, Any],
     probe_scorecard: dict[str, Any] | None = None,
+    capability_scorecard: dict[str, Any] | None = None,
     *,
-    smoke_weight: float = 0.3,
-    cross_weight: float = 0.3,
-    learn_weight: float = 0.4,
+    weights: tuple[float, float, float, float] | None = None,
 ) -> tuple[float, dict[str, float]]:
+    """Weighted sum over (smoke, cross_check, learning, binding) subscores.
+
+    Defaults to ``_BINDING_WEIGHTS`` (0.2/0.2/0.3/0.3) when a capability
+    scorecard is supplied; falls back to ``_LEGACY_WEIGHTS``
+    (0.3/0.3/0.4/0.0) when it is omitted so older call sites and tests
+    that pass only solo+probe stay numerically stable.
+    """
+    if weights is None:
+        weights = _BINDING_WEIGHTS if capability_scorecard else _LEGACY_WEIGHTS
+    smoke_w, cross_w, learn_w, bind_w = weights
     smoke = smoke_subscore(solo_scorecard.get("smoke", {}))
     cross = cross_check_subscore(solo_scorecard.get("property_cross_check", {}))
     learn = learning_subscore(probe_scorecard)
+    bind = binding_subscore(capability_scorecard)
     components = {
         "smoke": smoke,
         "cross_check": cross,
         "learning": learn,
+        "binding": bind,
     }
-    score = smoke_weight * smoke + cross_weight * cross + learn_weight * learn
+    score = smoke_w * smoke + cross_w * cross + learn_w * learn + bind_w * bind
     return score, components
 
 
 def rank_proposals(
     solo_scorecards: Sequence[dict[str, Any]],
     probe_scorecards_by_id: dict[str, dict[str, Any]] | None = None,
+    capability_scorecards_by_id: dict[str, dict[str, Any]] | None = None,
 ) -> list[RankedEntry]:
     probe_map = probe_scorecards_by_id or {}
+    cap_map = capability_scorecards_by_id or {}
     out: list[RankedEntry] = []
     for solo in solo_scorecards:
         proposal_id = str(solo.get("proposal_id") or "")
         probe = probe_map.get(proposal_id)
-        score, components = composite_score(solo, probe)
+        capability = cap_map.get(proposal_id)
+        score, components = composite_score(solo, probe, capability)
         out.append(
             RankedEntry(
                 proposal_id=proposal_id,

@@ -286,7 +286,7 @@ def _graph_signature(graph_json: Any) -> Optional[str]:
         canonical = json.dumps(graph_json, sort_keys=True, separators=(",", ":"))
     except (TypeError, ValueError):
         return None
-    return hashlib.sha1(canonical.encode("utf-8")).hexdigest()
+    return hashlib.sha1(canonical.encode("utf-8"), usedforsecurity=False).hexdigest()
 
 
 def _load_screening_predictor_corpus_rows(

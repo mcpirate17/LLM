@@ -10,6 +10,9 @@ from research.scientist.probe_metric_names import (
     TABLE_RENAMES,
     canonical_metric_name,
 )
+from research.scientist.probe_metric_columns import MODERN_AR_BINDING_COLUMNS
+from research.meta_analysis import metadata_db
+from research.tools.cross_exp_probe_merge import MERGE_COLUMNS_BY_FAMILY
 from research.tools.rename_probe_metrics_cascade import (
     apply_renames,
     plan_renames,
@@ -104,6 +107,15 @@ def test_stats_table_rename_catalog_covers_feedback_tables():
         assert TABLE_RENAMES[table]["avg_binding_v2_investigation_auc"] == (
             "avg_binding_intermediate_auc"
         )
+
+
+def test_modern_ar_binding_column_group_stays_shared():
+    start = metadata_db._OUTCOME_COLUMNS.index("ar_gate_metric_version")
+    end = metadata_db._OUTCOME_COLUMNS.index("hellaswag_acc")
+
+    assert metadata_db._OUTCOME_COLUMNS[start:end] == MODERN_AR_BINDING_COLUMNS
+    assert MERGE_COLUMNS_BY_FAMILY["modern_ar_binding"] == MODERN_AR_BINDING_COLUMNS
+    assert MODERN_AR_BINDING_COLUMNS[-1] == "champion_hard_failure_reason"
 
 
 def test_legacy_probe_names_are_allowlisted_to_migration_files():

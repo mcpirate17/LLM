@@ -146,7 +146,7 @@ def build_report_snapshot_key(scope: str, query_payload: Dict[str, Any]) -> str:
         sort_keys=True,
         separators=(",", ":"),
     )
-    return hashlib.sha1(raw.encode("utf-8")).hexdigest()
+    return hashlib.sha1(raw.encode("utf-8"), usedforsecurity=False).hexdigest()
 
 
 def build_report_action_eligibility(

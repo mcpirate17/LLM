@@ -9,66 +9,27 @@ Run: cd /path/to/LLM && python -m unittest research.tests.test_integration -v
 """
 
 import pytest
-import importlib
 import json
 import os
 import tempfile
 import time
 import unittest
 from unittest.mock import MagicMock, patch
+from research.tests._integration_dependency_helpers import (
+    probe_integration_dependencies,
+)
 
 pytestmark = pytest.mark.pipeline
 
-# Detect available dependencies
-try:
-    import torch
-
-    HAS_TORCH = True
-except ImportError:
-    HAS_TORCH = False
-
-try:
-    HAS_FLASK = True
-except ImportError:
-    HAS_FLASK = False
-
-
-# Import modules that don't require torch directly
-# (bypass scientist/__init__.py which eagerly imports runner)
-def _import_module(dotted_path):
-    """Import a submodule without triggering parent __init__.py."""
-    return importlib.import_module(dotted_path)
-
-
-try:
-    from research.scientist.notebook import LabNotebook
-
-    HAS_NOTEBOOK = True
-except Exception as e:
-    HAS_NOTEBOOK = False
-    print(f"Notebook import failed: {e}")
-
-try:
-    HAS_PERSONA = True
-except Exception as e:
-    HAS_PERSONA = False
-    print(f"Persona import failed: {e}")
-
-try:
-    import research.scientist.llm.prompts as _prompts_mod  # noqa: F401
-
-    HAS_PROMPTS = True
-except Exception as e:
-    HAS_PROMPTS = False
-    print(f"Prompts import failed: {e}")
-
-try:
-    import research.scientist.llm.context as _context_mod  # noqa: F401
-
-    HAS_CONTEXT = True
-except Exception as e:
-    HAS_CONTEXT = False
-    print(f"Context import failed: {e}")
+_DEPS = probe_integration_dependencies()
+torch = _DEPS.torch
+LabNotebook = _DEPS.lab_notebook
+HAS_TORCH = _DEPS.has_torch
+HAS_FLASK = _DEPS.has_flask
+HAS_NOTEBOOK = _DEPS.has_notebook
+HAS_PERSONA = _DEPS.has_persona
+HAS_PROMPTS = _DEPS.has_prompts
+HAS_CONTEXT = _DEPS.has_context
 
 
 # ── Test 3: RunConfig & Mode Selection ──

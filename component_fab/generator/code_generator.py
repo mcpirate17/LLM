@@ -22,7 +22,11 @@ from .primitive_templates import (
     CalculusAugmentedLane,
     CausalFastWeightMemoryLane,
     CausalSlotRouterMemoryLane,
+    ChebyshevAdapterLane,
+    ChebyshevSpectralLane,
     CliffordAttention,
+    FisherAdapterLane,
+    FisherAttention,
     FiniteDifferenceCalculusLane,
     FourierBasisLane,
     GraphDiffusionAdapterLane,
@@ -34,6 +38,8 @@ from .primitive_templates import (
     MultiscaleWaveletAdapterLane,
     MultiscaleWaveletLane,
     PadicProjection,
+    PoincareAttention,
+    QuaternionAttention,
     RandomFeatureKernelAdapterLane,
     RandomFeatureKernelLane,
     SparseBandedAdapterLane,
@@ -44,6 +50,30 @@ from .primitive_templates import (
     TropicalAttention,
     TropicalStateSpace,
     TropicalTopKStateSpace,
+    TuckerAdapterLane,
+    TuckerDecompLane,
+)
+from .block_templates import (
+    BLOCK_TEMPLATES,
+    AttnSpectralFilterBlock,
+    GatedParallelBlock,
+    GraphAttentionBlock,
+    HeteroMoEBlock,
+    HyperbolicBridgeBlock,
+    LatentCompressBlock,
+    RecursiveDepthBlock,
+    RecursiveDepthRouterBlock,
+    SparseMoEBlock,
+    ThreeLaneAdaptive,
+)
+from .routing_primitives import (
+    ROUTING_KINDS,
+    DifficultyRoutedLane,
+    HashedMoELane,
+    LowInfoSkipRouter,
+    MixtureOfRecursionsLane,
+    RoutedBottleneckLane,
+    SparseMoRLane,
 )
 
 
@@ -90,6 +120,23 @@ def _dispatch_padic(math_axes: dict[str, Any], *, dim: int) -> nn.Module | None:
     if dim % 8 != 0:
         return nn.Linear(dim, dim)
     return PadicProjection(dim, p=2, n_levels=3)
+
+
+def _dispatch_quaternion(math_axes: dict[str, Any], *, dim: int) -> nn.Module | None:
+    if _axis(math_axes, "op_algebraic_space") != "quaternion":
+        return None
+    if dim % 4 != 0:
+        return nn.Linear(dim, dim)
+    return QuaternionAttention(dim)
+
+
+def _dispatch_hyperbolic(math_axes: dict[str, Any], *, dim: int) -> nn.Module | None:
+    if _axis(math_axes, "op_algebraic_space") not in (
+        "hyperbolic",
+        "hyperbolic_poincare",
+    ):
+        return None
+    return PoincareAttention(dim)
 
 
 def _dispatch_state_kernel(math_axes: dict[str, Any], *, dim: int) -> nn.Module | None:
@@ -150,6 +197,19 @@ def _dispatch_math_knob(
         topology = _axis(math_axes, "op_graph_topology")
         if topology in ("causal_path_laplacian", "causal_path"):
             return GraphDiffusionLane(dim)
+    # Phase 2 (2026-05-15): information_geometry, spectral_graph, tensor_decomp.
+    if family == "information_geometry":
+        operator = _axis(math_axes, "op_info_geom_operator")
+        if operator in ("fisher_attention", "fisher", ""):
+            return FisherAttention(dim)
+    if family == "spectral_graph":
+        operator = _axis(math_axes, "op_spectral_graph_operator")
+        if operator in ("chebyshev_polynomial", "chebyshev", ""):
+            return ChebyshevSpectralLane(dim, n_terms=5)
+    if family == "tensor_decomp":
+        decomp = _axis(math_axes, "op_tensor_decomp_kind")
+        if decomp in ("tucker", ""):
+            return TuckerDecompLane(dim)
     return None
 
 
@@ -182,6 +242,12 @@ def _math_knobs(math_axes: dict[str, Any]) -> tuple[str, ...]:
             return ("sparse_matrix_banded",)
         if family == "kernel_methods":
             return ("kernel_random_features",)
+        if family == "information_geometry":
+            return ("info_geom_fisher",)
+        if family == "spectral_graph":
+            return ("spectral_chebyshev",)
+        if family == "tensor_decomp":
+            return ("tensor_tucker",)
         if family == "multiscale":
             return ("multiscale_wavelet",)
         if family == "graph_diffusion":
@@ -194,6 +260,38 @@ def _math_knobs(math_axes: dict[str, Any]) -> tuple[str, ...]:
     return ()
 
 
+def _dispatch_synthesis_hint(
+    math_axes: dict[str, Any], *, dim: int, top_k_frac: float
+) -> nn.Module | None:
+    """Phase 3: read ``synthesis_kind`` and pick a primitive when the
+    upstream algebra/state/sparsity dispatchers don't fully determine
+    the module. Without this, ``basis_swap`` falls through to
+    ``nn.Linear`` because no axis carries a sparsity/state/algebra
+    signal. This dispatcher gives the kind label real teeth.
+    """
+    kind = _axis(math_axes, "synthesis_kind")
+    # synthesis_kind isn't in math_axes by default — it's a ProposalSpec
+    # field. But specs may carry it forward via math_axes when set
+    # explicitly. Fall back to inferring from declared axes.
+    if not kind:
+        return None
+    if kind == "basis_swap":
+        basis = _axis(math_axes, "op_spectral_preferred_basis")
+        if basis in ("chebyshev", "polynomial"):
+            return ChebyshevSpectralLane(dim, n_terms=5)
+        if basis in ("fourier", "frequency"):
+            return FourierBasisLane(dim)
+        # Default basis_swap → Chebyshev (FNO-style polynomial mixing).
+        return ChebyshevSpectralLane(dim, n_terms=5)
+    if kind == "projection_swap":
+        # Sparsity-pattern primitives. Hash routing as default.
+        return HashedMoELane(_expert_factory_pool(top_k_frac), dim)
+    if kind == "state_kernel_swap":
+        # State-bearing primitives. Generic linear-SSM fallback.
+        return LinearStateSpaceLane(dim)
+    return None
+
+
 def _base_module(
     math_axes: dict[str, Any], *, dim: int, top_k_frac: float
 ) -> nn.Module:
@@ -202,8 +300,11 @@ def _base_module(
         lambda: _dispatch_clifford(math_axes, dim=dim),
         lambda: _dispatch_spiking(math_axes, dim=dim),
         lambda: _dispatch_padic(math_axes, dim=dim),
+        lambda: _dispatch_quaternion(math_axes, dim=dim),
+        lambda: _dispatch_hyperbolic(math_axes, dim=dim),
         lambda: _dispatch_state_kernel(math_axes, dim=dim),
         lambda: _dispatch_axis_modifier(math_axes, dim=dim, top_k_frac=top_k_frac),
+        lambda: _dispatch_synthesis_hint(math_axes, dim=dim, top_k_frac=top_k_frac),
     ):
         result = dispatcher()
         if result is not None:
@@ -234,7 +335,212 @@ def _apply_math_knobs(
             module = MultiscaleWaveletAdapterLane(module, dim)
         elif knob == "graph_laplacian_diffusion":
             module = GraphDiffusionAdapterLane(module, dim)
+        elif knob == "info_geom_fisher":
+            module = FisherAdapterLane(module, dim)
+        elif knob == "spectral_chebyshev":
+            module = ChebyshevAdapterLane(module, dim)
+        elif knob == "tensor_tucker":
+            tucker_rank = max(2, int(round(dim * top_k_frac)))
+            module = TuckerAdapterLane(module, dim, rank=tucker_rank)
     return module
+
+
+def _base_lane_factory(math_axes: dict[str, Any], *, top_k_frac: float) -> "callable":
+    """Return a ``Callable[[int], nn.Module]`` that re-dispatches the base
+    primitive for the given axes at the requested dim.
+
+    Routing primitives (MoR / sparseMoR / skip / Difficulty) need this
+    so each routing slot creates a fresh inner mixer rather than reusing
+    one instance across many slots.
+    """
+
+    def factory(dim: int) -> nn.Module:
+        axes = dict(math_axes)
+        axes["op_routing_kind"] = "none"  # break recursion
+        return generate_module(axes, dim=dim, top_k_frac=top_k_frac)
+
+    return factory
+
+
+def _expert_factory_pool(top_k_frac: float) -> tuple:
+    """Three diverse expert factories for HashedMoE / RoutedBottleneck.
+
+    Mixing a max-plus attention, a softmax-style state-space lane, and
+    a top-k linear forces the MoE to use experts with different
+    inductive biases. Sized for dim divisible by 4 (Cl(2,0) constraint
+    not used here, but kept for forward compat).
+    """
+
+    def expert_attn(dim: int) -> nn.Module:
+        return TropicalAttention(dim)
+
+    def expert_ssm(dim: int) -> nn.Module:
+        return LinearStateSpaceLane(dim)
+
+    def expert_topk(dim: int) -> nn.Module:
+        k = max(1, int(round(dim * top_k_frac)))
+        return TopKLinear(dim, dim, k=k)
+
+    return (expert_attn, expert_ssm, expert_topk)
+
+
+def _apply_routing_wrap(
+    base: nn.Module,
+    math_axes: dict[str, Any],
+    *,
+    dim: int,
+    top_k_frac: float,
+) -> nn.Module:
+    """Wrap ``base`` in a routing primitive if the spec requests one.
+
+    Spec axis ``op_routing_kind`` picks the wrapper; if unset or "none"
+    the base module passes through unchanged. ``op_max_depth``,
+    ``op_n_experts``, ``op_top_k``, ``op_skip_hard`` modulate per-kind
+    knobs.
+    """
+    kind = str(math_axes.get("op_routing_kind") or "none")
+    if kind == "none" or kind not in ROUTING_KINDS:
+        return base
+    max_depth = int(math_axes.get("op_max_depth") or 4)
+    top_k = int(math_axes.get("op_top_k") or 2)
+    skip_hard = bool(int(math_axes.get("op_skip_hard") or 0))
+    base_factory = _base_lane_factory(math_axes, top_k_frac=top_k_frac)
+    if kind == "depth_router":
+        return MixtureOfRecursionsLane(base_factory, dim, max_depth=max_depth)
+    if kind == "sparse_depth":
+        return SparseMoRLane(
+            base_factory, dim, max_depth=max_depth, top_k_frac=top_k_frac
+        )
+    if kind == "low_info_skip":
+        return LowInfoSkipRouter(base_factory, dim, hard=skip_hard)
+    if kind == "difficulty":
+
+        def easy(d: int) -> nn.Module:
+            return LinearStateSpaceLane(d)
+
+        return DifficultyRoutedLane(easy, base_factory, dim)
+    if kind == "hash":
+        return HashedMoELane(_expert_factory_pool(top_k_frac), dim)
+    if kind == "top_k_moe":
+        return RoutedBottleneckLane(_expert_factory_pool(top_k_frac), dim, top_k=top_k)
+    return base
+
+
+def _dispatch_block_template(
+    math_axes: dict[str, Any], *, dim: int, top_k_frac: float
+) -> nn.Module | None:
+    """Build a block-template module when ``op_block_template`` is set.
+
+    Block templates compose multiple lanes around the anchor's primitive.
+    The anchor's primitive becomes the inner mixer (via a factory closed
+    over the anchor's axes minus ``op_block_template`` to break the
+    dispatch recursion). The auxiliary lanes (attn, ssm, wavelet) are
+    fixed-class baselines chosen for inductive-bias diversity.
+    """
+    template = str(math_axes.get("op_block_template") or "")
+    if not template or template not in BLOCK_TEMPLATES:
+        return None
+    inner_axes = dict(math_axes)
+    inner_axes.pop("op_block_template", None)
+    # Day-5+: allow one level of block nesting. If op_block_inner_template
+    # is set, the inner anchor IS another block (e.g. gated_parallel
+    # whose anchor slot is a latent_compress block). Breaks recursion
+    # after one nesting level — set op_block_inner_template only on the
+    # outer spec, never on a nested spec generated by this dispatcher.
+    inner_block = str(math_axes.get("op_block_inner_template") or "")
+    if inner_block and inner_block in BLOCK_TEMPLATES:
+        inner_axes["op_block_template"] = inner_block
+        inner_axes.pop("op_block_inner_template", None)
+
+    def anchor_factory(d: int) -> nn.Module:
+        return generate_module(inner_axes, dim=d, top_k_frac=top_k_frac)
+
+    slot_b_name = str(math_axes.get("op_block_slot_b") or "")
+    slot_c_name = str(math_axes.get("op_block_slot_c") or "")
+
+    if template == "latent_compress":
+        compress = int(math_axes.get("op_block_compress") or 2)
+        return LatentCompressBlock(anchor_factory, dim, compress=compress)
+    if template == "three_lane_adaptive":
+        slot_b = _block_slot_factory(slot_b_name or "tropical_attention")
+        slot_c = _block_slot_factory(slot_c_name or "linear_state_space")
+        return ThreeLaneAdaptive(anchor_factory, slot_b, slot_c, dim)
+    if template == "recursive_depth":
+        max_depth = int(math_axes.get("op_max_depth") or 3)
+        return RecursiveDepthBlock(anchor_factory, dim, max_depth=max_depth)
+    if template == "gated_parallel":
+        slot_b = _block_slot_factory(slot_b_name or "multiscale_wavelet")
+        return GatedParallelBlock(anchor_factory, slot_b, dim)
+    if template == "recursive_depth_router":
+        max_depth = int(math_axes.get("op_max_depth") or 4)
+        return RecursiveDepthRouterBlock(anchor_factory, dim, max_depth=max_depth)
+    if template == "sparse_moe_block":
+        top_k = int(math_axes.get("op_top_k") or 2)
+        return SparseMoEBlock(
+            anchor_factory,
+            _expert_factory_pool(top_k_frac),
+            dim,
+            top_k=top_k,
+        )
+    if template == "hetero_moe_block":
+        # 4 heterogeneous experts: attn, ssm, top-k, wavelet
+        def hetero_attn(d: int) -> nn.Module:
+            return TropicalAttention(d)
+
+        def hetero_ssm(d: int) -> nn.Module:
+            return LinearStateSpaceLane(d)
+
+        def hetero_topk(d: int) -> nn.Module:
+            k = max(1, int(round(d * top_k_frac)))
+            return TopKLinear(d, d, k=k)
+
+        def hetero_wavelet(d: int) -> nn.Module:
+            return MultiscaleWaveletLane(d)
+
+        return HeteroMoEBlock(
+            anchor_factory,
+            (hetero_attn, hetero_ssm, hetero_topk, hetero_wavelet),
+            dim,
+        )
+    if template == "hyperbolic_bridge":
+        return HyperbolicBridgeBlock(anchor_factory, dim)
+    if template == "attn_spectral_filter":
+        return AttnSpectralFilterBlock(anchor_factory, dim)
+    if template == "graph_attention":
+        return GraphAttentionBlock(anchor_factory, dim)
+    return None
+
+
+def _block_slot_factory(name: str) -> "callable":
+    """Map a slot name to a fresh-instance factory. Used by block
+    templates to fill non-anchor lane slots. New slot kinds register
+    here without touching the templates themselves.
+    """
+    table = {
+        "tropical_attention": TropicalAttention,
+        "clifford_attention": lambda d: (
+            CliffordAttention(d) if d % 4 == 0 else nn.Linear(d, d)
+        ),
+        "linear_state_space": LinearStateSpaceLane,
+        "multiscale_wavelet": MultiscaleWaveletLane,
+        "fourier_basis": FourierBasisLane,
+        "graph_diffusion": GraphDiffusionLane,
+        "fisher_attention": FisherAttention,
+        "chebyshev_spectral": ChebyshevSpectralLane,
+        "tucker_decomp": TuckerDecompLane,
+        "quaternion": lambda d: (
+            QuaternionAttention(d) if d % 4 == 0 else nn.Linear(d, d)
+        ),
+        "poincare": PoincareAttention,
+        "random_features": RandomFeatureKernelLane,
+        "low_rank": LowRankFactorizedLane,
+    }
+    ctor = table.get(name, MultiscaleWaveletLane)
+
+    def factory(dim: int) -> nn.Module:
+        return ctor(dim)
+
+    return factory
 
 
 def generate_module(
@@ -244,19 +550,25 @@ def generate_module(
     top_k_frac: float = 0.25,
 ) -> nn.Module:
     """Generate a primitive instance from a math-axis tuple."""
+    block = _dispatch_block_template(math_axes, dim=dim, top_k_frac=top_k_frac)
+    if block is not None:
+        return block
     invention = _dispatch_invention_mechanism(math_axes, dim=dim)
     if invention is not None:
-        return invention
+        return _apply_routing_wrap(invention, math_axes, dim=dim, top_k_frac=top_k_frac)
     if math_axes.get("op_math_knobs") is not None:
         base = _base_module(math_axes, dim=dim, top_k_frac=top_k_frac)
-        return _apply_math_knobs(base, math_axes, dim=dim, top_k_frac=top_k_frac)
+        wrapped = _apply_math_knobs(base, math_axes, dim=dim, top_k_frac=top_k_frac)
+        return _apply_routing_wrap(wrapped, math_axes, dim=dim, top_k_frac=top_k_frac)
     for dispatcher in (
         lambda: _dispatch_math_knob(math_axes, dim=dim, top_k_frac=top_k_frac),
         lambda: _base_module(math_axes, dim=dim, top_k_frac=top_k_frac),
     ):
         result = dispatcher()
         if result is not None:
-            return result
+            return _apply_routing_wrap(
+                result, math_axes, dim=dim, top_k_frac=top_k_frac
+            )
     raise RuntimeError("unreachable module dispatch state")
 
 

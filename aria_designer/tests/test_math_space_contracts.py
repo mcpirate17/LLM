@@ -55,3 +55,14 @@ def test_math_space_shape_determinism_numerics_contract(manifest_path: Path) -> 
 
     assert isinstance(manifest.get("limits", {}).get("deterministic"), bool)
     assert isinstance(manifest.get("performance", {}).get("numerically_risky"), bool)
+
+
+@pytest.mark.parametrize("manifest_path", MANIFEST_PATHS, ids=lambda p: p.parent.name)
+def test_math_space_generated_manifest_contract(manifest_path: Path) -> None:
+    manifest = _load_manifest(manifest_path)
+    assert manifest["id"] == manifest_path.parent.name
+    assert manifest["category"] == "math_space"
+    assert manifest["version"] == "1.0.0"
+    assert len(manifest["outputs"]) >= 1
+    assert manifest["limits"]["deterministic"] is True
+    assert "numerically_risky" in manifest["performance"]

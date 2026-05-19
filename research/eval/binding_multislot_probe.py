@@ -26,6 +26,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from ._probe_runtime import disable_native_probe_dispatch
+from ._probe_utils import _materialize_non_inference_
 from .utils import chance_lift, clip01, clip_grad_norm, make_adamw, model_vocab_size
 
 BINDING_MULTISLOT_METRIC_VERSION = "binding_multislot_probe_v4_three_slot"
@@ -529,6 +530,7 @@ def binding_multislot_probe(
     dev = torch.device(device)
     try:
         probe_model = copy.deepcopy(model).to(dev) if cfg.copy_model else model.to(dev)
+        _materialize_non_inference_(probe_model)
     except Exception as exc:  # noqa: BLE001
         return _err_result(t0, "copy_failed", str(exc))
 

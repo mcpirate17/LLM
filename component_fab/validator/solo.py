@@ -96,6 +96,16 @@ def _category_metric(
     }
 
 
+def _has_adapter_wrap(module: nn.Module) -> bool:
+    """True if any submodule's class name contains 'Adapter' — the spec
+    is wrapping the base mixer in a math-knob adapter, so the OUTER
+    output reflects the adapter, not the inner algebra. Skip
+    algebra/state/sparsity cross-checks in that case; the
+    knob-specific check below remains the relevant signal.
+    """
+    return any("Adapter" in child.__class__.__name__ for child in module.modules())
+
+
 def _property_cross_check(
     spec: ProposalSpec, module: nn.Module, *, dim: int, seq_len: int
 ) -> dict[str, Any]:
@@ -106,15 +116,18 @@ def _property_cross_check(
     with torch.no_grad():
         y = module(x)
 
+    adapter_wrapped = _has_adapter_wrap(module)
+    findings["has_adapter_wrap"] = adapter_wrapped
+
     declared_sparsity = str(declared.get("op_activation_sparsity_pattern") or "")
-    if declared_sparsity == "top_k":
+    if declared_sparsity == "top_k" and not adapter_wrapped:
         sparsity = float((y.abs() < 1e-6).float().mean().item())
         findings["measured_sparsity_ratio"] = sparsity
         findings["sparsity_declared_top_k"] = True
         findings["sparsity_consistent"] = sparsity > 0.1
 
     declared_state = int(declared.get("op_dynamical_has_state") or 0)
-    if declared_state:
+    if declared_state and not adapter_wrapped:
         x2 = x.clone()
         x2[:, 0] = x2[:, 0] + torch.randn_like(x2[:, 0])
         with torch.no_grad():
@@ -124,7 +137,7 @@ def _property_cross_check(
         findings["state_consistent"] = late_diff > 1e-4
 
     declared_algebra = str(declared.get("op_algebraic_space") or "")
-    if declared_algebra == "tropical":
+    if declared_algebra == "tropical" and not adapter_wrapped:
         per_token_max_ratio = float(
             y.abs().amax(dim=-1).mean().item() / (y.abs().mean().item() + 1e-12)
         )

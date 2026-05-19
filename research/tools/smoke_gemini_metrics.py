@@ -26,12 +26,10 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-import numpy as np
 import torch
 
 from research.scientist.notebook.graph_artifacts import resolve_graph_json_value
 import torch.nn as nn
-import torch.nn.functional as F
 
 # Force compiler import so OP_DISPATCH is populated for CompiledOps.
 import research.synthesis.compiler  # noqa: F401
@@ -43,8 +41,13 @@ from research.eval.trajectory_metrics import (
 )
 from research.tools._concurrency import (
     acquire_gpu_lock,
-    assert_gpu_quiet,
-    cap_gpu_memory,
+)
+from research.tools._metric_backfill_common import (
+    add_gpu_safety_args,
+    load_projected_corpus,
+    prepare_cuda_if_requested,
+    sample_token_batch,
+    train_next_token_step,
 )
 
 
@@ -79,25 +82,19 @@ DEFAULT_TARGETS = [
 
 def _load_corpus_tokens(path: Path, vocab_size: int, max_tokens: int) -> torch.Tensor:
     """Load WikiText tokens, project into the model's vocab via modulo."""
-    if not path.exists():
-        raise FileNotFoundError(f"corpus npy not found: {path}")
-    arr = np.load(path, mmap_mode="r")
-    if arr.size > max_tokens:
-        arr = arr[:max_tokens]
-    tokens = torch.as_tensor(np.asarray(arr), dtype=torch.long)
-    return tokens % vocab_size
+    return load_projected_corpus(path, vocab_size=vocab_size, max_tokens=max_tokens)
 
 
 def _sample_batch(
     tokens: torch.Tensor, batch_size: int, seq_len: int, device: torch.device
 ) -> torch.Tensor:
-    n = tokens.numel() - seq_len - 1
-    if n <= 0:
-        raise ValueError("corpus too small for the requested seq_len")
-    starts = torch.randint(0, n, (batch_size,))
-    chunks = [tokens[s : s + seq_len + 1] for s in starts.tolist()]
-    batch = torch.stack(chunks, dim=0).to(device)
-    return batch  # (B, S+1)
+    return sample_token_batch(
+        tokens,
+        batch_size,
+        seq_len,
+        device,
+        error_detail="corpus too small for the requested seq_len",
+    )
 
 
 def _train_step(
@@ -105,20 +102,7 @@ def _train_step(
     optimizer: torch.optim.Optimizer,
     batch: torch.Tensor,
 ) -> float:
-    inputs = batch[:, :-1]
-    targets = batch[:, 1:]
-    logits = model(inputs)
-    loss = F.cross_entropy(
-        logits.reshape(-1, logits.shape[-1]),
-        targets.reshape(-1),
-    )
-    if not torch.isfinite(loss):
-        return float("nan")
-    optimizer.zero_grad(set_to_none=True)
-    loss.backward()
-    torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-    optimizer.step()
-    return float(loss.item())
+    return train_next_token_step(model, optimizer, batch)
 
 
 def _train_to_step(
@@ -450,35 +434,16 @@ def main() -> None:
         default=None,
         help="Output JSON path (default: research/perf_artifacts/gemini_smoke_<ts>.json)",
     )
-    parser.add_argument(
-        "--max-other-gpu-mib",
-        type=int,
-        default=4096,
-        help=(
-            "Refuse to start if any other GPU process holds more than this "
-            "many MiB of VRAM. Set to a large value to override (e.g. 30000)."
-        ),
-    )
-    parser.add_argument(
-        "--gpu-memory-fraction",
-        type=float,
-        default=0.5,
-        help="Cap our process's CUDA memory at this fraction of the card.",
-    )
-    parser.add_argument(
-        "--wait-for-gpu",
-        action="store_true",
-        help="Sleep-poll until the GPU is quiet instead of exiting on busy.",
-    )
+    add_gpu_safety_args(parser)
     args = parser.parse_args()
 
-    if args.device.startswith("cuda"):
-        assert_gpu_quiet(
-            max_other_used_mib=args.max_other_gpu_mib,
-            tool_name=TOOL_NAME,
-            sleep_until_quiet=args.wait_for_gpu,
-        )
-        cap_gpu_memory(fraction=args.gpu_memory_fraction)
+    prepare_cuda_if_requested(
+        device=args.device,
+        max_other_gpu_mib=args.max_other_gpu_mib,
+        tool_name=TOOL_NAME,
+        wait_for_gpu=args.wait_for_gpu,
+        gpu_memory_fraction=args.gpu_memory_fraction,
+    )
 
     ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
     out_path = (

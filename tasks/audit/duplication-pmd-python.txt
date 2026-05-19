@@ -1,0 +1,4219 @@
+Found a 31 line (262 tokens) duplication in the following files: 
+Starting at line 60 of /home/tim/Projects/LLM/component_fab/generator/primitive_templates.py
+Starting at line 134 of /home/tim/Projects/LLM/component_fab/generator/primitive_templates.py
+
+    def __init__(
+        self,
+        dim: int,
+        causal: bool = True,
+        *,
+        use_rope: bool = False,
+        max_seq_len: int = 1024,
+    ) -> None:
+        super().__init__()
+        self.q = nn.Linear(dim, dim, bias=False)
+        self.k = nn.Linear(dim, dim, bias=False)
+        self.v = nn.Linear(dim, dim, bias=False)
+        self.scale = float(dim) ** -0.5
+        self.dim = dim
+        self.causal = causal
+        self.rope = RotaryEmbedding(dim, max_seq_len=max_seq_len) if use_rope else None
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        seq_len = x.shape[1]
+        q = self.q(x)
+        k = self.k(x)
+        v = self.v(x)
+        if self.rope is not None:
+            cos, sin = self.rope(seq_len, device=x.device, dtype=x.dtype)
+            q = apply_rope(q, cos, sin)
+            k = apply_rope(k, cos, sin)
+        affinity = torch.einsum("bid,bjd->bij", q, k) * self.scale
+        if self.causal:
+            mask = torch.triu(
+                torch.full(
+                    (seq_len, seq_len), float("-inf"), device=x.device, dtype=x.dtype
+
+=====================================================================
+Found a 35 line (234 tokens) duplication in the following files: 
+Starting at line 286 of /home/tim/Projects/LLM/research/tools/meta_experiment_queue.py
+Starting at line 536 of /home/tim/Projects/LLM/research/tools/meta_profile_ml_analysis.py
+
+        "scaffold_commands": scaffold_commands,
+    }
+
+
+def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
+    if not rows:
+        path.write_text("")
+        return
+    with path.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def _md_table(
+    rows: list[dict[str, Any]], fields: list[str], *, limit: int
+) -> list[str]:
+    if not rows:
+        return ["_No rows._", ""]
+    lines = [
+        "| " + " | ".join(fields) + " |",
+        "| " + " | ".join("---" for _ in fields) + " |",
+    ]
+    for row in rows[:limit]:
+        lines.append(
+            "| " + " | ".join(str(row.get(field, "")) for field in fields) + " |"
+        )
+    lines.append("")
+    return lines
+
+
+def write_markdown(path: Path, payload: dict[str, Any]) -> None:
+    summary = payload["summary"]
+    lines = [
+        f"# Meta Experiment Queue - {summary['created_utc']}",
+
+=====================================================================
+Found a 31 line (232 tokens) duplication in the following files: 
+Starting at line 290 of /home/tim/Projects/LLM/research/tools/meta_experiment_queue.py
+Starting at line 495 of /home/tim/Projects/LLM/research/tools/meta_surrogate_analysis.py
+
+def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
+    if not rows:
+        path.write_text("")
+        return
+    with path.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def _md_table(
+    rows: list[dict[str, Any]], fields: list[str], *, limit: int
+) -> list[str]:
+    if not rows:
+        return ["_No rows._", ""]
+    lines = [
+        "| " + " | ".join(fields) + " |",
+        "| " + " | ".join("---" for _ in fields) + " |",
+    ]
+    for row in rows[:limit]:
+        lines.append(
+            "| " + " | ".join(str(row.get(field, "")) for field in fields) + " |"
+        )
+    lines.append("")
+    return lines
+
+
+def write_markdown(path: Path, payload: dict[str, Any]) -> None:
+    summary = payload["summary"]
+    lines = [
+        f"# Meta Experiment Queue - {summary['created_utc']}",
+
+=====================================================================
+Found a 31 line (232 tokens) duplication in the following files: 
+Starting at line 540 of /home/tim/Projects/LLM/research/tools/meta_profile_ml_analysis.py
+Starting at line 495 of /home/tim/Projects/LLM/research/tools/meta_surrogate_analysis.py
+
+def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
+    if not rows:
+        path.write_text("")
+        return
+    with path.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def _md_table(
+    rows: list[dict[str, Any]], fields: list[str], *, limit: int
+) -> list[str]:
+    if not rows:
+        return ["_No rows._", ""]
+    lines = [
+        "| " + " | ".join(fields) + " |",
+        "| " + " | ".join("---" for _ in fields) + " |",
+    ]
+    for row in rows[:limit]:
+        lines.append(
+            "| " + " | ".join(str(row.get(field, "")) for field in fields) + " |"
+        )
+    lines.append("")
+    return lines
+
+
+def write_markdown(path: Path, payload: dict[str, Any]) -> None:
+    summary = payload["summary"]
+    lines = [
+        f"# Profile-Grounded ML Analysis - {summary['created_utc']}",
+
+=====================================================================
+Found a 27 line (220 tokens) duplication in the following files: 
+Starting at line 95 of /home/tim/Projects/LLM/research/tools/ar_gate_pilot_midtier_sweep.py
+Starting at line 95 of /home/tim/Projects/LLM/research/tools/ar_gate_pilot_top20_sweep.py
+
+    logger.info("Cohort: %d mid-tier archs", len(cohort))
+
+    out_rows: list[dict] = []
+    t0 = time.perf_counter()
+    for i, arch in enumerate(cohort, start=1):
+        rid = arch["result_id"][:12]
+        in_pair = []
+        in_class = []
+        held_class = []
+        for sd in SEEDS:
+            cfg = ARGateConfig(seed=sd, **CFG_KW)
+            r = ar_gate(graph_json=arch["graph_json"], device="cuda", cfg=cfg)
+            in_pair.append(r.in_dist_pair_acc)
+            in_class.append(r.in_dist_class_acc)
+            held_class.append(r.held_class_acc)
+        ip_mu = st.mean(in_pair)
+        ip_sd = st.stdev(in_pair) if len(in_pair) > 1 else 0.0
+        out_rows.append(
+            {
+                **{k: v for k, v in arch.items() if k != "graph_json"},
+                "in_pair_mu": round(ip_mu, 3),
+                "in_pair_sd": round(ip_sd, 3),
+                "in_class_mu": round(st.mean(in_class), 3),
+                "held_class_mu": round(st.mean(held_class), 3),
+            }
+        )
+        logger.info(
+
+=====================================================================
+Found a 39 line (207 tokens) duplication in the following files: 
+Starting at line 386 of /home/tim/Projects/LLM/research/eval/nano_blimp_eval.py
+Starting at line 949 of /home/tim/Projects/LLM/research/eval/nano_blimp_eval.py
+
+    good_o, bad_o = _build_order_pairs(layout, device, all_nouns)
+
+    cls_in = _pair_accuracy(model, good_c_in, bad_c_in)
+    cls_ho = _pair_accuracy(model, good_c_ho, bad_c_ho)
+    bind_in = _pair_accuracy(model, good_b_in, bad_b_in)
+    bind_ho = _pair_accuracy(model, good_b_ho, bad_b_ho)
+    order_acc = _pair_accuracy(model, good_o, bad_o)
+
+    # Overall (all-noun) class/binding accuracies, weighted by pair counts.
+    n_c_in = int(good_c_in.shape[0])
+    n_c_ho = int(good_c_ho.shape[0])
+    n_b_in = int(good_b_in.shape[0])
+    n_b_ho = int(good_b_ho.shape[0])
+    cls_overall = (
+        (cls_in * n_c_in + cls_ho * n_c_ho) / max(n_c_in + n_c_ho, 1)
+        if (n_c_in + n_c_ho)
+        else 0.0
+    )
+    bind_overall = (
+        (bind_in * n_b_in + bind_ho * n_b_ho) / max(n_b_in + n_b_ho, 1)
+        if (n_b_in + n_b_ho)
+        else 0.0
+    )
+
+    return {
+        "class_coherence_acc": cls_overall,
+        "class_coherence_in_dist_acc": cls_in,
+        "class_coherence_held_out_acc": cls_ho,
+        "binding_fidelity_acc": bind_overall,
+        "binding_fidelity_in_dist_acc": bind_in,
+        "binding_fidelity_held_out_acc": bind_ho,
+        "order_grammaticality_acc": order_acc,
+        "n_in_dist_pairs": n_c_in,
+        "n_held_out_pairs": n_c_ho,
+        "n_pairs_per_test": int(good_o.shape[0]),
+    }
+
+
+def _build_result(
+
+=====================================================================
+Found a 30 line (200 tokens) duplication in the following files: 
+Starting at line 10 of /home/tim/Projects/LLM/aria_designer/components/routing/adaptive_rank_gate/kernel_fallback.py
+Starting at line 10 of /home/tim/Projects/LLM/aria_designer/components/routing/signal_conditioned_compression/kernel_fallback.py
+
+    def __init__(self):
+        self._u = None
+        self._v = None
+        self._dense = None
+
+    def validate_config(self, config):
+        return []
+
+    def build(self, config):
+        return None
+
+    def _ensure_weights(self, x):
+        d_model = x.shape[-1]
+        rank = max(1, d_model // 4)
+        device = x.device
+        dtype = x.dtype
+        if self._u is None or self._u.shape != (d_model, rank):
+            self._u = nn.Parameter(
+                torch.randn(d_model, rank, device=device, dtype=dtype) * 0.02
+            )
+            self._v = nn.Parameter(
+                torch.randn(rank, d_model, device=device, dtype=dtype) * 0.02
+            )
+            self._dense = nn.Parameter(
+                torch.randn(d_model, d_model, device=device, dtype=dtype)
+                * (d_model**-0.5)
+            )
+
+    def forward(self, inputs, config):
+        x = inputs["x"]
+
+=====================================================================
+Found a 15 line (191 tokens) duplication in the following files: 
+Starting at line 391 of /home/tim/Projects/LLM/research/tools/backfill_ar_validation.py
+Starting at line 424 of /home/tim/Projects/LLM/research/tools/run_ar_validation_fingerprint_sweep.py
+
+    parser.add_argument("--out", type=Path, default=None)
+    parser.add_argument("--layers", type=int, default=6)
+    parser.add_argument("--vocab-size", type=int, default=32_000)
+    parser.add_argument("--device", default="cuda")
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--train-steps", type=int, default=None)
+    parser.add_argument("--timeout-s", type=float, default=900.0)
+    parser.add_argument("--corpus-path", type=Path, default=DEFAULT_CORPUS)
+    parser.add_argument("--pretrain-steps", type=int, default=5_000)
+    parser.add_argument("--pretrain-batch-size", type=int, default=8)
+    parser.add_argument("--pretrain-seq-len", type=int, default=128)
+    parser.add_argument("--pretrain-lr", type=float, default=3e-4)
+    parser.add_argument("--progress-every", type=int, default=1000)
+    parser.add_argument("--checkpoint-dir", type=Path, default=None)
+    parser.add_argument("--no-save-checkpoints", action="store_true")
+
+=====================================================================
+Found a 40 line (172 tokens) duplication in the following files: 
+Starting at line 816 of /home/tim/Projects/LLM/research/scientist/runner/selection.py
+Starting at line 927 of /home/tim/Projects/LLM/research/scientist/runner/selection.py
+
+                for step in range(n_steps):
+                    if self._stop_event.is_set():
+                        break
+
+                    input_ids = self._sample_training_input_ids(
+                        config=config,
+                        dev=dev,
+                        batch_size=config.stage1_batch_size,
+                        seq_len=seq_len,
+                        seed=seed + step,
+                    )
+
+                    with torch.amp.autocast(
+                        device_type=dev.type,
+                        dtype=torch.bfloat16,
+                        enabled=(dev.type == "cuda"),
+                    ):
+                        logits = model(input_ids)
+                        loss = next_token_cross_entropy(
+                            logits, input_ids, logits.shape[-1]
+                        )
+
+                    if torch.isnan(loss) or torch.isinf(loss):
+                        break
+
+                    optimizer.zero_grad(set_to_none=True)
+                    loss.backward()
+                    clip_grad_norm_(model, 1.0)
+                    optimizer.step()
+
+                    loss_val = loss.item()
+                    if step == 0:
+                        initial_loss = loss_val
+                    final_loss = loss_val
+
+                loss_ratio = (
+                    normalized_loss_ratio(final_loss, config.vocab_size)
+                    if initial_loss and final_loss
+                    else None
+                )
+
+=====================================================================
+Found a 24 line (165 tokens) duplication in the following files: 
+Starting at line 13 of /home/tim/Projects/LLM/aria_designer/components/routing/adaptive_rank_gate/kernel_fallback.py
+Starting at line 15 of /home/tim/Projects/LLM/aria_designer/components/routing/difficulty_blend_3way/kernel_fallback.py
+Starting at line 13 of /home/tim/Projects/LLM/aria_designer/components/routing/signal_conditioned_compression/kernel_fallback.py
+
+        self._dense = None
+
+    def validate_config(self, config):
+        return []
+
+    def build(self, config):
+        return None
+
+    def _ensure_weights(self, x):
+        d_model = x.shape[-1]
+        rank = max(1, d_model // 4)
+        device = x.device
+        dtype = x.dtype
+        if self._u is None or self._u.shape != (d_model, rank):
+            self._u = nn.Parameter(
+                torch.randn(d_model, rank, device=device, dtype=dtype) * 0.02
+            )
+            self._v = nn.Parameter(
+                torch.randn(rank, d_model, device=device, dtype=dtype) * 0.02
+            )
+            self._dense = nn.Parameter(
+                torch.randn(d_model, d_model, device=device, dtype=dtype)
+                * (d_model**-0.5)
+            )
+
+=====================================================================
+Found a 25 line (164 tokens) duplication in the following files: 
+Starting at line 149 of /home/tim/Projects/LLM/component_fab/tools/run_lm_eval.py
+Starting at line 199 of /home/tim/Projects/LLM/component_fab/tools/run_lm_probe.py
+
+    )
+    return parser.parse_args(argv)
+
+
+def _resolve_targets(args: argparse.Namespace, ledger: Ledger) -> list[ProposalSpec]:
+    anchors = tuple(args.anchors)
+    if args.proposal_id:
+        spec = _resolve_spec_by_proposal_id(args.proposal_id, anchors, ledger)
+        if spec is None:
+            print(
+                f"proposal_id '{args.proposal_id}' not found in re-enumeration",
+                file=sys.stderr,
+            )
+            return []
+        return [spec]
+    return _top_unique_promoted_specs(int(args.top_n_unique), anchors, ledger)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parse_args(argv if argv is not None else sys.argv[1:])
+    ledger = Ledger(args.ledger, include_rotated=True)
+    targets = _resolve_targets(args, ledger)
+    if not targets:
+        print("no targets to run", file=sys.stderr)
+        return 2
+
+=====================================================================
+Found a 16 line (163 tokens) duplication in the following files: 
+Starting at line 436 of /home/tim/Projects/LLM/research/tools/train_tropical_gate_120m_pretrain.py
+Starting at line 613 of /home/tim/Projects/LLM/research/tools/train_tropical_gate_120m_pretrain.py
+
+    def next_batch(
+        self, *, batch_size: int, seq_len: int, vocab_size: int, device: torch.device
+    ) -> torch.Tensor:
+        needed = int(batch_size) * (int(seq_len) + 1)
+        self._fill(needed)
+        raw = self.token_buffer[:needed]
+        del self.token_buffer[:needed]
+        batch = torch.as_tensor(raw, dtype=torch.long).view(int(batch_size), int(seq_len) + 1)
+        if int(vocab_size) != self.vocab_size:
+            batch.remainder_(int(vocab_size))
+        self.tokens_emitted += int(batch_size) * int(seq_len)
+        return batch.to(device, non_blocking=device.type == "cuda")
+
+    def state_dict(self) -> dict[str, Any]:
+        return {
+            "kind": "jsonl_stream",
+
+=====================================================================
+Found a 28 line (157 tokens) duplication in the following files: 
+Starting at line 68 of /home/tim/Projects/LLM/research/tools/ar_gate_pilot_midtier_sweep.py
+Starting at line 68 of /home/tim/Projects/LLM/research/tools/ar_gate_pilot_top20_sweep.py
+
+        (SAMPLE_N,),
+    ).fetchall()
+    out = []
+    for r in rows:
+        graph_json = resolve_graph_json_value(conn, DB_PATH, r[5])
+        try:
+            graph = json.loads(graph_json)
+        except (TypeError, json.JSONDecodeError):
+            graph = {}
+        out.append(
+            {
+                "result_id": r[0],
+                "composite_score": float(r[1]),
+                "wikitext_perplexity": float(r[2]),
+                "templates": (graph.get("metadata") or {}).get("templates_used") or [],
+                "nano_bind_failer": bool(r[4]),
+                "graph_json": graph_json,
+            }
+        )
+    conn.close()
+    return out
+
+
+def main() -> None:
+    from research.eval.ar_gate import ARGateConfig, ar_gate
+
+    cohort = fetch_cohort()
+    logger.info("Cohort: %d mid-tier archs", len(cohort))
+
+=====================================================================
+Found a 27 line (156 tokens) duplication in the following files: 
+Starting at line 75 of /home/tim/Projects/LLM/component_fab/state/axis_lift.py
+Starting at line 82 of /home/tim/Projects/LLM/component_fab/state/failure_attribution.py
+
+    last_grade: dict[str, dict[str, Any]] = {}
+    last_status: dict[str, str] = {}
+    if not path.exists():
+        return last_grade, last_status
+    with path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            pid = record.get("proposal_id")
+            if not pid:
+                continue
+            event = record.get("event")
+            if event == "grade":
+                last_grade[str(pid)] = record
+            elif event == "promote":
+                status = str(record.get("status") or "")
+                if status:
+                    last_status[str(pid)] = status
+    return last_grade, last_status
+
+
+def _emit_axes(grade: dict[str, Any]) -> Iterable[tuple[str, str]]:
+
+=====================================================================
+Found a 22 line (156 tokens) duplication in the following files: 
+Starting at line 779 of /home/tim/Projects/LLM/research/scientist/intelligence/ml_corpus.py
+Starting at line 1107 of /home/tim/Projects/LLM/research/scientist/intelligence/ml_corpus.py
+
+            0 if stage1_passed else 1,
+            row["loss_ratio"] is None,
+            float(row["loss_ratio"]) if row["loss_ratio"] is not None else float("inf"),
+            float(row["timestamp"] or 0.0),
+        )
+        if group["_best_rank"] is None or rank < group["_best_rank"]:
+            group["_best_rank"] = rank
+            group["graph_json"] = graph_json
+
+    out: List[Dict[str, Any]] = []
+    for group in grouped.values():
+        n_rows = int(group["n_rows"])
+        group["stage1_pass_rate"] = float(group.pop("_n_stage1_passed")) / max(
+            n_rows, 1
+        )
+        group.pop("_best_rank", None)
+        out.append(group)
+    out.sort(key=lambda row: str(row["canonical_fingerprint"]))
+    return out
+
+
+def _fallback_predictor_training_rows(db_path: str) -> List[Dict[str, Any]]:
+
+=====================================================================
+Found a 24 line (144 tokens) duplication in the following files: 
+Starting at line 114 of /home/tim/Projects/LLM/research/scientist/runner/continuous_inline_validation_phase7.py
+Starting at line 29 of /home/tim/Projects/LLM/research/scientist/runner/execution_validation_phase3.py
+
+    ):
+        results = {
+            "total": len(result_ids),
+            "stage0_passed": 0,
+            "stage05_passed": 0,
+            "stage1_passed": 0,
+            "novel_count": 0,
+            "best_loss_ratio": None,
+            "best_novelty_score": None,
+            "survivors": [],
+            "validation_results": [],
+        }
+        dev = resolve_device(config.device)
+        dev_str = str(dev)
+        val_config = config.copy()
+        val_config.stage1_steps = config.validation_steps
+        val_config.stage1_batch_size = config.validation_batch_size
+        val_config.max_seq_len = config.validation_seq_len
+        # Scale early stopping for longer validation runs.
+        step_ratio = config.validation_steps / max(config.stage1_steps, 1)
+        val_config.early_stop_patience = int(config.early_stop_patience * step_ratio)
+        val_config.early_stop_min_steps = int(config.early_stop_min_steps * step_ratio)
+        source_map = _build_source_map(nb, result_ids)
+        return results, dev, dev_str, val_config, source_map
+
+=====================================================================
+Found a 29 line (143 tokens) duplication in the following files: 
+Starting at line 103 of /home/tim/Projects/LLM/research/scientist/runner/execution_validation_thread.py
+Starting at line 297 of /home/tim/Projects/LLM/research/scientist/runner/execution_validation_thread.py
+
+            context = self._build_rich_context_for_experiment(
+                results, config, hypothesis, nb
+            )
+            summary = self.aria.experiment_summary(results, context=context)
+            llm_analysis = self.aria.analyze_results(results, context=context)
+            insights = self._analyze_results(results, exp_id, nb, context=context)
+
+            self._publish_terminal_event(
+                producer="runner.execution_validation",
+                event_type="experiment_completed",
+                exp_id=exp_id,
+                payload={
+                    "completed_at": time.time(),
+                    "results": results,
+                    "aria_summary": summary,
+                    "aria_mood": self.aria.state.mood,
+                    "insights": insights,
+                    "llm_analysis": llm_analysis,
+                },
+            )
+
+            self._complete_experiment_compat(
+                nb=nb,
+                experiment_id=exp_id,
+                results=results,
+                aria_summary=summary,
+                insights=insights,
+                llm_analysis=llm_analysis,
+            )
+
+=====================================================================
+Found a 14 line (141 tokens) duplication in the following files: 
+Starting at line 132 of /home/tim/Projects/LLM/research/synthesis/_templates_new_substrate.py
+Starting at line 216 of /home/tim/Projects/LLM/research/synthesis/_templates_new_substrate.py
+
+    D = graph.model_dim
+    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
+    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
+
+    try:
+        q = graph.add_op("linear_proj", [normed], config={"out_dim": D})
+        kv = graph.add_op("linear_proj", [normed], config={"out_dim": D})
+        attn = graph.add_op("mla_attention", [q, kv])
+        out = graph.add_op("linear_proj", [attn], config={"out_dim": D})
+    except (ValueError, KeyError):
+        return tpl_residual_block(graph, input_id, rng, weights)
+
+    ffn = _pick_compatible_motif_from_classes(
+        graph, out, rng, list(_FFN_CLASSES), weights
+
+=====================================================================
+Found a 13 line (141 tokens) duplication in the following files: 
+Starting at line 88 of /home/tim/Projects/LLM/research/tools/phase1_mixer_analysis.py
+Starting at line 39 of /home/tim/Projects/LLM/research/tools/template_slot_realization.py
+
+def wilson(k: int, n: int, z: float = WILSON_Z) -> tuple[float, float]:
+    # Same formula as analytics_grammar._wilson_interval (kept inline; Phase 1
+    # tools do not depend on the analytics package).
+    if n == 0:
+        return (0.0, 0.0)
+    p = k / n
+    denom = 1.0 + z * z / n
+    centre = (p + z * z / (2.0 * n)) / denom
+    half = (z * math.sqrt(p * (1.0 - p) / n + z * z / (4.0 * n * n))) / denom
+    return (max(0.0, centre - half), min(1.0, centre + half))
+
+
+def is_pass(sa: float | None, failure_op: str | None) -> bool:
+
+=====================================================================
+Found a 22 line (140 tokens) duplication in the following files: 
+Starting at line 186 of /home/tim/Projects/LLM/research/scientist/perf.py
+Starting at line 169 of /home/tim/Projects/LLM/research/training/profiling.py
+
+        for evt in prof.key_averages():
+            cpu_ms = float(getattr(evt, "self_cpu_time_total", 0.0) or 0.0) / 1000.0
+            cuda_us = float(getattr(evt, "self_cuda_time_total", 0.0) or 0.0)
+            if cuda_us <= 0.0:
+                cuda_us = float(getattr(evt, "self_device_time_total", 0.0) or 0.0)
+            cuda_ms = cuda_us / 1000.0
+
+            if cpu_ms <= 0.0 and cuda_ms <= 0.0:
+                continue
+
+            total_cpu_ms += cpu_ms
+            total_cuda_ms += cuda_ms
+            rows.append(
+                {
+                    "op": str(getattr(evt, "key", "unknown")),
+                    "cpu_ms": round(cpu_ms, 4),
+                    "cuda_ms": round(cuda_ms, 4),
+                    "calls": int(getattr(evt, "count", 0) or 0),
+                }
+            )
+
+        rows.sort(key=lambda r: max(r["cpu_ms"], r["cuda_ms"]), reverse=True)
+
+=====================================================================
+Found a 15 line (140 tokens) duplication in the following files: 
+Starting at line 289 of /home/tim/Projects/LLM/research/tools/backfill_stats.py
+Starting at line 325 of /home/tim/Projects/LLM/research/tools/backfill_stats.py
+
+            d = tpl_data[tpl]
+            d[0] += 1
+            d[1] += s0_pass
+            d[2] += s1_pass
+            _append_weighted(d[3], loss_ratio, recency_weight)
+            _append_weighted(d[4], novelty, recency_weight)
+            _append_weighted(d[5], induction_screening_auc, recency_weight)
+            _append_weighted(d[6], binding_screening_auc, recency_weight)
+            _append_weighted(d[7], binding_screening_composite, recency_weight)
+            _append_weighted(d[8], ar_legacy_auc, recency_weight)
+            _append_weighted(d[9], hellaswag_acc, recency_weight)
+            _append_weighted(d[10], blimp_accuracy, recency_weight)
+            _append_weighted(d[11], induction_intermediate_auc, recency_weight)
+            _append_weighted(d[12], binding_intermediate_auc, recency_weight)
+            _append_weighted(d[13], math_space, recency_weight)
+
+=====================================================================
+Found a 22 line (139 tokens) duplication in the following files: 
+Starting at line 1947 of /home/tim/Projects/LLM/research/scientist/runner/_helpers_benchmark.py
+Starting at line 2023 of /home/tim/Projects/LLM/research/scientist/runner/_helpers_benchmark.py
+
+        baseline_loss_ratio=metrics.val_baseline_ratio,
+        validation_multi_seed_std=metrics.multi_seed_std,
+        validation_robustness_score=metrics.robustness_score,
+        validation_is_unstable=int(metrics.is_unstable),
+        validation_passed=len(metrics.passed_seeds) > 0,
+        normalized_baseline_ratio=metrics.val_normalized_ratio,
+        param_efficiency=metrics.val_param_efficiency,
+        quant_int8_retention=ev_res.quant_int8_retention,
+        quant_quality_per_byte=ev_res.quant_quality_per_byte,
+        robustness_long_ctx_score=ev_res.long_context_score,
+        robustness_long_ctx_scaling_score=ev_res.long_ctx_scaling_score,
+        robustness_long_ctx_assoc_score=ev_res.long_ctx_assoc_score,
+        robustness_long_ctx_passkey_score=ev_res.long_ctx_passkey_score,
+        robustness_long_ctx_multi_hop_score=ev_res.long_ctx_multi_hop_score,
+        robustness_long_ctx_retrieval_aggregate=ev_res.long_ctx_retrieval_aggregate,
+        robustness_long_ctx_combined_score=ev_res.long_ctx_combined_score,
+        induction_intermediate_auc=ev_res.induction_intermediate_auc,
+        induction_intermediate_max_gap_acc=ev_res.induction_intermediate_max_gap_acc,
+        induction_intermediate_protocol_version=ev_res.induction_intermediate_protocol_version,
+        binding_intermediate_auc=ev_res.binding_intermediate_auc,
+        binding_intermediate_max_distance_acc=ev_res.binding_intermediate_max_distance_acc,
+        binding_intermediate_protocol_version=ev_res.binding_intermediate_protocol_version,
+
+=====================================================================
+Found a 33 line (139 tokens) duplication in the following files: 
+Starting at line 578 of /home/tim/Projects/LLM/research/scientist/runner/continuous_modes.py
+Starting at line 354 of /home/tim/Projects/LLM/research/scientist/runner/execution_search.py
+
+            population_size=config.n_programs,
+            n_generations=config.n_generations,
+            grammar_config=grammar,
+            exploit_prob=config.exploit_prob,
+            local_mutation_prob=config.local_mutation_prob,
+            debug=config.debug,
+        )
+        dev = resolve_device(config.device)
+        dev_str = str(dev)
+
+        fitness_cache: dict = {}
+        fingerprint_cache: dict = {}
+        eval_counters = {"total": 0, "s0": 0, "s1": 0}
+
+        _debug = config.debug
+        on_evaluate = make_program_evaluation_callback(
+            self,
+            eval_counters=eval_counters,
+            nb=nb,
+            exp_id=exp_id,
+            model_source="novelty",
+            fingerprint_cache=fingerprint_cache,
+            debug=_debug,
+        )
+        combined_fitness_fn = make_combined_novelty_fitness_fn(
+            self,
+            config=config,
+            device=dev,
+            device_str=dev_str,
+            fitness_cache=fitness_cache,
+            fingerprint_cache=fingerprint_cache,
+            on_evaluate=on_evaluate,
+            stage_tag="novelty_fitness",
+
+=====================================================================
+Found a 25 line (135 tokens) duplication in the following files: 
+Starting at line 389 of /home/tim/Projects/LLM/aria_designer/runtime/subgraph.py
+Starting at line 499 of /home/tim/Projects/LLM/aria_designer/runtime/subgraph.py
+
+            {"id": "ln1", "component_type": "rmsnorm", "params": {}},
+            {
+                "id": "q",
+                "component_type": "linear_proj",
+                "params": {"out_dim": model_dim},
+            },
+            {
+                "id": "k",
+                "component_type": "linear_proj",
+                "params": {"out_dim": model_dim},
+            },
+            {
+                "id": "v",
+                "component_type": "linear_proj",
+                "params": {"out_dim": model_dim},
+            },
+            {"id": "qk", "component_type": "matmul", "params": {}},
+            {"id": "sm", "component_type": "softmax_last", "params": {}},
+            {"id": "av", "component_type": "matmul", "params": {}},
+            {
+                "id": "attn_proj",
+                "component_type": "linear_proj",
+                "params": {"out_dim": model_dim},
+            },
+            {"id": "res1", "component_type": "add", "params": {}},
+
+=====================================================================
+Found a 23 line (135 tokens) duplication in the following files: 
+Starting at line 888 of /home/tim/Projects/LLM/research/eval/controlled_sentence_probe.py
+Starting at line 664 of /home/tim/Projects/LLM/research/eval/nano_controlled_holdout_probe.py
+
+            tiktoken_encoding=corpus.tiktoken_encoding,
+        )
+        for idx in indices
+    ]
+    max_len = max(len(seq) for seq in seqs)
+    batch = torch.full(
+        (len(seqs), max_len),
+        _PAD,
+        dtype=torch.long,
+        device=torch.device(device),
+    )
+    for i, seq in enumerate(seqs):
+        batch[i, : len(seq)] = torch.tensor(seq, dtype=torch.long, device=device)
+    return batch
+
+
+def _next_token_loss(
+    model: nn.Module, batch: torch.Tensor, *, vocab_size: int
+) -> torch.Tensor:
+    return next_token_loss(model, batch, vocab_size=vocab_size, pad_id=_PAD)
+
+
+def _choice_accuracy(
+
+=====================================================================
+Found a 19 line (135 tokens) duplication in the following files: 
+Starting at line 73 of /home/tim/Projects/LLM/research/tools/ar_curriculum_predictor.py
+Starting at line 72 of /home/tim/Projects/LLM/research/tools/ar_curriculum_trends.py
+
+    return float(np.corrcoef(rx, ry)[0, 1])
+
+
+def _ranks(xs: list[float]) -> list[float]:
+    paired = sorted(enumerate(xs), key=lambda p: p[1])
+    ranks = [0.0] * len(xs)
+    i = 0
+    while i < len(paired):
+        j = i
+        while j + 1 < len(paired) and paired[j + 1][1] == paired[i][1]:
+            j += 1
+        avg = (i + j) / 2 + 1
+        for k in range(i, j + 1):
+            ranks[paired[k][0]] = avg
+        i = j + 1
+    return ranks
+
+
+def load_rows(db: Path) -> list[dict[str, Any]]:
+
+=====================================================================
+Found a 15 line (135 tokens) duplication in the following files: 
+Starting at line 855 of /home/tim/Projects/LLM/research/tools/backpopulate_screening_metrics.py
+Starting at line 1024 of /home/tim/Projects/LLM/research/tools/backpopulate_screening_metrics.py
+
+                updates["screening_hellaswag_total"] = None
+            elif hs.get("hellaswag_acc") is not None:
+                updates["hellaswag_acc"] = hs.get("hellaswag_acc")
+            if hs.get("hellaswag_status") is not None:
+                updates["hellaswag_status"] = hs.get("hellaswag_status")
+            if hs.get("hellaswag_metric_version") is not None:
+                updates["hellaswag_metric_version"] = hs.get("hellaswag_metric_version")
+            if hs.get("hellaswag_tokenizer_mode") is not None:
+                updates["hellaswag_tokenizer_mode"] = hs.get("hellaswag_tokenizer_mode")
+            if hs.get("hellaswag_tiktoken_encoding") is not None:
+                updates["hellaswag_tiktoken_encoding"] = hs.get(
+                    "hellaswag_tiktoken_encoding"
+                )
+            if hs.get("hellaswag_total") is not None:
+                updates["hellaswag_n_examples"] = hs.get("hellaswag_total")
+
+=====================================================================
+Found a 23 line (132 tokens) duplication in the following files: 
+Starting at line 396 of /home/tim/Projects/LLM/research/scientist/runner/continuous_validation.py
+Starting at line 188 of /home/tim/Projects/LLM/research/scientist/runner/execution_validation_phase3.py
+
+            seed_results.append(
+                {
+                    "seed": seed,
+                    "init_scheme": init_scheme,
+                    "passed": s1_result.get("passed", False),
+                    "loss_ratio": s1_result.get("loss_ratio"),
+                    "final_loss": s1_result.get("final_loss"),
+                    "n_train_steps": s1_result.get("n_train_steps"),
+                    "final_lr": s1_result.get("final_lr"),
+                    "training_program_json": s1_result.get("training_program_json"),
+                    "optimizer_class": s1_result.get("optimizer_class"),
+                    "optimizer_lr": s1_result.get("optimizer_lr"),
+                    "optimizer_weight_decay": s1_result.get("optimizer_weight_decay"),
+                    "optimizer_momentum": s1_result.get("optimizer_momentum"),
+                    "optimizer_beta1": s1_result.get("optimizer_beta1"),
+                    "optimizer_beta2": s1_result.get("optimizer_beta2"),
+                }
+            )
+
+            del model
+            clear_gpu_memory()
+
+        return seed_results
+
+=====================================================================
+Found a 13 line (132 tokens) duplication in the following files: 
+Starting at line 90 of /home/tim/Projects/LLM/research/tools/ar_curriculum_trends.py
+Starting at line 194 of /home/tim/Projects/LLM/research/tools/ar_probe_comparison.py
+
+def _pearson(xs: list[float], ys: list[float]) -> float:
+    n = len(xs)
+    if n < 2:
+        return 0.0
+    mx = sum(xs) / n
+    my = sum(ys) / n
+    num = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
+    dx = sum((x - mx) ** 2 for x in xs) ** 0.5
+    dy = sum((y - my) ** 2 for y in ys) ** 0.5
+    return num / (dx * dy) if dx > 0 and dy > 0 else 0.0
+
+
+def _spearman(xs: list[float], ys: list[float]) -> float:
+
+=====================================================================
+Found a 23 line (131 tokens) duplication in the following files: 
+Starting at line 48 of /home/tim/Projects/LLM/research/meta_analysis/metadata_db.py
+Starting at line 78 of /home/tim/Projects/LLM/research/meta_analysis/metadata_db.py
+
+    ("param_count", "INTEGER"),
+    ("output_mean", "REAL"),
+    ("output_std", "REAL"),
+    ("output_min", "REAL"),
+    ("output_max", "REAL"),
+    ("output_has_nan", "INTEGER"),
+    ("output_has_inf", "INTEGER"),
+    ("output_kurtosis", "REAL"),
+    ("grad_norm", "REAL"),
+    ("grad_max", "REAL"),
+    ("grad_min", "REAL"),
+    ("grad_has_nan", "INTEGER"),
+    ("grad_has_zero", "INTEGER"),
+    ("grad_vanishing", "INTEGER"),
+    ("grad_exploding", "INTEGER"),
+    ("jacobian_spectral_norm", "REAL"),
+    ("jacobian_condition_num", "REAL"),
+    ("lipschitz_estimate", "REAL"),
+    ("forward_time_us", "REAL"),
+    ("backward_time_us", "REAL"),
+    ("peak_memory_bytes", "INTEGER"),
+    ("flops_estimate", "INTEGER"),
+    ("error", "TEXT"),
+
+=====================================================================
+Found a 17 line (130 tokens) duplication in the following files: 
+Starting at line 128 of /home/tim/Projects/LLM/research/scientist/runner/execution_micro_train_phase3.py
+Starting at line 180 of /home/tim/Projects/LLM/research/scientist/runner/execution_micro_train_phase3.py
+
+                    with torch.amp.autocast(
+                        device_type=dev.type,
+                        dtype=torch.bfloat16,
+                        enabled=(dev.type == "cuda"),
+                    ):
+                        logits = model(input_ids)
+                        loss = F.cross_entropy(
+                            logits[:, :-1].reshape(-1, logits.shape[-1]),
+                            input_ids[:, 1:].reshape(-1),
+                        )
+                    if loss is not None and torch.isfinite(loss):
+                        losses.append(float(loss.item()))
+        finally:
+            model.train()
+        if not losses:
+            return None
+        return sum(losses) / len(losses)
+
+=====================================================================
+Found a 32 line (129 tokens) duplication in the following files: 
+Starting at line 514 of /home/tim/Projects/LLM/research/tools/exact_graph_replay.py
+Starting at line 599 of /home/tim/Projects/LLM/research/tools/exact_graph_replay.py
+
+        results = _evaluate_exact_replay(
+            runner,
+            nb,
+            exp_id,
+            config,
+            replay_rows,
+            verbose=verbose,
+            independent_sample=independent_sample,
+            candidate_confirmation=candidate_confirmation,
+        )
+        results["elapsed_seconds"] = float(results.get("elapsed_seconds") or 0.0)
+        nb.complete_experiment(
+            experiment_id=exp_id,
+            results=results,
+            aria_summary=(
+                "Exact graph replay complete: "
+                f"{results.get('stage1_passed', 0)}/{results.get('total', 0)} S1"
+            ),
+        )
+        s0_op_counts = results.pop("_s0_op_counts", None)
+        with nb.batch():
+            if s0_op_counts:
+                nb.merge_op_failure_counts(s0_op_counts)
+            else:
+                nb.update_op_success_rates(exp_id)
+            nb.strip_graph_json_for_failures(exp_id)
+            nb.update_failure_signatures(exp_id)
+    except Exception:
+        nb.fail_experiment(exp_id, "exact_graph_replay_failed")
+        raise
+    finally:
+        nb.close()
+
+=====================================================================
+Found a 21 line (128 tokens) duplication in the following files: 
+Starting at line 70 of /home/tim/Projects/LLM/research/synthesis/ir_executor_runtime.py
+Starting at line 122 of /home/tim/Projects/LLM/research/synthesis/ir_executor_runtime.py
+
+        node_idx = exec_node_indices[plan_index]
+        in1_idx = exec_in1_indices[plan_index]
+        in2_idx = exec_in2_indices[plan_index]
+        op = exec_ops[plan_index]
+        t1 = node_outputs[in1_idx]
+        if in2_idx != -1:
+            t2 = node_outputs[in2_idx]
+            out = op(t1, t2)
+            counts[in2_idx] -= 1
+            if counts[in2_idx] <= 0 and in2_idx != output_idx and release_outputs:
+                node_outputs[in2_idx] = None
+        else:
+            out = op(t1)
+
+        node_outputs[node_idx] = out
+        counts[in1_idx] -= 1
+        if counts[in1_idx] <= 0 and in1_idx != output_idx and release_outputs:
+            node_outputs[in1_idx] = None
+
+        if captured is not None:
+            captured[node_idx] = out
+
+=====================================================================
+Found a 28 line (128 tokens) duplication in the following files: 
+Starting at line 67 of /home/tim/Projects/LLM/research/tools/mixer_fingerprint.py
+Starting at line 928 of /home/tim/Projects/LLM/research/tools/train_tropical_gate_120m_pretrain.py
+
+def _configure_torch_performance() -> None:
+    if torch.cuda.is_available():
+        torch.backends.cudnn.benchmark = True
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+    try:
+        torch.set_float32_matmul_precision("high")
+    except Exception:
+        pass
+    try:
+        torch._dynamo.config.allow_unspec_int_on_nn_module = True
+        torch._dynamo.config.cache_size_limit = 64
+        torch._dynamo.config.recompile_limit = 32
+    except Exception:
+        pass
+    try:
+        import torch._inductor.config as inductor_config
+
+        # The lane catalogue includes custom control flow; no-cudagraph compile
+        # modes have been the most reliable in the long pretrain runner.
+        inductor_config.triton.cudagraphs = False
+        if hasattr(inductor_config.triton, "cudagraph_trees"):
+            inductor_config.triton.cudagraph_trees = False
+    except Exception:
+        pass
+
+
+def _mark_cudagraph_step_begin() -> None:
+
+=====================================================================
+Found a 21 line (127 tokens) duplication in the following files: 
+Starting at line 295 of /home/tim/Projects/LLM/research/synthesis/native_bound_graph.py
+Starting at line 382 of /home/tim/Projects/LLM/research/synthesis/native_bound_graph.py
+
+    def _lower_linear_proj(
+        self,
+        x: torch.Tensor,
+        module: torch.nn.Module,
+        dim_in: int,
+        dim_out: int,
+        input_ids: list[int],
+        next_id: int,
+        payload_specs: list[_PayloadSpec],
+        nodes: list[dict],
+        edges: list[dict],
+    ) -> tuple[str, dict, list[int], int]:
+        config = {"batch": self._rows(x), "dim_in": dim_in, "dim_out": dim_out}
+        next_id = self._emit_param_inputs(
+            next_id=next_id,
+            payload_specs=payload_specs,
+            nodes=nodes,
+            edges=edges,
+            target_inputs=input_ids,
+            module=module,
+            attr_paths=("weight",),
+
+=====================================================================
+Found a 22 line (126 tokens) duplication in the following files: 
+Starting at line 15 of /home/tim/Projects/LLM/research/scientist/analytics/dynamic_component_features.py
+Starting at line 287 of /home/tim/Projects/LLM/research/synthesis/graph_features.py
+
+def _metadata_list(metadata: Mapping[str, Any], key: str) -> list[Any]:
+    value = metadata.get(key)
+    return value if isinstance(value, list) else []
+
+
+def _dynamic_component_records(metadata: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    current = [
+        item
+        for item in _metadata_list(metadata, "dynamic_components_used")
+        if isinstance(item, Mapping)
+    ]
+    if current:
+        return current
+    return [
+        item
+        for item in _metadata_list(metadata, "dynamic_templates_used")
+        if isinstance(item, Mapping)
+        and isinstance(item.get("component_descriptor"), Mapping)
+    ]
+
+
+def _dynamic_component_tokens(records: list[Mapping[str, Any]]) -> list[str]:
+
+=====================================================================
+Found a 22 line (125 tokens) duplication in the following files: 
+Starting at line 1979 of /home/tim/Projects/LLM/research/scientist/runner/_helpers_benchmark.py
+Starting at line 2044 of /home/tim/Projects/LLM/research/scientist/runner/_helpers_benchmark.py
+
+        permutation_composition_metric_version=ev_res.permutation_composition_metric_version,
+        robustness_noise_score=ev_res.noise_score,
+        init_sensitivity_std=metrics.init_sensitivity_std,
+        fp_jacobian_spectral_norm=source_row.get("fp_jacobian_spectral_norm"),
+        scaling_param_efficiency=ev_res.scaling_param_efficiency,
+        scaling_d512_param_efficiency=ev_res.scaling_d512_param_efficiency,
+        scaling_flop_efficiency=ev_res.scaling_flop_efficiency,
+        scaling_gate_passed=ev_res.scaling_gate_passed_val,
+        scaling_best_family=ev_res.scaling_best_family,
+        scaling_confidence=ev_res.scaling_confidence,
+        activation_sparsity_score=ev_res.activation_sparsity_score,
+        dead_neuron_ratio=ev_res.dead_neuron_ratio,
+        routing_collapse_score=ev_res.routing_collapse_score,
+        wikitext_perplexity=ev_res.wikitext_perplexity,
+        wikitext_score=ev_res.wikitext_score,
+        tinystories_perplexity=ev_res.tinystories_perplexity,
+        tinystories_score=ev_res.tinystories_score,
+        cross_task_score=ev_res.cross_task_score,
+        efficiency_wall_score=ev_res.efficiency_wall_score,
+        max_viable_seq_len=ev_res.max_viable_seq_len,
+        scaling_regime=ev_res.scaling_regime,
+    )
+
+=====================================================================
+Found a 15 line (125 tokens) duplication in the following files: 
+Starting at line 49 of /home/tim/Projects/LLM/research/tools/phase1_meta_analysis.py
+Starting at line 84 of /home/tim/Projects/LLM/research/tools/phase1_mixer_analysis.py
+
+MIXER_BINDING_CLASSES = frozenset({"full", "local", "medium"})
+
+
+def wilson(k: int, n: int, z: float = WILSON_Z) -> tuple[float, float]:
+    # See analytics_grammar._wilson_interval (kept inline for tool isolation).
+    if n == 0:
+        return (0.0, 0.0)
+    p = k / n
+    denom = 1.0 + z * z / n
+    centre = (p + z * z / (2.0 * n)) / denom
+    half = (z * math.sqrt(p * (1.0 - p) / n + z * z / (4.0 * n * n))) / denom
+    return (max(0.0, centre - half), min(1.0, centre + half))
+
+
+def _connect() -> sqlite3.Connection:
+
+=====================================================================
+Found a 12 line (125 tokens) duplication in the following files: 
+Starting at line 282 of /home/tim/Projects/LLM/research/tools/profile_component_scaffolds.py
+Starting at line 307 of /home/tim/Projects/LLM/research/tools/profile_component_scaffolds.py
+
+    ffn_op: str,
+    *,
+    model_dim: int = _DEFAULT_MODEL_DIM,
+) -> ComputationGraph:
+    graph = ComputationGraph(model_dim=model_dim)
+    inp = graph.add_input()
+    norm1 = _add(graph, "rmsnorm", inp, model_dim=model_dim)
+    attended = _add(graph, "softmax_attention", norm1, model_dim=model_dim)
+    post_attn = _add(graph, "rmsnorm", _fix_dim(graph, attended), model_dim=model_dim)
+    proj = _add(graph, "linear_proj", post_attn, model_dim=model_dim)
+    mid = graph.add_op("add", [inp, _fix_dim(graph, proj)])
+    norm2 = _add(graph, "rmsnorm", mid, model_dim=model_dim)
+
+=====================================================================
+Found a 21 line (123 tokens) duplication in the following files: 
+Starting at line 297 of /home/tim/Projects/LLM/research/tools/meta_experiment_queue.py
+Starting at line 187 of /home/tim/Projects/LLM/research/tools/meta_surrogate_screening_proposal.py
+
+        writer.writerows(rows)
+
+
+def _md_table(
+    rows: list[dict[str, Any]], fields: list[str], *, limit: int
+) -> list[str]:
+    if not rows:
+        return ["_No rows._", ""]
+    lines = [
+        "| " + " | ".join(fields) + " |",
+        "| " + " | ".join("---" for _ in fields) + " |",
+    ]
+    for row in rows[:limit]:
+        lines.append(
+            "| " + " | ".join(str(row.get(field, "")) for field in fields) + " |"
+        )
+    lines.append("")
+    return lines
+
+
+def write_markdown(path: Path, payload: dict[str, Any]) -> None:
+
+=====================================================================
+Found a 21 line (123 tokens) duplication in the following files: 
+Starting at line 547 of /home/tim/Projects/LLM/research/tools/meta_profile_ml_analysis.py
+Starting at line 187 of /home/tim/Projects/LLM/research/tools/meta_surrogate_screening_proposal.py
+
+        writer.writerows(rows)
+
+
+def _md_table(
+    rows: list[dict[str, Any]], fields: list[str], *, limit: int
+) -> list[str]:
+    if not rows:
+        return ["_No rows._", ""]
+    lines = [
+        "| " + " | ".join(fields) + " |",
+        "| " + " | ".join("---" for _ in fields) + " |",
+    ]
+    for row in rows[:limit]:
+        lines.append(
+            "| " + " | ".join(str(row.get(field, "")) for field in fields) + " |"
+        )
+    lines.append("")
+    return lines
+
+
+def write_markdown(path: Path, payload: dict[str, Any]) -> None:
+
+=====================================================================
+Found a 21 line (123 tokens) duplication in the following files: 
+Starting at line 502 of /home/tim/Projects/LLM/research/tools/meta_surrogate_analysis.py
+Starting at line 187 of /home/tim/Projects/LLM/research/tools/meta_surrogate_screening_proposal.py
+
+        writer.writerows(rows)
+
+
+def _md_table(
+    rows: list[dict[str, Any]], fields: list[str], *, limit: int
+) -> list[str]:
+    if not rows:
+        return ["_No rows._", ""]
+    lines = [
+        "| " + " | ".join(fields) + " |",
+        "| " + " | ".join("---" for _ in fields) + " |",
+    ]
+    for row in rows[:limit]:
+        lines.append(
+            "| " + " | ".join(str(row.get(field, "")) for field in fields) + " |"
+        )
+    lines.append("")
+    return lines
+
+
+def write_markdown(path: Path, payload: dict[str, Any]) -> None:
+
+=====================================================================
+Found a 12 line (123 tokens) duplication in the following files: 
+Starting at line 52 of /home/tim/Projects/LLM/research/tools/phase1_meta_analysis.py
+Starting at line 39 of /home/tim/Projects/LLM/research/tools/template_slot_realization.py
+
+def wilson(k: int, n: int, z: float = WILSON_Z) -> tuple[float, float]:
+    # See analytics_grammar._wilson_interval (kept inline for tool isolation).
+    if n == 0:
+        return (0.0, 0.0)
+    p = k / n
+    denom = 1.0 + z * z / n
+    centre = (p + z * z / (2.0 * n)) / denom
+    half = (z * math.sqrt(p * (1.0 - p) / n + z * z / (4.0 * n * n))) / denom
+    return (max(0.0, centre - half), min(1.0, centre + half))
+
+
+def _connect() -> sqlite3.Connection:
+
+=====================================================================
+Found a 18 line (121 tokens) duplication in the following files: 
+Starting at line 266 of /home/tim/Projects/LLM/research/eval/ar_gate.py
+Starting at line 209 of /home/tim/Projects/LLM/research/eval/nano_bind.py
+
+    opt.zero_grad(set_to_none=True)
+    logits = model(batch)
+    targets = batch[:, 1:].contiguous()
+    pred = logits[:, :-1, :].contiguous()
+    mask = targets != PAD_ID
+    if not bool(mask.any()):
+        return True
+    loss = F.cross_entropy(pred[mask].float(), targets[mask])
+    if not torch.isfinite(loss):
+        return False
+    loss.backward()
+    clip_grad_norm(model.parameters(), 1.0)
+    opt.step()
+    return True
+
+
+@torch.no_grad()
+def _greedy_decode_two_tokens(
+
+=====================================================================
+Found a 25 line (121 tokens) duplication in the following files: 
+Starting at line 1036 of /home/tim/Projects/LLM/research/scientist/runner/control_start.py
+Starting at line 1109 of /home/tim/Projects/LLM/research/scientist/runner/control_start.py
+
+        if self.is_running:
+            raise RuntimeError("An experiment is already running")
+
+        self._ensure_math_spaces()
+        self._stop_event.clear()
+
+        nb = self._make_notebook()
+        hypothesis_metadata = self._build_hypothesis_metadata(
+            source="user_input" if hypothesis is not None else "unknown",
+            llm_used=False,
+            fallback_used=False,
+            used_context=False,
+        )
+        if hypothesis is None:
+            result = self.aria.formulate_hypothesis(return_metadata=True)
+            if isinstance(result, tuple):
+                hypothesis, meta = result
+                hypothesis_metadata.update(meta or {})
+            else:
+                hypothesis = result
+                hypothesis_metadata["source"] = "rule_based"
+
+        exp_id = self._start_preregistered_experiment(
+            nb=nb,
+            experiment_type="evolution",
+
+=====================================================================
+Found a 20 line (120 tokens) duplication in the following files: 
+Starting at line 903 of /home/tim/Projects/LLM/research/synthesis/grammar_support.py
+Starting at line 947 of /home/tim/Projects/LLM/research/synthesis/grammar_support.py
+
+    __slots__ = ("_weights", "_expires", "_ttl")
+
+    def __init__(self, ttl: float = 60.0):
+        self._weights: Optional[Dict[str, float]] = None
+        self._expires: float = 0.0
+        self._ttl = ttl
+
+    def get(self, db_path: str = RUNS_DB) -> Optional[Dict[str, float]]:
+        import time as _time
+
+        now = _time.time()
+        if self._weights is not None and now < self._expires:
+            return self._weights
+
+        conn = None
+        try:
+            conn = _connect_existing_db(db_path)
+            if conn is None:
+                return None
+            rows = _fetch_template_weight_rows(conn)
+
+=====================================================================
+Found a 18 line (120 tokens) duplication in the following files: 
+Starting at line 302 of /home/tim/Projects/LLM/research/tools/backfill_ar_validation.py
+Starting at line 582 of /home/tim/Projects/LLM/research/tools/run_ar_validation_fingerprint_sweep.py
+
+            result_row = _run_one(
+                row,
+                run_id=run_id,
+                rank=rank,
+                offset=int(args.offset),
+                cfg=cfg,
+                layers=int(args.layers),
+                vocab_size=int(args.vocab_size),
+                device=str(args.device),
+                init_seed=int(args.seed),
+                corpus_tokens=corpus_tokens,
+                corpus_path=args.corpus_path,
+                pretrain_steps=int(args.pretrain_steps),
+                pretrain_batch_size=int(args.pretrain_batch_size),
+                pretrain_seq_len=int(args.pretrain_seq_len),
+                pretrain_lr=float(args.pretrain_lr),
+                progress_every=int(args.progress_every),
+                checkpoint_dir=args.checkpoint_dir
+
+=====================================================================
+Found a 21 line (119 tokens) duplication in the following files: 
+Starting at line 571 of /home/tim/Projects/LLM/research/scientist/native/dispatch.py
+Starting at line 855 of /home/tim/Projects/LLM/research/scientist/native/dispatch.py
+
+            result = rust.execute_graph_with_stats_arrays(graph_json, x_np)
+            y_flat = result["output"]
+            logger.debug(
+                "Arena stats: %d/%d bytes used, %d arena allocs, %d heap fallbacks",
+                result.get("arena_bytes_used", 0),
+                result.get("arena_capacity", 0),
+                result.get("arena_alloc_count", 0),
+                result.get("heap_fallback_count", 0),
+            )
+            if "node_profiles" in result:
+                _set_last_profile_data(
+                    {
+                        "node_profiles": list(result["node_profiles"]),
+                        "peak_memory_bytes": int(result.get("peak_memory_bytes", 0)),
+                    }
+                )
+            else:
+                _set_last_profile_data(None)
+        elif profiling_enabled and hasattr(rust, "execute_graph_with_stats"):
+            x_flat = x_np.ravel().tolist()
+            result = rust.execute_graph_with_stats(graph_json, x_flat)
+
+=====================================================================
+Found a 37 line (119 tokens) duplication in the following files: 
+Starting at line 845 of /home/tim/Projects/LLM/research/scientist/notebook/notebook_advanced_analytics.py
+Starting at line 887 of /home/tim/Projects/LLM/research/scientist/notebook/notebook_advanced_analytics.py
+
+        self.flush_writes()
+        self._ensure_graph_features()
+        suppressions = self._get_failure_signature_suppressions()
+        rows = self.conn.execute("""
+            SELECT
+                gp.signature,
+                SUM(CASE WHEN pr.stage1_passed THEN 0 ELSE 1 END) AS n_failures,
+                SUM(CASE WHEN pr.stage1_passed THEN 1 ELSE 0 END) AS n_successes,
+                substr(group_concat(DISTINCT CASE
+                    WHEN pr.stage1_passed = 0 AND pr.error_type IS NOT NULL AND pr.error_type <> ''
+                    THEN pr.error_type
+                END), 1, 255) AS error_types
+            FROM program_graph_pairs gp
+            JOIN program_results_compat pr ON pr.result_id = gp.result_id
+            WHERE pr.stage0_passed = 1
+              AND pr.stage05_passed = 1
+            GROUP BY gp.signature
+            """).fetchall()
+        rows = [row for row in rows if str(row["signature"] or "") not in suppressions]
+        now = time.time()
+        self.conn.executemany(
+            """INSERT INTO failure_signatures
+               (signature, n_failures, n_successes, error_types, last_updated)
+               VALUES (?, ?, ?, ?, ?)""",
+            [
+                (
+                    row["signature"],
+                    int(row["n_failures"] or 0),
+                    int(row["n_successes"] or 0),
+                    row["error_types"],
+                    now,
+                )
+                for row in rows
+            ],
+        )
+        self._maybe_commit()
+        LOGGER.info("Backfilled %d failure signatures from existing results", len(rows))
+
+=====================================================================
+Found a 16 line (119 tokens) duplication in the following files: 
+Starting at line 544 of /home/tim/Projects/LLM/research/synthesis/_templates_attention_advanced.py
+Starting at line 609 of /home/tim/Projects/LLM/research/synthesis/_templates_attention_advanced.py
+
+    pb = _fix_dim(graph, pb)
+
+    merged = _residual(graph, pa, pb, context=f"{name}.merge")
+    merged = _fix_dim(graph, merged)
+    mid = _residual(graph, input_id, merged, context=f"{name}.mid")
+
+    norm2 = _pick_compatible_motif(graph, mid, rng, MOTIF_CLASS_NORM, weights)
+    normed2 = _instantiate_motif(graph, mid, norm2, rng) if norm2 else mid
+    ffn = _pick_compatible_motif_from_classes(
+        graph, normed2, rng, _FFN_CLASSES, weights
+    )
+    ffned = (
+        _instantiate_motif(graph, normed2, ffn, rng)
+        if ffn
+        else _add(
+            graph, "swiglu_mlp", [normed2], {"mlp_ratio": 3.0}, context=f"{name}.ffn"
+
+=====================================================================
+Found a 13 line (119 tokens) duplication in the following files: 
+Starting at line 98 of /home/tim/Projects/LLM/research/synthesis/_templates_new_substrate.py
+Starting at line 252 of /home/tim/Projects/LLM/research/synthesis/_templates_new_substrate.py
+
+    D = graph.model_dim
+    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
+    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
+
+    try:
+        proj_in = graph.add_op("linear_proj", [normed], config={"out_dim": D})
+        pq = graph.add_op("pq_embedding", [proj_in])
+        proj_out = graph.add_op("linear_proj", [pq], config={"out_dim": D})
+    except (ValueError, KeyError):
+        return tpl_residual_block(graph, input_id, rng, weights)
+
+    ffn = _pick_compatible_motif_from_classes(
+        graph, proj_out, rng, list(_FFN_CLASSES), weights
+
+=====================================================================
+Found a 15 line (119 tokens) duplication in the following files: 
+Starting at line 90 of /home/tim/Projects/LLM/research/tools/ar_curriculum_priority.py
+Starting at line 198 of /home/tim/Projects/LLM/research/tools/ar_curriculum_trends.py
+
+    rows = conn.execute(sql, tiers).fetchall()
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        d = (
+            dict(row)
+            if hasattr(row, "keys")
+            else {k: row[i] for i, k in enumerate(row.keys())}
+        )
+        try:
+            d["templates_list"] = (
+                json.loads(d["templates_used"]) if d.get("templates_used") else []
+            )
+        except (TypeError, json.JSONDecodeError):
+            d["templates_list"] = []
+        d["motifs"] = _detect_motifs(d.get("graph_json"))
+
+=====================================================================
+Found a 18 line (118 tokens) duplication in the following files: 
+Starting at line 1145 of /home/tim/Projects/LLM/research/scientist/runner/dashboard_orchestrator.py
+Starting at line 1180 of /home/tim/Projects/LLM/research/scientist/runner/dashboard_orchestrator.py
+
+            logger.debug("Pending selection family trials fetch failed: %s", e)
+            return
+        if not trials:
+            return
+
+        by_result = self._selection_trial_leaderboard_rows(nb)
+        for trial in trials:
+            context = str(trial.get("context") or "")
+            chosen_ids = trial.get("chosen_result_ids_json") or []
+            if not isinstance(chosen_ids, list) or not chosen_ids:
+                continue
+            entries = [by_result.get(str(rid)) for rid in chosen_ids]
+            if any(entry is None for entry in entries):
+                continue
+            rewards = self._selection_insight_trial_rewards(entries, context)
+            if not rewards:
+                continue
+            reward = float(sum(rewards) / len(rewards))
+
+=====================================================================
+Found a 15 line (114 tokens) duplication in the following files: 
+Starting at line 338 of /home/tim/Projects/LLM/research/synthesis/native_analysis.py
+Starting at line 431 of /home/tim/Projects/LLM/research/synthesis/native_analysis.py
+
+def validate_packed_ir_batch_natively(
+    *,
+    op_codes: Sequence[np.ndarray],
+    input_indices: Sequence[np.ndarray],
+    output_node_indices: Sequence[int],
+    param_estimates: Sequence[np.ndarray],
+    has_params_flags: Sequence[np.ndarray],
+    nontrivial_flags: Sequence[np.ndarray],
+    kv_breaking_flags: Sequence[np.ndarray],
+    node_dims: Sequence[np.ndarray],
+    node_seq_flags: Sequence[np.ndarray],
+    op_kind_flags: Sequence[np.ndarray],
+    full_dim_flags: Sequence[np.ndarray],
+    model_dims: Sequence[int],
+    input_node_indices: Sequence[int],
+
+=====================================================================
+Found a 19 line (113 tokens) duplication in the following files: 
+Starting at line 657 of /home/tim/Projects/LLM/research/scientist/runner/execution_candidates.py
+Starting at line 678 of /home/tim/Projects/LLM/research/scientist/runner/execution_candidates.py
+
+            grammar = GrammarConfig.capability_first(model_dim=config.model_dim)
+            if getattr(config, "composition_depth", 0) > 0:
+                grammar.composition_depth = config.composition_depth
+            grammar.max_ops = getattr(config, "max_ops", 20)
+            if op_weights:
+                for op_name, w in op_weights.items():
+                    if w < 1.0:
+                        grammar.op_weights[op_name] = (
+                            grammar.op_weights.get(op_name, 1.0) * w
+                        )
+                    else:
+                        grammar.op_weights.setdefault(op_name, w)
+            if category_weights:
+                grammar.category_weights.update(category_weights)
+            grammar.forced_template = _forced
+            return grammar
+
+        # exploit_mode implies routing-first: mandate routing/splits in every graph
+        if getattr(config, "exploit_mode", False) or getattr(
+
+=====================================================================
+Found a 14 line (113 tokens) duplication in the following files: 
+Starting at line 44 of /home/tim/Projects/LLM/research/tools/profile_micro_train_step_boundary.py
+Starting at line 84 of /home/tim/Projects/LLM/research/tools/validate_micro_train_native_optimizer_cutover.py
+
+def _build_config(args: argparse.Namespace) -> RunConfig:
+    return RunConfig(
+        device="cpu",
+        data_mode="random",
+        model_dim=int(args.model_dim),
+        n_layers=int(args.n_layers),
+        vocab_size=int(args.vocab_size),
+        max_seq_len=int(args.seq_len),
+        stage1_steps=int(args.steps),
+        stage1_batch_size=int(args.batch_size),
+        stage1_lr=float(args.lr),
+        optimizer_type=str(args.optimizer),
+        optimizer_betas=(0.9, 0.95),
+        optimizer_weight_decay=float(args.weight_decay),
+
+=====================================================================
+Found a 26 line (112 tokens) duplication in the following files: 
+Starting at line 190 of /home/tim/Projects/LLM/research/scientist/runner/execution_search.py
+Starting at line 484 of /home/tim/Projects/LLM/research/scientist/runner/execution_search.py
+
+            results = summarize_evolution_population(population, eval_counters)
+
+            context, summary, llm_analysis, insights = analyze_search_results(
+                self,
+                exp_id=exp_id,
+                results=results,
+                config=config,
+                hypothesis=hypothesis,
+                nb=nb,
+            )
+
+            # Validate hypothesis
+            try:
+                validation = self.aria.validate_hypothesis(hypothesis, results, context)
+                if validation:
+                    nb.add_entry(
+                        ExperimentEntry(
+                            entry_type="analysis",
+                            title="Hypothesis Validation",
+                            content=validation.get("explanation", ""),
+                            experiment_id=exp_id,
+                            metadata={"validated": validation.get("validated", False)},
+                        )
+                    )
+            except (RuntimeError, ValueError, KeyError) as e:
+                logger.warning("Hypothesis validation failed for %s: %s", exp_id, e)
+
+=====================================================================
+Found a 19 line (111 tokens) duplication in the following files: 
+Starting at line 490 of /home/tim/Projects/LLM/research/synthesis/native_bound_segments.py
+Starting at line 374 of /home/tim/Projects/LLM/research/synthesis/native_segments.py
+
+    supported_ops: set[str],
+) -> list[NativeChainSegment]:
+    if not supported_ops:
+        return []
+
+    consumers = _unique_consumers(graph)
+    topo = graph.topological_order()
+    reachable_node_ids = set(ir_node_ids)
+    node_id_to_ir_idx = {int(node_id): idx for idx, node_id in enumerate(ir_node_ids)}
+    node_id_to_plan_idx = {
+        int(ir_node_ids[node_idx]): plan_idx
+        for plan_idx, node_idx in enumerate(exec_plan_node_indices)
+    }
+    visited: set[int] = set()
+    segments: list[NativeChainSegment] = []
+
+    for node_id in topo:
+        if node_id in visited or node_id not in reachable_node_ids:
+            continue
+
+=====================================================================
+Found a 12 line (111 tokens) duplication in the following files: 
+Starting at line 330 of /home/tim/Projects/LLM/research/tools/backfill_stats.py
+Starting at line 374 of /home/tim/Projects/LLM/research/tools/backfill_stats.py
+
+            _append_weighted(d[4], novelty, recency_weight)
+            _append_weighted(d[5], induction_screening_auc, recency_weight)
+            _append_weighted(d[6], binding_screening_auc, recency_weight)
+            _append_weighted(d[7], binding_screening_composite, recency_weight)
+            _append_weighted(d[8], ar_legacy_auc, recency_weight)
+            _append_weighted(d[9], hellaswag_acc, recency_weight)
+            _append_weighted(d[10], blimp_accuracy, recency_weight)
+            _append_weighted(d[11], induction_intermediate_auc, recency_weight)
+            _append_weighted(d[12], binding_intermediate_auc, recency_weight)
+            _append_weighted(d[13], math_space, recency_weight)
+
+        for a, b in itertools.combinations(op_set, 2):
+
+=====================================================================
+Found a 10 line (110 tokens) duplication in the following files: 
+Starting at line 294 of /home/tim/Projects/LLM/research/tools/backfill_stats.py
+Starting at line 374 of /home/tim/Projects/LLM/research/tools/backfill_stats.py
+
+            _append_weighted(d[4], novelty, recency_weight)
+            _append_weighted(d[5], induction_screening_auc, recency_weight)
+            _append_weighted(d[6], binding_screening_auc, recency_weight)
+            _append_weighted(d[7], binding_screening_composite, recency_weight)
+            _append_weighted(d[8], ar_legacy_auc, recency_weight)
+            _append_weighted(d[9], hellaswag_acc, recency_weight)
+            _append_weighted(d[10], blimp_accuracy, recency_weight)
+            _append_weighted(d[11], induction_intermediate_auc, recency_weight)
+            _append_weighted(d[12], binding_intermediate_auc, recency_weight)
+            _append_weighted(d[13], math_space, recency_weight)
+
+=====================================================================
+Found a 14 line (110 tokens) duplication in the following files: 
+Starting at line 136 of /home/tim/Projects/LLM/research/tools/phase1_meta_analysis.py
+Starting at line 101 of /home/tim/Projects/LLM/research/tools/template_classification.py
+
+        try:
+            g = json.loads(graph_json)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        nodes = g.get("nodes")
+        if not nodes:
+            continue
+        iter_n = nodes.values() if isinstance(nodes, dict) else nodes
+        ops: set[str] = set()
+        for n in iter_n:
+            if isinstance(n, dict):
+                op = n.get("op_name") or n.get("op") or n.get("type")
+                if op and op != "input":
+                    ops.add(str(op))
+
+=====================================================================
+Found a 15 line (109 tokens) duplication in the following files: 
+Starting at line 415 of /home/tim/Projects/LLM/research/eval/controlled_sentence_probe.py
+Starting at line 212 of /home/tim/Projects/LLM/research/eval/nano_controlled_holdout_probe.py
+
+    target = max(int(active_vocab_size), len(words))
+    for token_id in range(min(int(max_token_id), int(enc.n_vocab))):
+        try:
+            raw = enc.decode_single_token_bytes(token_id)
+            decoded = raw.decode("utf-8")
+        except (KeyError, UnicodeDecodeError):
+            continue
+        word = decoded.strip().lower()
+        if not (2 <= len(word) <= 12 and word.isalpha()):
+            continue
+        if word in seen:
+            continue
+        seen.add(word)
+        words.append(word)
+        if len(words) >= target:
+
+=====================================================================
+Found a 18 line (108 tokens) duplication in the following files: 
+Starting at line 94 of /home/tim/Projects/LLM/research/eval/baseline.py
+Starting at line 169 of /home/tim/Projects/LLM/research/eval/baseline.py
+
+        self,
+        d_model: int = 256,
+        seq_len: int = 128,
+        n_steps: int = 500,
+        vocab_size: int = VOCAB_SIZE,
+        batch_size: int = 4,
+        lr: float = 3e-4,
+        device: str = "cuda",
+        n_layers: int = 2,
+        optimizer_name: str = "adamw",
+        weight_decay: float = 0.01,
+        momentum: float = 0.0,
+        betas: Optional[Tuple[float, float]] = None,
+        data_fn=None,
+        data_mode: str = "random",
+        data_tag: str = "none",
+        cache_data_fn: bool = True,
+    ) -> float:
+
+=====================================================================
+Found a 17 line (108 tokens) duplication in the following files: 
+Starting at line 281 of /home/tim/Projects/LLM/research/scientist/native/abi.py
+Starting at line 378 of /home/tim/Projects/LLM/research/scientist/native/abi.py
+
+        token_buf = token_ids.detach()
+        if token_buf.device.type != "cpu":
+            token_buf = token_buf.to(device="cpu", dtype=torch.int32)
+        else:
+            token_buf = token_buf.to(dtype=torch.int32, copy=False)
+        token_buf = token_buf.contiguous().view(-1)
+
+        req = _NrExecuteRequest(
+            model_handle=self.model_handle,
+            token_ids=ctypes.cast(
+                token_buf.data_ptr(),
+                ctypes.POINTER(ctypes.c_int32),
+            ),
+            batch=batch,
+            seq_len=seq_len,
+        )
+        resp = self._native_lib.nr_execute(ctypes.byref(req))
+
+=====================================================================
+Found a 21 line (108 tokens) duplication in the following files: 
+Starting at line 71 of /home/tim/Projects/LLM/research/scientist/persona_strategy.py
+Starting at line 330 of /home/tim/Projects/LLM/research/scientist/persona_strategy.py
+
+            r"REASONING:\s*(.+?)(?=CONFIDENCE:|CONFIG:|```|$)", text, re.DOTALL
+        )
+        if reasoning_match:
+            result["reasoning"] = reasoning_match.group(1).strip()
+
+        conf_match = _RE_CONFIDENCE.search(text)
+        if conf_match:
+            try:
+                result["confidence"] = float(conf_match.group(1))
+            except ValueError:
+                pass
+
+        json_match = _RE_JSON_BLOCK.search(text)
+        if json_match:
+            try:
+                result["config"] = _json.loads(json_match.group(1))
+            except _json.JSONDecodeError:
+                pass
+
+        if not result["reasoning"]:
+            result["reasoning"] = text[:200]
+
+=====================================================================
+Found a 18 line (106 tokens) duplication in the following files: 
+Starting at line 94 of /home/tim/Projects/LLM/research/eval/baseline.py
+Starting at line 218 of /home/tim/Projects/LLM/research/eval/baseline.py
+
+        self,
+        d_model: int = 256,
+        seq_len: int = 128,
+        n_steps: int = 500,
+        vocab_size: int = VOCAB_SIZE,
+        batch_size: int = 4,
+        lr: float = 3e-4,
+        device: str = "cuda",
+        n_layers: int = 2,
+        optimizer_name: str = "adamw",
+        weight_decay: float = 0.01,
+        momentum: float = 0.0,
+        betas: Optional[Tuple[float, float]] = None,
+        data_fn=None,
+        data_mode: str = "random",
+        data_tag: str = "none",
+        cache_data_fn: bool = True,
+    ) -> float:
+
+=====================================================================
+Found a 26 line (106 tokens) duplication in the following files: 
+Starting at line 9 of /home/tim/Projects/LLM/research/tools/ar_gate_pilot_midtier_sweep.py
+Starting at line 10 of /home/tim/Projects/LLM/research/tools/ar_gate_pilot_top20_sweep.py
+
+from __future__ import annotations
+
+import json
+import logging
+import sqlite3
+import statistics as st
+import sys
+import time
+from pathlib import Path
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s",
+    datefmt="%H:%M:%S",
+)
+logger = logging.getLogger(__name__)
+
+REPO = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO))
+
+from research.scientist.notebook.graph_artifacts import resolve_graph_json_value
+
+DB_PATH = REPO / "research/runs.db"
+REPORTS_DIR = REPO / "research/reports"
+
+SEEDS = (0, 1, 2)
+
+=====================================================================
+Found a 12 line (106 tokens) duplication in the following files: 
+Starting at line 195 of /home/tim/Projects/LLM/research/tools/run_blimp_cohort.py
+Starting at line 226 of /home/tim/Projects/LLM/research/tools/run_tier2_binding_cohort.py
+
+        ),
+        "elapsed_total_s": round(time.monotonic() - started, 1),
+    }
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--proposal-ids", required=True, type=str)
+    parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--dim", default=64, type=int)
+    parser.add_argument("--n-blocks", default=2, type=int)
+    parser.add_argument("--n-train-steps", default=500, type=int)
+
+=====================================================================
+Found a 20 line (105 tokens) duplication in the following files: 
+Starting at line 341 of /home/tim/Projects/LLM/aria_designer/runtime/subgraph.py
+Starting at line 390 of /home/tim/Projects/LLM/aria_designer/runtime/subgraph.py
+Starting at line 501 of /home/tim/Projects/LLM/aria_designer/runtime/subgraph.py
+
+            {
+                "id": "q",
+                "component_type": "linear_proj",
+                "params": {"out_dim": model_dim},
+            },
+            {
+                "id": "k",
+                "component_type": "linear_proj",
+                "params": {"out_dim": model_dim},
+            },
+            {
+                "id": "v",
+                "component_type": "linear_proj",
+                "params": {"out_dim": model_dim},
+            },
+            {"id": "qk", "component_type": "matmul", "params": {}},
+            {"id": "sm", "component_type": "softmax_last", "params": {}},
+            {"id": "av", "component_type": "matmul", "params": {}},
+            {
+                "id": "proj",
+
+=====================================================================
+Found a 19 line (105 tokens) duplication in the following files: 
+Starting at line 196 of /home/tim/Projects/LLM/research/synthesis/dynamic_template_registry.py
+Starting at line 590 of /home/tim/Projects/LLM/research/synthesis/templates.py
+
+        graph._next_id = prev_next_id
+        graph._output_node_id = prev_output_id
+        graph._ir_version = prev_ir_version
+        graph.metadata = prev_metadata
+        graph._cache.clear()
+        raise
+    finally:
+        if prev_template is None:
+            graph.metadata.pop("_active_template", None)
+        else:
+            graph.metadata["_active_template"] = prev_template
+        if prev_slot_counter is None:
+            graph.metadata.pop("_active_template_slot_counter", None)
+        else:
+            graph.metadata["_active_template_slot_counter"] = prev_slot_counter
+        if prev_template_instance is None:
+            graph.metadata.pop("_active_template_instance", None)
+        else:
+            graph.metadata["_active_template_instance"] = prev_template_instance
+
+=====================================================================
+Found a 19 line (104 tokens) duplication in the following files: 
+Starting at line 981 of /home/tim/Projects/LLM/research/scientist/runner/continuous_investigation.py
+Starting at line 1070 of /home/tim/Projects/LLM/research/scientist/runner/execution_investigation.py
+
+        results["investigation_results"].append(investigation_entry)
+
+        if best_lr and (
+            results["best_loss_ratio"] is None or best_lr < results["best_loss_ratio"]
+        ):
+            results["best_loss_ratio"] = best_lr
+        source_novelty = source.get("novelty_score")
+        if source_novelty is not None and (
+            results["best_novelty_score"] is None
+            or source_novelty > results["best_novelty_score"]
+        ):
+            results["best_novelty_score"] = source_novelty
+
+        # Update leaderboard
+        best_tp_json = None
+        if best_tp and best_tp.get("training_program"):
+            for tp in training_programs:
+                if tp.name == best_tp["training_program"]:
+                    best_tp_json = json.dumps(json_safe(tp.to_dict()))
+
+=====================================================================
+Found a 11 line (104 tokens) duplication in the following files: 
+Starting at line 240 of /home/tim/Projects/LLM/research/synthesis/_templates_attention_hybrid.py
+Starting at line 390 of /home/tim/Projects/LLM/research/synthesis/_templates_attention_tail.py
+
+    )
+    mid = _residual(graph, input_id, attended, context=f"{name}.mid1")
+    refine_in = _add(graph, "rmsnorm", [mid], context=f"{name}.refine_norm")
+    proj_a = _add(
+        graph, "linear_proj", [refine_in], {"out_dim": D}, context=f"{name}.proj_a"
+    )
+    proj_b = _add(
+        graph, "linear_proj", [refine_in], {"out_dim": D}, context=f"{name}.proj_b"
+    )
+    refined = _add(graph, "matmul", [proj_a, proj_b], context=f"{name}.refined")
+    refined = _add(graph, "rmsnorm", [refined], context=f"{name}.refined_norm")
+
+=====================================================================
+Found a 14 line (104 tokens) duplication in the following files: 
+Starting at line 381 of /home/tim/Projects/LLM/research/tools/champion_exhaustive_ablation.py
+Starting at line 691 of /home/tim/Projects/LLM/research/tools/smart_component_replacement_ablation.py
+
+    local_dir = PROJECT_ROOT / "research/db_backups" / backup_name
+    google_dir = GOOGLE_BACKUP_ROOT / backup_name
+    local_target = local_dir / db_path.name
+    google_target = google_dir / db_path.name
+    if dry_run:
+        return {"local": str(local_target), "google_drive": str(google_target)}
+    local_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(db_path, local_target)
+    google_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(db_path, google_target)
+    return {"local": str(local_target), "google_drive": str(google_target)}
+
+
+def inventory_payload(
+
+=====================================================================
+Found a 22 line (102 tokens) duplication in the following files: 
+Starting at line 940 of /home/tim/Projects/LLM/research/eval/controlled_sentence_probe.py
+Starting at line 711 of /home/tim/Projects/LLM/research/eval/nano_controlled_holdout_probe.py
+
+            )
+            seqs.append(tuple(int(x) for x in seq))
+            starts.append(int(start))
+        grouped_sequences.append(seqs)
+        grouped_starts.append(starts)
+
+    scores = grouped_choice_scores(
+        model,
+        grouped_sequences,
+        grouped_starts,
+        vocab_size=vocab_size,
+        device=device,
+    )
+    if not scores:
+        return 0.0
+    correct = sum(
+        1 for row in scores if row and max(range(len(row)), key=row.__getitem__) == 0
+    )
+    return correct / len(scores)
+
+
+def _pair_accuracy(
+
+=====================================================================
+Found a 22 line (102 tokens) duplication in the following files: 
+Starting at line 695 of /home/tim/Projects/LLM/research/scientist/runner/continuous_validation.py
+Starting at line 579 of /home/tim/Projects/LLM/research/scientist/runner/execution_validation_candidate.py
+
+                try:
+                    ckpt.save_phase(
+                        experiment_id=exp_id,
+                        phase="validation",
+                        candidate_idx=prog_idx + 1,
+                        seed_idx=0,
+                        model_state_dict={},
+                        optimizer_state_dict={},
+                        step=0,
+                        metrics={"completed_candidate": prog_idx},
+                    )
+                    ckpt.save_phase(
+                        experiment_id=exp_id,
+                        phase="validation",
+                        candidate_idx=-1,
+                        seed_idx=0,
+                        model_state_dict={},
+                        optimizer_state_dict={},
+                        step=0,
+                        metrics={"candidate_idx": prog_idx + 1},
+                    )
+                except (OSError, RuntimeError) as e:
+
+=====================================================================
+Found a 14 line (102 tokens) duplication in the following files: 
+Starting at line 381 of /home/tim/Projects/LLM/research/tools/champion_exhaustive_ablation.py
+Starting at line 303 of /home/tim/Projects/LLM/research/tools/focused_op_deletion_ablation.py
+Starting at line 433 of /home/tim/Projects/LLM/research/tools/proper_component_knockout_ablation.py
+Starting at line 691 of /home/tim/Projects/LLM/research/tools/smart_component_replacement_ablation.py
+
+    local_dir = PROJECT_ROOT / "research/db_backups" / backup_name
+    google_dir = GOOGLE_BACKUP_ROOT / backup_name
+    local_target = local_dir / db_path.name
+    google_target = google_dir / db_path.name
+    if dry_run:
+        return {"local": str(local_target), "google_drive": str(google_target)}
+    local_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(db_path, local_target)
+    google_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(db_path, google_target)
+    return {"local": str(local_target), "google_drive": str(google_target)}
+
+
+def inventory_payload(
+
+=====================================================================
+Found a 14 line (101 tokens) duplication in the following files: 
+Starting at line 819 of /home/tim/Projects/LLM/research/scientist/intelligence/gnn_predictor.py
+Starting at line 920 of /home/tim/Projects/LLM/research/scientist/intelligence/gnn_predictor.py
+
+                graph_payload,
+                ctx.op_profiles_json,
+                ctx.pair_stability_json,
+                ctx.op_metadata_json,
+                list(imodel.op_names),
+                np.ascontiguousarray(imodel.u, dtype=np.float32),
+                np.ascontiguousarray(imodel.v, dtype=np.float32),
+                np.ascontiguousarray(imodel.W_s, dtype=np.float32),
+                np.ascontiguousarray(imodel.W_l, dtype=np.float32),
+                float(imodel.b_s),
+                float(imodel.b_l),
+            )
+        except Exception:
+            raw_result = None
+
+=====================================================================
+Found a 9 line (101 tokens) duplication in the following files: 
+Starting at line 577 of /home/tim/Projects/LLM/research/synthesis/compiled_op_params.py
+Starting at line 651 of /home/tim/Projects/LLM/research/synthesis/compiled_op_params.py
+
+    def _init_depth_gated_transform(self, config: Dict, d_in: int) -> None:
+        max_depth = max(1, min(6, int(config.get("max_depth", 3))))
+        self.depth_scorer = self._make_param((max_depth, d_in), std=0.02)
+        projs = []
+        for _ in range(max_depth):
+            p = nn.Parameter(torch.empty(d_in, d_in))
+            p.data.normal_(std=0.02)
+            projs.append(p)
+        self.depth_projs = nn.ParameterList(projs)
+
+=====================================================================
+Found a 13 line (101 tokens) duplication in the following files: 
+Starting at line 491 of /home/tim/Projects/LLM/research/tools/exact_graph_replay.py
+Starting at line 577 of /home/tim/Projects/LLM/research/tools/exact_graph_replay.py
+
+    nb = LabNotebook(str(db_path))
+    exp_config = config.to_dict()
+    exp_config["source_result_ids"] = [
+        str(row.get("result_id") or "").strip()
+        for row in rows
+        if str(row.get("result_id") or "").strip()
+    ]
+    exp_config["source_graph_fingerprints"] = [
+        str(row.get("graph_fingerprint") or "").strip()
+        for row in rows
+        if str(row.get("graph_fingerprint") or "").strip()
+    ]
+    exp_id = nb.start_experiment(
+
+=====================================================================
+Found a 15 line (101 tokens) duplication in the following files: 
+Starting at line 111 of /home/tim/Projects/LLM/research/tools/mixer_fingerprint.py
+Starting at line 914 of /home/tim/Projects/LLM/research/tools/train_tropical_gate_120m_pretrain.py
+
+    }
+
+
+def _compact_exception_message(exc: BaseException, *, max_chars: int = 220) -> str:
+    message = " ".join(str(exc).split())
+    for marker in ("Set TORCHDYNAMO_VERBOSE=", "For even more developer context"):
+        pos = message.find(marker)
+        if pos >= 0:
+            message = message[:pos].strip()
+    if len(message) > max_chars:
+        message = message[: max_chars - 3].rstrip() + "..."
+    return message or type(exc).__name__
+
+
+def _autocast_dtype(name: str, device: torch.device) -> torch.dtype:
+
+=====================================================================
+Found a 14 line (100 tokens) duplication in the following files: 
+Starting at line 818 of /home/tim/Projects/LLM/research/scientist/intelligence/gnn_predictor.py
+Starting at line 839 of /home/tim/Projects/LLM/research/scientist/intelligence/gnn_predictor.py
+
+            raw_result = rust.extract_topology_feature_map_with_imodel_native_py(
+                graph_payload,
+                ctx.op_profiles_json,
+                ctx.pair_stability_json,
+                ctx.op_metadata_json,
+                list(imodel.op_names),
+                np.ascontiguousarray(imodel.u, dtype=np.float32),
+                np.ascontiguousarray(imodel.v, dtype=np.float32),
+                np.ascontiguousarray(imodel.W_s, dtype=np.float32),
+                np.ascontiguousarray(imodel.W_l, dtype=np.float32),
+                float(imodel.b_s),
+                float(imodel.b_l),
+            )
+        except Exception:
+
+=====================================================================
+Found a 14 line (100 tokens) duplication in the following files: 
+Starting at line 840 of /home/tim/Projects/LLM/research/scientist/intelligence/gnn_predictor.py
+Starting at line 944 of /home/tim/Projects/LLM/research/scientist/intelligence/gnn_predictor.py
+
+            graph_payload,
+            ctx.op_profiles_json,
+            ctx.pair_stability_json,
+            ctx.op_metadata_json,
+            list(imodel.op_names),
+            np.ascontiguousarray(imodel.u, dtype=np.float32),
+            np.ascontiguousarray(imodel.v, dtype=np.float32),
+            np.ascontiguousarray(imodel.W_s, dtype=np.float32),
+            np.ascontiguousarray(imodel.W_l, dtype=np.float32),
+            float(imodel.b_s),
+            float(imodel.b_l),
+        )
+    except Exception:
+        return None
+
+=====================================================================
+Found a 14 line (100 tokens) duplication in the following files: 
+Starting at line 919 of /home/tim/Projects/LLM/research/scientist/intelligence/gnn_predictor.py
+Starting at line 943 of /home/tim/Projects/LLM/research/scientist/intelligence/gnn_predictor.py
+
+            raw_result = rust.extract_topology_feature_maps_with_imodel_batch_native_py(
+                serialized,
+                ctx.op_profiles_json,
+                ctx.pair_stability_json,
+                ctx.op_metadata_json,
+                list(imodel.op_names),
+                np.ascontiguousarray(imodel.u, dtype=np.float32),
+                np.ascontiguousarray(imodel.v, dtype=np.float32),
+                np.ascontiguousarray(imodel.W_s, dtype=np.float32),
+                np.ascontiguousarray(imodel.W_l, dtype=np.float32),
+                float(imodel.b_s),
+                float(imodel.b_l),
+            )
+        except Exception:
+
+=====================================================================
+Found a 28 line (100 tokens) duplication in the following files: 
+Starting at line 775 of /home/tim/Projects/LLM/research/scientist/intelligence/predictor_gbm.py
+Starting at line 979 of /home/tim/Projects/LLM/research/scientist/intelligence/predictor_gbm.py
+
+    neg_count = len(y_gate_train) - pos_count
+    spw = neg_count / max(pos_count, 1)
+
+    # ── Gate model (binary classifier) ──
+    # Uses structure features only (no probes) to avoid label leakage.
+    gate_params = {
+        "objective": "binary",
+        "metric": "auc",
+        "learning_rate": 0.03,
+        "num_leaves": 31,
+        "min_data_in_leaf": 30,
+        "scale_pos_weight": spw,
+        "feature_fraction": 0.7,
+        "bagging_fraction": 0.7,
+        "bagging_freq": 5,
+        "lambda_l1": 0.1,
+        "lambda_l2": 1.0,
+        "verbose": -1,
+        "n_jobs": 1,
+        "seed": 42,
+    }
+    train_set = lgb.Dataset(
+        X_gate_train,
+        label=y_gate_train,
+        weight=w_train,
+        feature_name=gate_feature_names,
+    )
+    val_set = lgb.Dataset(
+
+=====================================================================
+Found a 19 line (100 tokens) duplication in the following files: 
+Starting at line 87 of /home/tim/Projects/LLM/research/tools/delete_corrupted_experiment_6b1f55ca.py
+Starting at line 182 of /home/tim/Projects/LLM/research/tools/delete_corrupted_experiment_6b1f55ca.py
+
+        before = {
+            "experiments": nb.conn.execute(
+                "SELECT COUNT(*) FROM experiments WHERE experiment_id = ?",
+                (CORRUPTED_EXPERIMENT_ID,),
+            ).fetchone()[0],
+            "entries": nb.conn.execute(
+                "SELECT COUNT(*) FROM entries WHERE experiment_id = ?",
+                (CORRUPTED_EXPERIMENT_ID,),
+            ).fetchone()[0],
+            "insights": nb.conn.execute(
+                "SELECT COUNT(*) FROM insights WHERE experiment_id = ?",
+                (CORRUPTED_EXPERIMENT_ID,),
+            ).fetchone()[0],
+            "hypothesis_preregistrations": nb.conn.execute(
+                "SELECT COUNT(*) FROM hypothesis_preregistrations "
+                "WHERE preregistration_id = ?",
+                (CORRUPTED_PREREGISTRATION_ID,),
+            ).fetchone()[0],
+        }
+
+=====================================================================
+Found a 11 line (100 tokens) duplication in the following files: 
+Starting at line 68 of /home/tim/Projects/LLM/research/tools/nano_blimp_v2_audit.py
+Starting at line 64 of /home/tim/Projects/LLM/research/tools/nano_blimp_v3_audit.py
+
+        "vocab": args.vocab,
+        "probe_steps": args.probe_steps,
+    }
+
+
+def _parse_args() -> argparse.Namespace:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--db", default="research/runs.db", type=Path)
+    ap.add_argument("--targets", nargs="+", required=True, help="result_id list")
+    ap.add_argument("--seeds", nargs="+", type=int, default=[1, 2, 3])
+    ap.add_argument("--held-out", nargs="+", type=int, default=[2, 3, 5])
+
+=====================================================================
+Found a 19 line (99 tokens) duplication in the following files: 
+Starting at line 571 of /home/tim/Projects/LLM/research/scientist/native/dispatch.py
+Starting at line 836 of /home/tim/Projects/LLM/research/scientist/native/dispatch.py
+Starting at line 855 of /home/tim/Projects/LLM/research/scientist/native/dispatch.py
+
+            result = rust.execute_graph_with_stats_arrays(graph_json, x_np)
+            y_flat = result["output"]
+            logger.debug(
+                "Arena stats: %d/%d bytes used, %d arena allocs, %d heap fallbacks",
+                result.get("arena_bytes_used", 0),
+                result.get("arena_capacity", 0),
+                result.get("arena_alloc_count", 0),
+                result.get("heap_fallback_count", 0),
+            )
+            if "node_profiles" in result:
+                _set_last_profile_data(
+                    {
+                        "node_profiles": list(result["node_profiles"]),
+                        "peak_memory_bytes": int(result.get("peak_memory_bytes", 0)),
+                    }
+                )
+            else:
+                _set_last_profile_data(None)
+        elif profiling_enabled and hasattr(rust, "execute_graph_with_stats"):
+
+=====================================================================
+Found a 12 line (99 tokens) duplication in the following files: 
+Starting at line 287 of /home/tim/Projects/LLM/research/synthesis/_templates_new_substrate.py
+Starting at line 321 of /home/tim/Projects/LLM/research/synthesis/_templates_new_substrate.py
+
+    D = graph.model_dim
+    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
+    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
+
+    try:
+        cell = graph.add_op("mlstm_cell", [normed])
+        out = graph.add_op("linear_proj", [cell], config={"out_dim": D})
+    except (ValueError, KeyError):
+        return tpl_residual_block(graph, input_id, rng, weights)
+
+    ffn = _pick_compatible_motif_from_classes(
+        graph, out, rng, list(_FFN_CLASSES), weights
+
+=====================================================================
+Found a 8 line (99 tokens) duplication in the following files: 
+Starting at line 346 of /home/tim/Projects/LLM/research/synthesis/compiler_ops_sequence.py
+Starting at line 441 of /home/tim/Projects/LLM/research/synthesis/compiler_ops_sequence.py
+
+    v = module.v_proj(x)
+    H = min(8, D)
+    if D % H != 0:
+        H = 1
+    d = D // H
+    q = q.reshape(B, S, H, d).permute(0, 2, 1, 3)
+    k = k.reshape(B, S, H, d).permute(0, 2, 1, 3)
+    v = v.reshape(B, S, H, d).permute(0, 2, 1, 3)
+
+=====================================================================
+Found a 19 line (99 tokens) duplication in the following files: 
+Starting at line 28 of /home/tim/Projects/LLM/research/tools/ar_gate_pilot.py
+Starting at line 28 of /home/tim/Projects/LLM/research/tools/backfill_ar_gate.py
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s",
+    datefmt="%H:%M:%S",
+)
+logger = logging.getLogger(__name__)
+
+REPO = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO))
+
+from research.scientist.notebook.graph_artifacts import resolve_graph_json_value
+
+DB_PATH = REPO / "research/runs.db"
+REPORTS_DIR = REPO / "research/reports"
+
+
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument(
+
+=====================================================================
+Found a 19 line (98 tokens) duplication in the following files: 
+Starting at line 11 of /home/tim/Projects/LLM/aria_designer/components/linear_algebra/fused_linear_gelu/kernel_fallback.py
+Starting at line 11 of /home/tim/Projects/LLM/aria_designer/components/linear_algebra/linear_proj/kernel_fallback.py
+
+    def validate_config(self, config):
+        return []
+
+    def build(self, config):
+        return None
+
+    def forward(self, inputs, config):
+        x = inputs["x"]
+        d_in = x.shape[-1]
+        d_out = config.get("out_dim") or d_in
+        w = cached_randn(
+            d_out,
+            d_in,
+            seed=d_in * 65537 + d_out,
+            device=x.device,
+            dtype=x.dtype,
+            scale=d_in**-0.5,
+        )
+        return {"y": F.gelu(F.linear(x, w))}
+
+=====================================================================
+Found a 10 line (98 tokens) duplication in the following files: 
+Starting at line 712 of /home/tim/Projects/LLM/component_fab/harness/binding_tests_v2.py
+Starting at line 753 of /home/tim/Projects/LLM/component_fab/harness/binding_tests_v2.py
+
+    NEG, POS, NOUN, VERB, ANY, OTHER, PAD = range(7)
+    ids = torch.full((batch_size, seq_len), PAD, dtype=torch.long)
+    pos = torch.zeros(batch_size, 1, dtype=torch.long)
+    tgt = torch.zeros(batch_size, 1, dtype=torch.long)
+    for b in range(batch_size):
+        is_neg = torch.rand((), generator=rng).item() < 0.5
+        licensor = NEG if is_neg else POS
+        ids[b, 0] = licensor
+        # Pattern: NOUN VERB X NOUN VERB X NOUN VERB X — where X is ANY (well-formed) or OTHER (ill-formed)
+        cursor = 1
+
+=====================================================================
+Found a 17 line (98 tokens) duplication in the following files: 
+Starting at line 305 of /home/tim/Projects/LLM/research/eval/induction_intermediate_probe.py
+Starting at line 174 of /home/tim/Projects/LLM/research/eval/induction_probe.py
+
+                    pred_logits = logits[:, input_ids.shape[1] - 1, :_RESTRICTED_VOCAB]
+                    loss = F.cross_entropy(pred_logits.float(), targets)
+                if not torch.isfinite(loss):
+                    result.status = "diverged"
+                    break
+                loss.backward()
+                clip_grad_norm(probe_model.parameters(), 1.0)
+                opt.step()
+                result.steps_trained = step
+
+            # Eval phase — bulk-generate eval batches per gap.
+            probe_model.eval()
+            with torch.inference_mode():
+                for gap in sorted(gaps):
+                    if time.perf_counter() - t0 > timeout_s:
+                        result.gap_accuracies[gap] = 0.0
+                        continue
+
+=====================================================================
+Found a 13 line (98 tokens) duplication in the following files: 
+Starting at line 819 of /home/tim/Projects/LLM/research/scientist/intelligence/gnn_predictor.py
+Starting at line 944 of /home/tim/Projects/LLM/research/scientist/intelligence/gnn_predictor.py
+
+                graph_payload,
+                ctx.op_profiles_json,
+                ctx.pair_stability_json,
+                ctx.op_metadata_json,
+                list(imodel.op_names),
+                np.ascontiguousarray(imodel.u, dtype=np.float32),
+                np.ascontiguousarray(imodel.v, dtype=np.float32),
+                np.ascontiguousarray(imodel.W_s, dtype=np.float32),
+                np.ascontiguousarray(imodel.W_l, dtype=np.float32),
+                float(imodel.b_s),
+                float(imodel.b_l),
+            )
+        except Exception:
+
+=====================================================================
+Found a 13 line (98 tokens) duplication in the following files: 
+Starting at line 840 of /home/tim/Projects/LLM/research/scientist/intelligence/gnn_predictor.py
+Starting at line 920 of /home/tim/Projects/LLM/research/scientist/intelligence/gnn_predictor.py
+
+            graph_payload,
+            ctx.op_profiles_json,
+            ctx.pair_stability_json,
+            ctx.op_metadata_json,
+            list(imodel.op_names),
+            np.ascontiguousarray(imodel.u, dtype=np.float32),
+            np.ascontiguousarray(imodel.v, dtype=np.float32),
+            np.ascontiguousarray(imodel.W_s, dtype=np.float32),
+            np.ascontiguousarray(imodel.W_l, dtype=np.float32),
+            float(imodel.b_s),
+            float(imodel.b_l),
+        )
+    except Exception:
+
+=====================================================================
+Found a 21 line (98 tokens) duplication in the following files: 
+Starting at line 112 of /home/tim/Projects/LLM/research/scientist/runner/execution_search.py
+Starting at line 397 of /home/tim/Projects/LLM/research/scientist/runner/execution_search.py
+
+                fitnesses = [ind.fitness for ind in population]
+                avg_fit = sum(fitnesses) / len(fitnesses) if fitnesses else 0
+                best_fit = max(fitnesses) if fitnesses else 0
+
+                # Template stats (Task 1I)
+                n_routing = sum(
+                    1
+                    for ind in population
+                    if any(
+                        node.op_name in self._ROUTING_OPS
+                        for node in ind.graph.nodes.values()
+                        if not node.is_input
+                    )
+                )
+                n_standard = len(population) - n_routing
+
+                self._update_progress(
+                    current_generation=gen + 1,
+                    status="evaluating",
+                    best_fitness=best_fit,
+                    avg_fitness=avg_fit,
+
+=====================================================================
+Found a 13 line (98 tokens) duplication in the following files: 
+Starting at line 477 of /home/tim/Projects/LLM/research/tools/exact_graph_replay.py
+Starting at line 563 of /home/tim/Projects/LLM/research/tools/exact_graph_replay.py
+
+    rows = _fetch_source_rows(db_path, result_ids)
+    if not rows:
+        raise ValueError("No replayable source rows found for the requested result_ids")
+    replay_rows = _expand_replays(rows, repeat_per_source)
+
+    runner = ExperimentRunner(str(db_path))
+    config = _build_config(device=device, repeat_count=len(replay_rows))
+    if stage1_steps is not None:
+        config.stage1_steps = max(1, int(stage1_steps))
+    if fast:
+        _apply_fast_replay_budget(config)
+    config, _ = runner.prescreen_run_config(config, mode="single", auto_harden=True)
+    runner._ensure_math_spaces()
+
+=====================================================================
+Found a 10 line (97 tokens) duplication in the following files: 
+Starting at line 205 of /home/tim/Projects/LLM/research/eval/nano_bind.py
+Starting at line 137 of /home/tim/Projects/LLM/research/tools/nano_corpus_v0_train_eval.py
+
+    idx = torch.randint(
+        0, n, (int(batch_size),), generator=rng, device=train_ids.device
+    )
+    batch = train_ids.index_select(0, idx)
+    opt.zero_grad(set_to_none=True)
+    logits = model(batch)
+    targets = batch[:, 1:].contiguous()
+    pred = logits[:, :-1, :].contiguous()
+    mask = targets != PAD_ID
+    if not bool(mask.any()):
+
+=====================================================================
+Found a 18 line (97 tokens) duplication in the following files: 
+Starting at line 422 of /home/tim/Projects/LLM/research/scientist/notebook/notebook_analytics.py
+Starting at line 569 of /home/tim/Projects/LLM/research/scientist/notebook/notebook_analytics.py
+
+                {
+                    "op_name": op_name,
+                    "n_used": stats["n_used"],
+                    "n_stage0_passed": stats["n_s0"],
+                    "n_stage05_passed": stats["n_s05"],
+                    "n_stage1_passed": stats["n_s1"],
+                    "avg_loss_ratio": (
+                        stats["lr_sum"] / stats["lr_n"] if stats["lr_n"] else None
+                    ),
+                    "avg_novelty": (
+                        stats["nov_sum"] / stats["nov_n"] if stats["nov_n"] else None
+                    ),
+                    "avg_novelty_confidence": (
+                        stats["nov_conf_sum"] / stats["nov_conf_n"]
+                        if stats["nov_conf_n"]
+                        else None
+                    ),
+                }
+
+=====================================================================
+Found a 17 line (97 tokens) duplication in the following files: 
+Starting at line 38 of /home/tim/Projects/LLM/research/synthesis/compiler_ops_attention.py
+Starting at line 151 of /home/tim/Projects/LLM/research/synthesis/compiler_ops_attention.py
+
+        _safe_linear(x, module.v_proj.weight, module.v_proj.bias)
+        .reshape(B, S, nh, hd)
+        .transpose(1, 2)
+    )
+    out = F.scaled_dot_product_attention(
+        q,
+        k,
+        v,
+        dropout_p=0.0,
+        is_causal=True,
+        scale=module.attn_scale,
+    )
+    out = out.transpose(1, 2).reshape(B, S, -1)
+    return _safe_linear(out, module.o_proj.weight, module.o_proj.bias)
+
+
+def _op_linear_attention(module, inputs, _):
+
+=====================================================================
+Found a 13 line (97 tokens) duplication in the following files: 
+Starting at line 155 of /home/tim/Projects/LLM/research/synthesis/native_analysis_bindings.py
+Starting at line 185 of /home/tim/Projects/LLM/research/synthesis/native_analysis_bindings.py
+
+            ctypes.c_int32,
+            ctypes.POINTER(ctypes.c_int64),
+            ctypes.POINTER(ctypes.c_int32),
+            ctypes.POINTER(ctypes.c_int32),
+            ctypes.POINTER(ctypes.c_int32),
+            ctypes.POINTER(ctypes.c_int32),
+            ctypes.POINTER(ctypes.c_int32),
+            ctypes.POINTER(ctypes.c_int32),
+            ctypes.POINTER(ctypes.c_int32),
+            ctypes.POINTER(ctypes.c_float),
+            ctypes.POINTER(ctypes.c_uint8),
+            ctypes.c_int32,
+            ctypes.c_int32,
+
+=====================================================================
+Found a 33 line (97 tokens) duplication in the following files: 
+Starting at line 770 of /home/tim/Projects/LLM/research/tools/backpopulate_screening_metrics.py
+Starting at line 897 of /home/tim/Projects/LLM/research/tools/backpopulate_screening_metrics.py
+
+        br = curriculum_binding_range_profile(
+            model,
+            distances=CURRICULUM_BINDING_DISTANCES,
+            n_train_steps=400,
+            n_eval=CURRICULUM_BINDING_EVAL_SCREENING,
+            train_batch_size=max(
+                1,
+                int(
+                    getattr(
+                        config,
+                        "binding_probe_train_batch_size",
+                        16,
+                    )
+                    or 16
+                ),
+            ),
+            eval_batch_size=max(
+                1,
+                int(
+                    getattr(
+                        config,
+                        "binding_probe_eval_batch_size",
+                        32,
+                    )
+                    or 32
+                ),
+            ),
+            device=str(dev),
+            seed=getattr(config, "screening_probe_seed", None),
+            offload_source_model=bool(
+                getattr(config, "binding_probe_offload_source_model", False)
+            ),
+        )
+
+=====================================================================
+Found a 25 line (96 tokens) duplication in the following files: 
+Starting at line 1020 of /home/tim/Projects/LLM/research/scientist/runner/continuous_investigation.py
+Starting at line 1145 of /home/tim/Projects/LLM/research/scientist/runner/execution_investigation.py
+
+            dev=dev,
+        )
+
+        try:
+            ckpt.save_phase(
+                experiment_id=exp_id,
+                phase="investigation",
+                candidate_idx=prog_idx + 1,
+                seed_idx=0,
+                model_state_dict={},
+                optimizer_state_dict={},
+                step=0,
+                metrics={"completed_candidate": prog_idx},
+            )
+            ckpt.save_phase(
+                experiment_id=exp_id,
+                phase="investigation",
+                candidate_idx=-1,
+                seed_idx=0,
+                model_state_dict={},
+                optimizer_state_dict={},
+                step=0,
+                metrics={"candidate_idx": prog_idx + 1},
+            )
+        except (OSError, RuntimeError) as e:
+
+=====================================================================
+Found a 11 line (96 tokens) duplication in the following files: 
+Starting at line 85 of /home/tim/Projects/LLM/research/tools/ar_validation_calibration.py
+Starting at line 114 of /home/tim/Projects/LLM/research/tools/small_ar_story_calibration.py
+
+        seq_len = int(input_ids.shape[1])
+        pos = torch.arange(seq_len, device=input_ids.device)
+        x = self.embed(input_ids) + self.pos(pos).unsqueeze(0)
+        mask = torch.triu(
+            torch.ones(seq_len, seq_len, device=input_ids.device, dtype=torch.bool),
+            diagonal=1,
+        )
+        return self.head(self.norm(self.layers(x, mask=mask)))
+
+
+class NoContextEmbeddingLM(nn.Module):
+
+=====================================================================
+Found a 12 line (95 tokens) duplication in the following files: 
+Starting at line 599 of /home/tim/Projects/LLM/research/scientist/runner/_types.py
+Starting at line 679 of /home/tim/Projects/LLM/research/scientist/runner/_types.py
+
+    sensitivity_result: Optional[Dict] = None
+    activation_sparsity_score: Optional[float] = None
+    dead_neuron_ratio: Optional[float] = None
+    routing_collapse_score: Optional[float] = None
+    wikitext_perplexity: Optional[float] = None
+    wikitext_score: Optional[float] = None
+    tinystories_perplexity: Optional[float] = None
+    tinystories_score: Optional[float] = None
+    cross_task_score: Optional[float] = None
+    efficiency_wall_score: Optional[float] = None
+    max_viable_seq_len: Optional[int] = None
+    scaling_regime: Optional[str] = None
+
+=====================================================================
+Found a 15 line (94 tokens) duplication in the following files: 
+Starting at line 103 of /home/tim/Projects/LLM/research/eval/ar_intermediate_probe.py
+Starting at line 115 of /home/tim/Projects/LLM/research/eval/binding_multislot_probe.py
+
+    best_held_pair_acc: float = 0.0
+    improvement: float = 0.0
+    slope_per_100_steps: float = 0.0
+    auc: float = 0.0
+    auc_lift: float = 0.0
+    learning_curve: list[dict[str, float | int]] = field(default_factory=list)
+    steps_to_threshold: int | None = None
+    score: float = 0.0
+    steps_trained: int = 0
+    status: str = "ok"
+    elapsed_ms: float = 0.0
+    error: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+
+=====================================================================
+Found a 20 line (94 tokens) duplication in the following files: 
+Starting at line 190 of /home/tim/Projects/LLM/research/meta_analysis/template_validator.py
+Starting at line 724 of /home/tim/Projects/LLM/research/tools/build_dynamic_component_candidates.py
+
+    try:
+        compiled = _compile_layer_module(graph, prefer_fast_path=True)
+    except Exception as exc:
+        result["failure_mode"] = "compile"
+        result["error"] = f"{type(exc).__name__}: {exc}"
+        return result
+    result["compile_passed"] = True
+
+    if not run_smoke:
+        return result
+
+    smoke = _run_smoke_test(compiled, model_dim=model_dim)
+    result.update(smoke)
+    if not smoke["backward_passed"] and result["failure_mode"] is None:
+        result["failure_mode"] = "smoke"
+        result["error"] = smoke.get("smoke_error")
+    return result
+
+
+def annotate_candidates_with_validation(
+
+=====================================================================
+Found a 10 line (94 tokens) duplication in the following files: 
+Starting at line 259 of /home/tim/Projects/LLM/research/tools/ar_curriculum_controls.py
+Starting at line 329 of /home/tim/Projects/LLM/research/tools/ar_curriculum_matrix.py
+Starting at line 230 of /home/tim/Projects/LLM/research/tools/ar_probe_comparison.py
+
+        help=f"Comma-separated modes from {TRAINING_MODES}",
+    )
+    p.add_argument("--run-id", default=None)
+    return p.parse_args()
+
+
+def main() -> int:
+    args = parse_args()
+    arch_keys = tuple(a.strip() for a in str(args.archs).split(",") if a.strip())
+    seeds = tuple(int(s.strip()) for s in str(args.seeds).split(",") if s.strip())
+
+=====================================================================
+Found a 14 line (93 tokens) duplication in the following files: 
+Starting at line 303 of /home/tim/Projects/LLM/research/meta_analysis/ar_binding_overlay.py
+Starting at line 110 of /home/tim/Projects/LLM/research/meta_analysis/routing_decision_analytics.py
+
+def _parse_routing_decisions(graph_json: Any) -> list[dict[str, Any]]:
+    if not isinstance(graph_json, str) or not graph_json:
+        return []
+    try:
+        graph = json.loads(graph_json)
+    except (TypeError, ValueError):
+        return []
+    metadata = graph.get("metadata") if isinstance(graph, dict) else None
+    if not isinstance(metadata, dict):
+        return []
+    decisions = metadata.get("routing_decisions")
+    if not isinstance(decisions, list):
+        return []
+    return [decision for decision in decisions if isinstance(decision, dict)]
+
+=====================================================================
+Found a 7 line (93 tokens) duplication in the following files: 
+Starting at line 87 of /home/tim/Projects/LLM/research/search/native_graph_mutation.py
+Starting at line 110 of /home/tim/Projects/LLM/research/search/native_graph_mutation.py
+
+    probe_status = lib.aria_graph_mutation_plan(
+        int(graph_opcodes.shape[0]),
+        graph_opcodes.ctypes.data_as(ctypes.POINTER(ctypes.c_int32)),
+        int(category_ids.shape[0]),
+        category_ids.ctypes.data_as(ctypes.POINTER(ctypes.c_int32)),
+        input_arities.ctypes.data_as(ctypes.POINTER(ctypes.c_int32)),
+        ctypes.c_uint64(int(seed) & ((1 << 64) - 1)),
+
+=====================================================================
+Found a 10 line (93 tokens) duplication in the following files: 
+Starting at line 116 of /home/tim/Projects/LLM/research/tools/ar_curriculum_active_priority.py
+Starting at line 277 of /home/tim/Projects/LLM/research/tools/ar_curriculum_priority.py
+
+    )
+    p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--run-id", default=None)
+    return p.parse_args()
+
+
+def main() -> int:
+    args = parse_args()
+    tiers = tuple(t.strip() for t in str(args.tiers).split(",") if t.strip())
+    run_id = args.run_id or datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+
+=====================================================================
+Found a 6 line (92 tokens) duplication in the following files: 
+Starting at line 199 of /home/tim/Projects/LLM/component_fab/harness/harder_binding_tasks.py
+Starting at line 257 of /home/tim/Projects/LLM/component_fab/harness/harder_binding_tasks.py
+
+    pool = task.eval_pairs if eval_split else task.train_pairs
+    res = _reserved_offsets(task.vocab_size)
+    ids = torch.full((batch_size, task.seq_len), res["PAD"], dtype=torch.long)
+    query_positions = torch.zeros((batch_size, task.n_queries), dtype=torch.long)
+    target_ids = torch.zeros((batch_size, task.n_queries), dtype=torch.long)
+    for b in range(batch_size):
+
+=====================================================================
+Found a 21 line (91 tokens) duplication in the following files: 
+Starting at line 85 of /home/tim/Projects/LLM/research/scientist/llm/anthropic.py
+Starting at line 27 of /home/tim/Projects/LLM/research/scientist/llm/openai_backend.py
+
+            self._client = anthropic.Anthropic(api_key=self.api_key)
+        return self._client
+
+    def is_available(self) -> bool:
+        if not self.api_key:
+            return False
+        try:
+            self._get_client()
+            return True
+        except Exception as exc:
+            logger.debug("Returning default due to error: %s", exc)
+            return False
+
+    def generate(
+        self,
+        prompt: str,
+        system: str = "",
+        max_tokens: int = 1024,
+        temperature: float = 0.7,
+    ) -> LLMResponse:
+        client = self._get_client()
+
+=====================================================================
+Found a 19 line (91 tokens) duplication in the following files: 
+Starting at line 571 of /home/tim/Projects/LLM/research/scientist/native/dispatch.py
+Starting at line 875 of /home/tim/Projects/LLM/research/scientist/native/dispatch.py
+
+            result = rust.execute_graph_with_stats_arrays(graph_json, x_np)
+            y_flat = result["output"]
+            logger.debug(
+                "Arena stats: %d/%d bytes used, %d arena allocs, %d heap fallbacks",
+                result.get("arena_bytes_used", 0),
+                result.get("arena_capacity", 0),
+                result.get("arena_alloc_count", 0),
+                result.get("heap_fallback_count", 0),
+            )
+            if "node_profiles" in result:
+                _set_last_profile_data(
+                    {
+                        "node_profiles": list(result["node_profiles"]),
+                        "peak_memory_bytes": int(result.get("peak_memory_bytes", 0)),
+                    }
+                )
+            else:
+                _set_last_profile_data(None)
+        elif profiling_enabled and hasattr(rust, "execute_graph_with_stats"):
+
+=====================================================================
+Found a 8 line (91 tokens) duplication in the following files: 
+Starting at line 76 of /home/tim/Projects/LLM/research/tools/ar_curriculum_predictor.py
+Starting at line 206 of /home/tim/Projects/LLM/research/tools/ar_probe_comparison.py
+
+def _ranks(xs: list[float]) -> list[float]:
+    paired = sorted(enumerate(xs), key=lambda p: p[1])
+    ranks = [0.0] * len(xs)
+    i = 0
+    while i < len(paired):
+        j = i
+        while j + 1 < len(paired) and paired[j + 1][1] == paired[i][1]:
+            j += 1
+
+=====================================================================
+Found a 8 line (91 tokens) duplication in the following files: 
+Starting at line 75 of /home/tim/Projects/LLM/research/tools/ar_curriculum_trends.py
+Starting at line 206 of /home/tim/Projects/LLM/research/tools/ar_probe_comparison.py
+
+def _ranks(xs: list[float]) -> list[float]:
+    paired = sorted(enumerate(xs), key=lambda p: p[1])
+    ranks = [0.0] * len(xs)
+    i = 0
+    while i < len(paired):
+        j = i
+        while j + 1 < len(paired) and paired[j + 1][1] == paired[i][1]:
+            j += 1
+
+=====================================================================
+Found a 24 line (90 tokens) duplication in the following files: 
+Starting at line 978 of /home/tim/Projects/LLM/research/scientist/runner/_helpers_benchmark.py
+Starting at line 1075 of /home/tim/Projects/LLM/research/scientist/runner/_helpers_benchmark.py
+
+        )
+        if stop_event is not None and stop_event.is_set():
+            return
+        # Create a thread-local notebook for DB writes
+        from ..notebook import LabNotebook
+
+        thread_nb = LabNotebook(db_path)
+        try:
+            _record_investigation_result(
+                nb=thread_nb,
+                exp_id=exp_id,
+                source_result_id=source_result_id,
+                source=source,
+                model_source=model_source,
+                graph_json_str=graph_json_str,
+                arch_spec_json_str=arch_spec_json_str,
+                n_passed=n_passed,
+                n_programs_tested=n_programs_tested,
+                best_lr=best_lr,
+                best_tp_json=best_tp_json,
+                robustness=robustness,
+                investigation_passed=investigation_passed,
+                benchmark_result=benchmark_result,
+                fingerprint_incomplete=fingerprint_incomplete,
+
+=====================================================================
+Found a 16 line (90 tokens) duplication in the following files: 
+Starting at line 158 of /home/tim/Projects/LLM/research/synthesis/_templates_exotic.py
+Starting at line 440 of /home/tim/Projects/LLM/research/synthesis/_templates_exotic.py
+Starting at line 474 of /home/tim/Projects/LLM/research/synthesis/_templates_exotic.py
+Starting at line 71 of /home/tim/Projects/LLM/research/synthesis/_templates_new_substrate.py
+Starting at line 186 of /home/tim/Projects/LLM/research/synthesis/_templates_new_substrate.py
+
+        projected = graph.add_op("linear_proj", [weighted], config={"out_dim": D})
+    except (ValueError, KeyError):
+        return tpl_residual_block(graph, input_id, rng, weights)
+
+    ffn = _pick_compatible_motif_from_classes(
+        graph, projected, rng, list(_FFN_CLASSES), weights
+    )
+    processed = _instantiate_motif(graph, projected, ffn, rng) if ffn else projected
+    processed = _fix_dim(graph, processed)
+    try:
+        return graph.add_op("add", [input_id, processed])
+    except ValueError:
+        return processed
+
+
+def tpl_hyp_distance_scoring(
+
+=====================================================================
+Found a 16 line (90 tokens) duplication in the following files: 
+Starting at line 140 of /home/tim/Projects/LLM/research/synthesis/_templates_new_substrate.py
+Starting at line 293 of /home/tim/Projects/LLM/research/synthesis/_templates_new_substrate.py
+
+        out = graph.add_op("linear_proj", [attn], config={"out_dim": D})
+    except (ValueError, KeyError):
+        return tpl_residual_block(graph, input_id, rng, weights)
+
+    ffn = _pick_compatible_motif_from_classes(
+        graph, out, rng, list(_FFN_CLASSES), weights
+    )
+    processed = _instantiate_motif(graph, out, ffn, rng) if ffn else out
+    processed = _fix_dim(graph, processed)
+    try:
+        return graph.add_op("add", [input_id, processed])
+    except ValueError:
+        return processed
+
+
+def tpl_tree_mix_block(
+
+=====================================================================
+Found a 16 line (90 tokens) duplication in the following files: 
+Starting at line 224 of /home/tim/Projects/LLM/research/synthesis/_templates_new_substrate.py
+Starting at line 327 of /home/tim/Projects/LLM/research/synthesis/_templates_new_substrate.py
+
+        out = graph.add_op("linear_proj", [attn], config={"out_dim": D})
+    except (ValueError, KeyError):
+        return tpl_residual_block(graph, input_id, rng, weights)
+
+    ffn = _pick_compatible_motif_from_classes(
+        graph, out, rng, list(_SPARSE_FFN_CLASSES), weights
+    )
+    processed = _instantiate_motif(graph, out, ffn, rng) if ffn else out
+    processed = _fix_dim(graph, processed)
+    try:
+        return graph.add_op("add", [input_id, processed])
+    except ValueError:
+        return processed
+
+
+def tpl_pq_embedding_moe_block(
+
+=====================================================================
+Found a 11 line (90 tokens) duplication in the following files: 
+Starting at line 363 of /home/tim/Projects/LLM/research/tools/build_routing_decision_priors.py
+Starting at line 111 of /home/tim/Projects/LLM/research/tools/routing_decision_report.py
+
+    return float(sum(clean) / len(clean))
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--db", default=str(RUNS_DB), help="runs/lab notebook DB path")
+    parser.add_argument("--template", default=None, help="optional template filter")
+    parser.add_argument(
+        "--limit", type=int, default=None, help="optional source-row cap"
+    )
+    parser.add_argument("--min-support", type=int, default=DEFAULT_MIN_SUPPORT)
+
+=====================================================================
+Found a 11 line (90 tokens) duplication in the following files: 
+Starting at line 78 of /home/tim/Projects/LLM/research/tools/export_cka_references.py
+Starting at line 162 of /home/tim/Projects/LLM/research/tools/export_cka_references.py
+
+        self.qkv = nn.Linear(dim, 3 * dim, bias=False)
+        self.proj = nn.Linear(dim, dim, bias=False)
+        self.norm2 = nn.LayerNorm(dim)
+        self.ffn = nn.Sequential(
+            nn.Linear(dim, dim * 4),
+            nn.GELU(),
+            nn.Linear(dim * 4, dim),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        B, S, D = x.shape
+
+=====================================================================
+Found a 11 line (89 tokens) duplication in the following files: 
+Starting at line 191 of /home/tim/Projects/LLM/aria_designer/runtime/fallback_templates.py
+Starting at line 225 of /home/tim/Projects/LLM/aria_designer/runtime/fallback_templates.py
+
+    class ComponentHandler:  # noqa: D401
+        def validate_config(self, config: Dict[str, Any]) -> List[str]:
+            return []
+
+        def build(self, config: Dict[str, Any]) -> None:
+            return None
+
+        def forward(self, inputs: Dict[str, Any], config: Dict[str, Any]):
+            scores = inputs["scores"]
+            if scores.dim() != 3:
+                raise ValueError("route_topk expects scores with shape [B, S, K]")
+
+=====================================================================
+Found a 13 line (89 tokens) duplication in the following files: 
+Starting at line 236 of /home/tim/Projects/LLM/research/eval/nano_blimp_eval.py
+Starting at line 261 of /home/tim/Projects/LLM/research/eval/nano_blimp_eval.py
+
+            bad.append([noun_a, query, target_b])
+    if not good:
+        return (
+            torch.empty((0, 3), dtype=torch.long, device=device),
+            torch.empty((0, 3), dtype=torch.long, device=device),
+        )
+    return (
+        torch.tensor(good, dtype=torch.long, device=device),
+        torch.tensor(bad, dtype=torch.long, device=device),
+    )
+
+
+def _build_order_pairs(
+
+=====================================================================
+Found a 12 line (89 tokens) duplication in the following files: 
+Starting at line 200 of /home/tim/Projects/LLM/research/meta_analysis/descriptive_properties.py
+Starting at line 427 of /home/tim/Projects/LLM/research/meta_analysis/descriptive_properties.py
+
+    lower = text.lower()
+    has_attention = _has_any(lower, _ATTENTION_TOKENS)
+    has_ssm = _has_any(lower, _SSM_TOKENS)
+    has_conv = _has_any(lower, _CONV_TOKENS)
+    has_routing = _has_any(lower, _ROUTING_TOKENS)
+    has_compression = _has_any(lower, _COMPRESSION_TOKENS)
+    has_memory = _has_any(lower, _MEMORY_TOKENS)
+    has_math_space = _has_any(lower, _MATH_SPACE_TOKENS)
+    has_frequency = _has_any(lower, _FREQUENCY_TOKENS)
+    has_norm = _has_any(lower, _NORM_TOKENS)
+    has_moe = _has_any(lower, _MOE_TOKENS)
+    has_residual = _has_any(lower, _RESIDUAL_TOKENS)
+
+=====================================================================
+Found a 13 line (89 tokens) duplication in the following files: 
+Starting at line 158 of /home/tim/Projects/LLM/research/synthesis/_templates_exotic.py
+Starting at line 508 of /home/tim/Projects/LLM/research/synthesis/_templates_exotic.py
+Starting at line 71 of /home/tim/Projects/LLM/research/synthesis/_templates_new_substrate.py
+Starting at line 186 of /home/tim/Projects/LLM/research/synthesis/_templates_new_substrate.py
+
+        projected = graph.add_op("linear_proj", [weighted], config={"out_dim": D})
+    except (ValueError, KeyError):
+        return tpl_residual_block(graph, input_id, rng, weights)
+
+    ffn = _pick_compatible_motif_from_classes(
+        graph, projected, rng, list(_FFN_CLASSES), weights
+    )
+    processed = _instantiate_motif(graph, projected, ffn, rng) if ffn else projected
+    processed = _fix_dim(graph, processed)
+    try:
+        return graph.add_op("add", [input_id, processed])
+    except ValueError:
+        return processed
+
+=====================================================================
+Found a 15 line (89 tokens) duplication in the following files: 
+Starting at line 744 of /home/tim/Projects/LLM/research/synthesis/_templates_exotic.py
+Starting at line 950 of /home/tim/Projects/LLM/research/synthesis/_templates_exotic.py
+
+    from ._template_helpers import MOTIF_CLASS_ATTENTION
+
+    D = graph.model_dim
+    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
+    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
+
+    # 40% chance: attention before MoE routing
+    current = normed
+    if rng.random() < 0.4:
+        attn = _pick_compatible_motif(
+            graph, normed, rng, MOTIF_CLASS_ATTENTION, weights
+        )
+        if attn:
+            attended = _instantiate_motif(graph, normed, attn, rng)
+            current = _fix_dim(graph, attended)
+
+=====================================================================
+Found a 13 line (89 tokens) duplication in the following files: 
+Starting at line 140 of /home/tim/Projects/LLM/research/synthesis/_templates_new_substrate.py
+Starting at line 372 of /home/tim/Projects/LLM/research/synthesis/_templates_new_substrate.py
+
+        out = graph.add_op("linear_proj", [attn], config={"out_dim": D})
+    except (ValueError, KeyError):
+        return tpl_residual_block(graph, input_id, rng, weights)
+
+    ffn = _pick_compatible_motif_from_classes(
+        graph, out, rng, list(_FFN_CLASSES), weights
+    )
+    processed = _instantiate_motif(graph, out, ffn, rng) if ffn else out
+    processed = _fix_dim(graph, processed)
+    try:
+        return graph.add_op("add", [input_id, processed])
+    except ValueError:
+        return processed
+
+=====================================================================
+Found a 11 line (88 tokens) duplication in the following files: 
+Starting at line 81 of /home/tim/Projects/LLM/aria_designer/components/base.py
+Starting at line 183 of /home/tim/Projects/LLM/aria_designer/components/base.py
+
+        return self.module_cls()
+
+    def forward(self, inputs, config):
+        a = inputs.get("a")
+        b = inputs.get("b")
+        if a is None or b is None:
+            keys = list(inputs.keys())
+            if len(keys) >= 2:
+                a = a if a is not None else inputs[keys[0]]
+                b = b if b is not None else inputs[keys[1]]
+        if self.native_op_name is not None:
+
+=====================================================================
+Found a 10 line (88 tokens) duplication in the following files: 
+Starting at line 220 of /home/tim/Projects/LLM/research/scientist/api_routes/programs_routes/causal_ablation.py
+Starting at line 246 of /home/tim/Projects/LLM/research/scientist/api_routes/programs_routes/causal_ablation.py
+
+    config.causal_ablation_top_k = max(
+        1, int(body.get("top_k", body.get("causal_ablation_top_k", 1)) or 1)
+    )
+    config.causal_ablation_max_signals = max(
+        1,
+        int(body.get("max_signals", body.get("causal_ablation_max_signals", 2)) or 2),
+    )
+    config.causal_ablation_max_graphs = max(
+        1, int(body.get("max_graphs", body.get("causal_ablation_max_graphs", 4)) or 4)
+    )
+
+=====================================================================
+Found a 11 line (88 tokens) duplication in the following files: 
+Starting at line 184 of /home/tim/Projects/LLM/research/synthesis/native_analysis_bindings.py
+Starting at line 222 of /home/tim/Projects/LLM/research/synthesis/native_analysis_bindings.py
+
+            ctypes.POINTER(ctypes.c_int32),
+            ctypes.POINTER(ctypes.c_int32),
+            ctypes.POINTER(ctypes.c_int64),
+            ctypes.POINTER(ctypes.c_int32),
+            ctypes.POINTER(ctypes.c_int32),
+            ctypes.POINTER(ctypes.c_int32),
+            ctypes.POINTER(ctypes.c_int32),
+            ctypes.POINTER(ctypes.c_int32),
+            ctypes.POINTER(ctypes.c_int32),
+            ctypes.POINTER(ctypes.c_int32),
+            ctypes.POINTER(ctypes.c_float),
+
+=====================================================================
+Found a 21 line (88 tokens) duplication in the following files: 
+Starting at line 149 of /home/tim/Projects/LLM/research/tools/ar_gate_pilot_midtier_sweep.py
+Starting at line 150 of /home/tim/Projects/LLM/research/tools/ar_gate_pilot_top20_sweep.py
+
+        f"Wall: {elapsed}s | warmup={CFG_KW['wikitext_warmup_steps']} ft={CFG_KW['finetune_steps']} | seeds={SEEDS}",
+        "",
+        "| rid | template (first) | comp | ppl | nb_fail | in_pair μ±σ | in_class μ | held_class μ |",
+        "|---|---|---:|---:|:---:|---:|---:|---:|",
+    ]
+    for r in rows_sorted:
+        tpl = (r["templates"] or ["?"])[0]
+        nb = "FAIL" if r["nano_bind_failer"] else " "
+        lines.append(
+            f"| {r['result_id'][:12]} | {tpl} | {r['composite_score']:.0f} | "
+            f"{r['wikitext_perplexity']:.0f} | {nb} | "
+            f"{r['in_pair_mu']:.2f} ± {r['in_pair_sd']:.2f} | "
+            f"{r['in_class_mu']:.2f} | {r['held_class_mu']:.2f} |"
+        )
+    md_path.write_text("\n".join(lines) + "\n")
+    logger.info("Wrote %s", md_path)
+    logger.info("Wrote %s", json_path)
+
+
+if __name__ == "__main__":
+    main()
+
+=====================================================================
+Found a 13 line (88 tokens) duplication in the following files: 
+Starting at line 426 of /home/tim/Projects/LLM/research/tools/ar_validation_calibration.py
+Starting at line 1276 of /home/tim/Projects/LLM/research/tools/small_ar_story_calibration.py
+
+    parser.add_argument("--heads", type=int, default=4)
+    parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
+    parser.add_argument(
+        "--device",
+        default="cuda" if torch.cuda.is_available() else "cpu",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+    if args.device == "cuda" and not torch.cuda.is_available():
+        raise SystemExit("CUDA requested but unavailable")
+
+=====================================================================
+Found a 18 line (88 tokens) duplication in the following files: 
+Starting at line 37 of /home/tim/Projects/LLM/research/tools/audit_generation_attribution.py
+Starting at line 36 of /home/tim/Projects/LLM/research/tools/build_investigation_queue.py
+
+)
+
+
+def _float_or_none(value: Any) -> float | None:
+    try:
+        if value is None:
+            return None
+        out = float(value)
+    except (TypeError, ValueError):
+        return None
+    return out if math.isfinite(out) else None
+
+
+def _bounded(value: float, lo: float = 0.0, hi: float = 1.0) -> float:
+    return max(lo, min(hi, float(value)))
+
+
+def _columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
+
+=====================================================================
+Found a 12 line (88 tokens) duplication in the following files: 
+Starting at line 347 of /home/tim/Projects/LLM/research/tools/focused_op_deletion_ablation.py
+Starting at line 779 of /home/tim/Projects/LLM/research/tools/smart_component_replacement_ablation.py
+
+    nb = LabNotebook(str(db_path), use_native=False)
+    try:
+        active_prior = get_active_construction_prior(nb)
+        parents = select_top_parents(
+            nb,
+            top_k=max(1, int(args.top_k)),
+            include_references=bool(args.include_references),
+            rank_offset=max(0, int(args.rank_offset)),
+            parent_result_ids=set(args.parent_result_id or []) or None,
+        )
+        if not parents:
+            raise SystemExit("no eligible parent graphs found")
+
+=====================================================================
+Found a 11 line (87 tokens) duplication in the following files: 
+Starting at line 806 of /home/tim/Projects/LLM/research/scientist/intelligence/gnn_predictor.py
+Starting at line 907 of /home/tim/Projects/LLM/research/scientist/intelligence/gnn_predictor.py
+
+) -> Optional[Dict[str, float]]:
+    if not (imodel is not None and hasattr(imodel, "_trained") and imodel._trained):
+        return None
+    required_attrs = ("op_names", "u", "v", "W_s", "W_l", "b_s", "b_l")
+    if not all(hasattr(imodel, attr) for attr in required_attrs):
+        return None
+    rust = _try_import_rust_scheduler()
+    if rust is None:
+        return None
+    ctx = native_ctx or _make_native_topology_context(op_profiles, pair_stability)
+    if hasattr(rust, "extract_topology_feature_map_with_imodel_native_py"):
+
+=====================================================================
+Found a 16 line (87 tokens) duplication in the following files: 
+Starting at line 405 of /home/tim/Projects/LLM/research/scientist/notebook/notebook_analytics.py
+Starting at line 548 of /home/tim/Projects/LLM/research/scientist/notebook/notebook_analytics.py
+
+                    stats["n_used"] += 1
+                    if s0:
+                        stats["n_s0"] += 1
+                    if s05:
+                        stats["n_s05"] += 1
+                    if s1:
+                        stats["n_s1"] += 1
+                    if lr is not None:
+                        stats["lr_sum"] += lr
+                        stats["lr_n"] += 1
+                    if nov is not None:
+                        stats["nov_sum"] += nov
+                        stats["nov_n"] += 1
+                    if nov_conf is not None:
+                        stats["nov_conf_sum"] += nov_conf
+                        stats["nov_conf_n"] += 1
+
+=====================================================================
+Found a 11 line (87 tokens) duplication in the following files: 
+Starting at line 1509 of /home/tim/Projects/LLM/research/scientist/runner/continuous_investigation.py
+Starting at line 725 of /home/tim/Projects/LLM/research/scientist/runner/continuous_validation.py
+
+        results["perf_report"] = self._build_experiment_perf_report(results)
+        results["perf_budget_gate"] = evaluate_perf_budget_gate(results["perf_report"])
+        context = self._build_rich_context_for_experiment(
+            results, config, hypothesis, nb
+        )
+        summary = self.aria.experiment_summary(results, context=context)
+        llm_analysis = self.aria.analyze_results(results, context=context)
+        insights = self._analyze_results(results, exp_id, nb, context=context)
+
+        self._publish_terminal_event(
+            producer="runner.continuous_investigation",
+
+=====================================================================
+Found a 8 line (87 tokens) duplication in the following files: 
+Starting at line 928 of /home/tim/Projects/LLM/research/synthesis/_templates_attention.py
+Starting at line 368 of /home/tim/Projects/LLM/research/synthesis/_templates_attention_hybrid.py
+Starting at line 88 of /home/tim/Projects/LLM/research/synthesis/_templates_attention_tail.py
+Starting at line 216 of /home/tim/Projects/LLM/research/synthesis/_templates_attention_tail.py
+Starting at line 250 of /home/tim/Projects/LLM/research/synthesis/_templates_attention_tail.py
+Starting at line 284 of /home/tim/Projects/LLM/research/synthesis/_templates_attention_tail.py
+
+    D = graph.model_dim
+    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
+    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
+
+    attn = _pick_compatible_motif(graph, normed, rng, MOTIF_CLASS_ATTENTION, weights)
+    attended = _instantiate_motif(graph, normed, attn, rng) if attn else normed
+    attended = _fix_dim(graph, attended)
+    attended = _add(graph, "rmsnorm", [attended], context="attn_gated_product.norm")
+
+=====================================================================
+Found a 7 line (87 tokens) duplication in the following files: 
+Starting at line 98 of /home/tim/Projects/LLM/research/tools/ar_validation_calibration.py
+Starting at line 111 of /home/tim/Projects/LLM/research/tools/ar_validation_calibration.py
+
+    def __init__(self, vocab_size: int, *, dim: int = 64) -> None:
+        super().__init__()
+        self.vocab_size = int(vocab_size)
+        self.embed = nn.Embedding(self.vocab_size, int(dim))
+        self.head = nn.Linear(int(dim), self.vocab_size)
+
+    def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
+
+=====================================================================
+Found a 11 line (86 tokens) duplication in the following files: 
+Starting at line 445 of /home/tim/Projects/LLM/research/eval/nano_blimp_eval.py
+Starting at line 1003 of /home/tim/Projects/LLM/research/eval/nano_blimp_eval.py
+
+    return NanoBLiMPResult(
+        score=round(score, 4),
+        class_coherence_acc=round(cls_all, 4),
+        binding_fidelity_acc=round(bind_all, 4),
+        order_grammaticality_acc=round(order_acc, 4),
+        class_coherence_in_dist_acc=round(cls_in, 4),
+        class_coherence_held_out_acc=round(cls_ho, 4),
+        binding_fidelity_in_dist_acc=round(bind_in, 4),
+        binding_fidelity_held_out_acc=round(bind_ho, 4),
+        held_out_score=round(held_out_score, 4),
+        held_out_count=len(held_out_nouns),
+
+=====================================================================
+Found a 19 line (86 tokens) duplication in the following files: 
+Starting at line 253 of /home/tim/Projects/LLM/research/scientist/api_routes/general_bp.py
+Starting at line 289 of /home/tim/Projects/LLM/research/scientist/api_routes/general_bp.py
+
+        runner = get_runner(notebook_path)
+        aria = get_aria_for_notebook(notebook_path)
+        analytics_data = runner._gather_analytics_data(nb)
+        history = nb.get_recent_experiments(10)
+        past_hypotheses = runner._get_past_hypotheses(nb)
+        from ..llm.context_experiment import build_rich_context
+
+        context = build_rich_context(
+            results={
+                "total": 0,
+                "stage0_passed": 0,
+                "stage05_passed": 0,
+                "stage1_passed": 0,
+                "novel_count": 0,
+            },
+            analytics_data=analytics_data,
+            history=history,
+            past_hypotheses=past_hypotheses,
+        )
+
+=====================================================================
+Found a 18 line (86 tokens) duplication in the following files: 
+Starting at line 71 of /home/tim/Projects/LLM/research/scientist/intelligence/interaction_model.py
+Starting at line 164 of /home/tim/Projects/LLM/research/scientist/intelligence/interaction_model.py
+
+def _train_interaction_python(
+    *,
+    u: np.ndarray,
+    v: np.ndarray,
+    W_s: np.ndarray,
+    W_l: np.ndarray,
+    b_s: float,
+    b_l: float,
+    stab_idx: np.ndarray,
+    stab_labels: np.ndarray,
+    stab_weights: np.ndarray,
+    loss_idx: np.ndarray,
+    loss_labels: np.ndarray,
+    loss_weights: np.ndarray,
+    n_epochs: int,
+    lr: float,
+    seed: int,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float, float, float]:
+
+=====================================================================
+Found a 17 line (86 tokens) duplication in the following files: 
+Starting at line 726 of /home/tim/Projects/LLM/research/scientist/intelligence/ml_corpus.py
+Starting at line 957 of /home/tim/Projects/LLM/research/scientist/intelligence/ml_corpus.py
+
+    ).fetchall()
+
+    grouped: Dict[str, Dict[str, Any]] = {}
+    for row in rows:
+        graph_json = resolve_graph_json_value(conn, db_path, row["graph_json"])
+        canonical = _graph_fingerprint(graph_json)
+        group = grouped.setdefault(
+            canonical,
+            {
+                "canonical_fingerprint": canonical,
+                "graph_json": graph_json,
+                "stage1_any_passed": False,
+                "stage1_pass_rate": 0.0,
+                "stage0_any_passed": False,
+                "stage05_any_passed": False,
+                "wikitext_perplexity_best": None,
+                "loss_ratio_best": None,
+
+=====================================================================
+Found a 14 line (86 tokens) duplication in the following files: 
+Starting at line 161 of /home/tim/Projects/LLM/research/scientist/native/_dispatch_rust_exec.py
+Starting at line 176 of /home/tim/Projects/LLM/research/scientist/native/_dispatch_rust_exec.py
+
+            graph_handle,
+            native_inputs,
+        )
+        output = np.asarray(result["output"], dtype=np.float32)
+        if output_shape is not None:
+            output = output.reshape(output_shape)
+        return {
+            "output": output,
+            "saved_activations": result["saved_state"],
+            "ir_json": graph_json,
+            "arena_bytes_used": int(result.get("arena_bytes_used", 0)),
+            "arena_capacity": int(result.get("arena_capacity", 0)),
+        }
+    if hasattr(rust, "execute_graph_forward_saved_multi_input_arrays_handle"):
+
+=====================================================================
+Found a 17 line (86 tokens) duplication in the following files: 
+Starting at line 591 of /home/tim/Projects/LLM/research/scientist/native/dispatch.py
+Starting at line 875 of /home/tim/Projects/LLM/research/scientist/native/dispatch.py
+
+            result = rust.execute_graph_with_stats(graph_json, x_flat)
+            y_flat = result["output"]
+            logger.debug(
+                "Arena stats: %d/%d bytes used, %d arena allocs, %d heap fallbacks",
+                result.get("arena_bytes_used", 0),
+                result.get("arena_capacity", 0),
+                result.get("arena_alloc_count", 0),
+                result.get("heap_fallback_count", 0),
+            )
+            # Cache profiling data if present.
+            if "node_profiles" in result:
+                _set_last_profile_data(
+                    {
+                        "node_profiles": list(result["node_profiles"]),
+                        "peak_memory_bytes": int(result.get("peak_memory_bytes", 0)),
+                    }
+                )
+
+=====================================================================
+Found a 14 line (86 tokens) duplication in the following files: 
+Starting at line 512 of /home/tim/Projects/LLM/research/scientist/runner/execution_validation_scale.py
+Starting at line 537 of /home/tim/Projects/LLM/research/scientist/runner/execution_validation_scale.py
+
+                final_loss,
+                d_model=config.model_dim,
+                seq_len=min(128, config.scale_up_seq_len),
+                n_steps=max(1, baseline_steps),
+                vocab_size=config.vocab_size,
+                batch_size=config.scale_up_batch_size,
+                lr=baseline_recipe["lr"],
+                device=dev_str,
+                n_layers=config.n_layers,
+                optimizer_name=baseline_recipe["optimizer_name"],
+                weight_decay=baseline_recipe["weight_decay"],
+                momentum=baseline_recipe["momentum"],
+                betas=baseline_recipe["betas"],
+                data_fn=bl_data_fn,
+
+=====================================================================
+Found a 5 line (86 tokens) duplication in the following files: 
+Starting at line 742 of /home/tim/Projects/LLM/research/synthesis/compiled_op_params.py
+Starting at line 752 of /home/tim/Projects/LLM/research/synthesis/compiled_op_params.py
+
+        self.attn_out = self._make_param((d_in, d_in), std=0.02)
+        self.conv_proj = self._make_param((d_in, d_in), std=0.02)
+        self.ssm_B_proj = self._make_param((d_in, d_in), std=0.02)
+        self.ssm_C_proj = self._make_param((d_in, d_in), std=0.02)
+        self.ssm_D = self._make_param((d_in,), std=0.02)
+
+=====================================================================
+Found a 12 line (86 tokens) duplication in the following files: 
+Starting at line 244 of /home/tim/Projects/LLM/research/tools/controlled_sentence_tune.py
+Starting at line 205 of /home/tim/Projects/LLM/research/tools/nano_controlled_holdout_tune.py
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--db", default=Path("research/runs.db"), type=Path)
+    parser.add_argument("--targets", nargs="*", default=list(DEFAULT_TARGETS))
+    parser.add_argument(
+        "--config",
+        action="append",
+        type=_parse_config,
+        help="Probe config as VOCAB:STEPS. Can be repeated.",
+    )
+    parser.add_argument("--base-train-steps", type=int, default=750)
+    parser.add_argument("--n-eval-items", type=int, default=64)
+
+=====================================================================
+Found a 15 line (86 tokens) duplication in the following files: 
+Starting at line 313 of /home/tim/Projects/LLM/research/tools/focused_op_deletion_ablation.py
+Starting at line 739 of /home/tim/Projects/LLM/research/tools/smart_component_replacement_ablation.py
+
+    return {"local": str(local_target), "google_drive": str(google_target)}
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--db", default=str(DB_PATH))
+    parser.add_argument("--top-k", type=int, default=2)
+    parser.add_argument("--rank-offset", type=int, default=0)
+    parser.add_argument(
+        "--parent-result-id",
+        action="append",
+        default=[],
+        help="Restrict planning/runs to selected parent result_id values.",
+    )
+    parser.add_argument(
+
+=====================================================================
+Found a 9 line (86 tokens) duplication in the following files: 
+Starting at line 266 of /home/tim/Projects/LLM/research/tools/profile_component_scaffolds.py
+Starting at line 342 of /home/tim/Projects/LLM/research/tools/profile_component_scaffolds.py
+Starting at line 395 of /home/tim/Projects/LLM/research/tools/profile_component_scaffolds.py
+
+    proj = _add(graph, "linear_proj", post_attn, model_dim=model_dim)
+    mid = graph.add_op("add", [inp, _fix_dim(graph, proj)])
+    norm2 = _add(graph, "rmsnorm", mid, model_dim=model_dim)
+    ffn = _add(graph, "swiglu_mlp", norm2, model_dim=model_dim)
+    out = graph.add_op("add", [mid, _fix_dim(graph, ffn)])
+    graph.set_output(out)
+    graph.metadata.update(
+        {
+            "scaffold_family": "gpt2_attn",
+
+=====================================================================
+Found a 8 line (85 tokens) duplication in the following files: 
+Starting at line 320 of /home/tim/Projects/LLM/component_fab/generator/block_templates.py
+Starting at line 310 of /home/tim/Projects/LLM/component_fab/generator/routing_primitives.py
+
+        expert_out = torch.zeros_like(x)
+        for slot in range(self.top_k):
+            idx = topk_idx[..., slot]
+            wt = topk_vals[..., slot].unsqueeze(-1)
+            for index, expert in enumerate(self.experts):
+                mask = (idx == index).unsqueeze(-1).to(x.dtype)
+                if mask.sum() == 0:
+                    continue
+
+=====================================================================
+Found a 9 line (85 tokens) duplication in the following files: 
+Starting at line 164 of /home/tim/Projects/LLM/research/scientist/screening_recompute.py
+Starting at line 730 of /home/tim/Projects/LLM/research/tools/backpopulate_screening_metrics.py
+
+        updates.update(screening_wikitext_fields(s1_result))
+        updates.update(screening_probe_fields(s1_result))
+        if s1_result.get("hellaswag_acc") is not None:
+            updates["hellaswag_acc"] = s1_result.get("hellaswag_acc")
+        if s1_result.get("hellaswag_status") is not None:
+            updates["hellaswag_status"] = s1_result.get("hellaswag_status")
+        if s1_result.get("hellaswag_n_examples") is not None:
+            updates["hellaswag_n_examples"] = s1_result.get("hellaswag_n_examples")
+        if s1_result.get("hellaswag_metric_version") is not None:
+
+=====================================================================
+Found a 11 line (85 tokens) duplication in the following files: 
+Starting at line 258 of /home/tim/Projects/LLM/research/synthesis/native_bound_segments.py
+Starting at line 275 of /home/tim/Projects/LLM/research/synthesis/native_bound_segments.py
+
+                "softmax_attention",
+                [
+                    _BoundPayloadSpec(tensor=module.q_proj.weight),
+                    _BoundPayloadSpec(tensor=module.k_proj.weight),
+                    _BoundPayloadSpec(tensor=module.v_proj.weight),
+                    _BoundPayloadSpec(tensor=module.o_proj.weight),
+                ],
+                {
+                    "batch": int(x.shape[0]),
+                    "seq": int(x.shape[1]) if x.ndim == 3 else 1,
+                    "dim": current_dim,
+
+=====================================================================
+Found a 15 line (85 tokens) duplication in the following files: 
+Starting at line 536 of /home/tim/Projects/LLM/research/tools/meta_profile_ml_analysis.py
+Starting at line 255 of /home/tim/Projects/LLM/research/tools/meta_surrogate_screening_proposal.py
+
+        "recommendations": _recommendations(model_payloads, all_lifts),
+    }
+
+
+def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
+    if not rows:
+        path.write_text("")
+        return
+    with path.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def _md_table(
+
+=====================================================================
+Found a 18 line (84 tokens) duplication in the following files: 
+Starting at line 86 of /home/tim/Projects/LLM/aria_designer/runtime/fallback_templates.py
+Starting at line 123 of /home/tim/Projects/LLM/aria_designer/runtime/fallback_templates.py
+
+    from aria_designer.components.base import NativeComponentHandler
+
+    _execute_fn = None
+
+    def _resolve():
+        nonlocal _execute_fn
+        if _execute_fn is None:
+            mod_path, fn_name = execute_fn_path.rsplit(".", 1)
+            import importlib
+
+            _execute_fn = getattr(importlib.import_module(mod_path), fn_name)
+        return _execute_fn
+
+    class ComponentHandler(NativeComponentHandler):
+        def _get_native_args(self, inputs, config):
+            if native_args_fn is not None:
+                return native_args_fn(inputs, config)
+            x = inputs["x"].detach().contiguous().float()
+
+=====================================================================
+Found a 16 line (84 tokens) duplication in the following files: 
+Starting at line 571 of /home/tim/Projects/LLM/research/scientist/native/dispatch.py
+Starting at line 591 of /home/tim/Projects/LLM/research/scientist/native/dispatch.py
+Starting at line 836 of /home/tim/Projects/LLM/research/scientist/native/dispatch.py
+Starting at line 855 of /home/tim/Projects/LLM/research/scientist/native/dispatch.py
+
+            result = rust.execute_graph_with_stats_arrays(graph_json, x_np)
+            y_flat = result["output"]
+            logger.debug(
+                "Arena stats: %d/%d bytes used, %d arena allocs, %d heap fallbacks",
+                result.get("arena_bytes_used", 0),
+                result.get("arena_capacity", 0),
+                result.get("arena_alloc_count", 0),
+                result.get("heap_fallback_count", 0),
+            )
+            if "node_profiles" in result:
+                _set_last_profile_data(
+                    {
+                        "node_profiles": list(result["node_profiles"]),
+                        "peak_memory_bytes": int(result.get("peak_memory_bytes", 0)),
+                    }
+                )
+
+=====================================================================
+Found a 15 line (84 tokens) duplication in the following files: 
+Starting at line 286 of /home/tim/Projects/LLM/research/tools/meta_experiment_queue.py
+Starting at line 255 of /home/tim/Projects/LLM/research/tools/meta_surrogate_screening_proposal.py
+
+        "scaffold_commands": scaffold_commands,
+    }
+
+
+def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
+    if not rows:
+        path.write_text("")
+        return
+    with path.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def _md_table(
+
+=====================================================================
+Found a 14 line (83 tokens) duplication in the following files: 
+Starting at line 581 of /home/tim/Projects/LLM/component_fab/harness/binding_tests_v2.py
+Starting at line 816 of /home/tim/Projects/LLM/component_fab/harness/binding_tests_v2.py
+
+def test_dyck2(
+    lane_factory: Callable[[int], nn.Module],
+    *,
+    dim: int = 32,
+    n_blocks: int = 2,
+    seq_len: int = 24,
+    batch_size: int = 32,
+    n_train_steps: int = 80,
+    n_eval_batches: int = 4,
+    seed: int = 0,
+) -> float:
+    torch.manual_seed(seed)
+    rng = torch.Generator().manual_seed(seed)
+    VOCAB = 5  # (, [, ), ], PAD
+
+=====================================================================
+Found a 43 line (83 tokens) duplication in the following files: 
+Starting at line 75 of /home/tim/Projects/LLM/research/scientist/api_routes/leaderboard_bp.py
+Starting at line 116 of /home/tim/Projects/LLM/research/scientist/notebook/notebook_leaderboard.py
+
+INTERMEDIATE_SCREEN_DASHBOARD_FIELDS = (
+    "ar_intermediate_metric_version",
+    "ar_intermediate_diagnostic_score",
+    "ar_intermediate_held_pair_acc",
+    "ar_intermediate_held_pair_lift",
+    "ar_intermediate_held_class_acc",
+    "ar_intermediate_auc_lift",
+    "ar_intermediate_best_held_pair_acc",
+    "ar_intermediate_improvement",
+    "ar_intermediate_status",
+    "ar_intermediate_elapsed_ms",
+    "binding_multislot_metric_version",
+    "binding_multislot_diagnostic_score",
+    "binding_multislot_held_entity_slot_acc",
+    "binding_multislot_held_slot_lift",
+    "binding_multislot_two_plus_slots_acc",
+    "binding_multislot_two_plus_slots_lift",
+    "binding_multislot_mixed_two_plus_slots_acc",
+    "binding_multislot_mixed_two_plus_slots_lift",
+    "binding_multislot_all_slots_acc",
+    "binding_multislot_auc_lift",
+    "binding_multislot_status",
+    "binding_multislot_elapsed_ms",
+    # AR curriculum probe (replaces ar_intermediate as differentiation probe).
+    "ar_curriculum_metric_version",
+    "ar_curriculum_auc_pair_final",
+    "ar_curriculum_auc_class_final",
+    "ar_curriculum_s0_held_pair_acc",
+    "ar_curriculum_s0_retention",
+    "ar_curriculum_max_passing_stage",
+    "ar_curriculum_per_stage_held_pair_acc",
+    "ar_curriculum_per_stage_held_class_acc",
+    "ar_curriculum_per_stage_lift_pair",
+    "ar_curriculum_per_stage_z_score_pair",
+    "ar_curriculum_per_stage_chance_pair",
+    "ar_curriculum_learning_curve_json",
+    "ar_curriculum_steps_trained",
+    "ar_curriculum_n_eval_examples",
+    "ar_curriculum_mode",
+    "ar_curriculum_elapsed_ms",
+    "ar_curriculum_status",
+    "ar_curriculum_error",
+)
+
+=====================================================================
+Found a 18 line (83 tokens) duplication in the following files: 
+Starting at line 284 of /home/tim/Projects/LLM/research/scientist/runner/execution_search.py
+Starting at line 578 of /home/tim/Projects/LLM/research/scientist/runner/execution_search.py
+
+                    "mode": "evolution",
+                },
+            )
+            self._fail_experiment_compat(nb=nb, experiment_id=exp_id, error=str(e))
+            self._update_progress(
+                status="failed",
+                error=str(e),
+                aria_message=self.aria.react_to_failure(str(e)),
+            )
+            self._emit_event(
+                "experiment_failed",
+                {
+                    "experiment_id": exp_id,
+                    "error": str(e),
+                },
+            )
+        except BaseException as e:
+            logger.critical(
+
+=====================================================================
+Found a 22 line (83 tokens) duplication in the following files: 
+Starting at line 316 of /home/tim/Projects/LLM/research/scientist/runner/execution_search.py
+Starting at line 610 of /home/tim/Projects/LLM/research/scientist/runner/execution_search.py
+
+                        "mode": "evolution",
+                        "fatal": True,
+                    },
+                )
+                self._fail_experiment_compat(
+                    nb=nb,
+                    experiment_id=exp_id,
+                    error=f"FATAL: {e}",
+                )
+                self._update_progress(status="failed", error=f"FATAL: {e}")
+                self._emit_event(
+                    "experiment_failed",
+                    {"experiment_id": exp_id, "error": f"FATAL: {e}"},
+                )
+            except RuntimeError:
+                logger.error(
+                    "Failed to emit failure event after fatal error", exc_info=True
+                )
+            raise
+        finally:
+            nb.close()
+            self._run_pending_scale_up()
+
+=====================================================================
+Found a 11 line (83 tokens) duplication in the following files: 
+Starting at line 829 of /home/tim/Projects/LLM/research/synthesis/_templates_research.py
+Starting at line 864 of /home/tim/Projects/LLM/research/synthesis/_templates_research.py
+Starting at line 904 of /home/tim/Projects/LLM/research/synthesis/_templates_research.py
+
+    routed = _add(graph, "hetero_moe", [proj], context="hetero_moe_block.routed")
+
+    norm2 = _pick_compatible_motif(graph, routed, rng, MOTIF_CLASS_NORM, weights)
+    normed2 = _instantiate_motif(graph, routed, norm2, rng) if norm2 else routed
+
+    ffn = _pick_compatible_motif_from_classes(
+        graph, normed2, rng, list(_FFN_CLASSES), weights
+    )
+    processed = _instantiate_motif(graph, normed2, ffn, rng) if ffn else normed2
+    processed = _fix_dim(graph, processed)
+    return _residual(graph, input_id, processed, context="hetero_moe_block.output")
+
+=====================================================================
+Found a 14 line (83 tokens) duplication in the following files: 
+Starting at line 297 of /home/tim/Projects/LLM/research/tools/ar_curriculum_controls.py
+Starting at line 573 of /home/tim/Projects/LLM/research/tools/ar_curriculum_experiment.py
+
+                r = run_arch(
+                    arch_key,
+                    device=device,
+                    seed=seed,
+                    d_model=int(args.d_model),
+                    n_layers=int(args.n_layers),
+                    steps_per_stage=int(args.steps_per_stage),
+                    batch_size=int(args.batch_size),
+                    lr=float(args.lr),
+                    eval_batches=int(args.eval_batches),
+                    stage_configs=stage_configs,
+                    stage_set_name=args.stage_set,
+                    vocab_size=vocab_size,
+                    mode=mode,
+
+=====================================================================
+Found a 18 line (83 tokens) duplication in the following files: 
+Starting at line 15 of /home/tim/Projects/LLM/research/tools/ar_gate_pilot_midtier_sweep.py
+Starting at line 24 of /home/tim/Projects/LLM/research/tools/backfill_ar_gate.py
+
+import sys
+import time
+from pathlib import Path
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s",
+    datefmt="%H:%M:%S",
+)
+logger = logging.getLogger(__name__)
+
+REPO = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO))
+
+from research.scientist.notebook.graph_artifacts import resolve_graph_json_value
+
+DB_PATH = REPO / "research/runs.db"
+REPORTS_DIR = REPO / "research/reports"
+
+=====================================================================
+Found a 18 line (83 tokens) duplication in the following files: 
+Starting at line 16 of /home/tim/Projects/LLM/research/tools/ar_gate_pilot_top20_sweep.py
+Starting at line 24 of /home/tim/Projects/LLM/research/tools/backfill_ar_gate.py
+
+import sys
+import time
+from pathlib import Path
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s",
+    datefmt="%H:%M:%S",
+)
+logger = logging.getLogger(__name__)
+
+REPO = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO))
+
+from research.scientist.notebook.graph_artifacts import resolve_graph_json_value
+
+DB_PATH = REPO / "research/runs.db"
+REPORTS_DIR = REPO / "research/reports"
+
+=====================================================================
+Found a 8 line (83 tokens) duplication in the following files: 
+Starting at line 98 of /home/tim/Projects/LLM/research/tools/ar_validation_calibration.py
+Starting at line 125 of /home/tim/Projects/LLM/research/tools/small_ar_story_calibration.py
+
+    def __init__(self, vocab_size: int, *, dim: int = 64) -> None:
+        super().__init__()
+        self.vocab_size = int(vocab_size)
+        self.embed = nn.Embedding(self.vocab_size, int(dim))
+        self.head = nn.Linear(int(dim), self.vocab_size)
+
+    def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
+        return self.head(self.embed(input_ids))
+
+=====================================================================
+Found a 11 line (82 tokens) duplication in the following files: 
+Starting at line 329 of /home/tim/Projects/LLM/research/eval/induction_intermediate_probe.py
+Starting at line 335 of /home/tim/Projects/LLM/research/eval/induction_validation_probe.py
+
+                    )
+    except Exception as exc:
+        result.status = f"train_failed: {exc}"
+
+    if result.gap_accuracies:
+        vals = list(result.gap_accuracies.values())
+        result.auc = round(sum(vals) / len(vals), 4)
+        result.max_gap_acc = round(max(vals), 4)
+
+    result.elapsed_ms = round((time.perf_counter() - t0) * 1000, 1)
+    return result
+
+=====================================================================
+Found a 7 line (82 tokens) duplication in the following files: 
+Starting at line 929 of /home/tim/Projects/LLM/research/synthesis/_templates_attention.py
+Starting at line 43 of /home/tim/Projects/LLM/research/synthesis/_templates_attention_tail.py
+Starting at line 89 of /home/tim/Projects/LLM/research/synthesis/_templates_attention_tail.py
+Starting at line 217 of /home/tim/Projects/LLM/research/synthesis/_templates_attention_tail.py
+Starting at line 251 of /home/tim/Projects/LLM/research/synthesis/_templates_attention_tail.py
+Starting at line 285 of /home/tim/Projects/LLM/research/synthesis/_templates_attention_tail.py
+
+    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
+    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
+
+    attn = _pick_compatible_motif(graph, normed, rng, MOTIF_CLASS_ATTENTION, weights)
+    attended = _instantiate_motif(graph, normed, attn, rng) if attn else normed
+    attended = _fix_dim(graph, attended)
+    attended = _add(graph, "rmsnorm", [attended], context="attn_gated_product.norm")
+
+=====================================================================
+Found a 10 line (82 tokens) duplication in the following files: 
+Starting at line 369 of /home/tim/Projects/LLM/research/synthesis/_templates_attention_hybrid.py
+Starting at line 43 of /home/tim/Projects/LLM/research/synthesis/_templates_attention_tail.py
+
+    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
+    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
+    attn = _pick_compatible_motif(graph, normed, rng, MOTIF_CLASS_ATTENTION, weights)
+    attended = _instantiate_motif(graph, normed, attn, rng) if attn else normed
+    attended = _fix_dim(graph, attended)
+    attended = _add(
+        graph,
+        "rmsnorm",
+        [attended],
+        context="attn_safe_division.norm",
+
+=====================================================================
+Found a 11 line (82 tokens) duplication in the following files: 
+Starting at line 495 of /home/tim/Projects/LLM/research/tools/meta_surrogate_analysis.py
+Starting at line 259 of /home/tim/Projects/LLM/research/tools/meta_surrogate_screening_proposal.py
+
+def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
+    if not rows:
+        path.write_text("")
+        return
+    with path.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def _md_table(
+
+=====================================================================
+Found a 6 line (81 tokens) duplication in the following files: 
+Starting at line 366 of /home/tim/Projects/LLM/aria_designer/runtime/subgraph.py
+Starting at line 432 of /home/tim/Projects/LLM/aria_designer/runtime/subgraph.py
+
+            {"id": "e_qk0", "source": "q", "target": "qk"},
+            {"id": "e_qk1", "source": "k", "target": "qk"},
+            {"id": "e_sm", "source": "qk", "target": "sm"},
+            {"id": "e_av0", "source": "sm", "target": "av"},
+            {"id": "e_av1", "source": "v", "target": "av"},
+            {"id": "e_proj", "source": "av", "target": "proj"},
+
+=====================================================================
+Found a 7 line (81 tokens) duplication in the following files: 
+Starting at line 288 of /home/tim/Projects/LLM/research/scientist/runner/execution_training_micro.py
+Starting at line 111 of /home/tim/Projects/LLM/research/scientist/runner/execution_training_program.py
+
+            result["optimizer_lr"] = float(pg0.get("lr", config.stage1_lr))
+            result["optimizer_weight_decay"] = float(pg0.get("weight_decay", 0.01))
+            result["optimizer_momentum"] = float(pg0.get("momentum", 0.0))
+            betas = pg0.get("betas")
+            if isinstance(betas, tuple) and len(betas) == 2:
+                result["optimizer_beta1"] = float(betas[0])
+                result["optimizer_beta2"] = float(betas[1])
+
+=====================================================================
+Found a 9 line (81 tokens) duplication in the following files: 
+Starting at line 208 of /home/tim/Projects/LLM/research/tools/run_blimp_cohort.py
+Starting at line 238 of /home/tim/Projects/LLM/research/tools/run_tier2_binding_cohort.py
+
+    parser.add_argument("--device", default=None, type=str)
+    parser.add_argument("--quiet", action="store_true")
+    args = parser.parse_args(sys.argv[1:] if argv is None else argv)
+    pids = [p.strip() for p in args.proposal_ids.split(",") if p.strip()]
+    summary = run_cohort(
+        pids,
+        dim=args.dim,
+        n_blocks=args.n_blocks,
+        n_train_steps=args.n_train_steps,
+
+=====================================================================
+Found a 10 line (80 tokens) duplication in the following files: 
+Starting at line 1065 of /home/tim/Projects/LLM/aria_designer/api/app/routers/eval.py
+Starting at line 573 of /home/tim/Projects/LLM/aria_designer/api/app/routers/workflows.py
+
+        )
+    result_payload = run.get("result") or {}
+    benchmarking = result_payload.get("benchmarking")
+    if not benchmarking:
+        stage_metrics = {
+            name: (stage.get("metrics") if isinstance(stage, dict) else None)
+            for name, stage in (run.get("stages") or {}).items()
+            if isinstance(stage, dict)
+        }
+        benchmarking = build_benchmark_analysis(stage_metrics)
+
+=====================================================================
+Found a 15 line (80 tokens) duplication in the following files: 
+Starting at line 307 of /home/tim/Projects/LLM/research/eval/induction_intermediate_probe.py
+Starting at line 285 of /home/tim/Projects/LLM/research/eval/induction_validation_probe.py
+
+                if not torch.isfinite(loss):
+                    result.status = "diverged"
+                    break
+                loss.backward()
+                clip_grad_norm(probe_model.parameters(), 1.0)
+                opt.step()
+                result.steps_trained = step
+
+            # Eval phase — bulk-generate eval batches per gap.
+            probe_model.eval()
+            with torch.inference_mode():
+                for gap in sorted(gaps):
+                    if time.perf_counter() - t0 > timeout_s:
+                        result.gap_accuracies[gap] = 0.0
+                        continue
+
+=====================================================================
+Found a 16 line (80 tokens) duplication in the following files: 
+Starting at line 177 of /home/tim/Projects/LLM/research/eval/induction_probe.py
+Starting at line 285 of /home/tim/Projects/LLM/research/eval/induction_validation_probe.py
+
+                if not torch.isfinite(loss):
+                    result.status = "diverged"
+                    break
+
+                loss.backward()
+                clip_grad_norm(probe_model.parameters(), 1.0)
+                opt.step()
+                result.steps_trained = step
+
+            # Evaluate across all gap distances
+            probe_model.eval()
+            with torch.inference_mode():
+                for gap in sorted(gaps):
+                    if time.perf_counter() - t0 > timeout_s:
+                        result.gap_accuracies[gap] = 0.0
+                        continue
+
+=====================================================================
+Found a 13 line (80 tokens) duplication in the following files: 
+Starting at line 1019 of /home/tim/Projects/LLM/research/scientist/intelligence/ml_corpus.py
+Starting at line 255 of /home/tim/Projects/LLM/research/tools/cross_exp_probe_merge.py
+
+        if isinstance(raw_payload, str) and raw_payload.strip():
+            try:
+                payload = json.loads(raw_payload)
+            except (json.JSONDecodeError, TypeError, ValueError):
+                payload = {}
+            if isinstance(payload, dict):
+                screening_role = str(
+                    payload.get("screening_model_training_role") or ""
+                ).strip()
+        if screening_role == "negative":
+            is_runtime_negative = True
+        elif screening_role == "positive":
+            is_trusted_positive = True
+
+=====================================================================
+Found a 14 line (80 tokens) duplication in the following files: 
+Starting at line 333 of /home/tim/Projects/LLM/research/scientist/runner/continuous_modes.py
+Starting at line 202 of /home/tim/Projects/LLM/research/scientist/runner/execution_search.py
+
+            try:
+                validation = self.aria.validate_hypothesis(hypothesis, results, context)
+                if validation:
+                    nb.add_entry(
+                        ExperimentEntry(
+                            entry_type="analysis",
+                            title="Hypothesis Validation",
+                            content=validation.get("explanation", ""),
+                            experiment_id=exp_id,
+                            metadata={"validated": validation.get("validated", False)},
+                        )
+                    )
+            except (RuntimeError, ValueError, KeyError) as e:
+                logger.warning("Hypothesis validation logging failed: %s", e)
+
+=====================================================================
+Found a 17 line (80 tokens) duplication in the following files: 
+Starting at line 375 of /home/tim/Projects/LLM/research/scientist/runner/results_auto_escalate_phase7.py
+Starting at line 534 of /home/tim/Projects/LLM/research/scientist/runner/results_auto_escalate_phase7.py
+
+    def _queue_pending_investigation_followup(
+        self,
+        *,
+        nb: LabNotebook,
+        result_ids: List[str],
+        config: RunConfig,
+        blocked_incomplete_fingerprint: int | None,
+        survivor_count: int | None,
+        qualifying_count: int | None,
+        source_context: str | None,
+        source_decision_id: str | None,
+        source_experiment_id: str | None,
+        priority_score: float,
+        priority_reasons: Dict[str, Any] | None,
+    ) -> str:
+        hypothesis = (
+            f"Auto-investigation: testing robustness of top "
+
+=====================================================================
+Found a 11 line (80 tokens) duplication in the following files: 
+Starting at line 535 of /home/tim/Projects/LLM/research/synthesis/_templates_attention.py
+Starting at line 828 of /home/tim/Projects/LLM/research/synthesis/_templates_attention.py
+Starting at line 678 of /home/tim/Projects/LLM/research/synthesis/_templates_attention_advanced.py
+Starting at line 742 of /home/tim/Projects/LLM/research/synthesis/_templates_attention_advanced.py
+Starting at line 795 of /home/tim/Projects/LLM/research/synthesis/_templates_attention_advanced.py
+Starting at line 300 of /home/tim/Projects/LLM/research/synthesis/_templates_attention_hybrid.py
+Starting at line 348 of /home/tim/Projects/LLM/research/synthesis/_templates_attention_hybrid.py
+Starting at line 457 of /home/tim/Projects/LLM/research/synthesis/_templates_attention_hybrid.py
+Starting at line 503 of /home/tim/Projects/LLM/research/synthesis/_templates_attention_hybrid.py
+Starting at line 848 of /home/tim/Projects/LLM/research/synthesis/_templates_routing_gated.py
+
+    mid = _residual(graph, input_id, merged, context="attn_conv_hybrid.mid")
+
+    norm2 = _pick_compatible_motif(graph, mid, rng, MOTIF_CLASS_NORM, weights)
+    normed2 = _instantiate_motif(graph, mid, norm2, rng) if norm2 else mid
+    ffn = _pick_compatible_motif_from_classes(
+        graph, normed2, rng, _FFN_CLASSES, weights
+    )
+    ffned = _instantiate_motif(graph, normed2, ffn, rng) if ffn else normed2
+    ffned = _fix_dim(graph, ffned)
+
+    return _residual(graph, mid, ffned, context="attn_conv_hybrid.output")
+
+=====================================================================
+Found a 22 line (80 tokens) duplication in the following files: 
+Starting at line 292 of /home/tim/Projects/LLM/research/tools/controlled_sentence_tune.py
+Starting at line 175 of /home/tim/Projects/LLM/research/tools/nano_controlled_holdout_tune.py
+
+                seeds=seeds,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("target %s failed", row.get("result_id"))
+            results = [{"status": "error", "error": str(exc)}]
+        report.append(
+            {
+                "target": {
+                    k: row.get(k)
+                    for k in (
+                        "entry_id",
+                        "result_id",
+                        "tier",
+                        "composite_score",
+                        "template_name",
+                        "induction_screening_auc",
+                        "binding_screening_composite",
+                        "induction_intermediate_auc",
+                        "binding_intermediate_auc",
+                        "language_control_s05_sentence_assoc_score",
+                        "language_control_s10_sentence_assoc_score",
+                        "language_control_investigation_sentence_assoc_score",
+

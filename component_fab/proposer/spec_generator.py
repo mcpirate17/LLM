@@ -31,7 +31,16 @@ CATEGORY_ROUTING = "routing"
 CATEGORY_COMPRESSION = "compression"
 
 _NOVEL_SPACES = frozenset(
-    {"tropical", "clifford", "padic", "spiking", "hyperbolic", "complex"}
+    {
+        "tropical",
+        "clifford",
+        "padic",
+        "spiking",
+        "hyperbolic",
+        "hyperbolic_poincare",
+        "complex",
+        "quaternion",
+    }
 )
 
 
@@ -156,6 +165,11 @@ def spec_from_candidate(candidate: CandidateTuple) -> ProposalSpec:
     category = category_from_axes(axes)
     anchor, anchor_axes = _pick_anchor(candidate)
     kind = synthesis_kind_for_axes(axes, anchor_axes)
+    # Day-3 (2026-05-15): make synthesis_kind visible to code_generator's
+    # _dispatch_synthesis_hint by mirroring it into math_axes. Without this
+    # the dispatcher can't see the kind and basis_swap / projection_swap /
+    # state_kernel_swap labels stay inert.
+    axes["synthesis_kind"] = kind
     name = _build_name(category, axes)
     return ProposalSpec(
         proposal_id=_proposal_id(name, axes),

@@ -833,7 +833,10 @@ class _CycleMixin:
 
     def _healer_signature_seen(self, error: str, scope: str) -> bool:
         """Return True if this error was already sent to the healer recently."""
-        sig = hashlib.md5((error[:200] + scope[:100]).encode()).hexdigest()[:12]
+        sig = hashlib.md5(
+            (error[:200] + scope[:100]).encode(),
+            usedforsecurity=False,
+        ).hexdigest()[:12]
         now = time.time()
         # Expire old signatures (5-minute TTL)
         self._recent_healer_signatures = {

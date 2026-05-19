@@ -30,9 +30,7 @@ from __future__ import annotations
 
 import argparse
 import sqlite3
-import subprocess
 import sys
-import threading
 import time
 from contextlib import nullcontext
 from dataclasses import dataclass
@@ -44,6 +42,13 @@ import torch.multiprocessing as mp
 import torch.nn.functional as F
 
 from research.scientist.notebook.graph_artifacts import resolve_graph_json_value
+from research.tools._metric_backfill_common import (
+    read_total_gpu_mib,
+    sample_token_batch,
+    start_parallel_backfill_runtime,
+    train_next_token_step,
+    update_graph_runs_columns,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 DB_PATH = ROOT / "research" / "runs.db"
@@ -175,29 +180,11 @@ def _patch_eval_tokenizers() -> None:
 
 
 def _sample_train_batch(device: torch.device) -> torch.Tensor:
-    n = _W_TRAIN_TOKENS.numel() - _W_SEQ_LEN - 1
-    starts = torch.randint(0, n, (_W_BATCH,))
-    return torch.stack(
-        [_W_TRAIN_TOKENS[s : s + _W_SEQ_LEN + 1] for s in starts.tolist()],
-        dim=0,
-    ).to(device)
+    return sample_token_batch(_W_TRAIN_TOKENS, _W_BATCH, _W_SEQ_LEN, device)
 
 
 def _train_step(model, optimizer, batch):
-    inputs = batch[:, :-1]
-    targets = batch[:, 1:]
-    logits = model(inputs)
-    loss = F.cross_entropy(
-        logits.reshape(-1, logits.shape[-1]),
-        targets.reshape(-1),
-    )
-    if not torch.isfinite(loss):
-        return float("nan")
-    optimizer.zero_grad(set_to_none=True)
-    loss.backward()
-    torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-    optimizer.step()
-    return float(loss.item())
+    return train_next_token_step(model, optimizer, batch)
 
 
 def _measure_zero_shot_ppl(model, device: torch.device) -> tuple[float | None, int]:
@@ -526,64 +513,12 @@ def _propagate(
     columns = [c for c in _BPE_EVAL_COLUMNS if c in payload and c in existing]
     if not columns:
         return 0
-    set_clause = ", ".join(f"{c} = ?" for c in columns)
-    values = [payload.get(c) for c in columns]
-    cursor = conn.execute(
-        f"UPDATE graph_runs SET {set_clause} WHERE graph_fingerprint = ?",
-        (*values, fingerprint),
+    return update_graph_runs_columns(
+        conn,
+        fingerprint,
+        payload,
+        tuple(columns),
     )
-    return cursor.rowcount
-
-
-def _read_total_gpu_mib() -> int:
-    try:
-        out = (
-            subprocess.run(
-                [
-                    "nvidia-smi",
-                    "--query-gpu=memory.used",
-                    "--format=csv,noheader,nounits",
-                ],
-                capture_output=True,
-                text=True,
-                check=True,
-                timeout=3,
-            )
-            .stdout.strip()
-            .splitlines()
-        )
-        return int(out[0]) if out else 0
-    except (
-        FileNotFoundError,
-        subprocess.CalledProcessError,
-        subprocess.TimeoutExpired,
-        ValueError,
-    ):
-        return 0
-
-
-def _vram_governor(
-    stop_event: threading.Event,
-    pause_event: threading.Event,
-    high_water_mib: int,
-    low_water_mib: int,
-    poll_interval_s: float,
-) -> None:
-    while not stop_event.is_set():
-        used = _read_total_gpu_mib()
-        if used >= high_water_mib and not pause_event.is_set():
-            print(
-                f"[governor] VRAM at {used} MiB ≥ {high_water_mib} — pausing dispatch",
-                flush=True,
-            )
-            pause_event.set()
-        elif used <= low_water_mib and pause_event.is_set():
-            print(
-                f"[governor] VRAM at {used} MiB ≤ {low_water_mib} — resuming dispatch",
-                flush=True,
-            )
-            pause_event.clear()
-        stop_event.wait(timeout=poll_interval_s)
 
 
 def _run_parallel(
@@ -608,32 +543,24 @@ def _run_parallel(
     if not tasks:
         return {"ok": 0, "fail": 0, "rows": 0, "elapsed_s": 0, "rate": 0}
 
-    print(
-        f"[setup] starting {n_workers} workers; per-worker VRAM cap {gpu_memory_fraction:.0%}",
-        flush=True,
-    )
-
-    ctx = mp.get_context("spawn")
-    pause_event = threading.Event()
-    stop_event = threading.Event()
-    governor = threading.Thread(
-        target=_vram_governor,
-        args=(stop_event, pause_event, high_water_mib, low_water_mib, governor_poll_s),
-        daemon=True,
-    )
-    governor.start()
-
-    conn = sqlite3.connect(str(DB_PATH))
-    conn.execute("PRAGMA journal_mode=WAL")
-
     succeeded = 0
     failed = 0
     propagated = 0
-    total = len(tasks)
-    t_start = time.time()
     peak_vram = 0
+    runtime = start_parallel_backfill_runtime(
+        tasks=tasks,
+        n_workers=n_workers,
+        gpu_memory_fraction=gpu_memory_fraction,
+        high_water_mib=high_water_mib,
+        low_water_mib=low_water_mib,
+        governor_poll_s=governor_poll_s,
+        multiprocessing_module=mp,
+        db_path=DB_PATH,
+    )
+    total = runtime.total
+    t_start = runtime.t_start
 
-    pool = ctx.Pool(
+    pool = runtime.ctx.Pool(
         processes=n_workers,
         initializer=_worker_init,
         initargs=(
@@ -653,7 +580,7 @@ def _run_parallel(
     try:
         result_iter = pool.imap_unordered(_worker_measure, tasks, chunksize=1)
         for idx, result in enumerate(result_iter, start=1):
-            while pause_event.is_set():
+            while runtime.pause_event.is_set():
                 time.sleep(2.0)
 
             if result.payload is None:
@@ -665,16 +592,16 @@ def _run_parallel(
                     )
                 continue
 
-            rowcount = _propagate(conn, result.fingerprint, result.payload)
+            rowcount = _propagate(runtime.conn, result.fingerprint, result.payload)
             succeeded += 1
             propagated += rowcount
 
             if succeeded % commit_every == 0 or idx == total:
-                conn.commit()
+                runtime.conn.commit()
                 elapsed = time.time() - t_start
                 rate = succeeded / max(elapsed, 1e-6)
                 eta_min = (total - idx) / max(rate, 1e-6) / 60.0
-                used = _read_total_gpu_mib()
+                used = read_total_gpu_mib()
                 peak_vram = max(peak_vram, used)
                 # Pretty preview of one row
                 p = result.payload
@@ -688,10 +615,10 @@ def _run_parallel(
     finally:
         pool.close()
         pool.join()
-        stop_event.set()
-        governor.join(timeout=5.0)
-        conn.commit()
-        conn.close()
+        runtime.stop_event.set()
+        runtime.governor.join(timeout=5.0)
+        runtime.conn.commit()
+        runtime.conn.close()
 
     elapsed = time.time() - t_start
     rate = succeeded / max(elapsed, 1e-6)

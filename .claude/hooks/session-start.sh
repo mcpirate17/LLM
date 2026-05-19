@@ -7,15 +7,43 @@
 
 set -euo pipefail
 
-# Auto-prune: delete root-level files in research/reports/ older than 14d.
-# Subdirs (nano_ar_inv_no_go/, nano_bind_backfill/) are intentionally preserved.
-# Output goes to stderr so the JSON payload below stays clean.
+# Auto-prune: delete root-level files older than N days from output dirs.
+# Subdirs (nano_ar_inv_no_go/, nano_bind_backfill/, dated perf_artifacts subdirs)
+# are intentionally preserved. Output goes to stderr so the JSON payload stays clean.
 REPO_ROOT="$(dirname "$(dirname "$(dirname "$(readlink -f "$0")")")")"
-REPORTS_DIR="$REPO_ROOT/research/reports"
-if [[ -d "$REPORTS_DIR" ]]; then
-  PRUNED=$(find "$REPORTS_DIR" -maxdepth 1 -type f -mtime +14 -print -delete 2>/dev/null | wc -l || true)
-  if [[ "${PRUNED:-0}" -gt 0 ]]; then
-    echo "[session-start] pruned $PRUNED file(s) from research/reports older than 14d" >&2
+
+prune_root_files() {
+  local dir="$1" days="$2" label="$3" extra_exclude="${4:-}"
+  [[ -d "$dir" ]] || return 0
+  local pruned
+  if [[ -n "$extra_exclude" ]]; then
+    pruned=$(find "$dir" -maxdepth 1 -type f -mtime "+$days" ! -name "$extra_exclude" -print -delete 2>/dev/null | wc -l || true)
+  else
+    pruned=$(find "$dir" -maxdepth 1 -type f -mtime "+$days" -print -delete 2>/dev/null | wc -l || true)
+  fi
+  if [[ "${pruned:-0}" -gt 0 ]]; then
+    echo "[session-start] pruned $pruned file(s) from $label older than ${days}d" >&2
+  fi
+}
+
+prune_root_files "$REPO_ROOT/research/reports"        14 "research/reports"
+prune_root_files "$REPO_ROOT/research/tmp"             7 "research/tmp"
+prune_root_files "$REPO_ROOT/research/perf_artifacts" 14 "research/perf_artifacts"
+prune_root_files "$REPO_ROOT/tasks/audit"             14 "tasks/audit"      "latest_guardrail_report.*"
+
+# Writer-default dirs in research/artifacts/notebook/ — readers don't exist for
+# these (entries/ excepted, has a test reader). Prune to keep dir size bounded.
+for sub in experiments training_curves program_results attribution_reports report_snapshots construction_prior_snapshots; do
+  prune_root_files "$REPO_ROOT/research/artifacts/notebook/$sub" 14 "research/artifacts/notebook/$sub"
+done
+
+# Per-experiment checkpoint dirs in checkpoints/_investigation_artifacts/ (champion-confirmation milestones).
+# Each subdir is one exp_id; prune whole subdirs older than 14d.
+INV_DIR="$REPO_ROOT/checkpoints/_investigation_artifacts"
+if [[ -d "$INV_DIR" ]]; then
+  pruned=$(find "$INV_DIR" -mindepth 1 -maxdepth 1 -type d -mtime +14 -print -exec rm -rf {} + 2>/dev/null | wc -l || true)
+  if [[ "${pruned:-0}" -gt 0 ]]; then
+    echo "[session-start] pruned $pruned exp_id dir(s) from checkpoints/_investigation_artifacts older than 14d" >&2
   fi
 fi
 

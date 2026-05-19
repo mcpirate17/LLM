@@ -2,106 +2,22 @@
 
 from __future__ import annotations
 
-import re
 from typing import Dict, List, Optional
 
 from .context_experiment import build_history_context
-
-
-def _knowledge_canonical(raw: str) -> str:
-    text = " ".join(str(raw or "").split()).strip().lower()
-    text = re.sub(r"\b\d+(?:\.\d+)?%?\b", "#", text)
-    text = re.sub(r"[^a-z0-9#\s]+", " ", text)
-    return re.sub(r"\s+", " ", text).strip()
-
-
-_KNOWLEDGE_STOPWORDS = {
-    "the",
-    "and",
-    "for",
-    "that",
-    "with",
-    "this",
-    "from",
-    "into",
-    "when",
-    "then",
-    "than",
-    "were",
-    "been",
-    "have",
-    "has",
-    "had",
-    "are",
-    "was",
-    "show",
-    "shows",
-    "showed",
-    "over",
-    "under",
-    "across",
-    "between",
-    "using",
-    "use",
-    "used",
-    "high",
-    "low",
-    "very",
-    "more",
-    "less",
-    "near",
-    "around",
-    "recent",
-    "experiments",
-    "experiment",
-    "result",
-    "results",
-    "indicate",
-    "indicates",
-    "suggest",
-    "suggests",
-    "mode",
-    "patterns",
-    "pattern",
-    "architecture",
-    "architectures",
-}
-
-
-def _knowledge_tokens(raw: str) -> set[str]:
-    canonical = _knowledge_canonical(raw)
-    return {
-        tok
-        for tok in canonical.split()
-        if len(tok) > 3 and tok not in _KNOWLEDGE_STOPWORDS
-    }
-
-
-def _knowledge_low_signal(row: Dict) -> bool:
-    title = " ".join(str(row.get("title") or "").split()).strip().lower()
-    content = " ".join(str(row.get("content") or "").split()).strip().lower()
-    if not title or not content:
-        return True
-    if len(title) < 12 or len(content) < 40:
-        return True
-    if title.startswith("recent experiments show ") or title.startswith(
-        "all recent experiments show "
-    ):
-        return True
-    if "..." in title or "..." in content:
-        return True
-    if "[principle/" in title or "hybrid? no" in title:
-        return True
-    if "$" in content or "\\approx" in content:
-        return True
-    return False
+from .knowledge_utils import (
+    canonical_knowledge_text,
+    is_prompt_low_signal,
+    is_semantic_duplicate,
+    knowledge_tokens,
+)
 
 
 def _knowledge_score(row: Dict) -> float:
     eff = float(row.get("effective_confidence", row.get("confidence", 0.5)) or 0.5)
     validated = int(row.get("times_validated") or 0)
     bonus = min(0.08, (max(validated, 0) ** 0.5) * 0.015)
-    penalty = 0.22 if _knowledge_low_signal(row) else 0.0
+    penalty = 0.22 if is_prompt_low_signal(row) else 0.0
     return eff + bonus - penalty
 
 
@@ -112,20 +28,18 @@ def _select_knowledge_for_llm(knowledge: List[Dict], limit: int = 6) -> List[Dic
     semantic_seen: List[set[str]] = []
     for row in rows:
         key = (
-            _knowledge_canonical(row.get("title") or ""),
-            _knowledge_canonical(row.get("content") or ""),
+            canonical_knowledge_text(row.get("title") or ""),
+            canonical_knowledge_text(row.get("content") or ""),
         )
         if key in seen:
             continue
-        row_tokens = _knowledge_tokens(
+        row_tokens = knowledge_tokens(
             f"{row.get('title') or ''} {row.get('content') or ''}"
         )
         if row_tokens:
             near_dup = False
             for tokens in semantic_seen:
-                inter = len(row_tokens & tokens)
-                union = len(row_tokens | tokens)
-                if inter >= 5 and union and (inter / union) >= 0.22:
+                if is_semantic_duplicate(row_tokens, tokens, threshold=0.22):
                     near_dup = True
                     break
             if near_dup:

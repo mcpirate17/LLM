@@ -2,6 +2,12 @@ from __future__ import annotations
 
 from typing import Any, Callable, Dict, List, Optional
 
+_IMPLICIT_COMPAT = {
+    ("complex_tensor", "tensor"),  # runtime takes .real
+    ("tensor", "complex_tensor"),  # runtime zero-fills imaginary
+    ("mask", "tensor"),  # mask is a tensor
+}
+
 
 def find_unsupported_edge_dtype_pairings(
     workflow: Dict[str, Any],
@@ -37,22 +43,8 @@ def find_unsupported_edge_dtype_pairings(
         if not isinstance(src_comp, dict) or not isinstance(tgt_comp, dict):
             continue
 
-        src_port = next(
-            (
-                p
-                for p in src_comp.get("outputs", [])
-                if isinstance(p, dict) and p.get("name") == source_port_name
-            ),
-            None,
-        )
-        tgt_port = next(
-            (
-                p
-                for p in tgt_comp.get("inputs", [])
-                if isinstance(p, dict) and p.get("name") == target_port_name
-            ),
-            None,
-        )
+        src_port = _find_manifest_port(src_comp, "outputs", source_port_name)
+        tgt_port = _find_manifest_port(tgt_comp, "inputs", target_port_name)
         if src_port is None or tgt_port is None:
             continue
 
@@ -60,44 +52,76 @@ def find_unsupported_edge_dtype_pairings(
         tgt_dtype = tgt_port.get("dtype")
         if src_dtype == tgt_dtype:
             continue
-
-        # Implicitly compatible pairings (warning, not error)
-        _IMPLICIT_COMPAT = {
-            ("complex_tensor", "tensor"),  # runtime takes .real
-            ("tensor", "complex_tensor"),  # runtime zero-fills imaginary
-            ("mask", "tensor"),  # mask is a tensor
-        }
         if (src_dtype, tgt_dtype) in _IMPLICIT_COMPAT:
             continue
 
-        # P3.13: Add explicit errors for unsupported edge type pairings.
-        specific_error = None
-        if src_dtype == "dataset" and tgt_dtype == "tensor":
-            specific_error = "Dataset cannot be connected directly to a tensor port; use a data_transform component first."
-        elif src_dtype == "list" and tgt_dtype == "scalar":
-            specific_error = "List cannot be connected to a scalar port; use a reduction or indexing op."
-
-        message = (
-            f"Unsupported edge dtype pairing on edge {edge.get('id', '')}: "
-            f"{source_id}.{source_port_name} ({src_dtype}) -> "
-            f"{target_id}.{target_port_name} ({tgt_dtype})."
-        )
-        if specific_error:
-            message = f"{message} {specific_error}"
-        else:
-            message = f"{message} Supported pairings currently require matching source/target dtypes."
-
         issues.append(
-            {
-                "edge_id": str(edge.get("id", "")),
-                "source": source_id,
-                "target": target_id,
-                "source_port": source_port_name,
-                "target_port": target_port_name,
-                "source_dtype": src_dtype,
-                "target_dtype": tgt_dtype,
-                "message": message,
-            }
+            _dtype_issue(
+                edge,
+                source_id,
+                source_port_name,
+                src_dtype,
+                target_id,
+                target_port_name,
+                tgt_dtype,
+            )
         )
 
     return issues
+
+
+def _find_manifest_port(
+    manifest: Dict[str, Any],
+    direction: str,
+    port_name: str,
+) -> Optional[Dict[str, Any]]:
+    return next(
+        (
+            port
+            for port in manifest.get(direction, [])
+            if isinstance(port, dict) and port.get("name") == port_name
+        ),
+        None,
+    )
+
+
+def _specific_dtype_error(src_dtype: object, tgt_dtype: object) -> str | None:
+    if src_dtype == "dataset" and tgt_dtype == "tensor":
+        return "Dataset cannot be connected directly to a tensor port; use a data_transform component first."
+    if src_dtype == "list" and tgt_dtype == "scalar":
+        return (
+            "List cannot be connected to a scalar port; use a reduction or indexing op."
+        )
+    return None
+
+
+def _dtype_issue(
+    edge: Dict[str, Any],
+    source_id: str,
+    source_port_name: str,
+    src_dtype: object,
+    target_id: str,
+    target_port_name: str,
+    tgt_dtype: object,
+) -> Dict[str, Any]:
+    message = (
+        f"Unsupported edge dtype pairing on edge {edge.get('id', '')}: "
+        f"{source_id}.{source_port_name} ({src_dtype}) -> "
+        f"{target_id}.{target_port_name} ({tgt_dtype})."
+    )
+    specific_error = _specific_dtype_error(src_dtype, tgt_dtype)
+    if specific_error:
+        message = f"{message} {specific_error}"
+    else:
+        message = f"{message} Supported pairings currently require matching source/target dtypes."
+
+    return {
+        "edge_id": str(edge.get("id", "")),
+        "source": source_id,
+        "target": target_id,
+        "source_port": source_port_name,
+        "target_port": target_port_name,
+        "source_dtype": src_dtype,
+        "target_dtype": tgt_dtype,
+        "message": message,
+    }

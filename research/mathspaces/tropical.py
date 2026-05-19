@@ -46,6 +46,22 @@ _SMOOTH_TAU: float = (
 _SMOOTH_S_REF: float = 128.0
 
 
+def _disable_torch_compile(fn):
+    try:
+        return torch.compiler.disable(fn)
+    except Exception:
+        try:
+            return torch._dynamo.disable(fn)
+        except Exception:
+            return fn
+
+
+@_disable_torch_compile
+def _logcumsumexp_dim1_eager(x: torch.Tensor) -> torch.Tensor:
+    """Run scan in eager mode; Inductor scan codegen is unstable for this op."""
+    return torch.logcumsumexp(x, dim=1)
+
+
 def _adaptive_temperature(base_tau: float, size: int) -> float:
     scale = max(1.0, (max(int(size), 1) / _SMOOTH_S_REF) ** 0.5)
     return max(base_tau * scale, 1e-4)
@@ -378,8 +394,10 @@ def execute_tropical_center(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
     tau = _SMOOTH_TAU
     inv_tau = 1.0 / tau
     neg_x_scaled = -x * inv_tau  # (B, S, D)
-    # Cumulative logsumexp — single fused C++ call replaces Python loop over S
-    cmin_smooth = -tau * torch.logcumsumexp(neg_x_scaled, dim=1)  # (B, S, D)
+    # Keep this scan outside torch.compile. PyTorch 2.11 Inductor can fail
+    # codegen for SplitScan(logcumsumexp/cumsum) at training shapes such as
+    # [B=16, S=256, D=640] with "tensor_dim=None" during Triton scheduling.
+    cmin_smooth = -tau * _logcumsumexp_dim1_eager(neg_x_scaled)  # (B, S, D)
     return x - cmin_smooth
 
 

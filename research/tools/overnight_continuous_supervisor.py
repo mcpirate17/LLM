@@ -374,7 +374,7 @@ class Supervisor:
         conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
         conn.row_factory = sqlite3.Row
         try:
-            promotable_sql = ",".join(repr(x) for x in PROMOTABLE_EXPERIMENT_TYPES)
+            promotable_placeholders = ",".join("?" for _ in PROMOTABLE_EXPERIMENT_TYPES)
             row = conn.execute(
                 f"""
                 SELECT
@@ -417,7 +417,7 @@ class Supervisor:
                         FROM program_results_compat p
                         JOIN experiments e ON e.experiment_id = p.experiment_id
                         WHERE p.stage1_passed = 1
-                          AND e.experiment_type IN ({promotable_sql})
+                          AND e.experiment_type IN ({promotable_placeholders})
                           AND NOT EXISTS (SELECT 1 FROM leaderboard l WHERE l.result_id = p.result_id)
                           AND NOT EXISTS (
                                 SELECT 1
@@ -427,7 +427,8 @@ class Supervisor:
                           )
                     ) AS missing_screening_leaderboard_rows
                 FROM program_results_compat pr
-                """
+                """,
+                tuple(PROMOTABLE_EXPERIMENT_TYPES),
             ).fetchone()
             return {key: int(row[key] or 0) for key in row.keys()}
         finally:
@@ -775,10 +776,12 @@ class Supervisor:
         if not command:
             return 0
         self.log(f"Running shutdown command: {command}")
+        argv = shlex.split(command)
+        if not argv:
+            return 0
         proc = subprocess.run(
-            command,
+            argv,
             cwd=ROOT,
-            shell=True,
             text=True,
             capture_output=True,
             check=False,

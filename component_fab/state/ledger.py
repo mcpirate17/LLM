@@ -27,6 +27,26 @@ PROMOTION_REJECTED = "rejected"
 _VALID_STATUSES = frozenset({PROMOTION_PENDING, PROMOTION_PROMOTED, PROMOTION_REJECTED})
 
 
+def _prune_rotations(base_path: Path, keep: int = 3) -> int:
+    """Delete old ``base_path.N`` integer-suffix rotations, keeping newest first."""
+    if keep < 0:
+        raise ValueError("keep must be non-negative")
+
+    rotations: list[Path] = []
+    prefix = base_path.name + "."
+    for child in base_path.parent.glob(f"{base_path.name}.*"):
+        suffix = child.name[len(prefix) :]
+        if suffix.isdigit():
+            rotations.append(child)
+
+    rotations.sort(key=lambda path: (path.stat().st_mtime_ns, path.name), reverse=True)
+    deleted = 0
+    for stale in rotations[keep:]:
+        stale.unlink(missing_ok=True)
+        deleted += 1
+    return deleted
+
+
 @dataclass(slots=True)
 class LedgerEntry:
     proposal_id: str
@@ -199,6 +219,7 @@ class Ledger:
             index += 1
         self.path.rename(candidate)
         self.path.touch()
+        _prune_rotations(self.path)
         return candidate
 
     def stale_proposals(

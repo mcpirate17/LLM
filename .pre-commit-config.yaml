@@ -16,6 +16,11 @@ repos:
           --exclude, "*/.venv/*,*/node_modules/*,*/__pycache__/*,*/.run/*,*/tests/*,*/migrations/*"
         ]
 
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks
+
   - repo: local
     hooks:
       - id: code-review-graph-detect
@@ -33,6 +38,51 @@ repos:
         language: system
         entry: bash -c 'if ! command -v taplo >/dev/null 2>&1; then echo "taplo not installed; skipping"; exit 0; fi; taplo fmt --check "$@"' --
         types: [toml]
+      - id: pyright-python
+        name: Pyright staged Python type check
+        language: system
+        entry: uv run pyright --project pyrightconfig.json --level error
+        types_or: [python, pyi]
+      - id: xenon-complexity
+        name: Xenon staged Python complexity check
+        language: system
+        entry: uv run xenon --max-average B --max-modules C --max-absolute D --ignore .venv,node_modules,__pycache__,.run,tests,migrations
+        types_or: [python, pyi]
+      - id: bandit-python
+        name: Bandit staged Python security check
+        language: system
+        entry: uv run bandit -q --severity-level medium --confidence-level medium
+        types_or: [python, pyi]
+      - id: semgrep-ai-safety
+        name: Semgrep staged AI safety/security rules
+        language: system
+        entry: uv run semgrep scan --config .semgrep.yml --error --quiet
+        types_or: [python, javascript, jsx, ts, tsx]
+      - id: biome-check
+        name: Biome staged JS/TS/JSON/CSS check
+        language: system
+        entry: npx --no-install biome check --write --files-ignore-unknown=true
+        files: '\.(js|jsx|ts|tsx|json|css)$'
+        exclude: '(^|/)package-lock\.json$'
+      - id: jscpd-staged
+        name: JSCPD staged duplicate-code check
+        language: system
+        entry: npx --no-install jscpd --config .jscpd.json --noTips
+        files: '\.(py|js|jsx|ts|tsx|c|cc|cpp|h|hpp|rs|sh)$'
+      - id: codespell
+        name: Codespell staged spelling check
+        language: system
+        entry: uv run codespell
+        exclude: '(^|/)(uv\.lock|package-lock\.json|node_modules|\.venv|tasks/audit|research/runtime_events|research/runtime|research/reports)/'
+      - id: detect-secrets
+        name: Detect-secrets staged secret scan
+        language: system
+        entry: uv run detect-secrets-hook --baseline .secrets.baseline --exclude-files '(^|/)(uv\.lock|package-lock\.json|node_modules|\.venv|research/runtime_events|research/runtime|research/reports)/'
+      - id: pip-audit
+        name: Pip-audit dependency vulnerability check
+        language: system
+        entry: uv run pip-audit --progress-spinner off
+        pass_filenames: false
       - id: protected-data-deletes
         name: Block protected research data deletes
         language: system
@@ -48,3 +98,14 @@ repos:
         language: system
         entry: python conductor/guardrail_audit.py --staged-only --check
         pass_filenames: false
+      - id: forbid-repo-root-junk
+        name: Forbid junk files at repo root
+        language: system
+        entry: python conductor/check_root_junk.py
+        pass_filenames: true
+      - id: forbid-json-in-notes
+        name: research/notes/ is .md-only
+        language: system
+        entry: python conductor/check_json_in_notes.py
+        pass_filenames: true
+        files: ^research/notes/.*

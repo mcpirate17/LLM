@@ -370,6 +370,84 @@ class TestAnthropicBackendConfig(unittest.TestCase):
             backend = AnthropicBackend()
             self.assertEqual(backend.model, "custom-model")
 
+    def test_generate_accepts_raw_string_content(self):
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}, clear=True):
+            from research.scientist.llm.anthropic import AnthropicBackend
+
+            class _Usage:
+                input_tokens = 2
+                output_tokens = 3
+
+            class _Response:
+                content = "Raw answer"
+                usage = _Usage()
+
+            class _Messages:
+                def __init__(self):
+                    self.calls = []
+
+                def create(self, **kwargs):
+                    self.calls.append(kwargs)
+                    return _Response()
+
+            class _Client:
+                def __init__(self):
+                    self.messages = _Messages()
+
+            backend = AnthropicBackend()
+            backend._client = _Client()
+
+            response = backend.generate("prompt")
+
+            self.assertEqual(response.text, "Raw answer")
+            self.assertEqual(response.tokens_used, 5)
+            self.assertEqual(len(backend._client.messages.calls), 1)
+
+    def test_generate_retries_empty_content_once(self):
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}, clear=True):
+            from research.scientist.llm.anthropic import AnthropicBackend
+
+            class _Usage:
+                input_tokens = 1
+                output_tokens = 2
+
+            class _EmptyResponse:
+                content = []
+                usage = _Usage()
+                stop_reason = "end_turn"
+                id = "msg-empty"
+
+            class _TextBlock:
+                type = "text"
+                text = "Recovered answer"
+
+            class _TextResponse:
+                content = [_TextBlock()]
+                usage = _Usage()
+
+            class _Messages:
+                def __init__(self):
+                    self.calls = []
+                    self.responses = [_EmptyResponse(), _TextResponse()]
+
+                def create(self, **kwargs):
+                    self.calls.append(kwargs)
+                    return self.responses.pop(0)
+
+            class _Client:
+                def __init__(self):
+                    self.messages = _Messages()
+
+            backend = AnthropicBackend()
+            backend._client = _Client()
+
+            response = backend.generate("prompt", max_tokens=10)
+
+            self.assertEqual(response.text, "Recovered answer")
+            self.assertEqual(response.tokens_used, 3)
+            self.assertEqual(len(backend._client.messages.calls), 2)
+            self.assertEqual(backend._client.messages.calls[1]["max_tokens"], 128)
+
 
 class TestPersonaOptimizerAwareness(unittest.TestCase):
     """Tests for optimizer diversity awareness in persona."""

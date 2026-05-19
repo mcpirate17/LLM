@@ -524,264 +524,149 @@ def _template_label_from_evidence(
 
 def _summarize_template_stat(stat: Dict[str, Any]) -> Dict[str, Any]:
     """Summarize a single template's accumulated stats into a result dict."""
-    losses = stat["losses"]
-    stage1_losses = stat.get("stage1_losses") or []
-    validation_vals = stat["validation_losses"]
-    discovery_vals = stat["discovery_losses"]
-    novelties = stat["novelties"]
-    novelty_confidences = stat["novelty_confidences"]
-    induction_screening_aucs = stat["induction_screening_aucs"]
-    binding_screening_aucs = stat["binding_screening_aucs"]
-    binding_screening_composites = stat.get("binding_screening_composites") or []
-    ar_legacy_aucs = stat["ar_legacy_aucs"]
-    hellaswag_accs = stat["hellaswag_accs"]
-    blimp_overall_accuracies = stat.get("blimp_overall_accuracies") or []
-    composite_scores = stat.get("composite_scores") or []
-    induction_intermediate_aucs = stat.get("induction_intermediate_aucs") or []
-    binding_intermediate_aucs = stat.get("binding_intermediate_aucs") or []
-    ar_curriculum_aucs = stat.get("ar_curriculum_aucs") or []
-    ar_curriculum_retentions = stat.get("ar_curriculum_retentions") or []
-    ar_curriculum_max_passes = stat.get("ar_curriculum_max_passes") or []
-    erf_densities = stat.get("erf_densities") or []
-    id_collapse_rates = stat.get("id_collapse_rates") or []
-    id_collapse_rate_normalizeds = stat.get("id_collapse_rate_normalizeds") or []
-    erf_decay_slopes = stat.get("erf_decay_slopes") or []
-    erf_first_norms = stat.get("erf_first_norms") or []
-    erf_last_norms = stat.get("erf_last_norms") or []
-    logit_margin_velocities = stat.get("logit_margin_velocities") or []
-    logit_margin_deltas = stat.get("logit_margin_deltas") or []
-    erf_variance_logs = stat.get("erf_variance_logs") or []
-    spec_norm_logs = stat.get("spec_norm_logs") or []
-    icld_velocities = stat.get("icld_velocities") or []
-    icld_delta_losses = stat.get("icld_delta_losses") or []
-    jacobian_effective_ranks = stat.get("jacobian_effective_ranks") or []
-    sensitivity_uniformities = stat.get("sensitivity_uniformities") or []
-    screening_hellaswag_accs = stat["screening_hellaswag_accs"]
-    reasons = stat["failure_reasons"]
-    fast_lane_scores = stat["routing_fast_lane_scores"]
-    fast_lane_improvements = stat["routing_fast_lane_improvements"]
-    fast_lane_slopes = stat["routing_fast_lane_slopes"]
-    top_reason = None
-    if reasons:
-        top_reason = max(reasons.items(), key=lambda item: item[1])[0]
+    return _summarize_template_stat_impl(stat)
+
+
+def _mean_or_none(values: List[float]) -> float | None:
+    return sum(values) / len(values) if values else None
+
+
+def _evidence_level(n_used: int) -> str:
+    if n_used < 3:
+        return "insufficient"
+    if n_used < 10:
+        return "sparse"
+    if n_used < 30:
+        return "building"
+    return "established"
+
+
+_TEMPLATE_AVG_FIELDS = (
+    ("avg_loss_ratio", "losses"),
+    ("avg_validation_loss_ratio", "validation_losses"),
+    ("avg_discovery_loss_ratio", "discovery_losses"),
+    ("avg_novelty", "novelties"),
+    ("avg_novelty_confidence", "novelty_confidences"),
+    ("avg_induction_screening_auc", "induction_screening_aucs"),
+    ("avg_binding_screening_auc", "binding_screening_aucs"),
+    ("avg_binding_screening_composite", "binding_screening_composites"),
+    ("avg_ar_legacy_auc", "ar_legacy_aucs"),
+    ("avg_hellaswag_acc", "hellaswag_accs"),
+    ("avg_blimp_overall_accuracy", "blimp_overall_accuracies"),
+    ("avg_composite_score", "composite_scores"),
+    ("avg_induction_intermediate_auc", "induction_intermediate_aucs"),
+    ("avg_binding_intermediate_auc", "binding_intermediate_aucs"),
+    ("avg_ar_curriculum_auc_pair_final", "ar_curriculum_aucs"),
+    ("avg_ar_curriculum_s0_retention", "ar_curriculum_retentions"),
+    ("avg_ar_curriculum_max_passing_stage", "ar_curriculum_max_passes"),
+    ("avg_erf_density", "erf_densities"),
+    ("avg_id_collapse_rate", "id_collapse_rates"),
+    ("avg_id_collapse_rate_normalized", "id_collapse_rate_normalizeds"),
+    ("avg_erf_decay_slope", "erf_decay_slopes"),
+    ("avg_erf_first_norm", "erf_first_norms"),
+    ("avg_erf_last_norm", "erf_last_norms"),
+    ("avg_logit_margin_velocity", "logit_margin_velocities"),
+    ("avg_logit_margin_delta", "logit_margin_deltas"),
+    ("avg_erf_variance_log", "erf_variance_logs"),
+    ("avg_spec_norm_log", "spec_norm_logs"),
+    ("avg_icld_velocity", "icld_velocities"),
+    ("avg_icld_delta_loss", "icld_delta_losses"),
+    ("avg_jacobian_effective_rank", "jacobian_effective_ranks"),
+    ("avg_sensitivity_uniformity", "sensitivity_uniformities"),
+    ("avg_screening_hellaswag_acc", "screening_hellaswag_accs"),
+    ("routing_fast_lane_avg_score", "routing_fast_lane_scores"),
+    ("routing_fast_lane_avg_improvement", "routing_fast_lane_improvements"),
+    ("routing_fast_lane_avg_slope", "routing_fast_lane_slopes"),
+)
+
+
+_TEMPLATE_COVERAGE_FIELDS = (
+    ("induction", "induction_screening_aucs"),
+    ("binding", "binding_screening_aucs"),
+    ("binding_screening_composite", "binding_screening_composites"),
+    ("associative_recall", "ar_legacy_aucs"),
+    ("blimp", "blimp_overall_accuracies"),
+    ("composite", "composite_scores"),
+    ("induction_intermediate", "induction_intermediate_aucs"),
+    ("binding_intermediate", "binding_intermediate_aucs"),
+    ("erf_density", "erf_densities"),
+    ("id_collapse", "id_collapse_rates"),
+    ("id_collapse_norm", "id_collapse_rate_normalizeds"),
+    ("erf_decay", "erf_decay_slopes"),
+    ("logit_margin", "logit_margin_velocities"),
+    ("jacobian_rank", "jacobian_effective_ranks"),
+)
+
+
+def _template_screening_metric_coverage(stat: Dict[str, Any]) -> Dict[str, int]:
+    coverage = {
+        name: len(stat.get(field) or []) for name, field in _TEMPLATE_COVERAGE_FIELDS
+    }
+    coverage["hellaswag"] = len(stat.get("hellaswag_accs") or []) + len(
+        stat.get("screening_hellaswag_accs") or []
+    )
+    coverage["wikitext"] = int(stat.get("screening_wikitext_runs") or 0)
+    coverage["language_control"] = max(
+        (
+            len(values)
+            for values in (stat.get("language_control_metrics") or {}).values()
+        ),
+        default=0,
+    )
+    return coverage
+
+
+def _template_core_metrics(stat: Dict[str, Any]) -> Dict[str, Any]:
     n_used = int(stat["n_used"] or 0)
-    core = {
+    losses = stat["losses"]
+    core: Dict[str, Any] = {
         "n_used": n_used,
         "s0_rate": stat["n_stage0"] / max(n_used, 1),
         "s05_rate": stat["n_stage05"] / max(n_used, 1),
         "s1_rate": stat["n_stage1"] / max(n_used, 1),
-        "avg_loss_ratio": sum(losses) / len(losses) if losses else None,
         "best_loss_ratio": min(losses) if losses else None,
-        "avg_validation_loss_ratio": (
-            sum(validation_vals) / len(validation_vals) if validation_vals else None
-        ),
-        "avg_discovery_loss_ratio": (
-            sum(discovery_vals) / len(discovery_vals) if discovery_vals else None
-        ),
-        "avg_novelty": (sum(novelties) / len(novelties) if novelties else None),
-        "avg_novelty_confidence": (
-            sum(novelty_confidences) / len(novelty_confidences)
-            if novelty_confidences
-            else None
-        ),
-        "avg_induction_screening_auc": (
-            sum(induction_screening_aucs) / len(induction_screening_aucs)
-            if induction_screening_aucs
-            else None
-        ),
-        "avg_binding_screening_auc": (
-            sum(binding_screening_aucs) / len(binding_screening_aucs)
-            if binding_screening_aucs
-            else None
-        ),
-        "avg_binding_screening_composite": (
-            sum(binding_screening_composites) / len(binding_screening_composites)
-            if binding_screening_composites
-            else None
-        ),
-        "avg_ar_legacy_auc": sum(ar_legacy_aucs) / len(ar_legacy_aucs)
-        if ar_legacy_aucs
-        else None,
-        "avg_hellaswag_acc": (
-            sum(hellaswag_accs) / len(hellaswag_accs) if hellaswag_accs else None
-        ),
-        "avg_blimp_overall_accuracy": (
-            sum(blimp_overall_accuracies) / len(blimp_overall_accuracies)
-            if blimp_overall_accuracies
-            else None
-        ),
-        **_summarize_language_control_metrics(stat),
-        "avg_composite_score": (
-            sum(composite_scores) / len(composite_scores) if composite_scores else None
-        ),
-        "avg_induction_intermediate_auc": (
-            sum(induction_intermediate_aucs) / len(induction_intermediate_aucs)
-            if induction_intermediate_aucs
-            else None
-        ),
-        "avg_binding_intermediate_auc": (
-            sum(binding_intermediate_aucs) / len(binding_intermediate_aucs)
-            if binding_intermediate_aucs
-            else None
-        ),
-        "avg_ar_curriculum_auc_pair_final": (
-            sum(ar_curriculum_aucs) / len(ar_curriculum_aucs)
-            if ar_curriculum_aucs
-            else None
-        ),
-        "avg_ar_curriculum_s0_retention": (
-            sum(ar_curriculum_retentions) / len(ar_curriculum_retentions)
-            if ar_curriculum_retentions
-            else None
-        ),
-        "avg_ar_curriculum_max_passing_stage": (
-            sum(ar_curriculum_max_passes) / len(ar_curriculum_max_passes)
-            if ar_curriculum_max_passes
-            else None
-        ),
-        "n_ar_curriculum": len(ar_curriculum_aucs),
-        "avg_erf_density": (
-            sum(erf_densities) / len(erf_densities) if erf_densities else None
-        ),
-        "avg_id_collapse_rate": (
-            sum(id_collapse_rates) / len(id_collapse_rates)
-            if id_collapse_rates
-            else None
-        ),
-        "avg_id_collapse_rate_normalized": (
-            sum(id_collapse_rate_normalizeds) / len(id_collapse_rate_normalizeds)
-            if id_collapse_rate_normalizeds
-            else None
-        ),
-        "avg_erf_decay_slope": (
-            sum(erf_decay_slopes) / len(erf_decay_slopes) if erf_decay_slopes else None
-        ),
-        "avg_erf_first_norm": (
-            sum(erf_first_norms) / len(erf_first_norms) if erf_first_norms else None
-        ),
-        "avg_erf_last_norm": (
-            sum(erf_last_norms) / len(erf_last_norms) if erf_last_norms else None
-        ),
-        "avg_logit_margin_velocity": (
-            sum(logit_margin_velocities) / len(logit_margin_velocities)
-            if logit_margin_velocities
-            else None
-        ),
-        "avg_logit_margin_delta": (
-            sum(logit_margin_deltas) / len(logit_margin_deltas)
-            if logit_margin_deltas
-            else None
-        ),
-        "avg_erf_variance_log": (
-            sum(erf_variance_logs) / len(erf_variance_logs)
-            if erf_variance_logs
-            else None
-        ),
-        "avg_spec_norm_log": (
-            sum(spec_norm_logs) / len(spec_norm_logs) if spec_norm_logs else None
-        ),
-        "avg_icld_velocity": (
-            sum(icld_velocities) / len(icld_velocities) if icld_velocities else None
-        ),
-        "avg_icld_delta_loss": (
-            sum(icld_delta_losses) / len(icld_delta_losses)
-            if icld_delta_losses
-            else None
-        ),
-        "avg_jacobian_effective_rank": (
-            sum(jacobian_effective_ranks) / len(jacobian_effective_ranks)
-            if jacobian_effective_ranks
-            else None
-        ),
-        "avg_sensitivity_uniformity": (
-            sum(sensitivity_uniformities) / len(sensitivity_uniformities)
-            if sensitivity_uniformities
-            else None
-        ),
-        "avg_screening_hellaswag_acc": (
-            sum(screening_hellaswag_accs) / len(screening_hellaswag_accs)
-            if screening_hellaswag_accs
-            else None
-        ),
-        "screening_wikitext_ok_rate": (
-            int(stat.get("screening_wikitext_ok") or 0)
-            / max(int(stat.get("screening_wikitext_runs") or 0), 1)
-            if stat.get("screening_wikitext_runs")
-            else None
-        ),
-        "screening_metric_coverage": {
-            "induction": len(induction_screening_aucs),
-            "binding": len(binding_screening_aucs),
-            "binding_screening_composite": len(binding_screening_composites),
-            "associative_recall": len(ar_legacy_aucs),
-            "hellaswag": len(hellaswag_accs) + len(screening_hellaswag_accs),
-            "blimp": len(blimp_overall_accuracies),
-            "composite": len(composite_scores),
-            "wikitext": int(stat.get("screening_wikitext_runs") or 0),
-            "induction_intermediate": len(induction_intermediate_aucs),
-            "binding_intermediate": len(binding_intermediate_aucs),
-            "language_control": max(
-                (
-                    len(values)
-                    for values in (stat.get("language_control_metrics") or {}).values()
-                ),
-                default=0,
-            ),
-            "erf_density": len(erf_densities),
-            "id_collapse": len(id_collapse_rates),
-            "id_collapse_norm": len(id_collapse_rate_normalizeds),
-            "erf_decay": len(erf_decay_slopes),
-            "logit_margin": len(logit_margin_velocities),
-            "jacobian_rank": len(jacobian_effective_ranks),
-        },
+        "n_ar_curriculum": len(stat.get("ar_curriculum_aucs") or []),
+        "screening_metric_coverage": _template_screening_metric_coverage(stat),
         "slot_count": int(stat.get("slot_count") or 0),
         "routing_fast_lane_runs": int(stat.get("routing_fast_lane_runs") or 0),
-        "routing_fast_lane_ok_rate": (
-            int(stat.get("routing_fast_lane_ok") or 0)
-            / max(int(stat.get("routing_fast_lane_runs") or 0), 1)
-            if stat.get("routing_fast_lane_runs")
-            else None
-        ),
-        "routing_fast_lane_positive_rate": (
-            int(stat.get("routing_fast_lane_positive") or 0)
-            / max(int(stat.get("routing_fast_lane_runs") or 0), 1)
-            if stat.get("routing_fast_lane_runs")
-            else None
-        ),
-        "routing_fast_lane_avg_score": (
-            sum(fast_lane_scores) / len(fast_lane_scores) if fast_lane_scores else None
-        ),
-        "routing_fast_lane_avg_improvement": (
-            sum(fast_lane_improvements) / len(fast_lane_improvements)
-            if fast_lane_improvements
-            else None
-        ),
-        "routing_fast_lane_avg_slope": (
-            sum(fast_lane_slopes) / len(fast_lane_slopes) if fast_lane_slopes else None
-        ),
-        "evidence_level": (
-            "insufficient"
-            if n_used < 3
-            else "sparse"
-            if n_used < 10
-            else "building"
-            if n_used < 30
-            else "established"
-        ),
+        "evidence_level": _evidence_level(n_used),
     }
-    n_used = int(core["n_used"])
+    core.update(
+        {
+            output_name: _mean_or_none(stat.get(stat_name) or [])
+            for output_name, stat_name in _TEMPLATE_AVG_FIELDS
+        }
+    )
+    core.update(_summarize_language_control_metrics(stat))
+    wikitext_runs = int(stat.get("screening_wikitext_runs") or 0)
+    fast_lane_runs = int(stat.get("routing_fast_lane_runs") or 0)
+    core["screening_wikitext_ok_rate"] = (
+        int(stat.get("screening_wikitext_ok") or 0) / max(wikitext_runs, 1)
+        if wikitext_runs
+        else None
+    )
+    core["routing_fast_lane_ok_rate"] = (
+        int(stat.get("routing_fast_lane_ok") or 0) / max(fast_lane_runs, 1)
+        if fast_lane_runs
+        else None
+    )
+    core["routing_fast_lane_positive_rate"] = (
+        int(stat.get("routing_fast_lane_positive") or 0) / max(fast_lane_runs, 1)
+        if fast_lane_runs
+        else None
+    )
+    return core
+
+
+def _template_diagnosis(
+    stat: Dict[str, Any], core: Dict[str, Any], top_reason: str | None
+) -> tuple[List[str], List[str]]:
+    diagnosis: List[str] = []
+    actions: List[str] = []
+    evidence_level = core["evidence_level"]
     s0_rate = core["s0_rate"]
     s05_rate = core["s05_rate"]
     s1_rate = core["s1_rate"]
-    avg_loss_ratio = core["avg_loss_ratio"]
-    avg_validation_loss_ratio = core["avg_validation_loss_ratio"]
-    avg_induction_screening_auc = core["avg_induction_screening_auc"]
-    avg_binding_screening_auc = core["avg_binding_screening_auc"]
-    avg_hellaswag_acc = core["avg_hellaswag_acc"]
-    evidence_level = core["evidence_level"]
-
-    diagnosis: List[str] = []
-    actions: List[str] = []
     if evidence_level == "insufficient":
         diagnosis.append("Too little evidence to rank confidently.")
         actions.append("Backfill this template before changing weights.")
@@ -799,6 +684,23 @@ def _summarize_template_stat(stat: Dict[str, Any]) -> Dict[str, Any]:
     elif s1_rate > 0.4:
         diagnosis.append("Template is producing Stage-1 survivors consistently.")
         actions.append("Use as a reference family for nearby sparse templates.")
+    _append_template_metric_diagnosis(stat, core, diagnosis, actions)
+    if top_reason and len(diagnosis) < 3:
+        diagnosis.append(f"Most common failure mode is {top_reason}.")
+    if not actions:
+        actions.append("Keep sampling while collecting more slot-level evidence.")
+    return diagnosis[:3], actions[:3]
+
+
+def _append_template_metric_diagnosis(
+    stat: Dict[str, Any],
+    core: Dict[str, Any],
+    diagnosis: List[str],
+    actions: List[str],
+) -> None:
+    avg_loss_ratio = core["avg_loss_ratio"]
+    avg_validation_loss_ratio = core["avg_validation_loss_ratio"]
+    s1_rate = core["s1_rate"]
     if (
         avg_validation_loss_ratio is not None
         and avg_loss_ratio is not None
@@ -808,21 +710,13 @@ def _summarize_template_stat(stat: Dict[str, Any]) -> Dict[str, Any]:
             "Validation materially trails training, suggesting brittle generalization."
         )
         actions.append("Reduce brittle motif mixes or extend slow-starter screening.")
-    if (
-        avg_induction_screening_auc is not None
-        and avg_induction_screening_auc < 0.02
-        and s1_rate >= 0.2
-    ):
+    if (core["avg_induction_screening_auc"] or 0.0) < 0.02 and s1_rate >= 0.2:
         diagnosis.append("Survivors train, but induction evidence remains weak.")
         actions.append("Bias backfills toward longer-range token-interaction motifs.")
-    if (
-        avg_binding_screening_auc is not None
-        and avg_binding_screening_auc < 0.05
-        and s1_rate >= 0.2
-    ):
+    if (core["avg_binding_screening_auc"] or 0.0) < 0.05 and s1_rate >= 0.2:
         diagnosis.append("Binding/copy behavior is weak relative to survivor rate.")
         actions.append("Probe slot choices that preserve non-local token access.")
-    if avg_hellaswag_acc is not None and avg_hellaswag_acc <= 0.27:
+    if core["avg_hellaswag_acc"] is not None and core["avg_hellaswag_acc"] <= 0.27:
         diagnosis.append("Commonsense signal is near noise floor.")
         actions.append("Do not trust perplexity-only wins from this family.")
     if (
@@ -832,10 +726,15 @@ def _summarize_template_stat(stat: Dict[str, Any]) -> Dict[str, Any]:
     ):
         diagnosis.append("Fast-lane probes are positive despite poor short-run S1.")
         actions.append("Treat it as a slow starter and extend targeted backfills.")
-    if top_reason and len(diagnosis) < 3:
-        diagnosis.append(f"Most common failure mode is {top_reason}.")
-    if not actions:
-        actions.append("Keep sampling while collecting more slot-level evidence.")
+
+
+def _summarize_template_stat_impl(stat: Dict[str, Any]) -> Dict[str, Any]:
+    """Summarize a single template's accumulated stats into a result dict."""
+    stage1_losses = stat.get("stage1_losses") or []
+    reasons = stat["failure_reasons"]
+    top_reason = max(reasons.items(), key=lambda item: item[1])[0] if reasons else None
+    core = _template_core_metrics(stat)
+    diagnosis, actions = _template_diagnosis(stat, core, top_reason)
     repeated_low_loss_count = sum(1 for v in stage1_losses if v <= 0.45)
     very_low_loss_count = sum(1 for v in stage1_losses if v <= 0.40)
     structural_category = _classify_template_structural(stat["name"])
@@ -854,8 +753,8 @@ def _summarize_template_stat(stat: Dict[str, Any]) -> Dict[str, Any]:
         "repeated_low_loss_family": repeated_low_loss_count >= 3,
         "top_failure_reason": top_reason,
         "failure_reasons": dict(sorted(reasons.items(), key=lambda item: -item[1])[:3]),
-        "diagnosis": diagnosis[:3],
-        "actions": actions[:3],
+        "diagnosis": diagnosis,
+        "actions": actions,
     }
 
 

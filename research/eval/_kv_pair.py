@@ -8,6 +8,7 @@ evaluation, and training step are identical.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Callable
 
 import torch
 import torch.nn as nn
@@ -30,6 +31,71 @@ class KVPairTable:
     @property
     def total_token_span(self) -> int:
         return int(self.value_hi - self.vocab_lo)
+
+
+@dataclass(frozen=True, slots=True)
+class KVProbeRuntime:
+    n_eval: int
+    batch_size: int
+    pairs_per_example: int
+    sep_token: int
+    ans_token: int
+    device: torch.device
+    episodic_values: bool
+
+
+@dataclass(frozen=True, slots=True)
+class KVTrainingLoopResult:
+    steps_done: int
+    status: str
+    error: str | None = None
+
+
+def build_kv_pair_table(
+    *,
+    seed: int,
+    vocab_lo: int,
+    n_key_tokens: int,
+    n_value_tokens: int,
+    n_value_classes: int,
+    n_train_pairs: int,
+    n_held_pairs: int,
+    pairs_per_example: int | None = None,
+) -> KVPairTable:
+    """Build deterministic disjoint train/held key/value pairs."""
+    total_pairs = int(n_train_pairs) + int(n_held_pairs)
+    if total_pairs <= 0:
+        raise ValueError("at least one train or held pair is required")
+    if int(n_key_tokens) < total_pairs * 2:
+        raise ValueError("n_key_tokens must provide two unique tokens per pair")
+    if int(n_value_tokens) <= 0:
+        raise ValueError("n_value_tokens must be positive")
+    if int(n_value_classes) <= 0 or int(n_value_classes) > int(n_value_tokens):
+        raise ValueError("n_value_classes must be in [1, n_value_tokens]")
+    if pairs_per_example is not None and int(pairs_per_example) < 2:
+        raise ValueError("pairs_per_example must be at least 2")
+
+    gen = torch.Generator(device="cpu")
+    gen.manual_seed(int(seed))
+    key_tokens = torch.randperm(int(n_key_tokens), generator=gen)[: total_pairs * 2]
+    key_tokens = key_tokens.reshape(total_pairs, 2) + int(vocab_lo)
+
+    value_lo = int(vocab_lo) + int(n_key_tokens)
+    value_offsets = torch.arange(total_pairs, dtype=torch.long) % int(n_value_tokens)
+    value_offsets = value_offsets[torch.randperm(total_pairs, generator=gen)]
+    values = value_lo + value_offsets
+
+    n_train = int(n_train_pairs)
+    return KVPairTable(
+        train_keys=key_tokens[:n_train].contiguous(),
+        train_values=values[:n_train].contiguous(),
+        held_keys=key_tokens[n_train:].contiguous(),
+        held_values=values[n_train:].contiguous(),
+        vocab_lo=int(vocab_lo),
+        value_lo=value_lo,
+        value_hi=value_lo + int(n_value_tokens),
+        n_value_classes=int(n_value_classes),
+    )
 
 
 def kv_table_to_device(table: KVPairTable, device: torch.device) -> KVPairTable:
@@ -186,6 +252,78 @@ def evaluate_kv_split(
     return int(exact_total.item()) / denom, int(class_total.item()) / denom
 
 
+def evaluate_kv_train_and_held(
+    model: nn.Module,
+    table: KVPairTable,
+    *,
+    n_eval: int,
+    batch_size: int,
+    pairs_per_example: int,
+    sep_token: int,
+    ans_token: int,
+    device: torch.device,
+    train_seed: int,
+    held_seed: int,
+    episodic_values: bool,
+) -> tuple[float, float, float]:
+    train_acc, _train_class = evaluate_kv_split(
+        model,
+        table,
+        split="train",
+        n_eval=n_eval,
+        batch_size=batch_size,
+        pairs_per_example=pairs_per_example,
+        sep_token=sep_token,
+        ans_token=ans_token,
+        device=device,
+        seed=train_seed,
+        episodic_values=episodic_values,
+    )
+    held_pair, held_class = evaluate_kv_split(
+        model,
+        table,
+        split="held",
+        n_eval=n_eval,
+        batch_size=batch_size,
+        pairs_per_example=pairs_per_example,
+        sep_token=sep_token,
+        ans_token=ans_token,
+        device=device,
+        seed=held_seed,
+        episodic_values=episodic_values,
+    )
+    return train_acc, held_pair, held_class
+
+
+def evaluate_kv_probe_checkpoint(
+    model: nn.Module,
+    table: KVPairTable,
+    *,
+    runtime: KVProbeRuntime,
+    base_seed: int,
+    step: int | None = None,
+) -> tuple[float, float, float]:
+    if step is None:
+        train_seed = int(base_seed) + 30_000
+        held_seed = int(base_seed) + 40_000
+    else:
+        train_seed = int(base_seed) + 10_000 + int(step)
+        held_seed = int(base_seed) + 20_000 + int(step)
+    return evaluate_kv_train_and_held(
+        model,
+        table,
+        n_eval=runtime.n_eval,
+        batch_size=runtime.batch_size,
+        pairs_per_example=runtime.pairs_per_example,
+        sep_token=runtime.sep_token,
+        ans_token=runtime.ans_token,
+        device=runtime.device,
+        train_seed=train_seed,
+        held_seed=held_seed,
+        episodic_values=runtime.episodic_values,
+    )
+
+
 def train_kv_one_batch(
     model: nn.Module,
     ids: torch.Tensor,
@@ -210,3 +348,79 @@ def train_kv_one_batch(
     clip_grad_norm(model.parameters(), 1.0)
     opt.step()
     return loss.detach()
+
+
+def train_kv_probe_step(
+    model: nn.Module,
+    table: KVPairTable,
+    *,
+    runtime: KVProbeRuntime,
+    generator: torch.Generator,
+    opt: torch.optim.Optimizer,
+    ans_pos: int,
+) -> torch.Tensor | None:
+    ids, targets, _classes = make_kv_pair_batch(
+        table,
+        split="train",
+        batch_size=runtime.batch_size,
+        pairs_per_example=runtime.pairs_per_example,
+        sep_token=runtime.sep_token,
+        ans_token=runtime.ans_token,
+        device=runtime.device,
+        generator=generator,
+        episodic_values=runtime.episodic_values,
+    )
+    return train_kv_one_batch(
+        model,
+        ids,
+        targets,
+        opt=opt,
+        table=table,
+        ans_pos=ans_pos,
+    )
+
+
+def run_kv_probe_training_loop(
+    model: nn.Module,
+    table: KVPairTable,
+    *,
+    runtime: KVProbeRuntime,
+    generator: torch.Generator,
+    opt: torch.optim.Optimizer,
+    ans_pos: int,
+    train_steps: int,
+    eval_every: int,
+    deadline: float,
+    base_seed: int,
+    monotonic_time: Callable[[], float],
+    on_eval: Callable[[int, torch.Tensor, float, float, float], None],
+) -> KVTrainingLoopResult:
+    steps_done = 0
+    for step in range(1, int(train_steps) + 1):
+        if monotonic_time() > deadline:
+            return KVTrainingLoopResult(steps_done=steps_done, status="timeout")
+        loss = train_kv_probe_step(
+            model,
+            table,
+            runtime=runtime,
+            generator=generator,
+            opt=opt,
+            ans_pos=ans_pos,
+        )
+        if loss is None:
+            return KVTrainingLoopResult(
+                steps_done=steps_done,
+                status="error",
+                error="non_finite_loss",
+            )
+        steps_done = step
+        if step % int(eval_every) == 0 or step == int(train_steps):
+            train_acc, held_pair, held_class = evaluate_kv_probe_checkpoint(
+                model,
+                table,
+                runtime=runtime,
+                base_seed=base_seed,
+                step=step,
+            )
+            on_eval(step, loss, train_acc, held_pair, held_class)
+    return KVTrainingLoopResult(steps_done=steps_done, status="ok")

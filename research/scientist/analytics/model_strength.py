@@ -199,10 +199,9 @@ def _iter_nodes(graph: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
     return []
 
 
-def _graph_features(graph_json: Any) -> dict[str, Any]:
-    graph = _safe_json_loads(graph_json)
-    metadata = graph.get("metadata") if isinstance(graph.get("metadata"), dict) else {}
-    nodes = _iter_nodes(graph)
+def _graph_topology_features(
+    nodes: list[tuple[str, dict[str, Any]]],
+) -> tuple[list[str], list[str], list[str]]:
     by_id = {node_id: node for node_id, node in nodes}
     children = {node_id: [] for node_id, _ in nodes}
     indegree = {node_id: 0 for node_id, _ in nodes}
@@ -233,7 +232,16 @@ def _graph_features(graph_json: Any) -> dict[str, Any]:
             continue
         ops.append(op)
         depth_ops.append((node_id, op))
+    op_depth_buckets = _op_depth_buckets(depth_ops, children, indegree, depths)
+    return sorted(set(ops)), sorted(pairs), sorted(op_depth_buckets)
 
+
+def _op_depth_buckets(
+    depth_ops: list[tuple[str, str]],
+    children: dict[str, list[str]],
+    indegree: dict[str, int],
+    depths: dict[str, int],
+) -> set[str]:
     queue = deque(node_id for node_id, degree in indegree.items() if degree == 0)
     while queue:
         node_id = queue.popleft()
@@ -260,40 +268,51 @@ def _graph_features(graph_json: Any) -> dict[str, Any]:
             else:
                 bucket = "late"
         op_depth_buckets.add(f"{bucket}:{op}")
+    return op_depth_buckets
 
-    templates = metadata.get("templates_used") or []
-    motifs = metadata.get("motifs_used") or []
-    dynamic_component_tokens, dynamic_feature_flags = dynamic_component_feature_summary(
-        metadata
-    )
-    primary_template = str(
-        metadata.get("primary_template")
-        or (templates[0] if isinstance(templates, list) and templates else "")
-    )
 
+def _metadata_sequence(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value if isinstance(item, str)]
+
+
+def _slot_usage_features(
+    metadata: dict[str, Any],
+    primary_template: str,
+) -> tuple[list[str], list[str], list[str]]:
     slot_entries = metadata.get("template_slot_usage") or []
     slot_keys: list[str] = []
     slot_motifs: list[str] = []
     slot_components: list[str] = []
-    if isinstance(slot_entries, list):
-        for slot in slot_entries:
-            if not isinstance(slot, dict):
-                continue
-            slot_key = str(
-                slot.get("slot_key")
-                or f"{slot.get('template_name', primary_template or 'unknown')}.slot{slot.get('slot_index', 0)}"
-            )
-            slot_keys.append(slot_key)
-            selected_motif = str(slot.get("selected_motif") or "").strip()
-            selected_class = str(slot.get("selected_motif_class") or "").strip()
-            if selected_motif:
-                slot_motifs.append(selected_motif)
-                slot_components.append(f"{slot_key}:{selected_motif}")
-            elif selected_class:
-                slot_components.append(f"{slot_key}:{selected_class}")
+    if not isinstance(slot_entries, list):
+        return slot_keys, slot_motifs, slot_components
+    for slot in slot_entries:
+        if not isinstance(slot, dict):
+            continue
+        slot_key = str(
+            slot.get("slot_key")
+            or f"{slot.get('template_name', primary_template or 'unknown')}.slot{slot.get('slot_index', 0)}"
+        )
+        slot_keys.append(slot_key)
+        selected_motif = str(slot.get("selected_motif") or "").strip()
+        selected_class = str(slot.get("selected_motif_class") or "").strip()
+        if selected_motif:
+            slot_motifs.append(selected_motif)
+            slot_components.append(f"{slot_key}:{selected_motif}")
+        elif selected_class:
+            slot_components.append(f"{slot_key}:{selected_class}")
+    return slot_keys, slot_motifs, slot_components
 
-    unique_ops = sorted(set(ops))
-    feature_flags = {
+
+def _pattern_feature_flags(
+    *,
+    unique_ops: list[str],
+    templates: list[str],
+    slot_keys: list[str],
+    dynamic_feature_flags: dict[str, Any],
+) -> dict[str, Any]:
+    return {
         "pattern_has_attention": int(any("attention" in op for op in unique_ops)),
         "pattern_has_moe": int(any("moe" in op or "router" in op for op in unique_ops)),
         "pattern_has_routing": int(
@@ -319,25 +338,57 @@ def _graph_features(graph_json: Any) -> dict[str, Any]:
         ),
         "pattern_has_residual": int("add" in unique_ops),
         "pattern_has_norm": int(any("norm" in op for op in unique_ops)),
-        "pattern_multi_template": int(
-            isinstance(templates, list) and len(templates) > 1
-        ),
+        "pattern_multi_template": int(len(templates) > 1),
         "pattern_slot_telemetry": int(bool(slot_keys)),
         **dynamic_feature_flags,
     }
 
+
+def _metadata_features(
+    metadata: dict[str, Any], unique_ops: list[str]
+) -> dict[str, Any]:
+    templates = metadata.get("templates_used") or []
+    motifs = metadata.get("motifs_used") or []
+    dynamic_component_tokens, dynamic_feature_flags = dynamic_component_feature_summary(
+        metadata
+    )
+    primary_template = str(
+        metadata.get("primary_template")
+        or (templates[0] if isinstance(templates, list) and templates else "")
+    )
+    template_names = _metadata_sequence(templates)
+    motif_names = _metadata_sequence(motifs)
+    slot_keys, slot_motifs, slot_components = _slot_usage_features(
+        metadata,
+        primary_template,
+    )
+    feature_flags = _pattern_feature_flags(
+        unique_ops=unique_ops,
+        templates=template_names,
+        slot_keys=slot_keys,
+        dynamic_feature_flags=dynamic_feature_flags,
+    )
     return {
         "primary_template": primary_template,
-        "templates_used": [str(item) for item in templates if isinstance(item, str)],
-        "motifs_used": [str(item) for item in motifs if isinstance(item, str)],
+        "templates_used": template_names,
+        "motifs_used": motif_names,
         "dynamic_components": dynamic_component_tokens,
-        "ops": unique_ops,
-        "op_pairs": sorted(pairs),
         "slot_keys": slot_keys,
         "slot_motifs": slot_motifs,
         "slot_components": slot_components,
-        "depth_ops": sorted(op_depth_buckets),
         **feature_flags,
+    }
+
+
+def _graph_features(graph_json: Any) -> dict[str, Any]:
+    graph = _safe_json_loads(graph_json)
+    metadata = graph.get("metadata") if isinstance(graph.get("metadata"), dict) else {}
+    unique_ops, op_pairs, depth_ops = _graph_topology_features(_iter_nodes(graph))
+    return {
+        **_metadata_features(metadata, unique_ops),
+        "ops": unique_ops,
+        "op_pairs": op_pairs,
+        "depth_ops": depth_ops,
     }
 
 

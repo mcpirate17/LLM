@@ -204,7 +204,375 @@ def _make_native_topology_context(
     )
 
 
+@dataclass(frozen=True)
+class _TopologyGraph:
+    graph_json: Dict[str, Any]
+    nodes: Dict[str, Any]
+    node_ids: List[str]
+    id_to_idx: Dict[str, int]
+    children: Dict[int, List[int]]
+    parents: Dict[int, List[int]]
+    op_names: List[str]
+    depth: np.ndarray
+    bfs_order: List[int]
+    max_depth: int
+    metadata: Dict[str, Any]
+
+
+def _parse_topology_graph_json(graph_json: Any) -> Optional[Dict[str, Any]]:
+    if isinstance(graph_json, str):
+        try:
+            graph_json = json.loads(graph_json)
+        except (json.JSONDecodeError, TypeError):
+            return None
+    return graph_json if isinstance(graph_json, dict) else None
+
+
+def _topology_adjacency(
+    nodes: Dict[str, Any], node_ids: List[str], id_to_idx: Dict[str, int]
+) -> Tuple[Dict[int, List[int]], Dict[int, List[int]]]:
+    children: Dict[int, List[int]] = defaultdict(list)
+    parents: Dict[int, List[int]] = defaultdict(list)
+    for nid in node_ids:
+        node = nodes[nid]
+        idx = id_to_idx[nid]
+        for inp in node.get("input_ids") or []:
+            parent_idx = id_to_idx.get(str(inp))
+            if parent_idx is not None:
+                children[parent_idx].append(idx)
+                parents[idx].append(parent_idx)
+    return children, parents
+
+
+def _topology_depth(
+    n: int, children: Dict[int, List[int]], parents: Dict[int, List[int]]
+) -> Tuple[np.ndarray, List[int], int]:
+    roots = [i for i in range(n) if not parents[i]] or [0]
+    depth = np.full(n, -1, dtype=np.int32)
+    queue = list(roots)
+    for root in queue:
+        depth[root] = 0
+    qi = 0
+    while qi < len(queue):
+        idx = queue[qi]
+        qi += 1
+        for child in children[idx]:
+            if depth[child] < 0:
+                depth[child] = depth[idx] + 1
+                queue.append(child)
+    return depth, queue, max(int(depth.max()), 1)
+
+
+def _build_topology_graph(graph_json: Any) -> Optional[_TopologyGraph]:
+    parsed = _parse_topology_graph_json(graph_json)
+    if parsed is None:
+        return None
+    nodes = parsed.get("nodes") or {}
+    if len(nodes) < 2:
+        return None
+    node_ids = list(nodes.keys())
+    id_to_idx = {nid: i for i, nid in enumerate(node_ids)}
+    children, parents = _topology_adjacency(nodes, node_ids, id_to_idx)
+    depth, bfs_order, max_depth = _topology_depth(len(node_ids), children, parents)
+    return _TopologyGraph(
+        graph_json=parsed,
+        nodes=nodes,
+        node_ids=node_ids,
+        id_to_idx=id_to_idx,
+        children=children,
+        parents=parents,
+        op_names=[nodes[nid].get("op_name", "") for nid in node_ids],
+        depth=depth,
+        bfs_order=bfs_order,
+        max_depth=max_depth,
+        metadata=parsed.get("metadata") or {},
+    )
+
+
+def _add_topology_basic_features(
+    features: Dict[str, float], graph: _TopologyGraph
+) -> int:
+    n = len(graph.node_ids)
+    n_ops = sum(1 for op in graph.op_names if op and op != "input")
+    n_edges = sum(len(ch) for ch in graph.children.values())
+    fan_ins = [len(graph.parents[i]) for i in range(n)]
+    fan_outs = [len(graph.children[i]) for i in range(n)]
+    features.update(
+        {
+            "topo_n_ops": float(n_ops),
+            "topo_depth": float(graph.max_depth),
+            "topo_edge_density": n_edges / max(n, 1),
+            "topo_edges_per_op": n_edges / max(n_ops, 1),
+            "topo_depth_per_op": graph.max_depth / max(n_ops, 1),
+            "topo_max_fan_in": float(max(fan_ins)) if fan_ins else 0.0,
+            "topo_max_fan_out": float(max(fan_outs)) if fan_outs else 0.0,
+            "topo_mean_fan_in": float(np.mean(fan_ins)) if fan_ins else 0.0,
+            "topo_mean_fan_out": float(np.mean(fan_outs)) if fan_outs else 0.0,
+            "topo_n_merge_nodes": float(sum(1 for f in fan_ins if f > 1)),
+            "topo_n_split_nodes": float(sum(1 for f in fan_outs if f > 1)),
+            "topo_leaf_fraction": float(sum(1 for f in fan_outs if f == 0)) / max(n, 1),
+            "topo_root_fraction": float(sum(1 for f in fan_ins if f == 0)) / max(n, 1),
+        }
+    )
+    return n_ops
+
+
+def _op_profile_arrays(
+    op_names: List[str], op_profiles: Dict[str, Dict[str, float]]
+) -> Tuple[np.ndarray, np.ndarray]:
+    lip_values = np.ones(len(op_names), dtype=np.float64)
+    grad_risks = np.zeros(len(op_names), dtype=np.float64)
+    for i, op in enumerate(op_names):
+        prof = op_profiles.get(op, {})
+        lip_values[i] = min(prof.get("lipschitz", 1.0), 100.0)
+        grad_risks[i] = (
+            prof.get("grad_vanishing", 0)
+            + prof.get("grad_exploding", 0)
+            + prof.get("has_nan", 0)
+        )
+    return lip_values, grad_risks
+
+
+def _add_path_profile_features(
+    features: Dict[str, float],
+    graph: _TopologyGraph,
+    lip_values: np.ndarray,
+    grad_risks: np.ndarray,
+) -> None:
+    n = len(graph.node_ids)
+    lip_product = np.ones(n, dtype=np.float64)
+    for idx in graph.bfs_order:
+        if graph.parents[idx]:
+            lip_product[idx] = (
+                max(lip_product[p] for p in graph.parents[idx]) * lip_values[idx]
+            )
+    risk_accum = np.zeros(n, dtype=np.float64)
+    for idx in graph.bfs_order:
+        if graph.parents[idx]:
+            risk_accum[idx] = (
+                max(risk_accum[p] for p in graph.parents[idx]) + grad_risks[idx]
+            )
+    features["path_max_lip_product"] = float(np.clip(np.max(lip_product), 0, 1e6))
+    features["path_mean_lip_product"] = float(np.clip(np.mean(lip_product), 0, 1e6))
+    features["path_max_lip_log"] = float(np.log1p(np.max(lip_product)))
+    features["path_max_risk_accum"] = float(np.max(risk_accum))
+    features["path_mean_risk_accum"] = float(np.mean(risk_accum))
+
+
+def _depth_weights(graph: _TopologyGraph) -> np.ndarray:
+    weights = np.zeros(len(graph.node_ids), dtype=np.float64)
+    for i in range(len(graph.node_ids)):
+        if graph.depth[i] >= 0:
+            weights[i] = (graph.depth[i] + 1) / (graph.max_depth + 1)
+    return weights
+
+
+def _add_depth_weighted_profile_features(
+    features: Dict[str, float],
+    graph: _TopologyGraph,
+    depth_weights: np.ndarray,
+    op_profiles: Dict[str, Dict[str, float]],
+) -> None:
+    weighted_lip = weighted_std = weighted_grad = weight_sum = 0.0
+    for i, op in enumerate(graph.op_names):
+        if not op or op == "input":
+            continue
+        prof = op_profiles.get(op, {})
+        weight = depth_weights[i]
+        weighted_lip += weight * min(prof.get("lipschitz", 1.0), 100.0)
+        weighted_std += weight * min(prof.get("output_std", 1.0), 10.0)
+        weighted_grad += weight * min(prof.get("grad_norm", 1.0), 1000.0)
+        weight_sum += weight
+    weight_sum = max(weight_sum, 1e-8)
+    features["depth_weighted_lip"] = weighted_lip / weight_sum
+    features["depth_weighted_std"] = weighted_std / weight_sum
+    features["depth_weighted_grad"] = float(np.log1p(weighted_grad / weight_sum))
+
+
+def _graph_edge_op_pairs(graph: _TopologyGraph) -> List[Tuple[str, str]]:
+    pairs: List[Tuple[str, str]] = []
+    for idx in range(len(graph.node_ids)):
+        for child_idx in graph.children[idx]:
+            a, b = graph.op_names[idx], graph.op_names[child_idx]
+            if a and b and a != "input" and b != "input":
+                pairs.append((a, b))
+    return pairs
+
+
+def _add_pair_stability_features(
+    features: Dict[str, float],
+    edge_pairs: List[Tuple[str, str]],
+    pair_stability: Dict[Tuple[str, str], float],
+) -> None:
+    stabilities = [pair_stability.get(pair, 0.5) for pair in edge_pairs]
+    if not stabilities:
+        features.update(
+            {
+                "pair_min_stability": 0.5,
+                "pair_mean_stability": 0.5,
+                "pair_frac_unstable": 0.5,
+            }
+        )
+        return
+    features["pair_min_stability"] = float(min(stabilities))
+    features["pair_mean_stability"] = float(np.mean(stabilities))
+    features["pair_frac_unstable"] = float(
+        sum(1 for value in stabilities if value < 0.5) / len(stabilities)
+    )
+
+
+def _add_interaction_model_features(
+    features: Dict[str, float], edge_pairs: List[Tuple[str, str]], imodel: Optional[Any]
+) -> None:
+    if imodel is None or not hasattr(imodel, "_trained") or not imodel._trained:
+        features.update(
+            {
+                "imodel_min_stability": 0.5,
+                "imodel_mean_stability": 0.5,
+                "imodel_mean_loss": 0.7,
+            }
+        )
+        return
+    stabilities = [imodel.predict_stability(a, b) for a, b in edge_pairs]
+    losses = [imodel.predict_loss(a, b) for a, b in edge_pairs]
+    features["imodel_min_stability"] = float(min(stabilities)) if stabilities else 0.5
+    features["imodel_mean_stability"] = (
+        float(np.mean(stabilities)) if stabilities else 0.5
+    )
+    features["imodel_mean_loss"] = float(np.mean(losses)) if losses else 0.7
+
+
+def _add_neighbor_profile_features(
+    features: Dict[str, float], graph: _TopologyGraph, lip_values: np.ndarray
+) -> None:
+    child_lip_means = [
+        float(np.mean([lip_values[child] for child in graph.children[idx]]))
+        for idx in range(len(graph.node_ids))
+        if graph.children[idx]
+    ]
+    features["neighbor_mean_child_lip"] = (
+        float(np.mean(child_lip_means)) if child_lip_means else 1.0
+    )
+    features["neighbor_max_child_lip"] = (
+        float(max(child_lip_means)) if child_lip_means else 1.0
+    )
+
+
+def _add_residual_features(
+    features: Dict[str, float], graph: _TopologyGraph, n_ops: int
+) -> None:
+    skip_spans = []
+    for idx in range(len(graph.node_ids)):
+        if graph.op_names[idx] == "add" and len(graph.parents[idx]) >= 2:
+            depths = [graph.depth[p] for p in graph.parents[idx] if graph.depth[p] >= 0]
+            if depths and max(depths) - min(depths) > 0:
+                skip_spans.append(max(depths) - min(depths))
+    features["residual_coverage"] = float(len(skip_spans)) / max(n_ops, 1)
+    features["residual_span_mean"] = float(np.mean(skip_spans)) if skip_spans else 0.0
+    features["residual_span_max"] = float(max(skip_spans)) if skip_spans else 0.0
+
+
+def _add_depth_category_features(
+    features: Dict[str, float],
+    graph: _TopologyGraph,
+    depth_weights: np.ndarray,
+    n_ops: int,
+) -> None:
+    buckets = {"early": 0, "mid": 0, "late": 0}
+    cats = {"mixing": 0, "math_space": 0, "parameterized": 0, "reduction": 0}
+    param_ops = 0
+    math_late = mixing_late = 0.0
+    for i, op in enumerate(graph.op_names):
+        if not op or op == "input":
+            continue
+        d_norm = depth_weights[i]
+        buckets["early" if d_norm <= 0.34 else "mid" if d_norm <= 0.67 else "late"] += 1
+        prim = PRIMITIVE_REGISTRY.get(op)
+        if prim is None:
+            continue
+        cat_name = str(getattr(prim.category, "value", prim.category)).lower()
+        if "mix" in cat_name:
+            cats["mixing"] += 1
+            mixing_late += d_norm
+        elif "math" in cat_name:
+            cats["math_space"] += 1
+            math_late += d_norm
+        elif "param" in cat_name:
+            cats["parameterized"] += 1
+        elif "reduction" in cat_name:
+            cats["reduction"] += 1
+        if getattr(prim, "has_params", False):
+            param_ops += 1
+    features.update(
+        {
+            "depth_frac_early": buckets["early"] / max(n_ops, 1),
+            "depth_frac_mid": buckets["mid"] / max(n_ops, 1),
+            "depth_frac_late": buckets["late"] / max(n_ops, 1),
+            "cat_frac_mixing": cats["mixing"] / max(n_ops, 1),
+            "cat_frac_math_space": cats["math_space"] / max(n_ops, 1),
+            "cat_frac_parameterized": cats["parameterized"] / max(n_ops, 1),
+            "cat_frac_reduction": cats["reduction"] / max(n_ops, 1),
+            "param_op_fraction": param_ops / max(n_ops, 1),
+            "late_mixing_density": mixing_late / max(n_ops, 1),
+            "late_math_density": math_late / max(n_ops, 1),
+        }
+    )
+
+
+def _add_metadata_features(
+    features: Dict[str, float], graph: _TopologyGraph, n_ops: int
+) -> None:
+    templates_used = graph.metadata.get("templates_used") or []
+    motifs_used = graph.metadata.get("motifs_used") or []
+    features["meta_n_templates"] = float(len(templates_used))
+    features["meta_n_motifs"] = float(len(motifs_used))
+    features["meta_template_per_op"] = float(len(templates_used)) / max(n_ops, 1)
+    features["meta_motif_per_op"] = float(len(motifs_used)) / max(n_ops, 1)
+
+
+def _add_output_structure_features(
+    features: Dict[str, float], graph: _TopologyGraph
+) -> None:
+    output_id = graph.graph_json.get("output_node_id")
+    if output_id is None or str(output_id) not in graph.nodes:
+        features["has_norm_before_output"] = 0.0
+        features["output_parent_depth_mean"] = 0.0
+        return
+    output_node = graph.nodes[str(output_id)]
+    output_parents = [str(p) for p in (output_node.get("input_ids") or [])]
+    features["has_norm_before_output"] = float(
+        any(
+            graph.nodes.get(parent, {}).get("op_name", "")
+            in ("layernorm", "rmsnorm", "layer_norm", "rms_norm")
+            for parent in output_parents
+        )
+    )
+    parent_depths = [
+        graph.depth[graph.id_to_idx[parent]]
+        for parent in output_parents
+        if parent in graph.id_to_idx and graph.depth[graph.id_to_idx[parent]] >= 0
+    ]
+    features["output_parent_depth_mean"] = (
+        float(np.mean(parent_depths)) if parent_depths else 0.0
+    )
+
+
 def _extract_topology_features_python(
+    graph_json: Any,
+    op_profiles: Dict[str, Dict[str, float]],
+    pair_stability: Dict[Tuple[str, str], float],
+    imodel: Optional[Any] = None,
+) -> Optional[Dict[str, float]]:
+    """Extract topology-aware features from a computation graph."""
+    return _extract_topology_features_python_impl(
+        graph_json,
+        op_profiles,
+        pair_stability,
+        imodel=imodel,
+    )
+
+
+def _extract_topology_features_python_impl(
     graph_json: Any,
     op_profiles: Dict[str, Dict[str, float]],
     pair_stability: Dict[Tuple[str, str], float],
@@ -216,295 +584,23 @@ def _extract_topology_features_python(
 
     Returns dict of feature_name → float, or None on parse failure.
     """
-    if isinstance(graph_json, str):
-        try:
-            graph_json = json.loads(graph_json)
-        except (json.JSONDecodeError, TypeError):
-            return None
-
-    if not isinstance(graph_json, dict):
+    graph = _build_topology_graph(graph_json)
+    if graph is None:
         return None
-
-    nodes = graph_json.get("nodes") or {}
-    if len(nodes) < 2:
-        return None
-
-    # Build adjacency (parent → children)
-    node_ids = list(nodes.keys())
-    id_to_idx = {nid: i for i, nid in enumerate(node_ids)}
-    n = len(node_ids)
-
-    children: Dict[int, List[int]] = defaultdict(list)  # idx → [child_idx]
-    parents: Dict[int, List[int]] = defaultdict(list)
-
-    for nid in node_ids:
-        node = nodes[nid]
-        idx = id_to_idx[nid]
-        for inp in node.get("input_ids") or []:
-            parent_idx = id_to_idx.get(str(inp))
-            if parent_idx is not None:
-                children[parent_idx].append(idx)
-                parents[idx].append(parent_idx)
-
-    metadata = graph_json.get("metadata") or {}
-
-    # Op names per node
-    op_names = [nodes[nid].get("op_name", "") for nid in node_ids]
-
-    # BFS depth
-    roots = [i for i in range(n) if not parents[i]]
-    if not roots:
-        roots = [0]
-    depth = np.full(n, -1, dtype=np.int32)
-    queue = list(roots)
-    for r in queue:
-        depth[r] = 0
-    qi = 0
-    while qi < len(queue):
-        idx = queue[qi]
-        qi += 1
-        for child in children[idx]:
-            if depth[child] < 0:
-                depth[child] = depth[idx] + 1
-                queue.append(child)
-
-    max_depth = max(int(depth.max()), 1)
-
     features: Dict[str, float] = {}
-
-    # ── 1. Topology basics ──
-    n_ops = sum(1 for op in op_names if op and op != "input")
-    n_edges = sum(len(ch) for ch in children.values())
-    features["topo_n_ops"] = float(n_ops)
-    features["topo_depth"] = float(max_depth)
-    features["topo_edge_density"] = n_edges / max(n, 1)
-    features["topo_edges_per_op"] = n_edges / max(n_ops, 1)
-    features["topo_depth_per_op"] = max_depth / max(n_ops, 1)
-
-    # Fan-in / fan-out statistics
-    fan_ins = [len(parents[i]) for i in range(n)]
-    fan_outs = [len(children[i]) for i in range(n)]
-    features["topo_max_fan_in"] = float(max(fan_ins)) if fan_ins else 0.0
-    features["topo_max_fan_out"] = float(max(fan_outs)) if fan_outs else 0.0
-    features["topo_mean_fan_in"] = float(np.mean(fan_ins)) if fan_ins else 0.0
-    features["topo_mean_fan_out"] = float(np.mean(fan_outs)) if fan_outs else 0.0
-    features["topo_n_merge_nodes"] = float(sum(1 for f in fan_ins if f > 1))
-    features["topo_n_split_nodes"] = float(sum(1 for f in fan_outs if f > 1))
-    features["topo_leaf_fraction"] = float(sum(1 for f in fan_outs if f == 0)) / max(
-        n, 1
-    )
-    features["topo_root_fraction"] = float(sum(1 for f in fan_ins if f == 0)) / max(
-        n, 1
-    )
-
-    # ── 2. Profiling-grounded path features ──
-    # Lipschitz chain: product along paths (measures amplification risk)
-    lip_values = np.ones(n, dtype=np.float64)
-    grad_risks = np.zeros(n, dtype=np.float64)
-    for i, op in enumerate(op_names):
-        prof = op_profiles.get(op, {})
-        lip_values[i] = min(prof.get("lipschitz", 1.0), 100.0)
-        grad_risks[i] = (
-            prof.get("grad_vanishing", 0)
-            + prof.get("grad_exploding", 0)
-            + prof.get("has_nan", 0)
-        )
-
-    # Max lipschitz product along any root→leaf path (DP)
-    lip_product = np.ones(n, dtype=np.float64)
-    for idx in queue:  # BFS order
-        if parents[idx]:
-            max_parent_lip = max(lip_product[p] for p in parents[idx])
-            lip_product[idx] = max_parent_lip * lip_values[idx]
-
-    features["path_max_lip_product"] = float(np.clip(np.max(lip_product), 0, 1e6))
-    features["path_mean_lip_product"] = float(np.clip(np.mean(lip_product), 0, 1e6))
-    features["path_max_lip_log"] = float(np.log1p(np.max(lip_product)))
-
-    # Gradient risk accumulation
-    risk_accum = np.zeros(n, dtype=np.float64)
-    for idx in queue:
-        if parents[idx]:
-            risk_accum[idx] = max(risk_accum[p] for p in parents[idx]) + grad_risks[idx]
-    features["path_max_risk_accum"] = float(np.max(risk_accum))
-    features["path_mean_risk_accum"] = float(np.mean(risk_accum))
-
-    # ── 3. Depth-weighted op profiles ──
-    # Ops near output (high depth) matter more for final loss
-    depth_weights = np.zeros(n, dtype=np.float64)
-    for i in range(n):
-        if depth[i] >= 0:
-            depth_weights[i] = (depth[i] + 1) / (max_depth + 1)
-
-    weighted_lip = 0.0
-    weighted_std = 0.0
-    weighted_grad = 0.0
-    weight_sum = 0.0
-    for i, op in enumerate(op_names):
-        if not op or op == "input":
-            continue
-        prof = op_profiles.get(op, {})
-        w = depth_weights[i]
-        weighted_lip += w * min(prof.get("lipschitz", 1.0), 100.0)
-        weighted_std += w * min(prof.get("output_std", 1.0), 10.0)
-        weighted_grad += w * min(prof.get("grad_norm", 1.0), 1000.0)
-        weight_sum += w
-
-    weight_sum = max(weight_sum, 1e-8)
-    features["depth_weighted_lip"] = weighted_lip / weight_sum
-    features["depth_weighted_std"] = weighted_std / weight_sum
-    features["depth_weighted_grad"] = float(np.log1p(weighted_grad / weight_sum))
-
-    # ── 4. Consecutive pair stability ──
-    # Use profiling pair data along actual edges
-    pair_stabilities = []
-    for idx in range(n):
-        for child_idx in children[idx]:
-            a, b = op_names[idx], op_names[child_idx]
-            if a and b and a != "input" and b != "input":
-                stab = pair_stability.get((a, b), 0.5)
-                pair_stabilities.append(stab)
-
-    if pair_stabilities:
-        features["pair_min_stability"] = float(min(pair_stabilities))
-        features["pair_mean_stability"] = float(np.mean(pair_stabilities))
-        features["pair_frac_unstable"] = float(
-            sum(1 for s in pair_stabilities if s < 0.5) / len(pair_stabilities)
-        )
-    else:
-        features["pair_min_stability"] = 0.5
-        features["pair_mean_stability"] = 0.5
-        features["pair_frac_unstable"] = 0.5
-
-    # ── 4b. Learned pair interaction features (from InteractionModel) ──
-    # The profiling pair_stability above is static (5,979 pairs profiled once).
-    # The interaction model learns from 258K+ experiment observations with temporal decay.
-    if imodel is not None and hasattr(imodel, "_trained") and imodel._trained:
-        imodel_stabilities = []
-        imodel_losses = []
-        for idx in range(n):
-            for child_idx in children[idx]:
-                a, b = op_names[idx], op_names[child_idx]
-                if a and b and a != "input" and b != "input":
-                    imodel_stabilities.append(imodel.predict_stability(a, b))
-                    imodel_losses.append(imodel.predict_loss(a, b))
-        if imodel_stabilities:
-            features["imodel_min_stability"] = float(min(imodel_stabilities))
-            features["imodel_mean_stability"] = float(np.mean(imodel_stabilities))
-            features["imodel_mean_loss"] = float(np.mean(imodel_losses))
-        else:
-            features["imodel_min_stability"] = 0.5
-            features["imodel_mean_stability"] = 0.5
-            features["imodel_mean_loss"] = 0.7
-    else:
-        features["imodel_min_stability"] = 0.5
-        features["imodel_mean_stability"] = 0.5
-        features["imodel_mean_loss"] = 0.7
-
-    # ── 5. Neighbor profile aggregation ──
-    # For each node, mean lipschitz of its children (amplification risk of downstream)
-    child_lip_means = []
-    for idx in range(n):
-        if children[idx]:
-            child_lips = [lip_values[c] for c in children[idx]]
-            child_lip_means.append(float(np.mean(child_lips)))
-    features["neighbor_mean_child_lip"] = (
-        float(np.mean(child_lip_means)) if child_lip_means else 1.0
-    )
-    features["neighbor_max_child_lip"] = (
-        float(max(child_lip_means)) if child_lip_means else 1.0
-    )
-
-    # ── 6. Structural patterns ──
-    # Residual coverage: fraction of ops with skip connections (add nodes w/ depth gap)
-    n_skip = 0
-    skip_spans = []
-    for idx in range(n):
-        if op_names[idx] == "add" and len(parents[idx]) >= 2:
-            depths = [depth[p] for p in parents[idx] if depth[p] >= 0]
-            if depths and max(depths) - min(depths) > 0:
-                n_skip += 1
-                skip_spans.append(max(depths) - min(depths))
-    features["residual_coverage"] = float(n_skip) / max(n_ops, 1)
-    features["residual_span_mean"] = float(np.mean(skip_spans)) if skip_spans else 0.0
-    features["residual_span_max"] = float(max(skip_spans)) if skip_spans else 0.0
-
-    # ── 7. Depth-bucket and op-category structure ──
-    early = mid = late = 0
-    mixing = math_space = parameterized = reduction = 0
-    param_ops = 0
-    math_late = 0.0
-    mixing_late = 0.0
-    for i, op in enumerate(op_names):
-        if not op or op == "input":
-            continue
-        d_norm = depth_weights[i]
-        if d_norm <= 0.34:
-            early += 1
-        elif d_norm <= 0.67:
-            mid += 1
-        else:
-            late += 1
-
-        prim = PRIMITIVE_REGISTRY.get(op)
-        if prim is not None:
-            cat_name = str(getattr(prim.category, "value", prim.category)).lower()
-            if "mix" in cat_name:
-                mixing += 1
-                mixing_late += d_norm
-            elif "math" in cat_name:
-                math_space += 1
-                math_late += d_norm
-            elif "param" in cat_name:
-                parameterized += 1
-            elif "reduction" in cat_name:
-                reduction += 1
-            if getattr(prim, "has_params", False):
-                param_ops += 1
-
-    features["depth_frac_early"] = early / max(n_ops, 1)
-    features["depth_frac_mid"] = mid / max(n_ops, 1)
-    features["depth_frac_late"] = late / max(n_ops, 1)
-    features["cat_frac_mixing"] = mixing / max(n_ops, 1)
-    features["cat_frac_math_space"] = math_space / max(n_ops, 1)
-    features["cat_frac_parameterized"] = parameterized / max(n_ops, 1)
-    features["cat_frac_reduction"] = reduction / max(n_ops, 1)
-    features["param_op_fraction"] = param_ops / max(n_ops, 1)
-    features["late_mixing_density"] = mixing_late / max(n_ops, 1)
-    features["late_math_density"] = math_late / max(n_ops, 1)
-
-    # ── 8. Metadata structure ──
-    templates_used = metadata.get("templates_used") or []
-    motifs_used = metadata.get("motifs_used") or []
-    features["meta_n_templates"] = float(len(templates_used))
-    features["meta_n_motifs"] = float(len(motifs_used))
-    features["meta_template_per_op"] = float(len(templates_used)) / max(n_ops, 1)
-    features["meta_motif_per_op"] = float(len(motifs_used)) / max(n_ops, 1)
-
-    # ── 9. Output structure ──
-    # Has normalization before output
-    output_id = graph_json.get("output_node_id")
-    if output_id is not None and str(output_id) in nodes:
-        output_node = nodes[str(output_id)]
-        output_parents = [str(p) for p in (output_node.get("input_ids") or [])]
-        has_norm_before_output = any(
-            nodes.get(p, {}).get("op_name", "")
-            in ("layernorm", "rmsnorm", "layer_norm", "rms_norm")
-            for p in output_parents
-        )
-        features["has_norm_before_output"] = float(has_norm_before_output)
-        parent_depths = [
-            depth[id_to_idx[p]]
-            for p in output_parents
-            if p in id_to_idx and depth[id_to_idx[p]] >= 0
-        ]
-        features["output_parent_depth_mean"] = (
-            float(np.mean(parent_depths)) if parent_depths else 0.0
-        )
-    else:
-        features["has_norm_before_output"] = 0.0
-        features["output_parent_depth_mean"] = 0.0
-
+    n_ops = _add_topology_basic_features(features, graph)
+    lip_values, grad_risks = _op_profile_arrays(graph.op_names, op_profiles)
+    depth_weights = _depth_weights(graph)
+    edge_pairs = _graph_edge_op_pairs(graph)
+    _add_path_profile_features(features, graph, lip_values, grad_risks)
+    _add_depth_weighted_profile_features(features, graph, depth_weights, op_profiles)
+    _add_pair_stability_features(features, edge_pairs, pair_stability)
+    _add_interaction_model_features(features, edge_pairs, imodel)
+    _add_neighbor_profile_features(features, graph, lip_values)
+    _add_residual_features(features, graph, n_ops)
+    _add_depth_category_features(features, graph, depth_weights, n_ops)
+    _add_metadata_features(features, graph, n_ops)
+    _add_output_structure_features(features, graph)
     return features
 
 
