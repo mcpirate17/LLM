@@ -1,6 +1,6 @@
 {
   "statistics": {
-    "detectionDate": "2026-05-18T20:28:05.788Z",
+    "detectionDate": "2026-05-19T02:04:46.148Z",
     "formats": {
       "python": {
         "sources": {
@@ -17,8 +17,8 @@
             "newClones": 0
           },
           "conductor/run_duplicate_audit.py": {
-            "lines": 278,
-            "tokens": 2031,
+            "lines": 285,
+            "tokens": 2046,
             "sources": 1,
             "clones": 0,
             "duplicatedLines": 0,
@@ -29,8 +29,8 @@
             "newClones": 0
           },
           "conductor/radon_complexity.py": {
-            "lines": 175,
-            "tokens": 1829,
+            "lines": 183,
+            "tokens": 1844,
             "sources": 1,
             "clones": 0,
             "duplicatedLines": 0,
@@ -377,8 +377,8 @@
             "newClones": 0
           },
           "component_fab/tests/test_sprint6_pipeline.py": {
-            "lines": 187,
-            "tokens": 1438,
+            "lines": 191,
+            "tokens": 1476,
             "sources": 1,
             "clones": 0,
             "duplicatedLines": 0,
@@ -389,14 +389,14 @@
             "newClones": 0
           },
           "component_fab/tests/test_sprint5_pipeline.py": {
-            "lines": 297,
-            "tokens": 2269,
+            "lines": 304,
+            "tokens": 2339,
             "sources": 1,
             "clones": 2,
             "duplicatedLines": 49,
             "duplicatedTokens": 327,
-            "percentage": 16.5,
-            "percentageTokens": 14.41,
+            "percentage": 16.12,
+            "percentageTokens": 13.98,
             "newDuplicatedLines": 0,
             "newClones": 0
           },
@@ -605,8 +605,8 @@
             "newClones": 0
           },
           "component_fab/tests/test_fab_catalog_cleanup.py": {
-            "lines": 92,
-            "tokens": 771,
+            "lines": 94,
+            "tokens": 775,
             "sources": 1,
             "clones": 0,
             "duplicatedLines": 0,
@@ -749,8 +749,8 @@
             "newClones": 0
           },
           "component_fab/policies/promotion.py": {
-            "lines": 141,
-            "tokens": 1004,
+            "lines": 144,
+            "tokens": 1027,
             "sources": 1,
             "clones": 0,
             "duplicatedLines": 0,
@@ -1073,8 +1073,8 @@
             "newClones": 0
           },
           "component_fab/harness/binding_tests_v2.py": {
-            "lines": 901,
-            "tokens": 8312,
+            "lines": 900,
+            "tokens": 8294,
             "sources": 1,
             "clones": 2,
             "duplicatedLines": 26,
@@ -1097,7 +1097,7 @@
             "newClones": 0
           },
           "component_fab/generator/routing_primitives.py": {
-            "lines": 338,
+            "lines": 254,
             "tokens": 2729,
             "sources": 1,
             "clones": 0,
@@ -1121,8 +1121,8 @@
             "newClones": 0
           },
           "component_fab/generator/block_templates.py": {
-            "lines": 478,
-            "tokens": 4164,
+            "lines": 382,
+            "tokens": 4151,
             "sources": 1,
             "clones": 0,
             "duplicatedLines": 0,
@@ -2945,8 +2945,8 @@
             "newClones": 0
           },
           "aria_designer/tools/bootstrap_components.py": {
-            "lines": 622,
-            "tokens": 5542,
+            "lines": 498,
+            "tokens": 5030,
             "sources": 1,
             "clones": 0,
             "duplicatedLines": 0,
@@ -3127,18 +3127,6 @@
           "aria_designer/tests/test_hybrid_sparse_routing.py": {
             "lines": 109,
             "tokens": 943,
-            "sources": 1,
-            "clones": 0,
-            "duplicatedLines": 0,
-            "duplicatedTokens": 0,
-            "percentage": 0,
-            "percentageTokens": 0,
-            "newDuplicatedLines": 0,
-            "newClones": 0
-          },
-          "aria_designer/tests/test_hybrid_sparse_router_prototype_copy.py": {
-            "lines": 20,
-            "tokens": 123,
             "sources": 1,
             "clones": 0,
             "duplicatedLines": 0,
@@ -3473,14 +3461,14 @@
             "newClones": 0
           },
           "aria_designer/components/base.py": {
-            "lines": 266,
-            "tokens": 2075,
+            "lines": 190,
+            "tokens": 1451,
             "sources": 1,
-            "clones": 2,
-            "duplicatedLines": 20,
-            "duplicatedTokens": 290,
-            "percentage": 7.52,
-            "percentageTokens": 13.98,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
             "newDuplicatedLines": 0,
             "newClones": 0
           },
@@ -3737,8 +3725,8 @@
             "newClones": 0
           },
           "research/tools/hive/bus_client.py": {
-            "lines": 77,
-            "tokens": 566,
+            "lines": 79,
+            "tokens": 570,
             "sources": 1,
             "clones": 0,
             "duplicatedLines": 0,
@@ -3761,8 +3749,8 @@
             "newClones": 0
           },
           "research/scientist/runner/search_common.py": {
-            "lines": 296,
-            "tokens": 2294,
+            "lines": 292,
+            "tokens": 2286,
             "sources": 1,
             "clones": 0,
             "duplicatedLines": 0,
@@ -3809,8 +3797,8 @@
             "newClones": 0
           },
           "research/scientist/runner/results_knowledge.py": {
-            "lines": 569,
-            "tokens": 4104,
+            "lines": 571,
+            "tokens": 4110,
             "sources": 1,
             "clones": 0,
             "duplicatedLines": 0,
@@ -3833,8 +3821,8 @@
             "newClones": 0
           },
           "research/scientist/runner/results_analysis.py": {
-            "lines": 822,
-            "tokens": 7364,
+            "lines": 839,
+            "tokens": 7401,
             "sources": 1,
             "clones": 0,
             "duplicatedLines": 0,
@@ -3845,8 +3833,8 @@
             "newClones": 0
           },
           "research/scientist/runner/fingerprint_completion.py": {
-            "lines": 99,
-            "tokens": 729,
+            "lines": 101,
+            "tokens": 733,
             "sources": 1,
             "clones": 0,
             "duplicatedLines": 0,
@@ -4505,8 +4493,8 @@
             "newClones": 0
           },
           "research/scientist/notebook/notebook_dashboard.py": {
-            "lines": 733,
-            "tokens": 4550,
+            "lines": 759,
+            "tokens": 4599,
             "sources": 1,
             "clones": 0,
             "duplicatedLines": 0,
@@ -4637,8 +4625,8 @@
             "newClones": 0
           },
           "research/scientist/notebook/_notebook_misc_shared.py": {
-            "lines": 805,
-            "tokens": 6952,
+            "lines": 814,
+            "tokens": 6968,
             "sources": 1,
             "clones": 0,
             "duplicatedLines": 0,
@@ -5549,8 +5537,8 @@
             "newClones": 0
           },
           "research/scientist/api_routes/_utils.py": {
-            "lines": 203,
-            "tokens": 1423,
+            "lines": 157,
+            "tokens": 1233,
             "sources": 1,
             "clones": 0,
             "duplicatedLines": 0,
@@ -6293,8 +6281,8 @@
             "newClones": 0
           },
           "research/tools/scaling_blimp_study.py": {
-            "lines": 887,
-            "tokens": 7649,
+            "lines": 895,
+            "tokens": 7661,
             "sources": 1,
             "clones": 0,
             "duplicatedLines": 0,
@@ -6905,8 +6893,8 @@
             "newClones": 0
           },
           "research/tools/nano_blimp_audit_common.py": {
-            "lines": 249,
-            "tokens": 2042,
+            "lines": 247,
+            "tokens": 2038,
             "sources": 1,
             "clones": 0,
             "duplicatedLines": 0,
@@ -6992,47 +6980,59 @@
             "lines": 404,
             "tokens": 3327,
             "sources": 1,
-            "clones": 4,
-            "duplicatedLines": 98,
-            "duplicatedTokens": 1035,
-            "percentage": 24.26,
-            "percentageTokens": 31.11,
+            "clones": 2,
+            "duplicatedLines": 24,
+            "duplicatedTokens": 301,
+            "percentage": 5.94,
+            "percentageTokens": 9.05,
             "newDuplicatedLines": 0,
             "newClones": 0
           },
           "research/tools/meta_surrogate_analysis.py": {
-            "lines": 670,
-            "tokens": 5459,
+            "lines": 644,
+            "tokens": 5177,
+            "sources": 1,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "research/tools/meta_report_helpers.py": {
+            "lines": 33,
+            "tokens": 336,
             "sources": 1,
             "clones": 2,
-            "duplicatedLines": 30,
-            "duplicatedTokens": 314,
-            "percentage": 4.48,
-            "percentageTokens": 5.75,
+            "duplicatedLines": 24,
+            "duplicatedTokens": 301,
+            "percentage": 72.73,
+            "percentageTokens": 89.58,
             "newDuplicatedLines": 0,
             "newClones": 0
           },
           "research/tools/meta_profile_ml_analysis.py": {
-            "lines": 673,
-            "tokens": 5548,
+            "lines": 647,
+            "tokens": 5266,
             "sources": 1,
-            "clones": 1,
-            "duplicatedLines": 34,
-            "duplicatedTokens": 361,
-            "percentage": 5.05,
-            "percentageTokens": 6.51,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
             "newDuplicatedLines": 0,
             "newClones": 0
           },
           "research/tools/meta_experiment_queue.py": {
-            "lines": 434,
-            "tokens": 2962,
+            "lines": 408,
+            "tokens": 2680,
             "sources": 1,
-            "clones": 1,
-            "duplicatedLines": 34,
-            "duplicatedTokens": 360,
-            "percentage": 7.83,
-            "percentageTokens": 12.15,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
             "newDuplicatedLines": 0,
             "newClones": 0
           },
@@ -7613,8 +7613,8 @@
             "newClones": 0
           },
           "research/tools/backfill_trajectory_metrics.py": {
-            "lines": 294,
-            "tokens": 1937,
+            "lines": 295,
+            "tokens": 1938,
             "sources": 1,
             "clones": 0,
             "duplicatedLines": 0,
@@ -8525,8 +8525,8 @@
             "newClones": 0
           },
           "research/synthesis/graph_validation_rules.py": {
-            "lines": 312,
-            "tokens": 2520,
+            "lines": 310,
+            "tokens": 2516,
             "sources": 1,
             "clones": 0,
             "duplicatedLines": 0,
@@ -9293,8 +9293,8 @@
             "newClones": 0
           },
           "research/scientist/thresholds.py": {
-            "lines": 230,
-            "tokens": 739,
+            "lines": 156,
+            "tokens": 611,
             "sources": 1,
             "clones": 0,
             "duplicatedLines": 0,
@@ -9547,6 +9547,18 @@
           "research/scientist/leaderboard_rescore.py": {
             "lines": 271,
             "tokens": 2504,
+            "sources": 1,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "research/scientist/leaderboard_dashboard_fields.py": {
+            "lines": 71,
+            "tokens": 395,
             "sources": 1,
             "clones": 0,
             "duplicatedLines": 0,
@@ -11093,8 +11105,8 @@
             "newClones": 0
           },
           "research/eval/_ar_curriculum_common.py": {
-            "lines": 344,
-            "tokens": 3313,
+            "lines": 346,
+            "tokens": 3317,
             "sources": 1,
             "clones": 0,
             "duplicatedLines": 0,
@@ -11226,14 +11238,14 @@
           }
         },
         "total": {
-          "lines": 227745,
-          "tokens": 1815663,
-          "sources": 935,
-          "clones": 99,
-          "duplicatedLines": 1751,
-          "duplicatedTokens": 16852,
-          "percentage": 0.77,
-          "percentageTokens": 0.93,
+          "lines": 227342,
+          "tokens": 1814222,
+          "sources": 936,
+          "clones": 96,
+          "duplicatedLines": 1667,
+          "duplicatedTokens": 15973,
+          "percentage": 0.73,
+          "percentageTokens": 0.88,
           "newDuplicatedLines": 0,
           "newClones": 0
         }
@@ -15752,14 +15764,14 @@
       }
     },
     "total": {
-      "lines": 268194,
-      "tokens": 2241802,
-      "sources": 1295,
-      "clones": 136,
-      "duplicatedLines": 2552,
-      "duplicatedTokens": 26096,
-      "percentage": 0.95,
-      "percentageTokens": 1.16,
+      "lines": 267791,
+      "tokens": 2240361,
+      "sources": 1296,
+      "clones": 133,
+      "duplicatedLines": 2468,
+      "duplicatedTokens": 25217,
+      "percentage": 0.92,
+      "percentageTokens": 1.13,
       "newDuplicatedLines": 0,
       "newClones": 0
     }
@@ -16024,32 +16036,32 @@
       "tokens": 0,
       "firstFile": {
         "name": "component_fab/harness/binding_tests_v2.py",
-        "start": 816,
-        "end": 829,
+        "start": 815,
+        "end": 828,
         "startLoc": {
-          "line": 816,
+          "line": 815,
           "column": 23,
-          "position": 7648
+          "position": 7630
         },
         "endLoc": {
-          "line": 829,
+          "line": 828,
           "column": 14,
-          "position": 7785
+          "position": 7767
         }
       },
       "secondFile": {
         "name": "component_fab/harness/binding_tests_v2.py",
-        "start": 581,
-        "end": 594,
+        "start": 580,
+        "end": 593,
         "startLoc": {
-          "line": 581,
+          "line": 580,
           "column": 15,
-          "position": 5311
+          "position": 5293
         },
         "endLoc": {
-          "line": 594,
+          "line": 593,
           "column": 14,
-          "position": 5448
+          "position": 5430
         }
       }
     },
@@ -17418,42 +17430,6 @@
           "line": 16,
           "column": 2,
           "position": 345
-        }
-      }
-    },
-    {
-      "format": "python",
-      "lines": 11,
-      "fragment": "()\n\n        def forward(self, inputs, config):\n            a = inputs.get(\"a\")\n            b = inputs.get(\"b\")\n            if a is None or b is None:\n                keys = list(inputs.keys())\n                if len(keys) >= 2:\n                    a = a if a is not None else inputs[keys[0]]\n                    b = b if b is not None else inputs[keys[1]]\n            if native_op_name",
-      "tokens": 0,
-      "firstFile": {
-        "name": "aria_designer/components/base.py",
-        "start": 183,
-        "end": 193,
-        "startLoc": {
-          "line": 183,
-          "column": 27,
-          "position": 1379
-        },
-        "endLoc": {
-          "line": 193,
-          "column": 30,
-          "position": 1524
-        }
-      },
-      "secondFile": {
-        "name": "aria_designer/components/base.py",
-        "start": 81,
-        "end": 91,
-        "startLoc": {
-          "line": 81,
-          "column": 31,
-          "position": 521
-        },
-        "endLoc": {
-          "line": 91,
-          "column": 16,
-          "position": 666
         }
       }
     },
@@ -18828,21 +18804,21 @@
     {
       "format": "python",
       "lines": 11,
-      "fragment": "def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:\n    if not rows:\n        path.write_text(\"\")\n        return\n    with path.open(\"w\", newline=\"\") as handle:\n        writer = csv.DictWriter(handle, fieldnames=list(rows[0].keys()))\n        writer.writeheader()\n        writer.writerows(rows)\n\n\ndef _md_table",
+      "fragment": "def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:\n    if not rows:\n        path.write_text(\"\")\n        return\n    with path.open(\"w\", newline=\"\") as handle:\n        writer = csv.DictWriter(handle, fieldnames=list(rows[0].keys()))\n        writer.writeheader()\n        writer.writerows(rows)\n\n\ndef markdown_table",
       "tokens": 0,
       "firstFile": {
-        "name": "research/tools/meta_surrogate_analysis.py",
-        "start": 495,
-        "end": 505,
+        "name": "research/tools/meta_report_helpers.py",
+        "start": 10,
+        "end": 20,
         "startLoc": {
-          "line": 495,
+          "line": 10,
           "column": 1,
-          "position": 4028
+          "position": 34
         },
         "endLoc": {
-          "line": 505,
-          "column": 14,
-          "position": 4144
+          "line": 20,
+          "column": 19,
+          "position": 150
         }
       },
       "secondFile": {
@@ -18863,109 +18839,37 @@
     },
     {
       "format": "python",
-      "lines": 21,
-      "fragment": ")\n\n\ndef _md_table(\n    rows: list[dict[str, Any]], fields: list[str], *, limit: int\n) -> list[str]:\n    if not rows:\n        return [\"_No rows._\", \"\"]\n    lines = [\n        \"| \" + \" | \".join(fields) + \" |\",\n        \"| \" + \" | \".join(\"---\" for _ in fields) + \" |\",\n    ]\n    for row in rows[:limit]:\n        lines.append(\n            \"| \" + \" | \".join(str(row.get(field, \"\")) for field in fields) + \" |\"\n        )\n    lines.append(\"\")\n    return lines\n\n\ndef write_markdown",
+      "lines": 15,
+      "fragment": "(\n    rows: list[dict[str, Any]], fields: list[str], *, limit: int\n) -> list[str]:\n    if not rows:\n        return [\"_No rows._\", \"\"]\n    lines = [\n        \"| \" + \" | \".join(fields) + \" |\",\n        \"| \" + \" | \".join(\"---\" for _ in fields) + \" |\",\n    ]\n    for row in rows[:limit]:\n        lines.append(\n            \"| \" + \" | \".join(str(row.get(field, \"\")) for field in fields) + \" |\"\n        )\n    lines.append(\"\")\n    return lines",
       "tokens": 0,
       "firstFile": {
-        "name": "research/tools/meta_surrogate_analysis.py",
-        "start": 502,
-        "end": 522,
+        "name": "research/tools/meta_report_helpers.py",
+        "start": 20,
+        "end": 34,
         "startLoc": {
-          "line": 502,
-          "column": 30,
-          "position": 4138
-        },
-        "endLoc": {
-          "line": 522,
+          "line": 20,
           "column": 19,
-          "position": 4336
+          "position": 151
+        },
+        "endLoc": {
+          "line": 34,
+          "column": 17,
+          "position": 336
         }
       },
       "secondFile": {
         "name": "research/tools/meta_surrogate_screening_proposal.py",
-        "start": 187,
-        "end": 207,
+        "start": 190,
+        "end": 204,
         "startLoc": {
-          "line": 187,
-          "column": 5,
-          "position": 1628
+          "line": 190,
+          "column": 14,
+          "position": 1635
         },
         "endLoc": {
-          "line": 207,
-          "column": 20,
-          "position": 1826
-        }
-      }
-    },
-    {
-      "format": "python",
-      "lines": 35,
-      "fragment": "),\n    }\n\n\ndef write_csv(path: Path, rows: list[dict[str, Any]]) -> None:\n    if not rows:\n        path.write_text(\"\")\n        return\n    with path.open(\"w\", newline=\"\") as handle:\n        writer = csv.DictWriter(handle, fieldnames=list(rows[0].keys()))\n        writer.writeheader()\n        writer.writerows(rows)\n\n\ndef _md_table(\n    rows: list[dict[str, Any]], fields: list[str], *, limit: int\n) -> list[str]:\n    if not rows:\n        return [\"_No rows._\", \"\"]\n    lines = [\n        \"| \" + \" | \".join(fields) + \" |\",\n        \"| \" + \" | \".join(\"---\" for _ in fields) + \" |\",\n    ]\n    for row in rows[:limit]:\n        lines.append(\n            \"| \" + \" | \".join(str(row.get(field, \"\")) for field in fields) + \" |\"\n        )\n    lines.append(\"\")\n    return lines\n\n\ndef write_markdown(path: Path, payload: dict[str, Any]) -> None:\n    summary = payload[\"summary\"]\n    lines = [\n        f\"# Profile-Grounded ML Analysis - {summary['created_utc']}\"",
-      "tokens": 0,
-      "firstFile": {
-        "name": "research/tools/meta_profile_ml_analysis.py",
-        "start": 536,
-        "end": 570,
-        "startLoc": {
-          "line": 536,
-          "column": 70,
-          "position": 4459
-        },
-        "endLoc": {
-          "line": 570,
-          "column": 69,
-          "position": 4820
-        }
-      },
-      "secondFile": {
-        "name": "research/tools/meta_surrogate_screening_proposal.py",
-        "start": 255,
-        "end": 525,
-        "startLoc": {
-          "line": 255,
-          "column": 63,
-          "position": 2330
-        },
-        "endLoc": {
-          "line": 525,
-          "column": 64,
-          "position": 4381
-        }
-      }
-    },
-    {
-      "format": "python",
-      "lines": 35,
-      "fragment": ",\n    }\n\n\ndef write_csv(path: Path, rows: list[dict[str, Any]]) -> None:\n    if not rows:\n        path.write_text(\"\")\n        return\n    with path.open(\"w\", newline=\"\") as handle:\n        writer = csv.DictWriter(handle, fieldnames=list(rows[0].keys()))\n        writer.writeheader()\n        writer.writerows(rows)\n\n\ndef _md_table(\n    rows: list[dict[str, Any]], fields: list[str], *, limit: int\n) -> list[str]:\n    if not rows:\n        return [\"_No rows._\", \"\"]\n    lines = [\n        \"| \" + \" | \".join(fields) + \" |\",\n        \"| \" + \" | \".join(\"---\" for _ in fields) + \" |\",\n    ]\n    for row in rows[:limit]:\n        lines.append(\n            \"| \" + \" | \".join(str(row.get(field, \"\")) for field in fields) + \" |\"\n        )\n    lines.append(\"\")\n    return lines\n\n\ndef write_markdown(path: Path, payload: dict[str, Any]) -> None:\n    summary = payload[\"summary\"]\n    lines = [\n        f\"# Meta Experiment Queue - {summary['created_utc']}\"",
-      "tokens": 0,
-      "firstFile": {
-        "name": "research/tools/meta_experiment_queue.py",
-        "start": 286,
-        "end": 320,
-        "startLoc": {
-          "line": 286,
-          "column": 47,
-          "position": 1770
-        },
-        "endLoc": {
-          "line": 320,
-          "column": 62,
-          "position": 2130
-        }
-      },
-      "secondFile": {
-        "name": "research/tools/meta_surrogate_screening_proposal.py",
-        "start": 255,
-        "end": 525,
-        "startLoc": {
-          "line": 255,
-          "column": 64,
-          "position": 2331
-        },
-        "endLoc": {
-          "line": 525,
-          "column": 64,
-          "position": 4381
+          "line": 204,
+          "column": 17,
+          "position": 1820
         }
       }
     },

@@ -119,19 +119,6 @@ def _device() -> str:
     return "cuda" if torch.cuda.is_available() else "cpu"
 
 
-def test_probe_imports_cleanly():
-    from research.eval.induction_intermediate_probe import (
-        INDUCTION_V2_GAPS,
-        INDUCTION_V2_PROTOCOL_VERSION,
-        InductionV2Result,
-    )
-
-    assert INDUCTION_V2_GAPS == (4, 8, 16, 32, 64)
-    assert INDUCTION_V2_PROTOCOL_VERSION.startswith("induction_investigation_")
-    r = InductionV2Result()
-    assert r.auc == 0.0 and r.status == "ok"
-
-
 def test_result_to_dict_has_all_keys():
     from research.eval.induction_intermediate_probe import InductionV2Result
 

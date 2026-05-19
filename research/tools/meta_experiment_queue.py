@@ -9,7 +9,6 @@ weights, gates, or ablation settings.
 from __future__ import annotations
 
 import argparse
-import csv
 import json
 import sqlite3
 from datetime import datetime, timezone
@@ -18,6 +17,8 @@ from typing import Any
 
 from research.meta_analysis.metadata_db import DEFAULT_META_ANALYSIS_DB
 from research.tools.meta_profile_ml_analysis import DEFAULT_REPORT_DIR
+from research.tools.meta_report_helpers import markdown_table as _md_table
+from research.tools.meta_report_helpers import write_csv
 from research.tools.profile_component_scaffolds import recommended_scaffold_family
 
 
@@ -285,33 +286,6 @@ def build_payload(
         "compression_safety_queue": compression_queue,
         "scaffold_commands": scaffold_commands,
     }
-
-
-def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
-    if not rows:
-        path.write_text("")
-        return
-    with path.open("w", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=list(rows[0].keys()))
-        writer.writeheader()
-        writer.writerows(rows)
-
-
-def _md_table(
-    rows: list[dict[str, Any]], fields: list[str], *, limit: int
-) -> list[str]:
-    if not rows:
-        return ["_No rows._", ""]
-    lines = [
-        "| " + " | ".join(fields) + " |",
-        "| " + " | ".join("---" for _ in fields) + " |",
-    ]
-    for row in rows[:limit]:
-        lines.append(
-            "| " + " | ".join(str(row.get(field, "")) for field in fields) + " |"
-        )
-    lines.append("")
-    return lines
 
 
 def write_markdown(path: Path, payload: dict[str, Any]) -> None:

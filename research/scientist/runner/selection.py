@@ -42,27 +42,16 @@ def _scaffold_blend_alpha(support: int) -> float:
 class _SelectionMixin:
     """Candidate scoring, selection, novelty calibration."""
 
-    def _score_candidate_pool(
-        self,
-        candidates: List[Dict[str, Any]],
-        config: RunConfig,
-        nb: LabNotebook,
-        context: str,
-        experiment_id: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """Multi-objective scoring + family uncertainty policy for candidate selection."""
-        if not candidates:
-            return {
-                "summary": {"candidate_count": 0},
-                "scored": [],
-                "selected": [],
-                "reason": "No candidates available.",
-                "policy": {"name": config.selection_policy, "exploration": False},
-            }
+    def _empty_selection_result(self, config: RunConfig) -> Dict[str, Any]:
+        return {
+            "summary": {"candidate_count": 0},
+            "scored": [],
+            "selected": [],
+            "reason": "No candidates available.",
+            "policy": {"name": config.selection_policy, "exploration": False},
+        }
 
-        self._resolve_pending_selection_family_trials(nb)
-        self._resolve_pending_selection_insight_trials(nb)
-
+    def _selection_weights(self, config: RunConfig) -> Dict[str, float]:
         weights = {
             "quality": float(config.selection_quality_weight),
             "novelty": float(config.selection_novelty_weight),
@@ -70,9 +59,20 @@ class _SelectionMixin:
             "feasibility": float(config.selection_feasibility_weight),
         }
         weight_sum = sum(max(0.0, w) for w in weights.values()) or 1.0
-        for k in list(weights):
-            weights[k] = max(0.0, weights[k]) / weight_sum
+        return {k: max(0.0, v) / weight_sum for k, v in weights.items()}
 
+    def _candidate_component_scores(
+        self,
+        candidates: List[Dict[str, Any]],
+        nb: LabNotebook,
+    ) -> tuple[
+        Dict[str, float],
+        Dict[str, float],
+        Dict[str, float],
+        Dict[str, float],
+        Dict[str, str],
+        Dict[str, Dict[str, Any]],
+    ]:
         quality_raw: Dict[str, float] = {}
         novelty_raw: Dict[str, float] = {}
         efficiency_raw: Dict[str, float] = {}
@@ -90,65 +90,69 @@ class _SelectionMixin:
                 row.get("routing_mode"),
             )
             families[rid] = family
-
-            loss_ratio = self._to_float(row.get("loss_ratio"), default=1.0)
-            baseline_ratio = self._to_float(row.get("baseline_loss_ratio"), default=1.0)
-            ncd = self._to_float(row.get("ncd_score"), default=1.0)
-
-            # Quality: Weighted combination of Loss and NCD (Information Redundancy)
-            # Higher NCD = structure does not explain the behavior (memorization).
-            # Lower NCD = structure captures the underlying rules (learning).
-            loss_score = max(0.0, (1.0 - loss_ratio) + max(0.0, 1.0 - baseline_ratio))
-            quality_raw[rid] = (0.7 * loss_score) + (0.3 * (1.0 - ncd))
-
+            quality_raw[rid] = self._candidate_quality_score(row)
             novelty_raw[rid] = self._to_float(row.get("novelty_score"), default=0.0)
+            efficiency_raw[rid] = self._candidate_efficiency_score(row, family)
+            feasibility_raw[rid] = self._candidate_feasibility_score(row)
+        return (
+            quality_raw,
+            novelty_raw,
+            efficiency_raw,
+            feasibility_raw,
+            families,
+            by_id,
+        )
 
-            throughput = self._to_float(row.get("throughput_tok_s"), default=0.0)
-            flops = self._to_float(row.get("flops_per_token"), default=0.0)
-            mem = self._to_float(row.get("peak_memory_mb"), default=0.0)
-            dl = self._to_float(row.get("ncd_description_length"), default=1000.0)
+    def _candidate_quality_score(self, row: Dict[str, Any]) -> float:
+        loss_ratio = self._to_float(row.get("loss_ratio"), default=1.0)
+        baseline_ratio = self._to_float(row.get("baseline_loss_ratio"), default=1.0)
+        ncd = self._to_float(row.get("ncd_score"), default=1.0)
+        loss_score = max(0.0, (1.0 - loss_ratio) + max(0.0, 1.0 - baseline_ratio))
+        return (0.7 * loss_score) + (0.3 * (1.0 - ncd))
 
-            # Baseline targets from research
-            is_efficient_arch = (
-                family.startswith("MoE-")
-                or family.startswith("Adaptive-")
-                or "Mamba" in family
-            )
-            target_throughput = 10000.0 if is_efficient_arch else 5000.0
-            throughput_bonus = max(0.0, throughput / target_throughput)
+    def _candidate_efficiency_score(self, row: Dict[str, Any], family: str) -> float:
+        throughput = self._to_float(row.get("throughput_tok_s"), default=0.0)
+        flops = self._to_float(row.get("flops_per_token"), default=0.0)
+        mem = self._to_float(row.get("peak_memory_mb"), default=0.0)
+        dl = self._to_float(row.get("ncd_description_length"), default=1000.0)
+        is_efficient_arch = (
+            family.startswith("MoE-")
+            or family.startswith("Adaptive-")
+            or "Mamba" in family
+        )
+        target_throughput = 10000.0 if is_efficient_arch else 5000.0
+        throughput_bonus = max(0.0, throughput / target_throughput)
+        score = (
+            (throughput_bonus * 5.0)
+            - (0.35 * flops)
+            - (0.15 * mem)
+            - (math.log(max(1.0, dl)) * 0.04)
+        )
+        savings = self._to_float(row.get("depth_savings_ratio"), default=0.0)
+        return score + (savings * 10.0 if savings > 0 else 0.0)
 
-            # Efficiency: Throughput, FLOPs, and MDL (Description Length)
-            # We penalize large description lengths (complex IR)
-            mdl_penalty = math.log(max(1.0, dl)) * 0.04
-            efficiency_raw[rid] = (
-                (throughput_bonus * 5.0) - (0.35 * flops) - (0.15 * mem) - mdl_penalty
-            )
+    def _candidate_feasibility_score(self, row: Dict[str, Any]) -> float:
+        stage0 = 1.0 if int(row.get("stage0_passed") or 0) == 1 else 0.0
+        stage05 = 1.0 if int(row.get("stage05_passed") or 0) == 1 else 0.0
+        stage1 = 1.0 if int(row.get("stage1_passed") or 0) == 1 else 0.0
+        stability = self._to_float(row.get("stability_score"), default=0.0)
+        grad_penalty = 0.0
+        if int(row.get("has_nan_grad") or 0) == 1:
+            grad_penalty += 0.5
+        if int(row.get("has_zero_grad") or 0) == 1:
+            grad_penalty += 0.3
+        return max(
+            0.0,
+            (0.2 * stage0 + 0.2 * stage05 + 0.3 * stage1 + 0.3 * stability)
+            - grad_penalty,
+        )
 
-            # Add adaptive savings bonus if available
-            savings = self._to_float(row.get("depth_savings_ratio"), default=0.0)
-            if savings > 0:
-                efficiency_raw[rid] += savings * 10.0
-
-            stage0 = 1.0 if int(row.get("stage0_passed") or 0) == 1 else 0.0
-            stage05 = 1.0 if int(row.get("stage05_passed") or 0) == 1 else 0.0
-            stage1 = 1.0 if int(row.get("stage1_passed") or 0) == 1 else 0.0
-            stability = self._to_float(row.get("stability_score"), default=0.0)
-            grad_penalty = 0.0
-            if int(row.get("has_nan_grad") or 0) == 1:
-                grad_penalty += 0.5
-            if int(row.get("has_zero_grad") or 0) == 1:
-                grad_penalty += 0.3
-            feasibility_raw[rid] = max(
-                0.0,
-                (0.2 * stage0 + 0.2 * stage05 + 0.3 * stage1 + 0.3 * stability)
-                - grad_penalty,
-            )
-
-        qn = self._norm_map(quality_raw, higher_is_better=True)
-        nn = self._norm_map(novelty_raw, higher_is_better=True)
-        en = self._norm_map(efficiency_raw, higher_is_better=True)
-        fn = self._norm_map(feasibility_raw, higher_is_better=True)
-
+    def _family_bonus_maps(
+        self,
+        families: Dict[str, str],
+        config: RunConfig,
+        nb: LabNotebook,
+    ) -> tuple[Dict[str, Any], Dict[str, float], Dict[str, float], int]:
         family_stats = nb.get_selection_family_stats()
         total_trials = sum(int(s.get("n_trials") or 0) for s in family_stats.values())
         family_bonus_raw: Dict[str, float] = {}
@@ -165,45 +169,87 @@ class _SelectionMixin:
             family_bonus_raw[rid] = (
                 uncertainty if config.selection_policy == "epsilon_greedy" else ucb
             )
-        family_bonus = self._norm_map(family_bonus_raw, higher_is_better=True)
-        unc_norm = self._norm_map(family_uncertainty, higher_is_better=True)
-        insight_by_result, supporting_insight_ids = self._selection_supporting_insights(
-            nb, candidates
-        )
-        interaction_rows = nb.get_selection_insight_interactions(limit=500)
+        return family_stats, family_bonus_raw, family_uncertainty, total_trials
+
+    def _selection_interaction_scores(
+        self,
+        nb: LabNotebook,
+        by_id: Dict[str, Dict[str, Any]],
+        insight_by_result: Dict[str, List[str]],
+    ) -> Dict[str, float]:
         interaction_map: Dict[Tuple[str, str], Dict[str, Any]] = {}
-        for row in interaction_rows:
+        for row in nb.get_selection_insight_interactions(limit=500):
             key = (
                 str(row.get("insight_a") or ""),
                 str(row.get("insight_b") or ""),
             )
             interaction_map[key] = row
-        insight_interaction_raw: Dict[str, float] = {}
+
+        raw: Dict[str, float] = {}
         for rid in by_id:
             matched = insight_by_result.get(rid) or []
-            rewards: List[float] = []
-            for insight_id in matched:
-                stat = interaction_map.get((insight_id, insight_id))
+            rewards = self._matched_insight_rewards(matched, interaction_map)
+            raw[rid] = float(sum(rewards) / len(rewards)) if rewards else 0.5
+        return self._norm_map(raw, higher_is_better=True)
+
+    def _matched_insight_rewards(
+        self,
+        matched: List[str],
+        interaction_map: Dict[Tuple[str, str], Dict[str, Any]],
+    ) -> List[float]:
+        rewards: List[float] = []
+        for insight_id in matched:
+            stat = interaction_map.get((insight_id, insight_id))
+            if stat and int(stat.get("n_trials") or 0) >= 2:
+                rewards.append(self._to_float(stat.get("mean_reward"), default=0.5))
+        for i in range(len(matched)):
+            for j in range(i + 1, len(matched)):
+                a, b = sorted((matched[i], matched[j]))
+                stat = interaction_map.get((a, b))
                 if stat and int(stat.get("n_trials") or 0) >= 2:
                     rewards.append(self._to_float(stat.get("mean_reward"), default=0.5))
-            # O(n^2) pairwise loop — acceptable because |matched| is the number
-            # of insights supporting a single result, typically 2-5 items.
-            for i in range(len(matched)):
-                for j in range(i + 1, len(matched)):
-                    a, b = matched[i], matched[j]
-                    if a > b:
-                        a, b = b, a
-                    stat = interaction_map.get((a, b))
-                    if stat and int(stat.get("n_trials") or 0) >= 2:
-                        rewards.append(
-                            self._to_float(stat.get("mean_reward"), default=0.5)
-                        )
-            if rewards:
-                insight_interaction_raw[rid] = float(sum(rewards) / len(rewards))
-            else:
-                insight_interaction_raw[rid] = 0.5
-        insight_interaction = self._norm_map(
-            insight_interaction_raw, higher_is_better=True
+        return rewards
+
+    def _score_candidate_pool(
+        self,
+        candidates: List[Dict[str, Any]],
+        config: RunConfig,
+        nb: LabNotebook,
+        context: str,
+        experiment_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Multi-objective scoring + family uncertainty policy for candidate selection."""
+        if not candidates:
+            return self._empty_selection_result(config)
+
+        self._resolve_pending_selection_family_trials(nb)
+        self._resolve_pending_selection_insight_trials(nb)
+
+        weights = self._selection_weights(config)
+        (
+            quality_raw,
+            novelty_raw,
+            efficiency_raw,
+            feasibility_raw,
+            families,
+            by_id,
+        ) = self._candidate_component_scores(candidates, nb)
+
+        qn = self._norm_map(quality_raw, higher_is_better=True)
+        nn = self._norm_map(novelty_raw, higher_is_better=True)
+        en = self._norm_map(efficiency_raw, higher_is_better=True)
+        fn = self._norm_map(feasibility_raw, higher_is_better=True)
+
+        family_stats, family_bonus_raw, family_uncertainty, total_trials = (
+            self._family_bonus_maps(families, config, nb)
+        )
+        family_bonus = self._norm_map(family_bonus_raw, higher_is_better=True)
+        unc_norm = self._norm_map(family_uncertainty, higher_is_better=True)
+        insight_by_result, supporting_insight_ids = self._selection_supporting_insights(
+            nb, candidates
+        )
+        insight_interaction = self._selection_interaction_scores(
+            nb, by_id, insight_by_result
         )
 
         scored: List[Dict[str, Any]] = []
@@ -367,34 +413,56 @@ class _SelectionMixin:
             ),
         }
 
+    def _insight_confidence(self, insight: Dict[str, Any]) -> float:
+        alpha = self._to_float(insight.get("alpha"), default=1.0)
+        beta = self._to_float(insight.get("beta_"), default=1.0)
+        return alpha / (alpha + beta)
+
+    def _active_selection_insights(self, nb: LabNotebook) -> List[Dict[str, Any]]:
+        return [
+            insight
+            for insight in nb.get_insights(limit=120, exclude_display_only=True)
+            if self._insight_confidence(insight) > 0.55
+        ]
+
+    @staticmethod
+    def _subject_tokens(subject: str) -> set[str]:
+        return {
+            s.strip().lower()
+            for s in subject.replace("+", " ").replace("_", " ").split()
+            if len(s.strip()) >= 3
+        }
+
+    def _insight_matches_tokens(
+        self,
+        insight: Dict[str, Any],
+        tokens: Set[str],
+    ) -> tuple[bool, float]:
+        confidence = self._insight_confidence(insight)
+        level = str(insight.get("insight_level") or "op")
+        subject = str(insight.get("subject_key") or "")
+
+        if level == "composition":
+            subject_ops = {s.strip() for s in subject.split("+") if s.strip()}
+            return bool(subject_ops and subject_ops.issubset(tokens)), confidence
+        if level == "structural":
+            return ("graph_size" in subject or subject in tokens), confidence
+        if level == "template":
+            return bool(self._subject_tokens(subject) & tokens), confidence
+        if subject and subject in tokens:
+            return True, confidence
+
+        content = str(insight.get("content") or "").lower()
+        hit_count = sum(1 for token in tokens if token in content)
+        return hit_count >= 2, confidence * 0.8
+
     def _selection_supporting_insights(
         self,
         nb: LabNotebook,
         candidates: List[Dict[str, Any]],
     ) -> Tuple[Dict[str, List[str]], List[str]]:
-        """Match active insights to candidates using structured matching.
-
-        Filters out display_only insights and those with confidence <= 0.55.
-        Uses insight_level + subject_key for structured matching instead of
-        naive token-in-content overlap.
-        """
-        insights = nb.get_insights(limit=120, exclude_display_only=True)
-        if not insights:
-            return {}, []
-
-        # Filter: only insights better than coin flip
-        insights = [
-            i
-            for i in insights
-            if (
-                self._to_float(i.get("alpha"), default=1.0)
-                / (
-                    self._to_float(i.get("alpha"), default=1.0)
-                    + self._to_float(i.get("beta_"), default=1.0)
-                )
-            )
-            > 0.55
-        ]
+        """Match active insights to candidates using structured metadata."""
+        insights = self._active_selection_insights(nb)
         if not insights:
             return {}, []
 
@@ -405,7 +473,6 @@ class _SelectionMixin:
             if not rid:
                 continue
             tokens = self._candidate_tokens(row)
-            self._to_float(row.get("graph_n_ops"), default=0)
             if not tokens:
                 continue
             scored: List[Tuple[float, str]] = []
@@ -413,47 +480,7 @@ class _SelectionMixin:
                 insight_id = str(insight.get("insight_id") or "")
                 if not insight_id:
                     continue
-                confidence = self._to_float(insight.get("alpha"), default=1.0) / (
-                    self._to_float(insight.get("alpha"), default=1.0)
-                    + self._to_float(insight.get("beta_"), default=1.0)
-                )
-                level = str(insight.get("insight_level") or "op")
-                subject = str(insight.get("subject_key") or "")
-
-                matched = False
-                if level == "composition":
-                    # Match if candidate graph contains the ops in subject_key
-                    subject_ops = {s.strip() for s in subject.split("+") if s.strip()}
-                    if subject_ops and subject_ops.issubset(tokens):
-                        matched = True
-                elif level == "structural":
-                    # Match based on graph properties
-                    if "graph_size" in subject:
-                        matched = True  # structural size insights apply globally
-                    elif subject in tokens:
-                        matched = True
-                elif level == "template":
-                    # Match if any subject token appears in candidate tokens
-                    subject_parts = {
-                        s.strip().lower()
-                        for s in subject.replace("+", " ").replace("_", " ").split()
-                        if len(s.strip()) >= 3
-                    }
-                    if subject_parts & tokens:
-                        matched = True
-                else:
-                    # Fallback: op-level, match subject_key directly
-                    if subject and subject in tokens:
-                        matched = True
-
-                if not matched:
-                    # Token fallback for backwards compat with legacy insights
-                    content = str(insight.get("content") or "").lower()
-                    hit_count = sum(1 for token in tokens if token in content)
-                    if hit_count >= 2:
-                        matched = True
-                        confidence *= 0.8  # Discount token-matched insights
-
+                matched, confidence = self._insight_matches_tokens(insight, tokens)
                 if matched:
                     scored.append((confidence, insight_id))
 
@@ -771,6 +798,64 @@ class _SelectionMixin:
             "betas": betas,
         }
 
+    def _run_candidate_probe_training(
+        self,
+        *,
+        model: nn.Module,
+        optimizer: torch.optim.Optimizer,
+        config: RunConfig,
+        dev: torch.device,
+        n_steps: int,
+        seed: int,
+    ) -> Dict[str, Any]:
+        seq_len = min(128, config.max_seq_len)
+        initial_loss = None
+        final_loss = None
+
+        for step in range(n_steps):
+            if self._stop_event.is_set():
+                break
+
+            input_ids = self._sample_training_input_ids(
+                config=config,
+                dev=dev,
+                batch_size=config.stage1_batch_size,
+                seq_len=seq_len,
+                seed=seed + step,
+            )
+
+            with torch.amp.autocast(
+                device_type=dev.type,
+                dtype=torch.bfloat16,
+                enabled=(dev.type == "cuda"),
+            ):
+                logits = model(input_ids)
+                loss = next_token_cross_entropy(logits, input_ids, logits.shape[-1])
+
+            if torch.isnan(loss) or torch.isinf(loss):
+                break
+
+            optimizer.zero_grad(set_to_none=True)
+            loss.backward()
+            clip_grad_norm_(model, 1.0)
+            optimizer.step()
+
+            loss_val = loss.item()
+            if step == 0:
+                initial_loss = loss_val
+            final_loss = loss_val
+
+        loss_ratio = (
+            normalized_loss_ratio(final_loss, config.vocab_size)
+            if initial_loss and final_loss
+            else None
+        )
+        return {
+            "initial_loss": initial_loss,
+            "final_loss": final_loss,
+            "loss_ratio": loss_ratio,
+        }
+
     def _ood_robustness_check(
         self,
         model_factory: Callable[[], nn.Module],
@@ -809,57 +894,22 @@ class _SelectionMixin:
                         betas=(0.9, 0.95),
                     )
 
-                seq_len = min(128, config.max_seq_len)
-                initial_loss = None
-                final_loss = None
-
-                for step in range(n_steps):
-                    if self._stop_event.is_set():
-                        break
-
-                    input_ids = self._sample_training_input_ids(
-                        config=config,
-                        dev=dev,
-                        batch_size=config.stage1_batch_size,
-                        seq_len=seq_len,
-                        seed=seed + step,
-                    )
-
-                    with torch.amp.autocast(
-                        device_type=dev.type,
-                        dtype=torch.bfloat16,
-                        enabled=(dev.type == "cuda"),
-                    ):
-                        logits = model(input_ids)
-                        loss = next_token_cross_entropy(
-                            logits, input_ids, logits.shape[-1]
-                        )
-
-                    if torch.isnan(loss) or torch.isinf(loss):
-                        break
-
-                    optimizer.zero_grad(set_to_none=True)
-                    loss.backward()
-                    clip_grad_norm_(model, 1.0)
-                    optimizer.step()
-
-                    loss_val = loss.item()
-                    if step == 0:
-                        initial_loss = loss_val
-                    final_loss = loss_val
-
-                loss_ratio = (
-                    normalized_loss_ratio(final_loss, config.vocab_size)
-                    if initial_loss and final_loss
-                    else None
+                probe_result = self._run_candidate_probe_training(
+                    model=model,
+                    optimizer=optimizer,
+                    config=config,
+                    dev=dev,
+                    n_steps=n_steps,
+                    seed=seed,
                 )
+                loss_ratio = probe_result["loss_ratio"]
                 recipe_results.append(
                     {
                         "recipe": recipe["name"],
                         "loss_ratio": round(loss_ratio, 4) if loss_ratio else None,
                         "passed": loss_ratio is not None and loss_ratio < 0.9,
-                        "initial_loss": initial_loss,
-                        "final_loss": final_loss,
+                        "initial_loss": probe_result["initial_loss"],
+                        "final_loss": probe_result["final_loss"],
                     }
                 )
 
@@ -920,50 +970,15 @@ class _SelectionMixin:
                     model.parameters(), lr=lr, weight_decay=0.01, betas=(0.9, 0.95)
                 )
 
-                seq_len = min(128, config.max_seq_len)
-                initial_loss = None
-                final_loss = None
-
-                for step in range(steps):
-                    if self._stop_event.is_set():
-                        break
-
-                    input_ids = self._sample_training_input_ids(
-                        config=config,
-                        dev=dev,
-                        batch_size=config.stage1_batch_size,
-                        seq_len=seq_len,
-                        seed=seed + step,
-                    )
-
-                    with torch.amp.autocast(
-                        device_type=dev.type,
-                        dtype=torch.bfloat16,
-                        enabled=(dev.type == "cuda"),
-                    ):
-                        logits = model(input_ids)
-                        loss = next_token_cross_entropy(
-                            logits, input_ids, logits.shape[-1]
-                        )
-
-                    if torch.isnan(loss) or torch.isinf(loss):
-                        break
-
-                    optimizer.zero_grad(set_to_none=True)
-                    loss.backward()
-                    clip_grad_norm_(model, 1.0)
-                    optimizer.step()
-
-                    loss_val = loss.item()
-                    if step == 0:
-                        initial_loss = loss_val
-                    final_loss = loss_val
-
-                loss_ratio = (
-                    normalized_loss_ratio(final_loss, config.vocab_size)
-                    if initial_loss and final_loss
-                    else None
+                probe_result = self._run_candidate_probe_training(
+                    model=model,
+                    optimizer=optimizer,
+                    config=config,
+                    dev=dev,
+                    n_steps=steps,
+                    seed=seed,
                 )
+                loss_ratio = probe_result["loss_ratio"]
 
                 # How much did loss_ratio change vs the base run?
                 deviation = (

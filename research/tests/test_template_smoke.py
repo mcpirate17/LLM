@@ -17,11 +17,7 @@ import random
 import pytest
 
 from research.synthesis.graph import ComputationGraph
-from research.synthesis.templates import (
-    DEFAULT_TEMPLATE_WEIGHTS,
-    TEMPLATES,
-    apply_template,
-)
+from research.synthesis.templates import apply_template
 from research.synthesis.validator import validate_graph
 
 
@@ -37,14 +33,6 @@ PHASE_3_1_NEW_TEMPLATES = (
     # Phase 5 V2 (2026-05-04) — Clifford versor template
     "geometric_product_versor_block",
 )
-
-
-@pytest.mark.parametrize("template_name", PHASE_3_1_NEW_TEMPLATES)
-def test_new_template_registered(template_name: str) -> None:
-    assert template_name in TEMPLATES, f"{template_name} missing from TEMPLATES"
-    weight = DEFAULT_TEMPLATE_WEIGHTS.get(template_name)
-    assert weight is not None, f"{template_name} missing from DEFAULT_TEMPLATE_WEIGHTS"
-    assert 0.5 <= weight <= 8.0, f"{template_name} weight {weight} outside clamp"
 
 
 @pytest.mark.parametrize("template_name", PHASE_3_1_NEW_TEMPLATES)

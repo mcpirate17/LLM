@@ -1,25 +1,4 @@
-"""Block-level templates for fab — multi-lane composition sites.
-
-Today's fab proposer emits single-lane primitives. Research/'s 0.570
-BLiMP winners (cf3e6bc6 class) all use 2-3 lane block compositions:
-``latent_compress_block``, ``three_lane_adaptive``, ``recursive_depth_router``.
-This module adds the missing block-template engine. Each template is a
-fab-discoverable composition site whose slot(s) are existing fab
-primitives, so the search space multiplies without inventing new
-primitives.
-
-Design: each template has a constructor accepting an inner
-``mixer_factory`` (or several). The factory is closed over the anchor's
-``math_axes`` minus its own ``op_block_template`` (broken-recursion).
-This means every existing primitive — Tropical, Clifford, Padic,
-LinearStateSpace, FastWeightMemory, etc. — automatically becomes
-available as a block slot.
-
-Composition rule: each block returns a *delta* from its input (matches
-the ``TropicalAttention``-style convention so the outer ``_LaneBlock``
-adds a single residual). Auxiliary losses (e.g. routing balance) live
-on the block via ``aux_loss`` if relevant.
-"""
+"""Block-level templates for multi-lane fab compositions."""
 
 from __future__ import annotations
 
@@ -35,9 +14,6 @@ BLOCK_TEMPLATES: tuple[str, ...] = (
     "three_lane_adaptive",
     "recursive_depth",
     "gated_parallel",
-    # Day-6 additions from runs.db BLiMP-winner mining (2026-05-15):
-    # research/ leaderboard top-25 used these template categories
-    # extensively but fab had no block-level equivalents.
     "recursive_depth_router",  # full block recurses with halt routing per token
     "sparse_moe_block",  # block-level MoE: anchor + N experts via top-k router
     "hetero_moe_block",  # heterogeneous experts: anchor + diverse-class lanes via softmax router
@@ -48,15 +24,7 @@ BLOCK_TEMPLATES: tuple[str, ...] = (
 
 
 class LatentCompressBlock(nn.Module):
-    """``x -> down(d->k) -> mixer(k) -> up(k->d)`` with an outer residual.
-
-    The mixer operates at a compressed inner dim ``k = dim // compress``.
-    Lets expensive mixers (TropicalAttention, FastWeightMemory) run at
-    4× lower cost while preserving the outer ``[B, L, D]`` shape. cf3e6bc6
-    used this template repeatedly as ``latent_compress_block``.
-
-    Returns a delta (mixer contribution only); outer block residual stays.
-    """
+    """Run the mixer in a compressed inner dimension and project back."""
 
     def __init__(
         self,
@@ -81,17 +49,7 @@ class LatentCompressBlock(nn.Module):
 
 
 class ThreeLaneAdaptive(nn.Module):
-    """Three parallel mixer lanes summed via per-token softmax gate.
-
-    Lane choices (in this order, for inductive-bias diversity):
-    - lane_a: the anchor's primitive (the "novel" mixer being tested)
-    - lane_b: a softmax-attention baseline (long-range token bind)
-    - lane_c: a state-space baseline (long-range running context)
-
-    Gate: ``softmax(gate_proj(x))[..., 3]`` mixes the three lane outputs
-    per token. The model can learn to favor whichever lane works best on
-    each token. cf3e6bc6 used this template as `three_lane_adaptive`.
-    """
+    """Three parallel mixer lanes summed by a per-token softmax gate."""
 
     def __init__(
         self,
@@ -135,14 +93,7 @@ class ThreeLaneAdaptive(nn.Module):
 
 
 class RecursiveDepthBlock(nn.Module):
-    """N-times re-application of the inner mixer with content-conditional
-    early-exit (a "soft" recursive depth router).
-
-    Differs from ``MixtureOfRecursionsLane`` in that depth is decided per
-    SEQUENCE (not per token), making it cheaper at the cost of less
-    granular routing. Useful as a baseline against MoR and as a separate
-    block-template axis in the leaderboard.
-    """
+    """Repeated mixer application with sequence-level soft halting."""
 
     def __init__(
         self,
@@ -227,21 +178,8 @@ class GatedParallelBlock(nn.Module):
         return g * self.lane_a(x) + (1.0 - g) * self.lane_b(x)
 
 
-# ---------- Day-6: runs.db BLiMP-winner-derived templates ----------
-
-
 class RecursiveDepthRouterBlock(nn.Module):
-    """The most common template among runs.db BLiMP winners (2 of 7).
-
-    Unlike ``RecursiveDepthBlock`` (above) which only reapplies the mixer,
-    this template recurses the ENTIRE block (mixer + FFN-like out-proj)
-    per token with an ACT-style halt head. ``mixer(x) + out_proj(mixer(x))``
-    is the unit; the halt-router decides whether each token recurses
-    through another unit or exits with the current state.
-
-    Closer to a token-conditional Transformer-block-depth rather than just
-    deeper mixing — the cf3e6bc6-class signature pattern.
-    """
+    """Per-token ACT-style recursion over mixer plus FFN projection."""
 
     def __init__(
         self,
@@ -284,13 +222,7 @@ class RecursiveDepthRouterBlock(nn.Module):
 
 
 class SparseMoEBlock(nn.Module):
-    """Block-level top-k MoE: anchor primitive + N experts via softmax-routed gate.
-
-    Unlike ``RoutedBottleneckLane`` (a routing primitive operating at the
-    lane level), this is a TEMPLATE — the experts can themselves be
-    block-templates or other primitives, and the router operates over the
-    whole block output. Matches runs.db's ``sparse_moe_block``.
-    """
+    """Block-level top-k MoE over anchor and expert blocks."""
 
     def __init__(
         self,
@@ -331,14 +263,7 @@ class SparseMoEBlock(nn.Module):
 
 
 class HeteroMoEBlock(nn.Module):
-    """Heterogeneous-expert MoE block. Each expert is a DIFFERENT primitive
-    class (tropical attention, SSM, top-k linear, multiscale wavelet) —
-    explicit architectural diversity in the expert pool rather than
-    homogeneous copies. Soft-mixed by a per-token gate.
-
-    runs.db's ``hetero_moe_block`` was the only pure-template entrant in
-    the top-7 BLiMP winners.
-    """
+    """Soft-mixed MoE block with heterogeneous expert factories."""
 
     def __init__(
         self,
@@ -364,14 +289,7 @@ class HeteroMoEBlock(nn.Module):
 
 
 class HyperbolicBridgeBlock(nn.Module):
-    """Euclidean ↔ Poincaré-ball chart bridge.
-
-    Pass 1: anchor in euclidean space. Pass 2: project to Poincaré ball,
-    mix in hyperbolic via inner Poincaré attention, project back. Gate
-    blends the two charts per token. Encodes "use hyperbolic geometry
-    where it helps, fall back to euclidean otherwise" without forcing
-    one chart globally. runs.db's ``hyperbolic_bridge_block``.
-    """
+    """Gated Euclidean and Poincare-ball mixer bridge."""
 
     def __init__(
         self, anchor_factory: LaneFactory, dim: int, eps: float = 1e-4
@@ -401,13 +319,7 @@ class HyperbolicBridgeBlock(nn.Module):
 
 
 class AttnSpectralFilterBlock(nn.Module):
-    """Attention output piped through a learned spectral filter.
-
-    The anchor (typically attention-class) produces sequence-mixed tokens;
-    the spectral filter (rFFT → learned per-frequency complex weights →
-    irFFT) sharpens or smooths the result along the sequence axis. Acts
-    as a frequency-domain post-conditioner. runs.db's ``attn_spectral_filter``.
-    """
+    """Apply a learned spectral filter to anchor output."""
 
     def __init__(
         self, anchor_factory: LaneFactory, dim: int, max_seq_len: int = 128
@@ -431,15 +343,7 @@ class AttnSpectralFilterBlock(nn.Module):
 
 
 class GraphAttentionBlock(nn.Module):
-    """Edge-conditioned attention with learned adjacency.
-
-    Standard attention has implicit "edges" from query-key dot products.
-    Here the edge weights ALSO consider a learned per-pair affinity
-    derived from a low-rank graph embedding. ``edge_w = q·k + u·a·v.T``
-    where (u, v) are query/key projections to a small graph dim and a is
-    a learned per-(graph-dim) bias matrix. Encodes prior topology.
-    runs.db's ``graph_attention_block``.
-    """
+    """Edge-conditioned attention with learned low-rank adjacency."""
 
     def __init__(
         self,

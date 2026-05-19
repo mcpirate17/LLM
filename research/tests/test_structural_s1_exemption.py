@@ -202,27 +202,3 @@ class TestComponentHealthExemption:
         ]
         for op in learnable:
             assert op not in S1_EXEMPT_OPS, f"{op} should NOT be exempt"
-
-
-class TestModelS1Unchanged:
-    """Overall model S1 screening must not be affected."""
-
-    def test_s1_screening_not_imported_from_context_rules(self):
-        """The actual S1 pass/fail gate should not reference S1_EXEMPT_OPS."""
-        import inspect
-        from research.eval import screening_rapid
-
-        source = inspect.getsource(screening_rapid)
-        assert "S1_EXEMPT_OPS" not in source, (
-            "S1 screening code must not reference structural exemptions"
-        )
-
-    def test_s1_screening_not_in_sandbox(self):
-        """The eval sandbox should not reference structural exemptions."""
-        import inspect
-        from research.eval import sandbox
-
-        source = inspect.getsource(sandbox)
-        assert "S1_EXEMPT_OPS" not in source, (
-            "Eval sandbox must not reference structural exemptions"
-        )

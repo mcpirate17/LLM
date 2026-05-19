@@ -521,6 +521,7 @@
 /home/tim/Projects/LLM/research/scientist/json_utils.py
 /home/tim/Projects/LLM/research/scientist/judgment.py
 /home/tim/Projects/LLM/research/scientist/language_control_gates.py
+/home/tim/Projects/LLM/research/scientist/leaderboard_dashboard_fields.py
 /home/tim/Projects/LLM/research/scientist/leaderboard_rescore.py
 /home/tim/Projects/LLM/research/scientist/leaderboard_scoring/__init__.py
 /home/tim/Projects/LLM/research/scientist/leaderboard_scoring/_config.py
@@ -930,6 +931,7 @@
 /home/tim/Projects/LLM/research/tools/long_context_bundle.py
 /home/tim/Projects/LLM/research/tools/meta_experiment_queue.py
 /home/tim/Projects/LLM/research/tools/meta_profile_ml_analysis.py
+/home/tim/Projects/LLM/research/tools/meta_report_helpers.py
 /home/tim/Projects/LLM/research/tools/meta_surrogate_analysis.py
 /home/tim/Projects/LLM/research/tools/meta_surrogate_screening_proposal.py
 /home/tim/Projects/LLM/research/tools/migrate_graph_normalization.py

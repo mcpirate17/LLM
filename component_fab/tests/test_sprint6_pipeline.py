@@ -6,6 +6,7 @@ from pathlib import Path
 
 import torch
 
+from component_fab.improver import adaptive as adaptive_mod
 from component_fab.harness.probe_tasks import DEFAULT_PROBE_TASKS
 from component_fab.improver.adaptive import (
     adaptive_axis_variants,
@@ -94,7 +95,10 @@ def test_build_anchor_pool_without_promoted_returns_only_corpus(tmp_path: Path) 
     assert len(pool.corpus_anchors) == 1
 
 
-def test_build_anchor_pool_with_promoted_adds_fab_anchors(tmp_path: Path) -> None:
+def test_build_anchor_pool_with_promoted_adds_fab_anchors(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(adaptive_mod, "_load_saved_winners", lambda: [])
     ledger = _seed_ledger(tmp_path, n_promoted=3)
     pool = build_anchor_pool(
         ["tropical_attention"],

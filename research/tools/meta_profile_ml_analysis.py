@@ -9,7 +9,6 @@ emits reviewable recommendations without changing generation policy.
 from __future__ import annotations
 
 import argparse
-import csv
 import json
 import math
 import sqlite3
@@ -19,6 +18,8 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from research.meta_analysis.metadata_db import DEFAULT_META_ANALYSIS_DB
+from research.tools.meta_report_helpers import markdown_table as _md_table
+from research.tools.meta_report_helpers import write_csv
 
 
 DEFAULT_REPORT_DIR = Path("research/reports")
@@ -222,23 +223,25 @@ def load_analysis_frame(meta_db: str | Path) -> AnalysisFrame:
             *(f"ranked.{name} AS {name}" for name in _BASE_FEATURE_COLUMNS),
             *gp_exprs,
         ]
-        rows = conn.execute(
-            f"""
-            WITH ranked AS (
-                SELECT
-                    *,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY result_id
-                        ORDER BY slot_count DESC, template_name ASC
-                    ) AS rn
-                FROM template_observations
+        select_clause = ", ".join(select_cols)
+        query = "\n".join(
+            (
+                "WITH ranked AS (",
+                "    SELECT",
+                "        *,",
+                "        ROW_NUMBER() OVER (",
+                "            PARTITION BY result_id",
+                "            ORDER BY slot_count DESC, template_name ASC",
+                "        ) AS rn",
+                "    FROM template_observations",
+                ")",
+                "SELECT " + select_clause,
+                "FROM ranked",
+                graph_join,
+                "WHERE ranked.rn = 1",
             )
-            SELECT {", ".join(select_cols)}
-            FROM ranked
-            {graph_join}
-            WHERE ranked.rn = 1
-            """
-        ).fetchall()
+        )
+        rows = conn.execute(query).fetchall()
         external_by_result = _external_features_by_result(conn)
     finally:
         conn.close()
@@ -535,33 +538,6 @@ def build_payload(
         "univariate_lifts": all_lifts[:120],
         "recommendations": _recommendations(model_payloads, all_lifts),
     }
-
-
-def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
-    if not rows:
-        path.write_text("")
-        return
-    with path.open("w", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=list(rows[0].keys()))
-        writer.writeheader()
-        writer.writerows(rows)
-
-
-def _md_table(
-    rows: list[dict[str, Any]], fields: list[str], *, limit: int
-) -> list[str]:
-    if not rows:
-        return ["_No rows._", ""]
-    lines = [
-        "| " + " | ".join(fields) + " |",
-        "| " + " | ".join("---" for _ in fields) + " |",
-    ]
-    for row in rows[:limit]:
-        lines.append(
-            "| " + " | ".join(str(row.get(field, "")) for field in fields) + " |"
-        )
-    lines.append("")
-    return lines
 
 
 def write_markdown(path: Path, payload: dict[str, Any]) -> None:

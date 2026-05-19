@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 import torch
 from torch.nn.utils.parametrizations import weight_norm
 
@@ -195,6 +196,52 @@ def test_pair_accuracy_handles_empty_tensors():
     empty = torch.empty((0, 3), dtype=torch.long)
     acc = nbe._pair_accuracy(_ZeroLogitModel(), empty, empty)
     assert acc == 0.0
+
+
+def test_evaluate_pair_split_metrics_weights_split_counts(monkeypatch):
+    pairs = {
+        "class_in": (
+            torch.zeros((2, 3), dtype=torch.long),
+            torch.ones((2, 3), dtype=torch.long),
+        ),
+        "class_held_out": (
+            torch.zeros((1, 3), dtype=torch.long),
+            torch.ones((1, 3), dtype=torch.long),
+        ),
+        "binding_in": (
+            torch.zeros((1, 3), dtype=torch.long),
+            torch.ones((1, 3), dtype=torch.long),
+        ),
+        "binding_held_out": (
+            torch.zeros((3, 3), dtype=torch.long),
+            torch.ones((3, 3), dtype=torch.long),
+        ),
+        "order": (
+            torch.zeros((4, 3), dtype=torch.long),
+            torch.ones((4, 3), dtype=torch.long),
+        ),
+    }
+    accuracy_by_tensor = {
+        id(pairs["class_in"][0]): 0.25,
+        id(pairs["class_held_out"][0]): 1.0,
+        id(pairs["binding_in"][0]): 0.1,
+        id(pairs["binding_held_out"][0]): 0.7,
+        id(pairs["order"][0]): 0.9,
+    }
+
+    def fake_pair_accuracy(_model, good, _bad):
+        return accuracy_by_tensor[id(good)]
+
+    monkeypatch.setattr(nbe, "_pair_accuracy", fake_pair_accuracy)
+
+    metrics = nbe._evaluate_pair_split_metrics(_ZeroLogitModel(), **pairs)
+
+    assert metrics["class_coherence_acc"] == 0.5
+    assert metrics["binding_fidelity_acc"] == pytest.approx(0.55)
+    assert metrics["order_grammaticality_acc"] == 0.9
+    assert metrics["n_in_dist_pairs"] == 2
+    assert metrics["n_held_out_pairs"] == 1
+    assert metrics["n_pairs_per_test"] == 4
 
 
 # ── Training-time held-out invariant ────────────────────────────────────

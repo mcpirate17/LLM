@@ -90,13 +90,16 @@ def decide_promotion(
             composite_history=tuple(entry.composite_history),
         )
     if _promote_streak_satisfied(entry, rules):
+        learned_clause = (
+            " + learned signal" if rules.promote_require_learned_signal else ""
+        )
         return PromotionDecision(
             proposal_id=entry.proposal_id,
             decision=PROMOTION_PROMOTED,
             reason=(
                 f"composite >= {rules.promote_min_composite} for "
                 f"{rules.promote_min_streak_cycles} consecutive cycles "
-                f"with smoke + learned signal"
+                f"with smoke{learned_clause}"
             ),
             composite_history=tuple(entry.composite_history),
         )

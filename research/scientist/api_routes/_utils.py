@@ -5,6 +5,7 @@ from __future__ import annotations
 import functools
 import logging
 import sqlite3
+from contextlib import suppress
 from typing import Any, Dict, Iterable, Sequence
 
 from flask import jsonify, request
@@ -93,19 +94,38 @@ def malformed_db_response_payload(exc: Exception) -> Dict[str, Any]:
     }
 
 
+def _db_error_response(exc: sqlite3.DatabaseError, phase: str):
+    if isinstance(exc, sqlite3.OperationalError) and "locked" in str(exc).lower():
+        logger.warning(
+            "%s %s -> 503 (db locked%s): %s",
+            request.method,
+            request.path,
+            phase,
+            exc,
+        )
+        return jsonify({"error": "Database temporarily busy, retry shortly"}), 503
+    if is_malformed_db_error(exc):
+        logger.warning(
+            "%s %s -> 503 (db malformed%s): %s",
+            request.method,
+            request.path,
+            phase,
+            exc,
+        )
+        return jsonify(malformed_db_response_payload(exc)), 503
+    logger.error(
+        "Unhandled db error%s on %s %s: %s",
+        phase,
+        request.method,
+        request.path,
+        exc,
+        exc_info=True,
+    )
+    return jsonify({"error": str(exc)}), 500
+
+
 def with_notebook_context(notebook_path: str, *, read_only: bool | None = None):
-    """Decorator factory: injects a shared ``nb`` kwarg and catches
-    unhandled exceptions with a standard JSON error response.
-
-    Usage::
-
-        wnb = with_notebook_context(notebook_path)
-
-        @app.route("/api/foo")
-        @wnb
-        def api_foo(nb=None):
-            return jsonify(nb.get_something())
-    """
+    """Inject a shared ``nb`` kwarg and return standard JSON errors."""
 
     def decorator(fn):
         @functools.wraps(fn)
@@ -119,85 +139,19 @@ def with_notebook_context(notebook_path: str, *, read_only: bool | None = None):
             nb = None
             try:
                 nb = get_notebook(notebook_path, read_only=effective_read_only)
-            except sqlite3.OperationalError as e:
-                logger.warning(
-                    "%s %s -> 503 (db locked during init): %s",
-                    request.method,
-                    request.path,
-                    e,
-                )
-                return jsonify(
-                    {"error": "Database temporarily busy, retry shortly"}
-                ), 503
             except sqlite3.DatabaseError as e:
-                if is_malformed_db_error(e):
-                    logger.warning(
-                        "%s %s -> 503 (db malformed during init): %s",
-                        request.method,
-                        request.path,
-                        e,
-                    )
-                    return jsonify(malformed_db_response_payload(e)), 503
-                logger.error(
-                    "Unhandled db init error on %s %s: %s",
-                    request.method,
-                    request.path,
-                    e,
-                    exc_info=True,
-                )
-                return jsonify({"error": str(e)}), 500
+                return _db_error_response(e, " during init")
             try:
                 return fn(*args, nb=nb, **kwargs)
-            except sqlite3.OperationalError as e:
-                if "locked" in str(e):
-                    logger.warning(
-                        "%s %s -> 503 (db locked): %s",
-                        request.method,
-                        request.path,
-                        e,
-                    )
-                    return jsonify(
-                        {"error": "Database temporarily busy, retry shortly"}
-                    ), 503
-                logger.error(
-                    "Unhandled db error on %s %s: %s",
-                    request.method,
-                    request.path,
-                    e,
-                    exc_info=True,
-                )
-                return jsonify({"error": str(e)}), 500
             except sqlite3.DatabaseError as e:
-                if is_malformed_db_error(e):
-                    logger.warning(
-                        "%s %s -> 503 (db malformed): %s",
-                        request.method,
-                        request.path,
-                        e,
-                    )
-                    return jsonify(malformed_db_response_payload(e)), 503
-                logger.error(
-                    "Unhandled db error on %s %s: %s",
-                    request.method,
-                    request.path,
-                    e,
-                    exc_info=True,
-                )
-                return jsonify({"error": str(e)}), 500
+                return _db_error_response(e, "")
             except Exception as e:
                 logger.error("Error in %s: %s", request.path, e, exc_info=True)
                 return jsonify({"error": str(e)}), 500
             finally:
                 if nb is not None:
-                    try:
+                    with suppress(Exception):
                         nb.close()
-                    except Exception:
-                        logger.debug(
-                            "Failed closing notebook for %s %s",
-                            request.method,
-                            request.path,
-                            exc_info=True,
-                        )
 
         return wrapper
 

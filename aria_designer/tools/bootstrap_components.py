@@ -6,7 +6,7 @@ box dimensions from research/morphological_box.py, then generates manifest.yaml
 for each component under aria_designer/components/.
 
 Usage:
-    python -m tools.bootstrap_components [--dry-run] [--emit-scaffolding]
+    python -m tools.bootstrap_components [--dry-run]
 """
 
 from __future__ import annotations
@@ -322,93 +322,10 @@ def build_morph_manifest(dim_name: str, option) -> Dict[str, Any]:
     return manifest
 
 
-def generate_kernel_fallback(manifest: Dict[str, Any]) -> str:
-    """Generate a minimal Python fallback kernel for a component.
-
-    This exists only for opt-in scaffolding generation. Production bootstrap
-    should not stamp placeholder handlers into the repo by default.
-    """
-    comp_id = manifest["id"]
-
-    lines = [
-        '"""Auto-generated Python fallback kernel for %s."""' % comp_id,
-        "",
-        "",
-        "class ComponentHandler:",
-        '    """Fallback handler for %s."""' % comp_id,
-        "",
-        "    def validate_config(self, config):",
-        "        return []",
-        "",
-        "    def build(self, config):",
-        '        raise NotImplementedError("Scaffold-only component: %s")' % comp_id,
-        "",
-        "",
-        "    def forward(self, inputs, config):",
-        '        raise NotImplementedError("Scaffold-only component: %s")' % comp_id,
-    ]
-
-    return "\n".join(lines) + "\n"
-
-
-def generate_kernel_stub(component_id: str) -> str:
-    """Generate a minimal C kernel stub for mathspace components.
-
-    This exists only for opt-in scaffolding generation.
-    """
-    return """
-#include <stdint.h>
-#include <string.h>
-
-// Minimal kernel stub for {component_id}
-// Exploratory scaffold only. Production execution must be implemented natively.
-
-typedef struct {{
-    float* data;
-    int64_t* shape;
-    int ndim;
-    int dtype;  // 0=f32, 1=f16, 2=bf16
-}} TensorView;
-
-typedef struct {{
-    const char* json_config;
-}} ComponentConfig;
-
-int component_validate(const ComponentConfig* config, char* error_buf, int buf_size) {{
-    (void)config;
-    const char* msg = "not implemented";
-    if (error_buf && buf_size > 0) {{
-        strncpy(error_buf, msg, (size_t)buf_size - 1);
-        error_buf[buf_size - 1] = '\\0';
-    }}
-    return -1;
-}}
-
-int component_forward(const TensorView* inputs, int n_inputs,
-                      TensorView* outputs, int n_outputs,
-                      const ComponentConfig* config) {{
-    (void)inputs; (void)n_inputs; (void)outputs; (void)n_outputs; (void)config;
-    return -1;
-}}
-
-void component_cleanup(void) {{
-}}
-""".lstrip().format(component_id=component_id)
-
-
-def write_component(
-    manifest: Dict[str, Any], dry_run: bool = False, emit_scaffolding: bool = False
-) -> Path:
-    """Write a component folder.
-
-    By default this only writes the manifest. Placeholder runtime code and tests
-    are opt-in because they add dead scaffolding to the production tree.
-    """
+def write_component(manifest: Dict[str, Any], dry_run: bool = False) -> Path:
+    """Write a component manifest without generating placeholder runtimes."""
     comp_dir = COMPONENTS_DIR / manifest["category"] / manifest["id"]
     manifest_path = comp_dir / "manifest.yaml"
-    fallback_path = comp_dir / "kernel_fallback.py"
-    native_path = comp_dir / "kernel.c"
-    test_dir = comp_dir / "tests"
 
     if dry_run:
         print(f"  [DRY RUN] Would create: {comp_dir}")
@@ -417,29 +334,14 @@ def write_component(
     comp_dir.mkdir(parents=True, exist_ok=True)
     manifest_to_write = deepcopy(manifest)
     implementation = dict(manifest_to_write.get("implementation") or {})
-    if not emit_scaffolding:
-        implementation["native"] = None
-        implementation["python"] = None
+    implementation["native"] = None
+    implementation["python"] = None
     manifest_to_write["implementation"] = implementation
 
-    # Write manifest
     with open(manifest_path, "w") as f:
         yaml.dump(
             manifest_to_write, f, default_flow_style=False, sort_keys=False, width=120
         )
-
-    if not emit_scaffolding:
-        return comp_dir
-
-    test_dir.mkdir(parents=True, exist_ok=True)
-
-    # Explicit opt-in for placeholder scaffolding during exploratory bootstraps.
-    with open(fallback_path, "w") as f:
-        f.write(generate_kernel_fallback(manifest))
-
-    if manifest["category"] == "math_space":
-        with open(native_path, "w") as f:
-            f.write(generate_kernel_stub(manifest["id"]))
 
     return comp_dir
 
@@ -450,11 +352,6 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--dry-run", action="store_true", help="Print what would be created"
-    )
-    parser.add_argument(
-        "--emit-scaffolding",
-        action="store_true",
-        help="Also emit placeholder fallback/native/test scaffolding",
     )
     return parser.parse_args()
 
@@ -473,20 +370,14 @@ def _print_header() -> None:
     print("=" * 60)
 
 
-def _bootstrap_primitives(
-    primitive_registry, dry_run: bool, emit_scaffolding: bool
-) -> int:
+def _bootstrap_primitives(primitive_registry, dry_run: bool) -> int:
     print(f"\n--- Primitive Operations ({len(primitive_registry)} ops) ---")
     prim_count = 0
     for name, op in primitive_registry.items():
         if name == "input":
             continue
         manifest = build_primitive_manifest(op)
-        write_component(
-            manifest,
-            dry_run=dry_run,
-            emit_scaffolding=emit_scaffolding,
-        )
+        write_component(manifest, dry_run=dry_run)
         prim_count += 1
         print(f"  [{manifest['category']:>16s}] {name}")
     return prim_count
@@ -496,7 +387,6 @@ def _bootstrap_morph_options(
     dimensions,
     seen_ids: set[str],
     dry_run: bool,
-    emit_scaffolding: bool,
 ) -> int:
     print(f"\n--- Morphological Box Dimensions ({len(dimensions)} dims) ---")
     morph_count = 0
@@ -508,11 +398,7 @@ def _bootstrap_morph_options(
                 continue
             seen_ids.add(option.name)
             manifest = build_morph_manifest(dim.name, option)
-            write_component(
-                manifest,
-                dry_run=dry_run,
-                emit_scaffolding=emit_scaffolding,
-            )
+            write_component(manifest, dry_run=dry_run)
             morph_count += 1
             print(f"    [{manifest['category']:>16s}] {option.name}")
     return morph_count
@@ -573,18 +459,12 @@ def _io_component_manifests() -> list[dict[str, Any]]:
     ]
 
 
-def _bootstrap_io_components(
-    seen_ids: set[str], dry_run: bool, emit_scaffolding: bool
-) -> int:
+def _bootstrap_io_components(seen_ids: set[str], dry_run: bool) -> int:
     print("\n--- IO Components ---")
     io_count = 0
     for manifest in _io_component_manifests():
         if manifest["id"] not in seen_ids:
-            write_component(
-                manifest,
-                dry_run=dry_run,
-                emit_scaffolding=emit_scaffolding,
-            )
+            write_component(manifest, dry_run=dry_run)
             seen_ids.add(manifest["id"])
             io_count += 1
             print(f"  [{manifest['category']:>16s}] {manifest['id']}")
@@ -608,14 +488,10 @@ def main():
     primitive_registry, dimensions, register_all_mathspaces = _load_research_sources()
     _print_header()
     register_all_mathspaces()
-    prim_count = _bootstrap_primitives(
-        primitive_registry, args.dry_run, args.emit_scaffolding
-    )
+    prim_count = _bootstrap_primitives(primitive_registry, args.dry_run)
     seen_ids = set(primitive_registry.keys())
-    morph_count = _bootstrap_morph_options(
-        dimensions, seen_ids, args.dry_run, args.emit_scaffolding
-    )
-    io_count = _bootstrap_io_components(seen_ids, args.dry_run, args.emit_scaffolding)
+    morph_count = _bootstrap_morph_options(dimensions, seen_ids, args.dry_run)
+    io_count = _bootstrap_io_components(seen_ids, args.dry_run)
     _print_summary(prim_count, morph_count, io_count, args.dry_run)
 
 

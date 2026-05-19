@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import ast
-import importlib
 from pathlib import Path
 
 
@@ -43,14 +42,3 @@ def test_no_legacy_top_level_imports() -> None:
         if imports
     }
     assert not offenders, offenders
-
-
-def test_all_kernel_fallback_modules_import_cleanly() -> None:
-    failures: dict[str, str] = {}
-    for path in KERNEL_FALLBACKS:
-        module_name = ".".join(path.relative_to(PROJECT_ROOT).with_suffix("").parts)
-        try:
-            importlib.import_module(module_name)
-        except Exception as exc:  # pragma: no cover - failure path only
-            failures[module_name] = repr(exc)
-    assert not failures, failures

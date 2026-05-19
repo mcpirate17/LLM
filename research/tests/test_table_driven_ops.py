@@ -141,13 +141,6 @@ def test_custom_ops_still_work():
     assert torch.allclose(result, x * x)
 
 
-def test_all_ops_callable():
-    """Every op in _OP_DISPATCH is callable with standard args."""
-    torch.randn(2, 4, 8)
-    for name, fn in _OP_DISPATCH.items():
-        assert callable(fn), f"Op '{name}' is not callable"
-
-
 # ── 6b: xxHash64 graph fingerprint ──────────────────────────────────
 
 

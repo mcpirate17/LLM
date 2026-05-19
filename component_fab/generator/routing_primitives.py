@@ -1,23 +1,4 @@
-"""Per-token compute-allocation routing primitives for fab lanes.
-
-Each primitive wraps one or more inner ``nn.Module`` mixers (the slot
-candidates the fab proposer is searching over) and decides PER TOKEN
-how much compute that token gets. The proven recipes from research/'s
-cf3e6bc6-class BLiMP wins all combine routing with a mixer block; fab
-had zero coverage of this axis before today.
-
-Interface: every primitive maps ``[B, L, D] -> [B, L, D]`` and preserves
-causality (no future-token leak via the routing decision). The router
-state is **per-position** and depends only on positions ``<= t``.
-
-Why ``LowInfoSkipRouter`` instead of the stop-word variant in the plan:
-the lane interface receives hidden states, not token ids — frozen
-``Embedding(vocab, 1)`` stop-word predictors require ids the upstream
-``TinyLM`` keeps inside its forward. The substitute here uses
-``||hidden||`` rank as a content-free low-information proxy. Same
-inductive bias (low-information tokens get a cheap path), without
-breaking every other lane's signature.
-"""
+"""Per-token routing lanes that preserve ``[B, L, D]`` shape and causality."""
 
 from __future__ import annotations
 
@@ -31,19 +12,7 @@ LaneFactory = Callable[[int], nn.Module]
 
 
 class MixtureOfRecursionsLane(nn.Module):
-    """Per-token learned halting: each token decides how many times to
-    re-pass through the same mixer block.
-
-    ACT-style continuous relaxation: at each depth ``d``, a small head
-    emits a halt probability ``p_d`` per position. The output is the
-    expected hidden state ``sum_d w_d * h_d`` where ``w_d`` is the
-    ponder weight (halt × not-halted-so-far). Quadratic penalty on
-    expected compute caps depth at training (returned via ``aux_loss``
-    attribute, set on each forward call).
-
-    Same params for every recursion depth — this is *recursive*, not
-    deeper.
-    """
+    """Per-token learned halting over repeated applications of one mixer."""
 
     def __init__(
         self,
@@ -90,17 +59,7 @@ class MixtureOfRecursionsLane(nn.Module):
 
 
 class SparseMoRLane(nn.Module):
-    """Mixture-of-Recursions with a hard per-batch top-k recursion budget.
-
-    Forward pass:
-      1. One pass through the mixer (every token).
-      2. Halt head over the result; the top-k-by-halt-score tokens get
-         extra recursions up to ``max_depth``.
-      3. Remaining tokens pin at depth=1.
-
-    Caps worst-case compute at ``1 + top_k_frac * (max_depth - 1)`` of
-    a vanilla single pass — bounds wallclock unlike unrestricted MoR.
-    """
+    """Mixture-of-Recursions with a hard per-token recursion budget."""
 
     def __init__(
         self,
@@ -141,25 +100,7 @@ class SparseMoRLane(nn.Module):
 
 
 class LowInfoSkipRouter(nn.Module):
-    """Per-token skip-routing keyed on activation norm.
-
-    Splits positions into two paths: a heavy ``mixer`` for high-content
-    tokens and a ``cheap_path`` (identity if ``hard=True``, or a small
-    low-rank residual if ``hard=False``) for low-content tokens.
-
-    "Low content" is determined per token by ``||x[t]|| < threshold``
-    where the threshold is set by a learned per-channel projection
-    (``score_proj``) — no token-id dependency, so the interface stays
-    ``[B, L, D] -> [B, L, D]``.
-
-    Two flavors:
-    - ``hard=True``: stop-content tokens completely bypass the mixer
-      (residual identity). Saves FLOPs but may degrade fine-grained
-      agreement features.
-    - ``hard=False``: stop-content tokens flow through a learned
-      ``low_rank`` adapter (rank=dim//4). Preserves linguistic structure
-      while still cheaper than the full mixer.
-    """
+    """Skip-route low-norm positions to an identity or low-rank path."""
 
     def __init__(
         self,
@@ -199,16 +140,7 @@ class LowInfoSkipRouter(nn.Module):
 
 
 class HashedMoELane(nn.Module):
-    """Deterministic hash-routed Mixture-of-Experts.
-
-    Hashes each token's activation signature to one of ``n_experts``
-    buckets via a sign-of-random-projection. No learned router, no
-    auxiliary balancing loss — every expert is guaranteed to see a
-    well-distributed share of tokens by the hash function alone.
-
-    Strong baseline for MoE-style routing; useful negative control
-    when learned routers seem to win.
-    """
+    """Deterministic hash-routed Mixture-of-Experts."""
 
     def __init__(
         self,
@@ -245,16 +177,7 @@ class HashedMoELane(nn.Module):
 
 
 class DifficultyRoutedLane(nn.Module):
-    """Per-token 1-bit router selecting easy vs hard mixer.
-
-    Predicts a soft per-token routing weight ``r in [0, 1]`` from the
-    input, then outputs ``r * hard(x) + (1 - r) * easy(x)``. Easy and
-    hard are arbitrary fab candidates — the bias is for ``easy`` to
-    be a cheap mixer (e.g. LinearStateSpaceLane) and ``hard`` to be an
-    expensive one (e.g. TropicalAttention).
-
-    Encodes the inductive bias that compute should track difficulty.
-    """
+    """Per-token soft router selecting easy vs hard mixer."""
 
     def __init__(
         self,
@@ -274,14 +197,7 @@ class DifficultyRoutedLane(nn.Module):
 
 
 class RoutedBottleneckLane(nn.Module):
-    """Switch-style top-k MoE with auxiliary load-balancing loss.
-
-    Learned router computes per-expert affinity. Each token routes to
-    its top-k experts; the outputs are summed weighted by softmaxed
-    affinity. Aux loss = mean-routing-fraction × mean-router-prob
-    (Shazeer 2017 / Switch Transformer). Set on each forward as
-    ``aux_loss`` attribute so the training loop can pick it up.
-    """
+    """Switch-style top-k MoE with auxiliary load-balancing loss."""
 
     def __init__(
         self,

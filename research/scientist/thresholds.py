@@ -1,7 +1,4 @@
-"""Centralized threshold constants for scoring and escalation gates.
-
-Every hardcoded numeric threshold used in promotion decisions lives here.
-Each constant includes: value, calibration date, and rationale.
+"""Centralized thresholds for scoring and escalation gates.
 
 loss_ratio convention: all thresholds compare against RAW loss_ratio
 (final_loss / initial_loss), NOT NORM (final_loss / ln(vocab_size)).
@@ -12,59 +9,30 @@ from __future__ import annotations
 
 from typing import NewType
 
-# Type alias enforcing that thresholds compare RAW loss_ratio only.
-# RAW = final_loss / initial_loss  (range 0-1+, lower is better)
-# NORM = final_loss / ln(vocab_size) (range 0-1+, different scale)
 RawLossRatio = NewType("RawLossRatio", float)
 
-
-# ---------------------------------------------------------------------------
-# Screening -> Investigation gate
-# ---------------------------------------------------------------------------
 
 # 90% of frontier avg composite score (69.67) at screening.
 # Calibrated 2026-03-23 against wiki103 4-ref frontier.
 V7_SCREENING_THRESHOLD: float = 62.7
 
-# ---------------------------------------------------------------------------
-# Investigation -> Validation gate
-# ---------------------------------------------------------------------------
-
 # 90% of frontier avg composite score at investigation tier.
 # Calibrated 2026-03-23 against wiki103 4-ref frontier.
 V7_INVESTIGATION_THRESHOLD: float = 121.2
 
-# ---------------------------------------------------------------------------
-# Empirical override gate (investigation -> validation bypass)
-# ---------------------------------------------------------------------------
-
-# Best RAW loss_ratio must be below this for empirical override.
-# Calibrated against RAW formula; under NORM 0.174 is nearly unreachable.
+# Empirical override gate. Calibrated against RAW formula; under NORM 0.174 is nearly unreachable.
 EMPIRICAL_OVERRIDE_BEST_LR: float = 0.18
 
-# Baseline loss_ratio must be below this for empirical override.
 # Prevents override when baseline comparison is inconclusive.
 EMPIRICAL_OVERRIDE_BASELINE_LR: float = 0.80
 
-# Robustness floor for empirical override pathway.
-# Candidate must have robustness >= this to qualify.
 EMPIRICAL_OVERRIDE_ROBUSTNESS: float = 0.50
 
-# Score multiplier: candidate_score must be >= min_score * this.
-# Ensures empirical override candidates are close to the threshold.
 EMPIRICAL_OVERRIDE_SCORE_MULT: float = 1.15
-
-# ---------------------------------------------------------------------------
-# Validation hard gate (loss_ratio)
-# ---------------------------------------------------------------------------
 
 # Maximum RAW loss_ratio for validation promotion.
 # Calibrated 2026-03-23; prevents weak learners from reaching validation.
 VALIDATION_BEST_LR_HARD: float = 0.25
-
-# ---------------------------------------------------------------------------
-# Investigation early pass thresholds
-# ---------------------------------------------------------------------------
 
 # RAW loss_ratio below which investigation is considered an early pass.
 # Calibrated by judgment; no formal sweep performed.
@@ -74,41 +42,20 @@ INVESTIGATION_EARLY_PASS_LR: float = 0.50
 # Even brittle models pass if they learn this well.
 INVESTIGATION_BRITTLE_OVERRIDE_LR: float = 0.30
 
-# ---------------------------------------------------------------------------
-# Insufficient learning cap
-# ---------------------------------------------------------------------------
-
 # RAW loss_ratio above which a model is considered to have not learned.
 # Triggers a hard score cap in composite scoring.
 INSUFFICIENT_LEARNING_LR: float = 0.95
-
-# ---------------------------------------------------------------------------
-# Structural novelty floor
-# ---------------------------------------------------------------------------
 
 # Minimum structural novelty to pass lightning gate.
 # Below this, the graph is too similar to existing population.
 STRUCTURAL_NOVELTY_FLOOR: float = 0.10
 
-# ---------------------------------------------------------------------------
-# Novelty scoring caps
-# ---------------------------------------------------------------------------
-
-# Maximum composite novelty points when novelty_valid_for_promotion is False.
-# Prevents structural-only novelty from dominating the score.
+# Prevents structural-only novelty from dominating the score when novelty is invalid for promotion.
 STRUCTURAL_ONLY_NOVELTY_CAP: float = 15.0
-
-# ---------------------------------------------------------------------------
-# Spectral norm floor
-# ---------------------------------------------------------------------------
 
 # Below this spectral_norm, the model is considered degenerate (collapsed).
 # Used in multiple composite scoring versions.
 SPECTRAL_NORM_FLOOR: float = 0.01
-
-# ---------------------------------------------------------------------------
-# GPT-2 reference metrics (measured on d_model=256, 6-layer config)
-# ---------------------------------------------------------------------------
 
 GPT2_REF = {
     "loss_ratio": 0.2646,
@@ -123,14 +70,6 @@ GPT2_REF = {
 # Calibrated 2026-03-23 against wiki103 4-ref frontier.
 WIKITEXT_REF_SCORE_FLOOR: float = 0.5868
 WIKITEXT_REF_PPL_CEILING: float = 72.68
-
-# ---------------------------------------------------------------------------
-# Tier ranking (for preventing tier downgrades)
-# ---------------------------------------------------------------------------
-
-# ---------------------------------------------------------------------------
-# HellaSwag commonsense reasoning gate
-# ---------------------------------------------------------------------------
 
 # Accuracy at or below this = noise floor → hard score cap, and the
 # screening_understanding_filter treats it as "probe measured but near-random".
@@ -163,10 +102,6 @@ HELLASWAG_INVESTIGATION_GATE: float = 0.29
 # Calibrated 2026-04-17.
 HELLASWAG_VALIDATION_GATE: float = 0.29
 
-# ---------------------------------------------------------------------------
-# Binding probe thresholds (associative recall + induction head)
-# ---------------------------------------------------------------------------
-
 # Soft gate at ALL tiers: fires only when ALL measured binding signals are
 # near zero simultaneously (3-signal AND). This is the pure conv-3 case.
 #
@@ -189,13 +124,10 @@ BINDING_INDUCTION_SOFT_GATE: float = 0.05
 BINDING_BINDING_AUC_SOFT_GATE: float = 0.10
 BINDING_LOCAL_ONLY_PENALTY: float = 0.80  # multiply composite by this
 
-# ---------------------------------------------------------------------------
-# Understanding gate (investigation → validation)
 # Calibrated 2026-04-17 (capability-first): require ≥ UNDERSTANDING_MIN_SIGNALS
 # of {diagnostic, binding_screening_composite, hellaswag} above the corresponding strict
 # threshold. The legacy soft thresholds (diagnostic=0.15 etc.) are retained
 # below for diagnostic logging only — they are NOT the promotion criterion.
-# ---------------------------------------------------------------------------
 UNDERSTANDING_MIN_DIAGNOSTIC: float = 0.30  # ~2× above 4-task random (~12.5%)
 UNDERSTANDING_MIN_BINDING: float = 0.10  # 2× the soft AND-gate floor
 UNDERSTANDING_MIN_HELLASWAG: float = 0.40  # ~15% above 4-way random
@@ -208,16 +140,10 @@ UNDERSTANDING_SOFT_DIAGNOSTIC: float = 0.15
 UNDERSTANDING_SOFT_BINDING: float = 0.05
 # UNDERSTANDING_SOFT_HELLASWAG uses HELLASWAG_RANDOM_CHANCE_GATE (0.28)
 
-# ---------------------------------------------------------------------------
 # v8 scoring thresholds (placeholder — calibrate after the current scoring backfill)
 # These should be re-estimated from frontier references before enforcing them.
-# ---------------------------------------------------------------------------
 V8_SCREENING_THRESHOLD: float = 50.0  # placeholder, ~90% of v8 frontier avg
 V8_INVESTIGATION_THRESHOLD: float = 95.0  # placeholder, ~90% of v8 frontier avg
-
-# ---------------------------------------------------------------------------
-# Tier ranking (for preventing tier downgrades)
-# ---------------------------------------------------------------------------
 
 TIER_RANK = {
     "screened_out": 0,

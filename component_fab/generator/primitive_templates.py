@@ -42,7 +42,54 @@ def _cumsum_dim1_eager(x: torch.Tensor) -> torch.Tensor:
     return x.cumsum(dim=1)
 
 
-class TropicalAttention(nn.Module):
+class _QKVRopeAttentionBase(nn.Module):
+    def __init__(
+        self,
+        dim: int,
+        causal: bool = True,
+        *,
+        use_rope: bool = False,
+        max_seq_len: int = 1024,
+    ) -> None:
+        super().__init__()
+        self.q = nn.Linear(dim, dim, bias=False)
+        self.k = nn.Linear(dim, dim, bias=False)
+        self.v = nn.Linear(dim, dim, bias=False)
+        self.scale = float(dim) ** -0.5
+        self.dim = dim
+        self.causal = causal
+        self.rope = RotaryEmbedding(dim, max_seq_len=max_seq_len) if use_rope else None
+
+    def _project_affinity_values(
+        self,
+        x: torch.Tensor,
+        *,
+        causal_mask_value: float,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        seq_len = x.shape[1]
+        q = self.q(x)
+        k = self.k(x)
+        v = self.v(x)
+        if self.rope is not None:
+            cos, sin = self.rope(seq_len, device=x.device, dtype=x.dtype)
+            q = apply_rope(q, cos, sin)
+            k = apply_rope(k, cos, sin)
+        affinity = torch.einsum("bid,bjd->bij", q, k) * self.scale
+        if self.causal:
+            mask = torch.triu(
+                torch.full(
+                    (seq_len, seq_len),
+                    causal_mask_value,
+                    device=x.device,
+                    dtype=x.dtype,
+                ),
+                diagonal=1,
+            )
+            affinity = affinity + mask
+        return affinity, v
+
+
+class TropicalAttention(_QKVRopeAttentionBase):
     """Max-plus attention with optional causal mask.
 
     ``out[b, i, d] = max_{j<=i} ( scale * (Q[b, i] . K[b, j]) + V[b, j, d] )``
@@ -65,33 +112,18 @@ class TropicalAttention(nn.Module):
         use_rope: bool = False,
         max_seq_len: int = 1024,
     ) -> None:
-        super().__init__()
-        self.q = nn.Linear(dim, dim, bias=False)
-        self.k = nn.Linear(dim, dim, bias=False)
-        self.v = nn.Linear(dim, dim, bias=False)
-        self.scale = float(dim) ** -0.5
-        self.dim = dim
-        self.causal = causal
-        self.rope = RotaryEmbedding(dim, max_seq_len=max_seq_len) if use_rope else None
+        super().__init__(
+            dim,
+            causal=causal,
+            use_rope=use_rope,
+            max_seq_len=max_seq_len,
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        seq_len = x.shape[1]
-        q = self.q(x)
-        k = self.k(x)
-        v = self.v(x)
-        if self.rope is not None:
-            cos, sin = self.rope(seq_len, device=x.device, dtype=x.dtype)
-            q = apply_rope(q, cos, sin)
-            k = apply_rope(k, cos, sin)
-        affinity = torch.einsum("bid,bjd->bij", q, k) * self.scale
-        if self.causal:
-            mask = torch.triu(
-                torch.full(
-                    (seq_len, seq_len), float("-inf"), device=x.device, dtype=x.dtype
-                ),
-                diagonal=1,
-            )
-            affinity = affinity + mask
+        affinity, v = self._project_affinity_values(
+            x,
+            causal_mask_value=float("-inf"),
+        )
         combined = affinity.unsqueeze(-1) + v.unsqueeze(1)
         return combined.max(dim=2).values
 
@@ -115,7 +147,7 @@ def _causal_sparsemax(logits: torch.Tensor) -> torch.Tensor:
     return (logits - tau).clamp_min(0.0)
 
 
-class SparsemaxAttention(nn.Module):
+class SparsemaxAttention(_QKVRopeAttentionBase):
     """Causal attention with sparsemax instead of softmax.
 
     Identity to standard scaled-dot-product attention everywhere except
@@ -139,36 +171,18 @@ class SparsemaxAttention(nn.Module):
         use_rope: bool = False,
         max_seq_len: int = 1024,
     ) -> None:
-        super().__init__()
-        self.q = nn.Linear(dim, dim, bias=False)
-        self.k = nn.Linear(dim, dim, bias=False)
-        self.v = nn.Linear(dim, dim, bias=False)
-        self.scale = float(dim) ** -0.5
-        self.dim = dim
-        self.causal = causal
-        self.rope = RotaryEmbedding(dim, max_seq_len=max_seq_len) if use_rope else None
+        super().__init__(
+            dim,
+            causal=causal,
+            use_rope=use_rope,
+            max_seq_len=max_seq_len,
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        seq_len = x.shape[1]
-        q = self.q(x)
-        k = self.k(x)
-        v = self.v(x)
-        if self.rope is not None:
-            cos, sin = self.rope(seq_len, device=x.device, dtype=x.dtype)
-            q = apply_rope(q, cos, sin)
-            k = apply_rope(k, cos, sin)
-        affinity = torch.einsum("bid,bjd->bij", q, k) * self.scale
-        if self.causal:
-            mask = torch.triu(
-                torch.full(
-                    (seq_len, seq_len),
-                    self._NEG_LARGE,
-                    device=x.device,
-                    dtype=x.dtype,
-                ),
-                diagonal=1,
-            )
-            affinity = affinity + mask
+        affinity, v = self._project_affinity_values(
+            x,
+            causal_mask_value=self._NEG_LARGE,
+        )
         weights = _causal_sparsemax(affinity)
         return torch.einsum("bij,bjd->bid", weights, v)
 

@@ -357,6 +357,60 @@ def _train_probe(
     return steps, status
 
 
+def _weighted_split_accuracy(
+    in_dist_acc: float,
+    in_dist_count: int,
+    held_out_acc: float,
+    held_out_count: int,
+) -> float:
+    total = in_dist_count + held_out_count
+    if total <= 0:
+        return 0.0
+    return (in_dist_acc * in_dist_count + held_out_acc * held_out_count) / total
+
+
+def _evaluate_pair_split_metrics(
+    model: nn.Module,
+    *,
+    class_in: tuple[torch.Tensor, torch.Tensor],
+    class_held_out: tuple[torch.Tensor, torch.Tensor],
+    binding_in: tuple[torch.Tensor, torch.Tensor],
+    binding_held_out: tuple[torch.Tensor, torch.Tensor],
+    order: tuple[torch.Tensor, torch.Tensor],
+) -> dict[str, Any]:
+    good_c_in, bad_c_in = class_in
+    good_c_ho, bad_c_ho = class_held_out
+    good_b_in, bad_b_in = binding_in
+    good_b_ho, bad_b_ho = binding_held_out
+    good_o, bad_o = order
+
+    cls_in = _pair_accuracy(model, good_c_in, bad_c_in)
+    cls_ho = _pair_accuracy(model, good_c_ho, bad_c_ho)
+    bind_in = _pair_accuracy(model, good_b_in, bad_b_in)
+    bind_ho = _pair_accuracy(model, good_b_ho, bad_b_ho)
+    order_acc = _pair_accuracy(model, good_o, bad_o)
+
+    n_c_in = int(good_c_in.shape[0])
+    n_c_ho = int(good_c_ho.shape[0])
+    n_b_in = int(good_b_in.shape[0])
+    n_b_ho = int(good_b_ho.shape[0])
+
+    return {
+        "class_coherence_acc": _weighted_split_accuracy(cls_in, n_c_in, cls_ho, n_c_ho),
+        "class_coherence_in_dist_acc": cls_in,
+        "class_coherence_held_out_acc": cls_ho,
+        "binding_fidelity_acc": _weighted_split_accuracy(
+            bind_in, n_b_in, bind_ho, n_b_ho
+        ),
+        "binding_fidelity_in_dist_acc": bind_in,
+        "binding_fidelity_held_out_acc": bind_ho,
+        "order_grammaticality_acc": order_acc,
+        "n_in_dist_pairs": n_c_in,
+        "n_held_out_pairs": n_c_ho,
+        "n_pairs_per_test": int(good_o.shape[0]),
+    }
+
+
 def _evaluate_splits(
     model: nn.Module,
     layout: AssociationLayout,
@@ -385,40 +439,14 @@ def _evaluate_splits(
 
     good_o, bad_o = _build_order_pairs(layout, device, all_nouns)
 
-    cls_in = _pair_accuracy(model, good_c_in, bad_c_in)
-    cls_ho = _pair_accuracy(model, good_c_ho, bad_c_ho)
-    bind_in = _pair_accuracy(model, good_b_in, bad_b_in)
-    bind_ho = _pair_accuracy(model, good_b_ho, bad_b_ho)
-    order_acc = _pair_accuracy(model, good_o, bad_o)
-
-    # Overall (all-noun) class/binding accuracies, weighted by pair counts.
-    n_c_in = int(good_c_in.shape[0])
-    n_c_ho = int(good_c_ho.shape[0])
-    n_b_in = int(good_b_in.shape[0])
-    n_b_ho = int(good_b_ho.shape[0])
-    cls_overall = (
-        (cls_in * n_c_in + cls_ho * n_c_ho) / max(n_c_in + n_c_ho, 1)
-        if (n_c_in + n_c_ho)
-        else 0.0
+    return _evaluate_pair_split_metrics(
+        model,
+        class_in=(good_c_in, bad_c_in),
+        class_held_out=(good_c_ho, bad_c_ho),
+        binding_in=(good_b_in, bad_b_in),
+        binding_held_out=(good_b_ho, bad_b_ho),
+        order=(good_o, bad_o),
     )
-    bind_overall = (
-        (bind_in * n_b_in + bind_ho * n_b_ho) / max(n_b_in + n_b_ho, 1)
-        if (n_b_in + n_b_ho)
-        else 0.0
-    )
-
-    return {
-        "class_coherence_acc": cls_overall,
-        "class_coherence_in_dist_acc": cls_in,
-        "class_coherence_held_out_acc": cls_ho,
-        "binding_fidelity_acc": bind_overall,
-        "binding_fidelity_in_dist_acc": bind_in,
-        "binding_fidelity_held_out_acc": bind_ho,
-        "order_grammaticality_acc": order_acc,
-        "n_in_dist_pairs": n_c_in,
-        "n_held_out_pairs": n_c_ho,
-        "n_pairs_per_test": int(good_o.shape[0]),
-    }
 
 
 def _build_result(
@@ -948,38 +976,14 @@ def _v3_evaluate_splits(
     )
     good_o, bad_o = _v3_order_pairs(layout, device, all_indices)
 
-    cls_in = _pair_accuracy(model, good_c_in, bad_c_in)
-    cls_ho = _pair_accuracy(model, good_c_ho, bad_c_ho)
-    bind_in = _pair_accuracy(model, good_b_in, bad_b_in)
-    bind_ho = _pair_accuracy(model, good_b_ho, bad_b_ho)
-    order_acc = _pair_accuracy(model, good_o, bad_o)
-
-    n_c_in = int(good_c_in.shape[0])
-    n_c_ho = int(good_c_ho.shape[0])
-    n_b_in = int(good_b_in.shape[0])
-    n_b_ho = int(good_b_ho.shape[0])
-    cls_overall = (
-        (cls_in * n_c_in + cls_ho * n_c_ho) / max(n_c_in + n_c_ho, 1)
-        if (n_c_in + n_c_ho)
-        else 0.0
+    return _evaluate_pair_split_metrics(
+        model,
+        class_in=(good_c_in, bad_c_in),
+        class_held_out=(good_c_ho, bad_c_ho),
+        binding_in=(good_b_in, bad_b_in),
+        binding_held_out=(good_b_ho, bad_b_ho),
+        order=(good_o, bad_o),
     )
-    bind_overall = (
-        (bind_in * n_b_in + bind_ho * n_b_ho) / max(n_b_in + n_b_ho, 1)
-        if (n_b_in + n_b_ho)
-        else 0.0
-    )
-    return {
-        "class_coherence_acc": cls_overall,
-        "class_coherence_in_dist_acc": cls_in,
-        "class_coherence_held_out_acc": cls_ho,
-        "binding_fidelity_acc": bind_overall,
-        "binding_fidelity_in_dist_acc": bind_in,
-        "binding_fidelity_held_out_acc": bind_ho,
-        "order_grammaticality_acc": order_acc,
-        "n_in_dist_pairs": n_c_in,
-        "n_held_out_pairs": n_c_ho,
-        "n_pairs_per_test": int(good_o.shape[0]),
-    }
 
 
 def _v3_build_result(

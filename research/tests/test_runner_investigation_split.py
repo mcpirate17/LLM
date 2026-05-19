@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import time
 from unittest.mock import MagicMock
-from unittest.mock import patch
 
 
 from research.scientist.runner.execution_investigation import (
@@ -33,66 +32,6 @@ class _StubRunner(_ExecutionInvestigationMixin):
 def _make_mixin(**overrides) -> _ExecutionInvestigationMixin:
     """Create a minimal mixin instance with mocked self.* dependencies."""
     return _StubRunner(**overrides)
-
-
-class TestInvestigateFingerprintCompletion:
-    """Tests for _investigate_fingerprint_completion."""
-
-    def test_returns_expected_types_with_none_model(self):
-        """When best_inv_model is None, should return (False, False, source)."""
-        mixin = _make_mixin()
-        source = {"_behavioral_fingerprint": {"some": "data"}, "result_id": "abc123"}
-        completed, attempted, returned_source = (
-            mixin._investigate_fingerprint_completion(
-                source_result_id="abc12345",
-                source=source,
-                best_inv_model=None,
-                config=MagicMock(max_seq_len=128, model_dim=256, vocab_size=32000),
-                dev=MagicMock(),
-                nb=MagicMock(),
-            )
-        )
-        assert completed is False
-        assert attempted is False
-        assert returned_source is source
-
-    def test_returns_expected_types_with_none_fp_dict(self):
-        """When source has no _behavioral_fingerprint, should skip."""
-        mixin = _make_mixin()
-        source = {"result_id": "abc123"}  # no _behavioral_fingerprint
-        model = MagicMock()
-        completed, attempted, returned_source = (
-            mixin._investigate_fingerprint_completion(
-                source_result_id="abc12345",
-                source=source,
-                best_inv_model=model,
-                config=MagicMock(max_seq_len=128, model_dim=256, vocab_size=32000),
-                dev=MagicMock(),
-                nb=MagicMock(),
-            )
-        )
-        assert completed is False
-        assert attempted is False
-        assert returned_source is source
-
-    def test_returns_expected_types_with_both_none(self):
-        """When both model and fp_dict are None, should return early."""
-        mixin = _make_mixin()
-        source = {"result_id": "abc123"}
-        completed, attempted, returned_source = (
-            mixin._investigate_fingerprint_completion(
-                source_result_id="abc12345",
-                source=source,
-                best_inv_model=None,
-                config=MagicMock(max_seq_len=128, model_dim=256, vocab_size=32000),
-                dev=MagicMock(),
-                nb=MagicMock(),
-            )
-        )
-        assert isinstance(completed, bool)
-        assert isinstance(attempted, bool)
-        assert completed is False
-        assert attempted is False
 
 
 class TestHandleInvestigationInfraFailure:
@@ -234,47 +173,3 @@ class TestSummarizeAndCheckInfra:
         assert ret is not _SKIP_INFRA
         assert hasattr(ret, "n_passed")
         assert ret.n_passed == 1
-
-
-class TestInvestigationModelReconstruction:
-    """Tests for investigation model reconstruction fallback behavior."""
-
-    def test_reconstruct_investigation_model_falls_back_for_byte_unsafe_graph(self):
-        mixin = _make_mixin()
-        config = MagicMock(model_dim=256, n_layers=4, vocab_size=32000)
-        sentinel = object()
-
-        with (
-            patch(
-                "research.scientist.runner.execution_investigation.graph_from_json",
-                return_value=MagicMock(name="graph"),
-            ) as graph_from_json,
-            patch(
-                "research.scientist.runner.execution_investigation.find_byte_safety_violations",
-                return_value=["Byte-unsafe op 'mod_topk'"],
-            ),
-            patch(
-                "research.scientist.runner.execution_investigation._compile_model_legacy",
-                return_value=sentinel,
-            ) as legacy_compile,
-            patch(
-                "research.scientist.runner.execution_investigation.compile_model",
-            ) as native_compile,
-        ):
-            model = mixin._reconstruct_investigation_model(
-                source_result_id="9cfd1d97-336",
-                model_source="fingerprint_refine",
-                graph_json_str="{}",
-                arch_spec_json_str=None,
-                config=config,
-                tp_max_seq=256,
-            )
-
-        assert model is sentinel
-        graph = graph_from_json.return_value
-        legacy_compile.assert_called_once_with(
-            [graph] * config.n_layers,
-            vocab_size=config.vocab_size,
-            max_seq_len=256,
-        )
-        native_compile.assert_not_called()

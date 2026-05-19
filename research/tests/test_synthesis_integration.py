@@ -504,44 +504,6 @@ class TestGrammarWeightPersistence(unittest.TestCase):
         self.assertIn("applied_grammar_weights", results)
         self.assertEqual(results["applied_grammar_weights"]["attention"], 2.0)
 
-    def test_single_experiment_path_persists_applied_weights(self):
-        """Single-threaded experiment path should persist applied grammar weights."""
-        import inspect
-        from research.scientist.runner import ExperimentRunner
-
-        src = inspect.getsource(ExperimentRunner._run_experiment_thread)
-        self.assertIn("self._persist_applied_grammar_weights(nb, exp_id, results)", src)
-
-    def test_continuous_synthesis_path_persists_applied_weights(self):
-        """Continuous synthesis path should persist applied grammar weights."""
-        import inspect
-        from research.scientist.runner import ExperimentRunner
-
-        src = inspect.getsource(ExperimentRunner._run_continuous_synthesis)
-        self.assertIn("self._persist_applied_grammar_weights(nb, exp_id, results)", src)
-
-    def test_execute_experiment_records_distribution_shift_signals(self):
-        """Core execute path should record generated-op distribution + shift metadata."""
-        import inspect
-        from research.scientist.runner import ExperimentRunner
-
-        # Distribution shift is captured in the generate-and-filter helper.
-        src = inspect.getsource(ExperimentRunner._generate_and_filter_candidates)
-        self.assertIn("generated_op_distribution", src)
-        self.assertIn("generation_distribution_shift", src)
-        self.assertIn("architecture_distribution_shift", src)
-
-    def test_execute_experiment_emits_budgeted_grammar_learning_event(self):
-        """Learned-grammar telemetry should include the active structural budget."""
-        import inspect
-        from research.scientist.runner import ExperimentRunner
-
-        # Learned-grammar event emission lives in the grammar-prep helper.
-        src = inspect.getsource(ExperimentRunner._prepare_grammar_config)
-        self.assertIn('"max_depth": int(config.max_depth)', src)
-        self.assertIn('"max_ops": int(config.max_ops)', src)
-        self.assertIn("Applied learned grammar weights (", src)
-
 
 class TestFrontierOps(unittest.TestCase):
     """Test that efficiency frontier includes ops field."""

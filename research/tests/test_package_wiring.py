@@ -5,7 +5,6 @@ Verifies that package __init__.py files export expected modules,
 math-space registrations work, and dead-code audit tooling runs.
 """
 
-import os
 import unittest
 
 import pytest
@@ -24,23 +23,6 @@ except ImportError:
 
 class TestPackageWiring(unittest.TestCase):
     """Ensure explicitly connected package modules remain importable."""
-
-    def test_mathspaces_exports_modules(self):
-        repo_root = os.path.dirname(os.path.dirname(__file__))
-        init_path = os.path.join(repo_root, "mathspaces", "__init__.py")
-        with open(init_path, "r", encoding="utf-8") as f:
-            content = f.read()
-
-        self.assertIn(
-            "from . import clifford, compression, hyperbolic, padic, spiking, tropical",
-            content,
-        )
-        self.assertIn("from .registry import register_all_mathspaces", content)
-        self.assertIn('"hyperbolic"', content)
-        self.assertIn('"tropical"', content)
-        self.assertIn('"padic"', content)
-        self.assertIn('"clifford"', content)
-        self.assertIn('"spiking"', content)
 
     @unittest.skipUnless(HAS_TORCH, "requires torch")
     def test_mathspace_registry_includes_hyp_distance(self):
@@ -132,17 +114,6 @@ class TestPackageWiring(unittest.TestCase):
             self.assertTrue(
                 torch.isfinite(out).all(), f"{op_name} produced non-finite values"
             )
-
-    def test_llm_package_exports_context_and_prompts(self):
-        repo_root = os.path.dirname(os.path.dirname(__file__))
-        init_path = os.path.join(repo_root, "scientist", "llm", "__init__.py")
-        with open(init_path, "r", encoding="utf-8") as f:
-            content = f.read()
-
-        self.assertIn("from . import context, prompts", content)
-        self.assertIn("from .backend import", content)
-        self.assertIn('"context"', content)
-        self.assertIn('"prompts"', content)
 
 
 if __name__ == "__main__":

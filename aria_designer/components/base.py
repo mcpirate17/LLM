@@ -60,81 +60,8 @@ class BaseComponentHandler:
         raise NotImplementedError("Subclasses must implement forward")
 
 
-class SimpleBinaryOpHandler(BaseComponentHandler):
-    """Generic handler for binary operations like add, mul, sub."""
-
-    __slots__ = ("module_cls", "op_fn", "native_op_name", "native_result_validator")
-
-    def __init__(
-        self,
-        module_cls,
-        op_fn,
-        native_op_name=None,
-        native_result_validator=None,
-    ):
-        self.module_cls = module_cls
-        self.op_fn = op_fn
-        self.native_op_name = native_op_name
-        self.native_result_validator = native_result_validator or _result_is_finite
-
-    def build(self, config):
-        return self.module_cls()
-
-    def forward(self, inputs, config):
-        a = inputs.get("a")
-        b = inputs.get("b")
-        if a is None or b is None:
-            keys = list(inputs.keys())
-            if len(keys) >= 2:
-                a = a if a is not None else inputs[keys[0]]
-                b = b if b is not None else inputs[keys[1]]
-        if self.native_op_name is not None:
-            result = _try_native(self.native_op_name, a, b)
-            if result is not None and self.native_result_validator(result):
-                return {"y": result}
-        return {"y": self.op_fn(a, b)}
-
-
-class SimpleUnaryOpHandler(BaseComponentHandler):
-    """Generic handler for unary operations like relu, sigmoid, exp."""
-
-    __slots__ = ("module_cls", "op_fn", "native_op_name", "native_result_validator")
-
-    def __init__(
-        self,
-        module_cls,
-        op_fn,
-        native_op_name=None,
-        native_result_validator=None,
-    ):
-        self.module_cls = module_cls
-        self.op_fn = op_fn
-        self.native_op_name = native_op_name
-        self.native_result_validator = native_result_validator or _result_is_finite
-
-    def build(self, config):
-        return self.module_cls()
-
-    def forward(self, inputs, config):
-        x = inputs.get("x")
-        if x is None:
-            keys = list(inputs.keys())
-            if keys:
-                x = inputs[keys[0]]
-        if self.native_op_name is not None:
-            result = _try_native(self.native_op_name, x)
-            if result is not None and self.native_result_validator(result):
-                return {"y": result}
-        return {"y": self.op_fn(x)}
-
-
 def make_unary_handler(op_fn, native_op_name=None, native_result_validator=None):
-    """Factory: generate a ComponentHandler class for a unary op.
-
-    ``op_fn`` takes a single tensor and returns a tensor.
-    The generated handler exposes ``validate_config``, ``build``, ``forward``
-    as expected by the runtime dispatch system.
-    """
+    """Generate a ComponentHandler class for a unary op."""
 
     class _Module(nn.Module):
         def forward(self, x):
@@ -164,10 +91,7 @@ def make_unary_handler(op_fn, native_op_name=None, native_result_validator=None)
 
 
 def make_binary_handler(op_fn, native_op_name=None, native_result_validator=None):
-    """Factory: generate a ComponentHandler class for a binary op.
-
-    ``op_fn`` takes two tensors (a, b) and returns a tensor.
-    """
+    """Generate a ComponentHandler class for a binary op."""
 
     class _Module(nn.Module):
         def forward(self, a, b):

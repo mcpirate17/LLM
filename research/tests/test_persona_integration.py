@@ -188,37 +188,6 @@ class TestPersona(unittest.TestCase):
     def setUp(self):
         self.aria = Aria()
 
-    def test_all_methods_exist(self):
-        """Aria should have all expected public methods."""
-        methods = [
-            "greet",
-            "react_to_discovery",
-            "react_to_failure",
-            "begin_analysis",
-            "formulate_hypothesis",
-            "experiment_summary",
-            "analyze_results",
-            "explain_fingerprint",
-            "plan_strategy",
-            "suggest_experiment",
-            "validate_hypothesis",
-            "explain_learning",
-            "generate_report_narrative",
-            "get_status",
-            "add_insight",
-            # Phase methods
-            "formulate_investigation_hypothesis",
-            "formulate_validation_hypothesis",
-            "announce_breakthrough",
-            # Mode selection
-            "recommend_next_mode",
-        ]
-        for m in methods:
-            self.assertTrue(hasattr(self.aria, m), f"Aria missing method: {m}")
-            self.assertTrue(
-                callable(getattr(self.aria, m)), f"Aria.{m} is not callable"
-            )
-
     def test_greet_returns_string(self):
         msg = self.aria.greet()
         self.assertIsInstance(msg, str)

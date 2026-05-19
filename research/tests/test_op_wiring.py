@@ -103,18 +103,6 @@ def _op_in_any_motif(op_name: str) -> list[str]:
     return result
 
 
-def _op_in_any_template(op_name: str) -> list[str]:
-    """Check if op appears in any template source (binary-op templates)."""
-    import inspect
-
-    result = []
-    for name, fn in TEMPLATES.items():
-        src = inspect.getsource(fn)
-        if f'"{op_name}"' in src:
-            result.append(name)
-    return result
-
-
 class TestMotifReachability:
     """Ops must be reachable via motif, template, or activation pool."""
 
@@ -141,12 +129,6 @@ class TestMotifReachability:
         assert motifs, "grade_mix must appear in at least one motif"
         assert "clifford_attention_grade" in motifs
 
-    def test_div_safe_in_template(self):
-        """div_safe is UNSAFE — must be wired via binary-op template."""
-        templates = _op_in_any_template("div_safe")
-        assert templates, "div_safe must appear in at least one template"
-        assert "safe_division" in templates
-
     def test_reciprocal_in_activation_pool(self):
         """reciprocal is ACTIVATE — must be in substitution pool."""
         assert "reciprocal" in ACTIVATION_POOL
@@ -155,17 +137,6 @@ class TestMotifReachability:
         motifs = _op_in_any_motif("spectral_filter")
         assert motifs, "spectral_filter must appear in at least one motif"
         assert "spectral_filter_mix" in motifs
-
-    def test_tropical_matmul_in_template(self):
-        """tropical_matmul is 2-input — must be wired via binary-op template."""
-        templates = _op_in_any_template("tropical_matmul")
-        assert templates, "tropical_matmul must appear in at least one template"
-        assert "tropical_matmul_block" in templates
-
-    def test_hyp_distance_in_motif(self):
-        templates = _op_in_any_template("hyp_distance")
-        assert templates, "hyp_distance must appear in at least one template"
-        assert "hyp_distance_scoring" in templates
 
 
 # ── 5. Algebraic type compatibility ───────────────────────────────

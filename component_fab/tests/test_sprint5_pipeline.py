@@ -273,9 +273,16 @@ def test_decide_promotion_pending_for_short_history() -> None:
     assert decision.decision == PROMOTION_PENDING
 
 
-def test_decide_promotion_requires_learned_signal_when_set() -> None:
+def test_decide_promotion_default_allows_no_learned_signal() -> None:
     entry = _entry([0.7, 0.75], learned=0)
     decision = decide_promotion(entry, DEFAULT_PROMOTION_RULES)
+    assert decision.decision == PROMOTION_PROMOTED
+
+
+def test_decide_promotion_requires_learned_signal_when_set() -> None:
+    rules = PromotionRules(promote_require_learned_signal=True)
+    entry = _entry([0.7, 0.75], learned=0)
+    decision = decide_promotion(entry, rules)
     assert decision.decision == PROMOTION_PENDING
 
 

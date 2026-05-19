@@ -10,6 +10,9 @@ from typing import Any, Dict, List, Optional
 
 from ._shared import LOGGER, sanitize_for_db
 from .graph_artifacts import resolve_graph_json_value
+from ..leaderboard_dashboard_fields import (
+    PROGRAM_RESULT_DASHBOARD_ALIAS_FIELDS as _PROGRAM_RESULT_DASHBOARD_ALIAS_FIELDS,
+)
 from ..leaderboard_scoring import (
     build_score_kwargs,
     compute_composite,
@@ -65,105 +68,117 @@ _LEADERBOARD_MANAGED_COLUMNS = frozenset(
     }
 )
 
-_CHAMPION_DASHBOARD_FIELDS = (
-    "champion_floor_protocol_version",
-    "champion_steps_to_floor",
-    "champion_floor_loss",
-    "champion_floor_ppl",
-    "champion_floor_loss_std",
-    "champion_plateau_detected_step",
-    "champion_plateau_window",
-    "champion_baseline_result_id",
-    "champion_baseline_layers",
-    "champion_baseline_protocol_version",
-    "champion_steps_to_floor_score",
-    "champion_floor_quality_score",
-    "champion_floor_stability_score",
-    "champion_induction_validation_score",
-    "champion_binding_long_context_score",
-    "champion_ar_validation_score",
-    "champion_tiny_model_score",
-    "champion_tiny_model_protocol_version",
-    "champion_hard_failure_reason",
-    "induction_validation_auc",
-    "induction_validation_max_gap_acc",
-    "induction_validation_gap_accuracy_cv",
-    "induction_validation_gap_accuracies_json",
-    "induction_validation_steps_trained",
-    "induction_validation_status",
-    "induction_validation_elapsed_ms",
-    "induction_validation_protocol_version",
-    "ar_validation_metric_version",
-    "ar_validation_final_acc",
-    "ar_validation_held_pair_acc",
-    "ar_validation_held_class_acc",
-    "ar_validation_learning_curve_json",
-    "ar_validation_steps_to_floor",
-    "ar_validation_rank_score",
-    "ar_validation_status",
-    "ar_validation_elapsed_ms",
-)
-
-_V2_INVESTIGATION_DASHBOARD_FIELDS = (
-    "induction_intermediate_auc",
-    "induction_intermediate_max_gap_acc",
-    "induction_intermediate_protocol_version",
-    "binding_intermediate_auc",
-    "binding_intermediate_max_distance_acc",
-    "binding_intermediate_protocol_version",
-)
-
-_INTERMEDIATE_SCREEN_DASHBOARD_FIELDS = (
-    "ar_intermediate_metric_version",
-    "ar_intermediate_diagnostic_score",
-    "ar_intermediate_held_pair_acc",
-    "ar_intermediate_held_pair_lift",
-    "ar_intermediate_held_class_acc",
-    "ar_intermediate_auc_lift",
-    "ar_intermediate_best_held_pair_acc",
-    "ar_intermediate_improvement",
-    "ar_intermediate_status",
-    "ar_intermediate_elapsed_ms",
-    "binding_multislot_metric_version",
-    "binding_multislot_diagnostic_score",
-    "binding_multislot_held_entity_slot_acc",
-    "binding_multislot_held_slot_lift",
-    "binding_multislot_two_plus_slots_acc",
-    "binding_multislot_two_plus_slots_lift",
-    "binding_multislot_mixed_two_plus_slots_acc",
-    "binding_multislot_mixed_two_plus_slots_lift",
-    "binding_multislot_all_slots_acc",
-    "binding_multislot_auc_lift",
-    "binding_multislot_status",
-    "binding_multislot_elapsed_ms",
-    # AR curriculum probe — replaces ar_intermediate as the differentiation
-    # signal. Headline = ar_curriculum_auc_pair_final and ar_curriculum_s0_retention.
-    "ar_curriculum_metric_version",
-    "ar_curriculum_auc_pair_final",
-    "ar_curriculum_auc_class_final",
-    "ar_curriculum_s0_held_pair_acc",
-    "ar_curriculum_s0_retention",
-    "ar_curriculum_max_passing_stage",
-    "ar_curriculum_per_stage_held_pair_acc",
-    "ar_curriculum_per_stage_held_class_acc",
-    "ar_curriculum_per_stage_lift_pair",
-    "ar_curriculum_per_stage_z_score_pair",
-    "ar_curriculum_per_stage_chance_pair",
-    "ar_curriculum_learning_curve_json",
-    "ar_curriculum_steps_trained",
-    "ar_curriculum_n_eval_examples",
-    "ar_curriculum_mode",
-    "ar_curriculum_elapsed_ms",
-    "ar_curriculum_status",
-    "ar_curriculum_error",
-)
-
 _PROGRAM_RESULT_UPSERT_SELECT = (
     "SELECT result_id, novelty_confidence, loss_ratio, param_count, flops_forward, "
     "throughput_tok_s, peak_memory_mb, forward_time_ms, graph_json, graph_fingerprint, "
     "result_cohort, trust_label, comparability_label, evaluation_protocol_version, "
     "data_provenance_json "
     "FROM program_results_compat "
+)
+
+_LEADERBOARD_BASE_SELECT = (
+    "SELECT l.*, pr.graph_json AS _graph_json, "
+    "pr.routing_mode AS _routing_mode, "
+    "pr.graph_fingerprint AS _graph_fingerprint, "
+    "pr.arch_spec_json AS _arch_spec_json, "
+    "pr.param_count AS _param_count, "
+    "pr.graph_n_params_estimate AS _graph_n_params_estimate, "
+    "pr.novelty_confidence AS _novelty_confidence, "
+    "pr.novelty_valid_for_promotion AS novelty_valid_for_promotion, "
+    "pr.novelty_validity_reason AS novelty_validity_reason, "
+    "pr.cka_source AS _cka_source, "
+    "pr.stage0_passed AS stage0_passed, "
+    "pr.stage1_passed AS stage1_passed, "
+    "pr.routing_confidence_mean AS _routing_confidence_mean, "
+    "pr.fp_jacobian_spectral_norm AS jacobian_spectral_norm, "
+    "pr.fp_jacobian_effective_rank AS fp_jacobian_effective_rank, "
+    "pr.fp_sensitivity_uniformity AS fp_sensitivity_uniformity, "
+    "pr.fp_jacobian_erf_density AS fp_jacobian_erf_density, "
+    "pr.fp_id_collapse_rate AS fp_id_collapse_rate, "
+    "pr.fp_id_collapse_rate_normalized AS fp_id_collapse_rate_normalized, "
+    "pr.fp_jacobian_erf_decay_slope AS fp_jacobian_erf_decay_slope, "
+    "pr.fp_jacobian_erf_first_norm AS fp_jacobian_erf_first_norm, "
+    "pr.fp_jacobian_erf_last_norm AS fp_jacobian_erf_last_norm, "
+    "pr.fp_logit_margin_velocity AS fp_logit_margin_velocity, "
+    "pr.fp_logit_margin_initial AS fp_logit_margin_initial, "
+    "pr.fp_logit_margin_final AS fp_logit_margin_final, "
+    "pr.fp_logit_margin_delta AS fp_logit_margin_delta, "
+    "pr.fp_jacobian_erf_variance AS fp_jacobian_erf_variance, "
+    "CASE WHEN pr.fp_jacobian_erf_variance IS NOT NULL "
+    "THEN log(abs(pr.fp_jacobian_erf_variance) + 0.000000001) ELSE NULL END AS fp_jacobian_erf_variance_log, "
+    "CASE WHEN pr.fp_jacobian_spectral_norm IS NOT NULL "
+    "THEN log(abs(pr.fp_jacobian_spectral_norm) + 0.000000001) ELSE NULL END AS fp_jacobian_spectral_norm_log, "
+    "pr.fp_icld_velocity AS fp_icld_velocity, "
+    "pr.fp_icld_early_loss AS fp_icld_early_loss, "
+    "pr.fp_icld_late_loss AS fp_icld_late_loss, "
+    "pr.fp_icld_delta_loss AS fp_icld_delta_loss, "
+    "pr.loss_ratio AS loss_ratio, "
+    "pr.discovery_loss AS discovery_loss, "
+    "pr.discovery_loss_ratio AS _pr_discovery_loss_ratio, "
+    "pr.validation_loss AS validation_loss, "
+    "pr.validation_loss_ratio AS _pr_validation_loss_ratio, "
+    "pr.wikitext_perplexity AS _pr_wikitext_perplexity, "
+    "pr.wikitext_score AS _pr_wikitext_score, "
+    "pr.tinystories_perplexity AS _pr_tinystories_perplexity, "
+    "pr.tinystories_score AS _pr_tinystories_score, "
+    "pr.hellaswag_acc AS _pr_hellaswag_acc, "
+    "pr.hellaswag_metric_version AS _pr_hellaswag_metric_version, "
+    "pr.hellaswag_tokenizer_mode AS _pr_hellaswag_tokenizer_mode, "
+    "pr.hellaswag_tiktoken_encoding AS _pr_hellaswag_tiktoken_encoding, "
+    "pr.blimp_overall_accuracy AS _pr_blimp_overall_accuracy, "
+    "pr.blimp_n_subtasks AS _pr_blimp_n_subtasks, "
+    "pr.blimp_status AS _pr_blimp_status, "
+)
+
+_LEADERBOARD_SUFFIX_SELECT = (
+    "pr.language_control_metric_version AS language_control_metric_version, "
+    "pr.language_control_s05_sentence_assoc_score AS language_control_s05_sentence_assoc_score, "
+    "pr.language_control_s05_binding_order_acc AS language_control_s05_binding_order_acc, "
+    "pr.language_control_s05_binding_score AS language_control_s05_binding_score, "
+    "pr.language_control_s10_sentence_assoc_score AS language_control_s10_sentence_assoc_score, "
+    "pr.language_control_s10_binding_order_acc AS language_control_s10_binding_order_acc, "
+    "pr.language_control_s10_binding_score AS language_control_s10_binding_score, "
+    "pr.language_control_investigation_sentence_assoc_score AS language_control_investigation_sentence_assoc_score, "
+    "pr.language_control_investigation_binding_order_acc AS language_control_investigation_binding_order_acc, "
+    "pr.language_control_investigation_binding_score AS language_control_investigation_binding_score, "
+    "pr.screening_wikitext_metric_version AS _pr_screening_wikitext_metric_version, "
+    "pr.tokenizer_mode AS _pr_tokenizer_mode, "
+    "pr.corpus_path AS _pr_corpus_path, "
+    "pr.evaluation_protocol_version AS _pr_evaluation_protocol_version, "
+    "pr.generalization_gap AS generalization_gap, "
+    "pr.novelty_score AS novelty_score, "
+    "pr.final_loss AS final_loss, "
+    "pr.throughput_tok_s AS throughput_tok_s, "
+    "pr.peak_memory_mb AS peak_memory_mb, "
+    "pr.loss_improvement_rate AS loss_improvement_rate, "
+    "pr.forward_time_ms AS forward_time_ms, "
+    "pr.flops_forward AS flops_forward, "
+    "pr.flops_per_param AS flops_per_param, "
+    "pr.sparsity_ratio AS sparsity_ratio, "
+    "pr.baseline_loss_ratio AS baseline_loss_ratio, "
+    "pr.routing_utilization_entropy AS routing_utilization_entropy, "
+    "pr.routing_drop_rate AS routing_drop_rate, "
+    "pr.routing_confidence_std AS routing_confidence_std, "
+    "pr.routing_tokens_total AS routing_tokens_total, "
+    "pr.routing_tokens_processed AS routing_tokens_processed, "
+    "pr.routing_capacity_overflow_count AS routing_capacity_overflow_count, "
+    "pr.depth_savings_ratio AS depth_savings_ratio, "
+    "pr.effective_depth_ratio AS effective_depth_ratio, "
+    "pr.recursion_savings_ratio AS recursion_savings_ratio, "
+    "pr.recursion_depth_ratio AS recursion_depth_ratio, "
+    "pr.activation_sparsity_score AS activation_sparsity_score, "
+    "pr.routing_expert_count AS routing_expert_count, "
+    "pr.routing_confidence_mean AS routing_confidence_mean, "
+    "pr.max_viable_seq_len AS max_viable_seq_len, "
+    "pr.robustness_long_ctx_scaling_score AS robustness_long_ctx_scaling_score, "
+    "pr.robustness_long_ctx_assoc_score AS robustness_long_ctx_assoc_score, "
+    "pr.robustness_long_ctx_multi_hop_score AS robustness_long_ctx_multi_hop_score, "
+    "pr.robustness_long_ctx_passkey_score AS robustness_long_ctx_passkey_score, "
+    "pr.external_benchmarks_json AS _external_benchmarks_json, "
+    "pr.efficiency_multiple AS _pr_efficiency_multiple "
+    "FROM leaderboard l "
+    "LEFT JOIN program_results_compat pr ON pr.result_id = l.result_id "
+    "WHERE 1=1"
 )
 
 _FINGERPRINT_METRIC_TO_SCORE_KWARG = {
@@ -962,7 +977,7 @@ class _LeaderboardMixin:
             params.append(val)
         params.append(entry_id)
         self.conn.execute(
-            f"UPDATE leaderboard SET {', '.join(sets)} WHERE entry_id = ?",
+            f"UPDATE leaderboard SET {', '.join(sets)} WHERE entry_id = ?",  # nosec B608
             params,
         )
         return entry_id
@@ -1035,7 +1050,7 @@ class _LeaderboardMixin:
         self._append_insert_fingerprint(cols, vals, pr_row)
         placeholders = ", ".join(["?"] * len(cols))
         self.conn.execute(
-            f"INSERT INTO leaderboard ({', '.join(cols)}) VALUES ({placeholders})",
+            f"INSERT INTO leaderboard ({', '.join(cols)}) VALUES ({placeholders})",  # nosec B608
             vals,
         )
         return entry_id
@@ -1231,17 +1246,9 @@ class _LeaderboardMixin:
                 alias,
             )
 
-        champion_dashboard_select = "".join(
+        dashboard_alias_select = "".join(
             optional_select(column, f"_pr_{column}")
-            for column in _CHAMPION_DASHBOARD_FIELDS
-        )
-        v2_investigation_select = "".join(
-            optional_select(column, f"_pr_{column}")
-            for column in _V2_INVESTIGATION_DASHBOARD_FIELDS
-        )
-        intermediate_screen_select = "".join(
-            optional_select(column, f"_pr_{column}")
-            for column in _INTERMEDIATE_SCREEN_DASHBOARD_FIELDS
+            for column in _PROGRAM_RESULT_DASHBOARD_ALIAS_FIELDS
         )
         ar_gate_select = "".join(
             optional_select(column)
@@ -1257,12 +1264,7 @@ class _LeaderboardMixin:
                 "ar_gate_train_steps_done",
             )
         )
-        return (
-            ar_gate_select
-            + champion_dashboard_select
-            + v2_investigation_select
-            + intermediate_screen_select
-        )
+        return ar_gate_select + dashboard_alias_select
 
     @staticmethod
     def _leaderboard_tier_clause(
@@ -1325,106 +1327,7 @@ class _LeaderboardMixin:
     ) -> tuple[str, List[Any]]:
         dashboard_selects = self._program_result_dashboard_selects()
         query = (
-            "SELECT l.*, pr.graph_json AS _graph_json, "
-            "pr.routing_mode AS _routing_mode, "
-            "pr.graph_fingerprint AS _graph_fingerprint, "
-            "pr.arch_spec_json AS _arch_spec_json, "
-            "pr.param_count AS _param_count, "
-            "pr.graph_n_params_estimate AS _graph_n_params_estimate, "
-            "pr.novelty_confidence AS _novelty_confidence, "
-            "pr.novelty_valid_for_promotion AS novelty_valid_for_promotion, "
-            "pr.novelty_validity_reason AS novelty_validity_reason, "
-            "pr.cka_source AS _cka_source, "
-            "pr.stage0_passed AS stage0_passed, "
-            "pr.stage1_passed AS stage1_passed, "
-            "pr.routing_confidence_mean AS _routing_confidence_mean, "
-            "pr.fp_jacobian_spectral_norm AS jacobian_spectral_norm, "
-            "pr.fp_jacobian_effective_rank AS fp_jacobian_effective_rank, "
-            "pr.fp_sensitivity_uniformity AS fp_sensitivity_uniformity, "
-            "pr.fp_jacobian_erf_density AS fp_jacobian_erf_density, "
-            "pr.fp_id_collapse_rate AS fp_id_collapse_rate, "
-            "pr.fp_id_collapse_rate_normalized AS fp_id_collapse_rate_normalized, "
-            "pr.fp_jacobian_erf_decay_slope AS fp_jacobian_erf_decay_slope, "
-            "pr.fp_jacobian_erf_first_norm AS fp_jacobian_erf_first_norm, "
-            "pr.fp_jacobian_erf_last_norm AS fp_jacobian_erf_last_norm, "
-            "pr.fp_logit_margin_velocity AS fp_logit_margin_velocity, "
-            "pr.fp_logit_margin_initial AS fp_logit_margin_initial, "
-            "pr.fp_logit_margin_final AS fp_logit_margin_final, "
-            "pr.fp_logit_margin_delta AS fp_logit_margin_delta, "
-            "pr.fp_jacobian_erf_variance AS fp_jacobian_erf_variance, "
-            "CASE WHEN pr.fp_jacobian_erf_variance IS NOT NULL "
-            "THEN log(abs(pr.fp_jacobian_erf_variance) + 0.000000001) ELSE NULL END AS fp_jacobian_erf_variance_log, "
-            "CASE WHEN pr.fp_jacobian_spectral_norm IS NOT NULL "
-            "THEN log(abs(pr.fp_jacobian_spectral_norm) + 0.000000001) ELSE NULL END AS fp_jacobian_spectral_norm_log, "
-            "pr.fp_icld_velocity AS fp_icld_velocity, "
-            "pr.fp_icld_early_loss AS fp_icld_early_loss, "
-            "pr.fp_icld_late_loss AS fp_icld_late_loss, "
-            "pr.fp_icld_delta_loss AS fp_icld_delta_loss, "
-            "pr.loss_ratio AS loss_ratio, "
-            "pr.discovery_loss AS discovery_loss, "
-            "pr.discovery_loss_ratio AS _pr_discovery_loss_ratio, "
-            "pr.validation_loss AS validation_loss, "
-            "pr.validation_loss_ratio AS _pr_validation_loss_ratio, "
-            "pr.wikitext_perplexity AS _pr_wikitext_perplexity, "
-            "pr.wikitext_score AS _pr_wikitext_score, "
-            "pr.tinystories_perplexity AS _pr_tinystories_perplexity, "
-            "pr.tinystories_score AS _pr_tinystories_score, "
-            "pr.hellaswag_acc AS _pr_hellaswag_acc, "
-            "pr.hellaswag_metric_version AS _pr_hellaswag_metric_version, "
-            "pr.hellaswag_tokenizer_mode AS _pr_hellaswag_tokenizer_mode, "
-            "pr.hellaswag_tiktoken_encoding AS _pr_hellaswag_tiktoken_encoding, "
-            "pr.blimp_overall_accuracy AS _pr_blimp_overall_accuracy, "
-            "pr.blimp_n_subtasks AS _pr_blimp_n_subtasks, "
-            "pr.blimp_status AS _pr_blimp_status, "
-            f"{dashboard_selects}"
-            "pr.language_control_metric_version AS language_control_metric_version, "
-            "pr.language_control_s05_sentence_assoc_score AS language_control_s05_sentence_assoc_score, "
-            "pr.language_control_s05_binding_order_acc AS language_control_s05_binding_order_acc, "
-            "pr.language_control_s05_binding_score AS language_control_s05_binding_score, "
-            "pr.language_control_s10_sentence_assoc_score AS language_control_s10_sentence_assoc_score, "
-            "pr.language_control_s10_binding_order_acc AS language_control_s10_binding_order_acc, "
-            "pr.language_control_s10_binding_score AS language_control_s10_binding_score, "
-            "pr.language_control_investigation_sentence_assoc_score AS language_control_investigation_sentence_assoc_score, "
-            "pr.language_control_investigation_binding_order_acc AS language_control_investigation_binding_order_acc, "
-            "pr.language_control_investigation_binding_score AS language_control_investigation_binding_score, "
-            "pr.screening_wikitext_metric_version AS _pr_screening_wikitext_metric_version, "
-            "pr.tokenizer_mode AS _pr_tokenizer_mode, "
-            "pr.corpus_path AS _pr_corpus_path, "
-            "pr.evaluation_protocol_version AS _pr_evaluation_protocol_version, "
-            "pr.generalization_gap AS generalization_gap, "
-            "pr.novelty_score AS novelty_score, "
-            "pr.final_loss AS final_loss, "
-            "pr.throughput_tok_s AS throughput_tok_s, "
-            "pr.peak_memory_mb AS peak_memory_mb, "
-            "pr.loss_improvement_rate AS loss_improvement_rate, "
-            "pr.forward_time_ms AS forward_time_ms, "
-            "pr.flops_forward AS flops_forward, "
-            "pr.flops_per_param AS flops_per_param, "
-            "pr.sparsity_ratio AS sparsity_ratio, "
-            "pr.baseline_loss_ratio AS baseline_loss_ratio, "
-            "pr.routing_utilization_entropy AS routing_utilization_entropy, "
-            "pr.routing_drop_rate AS routing_drop_rate, "
-            "pr.routing_confidence_std AS routing_confidence_std, "
-            "pr.routing_tokens_total AS routing_tokens_total, "
-            "pr.routing_tokens_processed AS routing_tokens_processed, "
-            "pr.routing_capacity_overflow_count AS routing_capacity_overflow_count, "
-            "pr.depth_savings_ratio AS depth_savings_ratio, "
-            "pr.effective_depth_ratio AS effective_depth_ratio, "
-            "pr.recursion_savings_ratio AS recursion_savings_ratio, "
-            "pr.recursion_depth_ratio AS recursion_depth_ratio, "
-            "pr.activation_sparsity_score AS activation_sparsity_score, "
-            "pr.routing_expert_count AS routing_expert_count, "
-            "pr.routing_confidence_mean AS routing_confidence_mean, "
-            "pr.max_viable_seq_len AS max_viable_seq_len, "
-            "pr.robustness_long_ctx_scaling_score AS robustness_long_ctx_scaling_score, "
-            "pr.robustness_long_ctx_assoc_score AS robustness_long_ctx_assoc_score, "
-            "pr.robustness_long_ctx_multi_hop_score AS robustness_long_ctx_multi_hop_score, "
-            "pr.robustness_long_ctx_passkey_score AS robustness_long_ctx_passkey_score, "
-            "pr.external_benchmarks_json AS _external_benchmarks_json, "
-            "pr.efficiency_multiple AS _pr_efficiency_multiple "
-            "FROM leaderboard l "
-            "LEFT JOIN program_results_compat pr ON pr.result_id = l.result_id "
-            "WHERE 1=1"
+            _LEADERBOARD_BASE_SELECT + dashboard_selects + _LEADERBOARD_SUFFIX_SELECT
         )
         params: List[Any] = []
         if trusted_only:
@@ -1530,11 +1433,7 @@ class _LeaderboardMixin:
 
     @staticmethod
     def _backfill_dashboard_aliases(d: Dict[str, Any]) -> None:
-        for col in (
-            *_CHAMPION_DASHBOARD_FIELDS,
-            *_V2_INVESTIGATION_DASHBOARD_FIELDS,
-            *_INTERMEDIATE_SCREEN_DASHBOARD_FIELDS,
-        ):
+        for col in _PROGRAM_RESULT_DASHBOARD_ALIAS_FIELDS:
             pr_key = f"_pr_{col}"
             if d.get(col) is None and d.get(pr_key) is not None:
                 d[col] = d.get(pr_key)
@@ -1580,11 +1479,7 @@ class _LeaderboardMixin:
             "_pr_efficiency_multiple",
         ):
             d.pop(field, None)
-        for col in (
-            *_CHAMPION_DASHBOARD_FIELDS,
-            *_V2_INVESTIGATION_DASHBOARD_FIELDS,
-            *_INTERMEDIATE_SCREEN_DASHBOARD_FIELDS,
-        ):
+        for col in _PROGRAM_RESULT_DASHBOARD_ALIAS_FIELDS:
             d.pop(f"_pr_{col}", None)
 
     def _parse_leaderboard_entry_details(self, d: Dict[str, Any]) -> None:
@@ -1891,7 +1786,7 @@ class _LeaderboardMixin:
         )
 
         return self.conn.execute(
-            f"SELECT {_PR_SELECT_COLS}, data_provenance_json, trust_label, comparability_label "
+            f"SELECT {_PR_SELECT_COLS}, data_provenance_json, trust_label, comparability_label "  # nosec B608
             "FROM program_results_compat WHERE result_id = ?",
             (result_id,),
         ).fetchone()
@@ -2006,7 +1901,7 @@ class _LeaderboardMixin:
             entry_id=entry_id,
         )
         self.conn.execute(
-            f"UPDATE leaderboard SET {', '.join(sets)} WHERE entry_id = ?",
+            f"UPDATE leaderboard SET {', '.join(sets)} WHERE entry_id = ?",  # nosec B608
             params,
         )
         self._sync_promoted_entry_fingerprint(entry_id)

@@ -8,7 +8,6 @@ candidate rules. It does not mutate the notebook, scoring, gates, or grammar.
 from __future__ import annotations
 
 import argparse
-import csv
 import json
 import math
 import sqlite3
@@ -18,6 +17,8 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from research.meta_analysis.metadata_db import DEFAULT_META_ANALYSIS_DB
+from research.tools.meta_report_helpers import markdown_table as _md_table
+from research.tools.meta_report_helpers import write_csv
 
 
 DEFAULT_REPORT_DIR = Path("research/reports")
@@ -490,33 +491,6 @@ def _median(values: Iterable[float | None]) -> float:
     if len(clean) % 2:
         return clean[mid]
     return (clean[mid - 1] + clean[mid]) / 2.0
-
-
-def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
-    if not rows:
-        path.write_text("")
-        return
-    with path.open("w", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=list(rows[0].keys()))
-        writer.writeheader()
-        writer.writerows(rows)
-
-
-def _md_table(
-    rows: list[dict[str, Any]], fields: list[str], *, limit: int
-) -> list[str]:
-    if not rows:
-        return ["_No rows._", ""]
-    lines = [
-        "| " + " | ".join(fields) + " |",
-        "| " + " | ".join("---" for _ in fields) + " |",
-    ]
-    for row in rows[:limit]:
-        lines.append(
-            "| " + " | ".join(str(row.get(field, "")) for field in fields) + " |"
-        )
-    lines.append("")
-    return lines
 
 
 def write_markdown(path: Path, payload: dict[str, Any]) -> None:
