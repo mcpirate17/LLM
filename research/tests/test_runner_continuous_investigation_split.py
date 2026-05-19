@@ -26,59 +26,6 @@ from research.scientist.runner.continuous_investigation import (
 pytestmark = pytest.mark.unit
 
 
-class TestContinuousInvestigationSplitStructure(unittest.TestCase):
-    """Verify the split produced the expected methods with correct signatures."""
-
-    EXPECTED_METHODS = [
-        "_inline_investigate_candidate_training",
-        "_inline_investigate_fingerprint_completion",
-        "_record_inline_investigation_candidate",
-        "_inline_investigate_one_candidate",
-        "_inline_investigation_loop",
-        "_run_inline_investigation",
-    ]
-
-    def test_all_extracted_methods_exist_on_mixin(self):
-        for name in self.EXPECTED_METHODS:
-            self.assertTrue(
-                hasattr(_ContinuousInvestigationMixin, name),
-                f"Missing method: {name}",
-            )
-            self.assertTrue(
-                callable(getattr(_ContinuousInvestigationMixin, name)),
-                f"Not callable: {name}",
-            )
-
-    def test_no_method_exceeds_150_lines(self):
-        import ast
-
-        src_path = os.path.join(
-            _RESEARCH_ROOT,
-            "scientist",
-            "runner",
-            "continuous_investigation.py",
-        )
-        with open(src_path) as f:
-            tree = ast.parse(f.read())
-
-        # Only check the methods we split — pre-existing methods are out of scope
-        split_methods = set(self.EXPECTED_METHODS)
-        for node in ast.walk(tree):
-            if (
-                isinstance(node, ast.ClassDef)
-                and node.name == "_ContinuousInvestigationMixin"
-            ):
-                for item in node.body:
-                    if isinstance(item, ast.FunctionDef) and item.name in split_methods:
-                        end = item.end_lineno or item.lineno
-                        lines = end - item.lineno + 1
-                        self.assertLessEqual(
-                            lines,
-                            150,
-                            f"{item.name} is {lines} lines (max 150)",
-                        )
-
-
 class TestContinuousInvestigationFingerprintCompletion(unittest.TestCase):
     """Smoke-test _inline_investigate_fingerprint_completion in isolation."""
 

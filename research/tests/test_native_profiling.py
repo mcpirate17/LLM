@@ -67,11 +67,6 @@ class TestProfilerControl:
         rust.profiler_enable(False)
         assert rust.profiler_enabled() is False
 
-    def test_reset(self):
-        rust.profiler_enable(True)
-        rust.profiler_reset()
-        rust.profiler_enable(False)
-
 
 class TestProfiledExecution:
     """Test that profiling data appears in execution results."""

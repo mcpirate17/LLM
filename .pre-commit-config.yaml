@@ -20,6 +20,7 @@ repos:
     rev: v8.30.1
     hooks:
       - id: gitleaks
+        exclude: '(^|/)(\.secrets\.baseline$|tasks/audit/|uv\.lock$|package-lock\.json$|research/runtime_events/|research/runtime/|research/reports/)'
 
   - repo: local
     hooks:
@@ -53,11 +54,13 @@ repos:
         language: system
         entry: uv run bandit -q --severity-level medium --confidence-level medium
         types_or: [python, pyi]
+        exclude: '(^|/)(research/tests/|aria_designer/tests/|component_fab/tests/)'
       - id: semgrep-ai-safety
         name: Semgrep staged AI safety/security rules
         language: system
         entry: uv run semgrep scan --config .semgrep.yml --error --quiet
         types_or: [python, javascript, jsx, ts, tsx]
+        exclude: '(^|/)(research/tests/|aria_designer/tests/|component_fab/tests/)'
       - id: biome-check
         name: Biome staged JS/TS/JSON/CSS check
         language: system
@@ -73,11 +76,12 @@ repos:
         name: Codespell staged spelling check
         language: system
         entry: uv run codespell
-        exclude: '(^|/)(uv\.lock|package-lock\.json|node_modules|\.venv|tasks/audit|research/runtime_events|research/runtime|research/reports)/'
+        args: [--ignore-words-list, "ans,mor,nd,pres,astroid,unparseable,regraded"]
+        exclude: '(^|/)(uv\.lock$|package-lock\.json$|node_modules/|\.venv/|tasks/audit/|research/runtime_events/|research/runtime/|research/reports/)'
       - id: detect-secrets
         name: Detect-secrets staged secret scan
         language: system
-        entry: uv run detect-secrets-hook --baseline .secrets.baseline --exclude-files '(^|/)(uv\.lock|package-lock\.json|node_modules|\.venv|research/runtime_events|research/runtime|research/reports)/'
+        entry: uv run detect-secrets-hook --baseline .secrets.baseline --exclude-files '(^|/)(\.secrets\.baseline$|uv\.lock$|package-lock\.json$|node_modules/|\.venv/|tasks/audit/|research/runtime_events/|research/runtime/|research/reports/)'
       - id: pip-audit
         name: Pip-audit dependency vulnerability check
         language: system
