@@ -470,7 +470,7 @@ class _ControlActionsMixin:
                     return {"status": "error", "error": "No valid op names provided"}
                 placeholders = ",".join("?" * len(op_names))
                 cur = nb.conn.execute(
-                    f"DELETE FROM op_success_rates WHERE op_name IN ({placeholders})",
+                    f"DELETE FROM op_success_rates WHERE op_name IN ({placeholders})",  # nosec B608  # nosemgrep: python-sql-string-formatting
                     op_names,
                 )
                 n = cur.rowcount

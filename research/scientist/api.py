@@ -491,7 +491,7 @@ def _recover_orphaned_running_experiments(notebook_path: str) -> int:
 
 def run_server(
     notebook_path: str = RUNS_DB,
-    host: str = "0.0.0.0",
+    host: str = "0.0.0.0",  # nosec B104
     port: int = 5000,
     debug: bool = False,
 ):

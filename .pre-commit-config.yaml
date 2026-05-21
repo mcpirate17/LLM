@@ -85,7 +85,10 @@ repos:
       - id: pip-audit
         name: Pip-audit dependency vulnerability check
         language: system
-        entry: uv run pip-audit --progress-spinner off
+        # PYSEC-2024-271 (flask-cors) and PYSEC-2025-183 (pyjwt): both at latest
+        # upstream version with no published fix as of 2026-05-21. Re-audit and
+        # drop these when upstream patches land.
+        entry: uv run pip-audit --progress-spinner off --ignore-vuln PYSEC-2024-271 --ignore-vuln PYSEC-2025-183
         pass_filenames: false
       - id: protected-data-deletes
         name: Block protected research data deletes

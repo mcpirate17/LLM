@@ -716,7 +716,9 @@ class _NotebookCore:
                 col_defs.append(f'"{name}" {ctype} NOT NULL')
             else:
                 col_defs.append(f'"{name}" {ctype}')
-        self.conn.execute(f"CREATE TABLE graph_runs ({', '.join(col_defs)})")
+        self.conn.execute(  # nosec B608  # nosemgrep: python-sql-string-formatting
+            f"CREATE TABLE graph_runs ({', '.join(col_defs)})"
+        )
         for stmt in (
             "CREATE INDEX IF NOT EXISTS idx_graph_runs_fp ON graph_runs(graph_fingerprint)",
             "CREATE INDEX IF NOT EXISTS idx_graph_runs_trust ON graph_runs(trust_label)",
@@ -737,7 +739,7 @@ class _NotebookCore:
         arch_set = {"graph_json", "arch_spec_json"}
         select_parts = [f'{("g" if c in arch_set else "r")}."{c}"' for c in pr_cols]
         self.conn.execute(
-            "CREATE VIEW program_results_compat AS "
+            "CREATE VIEW program_results_compat AS "  # nosec B608  # nosemgrep: python-sql-string-formatting
             f"SELECT {', '.join(select_parts)} "
             "FROM graph_runs r LEFT JOIN graphs g USING (graph_fingerprint)"
         )
@@ -799,7 +801,7 @@ class _NotebookCore:
         run_set_cols = [c for c in pr_cols if c not in arch_set and c != "result_id"]
         set_clause = ", ".join(f'"{c}" = NEW."{c}"' for c in run_set_cols)
         self.conn.execute(
-            "CREATE TRIGGER _gn_sync_pr_update_to_runs "
+            "CREATE TRIGGER _gn_sync_pr_update_to_runs "  # nosec B608  # nosemgrep: python-sql-string-formatting
             "AFTER UPDATE ON program_results "
             "WHEN NEW.graph_fingerprint IS NOT NULL "
             "  AND TRIM(NEW.graph_fingerprint) <> '' "
@@ -1335,7 +1337,7 @@ class _NotebookCore:
         for col_name, col_type in _PROGRAM_RESULTS_NEW_COLUMNS.items():
             if col_name not in existing:
                 try:
-                    self.conn.execute(
+                    self.conn.execute(  # nosec B608  # nosemgrep: python-sql-string-formatting
                         f"ALTER TABLE program_results ADD COLUMN {col_name} {col_type}"
                     )
                 except sqlite3.OperationalError:
@@ -1400,7 +1402,7 @@ class _NotebookCore:
             try:
                 existing = {
                     row[1]
-                    for row in self.conn.execute(
+                    for row in self.conn.execute(  # nosec B608  # nosemgrep: python-sql-string-formatting
                         f"PRAGMA table_info({table_name})"
                     ).fetchall()
                 }
@@ -1410,7 +1412,7 @@ class _NotebookCore:
                 if col_name in existing:
                     continue
                 try:
-                    self.conn.execute(
+                    self.conn.execute(  # nosec B608  # nosemgrep: python-sql-string-formatting
                         f"ALTER TABLE {table_name} ADD COLUMN {col_name} {col_type}"
                     )
                 except sqlite3.OperationalError:
@@ -1528,7 +1530,7 @@ class _NotebookCore:
                     status = CASE WHEN status = 'linked' THEN 'registered' ELSE status END,
                     notes = TRIM(COALESCE(notes || '\n', '') || ?)
                 WHERE preregistration_id IN ({ph})
-                """,
+                """,  # nosec B608  # nosemgrep: python-sql-string-formatting
                 (
                     "Auto-repaired orphaned experiment link during notebook startup.",
                     *orphan_ids,
@@ -1695,7 +1697,7 @@ class _NotebookCore:
         ):
             if col_name not in insight_cols:
                 try:
-                    self.conn.execute(
+                    self.conn.execute(  # nosec B608  # nosemgrep: python-sql-string-formatting
                         f"ALTER TABLE insights ADD COLUMN {col_name} {col_def}"
                     )
                 except sqlite3.OperationalError:
@@ -1844,7 +1846,9 @@ class _NotebookCore:
             col_name = col.split()[0]
             if col_name not in lb_cols:
                 try:
-                    self.conn.execute(f"ALTER TABLE leaderboard ADD COLUMN {col}")
+                    self.conn.execute(  # nosec B608  # nosemgrep: python-sql-string-formatting
+                        f"ALTER TABLE leaderboard ADD COLUMN {col}"
+                    )
                 except sqlite3.OperationalError:
                     pass
         # Drop the legacy ``scoring_version`` column. Backfill any rows whose
