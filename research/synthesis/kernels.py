@@ -70,30 +70,27 @@ def triton_block_sparse_linear(
 
     grid = (triton.cdiv(M, BLOCK_SIZE_M), triton.cdiv(N, BLOCK_SIZE_N))
 
-    try:
-        _block_sparse_linear_kernel[grid](
-            x_2d,
-            weight,
-            y_2d,
-            block_mask,
-            M,
-            N,
-            K,
-            x_2d.stride(0),
-            x_2d.stride(1),
-            weight.stride(0),
-            weight.stride(1),
-            y_2d.stride(0),
-            y_2d.stride(1),
-            block_mask.stride(0),
-            block_mask.stride(1),
-            BLOCK_SIZE_M=BLOCK_SIZE_M,
-            BLOCK_SIZE_N=BLOCK_SIZE_N,
-            BLOCK_SIZE_K=BLOCK_SIZE_K,
-        )
-        return y_2d.reshape(*x_shape[:-1], N)
-    except Exception:
-        return _safe_linear_fallback(x, weight * mask)
+    _block_sparse_linear_kernel[grid](
+        x_2d,
+        weight,
+        y_2d,
+        block_mask,
+        M,
+        N,
+        K,
+        x_2d.stride(0),
+        x_2d.stride(1),
+        weight.stride(0),
+        weight.stride(1),
+        y_2d.stride(0),
+        y_2d.stride(1),
+        block_mask.stride(0),
+        block_mask.stride(1),
+        BLOCK_SIZE_M=BLOCK_SIZE_M,
+        BLOCK_SIZE_N=BLOCK_SIZE_N,
+        BLOCK_SIZE_K=BLOCK_SIZE_K,
+    )
+    return y_2d.reshape(*x_shape[:-1], N)
 
 
 @triton.jit
@@ -770,10 +767,19 @@ def _tropical_matmul_kernel(
             other=float("inf"),
         )
 
-        a_ex = tl.expand_dims(a, 1)  # (BLOCK_M, 1, BLOCK_K)
-        b_ex = tl.expand_dims(b, 0)  # (1, BLOCK_N, BLOCK_K)
+        # b is loaded as (BLOCK_K, BLOCK_N) with values b_t[n, k] — transpose so
+        # we can broadcast on the (M, N, K) accumulator. Without the trans the
+        # broadcast errors with "incompatible dimensions at index 2" whenever
+        # BLOCK_K != BLOCK_N (silently wrong when they're equal, since the min
+        # would then reduce over the wrong axis). The runtime try/except in
+        # mathspaces.tropical.tropical_matmul masked this bug until torch.compile
+        # started surfacing it at trace time (2026-05-20).
+        b_t_inner = tl.trans(b)  # (BLOCK_N, BLOCK_K), b_t_inner[n, k] = b_t[n, k]
 
-        val = a_ex + b_ex
+        a_ex = tl.expand_dims(a, 1)  # (BLOCK_M, 1, BLOCK_K)
+        b_ex = tl.expand_dims(b_t_inner, 0)  # (1, BLOCK_N, BLOCK_K)
+
+        val = a_ex + b_ex  # (BLOCK_M, BLOCK_N, BLOCK_K)
         min_val = tl.min(val, axis=2)  # (BLOCK_M, BLOCK_N)
         accumulator = tl.minimum(accumulator, min_val)
 

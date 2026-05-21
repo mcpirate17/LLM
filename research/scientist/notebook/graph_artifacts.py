@@ -6,7 +6,11 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-from .artifact_store import NotebookArtifactStore, parse_artifact_pointer
+from .artifact_store import (
+    ARTIFACT_POINTER_KEY,
+    NotebookArtifactStore,
+    parse_artifact_pointer,
+)
 
 
 def is_nonempty_graph_json(value: Any) -> bool:
@@ -24,29 +28,24 @@ def resolve_graph_json_value(
     value: Any,
 ) -> str:
     pointer = parse_artifact_pointer(value)
-    if not pointer:
+    if pointer is None:
         if value is None:
             return ""
         return value.decode("utf-8") if isinstance(value, bytes) else str(value)
 
-    artifact_id = str(pointer.get("_notebook_artifact") or "")
-    metadata: dict[str, Any] | None = None
-    if artifact_id:
-        try:
-            row = conn.execute(
-                "SELECT * FROM notebook_artifacts WHERE artifact_id = ?",
-                (artifact_id,),
-            ).fetchone()
-        except sqlite3.OperationalError:
-            row = None
-        if row is not None:
-            metadata = dict(row)
-    if metadata is None and pointer.get("path"):
+    artifact_id = pointer[ARTIFACT_POINTER_KEY]
+    row = conn.execute(
+        "SELECT * FROM notebook_artifacts WHERE artifact_id = ?",
+        (artifact_id,),
+    ).fetchone()
+    if row is not None:
+        metadata: dict[str, Any] = dict(row)
+    elif pointer.get("path"):
         metadata = {
             "artifact_id": artifact_id,
             "path": pointer["path"],
             "compression": pointer.get("compression") or "zstd",
         }
-    if metadata is None:
+    else:
         raise ValueError(f"graph artifact metadata not found: {artifact_id}")
     return NotebookArtifactStore(db_path).read_bytes(metadata).decode("utf-8")

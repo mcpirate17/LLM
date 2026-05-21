@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from types import SimpleNamespace
 from typing import Optional
 
 import torch
@@ -22,6 +23,10 @@ try:
 except ImportError:
     aria_core = None
     HAS_ARIA_CORE = False
+if aria_core is None:
+    # Keep compiler_ops_* monkeypatch targets addressable in CPU fallback tests.
+    # Native dispatch is still gated exclusively by HAS_ARIA_CORE.
+    aria_core = SimpleNamespace()
 
 # Shared kernel fallback state for split op modules.
 # compiler.py maintains its own copy; this one covers the compiler_ops_*.py files.
@@ -431,14 +436,23 @@ def _get_stacked_params(
 ) -> torch.Tensor:
     """Stack n ParameterList entries into a single tensor, cached by dtype.
 
-    Avoids re-creating the stacked tensor on every forward pass. Cache is
-    invalidated when dtype changes (e.g. during autocast transitions).
+    Cache only when not training: in train mode the cached stacked tensor (a)
+    pins the first forward's autograd graph, so the second backward through it
+    raises "Trying to backward through the graph a second time", and (b) is
+    stale anyway because the underlying params update every optimizer step.
+    Recompute every forward in train mode; cache freely in eval/inference.
     """
-    cache_key = f"_stacked_{attr_name}_{dtype}"
+    params = getattr(module, attr_name)
+    if module.training:
+        return torch.stack([params[i].to(dtype) for i in range(n)])
+    # ``str(torch.bfloat16)`` is ``"torch.bfloat16"``; the dot in the attribute
+    # name trips ``torch._dynamo.source.AttrSource`` which asserts no '.' in
+    # member names. Strip the prefix so the cache key stays dynamo-traceable.
+    dtype_tag = str(dtype).rsplit(".", 1)[-1]
+    cache_key = f"_stacked_{attr_name}_{dtype_tag}"
     cached = getattr(module, cache_key, None)
     if cached is not None and not _is_inference_tensor(cached):
         return cached
-    params = getattr(module, attr_name)
     stacked = torch.stack([params[i].to(dtype) for i in range(n)])
     if not torch.is_inference_mode_enabled():
         object.__setattr__(module, cache_key, stacked)

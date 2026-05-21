@@ -24,7 +24,6 @@ than Python corpus assembly.
 
 from __future__ import annotations
 
-import copy
 import json
 import time
 from dataclasses import dataclass, field
@@ -43,7 +42,7 @@ from ._kv_pair import (
     run_kv_probe_training_loop,
     train_kv_one_batch,
 )
-from ._probe_utils import _materialize_non_inference_
+from ._probe_utils import safe_deepcopy_module
 from .associative_recall import _get_special_tokens
 from .utils import make_adamw, model_vocab_size
 
@@ -235,8 +234,9 @@ def _run_integer_ar_validation(
     t0 = time.perf_counter()
     dev = torch.device(device)
     try:
-        probe_model = copy.deepcopy(model).to(dev) if cfg.copy_model else model.to(dev)
-        _materialize_non_inference_(probe_model)
+        probe_model = (
+            safe_deepcopy_module(model).to(dev) if cfg.copy_model else model.to(dev)
+        )
     except Exception as exc:  # noqa: BLE001
         return _err_result(t0, "copy_failed", str(exc))
 
@@ -345,8 +345,9 @@ def _run_story_micro_champion(
     t0 = time.perf_counter()
     dev = torch.device(device)
     try:
-        probe_model = copy.deepcopy(model).to(dev) if cfg.copy_model else model.to(dev)
-        _materialize_non_inference_(probe_model)
+        probe_model = (
+            safe_deepcopy_module(model).to(dev) if cfg.copy_model else model.to(dev)
+        )
     except Exception as exc:  # noqa: BLE001
         return _err_result(t0, "copy_failed", str(exc))
 

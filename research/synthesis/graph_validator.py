@@ -26,11 +26,11 @@ from .dim_flow_support import build_dim_flow_inputs, ensure_dim_flow_flags
 from .graph import ComputationGraph
 from .native_analysis import (
     analyze_ir_runtime_first,
-    summarize_dim_flow_in_python,
+    summarize_dim_flow,
     validate_edges,
     validate_packed_ir_natively,
 )
-from .native_dim_flow import dead_parameterized_mask_in_python
+from .native_dim_flow import dead_parameterized_mask as compute_dead_parameterized_mask
 from .primitives import PRIMITIVE_REGISTRY
 
 
@@ -253,7 +253,7 @@ def validate_dim_flow(
         if input_node_id is not None and input_node_id in node_id_to_analysis_idx:
             summary_reachable_mask[node_id_to_analysis_idx[input_node_id]] = 0
 
-        summary = summarize_dim_flow_in_python(
+        summary = summarize_dim_flow(
             reachable_mask=summary_reachable_mask,
             has_params_flags=dim_flow_inputs.has_params_flags,
             param_estimates=dim_flow_inputs.param_estimates,
@@ -336,7 +336,7 @@ def validate_dim_flow(
 
     # ── 3. Dead parameterized nodes (unreachable learned weights) ─
     if dead_parameterized_mask is None:
-        dead_params = dead_parameterized_mask_in_python(
+        dead_params = compute_dead_parameterized_mask(
             reachable_mask=np.asarray(reachable_mask).astype(np.int32, copy=False),
             parameterized_flags=dim_flow_inputs.has_params_flags,
         )
@@ -398,7 +398,7 @@ def compute_kv_cacheable(graph: ComputationGraph) -> bool:
         input_idx = int(np.where(analysis_node_ids == input_node_id)[0][0])
         summary_reachable_mask[input_idx] = 0
 
-    summary = summarize_dim_flow_in_python(
+    summary = summarize_dim_flow(
         reachable_mask=summary_reachable_mask,
         has_params_flags=np.zeros(analysis_ir.n_nodes(), dtype=np.int32),
         param_estimates=np.zeros(analysis_ir.n_nodes(), dtype=np.int64),

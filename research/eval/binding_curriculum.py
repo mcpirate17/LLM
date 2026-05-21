@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import copy
 import time
 from dataclasses import dataclass
 from typing import Any, Dict
@@ -9,6 +8,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from ._probe_utils import safe_deepcopy_module
 from .utils import clip_grad_norm
 
 CURRICULUM_BINDING_PROTOCOL_VERSION = "copy_curriculum_v1"
@@ -151,7 +151,7 @@ def curriculum_binding_range_profile(
                 torch.cuda.empty_cache()
 
     try:
-        probe_model = copy.deepcopy(model)
+        probe_model = safe_deepcopy_module(model)
         probe_device = _module_primary_device(probe_model)
         if probe_device is None or str(probe_device) != device:
             probe_model.to(device)

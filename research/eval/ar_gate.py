@@ -20,7 +20,6 @@ exact accuracies are stored as audit channels.
 
 from __future__ import annotations
 
-import copy
 import logging
 import time
 from dataclasses import dataclass, field
@@ -40,6 +39,7 @@ from research.eval.ar_gate_corpus import (
     build_corpus,
     query_prompt,
 )
+from research.eval._probe_utils import safe_deepcopy_module
 from research.tools.nano_corpus_v0 import ADJECTIVES
 
 logger = logging.getLogger(__name__)
@@ -378,7 +378,7 @@ def _acquire_probe_model(
 ) -> nn.Module:
     """Deepcopy the live model or compile fresh from graph_json."""
     if model is not None:
-        return copy.deepcopy(model).to(dev)
+        return safe_deepcopy_module(model).to(dev)
     from research.scientist.native_runner import (
         compile_model_native_first as compile_model,
     )

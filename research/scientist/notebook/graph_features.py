@@ -4,6 +4,7 @@ import time
 from functools import lru_cache
 from typing import Any, Dict, List
 
+
 from ..json_utils import fast_dumps as _json_dumps
 from ..json_utils import fast_loads as _json_loads
 from ..native.core import _try_import_rust_scheduler
@@ -25,12 +26,11 @@ def _extract_graph_feature_payload_native(
     rust = _try_import_rust_scheduler()
     if rust is None or not hasattr(rust, "extract_graph_feature_payload"):
         return None
-    try:
-        result = rust.extract_graph_feature_payload(graph_json)
-    except Exception:
-        return None
+    result = rust.extract_graph_feature_payload(graph_json)
     if not isinstance(result, (list, tuple)) or len(result) != 6:
-        return None
+        raise ValueError(
+            f"rust.extract_graph_feature_payload returned malformed result: {type(result).__name__}"
+        )
     (
         template_name,
         op_names,
@@ -150,7 +150,7 @@ def _extract_graph_feature_payload_python(
         return _EMPTY_FEATURE_PAYLOAD
     try:
         graph = _json_loads(graph_json)
-    except Exception:
+    except ValueError:
         return _EMPTY_FEATURE_PAYLOAD
     if not isinstance(graph, dict):
         return _EMPTY_FEATURE_PAYLOAD
@@ -176,12 +176,11 @@ def _extract_graph_feature_payload_python(
 def _first_template_from_json(templates_json: str) -> str:
     if not templates_json or templates_json == _EMPTY_JSON_ARRAY:
         return ""
-    try:
-        names = _json_loads(templates_json)
-    except Exception:
-        return ""
+    names = _json_loads(templates_json)
     if not isinstance(names, list):
-        return ""
+        raise TypeError(
+            f"templates_json must decode to list, got {type(names).__name__}"
+        )
     for candidate in names:
         if isinstance(candidate, str) and candidate.strip():
             return candidate.strip()

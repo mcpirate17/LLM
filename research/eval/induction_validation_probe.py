@@ -10,7 +10,6 @@ scratch, while trained GPT-2/Retrieval controls separate cleanly.
 
 from __future__ import annotations
 
-import copy
 import math
 import time
 from dataclasses import dataclass
@@ -21,7 +20,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from ._probe_runtime import disable_native_probe_dispatch
-from ._probe_utils import _materialize_non_inference_
+from ._probe_utils import safe_deepcopy_module
 from .induction_intermediate_probe import (
     INDUCTION_V2_EVAL_EXAMPLES,
     INDUCTION_V2_SEEDS,
@@ -384,8 +383,7 @@ def _run_induction_validation_median(
 ) -> InductionValidationResult:
     t0 = time.perf_counter()
     try:
-        probe_model = copy.deepcopy(model).to(device)
-        _materialize_non_inference_(probe_model)
+        probe_model = safe_deepcopy_module(model).to(device)
     except Exception as exc:
         return InductionValidationResult(
             status=f"copy_failed: {exc}",

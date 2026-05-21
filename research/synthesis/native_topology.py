@@ -19,7 +19,7 @@ def _try_import_aria_core():
         import aria_core
 
         return aria_core
-    except Exception:
+    except ImportError:
         return None
 
 
@@ -60,17 +60,12 @@ def _topological_order_with_aria_core(graph: "ComputationGraph") -> Optional[Lis
     if aria_core is None or not hasattr(aria_core, "canonical_topo_sort"):
         return None
 
-    try:
-        n_nodes, edges, op_names, config_strs, node_inputs = (
-            _build_canonical_topology_inputs(graph)
-        )
-        order = aria_core.canonical_topo_sort(
-            n_nodes, edges, op_names, config_strs, node_inputs
-        )
-    except Exception as exc:
-        logger.debug("aria_core.canonical_topo_sort failed: %s", exc)
-        return None
-
+    n_nodes, edges, op_names, config_strs, node_inputs = (
+        _build_canonical_topology_inputs(graph)
+    )
+    order = aria_core.canonical_topo_sort(
+        n_nodes, edges, op_names, config_strs, node_inputs
+    )
     return [int(nid) for nid in order if int(nid) in graph.nodes]
 
 
@@ -81,12 +76,7 @@ def _topological_order_with_rust_scheduler(
     if rust is None or not hasattr(rust, "topological_order"):
         return None
 
-    try:
-        order = rust.topological_order(_graph_to_native_ir_json(graph))
-    except Exception as exc:
-        logger.debug("aria_scheduler.topological_order failed: %s", exc)
-        return None
-
+    order = rust.topological_order(_graph_to_native_ir_json(graph))
     return [int(nid) for nid in order if int(nid) in graph.nodes]
 
 

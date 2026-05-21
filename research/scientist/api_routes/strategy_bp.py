@@ -469,9 +469,6 @@ def _register_briefing_routes(app, notebook_path: str, wnb) -> None:
                 if (e.get("experiment_id") or "").startswith(just_completed_id):
                     just_completed_exp = e
                     break
-            aria_inst = get_aria_for_notebook(notebook_path)
-            if hasattr(aria_inst, "_briefing_cache"):
-                aria_inst._briefing_cache = None
 
         # Try LLM-powered briefing first
         aria = get_aria_for_notebook(notebook_path)

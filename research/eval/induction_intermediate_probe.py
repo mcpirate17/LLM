@@ -24,7 +24,6 @@ Performance:
 
 from __future__ import annotations
 
-import copy
 import logging
 import time
 from contextlib import nullcontext
@@ -36,7 +35,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from ._probe_runtime import disable_native_probe_dispatch
-from ._probe_utils import _materialize_non_inference_
+from ._probe_utils import safe_deepcopy_module
 from .utils import clip_grad_norm, make_adamw
 
 logger = logging.getLogger(__name__)
@@ -364,8 +363,7 @@ def _run_induction_intermediate_single_seed(
         generator = torch.Generator(device=device)
         generator.manual_seed(int(seed))
     try:
-        probe_model = copy.deepcopy(model).to(device)
-        _materialize_non_inference_(probe_model)
+        probe_model = safe_deepcopy_module(model).to(device)
     except Exception as exc:
         return InductionV2Result(
             status=f"copy_failed: {exc}",
@@ -411,8 +409,7 @@ def run_induction_intermediate(
     """
     t0 = time.perf_counter()
     try:
-        probe_model = copy.deepcopy(model).to(device)
-        _materialize_non_inference_(probe_model)
+        probe_model = safe_deepcopy_module(model).to(device)
     except Exception as exc:
         return InductionV2Result(
             status=f"copy_failed: {exc}",

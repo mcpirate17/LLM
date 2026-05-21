@@ -79,7 +79,6 @@ class _DashboardOrchestratorMixin:
         program_metrics["train_budget_steps"] = config.stage1_steps
         program_metrics.update(screening_wikitext_fields(train_result))
         program_metrics.update(screening_probe_fields(train_result))
-        program_metrics.update(screening_probe_fields(program_metrics))
         program_metrics.update(
             {k: train_result.get(k) for k in train_result if k.startswith("pruning_")}
         )

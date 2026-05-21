@@ -20,6 +20,7 @@ BLOCK_TEMPLATES: tuple[str, ...] = (
     "hyperbolic_bridge",  # euclidean ↔ Poincaré-ball chart bridging
     "attn_spectral_filter",  # attention composed with spectral filtering
     "graph_attention",  # edge-conditioned attention with learned adjacency
+    "top_ar_block",  # dual-mixer scaffold from fp 7fb0412ec57a1213 (top AR-curriculum scorer)
 )
 
 

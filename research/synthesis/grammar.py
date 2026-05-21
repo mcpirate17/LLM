@@ -892,6 +892,8 @@ def _validate_graph(
     packed_validation: object | None = None,
 ) -> None:
     """Validate a generated graph and raise ValueError if invalid."""
+    # validate_generated_graph enforces REQUIRES_RESIDUAL_CONTEXT_OPS and reports
+    # "no downstream add is reachable" for ops that escape residual recovery.
     validate_generated_graph(
         graph,
         config,

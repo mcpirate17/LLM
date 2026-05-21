@@ -37,17 +37,29 @@ def test_split_token_array_respects_fraction():
 def test_grouped_choice_scores_regroups_flat_scores(monkeypatch):
     captured = {}
 
-    def fake_batched_span_mean_log_probs(
-        model, sequences, starts, *, vocab_size, device
-    ):
-        del model, vocab_size, device
-        captured["sequences"] = [list(seq) for seq in sequences]
-        captured["starts"] = list(starts)
-        return torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32)
+    class _FakeEvalNative:
+        def grouped_choice_scores_packed_native(
+            self,
+            model,
+            packed,
+            offsets,
+            starts,
+            groups,
+            vocab_size,
+            device,
+        ):
+            del model
+            captured["packed"] = packed.tolist()
+            captured["offsets"] = offsets.tolist()
+            captured["starts"] = starts.tolist()
+            captured["groups"] = groups.tolist()
+            captured["vocab_size"] = vocab_size
+            captured["device"] = device
+            return torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32)
 
     monkeypatch.setattr(
-        "research.eval.choice_scoring.batched_span_mean_log_probs",
-        fake_batched_span_mean_log_probs,
+        "research.eval._eval_native.load_eval_native",
+        lambda: _FakeEvalNative(),
     )
 
     scores = grouped_choice_scores(
@@ -64,8 +76,12 @@ def test_grouped_choice_scores_regroups_flat_scores(monkeypatch):
         device="cpu",
     )
 
-    assert captured["sequences"] == [[1, 2], [3], [4, 5, 6]]
+    assert captured["packed"] == [1, 2, 3, 4, 5, 6]
+    assert captured["offsets"] == [0, 2, 3, 6]
     assert captured["starts"] == [0, 1, 2]
+    assert captured["groups"] == [2, 1]
+    assert captured["vocab_size"] == 256
+    assert captured["device"] == "cpu"
     assert scores == [[1.0, 2.0], [3.0]]
 
 

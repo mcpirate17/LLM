@@ -120,6 +120,11 @@ class IRExecutor(nn.Module):
             int(stats.get("fallbacks", 0)),
         )
 
+    # See ir_executor_v2.IRExecutorV2.forward for the rationale: dynamo
+    # specializes on the per-block int attrs (output_node_idx, n_nodes) and
+    # blows the recompile cache when many blocks coexist. Mark the forward as
+    # opaque; leaf ops still run eagerly via cuBLAS/cuDNN.
+    @torch._dynamo.disable
     def forward(
         self, x: torch.Tensor, capture_intermediates: bool = False
     ) -> torch.Tensor | Tuple[torch.Tensor, Dict[int, torch.Tensor]]:

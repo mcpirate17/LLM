@@ -171,5 +171,4 @@ class TestSummarizeAndCheckInfra:
         )
 
         assert ret is not _SKIP_INFRA
-        assert hasattr(ret, "n_passed")
         assert ret.n_passed == 1

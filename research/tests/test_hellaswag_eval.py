@@ -185,8 +185,7 @@ def test_score_example_batch_native_matches_python_for_empty_endings():
     assert native_result == python_result
 
 
-def test_score_example_batch_falls_back_to_python(monkeypatch):
-    model = _NextTokenLM(vocab_size=32, preferred={1: 4})
+def test_score_example_batch_propagates_native_failure(monkeypatch):
     examples = [
         {
             "ctx_tokens": np.array([1], dtype=np.int64),
@@ -199,13 +198,6 @@ def test_score_example_batch_falls_back_to_python(monkeypatch):
             "label": 0,
         }
     ]
-    expected = hellaswag_eval._score_example_batch_python(
-        model,
-        examples,
-        vocab_size=32,
-        device="cpu",
-        max_seq_len=16,
-    )
 
     def _raise_native(*args, **kwargs):
         del args, kwargs
@@ -213,16 +205,14 @@ def test_score_example_batch_falls_back_to_python(monkeypatch):
 
     monkeypatch.setattr(hellaswag_eval, "_score_example_batch_native", _raise_native)
 
-    assert (
+    with pytest.raises(RuntimeError, match="native scorer blew up"):
         hellaswag_eval._score_example_batch(
-            model,
+            object(),
             examples,
             vocab_size=32,
             device="cpu",
             max_seq_len=16,
         )
-        == expected
-    )
 
 
 def test_recommended_batch_examples_caps_cpu_batches():

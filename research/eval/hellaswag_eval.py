@@ -225,32 +225,19 @@ def _score_example_batch(
     device: str,
     max_seq_len: int = 512,
 ) -> tuple[int, int]:
-    """Score a batch of HellaSwag examples using the fastest correct path."""
+    """Score a batch of HellaSwag examples through the native scorer."""
     ctx_tokens = [ex["ctx_tokens"].tolist() for ex in examples]
     ending_tokens = [[t.tolist() for t in ex["ending_tokens"]] for ex in examples]
     labels = [int(ex["label"]) for ex in examples]
-    try:
-        return _score_example_batch_native(
-            model,
-            ctx_tokens,
-            ending_tokens,
-            labels,
-            vocab_size,
-            device,
-            max_seq_len=max_seq_len,
-        )
-    except Exception:
-        logger.warning(
-            "Native HellaSwag scorer failed; falling back to Python reference",
-            exc_info=True,
-        )
-        return _score_example_batch_python(
-            model,
-            examples,
-            vocab_size,
-            device,
-            max_seq_len=max_seq_len,
-        )
+    return _score_example_batch_native(
+        model,
+        ctx_tokens,
+        ending_tokens,
+        labels,
+        vocab_size,
+        device,
+        max_seq_len=max_seq_len,
+    )
 
 
 def _score_example_batch_native(
@@ -285,7 +272,7 @@ def _score_example_batch_python(
     device: str,
     max_seq_len: int = 512,
 ) -> tuple[int, int]:
-    """Reference Python scorer used for parity and native fallback."""
+    """Reference Python scorer used for native parity checks."""
     grouped_sequences: List[List[np.ndarray]] = []
     grouped_starts: List[List[int]] = []
 
@@ -389,21 +376,7 @@ def _score_hellaswag_loop(
             correct += batch_correct
             total += batch_total
             start += effective_batch_examples
-        except Exception:
-            logger.warning(
-                "Native HellaSwag scorer failed; falling back to Python reference",
-                exc_info=True,
-            )
-            try:
-                batch_correct, batch_total = _score_example_batch_python(
-                    model, batch, vocab_size, device, max_seq_len=max_seq_len
-                )
-                correct += batch_correct
-                total += batch_total
-                start += effective_batch_examples
-                continue
-            except Exception as fallback_exc:
-                exc = fallback_exc
+        except Exception as exc:
             if _is_cuda_oom(exc) and effective_batch_examples > 1:
                 oom_retries += 1
                 effective_batch_examples = max(1, effective_batch_examples // 2)
@@ -416,7 +389,7 @@ def _score_hellaswag_loop(
                 continue
             if first_error is None:
                 first_error = f"{type(exc).__name__}: {exc}"
-            logger.debug("HellaSwag batch failed, skipping", exc_info=True)
+            logger.debug("Native HellaSwag batch failed, skipping", exc_info=True)
             start += max(1, effective_batch_examples)
 
     return correct, total, first_error, oom_retries

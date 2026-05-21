@@ -151,13 +151,8 @@ class _ControlActionsMixin:
                 self._event_queue.put_nowait(payload)
         except queue.Full:
             if event_type != "training_step":
-                # Prefer dropping one stale queued event so critical lifecycle
-                # events can still be delivered to the dashboard feed.
-                try:
-                    self._event_queue.get_nowait()
-                    self._event_queue.put_nowait(payload)
-                except Exception as exc:
-                    logger.debug("Suppressed error: %s", exc)
+                self._event_queue.get_nowait()
+                self._event_queue.put_nowait(payload)
         self._persist_live_feed_event(event_type, data)
         self._publish_runtime_lifecycle_event(event_type, data)
         # Buffer training_step events for REST retrieval (dashboard chart restore).

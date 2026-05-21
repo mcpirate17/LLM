@@ -191,19 +191,18 @@ def tropical_matmul(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     """Tropical matrix multiplication.
 
     Instead of sum(a_ik * b_kj), computes min_k(a_ik + b_kj).
-    Dispatch order: Triton (GPU) -> aria_core (CPU) -> memory-efficient torch fallback.
+    Dispatch by device: Triton (CUDA) → aria_core (CPU + no_grad) → torch autograd.
 
     Input: a (B, S, D), b (B, D, S) or (B, S, D)
     Output: (B, S, S) or similar
-    """
-    # GPU fast path: Triton kernel
-    if _HAS_TRITON_KERNELS and a.is_cuda and b.is_cuda:
-        try:
-            return triton_tropical_matmul(a, b)
-        except Exception as e:
-            import logging
 
-            logging.getLogger(__name__).debug("triton_tropical_matmul fallback: %s", e)
+    No exception-swallowing wrapper around the Triton call: a kernel that
+    silently raises and falls back to torch masks real bugs for ages (see
+    [[feedback-no-silent-fallbacks]] — the 2026-05-20 incident where the
+    kernel had been broken since inception and nobody noticed).
+    """
+    if _HAS_TRITON_KERNELS and a.is_cuda and b.is_cuda:
+        return triton_tropical_matmul(a, b)
 
     # CPU fast path: native C kernel (inference only — no autograd support).
     # 2026-05-10 SEGV: aria_core.tropical_matmul_batched_f32 crashed when the

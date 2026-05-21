@@ -322,10 +322,7 @@ def _setup_logging(log_dir: Optional[str] = None):
 
     for handler in list(root.handlers):
         root.removeHandler(handler)
-        try:
-            handler.close()
-        except Exception:
-            pass
+        handler.close()
 
     fmt = logging.Formatter(
         "%(asctime)s %(levelname)-8s [%(name)s] %(message)s",
@@ -389,16 +386,10 @@ def _register_process_lifecycle_logging(
             notebook_path,
         )
         if _FAULT_LOG_STREAM is not None:
-            try:
-                faulthandler.dump_traceback(file=_FAULT_LOG_STREAM, all_threads=True)
-                _FAULT_LOG_STREAM.flush()
-            except Exception:
-                pass
+            faulthandler.dump_traceback(file=_FAULT_LOG_STREAM, all_threads=True)
+            _FAULT_LOG_STREAM.flush()
         for handler in logging.getLogger().handlers:
-            try:
-                handler.flush()
-            except Exception:
-                pass
+            handler.flush()
 
     atexit.register(lambda: _log_exit("atexit"))
 
@@ -406,10 +397,7 @@ def _register_process_lifecycle_logging(
         sig = getattr(signal, sig_name, None)
         if sig is None:
             continue
-        try:
-            prev_handler = signal.getsignal(sig)
-        except Exception:
-            continue
+        prev_handler = signal.getsignal(sig)
 
         def _make_handler(_sig_name, _prev_handler):
             def _handler(signum, frame):
@@ -425,10 +413,7 @@ def _register_process_lifecycle_logging(
 
             return _handler
 
-        try:
-            signal.signal(sig, _make_handler(sig_name, prev_handler))
-        except Exception as exc:
-            logger.debug("Signal handler registration failed for %s: %s", sig_name, exc)
+        signal.signal(sig, _make_handler(sig_name, prev_handler))
 
     _PROCESS_LIFECYCLE_REGISTERED = True
 
@@ -462,10 +447,7 @@ def _recover_orphaned_running_experiments(notebook_path: str) -> int:
         return 0
     finally:
         if nb_ro is not None:
-            try:
-                nb_ro.close()
-            except Exception:
-                pass
+            nb_ro.close()
 
     if not running_ids:
         return 0
@@ -504,10 +486,7 @@ def _recover_orphaned_running_experiments(notebook_path: str) -> int:
         logger.warning("Startup orphaned-run recovery failed: %s", exc, exc_info=True)
         return 0
     finally:
-        try:
-            nb.close()
-        except Exception:
-            pass
+        nb.close()
 
 
 def run_server(

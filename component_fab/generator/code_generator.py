@@ -44,6 +44,7 @@ from .primitive_templates import (
     RandomFeatureKernelLane,
     SparseBandedAdapterLane,
     SparseBandedMatrixLane,
+    SparsemaxAttention,
     SpikingActivationGate,
     SymplecticResidualMixerLane,
     TopKLinear,
@@ -508,6 +509,15 @@ def _dispatch_block_template(
         return AttnSpectralFilterBlock(anchor_factory, dim)
     if template == "graph_attention":
         return GraphAttentionBlock(anchor_factory, dim)
+    if template == "top_ar_block":
+        # 2026-05-19: dual-mixer scaffold from fp 7fb0412ec57a1213 (top
+        # AR-curriculum scorer at 0.9046 / passes all 5 stages).
+        # MIXER_A = anchor (from inner_axes / op_block_inner_template),
+        # MIXER_B = slot_b (default local_window_attn matches the source fp).
+        from component_fab.harness.top_ar_block import TopArchBlock
+
+        slot_b = _block_slot_factory(slot_b_name or "local_window_attn")
+        return TopArchBlock(dim, anchor_factory, slot_b)
     return None
 
 
@@ -516,8 +526,30 @@ def _block_slot_factory(name: str) -> "callable":
     templates to fill non-anchor lane slots. New slot kinds register
     here without touching the templates themselves.
     """
+
+    def _two_lane_ts(d: int) -> nn.Module:
+        return GatedParallelBlock(
+            lambda dd: TropicalAttention(dd),
+            lambda dd: SparsemaxAttention(dd),
+            d,
+        )
+
+    def _three_lane_tsw(d: int) -> nn.Module:
+        return ThreeLaneAdaptive(
+            lambda dd: TropicalAttention(dd),
+            lambda dd: SparsemaxAttention(dd),
+            lambda dd: MultiscaleWaveletLane(dd),
+            d,
+        )
+
+    def _local_window(d: int) -> nn.Module:
+        from component_fab.harness.top_ar_block import LocalWindowAttention
+
+        return LocalWindowAttention(d, window_size=16)
+
     table = {
         "tropical_attention": TropicalAttention,
+        "sparsemax_attention": SparsemaxAttention,
         "clifford_attention": lambda d: (
             CliffordAttention(d) if d % 4 == 0 else nn.Linear(d, d)
         ),
@@ -534,6 +566,12 @@ def _block_slot_factory(name: str) -> "callable":
         "poincare": PoincareAttention,
         "random_features": RandomFeatureKernelLane,
         "low_rank": LowRankFactorizedLane,
+        # Composite fab winners — usable as a slot fill inside ANY block template
+        # so e.g. top_ar_block's MIXER_A slot can be filled with the 2-lane.
+        "tropical_sparsemax_two_lane": _two_lane_ts,
+        "tropical_sparsemax_wavelet_three_lane": _three_lane_tsw,
+        # Top-AR scaffold's MIXER_B default (parameter-free local-window attention).
+        "local_window_attn": _local_window,
     }
     ctor = table.get(name, MultiscaleWaveletLane)
 

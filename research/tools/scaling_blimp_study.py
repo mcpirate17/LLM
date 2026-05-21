@@ -165,6 +165,70 @@ def _build_lane_factory(
 
         return factory
 
+    if name == "tropical_sparsemax_two_lane":
+        # 2026-05-19: 3-lane sublane ablation showed wavelet alone broken
+        # on every structural probe; tropical+sparsemax recover the full
+        # hybrid capability. This composite drops wavelet to test whether
+        # the 2-lane is simpler-and-better.
+        def factory(dim: int) -> nn.Module:
+            def lane_a(d):
+                return TropicalAttention(d)
+
+            def lane_b(d):
+                return SparsemaxAttention(d)
+
+            return GatedParallelBlock(lane_a, lane_b, dim)
+
+        return factory
+
+    if name == "top_ar_block":
+        # 2026-05-19: faithful reproduction of fp 7fb0412ec57a1213 (the
+        # leaderboard-best AR-curriculum scorer at 0.9046, ~13M params, 1000
+        # wikitext steps). Dual mixer with conv1d_seq + swiglu between the
+        # two attentions, 3-way residual to original input.
+        from component_fab.harness.top_ar_block import (
+            TopArchBlock,
+            LocalWindowAttention,
+        )
+
+        def factory(dim: int) -> nn.Module:
+            def mixer_a(d):
+                return TropicalAttention(d)
+
+            def mixer_b(d):
+                return LocalWindowAttention(d, window_size=16)
+
+            return TopArchBlock(dim, mixer_a, mixer_b)
+
+        return factory
+
+    if name == "top_ar_block_with_two_lane":
+        # 2026-05-19: same scaffold as top_ar_block but mixer_a (the
+        # tropical_attention slot) is replaced with our 2-lane composite
+        # (GatedParallelBlock of tropical + sparsemax). Tests whether the
+        # 2-lane is a productive substitution inside the AR-friendly scaffold.
+        from component_fab.harness.top_ar_block import (
+            TopArchBlock,
+            LocalWindowAttention,
+        )
+
+        def factory(dim: int) -> nn.Module:
+            def two_lane(d):
+                def la(dd):
+                    return TropicalAttention(dd)
+
+                def lb(dd):
+                    return SparsemaxAttention(dd)
+
+                return GatedParallelBlock(la, lb, d)
+
+            def mixer_b(d):
+                return LocalWindowAttention(d, window_size=16)
+
+            return TopArchBlock(dim, two_lane, mixer_b)
+
+        return factory
+
     if name == "block_gated_parallel":
 
         def factory(dim: int) -> nn.Module:
@@ -201,6 +265,32 @@ def _build_lane_factory(
             )
 
         return factory
+
+    if name.startswith("ensemble_top_ar_") or name == "ensemble_top_ar_plus_three_lane":
+        # 2026-05-19: parallel-sum ensemble lanes built from the top AR-curriculum
+        # graphs in runs.db. Lazy-import the factory builder to avoid a
+        # module-import-time dependency on sqlite/synthesis paths. Names:
+        #   ensemble_top_ar_Nway (N in 1..4) — equal-weight parallel-sum of top-N
+        #   ensemble_top_ar_plus_three_lane — top-4 graphs sum + ThreeLaneAsBlock
+        # All ensemble lanes have internal norm/FFN/residual via the underlying
+        # graphs — pair with mixer_fingerprint via `--no-ffn` if the TinyLM
+        # outer FFN must be skipped; see [[feedback_rope_or_pe_required]] for
+        # the screening recipe.
+        from research.tools.ensemble_screening import (
+            _load_top_graphs,
+            _make_ensemble_lane_factory,
+            _make_ensemble_plus_three_lane_factory,
+        )
+
+        if name == "ensemble_top_ar_plus_three_lane":
+            specs = _load_top_graphs(4)
+            return _make_ensemble_plus_three_lane_factory(specs)
+        suffix = name[len("ensemble_top_ar_") :]
+        if not suffix.endswith("way"):
+            raise ValueError(f"expected '_Nway' suffix in {name}")
+        n = int(suffix[: -len("way")])
+        specs = _load_top_graphs(n)
+        return _make_ensemble_lane_factory(specs)
 
     raise ValueError(f"unknown lane name: {name}")
 
@@ -351,20 +441,27 @@ class _RandomWindowBatcher:
     ) -> None:
         if int(tokens.numel()) < seq_len + 2:
             raise ValueError("not enough tokens for requested sequence length")
-        self.tokens = tokens.cpu().contiguous()
+        self.device = torch.device(device)
+        self.tokens = tokens.to(self.device).contiguous()
         self.batch_size = int(batch_size)
         self.seq_len = int(seq_len)
-        self.device = torch.device(device)
-        self.generator = torch.Generator().manual_seed(int(seed))
-        self.offsets = torch.arange(self.seq_len, dtype=torch.long).unsqueeze(0)
+        # Sample starts on the same device as tokens — keeps the gather GPU-side
+        # and removes the per-step H2D transfer that dominated old data wait time.
+        self.generator = torch.Generator(device=self.device).manual_seed(int(seed))
+        self.offsets = torch.arange(
+            self.seq_len, dtype=torch.long, device=self.device
+        ).unsqueeze(0)
         self.max_start = int(self.tokens.numel()) - self.seq_len - 1
 
     def next(self) -> torch.Tensor:
         starts = torch.randint(
-            0, self.max_start, (self.batch_size, 1), generator=self.generator
+            0,
+            self.max_start,
+            (self.batch_size, 1),
+            generator=self.generator,
+            device=self.device,
         )
-        batch = self.tokens[starts + self.offsets]
-        return batch.to(self.device, non_blocking=True)
+        return self.tokens[starts + self.offsets]
 
     def fixed_batches(self, n_batches: int) -> list[torch.Tensor]:
         return [self.next() for _ in range(int(n_batches))]

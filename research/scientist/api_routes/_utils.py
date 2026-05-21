@@ -121,7 +121,7 @@ def _db_error_response(exc: sqlite3.DatabaseError, phase: str):
         exc,
         exc_info=True,
     )
-    return jsonify({"error": str(exc)}), 500
+    return jsonify({"error": "Database error"}), 500
 
 
 def with_notebook_context(notebook_path: str, *, read_only: bool | None = None):
@@ -147,7 +147,7 @@ def with_notebook_context(notebook_path: str, *, read_only: bool | None = None):
                 return _db_error_response(e, "")
             except Exception as e:
                 logger.error("Error in %s: %s", request.path, e, exc_info=True)
-                return jsonify({"error": str(e)}), 500
+                return jsonify({"error": "Internal server error"}), 500
             finally:
                 if nb is not None:
                     with suppress(Exception):

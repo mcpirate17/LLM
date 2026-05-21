@@ -724,23 +724,9 @@ def _native_proactive_gating(graph) -> Dict[str, Any]:
 
 
 def _native_runner_progress_report() -> Dict[str, Any]:
-    try:
-        from ..native.telemetry import native_runner_capability_report
+    from ..native.telemetry import native_runner_capability_report
 
-        return native_runner_capability_report()
-    except (ImportError, RuntimeError, OSError) as exc:
-        return {
-            "enabled": False,
-            "strict": False,
-            "designer_runtime_available": False,
-            "status": f"native_runner_report_error:{exc}",
-            "supported_ops": [],
-            "unsupported_ops": [],
-            "approximate_mappings": {},
-            "semantic_warnings": [],
-            "semantic_warning_count": 0,
-            "mapping_source": "",
-        }
+    return native_runner_capability_report()
 
 
 def _rebuild_graph_with_overrides(

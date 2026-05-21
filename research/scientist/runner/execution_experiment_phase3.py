@@ -227,15 +227,11 @@ class _ExecutionExperimentPhase3Mixin:
         for start in range(0, len(ordered), _SQLITE_IN_CLAUSE_CHUNK):
             chunk = ordered[start : start + _SQLITE_IN_CLAUSE_CHUNK]
             placeholders = ",".join("?" for _ in chunk)
-            try:
-                rows = nb.conn.execute(
-                    "SELECT graph_fingerprint FROM program_results_compat "
-                    f"WHERE graph_fingerprint IN ({placeholders})",
-                    chunk,
-                ).fetchall()
-            except Exception as exc:
-                logger.debug("Failed fingerprint membership lookup: %s", exc)
-                return set()
+            rows = nb.conn.execute(
+                "SELECT graph_fingerprint FROM program_results_compat "
+                f"WHERE graph_fingerprint IN ({placeholders})",
+                chunk,
+            ).fetchall()
             found.update(str(row[0]) for row in rows if row[0])
         return found
 
@@ -343,7 +339,6 @@ class _ExecutionExperimentPhase3Mixin:
             program_metrics["train_budget_steps"] = config.stage1_steps
             program_metrics.update(screening_wikitext_fields(s1_result))
             program_metrics.update(screening_probe_fields(s1_result))
-            program_metrics.update(screening_probe_fields(program_metrics))
             self._merge_s1_telemetry(program_metrics, s1_result)
 
             result_id = nb.record_program_result(

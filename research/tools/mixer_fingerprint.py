@@ -626,14 +626,14 @@ def _training_loop(
     last_log_t = t0
     tokens_seen = 0
     last_log_tokens = 0
+    # .train() once outside the loop — it recurses into every submodule.
     model.train()
     train_model.train()
+    log_every = int(log_every_steps)
     for step in range(1, n_steps + 1):
         global_step = int(step_offset) + step
         lr = scheduler.apply(step - 1)
         ids = train_batcher.next()
-        model.train()
-        train_model.train()
         optim.zero_grad(set_to_none=True)
         if train_model is not model:
             _mark_cudagraph_step_begin()
@@ -697,9 +697,7 @@ def _training_loop(
                     "lr": lr,
                 }
             )
-        if int(log_every_steps) > 0 and (
-            step % int(log_every_steps) == 0 or step == 1 or step == n_steps
-        ):
+        if log_every > 0 and (step % log_every == 0 or step == 1 or step == n_steps):
             now = time.monotonic()
             elapsed = max(now - t0, 1e-9)
             recent_elapsed = max(now - last_log_t, 1e-9)
@@ -853,11 +851,12 @@ def _build_model_and_batchers(
     n_eval_batches: int,
     dim: int,
     n_blocks: int,
+    use_ffn: bool = True,
 ) -> tuple[
     nn.Module, Callable[[int], nn.Module], _RandomWindowBatcher, list[torch.Tensor], int
 ]:
     model_factory, probe_factory = _resolve_lane_factories(mixer, pattern)
-    model = _build_tinylm(model_factory, dim=dim, n_blocks=n_blocks)
+    model = _build_tinylm(model_factory, dim=dim, n_blocks=n_blocks, use_ffn=use_ffn)
     model = model.to(device)
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     train_tokens, val_tokens, _, _ = _load_wikitext_tokens(
@@ -1034,7 +1033,7 @@ def _validate_output_dir(output_dir: Path) -> None:
 def _load_resume_weights(
     model: nn.Module, resume_path: Path, device: torch.device
 ) -> int:
-    payload = torch.load(resume_path, map_location=device)
+    payload = torch.load(resume_path, map_location=device, weights_only=True)
     if not isinstance(payload, dict) or "model_state_dict" not in payload:
         raise ValueError(f"resume checkpoint missing model_state_dict: {resume_path}")
     model.load_state_dict(payload["model_state_dict"])
@@ -1075,6 +1074,7 @@ def run_fingerprint(
     plateau_patience: int = 3,
     plateau_min_delta: float = 0.005,
     plateau_min_steps: int = 20_000,
+    use_ffn: bool = True,
 ) -> Path:
     """End-to-end: build → train → checkpoint-eval → final-eval → write JSONL.
 
@@ -1106,6 +1106,7 @@ def run_fingerprint(
         n_eval_batches=n_eval_batches,
         dim=dim,
         n_blocks=n_blocks,
+        use_ffn=use_ffn,
     )
     step_offset = 0
     if resume is not None:
@@ -1368,6 +1369,15 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=int,
         help="Suppress plateau halt before this global step (avoid early-warmup false trigger).",
     )
+    p.add_argument(
+        "--use-ffn",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Wrap each lane in TinyLM's outer FFN (norm2+MLP+residual). Set --no-ffn "
+        "for lanes that already contain their own FFN internally (e.g. graph-derived "
+        "ensemble lanes) to avoid double-FFN, which crashes AR per the 2026-05-19 "
+        "sensitivity ablation.",
+    )
     p.set_defaults(save_weights=True)
     return p.parse_args(argv)
 
@@ -1407,6 +1417,7 @@ def main(argv: list[str] | None = None) -> int:
         plateau_patience=int(args.plateau_patience),
         plateau_min_delta=float(args.plateau_min_delta),
         plateau_min_steps=int(args.plateau_min_steps),
+        use_ffn=bool(args.use_ffn),
     )
     print(f"wrote {path}")
     return 0

@@ -652,6 +652,11 @@ def _non_byte_training_data_clauses(
     return clauses
 
 
+def _ppl_metric_is_comparable(metric_version: str) -> bool:
+    """Rows surviving byte filters are comparable when BPE-tagged or legacy-unversioned."""
+    return metric_version == BPE_EVAL_METRIC_VERSION or metric_version == ""
+
+
 def _program_results_columns(db_path: str) -> set[str]:
     from ..notebook.shared_conn import get_notebook_conn
 
@@ -766,7 +771,7 @@ def _fallback_graph_training_rows(db_path: str) -> List[Dict[str, Any]]:
             if ppl_keys is not None and "screening_wikitext_metric_version" in ppl_keys
             else ""
         )
-        if metric_version == BPE_EVAL_METRIC_VERSION:
+        if _ppl_metric_is_comparable(metric_version):
             group["wikitext_perplexity_best"] = _min_opt(
                 group["wikitext_perplexity_best"], row["wikitext_perplexity"]
             )
@@ -1052,7 +1057,7 @@ def _fallback_screening_predictor_rows(db_path: str) -> List[Dict[str, Any]]:
             if "screening_wikitext_metric_version" in _row_keys
             else ""
         )
-        if _metric_version == BPE_EVAL_METRIC_VERSION:
+        if _ppl_metric_is_comparable(_metric_version):
             group["wikitext_perplexity_best"] = _min_opt(
                 group["wikitext_perplexity_best"], row["wikitext_perplexity"]
             )

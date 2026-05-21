@@ -21,7 +21,6 @@ lands in the correct coarse value class.
 
 from __future__ import annotations
 
-import copy
 import json
 import time
 from dataclasses import dataclass, field
@@ -41,6 +40,7 @@ from ._kv_pair import (
     train_kv_one_batch,
 )
 from ._probe_runtime import disable_native_probe_dispatch
+from ._probe_utils import safe_deepcopy_module
 from .associative_recall import _get_special_tokens
 from .utils import chance_lift, clip01, make_adamw, model_vocab_size
 
@@ -235,7 +235,9 @@ def ar_intermediate_probe(
     t0 = time.perf_counter()
     dev = torch.device(device)
     try:
-        probe_model = copy.deepcopy(model).to(dev) if cfg.copy_model else model.to(dev)
+        probe_model = (
+            safe_deepcopy_module(model).to(dev) if cfg.copy_model else model.to(dev)
+        )
     except Exception as exc:  # noqa: BLE001
         return _err_result(t0, "copy_failed", str(exc))
 

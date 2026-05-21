@@ -10,7 +10,6 @@ Output column: ``robustness_long_ctx_assoc_score``
 
 from __future__ import annotations
 
-import copy
 import logging
 import time
 from dataclasses import dataclass, field
@@ -20,6 +19,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from ._probe_utils import safe_deepcopy_module
 from .associative_recall import (
     _VOCAB_HI,
     _VOCAB_LO,
@@ -81,7 +81,7 @@ def _train_ar_at_length(
 
     Returns (accuracy, timed_out).
     """
-    probe_model = copy.deepcopy(model)
+    probe_model = safe_deepcopy_module(model)
     probe_model.to(device)
     probe_model.train()
 

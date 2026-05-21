@@ -28,7 +28,6 @@ Performance:
 
 from __future__ import annotations
 
-import copy
 import logging
 import time
 from dataclasses import dataclass
@@ -38,7 +37,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+
 from ._probe_runtime import disable_native_probe_dispatch
+from ._probe_utils import safe_deepcopy_module
 from .utils import clip_grad_norm
 
 logger = logging.getLogger(__name__)
@@ -339,7 +340,7 @@ def _run_binding_intermediate_single_seed(
         generator = torch.Generator(device=device)
         generator.manual_seed(int(seed))
     try:
-        probe_model = copy.deepcopy(model).to(device)
+        probe_model = safe_deepcopy_module(model).to(device)
     except Exception as exc:
         return BindingV2Result(status=f"copy_failed: {exc}", distance_accuracies={})
     try:
@@ -384,7 +385,7 @@ def run_binding_intermediate(
     """
     t0 = time.perf_counter()
     try:
-        probe_model = copy.deepcopy(model).to(device)
+        probe_model = safe_deepcopy_module(model).to(device)
     except Exception as exc:
         return BindingV2Result(
             status=f"copy_failed: {exc}",

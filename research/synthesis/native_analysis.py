@@ -569,8 +569,10 @@ def summarize_dim_flow_natively(
     kv_breaking_flags: np.ndarray,
 ) -> Optional[DimFlowSummary]:
     lib = _load_native_graph_analysis_lib()
-    if lib is None or not hasattr(lib, "aria_graph_dim_flow_summary"):
-        return None
+    if lib is None:
+        raise RuntimeError("native graph dim-flow runtime is unavailable")
+    if not hasattr(lib, "aria_graph_dim_flow_summary"):
+        raise RuntimeError("native graph dim-flow summary symbol is unavailable")
 
     reachable_mask = np.ascontiguousarray(reachable_mask, dtype=np.int32)
     has_params_flags = np.ascontiguousarray(has_params_flags, dtype=np.int32)
@@ -589,8 +591,7 @@ def summarize_dim_flow_natively(
         ctypes.byref(result),
     )
     if status != 0:
-        logger.debug("aria_graph_dim_flow_summary failed with status=%d", status)
-        return None
+        raise RuntimeError(f"aria_graph_dim_flow_summary failed with status={status}")
 
     return DimFlowSummary(
         reachable_param_count=int(result.reachable_param_count),
@@ -635,16 +636,7 @@ def summarize_dim_flow(
     nontrivial_flags: np.ndarray,
     kv_breaking_flags: np.ndarray,
 ) -> DimFlowSummary:
-    native_result = summarize_dim_flow_natively(
-        reachable_mask=reachable_mask,
-        has_params_flags=has_params_flags,
-        param_estimates=param_estimates,
-        nontrivial_flags=nontrivial_flags,
-        kv_breaking_flags=kv_breaking_flags,
-    )
-    if native_result is not None:
-        return native_result
-    return summarize_dim_flow_in_python(
+    return summarize_dim_flow_natively(
         reachable_mask=reachable_mask,
         has_params_flags=has_params_flags,
         param_estimates=param_estimates,

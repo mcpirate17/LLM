@@ -245,15 +245,24 @@ class _LeaderboardMixin:
         metrics = screening.get("metrics") if screening else None
         return metrics if isinstance(metrics, dict) else {}
 
+    @staticmethod
+    def _first_present(*values: Any) -> Any:
+        for value in values:
+            if value is not None:
+                return value
+        return None
+
     def _apply_wikitext_ppl_aliases(
         self,
         entry: Dict[str, Any],
         screening_metrics: Dict[str, Any],
     ) -> None:
         wikitext_ppl = self._coerce_float(
-            entry.get("wikitext_ppl")
-            or entry.get("wikitext_perplexity")
-            or screening_metrics.get("wikitext_perplexity")
+            self._first_present(
+                entry.get("wikitext_ppl"),
+                entry.get("wikitext_perplexity"),
+                screening_metrics.get("wikitext_perplexity"),
+            )
         )
         if wikitext_ppl is not None:
             entry["wikitext_ppl"] = wikitext_ppl
@@ -265,10 +274,12 @@ class _LeaderboardMixin:
         screening_metrics: Dict[str, Any],
     ) -> None:
         improvement_ratio = self._coerce_float(
-            entry.get("wikitext_ppl_improvement_ratio")
-            or entry.get("wikitext_improvement_ratio")
-            or entry.get("wikitext_ppl_improvement")
-            or screening_metrics.get("wikitext_ppl_improvement")
+            self._first_present(
+                entry.get("wikitext_ppl_improvement_ratio"),
+                entry.get("wikitext_improvement_ratio"),
+                entry.get("wikitext_ppl_improvement"),
+                screening_metrics.get("wikitext_ppl_improvement"),
+            )
         )
         if improvement_ratio is not None:
             entry["improvement_ratio"] = improvement_ratio

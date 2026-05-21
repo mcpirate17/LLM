@@ -720,35 +720,7 @@ def with_native_runner_progress(
     progress_payload: Optional[Dict[str, Any]],
 ) -> Dict[str, Any]:
     payload = dict(progress_payload or {})
-    try:
-        payload["native_runner"] = native_runner_capability_report(deep=False)
-    except Exception as exc:
-        payload["native_runner"] = {
-            "enabled": False,
-            "strict": False,
-            "designer_runtime_available": False,
-            "status": f"native_runner_report_error:{exc}",
-            "fallback_metrics": {
-                "total_compiles": 0,
-                "native_enabled_compiles": 0,
-                "fallback_compiles": 0,
-                "probe_successes": 0,
-                "probe_failures": 0,
-                "fallback_rate": 0.0,
-                "samples_considered": 0,
-                "all_compile_calls": 0,
-            },
-            "semantic_warning_count": 0,
-            "semantic_warnings": [],
-            "selective_guardrail": {
-                "consecutive_requested_not_candidate": 0,
-                "threshold": 5,
-                "triggered": False,
-                "trigger_count": 0,
-                "last_reason": None,
-                "history": [],
-            },
-        }
+    payload["native_runner"] = native_runner_capability_report(deep=False)
     return payload
 
 

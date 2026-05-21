@@ -17,7 +17,6 @@ binding profile. A model with AUC > 0.3 has non-trivial binding range.
 
 from __future__ import annotations
 
-import copy
 import logging
 import time
 from contextlib import nullcontext
@@ -29,6 +28,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from ._probe_runtime import disable_native_probe_dispatch
+from ._probe_utils import safe_deepcopy_module
 from .utils import clip_grad_norm, make_adamw
 
 logger = logging.getLogger(__name__)
@@ -144,7 +144,7 @@ def induction_score(
         generator.manual_seed(int(seed))
 
     try:
-        probe_model = copy.deepcopy(model)
+        probe_model = safe_deepcopy_module(model)
         probe_model.to(device)
         probe_model.train()
     except Exception as e:

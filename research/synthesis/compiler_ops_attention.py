@@ -391,7 +391,11 @@ def _op_local_window_attn(_, inputs, config):
             out = kernels.triton_local_attn(x_f32, W)
             if torch.isfinite(out).all():
                 return out.to(x.dtype)
-        except (ImportError, RuntimeError, AttributeError) as e:
+        except Exception as e:
+            # Includes triton.compiler.errors.CompilationError, which doesn't
+            # inherit from RuntimeError — observed 2026-05-19 at D>=512 where
+            # the triton_local_attn kernel's tl.dot rejects K post-pad. The
+            # dense fallback below handles all such cases safely.
             record_kernel_fallback("triton_local_attn", e)
     x_work = x.float() if x.dtype in (torch.float16, torch.bfloat16) else x
     scores = torch.bmm(x_work, x_work.transpose(-2, -1)) / math.sqrt(D)

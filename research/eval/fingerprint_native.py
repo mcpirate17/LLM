@@ -35,11 +35,40 @@ def interaction_metrics(
 
 
 def sensitivity_metrics(sens_matrix: torch.Tensor) -> Dict[str, float]:
-    native = aria_core.sensitivity_metrics_f32(_cpu_contiguous(sens_matrix))
+    matrix = _cpu_contiguous(sens_matrix.float())
+    if aria_core is not None and hasattr(aria_core, "sensitivity_metrics_f32"):
+        native = aria_core.sensitivity_metrics_f32(matrix)
+        return {
+            "spectral_norm": float(native[0].item()),
+            "uniformity": float(native[1].item()),
+            "effective_rank": float(native[2].item()),
+        }
+
+    if matrix.numel() == 0:
+        return {"spectral_norm": 0.0, "uniformity": 0.0, "effective_rank": 0.0}
+    if matrix.ndim == 1:
+        matrix = matrix.unsqueeze(0)
+    matrix = torch.nan_to_num(matrix, nan=0.0, posinf=0.0, neginf=0.0)
+    singular_values = torch.linalg.svdvals(matrix)
+    spectral_norm = float(singular_values[0].item()) if singular_values.numel() else 0.0
+    total = singular_values.sum()
+    if float(total.item()) > 0.0:
+        probs = singular_values / total
+        entropy = -(probs * probs.clamp_min(1e-12).log()).sum()
+        effective_rank = float(torch.exp(entropy).item())
+    else:
+        effective_rank = 0.0
+    row_norms = matrix.norm(dim=-1)
+    mean_norm = row_norms.mean()
+    if float(mean_norm.item()) > 0.0 and row_norms.numel() > 1:
+        cv = row_norms.std(unbiased=False) / mean_norm
+        uniformity = float(torch.clamp(1.0 - cv, min=0.0, max=1.0).item())
+    else:
+        uniformity = 1.0 if float(mean_norm.item()) > 0.0 else 0.0
     return {
-        "spectral_norm": float(native[0].item()),
-        "uniformity": float(native[1].item()),
-        "effective_rank": float(native[2].item()),
+        "spectral_norm": spectral_norm,
+        "uniformity": uniformity,
+        "effective_rank": effective_rank,
     }
 
 

@@ -87,6 +87,34 @@ def test_native_adamw_step_matches_torch_adamw():
     torch.testing.assert_close(native_param, ref_param, atol=1e-6, rtol=1e-5)
 
 
+def test_make_optimizer_default_propagates_native_load_failure(monkeypatch):
+    def _raise_native():
+        raise RuntimeError("native optimizer unavailable")
+
+    monkeypatch.setattr("research.eval.training_core.load_runner_native", _raise_native)
+    param = torch.randn(2, 2, requires_grad=True)
+
+    with pytest.raises(RuntimeError, match="native optimizer unavailable"):
+        make_optimizer([param], optimizer_name="adamw", lr=1e-3)
+
+
+def test_make_optimizer_explicit_torch_opt_out(monkeypatch):
+    def _raise_native():
+        raise AssertionError("native loader should not be called")
+
+    monkeypatch.setattr("research.eval.training_core.load_runner_native", _raise_native)
+    param = torch.randn(2, 2, requires_grad=True)
+
+    optimizer = make_optimizer(
+        [param],
+        optimizer_name="sgd",
+        lr=1e-3,
+        prefer_native=False,
+    )
+
+    assert isinstance(optimizer, torch.optim.SGD)
+
+
 def test_native_adamw_clip_step_matches_torch_clip_then_adamw():
     torch.manual_seed(22)
     bases = [torch.randn(5, 4), torch.randn(3, 2)]

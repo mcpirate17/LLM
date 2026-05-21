@@ -35,6 +35,14 @@ def _quantile(values: List[float], q: float) -> Optional[float]:
     return data[lo] * (1.0 - frac) + data[hi] * frac
 
 
+def _append_finite(values: List[float], value: Any) -> None:
+    if value is None:
+        return
+    numeric = float(value)
+    if math.isfinite(numeric):
+        values.append(numeric)
+
+
 def calibrate_baseline_transformer_novelty(
     n_runs: int = 8,
     seq_len: int = 32,
@@ -70,11 +78,11 @@ def calibrate_baseline_transformer_novelty(
             n_probes=16,
         )
         novelty_values.append(float(fp.novelty_score))
-        jac_spec_values.append(float(fp.jacobian_spectral_norm))
-        jac_rank_values.append(float(fp.jacobian_effective_rank))
-        cka_t_values.append(float(fp.cka_vs_transformer))
-        cka_s_values.append(float(fp.cka_vs_ssm))
-        cka_c_values.append(float(fp.cka_vs_conv))
+        _append_finite(jac_spec_values, fp.jacobian_spectral_norm)
+        _append_finite(jac_rank_values, fp.jacobian_effective_rank)
+        _append_finite(cka_t_values, fp.cka_vs_transformer)
+        _append_finite(cka_s_values, fp.cka_vs_ssm)
+        _append_finite(cka_c_values, fp.cka_vs_conv)
 
         cka_source = fp.cka_source or cka_source
         cka_artifact_version = fp.cka_artifact_version or cka_artifact_version

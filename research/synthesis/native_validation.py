@@ -42,8 +42,10 @@ def summarize_validation_natively(
     linear_op_flags: np.ndarray,
 ) -> ValidationSummary | None:
     lib = _load_native_graph_analysis_lib()
-    if lib is None or not hasattr(lib, "aria_graph_validation_summary"):
-        return None
+    if lib is None:
+        raise RuntimeError("native graph validation runtime is unavailable")
+    if not hasattr(lib, "aria_graph_validation_summary"):
+        raise RuntimeError("native graph validation summary symbol is unavailable")
 
     known_op_flags = np.ascontiguousarray(known_op_flags, dtype=np.int32)
     risky_op_flags = np.ascontiguousarray(risky_op_flags, dtype=np.int32)
@@ -64,8 +66,7 @@ def summarize_validation_natively(
         ctypes.byref(result),
     )
     if status != 0:
-        logger.debug("aria_graph_validation_summary failed with status=%d", status)
-        return None
+        raise RuntimeError(f"aria_graph_validation_summary failed with status={status}")
 
     return ValidationSummary(
         risky_op_count=int(result.risky_op_count),
@@ -120,24 +121,7 @@ def summarize_validation(
     norm_op_flags: np.ndarray,
     linear_op_flags: np.ndarray,
 ) -> ValidationSummary:
-    if int(len(known_op_flags)) <= 48:
-        return summarize_validation_in_python(
-            known_op_flags=known_op_flags,
-            risky_op_flags=risky_op_flags,
-            parameterized_op_flags=parameterized_op_flags,
-            norm_op_flags=norm_op_flags,
-            linear_op_flags=linear_op_flags,
-        )
-    native_result = summarize_validation_natively(
-        known_op_flags=known_op_flags,
-        risky_op_flags=risky_op_flags,
-        parameterized_op_flags=parameterized_op_flags,
-        norm_op_flags=norm_op_flags,
-        linear_op_flags=linear_op_flags,
-    )
-    if native_result is not None:
-        return native_result
-    return summarize_validation_in_python(
+    return summarize_validation_natively(
         known_op_flags=known_op_flags,
         risky_op_flags=risky_op_flags,
         parameterized_op_flags=parameterized_op_flags,

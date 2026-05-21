@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import copy
 import gc
 import time
 from typing import Callable
@@ -10,11 +9,12 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from ._eval_native import load_eval_native
+from ._probe_utils import safe_deepcopy_module
 from .utils import clip_grad_norm, make_adamw
 
 
 def _build_probe_model(model: nn.Module, device: str) -> nn.Module:
-    probe_model = copy.deepcopy(model)
+    probe_model = safe_deepcopy_module(model)
     probe_model.to(device)
     probe_model.train()
     return probe_model

@@ -31,7 +31,7 @@ from .routing_telemetry import collect_routing_telemetry
 
 _collect_routing_telemetry = collect_routing_telemetry
 from .sparsity import check_activation_sparsity
-from .utils import clip_grad_norm, compute_grad_norm, language_model_loss, make_adamw
+from .utils import clip_grad_norm, language_model_loss, make_adamw
 from research.defaults import VOCAB_SIZE
 
 
@@ -415,41 +415,16 @@ def _gradient_health(model: nn.Module):
     if not grads:
         return 0.0, False, True, 0
 
-    try:
-        from ._runner_native import load_runner_native
+    from ._runner_native import load_runner_native
 
-        names = [f"p{i}" for i in range(len(grads))]
-        stats = load_runner_native().grad_stats_fused(grads, names)
-        return (
-            float(stats["total_norm"]),
-            bool(stats["has_nonfinite"]),
-            bool(stats["has_zero"]),
-            n_with_grad,
-        )
-    except Exception:
-        pass
-
-    # Python fallback
-    has_nan = False
-    has_zero = True
-    total_norm = float(compute_grad_norm(model))
-    try:
-        norms = torch._foreach_norm(grads, 2)
-        norm_vec = torch.stack([n.detach() for n in norms])
-        has_nan = not bool(torch.isfinite(norm_vec).all().item())
-        has_zero = not bool((norm_vec > 1e-10).any().item())
-    except RuntimeError as exc:
-        logger.debug(
-            "torch._foreach_norm failed during sandbox grad check; using scalar fallback: %s",
-            exc,
-        )
-        for grad in grads:
-            if torch.isnan(grad).any():
-                has_nan = True
-            pnorm = grad.data.float().norm().item()
-            if pnorm > 1e-10:
-                has_zero = False
-    return total_norm, has_nan, has_zero, n_with_grad
+    names = [f"p{i}" for i in range(len(grads))]
+    stats = load_runner_native().grad_stats_fused(grads, names)
+    return (
+        float(stats["total_norm"]),
+        bool(stats["has_nonfinite"]),
+        bool(stats["has_zero"]),
+        n_with_grad,
+    )
 
 
 def _extract_failure_op(tb: List[str], error_text: str) -> Optional[str]:

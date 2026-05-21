@@ -466,27 +466,22 @@ def make_optimizer(
     ):
         enable_paramwise_native = False
     if enable_paramwise_native:
-        try:
-            # Probe: fail fast if the native extension can't be built/loaded.
-            load_runner_native()
-            if opt == "sgd":
-                return _NativeSGDOptimizer(
-                    param_values,
-                    lr=lr,
-                    momentum=momentum,
-                    weight_decay=weight_decay,
-                )
-            adamw_betas = betas if betas is not None else (0.9, 0.999)
-            return _NativeAdamWOptimizer(
+        # Probe: fail fast if the native extension can't be built/loaded.
+        load_runner_native()
+        if opt == "sgd":
+            return _NativeSGDOptimizer(
                 param_values,
                 lr=lr,
-                betas=adamw_betas,
+                momentum=momentum,
                 weight_decay=weight_decay,
             )
-        except Exception:
-            if prefer_native is True:
-                raise
-            pass
+        adamw_betas = betas if betas is not None else (0.9, 0.999)
+        return _NativeAdamWOptimizer(
+            param_values,
+            lr=lr,
+            betas=adamw_betas,
+            weight_decay=weight_decay,
+        )
     if opt == "sgd":
         return torch.optim.SGD(
             param_values,

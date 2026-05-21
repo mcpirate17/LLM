@@ -119,6 +119,12 @@ class IRExecutorV2(nn.Module):
         )
         return {"flat_ops": self._flat_ops, "ir_node_ids": ir_node_ids}
 
+    # Dynamo can't usefully compile this — it's a Python orchestration loop over
+    # heterogeneous ops, and the int attrs (_n_nodes, _plan.output_node_idx) make
+    # every block specialize differently and burn the recompile cache. Treat the
+    # whole forward as an opaque op; the leaf ops still hit cuBLAS/cuDNN eagerly,
+    # and the wrapping TinyLM keeps compile gains on embed/norm/lm_head.
+    @torch._dynamo.disable
     def forward(
         self, x: torch.Tensor, capture_intermediates: bool = False
     ) -> torch.Tensor | Tuple[torch.Tensor, Dict[int, torch.Tensor]]:

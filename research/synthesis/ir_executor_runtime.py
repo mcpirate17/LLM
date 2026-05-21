@@ -4,7 +4,22 @@ from typing import Optional
 
 import torch
 
+# Each helper below orchestrates per-block op dispatch via a Python loop that
+# reads Python ints (output_idx, in2_idx == -1, counts[i] <= 0) inside the
+# body. torch.dynamo specializes on those ints, so an interleaved hybrid with
+# 18 IRExecutor blocks burns through the recompile cache (the 2026-05-20
+# benchmark crashed at 1078 ms/step from this; raising the cache made it 8×
+# worse). Disabling dynamo at the loop boundary keeps the leaf ops eager —
+# still cuBLAS/cuDNN-fast — while the outer TinyLM still benefits from
+# torch.compile. Don't add @torch.compile to anything in this file.
+_disable = getattr(torch, "_dynamo", None) and torch._dynamo.disable
+if _disable is None:  # very old torch — no dynamo to disable
 
+    def _disable(fn):  # type: ignore[no-redef]
+        return fn
+
+
+@_disable
 def initialize_execution_state(
     *,
     n_nodes: int,
@@ -27,6 +42,7 @@ def initialize_execution_state(
     return counts_buf, node_outputs, {} if capture_intermediates else None
 
 
+@_disable
 def dispatch_native_segment(
     *,
     counts: list[int],
@@ -54,6 +70,7 @@ def dispatch_native_segment(
     return True
 
 
+@_disable
 def execute_plan_loop(
     *,
     counts: list[int],
@@ -90,6 +107,7 @@ def execute_plan_loop(
             captured[node_idx] = out
 
 
+@_disable
 def execute_plan_loop_with_native_segments(
     *,
     counts: list[int],

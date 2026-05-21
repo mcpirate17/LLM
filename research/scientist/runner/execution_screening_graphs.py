@@ -66,62 +66,19 @@ def analyze_graph_for_screening(
     else:
         has_params_flags = [False] * len(ordered_nodes)
 
-    try:
-        native = load_eval_native()
-        analysis = native.screening_graph_analysis_native(
-            [int(node_id) for node_id, _ in ordered_nodes],
-            [str(node.op_name or "") for _, node in ordered_nodes],
-            [
-                [int(parent_id) for parent_id in node.input_ids]
-                for _, node in ordered_nodes
-            ],
-            [bool(getattr(node, "is_input", False)) for _, node in ordered_nodes],
-            [bool(getattr(node, "is_output", False)) for _, node in ordered_nodes],
-            [bool(flag) for flag in has_params_flags],
-        )
-        return ScreeningGraphAnalysis(
-            op_names=frozenset(analysis["op_names"]),
-            counted_ops=tuple(analysis["counted_ops"]),
-            toxic_bigrams=tuple(analysis["toxic_bigrams"]),
-            has_parameterized_op=bool(analysis["has_parameterized_op"]),
-        )
-    except Exception:
-        pass
-
-    op_names = set()
-    counted_ops = []
-    toxic_bigrams = set()
-    has_parameterized_op = False
-
-    for idx, (_node_id, node) in enumerate(ordered_nodes):
-        if node.is_input:
-            continue
-
-        op_name = node.op_name
-        if op_name:
-            counted_ops.append(op_name)
-
-        if getattr(node, "is_output", False):
-            continue
-
-        op_names.add(op_name)
-        if not has_parameterized_op and has_params_flags[idx]:
-            has_parameterized_op = True
-
-        for parent_id in node.input_ids:
-            parent = nodes.get(parent_id)
-            if (
-                parent is not None
-                and not parent.is_input
-                and not getattr(parent, "is_output", False)
-            ):
-                toxic_bigrams.add(f"{parent.op_name}->{op_name}")
-
+    analysis = load_eval_native().screening_graph_analysis_native(
+        [int(node_id) for node_id, _ in ordered_nodes],
+        [str(node.op_name or "") for _, node in ordered_nodes],
+        [[int(parent_id) for parent_id in node.input_ids] for _, node in ordered_nodes],
+        [bool(getattr(node, "is_input", False)) for _, node in ordered_nodes],
+        [bool(getattr(node, "is_output", False)) for _, node in ordered_nodes],
+        [bool(flag) for flag in has_params_flags],
+    )
     return ScreeningGraphAnalysis(
-        op_names=frozenset(op_names),
-        counted_ops=tuple(counted_ops),
-        toxic_bigrams=tuple(sorted(toxic_bigrams)),
-        has_parameterized_op=has_parameterized_op,
+        op_names=frozenset(analysis["op_names"]),
+        counted_ops=tuple(analysis["counted_ops"]),
+        toxic_bigrams=tuple(analysis["toxic_bigrams"]),
+        has_parameterized_op=bool(analysis["has_parameterized_op"]),
     )
 
 

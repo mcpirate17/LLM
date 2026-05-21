@@ -96,7 +96,7 @@ def test_validate_dim_flow_uses_native_summary_when_available():
     )
 
 
-def test_validate_dim_flow_summary_falls_back_to_python(monkeypatch):
+def test_validate_dim_flow_requires_native_summary(monkeypatch):
     import research.synthesis.native_analysis as native_analysis
 
     monkeypatch.setattr(
@@ -110,16 +110,15 @@ def test_validate_dim_flow_summary_falls_back_to_python(monkeypatch):
     hidden = graph.add_op("linear_proj", [input_id], config={"out_dim": 32})
     graph.set_output(hidden)
 
-    result = validate_dim_flow(graph)
-
-    assert result.reachable_param_count == 1
-    assert result.reachable_ops == 1
+    with pytest.raises(RuntimeError, match="native graph dim-flow runtime"):
+        validate_dim_flow(graph)
 
     kv_graph = ComputationGraph(32)
     kv_in = kv_graph.add_input()
     kv_out = kv_graph.add_op("spectral_filter", [kv_in])
     kv_graph.set_output(kv_out)
-    assert compute_kv_cacheable(kv_graph) is False
+    with pytest.raises(RuntimeError, match="native graph dim-flow runtime"):
+        compute_kv_cacheable(kv_graph)
 
 
 def test_validate_dim_flow_warns_on_dead_parameterized_nodes():
@@ -131,13 +130,11 @@ def test_validate_dim_flow_warns_on_dead_parameterized_nodes():
 
     result = validate_dim_flow(graph)
 
-    assert any(
-        f"Node {dead} (linear_proj): parameterized but unreachable" in warning
-        for warning in result.warnings
-    )
+    expected_warning = f"Node {dead} (linear_proj): parameterized but unreachable"
+    assert any(expected_warning in warning for warning in result.warnings)
 
 
-def test_validate_dim_flow_dead_parameterized_mask_falls_back_to_python(monkeypatch):
+def test_validate_dim_flow_requires_native_dead_parameterized_mask(monkeypatch):
     import research.synthesis.native_analysis as native_analysis
     import research.synthesis.native_dim_flow as native_dim_flow
 
@@ -153,15 +150,11 @@ def test_validate_dim_flow_dead_parameterized_mask_falls_back_to_python(monkeypa
     graph = ComputationGraph(32)
     input_id = graph.add_input()
     live = graph.add_op("linear_proj", [input_id], config={"out_dim": 32})
-    dead = graph.add_op("linear_proj", [input_id], config={"out_dim": 32})
+    graph.add_op("linear_proj", [input_id], config={"out_dim": 32})
     graph.set_output(live)
 
-    result = validate_dim_flow(graph)
-
-    assert any(
-        f"Node {dead} (linear_proj): parameterized but unreachable" in warning
-        for warning in result.warnings
-    )
+    with pytest.raises(RuntimeError, match="native graph dim-flow runtime"):
+        validate_dim_flow(graph)
 
 
 def test_validate_dim_flow_packed_native_matches_fallback(monkeypatch):

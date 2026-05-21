@@ -486,7 +486,6 @@ class _ExecutionValidationScaleMixin:
                 program_metrics["champion_floor_protocol_version"] = f"failed: {exc}"
         program_metrics.update(screening_wikitext_fields(s1_result))
         program_metrics.update(screening_probe_fields(s1_result))
-        program_metrics.update(screening_probe_fields(program_metrics))
         self._merge_s1_telemetry(program_metrics, s1_result)
 
     def _scale_up_baseline_comparison(
@@ -736,6 +735,53 @@ class _ExecutionValidationScaleMixin:
             **confirmation_metrics,
         )
 
+    def _scale_up_merge_source_result(
+        self,
+        source_result_id: str,
+        nb,
+        graph,
+        s1_passed: bool,
+        loss_ratio: float | None,
+        final_loss: float | None,
+        throughput: float | None,
+        n_score: float,
+        nov,
+        program_metrics: dict,
+    ) -> str:
+        source_program = nb.get_program_detail(source_result_id) or {}
+        if not source_program:
+            raise RuntimeError(
+                f"Cannot merge scale-up metrics; source result {source_result_id} was not found"
+            )
+
+        scale_up_metrics = dict(program_metrics)
+        scale_up_metrics.update(
+            {
+                "stage1_passed": s1_passed,
+                "final_loss": final_loss,
+                "loss_ratio": loss_ratio,
+                "throughput_tok_s": throughput,
+                "novelty_score": n_score,
+                "structural_novelty": getattr(nov, "structural_novelty", None),
+                "behavioral_novelty": getattr(nov, "behavioral_novelty", None),
+                "novelty_confidence": getattr(nov, "novelty_confidence", None),
+                "most_similar_to": getattr(nov, "most_similar_to", None),
+            }
+        )
+        merged = nb.merge_program_result_patch(
+            result_id=source_result_id,
+            graph_fingerprint=str(
+                source_program.get("graph_fingerprint") or graph.fingerprint()
+            ).strip(),
+            graph_json=graph_to_json(graph),
+            **scale_up_metrics,
+        )
+        if not merged:
+            raise RuntimeError(
+                f"Scale-up metrics did not update source result {source_result_id}"
+            )
+        return source_result_id
+
     def _scale_up_update_result_summary(
         self,
         *,
@@ -867,6 +913,19 @@ class _ExecutionValidationScaleMixin:
         if is_confirmation:
             result_id = self._scale_up_record_confirmation_result(
                 exp_id,
+                source_result_id,
+                nb,
+                graph,
+                s1_passed,
+                loss_ratio,
+                final_loss,
+                throughput,
+                n_score,
+                nov,
+                program_metrics,
+            )
+        else:
+            result_id = self._scale_up_merge_source_result(
                 source_result_id,
                 nb,
                 graph,

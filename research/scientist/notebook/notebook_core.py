@@ -23,6 +23,7 @@ from research.defaults import RUNS_DB
 
 from .graph_features import build_graph_feature_rows
 from .artifact_store import (
+    ARTIFACT_POINTER_KEY,
     NotebookArtifactStore,
     artifact_pointer_json,
     parse_artifact_pointer,
@@ -389,27 +390,23 @@ class _NotebookCore:
         self, pointer_value: Any
     ) -> dict[str, Any] | None:
         pointer = parse_artifact_pointer(pointer_value)
-        if not pointer:
+        if pointer is None:
             return None
-        artifact_id = str(pointer.get("_notebook_artifact") or "")
-        if not artifact_id:
-            return None
-        try:
-            row = self.conn.execute(
-                "SELECT * FROM notebook_artifacts WHERE artifact_id = ?",
-                (artifact_id,),
-            ).fetchone()
-        except sqlite3.OperationalError:
-            row = None
+        artifact_id = pointer[ARTIFACT_POINTER_KEY]
+        row = self.conn.execute(
+            "SELECT * FROM notebook_artifacts WHERE artifact_id = ?",
+            (artifact_id,),
+        ).fetchone()
         if row is not None:
             return dict(row)
-        if pointer.get("path"):
-            return {
-                "artifact_id": artifact_id,
-                "path": pointer["path"],
-                "compression": pointer.get("compression") or "zstd",
-            }
-        return None
+        path = pointer.get("path")
+        if not path:
+            return None
+        return {
+            "artifact_id": artifact_id,
+            "path": path,
+            "compression": pointer.get("compression") or "zstd",
+        }
 
     def _resolve_artifact_bytes(self, pointer_value: Any) -> bytes:
         metadata = self._artifact_metadata_from_pointer(pointer_value)

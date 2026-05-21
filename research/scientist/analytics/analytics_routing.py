@@ -616,13 +616,46 @@ class _RoutingMixin:
 
         Returns summary with per-program and aggregate statistics.
         """
+        table_row = self.nb.conn.execute(
+            """
+            SELECT name FROM sqlite_master
+            WHERE type IN ('table', 'view')
+              AND name IN ('program_results_compat', 'program_results')
+            ORDER BY CASE name WHEN 'program_results_compat' THEN 0 ELSE 1 END
+            LIMIT 1
+            """
+        ).fetchone()
+        if table_row is None:
+            return {"n_programs": 0, "programs": [], "summary": {}}
+        table_name = str(table_row[0])
+        available_columns = {
+            str(row[1])
+            for row in self.nb.conn.execute(f"PRAGMA table_info({table_name})")
+        }
+        required_columns = {
+            "result_id",
+            "graph_json",
+            "stage1_passed",
+            "final_loss",
+            "sparse_density_mean",
+            "sparse_density_last",
+            "pruning_method",
+            "pruning_target_sparsity",
+            "pruning_actual_sparsity",
+            "pruning_quality_retention",
+            "pruning_dense_eval_loss",
+            "pruning_pruned_eval_loss",
+            "pruning_n_params_total",
+        }
+        if not required_columns.issubset(available_columns):
+            return {"n_programs": 0, "programs": [], "summary": {}}
         rows = self.nb.conn.execute(
             "SELECT result_id, graph_json, stage1_passed, final_loss, "
             "sparse_density_mean, sparse_density_last, "
             "pruning_method, pruning_target_sparsity, pruning_actual_sparsity, "
             "pruning_quality_retention, pruning_dense_eval_loss, "
             "pruning_pruned_eval_loss, pruning_n_params_total "
-            "FROM program_results_compat "
+            f"FROM {table_name} "
             "WHERE (sparse_density_mean IS NOT NULL OR pruning_method IS NOT NULL)"
         ).fetchall()
         if not rows:

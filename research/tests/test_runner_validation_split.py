@@ -180,6 +180,88 @@ class TestChampionConfirmationPolicy(unittest.TestCase):
         )
         self.assertEqual(nb.recorded["graph_fingerprint"], "fp_parent")
 
+    def test_scale_up_merges_non_confirmation_metrics_into_source_result(self):
+        class _Stub(_ExecutionValidationMixin):
+            def __init__(self):
+                self.events = []
+
+            def _resolve_novelty_promotion_validity(self, *_args):
+                return True, "valid", False
+
+            def _emit_event(self, event_type, payload):
+                self.events.append((event_type, payload))
+
+        class _Graph:
+            def fingerprint(self):
+                return "fp_parent"
+
+        class _Novelty:
+            novelty_valid_for_promotion = True
+            novelty_validity_reason = "valid"
+            structural_novelty = 0.1
+            behavioral_novelty = 0.2
+            novelty_confidence = 0.3
+            most_similar_to = "neighbor"
+
+        class _Notebook:
+            conn = None
+
+            def __init__(self):
+                self.merged = None
+
+            def get_program_detail(self, result_id):
+                assert result_id == "parent-rid"
+                return {"graph_fingerprint": "fp_parent"}
+
+            def merge_program_result_patch(self, **kwargs):
+                self.merged = kwargs
+                return True
+
+            def store_training_curve(self, *_args):
+                raise AssertionError("no curve should be stored in this test")
+
+        config = RunConfig(mode="scale_up")
+        results = {
+            "novel_count": 0,
+            "survivors": [],
+            "best_loss_ratio": None,
+            "best_novelty_score": None,
+        }
+        nb = _Notebook()
+        stub = _Stub()
+
+        with patch(
+            "research.scientist.runner.execution_validation_scale.graph_to_json",
+            return_value="{}",
+        ):
+            stub._scale_up_record_result(
+                exp_id="exp-scale",
+                source_result_id="parent-rid",
+                prog_idx=0,
+                total=1,
+                config=config,
+                nb=nb,
+                results=results,
+                graph=_Graph(),
+                model=None,
+                s1_passed=True,
+                loss_ratio=0.47,
+                final_loss=5.9,
+                throughput=123.0,
+                training_curve=None,
+                n_score=0.6,
+                nov=_Novelty(),
+                program_metrics={"train_budget_steps": 40000},
+            )
+
+        self.assertEqual(nb.merged["result_id"], "parent-rid")
+        self.assertEqual(nb.merged["loss_ratio"], 0.47)
+        self.assertEqual(nb.merged["final_loss"], 5.9)
+        self.assertEqual(nb.merged["throughput_tok_s"], 123.0)
+        self.assertEqual(nb.merged["novelty_score"], 0.6)
+        self.assertEqual(nb.merged["train_budget_steps"], 40000)
+        self.assertFalse(results["survivors"][0]["confirmation"])
+
 
 if __name__ == "__main__":
     unittest.main()
