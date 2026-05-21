@@ -288,8 +288,10 @@ class _ContinuousValidationMixin:
                     for p in model.parameters():
                         if p.dim() >= 2:
                             nn.init.xavier_uniform_(p)
-            except Exception as e:
-                logger.warning("Model reconstruction FAILED for seed %d: %s", seed, e)
+            except Exception:
+                logger.warning(
+                    "Model reconstruction FAILED for seed %d", seed, exc_info=True
+                )
                 continue
 
             self._emit_event(
@@ -445,10 +447,10 @@ class _ContinuousValidationMixin:
                 if v_loss is not None:
                     try:
                         _compare(v_loss, split="val")
-                    except Exception as exc:
-                        logger.warning("Val-split baseline FAILED: %s", exc)
-            except Exception as exc:
-                logger.warning("Baseline comparison FAILED: %s", exc)
+                    except Exception:
+                        logger.warning("Val-split baseline FAILED", exc_info=True)
+            except Exception:
+                logger.warning("Baseline comparison FAILED", exc_info=True)
 
         val_normalized_ratio = None
         val_param_efficiency = None
@@ -466,8 +468,8 @@ class _ContinuousValidationMixin:
                 )
                 val_normalized_ratio = norm.get("normalized_ratio")
                 val_param_efficiency = norm.get("param_efficiency")
-            except Exception as exc:
-                logger.warning("Param-normalized baseline FAILED: %s", exc)
+            except Exception:
+                logger.warning("Param-normalized baseline FAILED", exc_info=True)
 
         return ValidationMetrics(
             val_loss_ratio=_sm["val_loss_ratio"],
@@ -766,7 +768,7 @@ class _ContinuousValidationMixin:
             )
 
         except Exception as e:
-            logger.warning(f"Inline validation failed: {e}")
+            logger.warning("Inline validation failed", exc_info=True)
             self._publish_terminal_event(
                 producer="runner.continuous_validation",
                 event_type="experiment_failed",

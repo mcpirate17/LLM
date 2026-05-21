@@ -73,30 +73,27 @@ class BaselineTransformer(nn.Module):
 
     def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
         if not os.environ.get("ARIA_DISABLE_REFERENCE_MODEL_NATIVE"):
-            try:
-                native = load_reference_model_native()
-                return native.baseline_transformer_forward(
-                    input_ids,
-                    self.embed.weight,
-                    [layer.attn.in_proj_weight for layer in self.layers],
-                    [layer.attn.in_proj_bias for layer in self.layers],
-                    [layer.attn.out_proj.weight for layer in self.layers],
-                    [layer.attn.out_proj.bias for layer in self.layers],
-                    [layer.ff[0].weight for layer in self.layers],
-                    [layer.ff[0].bias for layer in self.layers],
-                    [layer.ff[2].weight for layer in self.layers],
-                    [layer.ff[2].bias for layer in self.layers],
-                    [layer.ln1.weight for layer in self.layers],
-                    [layer.ln1.bias for layer in self.layers],
-                    [layer.ln2.weight for layer in self.layers],
-                    [layer.ln2.bias for layer in self.layers],
-                    self.ln_f.weight,
-                    self.ln_f.bias,
-                    self.head.weight,
-                    int(self.n_heads),
-                )
-            except Exception:
-                pass
+            native = load_reference_model_native()
+            return native.baseline_transformer_forward(
+                input_ids,
+                self.embed.weight,
+                [layer.attn.in_proj_weight for layer in self.layers],
+                [layer.attn.in_proj_bias for layer in self.layers],
+                [layer.attn.out_proj.weight for layer in self.layers],
+                [layer.attn.out_proj.bias for layer in self.layers],
+                [layer.ff[0].weight for layer in self.layers],
+                [layer.ff[0].bias for layer in self.layers],
+                [layer.ff[2].weight for layer in self.layers],
+                [layer.ff[2].bias for layer in self.layers],
+                [layer.ln1.weight for layer in self.layers],
+                [layer.ln1.bias for layer in self.layers],
+                [layer.ln2.weight for layer in self.layers],
+                [layer.ln2.bias for layer in self.layers],
+                self.ln_f.weight,
+                self.ln_f.bias,
+                self.head.weight,
+                int(self.n_heads),
+            )
         x = self.embed(input_ids)
         for layer in self.layers:
             x = layer(x)
