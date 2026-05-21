@@ -30,3 +30,6 @@ def load_split_op_modules() -> None:
                 f"Compiler handlers for ops in that module are missing. "
                 f"Fix the import error before continuing."
             ) from exc
+
+
+load_split_op_modules()

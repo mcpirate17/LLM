@@ -26,7 +26,10 @@ def _extract_graph_feature_payload_native(
     rust = _try_import_rust_scheduler()
     if rust is None or not hasattr(rust, "extract_graph_feature_payload"):
         return None
-    result = rust.extract_graph_feature_payload(graph_json)
+    try:
+        result = rust.extract_graph_feature_payload(graph_json)
+    except ValueError:
+        return None
     if not isinstance(result, (list, tuple)) or len(result) != 6:
         raise ValueError(
             f"rust.extract_graph_feature_payload returned malformed result: {type(result).__name__}"
