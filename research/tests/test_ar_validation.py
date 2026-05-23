@@ -129,6 +129,65 @@ def test_ar_validation_default_uses_episodic_values_to_block_key_memorization():
     assert len(set(targets.tolist())) > 1
 
 
+def test_ar_validation_episode_bank_is_seed_stable_and_seed_sensitive():
+    from research.eval._kv_pair import build_kv_episode_bank
+    from research.eval.ar_validation import (
+        ARValidationConfig,
+        build_ar_validation_pair_table,
+    )
+
+    cfg = ARValidationConfig(
+        vocab_lo=100,
+        n_key_tokens=64,
+        n_value_tokens=32,
+        n_value_classes=8,
+        n_train_pairs=20,
+        n_held_pairs=8,
+        pairs_per_example=4,
+    )
+    table = build_ar_validation_pair_table(cfg)
+    kwargs = {
+        "table": table,
+        "split": "held",
+        "n_examples": 16,
+        "batch_size": 4,
+        "pairs_per_example": cfg.pairs_per_example,
+        "sep_token": 510,
+        "ans_token": 511,
+        "device": torch.device("cpu"),
+    }
+
+    bank_a = build_kv_episode_bank(seed=11, **kwargs)
+    bank_b = build_kv_episode_bank(seed=11, **kwargs)
+    bank_c = build_kv_episode_bank(seed=12, **kwargs)
+
+    assert torch.equal(bank_a.ids, bank_b.ids)
+    assert torch.equal(bank_a.targets, bank_b.targets)
+    assert not torch.equal(bank_a.ids, bank_c.ids)
+    assert set(bank_a.targets.tolist()).issubset(
+        set(range(table.value_lo, table.value_hi))
+    )
+
+
+def test_ar_validation_size_budget_boundaries():
+    from research.eval.ar_validation import (
+        ar_validation_budget_for_param_count,
+        ar_validation_size_bucket,
+    )
+
+    assert ar_validation_size_bucket(14_999_999) == "10m"
+    assert ar_validation_size_bucket(15_000_000) == "20m"
+    assert ar_validation_size_bucket(25_000_000) == "30m"
+    assert ar_validation_size_bucket(45_000_000) == "60m"
+    assert ar_validation_size_bucket(80_000_000) == "100m_plus"
+
+    budget = ar_validation_budget_for_param_count(100_000_000)
+    assert budget.size_bucket == "100m_plus"
+    assert budget.train_steps == 25_000
+    assert budget.n_eval == 2048
+    assert budget.seed_count == 3
+
+
 def test_ar_validation_result_serializes_expected_fields():
     from research.eval.ar_validation import (
         INTEGER_AR_VALIDATION_METRIC_VERSION,
@@ -152,6 +211,52 @@ def test_ar_validation_result_serializes_expected_fields():
     assert json.loads(data["ar_validation_learning_curve_json"]) == [
         {"held_pair_acc": 0.125, "step": 10}
     ]
+
+
+def test_stable_ar_validation_result_serializes_aggregate_metadata():
+    from research.eval.ar_validation import (
+        STABLE_AR_VALIDATION_METRIC_VERSION,
+        ARValidationResult,
+    )
+
+    result = ARValidationResult(
+        metric_version=STABLE_AR_VALIDATION_METRIC_VERSION,
+        final_acc=0.25,
+        held_pair_acc=0.125,
+        held_class_acc=0.5,
+        score=2.75,
+        size_bucket="20m",
+        param_count=20_000_000,
+        seed_count=3,
+        seed_scores=[{"seed": 0, "score": 2.0}, {"seed": 1, "score": 3.5}],
+        rank_score_mean=2.75,
+        rank_score_std=0.75,
+        rank_score_stable=2.0,
+        held_pair_acc_mean=0.125,
+        held_pair_acc_std=0.025,
+        held_class_acc_mean=0.5,
+        held_class_acc_std=0.1,
+        budget={"train_steps": 7500, "size_bucket": "20m"},
+        checkpoint_path="/tmp/stage.pt",
+        stage_status="ok",
+        stage_elapsed_ms=55.5,
+    )
+
+    data = result.to_dict()
+
+    assert data["ar_validation_metric_version"] == STABLE_AR_VALIDATION_METRIC_VERSION
+    assert data["ar_validation_seed_count"] == 3
+    assert data["ar_validation_rank_score_mean"] == pytest.approx(2.75)
+    assert data["ar_validation_rank_score_stable"] == pytest.approx(2.0)
+    assert json.loads(data["ar_validation_seed_scores_json"]) == [
+        {"score": 2.0, "seed": 0},
+        {"score": 3.5, "seed": 1},
+    ]
+    assert json.loads(data["ar_validation_budget_json"]) == {
+        "size_bucket": "20m",
+        "train_steps": 7500,
+    }
+    assert data["ar_validation_checkpoint_path"] == "/tmp/stage.pt"
 
 
 def test_ar_validation_probe_refuses_cpu():

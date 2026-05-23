@@ -58,17 +58,14 @@ def compile_graph(
 
     Args:
         graph: The computation graph to compile.
-        use_ir: If True (default), prefers native subgraph dispatch and falls
-            back to an IR executor when native execution is unavailable.
-        executor: `default` resolves to `ir_v2`. Use `ir_v1` or `legacy` to
-            force the original executor path.
+        use_ir: If True, prefer the native/IR fast path. If False, use the
+            standard CompiledLayer fallback.
+        executor: ``default`` resolves to native subgraph dispatch with
+            IRExecutorV2 fallback. Use ``compiled`` to force CompiledLayer.
     """
     from .graph_validator import annotate_kv_cacheable
 
     annotate_kv_cacheable(graph)
-
-    if executor == "default":
-        return _compile_layer_module(graph, prefer_fast_path=use_ir)
     return _compile_layer_module(
         graph, prefer_fast_path=use_ir, executor_variant=executor
     )
@@ -86,39 +83,41 @@ def compile_model(
     model = SynthesizedModel(
         layer_graphs, vocab_size, layer_graphs[0].model_dim, max_seq_len
     )
-    if use_ir:
-        model.layers = nn.ModuleList(
-            [
-                (
-                    _compile_layer_module(g, prefer_fast_path=True)
-                    if executor == "default"
-                    else _compile_layer_module(
-                        g, prefer_fast_path=True, executor_variant=executor
-                    )
-                )
-                for g in layer_graphs
-            ]
-        )
+    model.layers = nn.ModuleList(
+        [
+            _compile_layer_module(g, prefer_fast_path=use_ir, executor_variant=executor)
+            for g in layer_graphs
+        ]
+    )
     return model
 
 
 def _resolve_executor_variant(executor_variant: str) -> str:
     normalized = str(executor_variant or "default").strip().lower()
-    if normalized in {"default", "ir_v2", "v2"}:
+    if normalized in {"default", "auto", "ir_v2", "v2", "native_ir_v2"}:
         return "ir_v2"
-    if normalized in {"ir_v1", "v1", "legacy"}:
-        return "ir_v1"
+    if normalized in {
+        "compiled",
+        "compiled_layer",
+        "eager",
+        "standard",
+        "torch",
+        "ir_v1",
+        "v1",
+        "legacy",
+    }:
+        return "compiled"
     raise ValueError(f"Unknown executor variant: {executor_variant}")
 
 
 def _compile_layer_module(
     graph: ComputationGraph,
     *,
-    prefer_fast_path: bool,
+    prefer_fast_path: bool = True,
     executor_variant: str = "default",
 ) -> nn.Module:
     executor_variant = _resolve_executor_variant(executor_variant)
-    if not prefer_fast_path:
+    if not prefer_fast_path or executor_variant == "compiled":
         layer = CompiledLayer(graph)
         native_compile.attach_partial_native_wrapper(layer, graph)
         return layer
@@ -129,12 +128,8 @@ def _compile_layer_module(
     if native_layer is not None:
         return native_layer
 
-    from .ir_executor import IRExecutor
     from .ir_executor_v2 import IRExecutorV2
 
-    if executor_variant == "ir_v2":
-        layer = IRExecutorV2(graph.lower_to_ir(), source_graph=graph)
-    else:
-        layer = IRExecutor(graph.lower_to_ir(), source_graph=graph)
+    layer = IRExecutorV2(graph.lower_to_ir(), source_graph=graph)
     native_compile.attach_partial_native_wrapper(layer, graph)
     return layer

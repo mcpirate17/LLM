@@ -92,7 +92,7 @@ impl GraphAccumulator {
         }
         self.stage0_any_passed |= row.stage0_passed;
         self.stage05_any_passed |= row.stage05_passed;
-        if row.wikitext_metric_version == "bpe_eval_v1" {
+        if row.wikitext_metric_version == "bpe_eval_v1" || row.wikitext_metric_version.is_empty() {
             self.wikitext_perplexity_best =
                 min_option(self.wikitext_perplexity_best, row.wikitext_perplexity);
         }

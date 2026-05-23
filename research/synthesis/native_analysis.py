@@ -13,12 +13,9 @@ from .native_analysis_bindings import (
     AriaPackedValidationResult,
     load_native_graph_analysis_lib,
     reset_bindings as _reset_native_analysis_bindings,
-    try_import_aria_core,
 )
 from .native_structure_analysis import (
     StructuralAnalysisResult,
-    analyze_ir_in_python,
-    analyze_ir_with_aria_core,
     analyze_ir_with_native_runtime,
 )
 
@@ -88,10 +85,6 @@ def _load_native_graph_analysis_lib() -> Any:
     return load_native_graph_analysis_lib()
 
 
-def _try_import_aria_core() -> Any:
-    return try_import_aria_core()
-
-
 def reset_native_analysis_bindings() -> None:
     _reset_native_analysis_bindings()
 
@@ -99,23 +92,8 @@ def reset_native_analysis_bindings() -> None:
 def analyze_ir_natively(
     ir: Any, *, include_reachable: bool = False
 ) -> Optional[StructuralAnalysisResult]:
-    if hasattr(ir, "op_codes") and hasattr(ir, "input_indices"):
-        native_runtime_result = analyze_ir_with_native_runtime(
-            ir,
-            include_reachable=include_reachable,
-            load_native_graph_analysis_lib=_load_native_graph_analysis_lib,
-        )
-        if native_runtime_result is not None:
-            return native_runtime_result
-
-    aria_core_result = analyze_ir_with_aria_core(
-        ir,
-        include_reachable=include_reachable,
-        try_import_aria_core=_try_import_aria_core,
-    )
-    if aria_core_result is not None:
-        return aria_core_result
-
+    if not hasattr(ir, "op_codes") or not hasattr(ir, "input_indices"):
+        raise TypeError("native graph analysis requires packed graph IR")
     return analyze_ir_with_native_runtime(
         ir,
         include_reachable=include_reachable,
@@ -124,35 +102,19 @@ def analyze_ir_natively(
 
 
 def analyze_ir(ir: Any, *, include_reachable: bool = False) -> StructuralAnalysisResult:
-    native_result = analyze_ir_natively(ir, include_reachable=include_reachable)
-    if native_result is not None:
-        return native_result
-    return analyze_ir_in_python(ir, include_reachable=include_reachable)
+    return analyze_ir_natively(ir, include_reachable=include_reachable)
 
 
 def analyze_ir_runtime_first(
     ir: Any, *, include_reachable: bool = False
 ) -> StructuralAnalysisResult:
     if not hasattr(ir, "op_codes") or not hasattr(ir, "input_indices"):
-        return ir.analyze_structure(include_reachable=include_reachable)
-
-    native_runtime_result = analyze_ir_with_native_runtime(
+        raise TypeError("native graph analysis requires packed graph IR")
+    return analyze_ir_with_native_runtime(
         ir,
         include_reachable=include_reachable,
         load_native_graph_analysis_lib=_load_native_graph_analysis_lib,
     )
-    if native_runtime_result is not None:
-        return native_runtime_result
-
-    aria_core_result = analyze_ir_with_aria_core(
-        ir,
-        include_reachable=include_reachable,
-        try_import_aria_core=_try_import_aria_core,
-    )
-    if aria_core_result is not None:
-        return aria_core_result
-
-    return analyze_ir_in_python(ir, include_reachable=include_reachable)
 
 
 def _packed_validation_result_from_native(
@@ -376,20 +338,25 @@ def validate_packed_ir_batch_natively(
         model_dims,
         input_node_indices,
     )
-    flat = _pack_validation_batch_inputs(
-        op_codes=op_codes,
-        input_indices=input_indices,
-        output_node_indices=output_node_indices,
-        param_estimates=param_estimates,
-        has_params_flags=has_params_flags,
-        nontrivial_flags=nontrivial_flags,
-        kv_breaking_flags=kv_breaking_flags,
-        node_dims=node_dims,
-        node_seq_flags=node_seq_flags,
-        op_kind_flags=op_kind_flags,
-        full_dim_flags=full_dim_flags,
-        model_dims=model_dims,
-        input_node_indices=input_node_indices,
+    node_offsets, flat_op_codes = _flatten_i32_arrays(op_codes)
+    flat_input_indices = _flatten_input_indices(input_indices)
+    if flat_input_indices.shape != (int(flat_op_codes.shape[0]), 2):
+        raise ValueError("each packed input_indices array must have shape (n_nodes, 2)")
+    flat = _FlatPackedValidationBatch(
+        node_offsets=node_offsets,
+        op_codes=flat_op_codes,
+        input_indices=flat_input_indices,
+        param_estimates=_flatten_i64_arrays(param_estimates),
+        has_params_flags=_flatten_i32_arrays(has_params_flags)[1],
+        nontrivial_flags=_flatten_i32_arrays(nontrivial_flags)[1],
+        kv_breaking_flags=_flatten_i32_arrays(kv_breaking_flags)[1],
+        node_dims=_flatten_i32_arrays(node_dims)[1],
+        node_seq_flags=_flatten_i32_arrays(node_seq_flags)[1],
+        op_kind_flags=_flatten_i32_arrays(op_kind_flags)[1],
+        full_dim_flags=_flatten_i32_arrays(full_dim_flags)[1],
+        output_node_indices=np.ascontiguousarray(output_node_indices, dtype=np.int32),
+        model_dims=np.ascontiguousarray(model_dims, dtype=np.int32),
+        input_node_indices=np.ascontiguousarray(input_node_indices, dtype=np.int32),
     )
     effective_depth_args = _effective_depth_batch_args(
         effective_depth_weights, discount_successor_u8
@@ -426,45 +393,6 @@ def validate_packed_ir_batch_natively(
 def _validate_batch_lengths(n_graphs: int, *sequences: Sequence[Any]) -> None:
     if {len(sequence) for sequence in sequences} != {n_graphs}:
         raise ValueError("packed validation batch inputs must have matching lengths")
-
-
-def _pack_validation_batch_inputs(
-    *,
-    op_codes: Sequence[np.ndarray],
-    input_indices: Sequence[np.ndarray],
-    output_node_indices: Sequence[int],
-    param_estimates: Sequence[np.ndarray],
-    has_params_flags: Sequence[np.ndarray],
-    nontrivial_flags: Sequence[np.ndarray],
-    kv_breaking_flags: Sequence[np.ndarray],
-    node_dims: Sequence[np.ndarray],
-    node_seq_flags: Sequence[np.ndarray],
-    op_kind_flags: Sequence[np.ndarray],
-    full_dim_flags: Sequence[np.ndarray],
-    model_dims: Sequence[int],
-    input_node_indices: Sequence[int],
-) -> _FlatPackedValidationBatch:
-    node_offsets, flat_op_codes = _flatten_i32_arrays(op_codes)
-    flat_input_indices = _flatten_input_indices(input_indices)
-    total_nodes = int(flat_op_codes.shape[0])
-    if flat_input_indices.shape != (total_nodes, 2):
-        raise ValueError("each packed input_indices array must have shape (n_nodes, 2)")
-    return _FlatPackedValidationBatch(
-        node_offsets=node_offsets,
-        op_codes=flat_op_codes,
-        input_indices=flat_input_indices,
-        param_estimates=_flatten_i64_arrays(param_estimates),
-        has_params_flags=_flatten_i32_arrays(has_params_flags)[1],
-        nontrivial_flags=_flatten_i32_arrays(nontrivial_flags)[1],
-        kv_breaking_flags=_flatten_i32_arrays(kv_breaking_flags)[1],
-        node_dims=_flatten_i32_arrays(node_dims)[1],
-        node_seq_flags=_flatten_i32_arrays(node_seq_flags)[1],
-        op_kind_flags=_flatten_i32_arrays(op_kind_flags)[1],
-        full_dim_flags=_flatten_i32_arrays(full_dim_flags)[1],
-        output_node_indices=np.ascontiguousarray(output_node_indices, dtype=np.int32),
-        model_dims=np.ascontiguousarray(model_dims, dtype=np.int32),
-        input_node_indices=np.ascontiguousarray(input_node_indices, dtype=np.int32),
-    )
 
 
 def _effective_depth_batch_args(
@@ -656,8 +584,10 @@ def validate_edges_natively(
     model_dim: int,
 ) -> Optional[EdgeValidationResult]:
     lib = _load_native_graph_analysis_lib()
-    if lib is None or not hasattr(lib, "aria_graph_validate_edges"):
-        return None
+    if lib is None:
+        raise RuntimeError("native graph edge-validation runtime is unavailable")
+    if not hasattr(lib, "aria_graph_validate_edges"):
+        raise RuntimeError("native graph edge-validation symbol is unavailable")
 
     reachable_mask = np.ascontiguousarray(reachable_mask, dtype=np.int32)
     input_indices = np.ascontiguousarray(input_indices, dtype=np.int32)
@@ -687,8 +617,7 @@ def validate_edges_natively(
         out.ctypes.data_as(ctypes.POINTER(AriaEdgeValidation)),
     )
     if status != 0:
-        logger.debug("aria_graph_validate_edges failed with status=%d", status)
-        return None
+        raise RuntimeError(f"aria_graph_validate_edges failed with status={status}")
 
     return EdgeValidationResult(
         freq_mismatch_bits=out["freq_mismatch_bits"].copy(),
@@ -755,28 +684,7 @@ def validate_edges(
     full_dim_flags: np.ndarray,
     model_dim: int,
 ) -> EdgeValidationResult:
-    if int(len(reachable_mask)) <= 12:
-        return validate_edges_in_python(
-            reachable_mask=reachable_mask,
-            input_indices=input_indices,
-            node_dims=node_dims,
-            node_seq_flags=node_seq_flags,
-            op_kind_flags=op_kind_flags,
-            full_dim_flags=full_dim_flags,
-            model_dim=model_dim,
-        )
-    native_result = validate_edges_natively(
-        reachable_mask=reachable_mask,
-        input_indices=input_indices,
-        node_dims=node_dims,
-        node_seq_flags=node_seq_flags,
-        op_kind_flags=op_kind_flags,
-        full_dim_flags=full_dim_flags,
-        model_dim=model_dim,
-    )
-    if native_result is not None:
-        return native_result
-    return validate_edges_in_python(
+    return validate_edges_natively(
         reachable_mask=reachable_mask,
         input_indices=input_indices,
         node_dims=node_dims,

@@ -19,7 +19,10 @@ import time
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from research.meta_analysis.template_validator import _run_smoke_test, validate_chain
+from research.meta_analysis.template_validator import (
+    _finalize_compile_and_smoke,
+    validate_chain,
+)
 from research.synthesis.component_rules import (
     ComponentRuleConfig,
     component_role_counts,
@@ -721,23 +724,9 @@ def _validate_lowered_dynamic_candidate(
         return result
     result["validate_passed"] = True
 
-    try:
-        compiled = _compile_layer_module(graph, prefer_fast_path=True)
-    except Exception as exc:
-        result["failure_mode"] = "compile"
-        result["error"] = f"{type(exc).__name__}: {exc}"
-        return result
-    result["compile_passed"] = True
-
-    if not run_smoke:
-        return result
-
-    smoke = _run_smoke_test(compiled, model_dim=model_dim)
-    result.update(smoke)
-    if not smoke["backward_passed"] and result["failure_mode"] is None:
-        result["failure_mode"] = "smoke"
-        result["error"] = smoke.get("smoke_error")
-    return result
+    return _finalize_compile_and_smoke(
+        graph, result, _compile_layer_module, model_dim=model_dim, run_smoke=run_smoke
+    )
 
 
 def _build_lowered_dynamic_candidate_graph(

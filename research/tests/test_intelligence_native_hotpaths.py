@@ -467,14 +467,10 @@ def test_native_topology_feature_batch_with_imodel_matches_single_graph_referenc
             assert value == pytest.approx(single[key], rel=1e-6, abs=1e-6)
 
 
-def test_native_graph_op_batch_matches_python_reference():
-    rust = _try_import_rust_scheduler()
-    if rust is None or not hasattr(rust, "extract_graph_ops_batch"):
-        pytest.skip("native graph-op batch extractor unavailable")
+def test_graph_op_batch_extracts_expected_ops():
     payloads = _many_graph_payloads(64)
-    native = go.extract_unique_graph_ops_batch(payloads)
-    python_ref = [go._extract_unique_graph_ops_python(payload) for payload in payloads]
-    assert native == python_ref
+    extracted = go.extract_unique_graph_ops_batch(payloads)
+    assert extracted == [["add", "gelu", "linear_proj", "rmsnorm"]] * len(payloads)
 
 
 def test_graph_op_extractors_handle_list_nodes_and_op_type():
@@ -658,17 +654,6 @@ def test_native_hotpaths_outperform_python_reference():
         )
     native_topology_s = time.perf_counter() - t0
     assert native_topology_s < python_topology_s
-
-    payloads = _many_graph_payloads(500)
-    t0 = time.perf_counter()
-    for payload in payloads:
-        go._extract_unique_graph_ops_python(payload)
-    python_graph_ops_s = time.perf_counter() - t0
-
-    t0 = time.perf_counter()
-    go.extract_unique_graph_ops_batch(payloads)
-    native_graph_ops_s = time.perf_counter() - t0
-    assert native_graph_ops_s < python_graph_ops_s * 1.25
 
     interaction_data = _make_interaction_train_data(
         n_ops=160,

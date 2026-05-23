@@ -36,6 +36,21 @@ AR_VALIDATION_COLUMNS: dict[str, str] = {
     "ar_validation_rank_score": "REAL",
     "ar_validation_status": "TEXT",
     "ar_validation_elapsed_ms": "REAL",
+    "ar_validation_size_bucket": "TEXT",
+    "ar_validation_param_count": "INTEGER",
+    "ar_validation_seed_count": "INTEGER",
+    "ar_validation_seed_scores_json": "TEXT",
+    "ar_validation_rank_score_mean": "REAL",
+    "ar_validation_rank_score_std": "REAL",
+    "ar_validation_rank_score_stable": "REAL",
+    "ar_validation_held_pair_acc_mean": "REAL",
+    "ar_validation_held_pair_acc_std": "REAL",
+    "ar_validation_held_class_acc_mean": "REAL",
+    "ar_validation_held_class_acc_std": "REAL",
+    "ar_validation_budget_json": "TEXT",
+    "ar_validation_checkpoint_path": "TEXT",
+    "ar_validation_stage_status": "TEXT",
+    "ar_validation_stage_elapsed_ms": "REAL",
 }
 
 _FLOAT_COLUMNS = {
@@ -44,8 +59,25 @@ _FLOAT_COLUMNS = {
     "ar_validation_held_class_acc",
     "ar_validation_rank_score",
     "ar_validation_elapsed_ms",
+    "ar_validation_rank_score_mean",
+    "ar_validation_rank_score_std",
+    "ar_validation_rank_score_stable",
+    "ar_validation_held_pair_acc_mean",
+    "ar_validation_held_pair_acc_std",
+    "ar_validation_held_class_acc_mean",
+    "ar_validation_held_class_acc_std",
+    "ar_validation_stage_elapsed_ms",
 }
-_INT_COLUMNS = {"ar_validation_steps_to_floor"}
+_INT_COLUMNS = {
+    "ar_validation_steps_to_floor",
+    "ar_validation_param_count",
+    "ar_validation_seed_count",
+}
+_JSON_TEXT_COLUMNS = {
+    "ar_validation_learning_curve_json",
+    "ar_validation_seed_scores_json",
+    "ar_validation_budget_json",
+}
 
 
 @dataclass(frozen=True)
@@ -78,7 +110,8 @@ class ImportDecision:
 
 def _table_columns(conn: sqlite3.Connection, table: str) -> dict[str, str]:
     return {
-        str(row[1]): str(row[2]) for row in conn.execute(f"PRAGMA table_info({table})")
+        str(row[1]): str(row[2])
+        for row in conn.execute(f"PRAGMA table_info({table})")  # nosec B608  # nosemgrep: python-sql-string-formatting - table name from internal resolver
     }
 
 
@@ -88,7 +121,7 @@ def ensure_ar_validation_columns(conn: sqlite3.Connection) -> list[str]:
     added: list[str] = []
     for name, col_type in AR_VALIDATION_COLUMNS.items():
         if name not in existing:
-            conn.execute(f"ALTER TABLE graph_runs ADD COLUMN {name} {col_type}")
+            conn.execute(f"ALTER TABLE graph_runs ADD COLUMN {name} {col_type}")  # nosec B608  # nosemgrep: python-sql-string-formatting - name/col_type from AR_VALIDATION_COLUMNS allowlist
             added.append(name)
     return added
 
@@ -124,9 +157,9 @@ def _parse_int(value: Any) -> int | None:
     return int(float(text))
 
 
-def _normalize_learning_curve(row: dict[str, Any]) -> str | None:
-    raw = _blank_to_none(row.get("ar_validation_learning_curve_json"))
-    if raw is None:
+def _normalize_json_text(row: dict[str, Any], name: str) -> str | None:
+    raw = _blank_to_none(row.get(name))
+    if raw is None and name == "ar_validation_learning_curve_json":
         raw = _blank_to_none(row.get("learning_curve_json"))
     if raw is None:
         return None
@@ -139,8 +172,8 @@ def parse_csv_metric_row(
 ) -> CsvMetricRow:
     values: dict[str, Any] = {}
     for name in AR_VALIDATION_COLUMNS:
-        if name == "ar_validation_learning_curve_json":
-            values[name] = _normalize_learning_curve(row)
+        if name in _JSON_TEXT_COLUMNS:
+            values[name] = _normalize_json_text(row, name)
         elif name in _FLOAT_COLUMNS:
             values[name] = _parse_float(row.get(name))
         elif name in _INT_COLUMNS:
@@ -185,9 +218,8 @@ def _load_db_indexes(
     conn.row_factory = sqlite3.Row
     select_cols = ["result_id", "graph_fingerprint", *AR_VALIDATION_COLUMNS.keys()]
     table = _program_results_read_table(conn)
-    rows = conn.execute(
-        f"SELECT {', '.join(select_cols)} FROM {table}",
-    ).fetchall()
+    sql = f"SELECT {', '.join(select_cols)} FROM {table}"  # nosec B608  # nosemgrep: python-sql-string-formatting - select_cols / table from internal allowlist
+    rows = conn.execute(sql).fetchall()
     by_result_id: dict[str, sqlite3.Row] = {}
     by_fingerprint: dict[str, list[sqlite3.Row]] = {}
     for row in rows:
@@ -339,6 +371,17 @@ def _merge_provenance(raw_payload: Any, entry: dict[str, Any]) -> str:
     return json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
 
+def _previous_ar_validation_values(row: sqlite3.Row | None) -> dict[str, Any]:
+    if row is None:
+        return {}
+    values = {
+        name: row[name]
+        for name in AR_VALIDATION_COLUMNS
+        if name in row.keys() and row[name] is not None
+    }
+    return values
+
+
 def apply_import_decisions(
     conn: sqlite3.Connection, decisions: Iterable[ImportDecision], *, overwrite: bool
 ) -> int:
@@ -365,17 +408,22 @@ def apply_import_decisions(
         if "data_provenance_json" in columns:
             table = _program_results_read_table(conn)
             row = conn.execute(
-                f"SELECT data_provenance_json FROM {table} WHERE result_id = ?",
+                f"SELECT data_provenance_json, {', '.join(AR_VALIDATION_COLUMNS)} "  # nosec B608  # nosemgrep: python-sql-string-formatting - AR_VALIDATION_COLUMNS/table from internal allowlist
+                f"FROM {table} WHERE result_id = ?",
                 (decision.result_id,),
             ).fetchone()
             raw = row["data_provenance_json"] if row else None
+            if overwrite:
+                previous = _previous_ar_validation_values(row)
+                if previous:
+                    provenance_entry["previous_ar_validation_values"] = previous
             items.append(
                 ("data_provenance_json", _merge_provenance(raw, provenance_entry))
             )
         set_clause = ", ".join(f"{key} = ?" for key, _value in items)
         params = [value for _key, value in items]
         params.append(decision.result_id)
-        conn.execute(f"UPDATE graph_runs SET {set_clause} WHERE result_id = ?", params)
+        conn.execute(f"UPDATE graph_runs SET {set_clause} WHERE result_id = ?", params)  # nosec B608  # nosemgrep: python-sql-string-formatting - set_clause built from internal-column allowlist
         updated += 1
     conn.commit()
     return updated

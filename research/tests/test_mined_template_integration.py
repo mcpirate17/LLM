@@ -130,5 +130,5 @@ def test_template_compiles_into_layer(mined_template_env):
     g.set_output(out)
     # Should not raise — the registered chain template emits ops the
     # full compile pipeline (dispatch wiring + native handlers) recognises.
-    layer = _compile_layer_module(g, prefer_fast_path=True)
+    layer = _compile_layer_module(g)
     assert layer is not None

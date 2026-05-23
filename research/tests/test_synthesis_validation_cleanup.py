@@ -99,25 +99,26 @@ def test_validate_dim_flow_uses_native_summary_when_available():
 def test_validate_dim_flow_requires_native_summary(monkeypatch):
     import research.synthesis.native_analysis as native_analysis
 
-    monkeypatch.setattr(
-        native_analysis, "_load_native_graph_analysis_lib", lambda: None
-    )
-    monkeypatch.setattr(native_analysis, "_try_import_aria_core", lambda: None)
-    native_analysis.reset_native_analysis_bindings()
-
     graph = ComputationGraph(32)
     input_id = graph.add_input()
     hidden = graph.add_op("linear_proj", [input_id], config={"out_dim": 32})
     graph.set_output(hidden)
+    analysis_ir = graph._analysis_ir()
+    analysis = analysis_ir.analyze_structure(include_reachable=True)
+
+    monkeypatch.setattr(
+        native_analysis, "_load_native_graph_analysis_lib", lambda: None
+    )
+    native_analysis.reset_native_analysis_bindings()
 
     with pytest.raises(RuntimeError, match="native graph dim-flow runtime"):
-        validate_dim_flow(graph)
+        validate_dim_flow(graph, analysis_ir=analysis_ir, analysis=analysis)
 
     kv_graph = ComputationGraph(32)
     kv_in = kv_graph.add_input()
     kv_out = kv_graph.add_op("spectral_filter", [kv_in])
     kv_graph.set_output(kv_out)
-    with pytest.raises(RuntimeError, match="native graph dim-flow runtime"):
+    with pytest.raises(RuntimeError, match="native graph analysis runtime"):
         compute_kv_cacheable(kv_graph)
 
 
@@ -135,29 +136,29 @@ def test_validate_dim_flow_warns_on_dead_parameterized_nodes():
 
 
 def test_validate_dim_flow_requires_native_dead_parameterized_mask(monkeypatch):
-    import research.synthesis.native_analysis as native_analysis
+    import research.synthesis.graph_validator as graph_validator
     import research.synthesis.native_dim_flow as native_dim_flow
-
-    monkeypatch.setattr(
-        native_analysis, "_load_native_graph_analysis_lib", lambda: None
-    )
-    monkeypatch.setattr(native_analysis, "_try_import_aria_core", lambda: None)
-    monkeypatch.setattr(
-        native_dim_flow, "_load_native_graph_analysis_lib", lambda: None
-    )
-    native_analysis.reset_native_analysis_bindings()
 
     graph = ComputationGraph(32)
     input_id = graph.add_input()
     live = graph.add_op("linear_proj", [input_id], config={"out_dim": 32})
     graph.add_op("linear_proj", [input_id], config={"out_dim": 32})
     graph.set_output(live)
+    analysis_ir = graph._analysis_ir()
+    analysis = analysis_ir.analyze_structure(include_reachable=True)
+
+    monkeypatch.setattr(
+        graph_validator, "validate_packed_ir_natively", lambda **_: None
+    )
+    monkeypatch.setattr(
+        native_dim_flow, "_load_native_graph_analysis_lib", lambda: None
+    )
 
     with pytest.raises(RuntimeError, match="native graph dim-flow runtime"):
-        validate_dim_flow(graph)
+        validate_dim_flow(graph, analysis_ir=analysis_ir, analysis=analysis)
 
 
-def test_validate_dim_flow_packed_native_matches_fallback(monkeypatch):
+def test_validate_dim_flow_packed_native_matches_split_native(monkeypatch):
     import research.synthesis.graph_validator as graph_validator
 
     graph = ComputationGraph(32)

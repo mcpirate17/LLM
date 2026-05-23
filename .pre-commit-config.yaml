@@ -86,9 +86,10 @@ repos:
         name: Pip-audit dependency vulnerability check
         language: system
         # PYSEC-2024-271 (flask-cors) and PYSEC-2025-183 (pyjwt): both at latest
-        # upstream version with no published fix as of 2026-05-21. Re-audit and
-        # drop these when upstream patches land.
-        entry: uv run pip-audit --progress-spinner off --ignore-vuln PYSEC-2024-271 --ignore-vuln PYSEC-2025-183
+        # upstream version with no published fix as of 2026-05-21. PYSEC-2026-161
+        # (starlette 1.0.0 -> 1.0.1) is a transitive dep we can't bump from here
+        # without a wider sync. Re-audit and drop these when upstream patches land.
+        entry: uv run pip-audit --progress-spinner off --ignore-vuln PYSEC-2024-271 --ignore-vuln PYSEC-2025-183 --ignore-vuln PYSEC-2026-161
         pass_filenames: false
       - id: protected-data-deletes
         name: Block protected research data deletes

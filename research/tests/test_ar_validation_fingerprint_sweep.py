@@ -9,6 +9,7 @@ import pytest
 import torch
 
 from research.tools.run_ar_validation_fingerprint_sweep import (
+    CSV_FIELDS,
     _append_row,
     _load_done_fingerprints,
     _load_projected_corpus,
@@ -121,6 +122,24 @@ def test_append_row_and_done_fingerprints_round_trip(tmp_path):
     assert len(rows) == 2
     assert rows[0]["ar_validation_rank_score"] == "0.5"
     assert _load_done_fingerprints(csv_path) == {"fp-ok"}
+
+
+def test_sweep_csv_fields_include_stable_v3_metadata():
+    expected = {
+        "ar_validation_size_bucket",
+        "ar_validation_param_count",
+        "ar_validation_seed_count",
+        "ar_validation_seed_scores_json",
+        "ar_validation_rank_score_mean",
+        "ar_validation_rank_score_std",
+        "ar_validation_rank_score_stable",
+        "ar_validation_budget_json",
+        "ar_validation_checkpoint_path",
+        "ar_validation_stage_status",
+        "ar_validation_stage_elapsed_ms",
+    }
+
+    assert expected.issubset(set(CSV_FIELDS))
 
 
 def test_load_projected_corpus_copies_read_only_mmap_before_projection(tmp_path):

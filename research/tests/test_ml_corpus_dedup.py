@@ -360,9 +360,7 @@ def test_graph_training_corpus_excludes_untrusted_rows_when_labels_exist(
     assert row["wikitext_perplexity_best"] == 9.0
 
 
-def test_ml_training_corpora_exclude_byte_metric_rows(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_ml_training_corpora_exclude_byte_metric_rows(tmp_path: Path) -> None:
     from research.scientist.intelligence import ml_corpus
     from research.scientist.intelligence.graph_segments import (
         load_stage05_native_segment_corpus,
@@ -370,7 +368,6 @@ def test_ml_training_corpora_exclude_byte_metric_rows(
 
     db_path = tmp_path / "ml_corpus_byte_filter.sqlite3"
     _create_rich_ml_corpus_db(db_path)
-    monkeypatch.setattr(ml_corpus, "_try_import_rust_scheduler", lambda: None)
     ml_corpus._clear_corpus_cache()
 
     graph_rows = ml_corpus.load_deduped_graph_training_rows(db_path)
@@ -887,22 +884,12 @@ def test_op_embeddings_cooccurrence_pairs_dedupe_reruns(tmp_path: Path) -> None:
     assert negative == []
 
 
-def test_graph_fingerprint_fallback_uses_shared_graph_parser(monkeypatch) -> None:
+def test_graph_fingerprint_requires_native(monkeypatch) -> None:
     from research.scientist.intelligence import ml_corpus
-    import research.synthesis.serializer as serializer_mod
-
-    calls = {"n": 0}
-    original_graph_from_json = serializer_mod.graph_from_json
-
-    def _counted_graph_from_json(payload: str):
-        calls["n"] += 1
-        return original_graph_from_json(payload)
 
     monkeypatch.setattr(ml_corpus, "_try_import_rust_scheduler", lambda: None)
-    monkeypatch.setattr(serializer_mod, "graph_from_json", _counted_graph_from_json)
 
     payload = graph_json('{"templates_used":["fp"]}')
-    fingerprint = ml_corpus._graph_fingerprint(payload)
 
-    assert fingerprint
-    assert calls["n"] == 1
+    with pytest.raises(RuntimeError, match="Rust graph fingerprinting is unavailable"):
+        ml_corpus._graph_fingerprint(payload)

@@ -1,4 +1,5 @@
 # pyright: reportPrivateImportUsage=false
+# guardrail: allow-god-file
 """Per-mixer capability fingerprint at nano-scale.
 
 Trains a ~10M-param ``TinyLM`` whose mixer is a single lane primitive,
@@ -77,6 +78,12 @@ def _configure_torch_performance() -> None:
         torch._dynamo.config.allow_unspec_int_on_nn_module = True
         torch._dynamo.config.cache_size_limit = 64
         torch._dynamo.config.recompile_limit = 32
+        # CompiledOp.forward gets traced per block; each block's weight tensor
+        # has a different rank (linear_proj 2D, rmsnorm 1D, etc.) so dynamo's
+        # default static-shape guard recompiles on every rank change, blowing
+        # the cache for graphs with many op kinds. Letting params be
+        # shape-dynamic lets the trace be reused across blocks.
+        torch._dynamo.config.force_parameter_static_shapes = False
     except Exception:
         pass
     try:
@@ -128,6 +135,16 @@ def _autocast_dtype(name: str, device: torch.device) -> torch.dtype:
     if device.type == "cuda" and torch.cuda.is_bf16_supported():
         return torch.bfloat16
     return torch.float16
+
+
+class _TrainLossWrapper(nn.Module):
+    def __init__(self, model: nn.Module) -> None:
+        super().__init__()
+        self.model = model
+
+    def forward(self, ids: torch.Tensor) -> torch.Tensor:
+        logits = self.model(ids)
+        return _causal_lm_loss(logits, ids)
 
 
 def _maybe_compile_training_model(
@@ -226,6 +243,26 @@ class _WarmupCosineSchedule:
         for group in self.optimizer.param_groups:
             group["lr"] = lr
         return lr
+
+
+def _scheduled_seq_len(
+    *,
+    schedule: str,
+    step: int,
+    max_seq_len: int,
+    initial_seq_len: int,
+    warmup_steps: int,
+) -> int:
+    """Return training sequence length for the local 1-indexed step."""
+    max_seq = max(1, int(max_seq_len))
+    if str(schedule).strip().lower() != "growing":
+        return max_seq
+    initial = max(1, min(int(initial_seq_len), max_seq))
+    warmup = max(1, int(warmup_steps))
+    if int(step) >= warmup:
+        return max_seq
+    progress = max(0.0, float(int(step) - 1) / float(warmup))
+    return int(initial + progress * (max_seq - initial))
 
 
 @dataclass
@@ -408,14 +445,18 @@ def _try_probe(out: dict[str, Any], key: str, fn: Callable[[], Any]) -> None:
 def _expensive_core_evals(
     *, model: nn.Module, device: torch.device, out: dict[str, Any]
 ) -> None:
-    """The four probes the fingerprint shipped with: induction_intermediate,
-    ar_legacy, ar_curriculum, binding_intermediate."""
+    """The core probes the fingerprint runs: induction_intermediate,
+    ar_legacy, binding_intermediate.
+
+    ar_curriculum was removed 2026-05-22: at production scale (76M+ params,
+    well-pretrained) its 1200-step probe-train budget can't move the model
+    and the metric saturates. It remains a valid screening tool for nano-
+    scale architecture differentiation; see ``research/eval/ar_curriculum_probe.py``
+    and the synthesis-scientist screening pipeline. The harder
+    ``ar_validation`` (v3 stable, 3-seed) in ``_expensive_enrichment_evals``
+    is the production-scale AR signal."""
     from research.eval.induction_intermediate_probe import run_induction_intermediate
     from research.eval.associative_recall import associative_recall_score
-    from research.eval.ar_curriculum_probe import (
-        ar_curriculum_probe,
-        ARCurriculumConfig,
-    )
     from research.eval.binding_intermediate_probe import run_binding_intermediate
 
     _try_probe(
@@ -431,17 +472,6 @@ def _expensive_core_evals(
         lambda: associative_recall_score(
             model, n_train_steps=300, n_eval=128, batch_size=8, device=device
         ),
-    )
-    _try_probe(
-        out,
-        "ar_curriculum",
-        lambda: ar_curriculum_probe(
-            model,
-            cfg=ARCurriculumConfig(
-                steps_per_stage=200, batch_size=8, eval_batches=16, copy_model=True
-            ),
-            device=device,
-        ).to_dict(),
     )
     _try_probe(
         out,
@@ -474,7 +504,11 @@ def _expensive_enrichment_evals(
     from research.eval.induction_validation_probe import (
         run_induction_validation_champion,
     )
-    from research.eval.ar_validation import run_ar_validation, ARValidationConfig
+    from research.eval.ar_validation import (
+        run_ar_validation,
+        ARValidationConfig,
+        STABLE_AR_VALIDATION_PROTOCOL,
+    )
 
     _try_probe(
         out,
@@ -526,7 +560,12 @@ def _expensive_enrichment_evals(
         "ar_validation",
         lambda: run_ar_validation(
             model,
-            cfg=ARValidationConfig(train_steps=1000, batch_size=8, n_eval=128),
+            cfg=ARValidationConfig(
+                protocol=STABLE_AR_VALIDATION_PROTOCOL,
+                seed_count=3,
+                auto_size_budget=True,
+                deterministic_episode_bank=True,
+            ),
             device=device,
         ).to_dict(),
     )
@@ -577,187 +616,179 @@ def _mid_tier_evals(
     return out
 
 
-def _training_loop(
+def _forward_loss_with_lazy_fallback(
     model: nn.Module,
     train_model: nn.Module,
-    train_batcher: _RandomWindowBatcher,
+    ids,
     *,
-    n_steps: int,
-    step_offset: int,
-    learning_rate: float,
-    min_lr: float,
-    warmup_steps: int,
-    device: torch.device,
     amp: bool,
     amp_dtype: torch.dtype,
+    device: torch.device,
     compile_required: bool,
-    log_every_steps: int,
-    batch_size: int,
-    seq_len: int,
-    checkpoint_steps: tuple[int, ...],
-    on_checkpoint: Callable[..., None],
-    save_every_steps: int,
-    on_save: Callable[[int], Path | None] | None,
-    mid_tier_every_steps: int,
-    on_mid_tier: Callable[[int], bool] | None,
-) -> dict[str, Any]:
-    """Run training, calling ``on_checkpoint(step)`` at each ckpt step."""
-    optim, optim_meta = _make_optimizer(
-        model, learning_rate=learning_rate, device=device
-    )
-    scheduler = _WarmupCosineSchedule(
-        optim,
-        learning_rate=float(learning_rate),
-        min_lr=float(min_lr),
-        warmup_steps=int(warmup_steps),
-        total_steps=int(n_steps),
-    )
-    scaler = torch.amp.GradScaler(
-        "cuda",
-        enabled=bool(amp and amp_dtype == torch.float16 and device.type == "cuda"),
-    )
-    sorted_ckpts = sorted(set(int(s) for s in checkpoint_steps))
-    next_idx = 0
-    history: list[dict[str, Any]] = []
-    save_steps: list[dict[str, Any]] = []
-    mid_tier_steps: list[int] = []
-    compile_meta: dict[str, Any] = {"lazy_disabled": False}
-    t0 = time.monotonic()
-    last_log_t = t0
-    tokens_seen = 0
-    last_log_tokens = 0
-    # .train() once outside the loop — it recurses into every submodule.
-    model.train()
-    train_model.train()
-    log_every = int(log_every_steps)
-    for step in range(1, n_steps + 1):
-        global_step = int(step_offset) + step
-        lr = scheduler.apply(step - 1)
-        ids = train_batcher.next()
-        optim.zero_grad(set_to_none=True)
-        if train_model is not model:
-            _mark_cudagraph_step_begin()
-        with torch.amp.autocast(
-            device_type="cuda",
-            dtype=amp_dtype,
-            enabled=bool(amp and device.type == "cuda"),
-        ):
-            try:
+    compile_meta: dict[str, Any],
+) -> tuple[Any, nn.Module]:
+    """Forward + loss under autocast, falling back to eager on lazy-compile failure."""
+    with torch.amp.autocast(
+        device_type="cuda",
+        dtype=amp_dtype,
+        enabled=bool(amp and device.type == "cuda"),
+    ):
+        try:
+            if train_model is model:
                 logits = train_model(ids)
                 loss = _causal_lm_loss(logits, ids)
-            except Exception as exc:  # noqa: BLE001
-                if (
-                    train_model is model
-                    or compile_required
-                    or not _is_lazy_compile_failure(exc)
-                ):
-                    raise
-                compile_meta["lazy_disabled"] = True
-                compile_meta["lazy_error"] = (
-                    f"{type(exc).__name__}: {_compact_exception_message(exc)}"
-                )
-                if hasattr(torch, "_dynamo"):
-                    torch._dynamo.reset()
-                train_model = model
-                logits = train_model(ids)
-                loss = _causal_lm_loss(logits, ids)
-        if not torch.isfinite(loss):
-            raise FloatingPointError(f"nonfinite loss at step={step}")
-        scaler.scale(loss).backward()
-        scaler.unscale_(optim)
-        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-        grad_norm_f = float(
-            grad_norm.detach().item() if torch.is_tensor(grad_norm) else grad_norm
-        )
+            else:
+                loss = train_model(ids)
+            return loss, train_model
+        except Exception as exc:  # noqa: BLE001
+            if (
+                train_model is model
+                or compile_required
+                or not _is_lazy_compile_failure(exc)
+            ):
+                raise
+            compile_meta["lazy_disabled"] = True
+            compile_meta["lazy_error"] = (
+                f"{type(exc).__name__}: {_compact_exception_message(exc)}"
+            )
+            if hasattr(torch, "_dynamo"):
+                torch._dynamo.reset()
+            train_model = model
+            logits = train_model(ids)
+            loss = _causal_lm_loss(logits, ids)
+            return loss, train_model
+
+
+def _log_train_step(
+    *,
+    step: int,
+    n_steps: int,
+    global_step: int,
+    step_offset: int,
+    loss,
+    grad_norm,
+    lr: float,
+    curr_seq_len: int,
+    t0: float,
+    last_log_t: float,
+    tokens_seen: int,
+    last_log_tokens: int,
+) -> tuple[float, int]:
+    now = time.monotonic()
+    elapsed = max(now - t0, 1e-9)
+    recent_elapsed = max(now - last_log_t, 1e-9)
+    recent_tokens = max(0, tokens_seen - last_log_tokens)
+    loss_f = float(loss.detach().item())
+    g_val = grad_norm.detach() if torch.is_tensor(grad_norm) else grad_norm
+    grad_norm_f = float(g_val.item() if torch.is_tensor(g_val) else g_val)
+    if not math.isfinite(loss_f):
+        raise FloatingPointError(f"nonfinite loss at step={step}")
+    ppl_f = float(math.exp(min(loss_f, 30.0)))
+    print(
+        "train "
+        f"step={global_step}/{step_offset + n_steps} "
+        f"local={step}/{n_steps} "
+        f"loss={loss_f:.4f} "
+        f"ppl={ppl_f:.2f} "
+        f"lr={lr:.3g} "
+        f"seq_len={int(curr_seq_len)} "
+        f"grad_norm={grad_norm_f:.3g} "
+        f"tok_s={tokens_seen / elapsed:.0f} "
+        f"recent_tok_s={recent_tokens / recent_elapsed:.0f}",
+        flush=True,
+    )
+    return now, tokens_seen
+
+
+def _finalize_history(
+    history: list[dict[str, Any]], seq_len: int
+) -> list[dict[str, Any]]:
+    final_history: list[dict[str, Any]] = []
+    for h in history:
+        if "__async_tensor__" not in h:
+            final_history.append(h)
+            continue
+        loss_f = float(h["loss_t"].item())
+        g_val = h["grad_norm_t"]
+        grad_norm_f = float(g_val.item() if torch.is_tensor(g_val) else g_val)
         if not math.isfinite(grad_norm_f):
-            optim.zero_grad(set_to_none=True)
-            scaler.update()
-            history.append(
+            final_history.append(
                 {
-                    "step": step,
-                    "loss": float(loss.detach().item()),
+                    "step": h["local_step"],
+                    "loss": loss_f,
                     "grad_norm": grad_norm_f,
                     "skipped": "nonfinite_grad",
                 }
             )
-            continue
-        scaler.step(optim)
-        scaler.update()
-        tokens_seen += int(batch_size) * int(seq_len)
-        loss_f = float(loss.detach().item())
-        ppl_f = float(math.exp(min(loss_f, 30.0)))
-        if step % 100 == 0 or step <= 50:
-            history.append(
+        else:
+            final_history.append(
                 {
-                    "step": global_step,
-                    "local_step": step,
+                    "step": h["step"],
+                    "local_step": h["local_step"],
                     "loss": loss_f,
-                    "ppl": ppl_f,
+                    "ppl": float(math.exp(min(loss_f, 30.0))),
                     "grad_norm": grad_norm_f,
-                    "lr": lr,
+                    "lr": h["lr"],
+                    "seq_len": int(h.get("seq_len", seq_len)),
                 }
             )
-        if log_every > 0 and (step % log_every == 0 or step == 1 or step == n_steps):
-            now = time.monotonic()
-            elapsed = max(now - t0, 1e-9)
-            recent_elapsed = max(now - last_log_t, 1e-9)
-            recent_tokens = max(0, tokens_seen - last_log_tokens)
-            print(
-                "train "
-                f"step={global_step}/{int(step_offset) + int(n_steps)} "
-                f"local={step}/{n_steps} "
-                f"loss={loss_f:.4f} "
-                f"ppl={ppl_f:.2f} "
-                f"lr={lr:.3g} "
-                f"grad_norm={grad_norm_f:.3g} "
-                f"tok_s={tokens_seen / elapsed:.0f} "
-                f"recent_tok_s={recent_tokens / recent_elapsed:.0f}",
-                flush=True,
-            )
-            last_log_t = now
-            last_log_tokens = tokens_seen
-        if (
-            on_save is not None
-            and int(save_every_steps) > 0
+    return final_history
+
+
+def _maybe_save(
+    *,
+    on_save,
+    step: int,
+    global_step: int,
+    n_steps: int,
+    save_every_steps: int,
+    save_steps: list[dict[str, Any]],
+    force: bool = False,
+) -> None:
+    if on_save is None:
+        return
+    if not (
+        force
+        or (
+            int(save_every_steps) > 0
             and (step % int(save_every_steps) == 0 or step == n_steps)
-        ):
-            saved_path = on_save(global_step)
-            if saved_path is not None:
-                save_steps.append(
-                    {"step": global_step, "local_step": step, "path": str(saved_path)}
-                )
-        halted = False
-        if (
-            on_mid_tier is not None
-            and int(mid_tier_every_steps) > 0
-            and step % int(mid_tier_every_steps) == 0
-            and step != n_steps
-        ):
-            halted = bool(on_mid_tier(global_step))
-            mid_tier_steps.append(global_step)
-        if halted:
-            if on_save is not None:
-                saved_path = on_save(global_step)
-                if saved_path is not None:
-                    save_steps.append(
-                        {
-                            "step": global_step,
-                            "local_step": step,
-                            "path": str(saved_path),
-                        }
-                    )
-            on_checkpoint(global_step, force_final=True)
-            halt_reason = "ppl_plateau"
-            halt_step = global_step
-            break
-        if next_idx < len(sorted_ckpts) and step >= sorted_ckpts[next_idx]:
-            on_checkpoint(int(step_offset) + sorted_ckpts[next_idx])
-            next_idx += 1
-    else:
-        halt_reason = "completed"
-        halt_step = int(step_offset) + int(n_steps)
+        )
+    ):
+        return
+    saved_path = on_save(global_step)
+    if saved_path is not None:
+        save_steps.append(
+            {"step": global_step, "local_step": step, "path": str(saved_path)}
+        )
+
+
+def _build_train_meta(
+    *,
+    history,
+    optim_meta,
+    learning_rate,
+    min_lr,
+    warmup_steps,
+    n_steps,
+    scheduler,
+    seq_len_schedule,
+    initial_seq_len,
+    seq_len,
+    curriculum_warmup_steps,
+    step_offset,
+    amp,
+    amp_dtype,
+    device,
+    compile_meta,
+    save_steps,
+    mid_tier_steps,
+    t0,
+    halt_reason: str,
+    halt_step: int,
+) -> dict[str, Any]:
+    final_history = _finalize_history(history, seq_len)
     return {
-        "history": history,
+        "history": final_history,
         "optimizer": optim_meta,
         "scheduler": {
             "name": "warmup_cosine",
@@ -766,6 +797,12 @@ def _training_loop(
             "warmup_steps": int(warmup_steps),
             "total_steps": int(n_steps),
             "final_lr": scheduler.lr_at(int(n_steps)),
+        },
+        "seq_len_schedule": {
+            "name": str(seq_len_schedule),
+            "initial_seq_len": int(initial_seq_len),
+            "max_seq_len": int(seq_len),
+            "warmup_steps": int(curriculum_warmup_steps),
         },
         "step_offset": int(step_offset),
         "amp": {
@@ -779,6 +816,318 @@ def _training_loop(
         "halt_reason": halt_reason,
         "halt_step": halt_step,
     }
+
+
+def _record_history(
+    history,
+    *,
+    step: int,
+    global_step: int,
+    loss,
+    grad_norm,
+    lr: float,
+    curr_seq_len: int,
+) -> None:
+    if not (step % 100 == 0 or step <= 50):
+        return
+    history.append(
+        {
+            "__async_tensor__": True,
+            "step": global_step,
+            "local_step": step,
+            "loss_t": loss.detach(),
+            "grad_norm_t": grad_norm.detach()
+            if torch.is_tensor(grad_norm)
+            else grad_norm,
+            "lr": lr,
+            "seq_len": int(curr_seq_len),
+        }
+    )
+
+
+@dataclass
+class _TrainState:
+    optim: Any
+    scheduler: Any
+    scaler: Any
+    compile_meta: dict[str, Any]
+    history: list[dict[str, Any]]
+    save_steps: list[dict[str, Any]]
+    mid_tier_steps: list[int]
+    sorted_ckpts: list[int]
+    next_idx: int = 0
+    tokens_seen: int = 0
+    last_log_t: float = 0.0
+    last_log_tokens: int = 0
+
+
+def _do_train_step(
+    model,
+    train_model,
+    train_batcher,
+    state: _TrainState,
+    *,
+    step: int,
+    n_steps: int,
+    step_offset: int,
+    device,
+    amp: bool,
+    amp_dtype,
+    compile_required: bool,
+    log_every: int,
+    batch_size: int,
+    seq_len: int,
+    seq_len_schedule: str,
+    initial_seq_len: int,
+    curriculum_warmup_steps: int,
+    t0: float,
+) -> Any:
+    """Execute a single training step in-place against ``state``; returns updated train_model."""
+    global_step = int(step_offset) + step
+    lr = state.scheduler.apply(step - 1)
+    curr_seq_len = _scheduled_seq_len(
+        schedule=seq_len_schedule,
+        step=step,
+        max_seq_len=seq_len,
+        initial_seq_len=initial_seq_len,
+        warmup_steps=curriculum_warmup_steps,
+    )
+    ids = train_batcher.next(curr_seq_len)
+    state.optim.zero_grad(set_to_none=True)
+    if train_model is not model:
+        _mark_cudagraph_step_begin()
+    loss, train_model = _forward_loss_with_lazy_fallback(
+        model,
+        train_model,
+        ids,
+        amp=amp,
+        amp_dtype=amp_dtype,
+        device=device,
+        compile_required=compile_required,
+        compile_meta=state.compile_meta,
+    )
+    state.scaler.scale(loss).backward()
+    state.scaler.unscale_(state.optim)
+    grad_norm = torch.nn.utils.clip_grad_norm_(
+        model.parameters(), 1.0, error_if_nonfinite=False
+    )
+    state.scaler.step(state.optim)
+    state.scaler.update()
+    state.tokens_seen += int(batch_size) * int(curr_seq_len)
+    _record_history(
+        state.history,
+        step=step,
+        global_step=global_step,
+        loss=loss,
+        grad_norm=grad_norm,
+        lr=lr,
+        curr_seq_len=curr_seq_len,
+    )
+    if log_every > 0 and (step % log_every == 0 or step == 1 or step == n_steps):
+        state.last_log_t, state.last_log_tokens = _log_train_step(
+            step=step,
+            n_steps=n_steps,
+            global_step=global_step,
+            step_offset=int(step_offset),
+            loss=loss,
+            grad_norm=grad_norm,
+            lr=lr,
+            curr_seq_len=int(curr_seq_len),
+            t0=t0,
+            last_log_t=state.last_log_t,
+            tokens_seen=state.tokens_seen,
+            last_log_tokens=state.last_log_tokens,
+        )
+    return train_model
+
+
+def _post_step_callbacks(
+    state: _TrainState,
+    *,
+    step: int,
+    global_step: int,
+    n_steps: int,
+    step_offset: int,
+    save_every_steps: int,
+    on_save,
+    on_mid_tier,
+    on_checkpoint,
+    mid_tier_every_steps: int,
+) -> tuple[str, int] | None:
+    """Run save/mid-tier/checkpoint callbacks; return (halt_reason, halt_step) if training should stop."""
+    _maybe_save(
+        on_save=on_save,
+        step=step,
+        global_step=global_step,
+        n_steps=n_steps,
+        save_every_steps=save_every_steps,
+        save_steps=state.save_steps,
+    )
+    halted = False
+    if (
+        on_mid_tier is not None
+        and int(mid_tier_every_steps) > 0
+        and step % int(mid_tier_every_steps) == 0
+        and step != n_steps
+    ):
+        halted = bool(on_mid_tier(global_step))
+        state.mid_tier_steps.append(global_step)
+    if halted:
+        _maybe_save(
+            on_save=on_save,
+            step=step,
+            global_step=global_step,
+            n_steps=n_steps,
+            save_every_steps=save_every_steps,
+            save_steps=state.save_steps,
+            force=True,
+        )
+        on_checkpoint(global_step, force_final=True)
+        return ("ppl_plateau", global_step)
+    if (
+        state.next_idx < len(state.sorted_ckpts)
+        and step >= state.sorted_ckpts[state.next_idx]
+    ):
+        on_checkpoint(int(step_offset) + state.sorted_ckpts[state.next_idx])
+        state.next_idx += 1
+    return None
+
+
+@dataclass
+class _LoopCfg:
+    n_steps: int
+    step_offset: int
+    learning_rate: float
+    min_lr: float
+    warmup_steps: int
+    device: torch.device
+    amp: bool
+    amp_dtype: torch.dtype
+    compile_required: bool
+    log_every_steps: int
+    batch_size: int
+    seq_len: int
+    seq_len_schedule: str
+    initial_seq_len: int
+    curriculum_warmup_steps: int
+    checkpoint_steps: tuple[int, ...]
+    save_every_steps: int
+    mid_tier_every_steps: int
+
+
+def _init_training_state(
+    model: nn.Module, cfg: _LoopCfg
+) -> tuple[_TrainState, dict[str, Any], float]:
+    optim, optim_meta = _make_optimizer(
+        model, learning_rate=cfg.learning_rate, device=cfg.device
+    )
+    scheduler = _WarmupCosineSchedule(
+        optim,
+        learning_rate=float(cfg.learning_rate),
+        min_lr=float(cfg.min_lr),
+        warmup_steps=int(cfg.warmup_steps),
+        total_steps=int(cfg.n_steps),
+    )
+    scaler = torch.amp.GradScaler(
+        "cuda",
+        enabled=bool(
+            cfg.amp and cfg.amp_dtype == torch.float16 and cfg.device.type == "cuda"
+        ),
+    )
+    t0 = time.monotonic()
+    state = _TrainState(
+        optim=optim,
+        scheduler=scheduler,
+        scaler=scaler,
+        compile_meta={"lazy_disabled": False},
+        history=[],
+        save_steps=[],
+        mid_tier_steps=[],
+        sorted_ckpts=sorted(set(int(s) for s in cfg.checkpoint_steps)),
+        last_log_t=t0,
+    )
+    return state, optim_meta, t0
+
+
+def _training_loop(
+    model: nn.Module,
+    train_model: nn.Module,
+    train_batcher: _RandomWindowBatcher,
+    *,
+    on_checkpoint: Callable[..., None],
+    on_save: Callable[[int], Path | None] | None,
+    on_mid_tier: Callable[[int], bool] | None,
+    **cfg_kwargs,
+) -> dict[str, Any]:
+    """Run training, calling ``on_checkpoint(step)`` at each ckpt step."""
+    cfg = _LoopCfg(**cfg_kwargs)
+    state, optim_meta, t0 = _init_training_state(model, cfg)
+    model.train()
+    train_model.train()
+    log_every = int(cfg.log_every_steps)
+    halt_reason = "completed"
+    halt_step = int(cfg.step_offset) + int(cfg.n_steps)
+    for step in range(1, cfg.n_steps + 1):
+        global_step = int(cfg.step_offset) + step
+        train_model = _do_train_step(
+            model,
+            train_model,
+            train_batcher,
+            state,
+            step=step,
+            n_steps=cfg.n_steps,
+            step_offset=cfg.step_offset,
+            device=cfg.device,
+            amp=cfg.amp,
+            amp_dtype=cfg.amp_dtype,
+            compile_required=cfg.compile_required,
+            log_every=log_every,
+            batch_size=cfg.batch_size,
+            seq_len=cfg.seq_len,
+            seq_len_schedule=cfg.seq_len_schedule,
+            initial_seq_len=cfg.initial_seq_len,
+            curriculum_warmup_steps=cfg.curriculum_warmup_steps,
+            t0=t0,
+        )
+        halt_info = _post_step_callbacks(
+            state,
+            step=step,
+            global_step=global_step,
+            n_steps=cfg.n_steps,
+            step_offset=cfg.step_offset,
+            save_every_steps=cfg.save_every_steps,
+            on_save=on_save,
+            on_mid_tier=on_mid_tier,
+            on_checkpoint=on_checkpoint,
+            mid_tier_every_steps=cfg.mid_tier_every_steps,
+        )
+        if halt_info is not None:
+            halt_reason, halt_step = halt_info
+            break
+
+    return _build_train_meta(
+        history=state.history,
+        optim_meta=optim_meta,
+        learning_rate=cfg.learning_rate,
+        min_lr=cfg.min_lr,
+        warmup_steps=cfg.warmup_steps,
+        n_steps=cfg.n_steps,
+        scheduler=state.scheduler,
+        seq_len_schedule=cfg.seq_len_schedule,
+        initial_seq_len=cfg.initial_seq_len,
+        seq_len=cfg.seq_len,
+        curriculum_warmup_steps=cfg.curriculum_warmup_steps,
+        step_offset=cfg.step_offset,
+        amp=cfg.amp,
+        amp_dtype=cfg.amp_dtype,
+        device=cfg.device,
+        compile_meta=state.compile_meta,
+        save_steps=state.save_steps,
+        mid_tier_steps=state.mid_tier_steps,
+        t0=t0,
+        halt_reason=halt_reason,
+        halt_step=halt_step,
+    )
 
 
 def _parse_pattern(pattern: str) -> list[tuple[str, int]]:
@@ -1040,86 +1389,39 @@ def _load_resume_weights(
     return int(payload.get("step", 0) or 0)
 
 
-def run_fingerprint(
+def _emit_start_event(
+    append,
     *,
-    mixer: str,
-    output_dir: Path,
-    n_steps: int = 10_000,
-    checkpoint_steps: tuple[int, ...] = DEFAULT_CHECKPOINT_STEPS,
-    batch_size: int = 16,
-    seq_len: int = 256,
-    learning_rate: float = 3e-4,
-    min_lr: float = 1e-5,
-    warmup_steps: int = 2_000,
-    n_eval_batches: int = 32,
-    device: str = "cuda",
-    seed: int = 0,
-    pattern: str | None = None,
-    run_label: str | None = None,
-    dim: int = 96,
-    n_blocks: int = 12,
-    save_weights: bool = True,
-    save_every_steps: int = 5_000,
-    keep_last_saves: int = 3,
-    mid_tier_every_steps: int = 10_000,
-    amp: bool = True,
-    amp_dtype_name: str = "bf16",
-    compile_model: bool = True,
-    compile_mode: str = "max-autotune-no-cudagraphs",
-    compile_fullgraph: bool = False,
-    compile_dynamic: bool = False,
-    compile_required: bool = False,
-    log_every_steps: int = 10,
-    resume: Path | None = None,
-    plateau_patience: int = 3,
-    plateau_min_delta: float = 0.005,
-    plateau_min_steps: int = 20_000,
-    use_ffn: bool = True,
-) -> Path:
-    """End-to-end: build → train → checkpoint-eval → final-eval → write JSONL.
-
-    ``pattern`` only used when ``mixer == "interleaved"`` — comma-separated
-    ``name:count`` per-block specification, e.g. ``"conv:6,three_lane:6"`` for
-    alternating-pair stacks of 12 blocks total.
-
-    ``run_label`` overrides the JSONL filename (default ``f"{mixer}.jsonl"``).
-    For interleaved runs you'll usually want to set this to encode the pattern.
-    """
-    _configure_torch_performance()
-    _validate_output_dir(output_dir)
-    torch.manual_seed(seed)
-    device_obj = torch.device(device)
-    if device_obj.type == "cuda":
-        torch.cuda.manual_seed_all(seed)
-    amp_dtype = _autocast_dtype(str(amp_dtype_name), device_obj)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    label = run_label or mixer
-    jsonl_path = output_dir / f"{label}.jsonl"
-    append = _make_writer(jsonl_path)
-
-    model, factory, train_batcher, val_batches, n_params = _build_model_and_batchers(
-        mixer=mixer,
-        pattern=pattern,
-        batch_size=batch_size,
-        seq_len=seq_len,
-        device=str(device_obj),
-        n_eval_batches=n_eval_batches,
-        dim=dim,
-        n_blocks=n_blocks,
-        use_ffn=use_ffn,
-    )
-    step_offset = 0
-    if resume is not None:
-        step_offset = _load_resume_weights(model, Path(resume), device_obj)
-    train_model, compile_meta = _maybe_compile_training_model(
-        model,
-        enabled=bool(compile_model),
-        required=bool(compile_required),
-        mode=str(compile_mode),
-        fullgraph=bool(compile_fullgraph),
-        dynamic=bool(compile_dynamic),
-        device=device_obj,
-    )
+    mixer,
+    pattern,
+    n_params,
+    dim,
+    n_blocks,
+    n_steps,
+    step_offset,
+    resume,
+    checkpoint_steps,
+    batch_size,
+    seq_len,
+    seq_len_schedule,
+    initial_seq_len,
+    curriculum_warmup_steps,
+    learning_rate,
+    min_lr,
+    warmup_steps,
+    device_obj,
+    amp,
+    amp_dtype,
+    compile_meta,
+    save_weights,
+    save_every_steps,
+    keep_last_saves,
+    mid_tier_every_steps,
+    log_every_steps,
+    plateau_patience,
+    plateau_min_delta,
+    plateau_min_steps,
+) -> None:
     append(
         {
             "event": "start",
@@ -1136,6 +1438,12 @@ def run_fingerprint(
             "checkpoint_steps": list(checkpoint_steps),
             "batch_size": batch_size,
             "seq_len": seq_len,
+            "seq_len_schedule": {
+                "name": str(seq_len_schedule),
+                "initial_seq_len": int(initial_seq_len),
+                "max_seq_len": int(seq_len),
+                "warmup_steps": int(curriculum_warmup_steps),
+            },
             "learning_rate": learning_rate,
             "min_lr": min_lr,
             "warmup_steps": int(warmup_steps),
@@ -1159,7 +1467,30 @@ def run_fingerprint(
             "started_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         }
     )
-    state: dict[str, Any] = {"last_evals": {}}
+
+
+def _make_callbacks(
+    *,
+    model,
+    factory,
+    val_batches,
+    device_obj,
+    seed,
+    checkpoint_steps,
+    step_offset,
+    append,
+    state,
+    amp,
+    amp_dtype,
+    save_weights,
+    output_dir,
+    label,
+    keep_last_saves,
+    mid_tier_every_steps,
+    plateau_patience,
+    plateau_min_delta,
+    plateau_min_steps,
+):
     on_checkpoint = _make_checkpoint_handler(
         model=model,
         factory=factory,
@@ -1205,6 +1536,175 @@ def run_fingerprint(
         if int(mid_tier_every_steps) > 0
         else None
     )
+    return on_checkpoint, on_save, on_mid_tier, plateau_tracker
+
+
+def _setup_run_environment(
+    *,
+    output_dir: Path,
+    seed: int,
+    device: str,
+    amp_dtype_name: str,
+    seq_len_schedule: str,
+    compile_model: bool,
+    compile_dynamic: bool,
+    run_label: str | None,
+    mixer: str,
+) -> tuple[torch.device, torch.dtype, bool, Path, str, Any]:
+    _configure_torch_performance()
+    _validate_output_dir(output_dir)
+    torch.manual_seed(seed)
+    device_obj = torch.device(device)
+    if device_obj.type == "cuda":
+        torch.cuda.manual_seed_all(seed)
+    amp_dtype = _autocast_dtype(str(amp_dtype_name), device_obj)
+    effective_compile_dynamic = bool(compile_dynamic)
+    if str(seq_len_schedule).strip().lower() == "growing" and bool(compile_model):
+        effective_compile_dynamic = True
+    output_dir.mkdir(parents=True, exist_ok=True)
+    label = run_label or mixer
+    jsonl_path = output_dir / f"{label}.jsonl"
+    append = _make_writer(jsonl_path)
+    return device_obj, amp_dtype, effective_compile_dynamic, jsonl_path, label, append
+
+
+def run_fingerprint(
+    *,
+    mixer: str,
+    output_dir: Path,
+    n_steps: int = 10_000,
+    checkpoint_steps: tuple[int, ...] = DEFAULT_CHECKPOINT_STEPS,
+    batch_size: int = 16,
+    seq_len: int = 256,
+    learning_rate: float = 3e-4,
+    min_lr: float = 1e-5,
+    warmup_steps: int = 2_000,
+    seq_len_schedule: str = "fixed",
+    initial_seq_len: int = 16,
+    curriculum_warmup_steps: int = 2_000,
+    n_eval_batches: int = 32,
+    device: str = "cuda",
+    seed: int = 0,
+    pattern: str | None = None,
+    run_label: str | None = None,
+    dim: int = 96,
+    n_blocks: int = 12,
+    save_weights: bool = True,
+    save_every_steps: int = 5_000,
+    keep_last_saves: int = 3,
+    mid_tier_every_steps: int = 10_000,
+    amp: bool = True,
+    amp_dtype_name: str = "bf16",
+    compile_model: bool = True,
+    compile_mode: str = "max-autotune-no-cudagraphs",
+    compile_fullgraph: bool = False,
+    compile_dynamic: bool = False,
+    compile_required: bool = False,
+    log_every_steps: int = 10,
+    resume: Path | None = None,
+    plateau_patience: int = 3,
+    plateau_min_delta: float = 0.005,
+    plateau_min_steps: int = 20_000,
+    use_ffn: bool = True,
+) -> Path:
+    """End-to-end: build → train → checkpoint-eval → final-eval → write JSONL.
+
+    Pure CLI dispatch; the work lives in _setup_run_environment,
+    _build_model_and_batchers, _emit_start_event, _make_callbacks,
+    _training_loop. The argument list IS the public surface area.
+    """
+    # guardrail: allow-god-function
+    device_obj, amp_dtype, effective_compile_dynamic, jsonl_path, label, append = (
+        _setup_run_environment(
+            output_dir=output_dir,
+            seed=seed,
+            device=device,
+            amp_dtype_name=amp_dtype_name,
+            seq_len_schedule=seq_len_schedule,
+            compile_model=compile_model,
+            compile_dynamic=compile_dynamic,
+            run_label=run_label,
+            mixer=mixer,
+        )
+    )
+    model, factory, train_batcher, val_batches, n_params = _build_model_and_batchers(
+        mixer=mixer,
+        pattern=pattern,
+        batch_size=batch_size,
+        seq_len=seq_len,
+        device=str(device_obj),
+        n_eval_batches=n_eval_batches,
+        dim=dim,
+        n_blocks=n_blocks,
+        use_ffn=use_ffn,
+    )
+    step_offset = 0
+    if resume is not None:
+        step_offset = _load_resume_weights(model, Path(resume), device_obj)
+    loss_wrapper = _TrainLossWrapper(model)
+    train_model, compile_meta = _maybe_compile_training_model(
+        loss_wrapper,
+        enabled=bool(compile_model),
+        required=bool(compile_required),
+        mode=str(compile_mode),
+        fullgraph=bool(compile_fullgraph),
+        dynamic=effective_compile_dynamic,
+        device=device_obj,
+    )
+    _emit_start_event(
+        append,
+        mixer=mixer,
+        pattern=pattern,
+        n_params=n_params,
+        dim=dim,
+        n_blocks=n_blocks,
+        n_steps=n_steps,
+        step_offset=step_offset,
+        resume=resume,
+        checkpoint_steps=checkpoint_steps,
+        batch_size=batch_size,
+        seq_len=seq_len,
+        seq_len_schedule=seq_len_schedule,
+        initial_seq_len=initial_seq_len,
+        curriculum_warmup_steps=curriculum_warmup_steps,
+        learning_rate=learning_rate,
+        min_lr=min_lr,
+        warmup_steps=warmup_steps,
+        device_obj=device_obj,
+        amp=amp,
+        amp_dtype=amp_dtype,
+        compile_meta=compile_meta,
+        save_weights=save_weights,
+        save_every_steps=save_every_steps,
+        keep_last_saves=keep_last_saves,
+        mid_tier_every_steps=mid_tier_every_steps,
+        log_every_steps=log_every_steps,
+        plateau_patience=plateau_patience,
+        plateau_min_delta=plateau_min_delta,
+        plateau_min_steps=plateau_min_steps,
+    )
+    state: dict[str, Any] = {"last_evals": {}}
+    on_checkpoint, on_save, on_mid_tier, plateau_tracker = _make_callbacks(
+        model=model,
+        factory=factory,
+        val_batches=val_batches,
+        device_obj=device_obj,
+        seed=seed,
+        checkpoint_steps=checkpoint_steps,
+        step_offset=step_offset,
+        append=append,
+        state=state,
+        amp=amp,
+        amp_dtype=amp_dtype,
+        save_weights=save_weights,
+        output_dir=output_dir,
+        label=label,
+        keep_last_saves=keep_last_saves,
+        mid_tier_every_steps=mid_tier_every_steps,
+        plateau_patience=plateau_patience,
+        plateau_min_delta=plateau_min_delta,
+        plateau_min_steps=plateau_min_steps,
+    )
     train_meta = _training_loop(
         model,
         train_model,
@@ -1221,6 +1721,9 @@ def run_fingerprint(
         log_every_steps=int(log_every_steps),
         batch_size=int(batch_size),
         seq_len=int(seq_len),
+        seq_len_schedule=str(seq_len_schedule),
+        initial_seq_len=int(initial_seq_len),
+        curriculum_warmup_steps=int(curriculum_warmup_steps),
         checkpoint_steps=checkpoint_steps,
         on_checkpoint=on_checkpoint,
         save_every_steps=int(save_every_steps),
@@ -1237,8 +1740,7 @@ def run_fingerprint(
     return jsonl_path
 
 
-def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    p = argparse.ArgumentParser(description=__doc__)
+def _add_run_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--mixer", required=True, type=str)
     p.add_argument(
         "--output",
@@ -1254,6 +1756,25 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     p.add_argument("--batch-size", default=16, type=int)
     p.add_argument("--seq-len", default=256, type=int)
+    p.add_argument(
+        "--seq-len-schedule",
+        default="fixed",
+        choices=["fixed", "growing"],
+        help="Training sequence-length schedule. 'growing' ramps from "
+        "--initial-seq-len to --seq-len over --curriculum-warmup-steps.",
+    )
+    p.add_argument(
+        "--initial-seq-len",
+        default=16,
+        type=int,
+        help="Initial training sequence length when --seq-len-schedule=growing.",
+    )
+    p.add_argument(
+        "--curriculum-warmup-steps",
+        default=2_000,
+        type=int,
+        help="Number of local optimizer steps for growing seq_len to reach --seq-len.",
+    )
     p.add_argument("--learning-rate", default=3e-4, type=float)
     p.add_argument("--min-lr", default=1e-5, type=float)
     p.add_argument("--warmup-steps", default=2_000, type=int)
@@ -1281,6 +1802,9 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--dim", default=96, type=int, help="Model dim (default 96 ≈ 10M params)."
     )
     p.add_argument("--n-blocks", default=12, type=int, help="Number of stacked blocks.")
+
+
+def _add_checkpoint_args(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--no-save-weights",
         dest="save_weights",
@@ -1306,6 +1830,9 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=int,
         help="Run cheap induction/binding screening every N steps; 0 disables.",
     )
+
+
+def _add_compile_args(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--amp",
         action=argparse.BooleanOptionalAction,
@@ -1345,6 +1872,9 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Exit instead of falling back to eager mode if torch.compile fails.",
     )
+
+
+def _add_plateau_args(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--log-every-steps",
         default=10,
@@ -1378,6 +1908,14 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "ensemble lanes) to avoid double-FFN, which crashes AR per the 2026-05-19 "
         "sensitivity ablation.",
     )
+
+
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    p = argparse.ArgumentParser(description=__doc__)
+    _add_run_args(p)
+    _add_checkpoint_args(p)
+    _add_compile_args(p)
+    _add_plateau_args(p)
     p.set_defaults(save_weights=True)
     return p.parse_args(argv)
 
@@ -1392,6 +1930,9 @@ def main(argv: list[str] | None = None) -> int:
         checkpoint_steps=ckpts,
         batch_size=int(args.batch_size),
         seq_len=int(args.seq_len),
+        seq_len_schedule=str(args.seq_len_schedule),
+        initial_seq_len=int(args.initial_seq_len),
+        curriculum_warmup_steps=int(args.curriculum_warmup_steps),
         learning_rate=float(args.learning_rate),
         min_lr=float(args.min_lr),
         warmup_steps=int(args.warmup_steps),

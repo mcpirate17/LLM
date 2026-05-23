@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import os
 import sqlite3
 import time
 from pathlib import Path
@@ -35,6 +36,7 @@ from research.eval.ar_curriculum_probe import (
     ar_curriculum_probe,
     required_vocab_size,
 )
+from research.scientist.notebook.graph_artifacts import resolve_graph_json_value
 from research.synthesis.compiler import _compile_layer_module
 from research.synthesis.serializer import graph_from_json
 from research.tools.mixer_fingerprint import (
@@ -74,11 +76,13 @@ TOP_AR_FPS: tuple[tuple[str, str, float], ...] = (
 )
 
 
-def _load_top_graphs(n: int):
+def _load_graphs_by_fingerprint(
+    graph_specs: tuple[tuple[str, str, float], ...],
+) -> list[tuple[str, str, float, Any]]:
     out = []
     with sqlite3.connect(str(DB_PATH)) as conn:
         cur = conn.cursor()
-        for fp, desc, db_auc in TOP_AR_FPS[:n]:
+        for fp, desc, db_auc in graph_specs:
             cur.execute(
                 "SELECT graph_json FROM program_results "
                 "WHERE graph_fingerprint=? AND graph_json IS NOT NULL "
@@ -88,8 +92,97 @@ def _load_top_graphs(n: int):
             row = cur.fetchone()
             if row is None:
                 raise ValueError(f"no graph_json for fp {fp}")
-            out.append((fp, desc, db_auc, graph_from_json(row[0])))
+            graph_json = resolve_graph_json_value(conn, DB_PATH, row[0])
+            out.append((fp, desc, db_auc, graph_from_json(graph_json)))
     return out
+
+
+# 2026-05-21: graphs from runs.db.program_results that simultaneously clear
+# ar_curriculum_auc_pair_final > 0.4 AND binding_intermediate_auc > 0.7 AND
+# induction_intermediate_auc > 0.5. Both share the `local_attn_ssm_hybrid`
+# template (research/synthesis/_templates_attention_hybrid.py:468) — ops:
+# local_window_attn + selective_scan + diff_attention + conv1d_seq + silu +
+# linear_proj + rmsnorm. Powers the `cross_bias_Nway` lane.
+CROSS_BIAS_FPS: tuple[tuple[str, str, float], ...] = (
+    (
+        "bb0b8d5856da1f29",  # pragma: allowlist secret
+        "local_attn_ssm_hybrid (ar=0.797, bi=0.984, ii=1.0)",
+        0.7975,
+    ),
+    (
+        "5c5013c79d1f0a51",  # pragma: allowlist secret
+        "local_attn_ssm_hybrid (ar=0.407, bi=0.995, ii=1.0)",
+        0.4073,
+    ),
+)
+
+# 2026-05-21: cluster 2 — bind > 0.7 AND ind > 0.5 AND ar > 0.3. Share
+# `latent_compress_block + difficulty_routed_block + routed_bottleneck` templates
+# — ops: softmax_attention + token_type_classifier + entropy_score + rope_rotate
+# + spectral_filter. Powers the `routed_compress_Nway` lane (codex track).
+ROUTED_COMPRESS_FPS: tuple[tuple[str, str, float], ...] = (
+    (
+        "176ec33b18a580bd",  # pragma: allowlist secret
+        "latent_compress + difficulty_routed (ar=0.346, bi=0.995, ii=0.923)",
+        0.3464,
+    ),
+    (
+        "0c07a4d2c6ea74fa",  # pragma: allowlist secret
+        "latent_compress + difficulty_routed (ar=0.300, bi=1.000, ii=0.985)",
+        0.3001,
+    ),
+)
+
+
+def _load_top_graphs(n: int):
+    return _load_graphs_by_fingerprint(TOP_AR_FPS[:n])
+
+
+def _load_cross_bias_graphs(n: int):
+    return _load_graphs_by_fingerprint(CROSS_BIAS_FPS[:n])
+
+
+def _load_routed_compress_graphs(n: int):
+    return _load_graphs_by_fingerprint(ROUTED_COMPRESS_FPS[:n])
+
+
+# 2026-05-21: ops whose input gets a `rope_rotate` injected when a graph passes
+# through `_inject_rope_before_ops` — anything `attention`-shaped where Q/K
+# scoring would benefit from explicit positional info. `selective_scan` and
+# `conv1d_seq` are intentionally excluded: they're order-aware by construction
+# (recurrent state / causal kernel), so RoPE adds nothing.
+_ROPE_INJECTION_TARGETS = frozenset(
+    {"local_window_attn", "diff_attention", "softmax_attention"}
+)
+
+
+def _inject_rope_before_ops(
+    graph, target_op_names: frozenset[str] = _ROPE_INJECTION_TARGETS
+):
+    """Return a copy of `graph` with `rope_rotate` nodes inserted before targets.
+
+    For every node whose `op_name` is in `target_op_names`, each input edge is
+    redirected through a fresh `rope_rotate` node. Used by the `local_ssm_diff_rope`
+    lane to give the cluster-1 attention ops the same position-aware Q/K
+    scoring the three_lane blocks get via `_attach_rope_to_attention`.
+
+    Why a graph-level mutation rather than patching `_op_local_window_attn`:
+    the synthesis-graph attention ops use Q=K=V=x (no projections), so RoPE
+    has to be applied at the input — at which point it's structurally identical
+    to inserting a `rope_rotate` node on the input edge.
+    """
+    g = graph.copy()
+    targets = [n for n in list(g.nodes.values()) if n.op_name in target_op_names]
+    for tgt in targets:
+        new_input_ids = []
+        for src_id in tgt.input_ids:
+            rope_id = g.add_op("rope_rotate", [src_id], {})
+            new_input_ids.append(rope_id)
+        tgt.input_ids[:] = new_input_ids
+    g._ir_version += 1
+    if g._cache:
+        g._cache.clear()
+    return g
 
 
 def _rescaled_graph_copy(graph, new_dim: int):
@@ -108,6 +201,8 @@ def _rescaled_graph_copy(graph, new_dim: int):
     for node in g.nodes.values():
         if isinstance(node.output_shape, dict) and "dim" in node.output_shape:
             node.output_shape["dim"] = int(new_dim)
+        elif hasattr(node.output_shape, "dim"):
+            node.output_shape.dim = int(new_dim)
         if isinstance(getattr(node, "config", None), dict) and "out_dim" in node.config:
             node.config["out_dim"] = int(new_dim)
     return g
@@ -127,12 +222,31 @@ def _make_ensemble_lane_factory(graph_specs) -> Callable[[int], nn.Module]:
         rescaled = [
             (g if g.model_dim == dim else _rescaled_graph_copy(g, dim)) for g in graphs
         ]
+        branch_executor = os.environ.get("SYNTHESIS_ENSEMBLE_EXECUTOR", "compiled")
         branches = nn.ModuleList(
-            [_compile_layer_module(g, prefer_fast_path=True) for g in rescaled]
+            [
+                _compile_layer_module(g, executor_variant=branch_executor)
+                for g in rescaled
+            ]
         )
         w = 1.0 / len(branches)
 
         class _ParallelSum(nn.Module):
+            """Equal-weight parallel-sum over branches.
+
+            Sequential by design. Two stream-parallel attempts (2026-05-20,
+            see [[feedback_parallel_sum_threads_dont_help]]):
+              1. Streams + inline join: 28.5 → 27.3 ms/block (~no overlap).
+              2. Streams + deferred join + ``@_dynamo.disable``: +14 ms
+                 regression because the disable boundary cost the outer
+                 model's compile fusion more than parallelism saved.
+            Both failed because each branch's CompiledLayer.forward is a
+            Python orchestration loop; the CPU still enters each branch
+            sequentially even when streams overlap on the GPU. Only L2
+            code-gen (collapse the per-branch Python loop to a flat
+            function) lets parallelism actually pay off.
+            """
+
             def __init__(self) -> None:
                 super().__init__()
                 self.branches = branches

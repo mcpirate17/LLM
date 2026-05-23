@@ -138,6 +138,7 @@ def _build_lane_factory(
     name: str, top_k_frac: float = 0.25
 ) -> Callable[[int], nn.Module]:
     """Resolve a lane-name to a lane factory for scaling tests."""
+    # guardrail: allow-god-function
     if name in ("softmax_ffn", "softmax_attention"):
         return lane_factory_for_baseline("softmax_attention")
     if name == "tropical_attention":
@@ -292,6 +293,72 @@ def _build_lane_factory(
         specs = _load_top_graphs(n)
         return _make_ensemble_lane_factory(specs)
 
+    if name == "local_ssm_diff":
+        # 2026-05-21 Phase-1 cross-bias mining: the only rows with both
+        # binding_intermediate > 0.7, ar_curriculum > 0.4, and induction=1.0
+        # were local_attn_ssm_hybrid variants with local_window_attn +
+        # conv1d_seq + selective_scan + diff_attention.
+        from research.tools.ensemble_screening import (
+            _load_graphs_by_fingerprint,
+            _make_ensemble_lane_factory,
+        )
+
+        specs = _load_graphs_by_fingerprint(
+            (
+                (
+                    "bb0b8d5856da1f29",  # pragma: allowlist secret
+                    "local_window + conv + selective_scan + diff_attention",
+                    0.7975,
+                ),
+                (
+                    "5c5013c79d1f0a51",  # pragma: allowlist secret
+                    "local_window + conv + selective_scan + diff_attention alt",
+                    0.4069,
+                ),
+            )
+        )
+        return _make_ensemble_lane_factory(specs)
+
+    if name == "routed_compress":
+        # 2026-05-21 Phase-1 cross-bias mining: cluster 2 — graphs that clear
+        # binding_intermediate > 0.7 AND induction_intermediate > 0.5 AND
+        # ar_curriculum > 0.3, sharing the `latent_compress + difficulty_routed
+        # + routed_bottleneck` templates. Ops: softmax_attention +
+        # token_type_classifier + entropy_score + rope_rotate + spectral_filter
+        # (+ latent_attention_compressor for one variant).
+        from research.tools.ensemble_screening import (
+            ROUTED_COMPRESS_FPS,
+            _load_graphs_by_fingerprint,
+            _make_ensemble_lane_factory,
+        )
+
+        return _make_ensemble_lane_factory(
+            _load_graphs_by_fingerprint(ROUTED_COMPRESS_FPS)
+        )
+
+    if name == "local_ssm_diff_rope":
+        # 2026-05-21: controlled ablation of `local_ssm_diff` with `rope_rotate`
+        # nodes injected before every `local_window_attn` / `diff_attention`
+        # node in the cluster-1 graphs. The function-based `_op_local_window_attn`
+        # is invisible to `_attach_rope_to_attention` (which walks nn.Module
+        # subclasses), so the bare `local_ssm_diff` lane has no Q/K positional
+        # signal. Caveat: the 2026-05-21 RoPE-coverage audit of past
+        # mixer_fingerprint runs found failing AR spread evenly across all
+        # RoPE cohorts — this variant is a controlled probe, not a fix.
+        from research.tools.ensemble_screening import (
+            CROSS_BIAS_FPS,
+            _inject_rope_before_ops,
+            _load_graphs_by_fingerprint,
+            _make_ensemble_lane_factory,
+        )
+
+        specs = _load_graphs_by_fingerprint(CROSS_BIAS_FPS)
+        roped = [
+            (fp, desc, db_auc, _inject_rope_before_ops(g))
+            for fp, desc, db_auc, g in specs
+        ]
+        return _make_ensemble_lane_factory(roped)
+
     raise ValueError(f"unknown lane name: {name}")
 
 
@@ -383,7 +450,7 @@ def _load_training_checkpoint(
     optim: torch.optim.Optimizer,
     device: str,
 ) -> dict:
-    payload = torch.load(path, map_location=device)
+    payload = torch.load(path, map_location=device)  # nosec B614 - locally-produced checkpoint, not network-sourced
     model.load_state_dict(payload["model_state_dict"])
     optim.load_state_dict(payload["optimizer_state_dict"])
     _restore_rng_state(payload.get("rng_state"))
@@ -448,20 +515,38 @@ class _RandomWindowBatcher:
         # Sample starts on the same device as tokens — keeps the gather GPU-side
         # and removes the per-step H2D transfer that dominated old data wait time.
         self.generator = torch.Generator(device=self.device).manual_seed(int(seed))
-        self.offsets = torch.arange(
-            self.seq_len, dtype=torch.long, device=self.device
-        ).unsqueeze(0)
+        self._offsets_cache: dict[int, torch.Tensor] = {
+            self.seq_len: torch.arange(
+                self.seq_len, dtype=torch.long, device=self.device
+            ).unsqueeze(0)
+        }
         self.max_start = int(self.tokens.numel()) - self.seq_len - 1
 
-    def next(self) -> torch.Tensor:
+    def _offsets_for(self, seq_len: int) -> torch.Tensor:
+        seq_len = int(seq_len)
+        offsets = self._offsets_cache.get(seq_len)
+        if offsets is None:
+            offsets = torch.arange(
+                seq_len, dtype=torch.long, device=self.device
+            ).unsqueeze(0)
+            self._offsets_cache[seq_len] = offsets
+        return offsets
+
+    def next(self, seq_len: int | None = None) -> torch.Tensor:
+        seq_len = self.seq_len if seq_len is None else int(seq_len)
+        if seq_len <= 0 or seq_len > self.seq_len:
+            raise ValueError(f"seq_len must be in [1, {self.seq_len}], got {seq_len}")
+        max_start = int(self.tokens.numel()) - seq_len - 1
+        if max_start <= 0:
+            raise ValueError("not enough tokens for requested sequence length")
         starts = torch.randint(
             0,
-            self.max_start,
+            max_start,
             (self.batch_size, 1),
             generator=self.generator,
             device=self.device,
         )
-        return self.tokens[starts + self.offsets]
+        return self.tokens[starts + self._offsets_for(seq_len)]
 
     def fixed_batches(self, n_batches: int) -> list[torch.Tensor]:
         return [self.next() for _ in range(int(n_batches))]
@@ -607,6 +692,98 @@ def _eval_v2_at_dim(
     }
 
 
+def _make_lr_schedule(
+    base_lr: float, warmup_steps: int, n_train_steps_total: int, final_lr_frac: float
+) -> Callable[[int], float]:
+    def _lr_at(s: int) -> float:
+        if s < warmup_steps:
+            return base_lr * (s + 1) / warmup_steps
+        progress = (s - warmup_steps) / max(1, n_train_steps_total - warmup_steps)
+        return base_lr * (
+            final_lr_frac
+            + (1 - final_lr_frac) * 0.5 * (1 + math.cos(math.pi * progress))
+        )
+
+    return _lr_at
+
+
+def _eval_checkpoint(
+    model,
+    val_batches,
+    factory,
+    dim: int,
+    *,
+    target: int,
+    step: int,
+    last_loss_val: float,
+    last_grad_norm: float,
+    cur_lr: float,
+    best_ppl: float | None,
+    best_ppl_step: int | None,
+    started: float,
+    blimp_n_per_subtask: int,
+    seq_len: int,
+    device: str,
+) -> tuple[dict, float, int]:
+    ckpt_t0 = time.monotonic()
+    post_ppl = _eval_ppl(model, val_batches)
+    if best_ppl is None or post_ppl < best_ppl:
+        best_ppl = post_ppl
+        best_ppl_step = step
+    blimp = evaluate_blimp(
+        model,
+        vocab_size=VOCAB_SIZE,
+        device=device,
+        n_per_subtask=blimp_n_per_subtask,
+        max_seq_len=seq_len,
+    )
+    v2 = _eval_v2_at_dim(factory, dim)
+    ck = {
+        "checkpoint_step": target,
+        "actual_step": step,
+        "train_loss": last_loss_val,
+        "grad_norm": last_grad_norm,
+        "lr": cur_lr,
+        "post_train_ppl": post_ppl,
+        "best_ppl": best_ppl,
+        "best_ppl_step": best_ppl_step,
+        "blimp_overall": float(blimp.overall_accuracy or 0),
+        "blimp_status": str(blimp.status or ""),
+        "blimp_by_subtask": dict(blimp.subtask_accuracies or {}),
+        "v2_sc": v2["v2_sc"],
+        "v2_vd_mean": v2["v2_vd_mean"],
+        "v2_vd_per_delay": v2["v2_vd_per_delay"],
+        "v2_dyck_v3": v2["v2_dyck_v3"],
+        "v2_npi_v2": v2["v2_npi_v2"],
+        "eval_elapsed_s": round(time.monotonic() - ckpt_t0, 1),
+        "wall_clock_s": round(time.monotonic() - started, 1),
+    }
+    return ck, best_ppl, best_ppl_step
+
+
+def _train_step(
+    model,
+    optim,
+    batch,
+    grad_clip_max_norm: float,
+) -> tuple[float, float, str | None]:
+    logits = model(batch)
+    loss = _causal_lm_loss(logits, batch)
+    if not torch.isfinite(loss):
+        return 0.0, 0.0, "nonfinite_loss"
+    optim.zero_grad()
+    loss.backward()
+    grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip_max_norm)
+    if torch.is_tensor(grad_norm) and not torch.isfinite(grad_norm):
+        return 0.0, 0.0, "nonfinite_grad"
+    optim.step()
+    last_loss_val = float(loss.item())
+    last_grad_norm = float(
+        grad_norm.item() if torch.is_tensor(grad_norm) else grad_norm
+    )
+    return last_loss_val, last_grad_norm, None
+
+
 def run_scaling_cell(
     lane_name: str | None,
     size: str,
@@ -632,6 +809,7 @@ def run_scaling_cell(
 ) -> dict:
     """One model × one size × full training to n_train_steps_total with
     checkpoints. Returns the checkpoint results."""
+    # guardrail: allow-god-function
     if size not in PARAM_SIZING:
         raise ValueError(f"unknown size: {size}")
     dim = PARAM_SIZING[size]["dim"]
@@ -723,22 +901,12 @@ def run_scaling_cell(
     step = 0
     next_ckpt_idx = 0
     sorted_ckpts = sorted(checkpoint_steps)
-    # Warmup schedule: linear from 0 → base_lr over first 1000 steps, then
-    # cosine decay to 10% of base_lr by end. Prevents the LR=3e-4 divergence
-    # observed on dim=256 at 50K steps (PPL exploded to 10^10).
-    base_lr = learning_rate
-    warmup_steps = 1000
-    final_lr_frac = 0.1
-
-    def _lr_at(s: int) -> float:
-        if s < warmup_steps:
-            return base_lr * (s + 1) / warmup_steps
-        progress = (s - warmup_steps) / max(1, n_train_steps_total - warmup_steps)
-        return base_lr * (
-            final_lr_frac
-            + (1 - final_lr_frac) * 0.5 * (1 + math.cos(math.pi * progress))
-        )
-
+    _lr_at = _make_lr_schedule(
+        base_lr=learning_rate,
+        warmup_steps=1000,
+        n_train_steps_total=n_train_steps_total,
+        final_lr_frac=0.1,
+    )
     grad_clip_max_norm = 1.0  # Standard transformer gradient clipping.
 
     model.train()
@@ -755,25 +923,13 @@ def run_scaling_cell(
         for pg in optim.param_groups:
             pg["lr"] = cur_lr
         batch = train_batcher.next()
-        logits = model(batch)
-        loss = _causal_lm_loss(logits, batch)
-        if not torch.isfinite(loss):
-            stop_reason = f"nonfinite_loss_step_{step + 1}"
-            break
-        optim.zero_grad()
-        loss.backward()
-        grad_norm = torch.nn.utils.clip_grad_norm_(
-            model.parameters(), grad_clip_max_norm
+        last_loss_val, last_grad_norm, step_err = _train_step(
+            model, optim, batch, grad_clip_max_norm
         )
-        if torch.is_tensor(grad_norm) and not torch.isfinite(grad_norm):
-            stop_reason = f"nonfinite_grad_step_{step + 1}"
+        if step_err is not None:
+            stop_reason = f"{step_err}_step_{step + 1}"
             break
-        optim.step()
         step += 1
-        last_loss_val = float(loss.item())
-        last_grad_norm = float(
-            grad_norm.item() if torch.is_tensor(grad_norm) else grad_norm
-        )
         if last_grad_norm > grad_spike_threshold:
             grad_spikes += 1
         else:
@@ -794,40 +950,24 @@ def run_scaling_cell(
         # Hit a checkpoint?
         if next_ckpt_idx < len(sorted_ckpts) and step >= sorted_ckpts[next_ckpt_idx]:
             target = sorted_ckpts[next_ckpt_idx]
-            ckpt_t0 = time.monotonic()
-            post_ppl = _eval_ppl(model, val_batches)
-            if best_ppl is None or post_ppl < best_ppl:
-                best_ppl = post_ppl
-                best_ppl_step = step
-            blimp = evaluate_blimp(
+            ck, best_ppl, best_ppl_step = _eval_checkpoint(
                 model,
-                vocab_size=VOCAB_SIZE,
+                val_batches,
+                factory,
+                dim,
+                target=target,
+                step=step,
+                last_loss_val=last_loss_val,
+                last_grad_norm=last_grad_norm,
+                cur_lr=cur_lr,
+                best_ppl=best_ppl,
+                best_ppl_step=best_ppl_step,
+                started=started,
+                blimp_n_per_subtask=blimp_n_per_subtask,
+                seq_len=seq_len,
                 device=device,
-                n_per_subtask=blimp_n_per_subtask,
-                max_seq_len=seq_len,
             )
-            v2 = _eval_v2_at_dim(factory, dim)
-            ckpt_elapsed = time.monotonic() - ckpt_t0
-            ck = {
-                "checkpoint_step": target,
-                "actual_step": step,
-                "train_loss": last_loss_val,
-                "grad_norm": last_grad_norm,
-                "lr": cur_lr,
-                "post_train_ppl": post_ppl,
-                "best_ppl": best_ppl,
-                "best_ppl_step": best_ppl_step,
-                "blimp_overall": float(blimp.overall_accuracy or 0),
-                "blimp_status": str(blimp.status or ""),
-                "blimp_by_subtask": dict(blimp.subtask_accuracies or {}),
-                "v2_sc": v2["v2_sc"],
-                "v2_vd_mean": v2["v2_vd_mean"],
-                "v2_vd_per_delay": v2["v2_vd_per_delay"],
-                "v2_dyck_v3": v2["v2_dyck_v3"],
-                "v2_npi_v2": v2["v2_npi_v2"],
-                "eval_elapsed_s": round(ckpt_elapsed, 1),
-                "wall_clock_s": round(time.monotonic() - started, 1),
-            }
+            post_ppl = ck["post_train_ppl"]
             if best_ppl is not None and post_ppl > best_ppl * ppl_stop_factor:
                 ck["early_stop_reason"] = (
                     f"val_ppl {post_ppl:.1f} > {ppl_stop_factor:.2f}x "
@@ -841,7 +981,7 @@ def run_scaling_cell(
                     f"  ckpt @ step {step:>6d}: ppl={post_ppl:>7.1f} "
                     f"BLiMP={ck['blimp_overall']:.4f} v2_sc={ck['v2_sc']:.3f} "
                     f"v2_vd={ck['v2_vd_mean']:.3f} dyck={ck['v2_dyck_v3']:.3f} "
-                    f"npi={ck['v2_npi_v2']:.3f} eval_t={ckpt_elapsed:.0f}s "
+                    f"npi={ck['v2_npi_v2']:.3f} eval_t={ck['eval_elapsed_s']:.0f}s "
                     f"total_t={ck['wall_clock_s']:.0f}s",
                     flush=True,
                 )

@@ -86,7 +86,9 @@ impl PartialOrd for ReadyNode {
 
 impl NotebookGraph {
     pub fn from_json(json: &str) -> Result<Self, AriaError> {
-        serde_json::from_str(json).map_err(|e| AriaError::InvalidIR(e.to_string()))
+        let value: Value =
+            serde_json::from_str(json).map_err(|e| AriaError::InvalidIR(e.to_string()))?;
+        notebook_graph_from_value(value)
     }
 
     pub fn canonical_topological_order(&self) -> Vec<i64> {
@@ -237,29 +239,191 @@ impl NotebookGraph {
 pub fn extract_graph_ops_json(json: &str) -> Result<Vec<String>, AriaError> {
     let value: Value =
         serde_json::from_str(json).map_err(|e| AriaError::InvalidIR(e.to_string()))?;
-    let Some(nodes) = value.get("nodes").and_then(Value::as_object) else {
-        return Ok(Vec::new());
-    };
+    Ok(graph_ops_from_value(&value, false))
+}
 
-    let mut ops: Vec<String> = nodes
-        .values()
-        .filter_map(|node| {
-            let obj = node.as_object()?;
-            let op_name = obj
-                .get("op_name")
-                .and_then(Value::as_str)
-                .or_else(|| obj.get("op").and_then(Value::as_str))
-                .unwrap_or("")
-                .trim();
-            if op_name.is_empty() || op_name == "input" {
-                return None;
+fn notebook_graph_from_value(value: Value) -> Result<NotebookGraph, AriaError> {
+    let Some(graph) = value.as_object() else {
+        return Err(AriaError::InvalidIR("notebook graph must be a JSON object".into()));
+    };
+    let model_dim = graph
+        .get("model_dim")
+        .and_then(Value::as_u64)
+        .unwrap_or(0)
+        .min(u32::MAX as u64) as u32;
+    let metadata = graph.get("metadata").cloned().unwrap_or(Value::Null);
+    let mut nodes: HashMap<String, NotebookNode> = HashMap::new();
+    let mut aliases: HashMap<String, i64> = HashMap::new();
+
+    match graph.get("nodes") {
+        Some(Value::Object(node_map)) => {
+            for (idx, (key, node)) in node_map.iter().enumerate() {
+                let id = assigned_node_id(node, Some(key), idx);
+                aliases.insert(key.clone(), id);
+                aliases.insert(id.to_string(), id);
+                if let Some(identifier) = node_identifier(node, Some(key), idx) {
+                    aliases.insert(identifier, id);
+                }
             }
-            Some(op_name.to_string())
+        }
+        Some(Value::Array(node_list)) => {
+            for (idx, node) in node_list.iter().enumerate() {
+                let id = assigned_node_id(node, None, idx);
+                aliases.insert(id.to_string(), id);
+                if let Some(identifier) = node_identifier(node, None, idx) {
+                    aliases.insert(identifier, id);
+                }
+            }
+        }
+        _ => {}
+    }
+
+    match graph.get("nodes") {
+        Some(Value::Object(node_map)) => {
+            for (idx, (key, node)) in node_map.iter().enumerate() {
+                if let Some(parsed) = notebook_node_from_value(node, Some(key), idx, &aliases) {
+                    nodes.insert(key.clone(), parsed);
+                }
+            }
+        }
+        Some(Value::Array(node_list)) => {
+            for (idx, node) in node_list.iter().enumerate() {
+                if let Some(parsed) = notebook_node_from_value(node, None, idx, &aliases) {
+                    nodes.insert(parsed.id.to_string(), parsed);
+                }
+            }
+        }
+        _ => {}
+    }
+
+    let output_node_id = graph
+        .get("output_node_id")
+        .and_then(|value| value_to_node_id(value, &aliases));
+
+    Ok(NotebookGraph {
+        model_dim,
+        nodes,
+        metadata,
+        output_node_id,
+    })
+}
+
+fn notebook_node_from_value(
+    value: &Value,
+    key: Option<&str>,
+    index: usize,
+    aliases: &HashMap<String, i64>,
+) -> Option<NotebookNode> {
+    if let Some(raw_op) = value.as_str() {
+        return Some(NotebookNode {
+            id: assigned_node_id(value, key, index),
+            op_name: raw_op.trim().to_string(),
+            input_ids: Vec::new(),
+            config: Value::Null,
+        });
+    }
+    let obj = value.as_object()?;
+    let id = assigned_node_id(value, key, index);
+    let op_name = cleaned_op_name(
+        obj.get("op_name")
+            .or_else(|| obj.get("op"))
+            .or_else(|| obj.get("op_type")),
+    );
+    let input_ids = obj
+        .get("input_ids")
+        .and_then(Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(|value| value_to_node_id(value, aliases))
+                .collect()
         })
-        .collect();
-    ops.sort();
-    ops.dedup();
-    Ok(ops)
+        .unwrap_or_default();
+    Some(NotebookNode {
+        id,
+        op_name,
+        input_ids,
+        config: obj.get("config").cloned().unwrap_or(Value::Null),
+    })
+}
+
+fn assigned_node_id(value: &Value, key: Option<&str>, index: usize) -> i64 {
+    value
+        .as_object()
+        .and_then(|obj| obj.get("id"))
+        .and_then(value_to_i64)
+        .or_else(|| key.and_then(|raw| raw.parse::<i64>().ok()))
+        .unwrap_or(index as i64)
+}
+
+fn node_identifier(value: &Value, key: Option<&str>, index: usize) -> Option<String> {
+    if let Some(obj) = value.as_object() {
+        if let Some(raw_id) = obj.get("id") {
+            let identifier = value_to_lookup_key(raw_id);
+            if !identifier.is_empty() {
+                return Some(identifier);
+            }
+        }
+    }
+    key.map(str::to_string).or_else(|| Some(index.to_string()))
+}
+
+fn graph_ops_from_value(value: &Value, unique: bool) -> Vec<String> {
+    let Some(graph) = value.as_object() else {
+        return Vec::new();
+    };
+    let mut ops = Vec::new();
+    match graph.get("nodes") {
+        Some(Value::Object(node_map)) => {
+            for node in node_map.values() {
+                if let Some(op_name) = op_name_from_node_value(node) {
+                    ops.push(op_name);
+                }
+            }
+        }
+        Some(Value::Array(node_list)) => {
+            for node in node_list {
+                if let Some(op_name) = op_name_from_node_value(node) {
+                    ops.push(op_name);
+                }
+            }
+        }
+        _ => {}
+    }
+    if unique {
+        ops.sort();
+        ops.dedup();
+    }
+    ops
+}
+
+fn op_name_from_node_value(value: &Value) -> Option<String> {
+    let op_name = if let Some(raw) = value.as_str() {
+        raw.trim().to_string()
+    } else {
+        let obj = value.as_object()?;
+        cleaned_op_name(
+            obj.get("op_name")
+                .or_else(|| obj.get("op"))
+                .or_else(|| obj.get("op_type")),
+        )
+    };
+    if op_name.is_empty() || op_name == "input" {
+        None
+    } else {
+        Some(op_name)
+    }
+}
+
+fn value_to_i64(value: &Value) -> Option<i64> {
+    value
+        .as_i64()
+        .or_else(|| value.as_u64().and_then(|raw| i64::try_from(raw).ok()))
+        .or_else(|| value.as_str().and_then(|raw| raw.parse::<i64>().ok()))
+}
+
+fn value_to_node_id(value: &Value, aliases: &HashMap<String, i64>) -> Option<i64> {
+    value_to_i64(value).or_else(|| aliases.get(&value_to_lookup_key(value)).copied())
 }
 
 pub fn extract_graph_feature_payload_json(json: &str) -> Result<GraphFeaturePayload, AriaError> {
@@ -288,8 +452,12 @@ pub fn extract_graph_feature_payload_json(json: &str) -> Result<GraphFeaturePayl
                 let Some(node_obj) = node.as_object() else {
                     continue;
                 };
-                let op_name =
-                    cleaned_op_name(node_obj.get("op_name").or_else(|| node_obj.get("op")));
+                let op_name = cleaned_op_name(
+                    node_obj
+                        .get("op_name")
+                        .or_else(|| node_obj.get("op"))
+                        .or_else(|| node_obj.get("op_type")),
+                );
                 if op_name.is_empty() || op_name == "input" {
                     continue;
                 }
@@ -303,8 +471,12 @@ pub fn extract_graph_feature_payload_json(json: &str) -> Result<GraphFeaturePayl
                     else {
                         continue;
                     };
-                    let parent_op =
-                        cleaned_op_name(parent_obj.get("op_name").or_else(|| parent_obj.get("op")));
+                    let parent_op = cleaned_op_name(
+                        parent_obj
+                            .get("op_name")
+                            .or_else(|| parent_obj.get("op"))
+                            .or_else(|| parent_obj.get("op_type")),
+                    );
                     if !parent_op.is_empty() && parent_op != "input" {
                         pair_signatures.insert(format!("{}->{}", parent_op, op_name));
                     }
@@ -325,8 +497,12 @@ pub fn extract_graph_feature_payload_json(json: &str) -> Result<GraphFeaturePayl
                 node_map.insert(id_key, node_obj);
             }
             for node_obj in node_map.values() {
-                let op_name =
-                    cleaned_op_name(node_obj.get("op_name").or_else(|| node_obj.get("op")));
+                let op_name = cleaned_op_name(
+                    node_obj
+                        .get("op_name")
+                        .or_else(|| node_obj.get("op"))
+                        .or_else(|| node_obj.get("op_type")),
+                );
                 if op_name.is_empty() || op_name == "input" {
                     continue;
                 }
@@ -339,8 +515,12 @@ pub fn extract_graph_feature_payload_json(json: &str) -> Result<GraphFeaturePayl
                     let Some(parent_obj) = node_map.get(&parent_key) else {
                         continue;
                     };
-                    let parent_op =
-                        cleaned_op_name(parent_obj.get("op_name").or_else(|| parent_obj.get("op")));
+                    let parent_op = cleaned_op_name(
+                        parent_obj
+                            .get("op_name")
+                            .or_else(|| parent_obj.get("op"))
+                            .or_else(|| parent_obj.get("op_type")),
+                    );
                     if !parent_op.is_empty() && parent_op != "input" {
                         pair_signatures.insert(format!("{}->{}", parent_op, op_name));
                     }

@@ -106,7 +106,7 @@ def test_template_compiles_and_forward(template_name):
     out = apply_template(g, inp, random.Random(42), template_name=template_name)
     g.set_output(out)
 
-    layer = compile_graph(g, use_ir=True)
+    layer = compile_graph(g)
     x = torch.randn(2, 16, 128)
     with torch.no_grad():
         y = layer(x)
@@ -128,7 +128,7 @@ def test_template_gradient_flow(template_name):
     out = apply_template(g, inp, random.Random(42), template_name=template_name)
     g.set_output(out)
 
-    layer = compile_graph(g, use_ir=True)
+    layer = compile_graph(g)
     x = torch.randn(2, 8, 64, requires_grad=True)
     y = layer(x)
     loss = y.sum()

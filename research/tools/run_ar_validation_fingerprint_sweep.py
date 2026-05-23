@@ -24,7 +24,15 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from research.eval.ar_validation import ARValidationConfig, run_ar_validation
+from research.eval.ar_validation import (
+    STABLE_AR_VALIDATION_METRIC_VERSION,
+    STABLE_AR_VALIDATION_PROTOCOL,
+    ARValidationConfig,
+    ar_validation_size_bucket,
+    count_model_parameters,
+    resolve_stable_ar_validation_config,
+    run_ar_validation,
+)
 from research.scientist.notebook.graph_artifacts import resolve_graph_json_value
 from research.scientist.native_runner import compile_model_native_first as compile_model
 from research.synthesis.serializer import graph_from_json
@@ -72,6 +80,21 @@ CSV_FIELDS = [
     "ar_validation_steps_to_floor",
     "ar_validation_rank_score",
     "ar_validation_elapsed_ms",
+    "ar_validation_size_bucket",
+    "ar_validation_param_count",
+    "ar_validation_seed_count",
+    "ar_validation_seed_scores_json",
+    "ar_validation_rank_score_mean",
+    "ar_validation_rank_score_std",
+    "ar_validation_rank_score_stable",
+    "ar_validation_held_pair_acc_mean",
+    "ar_validation_held_pair_acc_std",
+    "ar_validation_held_class_acc_mean",
+    "ar_validation_held_class_acc_std",
+    "ar_validation_budget_json",
+    "ar_validation_checkpoint_path",
+    "ar_validation_stage_status",
+    "ar_validation_stage_elapsed_ms",
     "wall_seconds",
     "learning_curve_json",
     "error",
@@ -85,6 +108,10 @@ def _connect_ro(db_path: Path) -> sqlite3.Connection:
     return conn
 
 
+def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    return {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})")}  # nosec B608  # nosemgrep: python-sql-string-formatting - table name from internal resolver
+
+
 def _query_top_fingerprints(
     conn: sqlite3.Connection,
     *,
@@ -95,13 +122,22 @@ def _query_top_fingerprints(
 ) -> list[dict[str, Any]]:
     ref_clause = "" if include_references else "AND COALESCE(l.is_reference, 0) = 0"
     program_results_table = _program_results_read_table(conn)
+    program_columns = _table_columns(conn, program_results_table)
+    graphs_join = ""
+    graph_json_expr = "pr.graph_json"
+    if "graph_json" not in program_columns:
+        graphs_join = (
+            "LEFT JOIN graphs g ON g.graph_fingerprint = "
+            "COALESCE(l.graph_fingerprint, pr.graph_fingerprint)"
+        )
+        graph_json_expr = "g.graph_json"
     query = f"""
         WITH ranked AS (
             SELECT
                 l.result_id,
                 pr.experiment_id,
                 COALESCE(l.graph_fingerprint, pr.graph_fingerprint) AS graph_fingerprint,
-                pr.graph_json,
+                {graph_json_expr} AS graph_json,
                 l.model_source,
                 l.tier,
                 COALESCE(l.is_reference, 0) AS is_reference,
@@ -115,8 +151,9 @@ def _query_top_fingerprints(
                 ) AS fp_rank
             FROM leaderboard l
             JOIN {program_results_table} pr ON pr.result_id = l.result_id
+            {graphs_join}
             WHERE COALESCE(l.graph_fingerprint, pr.graph_fingerprint, '') <> ''
-              AND COALESCE(pr.graph_json, '') NOT IN ('', '{{}}')
+              AND COALESCE({graph_json_expr}, '') NOT IN ('', '{{}}')
               AND l.composite_score IS NOT NULL
               {ref_clause}
         )
@@ -342,6 +379,17 @@ def _run_one(
             ),
         )
         model.to(device)
+        param_count = count_model_parameters(model)
+        effective_cfg = resolve_stable_ar_validation_config(
+            cfg,
+            model=model,
+            param_count=param_count,
+        )
+        base["config_json"] = json.dumps(asdict(effective_cfg), sort_keys=True)
+        base["ar_validation_param_count"] = int(param_count)
+        base["ar_validation_size_bucket"] = effective_cfg.size_bucket or (
+            ar_validation_size_bucket(param_count)
+        )
         pre_loss, pre_ms = _pretrain_lm(
             model,
             corpus_tokens,
@@ -387,14 +435,73 @@ def _run_one(
                 },
                 checkpoint_path,
             )
-        result = run_ar_validation(model, cfg=cfg, device=device)
+        result = run_ar_validation(model, cfg=effective_cfg, device=device)
         payload = result.to_dict()
+        stage_checkpoint_path = ""
+        stage_status = ""
+        stage_elapsed_ms: float | None = None
+        if (
+            str(effective_cfg.protocol) == STABLE_AR_VALIDATION_PROTOCOL
+            and (effective_cfg.size_bucket or ar_validation_size_bucket(param_count))
+            == "100m_plus"
+        ):
+            stage_cfg = ARValidationConfig(
+                **{
+                    **asdict(effective_cfg),
+                    "copy_model": False,
+                    "seed_count": 1,
+                    "auto_size_budget": False,
+                }
+            )
+            stage_result = run_ar_validation(model, cfg=stage_cfg, device=device)
+            stage_status = stage_result.status
+            stage_elapsed_ms = stage_result.elapsed_ms
+            if save_checkpoint:
+                checkpoint_dir.mkdir(parents=True, exist_ok=True)
+                stage_checkpoint_path = str(
+                    checkpoint_dir
+                    / f"rank{int(rank):04d}_{str(row['result_id'])}_{str(row['graph_fingerprint'])[:12]}_ar_stage_step{int(stage_cfg.train_steps)}.pt"
+                )
+                torch.save(
+                    {
+                        "artifact_kind": "ar_validation_v3_stage_checkpoint",
+                        "run_id": run_id,
+                        "created_unix": created,
+                        "result_id": str(row["result_id"]),
+                        "experiment_id": str(row["experiment_id"]),
+                        "graph_fingerprint": str(row["graph_fingerprint"]),
+                        "graph_json": str(row["graph_json"]),
+                        "compiled_layers": int(layers),
+                        "compiled_vocab_size": int(vocab_size),
+                        "param_count": int(param_count),
+                        "pretrain_steps": int(pretrain_steps),
+                        "pretrain_batch_size": int(pretrain_batch_size),
+                        "pretrain_seq_len": int(pretrain_seq_len),
+                        "pretrain_lr": float(pretrain_lr),
+                        "pretrain_corpus_path": str(corpus_path),
+                        "ar_validation_config": asdict(stage_cfg),
+                        "ar_validation_stage_result": stage_result.to_dict(),
+                        "model_state_dict": {
+                            k: v.detach().cpu() for k, v in model.state_dict().items()
+                        },
+                    },
+                    stage_checkpoint_path,
+                )
         return {
             **base,
             **payload,
             "pretrain_final_loss": pre_loss,
             "pretrain_elapsed_ms": round(pre_ms, 1),
             "checkpoint_path": checkpoint_path,
+            "ar_validation_checkpoint_path": stage_checkpoint_path
+            or payload.get("ar_validation_checkpoint_path", ""),
+            "ar_validation_stage_status": stage_status
+            or payload.get("ar_validation_stage_status", ""),
+            "ar_validation_stage_elapsed_ms": (
+                round(stage_elapsed_ms, 1)
+                if stage_elapsed_ms is not None
+                else payload.get("ar_validation_stage_elapsed_ms", "")
+            ),
             "learning_curve_json": payload.get(
                 "ar_validation_learning_curve_json",
                 "",
@@ -427,6 +534,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--train-steps", type=int, default=None)
+    parser.add_argument("--legacy-v2", action="store_true")
     parser.add_argument("--timeout-s", type=float, default=900.0)
     parser.add_argument("--corpus-path", type=Path, default=DEFAULT_CORPUS)
     parser.add_argument("--pretrain-steps", type=int, default=5_000)
@@ -457,7 +565,13 @@ def main(argv: list[str] | None = None) -> int:
     checkpoint_dir = args.checkpoint_dir or (DEFAULT_OUT_DIR / "checkpoints" / run_id)
     cfg_kwargs: dict[str, Any] = {
         "timeout_s": float(args.timeout_s),
-        "copy_model": False,
+        "copy_model": False if bool(args.legacy_v2) else True,
+        "protocol": "integer_v2"
+        if bool(args.legacy_v2)
+        else STABLE_AR_VALIDATION_PROTOCOL,
+        "auto_size_budget": not bool(args.legacy_v2),
+        "deterministic_episode_bank": not bool(args.legacy_v2),
+        "seed_count": 1 if bool(args.legacy_v2) else 3,
     }
     if args.train_steps is not None:
         cfg_kwargs["train_steps"] = int(args.train_steps)
@@ -494,7 +608,11 @@ def main(argv: list[str] | None = None) -> int:
                 "checkpoint_dir": str(checkpoint_dir),
                 "save_checkpoints": not bool(args.no_save_checkpoints),
                 "device": args.device,
-                "metric_version": "ar_validation_v2_easy25",
+                "metric_version": (
+                    "ar_validation_v2_easy25"
+                    if bool(args.legacy_v2)
+                    else STABLE_AR_VALIDATION_METRIC_VERSION
+                ),
                 "config": asdict(cfg),
                 "dry_run": bool(args.dry_run),
             },

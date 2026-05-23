@@ -187,17 +187,33 @@ def validate_chain(
         result["failure_mode"] = "compile_import"
         result["error"] = str(exc)
         return result
+    return _finalize_compile_and_smoke(
+        graph, result, _compile_layer_module, model_dim=model_dim, run_smoke=run_smoke
+    )
+
+
+def _finalize_compile_and_smoke(
+    graph,
+    result: Dict[str, Any],
+    compile_fn,
+    *,
+    model_dim: int,
+    run_smoke: bool,
+) -> Dict[str, Any]:
+    """Compile a graph layer and (optionally) run a smoke test, updating ``result``.
+
+    Shared between template_validator and build_dynamic_component_candidates so the
+    compile/smoke control flow stays in one place.
+    """
     try:
-        compiled = _compile_layer_module(graph, prefer_fast_path=True)
+        compiled = compile_fn(graph)
     except Exception as exc:
         result["failure_mode"] = "compile"
         result["error"] = f"{type(exc).__name__}: {exc}"
         return result
     result["compile_passed"] = True
-
     if not run_smoke:
         return result
-
     smoke = _run_smoke_test(compiled, model_dim=model_dim)
     result.update(smoke)
     if not smoke["backward_passed"] and result["failure_mode"] is None:

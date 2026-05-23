@@ -59,7 +59,7 @@ def compile_designer_graph(workflow_json: Dict[str, Any]) -> Dict[str, Any]:
     """Compile a workflow and return metadata."""
     try:
         graph = workflow_to_computation_graph(workflow_json)
-        module = compile_graph(graph, use_ir=False)
+        module = compile_graph(graph)
         return {
             "success": True,
             "workflow_id": workflow_json.get("workflow_id"),

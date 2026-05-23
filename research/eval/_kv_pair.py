@@ -51,6 +51,17 @@ class KVTrainingLoopResult:
     error: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class KVEpisodeBank:
+    ids: torch.Tensor
+    targets: torch.Tensor
+    target_classes: torch.Tensor
+
+    @property
+    def n_examples(self) -> int:
+        return int(self.ids.shape[0])
+
+
 def build_kv_pair_table(
     *,
     seed: int,
@@ -198,6 +209,115 @@ def make_kv_pair_batch(
     query_pos = (order == 0).to(torch.long).argmax(dim=1)
     targets = values.gather(1, query_pos.unsqueeze(1)).squeeze(1)
     return ids, targets, kv_value_classes(targets, table)
+
+
+def build_kv_episode_bank(
+    table: KVPairTable,
+    *,
+    split: str,
+    n_examples: int,
+    batch_size: int,
+    pairs_per_example: int,
+    sep_token: int,
+    ans_token: int,
+    device: torch.device,
+    seed: int,
+    episodic_values: bool = True,
+) -> KVEpisodeBank:
+    """Materialize a deterministic bank of AR episodes.
+
+    This freezes query, distractor, value, and pair-order choices up front so
+    training/evaluation does not depend on fresh random draws during the probe.
+    """
+    n_total = int(n_examples)
+    if n_total <= 0:
+        raise ValueError("n_examples must be positive")
+    seq_len = 3 * int(pairs_per_example) + 4
+    ids_bank = torch.empty((n_total, seq_len), dtype=torch.long, device=device)
+    targets_bank = torch.empty((n_total,), dtype=torch.long, device=device)
+    classes_bank = torch.empty((n_total,), dtype=torch.long, device=device)
+    gen = torch.Generator(device=device)
+    gen.manual_seed(int(seed))
+    offset = 0
+    while offset < n_total:
+        bs = min(int(batch_size), n_total - offset)
+        ids, targets, classes = make_kv_pair_batch(
+            table,
+            split=split,
+            batch_size=bs,
+            pairs_per_example=pairs_per_example,
+            sep_token=sep_token,
+            ans_token=ans_token,
+            device=device,
+            generator=gen,
+            episodic_values=episodic_values,
+        )
+        ids_bank[offset : offset + bs] = ids
+        targets_bank[offset : offset + bs] = targets
+        classes_bank[offset : offset + bs] = classes
+        offset += bs
+    return KVEpisodeBank(
+        ids=ids_bank,
+        targets=targets_bank,
+        target_classes=classes_bank,
+    )
+
+
+def _bank_batch(
+    bank: KVEpisodeBank,
+    *,
+    start: int,
+    batch_size: int,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    n_examples = bank.n_examples
+    if n_examples <= 0:
+        raise ValueError("episode bank is empty")
+    start = int(start) % n_examples
+    stop = start + int(batch_size)
+    if stop <= n_examples:
+        return (
+            bank.ids[start:stop],
+            bank.targets[start:stop],
+            bank.target_classes[start:stop],
+        )
+    idx = torch.arange(start, stop, device=bank.ids.device).remainder(n_examples)
+    return (
+        bank.ids.index_select(0, idx),
+        bank.targets.index_select(0, idx),
+        bank.target_classes.index_select(0, idx),
+    )
+
+
+@torch.no_grad()
+def evaluate_kv_episode_bank(
+    model: nn.Module,
+    table: KVPairTable,
+    bank: KVEpisodeBank,
+    *,
+    batch_size: int,
+    ans_pos: int,
+) -> tuple[float, float]:
+    model.eval()
+    exact_total = torch.zeros((), dtype=torch.long, device=bank.ids.device)
+    class_total = torch.zeros((), dtype=torch.long, device=bank.ids.device)
+    total = 0
+    offset = 0
+    while offset < bank.n_examples:
+        bs = min(int(batch_size), bank.n_examples - offset)
+        ids, targets, target_classes = _bank_batch(
+            bank,
+            start=offset,
+            batch_size=bs,
+        )
+        logits = model(ids)
+        pred = logits[:, ans_pos, table.value_lo : table.value_hi].argmax(dim=-1)
+        pred = pred + int(table.value_lo)
+        exact_total += (pred == targets).sum()
+        class_total += (kv_value_classes(pred, table) == target_classes).sum()
+        total += bs
+        offset += bs
+    denom = max(total, 1)
+    return int(exact_total.item()) / denom, int(class_total.item()) / denom
 
 
 @torch.no_grad()
@@ -380,6 +500,31 @@ def train_kv_probe_step(
     )
 
 
+def train_kv_probe_bank_step(
+    model: nn.Module,
+    table: KVPairTable,
+    *,
+    train_bank: KVEpisodeBank,
+    step: int,
+    batch_size: int,
+    opt: torch.optim.Optimizer,
+    ans_pos: int,
+) -> torch.Tensor | None:
+    ids, targets, _classes = _bank_batch(
+        train_bank,
+        start=(int(step) - 1) * int(batch_size),
+        batch_size=batch_size,
+    )
+    return train_kv_one_batch(
+        model,
+        ids,
+        targets,
+        opt=opt,
+        table=table,
+        ans_pos=ans_pos,
+    )
+
+
 def run_kv_probe_training_loop(
     model: nn.Module,
     table: KVPairTable,
@@ -421,6 +566,61 @@ def run_kv_probe_training_loop(
                 runtime=runtime,
                 base_seed=base_seed,
                 step=step,
+            )
+            on_eval(step, loss, train_acc, held_pair, held_class)
+    return KVTrainingLoopResult(steps_done=steps_done, status="ok")
+
+
+def run_kv_probe_bank_training_loop(
+    model: nn.Module,
+    table: KVPairTable,
+    *,
+    train_bank: KVEpisodeBank,
+    train_eval_bank: KVEpisodeBank,
+    held_eval_bank: KVEpisodeBank,
+    batch_size: int,
+    opt: torch.optim.Optimizer,
+    ans_pos: int,
+    train_steps: int,
+    eval_every: int,
+    deadline: float,
+    monotonic_time: Callable[[], float],
+    on_eval: Callable[[int, torch.Tensor, float, float, float], None],
+) -> KVTrainingLoopResult:
+    steps_done = 0
+    for step in range(1, int(train_steps) + 1):
+        if monotonic_time() > deadline:
+            return KVTrainingLoopResult(steps_done=steps_done, status="timeout")
+        loss = train_kv_probe_bank_step(
+            model,
+            table,
+            train_bank=train_bank,
+            step=step,
+            batch_size=int(batch_size),
+            opt=opt,
+            ans_pos=ans_pos,
+        )
+        if loss is None:
+            return KVTrainingLoopResult(
+                steps_done=steps_done,
+                status="error",
+                error="non_finite_loss",
+            )
+        steps_done = step
+        if step % int(eval_every) == 0 or step == int(train_steps):
+            train_acc, _train_class = evaluate_kv_episode_bank(
+                model,
+                table,
+                train_eval_bank,
+                batch_size=batch_size,
+                ans_pos=ans_pos,
+            )
+            held_pair, held_class = evaluate_kv_episode_bank(
+                model,
+                table,
+                held_eval_bank,
+                batch_size=batch_size,
+                ans_pos=ans_pos,
             )
             on_eval(step, loss, train_acc, held_pair, held_class)
     return KVTrainingLoopResult(steps_done=steps_done, status="ok")

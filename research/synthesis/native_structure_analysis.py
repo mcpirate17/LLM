@@ -91,7 +91,9 @@ def analyze_ir_with_native_runtime(
 ) -> Optional[StructuralAnalysisResult]:
     lib = load_native_graph_analysis_lib()
     if lib is None:
-        return None
+        raise RuntimeError("native graph analysis runtime is unavailable")
+    if not hasattr(lib, "aria_graph_analyze_ir"):
+        raise RuntimeError("native graph analysis symbol is unavailable")
 
     op_codes = np.ascontiguousarray(ir.op_codes, dtype=np.int32)
     input_indices = np.ascontiguousarray(ir.input_indices, dtype=np.int32)
@@ -118,8 +120,7 @@ def analyze_ir_with_native_runtime(
         reachable_ptr,
     )
     if status != 0:
-        logger.debug("aria_graph_analyze_ir failed with status=%d", status)
-        return None
+        raise RuntimeError(f"aria_graph_analyze_ir failed with status={status}")
 
     return StructuralAnalysisResult(
         has_gradient_path=bool(result.has_gradient_path),

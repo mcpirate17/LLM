@@ -9,7 +9,7 @@ from research.synthesis.graph import ComputationGraph
 from research.synthesis.compiler import compile_graph, compile_model
 from research.synthesis.grammar import GrammarConfig, generate_layer_graph
 from research.synthesis.reference_architectures import build_reference
-from research.synthesis.ir_executor import IRExecutor
+from research.synthesis.ir_executor_v2 import IRExecutorV2 as IRExecutor
 from research.synthesis.native_analysis import reset_native_analysis_bindings
 from research.synthesis.validator import validate_graph
 
@@ -57,22 +57,17 @@ def test_token_merge_conv_lowers_forced_template():
     assert graph.output_node.output_shape.dim == 64
 
 
-def test_structural_analysis_falls_back_to_python(monkeypatch):
+def test_structural_analysis_requires_native_runtime(monkeypatch):
     import research.synthesis.native_analysis as native_analysis
 
     monkeypatch.setattr(
         native_analysis, "_load_native_graph_analysis_lib", lambda: None
     )
-    monkeypatch.setattr(native_analysis, "_try_import_aria_core", lambda: None)
     reset_native_analysis_bindings()
 
     graph = _make_relu_graph()
-    analysis = graph._analysis_ir().analyze_structure(include_reachable=True)
-
-    assert analysis.backend == "python"
-    assert analysis.has_gradient_path is True
-    assert analysis.reachable_count == 2
-    assert analysis.depth == 1
+    with pytest.raises(RuntimeError, match="native graph analysis runtime"):
+        graph._analysis_ir().analyze_structure(include_reachable=True)
 
 
 def test_ir_executor_falls_back_to_python_loop(monkeypatch):
@@ -130,7 +125,9 @@ def test_bound_native_chain_skips_host_bridge_for_non_cpu_payloads(monkeypatch):
     out = graph.add_op("cumsum", [relu])
     graph.set_output(out)
 
-    layer = compile_graph(graph, use_ir=False)
+    from research.synthesis.compiler import CompiledLayer
+
+    layer = CompiledLayer(graph)
     dispatcher = native_bound_segments.BoundNativeChainDispatcher(
         [
             native_bound_segments._BoundChainNode("linear_proj", layer.ops[str(proj)]),
@@ -272,7 +269,7 @@ def test_validate_graph_requires_native_validation_summary(monkeypatch):
     d = graph.add_op("linear_proj", [c], config={"out_dim": 8})
     graph.set_output(d)
 
-    with pytest.raises(RuntimeError, match="native graph validation runtime"):
+    with pytest.raises(RuntimeError, match="native graph analysis runtime"):
         validate_graph(graph)
 
 
@@ -446,7 +443,7 @@ def test_ir_executor_skips_plain_subgraph_dispatch_for_mixed_parameterized_graph
     out = graph.add_op("add", [inp, n6])
     graph.set_output(out)
 
-    layer = compile_graph(graph, use_ir=True)
+    layer = compile_graph(graph)
     assert getattr(layer, "_subgraph_dispatcher", None) is None
 
     x = torch.randn(1, 3, 8)

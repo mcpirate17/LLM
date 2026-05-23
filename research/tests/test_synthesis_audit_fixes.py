@@ -182,13 +182,13 @@ def test_compile_graph_prefers_ir_executor_v2_by_default(monkeypatch):
     out = graph.add_op("relu", [inp])
     graph.set_output(out)
 
-    module = compile_graph(graph, use_ir=True)
+    module = compile_graph(graph)
 
     assert isinstance(module, FakeIRExecutorV2)
     assert module.source_graph is graph
 
 
-def test_compile_graph_can_select_ir_executor_v2(monkeypatch):
+def test_compile_graph_falls_back_to_ir_executor_when_native_unavailable(monkeypatch):
     import research.synthesis.ir_executor_v2 as ir_executor_v2_mod
 
     class FakeIRExecutorV2(nn.Module):
@@ -197,41 +197,16 @@ def test_compile_graph_can_select_ir_executor_v2(monkeypatch):
             self.ir = ir
             self.source_graph = source_graph
 
-        def forward(self, x):
-            return x
-
     monkeypatch.setattr(ir_executor_v2_mod, "IRExecutorV2", FakeIRExecutorV2)
-
-    graph = ComputationGraph(32)
-    inp = graph.add_input()
-    out = graph.add_op("relu", [inp])
-    graph.set_output(out)
-
-    module = compile_graph(graph, use_ir=True, executor="ir_v2")
-
-    assert isinstance(module, FakeIRExecutorV2)
-    assert module.source_graph is graph
-
-
-def test_compile_graph_falls_back_to_ir_executor_when_native_unavailable(monkeypatch):
-    import research.synthesis.ir_executor as ir_executor_mod
-
-    class FakeIRExecutor(nn.Module):
-        def __init__(self, ir, source_graph=None):
-            super().__init__()
-            self.ir = ir
-            self.source_graph = source_graph
-
-    monkeypatch.setattr(ir_executor_mod, "IRExecutor", FakeIRExecutor)
 
     graph = ComputationGraph(32)
     inp = graph.add_input()
     out = graph.add_op("topk_gate", [inp], {"k": 1})
     graph.set_output(out)
 
-    module = compile_graph(graph, use_ir=True, executor="ir_v1")
+    module = compile_graph(graph)
 
-    assert isinstance(module, FakeIRExecutor)
+    assert isinstance(module, FakeIRExecutorV2)
 
 
 def test_compile_model_uses_fast_path_selection_per_layer(monkeypatch):
@@ -248,7 +223,7 @@ def test_compile_model_uses_fast_path_selection_per_layer(monkeypatch):
     monkeypatch.setattr(
         compiler_mod,
         "_compile_layer_module",
-        lambda graph, prefer_fast_path: MarkerModule(graph),
+        lambda graph, **_kwargs: MarkerModule(graph),
     )
 
     graph = ComputationGraph(16)
@@ -256,9 +231,22 @@ def test_compile_model_uses_fast_path_selection_per_layer(monkeypatch):
     out = graph.add_op("relu", [inp])
     graph.set_output(out)
 
-    model = compile_model([graph], vocab_size=32, max_seq_len=8, use_ir=True)
+    model = compile_model([graph], vocab_size=32, max_seq_len=8)
 
     assert isinstance(model.layers[0], MarkerModule)
+
+
+def test_compile_graph_can_force_compiled_layer_fallback():
+    from research.synthesis.compiled_model import CompiledLayer
+
+    graph = ComputationGraph(16)
+    inp = graph.add_input()
+    out = graph.add_op("relu", [inp])
+    graph.set_output(out)
+
+    module = compile_graph(graph, use_ir=False)
+
+    assert isinstance(module, CompiledLayer)
 
 
 def test_compile_graph_attaches_native_subgraph_dispatcher(monkeypatch):
@@ -283,7 +271,7 @@ def test_compile_graph_attaches_native_subgraph_dispatcher(monkeypatch):
     out = graph.add_op("relu", [inp])
     graph.set_output(out)
 
-    module = compile_graph(graph, use_ir=True)
+    module = compile_graph(graph)
 
     assert isinstance(module._subgraph_dispatcher, FakeDispatcher)
 

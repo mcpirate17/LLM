@@ -184,12 +184,19 @@ class _CoverageMixin:
 
         total_tested = 0
         total_survived = 0
+        missing_graph_artifacts = 0
         for row in rows:
-            graph_json = resolve_graph_json_value(
-                self.nb.conn,
-                self.nb.db_path,
-                row["graph_json"],
-            )
+            try:
+                graph_json = resolve_graph_json_value(
+                    self.nb.conn,
+                    self.nb.db_path,
+                    row["graph_json"],
+                )
+            except FileNotFoundError:
+                missing_graph_artifacts += 1
+                if not row["arch_spec_json"]:
+                    continue
+                graph_json = ""
             family = _family_from_row(graph_json, row["arch_spec_json"])
             bucket = stats.get(family, stats["euclidean"])
             bucket["n_tested"] += 1
@@ -198,6 +205,12 @@ class _CoverageMixin:
             if row["stage1_passed"]:
                 bucket["n_survived"] += 1
                 total_survived += 1
+
+        if missing_graph_artifacts:
+            logger.warning(
+                "Ignored %d missing graph artifact(s) while computing math family coverage",
+                missing_graph_artifacts,
+            )
 
         families = []
         for fam in _FAMILY_ORDER:
@@ -264,13 +277,18 @@ class _CoverageMixin:
         by_operator: Dict[str, Dict[str, float]] = {}
         by_family: Dict[str, Dict[str, float]] = {}
         programs_with_mathspace = 0
+        missing_graph_artifacts = 0
 
         for row in rows:
-            graph_json = resolve_graph_json_value(
-                self.nb.conn,
-                self.nb.db_path,
-                row["graph_json"],
-            )
+            try:
+                graph_json = resolve_graph_json_value(
+                    self.nb.conn,
+                    self.nb.db_path,
+                    row["graph_json"],
+                )
+            except FileNotFoundError:
+                missing_graph_artifacts += 1
+                continue
             if not graph_json:
                 continue
 
@@ -309,6 +327,12 @@ class _CoverageMixin:
                         bucket["novelty_sum"] += novelty
                         bucket["novelty_count"] += 1
 
+        if missing_graph_artifacts:
+            logger.warning(
+                "Ignored %d missing graph artifact(s) while computing mathspace operator impact",
+                missing_graph_artifacts,
+            )
+
         return by_operator, by_family, programs_with_mathspace
 
     def mathspace_operator_impact(self) -> Dict:
@@ -319,11 +343,11 @@ class _CoverageMixin:
         """
         validation_col, baseline_col = self._resolve_impact_columns()
 
-        rows = self.nb.conn.execute(f"""
-            SELECT graph_json, stage1_passed, {validation_col}, novelty_score, {baseline_col}
-            FROM program_results_compat
-            WHERE graph_json IS NOT NULL
-        """).fetchall()
+        sql = (
+            f"SELECT graph_json, stage1_passed, {validation_col}, novelty_score, {baseline_col} "
+            "FROM program_results_compat WHERE graph_json IS NOT NULL"
+        )  # nosec B608  # nosemgrep: python-sql-string-formatting - validation_col/baseline_col are resolved from an internal allowlist
+        rows = self.nb.conn.execute(sql).fetchall()
 
         tracked_ops = set(_OP_FAMILY_MAP.keys())
 

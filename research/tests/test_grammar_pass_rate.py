@@ -99,7 +99,6 @@ def _try_compile_and_train(graph) -> bool:
             [graph],
             vocab_size=VOCAB_SIZE,
             max_seq_len=SEQ_LEN,
-            use_ir=False,
         )
     except Exception:
         return False

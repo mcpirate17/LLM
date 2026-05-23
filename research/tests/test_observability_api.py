@@ -7,6 +7,7 @@ import os
 import tempfile
 import time
 import unittest
+from pathlib import Path
 
 try:
     from flask import Flask  # noqa: F401
@@ -438,6 +439,79 @@ class TestObservabilityAPI(unittest.TestCase):
             self.assertIn(
                 comp["data_source"], {"search", "search+profiling", "profiling_only"}
             )
+
+    def test_health_grid_skips_missing_graph_artifact(self):
+        """A missing cold graph artifact should not blank the health grid."""
+        import shutil
+
+        from research.scientist.api import create_app
+        from research.scientist.api_routes._observability_core import (
+            refresh_observability_caches,
+        )
+        from research.scientist.notebook import LabNotebook
+        from research.scientist.notebook.artifact_store import parse_artifact_pointer
+        from research.scientist.notebook.artifact_store import NotebookArtifactStore
+        from research.tools.externalize_notebook_artifacts import (
+            run as externalize_artifacts,
+        )
+
+        tmpdir = tempfile.mkdtemp()
+        db_path = os.path.join(tmpdir, "missing_artifact_obs.db")
+        try:
+            nb = LabNotebook(db_path)
+            exp_id = nb.start_experiment(
+                "synthesis", {"n_programs": 2}, "missing graph artifact obs"
+            )
+            graph_a = json.dumps({"nodes": {"0": {"op_name": "linear_proj"}}})
+            graph_b = json.dumps({"nodes": {"0": {"op_name": "gelu"}}})
+            rid_a = nb.record_program_result(
+                experiment_id=exp_id,
+                graph_fingerprint="obs_missing_artifact_a",
+                graph_json=graph_a,
+                stage0_passed=True,
+                **_stage1_fixture_kwargs(loss_ratio=0.8, novelty_score=0.2),
+            )
+            nb.record_program_result(
+                experiment_id=exp_id,
+                graph_fingerprint="obs_missing_artifact_b",
+                graph_json=graph_b,
+                stage0_passed=True,
+                **_stage1_fixture_kwargs(loss_ratio=0.7, novelty_score=0.3),
+            )
+            nb.flush_writes()
+            nb.update_op_success_rates(exp_id)
+            nb.close()
+
+            externalize_artifacts(
+                db_path=Path(db_path),
+                min_bytes=16,
+                apply=True,
+                limit=None,
+                vacuum=False,
+                include_graph_json=True,
+                graph_json_cold_only=False,
+            )
+
+            nb = LabNotebook(db_path)
+            try:
+                row = nb.conn.execute(
+                    "SELECT graph_json FROM program_results_compat WHERE result_id = ?",
+                    (rid_a,),
+                ).fetchone()
+                pointer = parse_artifact_pointer(row["graph_json"])
+                self.assertIsNotNone(pointer)
+                (NotebookArtifactStore(db_path).root / pointer["path"]).unlink()
+            finally:
+                nb.close()
+
+            refresh_observability_caches()
+            client = create_app(notebook_path=db_path).test_client()
+            resp = client.get("/api/observability/health")
+            self.assertEqual(resp.status_code, 200)
+            data = resp.get_json()
+            self.assertGreater(data.get("total", 0), 0)
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
 
     def test_op_success_rates_weighted_averaging(self):
         """Run update_op_success_rates twice, verify weighted average."""

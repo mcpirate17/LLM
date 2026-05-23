@@ -20,12 +20,17 @@ from typing import Any, TextIO
 
 import torch
 
-from research.eval.ar_validation import ARValidationConfig
+from research.eval.ar_validation import (
+    STABLE_AR_VALIDATION_METRIC_VERSION,
+    STABLE_AR_VALIDATION_PROTOCOL,
+    ARValidationConfig,
+)
 from research.scientist.notebook.graph_artifacts import resolve_graph_json_value
 from research.tools.check_backup_freshness import main as check_backup_freshness_main
 from research.tools.import_ar_validation_fingerprint_sweep import (
     AR_VALIDATION_COLUMNS,
     _merge_provenance,
+    _previous_ar_validation_values,
     _program_results_read_table,
     _table_columns,
     ensure_ar_validation_columns,
@@ -44,8 +49,15 @@ DEFAULT_BACKFILL_OUT_DIR = DEFAULT_OUT_DIR / "db_backfill"
 DEFAULT_TIERS = ("validation",)
 
 
-def _missing_ar_validation_clause() -> str:
-    return " AND ".join(f"pr.{column} IS NULL" for column in AR_VALIDATION_COLUMNS)
+def _missing_ar_validation_clause(columns: dict[str, str] | None = None) -> str:
+    candidates = (
+        [name for name in AR_VALIDATION_COLUMNS if name in columns]
+        if columns is not None
+        else list(AR_VALIDATION_COLUMNS)
+    )
+    if not candidates:
+        return "1 = 1"
+    return " AND ".join(f"pr.{column} IS NULL" for column in candidates)
 
 
 def has_existing_ar_validation_result(
@@ -60,7 +72,7 @@ def has_existing_ar_validation_result(
         return False
     table = _program_results_read_table(conn)
     row = conn.execute(
-        f"SELECT {', '.join(ar_validation_columns)} FROM {table} WHERE result_id = ?",
+        f"SELECT {', '.join(ar_validation_columns)} FROM {table} WHERE result_id = ?",  # nosec B608  # nosemgrep: python-sql-string-formatting - columns/table from internal allowlist
         (result_id,),
     ).fetchone()
     if row is None:
@@ -78,8 +90,17 @@ def select_backfill_rows(
     offset: int,
     overwrite: bool,
 ) -> list[sqlite3.Row]:
+    program_columns = _table_columns(conn, "graph_runs")
+    graph_json_expr = "pr.graph_json"
+    graphs_join = ""
+    if "graph_json" not in program_columns:
+        graph_json_expr = "g.graph_json"
+        graphs_join = (
+            "LEFT JOIN graphs g ON g.graph_fingerprint = "
+            "COALESCE(l.graph_fingerprint, pr.graph_fingerprint)"
+        )
     where = [
-        "COALESCE(pr.graph_json, '') NOT IN ('', '{}')",
+        f"COALESCE({graph_json_expr}, '') NOT IN ('', '{{}}')",
         "COALESCE(pr.graph_fingerprint, l.graph_fingerprint, '') <> ''",
     ]
     params: list[Any] = []
@@ -107,14 +128,14 @@ def select_backfill_rows(
             )
             params.extend(fingerprints)
     if not overwrite:
-        where.append(_missing_ar_validation_clause())
+        where.append(_missing_ar_validation_clause(program_columns))
     table = _program_results_read_table(conn)
     query = f"""
         SELECT
             pr.result_id,
             pr.experiment_id,
             COALESCE(l.graph_fingerprint, pr.graph_fingerprint) AS graph_fingerprint,
-            pr.graph_json,
+            {graph_json_expr} AS graph_json,
             COALESCE(l.model_source, pr.model_source, '') AS model_source,
             COALESCE(l.tier, '') AS tier,
             COALESCE(l.is_reference, 0) AS is_reference,
@@ -124,6 +145,7 @@ def select_backfill_rows(
             pr.loss_ratio
         FROM {table} pr
         LEFT JOIN leaderboard l ON l.result_id = pr.result_id
+        {graphs_join}
         WHERE {" AND ".join(where)}
         ORDER BY {order_clause}
         LIMIT ? OFFSET ?
@@ -157,10 +179,18 @@ def persist_ar_validation_result(
     if "data_provenance_json" in columns:
         table = _program_results_read_table(conn)
         row = conn.execute(
-            f"SELECT data_provenance_json FROM {table} WHERE result_id = ?",
+            f"SELECT data_provenance_json, {', '.join(AR_VALIDATION_COLUMNS)} "  # nosec B608  # nosemgrep: python-sql-string-formatting - AR_VALIDATION_COLUMNS / table from internal allowlist
+            f"FROM {table} WHERE result_id = ?",
             (result_id,),
         ).fetchone()
         raw = row["data_provenance_json"] if row else None
+        if overwrite:
+            previous = _previous_ar_validation_values(row)
+            if previous:
+                provenance = {
+                    **provenance,
+                    "previous_ar_validation_values": previous,
+                }
         items.append(("data_provenance_json", _merge_provenance(raw, provenance)))
     set_clause = ", ".join(f"{key} = ?" for key, _value in items)
     params = [value for _key, value in items]
@@ -172,7 +202,7 @@ def persist_ar_validation_result(
         )
         if missing_clause:
             where = f"{where} AND {missing_clause}"
-    cursor = conn.execute(f"UPDATE graph_runs SET {set_clause} WHERE {where}", params)
+    cursor = conn.execute(f"UPDATE graph_runs SET {set_clause} WHERE {where}", params)  # nosec B608  # nosemgrep: python-sql-string-formatting - set_clause/where built from internal-column allowlists
     conn.commit()
     return cursor.rowcount > 0
 
@@ -197,12 +227,19 @@ def run(args: argparse.Namespace, out: TextIO = sys.stdout) -> int:
     out_csv = args.out or (DEFAULT_BACKFILL_OUT_DIR / f"{run_id}.csv")
     cfg_kwargs: dict[str, Any] = {
         "timeout_s": float(args.timeout_s),
-        "copy_model": False,
+        "copy_model": False if bool(args.legacy_v2) else True,
+        "protocol": "integer_v2"
+        if bool(args.legacy_v2)
+        else STABLE_AR_VALIDATION_PROTOCOL,
+        "auto_size_budget": not bool(args.legacy_v2),
+        "deterministic_episode_bank": not bool(args.legacy_v2),
+        "seed_count": 1 if bool(args.legacy_v2) else 3,
     }
     if args.train_steps is not None:
         cfg_kwargs["train_steps"] = int(args.train_steps)
     cfg = ARValidationConfig(**cfg_kwargs)
     try:
+        missing: list[str] = []
         if args.write:
             ensure_ar_validation_columns(conn)
             program_columns = _table_columns(conn, "graph_runs")
@@ -211,9 +248,6 @@ def run(args: argparse.Namespace, out: TextIO = sys.stdout) -> int:
             missing = [
                 name for name in AR_VALIDATION_COLUMNS if name not in program_columns
             ]
-            if missing:
-                print(f"missing_ar_validation_columns={','.join(missing)}", file=out)
-                return 1
         rows = [
             dict(row)
             for row in select_backfill_rows(
@@ -245,8 +279,13 @@ def run(args: argparse.Namespace, out: TextIO = sys.stdout) -> int:
                     "limit": int(args.limit),
                     "offset": int(args.offset),
                     "overwrite": bool(args.overwrite),
+                    "missing_ar_validation_columns": missing,
                     "device": args.device,
-                    "metric_version": "ar_validation_v2_easy25",
+                    "metric_version": (
+                        "ar_validation_v2_easy25"
+                        if bool(args.legacy_v2)
+                        else STABLE_AR_VALIDATION_METRIC_VERSION
+                    ),
                     "config": asdict(cfg),
                 },
                 sort_keys=True,
@@ -394,6 +433,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--train-steps", type=int, default=None)
+    parser.add_argument("--legacy-v2", action="store_true")
     parser.add_argument("--timeout-s", type=float, default=900.0)
     parser.add_argument("--corpus-path", type=Path, default=DEFAULT_CORPUS)
     parser.add_argument("--pretrain-steps", type=int, default=5_000)

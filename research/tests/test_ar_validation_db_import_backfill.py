@@ -37,6 +37,21 @@ def _csv_metric_row(**overrides):
         "ar_validation_steps_to_floor": "1500",
         "ar_validation_rank_score": "1.7344",
         "ar_validation_elapsed_ms": "1234.5",
+        "ar_validation_size_bucket": "20m",
+        "ar_validation_param_count": "20000000",
+        "ar_validation_seed_count": "3",
+        "ar_validation_seed_scores_json": '[{"seed":0,"score":1.0}]',
+        "ar_validation_rank_score_mean": "1.7344",
+        "ar_validation_rank_score_std": "0.25",
+        "ar_validation_rank_score_stable": "1.4844",
+        "ar_validation_held_pair_acc_mean": "0.0859",
+        "ar_validation_held_pair_acc_std": "0.01",
+        "ar_validation_held_class_acc_mean": "0.1562",
+        "ar_validation_held_class_acc_std": "0.02",
+        "ar_validation_budget_json": '{"size_bucket":"20m","train_steps":7500}',
+        "ar_validation_checkpoint_path": "/tmp/stage.pt",
+        "ar_validation_stage_status": "ok",
+        "ar_validation_stage_elapsed_ms": "55.5",
         "learning_curve_json": '[{"step": 500, "final_acc": 0.10}]',
     }
     row.update(overrides)
@@ -62,6 +77,17 @@ def test_csv_row_parsing_normalizes_meaningful_ar_validation_fields(tmp_path):
     assert parsed.values["ar_validation_held_class_acc"] == 0.1562
     assert parsed.values["ar_validation_steps_to_floor"] == 1500
     assert parsed.values["ar_validation_rank_score"] == 1.7344
+    assert parsed.values["ar_validation_size_bucket"] == "20m"
+    assert parsed.values["ar_validation_param_count"] == 20_000_000
+    assert parsed.values["ar_validation_seed_count"] == 3
+    assert parsed.values["ar_validation_rank_score_std"] == 0.25
+    assert json.loads(parsed.values["ar_validation_seed_scores_json"]) == [
+        {"score": 1.0, "seed": 0}
+    ]
+    assert json.loads(parsed.values["ar_validation_budget_json"]) == {
+        "size_bucket": "20m",
+        "train_steps": 7500,
+    }
     assert json.loads(parsed.values["ar_validation_learning_curve_json"]) == [
         {"final_acc": 0.10, "step": 500},
     ]
@@ -150,10 +176,18 @@ def test_import_does_not_overwrite_without_flag_and_overwrites_with_flag(tmp_pat
     assert overwrite[0].values["ar_validation_rank_score"] == 1.7344
     import_tool.apply_import_decisions(conn, overwrite, overwrite=True)
     score = conn.execute(
-        "SELECT ar_validation_rank_score FROM graph_runs WHERE result_id = ?",
+        """
+        SELECT ar_validation_rank_score, data_provenance_json
+        FROM graph_runs
+        WHERE result_id = ?
+        """,
         ("rid-1",),
-    ).fetchone()[0]
-    assert score == 1.7344
+    ).fetchone()
+    assert score["ar_validation_rank_score"] == 1.7344
+    previous = json.loads(score["data_provenance_json"])["last_metric_backfill"][
+        "previous_ar_validation_values"
+    ]
+    assert previous["ar_validation_rank_score"] == 9.9
 
 
 def test_ambiguous_fingerprint_fallback_is_skipped_and_reported(tmp_path):
@@ -214,6 +248,21 @@ def test_backfill_update_payload_and_sql_use_ar_validation_fields():
         "ar_validation_rank_score": 1.7344,
         "ar_validation_status": "ok",
         "ar_validation_elapsed_ms": 1234.5,
+        "ar_validation_size_bucket": "20m",
+        "ar_validation_param_count": 20_000_000,
+        "ar_validation_seed_count": 3,
+        "ar_validation_seed_scores_json": '[{"seed":0,"score":1.7344}]',
+        "ar_validation_rank_score_mean": 1.7344,
+        "ar_validation_rank_score_std": 0.25,
+        "ar_validation_rank_score_stable": 1.4844,
+        "ar_validation_held_pair_acc_mean": 0.0859,
+        "ar_validation_held_pair_acc_std": 0.01,
+        "ar_validation_held_class_acc_mean": 0.1562,
+        "ar_validation_held_class_acc_std": 0.02,
+        "ar_validation_budget_json": '{"size_bucket":"20m","train_steps":7500}',
+        "ar_validation_checkpoint_path": "/tmp/stage.pt",
+        "ar_validation_stage_status": "ok",
+        "ar_validation_stage_elapsed_ms": 55.5,
     }
     values = backfill_tool._ar_validation_values_from_result_row(result_row)
 
@@ -231,6 +280,8 @@ def test_backfill_update_payload_and_sql_use_ar_validation_fields():
                ar_validation_held_pair_acc,
                ar_validation_held_class_acc,
                ar_validation_rank_score,
+               ar_validation_size_bucket,
+               ar_validation_seed_count,
                ar_validation_status,
                data_provenance_json
         FROM graph_runs
@@ -243,6 +294,8 @@ def test_backfill_update_payload_and_sql_use_ar_validation_fields():
     assert row["ar_validation_held_pair_acc"] == 0.0859
     assert row["ar_validation_held_class_acc"] == 0.1562
     assert row["ar_validation_rank_score"] == 1.7344
+    assert row["ar_validation_size_bucket"] == "20m"
+    assert row["ar_validation_seed_count"] == 3
     assert row["ar_validation_status"] == "ok"
     assert (
         json.loads(row["data_provenance_json"])["last_metric_backfill"]["source"]

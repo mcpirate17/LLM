@@ -299,7 +299,7 @@ def _load_program_rows(
         cutoff = time.time() - window_seconds
 
     query = (
-        "SELECT graph_json, stage0_passed, stage1_passed, loss_ratio, "
+        "SELECT result_id, graph_json, stage0_passed, stage1_passed, loss_ratio, "
         "error_type, failure_op, failure_details_json "
         "FROM program_results_compat "
         "WHERE graph_json IS NOT NULL AND length(graph_json) > 0"
@@ -314,10 +314,18 @@ def _load_program_rows(
         logger.error("Failed to load observability program rows: %s", exc)
         return []
     payload_rows: list[dict[str, Any]] = []
+    skipped_artifacts = 0
+    skipped_examples: list[str] = []
     for row in cursor:
-        graph_json = resolve_graph_json_value(
-            nb.conn, db_path or getattr(nb, "db_path", ""), row["graph_json"]
-        )
+        try:
+            graph_json = resolve_graph_json_value(
+                nb.conn, db_path or getattr(nb, "db_path", ""), row["graph_json"]
+            )
+        except (FileNotFoundError, OSError, ValueError) as exc:
+            skipped_artifacts += 1
+            if len(skipped_examples) < 5:
+                skipped_examples.append(f"{row['result_id']}: {exc}")
+            continue
         if not isinstance(graph_json, str) or not graph_json:
             continue
         loss_ratio = row["loss_ratio"]
@@ -331,6 +339,12 @@ def _load_program_rows(
                 "failure_op": row["failure_op"],
                 "failure_details_json": row["failure_details_json"],
             }
+        )
+    if skipped_artifacts:
+        logger.warning(
+            "Skipped %d observability row(s) with unreadable graph artifacts. examples=%s",
+            skipped_artifacts,
+            "; ".join(skipped_examples),
         )
     return payload_rows
 

@@ -15,7 +15,7 @@ from research.synthesis.dim_flow_support import (
 )
 from research.synthesis.graph import ComputationGraph
 from research.synthesis.native_analysis import (
-    summarize_dim_flow_in_python,
+    summarize_dim_flow,
     validate_edges,
     validate_packed_ir_batch_natively,
     validate_packed_ir_natively,
@@ -184,7 +184,7 @@ def test_validate_packed_ir_native_matches_split_reference():
     if packed is None:
         pytest.skip("packed graph-validation runtime unavailable")
 
-    split_summary = summarize_dim_flow_in_python(
+    split_summary = summarize_dim_flow(
         reachable_mask=summary_mask,
         has_params_flags=dim_inputs.has_params_flags,
         param_estimates=dim_inputs.param_estimates,
@@ -223,7 +223,7 @@ def test_validate_packed_ir_native_matches_split_reference():
     )
 
 
-def test_validate_packed_ir_batch_native_matches_single_graph_results():
+def _build_packed_ir_test_graphs():
     graphs = []
     for out_dim in (8, 4, 8):
         graph = ComputationGraph(8)
@@ -234,7 +234,6 @@ def test_validate_packed_ir_batch_native_matches_single_graph_results():
         norm = graph.add_op("rmsnorm", [proj])
         graph.set_output(norm)
         graphs.append(graph)
-
     inputs = [
         build_dim_flow_inputs(
             graph,
@@ -245,31 +244,31 @@ def test_validate_packed_ir_batch_native_matches_single_graph_results():
         )
         for graph in graphs
     ]
-    tables = validation_opcode_tables()
-    singles = [
-        validate_packed_ir_natively(
-            op_codes=item.analysis_ir.op_codes,
-            input_indices=item.analysis_ir.input_indices,
-            output_node_idx=int(item.analysis_ir.output_node_idx),
-            param_estimates=item.param_estimates,
-            has_params_flags=item.has_params_flags,
-            nontrivial_flags=item.nontrivial_flags,
-            kv_breaking_flags=item.kv_breaking_flags,
-            node_dims=item.node_dims,
-            node_seq_flags=item.node_seq_flags,
-            op_kind_flags=item.op_kind_flags,
-            full_dim_flags=item.full_dim_flags,
-            model_dim=graph.model_dim,
-            input_node_idx=item.node_id_to_analysis_idx[graph._input_node_id],
-            effective_depth_weights=tables.effective_depth_weight,
-            discount_successor_u8=tables.discount_successor_u8,
-        )
-        for graph, item in zip(graphs, inputs)
-    ]
-    if any(result is None for result in singles):
-        pytest.skip("packed graph-validation runtime unavailable")
+    return graphs, inputs
 
-    batch = validate_packed_ir_batch_natively(
+
+def _validate_single_packed(graph, item, tables):
+    return validate_packed_ir_natively(
+        op_codes=item.analysis_ir.op_codes,
+        input_indices=item.analysis_ir.input_indices,
+        output_node_idx=int(item.analysis_ir.output_node_idx),
+        param_estimates=item.param_estimates,
+        has_params_flags=item.has_params_flags,
+        nontrivial_flags=item.nontrivial_flags,
+        kv_breaking_flags=item.kv_breaking_flags,
+        node_dims=item.node_dims,
+        node_seq_flags=item.node_seq_flags,
+        op_kind_flags=item.op_kind_flags,
+        full_dim_flags=item.full_dim_flags,
+        model_dim=graph.model_dim,
+        input_node_idx=item.node_id_to_analysis_idx[graph._input_node_id],
+        effective_depth_weights=tables.effective_depth_weight,
+        discount_successor_u8=tables.discount_successor_u8,
+    )
+
+
+def _validate_batch_packed(graphs, inputs, tables):
+    return validate_packed_ir_batch_natively(
         op_codes=[item.analysis_ir.op_codes for item in inputs],
         input_indices=[item.analysis_ir.input_indices for item in inputs],
         output_node_indices=[int(item.analysis_ir.output_node_idx) for item in inputs],
@@ -289,24 +288,39 @@ def test_validate_packed_ir_batch_native_matches_single_graph_results():
         effective_depth_weights=tables.effective_depth_weight,
         discount_successor_u8=tables.discount_successor_u8,
     )
+
+
+def _assert_packed_results_match(batched, single):
+    assert batched.analysis.depth == single.analysis.depth
+    assert batched.analysis.reachable_count == single.analysis.reachable_count
+    assert batched.analysis.param_estimate == single.analysis.param_estimate
+    assert batched.dim_flow.reachable_param_count == (
+        single.dim_flow.reachable_param_count
+    )
+    assert batched.edge_error_count == single.edge_error_count
+    assert batched.dead_parameterized_count == single.dead_parameterized_count
+    assert batched.reachable_mask.tolist() == single.reachable_mask.tolist()
+    assert batched.dead_parameterized_mask.tolist() == (
+        single.dead_parameterized_mask.tolist()
+    )
+    assert batched.edge_validation.freq_mismatch_bits.tolist() == (
+        single.edge_validation.freq_mismatch_bits.tolist()
+    )
+    assert batched.effective_depth == pytest.approx(single.effective_depth)
+
+
+def test_validate_packed_ir_batch_native_matches_single_graph_results():
+    graphs, inputs = _build_packed_ir_test_graphs()
+    tables = validation_opcode_tables()
+    singles = [
+        _validate_single_packed(graph, item, tables)
+        for graph, item in zip(graphs, inputs)
+    ]
+    if any(result is None for result in singles):
+        pytest.skip("packed graph-validation runtime unavailable")
+    batch = _validate_batch_packed(graphs, inputs, tables)
     if batch is None:
         pytest.skip("packed graph-validation batch runtime unavailable")
-
     assert len(batch) == len(singles)
     for batched, single in zip(batch, singles):
-        assert batched.analysis.depth == single.analysis.depth
-        assert batched.analysis.reachable_count == single.analysis.reachable_count
-        assert batched.analysis.param_estimate == single.analysis.param_estimate
-        assert batched.dim_flow.reachable_param_count == (
-            single.dim_flow.reachable_param_count
-        )
-        assert batched.edge_error_count == single.edge_error_count
-        assert batched.dead_parameterized_count == single.dead_parameterized_count
-        assert batched.reachable_mask.tolist() == single.reachable_mask.tolist()
-        assert batched.dead_parameterized_mask.tolist() == (
-            single.dead_parameterized_mask.tolist()
-        )
-        assert batched.edge_validation.freq_mismatch_bits.tolist() == (
-            single.edge_validation.freq_mismatch_bits.tolist()
-        )
-        assert batched.effective_depth == pytest.approx(single.effective_depth)
+        _assert_packed_results_match(batched, single)
