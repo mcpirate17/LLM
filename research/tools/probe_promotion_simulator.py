@@ -39,6 +39,7 @@ from research.defaults import RUNS_DB
 from research.scientist.probe_normalization import (
     safe_float,
     spearman,
+    table_columns,
     template_family,
 )
 
@@ -83,14 +84,10 @@ def _connect_readonly(db_path: Path) -> sqlite3.Connection:
     return conn
 
 
-def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
-    return {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})")}
-
-
 def _select_leaderboard_rows(
     conn: sqlite3.Connection, *, tiers: Sequence[str], limit: int | None
 ) -> list[dict[str, Any]]:
-    lb_cols = _table_columns(conn, "leaderboard")
+    lb_cols = table_columns(conn, "leaderboard")
     needed = [
         "result_id",
         "tier",

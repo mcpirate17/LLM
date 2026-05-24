@@ -339,6 +339,20 @@ def metrics_for_tier(tier: str) -> tuple[ProbeMetric, ...]:
     return tuple(pm for pm in PROBE_METRICS if pm.tier == tier)
 
 
+def table_columns(conn: Any, table: str) -> set[str]:
+    """Return the column names of a sqlite table.
+
+    ``PRAGMA`` does not accept bound parameters, so the table name is
+    interpolated. We validate it is a plain identifier first to keep the
+    interpolation injection-safe (callers only ever pass internal table
+    constants such as ``leaderboard`` / ``program_results``).
+    """
+    if not isinstance(table, str) or not table.isidentifier():
+        raise ValueError(f"unsafe table identifier: {table!r}")
+    pragma = "PRAGMA table_info(" + table + ")"
+    return {str(row[1]) for row in conn.execute(pragma)}
+
+
 # ── Pure stat helpers — stdlib only ───────────────────────────────────
 
 

@@ -24,6 +24,7 @@ from research.scientist.probe_normalization import (
     safe_float,
     spearman,
     spearman_ci,
+    table_columns,
     template_family,
     variance_decomposition,
 )
@@ -205,3 +206,28 @@ def test_metrics_for_tier_returns_only_matching():
     screening = metrics_for_tier("screening")
     for pm in screening:
         assert pm.tier == "screening"
+
+
+def test_table_columns_reads_schema(tmp_path):
+    import sqlite3
+
+    db = tmp_path / "t.db"
+    conn = sqlite3.connect(str(db))
+    conn.execute("CREATE TABLE foo (a TEXT, b REAL, c INTEGER)")
+    try:
+        assert table_columns(conn, "foo") == {"a", "b", "c"}
+    finally:
+        conn.close()
+
+
+def test_table_columns_rejects_unsafe_identifier():
+    import sqlite3
+
+    conn = sqlite3.connect(":memory:")
+    try:
+        with pytest.raises(ValueError):
+            table_columns(conn, "foo); DROP TABLE bar;--")
+        with pytest.raises(ValueError):
+            table_columns(conn, "")
+    finally:
+        conn.close()

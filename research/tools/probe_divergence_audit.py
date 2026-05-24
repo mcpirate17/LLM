@@ -56,6 +56,7 @@ from research.scientist.probe_normalization import (
     partial_spearman,
     safe_float,
     spearman_ci,
+    table_columns,
     template_family,
     variance_decomposition,
 )
@@ -83,14 +84,10 @@ def _detect_program_results_table(conn: sqlite3.Connection) -> str:
     return "program_results_compat" if has_compat else "program_results"
 
 
-def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
-    return {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})")}
-
-
 def _select_existing(
     conn: sqlite3.Connection, table: str, alias: str, candidates: Sequence[str]
 ) -> list[str]:
-    cols = _table_columns(conn, table)
+    cols = table_columns(conn, table)
     return [f"{alias}.{c}" for c in candidates if c in cols]
 
 
@@ -121,7 +118,7 @@ def _load_rows(db_path: Path) -> list[dict[str, Any]]:
         pgf_template = ", pgf.template_name AS pgf_template_name" if has_pgf else ""
         # Pull every registered probe metric column that actually exists
         # on this DB's program_results table.
-        pr_cols_available = _table_columns(conn, pr_table)
+        pr_cols_available = table_columns(conn, pr_table)
         probe_cols = [
             pm.column for pm in PROBE_METRICS if pm.column in pr_cols_available
         ]
