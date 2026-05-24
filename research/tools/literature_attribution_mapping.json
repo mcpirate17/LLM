@@ -1,0 +1,1867 @@
+{
+  "ops": [
+    {
+      "entity_key": "selective_scan",
+      "family_label": "selective_state_space",
+      "external_model_name": "Mamba (S6)",
+      "match_type": "exact",
+      "citation": "Gu & Dao 2023",
+      "reference_url": "https://arxiv.org/abs/2312.00752",
+      "notes": "Input-dependent selective SSM scan \u2014 the defining Mamba primitive."
+    },
+    {
+      "entity_key": "state_space",
+      "family_label": "structured_state_space",
+      "external_model_name": "S4 / S5",
+      "match_type": "family",
+      "citation": "Gu et al. 2021",
+      "reference_url": "https://arxiv.org/abs/2111.00396",
+      "notes": "Time-invariant SSM; no selectivity, so S4/S5 family rather than Mamba."
+    },
+    {
+      "entity_key": "conv1d_seq",
+      "family_label": "long_convolution",
+      "external_model_name": "Mamba / S4 / H3 causal conv",
+      "match_type": "family",
+      "citation": "Gu & Dao 2023",
+      "reference_url": "https://arxiv.org/abs/2312.00752",
+      "notes": "Short causal depthwise conv local-mixing lane; shared across SSM blocks."
+    },
+    {
+      "entity_key": "gated_linear",
+      "family_label": "gated_linear_recurrence",
+      "external_model_name": "HGRN / Griffin output gate",
+      "match_type": "family",
+      "citation": "Qin et al. 2023",
+      "reference_url": "https://arxiv.org/abs/2311.04823",
+      "notes": "Elementwise forget-style gate on a linear-recurrence output."
+    },
+    {
+      "entity_key": "rwkv_time_mixing",
+      "family_label": "linear_attention_rnn",
+      "external_model_name": "RWKV-4 (WKV)",
+      "match_type": "exact",
+      "citation": "Peng et al. 2023",
+      "reference_url": "https://arxiv.org/abs/2305.13048",
+      "notes": "WKV exponentially-weighted KV accumulation with receptance gate."
+    },
+    {
+      "entity_key": "rwkv_channel",
+      "family_label": "linear_attention_rnn",
+      "external_model_name": "RWKV-4 channel mixing",
+      "match_type": "exact",
+      "citation": "Peng et al. 2023",
+      "reference_url": "https://arxiv.org/abs/2305.13048",
+      "notes": "Token-shift + SiLU-gated channel mixing sublayer of RWKV-4."
+    },
+    {
+      "entity_key": "linear_attention",
+      "family_label": "linear_attention_rnn",
+      "external_model_name": "Linear Transformer",
+      "match_type": "exact",
+      "citation": "Katharopoulos et al. 2020",
+      "reference_url": "https://arxiv.org/abs/2006.16236",
+      "notes": "elu+1 kernel feature map; O(N) cumulative-sum attention. Foundational."
+    },
+    {
+      "entity_key": "gated_linear_attention",
+      "family_label": "gated_linear_attention",
+      "external_model_name": "GLA",
+      "match_type": "exact",
+      "citation": "Yang et al. 2023",
+      "reference_url": "https://arxiv.org/abs/2312.06635",
+      "notes": "Data-dependent gate on the linear-attention KV state. (Disabled 2026-05-23: anti-causal leak.)"
+    },
+    {
+      "entity_key": "gated_delta",
+      "family_label": "delta_rule",
+      "external_model_name": "Gated DeltaNet",
+      "match_type": "family",
+      "citation": "Yang et al. 2024",
+      "reference_url": "https://arxiv.org/abs/2412.06464",
+      "notes": "Delta-rule recurrence with a multiplicative forget gate (DeltaNet 2406.06484 base)."
+    },
+    {
+      "entity_key": "mla_attention",
+      "family_label": "multihead_latent_attention",
+      "external_model_name": "DeepSeek-V2 MLA",
+      "match_type": "exact",
+      "citation": "DeepSeek-AI 2024",
+      "reference_url": "https://arxiv.org/abs/2405.04434",
+      "notes": "Low-rank joint KV compression with decoupled RoPE."
+    },
+    {
+      "entity_key": "latent_attention_compressor",
+      "family_label": "multihead_latent_attention",
+      "external_model_name": "DeepSeek-V2 MLA (compressor)",
+      "match_type": "partial",
+      "citation": "DeepSeek-AI 2024",
+      "reference_url": "https://arxiv.org/abs/2405.04434",
+      "notes": "KV down-projection bottleneck (first half of MLA); also Perceiver/Linformer-adjacent."
+    },
+    {
+      "entity_key": "long_conv_hyena",
+      "family_label": "long_convolution",
+      "external_model_name": "Hyena",
+      "match_type": "exact",
+      "citation": "Poli et al. 2023",
+      "reference_url": "https://arxiv.org/abs/2302.10866",
+      "notes": "Implicit long convolution with data-controlled gating."
+    },
+    {
+      "entity_key": "mixture_of_recursions",
+      "family_label": "adaptive_computation_recurrence",
+      "external_model_name": "Mixture-of-Recursions",
+      "match_type": "family",
+      "citation": "Bae et al. 2025",
+      "reference_url": "https://arxiv.org/abs/2507.10524",
+      "notes": "Weight-tied recurrent block with per-token depth routing. Op may predate the July-2025 paper (parallel invention)."
+    },
+    {
+      "entity_key": "fixed_point_iter",
+      "family_label": "deep_equilibrium",
+      "external_model_name": "Deep Equilibrium Model",
+      "match_type": "family",
+      "citation": "Bai et al. 2019",
+      "reference_url": "https://arxiv.org/abs/1909.01377",
+      "notes": "Truncated fixed-point iteration of a weight-tied map."
+    },
+    {
+      "entity_key": "multi_head_mix",
+      "family_label": "token_channel_mixing",
+      "external_model_name": "MLP-Mixer",
+      "match_type": "partial",
+      "citation": "Tolstikhin et al. 2021",
+      "reference_url": "https://arxiv.org/abs/2105.01601",
+      "notes": "Shared MLP across the token dimension; multi-head blend of attention + mixer."
+    },
+    {
+      "entity_key": "cumprod_safe",
+      "family_label": "gated_linear_recurrence",
+      "external_model_name": "GateLoop",
+      "match_type": "family",
+      "citation": "Katsch 2023",
+      "reference_url": "https://arxiv.org/abs/2311.01927",
+      "notes": "Stable data-dependent cumulative product along sequence."
+    },
+    {
+      "entity_key": "cumsum",
+      "family_label": "linear_attention_rnn",
+      "external_model_name": "Linear Transformer / RetNet",
+      "match_type": "family",
+      "citation": "Katharopoulos et al. 2020",
+      "reference_url": "https://arxiv.org/abs/2006.16236",
+      "notes": "Cumulative KV-state sum; the O(N) recurrence shared across the family."
+    },
+    {
+      "entity_key": "softmax_attention",
+      "family_label": "softmax_self_attention",
+      "external_model_name": "Transformer / GPT-2",
+      "match_type": "exact",
+      "citation": "Vaswani et al. 2017",
+      "reference_url": "https://arxiv.org/abs/1706.03762",
+      "notes": "Scaled dot-product softmax attention."
+    },
+    {
+      "entity_key": "local_window_attn",
+      "family_label": "sliding_window_attention",
+      "external_model_name": "Longformer",
+      "match_type": "exact",
+      "citation": "Beltagy et al. 2020",
+      "reference_url": "https://arxiv.org/abs/2004.05150",
+      "notes": "Fixed-width local window attention."
+    },
+    {
+      "entity_key": "sliding_window_mask",
+      "family_label": "sliding_window_attention",
+      "external_model_name": "Mistral SWA",
+      "match_type": "exact",
+      "citation": "Jiang et al. 2023",
+      "reference_url": "https://arxiv.org/abs/2310.06825",
+      "notes": "Causal sliding-window mask (Mistral 7B)."
+    },
+    {
+      "entity_key": "strided_attention",
+      "family_label": "sparse_factorized_attention",
+      "external_model_name": "Sparse Transformer",
+      "match_type": "exact",
+      "citation": "Child et al. 2019",
+      "reference_url": "https://arxiv.org/abs/1904.10509",
+      "notes": "Strided/dilated factorized attention pattern."
+    },
+    {
+      "entity_key": "graph_attention",
+      "family_label": "graph_attention",
+      "external_model_name": "GAT",
+      "match_type": "exact",
+      "citation": "Veli\u010dkovi\u0107 et al. 2018",
+      "reference_url": "https://arxiv.org/abs/1710.10903",
+      "notes": "Attention over graph neighborhoods with learned weights."
+    },
+    {
+      "entity_key": "diff_attention",
+      "family_label": "differential_attention",
+      "external_model_name": "Differential Transformer",
+      "match_type": "exact",
+      "citation": "Ye et al. 2025",
+      "reference_url": "https://arxiv.org/abs/2410.05258",
+      "notes": "Subtracts two softmax maps to cancel attention noise."
+    },
+    {
+      "entity_key": "rope_rotate",
+      "family_label": "rotary_position_embedding",
+      "external_model_name": "RoFormer / RoPE",
+      "match_type": "exact",
+      "citation": "Su et al. 2021",
+      "reference_url": "https://arxiv.org/abs/2104.09864",
+      "notes": "Rotary relative position encoding."
+    },
+    {
+      "entity_key": "causal_mask",
+      "family_label": "softmax_self_attention",
+      "external_model_name": "GPT-2",
+      "match_type": "exact",
+      "citation": "Radford et al. 2019",
+      "reference_url": "https://arxiv.org/abs/1706.03762",
+      "notes": "Lower-triangular autoregressive mask; integral Transformer component."
+    },
+    {
+      "entity_key": "difficulty_routed_attention",
+      "family_label": "mixture_of_depths",
+      "external_model_name": "Mixture-of-Depths",
+      "match_type": "partial",
+      "citation": "Raposo et al. 2024",
+      "reference_url": "https://arxiv.org/abs/2404.02258",
+      "notes": "Routes tokens to attention paths by estimated difficulty; MoD-adjacent."
+    },
+    {
+      "entity_key": "gated_progressive_attention",
+      "family_label": "progressive_attention",
+      "external_model_name": "(none \u2014 see notes)",
+      "match_type": "novel",
+      "citation": "Child et al. 2019 (background)",
+      "reference_url": "https://arxiv.org/abs/1904.10509",
+      "notes": "Coarse-to-fine gated attention; no single published precedent."
+    },
+    {
+      "entity_key": "grouped_linear",
+      "family_label": "grouped_query_attention",
+      "external_model_name": "GQA",
+      "match_type": "family",
+      "citation": "Ainslie et al. 2023",
+      "reference_url": "https://arxiv.org/abs/2305.13245",
+      "notes": "Head/projection grouping for KV sharing."
+    },
+    {
+      "entity_key": "swiglu_mlp",
+      "family_label": "gated_ffn",
+      "external_model_name": "SwiGLU",
+      "match_type": "exact",
+      "citation": "Shazeer 2020",
+      "reference_url": "https://arxiv.org/abs/2002.05202",
+      "notes": "Swish-gated linear-unit FFN (LLaMA/PaLM)."
+    },
+    {
+      "entity_key": "fused_linear_gelu",
+      "family_label": "transformer_ffn",
+      "external_model_name": "GPT-2 FFN / GELU",
+      "match_type": "family",
+      "citation": "Hendrycks & Gimpel 2016",
+      "reference_url": "https://arxiv.org/abs/1606.08415",
+      "notes": "Fused linear+GELU FFN; engineering fusion of the standard FFN."
+    },
+    {
+      "entity_key": "moe_topk",
+      "family_label": "topk_moe",
+      "external_model_name": "Sparsely-Gated MoE",
+      "match_type": "exact",
+      "citation": "Shazeer et al. 2017",
+      "reference_url": "https://arxiv.org/abs/1701.06538",
+      "notes": "Top-k gated routing over FFN experts."
+    },
+    {
+      "entity_key": "moe_2expert",
+      "family_label": "topk_moe",
+      "external_model_name": "GShard / Switch",
+      "match_type": "family",
+      "citation": "Lepikhin et al. 2021",
+      "reference_url": "https://arxiv.org/abs/2006.16668",
+      "notes": "Top-2 expert routing special case."
+    },
+    {
+      "entity_key": "hetero_moe",
+      "family_label": "topk_moe",
+      "external_model_name": "HMoE",
+      "match_type": "family",
+      "citation": "Wang et al. 2024",
+      "reference_url": "https://arxiv.org/abs/2408.10681",
+      "notes": "Heterogeneous (variable-capacity) experts."
+    },
+    {
+      "entity_key": "relu_gated_moe",
+      "family_label": "topk_moe",
+      "external_model_name": "ReMoE",
+      "match_type": "family",
+      "citation": "Nie et al. 2024",
+      "reference_url": "https://arxiv.org/abs/2412.14711",
+      "notes": "Fully-differentiable ReLU routing instead of softmax+topk."
+    },
+    {
+      "entity_key": "sparse_bottleneck_moe",
+      "family_label": "topk_moe",
+      "external_model_name": "DeepSeekMoE",
+      "match_type": "family",
+      "citation": "Dai et al. 2024",
+      "reference_url": "https://arxiv.org/abs/2401.06066",
+      "notes": "Fine-grained + shared expert segmentation with bottleneck."
+    },
+    {
+      "entity_key": "n_way_sparse_router",
+      "family_label": "topk_moe",
+      "external_model_name": "Sparsely-Gated MoE",
+      "match_type": "family",
+      "citation": "Shazeer et al. 2017",
+      "reference_url": "https://arxiv.org/abs/1701.06538",
+      "notes": "Top-k over N experts; generalized original MoE gate."
+    },
+    {
+      "entity_key": "compression_mixture_experts",
+      "family_label": "topk_moe",
+      "external_model_name": "DeepSeekMoE",
+      "match_type": "partial",
+      "citation": "Dai et al. 2024",
+      "reference_url": "https://arxiv.org/abs/2401.06066",
+      "notes": "Compresses tokens before expert dispatch; bottleneck-before-dispatch framing not precisely named in literature."
+    },
+    {
+      "entity_key": "topk_gate",
+      "family_label": "topk_moe",
+      "external_model_name": "Sparsely-Gated MoE",
+      "match_type": "exact",
+      "citation": "Shazeer et al. 2017",
+      "reference_url": "https://arxiv.org/abs/1701.06538",
+      "notes": "Top-k expert selection gate."
+    },
+    {
+      "entity_key": "gather_topk",
+      "family_label": "topk_moe",
+      "external_model_name": "Switch Transformer",
+      "match_type": "family",
+      "citation": "Fedus et al. 2022",
+      "reference_url": "https://arxiv.org/abs/2101.03961",
+      "notes": "Scatter/gather token dispatch mechanics."
+    },
+    {
+      "entity_key": "arch_router",
+      "family_label": "topk_moe",
+      "external_model_name": "Sparsely-Gated MoE",
+      "match_type": "partial",
+      "citation": "Shazeer et al. 2017",
+      "reference_url": "https://arxiv.org/abs/1701.06538",
+      "notes": "Routes over whole sub-architectures rather than FFN experts; compositional extension, no exact prior name."
+    },
+    {
+      "entity_key": "compute_budget_router",
+      "family_label": "mixture_of_depths",
+      "external_model_name": "Mixture-of-Depths",
+      "match_type": "family",
+      "citation": "Raposo et al. 2024",
+      "reference_url": "https://arxiv.org/abs/2404.02258",
+      "notes": "Per-token FLOP-budget layer-skip router."
+    },
+    {
+      "entity_key": "adaptive_recursion",
+      "family_label": "mixture_of_recursions",
+      "external_model_name": "Mixture-of-Recursions",
+      "match_type": "family",
+      "citation": "Bae et al. 2025",
+      "reference_url": "https://arxiv.org/abs/2507.10524",
+      "notes": "Variable per-token recursion count over a shared block."
+    },
+    {
+      "entity_key": "route_recursion",
+      "family_label": "mixture_of_recursions",
+      "external_model_name": "Mixture-of-Recursions",
+      "match_type": "family",
+      "citation": "Bae et al. 2025",
+      "reference_url": "https://arxiv.org/abs/2507.10524",
+      "notes": "Per-token recursion-depth router."
+    },
+    {
+      "entity_key": "depth_weighted_proj",
+      "family_label": "mixture_of_depths",
+      "external_model_name": "Mixture-of-Depths",
+      "match_type": "partial",
+      "citation": "Raposo et al. 2024",
+      "reference_url": "https://arxiv.org/abs/2404.02258",
+      "notes": "Depth/route-score-weighted projection; no dedicated paper for this exact mechanic."
+    },
+    {
+      "entity_key": "early_exit",
+      "family_label": "early_exit",
+      "external_model_name": "CALM",
+      "match_type": "family",
+      "citation": "Schuster et al. 2022",
+      "reference_url": "https://arxiv.org/abs/2207.07061",
+      "notes": "Confidence-based early exit."
+    },
+    {
+      "entity_key": "confidence_token_gate",
+      "family_label": "early_exit",
+      "external_model_name": "CALM",
+      "match_type": "family",
+      "citation": "Schuster et al. 2022",
+      "reference_url": "https://arxiv.org/abs/2207.07061",
+      "notes": "Per-token confidence exit gate."
+    },
+    {
+      "entity_key": "cheap_verify_blend",
+      "family_label": "speculative_decoding",
+      "external_model_name": "Speculative Decoding",
+      "match_type": "partial",
+      "citation": "Leviathan et al. 2023",
+      "reference_url": "https://arxiv.org/abs/2211.17192",
+      "notes": "Draft/verify blend; the soft blend (vs accept/reject) is a novel twist."
+    },
+    {
+      "entity_key": "speculative",
+      "family_label": "speculative_decoding",
+      "external_model_name": "Speculative Decoding",
+      "match_type": "family",
+      "citation": "Chen et al. 2023",
+      "reference_url": "https://arxiv.org/abs/2302.01318",
+      "notes": "Draft-then-verify generation."
+    },
+    {
+      "entity_key": "adjacent_token_merge",
+      "family_label": "token_merging",
+      "external_model_name": "A-ToMe",
+      "match_type": "exact",
+      "citation": "Li et al. 2023",
+      "reference_url": "https://arxiv.org/abs/2306.16009",
+      "notes": "Merge similar adjacent tokens."
+    },
+    {
+      "entity_key": "token_merge",
+      "family_label": "token_merging",
+      "external_model_name": "ToMe",
+      "match_type": "exact",
+      "citation": "Bolya et al. 2023",
+      "reference_url": "https://arxiv.org/abs/2210.09461",
+      "notes": "Bipartite-matching token merging."
+    },
+    {
+      "entity_key": "semi_structured_2_4_linear",
+      "family_label": "structured_2_4_sparsity",
+      "external_model_name": "NVIDIA 2:4 sparsity",
+      "match_type": "exact",
+      "citation": "Mishra et al. 2021",
+      "reference_url": "https://arxiv.org/abs/2104.08378",
+      "notes": "2:4 structured sparse matmul (Ampere sparse tensor cores)."
+    },
+    {
+      "entity_key": "nm_sparse_linear",
+      "family_label": "structured_2_4_sparsity",
+      "external_model_name": "NVIDIA N:M sparsity",
+      "match_type": "family",
+      "citation": "Mishra et al. 2021",
+      "reference_url": "https://arxiv.org/abs/2104.08378",
+      "notes": "Generalized N:M structured sparsity."
+    },
+    {
+      "entity_key": "block_sparse_linear",
+      "family_label": "block_sparsity",
+      "external_model_name": "OpenAI block-sparse kernels",
+      "match_type": "family",
+      "citation": "Gray et al. 2017",
+      "reference_url": "https://arxiv.org/abs/1711.09224",
+      "notes": "Block-structured weight sparsity."
+    },
+    {
+      "entity_key": "ternary_projection",
+      "family_label": "ternary_quantization",
+      "external_model_name": "BitNet b1.58",
+      "match_type": "exact",
+      "citation": "Ma et al. 2024",
+      "reference_url": "https://arxiv.org/abs/2402.17764",
+      "notes": "Weights in {-1,0,+1} (1.58-bit)."
+    },
+    {
+      "entity_key": "sign_ste",
+      "family_label": "ternary_quantization",
+      "external_model_name": "BitNet b1.58",
+      "match_type": "exact",
+      "citation": "Ma et al. 2024",
+      "reference_url": "https://arxiv.org/abs/2402.17764",
+      "notes": "Straight-through estimator through sign for quantization."
+    },
+    {
+      "entity_key": "kronecker_linear",
+      "family_label": "structured_matrix",
+      "external_model_name": "Monarch matrices",
+      "match_type": "family",
+      "citation": "Dao et al. 2022",
+      "reference_url": "https://arxiv.org/abs/2204.00595",
+      "notes": "Kronecker-factored weight matrix W=A\u2297B."
+    },
+    {
+      "entity_key": "low_rank_proj",
+      "family_label": "structured_matrix",
+      "external_model_name": "LoRA",
+      "match_type": "family",
+      "citation": "Hu et al. 2022",
+      "reference_url": "https://arxiv.org/abs/2106.09685",
+      "notes": "Low-rank weight factorization."
+    },
+    {
+      "entity_key": "pq_embedding",
+      "family_label": "product_quantization",
+      "external_model_name": "Product Quantization",
+      "match_type": "family",
+      "citation": "J\u00e9gou et al. 2011",
+      "reference_url": "https://ieeexplore.ieee.org/document/5432202",
+      "notes": "Subspace-codebook quantized embeddings."
+    },
+    {
+      "entity_key": "embedding_lookup",
+      "family_label": "softmax_self_attention",
+      "external_model_name": "Transformer",
+      "match_type": "exact",
+      "citation": "Vaswani et al. 2017",
+      "reference_url": "https://arxiv.org/abs/1706.03762",
+      "notes": "Token embedding table lookup; integral Transformer component."
+    },
+    {
+      "entity_key": "spectral_filter",
+      "family_label": "fourier_token_mixing",
+      "external_model_name": "FNet / FNO",
+      "match_type": "family",
+      "citation": "Lee-Thorp et al. 2022",
+      "reference_url": "https://arxiv.org/abs/2105.03824",
+      "notes": "Learned frequency-domain token filter."
+    },
+    {
+      "entity_key": "chebyshev_spectral_mix",
+      "family_label": "fourier_token_mixing",
+      "external_model_name": "ChebNet",
+      "match_type": "family",
+      "citation": "Defferrard et al. 2016",
+      "reference_url": "https://arxiv.org/abs/1606.09375",
+      "notes": "Chebyshev-polynomial spectral mixing."
+    },
+    {
+      "entity_key": "integral_kernel",
+      "family_label": "neural_operator",
+      "external_model_name": "Fourier Neural Operator",
+      "match_type": "family",
+      "citation": "Li et al. 2021",
+      "reference_url": "https://arxiv.org/abs/2010.08895",
+      "notes": "Learned integral kernel over positions (position-based, not Fourier)."
+    },
+    {
+      "entity_key": "basis_expansion",
+      "family_label": "neural_operator",
+      "external_model_name": "FNO / Random Fourier Features",
+      "match_type": "partial",
+      "citation": "Li et al. 2021",
+      "reference_url": "https://arxiv.org/abs/2010.08895",
+      "notes": "Finite Fourier-feature basis expansion."
+    },
+    {
+      "entity_key": "geometric_product",
+      "family_label": "clifford_geometric_algebra",
+      "external_model_name": "Clifford Neural Layers / GCAN",
+      "match_type": "exact",
+      "citation": "Brandstetter et al. 2022",
+      "reference_url": "https://arxiv.org/abs/2209.04934",
+      "notes": "Cl(3,0) geometric product as a neural layer (also Ruhe 2302.06594)."
+    },
+    {
+      "entity_key": "clifford_attention",
+      "family_label": "clifford_geometric_algebra",
+      "external_model_name": "GATr",
+      "match_type": "partial",
+      "citation": "Brehmer et al. 2023",
+      "reference_url": "https://arxiv.org/abs/2305.18415",
+      "notes": "Attention via geometric product; ours uses Cl(3,0) vs GATr's projective GA."
+    },
+    {
+      "entity_key": "grade_mix",
+      "family_label": "clifford_geometric_algebra",
+      "external_model_name": "Clifford-group equivariant NN",
+      "match_type": "family",
+      "citation": "Ruhe et al. 2023",
+      "reference_url": "https://arxiv.org/abs/2305.11141",
+      "notes": "Grade-wise linear mixing of multivectors."
+    },
+    {
+      "entity_key": "grade_select",
+      "family_label": "clifford_geometric_algebra",
+      "external_model_name": "Clifford-group equivariant NN",
+      "match_type": "family",
+      "citation": "Ruhe et al. 2023",
+      "reference_url": "https://arxiv.org/abs/2305.11141",
+      "notes": "Grade projection from a multivector."
+    },
+    {
+      "entity_key": "rotor_transform",
+      "family_label": "clifford_geometric_algebra",
+      "external_model_name": "Clifford-group equivariant NN",
+      "match_type": "family",
+      "citation": "Ruhe et al. 2023",
+      "reference_url": "https://arxiv.org/abs/2305.11141",
+      "notes": "Rotor sandwich product for equivariant rotation."
+    },
+    {
+      "entity_key": "exp_map",
+      "family_label": "hyperbolic_geometry",
+      "external_model_name": "Hyperbolic Neural Networks",
+      "match_type": "exact",
+      "citation": "Ganea et al. 2018",
+      "reference_url": "https://arxiv.org/abs/1805.09112",
+      "notes": "Tangent\u2192Poincar\u00e9-ball exponential map."
+    },
+    {
+      "entity_key": "log_map",
+      "family_label": "hyperbolic_geometry",
+      "external_model_name": "Hyperbolic Neural Networks",
+      "match_type": "exact",
+      "citation": "Ganea et al. 2018",
+      "reference_url": "https://arxiv.org/abs/1805.09112",
+      "notes": "Poincar\u00e9-ball\u2192tangent logarithmic map."
+    },
+    {
+      "entity_key": "hyp_linear",
+      "family_label": "hyperbolic_geometry",
+      "external_model_name": "Hyperbolic Neural Networks",
+      "match_type": "exact",
+      "citation": "Ganea et al. 2018",
+      "reference_url": "https://arxiv.org/abs/1805.09112",
+      "notes": "M\u00f6bius linear layer."
+    },
+    {
+      "entity_key": "hyp_distance",
+      "family_label": "hyperbolic_geometry",
+      "external_model_name": "Hyperbolic Attention Networks",
+      "match_type": "family",
+      "citation": "Gulcehre et al. 2019",
+      "reference_url": "https://arxiv.org/abs/1805.09786",
+      "notes": "Geodesic distance as attention score."
+    },
+    {
+      "entity_key": "hyp_tangent_nonlinear",
+      "family_label": "hyperbolic_geometry",
+      "external_model_name": "Hyperbolic Neural Networks",
+      "match_type": "family",
+      "citation": "Ganea et al. 2018",
+      "reference_url": "https://arxiv.org/abs/1805.09112",
+      "notes": "Tangent-space nonlinearity."
+    },
+    {
+      "entity_key": "poincare_add",
+      "family_label": "hyperbolic_geometry",
+      "external_model_name": "Hyperbolic Neural Networks",
+      "match_type": "exact",
+      "citation": "Ganea et al. 2018",
+      "reference_url": "https://arxiv.org/abs/1805.09112",
+      "notes": "M\u00f6bius addition in the Poincar\u00e9 ball."
+    },
+    {
+      "entity_key": "hyperbolic_norm",
+      "family_label": "hyperbolic_geometry",
+      "external_model_name": "HNN++",
+      "match_type": "family",
+      "citation": "Shimizu et al. 2021",
+      "reference_url": "https://arxiv.org/abs/2006.08210",
+      "notes": "Manifold-aware normalization."
+    },
+    {
+      "entity_key": "lif_neuron",
+      "family_label": "spiking_neural_net",
+      "external_model_name": "Spikformer",
+      "match_type": "family",
+      "citation": "Zhou et al. 2022",
+      "reference_url": "https://arxiv.org/abs/2209.15425",
+      "notes": "Leaky integrate-and-fire neuron + surrogate gradient."
+    },
+    {
+      "entity_key": "spike_rate_code",
+      "family_label": "spiking_neural_net",
+      "external_model_name": "SpikeGPT",
+      "match_type": "family",
+      "citation": "Zhu et al. 2023",
+      "reference_url": "https://arxiv.org/abs/2302.13939",
+      "notes": "Continuous\u2194spike rate coding with STE."
+    },
+    {
+      "entity_key": "sparse_threshold",
+      "family_label": "spiking_neural_net",
+      "external_model_name": "Spikformer",
+      "match_type": "family",
+      "citation": "Zhou et al. 2022",
+      "reference_url": "https://arxiv.org/abs/2209.15425",
+      "notes": "Adaptive threshold sparsity gate."
+    },
+    {
+      "entity_key": "stdp_attention",
+      "family_label": "spiking_neural_net",
+      "external_model_name": "(none \u2014 see notes)",
+      "match_type": "novel",
+      "citation": "Kumar & Mondal 2025 (background)",
+      "reference_url": "https://arxiv.org/abs/2511.14691",
+      "notes": "STDP-inspired temporal-decay attention; ours predates and is simpler than the 2025 full-STDP transformer."
+    },
+    {
+      "entity_key": "associative_memory",
+      "family_label": "modern_hopfield",
+      "external_model_name": "Modern Hopfield Network",
+      "match_type": "family",
+      "citation": "Ramsauer et al. 2020",
+      "reference_url": "https://arxiv.org/abs/2008.02217",
+      "notes": "Continuous Hopfield retrieval update (= attention)."
+    },
+    {
+      "entity_key": "tropical_matmul",
+      "family_label": "tropical_maxplus",
+      "external_model_name": "Min-Max-Plus Networks",
+      "match_type": "family",
+      "citation": "Luo 2021",
+      "reference_url": "https://arxiv.org/abs/2102.06358",
+      "notes": "(min,+) / (max,+) semiring matmul = shortest-path."
+    },
+    {
+      "entity_key": "tropical_add",
+      "family_label": "tropical_maxplus",
+      "external_model_name": "Min-Max-Plus Networks",
+      "match_type": "family",
+      "citation": "Luo 2021",
+      "reference_url": "https://arxiv.org/abs/2102.06358",
+      "notes": "Tropical addition (smooth-min); novel as a residual operator."
+    },
+    {
+      "entity_key": "tropical_attention",
+      "family_label": "tropical_maxplus",
+      "external_model_name": "Tropical Attention",
+      "match_type": "partial",
+      "citation": "Hashemi et al. 2025",
+      "reference_url": "https://arxiv.org/abs/2505.17190",
+      "notes": "Parallel invention \u2014 their projective lift vs our smooth-min QKV; their paper postdates the codebase."
+    },
+    {
+      "entity_key": "tropical_gate",
+      "family_label": "tropical_maxplus",
+      "external_model_name": "(none \u2014 see notes)",
+      "match_type": "novel",
+      "citation": "Gaubert & Plus 1997 (math)",
+      "reference_url": "https://arxiv.org/abs/2102.06358",
+      "notes": "No published tropical-semiring gate for transformers."
+    },
+    {
+      "entity_key": "tropical_moe",
+      "family_label": "tropical_maxplus",
+      "external_model_name": "(none \u2014 see notes)",
+      "match_type": "novel",
+      "citation": "Luo 2021 (math)",
+      "reference_url": "https://arxiv.org/abs/2102.06358",
+      "notes": "No published trainable tropical MoE router."
+    },
+    {
+      "entity_key": "tropical_center",
+      "family_label": "tropical_maxplus",
+      "external_model_name": "(none \u2014 see notes)",
+      "match_type": "novel",
+      "citation": "Luo 2021 (math)",
+      "reference_url": "https://arxiv.org/abs/2102.06358",
+      "notes": "Causal min-centering normalization; no precedent."
+    },
+    {
+      "entity_key": "tropical_softmax",
+      "family_label": "tropical_maxplus",
+      "external_model_name": "(none \u2014 see notes)",
+      "match_type": "novel",
+      "citation": "(log-sum-exp duality)",
+      "reference_url": "https://arxiv.org/abs/2102.06358",
+      "notes": "Softmin relaxation as tropical softmax; no published standalone op."
+    },
+    {
+      "entity_key": "tropical_router",
+      "family_label": "tropical_maxplus",
+      "external_model_name": "(none \u2014 see notes)",
+      "match_type": "novel",
+      "citation": "Hashemi et al. 2025 (theory)",
+      "reference_url": "https://arxiv.org/abs/2505.17190",
+      "notes": "Tropical-argmax routing; only theoretical treatment exists."
+    },
+    {
+      "entity_key": "padic_expand",
+      "family_label": "padic_ultrametric",
+      "external_model_name": "(none \u2014 see notes)",
+      "match_type": "novel",
+      "citation": "Khrennikov 1994 (math)",
+      "reference_url": "https://arxiv.org/abs/2102.06358",
+      "notes": "p-adic-style multi-scale expansion as a trainable layer; no NN precedent. (URL placeholder \u2014 math background only.)"
+    },
+    {
+      "entity_key": "padic_gate",
+      "family_label": "padic_ultrametric",
+      "external_model_name": "(none \u2014 see notes)",
+      "match_type": "novel",
+      "citation": "Khrennikov 1994 (math)",
+      "reference_url": "https://arxiv.org/abs/2102.06358",
+      "notes": "Valuation-conditioned gate; no NN precedent."
+    },
+    {
+      "entity_key": "padic_residual",
+      "family_label": "padic_ultrametric",
+      "external_model_name": "(none \u2014 see notes)",
+      "match_type": "novel",
+      "citation": "Khrennikov 1994 (math)",
+      "reference_url": "https://arxiv.org/abs/2102.06358",
+      "notes": "Multi-resolution p-adic residual; no NN precedent."
+    },
+    {
+      "entity_key": "ultrametric_attention",
+      "family_label": "padic_ultrametric",
+      "external_model_name": "(none \u2014 see notes)",
+      "match_type": "novel",
+      "citation": "Khrennikov 1994 (math)",
+      "reference_url": "https://arxiv.org/abs/2508.01010",
+      "notes": "Ultrametric-distance attention; no published transformer uses this."
+    }
+  ],
+  "templates": [
+    {
+      "entity_key": "mamba_reference",
+      "family_label": "selective_state_space",
+      "external_model_name": "Mamba",
+      "match_type": "exact",
+      "citation": "Gu & Dao 2023",
+      "reference_url": "https://arxiv.org/abs/2312.00752",
+      "notes": "Reference Mamba block: conv1d \u2192 selective scan \u2192 gated proj."
+    },
+    {
+      "entity_key": "rwkv_block",
+      "family_label": "linear_attention_rnn",
+      "external_model_name": "RWKV-4",
+      "match_type": "exact",
+      "citation": "Peng et al. 2023",
+      "reference_url": "https://arxiv.org/abs/2305.13048",
+      "notes": "LN\u2192time-mix\u2192LN\u2192channel-mix."
+    },
+    {
+      "entity_key": "rwkv_double_norm",
+      "family_label": "linear_attention_rnn",
+      "external_model_name": "RWKV-4 (variant)",
+      "match_type": "family",
+      "citation": "Peng et al. 2023",
+      "reference_url": "https://arxiv.org/abs/2305.13048",
+      "notes": "RWKV with extra normalization; project variant."
+    },
+    {
+      "entity_key": "rwkv_sparse_chain",
+      "family_label": "linear_attention_rnn",
+      "external_model_name": "RWKV-4 + sparse FFN",
+      "match_type": "partial",
+      "citation": "Peng et al. 2023",
+      "reference_url": "https://arxiv.org/abs/2305.13048",
+      "notes": "RWKV time-mix + sparse/MoE channel mixing."
+    },
+    {
+      "entity_key": "rwkv_channel_conv1d_seq_block",
+      "family_label": "linear_attention_rnn",
+      "external_model_name": "RWKV-4 + conv1d",
+      "match_type": "partial",
+      "citation": "Peng et al. 2023",
+      "reference_url": "https://arxiv.org/abs/2305.13048",
+      "notes": "RWKV channel-mix + causal conv (RWKV\u00d7Mamba hybrid)."
+    },
+    {
+      "entity_key": "latent_compress_rwkv",
+      "family_label": "hybrid_mla_rwkv",
+      "external_model_name": "MLA \u00d7 RWKV hybrid",
+      "match_type": "novel",
+      "citation": "DeepSeek-AI 2024 / Peng et al. 2023",
+      "reference_url": "https://arxiv.org/abs/2405.04434",
+      "notes": "Project-novel combination of MLA KV-compression with RWKV time-mixing."
+    },
+    {
+      "entity_key": "state_space_block",
+      "family_label": "structured_state_space",
+      "external_model_name": "S4 / S5",
+      "match_type": "family",
+      "citation": "Gu et al. 2021",
+      "reference_url": "https://arxiv.org/abs/2111.00396",
+      "notes": "Generic non-selective SSM block."
+    },
+    {
+      "entity_key": "state_space_retrieval_v2",
+      "family_label": "structured_state_space",
+      "external_model_name": "H3",
+      "match_type": "family",
+      "citation": "Fu et al. 2022",
+      "reference_url": "https://arxiv.org/abs/2212.14052",
+      "notes": "SSM with associative-recall (H3-style)."
+    },
+    {
+      "entity_key": "adaptive_ssm_chain",
+      "family_label": "selective_state_space",
+      "external_model_name": "Mamba-2 (SSD)",
+      "match_type": "family",
+      "citation": "Dao & Gu 2024",
+      "reference_url": "https://arxiv.org/abs/2405.21060",
+      "notes": "Chained input-dependent SSMs; Mamba-2 SSD-adjacent."
+    },
+    {
+      "entity_key": "latent_attn_ssm_hybrid",
+      "family_label": "hybrid_ssm_attention",
+      "external_model_name": "Jamba / Mamba-2 hybrid",
+      "match_type": "family",
+      "citation": "Dao & Gu 2024",
+      "reference_url": "https://arxiv.org/abs/2405.21060",
+      "notes": "Latent attention interleaved with SSM; project combination."
+    },
+    {
+      "entity_key": "local_attn_ssm_hybrid",
+      "family_label": "hybrid_ssm_attention",
+      "external_model_name": "Griffin",
+      "match_type": "family",
+      "citation": "De et al. 2024",
+      "reference_url": "https://arxiv.org/abs/2402.19427",
+      "notes": "Local attention + gated linear recurrence (Griffin pattern)."
+    },
+    {
+      "entity_key": "recursive_attn_ssm_hybrid",
+      "family_label": "hybrid_ssm_attention",
+      "external_model_name": "MoR \u00d7 SSM",
+      "match_type": "partial",
+      "citation": "Bae et al. 2025",
+      "reference_url": "https://arxiv.org/abs/2507.10524",
+      "notes": "Recursive (weight-tied) attention + SSM; project combination."
+    },
+    {
+      "entity_key": "recursive_attn_ssm_depth",
+      "family_label": "adaptive_computation_recurrence",
+      "external_model_name": "Mixture-of-Recursions",
+      "match_type": "family",
+      "citation": "Bae et al. 2025",
+      "reference_url": "https://arxiv.org/abs/2507.10524",
+      "notes": "Per-token recursion depth over a shared attn-SSM stack."
+    },
+    {
+      "entity_key": "recurrent_delta_block",
+      "family_label": "delta_rule",
+      "external_model_name": "DeltaNet",
+      "match_type": "family",
+      "citation": "Yang et al. 2024",
+      "reference_url": "https://arxiv.org/abs/2406.06484",
+      "notes": "Block wrapping the delta-rule recurrence."
+    },
+    {
+      "entity_key": "gated_linear_attention_block",
+      "family_label": "gated_linear_attention",
+      "external_model_name": "GLA",
+      "match_type": "exact",
+      "citation": "Yang et al. 2023",
+      "reference_url": "https://arxiv.org/abs/2312.06635",
+      "notes": "GLA block (disabled 2026-05-23: anti-causal leak)."
+    },
+    {
+      "entity_key": "mlstm_block",
+      "family_label": "matrix_memory_lstm",
+      "external_model_name": "xLSTM (mLSTM)",
+      "match_type": "exact",
+      "citation": "Beck et al. 2024",
+      "reference_url": "https://arxiv.org/abs/2405.04517",
+      "notes": "Matrix-memory LSTM with exponential gating."
+    },
+    {
+      "entity_key": "mlstm_sparse_ffn_block",
+      "family_label": "matrix_memory_lstm",
+      "external_model_name": "xLSTM (mLSTM) + sparse FFN",
+      "match_type": "family",
+      "citation": "Beck et al. 2024",
+      "reference_url": "https://arxiv.org/abs/2405.04517",
+      "notes": "mLSTM core + sparse FFN extension."
+    },
+    {
+      "entity_key": "mla_block",
+      "family_label": "multihead_latent_attention",
+      "external_model_name": "DeepSeek-V2 MLA",
+      "match_type": "exact",
+      "citation": "DeepSeek-AI 2024",
+      "reference_url": "https://arxiv.org/abs/2405.04434",
+      "notes": "Full MLA block."
+    },
+    {
+      "entity_key": "mla_sparse_ffn_block",
+      "family_label": "multihead_latent_attention",
+      "external_model_name": "DeepSeek-V2 MLA + MoE",
+      "match_type": "family",
+      "citation": "DeepSeek-AI 2024",
+      "reference_url": "https://arxiv.org/abs/2405.04434",
+      "notes": "MLA + sparse FFN."
+    },
+    {
+      "entity_key": "long_conv_hyena_block",
+      "family_label": "long_convolution",
+      "external_model_name": "Hyena",
+      "match_type": "exact",
+      "citation": "Poli et al. 2023",
+      "reference_url": "https://arxiv.org/abs/2302.10866",
+      "notes": "Hyena operator block."
+    },
+    {
+      "entity_key": "latent_compress_block",
+      "family_label": "multihead_latent_attention",
+      "external_model_name": "DeepSeek-V2 MLA (compressor)",
+      "match_type": "partial",
+      "citation": "DeepSeek-AI 2024",
+      "reference_url": "https://arxiv.org/abs/2405.04434",
+      "notes": "KV-compression bottleneck block."
+    },
+    {
+      "entity_key": "codex_ssm_retention_block",
+      "family_label": "linear_attention_rnn",
+      "external_model_name": "RetNet",
+      "match_type": "family",
+      "citation": "Sun et al. 2023",
+      "reference_url": "https://arxiv.org/abs/2307.08621",
+      "notes": "Retention: decaying linear attention."
+    },
+    {
+      "entity_key": "codex_ssm_delta_memory_block",
+      "family_label": "delta_rule",
+      "external_model_name": "DeltaNet",
+      "match_type": "family",
+      "citation": "Yang et al. 2024",
+      "reference_url": "https://arxiv.org/abs/2406.06484",
+      "notes": "Delta-rule error-correcting memory."
+    },
+    {
+      "entity_key": "codex_ssm_mla_gated_block",
+      "family_label": "multihead_latent_attention",
+      "external_model_name": "DeepSeek-V2 MLA + gate",
+      "match_type": "partial",
+      "citation": "DeepSeek-AI 2024",
+      "reference_url": "https://arxiv.org/abs/2405.04434",
+      "notes": "MLA + extra output gate (project extension)."
+    },
+    {
+      "entity_key": "codex_ssm_local_recall_block",
+      "family_label": "hybrid_ssm_attention",
+      "external_model_name": "Griffin",
+      "match_type": "family",
+      "citation": "De et al. 2024",
+      "reference_url": "https://arxiv.org/abs/2402.19427",
+      "notes": "Local attention + SSM recall."
+    },
+    {
+      "entity_key": "transformer_block",
+      "family_label": "softmax_self_attention",
+      "external_model_name": "Transformer",
+      "match_type": "exact",
+      "citation": "Vaswani et al. 2017",
+      "reference_url": "https://arxiv.org/abs/1706.03762",
+      "notes": "Standard attention+FFN block."
+    },
+    {
+      "entity_key": "gpt2_reference",
+      "family_label": "softmax_self_attention",
+      "external_model_name": "GPT-2",
+      "match_type": "exact",
+      "citation": "Radford et al. 2019",
+      "reference_url": "https://arxiv.org/abs/1706.03762",
+      "notes": "Reference GPT-2 decoder block."
+    },
+    {
+      "entity_key": "rope_attention_block",
+      "family_label": "rotary_position_embedding",
+      "external_model_name": "RoFormer / LLaMA",
+      "match_type": "exact",
+      "citation": "Su et al. 2021",
+      "reference_url": "https://arxiv.org/abs/2104.09864",
+      "notes": "Attention block with RoPE."
+    },
+    {
+      "entity_key": "windowed_attention",
+      "family_label": "sliding_window_attention",
+      "external_model_name": "Longformer / Mistral",
+      "match_type": "exact",
+      "citation": "Beltagy et al. 2020",
+      "reference_url": "https://arxiv.org/abs/2004.05150",
+      "notes": "Windowed local attention block."
+    },
+    {
+      "entity_key": "local_attention_block",
+      "family_label": "sliding_window_attention",
+      "external_model_name": "Longformer",
+      "match_type": "exact",
+      "citation": "Beltagy et al. 2020",
+      "reference_url": "https://arxiv.org/abs/2004.05150",
+      "notes": "Strictly-local windowed attention."
+    },
+    {
+      "entity_key": "strided_attention_block",
+      "family_label": "sparse_factorized_attention",
+      "external_model_name": "Sparse Transformer",
+      "match_type": "exact",
+      "citation": "Child et al. 2019",
+      "reference_url": "https://arxiv.org/abs/1904.10509",
+      "notes": "Strided sparse attention block."
+    },
+    {
+      "entity_key": "difficulty_routed_attention_block",
+      "family_label": "mixture_of_depths",
+      "external_model_name": "Mixture-of-Depths",
+      "match_type": "family",
+      "citation": "Raposo et al. 2024",
+      "reference_url": "https://arxiv.org/abs/2404.02258",
+      "notes": "Difficulty-routed attention; MoD-family."
+    },
+    {
+      "entity_key": "diff_attention_block",
+      "family_label": "differential_attention",
+      "external_model_name": "Differential Transformer",
+      "match_type": "exact",
+      "citation": "Ye et al. 2025",
+      "reference_url": "https://arxiv.org/abs/2410.05258",
+      "notes": "Differential attention block."
+    },
+    {
+      "entity_key": "diff_attn_conv_hybrid",
+      "family_label": "differential_attention",
+      "external_model_name": "Differential Transformer (hybrid)",
+      "match_type": "partial",
+      "citation": "Ye et al. 2025",
+      "reference_url": "https://arxiv.org/abs/2410.05258",
+      "notes": "Diff attention + conv; conv not in original."
+    },
+    {
+      "entity_key": "diff_attn_routing",
+      "family_label": "differential_attention",
+      "external_model_name": "Differential Transformer (routed)",
+      "match_type": "partial",
+      "citation": "Ye et al. 2025",
+      "reference_url": "https://arxiv.org/abs/2410.05258",
+      "notes": "Diff attention + routing head."
+    },
+    {
+      "entity_key": "graph_attention_block",
+      "family_label": "graph_attention",
+      "external_model_name": "GAT",
+      "match_type": "exact",
+      "citation": "Veli\u010dkovi\u0107 et al. 2018",
+      "reference_url": "https://arxiv.org/abs/1710.10903",
+      "notes": "GAT layer block."
+    },
+    {
+      "entity_key": "sparse_moe_block",
+      "family_label": "topk_moe",
+      "external_model_name": "Switch Transformer",
+      "match_type": "family",
+      "citation": "Fedus et al. 2022",
+      "reference_url": "https://arxiv.org/abs/2101.03961",
+      "notes": "Attention + sparse MoE FFN."
+    },
+    {
+      "entity_key": "moe",
+      "family_label": "topk_moe",
+      "external_model_name": "Sparsely-Gated MoE",
+      "match_type": "exact",
+      "citation": "Shazeer et al. 2017",
+      "reference_url": "https://arxiv.org/abs/1701.06538",
+      "notes": "Generic top-k MoE FFN block."
+    },
+    {
+      "entity_key": "n_way_moe_block",
+      "family_label": "topk_moe",
+      "external_model_name": "Sparsely-Gated MoE",
+      "match_type": "family",
+      "citation": "Shazeer et al. 2017",
+      "reference_url": "https://arxiv.org/abs/1701.06538",
+      "notes": "Route to N-of-K experts."
+    },
+    {
+      "entity_key": "hetero_moe_block",
+      "family_label": "topk_moe",
+      "external_model_name": "HMoE",
+      "match_type": "family",
+      "citation": "Wang et al. 2024",
+      "reference_url": "https://arxiv.org/abs/2408.10681",
+      "notes": "Variable-size experts."
+    },
+    {
+      "entity_key": "routing_conditioned_moe",
+      "family_label": "topk_moe",
+      "external_model_name": "Mixtral",
+      "match_type": "family",
+      "citation": "Jiang et al. 2024",
+      "reference_url": "https://arxiv.org/abs/2401.04088",
+      "notes": "Context-conditioned MoE gate."
+    },
+    {
+      "entity_key": "recursive_moe_attn",
+      "family_label": "mixture_of_recursions",
+      "external_model_name": "MoR \u00d7 MoE",
+      "match_type": "family",
+      "citation": "Bae et al. 2025",
+      "reference_url": "https://arxiv.org/abs/2507.10524",
+      "notes": "Recursive attention + MoE; project combination."
+    },
+    {
+      "entity_key": "mixture_of_recursions_block",
+      "family_label": "mixture_of_recursions",
+      "external_model_name": "Mixture-of-Recursions",
+      "match_type": "family",
+      "citation": "Bae et al. 2025",
+      "reference_url": "https://arxiv.org/abs/2507.10524",
+      "notes": "Full MoR block. (Op may predate July-2025 paper.)"
+    },
+    {
+      "entity_key": "recursive_depth_router",
+      "family_label": "mixture_of_recursions",
+      "external_model_name": "Mixture-of-Recursions",
+      "match_type": "family",
+      "citation": "Bae et al. 2025",
+      "reference_url": "https://arxiv.org/abs/2507.10524",
+      "notes": "Per-token recursion-depth router."
+    },
+    {
+      "entity_key": "mixed_recursion",
+      "family_label": "mixture_of_recursions",
+      "external_model_name": "Mixture-of-Recursions",
+      "match_type": "family",
+      "citation": "Bae et al. 2025",
+      "reference_url": "https://arxiv.org/abs/2507.10524",
+      "notes": "Tokens mixed across recursion levels."
+    },
+    {
+      "entity_key": "cascaded_early_exit",
+      "family_label": "early_exit",
+      "external_model_name": "CALM",
+      "match_type": "family",
+      "citation": "Schuster et al. 2022",
+      "reference_url": "https://arxiv.org/abs/2207.07061",
+      "notes": "Cascaded confidence exits."
+    },
+    {
+      "entity_key": "compute_budget_block",
+      "family_label": "mixture_of_depths",
+      "external_model_name": "Mixture-of-Depths",
+      "match_type": "family",
+      "citation": "Raposo et al. 2024",
+      "reference_url": "https://arxiv.org/abs/2404.02258",
+      "notes": "Token-level FLOP-budget block."
+    },
+    {
+      "entity_key": "token_merge_block",
+      "family_label": "token_merging",
+      "external_model_name": "ToMe",
+      "match_type": "exact",
+      "citation": "Bolya et al. 2023",
+      "reference_url": "https://arxiv.org/abs/2210.09461",
+      "notes": "Token-merge block."
+    },
+    {
+      "entity_key": "token_merge_conv",
+      "family_label": "token_merging",
+      "external_model_name": "ToMe (hybrid)",
+      "match_type": "partial",
+      "citation": "Bolya et al. 2023",
+      "reference_url": "https://arxiv.org/abs/2210.09461",
+      "notes": "Token merge + conv; conv not in ToMe."
+    },
+    {
+      "entity_key": "sparse_24_linear_block",
+      "family_label": "structured_2_4_sparsity",
+      "external_model_name": "NVIDIA 2:4 sparsity",
+      "match_type": "exact",
+      "citation": "Mishra et al. 2021",
+      "reference_url": "https://arxiv.org/abs/2104.08378",
+      "notes": "2:4 sparse linear block."
+    },
+    {
+      "entity_key": "sparse_ffn",
+      "family_label": "block_sparsity",
+      "external_model_name": "Block-sparse FFN",
+      "match_type": "family",
+      "citation": "Gray et al. 2017",
+      "reference_url": "https://arxiv.org/abs/1711.09224",
+      "notes": "Structured-sparse FFN."
+    },
+    {
+      "entity_key": "fused_gelu_ffn",
+      "family_label": "transformer_ffn",
+      "external_model_name": "GPT-2 FFN",
+      "match_type": "family",
+      "citation": "Radford et al. 2019",
+      "reference_url": "https://arxiv.org/abs/1706.03762",
+      "notes": "Standard GELU FFN."
+    },
+    {
+      "entity_key": "kronecker_block",
+      "family_label": "structured_matrix",
+      "external_model_name": "Monarch matrices",
+      "match_type": "family",
+      "citation": "Dao et al. 2022",
+      "reference_url": "https://arxiv.org/abs/2204.00595",
+      "notes": "Kronecker/block-diagonal weight block."
+    },
+    {
+      "entity_key": "pq_embedding_block",
+      "family_label": "product_quantization",
+      "external_model_name": "Product Quantization",
+      "match_type": "family",
+      "citation": "J\u00e9gou et al. 2011",
+      "reference_url": "https://ieeexplore.ieee.org/document/5432202",
+      "notes": "PQ embedding-table block."
+    },
+    {
+      "entity_key": "pq_embedding_moe_block",
+      "family_label": "product_quantization",
+      "external_model_name": "PQ + MoE",
+      "match_type": "novel",
+      "citation": "J\u00e9gou et al. 2011 / Shazeer et al. 2017",
+      "reference_url": "https://arxiv.org/abs/1701.06538",
+      "notes": "No paper pairs PQ embeddings with MoE routing in this form."
+    },
+    {
+      "entity_key": "conditional_compute",
+      "family_label": "mixture_of_depths",
+      "external_model_name": "Mixture-of-Depths",
+      "match_type": "family",
+      "citation": "Raposo et al. 2024",
+      "reference_url": "https://arxiv.org/abs/2404.02258",
+      "notes": "Conditional layer-skip; MoD + early-exit family."
+    },
+    {
+      "entity_key": "routed_bottleneck",
+      "family_label": "topk_moe",
+      "external_model_name": "DeepSeekMoE",
+      "match_type": "family",
+      "citation": "Dai et al. 2024",
+      "reference_url": "https://arxiv.org/abs/2401.06066",
+      "notes": "Bottleneck-routed expert block."
+    },
+    {
+      "entity_key": "latent_attn_moe",
+      "family_label": "multihead_latent_attention",
+      "external_model_name": "DeepSeek-V2 (MLA+MoE)",
+      "match_type": "partial",
+      "citation": "DeepSeek-AI 2024",
+      "reference_url": "https://arxiv.org/abs/2405.04434",
+      "notes": "Latent attention + MoE FFN (DeepSeek-V2-adjacent)."
+    },
+    {
+      "entity_key": "latent_attn_sparse_ffn",
+      "family_label": "multihead_latent_attention",
+      "external_model_name": "DeepSeek-V2 MLA",
+      "match_type": "partial",
+      "citation": "DeepSeek-AI 2024",
+      "reference_url": "https://arxiv.org/abs/2405.04434",
+      "notes": "Latent attention + sparse FFN (top template by usage)."
+    },
+    {
+      "entity_key": "topk_retrieval",
+      "family_label": "retrieval_augmented",
+      "external_model_name": "RETRO / RAG",
+      "match_type": "partial",
+      "citation": "Borgeaud et al. 2022",
+      "reference_url": "https://arxiv.org/abs/2112.04426",
+      "notes": "Top-k retrieval over a datastore."
+    },
+    {
+      "entity_key": "conv_residual_retrieval_v2",
+      "family_label": "retrieval_augmented",
+      "external_model_name": "(novel combination)",
+      "match_type": "novel",
+      "citation": "Lewis et al. 2020 (RAG)",
+      "reference_url": "https://arxiv.org/abs/2005.11401",
+      "notes": "Conv-residual + retrieval; no single published precedent."
+    },
+    {
+      "entity_key": "latent_attn_retrieval_v2",
+      "family_label": "retrieval_augmented",
+      "external_model_name": "(novel combination)",
+      "match_type": "novel",
+      "citation": "Borgeaud et al. 2022 (RETRO)",
+      "reference_url": "https://arxiv.org/abs/2112.04426",
+      "notes": "Latent attention + retrieval; no single published precedent."
+    },
+    {
+      "entity_key": "tropical_residual",
+      "family_label": "tropical_maxplus",
+      "external_model_name": "(none \u2014 see notes)",
+      "match_type": "novel",
+      "citation": "Luo 2021 (math)",
+      "reference_url": "https://arxiv.org/abs/2102.06358",
+      "notes": "Tropical-add residual block; novel design."
+    },
+    {
+      "entity_key": "tropical_matmul_block",
+      "family_label": "tropical_maxplus",
+      "external_model_name": "(none \u2014 see notes)",
+      "match_type": "novel",
+      "citation": "Luo 2021 (math)",
+      "reference_url": "https://arxiv.org/abs/2102.06358",
+      "notes": "Block scaffold around tropical matmul; novel."
+    },
+    {
+      "entity_key": "tropical_softmax_block",
+      "family_label": "tropical_maxplus",
+      "external_model_name": "(none \u2014 see notes)",
+      "match_type": "novel",
+      "citation": "(log-sum-exp duality)",
+      "reference_url": "https://arxiv.org/abs/2102.06358",
+      "notes": "Softmin-mixing block; novel."
+    },
+    {
+      "entity_key": "tropical_center_block",
+      "family_label": "tropical_maxplus",
+      "external_model_name": "(none \u2014 see notes)",
+      "match_type": "novel",
+      "citation": "Luo 2021 (math)",
+      "reference_url": "https://arxiv.org/abs/2102.06358",
+      "notes": "Tropical-centering block; novel."
+    },
+    {
+      "entity_key": "tropical_attn_conv1d_seq_block",
+      "family_label": "tropical_maxplus",
+      "external_model_name": "(none \u2014 see notes)",
+      "match_type": "novel",
+      "citation": "Hashemi et al. 2025 (parallel)",
+      "reference_url": "https://arxiv.org/abs/2505.17190",
+      "notes": "Tropical attn + conv1d hybrid; novel."
+    },
+    {
+      "entity_key": "geometric_product_block",
+      "family_label": "clifford_geometric_algebra",
+      "external_model_name": "GCAN",
+      "match_type": "family",
+      "citation": "Ruhe et al. 2023",
+      "reference_url": "https://arxiv.org/abs/2302.06594",
+      "notes": "Geometric-product mixing block."
+    },
+    {
+      "entity_key": "geometric_product_versor_block",
+      "family_label": "clifford_geometric_algebra",
+      "external_model_name": "Clifford-group equivariant NN",
+      "match_type": "family",
+      "citation": "Ruhe et al. 2023",
+      "reference_url": "https://arxiv.org/abs/2305.11141",
+      "notes": "Geometric product + versor sandwich."
+    },
+    {
+      "entity_key": "hyperbolic_bridge_block",
+      "family_label": "hyperbolic_geometry",
+      "external_model_name": "Hyperbolic Neural Networks",
+      "match_type": "family",
+      "citation": "Ganea et al. 2018",
+      "reference_url": "https://arxiv.org/abs/1805.09112",
+      "notes": "Euclidean\u2192log\u2192process\u2192exp bridge."
+    },
+    {
+      "entity_key": "poincare_add_bridge",
+      "family_label": "hyperbolic_geometry",
+      "external_model_name": "Hyperbolic Neural Networks",
+      "match_type": "family",
+      "citation": "Ganea et al. 2018",
+      "reference_url": "https://arxiv.org/abs/1805.09112",
+      "notes": "M\u00f6bius-add residual bridge."
+    },
+    {
+      "entity_key": "ultrametric_attention_block",
+      "family_label": "padic_ultrametric",
+      "external_model_name": "(none \u2014 see notes)",
+      "match_type": "novel",
+      "citation": "Khrennikov 1994 (math)",
+      "reference_url": "https://arxiv.org/abs/2508.01010",
+      "notes": "Ultrametric attention block; no precedent."
+    },
+    {
+      "entity_key": "hyp_distance_scoring",
+      "family_label": "hyperbolic_geometry",
+      "external_model_name": "Hyperbolic Attention Networks",
+      "match_type": "family",
+      "citation": "Gulcehre et al. 2019",
+      "reference_url": "https://arxiv.org/abs/1805.09786",
+      "notes": "Hyperbolic-distance attention score block."
+    },
+    {
+      "entity_key": "spiking_residual_block",
+      "family_label": "spiking_neural_net",
+      "external_model_name": "Spikformer",
+      "match_type": "family",
+      "citation": "Zhou et al. 2022",
+      "reference_url": "https://arxiv.org/abs/2209.15425",
+      "notes": "LIF-gated residual block."
+    },
+    {
+      "entity_key": "spiking_moe_block",
+      "family_label": "spiking_neural_net",
+      "external_model_name": "(none \u2014 see notes)",
+      "match_type": "novel",
+      "citation": "Zhu et al. 2023 (background)",
+      "reference_url": "https://arxiv.org/abs/2302.13939",
+      "notes": "Spiking + MoE block; no precedent."
+    },
+    {
+      "entity_key": "spiking_stdp_block",
+      "family_label": "spiking_neural_net",
+      "external_model_name": "(none \u2014 see notes)",
+      "match_type": "novel",
+      "citation": "Kumar & Mondal 2025 (background)",
+      "reference_url": "https://arxiv.org/abs/2511.14691",
+      "notes": "STDP-attn + LIF block; novel arrangement."
+    },
+    {
+      "entity_key": "associative_memory_block",
+      "family_label": "modern_hopfield",
+      "external_model_name": "Modern Hopfield Network",
+      "match_type": "family",
+      "citation": "Ramsauer et al. 2020",
+      "reference_url": "https://arxiv.org/abs/2008.02217",
+      "notes": "Hopfield retrieval block."
+    },
+    {
+      "entity_key": "integral_kernel_block",
+      "family_label": "neural_operator",
+      "external_model_name": "Fourier Neural Operator",
+      "match_type": "family",
+      "citation": "Li et al. 2021",
+      "reference_url": "https://arxiv.org/abs/2010.08895",
+      "notes": "Integral-kernel mixing block."
+    },
+    {
+      "entity_key": "iterative_refinement",
+      "family_label": "deep_equilibrium",
+      "external_model_name": "Deep Equilibrium Model",
+      "match_type": "family",
+      "citation": "Bai et al. 2019",
+      "reference_url": "https://arxiv.org/abs/1909.01377",
+      "notes": "Finite fixed-point iteration block."
+    }
+  ],
+  "graph_families": {
+    "softmax_attention": {
+      "family_label": "softmax_self_attention",
+      "external_model_name": "Transformer / GPT-2 family",
+      "match_type": "family",
+      "citation": "Vaswani et al. 2017",
+      "reference_url": "https://arxiv.org/abs/1706.03762",
+      "notes": "Softmax self-attention family."
+    },
+    "diff_attention": {
+      "family_label": "differential_attention",
+      "external_model_name": "Differential Transformer family",
+      "match_type": "family",
+      "citation": "Ye et al. 2025",
+      "reference_url": "https://arxiv.org/abs/2410.05258",
+      "notes": "Differential-attention family."
+    },
+    "mla_attention": {
+      "family_label": "multihead_latent_attention",
+      "external_model_name": "DeepSeek-V2 MLA family",
+      "match_type": "family",
+      "citation": "DeepSeek-AI 2024",
+      "reference_url": "https://arxiv.org/abs/2405.04434",
+      "notes": "Explicit MLA mixer."
+    },
+    "latent_attention_compressor": {
+      "family_label": "multihead_latent_attention",
+      "external_model_name": "DeepSeek-V2 MLA / low-rank KV family",
+      "match_type": "family",
+      "citation": "DeepSeek-AI 2024",
+      "reference_url": "https://arxiv.org/abs/2405.04434",
+      "notes": "Largest mixer family in runs.db: low-rank KV-compression attention (MLA/Linformer lineage)."
+    },
+    "graph_attention": {
+      "family_label": "graph_attention",
+      "external_model_name": "GAT family",
+      "match_type": "family",
+      "citation": "Veli\u010dkovi\u0107 et al. 2018",
+      "reference_url": "https://arxiv.org/abs/1710.10903",
+      "notes": "Graph-attention family."
+    },
+    "local_window_attn": {
+      "family_label": "sliding_window_attention",
+      "external_model_name": "Longformer / Mistral SWA family",
+      "match_type": "family",
+      "citation": "Beltagy et al. 2020",
+      "reference_url": "https://arxiv.org/abs/2004.05150",
+      "notes": "Sliding-window attention family."
+    },
+    "strided_attention": {
+      "family_label": "sparse_factorized_attention",
+      "external_model_name": "Sparse Transformer family",
+      "match_type": "family",
+      "citation": "Child et al. 2019",
+      "reference_url": "https://arxiv.org/abs/1904.10509",
+      "notes": "Strided sparse attention family."
+    },
+    "difficulty_routed_attention": {
+      "family_label": "mixture_of_depths",
+      "external_model_name": "Mixture-of-Depths family",
+      "match_type": "partial",
+      "citation": "Raposo et al. 2024",
+      "reference_url": "https://arxiv.org/abs/2404.02258",
+      "notes": "Difficulty-routed attention (MoD-adjacent)."
+    },
+    "gated_progressive_attention": {
+      "family_label": "progressive_attention",
+      "external_model_name": "coarse-to-fine attention (project-novel)",
+      "match_type": "novel",
+      "citation": "Child et al. 2019 (background)",
+      "reference_url": "https://arxiv.org/abs/1904.10509",
+      "notes": "Progressive gated attention; no single precedent."
+    },
+    "selective_scan": {
+      "family_label": "selective_state_space",
+      "external_model_name": "Mamba family",
+      "match_type": "family",
+      "citation": "Gu & Dao 2023",
+      "reference_url": "https://arxiv.org/abs/2312.00752",
+      "notes": "Selective SSM (Mamba) family."
+    },
+    "state_space": {
+      "family_label": "structured_state_space",
+      "external_model_name": "S4 / S5 family",
+      "match_type": "family",
+      "citation": "Gu et al. 2021",
+      "reference_url": "https://arxiv.org/abs/2111.00396",
+      "notes": "Non-selective structured SSM family."
+    },
+    "gated_delta": {
+      "family_label": "delta_rule",
+      "external_model_name": "DeltaNet / Gated DeltaNet family",
+      "match_type": "family",
+      "citation": "Yang et al. 2024",
+      "reference_url": "https://arxiv.org/abs/2412.06464",
+      "notes": "Delta-rule recurrence family."
+    },
+    "rwkv_time_mixing": {
+      "family_label": "linear_attention_rnn",
+      "external_model_name": "RWKV family",
+      "match_type": "family",
+      "citation": "Peng et al. 2023",
+      "reference_url": "https://arxiv.org/abs/2305.13048",
+      "notes": "RWKV linear-attention-RNN family."
+    },
+    "linear_attention": {
+      "family_label": "linear_attention_rnn",
+      "external_model_name": "Linear Transformer family",
+      "match_type": "family",
+      "citation": "Katharopoulos et al. 2020",
+      "reference_url": "https://arxiv.org/abs/2006.16236",
+      "notes": "Kernel linear-attention family."
+    },
+    "gated_linear_attention": {
+      "family_label": "gated_linear_attention",
+      "external_model_name": "GLA family",
+      "match_type": "family",
+      "citation": "Yang et al. 2023",
+      "reference_url": "https://arxiv.org/abs/2312.06635",
+      "notes": "Gated linear attention family (op now disabled)."
+    },
+    "long_conv_hyena": {
+      "family_label": "long_convolution",
+      "external_model_name": "Hyena family",
+      "match_type": "family",
+      "citation": "Poli et al. 2023",
+      "reference_url": "https://arxiv.org/abs/2302.10866",
+      "notes": "Hyena long-convolution family."
+    },
+    "mixture_of_recursions": {
+      "family_label": "adaptive_computation_recurrence",
+      "external_model_name": "Mixture-of-Recursions family",
+      "match_type": "family",
+      "citation": "Bae et al. 2025",
+      "reference_url": "https://arxiv.org/abs/2507.10524",
+      "notes": "MoR recursion family (op may predate paper)."
+    },
+    "associative_memory": {
+      "family_label": "modern_hopfield",
+      "external_model_name": "Modern Hopfield family",
+      "match_type": "family",
+      "citation": "Ramsauer et al. 2020",
+      "reference_url": "https://arxiv.org/abs/2008.02217",
+      "notes": "Modern Hopfield associative-memory family."
+    },
+    "tropical_attention": {
+      "family_label": "tropical_maxplus",
+      "external_model_name": "tropical/max-plus (parallel invention)",
+      "match_type": "partial",
+      "citation": "Hashemi et al. 2025",
+      "reference_url": "https://arxiv.org/abs/2505.17190",
+      "notes": "Tropical attention; parallel to 2025 paper."
+    },
+    "tropical_matmul": {
+      "family_label": "tropical_maxplus",
+      "external_model_name": "tropical/max-plus (project-novel)",
+      "match_type": "novel",
+      "citation": "Luo 2021 (math)",
+      "reference_url": "https://arxiv.org/abs/2102.06358",
+      "notes": "Tropical matmul mixing; novel as architecture."
+    },
+    "tropical_softmax": {
+      "family_label": "tropical_maxplus",
+      "external_model_name": "tropical/max-plus (project-novel)",
+      "match_type": "novel",
+      "citation": "(log-sum-exp duality)",
+      "reference_url": "https://arxiv.org/abs/2102.06358",
+      "notes": "Softmin mixing; novel."
+    },
+    "clifford_attention": {
+      "family_label": "clifford_geometric_algebra",
+      "external_model_name": "GATr / Clifford family",
+      "match_type": "partial",
+      "citation": "Brehmer et al. 2023",
+      "reference_url": "https://arxiv.org/abs/2305.18415",
+      "notes": "Clifford geometric-algebra attention family."
+    },
+    "geometric_product": {
+      "family_label": "clifford_geometric_algebra",
+      "external_model_name": "Clifford Neural Layers family",
+      "match_type": "family",
+      "citation": "Brandstetter et al. 2022",
+      "reference_url": "https://arxiv.org/abs/2209.04934",
+      "notes": "Geometric-product mixing family."
+    },
+    "ultrametric_attention": {
+      "family_label": "padic_ultrametric",
+      "external_model_name": "p-adic/ultrametric (project-novel)",
+      "match_type": "novel",
+      "citation": "Khrennikov 1994 (math)",
+      "reference_url": "https://arxiv.org/abs/2508.01010",
+      "notes": "Ultrametric-distance attention; no precedent."
+    },
+    "stdp_attention": {
+      "family_label": "spiking_neural_net",
+      "external_model_name": "spiking/STDP (project-novel)",
+      "match_type": "novel",
+      "citation": "Kumar & Mondal 2025 (background)",
+      "reference_url": "https://arxiv.org/abs/2511.14691",
+      "notes": "STDP-decay attention; simpler than the 2025 STDP transformer."
+    },
+    "integral_kernel": {
+      "family_label": "neural_operator",
+      "external_model_name": "Fourier Neural Operator family",
+      "match_type": "family",
+      "citation": "Li et al. 2021",
+      "reference_url": "https://arxiv.org/abs/2010.08895",
+      "notes": "Integral-kernel / neural-operator family."
+    },
+    "spectral_filter": {
+      "family_label": "fourier_token_mixing",
+      "external_model_name": "FNet / FNO family",
+      "match_type": "family",
+      "citation": "Lee-Thorp et al. 2022",
+      "reference_url": "https://arxiv.org/abs/2105.03824",
+      "notes": "Spectral/Fourier token-mixing family."
+    },
+    "chebyshev_spectral_mix": {
+      "family_label": "fourier_token_mixing",
+      "external_model_name": "ChebNet family",
+      "match_type": "family",
+      "citation": "Defferrard et al. 2016",
+      "reference_url": "https://arxiv.org/abs/1606.09375",
+      "notes": "Chebyshev spectral mixing family."
+    },
+    "fixed_point_iter": {
+      "family_label": "deep_equilibrium",
+      "external_model_name": "DEQ family",
+      "match_type": "family",
+      "citation": "Bai et al. 2019",
+      "reference_url": "https://arxiv.org/abs/1909.01377",
+      "notes": "Deep-equilibrium fixed-point family."
+    },
+    "multi_head_mix": {
+      "family_label": "token_channel_mixing",
+      "external_model_name": "MLP-Mixer family",
+      "match_type": "partial",
+      "citation": "Tolstikhin et al. 2021",
+      "reference_url": "https://arxiv.org/abs/2105.01601",
+      "notes": "Token-mixing MLP family."
+    },
+    "conv1d_seq": {
+      "family_label": "long_convolution",
+      "external_model_name": "causal-conv lane (Mamba/S4)",
+      "match_type": "family",
+      "citation": "Gu & Dao 2023",
+      "reference_url": "https://arxiv.org/abs/2312.00752",
+      "notes": "Short causal-conv-only mixing."
+    },
+    "matmul": {
+      "family_label": "bilinear_attention",
+      "external_model_name": "bilinear / un-normalized attention",
+      "match_type": "partial",
+      "citation": "Katharopoulos et al. 2020",
+      "reference_url": "https://arxiv.org/abs/2006.16236",
+      "notes": "Raw learned bilinear token mixing; closest to un-normalized linear attention."
+    },
+    "_moe": {
+      "family_label": "topk_moe",
+      "external_model_name": "Sparsely-Gated MoE family",
+      "match_type": "family",
+      "citation": "Shazeer et al. 2017",
+      "reference_url": "https://arxiv.org/abs/1701.06538",
+      "notes": "FFN/MoE stack, no sequence mixer."
+    },
+    "_recursion": {
+      "family_label": "adaptive_computation_recurrence",
+      "external_model_name": "MoR / MoD recursion family",
+      "match_type": "family",
+      "citation": "Bae et al. 2025",
+      "reference_url": "https://arxiv.org/abs/2507.10524",
+      "notes": "Adaptive-depth routing stack, no sequence mixer."
+    },
+    "_conditional_compute": {
+      "family_label": "mixture_of_depths",
+      "external_model_name": "Mixture-of-Depths family",
+      "match_type": "partial",
+      "citation": "Raposo et al. 2024",
+      "reference_url": "https://arxiv.org/abs/2404.02258",
+      "notes": "Token-entropy/class conditional compute, no sequence mixer."
+    },
+    "_ternary_dense": {
+      "family_label": "ternary_quantization",
+      "external_model_name": "BitNet b1.58 family",
+      "match_type": "family",
+      "citation": "Ma et al. 2024",
+      "reference_url": "https://arxiv.org/abs/2402.17764",
+      "notes": "Ternary-quantized dense stack, no sequence mixer."
+    },
+    "_dense_ffn": {
+      "family_label": "dense_feedforward",
+      "external_model_name": "Transformer FFN (no token mixer)",
+      "match_type": "family",
+      "citation": "Vaswani et al. 2017",
+      "reference_url": "https://arxiv.org/abs/1706.03762",
+      "notes": "Real structure with NO sequence-mixing op (~1.2K graphs). Mostly from FFN-centric templates (sparse_ffn, residual_block). Degenerate for sequence modeling."
+    },
+    "_reaped_no_structure": {
+      "family_label": "structure_reaped",
+      "external_model_name": "(real evaluated model; structure compacted)",
+      "match_type": "unknown",
+      "citation": "",
+      "reference_url": "",
+      "notes": "Graph structure was reaped/compacted from runs.db (graph_json={}); these were real compiled+trained models. Recover structure from program_results history if needed \u2014 NOT dense-FFN."
+    },
+    "token_merge": {
+      "family_label": "token_merging",
+      "external_model_name": "ToMe / A-ToMe",
+      "match_type": "family",
+      "citation": "Bolya et al. 2023",
+      "reference_url": "https://arxiv.org/abs/2210.09461",
+      "notes": "Adjacent/similar token merging as the cross-position operation."
+    },
+    "gather_topk": {
+      "family_label": "retrieval_augmented",
+      "external_model_name": "RETRO / RAG",
+      "match_type": "partial",
+      "citation": "Borgeaud et al. 2022",
+      "reference_url": "https://arxiv.org/abs/2112.04426",
+      "notes": "Top-k retrieval as the cross-token mixing operation."
+    }
+  }
+}
