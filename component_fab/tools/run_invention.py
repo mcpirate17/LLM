@@ -68,6 +68,19 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--binding-dim", type=int, default=32)
     parser.add_argument("--binding-blocks", type=int, default=1)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--no-range-probe",
+        dest="run_range_probe",
+        action="store_false",
+        help="Skip the distance-resolved sparse/long-range binding probe.",
+    )
+    parser.add_argument(
+        "--range-train-steps",
+        type=int,
+        default=300,
+        help="Train steps for the range probe (recurrent lanes need more; "
+        "600 reaches full-range binding for memory lanes).",
+    )
     parser.add_argument("--ledger", default=str(DEFAULT_INVENTION_LEDGER))
     parser.add_argument("--output", default=str(DEFAULT_REPORT))
     return parser.parse_args(argv)
@@ -139,9 +152,18 @@ def _grade_invention(
     binding_dim: int,
     binding_blocks: int,
     seed: int,
+    run_range_probe: bool = True,
+    range_train_steps: int = 300,
 ) -> dict[str, Any]:
     module = generate_module_from_spec(spec, dim=dim)
-    capability = validate_capabilities(spec, module, dim=dim, seq_len=seq_len)
+    capability = validate_capabilities(
+        spec,
+        module,
+        dim=dim,
+        seq_len=seq_len,
+        run_range_probe=run_range_probe,
+        range_train_steps=range_train_steps,
+    )
     capability_dict = capability_scorecard_to_dict(capability)
     if capability.eliminated_by is not None:
         return {
@@ -204,6 +226,10 @@ def _record_result(ledger: Ledger, result: dict[str, Any], cycle: int) -> None:
         "can_bind": bool(capability.get("can_bind")),
         "erf_density": float(capability.get("erf_density") or 0.0),
         "nb_max_accuracy": float(capability.get("nb_max_accuracy") or 0.0),
+        "range_effective_distance": int(
+            capability.get("range_effective_distance") or 0
+        ),
+        "range_aggregate_acc": float(capability.get("range_aggregate_acc") or 0.0),
         "lm_binding_candidate_wins": (
             (result.get("lm_binding") or {}).get("candidate_wins")
         ),
@@ -257,6 +283,8 @@ def main(argv: list[str] | None = None) -> int:
             binding_dim=args.binding_dim,
             binding_blocks=args.binding_blocks,
             seed=args.seed,
+            run_range_probe=args.run_range_probe,
+            range_train_steps=args.range_train_steps,
         )
         _record_result(ledger, result, cycle=index)
         results.append(result)

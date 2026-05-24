@@ -36,6 +36,7 @@ from ..harness.capability_probes import (
 from ..harness.erf_probe import measure_erf
 from ..harness.nano_bind_probe import nano_bind_gate
 from ..harness.nano_induction_probe import nano_induction_gate
+from ..harness.range_binding_probe import DEFAULT_DISTANCES, range_binding_gate
 from ..harness.standard_block import LaneTestBlock
 from ..proposer.spec_generator import ProposalSpec
 
@@ -63,6 +64,11 @@ class CapabilityScorecard:
     binds_per_probe: dict[str, bool]
     relative_recall_per_probe: dict[str, float]
     eliminated_by: str | None
+    range_ran: bool = False
+    range_aggregate_acc: float = 0.0
+    range_effective_distance: int = 0
+    range_max_accuracy: float = 0.0
+    range_per_distance: dict[str, float] = field(default_factory=dict)
     notes: tuple[str, ...] = field(default_factory=tuple)
 
 
@@ -193,6 +199,9 @@ def validate_capabilities(
     erf_density_threshold: float = 0.05,
     nb_n_classes: int = 4,
     ind_n_classes: int = 8,
+    run_range_probe: bool = False,
+    range_train_steps: int = 300,
+    range_distances: tuple[int, ...] = DEFAULT_DISTANCES,
 ) -> CapabilityScorecard:
     """Run the tiered gate stack on ``lane``."""
     signals: dict[str, Any] = {}
@@ -247,6 +256,28 @@ def validate_capabilities(
         probes=probes,
         binding_threshold=binding_threshold,
     )
+
+    # Soft signal: distance-resolved binding (sparse/long-range mixing). Opt-in
+    # because it trains one model per call (cheap for parallel lanes, slow for
+    # sequential-scan lanes). effective_distance is training-budget-limited —
+    # the full per-distance curve is the honest signal.
+    if run_range_probe:
+        rng = range_binding_gate(
+            lane, dim=dim, distances=range_distances, n_train_steps=range_train_steps
+        )
+        signals.update(
+            {
+                "range_ran": True,
+                "range_aggregate_acc": float(rng.aggregate_accuracy),
+                "range_effective_distance": int(rng.effective_distance),
+                "range_max_accuracy": float(rng.max_accuracy),
+                "range_per_distance": {
+                    str(k): round(float(v), 3)
+                    for k, v in rng.per_distance_accuracy.items()
+                },
+            }
+        )
+
     return _scorecard(
         spec,
         signals,
@@ -279,6 +310,11 @@ def capability_scorecard_to_dict(card: CapabilityScorecard) -> dict[str, Any]:
         "can_bind": card.can_bind,
         "binds_per_probe": dict(card.binds_per_probe),
         "relative_recall_per_probe": dict(card.relative_recall_per_probe),
+        "range_ran": card.range_ran,
+        "range_aggregate_acc": card.range_aggregate_acc,
+        "range_effective_distance": card.range_effective_distance,
+        "range_max_accuracy": card.range_max_accuracy,
+        "range_per_distance": dict(card.range_per_distance),
         "eliminated_by": card.eliminated_by,
         "notes": list(card.notes),
     }
