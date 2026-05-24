@@ -5,11 +5,62 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
 from collections import defaultdict
 from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
 
 logger = logging.getLogger(__name__)
+
+# ── Capability-weighted breeding ────────────────────────────────────────
+# The analytics weights drive what the grammar breeds toward. Historically a
+# graph counted as a "success" iff it cleared the stage-1 (perplexity) gate.
+# Foundation analysis 2026-05-24 showed that gate is non-discriminative at the
+# screening budget: 96% of stage-1 passers have induction AUC < 0.1 (no genuine
+# in-context capability) and position-independent models reach the same wikitext
+# perplexity (~700) as real mixers. So s1-only breeding optimises noise.
+#
+# We instead credit each stage-1 passer by how much in-context capability it
+# actually shows (induction screening AUC — the signal that *does* separate real
+# sequence models from position-independent ones). Soft, not a hard gate: a
+# baseline floor keeps perplexity-passers in play and avoids excluding SSMs that
+# acquire capability slowly (see feedback_ssm_capability_floor). Self-correcting
+# (Bayesian shrinkage downstream) and reversible via env flag.
+_CAPABILITY_BREEDING = os.environ.get("ARIA_DISABLE_CAPABILITY_BREEDING") != "1"
+# Gentle tilt, not a hammer. base=0.5 caps the max capability advantage at ~2x
+# so families that acquire in-context skill more slowly than attention at the
+# 500-step screening probe budget (notably SSMs / linear-attention — see
+# feedback_ssm_capability_floor) stay competitively bred rather than collapsing
+# to the floor. Verified 2026-05-24: softmax rises, pure-FFN ops fall, and SSM
+# ops stay >= ~0.8 instead of the ~0.6 a base=0.25 hammer produced.
+_CAP_BASE = 0.5  # credit for clearing s1 with no/low measured capability
+_CAP_LO = 0.10  # induction AUC at/below which the capability bonus is 0
+_CAP_HI = 0.50  # induction AUC at/above which the capability bonus is full
+
+
+def _success_credit(row: Dict) -> float:
+    """Capability-weighted breeding credit for one graph row, in ``[0, 1]``.
+
+    Returns 0.0 if the graph never passed stage 1. Otherwise a soft blend: a
+    baseline ``_CAP_BASE`` for clearing the gate, ramped to 1.0 by the measured
+    ``induction_screening_auc_500``. Unmeasured capability gets a neutral mid
+    credit. With ``ARIA_DISABLE_CAPABILITY_BREEDING=1`` this collapses to the
+    legacy s1-only signal (1.0 for any stage-1 pass).
+    """
+    if not row.get("stage1_any_passed"):
+        return 0.0
+    if not _CAPABILITY_BREEDING:
+        return 1.0
+    auc = row.get("induction_screening_auc_500")
+    if auc is None:
+        cap = 0.5
+    else:
+        try:
+            a = float(auc)
+        except (TypeError, ValueError):
+            a = 0.0
+        cap = max(0.0, min(1.0, (a - _CAP_LO) / (_CAP_HI - _CAP_LO)))
+    return _CAP_BASE + (1.0 - _CAP_BASE) * cap
 
 
 def _load_deduped_graph_training_rows(db_path):
@@ -35,7 +86,7 @@ _BAYES_PRIOR_STRENGTH = 6.0
 
 
 def _bayesian_posterior_rate(
-    s1_count: int,
+    s1_count: float,
     n_used: int,
     prior_mean: float,
     prior_strength: float = _BAYES_PRIOR_STRENGTH,
@@ -79,7 +130,7 @@ def _fit_prior_mean(rates: Iterable[float]) -> float:
 def _amplified_weights_from_counts(
     *,
     counts: Dict[str, int],
-    s1_counts: Dict[str, int],
+    s1_counts: Dict[str, float],
     min_used: int,
     amp_exponent: float = 1.5,
     weight_lo: float = 0.3,
@@ -222,7 +273,7 @@ class _WeightsMixin:
         from research.synthesis.context_rules import S1_EXEMPT_OPS
 
         counts: Dict[str, int] = defaultdict(int)
-        s1_counts: Dict[str, int] = defaultdict(int)
+        s1_counts: Dict[str, float] = defaultdict(float)
         for row in self._deduped_graph_rows(since_ts=since_ts):
             if not row.get("stage0_any_passed"):
                 continue
@@ -230,12 +281,12 @@ class _WeightsMixin:
                 graph = json.loads(str(row["graph_json"]))
             except (json.JSONDecodeError, TypeError, KeyError):
                 continue
+            credit = _success_credit(row)
             for op in self._graph_ops(graph):
                 if op in S1_EXEMPT_OPS:
                     continue
                 counts[op] += 1
-                if row.get("stage1_any_passed"):
-                    s1_counts[op] += 1
+                s1_counts[op] += credit
         if not counts:
             return {}
         try:
@@ -248,7 +299,7 @@ class _WeightsMixin:
         # Blend scaffold prior into observed counts BEFORE shrinkage so the
         # downstream Bayesian update sees a single coherent (s1, n) per op.
         blended_counts: Dict[str, int] = dict(counts)
-        blended_s1: Dict[str, int] = dict(s1_counts)
+        blended_s1: Dict[str, float] = dict(s1_counts)
         for op_name, stat in scaffold_stats.items():
             if op_name in S1_EXEMPT_OPS:
                 continue
@@ -261,10 +312,10 @@ class _WeightsMixin:
                 n = blended_counts[op_name]
                 observed_rate = blended_s1.get(op_name, 0) / max(n, 1)
                 blended_rate = (1.0 - alpha) * observed_rate + alpha * prior_rate
-                blended_s1[op_name] = int(round(blended_rate * n))
+                blended_s1[op_name] = blended_rate * n
             elif support >= min_used:
                 blended_counts[op_name] = support
-                blended_s1[op_name] = int(round(prior_rate * support))
+                blended_s1[op_name] = prior_rate * support
         return _amplified_weights_from_counts(
             counts=blended_counts,
             s1_counts=blended_s1,
@@ -317,7 +368,7 @@ class _WeightsMixin:
             if row.get("stage0_any_passed")
         ]
         counts: Dict[str, int] = defaultdict(int)
-        s1_counts: Dict[str, int] = defaultdict(int)
+        s1_counts: Dict[str, float] = defaultdict(float)
         for row in rows:
             try:
                 meta = json.loads(str(row["graph_json"])).get("metadata", {})
@@ -326,13 +377,12 @@ class _WeightsMixin:
             items = meta.get(metadata_key)
             if not isinstance(items, list):
                 continue
-            passed = bool(row.get("stage1_any_passed"))
+            credit = _success_credit(row)
             for item in items:
                 if not isinstance(item, str):
                     continue
                 counts[item] += 1
-                if passed:
-                    s1_counts[item] += 1
+                s1_counts[item] += credit
         if not counts:
             return {}
         return _amplified_weights_from_counts(
@@ -431,16 +481,16 @@ class _WeightsMixin:
             "templates_used": defaultdict(int),
             "motifs_used": defaultdict(int),
         }
-        all_s1: Dict[str, Dict[str, int]] = {
-            "templates_used": defaultdict(int),
-            "motifs_used": defaultdict(int),
+        all_s1: Dict[str, Dict[str, float]] = {
+            "templates_used": defaultdict(float),
+            "motifs_used": defaultdict(float),
         }
         for row in rows:
             try:
                 meta = json.loads(str(row["graph_json"])).get("metadata", {})
             except (json.JSONDecodeError, TypeError, KeyError):
                 continue
-            passed = bool(row.get("stage1_any_passed"))
+            credit = _success_credit(row)
             for mk in ("templates_used", "motifs_used"):
                 items = meta.get(mk)
                 if not isinstance(items, list):
@@ -449,8 +499,7 @@ class _WeightsMixin:
                     if not isinstance(item, str):
                         continue
                     all_counts[mk][item] += 1
-                    if passed:
-                        all_s1[mk][item] += 1
+                    all_s1[mk][item] += credit
 
         templates = _amplified_weights_from_counts(
             counts=all_counts["templates_used"],
