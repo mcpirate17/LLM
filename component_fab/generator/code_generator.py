@@ -18,10 +18,15 @@ from typing import Any
 from torch import nn
 
 from ..proposer.spec_generator import ProposalSpec
-from .primitive_templates import (
-    CalculusAugmentedLane,
+from .memory_primitives import (
     CausalFastWeightMemoryLane,
     CausalSlotRouterMemoryLane,
+    HierarchicalResidualCompressorLane,
+    PadicSurpriseMemoryLane,
+    TropicalSurpriseMemoryLane,
+)
+from .primitive_templates import (
+    CalculusAugmentedLane,
     ChebyshevAdapterLane,
     ChebyshevSpectralLane,
     CliffordAttention,
@@ -31,7 +36,6 @@ from .primitive_templates import (
     FourierBasisLane,
     GraphDiffusionAdapterLane,
     GraphDiffusionLane,
-    HierarchicalResidualCompressorLane,
     LinearStateSpaceLane,
     LowRankAdapterLane,
     LowRankFactorizedLane,
@@ -228,6 +232,10 @@ def _dispatch_invention_mechanism(
         if dim % 2 != 0:
             return nn.Linear(dim, dim)
         return SymplecticResidualMixerLane(dim)
+    if mechanism == "tropical_surprise_memory":
+        return TropicalSurpriseMemoryLane(dim)
+    if mechanism == "padic_surprise_memory":
+        return PadicSurpriseMemoryLane(dim)
     return None
 
 

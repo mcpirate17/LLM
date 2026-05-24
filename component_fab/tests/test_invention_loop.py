@@ -7,12 +7,14 @@ import json
 import torch
 
 from component_fab.generator.code_generator import generate_module_from_spec
-from component_fab.generator.primitive_templates import (
+from component_fab.generator.memory_primitives import (
     CausalFastWeightMemoryLane,
     CausalSlotRouterMemoryLane,
     HierarchicalResidualCompressorLane,
-    SymplecticResidualMixerLane,
+    PadicSurpriseMemoryLane,
+    TropicalSurpriseMemoryLane,
 )
+from component_fab.generator.primitive_templates import SymplecticResidualMixerLane
 from component_fab.inventor.mechanism_catalog import (
     enumerate_invention_specs,
     invention_gate_reasons,
@@ -64,12 +66,41 @@ def test_invention_codegen_dispatches_mechanisms() -> None:
         "causal_slot_router_memory": CausalSlotRouterMemoryLane,
         "hierarchical_residual_compressor": HierarchicalResidualCompressorLane,
         "symplectic_residual_mixer": SymplecticResidualMixerLane,
+        "tropical_surprise_memory": TropicalSurpriseMemoryLane,
+        "padic_surprise_memory": PadicSurpriseMemoryLane,
     }
     x = torch.randn(2, 8, 16)
     for mechanism, cls in expected.items():
         module = generate_module_from_spec(specs[mechanism], dim=16)
         assert isinstance(module, cls)
         assert module(x).shape == x.shape
+
+
+def test_surprise_memory_lanes_are_causal_finite_and_share_read() -> None:
+    """The Titans/TTT delta-rule lanes must be strictly causal (left-to-right
+    scan), produce finite forward+backward, and share the family's max-plus
+    retrieval (neither subclass overrides ``_read``)."""
+    assert "_read" not in TropicalSurpriseMemoryLane.__dict__
+    assert "_read" not in PadicSurpriseMemoryLane.__dict__
+    for cls in (TropicalSurpriseMemoryLane, PadicSurpriseMemoryLane):
+        torch.manual_seed(0)
+        lane = cls(32)
+        x = torch.randn(2, 24, 32, requires_grad=True)
+        y = lane(x)
+        assert y.shape == x.shape
+        assert torch.isfinite(y).all()
+        y.pow(2).mean().backward()
+        assert all(
+            p.grad is None or torch.isfinite(p.grad).all() for p in lane.parameters()
+        )
+        # Causality: scrambling the second half must not move the first half.
+        with torch.no_grad():
+            base = lane(x.detach())
+            scrambled = x.detach().clone()
+            scrambled[:, 12:] = torch.randn(2, 12, 32)
+            moved = lane(scrambled)
+            drift = (base[:, :12] - moved[:, :12]).abs().max().item()
+        assert drift < 1e-5, f"{cls.__name__} leaked future info: drift={drift}"
 
 
 def test_run_invention_dry_run_outputs_active_specs(capsys) -> None:

@@ -1,16 +1,20 @@
 """Code generation — turn ProposalSpecs into runnable nn.Module primitives."""
 
 from .code_generator import generate_module, generate_module_from_spec
-from .primitive_templates import (
-    CalculusAugmentedLane,
+from .memory_primitives import (
     CausalFastWeightMemoryLane,
     CausalSlotRouterMemoryLane,
+    HierarchicalResidualCompressorLane,
+    PadicSurpriseMemoryLane,
+    TropicalSurpriseMemoryLane,
+)
+from .primitive_templates import (
+    CalculusAugmentedLane,
     CliffordAttention,
     FiniteDifferenceCalculusLane,
     FourierBasisLane,
     GraphDiffusionAdapterLane,
     GraphDiffusionLane,
-    HierarchicalResidualCompressorLane,
     LowRankAdapterLane,
     LowRankFactorizedLane,
     MultiscaleWaveletAdapterLane,
@@ -43,6 +47,7 @@ __all__ = [
     "MultiscaleWaveletAdapterLane",
     "MultiscaleWaveletLane",
     "PadicProjection",
+    "PadicSurpriseMemoryLane",
     "RandomFeatureKernelAdapterLane",
     "RandomFeatureKernelLane",
     "SparseBandedAdapterLane",
@@ -52,6 +57,7 @@ __all__ = [
     "TopKLinear",
     "TropicalAttention",
     "TropicalStateSpace",
+    "TropicalSurpriseMemoryLane",
     "TropicalTopKStateSpace",
     "generate_module",
     "generate_module_from_spec",
