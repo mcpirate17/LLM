@@ -18,6 +18,10 @@ from ...synthesis.grammar import batch_generate
 from ..notebook import ExperimentEntry, LabNotebook
 from ..shared_utils import resolve_device
 from ._types import RunConfig
+from .screening_measured_rescue import (
+    measured_rescue_config,
+    rescue_skipped_candidates,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -124,10 +128,18 @@ def _partition_prescreener_candidates(
     exp_id: str,
     p_pass_floor: float,
     floor_source: str,
-) -> Tuple[List[tuple[Any, float]], int]:
-    """Split scored candidates into kept_with_rank and persist skips."""
+    rescue_cfg: Any = None,
+) -> Tuple[List[tuple[Any, float]], int, List[Dict[str, Any]]]:
+    """Split scored candidates into kept_with_rank and persist skips.
+
+    When ``rescue_cfg`` is provided (env-gated via ``ARIA_MEASURED_RESCUE``, default OFF), the
+    candidates the GBM would drop are first offered to the label-free MEASURED filter; those
+    flagged structurally induction-capable (``long_range_reach >= tau``) are re-admitted to
+    ``kept_with_rank`` at the explore tail instead of being recorded as ``predictor_skip``.
+    Additive: with ``rescue_cfg=None`` the skip set, metrics, and counts are unchanged.
+    """
     kept_with_rank: List[tuple[Any, float]] = []
-    skipped = 0
+    would_skip: List[Tuple[Any, Dict[str, Any], Dict[str, Any]]] = []
     for (
         planning_score,
         p_pass,
@@ -138,30 +150,53 @@ def _partition_prescreener_candidates(
         graph_dict,
     ) in scored:
         if p_pass < p_pass_floor:
-            skipped += 1
-            try:
-                skip_metrics = {
-                    "predicted_p_s1": p_pass,
-                    "predicted_induction_screening_auc": pred_auc,
-                    "predicted_p_induction_learner": p_ind,
-                    "predictor_planning_score": planning_score,
-                    "screening_ensemble_p_pass_floor": p_pass_floor,
-                    "screening_ensemble_p_pass_floor_source": floor_source,
-                }
-                if rank_composite < _RANK_COMPOSITE_USABLE_CUTOFF:
-                    skip_metrics["predicted_rank_composite"] = rank_composite
-                nb.record_program_result(
-                    experiment_id=exp_id,
-                    graph=graph,
-                    graph_json=json.dumps(graph_dict, separators=(",", ":")),
-                    status="predictor_skip",
-                    metrics=skip_metrics,
-                )
-            except (TypeError, ValueError) as exc:
-                logger.debug("Failed recording predictor_skip result: %s", exc)
+            skip_metrics: Dict[str, Any] = {
+                "predicted_p_s1": p_pass,
+                "predicted_induction_screening_auc": pred_auc,
+                "predicted_p_induction_learner": p_ind,
+                "predictor_planning_score": planning_score,
+                "screening_ensemble_p_pass_floor": p_pass_floor,
+                "screening_ensemble_p_pass_floor_source": floor_source,
+            }
+            if rank_composite < _RANK_COMPOSITE_USABLE_CUTOFF:
+                skip_metrics["predicted_rank_composite"] = rank_composite
+            would_skip.append((graph, graph_dict, skip_metrics))
             continue
         kept_with_rank.append((graph, rank_composite))
-    return kept_with_rank, skipped
+
+    rescued_graphs: List[Any] = []
+    rescue_records: List[Dict[str, Any]] = []
+    if rescue_cfg is not None and would_skip:
+        try:
+            rescued_graphs, rescue_records = rescue_skipped_candidates(
+                would_skip, rescue_cfg
+            )
+        except Exception as exc:  # a rescue failure must never break the gate
+            logger.debug("measured rescue raised, skipping: %s", exc)
+            rescued_graphs, rescue_records = [], []
+    rescued_ids = {id(g) for g in rescued_graphs}
+
+    for graph, graph_dict, skip_metrics in would_skip:
+        if id(graph) in rescued_ids:
+            continue  # re-admitted by measured rescue — do not record as a skip
+        try:
+            nb.record_program_result(
+                experiment_id=exp_id,
+                graph=graph,
+                graph_json=json.dumps(graph_dict, separators=(",", ":")),
+                status="predictor_skip",
+                metrics=skip_metrics,
+            )
+        except (TypeError, ValueError) as exc:
+            logger.debug("Failed recording predictor_skip result: %s", exc)
+
+    # Rescued candidates ride the explore tail (sentinel rank): re-admitted for measurement,
+    # not promoted as predicted-good.
+    for graph in rescued_graphs:
+        kept_with_rank.append((graph, _RANK_COMPOSITE_USABLE_CUTOFF))
+
+    skipped = len(would_skip) - len(rescued_graphs)
+    return kept_with_rank, skipped, rescue_records
 
 
 def _reorder_kept_by_rank_composite(
@@ -211,6 +246,46 @@ def _maybe_rerank_kept_by_ar_binding_overlay(
     return kept
 
 
+def _log_prescreener_summary(
+    ensemble: Any,
+    scored: List[tuple],
+    *,
+    usable_ranks: List[float],
+    skipped: int,
+    p_pass_floor: float,
+    n_kept: int,
+    rank_composite_used: bool,
+) -> None:
+    """Emit the one-line ensemble-ranker diagnostic for a prescreened batch."""
+    diagnostics = ensemble.diagnostics() if hasattr(ensemble, "diagnostics") else {}
+    planning_scores = [row[0] for row in scored]
+    pass_scores = [row[1] for row in scored]
+    induction_scores = [row[2] for row in scored]
+    rank_range = (
+        "[%.2f-%.2f]" % (min(usable_ranks), max(usable_ranks))
+        if usable_ranks
+        else "unusable"
+    )
+    logger.info(
+        "Ensemble ranker: %d graphs scored plan=[%.3f-%.3f] "
+        "pass=[%.3f-%.3f] induction=[%.3f-%.3f] composite=%s, "
+        "%d below P(pass_s1) floor (%.2f), %d kept (composite_reorder=%s), components=%d",
+        len(scored),
+        min(planning_scores) if planning_scores else 0.0,
+        max(planning_scores) if planning_scores else 0.0,
+        min(pass_scores) if pass_scores else 0.0,
+        max(pass_scores) if pass_scores else 0.0,
+        min(induction_scores) if induction_scores else 0.0,
+        max(induction_scores) if induction_scores else 0.0,
+        rank_range,
+        skipped,
+        p_pass_floor,
+        n_kept,
+        rank_composite_used,
+        diagnostics.get("n_components", 1),
+    )
+
+
 class _ExecutionExperimentPhase3Mixin:
     """Split helpers for experiment execution phase orchestration."""
 
@@ -228,7 +303,7 @@ class _ExecutionExperimentPhase3Mixin:
             chunk = ordered[start : start + _SQLITE_IN_CLAUSE_CHUNK]
             placeholders = ",".join("?" for _ in chunk)
             rows = nb.conn.execute(
-                "SELECT graph_fingerprint FROM program_results_compat "
+                "SELECT graph_fingerprint FROM program_results_compat "  # nosec B608  # nosemgrep: python-sql-string-formatting
                 f"WHERE graph_fingerprint IN ({placeholders})",
                 chunk,
             ).fetchall()
@@ -412,6 +487,27 @@ class _ExecutionExperimentPhase3Mixin:
         results["candidate_batch_size"] = candidate_batch_size
         return dev, dev_str, orchestrator, candidate_batch_size
 
+    def _emit_measured_rescue(
+        self,
+        results: Dict[str, Any],
+        rescue_records: List[Dict[str, Any]],
+        rescue_cfg: Any,
+        exp_id: str,
+    ) -> None:
+        """Record + announce candidates re-admitted by the label-free measured filter."""
+        if not rescue_records:
+            return
+        results["funnel_counts"]["measured_rescued"] = len(rescue_records)
+        self._emit_event(
+            "measured_rescue_applied",
+            {
+                "experiment_id": exp_id,
+                "n_rescued": len(rescue_records),
+                "tau": getattr(rescue_cfg, "tau", None),
+                "rescued": rescue_records,
+            },
+        )
+
     def _run_gbm_prescreener(
         self,
         *,
@@ -461,12 +557,16 @@ class _ExecutionExperimentPhase3Mixin:
                 ensemble, getattr(ensemble, "gbm", None), graphs, op_stats_cache
             )
             scored.sort(key=lambda row: -row[0])
-            kept_with_rank, skipped = _partition_prescreener_candidates(
+            rescue_cfg = measured_rescue_config(
+                device=str(getattr(config, "device", "cpu"))
+            )
+            kept_with_rank, skipped, rescue_records = _partition_prescreener_candidates(
                 nb,
                 scored,
                 exp_id=exp_id,
                 p_pass_floor=p_pass_floor,
                 floor_source=floor_source,
+                rescue_cfg=rescue_cfg,
             )
             kept, rank_composite_used, usable_ranks = _reorder_kept_by_rank_composite(
                 kept_with_rank
@@ -475,38 +575,18 @@ class _ExecutionExperimentPhase3Mixin:
 
             results["funnel_counts"]["gbm_prescreener_skipped"] = skipped
             results["funnel_counts"]["post_gbm_prescreener"] = len(kept)
+            self._emit_measured_rescue(results, rescue_records, rescue_cfg, exp_id)
             results["screening_ensemble_p_pass_floor"] = p_pass_floor
             results["screening_ensemble_p_pass_floor_source"] = floor_source
             results["screening_rank_composite_used"] = rank_composite_used
-
-            diagnostics = (
-                ensemble.diagnostics() if hasattr(ensemble, "diagnostics") else {}
-            )
-            planning_scores = [row[0] for row in scored]
-            pass_scores = [row[1] for row in scored]
-            induction_scores = [row[2] for row in scored]
-            rank_range = (
-                "[%.2f-%.2f]" % (min(usable_ranks), max(usable_ranks))
-                if usable_ranks
-                else "unusable"
-            )
-            logger.info(
-                "Ensemble ranker: %d graphs scored plan=[%.3f-%.3f] "
-                "pass=[%.3f-%.3f] induction=[%.3f-%.3f] composite=%s, "
-                "%d below P(pass_s1) floor (%.2f), %d kept (composite_reorder=%s), components=%d",
-                len(scored),
-                min(planning_scores) if planning_scores else 0.0,
-                max(planning_scores) if planning_scores else 0.0,
-                min(pass_scores) if pass_scores else 0.0,
-                max(pass_scores) if pass_scores else 0.0,
-                min(induction_scores) if induction_scores else 0.0,
-                max(induction_scores) if induction_scores else 0.0,
-                rank_range,
-                skipped,
-                p_pass_floor,
-                len(kept),
-                rank_composite_used,
-                diagnostics.get("n_components", 1),
+            _log_prescreener_summary(
+                ensemble,
+                scored,
+                usable_ranks=usable_ranks,
+                skipped=skipped,
+                p_pass_floor=p_pass_floor,
+                n_kept=len(kept),
+                rank_composite_used=rank_composite_used,
             )
             return kept
         except Exception as exc:
