@@ -48,14 +48,29 @@ _EXISTING = [
 ]
 
 
-def _corpus(runs_db: str, n_neg: int, seed: int = 0) -> List[Tuple[str, str, float]]:
-    """All induction positives + a random sample of negatives; each with graph_json."""
+# allowlisted label columns (avoids SQL injection; values are fixed capability metrics)
+_LABEL_COLS = (
+    "induction_screening_auc",
+    "ar_gate_score",
+    "ar_curriculum_auc_pair_final",
+)
+
+
+def _corpus(
+    runs_db: str, label_col: str, thr: float, n_neg: int, seed: int = 0
+) -> List[Tuple[str, str, float]]:
+    """All positives (label>thr) + a random sample of negatives; each with graph_json."""
+    if (
+        label_col not in _LABEL_COLS
+    ):  # allowlist makes the interpolation below injection-safe
+        raise ValueError(f"label_col must be one of {_LABEL_COLS}")
     con = sqlite3.connect(runs_db)
-    rows = con.execute(
-        """SELECT g.graph_fingerprint, g.graph_json, r.induction_screening_auc
-           FROM graphs g JOIN graph_runs r ON g.graph_fingerprint=r.graph_fingerprint
-           WHERE g.graph_json_is_placeholder=0 AND r.induction_screening_auc IS NOT NULL"""
-    ).fetchall()
+    query = (
+        f"SELECT g.graph_fingerprint, g.graph_json, r.{label_col} "
+        "FROM graphs g JOIN graph_runs r ON g.graph_fingerprint=r.graph_fingerprint "
+        f"WHERE g.graph_json_is_placeholder=0 AND r.{label_col} IS NOT NULL"
+    )
+    rows = con.execute(query).fetchall()  # nosec B608  # nosemgrep: python-sql-string-formatting
     con.close()
     # dedup by fingerprint (mean label), keep one graph_json
     by_fp: Dict[str, Tuple[str, List[float]]] = {}
@@ -63,8 +78,8 @@ def _corpus(runs_db: str, n_neg: int, seed: int = 0) -> List[Tuple[str, str, flo
         _, accs = by_fp.setdefault(str(fp), (gj, []))
         accs.append(float(auc))
     items = [(fp, gj, float(np.mean(a))) for fp, (gj, a) in by_fp.items()]
-    pos = [it for it in items if it[2] > _THR]
-    neg = [it for it in items if it[2] <= _THR]
+    pos = [it for it in items if it[2] > thr]
+    neg = [it for it in items if it[2] <= thr]
     rng = np.random.default_rng(seed)
     if len(neg) > n_neg:
         neg = [neg[i] for i in rng.choice(len(neg), n_neg, replace=False)]
@@ -102,10 +117,10 @@ def _existing_baselines(
 
 
 def _single_feature_table(
-    feats: Dict[str, np.ndarray], y: np.ndarray
+    feats: Dict[str, np.ndarray], y: np.ndarray, thr: float
 ) -> Dict[str, Dict[str, Any]]:
-    """Spearman + ROC(ind>thr) of each feature, no fitting (closed-book)."""
-    pos = (y > _THR).astype(int)
+    """Spearman + ROC(label>thr) of each feature, no fitting (closed-book)."""
+    pos = (y > thr).astype(int)
     table: Dict[str, Dict[str, Any]] = {}
     for name, x in feats.items():
         m = np.isfinite(x)
@@ -126,11 +141,13 @@ def _single_feature_table(
     return table
 
 
-def _oof_gbm_roc(X: np.ndarray, y: np.ndarray, seed: int = 42) -> Optional[float]:
+def _oof_gbm_roc(
+    X: np.ndarray, y: np.ndarray, thr: float, seed: int = 42
+) -> Optional[float]:
     """OOF GBM ranking ROC for a representation (for head-to-head rep comparison only)."""
     ok = np.all(np.isfinite(X), axis=1)
     X, y = X[ok], y[ok]
-    pos = (y > _THR).astype(int)
+    pos = (y > thr).astype(int)
     if pos.sum() < 5 or pos.sum() == len(pos):
         return None
     oof = np.zeros(len(y))
@@ -154,10 +171,16 @@ def _winner_descriptors(
 
 
 def run(
-    runs_db: str, meta_db: str, n_neg: int, n_seeds: int, with_winner: bool
+    runs_db: str,
+    meta_db: str,
+    label_col: str,
+    thr: float,
+    n_neg: int,
+    n_seeds: int,
+    with_winner: bool,
 ) -> Dict[str, Any]:
     ext = MeasuredDescriptorExtractor(n_seeds=n_seeds)
-    items = _corpus(runs_db, n_neg)
+    items = _corpus(runs_db, label_col, thr, n_neg)
     t0 = time.time()
     fps: List[str] = []
     rows: List[Dict[str, float]] = []
@@ -180,18 +203,20 @@ def run(
     feats = {**measured, **baselines}
     out: Dict[str, Any] = {
         "device": ext.device,
+        "label_col": label_col,
+        "threshold": thr,
         "n_probed": len(fps),
         "n_failed": n_fail,
-        "n_pos_gt_thr": int((y > _THR).sum()),
+        "n_pos_gt_thr": int((y > thr).sum()),
         "elapsed_s": round(time.time() - t0, 1),
-        "single_feature_roc": _single_feature_table(feats, y),
+        "single_feature_roc": _single_feature_table(feats, y, thr),
         "oof_gbm_roc": {
             "measured_8": _oof_gbm_roc(
-                np.column_stack([measured[n] for n in DESCRIPTOR_NAMES]), y
+                np.column_stack([measured[n] for n in DESCRIPTOR_NAMES]), y, thr
             ),
         },
     }
-    if with_winner:
+    if with_winner and label_col == "induction_screening_auc":
         wd = _winner_descriptors(runs_db, ext)
         if wd is not None:
             pct = {}
@@ -213,12 +238,24 @@ def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--db", default=_RUNS_DB)
     p.add_argument("--meta", default=_META_DB)
+    p.add_argument(
+        "--label-col", default="induction_screening_auc", choices=_LABEL_COLS
+    )
+    p.add_argument("--thr", type=float, default=_THR)
     p.add_argument("--n-neg", type=int, default=1500)
     p.add_argument("--n-seeds", type=int, default=2)
     p.add_argument("--with-winner", action="store_true")
     p.add_argument("--out", default="research/reports/measured_descriptor_eval.json")
     args = p.parse_args()
-    report = run(args.db, args.meta, args.n_neg, args.n_seeds, args.with_winner)
+    report = run(
+        args.db,
+        args.meta,
+        args.label_col,
+        args.thr,
+        args.n_neg,
+        args.n_seeds,
+        args.with_winner,
+    )
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     Path(args.out).write_text(json.dumps(report, indent=2, sort_keys=True))
     print(json.dumps(report, indent=2, sort_keys=True))
