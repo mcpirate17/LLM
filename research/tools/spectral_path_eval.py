@@ -46,6 +46,10 @@ from research.tools.spectral_path_features import (
     SpectralPathExtractor,
 )
 
+# Oracle axes + the larger AR-gate funnel axis (4.5k fps, ~29% capable @0.95 vs the
+# curriculum axis's ~7%); ar_gate_score = 0.6*in_dist_pair + 0.4*held_class (eval/ar_gate.py).
+_ALL_AXES = {**AXES, "ar_gate": ("ar_gate_score", 0.95)}
+
 _ORACLE_PARAMS = {
     "n_components": 20,
     "tree_depth": 4,
@@ -113,7 +117,7 @@ def _eval_axis(
     winner_nodes: Any = None,
 ) -> Dict[str, Any]:
     ts = _fingerprint_timestamps(db_path)
-    corpus = _axis_corpus(db_path, AXES[axis][0], ts)
+    corpus = _axis_corpus(db_path, _ALL_AXES[axis][0], ts)
     Xsp, sp_names, keep = _spath_matrix(db_path, meta_db, corpus.fps)
     Xb = corpus.X[keep]
     y = corpus.y[keep]
@@ -231,7 +235,7 @@ def _oracle_ab_axis(
 ) -> Dict[str, Any]:
     """A/B base vs base⊕spath under the oracle's OWN heads + OOF self-selection (post-merge proxy)."""
     ts = _fingerprint_timestamps(db_path)
-    cp_full = _axis_corpus(db_path, AXES[axis][0], ts)
+    cp_full = _axis_corpus(db_path, _ALL_AXES[axis][0], ts)
     Xsp, sp_names, keep = _spath_matrix(db_path, meta_db, cp_full.fps)
     base = _subset_corpus(cp_full, keep)
     aug = _augment_corpus(base, Xsp, sp_names)
@@ -269,7 +273,7 @@ def run(
             "mode": "oracle_ab",
             "axes": {
                 axis: _oracle_ab_axis(db_path, meta_db, axis, thr)
-                for axis, (_, thr) in AXES.items()
+                for axis, (_, thr) in _ALL_AXES.items()
             },
         }
     winner = _load_winner_nodes(db_path) if with_winner else None
@@ -278,7 +282,7 @@ def run(
         "mode": "gbm_concat",
         "axes": {
             axis: _eval_axis(db_path, meta_db, axis, thr, winner)
-            for axis, (_, thr) in AXES.items()
+            for axis, (_, thr) in _ALL_AXES.items()
         },
     }
 
