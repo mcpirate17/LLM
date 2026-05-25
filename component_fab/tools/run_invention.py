@@ -81,6 +81,14 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         help="Train steps for the range probe (recurrent lanes need more; "
         "600 reaches full-range binding for memory lanes).",
     )
+    parser.add_argument(
+        "--veto-range-blind",
+        action="store_true",
+        help="Block promotion of specs whose MEASURED range_effective_distance is "
+        "below --min-range-distance. Use with adequate --range-train-steps (>=600 "
+        "for recurrent/scan lanes) or it will falsely veto undertrained binders.",
+    )
+    parser.add_argument("--min-range-distance", type=int, default=1)
     parser.add_argument("--ledger", default=str(DEFAULT_INVENTION_LEDGER))
     parser.add_argument("--output", default=str(DEFAULT_REPORT))
     return parser.parse_args(argv)
@@ -222,6 +230,10 @@ def _record_result(ledger: Ledger, result: dict[str, Any], cycle: int) -> None:
     metadata = {
         "track": "invention",
         "mechanism": spec["math_axes"].get("op_invention_mechanism"),
+        # Persist the full build recipe so promoted specs stay re-gradeable from
+        # the ledger (generate_module is a pure function of math_axes; the ledger
+        # otherwise drops it and block-template winners become unrebuildable).
+        "math_axes": dict(spec["math_axes"]),
         "eliminated_by": result.get("eliminated_by"),
         "can_bind": bool(capability.get("can_bind")),
         "erf_density": float(capability.get("erf_density") or 0.0),
@@ -295,6 +307,8 @@ def main(argv: list[str] | None = None) -> int:
         promote_require_learned_signal=False,
         reject_after_n_cycles=2,
         reject_max_composite=0.25,
+        veto_range_blind=args.veto_range_blind,
+        min_range_effective_distance=args.min_range_distance,
     )
     promotion_counts = apply_decisions(
         ledger, decide_promotions_for_ledger(ledger, rules)

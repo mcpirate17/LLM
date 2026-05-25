@@ -40,6 +40,14 @@ class PromotionRules:
     # learning subscore is weak (but binding/cross OK) aren't auto-killed
     # before they can build a 2-cycle streak.
     reject_max_composite: float = 0.20
+    # 2026-05-25: optional veto on *confirmed* sparse-range blindness. Off by
+    # default — range-blindness is legitimate for some specialists (e.g. the
+    # AR-curriculum top_ar_block). When on, a candidate whose grade metadata
+    # carries a measured ``range_effective_distance`` BELOW the threshold is
+    # not promoted; candidates with no range measurement are unaffected (this
+    # is a veto on measured failure, not a requirement that range was probed).
+    veto_range_blind: bool = False
+    min_range_effective_distance: int = 1
 
 
 DEFAULT_PROMOTION_RULES = PromotionRules()
@@ -63,6 +71,11 @@ def _promote_streak_satisfied(entry: LedgerEntry, rules: PromotionRules) -> bool
         return False
     if rules.promote_require_learned_signal and entry.learned_signal_count == 0:
         return False
+    if rules.veto_range_blind and entry.metadata_history:
+        latest = entry.metadata_history[-1]
+        measured = latest.get("range_effective_distance")
+        if measured is not None and measured < rules.min_range_effective_distance:
+            return False
     return True
 
 

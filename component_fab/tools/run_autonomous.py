@@ -50,6 +50,7 @@ from component_fab.improver.ranking import (
 from component_fab.intake.scope_existing import scope_all
 from component_fab.policies.promotion import (
     DEFAULT_PROMOTION_RULES,
+    PromotionRules,
     apply_decisions,
     decide_promotions_for_ledger,
 )
@@ -97,6 +98,20 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     )
     parser.add_argument("--max-cross-pairs", default=30, type=int)
     parser.add_argument("--max-knob-specs", default=48, type=int)
+    parser.add_argument(
+        "--range-probe",
+        action="store_true",
+        help="Run the sparse/long-range binding probe during grading (adds cost; "
+        "scan lanes are slow). Populates range_effective_distance metadata.",
+    )
+    parser.add_argument("--range-train-steps", default=300, type=int)
+    parser.add_argument(
+        "--veto-range-blind",
+        action="store_true",
+        help="Block promotion of candidates whose MEASURED range_effective_distance "
+        "is below --min-range-distance (no effect without --range-probe).",
+    )
+    parser.add_argument("--min-range-distance", default=1, type=int)
     parser.add_argument(
         "--time-budget-minutes",
         default=None,
@@ -177,6 +192,8 @@ def _grade_spec(
     seq_len: int,
     probe_steps: int,
     skip_probe: bool,
+    run_range_probe: bool = False,
+    range_train_steps: int = 300,
 ) -> tuple[SoloScorecard, dict | None, dict, str | None]:
     """Return ``(solo, probe, capability, eliminated_by)``.
 
@@ -186,7 +203,14 @@ def _grade_spec(
     name recorded.
     """
     module = generate_module_from_spec(spec, dim=dim)
-    capability = validate_capabilities(spec, module, dim=dim, seq_len=seq_len)
+    capability = validate_capabilities(
+        spec,
+        module,
+        dim=dim,
+        seq_len=seq_len,
+        run_range_probe=run_range_probe,
+        range_train_steps=range_train_steps,
+    )
     capability_dict = capability_scorecard_to_dict(capability)
 
     if capability.eliminated_by is not None:
@@ -234,6 +258,8 @@ def _grade_active_specs(
     seq_len: int,
     probe_steps: int,
     skip_probe: bool,
+    run_range_probe: bool = False,
+    range_train_steps: int = 300,
 ) -> tuple[list[dict], dict[str, dict], dict[str, dict], dict[str, int]]:
     cycle_scorecards: list[dict] = []
     cycle_probes: dict[str, dict] = {}
@@ -246,6 +272,8 @@ def _grade_active_specs(
             seq_len=seq_len,
             probe_steps=probe_steps,
             skip_probe=skip_probe,
+            run_range_probe=run_range_probe,
+            range_train_steps=range_train_steps,
         )
         cycle_scorecards.append(asdict(solo))
         if probe is not None:
@@ -263,6 +291,17 @@ def _grade_active_specs(
             "nb_max_accuracy": float(capability.get("nb_max_accuracy") or 0.0)
             if capability
             else 0.0,
+            # Persist the full build recipe so promoted specs stay re-gradeable
+            # from the ledger (generate_module is a pure function of math_axes).
+            "math_axes": dict(spec.math_axes),
+            # Range signal (only populated when --range-probe is on); feeds the
+            # optional veto_range_blind promotion rule.
+            "range_effective_distance": (
+                int(capability.get("range_effective_distance") or 0)
+                if capability
+                else 0
+            ),
+            "range_ran": bool(capability and capability.get("range_ran")),
         }
         if eliminated_by is not None:
             ledger.record_grade(
@@ -310,6 +349,9 @@ def _run_cycle(
     use_promoted_as_anchors: bool = False,
     max_cross_pairs: int = 30,
     max_knob_specs: int = 48,
+    run_range_probe: bool = False,
+    range_train_steps: int = 300,
+    promotion_rules: PromotionRules = DEFAULT_PROMOTION_RULES,
 ) -> dict:
     anchors = _gather_anchors(top_anchors)
     specs = _all_specs_for_cycle(
@@ -340,10 +382,12 @@ def _run_cycle(
             seq_len=seq_len,
             probe_steps=probe_steps,
             skip_probe=skip_probe,
+            run_range_probe=run_range_probe,
+            range_train_steps=range_train_steps,
         )
     )
 
-    decisions = decide_promotions_for_ledger(ledger, DEFAULT_PROMOTION_RULES)
+    decisions = decide_promotions_for_ledger(ledger, promotion_rules)
     counts = apply_decisions(ledger, decisions)
     ranked = rank_proposals(cycle_scorecards, cycle_probes, cycle_capabilities)
     n_can_bind = sum(1 for c in cycle_capabilities.values() if c.get("can_bind"))
@@ -483,6 +527,12 @@ def _drive_loop(args, ledger: Ledger, proposals_path: Path) -> list[dict]:
             use_promoted_as_anchors=args.use_promoted_as_anchors,
             max_cross_pairs=args.max_cross_pairs,
             max_knob_specs=args.max_knob_specs,
+            run_range_probe=args.range_probe,
+            range_train_steps=args.range_train_steps,
+            promotion_rules=PromotionRules(
+                veto_range_blind=args.veto_range_blind,
+                min_range_effective_distance=args.min_range_distance,
+            ),
         )
         cycle_summaries.append(summary)
         if not args.quiet:
