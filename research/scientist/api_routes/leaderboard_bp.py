@@ -132,6 +132,66 @@ FAILED_DISCOVERY_TIERS = {
 }
 
 
+def _discovery_tier_rank(entry: Dict[str, Any]) -> int:
+    tier = _current_discovery_tier(entry)
+    if tier in {
+        "validation",
+        "validation_pending",
+        "validation_failed",
+        "breakthrough",
+    }:
+        return 3
+    if tier in {
+        "investigation",
+        "investigation_failed",
+        "investigation_fingerprint_incomplete",
+    }:
+        return 2
+    return 1
+
+
+def _discovery_timestamp(entry: Dict[str, Any]) -> float:
+    try:
+        return float(entry.get("timestamp") or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _discovery_preference(entry: Dict[str, Any]) -> tuple:
+    cohort = str(entry.get("result_cohort") or "").strip().lower()
+    trust = str(entry.get("trust_label") or "").strip().lower()
+    comparability = str(entry.get("comparability_label") or "").strip().lower()
+    model_source = str(entry.get("model_source") or "").strip().lower()
+    return (
+        cohort != "backfill",
+        trust == "candidate_grade",
+        comparability == "candidate_comparable",
+        model_source == "exact_graph_replay",
+        bool(entry.get("entry_id")),
+        _discovery_tier_rank(entry),
+        float(entry.get("composite_score") or 0.0),
+        _discovery_timestamp(entry),
+    )
+
+
+def _dedupe_discovery_entries_by_fingerprint(
+    entries: List[Dict[str, Any]], *, limit: int
+) -> List[Dict[str, Any]]:
+    deduped: List[Dict[str, Any]] = []
+    seen: Dict[str, int] = {}
+    for entry in entries:
+        fp = str(entry.get("graph_fingerprint") or "").strip().lower()
+        key = f"fp:{fp}" if fp else f"rid:{entry.get('result_id')}"
+        if key in seen:
+            idx = seen[key]
+            if _discovery_preference(entry) > _discovery_preference(deduped[idx]):
+                deduped[idx] = entry
+            continue
+        seen[key] = len(deduped)
+        deduped.append(entry)
+    return deduped[:limit]
+
+
 def _search_discoveries(
     nb,
     *,
@@ -280,10 +340,8 @@ def _search_discoveries(
             continue
         entries.append(entry)
 
-    # No dedup needed: leaderboard.graph_fingerprint UNIQUE INDEX guarantees
-    # one row per fingerprint post graph-normalization migration.
     annotated = nb._attach_canonical_program_scores(entries)
-    return annotated[:limit]
+    return _dedupe_discovery_entries_by_fingerprint(annotated, limit=limit)
 
 
 def _matches_discovery_query(entry: Dict[str, Any], query: str) -> bool:
@@ -600,6 +658,43 @@ def _apply_cross_run_stability(
     return stability
 
 
+def _attach_literature_to_entries(nb, entries: List[Dict[str, Any]]) -> None:
+    """Batch-attach literature provenance (lit_family / lit_match_type / lit_ref)
+    to leaderboard rows from the graphs table. One query for the whole page;
+    defensive — older DBs without the columns simply get no badge."""
+    if not entries:
+        return
+    conn = getattr(nb, "conn", None)
+    if conn is None:
+        return
+    fps = {
+        str(e.get("graph_fingerprint") or "").strip()
+        for e in entries
+        if isinstance(e, dict)
+    }
+    fps.discard("")
+    if not fps:
+        return
+    try:
+        placeholders = ",".join("?" * len(fps))
+        rows = conn.execute(  # nosemgrep: python-sql-string-formatting
+            f"SELECT graph_fingerprint, lit_family, lit_match_type, lit_ref "  # nosec B608
+            f"FROM graphs WHERE graph_fingerprint IN ({placeholders})",
+            tuple(fps),
+        ).fetchall()
+    except Exception:
+        return  # lit_* columns absent
+    by_fp = {r[0]: r for r in rows}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        row = by_fp.get(str(entry.get("graph_fingerprint") or "").strip())
+        if row and row[1]:
+            entry["lit_family"] = row[1]
+            entry["lit_match_type"] = row[2]
+            entry["lit_ref"] = row[3]
+
+
 def _enrich_ranked_entries(
     nb,
     entries: List[Dict[str, Any]],
@@ -611,6 +706,7 @@ def _enrich_ranked_entries(
     annotate_qkv_usage(entries, analytics)
     _apply_arch_spec_metrics(entries)
     _annotate_capability_quality(entries)
+    _attach_literature_to_entries(nb, entries)
     return stability
 
 

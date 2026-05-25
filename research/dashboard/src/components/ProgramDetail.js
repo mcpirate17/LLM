@@ -1,12 +1,28 @@
-import React from 'react';
-import useProgramData from '../hooks/useProgramData';
-import ProgramHeader from './programDetail/ProgramHeader';
-import TrainingMetricsPanel, { BenchmarkTestMatrix, CoreMetricsColumn, ProgramSupportCards } from './programDetail/TrainingMetricsPanel';
-import ArchitectureView, { FingerprintColumn } from './programDetail/ArchitectureView';
-import EvalResultsPanel from './programDetail/EvalResultsPanel';
-import RerunQueuePanel from './programDetail/RerunQueuePanel';
+import React from "react";
+import useProgramData from "../hooks/useProgramData";
+import ArchitectureView, { FingerprintColumn } from "./programDetail/ArchitectureView";
+import EvalResultsPanel from "./programDetail/EvalResultsPanel";
+import LiteratureProvenance from "./programDetail/LiteratureProvenance";
+import ProgramHeader from "./programDetail/ProgramHeader";
+import RerunQueuePanel from "./programDetail/RerunQueuePanel";
+import TrainingMetricsPanel, {
+  BenchmarkTestMatrix,
+  CoreMetricsColumn,
+  ProgramSupportCards,
+} from "./programDetail/TrainingMetricsPanel";
 
-function ProgramDetail({ resultId, onClose, onActionComplete, onSelectExperiment, onViewInLeaderboard, onSelectCampaign, onOpenInDesigner, onAddToComparison, eligibilityByResultId, defaultOverrideIneligible = false }) {
+function ProgramDetail({
+  resultId,
+  onClose,
+  onActionComplete,
+  onSelectExperiment,
+  onViewInLeaderboard,
+  onSelectCampaign,
+  onOpenInDesigner,
+  onAddToComparison,
+  eligibilityByResultId,
+  defaultOverrideIneligible = false,
+}) {
   const {
     state,
     dispatch,
@@ -22,23 +38,46 @@ function ProgramDetail({ resultId, onClose, onActionComplete, onSelectExperiment
     fetchAndCopyManifest,
     manifestCopied,
     drawerResizeRef,
-  } = useProgramData({ resultId, defaultOverrideIneligible, onActionComplete, onClose, eligibilityByResultId });
+  } = useProgramData({
+    resultId,
+    defaultOverrideIneligible,
+    onActionComplete,
+    onClose,
+    eligibilityByResultId,
+  });
 
   const {
-    program, loading, error, leaderboardEntry,
-    linkedHypothesis, linkedDecision, linkedExperiment, linkedCampaign,
-    latestRefineLaunch, refineLaunchHistory, refineTrace, refineTraceLoading,
-    refineAnalysis, refineAnalysisLoading, refineAnalysisError,
-    actionStarting, drawerWidthVw, drawerMaximized, resizingDrawer,
+    program,
+    loading,
+    error,
+    leaderboardEntry,
+    linkedHypothesis,
+    linkedDecision,
+    linkedExperiment,
+    linkedCampaign,
+    latestRefineLaunch,
+    refineLaunchHistory,
+    refineTrace,
+    refineTraceLoading,
+    refineAnalysis,
+    refineAnalysisLoading,
+    refineAnalysisError,
+    actionStarting,
+    drawerWidthVw,
+    drawerMaximized,
+    resizingDrawer,
   } = state;
 
   if (!resultId) return null;
 
-  const fmt = (v, d = 4) => v != null ? Number(v).toFixed(d) : '--';
-  const fmtMs = v => v != null ? `${Number(v).toFixed(1)}ms` : '--';
-  const fmtMem = v => v != null ? `${Number(v).toFixed(1)}MB` : '--';
-  const fmtInt = v => v != null ? Number(v).toLocaleString() : '--';
-  const shortId = (v, n = 12) => { const s = String(v || '').trim(); return !s ? '--' : (s.length > n ? s.slice(0, n) : s); };
+  const fmt = (v, d = 4) => (v != null ? Number(v).toFixed(d) : "--");
+  const fmtMs = (v) => (v != null ? `${Number(v).toFixed(1)}ms` : "--");
+  const fmtMem = (v) => (v != null ? `${Number(v).toFixed(1)}MB` : "--");
+  const fmtInt = (v) => (v != null ? Number(v).toLocaleString() : "--");
+  const shortId = (v, n = 12) => {
+    const s = String(v || "").trim();
+    return !s ? "--" : s.length > n ? s.slice(0, n) : s;
+  };
   const formatUnixTimestamp = (value) => {
     if (value == null) return null;
     const n = Number(value);
@@ -48,14 +87,24 @@ function ProgramDetail({ resultId, onClose, onActionComplete, onSelectExperiment
   };
 
   return (
-    <div className="program-drawer-backdrop" onMouseDown={e => { if (e.target === e.currentTarget) onClose(); }}>
+    // biome-ignore lint/a11y/noStaticElementInteractions: modal backdrop; click-outside-to-close is the intended interaction
+    <div
+      className="program-drawer-backdrop"
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      {/* biome-ignore lint/a11y/noStaticElementInteractions: drawer container; handlers only stop event propagation */}
+      {/* biome-ignore lint/a11y/useKeyWithClickEvents: onClick only stops propagation, performs no user action */}
       <div
         className="program-drawer"
-        onClick={e => e.stopPropagation()}
-        onMouseDown={e => e.stopPropagation()}
-        style={drawerMaximized
-          ? { width: '100%', minWidth: 0, maxWidth: '100%' }
-          : { width: `${drawerWidthVw}vw`, minWidth: 460, maxWidth: '95vw' }}
+        onClick={(e) => e.stopPropagation()}
+        onMouseDown={(e) => e.stopPropagation()}
+        style={
+          drawerMaximized
+            ? { width: "100%", minWidth: 0, maxWidth: "100%" }
+            : { width: `${drawerWidthVw}vw`, minWidth: 460, maxWidth: "95vw" }
+        }
       >
         {!drawerMaximized && (
           <div
@@ -63,17 +112,17 @@ function ProgramDetail({ resultId, onClose, onActionComplete, onSelectExperiment
               event.preventDefault();
               event.stopPropagation();
               drawerResizeRef.current = { startX: event.clientX, startVw: drawerWidthVw };
-              dispatch({ type: 'SET_DRAWER', payload: { resizingDrawer: true } });
+              dispatch({ type: "SET_DRAWER", payload: { resizingDrawer: true } });
             }}
             style={{
-              position: 'absolute',
+              position: "absolute",
               top: 0,
               bottom: 0,
               left: 0,
               width: 8,
-              cursor: 'col-resize',
-              background: resizingDrawer ? 'rgba(88, 166, 255, 0.2)' : 'transparent',
-              borderLeft: '1px solid rgba(88, 166, 255, 0.35)',
+              cursor: "col-resize",
+              background: resizingDrawer ? "rgba(88, 166, 255, 0.2)" : "transparent",
+              borderLeft: "1px solid rgba(88, 166, 255, 0.35)",
               zIndex: 2,
             }}
             title="Drag to resize"
@@ -82,120 +131,123 @@ function ProgramDetail({ resultId, onClose, onActionComplete, onSelectExperiment
         )}
         <div className="program-drawer-header">
           <span>Program Detail</span>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
             <button
+              type="button"
               className="refresh-btn"
               aria-pressed={drawerMaximized}
-              onClick={() => dispatch({ type: 'SET_DRAWER', payload: { drawerMaximized: !drawerMaximized } })}
-              style={{ fontSize: 16, padding: '4px 8px' }}
-              title={drawerMaximized ? 'Exit fullscreen' : 'Expand to fullscreen'}
+              onClick={() =>
+                dispatch({ type: "SET_DRAWER", payload: { drawerMaximized: !drawerMaximized } })
+              }
+              style={{ fontSize: 16, padding: "4px 8px" }}
+              title={drawerMaximized ? "Exit fullscreen" : "Expand to fullscreen"}
             >
-              {drawerMaximized ? '\u2750' : '\u2922'}
+              {drawerMaximized ? "\u2750" : "\u2922"}
             </button>
-            <button className="close-btn" onClick={onClose}>&times;</button>
+            <button type="button" className="close-btn" onClick={onClose}>
+              &times;
+            </button>
           </div>
         </div>
-        <div style={{ flex: 1, overflowY: 'auto', padding: 24 }}>
-        {loading ? (
-          <p style={{ color: 'var(--text-muted)' }}>Loading...</p>
-        ) : error ? (
-          <p style={{ color: 'var(--accent-red)' }}>{error}</p>
-        ) : !program ? (
-          <p style={{ color: 'var(--accent-red)' }}>Program not found</p>
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-            <ProgramHeader
-              program={program}
-              leaderboardEntry={leaderboardEntry}
-              resultId={resultId}
-              dispatch={dispatch}
-              state={state}
-              linkedHypothesis={linkedHypothesis}
-              linkedDecision={linkedDecision}
-              linkedExperiment={linkedExperiment}
-              linkedCampaign={linkedCampaign}
-              fetchDecisionPacket={fetchDecisionPacket}
-              fetchAndCopyManifest={fetchAndCopyManifest}
-              manifestCopied={manifestCopied}
-              onClose={onClose}
-              onSelectExperiment={onSelectExperiment}
-              onAddToComparison={onAddToComparison}
-              onOpenInDesigner={onOpenInDesigner}
-              onViewInLeaderboard={onViewInLeaderboard}
-              onSelectCampaign={onSelectCampaign}
-              latestRefineLaunch={latestRefineLaunch}
-              refineLaunchHistory={refineLaunchHistory}
-              refineTrace={refineTrace}
-              refineTraceLoading={refineTraceLoading}
-              fmt={fmt}
-              fmtInt={fmtInt}
-              shortId={shortId}
-              formatUnixTimestamp={formatUnixTimestamp}
-            />
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-              <CoreMetricsColumn
+        <div style={{ flex: 1, overflowY: "auto", padding: 24 }}>
+          {loading ? (
+            <p style={{ color: "var(--text-muted)" }}>Loading...</p>
+          ) : error ? (
+            <p style={{ color: "var(--accent-red)" }}>{error}</p>
+          ) : !program ? (
+            <p style={{ color: "var(--accent-red)" }}>Program not found</p>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+              <ProgramHeader
                 program={program}
                 leaderboardEntry={leaderboardEntry}
+                resultId={resultId}
+                dispatch={dispatch}
+                state={state}
+                linkedHypothesis={linkedHypothesis}
+                linkedDecision={linkedDecision}
+                linkedExperiment={linkedExperiment}
+                linkedCampaign={linkedCampaign}
+                fetchDecisionPacket={fetchDecisionPacket}
+                fetchAndCopyManifest={fetchAndCopyManifest}
+                manifestCopied={manifestCopied}
+                onClose={onClose}
+                onSelectExperiment={onSelectExperiment}
+                onAddToComparison={onAddToComparison}
+                onOpenInDesigner={onOpenInDesigner}
+                onViewInLeaderboard={onViewInLeaderboard}
+                onSelectCampaign={onSelectCampaign}
+                latestRefineLaunch={latestRefineLaunch}
+                refineLaunchHistory={refineLaunchHistory}
+                refineTrace={refineTrace}
+                refineTraceLoading={refineTraceLoading}
+                fmt={fmt}
+                fmtInt={fmtInt}
+                shortId={shortId}
+                formatUnixTimestamp={formatUnixTimestamp}
+              />
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+                <CoreMetricsColumn
+                  program={program}
+                  leaderboardEntry={leaderboardEntry}
+                  fmt={fmt}
+                  fmtMs={fmtMs}
+                  fmtMem={fmtMem}
+                  fmtInt={fmtInt}
+                />
+                <FingerprintColumn
+                  program={program}
+                  fmtMs={fmtMs}
+                  fmtMem={fmtMem}
+                  fmtInt={fmtInt}
+                />
+              </div>
+              <BenchmarkTestMatrix program={program} leaderboardEntry={leaderboardEntry} />
+              <ProgramSupportCards
+                program={program}
+                leaderboardEntry={leaderboardEntry}
+                refineAnalysis={refineAnalysis}
+              />
+              <TrainingMetricsPanel
+                program={program}
+                resultId={resultId}
+                linkedHypothesis={linkedHypothesis}
+                linkedDecision={linkedDecision}
                 fmt={fmt}
                 fmtMs={fmtMs}
-                fmtMem={fmtMem}
-                fmtInt={fmtInt}
               />
-              <FingerprintColumn
+              <ArchitectureView
                 program={program}
-                fmtMs={fmtMs}
-                fmtMem={fmtMem}
-                fmtInt={fmtInt}
+                leaderboardEntry={leaderboardEntry}
+                resultId={resultId}
+                refineAnalysis={refineAnalysis}
+                refineAnalysisLoading={refineAnalysisLoading}
+                refineAnalysisError={refineAnalysisError}
+                handleLaunchRefinement={handleLaunchRefinement}
+                actionStarting={actionStarting}
+                onViewInLeaderboard={onViewInLeaderboard}
+                onOpenInDesigner={onOpenInDesigner}
+                onClose={onClose}
               />
+              <LiteratureProvenance program={program} />
+              <EvalResultsPanel
+                program={program}
+                leaderboardEntry={leaderboardEntry}
+                resultId={resultId}
+                dispatch={dispatch}
+                state={state}
+                onActionComplete={onActionComplete}
+                onClose={onClose}
+                canInvestigate={canInvestigate}
+                canCapabilityRank={canCapabilityRank}
+                canValidate={canValidate}
+                canConfirm={canConfirm}
+                alreadyInvestigated={alreadyInvestigated}
+                alreadyValidated={alreadyValidated}
+              />
+              <RerunQueuePanel resultId={resultId} leaderboardEntry={leaderboardEntry} />
             </div>
-            <BenchmarkTestMatrix program={program} leaderboardEntry={leaderboardEntry} />
-            <ProgramSupportCards
-              program={program}
-              leaderboardEntry={leaderboardEntry}
-              refineAnalysis={refineAnalysis}
-            />
-            <TrainingMetricsPanel
-              program={program}
-              resultId={resultId}
-              linkedHypothesis={linkedHypothesis}
-              linkedDecision={linkedDecision}
-              fmt={fmt}
-              fmtMs={fmtMs}
-            />
-            <ArchitectureView
-              program={program}
-              leaderboardEntry={leaderboardEntry}
-              resultId={resultId}
-              refineAnalysis={refineAnalysis}
-              refineAnalysisLoading={refineAnalysisLoading}
-              refineAnalysisError={refineAnalysisError}
-              handleLaunchRefinement={handleLaunchRefinement}
-              actionStarting={actionStarting}
-              onViewInLeaderboard={onViewInLeaderboard}
-              onOpenInDesigner={onOpenInDesigner}
-              onClose={onClose}
-            />
-            <EvalResultsPanel
-              program={program}
-              leaderboardEntry={leaderboardEntry}
-              resultId={resultId}
-              dispatch={dispatch}
-              state={state}
-              onActionComplete={onActionComplete}
-              onClose={onClose}
-              canInvestigate={canInvestigate}
-              canCapabilityRank={canCapabilityRank}
-              canValidate={canValidate}
-              canConfirm={canConfirm}
-              alreadyInvestigated={alreadyInvestigated}
-              alreadyValidated={alreadyValidated}
-            />
-            <RerunQueuePanel
-              resultId={resultId}
-              leaderboardEntry={leaderboardEntry}
-            />
-          </div>
-        )}
+          )}
         </div>
       </div>
     </div>

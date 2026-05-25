@@ -291,6 +291,105 @@ def _attach_causal_rule_evidence(nb, result_id: str, program: dict) -> None:
         program["causal_rule_evidence"] = []
 
 
+def _attach_literature_attribution(nb, program):
+    """Attach honest literature provenance to a program detail payload.
+
+    Reads the ``lit_*`` columns + ``literature_attribution`` table written by
+    ``tools/annotate_literature_attribution.py``. Surfaces, under
+    ``program['literature']``: the graph's family (with match_type / reference /
+    notes) plus per-op and per-template attributions for the ops/templates the
+    graph actually uses. Fully defensive — a missing column or table (older DB)
+    silently yields no ``literature`` block rather than failing the endpoint.
+    """
+    fp = str(program.get("graph_fingerprint") or "").strip()
+    if not fp:
+        return
+    conn = getattr(nb, "conn", None)
+    if conn is None:
+        return
+    lit = {}
+    try:
+        row = conn.execute(
+            "SELECT lit_family, lit_model, lit_match_type, lit_ref "
+            "FROM graphs WHERE graph_fingerprint = ?",
+            (fp,),
+        ).fetchone()
+    except Exception:
+        return  # lit_* columns absent — nothing to surface
+    if row and row[0]:
+        fam = {
+            "family_label": row[0],
+            "external_model_name": row[1],
+            "match_type": row[2],
+            "reference_url": row[3],
+        }
+        try:
+            note = conn.execute(
+                "SELECT notes, citation FROM literature_attribution "
+                "WHERE entity_type = 'graph_family' AND family_label = ? LIMIT 1",
+                (row[0],),
+            ).fetchone()
+            if note:
+                fam["notes"], fam["citation"] = note[0], note[1]
+        except Exception:
+            pass
+        lit["family"] = fam
+
+    # Per-op / per-template attributions for what this graph actually uses.
+    ops, templates = _extract_graph_ops_templates(program)
+    for etype, keys, dest in (("op", ops, "ops"), ("template", templates, "templates")):
+        if not keys:
+            continue
+        try:
+            ph = ",".join("?" * len(keys))
+            rows = conn.execute(  # nosemgrep: python-sql-string-formatting
+                f"SELECT entity_key, family_label, external_model_name, "  # nosec B608
+                f"match_type, reference_url FROM literature_attribution "
+                f"WHERE entity_type = ? AND entity_key IN ({ph})",
+                (etype, *keys),
+            ).fetchall()
+            if rows:
+                lit[dest] = [
+                    {
+                        "name": r[0],
+                        "family_label": r[1],
+                        "external_model_name": r[2],
+                        "match_type": r[3],
+                        "reference_url": r[4],
+                    }
+                    for r in rows
+                ]
+        except Exception:
+            continue
+    if lit:
+        program["literature"] = lit
+
+
+def _extract_graph_ops_templates(program):
+    """Best-effort (op_names, templates_used) from a program's graph JSON."""
+    import json as _json
+
+    graph = program.get("graph_json") or program.get("graph")
+    if isinstance(graph, str):
+        try:
+            graph = _json.loads(graph)
+        except (ValueError, TypeError):
+            return [], []
+    if not isinstance(graph, dict):
+        return [], []
+    ops = set()
+    nodes = graph.get("nodes")
+    node_iter = nodes.values() if isinstance(nodes, dict) else (nodes or [])
+    for node in node_iter:
+        if isinstance(node, dict):
+            name = node.get("op_name")
+            if name and name not in ("input", "output"):
+                ops.add(name)
+    meta = graph.get("metadata") or {}
+    templates = [t for t in (meta.get("templates_used") or []) if isinstance(t, str)]
+    return sorted(ops), sorted(set(templates))
+
+
 def _api_program_detail(result_id, nb=None):
     """Full program detail with parsed graph JSON + fingerprint + all metrics."""
     requested_result_id = str(result_id or "").strip()
@@ -313,6 +412,7 @@ def _api_program_detail(result_id, nb=None):
     program = enrich_program_detail(nb, program)
     attach_fingerprint_failure_metadata([program])
     _attach_causal_rule_evidence(nb, result_id, program)
+    _attach_literature_attribution(nb, program)
     return jsonify(json_safe(program))
 
 
