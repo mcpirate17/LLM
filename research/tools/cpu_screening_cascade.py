@@ -186,6 +186,21 @@ def _select(kept: List[Scored], n_exploit: int, n_explore: int) -> List[Scored]:
     return list(out.values())
 
 
+def _context_rule_clean(s: "Scored") -> bool:
+    """Hard backstop: drop any shortlisted graph that violates the grammar's context/adjacency
+    rules (forbidden prev/next-op pairs, local_window_attn successor reqs, etc.). The motif
+    grammar already enforces these upstream (empirically 0/651), but this guarantees the OUTPUT."""
+    from research.synthesis._context_validation import find_graph_context_violations
+    from research.synthesis.serializer import graph_from_json
+
+    try:
+        return not find_graph_context_violations(
+            graph_from_json(json.dumps(s.graph_dict))
+        )
+    except Exception:
+        return False  # un-checkable ⇒ exclude (don't ship a graph we can't validate)
+
+
 def run_generate(args: argparse.Namespace) -> Dict[str, Any]:
     scorer = CpuMechanismScorer(args.db, args.meta)
     hist = _historical_fingerprints(args.db)
@@ -193,7 +208,9 @@ def run_generate(args: argparse.Namespace) -> Dict[str, Any]:
     kept, stats = _generate_pool(
         scorer, hist, args.pool, args.max_attempts, args.seed0, args.progress_every
     )
-    shortlist = _select(kept, args.exploit, args.explore)
+    selected = _select(kept, args.exploit, args.explore)
+    shortlist = [s for s in selected if _context_rule_clean(s)]
+    stats["context_rule_dropped"] = len(selected) - len(shortlist)
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     with out.open("w") as f:
