@@ -23,8 +23,8 @@ from research.synthesis.op_roles import OpRole, get_role
 from research.tools.spectral_path_features import _topo
 
 
-def mixer_reach(nodes: Dict[str, Any] | List[Any]) -> Tuple[bool, int]:
-    """(has_seq_mixer_on_path, n_mixers_on_path) over input→output paths. CPU, ~microseconds."""
+def on_path_op_names(nodes: Dict[str, Any] | List[Any]) -> List[str]:
+    """Op names on any input→output path through the DAG (excludes inputs). CPU, ~microseconds."""
     node_list = list(nodes.values()) if isinstance(nodes, dict) else list(nodes)
     _, preds, succs = _topo(node_list)
     by_id = {n["id"]: n for n in node_list}
@@ -33,12 +33,12 @@ def mixer_reach(nodes: Dict[str, Any] | List[Any]) -> Tuple[bool, int]:
         i for i in by_id if not succs[i]
     ]
     on_path = _reachable(sources, succs) & _reachable(sinks, preds)
-    n_mix = sum(
-        1
-        for i in on_path
-        if not by_id[i].get("is_input")
-        and get_role(str(by_id[i]["op_name"])) is OpRole.MIX
-    )
+    return [str(by_id[i]["op_name"]) for i in on_path if not by_id[i].get("is_input")]
+
+
+def mixer_reach(nodes: Dict[str, Any] | List[Any]) -> Tuple[bool, int]:
+    """(has_seq_mixer_on_path, n_mixers_on_path) over input→output paths. CPU, ~microseconds."""
+    n_mix = sum(1 for op in on_path_op_names(nodes) if get_role(op) is OpRole.MIX)
     return n_mix > 0, n_mix
 
 
