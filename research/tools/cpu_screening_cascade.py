@@ -46,7 +46,10 @@ from research.tools.graph_semantic_features import (
     _MEMORY_ORDINAL,
     GraphSemanticExtractor,
 )
-from research.tools.static_capability_gate import on_path_op_names
+from research.tools.static_capability_gate import (
+    mixer_chain_depth,
+    on_path_op_names,
+)
 
 logger = logging.getLogger(__name__)
 _RUNS_DB = "research/runs.db"
@@ -56,6 +59,7 @@ _META_DB = "research/meta_analysis.db"
 @dataclass
 class MechProfile:
     n_mix: int
+    mixer_depth: int
     sum_mem: float
     n_global: int
     alg_div: int
@@ -79,13 +83,18 @@ class CpuMechanismScorer:
         alg_div = len({self.ext.op_algebra.get(m, "") for m in mixers if m})
         n_novel = sum(1 for m in mixers if m in self.novel)
         n_mix = len(mixers)
+        depth = mixer_chain_depth(
+            nodes
+        )  # ROUTING depth (chained mixing stages), not param count
         return MechProfile(
             n_mix=n_mix,
+            mixer_depth=depth,
             sum_mem=float(sum(mem)),
             n_global=n_global,
             alg_div=alg_div,
             n_novel_mix=n_novel,
-            mech_score=n_mix + 1.5 * float(sum(mem)) + n_global,
+            # routing-composition led (induction circuit is depth>=2) + per-stage quality
+            mech_score=2.0 * depth + float(sum(mem)) + n_global + 0.5 * n_mix,
             novelty=float(n_novel + alg_div),
         )
 
@@ -174,6 +183,7 @@ def run_generate(args: argparse.Namespace) -> Dict[str, Any]:
                         "ops": s.ops,
                         "mech_score": round(s.profile.mech_score, 3),
                         "novelty": s.profile.novelty,
+                        "mixer_depth": s.profile.mixer_depth,
                         "n_mixers_on_path": s.profile.n_mix,
                         "n_novel_mixers": s.profile.n_novel_mix,
                         "graph": s.graph_dict,
