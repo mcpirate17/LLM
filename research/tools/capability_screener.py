@@ -1,26 +1,34 @@
 #!/usr/bin/env python
-"""Standalone capability screener — rank graphs by predicted induction, at scale.
+"""Capability screener — rank graphs by predicted capability at scale, OOD-honest.
 
-NOT wired into the pipeline. Trains a GBM to predict (cluster-shrunk) induction
-capability and persists it so millions of *un-probed* candidate graphs can be
-triaged cheaply, before spending any probe compute.
+Triages millions of *un-probed* candidate graphs cheaply, before spending any probe
+compute, using only FREE static features (parseable from the graph definition, no
+forward pass): op-presence + op_count + pair_count (program_graph_{ops,features}).
 
-The decisive design constraint for scale: which features are FREE (parseable from
-the graph definition, no forward pass) vs. which need the graph actually run.
-  - FREE / static : op-presence + op_count + pair_count   (program_graph_{ops,features})
-  - NOT free      : the fingerprint metrics (jacobian_*, cka_*, ...) need a forward pass.
-`train` reports held-out ROC for BOTH so we know the cost of going fingerprint-free;
-the persisted screener is the static one (the only thing that scales to millions).
+Decisive design choices (see tasks/induction_corpus_handoff.md):
 
-Target denoising: induction labels are seed-noisy, so the training target is shrunk
-toward its template-family mean (see capability_shrinkage_denoise.py). Cluster stats
-are estimated train-only for the reported metric; the persisted model is refit on the
-full corpus.
+  - NO provenance/completeness gate on the training labels. A label is a label: the
+    corpus is EVERY fingerprint that carries an axis label (``_capability_map``), not
+    the ~3k full-experiment rows the deduped predictor corpus is capped at. This pulls
+    the induction corpus from 3143 → ~17.9k op-reachable labels.
+  - OOD generalization is the objective, never in-distribution holdout. Model selection
+    and the headline metric use leave-template-family-out (hold out whole families =
+    novel-region proxy) + forward-temporal — NOT random/in-dist ROC (that rewards
+    regress-to-familiar and collapses off-manifold, the documented STDP failure).
+  - ALL predictor types compete per axis (GBM / ExtraTrees recursive-partition /
+    PLS→tree / PLS→GBM / PLS→Bayesian) and the OOD-best is self-selected and persisted.
+    The shared zoo lives in ``pls_partition_oracle`` — reused here on op-presence
+    features so there is exactly one model zoo.
+
+Two axes ship as independent screeners (rank-distinct labels):
+  - induction              → research/runtime/capability_screener/        (thr 0.35)
+  - nano_induction_nearest → research/runtime/capability_screener_nano/   (thr 0.50)
 
 Usage::
 
-    python -m research.tools.capability_screener train --db research/runs.db
-    python -m research.tools.capability_screener train --shrink 0.75 --persist-tier static
+    python -m research.tools.capability_screener train --axis induction
+    python -m research.tools.capability_screener train --axis nano_induction_nearest
+    python -m research.tools.capability_screener backtest --axis induction
     python -m research.tools.capability_screener score --limit 100000 --top 500
 """
 
@@ -39,23 +47,100 @@ import numpy as np
 from research.defaults import RUNS_DB
 from research.tools.capability_shrinkage_denoise import (
     _NONE_CLUSTER,
+    _capability_map,
     _shrink,
     _template_map,
 )
 from research.tools.induction_predictor_foundation import (
-    _FEATURE_NAMES,
-    _build_corpus,
-    _fit_gbm,
+    _fingerprint_timestamps,
     _op_presence_features,
-    _ranking_metrics,
 )
+
+# NOTE: the shared model zoo lives in research.tools.pls_partition_oracle, which pulls
+# novelty_scorer -> probe_novel_candidates -> THIS module. Import the zoo lazily inside
+# train/backtest/_label_corpus to keep the scale-scoring API (load_screener /
+# featurize_op_sets, used by probe_novel_candidates) free of that cycle.
 
 logger = logging.getLogger(__name__)
 
 _STATE_DIR = Path("research/runtime/capability_screener")
-_MODEL_PATH = _STATE_DIR / "screener_model.txt"
-_META_PATH = _STATE_DIR / "screener_meta.json"
+_NANO_STATE_DIR = Path("research/runtime/capability_screener_nano")
 _SCORE_CHUNK = 50_000
+
+# axis -> (graph_runs label column, capable threshold, persisted state dir).
+_AXES: Dict[str, Tuple[str, float, Path]] = {
+    "induction": ("induction_screening_auc", 0.35, _STATE_DIR),
+    "nano_induction_nearest": (
+        "nano_induction_nearest_max_accuracy",
+        0.5,
+        _NANO_STATE_DIR,
+    ),
+}
+
+# Confirmed novel OOD winners (NOT in the labeled corpus — their op-sets are scored
+# externally). The deployed in-dist screener anti-correlated on these (predicted
+# 0.13–0.29 vs real induction 0.44–0.89): the rebuilt OOD-trained screener must rank
+# them above the corpus median or it has the same regress-to-familiar pathology.
+_OOD_SANITY_WINNERS: Tuple[Tuple[str, List[str], float], ...] = (
+    (
+        "e656938e359ada50",  # pragma: allowlist secret  (graph fingerprint, not a secret)
+        [
+            "add",
+            "conv1d_seq",
+            "gated_linear",
+            "layernorm",
+            "lif_neuron",
+            "linear_proj",
+            "rmsnorm",
+            "rwkv_channel",
+            "softmax_attention",
+            "stdp_attention",
+            "swiglu_mlp",
+        ],
+        0.894,
+    ),
+    (
+        "684ab3df7765207c",  # pragma: allowlist secret  (graph fingerprint, not a secret)
+        [
+            "add",
+            "layernorm",
+            "lif_neuron",
+            "linear_proj",
+            "rmsnorm",
+            "softmax_attention",
+            "spectral_filter",
+            "stdp_attention",
+        ],
+        0.742,
+    ),
+    (
+        "04a1b6b05745bf8d",  # pragma: allowlist secret  (graph fingerprint, not a secret)
+        [
+            "add",
+            "chebyshev_spectral_mix",
+            "entmax_attention",
+            "lif_neuron",
+            "linear_proj",
+            "outer_product",
+            "rmsnorm",
+            "sigmoid",
+            "stdp_attention",
+        ],
+        0.438,
+    ),
+)
+
+
+def _model_path(state_dir: Path) -> Path:
+    return state_dir / "screener_model.joblib"
+
+
+def _meta_path(state_dir: Path) -> Path:
+    return state_dir / "screener_meta.json"
+
+
+def _legacy_model_path(state_dir: Path) -> Path:
+    return state_dir / "screener_model.txt"
 
 
 def _meta_features(db_path: str, fps: List[str]) -> Tuple[np.ndarray, List[str]]:
@@ -86,17 +171,48 @@ def _static_matrix(
     return np.hstack([X_ops, X_meta]), [*op_names, *meta_names], vocab
 
 
-def load_screener() -> Tuple[Any, Dict[str, Any]]:
-    """Load the persisted booster + metadata. Fails loud if it needs a forward pass."""
-    import lightgbm as lgb
+def _label_corpus(db_path: str, axis_col: str) -> Tuple[Any, List[str]]:
+    """Op-presence + meta features over ALL fps with an axis label — NO gating.
 
-    meta = json.loads(_META_PATH.read_text())
+    Reuses ``_capability_map`` (every labeled fingerprint, mean over runs),
+    ``_fingerprint_timestamps`` (temporal order), ``_template_map`` (family clusters)
+    and ``_static_matrix`` (free features). Returns an ``AxisCorpus`` plus the op vocab
+    needed at score time so the feature layout matches.
+    """
+    from research.tools.pls_partition_oracle import AxisCorpus
+
+    cap = _capability_map(db_path, axis_col)
+    if not cap:
+        raise SystemExit(f"no labels for {axis_col}")
+    ts_map = _fingerprint_timestamps(db_path)
+    tmpl = _template_map(db_path)
+    fps = sorted(
+        cap, key=lambda fp: ts_map.get(fp, 0.0)
+    )  # oldest first → temporal split
+    X_static, names, vocab = _static_matrix(db_path, fps)
+    y = np.array([cap[fp] for fp in fps], dtype=np.float64)
+    clusters = [tmpl.get(fp, _NONE_CLUSTER) for fp in fps]
+    return AxisCorpus(X_static, names, fps, y, clusters), vocab
+
+
+def load_screener(state_dir: Path = _STATE_DIR) -> Tuple[Any, Dict[str, Any]]:
+    """Load the persisted model + metadata. Model exposes ``.predict(X)`` (joblib bundle,
+    any sklearn/PLS/GBM kind) with a legacy LightGBM-booster fallback. Fails loud if the
+    persisted model needs a forward pass."""
+    meta = json.loads(_meta_path(state_dir).read_text())
     if meta.get("uses_fingerprint"):
         raise SystemExit(
             "persisted screener needs fingerprint features (forward pass) — retrain "
-            "with --persist-tier static to score un-probed graphs."
+            "to score un-probed graphs."
         )
-    return lgb.Booster(model_file=str(_MODEL_PATH)), meta
+    jp = _model_path(state_dir)
+    if jp.exists():
+        import joblib
+
+        return joblib.load(jp), meta
+    import lightgbm as lgb
+
+    return lgb.Booster(model_file=str(_legacy_model_path(state_dir))), meta
 
 
 def featurize_op_sets(
@@ -126,79 +242,133 @@ def score_op_sets(
     op_sets: List[set], op_counts: List[int], pair_counts: List[int]
 ) -> np.ndarray:
     """Predict capability for graphs given only their op-sets (no DB, no forward pass)."""
-    booster, meta = load_screener()
+    model, meta = load_screener()
     X = featurize_op_sets(op_sets, op_counts, pair_counts, list(meta["op_vocab"]))
-    return np.asarray(booster.predict(X), dtype=np.float64)
+    return np.asarray(model.predict(X), dtype=np.float64)
+
+
+def _novel_winner_check(
+    model: Any, vocab: List[str], corpus_pred: np.ndarray
+) -> Dict[str, Any]:
+    """Score the confirmed external novel winners; report their percentile vs the corpus.
+
+    pair_count is unknown for off-DB graphs → approximated by op_count (a minor feature
+    relative to op-presence). The go/no-go is whether the OOD-trained model ranks these
+    above the corpus median (the in-dist screener did not)."""
+    ops_list = [set(o) for _, o, _ in _OOD_SANITY_WINNERS]
+    counts = [len(o) for o in ops_list]
+    X = featurize_op_sets(ops_list, counts, counts, vocab)
+    preds = np.asarray(model.predict(X), dtype=np.float64)
+    median = float(np.median(corpus_pred))
+    winners = [
+        {
+            "fingerprint": fp,
+            "real_induction": real,
+            "predicted": round(float(p), 4),
+            "corpus_percentile": round(float((corpus_pred < p).mean()), 3),
+            "above_median": bool(p > median),
+        }
+        for (fp, _, real), p in zip(_OOD_SANITY_WINNERS, preds)
+    ]
+    return {
+        "corpus_median_pred": round(median, 4),
+        "winners": winners,
+        "all_above_median": all(w["above_median"] for w in winners),
+    }
 
 
 def train(
-    db_path: str, thr: float, shrink_f: float, persist_tier: str
+    db_path: str, axis: str, shrink_f: float, params: Dict[str, int]
 ) -> Dict[str, Any]:
-    X_fp, _, ind, _, fps = _build_corpus(db_path)
-    n = len(X_fp)
-    cut = int(n * 0.8)
-    train_mask = np.zeros(n, dtype=bool)
-    train_mask[:cut] = True
+    """Build the ungated op-presence corpus, OOD-self-select among all model kinds, persist."""
+    from research.tools.pls_partition_oracle import (
+        _fit_axis_model,
+        _KINDS,
+        _leave_family_out_ab,
+        _temporal_ab,
+    )
 
-    tmpl = _template_map(db_path)
-    clusters = [tmpl.get(fp, _NONE_CLUSTER) for fp in fps]
-    ind_shrunk = _shrink(ind, clusters, train_mask, shrink_f)
+    axis_col, thr, state_dir = _AXES[axis]
+    cp, vocab = _label_corpus(db_path, axis_col)
+    n = len(cp.fps)
+    n_cap = int((cp.y > thr).sum())
+    if not (0 < n_cap < n):
+        raise SystemExit(f"axis {axis}: degenerate labels (n={n}, capable={n_cap})")
 
-    X_static, static_names, op_vocab = _static_matrix(db_path, fps)
-    X_full = np.hstack([X_static, X_fp])
+    lfo = _leave_family_out_ab(cp, thr, shrink_f, params)
+    temporal = _temporal_ab(cp, thr, shrink_f, params)
+    best = max(
+        _KINDS, key=lambda k: lfo[k]["roc"] or 0.0
+    )  # OOD metric drives selection
 
-    tiers = {
-        "static_free": (X_static, static_names),
-        "full_needs_forward_pass": (X_full, [*static_names, *_FEATURE_NAMES]),
-    }
-    metrics: Dict[str, Any] = {}
-    for tname, (Xall, _) in tiers.items():
-        gbm = _fit_gbm(Xall[:cut], ind_shrunk[:cut])
-        pred = np.asarray(gbm.predict(Xall[cut:]), dtype=np.float64)
-        m = _ranking_metrics(pred, ind[cut:], thr)  # scored vs RAW held-out label
-        metrics[tname] = {
-            "n_features": int(Xall.shape[1]),
-            "roc_vs_raw": round(m["roc_auc_gt_thr"] or 0.0, 4),
-            "spearman_vs_raw": round(m["spearman_rho"], 4),
-        }
+    ys = _shrink(cp.y, cp.clusters, np.ones(n, dtype=bool), shrink_f)
+    model = _fit_axis_model(best, cp.X, ys, cp.names, params)
+    corpus_pred = np.asarray(model.predict(cp.X), dtype=np.float64)
+    winner_check = _novel_winner_check(model, vocab, corpus_pred)
 
-    # Persist the chosen tier, refit on the FULL corpus (shrink over all data).
-    ind_shrunk_full = _shrink(ind, clusters, np.ones(n, dtype=bool), shrink_f)
-    X_persist = X_static if persist_tier == "static" else X_full
-    final = _fit_gbm(X_persist, ind_shrunk_full)
-    _STATE_DIR.mkdir(parents=True, exist_ok=True)
-    final.booster_.save_model(str(_MODEL_PATH))
+    state_dir.mkdir(parents=True, exist_ok=True)
+    import joblib
+
+    joblib.dump(model, _model_path(state_dir))
+    legacy = _legacy_model_path(state_dir)
+    if legacy.exists():
+        legacy.unlink()  # stale lgb-booster format from the capped-corpus era
     meta = {
-        "persist_tier": persist_tier,
-        "feature_layout": "op_presence + op_count + pair_count"
-        + ("" if persist_tier == "static" else " + fingerprint(18)"),
-        "op_vocab": op_vocab,
-        "uses_fingerprint": persist_tier != "static",
+        "axis": axis,
+        "axis_col": axis_col,
+        "model_kind": best,
+        "feature_layout": "op_presence + op_count + pair_count",
+        "op_vocab": vocab,
+        "uses_fingerprint": False,
         "induction_threshold": thr,
         "shrink_f": shrink_f,
         "n_train_total": n,
-        "holdout_metrics": metrics,
+        "n_capable": n_cap,
+        "ood_selection_metric": "leave_template_family_out_roc",
+        "leave_family_out_roc": {k: lfo[k]["roc"] for k in _KINDS},
+        "temporal_roc": {k: temporal[k]["roc"] for k in _KINDS},
+        "novel_winner_check": winner_check,
     }
-    _META_PATH.write_text(json.dumps(meta, indent=2, sort_keys=True))
-    logger.info("saved screener -> %s", _MODEL_PATH)
+    _meta_path(state_dir).write_text(json.dumps(meta, indent=2, sort_keys=True))
+    logger.info("saved %s screener (%s) -> %s", axis, best, _model_path(state_dir))
     return {
-        "split": "temporal_80_20",
+        "axis": axis,
         "n_total": n,
-        "tiers": metrics,
-        "persisted": persist_tier,
+        "n_capable": n_cap,
+        "selected_kind": best,
+        "leave_family_out_roc": meta["leave_family_out_roc"],
+        "temporal_roc": meta["temporal_roc"],
+        "novel_winner_check": winner_check,
+        "persisted": str(_model_path(state_dir)),
     }
 
 
-def score(db_path: str, limit: int, top_k: int, out: str) -> Dict[str, Any]:
-    import lightgbm as lgb
+def backtest(
+    db_path: str, axis: str, shrink_f: float, params: Dict[str, int]
+) -> Dict[str, Any]:
+    """OOD-honest A/B over all model kinds: leave-template-family-out + forward-temporal."""
+    from research.tools.pls_partition_oracle import (
+        _leave_family_out_ab,
+        _temporal_ab,
+    )
 
-    meta = json.loads(_META_PATH.read_text())
-    if meta.get("uses_fingerprint"):
-        raise SystemExit(
-            "persisted screener needs fingerprint features (forward pass) — not a "
-            "scale screener. Retrain with --persist-tier static."
-        )
-    booster = lgb.Booster(model_file=str(_MODEL_PATH))
+    axis_col, thr, _ = _AXES[axis]
+    cp, _ = _label_corpus(db_path, axis_col)
+    return {
+        "axis": axis,
+        "n_total": len(cp.fps),
+        "n_capable": int((cp.y > thr).sum()),
+        "n_features": int(cp.X.shape[1]),
+        "threshold": thr,
+        "note": "ROC scored vs RAW held-out label; OOD-honest. NOT in-dist holdout.",
+        "leave_family_out": _leave_family_out_ab(cp, thr, shrink_f, params),
+        "forward_temporal": _temporal_ab(cp, thr, shrink_f, params),
+    }
+
+
+def score(db_path: str, axis: str, limit: int, top_k: int, out: str) -> Dict[str, Any]:
+    _, _, state_dir = _AXES[axis]
+    model, meta = load_screener(state_dir)
     op_vocab = list(meta["op_vocab"])
 
     con = sqlite3.connect(db_path)
@@ -220,7 +390,7 @@ def score(db_path: str, limit: int, top_k: int, out: str) -> Dict[str, Any]:
         chunk = fps[start : start + _SCORE_CHUNK]
         X, _, _ = _static_matrix(db_path, chunk, op_vocab=op_vocab)
         preds[start : start + len(chunk)] = np.asarray(
-            booster.predict(X), dtype=np.float64
+            model.predict(X), dtype=np.float64
         )
     elapsed = time.time() - t0
 
@@ -233,6 +403,7 @@ def score(db_path: str, limit: int, top_k: int, out: str) -> Dict[str, Any]:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps({"top": top, "n_scored": len(fps)}, indent=2))
     return {
+        "axis": axis,
         "n_scored": len(fps),
         "elapsed_s": round(elapsed, 2),
         "graphs_per_sec": int(len(fps) / elapsed) if elapsed > 0 else None,
@@ -243,67 +414,12 @@ def score(db_path: str, limit: int, top_k: int, out: str) -> Dict[str, Any]:
     }
 
 
-def backtest(db_path: str, thr: float, shrink_f: float, k: int = 5) -> Dict[str, Any]:
-    """Backpredict every labeled graph and compare to its real induction label.
-
-    in_sample: the persisted model scoring graphs it was trained on (optimistic).
-    out_of_fold: k-fold — each graph predicted by a model that never saw it (honest).
-    Plus a calibration table (predicted decile vs actual capable-rate).
-    """
-    from research.tools.capability_shrinkage_denoise import (
-        _NONE_CLUSTER,
-        _shrink,
-        _template_map,
-    )
-    from research.tools.induction_predictor_foundation import (
-        _build_corpus,
-        _fit_gbm,
-        _ranking_metrics,
-    )
-
-    _, _, ind, _, fps = _build_corpus(db_path)
-    n = len(fps)
-    X, _, _ = _static_matrix(db_path, fps)
-    tmpl = _template_map(db_path)
-    clusters = [tmpl.get(fp, _NONE_CLUSTER) for fp in fps]
-
-    report: Dict[str, Any] = {
-        "n_labeled_graphs": n,
-        "threshold": thr,
-        "shrink_f": shrink_f,
+def _params(args: argparse.Namespace) -> Dict[str, int]:
+    return {
+        "n_components": args.pls_components,
+        "tree_depth": args.tree_depth,
+        "min_leaf": args.min_leaf,
     }
-    try:
-        booster, meta = load_screener()
-        Xp, _, _ = _static_matrix(db_path, fps, op_vocab=list(meta["op_vocab"]))
-        pred_in = np.asarray(booster.predict(Xp), dtype=np.float64)
-        report["in_sample_persisted_model"] = _ranking_metrics(pred_in, ind, thr)
-    except SystemExit as exc:
-        report["in_sample_persisted_model"] = {"error": str(exc)}
-
-    rng = np.random.default_rng(42)
-    folds = np.array_split(rng.permutation(n), k)
-    oof = np.zeros(n, dtype=np.float64)
-    for f in range(k):
-        held = folds[f]
-        rest = np.concatenate([folds[j] for j in range(k) if j != f])
-        train_mask = np.zeros(n, dtype=bool)
-        train_mask[rest] = True
-        y = _shrink(ind, clusters, train_mask, shrink_f)
-        model = _fit_gbm(X[rest], y[rest])
-        oof[held] = np.asarray(model.predict(X[held]), dtype=np.float64)
-    report["out_of_fold_honest"] = _ranking_metrics(oof, ind, thr)
-
-    order = np.argsort(oof)
-    report["calibration_deciles"] = [
-        {
-            "decile": i,
-            "pred_mean": round(float(oof[b].mean()), 4),
-            "actual_capable_rate": round(float((ind[b] > thr).mean()), 4),
-            "actual_induction_mean": round(float(ind[b].mean()), 4),
-        }
-        for i, b in enumerate(np.array_split(order, 10))
-    ]
-    return report
 
 
 def main() -> None:
@@ -311,22 +427,24 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("mode", choices=["train", "score", "backtest"])
     parser.add_argument("--db", default=str(RUNS_DB))
-    parser.add_argument("--thr", type=float, default=0.35)
+    parser.add_argument("--axis", choices=list(_AXES), default="induction")
     parser.add_argument(
         "--shrink", type=float, default=0.75, help="seed-noise shrink fraction"
     )
-    parser.add_argument("--persist-tier", choices=["static", "full"], default="static")
+    parser.add_argument("--pls-components", type=int, default=20)
+    parser.add_argument("--tree-depth", type=int, default=4)
+    parser.add_argument("--min-leaf", type=int, default=20)
     parser.add_argument("--limit", type=int, default=100_000)
     parser.add_argument("--top", type=int, default=500)
     parser.add_argument("--out", default="research/reports/capability_screen_topk.json")
     args = parser.parse_args()
 
     if args.mode == "train":
-        report = train(args.db, args.thr, args.shrink, args.persist_tier)
+        report = train(args.db, args.axis, args.shrink, _params(args))
     elif args.mode == "backtest":
-        report = backtest(args.db, args.thr, args.shrink)
+        report = backtest(args.db, args.axis, args.shrink, _params(args))
     else:
-        report = score(args.db, args.limit, args.top, args.out)
+        report = score(args.db, args.axis, args.limit, args.top, args.out)
     print(json.dumps(report, indent=2, sort_keys=True))
 
 

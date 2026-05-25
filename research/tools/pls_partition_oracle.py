@@ -37,6 +37,9 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 from sklearn.cross_decomposition import PLSRegression
 from sklearn.decomposition import PCA
+from sklearn.ensemble import ExtraTreesRegressor
+from sklearn.linear_model import BayesianRidge
+from sklearn.model_selection import GroupKFold
 from sklearn.preprocessing import StandardScaler
 from sklearn.tree import DecisionTreeRegressor
 
@@ -64,10 +67,15 @@ logger = logging.getLogger(__name__)
 #   ar_gate        — cheap AR go/no-go (well-populated ~4.5k, saturated; thr at the strong tail,
 #                    not 0.5, since 73% clear 0.5). Weakly correlated w/ curriculum (rho 0.13) and
 #                    induction (rho 0.05) — a distinct dimension, NOT a curriculum substitute.
+#   nano_induction_nearest — brand-new nearest-token induction probe, populated for all s1
+#                    (~8.5k, 99.6% feature-backed, rare-positive ~3%). Rank-distinct from the
+#                    induction axis (label rho 0.14, < 0.15) — 50 nano-capable rows are
+#                    induction-negative — so it earns its own model, not an induction substitute.
 AXES: Dict[str, Tuple[str, float]] = {
     "induction": ("induction_screening_auc", 0.35),
     "ar_curriculum": ("ar_curriculum_auc_pair_final", 0.5),
     "ar_gate": ("ar_gate_score", 0.9),
+    "nano_induction_nearest": ("nano_induction_nearest_max_accuracy", 0.5),
 }
 
 _STATE_DIR = Path("research/runtime/pls_partition_oracle")
@@ -129,6 +137,10 @@ class PLSPartition:
         scores = np.asarray(pls.transform(Xz))
         if head_kind == "gbm":
             head: Any = _fit_gbm(scores, y)
+        elif head_kind == "bayes":
+            # Bayesian linear head on the PLS latent scores — calibrated, low-variance
+            # regularization that does not overfit the rare-positive tail.
+            head = BayesianRidge().fit(scores, y)
         else:
             head = DecisionTreeRegressor(
                 max_depth=tree_depth, min_samples_leaf=min_leaf, random_state=42
@@ -162,7 +174,34 @@ class RawGBM:
     feature_names: List[str]
 
     def predict(self, X: np.ndarray) -> np.ndarray:
-        return np.asarray(self.model.predict(X), dtype=np.float64)
+        import warnings
+
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message="X does not have valid feature names",
+                category=UserWarning,
+            )
+            return np.asarray(self.model.predict(X), dtype=np.float64)
+
+
+_PLS_HEAD_KIND = {"pls_gbm": "gbm", "pls_bayes": "bayes", "pls_tree": "tree"}
+
+
+def _raw_estimator(kind: str, tree_depth: int, min_leaf: int) -> Any:
+    """Unfit raw-feature estimator (no PLS projection) for a recursive-partition kind."""
+    if kind == "extra_trees":
+        return ExtraTreesRegressor(
+            n_estimators=300,
+            min_samples_leaf=min_leaf,
+            random_state=42,
+            n_jobs=-1,
+        )
+    if kind == "tree_raw":
+        return DecisionTreeRegressor(
+            max_depth=tree_depth, min_samples_leaf=min_leaf, random_state=42
+        )
+    raise ValueError(f"not a raw-estimator kind: {kind}")
 
 
 def _fit_axis_model(
@@ -171,8 +210,10 @@ def _fit_axis_model(
     """Fit one deployable axis model by kind (uniform .predict)."""
     if kind == "gbm":
         return RawGBM(_fit_gbm(X, y), list(names))
-    head_kind = "gbm" if kind == "pls_gbm" else "tree"
-    return PLSPartition.fit(X, y, names, head_kind=head_kind, **params)
+    if kind in ("extra_trees", "tree_raw"):
+        est = _raw_estimator(kind, params["tree_depth"], params["min_leaf"]).fit(X, y)
+        return RawGBM(est, list(names))
+    return PLSPartition.fit(X, y, names, head_kind=_PLS_HEAD_KIND[kind], **params)
 
 
 # --------------------------------------------------------------------------- #
@@ -215,6 +256,16 @@ class AxisOracle:
     @staticmethod
     def load() -> "AxisOracle":
         import joblib
+        import sys
+
+        # Older oracle artifacts were saved from ``python -m`` execution, so
+        # joblib may resolve these classes against the caller's ``__main__``.
+        # Register aliases before loading so runtime tools can consume the
+        # artifact without retraining it.
+        main_mod = sys.modules.get("__main__")
+        if main_mod is not None:
+            for cls in (AxisOracle, PLSPartition, RawGBM):
+                setattr(main_mod, cls.__name__, cls)
 
         return joblib.load(_MODEL_PATH)
 
@@ -234,23 +285,31 @@ def _fit_predict(
 ) -> np.ndarray:
     if kind == "gbm":
         return np.asarray(_fit_gbm(Xtr, ytr).predict(Xte), dtype=np.float64)
-    if kind == "tree_raw":
-        tree = DecisionTreeRegressor(
-            max_depth=tree_depth, min_samples_leaf=min_leaf, random_state=42
-        ).fit(Xtr, ytr)
-        return np.asarray(tree.predict(Xte), dtype=np.float64)
-    head_kind = "gbm" if kind == "pls_gbm" else "tree"
+    if kind in ("tree_raw", "extra_trees"):
+        est = _raw_estimator(kind, tree_depth, min_leaf).fit(Xtr, ytr)
+        return np.asarray(est.predict(Xte), dtype=np.float64)
+    head_kind = _PLS_HEAD_KIND[kind] if kind != "pls_only" else "tree"
     model = PLSPartition.fit(
         Xtr, ytr, names, n_components, tree_depth, min_leaf, head_kind=head_kind
     )
     if kind == "pls_only":
         return model.pls_predict(Xte)
-    if kind in ("pls_tree", "pls_gbm"):
+    if kind in ("pls_tree", "pls_gbm", "pls_bayes"):
         return model.predict(Xte)
     raise ValueError(f"unknown model kind: {kind}")
 
 
-_KINDS = ("gbm", "tree_raw", "pls_only", "pls_tree", "pls_gbm")
+# Full A/B zoo: raw GBM, raw recursive-partition (single tree + ExtraTrees ensemble),
+# PLS-only linear, and PLS-projected heads (tree / GBM / Bayesian). One contract per kind.
+_KINDS = (
+    "gbm",
+    "tree_raw",
+    "extra_trees",
+    "pls_only",
+    "pls_tree",
+    "pls_gbm",
+    "pls_bayes",
+)
 
 
 def _metrics(pred: np.ndarray, y_raw: np.ndarray, thr: float) -> Dict[str, Any]:
@@ -298,6 +357,34 @@ def _temporal_ab(
     return out
 
 
+def _leave_family_out_ab(
+    cp: AxisCorpus, thr: float, shrink_f: float, params: Dict[str, int], k: int = 5
+) -> Dict[str, Any]:
+    """OOD-honest A/B: hold out WHOLE template families (GroupKFold by cluster).
+
+    Each row is predicted exactly once, by a model that never saw any graph from its
+    template family — the closest in-corpus proxy for scoring a novel, off-manifold
+    design. This (not random/in-dist holdout) is the go/no-go metric for the screener.
+    """
+    n = len(cp.fps)
+    groups = np.asarray(cp.clusters)
+    n_groups = int(len({*cp.clusters}))
+    splits = min(k, n_groups)
+    if splits < 2:
+        return {kind: {"roc": None, "spearman": 0.0} for kind in _KINDS}
+    gkf = GroupKFold(n_splits=splits)
+    oof = {kind: np.zeros(n, dtype=np.float64) for kind in _KINDS}
+    for rest, held in gkf.split(cp.X, cp.y, groups):
+        mask = np.zeros(n, dtype=bool)
+        mask[rest] = True
+        ys = _shrink(cp.y, cp.clusters, mask, shrink_f)  # train-family stats only
+        for kind in _KINDS:
+            oof[kind][held] = _fit_predict(
+                kind, cp.X[rest], ys[rest], cp.X[held], cp.names, **params
+            )
+    return {kind: _metrics(oof[kind], cp.y, thr) for kind in _KINDS}
+
+
 def _pca_dim(X: np.ndarray) -> Dict[str, int]:
     pca = PCA().fit(np.asarray(StandardScaler().fit_transform(X)))
     cum = np.cumsum(pca.explained_variance_ratio_)
@@ -334,6 +421,7 @@ def backtest(
             "threshold": thr,
             "pca": _pca_dim(cp.X),
             "out_of_fold": _oof_ab(cp, thr, shrink_f, k, params),
+            "leave_family_out": _leave_family_out_ab(cp, thr, shrink_f, params),
             "temporal_80_20": _temporal_ab(cp, thr, shrink_f, params),
         }
     report["note"] = (
@@ -343,7 +431,7 @@ def backtest(
     return report
 
 
-_CANDIDATES = ("gbm", "pls_gbm")
+_CANDIDATES = ("gbm", "extra_trees", "pls_gbm", "pls_bayes")
 
 
 def train(
@@ -352,9 +440,8 @@ def train(
     params: Dict[str, int],
     novelty_k: int,
     novelty_pctile_thr: float,
-    oof_folds: int = 5,
 ) -> Dict[str, Any]:
-    """Per axis: OOF-select the best regressor among _CANDIDATES, fit it, persist.
+    """Per axis: leave-family-out-select the best regressor among _CANDIDATES, fit, persist.
 
     Self-tuning by design — as properties grow the PLS-family may overtake the raw
     GBM on the induction axis too; re-running train re-selects. Novelty routing is
@@ -370,15 +457,17 @@ def train(
         cp = _axis_corpus(db_path, col, ts_map)
         if len(cp.fps) < 100 or not (0 < (cp.y > thr).sum() < len(cp.fps)):
             continue
-        oof = _oof_ab(cp, thr, shrink_f, oof_folds, params)
-        best = max(_CANDIDATES, key=lambda k: oof[k]["roc"] or 0.0)
+        # OOD-honest self-selection: pick the kind that ranks held-out template
+        # families best (not random/in-dist OOF — that rewards regress-to-familiar).
+        lfo = _leave_family_out_ab(cp, thr, shrink_f, params)
+        best = max(_CANDIDATES, key=lambda k: lfo[k]["roc"] or 0.0)
         ys = _shrink(cp.y, cp.clusters, np.ones(len(cp.fps), dtype=bool), shrink_f)
         models[axis] = _fit_axis_model(best, cp.X, ys, cp.names, params)
         thresholds[axis] = thr
         trained[axis] = len(cp.fps)
         selected[axis] = {
             "kind": best,
-            "oof_roc": {k: oof[k]["roc"] for k in _CANDIDATES},
+            "leave_family_out_roc": {k: lfo[k]["roc"] for k in _CANDIDATES},
         }
         if novelty_corpus is None or len(cp.fps) > len(novelty_corpus.fps):
             novelty_corpus = cp
@@ -485,7 +574,6 @@ def main() -> None:
             _params(args),
             args.novelty_k,
             args.novelty_pctile,
-            oof_folds=args.oof_folds,
         )
     else:
         report = score(args.db, args.probes)
