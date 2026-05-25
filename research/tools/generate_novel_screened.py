@@ -33,6 +33,7 @@ import heapq
 import json
 import logging
 import multiprocessing as mp
+import os
 import sqlite3
 import time
 from collections import Counter
@@ -202,6 +203,12 @@ def _generate_stream(
     fout = out_path.open("w")
     t0 = time.time()
 
+    # OPT-IN GPU-free structural capability gate (default off → zero overhead/behavior change).
+    gate_min = int(os.environ.get("ARIA_STATIC_REACH_MIN", "0"))
+    reach_gate = None
+    if gate_min > 0:
+        logger.info("[%s] static reach gate ON: min_mixers_on_path=%d", tag, gate_min)
+
     for seed in seeds:
         try:
             g = generate_layer_graph(cfg, seed=seed)
@@ -217,6 +224,9 @@ def _generate_stream(
         hits = sorted(op_set & novel_mixers)
         if not hits:
             stats["no_novel_mixer"] += 1
+            continue
+        if reach_gate is not None and not reach_gate(g, gate_min):
+            stats["static_reach_pruned"] += 1
             continue
         batch.append(
             {
