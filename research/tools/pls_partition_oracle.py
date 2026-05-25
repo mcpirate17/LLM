@@ -57,10 +57,17 @@ from research.tools.novelty_scorer import NoveltyScorer
 
 logger = logging.getLogger(__name__)
 
-# axis name -> (graph_runs column, capable threshold)
+# axis name -> (graph_runs column, capable threshold). Each axis is a near-orthogonal
+# capability dimension (pairwise label spearman < 0.15), so each gets its own model.
+#   induction      — in-context retrieval (rare-positive, ~3%).
+#   ar_curriculum  — deep multi-stage AR/reasoning (rare-positive ~7%, data-starved ~1.3k).
+#   ar_gate        — cheap AR go/no-go (well-populated ~4.5k, saturated; thr at the strong tail,
+#                    not 0.5, since 73% clear 0.5). Weakly correlated w/ curriculum (rho 0.13) and
+#                    induction (rho 0.05) — a distinct dimension, NOT a curriculum substitute.
 AXES: Dict[str, Tuple[str, float]] = {
     "induction": ("induction_screening_auc", 0.35),
     "ar_curriculum": ("ar_curriculum_auc_pair_final", 0.5),
+    "ar_gate": ("ar_gate_score", 0.9),
 }
 
 _STATE_DIR = Path("research/runtime/pls_partition_oracle")
