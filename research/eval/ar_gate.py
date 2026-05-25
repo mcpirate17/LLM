@@ -126,6 +126,29 @@ class ARGateResult:
         }
 
 
+# Single source of truth for the AR-gate score + hard no-go recipe.
+# Mirrors nano_bind's persistent-zero rule: an ``ok`` run whose in-dist
+# pair-match AND held-out class accuracy both collapse below 0.10 is a
+# frequency-collapse degenerate (no-go). Transient failures (timeout /
+# non-finite) are NOT flagged — only ``status == 'ok'`` runs.
+AR_GATE_NO_GO_PAIR_THRESHOLD: float = 0.10
+AR_GATE_NO_GO_HELD_CLASS_THRESHOLD: float = 0.10
+
+
+def ar_gate_score(result: "ARGateResult") -> float:
+    """Headline AR-gate score: 0.6 * in-dist pair-match + 0.4 * held class."""
+    return round(0.6 * result.in_dist_pair_acc + 0.4 * result.held_class_acc, 4)
+
+
+def ar_gate_is_no_go(result: "ARGateResult") -> bool:
+    """True iff an ``ok`` run is a frequency-collapse degenerate (hard no-go)."""
+    return (
+        result.status == "ok"
+        and result.in_dist_pair_acc < AR_GATE_NO_GO_PAIR_THRESHOLD
+        and result.held_class_acc < AR_GATE_NO_GO_HELD_CLASS_THRESHOLD
+    )
+
+
 def _get_encoder():
     from research.eval.utils import _get_tiktoken_encoder
 

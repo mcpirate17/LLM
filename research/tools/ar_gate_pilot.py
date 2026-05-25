@@ -63,6 +63,24 @@ def parse_args() -> argparse.Namespace:
         help="Optional: restrict to archs whose templates_used contains this name",
     )
     p.add_argument(
+        "--templates",
+        default=None,
+        help="Comma-separated template names to build fresh (from_s1=False pilot) "
+        "instead of pulling leaderboard archs. Bypasses --top-n/--filter-template.",
+    )
+    p.add_argument(
+        "--n-seeds",
+        type=int,
+        default=5,
+        help="Graphs to build per template in --templates mode (seeds 0..n-1).",
+    )
+    p.add_argument(
+        "--dim",
+        type=int,
+        default=256,
+        help="model_dim for freshly-built template graphs (--templates mode).",
+    )
+    p.add_argument(
         "--out-prefix",
         default=None,
         help="Output prefix (default: ar_gate_pilot_<unix_ts>)",
@@ -115,13 +133,72 @@ def fetch_top_archs(
         conn.close()
 
 
+def build_template_archs(
+    template_names: list[str], *, n_seeds: int, dim: int
+) -> list[dict[str, Any]]:
+    """Build fresh single-block graphs per (template, seed) for an offline pilot.
+
+    Mirrors how ``ar_gate(from_s1=False)`` compiles a stored graph_json
+    (``compile_model([graph])``), so freshly-built templates flow through the
+    exact same scoring/summary harness as leaderboard archs.
+    """
+    import random
+
+    from research.synthesis.graph import ComputationGraph
+    from research.synthesis.serializer import graph_to_json
+    from research.synthesis.templates import apply_template
+
+    out: list[dict[str, Any]] = []
+    for name in template_names:
+        for seed in range(int(n_seeds)):
+            rng = random.Random(seed)
+            g = ComputationGraph(model_dim=int(dim))
+            inp = g.add_input()
+            try:
+                out_id = apply_template(g, inp, rng, template_name=name)
+                g.set_output(out_id)
+                gj = graph_to_json(g)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("build failed: %s seed=%d: %s", name, seed, exc)
+                continue
+            out.append(
+                {
+                    "result_id": f"tmpl:{name}:s{seed}",
+                    "graph_json": gj,
+                    "composite_score": 0.0,
+                    "tier": "template_pilot",
+                    "wikitext_perplexity": None,
+                    "ar_legacy_auc_legacy": None,
+                    "induction_screening_auc": None,
+                    "binding_screening_auc": None,
+                    "templates": [name],
+                    "build_seed": seed,
+                }
+            )
+    return out
+
+
 def run_pilot(args: argparse.Namespace) -> dict[str, Any]:
+    from dataclasses import replace
+
     from research.eval.ar_gate import ARGateConfig, ar_gate
 
-    archs = fetch_top_archs(
-        args.db, top_n=args.top_n, filter_template=args.filter_template
-    )
-    logger.info("Pulled %d candidate arches", len(archs))
+    if args.templates:
+        names = [t.strip() for t in args.templates.split(",") if t.strip()]
+        archs = build_template_archs(
+            names, n_seeds=int(args.n_seeds), dim=int(args.dim)
+        )
+        logger.info(
+            "Built %d fresh template graphs (%d templates x %d seeds)",
+            len(archs),
+            len(names),
+            int(args.n_seeds),
+        )
+    else:
+        archs = fetch_top_archs(
+            args.db, top_n=args.top_n, filter_template=args.filter_template
+        )
+        logger.info("Pulled %d candidate arches", len(archs))
 
     cfg = ARGateConfig(
         seed=int(args.seed),
@@ -148,7 +225,12 @@ def run_pilot(args: argparse.Namespace) -> dict[str, Any]:
             arch["composite_score"],
             ",".join(arch["templates"][:3]),
         )
-        result = ar_gate(graph_json=arch["graph_json"], device=args.device, cfg=cfg)
+        arch_cfg = (
+            replace(cfg, seed=int(arch["build_seed"])) if "build_seed" in arch else cfg
+        )
+        result = ar_gate(
+            graph_json=arch["graph_json"], device=args.device, cfg=arch_cfg
+        )
         row = {
             **{k: v for k, v in arch.items() if k != "graph_json"},
             "ar_gate": asdict(result),
