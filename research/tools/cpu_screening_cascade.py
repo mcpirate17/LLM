@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Set, Tuple
 
 import numpy as np
+from scipy.stats import spearmanr
 
 from research.synthesis.grammar import GrammarConfig, generate_layer_graph
 from research.synthesis.op_roles import OpRole, get_role
@@ -50,6 +51,7 @@ from research.tools.graph_semantic_features import (
     _MEMORY_ORDINAL,
     GraphSemanticExtractor,
 )
+from research.tools.label_free_probe_oracle import LabelFreeProbeOracleScorer
 from research.tools.learned_rules import score_template_quality
 from research.tools.static_capability_gate import (
     mixer_chain_depth,
@@ -79,12 +81,23 @@ class MechProfile:
 class CpuMechanismScorer:
     """Label-free, GPU-free mechanism scorer over input→output-path ops (catalog loaded once)."""
 
-    def __init__(self, runs_db: str = _RUNS_DB, meta_db: str = _META_DB) -> None:
+    def __init__(
+        self,
+        runs_db: str = _RUNS_DB,
+        meta_db: str = _META_DB,
+        *,
+        use_probe_oracle: bool = True,
+    ) -> None:
         self.ext = GraphSemanticExtractor(runs_db, meta_db)
         self.novel: Set[str] = _novel_mixers(runs_db)
         self.lit_families: Dict[str, Any] = json.loads(DEFAULT_MAPPING.read_text())[
             "graph_families"
         ]
+        self.probe_oracle = (
+            LabelFreeProbeOracleScorer.try_load(runs_db=runs_db, meta_db=meta_db)
+            if use_probe_oracle
+            else None
+        )
 
     def profile(self, nodes: Dict[str, Any] | List[Any]) -> MechProfile:
         ops = on_path_op_names(nodes)
@@ -121,6 +134,15 @@ class CpuMechanismScorer:
             lit_match_type=str(lit.get("match_type", "?")),
         )
 
+    def probe_oracle_score(self, graph_dict: Dict[str, Any]) -> Dict[str, Any] | None:
+        if self.probe_oracle is None:
+            return None
+        try:
+            return self.probe_oracle.score_graph_dict(graph_dict)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("label-free probe oracle scoring failed: %s", exc)
+            return None
+
 
 # --------------------------------------------------------------------------- #
 # generate mode — the cascade
@@ -132,6 +154,7 @@ class Scored:
     profile: MechProfile
     quality: Dict[str, Any]  # learned_rules.score_template_quality output
     graph_dict: Dict[str, Any]
+    probe_oracle: Dict[str, Any] | None = None
 
 
 def _generate_pool(
@@ -171,7 +194,9 @@ def _generate_pool(
         if fr["compile"] >= 0.4 or fr["lookahead"] >= 0.4 or fr["resource"] >= 0.4:
             stats["high_failure_risk"] += 1
             continue
-        kept.append(Scored(fp, sorted(op_set), prof, q, gd))
+        kept.append(
+            Scored(fp, sorted(op_set), prof, q, gd, scorer.probe_oracle_score(gd))
+        )
         stats["kept"] += 1
         if progress_every and (i + 1) % progress_every == 0:
             logger.info(
@@ -185,9 +210,21 @@ def _generate_pool(
     return kept, stats
 
 
+def _exploit_key(s: Scored) -> tuple[float, float]:
+    if s.probe_oracle:
+        return (
+            float(s.probe_oracle.get("label_free_probe_score", 0.0)),
+            s.profile.mech_score,
+        )
+    return (0.0, s.profile.mech_score)
+
+
 def _select(kept: List[Scored], n_exploit: int, n_explore: int) -> List[Scored]:
-    """Explore∪exploit shortlist: top mechanism_score ∪ top novelty (dedup, exploit wins ties)."""
-    by_mech = sorted(kept, key=lambda s: -s.profile.mech_score)[:n_exploit]
+    """Explore∪exploit shortlist; AR/nano probe oracle drives exploit ranking when available."""
+    if any(s.probe_oracle for s in kept):
+        by_mech = sorted(kept, key=_exploit_key, reverse=True)[:n_exploit]
+    else:
+        by_mech = sorted(kept, key=lambda s: -s.profile.mech_score)[:n_exploit]
     by_nov = sorted(kept, key=lambda s: -s.profile.novelty)[:n_explore]
     out: Dict[str, Scored] = {s.fingerprint: s for s in by_mech}
     for s in by_nov:
@@ -211,7 +248,9 @@ def _context_rule_clean(s: "Scored") -> bool:
 
 
 def run_generate(args: argparse.Namespace) -> Dict[str, Any]:
-    scorer = CpuMechanismScorer(args.db, args.meta)
+    scorer = CpuMechanismScorer(
+        args.db, args.meta, use_probe_oracle=bool(args.probe_oracle)
+    )
     hist = _historical_fingerprints(args.db)
     t0 = time.time()
     kept, stats = _generate_pool(
@@ -239,6 +278,7 @@ def run_generate(args: argparse.Namespace) -> Dict[str, Any]:
                         "lit_match_type": s.profile.lit_match_type,
                         "template_quality": s.quality["score"],
                         "failure_risk": s.quality["failure_risk"],
+                        **(s.probe_oracle or {}),
                         "graph": s.graph_dict,
                     }
                 )
@@ -263,9 +303,26 @@ def run_generate(args: argparse.Namespace) -> Dict[str, Any]:
             else 0.0,
             3,
         ),
+        "label_free_probe_oracle": {
+            "enabled": bool(args.probe_oracle),
+            "loaded": scorer.probe_oracle is not None,
+            "scored_kept": sum(1 for s in kept if s.probe_oracle),
+            "scored_shortlist": sum(1 for s in shortlist if s.probe_oracle),
+        },
         "top_by_mech": [
-            {"fp": s.fingerprint, "mech": round(s.profile.mech_score, 2), "ops": s.ops}
-            for s in sorted(kept, key=lambda s: -s.profile.mech_score)[:5]
+            {
+                "fp": s.fingerprint,
+                "mech": round(s.profile.mech_score, 2),
+                "label_free_probe_score": (s.probe_oracle or {}).get(
+                    "label_free_probe_score"
+                ),
+                "ops": s.ops,
+            }
+            for s in (
+                sorted(kept, key=_exploit_key, reverse=True)
+                if any(s.probe_oracle for s in kept)
+                else sorted(kept, key=lambda s: -s.profile.mech_score)
+            )[:5]
         ],
     }
 
@@ -273,51 +330,109 @@ def run_generate(args: argparse.Namespace) -> Dict[str, Any]:
 # --------------------------------------------------------------------------- #
 # validate mode — recall of capable in the shortlist, on the labeled corpus
 # --------------------------------------------------------------------------- #
-def run_validate(args: argparse.Namespace) -> Dict[str, Any]:
-    import sqlite3
+# Allowlisted capability axes + their positive-class threshold (interpolation-safe SQL).
+# mech_score is a structural induction-FAMILY circuit detector: it concentrates the capable
+# 8-13x on induction / nano_induction_nearest / binding_curriculum (all "retrieve a token
+# seen earlier"), but is BLIND to AR (ar_gate/ar_curriculum, a different mechanism — enrich
+# <1x). AR coverage comes from the trained probe-oracle max-axis exploit layer, not here.
+_VALIDATE_LABELS: Dict[str, float] = {
+    "induction_screening_auc": 0.35,
+    "nano_induction_nearest_max_accuracy": 0.5,
+    "binding_curriculum_auc": 0.5,
+    "ar_gate_score": 0.8,
+    "ar_curriculum_auc_pair_final": 0.5,
+}
 
-    scorer = CpuMechanismScorer(args.db, args.meta)
-    con = sqlite3.connect(args.db)
-    rows = con.execute(
-        """SELECT g.graph_json, AVG(r.induction_screening_auc)
-           FROM graphs g JOIN graph_runs r ON g.graph_fingerprint=r.graph_fingerprint
-           WHERE g.graph_json_is_placeholder=0 AND r.induction_screening_auc IS NOT NULL
-           GROUP BY g.graph_fingerprint"""
-    ).fetchall()
-    con.close()
+
+def _validate_axis(
+    scorer: CpuMechanismScorer, con: Any, label_col: str, thr: float
+) -> Dict[str, Any]:
+    """Mech-score recall@topK + enrichment + global spearman against one capability axis."""
+    if (
+        label_col not in _VALIDATE_LABELS
+    ):  # allowlist ⇒ f-string interpolation is injection-safe
+        raise ValueError(f"label_col must be one of {tuple(_VALIDATE_LABELS)}")
+    query = (
+        f"SELECT g.graph_json, AVG(r.{label_col}) "
+        "FROM graphs g JOIN graph_runs r ON g.graph_fingerprint=r.graph_fingerprint "
+        f"WHERE g.graph_json_is_placeholder=0 AND r.{label_col} IS NOT NULL "
+        "GROUP BY g.graph_fingerprint"
+    )
+    rows = con.execute(query).fetchall()  # nosec B608  # nosemgrep: python-sql-string-formatting
     mech: List[float] = []
     y: List[float] = []
     t0 = time.time()
-    for gj, auc in rows:
+    for gj, val in rows:
         try:
             nodes = json.loads(gj)["nodes"]
         except Exception:
             continue
         mech.append(scorer.profile(nodes).mech_score)
-        y.append(float(auc))
+        y.append(float(val))
     mech_a = np.array(mech)
     y_a = np.array(y)
-    pos = y_a > 0.35
+    pos = y_a > thr
     order = np.argsort(-mech_a)
     n = len(y_a)
-    out: Dict[str, Any] = {
+    base_rate = float(pos.mean()) if n else 0.0
+    rk: Dict[str, Any] = {}
+    for frac in (0.05, 0.10, 0.20, 0.30):
+        k = max(int(n * frac), 1)
+        top = order[:k]
+        rk[f"top_{int(frac * 100)}pct"] = {
+            "recall_of_capable": round(float(pos[top].sum() / max(pos.sum(), 1)), 3),
+            "precision": round(float(pos[top].mean()), 3),
+            "enrichment_vs_base": round(
+                float(pos[top].mean() / max(base_rate, 1e-9)), 2
+            ),
+        }
+    sp = (
+        float(spearmanr(mech_a, y_a)[0])  # type: ignore[arg-type]  # scipy stub returns opaque tuple
+        if n > 2 and pos.any()
+        else float("nan")
+    )
+    return {
+        "label_col": label_col,
+        "threshold": thr,
         "n": n,
         "n_capable": int(pos.sum()),
+        "base_rate": round(base_rate, 4),
+        "spearman_mech_label": round(sp, 3),
         "graphs_per_s": round(n / max(time.time() - t0, 1e-9)),
-        "recall_at_topk": {},
+        "recall_at_topk": rk,
     }
-    base_rate = pos.mean()
-    for frac in (0.05, 0.10, 0.20, 0.30):
-        k = int(n * frac)
-        top = order[:k]
-        recall = pos[top].sum() / max(pos.sum(), 1)
-        precision = pos[top].mean()
-        out["recall_at_topk"][f"top_{int(frac * 100)}pct"] = {
-            "recall_of_capable": round(float(recall), 3),
-            "precision": round(float(precision), 3),
-            "enrichment_vs_base": round(float(precision / max(base_rate, 1e-9)), 2),
+
+
+def run_validate(args: argparse.Namespace) -> Dict[str, Any]:
+    import sqlite3
+
+    scorer = CpuMechanismScorer(args.db, args.meta, use_probe_oracle=False)
+    cols = list(_VALIDATE_LABELS) if args.label_col == "all" else [args.label_col]
+    con = sqlite3.connect(args.db)
+    try:
+        axes = {
+            col: _validate_axis(
+                scorer,
+                con,
+                col,
+                args.thr
+                if (args.thr is not None and args.label_col != "all")
+                else _VALIDATE_LABELS[col],
+            )
+            for col in cols
         }
-    return out
+    finally:
+        con.close()
+    if len(axes) == 1:
+        return next(iter(axes.values()))
+    return {
+        "axes": axes,
+        "note": (
+            "mech_score is a structural induction-family detector (strong on induction / "
+            "nano_induction_nearest / binding_curriculum); AR axes are served by the trained "
+            "probe-oracle max-axis layer, not the structural score."
+        ),
+    }
 
 
 _MUST_CHECKS = (
@@ -407,6 +522,18 @@ def main() -> None:
     p.add_argument("mode", choices=["generate", "validate", "rescreen"])
     p.add_argument("--db", default=_RUNS_DB)
     p.add_argument("--meta", default=_META_DB)
+    p.add_argument(
+        "--label-col",
+        default="induction_screening_auc",
+        choices=(*_VALIDATE_LABELS, "all"),
+        help="validate mode: capability axis to score mech_score against ('all' = every axis).",
+    )
+    p.add_argument(
+        "--thr",
+        type=float,
+        default=None,
+        help="validate mode: positive-class threshold override (single-axis only).",
+    )
     p.add_argument("--pool", type=int, default=50000)
     p.add_argument("--max-attempts", type=int, default=200000)
     p.add_argument("--seed0", type=int, default=11_000_000)
@@ -414,6 +541,13 @@ def main() -> None:
     p.add_argument("--explore", type=int, default=100)
     p.add_argument("--progress-every", type=int, default=20000)
     p.add_argument("--out", default="research/reports/cpu_cascade_shortlist.jsonl")
+    p.add_argument(
+        "--no-probe-oracle",
+        dest="probe_oracle",
+        action="store_false",
+        help="Disable persisted label-free AR/nano probe-oracle scoring.",
+    )
+    p.set_defaults(probe_oracle=True)
     p.add_argument(
         "--in",
         dest="in_path",

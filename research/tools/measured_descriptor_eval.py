@@ -51,6 +51,7 @@ _EXISTING = [
 # allowlisted label columns (avoids SQL injection; values are fixed capability metrics)
 _LABEL_COLS = (
     "induction_screening_auc",
+    "nano_induction_nearest_max_accuracy",
     "ar_gate_score",
     "ar_curriculum_auc_pair_final",
 )
@@ -156,6 +157,28 @@ def _oof_gbm_roc(
     return round(float(roc_auc_score(pos, oof)), 4)
 
 
+def _reach_operating_point(
+    reach: np.ndarray, y: np.ndarray, thr: float
+) -> Dict[str, Any]:
+    """Re-fit the rescue prefilter τ: recall of capable kept / incapable pruned at long_range_reach
+    >= τ. The live gate (screening_measured_rescue._DEFAULT_TAU=0.01) was set on induction; this lets
+    each axis confirm or move its operating point from the SAME probed arrays (no extra GPU pass)."""
+    m = np.isfinite(reach)
+    reach, y = reach[m], y[m]
+    pos = y > thr
+    neg = ~pos
+    out: Dict[str, Any] = {}
+    for tau in (0.005, 0.01, 0.02, 0.05, 0.1):
+        keep = reach >= tau
+        out[f"tau_{tau}"] = {
+            "capable_kept": round(float(keep[pos].mean()), 4) if pos.any() else None,
+            "incapable_pruned": round(float((~keep[neg]).mean()), 4)
+            if neg.any()
+            else None,
+        }
+    return out
+
+
 def _winner_descriptors(
     runs_db: str, ext: MeasuredDescriptorExtractor
 ) -> Optional[Dict[str, float]]:
@@ -210,13 +233,16 @@ def run(
         "n_pos_gt_thr": int((y > thr).sum()),
         "elapsed_s": round(time.time() - t0, 1),
         "single_feature_roc": _single_feature_table(feats, y, thr),
+        "long_range_reach_operating_point": _reach_operating_point(
+            measured["long_range_reach"], y, thr
+        ),
         "oof_gbm_roc": {
             "measured_8": _oof_gbm_roc(
                 np.column_stack([measured[n] for n in DESCRIPTOR_NAMES]), y, thr
             ),
         },
     }
-    if with_winner and label_col == "induction_screening_auc":
+    if with_winner:
         wd = _winner_descriptors(runs_db, ext)
         if wd is not None:
             pct = {}
