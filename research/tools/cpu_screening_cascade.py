@@ -50,6 +50,7 @@ from research.tools.graph_semantic_features import (
     _MEMORY_ORDINAL,
     GraphSemanticExtractor,
 )
+from research.tools.learned_rules import score_template_quality
 from research.tools.static_capability_gate import (
     mixer_chain_depth,
     on_path_op_names,
@@ -129,6 +130,7 @@ class Scored:
     fingerprint: str
     ops: List[str]
     profile: MechProfile
+    quality: Dict[str, Any]  # learned_rules.score_template_quality output
     graph_dict: Dict[str, Any]
 
 
@@ -159,10 +161,16 @@ def _generate_pool(
         seen.add(fp)
         gd = g.to_dict()
         prof = scorer.profile(gd["nodes"])
-        if prof.n_mix < 1:  # structural gate
-            stats["no_mixer_on_path"] += 1
+        q = score_template_quality(
+            gd["nodes"]
+        )  # good-template + data-mined failure rules
+        if not q["passes_must"]:  # mixer-on-path + norm + residual + no-double-gating
+            stats["bad_template"] += 1
             continue
-        kept.append(Scored(fp, sorted(op_set), prof, gd))
+        if q["failure_risk"]["compile"] >= 0.4 or q["failure_risk"]["lookahead"] >= 0.4:
+            stats["high_failure_risk"] += 1
+            continue
+        kept.append(Scored(fp, sorted(op_set), prof, q, gd))
         stats["kept"] += 1
         if progress_every and (i + 1) % progress_every == 0:
             logger.info(
@@ -228,6 +236,8 @@ def run_generate(args: argparse.Namespace) -> Dict[str, Any]:
                         "lit_family": s.profile.lit_family,
                         "lit_model": s.profile.lit_model,
                         "lit_match_type": s.profile.lit_match_type,
+                        "template_quality": s.quality["score"],
+                        "failure_risk": s.quality["failure_risk"],
                         "graph": s.graph_dict,
                     }
                 )
@@ -245,6 +255,12 @@ def run_generate(args: argparse.Namespace) -> Dict[str, Any]:
         ),
         "shortlist_contains_novel_mixer": sum(
             1 for s in shortlist if s.profile.n_novel_mix > 0
+        ),
+        "shortlist_mean_template_quality": round(
+            float(np.mean([s.quality["score"] for s in shortlist]))
+            if shortlist
+            else 0.0,
+            3,
         ),
         "top_by_mech": [
             {"fp": s.fingerprint, "mech": round(s.profile.mech_score, 2), "ops": s.ops}
