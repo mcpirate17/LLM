@@ -83,6 +83,17 @@ class MeasuredDescriptorExtractor:
             return None
         return {k: float(np.mean([d[k] for d in per_seed])) for k in _DESCRIPTOR_NAMES}
 
+    def induction_capable(self, graph_json: str, threshold: float = 0.01) -> bool:
+        """Cheap (~0.4s) label-free pre-probe filter: does the graph route info backward at all?
+
+        Validated operating point (n=1102, 2026-05-25): long_range_reach >= 0.01 keeps 99.3% of
+        induction-capable graphs while pruning ~55% of incapable ones — necessary-not-sufficient,
+        safe to skip the expensive training probe below it. Returns True on probe failure (fail
+        open — never silently drop a candidate the probe couldn't measure).
+        """
+        d = self.descriptors(graph_json)
+        return d is None or d["long_range_reach"] >= threshold
+
     # ── one random-init probe ───────────────────────────────────────
     def _probe_once(self, graph_json: str, seed: int) -> Optional[Dict[str, float]]:
         torch.manual_seed(seed)
