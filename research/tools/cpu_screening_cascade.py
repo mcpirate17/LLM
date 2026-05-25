@@ -319,10 +319,85 @@ def run_validate(args: argparse.Namespace) -> Dict[str, Any]:
     return out
 
 
+_MUST_CHECKS = (
+    "has_mixer_on_path",
+    "has_normalization",
+    "has_residual",
+    "no_double_gating",
+)
+
+
+def run_rescreen(args: argparse.Namespace) -> Dict[str, Any]:
+    """Re-check an already-emitted shortlist jsonl against the FULL rules (encoded context rules +
+    good-template must-checks + data-mined failure-risk) — how many now fail, by layer."""
+    from research.synthesis._context_validation import find_graph_context_violations
+    from research.synthesis.serializer import graph_from_json
+
+    rows = [
+        json.loads(line) for line in Path(args.in_path).read_text().splitlines() if line
+    ]
+    ctx_kinds: Counter = Counter()
+    check_fail: Counter = Counter()
+    n_ctx = n_must = n_risk = n_any = 0
+    failing: List[Dict[str, Any]] = []
+    for r in rows:
+        nodes = r["graph"]["nodes"]
+        q = score_template_quality(nodes)
+        try:
+            viol = find_graph_context_violations(
+                graph_from_json(json.dumps(r["graph"]))
+            )
+        except Exception:
+            viol = ["UNCHECKABLE"]
+        risk = q["failure_risk"]
+        hi_risk = risk["compile"] >= 0.4 or risk["lookahead"] >= 0.4
+        reasons: List[str] = []
+        if viol:
+            n_ctx += 1
+            reasons.append("context_violation")
+            for v in viol:
+                ctx_kinds[v.split(":")[0][:50]] += 1
+        if not q["passes_must"]:
+            n_must += 1
+        for chk, ok in q["checks"].items():
+            if not ok:
+                check_fail[chk] += 1
+                if chk in _MUST_CHECKS:
+                    reasons.append(chk)
+        if hi_risk:
+            n_risk += 1
+            reasons.append("high_failure_risk")
+        if reasons:
+            n_any += 1
+            if len(failing) < 40:
+                failing.append(
+                    {
+                        "fp": r.get("fingerprint"),
+                        "reasons": reasons,
+                        "failure_risk": risk,
+                    }
+                )
+    return {
+        "in": args.in_path,
+        "n_total": len(rows),
+        "n_context_violation": n_ctx,
+        "context_violation_kinds": dict(ctx_kinds.most_common(10)),
+        "n_fail_must": n_must,
+        "must_check_failures": {
+            k: check_fail[k] for k in _MUST_CHECKS if check_fail[k]
+        },
+        "all_check_failures": dict(check_fail.most_common()),
+        "n_high_failure_risk": n_risk,
+        "n_fail_any": n_any,
+        "n_clean": len(rows) - n_any,
+        "failing_fingerprints": failing,
+    }
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     p = argparse.ArgumentParser()
-    p.add_argument("mode", choices=["generate", "validate"])
+    p.add_argument("mode", choices=["generate", "validate", "rescreen"])
     p.add_argument("--db", default=_RUNS_DB)
     p.add_argument("--meta", default=_META_DB)
     p.add_argument("--pool", type=int, default=50000)
@@ -332,8 +407,22 @@ def main() -> None:
     p.add_argument("--explore", type=int, default=100)
     p.add_argument("--progress-every", type=int, default=20000)
     p.add_argument("--out", default="research/reports/cpu_cascade_shortlist.jsonl")
+    p.add_argument(
+        "--in",
+        dest="in_path",
+        default="research/reports/cpu_cascade_large_shortlist.jsonl",
+        help="shortlist jsonl to rescreen (rescreen mode)",
+    )
     args = p.parse_args()
-    report = run_generate(args) if args.mode == "generate" else run_validate(args)
+    if args.mode == "generate":
+        report = run_generate(args)
+    elif args.mode == "validate":
+        report = run_validate(args)
+    else:
+        report = run_rescreen(args)
+        Path("research/reports/cascade_shortlist_rescreen.json").write_text(
+            json.dumps(report, indent=2, sort_keys=True)
+        )
     print(json.dumps(report, indent=2, sort_keys=True))
 
 
