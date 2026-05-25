@@ -33,11 +33,25 @@ from research.tools.induction_predictor_foundation import (
     _ranking_metrics,
 )
 from research.tools.novelty_scorer import NoveltyScorer
-from research.tools.pls_partition_oracle import AXES, _axis_corpus
+from research.tools.pls_partition_oracle import (
+    _CANDIDATES,
+    AXES,
+    AxisCorpus,
+    _axis_corpus,
+    _oof_ab,
+    _temporal_ab,
+)
 from research.tools.spectral_path_features import (
     FEATURE_VERSION,
     SpectralPathExtractor,
 )
+
+_ORACLE_PARAMS = {
+    "n_components": 20,
+    "tree_depth": 4,
+    "min_leaf": 20,
+}  # oracle CLI defaults
+_SHRINK = 0.75
 
 logger = logging.getLogger(__name__)
 # confirmed novel STDP-attention winner, induction 0.894 (not a secret)
@@ -181,10 +195,87 @@ def _sub(a: Any, b: Any) -> Any:
     )
 
 
-def run(db_path: str, meta_db: str, with_winner: bool = False) -> Dict[str, Any]:
+def _subset_corpus(cp: AxisCorpus, keep: np.ndarray) -> AxisCorpus:
+    """Restrict a corpus to the rows in ``keep`` (those that also have spath features)."""
+    return AxisCorpus(
+        X=cp.X[keep],
+        names=cp.names,
+        fps=[fp for fp, k in zip(cp.fps, keep) if k],
+        y=cp.y[keep],
+        clusters=[c for c, k in zip(cp.clusters, keep) if k],
+    )
+
+
+def _augment_corpus(cp: AxisCorpus, Xsp: np.ndarray, sp_names: List[str]) -> AxisCorpus:
+    return AxisCorpus(
+        X=np.hstack([cp.X, Xsp]),
+        names=cp.names + sp_names,
+        fps=cp.fps,
+        y=cp.y,
+        clusters=cp.clusters,
+    )
+
+
+def _best(ab: Dict[str, Any]) -> Dict[str, Any]:
+    """Self-selected (by OOF ROC, like oracle.train) candidate + its OOF/temporal ROC pair."""
+    kind = max(_CANDIDATES, key=lambda k: ab["oof"][k]["roc"] or 0.0)
+    return {
+        "kind": kind,
+        "oof_roc": ab["oof"][kind]["roc"],
+        "temporal_roc": ab["temporal"][kind]["roc"],
+    }
+
+
+def _oracle_ab_axis(
+    db_path: str, meta_db: str, axis: str, thr: float
+) -> Dict[str, Any]:
+    """A/B base vs base⊕spath under the oracle's OWN heads + OOF self-selection (post-merge proxy)."""
+    ts = _fingerprint_timestamps(db_path)
+    cp_full = _axis_corpus(db_path, AXES[axis][0], ts)
+    Xsp, sp_names, keep = _spath_matrix(db_path, meta_db, cp_full.fps)
+    base = _subset_corpus(cp_full, keep)
+    aug = _augment_corpus(base, Xsp, sp_names)
+    out: Dict[str, Any] = {"axis": axis, "n": len(base.y), "threshold": thr}
+    for tag, cp in (("base", base), ("base+spath", aug)):
+        ab = {
+            "oof": _oof_ab(cp, thr, _SHRINK, 5, _ORACLE_PARAMS),
+            "temporal": _temporal_ab(cp, thr, _SHRINK, _ORACLE_PARAMS),
+        }
+        out[tag] = {
+            "n_features": cp.X.shape[1],
+            "by_kind": {
+                k: {"oof": ab["oof"][k]["roc"], "temporal": ab["temporal"][k]["roc"]}
+                for k in _CANDIDATES
+            },
+            "self_selected": _best(ab),
+        }
+    out["delta_selected_oof"] = _sub(
+        out["base+spath"]["self_selected"]["oof_roc"],
+        out["base"]["self_selected"]["oof_roc"],
+    )
+    out["delta_selected_temporal"] = _sub(
+        out["base+spath"]["self_selected"]["temporal_roc"],
+        out["base"]["self_selected"]["temporal_roc"],
+    )
+    return out
+
+
+def run(
+    db_path: str, meta_db: str, mode: str = "gbm", with_winner: bool = False
+) -> Dict[str, Any]:
+    if mode == "oracle":
+        return {
+            "spath_version": FEATURE_VERSION,
+            "mode": "oracle_ab",
+            "axes": {
+                axis: _oracle_ab_axis(db_path, meta_db, axis, thr)
+                for axis, (_, thr) in AXES.items()
+            },
+        }
     winner = _load_winner_nodes(db_path) if with_winner else None
     return {
         "spath_version": FEATURE_VERSION,
+        "mode": "gbm_concat",
         "axes": {
             axis: _eval_axis(db_path, meta_db, axis, thr, winner)
             for axis, (_, thr) in AXES.items()
@@ -198,13 +289,23 @@ def main() -> None:
     p.add_argument("--db", default=str(RUNS_DB))
     p.add_argument("--meta", default="research/meta_analysis.db")
     p.add_argument(
+        "--mode",
+        choices=["gbm", "oracle"],
+        default="gbm",
+        help="gbm: standalone GBM concat eval; oracle: A/B under the deployed oracle heads",
+    )
+    p.add_argument(
         "--with-winner",
         action="store_true",
         help="reconstruct the STDP winner via the probe pool to score its spath-novelty",
     )
     args = p.parse_args()
     print(
-        json.dumps(run(args.db, args.meta, args.with_winner), indent=2, sort_keys=True)
+        json.dumps(
+            run(args.db, args.meta, args.mode, args.with_winner),
+            indent=2,
+            sort_keys=True,
+        )
     )
 
 
