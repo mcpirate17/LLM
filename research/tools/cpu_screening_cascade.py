@@ -340,6 +340,7 @@ def run_rescreen(args: argparse.Namespace) -> Dict[str, Any]:
     check_fail: Counter = Counter()
     n_ctx = n_must = n_risk = n_any = 0
     failing: List[Dict[str, Any]] = []
+    clean: List[Dict[str, Any]] = []
     for r in rows:
         nodes = r["graph"]["nodes"]
         q = score_template_quality(nodes)
@@ -377,8 +378,13 @@ def run_rescreen(args: argparse.Namespace) -> Dict[str, Any]:
                         "failure_risk": risk,
                     }
                 )
+        else:
+            clean.append(r)
+    clean_path = Path(args.in_path).with_name(Path(args.in_path).stem + "_clean.jsonl")
+    clean_path.write_text("".join(json.dumps(r) + "\n" for r in clean))
     return {
         "in": args.in_path,
+        "clean_out": clean_path.as_posix(),
         "n_total": len(rows),
         "n_context_violation": n_ctx,
         "context_violation_kinds": dict(ctx_kinds.most_common(10)),
