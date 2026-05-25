@@ -26,7 +26,7 @@ from research.synthesis.op_roles import OpRole, get_role
 from research.tools.static_capability_gate import mixer_chain_depth, on_path_op_names
 
 _RULES_PATH = Path("research/data/learned_failure_rules/rules.json")
-_MODES = ("compile", "lookahead", "instability")
+_MODES = ("compile", "lookahead", "instability", "resource")
 
 
 @lru_cache(maxsize=1)
@@ -114,6 +114,8 @@ def score_template_quality(nodes: Any) -> Dict[str, Any]:
         "low_compile_risk": risk["compile"] < 0.25,
         "low_lookahead_risk": risk["lookahead"] < 0.20,
         "low_instability_risk": risk["instability"] < 0.20,
+        "low_resource_risk": risk["resource"]
+        < 0.20,  # OOM/cuda_fatal (wastes a full GPU run)
     }
     # MUST checks gate hard (score 0 if any fails); GOOD + risk checks are weighted.
     must = (

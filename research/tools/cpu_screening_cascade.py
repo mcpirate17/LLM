@@ -167,7 +167,8 @@ def _generate_pool(
         if not q["passes_must"]:  # mixer-on-path + norm + residual + no-double-gating
             stats["bad_template"] += 1
             continue
-        if q["failure_risk"]["compile"] >= 0.4 or q["failure_risk"]["lookahead"] >= 0.4:
+        fr = q["failure_risk"]
+        if fr["compile"] >= 0.4 or fr["lookahead"] >= 0.4 or fr["resource"] >= 0.4:
             stats["high_failure_risk"] += 1
             continue
         kept.append(Scored(fp, sorted(op_set), prof, q, gd))

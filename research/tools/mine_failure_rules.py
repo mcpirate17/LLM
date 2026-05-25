@@ -33,9 +33,17 @@ _MODES = {
     "compile": ("forward_error", "RuntimeError", "forward_pass_error"),
     "lookahead": ("causality_violation",),
     "instability": ("unstable_dynamics", "nan_forward", "inflight_grad_explosion"),
+    "resource": ("OutOfMemoryError", "cuda_fatal", "OutOfResources"),
 }
-# rate threshold above which an op is flagged "risky" for that mode (with >= min_support obs)
-_RISK_THRESHOLD = {"compile": 0.15, "lookahead": 0.10, "instability": 0.08}
+# rate threshold above which an op is flagged "risky" for that mode (with >= min_support obs).
+# NOTE: convergence/insufficient_learning are deliberately EXCLUDED — those are capability
+# (handled by the measured-mechanism score), not deterministic structural rules.
+_RISK_THRESHOLD = {
+    "compile": 0.15,
+    "lookahead": 0.10,
+    "instability": 0.08,
+    "resource": 0.08,
+}
 
 
 def mine(meta_db: str, min_support: int) -> Dict[str, Any]:
