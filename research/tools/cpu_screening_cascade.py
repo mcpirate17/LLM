@@ -37,6 +37,10 @@ import numpy as np
 
 from research.synthesis.grammar import GrammarConfig, generate_layer_graph
 from research.synthesis.op_roles import OpRole, get_role
+from research.tools.annotate_literature_attribution import (
+    DEFAULT_MAPPING,
+    classify_graph_family,
+)
 from research.tools.generate_novel_screened import (
     _graph_features,
     _historical_fingerprints,
@@ -66,6 +70,9 @@ class MechProfile:
     n_novel_mix: int
     mech_score: float
     novelty: float
+    lit_family: str  # closest published-architecture family (dominant mixer)
+    lit_model: str  # the published model name it resembles
+    lit_match_type: str  # exact | family | partial | novel
 
 
 class CpuMechanismScorer:
@@ -74,9 +81,21 @@ class CpuMechanismScorer:
     def __init__(self, runs_db: str = _RUNS_DB, meta_db: str = _META_DB) -> None:
         self.ext = GraphSemanticExtractor(runs_db, meta_db)
         self.novel: Set[str] = _novel_mixers(runs_db)
+        self.lit_families: Dict[str, Any] = json.loads(DEFAULT_MAPPING.read_text())[
+            "graph_families"
+        ]
 
     def profile(self, nodes: Dict[str, Any] | List[Any]) -> MechProfile:
         ops = on_path_op_names(nodes)
+        all_ops = {
+            str(n["op_name"])
+            for n in (nodes.values() if isinstance(nodes, dict) else nodes)
+            if not n.get("is_input")
+        }
+        fam = classify_graph_family(
+            all_ops
+        )  # same logic as literature_attribution pass
+        lit = self.lit_families.get(fam, {})
         mixers = [op for op in ops if get_role(op) is OpRole.MIX]
         mem = [_MEMORY_ORDINAL.get(self.ext.op_memory.get(m, ""), 0.0) for m in mixers]
         n_global = sum(1 for m in mixers if self.ext.op_receptive.get(m) == "global")
@@ -96,6 +115,9 @@ class CpuMechanismScorer:
             # routing-composition led (induction circuit is depth>=2) + per-stage quality
             mech_score=2.0 * depth + float(sum(mem)) + n_global + 0.5 * n_mix,
             novelty=float(n_novel + alg_div),
+            lit_family=fam,
+            lit_model=str(lit.get("external_model_name", "?")),
+            lit_match_type=str(lit.get("match_type", "?")),
         )
 
 
@@ -186,6 +208,9 @@ def run_generate(args: argparse.Namespace) -> Dict[str, Any]:
                         "mixer_depth": s.profile.mixer_depth,
                         "n_mixers_on_path": s.profile.n_mix,
                         "n_novel_mixers": s.profile.n_novel_mix,
+                        "lit_family": s.profile.lit_family,
+                        "lit_model": s.profile.lit_model,
+                        "lit_match_type": s.profile.lit_match_type,
                         "graph": s.graph_dict,
                     }
                 )
@@ -198,6 +223,12 @@ def run_generate(args: argparse.Namespace) -> Dict[str, Any]:
         "pool_kept": len(kept),
         "shortlist": len(shortlist),
         "out": out.as_posix(),
+        "shortlist_vs_published": dict(
+            Counter(s.profile.lit_match_type for s in shortlist)
+        ),
+        "shortlist_contains_novel_mixer": sum(
+            1 for s in shortlist if s.profile.n_novel_mix > 0
+        ),
         "top_by_mech": [
             {"fp": s.fingerprint, "mech": round(s.profile.mech_score, 2), "ops": s.ops}
             for s in sorted(kept, key=lambda s: -s.profile.mech_score)[:5]
