@@ -41,12 +41,17 @@ class LifecycleProjector:
         self._ensure_tables()
 
     def replay_once(self) -> ProjectorStatus:
-        checkpoint = self._load_checkpoint()
-        last_offset = checkpoint
+        last_offset: Optional[SpoolOffset] = None
         last_event_id: Optional[str] = None
         applied_count = 0
         degraded = False
         try:
+            # Load the checkpoint inside the try: a transient SQLite error here
+            # (e.g. "database is locked" while another writer holds events.db at
+            # startup) must degrade gracefully so the worker retries on its next
+            # tick, not propagate uncaught and abort projector priming.
+            checkpoint = self._load_checkpoint()
+            last_offset = checkpoint
             for record in self.spool.replay(after=checkpoint):
                 if (
                     record.event.event_type not in LIFECYCLE_EVENT_TYPES

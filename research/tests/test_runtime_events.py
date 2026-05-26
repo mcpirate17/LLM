@@ -216,6 +216,26 @@ def test_lifecycle_projector_is_idempotent_on_replay(tmp_path):
     assert count == 1
 
 
+def test_lifecycle_projector_degrades_on_locked_checkpoint_load(tmp_path):
+    """A transient SQLite error while loading the checkpoint must degrade
+    gracefully (so the worker retries on its next tick) rather than propagate
+    and abort projector priming. Regression for the 2026-05-25 priming crash:
+    _load_checkpoint() used to run before the try/except in replay_once()."""
+    spool = NdjsonEventSpool(tmp_path / "runtime_events")
+    conn = _make_projector_db()
+    projector = LifecycleProjector(conn, spool=spool)
+
+    def _boom() -> None:
+        raise sqlite3.OperationalError("database is locked")
+
+    projector._load_checkpoint = _boom  # type: ignore[method-assign]
+
+    status = projector.replay_once()  # must not raise
+
+    assert status.degraded is True
+    assert status.applied_count == 0
+
+
 def test_lifecycle_projector_stores_event_bookkeeping_in_state_db(tmp_path):
     db_path = tmp_path / "status.db"
     nb = LabNotebook(db_path, use_native=False)
