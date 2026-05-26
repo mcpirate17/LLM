@@ -744,9 +744,18 @@ class _ProgramsMixin(
         ("binding_intermediate_auc", "cap"),
     )
 
+    # Reasons that mark an independent run of the SAME graph (a legitimate
+    # replication that belongs in the fingerprint average). Counterfactual /
+    # knockout reasons (ablation_counterfactual, proper_component_knockout_s1)
+    # are deliberately EXCLUDED — they evaluate a MODIFIED graph, so folding
+    # them into the parent fingerprint's stats would be wrong.
+    # 'full_s1_on_cheap_probe_winner' is the cascade funnel re-running full S1
+    # on the exact cheap-probe-winner graph (same fingerprint) — a replication,
+    # so it must be governed in (tools/s1_top_shortlist.py:RERUN_REASON).
     _FINGERPRINT_AGGREGATE_REASON_FILTER = (
         "COALESCE(intentional_rerun_reason, '') IN "
-        "('', 'exact_graph_replay', 'exact_graph_replay_independent_sample')"
+        "('', 'exact_graph_replay', 'exact_graph_replay_independent_sample', "
+        "'full_s1_on_cheap_probe_winner')"
     )
 
     # Metrics that need a per-row provenance filter to be safe to
