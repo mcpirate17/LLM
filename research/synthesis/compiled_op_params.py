@@ -178,6 +178,12 @@ class CompiledOpParamInitMixin:
             "softmax_attention": lambda: self._init_attention_stack(
                 "softmax_attention", d_in
             ),
+            "sparsemax_attention": lambda: self._init_attention_stack(
+                "sparsemax_attention", d_in
+            ),
+            "entmax_attention": lambda: self._init_attention_stack(
+                "entmax_attention", d_in
+            ),
             "linear_attention": lambda: self._init_attention_stack(
                 "linear_attention", d_in
             ),
@@ -186,6 +192,7 @@ class CompiledOpParamInitMixin:
             ),
             "diff_attention": lambda: self._init_diff_attention(d_in),
             "gated_delta": lambda: self._init_gated_delta(d_in),
+            "dplr_gated_delta": lambda: self._init_dplr_gated_delta(d_in),
             "state_space": lambda: self._init_state_space(d_in),
             "conv_only": lambda: self._init_conv_only(d_in),
             "stdp_attention": lambda: setattr(
@@ -251,7 +258,12 @@ class CompiledOpParamInitMixin:
             "gated_linear_attention": lambda: self._init_gated_linear_attention(d_in),
             "long_conv_hyena": lambda: self._init_long_conv_hyena(d_in),
             "associative_memory": lambda: self._init_associative_memory(d_in),
+            "role_slot_attention": lambda: self._init_role_slot_attention(config, d_in),
             "mixture_of_recursions": lambda: self._init_mixture_of_recursions(d_in),
+            "token_hodge_mixer": lambda: self._init_token_hodge_mixer(d_in),
+            "wavelet_packet_mix": lambda: self._init_wavelet_packet_mix(d_in),
+            "retention_mix": lambda: self._init_retention_mix(d_in),
+            "product_key_memory": lambda: self._init_product_key_memory(config, d_in),
         }
 
         handler = dispatch.get(op.name)
@@ -271,7 +283,12 @@ class CompiledOpParamInitMixin:
         head_dim = d_in // n_heads
         self.n_heads = n_heads
         self.head_dim = head_dim
-        if op_name in ("softmax_attention", "graph_attention"):
+        if op_name in (
+            "softmax_attention",
+            "graph_attention",
+            "sparsemax_attention",
+            "entmax_attention",
+        ):
             self.attn_scale = head_dim**-0.5
         self.q_proj = nn.Linear(d_in, n_heads * head_dim, bias=False)
         self.k_proj = nn.Linear(d_in, n_heads * head_dim, bias=False)
@@ -299,6 +316,8 @@ class CompiledOpParamInitMixin:
             self.bias = nn.Parameter(torch.zeros(d_in))
         elif op.name == "hyp_linear":
             self.weight = self._make_param((d_in, d_in), std=0.02)
+        elif op.name == "projective_linear":
+            self.weight = self._make_param(((d_in + 1) * (d_in + 1),), std=0.02)
         elif op.name == "tropical_router":
             n_exp = int(config.get("n_experts", 8))
             self.centroids = nn.Parameter(torch.randn(n_exp, d_in) * 0.02)
@@ -488,6 +507,29 @@ class CompiledOpParamInitMixin:
         ):
             proj.weight.data.normal_(std=0.02)
 
+    def _init_dplr_gated_delta(self, d_in: int) -> None:
+        rank = max(1, d_in // 8)
+        self.q_proj = nn.Linear(d_in, d_in, bias=False)
+        self.k_proj = nn.Linear(d_in, d_in, bias=False)
+        self.v_proj = nn.Linear(d_in, d_in, bias=False)
+        self.o_proj = nn.Linear(d_in, d_in, bias=False)
+        self.diag_proj = nn.Linear(d_in, d_in, bias=False)
+        self.beta_proj = nn.Linear(d_in, d_in, bias=False)
+        self.lr_in = nn.Linear(d_in, rank, bias=False)
+        self.lr_out = nn.Linear(rank, d_in, bias=False)
+        self.dplr_rank = rank
+        for proj in (
+            self.q_proj,
+            self.k_proj,
+            self.v_proj,
+            self.o_proj,
+            self.diag_proj,
+            self.beta_proj,
+            self.lr_in,
+            self.lr_out,
+        ):
+            proj.weight.data.normal_(std=0.02)
+
     def _init_difficulty_routed_attention(self, d_in: int) -> None:
         """Difficulty-routed: difficulty scorer + QKV for hard tokens + cheap path for easy."""
         self.difficulty_proj = nn.Linear(d_in, 1, bias=True)
@@ -552,6 +594,20 @@ class CompiledOpParamInitMixin:
         for p in (self.query_proj, self.memory_proj, self.value_proj, self.o_proj):
             p.weight.data.normal_(std=0.02)
 
+    def _init_role_slot_attention(self, config: Dict, d_in: int) -> None:
+        """Persistent Role-Slot Attention params.
+
+        Learned global latent Slots (Keys/Values) are queried by input tokens.
+        """
+        num_slots = int(config.get("num_slots", 16))
+        self.num_slots = num_slots
+        self.q_proj = nn.Linear(d_in, d_in, bias=False)
+        self.slot_keys = nn.Parameter(torch.randn(num_slots, d_in) * 0.02)
+        self.slot_values = nn.Parameter(torch.randn(num_slots, d_in) * 0.02)
+        self.o_proj = nn.Linear(d_in, d_in, bias=False)
+        self.q_proj.weight.data.normal_(std=0.02)
+        self.o_proj.weight.data.normal_(std=0.02)
+
     def _init_mixture_of_recursions(self, d_in: int) -> None:
         """MoR: shared transform block + per-token depth router."""
         self.block_norm = nn.LayerNorm(d_in)
@@ -563,6 +619,49 @@ class CompiledOpParamInitMixin:
         self.block_ffn_down.weight.data.normal_(std=0.02)
         self.block_gate.weight.data.normal_(std=0.02)
         nn.init.zeros_(self.depth_router.bias)
+
+    def _init_token_hodge_mixer(self, d_in: int) -> None:
+        self.edge_proj = nn.Linear(d_in, d_in, bias=False)
+        self.face_proj = nn.Linear(d_in, d_in, bias=False)
+        self.gate_proj = nn.Linear(d_in, d_in, bias=True)
+        self.out_proj = nn.Linear(d_in, d_in, bias=False)
+        for proj in (self.edge_proj, self.face_proj, self.gate_proj, self.out_proj):
+            proj.weight.data.normal_(std=0.02)
+        nn.init.constant_(self.gate_proj.bias, -1.0)
+
+    def _init_wavelet_packet_mix(self, d_in: int) -> None:
+        self.low_proj = nn.Linear(d_in, d_in, bias=False)
+        self.high_proj = nn.Linear(d_in, d_in, bias=False)
+        self.gate_proj = nn.Linear(d_in, d_in, bias=False)
+        self.out_proj = nn.Linear(d_in, d_in, bias=False)
+        self.wavelet_low_scale = nn.Parameter(torch.ones(d_in))
+        self.wavelet_high_scale = nn.Parameter(torch.zeros(d_in))
+        for proj in (self.low_proj, self.high_proj, self.gate_proj, self.out_proj):
+            proj.weight.data.normal_(std=0.02)
+
+    def _init_retention_mix(self, d_in: int) -> None:
+        self.q_proj = nn.Linear(d_in, d_in, bias=False)
+        self.k_proj = nn.Linear(d_in, d_in, bias=False)
+        self.v_proj = nn.Linear(d_in, d_in, bias=False)
+        self.o_proj = nn.Linear(d_in, d_in, bias=False)
+        self.retention_log_decay = nn.Parameter(torch.linspace(-3.0, -0.1, d_in))
+        self.retention_phase = nn.Parameter(torch.zeros(d_in))
+        for proj in (self.q_proj, self.k_proj, self.v_proj, self.o_proj):
+            proj.weight.data.normal_(std=0.02)
+
+    def _init_product_key_memory(self, config: Dict, d_in: int) -> None:
+        num_keys = max(2, min(64, int(config.get("num_keys", 32))))
+        self.pkm_num_keys = num_keys
+        self.pkm_top_k = max(1, min(8, int(config.get("top_k", 4))))
+        left_dim = max(1, d_in // 2)
+        right_dim = max(1, d_in - left_dim)
+        self.pkm_left_dim = left_dim
+        self.pkm_right_dim = right_dim
+        self.key_left = nn.Parameter(torch.randn(num_keys, left_dim) * 0.02)
+        self.key_right = nn.Parameter(torch.randn(num_keys, right_dim) * 0.02)
+        self.memory_values = nn.Parameter(torch.randn(num_keys * num_keys, d_in) * 0.02)
+        self.o_proj = nn.Linear(d_in, d_in, bias=False)
+        self.o_proj.weight.data.normal_(std=0.02)
 
     def _init_gated_lane_blend(self, config: Dict, d_in: int) -> None:
         n_lanes = int(config.get("n_lanes", 3))

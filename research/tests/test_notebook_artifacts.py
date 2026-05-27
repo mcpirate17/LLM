@@ -217,6 +217,52 @@ def test_math_family_coverage_skips_missing_graph_artifact(tmp_path):
     nb.close()
 
 
+def test_experiment_trends_skip_missing_results_artifact(tmp_path):
+    db_path = tmp_path / "lab_notebook.db"
+    nb = LabNotebook(db_path, use_native=False)
+    exp_id = nb.start_experiment(
+        experiment_type="screening",
+        config={"source": "test"},
+        hypothesis="missing results artifact should not break trends",
+        require_preregistration=False,
+    )
+    results = {
+        "total": 1,
+        "stage0_passed": 1,
+        "stage05_passed": 1,
+        "stage1_passed": 1,
+        "perf_report": {
+            "trace_avg_ms": {"forward_pass": 2.0, "backward_pass": 3.0},
+            "avg_throughput_tok_s": 12.0,
+        },
+    }
+    nb.complete_experiment(exp_id, results, "seeded for artifact regression", "focused")
+
+    pointer_json = nb._store_artifact_payload(
+        table_name="experiments",
+        row_pk=exp_id,
+        column_name="results_json",
+        payload=nb._compress(results),
+        content_type="application/octet-stream",
+    )
+    nb.conn.execute(
+        "UPDATE experiments SET results_json = ? WHERE experiment_id = ?",
+        (pointer_json, exp_id),
+    )
+    nb.conn.commit()
+    pointer = parse_artifact_pointer(pointer_json)
+    assert pointer is not None
+    (NotebookArtifactStore(db_path).root / pointer["path"]).unlink()
+
+    trends = nb.get_experiment_trends()
+
+    trend = next(item for item in trends if item["experiment_id"] == exp_id)
+    assert trend["n_programs_generated"] == 1
+    assert trend["n_stage1_passed"] == 1
+    assert "avg_step_time_ms" not in trend
+    nb.close()
+
+
 def test_healer_task_payload_round_trips_from_artifact(tmp_path, monkeypatch):
     monkeypatch.setenv("ARIA_NOTEBOOK_ARTIFACT_MIN_BYTES", "32")
     nb = LabNotebook(tmp_path / "lab_notebook.db", use_native=False)

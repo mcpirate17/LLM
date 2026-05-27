@@ -17,6 +17,7 @@ ROUTING_CAPABLE_TEMPLATE_NAMES: FrozenSet[str] = frozenset(
         "attn_spiking_hybrid",
         "attn_three_way_split",
         "cascaded_early_exit",
+        "cawn_mixer_block",
         "codex_ssm_mla_gated_block",
         "compute_budget_block",
         "conditional_compute",

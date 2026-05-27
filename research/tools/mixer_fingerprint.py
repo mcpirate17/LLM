@@ -48,7 +48,10 @@ import torch
 from torch import nn
 
 from component_fab.harness.nano_bind_probe import nano_bind_gate
-from component_fab.harness.nano_induction_probe import nano_induction_gate
+from component_fab.harness.nano_induction_probe import (
+    nano_induction_gate,
+    nano_induction_nearest,
+)
 from component_fab.harness.standard_block import LaneTestBlock
 from research.defaults import VOCAB_SIZE
 from research.tools.scaling_blimp_study import (
@@ -58,7 +61,6 @@ from research.tools.scaling_blimp_study import (
     _load_wikitext_tokens,
     _RandomWindowBatcher,
 )
-
 
 NANO_SIZING = {"dim": 96, "n_blocks": 12}  # ~10.6M params with vocab=100K
 DEFAULT_CHECKPOINT_STEPS = (500, 1_000, 5_000, 10_000)
@@ -368,6 +370,8 @@ def _cheap_evals(
     amp: bool,
     amp_dtype: torch.dtype,
     probe_dim: int = 32,
+    model_dim: int | None = None,
+    run_nano_induction_nearest: bool = True,
 ) -> dict[str, Any]:
     """Probes under ~10s wall time each (run at every checkpoint)."""
     out: dict[str, Any] = {}
@@ -423,6 +427,29 @@ def _cheap_evals(
         nano_induction_gate(stacked, dim=dim, n_train_steps=150, seed=seed)
     )
     out["_t_ni05"] = round(time.monotonic() - t, 2)
+
+    if run_nano_induction_nearest:
+        t = time.monotonic()
+        nearest_dim = int(model_dim or probe_dim)
+        try:
+            nearest_stack = nn.Sequential(
+                LaneTestBlock(factory(nearest_dim), nearest_dim),
+                LaneTestBlock(factory(nearest_dim), nearest_dim),
+            )
+            out["nano_induction_nearest"] = _dataclass_to_metrics(
+                nano_induction_nearest(
+                    nearest_stack,
+                    dim=nearest_dim,
+                    n_train_steps=120,
+                    seed=seed,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            out["nano_induction_nearest"] = {
+                "status": "error",
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+        out["_t_nano_induction_nearest"] = round(time.monotonic() - t, 2)
 
     return out
 
@@ -836,9 +863,9 @@ def _record_history(
             "step": global_step,
             "local_step": step,
             "loss_t": loss.detach(),
-            "grad_norm_t": grad_norm.detach()
-            if torch.is_tensor(grad_norm)
-            else grad_norm,
+            "grad_norm_t": (
+                grad_norm.detach() if torch.is_tensor(grad_norm) else grad_norm
+            ),
             "lr": lr,
             "seq_len": int(curr_seq_len),
         }
@@ -1265,6 +1292,7 @@ def _make_checkpoint_handler(
     state: dict[str, Any],
     amp: bool,
     amp_dtype: torch.dtype,
+    model_dim: int,
 ) -> Callable[..., None]:
     def on_checkpoint(step: int, *, force_final: bool = False) -> None:
         model.eval()
@@ -1277,6 +1305,7 @@ def _make_checkpoint_handler(
             seed=seed,
             amp=amp,
             amp_dtype=amp_dtype,
+            model_dim=model_dim,
         )
         row: dict[str, Any] = {
             "event": "checkpoint",
@@ -1490,6 +1519,7 @@ def _make_callbacks(
     plateau_patience,
     plateau_min_delta,
     plateau_min_steps,
+    model_dim,
 ):
     on_checkpoint = _make_checkpoint_handler(
         model=model,
@@ -1502,6 +1532,7 @@ def _make_callbacks(
         state=state,
         amp=bool(amp),
         amp_dtype=amp_dtype,
+        model_dim=int(model_dim),
     )
     on_save = (
         _make_save_handler(
@@ -1682,6 +1713,7 @@ def run_fingerprint(
         plateau_patience=plateau_patience,
         plateau_min_delta=plateau_min_delta,
         plateau_min_steps=plateau_min_steps,
+        model_dim=dim,
     )
     state: dict[str, Any] = {"last_evals": {}}
     on_checkpoint, on_save, on_mid_tier, plateau_tracker = _make_callbacks(

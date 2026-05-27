@@ -382,12 +382,21 @@ def _op_depth_gated_transform(module, inputs, config):
 
 
 def _op_adjacent_token_merge(module, inputs, config):
-    """Causal token compression: merge even-indexed tokens into their predecessor.
+    """Causal token compression: merge each dropped token FORWARD into its
+    successor (token p merges INTO p+1), then restore the original seq_len via
+    a backward (nearest-kept-≤-i) hold.
 
-    Strictly causal: token p+1 absorbs information from token p (backward
-    merge), so the merged value at position p+1 depends only on tokens ≤ p+1.
-    The merge pattern is deterministic (even-stride) to avoid any dependency
-    on future token content.
+    Causality invariant: output[i] depends only on inputs at positions ≤ i.
+    Each surviving token absorbs only *earlier* dropped tokens, and the restore
+    maps every output position to the most recent kept token at-or-before it.
+    Enforced by research/tests/test_adjacent_token_merge_causality.py.
+
+    2026-05-23 fix: the prior implementation merged token p INTO p-1 (backward),
+    making output[p-1] depend on x[p] — a one-step next-token leak. Because the
+    binding_range/screening/curriculum probes are causal next-token tasks
+    (scored at position i against input[i+1]), that leak handed them the label
+    and inflated the binding scores of every model containing this op. See
+    [[project_adjacent_token_merge_leak]].
     """
     x = inputs[0]
     B, S, D = x.shape
@@ -407,10 +416,9 @@ def _op_adjacent_token_merge(module, inputs, config):
     if use_c_kernel:
         y, _restore_map = aria_core.token_merge_simple_f32(x, n_keep)
     else:
-        # Deterministic causal stride merge: drop every other token starting
-        # from position 1 (merge token p into token p-1, backward-looking).
-        # This is strictly causal because each merged token only receives
-        # information from its immediate predecessor.
+        # Deterministic causal stride merge: drop every `stride`-th token and
+        # fold it FORWARD into its successor (token p merges INTO p+1). This is
+        # causal because each surviving token only absorbs *earlier* tokens.
         stride = max(2, S // n_keep)
         # Positions to drop: 1, 1+stride, 1+2*stride, ... (up to n_merge)
         drop_positions = torch.arange(1, S, stride, device=x.device)[:n_merge]
@@ -420,10 +428,12 @@ def _op_adjacent_token_merge(module, inputs, config):
             torch.arange(S, device=x.device).unsqueeze(0).expand(B, -1).clone()
         )
 
-        # Backward merge: token at drop_pos merges INTO drop_pos-1 (vectorized)
-        valid_drops = drop_positions[drop_positions > 0]
+        # Forward merge: token at drop_pos merges INTO drop_pos+1 (vectorized).
+        # Exclude the final position (it has no successor to fold into) so it
+        # stays kept rather than leaking backward into its predecessor.
+        valid_drops = drop_positions[(drop_positions > 0) & (drop_positions < S - 1)]
         merged[:, valid_drops] = True
-        merge_targets[:, valid_drops] = valid_drops - 1
+        merge_targets[:, valid_drops] = valid_drops + 1
 
         # Build merged output: average merged pairs
         target_idx = merge_targets.unsqueeze(-1).expand(-1, -1, D)

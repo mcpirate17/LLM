@@ -152,6 +152,7 @@ SEQUENCE_MIXING_OPS: FrozenSet[str] = CONTENT_ADDRESSED_OPS | frozenset(
         # are SSM-class (long-range mixing without content addressing)
         "long_conv_hyena",
         "mixture_of_recursions",
+        "cawn_mixer",
     }
 )
 

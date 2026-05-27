@@ -86,6 +86,7 @@ _ALL_PROBES = (
     "fingerprint",
     "induction_intermediate",
     "binding_intermediate",
+    "nano_induction_nearest",
 )
 
 
@@ -251,7 +252,8 @@ def query_fingerprint_file_candidates(
         batch = fingerprints[start : start + chunk]
         placeholders = ",".join("?" for _ in batch)
         rows = nb.conn.execute(
-            f"""
+            (
+                f"""
             SELECT pr.result_id, pr.graph_fingerprint, pr.graph_json,
                    l.entry_id, l.tier, l.composite_score, l.is_reference,
                    l.model_source,
@@ -260,8 +262,8 @@ def query_fingerprint_file_candidates(
             LEFT JOIN leaderboard l ON pr.result_id = l.result_id
             WHERE pr.result_id IN ({placeholders})
             """
-            if null_column
-            else f"""
+                if null_column
+                else f"""
             SELECT pr.result_id, pr.graph_fingerprint, pr.graph_json,
                    l.entry_id, l.tier, l.composite_score, l.is_reference,
                    l.model_source,
@@ -269,7 +271,8 @@ def query_fingerprint_file_candidates(
             FROM program_results_compat pr
             LEFT JOIN leaderboard l ON pr.result_id = l.result_id
             WHERE pr.result_id IN ({placeholders})
-            """,
+            """
+            ),
             tuple(r for r, _ in batch),
         ).fetchall()
         for r in rows:
@@ -641,6 +644,51 @@ def run_binding_intermediate_probe(model: nn.Module, device: str) -> Dict[str, A
     }
 
 
+class _ContinuousFingerprintBody(nn.Module):
+    def __init__(self, model: nn.Module):
+        super().__init__()
+        self.model = model
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if hasattr(self.model, "_fingerprint_forward_from_embed"):
+            return self.model._fingerprint_forward_from_embed(x)
+        return self.model(x)
+
+
+def run_nano_induction_nearest_probe(
+    graph_json_str: str,
+    device: str,
+) -> Dict[str, Any]:
+    """Cheap structural nearest-induction probe on the graph body."""
+    from component_fab.harness.nano_induction_probe import nano_induction_nearest
+    from research.synthesis.compiler import compile_model as _compile_model
+    from research.synthesis.serializer import graph_from_json as _graph_from_json
+
+    graph = _graph_from_json(graph_json_str)
+    dim = int(getattr(graph, "model_dim", 256) or 256)
+    model = _compile_model([graph], vocab_size=256, max_seq_len=64).to(device).eval()
+    result = nano_induction_nearest(
+        _ContinuousFingerprintBody(model),
+        dim=dim,
+        n_train_steps=120,
+    )
+    ok = str(result.status or "") == "ok"
+    return {
+        "nano_induction_nearest_max_accuracy": (result.max_accuracy if ok else None),
+        "nano_induction_nearest_final_accuracy": (
+            result.final_accuracy if ok else None
+        ),
+        "nano_induction_nearest_status": result.status,
+        "nano_induction_nearest_elapsed_ms": result.elapsed_ms,
+        "nano_induction_nearest_error": result.error,
+        "nano_induction_nearest_accuracies_json": json.dumps(
+            list(result.accuracies), separators=(",", ":")
+        ),
+        "nano_induction_nearest_train_steps": result.train_steps,
+        "nano_induction_nearest_protocol_version": result.protocol_version,
+    }
+
+
 def run_triage_probe(
     model: nn.Module,
     graph: Any,
@@ -844,6 +892,7 @@ _PROBE_NULL_COLUMN: Dict[str, str] = {
     "fingerprint": "fp_cka_vs_transformer",
     "induction_intermediate": "induction_intermediate_auc",
     "binding_intermediate": "binding_intermediate_auc",
+    "nano_induction_nearest": "nano_induction_nearest_status",
 }
 
 # Graph-deterministic probes: the result depends only on the graph, so rows
@@ -864,6 +913,16 @@ _FP_REUSABLE_PROBE_COLS: Dict[str, List[str]] = {
         "binding_intermediate_status",
         "binding_intermediate_elapsed_ms",
         "binding_intermediate_protocol_version",
+    ],
+    "nano_induction_nearest": [
+        "nano_induction_nearest_max_accuracy",
+        "nano_induction_nearest_final_accuracy",
+        "nano_induction_nearest_status",
+        "nano_induction_nearest_elapsed_ms",
+        "nano_induction_nearest_error",
+        "nano_induction_nearest_accuracies_json",
+        "nano_induction_nearest_train_steps",
+        "nano_induction_nearest_protocol_version",
     ],
 }
 
@@ -1227,9 +1286,15 @@ def run_backfill(
                         f"  [{fp}] {cand.tier} score={new_score:.1f}{delta_str}{reused_str}"
                     )
 
-            except (RuntimeError, KeyError, ValueError, TypeError) as e:
+            except Exception as e:
+                # Per-candidate isolation: in a long (100s of models) batch a
+                # single un-reconstructable graph or un-compilable kernel
+                # (e.g. triton CompilationError, which is NOT a RuntimeError)
+                # must not abort the whole run. Log, count, free GPU, continue.
+                # KeyboardInterrupt/SystemExit are not Exception subclasses and
+                # still propagate to the outer handler.
                 failed += 1
-                print(f"  [{fp}] error: {e}")
+                print(f"  [{fp}] error: {type(e).__name__}: {e}")
                 clear_gpu(device)
 
             if (i + 1) % 10 == 0:
@@ -1312,6 +1377,8 @@ def _run_single_probe(
         return run_induction_intermediate_probe(model, device)
     if name == "binding_intermediate":
         return run_binding_intermediate_probe(model, device)
+    if name == "nano_induction_nearest":
+        return run_nano_induction_nearest_probe(cand.graph_json, device)
     if name == "fingerprint":
         return run_fingerprint_probe(
             cand.result_id,

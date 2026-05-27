@@ -232,6 +232,40 @@ def _op_gated_delta(module, inputs, _):
     return _safe_linear(out, module.o_proj.weight, module.o_proj.bias)
 
 
+def _op_dplr_gated_delta(module, inputs, _):
+    """Diagonal-plus-low-rank gated delta recurrence."""
+    x = inputs[0]
+    if not hasattr(module, "diag_proj"):
+        return x
+    B, S, D = x.shape
+    q = _safe_linear(x, module.q_proj.weight, module.q_proj.bias)
+    k = _safe_linear(x, module.k_proj.weight, module.k_proj.bias)
+    v = _safe_linear(x, module.v_proj.weight, module.v_proj.bias)
+    diag = torch.sigmoid(
+        _safe_linear(x, module.diag_proj.weight, module.diag_proj.bias)
+    )
+    beta = torch.sigmoid(
+        _safe_linear(x, module.beta_proj.weight, module.beta_proj.bias)
+    )
+    low_rank = _safe_linear(
+        torch.tanh(_safe_linear(x, module.lr_in.weight, module.lr_in.bias)),
+        module.lr_out.weight,
+        module.lr_out.bias,
+    )
+
+    state = torch.zeros(B, D, D, device=x.device, dtype=x.dtype)
+    outputs = []
+    scale = D**-0.5
+    for t in range(S):
+        v_t = v[:, t] + low_rank[:, t]
+        write = v_t.unsqueeze(-1) * k[:, t].unsqueeze(-2)
+        decay = diag[:, t].unsqueeze(-1)
+        state = decay * state + beta[:, t].unsqueeze(-1) * write
+        outputs.append(torch.bmm(q[:, t].unsqueeze(1), state).squeeze(1) * scale)
+    out = torch.stack(outputs, dim=1)
+    return _safe_linear(out, module.o_proj.weight, module.o_proj.bias)
+
+
 def _op_rwkv_time_mixing(module, inputs, _):
     if not hasattr(module, "W_k"):
         return inputs[0]
@@ -577,6 +611,99 @@ def _op_mixture_of_recursions(module, inputs, _):
     return accumulated
 
 
+def _op_token_hodge_mixer(module, inputs, _):
+    """Causal finite-incidence token mixer over edges and local triangles."""
+    x = inputs[0]
+    if not hasattr(module, "edge_proj"):
+        return x
+    prev = F.pad(x[:, :-1], (0, 0, 1, 0))
+    edge = x - prev
+    edge_flow = module.edge_proj(edge)
+    prev_edge_flow = F.pad(edge_flow[:, :-1], (0, 0, 1, 0))
+    divergence = edge_flow - prev_edge_flow
+
+    prev_edge = F.pad(edge[:, :-1], (0, 0, 1, 0))
+    triangle_boundary = module.face_proj(edge - prev_edge)
+    causal_face_memory = triangle_boundary.cumsum(dim=1) / (
+        torch.arange(1, x.shape[1] + 1, device=x.device, dtype=x.dtype).view(1, -1, 1)
+    )
+    gate = torch.sigmoid(module.gate_proj(x))
+    mixed = x + gate * (divergence + causal_face_memory)
+    return module.out_proj(mixed)
+
+
+def _op_wavelet_packet_mix(module, inputs, config):
+    """Causal Haar wavelet-packet mixer with learned low/high channel recombination."""
+    x = inputs[0]
+    if not hasattr(module, "low_proj"):
+        return x
+    levels = 2
+    if isinstance(config, dict):
+        levels = max(1, min(4, int(config.get("levels", levels))))
+    low = x
+    high_accum = torch.zeros_like(x)
+    inv_sqrt2 = 2.0**-0.5
+    for _ in range(levels):
+        prev = F.pad(low[:, :-1], (0, 0, 1, 0))
+        next_low = (low + prev) * inv_sqrt2
+        high = (low - prev) * inv_sqrt2
+        high_accum = high_accum + high
+        low = next_low
+    gate = torch.sigmoid(module.gate_proj(x))
+    mixed = (
+        module.low_proj(low) * module.wavelet_low_scale
+        + module.high_proj(high_accum / float(levels)) * module.wavelet_high_scale
+    )
+    return module.out_proj(gate * mixed + (1.0 - gate) * x)
+
+
+def _op_retention_mix(module, inputs, _):
+    """RetNet-style causal exponential retention in channel state form."""
+    x = inputs[0]
+    if not hasattr(module, "retention_log_decay"):
+        return x
+    B, S, D = x.shape
+    q = module.q_proj(x)
+    k = module.k_proj(x)
+    v = module.v_proj(x)
+    decay = torch.exp(-F.softplus(module.retention_log_decay)).to(
+        device=x.device, dtype=x.dtype
+    )
+    phase = torch.cos(module.retention_phase).to(device=x.device, dtype=x.dtype)
+    state = torch.zeros(B, D, device=x.device, dtype=x.dtype)
+    norm = torch.zeros(B, D, device=x.device, dtype=x.dtype)
+    outputs = []
+    for t in range(S):
+        kv = k[:, t] * v[:, t]
+        state = decay * state + kv
+        norm = decay * norm + k[:, t].abs()
+        outputs.append((q[:, t] * state * phase) / norm.clamp(min=1e-6))
+    return module.o_proj(torch.stack(outputs, dim=1))
+
+
+def _op_product_key_memory(module, inputs, _):
+    """Factorized product-key memory lookup with sparse top-k value retrieval."""
+    x = inputs[0]
+    if not hasattr(module, "key_left"):
+        return x
+    B, S, D = x.shape
+    left = x[..., : module.pkm_left_dim]
+    right = x[..., module.pkm_left_dim : module.pkm_left_dim + module.pkm_right_dim]
+    if right.shape[-1] < module.pkm_right_dim:
+        right = F.pad(right, (0, module.pkm_right_dim - right.shape[-1]))
+    left_scores = torch.matmul(left, module.key_left.t())
+    right_scores = torch.matmul(right, module.key_right.t())
+    pair_scores = (left_scores.unsqueeze(-1) + right_scores.unsqueeze(-2)).reshape(
+        B, S, -1
+    )
+    k_top = min(module.pkm_top_k, pair_scores.shape[-1])
+    top_scores, top_idx = torch.topk(pair_scores, k=k_top, dim=-1)
+    weights = torch.softmax(top_scores, dim=-1)
+    gathered = module.memory_values[top_idx.reshape(-1)].reshape(B, S, k_top, D)
+    retrieved = (weights.unsqueeze(-1) * gathered).sum(dim=-2)
+    return module.o_proj(retrieved)
+
+
 OP_IMPLS: Dict[str, Callable] = {
     "selective_scan": _op_selective_scan,
     "conv1d_seq": _op_conv1d_seq,
@@ -585,6 +712,7 @@ OP_IMPLS: Dict[str, Callable] = {
     "state_space": _op_state_space,
     "conv_only": _op_conv_only,
     "gated_delta": _op_gated_delta,
+    "dplr_gated_delta": _op_dplr_gated_delta,
     "rwkv_time_mixing": _op_rwkv_time_mixing,
     "difficulty_routed_attention": _op_difficulty_routed_attention,
     "strided_attention": _op_strided_attention,
@@ -593,4 +721,8 @@ OP_IMPLS: Dict[str, Callable] = {
     "long_conv_hyena": _op_long_conv_hyena,
     "associative_memory": _op_associative_memory,
     "mixture_of_recursions": _op_mixture_of_recursions,
+    "token_hodge_mixer": _op_token_hodge_mixer,
+    "wavelet_packet_mix": _op_wavelet_packet_mix,
+    "retention_mix": _op_retention_mix,
+    "product_key_memory": _op_product_key_memory,
 }

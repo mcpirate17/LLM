@@ -296,6 +296,73 @@ def test_discoveries_search_uses_leaderboard_v2_rollup_for_parent(tmp_path):
     assert entry["binding_intermediate_protocol_version"] == "binding_intermediate_test"
 
 
+def test_discoveries_search_dedupes_confirmed_s1_sibling_over_backfill(tmp_path):
+    db_path = str(tmp_path / "discoveries_confirmed_s1_dedupe.db")
+    nb = LabNotebook(db_path)
+    backfill_exp = nb.start_experiment("backfill", {})
+    backfill_rid = nb.record_program_result(
+        experiment_id=backfill_exp,
+        graph_fingerprint="fp-confirmed-s1-dedupe",
+        graph_json="{}",
+        result_cohort="backfill",
+        trust_label="backfill_observation",
+        comparability_label="reconstructed_init_variant",
+        **_stage1_kwargs(loss_ratio=0.83, novelty_score=0.4),
+    )
+    nb.flush_writes()
+    nb.upsert_leaderboard(
+        result_id=backfill_rid,
+        model_source="graph_synthesis",
+        screening_loss_ratio=0.83,
+        screening_novelty=0.4,
+        tier="screening",
+        result_cohort="backfill",
+        trust_label="backfill_observation",
+        comparability_label="reconstructed_init_variant",
+    )
+
+    replay_exp = nb.start_experiment(
+        "exact_graph_replay",
+        {"candidate_confirmation": True},
+        "confirm backfill candidate",
+    )
+    confirmed_rid = nb.record_program_result(
+        experiment_id=replay_exp,
+        graph_fingerprint="fp-confirmed-s1-dedupe",
+        graph_json="{}",
+        source_result_id=backfill_rid,
+        intentional_rerun_reason="exact_graph_replay",
+        result_cohort="search",
+        trust_label="candidate_grade",
+        comparability_label="candidate_comparable",
+        evaluation_protocol_version="candidate_grade_v1",
+        **_stage1_kwargs(
+            loss_ratio=0.81,
+            novelty_score=0.5,
+            model_source="exact_graph_replay",
+        ),
+    )
+    nb.close()
+
+    client = create_app(notebook_path=db_path).test_client()
+    res = client.get(
+        "/api/discoveries?sort=composite_score&limit=50&view=ranked"
+        "&scope=all&q=fp-confirmed-s1-dedupe&trusted_only=0"
+    )
+
+    assert res.status_code == 200
+    entries = res.get_json()["entries"]
+    matches = [
+        row
+        for row in entries
+        if row.get("graph_fingerprint") == "fp-confirmed-s1-dedupe"
+    ]
+    assert len(matches) == 1
+    assert matches[0]["result_id"] == confirmed_rid
+    assert matches[0]["result_cohort"] == "search"
+    assert matches[0]["tier"] == "screening"
+
+
 def test_discoveries_fingerprint_failed_view_explains_failed_checks(tmp_path):
     db_path = str(tmp_path / "discoveries_fingerprint_failed.db")
     nb = LabNotebook(db_path)

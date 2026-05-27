@@ -67,6 +67,8 @@ _OP_ROLE_MAP: Dict[str, OpRole] = {
     "softmax_last": OpRole.ACTIVATE,
     # ── MIX: sequence-level mixing ──────────────────────────────────
     "softmax_attention": OpRole.MIX,
+    "sparsemax_attention": OpRole.MIX,
+    "entmax_attention": OpRole.MIX,
     "linear_attention": OpRole.MIX,
     "graph_attention": OpRole.MIX,
     "local_window_attn": OpRole.MIX,
@@ -79,13 +81,21 @@ _OP_ROLE_MAP: Dict[str, OpRole] = {
     "latent_attention_compressor": OpRole.MIX,
     "diff_attention": OpRole.MIX,
     "gated_delta": OpRole.MIX,
+    "dplr_gated_delta": OpRole.MIX,
     "difficulty_routed_attention": OpRole.MIX,
     "strided_attention": OpRole.MIX,
     "gated_progressive_attention": OpRole.MIX,
-    "gated_linear_attention": OpRole.MIX,
+    # gated_linear_attention disabled 2026-05-23: proven anti-causal (next-token
+    # leak via whole-chunk kv/decay), records purged, NOT fixed. Removed from the
+    # MIX pool so the grammar can't insert it. Fixed replacement pending (gemini).
+    # See research/notes/adjacent_token_merge_leak_2026-05-23.md
     "long_conv_hyena": OpRole.MIX,
     "associative_memory": OpRole.MIX,
     "mixture_of_recursions": OpRole.MIX,
+    "token_hodge_mixer": OpRole.MIX,
+    "wavelet_packet_mix": OpRole.MIX,
+    "retention_mix": OpRole.MIX,
+    "product_key_memory": OpRole.MIX,
     "conv_only": OpRole.MIX,
     "multi_head_mix": OpRole.MIX,
     # ── ROUTE: information flow control ─────────────────────────────

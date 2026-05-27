@@ -480,6 +480,7 @@ def _run_probe_battery(
     val_batches: list[torch.Tensor],
     device: torch.device,
     seed: int,
+    dim: int,
 ) -> dict[str, Any]:
     out: dict[str, Any] = {}
     t0 = time.time()
@@ -491,6 +492,7 @@ def _run_probe_battery(
         seed=seed,
         amp=False,
         amp_dtype=torch.bfloat16,
+        model_dim=dim,
     )
     out["wikitext_ppl"] = cheap_out.get("wikitext_ppl")
     out["cheap"] = cheap_out
@@ -665,6 +667,7 @@ def _run_variant(
         val_batches=val_batches,
         device=device,
         seed=seed,
+        dim=dim,
     )
     del model
     torch.cuda.empty_cache()

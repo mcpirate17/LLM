@@ -1,0 +1,34 @@
+id: retention_mix
+version: 1.0.0
+name: Retention Mix
+category: mixing
+tags: [retention, recurrence, discovery]
+status: experimental
+description: Causal exponential retention recurrence with per-channel decay.
+inputs:
+- name: x
+  dtype: tensor
+  shape: [B, S, D]
+outputs:
+- name: y
+  dtype: tensor
+  shape: [B, S, D]
+params: {}
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: true
+  param_formula: "D*D*4+D*2"
+  preserves_gradient: true
+  numerically_risky: false
+help_md: |
+  ### Technical
+  Retentive mixing maintains an exponential moving state and queries it at
+  each token, giving a recurrence-friendly alternative to attention.
+
+  ### Plain Language
+  A memory mixer that keeps fading summaries of the past and reads them at
+  each token.

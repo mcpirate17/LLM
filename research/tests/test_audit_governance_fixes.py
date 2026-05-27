@@ -65,9 +65,10 @@ def test_binding_legal_roles_defined():
     )
 
     # The three role slots flagged "under-observed, broad class bucket without
-    # per-role legality checks" in the prior audit.
+    # per-role legality checks" in the prior audit, plus the neural-symbolic
+    # retrieval sidecar added for the role-slot v2 template.
     assert _BINDING_LEGAL_ROLES == frozenset(
-        {"global_retrieval", "binding_read", "binding_write"}
+        {"global_retrieval", "binding_read", "binding_write", "neural_symbolic"}
     )
     # Must include the core content-addressed ops; over-narrow legality would
     # silently make every binding role return None.

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 from typing import Dict
 
@@ -22,15 +23,91 @@ def interaction_metrics(
     influence_matrix: torch.Tensor,
     positions: torch.Tensor,
 ) -> Dict[str, float]:
-    native = aria_core.interaction_metrics_f32(
-        _cpu_contiguous(influence_matrix),
-        _cpu_contiguous(positions),
+    influence = _cpu_contiguous(influence_matrix.float())
+    pos = _cpu_contiguous(positions.to(dtype=torch.int64))
+    if aria_core is not None and hasattr(aria_core, "interaction_metrics_f32"):
+        native = aria_core.interaction_metrics_f32(influence, pos)
+        return {
+            "locality": float(native[0].item()),
+            "sparsity": float(native[1].item()),
+            "symmetry": float(native[2].item()),
+            "hierarchy": float(native[3].item()),
+        }
+
+    if influence.numel() == 0:
+        return {"locality": 0.5, "sparsity": 0.5, "symmetry": 0.5, "hierarchy": 0.5}
+    if influence.ndim != 2:
+        influence = influence.reshape(influence.shape[0], -1)
+
+    influence = torch.nan_to_num(influence, nan=0.0, posinf=0.0, neginf=0.0)
+    n_pos, seq_len = influence.shape
+    if n_pos == 0 or seq_len == 0:
+        return {"locality": 0.5, "sparsity": 0.5, "symmetry": 0.5, "hierarchy": 0.5}
+
+    row_sum = influence.sum(dim=1)
+    valid_rows = row_sum > 1e-8
+    if valid_rows.any():
+        columns = torch.arange(seq_len, dtype=influence.dtype)
+        clipped_pos = (
+            pos[:n_pos].clamp(min=0, max=max(seq_len - 1, 0)).to(dtype=influence.dtype)
+        )
+        distances = (columns.unsqueeze(0) - clipped_pos.unsqueeze(1)).abs()
+        weighted_distance = (influence * distances).sum(dim=1)
+        locality_rows = 1.0 - (
+            weighted_distance[valid_rows] / row_sum[valid_rows]
+        ) / float(seq_len)
+        locality = float(locality_rows.mean().item())
+    else:
+        locality = 0.5
+
+    total = influence.sum()
+    total_n = int(n_pos * seq_len)
+    if float(total.item()) > 1e-8:
+        probs = influence.reshape(-1) / total
+        nz = probs > 1e-10
+        entropy = -(probs[nz] * probs[nz].log()).sum()
+    else:
+        entropy = influence.new_tensor(0.0)
+    max_entropy = math.log(float(total_n if total_n > 1 else 2))
+    sparsity = (
+        float((1.0 - entropy / max_entropy).item()) if max_entropy > 1e-8 else 0.5
     )
+
+    sq = min(n_pos, seq_len)
+    if sq >= 2:
+        square = influence[:sq, :sq]
+        upper = torch.triu(square, diagonal=1)
+        lower_t = torch.tril(square, diagonal=-1).transpose(0, 1)
+        upper_sq = upper.square().sum()
+        if float(upper_sq.item()) > 1e-8:
+            sym_diff_sq = (upper - lower_t).square().sum()
+            symmetry = float((1.0 - sym_diff_sq.sqrt() / upper_sq.sqrt()).item())
+        else:
+            symmetry = 0.5
+    else:
+        symmetry = 0.5
+
+    fine_var = influence.var(unbiased=False)
+    if float(fine_var.item()) > 1e-10:
+        pool = 4
+        coarse_cols = max(seq_len // pool, 1)
+        coarse_values = []
+        for col_idx in range(coarse_cols):
+            start = col_idx * pool
+            end = min(start + pool, seq_len)
+            coarse_values.append(influence[:, start:end].mean(dim=1))
+        coarse = torch.stack(coarse_values, dim=1)
+        hierarchy = float(
+            torch.clamp(coarse.var(unbiased=False) / fine_var, max=1.0).item()
+        )
+    else:
+        hierarchy = 0.5
+
     return {
-        "locality": float(native[0].item()),
-        "sparsity": float(native[1].item()),
-        "symmetry": float(native[2].item()),
-        "hierarchy": float(native[3].item()),
+        "locality": locality,
+        "sparsity": sparsity,
+        "symmetry": symmetry,
+        "hierarchy": hierarchy,
     }
 
 

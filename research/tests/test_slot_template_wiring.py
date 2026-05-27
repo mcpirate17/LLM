@@ -163,6 +163,13 @@ MOTIF_TEST_CASES = [
     ("tropical_router_block", "tropical_router"),
     ("tropical_moe_block", "tropical_moe"),
     ("decay_cumprod", "cumprod_safe"),
+    ("attn_sparsemax", "sparsemax_attention"),
+    ("attn_entmax", "entmax_attention"),
+    ("mix_dplr_gated_delta", "dplr_gated_delta"),
+    ("mix_token_hodge", "token_hodge_mixer"),
+    ("mix_wavelet_packet", "wavelet_packet_mix"),
+    ("mix_retention", "retention_mix"),
+    ("mem_product_key", "product_key_memory"),
 ]
 
 
@@ -238,6 +245,13 @@ BACKFILL_TEMPLATE_CASES = [
     ("typed_slot_memory_block", "gather_topk"),
     ("sparse_relation_graph_block", "route_topk"),
     ("token_program_interpreter_block", "n_way_sparse_router"),
+    ("sparsemax_attention_block", "sparsemax_attention"),
+    ("entmax_attention_block", "entmax_attention"),
+    ("dplr_gated_delta_block", "dplr_gated_delta"),
+    ("token_hodge_mixer_block", "token_hodge_mixer"),
+    ("wavelet_packet_mix_block", "wavelet_packet_mix"),
+    ("retention_mix_block", "retention_mix"),
+    ("product_key_memory_block", "product_key_memory"),
 ]
 
 

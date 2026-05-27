@@ -586,6 +586,104 @@ EXTENDED_MOTIFS: Tuple[Motif, ...] = (
         lift=3.0,
     ),
     Motif(
+        name="attn_role_slot",
+        motif_class=MOTIF_CLASS_ATTENTION,
+        steps=(
+            MotifStep("role_slot_attention", OpRole.MIX),
+            MotifStep("linear_proj", OpRole.PROJECT),
+        ),
+        description="Persistent Role-Slot Attention: read from learned global registers → projection",
+        support=0,
+        avg_loss_ratio=0.0,
+        lift=3.5,
+    ),
+    Motif(
+        name="attn_sparsemax",
+        motif_class=MOTIF_CLASS_ATTENTION,
+        steps=(
+            MotifStep("sparsemax_attention", OpRole.MIX),
+            MotifStep("linear_proj", OpRole.PROJECT),
+        ),
+        description="Sparsemax causal attention with exact-zero retrieval weights → projection",
+        support=0,
+        avg_loss_ratio=0.0,
+        lift=3.0,
+    ),
+    Motif(
+        name="attn_entmax",
+        motif_class=MOTIF_CLASS_ATTENTION,
+        steps=(
+            MotifStep("entmax_attention", OpRole.MIX, config={"alpha": 1.5}),
+            MotifStep("linear_proj", OpRole.PROJECT),
+        ),
+        description="Alpha-entmax causal attention with tunable sparse retrieval → projection",
+        support=0,
+        avg_loss_ratio=0.0,
+        lift=3.0,
+    ),
+    Motif(
+        name="mix_dplr_gated_delta",
+        motif_class=MOTIF_CLASS_SSM,
+        steps=(
+            MotifStep("dplr_gated_delta", OpRole.MIX),
+            MotifStep("linear_proj", OpRole.PROJECT),
+        ),
+        description="DPLR gated-delta recurrent memory → projection",
+        support=0,
+        avg_loss_ratio=0.0,
+        lift=3.0,
+    ),
+    Motif(
+        name="mix_token_hodge",
+        motif_class=MOTIF_CLASS_SSM,
+        steps=(
+            MotifStep("token_hodge_mixer", OpRole.MIX),
+            MotifStep("linear_proj", OpRole.PROJECT),
+        ),
+        description="Token Hodge edge/triangle incidence mixer → projection",
+        support=0,
+        avg_loss_ratio=0.0,
+        lift=2.5,
+    ),
+    Motif(
+        name="mix_wavelet_packet",
+        motif_class=MOTIF_CLASS_CONV,
+        steps=(
+            MotifStep("wavelet_packet_mix", OpRole.MIX, config={"levels": 2}),
+            MotifStep("linear_proj", OpRole.PROJECT),
+        ),
+        description="Causal wavelet-packet multiscale mixer → projection",
+        support=0,
+        avg_loss_ratio=0.0,
+        lift=2.5,
+    ),
+    Motif(
+        name="mix_retention",
+        motif_class=MOTIF_CLASS_SSM,
+        steps=(
+            MotifStep("retention_mix", OpRole.MIX),
+            MotifStep("linear_proj", OpRole.PROJECT),
+        ),
+        description="Retentive exponential-memory sequence mixer → projection",
+        support=0,
+        avg_loss_ratio=0.0,
+        lift=3.0,
+    ),
+    Motif(
+        name="mem_product_key",
+        motif_class=MOTIF_CLASS_ATTENTION,
+        steps=(
+            MotifStep(
+                "product_key_memory", OpRole.MIX, config={"num_keys": 32, "top_k": 4}
+            ),
+            MotifStep("linear_proj", OpRole.PROJECT),
+        ),
+        description="Product-key content-addressed memory lookup → projection",
+        support=0,
+        avg_loss_ratio=0.0,
+        lift=3.0,
+    ),
+    Motif(
         name="mix_mixture_of_recursions",
         motif_class=MOTIF_CLASS_SSM,
         steps=(

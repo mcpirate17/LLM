@@ -121,6 +121,7 @@ research/runtime/**/*.log
 research/runtime/**/summary_*.json
 research/runtime/**/*.csv
 research/runtime/**/*.gguf
+research/runtime/**/*.joblib
 !research/runtime/native/**/*.json
 
 # Runtime experiment scratch (regenerable; never commit checkpoints/sweeps)

@@ -23,6 +23,7 @@ from ...eval.diagnostic_tasks import run_diagnostic_suite
 from ...eval.metrics import novelty_score
 from ...synthesis.serializer import graph_to_json
 from .dashboard_orchestrator_constants import CANDIDATE_CONFIRMATION_EVIDENCE_COLUMNS
+from .measured_rescue_observability import mark_measured_rescue_stage1_result
 
 logger = logging.getLogger(__name__)
 
@@ -1045,6 +1046,15 @@ class _DashboardOrchestratorMixin:
             final_loss=final_loss,
             throughput=throughput,
             training_curve=training_curve,
+        )
+        mark_measured_rescue_stage1_result(
+            results,
+            graph.fingerprint(),
+            completed=bool(promoted_to_stage1),
+            passed=bool(s1_passed),
+            result_id=rid,
+            loss_ratio=loss_ratio,
+            final_loss=final_loss,
         )
         self._record_leaderboard_and_best(
             nb=nb,

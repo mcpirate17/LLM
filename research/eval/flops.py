@@ -105,7 +105,6 @@ def _estimate_sequence_flops(
 def _estimate_mixing_flops(
     op_name: str, seq_len: int, width: int, config: Dict[str, object]
 ) -> int:
-    del config
     if op_name == "difficulty_routed_attention":
         return (
             4 * seq_len * seq_len * width
@@ -125,6 +124,14 @@ def _estimate_mixing_flops(
         )
     if op_name == "gated_linear_attention":
         return 12 * seq_len * width * width + 4 * seq_len * width
+    if op_name in {"sparsemax_attention", "entmax_attention"}:
+        return (
+            4 * seq_len * seq_len * width
+            + 8 * seq_len * width * width
+            + seq_len * seq_len * int(math.log2(max(seq_len, 2)))
+        )
+    if op_name == "dplr_gated_delta":
+        return 18 * seq_len * width * width + 6 * seq_len * width
     if op_name == "long_conv_hyena":
         fft_term = max(1, int(math.log2(max(seq_len, 2))))
         return (
@@ -138,6 +145,21 @@ def _estimate_mixing_flops(
         )
     if op_name == "mixture_of_recursions":
         return 48 * seq_len * width * width + 12 * seq_len * width
+    if op_name == "token_hodge_mixer":
+        return 8 * seq_len * width * width + 8 * seq_len * width
+    if op_name == "wavelet_packet_mix":
+        return 8 * seq_len * width * width + 10 * seq_len * width
+    if op_name == "retention_mix":
+        return 8 * seq_len * width * width + 10 * seq_len * width
+    if op_name == "product_key_memory":
+        num_keys = max(2, min(64, int(config.get("num_keys", 32))))
+        top_k = max(1, min(8, int(config.get("top_k", 4))))
+        return (
+            2 * seq_len * width * num_keys
+            + seq_len * num_keys * num_keys
+            + seq_len * top_k * width
+            + 2 * seq_len * width * width
+        )
     if op_name == "softmax_attention":
         return 4 * seq_len * seq_len * width + 8 * seq_len * width * width
     if op_name == "linear_attention":

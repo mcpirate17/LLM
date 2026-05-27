@@ -1,0 +1,37 @@
+id: entmax_attention
+version: 1.0.0
+name: Entmax Attention
+category: mixing
+tags: [attention, sparse, discovery]
+status: experimental
+description: Causal alpha-entmax attention with tunable sparsity between softmax and sparsemax.
+inputs:
+- name: x
+  dtype: tensor
+  shape: [B, S, D]
+outputs:
+- name: y
+  dtype: tensor
+  shape: [B, S, D]
+params:
+  alpha:
+    type: number
+    default: 1.5
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: true
+  param_formula: "D*D*4"
+  preserves_gradient: true
+  numerically_risky: false
+help_md: |
+  ### Technical
+  Alpha-entmax attention uses a sparse probability transform. Alpha=1 is
+  softmax-like and alpha=2 is sparsemax-like; 1.5 is the default.
+
+  ### Plain Language
+  Attention with a knob for how decisive or distributed each token's memory
+  lookup should be.

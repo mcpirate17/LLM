@@ -3,9 +3,10 @@
 import pytest
 
 from research.synthesis.grammar import GrammarConfig, batch_generate
+from research.synthesis.graph_validation_rules import validate_generated_graph
 from research.synthesis.templates import TEMPLATES
 from research.synthesis.validator import validate_graph
-from research.tools.backfill_templates import _phase_settings
+from research.tools.backfill_templates import _make_category_weights, _phase_settings
 from research.scientist.notebook.notebook_misc import _MiscMixin
 
 
@@ -43,10 +44,16 @@ _NON_ROUTING_TEMPLATES = {
     "difficulty_routed_attention_block",
     "strided_attention_block",
     "gated_progressive_attention_block",
-    "gated_linear_attention_block",
     "long_conv_hyena_block",
     "associative_memory_block",
     "mixture_of_recursions_block",
+    "sparsemax_attention_block",
+    "entmax_attention_block",
+    "dplr_gated_delta_block",
+    "token_hodge_mixer_block",
+    "wavelet_packet_mix_block",
+    "retention_mix_block",
+    "product_key_memory_block",
     "codex_ssm_retention_block",
     "codex_ssm_delta_memory_block",
     "codex_ssm_mla_gated_block",
@@ -54,6 +61,12 @@ _NON_ROUTING_TEMPLATES = {
     "typed_slot_memory_block",
     "sparse_relation_graph_block",
     "token_program_interpreter_block",
+}
+
+_DISCOVERY_BACKFILL_TEMPLATE_OPS = {
+    "token_hodge_mixer_block": "token_hodge_mixer",
+    "wavelet_packet_mix_block": "wavelet_packet_mix",
+    "product_key_memory_block": "product_key_memory",
 }
 
 
@@ -66,7 +79,7 @@ def _template_weights(template_name: str) -> dict[str, float]:
 def _backfill_like_config(template_name: str) -> GrammarConfig:
     return GrammarConfig(
         template_weights=_template_weights(template_name),
-        category_weights=dict(_UNIFORM_CATEGORY_WEIGHTS),
+        category_weights=_make_category_weights("uniform"),
         composition_depth=1,
         routing_mandatory=template_name not in _NON_ROUTING_TEMPLATES,
     )
@@ -115,7 +128,6 @@ def test_targeted_backfill_generates_requested_templates():
         "difficulty_routed_attention_block",
         "strided_attention_block",
         "gated_progressive_attention_block",
-        "gated_linear_attention_block",
         "long_conv_hyena_block",
         "associative_memory_block",
         "mixture_of_recursions_block",
@@ -149,7 +161,6 @@ def test_targeted_backfill_generates_requested_templates():
         ("difficulty_routed_attention_block", 42),
         ("strided_attention_block", 42),
         ("gated_progressive_attention_block", 42),
-        ("gated_linear_attention_block", 42),
         ("long_conv_hyena_block", 42),
         ("associative_memory_block", 42),
         ("mixture_of_recursions_block", 42),
@@ -171,6 +182,32 @@ def test_targeted_backfill_graphs_fit_screening_validator(template_name, seed):
             f"{template_name} produced invalid screening graph at seed {seed}: "
             f"{validation.errors}"
         )
+
+
+@pytest.mark.parametrize(
+    "template_name,target_op",
+    _DISCOVERY_BACKFILL_TEMPLATE_OPS.items(),
+)
+def test_discovery_templates_generate_for_production_backfill_path(
+    template_name, target_op
+):
+    config = _backfill_like_config(template_name)
+    result = batch_generate(2, config, base_seed=42)
+
+    assert len(result.graphs) >= 1, (
+        f"{template_name} produced no graphs "
+        f"(attempted={result.n_attempted}, rejected={result.n_rejected_grammar})"
+    )
+    assert result.n_rejected_grammar < result.n_attempted
+
+    for graph in result.graphs:
+        assert graph.metadata.get("templates_used") == [template_name]
+        op_names = [node.op_name for node in graph.nodes.values() if not node.is_input]
+        assert target_op in op_names
+
+        screening = validate_graph(graph, max_ops=24, max_depth=18)
+        assert screening.valid, screening.errors
+        validate_generated_graph(graph, config)
 
 
 @pytest.mark.parametrize(

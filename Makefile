@@ -12,8 +12,9 @@ JOURNAL_TEST ?=
 JOURNAL_PATHS ?=
 JOURNAL_MAX_STATUS ?= 80
 NOTEBOOKLM_OUT ?= tasks/notebooklm/codex_context_bundle.md
+NOTEBOOKLM_RESEARCH_OUT ?= tasks/notebooklm/research_briefing_bundle.md
 
-.PHONY: all aria_core test test-aria_core test-designer test-research test-integration test-changed watch-test-changed profile-scalene bench codex-journal notebooklm-bundle clean clean-junk clean-docs clean-all help complexity-report complexity-check complexity-refresh-baseline guardrails-dry guardrails-dry-report perf-summary governance-check governance-audit profile-hotpaths profile-screening-hotpaths profile-screening-hotpaths-quick
+.PHONY: all aria_core test test-aria_core test-designer test-research test-integration test-changed watch-test-changed profile-scalene bench codex-journal notebooklm-bundle notebooklm-research-bundle clean clean-junk clean-docs clean-all help complexity-report complexity-check complexity-refresh-baseline guardrails-dry guardrails-dry-report perf-summary governance-check governance-audit profile-hotpaths profile-screening-hotpaths profile-screening-hotpaths-quick
 
 all: aria_core  ## Build everything
 
@@ -68,7 +69,10 @@ codex-journal:  ## Append an Obsidian-compatible Codex journal entry
 	$(UV) run python conductor/codex_journal.py --note "$(JOURNAL_NOTE)" $(if $(JOURNAL_TEST),--test "$(JOURNAL_TEST)",) $(foreach path,$(JOURNAL_PATHS),--path "$(path)") --max-status "$(JOURNAL_MAX_STATUS)"
 
 notebooklm-bundle:  ## Build a curated Markdown bundle for manual NotebookLM upload
-	$(UV) run python conductor/notebooklm_bundle.py --out "$(NOTEBOOKLM_OUT)"
+	$(UV) run python conductor/notebooklm_bundle.py --out "$(NOTEBOOKLM_OUT)" --no-vault
+
+notebooklm-research-bundle:  ## Build a research-focused NotebookLM upload bundle
+	$(UV) run python conductor/notebooklm_bundle.py --out "$(NOTEBOOKLM_RESEARCH_OUT)"
 
 complexity-report:  ## Report production Python cyclomatic complexity
 	$(UV) run python conductor/radon_complexity.py report

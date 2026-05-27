@@ -7,7 +7,10 @@ import logging
 from typing import Dict, List, Optional
 
 from ..intelligence.graph_ops import extract_unique_graph_ops
-from ..notebook.graph_artifacts import resolve_graph_json_value
+from ..notebook.graph_artifacts import (
+    resolve_graph_json_value,
+    warn_missing_artifacts_once,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -207,10 +210,7 @@ class _CoverageMixin:
                 total_survived += 1
 
         if missing_graph_artifacts:
-            logger.warning(
-                "Ignored %d missing graph artifact(s) while computing math family coverage",
-                missing_graph_artifacts,
-            )
+            warn_missing_artifacts_once("math family coverage", missing_graph_artifacts)
 
         families = []
         for fam in _FAMILY_ORDER:
@@ -328,9 +328,8 @@ class _CoverageMixin:
                         bucket["novelty_count"] += 1
 
         if missing_graph_artifacts:
-            logger.warning(
-                "Ignored %d missing graph artifact(s) while computing mathspace operator impact",
-                missing_graph_artifacts,
+            warn_missing_artifacts_once(
+                "mathspace operator impact", missing_graph_artifacts
             )
 
         return by_operator, by_family, programs_with_mathspace

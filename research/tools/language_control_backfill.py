@@ -42,6 +42,7 @@ from research.scientist.language_control_gates import (
 )
 from research.scientist.notebook.graph_artifacts import resolve_graph_json_value
 from research.scientist.native_runner import compile_model_native_first as compile_model
+from research.scientist.probe_metric_names import canonical_metric_name
 from research.synthesis.serializer import graph_from_json
 from research.tools._db_maintenance import connect_readonly
 
@@ -403,10 +404,15 @@ def _train_base(graph_json_str: str, *, device: str) -> torch.nn.Module:
 
 def _run_one(fp: dict, *, device: str, tier_names: tuple[str, ...]) -> dict | None:
     """Train base, run requested tiers. Returns dict of column → value to write."""
+    # JSONL candidate rows (Colab path) carry only ``result_id``; DB-sourced
+    # rows alias it to ``entry_id``. Use whichever is present for logging so a
+    # base-train or gate-failure log line never masks the real error with a
+    # spurious KeyError.
+    ident = fp.get("entry_id") or fp.get("result_id") or "?"
     try:
         model = _train_base(fp["graph_json"], device=device)
     except Exception as exc:  # noqa: BLE001
-        logger.error("  %s base train failed: %s", fp["entry_id"], exc)
+        logger.error("  %s base train failed: %s", ident, exc)
         return None
 
     out: dict = {"language_control_metric_version": LANGUAGE_CONTROL_METRIC_VERSION}
@@ -430,25 +436,37 @@ def _run_one(fp: dict, *, device: str, tier_names: tuple[str, ...]) -> dict | No
             sa = (res.synthetic_association or {}).get("synthetic_association_score")
             nb_order = (res.nano_blimp or {}).get("nano_blimp_order_grammaticality_acc")
             nb_score = (res.nano_blimp or {}).get("nano_blimp_score")
-            out[f"language_control_{tier_name}_sa_score"] = sa
-            out[f"language_control_{tier_name}_nb_order_acc"] = nb_order
-            out[f"language_control_{tier_name}_nb_score"] = nb_score
+            # Build canonical DB column names via the rename catalog (single
+            # source of truth). The legacy `controlled_lang_*` keys map to the
+            # current `language_control_*` columns AND translate the `inv` tier
+            # infix to `investigation`; emitting them directly was the cause of
+            # the all-None NB0.5/NB1.0 backfill (keys matched neither the legacy
+            # map nor the live columns, so every metric was filtered/dropped).
+            out[canonical_metric_name(f"controlled_lang_{tier_name}_sa_score")] = sa
+            out[canonical_metric_name(f"controlled_lang_{tier_name}_nb_order_acc")] = (
+                nb_order
+            )
+            out[canonical_metric_name(f"controlled_lang_{tier_name}_nb_score")] = (
+                nb_score
+            )
             checkpoints = payload.get("language_control_checkpoints")
             if checkpoints and tier_name in {"s10", "inv"}:
-                out[f"language_control_{tier_name}_checkpoints_json"] = json.dumps(
-                    checkpoints, sort_keys=True, separators=(",", ":")
-                )
+                out[
+                    canonical_metric_name(
+                        f"controlled_lang_{tier_name}_checkpoints_json"
+                    )
+                ] = json.dumps(checkpoints, sort_keys=True, separators=(",", ":"))
             failed_gate = _first_failed_gate_in_updates(out, tier_name, context=fp)
             if failed_gate is not None:
                 logger.info(
                     "  %s %s %.4f below no-go threshold; skipping later tiers",
-                    fp["entry_id"],
+                    ident,
                     failed_gate["label"],
                     float(out[failed_gate["score_key"]]),
                 )
                 break
         except Exception as exc:  # noqa: BLE001
-            logger.warning("  %s tier %s failed: %s", fp["entry_id"], tier_name, exc)
+            logger.warning("  %s tier %s failed: %s", ident, tier_name, exc)
     del model
     if device == "cuda":
         torch.cuda.empty_cache()

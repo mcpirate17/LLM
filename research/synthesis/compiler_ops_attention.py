@@ -51,6 +51,114 @@ def _op_softmax_attention(module, inputs, _):
     return _safe_linear(out, module.o_proj.weight, module.o_proj.bias)
 
 
+def _sparsemax(logits: torch.Tensor, dim: int = -1) -> torch.Tensor:
+    shifted = logits - logits.max(dim=dim, keepdim=True).values
+    shifted = shifted.clamp(min=-20.0)
+    zs = torch.sort(shifted, dim=dim, descending=True).values
+    range_shape = [1] * logits.ndim
+    range_shape[dim] = logits.shape[dim]
+    ks = torch.arange(
+        1, logits.shape[dim] + 1, device=logits.device, dtype=logits.dtype
+    )
+    ks = ks.reshape(range_shape)
+    bound = 1 + ks * zs
+    cumsum_zs = zs.cumsum(dim)
+    is_gt = bound > cumsum_zs
+    k_z = is_gt.sum(dim=dim, keepdim=True).clamp(min=1)
+    tau = (cumsum_zs.gather(dim, k_z - 1) - 1) / k_z.to(logits.dtype)
+    return torch.clamp(shifted - tau, min=0)
+
+
+def _entmax_bisect(
+    logits: torch.Tensor, alpha: float = 1.5, dim: int = -1
+) -> torch.Tensor:
+    alpha = float(max(1.01, min(2.0, alpha)))
+    if alpha >= 1.999:
+        return _sparsemax(logits, dim=dim)
+    shifted = logits - logits.max(dim=dim, keepdim=True).values
+    shifted = shifted.clamp(min=-20.0)
+    scaled = shifted * (alpha - 1.0)
+    tau_lo = scaled.min(dim=dim, keepdim=True).values - 1.0
+    tau_hi = scaled.max(dim=dim, keepdim=True).values
+    power = 1.0 / (alpha - 1.0)
+    for _ in range(24):
+        tau = (tau_lo + tau_hi) * 0.5
+        probs = torch.clamp(scaled - tau, min=0).pow(power)
+        too_large = probs.sum(dim=dim, keepdim=True) > 1.0
+        tau_lo = torch.where(too_large, tau, tau_lo)
+        tau_hi = torch.where(too_large, tau_hi, tau)
+    probs = torch.clamp(scaled - tau_hi, min=0).pow(power)
+    return probs / probs.sum(dim=dim, keepdim=True).clamp(min=1e-8)
+
+
+def _causal_attention_scores(
+    q: torch.Tensor, k: torch.Tensor, scale: float
+) -> torch.Tensor:
+    scores = torch.matmul(q, k.transpose(-2, -1)) * scale
+    seq_len = scores.shape[-1]
+    causal = torch.triu(
+        torch.ones(seq_len, seq_len, device=scores.device, dtype=torch.bool), diagonal=1
+    )
+    return scores.masked_fill(causal, -1e9)
+
+
+def _op_sparsemax_attention(module, inputs, _):
+    """Causal attention with sparsemax-normalized retrieval weights."""
+    x = inputs[0]
+    if not hasattr(module, "q_proj"):
+        return x
+    B, S, _ = x.shape
+    nh, hd = module.n_heads, module.head_dim
+    q = (
+        _safe_linear(x, module.q_proj.weight, module.q_proj.bias)
+        .reshape(B, S, nh, hd)
+        .transpose(1, 2)
+    )
+    k = (
+        _safe_linear(x, module.k_proj.weight, module.k_proj.bias)
+        .reshape(B, S, nh, hd)
+        .transpose(1, 2)
+    )
+    v = (
+        _safe_linear(x, module.v_proj.weight, module.v_proj.bias)
+        .reshape(B, S, nh, hd)
+        .transpose(1, 2)
+    )
+    scores = _causal_attention_scores(q, k, module.attn_scale)
+    weights = _sparsemax(scores, dim=-1)
+    out = torch.matmul(weights, v).transpose(1, 2).reshape(B, S, -1)
+    return _safe_linear(out, module.o_proj.weight, module.o_proj.bias)
+
+
+def _op_entmax_attention(module, inputs, config):
+    """Causal alpha-entmax attention; alpha=1.5 by default, alpha=2 sparsemax."""
+    x = inputs[0]
+    if not hasattr(module, "q_proj"):
+        return x
+    B, S, _ = x.shape
+    nh, hd = module.n_heads, module.head_dim
+    alpha = float(config.get("alpha", 1.5)) if isinstance(config, dict) else 1.5
+    q = (
+        _safe_linear(x, module.q_proj.weight, module.q_proj.bias)
+        .reshape(B, S, nh, hd)
+        .transpose(1, 2)
+    )
+    k = (
+        _safe_linear(x, module.k_proj.weight, module.k_proj.bias)
+        .reshape(B, S, nh, hd)
+        .transpose(1, 2)
+    )
+    v = (
+        _safe_linear(x, module.v_proj.weight, module.v_proj.bias)
+        .reshape(B, S, nh, hd)
+        .transpose(1, 2)
+    )
+    scores = _causal_attention_scores(q, k, module.attn_scale)
+    weights = _entmax_bisect(scores, alpha=alpha, dim=-1)
+    out = torch.matmul(weights, v).transpose(1, 2).reshape(B, S, -1)
+    return _safe_linear(out, module.o_proj.weight, module.o_proj.bias)
+
+
 def _op_linear_attention(module, inputs, _):
     """Linear attention with ELU kernel (O(S*D) complexity).
 
@@ -458,14 +566,44 @@ def _op_token_pool_restore(_, inputs, __):
     return restored
 
 
+def _op_role_slot_attention(module, inputs, _):
+    """Persistent Role-Slot Attention.
+
+    Tokens (Queries) attend to learned global latent Slots (Keys/Values).
+    Provides O(S * num_slots) retrieval.
+    """
+    x = inputs[0]
+    if not hasattr(module, "q_proj"):
+        return x
+    B, S, D = x.shape
+
+    q = module.q_proj(x)  # (B, S, D)
+    k = module.slot_keys  # (num_slots, D)
+    v = module.slot_values  # (num_slots, D)
+
+    # Scaled dot-product attention against slots
+    # (B, S, D) @ (D, num_slots) -> (B, S, num_slots)
+    # Slots are shared across batch and sequence.
+    energy = torch.matmul(q, k.transpose(-2, -1)) * (D**-0.5)
+    attn_weights = torch.softmax(energy, dim=-1)
+
+    # (B, S, num_slots) @ (num_slots, D) -> (B, S, D)
+    out = torch.matmul(attn_weights, v)
+
+    return module.o_proj(out)
+
+
 # ── Routing Ops (Phase 1/2) ──────────────────────────────────────────
 
 OP_IMPLS: Dict[str, Callable] = {
     "softmax_attention": _op_softmax_attention,
+    "sparsemax_attention": _op_sparsemax_attention,
+    "entmax_attention": _op_entmax_attention,
     "linear_attention": _op_linear_attention,
     "graph_attention": _op_graph_attention,
     "local_window_attn": _op_local_window_attn,
     "sliding_window_mask": _op_sliding_window_mask,
+    "role_slot_attention": _op_role_slot_attention,
     "rmsnorm": _op_rmsnorm,
     "layernorm": _op_layernorm,
     "gated_linear": _op_gated_linear,

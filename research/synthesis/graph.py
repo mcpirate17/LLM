@@ -11,10 +11,12 @@ at construction time, so invalid graphs are rejected before compilation.
 
 from __future__ import annotations
 
-import xxhash
+import heapq
 import logging
 from dataclasses import dataclass, field, replace
 from typing import Dict, List, Optional
+
+import xxhash
 
 logger = logging.getLogger(__name__)
 
@@ -840,7 +842,7 @@ class ComputationGraph:
             node_ids = range(len(self.nodes))
             assume_contiguous_ids = True
         else:
-            node_ids = [nid for nid in self.topological_order() if nid in reachable]
+            node_ids = self._topological_order_for_nodes(reachable)
             assume_contiguous_ids = False
 
         ir = build_graph_ir(
@@ -851,6 +853,49 @@ class ComputationGraph:
         )
         self._cache["ir"] = ir
         return ir
+
+    def _topological_order_for_nodes(self, node_ids: set[int]) -> List[int]:
+        """Return deterministic topological order for an induced node subset."""
+        in_degree = {
+            nid: sum(
+                1 for input_id in self.nodes[nid].input_ids if input_id in node_ids
+            )
+            for nid in node_ids
+        }
+        children: Dict[int, List[int]] = {nid: [] for nid in node_ids}
+        for nid in node_ids:
+            for input_id in self.nodes[nid].input_ids:
+                if input_id in node_ids:
+                    children[input_id].append(nid)
+
+        order: List[int] = []
+        canonical_id_map: Dict[int, int] = {}
+        ready: list[tuple[str, tuple[int, ...], str, int]] = []
+        for nid, degree in in_degree.items():
+            if degree == 0:
+                node = self.nodes[nid]
+                heapq.heappush(ready, (node.op_name, (), node._config_repr, nid))
+
+        while ready:
+            _, _, _, nid = heapq.heappop(ready)
+            canonical_id_map[nid] = len(order)
+            order.append(nid)
+            for child_id in children[nid]:
+                in_degree[child_id] -= 1
+                if in_degree[child_id] == 0:
+                    child = self.nodes[child_id]
+                    input_keys = tuple(
+                        canonical_id_map[input_id]
+                        for input_id in child.input_ids
+                        if input_id in node_ids
+                    )
+                    heapq.heappush(
+                        ready, (child.op_name, input_keys, child._config_repr, child_id)
+                    )
+
+        if len(order) < len(node_ids):
+            return sorted(node_ids)
+        return order
 
     def _analysis_ir(self) -> ComputationGraphIR:
         cached = self._cache.get("analysis_ir")

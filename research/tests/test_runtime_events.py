@@ -192,6 +192,38 @@ def test_lifecycle_projector_replays_completed_run(tmp_path):
     assert row[3] == 10.0
 
 
+def test_lifecycle_projector_started_event_sanitizes_structured_text_fields(tmp_path):
+    spool = NdjsonEventSpool(tmp_path / "runtime_events")
+    bus = RuntimeEventBus(spool=spool)
+    conn = _make_projector_db()
+    projector = LifecycleProjector(conn, spool=spool)
+
+    bus.publish(
+        _make_event(
+            "experiment_started",
+            sequence=1,
+            hypothesis={"claim": "structured"},
+            research_question=["can", "replay"],
+            preregistration_id={"id": "pre-1"},
+            config={"path": str(tmp_path), "weights": [2, 1]},
+        )
+    )
+
+    status = projector.replay_once()
+
+    assert status.degraded is False
+    row = conn.execute(
+        "SELECT hypothesis, research_question, preregistration_id, config_json FROM experiments WHERE experiment_id = ?",
+        ("exp-1",),
+    ).fetchone()
+    assert json.loads(row[0]) == {"claim": "structured"}
+    assert json.loads(row[1]) == ["can", "replay"]
+    assert json.loads(row[2]) == {"id": "pre-1"}
+    config = json.loads(row[3])
+    assert config["path"] == str(tmp_path)
+    assert sorted(config["weights"]) == [1, 2]
+
+
 def test_lifecycle_projector_is_idempotent_on_replay(tmp_path):
     spool = NdjsonEventSpool(tmp_path / "runtime_events")
     bus = RuntimeEventBus(spool=spool)
@@ -328,6 +360,35 @@ def test_lifecycle_projector_skips_conflicting_terminal_event_without_poisoning_
         ).fetchall()
     ]
     assert applied_types == ["experiment_started", "experiment_completed"]
+
+
+def test_projector_replay_skips_conflict_without_warning_noise(tmp_path, caplog):
+    spool = NdjsonEventSpool(tmp_path / "runtime_events")
+    bus = RuntimeEventBus(spool=spool)
+    conn = _make_projector_db()
+    projector = LifecycleProjector(conn, spool=spool)
+
+    bus.publish(_make_event("experiment_started", sequence=1))
+    bus.publish(_make_event("experiment_completed", sequence=2, completed_at=20.0))
+    bus.publish(
+        _make_event(
+            "experiment_failed",
+            sequence=3,
+            completed_at=21.0,
+            error="stale failure",
+        )
+    )
+
+    with caplog.at_level("DEBUG"):
+        projector.replay_once()
+
+    assert "Skipping conflicting lifecycle event in projector" in caplog.text
+    assert not [
+        rec
+        for rec in caplog.records
+        if rec.levelname == "WARNING"
+        and "Skipping conflicting lifecycle event in projector" in rec.message
+    ]
 
 
 def test_registry_replay_ignores_conflict_without_warning_noise(tmp_path, caplog):

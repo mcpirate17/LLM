@@ -22,6 +22,7 @@ from .screening_measured_rescue import (
     measured_rescue_config,
     rescue_skipped_candidates,
 )
+from .measured_rescue_observability import initialize_measured_rescue_records
 
 logger = logging.getLogger(__name__)
 
@@ -56,8 +57,13 @@ def _resolve_p_pass_floor(
     if deprecated_floor > 0.0:
         return deprecated_floor, "config.gbm_gate_threshold"
     if temporal_f1_threshold is not None:
+        try:
+            temporal_f1_threshold = float(temporal_f1_threshold)
+        except (TypeError, ValueError):
+            temporal_f1_threshold = None
+    if temporal_f1_threshold is not None and temporal_f1_threshold > 0.0:
         return (
-            float(temporal_f1_threshold),
+            temporal_f1_threshold,
             "ensemble.temporal_holdout_evaluation.operating_points.f1.threshold",
         )
     return float(getattr(ensemble, "gate_threshold", 0.5)), "ensemble.gate_threshold"
@@ -498,13 +504,21 @@ class _ExecutionExperimentPhase3Mixin:
         if not rescue_records:
             return
         results["funnel_counts"]["measured_rescued"] = len(rescue_records)
+        initialize_measured_rescue_records(
+            results,
+            rescue_records,
+            experiment_id=exp_id,
+            tau=getattr(rescue_cfg, "tau", None),
+            max_rescue=getattr(rescue_cfg, "max_rescue", None),
+            probe_budget=getattr(rescue_cfg, "probe_budget", None),
+        )
         self._emit_event(
             "measured_rescue_applied",
             {
                 "experiment_id": exp_id,
                 "n_rescued": len(rescue_records),
                 "tau": getattr(rescue_cfg, "tau", None),
-                "rescued": rescue_records,
+                "rescued": results.get("measured_rescue_records", []),
             },
         )
 

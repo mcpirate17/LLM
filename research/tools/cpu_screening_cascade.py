@@ -7,9 +7,12 @@ worth the expensive real probe. Built on the validated signals from the closed-b
 
   - gate:    n_mixers_on_path >= 1 (a cross-position skill needs a sequence-mixer on an input→output
              path; keeps 95.7% of induction-capable, prunes the structurally-dead). `static_capability_gate`.
-  - exploit: mechanism_score = n_mix + 1.5*sum_memory + n_global  (validated label-free composite, ROC
-             0.907 vs induction). Deliberately NOT depth/n_ops — those score higher (0.93) but are the
-             SIZE confound (the zero-cost-NAS "#params baseline" trap) that won't generalize to small
+  - ML gate: predicted ar_gate must clear its trained threshold; AR is a no-go gate,
+             not an exploit score.
+  - ML downstream gate: at least one non-AR probe axis must clear its trained threshold.
+  - exploit: AR+downstream-gated survivors rank by non-AR probe-axis predictions plus mechanism score.
+             Deliberately NOT depth/n_ops — those score higher but are the SIZE confound
+             (the zero-cost-NAS "#params baseline" trap) that won't generalize to small
              novel-good designs.
   - explore: novelty = n_novel_mixers_on_path + algebra_diversity  (label-free). Reserves shortlist
              slots for the unknown-good so the cascade doesn't collapse onto the familiar — the trap
@@ -51,7 +54,10 @@ from research.tools.graph_semantic_features import (
     _MEMORY_ORDINAL,
     GraphSemanticExtractor,
 )
-from research.tools.label_free_probe_oracle import LabelFreeProbeOracleScorer
+from research.tools.label_free_probe_oracle import (
+    AR_GATE_AXIS,
+    LabelFreeProbeOracleScorer,
+)
 from research.tools.learned_rules import score_template_quality
 from research.tools.static_capability_gate import (
     mixer_chain_depth,
@@ -157,6 +163,46 @@ class Scored:
     probe_oracle: Dict[str, Any] | None = None
 
 
+def _probe_oracle_ar_gate_passes(probe: Dict[str, Any] | None) -> bool:
+    """AR Gate is a no-go filter. Missing oracle data is handled by the caller's fallback path."""
+    if not probe:
+        return True
+    if "label_free_probe_gate_pass" in probe:
+        return bool(probe["label_free_probe_gate_pass"])
+    gate = probe.get("label_free_probe_gate")
+    if isinstance(gate, dict) and "passed" in gate:
+        return bool(gate["passed"])
+    axes = probe.get("label_free_probe_axes")
+    if isinstance(axes, dict):
+        ar = axes.get(AR_GATE_AXIS)
+        if isinstance(ar, dict):
+            pred = ar.get("predicted")
+            thr = ar.get("threshold")
+            try:
+                return float(pred) >= float(thr)
+            except (TypeError, ValueError):
+                return False
+    return True
+
+
+def _probe_oracle_downstream_gate_passes(probe: Dict[str, Any] | None) -> bool:
+    """Non-AR predictions must say at least one capability axis is actually above threshold."""
+    if not probe:
+        return True
+    if "label_free_probe_downstream_gate_pass" in probe:
+        return bool(probe["label_free_probe_downstream_gate_pass"])
+    gate = probe.get("label_free_probe_downstream_gate")
+    if isinstance(gate, dict) and "passed" in gate:
+        return bool(gate["passed"])
+    axes = probe.get("label_free_probe_rank_axes")
+    if isinstance(axes, dict):
+        return any(
+            isinstance(detail, dict) and float(detail.get("ratio", 0.0)) >= 1.0
+            for detail in axes.values()
+        )
+    return True
+
+
 def _generate_pool(
     scorer: CpuMechanismScorer,
     hist: Set[str],
@@ -194,9 +240,14 @@ def _generate_pool(
         if fr["compile"] >= 0.4 or fr["lookahead"] >= 0.4 or fr["resource"] >= 0.4:
             stats["high_failure_risk"] += 1
             continue
-        kept.append(
-            Scored(fp, sorted(op_set), prof, q, gd, scorer.probe_oracle_score(gd))
-        )
+        probe = scorer.probe_oracle_score(gd)
+        if probe and not _probe_oracle_ar_gate_passes(probe):
+            stats["ar_gate_no_go"] += 1
+            continue
+        if probe and not _probe_oracle_downstream_gate_passes(probe):
+            stats["downstream_no_go"] += 1
+            continue
+        kept.append(Scored(fp, sorted(op_set), prof, q, gd, probe))
         stats["kept"] += 1
         if progress_every and (i + 1) % progress_every == 0:
             logger.info(
@@ -213,14 +264,14 @@ def _generate_pool(
 def _exploit_key(s: Scored) -> tuple[float, float]:
     if s.probe_oracle:
         return (
-            float(s.probe_oracle.get("label_free_probe_score", 0.0)),
+            float(s.probe_oracle.get("label_free_probe_rank_score", 0.0)),
             s.profile.mech_score,
         )
     return (0.0, s.profile.mech_score)
 
 
 def _select(kept: List[Scored], n_exploit: int, n_explore: int) -> List[Scored]:
-    """Explore∪exploit shortlist; AR/nano probe oracle drives exploit ranking when available."""
+    """Explore∪exploit shortlist; AR-gated survivors rank on non-AR probe axes."""
     if any(s.probe_oracle for s in kept):
         by_mech = sorted(kept, key=_exploit_key, reverse=True)[:n_exploit]
     else:
@@ -313,8 +364,14 @@ def run_generate(args: argparse.Namespace) -> Dict[str, Any]:
             {
                 "fp": s.fingerprint,
                 "mech": round(s.profile.mech_score, 2),
+                "label_free_probe_rank_score": (s.probe_oracle or {}).get(
+                    "label_free_probe_rank_score"
+                ),
                 "label_free_probe_score": (s.probe_oracle or {}).get(
                     "label_free_probe_score"
+                ),
+                "label_free_probe_gate": (s.probe_oracle or {}).get(
+                    "label_free_probe_gate"
                 ),
                 "ops": s.ops,
             }
@@ -334,7 +391,7 @@ def run_generate(args: argparse.Namespace) -> Dict[str, Any]:
 # mech_score is a structural induction-FAMILY circuit detector: it concentrates the capable
 # 8-13x on induction / nano_induction_nearest / binding_curriculum (all "retrieve a token
 # seen earlier"), but is BLIND to AR (ar_gate/ar_curriculum, a different mechanism — enrich
-# <1x). AR coverage comes from the trained probe-oracle max-axis exploit layer, not here.
+# <1x). AR Gate is handled as a no-go filter before non-AR exploit ranking.
 _VALIDATE_LABELS: Dict[str, float] = {
     "induction_screening_auc": 0.35,
     "nano_induction_nearest_max_accuracy": 0.5,

@@ -58,10 +58,18 @@ _POST_EVAL_FEATURE_NAMES = (
     "hellaswag_acc_best",
     "induction_screening_auc_best",
     "ar_legacy_auc_best",
+    "ar_gate_score_best",
     "blimp_overall_accuracy_best",
     "binding_screening_composite_best",
     "induction_intermediate_auc_best",
     "binding_intermediate_auc_best",
+    "nano_induction_nearest_max_accuracy_best",
+    "language_control_s05_sentence_assoc_score_best",
+    "language_control_s05_binding_order_acc_best",
+    "language_control_s05_binding_score_best",
+    "language_control_s10_sentence_assoc_score_best",
+    "language_control_s10_binding_order_acc_best",
+    "language_control_s10_binding_score_best",
     "validation_loss_ratio_best",
     "rapid_screening_passed_best",
     "initial_loss_best",
@@ -82,7 +90,6 @@ _POST_EVAL_FEATURE_NAMES = (
     "diagnostic_score_best",
     "cross_task_score_best",
 )
-_PROBE_FEATURE_NAMES = set(_POST_EVAL_FEATURE_NAMES)
 
 
 def _quality_from_ppl(value: float) -> float:
@@ -527,7 +534,7 @@ class GBMPredictor:
     rank_model_ppl: Any = None  # lgb.Booster
     rank_model_composite: Any = None  # lgb.Booster
     feature_names: List[str] = field(default_factory=list)  # all features (rank model)
-    gate_feature_names: List[str] = field(default_factory=list)  # structure only (gate)
+    gate_feature_names: List[str] = field(default_factory=list)
     n_train: int = 0
     gate_threshold: float = 0.5
     gate_importance: Optional[Dict[str, float]] = None
@@ -737,13 +744,11 @@ def train_gbm(
     X, feature_names = build_dense_feature_matrix(feat_dicts)
     n_total = len(X)
 
-    # Post-eval features leak the gate label (only non-NaN for entries
-    # that completed training).  Excluded from gate; kept for rank heads.
-    gate_col_mask = np.array(
-        [fn not in _PROBE_FEATURE_NAMES for fn in feature_names], dtype=bool
-    )
-    gate_feature_names = [fn for fn in feature_names if fn not in _PROBE_FEATURE_NAMES]
-    X_gate = X[:, gate_col_mask]
+    # Keep measured probe features in the gate model as well as rank heads.
+    # This GBM is for post-screening/measured candidates, not graph-only
+    # pre-screening.
+    gate_feature_names = list(feature_names)
+    X_gate = X
 
     n_pos = int(y_gate.sum())
     n_neg = n_total - n_pos
@@ -891,9 +896,11 @@ def train_gbm(
         n_trained,
         len(feature_names),
         spw,
-        "yes"
-        if (rank_model_ppl is not None or rank_model_composite is not None)
-        else "no",
+        (
+            "yes"
+            if (rank_model_ppl is not None or rank_model_composite is not None)
+            else "no"
+        ),
         split_stats["n_unique_graphs"],
         split_stats["n_duplicate_groups"],
         split_stats["n_ambiguous_duplicate_groups"],
@@ -945,14 +952,9 @@ def evaluate_gbm(
         X = X[:, keep_mask]
         feature_names = [fn for fn in feature_names if fn not in excluded_feature_names]
 
-    # Strip post-eval probe features from gate evaluation — same as train_gbm().
-    # These features leak the gate label (only non-NaN for entries that completed
-    # training). Kept for rank heads; excluded from gate.
-    gate_col_mask = np.array(
-        [fn not in _PROBE_FEATURE_NAMES for fn in feature_names], dtype=bool
-    )
-    gate_feature_names = [fn for fn in feature_names if fn not in _PROBE_FEATURE_NAMES]
-    X_gate = X[:, gate_col_mask]
+    # Keep measured probe features in the gate model as well as rank heads.
+    gate_feature_names = list(feature_names)
+    X_gate = X
 
     n_pos = int(y_gate.sum())
     n_neg = n_total - n_pos
@@ -1017,7 +1019,7 @@ def evaluate_gbm(
         callbacks=[lgb.early_stopping(50, verbose=False), lgb.log_evaluation(0)],
     )
 
-    # Gate AUC (use probe-stripped features, matching train_gbm)
+    # Gate AUC uses the same full feature set as train_gbm.
     gate_preds = gate_model.predict(X_gate_test)
     operating_points = operating_point_profiles(y_gate_test, gate_preds)
     gate_threshold = float(operating_points["f1"]["threshold"])

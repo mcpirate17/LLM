@@ -14,7 +14,10 @@ from typing import Any, Dict, List, Optional, Tuple
 from ..json_utils import fast_dumps, fast_loads
 from ..native.core import _try_import_rust_scheduler
 from ..shared_utils import coerce_finite_float as _finite_float_or_none
-from ..notebook.graph_artifacts import resolve_graph_json_value
+from ..notebook.graph_artifacts import (
+    resolve_graph_json_value,
+    warn_missing_artifacts_once,
+)
 from ._component_metric_overlays import (
     load_component_metric_overlays as _load_component_metric_overlays,
 )
@@ -341,10 +344,8 @@ def _load_program_rows(
             }
         )
     if skipped_artifacts:
-        logger.warning(
-            "Skipped %d observability row(s) with unreadable graph artifacts. examples=%s",
-            skipped_artifacts,
-            "; ".join(skipped_examples),
+        warn_missing_artifacts_once(
+            "observability rows", skipped_artifacts, skipped_examples
         )
     return payload_rows
 

@@ -1,0 +1,39 @@
+id: product_key_memory
+version: 1.0.0
+name: Product Key Memory
+category: mixing
+tags: [memory, retrieval, discovery]
+status: experimental
+description: Factorized product-key lookup for high-capacity per-token retrieval.
+inputs:
+- name: x
+  dtype: tensor
+  shape: [B, S, D]
+outputs:
+- name: y
+  dtype: tensor
+  shape: [B, S, D]
+params:
+  num_keys:
+    type: integer
+    default: 32
+  top_k:
+    type: integer
+    default: 4
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: true
+  param_formula: "D*D+1056*D"
+  preserves_gradient: true
+  numerically_risky: false
+help_md: |
+  ### Technical
+  Splits token channels into two key spaces, scores their Cartesian product,
+  and retrieves from a factorized value table.
+
+  ### Plain Language
+  A large lookup memory made affordable by composing two smaller keybooks.

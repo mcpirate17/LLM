@@ -429,11 +429,12 @@ def _recover_orphaned_running_experiments(notebook_path: str) -> int:
     this database, the 'running' rows belong to that writer (not orphaned), so we
     skip recovery silently.
     """
-    # Peek with read-only manager — no writer flock, no conflict possible.
+    # Peek with a short-lived read-only SQLite handle: no writer flock, no
+    # process-wide read-only singleton snapshot.
     running_ids: list[str] = []
     nb_ro = None
     try:
-        nb_ro = LabNotebook(notebook_path, read_only=True)
+        nb_ro = LabNotebook(notebook_path, read_only=True, use_native=False)
         running_rows = nb_ro.conn.execute(
             "SELECT experiment_id FROM experiments WHERE status = 'running'"
         ).fetchall()
@@ -476,11 +477,19 @@ def _recover_orphaned_running_experiments(notebook_path: str) -> int:
         cleaned = nb.cleanup_stale_experiments(
             timeout_minutes=0, startup_failure_minutes=0
         )
-        logger.warning(
-            "Recovered %d orphaned running experiment(s) at dashboard startup: %s",
-            cleaned,
-            ", ".join(running_ids[:10]),
-        )
+        if cleaned:
+            logger.warning(
+                "Recovered %d orphaned running experiment(s) at dashboard startup: %s",
+                cleaned,
+                ", ".join(running_ids[:10]),
+            )
+        else:
+            logger.info(
+                "Startup orphan recovery found %d pre-existing running row(s) "
+                "but no rows required cleanup: %s",
+                len(running_ids),
+                ", ".join(running_ids[:10]),
+            )
         return cleaned
     except Exception as exc:
         logger.warning("Startup orphaned-run recovery failed: %s", exc, exc_info=True)

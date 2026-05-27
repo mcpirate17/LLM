@@ -47,6 +47,14 @@ def triton_block_sparse_linear(
     K = x_shape[-1]
     N = weight.shape[0]
 
+    # Triton's tl.dot requires each tile dim >= 16 (16x16x16 for fp16). block_size
+    # sets BLOCK_SIZE_{N,K}, so a small block_size or a small contraction/output
+    # dim cannot be JIT-compiled (raises triton CompilationError, not RuntimeError,
+    # so callers' RuntimeError guards miss it). Dispatch those to the exact dense
+    # masked matmul — same explicit small-shape handling as the M<1024 guard above.
+    if block_size < 16 or K < 16 or N < 16:
+        return _safe_linear_fallback(x, weight * mask)
+
     x_2d = x.reshape(M, K)
     y_2d = torch.zeros((M, N), device=x.device, dtype=x.dtype)
 

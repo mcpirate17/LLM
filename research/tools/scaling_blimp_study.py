@@ -134,6 +134,51 @@ class _SimplifiedMambaLane(nn.Module):
         return ssm_out * gate
 
 
+class AdjacentTokenMergeLane(nn.Module):
+    """Binding-specialist lane built on the ``adjacent_token_merge`` primitive.
+
+    The primitive (``compiler_ops_routing._op_adjacent_token_merge``) is a
+    parameter-free, strictly-causal token compressor: it merges even-stride
+    tokens into their predecessor and then restores the original seq_len via a
+    nearest-kept mapping (``(B,S,D) -> (B,S,D)``). On its own it carries no
+    learnable capacity, so we surround it with learnable in/out projections and
+    a sigmoid content gate to make it a trainable mixer.
+
+    As a bare mixer it relies on the outer ``_LaneBlock`` for the
+    norm/residual/FFN structure (the merge is information-destructive and
+    ``REQUIRES_RESIDUAL_BYPASS`` — the outer ``x + lane(norm1(x))`` supplies it).
+
+    The merge op has data-dependent control flow (``searchsorted``/dynamic
+    ``arange``) and mutates a ``routing_telemetry`` dict on ``self`` every call,
+    both of which poison the dynamo recompile cache, so it is isolated via
+    ``@torch._dynamo.disable`` (see [[feedback_dynamo_disable_synthesis_forwards]]).
+    It is also forced to fp32 to avoid the bf16 ``scatter_add`` dtype mismatch
+    under AMP.
+    """
+
+    def __init__(self, dim: int, keep_frac: float = 0.5) -> None:
+        super().__init__()
+        self.dim = dim
+        self.keep_frac = float(keep_frac)
+        self.in_proj = nn.Linear(dim, dim)
+        self.out_proj = nn.Linear(dim, dim)
+        self.gate = nn.Linear(dim, dim)
+
+    @torch._dynamo.disable
+    def _merge(self, h: torch.Tensor) -> torch.Tensor:
+        from research.synthesis.compiler_ops_routing import _op_adjacent_token_merge
+
+        seq_len = h.shape[1]
+        n_keep = max(1, int(round(seq_len * self.keep_frac)))
+        with torch.autocast(device_type=h.device.type, enabled=False):
+            return _op_adjacent_token_merge(self, [h.float()], {"n_keep": n_keep})
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        merged = self._merge(self.in_proj(x)).to(x.dtype)
+        gate = torch.sigmoid(self.gate(x))
+        return self.out_proj(merged) * gate
+
+
 def _build_lane_factory(
     name: str, top_k_frac: float = 0.25
 ) -> Callable[[int], nn.Module]:
@@ -153,6 +198,8 @@ def _build_lane_factory(
         return LinearStateSpaceLane
     if name == "causal_conv":
         return lane_factory_for_baseline("causal_conv")
+    if name == "adjacent_token_merge_lane":
+        return AdjacentTokenMergeLane
 
     if name == "tropical_sparsemax_wavelet_three_lane":
 

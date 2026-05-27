@@ -1455,6 +1455,16 @@ _PROGRAM_RESULTS_NEW_COLUMNS = {
     "binding_intermediate_status": "TEXT",
     "binding_intermediate_elapsed_ms": "REAL",
     "binding_intermediate_protocol_version": "TEXT",
+    # Cheap structural nearest-induction probe. This is sparse/high-signal and
+    # should be treated as a feature, not as a pass/fail gate.
+    "nano_induction_nearest_max_accuracy": "REAL",
+    "nano_induction_nearest_final_accuracy": "REAL",
+    "nano_induction_nearest_status": "TEXT",
+    "nano_induction_nearest_elapsed_ms": "REAL",
+    "nano_induction_nearest_error": "TEXT",
+    "nano_induction_nearest_accuracies_json": "TEXT",
+    "nano_induction_nearest_train_steps": "INTEGER",
+    "nano_induction_nearest_protocol_version": "TEXT",
     # Champion-tier induction and AR validation probes.
     "induction_validation_auc": "REAL",
     "induction_validation_max_gap_acc": "REAL",

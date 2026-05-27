@@ -1341,17 +1341,18 @@ def graph_difficulty_routed() -> Tuple[ComputationGraph, str, List[str]]:
     g = ComputationGraph(D)
     inp = g.add_input()
     ln = g.add_op("rmsnorm", [inp])
-    # Classifier for difficulty scoring
-    g.add_op("token_type_classifier", [ln], {"n_classes": 2})
+    # Classifier for difficulty scoring, consumed as the slow-lane gate.
+    cls = g.add_op("token_type_classifier", [ln], {"n_classes": 2})
+    difficulty = g.add_op("entropy_score", [cls], {})
     # Fast lane: simple projection
     fast = g.add_op("linear_proj", [ln], {"out_dim": D})
     # Slow lane: attention
     slow = g.add_op("softmax_attention", [ln])
-    # Merge via add (difficulty gate applied by classifier output)
-    merged = g.add_op("add", [fast, slow])
+    slow_weighted = g.add_op("mul", [slow, difficulty])
+    merged = g.add_op("add", [fast, slow_weighted])
     res = g.add_op("add", [inp, merged])
     g.set_output(res)
-    return g, "difficulty_routed", ["token_type_classifier"]
+    return g, "difficulty_routed", ["token_type_classifier", "entropy_score", "mul"]
 
 
 def graph_topk_retrieval() -> Tuple[ComputationGraph, str, List[str]]:

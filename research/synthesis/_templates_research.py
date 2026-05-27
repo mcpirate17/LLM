@@ -997,3 +997,38 @@ def tpl_dual_axis_block(
 
     merged = _fix_dim(graph, merged)
     return _residual(graph, input_id, merged, context="dual_axis_block.output")
+
+
+def tpl_persistent_role_slot(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """norm → role_slot_attention → [FFN motif] → residual_add.
+
+    A 'Neural Symbolic' lane: tokens read from learned global slots,
+    followed by a local MLP transform. This provides a mechanism for
+    stable associative retrieval between tokens and a persistent workspace.
+    """
+    # Step 1: Norm
+    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
+    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
+
+    # Step 2: Role Slot Attention
+    # num_slots is sampled or fixed at 32 for this research lane.
+    attended = _add(
+        graph,
+        "role_slot_attention",
+        [normed],
+        {"num_slots": 32},
+        context="persistent_role_slot.read",
+    )
+
+    # Step 3: Local Transform (FFN)
+    ffn = _pick_compatible_motif_from_classes(
+        graph, attended, rng, _FFN_CLASSES, weights
+    )
+    processed = _instantiate_motif(graph, attended, ffn, rng) if ffn else attended
+
+    return _residual(graph, input_id, processed, context="persistent_role_slot.output")

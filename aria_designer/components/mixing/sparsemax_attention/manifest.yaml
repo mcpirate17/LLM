@@ -1,0 +1,34 @@
+id: sparsemax_attention
+version: 1.0.0
+name: Sparsemax Attention
+category: mixing
+tags: [attention, sparse, discovery]
+status: experimental
+description: Causal attention with sparsemax-normalized retrieval weights.
+inputs:
+- name: x
+  dtype: tensor
+  shape: [B, S, D]
+outputs:
+- name: y
+  dtype: tensor
+  shape: [B, S, D]
+params: {}
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: true
+  param_formula: "D*D*4"
+  preserves_gradient: true
+  numerically_risky: false
+help_md: |
+  ### Technical
+  Sparsemax attention replaces softmax with Euclidean projection onto the
+  probability simplex, producing exact zeros in causal retrieval maps.
+
+  ### Plain Language
+  Attention that can choose a small set of prior tokens instead of softly
+  blending nearly everything.

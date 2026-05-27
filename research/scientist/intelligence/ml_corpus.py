@@ -721,14 +721,12 @@ def _fallback_graph_training_rows(db_path: str) -> List[Dict[str, Any]]:
         if "screening_wikitext_metric_version" in pr_cols
         else ""
     )
-    rows = conn.execute(
-        f"""
+    rows = conn.execute(f"""
         SELECT graph_json, stage1_passed, wikitext_perplexity, loss_ratio,
                stage0_passed, stage05_passed, timestamp{metric_version_select}
         FROM {pr_table}
         WHERE {" AND ".join(where)}
-        """
-    ).fetchall()
+        """).fetchall()
 
     grouped: Dict[str, Dict[str, Any]] = {}
     for row in rows:
@@ -824,8 +822,7 @@ def _fallback_predictor_training_rows(db_path: str) -> List[Dict[str, Any]]:
                 ),
             ]
         )
-    rows = conn.execute(
-        f"""
+    rows = conn.execute(f"""
         SELECT pr.graph_json, pr.fingerprint_json, pr.novelty_score,
                pr.structural_novelty,
                COALESCE(l.investigation_loss_ratio, pr.loss_ratio) AS target_loss_ratio,
@@ -834,8 +831,7 @@ def _fallback_predictor_training_rows(db_path: str) -> List[Dict[str, Any]]:
         FROM {pr_table} pr
         LEFT JOIN leaderboard l ON l.result_id = pr.result_id
         WHERE {" AND ".join(where)}
-        """
-    ).fetchall()
+        """).fetchall()
 
     grouped: Dict[str, Dict[str, Any]] = {}
     for row in rows:
@@ -938,14 +934,40 @@ def _fallback_screening_predictor_rows(db_path: str) -> List[Dict[str, Any]]:
         if "screening_wikitext_metric_version" in pr_cols
         else ""
     )
-    rows = conn.execute(
-        f"""
+    nearest_select = (
+        "pr.nano_induction_nearest_max_accuracy"
+        if "nano_induction_nearest_max_accuracy" in pr_cols
+        else "NULL AS nano_induction_nearest_max_accuracy"
+    )
+    ar_gate_select = (
+        "pr.ar_gate_score" if "ar_gate_score" in pr_cols else "NULL AS ar_gate_score"
+    )
+    language_control_selects = {
+        name: f"pr.{name}" if name in pr_cols else f"NULL AS {name}"
+        for name in (
+            "language_control_s05_sentence_assoc_score",
+            "language_control_s05_binding_order_acc",
+            "language_control_s05_binding_score",
+            "language_control_s10_sentence_assoc_score",
+            "language_control_s10_binding_order_acc",
+            "language_control_s10_binding_score",
+        )
+    }
+    rows = conn.execute(f"""
         SELECT pr.graph_json, pr.stage1_passed, pr.wikitext_perplexity, pr.loss_ratio,
                pr.stage0_passed, pr.stage05_passed, pr.timestamp, pr.trust_label,
                pr.comparability_label, pr.result_cohort, pr.data_provenance_json,
                pr.hellaswag_acc, pr.induction_screening_auc, pr.ar_legacy_auc,
+               {ar_gate_select},
                pr.blimp_overall_accuracy, pr.binding_screening_composite,
                pr.induction_intermediate_auc, pr.binding_intermediate_auc,
+               {nearest_select},
+               {language_control_selects["language_control_s05_sentence_assoc_score"]},
+               {language_control_selects["language_control_s05_binding_order_acc"]},
+               {language_control_selects["language_control_s05_binding_score"]},
+               {language_control_selects["language_control_s10_sentence_assoc_score"]},
+               {language_control_selects["language_control_s10_binding_order_acc"]},
+               {language_control_selects["language_control_s10_binding_score"]},
                pr.validation_loss_ratio, pr.rapid_screening_passed,
                pr.initial_loss, pr.mean_grad_norm, pr.max_grad_norm,
                pr.grad_norm_std,
@@ -958,8 +980,7 @@ def _fallback_screening_predictor_rows(db_path: str) -> List[Dict[str, Any]]:
         FROM {pr_table} pr
         LEFT JOIN leaderboard l ON l.result_id = pr.result_id
         WHERE {" AND ".join(where)}
-        """
-    ).fetchall()
+        """).fetchall()
 
     grouped: Dict[str, Dict[str, Any]] = {}
     for row in rows:
@@ -979,10 +1000,18 @@ def _fallback_screening_predictor_rows(db_path: str) -> List[Dict[str, Any]]:
                 "hellaswag_acc_best": None,
                 "induction_screening_auc_best": None,
                 "ar_legacy_auc_best": None,
+                "ar_gate_score_best": None,
                 "blimp_overall_accuracy_best": None,
                 "binding_screening_composite_best": None,
                 "induction_intermediate_auc_best": None,
                 "binding_intermediate_auc_best": None,
+                "nano_induction_nearest_max_accuracy_best": None,
+                "language_control_s05_sentence_assoc_score_best": None,
+                "language_control_s05_binding_order_acc_best": None,
+                "language_control_s05_binding_score_best": None,
+                "language_control_s10_sentence_assoc_score_best": None,
+                "language_control_s10_binding_order_acc_best": None,
+                "language_control_s10_binding_score_best": None,
                 "validation_loss_ratio_best": None,
                 "rapid_screening_passed_best": None,
                 "composite_score_best": None,
@@ -1069,6 +1098,7 @@ def _fallback_screening_predictor_rows(db_path: str) -> List[Dict[str, Any]]:
             ("hellaswag_acc_best", "hellaswag_acc"),
             ("induction_screening_auc_best", "induction_screening_auc"),
             ("ar_legacy_auc_best", "ar_legacy_auc"),
+            ("ar_gate_score_best", "ar_gate_score"),
             ("blimp_overall_accuracy_best", "blimp_overall_accuracy"),
             ("binding_screening_composite_best", "binding_screening_composite"),
             (
@@ -1078,6 +1108,34 @@ def _fallback_screening_predictor_rows(db_path: str) -> List[Dict[str, Any]]:
             (
                 "binding_intermediate_auc_best",
                 "binding_intermediate_auc",
+            ),
+            (
+                "nano_induction_nearest_max_accuracy_best",
+                "nano_induction_nearest_max_accuracy",
+            ),
+            (
+                "language_control_s05_sentence_assoc_score_best",
+                "language_control_s05_sentence_assoc_score",
+            ),
+            (
+                "language_control_s05_binding_order_acc_best",
+                "language_control_s05_binding_order_acc",
+            ),
+            (
+                "language_control_s05_binding_score_best",
+                "language_control_s05_binding_score",
+            ),
+            (
+                "language_control_s10_sentence_assoc_score_best",
+                "language_control_s10_sentence_assoc_score",
+            ),
+            (
+                "language_control_s10_binding_order_acc_best",
+                "language_control_s10_binding_order_acc",
+            ),
+            (
+                "language_control_s10_binding_score_best",
+                "language_control_s10_binding_score",
             ),
             # 0/1 int → max() == OR
             ("rapid_screening_passed_best", "rapid_screening_passed"),
@@ -1168,6 +1226,7 @@ def _graph_analysis_select_cols(available: set[str]) -> List[str]:
         col("stage1_passed"),
         col("timestamp"),
         col("induction_screening_auc"),
+        col("ar_gate_score"),
         first(
             "binding_screening_auc", "binding_curriculum_auc", "binding_screening_auc"
         ),
@@ -1177,6 +1236,7 @@ def _graph_analysis_select_cols(available: set[str]) -> List[str]:
         col("blimp_overall_accuracy"),
         col("induction_intermediate_auc"),
         col("binding_intermediate_auc"),
+        col("nano_induction_nearest_max_accuracy"),
     ]
 
 
@@ -1195,6 +1255,7 @@ def _initial_graph_analysis_group(
         "graph_depth": row["graph_depth"],
         "graph_uses_math_spaces": bool(row["graph_uses_math_spaces"]),
         "induction_screening_auc": row["induction_screening_auc"],
+        "ar_gate_score": row["ar_gate_score"],
         "binding_screening_auc": row["binding_screening_auc"],
         "binding_screening_composite": row["binding_screening_composite"],
         "ar_legacy_auc": row["ar_legacy_auc"],
@@ -1202,6 +1263,9 @@ def _initial_graph_analysis_group(
         "blimp_overall_accuracy": row["blimp_overall_accuracy"],
         "induction_intermediate_auc": row["induction_intermediate_auc"],
         "binding_intermediate_auc": row["binding_intermediate_auc"],
+        "nano_induction_nearest_max_accuracy": row[
+            "nano_induction_nearest_max_accuracy"
+        ],
         "stage0_any_passed": False,
         "stage05_any_passed": False,
         "stage1_any_passed": False,
@@ -1230,6 +1294,7 @@ def _update_graph_analysis_group(
     )
     for metric_key in (
         "induction_screening_auc",
+        "ar_gate_score",
         "binding_screening_auc",
         "binding_screening_composite",
         "ar_legacy_auc",
@@ -1237,6 +1302,7 @@ def _update_graph_analysis_group(
         "blimp_overall_accuracy",
         "induction_intermediate_auc",
         "binding_intermediate_auc",
+        "nano_induction_nearest_max_accuracy",
     ):
         group[metric_key] = _max_opt(group.get(metric_key), row[metric_key])
 
@@ -1283,13 +1349,11 @@ def _fallback_graph_analysis_rows(db_path: str) -> List[Dict[str, Any]]:
         "graph_json <> '{}'",
         *_non_byte_training_data_clauses(pr_cols),
     ]
-    rows = conn.execute(
-        f"""
+    rows = conn.execute(f"""
         SELECT {", ".join(select_cols)}
         FROM {pr_table}
         WHERE {" AND ".join(where)}
-        """
-    ).fetchall()
+        """).fetchall()
 
     grouped: Dict[str, Dict[str, Any]] = {}
     for row in rows:

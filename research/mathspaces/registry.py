@@ -12,7 +12,16 @@ from ..synthesis.primitives import (
     OpCategory,
     register_external_primitive,
 )
-from . import hyperbolic, tropical, padic, clifford, compression, spiking
+from . import (
+    hyperbolic,
+    tropical,
+    padic,
+    clifford,
+    compression,
+    spiking,
+    projective,
+    cawn,
+)
 from . import tropical_routing
 from . import tree_mix as _tree_mix_mod  # noqa: F401 — used in register_all_mathspaces
 from . import mla as _mla_mod  # noqa: F401 — used in register_all_mathspaces
@@ -524,6 +533,43 @@ def register_all_mathspaces():
         algebraic_space="spiking",
     )
     op = _with_execute(op, spiking.execute_sparse_threshold)
+    register_external_primitive(op)
+
+    # ── Projective Geometry ──
+    op = PrimitiveOp(
+        name="projective_linear",
+        category=OpCategory.MATH_SPACE,
+        n_inputs=1,
+        shape_rule="identity",
+        has_params=True,
+        param_formula="(D+1)*(D+1)",
+        description="Linear transformation (homography) in projective space",
+        algebraic_space="projective",
+    )
+    op = _with_execute(op, projective.execute_projective_linear)
+    register_external_primitive(op)
+
+    op = PrimitiveOp(
+        name="projective_attention",
+        category=OpCategory.MATH_SPACE,
+        n_inputs=1,
+        shape_rule="identity",
+        description="Self-attention using projective angular (cosine) distances",
+        algebraic_space="projective",
+    )
+    op = _with_execute(op, projective.execute_projective_attention)
+    register_external_primitive(op)
+
+    # ── Continuous Acoustic Wave Network (CAWN) ──
+    op = PrimitiveOp(
+        name="cawn_mixer",
+        category=OpCategory.MATH_SPACE,
+        n_inputs=1,
+        shape_rule="identity",
+        description="Continuous complex-domain phase accumulation sequence mixer",
+        algebraic_space="complex",
+    )
+    op = _with_execute(op, cawn.execute_cawn_mixer)
     register_external_primitive(op)
 
 

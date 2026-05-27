@@ -123,9 +123,9 @@ def mutate_graph(
     mut_grammar = derive_mutation_grammar(graph, grammar, rng)
     for _ in range(3):
         new_graph = generate_context_valid_graph(mut_grammar, rng)
+        new_graph.prune_unreachable_nodes()
         if new_graph.fingerprint() != parent_fp:
             break
-    new_graph.prune_unreachable_nodes()
     new_graph.metadata["lineage"] = {
         "type": "mutation",
         "parent": parent_fp,

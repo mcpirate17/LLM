@@ -20,6 +20,13 @@ def test_new_mixing_op_param_formulas_match_initialized_modules():
         "long_conv_hyena": 32 * 32 * 3 + 32 * 33 + 64,
         "associative_memory": 32 * 32 * 4 + 1,
         "mixture_of_recursions": 32 * 32 * 6 + 32 * 6 + 4,
+        "sparsemax_attention": 32 * 32 * 4,
+        "entmax_attention": 32 * 32 * 4,
+        "dplr_gated_delta": 32 * 32 * 6 + 32 * 32 // 4,
+        "token_hodge_mixer": 32 * 32 * 4,
+        "wavelet_packet_mix": 32 * 32 * 4 + 32 * 2,
+        "retention_mix": 32 * 32 * 4 + 32 * 2,
+        "product_key_memory": 32 * 32 + 1056 * 32,
     }
     for op_name, n_params in expected.items():
         assert estimate_op_params(get_primitive(op_name), 32) == n_params
@@ -42,6 +49,15 @@ def test_new_mixing_op_flop_estimates_reflect_actual_kernel_shapes():
             "long_conv_hyena",
             "associative_memory",
             "mixture_of_recursions",
+            "softmax_attention",
+            "gated_delta",
+            "sparsemax_attention",
+            "entmax_attention",
+            "dplr_gated_delta",
+            "token_hodge_mixer",
+            "wavelet_packet_mix",
+            "retention_mix",
+            "product_key_memory",
         )
     }
 
@@ -55,3 +71,10 @@ def test_new_mixing_op_flop_estimates_reflect_actual_kernel_shapes():
     assert estimates["strided_attention"] < estimates["difficulty_routed_attention"]
     assert estimates["long_conv_hyena"] > 0
     assert estimates["mixture_of_recursions"] > estimates["gated_linear_attention"]
+    assert estimates["sparsemax_attention"] > estimates["softmax_attention"] * 0.9
+    assert estimates["entmax_attention"] > estimates["softmax_attention"] * 0.9
+    assert estimates["dplr_gated_delta"] > estimates["gated_delta"]
+    assert estimates["token_hodge_mixer"] > 0
+    assert estimates["wavelet_packet_mix"] > 0
+    assert estimates["retention_mix"] > 0
+    assert estimates["product_key_memory"] > 0

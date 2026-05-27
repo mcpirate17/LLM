@@ -92,6 +92,7 @@ def _smoke_test_native(graph) -> bool:
 
 def _try_compile_and_train(graph) -> bool:
     """Attempt compile + micro-train. Returns True if no crash/NaN."""
+    from research.eval._probe_runtime import disable_native_probe_dispatch
     from research.synthesis.compiler import compile_model
 
     try:
@@ -104,27 +105,28 @@ def _try_compile_and_train(graph) -> bool:
         return False
 
     try:
-        model.train()
-        optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
-        input_ids = torch.randint(0, VOCAB_SIZE, (BATCH_SIZE, SEQ_LEN))
+        with disable_native_probe_dispatch(model, device="cpu"):
+            model.train()
+            optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+            input_ids = torch.randint(0, VOCAB_SIZE, (BATCH_SIZE, SEQ_LEN))
 
-        for _ in range(TRAIN_STEPS):
-            optimizer.zero_grad()
-            logits = model(input_ids)
-            if logits.dim() == 3:
-                loss = torch.nn.functional.cross_entropy(
-                    logits[:, :-1].reshape(-1, logits.size(-1)),
-                    input_ids[:, 1:].reshape(-1),
-                )
-            else:
-                loss = logits.mean()
+            for _ in range(TRAIN_STEPS):
+                optimizer.zero_grad()
+                logits = model(input_ids)
+                if logits.dim() == 3:
+                    loss = torch.nn.functional.cross_entropy(
+                        logits[:, :-1].reshape(-1, logits.size(-1)),
+                        input_ids[:, 1:].reshape(-1),
+                    )
+                else:
+                    loss = logits.mean()
 
-            if torch.isnan(loss) or torch.isinf(loss):
-                return False
+                if torch.isnan(loss) or torch.isinf(loss):
+                    return False
 
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            optimizer.step()
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                optimizer.step()
 
         return True
     except Exception:

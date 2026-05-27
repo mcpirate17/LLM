@@ -1208,3 +1208,140 @@ def tpl_recursive_moe_attn(
 
     proj = _fix_dim(graph, proj)
     return _residual(graph, input_id, proj, context="recursive_moe_attn.output")
+
+
+def tpl_projective_attention_block(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """Projective geometry attention block.
+    norm -> projective_linear -> projective_attention -> norm -> state_space -> linear_proj -> activation -> residual.
+
+    Pairs the new projective substrate with SSM (state_space) to provide
+    long-range tracking and reach the 8+ op minimum for structural maturity.
+    """
+    D = graph.model_dim
+    norm_op = rng.choice(["rmsnorm", "layernorm"])
+
+    normed = _add(
+        graph,
+        norm_op,
+        [input_id],
+        context="projective_attention_block.pre_norm",
+    )
+
+    proj_in = _add(
+        graph,
+        "projective_linear",
+        [normed],
+        context="projective_attention_block.proj_in",
+    )
+
+    attn = _add(
+        graph,
+        "projective_attention",
+        [proj_in],
+        context="projective_attention_block.attn",
+    )
+
+    mid_norm = _add(
+        graph,
+        "rmsnorm",
+        [attn],
+        context="projective_attention_block.mid_norm",
+    )
+
+    ssm = _add(
+        graph,
+        "state_space",
+        [mid_norm],
+        context="projective_attention_block.ssm",
+    )
+
+    proj_out = _add(
+        graph,
+        "linear_proj",
+        [ssm],
+        {"out_dim": D},
+        context="projective_attention_block.proj_out",
+    )
+
+    act_op = rng.choice(["gelu", "silu", "relu"])
+    activated = _add(
+        graph,
+        act_op,
+        [proj_out],
+        context="projective_attention_block.activation",
+    )
+
+    final_out = _fix_dim(graph, activated)
+    return _residual(
+        graph, input_id, final_out, context="projective_attention_block.output"
+    )
+
+
+def tpl_cawn_mixer_block(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """Continuous Acoustic Wave Network mixer block.
+    norm -> cawn_mixer -> norm -> latent_attention_compressor -> sparse -> activation -> linear_proj -> residual.
+
+    Pairs the complex wave mixer with latent attention and sparse projections
+    to provide established content addressing and sufficient depth for the gates.
+    """
+    D = graph.model_dim
+    norm_op = rng.choice(["rmsnorm", "layernorm"])
+
+    normed = _add(
+        graph,
+        norm_op,
+        [input_id],
+        context="cawn_mixer_block.pre_norm",
+    )
+
+    mixed = _add(
+        graph,
+        "cawn_mixer",
+        [normed],
+        context="cawn_mixer_block.mixer",
+    )
+
+    mid_norm = _add(
+        graph,
+        "rmsnorm",
+        [mixed],
+        context="cawn_mixer_block.mid_norm",
+    )
+
+    attn = _add(
+        graph,
+        "latent_attention_compressor",
+        [mid_norm],
+        context="cawn_mixer_block.attn",
+    )
+
+    sparse_op = rng.choice(["nm_sparse_linear", "low_rank_proj", "ternary_projection"])
+    sparse = _add(graph, sparse_op, [attn], context="cawn_mixer_block.sparse")
+
+    act_op = rng.choice(["gelu", "silu", "relu"])
+    activated = _add(
+        graph,
+        act_op,
+        [sparse],
+        context="cawn_mixer_block.activation",
+    )
+
+    proj_out = _add(
+        graph,
+        "linear_proj",
+        [activated],
+        {"out_dim": D},
+        context="cawn_mixer_block.proj_out",
+    )
+    proj_out = _fix_dim(graph, proj_out)
+    return _residual(graph, input_id, proj_out, context="cawn_mixer_block.output")

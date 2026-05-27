@@ -148,6 +148,13 @@ COMPONENT_GRAPH_EXEMPT_TEMPLATES = frozenset(
         "long_conv_hyena_block",
         "associative_memory_block",
         "mixture_of_recursions_block",
+        "sparsemax_attention_block",
+        "entmax_attention_block",
+        "dplr_gated_delta_block",
+        "token_hodge_mixer_block",
+        "wavelet_packet_mix_block",
+        "retention_mix_block",
+        "product_key_memory_block",
         "codex_ssm_retention_block",
         "codex_ssm_delta_memory_block",
         "codex_ssm_mla_gated_block",
@@ -191,6 +198,7 @@ RETIRED_TEMPLATE_NAMES = frozenset(
     {
         "attn_reciprocal_gated",
         "attn_softmax_router_sidecar",
+        "gated_linear_attention_block",
         "multiscale_difficulty_router_blocksparse_attn_ssm",
         "multiscale_difficulty_router_easy_attn_ssm",
     }
@@ -256,6 +264,8 @@ from ._templates_core import (  # noqa: F401
     tpl_recursive_attn_ssm_hybrid,
     tpl_induction_matmul_block,
     tpl_recursive_moe_attn,
+    tpl_projective_attention_block,
+    tpl_cawn_mixer_block,
 )
 
 from ._templates_routing import (  # noqa: F401
@@ -330,6 +340,8 @@ TEMPLATES: Dict[str, TemplateFn] = {
     "recursive_attn_ssm_hybrid": tpl_recursive_attn_ssm_hybrid,
     "induction_matmul_block": tpl_induction_matmul_block,
     "recursive_moe_attn": tpl_recursive_moe_attn,
+    "projective_attention_block": tpl_projective_attention_block,
+    "cawn_mixer_block": tpl_cawn_mixer_block,
     **ROUTING_TEMPLATE_REGISTRY,
     "normalized_matmul": tpl_normalized_matmul,
     "gated_product": tpl_gated_product,
@@ -397,6 +409,8 @@ DEFAULT_TEMPLATE_WEIGHTS: Dict[str, float] = {
     "recursive_attn_ssm_hybrid": 0.5,
     "induction_matmul_block": 4.5,
     "recursive_moe_attn": 0.5,
+    "projective_attention_block": 3.0,
+    "cawn_mixer_block": 3.0,
     **ROUTING_TEMPLATE_DEFAULT_WEIGHTS,
     "normalized_matmul": 3.0,
     "gated_product": 2.0,
@@ -467,7 +481,9 @@ DEFAULT_TEMPLATE_WEIGHTS: Dict[str, float] = {
 # template registry deterministic for tests and CI. Mined templates are
 # registered with a weight of 0.5 (below the default 1.0) to avoid crowding
 # out human-designed templates until they prove out in live screening.
-from ._templates_mined import register_mined_templates as _register_mined_templates  # noqa: E402
+from ._templates_mined import (
+    register_mined_templates as _register_mined_templates,
+)  # noqa: E402
 
 _register_mined_templates(TEMPLATES, DEFAULT_TEMPLATE_WEIGHTS)
 

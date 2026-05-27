@@ -15,9 +15,11 @@ compression, MoE — so a novel mixer sits inside a learnable architecture. Gene
 is softly biased toward the novel mixers (so >=1 appears) and the historical learning
 scaffold (rope/attention/norm, mined from capable graphs) so the graph can still learn.
 
-The capability screener scores every survivor (predicted induction) and ranks them, but
-score is NOT a gate: the point is to explore novel mixers, including ones the screener —
-trained on the familiar past — under-rates.
+By default the persisted label-free probe oracle scores every survivor on measured
+probe axes, including AR Gate and ``nano_induction_nearest``. Score is NOT a hard
+gate: the point is to explore novel mixers, including ones any learned scorer
+under-rates. The older static capability screener remains available through
+``--scorer capability-screener`` for A/B comparisons.
 
 Usage::
 
@@ -47,6 +49,7 @@ from research.synthesis.grammar import GrammarConfig, generate_layer_graph
 from research.synthesis.op_roles import OpRole, get_role
 from research.synthesis.primitives import PRIMITIVE_REGISTRY
 from research.tools.capability_screener import featurize_op_sets, load_screener
+from research.tools.label_free_probe_oracle import LabelFreeProbeOracleScorer
 
 logger = logging.getLogger(__name__)
 
@@ -149,7 +152,7 @@ def _graph_features(g: Any) -> Tuple[Set[str], int, int, str]:
     return op_set, len(op_nodes), pair_count, str(g.fingerprint())
 
 
-def _score_and_write(
+def _score_with_capability_screener(
     batch: List[Dict[str, Any]],
     booster: Any,
     vocab: List[str],
@@ -157,9 +160,6 @@ def _score_and_write(
     top: List[Tuple[float, str, Dict[str, Any]]],
     top_k: int,
 ) -> int:
-    """Screen a batch, stream it to JSONL, keep a running top-k heap. Returns batch size."""
-    if not batch:
-        return 0
     X = featurize_op_sets(
         [set(r["ops"]) for r in batch],
         [r["op_count"] for r in batch],
@@ -168,6 +168,8 @@ def _score_and_write(
     )
     for r, s in zip(batch, np.asarray(booster.predict(X), dtype=np.float64)):
         r["score"] = round(float(s), 4)
+        r["score_source"] = "capability_screener"
+        r.pop("_graph_dict", None)
         fout.write(json.dumps(r) + "\n")
         entry = (r["score"], r["fingerprint"], r)
         if len(top) < top_k:
@@ -177,6 +179,48 @@ def _score_and_write(
     n = len(batch)
     batch.clear()
     return n
+
+
+def _score_with_probe_oracle(
+    batch: List[Dict[str, Any]],
+    oracle: LabelFreeProbeOracleScorer,
+    fout: Any,
+    top: List[Tuple[float, str, Dict[str, Any]]],
+    top_k: int,
+) -> int:
+    for r in batch:
+        graph_dict = r.pop("_graph_dict")
+        probe = oracle.score_graph_dict(graph_dict)
+        r.update(probe)
+        r["score"] = round(float(probe.get("label_free_probe_score", 0.0)), 4)
+        r["score_source"] = "label_free_probe_oracle"
+        fout.write(json.dumps(r) + "\n")
+        entry = (r["score"], r["fingerprint"], r)
+        if len(top) < top_k:
+            heapq.heappush(top, entry)
+        elif r["score"] > top[0][0]:
+            heapq.heapreplace(top, entry)
+    n = len(batch)
+    batch.clear()
+    return n
+
+
+def _score_and_write(
+    batch: List[Dict[str, Any]],
+    scorer: Tuple[str, Any, List[str] | None],
+    fout: Any,
+    top: List[Tuple[float, str, Dict[str, Any]]],
+    top_k: int,
+) -> int:
+    """Screen a batch, stream it to JSONL, keep a running top-k heap."""
+    if not batch:
+        return 0
+    kind, model, vocab = scorer
+    if kind == "probe-oracle":
+        return _score_with_probe_oracle(batch, model, fout, top, top_k)
+    return _score_with_capability_screener(
+        batch, model, list(vocab or []), fout, top, top_k
+    )
 
 
 def _generate_stream(
@@ -191,11 +235,17 @@ def _generate_stream(
     batch_size: int,
     progress_every: int,
     tag: str,
+    scorer_name: str,
+    runs_db: str,
 ) -> Tuple[Counter, List[Dict[str, Any]]]:
     """Core loop: generate -> gate (novel fp + novel mixer) -> screen batch -> stream JSONL."""
     cfg = GrammarConfig(op_weights=dict(op_weights))
-    booster, meta = load_screener()
-    vocab = list(meta["op_vocab"])
+    if scorer_name == "probe-oracle":
+        oracle = LabelFreeProbeOracleScorer.load(runs_db=runs_db)
+        scorer = ("probe-oracle", oracle, None)
+    else:
+        booster, meta = load_screener()
+        scorer = ("capability-screener", booster, list(meta["op_vocab"]))
     stats: Counter = Counter()
     seen_new: Set[str] = set()
     top: List[Tuple[float, str, Dict[str, Any]]] = []
@@ -235,10 +285,11 @@ def _generate_stream(
                 "op_count": op_count,
                 "pair_count": pair_count,
                 "novel_mixers": hits,
+                "_graph_dict": g.to_dict(),
             }
         )
         if len(batch) >= batch_size:
-            stats["kept"] += _score_and_write(batch, booster, vocab, fout, top, top_k)
+            stats["kept"] += _score_and_write(batch, scorer, fout, top, top_k)
         if progress_every and stats["generated"] % progress_every == 0:
             logger.info(
                 "[%s] gen=%d kept=%d (%.0f/s)",
@@ -249,7 +300,7 @@ def _generate_stream(
             )
         if stats["kept"] + len(batch) >= target:
             break
-    stats["kept"] += _score_and_write(batch, booster, vocab, fout, top, top_k)
+    stats["kept"] += _score_and_write(batch, scorer, fout, top, top_k)
     fout.close()
     return stats, [t[2] for t in sorted(top, reverse=True)]
 
@@ -268,6 +319,8 @@ def _worker(payload: Dict[str, Any]) -> Tuple[Dict[str, int], List[Dict[str, Any
         batch_size=payload["batch_size"],
         progress_every=payload["progress_every"],
         tag=payload["tag"],
+        scorer_name=payload["scorer_name"],
+        runs_db=payload["runs_db"],
     )
     return dict(stats), top
 
@@ -290,6 +343,8 @@ def _run_single(
         batch_size=args.batch_size,
         progress_every=args.progress_every,
         tag="main",
+        scorer_name=args.scorer,
+        runs_db=args.db,
     )
     return Counter(stats), top, [out.as_posix()]
 
@@ -310,6 +365,8 @@ def _run_parallel(
         "top_k": args.top,
         "batch_size": args.batch_size,
         "progress_every": args.progress_every,
+        "scorer_name": args.scorer,
+        "runs_db": args.db,
     }
     payloads = [
         {
@@ -360,6 +417,7 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
     elapsed = time.time() - t0
     return {
         "workers": args.workers,
+        "scorer": args.scorer,
         "novel_mixer_set": sorted(novel_mixers),
         "shards": shards,
         "elapsed_s": round(elapsed, 1),
@@ -396,6 +454,16 @@ def main() -> None:
     p.add_argument("--cap-thr", type=float, default=0.35)
     p.add_argument("--mixer-weight", type=float, default=6.0)
     p.add_argument("--scaffold-weight", type=float, default=2.5)
+    p.add_argument(
+        "--scorer",
+        choices=["probe-oracle", "capability-screener"],
+        default="probe-oracle",
+        help=(
+            "Ranking model for generated candidates. probe-oracle uses the "
+            "label-free AR/nano/induction probe oracle; capability-screener "
+            "uses the older static LightGBM screener."
+        ),
+    )
     p.add_argument(
         "--include-unattributed",
         action="store_true",

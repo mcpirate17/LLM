@@ -196,7 +196,7 @@ class _ExperimentsMixin:
 
         stale_rows = self.conn.execute(
             "SELECT experiment_id FROM experiments "
-            "WHERE status = 'running' AND started_at < ?",
+            "WHERE status = 'running' AND (started_at IS NULL OR started_at < ?)",
             (cutoff,),
         ).fetchall()
         stale_ids = {r["experiment_id"] for r in stale_rows}
@@ -1303,7 +1303,7 @@ class _ExperimentsMixin:
             if results_json:
                 try:
                     res = self._decompress(results_json)
-                    perf = res.get("perf_report")
+                    perf = res.get("perf_report") if isinstance(res, dict) else None
                     if isinstance(perf, dict):
                         d["avg_step_time_ms"] = perf.get("trace_avg_ms", {}).get(
                             "forward_pass", 0
@@ -1317,6 +1317,8 @@ class _ExperimentsMixin:
                     KeyError,
                     TypeError,
                     ValueError,
+                    FileNotFoundError,
+                    OSError,
                     zlib.error,
                 ):
                     pass

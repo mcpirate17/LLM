@@ -1,5 +1,6 @@
 """Re-export facade for the native/ subpackage."""
 
+import logging
 import os  # noqa: F401 - compatibility surface for tests and legacy monkeypatches.
 
 from research.defaults import VOCAB_SIZE
@@ -11,7 +12,10 @@ from .native.abi import (
     _try_load_native_lib,
 )
 from .native.compiler import _legacy_compile_model
-from .native.core import _try_import_rust_scheduler as _try_import_rust_scheduler
+from .native.core import (
+    _env_flag,
+    _try_import_rust_scheduler as _try_import_rust_scheduler,
+)
 from .native.dispatch import (
     dispatch_graph_native as dispatch_graph_native,  # noqa: F401
     dispatch_op_native as dispatch_op_native,  # noqa: F401
@@ -21,6 +25,8 @@ from .native.profiling import (
     get_native_profile as get_native_profile,
 )
 
+logger = logging.getLogger(__name__)
+
 
 class NativeForwardWrapper(_autograd_mod.NativeForwardWrapper):
     """Compatibility alias for legacy imports."""
@@ -29,8 +35,11 @@ class NativeForwardWrapper(_autograd_mod.NativeForwardWrapper):
 def compile_model_native_first(
     layer_graphs, vocab_size=VOCAB_SIZE, max_seq_len=None, **kwargs
 ):
-    # Reject graphs with byte-unsafe ops before native compilation —
-    # token_merge/mod_topk break tensor layout in native execution.
+    # token_merge/mod_topk break tensor layout in native execution, but the
+    # legacy PyTorch compiler runs them correctly. Route byte-unsafe graphs
+    # there instead of failing — the same decision runner/screening.py makes,
+    # so replay/backfill tools can rebuild these rows. Honour an explicit
+    # legacy-disable gate by failing loud rather than silently.
     from research.synthesis.context_rules import find_byte_safety_violations
 
     for g in layer_graphs:
@@ -41,7 +50,21 @@ def compile_model_native_first(
         except AttributeError:
             continue
         if violations:
-            raise ValueError(f"Cannot compile for native execution: {violations[0]}")
+            if _env_flag("NATIVE_RUNNER_DISABLE_LEGACY_COMPILE", False):
+                raise ValueError(
+                    f"Cannot compile for native execution: {violations[0]}"
+                )
+            logger.info(
+                "Routing byte-unsafe graph to legacy compile "
+                "(native execution unsupported): %s",
+                violations[0],
+            )
+            return _legacy_compile_model(
+                layer_graphs,
+                vocab_size=vocab_size,
+                max_seq_len=max_seq_len,
+                **kwargs,
+            )
     _compiler_mod._legacy_compile_model = _legacy_compile_model
     _compiler_mod._try_load_native_lib = _try_load_native_lib
     _compiler_mod._maybe_prepare_runner_abi_session = _maybe_prepare_runner_abi_session

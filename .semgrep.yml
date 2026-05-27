@@ -29,6 +29,11 @@ rules:
       - pattern: $CUR.execute($SQL % ...)
       - pattern: $CUR.execute($SQL.format(...))
       - pattern: $CUR.execute(f"...")
+    # research/ builds SQL from controlled column/table names against an internal
+    # SQLite DB (no untrusted input) — this rule is a false positive there.
+    paths:
+      exclude:
+        - "research/**"
 
   - id: javascript-dangerous-eval
     message: Avoid eval-like JavaScript execution paths in generated code.

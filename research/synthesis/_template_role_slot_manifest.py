@@ -10,6 +10,7 @@ from __future__ import annotations
 from ._templates_role_slot_v2 import (
     tpl_conv_residual_retrieval_v2,
     tpl_latent_attn_retrieval_v2,
+    tpl_neural_symbolic_retrieval_v2,
     tpl_state_space_retrieval_v2,
 )
 from ._templates_role_slots import (
@@ -26,6 +27,7 @@ ROLE_SLOT_TEMPLATE_REGISTRY = {
     "conv_residual_retrieval_v2": tpl_conv_residual_retrieval_v2,
     "state_space_retrieval_v2": tpl_state_space_retrieval_v2,
     "latent_attn_retrieval_v2": tpl_latent_attn_retrieval_v2,
+    "neural_symbolic_retrieval_v2": tpl_neural_symbolic_retrieval_v2,
 }
 
 
@@ -37,4 +39,5 @@ ROLE_SLOT_TEMPLATE_DEFAULT_WEIGHTS = {
     "conv_residual_retrieval_v2": 4.25,  # conv trunk + matmul/gather_topk sidecar
     "state_space_retrieval_v2": 4.25,  # SSM trunk + matmul/gather_topk sidecar
     "latent_attn_retrieval_v2": 4.0,  # latent_attn trunk + complementary retrieval lane
+    "neural_symbolic_retrieval_v2": 4.5,  # novel role-slot associative hybrid
 }

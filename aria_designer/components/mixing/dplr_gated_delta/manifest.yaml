@@ -1,0 +1,34 @@
+id: dplr_gated_delta
+version: 1.0.0
+name: DPLR Gated Delta
+category: mixing
+tags: [recurrence, long-context, discovery]
+status: experimental
+description: Diagonal-plus-low-rank gated delta recurrence for efficient long-context memory.
+inputs:
+- name: x
+  dtype: tensor
+  shape: [B, S, D]
+outputs:
+- name: y
+  dtype: tensor
+  shape: [B, S, D]
+params: {}
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: true
+  param_formula: "D*D*6 + D*D//4"
+  preserves_gradient: true
+  numerically_risky: false
+help_md: |
+  ### Technical
+  A gated delta recurrence with diagonal decay and a low-rank content update,
+  intended as a search primitive for KDA/DPLR-style long-context mixers.
+
+  ### Plain Language
+  A memory lane that can forget per feature while adding compact learned
+  corrections to what it writes.

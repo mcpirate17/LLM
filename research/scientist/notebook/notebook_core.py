@@ -38,7 +38,6 @@ from ._shared import (
 )
 from .knowledge_digest_store import KnowledgeDigestStore, default_cache_path
 
-
 # --- Graph-fingerprint normalization: keep graph_runs in sync with legacy
 # program_results UPDATEs during the dual-write window. Mirror UPDATE
 # program_results SET ... WHERE ... → UPDATE graph_runs SET ... WHERE ...
@@ -313,8 +312,7 @@ class _NotebookCore:
         }
 
     def _ensure_artifacts_table(self) -> None:
-        self.conn.execute(
-            """
+        self.conn.execute("""
             CREATE TABLE IF NOT EXISTS notebook_artifacts (
                 artifact_id TEXT PRIMARY KEY,
                 table_name TEXT NOT NULL,
@@ -329,14 +327,11 @@ class _NotebookCore:
                 compressed_bytes INTEGER NOT NULL,
                 created_at REAL NOT NULL
             )
-            """
-        )
-        self.conn.execute(
-            """
+            """)
+        self.conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_notebook_artifacts_lookup
             ON notebook_artifacts(table_name, row_pk, column_name)
-            """
-        )
+            """)
 
     def _insert_artifact_metadata(self, metadata: dict[str, Any]) -> None:
         self.conn.execute(
@@ -676,6 +671,7 @@ class _NotebookCore:
         ]
         self._gn_create_graphs()
         self._gn_create_graph_runs(pr_cols, pr_types)
+        self._gn_sync_graph_runs_columns(pr_cols, pr_types)
         self._gn_create_compat_view(pr_cols)
         self._gn_create_propagation_trigger(pr_cols)
         self._gn_create_propagation_trigger_update(pr_cols)
@@ -684,16 +680,14 @@ class _NotebookCore:
         self._maybe_commit()
 
     def _gn_create_graphs(self) -> None:
-        self.conn.execute(
-            """CREATE TABLE IF NOT EXISTS graphs (
+        self.conn.execute("""CREATE TABLE IF NOT EXISTS graphs (
                 graph_fingerprint TEXT PRIMARY KEY,
                 graph_json        TEXT NOT NULL,
                 arch_spec_json    TEXT,
                 first_seen_ts     REAL NOT NULL,
                 last_seen_ts      REAL NOT NULL,
                 graph_json_is_placeholder INTEGER NOT NULL DEFAULT 0
-            )"""
-        )
+            )""")
 
     def _gn_create_graph_runs(self, pr_cols: list[str], pr_types: list[str]) -> None:
         if self.conn.execute(
@@ -731,7 +725,46 @@ class _NotebookCore:
                 # `trust_label` etc. may not exist on minimal test schemas.
                 pass
 
+    def _gn_sync_graph_runs_columns(
+        self, pr_cols: list[str], pr_types: list[str]
+    ) -> None:
+        """Add late program_results columns to an existing graph_runs table."""
+        if not self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE name='graph_runs'"
+        ).fetchone():
+            return
+        existing = {
+            str(row[1])
+            for row in self.conn.execute("PRAGMA table_info(graph_runs)").fetchall()
+        }
+        arch_set = {"graph_json", "arch_spec_json"}
+        for name, ctype in zip(pr_cols, pr_types):
+            if name in arch_set or name in existing:
+                continue
+            self.conn.execute(  # nosec B608  # nosemgrep: python-sql-string-formatting
+                f'ALTER TABLE graph_runs ADD COLUMN "{name}" {ctype}'
+            )
+
+    def _gn_object_sql(self, name: str) -> str:
+        row = self.conn.execute(
+            "SELECT sql FROM sqlite_master WHERE name = ?",
+            (name,),
+        ).fetchone()
+        return str(row[0] or "") if row else ""
+
+    def _gn_drop_if_missing_columns(self, name: str, cols: list[str]) -> None:
+        sql = self._gn_object_sql(name)
+        if not sql:
+            return
+        missing = [
+            col for col in cols if f'"{col}"' not in sql and f".{col}" not in sql
+        ]
+        if missing:
+            kind = "VIEW" if name == "program_results_compat" else "TRIGGER"
+            self.conn.execute(f"DROP {kind} IF EXISTS {name}")  # nosec B608
+
     def _gn_create_compat_view(self, pr_cols: list[str]) -> None:
+        self._gn_drop_if_missing_columns("program_results_compat", pr_cols)
         if self.conn.execute(
             "SELECT 1 FROM sqlite_master WHERE name='program_results_compat'"
         ).fetchone():
@@ -749,12 +782,14 @@ class _NotebookCore:
         + graph_runs. INSERT OR IGNORE makes it a no-op for rows already
         inserted by the canonical `build_dual_write_statements` write path.
         """
+        arch_set = {"graph_json", "arch_spec_json"}
+        run_col_names = [c for c in pr_cols if c not in arch_set]
+        self._gn_drop_if_missing_columns("_gn_sync_pr_to_runs", run_col_names)
         if self.conn.execute(
             "SELECT 1 FROM sqlite_master WHERE name='_gn_sync_pr_to_runs'"
         ).fetchone():
             return
-        arch_set = {"graph_json", "arch_spec_json"}
-        run_cols = [f'"{c}"' for c in pr_cols if c not in arch_set]
+        run_cols = [f'"{c}"' for c in run_col_names]
         run_refs = [f"NEW.{c}" for c in run_cols]
         self.conn.execute(
             "CREATE TRIGGER _gn_sync_pr_to_runs "
@@ -792,13 +827,14 @@ class _NotebookCore:
         UPDATE). The row in graph_runs must already exist — either from the
         AFTER-INSERT propagation trigger or from the Phase 5b backfill.
         """
+        arch_set = {"graph_json", "arch_spec_json"}
+        run_set_cols = [c for c in pr_cols if c not in arch_set and c != "result_id"]
+        self._gn_drop_if_missing_columns("_gn_sync_pr_update_to_runs", run_set_cols)
         if self.conn.execute(
             "SELECT 1 FROM sqlite_master WHERE name='_gn_sync_pr_update_to_runs'"
         ).fetchone():
             return
-        arch_set = {"graph_json", "arch_spec_json"}
         # Set every non-arch column except result_id (PK, immutable in UPDATE).
-        run_set_cols = [c for c in pr_cols if c not in arch_set and c != "result_id"]
         set_clause = ", ".join(f'"{c}" = NEW."{c}"' for c in run_set_cols)
         self.conn.execute(
             "CREATE TRIGGER _gn_sync_pr_update_to_runs "  # nosec B608  # nosemgrep: python-sql-string-formatting
@@ -1663,12 +1699,10 @@ class _NotebookCore:
             )
 
     def _supersede_active_semantic_duplicates(self) -> None:
-        active_rows = self.conn.execute(
-            """SELECT insight_id, semantic_key
+        active_rows = self.conn.execute("""SELECT insight_id, semantic_key
                FROM insights
                WHERE status = 'active' AND semantic_key IS NOT NULL AND semantic_key != ''
-               ORDER BY confidence DESC, timestamp DESC"""
-        ).fetchall()
+               ORDER BY confidence DESC, timestamp DESC""").fetchall()
         seen_semantic: set[str] = set()
         for row in active_rows:
             sem = str(row["semantic_key"] if isinstance(row, sqlite3.Row) else row[1])
@@ -1947,8 +1981,7 @@ class _NotebookCore:
             ).fetchone()
             if existing:
                 return
-            self.conn.execute(
-                """
+            self.conn.execute("""
                 CREATE TRIGGER IF NOT EXISTS reject_dup_fingerprint_no_reason
                 BEFORE INSERT ON program_results
                 WHEN NEW.graph_fingerprint IS NOT NULL
@@ -1965,8 +1998,7 @@ class _NotebookCore:
                     'duplicate graph_fingerprint without intentional_rerun_reason'
                   );
                 END
-                """
-            )
+                """)
             LOGGER.info(
                 "Installed reject_dup_fingerprint_no_reason trigger — cross-experiment fingerprint dedup is now enforced at the schema level."
             )
@@ -1996,16 +2028,14 @@ class _NotebookCore:
             ).fetchone()
             if existing:
                 return
-            dup = self.conn.execute(
-                """
+            dup = self.conn.execute("""
                 SELECT graph_fingerprint, experiment_id, COUNT(*) AS n
                 FROM program_results
                 WHERE TRIM(COALESCE(graph_fingerprint, '')) <> ''
                 GROUP BY graph_fingerprint, experiment_id
                 HAVING n > 1
                 LIMIT 1
-                """
-            ).fetchone()
+                """).fetchone()
             if dup is not None:
                 LOGGER.warning(
                     "Skipping idx_pr_fp_per_experiment install: "
@@ -2080,8 +2110,7 @@ class _NotebookCore:
             ).fetchone()
             if existing_idx:
                 return
-            dup = self.conn.execute(
-                """
+            dup = self.conn.execute("""
                 SELECT graph_fingerprint, COUNT(*) AS n
                 FROM leaderboard
                 WHERE TRIM(COALESCE(graph_fingerprint, '')) <> ''
@@ -2089,8 +2118,7 @@ class _NotebookCore:
                 GROUP BY graph_fingerprint
                 HAVING n > 1
                 LIMIT 1
-                """
-            ).fetchone()
+                """).fetchone()
             if dup is not None:
                 LOGGER.warning(
                     "Skipping idx_leaderboard_fp install: leaderboard contains "

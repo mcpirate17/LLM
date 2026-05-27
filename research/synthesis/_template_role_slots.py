@@ -18,6 +18,7 @@ import random
 from typing import TYPE_CHECKING, Dict, Optional, Tuple
 
 from ._template_helpers import (
+    MOTIF_CLASS_ATTENTION,
     MOTIF_CLASS_CHANNEL,
     MOTIF_CLASS_CONV,
     MOTIF_CLASS_EFFICIENT_PROJ,
@@ -64,6 +65,7 @@ ROLE_SLOT_CLASS_GROUPS: Dict[str, Tuple[str, ...]] = {
         MOTIF_CLASS_EFFICIENT_PROJ,
         MOTIF_CLASS_GATE,
         MOTIF_CLASS_CHANNEL,
+        MOTIF_CLASS_ATTENTION,
     ),
     "binding_write": (
         MOTIF_CLASS_SPARSE,
@@ -71,12 +73,19 @@ ROLE_SLOT_CLASS_GROUPS: Dict[str, Tuple[str, ...]] = {
         MOTIF_CLASS_GATE,
         MOTIF_CLASS_REDUCE,
         MOTIF_CLASS_CHANNEL,
+        MOTIF_CLASS_ATTENTION,
     ),
     "binding_read": (
         MOTIF_CLASS_MATH_SPACE,
         MOTIF_CLASS_EFFICIENT_PROJ,
         MOTIF_CLASS_GATE,
         MOTIF_CLASS_CHANNEL,
+        MOTIF_CLASS_SPARSE,
+        MOTIF_CLASS_ATTENTION,
+    ),
+    "neural_symbolic": (
+        MOTIF_CLASS_ATTENTION,
+        MOTIF_CLASS_MATH_SPACE,
         MOTIF_CLASS_SPARSE,
     ),
     "controller": (
@@ -114,7 +123,7 @@ def get_role_slot_classes(role_name: str) -> Tuple[str, ...]:
 # motif distribution toward building blocks that include real bilinear /
 # similarity / outer-product structure instead of bare linear projections.
 _RETRIEVAL_BIASED_ROLES: frozenset = frozenset(
-    {"global_retrieval", "binding_read", "binding_write"}
+    {"global_retrieval", "binding_read", "binding_write", "neural_symbolic"}
 )
 _RETRIEVAL_MOTIF_BOOST: float = 2.0
 
@@ -126,7 +135,7 @@ _RETRIEVAL_MOTIF_BOOST: float = 2.0
 # Audit fix 2026-04-17 (slots.csv role:binding_* flagged "under-observed,
 # broad class bucket without per-role legality checks").
 _BINDING_LEGAL_ROLES: frozenset = frozenset(
-    {"global_retrieval", "binding_read", "binding_write"}
+    {"global_retrieval", "binding_read", "binding_write", "neural_symbolic"}
 )
 # Ops that constitute real content-addressed access — superset of
 # CONTENT_ADDRESSED_OPS in execution_screening_graphs.py, also accepting
@@ -141,6 +150,7 @@ _BINDING_LEGAL_OPS: frozenset = frozenset(
         "local_window_attn",
         "gated_linear_attention",
         "latent_attention_compressor",
+        "role_slot_attention",
         "matmul",
         "outer_product",
         "cosine_similarity",

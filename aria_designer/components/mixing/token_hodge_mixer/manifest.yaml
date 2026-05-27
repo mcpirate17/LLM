@@ -1,0 +1,34 @@
+id: token_hodge_mixer
+version: 1.0.0
+name: Token Hodge Mixer
+category: mixing
+tags: [topology, incidence, discovery]
+status: experimental
+description: Causal edge and triangle incidence messages over adjacent token simplices.
+inputs:
+- name: x
+  dtype: tensor
+  shape: [B, S, D]
+outputs:
+- name: y
+  dtype: tensor
+  shape: [B, S, D]
+params: {}
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: true
+  param_formula: "D*D*4"
+  preserves_gradient: true
+  numerically_risky: false
+help_md: |
+  ### Technical
+  Uses local edge differences and second-order boundary messages as a causal
+  Hodge-inspired mixer over token chains.
+
+  ### Plain Language
+  A sequence mixer that treats changes between neighboring tokens as first
+  class signals instead of only token content.

@@ -41,6 +41,12 @@ def _codex_tail_ffn(
 
 
 _NOVEL_MIXING_MLP_RATIOS: tuple[float, ...] = (2.0, 3.0, 4.0)
+_NOVEL_MIXING_COMPLEMENT_PROJECTION_OPS: frozenset[str] = frozenset(
+    {
+        "conv_only",
+        "local_window_attn",
+    }
+)
 
 
 def _pick_norm_or_default(
@@ -151,7 +157,16 @@ def _tpl_novel_mixing_block(
         input_node_id=normed,
     )
     pb = _add(graph, complement_op, [normed], context=f"{template_ctx}.complement")
-    pb = _fix_dim(graph, pb)
+    if complement_op in _NOVEL_MIXING_COMPLEMENT_PROJECTION_OPS:
+        pb = _add(
+            graph,
+            "linear_proj",
+            [pb],
+            {"out_dim": D},
+            context=f"{template_ctx}.complement_proj",
+        )
+    else:
+        pb = _fix_dim(graph, pb)
 
     merged = _fix_dim(graph, _residual(graph, pa, pb, context=f"{template_ctx}.merge"))
     mid = _residual(graph, input_id, merged, context=f"{template_ctx}.mid")
@@ -314,6 +329,130 @@ def tpl_mixture_of_recursions_block(
         primary_op="mixture_of_recursions",
         complement_op="gated_delta",
         template_ctx="mixture_of_recursions_block",
+    )
+
+
+def tpl_sparsemax_attention_block(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """norm → {sparsemax_attention || state_space} → merge → residual → norm → FFN → residual."""
+    return _tpl_novel_mixing_block(
+        graph,
+        input_id,
+        rng,
+        weights,
+        primary_op="sparsemax_attention",
+        template_ctx="sparsemax_attention_block",
+    )
+
+
+def tpl_entmax_attention_block(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """norm → {entmax_attention || state_space} → merge → residual → norm → FFN → residual."""
+    return _tpl_novel_mixing_block(
+        graph,
+        input_id,
+        rng,
+        weights,
+        primary_op="entmax_attention",
+        template_ctx="entmax_attention_block",
+    )
+
+
+def tpl_dplr_gated_delta_block(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """norm → {dplr_gated_delta || retention_mix} → merge → residual → norm → FFN → residual."""
+    return _tpl_novel_mixing_block(
+        graph,
+        input_id,
+        rng,
+        weights,
+        primary_op="dplr_gated_delta",
+        complement_op="retention_mix",
+        template_ctx="dplr_gated_delta_block",
+    )
+
+
+def tpl_token_hodge_mixer_block(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """norm → {token_hodge_mixer || local_window_attn} → merge → residual → norm → FFN → residual."""
+    return _tpl_novel_mixing_block(
+        graph,
+        input_id,
+        rng,
+        weights,
+        primary_op="token_hodge_mixer",
+        complement_op="local_window_attn",
+        template_ctx="token_hodge_mixer_block",
+    )
+
+
+def tpl_wavelet_packet_mix_block(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """norm → {wavelet_packet_mix || conv_only} → merge → residual → norm → FFN → residual."""
+    return _tpl_novel_mixing_block(
+        graph,
+        input_id,
+        rng,
+        weights,
+        primary_op="wavelet_packet_mix",
+        complement_op="conv_only",
+        template_ctx="wavelet_packet_mix_block",
+    )
+
+
+def tpl_retention_mix_block(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """norm → {retention_mix || dplr_gated_delta} → merge → residual → norm → FFN → residual."""
+    return _tpl_novel_mixing_block(
+        graph,
+        input_id,
+        rng,
+        weights,
+        primary_op="retention_mix",
+        complement_op="dplr_gated_delta",
+        template_ctx="retention_mix_block",
+    )
+
+
+def tpl_product_key_memory_block(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """norm → {product_key_memory || sparsemax_attention} → merge → residual → norm → FFN → residual."""
+    return _tpl_novel_mixing_block(
+        graph,
+        input_id,
+        rng,
+        weights,
+        primary_op="product_key_memory",
+        complement_op="sparsemax_attention",
+        template_ctx="product_key_memory_block",
     )
 
 

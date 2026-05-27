@@ -27,6 +27,16 @@ from ._helpers_metrics import (
     graph_routing_ops,
     routing_fast_lane_fields,
 )
+from .measured_rescue_observability import (
+    mark_measured_rescue_gate_drop,
+    mark_measured_rescue_rapid_result,
+    mark_measured_rescue_s075_drop,
+    mark_measured_rescue_screening,
+    mark_measured_rescue_stage0_attempted,
+    mark_measured_rescue_stage0_result,
+    mark_measured_rescue_stage1_queued,
+    measured_rescue_metrics_for_fingerprint,
+)
 from ._types import RunConfig, LiveProgress
 
 import logging
@@ -179,6 +189,7 @@ class _ExecutionScreeningPipelineMixin:
             results.setdefault("skipped_dedup_runtime", 0)
             results["skipped_dedup_runtime"] += 1
             results["funnel_counts"]["dropped_runtime_dedup"] += 1
+            mark_measured_rescue_gate_drop(results, fp, reason="dedup")
             self._emit_event(
                 "program_evaluated",
                 {
@@ -211,6 +222,7 @@ class _ExecutionScreeningPipelineMixin:
             results["funnel_counts"]["dropped_structural_gate"] += 1
             results["funnel_counts"].setdefault(f"dropped_{gate_fail}", 0)
             results["funnel_counts"][f"dropped_{gate_fail}"] += 1
+            mark_measured_rescue_gate_drop(results, fp, reason=gate_fail)
             return gate_fail
 
         if failure_blocklist:
@@ -219,6 +231,7 @@ class _ExecutionScreeningPipelineMixin:
                 results.setdefault("skipped_toxic", 0)
                 results["skipped_toxic"] += 1
                 results["funnel_counts"]["dropped_toxic"] += 1
+                mark_measured_rescue_gate_drop(results, fp, reason="toxic")
                 self._emit_event(
                     "program_evaluated",
                     {
@@ -241,6 +254,7 @@ class _ExecutionScreeningPipelineMixin:
             i=i,
         )
         if skip is not None:
+            mark_measured_rescue_gate_drop(results, fp, reason=skip)
             return skip
 
         return None
@@ -336,6 +350,7 @@ class _ExecutionScreeningPipelineMixin:
         )
 
         results["funnel_counts"]["stage0_attempted"] += 1
+        mark_measured_rescue_stage0_attempted(results, fp)
         # Z13: Defensive pause + GC to stabilize Torch Dynamo context if needed
         if i > 0 and i % 10 == 0:
             clear_gpu_memory()
@@ -401,6 +416,15 @@ class _ExecutionScreeningPipelineMixin:
             results["funnel_counts"]["stage05_passed"] += 1
             with self._lock:
                 self._progress.stage05_passed += 1
+
+        mark_measured_rescue_stage0_result(
+            results,
+            fp,
+            stage0_passed=bool(s0_passed),
+            stage05_passed=bool(s05_passed),
+            stability_score=sandbox_result.stability_score,
+            error_type=sandbox_result.error_type,
+        )
 
         # Track ALL compiled programs in _s0_op_counts so
         # merge_op_failure_counts sees both passes and failures.
@@ -488,6 +512,12 @@ class _ExecutionScreeningPipelineMixin:
                 and _s075_init_loss > _es_mod().INITIAL_LOSS_THRESHOLD
             ):
                 results["funnel_counts"]["dropped_s075_high_init"] += 1
+                mark_measured_rescue_s075_drop(
+                    results,
+                    fp,
+                    initial_loss=_s075_init_loss,
+                    threshold=_es_mod().INITIAL_LOSS_THRESHOLD,
+                )
                 self._emit_event(
                     "program_evaluated",
                     {
@@ -572,6 +602,12 @@ class _ExecutionScreeningPipelineMixin:
                 rapid_result.degraded_reasons
             )
         if not rapid_result.passed:
+            mark_measured_rescue_rapid_result(
+                results,
+                fp,
+                passed=False,
+                kill_reason=rapid_result.kill_reason,
+            )
             results["rapid_screening_killed"] += 1
             results["funnel_counts"]["dropped_rapid_screening"] += 1
             kr = rapid_result.kill_reason or "unknown"
@@ -608,6 +644,8 @@ class _ExecutionScreeningPipelineMixin:
                     extra_metrics=program_metrics,
                 )
             return True
+
+        mark_measured_rescue_rapid_result(results, fp, passed=True)
 
         # Phase 2: recompile at real vocab for S1 training
         if _use_progressive:
@@ -753,6 +791,7 @@ class _ExecutionScreeningPipelineMixin:
             model=model,  # Reuse compiled model (at real vocab)
         )
         results["funnel_counts"]["stage1_queued"] += 1
+        mark_measured_rescue_stage1_queued(results, fp)
         return False
 
     def _finalize_experiment_results(
@@ -899,6 +938,7 @@ class _ExecutionScreeningPipelineMixin:
 
             results["funnel_counts"]["screening_considered"] += 1
             fp = graph.fingerprint()
+            mark_measured_rescue_screening(results, fp, index=i)
             self._update_progress(
                 current_program=i + 1,
                 current_fingerprint=fp[:10],
@@ -923,6 +963,7 @@ class _ExecutionScreeningPipelineMixin:
 
             # Collect metrics and estimate FLOPs (populated by gates on pass-through)
             program_metrics = self._last_gate_program_metrics
+            program_metrics.update(measured_rescue_metrics_for_fingerprint(results, fp))
             graph_analysis = self._last_gate_graph_analysis
 
             # Compile, S0/S0.5 eval, op counts
@@ -970,6 +1011,7 @@ class _ExecutionScreeningPipelineMixin:
             except Exception as e:
                 logger.error("Error evaluating graph %d: %s", i, e)
                 results["funnel_counts"]["dropped_runtime_error"] += 1
+                mark_measured_rescue_gate_drop(results, fp, reason="runtime_error")
                 # Reset CUDA context if this was a fatal CUDA error
                 if torch.cuda.is_available():
                     from ...eval.sandbox import is_cuda_fatal

@@ -2,15 +2,62 @@ from __future__ import annotations
 
 """Helpers for reading graph_json whether inline or artifact-backed."""
 
+import logging
 import sqlite3
+import threading
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 from .artifact_store import (
     ARTIFACT_POINTER_KEY,
     NotebookArtifactStore,
     parse_artifact_pointer,
 )
+
+logger = logging.getLogger(__name__)
+
+# Process-lifetime dedup so callers that scan the same table on every cache
+# refresh (observability, exp_coverage, mathspace impact, ...) don't flood the
+# log when artifacts have been pruned from disk. Keyed by `category`; we only
+# re-warn when the missing-row count grows.
+_warned_missing_artifact_counts: dict[str, int] = {}
+_warned_missing_artifacts_lock = threading.Lock()
+
+
+def warn_missing_artifacts_once(
+    category: str,
+    count: int,
+    examples: Sequence[str] = (),
+) -> None:
+    """Emit one WARNING per process per category when artifacts are missing.
+
+    Repeat calls with an equal-or-smaller count log at DEBUG instead, so the
+    same scan of the same dead pointers doesn't keep firing WARNING every
+    cache rebuild. A larger count (new pruning, new rows) re-arms the warning.
+    """
+    if count <= 0:
+        return
+    with _warned_missing_artifacts_lock:
+        prev = _warned_missing_artifact_counts.get(category, 0)
+        if count <= prev:
+            logger.debug(
+                "%s: %d missing graph artifact(s) (already reported; max=%d)",
+                category,
+                count,
+                prev,
+            )
+            return
+        _warned_missing_artifact_counts[category] = count
+    examples_msg = "; ".join(examples)
+    if examples_msg:
+        logger.warning(
+            "%s: %d missing graph artifact(s). examples=%s",
+            category,
+            count,
+            examples_msg,
+        )
+    else:
+        logger.warning("%s: %d missing graph artifact(s)", category, count)
 
 
 def is_nonempty_graph_json(value: Any) -> bool:

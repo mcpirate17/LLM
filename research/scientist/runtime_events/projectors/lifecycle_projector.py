@@ -5,13 +5,25 @@ import logging
 import sqlite3
 import time
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional
 
+from ...json_utils import json_safe
 from ..schema import LIFECYCLE_EVENT_TYPES, RuntimeEvent
 from ..spool import NdjsonEventSpool, SpoolOffset
 from ..state_machine import LifecycleStateMachine
 
 logger = logging.getLogger(__name__)
+
+
+def _sqlite_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    safe = json_safe(value)
+    if safe is None:
+        return None
+    if isinstance(safe, (dict, list)):
+        return json.dumps(safe, sort_keys=True, separators=(",", ":"))
+    return str(safe)
 
 
 @dataclass(frozen=True)
@@ -104,7 +116,12 @@ class LifecycleProjector:
         if event.event_type == current_type:
             return False  # duplicate, already applied
         if not self.machine.is_valid_transition(current_type, event.event_type):
-            logger.warning(
+            # Replay-time conflicts (e.g. a stale experiment_failed arriving after
+            # the run already reached a terminal experiment_completed) are expected
+            # when draining the spool backlog. The registry replay path treats the
+            # same class as debug-level (quiet=True); match it so a fresh-start
+            # backlog drain doesn't flood the log with WARNINGs.
+            logger.debug(
                 "Skipping conflicting lifecycle event in projector: run_id=%s %r -> %r event_id=%s",
                 event.run_id,
                 current_type,
@@ -138,10 +155,10 @@ class LifecycleProjector:
                 event.run_id,
                 float(payload.get("timestamp", event.created_at)),
                 str(payload.get("experiment_type", "unknown")),
-                payload.get("hypothesis"),
-                payload.get("research_question"),
-                payload.get("preregistration_id"),
-                json.dumps(payload.get("config") or {}),
+                _sqlite_text(payload.get("hypothesis")),
+                _sqlite_text(payload.get("research_question")),
+                _sqlite_text(payload.get("preregistration_id")),
+                json.dumps(json_safe(payload.get("config") or {})),
                 float(payload.get("started_at", event.created_at)),
             ),
         )

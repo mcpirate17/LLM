@@ -332,3 +332,36 @@ def tpl_latent_attn_retrieval_v2(
         input_node_id=merged,
     )
     return _residual(graph, input_id, merged, context="latent_attn_retrieval_v2.output")
+
+
+def tpl_neural_symbolic_retrieval_v2(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """norm → state_space_block ──┬── residual_add
+                                 └── neural_symbolic sidecar
+
+    A v2 hybrid lane that combines the perplexity strength of SSM with
+    a dedicated 'Neural Symbolic' slot for persistent register-based retrieval.
+    """
+    from ._templates_research import tpl_state_space_block
+    from ._template_role_slots import pick_role_motif
+
+    # 1. Primary Trunk (SSM)
+    # We use state_space_block as the default high-ppl carrier.
+    trunk_out = tpl_state_space_block(graph, input_id, rng, weights)
+
+    # 2. Neural Symbolic Sidecar
+    # This semantic slot samples from MOTIF_CLASS_ATTENTION but requires
+    # content-addressed behavior (binding capability).
+    symbolic_motif = pick_role_motif(graph, trunk_out, rng, "neural_symbolic", weights)
+    if symbolic_motif:
+        symbolic_out = _instantiate_motif(graph, trunk_out, symbolic_motif, rng)
+        # Residual merge: trunk + symbolic workspace
+        return _add(
+            graph, "add", [trunk_out, symbolic_out], context="ns_retrieval_v2.merge"
+        )
+
+    return trunk_out

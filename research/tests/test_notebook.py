@@ -2584,6 +2584,62 @@ class TestStaleExperimentCleanup(unittest.TestCase):
         cleaned = self.nb.cleanup_stale_experiments(timeout_minutes=60)
         self.assertEqual(cleaned, 0)
 
+    def test_cleanup_marks_running_with_missing_started_at_as_failed(self):
+        """Running experiments without started_at cannot be aged and are stale."""
+        exp_id = self.nb.start_experiment("synthesis", {}, "missing start test")
+        self.nb.conn.execute(
+            "UPDATE experiments SET started_at = NULL WHERE experiment_id = ?",
+            (exp_id,),
+        )
+        self.nb.conn.commit()
+
+        cleaned = self.nb.cleanup_stale_experiments(timeout_minutes=60)
+        self.assertEqual(cleaned, 1)
+
+        row = self.nb.conn.execute(
+            "SELECT status, results_json FROM experiments WHERE experiment_id = ?",
+            (exp_id,),
+        ).fetchone()
+        self.assertEqual(row["status"], "failed")
+        results = json.loads(row["results_json"] or "{}")
+        self.assertEqual(
+            results.get("failure_reason"),
+            "Process terminated while running",
+        )
+
+    def test_dashboard_startup_recovery_handles_missing_started_at(self):
+        """Dashboard startup recovery should clean NULL-started running rows."""
+        from research.scientist.api import _recover_orphaned_running_experiments
+        from research.scientist.notebook.__init__ import LabNotebook
+
+        db_path = os.path.join(self.tmpdir, "startup_recovery.db")
+        nb = LabNotebook(db_path, use_native=False)
+        try:
+            exp_id = nb.start_experiment("synthesis", {}, "startup missing start")
+            nb.conn.execute(
+                "UPDATE experiments SET started_at = NULL WHERE experiment_id = ?",
+                (exp_id,),
+            )
+            nb.conn.commit()
+        finally:
+            nb.close()
+
+        recovered = _recover_orphaned_running_experiments(db_path)
+        self.assertEqual(recovered, 1)
+
+        with sqlite3.connect(db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT status, results_json FROM experiments WHERE experiment_id = ?",
+                (exp_id,),
+            ).fetchone()
+        self.assertEqual(row["status"], "failed")
+        results = json.loads(row["results_json"] or "{}")
+        self.assertEqual(
+            results.get("failure_reason"),
+            "Process terminated while running",
+        )
+
     def test_cleanup_marks_startup_failed_without_progress(self):
         """Running experiments with no progress should be cleaned by startup-failure threshold."""
         import time as _time

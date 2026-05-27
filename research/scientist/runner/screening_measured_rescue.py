@@ -123,12 +123,35 @@ def rescue_skipped_candidates(
         records.append(
             {
                 "graph_fingerprint": fp,
+                "rescue_reason": "measured_long_range_reach_ge_tau",
+                "measured_probe_passed": True,
+                "structural_induction_signal": "long_range_reach",
                 "measured_long_range_reach": round(reach, 6),
                 "measured_content_dependence": round(
                     float(d.get("content_dependence", 0.0)), 6
                 ),
                 "predicted_p_s1": round(
                     float(skip_metrics.get("predicted_p_s1", 0.0)), 6
+                ),
+                "predicted_induction_screening_auc": round(
+                    float(skip_metrics.get("predicted_induction_screening_auc", 0.0)),
+                    6,
+                ),
+                "predicted_p_induction_learner": round(
+                    float(skip_metrics.get("predicted_p_induction_learner", 0.0)),
+                    6,
+                ),
+                "predictor_planning_score": round(
+                    float(skip_metrics.get("predictor_planning_score", 0.0)), 6
+                ),
+                "screening_ensemble_p_pass_floor": skip_metrics.get(
+                    "screening_ensemble_p_pass_floor"
+                ),
+                "screening_ensemble_p_pass_floor_source": skip_metrics.get(
+                    "screening_ensemble_p_pass_floor_source"
+                ),
+                "predicted_rank_composite": skip_metrics.get(
+                    "predicted_rank_composite"
                 ),
             }
         )

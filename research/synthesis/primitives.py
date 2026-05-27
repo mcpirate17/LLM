@@ -761,6 +761,19 @@ _register(
 
 _register(
     PrimitiveOp(
+        "role_slot_attention",
+        OpCategory.MIXING,
+        1,
+        "identity",
+        has_params=True,
+        param_formula="D*D*2 + 32*D*2",  # Q/O projs + 32 slots K/V
+        description="Persistent Role-Slot Attention: tokens read from learned global registers",
+        config_keys=("num_slots",),
+        binding_range_class="full",
+    )
+)
+_register(
+    PrimitiveOp(
         "softmax_attention",
         OpCategory.MIXING,
         1,
@@ -768,6 +781,31 @@ _register(
         has_params=True,
         param_formula="D*D*3",
         description="Standard Softmax Self-Attention",
+        binding_range_class="full",
+    )
+)
+_register(
+    PrimitiveOp(
+        "sparsemax_attention",
+        OpCategory.MIXING,
+        1,
+        "identity",
+        has_params=True,
+        param_formula="D*D*4",
+        description="Sparsemax causal attention: sparse probability simplex projection for low-entropy retrieval maps",
+        binding_range_class="full",
+    )
+)
+_register(
+    PrimitiveOp(
+        "entmax_attention",
+        OpCategory.MIXING,
+        1,
+        "identity",
+        has_params=True,
+        param_formula="D*D*4",
+        description="Entmax causal attention: alpha-entmax retrieval between softmax and sparsemax for controllable sparsity",
+        config_keys=("alpha",),
         binding_range_class="full",
     )
 )
@@ -843,6 +881,18 @@ _register(
         has_params=True,
         param_formula="D*D*4",
         description="Gated delta rule: linear recurrence with decay + update gates for targeted state writes (ICLR 2025)",
+        binding_range_class="full",
+    )
+)
+_register(
+    PrimitiveOp(
+        "dplr_gated_delta",
+        OpCategory.MIXING,
+        1,
+        "identity",
+        has_params=True,
+        param_formula="D*D*6 + D*D//4",
+        description="DPLR gated delta mixer: diagonal-plus-low-rank recurrent state update for efficient long-context memory",
         binding_range_class="full",
     )
 )
@@ -928,6 +978,56 @@ _register(
         param_formula="D*D*6+D*6+4",
         description="Mixture-of-Recursions: four-step shared recurrent FFN stack with a soft depth router",
         binding_range_class="full",
+    )
+)
+_register(
+    PrimitiveOp(
+        "token_hodge_mixer",
+        OpCategory.MIXING,
+        1,
+        "identity",
+        has_params=True,
+        param_formula="D*D*4",
+        description="Token Hodge mixer: causal edge/triangle incidence messages over adjacent token simplices for topology-aware sequence mixing",
+        binding_range_class="full",
+    )
+)
+_register(
+    PrimitiveOp(
+        "wavelet_packet_mix",
+        OpCategory.MIXING,
+        1,
+        "identity",
+        has_params=True,
+        param_formula="D*D*4+D*2",
+        description="Causal wavelet-packet mixer: multiscale Haar low/high bands with learned channel recombination",
+        config_keys=("levels",),
+        binding_range_class="full",
+    )
+)
+_register(
+    PrimitiveOp(
+        "retention_mix",
+        OpCategory.MIXING,
+        1,
+        "identity",
+        has_params=True,
+        param_formula="D*D*4+D*2",
+        description="Retentive mixing: causal exponential retention recurrence with learned per-channel decay and phase bias",
+        binding_range_class="full",
+    )
+)
+_register(
+    PrimitiveOp(
+        "product_key_memory",
+        OpCategory.MIXING,
+        1,
+        "identity",
+        has_params=True,
+        param_formula="D*D+1056*D",
+        description="Product-key memory: factorized content-addressed value table for high-capacity per-token retrieval",
+        config_keys=("num_keys", "top_k"),
+        binding_range_class="none",
     )
 )
 

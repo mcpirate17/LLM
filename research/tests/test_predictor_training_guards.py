@@ -15,6 +15,7 @@ from research.scientist.intelligence.predictor import (
 from research.scientist.runner import RunConfig
 from research.scientist.runner.execution_experiment_phase3 import (
     _ExecutionExperimentPhase3Mixin,
+    _resolve_p_pass_floor,
 )
 
 
@@ -58,6 +59,23 @@ def test_graph_predictor_train_skips_single_class_corpus(monkeypatch, tmp_path):
 
     assert not model.is_fitted()
     assert model.w_gate.size == 0
+
+
+def test_gbm_prescreener_ignores_nonpositive_temporal_threshold():
+    config = RunConfig(gbm_prescreener_enabled=True)
+    ensemble = SimpleNamespace(gate_threshold=0.6673569091703704)
+    report = {
+        "ensemble_calibrated": {
+            "temporal_holdout_evaluation": {
+                "operating_points": {"f1": {"threshold": 0.0}}
+            }
+        }
+    }
+
+    floor, source = _resolve_p_pass_floor(ensemble, config, report)
+
+    assert floor == pytest.approx(0.6673569091703704)
+    assert source == "ensemble.gate_threshold"
 
 
 def test_augment_imodel_features_prefers_pair_stats():

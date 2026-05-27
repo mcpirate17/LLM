@@ -1,0 +1,36 @@
+id: wavelet_packet_mix
+version: 1.0.0
+name: Wavelet Packet Mix
+category: mixing
+tags: [wavelet, multiscale, discovery]
+status: experimental
+description: Causal Haar wavelet-packet low/high band mixer.
+inputs:
+- name: x
+  dtype: tensor
+  shape: [B, S, D]
+outputs:
+- name: y
+  dtype: tensor
+  shape: [B, S, D]
+params:
+  levels:
+    type: integer
+    default: 2
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: true
+  param_formula: "D*D*4+D*2"
+  preserves_gradient: true
+  numerically_risky: false
+help_md: |
+  ### Technical
+  Repeated causal Haar low/high decompositions expose short and long scale
+  sequence changes for architecture search.
+
+  ### Plain Language
+  A mixer that separates slow context trends from quick token-to-token changes.
