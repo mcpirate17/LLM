@@ -1,9 +1,0 @@
-{
-  "threshold": 100,
-  "minLines": 10,
-  "minTokens": 80,
-  "reporters": ["json"],
-  "gitignore": true,
-  "noSymlinks": true,
-  "ignore": ["**/node_modules/**", "**/build/**", "**/dist/**", "**/__pycache__/**"]
-}
