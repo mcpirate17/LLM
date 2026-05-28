@@ -366,6 +366,23 @@ def tpl_entmax_attention_block(
     )
 
 
+def tpl_learnable_semiring_attention_block(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """norm → {learnable_semiring_attention || state_space} → merge → residual → norm → FFN → residual."""
+    return _tpl_novel_mixing_block(
+        graph,
+        input_id,
+        rng,
+        weights,
+        primary_op="learnable_semiring_attention",
+        template_ctx="learnable_semiring_attention_block",
+    )
+
+
 def tpl_dplr_gated_delta_block(
     graph: ComputationGraph,
     input_id: int,

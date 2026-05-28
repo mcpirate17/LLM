@@ -189,6 +189,8 @@ _OP_ROLE_MAP: Dict[str, OpRole] = {
     # ── Context-safe residual ─────────────────────────────────────
     "identity": OpRole.RESIDUAL,
     "poincare_add": OpRole.RESIDUAL,
+    # ── Learnable-semiring attention ─────────────────────────────
+    "learnable_semiring_attention": OpRole.MIX,
     # ── Math-space: tropical ─────────────────────────────────────
     "tropical_attention": OpRole.MIX,
     "tropical_gate": OpRole.GATE,

@@ -184,6 +184,9 @@ class CompiledOpParamInitMixin:
             "entmax_attention": lambda: self._init_attention_stack(
                 "entmax_attention", d_in
             ),
+            "learnable_semiring_attention": lambda: self._init_semiring_attention(
+                d_in
+            ),
             "linear_attention": lambda: self._init_attention_stack(
                 "linear_attention", d_in
             ),
@@ -301,6 +304,17 @@ class CompiledOpParamInitMixin:
         if op_name == "graph_attention":
             self.edge_proj = nn.Linear(d_in, d_in, bias=False)
             self.edge_proj.weight.data.normal_(std=0.02)
+
+    def _init_semiring_attention(self, d_in: int) -> None:
+        """Attention stack + a learnable per-head value-aggregation exponent β.
+
+        β is spread across the sum↔max/min continuum (linspace) so heads diversify
+        from init; |β|>0 keeps β's gradient alive (β=0 hits the softmax-limit
+        fallback, which is β-independent). See ``mathspaces.semiring``.
+        """
+        self._init_attention_stack("learnable_semiring_attention", d_in)
+        self.attn_scale = self.head_dim**-0.5
+        self.semiring_beta = nn.Parameter(torch.linspace(-0.6, 0.6, self.n_heads))
 
     def _init_math_space(
         self, op: PrimitiveOp, config: Dict, d_in: int, d_out: int

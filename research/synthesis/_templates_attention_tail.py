@@ -583,6 +583,7 @@ from ._templates_attention_advanced import (  # noqa: E402,F401
     tpl_associative_memory_block,
     tpl_dplr_gated_delta_block,
     tpl_entmax_attention_block,
+    tpl_learnable_semiring_attention_block,
     tpl_mixture_of_recursions_block,
     tpl_product_key_memory_block,
     tpl_retention_mix_block,

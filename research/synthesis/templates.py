@@ -150,6 +150,7 @@ COMPONENT_GRAPH_EXEMPT_TEMPLATES = frozenset(
         "mixture_of_recursions_block",
         "sparsemax_attention_block",
         "entmax_attention_block",
+        "learnable_semiring_attention_block",
         "dplr_gated_delta_block",
         "token_hodge_mixer_block",
         "wavelet_packet_mix_block",

@@ -17,38 +17,42 @@ from .compiler_op_utils import (
 )
 
 
+def _project_qkv(module, x):
+    """Multi-head Q/K/V projection shared by every standard-attention variant.
+
+    Returns ``(q, k, v, B, S)`` with q/k/v shaped ``(B, n_heads, S, head_dim)``.
+    Callers can apply a per-variant activation (e.g. ``F.elu`` for linear
+    attention) on the returned tensors.
+    """
+    B, S, _ = x.shape
+    nh, hd = module.n_heads, module.head_dim
+
+    def _proj(linear):
+        return (
+            _safe_linear(x, linear.weight, linear.bias)
+            .reshape(B, S, nh, hd)
+            .transpose(1, 2)
+        )
+
+    return _proj(module.q_proj), _proj(module.k_proj), _proj(module.v_proj), B, S
+
+
+def _apply_o_proj(module, multi_head_out, B, S):
+    """Collapse ``(B, n_heads, S, head_dim)`` to ``(B, S, D)`` and apply o_proj."""
+    out = multi_head_out.transpose(1, 2).reshape(B, S, -1)
+    return _safe_linear(out, module.o_proj.weight, module.o_proj.bias)
+
+
 def _op_softmax_attention(module, inputs, _):
     """Standard causal multi-head softmax attention."""
     x = inputs[0]
     if not hasattr(module, "q_proj"):
         return x
-    B, S, _ = x.shape
-    nh, hd = module.n_heads, module.head_dim
-    q = (
-        _safe_linear(x, module.q_proj.weight, module.q_proj.bias)
-        .reshape(B, S, nh, hd)
-        .transpose(1, 2)
-    )
-    k = (
-        _safe_linear(x, module.k_proj.weight, module.k_proj.bias)
-        .reshape(B, S, nh, hd)
-        .transpose(1, 2)
-    )
-    v = (
-        _safe_linear(x, module.v_proj.weight, module.v_proj.bias)
-        .reshape(B, S, nh, hd)
-        .transpose(1, 2)
-    )
+    q, k, v, B, S = _project_qkv(module, x)
     out = F.scaled_dot_product_attention(
-        q,
-        k,
-        v,
-        dropout_p=0.0,
-        is_causal=True,
-        scale=module.attn_scale,
+        q, k, v, dropout_p=0.0, is_causal=True, scale=module.attn_scale
     )
-    out = out.transpose(1, 2).reshape(B, S, -1)
-    return _safe_linear(out, module.o_proj.weight, module.o_proj.bias)
+    return _apply_o_proj(module, out, B, S)
 
 
 def _sparsemax(logits: torch.Tensor, dim: int = -1) -> torch.Tensor:
@@ -107,27 +111,10 @@ def _op_sparsemax_attention(module, inputs, _):
     x = inputs[0]
     if not hasattr(module, "q_proj"):
         return x
-    B, S, _ = x.shape
-    nh, hd = module.n_heads, module.head_dim
-    q = (
-        _safe_linear(x, module.q_proj.weight, module.q_proj.bias)
-        .reshape(B, S, nh, hd)
-        .transpose(1, 2)
-    )
-    k = (
-        _safe_linear(x, module.k_proj.weight, module.k_proj.bias)
-        .reshape(B, S, nh, hd)
-        .transpose(1, 2)
-    )
-    v = (
-        _safe_linear(x, module.v_proj.weight, module.v_proj.bias)
-        .reshape(B, S, nh, hd)
-        .transpose(1, 2)
-    )
+    q, k, v, B, S = _project_qkv(module, x)
     scores = _causal_attention_scores(q, k, module.attn_scale)
     weights = _sparsemax(scores, dim=-1)
-    out = torch.matmul(weights, v).transpose(1, 2).reshape(B, S, -1)
-    return _safe_linear(out, module.o_proj.weight, module.o_proj.bias)
+    return _apply_o_proj(module, torch.matmul(weights, v), B, S)
 
 
 def _op_entmax_attention(module, inputs, config):
@@ -135,28 +122,30 @@ def _op_entmax_attention(module, inputs, config):
     x = inputs[0]
     if not hasattr(module, "q_proj"):
         return x
-    B, S, _ = x.shape
-    nh, hd = module.n_heads, module.head_dim
     alpha = float(config.get("alpha", 1.5)) if isinstance(config, dict) else 1.5
-    q = (
-        _safe_linear(x, module.q_proj.weight, module.q_proj.bias)
-        .reshape(B, S, nh, hd)
-        .transpose(1, 2)
-    )
-    k = (
-        _safe_linear(x, module.k_proj.weight, module.k_proj.bias)
-        .reshape(B, S, nh, hd)
-        .transpose(1, 2)
-    )
-    v = (
-        _safe_linear(x, module.v_proj.weight, module.v_proj.bias)
-        .reshape(B, S, nh, hd)
-        .transpose(1, 2)
-    )
+    q, k, v, B, S = _project_qkv(module, x)
     scores = _causal_attention_scores(q, k, module.attn_scale)
     weights = _entmax_bisect(scores, alpha=alpha, dim=-1)
-    out = torch.matmul(weights, v).transpose(1, 2).reshape(B, S, -1)
-    return _safe_linear(out, module.o_proj.weight, module.o_proj.bias)
+    return _apply_o_proj(module, torch.matmul(weights, v), B, S)
+
+
+def _op_learnable_semiring_attention(module, inputs, _):
+    """Causal attention with a learned per-head value-aggregation semiring.
+
+    Per head, β (``module.semiring_beta``) slides the value pooling from
+    arithmetic mean (β→0, == softmax attention) to winner-take-all max (β>0)
+    or min (β<0). See ``mathspaces.semiring``.
+    """
+    x = inputs[0]
+    if not hasattr(module, "q_proj"):
+        return x
+    from ..mathspaces.semiring import semiring_attention
+
+    q, k, v, B, S = _project_qkv(module, x)
+    out = semiring_attention(
+        q, k, v, module.semiring_beta.to(x.dtype), module.attn_scale
+    )
+    return _apply_o_proj(module, out, B, S)
 
 
 def _op_linear_attention(module, inputs, _):
@@ -170,29 +159,13 @@ def _op_linear_attention(module, inputs, _):
     x = inputs[0]
     if not hasattr(module, "q_proj"):
         return x
-    B, S, _ = x.shape
+    q, k, v, B, S = _project_qkv(module, x)
     nh, hd = module.n_heads, module.head_dim
-    q = (
-        F.elu(
-            _safe_linear(x, module.q_proj.weight, module.q_proj.bias)
-            .reshape(B, S, nh, hd)
-            .transpose(1, 2)
-        )
-        + 1
-    )  # (B, H, S, hd)
-    k = (
-        F.elu(
-            _safe_linear(x, module.k_proj.weight, module.k_proj.bias)
-            .reshape(B, S, nh, hd)
-            .transpose(1, 2)
-        )
-        + 1
-    )
-    v = (
-        _safe_linear(x, module.v_proj.weight, module.v_proj.bias)
-        .reshape(B, S, nh, hd)
-        .transpose(1, 2)
-    )
+    # ELU+1 feature map for the positive linear-attention kernel; applied to
+    # q and k only — v stays raw so the running state matches standard
+    # linear-attention formulations.
+    q = F.elu(q) + 1
+    k = F.elu(k) + 1
 
     # Chunked causal linear attention: accumulate kv state across chunks
     # to avoid the (B, H, S, hd, hd) intermediate tensor.
@@ -599,6 +572,7 @@ OP_IMPLS: Dict[str, Callable] = {
     "softmax_attention": _op_softmax_attention,
     "sparsemax_attention": _op_sparsemax_attention,
     "entmax_attention": _op_entmax_attention,
+    "learnable_semiring_attention": _op_learnable_semiring_attention,
     "linear_attention": _op_linear_attention,
     "graph_attention": _op_graph_attention,
     "local_window_attn": _op_local_window_attn,

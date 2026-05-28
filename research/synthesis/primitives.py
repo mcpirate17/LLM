@@ -811,6 +811,18 @@ _register(
 )
 _register(
     PrimitiveOp(
+        "learnable_semiring_attention",
+        OpCategory.MIXING,
+        1,
+        "identity",
+        has_params=True,
+        param_formula="D*D*4",
+        description="Learnable-semiring attention: per-head exponent slides value aggregation from softmax mean (beta->0) to winner-take-all max (beta>0) / min (beta<0)",
+        binding_range_class="full",
+    )
+)
+_register(
+    PrimitiveOp(
         "linear_attention",
         OpCategory.MIXING,
         1,
