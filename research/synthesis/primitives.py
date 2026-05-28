@@ -1081,6 +1081,18 @@ _register(
 )
 _register(
     PrimitiveOp(
+        "pq_embedding_moe_block",
+        OpCategory.PARAMETERIZED,
+        1,
+        "identity",
+        has_params=True,
+        param_formula="D*D*12",
+        description="Factorized Semantic Bottleneck MoE: PQ denoised routing (Novel Derivation)",
+        config_keys=("num_experts", "top_k", "M", "K"),
+    )
+)
+_register(
+    PrimitiveOp(
         "moe_2expert",
         OpCategory.PARAMETERIZED,
         1,

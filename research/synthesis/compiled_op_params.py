@@ -82,6 +82,9 @@ class CompiledOpParamInitMixin:
                 self, "gate_proj", self._make_param((2, d_in), std=0.02)
             ),
             "moe_topk": lambda: self._init_moe_topk(config, d_in),
+            "pq_embedding_moe_block": lambda: self._init_pq_embedding_moe_block(
+                config, d_in
+            ),
             "moe_2expert": lambda: (
                 setattr(self, "gate_proj", self._make_param((2, d_in), std=0.02)),
                 setattr(
@@ -184,9 +187,7 @@ class CompiledOpParamInitMixin:
             "entmax_attention": lambda: self._init_attention_stack(
                 "entmax_attention", d_in
             ),
-            "learnable_semiring_attention": lambda: self._init_semiring_attention(
-                d_in
-            ),
+            "learnable_semiring_attention": lambda: self._init_semiring_attention(d_in),
             "linear_attention": lambda: self._init_attention_stack(
                 "linear_attention", d_in
             ),
@@ -355,6 +356,23 @@ class CompiledOpParamInitMixin:
             expert[2].weight.data.normal_(
                 mean=0.0, std=1.0 / math.sqrt(hidden if hidden > 0 else 1)
             )
+
+    def _init_pq_embedding_moe_block(self, config: Dict, d_in: int) -> None:
+        """Factorized Semantic Bottleneck MoE: PQ denoised routing.
+
+        Instantiates the full block from arch_builder to ensure exact parity
+        between search/synthesis and final model generation.
+        """
+        from ..arch_builder import PQEmbeddingMoEBlock
+
+        self.block = PQEmbeddingMoEBlock(
+            dim=d_in,
+            n_experts=int(config.get("num_experts", 4)),
+            topk=int(config.get("top_k", 2)),
+            mlp_ratio=float(config.get("mlp_ratio", 3.0)),
+            M=int(config.get("M", 4)),
+            K=int(config.get("K", 16)),
+        )
 
     def _init_kronecker_linear(self, d_in: int) -> None:
         p = int(d_in**0.5)

@@ -1234,9 +1234,18 @@ def _op_relu_gated_moe(module, inputs, config):
     return gate_scores.sum(dim=-1, keepdim=True).expand_as(x) * x
 
 
+def _op_pq_embedding_moe_block(module, inputs, _):
+    """Factorized Semantic Bottleneck MoE: PQ denoised routing."""
+    x = inputs[0]
+    if hasattr(module, "block"):
+        return module.block(x)
+    return x
+
+
 OP_IMPLS: Dict[str, Callable] = {
     "topk_gate": _op_topk_gate,
     "moe_topk": _op_moe_topk,
+    "pq_embedding_moe_block": _op_pq_embedding_moe_block,
     "moe_2expert": _op_moe_2expert,
     "swiglu_mlp": _op_swiglu_mlp,
     "feature_sparsity": _op_feature_sparsity,

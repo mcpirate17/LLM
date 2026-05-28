@@ -602,6 +602,54 @@ class MoETopK(nn.Module):
         return output
 
 
+class PQEmbeddingMoEBlock(nn.Module):
+    """
+    Factorized Semantic Bottleneck (FSB) MoE Block.
+
+    Novel derivation: uses a soft Product-Quantized (PQ) codebook as an information
+    bottleneck to denoise the representation before it reaches the MoE router.
+    This "snaps" the continuous input to a learned discrete palette, reducing
+    routing jitter and forcing experts to specialize on prototypical concepts.
+
+    Flow: normalize → project → PQ-quantize → project back → route to experts (MoE)
+    """
+
+    def __init__(
+        self,
+        dim: int,
+        n_experts: int = 4,
+        topk: int = 2,
+        mlp_ratio: float = 3.0,
+        M: int = 4,
+        K: int = 16,
+    ):
+        super().__init__()
+        from .mathspaces.pq_embedding import execute_pq_embedding
+
+        self.execute_pq_embedding = execute_pq_embedding
+        self.proj_in = nn.Linear(dim, dim, bias=False)
+
+        # PQ parameters
+        self.M = M
+        self.K = K
+        sub_dim = dim // M
+        self.codebooks = nn.Parameter(torch.randn(M, K, sub_dim) * 0.02)
+        self.pq_tau = 1.0
+
+        self.proj_out = nn.Linear(dim, dim, bias=False)
+        self.moe = MoETopK(dim, n_experts, topk, mlp_ratio)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # bottleneck flow
+        h = self.proj_in(x)
+        # Snap to learned vocabulary (Information Bottleneck)
+        h = self.execute_pq_embedding(self, h)
+        # Project back to expert space
+        h = self.proj_out(h)
+        # Route based on cleaned semantic signal
+        return self.moe(h)
+
+
 class KANSplineMLP(nn.Module):
     """KAN-inspired learnable activation functions via B-splines."""
 
@@ -1331,6 +1379,9 @@ def _build_channel_mixer(choice: str, cfg: BuildConfig) -> nn.Module:
     mixers = {
         "swiglu_mlp": lambda: SwiGLUMLP(cfg.dim, cfg.mlp_ratio),
         "moe_topk": lambda: MoETopK(
+            cfg.dim, cfg.moe_num_experts, cfg.moe_topk, cfg.mlp_ratio
+        ),
+        "pq_embedding_moe_block": lambda: PQEmbeddingMoEBlock(
             cfg.dim, cfg.moe_num_experts, cfg.moe_topk, cfg.mlp_ratio
         ),
         "kan_spline": lambda: KANSplineMLP(cfg.dim, cfg.mlp_ratio),

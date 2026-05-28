@@ -1,0 +1,80 @@
+id: pq_embedding_moe_block
+version: 1.0.0
+name: PQ Embedding MoE Block
+category: channel_mixing
+tags:
+- pq
+- moe
+- bottleneck
+- channel_mixing
+status: approved
+description: Factorized Semantic Bottleneck MoE block using Product Quantization to denoise routing.
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params:
+  n_experts:
+    type: int
+    default: 4
+    description: Number of experts in the MoE.
+  topk:
+    type: int
+    default: 2
+    description: Number of experts to route to.
+  mlp_ratio:
+    type: float
+    default: 3.0
+    description: Ratio of hidden dimension to model dimension in experts.
+  M:
+    type: int
+    default: 4
+    description: Number of subspaces for Product Quantization.
+  K:
+    type: int
+    default: 16
+    description: Number of codebook centroids per subspace.
+  tau:
+    type: float
+    default: 1.0
+    description: Softmax temperature for PQ assignment.
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: true
+  param_formula: 2*D*D + M*K*(D/M) + n_experts*D
+  preserves_gradient: true
+  numerically_risky: false
+constraints:
+  incompatible_with: []
+help_md: '### Technical
+
+  Factorized Semantic Bottleneck MoE block.
+
+  Flow: normalize → project → PQ-quantize → project back → route to experts (MoE).
+
+  The PQ embedding acts as an information bottleneck, "snapping" the input to a learned discrete palette to provide a cleaner signal to the MoE router.
+
+
+  Inputs: x:tensor[B, S, D].
+
+  Outputs: y:tensor[B, S, D].
+
+
+  ### Plain Language
+
+  A "smart" Mixture of Experts block that cleans up its input before deciding which experts to use. It uses a learned "dictionary" of patterns (Product Quantization) to simplify the input, which helps the router make more consistent decisions.
+  '
