@@ -653,6 +653,8 @@ def run_template_batch_detailed(
     n_layers_override: int | None = None,
     stage1_steps_override: int | None = None,
     composition_depth_override: int | None = None,
+    max_seq_len_override: int | None = None,
+    stage1_batch_size_override: int | None = None,
     early_stop_patience: int | None = None,
     early_stop_min_delta: float | None = None,
     early_stop_min_steps: int | None = None,
@@ -690,6 +692,10 @@ def run_template_batch_detailed(
         es_kwargs["early_stop_min_delta"] = float(early_stop_min_delta)
     if early_stop_min_steps is not None:
         es_kwargs["early_stop_min_steps"] = int(early_stop_min_steps)
+    if max_seq_len_override is not None:
+        es_kwargs["max_seq_len"] = int(max_seq_len_override)
+    if stage1_batch_size_override is not None:
+        es_kwargs["stage1_batch_size"] = int(stage1_batch_size_override)
 
     config = RunConfig(
         n_programs=n_programs,
@@ -834,6 +840,8 @@ def run_template_batch(
     n_layers_override: int | None = None,
     stage1_steps_override: int | None = None,
     composition_depth_override: int | None = None,
+    max_seq_len_override: int | None = None,
+    stage1_batch_size_override: int | None = None,
     early_stop_patience: int | None = None,
     early_stop_min_delta: float | None = None,
     early_stop_min_steps: int | None = None,
@@ -850,6 +858,8 @@ def run_template_batch(
         n_layers_override=n_layers_override,
         stage1_steps_override=stage1_steps_override,
         composition_depth_override=composition_depth_override,
+        max_seq_len_override=max_seq_len_override,
+        stage1_batch_size_override=stage1_batch_size_override,
         early_stop_patience=early_stop_patience,
         early_stop_min_delta=early_stop_min_delta,
         early_stop_min_steps=early_stop_min_steps,
@@ -926,6 +936,24 @@ def main():
         type=int,
         default=None,
         help="Override phase default for composition_depth.",
+    )
+    parser.add_argument(
+        "--max-seq-len-override",
+        type=int,
+        default=None,
+        help=(
+            "Override RunConfig.max_seq_len (default 256). Sweep this to vary the "
+            "context length seen per step; combined with batch_size sets tokens/step."
+        ),
+    )
+    parser.add_argument(
+        "--stage1-batch-size-override",
+        type=int,
+        default=None,
+        help=(
+            "Override RunConfig.stage1_batch_size (default 4). Sweep this to vary "
+            "the per-step token budget independent of step count."
+        ),
     )
     parser.add_argument(
         "--early-stop-patience",
@@ -1137,6 +1165,8 @@ def main():
                     n_layers_override=args.n_layers_override,
                     stage1_steps_override=args.stage1_steps_override,
                     composition_depth_override=args.composition_depth_override,
+                    max_seq_len_override=args.max_seq_len_override,
+                    stage1_batch_size_override=args.stage1_batch_size_override,
                     early_stop_patience=args.early_stop_patience,
                     early_stop_min_delta=args.early_stop_min_delta,
                     early_stop_min_steps=args.early_stop_min_steps,
