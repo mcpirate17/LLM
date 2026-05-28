@@ -30,6 +30,7 @@ from ._template_helpers import (
     _instantiate_motif,
     _pick_compatible_motif,
     _pick_compatible_motif_from_classes,
+    record_template_slot_binding,
 )
 from ._templates_core import tpl_residual_block
 
@@ -242,157 +243,60 @@ def tpl_pq_embedding_moe_block(
     rng: random.Random,
     weights: MotifWeights = None,
 ) -> int:
-    """Factorized Semantic Substrate (FSS) — High-depth FSB implementation.
+    """PQ-bottleneck MoE: snap to a learned palette before expert routing.
 
-    Derivation: uses PQ-quantization as a semantic low-pass filter to drive
-    a multi-lane routing architecture. Denoised signals are processed by
-    parallel lanes (Easy/Medium/Hard) and merged via codebook-aligned gates.
+    ``norm → proj → pq_embedding → proj → norm → MoE motif → residual``
 
-    Topology:
-      Stem: norm → proj → act → PQ → proj → norm
-      Lanes:
-        1. Easy: Identity skip of quantized stem
-        2. Medium: Token-conditioned lightweight mixer (Conv/Sparse)
-        3. Hard: Semantic MoE (Top-K expert routing)
-      Merge: Multi-lane residual merge → Token Merge Proj → Final Norm → Add
-
-    Total Ops: ~18-22 (Passes all structural and depth gates).
+    The PQ codebook acts as an information bottleneck: each token's continuous
+    embedding is replaced by a soft blend of M·K learned prototypes, handing
+    the MoE router a discrete, codebook-aligned input instead of arbitrary
+    continuous noise. Hypothesis: cleaner routing signal → less routing
+    jitter, better expert specialisation. The composition is intentionally
+    flat (no Easy/Medium/Hard lanes — that role is the
+    ``intelligent_multilane_router`` template's; reinventing it here just
+    creates two near-duplicate templates competing for budget).
     """
     template_name = "pq_embedding_moe_block"
     template_instance = int(graph.metadata.get("_active_template_instance", 0) or 0)
     D = graph.model_dim
-    from ._template_helpers import (
-        record_template_slot_binding,
-        template_add_op as _add,
-        template_add_residual as _residual,
-    )
-    from ._templates_routing import _single_input_op_config
 
-    # ── Phase 1: Semantic Stem (The Bottleneck) ───────────────────
-    norm1 = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
-    stem = _instantiate_motif(graph, input_id, norm1, rng) if norm1 else input_id
+    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
+    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
     try:
-        # Project to factorized axes
-        h = _add(graph, "linear_proj", [stem], {"out_dim": D}, context="fss.proj_in")
-        # Non-linear feature prep
-        h = _add(graph, "silu", [h], context="fss.act")
-        # Information Bottleneck (Low-pass filter)
-        h = _add(graph, "pq_embedding", [h], context="fss.pq")
-        # Restore model space
-        h = _add(graph, "linear_proj", [h], {"out_dim": D}, context="fss.proj_out")
-        # Stabilize for routing
-        quantized_stem = _add(graph, "rmsnorm", [h], context="fss.stem_norm")
+        h = graph.add_op("linear_proj", [normed], config={"out_dim": D})
+        h = graph.add_op("pq_embedding", [h])
+        h = graph.add_op("linear_proj", [h], config={"out_dim": D})
+        h = graph.add_op("rmsnorm", [h])
     except (ValueError, KeyError):
         return tpl_residual_block(graph, input_id, rng, weights)
 
-    # ── Phase 2: Routing Signals ──────────────────────────────────
-    # Drive routing based on the denoised "palette" representation
-    signal = _add(
-        graph,
-        "token_class_proj",
-        [quantized_stem],
-        {"n_classes": 4},
-        context="fss.signal",
+    moe_motif = _pick_compatible_motif_from_classes(
+        graph, h, rng, list(_MOE_FFN_CLASSES), weights
     )
-    difficulty = _add(graph, "token_entropy", [signal], context="fss.difficulty")
-
-    # ── Phase 3: Multi-Lane Execution ─────────────────────────────
-
-    # Lane 1: Easy (Denoised identity)
-    easy_lane = quantized_stem
-
-    # Lane 2: Medium (Denoised Mixer)
-    # Picks a lightweight mixer from the "medium" cohort
-    medium_op = rng.choice(["conv1d_seq", "nm_sparse_linear", "block_sparse_linear"])
-    medium_cfg = _single_input_op_config(medium_op, D, rng)
-    if medium_op == "nm_sparse_linear":
-        medium_cfg.update({"n": 2, "m": 4})
-    
-    medium_lane = _add(
-        graph, medium_op, [quantized_stem], medium_cfg, context="fss.medium"
-    )
-    medium_lane = _add(
-        graph, "linear_proj", [medium_lane], {"out_dim": D}, context="fss.medium_proj"
-    )
-
-    # Lane 3: Hard (Semantic MoE)
-    # Uses a sparse router driven by the quantized signal
-    gated_tokens = _add(
-        graph,
-        "hybrid_token_gate",
-        [quantized_stem],
-        {"threshold": 0.5},
-        context="fss.token_gate",
-    )
-    router = _add(
-        graph,
-        "hybrid_sparse_router",
-        [gated_tokens],
-        {"span_width": 2, "lane_count": 2, "confidence_threshold": 0.5},
-        context="fss.router",
-    )
-    
-    moe_motif = _pick_compatible_motif(graph, router, rng, MOTIF_CLASS_MOE, weights)
     if moe_motif:
-        hard_lane = _instantiate_motif(graph, router, moe_motif, rng)
+        routed = _instantiate_motif(graph, h, moe_motif, rng)
     else:
-        # MoE Top-K fallback
-        hard_lane = _add(
-            graph,
-            "moe_topk",
-            [router],
-            {"num_experts": 4, "top_k": 2},
-            context="fss.moe",
-        )
-    hard_lane = _fix_dim(graph, hard_lane)
+        # Fallback: a single Top-K MoE op if no MOE/GATE-class motif is compatible.
+        routed = graph.add_op("moe_topk", [h], config={"num_experts": 4, "top_k": 2})
+    routed = _fix_dim(graph, routed)
 
-    # ── Phase 4: Merging & Final Synthesis ────────────────────────
-    
-    # Merge easy + medium via difficulty gate
-    merged = _add(graph, "mul", [medium_lane, difficulty], context="fss.gate_medium")
-    merged = _residual(graph, easy_lane, merged, context="fss.merge_easy_medium")
-    
-    # Merge hard lane
-    merged = _residual(graph, merged, hard_lane, context="fss.merge_hard")
-    
-    # Token-level consolidation
-    merged_tokens = _add(
-        graph, "linear_proj", [merged], {"out_dim": D}, context="fss.token_merge"
-    )
-    
-    # Final refinement
-    post = _add(graph, "rmsnorm", [merged_tokens], context="fss.post_norm")
-
-    # Record bindings for search visibility
     record_template_slot_binding(
         graph,
         template_name=template_name,
         template_instance=template_instance,
         slot_index=1,
-        slot_key="fss.stem",
-        slot_classes=["bottleneck"],
-        selected_name="pq_embedding",
-        selected_class="primitive",
-        input_node_id=input_id,
-    )
-    record_template_slot_binding(
-        graph,
-        template_name=template_name,
-        template_instance=template_instance,
-        slot_index=2,
-        slot_key="fss.hard_lane",
+        slot_key=f"{template_name}[{template_instance}].moe",
         slot_classes=["moe"],
         selected_name=moe_motif.name if moe_motif else "moe_topk",
-        selected_class="motif",
-        input_node_id=router,
+        selected_class="motif" if moe_motif else "primitive",
+        input_node_id=h,
     )
 
-    # Global residual bypass
     try:
-        return _add(graph, "add", [input_id, post], context="fss.output")
+        return graph.add_op("add", [input_id, routed])
     except ValueError:
-        return post
+        return routed
 
 
 def tpl_mlstm_block(

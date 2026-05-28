@@ -1082,12 +1082,12 @@ _register(
 _register(
     PrimitiveOp(
         "pq_embedding_moe_block",
-        OpCategory.PARAMETERIZED,
+        OpCategory.MIXING,
         1,
         "identity",
         has_params=True,
         param_formula="D*D*12",
-        description="Factorized Semantic Bottleneck MoE: PQ denoised routing (Novel Derivation)",
+        description="PQ-bottleneck MoE block: soft product-quantized snap-to-palette before MoE Top-K routing — denoised routing input → less jitter, better expert specialisation",
         config_keys=("num_experts", "top_k", "M", "K"),
     )
 )

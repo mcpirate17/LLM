@@ -191,6 +191,8 @@ _OP_ROLE_MAP: Dict[str, OpRole] = {
     "poincare_add": OpRole.RESIDUAL,
     # ── Learnable-semiring attention ─────────────────────────────
     "learnable_semiring_attention": OpRole.MIX,
+    # ── PQ-bottleneck MoE block ──────────────────────────────────
+    "pq_embedding_moe_block": OpRole.MIX,
     # ── Math-space: tropical ─────────────────────────────────────
     "tropical_attention": OpRole.MIX,
     "tropical_gate": OpRole.GATE,

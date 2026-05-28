@@ -7,7 +7,7 @@ tags:
 - moe
 - bottleneck
 - channel_mixing
-status: approved
+status: experimental
 description: Factorized Semantic Bottleneck MoE block using Product Quantization to denoise routing.
 inputs:
 - name: x

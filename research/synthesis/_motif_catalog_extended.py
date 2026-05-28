@@ -96,8 +96,8 @@ EXTENDED_MOTIFS: Tuple[Motif, ...] = (
     Motif(
         name="pq_embedding_moe_block",
         motif_class=MOTIF_CLASS_MOE,
-        steps=(MotifStep("pq_embedding_moe_block", OpRole.ROUTE),),
-        description="Factorized Semantic Bottleneck MoE (PQ → MoE)",
+        steps=(MotifStep("pq_embedding_moe_block", OpRole.MIX),),
+        description="PQ-bottleneck MoE: soft palette snap before MoE routing",
         support=6,
         avg_loss_ratio=0.08,
         lift=3.5,
