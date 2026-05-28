@@ -2266,7 +2266,18 @@ class _NotebookCore:
             return None
         pointer = parse_artifact_pointer(blob)
         if pointer:
-            blob = self._resolve_artifact_bytes(pointer)
+            try:
+                blob = self._resolve_artifact_bytes(pointer)
+            except FileNotFoundError:
+                # Artifact backing file was pruned/removed but the DB still
+                # holds the pointer. Degrade to None on this read path rather
+                # than 500 the whole endpoint; the row's summary metrics remain
+                # valid. Hash mismatches still raise loudly (corruption != gone).
+                LOGGER.warning(
+                    "Artifact pointer references missing file; returning None: %s",
+                    pointer,
+                )
+                return None
         if not isinstance(blob, bytes):
             # Already a string (old data)
             try:

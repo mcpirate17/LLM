@@ -48,6 +48,7 @@ _CANONICAL_MAP: Dict[str, str] = {
     "graph_output": "io/output",
     "conv_only": "mixing/conv_only",
     "swiglu_mlp": "channel_mixing/swiglu_mlp",
+    "pq_embedding_moe_block": "channel_mixing/pq_embedding_moe_block",
     "confidence_token_gate": "routing/confidence_token_gate",
     "matmul": "linear_algebra/matmul",
     "topk_gate": "linear_algebra/topk_gate",
