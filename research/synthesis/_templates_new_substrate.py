@@ -237,6 +237,68 @@ def tpl_mla_sparse_ffn_block(
         return processed
 
 
+def tpl_pq_embedding_moe_block_rope(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """PQ-bottleneck MoE with RoPE positional encoding before the bottleneck.
+
+    ``norm → rope_rotate → proj → pq_embedding → proj → norm → MoE motif → residual``
+
+    Sibling of ``tpl_pq_embedding_moe_block`` that explicitly inserts RoPE
+    before the PQ codebook step. Tests the hypothesis that PQ's near-zero
+    induction (the no-RoPE variant scored ~0.006 vs corpus 0.038) comes from
+    *missing positional information* — without RoPE, the input to PQ has no
+    position structure for the codebook to preserve, so the routed MoE
+    experts can't condition on (position, content) pairs and induction
+    heads can't form. With RoPE the codebook entries encode position+content
+    jointly, giving the router a position-aware signal to specialise on.
+    """
+    template_name = "pq_embedding_moe_block_rope"
+    template_instance = int(graph.metadata.get("_active_template_instance", 0) or 0)
+    D = graph.model_dim
+
+    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
+    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
+
+    try:
+        rotated = graph.add_op("rope_rotate", [normed])
+        h = graph.add_op("linear_proj", [rotated], config={"out_dim": D})
+        h = graph.add_op("pq_embedding", [h])
+        h = graph.add_op("linear_proj", [h], config={"out_dim": D})
+        h = graph.add_op("rmsnorm", [h])
+    except (ValueError, KeyError):
+        return tpl_residual_block(graph, input_id, rng, weights)
+
+    moe_motif = _pick_compatible_motif_from_classes(
+        graph, h, rng, list(_MOE_FFN_CLASSES), weights
+    )
+    if moe_motif:
+        routed = _instantiate_motif(graph, h, moe_motif, rng)
+    else:
+        routed = graph.add_op("moe_topk", [h], config={"num_experts": 4, "top_k": 2})
+    routed = _fix_dim(graph, routed)
+
+    record_template_slot_binding(
+        graph,
+        template_name=template_name,
+        template_instance=template_instance,
+        slot_index=1,
+        slot_key=f"{template_name}[{template_instance}].moe",
+        slot_classes=["moe"],
+        selected_name=moe_motif.name if moe_motif else "moe_topk",
+        selected_class="motif" if moe_motif else "primitive",
+        input_node_id=h,
+    )
+
+    try:
+        return graph.add_op("add", [input_id, routed])
+    except ValueError:
+        return routed
+
+
 def tpl_pq_embedding_moe_block(
     graph: ComputationGraph,
     input_id: int,

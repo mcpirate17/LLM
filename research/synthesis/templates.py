@@ -182,6 +182,7 @@ COMPONENT_GRAPH_EXEMPT_TEMPLATES = frozenset(
         # routing-capable manifest tests rather than a dedicated component
         # graph entry.
         "pq_embedding_moe_block",
+        "pq_embedding_moe_block_rope",
         # Fused-substrate templates (2026-05-11) — covered by
         # test_fused_substrate_templates.py (build/validate/target-op tests).
         "mla_sparse_ffn_block",
@@ -302,6 +303,7 @@ from ._templates_exotic import (  # noqa: F401
     tpl_mlstm_block,
     tpl_mlstm_sparse_ffn_block,
     tpl_pq_embedding_moe_block,
+    tpl_pq_embedding_moe_block_rope,
     tpl_tree_mix_attention_block,
     tpl_gated_minimum,
     tpl_spiking_residual_block,
@@ -363,6 +365,7 @@ TEMPLATES: Dict[str, TemplateFn] = {
     # hypothesis from handoff_2026-05-11.
     "mla_sparse_ffn_block": tpl_mla_sparse_ffn_block,
     "pq_embedding_moe_block": tpl_pq_embedding_moe_block,
+    "pq_embedding_moe_block_rope": tpl_pq_embedding_moe_block_rope,
     "tree_mix_attention_block": tpl_tree_mix_attention_block,
     # mLSTM (handoff item E) — matrix-memory recurrence. Bare + fused variants.
     "mlstm_block": tpl_mlstm_block,
@@ -441,6 +444,7 @@ DEFAULT_TEMPLATE_WEIGHTS: Dict[str, float] = {
     # Default weight ~ peer winner templates (latent_attn_sparse_ffn=4.0).
     "mla_sparse_ffn_block": 4.0,
     "pq_embedding_moe_block": 4.0,
+    "pq_embedding_moe_block_rope": 4.0,
     "tree_mix_attention_block": 3.5,
     # mLSTM templates start at peer-weight (4.0 fused, 3.0 bare).
     # Bayesian shrinkage handles the empirical bootstrap from n=0.

@@ -37,6 +37,7 @@ from ._templates_new_substrate import (  # noqa: F401
     tpl_mlstm_sparse_ffn_block,
     tpl_pq_embedding_block,
     tpl_pq_embedding_moe_block,
+    tpl_pq_embedding_moe_block_rope,
     tpl_tree_mix_attention_block,
     tpl_tree_mix_block,
     tpl_tropical_softmax_block,
