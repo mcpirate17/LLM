@@ -326,7 +326,11 @@ class _PlateauTracker:
         }
 
 
-@torch.inference_mode()
+# no_grad (not inference_mode): the eval shares the model with the training loop,
+# and stateful ops (e.g. state_space SSM) can cache a tensor here that the next
+# training step pulls into its autograd graph — inference-mode tensors cannot be
+# saved for backward, which crashed semiring-real at step 30k (2026-05-28).
+@torch.no_grad()
 def _eval_ppl_fast(
     model: nn.Module,
     batches: list[torch.Tensor],
