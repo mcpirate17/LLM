@@ -289,17 +289,14 @@ SLOT_MOTIFS: Tuple[Motif, ...] = (
         avg_loss_ratio=0.0,
         lift=2.5,
     ),
-    Motif(
-        name="route_hybrid_token_gate",
-        motif_class=MOTIF_CLASS_GATE,
-        steps=(
-            MotifStep("hybrid_token_gate", OpRole.ROUTE, config={"threshold": 0.5}),
-        ),
-        description="Cheap single-token gate feeding default and sparse routed paths",
-        support=0,
-        avg_loss_ratio=0.0,
-        lift=3.0,
-    ),
+    # NOTE: no standalone `route_hybrid_token_gate` motif. `hybrid_token_gate`
+    # carries a mandatory residual bypass (REQUIRES_RESIDUAL_BYPASS in
+    # _template_helpers._instantiate_motif), so an `add` is always inserted
+    # immediately after it. That breaks `hybrid_sparse_router`'s "immediate
+    # hybrid_token_gate predecessor" rule, making any sampled single/two-step
+    # variant un-instantiable as a valid slot fill. The hybrid-routing chain is
+    # only valid as the explicit branch construction in
+    # tpl_intelligent_multilane_router, so it is not offered as a sampled motif.
     Motif(
         name="route_sparse_triplet",
         motif_class=MOTIF_CLASS_GATE,
