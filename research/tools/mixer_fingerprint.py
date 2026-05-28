@@ -44,6 +44,7 @@ from dataclasses import asdict, dataclass, field, is_dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+import numpy as np
 import torch
 from torch import nn
 
@@ -1228,6 +1229,8 @@ def _build_model_and_batchers(
     dim: int,
     n_blocks: int,
     use_ffn: bool = True,
+    corpus_tokens: Path | None = None,
+    val_corpus_tokens: Path | None = None,
 ) -> tuple[
     nn.Module, Callable[[int], nn.Module], _RandomWindowBatcher, list[torch.Tensor], int
 ]:
@@ -1235,12 +1238,21 @@ def _build_model_and_batchers(
     model = _build_tinylm(model_factory, dim=dim, n_blocks=n_blocks, use_ffn=use_ffn)
     model = model.to(device)
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    train_tokens, val_tokens, _, _ = _load_wikitext_tokens(
-        variant="wikitext-103-raw-v1",
-        vocab_size=VOCAB_SIZE,
-        max_chars_train=200_000_000,
-        max_chars_val=2_000_000,
-    )
+    if corpus_tokens is not None:
+        # Pre-tokenized cl100k corpus override (e.g. FineFineWeb). Same tokenizer
+        # / vocab / format as the WikiText path — only the corpus content differs.
+        train_tokens = torch.as_tensor(
+            np.load(corpus_tokens), dtype=torch.long
+        ).contiguous()
+        val_src = val_corpus_tokens if val_corpus_tokens is not None else corpus_tokens
+        val_tokens = torch.as_tensor(np.load(val_src), dtype=torch.long).contiguous()
+    else:
+        train_tokens, val_tokens, _, _ = _load_wikitext_tokens(
+            variant="wikitext-103-raw-v1",
+            vocab_size=VOCAB_SIZE,
+            max_chars_train=200_000_000,
+            max_chars_val=2_000_000,
+        )
     train_batcher = _RandomWindowBatcher(
         train_tokens, batch_size=batch_size, seq_len=seq_len, device=device, seed=42
     )
@@ -1637,6 +1649,8 @@ def run_fingerprint(
     plateau_min_delta: float = 0.005,
     plateau_min_steps: int = 20_000,
     use_ffn: bool = True,
+    corpus_tokens: Path | None = None,
+    val_corpus_tokens: Path | None = None,
 ) -> Path:
     """End-to-end: build → train → checkpoint-eval → final-eval → write JSONL.
 
@@ -1668,6 +1682,8 @@ def run_fingerprint(
         dim=dim,
         n_blocks=n_blocks,
         use_ffn=use_ffn,
+        corpus_tokens=corpus_tokens,
+        val_corpus_tokens=val_corpus_tokens,
     )
     step_offset = 0
     if resume is not None:
@@ -1834,6 +1850,21 @@ def _add_run_args(p: argparse.ArgumentParser) -> None:
         "--dim", default=96, type=int, help="Model dim (default 96 ≈ 10M params)."
     )
     p.add_argument("--n-blocks", default=12, type=int, help="Number of stacked blocks.")
+    p.add_argument(
+        "--corpus-tokens",
+        default=None,
+        type=Path,
+        help="Pre-tokenized cl100k token .npy to train on instead of WikiText-103 "
+        "(e.g. research/corpus/finefineweb_train.npy). Same tokenizer/vocab — only "
+        "the corpus content changes.",
+    )
+    p.add_argument(
+        "--val-corpus-tokens",
+        default=None,
+        type=Path,
+        help="Held-out token .npy for validation when --corpus-tokens is set "
+        "(defaults to reusing --corpus-tokens).",
+    )
 
 
 def _add_checkpoint_args(p: argparse.ArgumentParser) -> None:
@@ -1991,6 +2022,8 @@ def main(argv: list[str] | None = None) -> int:
         plateau_min_delta=float(args.plateau_min_delta),
         plateau_min_steps=int(args.plateau_min_steps),
         use_ffn=bool(args.use_ffn),
+        corpus_tokens=args.corpus_tokens,
+        val_corpus_tokens=args.val_corpus_tokens,
     )
     print(f"wrote {path}")
     return 0
