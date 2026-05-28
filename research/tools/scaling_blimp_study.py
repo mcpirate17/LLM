@@ -179,6 +179,21 @@ class AdjacentTokenMergeLane(nn.Module):
         return self.out_proj(merged) * gate
 
 
+# 2026-05-28: nano-scale BLiMP winners (seq=512 sweet-spot study) — lane name →
+# (graphs-table fingerprint, description). Single source of truth shared by the
+# lane factory below and `tools/apply_mixer_fingerprint_pretrain.py`.
+WINNER_LANE_FINGERPRINTS: dict[str, tuple[str, str]] = {
+    "pq_rope_winner": (
+        "9be78a43c07948c4",  # pragma: allowlist secret
+        "pq_embedding_moe_block_rope (BLiMP 0.5543 @ 10k seq512)",
+    ),
+    "semiring_winner": (
+        "a2f747a20982907a",  # pragma: allowlist secret
+        "learnable_semiring_attention_block (BLiMP 0.5651 @ 10k seq512)",
+    ),
+}
+
+
 def _build_lane_factory(
     name: str, top_k_frac: float = 0.25
 ) -> Callable[[int], nn.Module]:
@@ -405,6 +420,22 @@ def _build_lane_factory(
             for fp, desc, db_auc, g in specs
         ]
         return _make_ensemble_lane_factory(roped)
+
+    if name in ("pq_rope_winner", "semiring_winner"):
+        # 2026-05-28: nano-scale BLiMP winners (seq=512 sweet-spot study). Each
+        # is a single synthesized block reconstructed from its graph_json in the
+        # `graphs` dedup table (these were screened-only, never promoted to a
+        # program_results row). Wrapped as a 1-branch ensemble = the block
+        # itself (its own norm/residual built in → pair with mixer_fingerprint
+        # `--no-ffn`). Powers the from-scratch Chinchilla pretrain.
+        from research.tools.ensemble_screening import (
+            _load_graphs_from_graphs_table,
+            _make_ensemble_lane_factory,
+        )
+
+        fp, desc = WINNER_LANE_FINGERPRINTS[name]
+        specs = _load_graphs_from_graphs_table(((fp, desc, 0.0),))
+        return _make_ensemble_lane_factory(specs)
 
     raise ValueError(f"unknown lane name: {name}")
 

@@ -97,6 +97,34 @@ def _load_graphs_by_fingerprint(
     return out
 
 
+def _load_graphs_from_graphs_table(
+    graph_specs: tuple[tuple[str, str, float], ...],
+) -> list[tuple[str, str, float, Any]]:
+    """Load graphs from the `graphs` dedup table rather than `program_results`.
+
+    Synthesized winners that were only ever screened (never promoted to a
+    program_results row) live solely in `graphs.graph_json`. The pq+rope and
+    learnable-semiring nano-scale BLiMP winners are exactly this case — their
+    graph_json is present in `graphs` (graph_json_is_placeholder=0) but absent
+    from `program_results`. Same return contract as `_load_graphs_by_fingerprint`.
+    """
+    out = []
+    with sqlite3.connect(str(DB_PATH)) as conn:
+        cur = conn.cursor()
+        for fp, desc, db_auc in graph_specs:
+            cur.execute(
+                "SELECT graph_json FROM graphs "
+                "WHERE graph_fingerprint=? AND graph_json IS NOT NULL "
+                "AND graph_json_is_placeholder=0 LIMIT 1",
+                (fp,),
+            )
+            row = cur.fetchone()
+            if row is None:
+                raise ValueError(f"no concrete graph_json in graphs table for fp {fp}")
+            out.append((fp, desc, db_auc, graph_from_json(row[0])))
+    return out
+
+
 # 2026-05-21: graphs from runs.db.program_results that simultaneously clear
 # ar_curriculum_auc_pair_final > 0.4 AND binding_intermediate_auc > 0.7 AND
 # induction_intermediate_auc > 0.5. Both share the `local_attn_ssm_hybrid`

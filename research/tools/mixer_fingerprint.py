@@ -1713,7 +1713,6 @@ def run_fingerprint(
         plateau_patience=plateau_patience,
         plateau_min_delta=plateau_min_delta,
         plateau_min_steps=plateau_min_steps,
-        model_dim=dim,
     )
     state: dict[str, Any] = {"last_evals": {}}
     on_checkpoint, on_save, on_mid_tier, plateau_tracker = _make_callbacks(
@@ -1736,6 +1735,7 @@ def run_fingerprint(
         plateau_patience=plateau_patience,
         plateau_min_delta=plateau_min_delta,
         plateau_min_steps=plateau_min_steps,
+        model_dim=dim,
     )
     train_meta = _training_loop(
         model,
