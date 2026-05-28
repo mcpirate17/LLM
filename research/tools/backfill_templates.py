@@ -653,6 +653,9 @@ def run_template_batch_detailed(
     n_layers_override: int | None = None,
     stage1_steps_override: int | None = None,
     composition_depth_override: int | None = None,
+    early_stop_patience: int | None = None,
+    early_stop_min_delta: float | None = None,
+    early_stop_min_steps: int | None = None,
 ) -> dict[str, Any]:
     """Run the full screening pipeline biased toward a single template."""
     from research.scientist.runner import ExperimentRunner, RunConfig
@@ -676,6 +679,18 @@ def run_template_batch_detailed(
     if composition_depth_override is not None:
         phase_cfg["composition_depth"] = int(composition_depth_override)
 
+    # Optional early-stop overrides for scaling-curve runs. Defaults
+    # (patience=300, min_delta=1e-3, min_steps=100) cap training at ~800-1100
+    # actual steps regardless of stage1_steps budget. Pass a large patience
+    # (e.g. 99999) to honour very high stage1_steps_override values.
+    es_kwargs: dict[str, Any] = {}
+    if early_stop_patience is not None:
+        es_kwargs["early_stop_patience"] = int(early_stop_patience)
+    if early_stop_min_delta is not None:
+        es_kwargs["early_stop_min_delta"] = float(early_stop_min_delta)
+    if early_stop_min_steps is not None:
+        es_kwargs["early_stop_min_steps"] = int(early_stop_min_steps)
+
     config = RunConfig(
         n_programs=n_programs,
         device=device,
@@ -698,6 +713,7 @@ def run_template_batch_detailed(
         disable_runtime_dedup=True,
         enable_stage09_cheap_train_gate=False,
         gbm_prescreener_enabled=False,  # backfill needs ALL graphs for data collection
+        **es_kwargs,
     )
 
     runner = ExperimentRunner(db_path)
@@ -818,6 +834,9 @@ def run_template_batch(
     n_layers_override: int | None = None,
     stage1_steps_override: int | None = None,
     composition_depth_override: int | None = None,
+    early_stop_patience: int | None = None,
+    early_stop_min_delta: float | None = None,
+    early_stop_min_steps: int | None = None,
 ) -> int:
     """Compatibility wrapper returning only persisted rows."""
     result = run_template_batch_detailed(
@@ -831,6 +850,9 @@ def run_template_batch(
         n_layers_override=n_layers_override,
         stage1_steps_override=stage1_steps_override,
         composition_depth_override=composition_depth_override,
+        early_stop_patience=early_stop_patience,
+        early_stop_min_delta=early_stop_min_delta,
+        early_stop_min_steps=early_stop_min_steps,
     )
     return int(result.get("persisted_rows", 0) or 0)
 
@@ -904,6 +926,27 @@ def main():
         type=int,
         default=None,
         help="Override phase default for composition_depth.",
+    )
+    parser.add_argument(
+        "--early-stop-patience",
+        type=int,
+        default=None,
+        help=(
+            "Override RunConfig.early_stop_patience (default 300). Use a large value "
+            "(e.g. 99999) to effectively disable early-stopping for scaling-curve runs."
+        ),
+    )
+    parser.add_argument(
+        "--early-stop-min-delta",
+        type=float,
+        default=None,
+        help="Override RunConfig.early_stop_min_delta (default 1e-3).",
+    )
+    parser.add_argument(
+        "--early-stop-min-steps",
+        type=int,
+        default=None,
+        help="Override RunConfig.early_stop_min_steps (default 100).",
     )
     parser.add_argument(
         "--no-refresh",
@@ -1094,6 +1137,9 @@ def main():
                     n_layers_override=args.n_layers_override,
                     stage1_steps_override=args.stage1_steps_override,
                     composition_depth_override=args.composition_depth_override,
+                    early_stop_patience=args.early_stop_patience,
+                    early_stop_min_delta=args.early_stop_min_delta,
+                    early_stop_min_steps=args.early_stop_min_steps,
                 )
                 recorded = int(batch_result.get("persisted_rows", 0) or 0)
                 updated_stats = get_template_stats(Path(args.db)).get(name, {})
