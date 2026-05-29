@@ -225,6 +225,19 @@ def _build_lane_factory(
     if name == "phase_lock_attention":
         return lambda d: PhaseLockAttention(d, use_rope=True)
 
+    if name == "reciprocal_phase_two_lane":
+        # Both induction-strong novel lanes only (no tropical/sparsemax), to test
+        # whether a 2-lane preserves the standout nano_induction_nearest that the
+        # 3-lane dilutes (0.44 single -> 0.29 in reciprocal_phase_tropical).
+        def factory(dim: int) -> nn.Module:
+            return GatedParallelBlock(
+                lambda d: ReciprocalRankAttention(d, use_rope=True),
+                lambda d: PhaseLockAttention(d, use_rope=True),
+                dim,
+            )
+
+        return factory
+
     if name == "reciprocal_phase_tropical_three_lane":
 
         def factory(dim: int) -> nn.Module:
