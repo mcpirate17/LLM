@@ -20,6 +20,7 @@ from ._template_helpers import (
     record_template_slot_binding,
     template_add_op as _add,
     template_add_residual as _residual,
+    template_gated_lane_merge as _gated_merge,
 )
 
 
@@ -182,7 +183,13 @@ def _tpl_novel_mixing_block(
     else:
         pb = _fix_dim(graph, pb)
 
-    merged = _fix_dim(graph, _residual(graph, pa, pb, context=f"{template_ctx}.merge"))
+    # Gated merge: the complement lane (state_space) multiplicatively gates the
+    # primary mixer. Both lanes are euclidean post-projection, so this introduces
+    # no math-space adjacency violation.
+    merged = _fix_dim(
+        graph,
+        _gated_merge(graph, pa, pb, context=f"{template_ctx}.merge", dim=D),
+    )
     mid = _residual(graph, input_id, merged, context=f"{template_ctx}.mid")
 
     normed2 = _pick_norm_or_default(
