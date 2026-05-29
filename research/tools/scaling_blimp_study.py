@@ -47,6 +47,8 @@ from component_fab.generator.primitive_templates import (
     PhaseLockAttention,
     ReciprocalPrimaryRefine,
     ReciprocalRankAttention,
+    SemiringReciprocalAttention,
+    SparseReciprocalAttention,
     SparsemaxAttention,
     TropicalAttention,
 )
@@ -238,6 +240,15 @@ def _build_lane_factory(
             )
 
         return factory
+
+    # Structure-changing reciprocal variants (vs the additive-bias reciprocal_rank
+    # that washed out at 100M): sparse mutual-NN and semiring (non-convex) value
+    # pooling. (Doubly-stochastic/Sinkhorn is fundamentally non-causal — its column
+    # constraint couples future queries — so it is not an LM lane.)
+    if name == "sparse_reciprocal_attention":
+        return lambda d: SparseReciprocalAttention(d, use_rope=True)
+    if name == "semiring_reciprocal_attention":
+        return lambda d: SemiringReciprocalAttention(d, use_rope=True)
 
     if name == "reciprocal_primary_phase_refine":
         return lambda d: ReciprocalPrimaryRefine(d, side="phase", use_rope=True)

@@ -318,6 +318,93 @@ class ReciprocalPrimaryRefine(nn.Module):
         return self.primary(x) + torch.sigmoid(self.gate) * self.side(x)
 
 
+class SparseReciprocalAttention(_QKVRopeAttentionBase):
+    """Mutual-nearest-neighbour SPARSE attention.
+
+    Keeps only keys that are sparse matches in BOTH directions: forward =
+    sparsemax(QKᵀ) (query i over keys j≤i); reverse = sparsemax((QKᵀ)ᵀ) (token j
+    as a query matching key i); weights ∝ forward·reverse, renormalised. Unlike
+    reciprocal_rank (a dense additive bias to softmax logits), this changes the
+    mixing *structure* — non-convex (sparsemax zeros most keys) AND bidirectional,
+    a hard mutual-binding operator. Causal.
+    """
+
+    _NEG: float = -1e4
+
+    def __init__(
+        self,
+        dim: int,
+        causal: bool = True,
+        *,
+        use_rope: bool = True,
+        max_seq_len: int = 1024,
+    ) -> None:
+        super().__init__(dim, causal=causal, use_rope=use_rope, max_seq_len=max_seq_len)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        S = x.shape[1]
+        q, k, v = self.q(x), self.k(x), self.v(x)
+        if self.rope is not None:
+            cos, sin = self.rope(S, device=x.device, dtype=x.dtype)
+            q, k = apply_rope(q, cos, sin), apply_rope(k, cos, sin)
+        raw = torch.einsum("bid,bjd->bij", q, k) * self.scale
+        if self.causal:
+            tri = torch.triu(torch.ones(S, S, device=x.device, dtype=torch.bool), 1)
+            fwd = _causal_sparsemax(raw.masked_fill(tri, self._NEG))
+            rev = _causal_sparsemax(raw.transpose(-2, -1).masked_fill(tri, self._NEG))
+        else:
+            fwd = _causal_sparsemax(raw)
+            rev = _causal_sparsemax(raw.transpose(-2, -1))
+        mutual = fwd * rev
+        weights = mutual / mutual.sum(dim=-1, keepdim=True).clamp_min(1e-6)
+        return torch.einsum("bij,bjd->bid", weights, v)
+
+
+class SemiringReciprocalAttention(_QKVRopeAttentionBase):
+    """Reciprocal content addressing + learnable-semiring value pooling.
+
+    Addressing = reciprocal-rank weights (mutual query↔key agreement). Value
+    aggregation uses a learned semiring instead of a convex weighted mean:
+    ``out_id = (1/γ)·logsumexp_j(log w_ij + γ·v_jd)`` with γ = ``exp(param)``
+    (>0, init 1). γ→0 recovers the weighted mean; γ large → soft-max pooling, so
+    the readout escapes softmax's convex hull (selection/extremisation). Causal.
+    Note: materialises a (B,S,S,D) tensor — fine for nano screening, chunk at scale.
+    """
+
+    def __init__(
+        self,
+        dim: int,
+        causal: bool = True,
+        *,
+        use_rope: bool = True,
+        max_seq_len: int = 1024,
+    ) -> None:
+        super().__init__(dim, causal=causal, use_rope=use_rope, max_seq_len=max_seq_len)
+        self.reciprocal_logit_scale = nn.Parameter(torch.zeros(1))
+        self.semiring_beta = nn.Parameter(torch.zeros(1))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        S = x.shape[1]
+        q, k, v = self.q(x), self.k(x), self.v(x)
+        if self.rope is not None:
+            cos, sin = self.rope(S, device=x.device, dtype=x.dtype)
+            q, k = apply_rope(q, cos, sin), apply_rope(k, cos, sin)
+        raw = torch.einsum("bid,bjd->bij", q, k) * self.scale
+        if self.causal:
+            tri = torch.triu(torch.ones(S, S, device=x.device, dtype=torch.bool), 1)
+            scores = raw.masked_fill(tri, float("-inf"))
+            reverse = raw.transpose(-2, -1).masked_fill(tri, float("-inf"))
+        else:
+            scores, reverse = raw, raw.transpose(-2, -1)
+        reciprocal = torch.softmax(reverse, dim=-1).clamp_min(1e-6)
+        boost = torch.tanh(self.reciprocal_logit_scale).to(x.dtype)
+        w = torch.softmax(scores + boost * torch.log(reciprocal), dim=-1)
+        gamma = torch.exp(self.semiring_beta).clamp(0.05, 10.0)
+        logw = torch.log(w.clamp_min(1e-9)).unsqueeze(-1)  # (B,S,S,1)
+        z = logw + gamma * v.unsqueeze(1)  # (B,S,S,D)
+        return torch.logsumexp(z, dim=2) / gamma
+
+
 class TropicalStateSpace(nn.Module):
     """Max-plus recurrent kernel: ``s[t] = max(A + s[t-1], B(x[t]))``.
 
