@@ -281,6 +281,43 @@ class PhaseLockAttention(_QKVRopeAttentionBase):
         return torch.einsum("bij,bjd->bid", weights, v)
 
 
+class ReciprocalPrimaryRefine(nn.Module):
+    """Reciprocal-rank attention as a full-strength residual backbone plus a
+    small gated side lane.
+
+    The FFW sweep showed equal-weight gating (2-/3-lane) dilutes reciprocal's
+    standout nano_induction_nearest (0.44 → 0.29). Here the reciprocal lane runs
+    undiluted and the side lane (phase-lock by default) is added through a
+    per-channel ``sigmoid`` gate initialised at bias −2 (≈0.12), so the backbone
+    dominates at init and the model keeps reciprocal's induction-nearest while
+    the side lane contributes LM / ni05 gains. ``side="tropical"`` swaps in the
+    max-plus lane instead.
+    """
+
+    def __init__(
+        self,
+        dim: int,
+        *,
+        side: str = "phase",
+        use_rope: bool = True,
+        max_seq_len: int = 1024,
+    ) -> None:
+        super().__init__()
+        self.primary = ReciprocalRankAttention(
+            dim, use_rope=use_rope, max_seq_len=max_seq_len
+        )
+        if side == "tropical":
+            self.side: nn.Module = TropicalAttention(dim)
+        else:
+            self.side = PhaseLockAttention(
+                dim, use_rope=use_rope, max_seq_len=max_seq_len
+            )
+        self.gate = nn.Parameter(torch.full((dim,), -2.0))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.primary(x) + torch.sigmoid(self.gate) * self.side(x)
+
+
 class TropicalStateSpace(nn.Module):
     """Max-plus recurrent kernel: ``s[t] = max(A + s[t-1], B(x[t]))``.
 

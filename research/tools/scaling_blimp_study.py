@@ -45,6 +45,7 @@ from component_fab.generator.primitive_templates import (
     LinearStateSpaceLane,
     MultiscaleWaveletLane,
     PhaseLockAttention,
+    ReciprocalPrimaryRefine,
     ReciprocalRankAttention,
     SparsemaxAttention,
     TropicalAttention,
@@ -237,6 +238,11 @@ def _build_lane_factory(
             )
 
         return factory
+
+    if name == "reciprocal_primary_phase_refine":
+        return lambda d: ReciprocalPrimaryRefine(d, side="phase", use_rope=True)
+    if name == "reciprocal_primary_tropical_refine":
+        return lambda d: ReciprocalPrimaryRefine(d, side="tropical", use_rope=True)
 
     if name == "reciprocal_phase_tropical_three_lane":
 
