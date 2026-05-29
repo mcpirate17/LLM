@@ -459,6 +459,27 @@ class _ExecutionTrainingPostMixin:
             except (RuntimeError, ValueError, OSError, ImportError) as e_bl:
                 logger.debug("Screening BLiMP eval skipped: %s", e_bl)
 
+        # AR-gate: synthetic 3-slot binding (associative recall) — the primary
+        # nano capability gate (score <0.6 ≈ can't learn). Corpus-independent,
+        # warm from the trained S1 weights (from_s1=True), ~2-7s per graph.
+        if should_run_post_s1_screening_probes and not getattr(
+            config, "skip_screening_ar_gate", False
+        ):
+            try:
+                from ...eval.post_s1_probes import _probe_ar_gate
+
+                ar_fields, _ar_score = _probe_ar_gate(model, str(dev))
+                result.update(ar_fields)
+                if ar_fields.get("ar_gate_score") is not None:
+                    logger.info(
+                        "    Screening AR-gate score=%.3f (pair=%.2f heldcls=%.2f)",
+                        ar_fields["ar_gate_score"],
+                        ar_fields.get("ar_gate_in_dist_pair_acc") or 0,
+                        ar_fields.get("ar_gate_held_class_acc") or 0,
+                    )
+            except (RuntimeError, ValueError, OSError, ImportError) as e_ar:
+                logger.debug("Screening AR-gate eval skipped: %s", e_ar)
+
         # Screening probes: induction and binding are independently skippable.
         want_induction_probe = should_run_post_s1_screening_probes and not (
             getattr(config, "skip_binding_probes", False)
