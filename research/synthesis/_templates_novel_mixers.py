@@ -55,6 +55,9 @@ def tpl_clifford_geometric_mixer_block(
     # Versor sandwich, then grade_select back to canonical (real) space.
     versor = _add(graph, "versor_apply", [gp, ra], context=f"{template_ctx}.versor")
     refined = _add(graph, "grade_select", [versor], context=f"{template_ctx}.grade_sel")
+    # The multivector→real grade projection is unbounded and was collapsing the
+    # loss (loss_ratio ~0.13, S1 fail). Normalise the geometric lane before merge.
+    refined = _add(graph, "rmsnorm", [refined], context=f"{template_ctx}.grade_norm")
 
     # Merge clifford-attention lane with the geometric-product lane, project, residual.
     merged = _add(graph, "add", [ca, refined], context=f"{template_ctx}.merge")
