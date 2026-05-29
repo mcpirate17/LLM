@@ -823,6 +823,30 @@ _register(
 )
 _register(
     PrimitiveOp(
+        "reciprocal_rank_attention",
+        OpCategory.MIXING,
+        1,
+        "identity",
+        has_params=True,
+        param_formula="D*D*4 + 1",
+        description="Reciprocal-rank attention: causal content retrieval boosted when query->key and key->query similarities agree",
+        binding_range_class="full",
+    )
+)
+_register(
+    PrimitiveOp(
+        "phase_lock_attention",
+        OpCategory.MIXING,
+        1,
+        "identity",
+        has_params=True,
+        param_formula="D*D*4 + 1",
+        description="Phase-lock attention: causal content retrieval using dot-product scores plus learned phase-synchrony matching",
+        binding_range_class="full",
+    )
+)
+_register(
+    PrimitiveOp(
         "linear_attention",
         OpCategory.MIXING,
         1,

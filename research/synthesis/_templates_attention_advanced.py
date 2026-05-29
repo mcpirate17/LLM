@@ -106,6 +106,20 @@ def _pick_ffn_or_swiglu(
     )
 
 
+def _pick_ffn_or_default(
+    graph: ComputationGraph,
+    src: int,
+    rng: random.Random,
+    weights: MotifWeights,
+    *,
+    fallback_context: str,
+) -> int:
+    """Backward-compatible alias for external novel-template modules."""
+    return _pick_ffn_or_swiglu(
+        graph, src, rng, weights, fallback_context=fallback_context
+    )
+
+
 def _tpl_novel_mixing_block(
     graph: ComputationGraph,
     input_id: int,
@@ -381,6 +395,140 @@ def tpl_learnable_semiring_attention_block(
         primary_op="learnable_semiring_attention",
         template_ctx="learnable_semiring_attention_block",
     )
+
+
+def tpl_reciprocal_rank_attention_block(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """norm → {reciprocal_rank_attention || state_space} → merge → residual → norm → FFN → residual.
+
+    The primary mixer is full-range and content-addressed; the reciprocal
+    boost explicitly prefers mutual query/key agreement for binding-style
+    retrieval instead of changing only the output gate or value transform.
+    """
+    return _tpl_novel_mixing_block(
+        graph,
+        input_id,
+        rng,
+        weights,
+        primary_op="reciprocal_rank_attention",
+        template_ctx="reciprocal_rank_attention_block",
+    )
+
+
+def tpl_phase_lock_attention_block(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """norm → {phase_lock_attention || state_space} → merge → residual → norm → FFN → residual.
+
+    Phase-lock attention keeps global content addressing but adds a
+    synchrony score to the address itself, distinct from softmax/sparsemax
+    normalizers and from semiring value aggregation.
+    """
+    return _tpl_novel_mixing_block(
+        graph,
+        input_id,
+        rng,
+        weights,
+        primary_op="phase_lock_attention",
+        template_ctx="phase_lock_attention_block",
+    )
+
+
+def tpl_stdp_reciprocal_memory_block(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """norm → STDP temporal salience → reciprocal retrieval → sparse readout → FFN residual.
+
+    This template uses STDP as a temporal salience preconditioner, then forces
+    the headline novelty into the full-range content-addressed mixer slot via
+    ``reciprocal_rank_attention``.  Sparsemax readout is a support lane, not the
+    novel component, and gives the block a proven binding-friendly fallback.
+    """
+    D = graph.model_dim
+    name = "stdp_reciprocal_memory_block"
+    instance = int(graph.metadata.get("_active_template_instance", 0) or 0)
+    normed = _pick_norm_or_default(
+        graph, input_id, rng, weights, fallback_context=f"{name}.norm1"
+    )
+
+    spike_seed = _add(graph, "spike_rate_code", [normed], context=f"{name}.spike_seed")
+    _record_fixed_core_slot(
+        graph,
+        template_ctx=name,
+        template_instance=instance,
+        slot_index=1,
+        role="temporal_salience_core",
+        op_name="stdp_attention",
+        input_node_id=spike_seed,
+    )
+    salience = _add(graph, "stdp_attention", [spike_seed], context=f"{name}.stdp")
+    salience = _add(graph, "rmsnorm", [salience], context=f"{name}.stdp_norm")
+
+    _record_fixed_core_slot(
+        graph,
+        template_ctx=name,
+        template_instance=instance,
+        slot_index=2,
+        role="reciprocal_retrieval_core",
+        op_name="reciprocal_rank_attention",
+        input_node_id=salience,
+    )
+    retrieved = _add(
+        graph,
+        "reciprocal_rank_attention",
+        [salience],
+        context=f"{name}.reciprocal",
+    )
+    retrieved = _add(
+        graph,
+        "linear_proj",
+        [retrieved],
+        {"out_dim": D},
+        context=f"{name}.reciprocal_proj",
+    )
+    mid = _residual(graph, input_id, retrieved, context=f"{name}.mid")
+
+    normed2 = _pick_norm_or_default(
+        graph, mid, rng, weights, fallback_context=f"{name}.norm2"
+    )
+    _record_fixed_core_slot(
+        graph,
+        template_ctx=name,
+        template_instance=instance,
+        slot_index=3,
+        role="sparse_readout_core",
+        op_name="sparsemax_attention",
+        input_node_id=normed2,
+    )
+    sparse = _add(graph, "sparsemax_attention", [normed2], context=f"{name}.sparse")
+    sparse = _add(
+        graph,
+        "linear_proj",
+        [sparse],
+        {"out_dim": D},
+        context=f"{name}.sparse_proj",
+    )
+    mid2 = _residual(graph, mid, sparse, context=f"{name}.sparse_merge")
+    normed3 = _pick_norm_or_default(
+        graph, mid2, rng, weights, fallback_context=f"{name}.norm3"
+    )
+    ffned = _fix_dim(
+        graph,
+        _pick_ffn_or_swiglu(
+            graph, normed3, rng, weights, fallback_context=f"{name}.ffn"
+        ),
+    )
+    return _residual(graph, mid2, ffned, context=f"{name}.output")
 
 
 def tpl_dplr_gated_delta_block(

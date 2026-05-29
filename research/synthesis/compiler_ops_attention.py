@@ -148,6 +148,59 @@ def _op_learnable_semiring_attention(module, inputs, _):
     return _apply_o_proj(module, out, B, S)
 
 
+def _op_reciprocal_rank_attention(module, inputs, _):
+    """Causal attention boosted by reciprocal content agreement.
+
+    Standard attention asks "how much should query i read key j?"  This mixer
+    adds the reverse compatibility "how much does token j point back at i?"
+    over the same causal prefix.  The product favors mutual matches, which is
+    the useful shape for binding/retrieval, while retaining a dense fallback at
+    initialization because the boost scale starts near zero.
+    """
+    x = inputs[0]
+    if not hasattr(module, "q_proj"):
+        return x
+    q, k, v, B, S = _project_qkv(module, x)
+    raw_scores = torch.matmul(q, k.transpose(-2, -1)) * module.attn_scale
+    causal = torch.triu(
+        torch.ones(S, S, device=x.device, dtype=torch.bool), diagonal=1
+    )
+    scores = raw_scores.masked_fill(causal, -1e9)
+
+    reverse_scores = raw_scores.transpose(-2, -1).masked_fill(causal, -1e9)
+    reciprocal = torch.softmax(reverse_scores, dim=-1).clamp(min=1e-6)
+    boost = torch.tanh(module.reciprocal_logit_scale).to(x.dtype)
+    weights = torch.softmax(scores + boost * torch.log(reciprocal), dim=-1)
+    return _apply_o_proj(module, torch.matmul(weights, v), B, S)
+
+
+def _op_phase_lock_attention(module, inputs, _):
+    """Causal attention with phase-synchrony content matching.
+
+    The extra score term compares bounded q/k phases through cos(q-k), so keys
+    are favored when their channel-wise phase pattern synchronizes with the
+    query.  This is deliberately not a value-pooling semiring or sparsemax
+    variant: the novelty is in the content address used by the mixer.
+    """
+    x = inputs[0]
+    if not hasattr(module, "q_proj"):
+        return x
+    q, k, v, B, S = _project_qkv(module, x)
+    dot_scores = _causal_attention_scores(q, k, module.attn_scale)
+    phase_q = torch.tanh(q)
+    phase_k = torch.tanh(k)
+    phase_scores = torch.cos(phase_q.unsqueeze(-2) - phase_k.unsqueeze(-3)).mean(
+        dim=-1
+    )
+    causal = torch.triu(
+        torch.ones(S, S, device=x.device, dtype=torch.bool), diagonal=1
+    )
+    phase_scores = phase_scores.masked_fill(causal, 0.0)
+    phase_scale = torch.tanh(module.phase_lock_scale).to(x.dtype)
+    weights = torch.softmax(dot_scores + phase_scale * phase_scores, dim=-1)
+    return _apply_o_proj(module, torch.matmul(weights, v), B, S)
+
+
 def _op_linear_attention(module, inputs, _):
     """Linear attention with ELU kernel (O(S*D) complexity).
 
@@ -573,6 +626,8 @@ OP_IMPLS: Dict[str, Callable] = {
     "sparsemax_attention": _op_sparsemax_attention,
     "entmax_attention": _op_entmax_attention,
     "learnable_semiring_attention": _op_learnable_semiring_attention,
+    "reciprocal_rank_attention": _op_reciprocal_rank_attention,
+    "phase_lock_attention": _op_phase_lock_attention,
     "linear_attention": _op_linear_attention,
     "graph_attention": _op_graph_attention,
     "local_window_attn": _op_local_window_attn,

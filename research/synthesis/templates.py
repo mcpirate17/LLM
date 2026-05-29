@@ -156,6 +156,9 @@ COMPONENT_GRAPH_EXEMPT_TEMPLATES = frozenset(
         "wavelet_packet_mix_block",
         "retention_mix_block",
         "product_key_memory_block",
+        "reciprocal_rank_attention_block",
+        "phase_lock_attention_block",
+        "stdp_reciprocal_memory_block",
         "codex_ssm_retention_block",
         "codex_ssm_delta_memory_block",
         "codex_ssm_mla_gated_block",
@@ -193,6 +196,9 @@ COMPONENT_GRAPH_EXEMPT_TEMPLATES = frozenset(
         "cascaded_attn_ffn",
         "gated_lane_blend_block",
         "hybrid_sparse_triplet_router",
+        "clifford_geometric_mixer_block",
+        "tropical_maxplus_mixer_block",
+        "ultrametric_hierarchical_ensemble_block",
     }
 )
 
@@ -240,6 +246,10 @@ from ._template_research_manifest import (
 from ._template_routing_manifest import (
     ROUTING_TEMPLATE_DEFAULT_WEIGHTS,
     ROUTING_TEMPLATE_REGISTRY,
+)
+from ._template_novel_manifest import (
+    NOVEL_MIXER_TEMPLATE_DEFAULT_WEIGHTS,
+    NOVEL_MIXER_TEMPLATE_REGISTRY,
 )
 
 # ── Import all template functions from submodules ──────────────────
@@ -374,6 +384,7 @@ TEMPLATES: Dict[str, TemplateFn] = {
     "geometric_product_versor_block": tpl_geometric_product_versor_block,
     "gated_maximum": tpl_gated_maximum,
     "three_way_split": tpl_three_way_split,
+    **NOVEL_MIXER_TEMPLATE_REGISTRY,
     **RESEARCH_TEMPLATE_REGISTRY,
     "spiking_residual_block": tpl_spiking_residual_block,
     "spiking_moe_block": tpl_spiking_moe_block,
@@ -474,6 +485,7 @@ DEFAULT_TEMPLATE_WEIGHTS: Dict[str, float] = {
     "recursive_attn_ssm_depth": 5.5,  # latent_attn||SSM + adaptive_recursion + FFN
     "latent_attn_padic_hybrid": 5.0,  # latent_attn||padic_expand + FFN
     "graph_attn_ssm_recursive": 4.5,  # graph_attn||SSM + FFN
+    **NOVEL_MIXER_TEMPLATE_DEFAULT_WEIGHTS,
     # NB: retired template names are tracked in RETIRED_TEMPLATE_NAMES above
     # for dedup/back-compat. Their templates and weight entries have been
     # removed — pick_template iterates TEMPLATES.keys() so dangling weight

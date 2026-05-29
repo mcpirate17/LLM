@@ -127,6 +127,41 @@ def template_add_residual(
     return template_add_op(graph, "add", [skip_id, value_id], context=context)
 
 
+def template_gated_lane_merge(
+    graph: ComputationGraph,
+    primary_id: int,
+    gate_source_id: int,
+    *,
+    context: str,
+    dim: int,
+) -> int:
+    """Multiplicative (GLU-style) merge of two mixing lanes.
+
+    Replaces a blind additive ``primary + gate_source`` with
+    ``primary ⊙ σ(W·gate_source) + gate_source``.  The lanes now interact
+    bilinearly instead of being summed, so ``gate_source`` (the order-aware /
+    complement lane) gets multiplicative control over the primary content
+    mixer — the gating shape used by gated SSM/attention hybrids.  A linear
+    ``+ gate_source`` path is retained so the complement signal survives gate
+    saturation.  Adds token-mixing op-depth (proj → sigmoid → mul → add) over a
+    bare residual add, which is the cheap way to deepen the mixing path.
+    """
+    gate_logits = template_add_op(
+        graph,
+        "linear_proj",
+        [gate_source_id],
+        {"out_dim": dim},
+        context=f"{context}.gate_proj",
+    )
+    gate = template_add_op(graph, "sigmoid", [gate_logits], context=f"{context}.gate")
+    gated = template_add_op(
+        graph, "mul", [primary_id, gate], context=f"{context}.gate_mul"
+    )
+    return template_add_op(
+        graph, "add", [gated, gate_source_id], context=f"{context}.gate_add"
+    )
+
+
 # ── Motif class groupings for slot constraints ──────────────────────
 
 # Slots that accept any sequence mixer
