@@ -125,6 +125,10 @@ def _build_row(
     row["evaluation_protocol_version"] = _PROTOCOL
     row["model_source"] = "graph_synthesis"
     row["tokenizer_mode"] = "cl100k_base"
+    # Distinct training regime from the screening row of the same fingerprint
+    # (Chinchilla pretrain, different corpus) — satisfies the duplicate-fingerprint
+    # guard and records why this is a legitimate second row.
+    row["intentional_rerun_reason"] = f"mixer_fingerprint Chinchilla pretrain: {label}"
     row["data_provenance_json"] = json.dumps(
         {
             "source": "mixer_fingerprint_pretrain",
