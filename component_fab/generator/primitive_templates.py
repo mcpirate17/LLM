@@ -187,6 +187,100 @@ class SparsemaxAttention(_QKVRopeAttentionBase):
         return torch.einsum("bij,bjd->bid", weights, v)
 
 
+class ReciprocalRankAttention(_QKVRopeAttentionBase):
+    """Causal attention boosted by reciprocal (mutual) content agreement.
+
+    Standard attention asks "how much should query i read key j?". This adds
+    the reverse compatibility "how much does j point back at i?" over the same
+    causal prefix and multiplies it in (log-space), favouring mutual matches —
+    the useful shape for binding/retrieval. The boost scale is ``tanh`` of a
+    learnable scalar initialised at 0, so the lane starts as plain softmax
+    attention and learns how much reciprocity to use. Ported from the
+    ``reciprocal_rank_attention`` synthesis op (AR-gate 1.0, top nano BLiMP).
+    """
+
+    def __init__(
+        self,
+        dim: int,
+        causal: bool = True,
+        *,
+        use_rope: bool = False,
+        max_seq_len: int = 1024,
+    ) -> None:
+        super().__init__(dim, causal=causal, use_rope=use_rope, max_seq_len=max_seq_len)
+        self.reciprocal_logit_scale = nn.Parameter(torch.zeros(1))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        seq_len = x.shape[1]
+        q, k, v = self.q(x), self.k(x), self.v(x)
+        if self.rope is not None:
+            cos, sin = self.rope(seq_len, device=x.device, dtype=x.dtype)
+            q = apply_rope(q, cos, sin)
+            k = apply_rope(k, cos, sin)
+        raw = torch.einsum("bid,bjd->bij", q, k) * self.scale
+        if self.causal:
+            neg = torch.triu(
+                torch.full(
+                    (seq_len, seq_len), float("-inf"), device=x.device, dtype=x.dtype
+                ),
+                diagonal=1,
+            )
+            scores = raw + neg
+            reverse = raw.transpose(-2, -1) + neg
+        else:
+            scores = raw
+            reverse = raw.transpose(-2, -1)
+        reciprocal = torch.softmax(reverse, dim=-1).clamp_min(1e-6)
+        boost = torch.tanh(self.reciprocal_logit_scale).to(x.dtype)
+        weights = torch.softmax(scores + boost * torch.log(reciprocal), dim=-1)
+        return torch.einsum("bij,bjd->bid", weights, v)
+
+
+class PhaseLockAttention(_QKVRopeAttentionBase):
+    """Causal attention with a phase-synchrony content score.
+
+    Adds ``phase_scale * mean_d cos(tanh(q)_i - tanh(k)_j)`` to the dot-product
+    affinity before softmax: keys are favoured when their channel-wise bounded
+    "phase" pattern synchronises with the query, a content address distinct from
+    dot-product magnitude. ``phase_scale = tanh`` of a learnable scalar (init 0)
+    so the lane starts as plain softmax attention. Ported from the
+    ``phase_lock_attention`` synthesis op (AR-gate 1.0, top nano BLiMP).
+    """
+
+    def __init__(
+        self,
+        dim: int,
+        causal: bool = True,
+        *,
+        use_rope: bool = False,
+        max_seq_len: int = 1024,
+    ) -> None:
+        super().__init__(dim, causal=causal, use_rope=use_rope, max_seq_len=max_seq_len)
+        self.phase_lock_scale = nn.Parameter(torch.zeros(1))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        seq_len = x.shape[1]
+        q, k, v = self.q(x), self.k(x), self.v(x)
+        if self.rope is not None:
+            cos, sin = self.rope(seq_len, device=x.device, dtype=x.dtype)
+            q = apply_rope(q, cos, sin)
+            k = apply_rope(k, cos, sin)
+        dot = torch.einsum("bid,bjd->bij", q, k) * self.scale
+        phase = torch.cos(
+            torch.tanh(q).unsqueeze(-2) - torch.tanh(k).unsqueeze(-3)
+        ).mean(dim=-1)
+        if self.causal:
+            tri = torch.triu(
+                torch.ones(seq_len, seq_len, device=x.device, dtype=torch.bool),
+                diagonal=1,
+            )
+            dot = dot.masked_fill(tri, float("-inf"))
+            phase = phase.masked_fill(tri, 0.0)
+        phase_scale = torch.tanh(self.phase_lock_scale).to(x.dtype)
+        weights = torch.softmax(dot + phase_scale * phase, dim=-1)
+        return torch.einsum("bij,bjd->bid", weights, v)
+
+
 class TropicalStateSpace(nn.Module):
     """Max-plus recurrent kernel: ``s[t] = max(A + s[t-1], B(x[t]))``.
 

@@ -44,6 +44,8 @@ from component_fab.generator.block_templates import (
 from component_fab.generator.primitive_templates import (
     LinearStateSpaceLane,
     MultiscaleWaveletLane,
+    PhaseLockAttention,
+    ReciprocalRankAttention,
     SparsemaxAttention,
     TropicalAttention,
 )
@@ -215,6 +217,37 @@ def _build_lane_factory(
         return lane_factory_for_baseline("causal_conv")
     if name == "adjacent_token_merge_lane":
         return AdjacentTokenMergeLane
+
+    # Novel mixer lanes ported from synthesis ops (AR-gate 1.0, top nano BLiMP),
+    # now with RoPE-capable QKV base for scaling tests.
+    if name == "reciprocal_rank_attention":
+        return lambda d: ReciprocalRankAttention(d, use_rope=True)
+    if name == "phase_lock_attention":
+        return lambda d: PhaseLockAttention(d, use_rope=True)
+
+    if name == "reciprocal_phase_tropical_three_lane":
+
+        def factory(dim: int) -> nn.Module:
+            return ThreeLaneAdaptive(
+                lambda d: ReciprocalRankAttention(d, use_rope=True),
+                lambda d: PhaseLockAttention(d, use_rope=True),
+                lambda d: TropicalAttention(d),
+                dim,
+            )
+
+        return factory
+
+    if name == "reciprocal_sparsemax_wavelet_three_lane":
+
+        def factory(dim: int) -> nn.Module:
+            return ThreeLaneAdaptive(
+                lambda d: ReciprocalRankAttention(d, use_rope=True),
+                lambda d: SparsemaxAttention(d),
+                lambda d: MultiscaleWaveletLane(d),
+                dim,
+            )
+
+        return factory
 
     if name == "tropical_sparsemax_wavelet_three_lane":
 
