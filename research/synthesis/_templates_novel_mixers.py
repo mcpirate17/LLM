@@ -43,41 +43,25 @@ def tpl_clifford_geometric_mixer_block(
         graph, "clifford_attention", [normed], context=f"{template_ctx}.clifford_attn"
     )
 
-    # Branch 2: Geometric Product (feature interaction over two projections).
-    # rotor_transform bridges euclidean→multivector so geometric_product gets
-    # multivector inputs (generation-time algebraic-type rule).
-    gp_a = _add(
-        graph, "linear_proj", [normed], {"out_dim": D}, context=f"{template_ctx}.geom_a"
-    )
-    gp_a = _add(
-        graph, "rotor_transform", [gp_a], context=f"{template_ctx}.geom_a_rotor"
-    )
-    gp_b = _add(
-        graph, "linear_proj", [normed], {"out_dim": D}, context=f"{template_ctx}.geom_b"
-    )
-    gp_b = _add(
-        graph, "rotor_transform", [gp_b], context=f"{template_ctx}.geom_b_rotor"
-    )
-    gp = _add(
-        graph, "geometric_product", [gp_a, gp_b], context=f"{template_ctx}.geom_prod"
-    )
+    # Branch 2: Geometric product of two multivector views. rotor_transform
+    # consumes real input directly and emits multivectors, so no linear_proj
+    # prefix is needed (kept lean to fit the generation op/depth budget). One
+    # view comes from the normed input, the other from the clifford-attention
+    # output, giving a content-dependent geometric interaction.
+    ra = _add(graph, "rotor_transform", [normed], context=f"{template_ctx}.rotor_a")
+    rb = _add(graph, "rotor_transform", [ca], context=f"{template_ctx}.rotor_b")
+    gp = _add(graph, "geometric_product", [ra, rb], context=f"{template_ctx}.geom_prod")
 
-    # Merge and transform
-    merged = _add(graph, "add", [ca, gp], context=f"{template_ctx}.merge")
-    rotor = _add(graph, "rotor_transform", [merged], context=f"{template_ctx}.rotor")
-
-    # Versor apply (Canonical Clifford rotation/reflection)
-    # Using 'normed' as the versor generator (learned per-token transform)
-    versor = _add(
-        graph, "versor_apply", [rotor, normed], context=f"{template_ctx}.versor"
-    )
-
-    # Optional Grade Select to return to canonical space
+    # Versor sandwich, then grade_select back to canonical (real) space.
+    versor = _add(graph, "versor_apply", [gp, ra], context=f"{template_ctx}.versor")
     refined = _add(graph, "grade_select", [versor], context=f"{template_ctx}.grade_sel")
+
+    # Merge clifford-attention lane with the geometric-product lane, project, residual.
+    merged = _add(graph, "add", [ca, refined], context=f"{template_ctx}.merge")
     refined = _add(
         graph,
         "linear_proj",
-        [refined],
+        [merged],
         {"out_dim": D},
         context=f"{template_ctx}.refine",
     )
