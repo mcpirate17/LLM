@@ -45,15 +45,20 @@ class TinyLMConfig:
 
 
 class _MLP(nn.Module):
-    """Standard 2-layer FFN: ``Linear(d, m*d) -> GELU -> Linear(m*d, d)``."""
+    """SwiGLU channel mixer: ``W3( SiLU(W1 x) * (W2 x) )`` (table-stakes; the
+    de-facto default gated FFN in modern LLMs). The hidden width is scaled by
+    2/3 so the 3-matrix SwiGLU has ~the same param count as the prior 2-matrix
+    ``Linear→GELU→Linear`` FFN at the same ``mult`` (standard practice)."""
 
     def __init__(self, dim: int, mult: int = 4) -> None:
         super().__init__()
-        self.fc1 = nn.Linear(dim, dim * mult)
-        self.fc2 = nn.Linear(dim * mult, dim)
+        hidden = int(dim * mult * 2 / 3)
+        self.fc1 = nn.Linear(dim, hidden)  # gate (SiLU)
+        self.fc2 = nn.Linear(dim, hidden)  # value
+        self.fc3 = nn.Linear(hidden, dim)  # project back
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.fc2(torch.nn.functional.gelu(self.fc1(x)))
+        return self.fc3(torch.nn.functional.silu(self.fc1(x)) * self.fc2(x))
 
 
 class _LaneBlock(nn.Module):

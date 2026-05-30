@@ -24,6 +24,9 @@ from __future__ import annotations
 import torch
 from torch import nn
 
+from ..harness.rope import RotaryEmbedding as RotaryEmbedding  # noqa: PLC0414 (re-export keeps autoflake)
+from ..harness.rope import apply_rope as apply_rope  # noqa: PLC0414
+
 
 class CausalFastWeightMemoryLane(nn.Module):
     """Causal fast-weight memory lane.
@@ -176,7 +179,14 @@ class _SurpriseMemoryBase(nn.Module):
     readout (no self-residual; the surrounding ``LaneTestBlock`` adds it).
     """
 
-    def __init__(self, dim: int, memory_dim: int | None = None) -> None:
+    def __init__(
+        self,
+        dim: int,
+        memory_dim: int | None = None,
+        *,
+        use_rope: bool = False,
+        max_seq_len: int = 1024,
+    ) -> None:
         super().__init__()
         memory_dim = memory_dim or min(dim, 32)
         self.q = nn.Linear(dim, memory_dim, bias=False)
@@ -194,11 +204,32 @@ class _SurpriseMemoryBase(nn.Module):
         self.dim = dim
         self.memory_dim = memory_dim
         self._scale = float(memory_dim) ** -0.5
+        # Optional RoPE on the ADDRESSING q/k. The delta-rule writes key k_s into
+        # memory at step s and reads with query q_t at step t; rotating q,k by
+        # absolute position injects the relative phase (t−s) into the retrieval
+        # score q_t·k_s, giving the memory an explicit notion of "how far back".
+        # A hypothesis worth testing for induction/associative recall — off by
+        # default so the family's published behavior + tests are unchanged.
+        self.rope = (
+            RotaryEmbedding(memory_dim, max_seq_len=max_seq_len)
+            if (use_rope and memory_dim % 2 == 0)
+            else None
+        )
 
     @staticmethod
     def _unit(t: torch.Tensor) -> torch.Tensor:
         """L2-normalize the last dim so retrieval scores are bounded."""
         return t / t.norm(dim=-1, keepdim=True).clamp_min(1e-6)
+
+    def _addr(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Project + bound + (optionally RoPE) the addressing q/k. Returns
+        ``(q, k)`` each ``[B, L, memory_dim]``; RoPE rotates per position."""
+        q = self._unit(torch.tanh(self.q(x)))
+        k = self._unit(torch.tanh(self.k(x)))
+        if self.rope is not None:
+            cos, sin = self.rope(x.shape[1], device=x.device, dtype=x.dtype)
+            q, k = apply_rope(q, cos, sin), apply_rope(k, cos, sin)
+        return q, k
 
     def _read(self, memory: torch.Tensor, addr: torch.Tensor) -> torch.Tensor:
         """Tropical (max-plus) retrieval from ``memory`` [B, m, m].
@@ -235,8 +266,7 @@ class _SurpriseMemoryBase(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         batch_size, seq_len, _ = x.shape
-        q = self._unit(torch.tanh(self.q(x)))
-        k = self._unit(torch.tanh(self.k(x)))
+        q, k = self._addr(x)
         v = self.v(x)
         write = torch.sigmoid(self.write_gate(x)).squeeze(-1)  # [B, L]
         forget = torch.sigmoid(self.forget_gate(x))  # [B, L, m]
@@ -308,8 +338,17 @@ class SemiringSurpriseMemoryLane(_SurpriseMemoryBase):
     is entirely in this retrieval algebra.
     """
 
-    def __init__(self, dim: int, memory_dim: int | None = None) -> None:
-        super().__init__(dim, memory_dim=memory_dim)
+    def __init__(
+        self,
+        dim: int,
+        memory_dim: int | None = None,
+        *,
+        use_rope: bool = False,
+        max_seq_len: int = 1024,
+    ) -> None:
+        super().__init__(
+            dim, memory_dim=memory_dim, use_rope=use_rope, max_seq_len=max_seq_len
+        )
         # softplus(4.0) ≈ 4.02: start sharp (near the proven tropical max read).
         self.semiring_temp = nn.Parameter(torch.tensor(4.0))
 

@@ -237,6 +237,8 @@ def _dispatch_invention_mechanism(
         return TropicalSurpriseMemoryLane(dim)
     if mechanism == "semiring_surprise_memory":
         return SemiringSurpriseMemoryLane(dim)
+    if mechanism == "semiring_surprise_memory_rope":
+        return SemiringSurpriseMemoryLane(dim, use_rope=True)
     if mechanism == "padic_surprise_memory":
         return PadicSurpriseMemoryLane(dim)
     return None
