@@ -204,3 +204,98 @@ def test_new_knob_adapters_preserve_shape_and_grad() -> None:
         diffusion_steps=2,
     )
     _check_shape_and_grad(module, dim=16, seq_len=8)
+
+
+# --- Width-robustness campaign lanes (2026-05-29) -------------------------------
+
+from component_fab.generator.primitive_templates import (  # noqa: E402
+    AnisotropicSemiringReciprocalAttention,
+    FixedRankReciprocalAttention,
+    HeteroSemiringReciprocalAttention,
+    ReciprocalRankAttention,
+    SemiringReciprocalAttention,
+    TemperedTropicalAttention,
+    _heads_for_head_dim,
+)
+
+
+def _assert_causal(module: torch.nn.Module, dim: int, seq_len: int = 12) -> None:
+    """Perturbing token t must not change outputs at positions < t."""
+    module = module.eval()
+    x = torch.randn(1, seq_len, dim)
+    with torch.no_grad():
+        y1 = module(x)
+        x2 = x.clone()
+        x2[:, seq_len // 2 :, :] += 5.0
+        y2 = module(x2)
+    leak = (y1[:, : seq_len // 2] - y2[:, : seq_len // 2]).abs().max().item()
+    assert leak < 1e-4, f"future leakage {leak}"
+
+
+@pytest.mark.parametrize("dim", [96, 192])
+def test_width_robust_lanes_shape_grad_causal(dim: int) -> None:
+    for module in (
+        HeteroSemiringReciprocalAttention(dim),
+        AnisotropicSemiringReciprocalAttention(dim),
+        FixedRankReciprocalAttention(dim, rank=96),
+        TemperedTropicalAttention(dim),
+    ):
+        _check_shape_and_grad(module, dim=dim, seq_len=12)
+        _assert_causal(module, dim=dim)
+
+
+def test_hetero_head_dim_selection() -> None:
+    # fixed head_dim≈96: 1 head at dim96, 2 at 192, 6 at 576 — even head_dim only.
+    assert _heads_for_head_dim(96, 96) == 1
+    assert _heads_for_head_dim(192, 96) == 2
+    assert _heads_for_head_dim(576, 96) == 6
+
+
+def test_hetero_single_head_reduces_to_semiring() -> None:
+    # No output proj + γ init 1.0 ⇒ a 1-head hetero is exactly single-head semiring.
+    torch.manual_seed(0)
+    h = HeteroSemiringReciprocalAttention(96)  # dim96 → 1 head
+    assert h.n_heads == 1
+    torch.manual_seed(0)
+    s = SemiringReciprocalAttention(96)
+    x = torch.randn(2, 16, 96)
+    assert torch.allclose(h(x), s(x), atol=1e-5)
+
+
+def test_anisotropic_init_equals_scalar_semiring() -> None:
+    # γ_d = exp(0) = 1 ∀d at init ⇒ identical to the scalar-γ semiring.
+    torch.manual_seed(0)
+    a = AnisotropicSemiringReciprocalAttention(96)
+    assert a.semiring_beta.shape == (96,)
+    torch.manual_seed(0)
+    s = SemiringReciprocalAttention(96)
+    x = torch.randn(2, 16, 96)
+    assert torch.allclose(a(x), s(x), atol=1e-5)
+
+
+def test_fixed_rank_full_rank_equals_reciprocal() -> None:
+    # rank == dim ⇒ no score bottleneck ⇒ exactly ReciprocalRankAttention.
+    torch.manual_seed(0)
+    fr = FixedRankReciprocalAttention(96, rank=96)
+    torch.manual_seed(0)
+    rr = ReciprocalRankAttention(96, use_rope=True)
+    x = torch.randn(2, 16, 96)
+    assert torch.allclose(fr(x), rr(x), atol=1e-5)
+
+
+def test_tempered_tropical_anneals_toward_hard_max() -> None:
+    # Larger β ⇒ the tempered pooling approaches the hard tropical max (per head),
+    # so the |max|-to-|mean| sparsity ratio increases with β.
+    torch.manual_seed(0)
+    m = TemperedTropicalAttention(96, use_rope=False).eval()
+    x = torch.randn(1, 32, 96)
+    with torch.no_grad():
+        m.log_beta.fill_(-3.0)  # softplus → ~0.05, soft
+        soft = m(x)
+        m.log_beta.fill_(5.0)  # softplus → ~5, near-hard max
+        hard = m(x)
+
+    def sparsity_ratio(y: torch.Tensor) -> float:
+        return (y.abs().amax(-1).mean() / (y.abs().mean() + 1e-9)).item()
+
+    assert sparsity_ratio(hard) > sparsity_ratio(soft)

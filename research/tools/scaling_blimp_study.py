@@ -42,7 +42,11 @@ from component_fab.generator.block_templates import (
     ThreeLaneAdaptive,
 )
 from component_fab.generator.primitive_templates import (
+    AnisotropicSemiringReciprocalAttention,
+    FixedRankReciprocalAttention,
+    HeteroSemiringReciprocalAttention,
     LinearStateSpaceLane,
+    TemperedTropicalAttention,
     MultiscaleWaveletLane,
     PhaseLockAttention,
     ReciprocalPrimaryRefine,
@@ -249,6 +253,25 @@ def _build_lane_factory(
         return lambda d: SparseReciprocalAttention(d, use_rope=True)
     if name == "semiring_reciprocal_attention":
         return lambda d: SemiringReciprocalAttention(d, use_rope=True)
+    # Heterogeneous-algebra multi-head: per-head reciprocity β_h + signed per-head
+    # semiring γ_h (soft-min/mean/soft-max), head split + output proj. Directly
+    # attacks the single-head/scalar-γ width dilution of semiring_reciprocal.
+    if name == "hetero_semiring_reciprocal":
+        return lambda d: HeteroSemiringReciprocalAttention(d, use_rope=True)
+    # Anisotropic per-channel semiring: keeps the full-width single head (best for
+    # indNear at 100M: 0.115 vs head-split 0.073) and makes γ a per-channel vector
+    # γ_d so each value feature pools under its own mean↔max algebra.
+    if name == "anisotropic_semiring_reciprocal":
+        return lambda d: AnisotropicSemiringReciprocalAttention(d, use_rope=True)
+    # Fixed-rank reciprocity: ONE attention pattern with the q·k score computed in
+    # a width-invariant rank-96 subspace, mixing full-width values. Tests whether
+    # the matching-subspace width (not head count) is what compresses indNear.
+    if name == "fixed_rank_reciprocal":
+        return lambda d: FixedRankReciprocalAttention(d, rank=96, use_rope=True)
+    # Track B: novel improvement to TropicalAttention — learnable per-head Boltzmann
+    # temperature interpolating hard max-plus ↔ soft log-mean-exp pooling.
+    if name == "tempered_tropical":
+        return lambda d: TemperedTropicalAttention(d, use_rope=True)
 
     if name == "reciprocal_primary_phase_refine":
         return lambda d: ReciprocalPrimaryRefine(d, side="phase", use_rope=True)

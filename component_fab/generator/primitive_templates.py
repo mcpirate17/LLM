@@ -405,6 +405,326 @@ class SemiringReciprocalAttention(_QKVRopeAttentionBase):
         return torch.logsumexp(z, dim=2) / gamma
 
 
+def _pick_n_heads(dim: int, preferred: int = 8) -> int:
+    """Largest head count <= ``preferred`` that evenly divides ``dim`` and
+    leaves an even head_dim (RoPE requires even dims). Falls back to 1."""
+    for h in (preferred, 6, 4, 3, 2):
+        if dim % h == 0 and (dim // h) % 2 == 0:
+            return h
+    return 1
+
+
+def _heads_for_head_dim(dim: int, target_head_dim: int) -> int:
+    """Pick the head count whose head_dim (a divisor of ``dim`` with even size,
+    RoPE requires even) is closest to ``target_head_dim``.
+
+    Fixing head_dim — rather than n_heads — keeps every width's per-head subspace
+    near the empirical induction-nearest sweet spot (~96 dims): the nano single
+    head (dim 96) scores indNear 0.46, but the SAME mechanism collapses both when
+    the head is too wide (dim 576 single head → 0.115) and too narrow (dim 12,
+    i.e. 8 heads at width 96 → 0.135). So we add heads as the model widens and
+    hold head_dim fixed."""
+    best_h, best_gap = 1, abs(dim - target_head_dim)
+    for h in range(1, dim + 1):
+        if dim % h != 0:
+            continue
+        hd = dim // h
+        if hd % 2 != 0:
+            continue
+        gap = abs(hd - target_head_dim)
+        if gap < best_gap:
+            best_h, best_gap = h, gap
+    return best_h
+
+
+class HeteroSemiringReciprocalAttention(_QKVRopeAttentionBase):
+    """Heterogeneous-algebra multi-head reciprocal attention.
+
+    Attacks the width-dilution of the single-head ``SemiringReciprocalAttention``
+    (whose scalar reciprocity β and scalar semiring γ get averaged-out as the
+    model widens) by giving **each head its own learned algebra**:
+
+    - per-head reciprocity ``β_h = tanh(param_h)`` controls how much mutual
+      query↔key agreement is folded into that head's addressing (init 0 → plain
+      softmax addressing per head);
+    - per-head **signed** semiring temperature ``γ_h`` controls value pooling via
+      ``out = (1/γ_h)·logsumexp_j(log w_ij + γ_h·v_jd)``. Unlike the single-head
+      op (which used ``γ = exp(param) > 0``, reaching only mean↔max), γ_h here is
+      a *signed* learnable scalar: ``γ_h < 0`` gives soft-**min** pooling,
+      ``γ_h → 0`` the convex mean (softmax attention), ``γ_h > 0`` soft-**max**
+      (tropical/winner-take-all). The full softmax-mean↔max↔min spectrum is thus
+      available per head, and heads are seeded with a deterministic spread of
+      γ (linspace, symmetry-broken) so the model starts as a *heterogeneous*
+      bank of algebras rather than collapsing to one.
+
+    The novelty over standard MHA: each head operates in a different learned
+    semiring AND a different reciprocity regime — a per-head learned algebra,
+    not a per-head learned projection. No output projection (consistent with the
+    softmax/semiring/reciprocal lane family) — heads are concatenated and
+    cross-head mixing is deferred to the next block's input projection; with
+    ``n_heads == 1`` the lane therefore reduces EXACTLY to the single-head
+    ``SemiringReciprocalAttention`` (γ init 1.0 = exp(0)). Causal. Materialises a
+    per-head ``(B,H,S,S,dh)`` tensor (total ``B·S·S·D`` — same footprint as the
+    single-head op; use a smaller batch at large width).
+    """
+
+    _GAMMA_EPS: float = 0.05
+    _GAMMA_MAX: float = 10.0
+
+    def __init__(
+        self,
+        dim: int,
+        causal: bool = True,
+        *,
+        target_head_dim: int = 96,
+        n_heads: int | None = None,
+        use_rope: bool = True,
+        max_seq_len: int = 1024,
+    ) -> None:
+        # Base builds q/k/v Linears; rope/scale are rebuilt per-head below.
+        super().__init__(dim, causal=causal, use_rope=False, max_seq_len=max_seq_len)
+        # Fix head_dim near the induction-nearest sweet spot (~96) and let n_heads
+        # grow with width; an explicit n_heads overrides (for head-dim ablations).
+        self.n_heads = (
+            _pick_n_heads(dim, preferred=n_heads)
+            if n_heads is not None
+            else _heads_for_head_dim(dim, target_head_dim)
+        )
+        self.head_dim = dim // self.n_heads
+        self.scale = float(self.head_dim) ** -0.5
+        self.rope = (
+            RotaryEmbedding(self.head_dim, max_seq_len=max_seq_len)
+            if use_rope
+            else None
+        )
+        # per-head reciprocity strength (init 0 → tanh 0 → plain softmax addressing)
+        self.reciprocal_logit_scale = nn.Parameter(torch.zeros(self.n_heads))
+        # per-head SIGNED semiring temperature. >1 head: a symmetry-broken spread
+        # across soft-min (<0) / mean (~0) / soft-max (>0) so heads start diverse;
+        # 1 head: γ=1.0, the proven single-head SemiringReciprocal init.
+        if self.n_heads == 1:
+            gamma_init = torch.ones(1)
+        else:
+            gamma_init = torch.linspace(-1.5, 1.5, self.n_heads)
+        self.semiring_gamma = nn.Parameter(gamma_init)
+
+    def _signed_gamma(self) -> torch.Tensor:
+        """Clamp |γ| into ``[eps, max]`` keeping sign — avoids the 1/γ blow-up
+        at 0 while preserving the soft-min/mean/soft-max regime per head."""
+        g = self.semiring_gamma
+        mag = g.abs().clamp(self._GAMMA_EPS, self._GAMMA_MAX)
+        return torch.where(g < 0, -mag, mag)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        B, S, _ = x.shape
+        H, dh = self.n_heads, self.head_dim
+        q = self.q(x).view(B, S, H, dh).transpose(1, 2)  # (B,H,S,dh)
+        k = self.k(x).view(B, S, H, dh).transpose(1, 2)
+        v = self.v(x).view(B, S, H, dh).transpose(1, 2)
+        if self.rope is not None:
+            cos, sin = self.rope(S, device=x.device, dtype=x.dtype)
+            q, k = apply_rope(q, cos, sin), apply_rope(k, cos, sin)
+        raw = torch.einsum("bhid,bhjd->bhij", q, k) * self.scale  # (B,H,S,S)
+        tri = None
+        if self.causal:
+            tri = torch.triu(torch.ones(S, S, device=x.device, dtype=torch.bool), 1)
+            scores = raw.masked_fill(tri, float("-inf"))
+            reverse = raw.transpose(-2, -1).masked_fill(tri, float("-inf"))
+        else:
+            scores, reverse = raw, raw.transpose(-2, -1)
+        reciprocal = torch.softmax(reverse, dim=-1).clamp_min(1e-6)
+        boost = torch.tanh(self.reciprocal_logit_scale).view(1, H, 1, 1).to(x.dtype)
+        w = torch.softmax(scores + boost * torch.log(reciprocal), dim=-1)  # (B,H,S,S)
+        gamma = self._signed_gamma().view(1, H, 1, 1, 1).to(x.dtype)
+        logw = torch.log(w.clamp_min(1e-9)).unsqueeze(-1)  # (B,H,S,S,1)
+        z = logw + gamma * v.unsqueeze(2)  # (B,H,S,S,dh)
+        if tri is not None:
+            # Exclude future keys from the pooling EXACTLY: the clamp_min floor on
+            # w leaves future v_j with weight ~1e-9, which a negative (soft-min) γ_h
+            # can amplify into a real causal leak. A finite −1e4 makes exp underflow
+            # to 0 independent of v_j (and keeps the backward finite).
+            z = z.masked_fill(tri.view(1, 1, S, S, 1), -1e4)
+        pooled = torch.logsumexp(z, dim=3) / gamma.squeeze(3)  # (B,H,S,dh)
+        return pooled.transpose(1, 2).reshape(B, S, H * dh)
+
+
+class AnisotropicSemiringReciprocalAttention(_QKVRopeAttentionBase):
+    """Reciprocal addressing + **per-channel** learnable-semiring value pooling.
+
+    A single, full-width attention (the 100M-best variant for induction-nearest:
+    the single 576-d head beat 6 head-split heads, 0.115 vs 0.073) whose ONLY
+    change from ``SemiringReciprocalAttention`` is that the semiring temperature
+    is a learned **vector** ``γ_d`` (one per value channel) instead of a scalar:
+
+        ``out_id = (1/γ_d)·logsumexp_j(log w_ij + γ_d·v_jd)``
+
+    Each value feature is thus pooled under its OWN algebra along the
+    mean(γ_d→0)↔max(γ_d large) spectrum — an *anisotropic* semiring readout,
+    novel value-aggregation algebra rather than a per-head split. ``γ_d =
+    exp(param_d)`` (init 0 → γ_d = 1 ∀d ⇒ identical to the scalar-γ semiring at
+    init, so it strictly generalises the proven lane). Reciprocal (mutual q↔k)
+    addressing as in the parent. Causal; materialises a ``(B,S,S,D)`` tensor.
+    """
+
+    def __init__(
+        self,
+        dim: int,
+        causal: bool = True,
+        *,
+        use_rope: bool = True,
+        max_seq_len: int = 1024,
+    ) -> None:
+        super().__init__(dim, causal=causal, use_rope=use_rope, max_seq_len=max_seq_len)
+        self.reciprocal_logit_scale = nn.Parameter(torch.zeros(1))
+        self.semiring_beta = nn.Parameter(torch.zeros(dim))  # per-channel γ_d
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        S = x.shape[1]
+        q, k, v = self.q(x), self.k(x), self.v(x)
+        if self.rope is not None:
+            cos, sin = self.rope(S, device=x.device, dtype=x.dtype)
+            q, k = apply_rope(q, cos, sin), apply_rope(k, cos, sin)
+        raw = torch.einsum("bid,bjd->bij", q, k) * self.scale
+        tri = None
+        if self.causal:
+            tri = torch.triu(torch.ones(S, S, device=x.device, dtype=torch.bool), 1)
+            scores = raw.masked_fill(tri, float("-inf"))
+            reverse = raw.transpose(-2, -1).masked_fill(tri, float("-inf"))
+        else:
+            scores, reverse = raw, raw.transpose(-2, -1)
+        reciprocal = torch.softmax(reverse, dim=-1).clamp_min(1e-6)
+        boost = torch.tanh(self.reciprocal_logit_scale).to(x.dtype)
+        w = torch.softmax(scores + boost * torch.log(reciprocal), dim=-1)
+        gamma = torch.exp(self.semiring_beta).clamp(0.05, 10.0).to(x.dtype)  # (D,)
+        logw = torch.log(w.clamp_min(1e-9)).unsqueeze(-1)  # (B,S,S,1)
+        z = logw + gamma.view(1, 1, 1, -1) * v.unsqueeze(1)  # (B,S,S,D)
+        if tri is not None:
+            # Exclude future keys exactly (the clamp_min floor would otherwise let
+            # future v_j leak in with weight ~1e-9); −1e4 underflows to 0 in exp.
+            z = z.masked_fill(tri.view(1, S, S, 1), -1e4)
+        return torch.logsumexp(z, dim=2) / gamma.view(1, 1, -1)
+
+
+class FixedRankReciprocalAttention(nn.Module):
+    """Reciprocal addressing whose SCORE lives in a fixed-rank subspace.
+
+    Tests the competing hypothesis to head-splitting: the induction-nearest
+    advantage may compress at width because the q·k *matching* happens over the
+    full (growing) model width. Here Q,K project to a FIXED rank ``r`` (≈ the
+    nano sweet spot, 96) regardless of model dim, so the matching subspace is
+    width-invariant, while V stays full-width and a SINGLE attention pattern
+    mixes the full values — unlike ``HeteroSemiringReciprocalAttention`` which
+    used many *competing* head patterns over *partitioned* values (that hurt:
+    0.073 vs single-head 0.115 at 100M). Reciprocal (mutual q↔k) addressing as
+    in ``ReciprocalRankAttention``; plain convex value mean (isolates the score
+    subspace as the only change). At ``r == dim`` it is exactly reciprocal_rank.
+    Causal.
+    """
+
+    def __init__(
+        self,
+        dim: int,
+        causal: bool = True,
+        *,
+        rank: int = 96,
+        use_rope: bool = True,
+        max_seq_len: int = 1024,
+    ) -> None:
+        super().__init__()
+        self.rank = min(rank, dim) if (min(rank, dim) % 2 == 0) else min(rank, dim) - 1
+        self.qr = nn.Linear(dim, self.rank, bias=False)
+        self.kr = nn.Linear(dim, self.rank, bias=False)
+        self.v = nn.Linear(dim, dim, bias=False)
+        self.scale = float(self.rank) ** -0.5
+        self.causal = causal
+        self.reciprocal_logit_scale = nn.Parameter(torch.zeros(1))
+        self.rope = (
+            RotaryEmbedding(self.rank, max_seq_len=max_seq_len) if use_rope else None
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        S = x.shape[1]
+        q, k, v = self.qr(x), self.kr(x), self.v(x)
+        if self.rope is not None:
+            cos, sin = self.rope(S, device=x.device, dtype=x.dtype)
+            q, k = apply_rope(q, cos, sin), apply_rope(k, cos, sin)
+        raw = torch.einsum("bir,bjr->bij", q, k) * self.scale
+        if self.causal:
+            tri = torch.triu(torch.ones(S, S, device=x.device, dtype=torch.bool), 1)
+            scores = raw.masked_fill(tri, float("-inf"))
+            reverse = raw.transpose(-2, -1).masked_fill(tri, float("-inf"))
+        else:
+            scores, reverse = raw, raw.transpose(-2, -1)
+        reciprocal = torch.softmax(reverse, dim=-1).clamp_min(1e-6)
+        boost = torch.tanh(self.reciprocal_logit_scale).to(x.dtype)
+        w = torch.softmax(scores + boost * torch.log(reciprocal), dim=-1)
+        return torch.einsum("bij,bjd->bid", w, v)
+
+
+class TemperedTropicalAttention(_QKVRopeAttentionBase):
+    """Max-plus attention with a learnable Boltzmann temperature (Track B —
+    novel improvement to ``TropicalAttention``).
+
+    Plain ``TropicalAttention`` takes a hard ``max_{j≤i}(scale·q·k + v)`` — a
+    non-smooth winner-take-all with zero gradient to all but the argmax key.
+    This replaces the hard max with a temperature-controlled log-sum-exp over the
+    SAME ``(affinity + value)`` tropical combination:
+
+        ``out_id = (1/β)·logsumexp_{j≤i}( β·(scale·q_i·k_j + v_jd) )``
+
+    with ``β = softplus(param)`` learnable per **head** (head_dim≈96). β→∞ recovers
+    the hard tropical max (winner-take-all); β→0 anneals to a log-mean-exp soft
+    pooling — so the model *learns where to sit on the hard↔soft max-plus axis*,
+    per head, and every key gets gradient. Distinct from
+    ``SemiringReciprocalAttention`` (which softmaxes the affinity into convex
+    weights FIRST, then semiring-pools values): here addressing and value are
+    fused inside one tempered tropical semiring, never leaving max-plus algebra.
+    Causal (``-inf`` mask flows through ``logsumexp`` cleanly).
+    """
+
+    def __init__(
+        self,
+        dim: int,
+        causal: bool = True,
+        *,
+        target_head_dim: int = 96,
+        use_rope: bool = True,
+        max_seq_len: int = 1024,
+    ) -> None:
+        super().__init__(dim, causal=causal, use_rope=False, max_seq_len=max_seq_len)
+        self.n_heads = _heads_for_head_dim(dim, target_head_dim)
+        self.head_dim = dim // self.n_heads
+        self.scale = float(self.head_dim) ** -0.5
+        self.rope = (
+            RotaryEmbedding(self.head_dim, max_seq_len=max_seq_len)
+            if use_rope
+            else None
+        )
+        # per-head inverse temperature, init softplus(0.5413)≈1.0 (mild-soft max)
+        self.log_beta = nn.Parameter(torch.full((self.n_heads,), 0.5413))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        B, S, _ = x.shape
+        H, dh = self.n_heads, self.head_dim
+        q = self.q(x).view(B, S, H, dh).transpose(1, 2)  # (B,H,S,dh)
+        k = self.k(x).view(B, S, H, dh).transpose(1, 2)
+        v = self.v(x).view(B, S, H, dh).transpose(1, 2)
+        if self.rope is not None:
+            cos, sin = self.rope(S, device=x.device, dtype=x.dtype)
+            q, k = apply_rope(q, cos, sin), apply_rope(k, cos, sin)
+        affinity = torch.einsum("bhid,bhjd->bhij", q, k) * self.scale  # (B,H,S,S)
+        if self.causal:
+            # Finite (not -inf) mask: -inf inside logsumexp gives 0·(-inf)=NaN in
+            # the backward; a large negative underflows to weight 0 with finite grad.
+            tri = torch.triu(torch.ones(S, S, device=x.device, dtype=torch.bool), 1)
+            affinity = affinity.masked_fill(tri, -1e4)
+        beta = torch.nn.functional.softplus(self.log_beta).clamp(0.05, 50.0)
+        beta = beta.view(1, H, 1, 1, 1).to(x.dtype)
+        combined = affinity.unsqueeze(-1) + v.unsqueeze(2)  # (B,H,S,S,dh)
+        pooled = torch.logsumexp(beta * combined, dim=3) / beta.squeeze(3)  # (B,H,S,dh)
+        return pooled.transpose(1, 2).reshape(B, S, H * dh)
+
+
 class TropicalStateSpace(nn.Module):
     """Max-plus recurrent kernel: ``s[t] = max(A + s[t-1], B(x[t]))``.
 
