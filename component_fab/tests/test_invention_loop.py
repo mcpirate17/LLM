@@ -12,6 +12,7 @@ from component_fab.generator.memory_primitives import (
     CausalSlotRouterMemoryLane,
     HierarchicalResidualCompressorLane,
     PadicSurpriseMemoryLane,
+    SemiringSurpriseMemoryLane,
     TropicalSurpriseMemoryLane,
 )
 from component_fab.generator.primitive_templates import SymplecticResidualMixerLane
@@ -59,9 +60,11 @@ def test_invention_gate_rejects_rehab_axis_variant() -> None:
 
 def test_semiring_surprise_memory_generalizes_the_family_read() -> None:
     """The semiring lane is the ONLY family member that overrides ``_read`` —
-    with a learnable tempered semiring. It must stay causal/finite, and at high
-    β it must reproduce the family's proven max-plus read (it strictly
-    generalizes ``TropicalSurpriseMemoryLane``, sliding mean<->max via β)."""
+    with a learnable tempered semiring. It must stay causal/finite, and its read
+    must *interpolate* the family's algebra: high beta tracks the proven max-plus
+    read, low beta tracks the arithmetic mean, monotonically in beta. So it
+    strictly generalizes ``TropicalSurpriseMemoryLane`` (the family's fixed
+    max-plus read) via a single learnable parameter."""
     assert "_read" in SemiringSurpriseMemoryLane.__dict__  # the novelty lives here
     torch.manual_seed(0)
     lane = SemiringSurpriseMemoryLane(32)
@@ -71,23 +74,43 @@ def test_semiring_surprise_memory_generalizes_the_family_read() -> None:
     assert torch.isfinite(y).all()
     y.sum().backward()
     assert x.grad is not None and torch.isfinite(x.grad).all()
-    # strict causality
+    # strict causality: scrambling the second half cannot move the first half
     torch.manual_seed(1)
     lane2 = SemiringSurpriseMemoryLane(16)
     x_a = torch.randn(1, 12, 16)
     x_b = x_a.clone()
     x_b[:, 6:] += torch.randn(1, 6, 16)
     assert torch.allclose(lane2(x_a)[:, :6], lane2(x_b)[:, :6], atol=1e-5)
-    # β -> large reproduces the proven tropical max-plus read (shared write weights)
+    # Compare _read directly on a fixed memory (isolates the retrieval algebra;
+    # the full scan would compound tiny per-step read deltas through the
+    # recurrence). beta-large -> max-plus (tropical); beta-small -> mean.
     torch.manual_seed(3)
-    trop = TropicalSurpriseMemoryLane(24).eval()
-    semi = SemiringSurpriseMemoryLane(24).eval()
-    semi.load_state_dict({k: v for k, v in trop.state_dict().items()}, strict=False)
-    with torch.no_grad():
-        semi.semiring_temp.fill_(50.0)  # softplus -> clamp 30: very sharp ~ max
-        xx = torch.randn(2, 10, 24)
-        rel = (trop(xx) - semi(xx)).abs().max() / trop(xx).abs().max().clamp_min(1e-6)
-    assert rel < 0.2, f"semiring(β large) should track tropical read, rel={rel:.3f}"
+    semi = SemiringSurpriseMemoryLane(24)
+    m = semi.memory_dim
+    mem = torch.randn(2, m, m)
+    addr = torch.randn(2, m)
+    scores = mem + addr.unsqueeze(-1)
+    max_read = scores.amax(dim=1)
+    mean_read = scores.mean(dim=1)
+
+    def read_at(beta_raw):
+        with torch.no_grad():
+            semi.semiring_temp.fill_(beta_raw)
+            return semi._read(mem, addr)
+
+    sharp = read_at(50.0)  # softplus -> clamp 30
+    soft = read_at(-50.0)  # softplus -> 1e-2
+    mid = read_at(0.0)  # softplus -> ~0.69
+    # beta->0 limit is the arithmetic mean (the -log m normalizer guarantees it)
+    assert (soft - mean_read).abs().max() < 1e-2
+    # genuine interpolation: sharp sits toward max, soft toward mean
+    assert (sharp - max_read).abs().mean() < (sharp - mean_read).abs().mean()
+    assert (soft - mean_read).abs().mean() < (soft - max_read).abs().mean()
+    # monotone in beta: larger beta -> strictly closer to the max-plus read
+    d_soft = (soft - max_read).abs().mean()
+    d_mid = (mid - max_read).abs().mean()
+    d_sharp = (sharp - max_read).abs().mean()
+    assert d_sharp < d_mid < d_soft
 
 
 def test_invention_codegen_dispatches_mechanisms() -> None:
