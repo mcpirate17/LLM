@@ -239,12 +239,17 @@ def _build_lane_factory(
             TropicalSurpriseMemoryLane,
         )
 
-        # compile_step=True: fuse the fixed-shape per-step _delta_step (2.8x
-        # fwd+bwd; the whole-forward compile hangs on the 512-iter Python loop).
+        # compile_step is INTENTIONALLY OFF: per-step torch.compile of _delta_step
+        # is 2.8x in an isolated fixed-shape benchmark, but in the live 12-block
+        # model it re-traces forever (GPU idle, 1 core pegged, hung at step 480
+        # for 45min) because the batch shape differs between train (b16) and the
+        # gMQAR/BLiMP eval batches. Eager (~3.5k tok/s) is the reliable path until
+        # a chunkwise-parallel kernel exists. compile_step stays a lane kwarg for
+        # that future fixed-shape path; the factory just doesn't enable it.
         if name == "tropical_surprise_memory":
-            return lambda d: TropicalSurpriseMemoryLane(d, compile_step=True)
+            return lambda d: TropicalSurpriseMemoryLane(d)
         rope = name.endswith("_rope")
-        return lambda d: SemiringSurpriseMemoryLane(d, use_rope=rope, compile_step=True)
+        return lambda d: SemiringSurpriseMemoryLane(d, use_rope=rope)
 
     # Novel mixer lanes ported from synthesis ops (AR-gate 1.0, top nano BLiMP),
     # now with RoPE-capable QKV base for scaling tests.
