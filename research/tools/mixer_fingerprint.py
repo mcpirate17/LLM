@@ -456,6 +456,27 @@ def _cheap_evals(
             }
         out["_t_nano_induction_nearest"] = round(time.monotonic() - t, 2)
 
+    # --- gMQAR (Graded Multi-Query Associative Recall) ---
+    # Scale-sensitive, in-weights-free binding probe that RANKS 100M models where
+    # indNear/AR saturate. AUDC = mean accuracy over a pairs×distractor grid;
+    # D50 = deepest KV-pair count still recalled >=50%. token_pool restricts
+    # keys/values to a well-trained low-id range so it measures the BINDING
+    # mechanism, not rare-embedding quality. softmax is the baseline to beat.
+    t = time.monotonic()
+    try:
+        from research.eval.gmqar import score_model_gmqar
+
+        gm = score_model_gmqar(
+            model, vocab_size=VOCAB_SIZE, device=str(device), token_pool=2048
+        )
+        out["gmqar_audc"] = round(float(gm.audc), 4)
+        out["gmqar_d50"] = int(gm.d50)
+        out["gmqar_chance"] = gm.chance
+        out["gmqar_cells"] = gm.cells
+    except (RuntimeError, ValueError, ImportError) as exc:
+        out["gmqar_error"] = str(exc)[:200]
+    out["_t_gmqar"] = round(time.monotonic() - t, 2)
+
     return out
 
 

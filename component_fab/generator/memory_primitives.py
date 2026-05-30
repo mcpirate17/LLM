@@ -186,6 +186,7 @@ class _SurpriseMemoryBase(nn.Module):
         *,
         use_rope: bool = False,
         max_seq_len: int = 1024,
+        compile_step: bool = False,
     ) -> None:
         super().__init__()
         memory_dim = memory_dim or min(dim, 32)
@@ -215,6 +216,16 @@ class _SurpriseMemoryBase(nn.Module):
             if (use_rope and memory_dim % 2 == 0)
             else None
         )
+        # The O(T) scan fires ~20 tiny kernels per timestep; the loop is
+        # launch-bound (GPU ~15-40% util). Compiling the FIXED-SHAPE per-step
+        # _delta_step (NOT the whole forward — tracing the 512-iter Python loop
+        # OOM/hangs Inductor) fuses those kernels: measured 2.8x fwd+bwd
+        # (25.7k -> 71.3k tok/s, dim576/seq512/b16). Lazy — compiles on first
+        # call, after subclasses finish __init__ (e.g. semiring_temp). Off by
+        # default (skip compile overhead for the fab's tiny dim16 grades);
+        # the 100M lane factory turns it on.
+        if compile_step:
+            self._delta_step = torch.compile(self._delta_step)  # type: ignore[method-assign]
 
     @staticmethod
     def _unit(t: torch.Tensor) -> torch.Tensor:
@@ -345,11 +356,18 @@ class SemiringSurpriseMemoryLane(_SurpriseMemoryBase):
         *,
         use_rope: bool = False,
         max_seq_len: int = 1024,
+        compile_step: bool = False,
     ) -> None:
         super().__init__(
-            dim, memory_dim=memory_dim, use_rope=use_rope, max_seq_len=max_seq_len
+            dim,
+            memory_dim=memory_dim,
+            use_rope=use_rope,
+            max_seq_len=max_seq_len,
+            compile_step=compile_step,
         )
         # softplus(4.0) ≈ 4.02: start sharp (near the proven tropical max read).
+        # compile_step wraps _delta_step lazily (compiles on first forward), so
+        # this param exists before the compiled step ever reads it via _read.
         self.semiring_temp = nn.Parameter(torch.tensor(4.0))
 
     def _read(self, memory: torch.Tensor, addr: torch.Tensor) -> torch.Tensor:

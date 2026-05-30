@@ -239,10 +239,12 @@ def _build_lane_factory(
             TropicalSurpriseMemoryLane,
         )
 
+        # compile_step=True: fuse the fixed-shape per-step _delta_step (2.8x
+        # fwd+bwd; the whole-forward compile hangs on the 512-iter Python loop).
         if name == "tropical_surprise_memory":
-            return lambda d: TropicalSurpriseMemoryLane(d)
+            return lambda d: TropicalSurpriseMemoryLane(d, compile_step=True)
         rope = name.endswith("_rope")
-        return lambda d: SemiringSurpriseMemoryLane(d, use_rope=rope)
+        return lambda d: SemiringSurpriseMemoryLane(d, use_rope=rope, compile_step=True)
 
     # Novel mixer lanes ported from synthesis ops (AR-gate 1.0, top nano BLiMP),
     # now with RoPE-capable QKV base for scaling tests.
