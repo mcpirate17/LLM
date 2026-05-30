@@ -225,6 +225,25 @@ def _build_lane_factory(
     if name == "adjacent_token_merge_lane":
         return AdjacentTokenMergeLane
 
+    # component_fab Titans/TTT surprise-memory family (delta-rule write substrate;
+    # the _read algebra is what varies). Bare lanes → default block FFN (now
+    # SwiGLU) supplies norm/residual. semiring = learnable tempered read; _rope
+    # adds rotary on the addressing q/k (relative-distance retrieval).
+    if name in (
+        "tropical_surprise_memory",
+        "semiring_surprise_memory",
+        "semiring_surprise_memory_rope",
+    ):
+        from component_fab.generator.memory_primitives import (
+            SemiringSurpriseMemoryLane,
+            TropicalSurpriseMemoryLane,
+        )
+
+        if name == "tropical_surprise_memory":
+            return lambda d: TropicalSurpriseMemoryLane(d)
+        rope = name.endswith("_rope")
+        return lambda d: SemiringSurpriseMemoryLane(d, use_rope=rope)
+
     # Novel mixer lanes ported from synthesis ops (AR-gate 1.0, top nano BLiMP),
     # now with RoPE-capable QKV base for scaling tests.
     if name == "reciprocal_rank_attention":
