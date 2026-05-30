@@ -162,9 +162,7 @@ def _op_reciprocal_rank_attention(module, inputs, _):
         return x
     q, k, v, B, S = _project_qkv(module, x)
     raw_scores = torch.matmul(q, k.transpose(-2, -1)) * module.attn_scale
-    causal = torch.triu(
-        torch.ones(S, S, device=x.device, dtype=torch.bool), diagonal=1
-    )
+    causal = torch.triu(torch.ones(S, S, device=x.device, dtype=torch.bool), diagonal=1)
     scores = raw_scores.masked_fill(causal, -1e9)
 
     reverse_scores = raw_scores.transpose(-2, -1).masked_fill(causal, -1e9)
@@ -189,12 +187,8 @@ def _op_phase_lock_attention(module, inputs, _):
     dot_scores = _causal_attention_scores(q, k, module.attn_scale)
     phase_q = torch.tanh(q)
     phase_k = torch.tanh(k)
-    phase_scores = torch.cos(phase_q.unsqueeze(-2) - phase_k.unsqueeze(-3)).mean(
-        dim=-1
-    )
-    causal = torch.triu(
-        torch.ones(S, S, device=x.device, dtype=torch.bool), diagonal=1
-    )
+    phase_scores = torch.cos(phase_q.unsqueeze(-2) - phase_k.unsqueeze(-3)).mean(dim=-1)
+    causal = torch.triu(torch.ones(S, S, device=x.device, dtype=torch.bool), diagonal=1)
     phase_scores = phase_scores.masked_fill(causal, 0.0)
     phase_scale = torch.tanh(module.phase_lock_scale).to(x.dtype)
     weights = torch.softmax(dot_scores + phase_scale * phase_scores, dim=-1)
@@ -322,6 +316,36 @@ def _op_rmsnorm(module, inputs, _):
     )
     rms = torch.sqrt(torch.mean(x_work**2, dim=-1, keepdim=True) + eps)
     return ((x_work / rms) * weight).to(orig_dtype)
+
+
+def _op_qk_norm(module, inputs, _):
+    """L2-normalize the feature dim, rescale by a learned per-channel gain.
+
+    Table-stakes attention stabilizer: applied to Q/K (or any activation),
+    it bounds the dot-product logit magnitude regardless of input scale, which
+    kills attention-logit blow-up and improves long-context behavior. Parameter
+    name ``qk_scale`` (per-channel). Identity-shape; falls through if unbuilt."""
+    x = inputs[0]
+    if not hasattr(module, "qk_scale"):
+        return x
+    orig_dtype = x.dtype
+    xf = x.float()
+    normed = xf / xf.norm(dim=-1, keepdim=True).clamp_min(1e-6)
+    return (normed * module.qk_scale.float()).to(orig_dtype)
+
+
+def _op_logit_softcap(module, inputs, _):
+    """Soft cap ``cap * tanh(x / cap)`` with a learned POSITIVE cap.
+
+    Smoothly squashes large magnitudes toward ``±cap`` while staying ~linear
+    near 0, bounding logits/activations without a hard clip (Gemma-style). The
+    cap is ``softplus(softcap_logit)`` so it stays > 0 and learnable. Identity-
+    shape; falls through if unbuilt."""
+    x = inputs[0]
+    if not hasattr(module, "softcap_logit"):
+        return x
+    cap = torch.nn.functional.softplus(module.softcap_logit).clamp_min(1e-2).to(x.dtype)
+    return cap * torch.tanh(x / cap)
 
 
 def _op_layernorm(module, inputs, _):
@@ -634,6 +658,8 @@ OP_IMPLS: Dict[str, Callable] = {
     "sliding_window_mask": _op_sliding_window_mask,
     "role_slot_attention": _op_role_slot_attention,
     "rmsnorm": _op_rmsnorm,
+    "qk_norm": _op_qk_norm,
+    "logit_softcap": _op_logit_softcap,
     "layernorm": _op_layernorm,
     "gated_linear": _op_gated_linear,
     "embedding_lookup": _op_embedding_lookup,

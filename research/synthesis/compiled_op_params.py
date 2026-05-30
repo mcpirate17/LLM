@@ -109,6 +109,12 @@ class CompiledOpParamInitMixin:
                 ),
             ),
             "rmsnorm": lambda: setattr(self, "weight", nn.Parameter(torch.ones(d_in))),
+            "qk_norm": lambda: setattr(
+                self, "qk_scale", nn.Parameter(torch.ones(d_in))
+            ),
+            "logit_softcap": lambda: setattr(
+                self, "softcap_logit", nn.Parameter(torch.tensor(2.0))
+            ),
             "layernorm": lambda: (
                 setattr(self, "weight", nn.Parameter(torch.ones(d_in))),
                 setattr(self, "bias", nn.Parameter(torch.zeros(d_in))),
@@ -188,6 +194,10 @@ class CompiledOpParamInitMixin:
                 "entmax_attention", d_in
             ),
             "learnable_semiring_attention": lambda: self._init_semiring_attention(d_in),
+            "reciprocal_rank_attention": lambda: self._init_reciprocal_rank_attention(
+                d_in
+            ),
+            "phase_lock_attention": lambda: self._init_phase_lock_attention(d_in),
             "linear_attention": lambda: self._init_attention_stack(
                 "linear_attention", d_in
             ),
@@ -316,6 +326,18 @@ class CompiledOpParamInitMixin:
         self._init_attention_stack("learnable_semiring_attention", d_in)
         self.attn_scale = self.head_dim**-0.5
         self.semiring_beta = nn.Parameter(torch.linspace(-0.6, 0.6, self.n_heads))
+
+    def _init_reciprocal_rank_attention(self, d_in: int) -> None:
+        """Attention stack with a learned reciprocal-match boost."""
+        self._init_attention_stack("reciprocal_rank_attention", d_in)
+        self.attn_scale = self.head_dim**-0.5
+        self.reciprocal_logit_scale = nn.Parameter(torch.tensor(0.0))
+
+    def _init_phase_lock_attention(self, d_in: int) -> None:
+        """Attention stack with a learned phase-synchrony score term."""
+        self._init_attention_stack("phase_lock_attention", d_in)
+        self.attn_scale = self.head_dim**-0.5
+        self.phase_lock_scale = nn.Parameter(torch.tensor(0.0))
 
     def _init_math_space(
         self, op: PrimitiveOp, config: Dict, d_in: int, d_out: int

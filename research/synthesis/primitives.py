@@ -704,6 +704,32 @@ _register(
 )
 _register(
     PrimitiveOp(
+        "qk_norm",
+        OpCategory.PARAMETERIZED,
+        1,
+        "identity",
+        has_params=True,
+        param_formula="D",
+        description="Query/Key normalization: L2-normalize the feature dim then "
+        "rescale by a learned per-channel gain. Bounds attention logit magnitude "
+        "(table-stakes stability lever; modern attention default).",
+    )
+)
+_register(
+    PrimitiveOp(
+        "logit_softcap",
+        OpCategory.PARAMETERIZED,
+        1,
+        "identity",
+        has_params=True,
+        param_formula="1",
+        description="Soft logit cap cap*tanh(x/cap) with a learned positive cap; "
+        "smoothly bounds activations/logits to stabilize training (Gemma-style "
+        "table-stakes lever).",
+    )
+)
+_register(
+    PrimitiveOp(
         "semi_structured_2_4_linear",
         OpCategory.PARAMETERIZED,
         1,

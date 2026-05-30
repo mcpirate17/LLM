@@ -56,6 +56,8 @@ _OP_ROLE_MAP: Dict[str, OpRole] = {
     # ── NORMALIZE: stabilize activations ────────────────────────────
     "rmsnorm": OpRole.NORMALIZE,
     "layernorm": OpRole.NORMALIZE,
+    "qk_norm": OpRole.NORMALIZE,
+    "logit_softcap": OpRole.NORMALIZE,
     # ── ACTIVATE: pointwise nonlinearities ──────────────────────────
     "relu": OpRole.ACTIVATE,
     "gelu": OpRole.ACTIVATE,
