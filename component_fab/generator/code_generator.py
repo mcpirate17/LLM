@@ -23,6 +23,7 @@ from .memory_primitives import (
     CausalSlotRouterMemoryLane,
     HierarchicalResidualCompressorLane,
     PadicSurpriseMemoryLane,
+    SemiringSurpriseMemoryLane,
     TropicalSurpriseMemoryLane,
 )
 from .primitive_templates import (
@@ -234,6 +235,8 @@ def _dispatch_invention_mechanism(
         return SymplecticResidualMixerLane(dim)
     if mechanism == "tropical_surprise_memory":
         return TropicalSurpriseMemoryLane(dim)
+    if mechanism == "semiring_surprise_memory":
+        return SemiringSurpriseMemoryLane(dim)
     if mechanism == "padic_surprise_memory":
         return PadicSurpriseMemoryLane(dim)
     return None

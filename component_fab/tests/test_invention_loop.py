@@ -57,6 +57,39 @@ def test_invention_gate_rejects_rehab_axis_variant() -> None:
     assert "anchored rehab/cross-anchor spec" in reasons
 
 
+def test_semiring_surprise_memory_generalizes_the_family_read() -> None:
+    """The semiring lane is the ONLY family member that overrides ``_read`` —
+    with a learnable tempered semiring. It must stay causal/finite, and at high
+    β it must reproduce the family's proven max-plus read (it strictly
+    generalizes ``TropicalSurpriseMemoryLane``, sliding mean<->max via β)."""
+    assert "_read" in SemiringSurpriseMemoryLane.__dict__  # the novelty lives here
+    torch.manual_seed(0)
+    lane = SemiringSurpriseMemoryLane(32)
+    x = torch.randn(2, 24, 32, requires_grad=True)
+    y = lane(x)
+    assert y.shape == x.shape
+    assert torch.isfinite(y).all()
+    y.sum().backward()
+    assert x.grad is not None and torch.isfinite(x.grad).all()
+    # strict causality
+    torch.manual_seed(1)
+    lane2 = SemiringSurpriseMemoryLane(16)
+    x_a = torch.randn(1, 12, 16)
+    x_b = x_a.clone()
+    x_b[:, 6:] += torch.randn(1, 6, 16)
+    assert torch.allclose(lane2(x_a)[:, :6], lane2(x_b)[:, :6], atol=1e-5)
+    # β -> large reproduces the proven tropical max-plus read (shared write weights)
+    torch.manual_seed(3)
+    trop = TropicalSurpriseMemoryLane(24).eval()
+    semi = SemiringSurpriseMemoryLane(24).eval()
+    semi.load_state_dict({k: v for k, v in trop.state_dict().items()}, strict=False)
+    with torch.no_grad():
+        semi.semiring_temp.fill_(50.0)  # softplus -> clamp 30: very sharp ~ max
+        xx = torch.randn(2, 10, 24)
+        rel = (trop(xx) - semi(xx)).abs().max() / trop(xx).abs().max().clamp_min(1e-6)
+    assert rel < 0.2, f"semiring(β large) should track tropical read, rel={rel:.3f}"
+
+
 def test_invention_codegen_dispatches_mechanisms() -> None:
     specs = {
         s.math_axes["op_invention_mechanism"]: s for s in enumerate_invention_specs()
@@ -67,6 +100,7 @@ def test_invention_codegen_dispatches_mechanisms() -> None:
         "hierarchical_residual_compressor": HierarchicalResidualCompressorLane,
         "symplectic_residual_mixer": SymplecticResidualMixerLane,
         "tropical_surprise_memory": TropicalSurpriseMemoryLane,
+        "semiring_surprise_memory": SemiringSurpriseMemoryLane,
         "padic_surprise_memory": PadicSurpriseMemoryLane,
     }
     x = torch.randn(2, 8, 16)

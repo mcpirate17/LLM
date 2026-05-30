@@ -134,6 +134,25 @@ DEFAULT_INVENTION_BLUEPRINTS: tuple[InventionBlueprint, ...] = (
         complexity="O(L * M^2) with M<=D memory projection",
     ),
     InventionBlueprint(
+        mechanism_id="semiring_surprise_memory",
+        category=CATEGORY_LANE,
+        axes={
+            "op_invention_mechanism": "semiring_surprise_memory",
+            "op_algebraic_space": "semiring_surprise_memory",
+            "op_dynamical_has_state": 1,
+            "op_dynamical_memory_length_class": "O(L)",
+            "op_activation_sparsity_pattern": "learned_semiring",
+            "op_geometric_receptive_field": "global",
+            "op_spectral_preferred_basis": "content",
+        },
+        information_flow="each token reads memory by a LEARNABLE tempered-semiring retrieval (1/β)logsumexp_i(β(M[i,j]+addr_i)) whose inverse-temperature β slides the read from arithmetic mean (β->0) to max-plus winner-take-all (β->inf), writes the surprise (associative prediction error) outer-product as one online gradient step with momentum + data-dependent forgetting",
+        forgetting_rule="data-dependent per-key decay gate plus momentum on the surprise stream (Titans adaptive weight decay); retrieval sharpness is itself a learned parameter",
+        causality_argument="memory is a strict left-to-right scan; output at t reads only memory built from tokens <= t",
+        target_failure_mode="cross-key interference in dense associative recall: a fixed max-plus read can be too hard (drops useful soft evidence) and a fixed mean read too soft (blurs distinct bindings); learning beta lets the same op adapt retrieval sharpness per data",
+        expected_baseline="tropical_surprise_memory",
+        complexity="O(L * M^2) with M<=D memory projection",
+    ),
+    InventionBlueprint(
         mechanism_id="padic_surprise_memory",
         category=CATEGORY_LANE,
         axes={

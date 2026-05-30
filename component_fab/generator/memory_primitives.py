@@ -10,9 +10,11 @@ scan over a per-example memory:
 - ``CausalSlotRouterMemoryLane`` — routing-as-memory over a few slots.
 - ``HierarchicalResidualCompressorLane`` — multi-timescale summary stack.
 - ``_SurpriseMemoryBase`` / ``TropicalSurpriseMemoryLane`` /
-  ``PadicSurpriseMemoryLane`` — Titans/TTT-style test-time memory whose write
-  is the *surprise* (associative prediction error), generalizing the Hebbian
-  lane. See ``_SurpriseMemoryBase`` for the mechanism.
+  ``SemiringSurpriseMemoryLane`` / ``PadicSurpriseMemoryLane`` — Titans/TTT-style
+  test-time memory whose write is the *surprise* (associative prediction error),
+  generalizing the Hebbian lane. ``SemiringSurpriseMemoryLane`` makes the
+  family's max-plus retrieval a *learnable* tempered semiring (β slides
+  mean↔max). See ``_SurpriseMemoryBase`` for the mechanism.
 
 All preserve ``[B, L, D]`` shape and produce finite gradients at init.
 """
@@ -273,6 +275,53 @@ class TropicalSurpriseMemoryLane(_SurpriseMemoryBase):
     and base scan unchanged. ``PadicSurpriseMemoryLane`` is the multi-scale
     (ultrametric) generalization built on the same retrieval algebra.
     """
+
+
+class SemiringSurpriseMemoryLane(_SurpriseMemoryBase):
+    """Test-time surprise memory with a LEARNABLE tempered-semiring read.
+
+    The family's retrieval algebra is the only thing this varies, but it varies
+    it *learnably*: the read is the tempered log-sum-exp over the key axis
+
+        ``read[b, j] = (1/β)·( logsumexp_i (β·(M[b, i, j] + addr[b, i])) − log m )``
+
+    with ``β = softplus(param) > 0`` a single learned inverse-temperature. This
+    is a strict generalization of BOTH existing reads in the family and slides
+    smoothly between them:
+
+    - ``β → ∞`` recovers ``TropicalSurpriseMemoryLane``'s max-plus
+      ``max_i (M[i, j] + addr_i)`` — the winner-take-all read proven (n=6 seeds)
+      to keep O(L) compressed memory at induction 1.00 where the Euclidean read
+      collapses to 0.25;
+    - ``β → 0`` recovers the arithmetic mean ``mean_i (M[i, j] + addr_i)`` — the
+      soft, interference-prone read.
+
+    So instead of *fixing* the retrieval sharpness, the model *learns* where to
+    sit on the mean↔max axis from the data, per the SOTA-plan thesis (proven
+    Titans/TTT delta-rule write substrate carrying a novel learnable algebra).
+    ``β`` is initialised high (≈4) so the lane starts at the proven tropical
+    behavior and can only soften if that helps — a safe, capability-preserving
+    init. The ``− log m`` keeps the β→0 limit a true mean (no log-cardinality
+    blow-up), so the read is well-conditioned across the whole β range.
+
+    Neither subclass of ``_SurpriseMemoryBase`` overrides the write; the novelty
+    is entirely in this retrieval algebra.
+    """
+
+    def __init__(self, dim: int, memory_dim: int | None = None) -> None:
+        super().__init__(dim, memory_dim=memory_dim)
+        # softplus(4.0) ≈ 4.02: start sharp (near the proven tropical max read).
+        self.semiring_temp = nn.Parameter(torch.tensor(4.0))
+
+    def _read(self, memory: torch.Tensor, addr: torch.Tensor) -> torch.Tensor:
+        beta = torch.nn.functional.softplus(self.semiring_temp).clamp(1e-2, 30.0)
+        m = memory.shape[1]
+        scores = memory + addr.unsqueeze(-1)  # [B, m_keys, m_vals]
+        lse = torch.logsumexp(beta * scores, dim=1)  # [B, m_vals]
+        log_m = torch.log(
+            torch.tensor(float(m), device=memory.device, dtype=memory.dtype)
+        )
+        return (lse - log_m) / beta
 
 
 class PadicSurpriseMemoryLane(_SurpriseMemoryBase):
