@@ -1,6 +1,5 @@
 """Geometric / sequence / misc lanes (part B). See _core, _lanes_a."""
 
-from __future__ import annotations
 import math
 import torch
 from torch import nn
@@ -8,7 +7,11 @@ from torch import nn
 from ._core import (
     _cumsum_dim1_eager,
 )
-from ._lanes_a import *  # noqa: F401,F403  (backward refs)
+from ._lanes_a import (
+    FiniteDifferenceCalculusLane,
+    LowRankFactorizedLane,
+    SparseBandedMatrixLane,
+)
 
 
 class CalculusAugmentedLane(nn.Module):

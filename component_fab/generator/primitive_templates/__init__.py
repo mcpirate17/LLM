@@ -1,12 +1,8 @@
 """Novel primitive templates the fab can synthesize from ProposalSpecs.
 
-Split from a single module into a package (god-file guardrail). Public API
-is unchanged: import the same names from ``primitive_templates``.
+Package (split from a 1689-line module for the god-file guardrail). Public
+API is unchanged: import the same names from ``primitive_templates``.
 """
-
-from ._core import *  # noqa: F401,F403
-from ._lanes_a import *  # noqa: F401,F403
-from ._lanes_b import *  # noqa: F401,F403
 
 from ._core import (
     _disable_torch_compile,
@@ -17,6 +13,51 @@ from ._core import (
     _causal_sparsemax,
     _pick_n_heads,
     _heads_for_head_dim,
+)
+from ._lanes_a import (
+    TropicalAttention,
+    SparsemaxAttention,
+    ReciprocalRankAttention,
+    PhaseLockAttention,
+    ReciprocalPrimaryRefine,
+    SparseReciprocalAttention,
+    SemiringReciprocalAttention,
+    HeteroSemiringReciprocalAttention,
+    AnisotropicSemiringReciprocalAttention,
+    FixedRankReciprocalAttention,
+    TemperedTropicalAttention,
+    TropicalStateSpace,
+    TopKLinear,
+    FourierBasisLane,
+    FiniteDifferenceCalculusLane,
+    LowRankFactorizedLane,
+    SparseBandedMatrixLane,
+)
+from ._lanes_b import (
+    CalculusAugmentedLane,
+    LowRankAdapterLane,
+    SparseBandedAdapterLane,
+    RandomFeatureKernelLane,
+    MultiscaleWaveletLane,
+    GraphDiffusionLane,
+    RandomFeatureKernelAdapterLane,
+    MultiscaleWaveletAdapterLane,
+    GraphDiffusionAdapterLane,
+    CliffordAttention,
+    _SurrogateSpike,
+    SpikingActivationGate,
+    PadicProjection,
+    TropicalTopKStateSpace,
+    LinearStateSpaceLane,
+    FisherAttention,
+    ChebyshevSpectralLane,
+    TuckerDecompLane,
+    FisherAdapterLane,
+    ChebyshevAdapterLane,
+    TuckerAdapterLane,
+    QuaternionAttention,
+    PoincareAttention,
+    SymplecticResidualMixerLane,
 )
 
 __all__ = [

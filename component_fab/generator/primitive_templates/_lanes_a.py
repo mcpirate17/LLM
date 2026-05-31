@@ -1,6 +1,5 @@
 """Reciprocal / semiring / tropical attention lanes (part A). See _core."""
 
-from __future__ import annotations
 import torch
 from torch import nn
 from component_fab.harness.rope import RotaryEmbedding, apply_rope
