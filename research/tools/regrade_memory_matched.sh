@@ -14,6 +14,11 @@
 set -uo pipefail
 cd "$(dirname "$0")/../.." || exit 1
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+# Skip the final-checkpoint expensive eval suite: uninformative at small matched
+# budgets and ~2.5h/lane on the slow O(T) memory scans. Cheap evals (ppl, BLiMP,
+# gMQAR, induction_screening, nano_induction) run at every checkpoint and carry
+# the whole comparison.
+export MIXER_FINGERPRINT_SKIP_EXPENSIVE=1
 PY=/home/tim/venvs/llm/bin/python
 STEPS="${1:-6000}"
 BATCH="${2:-16}"

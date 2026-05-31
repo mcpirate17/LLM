@@ -39,6 +39,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import time
 from dataclasses import asdict, dataclass, field, is_dataclass
 from pathlib import Path
@@ -456,12 +457,20 @@ def _cheap_evals(
             }
         out["_t_nano_induction_nearest"] = round(time.monotonic() - t, 2)
 
-    # --- gMQAR (Graded Multi-Query Associative Recall) ---
-    # Scale-sensitive, in-weights-free binding probe that RANKS 100M models where
-    # indNear/AR saturate. AUDC = mean accuracy over a pairs×distractor grid;
-    # D50 = deepest KV-pair count still recalled >=50%. token_pool restricts
-    # keys/values to a well-trained low-id range so it measures the BINDING
-    # mechanism, not rare-embedding quality. softmax is the baseline to beat.
+    _eval_gmqar(out, model, device)
+
+    return out
+
+
+def _eval_gmqar(out: dict[str, Any], model: nn.Module, device: torch.device) -> None:
+    """gMQAR (Graded Multi-Query Associative Recall) into ``out``.
+
+    Scale-sensitive, in-weights-free binding probe that RANKS 100M models where
+    indNear/AR saturate. AUDC = mean accuracy over a pairs×distractor grid;
+    D50 = deepest KV-pair count still recalled >=50%. token_pool restricts
+    keys/values to a well-trained low-id range so it measures the BINDING
+    mechanism, not rare-embedding quality. softmax is the baseline to beat.
+    """
     t = time.monotonic()
     try:
         from research.eval.gmqar import score_model_gmqar
@@ -476,8 +485,6 @@ def _cheap_evals(
     except (RuntimeError, ValueError, ImportError) as exc:
         out["gmqar_error"] = str(exc)[:200]
     out["_t_gmqar"] = round(time.monotonic() - t, 2)
-
-    return out
 
 
 def _try_probe(out: dict[str, Any], key: str, fn: Callable[[], Any]) -> None:
@@ -1350,7 +1357,13 @@ def _make_checkpoint_handler(
             "cheap": cheap,
             "eval_wall_s": round(time.monotonic() - t, 1),
         }
-        if force_final or int(step) >= int(final_step):
+        # MIXER_FINGERPRINT_SKIP_EXPENSIVE: skip the final-checkpoint expensive
+        # suite (binding curricula + induction_validation champion trains a
+        # 2000-step model with the lane). At small matched budgets the base is
+        # undertrained so these probes are uninformative (see _expensive_core_evals
+        # docstring) and dominate wall time on slow O(T) memory lanes.
+        skip_expensive = bool(os.environ.get("MIXER_FINGERPRINT_SKIP_EXPENSIVE"))
+        if (force_final or int(step) >= int(final_step)) and not skip_expensive:
             t = time.monotonic()
             row["expensive"] = _expensive_evals(model=model, device=device, seed=seed)
             row["expensive_wall_s"] = round(time.monotonic() - t, 1)
