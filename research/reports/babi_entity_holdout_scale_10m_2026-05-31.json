@@ -1,0 +1,312 @@
+{
+  "config": {
+    "lanes": [
+      "softmax_attention",
+      "semiring_reciprocal_attention"
+    ],
+    "seeds": 5,
+    "n_holdout": 2,
+    "dim": 96,
+    "n_blocks": 2,
+    "passes": 3,
+    "lr": 0.0003,
+    "batch": 32,
+    "max_len": 80,
+    "out": "research/reports/babi_entity_holdout_scale_10m_2026-05-31.json"
+  },
+  "rooms": [
+    "bathroom",
+    "bedroom",
+    "garden",
+    "hallway",
+    "kitchen",
+    "office"
+  ],
+  "chance": {
+    "strict": 0.1667
+  },
+  "results": {
+    "softmax_attention": {
+      "strict_mean": 0.2273,
+      "strict_std": 0.1625,
+      "restricted_mean": 0.8105,
+      "restricted_std": 0.1406,
+      "train_mean": 0.5718,
+      "strict_chance_margin": 0.0606,
+      "restricted_chance_mean": 0.5,
+      "restricted_chance_margin": 0.3105,
+      "strict_majority_mean": 0.0,
+      "restricted_majority_mean": 0.5192,
+      "strict_margin_over_majority": 0.2273,
+      "restricted_margin_over_majority": 0.2913,
+      "per_seed": [
+        {
+          "held": [
+            {
+              "relation": "east",
+              "entity": "office"
+            },
+            {
+              "relation": "west",
+              "entity": "garden"
+            }
+          ],
+          "held_entities": [
+            "garden",
+            "office"
+          ],
+          "n_test": 89,
+          "n_train": 911,
+          "strict": 0.11235955056179775,
+          "restricted": 0.9775280898876404,
+          "strict_majority_pred": "hallway",
+          "strict_majority": 0.0,
+          "restricted_majority_pred": "garden",
+          "restricted_majority": 0.5056179775280899,
+          "train": 0.5433589462129528
+        },
+        {
+          "held": [
+            {
+              "relation": "east",
+              "entity": "garden"
+            },
+            {
+              "relation": "south",
+              "entity": "bedroom"
+            }
+          ],
+          "held_entities": [
+            "bedroom",
+            "garden"
+          ],
+          "n_test": 88,
+          "n_train": 912,
+          "strict": 0.125,
+          "restricted": 0.8863636363636364,
+          "strict_majority_pred": "hallway",
+          "strict_majority": 0.0,
+          "restricted_majority_pred": "garden",
+          "restricted_majority": 0.5113636363636364,
+          "train": 0.5855263157894737
+        },
+        {
+          "held": [
+            {
+              "relation": "east",
+              "entity": "bathroom"
+            },
+            {
+              "relation": "west",
+              "entity": "bedroom"
+            }
+          ],
+          "held_entities": [
+            "bathroom",
+            "bedroom"
+          ],
+          "n_test": 79,
+          "n_train": 921,
+          "strict": 0.2911392405063291,
+          "restricted": 0.810126582278481,
+          "strict_majority_pred": "hallway",
+          "strict_majority": 0.0,
+          "restricted_majority_pred": "bedroom",
+          "restricted_majority": 0.5569620253164557,
+          "train": 0.6308360477741585
+        },
+        {
+          "held": [
+            {
+              "relation": "east",
+              "entity": "hallway"
+            },
+            {
+              "relation": "north",
+              "entity": "kitchen"
+            }
+          ],
+          "held_entities": [
+            "hallway",
+            "kitchen"
+          ],
+          "n_test": 90,
+          "n_train": 910,
+          "strict": 0.08888888888888889,
+          "restricted": 0.5555555555555556,
+          "strict_majority_pred": "garden",
+          "strict_majority": 0.0,
+          "restricted_majority_pred": "kitchen",
+          "restricted_majority": 0.4777777777777778,
+          "train": 0.5
+        },
+        {
+          "held": [
+            {
+              "relation": "north",
+              "entity": "kitchen"
+            },
+            {
+              "relation": "south",
+              "entity": "office"
+            }
+          ],
+          "held_entities": [
+            "kitchen",
+            "office"
+          ],
+          "n_test": 79,
+          "n_train": 921,
+          "strict": 0.5189873417721519,
+          "restricted": 0.8227848101265823,
+          "strict_majority_pred": "hallway",
+          "strict_majority": 0.0,
+          "restricted_majority_pred": "kitchen",
+          "restricted_majority": 0.5443037974683544,
+          "train": 0.5993485342019544
+        }
+      ]
+    },
+    "semiring_reciprocal_attention": {
+      "strict_mean": 0.2406,
+      "strict_std": 0.1578,
+      "restricted_mean": 0.8031,
+      "restricted_std": 0.1393,
+      "train_mean": 0.5699,
+      "strict_chance_margin": 0.0739,
+      "restricted_chance_mean": 0.5,
+      "restricted_chance_margin": 0.3031,
+      "strict_majority_mean": 0.0,
+      "restricted_majority_mean": 0.5192,
+      "strict_margin_over_majority": 0.2406,
+      "restricted_margin_over_majority": 0.2839,
+      "per_seed": [
+        {
+          "held": [
+            {
+              "relation": "east",
+              "entity": "office"
+            },
+            {
+              "relation": "west",
+              "entity": "garden"
+            }
+          ],
+          "held_entities": [
+            "garden",
+            "office"
+          ],
+          "n_test": 89,
+          "n_train": 911,
+          "strict": 0.10112359550561797,
+          "restricted": 0.9775280898876404,
+          "strict_majority_pred": "hallway",
+          "strict_majority": 0.0,
+          "restricted_majority_pred": "garden",
+          "restricted_majority": 0.5056179775280899,
+          "train": 0.5422612513721186
+        },
+        {
+          "held": [
+            {
+              "relation": "east",
+              "entity": "garden"
+            },
+            {
+              "relation": "south",
+              "entity": "bedroom"
+            }
+          ],
+          "held_entities": [
+            "bedroom",
+            "garden"
+          ],
+          "n_test": 88,
+          "n_train": 912,
+          "strict": 0.125,
+          "restricted": 0.875,
+          "strict_majority_pred": "hallway",
+          "strict_majority": 0.0,
+          "restricted_majority_pred": "garden",
+          "restricted_majority": 0.5113636363636364,
+          "train": 0.5756578947368421
+        },
+        {
+          "held": [
+            {
+              "relation": "east",
+              "entity": "bathroom"
+            },
+            {
+              "relation": "west",
+              "entity": "bedroom"
+            }
+          ],
+          "held_entities": [
+            "bathroom",
+            "bedroom"
+          ],
+          "n_test": 79,
+          "n_train": 921,
+          "strict": 0.27848101265822783,
+          "restricted": 0.7974683544303798,
+          "strict_majority_pred": "hallway",
+          "strict_majority": 0.0,
+          "restricted_majority_pred": "bedroom",
+          "restricted_majority": 0.5569620253164557,
+          "train": 0.6340933767643865
+        },
+        {
+          "held": [
+            {
+              "relation": "east",
+              "entity": "hallway"
+            },
+            {
+              "relation": "north",
+              "entity": "kitchen"
+            }
+          ],
+          "held_entities": [
+            "hallway",
+            "kitchen"
+          ],
+          "n_test": 90,
+          "n_train": 910,
+          "strict": 0.16666666666666666,
+          "restricted": 0.5555555555555556,
+          "strict_majority_pred": "garden",
+          "strict_majority": 0.0,
+          "restricted_majority_pred": "kitchen",
+          "restricted_majority": 0.4777777777777778,
+          "train": 0.5054945054945055
+        },
+        {
+          "held": [
+            {
+              "relation": "north",
+              "entity": "kitchen"
+            },
+            {
+              "relation": "south",
+              "entity": "office"
+            }
+          ],
+          "held_entities": [
+            "kitchen",
+            "office"
+          ],
+          "n_test": 79,
+          "n_train": 921,
+          "strict": 0.5316455696202531,
+          "restricted": 0.810126582278481,
+          "strict_majority_pred": "hallway",
+          "strict_majority": 0.0,
+          "restricted_majority_pred": "kitchen",
+          "restricted_majority": 0.5443037974683544,
+          "train": 0.5917480998914224
+        }
+      ]
+    }
+  }
+}

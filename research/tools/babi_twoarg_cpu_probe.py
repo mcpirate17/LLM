@@ -133,7 +133,7 @@ def _train(model, ids, ans_pos, ans_tok, passes, lr, batch, seed):
             opt.zero_grad()
             loss.backward()
             opt.step()
-            losses.append(float(loss))
+            losses.append(float(loss.detach()))
     return losses
 
 
