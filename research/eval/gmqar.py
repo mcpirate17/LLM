@@ -6,12 +6,15 @@ single operating points — pass/fail "can this model bind", saturating at ceili
 on any capable nano model. They triage architectures but cannot *rank* a 100M vs
 a 1.6B model. The real induction/binding/AR evals don't resolve at nano scale.
 
-gMQAR closes that gap. It is a synthetic in-context key->value recall task with
-*crankable difficulty* (number of KV pairs, distance, distractor density), so it
-NEITHER floors at nano NOR saturates at large. indNear is the degenerate 1-pair
-case of this surface. Attention solves gMQAR; many efficient mixers (linear attn,
-some SSMs) break as the pair count / distance grows — which is exactly the
-discrimination "how well does this mixer bind" that we want.
+gMQAR is a synthetic in-context key->value recall task with *crankable
+difficulty* (number of KV pairs, distance, distractor density). The current
+zero-shot ladder resolves 30M+ checkpoints but floors on nano checkpoints, so use
+it as a scaling/emergence probe rather than a nano lane-ranker. For nano models,
+use the train-then-test bAbI probes that measure learnability after gradient
+updates. indNear is the degenerate 1-pair case of this surface. Attention solves
+gMQAR; many efficient mixers (linear attn, some SSMs) break as the pair count /
+distance grows — which is exactly the discrimination "how well does this mixer
+bind" that we want at scales where the task clears floor.
 
 This is a MEASUREMENT TOOL, not an architecture — using it does not touch the
 novel-architecture mandate. softmax_attention is the baseline to beat.
