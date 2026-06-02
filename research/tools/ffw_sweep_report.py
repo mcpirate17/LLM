@@ -19,11 +19,16 @@ _DIR = Path("research/reports/mixer_fingerprint")
 
 
 def _final_checkpoint(path: Path) -> dict | None:
-    ck = [
-        json.loads(line)
-        for line in path.read_text().splitlines()
-        if line.strip() and '"event": "checkpoint"' in line
-    ]
+    ck = []
+    for line in path.read_text().splitlines():
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if row.get("event") == "checkpoint" and row.get("cheap"):
+            ck.append(row)
     return ck[-1] if ck else None
 
 

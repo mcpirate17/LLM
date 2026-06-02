@@ -34,7 +34,7 @@ Summary statistics over the difficulty grid:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Literal, Optional
 
 import torch
 import torch.nn as nn
@@ -171,11 +171,20 @@ def _logits_from_model(model: nn.Module, input_ids: torch.Tensor) -> torch.Tenso
     return out
 
 
+GMQARScoring = Literal["candidate", "full_vocab"]
+
+
+def _candidate_values(input_ids: torch.Tensor, cfg: GMQARConfig) -> torch.Tensor:
+    """Return the per-row in-context value candidates from the KV block."""
+    return input_ids[:, 1 : 2 * cfg.n_pairs : 2]
+
+
 @torch.no_grad()
 def score_cell(
     model: nn.Module,
     cfg: GMQARConfig,
     device: str = "cpu",
+    scoring: GMQARScoring = "candidate",
 ) -> float:
     """Zero-shot recall accuracy at the answer positions for one difficulty cell."""
     was_training = model.training
@@ -184,9 +193,30 @@ def score_cell(
     input_ids, target_ids, answer_mask = make_gmqar_batch(cfg, g, device)
     logits = _logits_from_model(model, input_ids)
     # logits[:, t] predict token t+1; answer_mask marks position t whose NEXT
-    # token is the value. Compare argmax(logits at mask) to target at mask.
-    preds = logits.argmax(dim=-1)
-    correct = (preds[answer_mask] == target_ids[answer_mask]).sum().item()
+    # token is the value. By default, score associative recall over the row's
+    # in-context values, not over the full LM vocabulary; otherwise frequent
+    # non-value tokens can dominate the raw argmax and floor a model that ranks
+    # the correct bound value highest among viable answers.
+    if scoring == "candidate":
+        answer_coords = answer_mask.nonzero(as_tuple=False)
+        if answer_coords.numel() == 0:
+            correct = 0
+        else:
+            row_idx = answer_coords[:, 0]
+            row_candidates = _candidate_values(input_ids, cfg)[row_idx]
+            answer_logits = logits[answer_mask]
+            candidate_logits = answer_logits.gather(1, row_candidates)
+            pred_idx = candidate_logits.argmax(dim=-1)
+            preds = row_candidates[
+                torch.arange(row_candidates.shape[0], device=row_candidates.device),
+                pred_idx,
+            ]
+            correct = (preds == target_ids[answer_mask]).sum().item()
+    elif scoring == "full_vocab":
+        preds = logits.argmax(dim=-1)
+        correct = (preds[answer_mask] == target_ids[answer_mask]).sum().item()
+    else:
+        raise ValueError(f"unknown gMQAR scoring mode: {scoring!r}")
     total = int(answer_mask.sum().item())
     if was_training:
         model.train()
@@ -230,6 +260,7 @@ def score_model_gmqar(
     vocab_size: int = 8192,
     device: str = "cpu",
     token_pool: int = 0,
+    scoring: GMQARScoring = "candidate",
 ) -> GMQARResult:
     """Run the full difficulty grid and summarise as AUDC + D50.
 
@@ -241,13 +272,16 @@ def score_model_gmqar(
         grid = default_grid(vocab_size, token_pool=token_pool)
     cells: list[dict] = []
     for cfg in grid:
-        acc = score_cell(model, cfg, device)
+        acc = score_cell(model, cfg, device, scoring=scoring)
         cells.append(
             {
                 "n_pairs": cfg.n_pairs,
                 "distractor_tokens": cfg.distractor_tokens,
                 "n_queries": cfg.n_queries,
                 "acc": round(acc, 4),
+                "chance": round(1.0 / cfg.n_pairs, 6)
+                if scoring == "candidate"
+                else round(1.0 / max(1, cfg.effective_span // 2), 6),
             }
         )
     audc = sum(c["acc"] for c in cells) / len(cells) if cells else 0.0
@@ -261,9 +295,13 @@ def score_model_gmqar(
         if sum(accs) / len(accs) >= 0.5:
             d50 = max(d50, n_pairs)
 
-    # chance reference: uniform over the value pool size actually used
-    span = grid[0].effective_span if grid else (vocab_size - N_SPECIAL)
-    chance = 1.0 / max(1, span // 2)
+    # chance reference for the active scoring mode. Candidate-restricted scoring
+    # has a per-cell chance of roughly 1/n_pairs; report the grid mean.
+    if scoring == "candidate":
+        chance = sum(c["chance"] for c in cells) / len(cells) if cells else 0.0
+    else:
+        span = grid[0].effective_span if grid else (vocab_size - N_SPECIAL)
+        chance = 1.0 / max(1, span // 2)
     return GMQARResult(
         cells=cells, audc=round(audc, 4), d50=d50, chance=round(chance, 6)
     )

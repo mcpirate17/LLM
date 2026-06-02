@@ -52,6 +52,10 @@ DEFAULT_THRESHOLDS: dict[str, float] = {
 # failure_risk sub-keys that are genuine execution no-gos (vs. soft advisories).
 HARD_RISK_KEYS: tuple[str, ...] = ("compile", "resource")
 
+# Calibrated P(nb1.0 binding pass) from the stacked head; gate passes when the
+# prediction is >= the trained reject threshold.
+NB10_STACKED_AXIS = "nb10_pass_stacked"
+
 
 class RejectionKind(str, Enum):
     PREDICTOR = "predictor"  # static model said no — rescue may override
@@ -95,6 +99,12 @@ class GatePolicyConfig(BaseModel):
     )
     rescue_quota: int = 8  # max known-good rescues per batch; <0 = unlimited
     head_version: str = "pls_partition_oracle"
+    # Stacked+calibrated nb1.0 reject head (OOD-confirmed NPV ~0.90). Fires only
+    # when its cheaper inputs (ar_gate + nb0.5) are measured, so it never gates a
+    # fresh pre-probe graph and never skips a probe. PREDICTOR kind → rescuable.
+    nb10_stacked_enabled: bool = True
+    # None → use the trained reject threshold from the persisted artifact meta.
+    nb10_stacked_reject_threshold: float | None = None
 
 
 @dataclass(frozen=True)
@@ -355,6 +365,43 @@ def _gate_ar_curriculum(
     ]
 
 
+def _gate_nb10_stacked(
+    cand: Candidate,
+    thr: Mapping[str, float],
+    config: GatePolicyConfig,
+    hv: str,
+    signals: dict[str, Any],
+) -> list[GateRejection]:
+    """Gate 4b: stacked+calibrated nb1.0 reject head — high-NPV, rescuable.
+
+    No-ops when the prediction is absent (cheap probes ar_gate/nb0.5 not yet
+    measured, so the scorer never populated it) or when disabled. Reject-only:
+    it never accepts, because temporal PPV (0.94) does not survive OOD (0.59).
+    """
+    pred = _finite_float(cand.predicted.get(NB10_STACKED_AXIS))
+    if pred is None:
+        return []  # cheap evidence absent → cannot/should not gate
+    signals[NB10_STACKED_AXIS] = pred
+    reject_thr = config.nb10_stacked_reject_threshold
+    if reject_thr is None:
+        reject_thr = _finite_float(thr.get(NB10_STACKED_AXIS))
+    signals["nb10_stacked_reject_threshold"] = reject_thr
+    if not config.nb10_stacked_enabled or reject_thr is None or reject_thr <= 0.0:
+        return []  # shadow mode: recorded in signals, not enforced
+    if pred < reject_thr:
+        return [
+            GateRejection(
+                NB10_STACKED_AXIS,
+                pred,
+                reject_thr,
+                RejectionKind.PREDICTOR,
+                hv,
+                "stacked nb1.0 head predicts fail (high-NPV reject; rescuable)",
+            )
+        ]
+    return []
+
+
 def _decide(
     cand: Candidate, rejections: list[GateRejection], signals: dict[str, Any]
 ) -> GateDecision:
@@ -398,6 +445,7 @@ def evaluate_candidate(
         signals["nb05"] = cand.nb05
     if cand.nb10 is not None:
         signals["nb10"] = cand.nb10
+    rejections += _gate_nb10_stacked(cand, thr, config, hv, signals)
     rejections += _gate_ar_curriculum(cand, thr, config, hv, signals)
     signals["cheap_evidence_rank_up"] = bool(
         signals.pop("_ar_passed", False) and cand.nb10 is not None and cand.nb10 >= 0.9
@@ -416,14 +464,46 @@ def _rescue_rank_key(decision: GateDecision) -> tuple[float, float, float]:
     )
 
 
+def _inject_nb10_stacked(row: Mapping[str, Any], scorer: Any) -> Mapping[str, Any]:
+    """Best-effort: populate predicted[nb10_pass_stacked] when the row carries a
+    graph and its cheaper actuals (ar_gate + nb0.5). Absent → row left untouched
+    and the gate no-ops. Never raises into the gating loop."""
+    graph = row.get("graph_dict") or row.get("graph_json")
+    cheap = (
+        row.get("cheap_actual") if isinstance(row.get("cheap_actual"), Mapping) else row
+    )
+    if graph is None:
+        return row
+    try:
+        res = scorer.score(graph, cheap)
+    except Exception:  # noqa: BLE001 - scoring must never break the batch
+        return row
+    if not res.get("available"):
+        return row
+    out = dict(row)
+    predicted = dict(
+        out.get("predicted") or out.get("label_free_probe_predictions") or {}
+    )
+    predicted[NB10_STACKED_AXIS] = res["nb10_pass_stacked"]
+    out["predicted"] = predicted
+    return out
+
+
 def evaluate_candidates(
     rows: Iterable[Mapping[str, Any]],
     thresholds: Mapping[str, float] | None = None,
     config: GatePolicyConfig | None = None,
+    nb10_scorer: Any = None,
 ) -> list[GateDecision]:
-    """Run the policy over a batch and enforce the explore-rescue quota."""
+    """Run the policy over a batch and enforce the explore-rescue quota.
+
+    Pass ``nb10_scorer`` (a ``StackedNb10Scorer``) to auto-populate the stacked
+    nb1.0 prediction for rows that carry a graph + cheap actuals; rows without
+    them are scored exactly as before (the stacked gate no-ops)."""
     config = config or GatePolicyConfig()
     thresholds = thresholds or {}
+    if nb10_scorer is not None:
+        rows = [_inject_nb10_stacked(r, nb10_scorer) for r in rows]
     decisions = [
         evaluate_candidate(candidate_from_row(r), thresholds, config) for r in rows
     ]
@@ -449,9 +529,24 @@ def load_thresholds() -> dict[str, float]:
     from research.tools.label_free_probe_oracle import LabelFreeProbeOracleScorer
 
     scorer = LabelFreeProbeOracleScorer.try_load()
-    if scorer is None:
-        return dict(DEFAULT_THRESHOLDS)
-    return _resolve_thresholds(scorer.thresholds)
+    resolved = (
+        dict(DEFAULT_THRESHOLDS)
+        if scorer is None
+        else _resolve_thresholds(scorer.thresholds)
+    )
+    # Merge the trained stacked-nb10 reject threshold from its artifact meta.
+    try:
+        from research.tools.stacked_nb10_gate import _META_PATH
+
+        if _META_PATH.exists():
+            rt = _finite_float(
+                json.loads(_META_PATH.read_text()).get("reject_threshold")
+            )
+            if rt is not None and rt > 0.0:
+                resolved[NB10_STACKED_AXIS] = rt
+    except Exception:  # noqa: BLE001 - missing/corrupt artifact must not break gating
+        pass
+    return resolved
 
 
 def summarize(decisions: list[GateDecision]) -> dict[str, Any]:

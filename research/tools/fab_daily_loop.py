@@ -11,7 +11,7 @@ Each invocation runs one full day-cycle:
      BLiMP. Compute delta vs softmax_attention baseline at same budget.
   E. Daily report — write a markdown handoff to
      ``research/reports/fab_daily_<YYYY-MM-DD>.md`` and append the
-     summary line to ``research/notes/fab_daily_log.md``.
+     summary line to the Obsidian `fab_daily_log` note.
 
 The orchestrator is **resumable**: ledger.jsonl is durable. If Phase B
 is killed mid-run (SIGINT, OOM), Phases C-E pick up from whatever
@@ -43,7 +43,7 @@ _REPO = Path(__file__).resolve().parents[2]
 _CATALOG = _REPO / "component_fab" / "catalog"
 _REPORTS = _REPO / "research" / "reports"
 _LEDGER_PATH = _CATALOG / "ledger.jsonl"
-_DAILY_LOG = _REPO / "research" / "notes" / "fab_daily_log.md"
+_DAILY_LOG = Path("/home/tim/Documents/CodexVault/research/fab_daily_log.md")
 
 
 def _now_iso() -> str:

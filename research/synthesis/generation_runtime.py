@@ -21,7 +21,7 @@ from .dynamic_template_registry import load_dynamic_template_candidates
 from .routing_decision_priors import load_routing_decision_priors
 
 _DEFAULT_DYNAMIC_TEMPLATE_CANDIDATE_PATH = (
-    "research/notes/dynamic_component_candidates.json"
+    "research/data/synthesis_candidates/dynamic_component_candidates.json"
 )
 
 

@@ -1,5 +1,5 @@
 {
-  "excludes": ["*/rust/*", "*/tests/*", "research/notes/*"],
+  "excludes": ["*/rust/*", "*/tests/*"],
   "findings": [
     {
       "complexity": 163,

@@ -21,7 +21,9 @@ from research.tools.backfill_templates import _start_backfill_experiment_with_re
 
 
 DEFAULT_DB = Path("research/runs.db")
-DEFAULT_CANDIDATES = Path("research/notes/dynamic_component_candidates.json")
+DEFAULT_CANDIDATES = Path(
+    "research/data/synthesis_candidates/dynamic_component_candidates.json"
+)
 DEFAULT_ARTIFACT_DIR = Path(tempfile.gettempdir()) / "dynamic_component_controlled"
 KNOWN_LOWERINGS = (
     "rmsnorm_chain_with_binary_skip",

@@ -63,6 +63,19 @@ HEAD_SPECS: tuple[HeadSpec, ...] = (
         target_definition="static graph -> real ar_gate_score; >=0.95 is a strong pass axis",
     ),
     HeadSpec(
+        name="predict_ar_gate_pass_from_graph",
+        feature_mode="graph",
+        target_columns=("ar_gate_score",),
+        threshold=0.95,
+        target_definition=(
+            "static graph -> ar_gate pass/fail at 0.95, as a CLASSIFIER. The "
+            "regressor head above is scored at its target threshold (0.95) which "
+            "cripples recall (~0.05); a classifier @0.50 recovers TPR (~0.77) on "
+            "the same target. Use this head for the AR no-go gate decision."
+        ),
+        model_kind="classifier",
+    ),
+    HeadSpec(
         name="predict_nano_induction_nearest_from_graph",
         feature_mode="graph",
         target_columns=("nano_induction_nearest_max_accuracy",),

@@ -44,7 +44,9 @@ from research.synthesis.validator import validate_graph
 
 
 DEFAULT_INPUT = Path("research/reports/component_rule_mining_20260511_222730.json")
-DEFAULT_OUTPUT = Path("research/notes/dynamic_component_candidates.json")
+DEFAULT_OUTPUT = Path(
+    "research/data/synthesis_candidates/dynamic_component_candidates.json"
+)
 PREFERRED_PAIR_MIN_PASS_RATE = 0.60
 PREFERRED_PAIR_MIN_PASS_RATE_LIFT = -0.25
 _BRANCH_LOWERINGS = frozenset(

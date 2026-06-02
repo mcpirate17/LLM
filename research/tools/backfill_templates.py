@@ -40,6 +40,15 @@ _VALID_PHASES = ("isolation", "stack")
 _VALID_POLICY_MODES = ("off", "auto")
 _VALID_TEMPLATE_MODES = ("rehab", "coverage", "harvest", "frozen")
 
+NOVEL_MIXER_BACKFILL_TEMPLATES = (
+    "clifford_geometric_mixer_block",
+    "tropical_maxplus_mixer_block",
+    "ultrametric_hierarchical_ensemble_block",
+    "reciprocal_rank_attention_block",
+    "phase_lock_attention_block",
+    "stdp_reciprocal_memory_block",
+)
+
 _NON_ROUTING_TEMPLATES = {
     "gpt2_reference",
     "mamba_reference",
@@ -126,6 +135,9 @@ _NON_ROUTING_TEMPLATES = {
     "codex_ssm_delta_memory_block",
     "codex_ssm_mla_gated_block",
     "codex_ssm_local_recall_block",
+    # Novel global/content-addressed mixer templates. These force their own
+    # full-range mixing path and should not require separate routing ops.
+    *NOVEL_MIXER_BACKFILL_TEMPLATES,
 }
 
 _STACK_PHASE_OVERRIDES: dict[str, dict[str, Any]] = {

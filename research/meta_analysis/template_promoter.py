@@ -8,8 +8,9 @@ consumer.
 
 This promoter applies hard thresholds (support, lift, pass-rate), dedupes
 against the existing ``TEMPLATES`` registry, and writes a stable registry
-file under ``research/notes/`` that the grammar (or a human reviewer) can
-load. Promotion is advisory — it does NOT auto-register with TEMPLATES.
+file under ``research/data/synthesis_candidates/`` that the grammar (or a
+human reviewer) can load. Promotion is advisory — it does NOT auto-register
+with TEMPLATES.
 The next phase wires the registry into grammar weights or compiles the
 ``code_skeleton`` into actual template callables behind a feature flag.
 """

@@ -24,7 +24,7 @@ from research.meta_analysis.pair_proposer import propose_untapped_pairs
 
 
 _DEFAULT_META_DB = "research/meta_analysis.db"
-_DEFAULT_OUTPUT = "research/notes/untapped_pair_proposals.json"
+_DEFAULT_OUTPUT = "research/data/synthesis_candidates/untapped_pair_proposals.json"
 
 
 def main() -> None:

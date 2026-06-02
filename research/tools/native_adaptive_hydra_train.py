@@ -155,6 +155,30 @@ def _adaptive_depth_stats(model: nn.Module) -> dict[str, float] | None:
         if depth is not None:
             depths.append(depth.detach().cpu().reshape(-1))
     if not depths:
+        mor = [
+            float(m.last_mean_depth)
+            for m in model.modules()
+            if getattr(m, "last_mean_depth", None) is not None
+        ]
+        if mor:
+            hists = [
+                m.last_depth_hist
+                for m in model.modules()
+                if getattr(m, "last_depth_hist", None) is not None
+            ]
+            stats: dict[str, Any] = {
+                "mean_depth": round(sum(mor) / len(mor), 4),
+                "skip_fraction": 0.0,
+                "max_depth": 0,
+                "router": "mor_soft",
+            }
+            if hists:
+                n_d = len(hists[0])
+                avg = [sum(h[i] for h in hists) / len(hists) for i in range(n_d)]
+                stats["histogram_fraction"] = {
+                    str(i + 1): round(avg[i], 4) for i in range(n_d)
+                }
+            return stats
         return None
     d = torch.cat(depths).float()
     if d.numel() == 0:
@@ -298,19 +322,55 @@ def _save_checkpoint(
     return path
 
 
+def _track_nonfinite(loss: float, run_count: int, limit: int, step: int) -> int:
+    """Update the consecutive non-finite counter; raise on true divergence.
+
+    Returns the new consecutive-count (0 when ``loss`` is finite). A NaN loss
+    means ``_train_step`` skipped the update; tolerate transient skips but abort
+    loudly once more than ``limit`` occur back-to-back.
+    """
+    if loss == loss:  # finite
+        return 0
+    run_count += 1
+    if run_count > limit:
+        raise RuntimeError(
+            f"{run_count} consecutive non-finite losses ending at step {step} — "
+            "true divergence, not a transient; aborting."
+        )
+    return run_count
+
+
 def _train_step(model, optimizers, base_lrs, ids, labels, args, step):
-    """One forward/backward/opt step with warmup-cosine LR. Returns (loss, grad, lr)."""
+    """One forward/backward/opt step with warmup-cosine LR. Returns (loss, grad, lr).
+
+    On a non-finite loss the optimizer step is SKIPPED (grads zeroed, no update)
+    and a NaN loss is returned so the caller can count it. A single transient
+    bad microbatch / Muon hiccup must not kill a multi-hour run; the run loop
+    fails loud only if too many *consecutive* non-finite steps occur (true
+    divergence), per ``--max-consecutive-nonfinite``.
+    """
     model.train()
+    mult = _lr_multiplier(
+        step, warmup=args.warmup_steps, total=args.steps, min_frac=args.min_lr_frac
+    )
     loss = _lm_loss(model(ids), labels)
     if not torch.isfinite(loss):
-        raise RuntimeError(f"non-finite loss at step {step}: {loss}")
+        for opt in optimizers:
+            opt.zero_grad(set_to_none=True)
+        print(
+            f"[WARN] non-finite loss at step {step}: {loss} — skipping optimizer step",
+            flush=True,
+        )
+        return float("nan"), float("nan"), base_lrs[0][0] * mult
+    from component_fab.generator.mor_bilane import collect_ponder_cost
+
+    ponder = collect_ponder_cost(model)
+    if ponder is not None:
+        loss = loss + ponder
     for opt in optimizers:
         opt.zero_grad(set_to_none=True)
     loss.backward()
     grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
-    mult = _lr_multiplier(
-        step, warmup=args.warmup_steps, total=args.steps, min_frac=args.min_lr_frac
-    )
     for opt, bases in zip(optimizers, base_lrs):
         for group, base in zip(opt.param_groups, bases):
             group["lr"] = base * mult
@@ -412,6 +472,37 @@ def _start_row(args, n_params, loaded_step, first_step, train_loader) -> dict[st
     }
 
 
+def _load_checkpoint(
+    model: nn.Module, args: argparse.Namespace
+) -> tuple[dict[str, Any] | None, int | None]:
+    """Load --load-checkpoint into model. Under --load-nonstrict, tolerate the
+    new MoR ``halt_head`` (fail loud on any other mismatch), deep-start re-init
+    the router, and reset the optimizer (handled by the caller skipping its load)."""
+    if args.load_checkpoint is None:
+        return None, None
+    payload = torch.load(args.load_checkpoint, map_location="cpu")  # nosec B614 - local experiment checkpoint
+    res = model.load_state_dict(
+        payload["model_state_dict"], strict=not args.load_nonstrict
+    )
+    if args.load_nonstrict:
+        missing = list(getattr(res, "missing_keys", []))
+        unexpected = list(getattr(res, "unexpected_keys", []))
+        if unexpected or any("halt_head" not in key for key in missing):
+            raise RuntimeError(
+                "--load-nonstrict resume mismatch beyond halt_head: "
+                f"missing={missing[:5]} unexpected={unexpected[:5]}"
+            )
+        from component_fab.generator.mor_bilane import apply_resume_init
+
+        n_lanes = apply_resume_init(model)
+        print(
+            f"[resume] non-strict: {len(missing)} fresh halt params; deep-start "
+            f"re-init on {n_lanes} MoR lanes; optimizer state reset",
+            flush=True,
+        )
+    return payload, int(payload.get("step", 0))
+
+
 def run(args: argparse.Namespace) -> dict[str, Any]:
     if args.torch_threads > 0:
         torch.set_num_threads(args.torch_threads)
@@ -426,12 +517,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         use_ffn=True,
     ).to(args.device)
     n_params = sum(p.numel() for p in model.parameters())
-    payload: dict[str, Any] | None = None
-    loaded_step: int | None = None
-    if args.load_checkpoint is not None:
-        payload = torch.load(args.load_checkpoint, map_location="cpu")  # nosec B614 - local experiment checkpoint
-        model.load_state_dict(payload["model_state_dict"], strict=True)
-        loaded_step = int(payload.get("step", 0))
+    payload, loaded_step = _load_checkpoint(model, args)
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     if args.out.exists() and not args.append:
@@ -448,7 +534,11 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     val_loader = _make_loader(args, dataset=args.val_dataset, seed=args.seed + 1009)
     optimizers = _build_optimizers(model, args)
     base_lrs = [[g["lr"] for g in opt.param_groups] for opt in optimizers]
-    if payload is not None and payload.get("optimizer_state_dicts") is not None:
+    if (
+        payload is not None
+        and payload.get("optimizer_state_dicts") is not None
+        and not args.load_nonstrict
+    ):
         for opt, sd in zip(optimizers, payload["optimizer_state_dicts"]):
             if sd is not None:
                 opt.load_state_dict(sd)
@@ -466,6 +556,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
 
     last_loss = float("nan")
     last_grad = float("nan")
+    nonfinite_run = 0
     checkpoints: list[str] = []
     for step in range(first_step, args.steps + 1):
         if hasattr(train_loader, "set_step"):
@@ -476,6 +567,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         )
         metrics = _train_step(model, optimizers, base_lrs, ids, labels, args, step)
         last_loss, last_grad, _ = metrics
+        nonfinite_run = _track_nonfinite(
+            last_loss, nonfinite_run, args.max_consecutive_nonfinite, step
+        )
         _record_step(args, model, train_loader, val_loader, started, step, metrics)
 
         if args.save_every and (step % args.save_every == 0 or step == args.steps):
@@ -527,6 +621,12 @@ def main() -> None:
     )
     ap.add_argument("--weight-decay", type=float, default=0.01)
     ap.add_argument("--grad-clip", type=float, default=1.0)
+    ap.add_argument(
+        "--max-consecutive-nonfinite",
+        type=int,
+        default=8,
+        help="Abort only after this many consecutive non-finite (skipped) steps.",
+    )
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--vocab-size", type=int, default=VOCAB_SIZE)
     ap.add_argument("--tokenizer", default="gpt2")
@@ -544,6 +644,12 @@ def main() -> None:
         default=Path("research/reports/native_adaptive_hydra_ckpts"),
     )
     ap.add_argument("--load-checkpoint", type=Path, default=None)
+    ap.add_argument(
+        "--load-nonstrict",
+        action="store_true",
+        help="Resume a checkpoint into a MoR-router model: tolerate the fresh "
+        "halt_head, deep-start re-init it, reset the optimizer.",
+    )
     ap.add_argument("--eval-only", action="store_true")
     ap.add_argument("--restart-step", action="store_true")
     ap.add_argument(

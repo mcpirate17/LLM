@@ -75,7 +75,7 @@ def load() -> dict:
     )
     # program_results_compat (= graph_runs LEFT JOIN graphs) is canonical post-Phase-5b;
     # the legacy program_results table is not updated by probe backfills and returns
-    # stale pre-leak-fix binding. See research/notes/adjacent_token_merge_leak_2026-05-23.md.
+    # stale pre-leak-fix binding. See Obsidian note `adjacent_token_merge_leak_2026-05-23`.
     rows = con.execute(
         f"SELECT {','.join(cols)} FROM program_results_compat"
     ).fetchall()

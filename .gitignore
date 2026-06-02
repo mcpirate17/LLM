@@ -190,6 +190,5 @@ component_fab/catalog/*
 # Added by code-review-graph
 .code-review-graph/
 
-# Persistent eval inputs and knowledge artifacts (relocated 2026-05-09 from research/reports/)
+# Persistent eval inputs and generated data (durable notes live in Obsidian)
 research/data/
-research/notes/

@@ -37,7 +37,7 @@ from .primitives import PRIMITIVE_REGISTRY
 
 
 DEFAULT_DYNAMIC_TEMPLATE_CANDIDATE_PATH = Path(
-    "research/notes/dynamic_component_candidates.json"
+    "research/data/synthesis_candidates/dynamic_component_candidates.json"
 )
 DEFAULT_DYNAMIC_TEMPLATE_MIN_LOWERED_OPS = DEFAULT_MIN_LOWERED_OPS
 _MAX_SCORE_WEIGHT = 100.0

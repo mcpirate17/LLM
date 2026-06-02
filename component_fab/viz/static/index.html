@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>component_fab · visual explainer</title>
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js" charset="utf-8"></script>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header>
+    <div class="head-text">
+      <h1>component_fab <span class="dim">· visual explainer</span></h1>
+      <p class="sub">This site is a visual laboratory designed to demystify the "black box" of AI architectures. Through interactive animations and plain-language analogies, we trace the journey of tokens as they transform into memory, watch in real-time as models learn to prioritize "surprising" information, and explore the evolutionary "Hall of Fame" where only the most effective designs survive. It aspires to be a living textbook for the next generation of neural design, turning complex retrieval algebra into an intuitive, animated story of how machines remember.</p>
+    </div>
+    <button id="plain-toggle" class="toggle" title="Show a plain-English explanation in every panel">🔰 Plain English: ON</button>
+  </header>
+  <div id="layout">
+    <nav id="sidebar">
+      <div class="nav-section">
+        <div class="nav-head">Activity</div>
+        <a class="nav-item special" data-view="live">▶ Live testing</a>
+        <a class="nav-item special" data-view="ledger">🏆 Hall of Fame</a>
+      </div>
+      <div id="lane-nav"></div>
+    </nav>
+    <main id="content">
+      <div class="empty">Select a lane on the left.</div>
+    </main>
+  </div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

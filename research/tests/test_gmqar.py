@@ -96,11 +96,45 @@ class _OracleModel(nn.Module):
         return logits
 
 
+class _CandidateOnlyOracle(nn.Module):
+    """Ranks the target highest among candidates but below a common vocab token."""
+
+    def __init__(self, vocab_size: int):
+        super().__init__()
+        self.vocab_size = vocab_size
+
+    def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
+        B, S = input_ids.shape
+        logits = torch.full((B, S, self.vocab_size), -10.0)
+        logits[:, :, 50] = 5.0
+        for b in range(B):
+            kv: dict[int, int] = {}
+            row = input_ids[b].tolist()
+            sep = row.index(SEP_ID) if SEP_ID in row else S
+            i = 0
+            while i + 1 < sep:
+                kv[row[i]] = row[i + 1]
+                i += 2
+            for t in range(S):
+                if t >= 1 and row[t - 1] == QRY_ID and row[t] in kv:
+                    logits[b, t, kv[row[t]]] = 4.0
+        return logits
+
+
 def test_oracle_scores_near_one():
     cfg = GMQARConfig(vocab_size=256, n_pairs=8, n_queries=4, batch_size=16)
     model = _OracleModel(cfg.vocab_size)
     acc = score_cell(model, cfg, "cpu")
     assert acc > 0.99, f"oracle should solve gMQAR, got {acc}"
+
+
+def test_candidate_scoring_ignores_non_value_vocab_argmax():
+    cfg = GMQARConfig(
+        vocab_size=256, n_pairs=8, n_queries=4, batch_size=16, token_pool=128
+    )
+    model = _CandidateOnlyOracle(cfg.vocab_size)
+    assert score_cell(model, cfg, "cpu") > 0.99
+    assert score_cell(model, cfg, "cpu", scoring="full_vocab") == 0.0
 
 
 def test_random_model_at_chance():
@@ -116,8 +150,9 @@ def test_random_model_at_chance():
 
     torch.manual_seed(0)
     acc = score_cell(_Rand(cfg.vocab_size), cfg, "cpu")
-    # chance ~ 1/(value-pool) ; allow generous slack but must be far below 0.5
-    assert acc < 0.1, f"random model should be near chance, got {acc}"
+    # Candidate-restricted chance is ~1/n_pairs; allow sampling noise but it must
+    # remain far below success.
+    assert acc < 0.3, f"random model should be near candidate chance, got {acc}"
 
 
 def test_audc_and_d50_summary():

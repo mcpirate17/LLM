@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import re
 import sys
 import time
 from pathlib import Path
@@ -229,11 +230,225 @@ def _build_lane_factory(
     # the _read algebra is what varies). Bare lanes → default block FFN (now
     # SwiGLU) supplies norm/residual. semiring = learnable tempered read; _rope
     # adds rotary on the addressing q/k (relative-distance retrieval).
+    mor_adaptive_composite = re.fullmatch(
+        r"mor_native_semiring_adapt_bilane_m(\d+)_g(-?\d+)_t(\d+)_b(\d+)_(?:l(\d+)_h(\d+)|l(\d+)bp_h(\d+)bp)_r(\d+)_surprise_memory",
+        name,
+    )
+    if mor_adaptive_composite is not None:
+        from component_fab.generator.mor_bilane import (
+            MoRAdaptiveSemiringBiLaneSurpriseMemoryLane,
+        )
+
+        g = mor_adaptive_composite
+        if g.group(7) is None:
+            low_t, high_t = float(g.group(5)) / 100.0, float(g.group(6)) / 100.0
+        else:
+            low_t, high_t = float(g.group(7)) / 10000.0, float(g.group(8)) / 10000.0
+        return lambda d: MoRAdaptiveSemiringBiLaneSurpriseMemoryLane(
+            d,
+            memory_dim=int(g.group(1)),
+            gate_bias=float(g.group(2)),
+            semiring_temp_init=float(g.group(3)),
+            recursive_balance_init=float(g.group(4)),
+            low_threshold=low_t,
+            high_threshold=high_t,
+            max_recursive_steps=int(g.group(9)),
+        )
+
+    tuned_adaptive_composite = re.fullmatch(
+        r"native_semiring_adapt_bilane_m(\d+)_g(-?\d+)_t(\d+)_b(\d+)_(?:l(\d+)_h(\d+)|l(\d+)bp_h(\d+)bp)_r(\d+)_surprise_memory",
+        name,
+    )
+    if tuned_adaptive_composite is not None:
+        from component_fab.generator.native_surprise_memory import (
+            NativeAdaptiveSemiringBiLaneSurpriseMemoryLane,
+        )
+
+        memory_dim = int(tuned_adaptive_composite.group(1))
+        gate_bias = float(tuned_adaptive_composite.group(2))
+        semiring_temp_init = float(tuned_adaptive_composite.group(3))
+        recursive_balance_init = float(tuned_adaptive_composite.group(4))
+        if tuned_adaptive_composite.group(7) is None:
+            low_threshold = float(tuned_adaptive_composite.group(5)) / 100.0
+            high_threshold = float(tuned_adaptive_composite.group(6)) / 100.0
+        else:
+            low_threshold = float(tuned_adaptive_composite.group(7)) / 10000.0
+            high_threshold = float(tuned_adaptive_composite.group(8)) / 10000.0
+        max_recursive_steps = int(tuned_adaptive_composite.group(9))
+        return lambda d: NativeAdaptiveSemiringBiLaneSurpriseMemoryLane(
+            d,
+            memory_dim=memory_dim,
+            gate_bias=gate_bias,
+            semiring_temp_init=semiring_temp_init,
+            recursive_balance_init=recursive_balance_init,
+            low_threshold=low_threshold,
+            high_threshold=high_threshold,
+            max_recursive_steps=max_recursive_steps,
+        )
+
+    tuned_adaptive_semiring_mac = re.fullmatch(
+        r"native_semiring_rope_titans_mac_adapt_m(\d+)_g(-?\d+)_t(\d+)_b(\d+)_(?:l(\d+)_h(\d+)|l(\d+)bp_h(\d+)bp)_r(\d+)_surprise_memory",
+        name,
+    )
+    if tuned_adaptive_semiring_mac is not None:
+        from component_fab.generator.native_surprise_memory import (
+            NativeAdaptiveSemiringRopeTitansMACSurpriseMemoryLane,
+        )
+
+        memory_dim = int(tuned_adaptive_semiring_mac.group(1))
+        gate_bias = float(tuned_adaptive_semiring_mac.group(2))
+        semiring_temp_init = float(tuned_adaptive_semiring_mac.group(3))
+        recursive_balance_init = float(tuned_adaptive_semiring_mac.group(4))
+        if tuned_adaptive_semiring_mac.group(7) is None:
+            low_threshold = float(tuned_adaptive_semiring_mac.group(5)) / 100.0
+            high_threshold = float(tuned_adaptive_semiring_mac.group(6)) / 100.0
+        else:
+            low_threshold = float(tuned_adaptive_semiring_mac.group(7)) / 10000.0
+            high_threshold = float(tuned_adaptive_semiring_mac.group(8)) / 10000.0
+        max_recursive_steps = int(tuned_adaptive_semiring_mac.group(9))
+        return lambda d: NativeAdaptiveSemiringRopeTitansMACSurpriseMemoryLane(
+            d,
+            memory_dim=memory_dim,
+            gate_bias=gate_bias,
+            semiring_temp_init=semiring_temp_init,
+            recursive_balance_init=recursive_balance_init,
+            low_threshold=low_threshold,
+            high_threshold=high_threshold,
+            max_recursive_steps=max_recursive_steps,
+        )
+
+    tuned_balanced_composite = re.fullmatch(
+        r"native_semiring_bal_(bi|tri)lane_m(\d+)_g(-?\d+)_t(\d+)_b(\d+)_surprise_memory",
+        name,
+    )
+    if tuned_balanced_composite is not None:
+        from component_fab.generator.native_surprise_memory import (
+            NativeBalancedSemiringBiLaneSurpriseMemoryLane,
+            NativeBalancedSemiringTriLaneSurpriseMemoryLane,
+        )
+
+        lane_cls = (
+            NativeBalancedSemiringBiLaneSurpriseMemoryLane
+            if tuned_balanced_composite.group(1) == "bi"
+            else NativeBalancedSemiringTriLaneSurpriseMemoryLane
+        )
+        memory_dim = int(tuned_balanced_composite.group(2))
+        gate_bias = float(tuned_balanced_composite.group(3))
+        semiring_temp_init = float(tuned_balanced_composite.group(4))
+        recursive_balance_init = float(tuned_balanced_composite.group(5))
+        return lambda d: lane_cls(
+            d,
+            memory_dim=memory_dim,
+            gate_bias=gate_bias,
+            semiring_temp_init=semiring_temp_init,
+            recursive_balance_init=recursive_balance_init,
+        )
+
+    tuned_semiring_mac = re.fullmatch(
+        r"native_semiring_(rope_)?titans_mac_(bal_)?(qkn_)?m(\d+)_g(-?\d+)_t(\d+)(?:_b(\d+))?_surprise_memory",
+        name,
+    )
+    if tuned_semiring_mac is not None:
+        from component_fab.generator.native_surprise_memory import (
+            NativeBalancedSemiringRopeTitansMACSurpriseMemoryLane,
+            NativeBalancedSemiringTitansMACSurpriseMemoryLane,
+            NativeSemiringRopeTitansMACSurpriseMemoryLane,
+            NativeSemiringTitansMACSurpriseMemoryLane,
+        )
+
+        use_rope = tuned_semiring_mac.group(1) is not None
+        balanced = tuned_semiring_mac.group(2) is not None
+        qk_norm = tuned_semiring_mac.group(3) is not None
+        memory_dim = int(tuned_semiring_mac.group(4))
+        gate_bias = float(tuned_semiring_mac.group(5))
+        semiring_temp_init = float(tuned_semiring_mac.group(6))
+        recursive_balance_init = float(tuned_semiring_mac.group(7) or 1)
+        if balanced and use_rope:
+            lane_cls = NativeBalancedSemiringRopeTitansMACSurpriseMemoryLane
+        elif balanced:
+            lane_cls = NativeBalancedSemiringTitansMACSurpriseMemoryLane
+        elif use_rope:
+            lane_cls = NativeSemiringRopeTitansMACSurpriseMemoryLane
+        else:
+            lane_cls = NativeSemiringTitansMACSurpriseMemoryLane
+        return lambda d: lane_cls(
+            d,
+            memory_dim=memory_dim,
+            gate_bias=gate_bias,
+            semiring_temp_init=semiring_temp_init,
+            qk_norm=qk_norm,
+            **({"recursive_balance_init": recursive_balance_init} if balanced else {}),
+        )
+
     if name in (
         "tropical_surprise_memory",
         "semiring_surprise_memory",
         "semiring_surprise_memory_rope",
+        "native_read_before_write_surprise_memory",
+        "native_context_gated_surprise_memory",
+        "native_atlas_poly_surprise_memory",
+        "native_titans_mac_surprise_memory",
+        "native_semiring_surprise_memory",
+        "native_semiring_surprise_memory_rope",
+        "native_semiring_titans_mac_surprise_memory",
+        "native_semiring_rope_titans_mac_surprise_memory",
+        "native_balanced_semiring_titans_mac_surprise_memory",
+        "native_balanced_semiring_rope_titans_mac_surprise_memory",
+        "native_balanced_semiring_bilane_surprise_memory",
+        "native_balanced_semiring_trilane_surprise_memory",
+        "native_adaptive_semiring_rope_titans_mac_surprise_memory",
+        "native_adaptive_semiring_bilane_surprise_memory",
     ):
+        if name.startswith("native_"):
+            from component_fab.generator.native_surprise_memory import (
+                NativeAtlasPolySurpriseMemoryLane,
+                NativeAdaptiveSemiringBiLaneSurpriseMemoryLane,
+                NativeAdaptiveSemiringRopeTitansMACSurpriseMemoryLane,
+                NativeBalancedSemiringBiLaneSurpriseMemoryLane,
+                NativeBalancedSemiringRopeTitansMACSurpriseMemoryLane,
+                NativeBalancedSemiringTitansMACSurpriseMemoryLane,
+                NativeBalancedSemiringTriLaneSurpriseMemoryLane,
+                NativeContextGatedSurpriseMemoryLane,
+                NativeReadBeforeWriteSurpriseMemoryLane,
+                NativeSemiringRopeSurpriseMemoryLane,
+                NativeSemiringRopeTitansMACSurpriseMemoryLane,
+                NativeSemiringSurpriseMemoryLane,
+                NativeSemiringTitansMACSurpriseMemoryLane,
+                NativeTitansMACSurpriseMemoryLane,
+            )
+
+            if name == "native_read_before_write_surprise_memory":
+                return lambda d: NativeReadBeforeWriteSurpriseMemoryLane(d)
+            if name == "native_context_gated_surprise_memory":
+                return lambda d: NativeContextGatedSurpriseMemoryLane(d)
+            if name == "native_atlas_poly_surprise_memory":
+                return lambda d: NativeAtlasPolySurpriseMemoryLane(d)
+            if name == "native_semiring_surprise_memory":
+                return lambda d: NativeSemiringSurpriseMemoryLane(d)
+            if name == "native_semiring_surprise_memory_rope":
+                return lambda d: NativeSemiringRopeSurpriseMemoryLane(d)
+            if name == "native_semiring_titans_mac_surprise_memory":
+                return lambda d: NativeSemiringTitansMACSurpriseMemoryLane(d)
+            if name == "native_semiring_rope_titans_mac_surprise_memory":
+                return lambda d: NativeSemiringRopeTitansMACSurpriseMemoryLane(d)
+            if name == "native_balanced_semiring_titans_mac_surprise_memory":
+                return lambda d: NativeBalancedSemiringTitansMACSurpriseMemoryLane(d)
+            if name == "native_balanced_semiring_rope_titans_mac_surprise_memory":
+                return lambda d: NativeBalancedSemiringRopeTitansMACSurpriseMemoryLane(
+                    d
+                )
+            if name == "native_balanced_semiring_bilane_surprise_memory":
+                return lambda d: NativeBalancedSemiringBiLaneSurpriseMemoryLane(d)
+            if name == "native_balanced_semiring_trilane_surprise_memory":
+                return lambda d: NativeBalancedSemiringTriLaneSurpriseMemoryLane(d)
+            if name == "native_adaptive_semiring_rope_titans_mac_surprise_memory":
+                return lambda d: NativeAdaptiveSemiringRopeTitansMACSurpriseMemoryLane(
+                    d
+                )
+            if name == "native_adaptive_semiring_bilane_surprise_memory":
+                return lambda d: NativeAdaptiveSemiringBiLaneSurpriseMemoryLane(d)
+            return lambda d: NativeTitansMACSurpriseMemoryLane(d)
+
         from component_fab.generator.memory_primitives import (
             SemiringSurpriseMemoryLane,
             TropicalSurpriseMemoryLane,
@@ -783,6 +998,7 @@ def _build_tinylm(
     vocab_size: int = VOCAB_SIZE,
     max_seq_len: int = 1024,
     use_ffn: bool = True,
+    ffn_kind: str = "swiglu",
     use_rope: bool = True,
     use_position_embedding: bool = False,
 ) -> TinyLM:
@@ -803,6 +1019,7 @@ def _build_tinylm(
         max_seq_len=max_seq_len,
         use_ffn=use_ffn,
         ffn_mult=4,
+        ffn_kind=ffn_kind,
     )
     model = TinyLM(lane_factory, cfg)
     if use_rope:

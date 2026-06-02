@@ -34,7 +34,7 @@ def load_data(db_path):
     -- program_results_compat (= graph_runs LEFT JOIN graphs) is the canonical
     -- read path post-Phase-5b; the raw program_results table is legacy and is NOT
     -- updated by probe backfills, so it returns stale (pre-leak-fix) binding.
-    -- See research/notes/adjacent_token_merge_leak_2026-05-23.md.
+    -- See Obsidian note `adjacent_token_merge_leak_2026-05-23`.
     FROM program_results_compat
     WHERE graph_json IS NOT NULL
     """

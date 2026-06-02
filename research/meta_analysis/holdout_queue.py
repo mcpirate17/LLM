@@ -13,10 +13,18 @@ from pathlib import Path
 from typing import Any
 
 
-DEFAULT_PROMOTED_TEMPLATES = Path("research/notes/promoted_template_candidates.json")
-DEFAULT_VALIDATED_TEMPLATES = Path("research/notes/validated_template_candidates.json")
-DEFAULT_PAIR_PROPOSALS = Path("research/notes/untapped_pair_proposals.json")
-DEFAULT_OUTPUT = Path("research/notes/ar_binding_holdout_queue.json")
+DEFAULT_PROMOTED_TEMPLATES = Path(
+    "research/data/synthesis_candidates/promoted_template_candidates.json"
+)
+DEFAULT_VALIDATED_TEMPLATES = Path(
+    "research/data/synthesis_candidates/validated_template_candidates.json"
+)
+DEFAULT_PAIR_PROPOSALS = Path(
+    "research/data/synthesis_candidates/untapped_pair_proposals.json"
+)
+DEFAULT_OUTPUT = Path(
+    "research/data/synthesis_candidates/ar_binding_holdout_queue.json"
+)
 
 
 def build_holdout_queue(

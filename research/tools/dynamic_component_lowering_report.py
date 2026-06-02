@@ -19,7 +19,9 @@ from research.scientist.notebook.graph_artifacts import resolve_graph_json_value
 
 
 DEFAULT_DB = Path("research/runs.db")
-DEFAULT_CANDIDATES = Path("research/notes/dynamic_component_candidates.json")
+DEFAULT_CANDIDATES = Path(
+    "research/data/synthesis_candidates/dynamic_component_candidates.json"
+)
 DEFAULT_OUTPUT_DIR = Path("research/reports")
 
 

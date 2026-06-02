@@ -560,11 +560,11 @@ class _ExecutionCandidatesMixin:
                         template_weights[tpl] = (template_weights[tpl] * bw) ** 0.5
                     else:
                         template_weights[tpl] = bw
-                for mot, bw in bayes_motif.items():
-                    if mot in motif_weights:
-                        motif_weights[mot] = (motif_weights[mot] * bw) ** 0.5
+                for motif, bw in bayes_motif.items():
+                    if motif in motif_weights:
+                        motif_weights[motif] = (motif_weights[motif] * bw) ** 0.5
                     else:
-                        motif_weights[mot] = bw
+                        motif_weights[motif] = bw
                 logger.debug(
                     "Bayesian tracker: blended %d op, %d template, %d motif weights (mode=%s)",
                     len(bayes_op),
@@ -782,7 +782,7 @@ class _ExecutionCandidatesMixin:
             dynamic_template_candidate_path=getattr(
                 config,
                 "dynamic_template_candidate_path",
-                "research/notes/dynamic_component_candidates.json",
+                "research/data/synthesis_candidates/dynamic_component_candidates.json",
             ),
             dynamic_template_candidate_prob=getattr(
                 config, "dynamic_template_candidate_prob", 0.10

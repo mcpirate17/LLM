@@ -29,6 +29,7 @@ from research.tools.eval_checkpoints_blimp import (
     _build_tinylm,
     _hybrid_spec,
     _infer_arch,
+    _infer_ffn_kind,
     _lane_from_name,
 )
 
@@ -38,6 +39,9 @@ from research.tools.eval_checkpoints_blimp import (
 # to the canonical single-mixer lanes accepted by _build_lane_factory. Substring
 # match, longest/most-specific first.
 _CAMPAIGN_LANE_PATTERNS: tuple[tuple[str, str], ...] = (
+    ("semiring_surprise_memory_rope", "semiring_surprise_memory_rope"),
+    ("semiring_surprise_memory", "semiring_surprise_memory"),
+    ("tropical_surprise_memory", "tropical_surprise_memory"),
     ("reciprocal_rank_attention", "reciprocal_rank_attention"),
     ("recip_100m", "reciprocal_rank_attention"),
     ("softmax_100m", "softmax_attention"),
@@ -75,9 +79,22 @@ def _load_model(ckpt: Path, device: str):
     dim, n_blocks, use_ffn = _infer_arch(sd)
     coverage = 1.0
     lane_name = _resolve_lane_name(ckpt.name)
+    if lane_name is None:
+        # Native checkpoints store their canonical lane name directly.
+        stored = payload.get("lane")
+        if stored is not None:
+            try:
+                _build_lane_factory(stored)
+                lane_name = stored
+            except Exception:
+                lane_name = None
     if lane_name is not None:
         model = _build_tinylm(
-            _build_lane_factory(lane_name), dim=dim, n_blocks=n_blocks, use_ffn=use_ffn
+            _build_lane_factory(lane_name),
+            dim=dim,
+            n_blocks=n_blocks,
+            use_ffn=use_ffn,
+            ffn_kind=_infer_ffn_kind(sd),
         )
         model.load_state_dict(sd)  # strict
     else:
@@ -88,7 +105,13 @@ def _load_model(ckpt: Path, device: str):
 
         mixer, pattern = spec
         factories = _resolve_lane_factories(mixer, pattern)
-        model = _build_tinylm(factories, dim=dim, n_blocks=n_blocks, use_ffn=use_ffn)
+        model = _build_tinylm(
+            factories,
+            dim=dim,
+            n_blocks=n_blocks,
+            use_ffn=use_ffn,
+            ffn_kind=_infer_ffn_kind(sd),
+        )
         inc = model.load_state_dict(sd, strict=False)
         total = len(sd)
         missing = len(inc.missing_keys)
@@ -101,6 +124,7 @@ def _load_model(ckpt: Path, device: str):
         "dim": dim,
         "n_blocks": n_blocks,
         "use_ffn": use_ffn,
+        "ffn_kind": _infer_ffn_kind(sd) if use_ffn else "none",
         "coverage": coverage,
     }
     return model, info
@@ -122,6 +146,13 @@ def main() -> None:
     ap.add_argument(
         "--out", type=Path, default=Path("research/reports/gmqar_ladder.json")
     )
+    ap.add_argument(
+        "--scoring",
+        choices=("candidate", "full_vocab"),
+        default="candidate",
+        help="score over each row's in-context value candidates (default) or "
+        "the full LM vocabulary for legacy audits.",
+    )
     args = ap.parse_args()
 
     rows = []
@@ -140,9 +171,16 @@ def main() -> None:
             vocab_size=args.vocab_size,
             device=args.device,
             token_pool=args.token_pool,
+            scoring=args.scoring,
         )
         info.update(
-            {"audc": res.audc, "d50": res.d50, "chance": res.chance, "cells": res.cells}
+            {
+                "audc": res.audc,
+                "d50": res.d50,
+                "chance": res.chance,
+                "scoring": args.scoring,
+                "cells": res.cells,
+            }
         )
         rows.append(info)
         print(
@@ -153,7 +191,10 @@ def main() -> None:
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(
-        json.dumps({"vocab_size": args.vocab_size, "rows": rows}, indent=2)
+        json.dumps(
+            {"vocab_size": args.vocab_size, "scoring": args.scoring, "rows": rows},
+            indent=2,
+        )
     )
     print(f"\nwrote {args.out}")
     ok = [r for r in rows if r.get("status") == "ok"]

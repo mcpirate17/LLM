@@ -42,6 +42,7 @@ class TinyLMConfig:
     # mixer-only block used by the discrete-binding probes.
     use_ffn: bool = False
     ffn_mult: int = 4
+    ffn_kind: str = "swiglu"
 
 
 class _MLP(nn.Module):
@@ -61,6 +62,19 @@ class _MLP(nn.Module):
         return self.fc3(torch.nn.functional.silu(self.fc1(x)) * self.fc2(x))
 
 
+class _GELUMLP(nn.Module):
+    """Legacy two-matrix FFN used by pre-SwiGLU checkpoints."""
+
+    def __init__(self, dim: int, mult: int = 4) -> None:
+        super().__init__()
+        hidden = dim * mult
+        self.fc1 = nn.Linear(dim, hidden)
+        self.fc2 = nn.Linear(hidden, dim)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.fc2(torch.nn.functional.gelu(self.fc1(x)))
+
+
 class _LaneBlock(nn.Module):
     """One pre-norm block. With FFN this is the standard Transformer
     pattern: ``x -> norm -> mixer -> +x -> norm -> FFN -> +x``.
@@ -70,16 +84,27 @@ class _LaneBlock(nn.Module):
     """
 
     def __init__(
-        self, lane: nn.Module, dim: int, *, use_ffn: bool, ffn_mult: int
+        self,
+        lane: nn.Module,
+        dim: int,
+        *,
+        use_ffn: bool,
+        ffn_mult: int,
+        ffn_kind: str,
     ) -> None:
         super().__init__()
         self.norm1 = nn.LayerNorm(dim)
         self.lane = lane
         self.norm2: nn.LayerNorm | None
-        self.mlp: _MLP | None
+        self.mlp: nn.Module | None
         if use_ffn:
             self.norm2 = nn.LayerNorm(dim)
-            self.mlp = _MLP(dim, mult=ffn_mult)
+            if ffn_kind == "swiglu":
+                self.mlp = _MLP(dim, mult=ffn_mult)
+            elif ffn_kind == "gelu":
+                self.mlp = _GELUMLP(dim, mult=ffn_mult)
+            else:
+                raise ValueError(f"unknown TinyLM FFN kind: {ffn_kind!r}")
         else:
             self.norm2 = None
             self.mlp = None
@@ -119,6 +144,7 @@ class TinyLM(nn.Module):
                     config.dim,
                     use_ffn=config.use_ffn,
                     ffn_mult=config.ffn_mult,
+                    ffn_kind=config.ffn_kind,
                 )
                 for _ in range(config.n_blocks)
             ]

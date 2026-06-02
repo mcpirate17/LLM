@@ -130,6 +130,10 @@ def _estimate_mixing_flops(
             + 8 * seq_len * width * width
             + seq_len * seq_len * int(math.log2(max(seq_len, 2)))
         )
+    if op_name == "reciprocal_rank_attention":
+        return 8 * seq_len * seq_len * width + 8 * seq_len * width * width
+    if op_name == "phase_lock_attention":
+        return 6 * seq_len * seq_len * width + 8 * seq_len * width * width
     if op_name == "dplr_gated_delta":
         return 18 * seq_len * width * width + 6 * seq_len * width
     if op_name == "long_conv_hyena":

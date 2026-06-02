@@ -90,7 +90,7 @@ _OP_ROLE_MAP: Dict[str, OpRole] = {
     # gated_linear_attention disabled 2026-05-23: proven anti-causal (next-token
     # leak via whole-chunk kv/decay), records purged, NOT fixed. Removed from the
     # MIX pool so the grammar can't insert it. Fixed replacement pending (gemini).
-    # See research/notes/adjacent_token_merge_leak_2026-05-23.md
+    # See Obsidian note `adjacent_token_merge_leak_2026-05-23`
     "long_conv_hyena": OpRole.MIX,
     "associative_memory": OpRole.MIX,
     "mixture_of_recursions": OpRole.MIX,

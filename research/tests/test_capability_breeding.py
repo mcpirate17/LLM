@@ -4,7 +4,7 @@ Foundation fix 2026-05-24: analytics breeding weights credit a graph by the
 in-context capability it shows (induction AUC), not merely for clearing the
 non-discriminative stage-1 (perplexity) gate. Soft tilt — keeps perplexity
 passers and slow-capability SSMs in play. See
-research/notes/capability_breeding_2026-05-24.md.
+Obsidian note `capability_breeding_2026-05-24`.
 """
 
 import importlib

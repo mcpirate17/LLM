@@ -26,6 +26,22 @@ from .memory_primitives import (
     SemiringSurpriseMemoryLane,
     TropicalSurpriseMemoryLane,
 )
+from .native_surprise_memory import (
+    NativeAtlasPolySurpriseMemoryLane,
+    NativeAdaptiveSemiringBiLaneSurpriseMemoryLane,
+    NativeAdaptiveSemiringRopeTitansMACSurpriseMemoryLane,
+    NativeBalancedSemiringBiLaneSurpriseMemoryLane,
+    NativeBalancedSemiringRopeTitansMACSurpriseMemoryLane,
+    NativeBalancedSemiringTitansMACSurpriseMemoryLane,
+    NativeBalancedSemiringTriLaneSurpriseMemoryLane,
+    NativeContextGatedSurpriseMemoryLane,
+    NativeReadBeforeWriteSurpriseMemoryLane,
+    NativeSemiringRopeSurpriseMemoryLane,
+    NativeSemiringRopeTitansMACSurpriseMemoryLane,
+    NativeSemiringSurpriseMemoryLane,
+    NativeSemiringTitansMACSurpriseMemoryLane,
+    NativeTitansMACSurpriseMemoryLane,
+)
 from .primitive_templates import (
     CalculusAugmentedLane,
     ChebyshevAdapterLane,
@@ -241,6 +257,34 @@ def _dispatch_invention_mechanism(
         return SemiringSurpriseMemoryLane(dim, use_rope=True)
     if mechanism == "padic_surprise_memory":
         return PadicSurpriseMemoryLane(dim)
+    if mechanism == "native_read_before_write_surprise_memory":
+        return NativeReadBeforeWriteSurpriseMemoryLane(dim)
+    if mechanism == "native_context_gated_surprise_memory":
+        return NativeContextGatedSurpriseMemoryLane(dim)
+    if mechanism == "native_atlas_poly_surprise_memory":
+        return NativeAtlasPolySurpriseMemoryLane(dim)
+    if mechanism == "native_titans_mac_surprise_memory":
+        return NativeTitansMACSurpriseMemoryLane(dim)
+    if mechanism == "native_semiring_surprise_memory":
+        return NativeSemiringSurpriseMemoryLane(dim)
+    if mechanism == "native_semiring_surprise_memory_rope":
+        return NativeSemiringRopeSurpriseMemoryLane(dim)
+    if mechanism == "native_semiring_titans_mac_surprise_memory":
+        return NativeSemiringTitansMACSurpriseMemoryLane(dim)
+    if mechanism == "native_semiring_rope_titans_mac_surprise_memory":
+        return NativeSemiringRopeTitansMACSurpriseMemoryLane(dim)
+    if mechanism == "native_balanced_semiring_titans_mac_surprise_memory":
+        return NativeBalancedSemiringTitansMACSurpriseMemoryLane(dim)
+    if mechanism == "native_balanced_semiring_rope_titans_mac_surprise_memory":
+        return NativeBalancedSemiringRopeTitansMACSurpriseMemoryLane(dim)
+    if mechanism == "native_balanced_semiring_bilane_surprise_memory":
+        return NativeBalancedSemiringBiLaneSurpriseMemoryLane(dim)
+    if mechanism == "native_balanced_semiring_trilane_surprise_memory":
+        return NativeBalancedSemiringTriLaneSurpriseMemoryLane(dim)
+    if mechanism == "native_adaptive_semiring_rope_titans_mac_surprise_memory":
+        return NativeAdaptiveSemiringRopeTitansMACSurpriseMemoryLane(dim)
+    if mechanism == "native_adaptive_semiring_bilane_surprise_memory":
+        return NativeAdaptiveSemiringBiLaneSurpriseMemoryLane(dim)
     return None
 
 

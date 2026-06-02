@@ -140,6 +140,7 @@ def register_all_mathspaces():
         param_formula="D*D",
         description="Self-attention using tropical geometry (shortest-path)",
         algebraic_space="tropical",
+        binding_range_class="full",
     )
     op = _with_execute(op, tropical.execute_tropical_attention)
     register_external_primitive(op)
@@ -199,6 +200,7 @@ def register_all_mathspaces():
         has_params=True,
         param_formula="D*D*3/8",  # 3 * D * (D/8) — down + 2 up-projs
         description="Multi-head latent attention: K and V share a low-rank latent path (d_latent=D/8 by default), reconstructed via distinct up-projections, then standard softmax attention on Q. KV-cache compression.",
+        binding_range_class="full",
     )
     op = _with_execute(op, _mla_mod.execute_mla_attention)
     register_external_primitive(op)
@@ -233,6 +235,7 @@ def register_all_mathspaces():
         has_params=True,
         param_formula="4*D*D + 2*D",  # W_q, W_k, W_v, W_o + scalar gate vectors
         description="Matrix-memory LSTM cell: recurrent state is a (D, D) outer-product accumulator addressed by per-token queries. Per-token compute is (4*D + 2)·D multiply-add; backward via autograd.",
+        binding_range_class="full",
     )
     op = _with_execute(op, _mlstm_mod.execute_mlstm_cell)
     register_external_primitive(op)
@@ -258,6 +261,7 @@ def register_all_mathspaces():
         shape_rule="identity",
         description="Attention using ultrametric (p-adic) distance",
         algebraic_space="padic",
+        binding_range_class="full",
     )
     op = _with_execute(op, padic.execute_ultrametric_attn)
     register_external_primitive(op)
@@ -410,6 +414,7 @@ def register_all_mathspaces():
         param_formula="D*D",
         description="Attention via geometric product (dot + wedge) for richer token scores",
         algebraic_space="clifford",
+        binding_range_class="full",
     )
     op = _with_execute(op, clifford.execute_clifford_attention)
     register_external_primitive(op)
@@ -520,6 +525,7 @@ def register_all_mathspaces():
         param_formula="1",
         description="STDP-inspired causal attention with learnable temporal decay",
         algebraic_space="spiking",
+        binding_range_class="full",
     )
     op = _with_execute(op, spiking.execute_stdp_attention)
     register_external_primitive(op)
@@ -556,6 +562,7 @@ def register_all_mathspaces():
         shape_rule="identity",
         description="Self-attention using projective angular (cosine) distances",
         algebraic_space="projective",
+        binding_range_class="full",
     )
     op = _with_execute(op, projective.execute_projective_attention)
     register_external_primitive(op)
@@ -568,6 +575,7 @@ def register_all_mathspaces():
         shape_rule="identity",
         description="Continuous complex-domain phase accumulation sequence mixer",
         algebraic_space="complex",
+        binding_range_class="full",
     )
     op = _with_execute(op, cawn.execute_cawn_mixer)
     register_external_primitive(op)

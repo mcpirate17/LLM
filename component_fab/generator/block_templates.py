@@ -139,8 +139,8 @@ class GatedParallelBlock(nn.Module):
     ``bias`` is a single scalar updated outside backprop based on observed
     per-batch gate imbalance (DeepSeek-V3 aux-loss-free load balance). Without
     it, the naive sigmoid gate drifts toward whichever lane edges ahead on the
-    current gradient signal and abandons the other lane's circuits — see
-    ``research/notes/tropical_gate_120m_pretrain_README.md`` §5.3 / §5.4 for
+    current gradient signal and abandons the other lane's circuits — see the
+    Obsidian note ``tropical_gate_120m_pretrain_README`` §5.3 / §5.4 for
     the 120M failure-mode analysis. The bias starts at zero so existing
     checkpoints load identically and behavior matches the naked gate on step 1.
     """

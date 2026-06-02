@@ -20,7 +20,7 @@ from research.meta_analysis.triplet_blocklist import derive_triplet_blocklist
 
 
 _DEFAULT_META_DB = "research/meta_analysis.db"
-_DEFAULT_OUTPUT = "research/notes/triplet_blocklist.json"
+_DEFAULT_OUTPUT = "research/data/synthesis_candidates/triplet_blocklist.json"
 
 
 def main() -> None:

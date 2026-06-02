@@ -76,6 +76,11 @@ def _infer_arch(sd: dict) -> tuple[int, int, bool]:
     return int(dim), int(n_blocks), bool(use_ffn)
 
 
+def _infer_ffn_kind(sd: dict) -> str:
+    """Infer the TinyLM FFN variant needed for strict checkpoint loading."""
+    return "swiglu" if any(".mlp.fc3.weight" in k for k in sd) else "gelu"
+
+
 def _rollup(subtask_acc: dict) -> dict:
     cats: dict[str, list] = defaultdict(list)
     for sub, acc in subtask_acc.items():
@@ -116,11 +121,24 @@ def _eval_one(ckpt: Path, n_per_subtask: int, device: str) -> dict:
     dim, n_blocks, ffn_detected = _infer_arch(sd)
     use_ffn = ffn_detected
     lane = _lane_from_name(ckpt.name)
+    if lane is None:
+        # Native checkpoints store their canonical lane name directly.
+        stored = payload.get("lane")
+        if stored is not None:
+            try:
+                _build_lane_factory(stored)
+                lane = (stored, False)
+            except Exception:
+                lane = None
     coverage = 1.0
     if lane is not None:
         lane_name, _ = lane
         model = _build_tinylm(
-            _build_lane_factory(lane_name), dim=dim, n_blocks=n_blocks, use_ffn=use_ffn
+            _build_lane_factory(lane_name),
+            dim=dim,
+            n_blocks=n_blocks,
+            use_ffn=use_ffn,
+            ffn_kind=_infer_ffn_kind(sd),
         )
         model.load_state_dict(sd)  # strict: wrong arch raises here
     else:
@@ -133,7 +151,11 @@ def _eval_one(ckpt: Path, n_per_subtask: int, device: str) -> dict:
         lane_name = mixer if pattern is None else f"interleaved[{pattern}]"
         model_factory, _ = _resolve_lane_factories(mixer, pattern)
         model = _build_tinylm(
-            model_factory, dim=dim, n_blocks=n_blocks, use_ffn=use_ffn
+            model_factory,
+            dim=dim,
+            n_blocks=n_blocks,
+            use_ffn=use_ffn,
+            ffn_kind=_infer_ffn_kind(sd),
         )
         inc = model.load_state_dict(sd, strict=False)  # hybrid: report coverage
         nk = len(list(model.state_dict().keys()))

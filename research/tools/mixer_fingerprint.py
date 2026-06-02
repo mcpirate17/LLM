@@ -13,7 +13,7 @@ each mixer primitive, holding everything else (data, schedule, scale)
 fixed. Output is a `mixer × capability → emergence_signal` matrix that
 tells you what each primitive is structurally good at.
 
-See ``research/notes/tropical_gate_120m_pretrain_README.md`` §5.5 for
+See ``Obsidian note `tropical_gate_120m_pretrain_README``` §5.5 for
 the motivating context (the 120M tropical+wavelet run halted at step
 143K with capability instability; this experiment characterizes mixers
 at the regime where the architecture's BLiMP advantage actually shows
@@ -481,6 +481,7 @@ def _eval_gmqar(out: dict[str, Any], model: nn.Module, device: torch.device) -> 
         out["gmqar_audc"] = round(float(gm.audc), 4)
         out["gmqar_d50"] = int(gm.d50)
         out["gmqar_chance"] = gm.chance
+        out["gmqar_scoring"] = "candidate"
         out["gmqar_cells"] = gm.cells
     except (RuntimeError, ValueError, ImportError) as exc:
         out["gmqar_error"] = str(exc)[:200]
@@ -1454,7 +1455,7 @@ def _validate_output_dir(output_dir: Path) -> None:
     if resolved == notes_dir or notes_dir in resolved.parents:
         raise ValueError(
             "mixer_fingerprint writes JSONL/weights; use research/reports/... "
-            "or tasks/audit/... instead of research/notes/..."
+            "or tasks/audit/... instead of the retired research/notes/ tree"
         )
 
 

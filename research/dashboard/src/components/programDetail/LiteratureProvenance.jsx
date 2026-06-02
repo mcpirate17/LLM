@@ -2,7 +2,7 @@ import React from "react";
 
 // Honest literature provenance for a program, surfaced from the
 // `literature_attribution` table + graphs.lit_* columns
-// (see research/notes/literature_attribution_2026-05-24.md). match_type tells
+// (see Obsidian note `literature_attribution_2026-05-24`). match_type tells
 // you whether the project reproduced prior work or originated something novel.
 const MATCH_COLORS = {
   exact: "var(--accent-green)",

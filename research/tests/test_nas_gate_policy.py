@@ -6,8 +6,10 @@ import pytest
 
 from research.tools.nas_gate_policy import (
     DEFAULT_THRESHOLDS,
+    NB10_STACKED_AXIS,
     GatePolicyConfig,
     NanoBand,
+    RejectionKind,
     Stage,
     candidate_from_row,
     classify_nano,
@@ -62,6 +64,48 @@ def test_known_good_rescued_past_predictor_rejection():
     assert not d.accepted and d.stage is Stage.RESCUE
     # rescue records the predictor rejections it overrode.
     assert {r.gate for r in d.rejections} >= {"ar_gate", "ar_curriculum"}
+
+
+# --- stacked nb1.0 reject head ------------------------------------------------
+_STACK_CFG = GatePolicyConfig(nb10_stacked_reject_threshold=0.30)
+
+
+def test_nb10_stacked_below_threshold_rejects():
+    row = _row(**{NB10_STACKED_AXIS: 0.10})
+    d = evaluate_candidate(candidate_from_row(row), THR, _STACK_CFG)
+    assert not d.accepted and d.stage is Stage.REJECTED
+    rej = next(r for r in d.rejections if r.gate == NB10_STACKED_AXIS)
+    assert rej.kind is RejectionKind.PREDICTOR  # rescuable, not hard
+
+
+def test_nb10_stacked_above_threshold_passes():
+    row = _row(**{NB10_STACKED_AXIS: 0.80})
+    d = evaluate_candidate(candidate_from_row(row), THR, _STACK_CFG)
+    assert d.accepted and d.stage is Stage.EXPLOIT
+    assert d.rank_signals[NB10_STACKED_AXIS] == 0.80
+
+
+def test_nb10_stacked_absent_is_noop():
+    # no prediction populated (cheap probes not measured) -> gate cannot fire
+    d = evaluate_candidate(candidate_from_row(_row()), THR, _STACK_CFG)
+    assert d.accepted and NB10_STACKED_AXIS not in d.rank_signals
+
+
+def test_nb10_stacked_disabled_is_shadow_only():
+    cfg = GatePolicyConfig(
+        nb10_stacked_enabled=False, nb10_stacked_reject_threshold=0.30
+    )
+    row = _row(**{NB10_STACKED_AXIS: 0.10})
+    d = evaluate_candidate(candidate_from_row(row), THR, cfg)
+    assert d.accepted  # recorded but not enforced
+    assert d.rank_signals[NB10_STACKED_AXIS] == 0.10
+
+
+def test_nb10_stacked_known_good_is_rescued():
+    row = _row(**{NB10_STACKED_AXIS: 0.10})
+    row["lit_match_type"] = "family"
+    d = evaluate_candidate(candidate_from_row(row), THR, _STACK_CFG)
+    assert not d.accepted and d.stage is Stage.RESCUE
 
 
 def test_hard_failure_blocks_rescue_even_for_known_good():

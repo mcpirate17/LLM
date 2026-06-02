@@ -123,6 +123,37 @@ def _majority_accuracy(train, test, candidates) -> tuple[str, float]:
     return pred, float((test["answer"] == pred).mean())
 
 
+def _adaptive_depth_stats(model, ids, batch) -> dict[str, float] | None:
+    """Aggregate native adaptive-recursion depth counters over a dataset."""
+    modules = [m for m in model.modules() if hasattr(m, "last_depth_counts")]
+    if not modules:
+        return None
+    total = 0
+    weighted_sum = 0.0
+    zeros = 0
+    max_seen = 0
+    model.eval()
+    with torch.no_grad():
+        for i in range(0, len(ids), batch):
+            _ = model(ids[i : i + batch])
+            for module in modules:
+                depth = getattr(module, "last_depth_counts", None)
+                if depth is None:
+                    continue
+                depth_cpu = depth.detach().cpu()
+                total += int(depth_cpu.numel())
+                weighted_sum += float(depth_cpu.float().sum().item())
+                zeros += int((depth_cpu == 0).sum().item())
+                max_seen = max(max_seen, int(depth_cpu.max().item()))
+    if total == 0:
+        return None
+    return {
+        "mean_depth": round(weighted_sum / total, 4),
+        "skip_fraction": round(zeros / total, 4),
+        "max_depth_seen": max_seen,
+    }
+
+
 def _one_run(
     df,
     rooms,
@@ -136,6 +167,8 @@ def _one_run(
     batch,
     seed,
     max_len,
+    mtp_depth=0,
+    mtp_weight=0.0,
 ):
     torch.manual_seed(seed)
     tr, test_df, held = _binding_split(df, n_holdout, seed)
@@ -144,11 +177,23 @@ def _one_run(
     model = _build_tinylm(
         _build_lane_factory(lane), dim=dim, n_blocks=n_blocks, use_ffn=True
     )
-    _train(model, tri, trp, tra, passes, lr, batch, seed)
+    _train(
+        model,
+        tri,
+        trp,
+        tra,
+        passes,
+        lr,
+        batch,
+        seed,
+        mtp_depth=mtp_depth,
+        mtp_weight=mtp_weight,
+    )
     held_entities = sorted({h["entity"] for h in held})
     held_toks = [_answer_token(r) for r in held_entities]
     strict = _accuracy(model, test_ids, test_pos, test_ans, room_toks)
     restricted = _accuracy(model, test_ids, test_pos, test_ans, held_toks)
+    adaptive_depth = _adaptive_depth_stats(model, test_ids, batch)
     strict_majority_pred, strict_majority = _majority_accuracy(tr, test_df, rooms)
     restricted_majority_pred, restricted_majority = _majority_accuracy(
         tr, test_df, held_entities
@@ -162,6 +207,7 @@ def _one_run(
         "n_train": len(tr),
         "strict": strict,
         "restricted": restricted,
+        "adaptive_depth": adaptive_depth,
         "strict_majority_pred": strict_majority_pred,
         "strict_majority": strict_majority,
         "restricted_majority_pred": restricted_majority_pred,
@@ -191,6 +237,18 @@ def main() -> None:
     ap.add_argument("--lr", type=float, default=3e-4)
     ap.add_argument("--batch", type=int, default=32)
     ap.add_argument("--max-len", type=int, default=80)
+    ap.add_argument(
+        "--mtp-depth",
+        type=int,
+        default=0,
+        help="auxiliary multi-token prediction depth over the tokenized sequence",
+    )
+    ap.add_argument(
+        "--mtp-weight",
+        type=float,
+        default=0.0,
+        help="weight for the auxiliary multi-token prediction loss",
+    )
     ap.add_argument(
         "--out",
         type=Path,
@@ -232,6 +290,8 @@ def main() -> None:
                 args.batch,
                 s,
                 args.max_len,
+                mtp_depth=args.mtp_depth,
+                mtp_weight=args.mtp_weight,
             )
             for s in range(args.seeds)
         ]
@@ -241,6 +301,7 @@ def main() -> None:
         strict_majority = [r["strict_majority"] for r in runs]
         restricted_majority = [r["restricted_majority"] for r in runs]
         restricted_chances = [1.0 / len(r["held_entities"]) for r in runs]
+        depth_stats = [r["adaptive_depth"] for r in runs if r["adaptive_depth"]]
         results[lane] = {
             "strict_mean": round(st.mean(strict), 4),
             "strict_std": round(st.pstdev(strict), 4),
@@ -259,6 +320,19 @@ def main() -> None:
             ),
             "restricted_margin_over_majority": round(
                 st.mean(restr) - st.mean(restricted_majority), 4
+            ),
+            "adaptive_depth_mean": (
+                round(st.mean(d["mean_depth"] for d in depth_stats), 4)
+                if depth_stats
+                else None
+            ),
+            "adaptive_skip_fraction_mean": (
+                round(st.mean(d["skip_fraction"] for d in depth_stats), 4)
+                if depth_stats
+                else None
+            ),
+            "adaptive_max_depth_seen": (
+                max(d["max_depth_seen"] for d in depth_stats) if depth_stats else None
             ),
             "per_seed": runs,
         }
@@ -279,6 +353,13 @@ def main() -> None:
             + " "
             + f"{r['train_mean']:.3f}".rjust(12)
         )
+        if r["adaptive_depth_mean"] is not None:
+            print(
+                "  adaptive depth "
+                f"mean={r['adaptive_depth_mean']:.3f} "
+                f"skip={r['adaptive_skip_fraction_mean']:.3f} "
+                f"max={r['adaptive_max_depth_seen']}"
+            )
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(

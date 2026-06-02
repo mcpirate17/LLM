@@ -26,7 +26,7 @@ from research.meta_analysis.routing_decision_analytics import (
 )
 
 
-_DEFAULT_OUTPUT = "research/notes/routing_decisions_summary.json"
+_DEFAULT_OUTPUT = "research/data/synthesis_candidates/routing_decisions_summary.json"
 
 
 def main() -> None:

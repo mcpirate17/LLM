@@ -1,7 +1,7 @@
 """Auto-register validated mined chains as live templates.
 
 The chain-mining → promotion → validation pipeline emits
-``research/notes/validated_template_candidates.json``. When the
+``research/data/synthesis_candidates/validated_template_candidates.json``. When the
 ``ARIA_ENABLE_MINED_TEMPLATES`` environment flag (or its sibling caller
 hook) is set, this module materializes each ``ready_for_registration``
 candidate into a real template callable and registers it into the
@@ -41,7 +41,9 @@ logger = logging.getLogger(__name__)
 
 _ENV_FLAG = "ARIA_ENABLE_MINED_TEMPLATES"
 _ENV_PATH = "ARIA_MINED_TEMPLATES_PATH"  # optional override (tests + manual)
-_DEFAULT_VALIDATED_PATH = Path("research/notes/validated_template_candidates.json")
+_DEFAULT_VALIDATED_PATH = Path(
+    "research/data/synthesis_candidates/validated_template_candidates.json"
+)
 _DEFAULT_MINED_WEIGHT = 0.5  # below default to prevent crowding out human templates
 # Hard cap on number of mined templates registered per process. Prevents a
 # runaway candidate JSON from doubling TEMPLATES size.
@@ -140,7 +142,7 @@ def register_mined_templates(
     Args:
         templates_dict: target dict (typically ``synthesis.templates.TEMPLATES``).
         weights_dict: target weight dict (``DEFAULT_TEMPLATE_WEIGHTS``).
-        json_path: validated candidates JSON; defaults to the notes location.
+        json_path: validated candidates JSON; defaults to synthesis_candidates.
         enable: explicit override; when None, falls back to the env flag.
         max_register: hard cap on number of templates registered.
 

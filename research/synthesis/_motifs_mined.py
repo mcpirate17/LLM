@@ -28,7 +28,9 @@ from .primitives import PRIMITIVE_REGISTRY
 logger = logging.getLogger(__name__)
 
 _ENV_FLAG = "ARIA_ENABLE_MINED_MOTIFS"
-_DEFAULT_PAIR_PATH = Path("research/notes/untapped_pair_proposals.json")
+_DEFAULT_PAIR_PATH = Path(
+    "research/data/synthesis_candidates/untapped_pair_proposals.json"
+)
 _MINED_MOTIF_CLASS = "mined_pair"
 _DEFAULT_LIFT = 0.5
 _MAX_MINED_MOTIFS = 48

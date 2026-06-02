@@ -984,7 +984,9 @@ def _updates_from_report_record(
     if spec.name == "ar_gate":
         payload = record.get("payload")
         return dict(payload) if isinstance(payload, dict) else {}
-    if spec.name in {"nb05", "nb10"}:
+    if spec.name in {"nb05", "nb10", "induction", "binding"}:
+        # Parallel shard runners emit {result_id, status, updates} jsonl for these
+        # (induction/binding extracted from per-shard local DB copies).
         payload = record.get("updates")
         return dict(payload) if isinstance(payload, dict) else {}
     if spec.name == "nano_bind" and record.get("status") == "no_go":

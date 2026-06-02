@@ -3,7 +3,7 @@
 Reads ``research/reports/mined_novel_chain_proposals.json`` (output of
 ``mine_template_subpatterns_v2.py``), filters by support/lift/pass-rate,
 dedupes against the live ``TEMPLATES`` registry, and writes a structured
-candidate file under ``research/notes/`` for review and follow-on wiring.
+candidate file under ``research/data/synthesis_candidates/`` for review and follow-on wiring.
 
 Usage:
     python -m research.tools.promote_mined_templates --top-k 25
@@ -22,7 +22,7 @@ from research.meta_analysis.template_promoter import (
 
 
 _DEFAULT_REPORT = "research/reports/mined_novel_chain_proposals.json"
-_DEFAULT_OUTPUT = "research/notes/promoted_template_candidates.json"
+_DEFAULT_OUTPUT = "research/data/synthesis_candidates/promoted_template_candidates.json"
 _DEFAULT_META_DB = "research/meta_analysis.db"
 
 

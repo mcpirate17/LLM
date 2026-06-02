@@ -112,7 +112,35 @@ def _accuracy(model, ids, ans_pos, ans_tok, candidate_toks, batch=64) -> float:
     return correct / len(ids)
 
 
-def _train(model, ids, ans_pos, ans_tok, passes, lr, batch, seed):
+def _mtp_loss(logits, ids, depth: int) -> torch.Tensor:
+    losses = []
+    for k in range(1, depth + 1):
+        if ids.shape[1] <= k:
+            continue
+        target = ids[:, k:].clone()
+        target[target == 0] = -100
+        losses.append(
+            F.cross_entropy(
+                logits[:, :-k, :].reshape(-1, logits.shape[-1]),
+                target.reshape(-1),
+                ignore_index=-100,
+            )
+        )
+    return sum(losses) / len(losses) if losses else logits.sum() * 0.0
+
+
+def _train(
+    model,
+    ids,
+    ans_pos,
+    ans_tok,
+    passes,
+    lr,
+    batch,
+    seed,
+    mtp_depth=0,
+    mtp_weight=0.0,
+):
     # guardrail: allow-complexity - explicit CPU probe loop over small nano batches.
     g = torch.Generator().manual_seed(seed)
     opt = torch.optim.AdamW(model.parameters(), lr=lr)
@@ -130,6 +158,8 @@ def _train(model, ids, ans_pos, ans_tok, passes, lr, batch, seed):
                 logits = logits[0]
             at = logits[torch.arange(len(idx)), b_pos]
             loss = F.cross_entropy(at, b_ans)
+            if mtp_depth > 0 and mtp_weight > 0:
+                loss = loss + float(mtp_weight) * _mtp_loss(logits, b_ids, mtp_depth)
             opt.zero_grad()
             loss.backward()
             opt.step()

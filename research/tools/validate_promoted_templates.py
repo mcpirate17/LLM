@@ -1,6 +1,6 @@
 """CLI: validate promoted template candidates against the synthesis pipeline.
 
-Reads ``research/notes/promoted_template_candidates.json`` (output of
+Reads ``research/data/synthesis_candidates/promoted_template_candidates.json`` (output of
 ``promote_mined_templates.py``), runs each candidate's chain through the
 build → validate → compile pipeline, and writes a structured registry of
 validation outcomes. Compile-passing candidates are marked ready for
@@ -25,8 +25,10 @@ from research.meta_analysis.template_validator import (
 )
 
 
-_DEFAULT_INPUT = "research/notes/promoted_template_candidates.json"
-_DEFAULT_OUTPUT = "research/notes/validated_template_candidates.json"
+_DEFAULT_INPUT = "research/data/synthesis_candidates/promoted_template_candidates.json"
+_DEFAULT_OUTPUT = (
+    "research/data/synthesis_candidates/validated_template_candidates.json"
+)
 
 
 def main() -> None:

@@ -2,7 +2,7 @@
 
 Outputs:
   research/reports/arch_component_analysis_2026-05-23/*.csv
-  research/notes/arch_component_stat_analysis_2026-05-23.md
+  Obsidian note `arch_component_stat_analysis_2026-05-23`
 """
 
 from __future__ import annotations
@@ -74,7 +74,7 @@ SELECT
   {", ".join(f"{col} AS {alias}" for alias, col in METRICS.items())}
 -- program_results_compat (= graph_runs LEFT JOIN graphs) is canonical post-Phase-5b;
 -- the legacy program_results table is stale (not updated by probe backfills). See
--- research/notes/adjacent_token_merge_leak_2026-05-23.md.
+-- Obsidian note `adjacent_token_merge_leak_2026-05-23`.
 FROM program_results_compat
 WHERE COALESCE(graph_json, '') NOT IN ('', '{{}}')
   AND ({" OR ".join(f"{col} IS NOT NULL" for col in METRICS.values())});

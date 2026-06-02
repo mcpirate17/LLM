@@ -442,7 +442,7 @@ class RunConfig:
     # ablation runs.
     use_dynamic_template_candidates: bool = True
     dynamic_template_candidate_path: str = (
-        "research/notes/dynamic_component_candidates.json"
+        "research/data/synthesis_candidates/dynamic_component_candidates.json"
     )
     dynamic_template_candidate_prob: float = 0.10
     dynamic_template_candidate_strength: float = 1.0
