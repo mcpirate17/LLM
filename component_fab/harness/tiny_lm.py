@@ -229,16 +229,98 @@ class CausalConv1dLane(nn.Module):
         return self.proj(h)
 
 
+class MultiHeadCausalAttention(nn.Module):
+    """GPT-2 style multi-head causal softmax attention (pure mixer).
+
+    The canonical frontier baseline. TinyLM wraps it with pre-norm, residual and
+    an FFN, so this is just the attention mixer (no FFN/residual here).
+    """
+
+    def __init__(self, dim: int, *, n_heads: int | None = None) -> None:
+        super().__init__()
+        if n_heads is None:
+            n_heads = max(1, dim // 16)
+            while n_heads > 1 and dim % n_heads != 0:
+                n_heads -= 1
+        if dim % n_heads != 0:
+            raise ValueError(f"dim {dim} not divisible by n_heads {n_heads}")
+        self.dim = dim
+        self.n_heads = n_heads
+        self.head_dim = dim // n_heads
+        self.qkv = nn.Linear(dim, 3 * dim, bias=True)
+        self.proj = nn.Linear(dim, dim)
+        self.scale = float(self.head_dim) ** -0.5
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        b, l, _ = x.shape
+        q, k, v = self.qkv(x).chunk(3, dim=-1)
+        q = q.view(b, l, self.n_heads, self.head_dim).transpose(1, 2)
+        k = k.view(b, l, self.n_heads, self.head_dim).transpose(1, 2)
+        v = v.view(b, l, self.n_heads, self.head_dim).transpose(1, 2)
+        affinity = torch.einsum("bhid,bhjd->bhij", q, k) * self.scale
+        mask = torch.triu(
+            torch.full((l, l), float("-inf"), device=x.device, dtype=x.dtype),
+            diagonal=1,
+        )
+        attn = torch.softmax(affinity + mask, dim=-1)
+        out = torch.einsum("bhij,bhjd->bhid", attn, v)
+        out = out.transpose(1, 2).reshape(b, l, self.dim)
+        return self.proj(out)
+
+
+def _compiled_reference_mixer_factory(arch: str) -> Callable[[int], nn.Module]:
+    """Build a residual/norm-free reference mixer lane from the NAS compiler.
+
+    Reuses the validated op implementations (``selective_scan``, ``gated_delta``)
+    rather than re-deriving Mamba/Mamba2 by hand. Returns a factory taking ``dim``
+    and yielding ``compile_model([mixer_graph]).layers[0]`` — a pure ``[B,L,D]``
+    mixer (TinyLM adds the norm/residual/FFN around it).
+    """
+
+    def factory(dim: int) -> nn.Module:
+        from research.synthesis.compiler import compile_model
+        from research.synthesis.graph import ComputationGraph
+
+        g = ComputationGraph(dim)
+        inp = g.add_input()
+        if arch == "mamba":
+            conv = g.add_op("conv1d_seq", [inp])
+            act = g.add_op("silu", [conv])
+            ssm = g.add_op("selective_scan", [act])
+            out = g.add_op("gated_linear", [ssm], {"out_dim": dim})
+        elif arch == "mamba2":  # Gated DeltaNet / Mamba2-family
+            gd = g.add_op("gated_delta", [inp])
+            out = g.add_op("linear_proj", [gd], {"out_dim": dim})
+        else:
+            raise ValueError(f"no compiled mixer for arch {arch!r}")
+        g.set_output(out)
+        return compile_model([g], use_ir=False).layers[0]
+
+    return factory
+
+
 def lane_factory_for_baseline(name: str) -> Callable[[int], nn.Module]:
     """Resolve a baseline name to a lane factory."""
     if name == "softmax_attention":
         return SoftmaxCausalAttention
     if name == "causal_conv":
         return CausalConv1dLane
+    if name == "gpt2":
+        return MultiHeadCausalAttention
+    if name in ("mamba", "mamba2"):
+        return _compiled_reference_mixer_factory(name)
     raise ValueError(f"unknown baseline: {name}")
 
 
 DEFAULT_BASELINE_NAMES: tuple[str, ...] = ("softmax_attention", "causal_conv")
+# Frontier preset: opt-in via cohort --baselines. Compares candidates against
+# real GPT-2 / Mamba / Mamba2 mixers, not just nano softmax/conv.
+FRONTIER_BASELINE_NAMES: tuple[str, ...] = (
+    "softmax_attention",
+    "gpt2",
+    "mamba",
+    "mamba2",
+)
 
 
 # ---------- Param-count utility ----------
