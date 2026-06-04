@@ -1,8 +1,8 @@
 from research.tools.cpu_screening_cascade import (
+    _CAPABILITY_GATE_CUTS,
     MechProfile,
     Scored,
-    _probe_oracle_ar_gate_passes,
-    _probe_oracle_downstream_gate_passes,
+    _capability_gate_passes,
     _select,
 )
 from research.tools.label_free_probe_oracle import (
@@ -144,27 +144,66 @@ def test_cpu_cascade_exploit_selection_prefers_non_ar_rank_score():
     assert [s.fingerprint for s in selected] == ["high-rank"]
 
 
-def test_cpu_cascade_ar_gate_pass_helper_uses_gate_field():
-    assert _probe_oracle_ar_gate_passes({"label_free_probe_gate_pass": True}) is True
-    assert _probe_oracle_ar_gate_passes({"label_free_probe_gate_pass": False}) is False
-
-
-def test_cpu_cascade_downstream_gate_helper_blocks_below_threshold_models():
+def test_capability_gate_passes_on_either_retrieval_axis():
+    ind_thr = _CAPABILITY_GATE_CUTS["induction"]
+    nano_thr = _CAPABILITY_GATE_CUTS["nano_induction_nearest"]
+    # induction above its recall-95 cut ⇒ keep (OR-of-capable).
     assert (
-        _probe_oracle_downstream_gate_passes(
+        _capability_gate_passes(
             {
-                "label_free_probe_rank_axes": {
-                    "nano_induction_nearest": {"ratio": 0.8},
-                    "induction": {"ratio": 0.4},
-                    "ar_curriculum": {"ratio": 0.99},
+                "label_free_probe_predictions": {
+                    "induction": ind_thr + 0.01,
+                    "nano_induction_nearest": 0.0,
+                }
+            }
+        )
+        is True
+    )
+    # nano above its cut, induction below ⇒ still keep.
+    assert (
+        _capability_gate_passes(
+            {
+                "label_free_probe_predictions": {
+                    "induction": 0.0,
+                    "nano_induction_nearest": nano_thr + 0.01,
+                }
+            }
+        )
+        is True
+    )
+
+
+def test_capability_gate_rejects_when_both_axes_below_cut():
+    assert (
+        _capability_gate_passes(
+            {
+                "label_free_probe_predictions": {
+                    "induction": 0.001,
+                    "nano_induction_nearest": 0.001,
                 }
             }
         )
         is False
     )
+
+
+def test_capability_gate_ignores_ar_gate_and_falls_open_when_unpredictable():
+    # ar_gate is NOT a gate axis: high ar_gate with low induction/nano ⇒ reject.
     assert (
-        _probe_oracle_downstream_gate_passes(
-            {"label_free_probe_rank_axes": {"induction": {"ratio": 1.01}}}
+        _capability_gate_passes(
+            {
+                "label_free_probe_predictions": {
+                    "ar_gate": 0.99,
+                    "induction": 0.0,
+                    "nano_induction_nearest": 0.0,
+                }
+            }
         )
+        is False
+    )
+    # No probe, or no predictable gate axis ⇒ fall open (never silently drop).
+    assert _capability_gate_passes(None) is True
+    assert (
+        _capability_gate_passes({"label_free_probe_predictions": {"ar_gate": 0.99}})
         is True
     )

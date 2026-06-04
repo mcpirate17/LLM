@@ -28,7 +28,7 @@ predict capability from the operator's measured behaviour, validated against lab
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional  # noqa: F401
 
 import numpy as np
 import torch
@@ -47,6 +47,28 @@ _DESCRIPTOR_NAMES = (
     "effective_rank",
     "nonlinearity",
     "self_dominance",
+)
+
+# Weights composing the validated descriptors into ONE capability RANK score (higher = more
+# induction/binding-capable). DATA-DERIVED, not guessed: `nas_funnel_ood_eval` (n=600 labeled,
+# 2026-06-03) measured each descriptor's single-feature ROC vs induction-capable —
+#   content_dependence 0.81, long_range_reach 0.79 (attention-class routing-back),
+#   content_match_gating 0.64 (binding-specific content-gated copy — the charter's "won't bind"),
+#   causality_violation 0.49 (NOISE at random init; grammar/context rules already guard causality),
+#   instability/lipschitz 0.81 but POSITIVE-correlated (expressivity/gain) — so penalizing it was
+#   backwards and tanked the composite to ROC 0.22. These positive-only weights restore the
+#   composite to ≈ the logistic ceiling (~0.78). Re-fit via `nas_funnel_ood_eval` if descriptors
+#   change. causality_violation/instability kept at 0 (non-predictive here; stability is a separate
+#   calibrated gate, not the capability rank).
+_CAPABILITY_WEIGHTS = {
+    "long_range_reach": 1.0,
+    "content_dependence": 1.0,
+    "content_match_gating": 0.5,
+    "causality_violation": 0.0,
+    "instability": 0.0,
+}
+_LIP_STABLE = (
+    2.0  # measured_lipschitz beyond this is treated as gain blow-up (instability)
 )
 
 
@@ -71,10 +93,25 @@ class MeasuredDescriptorExtractor:
     # ── public ──────────────────────────────────────────────────────
     def descriptors(self, graph_json: str) -> Optional[Dict[str, float]]:
         """Return measured descriptors for one graph, or None if it can't be probed."""
+        return self.descriptors_from_factory(
+            lambda seed: self._build_from_graph(graph_json, seed)
+        )
+
+    def descriptors_from_factory(
+        self, factory: Callable[[int], Any]
+    ) -> Optional[Dict[str, float]]:
+        """Measured descriptors for any model built by ``factory(seed)``.
+
+        ``factory(seed)`` must return a model exposing ``embed(ids)`` and
+        ``_fingerprint_forward_from_embed(emb)`` (the SynthesizedModel contract).
+        This lets callers probe a module they built themselves (e.g. a
+        component_fab lane wrapped in a probe adapter), not just a graph_json.
+        Returns None if no seed could be probed.
+        """
         per_seed: List[Dict[str, float]] = []
         for seed in range(self.n_seeds):
             try:
-                d = self._probe_once(graph_json, seed)
+                d = self._probe_model(factory(seed), seed)
             except Exception:
                 d = None
             if d is not None:
@@ -94,11 +131,31 @@ class MeasuredDescriptorExtractor:
         d = self.descriptors(graph_json)
         return d is None or d["long_range_reach"] >= threshold
 
+    def capability_score(
+        self, graph_json: str, weights: Optional[Dict[str, float]] = None
+    ) -> Optional[float]:
+        """Measured capability RANK score for one graph (higher = more induction/binding-capable).
+
+        Read off the graph's actual computation (OOD-robust, label-free) — the signal that ranked
+        novel winners where the declared-feature oracle collapsed. Returns None if unprobeable.
+        Reuses ``descriptors()`` (no new probe); composition + weights in
+        ``capability_score_from_descriptors``.
+        """
+        d = self.descriptors(graph_json)
+        if d is None:
+            return None
+        return capability_score_from_descriptors(d, weights)
+
     # ── one random-init probe ───────────────────────────────────────
-    def _probe_once(self, graph_json: str, seed: int) -> Optional[Dict[str, float]]:
+    def _build_from_graph(self, graph_json: str, seed: int) -> Any:
         torch.manual_seed(seed)
         graph = graph_from_json(graph_json)
-        model = compile_model([graph], use_ir=False).to(self.device).eval()
+        return compile_model([graph], use_ir=False).to(self.device).eval()
+
+    def _probe_once(self, graph_json: str, seed: int) -> Optional[Dict[str, float]]:
+        return self._probe_model(self._build_from_graph(graph_json, seed), seed)
+
+    def _probe_model(self, model: Any, seed: int) -> Optional[Dict[str, float]]:
         gen = torch.Generator(device=self.device).manual_seed(seed)
 
         ids_match, _ = _generate_induction_batch(self.batch, self.gap, self.device, gen)
@@ -206,6 +263,25 @@ def _effective_rank(x: torch.Tensor) -> float:
         return 0.0
     p = s / s.sum()
     return float(torch.exp(-(p * torch.log(p)).sum()))
+
+
+def capability_score_from_descriptors(
+    d: Dict[str, float], weights: Optional[Dict[str, float]] = None
+) -> float:
+    """Compose measured descriptors into one capability RANK score (higher = more capable).
+
+    Pure; see ``_CAPABILITY_WEIGHTS`` for the term rationale. ``instability`` is the gain blow-up
+    of ``measured_lipschitz`` past ``_LIP_STABLE``. Missing descriptors/weights default to 0.
+    """
+    w = weights or _CAPABILITY_WEIGHTS
+    instability = max(0.0, float(d.get("measured_lipschitz", 0.0)) - _LIP_STABLE)
+    return (
+        w.get("long_range_reach", 0.0) * float(d.get("long_range_reach", 0.0))
+        + w.get("content_match_gating", 0.0) * float(d.get("content_match_gating", 0.0))
+        + w.get("content_dependence", 0.0) * float(d.get("content_dependence", 0.0))
+        + w.get("causality_violation", 0.0) * float(d.get("causality_violation", 0.0))
+        + w.get("instability", 0.0) * instability
+    )
 
 
 DESCRIPTOR_NAMES = _DESCRIPTOR_NAMES

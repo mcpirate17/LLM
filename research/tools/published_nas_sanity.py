@@ -21,8 +21,7 @@ from research.defaults import RUNS_DB
 from research.synthesis.graph import ComputationGraph
 from research.tools.cpu_screening_cascade import (
     CpuMechanismScorer,
-    _probe_oracle_ar_gate_passes,
-    _probe_oracle_downstream_gate_passes,
+    _capability_gate_passes,
 )
 from research.tools.learned_rules import score_template_quality
 
@@ -220,12 +219,8 @@ def build_records(dim: int, db_path: str, meta_db: str) -> list[dict[str, Any]]:
                     "lit_match_type": profile.lit_match_type,
                     "template_quality": quality["score"],
                     "failure_risk": quality["failure_risk"],
-                    "nas_ar_gate_pass": _probe_oracle_ar_gate_passes(probe),
-                    "nas_downstream_gate_pass": _probe_oracle_downstream_gate_passes(
-                        probe
-                    ),
-                    "nas_pass": _probe_oracle_ar_gate_passes(probe)
-                    and _probe_oracle_downstream_gate_passes(probe),
+                    "nas_capability_gate_pass": _capability_gate_passes(probe),
+                    "nas_pass": _capability_gate_passes(probe),
                     **probe,
                     "graph": graph_dict,
                 }
