@@ -24,6 +24,12 @@ import math
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Sequence
 
+from component_fab.proposer.tier2_feedback import (
+    Tier2Feedback,
+    tier2_score_multiplier,
+)
+from component_fab.proposer.nas_screen import NasScreenResult, nas_score_multiplier
+
 _SMOKE_KEYS_REQUIRED = (
     "forward_passed",
     "backward_passed",
@@ -134,15 +140,30 @@ def rank_proposals(
     solo_scorecards: Sequence[dict[str, Any]],
     probe_scorecards_by_id: dict[str, dict[str, Any]] | None = None,
     capability_scorecards_by_id: dict[str, dict[str, Any]] | None = None,
+    tier2_feedback_by_id: dict[str, Tier2Feedback] | None = None,
+    nas_screen_by_id: dict[str, NasScreenResult] | None = None,
 ) -> list[RankedEntry]:
     probe_map = probe_scorecards_by_id or {}
     cap_map = capability_scorecards_by_id or {}
+    tier2_map = tier2_feedback_by_id or {}
+    nas_map = nas_screen_by_id or {}
     out: list[RankedEntry] = []
     for solo in solo_scorecards:
         proposal_id = str(solo.get("proposal_id") or "")
         probe = probe_map.get(proposal_id)
         capability = cap_map.get(proposal_id)
         score, components = composite_score(solo, probe, capability)
+        feedback = tier2_map.get(proposal_id)
+        multiplier = tier2_score_multiplier(feedback)
+        if multiplier != 1.0:
+            score *= multiplier
+            components = dict(components)
+            components["tier2_multiplier"] = multiplier
+        nas_multiplier = nas_score_multiplier(nas_map.get(proposal_id))
+        if nas_multiplier != 1.0:
+            score *= nas_multiplier
+            components = dict(components)
+            components["nas_multiplier"] = nas_multiplier
         out.append(
             RankedEntry(
                 proposal_id=proposal_id,

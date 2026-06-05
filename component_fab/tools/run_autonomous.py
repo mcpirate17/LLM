@@ -54,10 +54,27 @@ from component_fab.policies.promotion import (
     apply_decisions,
     decide_promotions_for_ledger,
 )
+from component_fab.proposer.dynamic import enumerate_dynamic_proposals
 from component_fab.proposer.spec_generator import (
     ProposalSpec,
     dedupe_specs_by_axes,
 )
+from component_fab.proposer.nas_screen import (
+    NasScreenResult,
+    nas_score_multiplier,
+    score_specs_with_nas,
+)
+from component_fab.proposer.quality import (
+    allocate_budget_buckets,
+    bucket_counts,
+    score_specs_quality,
+)
+from component_fab.proposer.tier2_feedback import (
+    Tier2Feedback,
+    load_tier2_feedback,
+    tier2_score_multiplier,
+)
+from component_fab.validator.trust import axes_counts_for_specs
 from component_fab.state.ledger import (
     Ledger,
     PROMOTION_PROMOTED,
@@ -98,6 +115,37 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     )
     parser.add_argument("--max-cross-pairs", default=30, type=int)
     parser.add_argument("--max-knob-specs", default=48, type=int)
+    parser.add_argument(
+        "--max-dynamic-specs",
+        default=32,
+        type=int,
+        help="max ledger-feedback proposals synthesized per cycle",
+    )
+    parser.add_argument(
+        "--tier2-feedback",
+        nargs="*",
+        default=None,
+        help="optional Tier-2 cohort JSON artifacts to feed proposal repair and scoring",
+    )
+    parser.add_argument(
+        "--disable-nas-screen",
+        action="store_true",
+        help="disable cheap NAS/oracle screening multiplier for fab candidates",
+    )
+    parser.add_argument(
+        "--disable-quality-order",
+        action="store_true",
+        help="disable fused-quality ordering of candidates before grading "
+        "(ordering is additive; it does not change which specs are graded unless "
+        "--max-graded-per-cycle is set)",
+    )
+    parser.add_argument(
+        "--max-graded-per-cycle",
+        default=0,
+        type=int,
+        help="if >0, grade only this many specs per cycle, filled by the "
+        "60/25/15 exploit/repair/exploration quality-budget split",
+    )
     parser.add_argument(
         "--range-probe",
         action="store_true",
@@ -157,18 +205,27 @@ def _all_specs_for_cycle(
     use_promoted_as_anchors: bool,
     max_cross_pairs: int,
     max_knob_specs: int,
+    max_dynamic_specs: int,
     cycle: int,
+    tier2_feedback_by_id: dict[str, Tier2Feedback] | None = None,
 ) -> list[ProposalSpec]:
     knob_specs = enumerate_adaptive_math_knob_compositions(
         anchors,
         ledger,
         max_specs=max_knob_specs,
     )
+    dynamic_specs = enumerate_dynamic_proposals(
+        anchors,
+        ledger,
+        max_specs=max_dynamic_specs,
+        tier2_feedback_by_id=tier2_feedback_by_id,
+    )
     if not use_promoted_as_anchors:
         return dedupe_specs_by_axes(
             enumerate_axis_variants(anchors)
             + enumerate_cross_anchor_variants(anchors)
             + knob_specs
+            + dynamic_specs
         )
     anchor_pool = build_anchor_pool(
         anchors,
@@ -182,7 +239,7 @@ def _all_specs_for_cycle(
         max_pairs=max_cross_pairs,
         seed=cycle,
     )
-    return dedupe_specs_by_axes(axis_specs + cross_specs + knob_specs)
+    return dedupe_specs_by_axes(axis_specs + cross_specs + knob_specs + dynamic_specs)
 
 
 def _grade_spec(
@@ -260,6 +317,8 @@ def _grade_active_specs(
     skip_probe: bool,
     run_range_probe: bool = False,
     range_train_steps: int = 300,
+    tier2_feedback_by_id: dict[str, Tier2Feedback] | None = None,
+    nas_screen_by_id: dict[str, NasScreenResult] | None = None,
 ) -> tuple[list[dict], dict[str, dict], dict[str, dict], dict[str, int]]:
     cycle_scorecards: list[dict] = []
     cycle_probes: dict[str, dict] = {}
@@ -321,6 +380,10 @@ def _grade_active_specs(
             )
             continue
         score, _ = composite_score(asdict(solo), probe, capability)
+        score *= tier2_score_multiplier(
+            (tier2_feedback_by_id or {}).get(spec.proposal_id)
+        )
+        score *= nas_score_multiplier((nas_screen_by_id or {}).get(spec.proposal_id))
         ledger.record_grade(
             proposal_id=spec.proposal_id,
             name=solo.name,
@@ -337,6 +400,43 @@ def _grade_active_specs(
     return cycle_scorecards, cycle_probes, cycle_capabilities, eliminated_by_gate
 
 
+def _order_active_specs_by_quality(
+    active_specs: list[ProposalSpec],
+    ledger: Ledger,
+    *,
+    tier2_feedback_by_id: dict[str, Tier2Feedback],
+    nas_screen_by_id: dict[str, NasScreenResult],
+    max_graded_per_cycle: int = 0,
+) -> tuple[list[ProposalSpec], dict[str, int]]:
+    """Rank active specs by fused quality, applying the budget split.
+
+    Additive ordering layer: candidates are graded in descending quality so the
+    best are reached first under a wall-clock budget. Coverage is only capped
+    when ``max_graded_per_cycle`` > 0 (then the 60/25/15 exploit/repair/explore
+    split decides which specs are graded this cycle). Returns the ordered specs
+    and the bucket histogram for reporting.
+    """
+
+    if not active_specs:
+        return active_specs, bucket_counts(())
+    quality_by_id = score_specs_quality(
+        active_specs,
+        tier2_by_id=tier2_feedback_by_id,
+        nas_by_id=nas_screen_by_id,
+        entries_by_id=ledger.entries,
+        axes_counts=axes_counts_for_specs(active_specs),
+    )
+    scores = list(quality_by_id.values())
+    if max_graded_per_cycle > 0:
+        chosen = allocate_budget_buckets(scores, total=max_graded_per_cycle)
+    else:
+        chosen = sorted(scores, key=lambda s: s.quality_score, reverse=True)
+    chosen_ids = [s.proposal_id for s in chosen]
+    spec_by_id = {s.proposal_id: s for s in active_specs}
+    ordered = [spec_by_id[pid] for pid in chosen_ids if pid in spec_by_id]
+    return ordered, bucket_counts(chosen)
+
+
 def _run_cycle(
     cycle: int,
     *,
@@ -349,19 +449,28 @@ def _run_cycle(
     use_promoted_as_anchors: bool = False,
     max_cross_pairs: int = 30,
     max_knob_specs: int = 48,
+    max_dynamic_specs: int = 32,
     run_range_probe: bool = False,
     range_train_steps: int = 300,
+    tier2_feedback_paths: list[str] | None = None,
+    use_nas_screen: bool = True,
+    use_quality_order: bool = True,
+    max_graded_per_cycle: int = 0,
     promotion_rules: PromotionRules = DEFAULT_PROMOTION_RULES,
 ) -> dict:
     anchors = _gather_anchors(top_anchors)
+    tier2_feedback_by_id = load_tier2_feedback(tier2_feedback_paths)
     specs = _all_specs_for_cycle(
         anchors,
         ledger,
         use_promoted_as_anchors=use_promoted_as_anchors,
         max_cross_pairs=max_cross_pairs,
         max_knob_specs=max_knob_specs,
+        max_dynamic_specs=max_dynamic_specs,
+        tier2_feedback_by_id=tier2_feedback_by_id,
         cycle=cycle,
     )
+    nas_screen_by_id = score_specs_with_nas(specs, enabled=use_nas_screen)
     # Re-grade every spec each cycle so the ledger accumulates score history;
     # promotion requires a streak across cycles to fire. Skip only proposals
     # that have already reached a terminal status (promoted or rejected).
@@ -372,6 +481,16 @@ def _run_cycle(
     }
     active_specs = [s for s in specs if s.proposal_id not in skippable]
     n_new_proposals = sum(1 for s in active_specs if not ledger.has_seen(s.proposal_id))
+
+    bucket_summary = bucket_counts(())
+    if use_quality_order:
+        active_specs, bucket_summary = _order_active_specs_by_quality(
+            active_specs,
+            ledger,
+            tier2_feedback_by_id=tier2_feedback_by_id,
+            nas_screen_by_id=nas_screen_by_id,
+            max_graded_per_cycle=max_graded_per_cycle,
+        )
 
     cycle_scorecards, cycle_probes, cycle_capabilities, eliminated_by_gate = (
         _grade_active_specs(
@@ -384,12 +503,20 @@ def _run_cycle(
             skip_probe=skip_probe,
             run_range_probe=run_range_probe,
             range_train_steps=range_train_steps,
+            tier2_feedback_by_id=tier2_feedback_by_id,
+            nas_screen_by_id=nas_screen_by_id,
         )
     )
 
     decisions = decide_promotions_for_ledger(ledger, promotion_rules)
     counts = apply_decisions(ledger, decisions)
-    ranked = rank_proposals(cycle_scorecards, cycle_probes, cycle_capabilities)
+    ranked = rank_proposals(
+        cycle_scorecards,
+        cycle_probes,
+        cycle_capabilities,
+        tier2_feedback_by_id=tier2_feedback_by_id,
+        nas_screen_by_id=nas_screen_by_id,
+    )
     n_can_bind = sum(1 for c in cycle_capabilities.values() if c.get("can_bind"))
     return {
         "cycle": cycle,
@@ -401,6 +528,7 @@ def _run_cycle(
         "n_eliminated": sum(eliminated_by_gate.values()),
         "eliminated_by_gate": dict(eliminated_by_gate),
         "n_can_bind": n_can_bind,
+        "quality_buckets": bucket_summary,
         "promotion_counts": counts,
         "top_5": leaderboard_to_json(ranked)[:5],
     }
@@ -423,6 +551,13 @@ def _print_cycle(summary: dict) -> None:
         f"nb={eliminated.get('nano_bind', 0)})"
     )
     print(f"AR binders:       {summary.get('n_can_bind', 0)} passed the binding probe")
+    buckets = summary.get("quality_buckets", {})
+    if buckets:
+        print(
+            f"quality buckets:  exploit={buckets.get('exploit', 0)}, "
+            f"repair={buckets.get('repair', 0)}, "
+            f"exploration={buckets.get('exploration', 0)}"
+        )
     counts = summary["promotion_counts"]
     print(
         f"promotions:       {counts.get(PROMOTION_PROMOTED, 0)} promoted, "
@@ -527,8 +662,13 @@ def _drive_loop(args, ledger: Ledger, proposals_path: Path) -> list[dict]:
             use_promoted_as_anchors=args.use_promoted_as_anchors,
             max_cross_pairs=args.max_cross_pairs,
             max_knob_specs=args.max_knob_specs,
+            max_dynamic_specs=args.max_dynamic_specs,
             run_range_probe=args.range_probe,
             range_train_steps=args.range_train_steps,
+            tier2_feedback_paths=args.tier2_feedback,
+            use_nas_screen=not args.disable_nas_screen,
+            use_quality_order=not args.disable_quality_order,
+            max_graded_per_cycle=args.max_graded_per_cycle,
             promotion_rules=PromotionRules(
                 veto_range_blind=args.veto_range_blind,
                 min_range_effective_distance=args.min_range_distance,
