@@ -7,6 +7,8 @@ from typing import Callable
 import torch
 from torch import nn
 
+from component_fab.harness.top_ar_block import RMSNorm
+
 LaneFactory = Callable[[int], nn.Module]
 
 BLOCK_TEMPLATES: tuple[str, ...] = (
@@ -106,6 +108,11 @@ class RecursiveDepthBlock(nn.Module):
         if max_depth < 1:
             raise ValueError("max_depth must be >= 1")
         self.mixer = mixer_factory(dim)
+        # Pre-norm the recursion input: without it the residual stream grows
+        # geometrically across depth (mixer fed its own growing output), which
+        # NaNs deep/high-gain variants. RMSNorm bounds each step's input so the
+        # accumulated stream grows at most linearly (Universal-Transformer style).
+        self.norm = RMSNorm(dim)
         self.halt_head = nn.Linear(dim, 1)
         self.dim = dim
         self.max_depth = max_depth
@@ -115,7 +122,7 @@ class RecursiveDepthBlock(nn.Module):
         total = torch.zeros_like(x)
         remainder = torch.ones(x.shape[0], 1, 1, device=x.device, dtype=x.dtype)
         for depth in range(self.max_depth):
-            mix_out = self.mixer(h)
+            mix_out = self.mixer(self.norm(h))
             pooled = (h + mix_out).mean(dim=1, keepdim=True)
             halt = torch.sigmoid(self.halt_head(pooled))
             if depth == self.max_depth - 1:
@@ -193,6 +200,14 @@ class RecursiveDepthRouterBlock(nn.Module):
         if max_depth < 1:
             raise ValueError("max_depth must be >= 1")
         self.mixer = anchor_factory(dim)
+        # Pre-norm the mixer and FFN inputs inside the recursion. Without it the
+        # residual stream (h = h + block_delta, re-fed to the mixer each step)
+        # grows geometrically with depth × mixer-gain and NaNs deep/high-gain
+        # variants at random init — the bulk of the screen's "unstable" rejects.
+        # Pre-norming bounds each step's contribution (Universal-Transformer /
+        # MoR style), so the stream grows at most linearly.
+        self.norm_mix = RMSNorm(dim)
+        self.norm_ffn = RMSNorm(dim)
         self.ffn_in = nn.Linear(dim, dim * ffn_mult)
         self.ffn_out = nn.Linear(dim * ffn_mult, dim)
         self.halt = nn.Linear(dim, 1)
@@ -206,9 +221,11 @@ class RecursiveDepthRouterBlock(nn.Module):
             x.shape[0], x.shape[1], 1, device=x.device, dtype=x.dtype
         )
         for depth in range(self.max_depth):
-            mix_out = self.mixer(h)
+            mix_out = self.mixer(self.norm_mix(h))
             h_after_mix = h + mix_out
-            ffn_out = self.ffn_out(torch.nn.functional.gelu(self.ffn_in(h_after_mix)))
+            ffn_out = self.ffn_out(
+                torch.nn.functional.gelu(self.ffn_in(self.norm_ffn(h_after_mix)))
+            )
             block_delta = mix_out + ffn_out
             halt = torch.sigmoid(self.halt(h_after_mix + ffn_out))
             if depth == self.max_depth - 1:
