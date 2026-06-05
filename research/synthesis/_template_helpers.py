@@ -847,6 +847,63 @@ def _shuffle_wrap(
     return result
 
 
+def _apply_step_config_defaults(
+    op_name: str,
+    config: Dict[str, Any],
+    cur_dim: int,
+    model_dim: int,
+    rng: random.Random,
+) -> None:
+    """Fill per-op default config knobs (out_dim, sparsity, heads, windows, …).
+
+    Pure: mutates ``config`` in place and consumes ``rng`` in the original order;
+    no graph mutation. Extracted from ``_instantiate_motif`` so that builder stays
+    under the complexity gate.
+    """
+    if op_name in ("linear_proj", "fused_linear_gelu", "gated_linear"):
+        config.setdefault("out_dim", model_dim)
+    elif op_name == "linear_proj_down":
+        config.setdefault("out_dim", cur_dim // 2)
+    elif op_name == "linear_proj_up":
+        config.setdefault("out_dim", cur_dim * 2)
+    elif op_name in (
+        "nm_sparse_linear",
+        "block_sparse_linear",
+        "semi_structured_2_4_linear",
+        "ternary_projection",
+    ):
+        config.setdefault("out_dim", cur_dim)
+        if op_name == "nm_sparse_linear":
+            config.setdefault("n", 2)
+            config.setdefault("m", 4)
+        elif op_name == "block_sparse_linear":
+            config.setdefault("block_size", rng.choice([8, 16, 32]))
+            config.setdefault("block_density", rng.uniform(0.05, 0.5))
+    elif op_name in (
+        "bottleneck_proj",
+        "low_rank_proj",
+        "grouped_linear",
+        "shared_basis_proj",
+        "tied_proj",
+    ):
+        config.setdefault("out_dim", cur_dim)
+    elif op_name == "multi_head_mix":
+        config.setdefault("n_heads", rng.choice([2, 4, 8]))
+    elif op_name == "local_window_attn":
+        # Cap window_size to avoid Triton shared memory overflow.
+        # At D>=256, W=32 exceeds GPU shared memory (151KB > 100KB).
+        choices = [8, 16] if cur_dim >= 256 else [8, 16, 32]
+        config.setdefault("window_size", rng.choice(choices))
+    elif op_name == "sliding_window_mask":
+        config.setdefault("window_size", rng.choice([8, 16, 32]))
+    elif op_name == "tropical_moe":
+        config.setdefault("num_experts", rng.choice([2, 4]))
+    elif op_name == "gather_topk":
+        config.setdefault("k", rng.choice([4, 8, 16]))
+    elif op_name in ("swiglu_mlp", "rwkv_channel", "moe_topk", "rwkv_time_mixing"):
+        config.setdefault("mlp_ratio", rng.choice([2.0, 3.0, 4.0]))
+
+
 def _instantiate_motif(
     graph: ComputationGraph,
     node_id: int,
@@ -901,48 +958,7 @@ def _instantiate_motif(
                         f"Motif '{motif.name}' could not restore reduced dim=1 to {D}"
                     ) from exc
                 cur_dim = D
-        if op_name in ("linear_proj", "fused_linear_gelu", "gated_linear"):
-            config.setdefault("out_dim", D)
-        elif op_name == "linear_proj_down":
-            config.setdefault("out_dim", cur_dim // 2)
-        elif op_name == "linear_proj_up":
-            config.setdefault("out_dim", cur_dim * 2)
-        elif op_name in (
-            "nm_sparse_linear",
-            "block_sparse_linear",
-            "semi_structured_2_4_linear",
-            "ternary_projection",
-        ):
-            config.setdefault("out_dim", cur_dim)
-            if op_name == "nm_sparse_linear":
-                config.setdefault("n", 2)
-                config.setdefault("m", 4)
-            elif op_name == "block_sparse_linear":
-                config.setdefault("block_size", rng.choice([8, 16, 32]))
-                config.setdefault("block_density", rng.uniform(0.05, 0.5))
-        elif op_name in (
-            "bottleneck_proj",
-            "low_rank_proj",
-            "grouped_linear",
-            "shared_basis_proj",
-            "tied_proj",
-        ):
-            config.setdefault("out_dim", cur_dim)
-        elif op_name == "multi_head_mix":
-            config.setdefault("n_heads", rng.choice([2, 4, 8]))
-        elif op_name == "local_window_attn":
-            # Cap window_size to avoid Triton shared memory overflow.
-            # At D>=256, W=32 exceeds GPU shared memory (151KB > 100KB).
-            choices = [8, 16] if cur_dim >= 256 else [8, 16, 32]
-            config.setdefault("window_size", rng.choice(choices))
-        elif op_name == "sliding_window_mask":
-            config.setdefault("window_size", rng.choice([8, 16, 32]))
-        elif op_name == "tropical_moe":
-            config.setdefault("num_experts", rng.choice([2, 4]))
-        elif op_name == "gather_topk":
-            config.setdefault("k", rng.choice([4, 8, 16]))
-        elif op_name in ("swiglu_mlp", "rwkv_channel", "moe_topk", "rwkv_time_mixing"):
-            config.setdefault("mlp_ratio", rng.choice([2.0, 3.0, 4.0]))
+        _apply_step_config_defaults(op_name, config, cur_dim, D, rng)
         if (
             op_name in ("linear_proj_up", "linear_proj")
             and prev_op == "linear_proj_down"
