@@ -22,6 +22,7 @@ from .motifs import (
     MOTIF_CLASS_CHANNEL,
     MOTIF_CLASS_CONV,
     MOTIF_CLASS_EFFICIENT_PROJ,
+    MOTIF_CLASS_FAB,
     MOTIF_CLASS_FFN,
     MOTIF_CLASS_GATE,
     MOTIF_CLASS_GUARDED_ACT,
@@ -220,6 +221,10 @@ _ALL_CLASSES: Tuple[str, ...] = (
     MOTIF_CLASS_REDUCE,
     MOTIF_CLASS_GUARDED_ACT,
     MOTIF_CLASS_MATH_SPACE,
+    # Cross-pollinated component_fab inventions (diversity generator M2). Empty
+    # and inert unless ARIA_ENABLE_FAB_MOTIFS registered the class; listed here so
+    # wildcard exploration slots can compose fab ops into non-fab topologies.
+    MOTIF_CLASS_FAB,
 )
 
 

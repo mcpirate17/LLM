@@ -36,6 +36,13 @@ from ._motifs_mined import register_mined_motifs as _register_mined_motifs  # no
 
 _register_mined_motifs(VALIDATED_MOTIFS, MOTIFS_BY_CLASS)
 
+# Cross-pollinate component_fab inventions as grammar motifs (diversity generator
+# M2). No-op unless ARIA_ENABLE_FAB_MOTIFS is set; lands in the dedicated
+# 'fab_invention' class, reachable via the wildcard exploration path.
+from ._motifs_fab import register_fab_motifs as _register_fab_motifs  # noqa: E402
+
+_register_fab_motifs(VALIDATED_MOTIFS, MOTIFS_BY_CLASS)
+
 # Alias for backward compatibility (used by execution_candidates.py)
 MOTIF_LIBRARY: Dict[str, Motif] = VALIDATED_MOTIFS
 

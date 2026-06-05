@@ -48,6 +48,11 @@ MOTIF_CLASS_EFFICIENT_PROJ = "efficient_proj"
 MOTIF_CLASS_REDUCE = "reduce_core"
 MOTIF_CLASS_GUARDED_ACT = "guarded_act"
 MOTIF_CLASS_MATH_SPACE = "math_space"
+# Dynamic provenance class for cross-pollinated component_fab inventions. Kept
+# OUT of ALL_MOTIF_CLASSES (like ``mined_pair``) so it never silently replaces a
+# validated motif; reachable only via the wildcard exploration path (it is added
+# to ``_template_helpers._ALL_CLASSES``) and explicit ``exploration_targets``.
+MOTIF_CLASS_FAB = "fab_invention"
 
 ALL_MOTIF_CLASSES: FrozenSet[str] = frozenset(
     {
