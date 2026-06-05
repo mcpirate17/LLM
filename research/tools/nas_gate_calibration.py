@@ -317,9 +317,12 @@ def main() -> None:
     p.add_argument("--db", default=str(RUNS_DB))
     p.add_argument(
         "--feat-db",
-        default="research/db_backups/meta_analysis_pre_ar_gate_report_apply_20260531_173038.db",
-        help="DB holding the graph_semantic_features table (live meta DB has lost it; "
-        "the oracle was trained on this backup).",
+        default="research/meta_analysis.db",
+        help="DB holding the graph_semantic_features table. The live meta DB was "
+        "re-backfilled 2026-06-03 (13309 fingerprints, 113-feature vectors, schema "
+        "identical to the oracle's training corpus) so calibration runs on fresh data. "
+        "Fallback backup if ever re-purged: "
+        "research/db_backups/meta_analysis_pre_ar_gate_report_apply_20260531_173038.db",
     )
     p.add_argument("--target-recall", type=float, default=0.95)
     p.add_argument("--shrink-f", type=float, default=0.5)
