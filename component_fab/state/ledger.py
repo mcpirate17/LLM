@@ -16,7 +16,7 @@ import datetime as _dt
 import json
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, TextIO
 
 _REPO = Path(__file__).resolve().parents[2]
 DEFAULT_LEDGER_PATH = _REPO / "component_fab" / "catalog" / "ledger.jsonl"
@@ -25,6 +25,70 @@ PROMOTION_PENDING = "pending"
 PROMOTION_PROMOTED = "promoted"
 PROMOTION_REJECTED = "rejected"
 _VALID_STATUSES = frozenset({PROMOTION_PENDING, PROMOTION_PROMOTED, PROMOTION_REJECTED})
+
+
+class JsonlWriter:
+    """Append-mode JSONL writer that keeps a single file handle open across writes.
+
+    Replaces the ``open('a') -> write -> close()`` per-record pattern. For
+    ~hundreds of writes/cycle (e.g. one per fab spec), the open+close cost
+    dominates wall-clock; this class amortizes the open cost to once per
+    ``JsonlWriter`` instance.
+
+    Thread-safety: NOT safe for concurrent use. Use one writer per thread.
+    The fab autonomous loop is single-threaded.
+
+    Behavior change vs the prior open/close pattern: the file handle is held
+    open across writes. ``flush()`` is called after every record so external
+    readers (``tail -f``) and same-process ``Path.read_text()`` see writes
+    immediately — but no ``fsync`` is forced, matching the prior durability
+    (process crash mid-cycle can still lose the last buffered line).
+    """
+
+    __slots__ = ("path", "buffering", "_handle")
+
+    def __init__(self, path: Path | str, *, buffering: int = 1 << 20) -> None:
+        self.path = Path(path)
+        self.buffering = buffering
+        self._handle: TextIO | None = None
+
+    def __enter__(self) -> "JsonlWriter":
+        self._ensure_open()
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self.close()
+
+    def _ensure_open(self) -> None:
+        if self._handle is None:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self._handle = self.path.open(
+                "a", encoding="utf-8", buffering=self.buffering
+            )
+
+    def write(self, record: Any) -> None:
+        """Encode ``record`` as one JSONL line and append it to the file.
+
+        Flushes after every write so external readers see data immediately
+        (the prior open/close pattern also flushed on close). With
+        ``buffering=1<<20`` and typical small records, the flush is a no-op
+        at the syscall level once the in-process buffer fills.
+        """
+        if self._handle is None:
+            self._ensure_open()
+        assert self._handle is not None
+        self._handle.write(json.dumps(record, default=str) + "\n")
+        self._handle.flush()
+
+    def flush(self) -> None:
+        if self._handle is not None:
+            self._handle.flush()
+
+    def close(self) -> None:
+        if self._handle is not None:
+            self._handle.flush()
+            self._handle.close()
+            self._handle = None
 
 
 def _prune_rotations(base_path: Path, keep: int = 3) -> int:
@@ -74,6 +138,7 @@ class Ledger:
     ) -> None:
         self.path = Path(path)
         self.entries: dict[str, LedgerEntry] = {}
+        self._writer: JsonlWriter | None = None
         if include_rotated:
             self._replay_rotated()
         if self.path.exists():
@@ -197,9 +262,9 @@ class Ledger:
         self._append(record)
 
     def _append(self, record: dict[str, Any]) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(record, default=str) + "\n")
+        if self._writer is None:
+            self._writer = JsonlWriter(self.path)
+        self._writer.write(record)
 
     def rotate_if_oversized(self, max_bytes: int = 1_048_576) -> Path | None:
         """Rotate the active JSONL when it exceeds ``max_bytes``.
@@ -211,6 +276,11 @@ class Ledger:
         """
         if not self.path.exists() or self.path.stat().st_size < max_bytes:
             return None
+        # Drop the cached handle — the on-disk inode is about to be renamed
+        # out from under it. A fresh writer will open on the next _append.
+        if self._writer is not None:
+            self._writer.close()
+            self._writer = None
         index = 1
         while True:
             candidate = self.path.with_suffix(self.path.suffix + f".{index}")
@@ -221,6 +291,16 @@ class Ledger:
         self.path.touch()
         _prune_rotations(self.path)
         return candidate
+
+    def close(self) -> None:
+        """Flush and release the JSONL file handle.
+
+        Safe to call multiple times. The handle is also released when the
+        process exits; this is the explicit-cleanup entry point.
+        """
+        if self._writer is not None:
+            self._writer.close()
+            self._writer = None
 
     def stale_proposals(
         self, max_age_cycles: int = 3, current_cycle: int = 0

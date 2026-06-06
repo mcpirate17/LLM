@@ -6,6 +6,7 @@ from torch import nn
 
 from ._core import (
     _cumsum_dim1_eager,
+    get_causal_mask,
 )
 from ._lanes_a import (
     FiniteDifferenceCalculusLane,
@@ -234,12 +235,7 @@ class CliffordAttention(nn.Module):
         signature = torch.tensor([1.0, 1.0, 1.0, -1.0], device=x.device, dtype=x.dtype)
         scalar_aff = torch.einsum("binc,bjnc,c->bij", q, k, signature) * self.scale
         if self.causal:
-            mask = torch.triu(
-                torch.full(
-                    (seq_len, seq_len), float("-inf"), device=x.device, dtype=x.dtype
-                ),
-                diagonal=1,
-            )
+            mask = get_causal_mask(seq_len, x.device, x.dtype)
             scalar_aff = scalar_aff + mask
         weights = torch.softmax(scalar_aff, dim=-1)
         out = torch.einsum("bij,bjnc->binc", weights, v)
@@ -466,10 +462,7 @@ class FisherAttention(nn.Module):
         sq = q_sq + k_sq - 2.0 * dot
         affinity = -0.5 * sq * torch.exp(self.log_scale)
         if self.causal:
-            mask = torch.triu(
-                torch.full((l, l), float("-inf"), device=x.device, dtype=x.dtype),
-                diagonal=1,
-            )
+            mask = get_causal_mask(l, x.device, x.dtype)
             affinity = affinity + mask
         weights = torch.softmax(affinity, dim=-1)
         return torch.einsum("bij,bjd->bid", weights, v)
@@ -647,10 +640,7 @@ class QuaternionAttention(nn.Module):
         # Quaternion inner product affinity: sum over (n_q, 4 components).
         affinity = torch.einsum("binc,bjnc->bij", q, k) * self.scale
         if self.causal:
-            mask = torch.triu(
-                torch.full((l, l), float("-inf"), device=x.device, dtype=x.dtype),
-                diagonal=1,
-            )
+            mask = get_causal_mask(l, x.device, x.dtype)
             affinity = affinity + mask
         weights = torch.softmax(affinity, dim=-1)
         # Quaternion-multiply each query by aggregated value, then flatten.
@@ -707,10 +697,7 @@ class PoincareAttention(nn.Module):
         hyp_dist = torch.acosh(dist_arg)
         affinity = -(hyp_dist * hyp_dist) * self.scale
         if self.causal:
-            mask = torch.triu(
-                torch.full((l, l), float("-inf"), device=x.device, dtype=x.dtype),
-                diagonal=1,
-            )
+            mask = get_causal_mask(l, x.device, x.dtype)
             affinity = affinity + mask
         weights = torch.softmax(affinity, dim=-1)
         return torch.einsum("bij,bjd->bid", weights, v)

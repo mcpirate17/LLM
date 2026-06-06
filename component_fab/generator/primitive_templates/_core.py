@@ -121,17 +121,70 @@ class _QKVRopeAttentionBase(nn.Module):
             k = apply_rope(k, cos, sin)
         affinity = torch.einsum("bid,bjd->bij", q, k) * self.scale
         if self.causal:
-            mask = torch.triu(
-                torch.full(
-                    (seq_len, seq_len),
-                    causal_mask_value,
-                    device=x.device,
-                    dtype=x.dtype,
-                ),
-                diagonal=1,
-            )
+            if causal_mask_value == float("-inf"):
+                mask = get_causal_mask(seq_len, x.device, x.dtype)
+            else:
+                mask = get_causal_mask(
+                    seq_len, x.device, x.dtype, mask_value=causal_mask_value
+                )
             affinity = affinity + mask
         return affinity, v
+
+
+# Causal-mask caches. Replaced the per-forward `torch.triu(torch.full(...))`
+# allocation in every attention lane with a (seq_len, device, dtype)-keyed
+# cache. The float-mask variant is for additive attention (mask + affinity);
+# the bool-mask variant is for `masked_fill` (reciprocal / semiring family).
+# Cache size is bounded by the small fixed set of (S, device, dtype) tuples a
+# single process sees — typically <10 entries.
+_FLOAT_MASK_CACHE: dict[tuple[int, str, torch.dtype], torch.Tensor] = {}
+_BOOL_MASK_CACHE: dict[tuple[int, str], torch.Tensor] = {}
+
+
+def get_causal_mask(
+    seq_len: int,
+    device: torch.device | str,
+    dtype: torch.dtype,
+    *,
+    mask_value: float = float("-inf"),
+) -> torch.Tensor:
+    """Cached upper-triangular causal mask of shape ``(S, S)`` for additive attention.
+
+    Returns the same tensor object across calls with the same key — safe to
+    share because the values are immutable (no in-place writes downstream).
+    """
+    key = (seq_len, str(device), dtype)
+    cached = _FLOAT_MASK_CACHE.get(key)
+    if cached is not None and mask_value == float("-inf"):
+        return cached
+    mask = torch.triu(
+        torch.full((seq_len, seq_len), mask_value, device=device, dtype=dtype),
+        diagonal=1,
+    )
+    if mask_value == float("-inf"):
+        _FLOAT_MASK_CACHE[key] = mask
+    return mask
+
+
+def get_causal_bool_mask(seq_len: int, device: torch.device | str) -> torch.Tensor:
+    """Cached upper-triangular causal bool mask of shape ``(S, S)`` for ``masked_fill``.
+
+    Used by the reciprocal / semiring attention family, which needs a bool
+    mask to call ``masked_fill`` rather than add a -inf value to the logits.
+    """
+    key = (seq_len, str(device))
+    cached = _BOOL_MASK_CACHE.get(key)
+    if cached is not None:
+        return cached
+    mask = torch.triu(torch.ones(seq_len, seq_len, device=device, dtype=torch.bool), 1)
+    _BOOL_MASK_CACHE[key] = mask
+    return mask
+
+
+def _clear_causal_mask_cache() -> None:
+    """Drop all cached causal masks. Intended for tests and process-end cleanup."""
+    _FLOAT_MASK_CACHE.clear()
+    _BOOL_MASK_CACHE.clear()
 
 
 def _causal_sparsemax(logits: torch.Tensor) -> torch.Tensor:
@@ -191,6 +244,9 @@ __all__ = [
     "_cummax_dim1_eager",
     "_reciprocal_attn_logits",
     "_QKVRopeAttentionBase",
+    "get_causal_mask",
+    "get_causal_bool_mask",
+    "_clear_causal_mask_cache",
     "_causal_sparsemax",
     "_pick_n_heads",
     "_heads_for_head_dim",

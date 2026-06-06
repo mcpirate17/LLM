@@ -7,6 +7,7 @@ from typing import Callable
 import torch
 from torch import nn
 
+from component_fab.generator.primitive_templates._core import get_causal_mask
 from component_fab.harness.top_ar_block import RMSNorm
 
 LaneFactory = Callable[[int], nn.Module]
@@ -390,10 +391,7 @@ class GraphAttentionBlock(nn.Module):
         adj_kg = kg @ self.adj.t()  # [B, L, R]
         affinity = torch.einsum("bir,bjr->bij", qg, adj_kg) * self.scale
         if self.causal:
-            mask = torch.triu(
-                torch.full((l, l), float("-inf"), device=x.device, dtype=x.dtype),
-                diagonal=1,
-            )
+            mask = get_causal_mask(l, x.device, x.dtype)
             affinity = affinity + mask
         weights = torch.softmax(affinity, dim=-1)
         edge_mixed = torch.einsum("bij,bjd->bid", weights, v)

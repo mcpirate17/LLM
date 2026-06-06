@@ -12,6 +12,7 @@ from ._core import (
     _causal_sparsemax,
     _pick_n_heads,
     _heads_for_head_dim,
+    get_causal_bool_mask,
 )
 
 
@@ -125,13 +126,7 @@ class ReciprocalRankAttention(_QKVRopeAttentionBase):
             q = apply_rope(q, cos, sin)
             k = apply_rope(k, cos, sin)
         raw = torch.einsum("bid,bjd->bij", q, k) * self.scale
-        tri = (
-            torch.triu(
-                torch.ones(seq_len, seq_len, device=x.device, dtype=torch.bool), 1
-            )
-            if self.causal
-            else None
-        )
+        tri = get_causal_bool_mask(seq_len, x.device) if self.causal else None
         boost = torch.tanh(self.reciprocal_logit_scale).to(x.dtype)
         logits = _reciprocal_attn_logits(raw, boost, tri)
         weights = torch.softmax(logits, dim=-1)
@@ -178,10 +173,7 @@ class PhaseLockAttention(_QKVRopeAttentionBase):
             + torch.einsum("bid,bjd->bij", s_q, s_k)
         ) / float(self.dim)
         if self.causal:
-            tri = torch.triu(
-                torch.ones(seq_len, seq_len, device=x.device, dtype=torch.bool),
-                diagonal=1,
-            )
+            tri = get_causal_bool_mask(seq_len, x.device)
             dot = dot.masked_fill(tri, float("-inf"))
             phase = phase.masked_fill(tri, 0.0)
         phase_scale = torch.tanh(self.phase_lock_scale).to(x.dtype)
@@ -257,7 +249,7 @@ class SparseReciprocalAttention(_QKVRopeAttentionBase):
             q, k = apply_rope(q, cos, sin), apply_rope(k, cos, sin)
         raw = torch.einsum("bid,bjd->bij", q, k) * self.scale
         if self.causal:
-            tri = torch.triu(torch.ones(S, S, device=x.device, dtype=torch.bool), 1)
+            tri = get_causal_bool_mask(S, x.device)
             fwd = _causal_sparsemax(raw.masked_fill(tri, self._NEG))
             rev = _causal_sparsemax(raw.transpose(-2, -1).masked_fill(tri, self._NEG))
         else:
@@ -298,11 +290,7 @@ class SemiringReciprocalAttention(_QKVRopeAttentionBase):
             cos, sin = self.rope(S, device=x.device, dtype=x.dtype)
             q, k = apply_rope(q, cos, sin), apply_rope(k, cos, sin)
         raw = torch.einsum("bid,bjd->bij", q, k) * self.scale
-        tri = (
-            torch.triu(torch.ones(S, S, device=x.device, dtype=torch.bool), 1)
-            if self.causal
-            else None
-        )
+        tri = get_causal_bool_mask(S, x.device) if self.causal else None
         boost = torch.tanh(self.reciprocal_logit_scale).to(x.dtype)
         logits = _reciprocal_attn_logits(raw, boost, tri)
         gamma = torch.exp(self.semiring_beta).clamp(0.05, 10.0)
@@ -403,11 +391,7 @@ class HeteroSemiringReciprocalAttention(_QKVRopeAttentionBase):
             cos, sin = self.rope(S, device=x.device, dtype=x.dtype)
             q, k = apply_rope(q, cos, sin), apply_rope(k, cos, sin)
         raw = torch.einsum("bhid,bhjd->bhij", q, k) * self.scale  # (B,H,S,S)
-        tri = (
-            torch.triu(torch.ones(S, S, device=x.device, dtype=torch.bool), 1)
-            if self.causal
-            else None
-        )
+        tri = get_causal_bool_mask(S, x.device) if self.causal else None
         boost = torch.tanh(self.reciprocal_logit_scale).view(1, H, 1, 1).to(x.dtype)
         logits = _reciprocal_attn_logits(raw, boost, tri)
         gamma = self._signed_gamma().view(1, H, 1, 1, 1).to(x.dtype)
@@ -459,11 +443,7 @@ class AnisotropicSemiringReciprocalAttention(_QKVRopeAttentionBase):
             cos, sin = self.rope(S, device=x.device, dtype=x.dtype)
             q, k = apply_rope(q, cos, sin), apply_rope(k, cos, sin)
         raw = torch.einsum("bid,bjd->bij", q, k) * self.scale
-        tri = (
-            torch.triu(torch.ones(S, S, device=x.device, dtype=torch.bool), 1)
-            if self.causal
-            else None
-        )
+        tri = get_causal_bool_mask(S, x.device) if self.causal else None
         boost = torch.tanh(self.reciprocal_logit_scale).to(x.dtype)
         logits = _reciprocal_attn_logits(raw, boost, tri)
         gamma = torch.exp(self.semiring_beta).clamp(0.05, 10.0).to(x.dtype)  # (D,)
@@ -519,11 +499,7 @@ class FixedRankReciprocalAttention(nn.Module):
             cos, sin = self.rope(S, device=x.device, dtype=x.dtype)
             q, k = apply_rope(q, cos, sin), apply_rope(k, cos, sin)
         raw = torch.einsum("bir,bjr->bij", q, k) * self.scale
-        tri = (
-            torch.triu(torch.ones(S, S, device=x.device, dtype=torch.bool), 1)
-            if self.causal
-            else None
-        )
+        tri = get_causal_bool_mask(S, x.device) if self.causal else None
         boost = torch.tanh(self.reciprocal_logit_scale).to(x.dtype)
         logits = _reciprocal_attn_logits(raw, boost, tri)
         weights = torch.softmax(logits, dim=-1)
@@ -582,11 +558,7 @@ class TemperedTropicalAttention(_QKVRopeAttentionBase):
             cos, sin = self.rope(S, device=x.device, dtype=x.dtype)
             q, k = apply_rope(q, cos, sin), apply_rope(k, cos, sin)
         affinity = torch.einsum("bhid,bhjd->bhij", q, k) * self.scale  # (B,H,S,S)
-        tri = (
-            torch.triu(torch.ones(S, S, device=x.device, dtype=torch.bool), 1)
-            if self.causal
-            else None
-        )
+        tri = get_causal_bool_mask(S, x.device) if self.causal else None
         beta = torch.nn.functional.softplus(self.log_beta).clamp(0.05, 50.0)
         beta = beta.view(1, H, 1, 1, 1).to(x.dtype)
         combined = affinity.unsqueeze(-1) + v.unsqueeze(2)  # (B,H,S,S,dh)

@@ -14,7 +14,6 @@ Runs four checks against a proposed nn.Module:
 
 from __future__ import annotations
 
-import json
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -25,6 +24,7 @@ from torch import nn
 from ..harness.standard_block import make_lane_test_block
 from ..metrics.mix_speed import measure_mix_speed
 from ..proposer.spec_generator import CATEGORY_LANE, ProposalSpec
+from ..state.ledger import JsonlWriter
 
 
 _REPO = Path(__file__).resolve().parents[2]
@@ -118,6 +118,16 @@ def _property_cross_check(
 
     adapter_wrapped = _has_adapter_wrap(module)
     findings["has_adapter_wrap"] = adapter_wrapped
+
+    # Spectral rank measurement (to detect collapse or capacity limitation)
+    flat_y = y.reshape(-1, dim)
+    try:
+        sv = torch.linalg.svdvals(flat_y)
+        rank = (sv > sv.max() * 1e-4).sum().item()
+        findings["activation_rank"] = int(rank)
+    except Exception as exc:
+        findings["activation_rank"] = 0
+        findings["activation_rank_error"] = str(exc)
 
     declared_sparsity = str(declared.get("op_activation_sparsity_pattern") or "")
     if declared_sparsity == "top_k" and not adapter_wrapped:
@@ -346,7 +356,39 @@ def append_scorecard(
     scorecard: SoloScorecard, path: Path | str = DEFAULT_CATALOG
 ) -> Path:
     out = Path(path)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    with out.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(asdict(scorecard), default=str) + "\n")
+    _get_scorecard_writer(out).write(asdict(scorecard))
     return out
+
+
+# Per-path cache of JsonlWriter instances. ``run_autonomous._grade_spec`` calls
+# ``append_scorecard`` once per spec per cycle (hundreds of writes/cycle); the
+# per-write open+close was the dominant cost on the cycle write phase.
+# Call ``close_scorecard_writers()`` to flush + release every cached handle
+# (e.g. before reading the file from another reader, or at process exit).
+_SCOREBOARD_WRITERS: dict[Path, JsonlWriter] = {}
+
+
+def _get_scorecard_writer(path: Path) -> JsonlWriter:
+    writer = _SCOREBOARD_WRITERS.get(path)
+    if writer is None:
+        writer = JsonlWriter(path)
+        _SCOREBOARD_WRITERS[path] = writer
+    return writer
+
+
+def close_scorecard_writers(path: Path | str | None = None) -> None:
+    """Flush and release the cached writer(s).
+
+    With no argument, closes every cached writer. With a path, closes only
+    that path. Safe to call multiple times; subsequent ``append_scorecard``
+    calls will lazily open a fresh writer.
+    """
+    if path is None:
+        for writer in _SCOREBOARD_WRITERS.values():
+            writer.close()
+        _SCOREBOARD_WRITERS.clear()
+        return
+    out = Path(path)
+    writer = _SCOREBOARD_WRITERS.pop(out, None)
+    if writer is not None:
+        writer.close()
