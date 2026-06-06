@@ -484,6 +484,35 @@ def _apply_routing_wrap(
     return base
 
 
+def _dispatch_nas_graph(math_axes: dict[str, Any], *, dim: int) -> nn.Module | None:
+    """Compile a NAS-synthesized graph topology into a token-mixing lane.
+
+    When ``op_source == "nas_graph"`` the spec carries a graph fingerprint whose
+    JSON is cached by ``proposer.nas_bridge``. We reload it, re-dimension to the
+    requested grading ``dim``, and compile it to an (B,L,D)->(B,L,D) module. The
+    bridge already compile-tested the graph at this dim, so this is the same
+    deterministic operation; a missing cache is a hard error (fail loud).
+    """
+    from component_fab.proposer.nas_bridge import SOURCE_NAS
+
+    if str(math_axes.get("op_source") or "") != SOURCE_NAS:
+        return None
+    from component_fab.proposer.nas_bridge import load_cached_graph_json
+
+    fingerprint = str(math_axes.get("op_nas_fingerprint") or "")
+    graph_json = load_cached_graph_json(fingerprint)
+    if graph_json is None:
+        raise RuntimeError(
+            f"nas_graph spec {fingerprint!r}: cached graph JSON missing "
+            f"(component_fab/catalog/nas_graphs/)"
+        )
+    from research.synthesis.compiler import compile_graph
+    from research.synthesis.serializer import graph_from_json
+
+    graph = graph_from_json(graph_json, model_dim=dim)
+    return compile_graph(graph, use_ir=True)
+
+
 def _dispatch_block_template(
     math_axes: dict[str, Any], *, dim: int, top_k_frac: float
 ) -> nn.Module | None:
@@ -645,6 +674,9 @@ def generate_module(
     top_k_frac: float = 0.25,
 ) -> nn.Module:
     """Generate a primitive instance from a math-axis tuple."""
+    nas = _dispatch_nas_graph(math_axes, dim=dim)
+    if nas is not None:
+        return nas
     block = _dispatch_block_template(math_axes, dim=dim, top_k_frac=top_k_frac)
     if block is not None:
         return block

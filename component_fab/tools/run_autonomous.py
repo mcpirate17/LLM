@@ -46,6 +46,7 @@ from component_fab.improver.cross_anchor import (
 from component_fab.improver.math_knob_catalog import (
     enumerate_adaptive_math_knob_compositions,
 )
+from component_fab.proposer.nas_bridge import nas_graph_specs
 from component_fab.improver.ranking import (
     composite_score,
     leaderboard_to_json,
@@ -119,6 +120,12 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     )
     parser.add_argument("--max-cross-pairs", default=30, type=int)
     parser.add_argument("--max-knob-specs", default=48, type=int)
+    parser.add_argument(
+        "--max-nas-specs",
+        default=6,
+        type=int,
+        help="fresh NAS-synthesized graph topologies to grade per cycle (0 disables)",
+    )
     parser.add_argument(
         "--max-dynamic-specs",
         default=32,
@@ -211,6 +218,8 @@ def _all_specs_for_cycle(
     max_knob_specs: int,
     max_dynamic_specs: int,
     cycle: int,
+    dim: int = 32,
+    max_nas_specs: int = 6,
     tier2_feedback_by_id: dict[str, Tier2Feedback] | None = None,
 ) -> list[ProposalSpec]:
     knob_specs = enumerate_adaptive_math_knob_compositions(
@@ -231,6 +240,10 @@ def _all_specs_for_cycle(
     frontier_specs = enumerate_frontier_core_specs() + enumerate_frontier_hybrids(
         anchors
     )
+    # Novel NAS topologies: genuinely new op-DAG structures (split/fuse/route/
+    # recurse) that fab's fixed templates cannot express, compiled into gradeable
+    # lanes. seed varies by cycle so each cycle samples different structures.
+    nas_specs = nas_graph_specs(n_fresh=max_nas_specs, dim=dim, seed=cycle)
     if not use_promoted_as_anchors:
         return dedupe_specs_by_axes(
             enumerate_axis_variants(anchors)
@@ -238,6 +251,7 @@ def _all_specs_for_cycle(
             + knob_specs
             + dynamic_specs
             + frontier_specs
+            + nas_specs
         )
     anchor_pool = build_anchor_pool(
         anchors,
@@ -252,7 +266,12 @@ def _all_specs_for_cycle(
         seed=cycle,
     )
     return dedupe_specs_by_axes(
-        axis_specs + cross_specs + knob_specs + dynamic_specs + frontier_specs
+        axis_specs
+        + cross_specs
+        + knob_specs
+        + dynamic_specs
+        + frontier_specs
+        + nas_specs
     )
 
 
@@ -464,6 +483,7 @@ def _run_cycle(
     max_cross_pairs: int = 30,
     max_knob_specs: int = 48,
     max_dynamic_specs: int = 32,
+    max_nas_specs: int = 6,
     run_range_probe: bool = False,
     range_train_steps: int = 300,
     tier2_feedback_paths: list[str] | None = None,
@@ -481,6 +501,8 @@ def _run_cycle(
         max_cross_pairs=max_cross_pairs,
         max_knob_specs=max_knob_specs,
         max_dynamic_specs=max_dynamic_specs,
+        dim=dim,
+        max_nas_specs=max_nas_specs,
         tier2_feedback_by_id=tier2_feedback_by_id,
         cycle=cycle,
     )
@@ -677,6 +699,7 @@ def _drive_loop(args, ledger: Ledger, proposals_path: Path) -> list[dict]:
             max_cross_pairs=args.max_cross_pairs,
             max_knob_specs=args.max_knob_specs,
             max_dynamic_specs=args.max_dynamic_specs,
+            max_nas_specs=args.max_nas_specs,
             run_range_probe=args.range_probe,
             range_train_steps=args.range_train_steps,
             tier2_feedback_paths=args.tier2_feedback,
