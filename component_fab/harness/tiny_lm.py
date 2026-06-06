@@ -22,6 +22,7 @@ from typing import Callable
 import torch
 from torch import nn
 
+from ..generator.primitive_templates._core import get_causal_mask
 from .rope import RotaryEmbedding, apply_rope
 
 
@@ -197,10 +198,7 @@ class SoftmaxCausalAttention(nn.Module):
             q = apply_rope(q, cos, sin)
             k = apply_rope(k, cos, sin)
         affinity = torch.einsum("bid,bjd->bij", q, k) * self.scale
-        mask = torch.triu(
-            torch.full((l, l), float("-inf"), device=x.device, dtype=x.dtype),
-            diagonal=1,
-        )
+        mask = get_causal_mask(l, x.device, x.dtype)
         attn = torch.softmax(affinity + mask, dim=-1)
         return torch.einsum("bij,bjd->bid", attn, v)
 
@@ -258,10 +256,7 @@ class MultiHeadCausalAttention(nn.Module):
         k = k.view(b, l, self.n_heads, self.head_dim).transpose(1, 2)
         v = v.view(b, l, self.n_heads, self.head_dim).transpose(1, 2)
         affinity = torch.einsum("bhid,bhjd->bhij", q, k) * self.scale
-        mask = torch.triu(
-            torch.full((l, l), float("-inf"), device=x.device, dtype=x.dtype),
-            diagonal=1,
-        )
+        mask = get_causal_mask(l, x.device, x.dtype)
         attn = torch.softmax(affinity + mask, dim=-1)
         out = torch.einsum("bhij,bhjd->bhid", attn, v)
         out = out.transpose(1, 2).reshape(b, l, self.dim)
@@ -310,6 +305,40 @@ def lane_factory_for_baseline(name: str) -> Callable[[int], nn.Module]:
     if name in ("mamba", "mamba2"):
         return _compiled_reference_mixer_factory(name)
     raise ValueError(f"unknown baseline: {name}")
+
+
+def striped_lane_factory(
+    candidate_factory: Callable[[int], nn.Module],
+    *,
+    attn_every: int = 2,
+    attn_name: str = "softmax_attention",
+) -> Callable[[int], nn.Module]:
+    """Wrap a candidate mixer into a striped hybrid: attention every ``attn_every``
+    blocks, the candidate everywhere else.
+
+    Why: the hybrid-architecture literature (Poli et al. 2024 striped stacks +8.1%
+    on MAD; Lahoti et al. 2025) finds that a token-mixer's value is its contribution
+    *inside* an attention stack, and that standalone quality does NOT predict hybrid
+    quality. So a fair "is this component worth keeping" test interleaves it with
+    full attention rather than running it solo. ``TinyLM`` calls the lane factory
+    once per block in order, so a position counter assigns block 0 (and every
+    ``attn_every``-th block) to attention and the rest to the candidate — e.g.
+    ``attn_every=2`` → ``[attn, cand, attn, cand, …]`` (1:1); ``attn_every=4`` →
+    ``[attn, cand, cand, cand, …]`` (1 full : 3 candidate, the Lahoti 3:1 regime).
+
+    The returned factory is single-use per ``TinyLM`` (it carries block-position
+    state); build a fresh one for each model.
+    """
+    attn_factory = lane_factory_for_baseline(attn_name)
+    position = {"i": -1}
+
+    def factory(dim: int) -> nn.Module:
+        position["i"] += 1
+        if position["i"] % max(1, attn_every) == 0:
+            return attn_factory(dim)
+        return candidate_factory(dim)
+
+    return factory
 
 
 DEFAULT_BASELINE_NAMES: tuple[str, ...] = ("softmax_attention", "causal_conv")
