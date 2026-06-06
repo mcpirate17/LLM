@@ -38,7 +38,11 @@ from component_fab.improver.adaptive import (
     build_anchor_pool,
 )
 from component_fab.improver.axis_variants import enumerate_axis_variants
-from component_fab.improver.cross_anchor import enumerate_cross_anchor_variants
+from component_fab.improver.cross_anchor import (
+    enumerate_cross_anchor_variants,
+    enumerate_frontier_core_specs,
+    enumerate_frontier_hybrids,
+)
 from component_fab.improver.math_knob_catalog import (
     enumerate_adaptive_math_knob_compositions,
 )
@@ -220,12 +224,20 @@ def _all_specs_for_cycle(
         max_specs=max_dynamic_specs,
         tier2_feedback_by_id=tier2_feedback_by_id,
     )
+    # "Frontier + delta": grade the proven binder cores standalone, and graft
+    # each novel anchor's mechanism (state/memory/sparsity) onto every core.
+    # This is the only path that starts from a frontier-tied binder, which is a
+    # prerequisite for matching/beating current architectures.
+    frontier_specs = enumerate_frontier_core_specs() + enumerate_frontier_hybrids(
+        anchors
+    )
     if not use_promoted_as_anchors:
         return dedupe_specs_by_axes(
             enumerate_axis_variants(anchors)
             + enumerate_cross_anchor_variants(anchors)
             + knob_specs
             + dynamic_specs
+            + frontier_specs
         )
     anchor_pool = build_anchor_pool(
         anchors,
@@ -239,7 +251,9 @@ def _all_specs_for_cycle(
         max_pairs=max_cross_pairs,
         seed=cycle,
     )
-    return dedupe_specs_by_axes(axis_specs + cross_specs + knob_specs + dynamic_specs)
+    return dedupe_specs_by_axes(
+        axis_specs + cross_specs + knob_specs + dynamic_specs + frontier_specs
+    )
 
 
 def _grade_spec(
