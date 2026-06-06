@@ -16,7 +16,7 @@ from ..synthesis.graph import ComputationGraph
 from ..synthesis.primitives import get_primitive, OpCategory
 
 
-@dataclass
+@dataclass(slots=True)
 class FLOPEstimate:
     """FLOP estimation result."""
 

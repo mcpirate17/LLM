@@ -37,7 +37,7 @@ from ._trajectory_datasets import (
 logger = logging.getLogger(__name__)
 
 
-@dataclass
+@dataclass(slots=True)
 class LogitMarginResult:
     velocity: Optional[float] = (
         None  # slope of margin vs training step (positive is good)

@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 _MIN_CONTEXT = 4
 
 
-@dataclass
+@dataclass(slots=True)
 class ICLDResult:
     velocity: Optional[float] = None  # slope of loss vs position (negative is good)
     early_loss: Optional[float] = None  # mean loss in early positions

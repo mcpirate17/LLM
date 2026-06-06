@@ -68,7 +68,7 @@ def _logit_margin_core_is_finite(result: LogitMarginResult) -> bool:
     return True
 
 
-@dataclass
+@dataclass(slots=True)
 class TrajectoryMetricsResult:
     spec_norm: Optional[float] = None
     spec_norm_eff_rank: Optional[float] = None

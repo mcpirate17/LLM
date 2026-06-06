@@ -22,7 +22,7 @@ _SPIKING_OPS = {
 }
 
 
-@dataclass
+@dataclass(slots=True)
 class SparsityResult:
     """Statistics for a single layer's activation sparsity."""
 
@@ -36,7 +36,7 @@ class SparsityResult:
     is_collapsed: bool  # True if >95% neurons are dead
 
 
-@dataclass
+@dataclass(slots=True)
 class ModelSparsityReport:
     """Comprehensive sparsity report for a whole model."""
 

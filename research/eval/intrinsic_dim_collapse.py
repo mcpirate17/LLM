@@ -58,7 +58,7 @@ class HiddenStateSnapshot:
     status: str = "ok"
 
 
-@dataclass
+@dataclass(slots=True)
 class IDCollapseResult:
     pr_early: Optional[float] = None
     pr_late: Optional[float] = None

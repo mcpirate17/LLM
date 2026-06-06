@@ -1025,6 +1025,9 @@ def _run_training_dynamics_check(
             results["training_dynamics_reversal_rate"] = round(reversal_rate, 4)
         return not dynamics_bad
     except Exception:
+        logger.warning(
+            "training-dynamics probe errored; marking dynamics failed", exc_info=True
+        )
         results["training_dynamics_passed"] = False
         return False
 

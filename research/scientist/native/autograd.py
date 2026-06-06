@@ -181,8 +181,8 @@ class SubgraphDispatcher:
                 self._last_refusal_reason = (
                     "bound_param_graph_requires_bound_dispatcher"
                 )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed to check graph for bound params: %s", exc)
         if self._all_native:
             try:
                 from ...synthesis.native_ir_converter import graph_to_native_ir_json

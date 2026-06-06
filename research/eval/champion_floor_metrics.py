@@ -33,7 +33,7 @@ class ChampionFloorMetrics(NamedTuple):
         return self._asdict()
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ChampionGpt2Baseline:
     layers: int
     protocol_version: str

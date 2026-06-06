@@ -210,14 +210,28 @@ def _run_full_post_train(
                 updates["blimp_overall_accuracy"] = blimp.overall_accuracy
                 updates["blimp_status"] = "ok"
             except Exception:
-                pass
+                import logging
+
+                logging.getLogger(__name__).warning(
+                    "BLiMP probe failed during full post-train recompute for %s; "
+                    "blimp metrics left unset",
+                    result_id,
+                    exc_info=True,
+                )
             try:
                 from research.eval.binding_pipeline import run_screening_binding_probes
 
                 bp = run_screening_binding_probes(model, device=str(dev))
                 updates.update(screening_probe_fields(bp))
             except Exception:
-                pass
+                import logging
+
+                logging.getLogger(__name__).warning(
+                    "Screening binding probe failed during full post-train "
+                    "recompute for %s; binding fields left unset",
+                    result_id,
+                    exc_info=True,
+                )
         elif s1_result.get("error"):
             raise RuntimeError(
                 f"micro_train_failed: {s1_result.get('error')} "

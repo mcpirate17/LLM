@@ -51,7 +51,7 @@ QRY_ID = 2
 N_SPECIAL = 3
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class GMQARConfig:
     """One difficulty cell. The *grid* is a list of these (see default_grid)."""
 
@@ -223,7 +223,7 @@ def score_cell(
     return correct / total if total else 0.0
 
 
-@dataclass
+@dataclass(slots=True)
 class GMQARResult:
     cells: list[dict] = field(default_factory=list)  # [{n_pairs, distance, acc}]
     audc: float = 0.0  # mean accuracy across the grid (0..1)

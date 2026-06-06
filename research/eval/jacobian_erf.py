@@ -27,7 +27,7 @@ from .fingerprint_sensitivity import forward_model_from_embed
 logger = logging.getLogger(__name__)
 
 
-@dataclass
+@dataclass(slots=True)
 class JacobianERFResult:
     density: Optional[float] = None
     variance: Optional[float] = None

@@ -38,7 +38,7 @@ REFERENCE_FAMILIES = ("transformer", "ssm", "conv")
 SUPPORTED_SCHEMA_VERSIONS = {"1"}
 
 
-@dataclass
+@dataclass(slots=True)
 class ArtifactManifest:
     """Parsed and validated artifact manifest."""
 
