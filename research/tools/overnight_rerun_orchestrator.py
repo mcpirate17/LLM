@@ -155,7 +155,11 @@ def runner_busy() -> bool:
         if r.status_code == 200:
             return bool(r.json().get("is_running"))
     except Exception:
-        pass
+        logger.warning(
+            "cycle-status probe to %s failed; assuming runner not busy",
+            DASHBOARD_BASE,
+            exc_info=True,
+        )
     return False
 
 

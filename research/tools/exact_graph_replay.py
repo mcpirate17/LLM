@@ -346,7 +346,13 @@ def _evaluate_exact_replay(
                 s075_opt.zero_grad(set_to_none=True)
                 del s075_opt
             except Exception:
-                pass
+                import logging
+
+                logging.getLogger(__name__).warning(
+                    "s075 replay stage errored for %s; skipping to rapid screening",
+                    row.get("result_id"),
+                    exc_info=True,
+                )
 
             from research.eval.screening_rapid import RapidScreeningCheck
 
