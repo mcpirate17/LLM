@@ -127,6 +127,12 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         help="fresh NAS-synthesized graph topologies to grade per cycle (0 disables)",
     )
     parser.add_argument(
+        "--nas-archive-guided",
+        action="store_true",
+        help="bias NAS grammar sampling toward empty behaviour niches in the "
+        "cached NAS population (anti-collapse) instead of random seeds",
+    )
+    parser.add_argument(
         "--max-dynamic-specs",
         default=32,
         type=int,
@@ -220,6 +226,7 @@ def _all_specs_for_cycle(
     cycle: int,
     dim: int = 32,
     max_nas_specs: int = 6,
+    nas_archive_guided: bool = False,
     tier2_feedback_by_id: dict[str, Tier2Feedback] | None = None,
 ) -> list[ProposalSpec]:
     knob_specs = enumerate_adaptive_math_knob_compositions(
@@ -243,7 +250,9 @@ def _all_specs_for_cycle(
     # Novel NAS topologies: genuinely new op-DAG structures (split/fuse/route/
     # recurse) that fab's fixed templates cannot express, compiled into gradeable
     # lanes. seed varies by cycle so each cycle samples different structures.
-    nas_specs = nas_graph_specs(n_fresh=max_nas_specs, dim=dim, seed=cycle)
+    nas_specs = nas_graph_specs(
+        n_fresh=max_nas_specs, dim=dim, seed=cycle, archive_guided=nas_archive_guided
+    )
     if not use_promoted_as_anchors:
         return dedupe_specs_by_axes(
             enumerate_axis_variants(anchors)
@@ -484,6 +493,7 @@ def _run_cycle(
     max_knob_specs: int = 48,
     max_dynamic_specs: int = 32,
     max_nas_specs: int = 6,
+    nas_archive_guided: bool = False,
     run_range_probe: bool = False,
     range_train_steps: int = 300,
     tier2_feedback_paths: list[str] | None = None,
@@ -503,6 +513,7 @@ def _run_cycle(
         max_dynamic_specs=max_dynamic_specs,
         dim=dim,
         max_nas_specs=max_nas_specs,
+        nas_archive_guided=nas_archive_guided,
         tier2_feedback_by_id=tier2_feedback_by_id,
         cycle=cycle,
     )
@@ -700,6 +711,7 @@ def _drive_loop(args, ledger: Ledger, proposals_path: Path) -> list[dict]:
             max_knob_specs=args.max_knob_specs,
             max_dynamic_specs=args.max_dynamic_specs,
             max_nas_specs=args.max_nas_specs,
+            nas_archive_guided=args.nas_archive_guided,
             run_range_probe=args.range_probe,
             range_train_steps=args.range_train_steps,
             tier2_feedback_paths=args.tier2_feedback,

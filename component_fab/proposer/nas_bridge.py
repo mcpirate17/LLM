@@ -22,6 +22,7 @@ reloads it by fingerprint.
 from __future__ import annotations
 
 import logging
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -42,8 +43,16 @@ def _cache_path(fingerprint: str) -> Path:
     return _CACHE_DIR / f"{fingerprint}.json"
 
 
+@lru_cache(maxsize=4096)
 def load_cached_graph_json(fingerprint: str) -> str | None:
-    """Return the cached graph JSON for ``fingerprint`` (None if absent)."""
+    """Return the cached graph JSON for ``fingerprint`` (None if absent).
+
+    Cached because ``code_generator._dispatch_nas_graph`` calls this once per
+    NAS-guided spec — typically hundreds of times per fab cycle. The function
+    is pure (same fingerprint ⇒ same content as long as the cache file is not
+    rewritten underneath us). If the cache file is updated externally, callers
+    can invoke ``load_cached_graph_json.cache_clear()``.
+    """
     path = _cache_path(fingerprint)
     return path.read_text(encoding="utf-8") if path.exists() else None
 
@@ -114,11 +123,16 @@ def build_graph_spec(
 
 
 def _fresh_grammar_specs(
-    n_fresh: int, dim: int, seed: int, seen: set[str]
+    n_fresh: int,
+    dim: int,
+    seed: int,
+    seen: set[str],
+    cfg: Any = None,
 ) -> list[ProposalSpec]:
     from research.synthesis.grammar import GrammarConfig, generate_layer_graph
 
-    cfg = GrammarConfig(model_dim=dim)
+    if cfg is None:
+        cfg = GrammarConfig(model_dim=dim)
     out: list[ProposalSpec] = []
     attempts = 0
     max_attempts = max(4, n_fresh * 5)
@@ -165,24 +179,98 @@ def _db_winner_specs(
     return out
 
 
+def build_nas_archive(dim: int, *, max_graphs: int = 64) -> Any:
+    """MAP-Elites archive over the cached NAS population, measured at init.
+
+    The bridge caches every admitted topology under ``catalog/nas_graphs/``; this
+    reads the ``max_graphs`` most-recently-cached graphs (so per-cycle cost stays
+    flat as the cache grows), measures each one's label-free behaviour descriptors
+    on CPU, and bins them. ``empty_niches`` on the result is what steers fresh
+    sampling toward the regions the NAS population does not yet cover (anti-collapse
+    — see ``research/synthesis/quality_diversity``). Returns ``None`` when nothing
+    measurable is cached yet (e.g. the first cycle) so the caller falls back to
+    plain random sampling.
+    """
+    from research.synthesis.quality_diversity import MapElitesArchive
+    from research.tools.measured_descriptors import (
+        MeasuredDescriptorExtractor,
+        capability_score_from_descriptors,
+    )
+
+    if not _CACHE_DIR.exists():
+        return None
+    paths = sorted(
+        _CACHE_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True
+    )[: max(1, max_graphs)]
+    if not paths:
+        return None
+    extractor = MeasuredDescriptorExtractor(device="cpu")
+    archive = MapElitesArchive()
+    n_added = 0
+    for path in paths:
+        try:
+            descriptors = extractor.descriptors(path.read_text(encoding="utf-8"))
+        except Exception as exc:  # noqa: BLE001 — measurement must not break the cycle
+            _LOG.debug("descriptor measure failed for %s: %s", path.name, exc)
+            continue
+        if not descriptors:
+            continue
+        archive.add(
+            path.stem, descriptors, capability_score_from_descriptors(descriptors)
+        )
+        n_added += 1
+    return archive if n_added else None
+
+
+def _exploration_config(dim: int, max_graphs: int) -> Any:
+    """Archive-derived exploration ``GrammarConfig`` (None → keep base grammar)."""
+    from research.synthesis.archive_guided import exploration_config_from_archive
+
+    archive = build_nas_archive(dim, max_graphs=max_graphs)
+    if archive is None:
+        _LOG.info("nas_bridge: no cached NAS population yet — random sampling")
+        return None
+    cfg, guidance = exploration_config_from_archive(archive, model_dim=dim)
+    _LOG.info(
+        "nas_bridge: archive coverage %.2f, %d reachable-empty niches → "
+        "%d exploration target ops",
+        guidance.coverage,
+        guidance.reachable_empty,
+        len(guidance.target_ops),
+    )
+    return cfg
+
+
 def nas_graph_specs(
     *,
     n_fresh: int = 6,
     dim: int = 32,
     seed: int = 0,
     include_db_winners: bool = True,
+    archive_guided: bool = False,
+    archive_max_graphs: int = 64,
 ) -> list[ProposalSpec]:
     """Novel NAS topologies as gradeable fab specs.
 
     ``n_fresh`` graphs are sampled fresh from the grammar at ``dim`` (the workhorse
     — genuinely new structures). When ``include_db_winners`` is set, curated
     proven-winner graphs are also attempted (best-effort; dim-incompatible ones are
-    dropped).
+    dropped). When ``archive_guided`` is set, the grammar is biased toward the ops
+    that fill empty niches in the cached NAS population's behaviour space, instead
+    of sampling uniformly at random — the anti-collapse lever. It fails safe to
+    random sampling when the archive is empty or the measurement path errors.
     """
     if n_fresh <= 0 and not include_db_winners:
         return []
+    cfg: Any = None
+    if archive_guided and n_fresh > 0:
+        try:
+            cfg = _exploration_config(dim, archive_max_graphs)
+        except Exception as exc:  # noqa: BLE001 — guidance is best-effort, never fatal
+            _LOG.warning("nas_bridge: archive guidance failed, using random: %s", exc)
+            cfg = None
     seen: set[str] = set()
-    specs = _fresh_grammar_specs(max(0, n_fresh), dim, seed, seen)
+    specs = _fresh_grammar_specs(max(0, n_fresh), dim, seed, seen, cfg)
     if include_db_winners:
         try:
             from research.tools.ensemble_screening import TOP_AR_FPS
