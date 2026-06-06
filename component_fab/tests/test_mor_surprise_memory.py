@@ -69,3 +69,62 @@ def test_depth_one_reduces_cleanly() -> None:
     y = lane(torch.randn(2, 8, 64))
     assert y.shape == (2, 8, 64)
     assert torch.isfinite(y).all()
+
+
+def test_refine_lane_router_grad_and_causal() -> None:
+    """The refine-each-step bilane lane_a: differentiable router + strictly causal."""
+    from component_fab.generator.mor_bilane import MoRRefineLaneA
+
+    lane = MoRRefineLaneA(
+        64, memory_dim=16, max_recursive_steps=4, recursive_balance_init=1.0
+    )
+    x = torch.randn(3, 12, 64)
+    y = lane(x)
+    assert y.shape == (3, 12, 64) and torch.isfinite(y).all()
+    (y.pow(2).mean() + lane.last_ponder_cost).backward()
+    assert lane.halt_head.weight.grad.abs().max().item() > 0.0
+    assert abs(sum(lane.last_depth_hist) - 1.0) < 1e-5
+
+    lane.eval()
+    with torch.no_grad():
+        base = lane(x)
+    worst = 0.0
+    for p in range(x.shape[1] - 1):
+        z = x.clone()
+        z[:, p + 1 :] = torch.randn(3, x.shape[1] - 1 - p, 64)
+        with torch.no_grad():
+            out = lane(z)
+        worst = max(worst, (base[:, : p + 1] - out[:, : p + 1]).abs().max().item())
+    assert worst < 1e-4, f"refine lane look-ahead leak: {worst}"
+
+
+def test_surprise_lane_depth_driven_by_both_loss_and_surprise() -> None:
+    """MoRSurpriseRefineMLPLaneA: floored surprise coupling + deep-start, and depth
+    responds to surprise on the torch path (more |err| -> lower halt -> deeper)."""
+    import torch
+
+    from component_fab.generator.mor_bilane import MoRSurpriseRefineMLPLaneA
+
+    lane = MoRSurpriseRefineMLPLaneA(
+        64, memory_dim=16, max_recursive_steps=4, surprise_coupling_min=0.05
+    )
+    # coupling param exists, a >= a_min > 0, and the structural floor is nonzero.
+    assert lane.halt_surprise_coupling is not None
+    a = float(lane._a_coupling())
+    assert a >= 0.05
+    err = torch.ones(3, 16)
+    extra = lane._halt_logit_extra(err)
+    assert torch.is_tensor(extra) and (extra < 0).all()  # surprise lowers halt
+
+    # higher surprise -> more negative logit contribution -> deeper recursion.
+    lo = lane._halt_logit_extra(torch.full((3, 16), 0.1))
+    hi = lane._halt_logit_extra(torch.full((3, 16), 5.0))
+    assert (hi < lo).all()
+
+    x = torch.randn(2, 10, 64)
+    y = lane(x)
+    assert y.shape == (2, 10, 64) and torch.isfinite(y).all()
+    # grad flows to the coupling and the deep-start starts near max depth.
+    (y.pow(2).mean()).backward()
+    assert lane.halt_surprise_coupling.grad is not None
+    assert lane.last_mean_depth > 3.0  # deep-start (bias -5) + surprise floor

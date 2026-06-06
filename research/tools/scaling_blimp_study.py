@@ -230,29 +230,102 @@ def _build_lane_factory(
     # the _read algebra is what varies). Bare lanes → default block FFN (now
     # SwiGLU) supplies norm/residual. semiring = learnable tempered read; _rope
     # adds rotary on the addressing q/k (relative-distance retrieval).
+    # refine-each-step MoR with a substantial MLP halting router (router width H
+    # from the `_mlp{H}` token). Separate branch so the existing group numbering
+    # below is untouched.
+    mor_surprise_composite = re.fullmatch(
+        r"mor_surprise_refine_mlp(\d+)_native_semiring_adapt_bilane_m(\d+)_g(-?\d+)_t(\d+)_b(\d+)_(?:l(\d+)_h(\d+)|l(\d+)bp_h(\d+)bp)_r(\d+)_surprise_memory",
+        name,
+    )
+    if mor_surprise_composite is not None:
+        from component_fab.generator.mor_bilane import (
+            MoRSurpriseRefineMLPAdaptiveSemiringBiLaneSurpriseMemoryLane,
+        )
+
+        g = mor_surprise_composite
+        router_hidden = int(g.group(1))
+        if g.group(8) is None:
+            low_t, high_t = float(g.group(6)) / 100.0, float(g.group(7)) / 100.0
+        else:
+            low_t, high_t = float(g.group(8)) / 10000.0, float(g.group(9)) / 10000.0
+        cls = type(
+            f"MoRSurpriseRefineMLP{router_hidden}Bilane",
+            (MoRSurpriseRefineMLPAdaptiveSemiringBiLaneSurpriseMemoryLane,),
+            {"ROUTER_HIDDEN": router_hidden},
+        )
+        return lambda d: cls(
+            d,
+            memory_dim=int(g.group(2)),
+            gate_bias=float(g.group(3)),
+            semiring_temp_init=float(g.group(4)),
+            recursive_balance_init=float(g.group(5)),
+            low_threshold=low_t,
+            high_threshold=high_t,
+            max_recursive_steps=int(g.group(10)),
+        )
+
+    mor_mlp_composite = re.fullmatch(
+        r"mor_refine_mlp(\d+)_native_semiring_adapt_bilane_m(\d+)_g(-?\d+)_t(\d+)_b(\d+)_(?:l(\d+)_h(\d+)|l(\d+)bp_h(\d+)bp)_r(\d+)_surprise_memory",
+        name,
+    )
+    if mor_mlp_composite is not None:
+        from component_fab.generator.mor_bilane import (
+            MoRRefineMLPAdaptiveSemiringBiLaneSurpriseMemoryLane,
+        )
+
+        g = mor_mlp_composite
+        router_hidden = int(g.group(1))
+        if g.group(8) is None:
+            low_t, high_t = float(g.group(6)) / 100.0, float(g.group(7)) / 100.0
+        else:
+            low_t, high_t = float(g.group(8)) / 10000.0, float(g.group(9)) / 10000.0
+        # ROUTER_HIDDEN is read in _make_lane_a during __init__, so bake it into a
+        # per-width subclass rather than setting an instance attr (too late).
+        cls = type(
+            f"MoRRefineMLP{router_hidden}Bilane",
+            (MoRRefineMLPAdaptiveSemiringBiLaneSurpriseMemoryLane,),
+            {"ROUTER_HIDDEN": router_hidden},
+        )
+        return lambda d: cls(
+            d,
+            memory_dim=int(g.group(2)),
+            gate_bias=float(g.group(3)),
+            semiring_temp_init=float(g.group(4)),
+            recursive_balance_init=float(g.group(5)),
+            low_threshold=low_t,
+            high_threshold=high_t,
+            max_recursive_steps=int(g.group(10)),
+        )
+
     mor_adaptive_composite = re.fullmatch(
-        r"mor_native_semiring_adapt_bilane_m(\d+)_g(-?\d+)_t(\d+)_b(\d+)_(?:l(\d+)_h(\d+)|l(\d+)bp_h(\d+)bp)_r(\d+)_surprise_memory",
+        r"(mor|mor_refine)_native_semiring_adapt_bilane_m(\d+)_g(-?\d+)_t(\d+)_b(\d+)_(?:l(\d+)_h(\d+)|l(\d+)bp_h(\d+)bp)_r(\d+)_surprise_memory",
         name,
     )
     if mor_adaptive_composite is not None:
         from component_fab.generator.mor_bilane import (
             MoRAdaptiveSemiringBiLaneSurpriseMemoryLane,
+            MoRRefineAdaptiveSemiringBiLaneSurpriseMemoryLane,
         )
 
         g = mor_adaptive_composite
-        if g.group(7) is None:
-            low_t, high_t = float(g.group(5)) / 100.0, float(g.group(6)) / 100.0
+        cls = (
+            MoRRefineAdaptiveSemiringBiLaneSurpriseMemoryLane
+            if g.group(1) == "mor_refine"
+            else MoRAdaptiveSemiringBiLaneSurpriseMemoryLane
+        )
+        if g.group(8) is None:  # group 1 is the mor/mor_refine prefix
+            low_t, high_t = float(g.group(6)) / 100.0, float(g.group(7)) / 100.0
         else:
-            low_t, high_t = float(g.group(7)) / 10000.0, float(g.group(8)) / 10000.0
-        return lambda d: MoRAdaptiveSemiringBiLaneSurpriseMemoryLane(
+            low_t, high_t = float(g.group(8)) / 10000.0, float(g.group(9)) / 10000.0
+        return lambda d: cls(
             d,
-            memory_dim=int(g.group(1)),
-            gate_bias=float(g.group(2)),
-            semiring_temp_init=float(g.group(3)),
-            recursive_balance_init=float(g.group(4)),
+            memory_dim=int(g.group(2)),
+            gate_bias=float(g.group(3)),
+            semiring_temp_init=float(g.group(4)),
+            recursive_balance_init=float(g.group(5)),
             low_threshold=low_t,
             high_threshold=high_t,
-            max_recursive_steps=int(g.group(9)),
+            max_recursive_steps=int(g.group(10)),
         )
 
     tuned_adaptive_composite = re.fullmatch(
