@@ -17,10 +17,12 @@ from typing import Any
 
 from torch import nn
 
+from ..proposer.nas_bridge import SOURCE_NAS, load_cached_graph_json
 from ..proposer.spec_generator import ProposalSpec
 from .memory_primitives import (
     CausalFastWeightMemoryLane,
     CausalSlotRouterMemoryLane,
+    DataDependentDecayMemoryLane,
     HierarchicalResidualCompressorLane,
     PadicSurpriseMemoryLane,
     SemiringSurpriseMemoryLane,
@@ -122,7 +124,9 @@ def _dispatch_tropical(
     return TropicalAttention(dim)
 
 
-def _dispatch_clifford(math_axes: dict[str, Any], *, dim: int) -> nn.Module | None:
+def _dispatch_clifford(
+    math_axes: dict[str, Any], *, dim: int, top_k_frac: float = 0.25
+) -> nn.Module | None:
     if _axis(math_axes, "op_algebraic_space") != "clifford":
         return None
     if dim % 4 != 0:
@@ -130,13 +134,17 @@ def _dispatch_clifford(math_axes: dict[str, Any], *, dim: int) -> nn.Module | No
     return CliffordAttention(dim)
 
 
-def _dispatch_spiking(math_axes: dict[str, Any], *, dim: int) -> nn.Module | None:
+def _dispatch_spiking(
+    math_axes: dict[str, Any], *, dim: int, top_k_frac: float = 0.25
+) -> nn.Module | None:
     if _axis(math_axes, "op_algebraic_space") != "spiking":
         return None
     return SpikingActivationGate(dim)
 
 
-def _dispatch_padic(math_axes: dict[str, Any], *, dim: int) -> nn.Module | None:
+def _dispatch_padic(
+    math_axes: dict[str, Any], *, dim: int, top_k_frac: float = 0.25
+) -> nn.Module | None:
     if _axis(math_axes, "op_algebraic_space") != "padic":
         return None
     if dim % 8 != 0:
@@ -144,7 +152,9 @@ def _dispatch_padic(math_axes: dict[str, Any], *, dim: int) -> nn.Module | None:
     return PadicProjection(dim, p=2, n_levels=3)
 
 
-def _dispatch_quaternion(math_axes: dict[str, Any], *, dim: int) -> nn.Module | None:
+def _dispatch_quaternion(
+    math_axes: dict[str, Any], *, dim: int, top_k_frac: float = 0.25
+) -> nn.Module | None:
     if _axis(math_axes, "op_algebraic_space") != "quaternion":
         return None
     if dim % 4 != 0:
@@ -152,7 +162,9 @@ def _dispatch_quaternion(math_axes: dict[str, Any], *, dim: int) -> nn.Module | 
     return QuaternionAttention(dim)
 
 
-def _dispatch_hyperbolic(math_axes: dict[str, Any], *, dim: int) -> nn.Module | None:
+def _dispatch_hyperbolic(
+    math_axes: dict[str, Any], *, dim: int, top_k_frac: float = 0.25
+) -> nn.Module | None:
     if _axis(math_axes, "op_algebraic_space") not in (
         "hyperbolic",
         "hyperbolic_poincare",
@@ -161,7 +173,9 @@ def _dispatch_hyperbolic(math_axes: dict[str, Any], *, dim: int) -> nn.Module | 
     return PoincareAttention(dim)
 
 
-def _dispatch_state_kernel(math_axes: dict[str, Any], *, dim: int) -> nn.Module | None:
+def _dispatch_state_kernel(
+    math_axes: dict[str, Any], *, dim: int, top_k_frac: float = 0.25
+) -> nn.Module | None:
     """Generic state-bearing primitive for non-tropical / non-clifford / non-padic
     proposals declaring ``op_dynamical_has_state=1``. Algebra-specific
     state primitives (TropicalStateSpace, etc.) already fired earlier in
@@ -236,11 +250,13 @@ def _dispatch_math_knob(
 
 
 def _dispatch_invention_mechanism(
-    math_axes: dict[str, Any], *, dim: int
+    math_axes: dict[str, Any], *, dim: int, top_k_frac: float = 0.25
 ) -> nn.Module | None:
     mechanism = _axis(math_axes, "op_invention_mechanism")
     if mechanism == "causal_fast_weight_memory":
         return CausalFastWeightMemoryLane(dim)
+    if mechanism == "data_dependent_decay_memory":
+        return DataDependentDecayMemoryLane(dim)
     if mechanism == "causal_slot_router_memory":
         return CausalSlotRouterMemoryLane(dim)
     if mechanism == "hierarchical_residual_compressor":
@@ -350,21 +366,31 @@ def _dispatch_synthesis_hint(
     return None
 
 
+# Flat dispatch table for the algebra / sparsity / synthesis chain. Each entry
+# is a function with the uniform signature
+#   (math_axes, *, dim: int, top_k_frac: float) -> nn.Module | None
+# that returns the matching primitive (or ``None`` to fall through). Order is
+# load-bearing: tropical fires before sparsity because algebra determines the
+# underlying math, and ``TropicalTopKStateSpace`` (tropical + state + top_k)
+# must materialize as the state primitive, not be bypassed to ``TopKLinear``.
+_BASE_DISPATCHERS: tuple = (
+    _dispatch_tropical,
+    _dispatch_clifford,
+    _dispatch_spiking,
+    _dispatch_padic,
+    _dispatch_quaternion,
+    _dispatch_hyperbolic,
+    _dispatch_state_kernel,
+    _dispatch_axis_modifier,
+    _dispatch_synthesis_hint,
+)
+
+
 def _base_module(
     math_axes: dict[str, Any], *, dim: int, top_k_frac: float
 ) -> nn.Module:
-    for dispatcher in (
-        lambda: _dispatch_tropical(math_axes, dim=dim, top_k_frac=top_k_frac),
-        lambda: _dispatch_clifford(math_axes, dim=dim),
-        lambda: _dispatch_spiking(math_axes, dim=dim),
-        lambda: _dispatch_padic(math_axes, dim=dim),
-        lambda: _dispatch_quaternion(math_axes, dim=dim),
-        lambda: _dispatch_hyperbolic(math_axes, dim=dim),
-        lambda: _dispatch_state_kernel(math_axes, dim=dim),
-        lambda: _dispatch_axis_modifier(math_axes, dim=dim, top_k_frac=top_k_frac),
-        lambda: _dispatch_synthesis_hint(math_axes, dim=dim, top_k_frac=top_k_frac),
-    ):
-        result = dispatcher()
+    for dispatcher in _BASE_DISPATCHERS:
+        result = dispatcher(math_axes, dim=dim, top_k_frac=top_k_frac)
         if result is not None:
             return result
     return nn.Linear(dim, dim)
@@ -484,7 +510,9 @@ def _apply_routing_wrap(
     return base
 
 
-def _dispatch_nas_graph(math_axes: dict[str, Any], *, dim: int) -> nn.Module | None:
+def _dispatch_nas_graph(
+    math_axes: dict[str, Any], *, dim: int, top_k_frac: float = 0.25
+) -> nn.Module | None:
     """Compile a NAS-synthesized graph topology into a token-mixing lane.
 
     When ``op_source == "nas_graph"`` the spec carries a graph fingerprint whose
@@ -493,12 +521,8 @@ def _dispatch_nas_graph(math_axes: dict[str, Any], *, dim: int) -> nn.Module | N
     bridge already compile-tested the graph at this dim, so this is the same
     deterministic operation; a missing cache is a hard error (fail loud).
     """
-    from component_fab.proposer.nas_bridge import SOURCE_NAS
-
     if str(math_axes.get("op_source") or "") != SOURCE_NAS:
         return None
-    from component_fab.proposer.nas_bridge import load_cached_graph_json
-
     fingerprint = str(math_axes.get("op_nas_fingerprint") or "")
     graph_json = load_cached_graph_json(fingerprint)
     if graph_json is None:
@@ -667,6 +691,15 @@ def _block_slot_factory(name: str) -> "callable":
     return factory
 
 
+# Default routing chain (math_knobs absent). math_knob fires first because
+# math_family names a concrete operator mechanism; the base algebra/sparsity
+# chain is the fallback. Replaces a tuple of 2 lambdas built per call.
+_DEFAULT_DISPATCHERS: tuple = (
+    _dispatch_math_knob,
+    _base_module,
+)
+
+
 def generate_module(
     math_axes: dict[str, Any],
     *,
@@ -674,24 +707,21 @@ def generate_module(
     top_k_frac: float = 0.25,
 ) -> nn.Module:
     """Generate a primitive instance from a math-axis tuple."""
-    nas = _dispatch_nas_graph(math_axes, dim=dim)
+    nas = _dispatch_nas_graph(math_axes, dim=dim, top_k_frac=top_k_frac)
     if nas is not None:
         return nas
     block = _dispatch_block_template(math_axes, dim=dim, top_k_frac=top_k_frac)
     if block is not None:
         return block
-    invention = _dispatch_invention_mechanism(math_axes, dim=dim)
+    invention = _dispatch_invention_mechanism(math_axes, dim=dim, top_k_frac=top_k_frac)
     if invention is not None:
         return _apply_routing_wrap(invention, math_axes, dim=dim, top_k_frac=top_k_frac)
     if math_axes.get("op_math_knobs") is not None:
         base = _base_module(math_axes, dim=dim, top_k_frac=top_k_frac)
         wrapped = _apply_math_knobs(base, math_axes, dim=dim, top_k_frac=top_k_frac)
         return _apply_routing_wrap(wrapped, math_axes, dim=dim, top_k_frac=top_k_frac)
-    for dispatcher in (
-        lambda: _dispatch_math_knob(math_axes, dim=dim, top_k_frac=top_k_frac),
-        lambda: _base_module(math_axes, dim=dim, top_k_frac=top_k_frac),
-    ):
-        result = dispatcher()
+    for dispatcher in _DEFAULT_DISPATCHERS:
+        result = dispatcher(math_axes, dim=dim, top_k_frac=top_k_frac)
         if result is not None:
             return _apply_routing_wrap(
                 result, math_axes, dim=dim, top_k_frac=top_k_frac

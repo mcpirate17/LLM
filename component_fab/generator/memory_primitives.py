@@ -464,3 +464,56 @@ class PadicSurpriseMemoryLane(_SurpriseMemoryBase):
                 read_sum = read_sum + gates[level] * read
             outputs.append(self.out(read_sum))
         return torch.stack(outputs, dim=1)
+
+
+class DataDependentDecayMemoryLane(nn.Module):
+    """SSM-like linear memory with data-dependent decay.
+
+    Unlike the constant decay in CausalFastWeightMemoryLane, this learns a
+    data-dependent gate that controls the forgetting rate per position.
+    This enables hard state tracking (like Mamba or recurrent models) by
+    selectively ignoring or retaining state.
+    """
+
+    def __init__(self, dim: int, memory_dim: int | None = None) -> None:
+        super().__init__()
+        memory_dim = memory_dim or min(dim, 32)
+        self.q = nn.Linear(dim, memory_dim, bias=False)
+        self.k = nn.Linear(dim, memory_dim, bias=False)
+        self.v = nn.Linear(dim, memory_dim, bias=False)
+        self.write_gate = nn.Linear(dim, memory_dim)
+        self.decay_gate = nn.Linear(dim, memory_dim)
+        self.out = nn.Linear(memory_dim, dim, bias=False)
+        
+        # Init decay gate bias so that default is slow forgetting
+        nn.init.constant_(self.decay_gate.bias, -2.0)
+        
+        self.dim = dim
+        self.memory_dim = memory_dim
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        batch_size, seq_len, _ = x.shape
+        q = torch.tanh(self.q(x))
+        k = torch.tanh(self.k(x))
+        v = torch.tanh(self.v(x))
+        
+        # Gates
+        write_strength = torch.sigmoid(self.write_gate(x))
+        decay = torch.sigmoid(self.decay_gate(x))
+        
+        memory = torch.zeros(
+            batch_size,
+            self.memory_dim,
+            self.memory_dim,
+            device=x.device,
+            dtype=x.dtype,
+        )
+        outputs = []
+        scale = float(self.memory_dim) ** -0.5
+        for t in range(seq_len):
+            write = torch.einsum("bi,bj->bij", k[:, t], v[:, t]) * scale
+            # Elementwise broadcasting of decay and write_strength
+            memory = decay[:, t].unsqueeze(-1) * memory + write_strength[:, t].unsqueeze(-1) * write
+            read = torch.einsum("bi,bij->bj", q[:, t], memory)
+            outputs.append(self.out(read))
+        return torch.stack(outputs, dim=1)

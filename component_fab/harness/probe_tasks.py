@@ -106,6 +106,16 @@ def _causal_induction(x: torch.Tensor) -> torch.Tensor:
     return out
 
 
+def _running_parity(x: torch.Tensor) -> torch.Tensor:
+    """Target at position i depends on the cumulative parity of x[j, 0] > 0 for j <= i.
+    Outputs x or -x depending on if the running count of positive elements is odd/even.
+    Tests hard boolean state tracking (typical SSM advantage over attention).
+    """
+    signs = (x[..., 0] > 0).float()
+    parity = (signs.cumsum(dim=1) % 2) * 2 - 1.0  # +1 or -1
+    return x * parity.unsqueeze(-1)
+
+
 DEFAULT_PROBE_TASKS: tuple[ProbeTask, ...] = (
     ProbeTask(name="running_mean", target_fn=_running_mean, difficulty="easy"),
     ProbeTask(name="periodic_average", target_fn=_periodic_average, difficulty="easy"),
@@ -117,4 +127,5 @@ DEFAULT_PROBE_TASKS: tuple[ProbeTask, ...] = (
         difficulty="hard",
     ),
     ProbeTask(name="causal_induction", target_fn=_causal_induction, difficulty="hard"),
+    ProbeTask(name="running_parity", target_fn=_running_parity, difficulty="hard"),
 )

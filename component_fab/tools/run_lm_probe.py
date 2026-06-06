@@ -43,6 +43,11 @@ from component_fab.improver.cross_anchor import enumerate_cross_anchor_variants
 from component_fab.improver.math_knob_catalog import (
     enumerate_adaptive_math_knob_compositions,
 )
+from component_fab.proposer.dynamic import (
+    enumerate_dynamic_proposals,
+    spec_from_ledger_entry,
+    specs_from_ledger_entries,
+)
 from component_fab.proposer.spec_generator import (
     ProposalSpec,
     axes_fingerprint,
@@ -82,10 +87,18 @@ def _all_specs(anchors: tuple[str, ...], ledger: Ledger) -> list[ProposalSpec]:
     cross_specs = adaptive_cross_anchor_variants(
         anchor_pool, ledger, max_pairs=80, seed=0
     )
+    dynamic_specs = enumerate_dynamic_proposals(list(anchors), ledger, max_specs=128)
+    ledger_specs = specs_from_ledger_entries(ledger)
     static_axis_specs = enumerate_axis_variants(list(anchors))
     static_cross_specs = enumerate_cross_anchor_variants(list(anchors))
     return dedupe_specs_by_axes(
-        static_axis_specs + static_cross_specs + axis_specs + cross_specs + knob_specs
+        static_axis_specs
+        + static_cross_specs
+        + axis_specs
+        + cross_specs
+        + knob_specs
+        + dynamic_specs
+        + ledger_specs
     )
 
 
@@ -105,6 +118,10 @@ def _factory_from_spec(spec: ProposalSpec) -> Callable[[int], nn.Module]:
 def _resolve_spec_by_proposal_id(
     proposal_id: str, anchors: tuple[str, ...], ledger: Ledger
 ) -> ProposalSpec | None:
+    if proposal_id in ledger.entries:
+        spec = spec_from_ledger_entry(ledger.entries[proposal_id])
+        if spec is not None:
+            return spec
     specs = _all_specs(anchors, ledger)
     by_id = {s.proposal_id: s for s in specs}
     if proposal_id in by_id:

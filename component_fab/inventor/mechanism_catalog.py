@@ -39,6 +39,25 @@ class InventionBlueprint:
 
 DEFAULT_INVENTION_BLUEPRINTS: tuple[InventionBlueprint, ...] = (
     InventionBlueprint(
+        mechanism_id="data_dependent_decay_memory",
+        category=CATEGORY_LANE,
+        axes={
+            "op_invention_mechanism": "data_dependent_decay_memory",
+            "op_algebraic_space": "linear_memory",
+            "op_dynamical_has_state": 1,
+            "op_dynamical_memory_length_class": "O(L)",
+            "op_activation_sparsity_pattern": "dense",
+            "op_geometric_receptive_field": "global",
+            "op_spectral_preferred_basis": "content",
+        },
+        information_flow="current token writes key/value outer product into causal memory; decay gate determines how much of past memory to forget",
+        forgetting_rule="data-dependent decay gate enables hard state tracking and variable context retention",
+        causality_argument="memory is updated left-to-right and never reads future tokens",
+        target_failure_mode="failure to track long-range discrete state over varying intervals",
+        expected_baseline="causal_fast_weight_memory",
+        complexity="O(L * D * M) with M<=D memory projection",
+    ),
+    InventionBlueprint(
         mechanism_id="causal_fast_weight_memory",
         category=CATEGORY_LANE,
         axes={
