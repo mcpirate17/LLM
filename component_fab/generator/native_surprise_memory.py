@@ -219,7 +219,7 @@ class _NativeAdaptiveSemiringSurpriseScan(torch.autograd.Function):
         return y, depth_counts
 
     @staticmethod
-    def backward(ctx, grad_y, grad_depth_counts):
+    def backward(ctx, grad_y, _grad_depth_counts):
         (
             q,
             k,
