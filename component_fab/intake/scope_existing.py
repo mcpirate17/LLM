@@ -158,11 +158,14 @@ def classify_template_row(row: dict[str, Any]) -> str | None:
     compression_intensity = float(row.get("template_compression_intensity") or 0.0)
     routing_intensity = float(row.get("template_routing_intensity") or 0.0)
 
-    if has_routing or has_moe or has_parallel:
-        return CATEGORY_ROUTING
-    if family == "routing" or family == "moe":
-        return CATEGORY_ROUTING
-    if routing_intensity >= 0.3:
+    routing_structural = (
+        has_routing
+        or has_moe
+        or has_parallel
+        or family in ("routing", "moe")
+        or routing_intensity >= 0.3
+    )
+    if routing_structural:
         return CATEGORY_ROUTING
     if has_compression or family == "compression" or compression_intensity >= 0.3:
         return CATEGORY_COMPRESSION

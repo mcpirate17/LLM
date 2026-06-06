@@ -17,6 +17,7 @@ Returns ``BindingTestsV2Result`` summarizing all 5 tests per spec.
 
 from __future__ import annotations
 
+import logging
 import math
 import time
 from dataclasses import dataclass
@@ -26,6 +27,26 @@ import torch
 from torch import nn
 
 from .tiny_lm import TinyLM, TinyLMConfig
+
+logger = logging.getLogger(__name__)
+
+
+def _train_and_score(
+    model: nn.Module,
+    train_batches: list,
+    eval_batches: list,
+    n_train_steps: int,
+    *,
+    probe: str,
+) -> float:
+    """Train then score a probe. A failed probe scores 0.0 (so ranking can
+    proceed), but the failure is logged loudly rather than silently swallowed."""
+    try:
+        _train_steps(model, train_batches, n_train_steps)
+        return _eval_accuracy(model, eval_batches)
+    except Exception:  # noqa: BLE001 - one bad lane must not abort the cohort
+        logger.warning("binding probe %r failed; scoring 0.0", probe, exc_info=True)
+        return 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -223,11 +244,9 @@ def test_multi_token_induction(
         _gen_induction_batch(batch_size, seq_len, vocab_size, n_distractors, rng)
         for _ in range(n_eval_batches)
     ]
-    try:
-        _train_steps(model, train_batches, n_train_steps)
-        return _eval_accuracy(model, eval_batches)
-    except Exception:  # noqa: BLE001
-        return 0.0
+    return _train_and_score(
+        model, train_batches, eval_batches, n_train_steps, probe="multi_token_induction"
+    )
 
 
 # ---------- Test 2: selective copy ----------
@@ -300,11 +319,9 @@ def test_selective_copy(
         _gen_selective_copy_batch(batch_size, seq_len, vocab_size, n_content, rng)
         for _ in range(n_eval_batches)
     ]
-    try:
-        _train_steps(model, train_batches, n_train_steps)
-        return _eval_accuracy(model, eval_batches)
-    except Exception:  # noqa: BLE001
-        return 0.0
+    return _train_and_score(
+        model, train_batches, eval_batches, n_train_steps, probe="selective_copy"
+    )
 
 
 # ---------- Test 3: dyck-2 (next valid bracket) ----------
@@ -483,11 +500,9 @@ def test_dyck2_v2(
         _gen_dyck2_v2_batch(batch_size, seq_len, n_queries, rng)
         for _ in range(n_eval_batches)
     ]
-    try:
-        _train_steps(model, train_batches, n_train_steps)
-        return _eval_accuracy(model, eval_batches)
-    except Exception:  # noqa: BLE001
-        return 0.0
+    return _train_and_score(
+        model, train_batches, eval_batches, n_train_steps, probe="dyck2_v2"
+    )
 
 
 def _gen_dyck2_v3_batch(
@@ -570,11 +585,9 @@ def test_dyck2_v3(
     eval_batches = [
         _gen_dyck2_v3_batch(batch_size, seq_len, rng) for _ in range(n_eval_batches)
     ]
-    try:
-        _train_steps(model, train_batches, n_train_steps)
-        return _eval_accuracy(model, eval_batches)
-    except Exception:  # noqa: BLE001
-        return 0.0
+    return _train_and_score(
+        model, train_batches, eval_batches, n_train_steps, probe="dyck2_v3"
+    )
 
 
 def test_dyck2(
@@ -602,11 +615,9 @@ def test_dyck2(
     eval_batches = [
         _gen_dyck2_batch(batch_size, seq_len, rng) for _ in range(n_eval_batches)
     ]
-    try:
-        _train_steps(model, train_batches, n_train_steps)
-        return _eval_accuracy(model, eval_batches)
-    except Exception:  # noqa: BLE001
-        return 0.0
+    return _train_and_score(
+        model, train_batches, eval_batches, n_train_steps, probe="dyck2"
+    )
 
 
 # ---------- Test 4: variable-delay repeat ----------
@@ -687,7 +698,12 @@ def test_variable_delay_repeat(
         try:
             _train_steps(model, train_batches, n_train_steps)
             per_delay[f"delay_{delay}"] = _eval_accuracy(model, eval_batches)
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001 - one bad delay must not abort the probe
+            logger.warning(
+                "variable-delay repeat probe failed at delay=%d; scoring 0.0",
+                delay,
+                exc_info=True,
+            )
             per_delay[f"delay_{delay}"] = 0.0
     mean = sum(per_delay.values()) / max(1, len(per_delay))
     return per_delay, mean
@@ -805,11 +821,9 @@ def test_npi_synthetic_v2(
     eval_batches = [
         _gen_npi_v2_batch(batch_size, seq_len, rng) for _ in range(n_eval_batches)
     ]
-    try:
-        _train_steps(model, train_batches, n_train_steps)
-        return _eval_accuracy(model, eval_batches)
-    except Exception:  # noqa: BLE001
-        return 0.0
+    return _train_and_score(
+        model, train_batches, eval_batches, n_train_steps, probe="npi_synthetic_v2"
+    )
 
 
 def test_npi_synthetic(
@@ -837,11 +851,9 @@ def test_npi_synthetic(
     eval_batches = [
         _gen_npi_batch(batch_size, seq_len, rng) for _ in range(n_eval_batches)
     ]
-    try:
-        _train_steps(model, train_batches, n_train_steps)
-        return _eval_accuracy(model, eval_batches)
-    except Exception:  # noqa: BLE001
-        return 0.0
+    return _train_and_score(
+        model, train_batches, eval_batches, n_train_steps, probe="npi_synthetic"
+    )
 
 
 # ---------- Combined runner ----------

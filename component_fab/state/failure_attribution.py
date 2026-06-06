@@ -330,6 +330,33 @@ def write_failure_attribution(
     return out
 
 
+def _gate_stats_from_json(record: dict[str, Any]) -> GateStats:
+    return GateStats(
+        gate=str(record.get("gate") or ""),
+        killed=int(record.get("killed") or 0),
+        reached=int(record.get("reached") or 0),
+        kill_rate=float(record.get("kill_rate") or 0.0),
+        over_eager=bool(record.get("over_eager")),
+        killed_at_floor=int(record.get("killed_at_floor") or 0),
+        generator_floor_bunched=bool(record.get("generator_floor_bunched")),
+    )
+
+
+def _anchor_candidate_from_json(record: dict[str, Any]) -> AnchorCandidate:
+    erf = record.get("erf_density")
+    nb = record.get("nb_max_accuracy")
+    return AnchorCandidate(
+        proposal_id=str(record.get("proposal_id") or ""),
+        name=str(record.get("name") or ""),
+        eliminated_by=str(record.get("eliminated_by") or ""),
+        composite_score=float(record.get("composite_score") or 0.0),
+        erf_density=float(erf) if erf is not None else None,
+        nb_max_accuracy=float(nb) if nb is not None else None,
+        math_knobs=tuple(str(k) for k in (record.get("math_knobs") or [])),
+        cycle=int(record.get("cycle") or 0),
+    )
+
+
 def load_failure_attribution(
     path: Path | str = DEFAULT_OUTPUT_PATH,
 ) -> FailureReport | None:
@@ -340,36 +367,9 @@ def load_failure_attribution(
         data = json.loads(p.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return None
-    gate_stats = [
-        GateStats(
-            gate=str(g.get("gate") or ""),
-            killed=int(g.get("killed") or 0),
-            reached=int(g.get("reached") or 0),
-            kill_rate=float(g.get("kill_rate") or 0.0),
-            over_eager=bool(g.get("over_eager")),
-            killed_at_floor=int(g.get("killed_at_floor") or 0),
-            generator_floor_bunched=bool(g.get("generator_floor_bunched")),
-        )
-        for g in (data.get("gate_stats") or [])
-    ]
+    gate_stats = [_gate_stats_from_json(g) for g in (data.get("gate_stats") or [])]
     anchor_pool = [
-        AnchorCandidate(
-            proposal_id=str(c.get("proposal_id") or ""),
-            name=str(c.get("name") or ""),
-            eliminated_by=str(c.get("eliminated_by") or ""),
-            composite_score=float(c.get("composite_score") or 0.0),
-            erf_density=(
-                float(c["erf_density"]) if c.get("erf_density") is not None else None
-            ),
-            nb_max_accuracy=(
-                float(c["nb_max_accuracy"])
-                if c.get("nb_max_accuracy") is not None
-                else None
-            ),
-            math_knobs=tuple(str(k) for k in (c.get("math_knobs") or [])),
-            cycle=int(c.get("cycle") or 0),
-        )
-        for c in (data.get("anchor_pool") or [])
+        _anchor_candidate_from_json(c) for c in (data.get("anchor_pool") or [])
     ]
     return FailureReport(
         total_graded=int(data.get("total_graded") or 0),

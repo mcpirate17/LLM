@@ -190,6 +190,80 @@ def _future_drift(module: nn.Module, x: torch.Tensor) -> float:
     return float((y[:, :split] - y_future[:, :split]).abs().max().item())
 
 
+@dataclass(frozen=True, slots=True)
+class _RangeKnobCheck:
+    """Declarative spec for a math-knob whose consistency is a class-name
+    fragment match plus a measured integer attribute landing in a range.
+
+    ``upper``: ``None`` (lower-bound only, > 0), ``"strict"`` (< dim) or
+    ``"inclusive"`` (<= dim).
+    """
+
+    knob: str
+    attr: str
+    measured_key: str
+    consistent_key: str
+    class_fragment: str
+    upper: str | None
+
+
+_RANGE_KNOB_CHECKS: tuple[_RangeKnobCheck, ...] = (
+    _RangeKnobCheck(
+        "linear_algebra_low_rank",
+        "rank",
+        "low_rank_measured_rank",
+        "low_rank_consistent",
+        "LowRank",
+        "strict",
+    ),
+    _RangeKnobCheck(
+        "sparse_matrix_banded",
+        "bandwidth",
+        "sparse_banded_measured_bandwidth",
+        "sparse_banded_consistent",
+        "SparseBanded",
+        "inclusive",
+    ),
+    _RangeKnobCheck(
+        "kernel_random_features",
+        "n_features",
+        "kernel_random_features_count",
+        "kernel_random_features_consistent",
+        "RandomFeatureKernel",
+        None,
+    ),
+    _RangeKnobCheck(
+        "multiscale_wavelet",
+        "n_scales",
+        "multiscale_wavelet_scales",
+        "multiscale_wavelet_consistent",
+        "MultiscaleWavelet",
+        None,
+    ),
+)
+
+
+def _measured_min_int(module: nn.Module, attr: str) -> int:
+    values = [int(v) for v in _module_attr_values(module, attr)]
+    return min(values) if values else 0
+
+
+def _apply_range_knob_check(
+    check: _RangeKnobCheck, findings: dict[str, Any], module: nn.Module, *, dim: int
+) -> None:
+    measured = _measured_min_int(module, check.attr)
+    findings[check.measured_key] = measured
+    if check.upper == "strict":
+        in_range = 0 < measured < dim
+    elif check.upper == "inclusive":
+        in_range = 0 < measured <= dim
+    else:
+        in_range = measured > 0
+    findings[check.consistent_key] = (
+        _module_has_class_fragment(module, check.class_fragment) and in_range
+    )
+
+
 def _math_knob_cross_check(
     findings: dict[str, Any],
     declared: dict[str, Any],
@@ -213,42 +287,12 @@ def _math_knob_cross_check(
             or _module_has_class_fragment(module, "FiniteDifference")
         ) and drift < 1e-5
 
-    if "linear_algebra_low_rank" in knobs:
-        ranks = [int(v) for v in _module_attr_values(module, "rank")]
-        rank = min(ranks) if ranks else 0
-        findings["low_rank_measured_rank"] = rank
-        findings["low_rank_consistent"] = (
-            _module_has_class_fragment(module, "LowRank") and 0 < rank < dim
-        )
-
-    if "sparse_matrix_banded" in knobs:
-        bandwidths = [int(v) for v in _module_attr_values(module, "bandwidth")]
-        bandwidth = min(bandwidths) if bandwidths else 0
-        findings["sparse_banded_measured_bandwidth"] = bandwidth
-        findings["sparse_banded_consistent"] = (
-            _module_has_class_fragment(module, "SparseBanded") and 0 < bandwidth <= dim
-        )
-
-    if "kernel_random_features" in knobs:
-        n_features = [int(v) for v in _module_attr_values(module, "n_features")]
-        feature_count = min(n_features) if n_features else 0
-        findings["kernel_random_features_count"] = feature_count
-        findings["kernel_random_features_consistent"] = (
-            _module_has_class_fragment(module, "RandomFeatureKernel")
-            and feature_count > 0
-        )
-
-    if "multiscale_wavelet" in knobs:
-        n_scales = [int(v) for v in _module_attr_values(module, "n_scales")]
-        scale_count = min(n_scales) if n_scales else 0
-        findings["multiscale_wavelet_scales"] = scale_count
-        findings["multiscale_wavelet_consistent"] = (
-            _module_has_class_fragment(module, "MultiscaleWavelet") and scale_count > 0
-        )
+    for check in _RANGE_KNOB_CHECKS:
+        if check.knob in knobs:
+            _apply_range_knob_check(check, findings, module, dim=dim)
 
     if "graph_laplacian_diffusion" in knobs:
-        steps = [int(v) for v in _module_attr_values(module, "diffusion_steps")]
-        step_count = min(steps) if steps else 0
+        step_count = _measured_min_int(module, "diffusion_steps")
         drift = _future_drift(module, x)
         findings["graph_diffusion_steps"] = step_count
         findings["graph_diffusion_future_drift"] = drift
