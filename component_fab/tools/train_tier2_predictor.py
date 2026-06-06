@@ -23,78 +23,14 @@ from typing import Any
 
 import numpy as np
 
-from component_fab.proposer.capability_screen import fab_op_multiset
-from component_fab.proposer.measured_screen import measured_screen_for_spec
-from component_fab.proposer.spec_generator import (
-    ProposalSpec,
-    category_from_axes,
-    synthesis_kind_for_axes,
-)
+from component_fab.proposer.tier2_features import FEATURE_NAMES, features_for_row
+from component_fab.state.tier2_predictor import MODEL_DIR as _OUT_DIR
 from component_fab.state.tier2_training import load_tier2_labels
-
-_REPO = Path(__file__).resolve().parents[2]
-_OUT_DIR = _REPO / "research" / "runtime" / "tier2_value_predictor"
 
 # Deploy gate — a model is saved only if it clears ALL of these OOD bars.
 MIN_LABELS = 60
 MIN_ARCHS = 12
 MIN_LEAVE_ARCH_OUT_RHO = 0.35
-
-_DESCRIPTORS = (
-    "long_range_reach",
-    "content_dependence",
-    "content_match_gating",
-    "causality_violation",
-    "measured_lipschitz",
-    "effective_rank",
-    "nonlinearity",
-    "self_dominance",
-)
-_FEATURE_NAMES = (
-    *_DESCRIPTORS,
-    "op_count",
-    "n_distinct_ops",
-    "has_state",
-    "memory_o_l",
-    "global_receptive",
-)
-
-
-def _spec_from_axes(pid: str, name: str, axes: dict[str, Any]) -> ProposalSpec:
-    return ProposalSpec(
-        proposal_id=pid,
-        name=name or pid,
-        category=category_from_axes(axes),
-        synthesis_kind=str(
-            axes.get("synthesis_kind") or synthesis_kind_for_axes(axes, axes)
-        ),
-        math_axes=dict(axes),
-        anchor_witness_op="",
-        anchor_witnesses_all=(),
-        declared_property_row=dict(axes),
-        predicted_lift=0.5,
-        rationale="",
-    )
-
-
-def _features_for_row(row: dict[str, Any], extractor: Any) -> list[float] | None:
-    axes = dict(row.get("math_axes") or {})
-    spec = _spec_from_axes(row.get("proposal_id", ""), row.get("name", ""), axes)
-    ms = measured_screen_for_spec(spec, extractor=extractor)
-    if not ms.available or ms.descriptors is None:
-        return None
-    d = ms.descriptors
-    ops = fab_op_multiset(spec)
-    feat = [float(d.get(k, 0.0)) for k in _DESCRIPTORS]
-    feat += [float(len(ops)), float(len(set(ops)))]
-    feat += [
-        float(axes.get("op_dynamical_has_state") or 0),
-        1.0 if axes.get("op_dynamical_memory_length_class") == "O(L)" else 0.0,
-        1.0
-        if axes.get("op_geometric_receptive_field") in ("global", "hybrid_local_global")
-        else 0.0,
-    ]
-    return feat if all(np.isfinite(feat)) else None
 
 
 def _build_dataset(
@@ -107,7 +43,7 @@ def _build_dataset(
     y: list[float] = []
     groups: list[str] = []
     for row in rows:
-        feat = _features_for_row(row, extractor)
+        feat = features_for_row(row, extractor)
         if feat is None:
             continue
         X.append(feat)
@@ -151,7 +87,7 @@ def _save_model(X: np.ndarray, y: np.ndarray, metrics: dict[str, float]) -> Path
         json.dumps(
             {
                 "target": "tier2_mean_delta",
-                "feature_names": list(_FEATURE_NAMES),
+                "feature_names": list(FEATURE_NAMES),
                 "leave_arch_out": metrics,
                 "trained_at": _dt.datetime.now().isoformat(timespec="seconds"),
             },

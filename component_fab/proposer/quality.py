@@ -25,6 +25,7 @@ from component_fab.proposer.research_priors import (
     prior_affinity_for_spec,
 )
 from component_fab.proposer.spec_generator import ProposalSpec
+from component_fab.state.tier2_predictor import predict_mean_delta, predictor_available
 from component_fab.proposer.tier2_feedback import (
     Tier2Feedback,
     WEAK_NARROW_DISTRACTOR_ONLY,
@@ -159,6 +160,7 @@ def _tier2_win_probability(
     composite: float,
     affinity: PriorAffinity,
     binds_ok: bool = True,
+    predicted_delta: float | None = None,
 ) -> tuple[float, bool, list[str]]:
     reasons: list[str] = []
     if tier2 is not None:
@@ -189,10 +191,21 @@ def _tier2_win_probability(
         # not bind, so cap the pre-Tier-2 win estimate hard.
         estimate *= 0.3
         reasons.append("measured screen: non-binder — win estimate capped")
-    reasons.append(
-        "no Tier-2 evidence yet — win-probability estimated from measured "
-        "nano-binding probe, internal composite, and research-prior affinity"
-    )
+    if predicted_delta is not None:
+        # A deployed Tier-2 value predictor (OOD-gated) is the trusted learned
+        # signal — let it dominate the heuristic. mean_delta is the net win
+        # margin vs baseline; map to a win-prob monotonically.
+        model_prob = _clamp(0.5 + predicted_delta)
+        estimate = _clamp(0.7 * model_prob + 0.3 * estimate)
+        reasons.append(
+            f"Tier-2 value predictor: pred mean_delta {predicted_delta:+.4f} "
+            "(learned signal, dominates heuristic)"
+        )
+    else:
+        reasons.append(
+            "no Tier-2 evidence yet — win-probability estimated from measured "
+            "nano-binding probe, internal composite, and research-prior affinity"
+        )
     return _clamp(estimate), False, reasons
 
 
@@ -329,12 +342,18 @@ def score_quality(
     novelty_confidence = _NOVELTY_CONFIDENCE.get(novelty.status, 0.5)
 
     binds_ok = nas is None or not nas.available or nas.gate_pass
+    # When a Tier-2 value predictor is deployed (OOD-gated), use its learned
+    # prediction in place of the cheap heuristic for un-measured candidates.
+    predicted_delta = (
+        predict_mean_delta(spec) if tier2 is None and predictor_available() else None
+    )
     win_prob, has_tier2, win_reasons = _tier2_win_probability(
         tier2,
         binding=binding,
         composite=composite,
         affinity=affinity,
         binds_ok=binds_ok,
+        predicted_delta=predicted_delta,
     )
     risk, risk_reasons = _risk_score(nas, tier2, novelty.status)
     repair_signatures = tuple(tier2.signatures) if tier2 is not None else ()
