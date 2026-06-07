@@ -183,6 +183,13 @@ def _op_conv_only(module, inputs, _):
     return x + module.conv_proj(out)
 
 
+# Forget-gate-bias init for the gated_delta retention gate. Must match the
+# aria_core C++ kernel constant kGatedDeltaDecayBias (gated_delta_compiled.cpp /
+# gated_delta_backward_compiled.cpp) — the native path and this torch reference
+# are pinned equal by test_native_gated_delta_backward_matches_python.
+_GATED_DELTA_DECAY_BIAS = 2.5
+
+
 def _op_gated_delta(module, inputs, _):
     x = inputs[0]
     if not hasattr(module, "q_proj"):
@@ -191,9 +198,14 @@ def _op_gated_delta(module, inputs, _):
     q = _safe_linear(x, module.q_proj.weight, module.q_proj.bias)
     k = _safe_linear(x, module.k_proj.weight, module.k_proj.bias)
     v = _safe_linear(x, module.v_proj.weight, module.v_proj.bias)
-    alpha = torch.sigmoid(module.alpha_proj(x))
+    # decay = alpha is the state-retention gate, shifted by a positive forget-gate
+    # bias so the recurrent state is *kept* at init (≈0.92). The old
+    # ``alpha - beta`` centred decay at 0 (both gates ≈0.5) and wiped the state →
+    # the mamba2/gated_delta baseline scored 0.0 everywhere. beta stays the delta
+    # write strength below.
+    alpha = torch.sigmoid(module.alpha_proj(x) + _GATED_DELTA_DECAY_BIAS)
     beta = torch.sigmoid(module.beta_proj(x))
-    eff_decay = alpha - beta
+    eff_decay = alpha
     H = getattr(module, "_gated_delta_heads", min(8, D))
     if D % H != 0:
         H = 1

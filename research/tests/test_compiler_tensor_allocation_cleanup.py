@@ -41,9 +41,13 @@ def _reference_gated_delta(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
     q = module.q_proj(x)
     k = module.k_proj(x)
     v = module.v_proj(x)
-    alpha = torch.sigmoid(module.alpha_proj(x))
+    # decay = alpha (retention gate) with a positive forget-gate-bias init,
+    # matching the fixed gated_delta op / aria_core kernel (_GATED_DELTA_DECAY_BIAS).
+    from research.synthesis.compiler_ops_sequence import _GATED_DELTA_DECAY_BIAS
+
+    alpha = torch.sigmoid(module.alpha_proj(x) + _GATED_DELTA_DECAY_BIAS)
     beta = torch.sigmoid(module.beta_proj(x))
-    eff_decay = alpha - beta
+    eff_decay = alpha
 
     H = getattr(module, "_gated_delta_heads", min(8, D))
     if D % H != 0:

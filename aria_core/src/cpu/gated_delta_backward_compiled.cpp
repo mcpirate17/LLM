@@ -13,6 +13,10 @@ extern "C" {
 
 namespace {
 
+// kGatedDeltaDecayBias is defined in gated_delta_compiled.cpp, which kernels.cpp
+// #includes immediately before this file (same translation unit / anonymous
+// namespace) — reused here so forward and backward share one constant.
+
 inline float gated_delta_backward_sigmoid_scalar(float x) {
     return 1.0f / (1.0f + std::exp(-x));
 }
@@ -109,9 +113,10 @@ void aria_gated_delta_compiled_backward_f32(const float *grad_out,
                 std::memcpy(prev_history.data() + t * state_size, state.data(), sizeof(float) * state_size);
 
                 for (int64_t i = 0; i < dim; i++) {
-                    alpha[t * dim + i] = gated_delta_backward_sigmoid_scalar(alpha[t * dim + i]);
+                    alpha[t * dim + i] = gated_delta_backward_sigmoid_scalar(
+                        alpha[t * dim + i] + kGatedDeltaDecayBias);
                     beta[t * dim + i] = gated_delta_backward_sigmoid_scalar(beta[t * dim + i]);
-                    decay[t * dim + i] = alpha[t * dim + i] - beta[t * dim + i];
+                    decay[t * dim + i] = alpha[t * dim + i];
                 }
 
                 for (int64_t h = 0; h < heads; h++) {
@@ -206,8 +211,10 @@ void aria_gated_delta_compiled_backward_f32(const float *grad_out,
                     if (!chunk_start && raw_decay <= 1e-8f) {
                         grad_decay_total = 0.0f;
                     }
+                    // decay = alpha (retention gate): ∂decay/∂alpha = 1,
+                    // ∂decay/∂beta = 0. (Old alpha - beta had ∂/∂beta = -1.)
                     grad_alpha[t * dim + off + row] += grad_decay_total;
-                    grad_beta[t * dim + off + row] += grad_beta_total - grad_decay_total;
+                    grad_beta[t * dim + off + row] += grad_beta_total;
                     grad_alpha[t * dim + off + row] *= alpha_val * (1.0f - alpha_val);
                     grad_beta[t * dim + off + row] *= beta_val * (1.0f - beta_val);
                 }

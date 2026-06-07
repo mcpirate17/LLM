@@ -12,6 +12,16 @@ extern "C" {
 
 namespace {
 
+// Positive forget-gate-bias init on the retention gate: the decay is
+// sigmoid(alpha_logit + kGatedDeltaDecayBias), so at init (logits ≈ 0) the gate
+// is ≈0.92 and the recurrent state is *kept*, not wiped. Without it the gate sits
+// at 0.5 and — combined with decay = alpha (a true retention gate, not the old
+// alpha - beta which centred decay at 0) — the state dies before training can
+// bias it (mamba2 baseline scored 0.0 everywhere; diagnosed 2026-06-07). Must
+// stay in lockstep with the torch reference `_op_gated_delta`
+// (_GATED_DELTA_DECAY_BIAS in research/synthesis/compiler_ops_sequence.py).
+constexpr float kGatedDeltaDecayBias = 2.5f;
+
 inline float sigmoid_scalar(float x) {
     return 1.0f / (1.0f + std::exp(-x));
 }
@@ -85,9 +95,9 @@ void aria_gated_delta_compiled_f32(const float *x,
                 linear_project_token(x_row, beta_weight, beta.data(), dim);
 
                 for (int64_t i = 0; i < dim; i++) {
-                    alpha[i] = sigmoid_scalar(alpha[i]);
+                    alpha[i] = sigmoid_scalar(alpha[i] + kGatedDeltaDecayBias);
                     beta[i] = sigmoid_scalar(beta[i]);
-                    decay[i] = alpha[i] - beta[i];
+                    decay[i] = alpha[i];
                 }
 
                 for (int64_t h = 0; h < heads; h++) {
