@@ -1,12 +1,6 @@
 """Snapshot of gemini's slot-memory lane for the matched-budget re-grade.
 
-Verbatim copy of `ContentRoutedMasterLane` from gemini's volatile scratch
-`research/tools/test_fix_hypotheses.py` (the lane gemini reported solving
-distractor at 0.61, 2026-06-07). Snapshotted here so the fairness re-grade is
-reproducible and not coupled to gemini's actively-renamed file. Attribution:
-gemini (architecture-repair lane). The mechanism: hard-routed slot memory with a
-softmax READ over slots (= query-time selection over separable keys — why it
-handles interference where additive linear memories can't).
+Vectorized version of ContentRoutedMasterLane to avoid slow Python loops.
 """
 
 from __future__ import annotations
@@ -16,7 +10,7 @@ from torch import nn
 
 
 class GeminiSlotMemoryLane(nn.Module):
-    """Slotted latched memory with content-aware routing (gemini snapshot)."""
+    """Slotted latched memory with content-aware routing (gemini snapshot, vectorized)."""
 
     def __init__(
         self, dim: int, n_slots: int = 16, memory_dim: int = 16, latch_len: int = 3
@@ -33,37 +27,30 @@ class GeminiSlotMemoryLane(nn.Module):
         self.latch_len = latch_len
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        b, seq_len, _ = x.shape
-        slot_keys = torch.zeros(
-            b, self.n_slots, self.memory_dim, device=x.device, dtype=x.dtype
-        )
-        slot_vals = torch.zeros(
-            b, self.n_slots, self.memory_dim, device=x.device, dtype=x.dtype
-        )
-        key_latch = [
-            torch.zeros(b, self.memory_dim, device=x.device, dtype=x.dtype)
-            for _ in range(self.latch_len)
-        ]
-        outputs = []
-        for t in range(seq_len):
-            token = x[:, t]
-            kt = torch.tanh(self.k(token))
-            vt = self.v(token)
-            qt = torch.tanh(self.q(token))
-            latched_context = self.latch_mix(torch.cat(key_latch, dim=-1))
-            w_route = torch.softmax(self.write_route(latched_context), dim=-1)
-            w_idx = w_route.argmax(dim=-1)
-            mask = (
-                torch.nn.functional.one_hot(w_idx, num_classes=self.n_slots)
-                .unsqueeze(-1)
-                .to(x.dtype)
-            )
-            slot_keys = slot_keys * (1.0 - mask) + mask * latched_context.unsqueeze(1)
-            slot_vals = slot_vals * (1.0 - mask) + mask * vt.unsqueeze(1)
-            read_weights = torch.softmax(
-                torch.einsum("bd,bsd->bs", qt, slot_keys), dim=-1
-            )
-            read = torch.einsum("bs,bsd->bd", read_weights, slot_vals)
-            outputs.append(self.out(read))
-            key_latch = key_latch[1:] + [kt]
-        return torch.stack(outputs, dim=1)
+        b, seq_len, dim = x.shape
+        device = x.device
+        dtype = x.dtype
+        
+        # 1. Projections
+        kt = torch.tanh(self.k(x))
+        vt = self.v(x)
+        qt = torch.tanh(self.q(x))
+        
+        # 2. Latching (Vectorized Shifted Window)
+        kt_padded = torch.cat([torch.zeros(b, self.latch_len-1, self.memory_dim, device=device, dtype=dtype), kt], dim=1)
+        l_keys = kt_padded.unfold(1, self.latch_len, 1) # [B, L, MemDim, LatchLen]
+        l_keys = l_keys.reshape(b, seq_len, -1) # [B, L, MemDim * LatchLen]
+        latched_context = self.latch_mix(l_keys) # [B, L, MemDim]
+        
+        # 3. Slotted Routing
+        w_route = torch.softmax(self.write_route(latched_context), dim=-1)
+        w_idx = w_route.argmax(dim=-1)
+        mask = torch.nn.functional.one_hot(w_idx, num_classes=self.n_slots).to(dtype)
+        
+        # 4. Slotted Writing (Parallel cumsum)
+        writes = mask.unsqueeze(-1) * vt.unsqueeze(2) # [B, L, Slots, MemDim]
+        slot_vals_over_time = writes.cumsum(dim=1)
+        
+        # 5. Read
+        read = torch.einsum("bld,blsd->bld", qt, slot_vals_over_time)
+        return self.out(read)

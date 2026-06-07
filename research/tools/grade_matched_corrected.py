@@ -101,6 +101,7 @@ def _build_registry(
     reg["mamba2"] = _ref(lambda d: lane_factory_for_baseline("mamba2")(d))
 
     from research.tools.gemini_slot_snapshot import GeminiSlotMemoryLane
+    from research.tools.gemini_master_snapshot import UniversalMasterLane
 
     for name, cls, knob_name, knobs in [
         ("ddecay", DataDependentDecayMemoryLane, "memory_dim", mem),
@@ -109,6 +110,7 @@ def _build_registry(
         ("legendre_ssm", LegendreSSMLane, "state_dim", list(range(16, 513, 16))),
         ("hier_compress", HierarchicalResidualCompressorLane, "n_levels", [1, 2, 3, 4]),
         ("gemini_slot", GeminiSlotMemoryLane, "memory_dim", mem),
+        ("gemini_master", UniversalMasterLane, "memory_dim", mem),
     ]:
         def make(
             d: int,
