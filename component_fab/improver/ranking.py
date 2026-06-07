@@ -29,6 +29,19 @@ from component_fab.proposer.tier2_feedback import (
     tier2_score_multiplier,
 )
 from component_fab.proposer.nas_screen import NasScreenResult, nas_score_multiplier
+from component_fab.harness.state_tracking_suite import AXES as _STATE_TRACK_AXES
+
+# SSM-favoured probe tasks (state-tracking + copy/compression) — the axis the
+# binding composite is blind to. The 2026-06-07 SSM-fair cohort showed non-QKV
+# mechanisms (routing / compression / selective-scan) Pareto-beat attention here
+# while attention keeps recall/induction. These task names index the per-task
+# loss ratios already in the in_context probe scorecard, so the subscore is free.
+_SSM_FAVOURED_TASKS: tuple[str, ...] = (
+    _STATE_TRACK_AXES["state_tracking"] + _STATE_TRACK_AXES["copy_compression"]
+)
+# Additive composite bonus for SSM-favoured state-tracking (modest: the cohort
+# separation is real but ~9% at the axis top — nudge promotion, don't dominate).
+_STATE_TRACK_BONUS = 0.15
 
 _SMOKE_KEYS_REQUIRED = (
     "forward_passed",
@@ -70,6 +83,31 @@ def learning_subscore(probe_scorecard: dict[str, Any] | None) -> float:
     if ratio <= 1.0:
         return 0.0
     return min(1.0, math.log10(ratio) / 2.0)
+
+
+def state_tracking_subscore(probe_scorecard: dict[str, Any] | None) -> float:
+    """Mean SSM-favoured loss-reduction off the in_context probe ``per_task``.
+
+    Reads the per-task loss ratios already computed by ``validate_in_context``,
+    keeps only the SSM-favoured tasks (state-tracking + copy/compression — the
+    axis the binding composite ignores), and maps the mean ratio through the
+    same ``log10(ratio)/2`` clamp as ``learning_subscore``. Returns 0.0 when the
+    scorecard, ``per_task``, or trained tasks are missing. Free: no new compute.
+    """
+    if not probe_scorecard:
+        return 0.0
+    per_task = probe_scorecard.get("per_task") or {}
+    ratios = [
+        float(per_task[name].get("loss_ratio_initial_over_final") or 0.0)
+        for name in _SSM_FAVOURED_TASKS
+        if name in per_task and per_task[name].get("trained_successfully")
+    ]
+    if not ratios:
+        return 0.0
+    mean_ratio = sum(ratios) / len(ratios)
+    if mean_ratio <= 1.0:
+        return 0.0
+    return min(1.0, math.log10(mean_ratio) / 2.0)
 
 
 def binding_subscore(capability_scorecard: dict[str, Any] | None) -> float:
@@ -126,13 +164,18 @@ def composite_score(
     cross = cross_check_subscore(solo_scorecard.get("property_cross_check", {}))
     learn = learning_subscore(probe_scorecard)
     bind = binding_subscore(capability_scorecard)
+    state_track = state_tracking_subscore(probe_scorecard)
     components = {
         "smoke": smoke,
         "cross_check": cross,
         "learning": learn,
         "binding": bind,
+        "state_tracking": state_track,
     }
     score = smoke_w * smoke + cross_w * cross + learn_w * learn + bind_w * bind
+    # Additive (not part of the 4-weight tuple, so the signature/callers are
+    # unchanged): reward non-QKV state-tracking the binding composite is blind to.
+    score += _STATE_TRACK_BONUS * state_track
     return score, components
 
 
