@@ -10,8 +10,14 @@ Re-evaluated the novel non-QKV architectures using the **episodic-v2-random-quer
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **gemini_master** | **Master-Memory** | **0.263** | **0.275** | **0.263** | **0.252** |
 | **gemini_slot** | Slotted-Memory | 0.258 | 0.267 | 0.258 | 0.251 |
+| **softmax_4h** | Frontier-Attn | 0.244 | 0.258 | 0.249 | 0.222 |
 | **softmax_1h** | Frontier-Attn | 0.226 | 0.255 | 0.215 | 0.198 |
-| **mamba2** | Frontier-SSM | 0.168 | 0.257 | 0.126 | 0.131 |
+| **mamba2** | Frontier-SSM | 0.169 | 0.259 | 0.126 | 0.131 |
+| **power_semiring** | novel-memory | 0.152 | 0.229 | 0.125 | 0.126 |
+| **fast_weight** | novel-memory | 0.146 | 0.207 | 0.126 | 0.125 |
+| **legendre_ssm** | novel-ssm | 0.137 | 0.158 | 0.131 | 0.127 |
+| **hier_compress** | novel-memory | 0.127 | 0.142 | 0.125 | 0.123 |
+| **ddecay** | novel-memory | 0.123 | 0.125 | 0.122 | 0.124 |
 
 ## Key Breakthroughs
 
