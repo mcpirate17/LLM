@@ -478,6 +478,7 @@ def _train_one_lm(
     n_train_steps: int,
     batch_size: int,
     learning_rate: float,
+    device: str = "cpu",
 ) -> _TrainTrace:
     optim = torch.optim.Adam(model.parameters(), lr=learning_rate)
     generate = _BATCH_GENERATORS[task.name]
@@ -488,6 +489,8 @@ def _train_one_lm(
         model.train()
         for step in range(n_train_steps):
             ids, qpos, tgt = generate(task, batch_size, False, rng)
+            if device != "cpu":
+                ids, qpos, tgt = ids.to(device), qpos.to(device), tgt.to(device)
             logits = model(ids)
             qlogits = _gather_logits_at(logits, qpos)
             loss = nn.functional.cross_entropy(
@@ -515,6 +518,7 @@ def _eval_one_lm(
     rng: torch.Generator,
     batch_size: int,
     n_eval_batches: int = 8,
+    device: str = "cpu",
 ) -> float:
     generate = _BATCH_GENERATORS[task.name]
     model.eval()
@@ -523,6 +527,8 @@ def _eval_one_lm(
     with torch.no_grad():
         for _ in range(n_eval_batches):
             ids, qpos, tgt = generate(task, batch_size, True, rng)
+            if device != "cpu":
+                ids, qpos, tgt = ids.to(device), qpos.to(device), tgt.to(device)
             logits = model(ids)
             qlogits = _gather_logits_at(logits, qpos)
             preds = qlogits.argmax(dim=-1)
@@ -542,6 +548,7 @@ def run_one_task(
     batch_size: int = 32,
     learning_rate: float = 3e-3,
     seed: int = 0,
+    device: str = "cpu",
 ) -> HardBindingResult:
     """Train a TinyLM(lane) on ``task`` and report held-out accuracy.
 
@@ -556,10 +563,16 @@ def run_one_task(
         use_position_embedding=True,
         max_seq_len=task.seq_len,
     )
-    model = TinyLM(lane_factory, cfg)
+    model = TinyLM(lane_factory, cfg).to(device)
     rng = torch.Generator().manual_seed(seed)
-    trace = _train_one_lm(model, task, rng, n_train_steps, batch_size, learning_rate)
-    eval_acc = _eval_one_lm(model, task, rng, batch_size) if trace.converged else 0.0
+    trace = _train_one_lm(
+        model, task, rng, n_train_steps, batch_size, learning_rate, device=device
+    )
+    eval_acc = (
+        _eval_one_lm(model, task, rng, batch_size, device=device)
+        if trace.converged
+        else 0.0
+    )
     chance = 1.0 / max(1, task.n_values or task.vocab_size)
     return HardBindingResult(
         task_name=task.name,
@@ -572,6 +585,137 @@ def run_one_task(
         converged=trace.converged,
         n_params=sum(p.numel() for p in model.parameters() if p.requires_grad),
     )
+
+
+def run_one_task_checkpoints(
+    lane_factory: Callable[[int], nn.Module],
+    task: HardBindingTask,
+    *,
+    eval_at_steps: tuple[int, ...],
+    mixer_label: str,
+    dim: int = 64,
+    n_blocks: int = 2,
+    batch_size: int = 32,
+    learning_rate: float = 3e-3,
+    seed: int = 0,
+    device: str = "cpu",
+    n_eval_batches: int = 8,
+) -> dict[int, HardBindingResult]:
+    """Train ONE trajectory and read held-out accuracy at each checkpoint.
+
+    Trains a single ``TinyLM(lane)`` to ``max(eval_at_steps)`` and evaluates
+    held-out binding accuracy at every step in ``eval_at_steps`` — i.e. the
+    "checkpoint at 2K, continue to 3K" pattern, so the standard (2K) and
+    thorough (3K) numbers come from the same run with no retraining. Eval uses a
+    fresh, deterministically-seeded generator at every checkpoint, so the eval
+    set is identical across checkpoints AND across models (fairer than the
+    single-shot ``run_one_task``, whose eval rng inherits the training state).
+
+    Returns ``{step: HardBindingResult}``. On failure every requested step gets a
+    ``converged=False`` row so callers can still aggregate.
+    """
+    steps = sorted({int(s) for s in eval_at_steps if int(s) > 0})
+    if not steps:
+        raise ValueError("eval_at_steps must contain at least one positive step")
+
+    torch.manual_seed(seed)
+    cfg = TinyLMConfig(
+        vocab_size=task.vocab_size,
+        dim=dim,
+        n_blocks=n_blocks,
+        use_position_embedding=True,
+        max_seq_len=task.seq_len,
+    )
+    model = TinyLM(lane_factory, cfg).to(device)
+    results = _train_eval_checkpoints(
+        model,
+        task,
+        steps=steps,
+        mixer_label=mixer_label,
+        batch_size=batch_size,
+        learning_rate=learning_rate,
+        seed=seed,
+        device=device,
+        n_eval_batches=n_eval_batches,
+    )
+    chance = 1.0 / max(1, task.n_values or task.vocab_size)
+    n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    for step in steps:  # fill any checkpoint missed by a mid-training failure
+        results.setdefault(
+            step,
+            HardBindingResult(
+                task_name=task.name,
+                mixer_label=mixer_label,
+                train_loss_initial=float("nan"),
+                train_loss_final=float("nan"),
+                train_accuracy_final=0.0,
+                eval_accuracy=0.0,
+                chance_accuracy=chance,
+                converged=False,
+                n_params=n_params,
+            ),
+        )
+    return results
+
+
+def _train_eval_checkpoints(
+    model: TinyLM,
+    task: HardBindingTask,
+    *,
+    steps: list[int],
+    mixer_label: str,
+    batch_size: int,
+    learning_rate: float,
+    seed: int,
+    device: str,
+    n_eval_batches: int,
+) -> dict[int, HardBindingResult]:
+    """Train ``model`` to ``max(steps)``, emit a result row at each checkpoint."""
+    checkpoints = set(steps)
+    rng = torch.Generator().manual_seed(seed)
+    optim = torch.optim.Adam(model.parameters(), lr=learning_rate)
+    generate = _BATCH_GENERATORS[task.name]
+    chance = 1.0 / max(1, task.n_values or task.vocab_size)
+    n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+    results: dict[int, HardBindingResult] = {}
+    initial_loss = float("nan")
+    try:
+        for step in range(1, steps[-1] + 1):
+            model.train()
+            ids, qpos, tgt = generate(task, batch_size, False, rng)
+            if device != "cpu":
+                ids, qpos, tgt = ids.to(device), qpos.to(device), tgt.to(device)
+            qlogits = _gather_logits_at(model(ids), qpos)
+            loss = nn.functional.cross_entropy(
+                qlogits.reshape(-1, qlogits.shape[-1]), tgt.reshape(-1)
+            )
+            optim.zero_grad()
+            loss.backward()
+            optim.step()
+            if step == 1:
+                initial_loss = float(loss.item())
+            if step not in checkpoints:
+                continue
+            train_acc = float((qlogits.argmax(dim=-1) == tgt).float().mean().item())
+            eval_rng = torch.Generator().manual_seed(seed + 10007)
+            eval_acc = _eval_one_lm(
+                model, task, eval_rng, batch_size, n_eval_batches, device=device
+            )
+            results[step] = HardBindingResult(
+                task_name=task.name,
+                mixer_label=mixer_label,
+                train_loss_initial=initial_loss,
+                train_loss_final=float(loss.item()),
+                train_accuracy_final=train_acc,
+                eval_accuracy=eval_acc,
+                chance_accuracy=chance,
+                converged=True,
+                n_params=n_params,
+            )
+    except Exception:  # noqa: BLE001 - caller fills missing checkpoints
+        pass
+    return results
 
 
 def run_harder_binding_suite(
