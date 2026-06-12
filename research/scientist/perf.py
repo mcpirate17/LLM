@@ -108,7 +108,7 @@ class PerfTracer:
                 tracer.start(name, use_gpu=use_gpu)
                 return self_inner
 
-            def __exit__(self_inner, _exc_type, exc, tb):
+            def __exit__(self_inner, _exc_type, _exc, _tb):
                 tracer.stop(name)
                 return False
 
@@ -274,7 +274,7 @@ class KernelTimer:
 
             # Use closure to capture name
             def _get_hooks(mod_name):
-                def pre_hook(mod, input):
+                def pre_hook(mod, _input):
                     if torch.cuda.is_available() and self.enabled:
                         start_event = torch.cuda.Event(enable_timing=True)
                         start_event.record()
@@ -282,7 +282,7 @@ class KernelTimer:
                         # For simplicity in single-threaded training, we use a stack-like approach per module
                         self._active_events.setdefault(id(mod), []).append(start_event)
 
-                def post_hook(mod, input, output):
+                def post_hook(mod, _input, _output):
                     if torch.cuda.is_available() and self.enabled:
                         end_event = torch.cuda.Event(enable_timing=True)
                         end_event.record()

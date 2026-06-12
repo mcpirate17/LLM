@@ -102,6 +102,10 @@ def _build_registry(
 
     from research.tools.gemini_slot_snapshot import GeminiSlotMemoryLane
     from research.tools.gemini_master_snapshot import UniversalMasterLane
+    from component_fab.generator.memory_primitives import (
+        MultiHeadSlotTableMemoryLane,
+        SlotTableMemoryLane,
+    )
 
     for name, cls, knob_name, knobs in [
         ("ddecay", DataDependentDecayMemoryLane, "memory_dim", mem),
@@ -111,7 +115,10 @@ def _build_registry(
         ("hier_compress", HierarchicalResidualCompressorLane, "n_levels", [1, 2, 3, 4]),
         ("gemini_slot", GeminiSlotMemoryLane, "memory_dim", mem),
         ("gemini_master", UniversalMasterLane, "memory_dim", mem),
+        ("slot_table", SlotTableMemoryLane, "memory_dim", mem),
+        ("slot_table_mh", MultiHeadSlotTableMemoryLane, "memory_dim", mem),
     ]:
+
         def make(
             d: int,
             kv: int,

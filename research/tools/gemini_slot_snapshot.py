@@ -30,27 +30,35 @@ class GeminiSlotMemoryLane(nn.Module):
         b, seq_len, dim = x.shape
         device = x.device
         dtype = x.dtype
-        
+
         # 1. Projections
         kt = torch.tanh(self.k(x))
         vt = self.v(x)
         qt = torch.tanh(self.q(x))
-        
+
         # 2. Latching (Vectorized Shifted Window)
-        kt_padded = torch.cat([torch.zeros(b, self.latch_len-1, self.memory_dim, device=device, dtype=dtype), kt], dim=1)
-        l_keys = kt_padded.unfold(1, self.latch_len, 1) # [B, L, MemDim, LatchLen]
-        l_keys = l_keys.reshape(b, seq_len, -1) # [B, L, MemDim * LatchLen]
-        latched_context = self.latch_mix(l_keys) # [B, L, MemDim]
-        
+        kt_padded = torch.cat(
+            [
+                torch.zeros(
+                    b, self.latch_len - 1, self.memory_dim, device=device, dtype=dtype
+                ),
+                kt,
+            ],
+            dim=1,
+        )
+        l_keys = kt_padded.unfold(1, self.latch_len, 1)  # [B, L, MemDim, LatchLen]
+        l_keys = l_keys.reshape(b, seq_len, -1)  # [B, L, MemDim * LatchLen]
+        latched_context = self.latch_mix(l_keys)  # [B, L, MemDim]
+
         # 3. Slotted Routing
         w_route = torch.softmax(self.write_route(latched_context), dim=-1)
         w_idx = w_route.argmax(dim=-1)
         mask = torch.nn.functional.one_hot(w_idx, num_classes=self.n_slots).to(dtype)
-        
+
         # 4. Slotted Writing (Parallel cumsum)
-        writes = mask.unsqueeze(-1) * vt.unsqueeze(2) # [B, L, Slots, MemDim]
+        writes = mask.unsqueeze(-1) * vt.unsqueeze(2)  # [B, L, Slots, MemDim]
         slot_vals_over_time = writes.cumsum(dim=1)
-        
+
         # 5. Read
         read = torch.einsum("bld,blsd->bld", qt, slot_vals_over_time)
         return self.out(read)

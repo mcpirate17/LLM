@@ -3,6 +3,7 @@ import statistics
 from pathlib import Path
 from collections import defaultdict
 
+
 def aggregate_results():
     reports_dir = Path("research/reports")
     # Only aggregate results from today's session (2026-06-07) and relevant regrades
@@ -12,10 +13,10 @@ def aggregate_results():
         "matched_corrected_regrade_params.json",
         "matched_corrected_regrade_flops.json",
     ]
-    
+
     # model_name -> task_name -> list of accuracies
     aggregated = defaultdict(lambda: defaultdict(list))
-    
+
     for pattern in patterns:
         for file_path in reports_dir.glob(pattern):
             try:
@@ -44,40 +45,48 @@ def aggregate_results():
         final_stats[model] = {}
         all_accs = []
         for task, accs in tasks.items():
-            if not accs: continue
+            if not accs:
+                continue
             mean = statistics.fmean(accs)
             stdev = statistics.stdev(accs) if len(accs) > 1 else 0.0
             final_stats[model][task] = {"mean": mean, "stdev": stdev, "n": len(accs)}
             all_accs.extend(accs)
-        
+
         if all_accs:
             final_stats[model]["total_avg"] = statistics.fmean(all_accs)
-            final_stats[model]["total_stdev"] = statistics.stdev(all_accs) if len(all_accs) > 1 else 0.0
+            final_stats[model]["total_stdev"] = (
+                statistics.stdev(all_accs) if len(all_accs) > 1 else 0.0
+            )
 
     return final_stats
+
 
 def generate_markdown(stats):
     tasks = [
         "episodic_unique_multi_query",
         "episodic_distinct_key_interference",
-        "episodic_compositional"
+        "episodic_compositional",
     ]
-    
+
     # Sort models by total average
     sorted_models = sorted(
-        stats.keys(), 
-        key=lambda m: stats[model].get("total_avg", 0) if (model := m) in stats else 0, 
-        reverse=True
+        stats.keys(),
+        key=lambda m: stats[model].get("total_avg", 0) if (model := m) in stats else 0,
+        reverse=True,
     )
 
     lines = []
-    lines.append("| Model | Total Avg (±σ) | Unique (128) | Interference (256) | Compositional (128) |")
+    lines.append(
+        "| Model | Total Avg (±σ) | Unique (128) | Interference (256) | Compositional (128) |"
+    )
     lines.append("| :--- | :--- | :--- | :--- | :--- |")
-    
+
     for model in sorted_models:
         row = stats[model]
-        avg_str = f"**{row.get('total_avg', 0):.3f}** (±{row.get('total_stdev', 0):.3f})"
-        
+        avg_str = (
+            f"**{row.get('total_avg', 0):.3f}** (±{row.get('total_stdev', 0):.3f})"
+        )
+
         task_cells = []
         for t in tasks:
             # Task names might vary slightly in reports (e.g. episodic_ vs hard_)
@@ -88,10 +97,11 @@ def generate_markdown(stats):
                 task_cells.append(f"{t_stats['mean']:.3f} (±{t_stats['stdev']:.3f})")
             else:
                 task_cells.append("-")
-        
+
         lines.append(f"| {model} | {avg_str} | {' | '.join(task_cells)} |")
-    
+
     return "\n".join(lines)
+
 
 if __name__ == "__main__":
     stats = aggregate_results()

@@ -17,7 +17,6 @@ gradient flows, bounded depth/params) but not necessarily USEFUL.
 
 from __future__ import annotations
 
-import copy
 import logging
 import random
 from dataclasses import dataclass, field, replace
@@ -27,7 +26,7 @@ from typing import Dict, FrozenSet, List, Mapping, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 from research.defaults import MODEL_DIM
-from .graph import ComputationGraph, OpNode
+from .graph import ComputationGraph, OpNode, copy_jsonlike
 from .grammar_support import (
     EfficiencyPrior,
     ROUTING_COMPRESSION_MOE_OPS,
@@ -618,37 +617,16 @@ def _config_with_efficiency_prior(
     return replace(config, op_weights=biased_weights)
 
 
-def generate_layer_graph(
-    config: Optional[GrammarConfig] = None,
-    seed: Optional[int] = None,
-    *,
-    validate: bool = True,
-    _runtime_context: _GenerationRuntimeContext | None = None,
-) -> ComputationGraph:
-    """Generate a computation graph for a single layer.
+def _populate_graph_metadata(
+    graph: ComputationGraph,
+    config: GrammarConfig,
+    runtime: _GenerationRuntimeContext,
+) -> None:
+    """Populate graph.metadata with all config/runtime fields.
 
-    Uses motif-based compositional generation:
-    1. Pick 1-2 structural templates
-    2. Fill each template's slots with validated motifs
-    3. Add residual connection
-    4. Validate output shape
+    Isolated metadata-setup stage so generate_layer_graph stays readable.
+    No RNG is consumed here — safe to call before the seed-driven depth choice.
     """
-    if config is None:
-        config = GrammarConfig()
-
-    config = _normalize_generation_config(config)
-    runtime = _runtime_context or _runtime_context_for_config(config)
-
-    rng = random.Random(seed)
-    graph = ComputationGraph(config.model_dim)
-    input_id = graph.add_input()
-
-    # Determine composition depth (how many template blocks to stack)
-    if config.composition_depth > 0:
-        n_templates = config.composition_depth
-    else:
-        n_templates = rng.choices([1, 2, 3], weights=[3, 5, 2], k=1)[0]
-
     graph.metadata["context_rules_version"] = "low_s1_v1"
     if config.ar_binding_overlay_enabled:
         graph.metadata["ar_binding_overlay_enabled"] = True
@@ -690,6 +668,105 @@ def generate_layer_graph(
             "strength": max(0.0, float(config.dynamic_template_candidate_strength)),
         }
 
+
+def _attempt_template_slot(
+    graph: ComputationGraph,
+    config: GrammarConfig,
+    runtime: _GenerationRuntimeContext,
+    rng: random.Random,
+    current: int,
+    t_idx: int,
+    iter_weights: Optional[Mapping],
+    iter_allowed_names: Optional[FrozenSet[str]],
+    max_attempts: int,
+) -> Optional[int]:
+    """Try up to max_attempts times to apply one template slot.
+
+    Returns the accepted tail node id, or None if every attempt exceeded
+    the graph budget (caller should stop stacking templates).
+    Rollback on budget-exceed is done here; the graph is left clean on None.
+    """
+    for _attempt in range(max_attempts):
+        # Snapshot graph state for lightweight rollback instead of full copy.
+        # Only need to track node IDs added and metadata changes.
+        prev_next_id = graph._next_id
+        prev_output_id = graph._output_node_id
+        prev_metadata = copy_jsonlike(graph.metadata)
+        graph._cache.clear()
+
+        # Phase B.2 — propagate the dynamic-slot flag through metadata so the
+        # picker (_pick_compatible_motif) can read it without altering the
+        # apply_template signature.
+        graph.metadata["_use_derived_slot_classes"] = bool(
+            config.use_derived_slot_classes
+        )
+        if getattr(config, "slot_strategy_reason", ""):
+            graph.metadata["slot_strategy_reason"] = str(config.slot_strategy_reason)
+
+        dynamic_trial, dynamic_used = maybe_apply_dynamic_template(
+            graph=graph,
+            current=current,
+            rng=rng,
+            runtime=runtime,
+            config=config,
+            t_idx=t_idx,
+            prev_next_id=prev_next_id,
+            prev_output_id=prev_output_id,
+            prev_metadata=prev_metadata,
+        )
+        if dynamic_used:
+            trial_current = dynamic_trial
+        else:
+            trial_current = apply_template(
+                graph,
+                current,
+                rng,
+                template_name=config.forced_template,
+                template_weights=iter_weights,
+                motif_weights=runtime.motif_weights,
+                op_weights=runtime.effective_op_weights,
+                exploration_budget=config.template_exploration_budget,
+                allowed_template_names=iter_allowed_names,
+                trial_template_names=config.trial_template_names,
+            )
+
+        # depth() returns 0 without a set output — point it at the trial tail
+        # so the budget check sees the actual longest input-to-trail path.
+        # Skip for very tight budgets where a real depth signal starves the
+        # grammar: the validator's +2 headroom is the sole depth backstop
+        # in that regime.
+        if config.max_depth > 10:
+            graph._output_node_id = trial_current
+            graph._cache.pop("depth", None)
+
+        if _graph_exceeds_final_budget(graph, config):
+            # Roll back only the suffix allocated by this template. Node IDs
+            # are monotonic, so there is no reason to rebuild a full key set.
+            for nid in range(prev_next_id, graph._next_id):
+                del graph.nodes[nid]
+            graph._next_id = prev_next_id
+            graph._output_node_id = prev_output_id
+            graph.metadata = prev_metadata
+            graph._cache.clear()
+            continue
+        return trial_current
+    return None
+
+
+def _run_template_loop(
+    graph: ComputationGraph,
+    config: GrammarConfig,
+    runtime: _GenerationRuntimeContext,
+    rng: random.Random,
+    input_id: int,
+    n_templates: int,
+) -> int:
+    """Apply n_templates template blocks to graph; return the tail node id.
+
+    Handles routing_mandatory biasing, depth-aware weight adjustment, and
+    budget-exceeded rollback via _attempt_template_slot.  RNG is consumed in
+    exactly the same order as the original inlined loop.
+    """
     current = input_id
     for t_idx in range(n_templates):
         _iter_weights = (
@@ -727,78 +804,43 @@ def generate_layer_graph(
             if config.routing_mandatory and t_idx == 0 and not config.forced_template
             else 1
         )
-        template_applied = False
-        for _attempt in range(max_attempts):
-            # Snapshot graph state for lightweight rollback instead of full copy.
-            # Only need to track node IDs added and metadata changes.
-            prev_next_id = graph._next_id
-            prev_output_id = graph._output_node_id
-            prev_metadata = copy.deepcopy(graph.metadata)
-            graph._cache.clear()
-
-            # Phase B.2 — propagate the dynamic-slot flag through metadata so the
-            # picker (_pick_compatible_motif) can read it without altering the
-            # apply_template signature.
-            graph.metadata["_use_derived_slot_classes"] = bool(
-                config.use_derived_slot_classes
-            )
-            if getattr(config, "slot_strategy_reason", ""):
-                graph.metadata["slot_strategy_reason"] = str(
-                    config.slot_strategy_reason
-                )
-
-            dynamic_trial, dynamic_used = maybe_apply_dynamic_template(
-                graph=graph,
-                current=current,
-                rng=rng,
-                runtime=runtime,
-                config=config,
-                t_idx=t_idx,
-                prev_next_id=prev_next_id,
-                prev_output_id=prev_output_id,
-                prev_metadata=prev_metadata,
-            )
-            if dynamic_used:
-                trial_current = dynamic_trial
-            else:
-                trial_current = apply_template(
-                    graph,
-                    current,
-                    rng,
-                    template_name=config.forced_template,
-                    template_weights=_iter_weights,
-                    motif_weights=runtime.motif_weights,
-                    op_weights=runtime.effective_op_weights,
-                    exploration_budget=config.template_exploration_budget,
-                    allowed_template_names=_iter_allowed_names,
-                    trial_template_names=config.trial_template_names,
-                )
-
-            # depth() returns 0 without a set output — point it at the trial tail
-            # so the budget check sees the actual longest input-to-trail path.
-            # Skip for very tight budgets where a real depth signal starves the
-            # grammar: the validator's +2 headroom is the sole depth backstop
-            # in that regime.
-            if config.max_depth > 10:
-                graph._output_node_id = trial_current
-                graph._cache.pop("depth", None)
-
-            if _graph_exceeds_final_budget(graph, config):
-                # Roll back only the suffix allocated by this template. Node IDs
-                # are monotonic, so there is no reason to rebuild a full key set.
-                for nid in range(prev_next_id, graph._next_id):
-                    del graph.nodes[nid]
-                graph._next_id = prev_next_id
-                graph._output_node_id = prev_output_id
-                graph.metadata = prev_metadata
-                graph._cache.clear()
-                continue
-            current = trial_current
-            template_applied = True
+        accepted = _attempt_template_slot(
+            graph,
+            config,
+            runtime,
+            rng,
+            current,
+            t_idx,
+            _iter_weights,
+            _iter_allowed_names,
+            max_attempts,
+        )
+        if accepted is None:
             break
-        if not template_applied:
-            break
+        current = accepted
+    return current
 
+
+def _apply_output_decorators(
+    graph: ComputationGraph,
+    config: GrammarConfig,
+    rng: random.Random,
+    current: int,
+    input_id: int,
+    n_templates: int,
+    *,
+    validate: bool,
+) -> None:
+    """Apply post-loop decorators and finalise the graph in-place.
+
+    Stages (in order, preserving RNG consumption):
+      1. Record layer_depths in metadata.
+      2. Optional spectral filter injection (consumes one rng.random()).
+      3. Output-dim coercion to model_dim.
+      4. Optional outer residual (consumes one rng.random()).
+      5. Final rmsnorm if not already normalised.
+      6. set_output + prune_unreachable_nodes + optional validate.
+    """
     # Record depth placement for leaderboard analysis
     tpls_used = graph.metadata.get("templates_used", [])
     if tpls_used and n_templates > 1:
@@ -871,6 +913,44 @@ def generate_layer_graph(
 
     if validate:
         _validate_graph(graph, config)
+
+
+def generate_layer_graph(
+    config: Optional[GrammarConfig] = None,
+    seed: Optional[int] = None,
+    *,
+    validate: bool = True,
+    _runtime_context: _GenerationRuntimeContext | None = None,
+) -> ComputationGraph:
+    """Generate a computation graph for a single layer.
+
+    Uses motif-based compositional generation:
+    1. Pick 1-2 structural templates
+    2. Fill each template's slots with validated motifs
+    3. Add residual connection
+    4. Validate output shape
+    """
+    if config is None:
+        config = GrammarConfig()
+
+    config = _normalize_generation_config(config)
+    runtime = _runtime_context or _runtime_context_for_config(config)
+
+    rng = random.Random(seed)
+    graph = ComputationGraph(config.model_dim)
+    input_id = graph.add_input()
+
+    # Determine composition depth (how many template blocks to stack)
+    if config.composition_depth > 0:
+        n_templates = config.composition_depth
+    else:
+        n_templates = rng.choices([1, 2, 3], weights=[3, 5, 2], k=1)[0]
+
+    _populate_graph_metadata(graph, config, runtime)
+    current = _run_template_loop(graph, config, runtime, rng, input_id, n_templates)
+    _apply_output_decorators(
+        graph, config, rng, current, input_id, n_templates, validate=validate
+    )
 
     return graph
 

@@ -413,57 +413,59 @@ def _tpl_softmax_matmul_tail(
     return _residual(graph, mid2, ffned, context=f"{name}.output")
 
 
-def _tpl_controlled_attn_matmul_ablation(
-    graph: ComputationGraph,
+def _controlled_attn_block(
+    graph: "ComputationGraph",
     input_id: int,
     rng: random.Random,
-    weights: MotifWeights = None,
+    weights: MotifWeights,
     *,
     name: str,
     attn_op: str,
-    use_matmul_refine: bool,
-    tail_kind: str,
+    D: int,
 ) -> int:
-    """Controlled ablation scaffold derived from attn_normalized_matmul."""
-    D = graph.model_dim
+    """norm → attn_op → optional post-norm → proj → fix_dim → residual.
+
+    Returns mid node id (residual of input_id + attended projection).
+    """
     norm1 = _pick_with_local_wildcard(
         graph, input_id, rng, MOTIF_CLASS_NORM, weights, wildcard_prob=0.0
     )
     normed1 = _instantiate_motif(graph, input_id, norm1, rng) if norm1 else input_id
-
     attended = _add(graph, attn_op, [normed1], context=f"{name}.attn")
     if attn_op == "softmax_attention":
         attended = _add(graph, "rmsnorm", [attended], context=f"{name}.attn_norm")
     attended = _add(
-        graph,
-        "linear_proj",
-        [attended],
-        {"out_dim": D},
-        context=f"{name}.attn_proj",
+        graph, "linear_proj", [attended], {"out_dim": D}, context=f"{name}.attn_proj"
     )
     attended = _fix_dim(graph, attended)
-    mid = _residual(graph, input_id, attended, context=f"{name}.mid")
+    return _residual(graph, input_id, attended, context=f"{name}.mid")
 
+
+def _controlled_refine_block(
+    graph: "ComputationGraph",
+    mid: int,
+    rng: random.Random,
+    weights: MotifWeights,
+    *,
+    name: str,
+    use_matmul_refine: bool,
+    D: int,
+) -> int:
+    """norm2 → (matmul-refine | swiglu) → proj → fix_dim → residual.
+
+    Returns mid2 node id (residual of mid + refined projection).
+    """
     norm2 = _pick_with_local_wildcard(
         graph, mid, rng, MOTIF_CLASS_NORM, weights, wildcard_prob=0.0
     )
     normed2 = _instantiate_motif(graph, mid, norm2, rng) if norm2 else mid
     refined_in = _add(graph, "rmsnorm", [normed2], context=f"{name}.refine_norm")
-
     if use_matmul_refine:
         proj_a = _add(
-            graph,
-            "linear_proj",
-            [refined_in],
-            {"out_dim": D},
-            context=f"{name}.proj_a",
+            graph, "linear_proj", [refined_in], {"out_dim": D}, context=f"{name}.proj_a"
         )
         proj_b = _add(
-            graph,
-            "linear_proj",
-            [refined_in],
-            {"out_dim": D},
-            context=f"{name}.proj_b",
+            graph, "linear_proj", [refined_in], {"out_dim": D}, context=f"{name}.proj_b"
         )
         refined = _add(graph, "matmul", [proj_a, proj_b], context=f"{name}.refined")
     else:
@@ -475,32 +477,40 @@ def _tpl_controlled_attn_matmul_ablation(
             context=f"{name}.refined",
         )
     refined = _add(
-        graph,
-        "linear_proj",
-        [refined],
-        {"out_dim": D},
-        context=f"{name}.refined_proj",
+        graph, "linear_proj", [refined], {"out_dim": D}, context=f"{name}.refined_proj"
     )
     refined = _fix_dim(graph, refined)
-    mid2 = _residual(graph, mid, refined, context=f"{name}.mid2")
+    return _residual(graph, mid, refined, context=f"{name}.mid2")
+
+
+def _tpl_controlled_attn_matmul_ablation(
+    graph: "ComputationGraph",
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+    *,
+    name: str,
+    attn_op: str,
+    use_matmul_refine: bool,
+    tail_kind: str,
+) -> int:
+    """Controlled ablation scaffold derived from attn_normalized_matmul."""
+    D = graph.model_dim
+    mid = _controlled_attn_block(
+        graph, input_id, rng, weights, name=name, attn_op=attn_op, D=D
+    )
+    mid2 = _controlled_refine_block(
+        graph, mid, rng, weights, name=name, use_matmul_refine=use_matmul_refine, D=D
+    )
     tail_in = (
         mid2
         if tail_kind == "router_sidecar"
-        else _add(
-            graph,
-            "rmsnorm",
-            [mid2],
-            context=f"{name}.tail_norm",
-        )
+        else _add(graph, "rmsnorm", [mid2], context=f"{name}.tail_norm")
     )
 
     if tail_kind == "dense":
         tail = _add(
-            graph,
-            "swiglu_mlp",
-            [tail_in],
-            {"mlp_ratio": 3.0},
-            context=f"{name}.tail",
+            graph, "swiglu_mlp", [tail_in], {"mlp_ratio": 3.0}, context=f"{name}.tail"
         )
     elif tail_kind == "sparse":
         tail = _add(graph, "nm_sparse_linear", [tail_in], context=f"{name}.tail")
@@ -513,17 +523,11 @@ def _tpl_controlled_attn_matmul_ablation(
         )
     elif tail_kind == "router_sidecar":
         routed = _add(
-            graph,
-            "difficulty_blend_3way",
-            [mid2, mid2],
-            context=f"{name}.route_mix",
+            graph, "difficulty_blend_3way", [mid2, mid2], context=f"{name}.route_mix"
         )
         routed = _residual(graph, mid2, routed, context=f"{name}.route_mid")
         routed = _add(
-            graph,
-            "depth_weighted_proj",
-            [routed],
-            context=f"{name}.route_proj",
+            graph, "depth_weighted_proj", [routed], context=f"{name}.route_proj"
         )
         routed = _fix_dim(graph, routed)
         tail = _add(
@@ -588,6 +592,7 @@ from ._templates_attention_advanced import (  # noqa: E402,F401
     tpl_phase_lock_attention_block,
     tpl_product_key_memory_block,
     tpl_reciprocal_rank_attention_block,
+    tpl_reciprocal_semiring_attention_block,
     tpl_retention_mix_block,
     tpl_sparsemax_attention_block,
     tpl_stdp_reciprocal_memory_block,

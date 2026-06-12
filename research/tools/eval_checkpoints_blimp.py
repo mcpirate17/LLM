@@ -51,6 +51,10 @@ def _lane_from_name(name: str) -> tuple[str, bool] | None:
         return "pq_rope_winner", False
     if "semiring_ffw_real" in n or "semiring_chinchilla" in n:
         return "semiring_winner", False
+    if "recip_100m" in n:
+        return "reciprocal_rank_attention", True
+    if "softmax_100m" in n:
+        return "softmax_attention", True
     for lane in (
         "anisotropic_semiring_reciprocal",
         "fixed_rank_reciprocal",

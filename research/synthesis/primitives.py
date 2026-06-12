@@ -18,6 +18,7 @@ import ast
 import operator
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 import logging
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
@@ -861,6 +862,18 @@ _register(
 )
 _register(
     PrimitiveOp(
+        "reciprocal_semiring_attention",
+        OpCategory.MIXING,
+        1,
+        "identity",
+        has_params=True,
+        param_formula="D*D*4 + 1",
+        description="Reciprocal-semiring attention: reciprocal-rank mutual-match addressing composed with learnable-semiring (mean<->max) value aggregation",
+        binding_range_class="full",
+    )
+)
+_register(
+    PrimitiveOp(
         "phase_lock_attention",
         OpCategory.MIXING,
         1,
@@ -1674,8 +1687,14 @@ _register(
 
 
 def load_primitives_from_designer(components_root: Path) -> int:
-    """Scan Designer components/ and register primitives from manifests."""
+    """Scan Designer components/ and register primitives from manifests.
+
+    Must be called after ``compiler`` is fully imported (it needs the op
+    dispatch table); ``compiler`` triggers it at the end of its module body.
+    """
     import yaml
+
+    from .compiler import _OP_DISPATCH
 
     count = 0
     # Map Designer categories to Research categories
@@ -1719,8 +1738,6 @@ def load_primitives_from_designer(components_root: Path) -> int:
             # Many aria-designer components (blocks, mixing variants, etc.)
             # have manifests but no _execute_op implementation — registering
             # them lets the grammar sample them, only to crash at runtime.
-            from .compiler import _OP_DISPATCH
-
             if op_id not in _OP_DISPATCH:
                 continue
 
@@ -1743,21 +1760,12 @@ def load_primitives_from_designer(components_root: Path) -> int:
             _register(op)
             count += 1
         except Exception:
+            logger.exception(
+                "Skipping designer primitive with unloadable manifest: %s",
+                manifest_path,
+            )
             continue
     return count
-
-
-# Load Designer primitives if available
-try:
-    from pathlib import Path
-
-    _DESIGNER_COMPONENTS = (
-        Path(__file__).resolve().parents[2] / "aria_designer" / "components"
-    )
-    if _DESIGNER_COMPONENTS.exists():
-        load_primitives_from_designer(_DESIGNER_COMPONENTS)
-except Exception as _e:
-    logger.warning("Failed to load designer primitives: %s", _e)
 
 
 # ── Algebraic Space Tags ──────────────────────────────────────────────

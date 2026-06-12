@@ -12,9 +12,11 @@ Template implementations live in submodules:
 
 from __future__ import annotations
 
-import copy
 import random
 from typing import TYPE_CHECKING, Dict, Iterable, Optional, Tuple
+
+
+from .graph import copy_jsonlike
 
 if TYPE_CHECKING:
     from .graph import ComputationGraph
@@ -157,6 +159,7 @@ COMPONENT_GRAPH_EXEMPT_TEMPLATES = frozenset(
         "retention_mix_block",
         "product_key_memory_block",
         "reciprocal_rank_attention_block",
+        "reciprocal_semiring_attention_block",
         "phase_lock_attention_block",
         "stdp_reciprocal_memory_block",
         "codex_ssm_retention_block",
@@ -584,7 +587,7 @@ def apply_template(
     prev_next_id = graph._next_id
     prev_output_id = graph._output_node_id
     prev_ir_version = graph._ir_version
-    prev_metadata = copy.deepcopy(graph.metadata)
+    prev_metadata = copy_jsonlike(graph.metadata)
 
     was_exploration = False
     if template_name and template_name in TEMPLATES:

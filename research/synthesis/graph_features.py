@@ -243,19 +243,22 @@ def _extract_graph_structure_native(
             payload = json.dumps(graph_json, separators=(",", ":"))
         except (TypeError, ValueError):
             return None
-    try:
-        raw = rust.extract_graph_structure_features_native(payload)
-    except Exception:
-        return None
-    try:
-        loaded = json.loads(raw)
-    except (TypeError, ValueError, json.JSONDecodeError):
-        return None
+    # The Rust layer exists and claims this API — a call failure or a
+    # malformed response is a bug; raise rather than silently degrading to
+    # the slower Python extraction path.
+    raw = rust.extract_graph_structure_features_native(payload)
+    loaded = json.loads(raw)
     if not isinstance(loaded, dict):
-        return None
+        raise TypeError(
+            "extract_graph_structure_features_native returned "
+            f"{type(loaded).__name__}, expected dict"
+        )
     raw_ops = loaded.get("op_names")
     if not isinstance(raw_ops, list):
-        return None
+        raise TypeError(
+            "extract_graph_structure_features_native returned op_names of type "
+            f"{type(raw_ops).__name__}, expected list"
+        )
     op_names = [str(op) for op in raw_ops if str(op)]
     features = {
         key: float(loaded.get(key, 0.0) or 0.0)

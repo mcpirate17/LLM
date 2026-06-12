@@ -10,10 +10,7 @@ from .native_support import graph_has_bound_params
 
 
 def get_supported_native_ops(graph: ComputationGraph) -> Set[str]:
-    try:
-        return set(probe_supported_native_ops(graph))
-    except Exception:
-        return set()
+    return set(probe_supported_native_ops(graph))
 
 
 def try_compile_native_subgraph_layer(
@@ -22,7 +19,7 @@ def try_compile_native_subgraph_layer(
     try:
         from .native_bound_graph import BoundNativeSubgraphDispatcher
         from ..scientist.native.autograd import SubgraphDispatcher
-    except Exception:
+    except ImportError:
         return None
 
     if not graph_has_bound_params(graph):
@@ -33,18 +30,17 @@ def try_compile_native_subgraph_layer(
         return None
 
     layer = layer_factory(graph)
-    try:
-        flat_ops, ir_node_ids = _bound_dispatcher_inputs_from_layer(layer, graph)
-        dispatcher = _select_native_subgraph_dispatcher(
-            graph,
-            supported_ops=supported_ops,
-            flat_ops=flat_ops,
-            ir_node_ids=ir_node_ids,
-            bound_dispatcher_cls=BoundNativeSubgraphDispatcher,
-            plain_dispatcher_cls=SubgraphDispatcher,
-        )
-    except Exception:
-        return None
+    # Dispatcher-construction failures are bugs (graph already passed the
+    # support probe) — raise rather than silently compiling a slower layer.
+    flat_ops, ir_node_ids = _bound_dispatcher_inputs_from_layer(layer, graph)
+    dispatcher = _select_native_subgraph_dispatcher(
+        graph,
+        supported_ops=supported_ops,
+        flat_ops=flat_ops,
+        ir_node_ids=ir_node_ids,
+        bound_dispatcher_cls=BoundNativeSubgraphDispatcher,
+        plain_dispatcher_cls=SubgraphDispatcher,
+    )
     if dispatcher is None or not dispatcher.all_native:
         return None
 
@@ -60,7 +56,7 @@ def attach_partial_native_wrapper(layer: nn.Module, graph: ComputationGraph) -> 
             _NATIVE_OP_ALIASES,
             _STANDALONE_NATIVE_DISABLED_OPS,
         )
-    except Exception:
+    except ImportError:
         return
 
     supported_ops = get_supported_native_ops(graph)

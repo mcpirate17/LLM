@@ -256,7 +256,10 @@ def evaluate_head(
                 thr = _cost_threshold(yca, p_ca_cal, c_fp=c_fp, c_fn=c_fn)
                 conditions.append(
                     _row_metrics(
-                        ytest, p_cal, thr, f"{tag} | calibrated @cost({c_fp:g}:{c_fn:g})"
+                        ytest,
+                        p_cal,
+                        thr,
+                        f"{tag} | calibrated @cost({c_fp:g}:{c_fn:g})",
                     )
                 )
         out["n_test"] = int(test_idx.size)

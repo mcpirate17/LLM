@@ -172,6 +172,38 @@ def _op_reciprocal_rank_attention(module, inputs, _):
     return _apply_o_proj(module, torch.matmul(weights, v), B, S)
 
 
+def _op_reciprocal_semiring_attention(module, inputs, _):
+    """Reciprocal-rank addressing composed with learnable-semiring value pooling.
+
+    Combines the two leading novel attention-surface mixers, which act on
+    disjoint stages of the same attention.  ``reciprocal_rank_attention`` edits
+    the *address* (boosting query/key pairs whose similarity is mutual);
+    ``learnable_semiring_attention`` edits the *value aggregation* (per-head β
+    slides pooling from softmax mean toward winner-take-all max).  Both vanish
+    at init (boost→0, β→0), so the composition is exactly softmax attention at
+    init and keeps the same stable dense fallback.
+    """
+    x = inputs[0]
+    if not hasattr(module, "q_proj"):
+        return x
+    from ..mathspaces.semiring import semiring_value_aggregate
+
+    q, k, v, B, S = _project_qkv(module, x)
+    raw_scores = torch.matmul(q, k.transpose(-2, -1)) * module.attn_scale
+    causal = torch.triu(torch.ones(S, S, device=x.device, dtype=torch.bool), diagonal=1)
+    scores = raw_scores.masked_fill(causal, -1e9)
+
+    # Reciprocal-rank boost on the address (same shape as reciprocal_rank).
+    reverse_scores = raw_scores.transpose(-2, -1).masked_fill(causal, -1e9)
+    reciprocal = torch.softmax(reverse_scores, dim=-1).clamp(min=1e-6)
+    boost = torch.tanh(module.reciprocal_logit_scale).to(x.dtype)
+    logw = F.log_softmax(scores + boost * torch.log(reciprocal), dim=-1)
+
+    # Semiring value aggregation in place of the plain weights @ v.
+    out = semiring_value_aggregate(logw, v, module.semiring_beta.to(x.dtype))
+    return _apply_o_proj(module, out, B, S)
+
+
 def _op_phase_lock_attention(module, inputs, _):
     """Causal attention with phase-synchrony content matching.
 
@@ -651,6 +683,7 @@ OP_IMPLS: Dict[str, Callable] = {
     "entmax_attention": _op_entmax_attention,
     "learnable_semiring_attention": _op_learnable_semiring_attention,
     "reciprocal_rank_attention": _op_reciprocal_rank_attention,
+    "reciprocal_semiring_attention": _op_reciprocal_semiring_attention,
     "phase_lock_attention": _op_phase_lock_attention,
     "linear_attention": _op_linear_attention,
     "graph_attention": _op_graph_attention,

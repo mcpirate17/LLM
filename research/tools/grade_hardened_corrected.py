@@ -38,9 +38,7 @@ def run_grade(args: argparse.Namespace) -> dict[str, Any]:
     tasks = _tasks(args.task_set)
     seeds = tuple(range(args.seed, args.seed + args.seed_count))
     registry = _build_registry(args.mode)
-    selected = tuple(
-        name.strip() for name in args.models.split(",") if name.strip()
-    )
+    selected = tuple(name.strip() for name in args.models.split(",") if name.strip())
     unknown = sorted(set(selected) - registry.keys())
     if unknown:
         raise ValueError(f"unknown models: {unknown}")
@@ -60,9 +58,7 @@ def run_grade(args: argparse.Namespace) -> dict[str, Any]:
     device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
     started = time.monotonic()
     rows: dict[str, Any] = {}
-    for model_index, (name, (factory, params, flops)) in enumerate(
-        registry.items(), 1
-    ):
+    for model_index, (name, (factory, params, flops)) in enumerate(registry.items(), 1):
         by_task: dict[str, Any] = {}
         for task in tasks:
             accuracies: list[float] = []
@@ -120,9 +116,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--task-set", choices=("hard", "load"), default="hard")
     parser.add_argument("--mode", choices=("params", "flops"), default="params")
-    parser.add_argument(
-        "--models", default="softmax_4h,legendre_ssm,mamba2,softmax_1h"
-    )
+    parser.add_argument("--models", default="softmax_4h,legendre_ssm,mamba2,softmax_1h")
     parser.add_argument("--steps", type=int, default=800)
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--eval-batches", type=int, default=8)
@@ -138,8 +132,7 @@ def main() -> int:
         return 0
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     out = args.out or (
-        _REPORT_DIR
-        / f"hardened_corrected_{args.task_set}_{args.mode}_{stamp}.json"
+        _REPORT_DIR / f"hardened_corrected_{args.task_set}_{args.mode}_{stamp}.json"
     )
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")

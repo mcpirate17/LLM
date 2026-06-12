@@ -35,53 +35,19 @@ from component_fab.harness.harder_binding_tasks import (
     default_hard_binding_tasks,
     run_harder_binding_suite,
 )
+from component_fab.harness.tiny_lm import (  # noqa: F401  (used in run_cohort + main)
+    DEFAULT_BASELINE_NAMES,
+    FRONTIER_BASELINE_NAMES,
+)
+from component_fab.state.tier2_training import append_tier2_labels
 from component_fab.proposer.spec_generator import ProposalSpec
 
-_REPO = Path(__file__).resolve().parents[2]
-_PROPOSALS = _REPO / "component_fab" / "catalog" / "proposals.jsonl"
-
-
-def _load_proposals_by_id(path: Path = _PROPOSALS) -> dict[str, ProposalSpec]:
-    """Build a {proposal_id: ProposalSpec} map from the catalog jsonl.
-
-    Also scans rotated ``proposals.jsonl.N`` files since the autonomous
-    loop rotates at 2 MB and promoted specs may live in older rotations.
-    Last-wins when the same proposal_id appears in multiple files.
-    """
-    paths = [path]
-    catalog_dir = path.parent
-    if catalog_dir.exists():
-        paths.extend(sorted(catalog_dir.glob("proposals.jsonl.*")))
-    out: dict[str, ProposalSpec] = {}
-    for p in paths:
-        if not p.exists():
-            continue
-        with p.open("r", encoding="utf-8") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    row = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                pid = row.get("proposal_id")
-                if not pid:
-                    continue
-                out[str(pid)] = ProposalSpec(
-                    proposal_id=str(pid),
-                    name=str(row.get("name") or ""),
-                    category=str(row.get("category") or ""),
-                    synthesis_kind=str(row.get("synthesis_kind") or ""),
-                    math_axes=dict(row.get("math_axes") or {}),
-                    anchor_witness_op=str(row.get("anchor_witness_op") or ""),
-                    anchor_witnesses_all=tuple(row.get("anchor_witnesses_all") or ()),
-                    declared_property_row=dict(row.get("declared_property_row") or {}),
-                    predicted_lift=float(row.get("predicted_lift") or 0.0),
-                    rationale=str(row.get("rationale") or ""),
-                    notes=tuple(row.get("notes") or ()),
-                )
-    return out
+# Back-compat alias: the loader moved into component_fab (it builds fab
+# ProposalSpecs from the fab catalog); several research tools still import
+# the underscore name from here.
+from component_fab.proposer.proposal_catalog import (  # noqa: F401
+    load_proposals_by_id as _load_proposals_by_id,
+)
 
 
 def _summarise_per_task(rows: list[Any]) -> dict[str, Any]:
@@ -106,6 +72,31 @@ def _summarise_per_task(rows: list[Any]) -> dict[str, Any]:
         "chance": float(candidate.chance_accuracy),
         "candidate_n_params": int(candidate.n_params),
     }
+
+
+def _aggregate_per_task(seed_rows: list[dict[str, dict[str, Any]]]) -> dict[str, Any]:
+    """Average per-task summaries across seeds, preserving the legacy shape."""
+    task_names = sorted({task for row in seed_rows for task in row})
+    out: dict[str, Any] = {}
+    for task in task_names:
+        rows = [row[task] for row in seed_rows if task in row]
+        if not rows:
+            continue
+        deltas = [float(row.get("delta") or 0.0) for row in rows]
+        cand = [float(row.get("candidate_eval_acc") or 0.0) for row in rows]
+        base = [float(row.get("baseline_max") or 0.0) for row in rows]
+        out[task] = {
+            "candidate_eval_acc": sum(cand) / len(cand),
+            "candidate_label": str(rows[-1].get("candidate_label") or ""),
+            "baseline_max": sum(base) / len(base),
+            "delta": sum(deltas) / len(deltas),
+            "beats": (sum(deltas) / len(deltas)) > 0.0,
+            "beat_rate": sum(1 for row in rows if row.get("beats")) / len(rows),
+            "chance": float(rows[-1].get("chance") or 0.0),
+            "candidate_n_params": int(rows[-1].get("candidate_n_params") or 0),
+            "seed_deltas": deltas,
+        }
+    return out
 
 
 _NICHE_REQUIRED: frozenset[str] = frozenset(
@@ -135,6 +126,187 @@ def _niche_survival(per_task: dict[str, dict[str, Any]]) -> bool:
     return broad_pass >= 1
 
 
+def _run_one_spec_seeds(
+    spec: ProposalSpec,
+    *,
+    seed: int,
+    seed_count: int,
+    dim: int,
+    n_blocks: int,
+    n_train_steps: int,
+    baseline_names: tuple[str, ...],
+) -> list[dict[str, Any]]:
+    """Run the binding suite for one spec across all seeds; return per-seed rows."""
+
+    def candidate_factory(d: int, _spec: ProposalSpec = spec) -> torch.nn.Module:
+        return generate_module_from_spec(_spec, dim=d)
+
+    per_seed: list[dict[str, Any]] = []
+    for offset in range(seed_count):
+        run_seed = int(seed) + offset
+        tasks = default_hard_binding_tasks(seed=run_seed)
+        suite = run_harder_binding_suite(
+            candidate_factory,
+            spec.name,
+            tasks=tasks,
+            dim=dim,
+            n_blocks=n_blocks,
+            n_train_steps=n_train_steps,
+            seed=run_seed,
+            baseline_names=baseline_names,
+        )
+        per_task_seed = {
+            name: _summarise_per_task(rows) for name, rows in suite.items()
+        }
+        pass_count_seed = sum(
+            1 for value in per_task_seed.values() if value.get("beats")
+        )
+        per_seed.append(
+            {
+                "seed": run_seed,
+                "per_task": per_task_seed,
+                "pass_count": pass_count_seed,
+                "tier2_passed_niche": _niche_survival(per_task_seed),
+            }
+        )
+    return per_seed
+
+
+def _build_spec_result(
+    spec: ProposalSpec,
+    per_seed: list[dict[str, Any]],
+    *,
+    seed_count: int,
+    pass_threshold: int,
+    use_niche_survival: bool,
+    elapsed: float,
+) -> tuple[dict[str, Any], bool]:
+    """Aggregate per-seed rows into a result entry; return (entry, tier2_passed)."""
+    per_task = _aggregate_per_task([row["per_task"] for row in per_seed])
+    pass_count = sum(1 for v in per_task.values() if v.get("beats"))
+    passed_niche = _niche_survival(per_task)
+    tier2_passed = (
+        passed_niche if use_niche_survival else (pass_count >= pass_threshold)
+    )
+    entry: dict[str, Any] = {
+        "status": "ok",
+        "name": spec.name,
+        "category": spec.category,
+        "synthesis_kind": spec.synthesis_kind,
+        "math_axes": dict(spec.math_axes),
+        "per_task": per_task,
+        "pass_count": pass_count,
+        "n_tasks": len(per_task),
+        "tier2_passed": bool(tier2_passed),
+        "tier2_passed_niche": bool(passed_niche),
+        "seed_count": seed_count,
+        "per_seed": per_seed,
+        "elapsed_s": round(elapsed, 1),
+    }
+    return entry, bool(tier2_passed)
+
+
+def _eval_proposal(
+    pid: str,
+    index: int,
+    total: int,
+    specs_by_id: dict[str, Any],
+    *,
+    seed: int,
+    seed_count: int,
+    dim: int,
+    n_blocks: int,
+    n_train_steps: int,
+    pass_threshold: int,
+    use_niche_survival: bool,
+    resolved_baselines: tuple[str, ...],
+    quiet: bool,
+) -> tuple[dict[str, Any], bool]:
+    """Evaluate one pid; return (result_entry, tier2_passed)."""
+    spec = specs_by_id.get(pid)
+    if spec is None:
+        if not quiet:
+            print(f"[{index + 1}/{total}] {pid} NOT in catalog — skipping")
+        return {"status": "spec_not_found"}, False
+    if not quiet:
+        print(
+            f"[{index + 1}/{total}] {pid} ({spec.name[:50]}) "
+            f"running {seed_count} seed(s) × 6 tasks × "
+            f"(1 cand + 2 baselines) × {n_train_steps} steps"
+        )
+    t0 = time.monotonic()
+    try:
+        per_seed = _run_one_spec_seeds(
+            spec,
+            seed=seed,
+            seed_count=seed_count,
+            dim=dim,
+            n_blocks=n_blocks,
+            n_train_steps=n_train_steps,
+            baseline_names=resolved_baselines,
+        )
+    except Exception as exc:  # noqa: BLE001
+        if not quiet:
+            print(f"    FAILED: {exc}")
+        return {"status": f"failed: {exc}"}, False
+    entry, tier2_passed = _build_spec_result(
+        spec,
+        per_seed,
+        seed_count=seed_count,
+        pass_threshold=pass_threshold,
+        use_niche_survival=use_niche_survival,
+        elapsed=time.monotonic() - t0,
+    )
+    if not quiet:
+        print(
+            f"    pass_count={entry['pass_count']}/{entry['n_tasks']} "
+            f"niche={entry['tier2_passed_niche']} tier2_passed={tier2_passed} "
+            f"elapsed={entry['elapsed_s']}s"
+        )
+    return entry, tier2_passed
+
+
+def _finalise_cohort(
+    results: dict[str, Any],
+    survivors: list[str],
+    proposal_ids: list[str],
+    *,
+    accumulate_labels: bool,
+    resolved_baselines: tuple[str, ...],
+    dim: int,
+    n_blocks: int,
+    n_train_steps: int,
+    seed_count: int,
+    pass_threshold: int,
+    seed: int,
+    started: float,
+    quiet: bool,
+) -> dict[str, Any]:
+    """Accumulate training labels and assemble the final summary dict."""
+    if accumulate_labels:
+        n_appended = append_tier2_labels(
+            results,
+            baseline_names=resolved_baselines,
+            dim=dim,
+            n_blocks=n_blocks,
+            n_train_steps=n_train_steps,
+            seed_count=seed_count,
+        )
+        if n_appended and not quiet:
+            print(f"[accumulated {n_appended} Tier-2 training labels]")
+    return {
+        "n_evaluated": len(proposal_ids),
+        "n_survivors": len(survivors),
+        "survivors": survivors,
+        "pass_threshold": pass_threshold,
+        "seed": int(seed),
+        "seed_count": seed_count,
+        "baseline_names": list(resolved_baselines),
+        "results": results,
+        "elapsed_total_s": round(time.monotonic() - started, 1),
+    }
+
+
 def run_cohort(
     proposal_ids: list[str],
     *,
@@ -143,6 +315,10 @@ def run_cohort(
     n_train_steps: int = 200,
     pass_threshold: int = 4,
     use_niche_survival: bool = True,
+    seed: int = 0,
+    seed_count: int = 1,
+    baseline_names: tuple[str, ...] | None = None,
+    accumulate_labels: bool = True,
     quiet: bool = False,
 ) -> dict[str, Any]:
     """Run Tier-2 binding on each proposal_id; return summary dict.
@@ -154,78 +330,45 @@ def run_cohort(
     applies.
     """
     specs_by_id = _load_proposals_by_id()
-    tasks = default_hard_binding_tasks()
     results: dict[str, Any] = {}
     survivors: list[str] = []
     started = time.monotonic()
+    seed_count = max(1, int(seed_count))
+    resolved_baselines = baseline_names or DEFAULT_BASELINE_NAMES
     for index, pid in enumerate(proposal_ids):
-        spec = specs_by_id.get(pid)
-        if spec is None:
-            if not quiet:
-                print(
-                    f"[{index + 1}/{len(proposal_ids)}] {pid} NOT in catalog — skipping"
-                )
-            results[pid] = {"status": "spec_not_found"}
-            continue
-
-        def candidate_factory(d: int, _spec: ProposalSpec = spec) -> torch.nn.Module:
-            return generate_module_from_spec(_spec, dim=d)
-
-        if not quiet:
-            print(
-                f"[{index + 1}/{len(proposal_ids)}] {pid} ({spec.name[:50]}) "
-                f"running 6 tasks × (1 cand + 2 baselines) × {n_train_steps} steps"
-            )
-        t0 = time.monotonic()
-        try:
-            suite = run_harder_binding_suite(
-                candidate_factory,
-                spec.name,
-                tasks=tasks,
-                dim=dim,
-                n_blocks=n_blocks,
-                n_train_steps=n_train_steps,
-            )
-        except Exception as exc:  # noqa: BLE001
-            results[pid] = {"status": f"failed: {exc}"}
-            if not quiet:
-                print(f"    FAILED: {exc}")
-            continue
-        per_task = {name: _summarise_per_task(rows) for name, rows in suite.items()}
-        pass_count = sum(1 for v in per_task.values() if v.get("beats"))
-        elapsed = time.monotonic() - t0
-        passed_niche = _niche_survival(per_task)
-        tier2_passed = (
-            passed_niche if use_niche_survival else (pass_count >= pass_threshold)
+        entry, tier2_passed = _eval_proposal(
+            pid,
+            index,
+            len(proposal_ids),
+            specs_by_id,
+            seed=seed,
+            seed_count=seed_count,
+            dim=dim,
+            n_blocks=n_blocks,
+            n_train_steps=n_train_steps,
+            pass_threshold=pass_threshold,
+            use_niche_survival=use_niche_survival,
+            resolved_baselines=resolved_baselines,
+            quiet=quiet,
         )
-        results[pid] = {
-            "status": "ok",
-            "name": spec.name,
-            "category": spec.category,
-            "synthesis_kind": spec.synthesis_kind,
-            "math_axes": dict(spec.math_axes),
-            "per_task": per_task,
-            "pass_count": pass_count,
-            "n_tasks": len(per_task),
-            "tier2_passed": bool(tier2_passed),
-            "tier2_passed_niche": bool(passed_niche),
-            "elapsed_s": round(elapsed, 1),
-        }
+        results[pid] = entry
         if tier2_passed:
             survivors.append(pid)
-        if not quiet:
-            print(
-                f"    pass_count={pass_count}/{len(per_task)} "
-                f"niche={passed_niche} tier2_passed={tier2_passed} elapsed={elapsed:.1f}s"
-            )
-    return {
-        "n_evaluated": len(proposal_ids),
-        "n_survivors": len(survivors),
-        "survivors": survivors,
-        "pass_threshold": pass_threshold,
-        "results": results,
-        "elapsed_total_s": round(time.monotonic() - started, 1),
-    }
+    return _finalise_cohort(
+        results,
+        survivors,
+        proposal_ids,
+        accumulate_labels=accumulate_labels,
+        resolved_baselines=resolved_baselines,
+        dim=dim,
+        n_blocks=n_blocks,
+        n_train_steps=n_train_steps,
+        seed_count=seed_count,
+        pass_threshold=pass_threshold,
+        seed=seed,
+        started=started,
+        quiet=quiet,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -236,15 +379,40 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--n-blocks", default=2, type=int)
     parser.add_argument("--n-train-steps", default=200, type=int)
     parser.add_argument("--pass-threshold", default=4, type=int)
+    parser.add_argument("--seed", default=0, type=int)
+    parser.add_argument("--seed-count", default=1, type=int)
+    parser.add_argument(
+        "--baselines",
+        default="default",
+        help="'default' (softmax+conv), 'frontier' (softmax+gpt2+mamba+mamba2), "
+        "or a comma-separated list of baseline names",
+    )
+    parser.add_argument(
+        "--no-accumulate",
+        action="store_true",
+        help="do not append results to the Tier-2 predictor training table",
+    )
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
     pids = [p.strip() for p in args.proposal_ids.split(",") if p.strip()]
+    if args.baselines == "default":
+        baseline_names: tuple[str, ...] = DEFAULT_BASELINE_NAMES
+    elif args.baselines == "frontier":
+        baseline_names = FRONTIER_BASELINE_NAMES
+    else:
+        baseline_names = tuple(
+            n.strip() for n in args.baselines.split(",") if n.strip()
+        )
     summary = run_cohort(
         pids,
         dim=args.dim,
         n_blocks=args.n_blocks,
         n_train_steps=args.n_train_steps,
         pass_threshold=args.pass_threshold,
+        seed=args.seed,
+        seed_count=args.seed_count,
+        baseline_names=baseline_names,
+        accumulate_labels=not args.no_accumulate,
         quiet=args.quiet,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)

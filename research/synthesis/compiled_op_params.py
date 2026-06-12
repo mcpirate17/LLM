@@ -17,6 +17,7 @@ class CompiledOpParamInitMixin:
         )
 
     def _init_params(self, op: PrimitiveOp, config: Dict, input_shape: ShapeInfo):
+        # guardrail: allow-god-function
         d_in = max(1, input_shape.dim)
         linear_ops = {
             "linear_proj",
@@ -197,6 +198,9 @@ class CompiledOpParamInitMixin:
             "reciprocal_rank_attention": lambda: self._init_reciprocal_rank_attention(
                 d_in
             ),
+            "reciprocal_semiring_attention": (
+                lambda: self._init_reciprocal_semiring_attention(d_in)
+            ),
             "phase_lock_attention": lambda: self._init_phase_lock_attention(d_in),
             "linear_attention": lambda: self._init_attention_stack(
                 "linear_attention", d_in
@@ -332,6 +336,16 @@ class CompiledOpParamInitMixin:
         self._init_attention_stack("reciprocal_rank_attention", d_in)
         self.attn_scale = self.head_dim**-0.5
         self.reciprocal_logit_scale = nn.Parameter(torch.tensor(0.0))
+
+    def _init_reciprocal_semiring_attention(self, d_in: int) -> None:
+        """Attention stack with BOTH the reciprocal-match boost (address) and a
+        learnable per-head value-aggregation exponent β (pooling) — the
+        composition of reciprocal_rank + learnable_semiring. Both init to their
+        identity (boost=0, β spread across the sum↔max/min continuum)."""
+        self._init_attention_stack("reciprocal_semiring_attention", d_in)
+        self.attn_scale = self.head_dim**-0.5
+        self.reciprocal_logit_scale = nn.Parameter(torch.tensor(0.0))
+        self.semiring_beta = nn.Parameter(torch.linspace(-0.6, 0.6, self.n_heads))
 
     def _init_phase_lock_attention(self, d_in: int) -> None:
         """Attention stack with a learned phase-synchrony score term."""

@@ -36,7 +36,10 @@ def _reset_cache_between_tests():
 def test_fallback_when_meta_db_missing(tmp_path: Path) -> None:
     """All accessors must return their fallback gracefully if the DB is gone."""
     fake_db = tmp_path / "nonexistent.db"
-    with patch("research.synthesis._op_catalog_loader.META_DB", fake_db):
+    with (
+        patch("research.synthesis._op_catalog_loader.META_DB", fake_db),
+        patch("research.synthesis._op_catalog_loader._connect", return_value=None),
+    ):
         reset_cache()
         assert query_ops_by_category("attention", fallback=("a", "b")) == frozenset(
             {"a", "b"}

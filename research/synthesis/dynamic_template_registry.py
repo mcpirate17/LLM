@@ -9,7 +9,6 @@ validation evidence matches online generation behavior.
 
 from __future__ import annotations
 
-import copy
 import hashlib
 import json
 import math
@@ -32,7 +31,7 @@ from .component_rules import (
     estimated_chain_lowered_op_count,
     validate_component_op_chain,
 )
-from .graph import ComputationGraph
+from .graph import ComputationGraph, copy_jsonlike
 from .primitives import PRIMITIVE_REGISTRY
 
 
@@ -152,7 +151,7 @@ def apply_dynamic_template_candidate(
     prev_next_id = graph._next_id
     prev_output_id = graph._output_node_id
     prev_ir_version = graph._ir_version
-    prev_metadata = copy.deepcopy(graph.metadata)
+    prev_metadata = copy_jsonlike(graph.metadata)
 
     graph.metadata.setdefault("templates_used", []).append(name)
     template_instance = len(graph.metadata.get("templates_used", [])) - 1

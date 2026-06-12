@@ -49,10 +49,9 @@ def _compile_template_selector_handle(
     rust = _try_import_rust_scheduler()
     if rust is None or not hasattr(rust, "compile_template_selector_handle"):
         return None
-    try:
-        return rust.compile_template_selector_handle(list(names), list(default_weights))
-    except Exception:
-        return None
+    # A failure here is a bug in the Rust layer or our inputs — raise, don't
+    # silently degrade every subsequent selection to the Python path.
+    return rust.compile_template_selector_handle(list(names), list(default_weights))
 
 
 @lru_cache(maxsize=128)
@@ -129,74 +128,31 @@ def pick_template_index_native(
     selection_draw: float,
 ) -> tuple[int, bool] | None:
     rust = _try_import_rust_scheduler()
-    if rust is None or not hasattr(rust, "select_template_index_compiled"):
+    arrays_fn = getattr(rust, "select_template_index_compiled_arrays", None)
+    if arrays_fn is None:
         return None
     handle = _compile_template_selector_handle(names, default_weights)
     if handle is None:
         return None
-    arrays_fn = getattr(rust, "select_template_index_compiled_arrays", None)
-    if arrays_fn is not None:
-        override = _override_arrays(names, _override_key(override_weights))
-        if override is None:
-            override_indices = None
-            override_values = None
-        else:
-            override_indices, override_values = override
-        allowed_indices = _allowed_indices(names, _allowed_key(allowed_names))
-        try:
-            index, explored = arrays_fn(
-                handle,
-                float(exploration_budget),
-                float(exploration_draw),
-                float(selection_draw),
-                override_indices,
-                override_values,
-                allowed_indices,
-            )
-            return int(index), bool(explored)
-        except Exception:
-            return _pick_template_index_native_mapping(
-                rust,
-                handle,
-                override_weights,
-                allowed_names,
-                exploration_budget=exploration_budget,
-                exploration_draw=exploration_draw,
-                selection_draw=selection_draw,
-            )
-    return _pick_template_index_native_mapping(
-        rust,
+    override = _override_arrays(names, _override_key(override_weights))
+    if override is None:
+        override_indices = None
+        override_values = None
+    else:
+        override_indices, override_values = override
+    allowed_indices = _allowed_indices(names, _allowed_key(allowed_names))
+    # A failure past this point is a bug (the Rust layer exists and claims
+    # this API) — raise rather than silently falling back to Python.
+    index, explored = arrays_fn(
         handle,
-        override_weights,
-        allowed_names,
-        exploration_budget=exploration_budget,
-        exploration_draw=exploration_draw,
-        selection_draw=selection_draw,
+        float(exploration_budget),
+        float(exploration_draw),
+        float(selection_draw),
+        override_indices,
+        override_values,
+        allowed_indices,
     )
-
-
-def _pick_template_index_native_mapping(
-    rust,
-    handle,
-    override_weights: Mapping[str, float] | None,
-    allowed_names: Iterable[str] | None,
-    *,
-    exploration_budget: float,
-    exploration_draw: float,
-    selection_draw: float,
-) -> tuple[int, bool] | None:
-    try:
-        index, explored = rust.select_template_index_compiled(
-            handle,
-            float(exploration_budget),
-            float(exploration_draw),
-            float(selection_draw),
-            dict(override_weights) if override_weights else None,
-            list(allowed_names) if allowed_names is not None else None,
-        )
-        return int(index), bool(explored)
-    except Exception:
-        return None
+    return int(index), bool(explored)
 
 
 def pick_template_index_python(

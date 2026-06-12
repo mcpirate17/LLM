@@ -426,6 +426,28 @@ def tpl_reciprocal_rank_attention_block(
     )
 
 
+def tpl_reciprocal_semiring_attention_block(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """norm → {reciprocal_semiring_attention || state_space} → merge → residual → norm → FFN → residual.
+
+    Composes the two leading novel attention-surface mixers: reciprocal-rank
+    mutual-match addressing on the score, then learnable-semiring (mean↔max)
+    pooling on the value aggregation. Both reduce to softmax attention at init.
+    """
+    return _tpl_novel_mixing_block(
+        graph,
+        input_id,
+        rng,
+        weights,
+        primary_op="reciprocal_semiring_attention",
+        template_ctx="reciprocal_semiring_attention_block",
+    )
+
+
 def tpl_phase_lock_attention_block(
     graph: ComputationGraph,
     input_id: int,

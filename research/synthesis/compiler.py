@@ -9,6 +9,7 @@ parameters allocated for parameterized ops.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import List
 
 import torch
@@ -17,6 +18,7 @@ import torch.nn as nn
 from .graph import ComputationGraph
 from . import native_compile
 from .compiler_registry import OP_DISPATCH, load_split_op_modules
+from .primitives import load_primitives_from_designer
 
 logger = logging.getLogger(__name__)
 
@@ -133,3 +135,15 @@ def _compile_layer_module(
     layer = IRExecutorV2(graph.lower_to_ir(), source_graph=graph)
     native_compile.attach_partial_native_wrapper(layer, graph)
     return layer
+
+
+# Register designer-manifest primitives now that the op dispatch table is
+# populated. This used to live at the bottom of primitives.py, where it always
+# died on a circular import (primitives -> compiler -> graph -> primitives)
+# that was silently swallowed, so designer ops never registered in pipeline
+# import order.
+_DESIGNER_COMPONENTS = (
+    Path(__file__).resolve().parents[2] / "aria_designer" / "components"
+)
+if _DESIGNER_COMPONENTS.exists():
+    load_primitives_from_designer(_DESIGNER_COMPONENTS)

@@ -40,6 +40,7 @@ import numpy as np
 from scipy.stats import spearmanr
 
 from research.synthesis.grammar import GrammarConfig, generate_layer_graph
+from research.synthesis.quality_diversity import MapElitesArchive, select_diverse
 from research.synthesis.op_roles import OpRole, get_role
 from research.tools.annotate_literature_attribution import (
     DEFAULT_MAPPING,
@@ -162,6 +163,9 @@ class Scored:
     probe_oracle: Dict[str, Any] | None = None
     measured_score: float | None = (
         None  # OOD-robust measured capability rank (top-K only)
+    )
+    measured_descriptors: Dict[str, float] | None = (
+        None  # measured behavior descriptors for QD-archive binning (top-K only)
     )
 
 
@@ -289,8 +293,11 @@ def _generate_pool(
     for i in range(max_attempts):
         try:
             g = generate_layer_graph(cfg, seed=seed0 + i)
-        except Exception:
+        except Exception as exc:
+            # Per-type counts land in the report stats so generator bugs are
+            # distinguishable from routine validation rejections.
             stats["invalid"] += 1
+            stats[f"invalid:{type(exc).__name__}"] += 1
             continue
         op_set, _, _, fp = _graph_features(g)
         if fp in hist or fp in seen:
@@ -369,8 +376,9 @@ def _cheap_screen_chunk(task: tuple[int, int]) -> Tuple[List[tuple], Counter]:
     for i in range(seed0, seed0 + n):
         try:
             g = generate_layer_graph(cfg, seed=i)
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
             stats["invalid"] += 1
+            stats[f"invalid:{type(exc).__name__}"] += 1
             continue
         op_set, _, _, fp = _graph_features(g)
         gd = g.to_dict()
@@ -478,9 +486,65 @@ def _exploit_key(s: Scored) -> tuple[float, float, float]:
     return (measured, rank, mech)
 
 
-def _select(kept: List[Scored], n_exploit: int, n_explore: int) -> List[Scored]:
-    """Explore∪exploit shortlist: exploit by measured-first capability, explore by novelty."""
-    by_cap = sorted(kept, key=_exploit_key, reverse=True)[:n_exploit]
+def _exploit_by_diversity(kept: List[Scored], n_exploit: int) -> List[Scored]:
+    """Fill the exploit slice best-per-NICHE over measured behavior, not global top-K.
+
+    The anti-collapse core (diversity generator M3): a homogeneous family piling onto
+    the global capability maximum starves distinct behavior niches. We bin the
+    MEASURED survivors by their descriptors and keep the best per niche, then back-fill
+    any remaining exploit slots from the un-measured tail by the scalar exploit key
+    (so behavior is unchanged where no descriptors exist).
+    """
+    measured = [s for s in kept if s.measured_descriptors is not None]
+    by_cap = select_diverse(
+        measured,
+        k=n_exploit,
+        descriptors=lambda s: s.measured_descriptors or {},
+        fitness=lambda s: s.measured_score if s.measured_score is not None else 0.0,
+        key=lambda s: s.fingerprint,
+    )
+    if measured:
+        archive = MapElitesArchive()
+        for s in measured:
+            archive.add(
+                s.fingerprint,
+                s.measured_descriptors or {},
+                s.measured_score if s.measured_score is not None else 0.0,
+            )
+        logger.info(
+            "  QD exploit: %d niches filled / %d (coverage %.2f) over %d measured survivors",
+            archive.filled,
+            archive.total_cells,
+            archive.coverage(),
+            len(measured),
+        )
+    chosen = {s.fingerprint for s in by_cap}
+    for s in sorted(kept, key=_exploit_key, reverse=True):
+        if len(by_cap) >= n_exploit:
+            break
+        if s.fingerprint not in chosen:
+            by_cap.append(s)
+            chosen.add(s.fingerprint)
+    return by_cap
+
+
+def _select(
+    kept: List[Scored],
+    n_exploit: int,
+    n_explore: int,
+    *,
+    diversity_exploit: bool = False,
+) -> List[Scored]:
+    """Explore∪exploit shortlist: exploit by measured-first capability, explore by novelty.
+
+    With ``diversity_exploit`` the exploit slice is chosen best-per-niche over the
+    measured behavior space (``_exploit_by_diversity``) instead of by global top-K —
+    the charter's diversity-preserving selection.
+    """
+    if diversity_exploit:
+        by_cap = _exploit_by_diversity(kept, n_exploit)
+    else:
+        by_cap = sorted(kept, key=_exploit_key, reverse=True)[:n_exploit]
     by_nov = sorted(kept, key=lambda s: -s.profile.novelty)[:n_explore]
     out: Dict[str, Scored] = {s.fingerprint: s for s in by_cap}
     for s in by_nov:
@@ -500,7 +564,10 @@ def _context_rule_clean(s: "Scored") -> bool:
             graph_from_json(json.dumps(s.graph_dict))
         )
     except Exception:
-        return False  # un-checkable ⇒ exclude (don't ship a graph we can't validate)
+        # un-checkable ⇒ exclude (don't ship a graph we can't validate),
+        # but a validator crash is a bug worth seeing.
+        logger.warning("context validation crashed; excluding graph", exc_info=True)
+        return False
 
 
 def _measured_rank_topk(
@@ -545,6 +612,7 @@ def _measured_rank_topk(
             dead.add(id(s))  # structurally can't route ⇒ drop
             continue
         s.measured_score = capability_score_from_descriptors(d)
+        s.measured_descriptors = d  # retained for QD-archive behavior binning
     if dead:
         kept = [s for s in kept if id(s) not in dead]
     return kept, len(dead)
@@ -657,7 +725,9 @@ def run_generate(args: argparse.Namespace) -> Dict[str, Any]:
         args.measured_tau,
         args.device,
     )
-    selected = _select(kept, args.exploit, args.explore)
+    selected = _select(
+        kept, args.exploit, args.explore, diversity_exploit=bool(args.diversity_exploit)
+    )
     shortlist = [s for s in selected if _context_rule_clean(s)]
     stats["context_rule_dropped"] = len(selected) - len(shortlist)
     shortlist, n_explore_dead = _measured_confirm_shortlist(
@@ -751,13 +821,21 @@ def _validate_axis(
     mech: List[float] = []
     y: List[float] = []
     t0 = time.time()
+    skipped_rows = 0
     for gj, val in rows:
         try:
             nodes = json.loads(gj)["nodes"]
         except Exception:
+            skipped_rows += 1
             continue
         mech.append(scorer.profile(nodes).mech_score)
         y.append(float(val))
+    if skipped_rows:
+        logger.warning(
+            "mech-correlation: skipped %d/%d rows with unparseable graph JSON",
+            skipped_rows,
+            len(rows),
+        )
     mech_a = np.array(mech)
     y_a = np.array(y)
     pos = y_a > thr
@@ -854,6 +932,10 @@ def run_rescreen(args: argparse.Namespace) -> Dict[str, Any]:
                 graph_from_json(json.dumps(r["graph"]))
             )
         except Exception:
+            logger.warning(
+                "context validation crashed during rescreen; marking UNCHECKABLE",
+                exc_info=True,
+            )
             viol = ["UNCHECKABLE"]
         risk = q["failure_risk"]
         hi_risk = risk["compile"] >= 0.4 or risk["lookahead"] >= 0.4
@@ -928,6 +1010,12 @@ def main() -> None:
     p.add_argument("--seed0", type=int, default=11_000_000)
     p.add_argument("--exploit", type=int, default=200)
     p.add_argument("--explore", type=int, default=100)
+    p.add_argument(
+        "--diversity-exploit",
+        action="store_true",
+        help="fill the exploit slice best-per-niche over measured behavior "
+        "(MAP-Elites) instead of global top-K — anti-collapse selection",
+    )
     p.add_argument("--progress-every", type=int, default=20000)
     p.add_argument(
         "--oracle-batch",

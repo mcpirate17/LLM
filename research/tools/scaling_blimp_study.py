@@ -24,6 +24,7 @@ clearly-bad architecture).
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import math
 import re
@@ -225,6 +226,28 @@ def _build_lane_factory(
         return lane_factory_for_baseline("causal_conv")
     if name == "adjacent_token_merge_lane":
         return AdjacentTokenMergeLane
+    if name == "gemini_master":
+        from component_fab.generator.memory_primitives import UniversalMasterLane
+
+        return lambda d: UniversalMasterLane(d)
+    if name == "slot_table_mh":
+        # Locked content-binding lane (validated at nano: solves binding_validity 0.99@3200,
+        # robust to 32 pairs / seq512, where softmax_4h is pinned ~0.22). Production config:
+        # composer + normalized read + input-route + RMSNorm + null-write, joint router.
+        # n_heads scales with dim (like attention); memory_dim via the dispatcher formula.
+        from component_fab.generator.memory_primitives import (
+            MultiHeadSlotTableMemoryLane,
+        )
+
+        return lambda d: MultiHeadSlotTableMemoryLane(
+            d,
+            memory_dim=max(4, ((7 * d) // 32) * 4),
+            n_heads=max(4, d // 64),
+            n_slots=8,
+            use_delta_update=False,
+            route_from_input=True,
+            normalize_slot_values=True,
+        )
 
     # component_fab Titans/TTT surprise-memory family (delta-rule write substrate;
     # the _read algebra is what varies). Bare lanes → default block FFN (now
@@ -1264,64 +1287,32 @@ def _train_step(
     return last_loss_val, last_grad_norm, None
 
 
-def run_scaling_cell(
+def _resolve_lane(
     lane_name: str | None,
-    size: str,
-    *,
-    proposal_id: str | None = None,
-    n_train_steps_total: int,
-    checkpoint_steps: tuple[int, ...],
-    batch_size: int = 8,
-    seq_len: int = 256,
-    n_eval_batches: int = 32,
-    max_chars_train: int = 200_000_000,
-    max_chars_val: int = 2_000_000,
-    blimp_n_per_subtask: int = 25,
-    learning_rate: float = 1e-4,
-    early_stop_blimp: float | None = None,
-    ppl_stop_factor: float = 2.0,
-    max_epoch_equivalent: float = 50.0,
-    grad_spike_threshold: float = 10.0,
-    grad_spike_patience: int = 5,
-    checkpoint_log: Path | None = None,
-    device: str = "cuda",
-    quiet: bool = False,
-) -> dict:
-    """One model × one size × full training to n_train_steps_total with
-    checkpoints. Returns the checkpoint results."""
-    # guardrail: allow-god-function
-    if size not in PARAM_SIZING:
-        raise ValueError(f"unknown size: {size}")
-    dim = PARAM_SIZING[size]["dim"]
-    n_blocks = PARAM_SIZING[size]["n_blocks"]
+    proposal_id: str | None,
+) -> tuple[str, object, dict | None]:
+    """Resolve (lane_label, factory, axes) from lane_name or proposal_id."""
     axes: dict | None = None
     if proposal_id:
         run_label, factory, axes = _saved_winner_factory(proposal_id)
-        lane_label = run_label
-    elif lane_name:
+        return run_label, factory, axes
+    if lane_name:
         factory = _build_lane_factory(lane_name)
-        lane_label = lane_name
-    else:
-        raise ValueError("either lane_name or proposal_id is required")
+        return lane_name, factory, axes
+    raise ValueError("either lane_name or proposal_id is required")
 
-    if not quiet:
-        print(
-            f"\n=== {lane_label} @ {size} (dim={dim}, n_blocks={n_blocks}) ===",
-            flush=True,
-        )
 
-    model = _build_tinylm(factory, dim=dim, n_blocks=n_blocks)
-    model = model.to(device)
-    n_params = count_trainable_params(model)
-    if not quiet:
-        print(f"  params: {n_params / 1e6:.1f}M", flush=True)
-
-    train_tokens, val_tokens, n_train_tokens, n_val_tokens = _load_wikitext_tokens(
-        variant="wikitext-103-raw-v1",
-        vocab_size=VOCAB_SIZE,
-        max_chars_train=max_chars_train,
-        max_chars_val=max_chars_val,
-    )
+def _check_epoch_guard(
+    lane_label: str,
+    proposal_id: str | None,
+    size: str,
+    n_train_tokens: int,
+    n_train_steps_total: int,
+    batch_size: int,
+    seq_len: int,
+    max_epoch_equivalent: float,
+) -> dict | None:
+    """Return a refusal dict if planned token visits exceed the epoch cap, else None."""
     token_visits = int(n_train_steps_total) * int(batch_size) * int(seq_len)
     epoch_equivalent = token_visits / max(1, n_train_tokens)
     if epoch_equivalent > max_epoch_equivalent:
@@ -1335,20 +1326,31 @@ def run_scaling_cell(
             "epoch_equivalent": epoch_equivalent,
             "max_epoch_equivalent": max_epoch_equivalent,
         }
+    return None
 
-    train_batcher = _RandomWindowBatcher(
-        train_tokens, batch_size=batch_size, seq_len=seq_len, device=device, seed=42
-    )
-    val_batcher = _RandomWindowBatcher(
-        val_tokens, batch_size=batch_size, seq_len=seq_len, device=device, seed=123
-    )
-    val_batches = val_batcher.fixed_batches(n_eval_batches)
 
-    optim = torch.optim.Adam(model.parameters(), lr=learning_rate)
-    checkpoints: list[dict] = []
-    started = time.monotonic()
-
-    pre_ppl = _eval_ppl(model, val_batches)
+def _log_start_metadata(
+    checkpoint_log: Path | None,
+    lane_label: str,
+    proposal_id: str | None,
+    axes: dict | None,
+    size: str,
+    dim: int,
+    n_blocks: int,
+    n_params: int,
+    batch_size: int,
+    seq_len: int,
+    n_train_steps_total: int,
+    checkpoint_steps: tuple[int, ...],
+    n_train_tokens: int,
+    n_val_tokens: int,
+    token_visits: int,
+    epoch_equivalent: float,
+    pre_ppl: float,
+    ppl_stop_factor: float,
+    quiet: bool,
+) -> None:
+    """Write the 'start' event to the checkpoint log and print the pre-ppl banner."""
     metadata = {
         "event": "start",
         "status": "running",
@@ -1378,49 +1380,160 @@ def run_scaling_cell(
             flush=True,
         )
 
-    step = 0
-    next_ckpt_idx = 0
-    sorted_ckpts = sorted(checkpoint_steps)
-    _lr_at = _make_lr_schedule(
-        base_lr=learning_rate,
-        warmup_steps=1000,
-        n_train_steps_total=n_train_steps_total,
-        final_lr_frac=0.1,
-    )
-    grad_clip_max_norm = 1.0  # Standard transformer gradient clipping.
 
-    model.train()
+def _process_checkpoint_hit(
+    ctx: "_LoopCtx",
+    next_ckpt_idx: int,
+    step: int,
+    last_loss_val: float,
+    last_grad_norm: float,
+    cur_lr: float,
+    best_ppl: float | None,
+    best_ppl_step: int | None,
+) -> tuple[dict, float | None, int | None, str | None]:
+    """Evaluate one checkpoint; return (ck, best_ppl, best_ppl_step, stop_reason)."""
+    target = ctx.sorted_ckpts[next_ckpt_idx]
+    ck, best_ppl, best_ppl_step = _eval_checkpoint(
+        ctx.model,
+        ctx.val_batches,
+        ctx.factory,
+        ctx.dim,
+        target=target,
+        step=step,
+        last_loss_val=last_loss_val,
+        last_grad_norm=last_grad_norm,
+        cur_lr=cur_lr,
+        best_ppl=best_ppl,
+        best_ppl_step=best_ppl_step,
+        started=ctx.started,
+        blimp_n_per_subtask=ctx.blimp_n_per_subtask,
+        seq_len=ctx.seq_len,
+        device=ctx.device,
+    )
+    post_ppl = ck["post_train_ppl"]
+    stop_reason: str | None = None
+    if best_ppl is not None and post_ppl > best_ppl * ctx.ppl_stop_factor:
+        ck["early_stop_reason"] = (
+            f"val_ppl {post_ppl:.1f} > {ctx.ppl_stop_factor:.2f}x "
+            f"best {best_ppl:.1f} at step {best_ppl_step}"
+        )
+        stop_reason = ck["early_stop_reason"]
+    _append_jsonl(ctx.checkpoint_log, {"event": "checkpoint", **ck})
+    if not ctx.quiet:
+        print(
+            f"  ckpt @ step {step:>6d}: ppl={post_ppl:>7.1f} "
+            f"BLiMP={ck['blimp_overall']:.4f} v2_sc={ck['v2_sc']:.3f} "
+            f"v2_vd={ck['v2_vd_mean']:.3f} dyck={ck['v2_dyck_v3']:.3f} "
+            f"npi={ck['v2_npi_v2']:.3f} eval_t={ck['eval_elapsed_s']:.0f}s "
+            f"total_t={ck['wall_clock_s']:.0f}s",
+            flush=True,
+        )
+    return ck, best_ppl, best_ppl_step, stop_reason
+
+
+@dataclasses.dataclass
+class _LoopCtx:
+    """Bundles all inputs for _run_training_loop and its helpers."""
+
+    model: TinyLM
+    optim: torch.optim.Optimizer
+    train_batcher: "_RandomWindowBatcher"
+    val_batches: list[torch.Tensor]
+    factory: object
+    dim: int
+    n_train_steps_total: int
+    sorted_ckpts: list[int]
+    learning_rate: float
+    lane_label: str
+    proposal_id: str | None
+    axes: dict | None
+    size: str
+    n_blocks: int
+    n_params: int
+    pre_ppl: float
+    n_train_tokens: int
+    n_val_tokens: int
+    token_visits: int
+    epoch_equivalent: float
+    started: float
+    blimp_n_per_subtask: int
+    seq_len: int
+    device: str
+    ppl_stop_factor: float
+    early_stop_blimp: float | None
+    grad_spike_threshold: float
+    grad_spike_patience: int
+    checkpoint_log: Path | None
+    quiet: bool
+
+
+def _build_common_result(ctx: _LoopCtx, checkpoints: list[dict]) -> dict:
+    """Assemble fields shared by every terminal result dict."""
+    return {
+        "lane": ctx.lane_label,
+        "proposal_id": ctx.proposal_id,
+        "math_axes": ctx.axes,
+        "size": ctx.size,
+        "dim": ctx.dim,
+        "n_blocks": ctx.n_blocks,
+        "n_params": ctx.n_params,
+        "pre_ppl": ctx.pre_ppl,
+        "train_tokens": ctx.n_train_tokens,
+        "val_tokens": ctx.n_val_tokens,
+        "planned_token_visits": ctx.token_visits,
+        "epoch_equivalent": ctx.epoch_equivalent,
+        "checkpoints": checkpoints,
+        "elapsed_total_s": round(time.monotonic() - ctx.started, 1),
+    }
+
+
+def _run_loop_while(
+    ctx: _LoopCtx,
+    lr_fn: Callable[[int], float],
+    grad_clip_max_norm: float,
+) -> tuple[list[dict], str | None, int]:
+    """Execute the training while-loop.
+
+    Returns (checkpoints, stop_reason, final_step).  stop_reason is None on
+    normal completion, ``"__blimp_early_stop__"`` when the BLiMP threshold
+    fires, or a descriptive string for grad-spike / non-finite errors.
+    """
     loss_history: list[tuple[int, float, float]] = []  # (step, loss, grad_norm)
     log_every = 500  # Print per-step diagnostics every N steps for early monitoring.
+    checkpoints: list[dict] = []
     best_ppl: float | None = None
     best_ppl_step: int | None = None
     last_loss_val = float("nan")
     last_grad_norm = float("nan")
     grad_spikes = 0
     stop_reason: str | None = None
-    while step < n_train_steps_total:
-        cur_lr = _lr_at(step)
-        for pg in optim.param_groups:
+    step = 0
+    next_ckpt_idx = 0
+    while step < ctx.n_train_steps_total:
+        cur_lr = lr_fn(step)
+        for pg in ctx.optim.param_groups:
             pg["lr"] = cur_lr
-        batch = train_batcher.next()
+        batch = ctx.train_batcher.next()
         last_loss_val, last_grad_norm, step_err = _train_step(
-            model, optim, batch, grad_clip_max_norm
+            ctx.model, ctx.optim, batch, grad_clip_max_norm
         )
         if step_err is not None:
             stop_reason = f"{step_err}_step_{step + 1}"
             break
         step += 1
-        if last_grad_norm > grad_spike_threshold:
+        if last_grad_norm > ctx.grad_spike_threshold:
             grad_spikes += 1
         else:
             grad_spikes = 0
-        if grad_spikes >= grad_spike_patience:
-            stop_reason = f"grad_spike>{grad_spike_threshold}_for_{grad_spikes}_steps"
+        if grad_spikes >= ctx.grad_spike_patience:
+            stop_reason = (
+                f"grad_spike>{ctx.grad_spike_threshold}_for_{grad_spikes}_steps"
+            )
             break
-        # Diagnostic logging — captures the early loss trajectory + grad
+        # Diagnostic logging -- captures the early loss trajectory + grad
         # health so we can SEE if the architecture is exploding before
         # the first checkpoint at step 10K.
-        if not quiet and (step <= 50 or step % log_every == 0):
+        if not ctx.quiet and (step <= 50 or step % log_every == 0):
             loss_history.append((step, last_loss_val, last_grad_norm))
             print(
                 f"  step {step:>6d} lr={cur_lr:.2e} loss={last_loss_val:>7.3f} "
@@ -1428,112 +1541,269 @@ def run_scaling_cell(
                 flush=True,
             )
         # Hit a checkpoint?
-        if next_ckpt_idx < len(sorted_ckpts) and step >= sorted_ckpts[next_ckpt_idx]:
-            target = sorted_ckpts[next_ckpt_idx]
-            ck, best_ppl, best_ppl_step = _eval_checkpoint(
-                model,
-                val_batches,
-                factory,
-                dim,
-                target=target,
-                step=step,
-                last_loss_val=last_loss_val,
-                last_grad_norm=last_grad_norm,
-                cur_lr=cur_lr,
-                best_ppl=best_ppl,
-                best_ppl_step=best_ppl_step,
-                started=started,
-                blimp_n_per_subtask=blimp_n_per_subtask,
-                seq_len=seq_len,
-                device=device,
+        if (
+            next_ckpt_idx < len(ctx.sorted_ckpts)
+            and step >= ctx.sorted_ckpts[next_ckpt_idx]
+        ):
+            ck, best_ppl, best_ppl_step, stop_reason = _process_checkpoint_hit(
+                ctx,
+                next_ckpt_idx,
+                step,
+                last_loss_val,
+                last_grad_norm,
+                cur_lr,
+                best_ppl,
+                best_ppl_step,
             )
-            post_ppl = ck["post_train_ppl"]
-            if best_ppl is not None and post_ppl > best_ppl * ppl_stop_factor:
-                ck["early_stop_reason"] = (
-                    f"val_ppl {post_ppl:.1f} > {ppl_stop_factor:.2f}x "
-                    f"best {best_ppl:.1f} at step {best_ppl_step}"
-                )
-                stop_reason = ck["early_stop_reason"]
             checkpoints.append(ck)
-            _append_jsonl(checkpoint_log, {"event": "checkpoint", **ck})
-            if not quiet:
-                print(
-                    f"  ckpt @ step {step:>6d}: ppl={post_ppl:>7.1f} "
-                    f"BLiMP={ck['blimp_overall']:.4f} v2_sc={ck['v2_sc']:.3f} "
-                    f"v2_vd={ck['v2_vd_mean']:.3f} dyck={ck['v2_dyck_v3']:.3f} "
-                    f"npi={ck['v2_npi_v2']:.3f} eval_t={ck['eval_elapsed_s']:.0f}s "
-                    f"total_t={ck['wall_clock_s']:.0f}s",
-                    flush=True,
-                )
             if stop_reason is not None:
-                if not quiet:
+                if not ctx.quiet:
                     print(f"  EARLY-STOP: {stop_reason}", flush=True)
                 break
             # Early-stop rule.
-            if early_stop_blimp is not None and ck["blimp_overall"] < early_stop_blimp:
-                if not quiet:
+            if (
+                ctx.early_stop_blimp is not None
+                and ck["blimp_overall"] < ctx.early_stop_blimp
+            ):
+                if not ctx.quiet:
                     print(
                         f"  EARLY-STOP: BLiMP {ck['blimp_overall']:.4f} < "
-                        f"{early_stop_blimp:.4f} at step {step}; halting this cell.",
+                        f"{ctx.early_stop_blimp:.4f} at step {step}; halting this cell.",
                         flush=True,
                     )
-                return {
-                    "status": "early_stopped",
-                    "lane": lane_label,
-                    "proposal_id": proposal_id,
-                    "size": size,
-                    "dim": dim,
-                    "n_blocks": n_blocks,
-                    "n_params": n_params,
-                    "pre_ppl": pre_ppl,
-                    "checkpoints": checkpoints,
-                    "early_stop_at_step": step,
-                    "early_stop_blimp_threshold": early_stop_blimp,
-                }
+                stop_reason = "__blimp_early_stop__"
+                break
             next_ckpt_idx += 1
-            model.train()
-        if next_ckpt_idx >= len(sorted_ckpts):
+            ctx.model.train()
+        if next_ckpt_idx >= len(ctx.sorted_ckpts):
             break
+    return checkpoints, stop_reason, step
 
-    if stop_reason is not None:
-        result = {
+
+def _run_training_loop(ctx: _LoopCtx) -> dict:
+    """Run the main training loop and return the final result dict."""
+    lr_fn = _make_lr_schedule(
+        base_lr=ctx.learning_rate,
+        warmup_steps=1000,
+        n_train_steps_total=ctx.n_train_steps_total,
+        final_lr_frac=0.1,
+    )
+    grad_clip_max_norm = 1.0  # Standard transformer gradient clipping.
+    ctx.model.train()
+    checkpoints, stop_reason, step = _run_loop_while(ctx, lr_fn, grad_clip_max_norm)
+    if stop_reason == "__blimp_early_stop__":
+        return {
             "status": "early_stopped",
-            "stop_reason": stop_reason,
-            "lane": lane_label,
-            "proposal_id": proposal_id,
-            "math_axes": axes,
-            "size": size,
-            "dim": dim,
-            "n_blocks": n_blocks,
-            "n_params": n_params,
-            "pre_ppl": pre_ppl,
-            "train_tokens": n_train_tokens,
-            "val_tokens": n_val_tokens,
-            "planned_token_visits": token_visits,
-            "epoch_equivalent": epoch_equivalent,
+            "lane": ctx.lane_label,
+            "proposal_id": ctx.proposal_id,
+            "size": ctx.size,
+            "dim": ctx.dim,
+            "n_blocks": ctx.n_blocks,
+            "n_params": ctx.n_params,
+            "pre_ppl": ctx.pre_ppl,
             "checkpoints": checkpoints,
-            "elapsed_total_s": round(time.monotonic() - started, 1),
+            "early_stop_at_step": step,
+            "early_stop_blimp_threshold": ctx.early_stop_blimp,
         }
-        _append_jsonl(checkpoint_log, {"event": "stop", **result})
+    common = _build_common_result(ctx, checkpoints)
+    if stop_reason is not None:
+        result = {"status": "early_stopped", "stop_reason": stop_reason, **common}
+        _append_jsonl(ctx.checkpoint_log, {"event": "stop", **result})
         return result
+    return {"status": "completed", **common}
 
-    return {
-        "status": "completed",
-        "lane": lane_label,
-        "proposal_id": proposal_id,
-        "math_axes": axes,
-        "size": size,
-        "dim": dim,
-        "n_blocks": n_blocks,
-        "n_params": n_params,
-        "pre_ppl": pre_ppl,
-        "train_tokens": n_train_tokens,
-        "val_tokens": n_val_tokens,
-        "planned_token_visits": token_visits,
-        "epoch_equivalent": epoch_equivalent,
-        "checkpoints": checkpoints,
-        "elapsed_total_s": round(time.monotonic() - started, 1),
-    }
+
+def _init_and_build_ctx(
+    model: TinyLM,
+    optim: torch.optim.Optimizer,
+    train_tokens: torch.Tensor,
+    val_tokens: torch.Tensor,
+    factory: object,
+    n_train_tokens: int,
+    n_val_tokens: int,
+    dim: int,
+    n_blocks: int,
+    n_params: int,
+    lane_label: str,
+    proposal_id: str | None,
+    axes: dict | None,
+    size: str,
+    n_train_steps_total: int,
+    checkpoint_steps: tuple[int, ...],
+    batch_size: int,
+    seq_len: int,
+    n_eval_batches: int,
+    learning_rate: float,
+    blimp_n_per_subtask: int,
+    device: str,
+    ppl_stop_factor: float,
+    early_stop_blimp: float | None,
+    grad_spike_threshold: float,
+    grad_spike_patience: int,
+    token_visits: int,
+    epoch_equivalent: float,
+    checkpoint_log: Path | None,
+    quiet: bool,
+) -> tuple[_LoopCtx, list[torch.Tensor], float]:
+    """Build batchers, log start metadata, eval pre-PPL, return (ctx, val_batches, pre_ppl)."""
+    train_batcher = _RandomWindowBatcher(
+        train_tokens, batch_size=batch_size, seq_len=seq_len, device=device, seed=42
+    )
+    val_batches = _RandomWindowBatcher(
+        val_tokens, batch_size=batch_size, seq_len=seq_len, device=device, seed=123
+    ).fixed_batches(n_eval_batches)
+    started = time.monotonic()
+    pre_ppl = _eval_ppl(model, val_batches)
+    _log_start_metadata(
+        checkpoint_log,
+        lane_label,
+        proposal_id,
+        axes,
+        size,
+        dim,
+        n_blocks,
+        n_params,
+        batch_size,
+        seq_len,
+        n_train_steps_total,
+        checkpoint_steps,
+        n_train_tokens,
+        n_val_tokens,
+        token_visits,
+        epoch_equivalent,
+        pre_ppl,
+        ppl_stop_factor,
+        quiet,
+    )
+    ctx = _LoopCtx(
+        model=model,
+        optim=optim,
+        train_batcher=train_batcher,
+        val_batches=val_batches,
+        factory=factory,
+        dim=dim,
+        n_train_steps_total=n_train_steps_total,
+        sorted_ckpts=sorted(checkpoint_steps),
+        learning_rate=learning_rate,
+        lane_label=lane_label,
+        proposal_id=proposal_id,
+        axes=axes,
+        size=size,
+        n_blocks=n_blocks,
+        n_params=n_params,
+        pre_ppl=pre_ppl,
+        n_train_tokens=n_train_tokens,
+        n_val_tokens=n_val_tokens,
+        token_visits=token_visits,
+        epoch_equivalent=epoch_equivalent,
+        started=started,
+        blimp_n_per_subtask=blimp_n_per_subtask,
+        seq_len=seq_len,
+        device=device,
+        ppl_stop_factor=ppl_stop_factor,
+        early_stop_blimp=early_stop_blimp,
+        grad_spike_threshold=grad_spike_threshold,
+        grad_spike_patience=grad_spike_patience,
+        checkpoint_log=checkpoint_log,
+        quiet=quiet,
+    )
+    return ctx, val_batches, pre_ppl
+
+
+def run_scaling_cell(
+    lane_name: str | None,
+    size: str,
+    *,
+    proposal_id: str | None = None,
+    n_train_steps_total: int,
+    checkpoint_steps: tuple[int, ...],
+    batch_size: int = 8,
+    seq_len: int = 256,
+    n_eval_batches: int = 32,
+    max_chars_train: int = 200_000_000,
+    max_chars_val: int = 2_000_000,
+    blimp_n_per_subtask: int = 25,
+    learning_rate: float = 1e-4,
+    early_stop_blimp: float | None = None,
+    ppl_stop_factor: float = 2.0,
+    max_epoch_equivalent: float = 50.0,
+    grad_spike_threshold: float = 10.0,
+    grad_spike_patience: int = 5,
+    checkpoint_log: Path | None = None,
+    device: str = "cuda",
+    quiet: bool = False,
+) -> dict:
+    """One model x one size x full training to n_train_steps_total with
+    checkpoints. Returns the checkpoint results."""
+    if size not in PARAM_SIZING:
+        raise ValueError(f"unknown size: {size}")
+    dim = PARAM_SIZING[size]["dim"]
+    n_blocks = PARAM_SIZING[size]["n_blocks"]
+    lane_label, factory, axes = _resolve_lane(lane_name, proposal_id)
+    if not quiet:
+        print(
+            f"\n=== {lane_label} @ {size} (dim={dim}, n_blocks={n_blocks}) ===",
+            flush=True,
+        )
+    model = _build_tinylm(factory, dim=dim, n_blocks=n_blocks)
+    model = model.to(device)
+    n_params = count_trainable_params(model)
+    if not quiet:
+        print(f"  params: {n_params / 1e6:.1f}M", flush=True)
+    train_tokens, val_tokens, n_train_tokens, n_val_tokens = _load_wikitext_tokens(
+        variant="wikitext-103-raw-v1",
+        vocab_size=VOCAB_SIZE,
+        max_chars_train=max_chars_train,
+        max_chars_val=max_chars_val,
+    )
+    token_visits = int(n_train_steps_total) * int(batch_size) * int(seq_len)
+    epoch_equivalent = token_visits / max(1, n_train_tokens)
+    guard = _check_epoch_guard(
+        lane_label,
+        proposal_id,
+        size,
+        n_train_tokens,
+        n_train_steps_total,
+        batch_size,
+        seq_len,
+        max_epoch_equivalent,
+    )
+    if guard is not None:
+        return guard
+    optim = torch.optim.Adam(model.parameters(), lr=learning_rate)
+    ctx, _vb, _pppl = _init_and_build_ctx(
+        model,
+        optim,
+        train_tokens,
+        val_tokens,
+        factory,
+        n_train_tokens,
+        n_val_tokens,
+        dim,
+        n_blocks,
+        n_params,
+        lane_label,
+        proposal_id,
+        axes,
+        size,
+        n_train_steps_total,
+        checkpoint_steps,
+        batch_size,
+        seq_len,
+        n_eval_batches,
+        learning_rate,
+        blimp_n_per_subtask,
+        device,
+        ppl_stop_factor,
+        early_stop_blimp,
+        grad_spike_threshold,
+        grad_spike_patience,
+        token_visits,
+        epoch_equivalent,
+        checkpoint_log,
+        quiet,
+    )
+    return _run_training_loop(ctx)
 
 
 def main(argv: list[str] | None = None) -> int:

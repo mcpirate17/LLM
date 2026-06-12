@@ -98,64 +98,15 @@ class _ExecutionValidationThreadMixin:
                 )
 
             # Complete experiment
-            _vstatus("generating experiment summary")
-            finalize_validation_results_summary(results)
-            context = self._build_rich_context_for_experiment(
-                results, config, hypothesis, nb
-            )
-            summary = self.aria.experiment_summary(results, context=context)
-            llm_analysis = self.aria.analyze_results(results, context=context)
-            insights = self._analyze_results(results, exp_id, nb, context=context)
-
-            self._publish_terminal_event(
-                producer="runner.execution_validation",
-                event_type="experiment_completed",
-                exp_id=exp_id,
-                payload={
-                    "completed_at": time.time(),
-                    "results": results,
-                    "aria_summary": summary,
-                    "aria_mood": self.aria.state.mood,
-                    "insights": insights,
-                    "llm_analysis": llm_analysis,
-                },
-            )
-
-            self._complete_experiment_compat(
-                nb=nb,
-                experiment_id=exp_id,
+            self._complete_validation_run(
+                vstatus=_vstatus,
                 results=results,
-                aria_summary=summary,
-                insights=insights,
-                llm_analysis=llm_analysis,
-            )
-
-            # Clean up validation checkpoints on success
-            if not config.keep_checkpoints:
-                try:
-                    ckpt.cleanup(exp_id)
-                except (OSError, RuntimeError) as exc:
-                    _fail_loud(
-                        "validation",
-                        f"checkpoint cleanup failed for {exp_id[:8]}",
-                        exc,
-                    )
-
-            self._update_progress(
-                status="completed",
-                elapsed_seconds=time.time() - t_start,
-                aria_message=summary.split("\n")[-1]
-                if summary
-                else "Validation complete.",
-            )
-
-            self._emit_event(
-                "validation_completed",
-                {
-                    "experiment_id": exp_id,
-                    "results": results,
-                    "summary": summary,
-                },
+                ckpt=ckpt,
+                exp_id=exp_id,
+                nb=nb,
+                config=config,
+                hypothesis=hypothesis,
+                t_start=t_start,
             )
 
         except Exception as e:
@@ -165,6 +116,50 @@ class _ExecutionValidationThreadMixin:
         finally:
             self._live_training_context = None
             nb.close()
+
+    def _complete_validation_run(
+        self,
+        *,
+        vstatus,
+        results: Dict,
+        ckpt,
+        exp_id: str,
+        nb,
+        config: RunConfig,
+        hypothesis: str,
+        t_start: float,
+    ) -> None:
+        """Finalise a validation run: summarise, clean checkpoints, emit events."""
+        vstatus("generating experiment summary")
+        finalize_validation_results_summary(results)
+        summary = self._summarize_and_complete_experiment(
+            exp_id, nb, results, config, hypothesis
+        )
+
+        # Clean up validation checkpoints on success
+        if not config.keep_checkpoints:
+            try:
+                ckpt.cleanup(exp_id)
+            except (OSError, RuntimeError) as exc:
+                _fail_loud(
+                    "validation",
+                    f"checkpoint cleanup failed for {exp_id[:8]}",
+                    exc,
+                )
+
+        self._update_progress(
+            status="completed",
+            elapsed_seconds=time.time() - t_start,
+            aria_message=summary.split("\n")[-1] if summary else "Validation complete.",
+        )
+        self._emit_event(
+            "validation_completed",
+            {
+                "experiment_id": exp_id,
+                "results": results,
+                "summary": summary,
+            },
+        )
 
     # ── Auto-Escalation Pipeline ──
 
@@ -285,15 +280,13 @@ class _ExecutionValidationThreadMixin:
             {"experiment_id": exp_id, "error": reason},
         )
 
-    def _scale_up_complete(
-        self,
-        exp_id: str,
-        nb,
-        results: Dict,
-        config: RunConfig,
-        hypothesis: str,
-        t_start: float,
-    ) -> None:
+    def _summarize_and_complete_experiment(
+        self, exp_id: str, nb, results: Dict, config: RunConfig, hypothesis: str
+    ) -> str:
+        """Summarize results, publish the terminal event, record completion.
+
+        Returns the ARIA summary for progress/event messages.
+        """
         context = self._build_rich_context_for_experiment(
             results, config, hypothesis, nb
         )
@@ -321,6 +314,20 @@ class _ExecutionValidationThreadMixin:
             aria_summary=summary,
             insights=insights,
             llm_analysis=llm_analysis,
+        )
+        return summary
+
+    def _scale_up_complete(
+        self,
+        exp_id: str,
+        nb,
+        results: Dict,
+        config: RunConfig,
+        hypothesis: str,
+        t_start: float,
+    ) -> None:
+        summary = self._summarize_and_complete_experiment(
+            exp_id, nb, results, config, hypothesis
         )
         self._auto_recommend(results, config, hypothesis, nb)
         self._update_progress(

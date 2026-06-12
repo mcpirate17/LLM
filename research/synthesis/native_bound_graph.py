@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List
 
 import torch
+
+logger = logging.getLogger(__name__)
 
 from ._json_compat import dumps_json
 from .compiler_op_utils import _get_stacked_params
@@ -825,6 +828,7 @@ class BoundNativeSubgraphDispatcher:
         nodes: list[dict],
         edges: list[dict],
     ) -> int:
+        # guardrail: allow-god-function
         node = self._graph.nodes[node_id]
         op_name = node.op_name
         input_ids = list(node.input_ids)
@@ -1058,6 +1062,15 @@ class BoundNativeSubgraphDispatcher:
             self._last_refusal_reason = None
             return result
         except Exception:
+            # Keep the documented refusal contract (None -> torch fallback)
+            # but never disable the native runtime silently: this is a real
+            # dispatch bug and it permanently degrades every future forward.
+            logger.exception(
+                "native bound dispatch failed; disabling native runtime for "
+                "this layer (input shape=%s, dtype=%s)",
+                tuple(x.shape),
+                x.dtype,
+            )
             self._runtime_enabled = False
             self._fallback_count += 1
             self._last_refusal_reason = "bound_dispatch_error"
