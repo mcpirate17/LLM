@@ -25,30 +25,7 @@ from component_fab.improver.ranking import (
     smoke_subscore,
 )
 from component_fab.validator.in_context import validate_in_context
-from component_fab.proposer.property_miner import AxisLift, CandidateTuple
-from component_fab.proposer.spec_generator import spec_from_candidate
-
-
-def _spec(axes: dict):
-    lifts = tuple(
-        AxisLift(
-            axis=k,
-            value=v,
-            n_ops=1,
-            total_evals=1,
-            total_s1_pass=0,
-            pass_rate=0.5,
-            representative_ops=(),
-        )
-        for k, v in axes.items()
-    )
-    candidate = CandidateTuple(
-        tuple_values=tuple(axes.items()),
-        predicted_lift=0.5,
-        per_axis_lift=lifts,
-        witness_ops=("anchor",),
-    )
-    return spec_from_candidate(candidate)
+from component_fab.tests.conftest import make_candidate_spec
 
 
 def test_dispatch_tropical_topk_with_state() -> None:
@@ -118,7 +95,7 @@ def test_short_training_probe_linear_lane_learns() -> None:
 
 
 def test_validate_in_context_returns_scorecard() -> None:
-    spec = _spec({"op_algebraic_space": "euclidean"})
+    spec = make_candidate_spec({"op_algebraic_space": "euclidean"})
     lane = nn.Linear(16, 16)
     card = validate_in_context(spec, lane, dim=16, seq_len=16, n_steps=40)
     assert card.proposal_id == spec.proposal_id

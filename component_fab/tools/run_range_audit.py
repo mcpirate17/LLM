@@ -34,19 +34,13 @@ import torch
 from torch import nn
 
 from component_fab.generator.code_generator import generate_module
-from component_fab.generator.memory_primitives import (
-    PadicSurpriseMemoryLane,
-    TropicalSurpriseMemoryLane,
-)
-from component_fab.generator.primitive_templates import (
-    LinearStateSpaceLane,
-    TropicalAttention,
-)
 from component_fab.harness.range_binding_probe import (
     DEFAULT_DISTANCES,
     range_binding_gate,
 )
+from component_fab.harness.reference_lanes import REFERENCE_LANES
 from component_fab.harness.standard_block import _LocalConvLane
+from component_fab.tools._cli import write_report
 
 _REPO = Path(__file__).resolve().parents[2]
 DEFAULT_WINNERS = _REPO / "component_fab" / "catalog" / "saved_winners.json"
@@ -110,13 +104,19 @@ def _audit_one(
 
 
 def _reference_targets(dim: int) -> dict[str, Callable[[], nn.Module]]:
-    return {
-        "REF:tropical_attention": lambda: TropicalAttention(dim),
-        "REF:linear_ssm": lambda: LinearStateSpaceLane(dim),
-        "REF:causal_conv": lambda: _LocalConvLane(dim),
-        "INV:tropical_surprise": lambda: TropicalSurpriseMemoryLane(dim),
-        "INV:padic_surprise": lambda: PadicSurpriseMemoryLane(dim),
+    """Audit-labelled zero-arg factories over the shared REFERENCE_LANES set,
+    extended with the audit-only causal-conv reference."""
+    shared = {
+        "REF:tropical_attention": REFERENCE_LANES["tropical_attention"],
+        "REF:linear_ssm": REFERENCE_LANES["linear_ssm"],
+        "INV:tropical_surprise": REFERENCE_LANES["tropical_surprise_memory"],
+        "INV:padic_surprise": REFERENCE_LANES["padic_surprise_memory"],
     }
+    targets: dict[str, Callable[[], nn.Module]] = {
+        label: (lambda make=make: make(dim)) for label, make in shared.items()
+    }
+    targets["REF:causal_conv"] = lambda: _LocalConvLane(dim)
+    return targets
 
 
 def run_audit(
@@ -233,9 +233,10 @@ def main(argv: list[str] | None = None) -> int:
         name_filter=args.name_filter,
     )
     _print_table(report)
-    args.out.parent.mkdir(parents=True, exist_ok=True)
-    args.out.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
-    print(f"\nwrote: {args.out}")
+    print()
+    write_report(
+        report, default_dir=DEFAULT_OUT.parent, prefix="range_audit", output=args.out
+    )
     low = [r["component"] for r in report["results"] if r["fidelity"] == "low"]
     if low:
         print(f"NOTE: low-fidelity rebuilds (numbers unreliable): {', '.join(low)}")

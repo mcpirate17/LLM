@@ -8,21 +8,16 @@ import pytest
 
 from component_fab.harness.lm_eval import LMEvalResult, WikitextTrainTrace
 from component_fab.proposer.spec_generator import ProposalSpec
+from component_fab.tests.conftest import make_spec
 
 
 def _spec() -> ProposalSpec:
-    axes = {"op_algebraic_space": "tropical"}
-    return ProposalSpec(
-        proposal_id="candidate_abc",
+    return make_spec(
+        {"op_algebraic_space": "tropical"},
+        "candidate_abc",
         name="candidate",
         category="lane",
-        synthesis_kind="novel_hybrid",
-        math_axes=axes,
-        anchor_witness_op="",
-        anchor_witnesses_all=(),
-        declared_property_row=dict(axes),
         predicted_lift=0.0,
-        rationale="test",
     )
 
 

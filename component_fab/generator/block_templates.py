@@ -268,15 +268,18 @@ class SparseMoEBlock(nn.Module):
         probs = torch.softmax(self.router(h), dim=-1)
         topk_vals, topk_idx = probs.topk(self.top_k, dim=-1)
         topk_vals = topk_vals / topk_vals.sum(dim=-1, keepdim=True).clamp_min(1e-6)
+        # Each expert forward runs ONCE; the old form recomputed expert(x)
+        # inside the slot loop (top_k× the compute) and the mask.sum() == 0
+        # early-out forced a device sync per (slot, expert) pair on GPU —
+        # the masked multiply is cheaper than the sync it saved.
+        expert_outs = [expert(x) for expert in self.experts]
         expert_out = torch.zeros_like(x)
         for slot in range(self.top_k):
             idx = topk_idx[..., slot]
             wt = topk_vals[..., slot].unsqueeze(-1)
-            for index, expert in enumerate(self.experts):
+            for index, out in enumerate(expert_outs):
                 mask = (idx == index).unsqueeze(-1).to(x.dtype)
-                if mask.sum() == 0:
-                    continue
-                expert_out = expert_out + mask * wt * expert(x)
+                expert_out = expert_out + mask * wt * out
         self.aux_loss = (probs.mean(dim=(0, 1)) * probs.mean(dim=(0, 1))).sum() * 0.01
         return anchor_out + expert_out
 

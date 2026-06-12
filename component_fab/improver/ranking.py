@@ -6,10 +6,11 @@ is reduced to a single composite score so promoted candidates can be
 ranked.
 
 The composite weights (post-2026-05-15 rebalance toward binding +
-induction, the dominant signals for downstream BLiMP wins):
-- 20% smoke (all checks pass = 1.0, else 0.0)
-- 20% cross-check pass ratio (fraction of declared properties matched)
-- 30% learning signal (log10 of probe loss-ratio, clamped to [0, 1])
+induction, the dominant signals for downstream BLiMP wins; see
+``_BINDING_WEIGHTS`` — the single source of truth):
+- 30% smoke (all checks pass = 1.0, else 0.0)
+- 30% cross-check pass ratio (fraction of declared properties matched)
+- 10% learning signal (log10 of probe loss-ratio, clamped to [0, 1])
 - 30% binding signal (capability AR-probe binds + relative_recall mean)
 
 The binding subscore replaces the ad-hoc ``+0.2 if can_bind`` bonus that
@@ -152,7 +153,7 @@ def composite_score(
 ) -> tuple[float, dict[str, float]]:
     """Weighted sum over (smoke, cross_check, learning, binding) subscores.
 
-    Defaults to ``_BINDING_WEIGHTS`` (0.2/0.2/0.3/0.3) when a capability
+    Defaults to ``_BINDING_WEIGHTS`` (0.3/0.3/0.1/0.3) when a capability
     scorecard is supplied; falls back to ``_LEGACY_WEIGHTS``
     (0.3/0.3/0.4/0.0) when it is omitted so older call sites and tests
     that pass only solo+probe stay numerically stable.
@@ -221,6 +222,93 @@ def rank_proposals(
         )
     out.sort(key=lambda e: e.composite_score, reverse=True)
     return out
+
+
+# --------------------------------------------------------------------------- #
+# WS-4: Pareto / niche objectives (multi-objective, no scalar collapse)
+# --------------------------------------------------------------------------- #
+# Objective vector — ALL dimensions "higher is better" (param count enters
+# negated as efficiency, so a smaller model dominates a larger equal one). A
+# specialist (high binding, low learning) and a generalist (balanced) then both
+# sit on the first Pareto front instead of being forced through one scalar.
+OBJECTIVE_KEYS: tuple[str, ...] = (
+    "binding",
+    "induction",
+    "learning",
+    "state_tracking",
+    "novelty",
+    "efficiency",
+)
+
+
+def objective_vector(
+    probe_scorecard: dict[str, Any] | None = None,
+    capability_scorecard: dict[str, Any] | None = None,
+    *,
+    param_count: int = 0,
+    novelty: float = 0.0,
+) -> dict[str, float]:
+    """Build the promotion-time objective vector for Pareto/niche ranking.
+
+    Every returned dimension is maximized. ``efficiency`` is therefore stored as
+    ``-param_count`` so equally capable smaller candidates dominate larger ones.
+    Missing scorecards map to zeros instead of dropping dimensions; that keeps
+    front assignment stable when only a subset of probes ran.
+    """
+    cap = capability_scorecard or {}
+    return {
+        "binding": binding_subscore(capability_scorecard),
+        "induction": float(cap.get("ind_max_accuracy") or 0.0),
+        "learning": learning_subscore(probe_scorecard),
+        "state_tracking": state_tracking_subscore(probe_scorecard),
+        "novelty": float(novelty),
+        "efficiency": -float(param_count),
+    }
+
+
+def _as_objective_list(vec: dict[str, float]) -> tuple[float, ...]:
+    return tuple(float(vec.get(k, 0.0)) for k in OBJECTIVE_KEYS)
+
+
+def _dominates(a: Sequence[float], b: Sequence[float]) -> bool:
+    """True if ``a`` Pareto-dominates ``b`` (>= on all dims, > on at least one)."""
+    ge_all = all(x >= y for x, y in zip(a, b))
+    gt_any = any(x > y for x, y in zip(a, b))
+    return ge_all and gt_any
+
+
+def non_dominated_sort(vectors: Sequence[dict[str, float]]) -> list[int]:
+    """Assign each vector a Pareto front index, where ``0`` is non-dominated.
+
+    Dict inputs are first projected through ``OBJECTIVE_KEYS`` so callers may
+    carry extra diagnostic fields without changing the dominance relation.
+    Equal vectors remain on the same front because dominance requires at least
+    one strictly better objective.
+    """
+    arrs = [_as_objective_list(v) for v in vectors]
+    n = len(arrs)
+    fronts = [-1] * n
+    remaining = set(range(n))
+    front = 0
+    while remaining:
+        current = [
+            i
+            for i in remaining
+            if not any(_dominates(arrs[j], arrs[i]) for j in remaining if j != i)
+        ]
+        if not current:  # numerical safety — should be unreachable
+            current = list(remaining)
+        for i in current:
+            fronts[i] = front
+        remaining -= set(current)
+        front += 1
+    return fronts
+
+
+def pareto_front_indices(vectors: Sequence[dict[str, float]]) -> list[int]:
+    """Indices of the non-dominated (front-0) objective vectors."""
+    fronts = non_dominated_sort(vectors)
+    return [i for i, f in enumerate(fronts) if f == 0]
 
 
 def leaderboard_to_json(ranked: Iterable[RankedEntry]) -> list[dict[str, Any]]:

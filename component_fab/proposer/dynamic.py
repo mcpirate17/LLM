@@ -14,19 +14,14 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from component_fab.improver.axis_variants import AnchorAxes, anchor_axes_for_op
-from component_fab.proposer.property_miner import (
-    AxisLift,
-    CandidateTuple,
-    DEFAULT_META_DB,
-)
+from component_fab.proposer.property_miner import DEFAULT_META_DB
 from component_fab.proposer.spec_generator import (
     ProposalSpec,
+    build_spec_from_axes,
     category_from_axes,
-    make_proposal_id,
-    spec_from_candidate,
     synthesis_kind_for_axes,
 )
-from component_fab.state.ledger import Ledger, LedgerEntry, PROMOTION_PROMOTED
+from component_fab.state.ledger import Ledger, LedgerEntry
 from component_fab.proposer.tier2_feedback import (
     Tier2Feedback,
     WEAK_FAIL_BROAD_KV,
@@ -66,12 +61,6 @@ class _Repair:
 
 def _latest_metadata(entry: LedgerEntry) -> dict[str, Any]:
     return dict(entry.metadata_history[-1]) if entry.metadata_history else {}
-
-
-def _mean_score(entry: LedgerEntry) -> float:
-    if not entry.composite_history:
-        return 0.0
-    return sum(entry.composite_history) / len(entry.composite_history)
 
 
 def _clean_axes(raw: Mapping[str, Any]) -> dict[str, Any]:
@@ -132,7 +121,7 @@ def collect_dynamic_evidence_cases(
         axes = _clean_axes(metadata.get("math_axes") or {})
         if not axes:
             continue
-        score = _mean_score(entry)
+        score = entry.mean_composite()
         feedback = (tier2_feedback_by_id or {}).get(entry.proposal_id)
         weaknesses = _weaknesses_with_tier2_feedback(metadata, score, feedback)
         if not weaknesses:
@@ -401,59 +390,32 @@ def _slug(raw: str, *, max_len: int = 48) -> str:
     return (slug or "case")[:max_len].strip("_") or "case"
 
 
-def _synthetic_axis_lift(axis: str, value: Any, score: float) -> AxisLift:
-    pass_rate = min(1.0, max(0.05, score))
-    return AxisLift(
-        axis=axis,
-        value=value,
-        n_ops=1,
-        total_evals=1,
-        total_s1_pass=1 if pass_rate >= 0.5 else 0,
-        pass_rate=pass_rate,
-        representative_ops=(),
-    )
-
-
 def _spec_from_case_and_repair(
     case: DynamicEvidenceCase, repair: _Repair
 ) -> ProposalSpec:
     axes = {**case.base_axes, **repair.delta}
     axes.pop("synthesis_kind", None)
-    tuple_values = tuple(axes.items())
-    candidate = CandidateTuple(
-        tuple_values=tuple_values,
-        predicted_lift=max(0.1, min(1.0, case.score + 0.08)),
-        per_axis_lift=tuple(
-            _synthetic_axis_lift(axis, value, case.score)
-            for axis, value in tuple_values
-        ),
-        witness_ops=(case.name,),
-        anchor_axes=tuple(case.anchor_axes.items()),
-    )
-    base_spec = spec_from_candidate(candidate)
     source = _slug(case.name)
     weakness = _slug("_".join(case.weaknesses), max_len=36)
-    name = f"dynamic_{source}_{repair.name}_{weakness}"
-    proposal_id = make_proposal_id(name, base_spec.math_axes)
-    return ProposalSpec(
-        proposal_id=proposal_id,
-        name=name,
-        category=base_spec.category,
-        synthesis_kind=base_spec.synthesis_kind,
-        math_axes=base_spec.math_axes,
-        anchor_witness_op=case.name,
-        anchor_witnesses_all=(case.name,),
-        declared_property_row=base_spec.declared_property_row,
-        predicted_lift=base_spec.predicted_lift,
-        rationale=(
-            f"Dynamic proposal derived from ledger evidence for {case.source_id}. "
-            f"Weaknesses={', '.join(case.weaknesses)}. {repair.rationale}."
-        ),
+    # This path historically fingerprints the dispatched axes (including
+    # the mirrored synthesis_kind) — preserved for proposal_id stability.
+    return build_spec_from_axes(
+        f"dynamic_{source}_{repair.name}_{weakness}",
+        axes,
+        witness_ops=(case.name,),
+        anchor_axes=case.anchor_axes,
         notes=(
             f"source_id={case.source_id}",
             f"source_score={case.score:.4f}",
             f"repair={repair.name}",
             *case.notes,
+        ),
+        predicted_lift=max(0.1, min(1.0, case.score + 0.08)),
+        lift_pass_rate=min(1.0, max(0.05, case.score)),
+        fingerprint_dispatched_axes=True,
+        rationale=(
+            f"Dynamic proposal derived from ledger evidence for {case.source_id}. "
+            f"Weaknesses={', '.join(case.weaknesses)}. {repair.rationale}."
         ),
     )
 
@@ -471,7 +433,7 @@ def spec_from_ledger_entry(entry: LedgerEntry) -> ProposalSpec | None:
     row.setdefault("op_n_inputs", 1)
     row.setdefault("op_is_parameterized", 1)
     row.setdefault("op_is_stateless", 0 if axes.get("op_dynamical_has_state") else 1)
-    score = _mean_score(entry)
+    score = entry.mean_composite()
     return ProposalSpec(
         proposal_id=entry.proposal_id,
         name=entry.name or entry.proposal_id,
@@ -567,15 +529,3 @@ def enumerate_dynamic_proposals(
             if len(specs) >= max_specs:
                 return specs
     return specs
-
-
-def promoted_entries_by_score(ledger: Ledger, *, limit: int = 16) -> list[LedgerEntry]:
-    """Return high-scoring promoted entries for diagnostics and tests."""
-
-    entries = [
-        entry
-        for entry in ledger.all_entries()
-        if entry.promotion_status == PROMOTION_PROMOTED and entry.composite_history
-    ]
-    entries.sort(key=_mean_score, reverse=True)
-    return entries[:limit]

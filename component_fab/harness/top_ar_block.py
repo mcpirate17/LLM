@@ -25,56 +25,22 @@ from typing import Callable
 
 import torch
 from torch import nn
-import torch.nn.functional as F
+
+from .primitives import (
+    CausalDepthwiseConv1d as CausalConv1dSeq,
+    RMSNorm,
+    SwiGLU,
+)
+
+__all__ = [
+    "CausalConv1dSeq",
+    "LocalWindowAttention",
+    "RMSNorm",
+    "SwiGLU",
+    "TopArchBlock",
+]
 
 LaneFactory = Callable[[int], nn.Module]
-
-
-class RMSNorm(nn.Module):
-    """Standard RMSNorm (no bias) — matches `_op_rmsnorm` semantics."""
-
-    def __init__(self, dim: int, eps: float = 1e-6) -> None:
-        super().__init__()
-        self.weight = nn.Parameter(torch.ones(dim))
-        self.eps = eps
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        rms = x.pow(2).mean(dim=-1, keepdim=True).sqrt()
-        return x / (rms + self.eps) * self.weight
-
-
-class CausalConv1dSeq(nn.Module):
-    """Causal depthwise 1D convolution along the sequence axis.
-
-    Mirrors ``conv1d_seq`` compiler op: depthwise causal mixing with a
-    short kernel. Default kernel=3 matches typical fab usage.
-    """
-
-    def __init__(self, dim: int, kernel_size: int = 3) -> None:
-        super().__init__()
-        self.kernel_size = int(kernel_size)
-        self.conv = nn.Conv1d(dim, dim, self.kernel_size, groups=dim)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # (B, S, D) -> (B, D, S) -> causal-left-pad -> conv -> back
-        h = x.transpose(1, 2)
-        h = F.pad(h, (self.kernel_size - 1, 0))
-        h = self.conv(h)
-        return h.transpose(1, 2)
-
-
-class SwiGLU(nn.Module):
-    """SwiGLU FFN: ``W3(silu(W1 x) * (W2 x))``."""
-
-    def __init__(self, dim: int, mlp_ratio: float = 4.0) -> None:
-        super().__init__()
-        hidden = int(round(dim * float(mlp_ratio)))
-        self.w1 = nn.Linear(dim, hidden, bias=False)
-        self.w2 = nn.Linear(dim, hidden, bias=False)
-        self.w3 = nn.Linear(hidden, dim, bias=False)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.w3(F.silu(self.w1(x)) * self.w2(x))
 
 
 class LocalWindowAttention(nn.Module):

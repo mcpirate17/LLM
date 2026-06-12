@@ -4,9 +4,13 @@ from __future__ import annotations
 
 import json
 
+import pytest
 import torch
 
-from component_fab.generator.code_generator import generate_module_from_spec
+from component_fab.generator.code_generator import (
+    NativeParityEvidenceError,
+    generate_module_from_spec,
+)
 from component_fab.generator.memory_primitives import (
     CausalFastWeightMemoryLane,
     CausalSlotRouterMemoryLane,
@@ -126,7 +130,6 @@ def test_invention_codegen_dispatches_mechanisms() -> None:
         "hierarchical_residual_compressor": HierarchicalResidualCompressorLane,
         "symplectic_residual_mixer": SymplecticResidualMixerLane,
         "tropical_surprise_memory": TropicalSurpriseMemoryLane,
-        "semiring_surprise_memory": SemiringSurpriseMemoryLane,
         "padic_surprise_memory": PadicSurpriseMemoryLane,
     }
     x = torch.randn(2, 8, 16)
@@ -134,6 +137,8 @@ def test_invention_codegen_dispatches_mechanisms() -> None:
         module = generate_module_from_spec(specs[mechanism], dim=16)
         assert isinstance(module, cls)
         assert module(x).shape == x.shape
+    with pytest.raises(NativeParityEvidenceError):
+        generate_module_from_spec(specs["semiring_surprise_memory"], dim=16)
 
 
 def test_surprise_memory_lanes_are_causal_finite_and_share_read() -> None:

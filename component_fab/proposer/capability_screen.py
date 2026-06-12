@@ -128,7 +128,9 @@ def capability_screen_for_spec(
             n_distinct_ops=len(op_set),
         )
     except Exception as exc:  # noqa: BLE001 - screen is best-effort, fail open
-        logger.debug("capability screen unavailable for %s: %s", spec.proposal_id, exc)
+        logger.warning(
+            "capability screen unavailable for %s: %s", spec.proposal_id, exc
+        )
         return CapabilityScreen(
             proposal_id=spec.proposal_id,
             available=False,

@@ -19,11 +19,16 @@ feed the composite score.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Callable
 
 import torch
 from torch import nn
+
+from .training_probe import train_lane_head
+
+logger = logging.getLogger(__name__)
 
 
 # ----------------------------- S0.5 gates -----------------------------
@@ -217,22 +222,36 @@ def train_and_score(
     initial = _baseline_mse(
         lane_block, probe, seq_len=seq_len, dim=dim, seed=seed + 999
     )
-    optimizer = torch.optim.Adam(lane_block.parameters(), lr=probe.learning_rate)
     gen = torch.Generator().manual_seed(seed)
+
+    def sample() -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
+        x, target, mask = probe.sample_fn(probe.batch_size, seq_len, dim, gen)
+        return x, (target, mask)
+
+    def masked_mse(
+        y: torch.Tensor, target_mask: tuple[torch.Tensor, torch.Tensor]
+    ) -> torch.Tensor:
+        target, mask = target_mask
+        diff = (y - target).pow(2).sum(dim=-1)
+        return (diff * mask).sum() / mask.sum().clamp_min(1.0)
+
     final = initial
     trained = True
     try:
         lane_block.train()
-        for _ in range(probe.n_train_steps):
-            x, target, mask = probe.sample_fn(probe.batch_size, seq_len, dim, gen)
-            y = lane_block(x)
-            diff = (y - target).pow(2).sum(dim=-1)
-            loss = (diff * mask).sum() / mask.sum().clamp_min(1.0)
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            final = float(loss.item())
-    except Exception:
+        trace = train_lane_head(
+            lane_block,
+            lane_block.parameters(),
+            sample,
+            masked_mse,
+            n_train_steps=probe.n_train_steps,
+            learning_rate=probe.learning_rate,
+        )
+        final = trace.final_loss
+    except Exception:  # noqa: BLE001 - one bad lane must not abort the cohort
+        logger.warning(
+            "capability probe %r failed; scoring 0.0", probe.name, exc_info=True
+        )
         trained = False
     lane_block.eval()
     relative = 1.0 - (final / max(initial, 1e-12))

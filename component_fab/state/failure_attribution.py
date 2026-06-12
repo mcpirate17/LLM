@@ -19,26 +19,17 @@ Output feeds two future loops:
 
 from __future__ import annotations
 
-import json
 from collections import defaultdict
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-_REPO = Path(__file__).resolve().parents[2]
-DEFAULT_LEDGER_PATH = _REPO / "component_fab" / "catalog" / "ledger.jsonl"
-DEFAULT_OUTPUT_PATH = _REPO / "component_fab" / "catalog" / "failure_attribution.json"
+from .gates import CANONICAL_GATE_ORDER, eliminated_by, reached
+from .ledger import DEFAULT_LEDGER_PATH, write_json_report
+from .ledger import read_last_grades_and_statuses as _read_ledger
 
-CANONICAL_GATE_ORDER: tuple[str, ...] = (
-    "smoke",
-    "s05_causality_stability",
-    "erf_density",
-    "nano_bind",
-    "ar_easy",
-    "ar_medium",
-    "ar_hard",
-)
-SURVIVED = "survived"
+_REPO = Path(__file__).resolve().parents[2]
+DEFAULT_OUTPUT_PATH = _REPO / "component_fab" / "catalog" / "failure_attribution.json"
 
 
 @dataclass(slots=True)
@@ -78,51 +69,6 @@ class FailureReport:
     anchor_pool: list[AnchorCandidate] = field(default_factory=list)
 
 
-def _read_ledger(path: Path) -> tuple[dict[str, dict[str, Any]], dict[str, str]]:
-    last_grade: dict[str, dict[str, Any]] = {}
-    last_status: dict[str, str] = {}
-    if not path.exists():
-        return last_grade, last_status
-    with path.open("r", encoding="utf-8") as handle:
-        for line in handle:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                record = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            pid = record.get("proposal_id")
-            if not pid:
-                continue
-            event = record.get("event")
-            if event == "grade":
-                last_grade[str(pid)] = record
-            elif event == "promote":
-                status = str(record.get("status") or "")
-                if status:
-                    last_status[str(pid)] = status
-    return last_grade, last_status
-
-
-def _gate_from_record(grade: dict[str, Any]) -> str:
-    meta = grade.get("metadata") or {}
-    e = meta.get("eliminated_by")
-    if isinstance(e, str) and e:
-        return e
-    if grade.get("smoke_pass") is False:
-        return "smoke"
-    return SURVIVED
-
-
-def _gate_index(gate: str, order: tuple[str, ...]) -> int:
-    """Return position in canonical order; unknown gates go after the last gate."""
-    try:
-        return order.index(gate)
-    except ValueError:
-        return len(order)
-
-
 def _count_outcomes(
     last_grade: dict[str, dict[str, Any]],
     last_status: dict[str, str],
@@ -140,7 +86,7 @@ def _count_outcomes(
             rejected += 1
         else:
             pending += 1
-        gate = _gate_from_record(grade)
+        gate = eliminated_by(grade)
         killed_by[gate] += 1
         if gate == "erf_density":
             erf = (grade.get("metadata") or {}).get("erf_density")
@@ -150,7 +96,6 @@ def _count_outcomes(
 
 
 def _build_gate_stats(
-    total: int,
     killed_by: dict[str, int],
     gate_order: tuple[str, ...],
     over_eager_threshold: float,
@@ -176,17 +121,14 @@ def _build_gate_stats(
     stats: list[GateStats] = []
     for gate in gate_order:
         killed = killed_by.get(gate, 0)
-        gate_pos = _gate_index(gate, gate_order)
-        killed_earlier = sum(
+        reached_count = sum(
             count
-            for other_gate, count in killed_by.items()
-            if other_gate not in (SURVIVED, gate)
-            and _gate_index(other_gate, gate_order) < gate_pos
+            for eliminated, count in killed_by.items()
+            if reached(eliminated, gate, gate_order)
         )
-        reached = max(0, total - killed_earlier)
-        rate = (killed / reached) if reached else 0.0
+        rate = (killed / reached_count) if reached_count else 0.0
         over_eager = (rate >= over_eager_threshold) and (
-            reached >= min_n_for_over_eager
+            reached_count >= min_n_for_over_eager
         )
         killed_at_floor = 0
         generator_floor_bunched = False
@@ -200,7 +142,7 @@ def _build_gate_stats(
             GateStats(
                 gate=gate,
                 killed=killed,
-                reached=reached,
+                reached=reached_count,
                 kill_rate=rate,
                 over_eager=over_eager,
                 killed_at_floor=killed_at_floor,
@@ -286,7 +228,6 @@ def compute_failure_attribution(
         last_grade, last_status
     )
     gate_stats = _build_gate_stats(
-        total,
         killed_by,
         gate_order,
         over_eager_threshold,
@@ -315,8 +256,6 @@ def write_failure_attribution(
     report: FailureReport,
     output_path: Path | str = DEFAULT_OUTPUT_PATH,
 ) -> Path:
-    out = Path(output_path)
-    out.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "total_graded": report.total_graded,
         "total_promoted": report.total_promoted,
@@ -326,57 +265,4 @@ def write_failure_attribution(
         "gate_stats": [asdict(g) for g in report.gate_stats],
         "anchor_pool": [asdict(c) for c in report.anchor_pool],
     }
-    out.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-    return out
-
-
-def _gate_stats_from_json(record: dict[str, Any]) -> GateStats:
-    return GateStats(
-        gate=str(record.get("gate") or ""),
-        killed=int(record.get("killed") or 0),
-        reached=int(record.get("reached") or 0),
-        kill_rate=float(record.get("kill_rate") or 0.0),
-        over_eager=bool(record.get("over_eager")),
-        killed_at_floor=int(record.get("killed_at_floor") or 0),
-        generator_floor_bunched=bool(record.get("generator_floor_bunched")),
-    )
-
-
-def _anchor_candidate_from_json(record: dict[str, Any]) -> AnchorCandidate:
-    erf = record.get("erf_density")
-    nb = record.get("nb_max_accuracy")
-    return AnchorCandidate(
-        proposal_id=str(record.get("proposal_id") or ""),
-        name=str(record.get("name") or ""),
-        eliminated_by=str(record.get("eliminated_by") or ""),
-        composite_score=float(record.get("composite_score") or 0.0),
-        erf_density=float(erf) if erf is not None else None,
-        nb_max_accuracy=float(nb) if nb is not None else None,
-        math_knobs=tuple(str(k) for k in (record.get("math_knobs") or [])),
-        cycle=int(record.get("cycle") or 0),
-    )
-
-
-def load_failure_attribution(
-    path: Path | str = DEFAULT_OUTPUT_PATH,
-) -> FailureReport | None:
-    p = Path(path)
-    if not p.exists():
-        return None
-    try:
-        data = json.loads(p.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return None
-    gate_stats = [_gate_stats_from_json(g) for g in (data.get("gate_stats") or [])]
-    anchor_pool = [
-        _anchor_candidate_from_json(c) for c in (data.get("anchor_pool") or [])
-    ]
-    return FailureReport(
-        total_graded=int(data.get("total_graded") or 0),
-        total_promoted=int(data.get("total_promoted") or 0),
-        total_rejected=int(data.get("total_rejected") or 0),
-        total_pending=int(data.get("total_pending") or 0),
-        gate_stats=gate_stats,
-        over_eager_gates=list(data.get("over_eager_gates") or []),
-        anchor_pool=anchor_pool,
-    )
+    return write_json_report(payload, output_path)

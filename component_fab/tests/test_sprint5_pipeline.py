@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from component_fab.tests.conftest import make_candidate_spec
+
 import pytest
 import torch
 from torch import nn
@@ -23,30 +25,6 @@ from component_fab.policies.promotion import (
 from component_fab.proposer.property_miner import DEFAULT_META_DB
 from component_fab.state.ledger import Ledger, LedgerEntry
 from component_fab.validator.in_context import validate_in_context
-from component_fab.proposer.property_miner import AxisLift, CandidateTuple
-from component_fab.proposer.spec_generator import spec_from_candidate
-
-
-def _spec(axes: dict):
-    lifts = tuple(
-        AxisLift(
-            axis=k,
-            value=v,
-            n_ops=1,
-            total_evals=1,
-            total_s1_pass=0,
-            pass_rate=0.5,
-            representative_ops=(),
-        )
-        for k, v in axes.items()
-    )
-    candidate = CandidateTuple(
-        tuple_values=tuple(axes.items()),
-        predicted_lift=0.5,
-        per_axis_lift=lifts,
-        witness_ops=("anchor",),
-    )
-    return spec_from_candidate(candidate)
 
 
 # ---------- Ledger ----------
@@ -126,35 +104,6 @@ def test_ledger_has_seen_dedups(tmp_path: Path) -> None:
     assert ledger.has_seen("p1")
 
 
-def test_ledger_candidates_with_streak(tmp_path: Path) -> None:
-    ledger = Ledger(tmp_path / "ledger.jsonl")
-    for cycle, score in enumerate([0.7, 0.65, 0.72], start=1):
-        ledger.record_grade(
-            proposal_id="p1",
-            name="p1",
-            category="lane",
-            synthesis_kind="x",
-            cycle=cycle,
-            composite_score=score,
-            smoke_pass=True,
-            learned_signal=True,
-        )
-    ledger.record_grade(
-        proposal_id="p2",
-        name="p2",
-        category="lane",
-        synthesis_kind="x",
-        cycle=1,
-        composite_score=0.7,
-        smoke_pass=True,
-        learned_signal=True,
-    )
-    streaking = ledger.candidates_with_pass_streak(min_cycles=2, min_score=0.6)
-    names = {e.proposal_id for e in streaking}
-    assert "p1" in names
-    assert "p2" not in names
-
-
 # ---------- Probe tasks ----------
 
 
@@ -175,7 +124,7 @@ def test_probe_tasks_preserve_shape() -> None:
 
 
 def test_in_context_validator_runs_full_suite() -> None:
-    spec = _spec({"op_algebraic_space": "euclidean"})
+    spec = make_candidate_spec({"op_algebraic_space": "euclidean"})
     lane = nn.Linear(16, 16)
     card = validate_in_context(spec, lane, dim=16, seq_len=16, n_steps=30)
     assert set(card.per_task) == {t.name for t in DEFAULT_PROBE_TASKS}
@@ -194,15 +143,12 @@ def test_cross_anchor_variants_pairs_compatible_anchors() -> None:
     # Two anchors → C(2,2) * 2 orderings = 2 specs
     assert len(specs) == 2
     names = {s.name for s in specs}
-    assert any("tropical_attention_x_clifford_attention" in n for n in names)
+    assert any("hybrid_tropical_attention_plus_clifford_attention" in n for n in names)
 
 
-def test_cross_anchor_skips_non_hosting_algebras(tmp_path: Path) -> None:
+def test_cross_anchor_skips_non_hosting_algebras() -> None:
     # Euclidean isn't a hosting algebra; should produce no cross variants.
-    specs = enumerate_cross_anchor_variants(
-        ["softmax_attention", "rmsnorm"],
-        db_path=DEFAULT_META_DB,
-    )
+    specs = enumerate_cross_anchor_variants(["softmax_attention", "rmsnorm"])
     assert specs == []
 
 
@@ -215,16 +161,12 @@ def test_cross_anchor_excludes_per_position_hosts() -> None:
         pytest.skip("meta_analysis.db not present")
     # padic_gate (padic algebra) + spike_rate_code (spiking algebra) — both
     # were previously valid hosts; neither should host now.
-    specs = enumerate_cross_anchor_variants(
-        ["padic_gate", "spike_rate_code"], db_path=DEFAULT_META_DB
-    )
+    specs = enumerate_cross_anchor_variants(["padic_gate", "spike_rate_code"])
     assert specs == []
     # A mixing host paired with a per-position donor: one direction only.
-    specs = enumerate_cross_anchor_variants(
-        ["tropical_attention", "padic_gate"], db_path=DEFAULT_META_DB
-    )
+    specs = enumerate_cross_anchor_variants(["tropical_attention", "padic_gate"])
     assert len(specs) == 1
-    assert specs[0].name.startswith("cross_tropical_attention_x_padic_gate")
+    assert specs[0].name.startswith("hybrid_tropical_attention_plus_padic_gate")
 
 
 # ---------- Promotion ----------
@@ -236,6 +178,7 @@ def _entry(
     smoke_pass: int | None = None,
     learned: int | None = None,
     status: str = PROMOTION_PENDING,
+    metadata: dict | None = None,
 ) -> LedgerEntry:
     if smoke_pass is None:
         smoke_pass = len(composite_history)
@@ -248,6 +191,7 @@ def _entry(
         synthesis_kind="x",
         composite_history=composite_history,
         cycles_seen=list(range(1, len(composite_history) + 1)),
+        metadata_history=[dict(metadata or {}) for _ in composite_history],
         smoke_pass_count=smoke_pass,
         learned_signal_count=learned,
         promotion_status=status,
@@ -255,7 +199,10 @@ def _entry(
 
 
 def test_decide_promotion_promotes_on_streak() -> None:
-    entry = _entry([0.7, 0.75])
+    entry = _entry(
+        [0.7, 0.75],
+        metadata={"paired_delta_ci_excludes_zero": True, "paired_delta_ci_low": 0.05},
+    )
     decision = decide_promotion(entry, DEFAULT_PROMOTION_RULES)
     assert decision.decision == PROMOTION_PROMOTED
 
@@ -274,7 +221,11 @@ def test_decide_promotion_pending_for_short_history() -> None:
 
 
 def test_decide_promotion_default_allows_no_learned_signal() -> None:
-    entry = _entry([0.7, 0.75], learned=0)
+    entry = _entry(
+        [0.7, 0.75],
+        learned=0,
+        metadata={"paired_delta_ci_excludes_zero": True, "paired_delta_ci_low": 0.05},
+    )
     decision = decide_promotion(entry, DEFAULT_PROMOTION_RULES)
     assert decision.decision == PROMOTION_PROMOTED
 
@@ -298,6 +249,10 @@ def test_apply_decisions_updates_ledger(tmp_path: Path) -> None:
             composite_score=score,
             smoke_pass=True,
             learned_signal=True,
+            metadata={
+                "paired_delta_ci_excludes_zero": True,
+                "paired_delta_ci_low": 0.05,
+            },
         )
     decisions = decide_promotions_for_ledger(ledger)
     counts = apply_decisions(ledger, decisions)

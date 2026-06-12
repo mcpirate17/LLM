@@ -68,13 +68,6 @@ class DeepProbeOutcome:
     status: str  # "ok" | "spec_not_found" | "failed: ..."
 
 
-def _recent_mean(history: list[float], window: int) -> float:
-    if not history:
-        return 0.0
-    recent = history[-window:] if window > 0 else history
-    return sum(recent) / len(recent)
-
-
 def select_top_k(
     ledger: Ledger,
     *,
@@ -105,7 +98,7 @@ def select_top_k(
             DeepProbeCandidate(
                 proposal_id=entry.proposal_id,
                 name=entry.name,
-                mean_composite=_recent_mean(entry.composite_history, window),
+                mean_composite=entry.mean_composite(window if window > 0 else None),
                 n_cycles=len(entry.composite_history),
                 promotion_status=entry.promotion_status,
             )

@@ -29,10 +29,13 @@ low here, and we want their score recorded, not zeroed.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 
 import torch
 from torch import nn
+
+from .training_probe import train_lane_head
 
 
 @dataclass(frozen=True, slots=True)
@@ -135,16 +138,12 @@ def _train_induction(
     generator: torch.Generator,
 ) -> tuple[list[float], float]:
     """Run the training loop; return (accuracy_at_checkpoints, final_acc)."""
-    optimizer = torch.optim.Adam(
-        list(lane_block.parameters()) + list(head.parameters()),
-        lr=learning_rate,
-    )
     class_keys, class_values = _make_class_vectors(n_classes, dim, generator)
-    accuracies: list[float] = []
-    final_acc = 0.0
     lane_block.train()
-    for step in range(1, n_train_steps + 1):
-        x, labels = _sample_induction_batch(
+    trace = train_lane_head(
+        lambda x: head(lane_block(x)[:, -1, :]),
+        list(lane_block.parameters()) + list(head.parameters()),
+        lambda: _sample_induction_batch(
             batch_size,
             seq_len,
             dim,
@@ -152,17 +151,14 @@ def _train_induction(
             class_keys=class_keys,
             class_values=class_values,
             generator=generator,
-        )
-        logits = head(lane_block(x)[:, -1, :])
-        loss = nn.functional.cross_entropy(logits, labels)
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-        if step in checkpoint_at_steps:
-            final_acc = _step_accuracy(logits, labels)
-            accuracies.append(final_acc)
+        ),
+        nn.functional.cross_entropy,
+        n_train_steps=n_train_steps,
+        learning_rate=learning_rate,
+        checkpoint_at_steps=checkpoint_at_steps,
+    )
     lane_block.eval()
-    return accuracies, final_acc
+    return list(trace.checkpoint_values), trace.final_checkpoint_value
 
 
 def nano_induction_gate(
@@ -323,6 +319,74 @@ def _nearest_accuracy(
     return acc
 
 
+def _run_nearest_training(
+    body: nn.Module,
+    head: nn.Linear,
+    *,
+    dim: int,
+    seq_len: int,
+    n_keys: int,
+    n_values: int,
+    n_train_steps: int,
+    checkpoint_at_steps: tuple[int, ...],
+    learning_rate: float,
+    batch_size: int,
+    eval_batch: int,
+    key_vectors: torch.Tensor,
+    value_vectors: torch.Tensor,
+    generator: torch.Generator,
+    device: torch.device,
+) -> tuple[list[float], str, str | None]:
+    """Run the nearest-induction loop; returns (accuracies, status, error)."""
+
+    def _heldout_accuracy(_logits: torch.Tensor, _labels: torch.Tensor) -> float:
+        return round(
+            _nearest_accuracy(
+                body,
+                head,
+                dim=dim,
+                seq_len=seq_len,
+                n_keys=n_keys,
+                n_values=n_values,
+                eval_batch=eval_batch,
+                key_vectors=key_vectors,
+                value_vectors=value_vectors,
+                generator=generator,
+                device=device,
+            ),
+            4,
+        )
+
+    try:
+        body.train()
+        head.train()
+        trace = train_lane_head(
+            lambda x: head(body(x)[:, -1, :]),
+            list(body.parameters()) + list(head.parameters()),
+            lambda: _make_nearest_batch(
+                batch_size,
+                seq_len,
+                dim,
+                n_keys,
+                n_values,
+                key_vectors=key_vectors,
+                value_vectors=value_vectors,
+                generator=generator,
+                device=device,
+            ),
+            nn.functional.cross_entropy,
+            n_train_steps=int(n_train_steps),
+            learning_rate=learning_rate,
+            checkpoint_at_steps=checkpoint_at_steps,
+            checkpoint_metric=_heldout_accuracy,
+        )
+    except FloatingPointError:
+        return [], "nonfinite_loss", None
+    except Exception as exc:  # noqa: BLE001 - structured failure, carried in result
+        return [], "error", f"{type(exc).__name__}: {exc}"
+    return list(trace.checkpoint_values), "ok", None
+
+
 def nano_induction_nearest(
     body: nn.Module,
     *,
@@ -343,8 +407,6 @@ def nano_induction_nearest(
     Metric values are populated only for clean ``status == "ok"`` runs; failed
     runs carry status/error so downstream persistence does not invent zeros.
     """
-    import time
-
     t0 = time.perf_counter()
     device = _module_device(body)
     try:
@@ -357,57 +419,23 @@ def nano_induction_nearest(
     body = body.to(device)
     key_vectors = torch.randn(n_keys, dim, generator=generator, device=device) * 2.0
     value_vectors = torch.randn(n_values, dim, generator=generator, device=device) * 2.0
-    optimizer = torch.optim.Adam(
-        list(body.parameters()) + list(head.parameters()), lr=learning_rate
+    accuracies, status, error = _run_nearest_training(
+        body,
+        head,
+        dim=dim,
+        seq_len=seq_len,
+        n_keys=n_keys,
+        n_values=n_values,
+        n_train_steps=n_train_steps,
+        checkpoint_at_steps=checkpoint_at_steps,
+        learning_rate=learning_rate,
+        batch_size=batch_size,
+        eval_batch=eval_batch,
+        key_vectors=key_vectors,
+        value_vectors=value_vectors,
+        generator=generator,
+        device=device,
     )
-    accuracies: list[float] = []
-    status = "ok"
-    error = None
-    try:
-        body.train()
-        head.train()
-        for step in range(1, int(n_train_steps) + 1):
-            x, labels = _make_nearest_batch(
-                batch_size,
-                seq_len,
-                dim,
-                n_keys,
-                n_values,
-                key_vectors=key_vectors,
-                value_vectors=value_vectors,
-                generator=generator,
-                device=device,
-            )
-            logits = head(body(x)[:, -1, :])
-            loss = nn.functional.cross_entropy(logits, labels)
-            if not torch.isfinite(loss):
-                status = "nonfinite_loss"
-                break
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            if step in checkpoint_at_steps:
-                accuracies.append(
-                    round(
-                        _nearest_accuracy(
-                            body,
-                            head,
-                            dim=dim,
-                            seq_len=seq_len,
-                            n_keys=n_keys,
-                            n_values=n_values,
-                            eval_batch=eval_batch,
-                            key_vectors=key_vectors,
-                            value_vectors=value_vectors,
-                            generator=generator,
-                            device=device,
-                        ),
-                        4,
-                    )
-                )
-    except Exception as exc:  # noqa: BLE001
-        status = "error"
-        error = f"{type(exc).__name__}: {exc}"
 
     ok = status == "ok" and bool(accuracies)
     final_acc = accuracies[-1] if ok else None

@@ -9,6 +9,7 @@ import torch
 from component_fab.improver import adaptive as adaptive_mod
 from component_fab.harness.probe_tasks import DEFAULT_PROBE_TASKS
 from component_fab.improver.adaptive import (
+    _pair_key_from_hybrid_name,
     adaptive_axis_variants,
     adaptive_cross_anchor_variants,
     build_anchor_pool,
@@ -110,6 +111,23 @@ def test_build_anchor_pool_with_promoted_adds_fab_anchors(
     assert len(pool.all_anchors) == 4
 
 
+def test_load_saved_winners_raises_on_corrupt_file(tmp_path: Path, monkeypatch) -> None:
+    # Corrupt saved_winners.json must FAIL LOUD: user-pinned winners being
+    # silently dropped defeats the file's purpose. Missing file stays fine.
+    import json
+
+    import pytest
+
+    bad = tmp_path / "saved_winners.json"
+    bad.write_text("{not json", encoding="utf-8")
+    monkeypatch.setattr(adaptive_mod, "_SAVED_WINNERS_PATH", bad)
+    with pytest.raises(json.JSONDecodeError):
+        adaptive_mod._load_saved_winners()
+
+    monkeypatch.setattr(adaptive_mod, "_SAVED_WINNERS_PATH", tmp_path / "absent.json")
+    assert adaptive_mod._load_saved_winners() == []
+
+
 def test_adaptive_axis_variants_deprioritize_failed_deltas(tmp_path: Path) -> None:
     ledger = _seed_ledger(tmp_path, n_promoted=0, n_rejected=4)
     pool = build_anchor_pool(
@@ -132,6 +150,17 @@ def test_adaptive_cross_anchor_caps_pairs(tmp_path: Path) -> None:
     specs = adaptive_cross_anchor_variants(pool, ledger, max_pairs=4)
     # max_pairs=4 → 4 unique pairs → 8 specs (host,donor + donor,host per pair)
     assert len(specs) == 8
+
+
+def test_pair_key_parser_handles_anchor_names_with_delimiters() -> None:
+    names = frozenset({"foo_plus_core", "bar_x_baz"})
+
+    assert _pair_key_from_hybrid_name(
+        "hybrid_foo_plus_core_plus_bar_x_baz", names
+    ) == frozenset({"foo_plus_core", "bar_x_baz"})
+    assert _pair_key_from_hybrid_name(
+        "cross_foo_plus_core_x_bar_x_baz", names
+    ) == frozenset({"foo_plus_core", "bar_x_baz"})
 
 
 # ---------- Ledger rotation ----------

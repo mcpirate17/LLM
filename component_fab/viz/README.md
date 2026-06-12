@@ -15,7 +15,7 @@ python -m component_fab.viz
 ```
 
 Once the server is running, open your browser to:
-**[http://127.0.0.1:8000](http://127.0.0.1:8000)**
+**[http://127.0.0.1:8092](http://127.0.0.1:8092)**
 
 ---
 

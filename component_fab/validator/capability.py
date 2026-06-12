@@ -39,6 +39,11 @@ from ..harness.nano_induction_probe import nano_induction_gate
 from ..harness.range_binding_probe import DEFAULT_DISTANCES, range_binding_gate
 from ..harness.standard_block import LaneTestBlock
 from ..proposer.spec_generator import ProposalSpec
+from ..state.gates import (
+    GATE_ERF_DENSITY,
+    GATE_NANO_BIND,
+    GATE_S05_CAUSALITY_STABILITY,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -187,6 +192,27 @@ def _run_ar_probes(
     return binds, recall
 
 
+def _range_signals(
+    lane: nn.Module,
+    dim: int,
+    distances: tuple[int, ...],
+    n_train_steps: int,
+) -> dict[str, Any]:
+    """Distance-resolved binding signals from the opt-in range probe."""
+    rng = range_binding_gate(
+        lane, dim=dim, distances=distances, n_train_steps=n_train_steps
+    )
+    return {
+        "range_ran": True,
+        "range_aggregate_acc": float(rng.aggregate_accuracy),
+        "range_effective_distance": int(rng.effective_distance),
+        "range_max_accuracy": float(rng.max_accuracy),
+        "range_per_distance": {
+            str(k): round(float(v), 3) for k, v in rng.per_distance_accuracy.items()
+        },
+    }
+
+
 def validate_capabilities(
     spec: ProposalSpec,
     lane: nn.Module,
@@ -217,7 +243,7 @@ def validate_capabilities(
         return _scorecard(
             spec,
             signals,
-            eliminated_by="s05_causality_stability",
+            eliminated_by=GATE_S05_CAUSALITY_STABILITY,
             notes=s05.notes + ("skipped downstream gates",),
         )
 
@@ -229,7 +255,9 @@ def validate_capabilities(
     )
     signals.update(_erf_signals(erf))
     if not erf.passed:
-        return _scorecard(spec, signals, eliminated_by="erf_density", notes=erf.notes)
+        return _scorecard(
+            spec, signals, eliminated_by=GATE_ERF_DENSITY, notes=erf.notes
+        )
 
     nb = nano_bind_gate(
         LaneTestBlock(lane, dim),
@@ -239,7 +267,7 @@ def validate_capabilities(
     )
     signals.update(_nb_signals(nb))
     if not nb.passed:
-        return _scorecard(spec, signals, eliminated_by="nano_bind", notes=nb.notes)
+        return _scorecard(spec, signals, eliminated_by=GATE_NANO_BIND, notes=nb.notes)
 
     ind = nano_induction_gate(
         _stacked_induction_block(lane, dim),
@@ -262,21 +290,7 @@ def validate_capabilities(
     # sequential-scan lanes). effective_distance is training-budget-limited —
     # the full per-distance curve is the honest signal.
     if run_range_probe:
-        rng = range_binding_gate(
-            lane, dim=dim, distances=range_distances, n_train_steps=range_train_steps
-        )
-        signals.update(
-            {
-                "range_ran": True,
-                "range_aggregate_acc": float(rng.aggregate_accuracy),
-                "range_effective_distance": int(rng.effective_distance),
-                "range_max_accuracy": float(rng.max_accuracy),
-                "range_per_distance": {
-                    str(k): round(float(v), 3)
-                    for k, v in rng.per_distance_accuracy.items()
-                },
-            }
-        )
+        signals.update(_range_signals(lane, dim, range_distances, range_train_steps))
 
     return _scorecard(
         spec,

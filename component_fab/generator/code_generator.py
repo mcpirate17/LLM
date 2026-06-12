@@ -13,10 +13,13 @@ E.g. ``tropical + state + top_k`` should materialize as
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from functools import partial
 from typing import Any
 
 from torch import nn
 
+from component_fab.math_knobs import math_knobs_from_axes
 from ..proposer.nas_bridge import SOURCE_NAS, load_cached_graph_json
 from ..proposer.spec_generator import ProposalSpec
 from .memory_primitives import (
@@ -24,7 +27,10 @@ from .memory_primitives import (
     CausalSlotRouterMemoryLane,
     DataDependentDecayMemoryLane,
     HierarchicalResidualCompressorLane,
+    LegendreSSMLane,
+    MultiHeadSlotTableMemoryLane,
     PadicSurpriseMemoryLane,
+    PowerSemiringMemoryLane,
     SemiringSurpriseMemoryLane,
     TropicalSurpriseMemoryLane,
 )
@@ -249,89 +255,94 @@ def _dispatch_math_knob(
     return None
 
 
+def _slot_table_memory_lane(dim: int) -> nn.Module:
+    memory_dim = max(4, ((7 * dim) // 32) * 4)
+    return MultiHeadSlotTableMemoryLane(
+        dim,
+        memory_dim=memory_dim,
+        use_delta_update=False,
+        route_from_input=True,
+        normalize_slot_values=True,
+    )
+
+
+def _symplectic_residual_mixer_lane(dim: int) -> nn.Module:
+    if dim % 2 != 0:
+        return nn.Linear(dim, dim)
+    return SymplecticResidualMixerLane(dim)
+
+
+_INVENTION_MECHANISMS: dict[str, Callable[[int], nn.Module]] = {
+    "causal_fast_weight_memory": CausalFastWeightMemoryLane,
+    "data_dependent_decay_memory": DataDependentDecayMemoryLane,
+    "power_semiring_memory": PowerSemiringMemoryLane,
+    "legendre_ssm": LegendreSSMLane,
+    "slot_table_memory": _slot_table_memory_lane,
+    "causal_slot_router_memory": CausalSlotRouterMemoryLane,
+    "hierarchical_residual_compressor": HierarchicalResidualCompressorLane,
+    "symplectic_residual_mixer": _symplectic_residual_mixer_lane,
+    "tropical_surprise_memory": TropicalSurpriseMemoryLane,
+    "semiring_surprise_memory": SemiringSurpriseMemoryLane,
+    "semiring_surprise_memory_rope": partial(SemiringSurpriseMemoryLane, use_rope=True),
+    "padic_surprise_memory": PadicSurpriseMemoryLane,
+    "native_read_before_write_surprise_memory": NativeReadBeforeWriteSurpriseMemoryLane,
+    "native_context_gated_surprise_memory": NativeContextGatedSurpriseMemoryLane,
+    "native_atlas_poly_surprise_memory": NativeAtlasPolySurpriseMemoryLane,
+    "native_titans_mac_surprise_memory": NativeTitansMACSurpriseMemoryLane,
+    "native_semiring_surprise_memory": NativeSemiringSurpriseMemoryLane,
+    "native_semiring_surprise_memory_rope": NativeSemiringRopeSurpriseMemoryLane,
+    "native_semiring_titans_mac_surprise_memory": NativeSemiringTitansMACSurpriseMemoryLane,
+    "native_semiring_rope_titans_mac_surprise_memory": NativeSemiringRopeTitansMACSurpriseMemoryLane,
+    "native_balanced_semiring_titans_mac_surprise_memory": NativeBalancedSemiringTitansMACSurpriseMemoryLane,
+    "native_balanced_semiring_rope_titans_mac_surprise_memory": NativeBalancedSemiringRopeTitansMACSurpriseMemoryLane,
+    "native_balanced_semiring_bilane_surprise_memory": NativeBalancedSemiringBiLaneSurpriseMemoryLane,
+    "native_balanced_semiring_trilane_surprise_memory": NativeBalancedSemiringTriLaneSurpriseMemoryLane,
+    "native_adaptive_semiring_rope_titans_mac_surprise_memory": NativeAdaptiveSemiringRopeTitansMACSurpriseMemoryLane,
+    "native_adaptive_semiring_bilane_surprise_memory": NativeAdaptiveSemiringBiLaneSurpriseMemoryLane,
+}
+
+_NATIVE_EQUIVALENT_MECHANISMS: dict[str, str] = {
+    "semiring_surprise_memory": "native_semiring_surprise_memory",
+    "semiring_surprise_memory_rope": "native_semiring_surprise_memory_rope",
+}
+
+
+class NativeParityEvidenceError(ValueError):
+    """A spec requested a legacy surprise lane that has a native replacement.
+
+    Dispatching the Python path preserves drift; dispatching Native without
+    proof risks changing the graded behavior. Require explicit parity evidence
+    on the spec before crossing that boundary.
+    """
+
+
+def _truthy_axis(math_axes: dict[str, Any], key: str) -> bool:
+    raw = math_axes.get(key)
+    if isinstance(raw, str):
+        return raw.strip().lower() in {"1", "true", "yes", "y", "passed", "pass"}
+    return bool(raw)
+
+
+def _has_native_parity_evidence(math_axes: dict[str, Any]) -> bool:
+    evidence = str(math_axes.get("op_native_parity_evidence") or "").strip()
+    return _truthy_axis(math_axes, "op_native_parity_passed") and bool(evidence)
+
+
 def _dispatch_invention_mechanism(
     math_axes: dict[str, Any], *, dim: int, top_k_frac: float = 0.25
 ) -> nn.Module | None:
     mechanism = _axis(math_axes, "op_invention_mechanism")
-    if mechanism == "causal_fast_weight_memory":
-        return CausalFastWeightMemoryLane(dim)
-    if mechanism == "data_dependent_decay_memory":
-        return DataDependentDecayMemoryLane(dim)
-    if mechanism == "causal_slot_router_memory":
-        return CausalSlotRouterMemoryLane(dim)
-    if mechanism == "hierarchical_residual_compressor":
-        return HierarchicalResidualCompressorLane(dim)
-    if mechanism == "symplectic_residual_mixer":
-        if dim % 2 != 0:
-            return nn.Linear(dim, dim)
-        return SymplecticResidualMixerLane(dim)
-    if mechanism == "tropical_surprise_memory":
-        return TropicalSurpriseMemoryLane(dim)
-    if mechanism == "semiring_surprise_memory":
-        return SemiringSurpriseMemoryLane(dim)
-    if mechanism == "semiring_surprise_memory_rope":
-        return SemiringSurpriseMemoryLane(dim, use_rope=True)
-    if mechanism == "padic_surprise_memory":
-        return PadicSurpriseMemoryLane(dim)
-    if mechanism == "native_read_before_write_surprise_memory":
-        return NativeReadBeforeWriteSurpriseMemoryLane(dim)
-    if mechanism == "native_context_gated_surprise_memory":
-        return NativeContextGatedSurpriseMemoryLane(dim)
-    if mechanism == "native_atlas_poly_surprise_memory":
-        return NativeAtlasPolySurpriseMemoryLane(dim)
-    if mechanism == "native_titans_mac_surprise_memory":
-        return NativeTitansMACSurpriseMemoryLane(dim)
-    if mechanism == "native_semiring_surprise_memory":
-        return NativeSemiringSurpriseMemoryLane(dim)
-    if mechanism == "native_semiring_surprise_memory_rope":
-        return NativeSemiringRopeSurpriseMemoryLane(dim)
-    if mechanism == "native_semiring_titans_mac_surprise_memory":
-        return NativeSemiringTitansMACSurpriseMemoryLane(dim)
-    if mechanism == "native_semiring_rope_titans_mac_surprise_memory":
-        return NativeSemiringRopeTitansMACSurpriseMemoryLane(dim)
-    if mechanism == "native_balanced_semiring_titans_mac_surprise_memory":
-        return NativeBalancedSemiringTitansMACSurpriseMemoryLane(dim)
-    if mechanism == "native_balanced_semiring_rope_titans_mac_surprise_memory":
-        return NativeBalancedSemiringRopeTitansMACSurpriseMemoryLane(dim)
-    if mechanism == "native_balanced_semiring_bilane_surprise_memory":
-        return NativeBalancedSemiringBiLaneSurpriseMemoryLane(dim)
-    if mechanism == "native_balanced_semiring_trilane_surprise_memory":
-        return NativeBalancedSemiringTriLaneSurpriseMemoryLane(dim)
-    if mechanism == "native_adaptive_semiring_rope_titans_mac_surprise_memory":
-        return NativeAdaptiveSemiringRopeTitansMACSurpriseMemoryLane(dim)
-    if mechanism == "native_adaptive_semiring_bilane_surprise_memory":
-        return NativeAdaptiveSemiringBiLaneSurpriseMemoryLane(dim)
-    return None
-
-
-def _math_knobs(math_axes: dict[str, Any]) -> tuple[str, ...]:
-    raw = math_axes.get("op_math_knobs")
-    if raw is None:
-        family = _axis(math_axes, "op_math_family")
-        if family == "calculus":
-            return ("calculus_finite_difference",)
-        if family == "linear_algebra":
-            return ("linear_algebra_low_rank",)
-        if family == "sparse_matrix":
-            return ("sparse_matrix_banded",)
-        if family == "kernel_methods":
-            return ("kernel_random_features",)
-        if family == "information_geometry":
-            return ("info_geom_fisher",)
-        if family == "spectral_graph":
-            return ("spectral_chebyshev",)
-        if family == "tensor_decomp":
-            return ("tensor_tucker",)
-        if family == "multiscale":
-            return ("multiscale_wavelet",)
-        if family == "graph_diffusion":
-            return ("graph_laplacian_diffusion",)
-        return ()
-    if isinstance(raw, str):
-        return tuple(part.strip() for part in raw.split("+") if part.strip())
-    if isinstance(raw, (list, tuple)):
-        return tuple(str(part) for part in raw if str(part))
-    return ()
+    native_mechanism = _NATIVE_EQUIVALENT_MECHANISMS.get(mechanism)
+    if native_mechanism is not None:
+        if not _has_native_parity_evidence(math_axes):
+            raise NativeParityEvidenceError(
+                f"{mechanism!r} has native equivalent {native_mechanism!r}; "
+                "refusing to dispatch either path without "
+                "op_native_parity_passed=True and op_native_parity_evidence"
+            )
+        mechanism = native_mechanism
+    factory = _INVENTION_MECHANISMS.get(mechanism)
+    return factory(dim) if factory is not None else None
 
 
 def _dispatch_synthesis_hint(
@@ -386,6 +397,18 @@ _BASE_DISPATCHERS: tuple = (
 )
 
 
+class UndispatchableSpecError(ValueError):
+    """A spec's math_axes matched no generator template.
+
+    Raised instead of silently substituting ``nn.Linear`` — a linear stand-in
+    *looks* gradeable but measures nothing, turning a locatable build failure
+    into a plausible-but-wrong result (the exact failure mode that produced a
+    degenerate gate-calibration corpus, 2026-06-10). The fab's own generated
+    specs never hit this (0/1246 ledger specs); reaching it means an external
+    op or a spec-generation bug, which must fail loud.
+    """
+
+
 def _base_module(
     math_axes: dict[str, Any], *, dim: int, top_k_frac: float
 ) -> nn.Module:
@@ -393,7 +416,11 @@ def _base_module(
         result = dispatcher(math_axes, dim=dim, top_k_frac=top_k_frac)
         if result is not None:
             return result
-    return nn.Linear(dim, dim)
+    present = sorted(k for k, v in math_axes.items() if v is not None)
+    raise UndispatchableSpecError(
+        "no generator template matched these math_axes — refusing to fall back "
+        f"to nn.Linear (would silently grade nothing). Non-null axes: {present}"
+    )
 
 
 def _apply_math_knobs(
@@ -406,7 +433,7 @@ def _apply_math_knobs(
     rank = max(1, int(round(dim * top_k_frac)))
     bandwidth = max(1, min(dim, int(round(dim * top_k_frac))))
     n_features = max(4, int(round(dim * 0.5)))
-    for knob in _math_knobs(math_axes):
+    for knob in math_knobs_from_axes(math_axes):
         if knob == "calculus_finite_difference":
             module = CalculusAugmentedLane(module, dim)
         elif knob == "linear_algebra_low_rank":
@@ -566,69 +593,95 @@ def _dispatch_block_template(
     def anchor_factory(d: int) -> nn.Module:
         return generate_module(inner_axes, dim=d, top_k_frac=top_k_frac)
 
-    slot_b_name = str(math_axes.get("op_block_slot_b") or "")
-    slot_c_name = str(math_axes.get("op_block_slot_c") or "")
+    builder = _BLOCK_TEMPLATE_BUILDERS.get(template)
+    if builder is None:
+        return None
+    return builder(math_axes, anchor_factory, dim, top_k_frac)
 
-    if template == "latent_compress":
-        compress = int(math_axes.get("op_block_compress") or 2)
-        return LatentCompressBlock(anchor_factory, dim, compress=compress)
-    if template == "three_lane_adaptive":
-        slot_b = _block_slot_factory(slot_b_name or "tropical_attention")
-        slot_c = _block_slot_factory(slot_c_name or "linear_state_space")
-        return ThreeLaneAdaptive(anchor_factory, slot_b, slot_c, dim)
-    if template == "recursive_depth":
-        max_depth = int(math_axes.get("op_max_depth") or 3)
-        return RecursiveDepthBlock(anchor_factory, dim, max_depth=max_depth)
-    if template == "gated_parallel":
-        slot_b = _block_slot_factory(slot_b_name or "multiscale_wavelet")
-        return GatedParallelBlock(anchor_factory, slot_b, dim)
-    if template == "recursive_depth_router":
-        max_depth = int(math_axes.get("op_max_depth") or 4)
-        return RecursiveDepthRouterBlock(anchor_factory, dim, max_depth=max_depth)
-    if template == "sparse_moe_block":
-        top_k = int(math_axes.get("op_top_k") or 2)
-        return SparseMoEBlock(
-            anchor_factory,
-            _expert_factory_pool(top_k_frac),
-            dim,
-            top_k=top_k,
-        )
-    if template == "hetero_moe_block":
-        # 4 heterogeneous experts: attn, ssm, top-k, wavelet
-        def hetero_attn(d: int) -> nn.Module:
-            return TropicalAttention(d)
 
-        def hetero_ssm(d: int) -> nn.Module:
-            return LinearStateSpaceLane(d)
+def _build_latent_compress(math_axes, anchor_factory, dim, top_k_frac):
+    compress = int(math_axes.get("op_block_compress") or 2)
+    return LatentCompressBlock(anchor_factory, dim, compress=compress)
 
-        def hetero_topk(d: int) -> nn.Module:
-            k = max(1, int(round(d * top_k_frac)))
-            return TopKLinear(d, d, k=k)
 
-        def hetero_wavelet(d: int) -> nn.Module:
-            return MultiscaleWaveletLane(d)
+def _build_three_lane_adaptive(math_axes, anchor_factory, dim, top_k_frac):
+    slot_b = _block_slot_factory(_block_slot_name(math_axes, "b", "tropical_attention"))
+    slot_c = _block_slot_factory(_block_slot_name(math_axes, "c", "linear_state_space"))
+    return ThreeLaneAdaptive(anchor_factory, slot_b, slot_c, dim)
 
-        return HeteroMoEBlock(
-            anchor_factory,
-            (hetero_attn, hetero_ssm, hetero_topk, hetero_wavelet),
-            dim,
-        )
-    if template == "hyperbolic_bridge":
-        return HyperbolicBridgeBlock(anchor_factory, dim)
-    if template == "attn_spectral_filter":
-        return AttnSpectralFilterBlock(anchor_factory, dim)
-    if template == "graph_attention":
-        return GraphAttentionBlock(anchor_factory, dim)
-    if template == "top_ar_block":
-        # 2026-05-19: dual-mixer scaffold from fp 7fb0412ec57a1213 (top
-        # AR-curriculum scorer at 0.9046 / passes all 5 stages).
-        # MIXER_A = anchor (from inner_axes / op_block_inner_template),
-        # MIXER_B = slot_b (default local_window_attn matches the source fp).
-        from component_fab.harness.top_ar_block import TopArchBlock
 
-        slot_b = _block_slot_factory(slot_b_name or "local_window_attn")
-        return TopArchBlock(dim, anchor_factory, slot_b)
-    return None
+def _build_recursive_depth(math_axes, anchor_factory, dim, top_k_frac):
+    max_depth = int(math_axes.get("op_max_depth") or 3)
+    return RecursiveDepthBlock(anchor_factory, dim, max_depth=max_depth)
+
+
+def _build_gated_parallel(math_axes, anchor_factory, dim, top_k_frac):
+    slot_b = _block_slot_factory(_block_slot_name(math_axes, "b", "multiscale_wavelet"))
+    return GatedParallelBlock(anchor_factory, slot_b, dim)
+
+
+def _build_recursive_depth_router(math_axes, anchor_factory, dim, top_k_frac):
+    max_depth = int(math_axes.get("op_max_depth") or 4)
+    return RecursiveDepthRouterBlock(anchor_factory, dim, max_depth=max_depth)
+
+
+def _build_sparse_moe_block(math_axes, anchor_factory, dim, top_k_frac):
+    top_k = int(math_axes.get("op_top_k") or 2)
+    return SparseMoEBlock(
+        anchor_factory,
+        _expert_factory_pool(top_k_frac),
+        dim,
+        top_k=top_k,
+    )
+
+
+def _build_hetero_moe_block(math_axes, anchor_factory, dim, top_k_frac):
+    # 4 heterogeneous experts: attn, ssm, top-k, wavelet
+    def hetero_topk(d: int) -> nn.Module:
+        k = max(1, int(round(d * top_k_frac)))
+        return TopKLinear(d, d, k=k)
+
+    return HeteroMoEBlock(
+        anchor_factory,
+        (TropicalAttention, LinearStateSpaceLane, hetero_topk, MultiscaleWaveletLane),
+        dim,
+    )
+
+
+def _build_top_ar_block(math_axes, anchor_factory, dim, top_k_frac):
+    # 2026-05-19: dual-mixer scaffold from fp 7fb0412ec57a1213 (top
+    # AR-curriculum scorer at 0.9046 / passes all 5 stages).
+    # MIXER_A = anchor (from inner_axes / op_block_inner_template),
+    # MIXER_B = slot_b (default local_window_attn matches the source fp).
+    from component_fab.harness.top_ar_block import TopArchBlock
+
+    slot_b = _block_slot_factory(_block_slot_name(math_axes, "b", "local_window_attn"))
+    return TopArchBlock(dim, anchor_factory, slot_b)
+
+
+def _block_slot_name(math_axes: dict[str, Any], slot: str, default: str) -> str:
+    return str(math_axes.get(f"op_block_slot_{slot}") or "") or default
+
+
+_BLOCK_TEMPLATE_BUILDERS: dict[str, Callable[..., nn.Module]] = {
+    "latent_compress": _build_latent_compress,
+    "three_lane_adaptive": _build_three_lane_adaptive,
+    "recursive_depth": _build_recursive_depth,
+    "gated_parallel": _build_gated_parallel,
+    "recursive_depth_router": _build_recursive_depth_router,
+    "sparse_moe_block": _build_sparse_moe_block,
+    "hetero_moe_block": _build_hetero_moe_block,
+    "hyperbolic_bridge": lambda _axes, anchor, dim, _tkf: HyperbolicBridgeBlock(
+        anchor, dim
+    ),
+    "attn_spectral_filter": lambda _axes, anchor, dim, _tkf: AttnSpectralFilterBlock(
+        anchor, dim
+    ),
+    "graph_attention": lambda _axes, anchor, dim, _tkf: GraphAttentionBlock(
+        anchor, dim
+    ),
+    "top_ar_block": _build_top_ar_block,
+}
 
 
 def _block_slot_factory(name: str) -> "callable":

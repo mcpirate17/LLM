@@ -18,34 +18,11 @@ from component_fab.harness.capability_probes import (
     train_and_score,
 )
 from component_fab.harness.probe_block import WinnerLikeBlock
-from component_fab.proposer.property_miner import AxisLift, CandidateTuple
-from component_fab.proposer.spec_generator import spec_from_candidate
 from component_fab.validator.capability import (
     capability_scorecard_to_dict,
     validate_capabilities,
 )
-
-
-def _spec(axes: dict):
-    lifts = tuple(
-        AxisLift(
-            axis=k,
-            value=v,
-            n_ops=1,
-            total_evals=1,
-            total_s1_pass=0,
-            pass_rate=0.5,
-            representative_ops=(),
-        )
-        for k, v in axes.items()
-    )
-    candidate = CandidateTuple(
-        tuple_values=tuple(axes.items()),
-        predicted_lift=0.5,
-        per_axis_lift=lifts,
-        witness_ops=("anchor",),
-    )
-    return spec_from_candidate(candidate)
+from component_fab.tests.conftest import make_candidate_spec
 
 
 # ---------- S0.5 gate ----------
@@ -157,7 +134,7 @@ def test_causal_attention_binds_ar_easy() -> None:
 
 
 def test_validate_capabilities_skips_ar_when_s05_fails() -> None:
-    spec = _spec({"op_algebraic_space": "euclidean"})
+    spec = make_candidate_spec({"op_algebraic_space": "euclidean"})
     lane = FourierBasisLane(dim=16)
     card = validate_capabilities(spec, lane, dim=16, seq_len=16)
     assert not card.s05_passed
@@ -166,7 +143,7 @@ def test_validate_capabilities_skips_ar_when_s05_fails() -> None:
 
 
 def test_validate_capabilities_runs_full_stack_when_s05_passes() -> None:
-    spec = _spec({"op_algebraic_space": "tropical"})
+    spec = make_candidate_spec({"op_algebraic_space": "tropical"})
     lane = TropicalAttention(dim=16, causal=True)
     card = validate_capabilities(spec, lane, dim=16, seq_len=16)
     assert card.s05_passed

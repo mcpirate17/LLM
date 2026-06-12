@@ -219,7 +219,11 @@ class MoRLaneA(NativeAdaptiveSemiringRopeTitansMACSurpriseMemoryLane):
         lse = torch.logsumexp(beta * scores, dim=1)  # over key axis -> [B, m_val]
         return (lse - log_m) / beta
 
-    def _scan(self, x: torch.Tensor) -> torch.Tensor:
+    def _scan_begin(self, x: torch.Tensor):
+        """Shared _scan prologue: projections, shape info, zeroed memory/
+        surprise state, and telemetry accumulators. Telemetry stays as device
+        tensors — a float()/.item() per (t, r) step would force a GPU->CPU
+        sync L*R times per forward; ``_scan_finish`` syncs once at the end."""
         q, k, v, write, forget, momentum, beta, balance = self._scan_params(x)
         b, length, m = v.shape
         scale = float(m) ** -0.5
@@ -227,10 +231,38 @@ class MoRLaneA(NativeAdaptiveSemiringRopeTitansMACSurpriseMemoryLane):
         steps = self.max_recursive_steps
         mem = x.new_zeros(b, m, m)
         sur = x.new_zeros(b, m, m)
-        outputs: list[torch.Tensor] = []
         ponder_total = x.new_zeros(())
-        depth_total = 0.0
-        hist = [0.0] * steps  # accumulated halting mass per depth r=1..steps
+        depth_total = x.new_zeros(())
+        hist_t = x.new_zeros(steps)  # halting mass per depth r=1..steps
+        return (
+            (q, k, v, write, forget, momentum, beta, balance),
+            (b, length, m, scale, log_m, steps),
+            (mem, sur, ponder_total, depth_total, hist_t),
+        )
+
+    def _scan_finish(
+        self,
+        outputs: list[torch.Tensor],
+        ponder_total: torch.Tensor,
+        depth_total: torch.Tensor,
+        hist_t: torch.Tensor,
+        length: int,
+    ) -> torch.Tensor:
+        """Shared _scan epilogue: ponder/depth telemetry (one host sync) and
+        the stacked [B, L, m] output."""
+        self.last_ponder_cost = self.ponder_weight * (ponder_total / length)
+        self.last_mean_depth = float(depth_total) / length
+        hist = hist_t.tolist()
+        total_mass = sum(hist) or 1.0
+        self.last_depth_hist = [round(h / total_mass, 4) for h in hist]
+        return torch.stack(outputs, dim=1)  # [B, L, m]
+
+    def _scan(self, x: torch.Tensor) -> torch.Tensor:
+        params, dims, state = self._scan_begin(x)
+        q, k, v, write, forget, momentum, beta, balance = params
+        b, length, m, scale, log_m, steps = dims
+        mem, sur, ponder_total, depth_total, hist_t = state
+        outputs: list[torch.Tensor] = []
         for t in range(length):
             q_t, k_t, v_t = q[:, t], k[:, t], v[:, t]
             w_t = write[:, t].view(b, 1, 1)
@@ -262,19 +294,15 @@ class MoRLaneA(NativeAdaptiveSemiringRopeTitansMACSurpriseMemoryLane):
                 p_r = remainder * halt
                 sur_acc = sur_acc + p_r.unsqueeze(-1) * s
                 depth_acc = depth_acc + p_r * float(r)
-                hist[r - 1] += float(p_r.mean().detach())
+                hist_t[r - 1] = hist_t[r - 1] + p_r.mean().detach()
                 remainder = remainder * (1.0 - halt)
             sur = sur_acc
             decay = (1.0 - forget[:, t]).unsqueeze(-1)  # per key-row i
             mem = decay * mem + sur
             outputs.append(read_q)
             ponder_total = ponder_total + depth_acc.mean()
-            depth_total += float(depth_acc.mean().detach())
-        self.last_ponder_cost = self.ponder_weight * (ponder_total / length)
-        self.last_mean_depth = depth_total / length
-        total_mass = sum(hist) or 1.0
-        self.last_depth_hist = [round(h / total_mass, 4) for h in hist]
-        return torch.stack(outputs, dim=1)  # [B, L, m]
+            depth_total = depth_total + depth_acc.mean().detach()
+        return self._scan_finish(outputs, ponder_total, depth_total, hist_t, length)
 
 
 class MoRAdaptiveSemiringBiLaneSurpriseMemoryLane(
@@ -370,17 +398,11 @@ class MoRRefineLaneA(MoRLaneA):
         return -a * err_r.abs().mean(dim=-1, keepdim=True)
 
     def _scan(self, x: torch.Tensor) -> torch.Tensor:
-        q, k, v, write, forget, momentum, beta, balance = self._scan_params(x)
-        b, length, m = v.shape
-        scale = float(m) ** -0.5
-        log_m = torch.log(torch.tensor(float(m), device=x.device, dtype=x.dtype))
-        steps = self.max_recursive_steps
-        mem = x.new_zeros(b, m, m)
-        sur = x.new_zeros(b, m, m)
+        params, dims, state = self._scan_begin(x)
+        q, k, v, write, forget, momentum, beta, balance = params
+        b, length, m, scale, log_m, steps = dims
+        mem, sur, ponder_total, depth_total, hist_t = state
         outputs: list[torch.Tensor] = []
-        ponder_total = x.new_zeros(())
-        depth_total = 0.0
-        hist = [0.0] * steps
         for t in range(length):
             q_t, k_t, v_t = q[:, t], k[:, t], v[:, t]
             w_t = write[:, t].view(b, 1, 1)
@@ -412,17 +434,13 @@ class MoRRefineLaneA(MoRLaneA):
                 mem_acc = mem_acc + p_r.unsqueeze(-1) * mem_r
                 sur_acc = sur_acc + p_r.unsqueeze(-1) * s_r
                 depth_acc = depth_acc + p_r * float(r)
-                hist[r - 1] += float(p_r.mean().detach())
+                hist_t[r - 1] = hist_t[r - 1] + p_r.mean().detach()
                 remainder = remainder * (1.0 - halt)
             mem, sur = mem_acc, sur_acc
             outputs.append(read_q)
             ponder_total = ponder_total + depth_acc.mean()
-            depth_total += float(depth_acc.mean().detach())
-        self.last_ponder_cost = self.ponder_weight * (ponder_total / length)
-        self.last_mean_depth = depth_total / length
-        total_mass = sum(hist) or 1.0
-        self.last_depth_hist = [round(h / total_mass, 4) for h in hist]
-        return torch.stack(outputs, dim=1)
+            depth_total = depth_total + depth_acc.mean().detach()
+        return self._scan_finish(outputs, ponder_total, depth_total, hist_t, length)
 
 
 class MoRRefineAdaptiveSemiringBiLaneSurpriseMemoryLane(

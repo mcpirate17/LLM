@@ -26,7 +26,8 @@ from typing import Callable
 import torch
 from torch import nn
 
-from .tiny_lm import TinyLM, TinyLMConfig
+from .tiny_lm import TinyLM
+from .training_probe import build_tiny_lm, gather_logits_at
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +55,6 @@ class BindingTestsV2Result:
     label: str
     multi_token_induction_acc: float
     selective_copy_acc: float
-    dyck2_acc: float
     variable_delay_acc_dict: dict[str, float]
     variable_delay_acc_mean: float
     npi_synthetic_acc: float
@@ -70,50 +70,26 @@ def _build_lm(
     n_blocks: int,
     max_seq_len: int,
 ) -> TinyLM:
-    cfg = TinyLMConfig(
+    return build_tiny_lm(
+        lane_factory,
         vocab_size=vocab_size,
         dim=dim,
         n_blocks=n_blocks,
-        use_position_embedding=True,
         max_seq_len=max_seq_len,
-        use_ffn=False,
+        use_position_embedding=True,
+        stable_init=True,
     )
-    model = TinyLM(lane_factory, cfg)
-    _stable_probe_init(model, n_blocks=n_blocks)
-    return model
-
-
-def _stable_probe_init(model: nn.Module, *, n_blocks: int) -> None:
-    init_std = 0.02
-    scaled_init_std = init_std / math.sqrt(max(1, 2 * n_blocks))
-    for name, module in model.named_modules():
-        if isinstance(module, nn.Linear):
-            is_residual_out = (
-                name.endswith(".fc2")
-                or name.endswith(".out")
-                or name.endswith(".out_proj")
-            )
-            std = scaled_init_std if is_residual_out else init_std
-            nn.init.normal_(module.weight, mean=0.0, std=std)
-            if module.bias is not None:
-                nn.init.zeros_(module.bias)
-        elif isinstance(module, nn.Embedding):
-            nn.init.normal_(module.weight, mean=0.0, std=init_std)
-        elif isinstance(module, nn.LayerNorm):
-            nn.init.ones_(module.weight)
-            if module.bias is not None:
-                nn.init.zeros_(module.bias)
 
 
 def _model_dim(model: nn.Module) -> int:
     cfg = getattr(model, "config", None)
     dim = getattr(cfg, "dim", None)
-    if dim:
-        return int(dim)
-    for param in model.parameters():
-        if param.ndim >= 2:
-            return int(param.shape[-1])
-    return 64
+    if not dim:
+        raise ValueError(
+            f"cannot determine model dim for {type(model).__name__}: "
+            "expected a `.config.dim` attribute"
+        )
+    return int(dim)
 
 
 def _train_steps(
@@ -130,12 +106,10 @@ def _train_steps(
     model.train()
     for step in range(n_steps):
         ids, pos, tgt = batches[step % len(batches)]
-        logits = model(ids)
-        b, q = pos.shape
-        v = logits.shape[-1]
-        pos_expanded = pos.unsqueeze(-1).expand(b, q, v)
-        gathered = logits.gather(1, pos_expanded)
-        loss = nn.functional.cross_entropy(gathered.reshape(-1, v), tgt.reshape(-1))
+        gathered = gather_logits_at(model(ids), pos)
+        loss = nn.functional.cross_entropy(
+            gathered.reshape(-1, gathered.shape[-1]), tgt.reshape(-1)
+        )
         if not torch.isfinite(loss):
             raise FloatingPointError(f"non-finite binding loss at step {step}")
         optim.zero_grad()
@@ -155,11 +129,7 @@ def _eval_accuracy(
     total = 0
     with torch.no_grad():
         for ids, pos, tgt in batches:
-            logits = model(ids)
-            b, q = pos.shape
-            v = logits.shape[-1]
-            pos_expanded = pos.unsqueeze(-1).expand(b, q, v)
-            preds = logits.gather(1, pos_expanded).argmax(dim=-1)
+            preds = gather_logits_at(model(ids), pos).argmax(dim=-1)
             correct += int((preds == tgt).sum().item())
             total += int(tgt.numel())
     return correct / max(1, total)
@@ -327,184 +297,6 @@ def test_selective_copy(
 # ---------- Test 3: dyck-2 (next valid bracket) ----------
 
 
-def _gen_dyck2_batch(
-    batch_size: int,
-    seq_len: int,
-    rng: torch.Generator,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Vocab: 0=(, 1=[, 2=), 3=], 4=PAD.
-
-    DEPRECATED — original generator queried the deterministic last token
-    of a balanced sequence; every baseline scored 1.0. Use
-    ``_gen_dyck2_v2_batch`` instead for the screening composite.
-    Kept here for backwards compatibility with the standalone
-    ``test_dyck2`` function.
-    """
-    PAD = 4
-    OPEN = (0, 1)
-    CLOSE = {0: 2, 1: 3}
-    ids = torch.full((batch_size, seq_len), PAD, dtype=torch.long)
-    # We test at exactly 1 query position per sequence (the LAST token).
-    pos = torch.zeros(batch_size, 1, dtype=torch.long)
-    tgt = torch.zeros(batch_size, 1, dtype=torch.long)
-    for b in range(batch_size):
-        stack: list[int] = []
-        seq: list[int] = []
-        # Generate a balanced sequence of length seq_len - 1 (leave last for query).
-        target_len = seq_len - 1
-        while len(seq) < target_len:
-            remaining = target_len - len(seq)
-            # Decide open vs close. If stack non-empty and we have space, random;
-            # if stack empty, must open.
-            if not stack or (
-                len(stack) < remaining // 2
-                and torch.rand((), generator=rng).item() < 0.5
-            ):
-                op = OPEN[int(torch.randint(0, 2, (1,), generator=rng).item())]
-                stack.append(op)
-                seq.append(op)
-            else:
-                top = stack.pop()
-                seq.append(CLOSE[top])
-        for i, s in enumerate(seq):
-            ids[b, i] = s
-        # Query: what's the valid next token at position target_len-1 → predict the close
-        # bracket determined by the FINAL open in the stack at position target_len-1
-        # If the FINAL token in seq is itself a close, then predict next valid open
-        # (or any of {0,1} but we pick deterministic 0).
-        # Simpler version: trim seq by 1 so we can ask "given seq[:-1], predict seq[-1]"
-        # That's the same as predicting the actual last token of a balanced sequence.
-        # Build stack up to target_len-2, then valid set at position target_len-1
-        # is whatever seq[-1] is. So just predict seq[-1].
-        pos[b, 0] = target_len - 1  # second-to-last index
-        tgt[b, 0] = seq[-1]
-        # Shift: we want input[0..target_len-2] and output at target_len-1
-        # ids[b, target_len-1] = seq[-1]  # this is what's THERE
-        # Position to query is target_len-1 (predict from context [0..target_len-2])
-        # The actual final token at that pos is seq[-1] which we expect.
-    return ids, pos, tgt
-
-
-def _gen_dyck2_v2_batch(
-    batch_size: int,
-    seq_len: int,
-    n_queries: int,
-    rng: torch.Generator,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Vocab: 0=(, 1=[, 2=), 3=], 4=PAD.
-
-    Generate dyck-2 sequences with MIN stack depth >= 3 at some point, then
-    pick ``n_queries`` interior CLOSE positions and ask the model to predict
-    the close TYPE (matching the open at that stack depth). Each query
-    requires recovering the open type the model saw earlier — not just the
-    most-recent unmatched open.
-
-    Min-depth-3 means the model can't just track the topmost open with a
-    1-bit register; it must propagate multiple open-types through state.
-    """
-    PAD = 4
-    OPEN = (0, 1)
-    CLOSE = {0: 2, 1: 3}
-    ids = torch.full((batch_size, seq_len), PAD, dtype=torch.long)
-    pos = torch.zeros(batch_size, n_queries, dtype=torch.long)
-    tgt = torch.zeros(batch_size, n_queries, dtype=torch.long)
-    for b in range(batch_size):
-        # Strategy: build sequence by alternating "force open until depth >= 3"
-        # then random open/close until end. Track per-position close-type targets.
-        stack: list[int] = []
-        seq: list[int] = []
-        max_depth_reached = 0
-        # Phase 1: force opens until depth >= 3
-        while len(stack) < 3 and len(seq) < seq_len - 2:
-            op = OPEN[int(torch.randint(0, 2, (1,), generator=rng).item())]
-            stack.append(op)
-            seq.append(op)
-            max_depth_reached = max(max_depth_reached, len(stack))
-        # Phase 2: random open/close, but bias toward closes once deep enough
-        while len(seq) < seq_len:
-            close_prob = 0.6 if len(stack) > 1 else 0.0
-            if stack and torch.rand((), generator=rng).item() < close_prob:
-                top = stack.pop()
-                seq.append(CLOSE[top])
-            elif len(stack) < 6 and (len(seq) + len(stack) + 2 < seq_len):
-                op = OPEN[int(torch.randint(0, 2, (1,), generator=rng).item())]
-                stack.append(op)
-                seq.append(op)
-                max_depth_reached = max(max_depth_reached, len(stack))
-            elif stack:
-                top = stack.pop()
-                seq.append(CLOSE[top])
-            else:
-                break
-        # Truncate or pad.
-        seq = seq[:seq_len]
-        for i, s in enumerate(seq):
-            ids[b, i] = s
-        # Find all CLOSE positions (where the value is in {2, 3}).
-        close_positions = [i for i, s in enumerate(seq) if s in (2, 3)]
-        if len(close_positions) < n_queries:
-            # Not enough close positions — fall back: query at any non-zero positions.
-            close_positions = close_positions + [
-                len(seq) - 1 - i for i in range(n_queries - len(close_positions))
-            ]
-        # Sample n_queries close positions, preferring interior ones (not the first close).
-        chosen = sorted(close_positions[: max(n_queries * 2, n_queries)])
-        if len(chosen) > n_queries:
-            # Take every other to spread coverage.
-            step = max(1, len(chosen) // n_queries)
-            chosen = chosen[::step][:n_queries]
-        else:
-            chosen = chosen[:n_queries]
-        # Pad to n_queries with the last available position.
-        while len(chosen) < n_queries:
-            chosen.append(chosen[-1] if chosen else 0)
-        for qi, qpos in enumerate(chosen):
-            # Predict from position qpos-1 (causal) — the close at qpos is the target.
-            pos[b, qi] = max(0, qpos - 1)
-            tgt[b, qi] = seq[qpos] if qpos < len(seq) else 2
-    return ids, pos, tgt
-
-
-def test_dyck2_v2(
-    lane_factory: Callable[[int], nn.Module],
-    *,
-    dim: int = 64,
-    n_blocks: int = 2,
-    seq_len: int = 48,
-    n_queries: int = 4,
-    batch_size: int = 32,
-    n_train_steps: int = 300,
-    n_eval_batches: int = 4,
-    seed: int = 0,
-) -> float:
-    """Improved dyck-2 with interior-close prediction + min-depth-3 nesting.
-
-    Replaces the original ``test_dyck2`` for screening use (the original
-    scored 1.0 on every baseline because the last-token target was
-    deterministic).
-    """
-    torch.manual_seed(seed)
-    rng = torch.Generator().manual_seed(seed)
-    VOCAB = 5
-    model = _build_lm(
-        lane_factory,
-        vocab_size=VOCAB,
-        dim=dim,
-        n_blocks=n_blocks,
-        max_seq_len=seq_len,
-    )
-    train_batches = [
-        _gen_dyck2_v2_batch(batch_size, seq_len, n_queries, rng) for _ in range(16)
-    ]
-    eval_batches = [
-        _gen_dyck2_v2_batch(batch_size, seq_len, n_queries, rng)
-        for _ in range(n_eval_batches)
-    ]
-    return _train_and_score(
-        model, train_batches, eval_batches, n_train_steps, probe="dyck2_v2"
-    )
-
-
 def _gen_dyck2_v3_batch(
     batch_size: int,
     seq_len: int,
@@ -587,36 +379,6 @@ def test_dyck2_v3(
     ]
     return _train_and_score(
         model, train_batches, eval_batches, n_train_steps, probe="dyck2_v3"
-    )
-
-
-def test_dyck2(
-    lane_factory: Callable[[int], nn.Module],
-    *,
-    dim: int = 32,
-    n_blocks: int = 2,
-    seq_len: int = 24,
-    batch_size: int = 32,
-    n_train_steps: int = 80,
-    n_eval_batches: int = 4,
-    seed: int = 0,
-) -> float:
-    torch.manual_seed(seed)
-    rng = torch.Generator().manual_seed(seed)
-    VOCAB = 5  # (, [, ), ], PAD
-    model = _build_lm(
-        lane_factory,
-        vocab_size=VOCAB,
-        dim=dim,
-        n_blocks=n_blocks,
-        max_seq_len=seq_len,
-    )
-    train_batches = [_gen_dyck2_batch(batch_size, seq_len, rng) for _ in range(16)]
-    eval_batches = [
-        _gen_dyck2_batch(batch_size, seq_len, rng) for _ in range(n_eval_batches)
-    ]
-    return _train_and_score(
-        model, train_batches, eval_batches, n_train_steps, probe="dyck2"
     )
 
 
@@ -712,45 +474,6 @@ def test_variable_delay_repeat(
 # ---------- Test 5: NPI-shaped synthetic ----------
 
 
-def _gen_npi_batch(
-    batch_size: int,
-    seq_len: int,
-    rng: torch.Generator,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Vocab: 0=NEG, 1=POS, 2=NOUN, 3=VERB, 4=ANY, 5=OTHER, 6=PAD.
-
-    Generate sequences like [LICENSOR NOUN VERB ANY_or_OTHER NOUN VERB ANY_or_OTHER ...]
-    Target: at random "ANY" position, predict 1 if licensor was NEG (well-formed),
-            0 if POS (ill-formed). Encoded as predict ANY token (4) for well-formed,
-            OTHER (5) for ill-formed.
-    """
-    NEG, POS, NOUN, VERB, ANY, OTHER, PAD = range(7)
-    ids = torch.full((batch_size, seq_len), PAD, dtype=torch.long)
-    pos = torch.zeros(batch_size, 1, dtype=torch.long)
-    tgt = torch.zeros(batch_size, 1, dtype=torch.long)
-    for b in range(batch_size):
-        is_neg = torch.rand((), generator=rng).item() < 0.5
-        licensor = NEG if is_neg else POS
-        ids[b, 0] = licensor
-        # Pattern: NOUN VERB X NOUN VERB X NOUN VERB X — where X is ANY (well-formed) or OTHER (ill-formed)
-        cursor = 1
-        target_x_pos = -1
-        while cursor + 2 < seq_len:
-            ids[b, cursor] = NOUN
-            ids[b, cursor + 1] = VERB
-            # Pick whether THIS X is the target.
-            if target_x_pos < 0 and torch.rand((), generator=rng).item() < 0.5:
-                target_x_pos = cursor + 2
-            # Fill X position with PLACEHOLDER (set to PAD here; the QUERY will predict ANY or OTHER).
-            ids[b, cursor + 2] = PAD
-            cursor += 3
-        if target_x_pos < 0:
-            target_x_pos = max(3, seq_len - 4)
-        pos[b, 0] = target_x_pos
-        tgt[b, 0] = ANY if is_neg else OTHER
-    return ids, pos, tgt
-
-
 def _gen_npi_v2_batch(
     batch_size: int,
     seq_len: int,
@@ -826,36 +549,6 @@ def test_npi_synthetic_v2(
     )
 
 
-def test_npi_synthetic(
-    lane_factory: Callable[[int], nn.Module],
-    *,
-    dim: int = 32,
-    n_blocks: int = 2,
-    seq_len: int = 24,
-    batch_size: int = 32,
-    n_train_steps: int = 80,
-    n_eval_batches: int = 4,
-    seed: int = 0,
-) -> float:
-    torch.manual_seed(seed)
-    rng = torch.Generator().manual_seed(seed)
-    VOCAB = 7
-    model = _build_lm(
-        lane_factory,
-        vocab_size=VOCAB,
-        dim=dim,
-        n_blocks=n_blocks,
-        max_seq_len=seq_len,
-    )
-    train_batches = [_gen_npi_batch(batch_size, seq_len, rng) for _ in range(16)]
-    eval_batches = [
-        _gen_npi_batch(batch_size, seq_len, rng) for _ in range(n_eval_batches)
-    ]
-    return _train_and_score(
-        model, train_batches, eval_batches, n_train_steps, probe="npi_synthetic"
-    )
-
-
 # ---------- Combined runner ----------
 
 
@@ -882,7 +575,8 @@ def run_all_binding_tests_v2(
     )
     # dyck-2 excluded from composite: validation showed every architecture
     # scored 1.0 (deterministic target from balanced-string structure).
-    # ``test_dyck2`` remains importable for research use.
+    # The saturated v1/v2 variants were deleted; ``test_dyck2_v3`` is the
+    # surviving hard variant (used by research/tools/scaling_blimp_study).
     rep_dict, rep_mean = test_variable_delay_repeat(
         lane_factory,
         dim=dim,
@@ -890,7 +584,9 @@ def run_all_binding_tests_v2(
         n_train_steps=n_train_steps,
         seed=seed + 3,
     )
-    npi = test_npi_synthetic(
+    # NPI v2 (long-distance licensor separation) replaced the recency-soluble
+    # v1 variant in the composite; same seed offset, same step budget.
+    npi = test_npi_synthetic_v2(
         lane_factory,
         dim=dim,
         n_blocks=n_blocks,
@@ -904,7 +600,6 @@ def run_all_binding_tests_v2(
         label=label,
         multi_token_induction_acc=mti,
         selective_copy_acc=sc,
-        dyck2_acc=0.0,
         variable_delay_acc_dict=rep_dict,
         variable_delay_acc_mean=rep_mean,
         npi_synthetic_acc=npi,

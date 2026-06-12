@@ -20,7 +20,6 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from component_fab.generator.code_generator import generate_module_from_spec
 from component_fab.harness.harder_binding_tasks import (
     default_hard_binding_tasks,
     run_harder_binding_suite,
@@ -41,12 +40,8 @@ from component_fab.state.ledger import (
     DEFAULT_LEDGER_PATH,
     Ledger,
 )
-from component_fab.validator.capability import (
-    capability_scorecard_to_dict,
-    validate_capabilities,
-)
-from component_fab.validator.in_context import validate_in_context
-from component_fab.validator.solo import validate_solo
+from component_fab.tools._cli import add_common_args, open_ledger, write_report
+from component_fab.validator.grade import factory_from_spec, grade_candidate
 
 _REPO = Path(__file__).resolve().parents[2]
 DEFAULT_INVENTION_LEDGER = DEFAULT_LEDGER_PATH.with_name("invention_ledger.jsonl")
@@ -89,20 +84,12 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         "for recurrent/scan lanes) or it will falsely veto undertrained binders.",
     )
     parser.add_argument("--min-range-distance", type=int, default=1)
-    parser.add_argument("--ledger", default=str(DEFAULT_INVENTION_LEDGER))
-    parser.add_argument("--output", default=str(DEFAULT_REPORT))
+    add_common_args(
+        parser,
+        ledger_default=DEFAULT_INVENTION_LEDGER,
+        output_default=DEFAULT_REPORT,
+    )
     return parser.parse_args(argv)
-
-
-def _factory_from_spec(spec: ProposalSpec):
-    axes = dict(spec.math_axes)
-
-    def factory(dim: int):
-        from component_fab.generator.code_generator import generate_module
-
-        return generate_module(axes, dim=dim)
-
-    return factory
 
 
 def _lm_binding_summary(
@@ -117,7 +104,7 @@ def _lm_binding_summary(
 ) -> dict[str, Any]:
     tasks = default_hard_binding_tasks(seed=seed)[: max(0, task_limit)]
     results = run_harder_binding_suite(
-        _factory_from_spec(spec),
+        factory_from_spec(spec),
         candidate_label=spec.name,
         tasks=tasks,
         baseline_names=tuple(DEFAULT_BASELINE_NAMES),
@@ -163,40 +150,33 @@ def _grade_invention(
     run_range_probe: bool = True,
     range_train_steps: int = 300,
 ) -> dict[str, Any]:
-    module = generate_module_from_spec(spec, dim=dim)
-    capability = validate_capabilities(
+    bundle = grade_candidate(
         spec,
-        module,
         dim=dim,
         seq_len=seq_len,
+        n_steps=probe_steps,
         run_range_probe=run_range_probe,
         range_train_steps=range_train_steps,
+        run_in_context=not skip_in_context,
     )
-    capability_dict = capability_scorecard_to_dict(capability)
-    if capability.eliminated_by is not None:
+    if bundle.eliminated_by is not None:
         return {
             "spec": spec_to_json(spec),
             "status": "eliminated",
-            "eliminated_by": capability.eliminated_by,
-            "capability": capability_dict,
+            "eliminated_by": bundle.eliminated_by,
+            "capability": bundle.capability,
             "score": 0.0,
         }
 
-    solo = validate_solo(spec, module, dim=dim, seq_len=seq_len)
-    in_context = None
+    solo = bundle.solo
+    assert solo is not None  # run_solo=True and not eliminated
+    in_context = bundle.in_context
     score = 0.45 if solo.promoted else 0.15
-    if not skip_in_context and solo.promoted:
-        in_context = validate_in_context(
-            spec,
-            module,
-            dim=dim,
-            seq_len=seq_len,
-            n_steps=probe_steps,
-        )
+    if in_context is not None:
         if in_context.learned_signal:
             score += 0.25
         score += min(0.15, max(0.0, in_context.aggregate_loss_ratio - 1.0) * 0.05)
-    if capability.can_bind:
+    if bundle.capability.get("can_bind"):
         score += 0.15
 
     binding = None
@@ -216,7 +196,7 @@ def _grade_invention(
     return {
         "spec": spec_to_json(spec),
         "status": "graded",
-        "capability": capability_dict,
+        "capability": bundle.capability,
         "solo": asdict(solo),
         "in_context": asdict(in_context) if in_context is not None else None,
         "lm_binding": binding,
@@ -279,7 +259,7 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(payload, indent=2))
         return 0
 
-    ledger = Ledger(args.ledger)
+    ledger = open_ledger(args)
     results = []
     for index, spec in enumerate(active, start=1):
         result = _grade_invention(
@@ -320,10 +300,12 @@ def main(argv: list[str] | None = None) -> int:
         "promotion_counts": promotion_counts,
         "results": results,
     }
-    out = Path(args.output)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    print(f"wrote: {out}")
+    write_report(
+        payload,
+        default_dir=DEFAULT_REPORT.parent,
+        prefix="invention_run",
+        output=args.output,
+    )
     for result in results:
         spec = result["spec"]
         print(

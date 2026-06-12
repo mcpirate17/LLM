@@ -19,9 +19,17 @@ from component_fab.proposer.capability_screen import fab_op_multiset
 from component_fab.proposer.measured_screen import measured_screen_for_spec
 from component_fab.proposer.spec_generator import (
     ProposalSpec,
-    category_from_axes,
-    synthesis_kind_for_axes,
+    spec_from_axes,
 )
+
+__all__ = [
+    "DESCRIPTORS",
+    "FEATURE_NAMES",
+    "features_for_row",
+    "features_for_spec",
+    # Re-exported for back-compat; canonical home is proposer.spec_generator.
+    "spec_from_axes",
+]
 
 DESCRIPTORS: tuple[str, ...] = (
     "long_range_reach",
@@ -41,23 +49,6 @@ FEATURE_NAMES: tuple[str, ...] = (
     "memory_o_l",
     "global_receptive",
 )
-
-
-def spec_from_axes(pid: str, name: str, axes: dict[str, Any]) -> ProposalSpec:
-    return ProposalSpec(
-        proposal_id=pid,
-        name=name or pid,
-        category=category_from_axes(axes),
-        synthesis_kind=str(
-            axes.get("synthesis_kind") or synthesis_kind_for_axes(axes, axes)
-        ),
-        math_axes=dict(axes),
-        anchor_witness_op="",
-        anchor_witnesses_all=(),
-        declared_property_row=dict(axes),
-        predicted_lift=0.5,
-        rationale="",
-    )
 
 
 def features_for_spec(spec: ProposalSpec, *, extractor: Any) -> list[float] | None:

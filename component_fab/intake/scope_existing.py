@@ -345,6 +345,14 @@ def scope_all(db_path: Path | str = DEFAULT_META_DB) -> dict[str, Any]:
     }
 
 
+def top_underperforming_names(
+    top_n: int, db_path: Path | str = DEFAULT_META_DB
+) -> list[str]:
+    """Names of the top-N underperforming novel ops — the standard anchor set."""
+    report = scope_all(db_path)
+    return [t["name"] for t in report["underperforming_novel_ops"][:top_n]]
+
+
 def _record_to_json(record: ComponentRecord) -> dict[str, Any]:
     return {
         "name": record.name,

@@ -16,7 +16,7 @@ NAS pipeline is meant to provide, applied to fab candidates on their real module
 from __future__ import annotations
 
 import logging
-import math  # noqa: F401  (used in finiteness guard below)
+import math
 from dataclasses import dataclass
 from typing import Any
 
@@ -168,5 +168,5 @@ def measured_screen_for_spec(
             else REASON_NON_BINDER,
         )
     except Exception as exc:  # noqa: BLE001 - screen is best-effort, fail open
-        logger.debug("measured screen unavailable for %s: %s", spec.proposal_id, exc)
+        logger.warning("measured screen unavailable for %s: %s", spec.proposal_id, exc)
         return _unavailable(spec.proposal_id, str(exc))

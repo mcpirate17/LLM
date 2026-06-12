@@ -15,9 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Mapping, Sequence
 
-from component_fab.proposer.measured_screen import (  # noqa: F401  (used in _verdict_for)
-    REASON_UNSTABLE,
-)
+from component_fab.proposer.measured_screen import REASON_UNSTABLE
 from component_fab.proposer.nas_screen import NasScreenResult
 from component_fab.proposer.research_priors import (
     PriorAffinity,
@@ -124,9 +122,7 @@ def _nas_norm(nas: NasScreenResult | None) -> float:
 
 
 def _internal_composite(entry: LedgerEntry | None) -> float:
-    if entry is None or not entry.composite_history:
-        return 0.0
-    return _clamp(max(entry.composite_history))
+    return _clamp(entry.best_composite()) if entry is not None else 0.0
 
 
 def _measured_binding(entry: LedgerEntry | None) -> tuple[float, bool]:

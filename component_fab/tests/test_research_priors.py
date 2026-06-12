@@ -5,11 +5,12 @@ from __future__ import annotations
 from typing import Any
 
 from component_fab.proposer.research_priors import (
-    load_research_priors,
+    RESEARCH_PRIORS,
     prior_affinity_for_spec,
     to_catalog_rows,
 )
 from component_fab.proposer.spec_generator import ProposalSpec
+from component_fab.tests.conftest import make_spec
 
 _CATALOG_COLUMNS = {
     "external_family",
@@ -25,22 +26,11 @@ _CATALOG_COLUMNS = {
 
 
 def _spec(axes: dict[str, Any], pid: str = "cand_x") -> ProposalSpec:
-    return ProposalSpec(
-        proposal_id=pid,
-        name="cand",
-        category="lane",
-        synthesis_kind="novel_hybrid",
-        math_axes=axes,
-        anchor_witness_op="",
-        anchor_witnesses_all=(),
-        declared_property_row=dict(axes),
-        predicted_lift=0.5,
-        rationale="test",
-    )
+    return make_spec(axes, pid, name="cand", category="lane")
 
 
 def test_priors_are_well_formed() -> None:
-    priors = load_research_priors()
+    priors = RESEARCH_PRIORS
     assert len(priors) == 6
     families = {p.family for p in priors}
     assert len(families) == 6  # unique family names
@@ -94,6 +84,20 @@ def test_template_and_knob_signals_count() -> None:
     # ReSSFormer or mixture-of-memory both plausibly match; affinity must be > 0.
     assert affinity.affinity > 0.0
     assert any("block_template" in r for r in affinity.reasons)
+
+
+def test_family_mapped_math_knob_matches_prior_vocabulary() -> None:
+    spec = _spec(
+        {
+            "op_dynamical_has_state": 1,
+            "op_dynamical_memory_length_class": "O(L)",
+            "op_spectral_preferred_basis": "content",
+            "op_math_family": "graph_diffusion",
+        }
+    )
+    affinity = prior_affinity_for_spec(spec)
+    assert affinity.family == "symplectic_hamiltonian_operator"
+    assert any("graph_laplacian_diffusion" in r for r in affinity.reasons)
 
 
 def test_catalog_rows_match_schema() -> None:

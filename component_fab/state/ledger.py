@@ -14,12 +14,127 @@ from __future__ import annotations
 
 import datetime as _dt
 import json
+import logging
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, TextIO
+from typing import Any, Callable, Iterable, Iterator, TextIO
+
+logger = logging.getLogger(__name__)
 
 _REPO = Path(__file__).resolve().parents[2]
 DEFAULT_LEDGER_PATH = _REPO / "component_fab" / "catalog" / "ledger.jsonl"
+
+
+def iter_jsonl_records(path: Path | str) -> Iterator[dict[str, Any]]:
+    """Yield parsed records from a JSONL file, skipping blank/corrupt lines.
+
+    The single shared reader for every ledger-style artifact — do not
+    re-implement this loop in analyzer modules.
+    """
+    path = Path(path)
+    if not path.exists():
+        return
+    skipped = 0
+    with path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                skipped += 1
+                continue
+            if isinstance(record, dict):
+                yield record
+    if skipped:
+        logger.debug("skipped %d corrupt lines in %s", skipped, path)
+
+
+def iter_rotated_jsonl_paths(
+    path: Path | str, *, include_active: bool = True
+) -> Iterator[Path]:
+    """Yield integer-suffix JSONL rotations oldest-first, then active file.
+
+    Rotation suffixes are not a reliable chronology after pruning; mtime is the
+    canonical order, with suffix as a stable tiebreak. Readers that build a
+    latest-wins view should consume this iterator directly so rotated and active
+    logs replay in the same order as :class:`Ledger`.
+    """
+    base = Path(path)
+    parent = base.parent
+    prefix = base.name + "."
+    rotations: list[tuple[int, int, Path]] = []
+    if parent.exists():
+        for child in parent.iterdir():
+            if not child.name.startswith(prefix):
+                continue
+            suffix = child.name[len(prefix) :]
+            try:
+                rotations.append((child.stat().st_mtime_ns, int(suffix), child))
+            except ValueError:
+                continue
+    for _, _, child in sorted(rotations):
+        yield child
+    if include_active:
+        yield base
+
+
+def latest_by_key(
+    records: Iterable[dict[str, Any]], key_field: str
+) -> dict[str, dict[str, Any]]:
+    """Last record per ``str(record[key_field])``; records missing the key are skipped.
+
+    The single shared latest-wins rollup for JSONL stores where re-runs
+    append and the newest row per id is authoritative.
+    """
+    latest: dict[str, dict[str, Any]] = {}
+    for record in records:
+        key = record.get(key_field)
+        if key:
+            latest[str(key)] = record
+    return latest
+
+
+def write_json_report(
+    payload: dict[str, Any] | list[Any],
+    output_path: Path | str,
+    *,
+    default: Callable[[Any], Any] | None = None,
+) -> Path:
+    """Shared analyzer-report writer: mkdir -> stable (indent=2, sorted) JSON.
+
+    ``default`` is passed through to ``json.dumps`` for payloads carrying
+    non-JSON-native values (``Path``, datetimes) — typically ``str``.
+    """
+    out = Path(output_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(
+        json.dumps(payload, indent=2, sort_keys=True, default=default),
+        encoding="utf-8",
+    )
+    return out
+
+
+def read_last_grades_and_statuses(
+    path: Path | str = DEFAULT_LEDGER_PATH,
+) -> tuple[dict[str, dict[str, Any]], dict[str, str]]:
+    """Replay a ledger JSONL; return (last grade record, last promote status) per id."""
+    last_grade: dict[str, dict[str, Any]] = {}
+    last_status: dict[str, str] = {}
+    for record in iter_jsonl_records(path):
+        pid = record.get("proposal_id")
+        if not pid:
+            continue
+        event = record.get("event")
+        if event == "grade":
+            last_grade[str(pid)] = record
+        elif event == "promote":
+            status = str(record.get("status") or "")
+            if status:
+                last_status[str(pid)] = status
+    return last_grade, last_status
+
 
 PROMOTION_PENDING = "pending"
 PROMOTION_PROMOTED = "promoted"
@@ -126,6 +241,21 @@ class LedgerEntry:
     first_seen_iso: str = ""
     last_seen_iso: str = ""
 
+    def best_composite(self) -> float:
+        """Max composite across cycles, 0.0 when never graded."""
+        return max(self.composite_history, default=0.0)
+
+    def mean_composite(self, window: int | None = None) -> float:
+        """Mean composite over the last ``window`` grades (all when ``None``)."""
+        if window is not None and window <= 0:
+            raise ValueError(f"window must be positive, got {window}")
+        history = (
+            self.composite_history
+            if window is None
+            else self.composite_history[-window:]
+        )
+        return sum(history) / len(history) if history else 0.0
+
 
 class Ledger:
     """JSONL-backed proposal ledger with in-memory rollup."""
@@ -145,37 +275,24 @@ class Ledger:
             self._replay(self.path)
 
     def _replay(self, path: Path) -> None:
-        with path.open("r", encoding="utf-8") as handle:
-            for line in handle:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    record = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                self._apply_record(record)
+        for record in iter_jsonl_records(path):
+            self._apply_record(record)
 
     def _replay_rotated(self) -> None:
-        """Replay rotated audit-trail files in numeric order (.1, .2, ...).
+        """Replay rotated audit-trail files oldest-first by mtime.
+
+        Ordering by mtime (numeric suffix as tiebreak) rather than suffix:
+        rotation indices are not chronological on disk — a historical
+        lowest-unused-index rotation scheme reused freed indices after
+        pruning, so e.g. ``.1`` can be newer than ``.18``. Replaying by
+        suffix would apply newer records before older ones and scramble
+        last-write-wins fields (promotion_status, history order).
 
         Rotations are an audit trail by default and not loaded into the
         in-memory rollup. The CLI tooling that wants the full historical
         view opts in via ``include_rotated=True``.
         """
-        parent = self.path.parent
-        prefix = self.path.name + "."
-        rotated = []
-        for child in parent.iterdir():
-            if not child.name.startswith(prefix):
-                continue
-            suffix = child.name[len(prefix) :]
-            try:
-                rotated.append((int(suffix), child))
-            except ValueError:
-                continue
-        rotated.sort()
-        for _, child in rotated:
+        for child in iter_rotated_jsonl_paths(self.path, include_active=False):
             self._replay(child)
 
     def _apply_record(self, record: dict[str, Any]) -> None:
@@ -269,10 +386,12 @@ class Ledger:
     def rotate_if_oversized(self, max_bytes: int = 1_048_576) -> Path | None:
         """Rotate the active JSONL when it exceeds ``max_bytes``.
 
-        Renames ``path`` to ``path.<N>`` (lowest unused integer) and starts
-        a fresh active log. In-memory rollup is preserved; the rotated file
-        remains on disk as the audit trail. Returns the rotated path, or
-        ``None`` if no rotation was needed.
+        Renames ``path`` to ``path.<N>`` where N is one past the highest
+        existing index — monotonic, so suffix order matches chronology even
+        after pruning frees lower indices — and starts a fresh active log.
+        In-memory rollup is preserved; the rotated file remains on disk as
+        the audit trail. Returns the rotated path, or ``None`` if no
+        rotation was needed.
         """
         if not self.path.exists() or self.path.stat().st_size < max_bytes:
             return None
@@ -281,12 +400,15 @@ class Ledger:
         if self._writer is not None:
             self._writer.close()
             self._writer = None
-        index = 1
-        while True:
-            candidate = self.path.with_suffix(self.path.suffix + f".{index}")
-            if not candidate.exists():
-                break
-            index += 1
+        prefix = self.path.name + "."
+        existing = [
+            int(child.name[len(prefix) :])
+            for child in self.path.parent.glob(f"{self.path.name}.*")
+            if child.name[len(prefix) :].isdigit()
+        ]
+        candidate = self.path.with_suffix(
+            self.path.suffix + f".{max(existing, default=0) + 1}"
+        )
         self.path.rename(candidate)
         self.path.touch()
         _prune_rotations(self.path)
@@ -302,33 +424,28 @@ class Ledger:
             self._writer.close()
             self._writer = None
 
-    def stale_proposals(
-        self, max_age_cycles: int = 3, current_cycle: int = 0
-    ) -> list[str]:
-        """Return proposals not seen in the last ``max_age_cycles`` cycles."""
-        out: list[str] = []
-        for proposal_id, entry in self.entries.items():
-            if not entry.cycles_seen:
-                continue
-            if current_cycle - max(entry.cycles_seen) > max_age_cycles:
-                out.append(proposal_id)
-        return out
-
-    def candidates_with_pass_streak(
-        self, min_cycles: int, min_score: float
-    ) -> list[LedgerEntry]:
-        """Entries whose last ``min_cycles`` composite scores all hit ``min_score``."""
-        out: list[LedgerEntry] = []
-        for entry in self.entries.values():
-            if len(entry.composite_history) < min_cycles:
-                continue
-            recent = entry.composite_history[-min_cycles:]
-            if all(score >= min_score for score in recent):
-                out.append(entry)
-        return out
-
     def all_entries(self) -> Iterable[LedgerEntry]:
         return self.entries.values()
 
     def to_json(self) -> list[dict[str, Any]]:
         return [asdict(entry) for entry in self.entries.values()]
+
+
+def resolve_proposal_id(ledger: Ledger, needle: str) -> LedgerEntry:
+    """Exact-then-unique-prefix proposal-id lookup over the ledger rollup.
+
+    Shared by the CLI runners that accept short ids. Raises ``ValueError``
+    when the prefix is ambiguous or matches nothing — fail loud, never
+    guess between candidates.
+    """
+    entry = ledger.entries.get(needle)
+    if entry is not None:
+        return entry
+    matches = [pid for pid in ledger.entries if pid.startswith(needle)]
+    if len(matches) == 1:
+        return ledger.entries[matches[0]]
+    if matches:
+        raise ValueError(
+            f"proposal id prefix {needle!r} is ambiguous ({len(matches)} matches)"
+        )
+    raise ValueError(f"proposal id {needle!r} not found in ledger")

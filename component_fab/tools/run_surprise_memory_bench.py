@@ -20,7 +20,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import json
 import statistics
 import sys
 from dataclasses import dataclass
@@ -31,35 +30,27 @@ from typing import Any, Callable
 import torch
 from torch import nn
 
-from component_fab.generator.memory_primitives import (
-    CausalFastWeightMemoryLane,
-    PadicSurpriseMemoryLane,
-    TropicalSurpriseMemoryLane,
-)
-from component_fab.generator.primitive_templates import (
-    LinearStateSpaceLane,
-    TropicalAttention,
-)
+from component_fab.generator.memory_primitives import CausalFastWeightMemoryLane
 from component_fab.harness.capability_probes import make_ar_probe, train_and_score
 from component_fab.harness.nano_bind_probe import nano_bind_gate
 from component_fab.harness.nano_induction_probe import nano_induction_gate
+from component_fab.harness.reference_lanes import LaneFactory, REFERENCE_LANES
 from component_fab.harness.standard_block import LaneTestBlock
+from component_fab.tools._cli import write_report
 from component_fab.validator.capability import _stacked_induction_block
 
 _REPO = Path(__file__).resolve().parents[2]
 DEFAULT_OUT = _REPO / "component_fab" / "catalog" / "surprise_memory_bench_latest.json"
 
-LaneFactory = Callable[[int], nn.Module]
-
 # Reference baselines + the surprise-memory family. References frame the
 # result: TropicalAttention is the O(L^2) ceiling, CausalFastWeightMemory is
 # the pure-Hebbian O(L) memory the surprise rule is meant to beat.
 DEFAULT_CANDIDATES: dict[str, LaneFactory] = {
-    "ref_tropical_attention": lambda d: TropicalAttention(d),
-    "ref_linear_ssm": lambda d: LinearStateSpaceLane(d),
+    "ref_tropical_attention": REFERENCE_LANES["tropical_attention"],
+    "ref_linear_ssm": REFERENCE_LANES["linear_ssm"],
     "base_hebbian_fastweight": lambda d: CausalFastWeightMemoryLane(d),
-    "tropical_surprise_memory": lambda d: TropicalSurpriseMemoryLane(d),
-    "padic_surprise_memory": lambda d: PadicSurpriseMemoryLane(d),
+    "tropical_surprise_memory": REFERENCE_LANES["tropical_surprise_memory"],
+    "padic_surprise_memory": REFERENCE_LANES["padic_surprise_memory"],
 }
 
 
@@ -307,9 +298,13 @@ def main(argv: list[str] | None = None) -> int:
             for name, per_metric in results.items()
         },
     }
-    args.out.parent.mkdir(parents=True, exist_ok=True)
-    args.out.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
-    print(f"\nwrote: {args.out}")
+    print()
+    write_report(
+        report,
+        default_dir=DEFAULT_OUT.parent,
+        prefix="surprise_memory_bench",
+        output=args.out,
+    )
     return 0
 
 

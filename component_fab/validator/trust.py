@@ -17,6 +17,7 @@ from component_fab.state.ledger import (
     PROMOTION_PROMOTED,
     PROMOTION_REJECTED,
 )
+from component_fab.state.tier2_training import parse_tier2_row
 
 TRUST_REJECTED = "rejected"
 TRUST_SCREENED = "screened"
@@ -136,25 +137,21 @@ def tier2_evidence_from_summary(
     row = _extract_tier2_row(proposal_id, tier2_summary)
     if row is None:
         return Tier2Evidence()
-    status = str(row.get("status") or "unknown")
-    if status != "ok":
-        return Tier2Evidence(present=True, status=status)
-    per_task = row.get("per_task") or {}
-    deltas = [_float(task.get("delta")) for task in per_task.values()]
-    niche_passed = all(
-        bool((per_task.get(task) or {}).get("beats")) for task in _NICHE_TASKS
-    )
-    mean_delta = sum(deltas) / len(deltas) if deltas else 0.0
-    seed_count = int(row.get("seed_count") or tier2_summary.get("seed_count") or 1)
-    passed = bool(row.get("tier2_passed")) and niche_passed
-    passed = passed and mean_delta >= thresholds.min_tier2_mean_delta
+    metrics = parse_tier2_row(row)
+    if not metrics.ok:
+        return Tier2Evidence(present=True, status=metrics.status)
+    wins = set(metrics.wins)
+    niche_passed = all(task in wins for task in _NICHE_TASKS)
+    seed_count = int(metrics.seed_count or (tier2_summary or {}).get("seed_count") or 1)
+    passed = metrics.tier2_passed and niche_passed
+    passed = passed and metrics.mean_delta >= thresholds.min_tier2_mean_delta
     return Tier2Evidence(
         present=True,
-        status=status,
-        pass_count=int(row.get("pass_count") or 0),
-        n_tasks=int(row.get("n_tasks") or len(per_task)),
-        mean_delta=round(mean_delta, 6),
-        min_delta=round(min(deltas), 6) if deltas else 0.0,
+        status=metrics.status,
+        pass_count=metrics.pass_count,
+        n_tasks=metrics.n_tasks,
+        mean_delta=round(metrics.mean_delta, 6),
+        min_delta=round(metrics.min_delta, 6),
         niche_passed=niche_passed,
         passed=passed,
         seed_count=seed_count,

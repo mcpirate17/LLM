@@ -69,9 +69,9 @@ class CausalFastWeightMemoryLane(nn.Module):
         for t in range(seq_len):
             write = torch.einsum("bi,bj->bij", k[:, t], v[:, t]) * scale
             memory = decay * memory + gates[:, t].view(batch_size, 1, 1) * write
-            read = torch.einsum("bi,bij->bj", q[:, t], memory)
-            outputs.append(self.out(read))
-        return torch.stack(outputs, dim=1)
+            outputs.append(torch.einsum("bi,bij->bj", q[:, t], memory))
+        # One batched projection over [B, L, m] instead of L per-step GEMMs.
+        return self.out(torch.stack(outputs, dim=1))
 
 
 class CausalSlotRouterMemoryLane(nn.Module):
@@ -107,9 +107,9 @@ class CausalSlotRouterMemoryLane(nn.Module):
             candidate = torch.tanh(self.write(token))
             write_weight = (route * gate).unsqueeze(-1)
             slots = slots * (1.0 - write_weight) + write_weight * candidate.unsqueeze(1)
-            read = torch.einsum("bs,bsd->bd", route, slots)
-            outputs.append(self.out(read))
-        return torch.stack(outputs, dim=1)
+            outputs.append(torch.einsum("bs,bsd->bd", route, slots))
+        # One batched projection over [B, L, d] instead of L per-step GEMMs.
+        return self.out(torch.stack(outputs, dim=1))
 
 
 class HierarchicalResidualCompressorLane(nn.Module):
@@ -149,8 +149,9 @@ class HierarchicalResidualCompressorLane(nn.Module):
                 )
                 gate = torch.sigmoid(self.gates[level](token))
                 summaries[level] = (1.0 - gate) * summaries[level] + gate * candidate
-            outputs.append(self.read(torch.cat(summaries, dim=-1)))
-        return torch.stack(outputs, dim=1)
+            outputs.append(torch.cat(summaries, dim=-1))
+        # One batched read over [B, L, d*levels] instead of L per-step GEMMs.
+        return self.read(torch.stack(outputs, dim=1))
 
 
 class _SurpriseMemoryBase(nn.Module):
@@ -296,8 +297,9 @@ class _SurpriseMemoryBase(nn.Module):
                 forget=forget[:, t],
                 momentum=momentum,
             )
-            outputs.append(self.out(read))
-        return torch.stack(outputs, dim=1)
+            outputs.append(read)
+        # One batched projection over [B, L, m] instead of L per-step GEMMs.
+        return self.out(torch.stack(outputs, dim=1))
 
 
 class TropicalSurpriseMemoryLane(_SurpriseMemoryBase):
@@ -462,8 +464,9 @@ class PadicSurpriseMemoryLane(_SurpriseMemoryBase):
                     momentum=momentum,
                 )
                 read_sum = read_sum + gates[level] * read
-            outputs.append(self.out(read_sum))
-        return torch.stack(outputs, dim=1)
+            outputs.append(read_sum)
+        # One batched projection over [B, L, m] instead of L per-step GEMMs.
+        return self.out(torch.stack(outputs, dim=1))
 
 
 class DataDependentDecayMemoryLane(nn.Module):
@@ -484,10 +487,10 @@ class DataDependentDecayMemoryLane(nn.Module):
         self.write_gate = nn.Linear(dim, memory_dim)
         self.decay_gate = nn.Linear(dim, memory_dim)
         self.out = nn.Linear(memory_dim, dim, bias=False)
-        
+
         # Init decay gate bias so that default is slow forgetting
         nn.init.constant_(self.decay_gate.bias, -2.0)
-        
+
         self.dim = dim
         self.memory_dim = memory_dim
 
@@ -496,11 +499,11 @@ class DataDependentDecayMemoryLane(nn.Module):
         q = torch.tanh(self.q(x))
         k = torch.tanh(self.k(x))
         v = torch.tanh(self.v(x))
-        
+
         # Gates
         write_strength = torch.sigmoid(self.write_gate(x))
         decay = torch.sigmoid(self.decay_gate(x))
-        
+
         memory = torch.zeros(
             batch_size,
             self.memory_dim,
@@ -513,7 +516,430 @@ class DataDependentDecayMemoryLane(nn.Module):
         for t in range(seq_len):
             write = torch.einsum("bi,bj->bij", k[:, t], v[:, t]) * scale
             # Elementwise broadcasting of decay and write_strength
-            memory = decay[:, t].unsqueeze(-1) * memory + write_strength[:, t].unsqueeze(-1) * write
-            read = torch.einsum("bi,bij->bj", q[:, t], memory)
-            outputs.append(self.out(read))
-        return torch.stack(outputs, dim=1)
+            memory = (
+                decay[:, t].unsqueeze(-1) * memory
+                + write_strength[:, t].unsqueeze(-1) * write
+            )
+            outputs.append(torch.einsum("bi,bij->bj", q[:, t], memory))
+        # One batched projection over [B, L, m] instead of L per-step GEMMs.
+        return self.out(torch.stack(outputs, dim=1))
+
+
+class LegendreSSMLane(nn.Module):
+    """UNIMPLEMENTED placeholder — construction fails loud.
+
+    The previous body returned ``x`` (identity), so every cohort that graded
+    "legendre" measured the TinyLM scaffold, not a lane (2026-06-11 audit, C1).
+    Implement a real Legendre/HiPPO scan before re-enabling.
+    """
+
+    def __init__(self, dim: int, state_dim: int = 64) -> None:
+        super().__init__()
+        raise NotImplementedError(
+            "LegendreSSMLane is an unimplemented stub (forward was identity); "
+            "grading it would measure the host scaffold. Implement or remove "
+            "it from the cohort."
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        raise NotImplementedError
+
+
+class PowerSemiringMemoryLane(nn.Module):
+    """UNIMPLEMENTED placeholder — construction fails loud.
+
+    The previous body was a plain ``nn.Linear`` in costume; any
+    "power_semiring" grade measured the scaffold (2026-06-11 audit, C1).
+    """
+
+    def __init__(self, dim: int, memory_dim: int = 32) -> None:
+        super().__init__()
+        raise NotImplementedError(
+            "PowerSemiringMemoryLane is an unimplemented stub (forward was a "
+            "plain nn.Linear); grading it would measure the host scaffold. "
+            "Implement or remove it from the cohort."
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        raise NotImplementedError
+
+
+class SlotTableMemoryLane(nn.Module):
+    """Per-token causal content-addressed slot memory (no temporal pooling).
+
+    Each token softly routes its (key, value) into a slot table; the running per-slot
+    means are read content-addressably via softmax(q·slot_key)·slot_val. A one-step
+    shift makes the read strictly causal (token i reads only writes from tokens < i).
+    This is the no-pooling sibling of UniversalMasterLane — the clean comparison point
+    for whether the pooling/key-cache front-end actually helps.
+    """
+
+    def __init__(self, dim: int, n_slots: int = 16, memory_dim: int = 64) -> None:
+        super().__init__()
+        self.q = nn.Linear(dim, memory_dim, bias=False)
+        self.k = nn.Linear(dim, memory_dim, bias=False)
+        self.v = nn.Linear(dim, memory_dim, bias=False)
+        self.write_route = nn.Linear(memory_dim, n_slots)
+        self.out = nn.Linear(memory_dim, dim, bias=False)
+        self.n_slots = n_slots
+        self.memory_dim = memory_dim
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        q = torch.tanh(self.q(x))
+        k = torch.tanh(self.k(x))
+        v = torch.tanh(self.v(x))
+        route = torch.softmax(self.write_route(k), dim=-1)  # [b, seq, S]
+        wk = route.unsqueeze(-1) * k.unsqueeze(2)  # [b, seq, S, m]
+        wv = route.unsqueeze(-1) * v.unsqueeze(2)
+        denom = route.cumsum(dim=1).clamp_min(1e-6).unsqueeze(-1)  # [b, seq, S, 1]
+        slot_key = wk.cumsum(dim=1) / denom  # running per-slot key
+        slot_val = wv.cumsum(dim=1) / denom
+
+        # Strict causality: read the slot state BEFORE this token's own write.
+        slot_key = torch.cat(
+            [slot_key.new_zeros(slot_key[:, :1].shape), slot_key[:, :-1]], dim=1
+        )
+        slot_val = torch.cat(
+            [slot_val.new_zeros(slot_val[:, :1].shape), slot_val[:, :-1]], dim=1
+        )
+
+        scores = torch.einsum("blm,blsm->bls", q, slot_key) * (self.memory_dim**-0.5)
+        read = torch.einsum("bls,blsm->blm", torch.softmax(scores, dim=-1), slot_val)
+        return self.out(read)
+
+
+class MultiHeadSlotTableMemoryLane(nn.Module):
+    """Multi-head causal content-addressed slot memory with selective writes.
+
+    The optional improvements are cumulative and independently ablatable:
+    null-write gates suppress non-memory tokens, a causal depthwise composer binds
+    local key/value or entity/attribute/value groups, gated delta updates preserve
+    slot plasticity, and cosine reads use a learned temperature per head.
+
+    Reads always happen before the current token's write, including in delta mode.
+    """
+
+    def __init__(
+        self,
+        dim: int,
+        memory_dim: int = 64,
+        n_slots: int = 8,
+        n_heads: int = 4,
+        *,
+        use_null_write: bool = True,
+        use_composer: bool = True,
+        use_delta_update: bool = True,
+        normalize_read: bool = True,
+        grouped_router: bool = False,
+        use_query_lift: bool = False,
+        route_from_input: bool = False,
+        bilinear_read: bool = False,
+        refine_write_route: bool = False,
+        consolidate_slots: bool = False,
+        normalize_slot_values: bool = False,
+        use_router_prior: bool = False,
+        composer_width: int = 3,
+    ) -> None:
+        super().__init__()
+        if min(memory_dim, n_slots, n_heads) <= 0:
+            raise ValueError("memory_dim, n_slots, and n_heads must be positive")
+        if composer_width <= 0:
+            raise ValueError("composer_width must be positive")
+        self.n_heads = n_heads
+        self.head_dim = max(1, memory_dim // n_heads)
+        self.memory_dim = self.head_dim * n_heads
+        self.n_slots = n_slots
+        self.use_null_write = use_null_write
+        self.use_composer = use_composer
+        self.use_delta_update = use_delta_update
+        self.normalize_read = normalize_read
+        self.grouped_router = grouped_router
+        self.use_query_lift = use_query_lift
+        self.route_from_input = route_from_input
+        self.bilinear_read = bilinear_read
+        self.refine_write_route = refine_write_route
+        self.consolidate_slots = consolidate_slots
+        self.normalize_slot_values = normalize_slot_values
+        self.use_router_prior = use_router_prior
+        self.composer_width = composer_width
+        if grouped_router and route_from_input:
+            raise ValueError("grouped_router and route_from_input cannot be combined")
+        if use_composer:
+            self.composer = nn.Conv1d(
+                dim,
+                dim,
+                kernel_size=composer_width,
+                groups=dim,
+                bias=False,
+            )
+            with torch.no_grad():
+                self.composer.weight.fill_(1.0 / composer_width)
+        if use_query_lift:
+            self.query_lift = nn.Conv1d(
+                dim,
+                dim,
+                kernel_size=composer_width,
+                groups=dim,
+                bias=False,
+            )
+            nn.init.zeros_(self.query_lift.weight)
+        self.q = nn.Linear(dim, self.memory_dim, bias=False)
+        self.k = nn.Linear(dim, self.memory_dim, bias=False)
+        self.v = nn.Linear(dim, self.memory_dim, bias=False)
+        if grouped_router:
+            self.write_route = nn.ModuleList(
+                nn.Linear(self.head_dim, n_slots) for _ in range(n_heads)
+            )
+        elif route_from_input:
+            self.write_route = nn.Linear(dim, n_heads * n_slots)
+        else:
+            self.write_route = nn.Linear(self.memory_dim, n_heads * n_slots)
+        if use_null_write:
+            self.write_gate = nn.Linear(dim, n_heads)
+            nn.init.constant_(self.write_gate.bias, -1.0)
+        if normalize_read:
+            self.log_read_scale = nn.Parameter(
+                torch.full((n_heads,), 0.5 * torch.log(torch.tensor(self.head_dim)))
+            )
+        if bilinear_read:
+            self.read_metric = nn.Parameter(
+                torch.eye(self.head_dim).expand(n_heads, -1, -1).clone()
+            )
+        if refine_write_route:
+            self.content_route_scale = nn.Parameter(torch.zeros(n_heads))
+        if consolidate_slots:
+            self.consolidation_gate = nn.Parameter(torch.zeros(n_heads))
+        self.out = nn.Linear(self.memory_dim, dim, bias=False)
+        if use_router_prior:
+            self.route_proto = nn.Parameter(
+                torch.randn(n_heads, n_slots, self.head_dim) * 0.02
+            )
+            self.route_proto_beta = nn.Parameter(torch.zeros(()))
+
+    def _compose(self, x: torch.Tensor) -> torch.Tensor:
+        if not self.use_composer:
+            return x
+        left_pad = self.composer_width - 1
+        composed = nn.functional.pad(x.transpose(1, 2), (left_pad, 0))
+        return self.composer(composed).transpose(1, 2)
+
+    def _lift_query(self, x: torch.Tensor, memory_input: torch.Tensor) -> torch.Tensor:
+        if not self.use_query_lift:
+            return memory_input
+        left_pad = self.composer_width - 1
+        context = nn.functional.pad(x.transpose(1, 2), (left_pad, 0))
+        return memory_input + self.query_lift(context).transpose(1, 2)
+
+    def _prewrite_slot_states(
+        self,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        write_weight: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        if self.use_delta_update:
+            from research.synthesis.compiler_ops_sequence import (
+                _parallel_associative_scan,
+            )
+
+            alpha = write_weight.clamp(0.0, 1.0 - 1e-6)
+            log_decay = torch.log1p(-alpha).permute(0, 2, 3, 1).contiguous()
+            key_write = (alpha.unsqueeze(-1) * k.unsqueeze(3)).permute(0, 2, 3, 4, 1)
+            val_write = (alpha.unsqueeze(-1) * v.unsqueeze(3)).permute(0, 2, 3, 4, 1)
+            slot_key = _parallel_associative_scan(log_decay, key_write)
+            slot_val = _parallel_associative_scan(log_decay, val_write)
+            slot_key = slot_key.permute(0, 4, 1, 2, 3)
+            slot_val = slot_val.permute(0, 4, 1, 2, 3)
+            zeros_key = slot_key.new_zeros(slot_key[:, :1].shape)
+            zeros_val = slot_val.new_zeros(slot_val[:, :1].shape)
+            return (
+                torch.cat([zeros_key, slot_key[:, :-1]], dim=1),
+                torch.cat([zeros_val, slot_val[:, :-1]], dim=1),
+            )
+
+        weighted_key = write_weight.unsqueeze(-1) * k.unsqueeze(3)
+        weighted_val = write_weight.unsqueeze(-1) * v.unsqueeze(3)
+        denom = write_weight.cumsum(dim=1).clamp_min(1e-6).unsqueeze(-1)
+        slot_key = weighted_key.cumsum(dim=1) / denom
+        slot_val = weighted_val.cumsum(dim=1) / denom
+        zeros_key = slot_key.new_zeros(slot_key[:, :1].shape)
+        zeros_val = slot_val.new_zeros(slot_val[:, :1].shape)
+        return (
+            torch.cat([zeros_key, slot_key[:, :-1]], dim=1),
+            torch.cat([zeros_val, slot_val[:, :-1]], dim=1),
+        )
+
+    def _read_slots(
+        self,
+        q: torch.Tensor,
+        slot_key: torch.Tensor,
+        slot_val: torch.Tensor,
+    ) -> torch.Tensor:
+        if self.bilinear_read:
+            q = torch.einsum("blhd,hde->blhe", q, self.read_metric)
+        if self.normalize_read:
+            q = nn.functional.normalize(q, dim=-1)
+            slot_key = nn.functional.normalize(slot_key, dim=-1)
+            scale = self.log_read_scale.exp().clamp(max=100.0).view(1, 1, -1, 1)
+        else:
+            scale = self.head_dim**-0.5
+        if self.normalize_slot_values:
+            slot_val = slot_val * torch.rsqrt(
+                slot_val.pow(2).mean(dim=-1, keepdim=True) + 1e-6
+            )
+        scores = torch.einsum("blhd,blhsd->blhs", q, slot_key) * scale
+        weights = torch.softmax(scores, dim=-1)
+        return torch.einsum("blhs,blhsd->blhd", weights, slot_val)
+
+    def _refine_route(
+        self,
+        route_logits: torch.Tensor,
+        route: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+    ) -> torch.Tensor:
+        if not self.refine_write_route:
+            return route
+        provisional_key, _ = self._prewrite_slot_states(k, v, route)
+        content_scores = torch.einsum(
+            "blhd,blhsd->blhs",
+            nn.functional.normalize(k, dim=-1),
+            nn.functional.normalize(provisional_key, dim=-1),
+        )
+        scale = self.content_route_scale.view(1, 1, -1, 1)
+        return torch.softmax(route_logits + scale * content_scores, dim=-1)
+
+    def _consolidate(
+        self,
+        slot_key: torch.Tensor,
+        slot_val: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        if not self.consolidate_slots:
+            return slot_key, slot_val
+        normalized_key = nn.functional.normalize(slot_key, dim=-1)
+        scores = torch.einsum("blhsd,blhtd->blhst", normalized_key, normalized_key) * (
+            self.head_dim**-0.5
+        )
+        weights = torch.softmax(scores, dim=-1)
+        key_context = torch.einsum("blhst,blhtd->blhsd", weights, slot_key)
+        val_context = torch.einsum("blhst,blhtd->blhsd", weights, slot_val)
+        gate = self.consolidation_gate.tanh().view(1, 1, -1, 1, 1)
+        return (
+            slot_key + gate * (key_context - slot_key),
+            slot_val + gate * (val_context - slot_val),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        b, seq_len, _ = x.shape
+        h, s, hd = self.n_heads, self.n_slots, self.head_dim
+        memory_input = self._compose(x)
+        query_input = self._lift_query(x, memory_input)
+        q = torch.tanh(self.q(query_input)).view(b, seq_len, h, hd)
+        k = torch.tanh(self.k(memory_input)).view(b, seq_len, h, hd)
+        v = torch.tanh(self.v(memory_input)).view(b, seq_len, h, hd)
+        if self.grouped_router:
+            route_logits = torch.stack(
+                [
+                    router(k[:, :, head_index])
+                    for head_index, router in enumerate(self.write_route)
+                ],
+                dim=2,
+            )
+        elif self.route_from_input:
+            route_logits = self.write_route(memory_input).view(b, seq_len, h, s)
+        else:
+            route_logits = self.write_route(k.reshape(b, seq_len, -1)).view(
+                b, seq_len, h, s
+            )
+        if self.use_router_prior:
+            route_bias = torch.einsum("blhd,hsd->blhs", k, self.route_proto)
+            route_logits = route_logits + self.route_proto_beta * route_bias
+        route = torch.softmax(route_logits, dim=-1)
+        gate = None
+        if self.use_null_write:
+            gate = torch.sigmoid(self.write_gate(memory_input)).unsqueeze(-1)
+            route = route * gate
+        route = self._refine_route(route_logits, route, k, v)
+        if gate is not None and self.refine_write_route:
+            route = route * gate
+        slot_key, slot_val = self._prewrite_slot_states(k, v, route)
+        slot_key, slot_val = self._consolidate(slot_key, slot_val)
+        read = self._read_slots(q, slot_key, slot_val)
+        return self.out(read.reshape(b, seq_len, self.memory_dim))
+
+
+class UniversalMasterLane(nn.Module):
+    """Temporal-pooling + slotted-memory + selection-head key-cache lane.
+
+    Causal by construction (verified by autograd Jacobian): each token reads only the
+    slot state of the *previous completed* pool window, so within-window pooled writes
+    never leak to the tokens that read them. Routing is soft (differentiable softmax,
+    not argmax) and the read is content-addressed (softmax(q·slot_key)·slot_val), not a
+    slot-sum. Supersedes the earlier acausal/frozen-router/blind-read prototype.
+    """
+
+    def __init__(
+        self,
+        dim: int,
+        n_slots: int = 16,
+        memory_dim: int = 64,
+        latch_len: int = 8,
+        pool_period: int = 4,
+    ) -> None:
+        super().__init__()
+        self.q = nn.Linear(dim, memory_dim, bias=False)
+        self.k = nn.Linear(dim, memory_dim, bias=False)
+        self.v = nn.Linear(dim, memory_dim, bias=False)
+        self.selection_q = nn.Linear(dim, memory_dim)
+        self.write_route = nn.Linear(memory_dim, n_slots)
+        self.out = nn.Linear(memory_dim, dim, bias=False)
+        self.n_slots = n_slots
+        self.memory_dim = memory_dim
+        self.latch_len = latch_len
+        self.pool_period = pool_period
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        b, seq_len, dim = x.shape
+        device, dtype = x.device, x.dtype
+        p = self.pool_period
+        pad_len = (p - (seq_len % p)) % p
+        xp = torch.cat([x, x.new_zeros(b, pad_len, dim)], dim=1) if pad_len else x
+        n_pool = xp.shape[1] // p
+        win = xp.view(b, n_pool, p, dim)
+
+        # Temporal pooling. The full-window mean is safe: a window is only ever read by
+        # tokens in strictly later windows (see read-index shift below), so no future leak.
+        pooled = win.mean(dim=2)  # [b, n_pool, dim]
+        pk = torch.tanh(self.k(pooled))  # [b, n_pool, m]
+        pv = torch.tanh(self.v(pooled))  # [b, n_pool, m]
+
+        # Selection-head key-cache: causal window of size latch_len over PAST pooled keys.
+        pk_pad = torch.cat(
+            [pk.new_zeros(b, self.latch_len - 1, self.memory_dim), pk], dim=1
+        )
+        l_keys = pk_pad.unfold(1, self.latch_len, 1).permute(
+            0, 1, 3, 2
+        )  # [b, n_pool, L, m]
+        sq = torch.tanh(self.selection_q(win[:, :, -1, :]))  # [b, n_pool, m]
+        attn = torch.softmax(torch.einsum("blm,blkm->blk", sq, l_keys), dim=-1)
+        latched = torch.einsum("blk,blkm->blm", attn, l_keys)  # [b, n_pool, m]
+
+        # Soft (differentiable) slot routing — replaces the zero-gradient argmax one-hot.
+        route = torch.softmax(self.write_route(latched), dim=-1)  # [b, n_pool, S]
+        wk = route.unsqueeze(-1) * latched.unsqueeze(2)  # [b, n_pool, S, m]
+        wv = route.unsqueeze(-1) * pv.unsqueeze(2)
+        denom = route.cumsum(dim=1).clamp_min(1e-6).unsqueeze(-1)  # [b, n_pool, S, 1]
+        slot_keys = wk.cumsum(dim=1) / denom  # running per-slot key
+        slot_vals = wv.cumsum(dim=1) / denom  # running per-slot value
+
+        # Causal read: token i reads the slot state of the PREVIOUS completed window.
+        read_idx = (torch.arange(seq_len, device=device) // p) - 1  # [seq]
+        valid = (read_idx >= 0).view(1, seq_len, 1).to(dtype)
+        idx = read_idx.clamp_min(0)
+        sk = slot_keys[:, idx, :, :]  # [b, seq, S, m]
+        sv = slot_vals[:, idx, :, :]
+        qt = torch.tanh(self.q(x))  # [b, seq, m]
+
+        # Content-addressed read — replaces the content-blind qt·Σ_slots.
+        scores = torch.einsum("blm,blsm->bls", qt, sk) * (self.memory_dim**-0.5)
+        read = torch.einsum("bls,blsm->blm", torch.softmax(scores, dim=-1), sv)
+        return self.out(read * valid)

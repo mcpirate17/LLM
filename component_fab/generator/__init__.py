@@ -5,6 +5,7 @@ from .memory_primitives import (
     CausalFastWeightMemoryLane,
     CausalSlotRouterMemoryLane,
     HierarchicalResidualCompressorLane,
+    MultiHeadSlotTableMemoryLane,
     PadicSurpriseMemoryLane,
     TropicalSurpriseMemoryLane,
 )
@@ -62,6 +63,7 @@ __all__ = [
     "LowRankFactorizedLane",
     "MultiscaleWaveletAdapterLane",
     "MultiscaleWaveletLane",
+    "MultiHeadSlotTableMemoryLane",
     "NativeAtlasPolySurpriseMemoryLane",
     "NativeAdaptiveSemiringBiLaneSurpriseMemoryLane",
     "NativeAdaptiveSemiringRopeTitansMACSurpriseMemoryLane",

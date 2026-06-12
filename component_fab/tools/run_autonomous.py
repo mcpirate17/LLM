@@ -22,8 +22,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import datetime as _dt
-import json
 import signal
 import sys
 import time
@@ -31,39 +29,30 @@ from dataclasses import asdict
 from pathlib import Path
 
 
-from component_fab.generator.code_generator import generate_module_from_spec
-from component_fab.improver.adaptive import (
-    adaptive_axis_variants,
-    adaptive_cross_anchor_variants,
-    build_anchor_pool,
+from component_fab.metrics.behavior_fingerprint import (
+    Normalizer,
+    behavior_fingerprint,
+    fingerprint_from_metadata,
+    is_clone,
+    novelty_distance,
 )
-from component_fab.improver.axis_variants import enumerate_axis_variants
-from component_fab.improver.cross_anchor import (
-    enumerate_cross_anchor_variants,
-    enumerate_frontier_core_specs,
-    enumerate_frontier_hybrids,
-)
-from component_fab.improver.math_knob_catalog import (
-    enumerate_adaptive_math_knob_compositions,
-)
-from component_fab.proposer.nas_bridge import nas_graph_specs
 from component_fab.improver.ranking import (
     composite_score,
+    objective_vector,
+    pareto_front_indices,
     leaderboard_to_json,
     rank_proposals,
 )
-from component_fab.intake.scope_existing import scope_all
 from component_fab.policies.promotion import (
     DEFAULT_PROMOTION_RULES,
     PromotionRules,
     apply_decisions,
     decide_promotions_for_ledger,
 )
-from component_fab.proposer.dynamic import enumerate_dynamic_proposals
-from component_fab.proposer.spec_generator import (
-    ProposalSpec,
-    dedupe_specs_by_axes,
-)
+from component_fab.intake.scope_existing import top_underperforming_names
+from component_fab.proposer.acquisition import select_by_acquisition
+from component_fab.proposer.enumeration import enumerate_cycle_specs
+from component_fab.proposer.spec_generator import ProposalSpec
 from component_fab.proposer.nas_screen import (
     NasScreenResult,
     nas_score_multiplier,
@@ -86,20 +75,24 @@ from component_fab.state.ledger import (
     PROMOTION_REJECTED,
     _prune_rotations,
 )
-from component_fab.validator.capability import (
-    capability_scorecard_to_dict,
-    validate_capabilities,
+from component_fab.proposer.dynamic import spec_from_ledger_entry
+from component_fab.state.aria_registration import register_promotion
+from component_fab.state.surrogate import Surrogate
+from component_fab.tools._cli import open_ledger, write_report
+from component_fab.validator.grade import eliminated_solo_scorecard, grade_candidate
+from component_fab.validator.paired import paired_metadata_for_spec
+from component_fab.validator.solo import (
+    SoloScorecard,
+    close_scorecard_writers,
 )
-from component_fab.validator.in_context import validate_in_context
-from component_fab.validator.solo import SoloScorecard, append_scorecard, validate_solo
 
 _REPO = Path(__file__).resolve().parents[2]
 _CATALOG_DIR = _REPO / "component_fab" / "catalog"
 _DEFAULT_TOP_N_ANCHORS = 5
 
 
-def _parse_args(argv: list[str]) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="component_fab autonomous loop")
+def _add_loop_args(parser: argparse.ArgumentParser) -> None:
+    """Cycle/budget/enumeration knobs for the outer loop."""
     parser.add_argument("--cycles", default=5, type=int)
     parser.add_argument("--dim", default=32, type=int)
     parser.add_argument("--seq-len", default=32, type=int)
@@ -145,6 +138,28 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         help="optional Tier-2 cohort JSON artifacts to feed proposal repair and scoring",
     )
     parser.add_argument(
+        "--time-budget-minutes",
+        default=None,
+        type=float,
+        help="continuous mode — run until this wall-clock budget elapses (overrides --cycles)",
+    )
+    parser.add_argument(
+        "--rotate-at-mb",
+        default=2,
+        type=float,
+        help="rotate ledger.jsonl + proposals.jsonl when they exceed this size",
+    )
+    parser.add_argument(
+        "--emit-run-summary",
+        action="store_true",
+        help="write component_fab/catalog/autonomous_run_<timestamp>.json",
+    )
+    parser.add_argument("--quiet", action="store_true")
+
+
+def _add_selection_args(parser: argparse.ArgumentParser) -> None:
+    """Screening/ordering/budgeting of which candidates get graded."""
+    parser.add_argument(
         "--disable-nas-screen",
         action="store_true",
         help="disable cheap NAS/oracle screening multiplier for fab candidates",
@@ -164,6 +179,27 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         "60/25/15 exploit/repair/exploration quality-budget split",
     )
     parser.add_argument(
+        "--selection",
+        default="legacy",
+        choices=("legacy", "surrogate"),
+        help=(
+            "WS-3 candidate selection. 'legacy' = quality-order + static caps. "
+            "'surrogate' = fill the per-cycle grading budget (--max-graded-per-cycle) "
+            "with the ledger surrogate's highest-UCB candidates. Default legacy "
+            "until run_surrogate reports acceptance_passed=True."
+        ),
+    )
+    parser.add_argument(
+        "--acquisition-beta",
+        default=1.0,
+        type=float,
+        help="UCB exploration weight for --selection surrogate (median + beta*(upper-median)).",
+    )
+
+
+def _add_promotion_args(parser: argparse.ArgumentParser) -> None:
+    """Evidence gathering + promotion-rule knobs."""
+    parser.add_argument(
         "--range-probe",
         action="store_true",
         help="Run the sparse/long-range binding probe during grading (adds cost; "
@@ -178,23 +214,34 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     )
     parser.add_argument("--min-range-distance", default=1, type=int)
     parser.add_argument(
-        "--time-budget-minutes",
-        default=None,
-        type=float,
-        help="continuous mode — run until this wall-clock budget elapses (overrides --cycles)",
-    )
-    parser.add_argument(
-        "--rotate-at-mb",
-        default=2,
-        type=float,
-        help="rotate ledger.jsonl + proposals.jsonl when they exceed this size",
-    )
-    parser.add_argument(
-        "--emit-run-summary",
+        "--niche-promotion",
         action="store_true",
-        help="write component_fab/catalog/autonomous_run_<timestamp>.json",
+        help=(
+            "WS-4/WS-5: tag each survivor with a behavioral-novelty distance and "
+            "first-Pareto-front membership, and let a front member promote in its "
+            "niche (PromotionRules.promote_by_pareto) even below the scalar bar. "
+            "Off by default — the legacy scalar composite stays the sole gate."
+        ),
     )
-    parser.add_argument("--quiet", action="store_true")
+    parser.add_argument(
+        "--paired-seeds",
+        default=0,
+        type=int,
+        help=(
+            "WS-2: if > 0, grade each surviving spec against its anchor baseline "
+            "on this many shared seeds and record the paired-delta 95%% CI. "
+            "The default promotion policy is fail-closed: 0 preserves loop cost "
+            "but leaves new streak-eligible candidates pending because CI evidence "
+            "is absent. 3-5 recommended for promotion-capable runs."
+        ),
+    )
+
+
+def _parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="component_fab autonomous loop")
+    _add_loop_args(parser)
+    _add_selection_args(parser)
+    _add_promotion_args(parser)
     return parser.parse_args(argv)
 
 
@@ -202,86 +249,12 @@ _INTERRUPTED = False
 
 
 def _install_signal_handler() -> None:
-    def _handler(signum, frame) -> None:  # noqa: ARG001
+    def _handler(_signum, _frame) -> None:
         global _INTERRUPTED
         _INTERRUPTED = True
         print("\n[interrupt received — halting after this cycle]", flush=True)
 
     signal.signal(signal.SIGINT, _handler)
-
-
-def _gather_anchors(top_n: int) -> list[str]:
-    report = scope_all()
-    return [t["name"] for t in report["underperforming_novel_ops"][:top_n]]
-
-
-def _all_specs_for_cycle(
-    anchors: list[str],
-    ledger: Ledger,
-    *,
-    use_promoted_as_anchors: bool,
-    max_cross_pairs: int,
-    max_knob_specs: int,
-    max_dynamic_specs: int,
-    cycle: int,
-    dim: int = 32,
-    max_nas_specs: int = 6,
-    nas_archive_guided: bool = False,
-    tier2_feedback_by_id: dict[str, Tier2Feedback] | None = None,
-) -> list[ProposalSpec]:
-    knob_specs = enumerate_adaptive_math_knob_compositions(
-        anchors,
-        ledger,
-        max_specs=max_knob_specs,
-    )
-    dynamic_specs = enumerate_dynamic_proposals(
-        anchors,
-        ledger,
-        max_specs=max_dynamic_specs,
-        tier2_feedback_by_id=tier2_feedback_by_id,
-    )
-    # "Frontier + delta": grade the proven binder cores standalone, and graft
-    # each novel anchor's mechanism (state/memory/sparsity) onto every core.
-    # This is the only path that starts from a frontier-tied binder, which is a
-    # prerequisite for matching/beating current architectures.
-    frontier_specs = enumerate_frontier_core_specs() + enumerate_frontier_hybrids(
-        anchors
-    )
-    # Novel NAS topologies: genuinely new op-DAG structures (split/fuse/route/
-    # recurse) that fab's fixed templates cannot express, compiled into gradeable
-    # lanes. seed varies by cycle so each cycle samples different structures.
-    nas_specs = nas_graph_specs(
-        n_fresh=max_nas_specs, dim=dim, seed=cycle, archive_guided=nas_archive_guided
-    )
-    if not use_promoted_as_anchors:
-        return dedupe_specs_by_axes(
-            enumerate_axis_variants(anchors)
-            + enumerate_cross_anchor_variants(anchors)
-            + knob_specs
-            + dynamic_specs
-            + frontier_specs
-            + nas_specs
-        )
-    anchor_pool = build_anchor_pool(
-        anchors,
-        ledger,
-        use_promoted_as_anchors=True,
-    )
-    axis_specs = adaptive_axis_variants(anchor_pool, ledger)
-    cross_specs = adaptive_cross_anchor_variants(
-        anchor_pool,
-        ledger,
-        max_pairs=max_cross_pairs,
-        seed=cycle,
-    )
-    return dedupe_specs_by_axes(
-        axis_specs
-        + cross_specs
-        + knob_specs
-        + dynamic_specs
-        + frontier_specs
-        + nas_specs
-    )
 
 
 def _grade_spec(
@@ -299,53 +272,134 @@ def _grade_spec(
     Tiered capability gates (S0.5 → ERF → NB → AR) run first as the
     cheapest filter. If any gate eliminates the proposal, solo + probe
     skip and the caller marks it rejected immediately with the gate
-    name recorded.
+    name recorded. The chain itself lives in ``validator.grade``.
     """
-    module = generate_module_from_spec(spec, dim=dim)
-    capability = validate_capabilities(
+    bundle = grade_candidate(
         spec,
-        module,
         dim=dim,
         seq_len=seq_len,
+        n_steps=probe_steps,
         run_range_probe=run_range_probe,
         range_train_steps=range_train_steps,
+        persist_solo_scorecard=True,
+        run_in_context=not skip_probe,
     )
-    capability_dict = capability_scorecard_to_dict(capability)
+    if bundle.eliminated_by is not None:
+        solo = eliminated_solo_scorecard(spec, bundle.eliminated_by)
+        return solo, None, bundle.capability, bundle.eliminated_by
+    assert bundle.solo is not None  # run_solo=True and not eliminated
+    probe_dict = asdict(bundle.in_context) if bundle.in_context is not None else None
+    return bundle.solo, probe_dict, bundle.capability, None
 
-    if capability.eliminated_by is not None:
-        fake_smoke = {
-            "forward_passed": True,
-            "backward_passed": True,
-            "output_finite": True,
-            "param_grad_finite": True,
-            "eliminated_by": capability.eliminated_by,
-        }
-        solo = SoloScorecard(
-            proposal_id=spec.proposal_id,
-            name=spec.name,
-            category=spec.category,
-            synthesis_kind=spec.synthesis_kind,
-            math_axes=dict(spec.math_axes),
-            smoke=fake_smoke,
-            metrics={"skipped": f"eliminated_by_{capability.eliminated_by}"},
-            property_cross_check={},
-            promoted=False,
-        )
-        return solo, None, capability_dict, capability.eliminated_by
 
-    solo = validate_solo(spec, module, dim=dim, seq_len=seq_len)
-    append_scorecard(solo)
-    probe_dict: dict | None = None
-    if not skip_probe and solo.promoted:
-        probe = validate_in_context(
-            spec,
-            module,
-            dim=dim,
-            seq_len=seq_len,
-            n_steps=probe_steps,
+def _annotate_niche_metadata(survivors: list[dict], ledger: Ledger) -> None:
+    """Attach WS-5 behavior fingerprint/novelty + WS-4 Pareto-front membership.
+
+    Computed over the whole survivor set (Pareto + novelty are relative). Novelty
+    is measured against the existing ledger catalog; the front is computed within
+    this cycle's survivors. param_count is not threaded yet, so the efficiency
+    objective is currently constant (neutral) — a documented follow-up.
+    """
+    # Build the catalog from the in-memory rollup instead of re-parsing the
+    # ledger file from disk every cycle (the rollup also includes rotated
+    # history the active file lacks).
+    catalog = [
+        fingerprint_from_metadata(entry.metadata_history[-1])
+        for entry in ledger.all_entries()
+        if entry.metadata_history
+    ]
+    fingerprints = [
+        behavior_fingerprint(s["probe"], s["capability"]) for s in survivors
+    ]
+    normalizer = Normalizer.fit(catalog + fingerprints)
+    for surv, fp in zip(survivors, fingerprints):
+        dist = novelty_distance(fp, catalog, normalizer=normalizer)
+        finite = dist != float("inf")
+        surv["metadata"]["behavior_fingerprint"] = fp
+        surv["metadata"]["novelty_distance"] = dist if finite else -1.0
+        surv["metadata"]["behavior_clone"] = bool(is_clone(dist)) if finite else False
+    vectors = [
+        objective_vector(
+            s["probe"],
+            s["capability"],
+            novelty=max(0.0, s["metadata"]["novelty_distance"]),
         )
-        probe_dict = asdict(probe)
-    return solo, probe_dict, capability_dict, None
+        for s in survivors
+    ]
+    front = set(pareto_front_indices(vectors))
+    for index, (surv, vector) in enumerate(zip(survivors, vectors)):
+        surv["metadata"]["pareto_objective_vector"] = dict(vector)
+        surv["metadata"]["on_pareto_front"] = index in front
+
+
+def _finalize_survivors(
+    survivors: list[dict], ledger: Ledger, *, cycle: int, niche_promotion: bool
+) -> None:
+    """Record deferred survivor grades, attaching niche metadata when enabled."""
+    if niche_promotion and survivors:
+        _annotate_niche_metadata(survivors, ledger)
+    for surv in survivors:
+        ledger.record_grade(
+            proposal_id=surv["proposal_id"],
+            name=surv["name"],
+            category=surv["category"],
+            synthesis_kind=surv["synthesis_kind"],
+            cycle=cycle,
+            composite_score=surv["composite_score"],
+            smoke_pass=surv["smoke_pass"],
+            learned_signal=surv["learned_signal"],
+            metadata=surv["metadata"],
+        )
+
+
+def _metadata_for_grade(
+    spec: ProposalSpec, capability: dict | None, eliminated_by: str | None
+) -> dict:
+    """Ledger metadata for one graded spec (pure assembly, no side effects)."""
+    math_knobs = str(spec.math_axes.get("op_math_knobs") or "")
+    return {
+        "math_knobs": [part for part in math_knobs.split("+") if part],
+        "eliminated_by": eliminated_by,
+        "can_bind": bool(capability and capability.get("can_bind")),
+        "erf_density": float(capability.get("erf_density") or 0.0)
+        if capability
+        else 0.0,
+        "nb_max_accuracy": float(capability.get("nb_max_accuracy") or 0.0)
+        if capability
+        else 0.0,
+        # Persist the full build recipe so promoted specs stay re-gradeable
+        # from the ledger (generate_module is a pure function of math_axes).
+        "math_axes": dict(spec.math_axes),
+        # Range signal (only populated when --range-probe is on); feeds the
+        # optional veto_range_blind promotion rule.
+        "range_effective_distance": (
+            int(capability.get("range_effective_distance") or 0) if capability else 0
+        ),
+        "range_ran": bool(capability and capability.get("range_ran")),
+    }
+
+
+def _record_eliminated(
+    ledger: Ledger,
+    spec: ProposalSpec,
+    solo: SoloScorecard,
+    metadata: dict,
+    *,
+    cycle: int,
+) -> None:
+    """Record a gate-eliminated spec: zero-score grade + immediate rejection."""
+    ledger.record_grade(
+        proposal_id=spec.proposal_id,
+        name=solo.name,
+        category=solo.category,
+        synthesis_kind=solo.synthesis_kind,
+        cycle=cycle,
+        composite_score=0.0,
+        smoke_pass=False,
+        learned_signal=False,
+        metadata=metadata,
+    )
+    ledger.record_promotion(spec.proposal_id, PROMOTION_REJECTED)
 
 
 def _grade_active_specs(
@@ -361,11 +415,14 @@ def _grade_active_specs(
     range_train_steps: int = 300,
     tier2_feedback_by_id: dict[str, Tier2Feedback] | None = None,
     nas_screen_by_id: dict[str, NasScreenResult] | None = None,
+    paired_seeds: int = 0,
+    niche_promotion: bool = False,
 ) -> tuple[list[dict], dict[str, dict], dict[str, dict], dict[str, int]]:
     cycle_scorecards: list[dict] = []
     cycle_probes: dict[str, dict] = {}
     cycle_capabilities: dict[str, dict] = {}
     eliminated_by_gate: dict[str, int] = {}
+    survivors: list[dict] = []
     for spec in active_specs:
         solo, probe, capability, eliminated_by = _grade_spec(
             spec,
@@ -381,64 +438,50 @@ def _grade_active_specs(
             cycle_probes[spec.proposal_id] = probe
         if capability is not None:
             cycle_capabilities[spec.proposal_id] = capability
-        math_knobs = str(spec.math_axes.get("op_math_knobs") or "")
-        metadata = {
-            "math_knobs": [part for part in math_knobs.split("+") if part],
-            "eliminated_by": eliminated_by,
-            "can_bind": bool(capability and capability.get("can_bind")),
-            "erf_density": float(capability.get("erf_density") or 0.0)
-            if capability
-            else 0.0,
-            "nb_max_accuracy": float(capability.get("nb_max_accuracy") or 0.0)
-            if capability
-            else 0.0,
-            # Persist the full build recipe so promoted specs stay re-gradeable
-            # from the ledger (generate_module is a pure function of math_axes).
-            "math_axes": dict(spec.math_axes),
-            # Range signal (only populated when --range-probe is on); feeds the
-            # optional veto_range_blind promotion rule.
-            "range_effective_distance": (
-                int(capability.get("range_effective_distance") or 0)
-                if capability
-                else 0
-            ),
-            "range_ran": bool(capability and capability.get("range_ran")),
-        }
+        metadata = _metadata_for_grade(spec, capability, eliminated_by)
         if eliminated_by is not None:
-            ledger.record_grade(
-                proposal_id=spec.proposal_id,
-                name=solo.name,
-                category=solo.category,
-                synthesis_kind=solo.synthesis_kind,
-                cycle=cycle,
-                composite_score=0.0,
-                smoke_pass=False,
-                learned_signal=False,
-                metadata=metadata,
-            )
-            ledger.record_promotion(spec.proposal_id, PROMOTION_REJECTED)
+            _record_eliminated(ledger, spec, solo, metadata, cycle=cycle)
             eliminated_by_gate[eliminated_by] = (
                 eliminated_by_gate.get(eliminated_by, 0) + 1
             )
             continue
+        # WS-2: paired delta vs anchor for survivors only (the promotable set).
+        # Eliminated specs are already rejected, so skip the extra training cost.
+        if paired_seeds > 0:
+            metadata.update(
+                paired_metadata_for_spec(
+                    spec,
+                    seeds=tuple(range(paired_seeds)),
+                    dim=dim,
+                    seq_len=seq_len,
+                    n_steps=probe_steps,
+                )
+            )
         score, _ = composite_score(asdict(solo), probe, capability)
         score *= tier2_score_multiplier(
             (tier2_feedback_by_id or {}).get(spec.proposal_id)
         )
         score *= nas_score_multiplier((nas_screen_by_id or {}).get(spec.proposal_id))
-        ledger.record_grade(
-            proposal_id=spec.proposal_id,
-            name=solo.name,
-            category=solo.category,
-            synthesis_kind=solo.synthesis_kind,
-            cycle=cycle,
-            composite_score=score,
-            smoke_pass=bool(
-                solo.smoke.get("forward_passed") and solo.smoke.get("backward_passed")
-            ),
-            learned_signal=bool(probe and probe.get("learned_signal")),
-            metadata=metadata,
+        # Defer recording: WS-4/WS-5 niche metadata (Pareto front + novelty) needs
+        # the whole survivor set together, so finalize after the grade loop.
+        survivors.append(
+            {
+                "proposal_id": spec.proposal_id,
+                "name": solo.name,
+                "category": solo.category,
+                "synthesis_kind": solo.synthesis_kind,
+                "composite_score": score,
+                "smoke_pass": bool(
+                    solo.smoke.get("forward_passed")
+                    and solo.smoke.get("backward_passed")
+                ),
+                "learned_signal": bool(probe and probe.get("learned_signal")),
+                "probe": probe,
+                "capability": capability,
+                "metadata": metadata,
+            }
         )
+    _finalize_survivors(survivors, ledger, cycle=cycle, niche_promotion=niche_promotion)
     return cycle_scorecards, cycle_probes, cycle_capabilities, eliminated_by_gate
 
 
@@ -479,6 +522,91 @@ def _order_active_specs_by_quality(
     return ordered, bucket_counts(chosen)
 
 
+def _register_promoted(ledger: Ledger, decisions: list) -> None:
+    """WS-7 loop closure: emit an ARIA handoff row for each FRESH promotion."""
+    for decision in decisions:
+        if (
+            decision.decision != PROMOTION_PROMOTED
+            or decision.reason == "already promoted"
+        ):
+            continue
+        entry = ledger.entries.get(decision.proposal_id)
+        if entry is None:
+            continue
+        spec = spec_from_ledger_entry(entry)
+        if spec is None:
+            continue
+        meta = entry.metadata_history[-1] if entry.metadata_history else {}
+        evidence = {
+            "composite": entry.composite_history[-1]
+            if entry.composite_history
+            else 0.0,
+            "transplant_portability": meta.get("transplant_portability"),
+            "on_pareto_front": meta.get("on_pareto_front"),
+        }
+        register_promotion(spec, evidence=evidence)
+
+
+def _select_active_specs(
+    specs: list[ProposalSpec],
+    ledger: Ledger,
+    *,
+    selection: str,
+    acquisition_beta: float,
+    use_nas_screen: bool,
+    use_quality_order: bool,
+    max_graded_per_cycle: int,
+    tier2_feedback_by_id: dict[str, Tier2Feedback],
+) -> tuple[list[ProposalSpec], dict[str, NasScreenResult], dict[str, int], int, int]:
+    """Filter terminal specs, screen, and order/budget the grading queue.
+
+    Returns ``(active_specs, nas_screen_by_id, bucket_summary,
+    n_new_proposals, n_terminal_skipped)``.
+    """
+    # Re-grade every spec each cycle so the ledger accumulates score history;
+    # promotion requires a streak across cycles to fire. Skip only proposals
+    # that have already reached a terminal status (promoted or rejected).
+    # Filter BEFORE the NAS/measured screen: the screen builds the real
+    # module per spec (2 seeds + Jacobian probes), so screening terminal
+    # specs that are then discarded was the dominant wasted per-cycle cost.
+    skippable = {
+        pid
+        for pid, entry in ledger.entries.items()
+        if entry.promotion_status in (PROMOTION_PROMOTED, PROMOTION_REJECTED)
+    }
+    active_specs = [s for s in specs if s.proposal_id not in skippable]
+    nas_screen_by_id = score_specs_with_nas(active_specs, enabled=use_nas_screen)
+    n_new_proposals = sum(1 for s in active_specs if not ledger.has_seen(s.proposal_id))
+
+    bucket_summary = bucket_counts(())
+    if selection == "surrogate":
+        # WS-3: fill the grading budget with the surrogate's highest-UCB
+        # candidates instead of the legacy quality order. max_graded_per_cycle
+        # is the budget (0 => no cap). Falls back to identity order if the
+        # surrogate can't fit (too little ledger history).
+        active_specs = select_by_acquisition(
+            active_specs,
+            Surrogate.fit(),
+            budget=max_graded_per_cycle,
+            beta=acquisition_beta,
+        )
+    elif use_quality_order:
+        active_specs, bucket_summary = _order_active_specs_by_quality(
+            active_specs,
+            ledger,
+            tier2_feedback_by_id=tier2_feedback_by_id,
+            nas_screen_by_id=nas_screen_by_id,
+            max_graded_per_cycle=max_graded_per_cycle,
+        )
+    return (
+        active_specs,
+        nas_screen_by_id,
+        bucket_summary,
+        n_new_proposals,
+        len(skippable),
+    )
+
+
 def _run_cycle(
     cycle: int,
     *,
@@ -501,43 +629,38 @@ def _run_cycle(
     use_quality_order: bool = True,
     max_graded_per_cycle: int = 0,
     promotion_rules: PromotionRules = DEFAULT_PROMOTION_RULES,
+    paired_seeds: int = 0,
+    selection: str = "legacy",
+    acquisition_beta: float = 1.0,
+    niche_promotion: bool = False,
 ) -> dict:
-    anchors = _gather_anchors(top_anchors)
+    anchors = top_underperforming_names(top_anchors)
     tier2_feedback_by_id = load_tier2_feedback(tier2_feedback_paths)
-    specs = _all_specs_for_cycle(
-        anchors,
+    specs = enumerate_cycle_specs(
         ledger,
+        anchors,
+        cycle=cycle,
+        dim=dim,
         use_promoted_as_anchors=use_promoted_as_anchors,
         max_cross_pairs=max_cross_pairs,
         max_knob_specs=max_knob_specs,
         max_dynamic_specs=max_dynamic_specs,
-        dim=dim,
         max_nas_specs=max_nas_specs,
         nas_archive_guided=nas_archive_guided,
         tier2_feedback_by_id=tier2_feedback_by_id,
-        cycle=cycle,
     )
-    nas_screen_by_id = score_specs_with_nas(specs, enabled=use_nas_screen)
-    # Re-grade every spec each cycle so the ledger accumulates score history;
-    # promotion requires a streak across cycles to fire. Skip only proposals
-    # that have already reached a terminal status (promoted or rejected).
-    skippable = {
-        pid
-        for pid, entry in ledger.entries.items()
-        if entry.promotion_status in (PROMOTION_PROMOTED, PROMOTION_REJECTED)
-    }
-    active_specs = [s for s in specs if s.proposal_id not in skippable]
-    n_new_proposals = sum(1 for s in active_specs if not ledger.has_seen(s.proposal_id))
-
-    bucket_summary = bucket_counts(())
-    if use_quality_order:
-        active_specs, bucket_summary = _order_active_specs_by_quality(
-            active_specs,
+    active_specs, nas_screen_by_id, bucket_summary, n_new_proposals, n_skipped = (
+        _select_active_specs(
+            specs,
             ledger,
-            tier2_feedback_by_id=tier2_feedback_by_id,
-            nas_screen_by_id=nas_screen_by_id,
+            selection=selection,
+            acquisition_beta=acquisition_beta,
+            use_nas_screen=use_nas_screen,
+            use_quality_order=use_quality_order,
             max_graded_per_cycle=max_graded_per_cycle,
+            tier2_feedback_by_id=tier2_feedback_by_id,
         )
+    )
 
     cycle_scorecards, cycle_probes, cycle_capabilities, eliminated_by_gate = (
         _grade_active_specs(
@@ -552,11 +675,14 @@ def _run_cycle(
             range_train_steps=range_train_steps,
             tier2_feedback_by_id=tier2_feedback_by_id,
             nas_screen_by_id=nas_screen_by_id,
+            paired_seeds=paired_seeds,
+            niche_promotion=niche_promotion,
         )
     )
 
     decisions = decide_promotions_for_ledger(ledger, promotion_rules)
     counts = apply_decisions(ledger, decisions)
+    _register_promoted(ledger, decisions)
     ranked = rank_proposals(
         cycle_scorecards,
         cycle_probes,
@@ -571,7 +697,7 @@ def _run_cycle(
         "n_specs_considered": len(specs),
         "n_active_regraded": len(active_specs),
         "n_new_proposals": n_new_proposals,
-        "n_terminal_skipped": len(skippable),
+        "n_terminal_skipped": n_skipped,
         "n_eliminated": sum(eliminated_by_gate.values()),
         "eliminated_by_gate": dict(eliminated_by_gate),
         "n_can_bind": n_can_bind,
@@ -624,11 +750,18 @@ def _print_cycle(summary: dict) -> None:
 def _rotate_proposals(proposals_path: Path, rotate_bytes: int, quiet: bool) -> None:
     if not proposals_path.exists() or proposals_path.stat().st_size < rotate_bytes:
         return
-    index = 1
-    while (
-        rotated := proposals_path.with_suffix(proposals_path.suffix + f".{index}")
-    ).exists():
-        index += 1
+    # One past the highest existing index — monotonic even after pruning
+    # frees lower indices, so suffix order matches chronology (the ledger's
+    # rotated-replay sorts by mtime, but keep numbering sane regardless).
+    prefix = proposals_path.name + "."
+    existing = [
+        int(child.name[len(prefix) :])
+        for child in proposals_path.parent.glob(f"{proposals_path.name}.*")
+        if child.name[len(prefix) :].isdigit()
+    ]
+    rotated = proposals_path.with_suffix(
+        proposals_path.suffix + f".{max(existing, default=0) + 1}"
+    )
     proposals_path.rename(rotated)
     proposals_path.touch()
     deleted = _prune_rotations(proposals_path)
@@ -721,7 +854,12 @@ def _drive_loop(args, ledger: Ledger, proposals_path: Path) -> list[dict]:
             promotion_rules=PromotionRules(
                 veto_range_blind=args.veto_range_blind,
                 min_range_effective_distance=args.min_range_distance,
+                promote_by_pareto=args.niche_promotion,
             ),
+            paired_seeds=args.paired_seeds,
+            selection=args.selection,
+            acquisition_beta=args.acquisition_beta,
+            niche_promotion=args.niche_promotion,
         )
         cycle_summaries.append(summary)
         if not args.quiet:
@@ -754,31 +892,34 @@ def main(argv: list[str] | None = None) -> int:
     # Replay rotated audit trail so promoted-fab anchors carried forward
     # from prior days remain visible to adaptive_axis_variants. Without this
     # the anchor pool collapses to whatever the most-recent rotation kept.
-    ledger = Ledger(ledger_path, include_rotated=True)
+    ledger = open_ledger(ledger_path)
 
-    cycle_summaries = _drive_loop(args, ledger, proposals_path)
+    try:
+        cycle_summaries = _drive_loop(args, ledger, proposals_path)
+    finally:
+        # Explicit flush+release of every cached JSONL handle (ledger +
+        # per-path scorecard writers) so a crash mid-run can't strand a
+        # buffered tail line.
+        ledger.close()
+        close_scorecard_writers()
 
     out_path = None
     pruned_run_summaries = 0
     if args.emit_run_summary:
-        timestamp = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
-        out_path = _CATALOG_DIR / f"autonomous_run_{timestamp}.json"
-        out_path.write_text(
-            json.dumps(
-                {
-                    "cycles_run": len(cycle_summaries),
-                    "summaries": cycle_summaries,
-                    "ledger_size": len(ledger.entries),
-                    "promoted_components": [
-                        asdict(entry)
-                        for entry in ledger.all_entries()
-                        if entry.promotion_status == PROMOTION_PROMOTED
-                    ],
-                },
-                indent=2,
-                default=str,
-            ),
-            encoding="utf-8",
+        out_path = write_report(
+            {
+                "cycles_run": len(cycle_summaries),
+                "summaries": cycle_summaries,
+                "ledger_size": len(ledger.entries),
+                "promoted_components": [
+                    asdict(entry)
+                    for entry in ledger.all_entries()
+                    if entry.promotion_status == PROMOTION_PROMOTED
+                ],
+            },
+            default_dir=_CATALOG_DIR,
+            prefix="autonomous_run",
+            quiet=True,  # the summary block below reports the path
         )
         pruned_run_summaries = _prune_autonomous_run_summaries(_CATALOG_DIR)
     if not args.quiet:

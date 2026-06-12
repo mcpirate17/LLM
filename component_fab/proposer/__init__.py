@@ -3,13 +3,7 @@
 from .property_miner import (
     AxisLift,
     CandidateTuple,
-    DEFAULT_AXES,
     DEFAULT_META_DB,
-    compute_axis_lifts,
-    enumerate_candidates,
-    extant_tuples,
-    load_rows,
-    run,
 )
 from .spec_generator import (
     CATEGORY_COMPRESSION,
@@ -34,7 +28,6 @@ __all__ = [
     "CATEGORY_LANE",
     "CATEGORY_ROUTING",
     "CandidateTuple",
-    "DEFAULT_AXES",
     "DEFAULT_META_DB",
     "ProposalSpec",
     "SYNTHESIS_KIND_BASIS_SWAP",
@@ -43,11 +36,6 @@ __all__ = [
     "SYNTHESIS_KIND_SEMIRING_SWAP",
     "SYNTHESIS_KIND_STATE_KERNEL_SWAP",
     "category_from_axes",
-    "compute_axis_lifts",
-    "enumerate_candidates",
-    "extant_tuples",
-    "load_rows",
-    "run",
     "spec_from_candidate",
     "spec_to_json",
     "specs_from_candidates",

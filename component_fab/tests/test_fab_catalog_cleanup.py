@@ -3,9 +3,15 @@
 from __future__ import annotations
 
 import os
+import json
 from pathlib import Path
 
-from component_fab.state.ledger import Ledger, _prune_rotations
+from component_fab.proposer.proposal_catalog import load_proposals_by_id
+from component_fab.state.ledger import (
+    Ledger,
+    _prune_rotations,
+    iter_rotated_jsonl_paths,
+)
 from component_fab.tools.run_autonomous import (
     _parse_args,
     _prune_autonomous_run_summaries,
@@ -33,6 +39,35 @@ def test_prune_rotations_keeps_three_newest_integer_suffixes(tmp_path: Path) -> 
         "ledger.jsonl.5",
         "ledger.jsonl.not-a-rotation",
     ]
+
+
+def test_iter_rotated_jsonl_paths_uses_mtime_order_then_active(tmp_path: Path) -> None:
+    base = tmp_path / "ledger.jsonl"
+    base.write_text("", encoding="utf-8")
+    _touch_with_mtime(tmp_path / "ledger.jsonl.2", 10)
+    _touch_with_mtime(tmp_path / "ledger.jsonl.1", 20)
+    _touch_with_mtime(tmp_path / "ledger.jsonl.not-a-rotation", 1)
+
+    paths = [path.name for path in iter_rotated_jsonl_paths(base)]
+
+    assert paths == ["ledger.jsonl.2", "ledger.jsonl.1", "ledger.jsonl"]
+
+
+def test_load_proposals_by_id_replays_rotations_by_mtime(tmp_path: Path) -> None:
+    base = tmp_path / "proposals.jsonl"
+
+    def row(name: str) -> str:
+        return json.dumps({"proposal_id": "p", "name": name}) + "\n"
+
+    (tmp_path / "proposals.jsonl.2").write_text(row("old"), encoding="utf-8")
+    os.utime(tmp_path / "proposals.jsonl.2", (10, 10))
+    (tmp_path / "proposals.jsonl.1").write_text(row("new"), encoding="utf-8")
+    os.utime(tmp_path / "proposals.jsonl.1", (20, 20))
+    base.write_text("", encoding="utf-8")
+
+    loaded = load_proposals_by_id(base)
+
+    assert loaded["p"].name == "new"
 
 
 def test_ledger_rotation_prunes_old_rotations(tmp_path: Path) -> None:

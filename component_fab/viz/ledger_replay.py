@@ -15,27 +15,13 @@ names; it is intentionally NOT the source here.)
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 
+from ..state.ledger import iter_jsonl_records
+
 _CATALOG = Path(__file__).resolve().parents[1] / "catalog"
 _LEDGER = _CATALOG / "invention_ledger.jsonl"
-
-
-def _read_jsonl(path: Path) -> list[dict[str, Any]]:
-    if not path.exists():
-        return []
-    rows: list[dict[str, Any]] = []
-    for line in path.read_text().splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            rows.append(json.loads(line))
-        except json.JSONDecodeError:
-            continue
-    return rows
 
 
 def _humanize(mechanism: str) -> str:
@@ -104,7 +90,7 @@ def _score_story(
 
 
 def load_ledger() -> dict[str, Any]:
-    events = _read_jsonl(_LEDGER)
+    events = list(iter_jsonl_records(_LEDGER))
 
     by_id: dict[str, dict[str, Any]] = {}
     promotes: list[dict[str, Any]] = []

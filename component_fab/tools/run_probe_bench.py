@@ -1,7 +1,7 @@
-"""Benchmark component_fab probe wall time and best-effort memory cost.
+"""Opt-in benchmark of component_fab probe wall time and best-effort memory cost.
 
-Generates ``component_fab/catalog/probe_costs.json`` by default. The
-benchmark covers the sprint-8 probe stack at the TODO-requested sizes:
+Generates ``component_fab/catalog/probe_costs.json`` by default at two
+standard sizes:
 
 - dim=16, seq_len=16, batch=8
 - dim=64, seq_len=64, batch=8
@@ -58,7 +58,6 @@ class ProbeSize:
 
 
 DEFAULT_SIZES: tuple[ProbeSize, ...] = (
-    # Keep these in the order called out in the sprint-9 TODO.
     ProbeSize(dim=16, seq_len=16, batch_size=8),
     ProbeSize(dim=64, seq_len=64, batch_size=8),
 )

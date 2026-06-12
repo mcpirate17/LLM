@@ -8,6 +8,8 @@ from typing import Callable
 import torch
 from torch import nn
 
+from component_fab.harness.top_ar_block import RMSNorm
+
 LaneFactory = Callable[[int], nn.Module]
 
 
@@ -26,6 +28,10 @@ class MixtureOfRecursionsLane(nn.Module):
         if max_depth < 1:
             raise ValueError("max_depth must be >= 1")
         self.mixer = mixer_factory(dim)
+        # Pre-norm the recursion input (same fix as block_templates.Recursive
+        # DepthBlock): without it the mixer is fed its own geometrically
+        # growing residual stream, which NaNs deep/high-gain variants.
+        self.norm = RMSNorm(dim)
         self.halt_head = nn.Linear(dim, 1)
         self.dim = dim
         self.max_depth = max_depth
@@ -42,7 +48,7 @@ class MixtureOfRecursionsLane(nn.Module):
         delta_total = torch.zeros_like(x)
         expected_steps = torch.zeros_like(remainder)
         for depth in range(self.max_depth):
-            mix_out = self.mixer(h)
+            mix_out = self.mixer(self.norm(h))
             delta_step = delta_step + mix_out
             halt = torch.sigmoid(self.halt_head(h + mix_out) / self.halt_temp)
             if depth == self.max_depth - 1:
@@ -74,6 +80,8 @@ class SparseMoRLane(nn.Module):
         if not 0.0 < top_k_frac <= 1.0:
             raise ValueError("top_k_frac must be in (0, 1]")
         self.mixer = mixer_factory(dim)
+        # Pre-norm the recursion input — same NaN fix as MixtureOfRecursionsLane.
+        self.norm = RMSNorm(dim)
         self.halt_head = nn.Linear(dim, 1)
         self.dim = dim
         self.max_depth = max_depth
@@ -81,7 +89,7 @@ class SparseMoRLane(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         b, l, _ = x.shape
-        delta = self.mixer(x)
+        delta = self.mixer(self.norm(x))
         h = x + delta
         if self.max_depth == 1 or l == 0:
             return delta
@@ -93,7 +101,7 @@ class SparseMoRLane(nn.Module):
         threshold = 1.0 - self.top_k_frac
         mask = (torch.sigmoid(scores) > threshold).to(x.dtype).unsqueeze(-1)
         for _ in range(self.max_depth - 1):
-            extra = self.mixer(h)
+            extra = self.mixer(self.norm(h))
             delta = delta + mask * extra
             h = h + mask * extra
         return delta

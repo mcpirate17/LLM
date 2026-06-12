@@ -11,7 +11,7 @@ from component_fab.proposer.dynamic import (
     spec_from_ledger_entry,
 )
 from component_fab.state.ledger import Ledger, PROMOTION_PROMOTED
-from component_fab.tools.run_autonomous import _all_specs_for_cycle
+from component_fab.proposer.enumeration import enumerate_cycle_specs
 
 
 def _base_axes() -> dict:
@@ -92,14 +92,14 @@ def test_dynamic_specs_are_buildable_modules(tmp_path: Path) -> None:
 def test_autonomous_cycle_includes_dynamic_specs_from_ledger(tmp_path: Path) -> None:
     ledger = _seed_range_blind_ledger(tmp_path)
 
-    specs = _all_specs_for_cycle(
-        [],
+    specs = enumerate_cycle_specs(
         ledger,
+        [],
+        cycle=1,
         use_promoted_as_anchors=False,
         max_cross_pairs=0,
         max_knob_specs=0,
         max_dynamic_specs=4,
-        cycle=1,
     )
 
     assert specs
@@ -165,7 +165,10 @@ def test_repairs_no_weakness_yields_only_fallback():
 
 def test_repairs_long_gap_fires_two_rules_in_order():
     repairs = _repairs_for_case(_case(WEAK_FAIL_LONG_GAP), {})
-    assert [r.name for r in repairs] == ["extend_receptive_state", "repair_long_gap_memory"]
+    assert [r.name for r in repairs] == [
+        "extend_receptive_state",
+        "repair_long_gap_memory",
+    ]
     assert repairs[1].delta["op_max_depth"] == 8
 
 
@@ -175,7 +178,10 @@ def test_repairs_rejected_only_when_no_prior():
         "rejected_to_memory_lookup"
     ]
     # with an earlier match -> suppressed
-    names = [r.name for r in _repairs_for_case(_case(WEAK_FAIL_COMPOSITIONAL, WEAK_REJECTED), {})]
+    names = [
+        r.name
+        for r in _repairs_for_case(_case(WEAK_FAIL_COMPOSITIONAL, WEAK_REJECTED), {})
+    ]
     assert names == ["repair_compositional_tensor"]
 
 

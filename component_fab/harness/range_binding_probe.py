@@ -32,6 +32,7 @@ import torch
 from torch import nn
 
 from .standard_block import LaneTestBlock
+from .training_probe import train_lane_head
 
 DEFAULT_DISTANCES: tuple[int, ...] = (8, 16, 32, 64, 128, 256)
 
@@ -74,20 +75,23 @@ def _train_mixed_distance(
     device: torch.device,
 ) -> None:
     seq_len = max_distance + 1
-    optimizer = torch.optim.Adam(
-        list(block.parameters()) + list(head.parameters()), lr=learning_rate
-    )
-    block.train()
-    for _ in range(n_train_steps):
+
+    def sample() -> tuple[torch.Tensor, torch.Tensor]:
         labels = torch.randint(0, n_classes, (batch_size,), generator=generator)
         dists = torch.randint(1, max_distance + 1, (batch_size,), generator=generator)
         x = torch.randn(batch_size, seq_len, dim, generator=generator)
         _place_keys(x, labels, class_keys, dists)
-        logits = head(block(x.to(device))[:, -1, :])
-        loss = nn.functional.cross_entropy(logits, labels.to(device))
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+        return x, labels
+
+    block.train()
+    train_lane_head(
+        lambda x: head(block(x.to(device))[:, -1, :]),
+        list(block.parameters()) + list(head.parameters()),
+        sample,
+        lambda logits, labels: nn.functional.cross_entropy(logits, labels.to(device)),
+        n_train_steps=n_train_steps,
+        learning_rate=learning_rate,
+    )
     block.eval()
 
 

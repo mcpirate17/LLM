@@ -17,21 +17,11 @@ from component_fab.proposer.capability_screen import (
     fab_op_multiset,
 )
 from component_fab.proposer.spec_generator import ProposalSpec
+from component_fab.tests.conftest import make_spec
 
 
 def _spec(axes: dict[str, Any], pid: str = "cap_cand") -> ProposalSpec:
-    return ProposalSpec(
-        proposal_id=pid,
-        name="cand",
-        category="lane",
-        synthesis_kind="novel_hybrid",
-        math_axes=axes,
-        anchor_witness_op="",
-        anchor_witnesses_all=(),
-        declared_property_row=dict(axes),
-        predicted_lift=0.5,
-        rationale="test",
-    )
+    return make_spec(axes, pid, name="cand", category="lane")
 
 
 def test_op_multiset_is_faithful_and_scaled() -> None:

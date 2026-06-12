@@ -48,6 +48,32 @@ class PromotionRules:
     # is a veto on measured failure, not a requirement that range was probed).
     veto_range_blind: bool = False
     min_range_effective_distance: int = 1
+    # WS-2 (2026-06-10): require the candidate's paired delta vs its anchor
+    # baseline to be significantly positive (95% CI excludes zero) before
+    # promotion — kills single-seed noise promotions. LEGACY-SAFE: only blocks
+    # when the grade metadata actually carries a paired-delta CI
+    # (``paired_delta_ci_excludes_zero`` / ``paired_delta_ci_low``); entries
+    # graded before the paired probe was wired in are unaffected, so this never
+    # freezes the loop. Once validator/paired.py is wired into grading, every
+    # candidate carries a CI and the guard is always live.
+    require_ci_excludes_zero: bool = True
+    # 2026-06-12 P0: fail closed for NEW promotion evidence. A candidate that
+    # has a promotion streak but lacks paired evidence (or whose paired evidence
+    # explicitly skipped because the anchor was absent/unbuildable) stays
+    # pending. Historical ledgers can be reviewed with
+    # ``grandfather_legacy_missing_evidence=True`` when intentionally needed.
+    require_complete_promotion_evidence: bool = True
+    grandfather_legacy_missing_evidence: bool = False
+    # WS-4 (2026-06-10): niche/Pareto promotion. When on, a candidate that sits
+    # on the first Pareto front (``metadata.on_pareto_front``) for a streak
+    # promotes even if its scalar composite never clears the bar — so a
+    # specialist (e.g. binding-only, low learning) graduates in its own niche
+    # instead of being crushed by the scalar composite. A front member is also
+    # shielded from the low-composite reject rule (it is still competing in its
+    # niche — this supersedes ``veto_range_blind``). OFF by default: the grade
+    # loop must emit ``on_pareto_front`` (run_autonomous --niche-promotion) first.
+    promote_by_pareto: bool = False
+    pareto_streak_cycles: int = 2
 
 
 DEFAULT_PROMOTION_RULES = PromotionRules()
@@ -79,8 +105,80 @@ def _promote_streak_satisfied(entry: LedgerEntry, rules: PromotionRules) -> bool
     return True
 
 
+def _paired_ci_satisfied(entry: LedgerEntry, rules: PromotionRules) -> bool:
+    """True unless a *present* paired-delta CI vs anchor fails to exclude zero.
+
+    Legacy-safe: absent CI metadata → satisfied (the guard activates only once
+    the paired probe is wired into grading and starts emitting the CI).
+    """
+    if not rules.require_ci_excludes_zero or not entry.metadata_history:
+        return True
+    latest = entry.metadata_history[-1]
+    if "paired_delta_ci_excludes_zero" in latest:
+        return bool(latest["paired_delta_ci_excludes_zero"])
+    if "paired_delta_ci_low" in latest:
+        return float(latest["paired_delta_ci_low"]) > 0.0
+    return True
+
+
+def _promotion_evidence_failure(
+    entry: LedgerEntry,
+    rules: PromotionRules,
+    *,
+    pareto_ok: bool,
+) -> str | None:
+    """Return a fail-closed reason when a promotion streak lacks evidence."""
+    if not rules.require_complete_promotion_evidence:
+        return None
+    if not entry.metadata_history:
+        if rules.grandfather_legacy_missing_evidence:
+            return None
+        return "promotion evidence metadata missing"
+
+    latest = entry.metadata_history[-1]
+    if rules.require_ci_excludes_zero:
+        skipped = latest.get("paired_skipped_reason")
+        if skipped:
+            return f"paired promotion evidence incomplete: {skipped}"
+        has_ci = (
+            "paired_delta_ci_excludes_zero" in latest or "paired_delta_ci_low" in latest
+        )
+        if not has_ci:
+            if rules.grandfather_legacy_missing_evidence:
+                return None
+            return "paired promotion evidence missing"
+
+    if pareto_ok:
+        recent = entry.metadata_history[-rules.pareto_streak_cycles :]
+        if not all("pareto_objective_vector" in metadata for metadata in recent):
+            return "niche promotion evidence missing pareto_objective_vector"
+    return None
+
+
+def _pareto_streak_satisfied(entry: LedgerEntry, rules: PromotionRules) -> bool:
+    """True when the entry held a first-Pareto-front slot for the recent streak."""
+    if not rules.promote_by_pareto:
+        return False
+    if len(entry.metadata_history) < rules.pareto_streak_cycles:
+        return False
+    if entry.smoke_pass_count < rules.pareto_streak_cycles:
+        return False
+    recent = entry.metadata_history[-rules.pareto_streak_cycles :]
+    return all(m.get("on_pareto_front") for m in recent)
+
+
+def _on_pareto_front_now(entry: LedgerEntry, rules: PromotionRules) -> bool:
+    if not rules.promote_by_pareto or not entry.metadata_history:
+        return False
+    return bool(entry.metadata_history[-1].get("on_pareto_front"))
+
+
 def _reject_satisfied(entry: LedgerEntry, rules: PromotionRules) -> bool:
     if len(entry.composite_history) < rules.reject_after_n_cycles:
+        return False
+    # A current Pareto-front member is still competing in its niche — do not
+    # reject it on low scalar composite (this supersedes veto_range_blind).
+    if _on_pareto_front_now(entry, rules):
         return False
     return all(score <= rules.reject_max_composite for score in entry.composite_history)
 
@@ -102,18 +200,48 @@ def decide_promotion(
             reason="already rejected",
             composite_history=tuple(entry.composite_history),
         )
-    if _promote_streak_satisfied(entry, rules):
-        learned_clause = (
-            " + learned signal" if rules.promote_require_learned_signal else ""
+    scalar_ok = _promote_streak_satisfied(entry, rules)
+    pareto_ok = _pareto_streak_satisfied(entry, rules)
+    if scalar_ok or pareto_ok:
+        evidence_failure = _promotion_evidence_failure(
+            entry, rules, pareto_ok=pareto_ok
         )
+        if evidence_failure is not None:
+            return PromotionDecision(
+                proposal_id=entry.proposal_id,
+                decision=PROMOTION_PENDING,
+                reason=f"streak met but {evidence_failure}",
+                composite_history=tuple(entry.composite_history),
+            )
+    if (scalar_ok or pareto_ok) and not _paired_ci_satisfied(entry, rules):
         return PromotionDecision(
             proposal_id=entry.proposal_id,
-            decision=PROMOTION_PROMOTED,
+            decision=PROMOTION_PENDING,
             reason=(
+                "streak met but paired delta vs anchor is not significant "
+                "(95% CI includes zero) — noise guard"
+            ),
+            composite_history=tuple(entry.composite_history),
+        )
+    if scalar_ok or pareto_ok:
+        if scalar_ok:
+            learned_clause = (
+                " + learned signal" if rules.promote_require_learned_signal else ""
+            )
+            reason = (
                 f"composite >= {rules.promote_min_composite} for "
                 f"{rules.promote_min_streak_cycles} consecutive cycles "
                 f"with smoke{learned_clause}"
-            ),
+            )
+        else:
+            reason = (
+                f"on the first Pareto front for {rules.pareto_streak_cycles} "
+                f"consecutive cycles (niche specialist)"
+            )
+        return PromotionDecision(
+            proposal_id=entry.proposal_id,
+            decision=PROMOTION_PROMOTED,
+            reason=reason,
             composite_history=tuple(entry.composite_history),
         )
     if _reject_satisfied(entry, rules):
@@ -144,15 +272,27 @@ def decide_promotions_for_ledger(
 def apply_decisions(
     ledger: Ledger, decisions: Iterable[PromotionDecision]
 ) -> dict[str, int]:
+    """Apply decisions; return counts of THIS call's status transitions.
+
+    ``promoted``/``rejected`` count only entries whose status changed now —
+    not cumulative ledger totals. The quiescence halt in ``run_autonomous``
+    reads these as "did anything move this cycle"; counting entries that
+    already held the decided status (the old behavior) made every cycle look
+    like movement, so ``--halt-quiescent`` could never fire. ``pending``
+    counts entries still awaiting a terminal decision.
+    """
     counts = {PROMOTION_PROMOTED: 0, PROMOTION_REJECTED: 0, PROMOTION_PENDING: 0}
     for decision in decisions:
         entry = ledger.entries.get(decision.proposal_id)
         if entry is None:
             continue
         if entry.promotion_status == decision.decision:
-            counts[decision.decision] = counts.get(decision.decision, 0) + 1
+            if decision.decision == PROMOTION_PENDING:
+                counts[PROMOTION_PENDING] += 1
             continue
         if decision.decision in (PROMOTION_PROMOTED, PROMOTION_REJECTED):
             ledger.record_promotion(decision.proposal_id, decision.decision)
-        counts[decision.decision] = counts.get(decision.decision, 0) + 1
+            counts[decision.decision] += 1
+        else:
+            counts[PROMOTION_PENDING] += 1
     return counts

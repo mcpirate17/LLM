@@ -18,12 +18,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
 
-from ..proposer.property_miner import AxisLift, CandidateTuple
-from ..proposer.spec_generator import (
-    ProposalSpec,
-    make_proposal_id,
-    spec_from_candidate,
-)
+from ..proposer.spec_generator import ProposalSpec, build_spec_from_axes
+from .math_knobs import DEFAULT_MATH_KNOBS, MathKnob
 
 _REPO = Path(__file__).resolve().parents[2]
 DEFAULT_META_DB = _REPO / "research" / "meta_analysis.db"
@@ -53,6 +49,22 @@ class AnchorAxes:
     pass_rate: float
 
 
+def _variant_from_math_knob(knob: MathKnob) -> AxisVariant:
+    """Derive a single-knob ``AxisVariant`` from the canonical knob definition.
+
+    Keeps the low-cost knob axes (``DEFAULT_MATH_KNOBS``) as the single
+    source of truth instead of retyping the same dicts here.
+    """
+    return AxisVariant(
+        delta_name=knob.knob_id,
+        delta={"op_math_family": knob.family, **knob.axes},
+        rationale=knob.rationale,
+    )
+
+
+_KNOB_BY_ID: dict[str, MathKnob] = {knob.knob_id: knob for knob in DEFAULT_MATH_KNOBS}
+
+
 DEFAULT_AXIS_VARIANT_TEMPLATES: tuple[AxisVariant, ...] = (
     AxisVariant(
         delta_name="add_state_OL",
@@ -77,30 +89,9 @@ DEFAULT_AXIS_VARIANT_TEMPLATES: tuple[AxisVariant, ...] = (
         delta={"op_geometric_receptive_field": "global"},
         rationale="widen to global receptive field",
     ),
-    AxisVariant(
-        delta_name="calculus_finite_difference",
-        delta={
-            "op_math_family": "calculus",
-            "op_calculus_operator": "causal_finite_difference_integral",
-        },
-        rationale="add causal finite-difference and running-integral features",
-    ),
-    AxisVariant(
-        delta_name="linear_algebra_low_rank",
-        delta={
-            "op_math_family": "linear_algebra",
-            "op_linear_algebra_structure": "low_rank_factorized",
-        },
-        rationale="replace dense feature mixing with low-rank factorized mixing",
-    ),
-    AxisVariant(
-        delta_name="sparse_matrix_banded",
-        delta={
-            "op_math_family": "sparse_matrix",
-            "op_sparse_matrix_pattern": "causal_banded",
-        },
-        rationale="apply a causal banded sparse sequence matrix",
-    ),
+    _variant_from_math_knob(_KNOB_BY_ID["calculus_finite_difference"]),
+    _variant_from_math_knob(_KNOB_BY_ID["linear_algebra_low_rank"]),
+    _variant_from_math_knob(_KNOB_BY_ID["sparse_matrix_banded"]),
     # Routing variants — wrap the anchor's primitive in a per-token
     # compute-allocation router. Added 2026-05-15 (Phase 4.5).
     AxisVariant(
@@ -428,53 +419,22 @@ def anchor_axes_for_op(
     )
 
 
-def _synthetic_axis_lift(axis: str, value: Any) -> AxisLift:
-    return AxisLift(
-        axis=axis,
-        value=value,
-        n_ops=1,
-        total_evals=1,
-        total_s1_pass=0,
-        pass_rate=0.5,
-        representative_ops=(),
-    )
-
-
-def _candidate_for_variant(anchor: AnchorAxes, variant: AxisVariant) -> CandidateTuple:
-    merged: dict[str, Any] = {**anchor.axes, **variant.delta}
-    tuple_values = tuple(merged.items())
-    lifts = tuple(_synthetic_axis_lift(a, v) for a, v in tuple_values)
-    return CandidateTuple(
-        tuple_values=tuple_values,
-        predicted_lift=0.5,
-        per_axis_lift=lifts,
-        witness_ops=(anchor.op_name,),
-        anchor_axes=tuple(anchor.axes.items()),
-    )
-
-
 def spec_for_variant(anchor: AnchorAxes, variant: AxisVariant) -> ProposalSpec:
-    base_spec = spec_from_candidate(_candidate_for_variant(anchor, variant))
-    name = f"improve_{anchor.op_name}_{variant.delta_name}"
-    proposal_id = make_proposal_id(name, base_spec.math_axes)
+    merged: dict[str, Any] = {**anchor.axes, **variant.delta}
     notes = (
         f"anchor={anchor.op_name} "
         f"(pass_rate={anchor.pass_rate:.2f} on {anchor.eval_count} evals)",
         variant.rationale,
     )
-    # Replace name + id; everything else inherits from the dispatched spec.
-    return ProposalSpec(
-        proposal_id=proposal_id,
-        name=name,
-        category=base_spec.category,
-        synthesis_kind=base_spec.synthesis_kind,
-        math_axes=base_spec.math_axes,
-        anchor_witness_op=anchor.op_name,
-        anchor_witnesses_all=(anchor.op_name,),
-        declared_property_row=base_spec.declared_property_row,
-        predicted_lift=base_spec.predicted_lift,
-        rationale=base_spec.rationale,
+    # This path historically fingerprints the dispatched axes (including
+    # the mirrored synthesis_kind) — preserved for proposal_id stability.
+    return build_spec_from_axes(
+        f"improve_{anchor.op_name}_{variant.delta_name}",
+        merged,
+        witness_ops=(anchor.op_name,),
+        anchor_axes=anchor.axes,
         notes=notes,
+        fingerprint_dispatched_axes=True,
     )
 
 

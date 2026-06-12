@@ -10,39 +10,16 @@ from torch import nn
 
 from component_fab.generator.code_generator import generate_module_from_spec
 from component_fab.generator.primitive_templates import TropicalAttention
-from component_fab.proposer.property_miner import AxisLift, CandidateTuple
-from component_fab.proposer.spec_generator import ProposalSpec, spec_from_candidate
 from component_fab.validator.solo import (
     SoloScorecard,
     append_scorecard,
     validate_solo,
 )
-
-
-def _spec(axes: dict) -> ProposalSpec:
-    lifts = tuple(
-        AxisLift(
-            axis=k,
-            value=v,
-            n_ops=1,
-            total_evals=1,
-            total_s1_pass=0,
-            pass_rate=0.5,
-            representative_ops=(),
-        )
-        for k, v in axes.items()
-    )
-    candidate = CandidateTuple(
-        tuple_values=tuple(axes.items()),
-        predicted_lift=0.5,
-        per_axis_lift=lifts,
-        witness_ops=("anchor",),
-    )
-    return spec_from_candidate(candidate)
+from component_fab.tests.conftest import make_candidate_spec
 
 
 def test_validate_solo_tropical_attention_promotes() -> None:
-    spec = _spec(
+    spec = make_candidate_spec(
         {
             "op_algebraic_space": "tropical",
             "op_dynamical_has_state": 0,
@@ -64,7 +41,7 @@ def test_validate_solo_broken_module_does_not_promote() -> None:
         def forward(self, x: torch.Tensor) -> torch.Tensor:
             return x[:, :, : x.shape[-1] // 2]
 
-    spec = _spec({"op_algebraic_space": "euclidean"})
+    spec = make_candidate_spec({"op_algebraic_space": "euclidean"})
     card = validate_solo(spec, _Broken(), dim=16, seq_len=16)
     assert card.smoke["forward_passed"] is False
     assert "error" in card.smoke
@@ -72,7 +49,7 @@ def test_validate_solo_broken_module_does_not_promote() -> None:
 
 
 def test_validate_solo_from_spec_round_trip() -> None:
-    spec = _spec(
+    spec = make_candidate_spec(
         {
             "op_algebraic_space": "tropical",
             "op_dynamical_has_state": 1,
@@ -87,7 +64,7 @@ def test_validate_solo_from_spec_round_trip() -> None:
 
 
 def test_validate_solo_cross_checks_composed_math_knobs() -> None:
-    spec = _spec(
+    spec = make_candidate_spec(
         {
             "op_algebraic_space": "tropical",
             "op_dynamical_has_state": 0,
@@ -112,7 +89,7 @@ def test_validate_solo_cross_checks_composed_math_knobs() -> None:
 
 
 def test_validate_solo_cross_checks_new_math_knobs() -> None:
-    spec = _spec(
+    spec = make_candidate_spec(
         {
             "op_algebraic_space": "tropical",
             "op_dynamical_has_state": 0,
@@ -133,7 +110,7 @@ def test_validate_solo_cross_checks_new_math_knobs() -> None:
 
 
 def test_append_scorecard_writes_jsonl(tmp_path: Path) -> None:
-    spec = _spec({"op_algebraic_space": "tropical"})
+    spec = make_candidate_spec({"op_algebraic_space": "tropical"})
     module = TropicalAttention(dim=16)
     card = validate_solo(spec, module, dim=16, seq_len=16)
     out = tmp_path / "proposals.jsonl"

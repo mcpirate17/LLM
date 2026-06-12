@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from ..state.tier2_training import Tier2TaskResult, parse_tier2_row
+
 _REPO = Path(__file__).resolve().parents[2]
 _AUDIT_DIR = _REPO / "tasks" / "audit"
 
@@ -36,15 +38,6 @@ WEAK_REJECTED = "tier2_rejected"
 
 
 @dataclass(frozen=True, slots=True)
-class Tier2TaskResult:
-    task: str
-    candidate_eval_acc: float
-    baseline_max: float
-    delta: float
-    beats: bool
-
-
-@dataclass(frozen=True, slots=True)
 class Tier2Feedback:
     proposal_id: str
     name: str
@@ -57,23 +50,6 @@ class Tier2Feedback:
     failures: tuple[str, ...]
     signatures: tuple[str, ...]
     task_results: tuple[Tier2TaskResult, ...]
-
-
-def _as_float(value: Any) -> float:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return 0.0
-
-
-def _task_result(task: str, row: Mapping[str, Any]) -> Tier2TaskResult:
-    return Tier2TaskResult(
-        task=task,
-        candidate_eval_acc=_as_float(row.get("candidate_eval_acc")),
-        baseline_max=_as_float(row.get("baseline_max")),
-        delta=_as_float(row.get("delta")),
-        beats=bool(row.get("beats")),
-    )
 
 
 def signatures_for_tasks(task_results: Sequence[Tier2TaskResult]) -> tuple[str, ...]:
@@ -98,27 +74,20 @@ def signatures_for_tasks(task_results: Sequence[Tier2TaskResult]) -> tuple[str, 
 def feedback_from_result(
     proposal_id: str, row: Mapping[str, Any]
 ) -> Tier2Feedback | None:
-    if row.get("status") != "ok":
+    metrics = parse_tier2_row(row)
+    if not metrics.ok or not metrics.task_results:
         return None
-    per_task = row.get("per_task") or {}
-    task_results = tuple(
-        _task_result(str(task), task_row)
-        for task, task_row in sorted(per_task.items())
-        if isinstance(task_row, Mapping)
-    )
-    if not task_results:
-        return None
+    task_results = tuple(sorted(metrics.task_results, key=lambda r: r.task))
     wins = tuple(result.task for result in task_results if result.beats)
     failures = tuple(result.task for result in task_results if not result.beats)
-    mean_delta = sum(result.delta for result in task_results) / len(task_results)
     return Tier2Feedback(
         proposal_id=proposal_id,
-        name=str(row.get("name") or proposal_id),
-        pass_count=int(row.get("pass_count") or len(wins)),
-        n_tasks=int(row.get("n_tasks") or len(task_results)),
-        tier2_passed=bool(row.get("tier2_passed")),
-        tier2_passed_niche=bool(row.get("tier2_passed_niche")),
-        mean_delta=mean_delta,
+        name=metrics.name or proposal_id,
+        pass_count=metrics.pass_count or len(wins),
+        n_tasks=metrics.n_tasks,
+        tier2_passed=metrics.tier2_passed,
+        tier2_passed_niche=metrics.tier2_passed_niche,
+        mean_delta=metrics.mean_delta,
         wins=wins,
         failures=failures,
         signatures=signatures_for_tasks(task_results),

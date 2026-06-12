@@ -13,6 +13,7 @@ bias (pairs not yet present in the ledger preferred).
 
 from __future__ import annotations
 
+import json
 import random
 from dataclasses import dataclass
 from itertools import combinations
@@ -20,7 +21,12 @@ from pathlib import Path
 from typing import Sequence
 
 from ..proposer.spec_generator import ProposalSpec
-from ..state.ledger import Ledger, PROMOTION_PROMOTED
+from ..state.ledger import (
+    Ledger,
+    PROMOTION_PROMOTED,
+    iter_jsonl_records,
+    iter_rotated_jsonl_paths,
+)
 from .axis_variants import (
     DEFAULT_AXIS_VARIANT_TEMPLATES,
     DEFAULT_META_DB,
@@ -53,7 +59,6 @@ def _load_proposal_axes_index() -> dict[str, dict]:
     anchors keep their actual axes (e.g. ``op_block_template=gated_parallel``)
     instead of generic placeholders. Cached after first load.
     """
-    import json
 
     global _PROPOSALS_AXES_CACHE
     if _PROPOSALS_AXES_CACHE is not None:
@@ -63,26 +68,12 @@ def _load_proposal_axes_index() -> dict[str, dict]:
     if not catalog.exists():
         _PROPOSALS_AXES_CACHE = out
         return out
-    files = [catalog / "proposals.jsonl"] + sorted(catalog.glob("proposals.jsonl.*"))
-    for p in files:
-        if not p.exists():
-            continue
-        try:
-            with p.open("r", encoding="utf-8") as fh:
-                for line in fh:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        row = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    pid = row.get("proposal_id")
-                    axes = row.get("math_axes")
-                    if pid and isinstance(axes, dict):
-                        out[str(pid)] = dict(axes)
-        except OSError:
-            continue
+    for p in iter_rotated_jsonl_paths(catalog / "proposals.jsonl"):
+        for row in iter_jsonl_records(p):
+            pid = row.get("proposal_id")
+            axes = row.get("math_axes")
+            if pid and isinstance(axes, dict):
+                out[str(pid)] = dict(axes)
     _PROPOSALS_AXES_CACHE = out
     return out
 
@@ -103,15 +94,14 @@ def _load_saved_winners() -> list[AnchorAxes]:
     compositions can always use it as an anchor, even if the ledger
     forgot the original promotion. Set per-spec via the saved_winners
     JSON file; never auto-populated.
+
+    A missing file is fine (no winners pinned); a corrupt file RAISES —
+    silently dropping user-pinned winners defeats the file's purpose.
     """
-    import json
 
     if not _SAVED_WINNERS_PATH.exists():
         return []
-    try:
-        data = json.loads(_SAVED_WINNERS_PATH.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return []
+    data = json.loads(_SAVED_WINNERS_PATH.read_text(encoding="utf-8"))
     out: list[AnchorAxes] = []
     for row in data.get("winners", []):
         axes = row.get("math_axes")
@@ -154,9 +144,7 @@ def _promoted_fab_components_as_anchors(ledger: Ledger) -> list[AnchorAxes]:
         if entry.promotion_status != PROMOTION_PROMOTED:
             continue
         axes = axes_index.get(entry.proposal_id) or fallback
-        pass_rate = sum(s for s in entry.composite_history[-2:]) / max(
-            1, len(entry.composite_history[-2:])
-        )
+        pass_rate = entry.mean_composite(2)
         out.append(
             AnchorAxes(
                 op_name=entry.name,
@@ -256,7 +244,7 @@ def _fab_anchor_category(anchor: AnchorAxes) -> str:
         return "novel_algebra"
     if name.startswith("compose_"):
         return "compose_classic"
-    if name.startswith("cross_"):
+    if name.startswith(("cross_", "hybrid_")):
         return "cross_classic"
     return "classic"
 
@@ -307,12 +295,12 @@ def adaptive_cross_anchor_variants(
     anchors = anchor_pool.all_anchors
     if len(anchors) < 2:
         return []
+    anchor_names = frozenset(a.op_name for a in anchors)
     seen_pair_keys: set[frozenset[str]] = set()
     for entry in ledger.all_entries():
-        if entry.name.startswith("cross_"):
-            parts = entry.name.removeprefix("cross_").split("_x_")
-            if len(parts) == 2:
-                seen_pair_keys.add(frozenset(parts))
+        key = _pair_key_from_hybrid_name(entry.name, anchor_names)
+        if key is not None:
+            seen_pair_keys.add(key)
 
     all_pairs = list(combinations(anchors, 2))
     rng = random.Random(seed)
@@ -336,3 +324,39 @@ def adaptive_cross_anchor_variants(
         if is_hosting_anchor(b):
             out.append(_hybrid_spec(b, a))
     return out
+
+
+def _split_known_anchor_pair(
+    body: str, delimiter: str, anchor_names: frozenset[str]
+) -> frozenset[str] | None:
+    for left in anchor_names:
+        prefix = left + delimiter
+        if body.startswith(prefix):
+            right = body[len(prefix) :]
+            if right in anchor_names:
+                return frozenset((left, right))
+    if body.count(delimiter) == 1:
+        left, right = body.split(delimiter)
+        if left and right:
+            return frozenset((left, right))
+    return None
+
+
+def _pair_key_from_hybrid_name(
+    name: str, anchor_names: frozenset[str]
+) -> frozenset[str] | None:
+    """Extract an unordered anchor-pair key from current/legacy hybrid names.
+
+    Anchor names are not guaranteed to avoid delimiters such as ``_plus_`` or
+    ``_x_``. Prefer matching against the known anchor-name vocabulary before
+    falling back to the old one-delimiter split for legacy records.
+    """
+    if name.startswith("hybrid_"):
+        return _split_known_anchor_pair(
+            name.removeprefix("hybrid_"), "_plus_", anchor_names
+        )
+    if name.startswith("cross_"):
+        return _split_known_anchor_pair(
+            name.removeprefix("cross_"), "_x_", anchor_names
+        )
+    return None

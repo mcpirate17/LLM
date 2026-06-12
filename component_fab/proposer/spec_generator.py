@@ -17,7 +17,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
-from .property_miner import CandidateTuple
+from .property_miner import AxisLift, CandidateTuple
 
 
 SYNTHESIS_KIND_SEMIRING_SWAP = "semiring_swap"
@@ -182,6 +182,106 @@ def spec_from_candidate(candidate: CandidateTuple) -> ProposalSpec:
         declared_property_row=_declared_property_row(axes),
         predicted_lift=candidate.predicted_lift,
         rationale=_rationale(axes, category, anchor, kind),
+    )
+
+
+def synthetic_axis_lift(axis: str, value: Any, pass_rate: float = 0.5) -> AxisLift:
+    """Placeholder per-axis lift for spec assembly outside the retired mining path.
+
+    The emitted ``ProposalSpec`` never reads ``per_axis_lift`` (only
+    ``tuple_values``/``witness_ops``/``anchor_axes``/``predicted_lift`` feed
+    ``spec_from_candidate``), so this exists purely to satisfy the
+    ``CandidateTuple`` contract. ``pass_rate`` defaults to the neutral 0.5;
+    the dynamic proposer maps its ledger score into it at the call site.
+    """
+    return AxisLift(
+        axis=axis,
+        value=value,
+        n_ops=1,
+        total_evals=1,
+        total_s1_pass=1 if pass_rate >= 0.5 else 0,
+        pass_rate=pass_rate,
+        representative_ops=(),
+    )
+
+
+def build_spec_from_axes(
+    name: str,
+    merged_axes: Mapping[str, Any],
+    *,
+    witness_ops: tuple[str, ...],
+    anchor_axes: Mapping[str, Any],
+    notes: tuple[str, ...],
+    predicted_lift: float = 0.5,
+    lift_pass_rate: float = 0.5,
+    fingerprint_dispatched_axes: bool = False,
+    dispatched_math_axes: bool = True,
+    rationale: str | None = None,
+) -> ProposalSpec:
+    """Assemble a named ``ProposalSpec`` from already-merged axes.
+
+    Single spec-assembly path shared by the cross-anchor, axis-variant,
+    math-knob, and dynamic proposers (each previously rebuilt the spec
+    field-by-field). The two boolean switches preserve per-caller drift so
+    historical proposal_ids and emitted axes stay byte-identical:
+
+    - ``fingerprint_dispatched_axes``: hash the dispatched ``math_axes``
+      (which include the mirrored ``synthesis_kind``) into the proposal_id
+      (axis-variant + dynamic paths) instead of the raw merged axes
+      (cross-anchor + math-knob paths).
+    - ``dispatched_math_axes``: emit the dispatched ``math_axes`` (default)
+      or the raw merged axes without ``synthesis_kind`` (math-knob path).
+
+    ``rationale`` overrides the generated tuple rationale (dynamic path).
+    """
+    tuple_values = tuple(merged_axes.items())
+    candidate = CandidateTuple(
+        tuple_values=tuple_values,
+        predicted_lift=predicted_lift,
+        per_axis_lift=tuple(
+            synthetic_axis_lift(axis, value, pass_rate=lift_pass_rate)
+            for axis, value in tuple_values
+        ),
+        witness_ops=witness_ops,
+        anchor_axes=tuple(anchor_axes.items()),
+    )
+    base = spec_from_candidate(candidate)
+    id_axes = base.math_axes if fingerprint_dispatched_axes else merged_axes
+    return ProposalSpec(
+        proposal_id=make_proposal_id(name, id_axes),
+        name=name,
+        category=base.category,
+        synthesis_kind=base.synthesis_kind,
+        math_axes=base.math_axes if dispatched_math_axes else dict(merged_axes),
+        anchor_witness_op=witness_ops[0] if witness_ops else name,
+        anchor_witnesses_all=witness_ops,
+        declared_property_row=base.declared_property_row,
+        predicted_lift=base.predicted_lift,
+        rationale=base.rationale if rationale is None else rationale,
+        notes=notes,
+    )
+
+
+def spec_from_axes(pid: str, name: str, axes: dict[str, Any]) -> ProposalSpec:
+    """Minimal axes-only spec reconstruction (no witness/lift evidence).
+
+    Used where only ``(proposal_id, name, math_axes)`` survive — e.g. stored
+    Tier-2 label rows. Unlike ``build_spec_from_axes`` it derives nothing
+    beyond category/synthesis_kind and keeps a neutral predicted_lift.
+    """
+    return ProposalSpec(
+        proposal_id=pid,
+        name=name or pid,
+        category=category_from_axes(axes),
+        synthesis_kind=str(
+            axes.get("synthesis_kind") or synthesis_kind_for_axes(axes, axes)
+        ),
+        math_axes=dict(axes),
+        anchor_witness_op="",
+        anchor_witnesses_all=(),
+        declared_property_row=dict(axes),
+        predicted_lift=0.5,
+        rationale="",
     )
 
 

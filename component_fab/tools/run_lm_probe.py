@@ -21,11 +21,7 @@ import json
 import sys
 from dataclasses import asdict
 from pathlib import Path
-from typing import Callable
 
-from torch import nn
-
-from component_fab.generator.code_generator import generate_module
 from component_fab.harness.harder_binding_tasks import (
     HardBindingResult,
     HardBindingTask,
@@ -33,31 +29,19 @@ from component_fab.harness.harder_binding_tasks import (
     run_harder_binding_suite,
 )
 from component_fab.harness.tiny_lm import DEFAULT_BASELINE_NAMES
-from component_fab.improver.adaptive import (
-    adaptive_axis_variants,
-    adaptive_cross_anchor_variants,
-    build_anchor_pool,
-)
-from component_fab.improver.axis_variants import enumerate_axis_variants
-from component_fab.improver.cross_anchor import enumerate_cross_anchor_variants
-from component_fab.improver.math_knob_catalog import (
-    enumerate_adaptive_math_knob_compositions,
-)
-from component_fab.proposer.dynamic import (
-    enumerate_dynamic_proposals,
-    spec_from_ledger_entry,
-    specs_from_ledger_entries,
-)
+from component_fab.proposer.dynamic import spec_from_ledger_entry
+from component_fab.proposer.enumeration import enumerate_cycle_specs
 from component_fab.proposer.spec_generator import (
     ProposalSpec,
     axes_fingerprint,
-    dedupe_specs_by_axes,
 )
 from component_fab.state.ledger import (
-    DEFAULT_LEDGER_PATH,
     PROMOTION_PROMOTED,
     Ledger,
+    resolve_proposal_id,
 )
+from component_fab.tools._cli import add_common_args, open_ledger
+from component_fab.validator.grade import factory_from_spec
 
 
 _DEFAULT_ANCHOR_OPS: tuple[str, ...] = (
@@ -73,55 +57,37 @@ _DEFAULT_ANCHOR_OPS: tuple[str, ...] = (
 
 
 def _all_specs(anchors: tuple[str, ...], ledger: Ledger) -> list[ProposalSpec]:
-    """Re-enumerate every spec the autonomous loop would consider this cycle.
+    """Re-enumerate the lm-probe view of the cycle spec space.
 
-    Mirrors ``tools/run_autonomous._all_specs_for_cycle`` minus the cycle
-    seed (deterministic enough for proposal_id matching since the digest
-    is axes-keyed, not seed-keyed).
+    Narrower than the autonomous loop on purpose: no frontier cores or NAS
+    topologies (they are not reconstructable targets here), cycle seed 0
+    (deterministic enough for proposal_id matching since the digest is
+    axes-keyed, not seed-keyed), and ledger-persisted specs included.
     """
-    knob_specs = enumerate_adaptive_math_knob_compositions(
-        list(anchors), ledger, max_specs=128
+    return enumerate_cycle_specs(
+        ledger,
+        list(anchors),
+        cycle=0,
+        use_promoted_as_anchors=True,
+        include_static_variants=True,
+        include_frontier=False,
+        include_nas=False,
+        include_ledger_specs=True,
+        max_cross_pairs=80,
+        max_knob_specs=128,
+        max_dynamic_specs=128,
     )
-    anchor_pool = build_anchor_pool(list(anchors), ledger, use_promoted_as_anchors=True)
-    axis_specs = adaptive_axis_variants(anchor_pool, ledger)
-    cross_specs = adaptive_cross_anchor_variants(
-        anchor_pool, ledger, max_pairs=80, seed=0
-    )
-    dynamic_specs = enumerate_dynamic_proposals(list(anchors), ledger, max_specs=128)
-    ledger_specs = specs_from_ledger_entries(ledger)
-    static_axis_specs = enumerate_axis_variants(list(anchors))
-    static_cross_specs = enumerate_cross_anchor_variants(list(anchors))
-    return dedupe_specs_by_axes(
-        static_axis_specs
-        + static_cross_specs
-        + axis_specs
-        + cross_specs
-        + knob_specs
-        + dynamic_specs
-        + ledger_specs
-    )
-
-
-def _factory_from_spec(spec: ProposalSpec) -> Callable[[int], nn.Module]:
-    """Return a lane factory that produces a fresh module from this spec.
-
-    The fab dispatcher reads ``spec.math_axes`` only, so we pass that.
-    """
-    axes = dict(spec.math_axes)
-
-    def factory(dim: int) -> nn.Module:
-        return generate_module(axes, dim=dim, top_k_frac=0.25)
-
-    return factory
 
 
 def _resolve_spec_by_proposal_id(
     proposal_id: str, anchors: tuple[str, ...], ledger: Ledger
 ) -> ProposalSpec | None:
-    if proposal_id in ledger.entries:
-        spec = spec_from_ledger_entry(ledger.entries[proposal_id])
+    try:
+        spec = spec_from_ledger_entry(resolve_proposal_id(ledger, proposal_id))
         if spec is not None:
             return spec
+    except ValueError:
+        pass  # not in the ledger (or ambiguous) — fall back to re-enumeration
     specs = _all_specs(anchors, ledger)
     by_id = {s.proposal_id: s for s in specs}
     if proposal_id in by_id:
@@ -207,13 +173,12 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         nargs="*",
         default=list(DEFAULT_BASELINE_NAMES),
     )
-    parser.add_argument("--ledger", default=str(DEFAULT_LEDGER_PATH))
     parser.add_argument("--n-train-steps", type=int, default=500)
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--dim", type=int, default=64)
     parser.add_argument("--n-blocks", type=int, default=2)
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--output", help="write JSON report to this path")
+    add_common_args(parser, output_help="write JSON report to this path")
     return parser.parse_args(argv)
 
 
@@ -233,7 +198,7 @@ def _resolve_targets(args: argparse.Namespace, ledger: Ledger) -> list[ProposalS
 
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv if argv is not None else sys.argv[1:])
-    ledger = Ledger(args.ledger, include_rotated=True)
+    ledger = open_ledger(args)
     targets = _resolve_targets(args, ledger)
     if not targets:
         print("no targets to run", file=sys.stderr)
@@ -242,7 +207,7 @@ def main(argv: list[str] | None = None) -> int:
     tasks: tuple[HardBindingTask, ...] = default_hard_binding_tasks(seed=args.seed)
     out_payloads: list[dict] = []
     for spec in targets:
-        candidate_factory = _factory_from_spec(spec)
+        candidate_factory = factory_from_spec(spec)
         results = run_harder_binding_suite(
             candidate_factory,
             candidate_label=spec.name,

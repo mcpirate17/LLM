@@ -13,12 +13,7 @@ from itertools import combinations
 from pathlib import Path
 from typing import Any, Sequence
 
-from ..proposer.property_miner import AxisLift, CandidateTuple
-from ..proposer.spec_generator import (
-    ProposalSpec,
-    make_proposal_id,
-    spec_from_candidate,
-)
+from ..proposer.spec_generator import ProposalSpec, build_spec_from_axes
 from ..state.axis_lift import AxisLiftReport, load_axis_lift
 from ..state.ledger import (
     Ledger,
@@ -27,15 +22,16 @@ from ..state.ledger import (
     PROMOTION_REJECTED,
 )
 from .axis_variants import DEFAULT_META_DB, AnchorAxes, anchor_axes_for_op
+from .math_knobs import DEFAULT_MATH_KNOBS, MathKnob
 
-
-@dataclass(frozen=True, slots=True)
-class MathKnob:
-    knob_id: str
-    family: str
-    axes: dict[str, Any]
-    cost_class: str
-    rationale: str
+__all__ = [
+    "DEFAULT_MATH_KNOBS",
+    "KnobStackScore",
+    "MathKnob",
+    "enumerate_adaptive_math_knob_compositions",
+    "enumerate_math_knob_compositions",
+    "score_knob_stack",
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,76 +43,7 @@ class KnobStackScore:
     reason: str
 
 
-DEFAULT_MATH_KNOBS: tuple[MathKnob, ...] = (
-    MathKnob(
-        knob_id="calculus_finite_difference",
-        family="calculus",
-        axes={
-            "op_calculus_operator": "causal_finite_difference_integral",
-        },
-        cost_class="low",
-        rationale="causal derivative and integral features",
-    ),
-    MathKnob(
-        knob_id="linear_algebra_low_rank",
-        family="linear_algebra",
-        axes={
-            "op_linear_algebra_structure": "low_rank_factorized",
-        },
-        cost_class="low",
-        rationale="low-rank factorized adapter",
-    ),
-    MathKnob(
-        knob_id="sparse_matrix_banded",
-        family="sparse_matrix",
-        axes={
-            "op_sparse_matrix_pattern": "causal_banded",
-        },
-        cost_class="low",
-        rationale="causal banded sparse matrix adapter",
-    ),
-    MathKnob(
-        knob_id="kernel_random_features",
-        family="kernel_methods",
-        axes={
-            "op_kernel_feature_map": "positive_random_features",
-        },
-        cost_class="low",
-        rationale="positive random-feature causal kernel mixer",
-    ),
-    MathKnob(
-        knob_id="multiscale_wavelet",
-        family="multiscale",
-        axes={
-            "op_multiscale_transform": "causal_haar",
-        },
-        cost_class="low",
-        rationale="causal Haar-style multiscale averaging and detail mixing",
-    ),
-    MathKnob(
-        knob_id="graph_laplacian_diffusion",
-        family="graph_diffusion",
-        axes={
-            "op_graph_topology": "causal_path_laplacian",
-        },
-        cost_class="low",
-        rationale="causal path-graph Laplacian diffusion",
-    ),
-)
-
 _DEFAULT_KNOB_IDS = tuple(knob.knob_id for knob in DEFAULT_MATH_KNOBS)
-
-
-def _synthetic_lift(axis: str, value: Any) -> AxisLift:
-    return AxisLift(
-        axis=axis,
-        value=value,
-        n_ops=1,
-        total_evals=1,
-        total_s1_pass=0,
-        pass_rate=0.5,
-        representative_ops=(),
-    )
 
 
 def _knobs_from_name(
@@ -127,6 +54,11 @@ def _knobs_from_name(
 
 
 def _knobs_from_metadata(metadata: dict[str, Any]) -> tuple[str, ...]:
+    # NOTE: two knob vocabularies meet here. ``math_knobs`` may carry
+    # DEFAULT_MATH_KNOBS ids (calculus_finite_difference, ...) or the
+    # axis_variants/dynamic literals (info_geom_fisher, spectral_chebyshev,
+    # tensor_tucker) that code_generator dispatches on. Unification is
+    # deferred — code_generator owns those literals.
     raw = metadata.get("math_knobs")
     if isinstance(raw, str):
         return tuple(sorted(part for part in raw.split("+") if part))
@@ -135,14 +67,7 @@ def _knobs_from_metadata(metadata: dict[str, Any]) -> tuple[str, ...]:
     return ()
 
 
-def _entry_score(entry: LedgerEntry) -> float:
-    if not entry.composite_history:
-        return 0.0
-    return max(float(v) for v in entry.composite_history)
-
-
 def _metadata_score(metadata: dict[str, Any]) -> float:
-    score = 0.0
     eliminated_by = metadata.get("eliminated_by")
     if eliminated_by:
         if eliminated_by == "s05_causality_stability":
@@ -152,14 +77,14 @@ def _metadata_score(metadata: dict[str, Any]) -> float:
         if eliminated_by == "nano_bind":
             return -0.2
         return -0.1
-    score += 0.08
-    erf_density = float(metadata.get("erf_density") or 0.0)
+    # WS-1 gate calibration (2026-06-10, catalog/gate_calibration.json):
+    # among survivors erf_density is anti-predictive (residual AUC 0.420)
+    # and can_bind is noise (0.481); only nb_max_accuracy weakly tracks the
+    # learned label. Positive evidence therefore reads nb_max_accuracy
+    # alone, capped so score_knob_stack magnitudes stay in the historical
+    # ballpark.
     nb_max_accuracy = float(metadata.get("nb_max_accuracy") or 0.0)
-    score += min(0.18, max(0.0, erf_density) * 0.4)
-    score += min(0.16, max(0.0, nb_max_accuracy) * 0.2)
-    if metadata.get("can_bind"):
-        score += 0.25
-    return score
+    return 0.08 + min(0.34, max(0.0, nb_max_accuracy) * 0.4)
 
 
 def _entry_capability_score(entry: LedgerEntry) -> float:
@@ -214,6 +139,7 @@ def score_knob_stack(
     *,
     reject_below: float = 0.35,
     axis_lift: AxisLiftReport | None = None,
+    stats: dict[tuple[str, ...], list[LedgerEntry]] | None = None,
 ) -> KnobStackScore:
     """Score a knob stack from exact and subset ledger history.
 
@@ -224,11 +150,16 @@ def score_knob_stack(
     - when an ``axis_lift`` report is provided, per-knob lift mean folds
       into the score so knobs with empirical lift over the global pass rate
       get sampled more often (and underperformers get sampled less).
+
+    ``stats`` lets batch callers precompute ``_stack_stats(ledger)`` once;
+    it is a full ledger scan, so recomputing it per candidate stack is
+    O(specs x ledger).
     """
-    stats = _stack_stats(ledger)
+    if stats is None:
+        stats = _stack_stats(ledger)
     exact = stats.get(tuple(sorted(knob_ids)), [])
     exact_attempts = len(exact)
-    exact_best = max((_entry_score(entry) for entry in exact), default=0.0)
+    exact_best = max((entry.best_composite() for entry in exact), default=0.0)
     exact_capability = max(
         (_entry_capability_score(entry) for entry in exact), default=0.0
     )
@@ -252,7 +183,7 @@ def score_knob_stack(
         for subset in combinations(tuple(sorted(knob_ids)), size):
             entries = stats.get(subset, [])
             if entries:
-                subset_scores.append(max(_entry_score(entry) for entry in entries))
+                subset_scores.append(max(entry.best_composite() for entry in entries))
     subset_prior = sum(subset_scores) / len(subset_scores) if subset_scores else 0.0
     novelty_bonus = 0.05 if not exact else 0.0
     depth_penalty = 0.02 * max(0, len(knob_ids) - 1)
@@ -285,36 +216,21 @@ def _spec_for_knobs(anchor: AnchorAxes, knobs: tuple[MathKnob, ...]) -> Proposal
     axes["op_math_family"] = "composite" if len(knobs) > 1 else knobs[0].family
     for knob in knobs:
         axes.update(knob.axes)
-
-    tuple_values = tuple(axes.items())
-    candidate = CandidateTuple(
-        tuple_values=tuple_values,
-        predicted_lift=0.5,
-        per_axis_lift=tuple(
-            _synthetic_lift(axis, value) for axis, value in tuple_values
-        ),
-        witness_ops=(anchor.op_name,),
-        anchor_axes=tuple(anchor.axes.items()),
-    )
-    base = spec_from_candidate(candidate)
-    suffix = "__".join(knob_ids)
-    name = f"compose_{anchor.op_name}_{suffix}"
+    name = f"compose_{anchor.op_name}_{'__'.join(knob_ids)}"
     notes = tuple(
         [f"anchor={anchor.op_name}", f"math_knobs={'+'.join(knob_ids)}"]
         + [knob.rationale for knob in knobs]
     )
-    return ProposalSpec(
-        proposal_id=make_proposal_id(name, axes),
-        name=name,
-        category=base.category,
-        synthesis_kind=base.synthesis_kind,
-        math_axes=axes,
-        anchor_witness_op=anchor.op_name,
-        anchor_witnesses_all=(anchor.op_name,),
-        declared_property_row=base.declared_property_row,
-        predicted_lift=base.predicted_lift,
-        rationale=base.rationale,
+    # This path historically emits math_axes WITHOUT the mirrored
+    # synthesis_kind and fingerprints the pre-dispatch axes — preserved
+    # for proposal_id stability.
+    return build_spec_from_axes(
+        name,
+        axes,
+        witness_ops=(anchor.op_name,),
+        anchor_axes=anchor.axes,
         notes=notes,
+        dispatched_math_axes=False,
     )
 
 
@@ -361,9 +277,9 @@ def enumerate_adaptive_math_knob_compositions(
     """Generate knob specs with ledger-guided pruning and ranking.
 
     When ``axis_lift`` is omitted the loader auto-discovers
-    ``component_fab/catalog/axis_lift.json`` (written by the
-    ``run_axis_lift`` CLI). Pass ``axis_lift=False``-style explicit
-    None-after-loader by setting an empty report if disabling is needed.
+    ``component_fab/catalog/axis_lift.json`` (refreshed by
+    ``research/tools/fab_daily_loop.py`` via ``state.axis_lift``). Pass an
+    empty report explicitly if disabling is needed.
     """
     if axis_lift is None:
         axis_lift = load_axis_lift()
@@ -377,10 +293,11 @@ def enumerate_adaptive_math_knob_compositions(
     if max_specs <= 0:
         return []
     ranked: list[tuple[KnobStackScore, ProposalSpec]] = []
+    stats = _stack_stats(ledger)
     for spec in specs:
         raw = str(spec.math_axes.get("op_math_knobs") or "")
         knob_ids = tuple(part for part in raw.split("+") if part)
-        score = score_knob_stack(knob_ids, ledger, axis_lift=axis_lift)
+        score = score_knob_stack(knob_ids, ledger, axis_lift=axis_lift, stats=stats)
         if score.rejected:
             continue
         ranked.append((score, spec))

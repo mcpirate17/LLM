@@ -79,8 +79,7 @@ def _tier2_artifact(tmp_path: Path) -> Path:
     return path
 
 
-def _ledger(tmp_path: Path) -> Ledger:
-    ledger = Ledger(tmp_path / "ledger.jsonl")
+def _seed_ledger(ledger: Ledger) -> Ledger:
     ledger.record_grade(
         proposal_id=_PID,
         name="dynamic_candidate",
@@ -110,11 +109,13 @@ def test_tier2_feedback_classifies_narrow_distractor_failures(tmp_path: Path) ->
     assert tier2_score_multiplier(feedback) == 0.55
 
 
-def test_dynamic_proposer_uses_tier2_task_specific_repairs(tmp_path: Path) -> None:
+def test_dynamic_proposer_uses_tier2_task_specific_repairs(
+    tmp_path: Path, tmp_ledger: Ledger
+) -> None:
     feedback_by_id = load_tier2_feedback([_tier2_artifact(tmp_path)])
     specs = enumerate_dynamic_proposals(
         [],
-        _ledger(tmp_path),
+        _seed_ledger(tmp_ledger),
         max_specs=16,
         include_anchor_fallback=False,
         tier2_feedback_by_id=feedback_by_id,

@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
+import pytest
 import torch
-from torch import nn
 
 from component_fab.generator.code_generator import (
+    NativeParityEvidenceError,
+    UndispatchableSpecError,
     generate_module,
     generate_module_from_spec,
+)
+from component_fab.generator.memory_primitives import MultiHeadSlotTableMemoryLane
+from component_fab.generator.native_surprise_memory import (
+    NativeSemiringRopeSurpriseMemoryLane,
+    NativeSemiringSurpriseMemoryLane,
 )
 from component_fab.generator.primitive_templates import (
     CalculusAugmentedLane,
@@ -36,6 +43,50 @@ def test_dispatch_tropical_no_state_to_attention() -> None:
         {"op_algebraic_space": "tropical", "op_dynamical_has_state": 0}, dim=16
     )
     assert isinstance(m, TropicalAttention)
+
+
+def test_dispatch_slot_table_memory_to_improved_multi_head_lane() -> None:
+    module = generate_module({"op_invention_mechanism": "slot_table_memory"}, dim=16)
+    assert isinstance(module, MultiHeadSlotTableMemoryLane)
+    assert module.use_null_write
+    assert module.use_composer
+    assert not module.use_delta_update
+    assert module.normalize_read
+    assert module.route_from_input
+    assert module.memory_dim == 12
+
+
+@pytest.mark.parametrize("mechanism", ("legendre_ssm", "power_semiring_memory"))
+def test_unimplemented_invention_stubs_fail_loud(mechanism: str) -> None:
+    with pytest.raises(NotImplementedError, match="unimplemented stub"):
+        generate_module({"op_invention_mechanism": mechanism}, dim=16)
+
+
+def test_native_equivalent_surprise_dispatch_requires_parity_evidence() -> None:
+    with pytest.raises(NativeParityEvidenceError, match="op_native_parity_passed"):
+        generate_module({"op_invention_mechanism": "semiring_surprise_memory"}, dim=16)
+
+
+def test_native_equivalent_surprise_dispatch_routes_after_parity_evidence() -> None:
+    module = generate_module(
+        {
+            "op_invention_mechanism": "semiring_surprise_memory",
+            "op_native_parity_passed": True,
+            "op_native_parity_evidence": "component_fab/tests/test_native_surprise_memory.py",
+        },
+        dim=16,
+    )
+    assert isinstance(module, NativeSemiringSurpriseMemoryLane)
+
+    rope = generate_module(
+        {
+            "op_invention_mechanism": "semiring_surprise_memory_rope",
+            "op_native_parity_passed": "passed",
+            "op_native_parity_evidence": "component_fab/tests/test_native_surprise_memory.py",
+        },
+        dim=16,
+    )
+    assert isinstance(rope, NativeSemiringRopeSurpriseMemoryLane)
 
 
 def test_dispatch_tropical_with_state_to_state_space() -> None:
@@ -161,9 +212,11 @@ def test_dispatch_composes_new_math_knobs_over_base_lane() -> None:
     assert m(x).shape == x.shape
 
 
-def test_dispatch_default_fallback_linear() -> None:
-    m = generate_module({"op_algebraic_space": "euclidean"}, dim=16)
-    assert isinstance(m, nn.Linear)
+def test_undispatchable_spec_raises() -> None:
+    # An un-dispatchable spec must fail loud, not silently become nn.Linear
+    # (a linear stand-in looks gradeable but measures nothing).
+    with pytest.raises(UndispatchableSpecError):
+        generate_module({"op_algebraic_space": "euclidean"}, dim=16)
 
 
 def test_from_spec_round_trip() -> None:

@@ -20,17 +20,15 @@ Example::
 from __future__ import annotations
 
 import argparse
-import datetime as _dt
-import json
 from pathlib import Path
 
 from component_fab.improver.deep_probe import run_deep_probe
+from component_fab.tools._cli import open_ledger, write_report
 from component_fab.state.ledger import (
     DEFAULT_LEDGER_PATH,
     PROMOTION_PENDING,
     PROMOTION_PROMOTED,
     PROMOTION_REJECTED,
-    Ledger,
 )
 
 _REPO = Path(__file__).resolve().parents[2]
@@ -109,7 +107,7 @@ def _print_summary(report: dict) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
-    ledger = Ledger(args.ledger_path, include_rotated=True)
+    ledger = open_ledger(args)
 
     report = run_deep_probe(
         ledger,
@@ -125,10 +123,13 @@ def main(argv: list[str] | None = None) -> int:
         quiet=args.quiet,
     )
 
-    stamp = _dt.datetime.now(_dt.timezone.utc).strftime("%Y%m%d_%H%M%S")
-    out_path = args.output or (_REPORT_DIR / f"deep_probe_{stamp}.json")
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps(report, indent=1), encoding="utf-8")
+    out_path = write_report(
+        report,
+        default_dir=_REPORT_DIR,
+        prefix="deep_probe",
+        output=args.output,
+        quiet=True,  # summary block below prints the path in its own format
+    )
 
     _print_summary(report)
     print(f"\n[report → {out_path}]")

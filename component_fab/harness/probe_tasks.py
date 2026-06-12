@@ -17,6 +17,7 @@ from typing import Callable
 
 import torch
 
+from .primitives import causal_running_mean
 
 TaskFn = Callable[[torch.Tensor], torch.Tensor]
 
@@ -26,14 +27,6 @@ class ProbeTask:
     name: str
     target_fn: TaskFn
     difficulty: str  # "easy" / "medium" / "hard"
-
-
-def _running_mean(x: torch.Tensor) -> torch.Tensor:
-    seq_len = x.shape[1]
-    weights = torch.arange(1, seq_len + 1, dtype=x.dtype, device=x.device).view(
-        1, -1, 1
-    )
-    return x.cumsum(dim=1) / weights
 
 
 def _causal_max(x: torch.Tensor) -> torch.Tensor:
@@ -85,25 +78,26 @@ def _causal_induction(x: torch.Tensor) -> torch.Tensor:
     A simple induction pattern: find a "key" earlier in the sequence (first
     feature positive) and emit the value at that position. Falls back to the
     current position if no such key exists. Tests pattern-conditioned lookup.
+    Vectorized: cummax over masked position indices, shifted one step right
+    (strictly-previous key), then a gather.
     """
     batch_size, seq_len, dim = x.shape
-    # Build a per-position mask of valid keys (first feature > 0).
-    keys = (x[..., 0] > 0).float()  # [B, L]
-    out = x.clone()
-    # For each position i, find the most recent j < i with keys[j] = 1.
-    # Iterative; bounded by L so cheap for L<=64.
-    last_key_position = torch.full((batch_size,), -1, dtype=torch.long, device=x.device)
-    for i in range(seq_len):
-        active = last_key_position >= 0
-        if active.any():
-            idx = last_key_position.clamp_min(0).view(-1, 1, 1).expand(-1, 1, dim)
-            out[active, i] = torch.gather(x, 1, idx).squeeze(1)[active]
-        # Update last_key_position for any batch where keys[b, i] == 1.
-        update = keys[:, i].bool()
-        last_key_position = torch.where(
-            update, torch.tensor(i, device=x.device), last_key_position
-        )
-    return out
+    positions = torch.arange(seq_len, device=x.device)
+    keyed = torch.where(
+        x[..., 0] > 0,
+        positions.unsqueeze(0).expand(batch_size, -1),
+        torch.full_like(positions, -1).unsqueeze(0).expand(batch_size, -1),
+    )
+    last_key_at_or_before = keyed.cummax(dim=1).values
+    last_key_before = torch.cat(
+        [
+            torch.full((batch_size, 1), -1, dtype=torch.long, device=x.device),
+            last_key_at_or_before[:, :-1],
+        ],
+        dim=1,
+    )
+    source = torch.where(last_key_before >= 0, last_key_before, positions.unsqueeze(0))
+    return torch.gather(x, 1, source.unsqueeze(-1).expand(-1, -1, dim))
 
 
 def _running_parity(x: torch.Tensor) -> torch.Tensor:
@@ -117,7 +111,7 @@ def _running_parity(x: torch.Tensor) -> torch.Tensor:
 
 
 DEFAULT_PROBE_TASKS: tuple[ProbeTask, ...] = (
-    ProbeTask(name="running_mean", target_fn=_running_mean, difficulty="easy"),
+    ProbeTask(name="running_mean", target_fn=causal_running_mean, difficulty="easy"),
     ProbeTask(name="periodic_average", target_fn=_periodic_average, difficulty="easy"),
     ProbeTask(name="causal_max", target_fn=_causal_max, difficulty="medium"),
     ProbeTask(name="shifted_copy", target_fn=_shifted_copy, difficulty="hard"),

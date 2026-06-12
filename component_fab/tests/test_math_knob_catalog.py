@@ -6,6 +6,7 @@ import pytest
 
 from component_fab.generator.code_generator import generate_module_from_spec
 from component_fab.generator.primitive_templates import SparseBandedAdapterLane
+from component_fab.math_knobs import math_knobs_from_axes
 from component_fab.improver.axis_variants import DEFAULT_META_DB
 from component_fab.improver.math_knob_catalog import (
     DEFAULT_MATH_KNOBS,
@@ -24,6 +25,20 @@ def test_default_math_knob_catalog_covers_requested_families() -> None:
     assert "kernel_methods" in families
     assert "multiscale" in families
     assert "graph_diffusion" in families
+
+
+def test_math_knobs_from_axes_parses_explicit_stack() -> None:
+    assert math_knobs_from_axes({"op_math_knobs": "a + b+c"}) == ("a", "b", "c")
+    assert math_knobs_from_axes({"op_math_knobs": ("a", "b")}) == ("a", "b")
+
+
+def test_math_knobs_from_axes_uses_family_fallbacks() -> None:
+    assert math_knobs_from_axes({"op_math_family": "calculus"}) == (
+        "calculus_finite_difference",
+    )
+    assert math_knobs_from_axes({"op_math_family": "spectral_graph"}) == (
+        "spectral_chebyshev",
+    )
 
 
 def test_enumerate_math_knob_compositions_against_real_db() -> None:

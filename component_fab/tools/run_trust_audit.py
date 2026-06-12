@@ -7,19 +7,19 @@ classifies candidates as screened, promising, trusted, or rejected.
 from __future__ import annotations
 
 import argparse
-import datetime as _dt
 import json
 import sys
 from pathlib import Path
 from typing import Any
 
+from component_fab.proposer.proposal_catalog import load_proposals_by_id
 from component_fab.state.ledger import (
-    DEFAULT_LEDGER_PATH,
     PROMOTION_PROMOTED,
     Ledger,
+    resolve_proposal_id,
 )
+from component_fab.tools._cli import add_common_args, open_ledger, write_report
 from component_fab.validator.trust import TrustThresholds, build_trust_report
-from research.tools.run_tier2_binding_cohort import _load_proposals_by_id
 
 _REPO = Path(__file__).resolve().parents[2]
 _DEFAULT_SAVED_WINNERS = _REPO / "component_fab" / "catalog" / "saved_winners.json"
@@ -48,26 +48,12 @@ def _resolve_promoted(ledger: Ledger, limit: int) -> list[str]:
 
 def _resolve_targets(args: argparse.Namespace, ledger: Ledger) -> list[str]:
     if args.proposal_id:
-        needle = str(args.proposal_id)
-        if needle in ledger.entries:
-            return [needle]
-        matches = [pid for pid in ledger.entries if pid.startswith(needle)]
-        if len(matches) == 1:
-            return matches
-        if len(matches) > 1:
-            print(
-                f"proposal id prefix {needle!r} is ambiguous ({len(matches)} matches)",
-                file=sys.stderr,
-            )
+        try:
+            return [resolve_proposal_id(ledger, str(args.proposal_id)).proposal_id]
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
             return []
-        print(f"proposal id {needle!r} not found in ledger", file=sys.stderr)
-        return []
     return _resolve_promoted(ledger, int(args.top_promoted))
-
-
-def _default_output_path() -> Path:
-    stamp = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
-    return _AUDIT_DIR / f"fab_trust_audit_{stamp}.json"
 
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:
@@ -75,7 +61,6 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     target = parser.add_mutually_exclusive_group(required=True)
     target.add_argument("--proposal-id")
     target.add_argument("--top-promoted", type=int)
-    parser.add_argument("--ledger", default=str(DEFAULT_LEDGER_PATH))
     parser.add_argument("--tier2", help="Tier-2 cohort JSON artifact")
     parser.add_argument("--blimp", help="BLiMP cohort JSON artifact")
     parser.add_argument("--saved-winners", default=str(_DEFAULT_SAVED_WINNERS))
@@ -83,23 +68,18 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--min-blimp-delta", type=float, default=0.005)
     parser.add_argument("--min-tier2-mean-delta", type=float, default=0.0)
     parser.add_argument("--max-wikitext-ppl-regression", type=float, default=0.10)
-    parser.add_argument("--output", type=Path)
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="print JSON to stdout and do not write an artifact",
-    )
+    add_common_args(parser, dry_run=True)
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(sys.argv[1:] if argv is None else argv)
-    ledger = Ledger(args.ledger, include_rotated=True)
+    ledger = open_ledger(args)
     proposal_ids = _resolve_targets(args, ledger)
     if not proposal_ids:
         print("no proposals to audit", file=sys.stderr)
         return 2
-    proposals = _load_proposals_by_id()
+    proposals = load_proposals_by_id()
     thresholds = TrustThresholds(
         min_seed_count=max(1, int(args.min_seed_count)),
         min_blimp_delta=float(args.min_blimp_delta),
@@ -117,14 +97,13 @@ def main(argv: list[str] | None = None) -> int:
         thresholds=thresholds,
     )
     report["proposal_ids"] = proposal_ids
-    payload = json.dumps(report, indent=2, default=str)
-    if args.dry_run:
-        print(payload)
-        return 0
-    out = args.output or _default_output_path()
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(payload, encoding="utf-8")
-    print(f"wrote: {out}")
+    write_report(
+        report,
+        default_dir=_AUDIT_DIR,
+        prefix="fab_trust_audit",
+        output=args.output,
+        dry_run=args.dry_run,
+    )
     return 0
 
 

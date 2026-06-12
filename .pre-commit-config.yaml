@@ -76,7 +76,7 @@ repos:
         name: Codespell staged spelling check
         language: system
         entry: uv run codespell
-        args: [--ignore-words-list, "ans,mor,nd,pres,astroid,unparseable,regraded"]
+        args: [--ignore-words-list, "ans,mor,nd,pres,astroid,unparseable,regraded,fpr"]
         exclude: '(^|/)(uv\.lock$|package-lock\.json$|node_modules/|\.venv/|tasks/audit/|research/runtime_events/|research/runtime/|research/reports/)'
       - id: detect-secrets
         name: Detect-secrets staged secret scan

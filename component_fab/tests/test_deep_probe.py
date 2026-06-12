@@ -6,7 +6,6 @@ so the Tier-2 engine is faked and the orchestration logic is exercised alone.
 
 from __future__ import annotations
 
-from pathlib import Path
 
 from component_fab.improver.deep_probe import (
     DeepProbeCandidate,
@@ -17,10 +16,6 @@ from component_fab.state.ledger import (
     PROMOTION_PROMOTED,
     Ledger,
 )
-
-
-def _ledger(tmp_path: Path) -> Ledger:
-    return Ledger(tmp_path / "ledger.jsonl")
 
 
 def _grade(
@@ -39,8 +34,8 @@ def _grade(
         )
 
 
-def test_select_top_k_ranks_by_recent_mean(tmp_path: Path) -> None:
-    ledger = _ledger(tmp_path)
+def test_select_top_k_ranks_by_recent_mean(tmp_ledger: Ledger) -> None:
+    ledger = tmp_ledger
     _grade(ledger, "a", [0.1, 0.9, 0.9])  # recent mean (window 2) = 0.9
     _grade(ledger, "b", [0.9, 0.5, 0.5])  # recent mean (window 2) = 0.5
     _grade(ledger, "c", [0.2, 0.2, 0.2])  # recent mean (window 2) = 0.2
@@ -50,8 +45,8 @@ def test_select_top_k_ranks_by_recent_mean(tmp_path: Path) -> None:
     assert top[0].mean_composite == 0.9
 
 
-def test_select_top_k_drops_no_smoke_and_no_history(tmp_path: Path) -> None:
-    ledger = _ledger(tmp_path)
+def test_select_top_k_drops_no_smoke_and_no_history(tmp_ledger: Ledger) -> None:
+    ledger = tmp_ledger
     _grade(ledger, "good", [0.6, 0.6])
     _grade(ledger, "nosmoke", [0.95, 0.95], smoke=False)  # never passed smoke
 
@@ -59,8 +54,8 @@ def test_select_top_k_drops_no_smoke_and_no_history(tmp_path: Path) -> None:
     assert ids == {"good"}
 
 
-def test_select_top_k_filters_by_status(tmp_path: Path) -> None:
-    ledger = _ledger(tmp_path)
+def test_select_top_k_filters_by_status(tmp_ledger: Ledger) -> None:
+    ledger = tmp_ledger
     _grade(ledger, "p", [0.7, 0.7])
     _grade(ledger, "q", [0.8, 0.8])
     ledger.record_promotion("p", PROMOTION_PROMOTED)
@@ -95,8 +90,8 @@ def _fake_cohort(passing_ids: set[str], deltas: dict[str, float]):
     return runner
 
 
-def test_run_deep_probe_promotes_only_frontier_beaters(tmp_path: Path) -> None:
-    ledger = _ledger(tmp_path)
+def test_run_deep_probe_promotes_only_frontier_beaters(tmp_ledger: Ledger) -> None:
+    ledger = tmp_ledger
     _grade(ledger, "winner", [0.5, 0.5])
     _grade(ledger, "loser", [0.6, 0.6])  # higher nano score, still selected
 
@@ -118,8 +113,8 @@ def test_run_deep_probe_promotes_only_frontier_beaters(tmp_path: Path) -> None:
     assert report["outcomes"][0]["proposal_id"] == "winner"
 
 
-def test_run_deep_probe_dry_run_does_not_mutate_ledger(tmp_path: Path) -> None:
-    ledger = _ledger(tmp_path)
+def test_run_deep_probe_dry_run_does_not_mutate_ledger(tmp_ledger: Ledger) -> None:
+    ledger = tmp_ledger
     _grade(ledger, "winner", [0.5, 0.5])
 
     report = run_deep_probe(
@@ -134,16 +129,16 @@ def test_run_deep_probe_dry_run_does_not_mutate_ledger(tmp_path: Path) -> None:
     assert ledger.entries["winner"].promotion_status != PROMOTION_PROMOTED
 
 
-def test_run_deep_probe_empty_selection(tmp_path: Path) -> None:
-    ledger = _ledger(tmp_path)
+def test_run_deep_probe_empty_selection(tmp_ledger: Ledger) -> None:
+    ledger = tmp_ledger
     report = run_deep_probe(ledger, top_k=5, cohort_runner=_fake_cohort(set(), {}))
     assert report["n_selected"] == 0
     assert report["outcomes"] == []
     assert report["baseline_names"]  # frontier names still reported
 
 
-def test_run_deep_probe_handles_failed_cohort_row(tmp_path: Path) -> None:
-    ledger = _ledger(tmp_path)
+def test_run_deep_probe_handles_failed_cohort_row(tmp_ledger: Ledger) -> None:
+    ledger = tmp_ledger
     _grade(ledger, "boom", [0.7, 0.7])
 
     def runner(proposal_ids, **_kwargs):

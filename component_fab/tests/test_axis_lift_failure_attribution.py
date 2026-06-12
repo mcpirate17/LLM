@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import datetime as _dt
 import json
 from pathlib import Path
 
@@ -16,60 +15,13 @@ from component_fab.state.axis_lift import (
 from component_fab.state.failure_attribution import (
     CANONICAL_GATE_ORDER,
     compute_failure_attribution,
-    load_failure_attribution,
     write_failure_attribution,
 )
-
-
-def _grade(
-    pid: str,
-    *,
-    cycle: int = 1,
-    knobs: tuple[str, ...] = (),
-    eliminated_by: str | None = None,
-    composite: float = 0.0,
-    learned: bool = False,
-    erf: float | None = None,
-    nb: float | None = None,
-    synthesis_kind: str = "semiring_swap",
-    category: str = "lane",
-    name: str | None = None,
-) -> dict:
-    meta: dict = {"math_knobs": list(knobs)}
-    if eliminated_by is not None:
-        meta["eliminated_by"] = eliminated_by
-    if erf is not None:
-        meta["erf_density"] = erf
-    if nb is not None:
-        meta["nb_max_accuracy"] = nb
-    return {
-        "event": "grade",
-        "proposal_id": pid,
-        "name": name or pid,
-        "category": category,
-        "synthesis_kind": synthesis_kind,
-        "cycle": cycle,
-        "composite_score": composite,
-        "smoke_pass": eliminated_by != "smoke",
-        "learned_signal": learned,
-        "metadata": meta,
-        "timestamp": _dt.datetime.now(_dt.timezone.utc).isoformat(),
-    }
-
-
-def _promote(pid: str, status: str) -> dict:
-    return {
-        "event": "promote",
-        "proposal_id": pid,
-        "status": status,
-        "timestamp": _dt.datetime.now(_dt.timezone.utc).isoformat(),
-    }
-
-
-def _write_ledger(path: Path, records: list[dict]) -> None:
-    with path.open("w", encoding="utf-8") as handle:
-        for r in records:
-            handle.write(json.dumps(r) + "\n")
+from component_fab.tests.conftest import (
+    grade_record,
+    promote_record,
+    write_ledger_jsonl,
+)
 
 
 # -------------------- axis_lift --------------------
@@ -78,19 +30,19 @@ def _write_ledger(path: Path, records: list[dict]) -> None:
 def test_axis_lift_shrinks_toward_global_with_small_n(tmp_path: Path) -> None:
     ledger = tmp_path / "ledger.jsonl"
     records = [
-        _grade("a", knobs=("good",), composite=0.6),
-        _promote("a", "promoted"),
+        grade_record("a", knobs=("good",), composite=0.6),
+        promote_record("a", "promoted"),
         # five rejected proposals so global pass rate = 1/6 ≈ 0.167
         *(
             rec
             for i in range(5)
             for rec in (
-                _grade(f"r{i}", knobs=("other",), eliminated_by="nano_bind"),
-                _promote(f"r{i}", "rejected"),
+                grade_record(f"r{i}", knobs=("other",), eliminated_by="nano_bind"),
+                promote_record(f"r{i}", "rejected"),
             )
         ),
     ]
-    _write_ledger(ledger, records)
+    write_ledger_jsonl(ledger, records)
 
     report = compute_axis_lift(ledger, prior_strength=5.0, min_n=1)
     assert report.global_total == 6
@@ -109,12 +61,12 @@ def test_axis_lift_shrinks_toward_global_with_small_n(tmp_path: Path) -> None:
 def test_axis_lift_pair_axis_present_only_for_multi_knob(tmp_path: Path) -> None:
     ledger = tmp_path / "ledger.jsonl"
     records = [
-        _grade("a", knobs=("x", "y"), composite=0.5),
-        _promote("a", "promoted"),
-        _grade("b", knobs=("x",), eliminated_by="nano_bind"),
-        _promote("b", "rejected"),
+        grade_record("a", knobs=("x", "y"), composite=0.5),
+        promote_record("a", "promoted"),
+        grade_record("b", knobs=("x",), eliminated_by="nano_bind"),
+        promote_record("b", "rejected"),
     ]
-    _write_ledger(ledger, records)
+    write_ledger_jsonl(ledger, records)
     report = compute_axis_lift(ledger, min_n=1)
     pair_values = {r.value for r in report.by_axis.get("math_knob_pair", [])}
     assert "x+y" in pair_values
@@ -125,7 +77,9 @@ def test_axis_lift_pair_axis_present_only_for_multi_knob(tmp_path: Path) -> None
 def test_axis_lift_round_trip_json(tmp_path: Path) -> None:
     ledger = tmp_path / "ledger.jsonl"
     out = tmp_path / "axis_lift.json"
-    _write_ledger(ledger, [_grade("a", knobs=("k",)), _promote("a", "promoted")])
+    write_ledger_jsonl(
+        ledger, [grade_record("a", knobs=("k",)), promote_record("a", "promoted")]
+    )
     report = compute_axis_lift(ledger, min_n=1)
     write_axis_lift(report, output_path=out)
     loaded = load_axis_lift(out)
@@ -152,15 +106,15 @@ def test_failure_attribution_flags_over_eager_gate(tmp_path: Path) -> None:
     # 30 ERF kills, 5 nano_bind kills, 5 survivors -> ERF rate = 30/40 = 75%
     # bump above 0.7 by using a custom threshold below.
     for i in range(30):
-        records.append(_grade(f"e{i}", eliminated_by="erf_density"))
-        records.append(_promote(f"e{i}", "rejected"))
+        records.append(grade_record(f"e{i}", eliminated_by="erf_density"))
+        records.append(promote_record(f"e{i}", "rejected"))
     for i in range(5):
-        records.append(_grade(f"nb{i}", eliminated_by="nano_bind"))
-        records.append(_promote(f"nb{i}", "rejected"))
+        records.append(grade_record(f"nb{i}", eliminated_by="nano_bind"))
+        records.append(promote_record(f"nb{i}", "rejected"))
     for i in range(5):
-        records.append(_grade(f"s{i}", composite=0.7, learned=True))
-        records.append(_promote(f"s{i}", "promoted"))
-    _write_ledger(ledger, records)
+        records.append(grade_record(f"s{i}", composite=0.7, learned=True))
+        records.append(promote_record(f"s{i}", "promoted"))
+    write_ledger_jsonl(ledger, records)
 
     report = compute_failure_attribution(
         ledger, over_eager_threshold=0.7, min_n_for_over_eager=10
@@ -178,19 +132,19 @@ def test_failure_attribution_anchor_pool_filters_and_ranks(tmp_path: Path) -> No
     ledger = tmp_path / "ledger.jsonl"
     records = [
         # high composite, late-gate kill -> anchor candidate
-        _grade("good_late", eliminated_by="nano_bind", composite=0.6, erf=0.15),
-        _promote("good_late", "rejected"),
+        grade_record("good_late", eliminated_by="nano_bind", composite=0.6, erf=0.15),
+        promote_record("good_late", "rejected"),
         # high ERF, late-gate kill -> anchor candidate
-        _grade("erf_late", eliminated_by="nano_bind", composite=0.1, erf=0.25),
-        _promote("erf_late", "rejected"),
+        grade_record("erf_late", eliminated_by="nano_bind", composite=0.1, erf=0.25),
+        promote_record("erf_late", "rejected"),
         # low composite, low ERF -> excluded
-        _grade("noise", eliminated_by="nano_bind", composite=0.0, erf=0.01),
-        _promote("noise", "rejected"),
+        grade_record("noise", eliminated_by="nano_bind", composite=0.0, erf=0.01),
+        promote_record("noise", "rejected"),
         # promoted -> excluded
-        _grade("winner", composite=0.9, erf=0.4),
-        _promote("winner", "promoted"),
+        grade_record("winner", composite=0.9, erf=0.4),
+        promote_record("winner", "promoted"),
     ]
-    _write_ledger(ledger, records)
+    write_ledger_jsonl(ledger, records)
     report = compute_failure_attribution(
         ledger, anchor_min_composite=0.5, anchor_min_erf=0.2
     )
@@ -209,12 +163,12 @@ def test_failure_attribution_canonical_gate_order_reached_counts(
     ledger = tmp_path / "ledger.jsonl"
     records: list[dict] = []
     for i in range(10):
-        records.append(_grade(f"e{i}", eliminated_by="erf_density"))
-        records.append(_promote(f"e{i}", "rejected"))
+        records.append(grade_record(f"e{i}", eliminated_by="erf_density"))
+        records.append(promote_record(f"e{i}", "rejected"))
     for i in range(2):
-        records.append(_grade(f"nb{i}", eliminated_by="nano_bind"))
-        records.append(_promote(f"nb{i}", "rejected"))
-    _write_ledger(ledger, records)
+        records.append(grade_record(f"nb{i}", eliminated_by="nano_bind"))
+        records.append(promote_record(f"nb{i}", "rejected"))
+    write_ledger_jsonl(ledger, records)
     report = compute_failure_attribution(ledger)
     gates = {g.gate: g for g in report.gate_stats}
     assert gates["erf_density"].reached == 12
@@ -225,22 +179,21 @@ def test_failure_attribution_canonical_gate_order_reached_counts(
     assert gates["ar_easy"].killed == 0
 
 
-def test_failure_attribution_round_trip_json(tmp_path: Path) -> None:
+def test_failure_attribution_writes_json(tmp_path: Path) -> None:
     ledger = tmp_path / "ledger.jsonl"
     out = tmp_path / "failure.json"
-    _write_ledger(
+    write_ledger_jsonl(
         ledger,
         [
-            _grade("a", eliminated_by="erf_density", erf=0.05),
-            _promote("a", "rejected"),
+            grade_record("a", eliminated_by="erf_density", erf=0.05),
+            promote_record("a", "rejected"),
         ],
     )
     report = compute_failure_attribution(ledger)
     write_failure_attribution(report, output_path=out)
-    loaded = load_failure_attribution(out)
-    assert loaded is not None
-    assert loaded.total_graded == 1
-    assert loaded.total_rejected == 1
+    data = json.loads(out.read_text(encoding="utf-8"))
+    assert data["total_graded"] == 1
+    assert data["total_rejected"] == 1
 
 
 def test_failure_attribution_floor_bunching_unflags_correct_erf_gate(
@@ -253,13 +206,13 @@ def test_failure_attribution_floor_bunching_unflags_correct_erf_gate(
     records: list[dict] = []
     # 30 ERF kills all at the floor (1/32 ≈ 0.03125).
     for i in range(30):
-        records.append(_grade(f"e{i}", eliminated_by="erf_density", erf=1.0 / 32))
-        records.append(_promote(f"e{i}", "rejected"))
+        records.append(grade_record(f"e{i}", eliminated_by="erf_density", erf=1.0 / 32))
+        records.append(promote_record(f"e{i}", "rejected"))
     # 10 survivors so kill_rate stays above the over_eager threshold.
     for i in range(10):
-        records.append(_grade(f"s{i}", composite=0.7, learned=True))
-        records.append(_promote(f"s{i}", "promoted"))
-    _write_ledger(ledger, records)
+        records.append(grade_record(f"s{i}", composite=0.7, learned=True))
+        records.append(promote_record(f"s{i}", "promoted"))
+    write_ledger_jsonl(ledger, records)
     report = compute_failure_attribution(
         ledger, over_eager_threshold=0.7, min_n_for_over_eager=10
     )

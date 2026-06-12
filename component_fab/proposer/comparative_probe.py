@@ -117,7 +117,9 @@ def comparative_binding_screen(
             per_task=per_task,
         )
     except Exception as exc:  # noqa: BLE001 - screen is best-effort, fail open
-        logger.debug("comparative probe unavailable for %s: %s", spec.proposal_id, exc)
+        logger.warning(
+            "comparative probe unavailable for %s: %s", spec.proposal_id, exc
+        )
         return _unavailable(spec.proposal_id, baseline_name, str(exc))
 
 

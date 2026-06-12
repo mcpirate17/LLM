@@ -23,6 +23,8 @@ from dataclasses import dataclass, field
 import torch
 from torch import nn
 
+from .training_probe import train_lane_head
+
 
 @dataclass(frozen=True, slots=True)
 class NanoBindResult:
@@ -87,41 +89,28 @@ def nano_bind_gate(
     torch.manual_seed(seed)
     generator = torch.Generator().manual_seed(seed)
     head = _BindingHead(dim, n_classes)
-    optimizer = torch.optim.Adam(
-        list(lane_block.parameters()) + list(head.parameters()),
-        lr=learning_rate,
-    )
     random_baseline = 1.0 / float(n_classes)
     # Tight margin: a primitive that can't beat random+epsilon on a tiny
     # K-class binding task fails the persistent-zero check. The original
     # nano_bind used "exactly 0.00" — we use "no checkpoint exceeded random
     # by more than epsilon" which is the equivalent for continuous-MSE setting.
     margin = 0.01
-    accuracies: list[float] = []
     try:
         lane_block.train()
-        for step in range(1, n_train_steps + 1):
-            x, labels = _sample_binding_batch(
-                batch_size,
-                seq_len,
-                dim,
-                n_classes,
-                generator=generator,
-            )
-            features = lane_block(x)
-            logits = head(features[:, -1, :])
-            loss = nn.functional.cross_entropy(logits, labels)
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            if step in checkpoint_at_steps:
-                with torch.no_grad():
-                    accuracies.append(
-                        float((logits.argmax(dim=-1) == labels).float().mean().item())
-                    )
-    except Exception as exc:  # noqa: BLE001
+        trace = train_lane_head(
+            lambda x: head(lane_block(x)[:, -1, :]),
+            list(lane_block.parameters()) + list(head.parameters()),
+            lambda: _sample_binding_batch(
+                batch_size, seq_len, dim, n_classes, generator=generator
+            ),
+            nn.functional.cross_entropy,
+            n_train_steps=n_train_steps,
+            learning_rate=learning_rate,
+            checkpoint_at_steps=checkpoint_at_steps,
+        )
+    except Exception as exc:  # noqa: BLE001 - structured no-go, logged via result
         return NanoBindResult(
-            accuracies=tuple(accuracies),
+            accuracies=(),
             max_accuracy=0.0,
             random_baseline=random_baseline,
             rejected_persistent_zero=True,
@@ -130,6 +119,7 @@ def nano_bind_gate(
         )
 
     lane_block.eval()
+    accuracies = list(trace.checkpoint_values)
     max_acc = max(accuracies) if accuracies else 0.0
     persistent_zero = bool(accuracies) and all(
         acc <= random_baseline + margin for acc in accuracies

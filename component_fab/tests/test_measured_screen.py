@@ -15,21 +15,11 @@ from component_fab.proposer.measured_screen import (  # noqa: F401
     measured_screen_for_spec,
 )
 from component_fab.proposer.spec_generator import ProposalSpec
+from component_fab.tests.conftest import make_spec
 
 
 def _spec(axes: dict, pid: str = "ms_cand") -> ProposalSpec:
-    return ProposalSpec(
-        proposal_id=pid,
-        name="cand",
-        category="lane",
-        synthesis_kind="novel_hybrid",
-        math_axes=axes,
-        anchor_witness_op="",
-        anchor_witnesses_all=(),
-        declared_property_row=dict(axes),
-        predicted_lift=0.5,
-        rationale="test",
-    )
+    return make_spec(axes, pid, name="cand", category="lane")
 
 
 def test_adapter_exposes_probe_contract_and_unwraps_tuple() -> None:

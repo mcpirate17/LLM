@@ -8,11 +8,10 @@ screen only; Tier-2 remains the downstream evidence gate.
 
 from __future__ import annotations
 
-import json
 import logging
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Any, Iterable, Mapping
+from functools import lru_cache
+from typing import Any, Iterable
 
 from component_fab.proposer.measured_screen import (
     LONG_RANGE_THRESHOLD,
@@ -22,13 +21,6 @@ from component_fab.proposer.measured_screen import (
 from component_fab.proposer.spec_generator import ProposalSpec
 
 logger = logging.getLogger(__name__)
-_REPO = Path(__file__).resolve().parents[2]
-_ORACLE_META = (
-    _REPO / "research" / "runtime" / "pls_partition_oracle" / "oracle_meta.json"
-)
-_PREDICTOR_REPORT = (
-    _REPO / "research" / "runtime" / "learning" / "predictor_metrics_report.json"
-)
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,79 +36,13 @@ class NasScreenResult:
     raw: dict[str, Any] | None = None
 
 
-def _load_json(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        return {}
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return {}
-    return payload if isinstance(payload, dict) else {}
-
-
-def nas_calibration_context() -> dict[str, Any]:
-    """Return PPV/NPV/ROC context for interpreting NAS screen decisions."""
-
-    oracle_meta = _load_json(_ORACLE_META)
-    predictor = _load_json(_PREDICTOR_REPORT)
-    graph_predictor = predictor.get("graph_predictor") or {}
-    selected_metrics = (
-        graph_predictor.get("saved_runtime_artifact_evaluation", {}).get(
-            "selected_metrics"
-        )
-        or graph_predictor.get("val_metrics_selected_threshold")
-        or graph_predictor.get("derived_val_classification_metrics")
-        or {}
-    )
-    temporal_metrics = (
-        graph_predictor.get("temporal_holdout_evaluation", {}).get("selected_metrics")
-        or {}
-    )
-    axes = {}
-    for axis, row in (oracle_meta.get("selected_per_axis") or {}).items():
-        if not isinstance(row, Mapping):
-            continue
-        axes[str(axis)] = {
-            "kind": row.get("kind"),
-            "leave_family_out_roc": row.get("leave_family_out_roc"),
-        }
-    return {
-        "oracle_axes": axes,
-        "oracle_thresholds": oracle_meta.get("thresholds") or {},
-        "graph_predictor_selected": {
-            key: selected_metrics.get(key)
-            for key in (
-                "roc_auc",
-                "precision_ppv",
-                "npv",
-                "recall_tpr_sensitivity",
-                "specificity_tnr",
-                "threshold",
-            )
-            if key in selected_metrics
-        },
-        "graph_predictor_temporal": {
-            key: temporal_metrics.get(key)
-            for key in (
-                "roc_auc",
-                "precision_ppv",
-                "npv",
-                "recall_tpr_sensitivity",
-                "specificity_tnr",
-                "threshold",
-            )
-            if key in temporal_metrics
-        },
-    }
-
-
+@lru_cache(maxsize=1)
 def _measured_calibration() -> dict[str, Any]:
     """Operating-point context for the measured-descriptor binding screen.
 
-    The 2026-06-03 audit retired the oracle proxy-graph gate (anti-predictive,
-    OOD on the 3-op stub). This screen instead reads the position-Jacobian of the
-    REAL fab module. ``nas_calibration_context`` is still exposed for the
-    oracle's own PPV/NPV/ROC, but the gate decision here is the measured one.
+    The 2026-06-03 audit retired the NAS oracle proxy-graph gate
+    (anti-predictive, OOD on the 3-op stub); this screen reads the
+    position-Jacobian of the REAL fab module instead.
     """
 
     return {
@@ -127,7 +53,6 @@ def _measured_calibration() -> dict[str, Any]:
         "induction-capable graphs, prunes ~55% of incapable (n=1102)",
         "note": "filters non-binders (MLP-class long_range_reach~0); not a "
         "fine-grained ranker within one architecture family",
-        "oracle_reference": nas_calibration_context(),
     }
 
 

@@ -57,6 +57,10 @@ DEFAULT_INVENTION_BLUEPRINTS: tuple[InventionBlueprint, ...] = (
         expected_baseline="causal_fast_weight_memory",
         complexity="O(L * D * M) with M<=D memory projection",
     ),
+    # power_semiring_memory and legendre_ssm blueprints removed 2026-06-11:
+    # their lane classes were unimplemented stubs (identity / bare nn.Linear)
+    # that graded the host scaffold. The stub classes now raise on
+    # construction; re-add the blueprints only with real implementations.
     InventionBlueprint(
         mechanism_id="causal_fast_weight_memory",
         category=CATEGORY_LANE,

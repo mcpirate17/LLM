@@ -20,21 +20,14 @@ donors, contributing state/sparsity/receptive axes onto a mixing host.
 
 from __future__ import annotations
 
-from itertools import combinations
-from pathlib import Path
+import logging
 from typing import Any, Sequence
 
-from ..proposer.property_miner import AxisLift, CandidateTuple
-from ..proposer.spec_generator import (
-    ProposalSpec,
-    make_proposal_id,
-    spec_from_candidate,
-)
-from .axis_variants import (
-    DEFAULT_META_DB,
-    AnchorAxes,
-    anchor_axes_for_op,
-)
+from ..proposer.spec_generator import ProposalSpec, build_spec_from_axes
+from .axis_variants import AnchorAxes, anchor_axes_for_op
+from ..inventor.mechanism_catalog import enumerate_invention_specs
+
+logger = logging.getLogger(__name__)
 
 _HOSTING_ALGEBRAS = frozenset({"tropical", "clifford", "fab_promoted"})
 _INHERITED_AXES: tuple[str, ...] = (
@@ -59,132 +52,58 @@ def is_hosting_anchor(anchor: AnchorAxes) -> bool:
     return algebra in _HOSTING_ALGEBRAS
 
 
-def _synthetic_lift(axis: str, value: Any) -> AxisLift:
-    return AxisLift(
-        axis=axis,
-        value=value,
-        n_ops=1,
-        total_evals=1,
-        total_s1_pass=0,
-        pass_rate=0.5,
-        representative_ops=(),
-    )
-
-
-def _build_spec(
-    name: str,
-    merged: dict[str, Any],
-    *,
-    witness_ops: tuple[str, ...],
-    anchor_axes: dict[str, Any],
-    notes: tuple[str, ...],
-) -> ProposalSpec:
-    """Assemble a ProposalSpec from already-merged axes.
-
-    Shared by the generic cross-anchor and the frontier-hybrid generators so
-    spec assembly (synthetic lifts, candidate, id, witnesses) lives in one place.
-    """
-    tuple_values = tuple(merged.items())
-    lifts = tuple(_synthetic_lift(a, v) for a, v in tuple_values)
-    candidate = CandidateTuple(
-        tuple_values=tuple_values,
-        predicted_lift=0.5,
-        per_axis_lift=lifts,
-        witness_ops=witness_ops,
-        anchor_axes=tuple(anchor_axes.items()),
-    )
-    base_spec = spec_from_candidate(candidate)
-    return ProposalSpec(
-        proposal_id=make_proposal_id(name, merged),
-        name=name,
-        category=base_spec.category,
-        synthesis_kind=base_spec.synthesis_kind,
-        math_axes=base_spec.math_axes,
-        anchor_witness_op=witness_ops[0] if witness_ops else name,
-        anchor_witnesses_all=witness_ops,
-        declared_property_row=base_spec.declared_property_row,
-        predicted_lift=base_spec.predicted_lift,
-        rationale=base_spec.rationale,
-        notes=notes,
-    )
-
-
 def _hybrid_spec(host: AnchorAxes, donor: AnchorAxes) -> ProposalSpec:
     merged: dict[str, Any] = dict(host.axes)
     for axis in _INHERITED_AXES:
         if axis in donor.axes:
             merged[axis] = donor.axes[axis]
-    return _build_spec(
-        f"cross_{host.op_name}_x_{donor.op_name}",
-        merged,
-        witness_ops=(host.op_name, donor.op_name),
-        anchor_axes=host.axes,
-        notes=(
-            f"host={host.op_name} (algebra={host.axes.get('op_algebraic_space')})",
-            f"donor={donor.op_name} (state/sparsity/receptive inherited)",
-        ),
-    )
-
-
-def enumerate_cross_anchor_variants(
-    anchor_op_names: Sequence[str],
-    *,
-    db_path: Path | str = DEFAULT_META_DB,
-) -> list[ProposalSpec]:
-    """Return cross-anchor specs for every (host, donor) pair where the
-    host's algebra mixes across positions. Donors can be any algebra."""
-    anchors: list[AnchorAxes] = []
-    for name in anchor_op_names:
-        anchor = anchor_axes_for_op(name, db_path=db_path)
-        if anchor is None:
-            continue
-        anchors.append(anchor)
-
-    out: list[ProposalSpec] = []
-    for a, b in combinations(anchors, 2):
-        if is_hosting_anchor(a):
-            out.append(_hybrid_spec(a, b))
-        if is_hosting_anchor(b):
-            out.append(_hybrid_spec(b, a))
-    return out
-
-
-# Frontier hybrids inherit ONLY the donor's novel mechanism (state + memory +
-# sparsity). The host's op_geometric_receptive_field=global is preserved on
-# purpose — that global mixing is the source of the core's binding strength, so
-# unlike the generic cross-anchor path a donor is NOT allowed to downgrade it.
-_FRONTIER_INHERITED_AXES: tuple[str, ...] = (
-    "op_dynamical_has_state",
-    "op_dynamical_memory_length_class",
-    "op_activation_sparsity_pattern",
-)
-
-
-def _resolve_frontier_hosts(
-    hosts: Sequence[AnchorAxes] | None,
-) -> list[AnchorAxes]:
-    if hosts is not None:
-        return list(hosts)
-    from ..proposer.frontier_cores import frontier_core_anchors
-
-    return frontier_core_anchors()
-
-
-def _frontier_hybrid_spec(host: AnchorAxes, donor: AnchorAxes) -> ProposalSpec:
-    merged: dict[str, Any] = dict(host.axes)
-    for axis in _FRONTIER_INHERITED_AXES:
-        if axis in donor.axes:
-            merged[axis] = donor.axes[axis]
-    return _build_spec(
-        f"frontier_{host.op_name}_plus_{donor.op_name}",
+    return build_spec_from_axes(
+        f"hybrid_{host.op_name}_plus_{donor.op_name}",
         merged,
         witness_ops=(host.op_name, donor.op_name),
         anchor_axes=host.axes,
         notes=(
             f"frontier_host={host.op_name} (proven binder, global mixing kept)",
-            f"donor={donor.op_name} (state/memory/sparsity grafted on)",
+            f"donor={donor.op_name} (gave state/sparsity axes)",
         ),
     )
+
+
+def enumerate_cross_anchor_variants(op_names: Sequence[str]) -> list[ProposalSpec]:
+    """All pairwise hybrids between the provided anchors."""
+    anchors = [a for n in op_names if (a := anchor_axes_for_op(n)) is not None]
+    hosts = [a for a in anchors if is_hosting_anchor(a)]
+    donors = anchors  # any anchor can be a donor
+    if not hosts:
+        return []
+    out: list[ProposalSpec] = []
+    for host in hosts:
+        for donor in donors:
+            if host.op_name == donor.op_name:
+                continue
+            out.append(_hybrid_spec(host, donor))
+    return out
+
+
+def _resolve_frontier_hosts(
+    hosts: Sequence[AnchorAxes] | None = None,
+) -> list[AnchorAxes]:
+    if hosts is not None:
+        return [h for h in hosts if h is not None]
+    # Default: the three "canonical" frontier cores from the meta-DB
+    # (these must exist in meta_db.db).
+    out: list[AnchorAxes] = []
+    for name in ("tropical_attention", "clifford_attention", "poincare_attention"):
+        try:
+            if (a := anchor_axes_for_op(name)) is not None:
+                out.append(a)
+        except Exception as exc:  # noqa: BLE001 - a broken meta-DB must not kill the run
+            logger.warning(
+                "frontier host lookup failed for %s (meta-DB unreadable?): %s",
+                name,
+                exc,
+            )
+    return out
 
 
 def enumerate_frontier_core_specs(
@@ -195,8 +114,8 @@ def enumerate_frontier_core_specs(
     Grades the frontier cores directly so they enter the ledger as high-quality
     reference points, not only as hybrid hosts.
     """
-    return [
-        _build_spec(
+    cores = [
+        build_spec_from_axes(
             host.op_name,
             dict(host.axes),
             witness_ops=(host.op_name,),
@@ -205,28 +124,27 @@ def enumerate_frontier_core_specs(
         )
         for host in _resolve_frontier_hosts(hosts)
     ]
+    # Inject invention-track specs (like data_dependent_decay) into the
+    # autonomous loop via the 'frontier core' path to ensure they are
+    # considered even when not anchored to a known failure.
+    invention_specs = enumerate_invention_specs()
+    return cores + invention_specs
 
 
 def enumerate_frontier_hybrids(
     donor_op_names: Sequence[str],
     *,
     hosts: Sequence[AnchorAxes] | None = None,
-    db_path: Path | str = DEFAULT_META_DB,
 ) -> list[ProposalSpec]:
-    """Graft each donor's novel mechanism onto each proven frontier core.
-
-    This is the "frontier + delta" generator: the host supplies a binder that
-    already reaches frontier-tied bAbI accuracy; the donor (typically an
-    underperforming-novel op) supplies the candidate new mechanism. Donors that
-    don't resolve in the meta DB are skipped.
-    """
-    donors: list[AnchorAxes] = []
-    for name in donor_op_names:
-        donor = anchor_axes_for_op(name, db_path=db_path)
-        if donor is not None:
-            donors.append(donor)
+    """Combine proven-binder cores with novel donor axis-profiles."""
+    host_anchors = _resolve_frontier_hosts(hosts)
+    if not host_anchors:
+        return []
+    donor_anchors = [
+        a for n in donor_op_names if (a := anchor_axes_for_op(n)) is not None
+    ]
     out: list[ProposalSpec] = []
-    for host in _resolve_frontier_hosts(hosts):
-        for donor in donors:
-            out.append(_frontier_hybrid_spec(host, donor))
+    for host in host_anchors:
+        for donor in donor_anchors:
+            out.append(_hybrid_spec(host, donor))
     return out

@@ -21,24 +21,13 @@ from component_fab.proposer.tier2_feedback import (
     WEAK_NARROW_DISTRACTOR_ONLY,
     WEAK_FAIL_LONG_GAP,
 )
+from component_fab.tests.conftest import make_spec
 
 
 def _spec(
     pid: str, axes: dict[str, Any] | None = None, name: str = "cand"
 ) -> ProposalSpec:
-    axes = axes or {}
-    return ProposalSpec(
-        proposal_id=pid,
-        name=name,
-        category="lane",
-        synthesis_kind="novel_hybrid",
-        math_axes=axes,
-        anchor_witness_op="",
-        anchor_witnesses_all=(),
-        declared_property_row=dict(axes),
-        predicted_lift=0.5,
-        rationale="test",
-    )
+    return make_spec(axes or {}, pid, name=name, category="lane")
 
 
 def _tier2(

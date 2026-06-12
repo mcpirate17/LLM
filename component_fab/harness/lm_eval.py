@@ -11,6 +11,7 @@ the only knob that differs between a fab candidate and the baselines.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Callable
 
@@ -21,7 +22,10 @@ from research.defaults import VOCAB_SIZE
 from research.eval.blimp_eval import BLiMPResult, evaluate_blimp
 from research.eval.wikitext_eval import _prepare_batches
 
-from .tiny_lm import TinyLM, TinyLMConfig, count_trainable_params
+from .tiny_lm import TinyLM, count_trainable_params
+from .training_probe import build_tiny_lm
+
+logger = logging.getLogger(__name__)
 
 
 # Wikitext-103 BPE prep — small budget so a CPU run completes in minutes.
@@ -62,16 +66,16 @@ def _build_lm(
     vocab_size: int,
     max_seq_len: int,
 ) -> TinyLM:
-    cfg = TinyLMConfig(
+    return build_tiny_lm(
+        lane_factory,
         vocab_size=vocab_size,
         dim=dim,
         n_blocks=n_blocks,
-        use_position_embedding=True,
         max_seq_len=max_seq_len,
+        use_position_embedding=True,
         use_ffn=True,  # Pre-norm Transformer requires FFN to be a real LM.
         ffn_mult=4,
     )
-    return TinyLM(lane_factory, cfg)
 
 
 def _causal_lm_loss(logits: torch.Tensor, ids: torch.Tensor) -> torch.Tensor:
@@ -159,7 +163,10 @@ def train_on_wikitext(
             if step == 0:
                 initial_loss = float(loss.item())
             final_loss = float(loss.item())
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 - one bad lane must not abort the cohort
+        logger.warning(
+            "wikitext training failed; scoring as non-converged", exc_info=True
+        )
         converged = False
     post_ppl = _eval_ppl(model, val_batches) if converged else float("nan")
     return WikitextTrainTrace(

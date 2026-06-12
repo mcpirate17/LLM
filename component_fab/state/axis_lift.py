@@ -30,8 +30,10 @@ from itertools import combinations
 from pathlib import Path
 from typing import Any, Iterable
 
+from .ledger import DEFAULT_LEDGER_PATH, write_json_report
+from .ledger import read_last_grades_and_statuses as _read_grades_and_promotions
+
 _REPO = Path(__file__).resolve().parents[2]
-DEFAULT_LEDGER_PATH = _REPO / "component_fab" / "catalog" / "ledger.jsonl"
 DEFAULT_OUTPUT_PATH = _REPO / "component_fab" / "catalog" / "axis_lift.json"
 
 PROMOTED = "promoted"
@@ -56,46 +58,6 @@ class AxisLiftReport:
     prior_strength: float
     min_n: int
     by_axis: dict[str, list[ValueStats]] = field(default_factory=dict)
-
-    def weights_for(self, axis: str) -> dict[str, float]:
-        """Sampling weights normalized to sum=1 over the axis's values."""
-        stats = self.by_axis.get(axis, [])
-        if not stats:
-            return {}
-        total = sum(max(s.lift, 1e-6) for s in stats)
-        if total <= 0:
-            return {s.value: 1.0 / len(stats) for s in stats}
-        return {s.value: max(s.lift, 1e-6) / total for s in stats}
-
-
-def _read_grades_and_promotions(
-    path: Path,
-) -> tuple[dict[str, dict[str, Any]], dict[str, str]]:
-    """Replay the ledger; return (last_grade_per_id, last_status_per_id)."""
-    last_grade: dict[str, dict[str, Any]] = {}
-    last_status: dict[str, str] = {}
-    if not path.exists():
-        return last_grade, last_status
-    with path.open("r", encoding="utf-8") as handle:
-        for line in handle:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                record = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            pid = record.get("proposal_id")
-            if not pid:
-                continue
-            event = record.get("event")
-            if event == "grade":
-                last_grade[str(pid)] = record
-            elif event == "promote":
-                status = str(record.get("status") or "")
-                if status:
-                    last_status[str(pid)] = status
-    return last_grade, last_status
 
 
 def _emit_axes(grade: dict[str, Any]) -> Iterable[tuple[str, str]]:
@@ -176,7 +138,7 @@ def compute_axis_lift(
                 )
             )
         rows.sort(key=lambda r: (-r.lift, -r.n, r.value))
-        by_axis[axis] = [r for r in rows if r.n >= min_n] or rows[:0]
+        by_axis[axis] = [r for r in rows if r.n >= min_n]
 
     return AxisLiftReport(
         global_promoted=promoted,
@@ -192,8 +154,6 @@ def write_axis_lift(
     report: AxisLiftReport,
     output_path: Path | str = DEFAULT_OUTPUT_PATH,
 ) -> Path:
-    out = Path(output_path)
-    out.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "global_promoted": report.global_promoted,
         "global_total": report.global_total,
@@ -204,8 +164,7 @@ def write_axis_lift(
             axis: [asdict(row) for row in rows] for axis, rows in report.by_axis.items()
         },
     }
-    out.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-    return out
+    return write_json_report(payload, output_path)
 
 
 def load_axis_lift(path: Path | str = DEFAULT_OUTPUT_PATH) -> AxisLiftReport | None:

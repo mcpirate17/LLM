@@ -14,7 +14,12 @@ from component_fab.state.ledger import Ledger
 
 
 def _promote_eligible_entry(tmp_path: Path, pid: str, metadata: dict):
-    """Build a 2-cycle promote-eligible streak with the given grade metadata."""
+    """Build a 2-cycle promote-eligible streak with the given grade metadata.
+
+    Satisfying paired-CI evidence is added so the fail-closed
+    ``require_complete_promotion_evidence`` guard stays out of the way —
+    these tests exercise the range veto only.
+    """
     ledger = Ledger(tmp_path / f"{pid}.jsonl")
     for cycle in (1, 2):
         ledger.record_grade(
@@ -26,7 +31,7 @@ def _promote_eligible_entry(tmp_path: Path, pid: str, metadata: dict):
             composite_score=0.8,
             smoke_pass=True,
             learned_signal=True,
-            metadata=metadata,
+            metadata={"paired_delta_ci_excludes_zero": True, **metadata},
         )
     return ledger.entries[pid]
 

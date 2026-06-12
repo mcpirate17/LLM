@@ -130,7 +130,8 @@ class MoRSemiringSurpriseMemoryLane(SemiringSurpriseMemoryLane):
                 remainder = remainder * (1.0 - halt)
             memory = mem_acc
             surprise = sur_acc
-            outputs.append(self.out(read_acc))
+            outputs.append(read_acc)
             ponder_total = ponder_total + depth_acc.mean()
         self.last_ponder_cost = self.ponder_weight * (ponder_total / seq_len)
-        return torch.stack(outputs, dim=1)
+        # One batched [B, L, m] projection instead of L per-step GEMMs.
+        return self.out(torch.stack(outputs, dim=1))

@@ -14,34 +14,11 @@ from component_fab.generator.primitive_templates import (
 from component_fab.harness.erf_probe import measure_erf
 from component_fab.harness.nano_bind_probe import nano_bind_gate
 from component_fab.harness.standard_block import LaneTestBlock
-from component_fab.proposer.property_miner import AxisLift, CandidateTuple
-from component_fab.proposer.spec_generator import spec_from_candidate
 from component_fab.validator.capability import (
     capability_scorecard_to_dict,
     validate_capabilities,
 )
-
-
-def _spec(axes: dict):
-    lifts = tuple(
-        AxisLift(
-            axis=k,
-            value=v,
-            n_ops=1,
-            total_evals=1,
-            total_s1_pass=0,
-            pass_rate=0.5,
-            representative_ops=(),
-        )
-        for k, v in axes.items()
-    )
-    candidate = CandidateTuple(
-        tuple_values=tuple(axes.items()),
-        predicted_lift=0.5,
-        per_axis_lift=lifts,
-        witness_ops=("anchor",),
-    )
-    return spec_from_candidate(candidate)
+from component_fab.tests.conftest import make_candidate_spec
 
 
 # ---------- ERF ----------
@@ -123,7 +100,7 @@ def test_nano_bind_well_formed_when_module_learns() -> None:
 
 
 def test_capability_eliminated_by_s05_for_noncausal_lane() -> None:
-    spec = _spec({"op_algebraic_space": "euclidean"})
+    spec = make_candidate_spec({"op_algebraic_space": "euclidean"})
     lane = FourierBasisLane(dim=16)  # non-causal
     card = validate_capabilities(spec, lane, dim=16, seq_len=16)
     assert card.eliminated_by == "s05_causality_stability"
@@ -133,7 +110,7 @@ def test_capability_eliminated_by_s05_for_noncausal_lane() -> None:
 
 
 def test_capability_runs_full_stack_for_causal_lane() -> None:
-    spec = _spec({"op_algebraic_space": "tropical"})
+    spec = make_candidate_spec({"op_algebraic_space": "tropical"})
     lane = TropicalStateSpace(dim=16)
     card = validate_capabilities(spec, lane, dim=16, seq_len=16)
     # Either passes everything or gets eliminated at one of the deeper gates;
@@ -146,7 +123,7 @@ def test_capability_runs_full_stack_for_causal_lane() -> None:
 
 
 def test_capability_records_per_gate_state() -> None:
-    spec = _spec({"op_algebraic_space": "euclidean"})
+    spec = make_candidate_spec({"op_algebraic_space": "euclidean"})
     lane = nn.Linear(16, 16)
     card = validate_capabilities(spec, lane, dim=16, seq_len=16)
     blob = capability_scorecard_to_dict(card)

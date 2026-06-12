@@ -18,6 +18,7 @@ from ..generator.memory_primitives import (
     _SurpriseMemoryBase,
 )
 from ..metrics.mix_speed import measure_mix_speed
+from ..validator.solo import smoke_test
 
 
 def param_count(module: torch.nn.Module) -> int:
@@ -25,36 +26,25 @@ def param_count(module: torch.nn.Module) -> int:
 
 
 def smoke(module: torch.nn.Module, *, dim: int, seq_len: int = 16) -> dict[str, Any]:
-    """Forward + backward on random input; check shape + finiteness."""
+    """Forward + backward on random input; check shape + finiteness.
+
+    Thin adapter over the validator's canonical ``smoke_test`` — same
+    measurement, UI-facing key names.
+    """
+    card = smoke_test(module, dim=dim, seq_len=seq_len)
+    error = card.get("error")
+    shape_preserved = bool(card.get("forward_passed"))
     out: dict[str, Any] = {
-        "forward_ok": False,
-        "backward_ok": False,
-        "shape_preserved": False,
-        "all_finite": False,
+        # The forward ran iff we got past it to the shape check or beyond.
+        "forward_ok": shape_preserved
+        or bool(error and str(error).startswith("shape mismatch")),
+        "backward_ok": bool(card.get("backward_passed")),
+        "shape_preserved": shape_preserved,
+        "all_finite": bool(card.get("output_finite"))
+        and bool(card.get("param_grad_finite")),
     }
-    x = torch.randn(2, seq_len, dim, requires_grad=True)
-    try:
-        y = module(x)
-        out["forward_ok"] = True
-    except Exception as exc:  # noqa: BLE001
-        out["error"] = f"forward: {exc}"
-        return out
-    out["shape_preserved"] = tuple(y.shape) == tuple(x.shape)
-    if not out["shape_preserved"]:
-        out["error"] = f"shape {tuple(y.shape)} != {tuple(x.shape)}"
-        return out
-    try:
-        y.sum().backward()
-        out["backward_ok"] = True
-    except Exception as exc:  # noqa: BLE001
-        out["error"] = f"backward: {exc}"
-        return out
-    grads_finite = all(
-        bool(torch.isfinite(p.grad).all())
-        for p in module.parameters()
-        if p.grad is not None
-    )
-    out["all_finite"] = bool(torch.isfinite(y).all()) and grads_finite
+    if error:
+        out["error"] = str(error)
     return out
 
 

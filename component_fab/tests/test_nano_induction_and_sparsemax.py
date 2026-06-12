@@ -22,34 +22,11 @@ from component_fab.harness.nano_induction_probe import (
 )
 from component_fab.harness.standard_block import LaneTestBlock
 from component_fab.harness.tiny_lm import SoftmaxCausalAttention
-from component_fab.proposer.property_miner import AxisLift, CandidateTuple
-from component_fab.proposer.spec_generator import spec_from_candidate
 from component_fab.validator.capability import (
     capability_scorecard_to_dict,
     validate_capabilities,
 )
-
-
-def _spec(axes: dict):
-    lifts = tuple(
-        AxisLift(
-            axis=k,
-            value=v,
-            n_ops=1,
-            total_evals=1,
-            total_s1_pass=0,
-            pass_rate=0.5,
-            representative_ops=(),
-        )
-        for k, v in axes.items()
-    )
-    cand = CandidateTuple(
-        tuple_values=tuple(axes.items()),
-        predicted_lift=0.5,
-        per_axis_lift=lifts,
-        witness_ops=("anchor",),
-    )
-    return spec_from_candidate(cand)
+from component_fab.tests.conftest import make_candidate_spec
 
 
 # ---------- SparsemaxAttention ----------
@@ -153,7 +130,7 @@ def test_nano_induction_records_notes_on_failure() -> None:
 def test_validate_capabilities_runs_induction_when_nb_passes() -> None:
     """Softmax attention should clear S0.5+ERF+NB, so induction must run
     and populate the new fields in the scorecard."""
-    spec = _spec({"op_algebraic_space": "euclidean"})
+    spec = make_candidate_spec({"op_algebraic_space": "euclidean"})
     lane = SoftmaxCausalAttention(dim=16)
     card = validate_capabilities(spec, lane, dim=16, seq_len=16)
     blob = capability_scorecard_to_dict(card)
@@ -170,7 +147,7 @@ def test_validate_capabilities_never_eliminates_on_induction() -> None:
         {"op_algebraic_space": "tropical"},
         {"op_algebraic_space": "euclidean"},
     ):
-        spec = _spec(axes)
+        spec = make_candidate_spec(axes)
         lane = (
             TropicalAttention(dim=16)
             if axes["op_algebraic_space"] == "tropical"

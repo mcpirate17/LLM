@@ -2,9 +2,9 @@
 
 Runs four checks against a proposed nn.Module:
 1. **Smoke**: compile + forward + backward + finite output + finite grad.
-2. **Category metric**: ``mix_speed`` for lane, ``routing_health`` for
-   routing (when the module emits routing weights), ``compression_quality``
-   for compression (when a paired restore is provided).
+2. **Category metric**: ``mix_speed`` for lane modules only; other
+   categories are recorded as skipped here (their behavior needs the
+   in-context probe tier, not a solo pass).
 3. **Property cross-check**: assert the runtime behavior matches the
    spec's declared math axes (e.g. tropical-declared modules must exhibit
    max-plus winner-take-all activation concentration).
@@ -21,6 +21,7 @@ from typing import Any
 import torch
 from torch import nn
 
+from component_fab.math_knobs import math_knobs_from_axes
 from ..harness.standard_block import make_lane_test_block
 from ..metrics.mix_speed import measure_mix_speed
 from ..proposer.spec_generator import CATEGORY_LANE, ProposalSpec
@@ -45,7 +46,11 @@ class SoloScorecard:
     notes: tuple[str, ...] = field(default_factory=tuple)
 
 
-def _smoke_test(module: nn.Module, *, dim: int, seq_len: int) -> dict[str, Any]:
+def smoke_test(module: nn.Module, *, dim: int, seq_len: int) -> dict[str, Any]:
+    """Forward + backward on random input; shape + finiteness checks.
+
+    Public: this is THE smoke check; ``viz.introspect`` adapts its keys for
+    the UI rather than re-running its own forward/backward."""
     smoke: dict[str, Any] = {
         "compile_passed": False,
         "forward_passed": False,
@@ -75,6 +80,10 @@ def _smoke_test(module: nn.Module, *, dim: int, seq_len: int) -> dict[str, Any]:
     except Exception as exc:
         smoke["error"] = f"{type(exc).__name__}: {exc}"
     return smoke
+
+
+# Back-compat alias for pre-rename callers.
+_smoke_test = smoke_test
 
 
 def _category_metric(
@@ -157,28 +166,6 @@ def _property_cross_check(
         findings["tropical_consistent"] = per_token_max_ratio > 1.3
     _math_knob_cross_check(findings, declared, module, x, y, dim=dim)
     return findings
-
-
-def _declared_math_knobs(declared: dict[str, Any]) -> tuple[str, ...]:
-    raw = declared.get("op_math_knobs")
-    if isinstance(raw, str):
-        return tuple(part.strip() for part in raw.split("+") if part.strip())
-    if isinstance(raw, (list, tuple)):
-        return tuple(str(part) for part in raw if str(part))
-    family = str(declared.get("op_math_family") or "")
-    if family == "calculus":
-        return ("calculus_finite_difference",)
-    if family == "linear_algebra":
-        return ("linear_algebra_low_rank",)
-    if family == "sparse_matrix":
-        return ("sparse_matrix_banded",)
-    if family == "kernel_methods":
-        return ("kernel_random_features",)
-    if family == "multiscale":
-        return ("multiscale_wavelet",)
-    if family == "graph_diffusion":
-        return ("graph_laplacian_diffusion",)
-    return ()
 
 
 def _module_has_class_fragment(module: nn.Module, fragment: str) -> bool:
@@ -284,7 +271,7 @@ def _math_knob_cross_check(
     dim: int,
 ) -> None:
     del y
-    knobs = _declared_math_knobs(declared)
+    knobs = math_knobs_from_axes(declared)
     if not knobs:
         return
     findings["declared_math_knobs"] = list(knobs)
@@ -331,7 +318,7 @@ def _is_promotable(smoke: dict[str, Any], cross: dict[str, Any]) -> bool:
 def validate_solo(
     spec: ProposalSpec, module: nn.Module, *, dim: int = 32, seq_len: int = 32
 ) -> SoloScorecard:
-    smoke = _smoke_test(module, dim=dim, seq_len=seq_len)
+    smoke = smoke_test(module, dim=dim, seq_len=seq_len)
     if smoke.get("forward_passed"):
         metrics = _category_metric(spec, module, dim=dim, seq_len=seq_len)
         cross = _property_cross_check(spec, module, dim=dim, seq_len=seq_len)

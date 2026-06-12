@@ -21,6 +21,7 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
 
+from component_fab.math_knobs import math_knobs_from_axes
 from component_fab.proposer.spec_generator import ProposalSpec
 
 
@@ -121,9 +122,9 @@ RESEARCH_PRIORS: tuple[ResearchPrior, ...] = (
             "op_dynamical_has_state": (1,),
             "op_dynamical_memory_length_class": ("O(L)",),
             "op_activation_sparsity_pattern": ("structured", "learned_structured"),
+            "op_linear_algebra_structure": ("low_rank_factorized",),
         },
-        mapped_knobs=("linear_algebra_low_rank", "sparse_matrix_banded",
-                      "low_rank_factorized"),
+        mapped_knobs=("linear_algebra_low_rank", "sparse_matrix_banded"),
         expected_strength="linear-time long-range recall with structured decay",
         expected_risk="capacity loss at small width; structured matrix brittleness",
         validation_tasks=("long_gap_recall", "distractor_kv_recall"),
@@ -165,8 +166,9 @@ RESEARCH_PRIORS: tuple[ResearchPrior, ...] = (
             "op_dynamical_has_state": (1,),
             "op_dynamical_memory_length_class": ("O(L)",),
             "op_spectral_preferred_basis": ("content",),
+            "op_graph_topology": ("causal_path_laplacian",),
         },
-        mapped_knobs=("graph_laplacian_diffusion", "causal_path_laplacian",
+        mapped_knobs=("graph_laplacian_diffusion",
                       "calculus_finite_difference"),
         expected_strength="stable long-horizon dynamics (no blow-up) — repairs "
         "stability eliminations",
@@ -180,12 +182,6 @@ RESEARCH_PRIORS: tuple[ResearchPrior, ...] = (
     ),
 )
 # fmt: on
-
-
-def load_research_priors() -> tuple[ResearchPrior, ...]:
-    """Return the curated research-prior table (source of truth)."""
-
-    return RESEARCH_PRIORS
 
 
 @dataclass(frozen=True, slots=True)
@@ -209,8 +205,7 @@ def _prior_signal_count(prior: ResearchPrior) -> int:
 
 
 def _spec_knobs(spec: ProposalSpec) -> set[str]:
-    raw = str(spec.math_axes.get("op_math_knobs") or "")
-    return {part for part in raw.split("+") if part}
+    return set(math_knobs_from_axes(spec.math_axes))
 
 
 def _score_prior(spec: ProposalSpec, prior: ResearchPrior) -> PriorAffinity:

@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import argparse
 import datetime as _dt
-import json
 import sys
 from pathlib import Path
 
@@ -23,6 +22,7 @@ from component_fab.proposer.dynamic import (
     enumerate_dynamic_proposals,
     specs_from_ledger_entries,
 )
+from component_fab.tools._cli import add_common_args, open_ledger, write_report
 from component_fab.proposer.nas_screen import score_specs_with_nas
 from component_fab.proposer.quality import (
     QualityScore,
@@ -35,7 +35,7 @@ from component_fab.proposer.quality import (
 from component_fab.proposer.research_priors import to_catalog_rows
 from component_fab.proposer.spec_generator import ProposalSpec, dedupe_specs_by_axes
 from component_fab.proposer.tier2_feedback import load_tier2_feedback
-from component_fab.state.ledger import DEFAULT_LEDGER_PATH, Ledger
+from component_fab.state.ledger import Ledger
 from component_fab.validator.trust import axes_counts_for_specs
 
 _REPO = Path(__file__).resolve().parents[2]
@@ -43,19 +43,16 @@ _REPORTS_DIR = _REPO / "research" / "reports"
 _REPORT_VERSION = "proposal_quality_v1"
 
 
-def _gather_anchor_names(top_n: int) -> list[str]:
-    from component_fab.intake.scope_existing import scope_all
-
-    report = scope_all()
-    return [t["name"] for t in report["underperforming_novel_ops"][:top_n]]
-
-
 def _candidate_specs(
     ledger: Ledger, *, top_anchors: int, max_dynamic: int
 ) -> list[ProposalSpec]:
+    # Lazy import: intake reads the meta DB; this report stays usable
+    # (ledger-only) when the DB is absent — the except below covers it.
+    from component_fab.intake.scope_existing import top_underperforming_names
+
     specs = list(specs_from_ledger_entries(ledger))
     try:
-        anchors = _gather_anchor_names(top_anchors)
+        anchors = top_underperforming_names(top_anchors)
         specs.extend(
             enumerate_dynamic_proposals(anchors, ledger, max_specs=max_dynamic)
         )
@@ -68,7 +65,6 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="component_fab proposal-quality report"
     )
-    parser.add_argument("--ledger", default=str(DEFAULT_LEDGER_PATH))
     parser.add_argument(
         "--tier2", nargs="*", default=None, help="Tier-2 cohort JSON artifacts"
     )
@@ -103,8 +99,7 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         "Spearman 0.54 vs full Tier-2; trains 2 models per candidate)",
     )
     parser.add_argument("--probe-steps", type=int, default=60)
-    parser.add_argument("--output", type=Path)
-    parser.add_argument("--dry-run", action="store_true")
+    add_common_args(parser, dry_run=True)
     return parser.parse_args(argv)
 
 
@@ -178,7 +173,7 @@ def _comparative_probe_top_n(
 
 
 def _build_report(args: argparse.Namespace) -> dict[str, object]:
-    ledger = Ledger(args.ledger, include_rotated=True)
+    ledger = open_ledger(args)
     specs = _candidate_specs(
         ledger, top_anchors=args.top_anchors, max_dynamic=args.max_dynamic
     )
@@ -232,15 +227,16 @@ def _build_report(args: argparse.Namespace) -> dict[str, object]:
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(sys.argv[1:] if argv is None else argv)
     report = _build_report(args)
-    payload = json.dumps(report, indent=2, default=str)
-    if args.dry_run:
-        print(payload)
-        return 0
-    stamp = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
-    out = args.output or (_REPORTS_DIR / f"proposal_quality_{stamp}.json")
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(payload, encoding="utf-8")
-    print(f"wrote: {out} ({report['n_specs']} specs ranked)")
+    out = write_report(
+        report,
+        default_dir=_REPORTS_DIR,
+        prefix="proposal_quality",
+        output=args.output,
+        dry_run=args.dry_run,
+        quiet=True,  # custom wrote-line below carries the spec count
+    )
+    if out is not None:
+        print(f"wrote: {out} ({report['n_specs']} specs ranked)")
     return 0
 
 

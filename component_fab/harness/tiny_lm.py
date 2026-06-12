@@ -15,7 +15,6 @@ are identical, so fair comparison is straightforward.
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 from typing import Callable
 
@@ -23,6 +22,7 @@ import torch
 from torch import nn
 
 from ..generator.primitive_templates._core import get_causal_mask
+from .primitives import CausalDepthwiseConv1d, swiglu
 from .rope import RotaryEmbedding, apply_rope
 
 
@@ -60,7 +60,7 @@ class _MLP(nn.Module):
         self.fc3 = nn.Linear(hidden, dim)  # project back
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.fc3(torch.nn.functional.silu(self.fc1(x)) * self.fc2(x))
+        return swiglu(x, self.fc1, self.fc2, self.fc3)
 
 
 class _GELUMLP(nn.Module):
@@ -203,28 +203,22 @@ class SoftmaxCausalAttention(nn.Module):
         return torch.einsum("bij,bjd->bid", attn, v)
 
 
-class CausalConv1dLane(nn.Module):
-    """Depthwise causal Conv1d — local-only mixing baseline.
+class CausalConv1dLane(CausalDepthwiseConv1d):
+    """Depthwise causal Conv1d + output projection — local-only mixing baseline.
 
     Strong on short-range patterns, weak on long-gap binding by construction.
     Useful negative control: if a fab lane only beats this on short tasks,
-    it's local-only.
+    it's local-only. State-dict paths (``conv.*``, ``proj.*``) match the
+    pre-consolidation module for checkpoint compatibility.
     """
 
     def __init__(self, dim: int, kernel_size: int = 5) -> None:
-        super().__init__()
+        super().__init__(dim, kernel_size=kernel_size)
         self.dim = dim
-        self.kernel_size = kernel_size
-        self.pad = kernel_size - 1  # left pad for causality
-        self.conv = nn.Conv1d(dim, dim, kernel_size=kernel_size, groups=dim, bias=True)
         self.proj = nn.Linear(dim, dim)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x: [B, L, D] -> [B, D, L]
-        h = x.transpose(1, 2)
-        h = torch.nn.functional.pad(h, (self.pad, 0))
-        h = self.conv(h).transpose(1, 2)
-        return self.proj(h)
+        return self.proj(super().forward(x))
 
 
 class MultiHeadCausalAttention(nn.Module):
@@ -357,27 +351,3 @@ FRONTIER_BASELINE_NAMES: tuple[str, ...] = (
 
 def count_trainable_params(module: nn.Module) -> int:
     return sum(p.numel() for p in module.parameters() if p.requires_grad)
-
-
-def param_match_warning(
-    candidate_lm: TinyLM, baseline_lms: dict[str, TinyLM], tolerance: float = 0.05
-) -> list[str]:
-    """Sanity check that candidate and baselines have comparable param counts.
-
-    Returns a list of warning strings (empty when within tolerance). Fair
-    comparison requires same scale — if a candidate has 10× the params of a
-    baseline, win/loss says nothing about the mixer.
-    """
-    out: list[str] = []
-    cand_count = count_trainable_params(candidate_lm)
-    for name, lm in baseline_lms.items():
-        b_count = count_trainable_params(lm)
-        if b_count == 0:
-            continue
-        ratio = cand_count / b_count
-        if abs(math.log(ratio)) > math.log(1.0 + tolerance):
-            out.append(
-                f"param count drift: candidate={cand_count} {name}={b_count} "
-                f"ratio={ratio:.3f}"
-            )
-    return out
