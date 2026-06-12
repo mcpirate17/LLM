@@ -1,6 +1,7 @@
 #ifndef ARIA_KERNELS_COMMON_H
 #include "kernels_common.h"
 #endif
+#include "compiled_kernel_helpers.h"
 
 #include <algorithm>
 #include <cmath>
@@ -10,32 +11,6 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-namespace {
-
-// kGatedDeltaDecayBias is defined in gated_delta_compiled.cpp, which kernels.cpp
-// #includes immediately before this file (same translation unit / anonymous
-// namespace) — reused here so forward and backward share one constant.
-
-inline float gated_delta_backward_sigmoid_scalar(float x) {
-    return 1.0f / (1.0f + std::exp(-x));
-}
-
-inline void gated_delta_backward_linear_project_token(const float *x_row,
-                                                      const float *weight,
-                                                      float *out,
-                                                      int64_t dim) {
-    for (int64_t o = 0; o < dim; o++) {
-        float sum = 0.0f;
-        const float *w_row = weight + o * dim;
-        for (int64_t i = 0; i < dim; i++) {
-            sum += x_row[i] * w_row[i];
-        }
-        out[o] = sum;
-    }
-}
-
-}  // namespace
 
 void aria_gated_delta_compiled_backward_f32(const float *grad_out,
                                             const float *x,
@@ -103,19 +78,19 @@ void aria_gated_delta_compiled_backward_f32(const float *grad_out,
             const int64_t c_end = std::min<int64_t>(c_start + chunk, seq);
             for (int64_t t = c_start; t < c_end; t++) {
                 const float *x_row = x + (b * seq + t) * dim;
-                gated_delta_backward_linear_project_token(x_row, q_weight, q.data() + t * dim, dim);
-                gated_delta_backward_linear_project_token(x_row, k_weight, k.data() + t * dim, dim);
-                gated_delta_backward_linear_project_token(x_row, v_weight, v.data() + t * dim, dim);
-                gated_delta_backward_linear_project_token(
+                aria_ck_linear_project(x_row, q_weight, q.data() + t * dim, dim);
+                aria_ck_linear_project(x_row, k_weight, k.data() + t * dim, dim);
+                aria_ck_linear_project(x_row, v_weight, v.data() + t * dim, dim);
+                aria_ck_linear_project(
                     x_row, alpha_weight, alpha.data() + t * dim, dim);
-                gated_delta_backward_linear_project_token(
+                aria_ck_linear_project(
                     x_row, beta_weight, beta.data() + t * dim, dim);
                 std::memcpy(prev_history.data() + t * state_size, state.data(), sizeof(float) * state_size);
 
                 for (int64_t i = 0; i < dim; i++) {
-                    alpha[t * dim + i] = gated_delta_backward_sigmoid_scalar(
+                    alpha[t * dim + i] = aria_ck_sigmoid(
                         alpha[t * dim + i] + kGatedDeltaDecayBias);
-                    beta[t * dim + i] = gated_delta_backward_sigmoid_scalar(beta[t * dim + i]);
+                    beta[t * dim + i] = aria_ck_sigmoid(beta[t * dim + i]);
                     decay[t * dim + i] = alpha[t * dim + i];
                 }
 

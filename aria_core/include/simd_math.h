@@ -252,6 +252,18 @@ static inline __m512 _mm512_atanh_ps(__m512 x) {
 #define aria_simd_sigmoid_ps _mm256_sigmoid_ps
 #endif
 
+/* v where x > 0, else 0 — compare APIs differ between AVX-512 and AVX2 */
+#ifdef __AVX512F__
+static inline __m512 aria_simd_keep_where_pos_ps(__m512 x, __m512 v) {
+    return _mm512_maskz_mov_ps(
+        _mm512_cmp_ps_mask(x, _mm512_setzero_ps(), _CMP_GT_OQ), v);
+}
+#elif defined(__AVX2__)
+static inline __m256 aria_simd_keep_where_pos_ps(__m256 x, __m256 v) {
+    return _mm256_and_ps(v, _mm256_cmp_ps(x, _mm256_setzero_ps(), _CMP_GT_OQ));
+}
+#endif
+
 /* ── Scalar fallback for non-SIMD platforms (ARM, older x86) ────────── */
 
 #if !defined(__AVX512F__) && !defined(__AVX2__)

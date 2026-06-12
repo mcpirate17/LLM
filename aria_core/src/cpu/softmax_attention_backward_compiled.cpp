@@ -1,6 +1,7 @@
 #ifndef ARIA_KERNELS_COMMON_H
 #include "kernels_common.h"
 #endif
+#include "compiled_kernel_helpers.h"
 
 #include <algorithm>
 #include <cmath>
@@ -10,24 +11,6 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-namespace {
-
-inline void linear_project(const float *x_row,
-                           const float *weight,
-                           float *out,
-                           int64_t dim) {
-    for (int64_t o = 0; o < dim; o++) {
-        float sum = 0.0f;
-        const float *w_row = weight + o * dim;
-        for (int64_t i = 0; i < dim; i++) {
-            sum += x_row[i] * w_row[i];
-        }
-        out[o] = sum;
-    }
-}
-
-}  // namespace
 
 void aria_softmax_attention_backward_f32(const float *grad_out,
                                          const float *x,
@@ -70,9 +53,9 @@ void aria_softmax_attention_backward_f32(const float *grad_out,
     for (int64_t b = 0; b < batch; b++) {
         for (int64_t t = 0; t < seq; t++) {
             const float *x_row = x + (b * seq + t) * dim;
-            linear_project(x_row, Wq, q.data() + (b * seq + t) * dim, dim);
-            linear_project(x_row, Wk, k.data() + (b * seq + t) * dim, dim);
-            linear_project(x_row, Wv, v.data() + (b * seq + t) * dim, dim);
+            aria_ck_linear_project(x_row, Wq, q.data() + (b * seq + t) * dim, dim);
+            aria_ck_linear_project(x_row, Wk, k.data() + (b * seq + t) * dim, dim);
+            aria_ck_linear_project(x_row, Wv, v.data() + (b * seq + t) * dim, dim);
         }
 
         for (int64_t h = 0; h < n_heads; h++) {

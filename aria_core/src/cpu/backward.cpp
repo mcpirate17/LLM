@@ -1,6 +1,7 @@
 #ifndef ARIA_KERNELS_COMMON_H
 #include "kernels_common.h"
 #endif
+#include "simd_elementwise.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -10,161 +11,87 @@ extern "C" {
 
 void aria_relu_backward_f32(const float *grad_out, const float *input,
                              float *grad_in, int64_t n) {
-#ifdef __AVX2__
-    {
-        const __m256 zero = _mm256_setzero_ps();
-        int64_t vec_end = n - (n % 8);
-#ifdef ARIA_HAS_OPENMP
-        #pragma omp parallel for if(n > ARIA_OMP_THRESHOLD) schedule(static)
-#endif
-        for (int64_t i = 0; i < vec_end; i += 8) {
-            __m256 vx = _mm256_loadu_ps(input + i);
-            __m256 vg = _mm256_loadu_ps(grad_out + i);
-            __m256 mask = _mm256_cmp_ps(vx, zero, _CMP_GT_OQ);
-            __m256 result = _mm256_and_ps(vg, mask);
-            _mm256_storeu_ps(grad_in + i, result);
-        }
-        for (int64_t i = vec_end; i < n; i++) grad_in[i] = input[i] > 0.0f ? grad_out[i] : 0.0f;
-    }
-#else
-#ifdef ARIA_HAS_OPENMP
-    #pragma omp parallel for if(n > ARIA_OMP_THRESHOLD) schedule(static)
-#endif
-    for (int64_t i = 0; i < n; i++) grad_in[i] = input[i] > 0.0f ? grad_out[i] : 0.0f;
-#endif
+    ARIA_EW_BINARY(grad_out, input, grad_in, n,
+        ([](aria_simd_ps vg, aria_simd_ps vx) {
+            return aria_simd_keep_where_pos_ps(vx, vg);
+        }),
+        ([](float g, float xv) { return xv > 0.0f ? g : 0.0f; }));
 }
 
 void aria_sigmoid_backward_f32(const float *grad_out, const float *output,
                                 float *grad_in, int64_t n) {
-#ifdef __AVX2__
-    {
-        const __m256 one = _mm256_set1_ps(1.0f);
-        int64_t vec_end = n - (n % 8);
-#ifdef ARIA_HAS_OPENMP
-        #pragma omp parallel for if(n > ARIA_OMP_THRESHOLD) schedule(static)
-#endif
-        for (int64_t i = 0; i < vec_end; i += 8) {
-            __m256 vo = _mm256_loadu_ps(output + i);
-            __m256 vg = _mm256_loadu_ps(grad_out + i);
-            __m256 one_minus_o = _mm256_sub_ps(one, vo);
-            __m256 result = _mm256_mul_ps(vg, _mm256_mul_ps(vo, one_minus_o));
-            _mm256_storeu_ps(grad_in + i, result);
-        }
-        for (int64_t i = vec_end; i < n; i++) grad_in[i] = grad_out[i] * output[i] * (1.0f - output[i]);
-    }
-#else
-#ifdef ARIA_HAS_OPENMP
-    #pragma omp parallel for if(n > ARIA_OMP_THRESHOLD) schedule(static)
-#endif
-    for (int64_t i = 0; i < n; i++) grad_in[i] = grad_out[i] * output[i] * (1.0f - output[i]);
-#endif
+    ARIA_EW_BINARY(grad_out, output, grad_in, n,
+        ([](aria_simd_ps vg, aria_simd_ps vo) {
+            aria_simd_ps one = aria_simd_set1_ps(1.0f);
+            return aria_simd_mul_ps(
+                vg, aria_simd_mul_ps(vo, aria_simd_sub_ps(one, vo)));
+        }),
+        ([](float g, float o) { return g * o * (1.0f - o); }));
 }
 
 void aria_tanh_backward_f32(const float *grad_out, const float *output,
                              float *grad_in, int64_t n) {
-#ifdef __AVX2__
-    {
-        const __m256 one = _mm256_set1_ps(1.0f);
-        int64_t vec_end = n - (n % 8);
-#ifdef ARIA_HAS_OPENMP
-        #pragma omp parallel for if(n > ARIA_OMP_THRESHOLD) schedule(static)
-#endif
-        for (int64_t i = 0; i < vec_end; i += 8) {
-            __m256 vo = _mm256_loadu_ps(output + i);
-            __m256 vg = _mm256_loadu_ps(grad_out + i);
-            __m256 o2 = _mm256_mul_ps(vo, vo);
-            __m256 result = _mm256_mul_ps(vg, _mm256_sub_ps(one, o2));
-            _mm256_storeu_ps(grad_in + i, result);
-        }
-        for (int64_t i = vec_end; i < n; i++) grad_in[i] = grad_out[i] * (1.0f - output[i] * output[i]);
-    }
-#else
-#ifdef ARIA_HAS_OPENMP
-    #pragma omp parallel for if(n > ARIA_OMP_THRESHOLD) schedule(static)
-#endif
-    for (int64_t i = 0; i < n; i++) grad_in[i] = grad_out[i] * (1.0f - output[i] * output[i]);
-#endif
+    ARIA_EW_BINARY(grad_out, output, grad_in, n,
+        ([](aria_simd_ps vg, aria_simd_ps vo) {
+            aria_simd_ps one = aria_simd_set1_ps(1.0f);
+            return aria_simd_mul_ps(
+                vg, aria_simd_sub_ps(one, aria_simd_mul_ps(vo, vo)));
+        }),
+        ([](float g, float o) { return g * (1.0f - o * o); }));
 }
 
 void aria_gelu_backward_f32(const float *grad_out, const float *input,
                              float *grad_in, int64_t n) {
-#ifdef __AVX2__
-    {
-        const __m256 half   = _mm256_set1_ps(0.5f);
-        const __m256 one    = _mm256_set1_ps(1.0f);
-        const __m256 two    = _mm256_set1_ps(2.0f);
-        const __m256 three  = _mm256_set1_ps(3.0f);
-        const __m256 coeff  = _mm256_set1_ps(GELU_COEFF);
-        const __m256 cubic  = _mm256_set1_ps(GELU_CUBIC);
-        int64_t vec_end = n - (n % 8);
-#ifdef ARIA_HAS_OPENMP
-        #pragma omp parallel for if(n > ARIA_OMP_THRESHOLD) schedule(static)
-#endif
-        for (int64_t i = 0; i < vec_end; i += 8) {
-            __m256 vx = _mm256_loadu_ps(input + i);
-            __m256 vg = _mm256_loadu_ps(grad_out + i);
-            __m256 x2 = _mm256_mul_ps(vx, vx);
-            __m256 x3 = _mm256_mul_ps(x2, vx);
-            __m256 inner = _mm256_fmadd_ps(cubic, x3, vx);
-            inner = _mm256_mul_ps(coeff, inner);
-            __m256 sig = _mm256_sigmoid_ps(_mm256_mul_ps(two, inner));
-            __m256 t = _mm256_fmsub_ps(two, sig, one);
-            __m256 d_inner = _mm256_fmadd_ps(_mm256_mul_ps(three, cubic), x2, one);
-            d_inner = _mm256_mul_ps(coeff, d_inner);
-            __m256 dgelu = _mm256_add_ps(_mm256_mul_ps(half, _mm256_add_ps(one, t)), 
-                                         _mm256_mul_ps(half, _mm256_mul_ps(vx, _mm256_mul_ps(_mm256_sub_ps(one, _mm256_mul_ps(t, t)), d_inner))));
-            _mm256_storeu_ps(grad_in + i, _mm256_mul_ps(vg, dgelu));
-        }
-        for (int64_t i = vec_end; i < n; i++) {
-            float v = input[i]; float inner = GELU_COEFF * (v + GELU_CUBIC * v * v * v);
-            float t = tanhf(inner); float d_inner = GELU_COEFF * (1.0f + 3.0f * GELU_CUBIC * v * v);
+    ARIA_EW_BINARY(grad_out, input, grad_in, n,
+        ([](aria_simd_ps vg, aria_simd_ps vx) {
+            aria_simd_ps half = aria_simd_set1_ps(0.5f);
+            aria_simd_ps one = aria_simd_set1_ps(1.0f);
+            aria_simd_ps two = aria_simd_set1_ps(2.0f);
+            aria_simd_ps three = aria_simd_set1_ps(3.0f);
+            aria_simd_ps coeff = aria_simd_set1_ps(GELU_COEFF);
+            aria_simd_ps cubic = aria_simd_set1_ps(GELU_CUBIC);
+            aria_simd_ps x2 = aria_simd_mul_ps(vx, vx);
+            aria_simd_ps x3 = aria_simd_mul_ps(x2, vx);
+            aria_simd_ps inner =
+                aria_simd_mul_ps(coeff, aria_simd_fmadd_ps(cubic, x3, vx));
+            aria_simd_ps sig = aria_simd_sigmoid_ps(aria_simd_mul_ps(two, inner));
+            aria_simd_ps t = aria_simd_fmsub_ps(two, sig, one);
+            aria_simd_ps d_inner = aria_simd_mul_ps(
+                coeff,
+                aria_simd_fmadd_ps(aria_simd_mul_ps(three, cubic), x2, one));
+            aria_simd_ps dgelu = aria_simd_add_ps(
+                aria_simd_mul_ps(half, aria_simd_add_ps(one, t)),
+                aria_simd_mul_ps(
+                    half,
+                    aria_simd_mul_ps(
+                        vx, aria_simd_mul_ps(
+                                aria_simd_sub_ps(one, aria_simd_mul_ps(t, t)),
+                                d_inner))));
+            return aria_simd_mul_ps(vg, dgelu);
+        }),
+        ([](float g, float v) {
+            float inner = GELU_COEFF * (v + GELU_CUBIC * v * v * v);
+            float t = tanhf(inner);
+            float d_inner = GELU_COEFF * (1.0f + 3.0f * GELU_CUBIC * v * v);
             float dgelu = 0.5f * (1.0f + t) + 0.5f * v * (1.0f - t * t) * d_inner;
-            grad_in[i] = grad_out[i] * dgelu;
-        }
-    }
-#else
-#ifdef ARIA_HAS_OPENMP
-    #pragma omp parallel for if(n > ARIA_OMP_THRESHOLD) schedule(static)
-#endif
-    for (int64_t i = 0; i < n; i++) {
-        float v = input[i]; float inner = GELU_COEFF * (v + GELU_CUBIC * v * v * v);
-        float t = tanhf(inner); float d_inner = GELU_COEFF * (1.0f + 3.0f * GELU_CUBIC * v * v);
-        float dgelu = 0.5f * (1.0f + t) + 0.5f * v * (1.0f - t * t) * d_inner;
-        grad_in[i] = grad_out[i] * dgelu;
-    }
-#endif
+            return g * dgelu;
+        }));
 }
 
 void aria_silu_backward_f32(const float *grad_out, const float *input,
                              float *grad_in, int64_t n) {
-#ifdef __AVX2__
-    {
-        const __m256 one = _mm256_set1_ps(1.0f);
-        int64_t vec_end = n - (n % 8);
-#ifdef ARIA_HAS_OPENMP
-        #pragma omp parallel for if(n > ARIA_OMP_THRESHOLD) schedule(static)
-#endif
-        for (int64_t i = 0; i < vec_end; i += 8) {
-            __m256 vx = _mm256_loadu_ps(input + i);
-            __m256 vg = _mm256_loadu_ps(grad_out + i);
-            __m256 sig = _mm256_sigmoid_ps(vx);
-            __m256 dsilu = _mm256_mul_ps(sig, _mm256_fmadd_ps(vx, _mm256_sub_ps(one, sig), one));
-            _mm256_storeu_ps(grad_in + i, _mm256_mul_ps(vg, dsilu));
-        }
-        for (int64_t i = vec_end; i < n; i++) {
-            float v = input[i]; float sig = 1.0f / (1.0f + expf(-v));
-            grad_in[i] = grad_out[i] * sig * (1.0f + v * (1.0f - sig));
-        }
-    }
-#else
-#ifdef ARIA_HAS_OPENMP
-    #pragma omp parallel for if(n > ARIA_OMP_THRESHOLD) schedule(static)
-#endif
-    for (int64_t i = 0; i < n; i++) {
-        float v = input[i]; float sig = 1.0f / (1.0f + expf(-v));
-        grad_in[i] = grad_out[i] * sig * (1.0f + v * (1.0f - sig));
-    }
-#endif
+    ARIA_EW_BINARY(grad_out, input, grad_in, n,
+        ([](aria_simd_ps vg, aria_simd_ps vx) {
+            aria_simd_ps one = aria_simd_set1_ps(1.0f);
+            aria_simd_ps sig = aria_simd_sigmoid_ps(vx);
+            aria_simd_ps dsilu = aria_simd_mul_ps(
+                sig, aria_simd_fmadd_ps(vx, aria_simd_sub_ps(one, sig), one));
+            return aria_simd_mul_ps(vg, dsilu);
+        }),
+        ([](float g, float v) {
+            float sig = 1.0f / (1.0f + expf(-v));
+            return g * sig * (1.0f + v * (1.0f - sig));
+        }));
 }
 
 void aria_add_backward_f32(const float *grad_out,
@@ -385,6 +312,55 @@ void aria_gated_linear_backward_f32(const float *grad_out,
 }
 #endif
 
+/* One softmin-weighted accumulation pass shared by the grad_a and grad_b
+ * halves of the tropical matmul backward — the target is selected by the
+ * (batch, i, j) strides: grad_a = (M*K, K, 0), grad_b = (N*K, 0, K).
+ * Parallel over batch only, so per-thread writes stay disjoint for both. */
+static void aria_tropical_matmul_bwd_accum(
+    const float *grad_out,
+    const float *a,
+    const float *b,
+    float *grad_target,
+    int64_t batch_stride, int64_t i_stride, int64_t j_stride,
+    int64_t batch, int64_t M, int64_t K, int64_t N,
+    float inv_tau
+) {
+#ifdef ARIA_HAS_OPENMP
+    #pragma omp parallel for schedule(static)
+#endif
+    for (int64_t b_idx = 0; b_idx < batch; ++b_idx) {
+        for (int64_t i = 0; i < M; ++i) {
+            for (int64_t j = 0; j < N; ++j) {
+                float max_val = -INFINITY;
+
+                for (int64_t k = 0; k < K; ++k) {
+                    float val = -(a[(b_idx * M + i) * K + k] + b[(b_idx * N + j) * K + k]) * inv_tau;
+                    if (val > max_val) {
+                        max_val = val;
+                    }
+                }
+
+                float sum_exp = 0.0f;
+                for (int64_t k = 0; k < K; ++k) {
+                    float val = -(a[(b_idx * M + i) * K + k] + b[(b_idx * N + j) * K + k]) * inv_tau;
+                    sum_exp += expf(val - max_val);
+                }
+
+                float lse = max_val + logf(sum_exp);
+                float gout = grad_out[(b_idx * M + i) * N + j];
+                float *target_row =
+                    grad_target + b_idx * batch_stride + i * i_stride + j * j_stride;
+
+                for (int64_t k = 0; k < K; ++k) {
+                    float val = -(a[(b_idx * M + i) * K + k] + b[(b_idx * N + j) * K + k]) * inv_tau;
+                    float sm_weight = expf(val - lse);
+                    target_row[k] += gout * sm_weight;
+                }
+            }
+        }
+    }
+}
+
 void aria_tropical_matmul_batched_backward_f32(
     const float *grad_out,
     const float *a,
@@ -395,74 +371,8 @@ void aria_tropical_matmul_batched_backward_f32(
     float tau
 ) {
     float inv_tau = 1.0f / tau;
-
-#ifdef ARIA_HAS_OPENMP
-    #pragma omp parallel for schedule(static)
-#endif
-    for (int64_t b_idx = 0; b_idx < batch; ++b_idx) {
-        for (int64_t i = 0; i < M; ++i) {
-            for (int64_t j = 0; j < N; ++j) {
-                float max_val = -INFINITY;
-                
-                for (int64_t k = 0; k < K; ++k) {
-                    float val = -(a[(b_idx * M + i) * K + k] + b[(b_idx * N + j) * K + k]) * inv_tau;
-                    if (val > max_val) {
-                        max_val = val;
-                    }
-                }
-                
-                float sum_exp = 0.0f;
-                for (int64_t k = 0; k < K; ++k) {
-                    float val = -(a[(b_idx * M + i) * K + k] + b[(b_idx * N + j) * K + k]) * inv_tau;
-                    sum_exp += expf(val - max_val);
-                }
-                
-                float lse = max_val + logf(sum_exp);
-                float gout = grad_out[(b_idx * M + i) * N + j];
-                
-                for (int64_t k = 0; k < K; ++k) {
-                    float val = -(a[(b_idx * M + i) * K + k] + b[(b_idx * N + j) * K + k]) * inv_tau;
-                    float sm_weight = expf(val - lse);
-                    float g_pairwise = gout * sm_weight;
-                    
-                    grad_a[(b_idx * M + i) * K + k] += g_pairwise;
-                }
-            }
-        }
-    }
-
-#ifdef ARIA_HAS_OPENMP
-    #pragma omp parallel for schedule(static)
-#endif
-    for (int64_t b_idx = 0; b_idx < batch; ++b_idx) {
-        for (int64_t j = 0; j < N; ++j) {
-            for (int64_t i = 0; i < M; ++i) {
-                float max_val = -INFINITY;
-                
-                for (int64_t k = 0; k < K; ++k) {
-                    float val = -(a[(b_idx * M + i) * K + k] + b[(b_idx * N + j) * K + k]) * inv_tau;
-                    if (val > max_val) {
-                        max_val = val;
-                    }
-                }
-                
-                float sum_exp = 0.0f;
-                for (int64_t k = 0; k < K; ++k) {
-                    float val = -(a[(b_idx * M + i) * K + k] + b[(b_idx * N + j) * K + k]) * inv_tau;
-                    sum_exp += expf(val - max_val);
-                }
-                
-                float lse = max_val + logf(sum_exp);
-                float gout = grad_out[(b_idx * M + i) * N + j];
-                
-                for (int64_t k = 0; k < K; ++k) {
-                    float val = -(a[(b_idx * M + i) * K + k] + b[(b_idx * N + j) * K + k]) * inv_tau;
-                    float sm_weight = expf(val - lse);
-                    float g_pairwise = gout * sm_weight;
-                    
-                    grad_b[(b_idx * N + j) * K + k] += g_pairwise;
-                }
-            }
-        }
-    }
+    aria_tropical_matmul_bwd_accum(grad_out, a, b, grad_a, M * K, K, 0,
+                                   batch, M, K, N, inv_tau);
+    aria_tropical_matmul_bwd_accum(grad_out, a, b, grad_b, N * K, 0, K,
+                                   batch, M, K, N, inv_tau);
 }

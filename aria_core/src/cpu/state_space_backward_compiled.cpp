@@ -1,6 +1,7 @@
 #ifndef ARIA_KERNELS_COMMON_H
 #include "kernels_common.h"
 #endif
+#include "compiled_kernel_helpers.h"
 
 #include <algorithm>
 #include <cmath>
@@ -10,18 +11,6 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-namespace {
-
-inline float state_space_backward_sigmoid_scalar(float x) {
-    return 1.0f / (1.0f + std::exp(-x));
-}
-
-inline bool unclamped(float value, float lo, float hi) {
-    return value > lo && value < hi;
-}
-
-}  // namespace
 
 void aria_state_space_compiled_backward_f32(const float *grad_out,
                                             const float *x,
@@ -148,7 +137,7 @@ void aria_state_space_compiled_backward_f32(const float *grad_out,
                 const float log_a = std::clamp(raw_log_a, -10.0f, 0.0f);
                 const float a = std::exp(log_a);
 
-                if (unclamped(raw_log_a, -10.0f, 0.0f)) {
+                if (aria_ck_unclamped(raw_log_a, -10.0f, 0.0f)) {
                     const float grad_log_a = total_grad * a * prev;
                     grad_ssm_A[idx] += grad_log_a * dt_t[d];
                     grad_dt_acc[t * dim + d] += grad_log_a * ssm_A[idx];
@@ -165,7 +154,7 @@ void aria_state_space_compiled_backward_f32(const float *grad_out,
 
             for (int64_t d = 0; d < dim; d++) {
                 const float g_dt_lin =
-                    grad_dt_acc[t * dim + d] * state_space_backward_sigmoid_scalar(dt_linear_t[d]);
+                    grad_dt_acc[t * dim + d] * aria_ck_sigmoid(dt_linear_t[d]);
                 grad_ssm_dt_bias[d] += g_dt_lin;
                 float *gdt_row = grad_ssm_dt_weight + d * dim;
                 const float *dt_row = ssm_dt_weight + d * dim;

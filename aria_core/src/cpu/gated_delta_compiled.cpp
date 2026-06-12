@@ -1,6 +1,7 @@
 #ifndef ARIA_KERNELS_COMMON_H
 #include "kernels_common.h"
 #endif
+#include "compiled_kernel_helpers.h"
 
 #include <algorithm>
 #include <cmath>
@@ -9,38 +10,6 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-namespace {
-
-// Positive forget-gate-bias init on the retention gate: the decay is
-// sigmoid(alpha_logit + kGatedDeltaDecayBias), so at init (logits ≈ 0) the gate
-// is ≈0.92 and the recurrent state is *kept*, not wiped. Without it the gate sits
-// at 0.5 and — combined with decay = alpha (a true retention gate, not the old
-// alpha - beta which centred decay at 0) — the state dies before training can
-// bias it (mamba2 baseline scored 0.0 everywhere; diagnosed 2026-06-07). Must
-// stay in lockstep with the torch reference `_op_gated_delta`
-// (_GATED_DELTA_DECAY_BIAS in research/synthesis/compiler_ops_sequence.py).
-constexpr float kGatedDeltaDecayBias = 2.5f;
-
-inline float sigmoid_scalar(float x) {
-    return 1.0f / (1.0f + std::exp(-x));
-}
-
-inline void linear_project_token(const float *x_row,
-                                 const float *weight,
-                                 float *out,
-                                 int64_t dim) {
-    for (int64_t o = 0; o < dim; o++) {
-        float sum = 0.0f;
-        const float *w_row = weight + o * dim;
-        for (int64_t i = 0; i < dim; i++) {
-            sum += x_row[i] * w_row[i];
-        }
-        out[o] = sum;
-    }
-}
-
-}  // namespace
 
 void aria_gated_delta_compiled_f32(const float *x,
                                    const float *q_weight,
@@ -88,15 +57,15 @@ void aria_gated_delta_compiled_f32(const float *x,
                 const float *x_row = x + (b * seq + t) * dim;
                 float *y_row = y + (b * seq + t) * dim;
 
-                linear_project_token(x_row, q_weight, q.data(), dim);
-                linear_project_token(x_row, k_weight, k.data(), dim);
-                linear_project_token(x_row, v_weight, v.data(), dim);
-                linear_project_token(x_row, alpha_weight, alpha.data(), dim);
-                linear_project_token(x_row, beta_weight, beta.data(), dim);
+                aria_ck_linear_project(x_row, q_weight, q.data(), dim);
+                aria_ck_linear_project(x_row, k_weight, k.data(), dim);
+                aria_ck_linear_project(x_row, v_weight, v.data(), dim);
+                aria_ck_linear_project(x_row, alpha_weight, alpha.data(), dim);
+                aria_ck_linear_project(x_row, beta_weight, beta.data(), dim);
 
                 for (int64_t i = 0; i < dim; i++) {
-                    alpha[i] = sigmoid_scalar(alpha[i] + kGatedDeltaDecayBias);
-                    beta[i] = sigmoid_scalar(beta[i]);
+                    alpha[i] = aria_ck_sigmoid(alpha[i] + kGatedDeltaDecayBias);
+                    beta[i] = aria_ck_sigmoid(beta[i]);
                     decay[i] = alpha[i];
                 }
 
@@ -126,7 +95,7 @@ void aria_gated_delta_compiled_f32(const float *x,
                     }
                 }
 
-                linear_project_token(pre_out.data(), o_weight, y_row, dim);
+                aria_ck_linear_project(pre_out.data(), o_weight, y_row, dim);
             }
         }
     }

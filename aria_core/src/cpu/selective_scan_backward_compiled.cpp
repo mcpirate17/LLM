@@ -1,6 +1,7 @@
 #ifndef ARIA_KERNELS_COMMON_H
 #include "kernels_common.h"
 #endif
+#include "compiled_kernel_helpers.h"
 
 #include <algorithm>
 #include <cmath>
@@ -10,18 +11,6 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-namespace {
-
-inline float selective_scan_backward_sigmoid_scalar(float x) {
-    return 1.0f / (1.0f + std::exp(-x));
-}
-
-inline bool clamp_active(float value, float lo, float hi) {
-    return value > lo && value < hi;
-}
-
-}  // namespace
 
 void aria_selective_scan_compiled_backward_f32(const float *grad_out,
                                                const float *x,
@@ -88,8 +77,8 @@ void aria_selective_scan_compiled_backward_f32(const float *grad_out,
                 }
                 b_proj[t] = b_sum;
                 c_proj[t] = c_sum;
-                gate_b[t] = selective_scan_backward_sigmoid_scalar(b_sum);
-                gate_c[t] = selective_scan_backward_sigmoid_scalar(c_sum);
+                gate_b[t] = aria_ck_sigmoid(b_sum);
+                gate_c[t] = aria_ck_sigmoid(c_sum);
                 u[t] = gate_b[t] * x_row[d];
                 const float u_trap = 0.5f * (u[t] + a_d * u_prev);
                 h[t] = a_d * h_prev + u_trap;
@@ -136,14 +125,14 @@ void aria_selective_scan_compiled_backward_f32(const float *grad_out,
             }
 
             const float raw_log_a = raw_a[d] * dt[d];
-            if (clamp_active(raw_log_a, -10.0f, -0.05f)) {
+            if (aria_ck_unclamped(raw_log_a, -10.0f, -0.05f)) {
                 const float grad_log_a = grad_a_scalar * a_d;
                 const float grad_raw_a = grad_log_a * dt[d];
                 const float grad_dt = grad_log_a * raw_a[d];
-                if (clamp_active(A_log[d], -10.0f, 10.0f)) {
+                if (aria_ck_unclamped(A_log[d], -10.0f, 10.0f)) {
                     grad_A_log[d] += grad_raw_a * raw_a[d];
                 }
-                grad_dt_proj[d] += grad_dt * selective_scan_backward_sigmoid_scalar(raw_dt[d]);
+                grad_dt_proj[d] += grad_dt * aria_ck_sigmoid(raw_dt[d]);
             }
         }
     }
