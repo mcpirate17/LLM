@@ -1,0 +1,79 @@
+
+  Improvements, ranked by expected lift on the v2 ladder
+
+  Tier 1 — Mechanism correctness (likely 5–15 pt each, low risk)
+
+  1. Replace running-mean write with last-write-wins or delta write.
+  Current (memory_primitives.py:570-572):
+  slot_key = wk.cumsum(dim=1) / denom
+  slot_val = wv.cumsum(dim=1) / denom
+  For same_key_overwrite (two writes to the same key), this returns the mean of the two values, not the latest. The task wants the latest. Same logic hurts distinct_key_interference when the same key recurs.
+  - Delta write: slot_val = slot_val + route * (v - slot_val) (one-shot converge-to-v). 1 line.
+  - Or last-write-wins: store per-slot last_v and last_k directly via a gated overwrite. Adds a write_strength per slot.
+
+  The current same_key_overwrite is at 0.273 (well below the 1.0 the bar is set at on the legacy task); the write rule is the proximate cause.
+
+  2. Empty-slot masking at read time.
+  For seq_len=64 / n_slots=8, all slots fill by end-of-context — but at early positions many slots are empty (slot_key=0, slot_val=0), and the read softmax wastes probability on them. Track slot_used = 
+  cumsum(route) > 0, mask unused slots in the read softmax with -inf before normalizing. Free correctness win on short contexts and on variable_layout (where scatter_writes=True puts NOISE tokens in early
+  positions). 2 lines.
+
+  3. Per-slot decay/forget gate (the ddecay lever).
+  The slot_table note reports "+decay" was neutral-to-slightly-negative at dim128/dim256 on the HARD 2-task ladder. But on the standard 4-task ladder with the same-key-overwrite axis, decay directly fixes #1's
+  symptoms: the older value fades, the newer one dominates. Use a per-slot learned decay in [0.85, 0.99] init. Combine with the delta write from #1 to make it tunable: slot_v = gamma * slot_v + (1-gamma) * v.
+  Cost: 1 scalar per head per slot (~32 params).
+
+  Tier 2 — Q-side & read refinements (likely 3–8 pt each)
+
+  4. Decouple write-route input from k (use raw input x for routing).
+  Current (memory_primitives.py:617-618): route = softmax(write_route(k.reshape(b, seq_len, -1))).
+  The router sees the same projected key that is used for content. For binding tasks the token identity is the routing signal (which vocab id is the key?), and the FFN has already distorted k by the time the lane
+  sees it. Routing on the un-projected input — route = softmax(write_route(x)) or a learned nn.Embedding(vocab_size, n_heads*n_slots) for binding-specific tasks — gives the router the discrete key id directly.
+  Should especially help distinct_key_interference and unique_multi_query.
+
+  5. Compositional joint — lift (entity, attribute) into the q at read time.
+  The 4.5σ compositional win is real but ceiling'd at 0.27 because the slot table's q at the ANS position only sees the ANS token's residual stream; the entity+attribute from positions N-2,N-1 must have been
+  copied by the FFN in block 1. Two architecture-agnostic moves that help the q specifically:
+  - Add a learned [ENTITY; ATTRIBUTE] → QUERY reduction MLP inside the lane, applied at QUERY/ANS token positions. Lane-side q-formation, doesn't require touching TinyLM.
+  - Q-side cross-position read: before the slot read, do one cheap 2-token attention over the previous 2 positions (entity, attribute). 2-token attention is O(L) and adds ~64 params.
+  Either lifts the joint into q and unblocks the compos axis.
+
+  6. Learnable read temperature (per head).
+  Replace scores * head_dim**-0.5 with scores * exp(log_temp[head]) where log_temp[head] is a learned parameter initialized to -0.5 * log(head_dim). Lets the model sharpen for hard tasks (interference) and soften
+  for easy ones (variable_layout). The sweep already shows mh2..mh16 are tied; this is a free way to specialize heads without adding params.
+
+  7. Output gating (zero/identity skip).
+  Add gate = sigmoid(gate_proj(q)) and out = self.out(read) * gate (with residual skip via the existing TinyLM block). Lets the model default to "ignore the slot read" on positions where no relevant write exists —
+  important for PAD/NOISE tokens. ~64 params.
+
+  Tier 3 — Capacity & normalization (likely 1–3 pt each, low risk)
+
+  8. RMSNorm on slot_val before read. Cumsum is unbounded; the read distribution drifts as L grows.
+
+  9. Size n_slots to the task's n_keys (HARD ladder). The HARD interference task has 16 pairs but the default n_slots=8 — slot collisions are guaranteed. A --n-slots-min n_keys knob in the grader (mirrors how
+  gemini_master is sized) would let the HARD ladder see the lane's true ceiling. Not an architecture change, but a grading fix worth flagging — current HARD slot_table_mh result is artificially deflated by
+  undersized slots.
+
+  10. Static per-slot learnable key + delta content write (a delta-rule slot). Note this is exactly what the slot_table ablation marked "won't help — #3 not implemented" on the basis that multihead/decay/scale all
+  failed. Re-evaluate with the fixes above in place (#1, #2, #3) before writing it off. The earlier ablation was on an underperforming base.
+
+  11. Heterogeneous per-head n_slots. Heads 0,1 = 8 slots (high-precision binders), heads 2,3 = 2 slots (recency/identity). Same total param budget, more specialization. Worth one sweep.
+
+  What's not worth pursuing (rules these out so we don't loop)
+
+  - More heads at this scale. Sweep shows mh2..mh16 are tied at 0.262 ± 0.002.
+  - Wider memory_dim at fixed steps. The slot_table ablation at dim128/dim256 showed base slot was already best, and improvements hurt at width.
+  - Straight-through hard routing. Active harm (0.159 at dim256 in the ablation).
+  - Delta-rule within a slot, in isolation. Same reason — it was ruled out on a base that lacked fixes #1-#3; revisit only after those land.
+  - Bigger n_slots as a universal knob. Helps HARD interference, neutral elsewhere; cap it at n_keys.
+
+  TL;DR — what I'd build next, in order
+
+  1. Delta write (replaces cumsum-mean) — fixes same-key-overwrite directly.
+  2. Empty-slot mask at read — fixes early-context behavior.
+  3. Per-slot decay gate — gives the model control over recency without removing content.
+  4. Decouple write-route input from k — uses discrete token id for routing.
+  5. Q-side joint lift for compos — opens the compos axis beyond 0.27.
+
+  These are 5 small changes, ~3–5 lines each, no kernel work, no TinyLM changes, and they target the four axes the result table shows are the actual gaps. I'd grade the resulting lane against the 4-task v2 ladder
+  first, then the HARD ladder with n_slots=n_keys.

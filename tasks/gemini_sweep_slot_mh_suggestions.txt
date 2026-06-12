@@ -1,0 +1,51 @@
+✦ Based on the current implementation of MultiHeadSlotTableMemoryLane and the existing "Codex" roadmap, here are several high-priority architectural improvements to further narrow the gap with softmax_4h and
+  enhance the memory's capacity for complex binding.
+
+  1. Read-before-Write (RbW) Routing
+  The current routing is "blind"—it projects the input key k to slot probabilities without knowing what is already stored.
+   * Mechanism: Allow the router to attend to the current slot_keys before deciding the write route. If a key (or a similar entity) is already present in a slot, the router should favor updating that specific
+     slot.
+   * Impact: This enables intentional updates/overwrites rather than redundant allocation. It directly addresses the "Unique" axis (by merging duplicate information) and "Interference" (by avoiding collisions).
+
+  2. Memory Consolidation (Inter-Slot Attention)
+  The "Compositional" axis is currently limited because entity, attribute, and value tokens write to memory independently, and the model must reconcile them during the final read.
+   * Mechanism: Periodically (or every step), apply a lightweight self-attention layer across the n_slots dimension.
+   * Impact: This allows slots to exchange and "bind" related information (e.g., merging an entity slot with its attribute slot) before a query arrives. It transforms the memory from a passive KV-store into an
+     active relational processor.
+
+  3. Sparse Competitive Writing (Top-k)
+  The current softmax routing distributes every token—including NOISE and PAD—across all slots, leading to "dilution" of high-value information.
+   * Mechanism: Replace the dense write route with a hard top-1 or sparse top-k selection (using a straight-through estimator).
+   * Impact: This ensures each item is stored with high fidelity in a single slot, leaving other slots completely untouched by noise. It is the logical extension of the "null-write gate" but applies to all items
+     to prevent cross-contamination.
+
+  4. Bilinear Addressing Kernel
+  Current addressing uses a scaled dot-product: q · k. This assumes the query and memory subspaces are perfectly aligned.
+   * Mechanism: Upgrade the read mechanism to a learned bilinear form: score = q^T W k.
+   * Impact: This significantly increases the expressivity of the query-key interaction without increasing the memory state size. It allows the model to learn more flexible mapping rules, which is critical when
+     queries are semantically distinct from stored keys.
+
+  5. Global-Local Slot Hierarchy
+  Currently, heads are independent (though they share a joint router).
+   * Mechanism: Implement a set of Global Slots shared by all heads, alongside the existing per-head Local Slots.
+   * Impact: Global slots can capture sequence-level invariants or frequently accessed "anchor" keys, while Local Slots specialize in head-specific binding nuances. This prevents redundant storage of global
+     context across all heads.
+
+  6. Value-Aware Routing
+  The router currently only sees the key k.
+   * Mechanism: Concatenate the value v to the router's input: route = Linear(cat(k, v)).
+   * Impact: If the model knows what it is storing, it can route different data types (e.g., numerical values vs. category labels) to specialized slots.
+
+  7. Slot-wise Normalization (Memory Stability)
+  As slots are updated via cumulative means or delta updates, their internal magnitudes can drift, causing the read softmax to become either too sharp or too uniform.
+   * Mechanism: Apply LayerNorm or RMSNorm to each slot key/value representation before the read step.
+   * Impact: This stabilizes the "Read" operation over long sequences, ensuring the memory remains addressable even as it accumulates hundreds of updates.
+
+  Summary of Recommended Ablation Order
+   1. Read-before-Write Routing (Addresses Unique/Interference)
+   2. Inter-Slot Consolidation (Addresses Compositional)
+   3. Top-k Sparse Writes (Addresses Interference/Noise)
+   4. Bilinear Addressing (Addresses Variable Layout/Complexity)
+
+  Note on Dispatcher: In component_fab/generator/code_generator.py:273, the MultiHeadSlotTableMemoryLane is indeed instantiated with default parameters. To fix the issue where it "still constructs the single-head
+  model," the dispatcher should be updated to pass n_heads and n_slots from the math_axes configuration.

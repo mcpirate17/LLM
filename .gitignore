@@ -192,3 +192,7 @@ component_fab/catalog/*
 
 # Persistent eval inputs and generated data (durable notes live in Obsidian)
 research/data/
+
+# Local app installs / session artifacts
+codex-desktop-linux/
+.playwright-mcp/
