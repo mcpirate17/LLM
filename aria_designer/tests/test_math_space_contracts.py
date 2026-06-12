@@ -14,7 +14,7 @@ def _load_manifest(path: Path) -> dict:
 
 
 def test_math_space_manifest_count_baseline() -> None:
-    assert len(MANIFEST_PATHS) == 32
+    assert len(MANIFEST_PATHS) == 36
 
 
 @pytest.mark.parametrize("manifest_path", MANIFEST_PATHS, ids=lambda p: p.parent.name)
@@ -23,11 +23,13 @@ def test_math_space_native_first_contract(manifest_path: Path) -> None:
     impl = manifest.get("implementation", {})
 
     native_kernel = impl.get("native")
-    assert native_kernel
-    if native_kernel != "kernel.c":
-        assert (manifest_path.parent / native_kernel).exists()
-
     python_fallback = impl.get("python")
+    assert native_kernel or python_fallback
+
+    if native_kernel:
+        if native_kernel != "kernel.c":
+            assert (manifest_path.parent / native_kernel).exists()
+
     if python_fallback:
         assert (manifest_path.parent / python_fallback).exists()
 

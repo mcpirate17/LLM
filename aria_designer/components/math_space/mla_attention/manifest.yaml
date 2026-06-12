@@ -38,7 +38,7 @@ implementation:
   native: null
   rust: null
   cython: null
-  python: null
+  python: kernel_fallback.py
 performance:
   has_params: true
   param_formula: D*D*3/8

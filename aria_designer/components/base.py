@@ -124,6 +124,84 @@ def make_binary_handler(op_fn, native_op_name=None, native_result_validator=None
     return ComponentHandler
 
 
+def make_causal_attention_handler(normalize, *, mask_value=-1e9):
+    """ComponentHandler factory: single-head causal self-attention over x with
+    a pluggable score normalizer (softmax / sparsemax / entmax — previously
+    three copies of the same scores→mask→weights→values skeleton).
+
+    ``normalize(scores, config)`` maps masked logits to attention weights.
+    ``mask_value`` is the pre-normalizer fill for future positions (-inf is
+    right for softmax; sparsemax/entmax arithmetic needs a finite value).
+    """
+
+    class ComponentHandler(BaseComponentHandler):
+        def build(self, config):
+            return None
+
+        def forward(self, inputs, config):
+            x = inputs["x"]  # (B, S, D)
+            _, S, D = x.shape
+            scores = torch.matmul(x, x.transpose(-2, -1)) * (D**-0.5)
+            mask = torch.triu(
+                torch.ones(S, S, device=x.device, dtype=torch.bool), diagonal=1
+            )
+            weights = normalize(scores.masked_fill(mask, mask_value), config)
+            return {"y": torch.matmul(weights, x)}
+
+    return ComponentHandler
+
+
+class LazyLowRankLanesHandler(BaseComponentHandler):
+    """Shared scaffolding for routing fallbacks that blend low-rank and dense
+    projections of x under a per-component gate (difficulty_blend_3way,
+    adaptive_rank_gate, signal_conditioned_compression — previously three
+    copies of the same lazy weight init).
+
+    Lazily creates u (d×r), v (r×d), dense (d×d) — plus router (d×n) when
+    ``router_lanes`` > 0 — sized from the first input. Subclasses implement
+    ``forward`` using ``low_rank_lane`` / ``dense_lane``.
+    """
+
+    router_lanes = 0
+
+    def __init__(self):
+        self._u = None
+        self._v = None
+        self._dense = None
+        self._router = None
+
+    def build(self, config):
+        return None
+
+    def _ensure_weights(self, x):
+        d_model = x.shape[-1]
+        rank = max(1, d_model // 4)
+        device = x.device
+        dtype = x.dtype
+        if self._u is None or self._u.shape != (d_model, rank):
+            self._u = nn.Parameter(
+                torch.randn(d_model, rank, device=device, dtype=dtype) * 0.02
+            )
+            self._v = nn.Parameter(
+                torch.randn(rank, d_model, device=device, dtype=dtype) * 0.02
+            )
+            self._dense = nn.Parameter(
+                torch.randn(d_model, d_model, device=device, dtype=dtype)
+                * (d_model**-0.5)
+            )
+            if self.router_lanes:
+                self._router = nn.Parameter(
+                    torch.randn(d_model, self.router_lanes, device=device, dtype=dtype)
+                    * 0.02
+                )
+
+    def low_rank_lane(self, x):
+        return x @ self._u @ self._v
+
+    def dense_lane(self, x):
+        return x @ self._dense
+
+
 def _make_weight(shape, fan_in=None):
     """Create a weight tensor with Kaiming-like init, cached for reuse."""
     scale = (fan_in or shape[-1]) ** -0.5

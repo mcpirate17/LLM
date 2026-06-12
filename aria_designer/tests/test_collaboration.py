@@ -29,16 +29,21 @@ def test_websocket_isolation():
 
     client = TestClient(app)
 
-    with client.websocket_connect("/api/v1/collaboration/wf_a") as ws_a:
-        with client.websocket_connect("/api/v1/collaboration/wf_b") as ws_b:
-            ws_a.send_json({"msg": "for_a"})
+    with client.websocket_connect("/api/v1/collaboration/wf_a") as ws_a1:
+        with client.websocket_connect("/api/v1/collaboration/wf_a") as ws_a2:
+            with client.websocket_connect("/api/v1/collaboration/wf_b") as ws_b1:
+                with client.websocket_connect("/api/v1/collaboration/wf_b") as ws_b2:
+                    # Send message from ws_a1
+                    ws_a1.send_json({"msg": "for_a"})
 
-            # ws_a should receive its own message back (broadcast)
-            received_a = ws_a.receive_json()
-            assert received_a["msg"] == "for_a"
+                    # ws_a2 (same workflow) should receive it
+                    received_a = ws_a2.receive_json()
+                    assert received_a["msg"] == "for_a"
 
-            # ws_b should NOT receive it — verify by sending on wf_b
-            # and confirming only wf_b's message arrives there
-            ws_b.send_json({"msg": "for_b"})
-            received_b = ws_b.receive_json()
-            assert received_b["msg"] == "for_b"
+                    # Send message from ws_b1
+                    ws_b1.send_json({"msg": "for_b"})
+
+                    # ws_b2 (same workflow) should receive its own workflow's message,
+                    # proving the message for wf_a did not leak to wf_b.
+                    received_b = ws_b2.receive_json()
+                    assert received_b["msg"] == "for_b"

@@ -1,5 +1,6 @@
 """Tests for the Aria patch engine."""
 
+from _workflows import chain_edges
 import pytest
 
 from aria_designer.api.app.patcher import apply_patch_ops, PatchError
@@ -16,29 +17,7 @@ def _base_workflow():
             {"id": "n2", "component_type": "relu", "params": {}},
             {"id": "n3", "component_type": "graph_output", "params": {}},
         ],
-        "edges": [
-            {
-                "id": "e0",
-                "source": "n0",
-                "target": "n1",
-                "source_port": "out",
-                "target_port": "in",
-            },
-            {
-                "id": "e1",
-                "source": "n1",
-                "target": "n2",
-                "source_port": "out",
-                "target_port": "in",
-            },
-            {
-                "id": "e2",
-                "source": "n2",
-                "target": "n3",
-                "source_port": "out",
-                "target_port": "in",
-            },
-        ],
+        "edges": chain_edges(["n0", "n1", "n2", "n3"]),
     }
 
 

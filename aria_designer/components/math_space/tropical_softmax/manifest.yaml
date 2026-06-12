@@ -26,7 +26,7 @@ implementation:
   native: null
   rust: null
   cython: null
-  python: null
+  python: kernel_fallback.py
 performance:
   has_params: false
   param_formula: '0'

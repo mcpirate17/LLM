@@ -2,6 +2,8 @@
 
 import torch
 
+from aria_designer.components.base import make_causal_attention_handler
+
 
 def _entmax(logits, alpha=1.5):
     alpha = max(1.01, min(2.0, float(alpha)))
@@ -21,19 +23,6 @@ def _entmax(logits, alpha=1.5):
     return probs / probs.sum(dim=-1, keepdim=True).clamp(min=1e-8)
 
 
-class ComponentHandler:
-    def validate_config(self, config):
-        return []
-
-    def build(self, config):
-        return None
-
-    def forward(self, inputs, config):
-        x = inputs["x"]
-        _, S, D = x.shape
-        scores = torch.matmul(x, x.transpose(-2, -1)) * (D**-0.5)
-        mask = torch.triu(
-            torch.ones(S, S, device=x.device, dtype=torch.bool), diagonal=1
-        )
-        weights = _entmax(scores.masked_fill(mask, -1e9), config.get("alpha", 1.5))
-        return {"y": torch.matmul(weights, x)}
+ComponentHandler = make_causal_attention_handler(
+    lambda scores, config: _entmax(scores, config.get("alpha", 1.5))
+)

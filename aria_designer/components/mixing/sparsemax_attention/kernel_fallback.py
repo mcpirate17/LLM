@@ -2,6 +2,8 @@
 
 import torch
 
+from aria_designer.components.base import make_causal_attention_handler
+
 
 def _sparsemax(logits):
     shifted = logits - logits.max(dim=-1, keepdim=True).values
@@ -17,19 +19,6 @@ def _sparsemax(logits):
     return torch.clamp(shifted - tau, min=0)
 
 
-class ComponentHandler:
-    def validate_config(self, config):
-        return []
-
-    def build(self, config):
-        return None
-
-    def forward(self, inputs, config):
-        x = inputs["x"]
-        _, S, D = x.shape
-        scores = torch.matmul(x, x.transpose(-2, -1)) * (D**-0.5)
-        mask = torch.triu(
-            torch.ones(S, S, device=x.device, dtype=torch.bool), diagonal=1
-        )
-        weights = _sparsemax(scores.masked_fill(mask, -1e9))
-        return {"y": torch.matmul(weights, x)}
+ComponentHandler = make_causal_attention_handler(
+    lambda scores, config: _sparsemax(scores)
+)

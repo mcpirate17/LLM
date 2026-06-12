@@ -1,6 +1,6 @@
 """Kernel handler for padic_gate — delegates to research.mathspaces.padic."""
 
-from aria_designer.runtime.fallback_templates import make_mathspace_unary_handler
+from aria_designer.runtime.fallback_templates import make_mathspace_handler
 
 
 def _native_args(inputs, config):
@@ -9,7 +9,7 @@ def _native_args(inputs, config):
     return (x, p)
 
 
-ComponentHandler = make_mathspace_unary_handler(
+ComponentHandler = make_mathspace_handler(
     "padic_gate",
     "research.mathspaces.padic.execute_padic_gate",
     native_args_fn=_native_args,

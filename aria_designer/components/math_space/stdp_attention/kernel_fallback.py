@@ -1,6 +1,6 @@
 """Kernel handler for stdp_attention — delegates to research.mathspaces.spiking."""
 
-from aria_designer.runtime.fallback_templates import make_mathspace_unary_handler
+from aria_designer.runtime.fallback_templates import make_mathspace_handler
 
 
 def _native_args(inputs, config):
@@ -10,7 +10,7 @@ def _native_args(inputs, config):
     return (x, tau_plus, tau_minus)
 
 
-ComponentHandler = make_mathspace_unary_handler(
+ComponentHandler = make_mathspace_handler(
     "stdp_attention",
     "research.mathspaces.spiking.execute_stdp_attention",
     native_args_fn=_native_args,

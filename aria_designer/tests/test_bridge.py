@@ -4,6 +4,8 @@ import sys
 import pytest
 from types import SimpleNamespace
 
+from _workflows import chain_edges, make_attention_workflow, make_mlp_workflow
+
 from aria_designer.runtime.bridge import (
     workflow_to_graph,
     validate_workflow_graph,
@@ -16,138 +18,6 @@ from aria_designer.runtime.bridge import (
 
 
 # ── Fixtures ─────────────────────────────────────────────────────────
-
-
-def _simple_mlp():
-    """Simple: input → linear → relu → linear → output."""
-    return {
-        "nodes": [
-            {"id": "n0", "component_type": "graph_input", "params": {}},
-            {"id": "n1", "component_type": "linear_proj", "params": {"out_dim": 256}},
-            {"id": "n2", "component_type": "relu", "params": {}},
-            {"id": "n3", "component_type": "linear_proj", "params": {"out_dim": 256}},
-            {"id": "n4", "component_type": "graph_output", "params": {}},
-        ],
-        "edges": [
-            {
-                "id": "e0",
-                "source": "n0",
-                "target": "n1",
-                "source_port": "out",
-                "target_port": "in",
-            },
-            {
-                "id": "e1",
-                "source": "n1",
-                "target": "n2",
-                "source_port": "out",
-                "target_port": "in",
-            },
-            {
-                "id": "e2",
-                "source": "n2",
-                "target": "n3",
-                "source_port": "out",
-                "target_port": "in",
-            },
-            {
-                "id": "e3",
-                "source": "n3",
-                "target": "n4",
-                "source_port": "out",
-                "target_port": "in",
-            },
-        ],
-    }
-
-
-def _attention_pattern():
-    """Attention-like: input → Q/K/V projections → matmul → softmax → matmul → output."""
-    return {
-        "nodes": [
-            {"id": "in", "component_type": "graph_input", "params": {}},
-            {"id": "q", "component_type": "linear_proj", "params": {"out_dim": 256}},
-            {"id": "k", "component_type": "linear_proj", "params": {"out_dim": 256}},
-            {"id": "v", "component_type": "linear_proj", "params": {"out_dim": 256}},
-            {"id": "attn", "component_type": "matmul", "params": {}},
-            {"id": "sm", "component_type": "softmax_last", "params": {}},
-            {"id": "out_attn", "component_type": "matmul", "params": {}},
-            {"id": "proj", "component_type": "linear_proj", "params": {"out_dim": 256}},
-            {"id": "out", "component_type": "graph_output", "params": {}},
-        ],
-        "edges": [
-            {
-                "id": "e0",
-                "source": "in",
-                "target": "q",
-                "source_port": "out",
-                "target_port": "in",
-            },
-            {
-                "id": "e1",
-                "source": "in",
-                "target": "k",
-                "source_port": "out",
-                "target_port": "in",
-            },
-            {
-                "id": "e2",
-                "source": "in",
-                "target": "v",
-                "source_port": "out",
-                "target_port": "in",
-            },
-            {
-                "id": "e3",
-                "source": "q",
-                "target": "attn",
-                "source_port": "out",
-                "target_port": "a",
-            },
-            {
-                "id": "e4",
-                "source": "k",
-                "target": "attn",
-                "source_port": "out",
-                "target_port": "b",
-            },
-            {
-                "id": "e5",
-                "source": "attn",
-                "target": "sm",
-                "source_port": "out",
-                "target_port": "in",
-            },
-            {
-                "id": "e6",
-                "source": "sm",
-                "target": "out_attn",
-                "source_port": "out",
-                "target_port": "a",
-            },
-            {
-                "id": "e7",
-                "source": "v",
-                "target": "out_attn",
-                "source_port": "out",
-                "target_port": "b",
-            },
-            {
-                "id": "e8",
-                "source": "out_attn",
-                "target": "proj",
-                "source_port": "out",
-                "target_port": "in",
-            },
-            {
-                "id": "e9",
-                "source": "proj",
-                "target": "out",
-                "source_port": "out",
-                "target_port": "in",
-            },
-        ],
-    }
 
 
 def _residual_block():
@@ -337,7 +207,7 @@ def test_data_plane_components_are_bridge_supported():
 
 
 def test_simple_mlp_conversion():
-    graph = workflow_to_graph(_simple_mlp(), model_dim=256)
+    graph = workflow_to_graph(make_mlp_workflow(), model_dim=256)
     assert graph.n_ops() == 3  # linear, relu, linear (input doesn't count)
     assert graph.depth() == 3
     assert graph.model_dim == 256
@@ -346,7 +216,7 @@ def test_simple_mlp_conversion():
 
 
 def test_attention_conversion():
-    graph = workflow_to_graph(_attention_pattern(), model_dim=256)
+    graph = workflow_to_graph(make_attention_workflow(), model_dim=256)
     assert graph.n_ops() == 7  # 4 linear + 2 matmul + 1 softmax
     assert graph.depth() == 5
 
@@ -391,8 +261,8 @@ def test_implicit_io_nodes():
 # ── Tests: validation ────────────────────────────────────────────────
 
 
-def test_validate_simple_mlp():
-    result = validate_workflow_graph(_simple_mlp(), model_dim=256)
+def test_validatemake_mlp_workflow():
+    result = validate_workflow_graph(make_mlp_workflow(), model_dim=256)
     assert result["valid"] is True
     info = result["graph_info"]
     assert info["n_ops"] == 3
@@ -401,7 +271,7 @@ def test_validate_simple_mlp():
 
 
 def test_validate_attention():
-    result = validate_workflow_graph(_attention_pattern(), model_dim=256)
+    result = validate_workflow_graph(make_attention_workflow(), model_dim=256)
     assert result["valid"] is True
 
 
@@ -423,110 +293,62 @@ def test_validate_unknown_op():
     assert "Unknown op" in result["error"]
 
 
-def test_workflow_with_passthrough_component():
-    wf = {
-        "nodes": [
-            {"id": "n0", "component_type": "graph_input", "params": {}},
-            {"id": "n1", "component_type": "blocks/sequential", "params": {}},
-            {"id": "n2", "component_type": "relu", "params": {}},
-            {"id": "n3", "component_type": "graph_output", "params": {}},
-        ],
-        "edges": [
-            {"id": "e0", "source": "n0", "target": "n1"},
-            {"id": "e1", "source": "n1", "target": "n2"},
-            {"id": "e2", "source": "n2", "target": "n3"},
-        ],
-    }
+@pytest.mark.parametrize(
+    ("chain", "params_overrides", "expected_ops"),
+    [
+        # sequential lowers to passthrough → only relu counts
+        (["graph_input", "blocks/sequential", "relu", "graph_output"], {}, 1),
+        # token merge + gate are real primitives, plus relu
+        (
+            [
+                "graph_input",
+                "routing/adjacent_token_merge",
+                "routing/learned_token_gate",
+                "relu",
+                "graph_output",
+            ],
+            {},
+            3,
+        ),
+        # adaptive + speculative primitives, plus gelu
+        (
+            [
+                "graph_input",
+                "routing/depth_weighted_proj",
+                "routing/cheap_verify_blend",
+                "gelu",
+                "graph_output",
+            ],
+            {},
+            3,
+        ),
+        # source + filter lower to input/passthrough → only relu counts
+        (
+            [
+                "data_io/random_data_source",
+                "data_transform/filter",
+                "relu",
+                "graph_output",
+            ],
+            {},
+            1,
+        ),
+        # loop lowers to passthrough → only gelu counts
+        (
+            ["graph_input", "control_flow/loop", "gelu", "graph_output"],
+            {"control_flow/loop": {"max_iterations": 3}},
+            1,
+        ),
+    ],
+)
+def test_workflow_passthrough_lowering(chain, params_overrides, expected_ops):
+    nodes = [
+        {"id": f"n{i}", "component_type": ct, "params": params_overrides.get(ct, {})}
+        for i, ct in enumerate(chain)
+    ]
+    wf = {"nodes": nodes, "edges": chain_edges([n["id"] for n in nodes], ports=False)}
     graph = workflow_to_graph(wf, model_dim=256)
-    # sequential is lowered as passthrough, so only relu counts as op
-    assert graph.n_ops() == 1
-
-
-def test_workflow_with_routing_passthrough_components():
-    wf = {
-        "nodes": [
-            {"id": "n0", "component_type": "graph_input", "params": {}},
-            {
-                "id": "n1",
-                "component_type": "routing/adjacent_token_merge",
-                "params": {},
-            },
-            {"id": "n2", "component_type": "routing/learned_token_gate", "params": {}},
-            {"id": "n3", "component_type": "relu", "params": {}},
-            {"id": "n4", "component_type": "graph_output", "params": {}},
-        ],
-        "edges": [
-            {"id": "e0", "source": "n0", "target": "n1"},
-            {"id": "e1", "source": "n1", "target": "n2"},
-            {"id": "e2", "source": "n2", "target": "n3"},
-            {"id": "e3", "source": "n3", "target": "n4"},
-        ],
-    }
-    graph = workflow_to_graph(wf, model_dim=256)
-    # adjacent_token_merge + learned_token_gate are real primitives, plus relu = 3 ops
-    assert graph.n_ops() == 3
-
-
-def test_workflow_with_adaptive_and_speculative_passthrough():
-    wf = {
-        "nodes": [
-            {"id": "n0", "component_type": "graph_input", "params": {}},
-            {"id": "n1", "component_type": "routing/depth_weighted_proj", "params": {}},
-            {"id": "n2", "component_type": "routing/cheap_verify_blend", "params": {}},
-            {"id": "n3", "component_type": "gelu", "params": {}},
-            {"id": "n4", "component_type": "graph_output", "params": {}},
-        ],
-        "edges": [
-            {"id": "e0", "source": "n0", "target": "n1"},
-            {"id": "e1", "source": "n1", "target": "n2"},
-            {"id": "e2", "source": "n2", "target": "n3"},
-            {"id": "e3", "source": "n3", "target": "n4"},
-        ],
-    }
-    graph = workflow_to_graph(wf, model_dim=256)
-    # depth_weighted_proj + cheap_verify_blend are real primitives, plus gelu = 3 ops
-    assert graph.n_ops() == 3
-
-
-def test_workflow_with_data_source_lowering():
-    wf = {
-        "nodes": [
-            {"id": "n0", "component_type": "data_io/random_data_source", "params": {}},
-            {"id": "n1", "component_type": "data_transform/filter", "params": {}},
-            {"id": "n2", "component_type": "relu", "params": {}},
-            {"id": "n3", "component_type": "graph_output", "params": {}},
-        ],
-        "edges": [
-            {"id": "e0", "source": "n0", "target": "n1"},
-            {"id": "e1", "source": "n1", "target": "n2"},
-            {"id": "e2", "source": "n2", "target": "n3"},
-        ],
-    }
-    graph = workflow_to_graph(wf, model_dim=256)
-    # source + filter lower to input/passthrough, leaving relu as concrete op
-    assert graph.n_ops() == 1
-
-
-def test_workflow_with_control_flow_loop_passthrough():
-    wf = {
-        "nodes": [
-            {"id": "n0", "component_type": "graph_input", "params": {}},
-            {
-                "id": "n1",
-                "component_type": "control_flow/loop",
-                "params": {"max_iterations": 3},
-            },
-            {"id": "n2", "component_type": "gelu", "params": {}},
-            {"id": "n3", "component_type": "graph_output", "params": {}},
-        ],
-        "edges": [
-            {"id": "e0", "source": "n0", "target": "n1"},
-            {"id": "e1", "source": "n1", "target": "n2"},
-            {"id": "e2", "source": "n2", "target": "n3"},
-        ],
-    }
-    graph = workflow_to_graph(wf, model_dim=256)
-    assert graph.n_ops() == 1
+    assert graph.n_ops() == expected_ops
 
 
 def test_template_lowered_block_components_supported():
@@ -585,8 +407,8 @@ def test_workflow_with_data_plane_lowering_components():
 # ── Tests: performance estimation ────────────────────────────────────
 
 
-def test_estimate_simple_mlp():
-    result = estimate_performance(_simple_mlp(), model_dim=256)
+def test_estimatemake_mlp_workflow():
+    result = estimate_performance(make_mlp_workflow(), model_dim=256)
     assert result["valid"] is True
     assert result["n_params_estimate"] > 0
     assert result["flops_per_token_estimate"] > 0
@@ -595,7 +417,7 @@ def test_estimate_simple_mlp():
 
 
 def test_estimate_attention():
-    result = estimate_performance(_attention_pattern(), model_dim=256)
+    result = estimate_performance(make_attention_workflow(), model_dim=256)
     assert result["valid"] is True
     assert result["n_ops"] == 7
 
@@ -615,9 +437,9 @@ def test_list_primitives():
 # ── Tests: full evaluation (CPU only, no fingerprint) ────────────────
 
 
-def test_evaluate_simple_mlp():
+def test_evaluatemake_mlp_workflow():
     result = evaluate_workflow(
-        _simple_mlp(),
+        make_mlp_workflow(),
         model_dim=256,
         device="cpu",
         run_fingerprint=False,
@@ -654,7 +476,7 @@ def test_evaluate_residual():
 
 def test_bridge_result_to_dict():
     result = evaluate_workflow(
-        _simple_mlp(),
+        make_mlp_workflow(),
         model_dim=256,
         device="cpu",
         run_fingerprint=False,
@@ -776,7 +598,7 @@ def test_evaluate_workflow_uses_behavioral_fingerprint_for_novelty(monkeypatch):
     )
 
     result = bridge_mod.evaluate_workflow(
-        _simple_mlp(),
+        make_mlp_workflow(),
         model_dim=256,
         device="cpu",
         run_fingerprint=True,

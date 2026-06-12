@@ -10,6 +10,7 @@ These tests verify that profiling baselines don't regress:
 These serve as a regression gate in CI.
 """
 
+from _workflows import make_attention_workflow, make_mlp_workflow
 import time
 
 from aria_designer.runtime.bridge import (
@@ -22,47 +23,9 @@ from aria_designer.runtime.profiler import profile_static, profile_runtime
 
 # ── Reference Workflows ──────────────────────────────────────────────
 
-REFERENCE_MLP = {
-    "nodes": [
-        {"id": "n0", "component_type": "graph_input", "params": {}},
-        {"id": "n1", "component_type": "linear_proj", "params": {"out_dim": 256}},
-        {"id": "n2", "component_type": "gelu", "params": {}},
-        {"id": "n3", "component_type": "linear_proj", "params": {"out_dim": 256}},
-        {"id": "n4", "component_type": "graph_output", "params": {}},
-    ],
-    "edges": [
-        {"id": "e0", "source": "n0", "target": "n1"},
-        {"id": "e1", "source": "n1", "target": "n2"},
-        {"id": "e2", "source": "n2", "target": "n3"},
-        {"id": "e3", "source": "n3", "target": "n4"},
-    ],
-}
+REFERENCE_MLP = make_mlp_workflow(activation="gelu", ports=False)
 
-REFERENCE_ATTENTION = {
-    "nodes": [
-        {"id": "in", "component_type": "graph_input", "params": {}},
-        {"id": "q", "component_type": "linear_proj", "params": {"out_dim": 256}},
-        {"id": "k", "component_type": "linear_proj", "params": {"out_dim": 256}},
-        {"id": "v", "component_type": "linear_proj", "params": {"out_dim": 256}},
-        {"id": "attn", "component_type": "matmul", "params": {}},
-        {"id": "sm", "component_type": "softmax_last", "params": {}},
-        {"id": "av", "component_type": "matmul", "params": {}},
-        {"id": "proj", "component_type": "linear_proj", "params": {"out_dim": 256}},
-        {"id": "out", "component_type": "graph_output", "params": {}},
-    ],
-    "edges": [
-        {"id": "e0", "source": "in", "target": "q"},
-        {"id": "e1", "source": "in", "target": "k"},
-        {"id": "e2", "source": "in", "target": "v"},
-        {"id": "e3", "source": "q", "target": "attn"},
-        {"id": "e4", "source": "k", "target": "attn"},
-        {"id": "e5", "source": "attn", "target": "sm"},
-        {"id": "e6", "source": "sm", "target": "av"},
-        {"id": "e7", "source": "v", "target": "av"},
-        {"id": "e8", "source": "av", "target": "proj"},
-        {"id": "e9", "source": "proj", "target": "out"},
-    ],
-}
+REFERENCE_ATTENTION = make_attention_workflow(ports=False)
 
 REFERENCE_RESIDUAL = {
     "nodes": [

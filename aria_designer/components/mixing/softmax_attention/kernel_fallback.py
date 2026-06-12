@@ -1,28 +1,9 @@
 """Python fallback kernel for softmax_attention."""
 
-import math
-import torch
 import torch.nn.functional as F
 
+from aria_designer.components.base import make_causal_attention_handler
 
-class ComponentHandler:
-    """Fallback handler for softmax_attention: single-head causal self-attention."""
-
-    def validate_config(self, config):
-        return []
-
-    def build(self, config):
-        return None
-
-    def forward(self, inputs, config):
-        x = inputs["x"]  # (B, S, D)
-        B, S, D = x.shape
-        scale = math.sqrt(D)
-        scores = torch.bmm(x, x.transpose(-1, -2)) / scale
-        # Causal mask
-        mask = torch.triu(
-            torch.ones(S, S, device=x.device, dtype=torch.bool), diagonal=1
-        )
-        scores.masked_fill_(mask.unsqueeze(0), float("-inf"))
-        attn = F.softmax(scores, dim=-1)
-        return {"y": torch.bmm(attn, x)}
+ComponentHandler = make_causal_attention_handler(
+    lambda scores, config: F.softmax(scores, dim=-1), mask_value=float("-inf")
+)

@@ -1,6 +1,5 @@
 """Python fallback kernel for pq_embedding_moe_block."""
 
-import torch
 import torch.nn.functional as F
 from aria_designer.components._weight_cache import cached_randn
 from research.mathspaces.pq_embedding import execute_pq_embedding

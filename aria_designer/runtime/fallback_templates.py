@@ -15,6 +15,16 @@ except ImportError:
     _HAS_ARIA_CORE = False
 
 
+class _PreviewHandlerBase:
+    """validate_config/build boilerplate shared by the preview handler factories."""
+
+    def validate_config(self, config: Dict[str, Any]) -> List[str]:
+        return []
+
+    def build(self, config: Dict[str, Any]) -> None:
+        return None
+
+
 def make_identity_handler(component_type: str):
     """Create a ComponentHandler class that returns input tensor as-is.
 
@@ -67,22 +77,26 @@ class _StubModule(nn.Module):
         return x
 
 
-def make_mathspace_unary_handler(
+def make_mathspace_handler(
     native_op_name: str,
     execute_fn_path: str,
     *,
+    arity: int = 1,
     native_args_fn=None,
 ):
     """Create a NativeComponentHandler that delegates its fallback to a
-    research.mathspaces execute function (unary: ``execute_fn(module, x)``
-    or variadic: ``execute_fn(module, *inputs)``).
+    research.mathspaces execute function — ``execute_fn(module, x)`` for
+    ``arity=1``, ``execute_fn(module, x, y)`` for ``arity=2`` (a missing
+    second input defaults to ``x``).
 
     ``execute_fn_path`` is a dotted import path like
     ``"research.mathspaces.clifford.execute_clifford_attention"``.
 
     ``native_args_fn`` optionally customises the args tuple sent to
-    aria_core; by default it sends ``(x_detached_contiguous_f32,)``.
+    aria_core; by default it sends the detached/contiguous f32 inputs.
     """
+    if arity not in (1, 2):
+        raise ValueError(f"make_mathspace_handler: unsupported arity {arity}")
     from aria_designer.components.base import NativeComponentHandler
 
     _execute_fn = None
@@ -96,58 +110,27 @@ def make_mathspace_unary_handler(
             _execute_fn = getattr(importlib.import_module(mod_path), fn_name)
         return _execute_fn
 
-    class ComponentHandler(NativeComponentHandler):
-        def _get_native_args(self, inputs, config):
-            if native_args_fn is not None:
-                return native_args_fn(inputs, config)
-            x = inputs["x"].detach().contiguous().float()
+    def _gather_inputs(inputs):
+        x = inputs.get("x", inputs.get("a"))
+        if arity == 1:
             return (x,)
-
-        def _fallback(self, inputs, config):
-            fn = _resolve()
-            x = inputs["x"]
-            return {"y": fn(_StubModule(), x)}
-
-    ComponentHandler.native_op_name = native_op_name
-    return ComponentHandler
-
-
-def make_mathspace_binary_handler(
-    native_op_name: str,
-    execute_fn_path: str,
-    *,
-    native_args_fn=None,
-):
-    """Like ``make_mathspace_unary_handler`` but for binary ops
-    (``execute_fn(module, x, y)``)."""
-    from aria_designer.components.base import NativeComponentHandler
-
-    _execute_fn = None
-
-    def _resolve():
-        nonlocal _execute_fn
-        if _execute_fn is None:
-            mod_path, fn_name = execute_fn_path.rsplit(".", 1)
-            import importlib
-
-            _execute_fn = getattr(importlib.import_module(mod_path), fn_name)
-        return _execute_fn
+        return (x, inputs.get("y", inputs.get("b", x)))
 
     class ComponentHandler(NativeComponentHandler):
         def _get_native_args(self, inputs, config):
             if native_args_fn is not None:
                 return native_args_fn(inputs, config)
-            x = inputs.get("x", inputs.get("a")).detach().contiguous().float()
-            y = inputs.get("y", inputs.get("b", x))
-            if y is not x:
-                y = y.detach().contiguous().float()
+            gathered = _gather_inputs(inputs)
+            x = gathered[0].detach().contiguous().float()
+            if arity == 1:
+                return (x,)
+            y = gathered[1]
+            y = x if y is gathered[0] else y.detach().contiguous().float()
             return (x, y)
 
         def _fallback(self, inputs, config):
             fn = _resolve()
-            x = inputs.get("x", inputs.get("a"))
-            y = inputs.get("y", inputs.get("b", x))
-            return {"y": fn(_StubModule(), x, y)}
+            return {"y": fn(_StubModule(), *_gather_inputs(inputs))}
 
     ComponentHandler.native_op_name = native_op_name
     return ComponentHandler
@@ -156,13 +139,7 @@ def make_mathspace_binary_handler(
 def make_embedding_lookup_handler(component_type: str):
     """Create a minimal embedding lookup fallback for preview and tests."""
 
-    class ComponentHandler:  # noqa: D401
-        def validate_config(self, config: Dict[str, Any]) -> List[str]:
-            return []
-
-        def build(self, config: Dict[str, Any]) -> None:
-            return None
-
+    class ComponentHandler(_PreviewHandlerBase):
         def forward(self, inputs: Dict[str, Any], config: Dict[str, Any]):
             if "indices" not in inputs:
                 raise KeyError(
@@ -188,13 +165,7 @@ def make_embedding_lookup_handler(component_type: str):
 def make_route_topk_handler():
     """Create a native-first top-k routing handler."""
 
-    class ComponentHandler:  # noqa: D401
-        def validate_config(self, config: Dict[str, Any]) -> List[str]:
-            return []
-
-        def build(self, config: Dict[str, Any]) -> None:
-            return None
-
+    class ComponentHandler(_PreviewHandlerBase):
         def forward(self, inputs: Dict[str, Any], config: Dict[str, Any]):
             scores = inputs["scores"]
             if scores.dim() != 3:
@@ -222,13 +193,7 @@ def make_route_argmax_handler(
 ):
     """Create an argmax-style routing handler."""
 
-    class ComponentHandler:  # noqa: D401
-        def validate_config(self, config: Dict[str, Any]) -> List[str]:
-            return []
-
-        def build(self, config: Dict[str, Any]) -> None:
-            return None
-
+    class ComponentHandler(_PreviewHandlerBase):
         def forward(self, inputs: Dict[str, Any], config: Dict[str, Any]):
             scores = inputs["scores"]
             if scores.dim() != 3:
@@ -254,13 +219,7 @@ def make_route_argmax_handler(
 def make_token_merge_handler():
     """Create a native-first token merge handler."""
 
-    class ComponentHandler:  # noqa: D401
-        def validate_config(self, config: Dict[str, Any]) -> List[str]:
-            return []
-
-        def build(self, config: Dict[str, Any]) -> None:
-            return None
-
+    class ComponentHandler(_PreviewHandlerBase):
         def forward(self, inputs: Dict[str, Any], config: Dict[str, Any]):
             x = inputs["x"]
             if x.dim() != 3:
@@ -288,13 +247,7 @@ def make_token_merge_handler():
 def make_basis_expansion_handler():
     """Create a native-first Fourier basis expansion handler."""
 
-    class ComponentHandler:  # noqa: D401
-        def validate_config(self, config: Dict[str, Any]) -> List[str]:
-            return []
-
-        def build(self, config: Dict[str, Any]) -> None:
-            return None
-
+    class ComponentHandler(_PreviewHandlerBase):
         def forward(self, inputs: Dict[str, Any], config: Dict[str, Any]):
             x = inputs["x"]
             n_bases = max(1, int(config.get("n_bases", 4)))
