@@ -1,0 +1,19 @@
+[mcp_servers.code-review-graph]
+command = "uvx"
+args = ["code-review-graph", "serve"]
+
+[mcp_servers.code-review-graph.tools.cross_repo_search_tool]
+approval_mode = "approve"
+
+[mcp_servers.code-review-graph.tools.get_review_context_tool]
+approval_mode = "approve"
+
+[mcp_servers.code-review-graph.tools.detect_changes_tool]
+approval_mode = "approve"
+
+[mcp_servers.code-review-graph.tools.get_minimal_context_tool]
+approval_mode = "approve"
+
+[mcp_servers.notebooklm]
+command = "uvx"
+args = ["--from", "notebooklm-mcp-server", "notebooklm-mcp"]
