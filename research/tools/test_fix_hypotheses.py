@@ -1,11 +1,7 @@
-import json
 import torch
 
 from research.tools.gemini_slot_snapshot import GeminiSlotMemoryLane
-from component_fab.harness.harder_binding_tasks import (
-    default_hard_binding_tasks,
-    run_one_task_checkpoints,
-)
+from research.tools._recall_probe_common import run_comparisons
 
 
 class ContentRoutedMasterLane(GeminiSlotMemoryLane):
@@ -59,7 +55,7 @@ class ContentRoutedMasterLane(GeminiSlotMemoryLane):
         return torch.stack(outputs, dim=1)
 
 
-def run_eval():
+def run_eval() -> None:
     STEPS = 1000
     DIM = 64
     comparisons = [
@@ -74,25 +70,13 @@ def run_eval():
             "compositional_binding",
         ),
     ]
-    results = {}
-    for name, factory, tn in comparisons:
-        if name not in results:
-            results[name] = {}
-        task = next(t for t in default_hard_binding_tasks(seed=0) if t.name == tn)
-        print(f"Running {name} on {tn}...", flush=True)
-        rows = run_one_task_checkpoints(
-            factory,
-            task,
-            eval_at_steps=(STEPS,),
-            dim=DIM,
-            seed=0,
-            device="cuda",
-            mixer_label=name,
-        )
-        results[name][tn] = rows[STEPS].eval_accuracy
-        print(f"DONE: {name} {tn}: {results[name][tn]:.4f}")
-    with open("research/reports/fix_attempt_results.json", "w") as f:
-        json.dump(results, f, indent=2)
+    run_comparisons(
+        comparisons,
+        steps=STEPS,
+        dim=DIM,
+        device="cuda",
+        out_path="research/reports/fix_attempt_results.json",
+    )
 
 
 if __name__ == "__main__":

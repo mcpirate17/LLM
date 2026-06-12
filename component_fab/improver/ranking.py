@@ -22,6 +22,8 @@ weighting so older callers still work.
 from __future__ import annotations
 
 import math
+
+import numpy as np
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Sequence
 
@@ -270,37 +272,33 @@ def _as_objective_list(vec: dict[str, float]) -> tuple[float, ...]:
     return tuple(float(vec.get(k, 0.0)) for k in OBJECTIVE_KEYS)
 
 
-def _dominates(a: Sequence[float], b: Sequence[float]) -> bool:
-    """True if ``a`` Pareto-dominates ``b`` (>= on all dims, > on at least one)."""
-    ge_all = all(x >= y for x, y in zip(a, b))
-    gt_any = any(x > y for x, y in zip(a, b))
-    return ge_all and gt_any
-
-
 def non_dominated_sort(vectors: Sequence[dict[str, float]]) -> list[int]:
     """Assign each vector a Pareto front index, where ``0`` is non-dominated.
 
     Dict inputs are first projected through ``OBJECTIVE_KEYS`` so callers may
     carry extra diagnostic fields without changing the dominance relation.
     Equal vectors remain on the same front because dominance requires at least
-    one strictly better objective.
+    one strictly better objective (the self/equal pair fails the strict-any
+    test, so the dominance matrix diagonal is always False).
     """
-    arrs = [_as_objective_list(v) for v in vectors]
-    n = len(arrs)
-    fronts = [-1] * n
-    remaining = set(range(n))
+    if not vectors:
+        return []
+    arrs = np.asarray([_as_objective_list(v) for v in vectors], dtype=float)
+    fronts = [-1] * len(arrs)
+    remaining = np.arange(len(arrs))
     front = 0
-    while remaining:
-        current = [
-            i
-            for i in remaining
-            if not any(_dominates(arrs[j], arrs[i]) for j in remaining if j != i)
-        ]
-        if not current:  # numerical safety — should be unreachable
-            current = list(remaining)
-        for i in current:
-            fronts[i] = front
-        remaining -= set(current)
+    while remaining.size:
+        sub = arrs[remaining]
+        # dominates[j, i]: j >= i on all objectives and > on at least one
+        dominates = (sub[:, None, :] >= sub[None, :, :]).all(-1) & (
+            sub[:, None, :] > sub[None, :, :]
+        ).any(-1)
+        dominated = dominates.any(axis=0)
+        if dominated.all():  # numerical safety — should be unreachable
+            dominated[:] = False
+        for i in remaining[~dominated]:
+            fronts[int(i)] = front
+        remaining = remaining[dominated]
         front += 1
     return fronts
 

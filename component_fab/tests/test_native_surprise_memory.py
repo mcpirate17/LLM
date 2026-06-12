@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+
 import torch
 
 from component_fab.generator.native_surprise_memory import (
@@ -25,8 +26,9 @@ from component_fab.generator.native_surprise_memory import (
 )
 
 
-def test_native_surprise_scan_gradcheck() -> None:
-    torch.manual_seed(0)
+def _gradcheck_inputs(seed: int, momentum: float):
+    """Shared double-precision gradcheck inputs for the native scan Functions."""
+    torch.manual_seed(seed)
     bsz, seq_len, memory_dim = 1, 3, 2
     q = torch.randn(bsz, seq_len, memory_dim, dtype=torch.double, requires_grad=True)
     k = torch.randn(bsz, seq_len, memory_dim, dtype=torch.double, requires_grad=True)
@@ -38,7 +40,12 @@ def test_native_surprise_scan_gradcheck() -> None:
         torch.sigmoid(torch.randn(bsz, seq_len, memory_dim, dtype=torch.double)) * 0.1
     )
     forget = forget.detach().requires_grad_()
-    momentum = torch.tensor(0.4, dtype=torch.double, requires_grad=True)
+    momentum_t = torch.tensor(momentum, dtype=torch.double, requires_grad=True)
+    return q, k, v, write, forget, momentum_t
+
+
+def test_native_surprise_scan_gradcheck() -> None:
+    q, k, v, write, forget, momentum = _gradcheck_inputs(0, 0.4)
 
     assert torch.autograd.gradcheck(
         lambda *args: _NativeSurpriseScan.apply(*args),
@@ -50,19 +57,7 @@ def test_native_surprise_scan_gradcheck() -> None:
 
 
 def test_native_semiring_surprise_scan_gradcheck() -> None:
-    torch.manual_seed(1)
-    bsz, seq_len, memory_dim = 1, 3, 2
-    q = torch.randn(bsz, seq_len, memory_dim, dtype=torch.double, requires_grad=True)
-    k = torch.randn(bsz, seq_len, memory_dim, dtype=torch.double, requires_grad=True)
-    v = torch.randn(bsz, seq_len, memory_dim, dtype=torch.double, requires_grad=True)
-    write = torch.sigmoid(
-        torch.randn(bsz, seq_len, dtype=torch.double)
-    ).requires_grad_()
-    forget = (
-        torch.sigmoid(torch.randn(bsz, seq_len, memory_dim, dtype=torch.double)) * 0.1
-    )
-    forget = forget.detach().requires_grad_()
-    momentum = torch.tensor(0.35, dtype=torch.double, requires_grad=True)
+    q, k, v, write, forget, momentum = _gradcheck_inputs(1, 0.35)
     beta = torch.tensor(3.0, dtype=torch.double, requires_grad=True)
     balance = torch.tensor(0.75, dtype=torch.double, requires_grad=True)
 
@@ -76,19 +71,7 @@ def test_native_semiring_surprise_scan_gradcheck() -> None:
 
 
 def test_native_adaptive_semiring_surprise_scan_gradcheck() -> None:
-    torch.manual_seed(3)
-    bsz, seq_len, memory_dim = 1, 3, 2
-    q = torch.randn(bsz, seq_len, memory_dim, dtype=torch.double, requires_grad=True)
-    k = torch.randn(bsz, seq_len, memory_dim, dtype=torch.double, requires_grad=True)
-    v = torch.randn(bsz, seq_len, memory_dim, dtype=torch.double, requires_grad=True)
-    write = torch.sigmoid(
-        torch.randn(bsz, seq_len, dtype=torch.double)
-    ).requires_grad_()
-    forget = (
-        torch.sigmoid(torch.randn(bsz, seq_len, memory_dim, dtype=torch.double)) * 0.1
-    )
-    forget = forget.detach().requires_grad_()
-    momentum = torch.tensor(0.35, dtype=torch.double, requires_grad=True)
+    q, k, v, write, forget, momentum = _gradcheck_inputs(3, 0.35)
     beta = torch.tensor(3.0, dtype=torch.double, requires_grad=True)
     balance = torch.tensor(0.75, dtype=torch.double, requires_grad=True)
     low = torch.tensor(0.0, dtype=torch.double)
