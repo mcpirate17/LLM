@@ -148,6 +148,22 @@ def _add_promotion_args(parser: argparse.ArgumentParser) -> None:
         ),
     )
     parser.add_argument(
+        "--scale-gate",
+        action="store_true",
+        help=(
+            "Final gate before promotion: re-verify each fresh promotion beats "
+            "its anchor (catalog op or softmax-frontier fallback) at SCALE "
+            "(--scale-gate-dim/steps/seeds) via the paired probe. The nano "
+            "paired-CI is NOT scale-predictive — it promoted candidates that "
+            "lose to softmax at dim96/1500st — so a candidate that does not beat "
+            "its anchor at scale is REJECTED (terminal) instead of promoted. "
+            "Off by default; recommended for promotion-capable runs."
+        ),
+    )
+    parser.add_argument("--scale-gate-dim", default=96, type=int)
+    parser.add_argument("--scale-gate-steps", default=1500, type=int)
+    parser.add_argument("--scale-gate-seeds", default=5, type=int)
+    parser.add_argument(
         "--regrade-top-orthogonality",
         default=0,
         type=int,
