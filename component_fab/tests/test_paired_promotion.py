@@ -103,25 +103,34 @@ def test_run_paired_probe_requires_seeds():
 # --------------------------------------------------------------------------- #
 # paired_metadata_for_spec (anchor build + explicit skips — no silent fallback)
 # --------------------------------------------------------------------------- #
-def test_metadata_skips_when_no_anchor():
+def test_metadata_frontier_anchors_when_no_witness_op():
+    # No anchor witness op -> fall back to the softmax causal-attention FRONTIER
+    # baseline (greenlit 2026-06-16) so "beats frontier with CI>0" is the
+    # promotion path, instead of skipping. Emits CI keys, not a skip reason.
     md = paired_metadata_for_spec(
-        _spec({"op_invention_mechanism": "causal_fast_weight_memory"}, "")
+        _spec({"op_invention_mechanism": "causal_fast_weight_memory"}, ""),
+        seeds=(0, 1),
     )
-    assert md == {"paired_skipped_reason": "no_anchor_witness_op"}
+    assert md.get("paired_anchor_op") == "frontier:causal_attention"
+    assert "paired_delta_ci_excludes_zero" in md
+    assert "paired_skipped_reason" not in md
 
 
-def test_metadata_skips_when_anchor_unbuildable():
-    # softmax_attention has no dispatch trigger -> generate_module now RAISES;
-    # the helper records that explicitly instead of fabricating a comparison.
+def test_metadata_frontier_anchors_when_anchor_unbuildable():
+    # An anchor that cannot be built (softmax_attention has no dispatch trigger)
+    # also falls back to the frontier baseline rather than skipping.
     if not DEFAULT_META_DB.exists():
         pytest.skip("meta_analysis.db not present")
     md = paired_metadata_for_spec(
         _spec(
             {"op_invention_mechanism": "causal_fast_weight_memory"},
             "softmax_attention",
-        )
+        ),
+        seeds=(0, 1),
     )
-    assert md.get("paired_skipped_reason") == "anchor_unbuildable:softmax_attention"
+    assert md.get("paired_anchor_op") == "frontier:causal_attention"
+    assert "paired_delta_ci_excludes_zero" in md
+    assert "paired_skipped_reason" not in md
 
 
 def test_metadata_emits_ci_for_buildable_anchor():

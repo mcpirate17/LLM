@@ -16,6 +16,7 @@ as ``in_context.py`` does, so the two stay metric-compatible.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import partial
 from statistics import mean, stdev
 from typing import TYPE_CHECKING, Any, Callable, Hashable, Sequence
 
@@ -199,15 +200,18 @@ def paired_metadata_for_spec(
     seq_len: int = 32,
     n_steps: int = 100,
 ) -> dict[str, Any]:
-    """Grade-record metadata: paired CI of ``spec`` vs its anchor baseline.
+    """Grade-record metadata: paired CI of ``spec`` vs an anchor baseline.
 
-    Builds the candidate from ``spec`` and the anchor from
-    ``spec.anchor_witness_op`` (catalog axes → generator). When the anchor
-    cannot be built — no witness op, not in the catalog, or un-dispatchable
-    (it now *raises* rather than silently becoming nn.Linear) — no comparison is
-    fabricated: an explicit ``paired_skipped_reason`` is recorded instead and no
-    CI keys are emitted, so the promotion guard stays on its legacy-safe path.
-    Imports are local to avoid a validator→generator import cycle.
+    The candidate is built from ``spec``. The anchor is its catalog
+    ``anchor_witness_op`` when one exists and is buildable; otherwise — no
+    witness op, not in the catalog, or un-dispatchable — we FALL BACK to the
+    softmax causal-attention FRONTIER baseline (greenlit 2026-06-16) instead of
+    skipping. This makes "beats softmax/frontier with CI>0" the promotion
+    criterion for inventions + NAS topologies, which were previously stuck
+    pending (``no_anchor_witness_op`` / ``anchor_not_in_catalog``) despite holding
+    the Pareto front — the mission lever. ``paired_anchor_op`` records which
+    anchor was used (catalog op vs ``frontier:causal_attention``).
+    Imports are local to avoid validator→generator / validator→transplant cycles.
     """
     from ..generator.code_generator import (
         UndispatchableSpecError,
@@ -215,28 +219,41 @@ def paired_metadata_for_spec(
         generate_module_from_spec,
     )
     from ..improver.axis_variants import anchor_axes_for_op
+    from .transplant import _default_baseline_factory
 
     op = getattr(spec, "anchor_witness_op", "") or ""
-    if not op:
-        return {"paired_skipped_reason": "no_anchor_witness_op"}
-    anchor = anchor_axes_for_op(op)
-    if anchor is None:
-        return {"paired_skipped_reason": f"anchor_not_in_catalog:{op}"}
-    anchor_axes = dict(anchor.axes)
-    try:
-        generate_module(anchor_axes, dim=dim)  # probe buildability once
-    except UndispatchableSpecError:
-        return {"paired_skipped_reason": f"anchor_unbuildable:{op}"}
+    anchor_axes: dict[str, Any] | None = None
+    if op:
+        anchor = anchor_axes_for_op(op)
+        if anchor is not None:
+            candidate_axes = dict(anchor.axes)
+            try:
+                generate_module(candidate_axes, dim=dim)  # probe buildability once
+                anchor_axes = candidate_axes
+            except UndispatchableSpecError:
+                anchor_axes = None  # fall through to the frontier baseline
+
+    if anchor_axes is not None:
+        anchor_factory: LaneFactory = partial(generate_module, anchor_axes, dim=dim)
+        anchor_key: Hashable = ("paired_anchor", op)
+        anchor_label = op
+    else:
+        # Frontier fallback: anchorless / uncatalogued / unbuildable specs are
+        # paired against the softmax causal-attention baseline (the thing the
+        # mission must beat). Always builds at any dim.
+        anchor_factory = partial(_default_baseline_factory, dim)
+        anchor_key = ("paired_anchor_frontier", "causal_attention")
+        anchor_label = "frontier:causal_attention"
 
     ci = run_paired_probe(
         lambda: generate_module_from_spec(spec, dim=dim),
-        lambda: generate_module(anchor_axes, dim=dim),
+        anchor_factory,
         seeds=seeds,
         dim=dim,
         seq_len=seq_len,
         n_steps=n_steps,
-        # Anchor is fully determined by its catalog op — reuse its metrics
-        # across every candidate sharing the same anchor this process.
-        anchor_cache_key=("paired_anchor", op),
+        # Anchor metrics are fully determined by the anchor identity — reuse
+        # across every candidate sharing it this process.
+        anchor_cache_key=anchor_key,
     )
-    return {**ci.to_metadata(), "paired_anchor_op": op}
+    return {**ci.to_metadata(), "paired_anchor_op": anchor_label}
