@@ -130,6 +130,7 @@ def _run_cycle(
     selection: str = "legacy",
     acquisition_beta: float = 1.0,
     niche_promotion: bool = False,
+    regrade_top_orthogonality: int = 0,
 ) -> dict:
     anchors = top_underperforming_names(top_anchors)
     tier2_feedback_by_id = load_tier2_feedback(tier2_feedback_paths)
@@ -167,6 +168,7 @@ def _run_cycle(
         use_quality_order=use_quality_order,
         max_graded_per_cycle=max_graded_per_cycle,
         tier2_feedback_by_id=tier2_feedback_by_id,
+        regrade_top_orthogonality=regrade_top_orthogonality,
     )
 
     cycle_scorecards, cycle_probes, cycle_capabilities, eliminated_by_gate = (
@@ -342,6 +344,7 @@ def _drive_loop(args, ledger: Ledger, proposals_path: Path) -> list[dict]:
             selection=args.selection,
             acquisition_beta=args.acquisition_beta,
             niche_promotion=args.niche_promotion,
+            regrade_top_orthogonality=args.regrade_top_orthogonality,
         )
         cycle_summaries.append(summary)
         if not args.quiet:

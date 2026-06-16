@@ -148,6 +148,18 @@ def _add_promotion_args(parser: argparse.ArgumentParser) -> None:
         ),
     )
     parser.add_argument(
+        "--regrade-top-orthogonality",
+        default=0,
+        type=int,
+        help=(
+            "If > 0, force the top-K pending Pareto-front candidates by PEAK "
+            "orthogonality (distance from softmax/frontier+ledger) into each "
+            "cycle's grading budget. Counters the composite-selection pathology "
+            "that starves genuinely-novel candidates so they never re-grade / "
+            "accumulate the paired-CI a niche promotion needs. 0 = off (default)."
+        ),
+    )
+    parser.add_argument(
         "--paired-seeds",
         default=0,
         type=int,

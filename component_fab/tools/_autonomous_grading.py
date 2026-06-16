@@ -421,6 +421,99 @@ def _order_active_specs_by_quality(
     return ordered, bucket_counts(chosen)
 
 
+def _top_orthogonality_pending(
+    pool: list[ProposalSpec], ledger: Ledger, k: int
+) -> list[ProposalSpec]:
+    """Top-``k`` pending Pareto-front specs by PEAK orthogonality across history.
+
+    The orthogonality radius decays to ~0 once a spec enters the ledger catalog
+    (it is min-distance to a catalog that now contains itself), so first-sighting
+    novelty lives in the MAX over a spec's grade history, not its latest value.
+    Composite ordering starves these genuinely-novel candidates (mid composite vs
+    high-composite recombinations), so they never re-grade and never accumulate the
+    paired-CI a niche promotion needs — the gate-abandons-novel pathology. Forcing
+    them back into the grading budget is the fix.
+    """
+    scored: list[tuple[float, ProposalSpec]] = []
+    for spec in pool:
+        entry = ledger.entries.get(spec.proposal_id)
+        if entry is None or not entry.metadata_history:
+            continue
+        if not entry.metadata_history[-1].get("on_pareto_front"):
+            continue
+        peak = max(
+            (
+                float(m.get("orthogonality_radius") or 0.0)
+                for m in entry.metadata_history
+            ),
+            default=0.0,
+        )
+        if peak > 0.0:
+            scored.append((peak, spec))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [spec for _, spec in scored[:k]]
+
+
+def _inject_novelty_regrades(
+    active_specs: list[ProposalSpec],
+    pool: list[ProposalSpec],
+    ledger: Ledger,
+    *,
+    k: int,
+    budget: int,
+) -> list[ProposalSpec]:
+    """Prepend the top-``k`` orthogonality front-members to the graded set (kept
+    within ``budget``). Opt-in: ``k <= 0`` returns ``active_specs`` unchanged."""
+    if k <= 0:
+        return active_specs
+    selected = {s.proposal_id for s in active_specs}
+    extra = [
+        s
+        for s in _top_orthogonality_pending(pool, ledger, k)
+        if s.proposal_id not in selected
+    ]
+    if not extra:
+        return active_specs
+    merged = extra + active_specs
+    return merged[:budget] if budget > 0 else merged
+
+
+def _order_grading_queue(
+    active_specs: list[ProposalSpec],
+    ledger: Ledger,
+    *,
+    selection: str,
+    acquisition_beta: float,
+    use_quality_order: bool,
+    max_graded_per_cycle: int,
+    tier2_feedback_by_id: dict[str, Tier2Feedback],
+    nas_screen_by_id: dict[str, NasScreenResult],
+) -> tuple[list[ProposalSpec], dict[str, int]]:
+    """Order/budget the screened pool — surrogate-UCB or legacy quality split.
+
+    ``surrogate`` fills the budget with the MeanFieldApproximant's highest-UCB
+    candidates (falls back to identity order if it can't fit); otherwise the
+    legacy 60/25/15 quality order applies. Returns ``(ordered, bucket_summary)``.
+    """
+    if selection == "surrogate":
+        ordered = select_by_acquisition(
+            active_specs,
+            MeanFieldApproximant.fit(),
+            budget=max_graded_per_cycle,
+            beta=acquisition_beta,
+        )
+        return ordered, bucket_counts(())
+    if use_quality_order:
+        return _order_active_specs_by_quality(
+            active_specs,
+            ledger,
+            tier2_feedback_by_id=tier2_feedback_by_id,
+            nas_screen_by_id=nas_screen_by_id,
+            max_graded_per_cycle=max_graded_per_cycle,
+        )
+    return active_specs, bucket_counts(())
+
+
 def _select_active_specs(
     specs: list[ProposalSpec],
     ledger: Ledger,
@@ -434,6 +527,7 @@ def _select_active_specs(
     use_quality_order: bool,
     max_graded_per_cycle: int,
     tier2_feedback_by_id: dict[str, Tier2Feedback],
+    regrade_top_orthogonality: int = 0,
 ) -> tuple[
     list[ProposalSpec],
     dict[str, NasScreenResult],
@@ -480,27 +574,28 @@ def _select_active_specs(
     )
     n_new_available = sum(1 for s in active_specs if not ledger.has_seen(s.proposal_id))
     nas_screen_by_id = score_specs_with_nas(active_specs, enabled=use_nas_screen)
+    pool = list(active_specs)  # full screened set, before ordering/budget reduces it
 
-    bucket_summary = bucket_counts(())
-    if selection == "surrogate":
-        # WS-3: fill the grading budget with the surrogate's highest-UCB
-        # candidates instead of the legacy quality order. max_graded_per_cycle
-        # is the budget (0 => no cap). Falls back to identity order if the
-        # surrogate can't fit (too little ledger history).
-        active_specs = select_by_acquisition(
-            active_specs,
-            MeanFieldApproximant.fit(),
-            budget=max_graded_per_cycle,
-            beta=acquisition_beta,
-        )
-    elif use_quality_order:
-        active_specs, bucket_summary = _order_active_specs_by_quality(
-            active_specs,
-            ledger,
-            tier2_feedback_by_id=tier2_feedback_by_id,
-            nas_screen_by_id=nas_screen_by_id,
-            max_graded_per_cycle=max_graded_per_cycle,
-        )
+    active_specs, bucket_summary = _order_grading_queue(
+        active_specs,
+        ledger,
+        selection=selection,
+        acquisition_beta=acquisition_beta,
+        use_quality_order=use_quality_order,
+        max_graded_per_cycle=max_graded_per_cycle,
+        tier2_feedback_by_id=tier2_feedback_by_id,
+        nas_screen_by_id=nas_screen_by_id,
+    )
+    # Force the top-orthogonality pending front-members into the graded budget so
+    # genuinely-novel candidates re-grade and can accumulate paired-CI (fixes the
+    # composite-selection-starves-novel pathology). Opt-in: 0 => unchanged.
+    active_specs = _inject_novelty_regrades(
+        active_specs,
+        pool,
+        ledger,
+        k=regrade_top_orthogonality,
+        budget=max_graded_per_cycle,
+    )
     return (
         active_specs,
         nas_screen_by_id,
