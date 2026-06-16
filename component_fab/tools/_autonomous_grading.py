@@ -216,13 +216,9 @@ def _metadata_for_grade(
             {
                 "routing_entropy_mean": round(float(mechanism.routing_entropy_mean), 4),
                 "load_balance_cv": round(float(mechanism.load_balance_cv), 4),
-                "mode_collapse_propensity": round(
-                    float(mechanism.mode_collapse_propensity), 4
-                ),
+                "state_degeneracy": round(float(mechanism.state_degeneracy), 4),
                 "active_lane_fraction": round(float(mechanism.active_lane_fraction), 4),
-                "surprise_relaxation_slope": round(
-                    float(mechanism.surprise_relaxation_slope), 4
-                ),
+                "relaxation_slope": round(float(mechanism.relaxation_slope), 4),
                 "address_entropy": round(float(mechanism.address_entropy), 4),
                 "mechanism_passed": bool(mechanism.passed),
             }

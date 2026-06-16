@@ -137,7 +137,7 @@ def _training_rows(
         # Note: these fields are added by our new validator/mechanism.py
         if meta.get("routing_entropy_mean", 1.0) < 0.05:
             composite *= 0.5
-        if meta.get("mode_collapse_propensity", 0.0) > 0.9:
+        if meta.get("state_degeneracy", 0.0) > 0.9:
             composite *= 0.5
 
         frontier_delta = meta.get("deep_probe_mean_delta")
