@@ -9,8 +9,10 @@ from component_fab.proposer.quality import (
     BUCKET_EXPLOIT,
     BUCKET_EXPLORATION,
     BUCKET_REPAIR,
+    SIGNATURE_DYNAMIC_LEDGER_REPAIR,
     allocate_budget_buckets,
     bucket_counts,
+    physics_s05_failure_count_for_spec,
     score_quality,
     score_specs_quality,
 )
@@ -21,6 +23,7 @@ from component_fab.proposer.tier2_feedback import (
     WEAK_NARROW_DISTRACTOR_ONLY,
     WEAK_FAIL_LONG_GAP,
 )
+from component_fab.state.gates import GATE_S05_CAUSALITY_STABILITY
 from component_fab.tests.conftest import make_spec
 
 
@@ -48,7 +51,13 @@ def _tier2(
     )
 
 
-def _nas(pid: str, *, gate_pass: bool = True, rank: float = 1.0) -> NasScreenResult:
+def _nas(
+    pid: str,
+    *,
+    gate_pass: bool = True,
+    rank: float = 1.0,
+    raw: dict[str, float] | None = None,
+) -> NasScreenResult:
     return NasScreenResult(
         proposal_id=pid,
         available=True,
@@ -56,6 +65,7 @@ def _nas(pid: str, *, gate_pass: bool = True, rank: float = 1.0) -> NasScreenRes
         downstream_gate_pass=gate_pass,
         rank_score=rank,
         source="test",
+        raw=raw,
     )
 
 
@@ -97,6 +107,298 @@ def test_repair_bucket_from_failure_signature() -> None:
     assert (
         "long_gap" in score.why_beats_tier2
         or WEAK_FAIL_LONG_GAP in score.why_beats_tier2
+    )
+
+
+def test_dynamic_proposal_without_tier2_gets_repair_bucket() -> None:
+    score = score_quality(
+        _spec(
+            "dynamic_repair",
+            name="dynamic_source_extend_receptive_state_weak_nano_bind",
+        )
+    )
+
+    assert score.bucket == BUCKET_REPAIR
+    assert SIGNATURE_DYNAMIC_LEDGER_REPAIR in score.repair_signatures
+
+
+def test_unseen_dynamic_physics_variant_outranks_seen_base_repair() -> None:
+    axes = {
+        "op_search_track": "physics_atom",
+        "op_physics_atom_kinds": "scan+basis",
+        "op_physics_address_family": "reciprocal",
+        "op_physics_score_norm_family": "sharpen",
+        "op_physics_aggregate_family": "semiring",
+    }
+    base = score_quality(
+        _spec(
+            "dynamic_base",
+            axes,
+            name="dynamic_source_extend_receptive_state_weak_nano_bind",
+        ),
+        entry=LedgerEntry(
+            proposal_id="dynamic_base",
+            name="dynamic_source_extend_receptive_state_weak_nano_bind",
+            category="lane",
+            synthesis_kind="novel_hybrid",
+            composite_history=[0.6],
+        ),
+    )
+    variant = score_quality(
+        _spec(
+            "dynamic_variant",
+            {**axes, "op_physics_variant": "physv01"},
+            name="dynamic_source_extend_receptive_state_physv01_weak_nano_bind",
+        )
+    )
+
+    assert variant.bucket == BUCKET_REPAIR
+    assert variant.quality_score > base.quality_score
+    assert any("physics variant" in r for r in variant.evidence_reasons)
+
+
+def test_dynamic_physics_long_gap_uses_measured_target_alignment() -> None:
+    axes = {
+        "op_search_track": "physics_atom",
+        "op_physics_target": "long_gap_recursive_memory",
+    }
+    weak = score_quality(
+        _spec("dynamic_weak", axes, name="dynamic_source_repair_long_gap_memory"),
+        nas=_nas(
+            "dynamic_weak",
+            raw={
+                "long_range_reach": 0.005,
+                "causality_violation": 0.45,
+                "content_dependence": 0.0,
+                "content_match_gating": 0.0,
+            },
+        ),
+    )
+    aligned = score_quality(
+        _spec("dynamic_aligned", axes, name="dynamic_source_repair_long_gap_memory"),
+        nas=_nas(
+            "dynamic_aligned",
+            raw={
+                "long_range_reach": 0.05,
+                "causality_violation": 0.05,
+                "content_dependence": 0.0,
+                "content_match_gating": 0.0,
+            },
+        ),
+    )
+
+    assert aligned.quality_score > weak.quality_score
+    assert any("long-gap repair" in r for r in aligned.evidence_reasons)
+
+
+def test_dynamic_physics_binding_uses_measured_target_alignment() -> None:
+    axes = {
+        "op_search_track": "physics_atom",
+        "op_physics_target": "binding_content_addressed_state",
+    }
+    weak = score_quality(
+        _spec("dynamic_weak_bind", axes, name="dynamic_source_bind_sparse_content"),
+        nas=_nas(
+            "dynamic_weak_bind",
+            raw={
+                "long_range_reach": 0.005,
+                "causality_violation": 0.4,
+                "content_dependence": 0.05,
+                "content_match_gating": 0.05,
+            },
+        ),
+    )
+    aligned = score_quality(
+        _spec("dynamic_aligned_bind", axes, name="dynamic_source_bind_sparse_content"),
+        nas=_nas(
+            "dynamic_aligned_bind",
+            raw={
+                "long_range_reach": 0.02,
+                "causality_violation": 0.05,
+                "content_dependence": 0.7,
+                "content_match_gating": 0.5,
+            },
+        ),
+    )
+
+    assert aligned.quality_score > weak.quality_score
+    assert any("binding repair" in r for r in aligned.evidence_reasons)
+
+
+def test_dynamic_physics_quality_uses_target_task_learning_ratios() -> None:
+    axes = {
+        "op_search_track": "physics_atom",
+        "op_physics_target": "long_gap_recursive_memory",
+    }
+    weak_entry = LedgerEntry(
+        proposal_id="dynamic_weak_task",
+        name="dynamic_source_repair_long_gap_memory",
+        category="lane",
+        synthesis_kind="novel_hybrid",
+        composite_history=[0.4],
+        metadata_history=[
+            {
+                "physics_probe_task_ratios": {
+                    "shifted_copy": 1.01,
+                    "copy_from_uniform_past": 1.0,
+                    "causal_induction": 1.0,
+                    "running_parity": 1.0,
+                }
+            }
+        ],
+    )
+    strong_entry = LedgerEntry(
+        proposal_id="dynamic_strong_task",
+        name="dynamic_source_repair_long_gap_memory",
+        category="lane",
+        synthesis_kind="novel_hybrid",
+        composite_history=[0.4],
+        metadata_history=[
+            {
+                "physics_probe_task_ratios": {
+                    "shifted_copy": 1.06,
+                    "copy_from_uniform_past": 1.18,
+                    "causal_induction": 1.04,
+                    "running_parity": 1.02,
+                }
+            }
+        ],
+    )
+
+    weak = score_quality(_spec("dynamic_weak_task", axes), entry=weak_entry)
+    strong = score_quality(_spec("dynamic_strong_task", axes), entry=strong_entry)
+
+    assert strong.quality_score > weak.quality_score
+    assert any("physics task learning" in r for r in strong.evidence_reasons)
+
+
+def test_dynamic_physics_quality_inherits_task_ratios_from_matching_coordinate() -> (
+    None
+):
+    axes = {
+        "op_search_track": "physics_atom",
+        "op_physics_target": "long_gap_recursive_memory",
+        "op_physics_atom_kinds": "basis+scan",
+        "op_physics_basis_axis": "token",
+        "op_physics_norm_axis": "channel",
+        "op_physics_address_family": "reciprocal",
+        "op_physics_score_norm_family": "sharpen",
+        "op_physics_aggregate_family": "mean",
+        "op_physics_variant": "physod01",
+    }
+    prior = LedgerEntry(
+        proposal_id="prior_physod01",
+        name="dynamic_prior",
+        category="lane",
+        synthesis_kind="novel_hybrid",
+        metadata_history=[
+            {
+                "math_axes": axes,
+                "physics_probe_task_ratios": {
+                    "copy_from_uniform_past": 1.2,
+                    "causal_induction": 1.1,
+                },
+            }
+        ],
+    )
+    candidate = _spec("dynamic_candidate", axes, name="dynamic_candidate")
+    plain = list(score_specs_quality([candidate]).values())[0]
+    inherited = list(
+        score_specs_quality(
+            [candidate], entries_by_id={prior.proposal_id: prior}
+        ).values()
+    )[0]
+
+    assert inherited.quality_score > plain.quality_score
+    assert any("physics task learning" in r for r in inherited.evidence_reasons)
+
+
+def test_dynamic_physics_quality_penalizes_repeated_s05_coordinate() -> None:
+    bad_axes = {
+        "op_search_track": "physics_atom",
+        "op_physics_target": "long_gap_recursive_memory",
+        "op_physics_atom_kinds": "basis+scan",
+        "op_physics_basis_axis": "token",
+        "op_physics_norm_axis": "channel",
+        "op_physics_address_family": "reciprocal",
+        "op_physics_score_norm_family": "softmax",
+        "op_physics_aggregate_family": "mean",
+        "op_physics_variant": "physv02",
+    }
+    good_axes = {
+        **bad_axes,
+        "op_physics_address_family": "dot",
+        "op_physics_score_norm_family": "sharpen",
+        "op_physics_variant": "physod01",
+    }
+    failed = LedgerEntry(
+        proposal_id="failed_physv02",
+        name="dynamic_failed",
+        category="lane",
+        synthesis_kind="novel_hybrid",
+        metadata_history=[
+            {
+                "math_axes": bad_axes,
+                "capability_eliminated_by": GATE_S05_CAUSALITY_STABILITY,
+            }
+        ],
+    )
+    bad = _spec("dynamic_bad", bad_axes, name="dynamic_bad")
+    good = _spec("dynamic_good", good_axes, name="dynamic_good")
+    scores = score_specs_quality(
+        [bad, good], entries_by_id={failed.proposal_id: failed}
+    )
+
+    assert (
+        scores[good.proposal_id].quality_score > scores[bad.proposal_id].quality_score
+    )
+    assert any("S0.5 failures" in r for r in scores[bad.proposal_id].evidence_reasons)
+
+
+def test_physics_s05_memory_keys_dispatched_program_not_repair_label() -> None:
+    failed_axes = {
+        "op_search_track": "physics_atom",
+        "op_physics_target": "long_gap_recursive_memory",
+        "op_physics_variant": "physod01",
+        "op_physics_seed": 101,
+        "op_physics_knob_scale": 2.0,
+        "op_physics_atom_kinds": "basis+scan",
+        "op_physics_basis_axis": "token",
+        "op_physics_norm_axis": "channel",
+        "op_physics_address_family": "reciprocal",
+        "op_physics_score_norm_family": "sharpen",
+        "op_physics_aggregate_family": "mean",
+    }
+    relabeled_axes = {
+        **failed_axes,
+        "op_physics_target": "long_gap_ordered_memory",
+        "op_physics_variant": "physod99",
+    }
+    different_program_axes = {**relabeled_axes, "op_physics_seed": 102}
+    failed = LedgerEntry(
+        proposal_id="failed_physics",
+        name="dynamic_failed",
+        category="lane",
+        synthesis_kind="novel_hybrid",
+        metadata_history=[
+            {
+                "math_axes": failed_axes,
+                "capability_eliminated_by": GATE_S05_CAUSALITY_STABILITY,
+            }
+        ],
+    )
+
+    assert (
+        physics_s05_failure_count_for_spec(
+            _spec("relabeled", relabeled_axes), {failed.proposal_id: failed}
+        )
+        == 1
+    )
+    assert (
+        physics_s05_failure_count_for_spec(
+            _spec("different", different_program_axes), {failed.proposal_id: failed}
+        )
+        == 0
     )
 
 

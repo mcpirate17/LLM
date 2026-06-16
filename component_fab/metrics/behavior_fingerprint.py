@@ -46,8 +46,8 @@ FINGERPRINT_KEYS: tuple[str, ...] = (
     "mean_relative_recall",
     "range_effective_distance",
 )
-# Default behavioral-clone threshold in z-scored Euclidean space.
-DEFAULT_CLONE_EPS = 0.75
+# Default state-degeneracy threshold in z-scored Euclidean space.
+DEFAULT_DEGENERACY_EPS = 0.75
 
 
 def _mean_relative_recall(capability_scorecard: dict[str, Any] | None) -> float:
@@ -59,11 +59,11 @@ def _mean_relative_recall(capability_scorecard: dict[str, Any] | None) -> float:
     return sum(max(0.0, float(v)) for v in recalls.values()) / len(recalls)
 
 
-def behavior_fingerprint(
+def operational_spectrum(
     probe_scorecard: dict[str, Any] | None,
     capability_scorecard: dict[str, Any] | None,
 ) -> dict[str, float]:
-    """Named fixed-key fingerprint from the live in-context + capability scorecards."""
+    """Named fixed-key spectrum from the live in-context + capability scorecards."""
     cap = capability_scorecard or {}
     return {
         "learning": learning_subscore(probe_scorecard),
@@ -78,15 +78,13 @@ def behavior_fingerprint(
     }
 
 
-def fingerprint_from_metadata(metadata: dict[str, Any]) -> dict[str, float]:
-    """Reconstruct a fingerprint from a persisted ledger grade-metadata dict.
+def spectrum_from_metadata(metadata: dict[str, Any]) -> dict[str, float]:
+    """Reconstruct an operational spectrum from persisted grade-metadata.
 
-    Prefers a stored ``behavior_fingerprint`` (full, written going forward); falls
-    back to the coarse subset every grade record already carries (erf_density,
-    nb_max_accuracy, range_effective_distance) so legacy rows still place in the
-    behavioral space, just less precisely.
+    Prefers a stored ``operational_spectrum`` (full); falls back to the coarse
+    subset every grade record already carries.
     """
-    stored = metadata.get("behavior_fingerprint")
+    stored = metadata.get("operational_spectrum")
     if isinstance(stored, dict) and stored:
         return {k: float(stored.get(k) or 0.0) for k in FINGERPRINT_KEYS}
     coarse = {k: 0.0 for k in FINGERPRINT_KEYS}
@@ -106,17 +104,17 @@ def to_vector(fp: dict[str, float]) -> np.ndarray:
 
 @dataclass(slots=True)
 class Normalizer:
-    """Per-dimension z-scoring over a catalog of fingerprints."""
+    """Per-dimension z-scoring over a catalog of spectra."""
 
     mean: np.ndarray
     std: np.ndarray
 
     @classmethod
-    def fit(cls, fingerprints: Sequence[dict[str, float]]) -> "Normalizer":
-        if not fingerprints:
+    def fit(cls, spectra: Sequence[dict[str, float]]) -> "Normalizer":
+        if not spectra:
             n = len(FINGERPRINT_KEYS)
             return cls(mean=np.zeros(n), std=np.ones(n))
-        M = np.vstack([to_vector(fp) for fp in fingerprints])
+        M = np.vstack([to_vector(fp) for fp in spectra])
         std = M.std(axis=0)
         std[std < 1e-9] = 1.0  # constant dims contribute nothing, never divide by 0
         return cls(mean=M.mean(axis=0), std=std)
@@ -125,16 +123,15 @@ class Normalizer:
         return (to_vector(fp) - self.mean) / self.std
 
 
-def novelty_distance(
+def orthogonality_radius(
     fp: dict[str, float],
     catalog: Sequence[dict[str, float]],
     *,
     normalizer: Normalizer | None = None,
 ) -> float:
-    """Min z-scored Euclidean distance from ``fp`` to any catalog fingerprint.
+    """Min z-scored Euclidean distance from ``fp`` to any catalog spectrum.
 
-    Returns ``inf`` for an empty catalog (nothing to be a clone of). A
-    self-identical neighbor yields 0.0.
+    Returns ``inf`` for an empty catalog. A self-identical neighbor yields 0.0.
     """
     if not catalog:
         return float("inf")
@@ -144,16 +141,61 @@ def novelty_distance(
     return float(np.linalg.norm(M - target, axis=1).min())
 
 
-def is_clone(distance: float, *, clone_eps: float = DEFAULT_CLONE_EPS) -> bool:
-    return distance <= clone_eps
+def is_degenerate(distance: float, *, eps: float = DEFAULT_DEGENERACY_EPS) -> bool:
+    return distance <= eps
+
+
+# Frontier baseline anchors (Calibrated 2026-06-07).
+# These represent the 'softmax twin' and 'SOTA recurrence' behaviors we
+# want to move away from. Orthogonality is anchored against these.
+FRONTIER_SPECTRA: dict[str, dict[str, float]] = {
+    "softmax_attention": {
+        "learning": 0.42,
+        "binding": 0.58,
+        "state_tracking": 0.05,
+        "erf_density": 0.12,
+        "erf_decay_slope": -0.8,
+        "nb_max_accuracy": 0.98,
+        "ind_max_accuracy": 0.55,
+        "mean_relative_recall": 0.85,
+        "range_effective_distance": 1024,
+    },
+    "gpt2": {
+        "learning": 0.45,
+        "binding": 0.62,
+        "state_tracking": 0.08,
+        "erf_density": 0.15,
+        "erf_decay_slope": -0.75,
+        "nb_max_accuracy": 1.0,
+        "ind_max_accuracy": 0.62,
+        "mean_relative_recall": 0.92,
+        "range_effective_distance": 1024,
+    },
+    "mamba2": {
+        "learning": 0.38,
+        "binding": 0.45,
+        "state_tracking": 0.65,
+        "erf_density": 0.08,
+        "erf_decay_slope": -0.4,
+        "nb_max_accuracy": 0.85,
+        "ind_max_accuracy": 0.02,
+        "mean_relative_recall": 0.42,
+        "range_effective_distance": 256,
+    },
+}
 
 
 def catalog_from_ledger(
     ledger_path: Path | str = DEFAULT_LEDGER_PATH,
+    *,
+    include_frontier: bool = True,
 ) -> list[dict[str, float]]:
-    """Behavioral fingerprints for every graded ledger entry (latest per id)."""
+    """Operational spectra for every graded ledger entry (latest per id)."""
     latest = latest_by_key(
         (r for r in iter_jsonl_records(Path(ledger_path)) if r.get("event") == "grade"),
         "proposal_id",
     )
-    return [fingerprint_from_metadata(g.get("metadata") or {}) for g in latest.values()]
+    catalog = [spectrum_from_metadata(g.get("metadata") or {}) for g in latest.values()]
+    if include_frontier:
+        catalog.extend(FRONTIER_SPECTRA.values())
+    return catalog

@@ -10,8 +10,20 @@ tests); ``write_ledger_jsonl`` goes through the real ``JsonlWriter``.
 from __future__ import annotations
 
 import datetime as _dt
+import os
 from pathlib import Path
 from typing import Any, Iterable
+
+# ── CPU thread hygiene under xdist ───────────────────────────────────
+# Same fix as research/tests/conftest.py: without this every worker
+# initializes an all-core OpenMP/BLAS pool and the nano-training tests
+# thrash (measured 1233s → 3s per test once pinned). Must run before
+# torch import; explicit env settings win.
+_XDIST_WORKERS = os.environ.get("PYTEST_XDIST_WORKER_COUNT")
+if _XDIST_WORKERS:
+    _threads = str(max(1, (os.cpu_count() or 1) // int(_XDIST_WORKERS)))
+    for _var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
+        os.environ.setdefault(_var, _threads)
 
 import pytest
 

@@ -27,6 +27,7 @@ from component_fab.proposer.dynamic import (
 from component_fab.proposer.property_miner import AxisLift, CandidateTuple
 from component_fab.proposer.spec_generator import (
     ProposalSpec,
+    build_spec_from_axes,
     make_proposal_id,
     spec_from_candidate,
 )
@@ -198,6 +199,7 @@ def test_spec_for_variant_matches_old_axis_variant_construction() -> None:
 def test_spec_from_case_and_repair_matches_old_dynamic_construction() -> None:
     case = DynamicEvidenceCase(
         source_id="p1",
+        root_source_id="p1",
         name="tropical attention v2",
         base_axes=dict(_HOST.axes),
         anchor_axes=dict(_HOST.axes),
@@ -215,41 +217,32 @@ def test_spec_from_case_and_repair_matches_old_dynamic_construction() -> None:
         },
         rationale="repair measured range/ERF weakness",
     )
-    # Old dynamic._spec_from_case_and_repair, replicated.
+    # Mirror the production delegation to the shared builder. The physics-axis
+    # strip is a no-op here (case has no op_search_track=physics_atom), so the
+    # dispatched axes are base ∪ delta minus the mirrored synthesis_kind.
     axes = {**case.base_axes, **repair.delta}
     axes.pop("synthesis_kind", None)
-    tuple_values = tuple(axes.items())
-    pass_rate = min(1.0, max(0.05, case.score))
-    candidate = CandidateTuple(
-        tuple_values=tuple_values,
-        predicted_lift=max(0.1, min(1.0, case.score + 0.08)),
-        per_axis_lift=tuple(
-            _old_synthetic_lift(a, v, pass_rate) for a, v in tuple_values
-        ),
-        witness_ops=(case.name,),
-        anchor_axes=tuple(case.anchor_axes.items()),
-    )
-    base_spec = spec_from_candidate(candidate)
     name = "dynamic_tropical_attention_v2_extend_receptive_state_range_blind_weak_nano_bind"
-    expected = ProposalSpec(
-        proposal_id=make_proposal_id(name, base_spec.math_axes),
-        name=name,
-        category=base_spec.category,
-        synthesis_kind=base_spec.synthesis_kind,
-        math_axes=base_spec.math_axes,
-        anchor_witness_op=case.name,
-        anchor_witnesses_all=(case.name,),
-        declared_property_row=base_spec.declared_property_row,
-        predicted_lift=base_spec.predicted_lift,
+    expected = build_spec_from_axes(
+        name,
+        axes,
+        witness_ops=(case.name,),
+        anchor_axes=case.anchor_axes,
+        notes=(
+            f"source_id={case.source_id}",
+            f"root_source_id={case.root_source_id}",
+            f"source_score={case.score:.4f}",
+            f"repair={repair.name}",
+            f"repair_depth={case.repair_depth + 1}",
+            f"repair_history={'+'.join((*case.repair_history, repair.name))}",
+            *case.notes,
+        ),
+        predicted_lift=max(0.1, min(1.0, case.score + 0.08)),
+        lift_pass_rate=min(1.0, max(0.05, case.score)),
+        fingerprint_dispatched_axes=True,
         rationale=(
             f"Dynamic proposal derived from ledger evidence for {case.source_id}. "
             f"Weaknesses={', '.join(case.weaknesses)}. {repair.rationale}."
-        ),
-        notes=(
-            f"source_id={case.source_id}",
-            f"source_score={case.score:.4f}",
-            f"repair={repair.name}",
-            *case.notes,
         ),
     )
 

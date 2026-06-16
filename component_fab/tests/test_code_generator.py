@@ -36,6 +36,7 @@ from component_fab.generator.primitive_templates import (
 )
 from component_fab.proposer.property_miner import AxisLift, CandidateTuple
 from component_fab.proposer.spec_generator import spec_from_candidate
+from research.synthesis.parametric_ops import ParametricMix
 
 
 def test_dispatch_tropical_no_state_to_attention() -> None:
@@ -62,31 +63,56 @@ def test_unimplemented_invention_stubs_fail_loud(mechanism: str) -> None:
         generate_module({"op_invention_mechanism": mechanism}, dim=16)
 
 
-def test_native_equivalent_surprise_dispatch_requires_parity_evidence() -> None:
-    with pytest.raises(NativeParityEvidenceError, match="op_native_parity_passed"):
-        generate_module({"op_invention_mechanism": "semiring_surprise_memory"}, dim=16)
-
-
-def test_native_equivalent_surprise_dispatch_routes_after_parity_evidence() -> None:
+def test_native_equivalent_surprise_dispatches_validated_native() -> None:
+    # The legacy mechanism names carry a checked-in validated native lane in the
+    # registry, so they route straight to the native C++ lane — no per-spec
+    # evidence axes required, and the drifty Python lane is never selected.
     module = generate_module(
-        {
-            "op_invention_mechanism": "semiring_surprise_memory",
-            "op_native_parity_passed": True,
-            "op_native_parity_evidence": "component_fab/tests/test_native_surprise_memory.py",
-        },
-        dim=16,
+        {"op_invention_mechanism": "semiring_surprise_memory"}, dim=16
     )
     assert isinstance(module, NativeSemiringSurpriseMemoryLane)
 
     rope = generate_module(
+        {"op_invention_mechanism": "semiring_surprise_memory_rope"}, dim=16
+    )
+    assert isinstance(rope, NativeSemiringRopeSurpriseMemoryLane)
+
+
+def test_native_equivalent_without_validation_artifact_fails_loud(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A native mapping with a missing proof is a wiring bug: refuse to dispatch
+    # rather than silently fall back to the Python path or an unvalidated native.
+    import component_fab.generator.code_generator as cg
+
+    monkeypatch.setitem(
+        cg._NATIVE_EQUIVALENT_MECHANISMS,
+        "semiring_surprise_memory",
+        ("native_semiring_surprise_memory", ""),
+    )
+    with pytest.raises(NativeParityEvidenceError, match="validation artifact"):
+        generate_module({"op_invention_mechanism": "semiring_surprise_memory"}, dim=16)
+
+
+def test_dispatch_physics_atom_program_from_axes() -> None:
+    module = generate_module(
         {
-            "op_invention_mechanism": "semiring_surprise_memory_rope",
-            "op_native_parity_passed": "passed",
-            "op_native_parity_evidence": "component_fab/tests/test_native_surprise_memory.py",
+            "op_search_track": "physics_atom",
+            "op_physics_atom_kinds": "scan+basis",
+            "op_physics_basis_axis": "token",
+            "op_physics_address_family": "reciprocal",
+            "op_physics_score_norm_family": "sharpen",
+            "op_physics_aggregate_family": "semiring",
+            "op_physics_knob_scale": 1.5,
+            "op_physics_seed": 7,
         },
         dim=16,
     )
-    assert isinstance(rope, NativeSemiringRopeSurpriseMemoryLane)
+    assert isinstance(module[-1], ParametricMix)
+    x = torch.randn(2, 8, 16)
+    y = module(x)
+    assert y.shape == x.shape
+    assert torch.isfinite(y).all()
 
 
 def test_dispatch_tropical_with_state_to_state_space() -> None:

@@ -34,6 +34,7 @@ from component_fab.generator.code_generator import generate_module_from_spec
 from component_fab.harness.harder_binding_tasks import (
     default_hard_binding_tasks,
     run_harder_binding_suite,
+    run_one_task_checkpoints,
 )
 from component_fab.harness.tiny_lm import (  # noqa: F401  (used in run_cohort + main)
     DEFAULT_BASELINE_NAMES,
@@ -96,6 +97,21 @@ def _aggregate_per_task(seed_rows: list[dict[str, dict[str, Any]]]) -> dict[str,
             "candidate_n_params": int(rows[-1].get("candidate_n_params") or 0),
             "seed_deltas": deltas,
         }
+        # Average ladder results across seeds if present (rows are per-task dicts)
+        ladders = [row.get("ladder") for row in rows if row.get("ladder")]
+        if ladders:
+            steps = sorted({int(s) for ladder in ladders for s in ladder})
+            merged_ladder = {}
+            for step in steps:
+                vals = [
+                    float(ladder[str(step)])
+                    for ladder in ladders
+                    if str(step) in ladder
+                ]
+                if vals:
+                    merged_ladder[str(step)] = sum(vals) / len(vals)
+            out[task]["ladder"] = merged_ladder
+
     return out
 
 
@@ -135,8 +151,10 @@ def _run_one_spec_seeds(
     n_blocks: int,
     n_train_steps: int,
     baseline_names: tuple[str, ...],
+    steps_ladder: tuple[int, ...] | None = None,
 ) -> list[dict[str, Any]]:
     """Run the binding suite for one spec across all seeds; return per-seed rows."""
+    from component_fab.harness.tiny_lm import lane_factory_for_baseline
 
     def candidate_factory(d: int, _spec: ProposalSpec = spec) -> torch.nn.Module:
         return generate_module_from_spec(_spec, dim=d)
@@ -145,19 +163,63 @@ def _run_one_spec_seeds(
     for offset in range(seed_count):
         run_seed = int(seed) + offset
         tasks = default_hard_binding_tasks(seed=run_seed)
-        suite = run_harder_binding_suite(
-            candidate_factory,
-            spec.name,
-            tasks=tasks,
-            dim=dim,
-            n_blocks=n_blocks,
-            n_train_steps=n_train_steps,
-            seed=run_seed,
-            baseline_names=baseline_names,
-        )
+
+        if steps_ladder:
+            # Ladder mode: collect checkpoints to calculate slope
+            suite = {}
+            for task in tasks:
+                res_checkpoints = run_one_task_checkpoints(
+                    candidate_factory,
+                    task,
+                    eval_at_steps=steps_ladder,
+                    mixer_label=spec.name,
+                    dim=dim,
+                    n_blocks=n_blocks,
+                    seed=run_seed,
+                )
+                max_step = max(steps_ladder)
+                baseline_results = []
+                for b_name in baseline_names:
+                    b_res = run_one_task_checkpoints(
+                        lane_factory_for_baseline(b_name),
+                        task,
+                        eval_at_steps=steps_ladder,
+                        mixer_label=b_name,
+                        dim=dim,
+                        n_blocks=n_blocks,
+                        seed=run_seed,
+                    )
+                    baseline_results.append(b_res)
+
+                suite[task.name] = [
+                    res_checkpoints[max_step],
+                    *[b_res[max_step] for b_res in baseline_results],
+                ]
+                # Attach ladder data to candidate
+                setattr(suite[task.name][0], "ladder", res_checkpoints)
+        else:
+            suite = run_harder_binding_suite(
+                candidate_factory,
+                spec.name,
+                tasks=tasks,
+                dim=dim,
+                n_blocks=n_blocks,
+                n_train_steps=n_train_steps,
+                seed=run_seed,
+                baseline_names=baseline_names,
+            )
+
         per_task_seed = {
             name: _summarise_per_task(rows) for name, rows in suite.items()
         }
+        # If ladder was used, propagate it to the summary
+        if steps_ladder:
+            for name, rows in suite.items():
+                per_task_seed[name]["ladder"] = {
+                    str(step): r.eval_accuracy
+                    for step, r in getattr(rows[0], "ladder").items()
+                }
+
         pass_count_seed = sum(
             1 for value in per_task_seed.values() if value.get("beats")
         )
@@ -221,6 +283,7 @@ def _eval_proposal(
     use_niche_survival: bool,
     resolved_baselines: tuple[str, ...],
     quiet: bool,
+    steps_ladder: tuple[int, ...] | None = None,
 ) -> tuple[dict[str, Any], bool]:
     """Evaluate one pid; return (result_entry, tier2_passed)."""
     spec = specs_by_id.get(pid)
@@ -229,10 +292,11 @@ def _eval_proposal(
             print(f"[{index + 1}/{total}] {pid} NOT in catalog — skipping")
         return {"status": "spec_not_found"}, False
     if not quiet:
+        mode = f"LADDER {steps_ladder}" if steps_ladder else f"{n_train_steps} steps"
         print(
             f"[{index + 1}/{total}] {pid} ({spec.name[:50]}) "
             f"running {seed_count} seed(s) × 6 tasks × "
-            f"(1 cand + 2 baselines) × {n_train_steps} steps"
+            f"(1 cand + 2 baselines) × {mode}"
         )
     t0 = time.monotonic()
     try:
@@ -244,6 +308,7 @@ def _eval_proposal(
             n_blocks=n_blocks,
             n_train_steps=n_train_steps,
             baseline_names=resolved_baselines,
+            steps_ladder=steps_ladder,
         )
     except Exception as exc:  # noqa: BLE001
         if not quiet:
@@ -320,6 +385,7 @@ def run_cohort(
     baseline_names: tuple[str, ...] | None = None,
     accumulate_labels: bool = True,
     quiet: bool = False,
+    steps_ladder: tuple[int, ...] | None = None,
 ) -> dict[str, Any]:
     """Run Tier-2 binding on each proposal_id; return summary dict.
 
@@ -350,6 +416,7 @@ def run_cohort(
             use_niche_survival=use_niche_survival,
             resolved_baselines=resolved_baselines,
             quiet=quiet,
+            steps_ladder=steps_ladder,
         )
         results[pid] = entry
         if tier2_passed:
@@ -392,6 +459,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="do not append results to the Tier-2 predictor training table",
     )
+    parser.add_argument(
+        "--ladder",
+        type=str,
+        help="comma-separated list of steps for scale-ladder (e.g. '800,2000,5000')",
+    )
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
     pids = [p.strip() for p in args.proposal_ids.split(",") if p.strip()]
@@ -403,6 +475,13 @@ def main(argv: list[str] | None = None) -> int:
         baseline_names = tuple(
             n.strip() for n in args.baselines.split(",") if n.strip()
         )
+
+    steps_ladder = None
+    if args.ladder:
+        steps_ladder = tuple(
+            sorted({int(s) for s in args.ladder.split(",") if s.strip()})
+        )
+
     summary = run_cohort(
         pids,
         dim=args.dim,
@@ -414,6 +493,7 @@ def main(argv: list[str] | None = None) -> int:
         baseline_names=baseline_names,
         accumulate_labels=not args.no_accumulate,
         quiet=args.quiet,
+        steps_ladder=steps_ladder,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(summary, indent=2, default=str), encoding="utf-8")

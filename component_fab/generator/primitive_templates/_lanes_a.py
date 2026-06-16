@@ -755,7 +755,68 @@ class SparseBandedMatrixLane(nn.Module):
         return x + out / float(self.bandwidth)
 
 
+class HyperbolicAttention(_QKVRopeAttentionBase):
+    """Causal attention scored by HYPERBOLIC (Lorentz-model) distance instead of
+    the Euclidean QK dot product. In negatively-curved space, volume grows
+    exponentially with radius, so a tree's worth of children fits "near" their
+    parent with little interference — general/near-root tokens sit close to the
+    origin, specifics fan outward. Content matching then respects hierarchy a
+    flat dot product cannot pack. Curvature ``c = softplus(param)`` is learned, so
+    the lane can bend space only where it pays.
+
+    This is the intended replacement for the reciprocal **softmax-twin**: a
+    genuinely non-Euclidean addressing geometry, not a cosmetic re-weighting of
+    the same flat scores. (Honest caveat: scores still go through a softmax — the
+    novelty is the geometry of the score, not avoiding softmax. The nano gate
+    asks whether that geometry buys per-parameter capability over reciprocal /
+    softmax on induction + binding.)
+
+    Same q/k/v/RoPE machinery as the rest of the attention family (subclasses the
+    shared base), so the ONLY difference vs reciprocal is the scoring geometry —
+    a controlled, param-matched comparison.
+    """
+
+    def __init__(
+        self,
+        dim: int,
+        causal: bool = True,
+        *,
+        use_rope: bool = True,
+        max_seq_len: int = 1024,
+    ) -> None:
+        super().__init__(dim, causal=causal, use_rope=use_rope, max_seq_len=max_seq_len)
+        # c starts at softplus(0)≈0.69 (mild curvature); temp shapes score sharpness.
+        self.log_curvature = nn.Parameter(torch.zeros(1))
+        self.log_temp = nn.Parameter(torch.zeros(1))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        from ._core import get_causal_mask
+
+        seq_len = x.shape[1]
+        q, k, v = self.q(x), self.k(x), self.v(x)
+        if self.rope is not None:
+            cos, sin = self.rope(seq_len, device=x.device, dtype=x.dtype)
+            q, k = apply_rope(q, cos, sin), apply_rope(k, cos, sin)
+        c = nn.functional.softplus(self.log_curvature) + 1e-4
+        # Lorentz lift: time coord t = sqrt(1/c + ||x||^2) puts each point on the
+        # hyperboloid <x,x>_L = -1/c. Lorentzian inner product <p,q>_L = -t_p t_q +
+        # p·q; geodesic distance = (1/sqrt c)·acosh(-c<p,q>_L). At p=q the argument
+        # is exactly 1 (distance 0); it is >=1 everywhere by Cauchy-Schwarz.
+        q_t = torch.sqrt(1.0 / c + q.pow(2).sum(-1, keepdim=True))  # [b, L, 1]
+        k_t = torch.sqrt(1.0 / c + k.pow(2).sum(-1, keepdim=True))
+        spatial = torch.einsum("bid,bjd->bij", q, k)  # [b, L, L]
+        time = q_t * k_t.transpose(1, 2)  # [b, L, L]
+        arg = (c * (time - spatial)).clamp_min(1.0 + 1e-5)
+        dist = torch.acosh(arg) / torch.sqrt(c)
+        scores = -dist * nn.functional.softplus(self.log_temp)  # closer => higher
+        if self.causal:
+            scores = scores + get_causal_mask(seq_len, x.device, x.dtype)
+        attn = torch.softmax(scores, dim=-1)
+        return torch.einsum("bij,bjd->bid", attn, v)
+
+
 __all__ = [
+    "HyperbolicAttention",
     "TropicalAttention",
     "SparsemaxAttention",
     "ReciprocalRankAttention",

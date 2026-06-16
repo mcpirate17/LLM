@@ -11,7 +11,7 @@ from component_fab.proposer.acquisition import score_specs, select_by_acquisitio
 from component_fab.proposer.spec_generator import ProposalSpec
 from component_fab.state._stats import spearman
 from component_fab.state.surrogate import (
-    Surrogate,
+    MeanFieldApproximant,
     _marginal_scores,
     _recall_at_k,
     compute_surrogate_report,
@@ -78,7 +78,7 @@ def test_features_for_spec_encodes_axes_and_knobs():
 # --------------------------------------------------------------------------- #
 # Acquisition ranking (stub surrogate — deterministic, no training)
 # --------------------------------------------------------------------------- #
-class _StubSurrogate:
+class _StubMeanFieldApproximant:
     def predict(self, features: dict) -> tuple[float, float]:
         base = 0.6 if features.get("op_algebraic_space=tropical") else 0.2
         return base, base + 0.3
@@ -89,7 +89,7 @@ def test_score_specs_ranks_by_ucb():
         _spec("low", {"op_algebraic_space": "euclidean"}),
         _spec("high", {"op_algebraic_space": "tropical"}),
     ]
-    scored = score_specs(specs, _StubSurrogate(), beta=1.0)
+    scored = score_specs(specs, _StubMeanFieldApproximant(), beta=1.0)
     assert scored[0].spec.proposal_id == "high"
     assert scored[0].ucb > scored[1].ucb
 
@@ -100,10 +100,10 @@ def test_select_by_acquisition_budget_and_fallbacks():
         _spec("b", {"op_algebraic_space": "tropical"}),
         _spec("c", {"op_algebraic_space": "euclidean"}),
     ]
-    sel = select_by_acquisition(specs, _StubSurrogate(), budget=1)
+    sel = select_by_acquisition(specs, _StubMeanFieldApproximant(), budget=1)
     assert [s.proposal_id for s in sel] == ["b"]  # highest UCB
     # budget 0 -> no cap, identity order
-    assert len(select_by_acquisition(specs, _StubSurrogate(), budget=0)) == 3
+    assert len(select_by_acquisition(specs, _StubMeanFieldApproximant(), budget=0)) == 3
     # no surrogate -> identity prefix
     assert [s.proposal_id for s in select_by_acquisition(specs, None, budget=2)] == [
         "a",
@@ -160,7 +160,7 @@ def test_report_insufficient_rows(tmp_path: Path):
 def test_surrogate_fit_predict(tmp_path: Path):
     ledger = tmp_path / "ledger.jsonl"
     _synthetic_ledger(ledger)
-    surrogate = Surrogate.fit(ledger_path=ledger)
+    surrogate = MeanFieldApproximant.fit(ledger_path=ledger)
     assert surrogate is not None
     median, upper = surrogate.predict(
         features_for_spec(_spec("x", {"op_algebraic_space": "tropical"}))
@@ -173,4 +173,4 @@ def test_surrogate_fit_none_on_tiny_ledger(tmp_path: Path):
     ledger.write_text(
         json.dumps(_grade("p0", {"op_algebraic_space": "tropical"}, 0.5)) + "\n"
     )
-    assert Surrogate.fit(ledger_path=ledger) is None
+    assert MeanFieldApproximant.fit(ledger_path=ledger) is None

@@ -16,7 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Sequence
 
-from ..state.surrogate import Surrogate, features_for_spec
+from ..state.surrogate import MeanFieldApproximant, features_for_spec
 
 if TYPE_CHECKING:
     from .spec_generator import ProposalSpec
@@ -32,7 +32,7 @@ class ScoredSpec:
 
 def score_specs(
     specs: Sequence["ProposalSpec"],
-    surrogate: Surrogate,
+    surrogate: MeanFieldApproximant,
     *,
     beta: float = 1.0,
 ) -> list[ScoredSpec]:
@@ -48,7 +48,7 @@ def score_specs(
 
 def select_by_acquisition(
     specs: Sequence["ProposalSpec"],
-    surrogate: Surrogate | None,
+    surrogate: MeanFieldApproximant | None,
     *,
     budget: int,
     beta: float = 1.0,

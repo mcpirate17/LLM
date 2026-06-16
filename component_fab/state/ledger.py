@@ -299,10 +299,26 @@ class Ledger:
         proposal_id = record.get("proposal_id")
         if not proposal_id:
             return
-        if record.get("event") == "grade":
+        event = record.get("event")
+        if event == "grade":
             self._apply_grade(record)
-        elif record.get("event") == "promote":
+        elif event == "promote":
             self._apply_promotion(record)
+        elif event == "deep_probe":
+            self._apply_deep_probe(record)
+
+    def _apply_deep_probe(self, record: dict[str, Any]) -> None:
+        proposal_id = str(record["proposal_id"])
+        entry = self.entries.get(proposal_id)
+        if entry is None:
+            return
+        # Fold the outcome into the metadata history so the surrogate can see it.
+        meta = {
+            "deep_probe_beats_frontier": bool(record.get("beats_frontier")),
+            "deep_probe_mean_delta": float(record.get("mean_delta") or 0.0),
+            **(record.get("metadata") or {}),
+        }
+        entry.metadata_history.append(meta)
 
     def _apply_grade(self, record: dict[str, Any]) -> None:
         proposal_id = str(record["proposal_id"])
@@ -375,6 +391,29 @@ class Ledger:
             "status": status,
             "timestamp": _dt.datetime.now(_dt.timezone.utc).isoformat(),
         }
+        self._apply_record(record)
+        self._append(record)
+
+    def record_deep_probe(
+        self,
+        proposal_id: str,
+        *,
+        beats_frontier: bool,
+        mean_delta: float,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        """Record the high-fidelity outcome of a deep frontier bake-off."""
+        record = {
+            "event": "deep_probe",
+            "proposal_id": proposal_id,
+            "beats_frontier": beats_frontier,
+            "mean_delta": float(mean_delta),
+            "metadata": dict(metadata or {}),
+            "timestamp": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+        }
+        # deep_probe doesn't change the basic LedgerEntry history (which is
+        # nano-cycle focused), but it is replayed into the entries' metadata
+        # by _apply_record.
         self._apply_record(record)
         self._append(record)
 

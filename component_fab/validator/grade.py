@@ -22,16 +22,20 @@ from component_fab.generator.code_generator import (
     generate_module_from_spec,
 )
 from component_fab.proposer.spec_generator import ProposalSpec
+from component_fab.state.gates import GATE_ERF_DENSITY, GATE_NANO_BIND
 from component_fab.validator.capability import (
     capability_scorecard_to_dict,
     validate_capabilities,
 )
-from component_fab.validator.in_context import InContextScorecard, validate_in_context
-from component_fab.validator.solo import (
+from .in_context import InContextScorecard, validate_in_context
+from .mechanism import MechanisticObservable, probe_observables
+from .solo import (
     SoloScorecard,
     append_scorecard,
     validate_solo,
 )
+
+_PHYSICS_SOFT_ESCAPE_GATES = frozenset({GATE_ERF_DENSITY, GATE_NANO_BIND})
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,6 +46,7 @@ class GradeBundle:
     eliminated_by: str | None
     solo: SoloScorecard | None
     in_context: InContextScorecard | None
+    observables: MechanisticObservable | None = None
 
 
 def eliminated_solo_scorecard(spec: ProposalSpec, eliminated_by: str) -> SoloScorecard:
@@ -65,6 +70,13 @@ def eliminated_solo_scorecard(spec: ProposalSpec, eliminated_by: str) -> SoloSco
     )
 
 
+def _soft_escape_physics_gate(spec: ProposalSpec, eliminated_by: str | None) -> bool:
+    return (
+        spec.math_axes.get("op_search_track") == "physics_atom"
+        and eliminated_by in _PHYSICS_SOFT_ESCAPE_GATES
+    )
+
+
 def grade_candidate(
     spec: ProposalSpec,
     *,
@@ -76,6 +88,7 @@ def grade_candidate(
     run_solo: bool = True,
     persist_solo_scorecard: bool = False,
     run_in_context: bool = True,
+    run_mechanisms: bool = True,
     in_context_requires_promotion: bool = True,
     halt_on_elimination: bool = True,
 ) -> GradeBundle:
@@ -99,13 +112,19 @@ def grade_candidate(
         range_train_steps=range_train_steps,
     )
     capability_dict = capability_scorecard_to_dict(capability)
-    if capability.eliminated_by is not None and halt_on_elimination:
+    soft_escape = _soft_escape_physics_gate(spec, capability.eliminated_by)
+    if capability.eliminated_by is not None and halt_on_elimination and not soft_escape:
         return GradeBundle(
             capability=capability_dict,
             eliminated_by=capability.eliminated_by,
             solo=None,
             in_context=None,
+            observables=None,
         )
+
+    observables: MechanisticObservable | None = None
+    if run_mechanisms:
+        observables = probe_observables(module, dim=dim, seq_len=seq_len)
 
     solo: SoloScorecard | None = None
     if run_solo:
@@ -114,7 +133,11 @@ def grade_candidate(
             append_scorecard(solo)
 
     in_context: InContextScorecard | None = None
-    probe_allowed = (not in_context_requires_promotion) or bool(solo and solo.promoted)
+    probe_allowed = (
+        soft_escape
+        or (not in_context_requires_promotion)
+        or bool(solo and solo.promoted)
+    )
     if run_in_context and probe_allowed:
         in_context = validate_in_context(
             spec,
@@ -125,9 +148,10 @@ def grade_candidate(
         )
     return GradeBundle(
         capability=capability_dict,
-        eliminated_by=capability.eliminated_by,
+        eliminated_by=None if soft_escape else capability.eliminated_by,
         solo=solo,
         in_context=in_context,
+        observables=observables,
     )
 
 

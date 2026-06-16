@@ -12,13 +12,19 @@
 //
 // Forward saves M_{t-1} and S_{t-1} per t; the backward recomputes the per-step
 // surprise history s_hist[0..R] (in shared) and the halts, then backprops in
-// reverse. R<=8, M<=32, H<=128.
+// reverse. R<=8, M<=32, H<=512.
+//
+// H is a runtime arg; MAXH only bounds the guard. Shared memory is sized
+// dynamically (forward ~30KB, backward ~66KB at H=258/M=32/R=7) and the
+// backward kernel opts into large dynamic shared mem via cudaFuncSetAttribute,
+// so H up to a few hundred fits on >=Ampere. Raised 128->512 for the 1291-param
+// (H=258) surprise+loss MoR router; keep <=512 to stay within shared-mem limits.
 
 #include <torch/extension.h>
 #include <cuda_runtime.h>
 
 #define MAXM 32
-#define MAXH 128
+#define MAXH 512
 #define MAXR 8
 
 __device__ __forceinline__ float bal_f(float raw, float balance) {

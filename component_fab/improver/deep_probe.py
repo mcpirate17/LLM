@@ -36,6 +36,8 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
+import numpy as np
+
 from component_fab.state.ledger import (
     PROMOTION_PROMOTED,
     Ledger,
@@ -66,6 +68,7 @@ class DeepProbeOutcome:
     n_tasks: int
     mean_delta_vs_frontier: float
     status: str  # "ok" | "spec_not_found" | "failed: ..."
+    slope: float = 0.0
 
 
 def select_top_k(
@@ -117,6 +120,35 @@ def _mean_delta(per_task: dict[str, Any]) -> float:
     return sum(deltas) / len(deltas) if deltas else 0.0
 
 
+def _calculate_slope(per_task: dict[str, Any]) -> float:
+    """Calculate mean Δacc / Δlog10(steps) across tasks with ladder data."""
+    slopes = []
+    for task_res in per_task.values():
+        if not isinstance(task_res, dict):
+            continue
+        ladder = task_res.get("ladder")
+        if not ladder or len(ladder) < 2:
+            continue
+
+        steps = sorted([int(s) for s in ladder.keys()])
+        accs = [float(ladder[str(s)]) for s in steps]
+
+        # Simple regression on log-steps
+        x = np.log10(np.array(steps, dtype=float))
+        y = np.array(accs, dtype=float)
+
+        if len(x) > 1:
+            # OLS slope of accuracy vs log10(steps): positive => still improving.
+            x_mean = x.mean()
+            y_mean = y.mean()
+            num = ((x - x_mean) * (y - y_mean)).sum()
+            den = ((x - x_mean) ** 2).sum()
+            slope = (num / den) if den > 0 else 0.0
+            slopes.append(slope)
+
+    return float(np.mean(slopes)) if slopes else 0.0
+
+
 def _one_outcome(pid: str, fallback_name: str, res: dict[str, Any]) -> DeepProbeOutcome:
     """Reduce one ``run_cohort`` result row to a ``DeepProbeOutcome``."""
     status = str(res.get("status") or "missing")
@@ -128,6 +160,7 @@ def _one_outcome(pid: str, fallback_name: str, res: dict[str, Any]) -> DeepProbe
             pass_count=0,
             n_tasks=0,
             mean_delta_vs_frontier=0.0,
+            slope=0.0,
             status=status,
         )
     per_task = res.get("per_task") or {}
@@ -138,6 +171,7 @@ def _one_outcome(pid: str, fallback_name: str, res: dict[str, Any]) -> DeepProbe
         pass_count=int(res.get("pass_count") or 0),
         n_tasks=int(res.get("n_tasks") or len(per_task)),
         mean_delta_vs_frontier=_mean_delta(per_task),
+        slope=_calculate_slope(per_task),
         status="ok",
     )
 
@@ -222,11 +256,20 @@ def run_deep_probe(
         _one_outcome(pid, by_id[pid].name, results.get(pid, {})) for pid in proposal_ids
     ]
     promoted: list[str] = []
-    if promote:
-        for outcome in outcomes:
-            if outcome.beats_frontier:
-                ledger.record_promotion(outcome.proposal_id, PROMOTION_PROMOTED)
-                promoted.append(outcome.proposal_id)
+    for outcome in outcomes:
+        if outcome.status != "ok":
+            continue
+        # Always record the outcome so the surrogate has the honest target,
+        # even if we don't promote the candidate this cycle.
+        ledger.record_deep_probe(
+            outcome.proposal_id,
+            beats_frontier=outcome.beats_frontier,
+            mean_delta=outcome.mean_delta_vs_frontier,
+            metadata={"slope": outcome.slope},
+        )
+        if promote and outcome.beats_frontier:
+            ledger.record_promotion(outcome.proposal_id, PROMOTION_PROMOTED)
+            promoted.append(outcome.proposal_id)
 
     outcomes.sort(
         key=lambda o: (o.beats_frontier, o.mean_delta_vs_frontier), reverse=True

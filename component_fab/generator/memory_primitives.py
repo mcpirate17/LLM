@@ -639,12 +639,23 @@ class MultiHeadSlotTableMemoryLane(nn.Module):
         normalize_slot_values: bool = False,
         use_router_prior: bool = False,
         composer_width: int = 3,
+        content_forget: bool = False,
+        dplr_value_rank: int = 0,
+        learnable_slots: bool = False,
     ) -> None:
         super().__init__()
         if min(memory_dim, n_slots, n_heads) <= 0:
             raise ValueError("memory_dim, n_slots, and n_heads must be positive")
         if composer_width <= 0:
             raise ValueError("composer_width must be positive")
+        if dplr_value_rank < 0:
+            raise ValueError("dplr_value_rank must be non-negative")
+        # Run-1 compositional levers (Compositional/multislot binding wall fix).
+        # Each is independently ablatable; all three OFF reproduces the prior lane
+        # byte-for-byte. content_forget REQUIRES the delta path (the running-mean
+        # fallback has no decay to decouple) — fail fast rather than silently no-op.
+        if content_forget and not use_delta_update:
+            raise ValueError("content_forget requires use_delta_update=True")
         self.n_heads = n_heads
         self.head_dim = max(1, memory_dim // n_heads)
         self.memory_dim = self.head_dim * n_heads
@@ -662,6 +673,9 @@ class MultiHeadSlotTableMemoryLane(nn.Module):
         self.normalize_slot_values = normalize_slot_values
         self.use_router_prior = use_router_prior
         self.composer_width = composer_width
+        self.content_forget = content_forget
+        self.dplr_value_rank = dplr_value_rank
+        self.learnable_slots = learnable_slots
         if grouped_router and route_from_input:
             raise ValueError("grouped_router and route_from_input cannot be combined")
         if use_composer:
@@ -715,6 +729,35 @@ class MultiHeadSlotTableMemoryLane(nn.Module):
                 torch.randn(n_heads, n_slots, self.head_dim) * 0.02
             )
             self.route_proto_beta = nn.Parameter(torch.zeros(()))
+        self._init_compositional_levers(dim)
+
+    def _init_compositional_levers(self, dim: int) -> None:
+        """Run-1 levers for the compositional/multislot wall (held_class=1.0,
+        all_slots=0.0 = 'right content, wrong slot'). All OFF = prior lane."""
+        h, s, hd = self.n_heads, self.n_slots, self.head_dim
+        if self.content_forget:
+            # Content-aware per-slot eviction, DECOUPLED from the write route, so
+            # writing entity B to a slot can WIPE entity A (last-write-wins) instead
+            # of blending into a running mean. Per-slot scalar (input-driven) × a
+            # learned per-dim diagonal = the DPLR diagonal. Bias -3.5 → σ≈0.03 so an
+            # untrained lane starts at the prior strong-retention behaviour.
+            self.forget_route = nn.Linear(dim, h * s)
+            nn.init.constant_(self.forget_route.bias, -3.5)
+            self.forget_diag = nn.Parameter(torch.zeros(h, hd))
+        if self.dplr_value_rank > 0:
+            # DPLR low-rank write correction v_eff = v + lr_out(tanh(lr_in(x))).
+            # lr_out zero-init → starts as a no-op (capability-preserving).
+            self.lr_in = nn.Linear(dim, self.dplr_value_rank, bias=False)
+            self.lr_out = nn.Linear(self.dplr_value_rank, self.memory_dim, bias=False)
+            nn.init.zeros_(self.lr_out.weight)
+        if self.learnable_slots:
+            # Slot identity/capacity becomes LEARNT, not a fixed uniform table:
+            # learned key prototypes + per-slot usage bias + a learned route
+            # temperature (lets distinct entities claim distinct slots).
+            self.slot_proto = nn.Parameter(torch.randn(h, s, hd) * 0.02)
+            self.slot_proto_beta = nn.Parameter(torch.zeros(()))
+            self.slot_prior_bias = nn.Parameter(torch.zeros(h, s))
+            self.route_log_temp = nn.Parameter(torch.zeros(h))
 
     def _compose(self, x: torch.Tensor) -> torch.Tensor:
         if not self.use_composer:
@@ -735,6 +778,7 @@ class MultiHeadSlotTableMemoryLane(nn.Module):
         k: torch.Tensor,
         v: torch.Tensor,
         write_weight: torch.Tensor,
+        forget: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         if self.use_delta_update:
             from research.synthesis.compiler_ops_sequence import (
@@ -742,7 +786,20 @@ class MultiHeadSlotTableMemoryLane(nn.Module):
             )
 
             alpha = write_weight.clamp(0.0, 1.0 - 1e-6)
-            log_decay = torch.log1p(-alpha).permute(0, 2, 3, 1).contiguous()
+            if forget is None:
+                # Default: decay tied to the write route (a slot is replaced only
+                # in proportion to how much it is written) → overlapping entities
+                # blend. [b, h, s, seq], broadcast over head_dim in the scan.
+                log_decay = torch.log1p(-alpha).permute(0, 2, 3, 1).contiguous()
+            else:
+                # Decoupled content-aware eviction: per-(slot, dim) decay driven by
+                # the forget gate, independent of where we write → last-write-wins.
+                # [b, h, s, hd, seq] matches the slot-state shape exactly.
+                log_decay = (
+                    torch.log1p(-forget.clamp(0.0, 1.0 - 1e-6))
+                    .permute(0, 2, 3, 4, 1)
+                    .contiguous()
+                )
             key_write = (alpha.unsqueeze(-1) * k.unsqueeze(3)).permute(0, 2, 3, 4, 1)
             val_write = (alpha.unsqueeze(-1) * v.unsqueeze(3)).permute(0, 2, 3, 4, 1)
             slot_key = _parallel_associative_scan(log_decay, key_write)
@@ -836,6 +893,10 @@ class MultiHeadSlotTableMemoryLane(nn.Module):
         q = torch.tanh(self.q(query_input)).view(b, seq_len, h, hd)
         k = torch.tanh(self.k(memory_input)).view(b, seq_len, h, hd)
         v = torch.tanh(self.v(memory_input)).view(b, seq_len, h, hd)
+        if self.dplr_value_rank > 0:
+            # DPLR low-rank write correction (zero-init → no-op at start).
+            v_lr = self.lr_out(torch.tanh(self.lr_in(x))).view(b, seq_len, h, hd)
+            v = v + v_lr
         if self.grouped_router:
             route_logits = torch.stack(
                 [
@@ -853,6 +914,19 @@ class MultiHeadSlotTableMemoryLane(nn.Module):
         if self.use_router_prior:
             route_bias = torch.einsum("blhd,hsd->blhs", k, self.route_proto)
             route_logits = route_logits + self.route_proto_beta * route_bias
+        if self.learnable_slots:
+            # Learnt slot identity (content match to prototypes) + learnt per-slot
+            # usage bias + learnt route temperature, so distinct entities can claim
+            # distinct slots instead of all softly sharing a fixed uniform table.
+            proto_match = torch.einsum("blhd,hsd->blhs", k, self.slot_proto)
+            route_logits = (
+                route_logits
+                + self.slot_proto_beta * proto_match
+                + self.slot_prior_bias.view(1, 1, h, s)
+            )
+            route_logits = route_logits * self.route_log_temp.exp().clamp(
+                0.2, 5.0
+            ).view(1, 1, h, 1)
         route = torch.softmax(route_logits, dim=-1)
         gate = None
         if self.use_null_write:
@@ -861,7 +935,15 @@ class MultiHeadSlotTableMemoryLane(nn.Module):
         route = self._refine_route(route_logits, route, k, v)
         if gate is not None and self.refine_write_route:
             route = route * gate
-        slot_key, slot_val = self._prewrite_slot_states(k, v, route)
+        forget = None
+        if self.content_forget:
+            # Per-slot scalar eviction (input-driven) × learned per-dim diagonal
+            # → content-aware DPLR-diagonal decay decoupled from the write route.
+            forget_scalar = self.forget_route(memory_input).view(b, seq_len, h, s, 1)
+            forget = torch.sigmoid(
+                forget_scalar + self.forget_diag.view(1, 1, h, 1, hd)
+            )
+        slot_key, slot_val = self._prewrite_slot_states(k, v, route, forget)
         slot_key, slot_val = self._consolidate(slot_key, slot_val)
         read = self._read_slots(q, slot_key, slot_val)
         return self.out(read.reshape(b, seq_len, self.memory_dim))

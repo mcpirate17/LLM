@@ -59,6 +59,9 @@ def test_tropical_state_space_shape_and_grad() -> None:
 
 
 def test_tropical_state_space_is_causal() -> None:
+    # Max-plus propagation is draw-sensitive: unseeded, some RNG states leave
+    # the position-0 perturbation invisible at the last position.
+    torch.manual_seed(0)
     module = TropicalStateSpace(dim=16).eval()
     x = torch.randn(1, 16, 16)
     x_perturbed = x.clone()

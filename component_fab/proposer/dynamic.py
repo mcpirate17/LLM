@@ -8,6 +8,7 @@ or CUDA code.
 
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,7 +22,12 @@ from component_fab.proposer.spec_generator import (
     category_from_axes,
     synthesis_kind_for_axes,
 )
-from component_fab.state.ledger import Ledger, LedgerEntry
+from component_fab.state.ledger import (
+    Ledger,
+    LedgerEntry,
+    PROMOTION_PROMOTED,
+    PROMOTION_REJECTED,
+)
 from component_fab.proposer.tier2_feedback import (
     Tier2Feedback,
     WEAK_FAIL_BROAD_KV,
@@ -44,11 +50,14 @@ class DynamicEvidenceCase:
     """A ledger-derived candidate base plus the measured weakness to repair."""
 
     source_id: str
+    root_source_id: str
     name: str
     base_axes: dict[str, Any]
     anchor_axes: dict[str, Any]
     score: float
     weaknesses: tuple[str, ...]
+    repair_depth: int = 0
+    repair_history: tuple[str, ...] = ()
     notes: tuple[str, ...] = ()
 
 
@@ -61,6 +70,21 @@ class _Repair:
 
 def _latest_metadata(entry: LedgerEntry) -> dict[str, Any]:
     return dict(entry.metadata_history[-1]) if entry.metadata_history else {}
+
+
+def _dynamic_repair_depth(name: str) -> int:
+    depth = 0
+    remaining = name
+    while remaining.startswith("dynamic_"):
+        depth += 1
+        remaining = remaining[len("dynamic_") :]
+    return depth
+
+
+def _positive_tier2_repair_evidence(feedback: Tier2Feedback | None) -> bool:
+    return (
+        feedback is not None and feedback.mean_delta > 0.0 and feedback.pass_count > 0
+    )
 
 
 def _clean_axes(raw: Mapping[str, Any]) -> dict[str, Any]:
@@ -123,6 +147,9 @@ def collect_dynamic_evidence_cases(
             continue
         score = entry.mean_composite()
         feedback = (tier2_feedback_by_id or {}).get(entry.proposal_id)
+        repair_depth = _dynamic_repair_depth(entry.name or entry.proposal_id)
+        if repair_depth >= 2 and not _positive_tier2_repair_evidence(feedback):
+            continue
         weaknesses = _weaknesses_with_tier2_feedback(metadata, score, feedback)
         if not weaknesses:
             continue
@@ -131,13 +158,21 @@ def collect_dynamic_evidence_cases(
         cases.append(
             DynamicEvidenceCase(
                 source_id=entry.proposal_id,
+                root_source_id=str(
+                    metadata.get("root_source_id")
+                    or metadata.get("source_id")
+                    or entry.proposal_id
+                ),
                 name=entry.name or entry.proposal_id,
                 base_axes=axes,
                 anchor_axes=axes,
                 score=score,
                 weaknesses=weaknesses,
+                repair_depth=repair_depth,
+                repair_history=tuple(metadata.get("repair_history") or ()),
                 notes=(
                     f"ledger_status={entry.promotion_status}",
+                    f"repair_depth={repair_depth}",
                     *(
                         (
                             f"tier2_pass_count={feedback.pass_count}/{feedback.n_tasks}",
@@ -183,6 +218,16 @@ def _delta_bind_sparse_content(
     value_pool: Mapping[str, Sequence[Any]], axes: Mapping[str, Any]
 ) -> dict[str, Any]:
     return {
+        "op_search_track": "physics_atom",
+        "op_physics_atom_kinds": "scan+basis",
+        "op_physics_basis_axis": "token",
+        "op_physics_address_family": "cosine",
+        "op_physics_score_norm_family": "sharpen",
+        "op_physics_aggregate_family": "semiring",
+        "op_physics_knob_scale": 2.0,
+        "op_physics_target": "binding_content_addressed_state",
+        "op_dynamical_has_state": 1,
+        "op_dynamical_memory_length_class": "O(L)",
         "op_activation_sparsity_pattern": _dynamic_alternative(
             value_pool,
             "op_activation_sparsity_pattern",
@@ -191,12 +236,6 @@ def _delta_bind_sparse_content(
         ),
         "op_geometric_receptive_field": "global",
         "op_spectral_preferred_basis": "content",
-        "op_routing_kind": _dynamic_alternative(
-            value_pool,
-            "op_routing_kind",
-            axes.get("op_routing_kind"),
-            "difficulty",
-        ),
     }
 
 
@@ -220,6 +259,190 @@ def _delta_ledger_novel_composite(
             value_pool, "op_math_knobs", axes.get("op_math_knobs"), "spectral_chebyshev"
         ),
     }
+
+
+def _physics_variant_patches(delta: Mapping[str, Any]) -> tuple[dict[str, Any], ...]:
+    """Small grammar-bounded fan-out over atomic/physics coordinates.
+
+    The repair rules pick a target region; this expands that target into a few
+    nearby valid ``AtomSpec``/``StageSpec`` coordinates instead of treating a
+    human-chosen coordinate as the only candidate.
+    """
+
+    if delta.get("op_search_track") != "physics_atom":
+        return ()
+
+    target = str(delta.get("op_physics_target") or "")
+    base_scale = float(delta.get("op_physics_knob_scale") or 1.0)
+    if target.startswith("long_gap"):
+        curated = (
+            {
+                "op_physics_variant": "physv01",
+                "op_physics_seed": 1,
+                "op_physics_atom_kinds": "scan+basis+norm",
+                "op_physics_norm_axis": "channel",
+                "op_physics_address_family": "dot",
+                "op_physics_score_norm_family": "sharpen",
+                "op_physics_aggregate_family": "semiring",
+                "op_physics_knob_scale": round(base_scale * 0.85, 4),
+            },
+            {
+                "op_physics_variant": "physv02",
+                "op_physics_seed": 2,
+                "op_physics_atom_kinds": "basis+scan",
+                "op_physics_address_family": "reciprocal",
+                "op_physics_score_norm_family": "softmax",
+                "op_physics_aggregate_family": "mean",
+                "op_physics_knob_scale": round(base_scale * 1.15, 4),
+            },
+            {
+                "op_physics_variant": "physv03",
+                "op_physics_seed": 3,
+                "op_physics_atom_kinds": "scan+norm+basis",
+                "op_physics_norm_axis": "token",
+                "op_physics_address_family": "cosine",
+                "op_physics_score_norm_family": "sharpen",
+                "op_physics_aggregate_family": "mean",
+                "op_physics_knob_scale": round(base_scale * 0.7, 4),
+            },
+        )
+        return (*curated, *_open_discovery_variant_patches(delta))
+    if target in {"binding_content_addressed_state", "broad_kv_content_lookup"}:
+        curated = (
+            {
+                "op_physics_variant": "physv01",
+                "op_physics_seed": 1,
+                "op_physics_atom_kinds": "basis+scan",
+                "op_physics_address_family": "dot",
+                "op_physics_score_norm_family": "sharpen",
+                "op_physics_aggregate_family": "semiring",
+                "op_physics_knob_scale": round(base_scale * 0.75, 4),
+            },
+            {
+                "op_physics_variant": "physv02",
+                "op_physics_seed": 2,
+                "op_physics_atom_kinds": "norm+basis+scan",
+                "op_physics_norm_axis": "channel",
+                "op_physics_address_family": "cosine",
+                "op_physics_score_norm_family": "softmax",
+                "op_physics_aggregate_family": "mean",
+                "op_physics_knob_scale": round(base_scale * 1.25, 4),
+            },
+            {
+                "op_physics_variant": "physv03",
+                "op_physics_seed": 3,
+                "op_physics_atom_kinds": "scan+basis+norm",
+                "op_physics_norm_axis": "token",
+                "op_physics_address_family": "reciprocal",
+                "op_physics_score_norm_family": "sharpen",
+                "op_physics_aggregate_family": "semiring",
+                "op_physics_knob_scale": round(base_scale * 1.5, 4),
+            },
+        )
+        return (*curated, *_open_discovery_variant_patches(delta))
+    curated = (
+        {
+            "op_physics_variant": "physv01",
+            "op_physics_seed": 1,
+            "op_physics_atom_kinds": "norm+basis+scan",
+            "op_physics_norm_axis": "channel",
+            "op_physics_score_norm_family": "sharpen",
+            "op_physics_knob_scale": round(base_scale * 1.1, 4),
+        },
+    )
+    return (*curated, *_open_discovery_variant_patches(delta, max_variants=1))
+
+
+def _stable_seed(*parts: object) -> int:
+    payload = "|".join(str(part) for part in parts).encode("utf-8")
+    return int.from_bytes(hashlib.blake2b(payload, digest_size=4).digest(), "big")
+
+
+def _open_discovery_variant_patches(
+    delta: Mapping[str, Any], *, max_variants: int = 3
+) -> tuple[dict[str, Any], ...]:
+    """Generate grammar-sampled physics variants from ``open_discovery``.
+
+    This is a mini, deterministic prepass over the existing atom/stage search
+    grammar. It rejects identity/default softmax-shaped samples so repair budget
+    keeps moving toward novel physics coordinates.
+    """
+
+    try:
+        import torch
+        from research.synthesis.open_discovery import sample_spec
+    except Exception:  # pragma: no cover - torch/synthesis unavailable in tiny envs
+        return ()
+
+    target = str(delta.get("op_physics_target") or "generic")
+    base_seed = _stable_seed(target, delta.get("op_physics_atom_kinds"), max_variants)
+    gen = torch.Generator().manual_seed(base_seed)
+    patches: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str, str, str]] = set()
+    for _ in range(max_variants * 16):
+        sampled = sample_spec(gen, None, max_atom_depth=3, mutate_prob=0.0)
+        kinds = sampled.atom.kinds
+        if not kinds:
+            continue
+        if target.startswith("long_gap") and "scan" not in kinds:
+            continue
+        if target in {"binding_content_addressed_state", "broad_kv_content_lookup"}:
+            if "basis" not in kinds and sampled.stage.address == "dot":
+                continue
+        key = (
+            "+".join(kinds),
+            sampled.atom.norm_axis,
+            sampled.atom.basis_axis,
+            sampled.stage.key,
+            f"{sampled.knob_scale:.2f}",
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        index = len(patches) + 1
+        patches.append(
+            {
+                "op_physics_variant": f"physod{index:02d}",
+                "op_physics_seed": 100 + index,
+                "op_physics_atom_kinds": "+".join(kinds),
+                "op_physics_norm_axis": sampled.atom.norm_axis,
+                "op_physics_basis_axis": sampled.atom.basis_axis,
+                "op_physics_address_family": sampled.stage.address,
+                "op_physics_score_norm_family": sampled.stage.score_norm,
+                "op_physics_aggregate_family": sampled.stage.aggregate,
+                "op_physics_knob_scale": round(sampled.knob_scale, 4),
+            }
+        )
+        if len(patches) >= max_variants:
+            break
+    return tuple(patches)
+
+
+def _expand_physics_repairs(repairs: Sequence[_Repair]) -> list[_Repair]:
+    expanded = list(repairs)
+    seen: set[tuple[tuple[str, str], ...]] = {
+        tuple(sorted((key, str(value)) for key, value in repair.delta.items()))
+        for repair in repairs
+    }
+    for repair in repairs:
+        for patch in _physics_variant_patches(repair.delta):
+            delta = {**repair.delta, **patch}
+            key = tuple(sorted((axis, str(value)) for axis, value in delta.items()))
+            if key in seen:
+                continue
+            seen.add(key)
+            variant = str(patch["op_physics_variant"])
+            expanded.append(
+                _Repair(
+                    name=f"{repair.name}_{variant}",
+                    delta=delta,
+                    rationale=(
+                        f"{repair.rationale} Descriptor variant {variant} "
+                        "samples a nearby atom/stage coordinate."
+                    ),
+                )
+            )
+    return expanded
 
 
 @dataclass(frozen=True, slots=True)
@@ -256,6 +479,14 @@ _REPAIR_RULES: tuple[_RepairRule, ...] = (
         "extend_receptive_state",
         "repair measured range/ERF weakness with causal state and global content mixing",
         static_delta={
+            "op_search_track": "physics_atom",
+            "op_physics_atom_kinds": "scan+basis",
+            "op_physics_basis_axis": "token",
+            "op_physics_address_family": "reciprocal",
+            "op_physics_score_norm_family": "sharpen",
+            "op_physics_aggregate_family": "semiring",
+            "op_physics_knob_scale": 2.25,
+            "op_physics_target": "long_gap_ordered_memory",
             "op_dynamical_has_state": 1,
             "op_dynamical_memory_length_class": "O(L)",
             "op_geometric_receptive_field": "global",
@@ -267,12 +498,18 @@ _REPAIR_RULES: tuple[_RepairRule, ...] = (
         "repair_long_gap_memory",
         "repair Tier-2 long_gap_recall failure with explicit causal state and recursive depth",
         static_delta={
+            "op_search_track": "physics_atom",
+            "op_physics_atom_kinds": "scan+basis",
+            "op_physics_basis_axis": "token",
+            "op_physics_address_family": "reciprocal",
+            "op_physics_score_norm_family": "sharpen",
+            "op_physics_aggregate_family": "semiring",
+            "op_physics_knob_scale": 2.5,
+            "op_physics_target": "long_gap_recursive_memory",
             "op_dynamical_has_state": 1,
             "op_dynamical_memory_length_class": "O(L)",
             "op_geometric_receptive_field": "global",
             "op_spectral_preferred_basis": "content",
-            "op_block_template": "recursive_depth_router",
-            "op_max_depth": 8,
         },
     ),
     _RepairRule(
@@ -292,10 +529,17 @@ _REPAIR_RULES: tuple[_RepairRule, ...] = (
         "repair_broad_kv_lookup",
         "repair Tier-2 broad key/value recall failure with global content lookup and sparse expert routing",
         static_delta={
+            "op_search_track": "physics_atom",
+            "op_physics_atom_kinds": "scan+basis",
+            "op_physics_basis_axis": "token",
+            "op_physics_address_family": "cosine",
+            "op_physics_score_norm_family": "sharpen",
+            "op_physics_aggregate_family": "semiring",
+            "op_physics_knob_scale": 2.0,
+            "op_physics_target": "broad_kv_content_lookup",
             "op_geometric_receptive_field": "global",
             "op_spectral_preferred_basis": "content",
             "op_activation_sparsity_pattern": "top_k",
-            "op_routing_kind": "top_k_moe",
             "op_top_k": 2,
         },
     ),
@@ -382,7 +626,7 @@ def _repairs_for_case(
         repairs.append(_Repair(rule.name, delta, rule.rationale))
     if not repairs:
         repairs.append(_FALLBACK_REPAIR)
-    return repairs
+    return _expand_physics_repairs(repairs)
 
 
 def _slug(raw: str, *, max_len: int = 48) -> str:
@@ -390,10 +634,37 @@ def _slug(raw: str, *, max_len: int = 48) -> str:
     return (slug or "case")[:max_len].strip("_") or "case"
 
 
+def _strip_named_composition_axes_for_physics(axes: dict[str, Any]) -> None:
+    if axes.get("op_search_track") != "physics_atom":
+        return
+    for key in (
+        "op_algebraic_space",
+        "op_math_family",
+        "op_math_knobs",
+        "op_sparse_matrix_pattern",
+        "op_kernel_feature_map",
+        "op_graph_topology",
+        "op_tensor_decomp_kind",
+        "op_tensor_rank",
+        "op_activation_sparsity_pattern",
+        "op_block_template",
+        "op_block_inner_template",
+        "op_block_slot_a",
+        "op_block_slot_b",
+        "op_block_slot_c",
+        "op_routing_kind",
+        "op_max_depth",
+        "op_skip_hard",
+        "op_top_k",
+    ):
+        axes.pop(key, None)
+
+
 def _spec_from_case_and_repair(
     case: DynamicEvidenceCase, repair: _Repair
 ) -> ProposalSpec:
     axes = {**case.base_axes, **repair.delta}
+    _strip_named_composition_axes_for_physics(axes)
     axes.pop("synthesis_kind", None)
     source = _slug(case.name)
     weakness = _slug("_".join(case.weaknesses), max_len=36)
@@ -406,8 +677,11 @@ def _spec_from_case_and_repair(
         anchor_axes=case.anchor_axes,
         notes=(
             f"source_id={case.source_id}",
+            f"root_source_id={case.root_source_id}",
             f"source_score={case.score:.4f}",
             f"repair={repair.name}",
+            f"repair_depth={case.repair_depth + 1}",
+            f"repair_history={'+'.join((*case.repair_history, repair.name))}",
             *case.notes,
         ),
         predicted_lift=max(0.1, min(1.0, case.score + 0.08)),
@@ -475,11 +749,14 @@ def _anchor_cases(
         cases.append(
             DynamicEvidenceCase(
                 source_id=name,
+                root_source_id=name,
                 name=name,
                 base_axes=dict(anchor.axes),
                 anchor_axes=dict(anchor.axes),
                 score=score,
                 weaknesses=weaknesses,
+                repair_depth=0,
+                repair_history=(),
                 notes=("source=anchor_catalog",),
             )
         )
@@ -508,24 +785,40 @@ def enumerate_dynamic_proposals(
         max_cases=max_cases,
         tier2_feedback_by_id=tier2_feedback_by_id,
     )
-    if include_anchor_fallback and not evidence_cases:
-        evidence_cases = _anchor_cases(anchor_op_names, db_path=db_path)
+    if include_anchor_fallback:
+        # Anchor cases are a recovery pool, not just an empty-ledger fallback:
+        # mature ledgers can have abundant evidence whose deterministic repairs
+        # are all already terminal. Keep them after ledger cases so measured
+        # failures still drive the first proposals.
+        evidence_cases = [
+            *evidence_cases,
+            *_anchor_cases(anchor_op_names, db_path=db_path),
+        ]
     if not evidence_cases:
         return []
 
+    terminal_ids = {
+        proposal_id
+        for proposal_id, entry in ledger.entries.items()
+        if entry.promotion_status in (PROMOTION_PROMOTED, PROMOTION_REJECTED)
+    }
     value_pool = _axis_value_pool(evidence_cases)
-    specs: list[ProposalSpec] = []
+    unseen_specs: list[ProposalSpec] = []
+    pending_specs: list[ProposalSpec] = []
     seen_axes: set[tuple[tuple[str, str], ...]] = set()
     for case in evidence_cases:
         for repair in _repairs_for_case(case, value_pool):
             spec = _spec_from_case_and_repair(case, repair)
+            if spec.proposal_id in terminal_ids:
+                continue
             key = tuple(
                 sorted((key, str(value)) for key, value in spec.math_axes.items())
             )
             if key in seen_axes:
                 continue
             seen_axes.add(key)
-            specs.append(spec)
-            if len(specs) >= max_specs:
-                return specs
-    return specs
+            if ledger.has_seen(spec.proposal_id):
+                pending_specs.append(spec)
+            else:
+                unseen_specs.append(spec)
+    return [*unseen_specs, *pending_specs][:max_specs]

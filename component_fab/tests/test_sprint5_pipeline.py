@@ -24,7 +24,12 @@ from component_fab.policies.promotion import (
 )
 from component_fab.proposer.property_miner import DEFAULT_META_DB
 from component_fab.state.ledger import Ledger, LedgerEntry
-from component_fab.validator.in_context import validate_in_context
+from component_fab.validator.in_context import (
+    physics_probe_lr_for_spec,
+    physics_probe_steps_for_spec,
+    physics_probe_tasks_for_spec,
+    validate_in_context,
+)
 
 
 # ---------- Ledger ----------
@@ -130,6 +135,25 @@ def test_in_context_validator_runs_full_suite() -> None:
     assert set(card.per_task) == {t.name for t in DEFAULT_PROBE_TASKS}
     for task_result in card.per_task.values():
         assert "loss_ratio_initial_over_final" in task_result
+
+
+def test_physics_in_context_probe_focuses_long_gap_tasks() -> None:
+    spec = make_candidate_spec(
+        {
+            "op_search_track": "physics_atom",
+            "op_physics_target": "long_gap_recursive_memory",
+        }
+    )
+    tasks = physics_probe_tasks_for_spec(spec)
+
+    assert {task.name for task in tasks} == {
+        "shifted_copy",
+        "copy_from_uniform_past",
+        "causal_induction",
+        "running_parity",
+    }
+    assert physics_probe_steps_for_spec(spec, 30) == 80
+    assert physics_probe_lr_for_spec(spec, 1e-3) == pytest.approx(3e-3)
 
 
 # ---------- Cross-anchor ----------

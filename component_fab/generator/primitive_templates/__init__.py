@@ -15,6 +15,7 @@ from ._core import (
     _heads_for_head_dim,
 )
 from ._lanes_a import (
+    HyperbolicAttention,
     TropicalAttention,
     SparsemaxAttention,
     ReciprocalRankAttention,
@@ -71,6 +72,7 @@ __all__ = [
     "_heads_for_head_dim",
     "TropicalAttention",
     "SparsemaxAttention",
+    "HyperbolicAttention",
     "ReciprocalRankAttention",
     "PhaseLockAttention",
     "ReciprocalPrimaryRefine",

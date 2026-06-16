@@ -135,15 +135,39 @@ def binding_subscore(capability_scorecard: dict[str, Any] | None) -> float:
     return 0.5 * bind_mean + 0.5 * recall_mean
 
 
+def orthogonality_subscore(solo_scorecard: dict[str, Any]) -> float:
+    """Orthogonality signal (distance from state degeneracy with clones + baselines).
+
+    The radius (min z-scored Euclidean distance to the ledger catalog spectra) is
+    computed and attached by ``_annotate_niche_metadata`` in
+    ``tools/_autonomous_grading.py``. ``composite_score`` only adds the lift when
+    the candidate clears ``meets_stability_floor`` — so non-functional states
+    never score for distinctness alone.
+    """
+    radius = float(
+        solo_scorecard.get("metadata", {}).get("orthogonality_radius") or 0.0
+    )
+    return min(1.0, radius / 4.0)  # radius [0, 4+] -> [0, 1]
+
+
 _LEGACY_WEIGHTS = (0.3, 0.3, 0.4, 0.0)
-# Day-6 reweight (2026-05-15): user-flagged that loss_ratio (drives the
-# `learning` subscore via aggregate_loss_ratio) is NOT a good
-# model-strength indicator — confirmed against runs.db where 5 of the
-# top-25 BLiMP winners were screened_out with low composite scores. Move
-# weight from learning → binding (binding's AR-probe recall correlates
-# better with actual sequence-mixing capability). Smoke+cross still
-# clear the 0.6 promote threshold so plain-passing candidates graduate.
+# Day-6 reweight (2026-05-15): align weights with sequence-mixing capability.
 _BINDING_WEIGHTS = (0.3, 0.3, 0.1, 0.3)
+# Orthogonality lift: reward mechanistic distinctness, but ONLY for functional models
+# (gated by the shared stability floor below).
+_ORTHOGONALITY_LIFT = 0.20
+
+# Single source of truth for the orthogonality stability floor, shared by the scalar
+# composite bonus and the Pareto orthogonality objective. A candidate must clear it on
+# *some* capability axis before its distinctness earns any credit.
+STABILITY_FLOOR = 0.05
+
+
+def meets_stability_floor(
+    *, binding: float, induction: float, learning: float, state_tracking: float
+) -> bool:
+    """True if any capability axis clears ``STABILITY_FLOOR``."""
+    return max(binding, induction, learning, state_tracking) >= STABILITY_FLOOR
 
 
 def composite_score(
@@ -156,9 +180,7 @@ def composite_score(
     """Weighted sum over (smoke, cross_check, learning, binding) subscores.
 
     Defaults to ``_BINDING_WEIGHTS`` (0.3/0.3/0.1/0.3) when a capability
-    scorecard is supplied; falls back to ``_LEGACY_WEIGHTS``
-    (0.3/0.3/0.4/0.0) when it is omitted so older call sites and tests
-    that pass only solo+probe stay numerically stable.
+    scorecard is supplied.
     """
     if weights is None:
         weights = _BINDING_WEIGHTS if capability_scorecard else _LEGACY_WEIGHTS
@@ -168,17 +190,29 @@ def composite_score(
     learn = learning_subscore(probe_scorecard)
     bind = binding_subscore(capability_scorecard)
     state_track = state_tracking_subscore(probe_scorecard)
+    orthogonality = orthogonality_subscore(solo_scorecard)
+
     components = {
         "smoke": smoke,
         "cross_check": cross,
         "learning": learn,
         "binding": bind,
         "state_tracking": state_track,
+        "orthogonality": orthogonality,
     }
     score = smoke_w * smoke + cross_w * cross + learn_w * learn + bind_w * bind
-    # Additive (not part of the 4-weight tuple, so the signature/callers are
-    # unchanged): reward non-QKV state-tracking the binding composite is blind to.
+
+    # Additive bonuses
     score += _STATE_TRACK_BONUS * state_track
+
+    # Degeneracy penalty: reward mechanistic distinctness (orthogonality), but
+    # only for a candidate that clears the stability floor on some axis.
+    induction = float((capability_scorecard or {}).get("ind_max_accuracy") or 0.0)
+    if meets_stability_floor(
+        binding=bind, induction=induction, learning=learn, state_tracking=state_track
+    ):
+        score += _ORTHOGONALITY_LIFT * orthogonality
+
     return score, components
 
 
@@ -229,16 +263,13 @@ def rank_proposals(
 # --------------------------------------------------------------------------- #
 # WS-4: Pareto / niche objectives (multi-objective, no scalar collapse)
 # --------------------------------------------------------------------------- #
-# Objective vector — ALL dimensions "higher is better" (param count enters
-# negated as efficiency, so a smaller model dominates a larger equal one). A
-# specialist (high binding, low learning) and a generalist (balanced) then both
-# sit on the first Pareto front instead of being forced through one scalar.
+# Objective vector — ALL dimensions "higher is better".
 OBJECTIVE_KEYS: tuple[str, ...] = (
     "binding",
     "induction",
     "learning",
     "state_tracking",
-    "novelty",
+    "orthogonality",
     "efficiency",
 )
 
@@ -248,22 +279,34 @@ def objective_vector(
     capability_scorecard: dict[str, Any] | None = None,
     *,
     param_count: int = 0,
-    novelty: float = 0.0,
+    orthogonality: float = 0.0,
 ) -> dict[str, float]:
     """Build the promotion-time objective vector for Pareto/niche ranking.
 
-    Every returned dimension is maximized. ``efficiency`` is therefore stored as
-    ``-param_count`` so equally capable smaller candidates dominate larger ones.
-    Missing scorecards map to zeros instead of dropping dimensions; that keeps
-    front assignment stable when only a subset of probes ran.
+    Every returned dimension is maximized. ``efficiency`` is stored as
+    ``-param_count``.
+
+    ``orthogonality`` is gated by ``STABILITY_FLOOR``: a candidate with no
+    measurable capability gets zero credit, so it cannot ride the orthogonality
+    axis onto the Pareto front.
     """
     cap = capability_scorecard or {}
+    binding = binding_subscore(capability_scorecard)
+    induction = float(cap.get("ind_max_accuracy") or 0.0)
+    learning = learning_subscore(probe_scorecard)
+    state_tracking = state_tracking_subscore(probe_scorecard)
+    stable = meets_stability_floor(
+        binding=binding,
+        induction=induction,
+        learning=learning,
+        state_tracking=state_tracking,
+    )
     return {
-        "binding": binding_subscore(capability_scorecard),
-        "induction": float(cap.get("ind_max_accuracy") or 0.0),
-        "learning": learning_subscore(probe_scorecard),
-        "state_tracking": state_tracking_subscore(probe_scorecard),
-        "novelty": float(novelty),
+        "binding": binding,
+        "induction": induction,
+        "learning": learning,
+        "state_tracking": state_tracking,
+        "orthogonality": float(orthogonality) if stable else 0.0,
         "efficiency": -float(param_count),
     }
 
@@ -273,14 +316,7 @@ def _as_objective_list(vec: dict[str, float]) -> tuple[float, ...]:
 
 
 def non_dominated_sort(vectors: Sequence[dict[str, float]]) -> list[int]:
-    """Assign each vector a Pareto front index, where ``0`` is non-dominated.
-
-    Dict inputs are first projected through ``OBJECTIVE_KEYS`` so callers may
-    carry extra diagnostic fields without changing the dominance relation.
-    Equal vectors remain on the same front because dominance requires at least
-    one strictly better objective (the self/equal pair fails the strict-any
-    test, so the dominance matrix diagonal is always False).
-    """
+    """Assign each vector a Pareto front index, where ``0`` is non-dominated."""
     if not vectors:
         return []
     arrs = np.asarray([_as_objective_list(v) for v in vectors], dtype=float)

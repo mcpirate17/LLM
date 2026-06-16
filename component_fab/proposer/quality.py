@@ -30,6 +30,7 @@ from component_fab.proposer.tier2_feedback import (
     WEAK_NEAR_SURVIVOR,
 )
 from component_fab.state.ledger import LedgerEntry
+from component_fab.state.gates import GATE_S05_CAUSALITY_STABILITY
 from component_fab.validator.trust import (
     NOVELTY_AXIS_NOVEL,
     NOVELTY_DUPLICATE_AXES,
@@ -65,6 +66,19 @@ VERDICT_LOSES_TO_BASELINE = "loses_to_baseline"
 VERDICT_REJECT_UNSTABLE = "reject_unstable"
 VERDICT_REJECT_NON_BINDER = "reject_non_binder"
 VERDICT_UNPROVEN = "unproven"
+SIGNATURE_DYNAMIC_LEDGER_REPAIR = "dynamic_ledger_repair"
+
+_LONG_GAP_PROBE_TASKS = (
+    "shifted_copy",
+    "copy_from_uniform_past",
+    "causal_induction",
+    "running_parity",
+)
+_BINDING_PROBE_TASKS = (
+    "copy_from_uniform_past",
+    "causal_induction",
+    "shifted_copy",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,6 +161,71 @@ def _measured_binding(entry: LedgerEntry | None) -> tuple[float, bool]:
                 score = min(1.0, score + 0.05)
             return score, True
     return 0.5, False
+
+
+def _latest_entry_metadata(entry: LedgerEntry | None) -> dict:
+    return dict(entry.metadata_history[-1]) if entry and entry.metadata_history else {}
+
+
+def _physics_coordinate_keys(axes: Mapping[str, object]) -> tuple[tuple[str, ...], ...]:
+    if axes.get("op_search_track") != "physics_atom":
+        return ()
+    return (
+        (
+            "physics",
+            str(axes.get("op_physics_seed") or ""),
+            str(axes.get("op_physics_knob_scale") or ""),
+            str(axes.get("op_physics_atom_kinds") or ""),
+            str(axes.get("op_physics_basis_axis") or ""),
+            str(axes.get("op_physics_norm_axis") or ""),
+            str(axes.get("op_physics_address_family") or ""),
+            str(axes.get("op_physics_score_norm_family") or ""),
+            str(axes.get("op_physics_aggregate_family") or ""),
+        ),
+    )
+
+
+def _physics_ledger_maps(
+    entries_by_id: Mapping[str, LedgerEntry],
+) -> tuple[dict[tuple[str, ...], int], dict[tuple[str, ...], dict[str, float]]]:
+    s05_failures: dict[tuple[str, ...], int] = {}
+    task_ratios: dict[tuple[str, ...], dict[str, float]] = {}
+    for entry in entries_by_id.values():
+        for metadata in entry.metadata_history:
+            axes = metadata.get("math_axes") or {}
+            keys = _physics_coordinate_keys(axes)
+            if not keys:
+                continue
+            if (
+                metadata.get("capability_eliminated_by") == GATE_S05_CAUSALITY_STABILITY
+                or metadata.get("eliminated_by") == GATE_S05_CAUSALITY_STABILITY
+            ):
+                for key in keys:
+                    s05_failures[key] = s05_failures.get(key, 0) + 1
+            ratios = metadata.get("physics_probe_task_ratios") or {}
+            if ratios:
+                for key in keys:
+                    bucket = task_ratios.setdefault(key, {})
+                    for task, ratio in ratios.items():
+                        bucket[str(task)] = max(
+                            bucket.get(str(task), 0.0), float(ratio)
+                        )
+    return s05_failures, task_ratios
+
+
+def physics_s05_failure_count_for_spec(
+    spec: ProposalSpec,
+    entries_by_id: Mapping[str, LedgerEntry],
+) -> int:
+    """Number of prior S0.5 hard failures matching this physics coordinate."""
+    s05_failures, _ = _physics_ledger_maps(entries_by_id)
+    return max(
+        (
+            int(s05_failures.get(key, 0))
+            for key in _physics_coordinate_keys(spec.math_axes)
+        ),
+        default=0,
+    )
 
 
 def _tier2_win_probability(
@@ -232,6 +311,143 @@ def _risk_score(
         risk += 0.20
         reasons.append("axes duplicate an already-seen candidate")
     return _clamp(risk), reasons
+
+
+def _proposal_repair_signatures(spec: ProposalSpec) -> tuple[str, ...]:
+    if not spec.name.startswith("dynamic_"):
+        return ()
+    repairs = [
+        note.split("=", 1)[1]
+        for note in spec.notes
+        if note.startswith("repair=") and note.split("=", 1)[1]
+    ]
+    return tuple(dict.fromkeys((SIGNATURE_DYNAMIC_LEDGER_REPAIR, *repairs)))
+
+
+def _dynamic_physics_variant_bonus(
+    spec: ProposalSpec, entry: LedgerEntry | None
+) -> tuple[float, tuple[str, ...]]:
+    axes = spec.math_axes
+    if (
+        entry is not None
+        or not spec.name.startswith("dynamic_")
+        or axes.get("op_search_track") != "physics_atom"
+    ):
+        return 0.0, ()
+    variant = str(axes.get("op_physics_variant") or "")
+    if variant:
+        return (
+            0.20,
+            (
+                "unseen dynamic physics variant: prioritize atom/stage "
+                f"coordinate {variant}",
+            ),
+        )
+    return 0.05, ("unseen dynamic physics repair coordinate",)
+
+
+def _physics_target_alignment_bonus(
+    spec: ProposalSpec, nas: NasScreenResult | None
+) -> tuple[float, tuple[str, ...]]:
+    axes = spec.math_axes
+    if axes.get("op_search_track") != "physics_atom" or nas is None or not nas.raw:
+        return 0.0, ()
+    target = str(axes.get("op_physics_target") or "")
+    raw = nas.raw
+    reach = float(raw.get("long_range_reach") or 0.0)
+    content_dependence = float(raw.get("content_dependence") or 0.0)
+    content_gating = float(raw.get("content_match_gating") or 0.0)
+    causality_violation = float(raw.get("causality_violation") or 0.0)
+    causal_score = _clamp(1.0 - causality_violation / 0.5)
+    reach_score = _clamp(reach / 0.05)
+    content_score = _clamp(0.5 * content_dependence + 0.5 * content_gating)
+
+    if target.startswith("long_gap"):
+        bonus = 0.12 * reach_score + 0.04 * causal_score
+        reason = (
+            "physics target alignment: long-gap repair ranked by measured "
+            f"reach={reach:.4f}, causality_violation={causality_violation:.4f}"
+        )
+    elif target in {"binding_content_addressed_state", "broad_kv_content_lookup"}:
+        bonus = 0.10 * content_score + 0.05 * reach_score + 0.02 * causal_score
+        reason = (
+            "physics target alignment: binding repair ranked by measured "
+            f"content={content_score:.4f}, reach={reach:.4f}"
+        )
+    else:
+        bonus = 0.03 * nas.rank_score
+        reason = "physics target alignment: generic measured capability rank"
+    return _clamp(bonus, hi=0.16), (reason,)
+
+
+def _loss_ratio_score(ratio: float) -> float:
+    if ratio <= 1.0:
+        return 0.0
+    return _clamp((ratio - 1.0) / 0.5)
+
+
+def _physics_task_learning_bonus(
+    spec: ProposalSpec,
+    entry: LedgerEntry | None,
+    physics_task_ratios_by_key: Mapping[tuple[str, ...], Mapping[str, float]]
+    | None = None,
+) -> tuple[float, tuple[str, ...]]:
+    axes = spec.math_axes
+    if axes.get("op_search_track") != "physics_atom":
+        return 0.0, ()
+    metadata = _latest_entry_metadata(entry)
+    ratios = dict(metadata.get("physics_probe_task_ratios") or {})
+    if not ratios and physics_task_ratios_by_key:
+        for key in _physics_coordinate_keys(axes):
+            for task, ratio in physics_task_ratios_by_key.get(key, {}).items():
+                ratios[task] = max(ratios.get(task, 0.0), float(ratio))
+    if not ratios:
+        return 0.0, ()
+    target = str(axes.get("op_physics_target") or "")
+    if target.startswith("long_gap"):
+        tasks = _LONG_GAP_PROBE_TASKS
+        label = "long-gap"
+    elif target in {"binding_content_addressed_state", "broad_kv_content_lookup"}:
+        tasks = _BINDING_PROBE_TASKS
+        label = "binding"
+    else:
+        tasks = tuple(ratios)
+        label = "physics"
+    task_ratios = [
+        float(ratios[name])
+        for name in tasks
+        if name in ratios and float(ratios[name]) > 0.0
+    ]
+    if not task_ratios:
+        return 0.0, ()
+    best = max(task_ratios)
+    mean = sum(task_ratios) / len(task_ratios)
+    task_score = 0.7 * _loss_ratio_score(best) + 0.3 * _loss_ratio_score(mean)
+    bonus = 0.18 * task_score
+    reason = (
+        f"physics task learning: {label} target best_ratio={best:.4f}, "
+        f"mean_ratio={mean:.4f}"
+    )
+    return _clamp(bonus, hi=0.18), (reason,)
+
+
+def _physics_hard_gate_penalty(
+    spec: ProposalSpec,
+    physics_s05_failures_by_key: Mapping[tuple[str, ...], int] | None = None,
+) -> tuple[float, tuple[str, ...]]:
+    if spec.math_axes.get("op_search_track") != "physics_atom":
+        return 0.0, ()
+    failures = max(
+        (
+            int((physics_s05_failures_by_key or {}).get(key, 0))
+            for key in _physics_coordinate_keys(spec.math_axes)
+        ),
+        default=0,
+    )
+    if failures <= 0:
+        return 0.0, ()
+    penalty = min(0.35, 0.18 * failures)
+    return penalty, (f"physics hard-gate memory: S0.5 failures={failures}",)
 
 
 def _verdict_for(
@@ -325,6 +541,9 @@ def score_quality(
     axes_counts: Mapping[str, int] | None = None,
     saved_winner_ids: set[str] | None = None,
     priors: Sequence[ResearchPrior] | None = None,
+    physics_s05_failures_by_key: Mapping[tuple[str, ...], int] | None = None,
+    physics_task_ratios_by_key: Mapping[tuple[str, ...], Mapping[str, float]]
+    | None = None,
 ) -> QualityScore:
     """Fuse all evidence into a calibrated, auditable quality record."""
 
@@ -352,7 +571,11 @@ def score_quality(
         predicted_delta=predicted_delta,
     )
     risk, risk_reasons = _risk_score(nas, tier2, novelty.status)
-    repair_signatures = tuple(tier2.signatures) if tier2 is not None else ()
+    repair_signatures = (
+        tuple(tier2.signatures)
+        if tier2 is not None
+        else _proposal_repair_signatures(spec)
+    )
 
     # Weights reflect the 2026-06-03 audit: downstream Tier-2 win-probability
     # dominates, the MEASURED binding probe is the trusted cheap signal, and the
@@ -365,6 +588,15 @@ def score_quality(
         + 0.10 * novelty_confidence
     )
     quality *= 1.0 - 0.5 * risk
+    physics_bonus, physics_reasons = _dynamic_physics_variant_bonus(spec, entry)
+    target_bonus, target_reasons = _physics_target_alignment_bonus(spec, nas)
+    task_bonus, task_reasons = _physics_task_learning_bonus(
+        spec, entry, physics_task_ratios_by_key
+    )
+    hard_gate_penalty, hard_gate_reasons = _physics_hard_gate_penalty(
+        spec, physics_s05_failures_by_key
+    )
+    quality += physics_bonus + target_bonus + task_bonus - hard_gate_penalty
     quality = _clamp(quality)
     if binding_measured:
         win_reasons.append(f"measured nano-binding probe nb={binding:.3f}")
@@ -383,6 +615,10 @@ def score_quality(
     reasons = (
         *win_reasons,
         *risk_reasons,
+        *physics_reasons,
+        *target_reasons,
+        *task_reasons,
+        *hard_gate_reasons,
         *(affinity.reasons if affinity.affinity > 0.0 else ()),
         f"novelty={novelty.status}",
         f"verdict={verdict}",
@@ -421,6 +657,9 @@ def score_specs_quality(
     tier2_by_id = tier2_by_id or {}
     nas_by_id = nas_by_id or {}
     entries_by_id = entries_by_id or {}
+    physics_s05_failures_by_key, physics_task_ratios_by_key = _physics_ledger_maps(
+        entries_by_id
+    )
     return {
         spec.proposal_id: score_quality(
             spec,
@@ -430,6 +669,8 @@ def score_specs_quality(
             axes_counts=axes_counts,
             saved_winner_ids=saved_winner_ids,
             priors=priors,
+            physics_s05_failures_by_key=physics_s05_failures_by_key,
+            physics_task_ratios_by_key=physics_task_ratios_by_key,
         )
         for spec in specs
     }

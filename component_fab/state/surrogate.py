@@ -126,6 +126,35 @@ def _training_rows(
         meta = grade.get("metadata") or {}
         axes = meta.get("math_axes") or {}
         knobs = meta.get("math_knobs") or []
+
+        # WS-2 Relabeling: prefer the honest frontier-relative delta from the
+        # deep probe if it exists. Otherwise fallback to the nano composite.
+        # We also want to penalize candidates that fail mechanistic probes.
+        composite = float(grade.get("composite_score") or 0.0)
+
+        # If the candidate failed mechanistic probes (e.g. routing collapse),
+        # we demote its score.
+        # Note: these fields are added by our new validator/mechanism.py
+        if meta.get("routing_entropy_mean", 1.0) < 0.05:
+            composite *= 0.5
+        if meta.get("mode_collapse_propensity", 0.0) > 0.9:
+            composite *= 0.5
+
+        frontier_delta = meta.get("deep_probe_mean_delta")
+        slope = meta.get("slope")
+        if frontier_delta is not None:
+            # Shift the delta into a similar range as the 0-1 composite
+            # (frontier deltas are typically small, e.g. -0.1 to +0.1).
+            # We want 'beats frontier' (delta > 0) to be a strong signal.
+            target = 0.6 + float(frontier_delta) * 2.0
+
+            # Incorporate slope: a positive slope is a strong indicator of
+            # scaling potential. (typical slopes are small, e.g. 0.05).
+            if slope is not None:
+                target += float(slope) * 2.0
+        else:
+            target = composite
+
         rows.append(
             TrainingRow(
                 proposal_id=pid,
@@ -135,7 +164,7 @@ def _training_rows(
                     math_axes=axes,
                     math_knobs=knobs,
                 ),
-                composite=float(grade.get("composite_score") or 0.0),
+                composite=max(0.0, min(1.0, target)),
                 promoted=1 if last_status.get(pid) == "promoted" else 0,
             )
         )
@@ -432,9 +461,9 @@ def write_surrogate_report(
 
 
 # --------------------------------------------------------------------------- #
-# Fitted surrogate for acquisition (proposer/acquisition.py)
+# Fitted approximant for acquisition (proposer/acquisition.py)
 # --------------------------------------------------------------------------- #
-class Surrogate:
+class MeanFieldApproximant:
     """Fitted composite predictor exposing (median, upper_quantile) per candidate."""
 
     def __init__(self, feature_names: list[str], median_model: Any, upper_model: Any):
@@ -444,7 +473,9 @@ class Surrogate:
         self._upper = upper_model
 
     @classmethod
-    def fit(cls, ledger_path: Path | str = DEFAULT_LEDGER_PATH) -> "Surrogate | None":
+    def fit(
+        cls, ledger_path: Path | str = DEFAULT_LEDGER_PATH
+    ) -> "MeanFieldApproximant | None":
         last_grade, last_status = _read_ledger(Path(ledger_path))
         rows = _training_rows(last_grade, last_status)
         if len(rows) < 10:

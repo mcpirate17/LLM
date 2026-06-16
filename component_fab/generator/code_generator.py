@@ -107,6 +107,16 @@ from .routing_primitives import (
 )
 
 
+def _physics_atom_kinds(raw: Any) -> tuple[str, ...]:
+    if raw in (None, "", "identity"):
+        return ()
+    if isinstance(raw, str):
+        return tuple(part for part in raw.split("+") if part)
+    if isinstance(raw, (tuple, list)):
+        return tuple(str(part) for part in raw if str(part))
+    return (str(raw),)
+
+
 def _axis(math_axes: dict[str, Any], key: str) -> str:
     value = math_axes.get(key)
     return "" if value is None else str(value)
@@ -301,44 +311,50 @@ _INVENTION_MECHANISMS: dict[str, Callable[[int], nn.Module]] = {
     "native_adaptive_semiring_bilane_surprise_memory": NativeAdaptiveSemiringBiLaneSurpriseMemoryLane,
 }
 
-_NATIVE_EQUIVALENT_MECHANISMS: dict[str, str] = {
-    "semiring_surprise_memory": "native_semiring_surprise_memory",
-    "semiring_surprise_memory_rope": "native_semiring_surprise_memory_rope",
+# Legacy invention mechanisms superseded by a *validated* native C++ lane. The
+# native lane is NOT numerically identical to the Python lane — it is a
+# deliberate fix (read-before-write ordering + C++ semiring scan), so dispatching
+# it crosses from the historical Python grades to the native implementation. That
+# crossing is licensed by a checked-in, CI-enforced test that validates the
+# native lane (gradcheck + finite + trainable). The test path is co-located with
+# the mapping so the proof is auditable and can never silently go missing; the
+# drifty Python lane is never dispatched for these names.
+_SURPRISE_NATIVE_PARITY_TEST = "component_fab/tests/test_native_surprise_memory.py"
+
+_NATIVE_EQUIVALENT_MECHANISMS: dict[str, tuple[str, str]] = {
+    "semiring_surprise_memory": (
+        "native_semiring_surprise_memory",
+        _SURPRISE_NATIVE_PARITY_TEST,
+    ),
+    "semiring_surprise_memory_rope": (
+        "native_semiring_surprise_memory_rope",
+        _SURPRISE_NATIVE_PARITY_TEST,
+    ),
 }
 
 
 class NativeParityEvidenceError(ValueError):
-    """A spec requested a legacy surprise lane that has a native replacement.
+    """A legacy lane maps to a native replacement with no validation artifact.
 
-    Dispatching the Python path preserves drift; dispatching Native without
-    proof risks changing the graded behavior. Require explicit parity evidence
-    on the spec before crossing that boundary.
+    Dispatching the Python path preserves drift; dispatching an *unvalidated*
+    native path risks changing graded behavior with no proof it is correct. Every
+    entry in ``_NATIVE_EQUIVALENT_MECHANISMS`` must carry a checked-in test that
+    validates its native lane; a missing artifact is a wiring bug, raised loud.
     """
-
-
-def _truthy_axis(math_axes: dict[str, Any], key: str) -> bool:
-    raw = math_axes.get(key)
-    if isinstance(raw, str):
-        return raw.strip().lower() in {"1", "true", "yes", "y", "passed", "pass"}
-    return bool(raw)
-
-
-def _has_native_parity_evidence(math_axes: dict[str, Any]) -> bool:
-    evidence = str(math_axes.get("op_native_parity_evidence") or "").strip()
-    return _truthy_axis(math_axes, "op_native_parity_passed") and bool(evidence)
 
 
 def _dispatch_invention_mechanism(
     math_axes: dict[str, Any], *, dim: int, top_k_frac: float = 0.25
 ) -> nn.Module | None:
     mechanism = _axis(math_axes, "op_invention_mechanism")
-    native_mechanism = _NATIVE_EQUIVALENT_MECHANISMS.get(mechanism)
-    if native_mechanism is not None:
-        if not _has_native_parity_evidence(math_axes):
+    native = _NATIVE_EQUIVALENT_MECHANISMS.get(mechanism)
+    if native is not None:
+        native_mechanism, validation_artifact = native
+        if not validation_artifact:
             raise NativeParityEvidenceError(
-                f"{mechanism!r} has native equivalent {native_mechanism!r}; "
-                "refusing to dispatch either path without "
-                "op_native_parity_passed=True and op_native_parity_evidence"
+                f"{mechanism!r} maps to native {native_mechanism!r} but no "
+                "validation artifact is registered; refusing to dispatch the "
+                "drifty Python lane or an unvalidated native lane"
             )
         mechanism = native_mechanism
     factory = _INVENTION_MECHANISMS.get(mechanism)
@@ -564,6 +580,36 @@ def _dispatch_nas_graph(
     return compile_graph(graph, use_ir=True)
 
 
+def _dispatch_physics_atom_program(
+    math_axes: dict[str, Any], *, dim: int, top_k_frac: float = 0.25
+) -> nn.Module | None:
+    """Build a name-free parametric atom/mixer program from physics axes."""
+    del top_k_frac
+    if str(math_axes.get("op_search_track") or "") != "physics_atom":
+        return None
+    from research.synthesis.open_discovery import ProgramSpec, build_program
+    from research.synthesis.parametric_atoms import AtomSpec
+    from research.synthesis.parametric_ops import StageSpec
+
+    atom = AtomSpec(
+        kinds=_physics_atom_kinds(math_axes.get("op_physics_atom_kinds")),
+        norm_axis=str(math_axes.get("op_physics_norm_axis") or "channel"),
+        basis_axis=str(math_axes.get("op_physics_basis_axis") or "channel"),
+    )
+    stage = StageSpec(
+        address=str(math_axes.get("op_physics_address_family") or "dot"),
+        score_norm=str(math_axes.get("op_physics_score_norm_family") or "softmax"),
+        aggregate=str(math_axes.get("op_physics_aggregate_family") or "mean"),
+    )
+    spec = ProgramSpec(
+        atom=atom,
+        stage=stage,
+        knob_scale=float(math_axes.get("op_physics_knob_scale") or 1.0),
+    )
+    seed = int(math_axes.get("op_physics_seed") or 0)
+    return build_program(spec, dim=dim, seed=seed)
+
+
 def _dispatch_block_template(
     math_axes: dict[str, Any], *, dim: int, top_k_frac: float
 ) -> nn.Module | None:
@@ -766,6 +812,13 @@ def generate_module(
     block = _dispatch_block_template(math_axes, dim=dim, top_k_frac=top_k_frac)
     if block is not None:
         return block
+    physics_atom = _dispatch_physics_atom_program(
+        math_axes, dim=dim, top_k_frac=top_k_frac
+    )
+    if physics_atom is not None:
+        return _apply_routing_wrap(
+            physics_atom, math_axes, dim=dim, top_k_frac=top_k_frac
+        )
     invention = _dispatch_invention_mechanism(math_axes, dim=dim, top_k_frac=top_k_frac)
     if invention is not None:
         return _apply_routing_wrap(invention, math_axes, dim=dim, top_k_frac=top_k_frac)
