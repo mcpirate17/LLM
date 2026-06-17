@@ -1,84 +1,79 @@
-"""Param/width scaling ladder — predictivity calibration for cheap screening.
+"""Param scaling ladder on a SCALABLE binding corpus — predictivity calibration.
 
-Goal: find the cheapest model scale whose capability ranking PREDICTS the 40M
-outcome, so screening stops relying on the (anti-predictive) nano signal. The
-ladder spans two regimes the project already uses:
+History: synthetic probes (poor proxy) -> tiny real corpus (memorized + trivial
+metric: softmax@24K hit 1.0 vs gpt2 ref 0.6, because "predict *an* adjective" over
+a 27-word vocab is free). Both failures share a cause — too little data + too easy
+a metric. This version fixes both:
 
-  * LANE rungs (4K -> ~400K): the mechanism in isolation, scored on the capability
-    probes (binding / induction / state-tracking) that DISCRIMINATE at small scale
-    (BLiMP is ~chance < 30M, so it carries no signal at the cheap end). This is
-    what nano screening does, swept across width.
-  * LM rungs (~4M): a full TinyLM (embedding + lane + FFN + head) scored on real
-    BLiMP + perplexity. A real BPE vocab makes a <1M-param *full* LM impossible
-    (embedding dominates), so full-LM rungs start here.
-  * L4 (~30-100M): read from research/data/scale_ladder/softmax_l4_anchor.json +
-    runs.db (no re-run — the ground truth already exists).
+  * SCALABLE corpus: generate n_nouns nouns x n_adjectives adjectives, bind each
+    noun to a fixed ``k`` adjectives, emit sentences "the {noun} was {adj_in_set}".
+    Volume scales ~5 tok/param per rung so bigger models can't just memorize.
+  * DISCRIMINATING metric (bound-set recall): "the {noun} was -> top1 in that noun's
+    bound set". Chance ~ k/n_adjectives, so a non-binder scores near chance — unlike
+    the trivial "is it an adjective" test. Held-out nouns test rule generalization.
+  * MEMORIZATION guard: report in-dist recall, held-out recall, and final train loss;
+    flag memorized = (in-dist high AND held-out ~chance) or train_loss ~ 0.
 
-Run softmax first to establish the reference curve + validate the harness; then
-the same call on candidate lanes gives, per metric, Spearman(rung_k, L4) across
-candidates — the cheapest predictive rung. CPU-friendly; lane rungs are seconds.
+Medium vocab (~100 words) keeps sub-1M full LMs reachable AND keeps recall non-trivial.
+Run softmax first to validate the curve discriminates; then candidate lanes + the L4
+anchor (40M binding from runs.db + the pinned softmax refs) give the cheapest
+predictive rung. If a rung shows memorization, raise --tokens-per-param.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import random
 import time
 from pathlib import Path
 from statistics import mean
 
 import torch
+from torch import nn
 
-from component_fab.harness.lm_eval import evaluate_lm
-from component_fab.harness.probe_block import short_training_probe
-from component_fab.harness.probe_tasks import DEFAULT_PROBE_TASKS
 from component_fab.harness.tiny_lm import lane_factory_for_baseline
 from component_fab.harness.training_probe import build_tiny_lm
 
 _REPO = Path(__file__).resolve().parents[1]
-_ANCHOR = _REPO / "data" / "scale_ladder" / "softmax_l4_anchor.json"
-
-# Lane-rung widths (dim) -> roughly {4K, 16K, 65K, 260K} lane params for attention.
-_LANE_DIMS = (32, 64, 128, 256)
-# Full-LM rung: (dim, n_blocks) chosen to land near ~4M params with a real vocab.
-_LM_RUNGS = ((192, 4),)
-_PROBE_STEPS = 600  # fixed across lane rungs to isolate the width effect
-_PROBE_SEQ = 64
+_DIMS = (32, 64, 128, 256, 512)
+_N_BLOCKS = 2
+_N_NOUNS, _N_ADJ, _K, _N_HELDOUT = 60, 40, 3, 12  # vocab ~ 100+2; chance ~ k/N_ADJ
 
 
-def _lane_params(lane_factory, dim: int) -> int:
-    return sum(p.numel() for p in lane_factory(dim).parameters())
+def _make_binding_corpus(*, n_sentences: int, seed: int) -> dict:
+    """Generate a noun->adjective binding corpus that scales with n_sentences."""
+    rng = random.Random(seed)
+    nouns = [f"n{i}" for i in range(_N_NOUNS)]
+    adjs = [f"a{i}" for i in range(_N_ADJ)]
+    bound = {nn: rng.sample(adjs, _K) for nn in nouns}  # each noun -> k adjectives
+    held_out = nouns[:_N_HELDOUT]
+    train_nouns = nouns[_N_HELDOUT:]
+    vocab = sorted(["the", "was", *nouns, *adjs])
+    stoi = {w: i for i, w in enumerate(vocab)}
+    sentences = []
+    for _ in range(n_sentences):
+        nn_ = rng.choice(train_nouns)
+        sentences.append(["the", nn_, "was", rng.choice(bound[nn_])])
+    return {
+        "sentences": sentences,
+        "stoi": stoi,
+        "vocab": vocab,
+        "bound": {nn: frozenset(stoi[a] for a in adjs_) for nn, adjs_ in bound.items()},
+        "adj_ids": frozenset(stoi[a] for a in adjs),
+        "train_nouns": train_nouns,
+        "held_out": held_out,
+        "chance": round(_K / _N_ADJ, 3),
+    }
 
 
-def _probe_capability(lane_factory, dim: int, *, seeds=(0, 1)) -> dict[str, float]:
-    """Mean loss-ratio per probe task (higher = learns the task better)."""
-    per_task: dict[str, list[float]] = {t.name: [] for t in DEFAULT_PROBE_TASKS}
-    for seed in seeds:
-        torch.manual_seed(seed)
-        lane = lane_factory(dim)
-        for task in DEFAULT_PROBE_TASKS:
-            r = short_training_probe(
-                lane,
-                dim=dim,
-                seq_len=_PROBE_SEQ,
-                n_steps=_PROBE_STEPS,
-                seed=seed,
-                target_fn=task.target_fn,
-            )
-            if r.trained_successfully:
-                per_task[task.name].append(r.loss_ratio_initial_over_final)
-    out = {k: (mean(v) if v else 0.0) for k, v in per_task.items()}
-    out["_mean"] = mean([out[t.name] for t in DEFAULT_PROBE_TASKS])
-    return out
-
-
-def _lm_params(lane_factory, dim: int, n_blocks: int) -> int:
+def _lm_params(lane_factory, dim: int, vocab_size: int) -> int:
     m = build_tiny_lm(
         lane_factory,
-        vocab_size=8000,
+        vocab_size=vocab_size,
         dim=dim,
-        n_blocks=n_blocks,
-        max_seq_len=128,
+        n_blocks=_N_BLOCKS,
+        max_seq_len=8,
         use_position_embedding=True,
         use_ffn=True,
         ffn_mult=4,
@@ -86,86 +81,157 @@ def _lm_params(lane_factory, dim: int, n_blocks: int) -> int:
     return sum(p.numel() for p in m.parameters())
 
 
-def run_ladder(lane_name: str, *, device: str = "cpu") -> dict:
-    lane_factory = lane_factory_for_baseline(lane_name)
-    report: dict = {"lane": lane_name, "lane_rungs": [], "lm_rungs": []}
-
-    print(
-        f"\n=== {lane_name}: LANE rungs (capability probes, {_PROBE_STEPS} steps) ==="
+def _train_and_score(
+    lane_factory,
+    dim: int,
+    *,
+    device: str,
+    seed: int,
+    tokens_per_param: int,
+    lr: float = 3e-3,
+    batch_size: int = 128,
+) -> dict:
+    vocab_probe = len(_make_binding_corpus(n_sentences=1, seed=0)["vocab"])
+    params = _lm_params(lane_factory, dim, vocab_probe)
+    # ~tokens_per_param tokens; 4 tokens/sentence. Floor keeps tiny rungs trainable.
+    n_sentences = max(400, (tokens_per_param * params) // 4)
+    corpus = _make_binding_corpus(n_sentences=n_sentences, seed=seed)
+    stoi, vocab_size = corpus["stoi"], len(corpus["vocab"])
+    torch.manual_seed(seed)
+    model = build_tiny_lm(
+        lane_factory,
+        vocab_size=vocab_size,
+        dim=dim,
+        n_blocks=_N_BLOCKS,
+        max_seq_len=8,
+        use_position_embedding=True,
+        use_ffn=True,
+        ffn_mult=4,
+    ).to(device)
+    data = torch.tensor(
+        [[stoi[w] for w in s] for s in corpus["sentences"]], device=device
     )
-    for dim in _LANE_DIMS:
+    n = data.shape[0]
+    n_steps = max(300, min(3000, n // batch_size * 4))
+    opt = torch.optim.Adam(model.parameters(), lr=lr)
+    model.train()
+    final_loss = float("nan")
+    for _ in range(n_steps):
+        batch = data[torch.randint(0, n, (min(batch_size, n),), device=device)]
+        logits = model(batch)
+        loss = nn.functional.cross_entropy(
+            logits[:, :-1, :].reshape(-1, vocab_size), batch[:, 1:].reshape(-1)
+        )
+        opt.zero_grad()
+        loss.backward()
+        opt.step()
+        final_loss = float(loss.item())
+
+    model.eval()
+    the_i, was_i = stoi["the"], stoi["was"]
+
+    def _recall(nouns: list[str], bound_check: bool) -> float:
+        hits = 0
+        with torch.no_grad():
+            for noun in nouns:
+                top1 = int(
+                    model(torch.tensor([[the_i, stoi[noun], was_i]], device=device))[
+                        0, -1
+                    ].argmax()
+                )
+                target = corpus["bound"][noun] if bound_check else corpus["adj_ids"]
+                hits += int(top1 in target)
+        return hits / max(1, len(nouns))
+
+    in_dist = _recall(
+        corpus["train_nouns"], bound_check=True
+    )  # right adj for that noun
+    held_out = _recall(
+        corpus["held_out"], bound_check=False
+    )  # any adj (rule generalizes)
+    memorized = in_dist > 0.5 and held_out <= corpus["chance"] * 2
+    return {
+        "dim": dim,
+        "params": params,
+        "n_sentences": n_sentences,
+        "n_steps": n_steps,
+        "in_dist_bound_recall": round(in_dist, 3),
+        "held_out_is_adj": round(held_out, 3),
+        "final_loss": round(final_loss, 3),
+        "memorized": memorized,
+    }
+
+
+def run_ladder(lane_name: str, *, device: str, seeds, tokens_per_param: int) -> dict:
+    lane_factory = lane_factory_for_baseline(lane_name)
+    chance = _make_binding_corpus(n_sentences=1, seed=0)["chance"]
+    print(f"\n=== {lane_name}: binding ladder (chance bound-recall ~ {chance}) ===")
+    rungs = []
+    for dim in _DIMS:
         t0 = time.time()
-        params = _lane_params(lane_factory, dim)
-        cap = _probe_capability(lane_factory, dim)
+        runs = [
+            _train_and_score(
+                lane_factory,
+                dim,
+                device=device,
+                seed=s,
+                tokens_per_param=tokens_per_param,
+            )
+            for s in seeds
+        ]
         row = {
             "dim": dim,
-            "lane_params": params,
-            "mean_loss_ratio": round(cap["_mean"], 4),
-            "induction": round(cap.get("causal_induction", 0.0), 4),
-            "running_parity": round(cap.get("running_parity", 0.0), 4),
-            "shifted_copy": round(cap.get("shifted_copy", 0.0), 4),
+            "params": runs[0]["params"],
+            "n_sentences": runs[0]["n_sentences"],
+            "in_dist_bound_recall": round(
+                mean(r["in_dist_bound_recall"] for r in runs), 3
+            ),
+            "held_out_is_adj": round(mean(r["held_out_is_adj"] for r in runs), 3),
+            "final_loss": round(mean(r["final_loss"] for r in runs), 3),
+            "memorized_any": any(r["memorized"] for r in runs),
             "seconds": round(time.time() - t0, 1),
         }
-        report["lane_rungs"].append(row)
+        rungs.append(row)
+        flag = " [MEMORIZED]" if row["memorized_any"] else ""
         print(
-            f"  dim{dim:<4} params={params:>8,} mean_lr={row['mean_loss_ratio']:.3f} "
-            f"induction={row['induction']:.3f} parity={row['running_parity']:.3f} "
-            f"({row['seconds']}s)"
+            f"  dim{dim:<4} params={row['params']:>9,} sents={row['n_sentences']:>7,} "
+            f"bound_recall={row['in_dist_bound_recall']:.3f} held_out_adj={row['held_out_is_adj']:.3f} "
+            f"loss={row['final_loss']:.2f}{flag} ({row['seconds']}s)"
         )
-
-    print(f"\n=== {lane_name}: LM rungs (TinyLM + real BLiMP + ppl) ===")
-    for dim, n_blocks in _LM_RUNGS:
-        t0 = time.time()
-        params = _lm_params(lane_factory, dim, n_blocks)
-        # ~5 tok/param @ batch16/seq128, capped to bound CPU wall-clock (the lane
-        # rungs carry the discriminating signal; the LM rung is the BLiMP bridge).
-        n_steps = min(4000, max(200, (5 * params) // (16 * 128)))
-        res = evaluate_lm(
-            lane_factory,
-            mixer_label=lane_name,
-            dim=dim,
-            n_blocks=n_blocks,
-            n_train_steps=n_steps,
-            device=device,
-        )
-        row = {
-            "dim": dim,
-            "n_blocks": n_blocks,
-            "lm_params": params,
-            "n_train_steps": n_steps,
-            "blimp": round(float(res.blimp_overall_accuracy), 4),
-            "post_ppl": round(float(getattr(res, "post_train_ppl", float("nan"))), 2),
-            "seconds": round(time.time() - t0, 1),
-        }
-        report["lm_rungs"].append(row)
-        print(
-            f"  dim{dim}/{n_blocks}blk params={params:>10,} steps={n_steps} "
-            f"BLiMP={row['blimp']:.4f} ppl={row['post_ppl']} ({row['seconds']}s)"
-        )
-
-    return report
+    return {"lane": lane_name, "chance": chance, "rungs": rungs}
 
 
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--lanes", nargs="*", default=["softmax_attention", "gpt2"])
-    p.add_argument("--device", default="cpu")
+    p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    p.add_argument("--seeds", type=int, default=3)
+    p.add_argument("--tokens-per-param", type=int, default=20)
     p.add_argument(
-        "--output",
-        default=str(_REPO / "reports" / "scale_ladder_softmax.json"),
+        "--output", default=str(_REPO / "reports" / "scale_ladder_binding.json")
     )
     args = p.parse_args(argv)
-
-    anchor = json.loads(_ANCHOR.read_text()) if _ANCHOR.exists() else {}
-    out = {"L4_anchor": anchor.get("anchors", {}), "ladders": []}
+    out = {
+        "device": args.device,
+        "tokens_per_param": args.tokens_per_param,
+        "config": {"n_nouns": _N_NOUNS, "n_adj": _N_ADJ, "k": _K},
+        "ladders": [],
+    }
     out_path = Path(args.output)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     for lane in args.lanes:
-        out["ladders"].append(run_ladder(lane, device=args.device))
+        out["ladders"].append(
+            run_ladder(
+                lane,
+                device=args.device,
+                seeds=tuple(range(args.seeds)),
+                tokens_per_param=args.tokens_per_param,
+            )
+        )
         out_path.write_text(json.dumps(out, indent=2))
-
-    print(f"\nL4 anchor (existing softmax @ scale): {list(out['L4_anchor'])}")
-    print(f"report: {out_path}")
+    print(
+        f"\nreport: {out_path}  | L4 anchor: research/data/scale_ladder/softmax_l4_anchor.json"
+    )
     return 0
 
 
