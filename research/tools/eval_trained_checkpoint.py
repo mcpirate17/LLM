@@ -80,24 +80,51 @@ def _load_model(
     return model
 
 
+def _fine_tune_budget(probe_timeout: int) -> float:
+    """Per-probe wall-clock budget handed to each fine-tuning probe's internal cap.
+
+    The fine-tuning probes (induction/AR/binding) each carry an internal timeout
+    calibrated for nano models (90-300s at ~0.08 s/step). A 144M+ model trains
+    ~2x slower, so those caps fire mid-training and write 0.0 — a false negative,
+    not a capability result (the induction_validation 0.0 on the 144M run was
+    exactly this). Hand every probe the same generous budget the outer SIGALRM
+    already grants (minus a small margin so the probe's own graceful stop wins),
+    so the internal cap only ever bounds a genuinely-hung probe. This only ever
+    RAISES caps, so no probe that completes today can be cut shorter.
+    """
+    return float(probe_timeout) - 30.0 if probe_timeout and probe_timeout > 0 else 1e9
+
+
 def _dispatch_recall_probes(
     safe,  # callable(label: str, fn: Callable) -> None
     model: torch.nn.Module,
     dev: torch.device,
     device: str,
     seed: int,
+    probe_timeout: int = 1800,
 ) -> None:
     """Fire induction and AR probes (first half of the standard battery)."""
+    budget = _fine_tune_budget(probe_timeout)
     safe(
         "induction_intermediate",
         lambda: run_induction_intermediate(
-            model, n_train_steps=300, n_eval=128, batch_size=8, device=dev
+            model,
+            n_train_steps=300,
+            n_eval=128,
+            batch_size=8,
+            device=dev,
+            timeout_s=budget,
         ),
     )
     safe(
         "ar_legacy",
         lambda: associative_recall_score(
-            model, n_train_steps=300, n_eval=128, batch_size=8, device=dev
+            model,
+            n_train_steps=300,
+            n_eval=128,
+            batch_size=8,
+            device=dev,
+            timeout_s=budget,
         ),
     )
     safe(
@@ -110,6 +137,7 @@ def _dispatch_recall_probes(
                 batch_size=16,
                 eval_batches=32,
                 mode="cumulative",
+                timeout_s=budget,
             ),
             device=device,
         ),
@@ -117,12 +145,17 @@ def _dispatch_recall_probes(
     safe(
         "induction_validation",
         lambda: run_induction_validation_champion(
-            model, n_train_steps=2000, device=dev
+            model,
+            n_train_steps=2000,
+            device=dev,
+            timeout_s=budget,
         ),
     )
     safe(
         "ar_validation",
-        lambda: run_ar_validation(model, cfg=ARValidationConfig(), device=device),
+        lambda: run_ar_validation(
+            model, cfg=ARValidationConfig(timeout_s=budget), device=device
+        ),
     )
 
 
@@ -130,8 +163,10 @@ def _dispatch_binding_probes(
     safe,  # callable(label: str, fn: Callable) -> None
     model: torch.nn.Module,
     dev: torch.device,
+    probe_timeout: int = 1800,
 ) -> None:
     """Fire binding probes (second half of the standard battery)."""
+    budget = _fine_tune_budget(probe_timeout)
     safe(
         "binding_v2",
         lambda: run_binding_intermediate(
@@ -141,6 +176,7 @@ def _dispatch_binding_probes(
             train_batch_size=8,
             eval_batch_size=8,
             device=dev,
+            timeout_s=budget,
         ),
     )
     safe(
@@ -170,7 +206,9 @@ def _dispatch_binding_probes(
         "binding_multislot",
         lambda: binding_multislot_probe(
             model,
-            cfg=BindingMultislotConfig(train_steps=400, batch_size=8, n_eval=128),
+            cfg=BindingMultislotConfig(
+                train_steps=400, batch_size=8, n_eval=128, timeout_s=budget
+            ),
             device=dev,
         ),
     )
@@ -182,10 +220,11 @@ def _dispatch_probes(
     dev: torch.device,
     device: str,
     seed: int,
+    probe_timeout: int = 1800,
 ) -> None:
     """Call ``safe`` for every probe in the standard battery (order is significant)."""
-    _dispatch_recall_probes(safe, model, dev, device, seed)
-    _dispatch_binding_probes(safe, model, dev)
+    _dispatch_recall_probes(safe, model, dev, device, seed, probe_timeout)
+    _dispatch_binding_probes(safe, model, dev, probe_timeout)
 
 
 def _run_probes(
@@ -227,7 +266,7 @@ def _run_probes(
             if use_alarm:
                 signal.alarm(0)
 
-    _dispatch_probes(_safe, model, dev, device, seed)
+    _dispatch_probes(_safe, model, dev, device, seed, probe_timeout)
     return out
 
 
