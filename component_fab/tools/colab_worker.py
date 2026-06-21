@@ -102,16 +102,35 @@ def _utc_now() -> str:
 def _write_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(payload, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8")
+    tmp.write_text(
+        json.dumps(payload, indent=2, sort_keys=True, default=str) + "\n",
+        encoding="utf-8",
+    )
     tmp.replace(path)
 
 
+def _drive_looks_mounted() -> bool:
+    root = Path("/content/drive")
+    return root.exists() and any(root.iterdir())
+
+
 def _mount_drive_if_available() -> None:
+    if _drive_looks_mounted():
+        return
     try:
         from google.colab import drive  # type: ignore
     except Exception:
         return
-    drive.mount("/content/drive")
+    try:
+        drive.mount("/content/drive")
+    except Exception as exc:
+        if _drive_looks_mounted():
+            return
+        raise RuntimeError(
+            "Google Drive is not mounted. In Colab, run "
+            "`from google.colab import drive; drive.mount('/content/drive')` "
+            "in a notebook cell before launching this worker."
+        ) from exc
 
 
 def _install_dependencies(skip_install: bool) -> None:
@@ -122,8 +141,7 @@ def _install_dependencies(skip_install: bool) -> None:
 
 def _format_args(raw: Iterable[str], *, report_dir: Path, ledger: Path) -> list[str]:
     return [
-        str(part).format(report_dir=str(report_dir), ledger=str(ledger))
-        for part in raw
+        str(part).format(report_dir=str(report_dir), ledger=str(ledger)) for part in raw
     ]
 
 
@@ -134,10 +152,12 @@ def _build_command(args: argparse.Namespace, report_dir: Path, ledger: Path) -> 
     if args.extra_args:
         cmd.extend(_format_args(args.extra_args, report_dir=report_dir, ledger=ledger))
     else:
-        cmd.extend(_format_args(_DEFAULT_MODE_ARGS.get(args.mode, ()), report_dir=report_dir, ledger=ledger))
+        cmd.extend(
+            _format_args(
+                _DEFAULT_MODE_ARGS.get(args.mode, ()), report_dir=report_dir, ledger=ledger
+            )
+        )
     if args.mode in {"surrogate", "deep_probe", "lm_probe", "trust_audit"}:
-        # These runners accept ledger-style args with different names. Preserve
-        # runner-specific defaults unless the caller explicitly supplies one.
         joined = " ".join(cmd)
         if args.mode == "deep_probe" and "--ledger-path" not in joined:
             cmd.extend(["--ledger-path", str(ledger)])
