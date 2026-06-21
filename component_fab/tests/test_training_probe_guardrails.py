@@ -9,6 +9,20 @@ from torch import nn
 from component_fab.harness.training_probe import train_lane_head
 
 
+class _FiniteForwardBadBackward(torch.autograd.Function):
+    """Finite forward value whose backward intentionally returns inf."""
+
+    @staticmethod
+    def forward(ctx, x: torch.Tensor) -> torch.Tensor:  # noqa: ANN001
+        del ctx
+        return x.clone()
+
+    @staticmethod
+    def backward(ctx, grad_output: torch.Tensor) -> tuple[torch.Tensor]:  # noqa: ANN001
+        del ctx
+        return (torch.full_like(grad_output, float("inf")),)
+
+
 def test_train_lane_head_reports_non_finite_predictions() -> None:
     weight = nn.Parameter(torch.ones(1))
 
@@ -39,18 +53,19 @@ def test_train_lane_head_reports_non_finite_gradients() -> None:
     weight = nn.Parameter(torch.ones(1))
 
     def forward(x: torch.Tensor) -> torch.Tensor:
-        return x * weight
+        finite = x * weight
+        return _FiniteForwardBadBackward.apply(finite)
 
     def sample_batch() -> tuple[torch.Tensor, torch.Tensor]:
         return torch.ones(4, 1), torch.zeros(4, dtype=torch.long)
 
     def loss_fn(predictions: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-        del predictions, target
-        # Forward output and scalar loss are finite, but backward produces an
-        # infinite gradient. This catches the failure before optimizer.step().
-        return weight.sum() * float("inf")
+        del target
+        # The scalar loss is finite. The custom autograd function makes only the
+        # backward path non-finite, which verifies the gradient guard directly.
+        return predictions.mean()
 
-    with pytest.raises(FloatingPointError, match="non-finite loss at step 1"):
+    with pytest.raises(FloatingPointError, match="non-finite gradient at step 1"):
         train_lane_head(
             forward,
             [weight],
