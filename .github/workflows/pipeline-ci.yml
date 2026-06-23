@@ -30,6 +30,7 @@ concurrency:
 jobs:
   lint-static:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -45,6 +46,7 @@ jobs:
 
   research-contracts:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -66,12 +68,14 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: research-contracts
+          retention-days: 7
           path: |
             artifacts/research-junit.xml
             research/monitor_alerts.json
 
   designer-contracts:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -93,10 +97,12 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: designer-contracts
+          retention-days: 7
           path: artifacts/designer-junit.xml
 
   integration-contracts:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     needs: [research-contracts, designer-contracts]
     steps:
       - uses: actions/checkout@v4
@@ -119,5 +125,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: integration-contracts
+          retention-days: 7
           path: |
             aria_designer/api/aria_designer.db
