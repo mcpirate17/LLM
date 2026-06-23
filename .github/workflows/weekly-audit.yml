@@ -15,6 +15,7 @@ concurrency:
 jobs:
   audit-and-profile:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -43,6 +44,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: weekly-audit
+          retention-days: 7
           path: |
             tasks/audit/latest_guardrail_report.md
             tasks/audit/latest_guardrail_report.json
