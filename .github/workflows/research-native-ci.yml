@@ -4,14 +4,14 @@ on:
   push:
     branches: [main, master]
     paths:
-      - 'research/**'
-      - '.github/workflows/research-native-ci.yml'
-      - 'pyproject.toml'
+      - "research/**"
+      - ".github/workflows/research-native-ci.yml"
+      - "pyproject.toml"
   pull_request:
     paths:
-      - 'research/**'
-      - '.github/workflows/research-native-ci.yml'
-      - 'pyproject.toml'
+      - "research/**"
+      - ".github/workflows/research-native-ci.yml"
+      - "pyproject.toml"
   workflow_dispatch:
 
 permissions:
@@ -24,36 +24,30 @@ concurrency:
 jobs:
   native-runner-contracts:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ['3.12']
-
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: "3.12"
+          cache: pip
 
       - name: Install test dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -e . pytest
-          pip install torch --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple/
+          python -m pip install -e . pytest
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple/
 
       - name: Build native runtime
-        run: |
-          make -C research/runtime/native c-kernels
+        run: make -C research/runtime/native c-kernels
 
       - name: Enforce native-first compile callsites
         env:
           PYTHONPATH: ${{ github.workspace }}
-        run: |
-          python -m research.tools.check_native_compile_callsites
+        run: python -m research.tools.check_native_compile_callsites
 
-      - name: Run native-runner adapter, contract, parity, and ABI smoke tests
+      - name: Run native-runner contracts
         env:
           PYTHONPATH: ${{ github.workspace }}
         run: |
@@ -69,7 +63,7 @@ jobs:
             research/tests/test_perf_contract.py \
             -q
 
-      - name: Cutover gate canary (enforce-ready)
+      - name: Cutover gate canary
         env:
           PYTHONPATH: ${{ github.workspace }}
           NATIVE_RUNNER_MAX_FALLBACK_RATE: "1.0"
@@ -78,23 +72,20 @@ jobs:
           NATIVE_RUNNER_ABI_PARITY_SAMPLE_RATE: "1.0"
           NATIVE_RUNNER_ABI_PARITY_MAX_ABS: "1e-6"
           NATIVE_RUNNER_ABI_PARITY_STRICT: "1"
-        run: |
-          python -m research.tools.check_cutover_gate --offline --generate-compile-sample --generate-parity-sample
+        run: python -m research.tools.check_cutover_gate --offline --generate-compile-sample --generate-parity-sample
 
-      - name: Native no-legacy gate (ABI model-only)
+      - name: Native no-legacy gate
         env:
           PYTHONPATH: ${{ github.workspace }}
           NATIVE_RUNNER_ENABLED: "1"
           NATIVE_RUNNER_DISABLE_LEGACY_COMPILE_NATIVE_ENABLED: "1"
           NATIVE_RUNNER_ABI_MODEL_ONLY: "1"
-        run: |
-          python -m research.tools.check_no_legacy_compile
+        run: python -m research.tools.check_no_legacy_compile
 
-      - name: Native canary execution paths (no legacy compile)
+      - name: Native canary execution paths
         env:
           PYTHONPATH: ${{ github.workspace }}
           NATIVE_RUNNER_ENABLED: "1"
           NATIVE_RUNNER_DISABLE_LEGACY_COMPILE_NATIVE_ENABLED: "1"
           NATIVE_RUNNER_ABI_MODEL_ONLY: "1"
-        run: |
-          python -m research.tools.check_no_legacy_execution_paths
+        run: python -m research.tools.check_no_legacy_execution_paths
