@@ -1,14 +1,4 @@
-"""Cross-cycle ledger — tracks every proposal seen across autonomous runs.
-
-Backed by a single JSONL append log + an in-memory rollup. Each proposal
-gets one ``LedgerEntry`` keyed by ``proposal_id`` with:
-- score history across cycles
-- promotion status (pending / promoted / rejected)
-- timestamps + last-seen cycle
-
-Append-only on disk so cycle history is auditable. The in-memory state
-is rebuilt by replaying the log on startup.
-"""
+"""Append-only component_fab ledger with replayable in-memory rollup."""
 
 from __future__ import annotations
 
@@ -19,6 +9,12 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator, TextIO
 
+from component_fab.state.schema_versions import (
+    LEDGER_GRADE_SCHEMA_VERSION,
+    LEDGER_PROMOTION_SCHEMA_VERSION,
+    with_schema_version,
+)
+
 logger = logging.getLogger(__name__)
 
 _REPO = Path(__file__).resolve().parents[2]
@@ -26,11 +22,7 @@ DEFAULT_LEDGER_PATH = _REPO / "component_fab" / "catalog" / "ledger.jsonl"
 
 
 def iter_jsonl_records(path: Path | str) -> Iterator[dict[str, Any]]:
-    """Yield parsed records from a JSONL file, skipping blank/corrupt lines.
-
-    The single shared reader for every ledger-style artifact — do not
-    re-implement this loop in analyzer modules.
-    """
+    """Yield parsed records from a JSONL file, skipping blank/corrupt lines."""
     path = Path(path)
     if not path.exists():
         return
@@ -54,19 +46,12 @@ def iter_jsonl_records(path: Path | str) -> Iterator[dict[str, Any]]:
 def iter_rotated_jsonl_paths(
     path: Path | str, *, include_active: bool = True
 ) -> Iterator[Path]:
-    """Yield integer-suffix JSONL rotations oldest-first, then active file.
-
-    Rotation suffixes are not a reliable chronology after pruning; mtime is the
-    canonical order, with suffix as a stable tiebreak. Readers that build a
-    latest-wins view should consume this iterator directly so rotated and active
-    logs replay in the same order as :class:`Ledger`.
-    """
+    """Yield integer-suffix JSONL rotations oldest-first, then active file."""
     base = Path(path)
-    parent = base.parent
-    prefix = base.name + "."
     rotations: list[tuple[int, int, Path]] = []
-    if parent.exists():
-        for child in parent.iterdir():
+    prefix = base.name + "."
+    if base.parent.exists():
+        for child in base.parent.iterdir():
             if not child.name.startswith(prefix):
                 continue
             suffix = child.name[len(prefix) :]
@@ -83,11 +68,7 @@ def iter_rotated_jsonl_paths(
 def latest_by_key(
     records: Iterable[dict[str, Any]], key_field: str
 ) -> dict[str, dict[str, Any]]:
-    """Last record per ``str(record[key_field])``; records missing the key are skipped.
-
-    The single shared latest-wins rollup for JSONL stores where re-runs
-    append and the newest row per id is authoritative.
-    """
+    """Last record per ``str(record[key_field])``; missing keys are skipped."""
     latest: dict[str, dict[str, Any]] = {}
     for record in records:
         key = record.get(key_field)
@@ -102,11 +83,7 @@ def write_json_report(
     *,
     default: Callable[[Any], Any] | None = None,
 ) -> Path:
-    """Shared analyzer-report writer: mkdir -> stable (indent=2, sorted) JSON.
-
-    ``default`` is passed through to ``json.dumps`` for payloads carrying
-    non-JSON-native values (``Path``, datetimes) — typically ``str``.
-    """
+    """Shared analyzer-report writer: mkdir -> stable JSON."""
     out = Path(output_path)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(
@@ -119,7 +96,7 @@ def write_json_report(
 def read_last_grades_and_statuses(
     path: Path | str = DEFAULT_LEDGER_PATH,
 ) -> tuple[dict[str, dict[str, Any]], dict[str, str]]:
-    """Replay a ledger JSONL; return (last grade record, last promote status) per id."""
+    """Replay a ledger JSONL; return last grade and promotion status per id."""
     last_grade: dict[str, dict[str, Any]] = {}
     last_status: dict[str, str] = {}
     for record in iter_jsonl_records(path):
@@ -143,22 +120,7 @@ _VALID_STATUSES = frozenset({PROMOTION_PENDING, PROMOTION_PROMOTED, PROMOTION_RE
 
 
 class JsonlWriter:
-    """Append-mode JSONL writer that keeps a single file handle open across writes.
-
-    Replaces the ``open('a') -> write -> close()`` per-record pattern. For
-    ~hundreds of writes/cycle (e.g. one per fab spec), the open+close cost
-    dominates wall-clock; this class amortizes the open cost to once per
-    ``JsonlWriter`` instance.
-
-    Thread-safety: NOT safe for concurrent use. Use one writer per thread.
-    The fab autonomous loop is single-threaded.
-
-    Behavior change vs the prior open/close pattern: the file handle is held
-    open across writes. ``flush()`` is called after every record so external
-    readers (``tail -f``) and same-process ``Path.read_text()`` see writes
-    immediately — but no ``fsync`` is forced, matching the prior durability
-    (process crash mid-cycle can still lose the last buffered line).
-    """
+    """Append-mode JSONL writer with one open file handle per instance."""
 
     __slots__ = ("path", "buffering", "_handle")
 
@@ -182,13 +144,6 @@ class JsonlWriter:
             )
 
     def write(self, record: Any) -> None:
-        """Encode ``record`` as one JSONL line and append it to the file.
-
-        Flushes after every write so external readers see data immediately
-        (the prior open/close pattern also flushed on close). With
-        ``buffering=1<<20`` and typical small records, the flush is a no-op
-        at the syscall level once the in-process buffer fills.
-        """
         if self._handle is None:
             self._ensure_open()
         assert self._handle is not None
@@ -207,23 +162,21 @@ class JsonlWriter:
 
 
 def _prune_rotations(base_path: Path, keep: int = 3) -> int:
-    """Delete old ``base_path.N`` integer-suffix rotations, keeping newest first."""
+    """Remove old integer-suffix rotations, keeping newest first."""
     if keep < 0:
         raise ValueError("keep must be non-negative")
-
-    rotations: list[Path] = []
     prefix = base_path.name + "."
-    for child in base_path.parent.glob(f"{base_path.name}.*"):
-        suffix = child.name[len(prefix) :]
-        if suffix.isdigit():
-            rotations.append(child)
-
+    rotations = [
+        child
+        for child in base_path.parent.glob(f"{base_path.name}.*")
+        if child.name[len(prefix) :].isdigit()
+    ]
     rotations.sort(key=lambda path: (path.stat().st_mtime_ns, path.name), reverse=True)
-    deleted = 0
+    removed = 0
     for stale in rotations[keep:]:
         stale.unlink(missing_ok=True)
-        deleted += 1
-    return deleted
+        removed += 1
+    return removed
 
 
 @dataclass(slots=True)
@@ -242,23 +195,17 @@ class LedgerEntry:
     last_seen_iso: str = ""
 
     def best_composite(self) -> float:
-        """Max composite across cycles, 0.0 when never graded."""
         return max(self.composite_history, default=0.0)
 
     def mean_composite(self, window: int | None = None) -> float:
-        """Mean composite over the last ``window`` grades (all when ``None``)."""
         if window is not None and window <= 0:
             raise ValueError(f"window must be positive, got {window}")
-        history = (
-            self.composite_history
-            if window is None
-            else self.composite_history[-window:]
-        )
+        history = self.composite_history if window is None else self.composite_history[-window:]
         return sum(history) / len(history) if history else 0.0
 
 
 class Ledger:
-    """JSONL-backed proposal ledger with in-memory rollup."""
+    """JSONL-backed proposal ledger with an in-memory rollup."""
 
     def __init__(
         self,
@@ -279,25 +226,11 @@ class Ledger:
             self._apply_record(record)
 
     def _replay_rotated(self) -> None:
-        """Replay rotated audit-trail files oldest-first by mtime.
-
-        Ordering by mtime (numeric suffix as tiebreak) rather than suffix:
-        rotation indices are not chronological on disk — a historical
-        lowest-unused-index rotation scheme reused freed indices after
-        pruning, so e.g. ``.1`` can be newer than ``.18``. Replaying by
-        suffix would apply newer records before older ones and scramble
-        last-write-wins fields (promotion_status, history order).
-
-        Rotations are an audit trail by default and not loaded into the
-        in-memory rollup. The CLI tooling that wants the full historical
-        view opts in via ``include_rotated=True``.
-        """
         for child in iter_rotated_jsonl_paths(self.path, include_active=False):
             self._replay(child)
 
     def _apply_record(self, record: dict[str, Any]) -> None:
-        proposal_id = record.get("proposal_id")
-        if not proposal_id:
+        if not record.get("proposal_id"):
             return
         if record.get("event") == "grade":
             self._apply_grade(record)
@@ -350,31 +283,37 @@ class Ledger:
         learned_signal: bool,
         metadata: dict[str, Any] | None = None,
     ) -> None:
-        record = {
-            "event": "grade",
-            "proposal_id": proposal_id,
-            "name": name,
-            "category": category,
-            "synthesis_kind": synthesis_kind,
-            "cycle": cycle,
-            "composite_score": composite_score,
-            "smoke_pass": smoke_pass,
-            "learned_signal": learned_signal,
-            "metadata": dict(metadata or {}),
-            "timestamp": _dt.datetime.now(_dt.timezone.utc).isoformat(),
-        }
+        record = with_schema_version(
+            {
+                "event": "grade",
+                "proposal_id": proposal_id,
+                "name": name,
+                "category": category,
+                "synthesis_kind": synthesis_kind,
+                "cycle": cycle,
+                "composite_score": composite_score,
+                "smoke_pass": smoke_pass,
+                "learned_signal": learned_signal,
+                "metadata": dict(metadata or {}),
+                "timestamp": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+            },
+            LEDGER_GRADE_SCHEMA_VERSION,
+        )
         self._apply_record(record)
         self._append(record)
 
     def record_promotion(self, proposal_id: str, status: str) -> None:
         if status not in _VALID_STATUSES:
             raise ValueError(f"unknown promotion status: {status}")
-        record = {
-            "event": "promote",
-            "proposal_id": proposal_id,
-            "status": status,
-            "timestamp": _dt.datetime.now(_dt.timezone.utc).isoformat(),
-        }
+        record = with_schema_version(
+            {
+                "event": "promote",
+                "proposal_id": proposal_id,
+                "status": status,
+                "timestamp": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+            },
+            LEDGER_PROMOTION_SCHEMA_VERSION,
+        )
         self._apply_record(record)
         self._append(record)
 
@@ -384,19 +323,8 @@ class Ledger:
         self._writer.write(record)
 
     def rotate_if_oversized(self, max_bytes: int = 1_048_576) -> Path | None:
-        """Rotate the active JSONL when it exceeds ``max_bytes``.
-
-        Renames ``path`` to ``path.<N>`` where N is one past the highest
-        existing index — monotonic, so suffix order matches chronology even
-        after pruning frees lower indices — and starts a fresh active log.
-        In-memory rollup is preserved; the rotated file remains on disk as
-        the audit trail. Returns the rotated path, or ``None`` if no
-        rotation was needed.
-        """
         if not self.path.exists() or self.path.stat().st_size < max_bytes:
             return None
-        # Drop the cached handle — the on-disk inode is about to be renamed
-        # out from under it. A fresh writer will open on the next _append.
         if self._writer is not None:
             self._writer.close()
             self._writer = None
@@ -415,11 +343,6 @@ class Ledger:
         return candidate
 
     def close(self) -> None:
-        """Flush and release the JSONL file handle.
-
-        Safe to call multiple times. The handle is also released when the
-        process exits; this is the explicit-cleanup entry point.
-        """
         if self._writer is not None:
             self._writer.close()
             self._writer = None
@@ -432,12 +355,7 @@ class Ledger:
 
 
 def resolve_proposal_id(ledger: Ledger, needle: str) -> LedgerEntry:
-    """Exact-then-unique-prefix proposal-id lookup over the ledger rollup.
-
-    Shared by the CLI runners that accept short ids. Raises ``ValueError``
-    when the prefix is ambiguous or matches nothing — fail loud, never
-    guess between candidates.
-    """
+    """Exact-then-unique-prefix proposal-id lookup over the ledger rollup."""
     entry = ledger.entries.get(needle)
     if entry is not None:
         return entry

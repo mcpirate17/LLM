@@ -7,6 +7,7 @@ on:
       - "research/**"
       - "aria_designer/**"
       - "aria_core/**"
+      - "component_fab/**"
       - "Makefile"
       - "pyproject.toml"
       - ".github/workflows/pipeline-ci.yml"
@@ -15,6 +16,7 @@ on:
       - "research/**"
       - "aria_designer/**"
       - "aria_core/**"
+      - "component_fab/**"
       - "Makefile"
       - "pyproject.toml"
       - ".github/workflows/pipeline-ci.yml"
@@ -41,7 +43,32 @@ jobs:
           pip install ruff
       - name: Run static lint checks
         run: |
-          ruff check research/scientist aria_designer/api aria_designer/runtime
+          ruff check research/scientist aria_designer/api aria_designer/runtime component_fab
+
+  component-fab-contracts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install component_fab test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[component-fab-test]" fastapi uvicorn numpy
+          pip install torch --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple/
+      - name: Run component_fab platform contracts
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          mkdir -p artifacts
+          pytest component_fab/tests/test_platform_contracts.py -q --tb=short --junitxml=artifacts/component-fab-junit.xml
+      - name: Upload component_fab artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: component-fab-contracts
+          path: artifacts/component-fab-junit.xml
 
   research-contracts:
     runs-on: ubuntu-latest
@@ -97,7 +124,7 @@ jobs:
 
   integration-contracts:
     runs-on: ubuntu-latest
-    needs: [research-contracts, designer-contracts]
+    needs: [research-contracts, designer-contracts, component-fab-contracts]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

@@ -1,0 +1,17 @@
+version: invention_promotion_v1
+promotion:
+  min_streak_cycles: 1
+  min_composite: 0.70
+  require_learned_signal: false
+rejection:
+  after_n_cycles: 2
+  max_composite: 0.25
+range_veto:
+  enabled_by_default: false
+  min_range_effective_distance: 1
+scoring:
+  solo_promoted: 0.45
+  solo_not_promoted: 0.15
+  in_context_learned_signal: 0.25
+  binding_capability: 0.15
+  max_lm_binding_win_bonus: 0.20

@@ -1,14 +1,8 @@
-"""Dispatcher — ProposalSpec → runnable nn.Module.
+"""Dispatcher — ProposalSpec -> runnable nn.Module.
 
-Maps the spec's math axes + synthesis_kind onto the right
-``primitive_templates`` class. Returns an instantiated module ready to
-plug into the standard test harness.
-
-Dispatch order (first match wins): explicit ``op_math_family`` knobs come
-first because they name concrete operator mechanisms; algebraic_space comes
-before sparsity otherwise because algebra determines the underlying math.
-E.g. ``tropical + state + top_k`` should materialize as
-``TropicalTopKStateSpace``, not bypass to ``TopKLinear``.
+The heavy primitive builders still live here, but ordered dispatch mechanics and
+block-slot lookup are split into ``component_fab.generator.dispatch`` so registry
+behavior is auditable and unknown block slots fail loud.
 """
 
 from __future__ import annotations
@@ -19,9 +13,28 @@ from typing import Any
 
 from torch import nn
 
+from component_fab.generator.dispatch import (
+    DispatchRule,
+    build_block_slot_factory,
+    dispatch_first,
+)
 from component_fab.math_knobs import math_knobs_from_axes
+
 from ..proposer.nas_bridge import SOURCE_NAS, load_cached_graph_json
 from ..proposer.spec_generator import ProposalSpec
+from .block_templates import (
+    BLOCK_TEMPLATES,
+    AttnSpectralFilterBlock,
+    GatedParallelBlock,
+    GraphAttentionBlock,
+    HeteroMoEBlock,
+    HyperbolicBridgeBlock,
+    LatentCompressBlock,
+    RecursiveDepthBlock,
+    RecursiveDepthRouterBlock,
+    SparseMoEBlock,
+    ThreeLaneAdaptive,
+)
 from .memory_primitives import (
     CausalFastWeightMemoryLane,
     CausalSlotRouterMemoryLane,
@@ -35,9 +48,9 @@ from .memory_primitives import (
     TropicalSurpriseMemoryLane,
 )
 from .native_surprise_memory import (
-    NativeAtlasPolySurpriseMemoryLane,
     NativeAdaptiveSemiringBiLaneSurpriseMemoryLane,
     NativeAdaptiveSemiringRopeTitansMACSurpriseMemoryLane,
+    NativeAtlasPolySurpriseMemoryLane,
     NativeBalancedSemiringBiLaneSurpriseMemoryLane,
     NativeBalancedSemiringRopeTitansMACSurpriseMemoryLane,
     NativeBalancedSemiringTitansMACSurpriseMemoryLane,
@@ -55,9 +68,9 @@ from .primitive_templates import (
     ChebyshevAdapterLane,
     ChebyshevSpectralLane,
     CliffordAttention,
+    FiniteDifferenceCalculusLane,
     FisherAdapterLane,
     FisherAttention,
-    FiniteDifferenceCalculusLane,
     FourierBasisLane,
     GraphDiffusionAdapterLane,
     GraphDiffusionLane,
@@ -73,7 +86,6 @@ from .primitive_templates import (
     RandomFeatureKernelLane,
     SparseBandedAdapterLane,
     SparseBandedMatrixLane,
-    SparsemaxAttention,
     SpikingActivationGate,
     SymplecticResidualMixerLane,
     TopKLinear,
@@ -82,19 +94,6 @@ from .primitive_templates import (
     TropicalTopKStateSpace,
     TuckerAdapterLane,
     TuckerDecompLane,
-)
-from .block_templates import (
-    BLOCK_TEMPLATES,
-    AttnSpectralFilterBlock,
-    GatedParallelBlock,
-    GraphAttentionBlock,
-    HeteroMoEBlock,
-    HyperbolicBridgeBlock,
-    LatentCompressBlock,
-    RecursiveDepthBlock,
-    RecursiveDepthRouterBlock,
-    SparseMoEBlock,
-    ThreeLaneAdaptive,
 )
 from .routing_primitives import (
     ROUTING_KINDS,
@@ -105,6 +104,9 @@ from .routing_primitives import (
     RoutedBottleneckLane,
     SparseMoRLane,
 )
+
+
+LaneFactory = Callable[[int], nn.Module]
 
 
 def _axis(math_axes: dict[str, Any], key: str) -> str:
@@ -182,11 +184,6 @@ def _dispatch_hyperbolic(
 def _dispatch_state_kernel(
     math_axes: dict[str, Any], *, dim: int, top_k_frac: float = 0.25
 ) -> nn.Module | None:
-    """Generic state-bearing primitive for non-tropical / non-clifford / non-padic
-    proposals declaring ``op_dynamical_has_state=1``. Algebra-specific
-    state primitives (TropicalStateSpace, etc.) already fired earlier in
-    the dispatch chain, so reaching here means no domain module matched.
-    """
     if not _has_state(math_axes):
         return None
     algebra = _axis(math_axes, "op_algebraic_space")
@@ -239,7 +236,6 @@ def _dispatch_math_knob(
         topology = _axis(math_axes, "op_graph_topology")
         if topology in ("causal_path_laplacian", "causal_path"):
             return GraphDiffusionLane(dim)
-    # Phase 2 (2026-05-15): information_geometry, spectral_graph, tensor_decomp.
     if family == "information_geometry":
         operator = _axis(math_axes, "op_info_geom_operator")
         if operator in ("fisher_attention", "fisher", ""):
@@ -272,7 +268,7 @@ def _symplectic_residual_mixer_lane(dim: int) -> nn.Module:
     return SymplecticResidualMixerLane(dim)
 
 
-_INVENTION_MECHANISMS: dict[str, Callable[[int], nn.Module]] = {
+_INVENTION_MECHANISMS: dict[str, LaneFactory] = {
     "causal_fast_weight_memory": CausalFastWeightMemoryLane,
     "data_dependent_decay_memory": DataDependentDecayMemoryLane,
     "power_semiring_memory": PowerSemiringMemoryLane,
@@ -308,12 +304,11 @@ _NATIVE_EQUIVALENT_MECHANISMS: dict[str, str] = {
 
 
 class NativeParityEvidenceError(ValueError):
-    """A spec requested a legacy surprise lane that has a native replacement.
+    """A spec requested a legacy surprise lane with a native replacement."""
 
-    Dispatching the Python path preserves drift; dispatching Native without
-    proof risks changing the graded behavior. Require explicit parity evidence
-    on the spec before crossing that boundary.
-    """
+
+class UndispatchableSpecError(ValueError):
+    """A spec's math axes matched no generator template."""
 
 
 def _truthy_axis(math_axes: dict[str, Any], key: str) -> bool:
@@ -348,16 +343,7 @@ def _dispatch_invention_mechanism(
 def _dispatch_synthesis_hint(
     math_axes: dict[str, Any], *, dim: int, top_k_frac: float
 ) -> nn.Module | None:
-    """Phase 3: read ``synthesis_kind`` and pick a primitive when the
-    upstream algebra/state/sparsity dispatchers don't fully determine
-    the module. Without this, ``basis_swap`` falls through to
-    ``nn.Linear`` because no axis carries a sparsity/state/algebra
-    signal. This dispatcher gives the kind label real teeth.
-    """
     kind = _axis(math_axes, "synthesis_kind")
-    # synthesis_kind isn't in math_axes by default — it's a ProposalSpec
-    # field. But specs may carry it forward via math_axes when set
-    # explicitly. Fall back to inferring from declared axes.
     if not kind:
         return None
     if kind == "basis_swap":
@@ -366,60 +352,51 @@ def _dispatch_synthesis_hint(
             return ChebyshevSpectralLane(dim, n_terms=5)
         if basis in ("fourier", "frequency"):
             return FourierBasisLane(dim)
-        # Default basis_swap → Chebyshev (FNO-style polynomial mixing).
         return ChebyshevSpectralLane(dim, n_terms=5)
     if kind == "projection_swap":
-        # Sparsity-pattern primitives. Hash routing as default.
         return HashedMoELane(_expert_factory_pool(top_k_frac), dim)
     if kind == "state_kernel_swap":
-        # State-bearing primitives. Generic linear-SSM fallback.
         return LinearStateSpaceLane(dim)
     return None
 
 
-# Flat dispatch table for the algebra / sparsity / synthesis chain. Each entry
-# is a function with the uniform signature
-#   (math_axes, *, dim: int, top_k_frac: float) -> nn.Module | None
-# that returns the matching primitive (or ``None`` to fall through). Order is
-# load-bearing: tropical fires before sparsity because algebra determines the
-# underlying math, and ``TropicalTopKStateSpace`` (tropical + state + top_k)
-# must materialize as the state primitive, not be bypassed to ``TopKLinear``.
-_BASE_DISPATCHERS: tuple = (
-    _dispatch_tropical,
-    _dispatch_clifford,
-    _dispatch_spiking,
-    _dispatch_padic,
-    _dispatch_quaternion,
-    _dispatch_hyperbolic,
-    _dispatch_state_kernel,
-    _dispatch_axis_modifier,
-    _dispatch_synthesis_hint,
-)
+def _dispatch_rule(
+    name: str,
+    handler: Callable[..., nn.Module | None],
+    *,
+    dim: int,
+    top_k_frac: float,
+) -> DispatchRule:
+    return DispatchRule(
+        name,
+        lambda axes: handler(axes, dim=dim, top_k_frac=top_k_frac),
+    )
 
 
-class UndispatchableSpecError(ValueError):
-    """A spec's math_axes matched no generator template.
-
-    Raised instead of silently substituting ``nn.Linear`` — a linear stand-in
-    *looks* gradeable but measures nothing, turning a locatable build failure
-    into a plausible-but-wrong result (the exact failure mode that produced a
-    degenerate gate-calibration corpus, 2026-06-10). The fab's own generated
-    specs never hit this (0/1246 ledger specs); reaching it means an external
-    op or a spec-generation bug, which must fail loud.
-    """
+def _base_dispatchers(*, dim: int, top_k_frac: float) -> tuple[DispatchRule, ...]:
+    return (
+        _dispatch_rule("tropical", _dispatch_tropical, dim=dim, top_k_frac=top_k_frac),
+        _dispatch_rule("clifford", _dispatch_clifford, dim=dim, top_k_frac=top_k_frac),
+        _dispatch_rule("spiking", _dispatch_spiking, dim=dim, top_k_frac=top_k_frac),
+        _dispatch_rule("padic", _dispatch_padic, dim=dim, top_k_frac=top_k_frac),
+        _dispatch_rule("quaternion", _dispatch_quaternion, dim=dim, top_k_frac=top_k_frac),
+        _dispatch_rule("hyperbolic", _dispatch_hyperbolic, dim=dim, top_k_frac=top_k_frac),
+        _dispatch_rule("state_kernel", _dispatch_state_kernel, dim=dim, top_k_frac=top_k_frac),
+        _dispatch_rule("axis_modifier", _dispatch_axis_modifier, dim=dim, top_k_frac=top_k_frac),
+        _dispatch_rule("synthesis_hint", _dispatch_synthesis_hint, dim=dim, top_k_frac=top_k_frac),
+    )
 
 
 def _base_module(
     math_axes: dict[str, Any], *, dim: int, top_k_frac: float
 ) -> nn.Module:
-    for dispatcher in _BASE_DISPATCHERS:
-        result = dispatcher(math_axes, dim=dim, top_k_frac=top_k_frac)
-        if result is not None:
-            return result
+    result = dispatch_first(_base_dispatchers(dim=dim, top_k_frac=top_k_frac), math_axes)
+    if result is not None:
+        return result
     present = sorted(k for k, v in math_axes.items() if v is not None)
     raise UndispatchableSpecError(
-        "no generator template matched these math_axes — refusing to fall back "
-        f"to nn.Linear (would silently grade nothing). Non-null axes: {present}"
+        "no generator template matched these math_axes; refusing to fall back "
+        f"to nn.Linear. Non-null axes: {present}"
     )
 
 
@@ -456,32 +433,16 @@ def _apply_math_knobs(
     return module
 
 
-def _base_lane_factory(math_axes: dict[str, Any], *, top_k_frac: float) -> "callable":
-    """Return a ``Callable[[int], nn.Module]`` that re-dispatches the base
-    primitive for the given axes at the requested dim.
-
-    Routing primitives (MoR / sparseMoR / skip / Difficulty) need this
-    so each routing slot creates a fresh inner mixer rather than reusing
-    one instance across many slots.
-    """
-
+def _base_lane_factory(math_axes: dict[str, Any], *, top_k_frac: float) -> LaneFactory:
     def factory(dim: int) -> nn.Module:
         axes = dict(math_axes)
-        axes["op_routing_kind"] = "none"  # break recursion
+        axes["op_routing_kind"] = "none"
         return generate_module(axes, dim=dim, top_k_frac=top_k_frac)
 
     return factory
 
 
-def _expert_factory_pool(top_k_frac: float) -> tuple:
-    """Three diverse expert factories for HashedMoE / RoutedBottleneck.
-
-    Mixing a max-plus attention, a softmax-style state-space lane, and
-    a top-k linear forces the MoE to use experts with different
-    inductive biases. Sized for dim divisible by 4 (Cl(2,0) constraint
-    not used here, but kept for forward compat).
-    """
-
+def _expert_factory_pool(top_k_frac: float) -> tuple[LaneFactory, LaneFactory, LaneFactory]:
     def expert_attn(dim: int) -> nn.Module:
         return TropicalAttention(dim)
 
@@ -502,13 +463,6 @@ def _apply_routing_wrap(
     dim: int,
     top_k_frac: float,
 ) -> nn.Module:
-    """Wrap ``base`` in a routing primitive if the spec requests one.
-
-    Spec axis ``op_routing_kind`` picks the wrapper; if unset or "none"
-    the base module passes through unchanged. ``op_max_depth``,
-    ``op_n_experts``, ``op_top_k``, ``op_skip_hard`` modulate per-kind
-    knobs.
-    """
     kind = str(math_axes.get("op_routing_kind") or "none")
     if kind == "none" or kind not in ROUTING_KINDS:
         return base
@@ -519,13 +473,10 @@ def _apply_routing_wrap(
     if kind == "depth_router":
         return MixtureOfRecursionsLane(base_factory, dim, max_depth=max_depth)
     if kind == "sparse_depth":
-        return SparseMoRLane(
-            base_factory, dim, max_depth=max_depth, top_k_frac=top_k_frac
-        )
+        return SparseMoRLane(base_factory, dim, max_depth=max_depth, top_k_frac=top_k_frac)
     if kind == "low_info_skip":
         return LowInfoSkipRouter(base_factory, dim, hard=skip_hard)
     if kind == "difficulty":
-
         def easy(d: int) -> nn.Module:
             return LinearStateSpaceLane(d)
 
@@ -540,14 +491,6 @@ def _apply_routing_wrap(
 def _dispatch_nas_graph(
     math_axes: dict[str, Any], *, dim: int, top_k_frac: float = 0.25
 ) -> nn.Module | None:
-    """Compile a NAS-synthesized graph topology into a token-mixing lane.
-
-    When ``op_source == "nas_graph"`` the spec carries a graph fingerprint whose
-    JSON is cached by ``proposer.nas_bridge``. We reload it, re-dimension to the
-    requested grading ``dim``, and compile it to an (B,L,D)->(B,L,D) module. The
-    bridge already compile-tested the graph at this dim, so this is the same
-    deterministic operation; a missing cache is a hard error (fail loud).
-    """
     if str(math_axes.get("op_source") or "") != SOURCE_NAS:
         return None
     fingerprint = str(math_axes.get("op_nas_fingerprint") or "")
@@ -567,24 +510,11 @@ def _dispatch_nas_graph(
 def _dispatch_block_template(
     math_axes: dict[str, Any], *, dim: int, top_k_frac: float
 ) -> nn.Module | None:
-    """Build a block-template module when ``op_block_template`` is set.
-
-    Block templates compose multiple lanes around the anchor's primitive.
-    The anchor's primitive becomes the inner mixer (via a factory closed
-    over the anchor's axes minus ``op_block_template`` to break the
-    dispatch recursion). The auxiliary lanes (attn, ssm, wavelet) are
-    fixed-class baselines chosen for inductive-bias diversity.
-    """
     template = str(math_axes.get("op_block_template") or "")
     if not template or template not in BLOCK_TEMPLATES:
         return None
     inner_axes = dict(math_axes)
     inner_axes.pop("op_block_template", None)
-    # Day-5+: allow one level of block nesting. If op_block_inner_template
-    # is set, the inner anchor IS another block (e.g. gated_parallel
-    # whose anchor slot is a latent_compress block). Breaks recursion
-    # after one nesting level — set op_block_inner_template only on the
-    # outer spec, never on a nested spec generated by this dispatcher.
     inner_block = str(math_axes.get("op_block_inner_template") or "")
     if inner_block and inner_block in BLOCK_TEMPLATES:
         inner_axes["op_block_template"] = inner_block
@@ -600,27 +530,32 @@ def _dispatch_block_template(
 
 
 def _build_latent_compress(math_axes, anchor_factory, dim, top_k_frac):
+    del top_k_frac
     compress = int(math_axes.get("op_block_compress") or 2)
     return LatentCompressBlock(anchor_factory, dim, compress=compress)
 
 
 def _build_three_lane_adaptive(math_axes, anchor_factory, dim, top_k_frac):
+    del top_k_frac
     slot_b = _block_slot_factory(_block_slot_name(math_axes, "b", "tropical_attention"))
     slot_c = _block_slot_factory(_block_slot_name(math_axes, "c", "linear_state_space"))
     return ThreeLaneAdaptive(anchor_factory, slot_b, slot_c, dim)
 
 
 def _build_recursive_depth(math_axes, anchor_factory, dim, top_k_frac):
+    del top_k_frac
     max_depth = int(math_axes.get("op_max_depth") or 3)
     return RecursiveDepthBlock(anchor_factory, dim, max_depth=max_depth)
 
 
 def _build_gated_parallel(math_axes, anchor_factory, dim, top_k_frac):
+    del top_k_frac
     slot_b = _block_slot_factory(_block_slot_name(math_axes, "b", "multiscale_wavelet"))
     return GatedParallelBlock(anchor_factory, slot_b, dim)
 
 
 def _build_recursive_depth_router(math_axes, anchor_factory, dim, top_k_frac):
+    del top_k_frac
     max_depth = int(math_axes.get("op_max_depth") or 4)
     return RecursiveDepthRouterBlock(anchor_factory, dim, max_depth=max_depth)
 
@@ -636,7 +571,6 @@ def _build_sparse_moe_block(math_axes, anchor_factory, dim, top_k_frac):
 
 
 def _build_hetero_moe_block(math_axes, anchor_factory, dim, top_k_frac):
-    # 4 heterogeneous experts: attn, ssm, top-k, wavelet
     def hetero_topk(d: int) -> nn.Module:
         k = max(1, int(round(d * top_k_frac)))
         return TopKLinear(d, d, k=k)
@@ -649,10 +583,7 @@ def _build_hetero_moe_block(math_axes, anchor_factory, dim, top_k_frac):
 
 
 def _build_top_ar_block(math_axes, anchor_factory, dim, top_k_frac):
-    # 2026-05-19: dual-mixer scaffold from fp 7fb0412ec57a1213 (top
-    # AR-curriculum scorer at 0.9046 / passes all 5 stages).
-    # MIXER_A = anchor (from inner_axes / op_block_inner_template),
-    # MIXER_B = slot_b (default local_window_attn matches the source fp).
+    del top_k_frac
     from component_fab.harness.top_ar_block import TopArchBlock
 
     slot_b = _block_slot_factory(_block_slot_name(math_axes, "b", "local_window_attn"))
@@ -663,6 +594,10 @@ def _block_slot_name(math_axes: dict[str, Any], slot: str, default: str) -> str:
     return str(math_axes.get(f"op_block_slot_{slot}") or "") or default
 
 
+def _block_slot_factory(name: str) -> LaneFactory:
+    return build_block_slot_factory(name)
+
+
 _BLOCK_TEMPLATE_BUILDERS: dict[str, Callable[..., nn.Module]] = {
     "latent_compress": _build_latent_compress,
     "three_lane_adaptive": _build_three_lane_adaptive,
@@ -671,86 +606,18 @@ _BLOCK_TEMPLATE_BUILDERS: dict[str, Callable[..., nn.Module]] = {
     "recursive_depth_router": _build_recursive_depth_router,
     "sparse_moe_block": _build_sparse_moe_block,
     "hetero_moe_block": _build_hetero_moe_block,
-    "hyperbolic_bridge": lambda _axes, anchor, dim, _tkf: HyperbolicBridgeBlock(
-        anchor, dim
-    ),
-    "attn_spectral_filter": lambda _axes, anchor, dim, _tkf: AttnSpectralFilterBlock(
-        anchor, dim
-    ),
-    "graph_attention": lambda _axes, anchor, dim, _tkf: GraphAttentionBlock(
-        anchor, dim
-    ),
+    "hyperbolic_bridge": lambda _axes, anchor, dim, _tkf: HyperbolicBridgeBlock(anchor, dim),
+    "attn_spectral_filter": lambda _axes, anchor, dim, _tkf: AttnSpectralFilterBlock(anchor, dim),
+    "graph_attention": lambda _axes, anchor, dim, _tkf: GraphAttentionBlock(anchor, dim),
     "top_ar_block": _build_top_ar_block,
 }
 
 
-def _block_slot_factory(name: str) -> "callable":
-    """Map a slot name to a fresh-instance factory. Used by block
-    templates to fill non-anchor lane slots. New slot kinds register
-    here without touching the templates themselves.
-    """
-
-    def _two_lane_ts(d: int) -> nn.Module:
-        return GatedParallelBlock(
-            lambda dd: TropicalAttention(dd),
-            lambda dd: SparsemaxAttention(dd),
-            d,
-        )
-
-    def _three_lane_tsw(d: int) -> nn.Module:
-        return ThreeLaneAdaptive(
-            lambda dd: TropicalAttention(dd),
-            lambda dd: SparsemaxAttention(dd),
-            lambda dd: MultiscaleWaveletLane(dd),
-            d,
-        )
-
-    def _local_window(d: int) -> nn.Module:
-        from component_fab.harness.top_ar_block import LocalWindowAttention
-
-        return LocalWindowAttention(d, window_size=16)
-
-    table = {
-        "tropical_attention": TropicalAttention,
-        "sparsemax_attention": SparsemaxAttention,
-        "clifford_attention": lambda d: (
-            CliffordAttention(d) if d % 4 == 0 else nn.Linear(d, d)
-        ),
-        "linear_state_space": LinearStateSpaceLane,
-        "multiscale_wavelet": MultiscaleWaveletLane,
-        "fourier_basis": FourierBasisLane,
-        "graph_diffusion": GraphDiffusionLane,
-        "fisher_attention": FisherAttention,
-        "chebyshev_spectral": ChebyshevSpectralLane,
-        "tucker_decomp": TuckerDecompLane,
-        "quaternion": lambda d: (
-            QuaternionAttention(d) if d % 4 == 0 else nn.Linear(d, d)
-        ),
-        "poincare": PoincareAttention,
-        "random_features": RandomFeatureKernelLane,
-        "low_rank": LowRankFactorizedLane,
-        # Composite fab winners — usable as a slot fill inside ANY block template
-        # so e.g. top_ar_block's MIXER_A slot can be filled with the 2-lane.
-        "tropical_sparsemax_two_lane": _two_lane_ts,
-        "tropical_sparsemax_wavelet_three_lane": _three_lane_tsw,
-        # Top-AR scaffold's MIXER_B default (parameter-free local-window attention).
-        "local_window_attn": _local_window,
-    }
-    ctor = table.get(name, MultiscaleWaveletLane)
-
-    def factory(dim: int) -> nn.Module:
-        return ctor(dim)
-
-    return factory
-
-
-# Default routing chain (math_knobs absent). math_knob fires first because
-# math_family names a concrete operator mechanism; the base algebra/sparsity
-# chain is the fallback. Replaces a tuple of 2 lambdas built per call.
-_DEFAULT_DISPATCHERS: tuple = (
-    _dispatch_math_knob,
-    _base_module,
-)
+def _default_dispatchers(*, dim: int, top_k_frac: float) -> tuple[DispatchRule, ...]:
+    return (
+        _dispatch_rule("math_knob", _dispatch_math_knob, dim=dim, top_k_frac=top_k_frac),
+        DispatchRule("base_module", lambda axes: _base_module(axes, dim=dim, top_k_frac=top_k_frac)),
+    )
 
 
 def generate_module(
@@ -773,12 +640,9 @@ def generate_module(
         base = _base_module(math_axes, dim=dim, top_k_frac=top_k_frac)
         wrapped = _apply_math_knobs(base, math_axes, dim=dim, top_k_frac=top_k_frac)
         return _apply_routing_wrap(wrapped, math_axes, dim=dim, top_k_frac=top_k_frac)
-    for dispatcher in _DEFAULT_DISPATCHERS:
-        result = dispatcher(math_axes, dim=dim, top_k_frac=top_k_frac)
-        if result is not None:
-            return _apply_routing_wrap(
-                result, math_axes, dim=dim, top_k_frac=top_k_frac
-            )
+    result = dispatch_first(_default_dispatchers(dim=dim, top_k_frac=top_k_frac), math_axes)
+    if result is not None:
+        return _apply_routing_wrap(result, math_axes, dim=dim, top_k_frac=top_k_frac)
     raise RuntimeError("unreachable module dispatch state")
 
 
