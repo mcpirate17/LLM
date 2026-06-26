@@ -30,6 +30,55 @@ TokenBatch = tuple[torch.Tensor, torch.Tensor, torch.Tensor]
 TokenBatchFn = Callable[[torch.Generator], TokenBatch]
 
 
+def _tensor_finite_summary(name: str, tensor: torch.Tensor) -> str:
+    """Compact diagnostics for non-finite tensors without dumping payloads."""
+    with torch.no_grad():
+        detached = tensor.detach()
+        finite = torch.isfinite(detached)
+        n_total = int(detached.numel())
+        n_finite = int(finite.sum().item()) if n_total else 0
+        pieces = [
+            f"{name}: shape={tuple(detached.shape)}",
+            f"dtype={detached.dtype}",
+            f"finite={n_finite}/{n_total}",
+        ]
+        if n_finite:
+            finite_values = detached[finite]
+            pieces.append(f"min={float(finite_values.min().item()):.6g}")
+            pieces.append(f"max={float(finite_values.max().item()):.6g}")
+        return ", ".join(pieces)
+
+
+def _require_finite_tensor(name: str, tensor: torch.Tensor, *, step: int) -> None:
+    if not torch.isfinite(tensor).all():
+        raise FloatingPointError(
+            f"non-finite {name} at step {step}; {_tensor_finite_summary(name, tensor)}"
+        )
+
+
+def _materialize_parameters(parameters: Iterable[nn.Parameter]) -> list[nn.Parameter]:
+    params = list(parameters)
+    if not params:
+        raise ValueError("parameters must contain at least one trainable parameter")
+    return params
+
+
+def _require_finite_gradients(
+    parameters: Sequence[nn.Parameter], *, step: int
+) -> None:
+    bad: list[str] = []
+    for idx, param in enumerate(parameters):
+        if param.grad is None:
+            continue
+        if not torch.isfinite(param.grad).all():
+            bad.append(_tensor_finite_summary(f"grad[{idx}]", param.grad))
+            if len(bad) >= 3:
+                break
+    if bad:
+        joined = "; ".join(bad)
+        raise FloatingPointError(f"non-finite gradient at step {step}; {joined}")
+
+
 def gather_logits_at(logits: torch.Tensor, positions: torch.Tensor) -> torch.Tensor:
     """``logits[B, L, V]`` + ``positions[B, Q]`` -> ``[B, Q, V]``."""
     b, q = positions.shape
@@ -156,6 +205,7 @@ def train_token_task(
     learning_rate: float = 3e-3,
     device: str = "cpu",
     probe: str,
+    max_grad_norm: float | None = 1.0,
 ) -> TokenTaskTrace:
     """Train to ``max(eval_at_steps)``; record metrics at every checkpoint.
 
@@ -169,7 +219,8 @@ def train_token_task(
         raise ValueError("eval_at_steps must contain at least one positive step")
     checkpoints_at = set(steps)
 
-    optim = torch.optim.Adam(model.parameters(), lr=learning_rate)
+    params = _materialize_parameters(model.parameters())
+    optim = torch.optim.Adam(params, lr=learning_rate)
     initial_loss = float("nan")
     final_train_acc = 0.0
     # Track the running loss as a detached tensor; .item() per step is a
@@ -185,12 +236,18 @@ def train_token_task(
             positions = positions.to(device)
             targets = targets.to(device)
             query_logits = gather_logits_at(model(ids), positions)
+            _require_finite_tensor("query_logits", query_logits, step=step)
             loss = nn.functional.cross_entropy(
                 query_logits.reshape(-1, query_logits.shape[-1]),
                 targets.reshape(-1),
             )
-            optim.zero_grad()
+            _require_finite_tensor("loss", loss, step=step)
+            optim.zero_grad(set_to_none=True)
             loss.backward()
+            _require_finite_gradients(params, step=step)
+            if max_grad_norm is not None:
+                grad_norm = nn.utils.clip_grad_norm_(params, max_grad_norm)
+                _require_finite_tensor("grad_norm", grad_norm, step=step)
             optim.step()
             if step == 1:
                 initial_loss = float(loss.item())
@@ -262,25 +319,32 @@ def train_lane_head(
     learning_rate: float = 3e-3,
     checkpoint_at_steps: tuple[int, ...] = (),
     checkpoint_metric: Callable[[torch.Tensor, TargetT], float] | None = None,
+    max_grad_norm: float | None = 1.0,
 ) -> LaneHeadTrace:
     """Adam loop over ``forward(sample) -> loss`` with optional checkpoints.
 
-    Raises ``FloatingPointError`` on a non-finite loss (fail fast); any
-    other exception propagates to the caller, whose probe-specific result
-    type records the structured failure.
+    Raises ``FloatingPointError`` on non-finite predictions, loss, gradient, or
+    gradient norm. The exception includes compact tensor diagnostics so the
+    caller can identify whether divergence started in the lane, head, loss, or
+    optimizer step.
     """
-    optimizer = torch.optim.Adam(list(parameters), lr=learning_rate)
+    params = _materialize_parameters(parameters)
+    optimizer = torch.optim.Adam(params, lr=learning_rate)
     metric = checkpoint_metric or classification_accuracy
     checkpoint_values: list[float] = []
     last_loss: torch.Tensor | None = None
     for step in range(1, int(n_train_steps) + 1):
         x, target = sample_batch()
         predictions = forward(x)
+        _require_finite_tensor("predictions", predictions, step=step)
         loss = loss_fn(predictions, target)
-        if not torch.isfinite(loss):
-            raise FloatingPointError(f"non-finite probe loss at step {step}")
-        optimizer.zero_grad()
+        _require_finite_tensor("loss", loss, step=step)
+        optimizer.zero_grad(set_to_none=True)
         loss.backward()
+        _require_finite_gradients(params, step=step)
+        if max_grad_norm is not None:
+            grad_norm = nn.utils.clip_grad_norm_(params, max_grad_norm)
+            _require_finite_tensor("grad_norm", grad_norm, step=step)
         optimizer.step()
         last_loss = loss.detach()
         if step in checkpoint_at_steps:
