@@ -14,7 +14,7 @@ JOURNAL_MAX_STATUS ?= 80
 NOTEBOOKLM_OUT ?= tasks/notebooklm/codex_context_bundle.md
 NOTEBOOKLM_RESEARCH_OUT ?= tasks/notebooklm/research_briefing_bundle.md
 
-.PHONY: all aria_core test test-aria_core test-designer test-research test-integration test-changed watch-test-changed profile-scalene bench codex-journal notebooklm-bundle notebooklm-research-bundle clean clean-junk clean-docs clean-all help complexity-report complexity-check complexity-refresh-baseline guardrails-dry guardrails-dry-report perf-summary governance-check governance-audit profile-hotpaths profile-screening-hotpaths profile-screening-hotpaths-quick
+.PHONY: all aria_core test test-aria_core test-designer test-research test-component_fab test-component_fab-contracts test-integration test-changed watch-test-changed profile-scalene bench codex-journal notebooklm-bundle notebooklm-research-bundle clean clean-junk clean-docs clean-all help complexity-report complexity-check complexity-refresh-baseline guardrails-dry guardrails-dry-report perf-summary governance-check governance-audit profile-hotpaths profile-screening-hotpaths profile-screening-hotpaths-quick
 
 all: aria_core  ## Build everything
 
@@ -24,13 +24,15 @@ aria_core:  ## Build aria_core C++ extension
 	cd aria_core && $(PYTHON) setup.py build_ext --inplace
 
 # ── Tests ────────────────────────────────────────────────────────────
-test: aria_core  ## Run all tests (aria_core + aria_designer + research)
+test: aria_core  ## Run all tests (aria_core + aria_designer + research + component_fab)
 	@echo "=== aria_core equivalence tests ==="
 	cd aria_core && $(PYTHON) -m pytest tests/ -x -q
 	@echo "=== aria_designer tests ==="
 	cd aria_designer && $(PYTHON) -m pytest tests/ --ignore=tests/test_aria_features.py -x -q
 	@echo "=== research tests (unit+api) ==="
 	cd research && $(PYTHON) -m pytest tests/ -m "unit or api" -x --tb=short
+	@echo "=== component_fab tests ==="
+	$(PYTHON) -m pytest component_fab/tests -x --tb=short
 
 test-aria_core: aria_core  ## Run only aria_core tests
 	cd aria_core && $(PYTHON) -m pytest tests/ -x -q
@@ -40,6 +42,12 @@ test-designer:  ## Run only aria_designer tests
 
 test-research:  ## Run only research tests (unit+api)
 	cd research && $(PYTHON) -m pytest tests/ -m "unit or api" -x --tb=short
+
+test-component_fab:  ## Run only component_fab tests
+	$(PYTHON) -m pytest component_fab/tests -x --tb=short
+
+test-component_fab-contracts:  ## Run fast component_fab platform contract tests
+	$(PYTHON) -m pytest component_fab/tests/test_platform_contracts.py -q --tb=short
 
 test-research-all:  ## Run all research test markers
 	cd research && $(PYTHON) -m pytest tests/ -m "unit or api" -x --tb=short
@@ -55,7 +63,7 @@ test-changed:  ## Run testmon-selected Python tests for changed code
 	$(PYTHON) -m pytest --testmon --testmon-forceselect -m "$(TESTMON_MARKERS)" $(TESTMON_TARGET) -x --tb=short
 
 watch-test-changed:  ## Re-run test-changed when source or tests change
-	watchexec --restart --watch research --watch aria_core --watch aria_designer --exts py,js,jsx,ts,tsx -- make test-changed
+	watchexec --restart --watch research --watch aria_core --watch aria_designer --watch component_fab --exts py,js,jsx,ts,tsx -- make test-changed
 
 profile-scalene:  ## Profile SCALENE_CMD='python -m module' with Scalene
 	@test -n "$(SCALENE_CMD)" || { echo "Set SCALENE_CMD='python -m module_or_script ...'"; exit 2; }
@@ -109,7 +117,7 @@ profile-screening-hotpaths-quick:  ## Run quick targeted experiment-screening ho
 
 dead: ## Standing dead-code detector
 	@mkdir -p tasks/audit
-	vulture research/ aria_core/ aria_designer/ vulture_whitelist.py \
+	vulture research/ aria_core/ aria_designer/ component_fab/ vulture_whitelist.py \
 	  --min-confidence 80 \
 	  --exclude "*/.venv/*,*/node_modules/*,*/__pycache__/*,*/.run/*,tests/,migrations/" \
 	  | tee tasks/audit/dead_code.txt
