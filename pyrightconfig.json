@@ -1,5 +1,5 @@
 {
-  "include": ["research"],
+  "include": ["research", "component_fab"],
   "exclude": [
     "**/.venv",
     "**/node_modules",
@@ -13,7 +13,9 @@
     "research/runtime",
     "research/runtime_events",
     "research/tests",
-    "research/tools/vulture_whitelist.py"
+    "research/tools/vulture_whitelist.py",
+    "component_fab/catalog",
+    "component_fab/tests"
   ],
   "pythonVersion": "3.12",
   "typeCheckingMode": "basic",
