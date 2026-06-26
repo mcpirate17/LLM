@@ -9,12 +9,19 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 import yaml
 
+from component_fab.generator.dispatch import UnknownBlockSlotError
+from component_fab.generator.code_generator import generate_module
 from component_fab.state.ledger import Ledger, PROMOTION_PENDING, iter_jsonl_records
 from component_fab.state.provenance import build_run_provenance
-from component_fab.state.schema_versions import SCHEMA_VERSIONS
+from component_fab.state.schema_versions import (
+    LEDGER_GRADE_SCHEMA_VERSION,
+    SCHEMA_VERSIONS,
+)
 from component_fab.tests.conftest import make_spec
+from component_fab.tools._cli import write_report
 from component_fab.validator.grade import grade_candidate
 
 
@@ -40,7 +47,9 @@ def test_policy_config_snapshots_load() -> None:
 
 
 def test_run_provenance_has_replay_fields() -> None:
-    payload = build_run_provenance(["--cycles", "1"], config_versions={"quality": "quality_v1"})
+    payload = build_run_provenance(
+        ["--cycles", "1"], config_versions={"quality": "quality_v1"}
+    )
     assert payload["run_id"]
     assert payload["argv"] == ["--cycles", "1"]
     assert payload["schema_versions"]["proposal_spec"] == "component_fab.proposal_spec.v1"
@@ -69,6 +78,7 @@ def test_ledger_write_replay_contract(tmp_path: Path) -> None:
     assert entry.best_composite() == 0.25
     records = list(iter_jsonl_records(ledger_path))
     assert records[0]["event"] == "grade"
+    assert records[0]["schema_version"] == LEDGER_GRADE_SCHEMA_VERSION
 
 
 def test_grade_candidate_fast_contract() -> None:
@@ -88,11 +98,26 @@ def test_grade_candidate_fast_contract() -> None:
     assert bundle.solo.smoke["backward_passed"]
 
 
-def test_json_report_payload_can_embed_provenance() -> None:
-    payload = {
-        "run_metadata": build_run_provenance(["--dry-run"]),
-        "results": [],
-    }
-    encoded = json.dumps(payload)
-    assert "run_metadata" in encoded
-    assert "schema_versions" in encoded
+def test_report_writer_embeds_provenance(tmp_path: Path) -> None:
+    out = write_report(
+        {"results": []},
+        default_dir=tmp_path,
+        prefix="contract",
+        quiet=True,
+    )
+    assert out is not None
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    assert payload["schema_version"] == "component_fab.run_report.v1"
+    assert payload["run_metadata"]["schema_versions"]["ledger_grade"]
+
+
+def test_unknown_block_slot_fails_loud() -> None:
+    with pytest.raises(UnknownBlockSlotError):
+        generate_module(
+            {
+                "op_block_template": "gated_parallel",
+                "op_algebraic_space": "tropical",
+                "op_block_slot_b": "not_registered",
+            },
+            dim=8,
+        )
