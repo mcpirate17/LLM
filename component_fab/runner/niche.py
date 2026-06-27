@@ -37,7 +37,9 @@ def annotate_niche_metadata(survivors: list[dict[str, Any]], ledger: Ledger) -> 
         finite = distance != float("inf")
         survivor["metadata"]["behavior_fingerprint"] = fingerprint
         survivor["metadata"]["novelty_distance"] = distance if finite else -1.0
-        survivor["metadata"]["behavior_clone"] = bool(is_clone(distance)) if finite else False
+        survivor["metadata"]["behavior_clone"] = (
+            bool(is_clone(distance)) if finite else False
+        )
 
     vectors = [
         objective_vector(
