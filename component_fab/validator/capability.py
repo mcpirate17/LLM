@@ -267,6 +267,10 @@ def validate_capabilities(
     )
     signals.update(_nb_signals(nb))
     if not nb.passed:
+        if run_range_probe:
+            signals.update(
+                _range_signals(lane, dim, range_distances, range_train_steps)
+            )
         return _scorecard(spec, signals, eliminated_by=GATE_NANO_BIND, notes=nb.notes)
 
     ind = nano_induction_gate(
