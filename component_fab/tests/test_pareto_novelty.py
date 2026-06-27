@@ -24,6 +24,8 @@ from component_fab.policies.promotion import (
     PromotionRules,
     decide_promotion,
 )
+from component_fab.runner.grading import finalize_survivors
+from component_fab.runner.niche import annotate_niche_metadata
 from component_fab.state.ledger import Ledger
 
 
@@ -42,7 +44,8 @@ def test_fingerprint_reads_scorecards():
 def test_identical_behavior_is_clone_regardless_of_axes():
     # Same behavioral fingerprint, different axes -> behavioral clone.
     fp_a = behavior_fingerprint(
-        {"aggregate_loss_ratio": 50.0}, {"erf_density": 0.25, "nb_max_accuracy": 0.7}
+        {"aggregate_loss_ratio": 50.0},
+        {"erf_density": 0.25, "nb_max_accuracy": 0.7},
     )
     catalog = [fp_a]
     fp_b = dict(fp_a)  # identical behavior, imagine different math_axes
@@ -52,7 +55,9 @@ def test_identical_behavior_is_clone_regardless_of_axes():
 
 
 def test_distinct_behavior_not_clone():
-    fp_a = behavior_fingerprint({"aggregate_loss_ratio": 2.0}, {"nb_max_accuracy": 0.1})
+    fp_a = behavior_fingerprint(
+        {"aggregate_loss_ratio": 2.0}, {"nb_max_accuracy": 0.1}
+    )
     fp_b = behavior_fingerprint(
         {"aggregate_loss_ratio": 100.0},
         {"nb_max_accuracy": 0.95, "ind_max_accuracy": 0.9},
@@ -114,7 +119,9 @@ def test_dominated_candidate_on_later_front():
             "relative_recall_per_probe": {"p": 0.9},
         },
     )
-    weak = objective_vector({"aggregate_loss_ratio": 1.0}, {"ind_max_accuracy": 0.0})
+    weak = objective_vector(
+        {"aggregate_loss_ratio": 1.0}, {"ind_max_accuracy": 0.0}
+    )
     fronts = non_dominated_sort([strong, weak])
     assert fronts[0] == 0 and fronts[1] == 1
 
@@ -205,11 +212,6 @@ def _survivor(pid: str, *, agg_loss: float, cap: dict) -> dict:
 
 
 def test_annotate_and_finalize_wires_niche_metadata(tmp_path: Path):
-    from component_fab.tools.run_autonomous import (
-        _annotate_niche_metadata,
-        _finalize_survivors,
-    )
-
     survivors = [
         # specialist: strong binder, ~no learning
         _survivor(
@@ -225,7 +227,7 @@ def test_annotate_and_finalize_wires_niche_metadata(tmp_path: Path):
         _survivor("gen", agg_loss=50.0, cap={"ind_max_accuracy": 0.6}),
     ]
     ledger = Ledger(tmp_path / "l.jsonl")
-    _annotate_niche_metadata(survivors, ledger)
+    annotate_niche_metadata(survivors, ledger)
     for surv in survivors:
         md = surv["metadata"]
         assert "behavior_fingerprint" in md
@@ -235,7 +237,7 @@ def test_annotate_and_finalize_wires_niche_metadata(tmp_path: Path):
     # neither dominates the other -> both on the front
     assert all(s["metadata"]["on_pareto_front"] for s in survivors)
 
-    _finalize_survivors(survivors, ledger, cycle=1, niche_promotion=True)
+    finalize_survivors(survivors, ledger, cycle=1, niche_promotion=True)
     entry = ledger.entries["spec"]
     assert entry.metadata_history[-1]["on_pareto_front"] is True
 
@@ -244,7 +246,11 @@ def test_front_member_shielded_from_reject(tmp_path: Path):
     rules = PromotionRules(promote_by_pareto=True)
     # 4 sub-reject-floor cycles (composite 0.1 <= 0.20) would normally reject;
     # being on the front shields it (and the pareto streak promotes it).
-    on = _front_streak_entry(tmp_path, "on", on_front=True, cycles=4, composite=0.1)
+    on = _front_streak_entry(
+        tmp_path, "on", on_front=True, cycles=4, composite=0.1
+    )
     assert decide_promotion(on, rules).decision == PROMOTION_PROMOTED
-    off = _front_streak_entry(tmp_path, "off", on_front=False, cycles=4, composite=0.1)
+    off = _front_streak_entry(
+        tmp_path, "off", on_front=False, cycles=4, composite=0.1
+    )
     assert decide_promotion(off, rules).decision == PROMOTION_REJECTED
