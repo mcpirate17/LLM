@@ -112,16 +112,22 @@ def test_multi_blank_score_does_not_reward_class_only_behavior_heavily():
     assert exact_binding > class_only
 
 
-def test_multi_blank_tiny_cpu_completes_and_populates_schema():
+def test_multi_blank_tiny_cpu_completes_populates_schema_and_preserves_state():
     from research.eval.binding_multislot_probe import (
         BINDING_MULTISLOT_METRIC_VERSION,
         binding_multislot_probe,
     )
 
-    result = binding_multislot_probe(TinyLM(), cfg=_tiny_cfg(), device="cpu")
+    model = TinyLM()
+    model.eval()
+    before = snapshot_state(model)
+
+    result = binding_multislot_probe(model, cfg=_tiny_cfg(), device="cpu")
     data = result.to_dict()
 
     assert result.status == "ok"
+    assert not model.training
+    assert_state_preserved(model, before)
     assert result.metric_version == BINDING_MULTISLOT_METRIC_VERSION
     assert result.steps_trained == 3
     assert len(result.learning_curve) == 3
@@ -158,20 +164,6 @@ def test_multi_blank_tiny_cpu_completes_and_populates_schema():
         "all_slots_lift",
     }.issubset(curve[0])
     assert all(row["loss"] > 0.0 for row in curve)
-
-
-def test_multi_blank_preserves_model_state_with_copy_model():
-    from research.eval.binding_multislot_probe import binding_multislot_probe
-
-    model = TinyLM()
-    model.eval()
-    before = snapshot_state(model)
-
-    result = binding_multislot_probe(model, cfg=_tiny_cfg(), device="cpu")
-
-    assert result.status == "ok"
-    assert not model.training
-    assert_state_preserved(model, before)
 
 
 def test_multi_blank_reports_vocab_too_small_without_curve_placeholders():

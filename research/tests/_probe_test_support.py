@@ -24,6 +24,31 @@ class TinyLM(nn.Module):
         return self.proj(self.embed(input_ids))
 
 
+class PreferredTokenLM(nn.Module):
+    """Oracle LM emitting high logits for a preferred next token per source token.
+
+    Used by choice-scoring eval tests (BLiMP, HellaSwag) to build models with
+    known-correct answers.
+    """
+
+    def __init__(self, vocab_size: int, preferred: dict[int, int]) -> None:
+        super().__init__()
+        self.vocab_size = vocab_size
+        self.preferred = preferred
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        batch, seq_len = x.shape
+        logits = torch.full(
+            (batch, seq_len, self.vocab_size),
+            -9.0,
+            dtype=torch.float32,
+            device=x.device,
+        )
+        for src_token, dst_token in self.preferred.items():
+            logits[x == src_token, dst_token] = 9.0
+        return logits
+
+
 def snapshot_state(model: nn.Module) -> dict[str, torch.Tensor]:
     return {k: v.detach().clone() for k, v in model.state_dict().items()}
 

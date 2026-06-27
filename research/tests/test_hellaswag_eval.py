@@ -2,32 +2,13 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-import torch
 import torch.nn as nn
 
 from research.eval import hellaswag_eval
+from research.tests._probe_test_support import PreferredTokenLM as _NextTokenLM
 
 
 pytestmark = pytest.mark.unit
-
-
-class _NextTokenLM(nn.Module):
-    def __init__(self, vocab_size: int, preferred: dict[int, int]):
-        super().__init__()
-        self.vocab_size = vocab_size
-        self.preferred = preferred
-
-    def forward(self, x):
-        batch, seq_len = x.shape
-        logits = torch.full(
-            (batch, seq_len, self.vocab_size),
-            -9.0,
-            dtype=torch.float32,
-            device=x.device,
-        )
-        for src_token, dst_token in self.preferred.items():
-            logits[x == src_token, dst_token] = 9.0
-        return logits
 
 
 def test_get_tokenized_examples_reuses_cache(monkeypatch):
@@ -325,3 +306,34 @@ def test_screening_hellaswag_bypasses_native_dispatch(monkeypatch, device):
     assert calls["device"] == device
     assert calls["enter"] == 1
     assert calls["exit"] == 1
+
+
+def test_native_subset_payload_is_cached(monkeypatch):
+    monkeypatch.setattr(
+        hellaswag_eval,
+        "_download_hellaswag",
+        lambda: [
+            {
+                "ctx": "ctx 1",
+                "endings": ["a", "b", "c", "d"],
+                "label": 1,
+            },
+            {
+                "ctx": "ctx 2",
+                "endings": ["e", "f", "g", "h"],
+                "label": 2,
+            },
+        ],
+    )
+    hellaswag_eval._tokenized_examples_cache.clear()
+    hellaswag_eval._tokenized_subset_cache.clear()
+    hellaswag_eval._native_subset_cache.clear()
+
+    payload_a = hellaswag_eval._get_native_subset_payload(2, vocab_size=257)
+    payload_b = hellaswag_eval._get_native_subset_payload(2, vocab_size=257)
+
+    assert payload_a is payload_b
+    ctx_tokens, ending_tokens, labels = payload_a
+    assert len(ctx_tokens) == 2
+    assert len(ending_tokens) == 2
+    assert labels == [1, 2]

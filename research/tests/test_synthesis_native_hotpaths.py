@@ -85,8 +85,10 @@ def test_ir_executor_falls_back_to_python_loop(monkeypatch):
     out = executor(x)
 
     assert torch.equal(out, torch.relu(x))
-    assert executor.execution_stats["last_execution_path"] == "python_ir_loop"
-    assert executor.execution_stats["python_ir_loop_fallbacks"] == 1
+    # v2's Python-loop fallback path (the v1 "python_ir_loop" stats were
+    # removed with IRExecutor v1 on 2026-05-20).
+    assert executor.execution_stats["last_execution_path"] == "v2_fallback"
+    assert executor.execution_stats["v2_fallback_dispatches"] == 1
     assert executor.execution_stats["native_subgraph_available"] is False
 
 

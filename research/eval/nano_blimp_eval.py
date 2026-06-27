@@ -42,6 +42,7 @@ import gc
 import logging
 import time
 from dataclasses import dataclass, field
+from functools import lru_cache
 from typing import Any, Dict, Sequence
 
 import torch
@@ -726,6 +727,7 @@ def _filter_single_token_words(
     return out
 
 
+@lru_cache(maxsize=4)
 def build_real_word_layout(
     n_per_type: int = _V3_DEFAULT_N_PER_TYPE,
     *,

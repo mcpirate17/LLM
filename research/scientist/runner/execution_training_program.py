@@ -432,9 +432,11 @@ class _ExecutionTrainingProgramMixin:
                         enabled=(dev.type == "cuda"),
                     ):
                         logits = model(input_ids)
+                        # Keep logits 3D: SynthesizedLoss flattens internally,
+                        # and the spectral component needs the sequence dim.
                         loss = program.loss.compute(
-                            logits[:, :-1].reshape(-1, logits.shape[-1]),
-                            input_ids[:, 1:].reshape(-1),
+                            logits[:, :-1],
+                            input_ids[:, 1:],
                         )
 
                 if torch.isnan(loss) or torch.isinf(loss):

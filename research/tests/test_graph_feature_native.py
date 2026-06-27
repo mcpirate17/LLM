@@ -5,16 +5,18 @@ import json
 import pytest
 
 
-def test_graph_feature_payload_requires_native(monkeypatch):
+def test_graph_feature_payload_python_fallback_without_native(monkeypatch):
     from research.scientist.notebook import graph_features
 
     graph_features.extract_graph_feature_payload.cache_clear()
     monkeypatch.setattr(graph_features, "_try_import_rust_scheduler", lambda: None)
+    try:
+        payload = graph_features.extract_graph_feature_payload('{"nodes": {}}')
+    finally:
+        graph_features.extract_graph_feature_payload.cache_clear()
 
-    with pytest.raises(
-        RuntimeError, match="Rust graph feature extractor is unavailable"
-    ):
-        graph_features.extract_graph_feature_payload('{"nodes": {}}')
+    expected = graph_features._extract_graph_feature_payload_python('{"nodes": {}}')
+    assert payload == expected
 
 
 def test_native_graph_feature_payload_extracts_expected_fields():

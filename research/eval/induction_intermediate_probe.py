@@ -18,8 +18,9 @@ Performance:
     vectorized call per gap before the train loop starts — eliminates
     per-step kernel dispatch overhead (~28% of prior runtime).
   * torch.compile(mode="reduce-overhead") caches the forward graph.
-  * Multi-seed probe uses a single deepcopy plus state_dict reload for
-    seeds 2/3, cutting per-fingerprint deepcopy cost by ~65%.
+  * Multi-seed probe runs on the shared ``_probe_utils.run_probe_seeds``
+    harness: one deepcopy plus tensor-snapshot restore for seeds 2/3,
+    cutting per-fingerprint deepcopy cost by ~65%.
 """
 
 from __future__ import annotations
@@ -28,14 +29,19 @@ import logging
 import time
 from contextlib import nullcontext
 from dataclasses import dataclass
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, Tuple
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 from ._probe_runtime import disable_native_probe_dispatch
-from ._probe_utils import safe_deepcopy_module
+from ._probe_utils import (
+    ProbeCopyError,
+    maybe_compile_probe_model,
+    mean_auc,
+    run_probe_seeds,
+)
 from .utils import clip_grad_norm, make_adamw
 
 logger = logging.getLogger(__name__)
@@ -50,25 +56,6 @@ INDUCTION_V2_LR = 1e-3
 INDUCTION_V2_TIMEOUT_S = 120.0
 INDUCTION_V2_SEEDS: Tuple[int, ...] = (11, 23, 47)
 _RESTRICTED_VOCAB = 256
-
-
-def _snapshot_module_tensors(
-    module: nn.Module,
-) -> tuple[List[torch.Tensor], List[torch.Tensor]]:
-    """Capture parameters and buffers for cheap in-place restoration."""
-    refs = [*module.parameters(), *module.buffers()]
-    with torch.no_grad():
-        snapshot = [tensor.detach().clone() for tensor in refs]
-    return refs, snapshot
-
-
-def _restore_module_tensors(
-    refs: List[torch.Tensor], snapshot: List[torch.Tensor]
-) -> None:
-    """Restore parameters and buffers without rebuilding a state_dict."""
-    with torch.no_grad():
-        for ref, original in zip(refs, snapshot):
-            ref.copy_(original)
 
 
 def _amp_context(device: str):
@@ -155,34 +142,6 @@ class InductionV2Result:
             "induction_intermediate_elapsed_ms": self.elapsed_ms,
             "induction_intermediate_protocol_version": self.protocol_version,
         }
-
-
-def _maybe_compile(model: nn.Module) -> nn.Module:
-    """Optionally wrap with ``torch.compile``.
-
-    Disabled by default: probe training uses 5 distinct seq_lens (one per
-    gap: 7/11/19/35/67), and ``torch.compile`` pays a per-shape compile
-    cost that does NOT amortize at 500-step training budgets. Measured
-    ~23s of compile overhead that the in-loop savings (~0.5ms per step
-    kernel-launch reduction × 500 steps = 0.25s) do not recover.
-
-    Can be re-enabled via ``ARIA_PROBE_COMPILE=1`` once we either:
-      (a) add a prewarm phase that amortizes compile across a batch of
-          fingerprints, or
-      (b) pad all inputs to max seq_len so there's a single compiled
-          graph.
-    """
-    import os as _os
-
-    if _os.environ.get("ARIA_PROBE_COMPILE", "") != "1":
-        return model
-    if not torch.cuda.is_available():
-        return model
-    try:
-        return torch.compile(model, mode="default", dynamic=True, fullgraph=False)
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("torch.compile unavailable for probe model: %s", exc)
-        return model
 
 
 def _steps_per_gap(gaps: Tuple[int, ...], n_train_steps: int) -> Dict[int, int]:
@@ -272,7 +231,7 @@ def _run_induction_intermediate_on(
         fused_if_available=False,
         foreach=False,
     )
-    compiled = _maybe_compile(probe_model)
+    compiled = maybe_compile_probe_model(probe_model, dynamic=True)
 
     n_gaps = len(gaps)
     pre_inputs, pre_targets = _pregenerate_training_batches(
@@ -331,61 +290,11 @@ def _run_induction_intermediate_on(
 
     if result.gap_accuracies:
         vals = list(result.gap_accuracies.values())
-        result.auc = round(sum(vals) / len(vals), 4)
+        result.auc = mean_auc(vals)
         result.max_gap_acc = round(max(vals), 4)
 
     result.elapsed_ms = round((time.perf_counter() - t0) * 1000, 1)
     return result
-
-
-def _run_induction_intermediate_single_seed(
-    model: nn.Module,
-    *,
-    gaps: Tuple[int, ...] = INDUCTION_V2_GAPS,
-    n_train_steps: int = INDUCTION_V2_TRAIN_STEPS,
-    n_eval: int = INDUCTION_V2_EVAL_EXAMPLES,
-    batch_size: int = INDUCTION_V2_BATCH_SIZE,
-    lr: float = INDUCTION_V2_LR,
-    device: str = "cuda",
-    timeout_s: float = INDUCTION_V2_TIMEOUT_S,
-    seed: int | None = None,
-) -> InductionV2Result:
-    """Single-seed induction v2 probe.
-
-    Kept for compatibility and targeted debugging. Production callers
-    should use :func:`run_induction_intermediate` which takes the
-    median across seeds — shallow attention models are seed-sensitive at
-    the mechanism-forming threshold (see
-    `tasks/probe_calibration_results/variance_summary.md`, 2026-04-18).
-    """
-    generator: torch.Generator | None = None
-    if seed is not None:
-        generator = torch.Generator(device=device)
-        generator.manual_seed(int(seed))
-    try:
-        probe_model = safe_deepcopy_module(model).to(device)
-    except Exception as exc:
-        return InductionV2Result(
-            status=f"copy_failed: {exc}",
-            elapsed_ms=0.0,
-            gap_accuracies={},
-        )
-    try:
-        return _run_induction_intermediate_on(
-            probe_model,
-            gaps=gaps,
-            n_train_steps=n_train_steps,
-            n_eval=n_eval,
-            batch_size=batch_size,
-            lr=lr,
-            device=device,
-            timeout_s=timeout_s,
-            generator=generator,
-        )
-    finally:
-        del probe_model
-        if device == "cuda":
-            torch.cuda.empty_cache()
 
 
 def run_induction_intermediate(
@@ -409,42 +318,31 @@ def run_induction_intermediate(
     """
     t0 = time.perf_counter()
     try:
-        probe_model = safe_deepcopy_module(model).to(device)
-    except Exception as exc:
+        runs = run_probe_seeds(
+            model,
+            seeds=seeds,
+            device=device,
+            run_single_seed=lambda probe_model, generator: (
+                _run_induction_intermediate_on(
+                    probe_model,
+                    gaps=gaps,
+                    n_train_steps=n_train_steps,
+                    n_eval=n_eval,
+                    batch_size=batch_size,
+                    lr=lr,
+                    device=device,
+                    timeout_s=timeout_s,
+                    generator=generator,
+                )
+            ),
+        )
+    except ProbeCopyError as exc:
         return InductionV2Result(
             status=f"copy_failed: {exc}",
             elapsed_ms=round((time.perf_counter() - t0) * 1000, 1),
             gap_accuracies={},
         )
-    # Snapshot initial params/buffers once; restore between seeds in-place
-    # instead of rebuilding/loading a full state_dict every time.
-    state_refs, init_state = _snapshot_module_tensors(probe_model)
 
-    runs: List[InductionV2Result] = []
-    try:
-        for idx, seed in enumerate(seeds):
-            if idx > 0:
-                _restore_module_tensors(state_refs, init_state)
-            generator = torch.Generator(device=device)
-            generator.manual_seed(int(seed))
-            r = _run_induction_intermediate_on(
-                probe_model,
-                gaps=gaps,
-                n_train_steps=n_train_steps,
-                n_eval=n_eval,
-                batch_size=batch_size,
-                lr=lr,
-                device=device,
-                timeout_s=timeout_s,
-                generator=generator,
-            )
-            runs.append(r)
-    finally:
-        del probe_model, state_refs, init_state
-        if device == "cuda":
-            torch.cuda.empty_cache()
-
-    runs.sort(key=lambda r: r.auc)
     median = runs[len(runs) // 2]
     median.elapsed_ms = round((time.perf_counter() - t0) * 1000, 1)
     return median

@@ -36,7 +36,10 @@ def _setup_rust_dispatch(monkeypatch, fake_rust, *, compile_handle=None):
     monkeypatch.setattr(
         native_dispatch_module,
         "_prepare_graph_input",
-        lambda graph, input_data: (np.zeros((1, 2, 4), dtype=np.float32), "fake-ir"),
+        lambda graph, input_data, *, ir_json=None: (
+            np.zeros((1, 2, 4), dtype=np.float32),
+            ir_json if ir_json is not None else "fake-ir",
+        ),
     )
     monkeypatch.setattr(
         native_dispatch_module,

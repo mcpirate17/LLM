@@ -6,20 +6,10 @@ from types import SimpleNamespace
 
 import pytest
 import torch
-import torch.nn as nn
+
+from research.tests._probe_test_support import TinyLM
 
 pytestmark = pytest.mark.unit
-
-
-class TinyLM(nn.Module):
-    def __init__(self, vocab_size: int = 512, dim: int = 16):
-        super().__init__()
-        self.vocab_size = vocab_size
-        self.embed = nn.Embedding(vocab_size, dim)
-        self.proj = nn.Linear(dim, vocab_size)
-
-    def forward(self, input_ids):
-        return self.proj(self.embed(input_ids))
 
 
 def test_ar_validation_pair_table_uses_large_default_vocab_and_disjoint_splits():
@@ -281,7 +271,7 @@ def test_ar_validation_probe_refuses_cpu():
         n_eval=4,
         timeout_s=20.0,
     )
-    result = run_ar_validation(TinyLM(), cfg=cfg, device="cpu")
+    result = run_ar_validation(TinyLM(vocab_size=512), cfg=cfg, device="cpu")
 
     assert result.metric_version == INTEGER_AR_VALIDATION_METRIC_VERSION
     assert result.status == "missing_accelerator"
@@ -312,7 +302,7 @@ def test_ar_validation_story_micro_probe_refuses_cpu():
         n_eval=4,
         timeout_s=20.0,
     )
-    result = run_ar_validation(TinyLM(), cfg=cfg, device="cpu")
+    result = run_ar_validation(TinyLM(vocab_size=512), cfg=cfg, device="cpu")
 
     assert result.metric_version == AR_VALIDATION_METRIC_VERSION
     assert result.status == "missing_accelerator"

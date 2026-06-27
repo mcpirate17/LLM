@@ -211,25 +211,29 @@ def _finalize_ppl_result(
     post_ppl: Optional[float],
     train_final_loss: float,
     vocab_size: int,
-    variant: str,
     n_train_steps: int,
     seq_len: int,
     elapsed_ms: float,
+    prefix: str = "wikitext",
+    variant: Optional[str] = None,
 ) -> Dict[str, Any]:
+    """Shared micro-train+perplexity result dict (wikitext, tinystories)."""
     ppl_improvement = None
     if pre_ppl is not None and post_ppl is not None and pre_ppl > 0:
         ppl_improvement = round(post_ppl / pre_ppl, 4)
-    return {
-        "wikitext_perplexity": round(post_ppl, 2) if post_ppl is not None else None,
-        "wikitext_pre_perplexity": round(pre_ppl, 2) if pre_ppl is not None else None,
-        "wikitext_score": wikitext_score_from_ppl(post_ppl, vocab_size),
-        "wikitext_ppl_improvement": ppl_improvement,
+    result: Dict[str, Any] = {
+        f"{prefix}_perplexity": round(post_ppl, 2) if post_ppl is not None else None,
+        f"{prefix}_pre_perplexity": round(pre_ppl, 2) if pre_ppl is not None else None,
+        f"{prefix}_score": wikitext_score_from_ppl(post_ppl, vocab_size),
+        f"{prefix}_ppl_improvement": ppl_improvement,
         "train_final_loss": round(train_final_loss, 6),
-        "variant": variant,
         "n_train_steps": n_train_steps,
         "seq_len": seq_len,
         "elapsed_ms": round(elapsed_ms, 1),
     }
+    if variant is not None:
+        result["variant"] = variant
+    return result
 
 
 def _screening_meta(
@@ -455,32 +459,6 @@ def _update_trajectory_checkpoint(
         "loss": round(loss_val, 4) if loss_val is not None else None,
     }
     return loss_val
-
-
-def _prepare_wikitext_or_error(
-    variant: str,
-    vocab_size: int,
-    seq_len: int,
-    train_batch_size: int,
-    eval_batch_size: int,
-    n_train_batches: int,
-    n_eval_batches: int,
-    max_chars_train: int,
-    max_chars_val: int,
-    device: str,
-):
-    return _prepare_batches(
-        variant,
-        vocab_size,
-        seq_len,
-        train_batch_size,
-        eval_batch_size,
-        n_train_batches,
-        n_eval_batches,
-        max_chars_train,
-        max_chars_val,
-        device,
-    )
 
 
 def _run_trajectory_checkpoint(
@@ -885,7 +863,7 @@ def evaluate_wikitext_trajectory(
         n_train_batches = max(sorted_ckpts) if sorted_ckpts else 512
 
     try:
-        train_batches, val_batches, n_train_tok, n_val_tok = _prepare_wikitext_or_error(
+        train_batches, val_batches, n_train_tok, n_val_tok = _prepare_batches(
             variant,
             vocab_size,
             seq_len,

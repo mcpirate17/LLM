@@ -7,6 +7,21 @@ from research.synthesis.graph import ComputationGraph
 from research.synthesis.reference_architectures import build_reference
 
 
+def _run_probe(model, device: str):
+    return curriculum_binding_range_profile(
+        model,
+        distances=(4, 8, 16, 32),
+        n_train_steps=400,
+        n_eval=64,
+        train_seq_len=128,
+        eval_seq_len=128,
+        train_batch_size=16,
+        eval_batch_size=16,
+        device=device,
+        seed=123,
+    )
+
+
 def _build_local_only_graph(model_dim: int = 64) -> ComputationGraph:
     g = ComputationGraph(model_dim)
     inp = g.add_input()
@@ -18,7 +33,14 @@ def _build_local_only_graph(model_dim: int = 64) -> ComputationGraph:
     return g
 
 
-def test_curriculum_binding_probe_separates_gpt2_reference_from_local_model():
+@pytest.fixture(scope="module")
+def curriculum_results():
+    """One shared 400-step training per model; both tests assert against it.
+
+    Seeding matches the original per-test setup exactly (manual_seed(1234)
+    before each compile, probe seed=123) so the CUDA baseline envelopes
+    below stay valid.
+    """
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     torch.manual_seed(1234)
@@ -26,36 +48,25 @@ def test_curriculum_binding_probe_separates_gpt2_reference_from_local_model():
         [_build_local_only_graph()], vocab_size=256, max_seq_len=128
     )
     local_model.to(device)
-    local = curriculum_binding_range_profile(
-        local_model,
-        distances=(4, 8, 16, 32),
-        n_train_steps=400,
-        n_eval=64,
-        train_seq_len=128,
-        eval_seq_len=128,
-        train_batch_size=16,
-        eval_batch_size=16,
-        device=device,
-        seed=123,
-    )
+    local = _run_probe(local_model, device)
 
     torch.manual_seed(1234)
     gpt2_model = compile_model(
         [build_reference("gpt2", 64)], vocab_size=256, max_seq_len=128
     )
     gpt2_model.to(device)
-    gpt2 = curriculum_binding_range_profile(
-        gpt2_model,
-        distances=(4, 8, 16, 32),
-        n_train_steps=400,
-        n_eval=64,
-        train_seq_len=128,
-        eval_seq_len=128,
-        train_batch_size=16,
-        eval_batch_size=16,
-        device=device,
-        seed=123,
-    )
+    gpt2 = _run_probe(gpt2_model, device)
+
+    return device, local, gpt2
+
+
+# Capability experiment (2 models × 400-step curriculum training); times out
+# under CPU-only nano probe budgets — run via the slow lane.
+@pytest.mark.slow
+def test_curriculum_binding_probe_separates_gpt2_reference_from_local_model(
+    curriculum_results,
+):
+    _, local, gpt2 = curriculum_results
 
     assert local.status == "ok"
     assert gpt2.status == "ok"
@@ -66,46 +77,13 @@ def test_curriculum_binding_probe_separates_gpt2_reference_from_local_model():
     )
 
 
-@pytest.mark.skipif(
-    not torch.cuda.is_available(),
-    reason="seeded binding baseline is calibrated on CUDA",
-)
-def test_curriculum_binding_probe_seeded_cuda_baseline_values_are_stable():
-    torch.manual_seed(1234)
-    local_model = compile_model(
-        [_build_local_only_graph()], vocab_size=256, max_seq_len=128
-    )
-    local_model.to("cuda")
-    local = curriculum_binding_range_profile(
-        local_model,
-        distances=(4, 8, 16, 32),
-        n_train_steps=400,
-        n_eval=64,
-        train_seq_len=128,
-        eval_seq_len=128,
-        train_batch_size=16,
-        eval_batch_size=16,
-        device="cuda",
-        seed=123,
-    )
-
-    torch.manual_seed(1234)
-    gpt2_model = compile_model(
-        [build_reference("gpt2", 64)], vocab_size=256, max_seq_len=128
-    )
-    gpt2_model.to("cuda")
-    gpt2 = curriculum_binding_range_profile(
-        gpt2_model,
-        distances=(4, 8, 16, 32),
-        n_train_steps=400,
-        n_eval=64,
-        train_seq_len=128,
-        eval_seq_len=128,
-        train_batch_size=16,
-        eval_batch_size=16,
-        device="cuda",
-        seed=123,
-    )
+@pytest.mark.slow
+def test_curriculum_binding_probe_seeded_cuda_baseline_values_are_stable(
+    curriculum_results,
+):
+    device, local, gpt2 = curriculum_results
+    if device != "cuda":
+        pytest.skip("seeded binding baseline is calibrated on CUDA")
 
     assert local.status == "ok"
     assert gpt2.status == "ok"

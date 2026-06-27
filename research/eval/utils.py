@@ -15,8 +15,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from research.scientist.shared_utils import clamp
-from research.training._data_native import load_data_native
-from research.training._loss_native import load_loss_native
+from research.training._native import load_training_native
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +68,7 @@ def language_model_loss(
     reduction: str = "mean",
 ) -> torch.Tensor:
     """Cross-entropy over next-token logits with vocab clipping."""
-    return load_loss_native().next_token_cross_entropy(
+    return load_training_native().next_token_cross_entropy(
         logits,
         targets,
         int(vocab_size),
@@ -85,7 +84,7 @@ def clip_grad_norm(
     params = [param for param in parameters if param.grad is not None]
     if not params:
         return torch.zeros((), dtype=torch.float32)
-    return load_loss_native().clip_grad_norm_(
+    return load_training_native().clip_grad_norm_(
         [param.grad for param in params],
         float(max_norm),
         1e-6,
@@ -186,7 +185,7 @@ def tokenize_string(
         if vocab_size and arr.size:
             np.minimum(arr, int(vocab_size) - 1, out=arr)
         return arr
-    return load_data_native().byte_tokenize_utf8(text, int(vocab_size)).numpy()
+    return load_training_native().byte_tokenize_utf8(text, int(vocab_size)).numpy()
 
 
 def tokenize_file(
@@ -210,7 +209,9 @@ def tokenize_file(
             tiktoken_encoding=tiktoken_encoding,
         )
     return (
-        load_data_native().byte_tokenize_file_utf8(str(path), int(vocab_size)).numpy()
+        load_training_native()
+        .byte_tokenize_file_utf8(str(path), int(vocab_size))
+        .numpy()
     )
 
 
@@ -229,7 +230,7 @@ def make_batches(
     gen = torch.Generator().manual_seed(seed)
     max_start = len(tokens) - seq_len - 1
     all_starts = torch.randint(0, max_start, (n_batches, batch_size), generator=gen)
-    flat_batches = load_data_native().gather_token_batch(
+    flat_batches = load_training_native().gather_token_batch(
         t,
         all_starts.reshape(-1).contiguous(),
         int(seq_len),

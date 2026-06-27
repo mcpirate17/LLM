@@ -17,7 +17,7 @@ import torch
 # reference module split.
 from .reference_training import BaselineTransformer as _BaselineTransformer
 from .fingerprint_runtime import compute_fingerprint
-from .fingerprint_scoring import build_novelty_reference_version
+from .fingerprint_runtime import build_novelty_reference_version
 
 
 def _quantile(values: List[float], q: float) -> Optional[float]:

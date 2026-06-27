@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from research.tools.audit_cheap_probe_predictors import (
     HEAD_SPECS,
     audit_heads,
@@ -54,43 +56,61 @@ def _synthetic_rows(n: int = 45) -> list[dict]:
     return rows
 
 
-def test_audit_heads_reports_each_required_head() -> None:
+def _audit_single_head(spec) -> dict:
     report = audit_heads(
         _synthetic_rows(),
+        specs=[spec],
         min_samples=12,
         min_eval=4,
         min_family_holdout=5,
         n_estimators=8,
         top_features=5,
     )
-
     heads = {head["head"]: head for head in report["heads"]}
-    assert set(heads) == {spec.name for spec in HEAD_SPECS}
+    assert set(heads) == {spec.name}
+    return heads[spec.name]
 
-    ar_head = heads["predict_ar_gate_from_graph"]
-    assert ar_head["feature_mode"] == "graph"
-    assert ar_head["sample_count"] == 45
-    assert "temporal_holdout" in ar_head
-    assert "binary_at_threshold" in ar_head["temporal_holdout"]
-    assert "top_feature_importances" in ar_head["temporal_holdout"]
-    assert "calibration_bins" in ar_head["temporal_holdout"]
-    assert "stability_flags" in ar_head["temporal_holdout"]
-    assert "stratified_diagnostics" in ar_head["temporal_holdout"]
-    assert "model_comparison" in ar_head["temporal_holdout"]
-    assert "operating_points" in ar_head["temporal_holdout"]
-    assert {"balanced", "f1", "high_ppv", "high_npv"} <= set(
-        ar_head["temporal_holdout"]["operating_points"]
+
+# One test per head so xdist spreads the model training across workers
+# (the former single-function version was the suite's slowest test).
+@pytest.mark.parametrize("spec", HEAD_SPECS, ids=lambda s: s.name)
+def test_audit_heads_reports_each_required_head(spec) -> None:
+    head = _audit_single_head(spec)
+
+    if spec.name == "predict_ar_gate_from_graph":
+        assert head["feature_mode"] == "graph"
+        assert head["sample_count"] == 45
+        assert "temporal_holdout" in head
+        assert "binary_at_threshold" in head["temporal_holdout"]
+        assert "top_feature_importances" in head["temporal_holdout"]
+        assert "calibration_bins" in head["temporal_holdout"]
+        assert "stability_flags" in head["temporal_holdout"]
+        assert "stratified_diagnostics" in head["temporal_holdout"]
+        assert "model_comparison" in head["temporal_holdout"]
+        assert "operating_points" in head["temporal_holdout"]
+        assert {"balanced", "f1", "high_ppv", "high_npv"} <= set(
+            head["temporal_holdout"]["operating_points"]
+        )
+    elif spec.name == "predict_nb10_binding_from_graph":
+        assert head["model_kind"] == "classifier"
+        assert head["target_columns"] == ["language_control_s10_binding_score"]
+        assert head["temporal_holdout"]["selected_model"]
+    elif spec.name == "predict_large_induction_from_cheap":
+        assert head["feature_mode"] == "cheap"
+        assert head["leave_family_out"]["families_evaluated"] == 3
+
+
+def test_audit_markdown_includes_head_and_metrics() -> None:
+    ar_spec = next(s for s in HEAD_SPECS if s.name == "predict_ar_gate_from_graph")
+    report = audit_heads(
+        _synthetic_rows(),
+        specs=[ar_spec],
+        min_samples=12,
+        min_eval=4,
+        min_family_holdout=5,
+        n_estimators=8,
+        top_features=5,
     )
-
-    nb10_binding = heads["predict_nb10_binding_from_graph"]
-    assert nb10_binding["model_kind"] == "classifier"
-    assert nb10_binding["target_columns"] == ["language_control_s10_binding_score"]
-    assert nb10_binding["temporal_holdout"]["selected_model"]
-
-    cheap_head = heads["predict_large_induction_from_cheap"]
-    assert cheap_head["feature_mode"] == "cheap"
-    assert cheap_head["leave_family_out"]["families_evaluated"] == 3
-
     markdown = format_markdown(report)
     assert "predict_ar_gate_from_graph" in markdown
     assert "PPV/NPV/accuracy" in markdown

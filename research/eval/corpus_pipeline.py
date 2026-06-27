@@ -21,7 +21,11 @@ class TextSplitSpec:
 
 
 _BATCH_CACHE_MAX_ENTRIES = 16
-_batch_cache: "collections.OrderedDict[tuple, tuple[List[torch.Tensor], int]]" = (
+# (cpu_batches, token_count, device-memo of moved copies)
+_BatchCacheEntry = tuple[
+    List[torch.Tensor], int, dict[tuple[str, int], List[torch.Tensor]]
+]
+_batch_cache: "collections.OrderedDict[tuple, _BatchCacheEntry]" = (
     collections.OrderedDict()
 )
 _TOKEN_CACHE_MAX_ENTRIES = 8
@@ -79,6 +83,8 @@ def cache_hf_text_splits(
 
     load_kwargs = dict(load_kwargs or {})
     load_kwargs.setdefault("trust_remote_code", trust_remote_code)
+    # Pin a default dataset revision (bandit B615); callers may override.
+    load_kwargs.setdefault("revision", "main")
     shared_dataset = None
     if not streaming:
         shared_dataset = load_dataset(
@@ -140,6 +146,14 @@ def _cache_key(
     )
 
 
+def _device_memo_key(device: str | torch.device) -> tuple[str, int]:
+    target = torch.device(device)
+    index = target.index
+    if index is None and target.type == "cuda" and torch.cuda.is_available():
+        index = torch.cuda.current_device()
+    return (target.type, index if index is not None else -1)
+
+
 def _get_cached_batch_entry(
     cache_key: tuple, device: str | torch.device
 ) -> Optional[tuple[List[torch.Tensor], int]]:
@@ -147,8 +161,17 @@ def _get_cached_batch_entry(
     if cached is None:
         return None
     _batch_cache.move_to_end(cache_key)
-    batches, token_count = cached
-    return move_batches_to_device(batches, device), token_count
+    batches, token_count, by_device = cached
+    memo_key = _device_memo_key(device)
+    moved = by_device.get(memo_key)
+    if moved is None:
+        # Device-resident memo: repeated evals of the same corpus config no
+        # longer re-stream every batch host->device on each call. Eval
+        # batches are read-only; entries (and their GPU copies) drop out
+        # with LRU eviction.
+        moved = move_batches_to_device(batches, device)
+        by_device[memo_key] = moved
+    return moved, token_count
 
 
 def _get_cached_batches(
@@ -163,7 +186,8 @@ def _get_cached_batches(
 def _put_cached_batches(
     cache_key: tuple, batches: List[torch.Tensor], token_count: int = -1
 ) -> None:
-    _batch_cache[cache_key] = (batches, int(token_count))
+    by_device: dict[tuple[str, int], List[torch.Tensor]] = {}
+    _batch_cache[cache_key] = (batches, int(token_count), by_device)
     while len(_batch_cache) > _BATCH_CACHE_MAX_ENTRIES:
         _batch_cache.popitem(last=False)
 

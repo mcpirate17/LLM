@@ -30,6 +30,7 @@ import torch
 import torch.nn as nn
 
 from ._probe_runtime import disable_native_probe_dispatch
+from ._probe_utils import mean_auc
 
 logger = logging.getLogger(__name__)
 
@@ -146,7 +147,9 @@ def binding_range_profile(
                     result.status = "timeout"
                     continue
 
-                correct = 0
+                # On-device accumulator: one host sync per distance instead
+                # of one per batch (pattern from _kv_pair.evaluate_kv_split).
+                correct = torch.zeros((), dtype=torch.long, device=device)
                 total = 0
                 remaining = n_eval
 
@@ -173,11 +176,11 @@ def binding_range_profile(
                     targets = input_ids[:, start + 1 : end + 1]
 
                     preds = pred_logits.argmax(dim=-1)  # (B, n_positions)
-                    correct += preds.eq(targets).sum().item()
+                    correct += preds.eq(targets).sum()
                     total += targets.numel()
                     remaining -= bs
 
-                acc = correct / max(total, 1)
+                acc = int(correct.item()) / max(total, 1)
                 result.distance_accuracies[d] = round(acc, 4)
 
     except Exception as e:
@@ -187,7 +190,7 @@ def binding_range_profile(
 
     if result.distance_accuracies:
         vals = list(result.distance_accuracies.values())
-        result.auc = round(sum(vals) / len(vals), 4)
+        result.auc = mean_auc(vals)
 
     result.elapsed_ms = round((time.perf_counter() - t0) * 1000, 1)
     return result

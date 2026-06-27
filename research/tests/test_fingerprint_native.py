@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 
 from research.eval import fingerprint_native
-from research.eval.fingerprint_probes import analyze_interactions
+from research.eval.fingerprint_runtime import analyze_interactions
 
 pytestmark = pytest.mark.unit
 

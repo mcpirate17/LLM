@@ -7,7 +7,61 @@
 #include <vector>
 
 #include <c10/core/InferenceMode.h>
+#include <pybind11/numpy.h>
 #include <torch/extension.h>
+
+namespace py = pybind11;
+
+// Pack variable-length choice token sequences into one flat int64 tensor
+// plus offsets. Replaces the Python list-extend loop in
+// choice_scoring._pack_choice_sequences (the last Python-level stage before
+// grouped_choice_scores_packed_native). Accepts numpy int arrays (memcpy
+// fast path) or any int sequence per item.
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
+pack_choice_sequences_native(
+    const py::sequence& flat_sequences,
+    const std::vector<int64_t>& flat_starts,
+    const std::vector<int64_t>& group_sizes) {
+  const int64_t n_seq = static_cast<int64_t>(py::len(flat_sequences));
+  auto opts = torch::TensorOptions().dtype(torch::kInt64);
+
+  std::vector<py::array_t<int64_t>> arrays;
+  arrays.reserve(static_cast<size_t>(n_seq));
+  torch::Tensor offsets = torch::empty({n_seq + 1}, opts);
+  auto* offsets_ptr = offsets.data_ptr<int64_t>();
+  offsets_ptr[0] = 0;
+  int64_t total_len = 0;
+  for (int64_t i = 0; i < n_seq; ++i) {
+    // forcecast handles numpy int32/int64 arrays, lists, and tuples alike.
+    arrays.emplace_back(
+        py::array_t<int64_t, py::array::c_style | py::array::forcecast>::ensure(
+            flat_sequences[i]));
+    if (!arrays.back()) {
+      throw std::runtime_error(
+          "pack_choice_sequences_native: sequence is not int-convertible");
+    }
+    total_len += static_cast<int64_t>(arrays.back().size());
+    offsets_ptr[i + 1] = total_len;
+  }
+
+  torch::Tensor packed = torch::empty({total_len}, opts);
+  auto* packed_ptr = packed.data_ptr<int64_t>();
+  for (int64_t i = 0; i < n_seq; ++i) {
+    const auto& arr = arrays[static_cast<size_t>(i)];
+    const auto slen = static_cast<size_t>(arr.size());
+    if (slen) {
+      std::memcpy(packed_ptr + offsets_ptr[i], arr.data(), slen * sizeof(int64_t));
+    }
+  }
+
+  torch::Tensor starts = torch::from_blob(
+      const_cast<int64_t*>(flat_starts.data()),
+      {static_cast<int64_t>(flat_starts.size())}, opts).clone();
+  torch::Tensor groups = torch::from_blob(
+      const_cast<int64_t*>(group_sizes.data()),
+      {static_cast<int64_t>(group_sizes.size())}, opts).clone();
+  return {packed, offsets, starts, groups};
+}
 
 std::tuple<int, int> hellaswag_score_batch_native(
     py::object model,
@@ -74,47 +128,6 @@ torch::Tensor routing_metrics_f64(
       {gini, avg_entropy, normalized_entropy, dominant_fraction},
       torch::kFloat64);
 }
-
-namespace {
-
-py::object mean_or_none(const std::vector<double>& values) {
-  if (values.empty()) {
-    return py::none();
-  }
-  double total = 0.0;
-  for (double value : values) {
-    total += value;
-  }
-  return py::float_(total / static_cast<double>(values.size()));
-}
-
-py::object min_or_none(const std::vector<double>& values) {
-  if (values.empty()) {
-    return py::none();
-  }
-  double best = values.front();
-  for (double value : values) {
-    if (value < best) {
-      best = value;
-    }
-  }
-  return py::float_(best);
-}
-
-std::string evidence_level_from_count(int64_t n_used) {
-  if (n_used < 3) {
-    return "insufficient";
-  }
-  if (n_used < 10) {
-    return "sparse";
-  }
-  if (n_used < 30) {
-    return "building";
-  }
-  return "established";
-}
-
-}  // namespace
 
 py::dict screening_graph_analysis_native(
     const std::vector<int64_t>& node_ids,
@@ -185,83 +198,6 @@ py::dict screening_graph_analysis_native(
   out["op_names"] = op_names_py;
   out["toxic_bigrams"] = toxic_bigrams_py;
   out["has_parameterized_op"] = has_parameterized_op;
-  return out;
-}
-
-py::dict summarize_template_stat_core(
-    int64_t n_used,
-    int64_t n_stage0,
-    int64_t n_stage05,
-    int64_t n_stage1,
-    const std::vector<double>& losses,
-    const std::vector<double>& validation_losses,
-    const std::vector<double>& discovery_losses,
-    const std::vector<double>& novelties,
-    const std::vector<double>& novelty_confidences,
-    const std::vector<double>& induction_aucs,
-    const std::vector<double>& binding_aucs,
-    const std::vector<double>& ar_aucs,
-    const std::vector<double>& hellaswag_accs,
-    const std::vector<double>& screening_hellaswag_accs,
-    int64_t screening_wikitext_ok,
-    int64_t screening_wikitext_runs,
-    int64_t slot_count,
-    int64_t routing_fast_lane_runs,
-    int64_t routing_fast_lane_ok,
-    int64_t routing_fast_lane_positive,
-    const std::vector<double>& routing_fast_lane_scores,
-    const std::vector<double>& routing_fast_lane_improvements,
-    const std::vector<double>& routing_fast_lane_slopes) {
-  const double denom = static_cast<double>(std::max<int64_t>(n_used, 1));
-  py::dict out;
-  out["n_used"] = n_used;
-  out["s0_rate"] = static_cast<double>(n_stage0) / denom;
-  out["s05_rate"] = static_cast<double>(n_stage05) / denom;
-  out["s1_rate"] = static_cast<double>(n_stage1) / denom;
-  out["avg_loss_ratio"] = mean_or_none(losses);
-  out["best_loss_ratio"] = min_or_none(losses);
-  out["avg_validation_loss_ratio"] = mean_or_none(validation_losses);
-  out["avg_discovery_loss_ratio"] = mean_or_none(discovery_losses);
-  out["avg_novelty"] = mean_or_none(novelties);
-  out["avg_novelty_confidence"] = mean_or_none(novelty_confidences);
-  out["avg_induction_auc"] = mean_or_none(induction_aucs);
-  out["avg_binding_auc"] = mean_or_none(binding_aucs);
-  out["avg_ar_auc"] = mean_or_none(ar_aucs);
-  out["avg_hellaswag_acc"] = mean_or_none(hellaswag_accs);
-  out["avg_screening_hellaswag_acc"] = mean_or_none(screening_hellaswag_accs);
-  out["screening_wikitext_ok_rate"] =
-      screening_wikitext_runs > 0
-      ? py::object(py::float_(
-            static_cast<double>(screening_wikitext_ok)
-            / static_cast<double>(std::max<int64_t>(screening_wikitext_runs, 1))))
-      : py::object(py::none());
-  py::dict coverage;
-  coverage["induction"] = static_cast<int64_t>(induction_aucs.size());
-  coverage["binding"] = static_cast<int64_t>(binding_aucs.size());
-  coverage["associative_recall"] = static_cast<int64_t>(ar_aucs.size());
-  coverage["hellaswag"] = static_cast<int64_t>(
-      hellaswag_accs.size() + screening_hellaswag_accs.size());
-  coverage["wikitext"] = screening_wikitext_runs;
-  out["screening_metric_coverage"] = coverage;
-  out["slot_count"] = slot_count;
-  out["routing_fast_lane_runs"] = routing_fast_lane_runs;
-  out["routing_fast_lane_ok_rate"] =
-      routing_fast_lane_runs > 0
-      ? py::object(py::float_(
-            static_cast<double>(routing_fast_lane_ok)
-            / static_cast<double>(std::max<int64_t>(routing_fast_lane_runs, 1))))
-      : py::object(py::none());
-  out["routing_fast_lane_positive_rate"] =
-      routing_fast_lane_runs > 0
-      ? py::object(py::float_(
-            static_cast<double>(routing_fast_lane_positive)
-            / static_cast<double>(std::max<int64_t>(routing_fast_lane_runs, 1))))
-      : py::object(py::none());
-  out["routing_fast_lane_avg_score"] = mean_or_none(routing_fast_lane_scores);
-  out["routing_fast_lane_avg_improvement"] =
-      mean_or_none(routing_fast_lane_improvements);
-  out["routing_fast_lane_avg_slope"] = mean_or_none(routing_fast_lane_slopes);
-  out["evidence_level"] = evidence_level_from_count(n_used);
   return out;
 }
 
@@ -570,13 +506,13 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
       &screening_graph_analysis_native,
       "Analyze graph screening facts in native code");
   m.def(
-      "summarize_template_stat_core",
-      &summarize_template_stat_core,
-      "Summarize template-stat arithmetic in native code");
-  m.def(
       "pad_sequences_native",
       &pad_sequences_native,
       "Pad variable-length int64 sequences into (batch, max_len) tensor");
+  m.def(
+      "pack_choice_sequences_native",
+      &pack_choice_sequences_native,
+      "Pack variable-length choice sequences into flat tensor + offsets");
   m.def(
       "span_mean_log_probs_native",
       &span_mean_log_probs_native,

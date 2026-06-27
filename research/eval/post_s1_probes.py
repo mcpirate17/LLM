@@ -282,7 +282,11 @@ _REQUIRED_S1_METRICS = (
     "induction_screening_auc",
     "binding_screening_auc",
     "binding_screening_composite",
-    "ar_legacy_auc",
+    # ar_legacy_auc removed 2026-06-18: the legacy associative_recall probe is a
+    # measurement artifact (a softmax positive control also floors it; full-vocab
+    # argmax + deepcopy FT + 300-step harness « Zoology's ~8K). No longer computed
+    # (skip_ar_probe defaults True); gMQAR is the AR metric of record. Must match
+    # _S1_REQUIRED_POST_METRIC_COLUMNS_FOR_GUARDRAIL in program_writes.py.
 )
 
 

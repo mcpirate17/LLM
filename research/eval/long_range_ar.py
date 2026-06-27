@@ -19,7 +19,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from ._probe_utils import safe_deepcopy_module
+from ._probe_utils import (
+    restore_module_tensors,
+    safe_deepcopy_module,
+    snapshot_module_tensors,
+)
 from .associative_recall import (
     _VOCAB_HI,
     _VOCAB_LO,
@@ -68,7 +72,7 @@ def _n_pairs_for_seq_len(target_seq_len: int) -> int:
 
 
 def _train_ar_at_length(
-    model: nn.Module,
+    probe_model: nn.Module,
     n_pairs: int,
     n_train_steps: int,
     n_eval: int,
@@ -77,12 +81,11 @@ def _train_ar_at_length(
     device: str,
     deadline: float,
 ) -> Tuple[float, bool]:
-    """Micro-train a deepcopy on AR at one sequence length.
+    """Micro-train the (already initial-state) probe copy on AR at one length.
 
-    Returns (accuracy, timed_out).
+    Returns (accuracy, timed_out). The caller owns the copy and restores
+    its initial weights between lengths.
     """
-    probe_model = safe_deepcopy_module(model)
-    probe_model.to(device)
     probe_model.train()
 
     sep_token, ans_token = _get_special_tokens(probe_model)
@@ -124,7 +127,7 @@ def _train_ar_at_length(
             query_pos=ans_pos,
         )
     finally:
-        del eval_ids, eval_targets, probe_model
+        del eval_ids, eval_targets
         if device == "cuda":
             torch.cuda.empty_cache()
 
@@ -165,26 +168,50 @@ def long_range_ar_score(
     result = LongRangeARResult()
     accuracies: List[Tuple[int, float]] = []
 
-    for seq_len in sorted(seq_lens):
-        if time.perf_counter() > deadline:
-            result.status = "timeout"
-            break
+    # One deepcopy for the whole sweep; restore the initial weights between
+    # lengths instead of re-deepcopying the full model per sequence length.
+    try:
+        probe_model = safe_deepcopy_module(model).to(device)
+    except Exception as e:
+        result.status = f"copy_failed: {e}"
+        result.elapsed_ms = round((time.perf_counter() - t0) * 1000, 1)
+        return result
+    state_refs, init_state = snapshot_module_tensors(probe_model)
 
-        n_pairs = _n_pairs_for_seq_len(seq_len)
-
-        try:
-            acc, timed_out = _train_ar_at_length(
-                model, n_pairs, n_train_steps, n_eval, lr, batch_size, device, deadline
-            )
-            result.per_length[seq_len] = round(acc, 4)
-            accuracies.append((seq_len, acc))
-            if timed_out:
+    try:
+        for length_idx, seq_len in enumerate(sorted(seq_lens)):
+            if time.perf_counter() > deadline:
                 result.status = "timeout"
                 break
-        except Exception as e:
-            result.per_length[seq_len] = 0.0
-            accuracies.append((seq_len, 0.0))
-            logger.debug("long_range_ar: failed at seq_len=%d: %s", seq_len, e)
+
+            n_pairs = _n_pairs_for_seq_len(seq_len)
+            if length_idx > 0:
+                restore_module_tensors(state_refs, init_state)
+
+            try:
+                acc, timed_out = _train_ar_at_length(
+                    probe_model,
+                    n_pairs,
+                    n_train_steps,
+                    n_eval,
+                    lr,
+                    batch_size,
+                    device,
+                    deadline,
+                )
+                result.per_length[seq_len] = round(acc, 4)
+                accuracies.append((seq_len, acc))
+                if timed_out:
+                    result.status = "timeout"
+                    break
+            except Exception as e:
+                result.per_length[seq_len] = 0.0
+                accuracies.append((seq_len, 0.0))
+                logger.debug("long_range_ar: failed at seq_len=%d: %s", seq_len, e)
+    finally:
+        del probe_model, state_refs, init_state
+        if device == "cuda":
+            torch.cuda.empty_cache()
 
     result.score = _auc_from_accuracies(accuracies)
     result.elapsed_ms = round((time.perf_counter() - t0) * 1000, 1)

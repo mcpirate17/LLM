@@ -102,24 +102,6 @@ def test_induction_validation_counterfactual_batches_change_target_binding():
     assert torch.any(normal != cf_inputs)
 
 
-def test_induction_validation_freezes_backbone_and_infers_readout_dim():
-    import torch.nn as nn
-
-    from research.eval import induction_validation_probe as probe
-
-    class TinyBackbone(nn.Module):
-        def __init__(self):
-            super().__init__()
-            self.model_dim = 4
-            self.proj = nn.Linear(4, 4)
-
-    model = TinyBackbone()
-    probe._freeze_backbone(model)
-
-    assert probe._infer_model_dim(model) == 4
-    assert not any(param.requires_grad for param in model.parameters())
-
-
 def test_investigation_probe_helper_keeps_induction_validation_separate(monkeypatch):
     from research.scientist.runner._helpers_benchmark import (
         _run_investigation_v2_probes,

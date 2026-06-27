@@ -2,32 +2,12 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-import torch
-import torch.nn as nn
 
 from research.eval import blimp_eval
+from research.tests._probe_test_support import PreferredTokenLM as _NextTokenLM
 
 
 pytestmark = pytest.mark.unit
-
-
-class _NextTokenLM(nn.Module):
-    def __init__(self, vocab_size: int, preferred: dict[int, int]):
-        super().__init__()
-        self.vocab_size = vocab_size
-        self.preferred = preferred
-
-    def forward(self, x):
-        batch, seq_len = x.shape
-        logits = torch.full(
-            (batch, seq_len, self.vocab_size),
-            -9.0,
-            dtype=torch.float32,
-            device=x.device,
-        )
-        for src_token, dst_token in self.preferred.items():
-            logits[x == src_token, dst_token] = 9.0
-        return logits
 
 
 def test_get_tokenized_subtask_examples_reuses_cache(monkeypatch):
@@ -65,24 +45,6 @@ def test_get_tokenized_subtask_examples_reuses_cache(monkeypatch):
 
     assert first is second
     assert calls["count"] == 4
-
-
-def test_score_token_pairs_batched_scores_tokenized_pairs():
-    model = _NextTokenLM(vocab_size=32, preferred={1: 2, 2: 3, 4: 5})
-    pairs = [
-        {"good": [1, 2, 3], "bad": [1, 4, 6]},
-        {"good": [4, 5], "bad": [4, 6]},
-        {"good": [9], "bad": [9]},
-    ]
-
-    result = blimp_eval._score_token_pairs_batched(
-        model,
-        pairs,
-        vocab_size=32,
-        device="cpu",
-    )
-
-    assert result == 2
 
 
 def test_evaluate_blimp_batches_across_subtasks(monkeypatch):

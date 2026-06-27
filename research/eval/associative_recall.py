@@ -126,8 +126,11 @@ def _generate_ar_batch(
     keys = tokens[:, : 2 * n_pairs].reshape(batch_size, n_pairs, 2)  # (B, N, 2)
     values = tokens[:, 2 * n_pairs :]  # (B, N)
 
-    # Shuffle pair order per sample
-    pair_perms = torch.stack([torch.randperm(n_pairs) for _ in range(batch_size)])
+    # Shuffle pair order per sample. argsort-of-uniform == per-row randperm
+    # without B Python↔torch transitions per step. NOTE (2026-06-13): this
+    # changed the RNG stream — AR probe scores are not comparable to
+    # pre-change baselines (user-approved; re-baseline before comparing).
+    pair_perms = torch.rand(batch_size, n_pairs).argsort(dim=1)
     batch_idx = torch.arange(batch_size).unsqueeze(1).expand_as(pair_perms)
     keys = keys[batch_idx, pair_perms]  # (B, N, 2)
     values = values[batch_idx, pair_perms]  # (B, N)

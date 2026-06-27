@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import List, Sequence
 
 import numpy as np
-
 import torch
 import torch.nn as nn
 
@@ -15,26 +14,11 @@ def _pack_choice_sequences(
     flat_starts: Sequence[int],
     group_sizes: Sequence[int],
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    n_seq = len(flat_sequences)
-    offsets = torch.empty(n_seq + 1, dtype=torch.long)
-    offsets[0] = 0
-    total_len = 0
-    flat_values: list[int] = []
-    extend_values = flat_values.extend
-    for idx, seq in enumerate(flat_sequences):
-        seq_len = len(seq)
-        total_len += seq_len
-        offsets[idx + 1] = total_len
-        if seq_len:
-            if isinstance(seq, np.ndarray):
-                extend_values(seq.tolist())
-            else:
-                extend_values(seq)
+    from ._eval_native import load_eval_native
 
-    packed = torch.tensor(flat_values, dtype=torch.long)
-    starts = torch.as_tensor(flat_starts, dtype=torch.long)
-    groups = torch.as_tensor(group_sizes, dtype=torch.long)
-    return packed, offsets, starts, groups
+    return load_eval_native().pack_choice_sequences_native(
+        flat_sequences, list(flat_starts), list(group_sizes)
+    )
 
 
 def concat_choice_tokens(

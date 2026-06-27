@@ -1,6 +1,8 @@
 import torch
 from research.env import aria_core
 from research.mathspaces.tropical import (
+    _SMOOTH_TAU,
+    _adaptive_temperature,
     tropical_matmul,
     execute_tropical_attention,
     execute_tropical_gate,
@@ -102,12 +104,13 @@ def test_tropical_attention_parity():
 
         module = DummyModule()
 
-        # Native
+        # Native: distances go through aria_core tropical matmul (no-grad CPU)
         actual = execute_tropical_attention(module, x.contiguous())
 
-        # Expected (manual)
+        # Expected (manual, mirrors current executor semantics:
+        # hard min-plus distances → softmin at adaptive tau → residual)
         B, S, D = shape
-        # 1. Distances (min-plus)
+        # 1. Distances (min-plus, causal)
         dist = torch.zeros((B, S, S))
         for b in range(B):
             for i in range(S):
@@ -116,11 +119,12 @@ def test_tropical_attention_parity():
                 for j in range(i + 1, S):
                     dist[b, i, j] = float("inf")
 
-        # 2. Softmax
-        weights = torch.softmax(-dist / 0.1, dim=-1)
+        # 2. Softmin over last dim at the production adaptive temperature
+        tau = _adaptive_temperature(_SMOOTH_TAU, S)
+        weights = torch.softmax(-dist / tau, dim=-1)
 
-        # 3. Weighted sum
-        expected = torch.bmm(weights, x)
+        # 3. Weighted sum + residual
+        expected = x + torch.bmm(weights, x)
 
         assert torch.allclose(expected, actual, atol=1e-5), (
             f"Parity failed for shape {shape}"
@@ -137,10 +141,11 @@ def test_tropical_gate_parity():
 
         module = DummyModule()
 
-        # Native
+        # Native: distances go through aria_core tropical matmul (no-grad CPU)
         actual = execute_tropical_gate(module, x.contiguous())
 
-        # Expected
+        # Expected (mirrors current executor: hard min-plus distances →
+        # softmin at adaptive tau → sigmoid gate on the weighted sum)
         B, S, D = shape
         dist = torch.zeros((B, S, S))
         for b in range(B):
@@ -150,7 +155,8 @@ def test_tropical_gate_parity():
                 for j in range(i + 1, S):
                     dist[b, i, j] = float("inf")
 
-        weights = torch.softmax(-dist / 0.1, dim=-1)
+        tau = _adaptive_temperature(_SMOOTH_TAU, S)
+        weights = torch.softmax(-dist / tau, dim=-1)
         gated = torch.bmm(weights, x)
         gate = torch.sigmoid(gated)
         expected = x * gate
@@ -161,25 +167,23 @@ def test_tropical_gate_parity():
 
 
 def test_tropical_router_parity():
+    # TropicalRouter has no native dispatch (centroids carry gradients);
+    # this pins the production semantics: smooth-min scores at adaptive tau
+    # over D, then softmin over experts at the router temperature.
     B, S, D, E = 2, 8, 64, 16
     x = torch.randn(B, S, D)
     router = TropicalRouter(D, E, temperature=0.1)
 
-    # Native
     actual = router(x.contiguous())
 
-    # Expected
     x_min = torch.min(x, dim=-1, keepdim=True).values
     x_norm = x - x_min
 
-    expected_scores = torch.zeros((B, S, E))
-    for b in range(B):
-        for s in range(S):
-            for e in range(E):
-                expected_scores[b, s, e] = torch.min(
-                    x_norm[b, s, :] + router.centroids[e, :]
-                )
+    tau_d = _adaptive_temperature(_SMOOTH_TAU, D)
+    pairwise = x_norm.unsqueeze(2) + router.centroids.unsqueeze(0).unsqueeze(0)
+    expected_scores = -tau_d * torch.logsumexp(-pairwise / tau_d, dim=-1)
 
-    expected = torch.softmax(-expected_scores / 0.1, dim=-1)
+    tau_e = _adaptive_temperature(router.temperature, E)
+    expected = torch.softmax(-expected_scores / tau_e, dim=-1)
 
     assert torch.allclose(expected, actual, atol=1e-5), "Router parity failed"

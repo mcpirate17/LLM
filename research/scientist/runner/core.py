@@ -435,6 +435,19 @@ class _CoreMixin:
             self._corpus_signature = signature
             return None
 
+        if not Path(path).is_file():
+            # CorpusTokenBatcher raises on a missing path; the runner's policy
+            # for an unavailable corpus is the explicit random-token fallback.
+            self._corpus_batcher = None
+            self._corpus_signature = signature
+            if not self._corpus_warned_unavailable:
+                logger.warning(
+                    "Corpus mode requested but corpus path not found (path=%s); falling back to random tokens.",
+                    path,
+                )
+                self._corpus_warned_unavailable = True
+            return None
+
         batcher = CorpusTokenBatcher(
             CorpusConfig(
                 path=path,
@@ -483,7 +496,7 @@ class _CoreMixin:
             return None
 
         try:
-            ds = load_dataset(ds_name, subset, split=split)
+            ds = load_dataset(ds_name, subset, split=split, revision="main")
             texts = []
             char_budget = int(config.corpus_max_chars)
             total = 0

@@ -138,7 +138,9 @@ class RunConfig:
     stage1_discovery_batch_size: int = 4
     skip_screening_hellaswag: bool = False
     skip_screening_blimp: bool = False
-    skip_ar_probe: bool = False
+    # ar_legacy probe retired 2026-06-18 (measurement artifact — softmax control
+    # also floors; gMQAR is the AR metric of record). Default True = skip it.
+    skip_ar_probe: bool = True
     skip_ar_gate: bool = False
     skip_binding_probes: bool = False
     skip_induction_probe: bool = False

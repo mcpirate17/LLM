@@ -42,7 +42,8 @@ _S1_REQUIRED_POST_METRIC_COLUMNS_FOR_GUARDRAIL = (
     "induction_screening_auc",
     "binding_screening_auc",
     "binding_screening_composite",
-    "ar_legacy_auc",
+    # ar_legacy_auc removed 2026-06-18 (artifact probe, no longer computed —
+    # see post_s1_probes._REQUIRED_S1_METRICS; the two lists must stay equal).
 )
 
 # Additional post-S1 metrics required for investigation-tier writes (rows that

@@ -14,6 +14,31 @@ import pytest
 pytestmark = pytest.mark.unit
 
 
+def _wikitext_corpus_cached() -> bool:
+    from research.eval.wikitext_eval import _WIKITEXT_CACHE_DIR
+
+    cache_dir = _WIKITEXT_CACHE_DIR / "wikitext-103-raw-v1"
+    return (cache_dir / "train.txt").exists() and (
+        cache_dir / "validation.txt"
+    ).exists()
+
+
+def _tinystories_corpus_cached() -> bool:
+    from research.eval.tinystories_eval import _CACHE_DIR
+
+    return (_CACHE_DIR / "train.txt").exists() and (
+        _CACHE_DIR / "validation.txt"
+    ).exists()
+
+
+def _cross_task_corpora_cached() -> bool:
+    from research.eval.cross_task_eval import _CACHE_DIR
+
+    return (_CACHE_DIR / "python_code.txt").exists() and (
+        _CACHE_DIR / "natural_language.txt"
+    ).exists()
+
+
 # ── Activation Sparsity ──────────────────────────────────────────────
 
 
@@ -371,6 +396,12 @@ class TestWikiTextEval:
         # Training should reduce loss (or at least not crash)
         assert final_loss < initial_loss * 1.5  # Allow some tolerance
 
+    # End-to-end against the real corpus: needs the cached text files (or a
+    # network download on cold cache) — keep out of the default unit lane.
+    @pytest.mark.slow
+    @pytest.mark.skipif(
+        not _wikitext_corpus_cached(), reason="WikiText corpus not cached locally"
+    )
     def test_evaluate_wikitext_full(self):
         """Full end-to-end test with actual WikiText download."""
         from research.eval.wikitext_eval import evaluate_wikitext_perplexity
@@ -400,43 +431,6 @@ class TestWikiTextEval:
             assert result["variant"] == "wikitext-103-raw-v1"
 
 
-# ── Notebook Schema ──────────────────────────────────────────────────
-
-
-class TestNotebookSchema:
-    def test_new_columns_in_schema(self):
-        """Verify the new columns are in the program_results schema."""
-        from research.scientist.notebook import _PROGRAM_RESULTS_NEW_COLUMNS
-
-        assert "activation_sparsity_score" in _PROGRAM_RESULTS_NEW_COLUMNS
-        assert "dead_neuron_ratio" in _PROGRAM_RESULTS_NEW_COLUMNS
-        assert "routing_collapse_score" in _PROGRAM_RESULTS_NEW_COLUMNS
-        assert "wikitext_perplexity" in _PROGRAM_RESULTS_NEW_COLUMNS
-        assert "wikitext_score" in _PROGRAM_RESULTS_NEW_COLUMNS
-        assert "permutation_composition_score" in _PROGRAM_RESULTS_NEW_COLUMNS
-        assert "permutation_composition_metric_version" in _PROGRAM_RESULTS_NEW_COLUMNS
-
-    def test_leaderboard_migration(self):
-        """Verify the new columns get added to leaderboard on init."""
-        import tempfile
-        from research.scientist.notebook import LabNotebook
-
-        with tempfile.TemporaryDirectory() as tmp:
-            nb = LabNotebook(f"{tmp}/test.db")
-            cols = {row[1] for row in nb.conn.execute("PRAGMA table_info(leaderboard)")}
-            assert "activation_sparsity_score" in cols
-            assert "dead_neuron_ratio" in cols
-            assert "routing_collapse_score" in cols
-            assert "wikitext_perplexity" in cols
-            assert "wikitext_score" in cols
-            assert "tinystories_perplexity" in cols
-            assert "tinystories_score" in cols
-            assert "cross_task_score" in cols
-            assert "efficiency_wall_score" in cols
-            assert "max_viable_seq_len" in cols
-            assert "scaling_regime" in cols
-
-
 # ── TinyStories Eval ─────────────────────────────────────────────────
 
 
@@ -454,6 +448,11 @@ class TestTinyStoriesEval:
 
         return M()
 
+    # End-to-end against the real corpus — slow lane, cached corpus only.
+    @pytest.mark.slow
+    @pytest.mark.skipif(
+        not _tinystories_corpus_cached(), reason="TinyStories corpus not cached locally"
+    )
     def test_full_eval(self):
         from research.eval.tinystories_eval import evaluate_tinystories
 
@@ -551,6 +550,12 @@ class TestCrossTaskEval:
         assert result["cross_task_score"] is None
         assert "download_failed" in result["error"]
 
+    # End-to-end against the real corpora — slow lane, cached corpora only.
+    @pytest.mark.slow
+    @pytest.mark.skipif(
+        not _cross_task_corpora_cached(),
+        reason="cross-task corpora not cached locally",
+    )
     def test_full_eval(self):
         from research.eval.cross_task_eval import evaluate_cross_task_robustness
 

@@ -156,6 +156,39 @@ class TestNotebook(unittest.TestCase):
         for t in expected:
             self.assertIn(t, tables, f"Missing table: {t}")
 
+    def test_interpretability_columns_in_new_columns_registry(self):
+        from research.scientist.notebook import _PROGRAM_RESULTS_NEW_COLUMNS
+
+        expected = {
+            "activation_sparsity_score",
+            "dead_neuron_ratio",
+            "routing_collapse_score",
+            "wikitext_perplexity",
+            "wikitext_score",
+            "permutation_composition_score",
+            "permutation_composition_metric_version",
+        }
+        self.assertTrue(expected.issubset(set(_PROGRAM_RESULTS_NEW_COLUMNS)))
+
+    def test_interpretability_columns_migrated_into_leaderboard(self):
+        cols = {
+            row[1] for row in self.nb.conn.execute("PRAGMA table_info(leaderboard)")
+        }
+        expected = {
+            "activation_sparsity_score",
+            "dead_neuron_ratio",
+            "routing_collapse_score",
+            "wikitext_perplexity",
+            "wikitext_score",
+            "tinystories_perplexity",
+            "tinystories_score",
+            "cross_task_score",
+            "efficiency_wall_score",
+            "max_viable_seq_len",
+            "scaling_regime",
+        }
+        self.assertTrue(expected.issubset(cols), expected - cols)
+
     def test_hellaswag_provenance_columns_exist(self):
         program_cols = {
             row[1] for row in self.nb.conn.execute("PRAGMA table_info(program_results)")

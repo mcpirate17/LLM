@@ -57,7 +57,9 @@ _MIN_COMPOSITE_RANK_NDCG = 0.60
 _POST_EVAL_FEATURE_NAMES = (
     "hellaswag_acc_best",
     "induction_screening_auc_best",
-    "ar_legacy_auc_best",
+    # ar_legacy_auc_best removed 2026-06-18: probe was an artifact (floored for
+    # every architecture incl. a softmax positive control; values purged from the
+    # DBs). ar_gate_score_best is the live AR signal that replaced it.
     "ar_gate_score_best",
     "blimp_overall_accuracy_best",
     "binding_screening_composite_best",

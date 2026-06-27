@@ -20,12 +20,15 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from ._probe_runtime import disable_native_probe_dispatch
-from ._probe_utils import safe_deepcopy_module
+from ._probe_utils import (
+    ProbeCopyError,
+    mean_auc,
+    run_probe_seeds,
+)
 from .induction_intermediate_probe import (
     INDUCTION_V2_EVAL_EXAMPLES,
     INDUCTION_V2_SEEDS,
-    _restore_module_tensors,
-    _snapshot_module_tensors,
+    _steps_per_gap,
 )
 from .utils import clip_grad_norm, make_adamw
 
@@ -87,32 +90,6 @@ def _gap_accuracy_cv(gap_accuracies: Dict[int, float] | None) -> float:
         return 0.0
     variance = sum((v - mean) ** 2 for v in vals) / len(vals)
     return round(math.sqrt(variance) / abs(mean), 4)
-
-
-def _freeze_backbone(model: nn.Module) -> None:
-    for param in model.parameters():
-        param.requires_grad_(False)
-
-
-def _infer_model_dim(model: nn.Module) -> int:
-    dim = getattr(model, "model_dim", None)
-    if dim is not None:
-        return int(dim)
-    norm = getattr(model, "norm", None)
-    shape = getattr(getattr(norm, "weight", None), "shape", None)
-    if shape:
-        return int(shape[0])
-    raise ValueError("model does not expose model_dim or norm.weight")
-
-
-def _pre_logits(model: nn.Module, input_ids: torch.Tensor) -> torch.Tensor:
-    if hasattr(model, "_fingerprint_representations"):
-        _logits, reps = model._fingerprint_representations(input_ids)
-        return reps
-    output = model(input_ids)
-    if output.ndim != 3:
-        raise ValueError("model output must be rank-3 logits or representations")
-    return output
 
 
 def _sample_unique_tokens(
@@ -229,10 +206,7 @@ def _run_induction_validation_on(
         fused_if_available=False,
         foreach=False,
     )
-    n_gaps = len(gaps)
-    steps_per_gap: Dict[int, int] = {g: 0 for g in gaps}
-    for step in range(n_train_steps):
-        steps_per_gap[gaps[step % n_gaps]] += 1
+    steps_per_gap = _steps_per_gap(gaps, n_train_steps)
 
     pre_inputs: Dict[int, torch.Tensor] = {}
     pre_targets: Dict[int, torch.Tensor] = {}
@@ -263,7 +237,7 @@ def _run_induction_validation_on(
                 if time.perf_counter() - t0 > timeout_s:
                     result.status = "timeout"
                     break
-                gap = gaps[(step - 1) % n_gaps]
+                gap = gaps[(step - 1) % len(gaps)]
                 idx = cursor[gap]
                 cursor[gap] = idx + 1
                 input_ids = pre_inputs[gap][idx]
@@ -337,7 +311,7 @@ def _run_induction_validation_on(
 
     if result.gap_accuracies:
         vals = list(result.gap_accuracies.values())
-        result.auc = round(sum(vals) / len(vals), 4)
+        result.auc = mean_auc(vals)
         result.max_gap_acc = round(max(vals), 4)
     result.elapsed_ms = round((time.perf_counter() - t0) * 1000, 1)
     return result
@@ -383,41 +357,29 @@ def _run_induction_validation_median(
 ) -> InductionValidationResult:
     t0 = time.perf_counter()
     try:
-        probe_model = safe_deepcopy_module(model).to(device)
-    except Exception as exc:
+        runs = run_probe_seeds(
+            model,
+            seeds=seeds,
+            device=device,
+            run_single_seed=lambda probe_model, generator: _run_induction_validation_on(
+                probe_model,
+                gaps=gaps,
+                n_train_steps=n_train_steps,
+                n_eval=n_eval,
+                batch_size=batch_size,
+                lr=lr,
+                device=device,
+                timeout_s=timeout_s,
+                generator=generator,
+            ),
+        )
+    except ProbeCopyError as exc:
         return InductionValidationResult(
             status=f"copy_failed: {exc}",
             elapsed_ms=round((time.perf_counter() - t0) * 1000, 1),
             gap_accuracies={},
         )
 
-    state_refs, init_state = _snapshot_module_tensors(probe_model)
-    runs = []
-    try:
-        for idx, seed in enumerate(seeds):
-            if idx > 0:
-                _restore_module_tensors(state_refs, init_state)
-            generator = torch.Generator(device=device)
-            generator.manual_seed(int(seed))
-            runs.append(
-                _run_induction_validation_on(
-                    probe_model,
-                    gaps=gaps,
-                    n_train_steps=n_train_steps,
-                    n_eval=n_eval,
-                    batch_size=batch_size,
-                    lr=lr,
-                    device=device,
-                    timeout_s=timeout_s,
-                    generator=generator,
-                )
-            )
-    finally:
-        del probe_model, state_refs, init_state
-        if device == "cuda":
-            torch.cuda.empty_cache()
-
-    runs.sort(key=lambda r: r.auc)
     median = runs[len(runs) // 2]
     gap_accuracies = dict(median.gap_accuracies or {})
     return InductionValidationResult(

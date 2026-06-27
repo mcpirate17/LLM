@@ -37,7 +37,14 @@ def test_split_token_array_respects_fraction():
 def test_grouped_choice_scores_regroups_flat_scores(monkeypatch):
     captured = {}
 
+    from research.eval._eval_native import load_eval_native
+
+    real_pack = load_eval_native().pack_choice_sequences_native
+
     class _FakeEvalNative:
+        # Real native packing — only the scorer is faked.
+        pack_choice_sequences_native = staticmethod(real_pack)
+
         def grouped_choice_scores_packed_native(
             self,
             model,

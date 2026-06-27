@@ -21,8 +21,9 @@ from typing import Callable, Optional, Protocol
 import numpy as np
 import torch
 
-from ._data_native import load_data_native
 from research.synthesis._json_compat import loads_json
+
+from ._native import load_training_native
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +74,7 @@ class ByteTokenizer:
     def encode_to_tensor(self, text: str, vocab_size: int) -> torch.Tensor:
         if vocab_size <= 0 or not text:
             return torch.empty(0, dtype=torch.long)
-        return load_data_native().byte_tokenize_utf8(text, int(vocab_size))
+        return load_training_native().byte_tokenize_utf8(text, int(vocab_size))
 
 
 class WhitespaceHashTokenizer:
@@ -84,7 +85,7 @@ class WhitespaceHashTokenizer:
     def encode_to_tensor(self, text: str, vocab_size: int) -> torch.Tensor:
         if vocab_size <= 0 or not text:
             return torch.empty(0, dtype=torch.long)
-        return load_data_native().whitespace_hash_tokenize(text, int(vocab_size))
+        return load_training_native().whitespace_hash_tokenize(text, int(vocab_size))
 
 
 class TiktokenAdapter:
@@ -104,7 +105,7 @@ class TiktokenAdapter:
             return torch.empty(0, dtype=torch.long)
         tensor = torch.as_tensor(ids, dtype=torch.long)
         if vocab_size > 0 and vocab_size < self.native_vocab_size:
-            load_data_native().project_int64_modulo_inplace(tensor, int(vocab_size))
+            load_training_native().project_int64_modulo_inplace(tensor, int(vocab_size))
         return tensor
 
 
@@ -143,7 +144,7 @@ class CorpusTokenBatcher:
         self._tokenizer = self._build_tokenizer(
             config.tokenizer, config.tiktoken_encoding
         )
-        self._native_ext = load_data_native()
+        self._native_ext = load_training_native()
         self._pinned_batch: Optional[torch.Tensor] = None
         self._pinned_shape: Optional[tuple[int, int]] = None
         self._tokens = self._load_tokens()
@@ -262,9 +263,12 @@ class CorpusTokenBatcher:
         return self._tokenizer.encode_to_tensor("".join(chunks), self.vocab_size)
 
     def _load_tokens(self) -> torch.Tensor:
-        if not self.path.exists() or not self.path.is_file():
-            logger.warning("Corpus path not found: %s", self.path)
-            return torch.empty(0, dtype=torch.long)
+        if not self.path.is_file():
+            raise FileNotFoundError(
+                f"Corpus path not found: {self.path}. Callers that tolerate a "
+                "missing corpus must check the path before constructing "
+                "CorpusTokenBatcher."
+            )
 
         try:
             stat = self.path.stat()
@@ -359,22 +363,7 @@ class CorpusTokenBatcher:
         if max_start < 0:
             return None
 
-        if timer is None:
-            return self._sample_batch_fast(
-                tokens, batch_size, seq_len, generator, device
-            )
-        return self._sample_batch_timed(
-            tokens, batch_size, seq_len, generator, device, timer
-        )
-
-    def _sample_batch_fast(
-        self,
-        tokens: torch.Tensor,
-        batch_size: int,
-        seq_len: int,
-        generator: torch.Generator,
-        device: torch.device,
-    ) -> torch.Tensor:
+        t0 = time.perf_counter() if timer is not None else 0.0
         starts = torch.randint(
             0,
             int(tokens.numel()) - seq_len,
@@ -382,44 +371,24 @@ class CorpusTokenBatcher:
             generator=generator,
             device="cpu",
         )
-        if device.type != "cuda":
-            return self._native_ext.gather_token_batch(tokens, starts, seq_len)
-        out = self._cuda_pinned_buffer(batch_size, seq_len)
-        self._native_ext.gather_token_batch_into(tokens, starts, seq_len, out)
-        return out.to(device, non_blocking=True)
+        if timer is not None:
+            timer("start_index_sampling_ms", (time.perf_counter() - t0) * 1000.0)
+            t0 = time.perf_counter()
 
-    def _sample_batch_timed(
-        self,
-        tokens: torch.Tensor,
-        batch_size: int,
-        seq_len: int,
-        generator: torch.Generator,
-        device: torch.device,
-        timer: Callable[[str, float], None],
-    ) -> torch.Tensor:
-        t0 = time.perf_counter()
-        starts = torch.randint(
-            0,
-            int(tokens.numel()) - seq_len,
-            (batch_size,),
-            generator=generator,
-            device="cpu",
-        )
-        timer("start_index_sampling_ms", (time.perf_counter() - t0) * 1000.0)
-
-        t0 = time.perf_counter()
         if device.type != "cuda":
             batch = self._native_ext.gather_token_batch(tokens, starts, seq_len)
-            timer("native_gather_ms", (time.perf_counter() - t0) * 1000.0)
+            if timer is not None:
+                timer("native_gather_ms", (time.perf_counter() - t0) * 1000.0)
             return batch
 
         out = self._cuda_pinned_buffer(batch_size, seq_len)
         self._native_ext.gather_token_batch_into(tokens, starts, seq_len, out)
-        timer("native_gather_ms", (time.perf_counter() - t0) * 1000.0)
-
-        t0 = time.perf_counter()
+        if timer is not None:
+            timer("native_gather_ms", (time.perf_counter() - t0) * 1000.0)
+            t0 = time.perf_counter()
         batch = out.to(device, non_blocking=True)
-        timer("h2d_copy_ms", (time.perf_counter() - t0) * 1000.0)
+        if timer is not None:
+            timer("h2d_copy_ms", (time.perf_counter() - t0) * 1000.0)
         return batch
 
     def _cuda_pinned_buffer(self, batch_size: int, seq_len: int) -> torch.Tensor:

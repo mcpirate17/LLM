@@ -28,7 +28,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from ._probe_runtime import disable_native_probe_dispatch
-from ._probe_utils import safe_deepcopy_module
+from ._probe_utils import mean_auc, safe_deepcopy_module
 from .utils import clip_grad_norm, make_adamw
 
 logger = logging.getLogger(__name__)
@@ -191,7 +191,9 @@ def induction_score(
                         result.gap_accuracies[gap] = 0.0
                         continue
 
-                    correct = 0
+                    # On-device accumulator: one host sync per gap instead of
+                    # one per batch (pattern from _kv_pair.evaluate_kv_split).
+                    correct = torch.zeros((), dtype=torch.long, device=device)
                     total = 0
                     remaining = n_eval
                     while remaining > 0:
@@ -205,11 +207,13 @@ def induction_score(
                         out = probe_model(inp)
                         pred_pos = inp.shape[1] - 1
                         preds = out[:, pred_pos, :_RESTRICTED_VOCAB].argmax(dim=-1)
-                        correct += (preds == tgt).sum().item()
+                        correct += (preds == tgt).sum()
                         total += tgt.numel()
                         remaining -= bs
 
-                    result.gap_accuracies[gap] = round(correct / max(total, 1), 4)
+                    result.gap_accuracies[gap] = round(
+                        int(correct.item()) / max(total, 1), 4
+                    )
 
     except Exception as e:
         result.status = f"train_failed: {e}"
@@ -221,7 +225,7 @@ def induction_score(
     # AUC: mean accuracy across gaps, normalized to [0, 1]
     if result.gap_accuracies:
         vals = list(result.gap_accuracies.values())
-        result.auc = round(sum(vals) / len(vals), 4)
+        result.auc = mean_auc(vals)
 
     result.elapsed_ms = round((time.perf_counter() - t0) * 1000, 1)
     return result

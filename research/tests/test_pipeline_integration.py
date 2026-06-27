@@ -504,7 +504,11 @@ class TestInlinePhaseMethods(unittest.TestCase):
         class _Loss:
             @staticmethod
             def compute(logits, target):
-                return torch.nn.functional.cross_entropy(logits, target)
+                # Mirror SynthesizedLoss.compute: callers pass 3D logits /
+                # 2D targets and the loss flattens internally.
+                return torch.nn.functional.cross_entropy(
+                    logits.reshape(-1, logits.shape[-1]), target.reshape(-1)
+                )
 
         class _Optimizer:
             @staticmethod

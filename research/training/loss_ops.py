@@ -1,7 +1,7 @@
 """Thin wrappers around research.eval.utils for the micro-training tools.
 
 Kept as a stable import surface for the scripts under research/tools/. The
-native fast path lives in research.training._loss_native and is reached
+native fast path lives in research.training._native and is reached
 through language_model_loss / clip_grad_norm.
 """
 

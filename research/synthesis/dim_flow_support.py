@@ -167,6 +167,21 @@ def _build_dim_flow_flag_arrays(
         op_kind_identity=op_kind_identity,
         op_kind_binary_broadcast=op_kind_binary_broadcast,
     )
+    max_opcode = int(op_codes.max()) if op_codes.size else 0
+    if max_opcode >= int(opcode_tables["opcode_has_params"].shape[0]):
+        build_dim_flow_opcode_tables.cache_clear()
+        opcode_tables = build_dim_flow_opcode_tables(
+            op_kind_default=op_kind_default,
+            op_kind_irfft=op_kind_irfft,
+            op_kind_identity=op_kind_identity,
+            op_kind_binary_broadcast=op_kind_binary_broadcast,
+        )
+        if max_opcode >= int(opcode_tables["opcode_has_params"].shape[0]):
+            raise ValueError(
+                "dim-flow opcode table is stale or incomplete: "
+                f"max op code {max_opcode}, "
+                f"table size {opcode_tables['opcode_has_params'].shape[0]}"
+            )
     has_params_flags = opcode_tables["opcode_has_params"][op_codes] * (
         param_estimates > 0
     ).astype(np.int32, copy=False)

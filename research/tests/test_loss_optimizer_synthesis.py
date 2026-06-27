@@ -7,7 +7,10 @@ import torch
 import torch.nn as nn
 
 from research.training import _loss_components as loss_components
-from research.training._optimizer_muon import _orthogonalize_update
+from research.training._optimizer_muon import (
+    _orthogonalize_batched,
+    _orthogonalize_update,
+)
 from research.scientist.runner._types import RunConfig
 from research.scientist.runner.execution_training import (
     _allow_synthesized_training,
@@ -18,7 +21,7 @@ from research.training.optimizer_synthesis import (
     MuonOptimizer,
 )
 from research.training.curriculum import CurriculumStrategy
-from research.training._loss_native import load_loss_native
+from research.training._native import load_training_native
 from research.training.sparse_training import RigLScheduler
 
 pytestmark = pytest.mark.unit
@@ -98,6 +101,39 @@ def test_rigl_scheduler_updates_masks():
         assert state.mask.shape == state.param.shape
 
 
+def test_rigl_optimizer_state_dict_round_trips_topology():
+    """state_dict must carry masks + step_count; resume must restore them."""
+    from research.training.sparse_training import RigLOptimizer
+
+    torch.manual_seed(0)
+    params = [torch.nn.Parameter(torch.randn(16, 16)) for _ in range(2)]
+    opt = RigLOptimizer(params, lr=1e-3, T_end=10, delta=1)
+    for p in params:
+        p.grad = torch.randn_like(p)
+    opt.step()
+    opt.step()
+
+    saved = opt.state_dict()
+    assert "rigl" in saved
+    saved_masks = [m.clone() for m in saved["rigl"]["masks"]]
+
+    params2 = [torch.nn.Parameter(p.detach().clone()) for p in params]
+    opt2 = RigLOptimizer(params2, lr=1e-3, T_end=10, delta=1)
+    opt2.load_state_dict(saved)
+
+    assert opt2.scheduler.step_count == opt.scheduler.step_count
+    for state, mask in zip(opt2.scheduler._sparse_params, saved_masks):
+        assert torch.equal(state.mask.cpu(), mask)
+    # Aliases must survive the rebind inside load_state_dict.
+    assert opt2.state is opt2.base_optimizer.state
+    assert opt2.param_groups is opt2.base_optimizer.param_groups
+
+    legacy = opt.state_dict()
+    legacy.pop("rigl")
+    with pytest.raises(ValueError, match="rigl"):
+        opt2.load_state_dict(legacy)
+
+
 def test_rigl_mask_matches_reference_selection():
     param = torch.tensor(
         [[0.2, -0.9, 0.1], [1.4, -0.3, 0.8]],
@@ -135,7 +171,7 @@ def test_rigl_mask_matches_reference_selection():
     expected[grow_indices] = True
 
     actual = (
-        load_loss_native()
+        load_training_native()
         .rigl_compute_new_mask(param, grad, mask, num_to_update)
         .reshape(-1)
     )
@@ -352,6 +388,48 @@ def test_muon_orthogonalization_matches_reference_iteration():
     actual = _orthogonalize_update(matrix, n_steps)
 
     assert torch.allclose(actual, ref, rtol=1e-5, atol=1e-5)
+
+
+def test_muon_batched_orthogonalization_matches_per_matrix():
+    """Shape-bucketed (bmm) Newton-Schulz must match the per-matrix path."""
+    torch.manual_seed(0)
+    for rows, cols in ((16, 16), (8, 24), (24, 8)):
+        stack = torch.randn(5, rows, cols, dtype=torch.float32)
+        batched = _orthogonalize_batched(stack.clone(), 5)
+        for i in range(stack.shape[0]):
+            single = _orthogonalize_update(stack[i].clone(), 5)
+            assert torch.allclose(batched[i], single, rtol=1e-5, atol=1e-6), (
+                f"bucketed NS diverged from per-matrix at [{i}] for "
+                f"shape ({rows},{cols})"
+            )
+
+
+def test_muon_step_bucketing_matches_per_matrix_reference():
+    """A step over many same-shape layers must equal per-matrix Muon math."""
+    torch.manual_seed(1)
+    n_layers, dim = 4, 12
+    params = [torch.nn.Parameter(torch.randn(dim, dim)) for _ in range(n_layers)]
+    grads = [torch.randn(dim, dim) for _ in range(n_layers)]
+    lr, wd, momentum, ns_steps = 1e-2, 0.01, 0.95, 5
+
+    expected = []
+    for p, g in zip(params, grads):
+        buf = g.clone()  # first step: buffer = 0*momentum + grad
+        update = g + momentum * buf  # nesterov
+        update = _orthogonalize_update(update, ns_steps)
+        expected.append(p.detach() * (1.0 - lr * wd) - lr * update)
+
+    opt = MuonOptimizer(
+        params, lr=lr, weight_decay=wd, momentum=momentum, ns_steps=ns_steps
+    )
+    for p, g in zip(params, grads):
+        p.grad = g.clone()
+    opt.step()
+
+    for i, (p, exp) in enumerate(zip(params, expected)):
+        assert torch.allclose(p.detach(), exp, rtol=1e-5, atol=1e-6), (
+            f"bucketed Muon step diverged from per-matrix reference at layer {i}"
+        )
 
 
 # ── RunConfig optimizer fields ─────────────────────────────────────────

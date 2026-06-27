@@ -7,6 +7,16 @@ import gc
 import os
 from types import SimpleNamespace
 
+# ── CPU thread hygiene under xdist ───────────────────────────────────
+# Without this every worker initializes an all-core OpenMP/BLAS pool
+# (workers × cores threads thrashing shared caches). Must run before
+# torch/numpy import anywhere in the worker; explicit env settings win.
+_XDIST_WORKERS = os.environ.get("PYTEST_XDIST_WORKER_COUNT")
+if _XDIST_WORKERS:
+    _threads = str(max(1, (os.cpu_count() or 1) // int(_XDIST_WORKERS)))
+    for _var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
+        os.environ.setdefault(_var, _threads)
+
 import numpy as np
 import pytest
 

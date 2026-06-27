@@ -6,7 +6,8 @@ from typing import Callable, Optional
 import torch
 import torch.nn.functional as F
 
-from ._loss_native import load_loss_native
+from ._native import load_training_native
+
 
 LOG_PROB_COMPONENTS = frozenset(
     {
@@ -43,7 +44,7 @@ def loss_label_smoothed_ce(flat_logits, flat_targets, log_probs):
 def loss_rank_weighted_ce(flat_logits, flat_targets, log_probs):
     if log_probs is None:
         log_probs = F.log_softmax(flat_logits, dim=-1)
-    return load_loss_native().rank_weighted_ce(flat_logits, flat_targets, log_probs)
+    return load_training_native().rank_weighted_ce(flat_logits, flat_targets, log_probs)
 
 
 def loss_tropical_ce(flat_logits, flat_targets, log_probs):
@@ -51,19 +52,19 @@ def loss_tropical_ce(flat_logits, flat_targets, log_probs):
         return flat_logits.new_zeros(())
     if log_probs is None:
         log_probs = F.log_softmax(flat_logits, dim=-1)
-    return load_loss_native().tropical_ce(flat_targets, log_probs)
+    return load_training_native().tropical_ce(flat_targets, log_probs)
 
 
 def loss_contrastive_push(flat_logits, flat_targets, log_probs):
     if flat_logits.shape[-1] <= 1:
         return flat_logits.new_zeros(())
-    return load_loss_native().contrastive_push(flat_logits, flat_targets)
+    return load_training_native().contrastive_push(flat_logits, flat_targets)
 
 
 def loss_entropy_reg(flat_logits, flat_targets, log_probs):
     if log_probs is None:
         log_probs = F.log_softmax(flat_logits, dim=-1)
-    return load_loss_native().entropy_reg(log_probs)
+    return load_training_native().entropy_reg(log_probs)
 
 
 def loss_gradient_penalty(flat_logits, flat_targets, log_probs):

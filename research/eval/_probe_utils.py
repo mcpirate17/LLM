@@ -9,9 +9,93 @@ behind that break autograd or corrupt tensor metadata on subsequent CUDA ops.
 from __future__ import annotations
 
 import copy
+import logging
+import os
+from typing import Callable, Protocol, Sequence, TypeVar
 
 import torch
 import torch.nn as nn
+
+logger = logging.getLogger(__name__)
+
+
+class _HasAuc(Protocol):
+    auc: float
+
+
+_ProbeRun = TypeVar("_ProbeRun", bound=_HasAuc)
+
+
+class ProbeCopyError(RuntimeError):
+    """Raised when the probe's safe-deepcopy of the host model fails."""
+
+
+def mean_auc(values: Sequence[float]) -> float:
+    """Mean accuracy rounded to 4 places — the shared probe AUC reduction."""
+    if not values:
+        return 0.0
+    return round(sum(values) / len(values), 4)
+
+
+def maybe_compile_probe_model(model: nn.Module, *, dynamic: bool) -> nn.Module:
+    """Optionally wrap a probe copy with ``torch.compile``.
+
+    Gated behind ``ARIA_PROBE_COMPILE=1`` (off by default): per-shape compile
+    cost does not amortize at typical probe budgets, and some IR-executor
+    graphs trigger Python-side side-effect recompiles that erase the gain.
+    ``dynamic`` should be True when the probe trains across multiple sequence
+    lengths (e.g. one per gap) and False for shape-invariant probes.
+    """
+    if os.environ.get("ARIA_PROBE_COMPILE", "") != "1":
+        return model
+    if not torch.cuda.is_available():
+        return model
+    try:
+        return torch.compile(model, mode="default", dynamic=dynamic, fullgraph=False)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("torch.compile unavailable for probe model: %s", exc)
+        return model
+
+
+def run_probe_seeds(
+    model: nn.Module,
+    *,
+    seeds: Sequence[int],
+    device: str,
+    run_single_seed: Callable[[nn.Module, torch.Generator], _ProbeRun],
+) -> list[_ProbeRun]:
+    """Shared multi-seed probe harness: one deepcopy, restore between seeds.
+
+    Deepcopies the host model once, snapshots its initial tensors, then runs
+    ``run_single_seed(probe_model, generator)`` per seed with the initial
+    weights restored in between (~10× cheaper than deepcopying per seed for
+    10-100M-param probe models). Returns the runs sorted by ``.auc`` so the
+    caller can take ``runs[len(runs) // 2]`` as the median.
+
+    Raises :class:`ProbeCopyError` if the deepcopy fails; run errors
+    propagate unchanged.
+    """
+    try:
+        probe_model = safe_deepcopy_module(model).to(device)
+    except Exception as exc:
+        raise ProbeCopyError(str(exc)) from exc
+    state_refs, init_state = snapshot_module_tensors(probe_model)
+
+    runs: list[_ProbeRun] = []
+    try:
+        for idx, seed in enumerate(seeds):
+            if idx > 0:
+                restore_module_tensors(state_refs, init_state)
+            generator = torch.Generator(device=device)
+            generator.manual_seed(int(seed))
+            runs.append(run_single_seed(probe_model, generator))
+    finally:
+        del probe_model, state_refs, init_state
+        if device == "cuda":
+            torch.cuda.empty_cache()
+
+    runs.sort(key=lambda r: r.auc)
+    return runs
 
 
 def _materialize_non_inference_(module: nn.Module) -> None:
@@ -76,6 +160,29 @@ def _detach_non_leaf_attrs_(module: nn.Module) -> None:
                 continue
             if isinstance(val, torch.Tensor) and not val.is_leaf:
                 setattr(mod, name, val.detach())
+
+
+def snapshot_module_tensors(
+    module: nn.Module,
+) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
+    """Capture parameters and buffers for cheap in-place restoration.
+
+    Pair with :func:`restore_module_tensors` to reuse one deepcopy across
+    multiple probe runs (seeds, sequence lengths) instead of re-deepcopying.
+    """
+    refs = [*module.parameters(), *module.buffers()]
+    with torch.no_grad():
+        snapshot = [tensor.detach().clone() for tensor in refs]
+    return refs, snapshot
+
+
+def restore_module_tensors(
+    refs: list[torch.Tensor], snapshot: list[torch.Tensor]
+) -> None:
+    """Restore parameters and buffers without rebuilding a state_dict."""
+    with torch.no_grad():
+        for ref, original in zip(refs, snapshot):
+            ref.copy_(original)
 
 
 def safe_deepcopy_module(module: nn.Module) -> nn.Module:

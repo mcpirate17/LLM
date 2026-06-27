@@ -4,7 +4,6 @@ from types import SimpleNamespace
 
 import torch
 
-from research.eval.routing_ablations import rank_matched_budget_variants
 from research.eval.sandbox import safe_eval
 from research.synthesis.compiler import compile_model
 from research.synthesis.compiler_ops_routing import (
@@ -55,20 +54,6 @@ def test_hybrid_sparse_router_graph_safe_eval_emits_routing_metrics():
     assert "route_confidence_mean" in report
     assert "route_strength_mean" in report
     assert "dead_lane_count" in report
-
-
-def test_rank_matched_budget_variants_prefers_quality_per_compute():
-    ranked = rank_matched_budget_variants(
-        [
-            {"variant": "no_routing", "quality": 0.60, "compute": 1.0},
-            {"variant": "single_token", "quality": 0.63, "compute": 1.02},
-            {"variant": "dense_triplet", "quality": 0.67, "compute": 1.08},
-            {"variant": "sparse_triplet", "quality": 0.69, "compute": 1.01},
-        ],
-        budget_tolerance=0.1,
-    )
-    assert ranked[0]["variant"] == "sparse_triplet"
-    assert ranked[0]["matched_budget"] is True
 
 
 def test_hybrid_sparse_router_does_not_write_future_span_signal_into_prefix():

@@ -13,7 +13,7 @@ from dataclasses import dataclass
 
 import torch
 
-from ._loss_native import load_loss_native
+from ._native import load_training_native
 
 
 @dataclass(slots=True)
@@ -58,7 +58,7 @@ class RigLScheduler:
         self.step_count = 0
         self._sparse_params: list[_SparseParamState] = []
         self._hook_handles: list[torch.utils.hooks.RemovableHandle] = []
-        self._native = load_loss_native()
+        self._native = load_training_native()
 
         for param in _flatten_params(params):
             if (
@@ -154,6 +154,13 @@ class RigLScheduler:
 class RigLOptimizer(torch.optim.Optimizer):
     """
     Wrapper optimizer for RigL algorithm. Use as a transparent replacement for AdamW.
+
+    A real ``torch.optim.Optimizer``: the base class is initialized properly
+    and ``param_groups``/``state`` alias the wrapped optimizer's containers,
+    so the inherited ``state_dict``/``load_state_dict`` machinery operates on
+    the live base-optimizer state. The RigL topology (masks + step counter)
+    rides along in the checkpoint payload so a resume keeps the sparse
+    topology instead of silently restarting it.
     """
 
     def __init__(
@@ -170,7 +177,9 @@ class RigLOptimizer(torch.optim.Optimizer):
         params_list = list(params)
 
         self.base_optimizer = base_optimizer_cls(params_list, **kwargs)
-        self.defaults = self.base_optimizer.defaults
+        super().__init__(params_list, self.base_optimizer.defaults)
+        # Alias the base optimizer's containers (replacing the ones the base
+        # class just built) so both objects always see the same state.
         self.param_groups = self.base_optimizer.param_groups
         self.state = self.base_optimizer.state
 
@@ -187,8 +196,42 @@ class RigLOptimizer(torch.optim.Optimizer):
         self.scheduler.step()
         return loss
 
-    def zero_grad(self, set_to_none=False):
+    def zero_grad(self, set_to_none=True):
         self.base_optimizer.zero_grad(set_to_none=set_to_none)
+
+    def state_dict(self):
+        state = self.base_optimizer.state_dict()
+        state["rigl"] = {
+            "step_count": int(self.scheduler.step_count),
+            "masks": [s.mask.detach().cpu() for s in self.scheduler._sparse_params],
+        }
+        return state
+
+    def load_state_dict(self, state_dict):
+        state_dict = dict(state_dict)
+        rigl = state_dict.pop("rigl", None)
+        self.base_optimizer.load_state_dict(state_dict)
+        # load_state_dict rebinds the base optimizer's containers — re-alias.
+        self.param_groups = self.base_optimizer.param_groups
+        self.state = self.base_optimizer.state
+        if rigl is None:
+            raise ValueError(
+                "RigLOptimizer checkpoint is missing the 'rigl' topology payload; "
+                "refusing to resume with reinitialized masks."
+            )
+        sparse_params = self.scheduler._sparse_params
+        masks = rigl["masks"]
+        if len(masks) != len(sparse_params):
+            raise ValueError(
+                f"RigL mask count mismatch: checkpoint has {len(masks)}, "
+                f"optimizer tracks {len(sparse_params)}"
+            )
+        self.scheduler.step_count = int(rigl["step_count"])
+        for sparse_state, mask in zip(sparse_params, masks):
+            sparse_state.mask = mask.to(
+                device=sparse_state.param.device, dtype=torch.bool
+            )
+        self.scheduler.apply_masks()
 
 
 def _flatten_params(params) -> list[torch.Tensor]:

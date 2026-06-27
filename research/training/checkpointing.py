@@ -20,6 +20,7 @@ from typing import Any, Dict, Optional
 
 import torch
 import torch.nn as nn
+from torch.utils._pytree import tree_map_only
 
 logger = logging.getLogger(__name__)
 
@@ -52,25 +53,12 @@ class CheckpointManager:
         logger.debug("Checkpoint saved: %s", path)
 
     @staticmethod
-    def _map_tensors(value: Any, fn) -> Any:
-        """Recursively apply ``fn`` to every tensor leaf, preserving structure."""
-        if torch.is_tensor(value):
-            return fn(value)
-        if isinstance(value, dict):
-            return {k: CheckpointManager._map_tensors(v, fn) for k, v in value.items()}
-        if isinstance(value, list):
-            return [CheckpointManager._map_tensors(v, fn) for v in value]
-        if isinstance(value, tuple):
-            return tuple(CheckpointManager._map_tensors(v, fn) for v in value)
-        return value
+    def _cpu_tree(value: Any) -> Any:
+        return tree_map_only(torch.Tensor, lambda t: t.detach().cpu(), value)
 
-    @classmethod
-    def _cpu_tree(cls, value: Any) -> Any:
-        return cls._map_tensors(value, lambda t: t.detach().cpu())
-
-    @classmethod
-    def _move_tree_to_device(cls, value: Any, device: torch.device) -> Any:
-        return cls._map_tensors(value, lambda t: t.to(device=device))
+    @staticmethod
+    def _move_tree_to_device(value: Any, device: torch.device) -> Any:
+        return tree_map_only(torch.Tensor, lambda t: t.to(device=device), value)
 
     @staticmethod
     def _validate_phase_state(state: Dict[str, Any], path: Path) -> Dict[str, Any]:

@@ -31,7 +31,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, Tuple
 
 import torch
 import torch.nn as nn
@@ -39,7 +39,12 @@ import torch.nn.functional as F
 
 
 from ._probe_runtime import disable_native_probe_dispatch
-from ._probe_utils import safe_deepcopy_module
+from ._probe_utils import (
+    ProbeCopyError,
+    maybe_compile_probe_model,
+    mean_auc,
+    run_probe_seeds,
+)
 from .utils import clip_grad_norm
 
 logger = logging.getLogger(__name__)
@@ -55,27 +60,6 @@ BINDING_V2_EVAL_BATCH_SIZE = 32
 BINDING_V2_LR = 3e-4
 BINDING_V2_TIMEOUT_S = 240.0
 BINDING_V2_SEEDS: Tuple[int, ...] = (11, 23, 47)
-
-
-def _maybe_compile(model: nn.Module) -> nn.Module:
-    """Optionally wrap with ``torch.compile``.
-
-    Shape-invariant here (seq_len=128 always), so compile *could* amortize
-    across the 2400 training steps. Gated behind ``ARIA_PROBE_COMPILE``
-    because some IR-executor graphs still trigger Python-side side-effect
-    recompiles that erase the gain.
-    """
-    import os as _os
-
-    if _os.environ.get("ARIA_PROBE_COMPILE", "") != "1":
-        return model
-    if not torch.cuda.is_available():
-        return model
-    try:
-        return torch.compile(model, mode="default", dynamic=False, fullgraph=False)
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("torch.compile unavailable for binding probe model: %s", exc)
-        return model
 
 
 def _generate_copy_batches_bulk(
@@ -195,7 +179,7 @@ def _run_binding_intermediate_on(
 
     vocab_size = int(getattr(probe_model, "vocab_size", 256) or 256)
     probe_model.train()
-    compiled = _maybe_compile(probe_model)
+    compiled = maybe_compile_probe_model(probe_model, dynamic=False)
 
     # Pre-generate all training batches per distance up-front.
     pre_train = _pre_generate_binding_train_batches(
@@ -254,7 +238,7 @@ def _run_binding_intermediate_on(
                 generator=generator,
             )
             vals = list(result.distance_accuracies.values())
-            result.auc = round(sum(vals) / len(vals), 4) if vals else 0.0
+            result.auc = mean_auc(vals)
             result.max_distance_acc = round(max(vals), 4) if vals else 0.0
     except Exception as exc:
         result.status = f"train_failed: {exc}"
@@ -316,54 +300,6 @@ def _binding_train_loss(
     )
 
 
-def _run_binding_intermediate_single_seed(
-    model: nn.Module,
-    *,
-    distances: Tuple[int, ...] = BINDING_V2_DISTANCES,
-    n_train_steps: int = BINDING_V2_TRAIN_STEPS,
-    n_eval: int = BINDING_V2_EVAL_EXAMPLES,
-    train_seq_len: int = BINDING_V2_TRAIN_SEQ_LEN,
-    eval_seq_len: int = BINDING_V2_EVAL_SEQ_LEN,
-    train_batch_size: int = BINDING_V2_TRAIN_BATCH_SIZE,
-    eval_batch_size: int = BINDING_V2_EVAL_BATCH_SIZE,
-    lr: float = BINDING_V2_LR,
-    device: str = "cuda",
-    timeout_s: float = BINDING_V2_TIMEOUT_S,
-    seed: int | None = None,
-) -> BindingV2Result:
-    """Single-seed binding v2 probe. Prefer
-    :func:`run_binding_intermediate` which takes the median across
-    seeds.
-    """
-    generator: torch.Generator | None = None
-    if seed is not None:
-        generator = torch.Generator(device=device)
-        generator.manual_seed(int(seed))
-    try:
-        probe_model = safe_deepcopy_module(model).to(device)
-    except Exception as exc:
-        return BindingV2Result(status=f"copy_failed: {exc}", distance_accuracies={})
-    try:
-        return _run_binding_intermediate_on(
-            probe_model,
-            distances=distances,
-            n_train_steps=n_train_steps,
-            n_eval=n_eval,
-            train_seq_len=train_seq_len,
-            eval_seq_len=eval_seq_len,
-            train_batch_size=train_batch_size,
-            eval_batch_size=eval_batch_size,
-            lr=lr,
-            device=device,
-            timeout_s=timeout_s,
-            generator=generator,
-        )
-    finally:
-        del probe_model
-        if device == "cuda":
-            torch.cuda.empty_cache()
-
-
 def run_binding_intermediate(
     model: nn.Module,
     *,
@@ -385,23 +321,11 @@ def run_binding_intermediate(
     """
     t0 = time.perf_counter()
     try:
-        probe_model = safe_deepcopy_module(model).to(device)
-    except Exception as exc:
-        return BindingV2Result(
-            status=f"copy_failed: {exc}",
-            elapsed_ms=round((time.perf_counter() - t0) * 1000, 1),
-            distance_accuracies={},
-        )
-    init_state = {k: v.detach().clone() for k, v in probe_model.state_dict().items()}
-
-    runs: List[BindingV2Result] = []
-    try:
-        for idx, seed in enumerate(seeds):
-            if idx > 0:
-                probe_model.load_state_dict(init_state, strict=False)
-            generator = torch.Generator(device=device)
-            generator.manual_seed(int(seed))
-            r = _run_binding_intermediate_on(
+        runs = run_probe_seeds(
+            model,
+            seeds=seeds,
+            device=device,
+            run_single_seed=lambda probe_model, generator: _run_binding_intermediate_on(
                 probe_model,
                 distances=distances,
                 n_train_steps=n_train_steps,
@@ -414,14 +338,15 @@ def run_binding_intermediate(
                 device=device,
                 timeout_s=timeout_s,
                 generator=generator,
-            )
-            runs.append(r)
-    finally:
-        del probe_model, init_state
-        if device == "cuda":
-            torch.cuda.empty_cache()
+            ),
+        )
+    except ProbeCopyError as exc:
+        return BindingV2Result(
+            status=f"copy_failed: {exc}",
+            elapsed_ms=round((time.perf_counter() - t0) * 1000, 1),
+            distance_accuracies={},
+        )
 
-    runs.sort(key=lambda r: r.auc)
     median = runs[len(runs) // 2]
     median.elapsed_ms = round((time.perf_counter() - t0) * 1000, 1)
     return median

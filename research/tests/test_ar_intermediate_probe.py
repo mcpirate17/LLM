@@ -109,16 +109,22 @@ def test_ar_intermediate_diagnostic_score_prioritizes_exact_and_learning_speed()
     assert exact_with_slope > class_only
 
 
-def test_ar_intermediate_tiny_cpu_completes_and_populates_schema():
+def test_ar_intermediate_tiny_cpu_completes_populates_schema_and_preserves_state():
     from research.eval.ar_intermediate_probe import (
         AR_INTERMEDIATE_METRIC_VERSION,
         ar_intermediate_probe,
     )
 
-    result = ar_intermediate_probe(TinyLM(), cfg=_tiny_cfg(), device="cpu")
+    model = TinyLM()
+    model.eval()
+    before = snapshot_state(model)
+
+    result = ar_intermediate_probe(model, cfg=_tiny_cfg(), device="cpu")
     data = result.to_dict()
 
     assert result.status == "ok"
+    assert not model.training
+    assert_state_preserved(model, before)
     assert result.metric_version == AR_INTERMEDIATE_METRIC_VERSION
     assert result.steps_trained == 3
     assert len(result.learning_curve) == 3
@@ -142,20 +148,6 @@ def test_ar_intermediate_tiny_cpu_completes_and_populates_schema():
         "held_class_lift",
     }.issubset(curve[0])
     assert all(row["loss"] > 0.0 for row in curve)
-
-
-def test_ar_intermediate_preserves_model_state_with_copy_model():
-    from research.eval.ar_intermediate_probe import ar_intermediate_probe
-
-    model = TinyLM()
-    model.eval()
-    before = snapshot_state(model)
-
-    result = ar_intermediate_probe(model, cfg=_tiny_cfg(), device="cpu")
-
-    assert result.status == "ok"
-    assert not model.training
-    assert_state_preserved(model, before)
 
 
 def test_ar_intermediate_reports_vocab_too_small_without_curve_placeholders():

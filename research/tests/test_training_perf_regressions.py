@@ -79,7 +79,7 @@ def test_byte_text_loader_uses_native_file_prefix_tokenizer(
             raise AssertionError("not expected in this test")
 
     monkeypatch.setattr(
-        "research.training.data_pipeline.load_data_native", lambda: _Native()
+        "research.training.data_pipeline.load_training_native", lambda: _Native()
     )
 
     batcher = CorpusTokenBatcher(
@@ -117,7 +117,7 @@ def test_jsonl_byte_loader_uses_native_jsonl_path(monkeypatch):
 
     try:
         monkeypatch.setattr(
-            "research.training.data_pipeline.load_data_native", lambda: _Native()
+            "research.training.data_pipeline.load_training_native", lambda: _Native()
         )
         batcher = CorpusTokenBatcher(
             CorpusConfig(

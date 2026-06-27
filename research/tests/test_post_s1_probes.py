@@ -51,7 +51,6 @@ def test_missing_required_metrics_partial() -> None:
     assert absent == {
         "binding_screening_auc",
         "binding_screening_composite",
-        "ar_legacy_auc",
     }
 
 

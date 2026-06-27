@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import ctypes
-import importlib
 import logging
 import os
 from pathlib import Path
@@ -10,7 +9,6 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 BOUND_NATIVE_LIB: Any = False
-ARIA_CORE_MODULE: Any = False
 
 
 class AriaGraphAnalysisResult(ctypes.Structure):
@@ -247,19 +245,6 @@ def load_native_graph_analysis_lib() -> Any:
     return lib
 
 
-def try_import_aria_core() -> Any:
-    global ARIA_CORE_MODULE
-    if ARIA_CORE_MODULE is not False:
-        return ARIA_CORE_MODULE
-    try:
-        module = importlib.import_module("aria_core")
-    except Exception:
-        module = None
-    ARIA_CORE_MODULE = module
-    return module
-
-
 def reset_bindings() -> None:
-    global BOUND_NATIVE_LIB, ARIA_CORE_MODULE
+    global BOUND_NATIVE_LIB
     BOUND_NATIVE_LIB = False
-    ARIA_CORE_MODULE = False

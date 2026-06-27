@@ -14,7 +14,7 @@ JOURNAL_MAX_STATUS ?= 80
 NOTEBOOKLM_OUT ?= tasks/notebooklm/codex_context_bundle.md
 NOTEBOOKLM_RESEARCH_OUT ?= tasks/notebooklm/research_briefing_bundle.md
 
-.PHONY: all aria_core test test-aria_core test-designer test-research test-integration test-changed watch-test-changed profile-scalene bench codex-journal notebooklm-bundle notebooklm-research-bundle clean clean-junk clean-docs clean-all help complexity-report complexity-check complexity-refresh-baseline guardrails-dry guardrails-dry-report perf-summary governance-check governance-audit profile-hotpaths profile-screening-hotpaths profile-screening-hotpaths-quick
+.PHONY: all aria_core test test-aria_core test-designer test-research test-research-slow test-integration test-changed watch-test-changed profile-scalene bench codex-journal notebooklm-bundle notebooklm-research-bundle clean clean-junk clean-docs clean-all help complexity-report complexity-check complexity-refresh-baseline guardrails-dry guardrails-dry-report perf-summary governance-check governance-audit profile-hotpaths profile-screening-hotpaths profile-screening-hotpaths-quick
 
 all: aria_core  ## Build everything
 
@@ -28,21 +28,24 @@ test: aria_core  ## Run all tests (aria_core + aria_designer + research)
 	@echo "=== aria_core equivalence tests ==="
 	cd aria_core && $(PYTHON) -m pytest tests/ -x -q
 	@echo "=== aria_designer tests ==="
-	cd aria_designer && $(PYTHON) -m pytest tests/ --ignore=tests/test_aria_features.py -x -q
-	@echo "=== research tests (unit+api) ==="
-	cd research && $(PYTHON) -m pytest tests/ -m "unit or api" -x --tb=short
+	cd aria_designer && $(PYTHON) -m pytest tests/ -x -q
+	@echo "=== research tests (unit+api, fast) ==="
+	cd research && $(PYTHON) -m pytest tests/ -m "(unit or api) and not slow" -n auto -x --tb=short
 
 test-aria_core: aria_core  ## Run only aria_core tests
 	cd aria_core && $(PYTHON) -m pytest tests/ -x -q
 
 test-designer:  ## Run only aria_designer tests
-	cd aria_designer && $(PYTHON) -m pytest tests/ --ignore=tests/test_aria_features.py -x -q
+	cd aria_designer && $(PYTHON) -m pytest tests/ -x -q
 
-test-research:  ## Run only research tests (unit+api)
-	cd research && $(PYTHON) -m pytest tests/ -m "unit or api" -x --tb=short
+test-research:  ## Run only research tests (unit+api, excludes slow)
+	cd research && $(PYTHON) -m pytest tests/ -m "(unit or api) and not slow" -n auto -x --tb=short
+
+test-research-slow:  ## Run the slow-marked research tests (serial, long)
+	cd research && $(PYTHON) -m pytest tests/ -m slow --tb=short --durations=25
 
 test-research-all:  ## Run all research test markers
-	cd research && $(PYTHON) -m pytest tests/ -m "unit or api" -x --tb=short
+	cd research && $(PYTHON) -m pytest tests/ -m "(unit or api) and not slow" -n auto -x --tb=short
 	cd research && $(PYTHON) -m pytest tests/ -m pipeline --tb=short
 	cd research && $(PYTHON) -m pytest tests/ -m native --tb=short
 	cd research && $(PYTHON) -m pytest tests/ -m designer --tb=short

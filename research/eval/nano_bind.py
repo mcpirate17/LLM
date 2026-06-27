@@ -247,9 +247,13 @@ def _eval_checkpoint(
     top1_tokens: list[int] = []
     top5_ids_per_prompt: list[list[int]] = []
     top5_tokens_per_prompt: list[list[str]] = []
-    for i, lp in enumerate(last_pos):
-        top5_vals = torch.topk(logits[i, lp, :], k=5)
-        ids5 = [int(t) for t in top5_vals.indices.tolist()]
+    # One gather + one topk + one host transfer for all prompts, instead of
+    # a per-prompt topk/.tolist() sync loop.
+    pos = torch.as_tensor(last_pos, dtype=torch.long, device=logits.device)
+    row_idx = torch.arange(len(last_pos), device=logits.device)
+    top5_all = torch.topk(logits[row_idx, pos, :], k=5).indices.tolist()
+    for i, ids5 in enumerate(top5_all):
+        ids5 = [int(t) for t in ids5]
         top5_ids_per_prompt.append(ids5)
         top5_tokens_per_prompt.append([enc.decode([t]).strip() for t in ids5])
         top1 = ids5[0]

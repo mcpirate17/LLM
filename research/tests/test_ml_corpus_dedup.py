@@ -884,12 +884,13 @@ def test_op_embeddings_cooccurrence_pairs_dedupe_reruns(tmp_path: Path) -> None:
     assert negative == []
 
 
-def test_graph_fingerprint_requires_native(monkeypatch) -> None:
+def test_graph_fingerprint_python_fallback_matches_serializer(monkeypatch) -> None:
     from research.scientist.intelligence import ml_corpus
+    from research.synthesis.serializer import graph_from_json
 
     monkeypatch.setattr(ml_corpus, "_try_import_rust_scheduler", lambda: None)
 
     payload = graph_json('{"templates_used":["fp"]}')
 
-    with pytest.raises(RuntimeError, match="Rust graph fingerprinting is unavailable"):
-        ml_corpus._graph_fingerprint(payload)
+    fingerprint = ml_corpus._graph_fingerprint(payload)
+    assert fingerprint == str(graph_from_json(payload).fingerprint())

@@ -297,7 +297,10 @@ def test_get_supported_native_ops_caches_probe_result(monkeypatch):
     assert calls["count"] == 1
 
 
-def test_graph_uses_native_analysis_when_available(monkeypatch):
+def test_graph_native_analysis_is_mandatory(monkeypatch):
+    """Graph analysis runs on the native runtime only — the aria_core and
+    pure-Python fallbacks were removed (3600fbb); a missing native lib must
+    raise instead of silently degrading."""
     import research.synthesis.native_analysis as native_analysis
 
     graph = ComputationGraph(16)
@@ -306,25 +309,14 @@ def test_graph_uses_native_analysis_when_available(monkeypatch):
     out = graph.add_op("gelu", [mid])
     graph.set_output(out)
 
-    class FakeAriaCore:
-        @staticmethod
-        def analyze_graph(n_nodes, edges, op_codes, output_idx, input_idx):
-            return {
-                "valid": True,
-                "reachable_nodes": [0, 1, 2],
-                "max_depth": 7,
-                "has_input_path": False,
-            }
+    assert graph.get_reachable_nodes() == {inp, mid, out}
+    analysis = graph._analysis_ir().analyze_structure()
+    assert analysis.backend == "native"
+    assert analysis.reachable_count == 3
+    assert graph.has_gradient_path() is True
 
-    native_analysis.reset_native_analysis_bindings()
     monkeypatch.setattr(
         native_analysis, "_load_native_graph_analysis_lib", lambda: None
     )
-    monkeypatch.setattr(
-        native_analysis, "_try_import_aria_core", lambda: FakeAriaCore()
-    )
-
-    assert graph.get_reachable_nodes() == {inp, mid, out}
-    analysis = graph._analysis_ir().analyze_structure()
-    assert analysis.depth == 7
-    assert graph.has_gradient_path() is False
+    with pytest.raises(RuntimeError, match="native graph analysis runtime"):
+        native_analysis.analyze_ir(graph._analysis_ir(), include_reachable=False)

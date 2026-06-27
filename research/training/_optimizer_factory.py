@@ -1,13 +1,10 @@
 from __future__ import annotations
 
-import logging
 from typing import Dict, Tuple
 
 import torch
 
 from ._optimizer_muon import MuonOptimizer
-
-logger = logging.getLogger(__name__)
 
 
 def build_optimizer(
@@ -37,20 +34,13 @@ def build_optimizer(
             weight_decay=weight_decay,
             betas=betas,
         )
+        # fused/foreach are explicit caller requests: if the build can't
+        # honor them, fail loud rather than silently training differently.
         if fused:
             kwargs["fused"] = True
         elif foreach:
             kwargs["foreach"] = True
-        try:
-            return torch.optim.AdamW(params, **kwargs)  # type: ignore[arg-type]
-        except TypeError:
-            logger.warning(
-                "AdamW fused/foreach not supported on this PyTorch build; "
-                "falling back to plain AdamW"
-            )
-            kwargs.pop("fused", None)
-            kwargs.pop("foreach", None)
-            return torch.optim.AdamW(params, **kwargs)  # type: ignore[arg-type]
+        return torch.optim.AdamW(params, **kwargs)  # type: ignore[arg-type]
 
     if name == "sgd":
         return torch.optim.SGD(

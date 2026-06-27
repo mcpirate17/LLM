@@ -184,7 +184,10 @@ static torch::Tensor tropical_matmul_f32(torch::Tensor A, torch::Tensor B) {
 
 static torch::Tensor tropical_matmul_batched_f32(torch::Tensor A, torch::Tensor B) {
     CHECK_INPUT_ANY(A); CHECK_INPUT_ANY(B);
-    int64_t batch = A.size(0), M = A.size(1), K = A.size(2), N = B.size(1);
+    // B is (batch, K, N): both the CPU and CUDA kernels index B[k*N + j].
+    TORCH_CHECK(B.dim() == 3 && B.size(1) == A.size(2),
+                "tropical_matmul_batched_f32: B must be (batch, K, N) with K == A.size(2)");
+    int64_t batch = A.size(0), M = A.size(1), K = A.size(2), N = B.size(2);
     auto C = torch::zeros({batch, M, N}, A.options());
     if (A.is_cuda()) {
         launch_cuda_tropical_matmul_batched_f32(A.data_ptr<float>(), B.data_ptr<float>(), C.data_ptr<float>(), batch, M, K, N);
@@ -479,4 +482,30 @@ void bind_kernels(py::module_ &m) {
         aria_cumprod_safe_f32(flat.data_ptr<float>(), y.data_ptr<float>(), flat.size(0), flat.size(1), lo, hi);
         return y.reshape_as(x);
     }, "Cumulative product with clamping", py::arg("x"), py::arg("lo") = 1e-6f, py::arg("hi") = 1e6f);
+
+    // ═══ Op Registry (Run-2 Orthogonality) ═══
+    m.def("get_op_registry", []() {
+        py::dict registry;
+        auto add_op = [&](const std::string& name, float flops, float memory, float orthogonality) {
+            registry[name.c_str()] = py::make_tuple(flops, memory, orthogonality);
+        };
+
+        // Standard ops (low orthogonality relative to softmax)
+        add_op("softmax_f32", 3.0, 1.0, 0.0);
+        add_op("softmax_seq_f32", 3.0, 1.0, 0.0);
+        add_op("matmul_f32", 2.0, 1.0, 0.1);
+        add_op("relu_f32", 1.0, 1.0, 0.1);
+        add_op("gelu_f32", 5.0, 1.0, 0.1);
+        add_op("silu_f32", 3.0, 1.0, 0.1);
+        
+        // Novel/Alternative ops (high orthogonality / symmetry breaking)
+        add_op("tropical_add_f32", 1.0, 1.0, 0.9);
+        add_op("tropical_matmul_f32", 2.0, 1.0, 1.0);
+        add_op("reciprocal_f32", 1.0, 1.0, 0.8);
+        add_op("sign_ste_f32", 1.0, 1.0, 1.0);
+        add_op("cumprod_safe_f32", 2.0, 1.0, 0.7);
+        add_op("linear_cka_f32", 10.0, 1.0, 0.5);
+
+        return registry;
+    }, "Return a mapping of op_name -> (flops_mult, mem_mult, orthogonality_factor)");
 }

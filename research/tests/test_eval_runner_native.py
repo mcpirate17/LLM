@@ -289,39 +289,3 @@ def test_native_screening_graph_analysis_matches_python_shape():
     assert tuple(native["counted_ops"]) == ("linear_proj", "moe_topk", "output")
     assert tuple(native["toxic_bigrams"]) == ("linear_proj->moe_topk",)
     assert native["has_parameterized_op"] is True
-
-
-def test_native_template_summary_core_exposes_metrics():
-    native = load_eval_native().summarize_template_stat_core(
-        4,
-        4,
-        3,
-        2,
-        [0.5, 0.7],
-        [0.6],
-        [0.8],
-        [0.9],
-        [0.4],
-        [0.08],
-        [0.09],
-        [0.07],
-        [0.31],
-        [0.4],
-        1,
-        2,
-        3,
-        2,
-        1,
-        1,
-        [0.2],
-        [0.1],
-        [0.05],
-    )
-    assert native["n_used"] == 4
-    assert native["s0_rate"] == pytest.approx(1.0)
-    assert native["s05_rate"] == pytest.approx(0.75)
-    assert native["s1_rate"] == pytest.approx(0.5)
-    assert native["avg_loss_ratio"] == pytest.approx(0.6)
-    assert native["best_loss_ratio"] == pytest.approx(0.5)
-    assert native["screening_metric_coverage"]["hellaswag"] == 2
-    assert native["evidence_level"] == "sparse"

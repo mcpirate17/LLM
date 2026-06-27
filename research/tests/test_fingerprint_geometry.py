@@ -3,7 +3,7 @@ import torch
 
 # `_analyze_geometry` was renamed to public `analyze_geometry` and moved
 # from `fingerprint` to `fingerprint_probes` during the module split.
-from research.eval.fingerprint_probes import analyze_geometry
+from research.eval.fingerprint_runtime import analyze_geometry
 
 pytestmark = pytest.mark.unit
 

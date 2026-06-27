@@ -152,7 +152,9 @@ def _download_blimp() -> Dict[str, List[Dict[str, str]]]:
 
     for subtask_name in _BLIMP_SUBTASKS:
         try:
-            ds = load_dataset("nyu-mll/blimp", subtask_name, split="train")
+            ds = load_dataset(
+                "nyu-mll/blimp", subtask_name, split="train", revision="main"
+            )
             examples = [
                 {"good": row["sentence_good"], "bad": row["sentence_bad"]} for row in ds
             ]
@@ -234,69 +236,6 @@ def _get_tokenized_subtask_examples(
 
 
 # ── Scoring ─────────────────────────────────────────────────────────────
-
-
-@torch.no_grad()
-def _score_pairs_batched(
-    model: nn.Module,
-    pairs: List[Dict[str, str]],
-    vocab_size: int,
-    device: str,
-    max_seq_len: int = 512,
-) -> int:
-    """Score minimal pairs via one batched forward pass."""
-
-    if not pairs:
-        return 0
-
-    grouped_sequences: List[List[List[int]]] = []
-    grouped_starts: List[List[int]] = []
-    for pair in pairs:
-        pair_tokens: List[List[int]] = []
-        for key in ("good", "bad"):
-            toks = tokenize_string(pair[key], vocab_size)
-            if len(toks) > max_seq_len:
-                toks = toks[:max_seq_len]
-            pair_tokens.append(toks.tolist() if hasattr(toks, "tolist") else list(toks))
-        grouped_sequences.append(pair_tokens)
-        grouped_starts.append([0, 0])
-
-    pair_scores = grouped_choice_scores(
-        model,
-        grouped_sequences,
-        grouped_starts,
-        vocab_size=vocab_size,
-        device=device,
-    )
-    return sum(
-        1 for scores in pair_scores if len(scores) == 2 and scores[0] > scores[1]
-    )
-
-
-@torch.no_grad()
-def _score_token_pairs_batched(
-    model: nn.Module,
-    pairs: List[Dict[str, List[int]]],
-    vocab_size: int,
-    device: str,
-) -> int:
-    """Score already-tokenized minimal pairs via one batched forward pass."""
-
-    if not pairs:
-        return 0
-
-    grouped_sequences = [[pair["good"], pair["bad"]] for pair in pairs]
-    grouped_starts = [[0, 0]] * len(pairs)
-    pair_scores = grouped_choice_scores(
-        model,
-        grouped_sequences,
-        grouped_starts,
-        vocab_size=vocab_size,
-        device=device,
-    )
-    return sum(
-        1 for scores in pair_scores if len(scores) == 2 and scores[0] > scores[1]
-    )
 
 
 @torch.no_grad()

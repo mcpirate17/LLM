@@ -18,10 +18,10 @@ from .corpus_pipeline import (
     cache_hf_text_splits,
     prepare_text_split_batches,
 )
+from .wikitext_eval import _finalize_ppl_result
 from .utils import (
     micro_train_and_measure_perplexity,
 )
-from .wikitext_eval import wikitext_score_from_ppl
 
 logger = logging.getLogger(__name__)
 
@@ -105,19 +105,16 @@ def evaluate_tinystories(
         lr=lr,
     )
 
-    elapsed_ms = (time.perf_counter() - t0) * 1000.0
-
-    tinystories_score = wikitext_score_from_ppl(post_ppl, vocab_size)
-
-    return {
-        "tinystories_perplexity": round(post_ppl, 2) if post_ppl is not None else None,
-        "tinystories_pre_perplexity": round(pre_ppl, 2)
-        if pre_ppl is not None
-        else None,
-        "tinystories_score": tinystories_score,
-        "train_final_loss": round(train_final_loss, 6),
-        "n_train_steps": n_train_steps,
-        "train_tokens": train_tokens,
-        "val_tokens": val_tokens,
-        "elapsed_ms": round(elapsed_ms, 1),
-    }
+    result = _finalize_ppl_result(
+        pre_ppl=pre_ppl,
+        post_ppl=post_ppl,
+        train_final_loss=train_final_loss,
+        vocab_size=vocab_size,
+        n_train_steps=n_train_steps,
+        seq_len=seq_len,
+        elapsed_ms=(time.perf_counter() - t0) * 1000.0,
+        prefix="tinystories",
+    )
+    result["train_tokens"] = train_tokens
+    result["val_tokens"] = val_tokens
+    return result

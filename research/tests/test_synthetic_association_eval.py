@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 import torch
 from torch.nn.utils.parametrizations import weight_norm
 
@@ -199,6 +200,9 @@ def test_public_probe_reports_vocab_too_small_without_training():
     assert payload["synthetic_association_metric_version"] == "synthetic_association_v1"
 
 
+# Capability experiment (300-step training); hits the probe's internal
+# timeout under CPU-only budgets — run via the slow lane.
+@pytest.mark.slow
 def test_trainable_noun_relation_model_learns_probe():
     result = sae.synthetic_association_score(
         _NounRelationLearner(),
@@ -240,6 +244,8 @@ def test_weight_norm_model_runs_and_restores_state():
         assert torch.allclose(after[key], expected), key
 
 
+# Negative-control experiment (100-step training) — run via the slow lane.
+@pytest.mark.slow
 def test_relation_only_model_does_not_pass_probe():
     result = sae.synthetic_association_score(
         _RelationOnlyLearner(),

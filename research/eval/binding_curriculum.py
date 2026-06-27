@@ -8,7 +8,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from ._probe_utils import safe_deepcopy_module
+from ._probe_utils import mean_auc, safe_deepcopy_module
 from .utils import clip_grad_norm
 
 CURRICULUM_BINDING_PROTOCOL_VERSION = "copy_curriculum_v1"
@@ -217,7 +217,7 @@ def curriculum_binding_range_profile(
             generator=generator,
         )
         vals = list(result.distance_accuracies.values())
-        result.auc = round(sum(vals) / len(vals), 4) if vals else 0.0
+        result.auc = mean_auc(vals)
     except Exception as exc:
         result.status = f"train_failed: {exc}"
     finally:

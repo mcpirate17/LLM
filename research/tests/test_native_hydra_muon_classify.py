@@ -11,6 +11,8 @@ matrix — plus embeddings, 1D params, and the MoR halt heads — to AdamW.
 
 from __future__ import annotations
 
+import argparse
+
 import pytest
 import torch
 from torch import nn
@@ -18,7 +20,11 @@ from torch import nn
 from research.tools.native_adaptive_hydra_train import (
     _cautious_step,
     _classify_muon_params,
+    _gate_aux_loss,
+    _gate_aux_target_dist,
+    _set_native_gate_floors,
 )
+from research.tools._scaling_lanes import NativeAdaptiveReciprocalSlotDeltaLane
 
 
 class _GateModel(nn.Module):
@@ -100,3 +106,69 @@ def test_cautious_all_agree_is_plain_step() -> None:
     delta = torch.tensor([-0.5, -0.5, -0.5])  # all descend -> mask keeps all, scale 1
     _cautious_step([_FixedDeltaOpt(p, delta)], base_lrs=[[0.0]], mult=1.0)
     assert torch.allclose(p.data, delta)
+
+
+class _TinyGateAuxModel(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.embed = nn.Embedding(1024, 16)
+        self.blocks = nn.ModuleList(
+            [NativeAdaptiveReciprocalSlotDeltaLane(16) for _ in range(2)]
+        )
+        self.head = nn.Linear(16, 1024)
+
+    def forward(self, ids: torch.Tensor) -> torch.Tensor:
+        x = self.embed(ids)
+        for block in self.blocks:
+            x = block(x)
+        return self.head(x)
+
+
+def test_gate_aux_targets_raw_pre_floor_gates_by_probe_and_block() -> None:
+    target = _gate_aux_target_dist(
+        "binding", 1, 8, device=torch.device("cpu"), dtype=torch.float32
+    )
+    assert target[0].item() == pytest.approx(0.05)
+    assert torch.isclose(target.sum(), torch.tensor(1.0))
+
+    args = argparse.Namespace(
+        gate_aux_every=2,
+        gate_aux_weight=0.01,
+        gate_aux_start_step=10,
+        gate_aux_probes="binding,induction,surprise",
+        gate_aux_max_batches=1,
+        gate_aux_batch=1,
+        device="cpu",
+    )
+    model = _TinyGateAuxModel()
+
+    inactive_loss, inactive_info = _gate_aux_loss(model, args, step=9)
+    assert inactive_loss is None
+    assert inactive_info is None
+
+    aux_loss, info = _gate_aux_loss(model, args, step=10)
+    assert aux_loss is not None
+    assert info is not None
+    assert torch.isfinite(aux_loss)
+    assert info["probes"] == ("binding", "induction", "surprise")
+    assert info["summary"]["by_probe"].keys() == {"binding", "induction", "surprise"}
+    assert len(info["rows"]) == 6
+    for row in info["rows"]:
+        assert row["effective_gate_mean"][0] == pytest.approx(
+            0.25 + 0.75 * row["raw_gate_mean"][0], abs=1e-5
+        )
+        assert row["target_dist"][0] in {0.05, 0.2}
+        assert row["gate_entropy"] > 0.0
+
+
+def test_native_gate_floors_assign_across_blocks() -> None:
+    model = _TinyGateAuxModel()
+    floors = _set_native_gate_floors(model, (0.05, 0.20))
+    assert floors == [0.05, 0.20]
+
+    ids = torch.tensor([[101, 102, 103]], dtype=torch.long)
+    model(ids)
+    first = model.blocks[0].last_gate_metrics
+    second = model.blocks[1].last_gate_metrics
+    assert first["effective_gate_mean"][0] >= 0.05
+    assert second["effective_gate_mean"][0] >= 0.20
