@@ -4,13 +4,18 @@ from __future__ import annotations
 
 from component_fab.improver.ranking import leaderboard_to_json, rank_proposals
 from component_fab.intake.scope_existing import top_underperforming_names
-from component_fab.policies.promotion import DEFAULT_PROMOTION_RULES, PromotionRules
+from component_fab.policies.promotion import (
+    DEFAULT_PROMOTION_RULES,
+    PromotionRules,
+    apply_decisions,
+    decide_promotions_for_ledger,
+)
 from component_fab.proposer.enumeration import enumerate_cycle_specs
 from component_fab.proposer.tier2_feedback import load_tier2_feedback
-from component_fab.state.ledger import Ledger, PROMOTION_PROMOTED, PROMOTION_REJECTED
 from component_fab.runner.grading import grade_active_specs
 from component_fab.runner.promotion import register_promoted
 from component_fab.runner.selection import select_active_specs
+from component_fab.state.ledger import Ledger, PROMOTION_PROMOTED, PROMOTION_REJECTED
 
 
 def run_cycle(
@@ -88,16 +93,8 @@ def run_cycle(
         )
     )
 
-    decisions = promotion_rules.decide(ledger) if hasattr(promotion_rules, "decide") else None
-    if decisions is None:
-        from component_fab.policies.promotion import apply_decisions, decide_promotions_for_ledger
-
-        decisions = decide_promotions_for_ledger(ledger, promotion_rules)
-        counts = apply_decisions(ledger, decisions)
-    else:
-        from component_fab.policies.promotion import apply_decisions
-
-        counts = apply_decisions(ledger, decisions)
+    decisions = decide_promotions_for_ledger(ledger, promotion_rules)
+    counts = apply_decisions(ledger, decisions)
     register_promoted(ledger, decisions)
     ranked = rank_proposals(
         cycle_scorecards,
