@@ -12,11 +12,12 @@ from component_fab.generator.code_generator import generate_module
 from component_fab.generator.dispatch import UnknownBlockSlotError
 from component_fab.runner.cycle import print_cycle, run_cycle
 from component_fab.runner.grading import metadata_for_grade
+from component_fab.runner.invention import metadata_for_invention_result
 from component_fab.state.ledger import Ledger, iter_jsonl_records
 from component_fab.state.provenance import build_run_provenance
 from component_fab.state.schema_versions import LEDGER_GRADE_SCHEMA_VERSION, SCHEMA_VERSIONS
 from component_fab.tests.conftest import make_spec
-from component_fab.tools import run_autonomous
+from component_fab.tools import run_autonomous, run_invention
 from component_fab.tools._cli import write_report
 from component_fab.validator.grade import grade_candidate
 
@@ -89,3 +90,22 @@ def test_autonomous_runner_split_contract() -> None:
     assert callable(run_cycle)
     assert callable(print_cycle)
     assert callable(run_autonomous.main)
+
+
+def test_invention_runner_split_contract() -> None:
+    result = {
+        "spec": {
+            "math_axes": {"op_invention_mechanism": "demo"},
+            "proposal_id": "demo",
+            "name": "demo",
+            "category": "lane",
+            "synthesis_kind": "novel_hybrid",
+        },
+        "capability": {"can_bind": True, "erf_density": 0.2},
+        "lm_binding": {"candidate_wins": 1, "mean_margin": 0.03},
+    }
+    metadata = metadata_for_invention_result(result)
+    assert metadata["track"] == "invention"
+    assert metadata["mechanism"] == "demo"
+    assert metadata["lm_binding_candidate_wins"] == 1
+    assert callable(run_invention.main)
