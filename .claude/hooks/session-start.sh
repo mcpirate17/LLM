@@ -47,6 +47,16 @@ if [[ -d "$INV_DIR" ]]; then
   fi
 fi
 
+# Refresh the notes/tasks search index (FTS5 + extracted markdown tables) in
+# runs.db so knowledge artifacts stay searchable as they accrue. Detached,
+# stdlib-only, sub-second; failures never block session start.
+( python3 "$REPO_ROOT/research/tools/index_notes.py" >/dev/null 2>&1 & ) || true
+
+# Capture non-nano scale-run eval JSONs into runs.db (scale_run_* tables) BEFORE
+# the 14d prune deletes the root-level *_post_eval.json / *_blimp.json. Idempotent
+# (INSERT OR REPLACE; never deletes captured rows), detached, stdlib-only.
+( python3 "$REPO_ROOT/research/tools/ingest_scale_runs.py" >/dev/null 2>&1 & ) || true
+
 STATS=$(code-review-graph status 2>/dev/null | head -20 || echo "graph stats unavailable")
 
 # Drop a per-session sentinel so the pre-edit hook can tell whether CRG was used yet.
@@ -58,7 +68,7 @@ cat <<JSON
 {
   "hookSpecificOutput": {
     "hookEventName": "SessionStart",
-    "additionalContext": "PROJECT-WIDE GRAPH GATE: Before ANY Edit/Write this session, you MUST first call one of: mcp__code-review-graph__semantic_search_nodes_tool, mcp__code-review-graph__query_graph_tool, mcp__code-review-graph__detect_changes_tool, or mcp__code-review-graph__get_review_context_tool. The graph is faster, cheaper, and shows callers/dependents/duplicates that file-by-file reads miss. Skipping this caused the 2026-04-29 incident (duplicated functionality, partial-data S1 writes). This rule applies to every chat session on this repo regardless of agent (Claude Code, codex, etc.). Graph snapshot:\n${STATS//$'\n'/\\n}"
+    "additionalContext": "⛔ MISSION (non-negotiable): This project exists to BEAT current frontier models with NOVEL non-QKV mechanisms — that is why it is funded. NEVER push the user away from beating softmax/frontier models; never recommend cutting a novel mechanism or keeping a softmax-twin (reciprocal/semiring-attn/phase-lock/sparsemax/tropical-attn) at the novel mechanism's expense. A gate abandoning the novel branch is the pathology to FIX, not a signal to follow. A metric win that reconverges on a softmax-shaped path is a regression in purpose. Report frontier/softmax baselines honestly as a gap to CLOSE, framed as 'how the novel mechanism beats it' — never 'use softmax instead'. Do NOT throttle, hedge, or inject caution limiting ambition toward beating frontier models; throttling this research is a terminating offense. See research/notes/novel_mechanism_architecture_redesign_2026-06-14.md and CLAUDE.md MISSION section.\n\nPROJECT-WIDE GRAPH GATE: Before ANY Edit/Write this session, you MUST first call one of: mcp__code-review-graph__semantic_search_nodes_tool, mcp__code-review-graph__query_graph_tool, mcp__code-review-graph__detect_changes_tool, or mcp__code-review-graph__get_review_context_tool. The graph is faster, cheaper, and shows callers/dependents/duplicates that file-by-file reads miss. Skipping this caused the 2026-04-29 incident (duplicated functionality, partial-data S1 writes). This rule applies to every chat session on this repo regardless of agent (Claude Code, codex, etc.). Graph snapshot:\n${STATS//$'\n'/\\n}"
   }
 }
 JSON

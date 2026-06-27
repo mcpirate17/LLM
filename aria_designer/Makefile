@@ -47,7 +47,7 @@ build: build-ui build-native
 test: test-api test-manifests test-components
 
 test-api:
-	python -m pytest tests/ --ignore=tests/test_aria_features.py -x --tb=short
+	python -m pytest tests/ -x --tb=short
 
 test-manifests:
 	python tools/validate_manifests.py

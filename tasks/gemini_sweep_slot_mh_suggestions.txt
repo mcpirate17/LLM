@@ -1,4 +1,9 @@
-✦ Based on the current implementation of MultiHeadSlotTableMemoryLane and the existing "Codex" roadmap, here are several high-priority architectural improvements to further narrow the gap with softmax_4h and
+✦ [NEW PRIMARY OBJECTIVE] Implement and Evaluate: Recursive Hyperbolic-Reciprocal Surprise
+  * Paper: research/reports/2026-06-14-recursive-hyperbolic-surprise-mor.md
+  * Goal: 60% weight reduction via heterogeneous 8-block stack.
+  * Status: Proposal Published.
+
+  ✦ Based on the current implementation of MultiHeadSlotTableMemoryLane and the existing "Codex" roadmap, here are several high-priority architectural improvements to further narrow the gap with softmax_4h and
   enhance the memory's capacity for complex binding.
 
   1. Read-before-Write (RbW) Routing

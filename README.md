@@ -390,7 +390,7 @@ Targeted commands already wired in the repo:
 
 ```bash
 cd /home/tim/Projects/LLM/aria_core && python -m pytest tests/ -x -q
-cd /home/tim/Projects/LLM/aria_designer && python -m pytest tests/ --ignore=tests/test_aria_features.py -x --tb=short
+cd /home/tim/Projects/LLM/aria_designer && python -m pytest tests/ -x --tb=short
 cd /home/tim/Projects/LLM/research && python -m pytest tests/ -x
 ```
 
