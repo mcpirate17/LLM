@@ -95,7 +95,11 @@ def record_eliminated(
 
 
 def finalize_survivors(
-    survivors: list[dict[str, Any]], ledger: Ledger, *, cycle: int, niche_promotion: bool
+    survivors: list[dict[str, Any]],
+    ledger: Ledger,
+    *,
+    cycle: int,
+    niche_promotion: bool,
 ) -> None:
     """Record deferred survivor grades, adding niche metadata when enabled."""
 
@@ -156,7 +160,9 @@ def grade_active_specs(
         metadata = metadata_for_grade(spec, capability, eliminated_by)
         if eliminated_by is not None:
             record_eliminated(ledger, spec, solo, metadata, cycle=cycle)
-            eliminated_by_gate[eliminated_by] = eliminated_by_gate.get(eliminated_by, 0) + 1
+            eliminated_by_gate[eliminated_by] = (
+                eliminated_by_gate.get(eliminated_by, 0) + 1
+            )
             continue
         if paired_seeds > 0:
             metadata.update(
@@ -169,7 +175,9 @@ def grade_active_specs(
                 )
             )
         score, _ = composite_score(asdict(solo), probe, capability)
-        score *= tier2_score_multiplier((tier2_feedback_by_id or {}).get(spec.proposal_id))
+        score *= tier2_score_multiplier(
+            (tier2_feedback_by_id or {}).get(spec.proposal_id)
+        )
         score *= nas_score_multiplier((nas_screen_by_id or {}).get(spec.proposal_id))
         survivors.append(
             {
@@ -179,7 +187,8 @@ def grade_active_specs(
                 "synthesis_kind": solo.synthesis_kind,
                 "composite_score": score,
                 "smoke_pass": bool(
-                    solo.smoke.get("forward_passed") and solo.smoke.get("backward_passed")
+                    solo.smoke.get("forward_passed")
+                    and solo.smoke.get("backward_passed")
                 ),
                 "learned_signal": bool(probe and probe.get("learned_signal")),
                 "probe": probe,
