@@ -32,31 +32,34 @@ concurrency:
 jobs:
   lint-static:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
       - name: Install lint dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install ruff
+          python -m pip install ruff
       - name: Run static lint checks
-        run: |
-          ruff check research/scientist aria_designer/api aria_designer/runtime component_fab
+        run: ruff check research/scientist aria_designer/api aria_designer/runtime component_fab
 
   component-fab-contracts:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
       - name: Install component_fab test dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[component-fab-test]" fastapi uvicorn numpy
-          pip install torch --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple/
+          python -m pip install -e ".[component-fab-test]" fastapi uvicorn numpy
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple/
       - name: Run component_fab platform contracts
         env:
           PYTHONPATH: ${{ github.workspace }}
@@ -69,19 +72,23 @@ jobs:
         with:
           name: component-fab-contracts
           path: artifacts/component-fab-junit.xml
+          retention-days: 7
+          if-no-files-found: ignore
 
   research-contracts:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
       - name: Install research test dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -e . pytest flask requests
-          pip install torch --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple/
+          python -m pip install -e . pytest flask requests
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple/
       - name: Run research observability contract test
         env:
           PYTHONPATH: ${{ github.workspace }}
@@ -96,19 +103,23 @@ jobs:
           path: |
             artifacts/research-junit.xml
             research/monitor_alerts.json
+          retention-days: 7
+          if-no-files-found: ignore
 
   designer-contracts:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
       - name: Install designer test dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r aria_designer/api/requirements.txt
-          pip install -r aria_designer/requirements-test.txt --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple/
+          python -m pip install -r aria_designer/api/requirements.txt
+          python -m pip install -r aria_designer/requirements-test.txt --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple/
       - name: Run designer observability contract tests
         env:
           PYTHONPATH: ${{ github.workspace }}
@@ -121,30 +132,34 @@ jobs:
         with:
           name: designer-contracts
           path: artifacts/designer-junit.xml
+          retention-days: 7
+          if-no-files-found: ignore
 
   integration-contracts:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     needs: [research-contracts, designer-contracts, component-fab-contracts]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
       - name: Install integration test dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -e . pytest flask requests
-          pip install -r aria_designer/api/requirements.txt
-          pip install -r aria_designer/requirements-test.txt --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple/
+          python -m pip install -e . pytest flask requests
+          python -m pip install -r aria_designer/api/requirements.txt
+          python -m pip install -r aria_designer/requirements-test.txt --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple/
       - name: Run integration make target
         env:
           PYTHONPATH: ${{ github.workspace }}
-        run: |
-          make test-integration
+        run: make test-integration
       - name: Upload integration artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: integration-contracts
-          path: |
-            aria_designer/api/aria_designer.db
+          path: aria_designer/api/aria_designer.db
+          retention-days: 7
+          if-no-files-found: ignore
