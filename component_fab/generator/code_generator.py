@@ -19,7 +19,7 @@ from component_fab.generator.dispatch import (
     dispatch_first,
 )
 from component_fab.generator.dispatch.invention import (
-    NativeParityEvidenceError,
+    NativeParityEvidenceError as NativeParityEvidenceError,
     dispatch_invention_mechanism,
 )
 from component_fab.math_knobs import math_knobs_from_axes
