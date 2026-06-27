@@ -24,6 +24,8 @@ from component_fab.policies.promotion import (
     PromotionRules,
     decide_promotion,
 )
+from component_fab.runner.grading import finalize_survivors
+from component_fab.runner.niche import annotate_niche_metadata
 from component_fab.state.ledger import Ledger
 
 
@@ -205,11 +207,6 @@ def _survivor(pid: str, *, agg_loss: float, cap: dict) -> dict:
 
 
 def test_annotate_and_finalize_wires_niche_metadata(tmp_path: Path):
-    from component_fab.tools.run_autonomous import (
-        _annotate_niche_metadata,
-        _finalize_survivors,
-    )
-
     survivors = [
         # specialist: strong binder, ~no learning
         _survivor(
@@ -225,7 +222,7 @@ def test_annotate_and_finalize_wires_niche_metadata(tmp_path: Path):
         _survivor("gen", agg_loss=50.0, cap={"ind_max_accuracy": 0.6}),
     ]
     ledger = Ledger(tmp_path / "l.jsonl")
-    _annotate_niche_metadata(survivors, ledger)
+    annotate_niche_metadata(survivors, ledger)
     for surv in survivors:
         md = surv["metadata"]
         assert "behavior_fingerprint" in md
@@ -235,7 +232,7 @@ def test_annotate_and_finalize_wires_niche_metadata(tmp_path: Path):
     # neither dominates the other -> both on the front
     assert all(s["metadata"]["on_pareto_front"] for s in survivors)
 
-    _finalize_survivors(survivors, ledger, cycle=1, niche_promotion=True)
+    finalize_survivors(survivors, ledger, cycle=1, niche_promotion=True)
     entry = ledger.entries["spec"]
     assert entry.metadata_history[-1]["on_pareto_front"] is True
 
