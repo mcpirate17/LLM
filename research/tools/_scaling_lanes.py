@@ -28,6 +28,7 @@ from component_fab.generator.primitive_templates import (
     LinearStateSpaceLane,
     MultiscaleWaveletLane,
     PhaseLockAttention,
+    PoincareAttention,
     ReciprocalPrimaryRefine,
     ReciprocalRankAttention,
     SemiringReciprocalAttention,
@@ -152,6 +153,98 @@ class AdjacentTokenMergeLane(nn.Module):
         return self.out_proj(merged) * gate
 
 
+class NativeAdaptiveReciprocalSlotDeltaLane(nn.Module):
+    """Native-adaptive trunk with reciprocal addressing and delta-slot sidecars.
+
+    This native-format hybrid reuses the frontier components directly:
+    native adaptive surprise memory supplies the broad-capability trunk,
+    reciprocal attention supplies mutual-match read addressing, and the slot
+    table supplies explicit AR/state-tracking memory with delta updates enabled.
+    """
+
+    GATE_FLOOR = 0.25
+
+    def __init__(self, dim: int) -> None:
+        super().__init__()
+        from component_fab.generator.memory_primitives import (
+            MultiHeadSlotTableMemoryLane,
+        )
+        from component_fab.generator.native_surprise_memory import (
+            NativeAdaptiveSemiringBiLaneSurpriseMemoryLane,
+        )
+
+        slot_memory_dim = max(4, ((7 * dim) // 32) * 4)
+        self.native = NativeAdaptiveSemiringBiLaneSurpriseMemoryLane(
+            dim,
+            memory_dim=32,
+            gate_bias=0.0,
+            semiring_temp_init=1.0,
+            recursive_balance_init=1.0,
+            low_threshold=0.0,
+            high_threshold=0.02,
+            max_recursive_steps=4,
+        )
+        self.reciprocal = ReciprocalRankAttention(dim, use_rope=True)
+        self.slot = MultiHeadSlotTableMemoryLane(
+            dim,
+            memory_dim=slot_memory_dim,
+            n_heads=max(4, dim // 64),
+            n_slots=8,
+            use_delta_update=True,
+            route_from_input=True,
+            normalize_slot_values=True,
+            refine_write_route=True,
+            consolidate_slots=True,
+        )
+        self.gate = nn.Linear(dim, 3)
+        self.native_gate_floor = float(self.GATE_FLOOR)
+        with torch.no_grad():
+            self.gate.weight.zero_()
+            self.gate.bias.copy_(torch.tensor([2.0, -0.5, -0.5]))
+
+    @staticmethod
+    def _rms_normalize_branch(x: torch.Tensor) -> torch.Tensor:
+        return x * torch.rsqrt(x.pow(2).mean(dim=-1, keepdim=True) + 1e-6)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        raw_weights = torch.softmax(self.gate(x), dim=-1)
+        native_floor = float(getattr(self, "native_gate_floor", self.GATE_FLOOR))
+        native_floor = min(max(native_floor, 0.0), 1.0)
+        weights = raw_weights.clone()
+        weights[..., 0] = native_floor + (1.0 - native_floor) * raw_weights[..., 0]
+        weights[..., 1:] = (1.0 - native_floor) * raw_weights[..., 1:]
+        if x.is_cuda:
+            with torch.autocast(device_type=x.device.type, enabled=False):
+                native = self.native(x.float()).to(x.dtype)
+        else:
+            native = self.native(x)
+        reciprocal = self.reciprocal(x)
+        slot = self.slot(x)
+        native = self._rms_normalize_branch(native)
+        reciprocal = self._rms_normalize_branch(reciprocal)
+        slot = self._rms_normalize_branch(slot)
+        weighted_native = weights[..., 0:1] * native
+        weighted_reciprocal = weights[..., 1:2] * reciprocal
+        weighted_slot = weights[..., 2:3] * slot
+        with torch.no_grad():
+            entropy = -(raw_weights * (raw_weights + 1e-8).log()).sum(dim=-1)
+            self.last_gate_metrics = {
+                "raw_gate_mean": raw_weights.float().mean(dim=(0, 1)).detach().cpu(),
+                "effective_gate_mean": weights.float().mean(dim=(0, 1)).detach().cpu(),
+                "gate_entropy": float(entropy.float().mean().item()),
+                "weighted_branch_rms": torch.stack(
+                    [
+                        weighted_native.float().pow(2).mean().sqrt(),
+                        weighted_reciprocal.float().pow(2).mean().sqrt(),
+                        weighted_slot.float().pow(2).mean().sqrt(),
+                    ]
+                )
+                .detach()
+                .cpu(),
+            }
+        return weighted_native + weighted_reciprocal + weighted_slot
+
+
 # 2026-05-28: nano-scale BLiMP winners (seq=512 sweet-spot study) — lane name →
 # (graphs-table fingerprint, description). Single source of truth shared by the
 # lane factory below and `tools/apply_mixer_fingerprint_pretrain.py`.
@@ -234,8 +327,48 @@ def _build_slot_table_mh(name: str, top_k_frac: float) -> Callable[[int], nn.Mod
     )
 
 
+def _build_slot_table_mh_dplr(
+    name: str, top_k_frac: float
+) -> Callable[[int], nn.Module]:
+    # Run-1 compositional upgrade of slot_table_mh: attacks the multislot wall
+    # (all_slots=0.0, held_class=1.0 = right content/wrong slot). On top of the
+    # delta write: content-aware per-slot eviction decoupled from the route
+    # (last-write-wins instead of blending), a DPLR low-rank value correction, and
+    # LEARNT slot identity/capacity (prototypes + per-slot bias + route temp).
+    # Isolated single-lane build so the nano/40M grade attributes any all_slots
+    # movement to the slot mechanism alone.
+    from component_fab.generator.memory_primitives import MultiHeadSlotTableMemoryLane
+
+    return lambda d: MultiHeadSlotTableMemoryLane(
+        d,
+        memory_dim=max(4, ((7 * d) // 32) * 4),
+        n_heads=max(4, d // 64),
+        n_slots=8,
+        use_delta_update=True,
+        route_from_input=True,
+        normalize_slot_values=True,
+        refine_write_route=True,
+        consolidate_slots=True,
+        content_forget=True,
+        dplr_value_rank=16,
+        learnable_slots=True,
+    )
+
+
+def _build_native_adaptive_reciprocal_slot_delta(
+    name: str, top_k_frac: float
+) -> Callable[[int], nn.Module]:
+    return NativeAdaptiveReciprocalSlotDeltaLane
+
+
 def _build_reciprocal_rank(name: str, top_k_frac: float) -> Callable[[int], nn.Module]:
     return lambda d: ReciprocalRankAttention(d, use_rope=True)
+
+
+def _build_hyperbolic(name: str, top_k_frac: float) -> Callable[[int], nn.Module]:
+    # Non-Euclidean Poincare-ball addressing geometry. Keep the public lane
+    # name stable so existing scale reports continue to identify this family.
+    return PoincareAttention
 
 
 def _build_phase_lock(name: str, top_k_frac: float) -> Callable[[int], nn.Module]:
@@ -583,7 +716,10 @@ LANE_BUILDERS: dict[str, Callable[..., Callable[[int], nn.Module]]] = {
     "adjacent_token_merge_lane": _build_adjacent_token_merge,
     "gemini_master": _build_gemini_master,
     "slot_table_mh": _build_slot_table_mh,
+    "slot_table_mh_dplr": _build_slot_table_mh_dplr,
+    "native_adaptive_reciprocal_slot_delta": _build_native_adaptive_reciprocal_slot_delta,
     "reciprocal_rank_attention": _build_reciprocal_rank,
+    "hyperbolic_attention": _build_hyperbolic,
     "phase_lock_attention": _build_phase_lock,
     "reciprocal_phase_two_lane": _build_reciprocal_phase_two_lane,
     "sparse_reciprocal_attention": _build_sparse_reciprocal,

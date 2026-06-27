@@ -19,11 +19,25 @@ import torch
 from torch import nn
 
 from research.defaults import PROJECT_ROOT, VOCAB_SIZE
+from research.tools._scaling_lanes import NativeAdaptiveReciprocalSlotDeltaLane
+from research.tools.native_gate_floor_utils import (
+    DEFAULT_NATIVE_GATE_FLOORS,
+    parse_float_csv,
+)
+from research.tools.native_recip_slot_synthetic_gate_probe import (
+    ProbeBatch,
+    _make_ar,
+    _make_binding,
+    _make_induction,
+    _make_inline,
+)
 from research.tools.scaling_blimp_study import _build_lane_factory, _build_tinylm
 from research.training._optimizer_muon import MuonOptimizer
 
 
 LOCAL_MIX_NAME = "codex_ffw60_chat30_pleias10_local"
+GATE_AUX_BRANCHES = ("native", "reciprocal", "slot")
+GATE_AUX_NATIVE_TARGETS_8 = DEFAULT_NATIVE_GATE_FLOORS
 
 
 def _load_hydra_loader_module(hydra_root: Path):
@@ -146,6 +160,214 @@ def _lm_loss(logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
         labels.reshape(-1),
         ignore_index=-100,
     )
+
+
+def _parse_gate_aux_probes(raw: str) -> tuple[str, ...]:
+    aliases = {"associative": "ar", "associative_recall": "ar", "refinement": "surprise"}
+    probes: list[str] = []
+    for item in raw.split(","):
+        probe = aliases.get(item.strip().lower(), item.strip().lower())
+        if not probe:
+            continue
+        if probe not in {"binding", "ar", "induction", "surprise", "inline"}:
+            raise ValueError(f"unsupported --gate-aux-probes entry: {item!r}")
+        probes.append("surprise" if probe == "inline" else probe)
+    return tuple(dict.fromkeys(probes))
+
+
+def _parse_float_csv(raw: str) -> tuple[float, ...]:
+    return parse_float_csv(raw)
+
+
+def _gate_aux_native_target(block_idx: int, n_blocks: int) -> float:
+    if n_blocks <= 1:
+        return GATE_AUX_NATIVE_TARGETS_8[-1]
+    table_pos = round(block_idx * (len(GATE_AUX_NATIVE_TARGETS_8) - 1) / (n_blocks - 1))
+    return float(GATE_AUX_NATIVE_TARGETS_8[int(table_pos)])
+
+
+def _gate_aux_target_dist(
+    probe: str, block_idx: int, n_blocks: int, *, device: torch.device, dtype: torch.dtype
+) -> torch.Tensor:
+    native = _gate_aux_native_target(block_idx, n_blocks)
+    remaining = max(1.0 - native, 0.0)
+    depth = block_idx / max(n_blocks - 1, 1)
+    if probe == "induction":
+        recip_frac = 0.88 if depth < 0.25 or depth >= 0.75 else 0.78
+    elif probe in {"binding", "ar"}:
+        recip_frac = 0.45 if 0.25 <= depth < 0.625 else 0.58
+    elif probe == "surprise":
+        recip_frac = 0.42 if depth < 0.25 else 0.30
+    else:
+        recip_frac = 0.5
+    reciprocal = remaining * recip_frac
+    slot = remaining - reciprocal
+    return torch.tensor([native, reciprocal, slot], device=device, dtype=dtype)
+
+
+def _set_native_gate_floors(model: nn.Module, floors: tuple[float, ...]) -> list[float]:
+    lanes = [
+        module
+        for module in model.modules()
+        if isinstance(module, NativeAdaptiveReciprocalSlotDeltaLane)
+    ]
+    if not lanes:
+        return []
+    assigned: list[float] = []
+    for block_idx, lane in enumerate(lanes):
+        floor = floors[round(block_idx * (len(floors) - 1) / max(len(lanes) - 1, 1))]
+        lane.native_gate_floor = float(floor)
+        assigned.append(float(floor))
+    return assigned
+
+
+def _make_gate_aux_probe_batch(
+    probe: str, *, batch: int, difficulty: int, device: torch.device
+) -> ProbeBatch:
+    if probe == "binding":
+        return _make_binding(batch, difficulty, device)
+    if probe == "ar":
+        return _make_ar(batch, difficulty, device)
+    if probe == "induction":
+        return _make_induction(batch, difficulty, device)
+    if probe == "surprise":
+        return _make_inline(batch, difficulty, device)
+    raise ValueError(f"unsupported gate aux probe: {probe}")
+
+
+def _mean_gate_aux_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    if not rows:
+        return {}
+    by_probe: dict[str, list[float]] = {}
+    by_block: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        by_probe.setdefault(str(row["probe"]), []).append(float(row["aux_loss"]))
+        by_block.setdefault(str(row["block"]), []).append(row)
+    return {
+        "by_probe": {
+            probe: round(sum(vals) / len(vals), 6) for probe, vals in sorted(by_probe.items())
+        },
+        "by_block": {
+            block: {
+                "raw_gate_mean": [
+                    round(sum(float(r["raw_gate_mean"][i]) for r in block_rows) / len(block_rows), 5)
+                    for i in range(3)
+                ],
+                "effective_gate_mean": [
+                    round(
+                        sum(float(r["effective_gate_mean"][i]) for r in block_rows)
+                        / len(block_rows),
+                        5,
+                    )
+                    for i in range(3)
+                ],
+                "gate_entropy": round(
+                    sum(float(r["gate_entropy"]) for r in block_rows) / len(block_rows), 5
+                ),
+                "weighted_branch_rms": [
+                    round(
+                        sum(float(r["weighted_branch_rms"][i]) for r in block_rows)
+                        / len(block_rows),
+                        5,
+                    )
+                    for i in range(3)
+                ],
+            }
+            for block, block_rows in sorted(by_block.items(), key=lambda kv: int(kv[0]))
+        },
+    }
+
+
+def _gate_aux_loss(
+    model: nn.Module, args: argparse.Namespace, step: int
+) -> tuple[torch.Tensor | None, dict[str, Any] | None]:
+    if (
+        args.gate_aux_every <= 0
+        or args.gate_aux_weight <= 0.0
+        or step < args.gate_aux_start_step
+        or step % args.gate_aux_every != 0
+    ):
+        return None, None
+    lanes = [
+        module
+        for module in model.modules()
+        if isinstance(module, NativeAdaptiveReciprocalSlotDeltaLane)
+    ]
+    probes = _parse_gate_aux_probes(args.gate_aux_probes)
+    if not lanes or not probes:
+        return None, None
+
+    handles = []
+    captured: list[tuple[int, torch.Tensor]] = []
+    for block_idx, lane in enumerate(lanes):
+        handles.append(
+            lane.gate.register_forward_hook(
+                lambda _module, _inputs, output, idx=block_idx: captured.append((idx, output))
+            )
+        )
+
+    device = torch.device(args.device)
+    losses: list[torch.Tensor] = []
+    rows: list[dict[str, Any]] = []
+    try:
+        for probe in probes:
+            for difficulty in range(1, args.gate_aux_max_batches + 1):
+                batch = _make_gate_aux_probe_batch(
+                    probe, batch=args.gate_aux_batch, difficulty=difficulty, device=device
+                )
+                captured.clear()
+                model(batch.ids)
+                for block_idx, gate_logits in captured:
+                    raw_gate = torch.softmax(gate_logits, dim=-1)
+                    target = _gate_aux_target_dist(
+                        probe,
+                        block_idx,
+                        len(lanes),
+                        device=gate_logits.device,
+                        dtype=gate_logits.dtype,
+                    )
+                    block_loss = -(target * (raw_gate + 1e-8).log()).sum(dim=-1).mean()
+                    losses.append(block_loss)
+                    metrics = getattr(lanes[block_idx], "last_gate_metrics", {})
+                    rows.append(
+                        {
+                            "probe": probe,
+                            "difficulty": difficulty,
+                            "block": block_idx,
+                            "target_dist": [round(float(v), 5) for v in target.detach().cpu()],
+                            "aux_loss": float(block_loss.detach().cpu()),
+                            "raw_gate_mean": [
+                                round(float(v), 5)
+                                for v in metrics.get("raw_gate_mean", torch.zeros(3))
+                            ],
+                            "effective_gate_mean": [
+                                round(float(v), 5)
+                                for v in metrics.get("effective_gate_mean", torch.zeros(3))
+                            ],
+                            "gate_entropy": round(float(metrics.get("gate_entropy", 0.0)), 5),
+                            "weighted_branch_rms": [
+                                round(float(v), 5)
+                                for v in metrics.get("weighted_branch_rms", torch.zeros(3))
+                            ],
+                        }
+                    )
+    finally:
+        for handle in handles:
+            handle.remove()
+
+    if not losses:
+        return None, None
+    aux = torch.stack(losses).mean()
+    return aux, {
+        "event": "gate_aux",
+        "step": step,
+        "weight": args.gate_aux_weight,
+        "branches": GATE_AUX_BRANCHES,
+        "loss": round(float(aux.detach().cpu()), 6),
+        "probes": probes,
+        "rows": rows,
+        "summary": _mean_gate_aux_rows(rows),
+    }
 
 
 def _adaptive_depth_stats(model: nn.Module) -> dict[str, Any] | None:
@@ -468,7 +690,14 @@ def _train_step(model, optimizers, base_lrs, ids, labels, args, step):
     mult = _lr_multiplier(
         step, warmup=args.warmup_steps, total=args.steps, min_frac=args.min_lr_frac
     )
-    loss = _lm_loss(model(ids), labels)
+    lm_loss = _lm_loss(model(ids), labels)
+    gate_aux, gate_aux_info = _gate_aux_loss(model, args, step)
+    loss = lm_loss if gate_aux is None else lm_loss + args.gate_aux_weight * gate_aux
+    args._last_gate_aux = gate_aux_info
+    if gate_aux_info is not None:
+        gate_aux_info["lm_loss_before_aux"] = round(float(lm_loss.detach().cpu()), 6)
+        gate_aux_info["loss_after_aux"] = round(float(loss.detach().cpu()), 6)
+        _append_jsonl(args.out, gate_aux_info)
     if not torch.isfinite(loss):
         for opt in optimizers:
             opt.zero_grad(set_to_none=True)
@@ -657,6 +886,15 @@ def _record_step(args, model, train_loader, val_loader, started, step, metrics):
         "depth": _adaptive_depth_stats(model),
         "loader_stats": getattr(train_loader, "stats", lambda: {})(),
     }
+    gate_aux = getattr(args, "_last_gate_aux", None)
+    if gate_aux is not None and int(gate_aux.get("step", -1)) == step:
+        row["gate_aux"] = {
+            "weight": gate_aux["weight"],
+            "loss": gate_aux["loss"],
+            "lm_loss_before_aux": gate_aux["lm_loss_before_aux"],
+            "loss_after_aux": gate_aux["loss_after_aux"],
+            "summary": gate_aux["summary"],
+        }
     if should_eval:
         row["eval"] = _eval_loss(
             model,
@@ -696,6 +934,16 @@ def _start_row(args, n_params, loaded_step, first_step, train_loader) -> dict[st
         "min_lr_frac": args.min_lr_frac,
         "vocab_size": args.vocab_size,
         "train_loader_stats": getattr(train_loader, "stats", lambda: {})(),
+        "native_gate_floors": getattr(args, "_native_gate_floors", None),
+        "gate_aux": {
+            "every": args.gate_aux_every,
+            "weight": args.gate_aux_weight,
+            "probes": _parse_gate_aux_probes(args.gate_aux_probes),
+            "start_step": args.gate_aux_start_step,
+            "max_batches": args.gate_aux_max_batches,
+            "batch": args.gate_aux_batch,
+            "native_targets_8": GATE_AUX_NATIVE_TARGETS_8,
+        },
     }
 
 
@@ -745,6 +993,12 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         max_seq_len=max(args.seq_len, 1024),
         use_ffn=True,
     ).to(args.device)
+    if args.native_gate_floors:
+        args._native_gate_floors = _set_native_gate_floors(
+            model, _parse_float_csv(args.native_gate_floors)
+        )
+    else:
+        args._native_gate_floors = None
     n_params = sum(p.numel() for p in model.parameters())
     payload, loaded_step = _load_checkpoint(model, args)
     if args.ponder_weight is not None:
@@ -918,6 +1172,47 @@ def main() -> None:
     )
     ap.add_argument("--weight-decay", type=float, default=0.01)
     ap.add_argument("--grad-clip", type=float, default=1.0)
+    ap.add_argument(
+        "--native-gate-floors",
+        default="",
+        help="Comma-separated native branch effective-floor table assigned across "
+        "native_adaptive_reciprocal_slot_delta blocks. Empty keeps the lane default.",
+    )
+    ap.add_argument(
+        "--gate-aux-every",
+        type=int,
+        default=0,
+        help="If >0, run the raw branch-gate auxiliary loss every N steps.",
+    )
+    ap.add_argument(
+        "--gate-aux-weight",
+        type=float,
+        default=0.0,
+        help="Weight for the raw pre-floor gate auxiliary loss. Suggested first pass: 0.005-0.02.",
+    )
+    ap.add_argument(
+        "--gate-aux-probes",
+        default="binding,induction,surprise",
+        help="Comma-separated gate aux probes: binding, ar, induction, surprise.",
+    )
+    ap.add_argument(
+        "--gate-aux-start-step",
+        type=int,
+        default=0,
+        help="Do not apply gate aux before this absolute training step.",
+    )
+    ap.add_argument(
+        "--gate-aux-max-batches",
+        type=int,
+        default=1,
+        help="Number of tiny synthetic difficulty batches per selected aux probe.",
+    )
+    ap.add_argument(
+        "--gate-aux-batch",
+        type=int,
+        default=1,
+        help="Batch size for each synthetic gate aux probe batch.",
+    )
     ap.add_argument(
         "--grad-spike-threshold",
         type=float,

@@ -182,6 +182,18 @@ def build_mor_surprise_composite(
     )
 
 
+def build_hyper_mor_surprise_composite(
+    m: re.Match, top_k_frac: float
+) -> Callable[[int], nn.Module]:
+    from component_fab.generator.hyper_mor_bilane import (
+        HyperbolicMoRSurpriseRefineMLPBiLane,
+    )
+
+    return _build_mor_mlp_subclass(
+        m, HyperbolicMoRSurpriseRefineMLPBiLane, "HyperMoRSurpriseRefineMLP"
+    )
+
+
 def build_mor_mlp_composite(
     m: re.Match, top_k_frac: float
 ) -> Callable[[int], nn.Module]:
@@ -329,6 +341,12 @@ def build_tuned_semiring_mac(
 REGEX_BUILDERS: list[
     tuple[re.Pattern, Callable[[re.Match, float], Callable[[int], nn.Module]]]
 ] = [
+    (
+        re.compile(
+            r"hyper_mor_surprise_refine_mlp(\d+)_native_semiring_adapt_bilane_m(\d+)_g(-?\d+)_t(\d+)_b(\d+)_(?:l(\d+)_h(\d+)|l(\d+)bp_h(\d+)bp)_r(\d+)_surprise_memory"
+        ),
+        build_hyper_mor_surprise_composite,
+    ),
     (
         re.compile(
             r"mor_surprise_refine_mlp(\d+)_native_semiring_adapt_bilane_m(\d+)_g(-?\d+)_t(\d+)_b(\d+)_(?:l(\d+)_h(\d+)|l(\d+)bp_h(\d+)bp)_r(\d+)_surprise_memory"

@@ -23,6 +23,7 @@ import multiprocessing as mp
 import os
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import torch
@@ -103,6 +104,11 @@ def _get_backfill_batcher(vocab_size: int) -> CorpusTokenBatcher | None:
     cached = _BACKFILL_BATCHERS.get(int(vocab_size))
     if cached is not None:
         return cached
+    if not Path(_BACKFILL_CORPUS_PATH).is_file():
+        # CorpusTokenBatcher raises on a missing path; backfill treats an
+        # absent corpus as "no batcher" by design.
+        _BACKFILL_BATCHERS[int(vocab_size)] = None
+        return None
     config = CorpusConfig(
         path=_BACKFILL_CORPUS_PATH,
         fmt="auto",

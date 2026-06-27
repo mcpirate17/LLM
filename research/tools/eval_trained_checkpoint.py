@@ -37,7 +37,6 @@ def _alarm_handler(signum, frame):  # noqa: ANN001 — signal handler signature
 
 from research.defaults import VOCAB_SIZE
 from research.eval.ar_curriculum_probe import ar_curriculum_probe, ARCurriculumConfig
-from research.eval.associative_recall import associative_recall_score
 from research.eval.binding_curriculum import curriculum_binding_range_profile
 from research.eval.binding_intermediate_probe import run_binding_intermediate
 from research.eval.binding_multislot_probe import (
@@ -116,17 +115,9 @@ def _dispatch_recall_probes(
             timeout_s=budget,
         ),
     )
-    safe(
-        "ar_legacy",
-        lambda: associative_recall_score(
-            model,
-            n_train_steps=300,
-            n_eval=128,
-            batch_size=8,
-            device=dev,
-            timeout_s=budget,
-        ),
-    )
+    # ar_legacy probe retired 2026-06-18: measurement artifact (a softmax positive
+    # control also floors it; full-vocab argmax + deepcopy FT + 300-step harness «
+    # Zoology's ~8K). gMQAR (research/eval/gmqar.py) is the AR metric of record.
     safe(
         "ar_curriculum",
         lambda: ar_curriculum_probe(
