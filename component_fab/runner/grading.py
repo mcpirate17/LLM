@@ -5,21 +5,11 @@ from __future__ import annotations
 from dataclasses import asdict
 from typing import Any
 
-from component_fab.improver.ranking import (
-    composite_score,
-    objective_vector,
-    pareto_front_indices,
-)
-from component_fab.metrics.behavior_fingerprint import (
-    Normalizer,
-    behavior_fingerprint,
-    fingerprint_from_metadata,
-    is_clone,
-    novelty_distance,
-)
+from component_fab.improver.ranking import composite_score
 from component_fab.proposer.nas_screen import NasScreenResult, nas_score_multiplier
 from component_fab.proposer.spec_generator import ProposalSpec
 from component_fab.proposer.tier2_feedback import Tier2Feedback, tier2_score_multiplier
+from component_fab.runner.niche import annotate_niche_metadata
 from component_fab.state.ledger import Ledger, PROMOTION_REJECTED
 from component_fab.validator.grade import eliminated_solo_scorecard, grade_candidate
 from component_fab.validator.paired import paired_metadata_for_spec
@@ -102,38 +92,6 @@ def record_eliminated(
         metadata=metadata,
     )
     ledger.record_promotion(spec.proposal_id, PROMOTION_REJECTED)
-
-
-def annotate_niche_metadata(survivors: list[dict[str, Any]], ledger: Ledger) -> None:
-    """Attach behavior novelty and Pareto-front membership to survivor rows."""
-
-    catalog = [
-        fingerprint_from_metadata(entry.metadata_history[-1])
-        for entry in ledger.all_entries()
-        if entry.metadata_history
-    ]
-    fingerprints = [
-        behavior_fingerprint(s["probe"], s["capability"]) for s in survivors
-    ]
-    normalizer = Normalizer.fit(catalog + fingerprints)
-    for surv, fp in zip(survivors, fingerprints):
-        dist = novelty_distance(fp, catalog, normalizer=normalizer)
-        finite = dist != float("inf")
-        surv["metadata"]["behavior_fingerprint"] = fp
-        surv["metadata"]["novelty_distance"] = dist if finite else -1.0
-        surv["metadata"]["behavior_clone"] = bool(is_clone(dist)) if finite else False
-    vectors = [
-        objective_vector(
-            s["probe"],
-            s["capability"],
-            novelty=max(0.0, s["metadata"]["novelty_distance"]),
-        )
-        for s in survivors
-    ]
-    front = set(pareto_front_indices(vectors))
-    for index, (surv, vector) in enumerate(zip(survivors, vectors)):
-        surv["metadata"]["pareto_objective_vector"] = dict(vector)
-        surv["metadata"]["on_pareto_front"] = index in front
 
 
 def finalize_survivors(
