@@ -10,10 +10,13 @@ import yaml
 
 from component_fab.generator.code_generator import generate_module
 from component_fab.generator.dispatch import UnknownBlockSlotError
+from component_fab.runner.cycle import print_cycle, run_cycle
+from component_fab.runner.grading import metadata_for_grade
 from component_fab.state.ledger import Ledger, iter_jsonl_records
 from component_fab.state.provenance import build_run_provenance
 from component_fab.state.schema_versions import LEDGER_GRADE_SCHEMA_VERSION, SCHEMA_VERSIONS
 from component_fab.tests.conftest import make_spec
+from component_fab.tools import run_autonomous
 from component_fab.tools._cli import write_report
 from component_fab.validator.grade import grade_candidate
 
@@ -76,3 +79,13 @@ def test_fast_grade_and_fail_loud_slot_contract() -> None:
             },
             dim=8,
         )
+
+
+def test_autonomous_runner_split_contract() -> None:
+    spec = make_spec({"op_algebraic_space": "tropical"}, pid="runner_contract")
+    metadata = metadata_for_grade(spec, {"can_bind": True, "erf_density": 0.1}, None)
+    assert metadata["math_axes"] == spec.math_axes
+    assert metadata["can_bind"] is True
+    assert callable(run_cycle)
+    assert callable(print_cycle)
+    assert callable(run_autonomous.main)
