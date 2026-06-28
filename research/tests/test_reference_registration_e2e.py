@@ -35,6 +35,7 @@ def test_pinned_reference_visible_in_tier_filtered_endpoints(tmp_path):
         loss_ratio=0.42,
         novelty_score=0.01,
         model_source="reference",
+        trust_label="test_fixture",
     )
     assert ref_result_id
 
@@ -61,6 +62,7 @@ def test_pinned_reference_visible_in_tier_filtered_endpoints(tmp_path):
         loss_ratio=0.37,
         novelty_score=0.6,
         model_source="graph_synthesis",
+        trust_label="test_fixture",
     )
     assert candidate_result_id
     nb.upsert_leaderboard(
@@ -80,7 +82,9 @@ def test_pinned_reference_visible_in_tier_filtered_endpoints(tmp_path):
     app = create_app(notebook_path=db_path)
     client = app.test_client()
 
-    leaderboard = client.get("/api/leaderboard?tier=validation&limit=50")
+    leaderboard = client.get(
+        "/api/leaderboard?tier=validation&limit=50&trusted_only=0"
+    )
     assert leaderboard.status_code == 200
     lb_entries = leaderboard.get_json().get("entries", [])
     assert any(e.get("entry_id") == ref_entry_id for e in lb_entries)
@@ -89,7 +93,9 @@ def test_pinned_reference_visible_in_tier_filtered_endpoints(tmp_path):
         for e in lb_entries
     )
 
-    discoveries = client.get("/api/discoveries?view=ranked&tier=validation&limit=50")
+    discoveries = client.get(
+        "/api/discoveries?view=ranked&tier=validation&limit=50&trusted_only=0"
+    )
     assert discoveries.status_code == 200
     payload = discoveries.get_json()
     disc_entries = payload.get("entries", [])
@@ -139,6 +145,7 @@ def test_register_reference_full_pipeline(tmp_path):
         novelty_score=0.01,
         model_source="reference",
         param_count=param_count,
+        trust_label="test_fixture",
     )
     assert result_id
 
@@ -159,7 +166,7 @@ def test_register_reference_full_pipeline(tmp_path):
     app = create_app(notebook_path=db_path)
     client = app.test_client()
 
-    resp = client.get("/api/leaderboard?limit=50")
+    resp = client.get("/api/leaderboard?limit=50&trusted_only=0")
     assert resp.status_code == 200
     entries = resp.get_json().get("entries", [])
     ref_entry = next((e for e in entries if e.get("entry_id") == entry_id), None)
@@ -220,6 +227,7 @@ def test_reference_comparison_metrics(tmp_path):
         loss_ratio=0.50,
         novelty_score=0.01,
         model_source="reference",
+        trust_label="test_fixture",
     )
     ref_entry_id = nb.upsert_leaderboard(
         result_id=ref_result_id,
@@ -246,6 +254,7 @@ def test_reference_comparison_metrics(tmp_path):
         loss_ratio=0.40,
         novelty_score=0.7,
         model_source="graph_synthesis",
+        trust_label="test_fixture",
     )
     nb.upsert_leaderboard(
         result_id=cand_result_id,
@@ -262,7 +271,7 @@ def test_reference_comparison_metrics(tmp_path):
     app = create_app(notebook_path=db_path)
     client = app.test_client()
 
-    resp = client.get("/api/leaderboard?limit=50")
+    resp = client.get("/api/leaderboard?limit=50&trusted_only=0")
     assert resp.status_code == 200
     entries = resp.get_json().get("entries", [])
 
@@ -302,6 +311,7 @@ def test_reference_survives_tier_filter(tmp_path):
         loss_ratio=0.42,
         novelty_score=0.01,
         model_source="reference",
+        trust_label="test_fixture",
     )
     ref_entry_id = nb.upsert_leaderboard(
         result_id=ref_result_id,
@@ -320,14 +330,16 @@ def test_reference_survives_tier_filter(tmp_path):
     app = create_app(notebook_path=db_path)
     client = app.test_client()
 
-    leaderboard = client.get("/api/leaderboard?tier=validation&limit=50")
+    leaderboard = client.get(
+        "/api/leaderboard?tier=validation&limit=50&trusted_only=0"
+    )
     assert leaderboard.status_code == 200
     assert any(
         e.get("entry_id") == ref_entry_id
         for e in leaderboard.get_json().get("entries", [])
     )
 
-    discoveries = client.get("/api/discoveries?tier=validation&limit=50")
+    discoveries = client.get("/api/discoveries?tier=validation&limit=50&trusted_only=0")
     assert discoveries.status_code == 200
     payload = discoveries.get_json()
     assert not any(
@@ -336,7 +348,7 @@ def test_reference_survives_tier_filter(tmp_path):
     assert any(e.get("entry_id") == ref_entry_id for e in payload.get("references", []))
 
     # Filter by investigation tier — same check
-    resp = client.get("/api/leaderboard?tier=investigation&limit=50")
+    resp = client.get("/api/leaderboard?tier=investigation&limit=50&trusted_only=0")
     assert resp.status_code == 200
     entries = resp.get_json().get("entries", [])
     assert any(e.get("entry_id") == ref_entry_id for e in entries)

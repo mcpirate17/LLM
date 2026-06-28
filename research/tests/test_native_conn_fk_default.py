@@ -10,8 +10,8 @@ spool stayed current.
 
 This test inserts a program_result whose ``experiment_id`` references
 no real experiment row (an FK violation under ON, a benign insert under
-OFF). The row must land. A flip back to ON would fail this test
-loudly.
+OFF). The row must land on the supported ``program_results_compat``
+read surface. A flip back to ON would fail this test loudly.
 
 If you need FKs enforced in production, reintroduce them table-by-table
 via ``DEFERRABLE INITIALLY DEFERRED`` on the schema, not via a
@@ -112,12 +112,12 @@ def test_program_result_insert_lands_without_matching_experiment(
     temp_notebook.flush_writes(timeout=10.0)
 
     row = temp_notebook.conn.execute(
-        "SELECT result_id, experiment_id FROM program_results WHERE result_id = ?",
+        "SELECT result_id, experiment_id FROM program_results_compat WHERE result_id = ?",
         (tid,),
     ).fetchone()
     assert row is not None, (
         "record_program_result returned a result_id but the row did "
-        "not land in program_results — likely a silent writer-thread "
+        "not land in program_results_compat — likely a silent writer-thread "
         "drop. Check PRAGMA foreign_keys and the aria-db stderr output."
     )
     assert dict(row)["experiment_id"] == fake_experiment_id

@@ -68,6 +68,7 @@ def test_fast_grade_and_fail_loud_slot_contract() -> None:
         n_steps=1,
         run_range_probe=False,
         run_in_context=False,
+        halt_on_elimination=False,
     )
     assert bundle.solo is not None
     assert bundle.solo.smoke["forward_passed"]

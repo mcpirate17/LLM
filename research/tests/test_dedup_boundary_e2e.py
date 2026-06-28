@@ -33,6 +33,8 @@ def _create_boundary_db(path: Path) -> None:
             routing_confidence_mean REAL,
             routing_confidence_std REAL
         );
+        CREATE VIEW program_results_compat AS
+            SELECT * FROM program_results;
         """
     )
     conn.close()

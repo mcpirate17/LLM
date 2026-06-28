@@ -26,6 +26,7 @@ def test_dashboard_pinning_api_and_sorting(tmp_path):
         stage1_passed=True,
         loss_ratio=0.5,
         novelty_score=0.1,
+        trust_label="test_fixture",
     )
     res2 = nb.record_program_result(
         experiment_id=exp_id,
@@ -34,6 +35,7 @@ def test_dashboard_pinning_api_and_sorting(tmp_path):
         stage1_passed=True,
         loss_ratio=0.4,  # Better loss than res1
         novelty_score=0.1,
+        trust_label="test_fixture",
     )
 
     entry1 = nb.upsert_leaderboard(

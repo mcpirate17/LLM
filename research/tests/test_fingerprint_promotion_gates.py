@@ -77,6 +77,32 @@ def _make_phase7_mixin(strong):
     return mixin
 
 
+def _patch_graph_meta_execute(
+    nb,
+    *,
+    result_id: str = "rid_001",
+    graph_json: str = "{}",
+    routing_mode: str | None = None,
+) -> None:
+    orig_execute = nb.conn.execute
+
+    def patched_execute(query, params=None):
+        result = MagicMock()
+        if "graph_json" not in query:
+            return orig_execute(query, params)
+        row = MagicMock()
+        row.__getitem__ = lambda self, k: {
+            "result_id": result_id,
+            "graph_json": graph_json,
+            "routing_mode": routing_mode,
+        }.get(k)
+        row.keys = lambda: ["result_id", "graph_json", "routing_mode"]
+        result.fetchall = MagicMock(return_value=[row])
+        return result
+
+    nb.conn.execute = patched_execute
+
+
 # ---------------------------------------------------------------------------
 # B1: Block promotion on incomplete fingerprints
 # ---------------------------------------------------------------------------
@@ -216,24 +242,7 @@ class TestB1EscalationFingerprintGate:
         nb = self._make_nb_with_fingerprint(result_ids, fp_complete=True)
 
         # Need graph_meta query and MIN(screening_loss_ratio) for ref baseline
-        _orig_execute = nb.conn.execute
-
-        def patched_execute(query, params=None):
-            result = MagicMock()
-            if "graph_json" in query:
-                row = MagicMock()
-                row.__getitem__ = lambda self, k: {
-                    "result_id": "rid_001",
-                    "graph_json": "{}",
-                    "routing_mode": None,
-                }.get(k)
-                row.keys = lambda: ["result_id", "graph_json", "routing_mode"]
-                result.fetchall = MagicMock(return_value=[row])
-            else:
-                return _orig_execute(query, params)
-            return result
-
-        nb.conn.execute = patched_execute
+        _patch_graph_meta_execute(nb)
 
         config = _auto_validate_config()
 
@@ -270,24 +279,7 @@ class TestB1EscalationFingerprintGate:
             novelty_valid=False,
         )
 
-        _orig_execute = nb.conn.execute
-
-        def patched_execute(query, params=None):
-            result = MagicMock()
-            if "graph_json" in query:
-                row = MagicMock()
-                row.__getitem__ = lambda self, k: {
-                    "result_id": "rid_001",
-                    "graph_json": "{}",
-                    "routing_mode": None,
-                }.get(k)
-                row.keys = lambda: ["result_id", "graph_json", "routing_mode"]
-                result.fetchall = MagicMock(return_value=[row])
-            else:
-                return _orig_execute(query, params)
-            return result
-
-        nb.conn.execute = patched_execute
+        _patch_graph_meta_execute(nb)
 
         config = _auto_validate_config()
 

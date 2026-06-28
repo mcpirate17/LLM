@@ -11,6 +11,20 @@ pytestmark = pytest.mark.unit
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 
+def _pareto_row(**kw):
+    defaults = {
+        "graph_fingerprint": "fp",
+        "novelty_score": 0.5,
+        "loss_ratio": 0.8,
+        "baseline_loss_ratio": 0.9,
+        "graph_json": None,
+        "routing_savings_ratio": None,
+        "compression_ratio": None,
+    }
+    defaults.update(kw)
+    return defaults
+
+
 class TestParetoFrontier3D(unittest.TestCase):
     """Test the 3D Pareto frontier logic."""
 
@@ -90,24 +104,11 @@ class TestParetoFrontier3D(unittest.TestCase):
 
         analytics = ExperimentAnalytics.__new__(ExperimentAnalytics)
 
-        def make_row(**kw):
-            defaults = {
-                "graph_fingerprint": "fp",
-                "novelty_score": 0.5,
-                "loss_ratio": 0.8,
-                "baseline_loss_ratio": 0.9,
-                "graph_json": None,
-                "routing_savings_ratio": None,
-                "compression_ratio": None,
-            }
-            defaults.update(kw)
-            return defaults
-
         rows = [
-            make_row(
+            _pareto_row(
                 result_id="good", final_loss=0.5, flops_forward=500, param_count=100
             ),
-            make_row(
+            _pareto_row(
                 result_id="bad", final_loss=1.0, flops_forward=1000, param_count=200
             ),
         ]
@@ -126,29 +127,16 @@ class TestParetoFrontier3D(unittest.TestCase):
 
         analytics = ExperimentAnalytics.__new__(ExperimentAnalytics)
 
-        def make_row(**kw):
-            defaults = {
-                "graph_fingerprint": "fp",
-                "novelty_score": 0.5,
-                "loss_ratio": 0.8,
-                "baseline_loss_ratio": 0.9,
-                "graph_json": None,
-                "routing_savings_ratio": None,
-                "compression_ratio": None,
-            }
-            defaults.update(kw)
-            return defaults
-
         rows = [
             # Low loss but high compute
-            make_row(
+            _pareto_row(
                 result_id="accurate",
                 final_loss=0.3,
                 flops_forward=2000,
                 param_count=500,
             ),
             # Higher loss but very efficient
-            make_row(
+            _pareto_row(
                 result_id="efficient", final_loss=0.8, flops_forward=200, param_count=50
             ),
         ]
@@ -168,26 +156,13 @@ class TestParetoFrontier3D(unittest.TestCase):
 
         analytics = ExperimentAnalytics.__new__(ExperimentAnalytics)
 
-        def make_row(**kw):
-            defaults = {
-                "graph_fingerprint": "fp",
-                "novelty_score": 0.5,
-                "loss_ratio": 0.8,
-                "baseline_loss_ratio": 0.9,
-                "graph_json": None,
-                "routing_savings_ratio": None,
-                "compression_ratio": None,
-            }
-            defaults.update(kw)
-            return defaults
-
         rows = [
             # Good loss, good flops, no compression
-            make_row(
+            _pareto_row(
                 result_id="a", final_loss=0.5, flops_forward=1000, param_count=1000
             ),
             # Slightly worse loss, same flops, but 4x compressed
-            make_row(
+            _pareto_row(
                 result_id="b",
                 final_loss=0.6,
                 flops_forward=1000,
@@ -211,27 +186,14 @@ class TestParetoFrontier3D(unittest.TestCase):
 
         analytics = ExperimentAnalytics.__new__(ExperimentAnalytics)
 
-        def make_row(**kw):
-            defaults = {
-                "graph_fingerprint": "fp",
-                "novelty_score": 0.5,
-                "loss_ratio": 0.8,
-                "baseline_loss_ratio": 0.9,
-                "graph_json": None,
-                "routing_savings_ratio": None,
-                "compression_ratio": None,
-            }
-            defaults.update(kw)
-            return defaults
-
         rows = [
-            make_row(
+            _pareto_row(
                 result_id="best", final_loss=0.3, flops_forward=500, param_count=100
             ),
-            make_row(
+            _pareto_row(
                 result_id="worst", final_loss=0.5, flops_forward=600, param_count=200
             ),
-            make_row(
+            _pareto_row(
                 result_id="tradeoff", final_loss=0.4, flops_forward=300, param_count=500
             ),
         ]

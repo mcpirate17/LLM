@@ -22,7 +22,7 @@ def test_cython_bridge_negative_cache_does_not_block_retry(monkeypatch):
 def test_rust_scheduler_negative_cache_does_not_block_retry(monkeypatch):
     dummy = types.ModuleType("aria_scheduler")
     monkeypatch.setitem(sys.modules, "aria_scheduler", dummy)
-    native_core._rust_scheduler_cache = None
+    monkeypatch.setattr(native_core, "_rust_scheduler_cache", None)
     monkeypatch.setattr(Path, "exists", lambda self: False)
 
     rust = native_core._try_import_rust_scheduler()

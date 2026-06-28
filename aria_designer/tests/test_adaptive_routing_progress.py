@@ -4,13 +4,11 @@ from __future__ import annotations
 
 import json
 import importlib.util
-import tempfile
 from pathlib import Path
 
 import pytest
 import torch
 import yaml
-from fastapi.testclient import TestClient
 
 
 ADAPTIVE_MANIFESTS = [
@@ -23,23 +21,6 @@ ADAPTIVE_EXAMPLES = [
     Path("ui/public/examples/adaptive_trilane_v2.json"),
     Path("ui/public/examples/adaptive_trilane_v3.json"),
 ]
-
-
-@pytest.fixture(scope="module")
-def client():
-    """Create test client with temporary database."""
-    from aria_designer.api.app import database as db
-    from aria_designer.api.app.main import app
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db.init_db(Path(tmpdir) / "test.db")
-        from aria_designer.api.app.loader import scan_and_load
-
-        count = scan_and_load()
-        assert count > 0, "No components loaded"
-
-        with TestClient(app) as c:
-            yield c
 
 
 def test_adaptive_manifests_have_python_fallback_paths():

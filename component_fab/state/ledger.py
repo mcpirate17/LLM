@@ -96,20 +96,26 @@ def write_json_report(
 def read_last_grades_and_statuses(
     path: Path | str = DEFAULT_LEDGER_PATH,
 ) -> tuple[dict[str, dict[str, Any]], dict[str, str]]:
-    """Replay a ledger JSONL; return last grade and promotion status per id."""
+    """Replay a ledger JSONL history; return last grade and status per id.
+
+    Catalog rotation leaves the active ``ledger.jsonl`` valid but possibly empty.
+    Learning-state analyzers need the full durable history, so replay integer
+    rotations oldest-first and then the active file.
+    """
     last_grade: dict[str, dict[str, Any]] = {}
     last_status: dict[str, str] = {}
-    for record in iter_jsonl_records(path):
-        pid = record.get("proposal_id")
-        if not pid:
-            continue
-        event = record.get("event")
-        if event == "grade":
-            last_grade[str(pid)] = record
-        elif event == "promote":
-            status = str(record.get("status") or "")
-            if status:
-                last_status[str(pid)] = status
+    for ledger_path in iter_rotated_jsonl_paths(path):
+        for record in iter_jsonl_records(ledger_path):
+            pid = record.get("proposal_id")
+            if not pid:
+                continue
+            event = record.get("event")
+            if event == "grade":
+                last_grade[str(pid)] = record
+            elif event == "promote":
+                status = str(record.get("status") or "")
+                if status:
+                    last_status[str(pid)] = status
     return last_grade, last_status
 
 

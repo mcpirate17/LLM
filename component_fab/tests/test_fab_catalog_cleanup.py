@@ -11,6 +11,7 @@ from component_fab.state.ledger import (
     Ledger,
     _prune_rotations,
     iter_rotated_jsonl_paths,
+    read_last_grades_and_statuses,
 )
 from component_fab.tools.run_autonomous import (
     _parse_args,
@@ -68,6 +69,29 @@ def test_load_proposals_by_id_replays_rotations_by_mtime(tmp_path: Path) -> None
     loaded = load_proposals_by_id(base)
 
     assert loaded["p"].name == "new"
+
+
+def test_last_grade_status_reader_replays_rotations(tmp_path: Path) -> None:
+    base = tmp_path / "ledger.jsonl"
+    base.write_text("", encoding="utf-8")
+    grade = {
+        "event": "grade",
+        "proposal_id": "p",
+        "name": "candidate",
+        "composite_score": 0.5,
+    }
+    promotion = {"event": "promote", "proposal_id": "p", "status": "promoted"}
+    (tmp_path / "ledger.jsonl.1").write_text(json.dumps(grade) + "\n", encoding="utf-8")
+    os.utime(tmp_path / "ledger.jsonl.1", (10, 10))
+    (tmp_path / "ledger.jsonl.2").write_text(
+        json.dumps(promotion) + "\n", encoding="utf-8"
+    )
+    os.utime(tmp_path / "ledger.jsonl.2", (20, 20))
+
+    last_grade, last_status = read_last_grades_and_statuses(base)
+
+    assert last_grade["p"]["name"] == "candidate"
+    assert last_status["p"] == "promoted"
 
 
 def test_ledger_rotation_prunes_old_rotations(tmp_path: Path) -> None:

@@ -37,6 +37,19 @@ from component_fab.proposer.spec_generator import (
 from component_fab.state.ledger import JsonlWriter, Ledger
 
 
+def base_dynamic_axes() -> dict[str, Any]:
+    """Baseline dynamic proposal axes used by dynamic proposer tests."""
+    return {
+        "op_algebraic_space": "tropical",
+        "op_spectral_preferred_basis": "identity",
+        "op_dynamical_memory_length_class": "O(1)",
+        "op_dynamical_has_state": 0,
+        "op_activation_sparsity_pattern": "dense",
+        "op_geometric_receptive_field": "local",
+        "synthesis_kind": "novel_hybrid",
+    }
+
+
 def make_spec(
     axes: dict[str, Any] | None = None,
     pid: str = "cand",

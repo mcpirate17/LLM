@@ -22,7 +22,7 @@ def _full_s1() -> dict:
         "passed": True,
         "final_loss": 5.0,
         "loss_ratio": 0.42,
-        "param_count": 1234,
+        "param_count": 2_000_000,  # above the nano floor (a valid S1-pass write)
         "wikitext_perplexity": 200.0,
         "wikitext_score": 0.5,
         "hellaswag_acc": 0.31,

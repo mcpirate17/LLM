@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from component_fab.tests.conftest import base_dynamic_axes
 from component_fab.improver.ranking import rank_proposals
 from component_fab.proposer.dynamic import enumerate_dynamic_proposals
 from component_fab.proposer.tier2_feedback import (
@@ -17,18 +18,6 @@ from component_fab.state.ledger import Ledger
 
 
 _PID = "dynamic_candidate_abc123"
-
-
-def _base_axes() -> dict:
-    return {
-        "op_algebraic_space": "tropical",
-        "op_spectral_preferred_basis": "identity",
-        "op_dynamical_memory_length_class": "O(1)",
-        "op_dynamical_has_state": 0,
-        "op_activation_sparsity_pattern": "dense",
-        "op_geometric_receptive_field": "local",
-        "synthesis_kind": "novel_hybrid",
-    }
 
 
 def _tier2_artifact(tmp_path: Path) -> Path:
@@ -90,7 +79,7 @@ def _seed_ledger(ledger: Ledger) -> Ledger:
         smoke_pass=True,
         learned_signal=True,
         metadata={
-            "math_axes": _base_axes(),
+            "math_axes": base_dynamic_axes(),
             "can_bind": True,
             "erf_density": 0.08,
             "nb_max_accuracy": 0.7,

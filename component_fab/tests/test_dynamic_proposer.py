@@ -12,18 +12,7 @@ from component_fab.proposer.dynamic import (
 )
 from component_fab.state.ledger import Ledger, PROMOTION_PROMOTED, PROMOTION_REJECTED
 from component_fab.proposer.enumeration import enumerate_cycle_specs
-
-
-def _base_axes() -> dict:
-    return {
-        "op_algebraic_space": "tropical",
-        "op_spectral_preferred_basis": "identity",
-        "op_dynamical_memory_length_class": "O(1)",
-        "op_dynamical_has_state": 0,
-        "op_activation_sparsity_pattern": "dense",
-        "op_geometric_receptive_field": "local",
-        "synthesis_kind": "novel_hybrid",
-    }
+from component_fab.tests.conftest import base_dynamic_axes
 
 
 def _seed_range_blind_ledger(tmp_path: Path) -> Ledger:
@@ -38,7 +27,7 @@ def _seed_range_blind_ledger(tmp_path: Path) -> Ledger:
         smoke_pass=True,
         learned_signal=False,
         metadata={
-            "math_axes": _base_axes(),
+            "math_axes": base_dynamic_axes(),
             "eliminated_by": None,
             "can_bind": False,
             "erf_density": 0.02,
@@ -307,7 +296,7 @@ def test_physics_repairs_strip_named_composition_axes() -> None:
         _case(
             WEAK_FAIL_LONG_GAP,
             axes={
-                **_base_axes(),
+                **base_dynamic_axes(),
                 "op_algebraic_space": "tropical",
                 "op_math_family": "composite",
                 "op_math_knobs": "sparse_matrix_banded+kernel_random_features",
@@ -330,7 +319,7 @@ def test_physics_repairs_strip_named_composition_axes() -> None:
         _case(
             WEAK_FAIL_LONG_GAP,
             axes={
-                **_base_axes(),
+                **base_dynamic_axes(),
                 "op_algebraic_space": "tropical",
                 "op_math_family": "composite",
                 "op_math_knobs": "sparse_matrix_banded+kernel_random_features",
@@ -385,7 +374,7 @@ def test_collect_dynamic_cases_skips_over_recursed_dynamic_bases(
         smoke_pass=True,
         learned_signal=False,
         metadata={
-            "math_axes": _base_axes(),
+            "math_axes": base_dynamic_axes(),
             "can_bind": False,
             "erf_density": 0.02,
             "nb_max_accuracy": 0.55,
