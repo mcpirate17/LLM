@@ -14,7 +14,7 @@ JOURNAL_MAX_STATUS ?= 80
 NOTEBOOKLM_OUT ?= tasks/notebooklm/codex_context_bundle.md
 NOTEBOOKLM_RESEARCH_OUT ?= tasks/notebooklm/research_briefing_bundle.md
 
-.PHONY: all aria_core test test-aria_core test-designer test-research test-research-slow test-component_fab test-component_fab-contracts test-integration test-changed watch-test-changed profile-scalene bench codex-journal notebooklm-bundle notebooklm-research-bundle clean clean-junk clean-docs clean-all help complexity-report complexity-check complexity-refresh-baseline guardrails-dry guardrails-dry-report perf-summary governance-check governance-audit profile-hotpaths profile-screening-hotpaths profile-screening-hotpaths-quick
+.PHONY: all aria_core test test-aria_core test-designer test-research test-research-slow test-component_fab test-component_fab-contracts test-integration test-changed watch-test-changed profile-scalene bench codex-journal notebooklm-bundle notebooklm-research-bundle clean clean-junk clean-docs clean-all help complexity-report complexity-check complexity-refresh-baseline guardrails-dry guardrails-dry-report perf-summary governance-check governance-audit profile-screening-hotpaths profile-screening-hotpaths-quick
 
 all: aria_core  ## Build everything
 
@@ -108,9 +108,6 @@ governance-check:  ## Block on guardrail violations from GLOBAL_DEV_PROMPT
 
 governance-audit:  ## Generate the full A-G audit report artifact
 	$(PYTHON) conductor/guardrail_audit.py --markdown-out tasks/audit/latest_guardrail_report.md --json-out tasks/audit/latest_guardrail_report.json
-
-profile-hotpaths:  ## Run lightweight benchmark/profiling hooks for CI
-	$(PYTHON) conductor/profile_hotpaths.py --json-out tasks/audit/profile_hotpaths.json
 
 profile-screening-hotpaths:  ## Run standard targeted experiment-screening hotpath benchmark
 	$(PYTHON) -m research.tools.profile_screening_hotpaths --fixture standard --json-out tasks/audit/screening_hotpaths.json
