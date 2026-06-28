@@ -10,10 +10,10 @@ from component_fab.proposer.spec_generator import ProposalSpec
 from component_fab.state.gates import GATE_NANO_BIND, GATE_S05_CAUSALITY_STABILITY
 from component_fab.state.ledger import Ledger, PROMOTION_REJECTED
 from component_fab.tests.conftest import make_spec
-from component_fab.tools._autonomous_grading import (
-    _metadata_for_grade,
-    _physics_s05_prescreen_specs,
-    _select_active_specs,
+from component_fab.runner.grading import metadata_for_grade as _metadata_for_grade
+from component_fab.runner.selection import (
+    physics_s05_prescreen_specs as _physics_s05_prescreen_specs,
+    select_active_specs as _select_active_specs,
 )
 from component_fab.validator.capability import CapabilityScorecard
 from component_fab.validator.grade import grade_candidate
@@ -202,7 +202,7 @@ def test_selection_preskips_known_s05_physics_coordinate(tmp_path, monkeypatch) 
     bad = make_spec(bad_axes, "new_bad", name="dynamic_bad")
     good = make_spec(good_axes, "new_good", name="dynamic_good")
     monkeypatch.setattr(
-        "component_fab.tools._autonomous_grading._physics_s05_prescreen_specs",
+        "component_fab.runner.selection.physics_s05_prescreen_specs",
         lambda specs, ledger, *, cycle, dim, seq_len: (list(specs), 0),
     )
 
@@ -248,11 +248,11 @@ def test_physics_s05_prescreen_records_new_hard_failure(tmp_path, monkeypatch) -
     )
     ledger = Ledger(tmp_path / "ledger.jsonl")
     monkeypatch.setattr(
-        "component_fab.tools._autonomous_grading.generate_module_from_spec",
+        "component_fab.runner.selection.generate_module_from_spec",
         lambda _spec, dim: nn.Identity(),
     )
     monkeypatch.setattr(
-        "component_fab.tools._autonomous_grading.causality_stability_gate",
+        "component_fab.runner.selection.causality_stability_gate",
         lambda *args, **kwargs: SimpleNamespace(
             passed=False,
             max_first_half_drift=0.25,

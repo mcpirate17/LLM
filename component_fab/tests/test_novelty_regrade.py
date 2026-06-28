@@ -12,9 +12,9 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from component_fab.state.ledger import Ledger
-from component_fab.tools._autonomous_grading import (
-    _inject_novelty_regrades,
-    _top_orthogonality_pending,
+from component_fab.runner.selection import (
+    inject_novelty_regrades as _inject_novelty_regrades,
+    top_orthogonality_pending as _top_orthogonality_pending,
 )
 
 

@@ -1,22 +1,8 @@
-"""CLI: fully autonomous fab loop — runs N cycles end-to-end with no operator.
+"""CLI: fully autonomous fab loop.
 
-One cycle:
-  1. scope existing components (intake)
-  2. enumerate goal-(b) axis-variants + cross-anchor variants
-  3. dispatch each spec to a runnable nn.Module (code_generator)
-  4. solo-grade (smoke + cross-check)
-  5. in-context probe-suite grade (multi-task training)
-  6. composite-rank
-  7. update persistent ledger
-  8. consult promotion policy
-  9. print human-readable cycle summary
-
-Halts when N cycles complete OR when M consecutive cycles produce no
-new promotions and no new candidates.
-
-The CLI surface lives in ``_autonomous_cli`` and the per-spec grading
-pipeline in ``_autonomous_grading``; this module owns the cycle/loop
-orchestration and promotion bookkeeping.
+The CLI owns argument parsing, signal handling, rotation, and report emission.
+Cycle selection/grading/promotion orchestration lives under
+``component_fab.runner`` so it can be tested without invoking the command line.
 
 Usage:
     python -m component_fab.tools.run_autonomous --cycles 5
@@ -25,319 +11,166 @@ Usage:
 
 from __future__ import annotations
 
+import argparse
+import signal
 import sys
 import time
 from dataclasses import asdict
 from pathlib import Path
 
-from component_fab.improver.ranking import (
-    leaderboard_to_json,
-    rank_proposals,
-)
-from component_fab.policies.promotion import (
-    DEFAULT_PROMOTION_RULES,
-    PromotionDecision,
-    PromotionRules,
-    apply_decisions,
-    decide_promotions_for_ledger,
-)
-from component_fab.intake.scope_existing import top_underperforming_names
-from component_fab.proposer.enumeration import enumerate_cycle_specs
-from component_fab.proposer.tier2_feedback import load_tier2_feedback
-from component_fab.state.ledger import (
-    Ledger,
-    PROMOTION_PROMOTED,
-    PROMOTION_REJECTED,
-    _prune_rotations,
-)
-from component_fab.proposer.dynamic import spec_from_ledger_entry
-from component_fab.state.aria_registration import register_promotion
+from component_fab.policies.promotion import PromotionRules
+from component_fab.runner.cycle import print_cycle, run_cycle
+from component_fab.state.ledger import Ledger, PROMOTION_PROMOTED, _prune_rotations
 from component_fab.tools._cli import open_ledger, write_report
-from component_fab.tools._autonomous_cli import (
-    _install_signal_handler,
-    _parse_args,
-    _print_cycle,
-    is_interrupted,
-)
-from component_fab.tools._autonomous_grading import (
-    _annotate_niche_metadata,  # re-exported for tests
-    _finalize_survivors,  # re-exported for tests
-    _grade_active_specs,
-    _select_active_specs,
-)
 from component_fab.validator.solo import close_scorecard_writers
-
-__all__ = [
-    "main",
-    "_parse_args",
-    "_rotate_proposals",
-    "_prune_autonomous_run_summaries",
-    "_annotate_niche_metadata",
-    "_finalize_survivors",
-]
 
 _REPO = Path(__file__).resolve().parents[2]
 _CATALOG_DIR = _REPO / "component_fab" / "catalog"
+_DEFAULT_TOP_N_ANCHORS = 5
 
 
-def _register_promoted(ledger: Ledger, decisions: list) -> None:
-    """WS-7 loop closure: emit an ARIA handoff row for each FRESH promotion."""
-    for decision in decisions:
-        if (
-            decision.decision != PROMOTION_PROMOTED
-            or decision.reason == "already promoted"
-        ):
-            continue
-        entry = ledger.entries.get(decision.proposal_id)
-        if entry is None:
-            continue
-        spec = spec_from_ledger_entry(entry)
-        if spec is None:
-            continue
-        meta = entry.metadata_history[-1] if entry.metadata_history else {}
-        evidence = {
-            "composite": entry.composite_history[-1]
-            if entry.composite_history
-            else 0.0,
-            "transplant_portability": meta.get("transplant_portability"),
-            "on_pareto_front": meta.get("on_pareto_front"),
-        }
-        register_promotion(spec, evidence=evidence)
+def _add_loop_args(parser: argparse.ArgumentParser) -> None:
+    """Cycle/budget/enumeration knobs for the outer loop."""
 
-
-def _scale_gate_promotions(
-    ledger: Ledger,
-    decisions: list,
-    *,
-    dim: int,
-    steps: int,
-    seeds: int,
-    seq_len: int,
-) -> list:
-    """Final gate before promotion: re-verify each FRESH promotion beats its
-    anchor at SCALE.
-
-    The nano paired-CI is not scale-predictive — at dim32/100 steps inventions
-    showed tiny positive margins that INVERT to large losses at dim96/1500
-    (validated 2026-06-16). So before a candidate promotes, re-run the paired
-    probe (vs its catalog anchor, or the softmax-frontier fallback) at a larger
-    width + many more steps. A candidate that does not beat its anchor at scale
-    is REJECTED — terminal, so it is not re-tested (and re-promoted) every cycle —
-    rather than minted as a scale-losing artifact.
-    """
-    from component_fab.validator.paired import paired_metadata_for_spec
-
-    gated: list = []
-    for decision in decisions:
-        entry = ledger.entries.get(decision.proposal_id)
-        # Only re-verify FRESH promotions (not already-promoted, not pending/reject).
-        if (
-            decision.decision != PROMOTION_PROMOTED
-            or entry is None
-            or entry.promotion_status == PROMOTION_PROMOTED
-        ):
-            gated.append(decision)
-            continue
-        spec = spec_from_ledger_entry(entry)
-        if spec is None:
-            gated.append(decision)
-            continue
-        md = paired_metadata_for_spec(
-            spec, seeds=tuple(range(seeds)), dim=dim, seq_len=seq_len, n_steps=steps
-        )
-        beats = bool(md.get("paired_delta_ci_excludes_zero"))
-        anchor = md.get("paired_anchor_op", "?")
-        ci_low = md.get("paired_delta_ci_low")
-        print(
-            f"  scale-gate {decision.proposal_id[:24]} vs {anchor} "
-            f"@dim{dim}/{steps}st: {'PASS' if beats else 'FAIL'} ci_low={ci_low}"
-        )
-        if beats:
-            gated.append(decision)
-        else:
-            gated.append(
-                PromotionDecision(
-                    proposal_id=decision.proposal_id,
-                    decision=PROMOTION_REJECTED,
-                    reason=(
-                        f"scale-gate: loses to {anchor} at dim{dim}/{steps}st "
-                        f"(ci_low={ci_low})"
-                    ),
-                    composite_history=decision.composite_history,
-                )
-            )
-    return gated
-
-
-def _resolve_promotions(
-    ledger: Ledger,
-    promotion_rules: PromotionRules,
-    *,
-    scale_gate: bool,
-    scale_gate_dim: int,
-    scale_gate_steps: int,
-    scale_gate_seeds: int,
-    seq_len: int,
-) -> dict[str, int]:
-    """Decide promotions, optionally scale-gate the fresh ones, apply + register."""
-    decisions = decide_promotions_for_ledger(ledger, promotion_rules)
-    if scale_gate:
-        decisions = _scale_gate_promotions(
-            ledger,
-            decisions,
-            dim=scale_gate_dim,
-            steps=scale_gate_steps,
-            seeds=scale_gate_seeds,
-            seq_len=seq_len,
-        )
-    counts = apply_decisions(ledger, decisions)
-    _register_promoted(ledger, decisions)
-    return counts
-
-
-def _run_cycle(
-    cycle: int,
-    *,
-    ledger: Ledger,
-    dim: int,
-    seq_len: int,
-    probe_steps: int,
-    top_anchors: int,
-    skip_probe: bool,
-    use_promoted_as_anchors: bool = False,
-    max_cross_pairs: int = 30,
-    max_knob_specs: int = 48,
-    max_dynamic_specs: int = 32,
-    max_nas_specs: int = 6,
-    nas_archive_guided: bool = False,
-    run_range_probe: bool = False,
-    range_train_steps: int = 300,
-    tier2_feedback_paths: list[str] | None = None,
-    use_nas_screen: bool = True,
-    use_quality_order: bool = True,
-    max_graded_per_cycle: int = 0,
-    promotion_rules: PromotionRules = DEFAULT_PROMOTION_RULES,
-    paired_seeds: int = 0,
-    selection: str = "legacy",
-    acquisition_beta: float = 1.0,
-    niche_promotion: bool = False,
-    regrade_top_orthogonality: int = 0,
-    scale_gate: bool = False,
-    scale_gate_dim: int = 96,
-    scale_gate_steps: int = 1500,
-    scale_gate_seeds: int = 5,
-) -> dict:
-    anchors = top_underperforming_names(top_anchors)
-    tier2_feedback_by_id = load_tier2_feedback(tier2_feedback_paths)
-    specs = enumerate_cycle_specs(
-        ledger,
-        anchors,
-        cycle=cycle,
-        dim=dim,
-        use_promoted_as_anchors=use_promoted_as_anchors,
-        max_cross_pairs=max_cross_pairs,
-        max_knob_specs=max_knob_specs,
-        max_dynamic_specs=max_dynamic_specs,
-        max_nas_specs=max_nas_specs,
-        nas_archive_guided=nas_archive_guided,
-        tier2_feedback_by_id=tier2_feedback_by_id,
+    parser.add_argument("--cycles", default=5, type=int)
+    parser.add_argument("--dim", default=32, type=int)
+    parser.add_argument("--seq-len", default=32, type=int)
+    parser.add_argument("--probe-steps", default=60, type=int)
+    parser.add_argument("--top-anchors", default=_DEFAULT_TOP_N_ANCHORS, type=int)
+    parser.add_argument(
+        "--halt-quiescent",
+        default=2,
+        type=int,
+        help="halt after this many consecutive cycles with no new candidates",
     )
-    (
-        active_specs,
-        nas_screen_by_id,
-        bucket_summary,
-        n_new_selected,
-        n_new_available,
-        n_skipped,
-        n_physics_s05_skipped,
-        n_physics_s05_prescreen_failed,
-    ) = _select_active_specs(
-        specs,
-        ledger,
-        cycle=cycle,
-        dim=dim,
-        seq_len=seq_len,
-        selection=selection,
-        acquisition_beta=acquisition_beta,
-        use_nas_screen=use_nas_screen,
-        use_quality_order=use_quality_order,
-        max_graded_per_cycle=max_graded_per_cycle,
-        tier2_feedback_by_id=tier2_feedback_by_id,
-        regrade_top_orthogonality=regrade_top_orthogonality,
+    parser.add_argument("--skip-probe", action="store_true")
+    parser.add_argument("--reset-ledger", action="store_true")
+    parser.add_argument(
+        "--use-promoted-as-anchors",
+        action="store_true",
+        help="feed promoted fab components back as anchors for compounding",
+    )
+    parser.add_argument("--max-cross-pairs", default=30, type=int)
+    parser.add_argument("--max-knob-specs", default=48, type=int)
+    parser.add_argument(
+        "--max-nas-specs",
+        default=6,
+        type=int,
+        help="fresh NAS-synthesized graph topologies to grade per cycle (0 disables)",
+    )
+    parser.add_argument(
+        "--nas-archive-guided",
+        action="store_true",
+        help="bias NAS grammar sampling toward empty behaviour niches",
+    )
+    parser.add_argument(
+        "--max-dynamic-specs",
+        default=32,
+        type=int,
+        help="max ledger-feedback proposals synthesized per cycle",
+    )
+    parser.add_argument(
+        "--tier2-feedback",
+        nargs="*",
+        default=None,
+        help="optional Tier-2 cohort JSON artifacts to feed proposal repair/scoring",
+    )
+    parser.add_argument(
+        "--time-budget-minutes",
+        default=None,
+        type=float,
+        help="continuous mode; run until this wall-clock budget elapses",
+    )
+    parser.add_argument(
+        "--rotate-at-mb",
+        default=2,
+        type=float,
+        help="rotate ledger.jsonl + proposals.jsonl when they exceed this size",
+    )
+    parser.add_argument(
+        "--emit-run-summary",
+        action="store_true",
+        help="write component_fab/catalog/autonomous_run_<timestamp>.json",
+    )
+    parser.add_argument("--quiet", action="store_true")
+
+
+def _add_selection_args(parser: argparse.ArgumentParser) -> None:
+    """Screening/ordering/budgeting knobs."""
+
+    parser.add_argument("--disable-nas-screen", action="store_true")
+    parser.add_argument("--disable-quality-order", action="store_true")
+    parser.add_argument(
+        "--max-graded-per-cycle",
+        default=0,
+        type=int,
+        help="if >0, grade only this many specs per cycle",
+    )
+    parser.add_argument(
+        "--selection",
+        default="legacy",
+        choices=("legacy", "surrogate"),
+        help="candidate selection policy",
+    )
+    parser.add_argument("--acquisition-beta", default=1.0, type=float)
+    parser.add_argument(
+        "--regrade-top-orthogonality",
+        default=0,
+        type=int,
+        help="force the top-K pending Pareto-front specs by peak orthogonality "
+        "back into the grading budget so genuinely-novel candidates accumulate "
+        "paired-CI (fixes the composite-selection-starves-novel pathology)",
     )
 
-    cycle_scorecards, cycle_probes, cycle_capabilities, eliminated_by_gate = (
-        _grade_active_specs(
-            active_specs,
-            ledger,
-            cycle=cycle,
-            dim=dim,
-            seq_len=seq_len,
-            probe_steps=probe_steps,
-            skip_probe=skip_probe,
-            run_range_probe=run_range_probe,
-            range_train_steps=range_train_steps,
-            tier2_feedback_by_id=tier2_feedback_by_id,
-            nas_screen_by_id=nas_screen_by_id,
-            paired_seeds=paired_seeds,
-            niche_promotion=niche_promotion,
-        )
-    )
 
-    counts = _resolve_promotions(
-        ledger,
-        promotion_rules,
-        scale_gate=scale_gate,
-        scale_gate_dim=scale_gate_dim,
-        scale_gate_steps=scale_gate_steps,
-        scale_gate_seeds=scale_gate_seeds,
-        seq_len=seq_len,
+def _add_promotion_args(parser: argparse.ArgumentParser) -> None:
+    """Evidence gathering and promotion-rule knobs."""
+
+    parser.add_argument("--range-probe", action="store_true")
+    parser.add_argument("--range-train-steps", default=300, type=int)
+    parser.add_argument("--veto-range-blind", action="store_true")
+    parser.add_argument("--min-range-distance", default=1, type=int)
+    parser.add_argument("--niche-promotion", action="store_true")
+    parser.add_argument(
+        "--paired-seeds",
+        default=0,
+        type=int,
+        help="if >0, grade each survivor against its anchor on this many seeds",
     )
-    ranked = rank_proposals(
-        cycle_scorecards,
-        cycle_probes,
-        cycle_capabilities,
-        tier2_feedback_by_id=tier2_feedback_by_id,
-        nas_screen_by_id=nas_screen_by_id,
+    parser.add_argument(
+        "--scale-gate",
+        action="store_true",
+        help="re-verify each fresh promotion beats its anchor at SCALE before "
+        "promoting; a candidate that loses at scale is rejected, not minted",
     )
-    n_can_bind = sum(1 for c in cycle_capabilities.values() if c.get("can_bind"))
-    physics_probe_task_ratios = {
-        proposal_id: {
-            name: round(float(result.get("loss_ratio_initial_over_final") or 0.0), 4)
-            for name, result in (probe.get("per_task") or {}).items()
-            if result.get("trained_successfully")
-        }
-        for proposal_id, probe in cycle_probes.items()
-        if any(
-            note.startswith("physics_probe_tasks=") for note in probe.get("notes", ())
-        )
-    }
-    return {
-        "cycle": cycle,
-        "anchors": anchors,
-        "n_specs_considered": len(specs),
-        "n_active_regraded": len(active_specs),
-        "n_new_proposals": n_new_selected,
-        "n_new_available": n_new_available,
-        "n_terminal_skipped": n_skipped,
-        "n_physics_s05_skipped": n_physics_s05_skipped,
-        "n_physics_s05_prescreen_failed": n_physics_s05_prescreen_failed,
-        "n_eliminated": sum(eliminated_by_gate.values()),
-        "eliminated_by_gate": dict(eliminated_by_gate),
-        "n_can_bind": n_can_bind,
-        "quality_buckets": bucket_summary,
-        "physics_probe_task_ratios": physics_probe_task_ratios,
-        "promotion_counts": counts,
-        "top_5": leaderboard_to_json(ranked)[:5],
-    }
+    parser.add_argument("--scale-gate-dim", default=96, type=int)
+    parser.add_argument("--scale-gate-steps", default=1500, type=int)
+    parser.add_argument("--scale-gate-seeds", default=5, type=int)
+
+
+def _parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="component_fab autonomous loop")
+    _add_loop_args(parser)
+    _add_selection_args(parser)
+    _add_promotion_args(parser)
+    return parser.parse_args(argv)
+
+
+_INTERRUPTED = False
+
+
+def _install_signal_handler() -> None:
+    def _handler(_signum, _frame) -> None:
+        global _INTERRUPTED
+        _INTERRUPTED = True
+        print("\n[interrupt received — halting after this cycle]", flush=True)
+
+    signal.signal(signal.SIGINT, _handler)
 
 
 def _rotate_proposals(proposals_path: Path, rotate_bytes: int, quiet: bool) -> None:
     if not proposals_path.exists() or proposals_path.stat().st_size < rotate_bytes:
         return
-    # One past the highest existing index — monotonic even after pruning
-    # frees lower indices, so suffix order matches chronology (the ledger's
-    # rotated-replay sorts by mtime, but keep numbering sane regardless).
     prefix = proposals_path.name + "."
     existing = [
         int(child.name[len(prefix) :])
@@ -378,7 +211,7 @@ def _should_halt(
     moved = (
         summary["n_new_proposals"] > 0
         or summary["promotion_counts"].get(PROMOTION_PROMOTED, 0) > 0
-        or summary["promotion_counts"].get(PROMOTION_REJECTED, 0) > 0
+        or summary["promotion_counts"].get("rejected", 0) > 0
     )
     quiescent_streak = 0 if moved else quiescent_streak + 1
     if quiescent_streak >= halt_quiescent:
@@ -392,11 +225,13 @@ def _should_halt(
     return False, quiescent_streak
 
 
-def _drive_loop(args, ledger: Ledger, proposals_path: Path) -> list[dict]:
+def _drive_loop(
+    args: argparse.Namespace, ledger: Ledger, proposals_path: Path
+) -> list[dict]:
     rotate_bytes = int(args.rotate_at_mb * 1_048_576)
     started = time.monotonic()
 
-    def _budget_exhausted() -> bool:
+    def budget_exhausted() -> bool:
         if args.time_budget_minutes is None:
             return False
         return (time.monotonic() - started) / 60.0 >= args.time_budget_minutes
@@ -408,15 +243,15 @@ def _drive_loop(args, ledger: Ledger, proposals_path: Path) -> list[dict]:
         cycle += 1
         if args.time_budget_minutes is None and cycle > args.cycles:
             break
-        if _budget_exhausted():
+        if budget_exhausted():
             if not args.quiet:
                 print(
                     f"\nhalting: wall-clock budget {args.time_budget_minutes}m exhausted"
                 )
             break
-        if is_interrupted():
+        if _INTERRUPTED:
             break
-        summary = _run_cycle(
+        summary = run_cycle(
             cycle,
             ledger=ledger,
             dim=args.dim,
@@ -453,13 +288,11 @@ def _drive_loop(args, ledger: Ledger, proposals_path: Path) -> list[dict]:
         )
         cycle_summaries.append(summary)
         if not args.quiet:
-            _print_cycle(summary)
-
+            print_cycle(summary)
         rotated_ledger = ledger.rotate_if_oversized(rotate_bytes)
         if rotated_ledger and not args.quiet:
             print(f"[rotated ledger.jsonl → {rotated_ledger.name}]")
         _rotate_proposals(proposals_path, rotate_bytes, args.quiet)
-
         halted, quiescent_streak = _should_halt(
             summary,
             quiescent_streak,
@@ -479,17 +312,11 @@ def main(argv: list[str] | None = None) -> int:
     proposals_path = _CATALOG_DIR / "proposals.jsonl"
     if args.reset_ledger and ledger_path.exists():
         ledger_path.unlink()
-    # Replay rotated audit trail so promoted-fab anchors carried forward
-    # from prior days remain visible to adaptive_axis_variants. Without this
-    # the anchor pool collapses to whatever the most-recent rotation kept.
     ledger = open_ledger(ledger_path)
 
     try:
         cycle_summaries = _drive_loop(args, ledger, proposals_path)
     finally:
-        # Explicit flush+release of every cached JSONL handle (ledger +
-        # per-path scorecard writers) so a crash mid-run can't strand a
-        # buffered tail line.
         ledger.close()
         close_scorecard_writers()
 
@@ -509,7 +336,7 @@ def main(argv: list[str] | None = None) -> int:
             },
             default_dir=_CATALOG_DIR,
             prefix="autonomous_run",
-            quiet=True,  # the summary block below reports the path
+            quiet=True,
         )
         pruned_run_summaries = _prune_autonomous_run_summaries(_CATALOG_DIR)
     if not args.quiet:

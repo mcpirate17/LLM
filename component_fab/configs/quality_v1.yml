@@ -1,0 +1,13 @@
+version: quality_v1
+budget_split:
+  exploit: 0.60
+  repair: 0.25
+  exploration: 0.15
+score_weights:
+  tier2_win_probability: 0.45
+  measured_binding: 0.20
+  internal_composite: 0.15
+  research_prior_affinity: 0.10
+  novelty_confidence: 0.10
+risk_multiplier:
+  penalty_fraction: 0.50

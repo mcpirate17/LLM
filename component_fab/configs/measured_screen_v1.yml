@@ -1,0 +1,10 @@
+version: measured_screen_v1
+thresholds:
+  long_range_reach_min: 0.01
+  causality_violation_max: 0.50
+extractor:
+  n_seeds: 2
+  probe_vocab: 256
+behavior:
+  descriptor_unavailable: fail_open
+  nonfinite_descriptor: reject_unstable

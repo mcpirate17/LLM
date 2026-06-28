@@ -63,35 +63,34 @@ def test_unimplemented_invention_stubs_fail_loud(mechanism: str) -> None:
         generate_module({"op_invention_mechanism": mechanism}, dim=16)
 
 
-def test_native_equivalent_surprise_dispatches_validated_native() -> None:
-    # The legacy mechanism names carry a checked-in validated native lane in the
-    # registry, so they route straight to the native C++ lane — no per-spec
-    # evidence axes required, and the drifty Python lane is never selected.
+def test_native_equivalent_surprise_dispatch_requires_parity_evidence() -> None:
+    # A legacy mechanism with a native equivalent refuses to dispatch either path
+    # until the spec carries per-spec parity evidence — no silent fall back to the
+    # drifty Python lane or an unvalidated native lane.
+    with pytest.raises(NativeParityEvidenceError, match="op_native_parity_passed"):
+        generate_module({"op_invention_mechanism": "semiring_surprise_memory"}, dim=16)
+
+
+def test_native_equivalent_surprise_dispatch_routes_after_parity_evidence() -> None:
     module = generate_module(
-        {"op_invention_mechanism": "semiring_surprise_memory"}, dim=16
+        {
+            "op_invention_mechanism": "semiring_surprise_memory",
+            "op_native_parity_passed": True,
+            "op_native_parity_evidence": "component_fab/tests/test_native_surprise_memory.py",
+        },
+        dim=16,
     )
     assert isinstance(module, NativeSemiringSurpriseMemoryLane)
 
     rope = generate_module(
-        {"op_invention_mechanism": "semiring_surprise_memory_rope"}, dim=16
+        {
+            "op_invention_mechanism": "semiring_surprise_memory_rope",
+            "op_native_parity_passed": "passed",
+            "op_native_parity_evidence": "component_fab/tests/test_native_surprise_memory.py",
+        },
+        dim=16,
     )
     assert isinstance(rope, NativeSemiringRopeSurpriseMemoryLane)
-
-
-def test_native_equivalent_without_validation_artifact_fails_loud(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    # A native mapping with a missing proof is a wiring bug: refuse to dispatch
-    # rather than silently fall back to the Python path or an unvalidated native.
-    import component_fab.generator.code_generator as cg
-
-    monkeypatch.setitem(
-        cg._NATIVE_EQUIVALENT_MECHANISMS,
-        "semiring_surprise_memory",
-        ("native_semiring_surprise_memory", ""),
-    )
-    with pytest.raises(NativeParityEvidenceError, match="validation artifact"):
-        generate_module({"op_invention_mechanism": "semiring_surprise_memory"}, dim=16)
 
 
 def test_dispatch_physics_atom_program_from_axes() -> None:

@@ -1,10 +1,4 @@
-"""Shared CLI plumbing for ``component_fab.tools`` runners.
-
-Three things every runner used to hand-roll:
-- the common ``--ledger/--output/--dry-run/--quiet`` argument block,
-- opening the ledger (with a CONSISTENT ``include_rotated`` policy), and
-- the mkdir + timestamp + ``json.dumps(indent=2)`` report-write block.
-"""
+"""Shared CLI plumbing for ``component_fab.tools`` runners."""
 
 from __future__ import annotations
 
@@ -19,6 +13,10 @@ from component_fab.state.ledger import (
     Ledger,
     write_json_report,
 )
+from component_fab.state.provenance import build_run_provenance
+from component_fab.state.schema_versions import RUN_REPORT_SCHEMA_VERSION
+
+_REPO = Path(__file__).resolve().parents[2]
 
 
 def add_common_args(
@@ -30,9 +28,8 @@ def add_common_args(
     dry_run: bool = False,
     quiet: bool = False,
 ) -> argparse.ArgumentParser:
-    """Register the genuinely shared runner args (``--ledger``/``--output``
-    always; ``--dry-run``/``--quiet`` opt-in so runners that ignore them do
-    not grow dead CLI surface)."""
+    """Register shared runner args."""
+
     parser.add_argument("--ledger", default=str(ledger_default))
     parser.add_argument(
         "--output",
@@ -54,17 +51,27 @@ def add_common_args(
 def open_ledger(
     args_or_path: argparse.Namespace | Path | str, *, rotated: bool = True
 ) -> Ledger:
-    """Open the ledger with the standard full-history policy.
+    """Open the ledger with the standard full-history policy."""
 
-    Every CLI runner wants the rotated audit trail replayed (promoted
-    entries from prior days live in rotations); ``rotated=True`` is the
-    single shared default that used to drift per-runner.
-    """
     if isinstance(args_or_path, argparse.Namespace):
         path = getattr(args_or_path, "ledger", None) or args_or_path.ledger_path
     else:
         path = args_or_path
     return Ledger(path, include_rotated=rotated)
+
+
+def _with_report_metadata(payload: dict[str, Any] | list[Any]) -> dict[str, Any] | list[Any]:
+    """Add schema/provenance metadata to dict reports exactly once."""
+
+    if not isinstance(payload, dict):
+        return payload
+    if "run_metadata" in payload or "schema_version" in payload:
+        return payload
+    return {
+        "schema_version": RUN_REPORT_SCHEMA_VERSION,
+        "run_metadata": build_run_provenance(repo_root=_REPO),
+        **payload,
+    }
 
 
 def write_report(
@@ -76,12 +83,9 @@ def write_report(
     dry_run: bool = False,
     quiet: bool = False,
 ) -> Path | None:
-    """Write a timestamped JSON report (or print it for ``--dry-run``).
+    """Write a timestamped JSON report, or print it for ``--dry-run``."""
 
-    Resolves ``output or default_dir/<prefix>_<YYYYmmdd_HHMMSS>.json``, then
-    delegates mkdir + stable-dump to ``state.ledger.write_json_report``.
-    Returns the written path, or ``None`` when ``dry_run`` printed instead.
-    """
+    payload = _with_report_metadata(payload)
     if dry_run:
         print(json.dumps(payload, indent=2, default=str))
         return None

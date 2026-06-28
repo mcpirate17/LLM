@@ -23,9 +23,12 @@ from component_fab.improver.ranking import (
 from component_fab.policies.promotion import (
     PROMOTION_PENDING,
     PROMOTION_PROMOTED,
+    PROMOTION_REJECTED,
     PromotionRules,
     decide_promotion,
 )
+from component_fab.runner.grading import finalize_survivors
+from component_fab.runner.niche import annotate_niche_metadata
 from component_fab.state.ledger import Ledger
 
 
@@ -292,11 +295,6 @@ def _survivor(pid: str, *, agg_loss: float, cap: dict) -> dict:
 
 
 def test_annotate_and_finalize_wires_niche_metadata(tmp_path: Path):
-    from component_fab.tools.run_autonomous import (
-        _annotate_niche_metadata,
-        _finalize_survivors,
-    )
-
     survivors = [
         # specialist: strong binder, ~no learning
         _survivor(
@@ -312,7 +310,7 @@ def test_annotate_and_finalize_wires_niche_metadata(tmp_path: Path):
         _survivor("gen", agg_loss=50.0, cap={"ind_max_accuracy": 0.6}),
     ]
     ledger = Ledger(tmp_path / "l.jsonl")
-    _annotate_niche_metadata(survivors, ledger)
+    annotate_niche_metadata(survivors, ledger)
     for surv in survivors:
         md = surv["metadata"]
         assert "operational_spectrum" in md
@@ -322,6 +320,16 @@ def test_annotate_and_finalize_wires_niche_metadata(tmp_path: Path):
     # neither dominates the other -> both on the front
     assert all(s["metadata"]["on_pareto_front"] for s in survivors)
 
-    _finalize_survivors(survivors, ledger, cycle=1, niche_promotion=True)
+    finalize_survivors(survivors, ledger, cycle=1, niche_promotion=True)
     entry = ledger.entries["spec"]
     assert entry.metadata_history[-1]["on_pareto_front"] is True
+
+
+def test_front_member_shielded_from_reject(tmp_path: Path):
+    rules = PromotionRules(promote_by_pareto=True)
+    # 4 sub-reject-floor cycles (composite 0.1 <= 0.20) would normally reject;
+    # being on the front shields it (and the pareto streak promotes it).
+    on = _front_streak_entry(tmp_path, "on", on_front=True, cycles=4, composite=0.1)
+    assert decide_promotion(on, rules).decision == PROMOTION_PROMOTED
+    off = _front_streak_entry(tmp_path, "off", on_front=False, cycles=4, composite=0.1)
+    assert decide_promotion(off, rules).decision == PROMOTION_REJECTED

@@ -4,13 +4,12 @@ from __future__ import annotations
 
 import json
 
+import pytest
 import torch
 
 from component_fab.generator.code_generator import (
+    NativeParityEvidenceError,
     generate_module_from_spec,
-)
-from component_fab.generator.native_surprise_memory import (
-    NativeSemiringSurpriseMemoryLane,
 )
 from component_fab.generator.memory_primitives import (
     CausalFastWeightMemoryLane,
@@ -138,10 +137,10 @@ def test_invention_codegen_dispatches_mechanisms() -> None:
         module = generate_module_from_spec(specs[mechanism], dim=16)
         assert isinstance(module, cls)
         assert module(x).shape == x.shape
-    # The legacy semiring name routes to its validated native C++ lane.
-    semi = generate_module_from_spec(specs["semiring_surprise_memory"], dim=16)
-    assert isinstance(semi, NativeSemiringSurpriseMemoryLane)
-    assert semi(x).shape == x.shape
+    # The legacy semiring name has a native equivalent: the enumerated spec carries
+    # no per-spec parity evidence, so dispatch refuses either path (loud).
+    with pytest.raises(NativeParityEvidenceError):
+        generate_module_from_spec(specs["semiring_surprise_memory"], dim=16)
 
 
 def test_surprise_memory_lanes_are_causal_finite_and_share_read() -> None:

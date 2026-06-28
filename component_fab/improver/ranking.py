@@ -139,8 +139,8 @@ def orthogonality_subscore(solo_scorecard: dict[str, Any]) -> float:
     """Orthogonality signal (distance from state degeneracy with clones + baselines).
 
     The radius (min z-scored Euclidean distance to the ledger catalog spectra) is
-    computed and attached by ``_annotate_niche_metadata`` in
-    ``tools/_autonomous_grading.py``. ``composite_score`` only adds the lift when
+    computed and attached by ``annotate_niche_metadata`` in
+    ``runner/niche.py``. ``composite_score`` only adds the lift when
     the candidate clears ``meets_stability_floor`` — so non-functional states
     never score for distinctness alone.
     """
